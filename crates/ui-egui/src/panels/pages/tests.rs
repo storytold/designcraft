@@ -111,7 +111,8 @@ fn menu_harness(app: DesignApp, abs: usize, si: usize) -> Harness<'static, Desig
                 return;
             }
             let doc = app.session.doc().unwrap().doc.clone();
-            page_menu(app, ui, &doc, abs, si);
+            let layouts = doc.layouts();
+            page_menu(app, ui, &doc, &layouts, abs, si);
         },
         app,
     );
@@ -324,6 +325,150 @@ fn parent_thumbnails_follow_panel_options() {
     };
     assert_eq!(parent_thumb_heights(true), vec![IconSize::Large.row_h() as u32 - 5]);
     assert_eq!(parent_thumb_heights(false), Vec::<u32>::new());
+}
+
+#[test]
+fn parents_are_added_duplicated_and_renamed_from_the_panel() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"pages": 2, "facingPages": false})).unwrap();
+    let mut h = harness(app);
+    // One click on New Parent adds B-Parent and selects it.
+    h.get_by_label("New Parent").click();
+    h.run_steps(3);
+    let doc = h.state().session.doc().unwrap().doc.clone();
+    let b = doc.parents.iter().find(|p| p.parent.as_ref().is_some_and(|i| i.label() == "B-Parent")).map(|p| p.id);
+    assert!(b.is_some());
+    assert_eq!(selected_parent(h.state()), b);
+    // Its menu duplicates it as C-Parent.
+    h.get_by_label("B-Parent").click_secondary();
+    h.run_steps(3);
+    h.get_by_label("Duplicate Parent Spread").click();
+    h.run_steps(3);
+    let labels: Vec<String> = h.state().session.doc().unwrap().doc.parents.iter().filter_map(|p| p.parent.as_ref().map(|i| i.label())).collect();
+    assert_eq!(labels, ["A-Parent", "B-Parent", "C-Parent"]);
+    // Parent Options… renames prefix and name.
+    h.get_by_label("C-Parent").click_secondary();
+    h.run_steps(3);
+    h.get_by_label("Parent Options…").click();
+    h.run_steps(3);
+    let app = h.state_mut();
+    let d = app.ui.dialog.as_mut().unwrap();
+    assert_eq!(d.id, "parentOptions");
+    assert_eq!((d.s("prefix"), d.s("name")), ("C".into(), "Parent".into()));
+    d.fields.insert("prefix".into(), json!("CV"));
+    d.fields.insert("name".into(), json!("Cover"));
+    d.fields.insert("basedOn".into(), json!(b.unwrap().0.to_string()));
+    crate::dialogs::confirm(app).unwrap();
+    let doc = &app.session.doc().unwrap().doc;
+    let info = doc.parents[2].parent.as_ref().unwrap();
+    assert_eq!((info.label(), info.based_on), ("CV-Cover".into(), b));
+}
+
+#[test]
+fn the_panel_menu_names_the_selected_parent_or_lists_the_parents() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"pages": 2, "facingPages": false})).unwrap();
+    let h = menu_harness(app, 0, 0);
+    assert!(h.query_by_label("Parent Options").is_some(), "no parent selected: a submenu of the parents");
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"pages": 2, "facingPages": false})).unwrap();
+    let first = app.session.doc().unwrap().doc.parents[0].id;
+    select_parent(&mut app, Some(first));
+    let mut h = menu_harness(app, 0, 0);
+    assert!(h.query_by_label("Delete Parent “A-Parent”").is_some());
+    h.get_by_label("Duplicate Parent Spread “A-Parent”").click();
+    h.run_steps(3);
+    assert_eq!(h.state().session.doc().unwrap().doc.parents.len(), 2);
+    // Duplicating selected the copy, so the menu now names it.
+    assert!(h.query_by_label("Parent Options “B-Parent”…").is_some());
+    h.get_by_label("Parent Options “B-Parent”…").click();
+    h.run_steps(3);
+    assert!(h.state().ui.dialog.as_ref().is_some_and(|d| d.id == "parentOptions" && d.s("prefix") == "B"));
+}
+
+#[test]
+fn alternate_layouts_show_as_columns_with_their_own_menus() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"pages": 2, "width": 612, "height": 792})).unwrap();
+    let single = sized_harness(app, vec2(600.0, 520.0));
+    assert!(single.query_by_label("Layout 1").is_none(), "one layout: no column headers");
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"pages": 2, "width": 612, "height": 792})).unwrap();
+    app.run("layout.createAlternate", json!({"name": "Tablet H", "width": 1024, "height": 768})).unwrap();
+    let mut h = sized_harness(app, vec2(600.0, 520.0));
+    let (a, b) = (h.get_by_label("Layout 1").rect(), h.get_by_label("Tablet H").rect());
+    assert!(b.min.x > a.max.x - 1.0, "the alternate layout is a column to the right: {a:?} {b:?}");
+    // The + column creates another, from the current layout.
+    h.get_by_label("Create Alternate Layout…").click();
+    h.run_steps(3);
+    let d = h.state().ui.dialog.clone().unwrap();
+    assert_eq!(d.id, "cmd:layout.createAlternate");
+    assert_eq!(d.s("from"), "Layout 1");
+    h.state_mut().ui.dialog = None;
+    // The header's menu duplicates and deletes.
+    h.get_by_label("Layout Options: Tablet H").click();
+    h.run_steps(3);
+    h.get_by_label("Duplicate Alternate Layout").click();
+    h.run_steps(3);
+    assert_eq!(h.state().session.doc().unwrap().doc.layouts().len(), 3);
+    h.get_by_label("Layout Options: Tablet H").click();
+    h.run_steps(3);
+    h.get_by_label("Delete Alternate Layout").click();
+    h.run_steps(3);
+    let names: Vec<String> = h.state().session.doc().unwrap().doc.layouts().into_iter().map(|l| l.name).collect();
+    assert_eq!(names, ["Layout 1", "Tablet H copy"]);
+}
+
+#[test]
+fn renaming_an_alternate_layout_keeps_its_page_sizes() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"pages": 1, "width": 600, "height": 800, "facingPages": false})).unwrap();
+    app.run("layout.createAlternate", json!({"name": "Wide", "width": 900, "height": 600})).unwrap();
+    app.run("layout.pages.insert", json!({"after": 1, "count": 1})).unwrap();
+    app.run("layout.pageSize", json!({"pages": [3], "width": 400, "height": 400})).unwrap();
+    let sizes = |app: &DesignApp| (1..3).map(|i| app.session.doc().unwrap().doc.page(i).map(|p| (p.width, p.height))).collect::<Vec<_>>();
+    let open = |app: &mut DesignApp| {
+        let doc = app.session.doc().unwrap().doc.clone();
+        crate::panels::pages::open_layout_options(app, &doc, &doc.layouts(), 1);
+    };
+    // The dialog shows the first page's size (900 × 600); renaming leaves the 400 × 400 page.
+    open(&mut app);
+    app.ui.dialog.as_mut().unwrap().fields.insert("name".into(), json!("Landscape"));
+    crate::dialogs::confirm(&mut app).unwrap();
+    assert_eq!(sizes(&app), vec![Some((900.0, 600.0)), Some((400.0, 400.0))]);
+    assert_eq!(app.session.doc().unwrap().doc.layouts()[1].name, "Landscape");
+    // A changed width still resizes the layout's pages.
+    open(&mut app);
+    app.ui.dialog.as_mut().unwrap().fields.insert("width".into(), json!("1000"));
+    crate::dialogs::confirm(&mut app).unwrap();
+    assert!(sizes(&app).iter().all(|s| s.is_some_and(|(w, _)| (w - 1000.0).abs() < 1e-6)), "{:?}", sizes(&app));
+}
+
+#[test]
+fn layout_menu_options_open_the_pages_panel_dialogs() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"pages": 2, "facingPages": false})).unwrap();
+    app.run("layout.parents.new", json!({"prefix": "B"})).unwrap();
+    app.run("app.parentOptions", json!({})).unwrap();
+    assert!(app.ui.dialog.as_ref().is_some_and(|d| d.id == "parentOptions" && d.s("prefix") == "A"), "no selection: the first parent");
+    let b = app.session.doc().unwrap().doc.parents[1].id;
+    select_parent(&mut app, Some(b));
+    app.run("app.parentOptions", json!({})).unwrap();
+    assert!(app.ui.dialog.as_ref().is_some_and(|d| d.s("prefix") == "B"));
+    // A prefix the engine refuses (A is taken): the dialog stays, with what was typed and why.
+    if let Some(d) = app.ui.dialog.as_mut() {
+        d.fields.insert("prefix".into(), json!("A"));
+    }
+    assert!(crate::dialogs::confirm(&mut app).is_err());
+    let d = app.ui.dialog.as_ref().expect("the dialog stays open");
+    assert!(d.id == "parentOptions" && d.s("prefix") == "A" && !d.s("status").is_empty());
+    app.ui.dialog = None;
+    app.run("layout.createAlternate", json!({"name": "Wide", "width": 900, "height": 600})).unwrap();
+    app.run("app.alternateLayoutOptions", json!({})).unwrap();
+    assert!(app.ui.dialog.as_ref().is_some_and(|d| d.id == "cmd:layout.alternate.options" && d.s("layout") == "Layout 1"));
+    // A selection belongs to its document.
+    app.run("file.new", json!({"pages": 1})).unwrap();
+    assert_eq!(selected_parent(&app), None);
 }
 
 #[test]

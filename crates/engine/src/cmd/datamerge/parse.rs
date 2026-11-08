@@ -210,6 +210,10 @@ fn select_range(range: &str, count: usize, idx: &mut Vec<usize>, seen: &mut std:
 }
 
 fn parse_record_no(s: &str) -> Result<u32, String> {
+    // `parse` alone would accept a leading '+'.
+    if !s.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(format!("bad record \"{s}\""));
+    }
     s.parse::<u32>().map_err(|_| format!("bad record \"{s}\""))
 }
 
