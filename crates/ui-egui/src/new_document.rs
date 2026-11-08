@@ -136,6 +136,10 @@ fn as_preset(p: &Value) -> Option<NewDocument> {
     let mut v = p.clone();
     let o = v.as_object_mut()?;
     o.remove("title");
+    // `file.new` takes `binding`; the preset keeps it as `rightToLeftBinding`.
+    if let Some(binding) = o.remove("binding") {
+        o.insert("rightToLeftBinding".into(), json!(binding.as_str() == Some("rightToLeft")));
+    }
     o.retain(|_, v| !v.is_null());
     if let Some(b) = o.get("bleed").and_then(Value::as_f64) {
         o.insert("bleed".into(), json!([b, b, b, b]));
