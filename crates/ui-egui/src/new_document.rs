@@ -814,8 +814,8 @@ fn details(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) {
     });
     row(ui, rtl, |ui| {
         cell(ui, rtl, tr("Height"), |ui| spin(ui, d, "height", COLUMN_W - 8.0, Step::Measure(1.0)));
-        // Binding sits beside Orientation, under Show Right-to-Left Features (Document Setup shows
-        // it either way); the two share the column, with narrower buttons.
+        // Binding sits beside Orientation, under Show Right-to-Left Features; the two share the
+        // column, with narrower buttons.
         let binding = crate::rtl_features(app);
         let (w_cell, w_icon) = if binding { ((COLUMN_W - BINDING_GAP) / 2.0, 27.0) } else { (COLUMN_W, 30.0) };
         row(ui, rtl, |ui| {
