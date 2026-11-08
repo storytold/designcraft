@@ -1335,31 +1335,50 @@ mod spread_label_tests {
 
 #[cfg(test)]
 mod click_freeze_repro {
-    //! Repro for: clicking an object in a large document froze the UI for ~30 s.
-    //!
-    //! Set `DC_PORT_REPRO` to a `.designcraft` path to run it (e.g. the user's
-    //! Portfolio-Clean file); the test is skipped when the variable is unset.
+    //! Clicking an object in a large document used to freeze the UI for ~30 s: every
+    //! selection change (and every content edit) re-rendered every page thumbnail on
+    //! the UI thread. The document below is built in code, so the assertions run in
+    //! CI without any external file: the pages panel fills `THUMBS`, and the cached
+    //! must then survive a selection change, and a local content edit
+    //! must re-render only the edited spread's page thumbnails.
+    use egui::epaint::TextureId;
     use egui_kittest::Harness;
     use serde_json::json;
+    use std::collections::HashMap;
 
     use super::*;
+    use designcraft_doc::ParaFormat;
+    use designcraft_doc::build::NewDocument;
+    use designcraft_doc::geom::Rect;
+
+    /// A many-page document with one text frame per spread, built in code.
+    fn build_doc(pages: usize) -> Document {
+        let mut doc = Document::new(&NewDocument { pages, facing_pages: false, ..Default::default() });
+        let lid = doc.default_layer();
+        for si in 0..doc.spreads.len() {
+            doc.add_text_frame(SpreadRef::Doc(si), Rect::new(72.0, 72.0, 300.0, 120.0), lid, "Hello", ParaFormat::default()).unwrap();
+        }
+        doc
+    }
+
+    /// For every cached thumbnail: the `(document uid, page or parent)` it is for, and
+    /// the id of the texture backing it. A cache hit reuses a thumbnail's texture,
+    /// while a rebuild replaces it with a new one, so this map is the observable
+    /// trace of exactly what the panel re-rendered.
+    fn thumb_tex() -> HashMap<(u64, ThumbOf), TextureId> {
+        THUMBS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map(|m| m.iter().map(|(k, t)| ((k.0, k.1), t.id())).collect())
+            .unwrap_or_default()
+    }
 
     #[test]
-    fn selecting_an_object_must_not_rebuild_every_page_thumbnail() {
-        let path = match std::env::var("DC_PORT_REPRO") {
-            Ok(p) if !p.is_empty() => p,
-            _ => return,
-        };
+    fn page_thumbnails_survive_selection_and_local_edits() {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-        app.run("file.open", json!({"path": path})).unwrap();
-        let doc = app.session.doc().unwrap().doc.clone();
-        println!(
-            "document: {} spreads, {} items, {} assets",
-            doc.spreads.len(),
-            doc.spreads.iter().map(|s| s.items.len()).sum::<usize>(),
-            doc.assets.len()
-        );
-        let count = || THUMBS.lock().unwrap().as_ref().map(|m| m.len()).unwrap_or(0);
+        let a = app.session.add_document(designcraft_engine::DocState::new(build_doc(12), None));
+        let uid_a = app.session.documents()[a].uid;
         let mut h = Harness::builder().with_size(vec2(280.0, 900.0)).with_step_dt(1.0 / 60.0).build_ui_state(
             |ui, app: &mut DesignApp| {
                 let key = egui::Id::unique("click_freeze_repro_fonts");
@@ -1372,242 +1391,38 @@ mod click_freeze_repro {
             },
             app,
         );
-        println!("after build_ui_state: {} thumbnails cached", count());
-        let frame = |h: &mut Harness<DesignApp>, label: &str| {
-            let t0 = std::time::Instant::now();
-            h.run_steps(1);
-            println!("{label}: {} ms ({} thumbnails cached)", t0.elapsed().as_millis(), count());
-        };
-        frame(&mut h, "frame 1 (first paint: builds every page thumbnail)");
-        frame(&mut h, "frame 2 (thumbnails cached)");
-        // What a click on an object does: the select tool dispatches selection.set.
-        let id = h.state().session.doc().unwrap().doc.spreads.first().and_then(|sp| sp.items.first()).map(|it| it.id.0).unwrap_or(0);
-        h.state_mut().run("selection.set", json!({"ids": [id]})).unwrap();
-        let after = {
-            let t0 = std::time::Instant::now();
-            h.run_steps(1);
-            let ms = t0.elapsed().as_millis();
-            println!("frame 3 (after selection.set): {ms} ms");
-            ms
-        };
-        // A selection change repaints only the selection outline; it must not cost
-        // like re-rendering every page thumbnail.
-        let cached = {
-            let t0 = std::time::Instant::now();
-            h.run_steps(1);
-            let ms = t0.elapsed().as_millis();
-            println!("frame 4 (steady state): {ms} ms");
-            ms
-        };
-        assert!(after < cached.max(200) * 20 + 2000, "selection change rebuilt every page thumbnail: {after} ms vs cached {cached} ms");
-        // What Delete on a selected object does: a content edit (copy-on-write, new
-        // allocation) must rebuild only the damaged page's thumbnail, not all of them.
-        let keys_before: std::collections::HashSet<_> = THUMBS.lock().unwrap().as_ref().unwrap().keys().copied().collect();
+        // Frame 0 (build_ui_state) installed the fonts; frame 1 is the first paint, which
+        // renders every page into the cache.
+        h.run_steps(1);
+        let before = thumb_tex();
+        assert!(!before.is_empty(), "the pages panel must have filled the thumbnail cache");
+        assert!(before.keys().all(|(uid, _)| *uid == uid_a));
+
+        // What a click on an object does: the select tool dispatches selection.set. A
+        // selection change repaints only the selection outline and must not re-render
+        // any cached thumbnail.
+        let item = h.state().session.doc().unwrap().doc.spreads[0].items[0].id.0;
+        h.state_mut().run("selection.set", json!({ "ids": [item] })).unwrap();
+        h.run_steps(1);
+        assert_eq!(thumb_tex(), before, "selection.set must not re-render any cached thumbnail");
+
+        // What Delete on a selected object does: a content edit (copy-on-write, a new
+        // allocation) must re-render only the edited spread's page thumbnails and keep
+        // every other cached texture in place.
+        let edited_spread = 3;
+        let victim = h.state().session.doc().unwrap().doc.spreads[edited_spread].items[0].id.0;
+        h.state_mut().run("selection.set", json!({ "ids": [victim] })).unwrap();
         h.state_mut().run("edit.clear", json!({})).unwrap();
-        let deleted = {
-            let t0 = std::time::Instant::now();
-            h.run_steps(1);
-            let ms = t0.elapsed().as_millis();
-            let keys_after: std::collections::HashSet<_> = THUMBS.lock().unwrap().as_ref().unwrap().keys().copied().collect();
-            println!("frame 5 (after edit.clear): {ms} ms ({} -> {} thumbnails)", keys_before.len(), keys_after.len());
-            assert_eq!(keys_before, keys_after, "the content edit dropped page thumbnails that should have stayed cached");
-            ms
-        };
-        // One page thumbnail costs a fraction of a second here; dropping and rebuilding
-        // all ~104 (the old behavior) takes seconds for this document.
-        assert!(deleted < 500, "object delete rebuilt every page thumbnail: {deleted} ms");
-    }
-
-    /// What the status bar re-runs on every content edit (the memo is keyed on the
-    /// document allocation). Measures the raw cost.
-    #[test]
-    fn status_bar_preflight_cost_probe() {
-        let path = match std::env::var("DC_PORT_REPRO") {
-            Ok(p) if !p.is_empty() => p,
-            _ => return,
-        };
-        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-        app.run("file.open", json!({"path": path})).unwrap();
-        let t0 = std::time::Instant::now();
-        let n = crate::panels::preflight_errors(&app);
-        let dt = t0.elapsed();
-        println!("status-bar preflight_errors (full-document check): {dt:?} ({n} errors)");
-    }
-
-    /// The REAL app frame (canvas + panels), not just the pages panel: what does
-    /// a frame actually cost after select / resize / delete?
-    #[test]
-    fn full_app_content_edit_cost_probe() {
-        let path = match std::env::var("DC_PORT_REPRO") {
-            Ok(p) if !p.is_empty() => p,
-            _ => return,
-        };
-        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-        app.run("file.open", json!({"path": path})).unwrap();
-        let mut h = crate::test_window::open(app, egui::vec2(1440.0, 900.0));
-        h.state_mut().app.run("window.panel", json!({"panel": "pages"})).unwrap();
-
-        let measure = |label: &str, h: &mut egui_kittest::Harness<'static, crate::test_window::Window>| {
-            let t0 = std::time::Instant::now();
-            h.run_steps(1);
-            let ms = t0.elapsed().as_millis();
-            let (patches, render_ms) = (h.state().app.canvas.patches, h.state().app.perf.render_ms);
-            println!("{label}: full frame {ms} ms | canvas render {render_ms} ms, patches {patches}");
-        };
-
-        measure("steady-state frame", &mut h);
-
-        let (id, b) = {
-            let ds = h.state().app.session.active().unwrap();
-            let doc = &ds.doc;
-            let it = &doc.spreads[0].items[0];
-            let b = it.bounds();
-            println!("spread 0 first item #{}: bounds {:?}, text_frame={} graphic={}", it.id.0, b, it.is_text_frame(), it.graphic().is_some());
-            (it.id.0, b)
-        };
-        h.state_mut().app.run("selection.set", json!({"ids": [id]})).unwrap();
-        measure("frame after selection.set", &mut h);
-
-        h.state_mut().app.run("transform.resize", json!({"from": [b.x0, b.y0, b.x1, b.y1], "to": [b.x0, b.y0, b.x1 + 120.0, b.y1 + 60.0]})).unwrap();
-        measure("frame after transform.resize", &mut h);
-
-        h.state_mut().app.run("edit.clear", json!({})).unwrap();
-        measure("frame after edit.clear", &mut h);
-
-        // --- Now: delete an IMAGE (does the asset table change → damage None → full render?) ---
-        let assets_before = h.state().app.session.active().unwrap().doc.assets.len();
-        let (gid, is_graphic) = {
-            let ds = h.state().app.session.active().unwrap();
-            let doc = &ds.doc;
-            doc.spreads[0].items.iter().find_map(|it| it.graphic().is_some().then_some((it.id.0, true))).unwrap_or((0, false))
-        };
-        println!("assets before image delete: {assets_before} (graphic item #{gid}, found={is_graphic})");
-        if is_graphic {
-            h.state_mut().app.run("selection.set", json!({"ids": [gid]})).unwrap();
-            h.state_mut().app.run("edit.clear", json!({})).unwrap();
-            let assets_after = h.state().app.session.active().unwrap().doc.assets.len();
-            println!("assets after image delete: {assets_after}");
-            measure("frame after image edit.clear", &mut h);
-        }
-
-        // --- Force a full synchronous canvas re-render (screen-mode change) to bound its cost ---
-        h.state_mut().app.ui.screen_mode = crate::ScreenMode::Preview;
-        measure("frame after screen-mode change (forced full sync render)", &mut h);
-        h.state_mut().app.ui.screen_mode = crate::ScreenMode::Normal;
-        measure("frame back to Normal (forced full sync render)", &mut h);
-    }
-
-    /// What a RESIZE DRAG does, driven through the real interaction API the way the select
-    /// tool drives it: `begin_interaction` on pointer-down, a `preview("transform.resize")`
-    /// on every drag step (applied on top of the drag's start-of-drag snapshot, with no
-    /// per-step undo), and `commit_interaction` on pointer-up.
-    ///
-    /// That makes each per-step document *transient*: nothing pins it but the pages cache's
-    /// reference and the render worker (already dropped after its 0.5 ms render). This is the
-    /// exact condition under which a `Weak` cache reference died between frames and `validate`
-    /// fell back to dropping *every* thumbnail — the ~30 s resize freeze on large documents.
-    /// The probe reproduces it by dropping the test's own strong reference to the previous
-    /// frame's document after each preview, so only the cache keeps it alive. A `Weak` cache
-    /// reference frees the allocation (full rebuild, seconds per step); a strong `Arc` keeps
-    /// it (only the damaged spread's thumbnails rebuild, tens of ms).
-    #[test]
-    fn resize_drag_cost_probe() {
-        let path = match std::env::var("DC_PORT_REPRO") {
-            Ok(p) if !p.is_empty() => p,
-            _ => return,
-        };
-        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-        app.run("file.open", json!({"path": path})).unwrap();
-        let mut h = crate::test_window::open(app, egui::vec2(1440.0, 900.0));
-        h.state_mut().app.run("window.panel", json!({"panel": "pages"})).unwrap();
-        let count = || THUMBS.lock().unwrap().as_ref().map(|m| m.len()).unwrap_or(0);
-        let t0 = std::time::Instant::now();
         h.run_steps(1);
-        println!("first paint: {} ms ({} thumbnails cached)", t0.elapsed().as_millis(), count());
-
-        // Find the text frame whose story spans the most spreads (worst reflow case).
-        let (fid, spread_i, item_i, nframes) = {
-            let doc = &h.state().app.session.active().unwrap().doc;
-            let mut best: Option<(designcraft_doc::ItemId, usize, usize, usize)> = None;
-            for (si, sp) in doc.spreads.iter().enumerate() {
-                for (ii, it) in sp.items.iter().enumerate() {
-                    if let Some(tf) = it.text_frame() {
-                        let n = doc.stories.get(&tf.story).map(|s| s.frames.len()).unwrap_or(0);
-                        if best.is_none_or(|(_, _, _, b)| n > b) {
-                            best = Some((it.id, si, ii, n));
-                        }
-                    }
-                }
-            }
-            best.unwrap()
-        };
-        println!("worst text frame: #{} (spread {}, item {}) with a {}-frame story", fid.0, spread_i, item_i, nframes);
-
-        // Select it, paint once (so `validate` has a baseline allocation), and capture the
-        // drag's starting bounds as the select tool does on pointer-down.
-        h.state_mut().app.run("selection.set", json!({"ids": [fid.0]})).unwrap();
-        h.run_steps(1);
-        let from_rect = {
-            let doc = &h.state().app.session.active().unwrap().doc;
-            doc.spreads[spread_i].items[item_i].bounds()
-        };
-        let mut prev = h.state().app.session.active().unwrap().doc.clone();
-
-        // Begin the drag exactly like pointer-down.
-        h.state_mut().app.session.begin_interaction("Resize").unwrap();
-
-        for step in 1..=6u32 {
-            // A cumulative target from the original bounds, applied on the drag's snapshot.
-            // No per-step undo step is recorded, so the per-step document is transient.
-            h.state_mut()
-                .app
-                .session
-                .preview(
-                    "transform.resize",
-                    json!({
-                        "from": [from_rect.x0, from_rect.y0, from_rect.x1, from_rect.y1],
-                        "to": [from_rect.x0, from_rect.y0, from_rect.x1 + 15.0 * step as f64, from_rect.y1],
-                    }),
-                )
-                .unwrap();
-            let cur = h.state().app.session.active().unwrap().doc.clone();
-            let dmg = {
-                let cache: &designcraft_compose::Cache = &h.state().app.session.cache;
-                designcraft_render::damage::damage_with(&prev, &cur, Some(cache))
-            };
-            let regions = dmg.as_ref().map(|v| v.len()).unwrap_or(usize::MAX);
-            let spreads: std::collections::BTreeSet<usize> = dmg
-                .as_ref()
-                .map(|v| {
-                    v.iter()
-                        .filter_map(|(r, _)| match r {
-                            designcraft_doc::SpreadRef::Doc(i) => Some(*i),
-                            _ => None,
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-
-            // Release our strong reference to the previous frame's document: from here on the
-            // only thing pinning it is the pages cache — the real-app condition. A `Weak`
-            // cache reference frees it (full rebuild); a strong `Arc` keeps it (incremental).
-            std::mem::drop(prev);
-
-            let before = count();
-            let t0 = std::time::Instant::now();
-            h.run_steps(1);
-            let ms = t0.elapsed().as_millis();
-            let after = count();
-            println!("drag step {step}: damage={{{regions} regions, {} spreads}} | frame {ms} ms | thumbs {before} -> {after}", spreads.len());
-            // A full rebuild (the old fallback) costs seconds per step on this document; the
-            // incremental path costs tens of ms.
-            assert!(ms < 5000, "drag step {step}: a full rebuild ran during the drag ({ms} ms)");
-            prev = cur;
-        }
-
-        // Pointer-up: one undo step for the whole drag.
-        h.state_mut().app.session.commit_interaction().unwrap();
-        h.run_steps(1);
-        println!("after commit: {} thumbnails cached", count());
+        let after = thumb_tex();
+        assert_eq!(
+            after.keys().cloned().collect::<HashSet<_>>(),
+            before.keys().cloned().collect::<HashSet<_>>(),
+            "the content edit must not drop or add thumbnail entries"
+        );
+        let re_rendered: HashSet<ThumbOf> = after.iter().filter(|(k, t)| before.get(*k).is_none_or(|old| old != *t)).map(|(k, _)| k.1).collect();
+        let expected: HashSet<ThumbOf> =
+            h.state().session.doc().unwrap().doc.spreads[edited_spread].pages.iter().map(|p| ThumbOf::Page(p.id)).collect();
+        assert_eq!(re_rendered, expected, "the content edit must re-render exactly the edited spread's page thumbnails");
     }
 }
