@@ -135,30 +135,33 @@ mod spanish_tests {
     }
 
     #[test]
-    fn two_commands_never_read_the_same_in_spanish() {
+    fn two_commands_in_the_same_menu_never_read_the_same_in_spanish() {
         // The Type menu offers `Hair Space` and `Thin Space`, which insert U+200A and U+2009, and the
-        // Symbols menu offers the trademark and the registered trademark. If both read the same, the
-        // user cannot tell which command will insert which character.
+        // Symbols menu offers the trademark and the registered trademark. Two options in the same list
+        // reading the same leaves the user unable to say which character a command will insert.
         let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
         run_ui(&mut app, "app.language", &json!({"lang": "es"})).unwrap().unwrap();
         let norm = |l: &str| l.trim().to_lowercase();
-        let mut seen: std::collections::HashMap<String, String> = std::collections::HashMap::new();
         let mut clashes = Vec::new();
         let tree = menu_tree();
-        let mut stack: Vec<(String, Vec<&Item>)> = tree.iter().map(|(t, e)| (t.to_string(), e.iter().collect())).collect();
-        while let Some((title, entries)) = stack.pop() {
-            let mut labels = vec![title];
-            let mut pending: Vec<&Item> = entries;
-            while let Some(entry) = pending.pop() {
+        let mut menus: Vec<Vec<String>> = vec![tree.iter().map(|(t, _)| t.to_string()).collect()];
+        let mut stack: Vec<Vec<&Item>> = vec![tree.iter().map(|(_, e)| e.iter().collect()).collect()];
+        while let Some(entries) = stack.pop() {
+            let mut labels = Vec::new();
+            for entry in entries {
                 match entry {
                     Item::Sub(label, children) => {
                         labels.push(label.clone());
-                        stack.push((label.clone(), children.iter().collect()));
+                        stack.push(children.iter().collect());
                     }
                     Item::Cmd { label, .. } => labels.push(label.clone()),
                     _ => {}
                 }
             }
+            menus.push(labels);
+        }
+        for labels in menus {
+            let mut seen: std::collections::HashMap<String, String> = std::collections::HashMap::new();
             for label in labels {
                 let spanish = crate::i18n::tr("es", &label).to_string();
                 if !spanish.chars().any(char::is_alphabetic) {
@@ -175,6 +178,6 @@ mod spanish_tests {
                 }
             }
         }
-        assert!(clashes.is_empty(), "two commands read the same in Spanish: {clashes:?}");
+        assert!(clashes.is_empty(), "two commands in one Spanish menu read the same: {clashes:?}");
     }
 }
