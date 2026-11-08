@@ -1074,6 +1074,28 @@ fn shape_cached(
     out
 }
 
+/// Size of a small capital drawn by us, as a fraction of the type size, close to InDesign's own.
+const SMALL_CAPS_SIZE: f64 = 0.7;
+
+/// Faces whose small caps we must draw, by face id. Reading a font's feature list parses its GSUB,
+/// which is not something to do once per run per line.
+static SMALL_CAPS_MISSING: RwLock<Vec<(u32, bool)>> = RwLock::new(Vec::new());
+
+/// Whether this run's small caps have to be drawn instead of taken from the font: the font's own
+/// `smcp` is used whenever it has one.
+fn small_caps_drawn_by_us(face: &FontFace, p: &CharProps) -> bool {
+    if !matches!(p.capitalization, Capitalization::SmallCaps | Capitalization::OpenTypeAllSmallCaps) {
+        return false;
+    }
+    let id = face.id();
+    if let Some((_, missing)) = SMALL_CAPS_MISSING.read().unwrap_or_else(std::sync::PoisonError::into_inner).iter().find(|e| e.0 == id) {
+        return *missing;
+    }
+    let missing = !designcraft_fonts::font_features(face).tags.contains("smcp");
+    SMALL_CAPS_MISSING.write().unwrap_or_else(std::sync::PoisonError::into_inner).push((id, missing));
+    missing
+}
+
 fn metrics(face: &FontFace, p: &CharProps, auto_leading: TypeEnv) -> (f64, f64, f64, f64, f64, f64, f64, f64) {
     let (size, shift) = effective_size(p, &auto_leading.adv);
     let k = size / face.upem;
@@ -1199,7 +1221,11 @@ fn shape_segment(
     let tracking = p.tracking / 1000.0 * p.size;
     let manual = if let Kerning::Manual(v) = p.kerning { v / 1000.0 * p.size } else { 0.0 };
     let src = replacement.unwrap_or(&text[range.clone()]);
-    let caps = p.capitalization == Capitalization::AllCaps;
+    // A font with no small caps of its own gets them drawn: the letter is uppercased and set
+    // smaller, the way InDesign does it, which is why All Caps worked on such a font and Small
+    // Caps looked like nothing happened (#2438).
+    let small = small_caps_drawn_by_us(face, p);
+    let caps = p.capitalization == Capitalization::AllCaps || small;
     let feats = features_for(p);
     // Upright in vertical text, Horizontal Kana takes the vertical kana alternates instead.
     let mut upright_feats = feats.clone();
@@ -1253,12 +1279,20 @@ fn shape_segment(
             let end = shaped[gi + 1..].iter().map(|r| r.cluster).find(|&c| c > sg.cluster).unwrap_or(src.len());
             Box::from(src.get(sg.cluster..end).unwrap_or(""))
         });
+        // Small caps drawn by us shrink the lowercase letters (all of them for All Small Caps);
+        // the capitals of a Small Caps run keep their size. Only the glyph and its advance change:
+        // the line box above is measured from the unscaled size, so leading never moves.
+        let shrink = match small {
+            true if p.capitalization == Capitalization::OpenTypeAllSmallCaps => SMALL_CAPS_SIZE,
+            true if ch.is_lowercase() => SMALL_CAPS_SIZE,
+            _ => 1.0,
+        };
         // Upright: down the line is the shaper's -y, across it (text space -y) its x.
-        let mut adv = if up { -(sg.y_advance as f64) * k_v } else { sg.x_advance as f64 * k * hs };
+        let mut adv = if up { -(sg.y_advance as f64) * k_v * shrink } else { sg.x_advance as f64 * k * hs * shrink };
         let (dx, dy) = if up {
-            (-(sg.y_offset as f64) * k_v, -(sg.x_offset as f64) * k * hs)
+            (-(sg.y_offset as f64) * k_v * shrink, -(sg.x_offset as f64) * k * hs * shrink)
         } else {
-            (sg.x_offset as f64 * k * hs, -(sg.y_offset as f64) * k * p.v_scale)
+            (sg.x_offset as f64 * k * hs * shrink, -(sg.y_offset as f64) * k * p.v_scale * shrink)
         };
         let (ascent, descent) = if up { (em_top * k_v, -em_bottom * k_v) } else { (ascent, descent) };
         let body = adv;
@@ -1280,8 +1314,8 @@ fn shape_segment(
             adv,
             dx: dx + mark_x,
             dy: dy - mark_y,
-            sx: k * hs,
-            sy: k * p.v_scale,
+            sx: k * hs * shrink,
+            sy: k * p.v_scale * shrink,
             shift,
             ascent,
             typo_ascent: face.typo_ascent * k,

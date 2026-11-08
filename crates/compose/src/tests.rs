@@ -8647,3 +8647,46 @@ fn cross_reference_text_breaks_at_its_spaces() {
         }
     }
 }
+
+/// A font with small caps of its own keeps them (Source Sans 3 has `smcp`), and one without gets
+/// them drawn: the lowercase letters are set as capitals at 70%, while a capital already in the run
+/// keeps its size. That is the case the report hit, where All Caps worked and Small Caps did nothing.
+#[test]
+fn small_caps_come_from_the_font_or_are_drawn_when_it_has_none() {
+    use designcraft_doc::Capitalization;
+    let text = "ab A";
+
+    let composed = |family: &str, caps: Capitalization| {
+        let (mut d, sid, _) = doc_with(text, Rect::new(72.0, 36.0, 372.0, 136.0), ParaAttrs::default());
+        d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| {
+            f.over.font_family = Some(family.into());
+            f.over.size = Some(20.0);
+            f.over.capitalization = Some(caps);
+        });
+        let cs = compose_story(&d, sid, &Default::default());
+        cs.frames[0].lines[0].glyphs.iter().map(|g| (g.byte, g.gid, g.adv, g.sx, g.rendered_char)).collect::<Vec<_>>()
+    };
+
+    // Inter ships without `smcp`; Source Sans 3 has it.
+    let plain = composed("Inter", Capitalization::Normal);
+    let small = composed("Inter", Capitalization::SmallCaps);
+    let at = |gs: &[(usize, u32, f64, f64, char)], byte: usize| gs.iter().find(|g| g.0 == byte).cloned().unwrap();
+    let (_, a_plain, adv_plain, _, _) = at(&plain, 0);
+    let (_, cap_plain, adv_cap, _, _) = at(&plain, 3);
+    let (_, a_small, adv_a, sx_a, ch_a) = at(&small, 0);
+    let (_, cap_small, adv_A, sx_cap, _) = at(&small, 3);
+    assert_eq!(ch_a, 'a', "the run still reads a");
+    assert_eq!(a_small, cap_plain, "the a is drawn with the glyph of an A");
+    assert_eq!(a_small, cap_small, "the same glyph the run's own A uses");
+    assert!((adv_a / adv_cap - 0.7).abs() < 1e-6, "the small a takes 70%: {} / {}", adv_a, adv_cap);
+    assert!((adv_A - adv_cap).abs() < 1e-9, "the capital keeps its advance: {} vs {}", adv_A, adv_cap);
+    assert!((sx_a / sx_cap - 0.7).abs() < 1e-6, "and its drawing is scaled by the same 0.7");
+    assert_ne!(a_plain, cap_plain, "in the plain run the two letters differ");
+
+    // With Source Sans 3 the font sets them: its `smcp` gives a small-capital glyph of its own,
+    // not the uppercased A we would draw.
+    let named = composed("Source Sans 3", Capitalization::SmallCaps);
+    let (_, a_named, _, _, _) = at(&named, 0);
+    assert_ne!(a_named, cap_plain, "the a takes the font's small capital, not an uppercased A");
+    assert_ne!(a_named, a_plain, "and it is not the plain a either");
+}
