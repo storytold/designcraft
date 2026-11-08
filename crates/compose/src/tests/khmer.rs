@@ -14,6 +14,16 @@ fn khmer_font_available() -> bool {
     available
 }
 
+/// The data-gated tests below need the Khmer data, which no build embeds until maintainers classify
+/// it; `required_data_pack_is_available` stops a build that requires the data from skipping them.
+fn khmer_data_available() -> bool {
+    let available = craft_khmer::data_available();
+    if !available {
+        eprintln!("skipped Khmer dictionary layout: built without Khmer data (see docs/khmer.md)");
+    }
+    available
+}
+
 fn fixture(text: &str, width: f64, composer: Composer, align: Align) -> (Document, StoryId) {
     let (mut doc, sid, _) = doc_with(
         text,
@@ -51,7 +61,7 @@ fn required_data_pack_is_available() {
 
 #[test]
 fn justified_khmer_fills_only_lines_with_real_spaces_without_moving_attached_glyphs() {
-    if !craft_khmer::data_available() || !khmer_font_available() {
+    if !khmer_data_available() || !khmer_font_available() {
         return;
     }
     let (natural_doc, sid) = fixture(PROSE, 10000.0, Composer::Paragraph, Align::Left);
@@ -145,7 +155,7 @@ fn khmer_authored_boundaries_survive_formatting_and_emergency_wraps() {
 
 #[test]
 fn misspelled_khmer_still_wraps_and_single_words_stay_intact() {
-    if !craft_khmer::data_available() || !khmer_font_available() {
+    if !khmer_data_available() || !khmer_font_available() {
         return;
     }
     let text = "ខ្ញុំស្រឡាញ់ភាសាខ្មែររររររសួស្តីពិភពលោក";
