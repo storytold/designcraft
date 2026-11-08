@@ -1,7 +1,7 @@
 //! Pages panel: parents at the top, document spreads with live thumbnails below.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use designcraft_doc::{Document, PageId, SpreadId, SpreadRef};
 use egui::{Color32, Sense, Stroke, StrokeKind, vec2};
@@ -31,7 +31,15 @@ static THUMBS: Mutex<Option<HashMap<ThumbKey, egui::TextureHandle>>> = Mutex::ne
 /// edit replaces the allocation (copy-on-write), and the next paint compares old and new
 /// with the damage API to drop only the damaged spreads' thumbnails; a selection-only
 /// change never touches the allocation, so it drops nothing.
-static LAST_DOC: Mutex<Option<HashMap<u64, std::sync::Weak<Document>>>> = Mutex::new(None);
+///
+/// The previous allocation is held with a **strong** `Arc`, not a `Weak`: an intermediate
+/// edit's allocation is transient (the undo buffer coalesces a drag into one step and the
+/// render worker drops its reference right after each 0.5 ms render), so a `Weak` ref dies
+/// between frames and the diff fell back to dropping *every* thumbnail — the ~30 s resize
+/// freeze on large documents. Holding one previous allocation per document is cheap: the
+/// document is copy-on-write and raster bytes are shared `Arc`s, so the extra reference pins
+/// only the changed items, not the pixel data.
+static LAST_DOC: Mutex<Option<HashMap<u64, Arc<Document>>>> = Mutex::new(None);
 
 /// Widest parent thumbnail, in pixels (a spread of many pages stays a small texture).
 const MAX_THUMB_W: f64 = 1024.0;
@@ -84,9 +92,15 @@ fn thumb(app: &mut DesignApp, ctx: &egui::Context, of: ThumbOf, h: f32) -> Optio
 fn validate(uid: u64, cur: &std::sync::Arc<Document>, cache: &designcraft_compose::Cache) {
     let mut last = LAST_DOC.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let last = last.get_or_insert_with(HashMap::new);
-    match last.get(&uid).and_then(|w| w.upgrade()) {
-        Some(prev) if !std::ptr::eq(&prev, cur) => {
-            last.insert(uid, std::sync::Arc::downgrade(cur));
+    // Hold only the active document's previous allocation; other documents' thumbnails stay
+    // cached but pinning their old allocations would only add memory for no diffing benefit.
+    last.retain(|k, _| *k == uid);
+    match last.get(&uid) {
+        Some(prev) if !std::ptr::eq(prev.as_ref(), cur.as_ref()) => {
+            // Take an owned handle to the old allocation so the borrow of `last` ends before
+            // the (re)insert below.
+            let prev = Arc::clone(prev);
+            last.insert(uid, Arc::clone(cur));
             let mut g = THUMBS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             let map = g.get_or_insert_with(HashMap::new);
             let mut by_spread: HashMap<usize, Vec<PageId>> = HashMap::new();
@@ -111,9 +125,10 @@ fn validate(uid: u64, cur: &std::sync::Arc<Document>, cache: &designcraft_compos
         }
         Some(_) => {}
         None => {
-            // First paint of this document (nothing to drop), or the recorded allocation is
-            // unreachable (e.g. the undo buffer cleared it): drop everything and revalidate.
-            last.insert(uid, std::sync::Arc::downgrade(cur));
+            // First paint of this document: nothing cached against it yet (uids are a global
+            // counter, never reused). With a strong reference the previous allocation can no
+            // longer vanish mid-edit, so this is the only path that drops a whole set.
+            last.insert(uid, Arc::clone(cur));
             let mut g = THUMBS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             let map = g.get_or_insert_with(HashMap::new);
             map.retain(|k, _| k.0 != uid);
@@ -1399,5 +1414,207 @@ mod click_freeze_repro {
         // One page thumbnail costs a fraction of a second here; dropping and rebuilding
         // all ~104 (the old behavior) takes seconds for this document.
         assert!(deleted < 500, "object delete rebuilt every page thumbnail: {deleted} ms");
+    }
+
+    /// What the status bar re-runs on every content edit (the memo is keyed on the
+    /// document allocation). Measures the raw cost.
+    #[test]
+    fn status_bar_preflight_cost_probe() {
+        let path = match std::env::var("DC_PORT_REPRO") {
+            Ok(p) if !p.is_empty() => p,
+            _ => return,
+        };
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.open", json!({"path": path})).unwrap();
+        let t0 = std::time::Instant::now();
+        let n = crate::panels::preflight_errors(&mut app);
+        let dt = t0.elapsed();
+        println!("status-bar preflight_errors (full-document check): {dt:?} ({n} errors)");
+    }
+
+    /// The REAL app frame (canvas + panels), not just the pages panel: what does
+    /// a frame actually cost after select / resize / delete?
+    #[test]
+    fn full_app_content_edit_cost_probe() {
+        let path = match std::env::var("DC_PORT_REPRO") {
+            Ok(p) if !p.is_empty() => p,
+            _ => return,
+        };
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.open", json!({"path": path})).unwrap();
+        let mut h = crate::test_window::open(app, egui::vec2(1440.0, 900.0));
+        h.state_mut().app.run("window.panel", json!({"panel": "pages"})).unwrap();
+
+        let measure = |label: &str, h: &mut egui_kittest::Harness<'static, crate::test_window::Window>| {
+            let t0 = std::time::Instant::now();
+            h.run_steps(1);
+            let ms = t0.elapsed().as_millis();
+            let (patches, render_ms) = (h.state().app.canvas.patches, h.state().app.perf.render_ms);
+            println!("{label}: full frame {ms} ms | canvas render {render_ms} ms, patches {patches}");
+        };
+
+        measure("steady-state frame", &mut h);
+
+        let (id, b) = {
+            let ds = h.state().app.session.active().unwrap();
+            let doc = &ds.doc;
+            let it = &doc.spreads[0].items[0];
+            let b = it.bounds();
+            println!(
+                "spread 0 first item #{}: bounds {:?}, text_frame={} graphic={}",
+                it.id.0, b, it.is_text_frame(), it.graphic().is_some()
+            );
+            (it.id.0, b)
+        };
+        h.state_mut().app.run("selection.set", json!({"ids": [id]})).unwrap();
+        measure("frame after selection.set", &mut h);
+
+        h.state_mut()
+            .app
+            .run(
+                "transform.resize",
+                json!({"from": [b.x0, b.y0, b.x1, b.y1], "to": [b.x0, b.y0, b.x1 + 120.0, b.y1 + 60.0]}),
+            )
+            .unwrap();
+        measure("frame after transform.resize", &mut h);
+
+        h.state_mut().app.run("edit.clear", json!({})).unwrap();
+        measure("frame after edit.clear", &mut h);
+
+        // --- Now: delete an IMAGE (does the asset table change → damage None → full render?) ---
+        let assets_before = h.state().app.session.active().unwrap().doc.assets.len();
+        let (gid, is_graphic) = {
+            let ds = h.state().app.session.active().unwrap();
+            let doc = &ds.doc;
+            doc.spreads[0]
+                .items
+                .iter()
+                .find_map(|it| it.graphic().is_some().then_some((it.id.0, true)))
+                .unwrap_or((0, false))
+        };
+        println!("assets before image delete: {assets_before} (graphic item #{gid}, found={is_graphic})");
+        if is_graphic {
+            h.state_mut().app.run("selection.set", json!({"ids": [gid]})).unwrap();
+            h.state_mut().app.run("edit.clear", json!({})).unwrap();
+            let assets_after = h.state().app.session.active().unwrap().doc.assets.len();
+            println!("assets after image delete: {assets_after}");
+            measure("frame after image edit.clear", &mut h);
+        }
+
+        // --- Force a full synchronous canvas re-render (screen-mode change) to bound its cost ---
+        h.state_mut().app.ui.screen_mode = crate::ScreenMode::Preview;
+        measure("frame after screen-mode change (forced full sync render)", &mut h);
+        h.state_mut().app.ui.screen_mode = crate::ScreenMode::Normal;
+        measure("frame back to Normal (forced full sync render)", &mut h);
+    }
+
+    /// What a RESIZE DRAG does, driven through the real interaction API the way the select
+    /// tool drives it: `begin_interaction` on pointer-down, a `preview("transform.resize")`
+    /// on every drag step (applied on top of the drag's start-of-drag snapshot, with no
+    /// per-step undo), and `commit_interaction` on pointer-up.
+    ///
+    /// That makes each per-step document *transient*: nothing pins it but the pages cache's
+    /// reference and the render worker (already dropped after its 0.5 ms render). This is the
+    /// exact condition under which a `Weak` cache reference died between frames and `validate`
+    /// fell back to dropping *every* thumbnail — the ~30 s resize freeze on large documents.
+    /// The probe reproduces it by dropping the test's own strong reference to the previous
+    /// frame's document after each preview, so only the cache keeps it alive. A `Weak` cache
+    /// reference frees the allocation (full rebuild, seconds per step); a strong `Arc` keeps
+    /// it (only the damaged spread's thumbnails rebuild, tens of ms).
+    #[test]
+    fn resize_drag_cost_probe() {
+        let path = match std::env::var("DC_PORT_REPRO") {
+            Ok(p) if !p.is_empty() => p,
+            _ => return,
+        };
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.open", json!({"path": path})).unwrap();
+        let mut h = crate::test_window::open(app, egui::vec2(1440.0, 900.0));
+        h.state_mut().app.run("window.panel", json!({"panel": "pages"})).unwrap();
+        let count = || THUMBS.lock().unwrap().as_ref().map(|m| m.len()).unwrap_or(0);
+        let t0 = std::time::Instant::now();
+        h.run_steps(1);
+        println!("first paint: {} ms ({} thumbnails cached)", t0.elapsed().as_millis(), count());
+
+        // Find the text frame whose story spans the most spreads (worst reflow case).
+        let (fid, spread_i, item_i, nframes) = {
+            let doc = &h.state().app.session.active().unwrap().doc;
+            let mut best: Option<(designcraft_doc::ItemId, usize, usize, usize)> = None;
+            for (si, sp) in doc.spreads.iter().enumerate() {
+                for (ii, it) in sp.items.iter().enumerate() {
+                    if let Some(tf) = it.text_frame() {
+                        let n = doc.stories.get(&tf.story).map(|s| s.frames.len()).unwrap_or(0);
+                        if best.map_or(true, |(_, _, _, b)| n > b) {
+                            best = Some((it.id, si, ii, n));
+                        }
+                    }
+                }
+            }
+            best.unwrap()
+        };
+        println!("worst text frame: #{} (spread {}, item {}) with a {}-frame story", fid.0, spread_i, item_i, nframes);
+
+        // Select it, paint once (so `validate` has a baseline allocation), and capture the
+        // drag's starting bounds as the select tool does on pointer-down.
+        h.state_mut().app.run("selection.set", json!({"ids": [fid.0]})).unwrap();
+        h.run_steps(1);
+        let from_rect = {
+            let doc = &h.state().app.session.active().unwrap().doc;
+            doc.spreads[spread_i].items[item_i].bounds()
+        };
+        let mut prev = h.state().app.session.active().unwrap().doc.clone();
+
+        // Begin the drag exactly like pointer-down.
+        h.state_mut().app.session.begin_interaction("Resize").unwrap();
+
+        for step in 1..=6u32 {
+            // A cumulative target from the original bounds, applied on the drag's snapshot.
+            // No per-step undo step is recorded, so the per-step document is transient.
+            h.state_mut()
+                .app
+                .session
+                .preview(
+                    "transform.resize",
+                    json!({
+                        "from": [from_rect.x0, from_rect.y0, from_rect.x1, from_rect.y1],
+                        "to": [from_rect.x0, from_rect.y0, from_rect.x1 + 15.0 * step as f64, from_rect.y1],
+                    }),
+                )
+                .unwrap();
+            let cur = h.state().app.session.active().unwrap().doc.clone();
+            let dmg = {
+                let cache: &designcraft_compose::Cache = &*h.state().app.session.cache;
+                designcraft_render::damage::damage_with(&prev, &cur, Some(cache))
+            };
+            let regions = dmg.as_ref().map(|v| v.len()).unwrap_or(usize::MAX);
+            let spreads: std::collections::BTreeSet<usize> = dmg
+                .as_ref()
+                .map(|v| v.iter().filter_map(|(r, _)| match r { designcraft_doc::SpreadRef::Doc(i) => Some(*i), _ => None }).collect())
+                .unwrap_or_default();
+
+            // Release our strong reference to the previous frame's document: from here on the
+            // only thing pinning it is the pages cache — the real-app condition. A `Weak`
+            // cache reference frees it (full rebuild); a strong `Arc` keeps it (incremental).
+            std::mem::drop(prev);
+
+            let before = count();
+            let t0 = std::time::Instant::now();
+            h.run_steps(1);
+            let ms = t0.elapsed().as_millis();
+            let after = count();
+            println!(
+                "drag step {step}: damage={{{regions} regions, {} spreads}} | frame {ms} ms | thumbs {before} -> {after}",
+                spreads.len()
+            );
+            // A full rebuild (the old fallback) costs seconds per step on this document; the
+            // incremental path costs tens of ms.
+            assert!(ms < 5000, "drag step {step}: a full rebuild ran during the drag ({ms} ms)");
+            prev = cur;
+        }
+
+        // Pointer-up: one undo step for the whole drag.
+        h.state_mut().app.session.commit_interaction().unwrap();
+        h.run_steps(1);
+        println!("after commit: {} thumbnails cached", count());
     }
 }
