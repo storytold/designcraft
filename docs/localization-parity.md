@@ -35,7 +35,7 @@ come as Middle East editions with an English or French interface and right-to-le
 |---|---|---|---|---|---|---|---|---|
 | English | en | ✓ | 1,724 / 1,724 (100%) | all / all / none | Latin ✓ | yes | full | 0 |
 | Simplified Chinese (Mandarin) | zh | ✓ (zh_CN) | 1,438 (83%) | menus, panels, most dialogs; tooltips partly; no help | CJK typesetting ✓ (cjk.md); canvas IME ✓, not checked by hand with a system IME (#322); CJK UI font not embedded in release builds, so boxes on Linux (#332) | no | partial | 25–40 |
-| Spanish | es | ✓ | 2,947 / 2,947 (100%) | menus, panels, dialogs, messages and command labels; no help | Latin ✓; Spanish hyphenation ✓ (#222) | no | full | 0 |
+| Spanish | es | ✓ | 2,947 / 2,947 by the missing-translations report (the 1,724-string baseline plus the catalog keys it never saw) | menus, panels, dialogs, messages and command labels; no help | Latin ✓; Spanish hyphenation ✓ (#222) | no | partial (catalog complete, nothing rendered on screen) | 0 |
 | Hindi | hi | ✗ | 0 (0%) | none | Devanagari shaped by harfrust in documents but untested; no Hindi hyphenation or spelling | no | none | 20–30 |
 | Arabic | ar | Middle East edition (English/French UI) | 1,459 (85%) | menus, panels, most dialogs; no help | RTL UI text (`rtl.rs`: bidi + shaping); Arabic composition, kashida, digits, RTL stories and tables ✓ (arabic-typography.md); list bullets and multi-column RTL open (#100) | no | partial | 15–25 |
 | French | fr | ✓ | 1,438 (83%) | menus, panels, most dialogs; no help | Latin ✓; French hyphenation ✓ (hyph-fr) | no | partial | 6–10 |
@@ -53,6 +53,10 @@ Japanese follow-up (2026-10-11): print ranges, imported style handling, the buil
 caption, table row/column movement and row-height distribution now use the existing translation
 catalog. Print, import options and an active table were rendered in Japanese and English with
 craft-fonts. The language totals above retain their dated measurement; this is a targeted fix.
+
+Spanish interface (2026-11-07): the missing-translations report counts **2,947** strings — the 1,724-string
+baseline plus the catalog keys that measurement never saw — and `es` misses none of them. It stays
+`partial` by the rule above: no screen was rendered in Spanish, so clipping in narrow widgets is unchecked.
 
 Hungarian interface (2026-11-01): `hu.rs` contains **1,906 entries and four context-specific
 captions**, including all 37 tool names. The initial catalog was prepared with AI assistance
