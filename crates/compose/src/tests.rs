@@ -8365,19 +8365,20 @@ fn greek_text_gets_greek_hyphenation() {
 
 /// Regression: hungarian layout breaks and unbroken text preserve source.
 #[test]
+#[ignore = "requires the verified hu Language pack; see docs/hungarian-language-support.md"]
 fn hungarian_layout_breaks_and_unbroken_text_preserve_source() {
-    if !option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")) {
-        eprintln!("requires the optional hu Language pack; see docs/hungarian-language-support.md");
-        return;
-    }
+    assert!(
+        option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")),
+        "select the verified hu Language pack before explicitly running this test"
+    );
     for composer in [Composer::SingleLine, Composer::Paragraph] {
-        for (word, parts) in [
-            ("asszony", ["asz-", "szony"]),
-            ("könnyen", ["köny-", "nyen"]),
-            ("hosszú", ["hosz-", "szú"]),
-            ("ASSZONY", ["ASZ-", "SZONY"]),
-            ("HOSSZÚ", ["HOSZ-", "SZÚ"]),
-            ("ko\u{308}nnyen", ["köny-", "nyen"]),
+        for (word, parts, inserted) in [
+            ("asszony", ["asz-", "szony"], 'z'),
+            ("könnyen", ["köny-", "nyen"], 'y'),
+            ("hosszú", ["hosz-", "szú"], 'z'),
+            ("ASSZONY", ["ASZ-", "SZONY"], 'Z'),
+            ("HOSSZÚ", ["HOSZ-", "SZÚ"], 'Z'),
+            ("ko\u{308}nnyen", ["köny-", "nyen"], 'y'),
         ] {
             let mut found = false;
             for width in (25..180).step_by(2) {
@@ -8421,6 +8422,13 @@ fn hungarian_layout_breaks_and_unbroken_text_preserve_source() {
                 }
                 assert_eq!(d.stories[&sid].text, word);
                 if shown == parts {
+                    let added: Vec<_> = lines[0].glyphs.iter().filter(|g| g.hyphen_inserted).collect();
+                    assert_eq!(added.iter().map(|g| g.rendered_char).collect::<Vec<_>>(), [inserted, '-']);
+                    for glyph in added {
+                        assert_eq!(glyph.len, 0);
+                        assert_eq!(glyph.generated_text.as_deref(), Some(""));
+                        assert_eq!(glyph.gid, glyph.face.glyph_for(glyph.rendered_char));
+                    }
                     assert_eq!(hit(&cs, 0, Point::new(lines[0].end_x - 0.1, lines[0].baseline)), Some(lines[0].range.end));
                     assert!(!highlight_quads(lines[0], 0, word.len(), true).is_empty());
                     found = true;
@@ -8439,11 +8447,12 @@ fn hungarian_layout_breaks_and_unbroken_text_preserve_source() {
 }
 /// Regression: hungarian manual no break and language boundaries.
 #[test]
+#[ignore = "requires the verified hu Language pack; see docs/hungarian-language-support.md"]
 fn hungarian_manual_no_break_and_language_boundaries() {
-    if !option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")) {
-        eprintln!("requires the optional hu Language pack; see docs/hungarian-language-support.md");
-        return;
-    }
+    assert!(
+        option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")),
+        "select the verified hu Language pack before explicitly running this test"
+    );
     let word = "asszony";
     let mut positive_control = false;
     for width in (25..120).step_by(2) {
@@ -8479,11 +8488,12 @@ fn hungarian_manual_no_break_and_language_boundaries() {
 
 /// Regression: hungarian all caps formatting applies to inserted letters.
 #[test]
+#[ignore = "requires the verified hu Language pack; see docs/hungarian-language-support.md"]
 fn hungarian_all_caps_formatting_applies_to_inserted_letters() {
-    if !option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")) {
-        eprintln!("requires the optional hu Language pack; see docs/hungarian-language-support.md");
-        return;
-    }
+    assert!(
+        option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")),
+        "select the verified hu Language pack before explicitly running this test"
+    );
     let word = "asszony";
     let mut found = false;
     for width in 25..120 {
@@ -8508,11 +8518,12 @@ fn hungarian_all_caps_formatting_applies_to_inserted_letters() {
 
 /// Regression: hungarian small caps insertions use shaped glyphs.
 #[test]
+#[ignore = "requires the verified hu Language pack; see docs/hungarian-language-support.md"]
 fn hungarian_small_caps_insertions_use_shaped_glyphs() {
-    if !option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")) {
-        eprintln!("requires the optional hu Language pack; see docs/hungarian-language-support.md");
-        return;
-    }
+    assert!(
+        option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")),
+        "select the verified hu Language pack before explicitly running this test"
+    );
     // A bundled face keeps this regression independent of optional craft-fonts.
     let word = "asszony";
     let face = designcraft_fonts::FontDb::global().face("Source Sans 3", "Regular");

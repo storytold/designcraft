@@ -854,6 +854,20 @@ impl Document {
         chain.into_iter().filter_map(|i| Some((i, self.parents.get(i)?.parent_page_at(pg.side, page)?))).collect()
     }
 
+    /// The parent items page `page` of spread `sr` leaves out because they are overridden: the
+    /// page's own overrides and those of every parent page in [`Self::shown_parent_pages`]. A
+    /// parent page that overrode an item of its base and then deleted the override removed that
+    /// item from itself and from every page based on it (#1469). An override always names an item
+    /// of a parent further back, so one set covers the chain.
+    ///
+    /// Everything that works out which parent items a page shows -- drawing, PDF and PPTX export,
+    /// hit-testing, snapping, frame edges -- asks this, so they all hide the same items.
+    pub fn overridden_parent_items(&self, sr: SpreadRef, page: usize) -> HashSet<ItemId> {
+        let Some(pg) = self.spread(sr).and_then(|sp| sp.pages.get(page)) else { return HashSet::new() };
+        let behind = self.shown_parent_pages(sr, page).into_iter().filter_map(|(ppi, ppage)| self.parents.get(ppi)?.pages.get(ppage));
+        pg.overridden.iter().copied().chain(behind.flat_map(|p| p.overridden.iter().copied())).collect()
+    }
+
     /// Whether basing parent `pi` on `base` would make a `based_on` cycle (or names no parent).
     pub fn parent_base_cycles(&self, pi: usize, base: SpreadId) -> bool {
         let Some(mut cur) = self.parent_index(base) else { return true };

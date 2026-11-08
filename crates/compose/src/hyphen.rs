@@ -545,11 +545,12 @@ mod tests {
 
     /// Regression: hungarian size limit is per word in long input.
     #[test]
+    #[ignore = "requires the verified hu Language pack; see docs/hungarian-language-support.md"]
     fn hungarian_size_limit_is_per_word_in_long_input() {
-        if !option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")) {
-            eprintln!("requires the optional hu Language pack; see docs/hungarian-language-support.md");
-            return;
-        }
+        assert!(
+            option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")),
+            "select the verified hu Language pack before explicitly running this test"
+        );
         let lim = Limits::default();
         let text = "asszony — ".repeat(160);
         assert!(text.len() > 1024);
@@ -572,10 +573,12 @@ mod tests {
 
     /// Regression: huge hungarian runs are bounded without losing neighbour breaks.
     #[test]
+    #[ignore = "requires the verified hu Language pack; see docs/hungarian-language-support.md"]
     fn huge_hungarian_runs_are_bounded_without_losing_neighbour_breaks() {
-        if !option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")) {
-            return;
-        }
+        assert!(
+            option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")),
+            "select the verified hu Language pack before explicitly running this test"
+        );
         let giant = "á".repeat(craft_proof::hyphen::MAX_HYPHENATION_RUN_BYTES);
         let text = format!("asszony {giant} könnyen");
         let lim = Limits::default();
@@ -584,11 +587,12 @@ mod tests {
     }
     /// Regression: hungarian limits apply to each separator separated run.
     #[test]
+    #[ignore = "requires the verified hu Language pack; see docs/hungarian-language-support.md"]
     fn hungarian_limits_apply_to_each_separator_separated_run() {
-        if !option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")) {
-            eprintln!("requires the optional hu Language pack; see docs/hungarian-language-support.md");
-            return;
-        }
+        assert!(
+            option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")),
+            "select the verified hu Language pack before explicitly running this test"
+        );
         for separator in [" ", "-", "—", "/", "123"] {
             let word = format!("asszony{separator}asszony");
             assert_eq!(hyphen_points_in(&word, &Limits::default(), Lang::Hungarian), vec![2, 9 + separator.chars().count()]);
@@ -608,11 +612,12 @@ mod tests {
 
     /// Regression: hungarian run offsets preserve insertions and combining marks.
     #[test]
+    #[ignore = "requires the verified hu Language pack; see docs/hungarian-language-support.md"]
     fn hungarian_run_offsets_preserve_insertions_and_combining_marks() {
-        if !option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")) {
-            eprintln!("requires the optional hu Language pack; see docs/hungarian-language-support.md");
-            return;
-        }
+        assert!(
+            option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")),
+            "select the verified hu Language pack before explicitly running this test"
+        );
         let lim = Limits::default();
         for separator in [" ", "-", "—", "/", "123"] {
             let first = "ko\u{308}nnyen";

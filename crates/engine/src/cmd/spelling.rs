@@ -83,12 +83,17 @@ pub fn specs() -> Vec<CommandSpec> {
             let (a, b) = (p.get("start").and_then(Value::as_u64).unwrap_or(0) as usize, p.get("end").and_then(Value::as_u64).unwrap_or(0) as usize);
             let to = str_param(p, "to").unwrap_or("").to_string();
             s.edit(|d, _| {
-                let st = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
-                let current = st.text.get(a..b).ok_or_else(|| bad("spelling.change", "invalid text range"))?;
-                if p.get("expected").and_then(Value::as_str).is_some_and(|w| w != current) {
-                    return Err(bad("spelling.change", "text changed; check spelling again"));
-                }
-                st.replace(a..b, &to);
+                let r = {
+                    let st = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
+                    let current = st.text.get(a..b).ok_or_else(|| bad("spelling.change", "invalid text range"))?;
+                    if p.get("expected").and_then(Value::as_str).is_some_and(|w| w != current) {
+                        return Err(bad("spelling.change", "text changed; check spelling again"));
+                    }
+                    let r = a..b;
+                    st.replace(r.clone(), &to);
+                    r
+                };
+                d.adjust_text_ranges(sid, r, to.len());
                 Ok(Value::Null)
             })
         }),
@@ -401,8 +406,14 @@ pub fn suggestions(doc: &designcraft_doc::Document, story: &designcraft_doc::Sto
     suggestions_in_language(lang.unwrap_or(Language::Unsupported), word)
 }
 
+/// Bound the English edit-candidate generator before allocating lowercase text or edits.
+const MAX_ENGLISH_SUGGESTION_BYTES: usize = 256;
+
 /// Generate language-specific suggestions without sharing results across languages.
 fn suggestions_in_language(language: Language, word: &str) -> Vec<String> {
+    if language == Language::English && word.len() > MAX_ENGLISH_SUGGESTION_BYTES {
+        return vec![];
+    }
     #[cfg(test)]
     SUGGESTION_CALLS.with(|calls| calls.set(calls.get() + 1));
     match language {
@@ -597,13 +608,51 @@ mod hungarian_integration_tests {
             .map(|v| v["word"].as_str().unwrap().to_string())
             .collect()
     }
+    /// Oversized UTF-8 and ASCII tokens never reach the English edit generator.
+    #[test]
+    fn english_suggestions_bound_bytes_before_generating_candidates() {
+        let calls = SUGGESTION_CALLS.get();
+        for word in ["x".repeat(MAX_ENGLISH_SUGGESTION_BYTES + 1), "ő".repeat(MAX_ENGLISH_SUGGESTION_BYTES / 2 + 1)] {
+            assert!(suggestions_in_language(Language::English, &word).is_empty());
+            assert_eq!(SUGGESTION_CALLS.get(), calls);
+        }
+        let boundary = "x".repeat(MAX_ENGLISH_SUGGESTION_BYTES);
+        suggestions_in_language(Language::English, &boundary);
+        assert_eq!(SUGGESTION_CALLS.get(), calls + 1, "the byte limit is inclusive");
+        assert!(suggestions_in_language(Language::English, "typograpy").contains(&"typography".to_string()));
+        assert!(suggestions_in_language(Language::Unsupported, "typograpy").is_empty());
+    }
+
+    /// A replacement keeps live text links aligned and rejects stale or invalid source ranges.
+    #[test]
+    fn spelling_change_adjusts_text_links_and_validates_source() {
+        use designcraft_doc::{Hyperlink, HyperlinkDest, HyperlinkSource};
+        let (mut s, sid) = document("typo linked", "English: USA");
+        std::sync::Arc::make_mut(&mut s.doc_mut().unwrap().doc).hyperlinks.push(Hyperlink {
+            id: 1,
+            name: "Link".into(),
+            source: HyperlinkSource::Text { story: StoryId(sid), start: 5, end: 11 },
+            dest: HyperlinkDest::Url("https://example.com".into()),
+        });
+        for (start, end, expected) in [(0, 4, "stale"), (0, 100, "typo"), (4, 0, "typo")] {
+            assert!(s.execute("spelling.change", &json!({"story":sid,"start":start,"end":end,"to":"typography","expected":expected})).is_err());
+            assert_eq!(s.doc().unwrap().doc.stories[&StoryId(sid)].text, "typo linked");
+        }
+        s.execute("spelling.change", &json!({"story":sid,"start":0,"end":4,"to":"typography","expected":"typo"})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.hyperlinks[0].source, HyperlinkSource::Text { story: StoryId(sid), start: 11, end: 17 });
+        assert_eq!(s.doc().unwrap().doc.stories[&StoryId(sid)].text, "typography linked");
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.hyperlinks[0].source, HyperlinkSource::Text { story: StoryId(sid), start: 5, end: 11 });
+    }
+
     /// Regression: suggestions are cached across occurrences and stories.
     #[test]
+    #[ignore = "requires the verified hu Language pack; see docs/hungarian-language-support.md"]
     fn suggestions_are_cached_across_occurrences_and_stories() {
-        if !option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")) {
-            eprintln!("requires the optional hu Language pack; see docs/hungarian-language-support.md");
-            return;
-        }
+        assert!(
+            option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")),
+            "select the verified hu Language pack before explicitly running this test"
+        );
         let text = "hejesírás hejesírás";
         let (mut s, first) = document(text, "hu");
         let r = s.execute("frame.create", &json!({"rect":[36,36,500,700],"content":"text","text":text})).unwrap();
@@ -636,11 +685,12 @@ mod hungarian_integration_tests {
 
     /// Regression: suggestion cache preserves language case and unsupported runs.
     #[test]
+    #[ignore = "requires the verified hu Language pack; see docs/hungarian-language-support.md"]
     fn suggestion_cache_preserves_language_case_and_unsupported_runs() {
-        if !option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")) {
-            eprintln!("requires the optional hu Language pack; see docs/hungarian-language-support.md");
-            return;
-        }
+        assert!(
+            option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")),
+            "select the verified hu Language pack before explicitly running this test"
+        );
         let text = "typograpy typograpy Hejesírás hejesírás qzxw";
         let (mut s, sid) = document(text, "hu");
         for (start, end, lang) in [(0, 9, "English: USA"), (text.find("qzxw").unwrap(), text.len(), "German")] {
@@ -690,11 +740,12 @@ mod hungarian_integration_tests {
 
     /// Regression: hungarian initialization respects story scope.
     #[test]
+    #[ignore = "requires the verified hu Language pack; see docs/hungarian-language-support.md"]
     fn hungarian_initialization_respects_story_scope() {
-        if !option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")) {
-            eprintln!("requires the optional hu Language pack; see docs/hungarian-language-support.md");
-            return;
-        }
+        assert!(
+            option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")),
+            "select the verified hu Language pack before explicitly running this test"
+        );
         let (mut s, hu) = document("hejesírás", "hu");
         let r = s.execute("frame.create", &json!({"rect": [36,36,500,700], "content":"text", "text":"typograpy"})).unwrap();
         let en = r["story"].as_u64().unwrap();
@@ -716,11 +767,12 @@ mod hungarian_integration_tests {
 
     /// Regression: mixed story initializes hungarian.
     #[test]
+    #[ignore = "requires the verified hu Language pack; see docs/hungarian-language-support.md"]
     fn mixed_story_initializes_hungarian() {
-        if !option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")) {
-            eprintln!("requires the optional hu Language pack; see docs/hungarian-language-support.md");
-            return;
-        }
+        assert!(
+            option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")),
+            "select the verified hu Language pack before explicitly running this test"
+        );
         let (mut s, sid) = document("typograpy hejesírás", "English: USA");
         s.execute("text.select", &json!({"story":sid,"anchor":10,"focus":"typograpy hejesírás".len()})).unwrap();
         s.execute("type.char", &json!({"attrs":{"language":"hu"}})).unwrap();
@@ -731,11 +783,12 @@ mod hungarian_integration_tests {
 
     /// Regression: hungarian text preserves compounds numbers case and byte ranges.
     #[test]
+    #[ignore = "requires the verified hu Language pack; see docs/hungarian-language-support.md"]
     fn hungarian_text_preserves_compounds_numbers_case_and_byte_ranges() {
-        if !option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")) {
-            eprintln!("requires the optional hu Language pack; see docs/hungarian-language-support.md");
-            return;
-        }
+        assert!(
+            option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")),
+            "select the verified hu Language pack before explicitly running this test"
+        );
         let text = "Árvíztűrő tükörfúrógép munkavállalóinkkal 2026-ban 2026-ben hejesírás.";
         for lang in ["Hungarian", "hu", "hu-HU", "hu_HU"] {
             let (mut s, _) = document(text, lang);
@@ -751,11 +804,12 @@ mod hungarian_integration_tests {
     }
     /// Regression: formatting does not split a word but language does.
     #[test]
+    #[ignore = "requires the verified hu Language pack; see docs/hungarian-language-support.md"]
     fn formatting_does_not_split_a_word_but_language_does() {
-        if !option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")) {
-            eprintln!("requires the optional hu Language pack; see docs/hungarian-language-support.md");
-            return;
-        }
+        assert!(
+            option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")),
+            "select the verified hu Language pack before explicitly running this test"
+        );
         let (mut s, sid) = document("helyesírás typograpy", "hu");
         s.execute("text.select", &json!({"story":sid,"anchor":0,"focus":3})).unwrap();
         s.execute("type.char", &json!({"attrs":{"size":18}})).unwrap();
@@ -766,11 +820,12 @@ mod hungarian_integration_tests {
     }
     /// Regression: user words changes and undo work in hungarian.
     #[test]
+    #[ignore = "requires the verified hu Language pack; see docs/hungarian-language-support.md"]
     fn user_words_changes_and_undo_work_in_hungarian() {
-        if !option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")) {
-            eprintln!("requires the optional hu Language pack; see docs/hungarian-language-support.md");
-            return;
-        }
+        assert!(
+            option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")),
+            "select the verified hu Language pack before explicitly running this test"
+        );
         let (mut s, sid) = document("hejesírás qzxw", "hu");
         s.execute("spelling.addWord", &json!({"word":"qzxw"})).unwrap();
         assert_eq!(words(&mut s), ["hejesírás"]);
@@ -785,11 +840,12 @@ mod hungarian_integration_tests {
     }
     /// Regression: decomposed accents are checked without changing document offsets.
     #[test]
+    #[ignore = "requires the verified hu Language pack; see docs/hungarian-language-support.md"]
     fn decomposed_accents_are_checked_without_changing_document_offsets() {
-        if !option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")) {
-            eprintln!("requires the optional hu Language pack; see docs/hungarian-language-support.md");
-            return;
-        }
+        assert!(
+            option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")),
+            "select the verified hu Language pack before explicitly running this test"
+        );
         let text = "tu\u{0308}ko\u{0308}rfu\u{0301}ro\u{0301}ge\u{0301}p hejesírás";
         let (mut s, _) = document(text, "hu");
         assert_eq!(words(&mut s), ["hejesírás"]);
@@ -799,21 +855,18 @@ mod hungarian_integration_tests {
     /// Regression: unsupported languages are not checked with a hungarian dictionary.
     #[test]
     fn unsupported_languages_are_not_checked_with_a_hungarian_dictionary() {
-        if !option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")) {
-            eprintln!("requires the optional hu Language pack; see docs/hungarian-language-support.md");
-            return;
-        }
         let (mut s, _) = document("qzxw hejesírás", "German");
         assert!(words(&mut s).is_empty());
     }
 
     /// Regression: hungarian user words match both unicode forms and legacy case.
     #[test]
+    #[ignore = "requires the verified hu Language pack; see docs/hungarian-language-support.md"]
     fn hungarian_user_words_match_both_unicode_forms_and_legacy_case() {
-        if !option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")) {
-            eprintln!("requires the optional hu Language pack; see docs/hungarian-language-support.md");
-            return;
-        }
+        assert!(
+            option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")),
+            "select the verified hu Language pack before explicitly running this test"
+        );
         let composed = "qzxőr";
         let decomposed = "qzxo\u{030b}r";
         for text in [composed, decomposed] {

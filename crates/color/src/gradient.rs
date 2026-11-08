@@ -100,10 +100,11 @@ impl Gradient {
         let mut out = Vec::new();
         for (i, s) in self.stops.iter().enumerate() {
             out.push((s.offset, s.color, s.opacity));
+            let mid = s.midpoint.clamp(0.01, 0.99);
             if let Some(n) = self.stops.get(i + 1)
-                && (s.midpoint - 0.5).abs() > 1e-3
+                && (mid - 0.5).abs() > 1e-3
             {
-                let t = s.offset + (n.offset - s.offset) * s.midpoint;
+                let t = s.offset + (n.offset - s.offset) * mid;
                 let (c, o) = self.sample(t);
                 out.push((t, c, o));
             }
@@ -216,6 +217,17 @@ impl GradientPaint {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn expanded_stops_clamp_out_of_range_midpoint() {
+        for mid in [2.0, -1.0] {
+            let mut g = Gradient::default();
+            g.stops[0].midpoint = mid;
+            let offsets: Vec<f32> = g.expanded_stops().iter().map(|s| s.0).collect();
+            assert!(offsets.windows(2).all(|w| w[0] <= w[1]), "{offsets:?}");
+            assert!(offsets.iter().all(|o| (0.0..=1.0).contains(o)), "{offsets:?}");
+        }
+    }
 
     #[test]
     fn sample_endpoints_and_mid() {

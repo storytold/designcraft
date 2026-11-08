@@ -1479,12 +1479,17 @@ fn digit_mode(p: &designcraft_doc::CharProps, arabic_context: Option<bool>) -> d
     }
 }
 
-/// Shaped once per candidate break, then shared while fitting candidate lines.
+/// Font-unit glyphs shared across identical suffixes, independent of source offsets and size.
 #[derive(Clone, Debug)]
 pub struct HyphenSuffix {
     text: Box<str>,
     glyphs: Vec<ShapedGlyph>,
+    advance: f64,
 }
+
+type SuffixKey = (u32, bool, String, Option<&'static str>, Box<str>);
+static SUFFIX_CACHE: RwLock<Vec<(SuffixKey, Arc<HyphenSuffix>)>> = RwLock::new(Vec::new());
+const SUFFIX_CACHE_MAX: usize = 128;
 
 /// Keep the same OpenType features as the source run (small caps, superior forms, etc.).
 pub(crate) fn set_hyphen_suffix(g: &mut Glyph, text: String) -> bool {
@@ -1492,17 +1497,39 @@ pub(crate) fn set_hyphen_suffix(g: &mut Glyph, text: String) -> bool {
         g.hyphen_suffix = None;
         return true;
     }
-    let shaped = shape_cached(&g.face, &text, g.hyphen_features.as_deref().unwrap_or(&[]), g.lang, false, g.upright, ("", ""));
+    let features = g.hyphen_features.as_deref().unwrap_or(&[]);
+    let key = (g.face.id(), g.upright, format!("{features:?}"), g.lang, text.clone().into_boxed_str());
+    {
+        let cache = SUFFIX_CACHE.read().unwrap_or_else(|e| e.into_inner());
+        if let Some((_, suffix)) = cache.iter().find(|(k, _)| *k == key) {
+            g.hyphen_suffix = Some(suffix.clone());
+            return true;
+        }
+    }
+    // Shape outside the cache lock: font work must not block other cache readers.
+    let shaped = shape_cached(&g.face, &text, features, g.lang, false, g.upright, ("", ""));
     if shaped.is_empty() || shaped.iter().any(|s| s.gid == 0) {
         return false;
     }
-    g.hyphen_suffix = Some(Arc::new(HyphenSuffix { text: text.into_boxed_str(), glyphs: shaped }));
+    let advance = shaped.iter().map(|sg| sg.x_advance as f64).sum();
+    let suffix = Arc::new(HyphenSuffix { text: text.into_boxed_str(), glyphs: shaped, advance });
+    let mut cache = SUFFIX_CACHE.write().unwrap_or_else(|e| e.into_inner());
+    let suffix = if let Some((_, existing)) = cache.iter().find(|(k, _)| *k == key) {
+        existing.clone()
+    } else {
+        if cache.len() >= SUFFIX_CACHE_MAX {
+            cache.clear();
+        }
+        cache.push((key, suffix.clone()));
+        suffix
+    };
+    g.hyphen_suffix = Some(suffix);
     true
 }
 
 /// Width of only the extra display letters; the hyphen is measured separately.
 pub(crate) fn hyphen_suffix_width(g: &Glyph) -> f64 {
-    g.hyphen_suffix.as_ref().map_or(0.0, |s| s.glyphs.iter().map(|sg| sg.x_advance as f64 * g.sx + g.hyphen_tracking).sum())
+    g.hyphen_suffix.as_ref().map_or(0.0, |s| s.advance * g.sx + s.glyphs.len() as f64 * g.hyphen_tracking)
 }
 /// Display-only glyphs; exported as outlines so they do not alter copied text.
 pub(crate) fn hyphen_suffix_glyphs(g: &Glyph) -> Vec<Glyph> {
@@ -1564,7 +1591,33 @@ fn overlay_bands(overlays: &[(std::ops::Range<usize>, String)]) -> Vec<(usize, O
 
 #[cfg(test)]
 mod tests {
-    use super::overlay_bands;
+    use super::*;
+
+    /// Repeated suffixes share shaped font units, while features, source offsets and size stay distinct.
+    #[test]
+    fn hyphen_suffix_cache_shares_glyphs_and_preserves_features_and_metrics() {
+        let face = designcraft_fonts::FontDb::global().face("Source Sans 3", "Regular");
+        let env = TypeEnv { auto_leading: 120.0, adv: Default::default(), glyph_fallback: true };
+        let mut first = control_glyph(&face, &CharProps::default(), env, 0, 0, 'z');
+        first.lang = Some("hu");
+        first.hyphen_features = None;
+        assert!(set_hyphen_suffix(&mut first, "zy".into()));
+        let mut second = first.clone();
+        second.byte += 100;
+        second.sx *= 2.0;
+        second.hyphen_tracking = 3.0;
+        assert!(set_hyphen_suffix(&mut second, "zy".into()));
+        assert!(std::sync::Arc::ptr_eq(first.hyphen_suffix.as_ref().unwrap(), second.hyphen_suffix.as_ref().unwrap()));
+        assert!((hyphen_suffix_width(&second) - hyphen_suffix_width(&first) * 2.0 - 6.0).abs() < 0.001);
+        let shown = hyphen_suffix_glyphs(&second);
+        assert!(shown.iter().all(|g| g.byte == second.byte && g.len == 0));
+        assert!((shown.iter().map(|g| g.adv).sum::<f64>() - hyphen_suffix_width(&second)).abs() < 0.001);
+        let feature: Vec<_> = designcraft_fonts::feature("smcp").into_iter().collect();
+        second.hyphen_features = Some(feature.into());
+        assert!(set_hyphen_suffix(&mut second, "zy".into()));
+        assert!(!std::sync::Arc::ptr_eq(first.hyphen_suffix.as_ref().unwrap(), second.hyphen_suffix.as_ref().unwrap()));
+        assert_ne!(hyphen_suffix_glyphs(&first)[0].gid, hyphen_suffix_glyphs(&second)[0].gid);
+    }
 
     /// The band sweep picks the same top overlay as checking every overlay at each boundary.
     #[test]

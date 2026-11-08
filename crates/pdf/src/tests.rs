@@ -1011,11 +1011,12 @@ fn a_swatch_colours_a_greyscale_image() {
 
 /// Regression: hungarian hyphenation pdf keeps original text.
 #[test]
+#[ignore = "requires the verified hu Language pack; see docs/hungarian-language-support.md"]
 fn hungarian_hyphenation_pdf_keeps_original_text() {
-    if !option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")) {
-        eprintln!("requires the optional hu Language pack; see docs/hungarian-language-support.md");
-        return;
-    }
+    assert!(
+        option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")),
+        "select the verified hu Language pack before explicitly running this test"
+    );
     let mut exercised = false;
     for width in (20..90).step_by(2) {
         let text = "asszony";
@@ -1122,4 +1123,30 @@ fn each_page_shows_its_own_composition() {
     // Parent items first, then the page's own.
     assert_eq!(extract_text(&bytes), ["Folio1Alpha", "Folio2Bravo", "Folio3Charlie"]);
     assert_eq!(export_pdf(&d, &cache, &opts).unwrap(), bytes, "a warm cache exports the same bytes");
+}
+
+/// A parent page that overrode an item of its base and deleted the override hides that item on
+/// the pages that use it. The canvas hid it but PDF export, which looked only at the page's own
+/// overrides, still drew it (#1469).
+#[test]
+fn an_item_a_parent_overrode_and_deleted_is_not_exported() {
+    let mut d = Document::new(&NewDocument { pages: 1, facing_pages: false, ..Default::default() });
+    let lid = d.default_layer();
+    let a = d.parents[0].id;
+    let margins = d.parents[0].pages[0].margins;
+    let b = d.add_parent("B", "Parent", 1, 0.0, margins);
+    let box_id = ItemId(d.alloc());
+    let rect = Rect::new(100.0, 100.0, 200.0, 160.0);
+    let mut it = Item::new(box_id, lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(rect));
+    it.fill = Fill::swatch(designcraft_color::swatch::BLACK);
+    d.insert_item(SpreadRef::Parent(0), it, None).unwrap();
+    std::sync::Arc::make_mut(&mut d.parents[1]).parent.as_mut().unwrap().based_on = Some(a);
+    std::sync::Arc::make_mut(&mut d.spreads[0]).pages[0].parent = Some(b);
+    let has_box = |d: &Document| {
+        let (_, paths) = drawn(&export_pdf(d, &Cache::new(), &PdfOptions::default()).unwrap());
+        paths.iter().any(|r| (r.width() - rect.width()).abs() < 0.5 && (r.height() - rect.height()).abs() < 0.5)
+    };
+    assert!(has_box(&d), "the page exports parent A's box through parent B");
+    std::sync::Arc::make_mut(&mut d.parents[1]).pages[0].overridden.push(box_id);
+    assert!(!has_box(&d), "removed on B, so the page using B exports no box");
 }

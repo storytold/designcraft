@@ -70,11 +70,21 @@ For review this branch pins the published commit of the companion
 No local Cargo source override is needed. Switch that pin to the upstream merge
 revision before merging the application change.
 
-The hu-data-dependent application tests run when `CRAFT_PROOF_EMBED_PACKS=hu`
-is explicitly selected. Builds without the optional pack still compile and test
-the regular paths; they do not claim Hungarian-data coverage. A selected pack
-that fails to load still fails the assertions. The full recorded data checks
-remain in craft-proof and run explicitly with the verified pack.
+HU-data-dependent application tests are explicitly ignored in the default suite,
+with the required pack recorded in each ignore reason. They assert the selected
+pack when invoked; missing data cannot silently pass. After setting the verified
+build inputs above, run the complete pack-dependent checks explicitly:
+
+```sh
+cargo test --locked -p designcraft-compose hungarian -- --include-ignored
+cargo test --locked -p designcraft-pdf hungarian -- --include-ignored
+cargo test --locked -p designcraft-engine cmd::spelling:: -- --include-ignored
+```
+
+Run those commands with one test thread on constrained machines. Builds without
+the optional pack still compile and test the regular paths; they do not claim
+Hungarian-data coverage. The full recorded data checks remain in craft-proof
+and run explicitly with the verified pack.
 
 The shared default opportunity API retains its all-caps exclusion. DesignCraft
 explicitly uses the layout opt-in for nonstandard all-caps breaks, so ASSZONY
