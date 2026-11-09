@@ -34,7 +34,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Resize Anchored Graphic",
             [],
             None,
-            "{id, width, height} — resize a story-owned anchored graphic and recompose its text",
+            "{id, left?, top?, right?, bottom?} edge deltas in frame points, or {id, width, height} together for explicit size; recomposes text",
             has_doc,
             resize_graphic
         ),
@@ -147,7 +147,16 @@ fn resize_graphic(s: &mut Session, p: &Value) -> Result<Value> {
         }
         // The placed graphic's transformed natural bounds define the maximum
         // revealable area. Never create empty frame space beyond those bounds.
-        let image_bounds = graphic.xf.transform_rect_bbox(
+        // Graphic bounds are in the item's inner coordinates, while the API
+        // receives edge deltas in the frame's parent coordinates. Convert the
+        // bounds before clamping and convert the final offset back to inner
+        // coordinates. Otherwise a second crop multiplies the offset by the
+        // scale introduced by the first crop.
+        let frame_xf = resized.xf;
+        if frame_xf.determinant().abs() < 1e-12 {
+            return Err(bad("anchored.resize", "singular frame transform"));
+        }
+        let image_bounds = (frame_xf * graphic.xf).transform_rect_bbox(
             designcraft_geom::Rect::new(0.0, 0.0, graphic.size.0, graphic.size.1));
         let l = left.clamp(image_bounds.x0.min(0.0), old_w - 1.0);
         let t = top.clamp(image_bounds.y0.min(0.0), old_h - 1.0);
@@ -157,10 +166,9 @@ fn resize_graphic(s: &mut Session, p: &Value) -> Result<Value> {
         let height = old_h - t - b;
         let sx = width / old_w;
         let sy = height / old_h;
-        // Keep content stationary in story coordinates, shifting it only by
-        // the amount removed from the upper/left edge of the crop.
+        let inner_offset = frame_xf.inverse() * designcraft_geom::Point::new(-l, -t) - frame_xf.inverse() * designcraft_geom::Point::ORIGIN;
         graphic.xf = Affine::scale_non_uniform(1.0 / sx, 1.0 / sy)
-            * Affine::translate((-l, -t)) * graphic.xf;
+            * Affine::translate(inner_offset) * graphic.xf;
         resized.xf = Affine::scale_non_uniform(sx, sy) * resized.xf;
         let mut normalized = AnchoredObject::new(resized, obj.position.clone());
         normalized.caption_id = obj.caption_id;
@@ -189,7 +197,11 @@ fn transform_content(s: &mut Session, p: &Value) -> Result<Value> {
         // Scaling around the graphic's natural centre preserves its proportions.
         let cx = graphic.size.0 / 2.0;
         let cy = graphic.size.1 / 2.0;
-        graphic.xf = Affine::translate((dx, dy)) * graphic.xf
+        if edited.xf.determinant().abs() < 1e-12 {
+            return Err(bad("anchored.contentTransform", "singular frame transform"));
+        }
+        let inner_delta = edited.xf.inverse() * designcraft_geom::Point::new(dx, dy) - edited.xf.inverse() * designcraft_geom::Point::ORIGIN;
+        graphic.xf = Affine::translate(inner_delta) * graphic.xf
             * Affine::translate((cx, cy)) * Affine::scale(scale) * Affine::translate((-cx, -cy));
         *obj = Arc::new(AnchoredObject { item: edited, position: obj.position.clone(), caption_id: obj.caption_id });
         Ok(json!({"id": id.0}))
@@ -380,6 +392,37 @@ fn release(s: &mut Session, p: &Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn consecutive_crops_keep_graphic_coordinates_in_frame_space() {
+        use designcraft_geom::Point;
+        // A first crop scales the item frame; the second must convert its
+        // edge delta through that scaled frame, not treat it as inner points.
+        let mut frame = Affine::IDENTITY;
+        let mut content = Affine::IDENTITY;
+        let natural_point = Point::new(60.0, 35.0);
+        let initial = frame * content * natural_point;
+        let mut old_width = 100.0;
+        for left in [20.0, 10.0] {
+            let sx = (old_width - left) / old_width;
+            let inv = frame.inverse();
+            let inner = inv * Point::new(-left, 0.0) - inv * Point::ORIGIN;
+            content = Affine::scale_non_uniform(1.0 / sx, 1.0)
+                * Affine::translate(inner) * content;
+            frame = Affine::scale_non_uniform(sx, 1.0) * frame;
+            let displayed = frame * content * natural_point;
+            assert!((displayed.x - (initial.x - (100.0 - old_width) - left)).abs() < 1e-9);
+            assert!((displayed.y - initial.y).abs() < 1e-9);
+            old_width -= left;
+        }
+        // A content move is also specified in frame points after both crops.
+        let inv = frame.inverse();
+        let delta = inv * Point::new(8.0, -4.0) - inv * Point::ORIGIN;
+        content = Affine::translate(delta) * content;
+        let moved = frame * content * natural_point;
+        assert!((moved.x - (initial.x - 30.0 + 8.0)).abs() < 1e-9);
+        assert!((moved.y - (initial.y - 4.0)).abs() < 1e-9);
+    }
 
     #[test]
     fn linking_caption_never_guesses_body_text_or_accepts_non_graphics() {

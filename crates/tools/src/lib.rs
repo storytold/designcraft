@@ -259,6 +259,7 @@ impl ToolContext<'_> {
             for frame in &composed.frames {
                 let Some(loc) = self.doc.find(frame.frame) else { continue };
                 let Some(host) = self.doc.item_at(&loc) else { continue };
+                if host.hidden || host.locked || self.doc.layer(host.layer).is_some_and(|l| !l.visible || l.locked) { continue; }
                 let parent = self.layout.xf(loc.spread) * self.doc.parent_xf(&loc) * self.doc.text_xf(host);
                 for placed in &frame.objects {
                     let item = &placed.object.item;

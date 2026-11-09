@@ -1003,7 +1003,7 @@ mod placed_item_tests {
         item.content = Content::Group { items: vec![Arc::new(Item::new(ItemId(d.alloc()), layer, Shape::Rectangle, Default::default()))] };
         let child = item.children()[0].id;
         let mut table = crate::Table::new(1, 1, 1, 0, 0, 20.0);
-        table.cells[0].text.insert_object(0, crate::AnchoredObject { item, position: Default::default() });
+        table.cells[0].text.insert_object(0, crate::AnchoredObject { item, position: Default::default(), caption_id: None });
         d.story_mut(sid).unwrap().insert_table(0, table);
         let untouched = StoryId(d.alloc());
         d.stories.insert(untouched, Arc::new(Story::new(untouched)));
@@ -1044,7 +1044,7 @@ mod placed_item_tests {
         let mut story = Story::new(sid);
         story.insert_object(
             0,
-            crate::AnchoredObject { item: Item::new(nested, layer, Shape::Rectangle, Default::default()), position: Default::default() },
+            crate::AnchoredObject { item: Item::new(nested, layer, Shape::Rectangle, Default::default()), position: Default::default(), caption_id: None },
         );
         for _ in 0..MAX_PLACEMENT_DEPTH + 2 {
             let mut outer = Story::new(sid);

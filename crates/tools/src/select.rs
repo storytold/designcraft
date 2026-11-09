@@ -46,6 +46,7 @@ enum Drag {
         id: ItemId,
         handle: usize,
         from: Rect,
+        ratio: (f64, f64),
     },
     AnchoredContentMove { id: ItemId, start: Point },
     AnchoredContentScale { id: ItemId, handle: usize, from: Rect },
@@ -1054,8 +1055,8 @@ impl SelectionTool {
         let p = ev.pos;
         match self.drag.clone() {
             Drag::AnchoredContentMove { id, start } => {
-                let dx = (p.x - start.x) / cx.zoom.max(1e-6);
-                let dy = (p.y - start.y) / cx.zoom.max(1e-6);
+                let dx = p.x - start.x;
+                let dy = p.y - start.y;
                 vec![Action::Preview("anchored.contentTransform".into(), json!({"id": id.0, "dx": dx, "dy": dy}))]
             }
             Drag::AnchoredContentScale { id, handle, from } => {
@@ -1066,15 +1067,11 @@ impl SelectionTool {
                 let scale = aspect_scale(from, handle, to).clamp(0.01, 100.0);
                 vec![Action::Preview("anchored.contentTransform".into(), json!({"id": id.0, "scale": scale}))]
             }
-            Drag::AnchoredResize { id, handle, from } => {
+            Drag::AnchoredResize { id, handle, from, ratio } => {
                 // An anchored image cannot move its top edge into preceding text.
                 // Dragging a handle trims/reveals content; it does not scale the image.
                 let to = resize_edges_rect(from, handle, p);
-                let Some(item) = cx.doc.anchored_item(id) else { return vec![] };
-                if from.width().abs() < 1e-9 || from.height().abs() < 1e-9 { return vec![]; }
-                let original = item.bounds();
-                let rx = original.width() / from.width();
-                let ry = original.height() / from.height();
+                let (rx, ry) = ratio;
                 vec![Action::Preview("anchored.resize".into(), json!({
                     "id": id.0,
                     "left": (to.x0 - from.x0) * rx,
@@ -1316,7 +1313,7 @@ impl Tool for SelectionTool {
             self.drag = if ev.mods.alt {
                 Drag::AnchoredContentScale { id: *id, handle, from }
             } else {
-                Drag::AnchoredResize { id: *id, handle, from }
+                Drag::AnchoredResize { id: *id, handle, from, ratio: cx.doc.anchored_item(*id).map(|item| (item.bounds().width() / from.width().max(1e-9), item.bounds().height() / from.height().max(1e-9))).unwrap_or((1.0, 1.0)) }
             };
             return vec![Action::Begin(if ev.mods.alt { "Scale Anchored Image Content" } else { "Resize Anchored Image" }.into())];
         }
