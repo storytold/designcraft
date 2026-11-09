@@ -1,6 +1,7 @@
 use crate::CmykRaster;
 use crate::colour::{DisplayColour, Pixels, to_display_rgba};
 use crate::decode_rgba;
+use crate::psd::{decode, decode_cmyk, is_cmyk};
 
 const W: u32 = 12;
 const H: u32 = 8;
@@ -313,6 +314,26 @@ fn cmyk_converts_like_other_cmyk_images() {
         assert_eq!(px[at(11, 7)], expect([0, 0, 0, 128]));
         assert!(px.iter().all(|p| p[3] == 255));
     }
+}
+
+/// A CMYK document's inks are read as they are (not through RGB); other modes have none.
+#[test]
+fn cmyk_inks_are_kept() {
+    let c = plane(255, Some((0, 0, 6, 8, 0)));
+    let m = plane(255, None);
+    let y = plane(255, None);
+    let k = plane(255, Some((6, 0, 12, 8, 127)));
+    let bytes = Psd::new(4, vec![c, m, y, k]).write();
+    assert!(is_cmyk(&bytes));
+    let inks = decode_cmyk(&bytes).unwrap();
+    assert_eq!((inks.width, inks.height, inks.alpha.as_ref()), (12, 8, None));
+    assert_eq!(inks.cmyk.get(at(0, 0) * 4..at(0, 0) * 4 + 4), Some(&[255, 0, 0, 0][..]));
+    assert_eq!(inks.cmyk.get(at(11, 7) * 4..at(11, 7) * 4 + 4), Some(&[0, 0, 0, 128][..]));
+    let rgb = Psd::new(3, vec![plane(64, None), plane(192, None), plane(64, None)]).write();
+    assert!(!is_cmyk(&rgb) && decode_cmyk(&rgb).is_none() && decode(&rgb).is_some());
+    let mut cut = bytes.clone();
+    cut.truncate(60);
+    assert!(decode_cmyk(&cut).is_none());
 }
 
 #[test]

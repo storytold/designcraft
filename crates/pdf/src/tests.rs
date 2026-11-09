@@ -1191,20 +1191,26 @@ fn compression_downsamples_per_class_and_sets_jpeg_quality() {
     assert!(pdf.windows(bytes.len()).any(|w| w == bytes.as_slice()), "the JPEG's own bytes");
     assert_eq!(compressed(&j, colour(class(0.72, 1.2, Some(60)))), [(4, 4, "DCTDecode".into())]);
 
-    // A CMYK TIFF is downsampled too, lossless and still CMYK.
+    // A CMYK TIFF is downsampled too and stays CMYK: lossless without a quality, a CMYK JPEG
+    // with one.
     let (tif, _) = cmyk_tiff();
     let mut c = doc_with_text("x");
     place(&mut c, tif, (4, 2));
-    let pdf = export_pdf(&c, &Cache::new(), &PdfOptions { images: colour(class(0.72, 1.2, Some(60))), ..Default::default() }).unwrap();
+    let pdf = export_pdf(&c, &Cache::new(), &PdfOptions { images: colour(class(0.72, 1.2, None)), ..Default::default() }).unwrap();
     assert_eq!(image_dicts(&pdf), [(2, 1, "FlateDecode".into())]);
     assert_eq!(image_xobjects(&pdf)[0].0, "DeviceCMYK");
+    let pdf = export_pdf(&c, &Cache::new(), &PdfOptions { images: colour(class(0.72, 1.2, Some(60))), ..Default::default() }).unwrap();
+    assert_eq!(image_dicts(&pdf), [(2, 1, "DCTDecode".into())]);
 
-    // A CMYK JPEG keeps its inks: passed through even when its class would downsample it.
+    // A CMYK JPEG keeps its inks: passed through unless downsampled, and then a CMYK JPEG again.
     let cmyk = crate::image_fixtures::cmyk_jpeg([0, 255, 255, 255], Some(0));
     let mut k = doc_with_text("x");
     place(&mut k, cmyk.clone(), (8, 8));
-    let pdf = export_pdf(&k, &Cache::new(), &PdfOptions { images: colour(class(0.72, 1.2, Some(60))), ..Default::default() }).unwrap();
+    let pdf = export_pdf(&k, &Cache::new(), &PdfOptions { images: colour(class(0.72, 2.0, Some(60))), ..Default::default() }).unwrap();
     assert!(pdf.windows(cmyk.len()).any(|w| w == cmyk.as_slice()), "the CMYK JPEG's own bytes");
+    let opts = PdfOptions { images: colour(class(0.72, 1.2, Some(60))), ..Default::default() };
+    assert_eq!(image_dicts(&export_pdf(&k, &Cache::new(), &opts).unwrap()), [(4, 4, "DCTDecode".into())]);
+    assert!(uncompressed(&k, opts).contains("/ColorSpace/DeviceCMYK"));
 }
 
 /// The grey class governs grey images; monochrome ones take the monochrome class and are never
@@ -1299,4 +1305,158 @@ fn psd_exports_through_compression() {
     assert_eq!(export(ImageClass { quality: Some(60), ..ImageClass::LOSSLESS }), [(2, 1, "DCTDecode".into())]);
     // 2 px over 100 pt = 1.44 ppi; above 1.2 → down to 0.72 ppi = 1×1.
     assert_eq!(export(class(0.72, 1.2, None)), [(1, 1, "FlateDecode".into())]);
+}
+
+/// A minimal CMYK Photoshop file, 2×1: 100 % K, then 100 % C (channels stored inverted).
+fn tiny_cmyk_psd() -> Vec<u8> {
+    let mut b = Vec::new();
+    b.extend(b"8BPS");
+    b.extend(1u16.to_be_bytes());
+    b.extend([0u8; 6]);
+    b.extend(4u16.to_be_bytes()); // channels
+    b.extend(1u32.to_be_bytes()); // height
+    b.extend(2u32.to_be_bytes()); // width
+    b.extend(8u16.to_be_bytes());
+    b.extend(4u16.to_be_bytes()); // CMYK
+    b.extend([0u8; 12]); // colour mode data, image resources, layers
+    b.extend(0u16.to_be_bytes()); // raw
+    b.extend([255, 0, 255, 255, 255, 255, 0, 255]); // C, M, Y, K planes
+    b
+}
+
+/// A CMYK Photoshop file keeps its inks (100 % K stays K only) instead of going through RGB;
+/// PDF/A gets it as RGB.
+#[test]
+fn cmyk_psd_keeps_its_inks() {
+    let mut d = doc_with_text("x");
+    place(&mut d, tiny_cmyk_psd(), (2, 1));
+    let r = export_pdf_with_report(&d, &Cache::new(), &PdfOptions::default()).unwrap();
+    assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+    assert_eq!(image_xobjects(&r.bytes), [("DeviceCMYK".to_string(), vec![0, 0, 0, 255, 255, 0, 0, 0])]);
+    let r = export_pdf_with_report(&d, &Cache::new(), &PdfOptions { standard: Standard::PdfA2b, ..Default::default() }).unwrap();
+    assert_ne!(image_xobjects(&r.bytes)[0].0, "DeviceCMYK");
+}
+
+fn convert(conversion: ColorConversion, destination: Option<&str>) -> Output {
+    Output { conversion, destination: destination.map(str::to_string) }
+}
+
+/// Output › Convert to Destination: RGB swatches and RGB rasters become CMYK; CMYK and grey
+/// keep their numbers in their own space; PDF/A stays RGB; an unknown destination is an error.
+#[test]
+fn color_conversion_to_destination_makes_cmyk() {
+    let to_dest = convert(ColorConversion::ToDestination, None);
+    let mut d = doc_with_text("x");
+    d.swatches.push(Swatch::color("Web Red", Color::rgb(1.0, 0.0, 0.0)));
+    add_box(&mut d, Rect::new(36.0, 36.0, 136.0, 136.0), "Web Red");
+    add_box(&mut d, Rect::new(36.0, 200.0, 136.0, 300.0), "[Black]");
+    let plain = uncompressed(&d, PdfOptions::default());
+    assert!(plain.contains("1 0 0 rg"), "RGB stays RGB without conversion");
+    let s = uncompressed(&d, PdfOptions { output: to_dest.clone(), ..Default::default() });
+    // No RGB fill or stroke operator anywhere in the content.
+    assert!(!s.split_ascii_whitespace().any(|t| t == "rg" || t == "RG"), "no RGB colour left:\n{}", &s[..s.len().min(2500)]);
+    assert!(s.contains("0 0 0 1 k"), "black keeps its numbers");
+
+    // An RGB PNG becomes a DeviceCMYK image; a grey one stays grey.
+    let mut d = doc_with_text("x");
+    place(&mut d, raster(image::ImageFormat::Png, false), (8, 8));
+    let r = export_pdf_with_report(&d, &Cache::new(), &PdfOptions { output: to_dest.clone(), ..Default::default() }).unwrap();
+    assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+    assert_eq!(image_xobjects(&r.bytes)[0].0, "DeviceCMYK");
+    let a2b = PdfOptions { output: to_dest.clone(), standard: Standard::PdfA2b, ..Default::default() };
+    let r = export_pdf_with_report(&d, &Cache::new(), &a2b).unwrap();
+    assert_ne!(image_xobjects(&r.bytes)[0].0, "DeviceCMYK", "PDF/A stays RGB");
+    assert!(r.warnings.iter().any(|w| w.contains("PDF/A: Output colour conversion was left out")), "{:?}", r.warnings);
+    // A placed RGB JPEG is converted too, not passed through.
+    let mut j = doc_with_text("x");
+    place(&mut j, raster(image::ImageFormat::Jpeg, false), (8, 8));
+    let r = export_pdf_with_report(&j, &Cache::new(), &PdfOptions { output: to_dest.clone(), ..Default::default() }).unwrap();
+    assert_eq!(image_xobjects(&r.bytes)[0].0, "DeviceCMYK");
+    let mut g = doc_with_text("x");
+    place(&mut g, grey_png(|x| if x < 4 { 40 } else { 200 }), (8, 8));
+    let r = export_pdf_with_report(&g, &Cache::new(), &PdfOptions { output: to_dest, ..Default::default() }).unwrap();
+    assert_eq!(image_xobjects(&r.bytes)[0].0, "DeviceGray");
+
+    let bad = convert(ColorConversion::PreserveNumbers, Some("No Such Profile"));
+    assert!(export_pdf(&g, &Cache::new(), &PdfOptions { output: bad, ..Default::default() }).is_err());
+}
+
+/// Into another destination than the working CMYK, Convert to Destination moves CMYK colours
+/// and CMYK images; Preserve Numbers keeps them. The PDF/X-4 output intent names the destination.
+#[test]
+fn convert_and_preserve_numbers_differ_and_the_output_intent_is_the_destination() {
+    let other = designcraft_color::cms::GENERIC_CMYK;
+    let mut d = doc_with_text("x");
+    d.swatches.push(Swatch::color("Ink", Color::cmyk(0.6, 0.3, 0.1, 0.05)));
+    add_box(&mut d, Rect::new(36.0, 36.0, 136.0, 136.0), "Ink");
+    let (tif, inks) = cmyk_tiff();
+    place(&mut d, tif, (4, 2));
+    let export = |conversion| {
+        let opts = PdfOptions { output: convert(conversion, Some(other)), compress: false, ..Default::default() };
+        let bytes = export_pdf(&d, &Cache::new(), &opts).unwrap();
+        (String::from_utf8_lossy(&bytes).into_owned(), image_xobjects(&bytes))
+    };
+    let (plain, plain_images) = export(ColorConversion::None);
+    let (kept, kept_images) = export(ColorConversion::PreserveNumbers);
+    let (moved, moved_images) = export(ColorConversion::ToDestination);
+    let fill = |s: &str| s.lines().find(|l| l.ends_with(" k")).map(str::to_string);
+    assert_eq!(fill(&kept), fill(&plain), "Preserve Numbers keeps the swatch's numbers");
+    assert_ne!(fill(&moved), fill(&plain), "Convert to Destination converts them");
+    assert_eq!(plain_images[0].1, inks);
+    assert_eq!(kept_images[0], ("DeviceCMYK".to_string(), inks.clone()));
+    assert_eq!(moved_images[0].0, "DeviceCMYK");
+    assert_ne!(moved_images[0].1, inks);
+
+    // PDF/X-4: the output intent is the destination when converting, else the working CMYK.
+    let x4 = |output: Output| {
+        let bytes = export_pdf(&d, &Cache::new(), &PdfOptions { standard: Standard::PdfX4, output, ..Default::default() }).unwrap();
+        crate::print_tests::output_intent(&bytes).expect("output intent")
+    };
+    let names = |i: &crate::print_tests::Intent| format!("{} / {}", i.identifier, i.condition);
+    let (dest, working) = (x4(convert(ColorConversion::PreserveNumbers, Some(other))), x4(Output::default()));
+    assert!(names(&dest).contains("Generic CMYK"), "{}", names(&dest));
+    assert!(!names(&working).contains("Generic CMYK"), "{}", names(&working));
+    assert_ne!(dest.profile, working.profile, "the destination's own profile");
+}
+
+/// With an Image Quality, CMYK rasters go in as CMYK JPEG (Adobe-inverted, with a Decode array):
+/// a CMYK TIFF, and an RGB raster converted to the destination. Without one they stay lossless.
+#[test]
+fn cmyk_rasters_with_a_quality_are_cmyk_jpeg() {
+    let (tif, _) = cmyk_tiff();
+    let mut c = doc_with_text("x");
+    place(&mut c, tif, (4, 2));
+    let lossless = uncompressed(&c, PdfOptions { images: colour(class(0.72, 1.2, None)), ..Default::default() });
+    assert!(lossless.contains("/ColorSpace/DeviceCMYK") && !lossless.contains("/DCTDecode"));
+    let cmyk_jpeg = |s: &str| s.contains("/Filter/DCTDecode") && s.contains("/ColorSpace/DeviceCMYK") && s.contains("/Decode[1 0 1 0 1 0 1 0]");
+    let s = uncompressed(&c, PdfOptions { images: colour(class(0.72, 1.2, Some(60))), ..Default::default() });
+    assert!(cmyk_jpeg(&s), "{}", &s[..s.len().min(3000)]);
+    // The legacy switch alone never makes a CMYK raster JPEG.
+    assert!(!uncompressed(&c, PdfOptions { compress_images: true, ..Default::default() }).contains("/DCTDecode"));
+
+    let mut d = doc_with_text("x");
+    place(&mut d, raster(image::ImageFormat::Png, false), (8, 8));
+    let opts = PdfOptions {
+        output: convert(ColorConversion::ToDestination, None),
+        images: colour(ImageClass { quality: Some(70), ..ImageClass::LOSSLESS }),
+        ..Default::default()
+    };
+    let s = uncompressed(&d, opts);
+    assert!(cmyk_jpeg(&s), "{}", &s[..s.len().min(3000)]);
+    // Converted, the legacy switch alone doesn't make it JPEG either.
+    let s = uncompressed(&d, PdfOptions { output: convert(ColorConversion::ToDestination, None), compress_images: true, ..Default::default() });
+    assert!(s.contains("/ColorSpace/DeviceCMYK") && !s.contains("/DCTDecode"), "{}", &s[..s.len().min(3000)]);
+}
+
+/// PDF/A takes no CMYK: a placed CMYK JPEG goes in as RGB, downsampled or not, never as the
+/// DeviceCMYK JPEG it is.
+#[test]
+fn pdf_a_writes_a_cmyk_jpeg_as_rgb() {
+    let cmyk = crate::image_fixtures::cmyk_jpeg([0, 255, 255, 255], Some(0));
+    let mut k = doc_with_text("x");
+    place(&mut k, cmyk, (8, 8));
+    for images in [ImageCompression::NONE, colour(class(0.72, 1.2, Some(60)))] {
+        let s = uncompressed(&k, PdfOptions { standard: Standard::PdfA2b, images, ..Default::default() });
+        assert!(s.contains("/Subtype/Image") && !s.contains("DeviceCMYK"), "{images:?}: {}", &s[..s.len().min(3000)]);
+    }
 }

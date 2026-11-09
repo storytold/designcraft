@@ -17,6 +17,8 @@ designcraft-compose = { workspace = true }
 craft-pdf = { workspace = true, features = ["write-pdf"] }
 craft-prepress = { workspace = true }
 craft-cms = { workspace = true }
+# CMYK JPEG for converted and CMYK rasters with an Image Quality (`image` writes only grey and RGB).
+jpeg-encoder = { version = "0.7", default-features = false, features = ["std"] }
 krilla-svg = { workspace = true }
 designcraft-images = { workspace = true }
 image = { workspace = true }

@@ -147,6 +147,10 @@ pub struct PdfExportSettings {
     pub mono_downsample: bool,
     pub mono_ppi: String,
     pub mono_above: String,
+    /// Output › Color Conversion: `none`, `destination` or `preserveNumbers`.
+    pub color_conversion: String,
+    /// Output › Destination: a CMYK profile name; empty = the working CMYK.
+    pub destination: String,
     /// Transparency flattener preset (`""` = none, `high`, `medium`, `low`).
     pub flatten: String,
     pub spreads: bool,
@@ -179,6 +183,8 @@ impl Default for PdfExportSettings {
             mono_downsample: true,
             mono_ppi: "1200".into(),
             mono_above: "1800".into(),
+            color_conversion: "none".into(),
+            destination: String::new(),
             flatten: "".into(),
             spreads: false,
             bleed: true,

@@ -60,6 +60,8 @@ impl Dialog {
                     "monoDownsample": true,
                     "monoPpi": "1200",
                     "monoAbove": "1800",
+                    "colorConversion": "none",
+                    "destination": "",
                     "flatten": "",
                     "spreads": false,
                     "bleed": true,
@@ -803,6 +805,15 @@ pub fn open_pdf_export(app: &mut DesignApp) {
         if app.ui.pdf_export.flatten.is_empty() {
             m.insert("flatten".into(), json!(app.ui.flattener));
         }
+        // A remembered destination that is no longer loaded (its file gone, or a profile loaded
+        // in an earlier session) falls back to the working CMYK rather than failing the export;
+        // so does the working CMYK named, which the menu lists once, as the working CMYK.
+        let destination = app.ui.pdf_export.destination.trim();
+        let loaded =
+            || designcraft_color::cms::profiles().iter().any(|p| p.kind == designcraft_color::cms::ProfileKind::Cmyk && p.name == destination);
+        if !destination.is_empty() && (destination == designcraft_color::cms::active_settings().cmyk || !loaded()) {
+            m.insert("destination".into(), json!(""));
+        }
     }
     app.ui.dialog = Some(Dialog::new("pdfExport", fields));
 }
@@ -1014,6 +1025,25 @@ fn pdf_images_error(d: &Dialog) -> Option<String> {
     })
 }
 
+/// Export PDF › Output › Color Conversion: the command's value and the caption.
+const PDF_COLOR_CONVERSIONS: [(&str, &str); 3] =
+    [("none", "No Color Conversion"), ("destination", "Convert to Destination"), ("preserveNumbers", "Convert to Destination (Preserve Numbers)")];
+
+/// The `output` option: nothing without a conversion; the destination left out for the working
+/// CMYK.
+fn pdf_output_param(d: &Dialog) -> Option<Value> {
+    let conversion = d.s("colorConversion");
+    if !PDF_COLOR_CONVERSIONS.iter().any(|(v, _)| *v == conversion && *v != "none") {
+        return None;
+    }
+    let destination = d.s("destination");
+    Some(if destination.trim().is_empty() {
+        json!({"colorConversion": conversion})
+    } else {
+        json!({"colorConversion": conversion, "destination": destination})
+    })
+}
+
 /// The `file.exportPdf` options the Export PDF dialog's fields stand for (pages and title aside).
 fn pdf_export_params(d: &Dialog) -> Value {
     let mut params = json!({
@@ -1033,6 +1063,9 @@ fn pdf_export_params(d: &Dialog) -> Value {
     let flatten = d.s("flatten");
     if !flatten.is_empty() {
         params["flatten"] = json!(flatten);
+    }
+    if let Some(output) = pdf_output_param(d) {
+        params["output"] = output;
     }
     params
 }
@@ -1168,6 +1201,29 @@ fn pdf_export(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
         ui.add_space(8.0);
         crate::rtl::label(ui, crate::i18n::tr(lang, "Offset:"));
         text_field(ui, d, "marksOffset", 60.0);
+    });
+
+    head(ui, "Output");
+    ui.horizontal(|ui| {
+        crate::rtl::label(ui, crate::i18n::tr(lang, "Color Conversion:"));
+        translated_combo(lang, ui, d, "colorConversion", &PDF_COLOR_CONVERSIONS);
+    });
+    // The destination is greyed out without a conversion.
+    let converting = d.s("colorConversion") != "none" && !d.s("colorConversion").is_empty();
+    ui.add_enabled_ui(converting, |ui| {
+        ui.horizontal(|ui| {
+            crate::rtl::label(ui, crate::i18n::tr(lang, "Destination:"));
+            // The working CMYK once, first; then the other CMYK profiles the colour settings know.
+            let working_cmyk = designcraft_color::cms::active_settings().cmyk;
+            let working = format!("{} ({working_cmyk})", crate::i18n::tr(lang, "Working CMYK"));
+            let profiles: Vec<String> = designcraft_color::cms::profiles()
+                .into_iter()
+                .filter(|p| p.kind == designcraft_color::cms::ProfileKind::Cmyk && p.name != working_cmyk)
+                .map(|p| p.name)
+                .collect();
+            let opts: Vec<(&str, &str)> = std::iter::once(("", working.as_str())).chain(profiles.iter().map(|n| (n.as_str(), n.as_str()))).collect();
+            combo(ui, d, "destination", &opts);
+        });
     });
 
     head(ui, "Advanced");
@@ -5215,6 +5271,8 @@ fn confirm_part3(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
             pe.mono_downsample = d.b("monoDownsample");
             pe.mono_ppi = d.s("monoPpi");
             pe.mono_above = d.s("monoAbove");
+            pe.color_conversion = d.s("colorConversion");
+            pe.destination = d.s("destination");
             app.ui.pdf_export.flatten = d.s("flatten");
             app.ui.pdf_export.spreads = d.b("spreads");
             app.ui.pdf_export.bleed = d.b("bleed");

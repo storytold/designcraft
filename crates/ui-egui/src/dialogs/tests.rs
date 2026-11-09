@@ -3404,9 +3404,11 @@ fn pdf_export_defaults() {
     let expected = [
         "bleed",
         "colorAbove",
+        "colorConversion",
         "colorDownsample",
         "colorPpi",
         "colorQuality",
+        "destination",
         "flatten",
         "grayAbove",
         "grayDownsample",
@@ -3488,6 +3490,42 @@ fn pdf_export_unreadable_resolution_keeps_the_dialog_open() {
     assert!(pdf_images_error(&d).is_some(), "a threshold of 0 is refused");
     d.fields.insert("grayAbove".into(), json!(""));
     assert!(pdf_images_error(&d).is_none(), "an empty threshold is 1.5 × the resolution");
+}
+
+/// Output: no `output` option without a conversion; the destination only when one is picked.
+#[test]
+fn pdf_export_output_param() {
+    let mut d = Dialog::new("pdfExport", json!({}));
+    assert!(pdf_export_params(&d).get("output").is_none());
+    d.fields.insert("colorConversion".into(), json!("preserveNumbers"));
+    assert_eq!(pdf_export_params(&d)["output"], json!({"colorConversion": "preserveNumbers"}));
+    d.fields.insert("destination".into(), json!(designcraft_color::cms::GENERIC_CMYK));
+    assert_eq!(pdf_export_params(&d)["output"], json!({"colorConversion": "preserveNumbers", "destination": designcraft_color::cms::GENERIC_CMYK}));
+    d.fields.insert("colorConversion".into(), json!("bogus"));
+    assert!(pdf_export_params(&d).get("output").is_none());
+    // Presets leave the conversion as it is.
+    d.fields.insert("colorConversion".into(), json!("destination"));
+    apply_pdf_preset(&mut d, "PDF/X-4");
+    assert_eq!(d.s("colorConversion"), "destination");
+}
+
+/// A remembered destination that isn't loaded any more, or the working CMYK by name, opens as the
+/// working CMYK; a loaded one stays.
+#[test]
+fn pdf_export_destination_falls_back_to_the_working_cmyk() {
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    let working = designcraft_color::cms::active_settings().cmyk;
+    let other = designcraft_color::cms::profiles()
+        .into_iter()
+        .find(|p| p.kind == designcraft_color::cms::ProfileKind::Cmyk && p.name != working)
+        .map(|p| p.name);
+    for (remembered, opens) in
+        [("Gone CMYK".to_string(), String::new()), (working.clone(), String::new())].into_iter().chain(other.map(|o| (o.clone(), o)))
+    {
+        app.ui.pdf_export.destination = remembered.clone();
+        open_pdf_export(&mut app);
+        assert_eq!(app.ui.dialog.as_ref().unwrap().s("destination"), opens, "{remembered}");
+    }
 }
 
 #[test]

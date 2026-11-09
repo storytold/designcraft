@@ -23,9 +23,16 @@
 //!   losslessly. Compression ([`PdfOptions::images`]) bicubic-downsamples colour, greyscale and
 //!   monochrome images above a resolution (pixel width over the narrowest placement) and can
 //!   re-encode opaque colour and grey ones as JPEG ([`PdfOptions::compress_images`] at quality 90
-//!   where it gives none); a JPEG is re-encoded only when downsampled. PDF/X-4 and PDF/A
-//!   images are written without interpolation. In PDF/X-4 an RGB image without a profile of its own
-//!   carries sRGB (`assets/icc/sRGB-v2-magic.icc`).
+//!   where it gives none); a JPEG is re-encoded only when downsampled or converted (below). CMYK
+//!   rasters keep their inks (TIFF, Photoshop, JPEG) and, with an Image Quality, go in as CMYK
+//!   JPEG; PDF/A takes them as RGB. PDF/X-4 and PDF/A images are written without interpolation.
+//!   In PDF/X-4 an RGB image without a profile of its own carries sRGB
+//!   (`assets/icc/sRGB-v2-magic.icc`).
+//! - **Output colour conversion** ([`PdfOptions::output`]): Convert to Destination turns RGB
+//!   colours and rasters into a CMYK destination profile, and working-space CMYK too when the
+//!   destination is another profile; Preserve Numbers keeps CMYK numbers. The destination is the
+//!   blending space and, in PDF/X, the output intent. Grey stays grey, placed PDF and SVG content
+//!   is not converted, and PDF/A is left RGB with a warning.
 //! - **Text as real text:** the composed glyph runs are emitted with embedded, subsetted fonts and a
 //!   Unicode mapping taken from the story text (ligatures, page numbers and inserted hyphens get the
 //!   right characters), so text is selectable and searchable.
@@ -39,6 +46,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
 
+mod color_out;
 mod export;
 mod gradient_inks;
 pub mod inks;
@@ -183,6 +191,41 @@ impl Default for ImageCompression {
     }
 }
 
+/// Export PDF › Output › Color Conversion.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ColorConversion {
+    /// Colours and images stay in their own spaces.
+    #[default]
+    None,
+    /// Convert to Destination: RGB becomes CMYK through the destination profile, and CMYK in the
+    /// document's working CMYK space is converted to the destination when that is another profile.
+    ToDestination,
+    /// Convert to Destination (Preserve Numbers): RGB becomes CMYK; CMYK keeps its numbers.
+    PreserveNumbers,
+}
+
+impl ColorConversion {
+    /// From a command parameter: `none`, `destination`, `preserveNumbers` (or their dialog names).
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().replace(['-', '_', ' ', '(', ')'], "").as_str() {
+            "none" | "nocolorconversion" => Some(Self::None),
+            "destination" | "converttodestination" => Some(Self::ToDestination),
+            "preservenumbers" | "converttodestinationpreservenumbers" => Some(Self::PreserveNumbers),
+            _ => None,
+        }
+    }
+}
+
+/// Export PDF › Output.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Output {
+    pub conversion: ColorConversion,
+    /// The destination CMYK profile, by the name the colour settings know it by (a built-in or
+    /// loaded profile); `None` = the working CMYK space. Converting PDFs carry it as their output
+    /// intent (PDF/X) and blend transparency in it.
+    pub destination: Option<String>,
+}
+
 /// Export options.
 #[derive(Clone, Debug)]
 pub struct PdfOptions {
@@ -196,10 +239,13 @@ pub struct PdfOptions {
     pub standard: Standard,
     /// Re-encode raster images whose class has no JPEG quality of its own (`images`) as JPEG
     /// quality 90 when they have no transparency. Off = lossless. A JPEG is passed through
-    /// unchanged unless it is downsampled.
+    /// unchanged unless it is downsampled or converted; a converted (CMYK) raster is never made
+    /// JPEG by this alone.
     pub compress_images: bool,
     /// Compression: downsampling and JPEG quality per image class.
     pub images: ImageCompression,
+    /// Output: colour conversion to a CMYK destination.
+    pub output: Output,
     /// Flate-compress content streams.
     pub compress: bool,
     /// Title for the metadata; `None` = the document title.
@@ -241,6 +287,7 @@ impl Default for PdfOptions {
             standard: Standard::None,
             compress_images: false,
             images: ImageCompression::NONE,
+            output: Output::default(),
             compress: true,
             title: None,
             author: None,

@@ -1,7 +1,7 @@
 use super::flatten::{flatten, rasterize_effects, rasterize_layered, shadow_masks, transparent};
 use super::formats::write_file;
 use super::{EngineError, Marks, PdfOptions, Result, Session, Standard, Value, bad, json, str_param};
-use designcraft_pdf::{ImageClass, ImageCompression};
+use designcraft_pdf::{ColorConversion, ImageClass, ImageCompression, Output};
 
 /// The `pages` parameter: a range string ("1-3,5"), a list or a number of 1-based positions.
 pub(super) fn pages_param(id: &str, p: &Value, page_count: usize) -> Result<Option<Vec<usize>>> {
@@ -84,6 +84,40 @@ fn images_param(id: &str, p: &Value) -> Result<ImageCompression> {
     Ok(ImageCompression { color: class("color", true)?, gray: class("gray", true)?, mono: class("mono", false)? })
 }
 
+/// The `output` parameter (Output › Color Conversion and Destination). The destination is a CMYK
+/// profile the colour settings already know (built in, or loaded with `color.loadProfile`):
+/// reading the options loads nothing.
+fn output_param(id: &str, p: &Value) -> Result<Output> {
+    let m = match p.get("output") {
+        None | Some(Value::Null) => return Ok(Output::default()),
+        Some(Value::Object(m)) => m,
+        Some(v) => return Err(bad(id, format!("bad `output`: {v} (an object with colorConversion and destination)"))),
+    };
+    let conversion = match m.get("colorConversion") {
+        None | Some(Value::Null) => ColorConversion::None,
+        Some(Value::String(s)) => ColorConversion::parse(s)
+            .ok_or_else(|| bad(id, format!("unknown `output.colorConversion` `{s}` (none, destination, preserveNumbers, or the dialog's names)")))?,
+        Some(v) => return Err(bad(id, format!("bad `output.colorConversion`: {v}"))),
+    };
+    let destination = match m.get("destination") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(s)) if s.trim().is_empty() => None,
+        Some(Value::String(s)) => {
+            let s = s.trim();
+            let known = designcraft_color::cms::profiles().into_iter().any(|i| i.kind == designcraft_color::cms::ProfileKind::Cmyk && i.name == s);
+            if !known {
+                return Err(bad(
+                    id,
+                    format!("`output.destination` `{s}` is not a CMYK profile the colour settings know (load it with color.loadProfile first)"),
+                ));
+            }
+            Some(s.to_string())
+        }
+        Some(v) => return Err(bad(id, format!("bad `output.destination`: {v}"))),
+    };
+    Ok(Output { conversion, destination })
+}
+
 pub(crate) fn options(p: &Value, page_count: usize) -> Result<PdfOptions> {
     const ID: &str = "file.exportPdf";
 
@@ -120,6 +154,7 @@ pub(crate) fn options(p: &Value, page_count: usize) -> Result<PdfOptions> {
         standard,
         compress_images: p.get("compressImages").and_then(Value::as_bool).unwrap_or(false),
         images: images_param(ID, p)?,
+        output: output_param(ID, p)?,
         title: str_param(p, "title").map(str::to_string),
         author: str_param(p, "author").map(str::to_string),
         tagged: p.get("tagged").and_then(Value::as_bool).unwrap_or(false),
@@ -803,6 +838,39 @@ mod compression_option_tests {
             json!([]),
         ] {
             assert!(options(&json!({"images": bad}), 1).is_err(), "{bad}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod output_option_tests {
+    use designcraft_pdf::{ColorConversion, Output};
+    use serde_json::json;
+
+    use super::options;
+
+    /// `output`: the conversion by name and a destination the colour settings know; an unknown
+    /// destination is an error and nothing is loaded.
+    #[test]
+    fn output_parameter() {
+        assert_eq!(options(&json!({}), 1).unwrap().output, Output::default());
+        let generic = designcraft_color::cms::GENERIC_CMYK;
+        let o = options(&json!({"output": {"colorConversion": "preserveNumbers", "destination": generic}}), 1).unwrap();
+        assert_eq!(o.output, Output { conversion: ColorConversion::PreserveNumbers, destination: Some(generic.into()) });
+        let o = options(&json!({"output": {"colorConversion": "Convert to Destination"}}), 1).unwrap();
+        assert_eq!(o.output, Output { conversion: ColorConversion::ToDestination, destination: None });
+        // Spaces around a name are not part of it.
+        let o = options(&json!({"output": {"colorConversion": "destination", "destination": format!(" {generic} ")}}), 1).unwrap();
+        assert_eq!(o.output.destination.as_deref(), Some(generic));
+        for bad in [
+            json!({"destination": "Some CMYK profile that isn't loaded"}),
+            json!({"colorConversion": "rgb"}),
+            json!({"colorConversion": 1}),
+            json!({"destination": "/tmp/some.icc"}),
+            json!({"destination": designcraft_color::cms::SRGB}),
+            json!("destination"),
+        ] {
+            assert!(options(&json!({"output": bad}), 1).is_err(), "{bad}");
         }
     }
 }

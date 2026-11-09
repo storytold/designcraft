@@ -1951,6 +1951,11 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("URL:", "URL:"),
     ("Vertical:", "Svisle:"),
     ("Working CMYK", "Pracovní CMYK"),
+    ("Color Conversion:", "Převod barev:"),
+    ("No Color Conversion", "Bez převodu barev"),
+    ("Convert to Destination", "Převést do cíle"),
+    ("Convert to Destination (Preserve Numbers)", "Převést do cíle (zachovat čísla)"),
+    ("Destination:", "Cíl:"),
     ("Yellow", "Žlutá"),
     // Labels the code passes to `tr` that no other catalog has yet.
     ("About", "O aplikaci"),
