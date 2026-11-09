@@ -87,7 +87,8 @@ pub fn import_icml(bytes: &[u8], read_link: &dyn Fn(&str) -> Option<Vec<u8>>) ->
     // The importer finishes a document only with a spread: it gets an empty one, taken away again.
     let id = SpreadId(im.alloc());
     im.spreads.push(Spread { id, pages: Vec::new(), items: Vec::new(), parent: None, allow_shuffle: true });
-    let mut document = im.finish(&root)?;
+    let (mut document, finishing) = im.finish(&root)?;
+    warnings.extend(finishing);
     document.spreads.clear();
     document.check().map_err(|e| IdmlError::Invalid(e.to_string()))?;
     let story = main_story(&mut document, &mut warnings)?;

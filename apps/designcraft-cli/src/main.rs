@@ -42,7 +42,7 @@ use designcraft_engine::Session;
 use serde_json::{Value, json};
 
 /// The usage block. Shared by `--help` (stdout, success) and an unknown command (stderr, failure).
-const USAGE: &str = "usage: designcraft-cli run [--in FILE | --sample] [--cmd ID[=JSON]]... [--page N] [--scale S] [--pdf-options JSON] [--export OUT] [--all-pages DIR]\n         (--page, --scale and --pdf-options apply to the exports that follow them)\n       designcraft-cli commands [FILTER]\n       designcraft-cli describe COMMAND\n       designcraft-cli script [FILE|-] [--in FILE | --sample] [--connect PORT] [--save OUT] [--export OUT] [--keep-going]\n       designcraft-cli app [--port PORT] COMMAND [JSON] | --method METHOD [JSON]\n       designcraft-cli mcp [--connect PORT] [--sample] [--automation-read-root DIR]... [--automation-write-root DIR]...\n         the roots confine every file the agent's commands read (open, placed images, data sources, libraries) and\n         write (save, export, package) to those folders, links followed. Each may be given more than once; a kind\n         left out grants none of its access.\n         They run the in-process server, so they conflict with --connect (a running app is not confined by them).\n       designcraft-cli perf [--pages N] [--runs N] [--strict]\n       designcraft-cli bench FILE [--runs N]\n       designcraft-cli validate-pdf FILE.pdf  # built-in PDF/X-4 checks (including visible unembedded fonts)\n       designcraft-cli thumbnail FILE.designcraft OUT.png [SIZE]  # the saved first-page preview, at most SIZE px\n       designcraft-cli links\n       designcraft-cli --version";
+const USAGE: &str = "usage: designcraft-cli run [--in FILE | --sample] [--cmd ID[=JSON]]... [--page N] [--scale S] [--pdf-options JSON] [--export OUT] [--all-pages DIR]\n         (--page, --scale and --pdf-options apply to the exports that follow them)\n       designcraft-cli commands [FILTER]\n       designcraft-cli describe COMMAND\n       designcraft-cli script [FILE|-] [--in FILE | --sample] [--connect PORT] [--save OUT] [--export OUT] [--keep-going]\n       designcraft-cli app [--port PORT] COMMAND [JSON] | --method METHOD [JSON]\n       designcraft-cli mcp [--connect PORT] [--sample] [--automation-read-root DIR]... [--automation-write-root DIR]...\n         the roots confine every file the agent's commands read (open, placed images, data sources, libraries) and\n         write (save, export, package) to those folders, links followed. Each may be given more than once; a kind\n         left out grants none of its access.\n         They run the in-process server, so they conflict with --connect (a running app is not confined by them).\n       designcraft-cli perf [--pages N] [--runs N] [--strict]\n       designcraft-cli bench FILE [--runs N]\n       designcraft-cli validate-pdf FILE.pdf [--standard x4|x1a]  # built-in PDF/X checks (including visible unembedded fonts; the standard defaults to the file's own)\n       designcraft-cli thumbnail FILE.designcraft OUT.png [SIZE]  # the saved first-page preview, at most SIZE px\n       designcraft-cli links\n       designcraft-cli --version";
 
 /// `script --help`: the script syntax, otherwise only in `describe script.run` and docs/agents.md.
 const SCRIPT_HELP: &str = r#"usage: designcraft-cli script [FILE|-] [--in FILE | --sample] [--connect PORT] [--save OUT] [--export OUT] [--keep-going]
@@ -98,8 +98,94 @@ fn stdout_failed(e: std::io::Error) -> ! {
     std::process::exit(1);
 }
 
+/// Options whose value is a path, and so can be written `./-name` when it starts with `-`, the
+/// shell's own way out. None of them has an `--opt=value` form (the automation roots, parsed in
+/// [`automation_args`], do and say so themselves).
+const PATH_OPTIONS: [&str; 4] = ["--in", "--export", "--all-pages", "--save"];
+
+/// An option's value, refusing the next token when it is another option: `--export --scale` used
+/// to write a file called `--scale`.
+fn value(a: &str, next: Option<&String>) -> Result<String, String> {
+    match next {
+        None => Err(format!("{a} needs a value")),
+        Some(v) if !can_be_value(v) => {
+            // The way out is worth offering only where the value could be such a name.
+            let out = if PATH_OPTIONS.contains(&a) { format!("; if you did mean that name, write `./{v}`") } else { String::new() };
+            Err(format!("{a} needs a value and `{v}` is another option{out}"))
+        }
+        Some(v) => Ok(v.clone()),
+    }
+}
+
+/// Whether a token can be an option's value. A negative number can; anything else that starts
+/// with `-` is another option. `-inf` and `-nan` parse as numbers too, so a bad `--scale` still
+/// reaches the check that reports it rather than being called an option.
+fn can_be_value(v: &str) -> bool {
+    !(v.starts_with('-') && v.len() > 1 && v.parse::<f64>().is_err())
+}
+
+/// Whether `sub` is a subcommand [`USAGE`] lists. Read from the usage text rather than written
+/// out again, so a subcommand added there cannot be missing here.
+fn is_subcommand(sub: &str) -> bool {
+    !sub.starts_with('-') && USAGE.lines().any(|line| usage_subcommand(line) == Some(sub))
+}
+
+/// The subcommand a `USAGE` line introduces, if it introduces one.
+fn usage_subcommand(line: &str) -> Option<&str> {
+    let trimmed = line.trim_start();
+    trimmed
+        .strip_prefix("usage: designcraft-cli ")
+        .or_else(|| trimmed.strip_prefix("designcraft-cli "))
+        .and_then(|rest| rest.split_whitespace().next())
+}
+
+/// The usage lines for one subcommand, for `<sub> --help`. Each line of [`USAGE`] names its
+/// subcommand, and the indented lines after it belong to it.
+fn usage_for(sub: &str) -> String {
+    let mut out = Vec::new();
+    let mut keep = false;
+    for line in USAGE.lines() {
+        if let Some(named) = usage_subcommand(line) {
+            keep = named == sub;
+        }
+        if keep {
+            out.push(line);
+        }
+    }
+    if out.is_empty() { USAGE.to_string() } else { out.join("\n") }
+}
+
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    // `std::env::args` panics on an argument that is not UTF-8 ("called `Result::unwrap()` on an
+    // `Err` value"), which a Latin-1 file name on Linux or macOS is. Such a name cannot be passed
+    // through to the engine, whose paths are `str`, so it is a usage error here rather than a
+    // crash (photocraft#1108).
+    let mut args: Vec<String> = Vec::new();
+    for arg in std::env::args_os().skip(1) {
+        match arg.into_string() {
+            Ok(a) => args.push(a),
+            Err(bad) => {
+                eprintln!("designcraft-cli: `{}` is not valid UTF-8, so it cannot be used as an argument", bad.to_string_lossy());
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+    // `<sub> --help` asks about that subcommand, which every parser but `script`'s read as an
+    // unknown option (photocraft#423). It goes to stdout and succeeds, as `--help` does.
+    //
+    // Only for a subcommand that exists. Without that, `designcraft-cli typo --help` printed the
+    // whole usage and *succeeded*, so a misspelled command was an error on its own and not an
+    // error with `--help` after it -- and a script checking the exit status would carry on
+    // (noted in review). An unknown one now falls through to the dispatch, which fails as it
+    // does for `typo` alone.
+    if let Some(sub) = args.first().map(String::as_str)
+        && !matches!(sub, "--help" | "-h" | "help" | "script")
+        && is_subcommand(sub)
+        && args[1..].iter().any(|a| a == "--help" || a == "-h")
+    {
+        outln!("{}", usage_for(sub));
+        return ExitCode::SUCCESS;
+    }
     match args.first().map(String::as_str) {
         Some("--version" | "-V" | "version") => {
             outln!("designcraft-cli {}", env!("CARGO_PKG_VERSION"));
@@ -259,7 +345,7 @@ fn mcp(args: &[String]) -> Result<(), String> {
             continue;
         }
         match a.as_str() {
-            "--connect" => connect = Some(it.next().ok_or("--connect needs a port or host:port")?),
+            "--connect" => connect = Some(value(&a, it.next().as_ref())?),
             "--sample" => sample = true,
             other => {
                 return Err(format!(
@@ -309,21 +395,28 @@ so drop --connect (or use --connect without the roots)"
 /// They apply to the exports that follow them, so one after the last export would do nothing.
 fn option_after_last_export(args: &[String]) -> Option<&str> {
     let mut unused = None;
-    let mut it = args.iter();
+    let mut it = args.iter().peekable();
+    // A value is skipped only where the next token can be one. Taking it whatever it is read
+    // `--scale --export out.png` as --scale applied to no export, so a missing value was
+    // reported as the order of the options -- and "put it before its --export" is advice for a
+    // list that already does that (photocraft#7071).
     while let Some(a) = it.next() {
+        let is_opt = matches!(a.as_str(), "--page" | "--scale" | "--pdf-options" | "--export" | "--all-pages" | "--in" | "--cmd");
         match a.as_str() {
-            "--page" | "--scale" | "--pdf-options" => {
-                unused = unused.or(Some(a.as_str()));
-                it.next();
-            }
-            "--export" | "--all-pages" => {
-                unused = None;
-                it.next();
-            }
-            "--in" | "--cmd" => {
-                it.next();
-            }
+            "--page" | "--scale" | "--pdf-options" => unused = unused.or(Some(a.as_str())),
+            "--export" | "--all-pages" => unused = None,
             _ => {}
+        }
+        if is_opt {
+            match it.peek() {
+                Some(v) if can_be_value(v.as_str()) => {
+                    it.next();
+                }
+                // The option has no value. That is what is wrong with the line, so this check
+                // stands aside and lets `value()` say so: reporting the order instead advised
+                // moving an option that is already where it belongs (photocraft#7071).
+                _ => return None,
+            }
         }
     }
     unused
@@ -366,7 +459,28 @@ impl Export {
     }
 }
 
+/// Every option that takes a value has one, checked before anything runs. Found later, a missing
+/// value is reported only after the exports before it have been written -- and `run --export
+/// first.png --scale --export second.png` would then have overwritten an existing `first.png` on
+/// an invocation that fails (noted in review).
+fn values_present(args: &[String]) -> Result<(), String> {
+    let mut i = 0;
+    while let Some(a) = args.get(i) {
+        i += 1;
+        if !matches!(a.as_str(), "--in" | "--cmd" | "--export" | "--all-pages" | "--page" | "--scale" | "--pdf-options") {
+            continue;
+        }
+        value(a, args.get(i))?;
+        // Step over the value, so one that looks like an option is not checked as one.
+        i += 1;
+    }
+    Ok(())
+}
+
 fn run(args: &[String]) -> Result<(), String> {
+    // Before the order check and before any export: a value error is about the line as written,
+    // and reporting it must not cost a file that was already there.
+    values_present(args)?;
     if let Some(opt) = option_after_last_export(args) {
         return Err(format!(
             "{opt} has no --export or --all-pages after it; options apply to the exports that follow them, so put it before its --export"
@@ -387,7 +501,7 @@ fn run(args: &[String]) -> Result<(), String> {
     // Earlier --cmd results, for `$N.path` references.
     let mut results: Vec<Value> = Vec::new();
     while let Some(a) = it.next() {
-        let mut val = || it.next().cloned().ok_or_else(|| format!("{a} needs a value"));
+        let mut val = || value(a, it.next());
         match a.as_str() {
             "--in" => {
                 let p = val()?;
@@ -529,7 +643,7 @@ fn script(args: &[String]) -> Result<(), String> {
     let mut keep_going = false;
     let mut it = args.iter();
     while let Some(a) = it.next() {
-        let mut val = || it.next().cloned().ok_or_else(|| format!("{a} needs a value"));
+        let mut val = || value(a, it.next());
         match a.as_str() {
             "--in" => {
                 let p = val()?;

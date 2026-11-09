@@ -469,6 +469,8 @@ pub(super) fn place_text(
             if resources.is_some() {
                 icml::inserted(story, r.start, &src, false);
             }
+            let ins_len = end.saturating_sub(r.start);
+            d.adjust_text_ranges(t.story, r, ins_len);
             sel.text = Some(TextSel { anchor: end, focus: end, ..t });
             if link.is_some() {
                 warnings.push("not linked: a linked text file fills a whole story, not an insertion point".into());
@@ -504,6 +506,7 @@ pub(super) fn place_text(
                 None => return Err(bad("file.place", "no such frame")),
             };
             let replaced = if resources.is_some() { icml::anchored_stories(d, sid) } else { Vec::new() };
+            d.prune_story_text_ranges(sid);
             let story = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
             fill(story, &src);
             if resources.is_some() {
