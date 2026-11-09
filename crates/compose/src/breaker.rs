@@ -342,7 +342,7 @@ pub(crate) fn hang_right(g: &Glyph, sp: &Spacing) -> f64 {
 }
 
 fn right_hang(g: &Glyph, sp: &Spacing) -> f64 {
-    g.cjk_hang.max(hang_right(g, sp)) - g.moji.end
+    g.cjk_hang.max(g.track_hang).max(hang_right(g, sp)) - g.moji.end
 }
 
 /// The part of a hyphen after `g` (of width `hw`) that hangs past the line's end.
