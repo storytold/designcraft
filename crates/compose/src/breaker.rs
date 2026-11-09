@@ -270,6 +270,11 @@ fn is_cjk(c: char) -> bool {
     crate::upright_in_vertical(c) || matches!(c as u32, 0x3000..=0x303F)
 }
 
+/// Hangul (syllables, jamo and compatibility jamo), which is set with word spaces.
+fn is_hangul(c: char) -> bool {
+    matches!(c as u32, 0x1100..=0x11FF | 0x3130..=0x318F | 0xA960..=0xA97F | 0xAC00..=0xD7FF)
+}
+
 fn kinsoku_allows(a: char, b: char) -> bool {
     const NO_START: &str = "、。，．・：；？！ー）」』】〕〉》｝］〙〗ぁぃぅぇぉっゃゅょゎァィゥェォッャュョヮヵヶ々〻ゝゞヽヾ!),.:;?]}";
     const NO_END: &str = "（「『【〔〈《｛［〘〖([{";
@@ -754,6 +759,19 @@ fn kp_pass(input: PassInput<'_>) -> Option<Vec<Break>> {
             let d = target - l;
             let d = if d < 0.0 && d > -FIT_EPS { 0.0 } else { d };
             let (mut r, feasible) = tiered_ratio(d, y, z, so[b] - n.to);
+            if sp.justify
+                && d > 0.0
+                && glyphs.get(item_glyphs[n.pos].min(glyphs.len())..item_glyphs[b].min(glyphs.len())).is_some_and(|line| {
+                    // Japanese or Chinese text with no word space: the characters take up what is left.
+                    // With a word space, layout puts what the mojikumi and letter spacing cannot take
+                    // into the word spaces, as the tiers above already rate; Hangul is spaced that way.
+                    line.iter().any(|g| is_cjk(g.ch) && !is_hangul(g.ch)) && !line.iter().any(|g| g.is_justify_space())
+                })
+            {
+                // Rate the line by the space it leaves, so the composer prefers fuller lines: without
+                // this a line with nothing to stretch is hopeless unless it fits to the point.
+                r = r.min(d / target);
+            }
             if it.emergency && sp.justify && r > 0.0 {
                 // A piece of an overlong word usually has no elastic material: rate it by the
                 // space it leaves, so the fullest piece wins (the break at the last glyph that fits).
