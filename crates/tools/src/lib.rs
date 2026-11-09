@@ -341,7 +341,12 @@ impl ToolContext<'_> {
                 break;
             }
             if let Some(sp) = self.doc.spread(r) {
-                walk(&sp.items, self.layout.xf(r), &mut want, &mut found);
+                let mut here = std::collections::HashMap::new();
+                walk(&sp.items, Affine::IDENTITY, &mut want, &mut here);
+                if !here.is_empty() {
+                    let canvas = self.layout.xf(r);
+                    found.extend(here.into_iter().map(|(id, (it, xf))| (id, (it, canvas * xf))));
+                }
             }
         }
         self.selection.items.iter().filter_map(|id| found.get(id).copied()).collect()
