@@ -42,6 +42,13 @@ enum Drag {
         exclude: Vec<ItemId>,
         content: bool,
     },
+    AnchoredResize {
+        id: ItemId,
+        handle: usize,
+        from: Rect,
+    },
+    AnchoredContentMove { id: ItemId, start: Point },
+    AnchoredContentScale { id: ItemId, handle: usize, from: Rect },
     Resize {
         handle: usize,
         start: Point,
@@ -1046,6 +1053,36 @@ impl SelectionTool {
     fn pointer_drag(&mut self, cx: &ToolContext, ev: &PointerEvent) -> Vec<Action> {
         let p = ev.pos;
         match self.drag.clone() {
+            Drag::AnchoredContentMove { id, start } => {
+                let dx = (p.x - start.x) / cx.zoom.max(1e-6);
+                let dy = (p.y - start.y) / cx.zoom.max(1e-6);
+                vec![Action::Preview("anchored.contentTransform".into(), json!({"id": id.0, "dx": dx, "dy": dy}))]
+            }
+            Drag::AnchoredContentScale { id, handle, from } => {
+                // Option is the mode switch, not the centred-frame resize modifier.
+                // Drive uniform content scaling from the dragged edge; the crop frame
+                // itself never changes, including when dragging a side handle.
+                let to = resize_edges_rect(from, handle, p);
+                let scale = aspect_scale(from, handle, to).clamp(0.01, 100.0);
+                vec![Action::Preview("anchored.contentTransform".into(), json!({"id": id.0, "scale": scale}))]
+            }
+            Drag::AnchoredResize { id, handle, from } => {
+                // An anchored image cannot move its top edge into preceding text.
+                // Dragging a handle trims/reveals content; it does not scale the image.
+                let to = resize_edges_rect(from, handle, p);
+                let Some(item) = cx.doc.anchored_item(id) else { return vec![] };
+                if from.width().abs() < 1e-9 || from.height().abs() < 1e-9 { return vec![]; }
+                let original = item.bounds();
+                let rx = original.width() / from.width();
+                let ry = original.height() / from.height();
+                vec![Action::Preview("anchored.resize".into(), json!({
+                    "id": id.0,
+                    "left": (to.x0 - from.x0) * rx,
+                    "top": (to.y0 - from.y0) * ry,
+                    "right": (from.x1 - to.x1) * rx,
+                    "bottom": (from.y1 - to.y1) * ry
+                }))]
+            }
             Drag::Bracket { id, end } => {
                 let Some((warp, xf, _, _)) = path_type_of(cx, id) else { return vec![] };
                 if xf.determinant().abs() < 1e-12 {
@@ -1270,6 +1307,31 @@ impl Tool for SelectionTool {
         {
             self.live = None;
         }
+        // Eight handles resize the story-owned object, not a spread item.
+        if matches!(ev.kind, PointerKind::Down)
+            && let [id] = cx.selection.items.as_slice()
+            && let Some((_, from)) = cx.anchored_graphic_bounds().into_iter().find(|(candidate, _)| candidate == id)
+            && let Some(handle) = handles(from).iter().position(|h| (h.x - p.x).abs() <= cx.tol(5.0) && (h.y - p.y).abs() <= cx.tol(5.0))
+        {
+            self.drag = if ev.mods.alt {
+                Drag::AnchoredContentScale { id: *id, handle, from }
+            } else {
+                Drag::AnchoredResize { id: *id, handle, from }
+            };
+            return vec![Action::Begin(if ev.mods.alt { "Scale Anchored Image Content" } else { "Resize Anchored Image" }.into())];
+        }
+        // Anchored images have no spread-tree hit target. Select their story-owned ID
+        // directly; never pass a drag to the ordinary spread transform commands.
+        if matches!(ev.kind, PointerKind::Down)
+            && let Some(id) = cx.hit_anchored_graphic(p)
+        {
+            if ev.mods.alt && cx.selection.items == [id] {
+                self.drag = Drag::AnchoredContentMove { id, start: p };
+                return vec![Action::Begin("Move Anchored Image Content".into())];
+            }
+            self.drag = Drag::None;
+            return vec![Action::Exec("selection.set".into(), json!({"ids": [id.0]}))];
+        }
         if !self.direct
             && let Some(actions) = self.thread_pointer(cx, ev)
         {
@@ -1326,6 +1388,9 @@ impl Tool for SelectionTool {
                     }
                     Drag::Move { .. }
                     | Drag::Resize { .. }
+                    | Drag::AnchoredResize { .. }
+                    | Drag::AnchoredContentMove { .. }
+                    | Drag::AnchoredContentScale { .. }
                     | Drag::ContentResize { .. }
                     | Drag::Anchor { .. }
                     | Drag::Rotate { .. }
@@ -1445,12 +1510,18 @@ impl Tool for SelectionTool {
                 v.extend(self.guides.iter().cloned());
                 v
             }
-            Drag::Move { .. } | Drag::Resize { .. } | Drag::Rotate { .. } | Drag::Anchor { .. } => self.guides.clone(),
+            Drag::Move { .. } | Drag::Resize { .. } | Drag::AnchoredResize { .. } | Drag::AnchoredContentMove { .. } | Drag::AnchoredContentScale { .. } | Drag::Rotate { .. } | Drag::Anchor { .. } => self.guides.clone(),
             // The whole graphic shows while it's resized, outside the frame too.
             Drag::ContentResize { id, .. } => vec![Overlay::ContentGhost(*id)],
             Drag::None | Drag::Bracket { .. } => brackets(cx),
             _ => vec![],
         };
+        // Show the eight resize handles of the selected anchored graphic.
+        if let [id] = cx.selection.items.as_slice()
+            && let Some((_, bounds)) = cx.anchored_graphic_bounds().into_iter().find(|(candidate, _)| candidate == id)
+        {
+            out.push(Overlay::PageHandles(bounds));
+        }
         // The loaded text cursor places text: the frame's corners aren't edited meanwhile.
         if !self.direct && self.loaded.and_then(|l| l.resolve(cx.doc)).is_none() {
             if let Some(f) = self.live_corners(cx) {
@@ -1489,13 +1560,20 @@ impl Tool for SelectionTool {
         }
         match self.drag {
             Drag::Move { .. } => return Cursor::Move,
-            Drag::Resize { handle, .. } => return handle_cursor(handle),
+            Drag::Resize { handle, .. } | Drag::AnchoredResize { handle, .. } | Drag::AnchoredContentScale { handle, .. } => return handle_cursor(handle),
+            Drag::AnchoredContentMove { .. } => return Cursor::HandGrab,
             Drag::Rotate { .. } => return Cursor::Rotate,
             Drag::Corner { .. } => return Cursor::Arrow,
             _ => {}
         }
         if self.diamond_at(cx, p).is_some() || self.widget_at(cx, p).is_some() {
             return Cursor::Arrow;
+        }
+        if let [id] = cx.selection.items.as_slice()
+            && let Some((_, bounds)) = cx.anchored_graphic_bounds().into_iter().find(|(candidate, _)| candidate == id)
+            && let Some(h) = handles(bounds).iter().position(|h| (h.x - p.x).abs() <= cx.tol(5.0) && (h.y - p.y).abs() <= cx.tol(5.0))
+        {
+            return handle_cursor(h);
         }
         match handle_at(cx, p) {
             Some(h) => handle_cursor(h),

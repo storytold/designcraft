@@ -94,6 +94,9 @@ pub struct AnchoredObject {
     pub item: Item,
     #[serde(default)]
     pub position: AnchorPosition,
+    /// Explicit link to an anchored caption in the same story; never inferred from adjacent body text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caption_id: Option<crate::ids::ItemId>,
 }
 
 impl AnchoredObject {
@@ -101,7 +104,7 @@ impl AnchoredObject {
     pub fn new(mut item: Item, position: AnchorPosition) -> Self {
         let b = item.bounds();
         item.xf = designcraft_geom::Affine::translate((-b.x0, -b.y0)) * item.xf;
-        AnchoredObject { item, position }
+        AnchoredObject { item, position, caption_id: None }
     }
 
     /// Width and height.
@@ -116,7 +119,7 @@ impl Default for AnchoredObject {
     fn default() -> Self {
         let path = designcraft_geom::shapes::rectangle(designcraft_geom::Rect::new(0.0, 0.0, 0.0, 0.0));
         let item = Item::new(crate::ids::ItemId(0), crate::ids::LayerId(0), crate::item::Shape::Rectangle, path);
-        AnchoredObject { item, position: AnchorPosition::default() }
+        AnchoredObject { item, position: AnchorPosition::default(), caption_id: None }
     }
 }
 

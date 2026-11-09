@@ -250,6 +250,39 @@ impl ToolContext<'_> {
         self.doc.hit_item(si, sp, self.tol(4.0)).map(|id| (sr, id))
     }
 
+    /// Anchored graphics are composed inside text frames, not stored as spread items.
+    /// Resolve their on-canvas rectangles from the current cached text composition.
+    pub fn anchored_graphic_bounds(&self) -> Vec<(ItemId, Rect)> {
+        let mut out = Vec::new();
+        for story in self.doc.stories.values() {
+            let composed = self.cache.get(self.doc, story.id, None);
+            for frame in &composed.frames {
+                let Some(loc) = self.doc.find(frame.frame) else { continue };
+                let Some(host) = self.doc.item_at(&loc) else { continue };
+                let parent = self.layout.xf(loc.spread) * self.doc.parent_xf(&loc) * self.doc.text_xf(host);
+                for placed in &frame.objects {
+                    let item = &placed.object.item;
+                    if !matches!(item.content, designcraft_doc::Content::Graphic(_)) || item.hidden || item.locked {
+                        continue;
+                    }
+                    if self.doc.layer(item.layer).is_some_and(|l| !l.visible || l.locked) {
+                        continue;
+                    }
+                    let xf = parent * Affine::translate(placed.origin.to_vec2());
+                    let rect = xf.transform_rect_bbox(item.bounds());
+                    if rect.x0.is_finite() && rect.y0.is_finite() && rect.x1.is_finite() && rect.y1.is_finite() {
+                        out.push((item.id, rect));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    pub fn hit_anchored_graphic(&self, p: Point) -> Option<ItemId> {
+        self.anchored_graphic_bounds().into_iter().rev().find_map(|(id, bounds)| bounds.contains(p).then_some(id))
+    }
+
     /// The frontmost text frame under `p`, looking inside groups. [`Self::hit`] stops at the
     /// group, so a loaded text cursor over a text frame in a group found nothing to thread into
     /// (gaps 27); InDesign threads into it.
@@ -316,7 +349,12 @@ impl ToolContext<'_> {
     /// Canvas bounds of the selected items' paths. Handles and resize use this geometric box.
     pub fn selection_bounds(&self) -> Option<Rect> {
         let mut r: Option<Rect> = None;
+        let anchored = self.anchored_graphic_bounds();
         for id in &self.selection.items {
+            if let Some((_, b)) = anchored.iter().find(|(aid, _)| aid == id) {
+                r = Some(r.map_or(*b, |r| r.union(*b)));
+                continue;
+            }
             let (Some(it), Some(xf)) = (self.doc.item(*id), self.item_canvas_xf(*id)) else { continue };
             let b = xf.transform_rect_bbox(it.bounds());
             r = Some(r.map_or(b, |r| r.union(b)));
