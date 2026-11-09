@@ -856,9 +856,15 @@ fn dropping_an_ase_file_loads_its_swatches() {
 /// A document with one empty frame at (36, 36)-(136, 136): the app, the frame's id and a screen point inside it
 /// and one outside it.
 fn app_with_drop_frame() -> (DesignApp, u64, egui::Pos2, egui::Pos2) {
+    app_with_drop_item("frame.create", json!({"rect": [36, 36, 136, 136]}))
+}
+
+/// A document with the one object `command` creates from `params`: the app, the object's id, the
+/// screen point of page point (80, 80) and that of (300, 300), off the object.
+fn app_with_drop_item(command: &str, params: serde_json::Value) -> (DesignApp, u64, egui::Pos2, egui::Pos2) {
     let mut app = DesignApp::new(Session::new(), Services::default());
     app.run("file.new", json!({})).unwrap();
-    let frame = app.run("frame.create", json!({"rect": [36, 36, 136, 136]})).unwrap()["id"].as_u64().unwrap();
+    let frame = app.run(command, params).unwrap()["id"].as_u64().unwrap();
     app.canvas_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0)));
     let _ = app.view_mut();
     let (view, rect) = (app.view().unwrap(), app.canvas_rect.unwrap());
@@ -957,6 +963,27 @@ fn a_file_dropped_without_pointer_events_fills_the_frame_under_the_system_pointe
         };
         assert!(d.assets[&g.asset].name.contains("drop-system-pointer"));
     }
+}
+
+/// A line encloses no area, so a graphic dropped on it gets a frame of its own at the drop point
+/// and the line stays a line, as with the place cursor (#2290).
+#[test]
+fn a_graphic_dropped_on_a_line_leaves_the_line_alone() {
+    let (mut app, line, on_line, _) = app_with_drop_item("line.create", json!({"a": [36, 80], "b": [136, 80]}));
+    let id = designcraft_doc::ItemId(line);
+    let before = serde_json::to_value(app.session.doc().unwrap().doc.item(id).unwrap()).unwrap();
+    assert!(canvas::drop_frame(&app, Some(on_line)).is_none(), "a line is no frame");
+    let path = dropped_png("drop-on-line");
+    let r = app.open_dropped_at(&path.to_string_lossy(), Some(on_line));
+    let _ = std::fs::remove_file(&path);
+    let placed = designcraft_doc::ItemId(r.unwrap()["id"].as_u64().unwrap());
+    assert_ne!(placed, id, "the graphic has a new frame");
+    let d = &app.session.doc().unwrap().doc;
+    assert_eq!(d.spreads[0].items.len(), 2);
+    assert_eq!(serde_json::to_value(d.item(id).unwrap()).unwrap(), before, "the line is unchanged");
+    let it = d.item(placed).unwrap();
+    assert!(matches!(it.content, designcraft_doc::Content::Graphic(_)));
+    assert!(it.path.encloses_area() && it.bounds().height() > 1.0, "a real frame, not a zero-height one: {:?}", it.bounds());
 }
 
 #[test]
