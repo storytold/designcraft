@@ -497,8 +497,6 @@ pub trait Tool: Send {
     fn ime_caret(&self, _cx: &ToolContext) -> Option<(Point, Point)> {
         None
     }
-    /// Set a tool option or restore state (e.g. `prevTool`).
-    fn set_option(&mut self, _key: &str, _value: &Value) {}
 }
 
 pub fn create(id: &str) -> Box<dyn Tool> {
