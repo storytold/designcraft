@@ -703,6 +703,11 @@ fn kp_pass(input: PassInput<'_>) -> Option<Vec<Break>> {
     let PassInput { items, item_glyphs, glyphs, spacing: sp, width, tolerance: tol, emergency } = input;
     let m = items.len();
     let PrefixSums { sw, sy, sz, so } = prefix_sums(items);
+    // Mojikumi shrink up to each glyph.
+    let mut sqp = vec![0.0; glyphs.len() + 1];
+    for (i, g) in glyphs.iter().enumerate() {
+        sqp[i + 1] = sqp[i] + if g.locked_advance || sp.kinsoku_priority == 3 { 0.0 } else { g.moji.shrink };
+    }
     let first_box = items.iter().find(|i| i.kind == Kind::Box);
     let first_hang = first_box.map_or(0.0, |b| b.hang);
     let first_elastic = first_box.map_or([0.0; 2], |b| b.start_elastic);
@@ -753,6 +758,21 @@ fn kp_pass(input: PassInput<'_>) -> Option<Vec<Break>> {
             // A line that overruns its measure by a rounding error fits exactly.
             let d = target - l;
             let d = if d < 0.0 && d > -FIT_EPS { 0.0 } else { d };
+            // All the spacing the mojikumi table allows to be closed up (between characters and at
+            // the line end) is taken first, at no cost: as in InDesign, a line that fits by
+            // squeezing within the table isn't a tight line.
+            let (mut d, mut z) = (d, z);
+            if d < 0.0 {
+                let (from, to) = (item_glyphs[n.pos].min(glyphs.len()), item_glyphs[b].min(glyphs.len()));
+                let cap = (sqp[to] - sqp[from] + it.edge_elastic[1]).clamp(0.0, z[0]);
+                let free = cap.min(-d);
+                d += free;
+                z[0] -= free;
+                // The line still overruns by a rounding error: it fits exactly.
+                if d < 0.0 && d > -FIT_EPS {
+                    d = 0.0;
+                }
+            }
             let (mut r, feasible) = tiered_ratio(d, y, z, so[b] - n.to);
             if it.emergency && sp.justify && r > 0.0 {
                 // A piece of an overlong word usually has no elastic material: rate it by the

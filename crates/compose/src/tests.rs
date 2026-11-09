@@ -8647,3 +8647,43 @@ fn cross_reference_text_breaks_at_its_spaces() {
         }
     }
 }
+
+#[test]
+fn spacing_the_mojikumi_table_closes_up_costs_nothing_when_a_line_fits_by_squeezing() {
+    use designcraft_doc::cjk::{MojikumiAki, MojikumiTable};
+    // Every gap between two ideographs is half an em that may close up. A measure that holds the
+    // text only with the gaps most of the way closed is still one line: squeezing within the table
+    // is free, so the composer doesn't give the line up for two looser ones.
+    let text = "漢漢漢漢漢";
+    let (mut d, sid, fid) =
+        doc_with(text, Rect::new(0.0, 0.0, 600.0, 100.0), ParaAttrs { mojikumi: Some("MojikumiTable/Gaps".into()), ..Default::default() });
+    Arc::make_mut(&mut d.styles).mojikumi_tables.push(MojikumiTable {
+        name: "Gaps".into(),
+        based_on: "SimpChineseDefault".into(),
+        overrides: vec![MojikumiAki {
+            target_class: 12,
+            side_class: 12,
+            after: true,
+            minimum: 0.0,
+            desired: 0.5,
+            maximum: 0.5,
+            priority: 1,
+            does_not_float: false,
+        }],
+    });
+    let width = |d: &Document| compose_story(d, sid, &ComposeOptions::default()).frames[0].lines[0].glyphs.iter().map(|g| g.adv).sum::<f64>();
+    let natural = width(&d);
+    d.story_mut(sid).unwrap().paras[0].para.mojikumi = None;
+    let gaps = natural - width(&d);
+    assert!(gaps > 1.0, "the four gaps are in the advances: {gaps}");
+    d.story_mut(sid).unwrap().paras[0].para.mojikumi = Some("MojikumiTable/Gaps".into());
+    // The measure leaves room for a hundredth of the gaps.
+    let measure = natural - 0.99 * gaps;
+    d.item_mut(fid).unwrap().path = designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, measure, 100.0));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert_eq!(all_lines(&cs).len(), 1, "{:?}", all_lines(&cs).iter().map(|l| l.end_x).collect::<Vec<_>>());
+    // Squeezed to the last drop and a hair beyond (a rounding error): still one line.
+    d.item_mut(fid).unwrap().path = designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, natural - gaps - 0.01, 100.0));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert_eq!(all_lines(&cs).len(), 1, "a line that overruns by a rounding error once squeezed fits");
+}
