@@ -169,7 +169,9 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         ui.data_mut(|d| d.insert_temp(sel_key, c));
     }
     match chosen_item {
-        Some(item) => ui.data_mut(|d| d.insert_temp(item_sel_key, item)),
+        Some(item) => {
+            ui.data_mut(|d| d.insert_temp(item_sel_key, item));
+        }
         None => {
             ui.data_mut(|d| d.remove::<u64>(item_sel_key));
         }
