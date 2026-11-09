@@ -348,6 +348,7 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 Newest first.
 
+- **2026-10-20** · The Type tool clicks directly into text frames inside groups and nested groups to place the caret, edit, drag-select and multi-click select. A text frame inside a locked group does not take the caret; a locked text frame on its own still does, as before. No readiness percentage change.
 - **2026-10-20** · Direct Selection directly selects items nested in groups and nested groups, on click and on marquee drag, without ungrouping; locked items and items in locked groups stay unselectable. No readiness percentage change.
 - **2026-10-16** · Type › Reload Fonts (`font.reload`): fonts installed, edited or removed while DesignCraft runs are read again without a restart, and the open documents recompose with them (#328, #547). An edited font file is noticed by its length and modification time; bundled, added and document fonts stay as they are. InDesign does this by itself, so noticing changes automatically is still open (gap 6). No readiness percentage change.
 - **2026-10-16** · Parents can be deleted from their Pages-panel context menu or `layout.parents.delete {id}`. Applied-page and based-on references are cleared, local override copies survive, and Undo restores the parent. Addresses the deletion portion of #956; no readiness percentage change.

@@ -4779,7 +4779,7 @@ mod tests {
     }
 
     #[test]
-    fn direct_selection_click_selects_items_in_nested_groups() {
+    fn direct_selection_and_type_tool_clicks_reach_items_in_nested_groups() {
         let (mut h, id) = typing("Nested hello");
         let r2 = h.state_mut().run("frame.create", json!({"rect": [72, 450, 400, 550], "content": "text", "text": "Other frame"})).unwrap();
         let id2 = r2["id"].as_u64().unwrap();
@@ -4816,6 +4816,25 @@ mod tests {
             vec![designcraft_doc::ItemId(id)],
             "direct selection must select child directly"
         );
+
+        // Test 2: Type tool single click on nested child `id2` places caret and edits text
+        h.state_mut().run("tool.select", json!({"tool": "type"})).unwrap();
+        h.state_mut().run("edit.deselectAll", json!({})).unwrap();
+        assert_eq!(h.state().session.tool_id(), "type");
+
+        let p2 = center_of(h.state(), id2);
+        click(&mut h, p2);
+        h.run_steps(5);
+        assert!(h.state_mut().session.wants_text(), "Type tool click on grouped text frame must start text editing");
+        let sel_text = h.state().session.doc().unwrap().selection.text;
+        assert!(sel_text.is_some(), "caret must be placed in grouped text frame");
+        assert_eq!(sel_text.unwrap().frame, Some(designcraft_doc::ItemId(id2)));
+
+        // Type some characters
+        h.state_mut().run("text.insert", json!({"text": "!"})).unwrap();
+        h.run_steps(5);
+        let story = h.state().session.doc().unwrap().doc.text_story(sel_text.unwrap().story, None).unwrap().text.clone();
+        assert!(story.contains('!'), "typed text must be inserted in grouped story");
     }
 }
 
