@@ -15,7 +15,7 @@
 //! bold) under Optical, read from its kerning values: most text pairs, `nn` included, close up a
 //! little, `AV`, `To` and `P.` close up a lot, and pairs whose inks nearly touch (`VW`) open.
 //!
-//! Profiles are cached per (face, glyph) and the target per face, so body text in Optical costs
+//! Profiles are cached per (face, glyph), so body text in Optical costs
 //! one outline walk per distinct glyph.
 
 use std::collections::HashMap;
