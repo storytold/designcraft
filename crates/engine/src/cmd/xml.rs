@@ -437,7 +437,10 @@ fn import_xml(s: &mut Session, p: &Value) -> Result<Value> {
         } else {
             el.children
                 .into_iter()
-                .map(|(t, txt)| (reverse.iter().find(|(tag, _)| *tag == t).map(|(_, st)| st.clone()), txt.trim().to_string()))
+                .flat_map(|(t, txt)| {
+                    let style = reverse.iter().find(|(tag, _)| *tag == t).map(|(_, st)| st.clone());
+                    txt.trim().split('\n').map(|l| (style.clone(), l.trim().to_string())).collect::<Vec<_>>()
+                })
                 .collect()
         };
         fills.push((slot.1, paras));
@@ -493,8 +496,11 @@ fn fill_story(st: &mut Story, paras: &[(Option<String>, String)]) {
         }
     }
     for (i, (style, _)) in paras.iter().enumerate() {
-        if let (Some(sty), Some(pf)) = (style, st.paras.get_mut(i)) {
+        if let (Some(sty), Some(pf)) = (style, st.paras.get_mut(i))
+            && pf.style != *sty
+        {
             pf.style = sty.clone();
+            st.rev = st.rev.wrapping_add(1);
         }
     }
 }
@@ -614,6 +620,17 @@ mod tests {
         assert_eq!(st.text, "Enthält: 300 g/L\n");
         assert_eq!(size(&st, 0), Some(20.0));
         assert_eq!(st.paras.len(), 2);
+    }
+
+    #[test]
+    fn import_xml_splits_lines_inside_a_child_element() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let f = s.execute("frame.create", &json!({"rect": [72, 72, 400, 300], "content": "text", "text": "x\ny", "caret": false})).unwrap();
+        s.execute("xml.tag", &json!({"tag": "c", "ids": [f["id"]]})).unwrap();
+        s.execute("file.importXml", &json!({"text": "<Root><c><p>a\nb</p><p>c</p></c></Root>"})).unwrap();
+        let sid = designcraft_doc::StoryId(f["story"].as_u64().unwrap());
+        assert_eq!(s.doc().unwrap().doc.stories[&sid].text, "a\nb\nc");
     }
 
     #[test]
