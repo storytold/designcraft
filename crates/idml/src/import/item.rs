@@ -67,7 +67,7 @@ impl<'r> Importer<'r> {
             .map(|c| if matches!(c, '\n' | '\r' | '\u{2029}') { designcraft_doc::story::FORCED_LINE_BREAK } else { c })
             .collect();
         let right = x + pw.max(size * text.chars().count() as f64);
-        if text.is_empty() || ![s, x, base, size, right].iter().all(|v| v.is_finite()) || size <= 0.0 {
+        if text.is_empty() || ![s, x, base, size, right, base - size, base + size * 0.5].iter().all(|v| v.is_finite()) || size <= 0.0 {
             return None;
         }
         let id = ItemId(self.alloc());
