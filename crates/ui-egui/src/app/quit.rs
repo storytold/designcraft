@@ -18,6 +18,17 @@ impl DesignApp {
             ctx.request_repaint();
             return;
         }
+        // Quitting the process would kill the worker before the driver has accepted its job.
+        // Keep the event loop running and replay the close through the usual unsaved-document
+        // checks once printing returns. An explicit forced quit retains its existing behavior.
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.pending_print.is_some() && !self.quit_without_asking && (close_requested || self.quit_requested || self.close_requested_pending) {
+            self.quit_requested = false;
+            self.close_requested_pending = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            return;
+        }
         let replay_close = std::mem::take(&mut self.close_requested_pending);
         if std::mem::take(&mut self.quit_requested) || replay_close {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);

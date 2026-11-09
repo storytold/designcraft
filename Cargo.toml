@@ -87,8 +87,9 @@ indd = { git = "https://github.com/storytold/indd-utils", rev = "7f3060e5bce78d2
 craft-docpath = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "92d392cff132eaf53e13afff77f38b5c11b73aa0" }
 # Atomic file replacement for saves and exports (craft-libs).
 craft-atomic = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "92d392cff132eaf53e13afff77f38b5c11b73aa0" }
-# File › Print through the system print spooler (craft-libs).
-craft-print = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "92d392cff132eaf53e13afff77f38b5c11b73aa0" }
+# File › Print: includes winprint's multi-threaded Direct2D factory fix (craft-libs#605).
+# Other shared libraries stay at their existing reviewed revision.
+craft-print = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "058b047760dfe5ba51f6f526faa3b0c833552dfa" }
 
 # ICC colour management: working spaces, transforms, black point compensation (craft-libs).
 craft-cms = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "92d392cff132eaf53e13afff77f38b5c11b73aa0" }

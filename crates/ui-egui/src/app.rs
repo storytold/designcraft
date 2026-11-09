@@ -40,6 +40,10 @@ impl DesignApp {
         DesignApp {
             pending_pdf: None,
             #[cfg(not(target_arch = "wasm32"))]
+            pending_print: None,
+            #[cfg(all(test, not(target_arch = "wasm32")))]
+            test_print: None,
+            #[cfg(not(target_arch = "wasm32"))]
             file_dialogs: file_dialogs::new_dialogs(dialog_wake.clone()),
             #[cfg(not(target_arch = "wasm32"))]
             asked: Vec::new(),

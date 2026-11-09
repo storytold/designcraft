@@ -83,6 +83,18 @@ fn show_preflight(app: &mut DesignApp) {
     }
 }
 
+fn show_status(app: &DesignApp, ui: &mut egui::Ui, font: egui::FontId, color: Color32) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(print) = &app.pending_print {
+        ui.add(egui::Spinner::new().size(10.0));
+        let status = if app.close_requested_pending { "Waiting for printing to finish before closing…" } else { "Printing…" };
+        let text = format!("{} {}", crate::i18n::tr(&app.ui.language, status), print.title);
+        ui.label(egui::RichText::new(text).font(font).color(color));
+        return;
+    }
+    ui.label(egui::RichText::new(&app.ui.status).font(font).color(color));
+}
+
 pub fn status_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     let resp = egui::Panel::bottom("status_bar")
@@ -93,7 +105,7 @@ pub fn status_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
             ui.horizontal_centered(|ui| {
                 let small = egui::FontId::proportional(10.5);
                 if app.session.active().is_none() {
-                    ui.label(egui::RichText::new(&app.ui.status).font(small).color(t.text_dim));
+                    show_status(app, ui, small, t.text_dim);
                     return;
                 }
                 let z = app.view().map(|v| v.zoom).unwrap_or(1.0);
@@ -196,7 +208,7 @@ pub fn status_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
                     show_preflight(app);
                 }
                 ui.add_space(12.0);
-                ui.label(egui::RichText::new(&app.ui.status).font(small).color(t.text_dim));
+                show_status(app, ui, small, t.text_dim);
             });
         });
     let r = resp.response.rect;

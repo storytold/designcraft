@@ -37,6 +37,8 @@ mod page_history;
 mod panel_docking;
 pub mod panels;
 mod prefs;
+#[cfg(not(target_arch = "wasm32"))]
+mod printing;
 pub mod render_worker;
 mod rtl;
 mod section_options;
@@ -131,6 +133,10 @@ struct ShotRequest {
 
 pub struct DesignApp {
     pending_pdf: Option<ImportedFile>,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) pending_print: Option<printing::Pending>,
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    test_print: Option<printing::PrintFn>,
     /// File and message dialogs: asked for during a frame, shown by the host at its end, answered
     /// on a later frame (see `app/file_dialogs.rs`).
     #[cfg(not(target_arch = "wasm32"))]

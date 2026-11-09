@@ -4741,6 +4741,10 @@ fn confirm_part3(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
                     return Err(e);
                 }
             };
+            // The desktop print worker reports success after submission, on a later frame.
+            if r.get("pending").and_then(Value::as_bool) == Some(true) {
+                return Ok(r);
+            }
             let printer = r["printer"].as_str().unwrap_or_else(|| crate::i18n::tr(&app.ui.language, "the default printer"));
             app.status(
                 crate::i18n::tr(&app.ui.language, "Sent {count} page(s) to {printer}")
