@@ -297,11 +297,34 @@ pub(crate) fn anchored_stories(d: &Document, sid: StoryId) -> Vec<StoryId> {
 }
 
 /// Remove those of `stories` none of whose frames is left: their anchored text frames went with
-/// the text that was replaced. Hyperlinks and placeholders in their text go with them.
+/// the text that was replaced. Hyperlinks and placeholders in their text go with them. One that
+/// keeps a frame elsewhere (threaded to a frame on a page) stays, without the frames that went.
+/// Removing a story takes the frames anchored in it too, so this repeats until nothing more goes:
+/// at most once per level of nesting, which `Document::check` bounds.
 pub(crate) fn drop_detached(d: &mut Document, stories: &[StoryId]) {
-    if stories.is_empty() {
-        return;
+    while !stories.is_empty() {
+        let alive = live_items(d);
+        let mut dropped = false;
+        for sid in stories {
+            let Some(st) = d.story(*sid) else { continue };
+            if !st.frames.iter().any(|f| alive.contains(f)) {
+                d.stories.remove(sid);
+                d.prune_story_text_ranges(*sid);
+                dropped = true;
+            } else if !st.frames.iter().all(|f| alive.contains(f))
+                && let Some(st) = d.story_mut(*sid)
+            {
+                st.frames.retain(|f| alive.contains(f));
+            }
+        }
+        if !dropped {
+            break;
+        }
     }
+}
+
+/// The ids of every item on the spreads and parents, and anchored in a story of `d`.
+fn live_items(d: &Document) -> BTreeSet<ItemId> {
     let mut alive: BTreeSet<ItemId> = d.anchored_items().into_iter().map(|(_, it)| it.id).collect();
     for sp in d.spreads.iter().chain(&d.parents) {
         for it in &sp.items {
@@ -310,12 +333,7 @@ pub(crate) fn drop_detached(d: &mut Document, stories: &[StoryId]) {
             });
         }
     }
-    for sid in stories {
-        if d.story(*sid).is_some_and(|s| !s.frames.iter().any(|f| alive.contains(f))) {
-            d.stories.remove(sid);
-            d.prune_story_text_ranges(*sid);
-        }
-    }
+    alive
 }
 
 /// After `src` (an InCopy story) went into `story` at `pos`: its cross-references point at its

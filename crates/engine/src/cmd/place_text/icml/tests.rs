@@ -253,38 +253,26 @@ fn anchored_text_frames_get_stories_of_their_own() {
 
 #[test]
 fn updating_a_story_drops_the_anchored_frames_it_replaced() {
-    let dir = std::env::temp_dir().join(format!("dc-update-icml-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("boxed.icml");
-    std::fs::write(&path, ANCHORED_FRAME).unwrap();
-    let mut s = Session::new();
-    s.execute("file.new", &json!({})).unwrap();
-    let r = s.execute("file.place", &json!({"path": path.to_string_lossy(), "link": true})).unwrap();
-    let sid = StoryId(r["story"].as_u64().unwrap());
-    let count = doc(&s).stories.len();
-    // A hyperlink on the text of the anchored frame the update replaces.
-    let old = doc(&s).story(sid).unwrap().objects[0].item.text_frame().unwrap().story;
-    s.edit(|d, _| {
-        let source = designcraft_doc::HyperlinkSource::Text { story: old, start: 0, end: 5 };
-        d.hyperlinks.push(designcraft_doc::Hyperlink {
-            id: 1,
-            name: "Boxed".into(),
-            source,
-            dest: designcraft_doc::HyperlinkDest::Url("https://example.com".into()),
-        });
-        Ok(())
-    })
-    .unwrap();
-    std::fs::write(&path, ANCHORED_FRAME.replace("Boxed", "Boxed again")).unwrap();
-    assert_eq!(s.execute("links.update", &json!({"story": sid.0})).unwrap()["updated"], 1);
+    let (mut count, mut old) = (0, StoryId(0));
+    let update = ANCHORED_FRAME.replace("Boxed", "Boxed again");
+    let (s, sid) = place_linked_then_update("update-icml", ANCHORED_FRAME, &update, |s, sid| {
+        count = doc(s).stories.len();
+        // A hyperlink on the text of the anchored frame the update replaces.
+        old = doc(s).story(sid).unwrap().objects[0].item.text_frame().unwrap().story;
+        s.edit(|d, _| {
+            let source = designcraft_doc::HyperlinkSource::Text { story: old, start: 0, end: 5 };
+            let dest = designcraft_doc::HyperlinkDest::Url("https://example.com".into());
+            d.hyperlinks.push(designcraft_doc::Hyperlink { id: 1, name: "Boxed".into(), source, dest });
+            Ok(())
+        })
+        .unwrap();
+    });
     let d = doc(&s);
-    d.check().unwrap();
     assert_eq!(d.stories.len(), count, "the old frame's story went with it");
     assert!(d.story(old).is_none());
     assert!(d.hyperlinks.is_empty(), "the hyperlink went with its story: {:?}", d.hyperlinks);
     let tf = d.story(sid).unwrap().objects[0].item.text_frame().unwrap().story;
     assert_eq!(d.story(tf).unwrap().text, "Boxed again");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -377,25 +365,93 @@ fn a_style_based_on_nothing_stays_so() {
     assert_eq!(chars.size, 12.0, "not the document's [Basic Paragraph] size");
 }
 
-/// Stories several anchored frames share are copied once each, so a file can't multiply them:
-/// here every story anchors two frames of the next, twelve levels deep (copying per frame would
-/// make 2^12 stories).
-#[test]
-fn shared_anchored_stories_are_copied_once() {
-    const LEVELS: usize = 12;
+/// An ICML file of `levels + 1` stories, `s0` to `s{levels}`: each holds `frames` anchored text
+/// frames of the next (all showing it), and the last holds `leaf`.
+fn nested_icml(levels: usize, frames: usize, leaf: &str) -> String {
     let frame = |story: usize, k: usize| {
         format!(
             r#"<TextFrame Self="f{story}_{k}" ParentStory="s{story}" ItemTransform="1 0 0 1 0 0"><Properties><PathGeometry><GeometryPathType PathOpen="false"><PathPointArray><PathPointType Anchor="0 0"/><PathPointType Anchor="0 10"/><PathPointType Anchor="10 10"/><PathPointType Anchor="10 0"/></PathPointArray></GeometryPathType></PathGeometry></Properties></TextFrame>"#
         )
     };
     let story = |i: usize| {
-        let body = if i == LEVELS { "<Content>leaf</Content>".to_string() } else { format!("{}{}", frame(i + 1, 0), frame(i + 1, 1)) };
+        let body = if i == levels { format!("<Content>{leaf}</Content>") } else { (0..frames).map(|k| frame(i + 1, k)).collect() };
         format!(r#"<Story Self="s{i}"><ParagraphStyleRange><CharacterStyleRange>{body}</CharacterStyleRange></ParagraphStyleRange></Story>"#)
     };
-    let stories: String = (0..=LEVELS).map(story).collect();
-    let icml = format!(
+    let stories: String = (0..=levels).map(story).collect();
+    format!(
         r#"<?xml version="1.0" encoding="UTF-8"?><?aid SnippetType="InCopyInterchange"?><Document DOMVersion="16.0" Self="d">{stories}</Document>"#
-    );
+    )
+}
+
+/// Place `icml` linked from a file in a fresh document, write `update` over the file and update
+/// the link. Returns the session (its document checked) and the placed story.
+fn place_linked_then_update(name: &str, icml: &str, update: &str, between: impl FnOnce(&mut Session, StoryId)) -> (Session, StoryId) {
+    let dir = std::env::temp_dir().join(format!("dc-{name}-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("story.icml");
+    std::fs::write(&path, icml).unwrap();
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    let r = s.execute("file.place", &json!({"path": path.to_string_lossy(), "link": true})).unwrap();
+    let sid = StoryId(r["story"].as_u64().unwrap());
+    between(&mut s, sid);
+    doc(&s).check().unwrap();
+    std::fs::write(&path, update).unwrap();
+    assert_eq!(s.execute("links.update", &json!({"story": sid.0})).unwrap()["updated"], 1);
+    doc(&s).check().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    (s, sid)
+}
+
+/// Updating a story whose anchored frames hold anchored frames of their own drops every level of
+/// the old ones: a story whose only frame sat in a dropped story goes too.
+#[test]
+fn updating_a_story_drops_nested_anchored_frames() {
+    let mut count = 0;
+    let (s, sid) =
+        place_linked_then_update("nested", &nested_icml(3, 1, "leaf"), &nested_icml(3, 1, "leaf again"), |s, _| count = doc(s).stories.len());
+    let d = doc(&s);
+    assert_eq!(d.stories.len(), count, "{:?}", d.stories.keys().collect::<Vec<_>>());
+    let mut st = d.story(sid).unwrap();
+    for _ in 0..3 {
+        st = d.story(st.objects[0].item.text_frame().unwrap().story).unwrap();
+    }
+    assert_eq!(st.text, "leaf again");
+}
+
+/// An anchored frame's story the user threaded on to a frame on a page outlives the update that
+/// replaces the anchored frame: it keeps the page's frame and loses the one that went.
+#[test]
+fn updating_a_story_keeps_an_anchored_story_threaded_onto_a_page() {
+    let mut kept = (StoryId(0), ItemId(0));
+    let update = ANCHORED_FRAME.replace("Body", "New body");
+    let (s, _) = place_linked_then_update("threaded", ANCHORED_FRAME, &update, |s, sid| {
+        let inner = doc(s).story(sid).unwrap().objects[0].item.text_frame().unwrap().story;
+        let r = s.execute("frame.create", &json!({"rect": [36, 400, 300, 500], "content": "text"})).unwrap();
+        let (page_frame, own) = (ItemId(r["id"].as_u64().unwrap()), StoryId(r["story"].as_u64().unwrap()));
+        s.edit(|d, _| {
+            d.stories.remove(&own);
+            if let Some(Content::Text(tf)) = d.item_mut(page_frame).map(|it| &mut it.content) {
+                tf.story = inner;
+            }
+            d.story_mut(inner).unwrap().frames.push(page_frame);
+            Ok(())
+        })
+        .unwrap();
+        kept = (inner, page_frame);
+    });
+    let st = doc(&s).story(kept.0).expect("still shown on the page");
+    assert_eq!(st.frames, [kept.1]);
+    assert_eq!(st.text, "Boxed");
+}
+
+/// Stories several anchored frames share are copied once each, so a file can't multiply them:
+/// here every story anchors two frames of the next, twelve levels deep (copying per frame would
+/// make 2^12 stories).
+#[test]
+fn shared_anchored_stories_are_copied_once() {
+    const LEVELS: usize = 12;
+    let icml = nested_icml(LEVELS, 2, "leaf");
     let mut s = Session::new();
     s.execute("file.new", &json!({})).unwrap();
     let before = doc(&s).stories.len();
