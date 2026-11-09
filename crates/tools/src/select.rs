@@ -1466,7 +1466,9 @@ impl Tool for SelectionTool {
         if let Drag::Move { content: true, .. } = self.drag {
             return Cursor::HandGrab;
         }
-        if matches!(self.drag, Drag::Bracket { .. }) || (matches!(self.drag, Drag::None) && self.bracket_at(cx, p).is_some()) {
+        if matches!(self.drag, Drag::Bracket { .. })
+            || (matches!(self.drag, Drag::None) && self.bracket_at(cx, p).is_some() && (self.direct || crate::thread::port_at(cx, p).is_none()))
+        {
             return Cursor::PathBracket;
         }
         if let Drag::ContentResize { handle, .. } = self.drag {
