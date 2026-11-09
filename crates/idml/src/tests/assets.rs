@@ -466,6 +466,56 @@ fn a_placed_eps_text_imports_as_a_text_frame() {
     assert_eq!(story.frames, vec![items[0].id]);
 }
 
+/// A group holding one `<EPSText>` with the given extra attributes, text and attribute bounds.
+fn eps_text_group(attrs: &str, text: &str, attribute_bounds: &str) -> String {
+    let data = base64_encode(&eps_text_data("YuMincho-Regular", 20.0, 100.0, -50.0, text));
+    format!(
+        r#"<Group Self="g1" ItemLayer="L1" ItemTransform="1 0 0 1 0 0"><EPSText Self="e1" FillColor="Color/Black" ItemTransform="1 0 0 1 0 0" {attrs}><Properties>
+        <PathBoundingBox Left="300" Top="-70" Right="360" Bottom="-60"/>
+        <EPSTextData><![CDATA[{data}]]></EPSTextData>
+        {attribute_bounds}</Properties></EPSText></Group>"#
+    )
+}
+
+const EPS_TEXT_BOUNDS: &str = r#"<EPSTextAttributeBounds Top="-65" Left="100" Bottom="-45" Right="220"/>"#;
+
+#[test]
+fn an_eps_text_keeps_its_name_visibility_and_lock() {
+    let group = eps_text_group(r#"Name="Phone" Visible="false" Nonprinting="true" Locked="true""#, "0120", EPS_TEXT_BOUNDS);
+    let d = import_idml_with(&package(&[group]), &|_: &str| None).unwrap();
+    let Content::Group { items } = &d.spreads[0].items[0].content else { panic!("a group") };
+    let it = &items[0];
+    assert_eq!((it.name.as_str(), it.hidden, it.nonprinting, it.locked), ("Phone", true, true, true));
+    // Without the attributes it is an ordinary visible, printing, unlocked item.
+    let d = import_idml_with(&package(&[eps_text_group("", "0120", EPS_TEXT_BOUNDS)]), &|_: &str| None).unwrap();
+    let Content::Group { items } = &d.spreads[0].items[0].content else { panic!("a group") };
+    assert_eq!((items[0].name.as_str(), items[0].hidden, items[0].nonprinting, items[0].locked), ("", false, false, false));
+}
+
+#[test]
+fn a_line_break_in_an_eps_text_is_a_forced_line_break() {
+    // A \n, \r or U+2029 would add paragraphs the story has no formats for; U+FEFF is dropped.
+    let group = eps_text_group("", "a\nb\rc\u{2029}d\u{FEFF}e", EPS_TEXT_BOUNDS);
+    let d = import_idml_with(&package(&[group]), &|_: &str| None).unwrap();
+    d.check().unwrap();
+    let Content::Group { items } = &d.spreads[0].items[0].content else { panic!("a group") };
+    let Content::Text(tf) = &items[0].content else { panic!("a text frame") };
+    assert_eq!(d.story(tf.story).unwrap().text, "a\u{2028}b\u{2028}c\u{2028}de");
+}
+
+#[test]
+fn an_eps_text_whose_scale_overflows_is_left_out() {
+    // An attribute-bounds width this small makes the scale infinite: no frame can be built from it.
+    let tiny = r#"<EPSTextAttributeBounds Top="-65" Left="0" Bottom="-45" Right="1e-320"/>"#;
+    let d = import_idml_with(&package(&[eps_text_group("", "0120", tiny)]), &|_: &str| None).unwrap();
+    d.check().unwrap();
+    let texts = d.spreads[0]
+        .items
+        .iter()
+        .filter(|i| matches!(&i.content, Content::Group { items } if items.iter().any(|c| c.text_frame().is_some())))
+        .count();
+    assert_eq!(texts, 0);
+}
 
 #[test]
 fn an_eps_text_anchored_in_text_is_imported() {

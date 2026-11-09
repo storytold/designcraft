@@ -3,8 +3,9 @@ use super::object_style::INDESIGN_CORNER_SIZE;
 use super::package::uri_to_path;
 use super::values::{nums, parse_affine, parse_point, tint};
 use super::{
-    Affine, Anchor, Arc, Asset, AssetId, CharAttrs, CharFormat, CharRun, Content, Corner, CornerOptions, El, Fill, Importer, Item, ItemId, OBJECT_BUILTINS, PathData, Point, Rect, Shape,
-    Story, StoryId, Stroke, SubPath, TextFrame, TextFrameOptions, base64_decode, names, sniff_image, swatch, unescape_id,
+    Affine, Anchor, Arc, Asset, AssetId, CharAttrs, CharFormat, CharRun, Content, Corner, CornerOptions, El, Fill, Importer, Item, ItemId,
+    OBJECT_BUILTINS, PathData, Point, Rect, Shape, Story, StoryId, Stroke, SubPath, TextFrame, TextFrameOptions, base64_decode, names, sniff_image,
+    swatch, unescape_id,
 };
 
 /// The viewBox size of an SVG whose root has a viewBox but no width/height (percentages count as
@@ -57,14 +58,32 @@ impl<'r> Importer<'r> {
         // The layout scales the EPS: map its coordinates onto the bounds InDesign reports for the art.
         let s = if aw > 0.0 && pw > 0.0 { pw / aw } else { 1.0 };
         let (x, base, size) = (pl + (t.x - al) * s, pb + (t.y - ab) * s, t.size * s);
+        // A tiny attribute width makes the scale huge: what it multiplies can overflow to infinity,
+        // and no frame can be built from that.
+        let text: String = t
+            .text
+            .chars()
+            .filter(|c| *c != '\u{FEFF}')
+            .map(|c| if matches!(c, '\n' | '\r' | '\u{2029}') { designcraft_doc::story::FORCED_LINE_BREAK } else { c })
+            .collect();
+        let right = x + pw.max(size * text.chars().count() as f64);
+        if text.is_empty() || ![s, x, base, size, right].iter().all(|v| v.is_finite()) || size <= 0.0 {
+            return None;
+        }
         let id = ItemId(self.alloc());
         if let Some(sf) = e.get("Self") {
             self.item_ids.insert(sf.to_string(), id);
         }
         let layer = e.get("ItemLayer").and_then(|l| self.layer_ids.get(l)).copied().unwrap_or_else(|| self.layers[0].id);
-        let frame = Rect::new(x, base - size, x + pw.max(size * t.text.chars().count() as f64), base + size * 0.5);
+        let frame = Rect::new(x, base - size, right, base + size * 0.5);
         let mut it = Item::new(id, layer, Shape::Rectangle, designcraft_geom::shapes::rectangle(frame));
         it.xf = parent * parse_affine(e.get("ItemTransform"));
+        // The attributes every page item has, as in `item` below.
+        it.name = e.get("Name").filter(|n| *n != "$ID/").unwrap_or("").to_string();
+        it.locked = e.get("Locked") == Some("true");
+        it.hidden = e.get("Visible") == Some("false");
+        it.overrides = e.get("OverriddenPageItem").and_then(|s| self.item_ids.get(s)).copied().filter(|i| self.is_parent_item(*i));
+        it.nonprinting = e.get("Nonprinting") == Some("true");
         it.fill = Fill::none();
         it.stroke = Stroke::none();
         // PostScript name → family and style: `YuMincho-Regular` is Yu Mincho, Regular.
@@ -83,8 +102,8 @@ impl<'r> Importer<'r> {
             CharAttrs { font_family: Some(spaced), font_style: Some(style.to_string()), size: Some(size), fill: Some(fill), ..Default::default() };
         let sid = StoryId(self.alloc());
         let mut story = Story::new(sid);
-        story.chars = vec![CharRun { len: t.text.len(), format: CharFormat { over, ..Default::default() } }];
-        story.text = t.text;
+        story.chars = vec![CharRun { len: text.len(), format: CharFormat { over, ..Default::default() } }];
+        story.text = text;
         story.frames = vec![id];
         self.stories.insert(sid, story);
         let options = TextFrameOptions {

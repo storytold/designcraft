@@ -140,8 +140,8 @@ pub(crate) struct EpsText {
     pub text: String,
 }
 
-/// Read `EPSTextData`: a few header bytes, the font name, five big-endian doubles (size, two
-/// reserved, size again, x, y), then the text: its length in characters, then runs of
+/// Read `EPSTextData`: a few header bytes, the font name, six big-endian doubles (size, two
+/// reserved, size again, x, y: x and y at offsets 32 and 40 from the end of the name), then the text: its length in characters, then runs of
 /// `0x40, n` + n bytes (8-bit characters) or `0x80, n` + n big-endian UTF-16 units, until the
 /// length is reached (`野地合板＠12` is a wide run of five characters and a narrow one of two).
 pub(crate) fn parse_eps_text(b: &[u8]) -> Option<EpsText> {
