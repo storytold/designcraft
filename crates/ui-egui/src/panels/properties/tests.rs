@@ -178,25 +178,32 @@ fn links_panel_distinguishes_same_named_sources_and_keeps_link_actions() {
 }
 
 #[test]
-fn links_panel_exposes_individual_placements_of_one_shared_asset() {
-    use designcraft_doc::{Content, ItemId};
-    use std::sync::Arc;
-
+fn links_panel_exposes_individual_placements_and_makes_action_scope_clear() {
     let path = "/project/assets/photo.svg";
     let (mut app, items, assets) = linked_graphics(&[Some(path)]);
-    let second = ItemId(app.run("frame.create", json!({"rect": [180, 72, 252, 144]})).unwrap()["id"].as_u64().unwrap());
-    let graphic = app.session.active().unwrap().doc.item(items[0]).unwrap().graphic().unwrap().clone();
-    Arc::make_mut(&mut app.session.doc_mut().unwrap().doc).item_mut(second).unwrap().content = Content::Graphic(graphic);
+    app.run("selection.set", json!({"ids": [items[0].0]})).unwrap();
+    let dup = app.run("edit.duplicate", json!({})).unwrap();
+    let second = designcraft_doc::ItemId(dup["ids"][0].as_u64().unwrap());
+    assert_eq!(app.session.active().unwrap().doc.item(second).unwrap().graphic().unwrap().asset, assets[0]);
 
-    let mut h = links_harness(app, 360.0);
+    let mut h = links_harness(app, 420.0);
     let _ = h.get_by_label("↳ photo.svg 1");
     h.get_by_label("↳ photo.svg 2").click();
     h.run_steps(3);
+    let _ = h.get_by_label("Placement 2 of photo.svg");
+    let _ = h.get_by_label("Update All");
+    let _ = h.get_by_label("Embed All");
     h.get_by_label("Go To").click();
     h.run_steps(3);
     assert_eq!(h.state().session.active().unwrap().selection.items, vec![second]);
-    assert_eq!(h.state().session.active().unwrap().doc.item(items[0]).unwrap().graphic().unwrap().asset, assets[0]);
-    assert_eq!(h.state().session.active().unwrap().doc.item(second).unwrap().graphic().unwrap().asset, assets[0]);
+
+    // Choosing the source row clears placement scope and restores source-wide labels.
+    h.get_by_label(path).click();
+    h.run_steps(3);
+    let _ = h.get_by_label("Update");
+    let _ = h.get_by_label("Embed");
+    assert!(h.query_by_label("Update All").is_none());
+    assert!(h.query_by_label("Embed All").is_none());
 }
 
 #[test]

@@ -338,6 +338,19 @@ impl Document {
         used
     }
 
+    /// Number of references to one asset across page items, media posters, anchored/inline
+    /// objects, table cells and notes. `None` when a hostile/deep document exceeds the traversal
+    /// budget, so callers can conservatively avoid assuming the asset has a single owner.
+    pub fn asset_ref_count(&self, target: AssetId) -> Option<usize> {
+        let mut count = 0;
+        self.asset_refs(&mut |a| {
+            if a == target {
+                count += 1;
+            }
+        })
+        .then_some(count)
+    }
+
     /// Point every reference to a key of `map` at its value.
     pub fn remap_assets(&mut self, map: &HashMap<AssetId, AssetId>) {
         if map.is_empty() {
