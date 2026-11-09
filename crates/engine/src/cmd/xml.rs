@@ -1025,6 +1025,15 @@ mod tests {
         let shape = frame(&mut s, [450, 72, 500, 120], "unassigned");
         s.execute("object.rename", &json!({"id": head, "name": "headline"})).unwrap();
         s.execute("object.rename", &json!({"id": body, "name": "not a tag"})).unwrap();
+        // A plain shape in the graphics frame style (as InDesign gives every rectangle) is no frame.
+        s.edit(|d, _| {
+            let style = d.styles.default_graphic_frame.clone();
+            if let Some(it) = d.item_mut(designcraft_doc::ItemId(shape.as_u64().unwrap())) {
+                it.object_style = style;
+            }
+            Ok(())
+        })
+        .unwrap();
         s.execute("xml.tag", &json!({"tag": "text_1", "ids": [kept]})).unwrap();
         let r = s.execute("xml.autoTag", &json!({})).unwrap();
         let tags: Vec<(serde_json::Value, String)> =
@@ -1043,6 +1052,18 @@ mod tests {
         // The tagged frames take imported XML.
         let r = s.execute("file.importXml", &json!({"text": "<Root><headline>New head</headline><text_2>New body</text_2></Root>"})).unwrap();
         assert_eq!(r["placed"], 2);
+        // A frame on the pasteboard isn't the page's; a text frame made a graphic frame is one.
+        let aside = frame(&mut s, [-300, 72, -100, 120], "text");
+        let converted = frame(&mut s, [450, 300, 550, 400], "text");
+        s.execute("object.content", &json!({"type": "graphic", "ids": [converted]})).unwrap();
+        let r = s.execute("xml.autoTag", &json!({})).unwrap();
+        let tagged: Vec<serde_json::Value> = r["tagged"].as_array().unwrap().iter().map(|t| t["id"].clone()).collect();
+        assert_eq!(tagged, vec![converted.clone()], "{r}");
+        assert_eq!(r["tagged"][0]["kind"], "image");
+        assert!(!tagged.contains(&aside));
+        // Made unassigned again, it's a plain shape.
+        s.execute("object.content", &json!({"type": "unassigned", "ids": [converted]})).unwrap();
+        assert!(!s.doc().unwrap().doc.item(designcraft_doc::ItemId(converted.as_u64().unwrap())).unwrap().graphic_frame);
     }
 
     #[cfg(not(target_arch = "wasm32"))]
