@@ -2132,3 +2132,37 @@ fn type_tool_and_direct_selection_reject_items_in_locked_ancestor_groups() {
     let a_tt = tt.pointer(&cx, &PointerEvent::new(PointerKind::Down, 150.0, 150.0));
     assert_eq!(a_tt, vec![]);
 }
+
+#[test]
+fn type_tool_places_the_caret_in_a_standalone_locked_text_frame() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (fid, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(100.0, 100.0, 200.0, 200.0), lid, "locked text", ParaFormat::default()).unwrap();
+    d.item_mut(fid).unwrap().locked = true;
+    let s = Selection::default();
+    let (c, l) = (Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    let mut tt = create("type");
+    // Locked text frames take the caret; only a lock inherited from a group refuses it.
+    let a = tt.pointer(&cx, &PointerEvent::new(PointerKind::Down, 150.0, 150.0));
+    assert_eq!(a, vec![Action::Exec("text.placeCaret".into(), serde_json::json!({"frame": fid.0, "point": [150.0, 150.0]}))]);
+}
+
+#[test]
+fn type_tool_places_the_caret_in_a_locked_text_frame_in_an_unlocked_group() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (fid, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(100.0, 100.0, 200.0, 200.0), lid, "locked text", ParaFormat::default()).unwrap();
+    let mut child = d.spread_mut(SpreadRef::Doc(0)).unwrap().items.pop().unwrap();
+    std::sync::Arc::make_mut(&mut child).locked = true;
+    let gid = ItemId(d.alloc());
+    let mut g = Item::new(gid, lid, Shape::Group, designcraft_geom::PathData::default());
+    g.content = designcraft_doc::item::Content::Group { items: vec![child] };
+    d.insert_item(SpreadRef::Doc(0), g, None).unwrap();
+    let s = Selection::default();
+    let (c, l) = (Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    let mut tt = create("type");
+    let a = tt.pointer(&cx, &PointerEvent::new(PointerKind::Down, 150.0, 150.0));
+    assert_eq!(a, vec![Action::Exec("text.placeCaret".into(), serde_json::json!({"frame": fid.0, "point": [150.0, 150.0]}))]);
+}

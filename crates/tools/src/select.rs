@@ -786,13 +786,7 @@ impl Tool for SelectionTool {
                             id
                         } else {
                             let leaf = cx.hit_leaf(p).map(|(_, lid)| lid).unwrap_or(id);
-                            let chain = cx.doc.ancestry_chain(leaf);
-                            chain
-                                .iter()
-                                .copied()
-                                .rev()
-                                .find(|item_id| cx.selection.contains(*item_id))
-                                .unwrap_or_else(|| cx.doc.top_level_of(id).unwrap_or(id))
+                            cx.doc.selection_target(leaf, |i| cx.selection.contains(i))
                         };
                         let mut out = vec![];
                         if ev.mods.shift {

@@ -351,3 +351,45 @@ fn placed_pdf_without_a_crop_choice_loads_with_the_crop_box() {
     // A box with no area shows the whole page.
     assert_eq!(Asset { pdf_box: Some([0.5, 0.5, 0.5, 0.9]), ..back }.shown_box(), None);
 }
+
+fn group_of(d: &mut Document, lid: LayerId, kids: Vec<std::sync::Arc<Item>>) -> ItemId {
+    let gid = ItemId(d.alloc());
+    let mut g = Item::new(gid, lid, Shape::Group, designcraft_geom::PathData::default());
+    g.content = Content::Group { items: kids };
+    d.insert_item(SpreadRef::Doc(0), g, None).unwrap();
+    gid
+}
+
+#[test]
+fn ancestry_helpers_follow_nested_groups_and_ignore_anchored_items() {
+    let mut d = doc();
+    let lid = d.default_layer();
+    let (f, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(10.0, 10.0, 100.0, 100.0), lid, "t", ParaFormat::default()).unwrap();
+    let leaf = d.spread_mut(SpreadRef::Doc(0)).unwrap().items.pop().unwrap();
+    let inner = ItemId(d.alloc());
+    let mut ig = Item::new(inner, lid, Shape::Group, designcraft_geom::PathData::default());
+    ig.content = Content::Group { items: vec![leaf] };
+    let outer = group_of(&mut d, lid, vec![std::sync::Arc::new(ig)]);
+    assert_eq!(d.ancestry_chain(f), vec![outer, inner, f]);
+    assert_eq!((d.parent_of(f), d.parent_of(inner), d.parent_of(outer)), (Some(inner), Some(outer), None));
+    // Not on a spread (an unknown id, or one anchored in a story): no chain, no parent.
+    assert_eq!((d.ancestry_chain(ItemId(u64::MAX)), d.parent_of(ItemId(u64::MAX))), (vec![], None));
+    // A click on the leaf picks the deepest selected ancestor, else the top-level group.
+    assert_eq!(d.selection_target(f, |_| false), outer);
+    assert_eq!(d.selection_target(f, |i| i == inner), inner);
+    assert_eq!(d.selection_target(f, |i| i == f || i == outer), f);
+}
+
+#[test]
+fn ancestor_locked_ignores_the_items_own_lock() {
+    let mut d = doc();
+    let lid = d.default_layer();
+    let (f, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(10.0, 10.0, 100.0, 100.0), lid, "t", ParaFormat::default()).unwrap();
+    let mut leaf = d.spread_mut(SpreadRef::Doc(0)).unwrap().items.pop().unwrap();
+    std::sync::Arc::make_mut(&mut leaf).locked = true;
+    let g = group_of(&mut d, lid, vec![leaf]);
+    assert!(d.is_locked(f) && !d.ancestor_locked(f), "its own lock is not inherited");
+    d.item_mut(g).unwrap().locked = true;
+    assert!(d.ancestor_locked(f) && d.is_locked(f));
+    assert!(!d.ancestor_locked(g), "a top-level item has no ancestors");
+}

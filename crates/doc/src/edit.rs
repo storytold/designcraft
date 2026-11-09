@@ -199,41 +199,39 @@ impl Document {
         Some(self.spread(loc.spread)?.items[loc.top()].id)
     }
 
-    /// The immediate parent group of `id`, if `id` is nested inside a group.
+    /// The immediate parent group of `id`, if `id` is nested inside a group. Only groups hold
+    /// items on a spread (see [`Item::children`]); anchored items live in stories and have no
+    /// parent here.
     pub fn parent_of(&self, id: ItemId) -> Option<ItemId> {
-        let loc = self.find(id)?;
-        if loc.path.len() <= 1 {
+        let chain = self.ancestry_chain(id);
+        let (last, parents) = chain.split_last()?;
+        if *last != id {
             return None;
         }
-        let sp = self.spread(loc.spread)?;
-        let mut items = &sp.items;
-        let mut parent_id = None;
-        for &i in &loc.path[..loc.path.len() - 1] {
-            let it = items.get(i)?;
-            parent_id = Some(it.id);
-            items = match &it.content {
-                Content::Group { items } => items,
-                _ => return None,
-            };
-        }
-        parent_id
+        parents.last().copied()
     }
 
-    /// Item IDs along the ancestry path from top-level down to `id` (inclusive).
+    /// Item IDs along the ancestry path from top-level down to `id` (inclusive); empty when `id`
+    /// is not on a spread.
     pub fn ancestry_chain(&self, id: ItemId) -> Vec<ItemId> {
         let Some(loc) = self.find(id) else { return vec![] };
         let Some(sp) = self.spread(loc.spread) else { return vec![] };
-        let mut items = &sp.items;
+        let mut items: &[Arc<Item>] = &sp.items;
         let mut chain = Vec::with_capacity(loc.path.len());
         for &i in &loc.path {
             let Some(it) = items.get(i) else { break };
             chain.push(it.id);
-            items = match &it.content {
-                Content::Group { items } => items,
-                _ => break,
-            };
+            items = it.children();
         }
         chain
+    }
+
+    /// The item a Selection-tool click on the leaf `leaf` picks: the deepest ancestor (or `leaf`
+    /// itself) that `is_selected` says is already selected, so a click inside a selected group
+    /// keeps drilling at that level, otherwise the top-level item. Clicks and the context menu
+    /// share this so they agree.
+    pub fn selection_target(&self, leaf: ItemId, is_selected: impl Fn(ItemId) -> bool) -> ItemId {
+        self.ancestry_chain(leaf).into_iter().rev().find(|&i| is_selected(i)).or_else(|| self.top_level_of(leaf)).unwrap_or(leaf)
     }
 
     /// Spread-space transform of the parent group chain of the item at `loc` (identity at top level).
@@ -677,25 +675,18 @@ impl Document {
 
     /// True if `id` itself is locked, sits on a locked layer, or has any locked ancestor group.
     pub fn is_locked(&self, id: ItemId) -> bool {
-        let Some(loc) = self.find(id) else { return false };
         let Some(it) = self.item(id) else { return false };
-        if it.locked || self.layer(it.layer).is_some_and(|l| l.locked) {
-            return true;
+        it.locked || self.layer(it.layer).is_some_and(|l| l.locked) || self.ancestor_locked(id)
+    }
+
+    /// True if a group around `id` is locked (the item's own lock and its layer's are not
+    /// looked at): the lock `id` inherits.
+    pub fn ancestor_locked(&self, id: ItemId) -> bool {
+        let chain = self.ancestry_chain(id);
+        match chain.split_last() {
+            Some((last, parents)) if *last == id => parents.iter().any(|&p| self.item(p).is_some_and(|g| g.locked)),
+            _ => false,
         }
-        if let Some(sp) = self.spread(loc.spread) {
-            let mut items = &sp.items;
-            for &i in &loc.path[..loc.path.len().saturating_sub(1)] {
-                let Some(group) = items.get(i) else { break };
-                if group.locked {
-                    return true;
-                }
-                items = match &group.content {
-                    Content::Group { items } => items,
-                    _ => break,
-                };
-            }
-        }
-        false
     }
 
     /// Every item id (pre-order) on document spreads.
