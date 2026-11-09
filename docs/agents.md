@@ -101,7 +101,8 @@ echo 'data.merge {"path": "people.csv", "records": "range", "range": "1-20"}' | 
 ## XML tags
 
 `xml.autoTag {kinds?, overwrite?, useNames?}` tags every untagged text and graphic frame on the document pages: a
-frame whose Layers panel name is a valid XML name gets that name, the others `text_1`, `image_1`, … in reading order.
+frame whose Layers panel name is a valid XML name no other frame has gets that name, the others `text_1`,
+`image_1`, … in reading order.
 `file.importXml` then fills them:
 
 ```sh

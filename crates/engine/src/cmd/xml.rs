@@ -72,7 +72,7 @@ fn frame_kind(it: &Item) -> Option<&'static str> {
 }
 
 /// `xml.autoTag`: tags text and graphic frames on the document pages, by their Layers panel name
-/// when that is a valid XML name, otherwise `text_1`, `image_1`, … in reading order.
+/// when that is a valid XML name no other frame has, otherwise `text_1`, `image_1`, … in reading order.
 fn auto_tag(s: &mut Session, p: &Value) -> Result<Value> {
     const ID: &str = "xml.autoTag";
     let kinds: Vec<String> = match p.get("kinds") {
@@ -90,10 +90,11 @@ fn auto_tag(s: &mut Session, p: &Value) -> Result<Value> {
     // Frames on the pasteboard aren't the page's: they would take numbers before frames on it.
     let on_page = on_pages(d);
     let ids: Vec<ItemId> = in_reading_order(d, wanted).into_iter().filter(|id| on_page.contains(id)).collect();
-    // Numbers already taken by tags that stay, so `text_3` isn't given twice.
+    let retagged: std::collections::HashSet<ItemId> = ids.iter().copied().collect();
+    // Tags that stay, so neither `text_3` nor a frame's name is given twice.
     let mut used: std::collections::HashSet<String> = in_reading_order(d, |it| !it.xml_tag.is_empty())
         .into_iter()
-        .filter(|i| !ids.contains(i))
+        .filter(|i| !retagged.contains(i))
         .filter_map(|i| d.item(i))
         .map(|it| it.xml_tag.clone())
         .collect();
@@ -103,7 +104,7 @@ fn auto_tag(s: &mut Session, p: &Value) -> Result<Value> {
         let Some(it) = d.item(id) else { continue };
         let Some(kind) = frame_kind(it) else { continue };
         let name = it.name.trim();
-        let tag = if use_names && valid_name(name) {
+        let tag = if use_names && valid_name(name) && !used.contains(name) {
             name.to_string()
         } else {
             let counter = next.iter_mut().find(|(k, _)| *k == kind).map(|(_, n)| n);
@@ -265,11 +266,18 @@ fn href_path(href: &str, base: Option<&std::path::Path>) -> String {
     let decoded = percent_decode(p);
     let path = std::path::Path::new(&decoded);
     match base {
-        Some(b) if path.is_relative() && !decoded.starts_with('/') && !decoded.starts_with('\\') => b.join(path).to_string_lossy().to_string(),
+        Some(b) if path.is_relative() && !decoded.starts_with(['/', '\\']) && !has_drive(&decoded) => b.join(path).to_string_lossy().to_string(),
         _ => decoded,
     }
 }
 
+/// `C:/x.png` or `C:\x.png`: absolute, also where `Path` knows no drive letters.
+fn has_drive(p: &str) -> bool {
+    let b = p.as_bytes();
+    b.len() > 2 && b[0].is_ascii_alphabetic() && b[1] == b':' && matches!(b[2], b'/' | b'\\')
+}
+
+/// `%XX` escapes decoded; a `%` without two hex digits stays as it is.
 fn percent_decode(s: &str) -> String {
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
@@ -441,7 +449,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Auto Tag Frames",
             [],
             None,
-            "{kinds?: [text, image] (default both), overwrite?: bool (retag tagged frames; default false), useNames?: bool (a valid XML Layers panel name is the tag; default true)} — untagged frames on document pages get their name or text_1, image_1, … in reading order → {tagged: [{id, tag, kind}]}",
+            "{kinds?: [text, image] (default both), overwrite?: bool (retag tagged frames; default false), useNames?: bool (a valid XML Layers panel name is the tag unless another frame has it; default true)} — untagged frames on document pages get their name or text_1, image_1, … in reading order → {tagged: [{id, tag, kind}]}",
             has_doc,
             auto_tag
         ),
@@ -854,6 +862,73 @@ mod tests {
         // Made unassigned again, it's a plain shape.
         s.execute("object.content", &json!({"type": "unassigned", "ids": [converted]})).unwrap();
         assert!(!s.doc().unwrap().doc.item(designcraft_doc::ItemId(converted.as_u64().unwrap())).unwrap().graphic_frame);
+    }
+
+    /// A Layers name another frame already has, as a tag or as a name, isn't given again: that
+    /// frame gets a numbered tag. `kinds` picks which frames are tagged.
+    #[test]
+    fn auto_tag_gives_each_name_once() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let frame = |s: &mut Session, y: i32, content: &str, name: &str| {
+            let id =
+                s.execute("frame.create", &json!({"rect": [72, y, 400, y + 40], "content": content, "text": "x", "caret": false})).unwrap()["id"]
+                    .clone();
+            s.execute("object.rename", &json!({"id": id, "name": name})).unwrap();
+            id
+        };
+        let kept = frame(&mut s, 72, "text", "kept");
+        s.execute("xml.tag", &json!({"tag": "headline", "ids": [kept]})).unwrap();
+        let a = frame(&mut s, 150, "text", "intro");
+        let b = frame(&mut s, 250, "text", "intro");
+        let c = frame(&mut s, 350, "text", "headline");
+        let photo = frame(&mut s, 450, "graphic", "photo");
+        let r = s.execute("xml.autoTag", &json!({"kinds": ["text"]})).unwrap();
+        let tags: Vec<(serde_json::Value, String)> =
+            r["tagged"].as_array().unwrap().iter().map(|t| (t["id"].clone(), t["tag"].as_str().unwrap().to_string())).collect();
+        assert_eq!(tags, vec![(a, "intro".into()), (b, "text_1".into()), (c, "text_2".into())]);
+        assert!(s.doc().unwrap().doc.item(designcraft_doc::ItemId(photo.as_u64().unwrap())).unwrap().xml_tag.is_empty(), "only text frames");
+    }
+
+    #[test]
+    fn href_paths() {
+        use super::{href_path, percent_decode};
+        use std::path::Path;
+        let base = Path::new("/xml/folder");
+        let joined = |rel: &str| base.join(rel).to_string_lossy().to_string();
+        for (href, want) in [
+            ("file:///C:/img/a.png", "C:/img/a.png".to_string()),
+            ("file:///home/me/a%20b.png", "/home/me/a b.png".into()),
+            ("C:\\img\\a.png", "C:\\img\\a.png".into()),
+            ("\\\\server\\share\\a.png", "\\\\server\\share\\a.png".into()),
+            ("/abs/a.png", "/abs/a.png".into()),
+            ("img/a%20b.png", joined("img/a b.png")),
+            ("img\\a.png", joined("img\\a.png")),
+            ("  a.png  ", joined("a.png")),
+        ] {
+            assert_eq!(href_path(href, Some(base)), want, "{href}");
+        }
+        assert_eq!(href_path("img/a.png", None), "img/a.png", "no base: as it is");
+        assert_eq!(percent_decode("100%"), "100%");
+        assert_eq!(percent_decode("a%zzb%2"), "a%zzb%2", "invalid escapes stay");
+        assert_eq!(percent_decode("%C3%A4%41"), "äA");
+    }
+
+    #[test]
+    fn image_attrs_read_href_and_xlink_href() {
+        let attrs = |xml: &str| {
+            let mut r = quick_xml::Reader::from_str(xml);
+            match r.read_event().unwrap() {
+                quick_xml::events::Event::Empty(e) => super::image_attrs(&e).unwrap().map(|i| (i.href, i.fit, i.crop)),
+                ev => panic!("{ev:?}"),
+            }
+        };
+        assert_eq!(attrs(r#"<photo href="a&amp;b.png" fit="fitContent"/>"#), Some(("a&b.png".into(), Some("fitContent".into()), None)));
+        assert_eq!(
+            attrs(r#"<photo xlink:href="file:///x.pdf" crop="contentVisible"/>"#),
+            Some(("file:///x.pdf".into(), None, Some("contentVisible".into())))
+        );
+        assert_eq!(attrs("<photo/>"), None);
     }
 
     /// Frames in a group take the group's place: a group moved from the pasteboard onto a page
