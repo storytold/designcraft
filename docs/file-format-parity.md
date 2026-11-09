@@ -71,7 +71,7 @@ external PDF/X certification.
 | JPEG, PNG, GIF, BMP, WebP | | ✓ | ✓ embedded ICC profiles applied on screen; CMYK JPEGs (incl. YCCK) through their own profile or the working CMYK space | CMYK JPEG/TIFF keep inks in PDF (#35) | 2% |
 | TIFF | `.tif` | ✓ incl. CMYK, alpha, indexed colour, paths | ✓ incl. CMYK, embedded ICC profiles on screen | clipping paths from 8BIM resources unverified | 1% |
 | PSD | `.psd` | ✓ layers, comps, alpha, paths | ~ composite + Object Layer Options; embedded ICC profile and managed CMYK on screen | layer comps partial | 1% |
-| EPS | `.eps` | ✓ (PostScript) | ~ preview only (no interpreter) | | <1% |
+| EPS | `.eps` | ✓ (PostScript) | ~ preview only (no interpreter); in IDML, the embedded `EPSImage` raster is the preview | | <1% |
 | SVG | `.svg` | ✓ | ✓ (usvg) | | <1% |
 | HEIC | `.heic` | ✓ | ✗ | | <1% |
 | Word | `.docx` | ✓ styles, footnotes, tables, track changes, options | ✓ styles by name, footnotes, tables, tabs, breaks, moved text (#257), bullets and numbering from `numbering.xml` (#626; levels become list levels, parent numbers in a label level references), style mapping and conflicts | `.doc` not supported (InDesign reads it) | 2% |

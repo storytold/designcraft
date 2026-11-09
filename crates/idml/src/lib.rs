@@ -127,7 +127,49 @@ pub(crate) fn base64_decode(s: &str) -> Vec<u8> {
     out
 }
 
-/// Sniff an image's MIME type and pixel size (PNG, JPEG, GIF, WebP, TIFF, PDF, EPS).
+/// Re-wrap the raw preview raster InDesign embeds for an EPS placement (`EPSImage` + five
+/// little-endian words: row bytes, width, height, bits per channel, channels + top-down 8-bit
+/// pixels) as a 24-bit BMP, which the image decoders read. `None` for anything else, a
+/// truncated raster or a size that would not fit a BMP.
+pub(crate) fn eps_preview_to_bmp(b: &[u8]) -> Option<Vec<u8>> {
+    let rest = b.strip_prefix(b"EPSImage")?;
+    let word = |i: usize| rest.get(i * 4..i * 4 + 4).map(|s| u32::from_le_bytes([s[0], s[1], s[2], s[3]]) as usize);
+    let (w, h, bits, ch) = (word(1)?, word(2)?, word(3)?, word(4)?);
+    let px = rest.get(20..)?;
+    if bits != 8 || !matches!(ch, 1 | 3 | 4) || w == 0 || h == 0 || w > 1 << 15 || h > 1 << 15 || px.len() != w.checked_mul(h)?.checked_mul(ch)? {
+        return None;
+    }
+    let stride = (w * 3).div_ceil(4) * 4;
+    let size = 54 + stride * h;
+    let mut out = Vec::with_capacity(size);
+    out.extend_from_slice(b"BM");
+    out.extend_from_slice(&u32::try_from(size).ok()?.to_le_bytes());
+    out.extend_from_slice(&[0; 4]);
+    out.extend_from_slice(&54u32.to_le_bytes());
+    out.extend_from_slice(&40u32.to_le_bytes());
+    out.extend_from_slice(&i32::try_from(w).ok()?.to_le_bytes());
+    out.extend_from_slice(&i32::try_from(h).ok()?.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&24u16.to_le_bytes());
+    out.extend_from_slice(&[0; 24]);
+    for row in px.chunks_exact(w * ch).rev() {
+        for p in row.chunks_exact(ch) {
+            let rgb = match ch {
+                1 => [p[0]; 3],
+                3 => [p[0], p[1], p[2]],
+                _ => {
+                    let k = 255 - p[3] as u32;
+                    [0, 1, 2].map(|i| ((255 - p[i] as u32) * k / 255) as u8)
+                }
+            };
+            out.extend_from_slice(&[rgb[2], rgb[1], rgb[0]]);
+        }
+        out.resize(out.len() + stride - w * 3, 0);
+    }
+    Some(out)
+}
+
+/// Sniff an image's MIME type and pixel size (PNG, JPEG, GIF, WebP, TIFF, BMP, PDF, EPS).
 pub(crate) fn sniff_image(b: &[u8]) -> (Option<&'static str>, Option<(u32, u32)>) {
     if designcraft_images::is_eps(b) {
         return (Some("application/postscript"), designcraft_images::eps_pixel_size(b));
@@ -165,6 +207,10 @@ pub(crate) fn sniff_image(b: &[u8]) -> (Option<&'static str>, Option<(u32, u32)>
     }
     if b.starts_with(b"%PDF") {
         return (Some("application/pdf"), None);
+    }
+    if b.starts_with(b"BM") && b.len() >= 26 {
+        let le = |i: usize| i32::from_le_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]]);
+        return (Some("image/bmp"), Some((le(18).unsigned_abs(), le(22).unsigned_abs())));
     }
     (None, None)
 }

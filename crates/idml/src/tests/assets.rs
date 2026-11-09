@@ -393,3 +393,34 @@ fn the_swatch_applied_to_an_image_is_kept() {
     assert!(!images.iter().any(|e| e.contains("Swatch/None")), "{images:?}");
     assert_eq!(fills(&import_idml_with(&out, &reader).unwrap()), want);
 }
+
+/// InDesign embeds an EPS placement's preview as `EPSImage` + five words + raw top-down RGB.
+fn eps_preview(w: u32, h: u32, rgb: &[u8]) -> Vec<u8> {
+    let mut b = b"EPSImage".to_vec();
+    for v in [w * 3, w, h, 8, 3] {
+        b.extend_from_slice(&v.to_le_bytes());
+    }
+    b.extend_from_slice(rgb);
+    b
+}
+
+#[test]
+fn an_embedded_eps_preview_imports_as_a_raster() {
+    // 2x2: red, green / blue, white.
+    let rgb = [255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255];
+    let frames = vec![frame(1, 0.0, 0.0, &image(1, "file:/art/code.eps", Some(&eps_preview(2, 2, &rgb))))];
+    let d = import_idml_with(&package(&frames), &|_: &str| None).unwrap();
+    let (id, _, _) = placements(&d)[0];
+    let a = d.assets.get(&id).unwrap();
+    assert_eq!(a.mime, "image/bmp");
+    assert_eq!(a.pixels, Some((2, 2)));
+    assert!(a.is_raster());
+    // A 24-bit BMP stores rows bottom-up as BGR, padded to four bytes: blue/white first.
+    let px = &a.data[54..];
+    assert_eq!(px[..6], [255, 0, 0, 255, 255, 255], "bottom row: blue, white");
+    assert_eq!(px[8..14], [0, 0, 255, 0, 255, 0], "top row: red, green");
+
+    // A truncated raster is not decoded as one.
+    let cut = eps_preview(2, 2, &rgb[..9]);
+    assert!(crate::eps_preview_to_bmp(&cut).is_none());
+}
