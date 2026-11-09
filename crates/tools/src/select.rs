@@ -50,7 +50,7 @@ enum Drag {
         canvas_to_frame: Affine,
     },
     AnchoredContentMove { id: ItemId, start: Point, canvas_to_frame: Affine },
-    AnchoredContentScale { id: ItemId, handle: usize, from: Rect },
+    AnchoredContentScale { id: ItemId, handle: usize, from: Rect, frame_from: Rect, canvas_to_frame: Affine },
     Resize {
         handle: usize,
         start: Point,
@@ -571,10 +571,20 @@ fn selected_graphic(cx: &ToolContext) -> Option<(ItemId, Rect)> {
 }
 
 /// A handle of the selected placed graphic's bounding box under `p` (0 TL … 7 L).
+/// Pick the nearest handle, not the first matching square: small graphics
+/// can have several handles inside the same screen-space tolerance.
+fn nearest_handle(bounds: Rect, p: Point, tol: f64) -> Option<usize> {
+    handles(bounds).iter().enumerate()
+        .map(|(i, h)| (i, (h.x - p.x).hypot(h.y - p.y)))
+        .filter(|(_, distance)| *distance <= tol)
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(i, _)| i)
+}
+
 fn content_handle_at(cx: &ToolContext, p: Point) -> Option<(ItemId, usize)> {
     let (id, b) = selected_graphic(cx)?;
     let tol = cx.tol(5.0);
-    handles(b).iter().position(|h| (h.x - p.x).abs() <= tol && (h.y - p.y).abs() <= tol).map(|h| (id, h))
+    nearest_handle(b, p, tol).map(|h| (id, h))
 }
 
 fn handle_at(cx: &ToolContext, p: Point) -> Option<usize> {
@@ -584,7 +594,7 @@ fn handle_at(cx: &ToolContext, p: Point) -> Option<usize> {
     }
     let b = cx.selection_bounds()?;
     let tol = cx.tol(5.0);
-    handles(b).iter().position(|h| (h.x - p.x).abs() <= tol && (h.y - p.y).abs() <= tol)
+    nearest_handle(b, p, tol)
 }
 
 /// Side handles are drawn on the canvas bounding box; fitting uses the frame's local axes.
@@ -1099,12 +1109,14 @@ impl SelectionTool {
                 let (dx, dy) = (delta.x, delta.y);
                 vec![Action::Preview("anchored.contentTransform".into(), json!({"id": id.0, "dx": dx, "dy": dy}))]
             }
-            Drag::AnchoredContentScale { id, handle, from } => {
-                // Option is the mode switch, not the centred-frame resize modifier.
-                // Drive uniform content scaling from the dragged edge; the crop frame
-                // itself never changes, including when dragging a side handle.
-                let to = resize_edges_rect(from, handle, p);
-                let scale = aspect_scale(from, handle, to).clamp(0.01, 100.0);
+            Drag::AnchoredContentScale { id, handle, from, frame_from, canvas_to_frame } => {
+                // Scale in frame coordinates, not the canvas bounding box: a
+                // vertical or rotated text frame swaps the canvas axes.
+                let local_handle = frame_handle_for_canvas_handle(canvas_to_frame, handle);
+                let delta = affine_delta(canvas_to_frame, p - handles(from)[handle]);
+                let target = handles(frame_from)[local_handle] + delta;
+                let to = resize_edges_rect(frame_from, local_handle, target);
+                let scale = aspect_scale(frame_from, local_handle, to).clamp(0.01, 100.0);
                 vec![Action::Preview("anchored.contentTransform".into(), json!({"id": id.0, "scale": scale}))]
             }
             Drag::AnchoredResize { id, handle, from, frame_from, canvas_to_frame } => {
@@ -1355,13 +1367,13 @@ impl Tool for SelectionTool {
             && self.loaded.is_none()
             && ev.click_count() < 2
             && let Some((_, from, frame_to_canvas, _)) = cx.anchored_graphic_geometry().into_iter().find(|(candidate, _, _, _)| candidate == id)
-            && let Some(handle) = handles(from).iter().position(|h| (h.x - p.x).abs() <= cx.tol(5.0) && (h.y - p.y).abs() <= cx.tol(5.0))
+            && let Some(handle) = nearest_handle(from, p, cx.tol(5.0))
             && frame_to_canvas.determinant().abs() > 1e-12
             && let Some(item) = cx.doc.anchored_item(*id)
         {
             let frame_from = Rect::new(0.0, 0.0, item.bounds().width(), item.bounds().height());
             self.drag = if ev.mods.alt {
-                Drag::AnchoredContentScale { id: *id, handle, from }
+                Drag::AnchoredContentScale { id: *id, handle, from, frame_from, canvas_to_frame: frame_to_canvas.inverse() }
             } else {
                 Drag::AnchoredResize { id: *id, handle, from, frame_from, canvas_to_frame: frame_to_canvas.inverse() }
             };
@@ -1623,7 +1635,7 @@ impl Tool for SelectionTool {
         }
         if let [id] = cx.selection.items.as_slice()
             && let Some((_, bounds)) = cx.anchored_graphic_bounds().into_iter().find(|(candidate, _)| candidate == id)
-            && let Some(h) = handles(bounds).iter().position(|h| (h.x - p.x).abs() <= cx.tol(5.0) && (h.y - p.y).abs() <= cx.tol(5.0))
+            && let Some(h) = nearest_handle(bounds, p, cx.tol(5.0))
         {
             return handle_cursor(h);
         }
@@ -1726,6 +1738,36 @@ mod anchored_transform_tests {
         let (_, bounds, _, found_host) = geometry.iter().find(|(graphic, _, _, _)| *graphic == id).unwrap();
         assert_eq!(*found_host, host);
         (d, host, id, bounds.center())
+    }
+
+    #[test]
+    fn nearest_handle_prefers_closest_when_tolerances_overlap() {
+        let rect = Rect::new(0.0, 0.0, 6.0, 6.0);
+        assert_eq!(nearest_handle(rect, Point::new(5.8, 0.2), 10.0), Some(2));
+        assert_eq!(nearest_handle(rect, Point::new(3.0, 0.1), 10.0), Some(1));
+        assert_eq!(nearest_handle(rect, Point::new(100.0, 100.0), 10.0), None);
+    }
+
+    #[test]
+    fn vertical_host_content_scale_uses_frame_width_not_canvas_height() {
+        let d = Document::new(&NewDocument::default());
+        let selection = Selection::default();
+        let cache = Cache::new();
+        let layout = CanvasLayout::new(&d, false);
+        let cx = context(&d, &selection, &cache, &layout, 1.0);
+        let frame = Rect::new(0.0, 0.0, 100.0, 50.0);
+        let to_canvas = Affine::translate((100.0, 100.0)) * Affine::rotate(std::f64::consts::FRAC_PI_2);
+        let from = to_canvas.transform_rect_bbox(frame);
+        let mut tool = SelectionTool::new(false);
+        tool.drag = Drag::AnchoredContentScale {
+            id: ItemId(999), handle: 1, from, frame_from: frame,
+            canvas_to_frame: to_canvas.inverse(),
+        };
+        let h = handles(from)[1];
+        let action = tool.pointer_drag(&cx, &PointerEvent::new(PointerKind::Drag, h.x, h.y - 20.0));
+        let [Action::Preview(command, params)] = action.as_slice() else { panic!("{action:?}") };
+        assert_eq!(command, "anchored.contentTransform");
+        assert!(params["scale"].as_f64().is_some_and(|s| (s - 1.2).abs() < 1e-9), "{params:?}");
     }
 
     #[test]
