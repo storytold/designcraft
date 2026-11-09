@@ -94,8 +94,34 @@ pub(crate) fn adopt<'a>(d: &mut Document, imp: &'a Imported, src: Option<&Docume
     adopt_resources(d, src);
     link_next_styles(d, src, imp, rename);
     let mut story = imp.story.clone();
-    adopt_story(d, src, &mut story, 0);
+    let mut copies = Copies::default();
+    adopt_story(d, src, &mut story, 0, &mut copies);
+    copies.thread(d, src);
     Cow::Owned(story)
+}
+
+/// The stories of the file copied into the document so far: source id → the copy's id and the
+/// anchored frames showing it (source id, new id). A story several anchored frames share is
+/// copied once, so the copies can't outnumber the file's stories however the frames nest.
+#[derive(Default)]
+struct Copies {
+    stories: HashMap<StoryId, (StoryId, Vec<(ItemId, ItemId)>)>,
+}
+
+impl Copies {
+    /// Each copied story is threaded through the copies of its frames, in the file's thread
+    /// order; frames the file's story doesn't list (or a story the file lacks) follow in the
+    /// order they were met in, so every frame still shows its story.
+    fn thread(self, d: &mut Document, src: &Document) {
+        for (from, (to, mut frames)) in self.stories {
+            let order: HashMap<ItemId, usize> =
+                src.story(from).map(|s| s.frames.iter().enumerate().map(|(k, f)| (*f, k)).collect()).unwrap_or_default();
+            frames.sort_by_key(|(old, _)| order.get(old).copied().unwrap_or(usize::MAX));
+            if let Some(st) = d.story_mut(to) {
+                st.frames = frames.into_iter().map(|(_, new)| new).collect();
+            }
+        }
+    }
 }
 
 /// Does `want` hold an entry whose name `have` lacks?
@@ -112,6 +138,8 @@ fn add_missing<T: Clone>(to: &mut Vec<T>, from: &[T], name: impl Fn(&T) -> &str)
     }
 }
 
+/// The swatches, numbering lists, conditions, stroke styles, object, table and cell styles,
+/// composite fonts and mojikumi tables of `src` that `d` lacks, by name.
 fn adopt_resources(d: &mut Document, src: &Document) {
     for sw in &src.swatches {
         if d.swatch(&sw.name).is_none() {
@@ -169,7 +197,7 @@ fn link_next_styles(d: &mut Document, src: &Document, imp: &Imported, rename: &H
 
 /// Give `story`'s graphics and anchored objects (in its notes and table cells too) ids of `d`,
 /// bringing the graphics' files and the anchored text frames' stories from `src`.
-fn adopt_story(d: &mut Document, src: &Document, story: &mut Story, depth: usize) {
+fn adopt_story(d: &mut Document, src: &Document, story: &mut Story, depth: usize, copies: &mut Copies) {
     let mut assets: HashMap<AssetId, AssetId> = HashMap::new();
     for a in designcraft_doc::story_asset_refs(story) {
         if assets.contains_key(&a) {
@@ -180,25 +208,25 @@ fn adopt_story(d: &mut Document, src: &Document, story: &mut Story, depth: usize
         assets.insert(a, n);
     }
     designcraft_doc::remap_story_assets(story, &assets);
-    renumber_objects(d, src, story, depth);
+    renumber_objects(d, src, story, depth, copies);
 }
 
 /// Fresh ids for the anchored objects of `story`, its notes and its table cells. `depth` counts
 /// the anchored text frames `story` is in; notes and cells nest as deep as the file's XML, which
 /// the parser bounds.
-fn renumber_objects(d: &mut Document, src: &Document, story: &mut Story, depth: usize) {
+fn renumber_objects(d: &mut Document, src: &Document, story: &mut Story, depth: usize, copies: &mut Copies) {
     for o in &mut story.objects {
-        renumber_item(d, src, &mut Arc::make_mut(o).item, depth);
+        renumber_item(d, src, &mut Arc::make_mut(o).item, depth, copies);
     }
     for n in story.notes.iter_mut().chain(story.endnotes.iter_mut()) {
         if has_objects(&n.text) {
-            renumber_objects(d, src, &mut Arc::make_mut(n).text, depth);
+            renumber_objects(d, src, &mut Arc::make_mut(n).text, depth, copies);
         }
     }
     for t in story.tables.values_mut() {
         if t.cells.iter().any(|c| has_objects(&c.text)) {
             for c in &mut Arc::make_mut(t).cells {
-                renumber_objects(d, src, &mut c.text, depth);
+                renumber_objects(d, src, &mut c.text, depth, copies);
             }
         }
     }
@@ -211,9 +239,11 @@ fn has_objects(story: &Story) -> bool {
         || story.tables.values().any(|t| t.cells.iter().any(|c| has_objects(&c.text)))
 }
 
-/// A fresh id for `it` and what it holds; an anchored text frame gets a copy of its story. One
-/// nested deeper than `Document::check` allows (it refused such a file already) is left empty.
-fn renumber_item(d: &mut Document, src: &Document, it: &mut Item, depth: usize) {
+/// A fresh id for `it` and what it holds; an anchored text frame gets the copy of its story
+/// (made on the first frame that needs it, threaded by [`Copies::thread`]). One nested deeper than
+/// `Document::check` allows (it refused such a file already) is left empty.
+fn renumber_item(d: &mut Document, src: &Document, it: &mut Item, depth: usize, copies: &mut Copies) {
+    let old = it.id;
     it.id = ItemId(d.alloc());
     if d.layer(it.layer).is_none() {
         it.layer = d.default_layer();
@@ -223,19 +253,25 @@ fn renumber_item(d: &mut Document, src: &Document, it: &mut Item, depth: usize) 
     }
     match &mut it.content {
         Content::Text(tf) => {
+            if let Some((copy, frames)) = copies.stories.get_mut(&tf.story) {
+                frames.push((old, it.id));
+                tf.story = *copy;
+                return;
+            }
             let new = StoryId(d.alloc());
+            copies.stories.insert(tf.story, (new, vec![(old, it.id)]));
             let mut inner = src.story(tf.story).cloned().unwrap_or_else(|| Story::new(new));
             inner.id = new;
-            inner.frames = vec![it.id];
+            inner.frames.clear();
             inner.file_link = None;
             inner.link = None;
-            adopt_story(d, src, &mut inner, depth + 1);
+            adopt_story(d, src, &mut inner, depth + 1, copies);
             d.stories.insert(new, Arc::new(inner));
             tf.story = new;
         }
         Content::Group { items } => {
             for c in items.iter_mut() {
-                renumber_item(d, src, Arc::make_mut(c), depth);
+                renumber_item(d, src, Arc::make_mut(c), depth, copies);
             }
         }
         Content::Graphic(_) | Content::Unassigned => {}
@@ -261,7 +297,7 @@ pub(crate) fn anchored_stories(d: &Document, sid: StoryId) -> Vec<StoryId> {
 }
 
 /// Remove those of `stories` none of whose frames is left: their anchored text frames went with
-/// the text that was replaced.
+/// the text that was replaced. Hyperlinks and placeholders in their text go with them.
 pub(crate) fn drop_detached(d: &mut Document, stories: &[StoryId]) {
     if stories.is_empty() {
         return;
@@ -277,6 +313,7 @@ pub(crate) fn drop_detached(d: &mut Document, stories: &[StoryId]) {
     for sid in stories {
         if d.story(*sid).is_some_and(|s| !s.frames.iter().any(|f| alive.contains(f))) {
             d.stories.remove(sid);
+            d.prune_story_text_ranges(*sid);
         }
     }
 }
@@ -288,6 +325,9 @@ pub(crate) fn inserted(story: &mut Story, pos: usize, src: &Story, whole: bool) 
     let before = story.text.get(..pos).unwrap_or_default();
     let (na, nx) = (before.matches(designcraft_doc::ANCHOR_MARK).count(), before.matches(designcraft_doc::XREF_MARK).count());
     let ids: HashMap<u64, u64> = src.anchors.iter().enumerate().filter_map(|(k, a)| Some((a.id, story.anchors.get(na + k)?.id))).collect();
+    // `Story::xrefs` and `Story::anchors` hold one entry per mark in text order (`check_marks`
+    // holds the counts to that), and `Story::insert_story` wrote `src`'s entries to the slots
+    // after the `nx` / `na` marks before `pos`: the same slots read here.
     let count = src.xrefs.len();
     for x in story.xrefs.iter_mut().skip(nx).take(count) {
         if let Some(&to) = ids.get(&x.target)

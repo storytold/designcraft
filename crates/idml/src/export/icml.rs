@@ -28,7 +28,7 @@ pub fn export_icml(doc: &Document, story: StoryId) -> Result<Vec<u8>> {
     }
     let opts = ExportOptions::default();
     let mut ex = Ex::new(doc, &opts);
-    Ok(ex.icml(story))
+    ex.icml(story)
 }
 
 /// `story` and the stories of the text frames anchored in it, at any depth, in that order.
@@ -62,20 +62,23 @@ fn with_anchored(d: &Document, story: StoryId) -> Vec<StoryId> {
     out
 }
 
-/// The children of a part's root element.
-fn part_children(bytes: &[u8]) -> Vec<El> {
-    parse(bytes).map(|root| root.elements().cloned().collect()).unwrap_or_default()
+/// The children of the root element of `part` (its name, for the error), as the IDML export
+/// wrote it. A part that doesn't read back is an error: the file would be missing its contents.
+fn part_children(part: &str, bytes: &[u8]) -> Result<Vec<El>> {
+    let root = parse(bytes).map_err(|msg| IdmlError::Part { part: part.into(), msg })?;
+    Ok(root.elements().cloned().collect())
 }
 
 impl Ex<'_> {
-    fn icml(&mut self, story: StoryId) -> Vec<u8> {
+    /// The ICML file of `story` (see the module comment for what it holds and in what order).
+    fn icml(&mut self, story: StoryId) -> Result<Vec<u8>> {
         let d = self.d;
         // Stories first: they register the fonts and the cross-references the rest lists.
         let stories: Vec<El> = with_anchored(d, story).into_iter().filter_map(|sid| d.stories.get(&sid)).map(|s| self.story_el(s)).collect();
-        let styles = part_children(&self.styles_part());
-        let graphic = part_children(&self.graphic_part());
-        let fonts = part_children(&self.fonts_part());
-        let map = part_children(&self.designmap(&[], &[], &[]));
+        let styles = part_children("Resources/Styles.xml", &self.styles_part())?;
+        let graphic = part_children("Resources/Graphic.xml", &self.graphic_part())?;
+        let fonts = part_children("Resources/Fonts.xml", &self.fonts_part())?;
+        let map = part_children("designmap.xml", &self.designmap(&[], &[], &[]))?;
         let mut root = El::new("Document").attr("DOMVersion", DOM_VERSION).attr("Self", "d");
         let mut stories = Some(stories);
         for el in map {
@@ -99,6 +102,6 @@ impl Ex<'_> {
             }
         }
         stories.into_iter().flatten().for_each(|s| root.push(s));
-        document_with_pi(&root, &icml_pi())
+        Ok(document_with_pi(&root, &icml_pi()))
     }
 }

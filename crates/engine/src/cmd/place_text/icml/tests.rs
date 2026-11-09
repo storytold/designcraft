@@ -66,6 +66,7 @@ fn place(s: &mut Session, icml: &str, extra: Value) -> crate::Result<Value> {
     s.execute("file.place", &p)
 }
 
+/// The session's active document.
 fn doc(s: &Session) -> &Document {
     &s.doc().unwrap().doc
 }
@@ -147,9 +148,13 @@ fn at_an_insertion_point_cross_references_keep_their_own_anchors() {
     s.execute("file.new", &json!({})).unwrap();
     let r = s.execute("frame.create", &json!({"rect": [36, 36, 500, 700], "content": "text", "text": "Before after"})).unwrap();
     let host = StoryId(r["story"].as_u64().unwrap());
-    // An anchor of the host story before the insertion point.
+    // An anchor of the host story, and a cross-reference to it, before the insertion point: the
+    // placed cross-reference is the host's second, so remapping must skip the first.
     s.edit(|d, _| {
-        d.story_mut(host).unwrap().insert_anchor(0, "Host");
+        let story = d.story_mut(host).unwrap();
+        let target = story.insert_anchor(0, "Host");
+        let at = story.text.find(' ').unwrap();
+        story.insert_xref(at, designcraft_doc::CrossRef { target, format: "Paragraph Text".into(), ..Default::default() });
         Ok(())
     })
     .unwrap();
@@ -157,11 +162,16 @@ fn at_an_insertion_point_cross_references_keep_their_own_anchors() {
     s.execute("text.select", &json!({"story": host.0, "anchor": at, "focus": at})).unwrap();
     place(&mut s, &icml, json!({})).unwrap();
     let story = doc(&s).story(host).unwrap();
-    assert!(story.text.starts_with(&format!("{a}Before {a}Opening", a = designcraft_doc::ANCHOR_MARK)), "{:?}", story.text);
+    assert!(
+        story.text.starts_with(&format!("{a}Before{x} {a}Opening", a = designcraft_doc::ANCHOR_MARK, x = designcraft_doc::XREF_MARK)),
+        "{:?}",
+        story.text
+    );
     assert!(story.text.ends_with("after"), "{:?}", story.text);
     assert_eq!(story.anchors.len(), 2);
-    assert_eq!(story.xrefs.len(), 1);
-    assert_eq!(story.xrefs[0].target, story.anchors[1].id, "the placed anchor, not the host's");
+    assert_eq!(story.xrefs.len(), 2);
+    assert_eq!(story.xrefs[0].target, story.anchors[0].id, "the host's cross-reference keeps the host's anchor");
+    assert_eq!(story.xrefs[1].target, story.anchors[1].id, "the placed anchor, not the host's");
     assert_ne!(story.anchors[0].id, story.anchors[1].id);
     doc(&s).check().unwrap();
 }
@@ -252,11 +262,26 @@ fn updating_a_story_drops_the_anchored_frames_it_replaced() {
     let r = s.execute("file.place", &json!({"path": path.to_string_lossy(), "link": true})).unwrap();
     let sid = StoryId(r["story"].as_u64().unwrap());
     let count = doc(&s).stories.len();
+    // A hyperlink on the text of the anchored frame the update replaces.
+    let old = doc(&s).story(sid).unwrap().objects[0].item.text_frame().unwrap().story;
+    s.edit(|d, _| {
+        let source = designcraft_doc::HyperlinkSource::Text { story: old, start: 0, end: 5 };
+        d.hyperlinks.push(designcraft_doc::Hyperlink {
+            id: 1,
+            name: "Boxed".into(),
+            source,
+            dest: designcraft_doc::HyperlinkDest::Url("https://example.com".into()),
+        });
+        Ok(())
+    })
+    .unwrap();
     std::fs::write(&path, ANCHORED_FRAME.replace("Boxed", "Boxed again")).unwrap();
     assert_eq!(s.execute("links.update", &json!({"story": sid.0})).unwrap()["updated"], 1);
     let d = doc(&s);
     d.check().unwrap();
     assert_eq!(d.stories.len(), count, "the old frame's story went with it");
+    assert!(d.story(old).is_none());
+    assert!(d.hyperlinks.is_empty(), "the hyperlink went with its story: {:?}", d.hyperlinks);
     let tf = d.story(sid).unwrap().objects[0].item.text_frame().unwrap().story;
     assert_eq!(d.story(tf).unwrap().text, "Boxed again");
     let _ = std::fs::remove_dir_all(&dir);
@@ -350,4 +375,44 @@ fn a_style_based_on_nothing_stays_so() {
     let (para, chars) = st.resolve_para_style("Loose");
     assert_eq!(para.left_indent, 6.0);
     assert_eq!(chars.size, 12.0, "not the document's [Basic Paragraph] size");
+}
+
+/// Stories several anchored frames share are copied once each, so a file can't multiply them:
+/// here every story anchors two frames of the next, twelve levels deep (copying per frame would
+/// make 2^12 stories).
+#[test]
+fn shared_anchored_stories_are_copied_once() {
+    const LEVELS: usize = 12;
+    let frame = |story: usize, k: usize| {
+        format!(
+            r#"<TextFrame Self="f{story}_{k}" ParentStory="s{story}" ItemTransform="1 0 0 1 0 0"><Properties><PathGeometry><GeometryPathType PathOpen="false"><PathPointArray><PathPointType Anchor="0 0"/><PathPointType Anchor="0 10"/><PathPointType Anchor="10 10"/><PathPointType Anchor="10 0"/></PathPointArray></GeometryPathType></PathGeometry></Properties></TextFrame>"#
+        )
+    };
+    let story = |i: usize| {
+        let body = if i == LEVELS { "<Content>leaf</Content>".to_string() } else { format!("{}{}", frame(i + 1, 0), frame(i + 1, 1)) };
+        format!(r#"<Story Self="s{i}"><ParagraphStyleRange><CharacterStyleRange>{body}</CharacterStyleRange></ParagraphStyleRange></Story>"#)
+    };
+    let stories: String = (0..=LEVELS).map(story).collect();
+    let icml = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?><?aid SnippetType="InCopyInterchange"?><Document DOMVersion="16.0" Self="d">{stories}</Document>"#
+    );
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    let before = doc(&s).stories.len();
+    let r = place(&mut s, &icml, json!({})).unwrap();
+    let d = doc(&s);
+    d.check().unwrap();
+    assert_eq!(d.stories.len(), before + LEVELS + 1);
+    // Each copied story is threaded through both of the frames that share it.
+    let mut sid = StoryId(r["story"].as_u64().unwrap());
+    for level in 1..=LEVELS {
+        let st = d.story(sid).unwrap();
+        let shared: Vec<StoryId> = st.objects.iter().map(|o| o.item.text_frame().unwrap().story).collect();
+        assert_eq!(shared.len(), 2, "level {level}");
+        assert_eq!(shared[0], shared[1], "level {level}");
+        let next = d.story(shared[0]).unwrap();
+        assert_eq!(next.frames, st.objects.iter().map(|o| o.item.id).collect::<Vec<_>>(), "level {level}");
+        sid = shared[0];
+    }
+    assert_eq!(d.story(sid).unwrap().text, "leaf");
 }

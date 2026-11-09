@@ -44,7 +44,7 @@ A PDF with one page is placed without this dialog.
 
 ## Place an InCopy story
 
-An `.icml` file is a story saved by InDesign or InCopy (**File**, **Export**, **InCopy Document**), or written by a converter such as Pandoc. Place it like any text file. Its paragraph and character styles, swatches, footnotes, tables and inline images come with it. Styles your document already has keep your definitions. Images the story links to are looked for in the file's folder.
+An `.icml` file is a story saved by InDesign or InCopy (**File**, **Export**, **InCopy Document**), or written by a converter such as Pandoc. Place it like any text file. Its paragraph and character styles, swatches, footnotes, tables and inline images come with it. By default, styles your document already has keep their definitions. Images the story links to are looked for in the file's folder.
 
 To write a story as an InCopy story, click in it, choose **File**, then **Export Text…**, and give the file name the `.icml` extension.
 
