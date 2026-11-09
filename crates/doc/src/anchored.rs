@@ -94,7 +94,9 @@ pub struct AnchoredObject {
     pub item: Item,
     #[serde(default)]
     pub position: AnchorPosition,
-    /// Explicit link to an anchored caption in the same story; never inferred from adjacent body text.
+    /// Explicit one-to-one link to an anchored text-frame caption in the same story.
+    /// None means unlinked, is the default, and is omitted from serialization.
+    /// Never infer a caption from adjacent body text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caption_id: Option<crate::ids::ItemId>,
 }
