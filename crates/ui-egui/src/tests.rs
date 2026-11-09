@@ -966,24 +966,32 @@ fn a_file_dropped_without_pointer_events_fills_the_frame_under_the_system_pointe
 }
 
 /// A line encloses no area, so a graphic dropped on it gets a frame of its own at the drop point
-/// and the line stays a line, as with the place cursor (#2290).
+/// and the line stays a line, as with the place cursor (#2290). A second graphic of the same drop
+/// gets a frame of its own too, instead of replacing the first in the frame the first one got.
 #[test]
-fn a_graphic_dropped_on_a_line_leaves_the_line_alone() {
+fn graphics_dropped_on_a_line_leave_the_line_alone() {
     let (mut app, line, on_line, _) = app_with_drop_item("line.create", json!({"a": [36, 80], "b": [136, 80]}));
     let id = designcraft_doc::ItemId(line);
     let before = serde_json::to_value(app.session.doc().unwrap().doc.item(id).unwrap()).unwrap();
     assert!(canvas::drop_frame(&app, Some(on_line)).is_none(), "a line is no frame");
-    let path = dropped_png("drop-on-line");
-    let r = app.open_dropped_at(&path.to_string_lossy(), Some(on_line));
-    let _ = std::fs::remove_file(&path);
-    let placed = designcraft_doc::ItemId(r.unwrap()["id"].as_u64().unwrap());
-    assert_ne!(placed, id, "the graphic has a new frame");
+    let (first, second) = (dropped_png("drop-on-line-first"), dropped_png("drop-on-line-second"));
+    let mut frame_free = true;
+    let a = app.place_dropped(&first.to_string_lossy(), Some(on_line), &mut frame_free);
+    assert!(!frame_free, "the first graphic is under the pointer now");
+    let b = app.place_dropped(&second.to_string_lossy(), Some(on_line), &mut frame_free);
+    let _ = (std::fs::remove_file(&first), std::fs::remove_file(&second));
+    let a = designcraft_doc::ItemId(a.unwrap()["id"].as_u64().unwrap());
+    let b = designcraft_doc::ItemId(b.unwrap()["id"].as_u64().unwrap());
+    assert!(a != id && b != id && a != b, "each graphic has a new frame: {a:?} {b:?}");
     let d = &app.session.doc().unwrap().doc;
-    assert_eq!(d.spreads[0].items.len(), 2);
+    assert_eq!(d.spreads[0].items.len(), 3);
     assert_eq!(serde_json::to_value(d.item(id).unwrap()).unwrap(), before, "the line is unchanged");
-    let it = d.item(placed).unwrap();
-    assert!(matches!(it.content, designcraft_doc::Content::Graphic(_)));
-    assert!(it.path.encloses_area() && it.bounds().height() > 1.0, "a real frame, not a zero-height one: {:?}", it.bounds());
+    for (placed, name) in [(a, "drop-on-line-first"), (b, "drop-on-line-second")] {
+        let it = d.item(placed).unwrap();
+        let designcraft_doc::Content::Graphic(g) = &it.content else { panic!("{name} is in its frame") };
+        assert!(d.assets[&g.asset].name.contains(name), "{name}");
+        assert!(it.path.encloses_area() && it.bounds().height() > 1.0, "a real frame, not a zero-height one: {:?}", it.bounds());
+    }
 }
 
 #[test]
