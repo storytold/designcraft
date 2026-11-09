@@ -35,9 +35,12 @@ The folder contains `hu/pack.toml`, spelling files, hyphenation files and
 and their licence texts. Parsing is lazy and Hungarian text alone uses the hu
 dictionary. The same optional input works on native systems and WASM, which
 cannot read an installed pack with std::fs. Installed native packs can also be
-selected through the shared pack API. The explicit spelling command reports
-Hungarian data unavailable only when no matching native dictionary or selected
-embedded spelling pack can be loaded.
+selected through the shared pack API. For Hungarian, the generic locale loader
+tries the embedded spelling pack only when it finds no matching native pair.
+If the first matching native dictionary is unreadable or invalid, it reports
+that load error without trying the embedded pack, even when that pack is usable.
+Hungarian spelling may therefore be unavailable because data is missing or
+because a selected native dictionary failed to load.
 A native spelling dictionary alone does not provide the nonstandard hyphenation
 patterns used for inserted letters.
 
