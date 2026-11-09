@@ -263,3 +263,16 @@ fn loads_system_cmyk_icc() {
     assert!(de(rgb, back) < 5.0, "{back:?}");
     assert_eq!(c.cmyk_to_srgb([0.0; 4], false).map(|v| (v * 255.0).round() as u8), [255, 255, 255]);
 }
+
+/// `inspect_icc` names a profile without registering it; every platform has profile folders.
+#[test]
+fn inspect_names_without_registering() {
+    let srgb = include_bytes!("../../../../assets/icc/sRGB-v2-magic.icc");
+    let info = super::inspect_icc(srgb).unwrap();
+    assert_eq!(info.kind, super::ProfileKind::Rgb);
+    assert!(info.name.to_lowercase().contains("srgb"), "{}", info.name);
+    assert!(!super::profiles().iter().any(|p| p.name == info.name && !p.builtin), "inspecting does not register");
+    assert!(super::inspect_icc(b"not a profile").is_err());
+    #[cfg(not(target_arch = "wasm32"))]
+    assert!(!super::installed_profile_dirs().is_empty());
+}

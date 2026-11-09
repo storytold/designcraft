@@ -1115,6 +1115,73 @@ fn apply_pdf_preset(d: &mut Dialog, preset: &str) {
     }
 }
 
+/// Output › Destination: the working CMYK, the CMYK profiles the colour settings know, then the
+/// ones installed on this machine. Those are listed from a scan made once per session, only when
+/// the menu first opens; picking one asks the caller to load it (`_loadPath`).
+fn pdf_destination_combo(lang: &str, ui: &mut egui::Ui, d: &mut Dialog) {
+    use designcraft_color::cms::{ProfileKind, active_settings, profiles};
+    let cur = d.s("destination");
+    let working_cmyk = active_settings().cmyk;
+    let working = format!("{} ({working_cmyk})", crate::i18n::tr(lang, "Working CMYK"));
+    let shown = if cur.trim().is_empty() { working.clone() } else { cur.clone() };
+    craft_ui::ComboBox::from_id_salt("pdf_destination").selected_text(crate::rtl::widget(ui, &shown)).width(240.0).show_ui(ui, |ui| {
+        if ui.selectable_label(cur.trim().is_empty(), crate::rtl::widget(ui, &working)).clicked() {
+            d.fields.insert("destination".into(), json!(""));
+        }
+        let known: Vec<String> = profiles().into_iter().map(|p| p.name).collect();
+        // The working CMYK is listed once, above.
+        for p in profiles().into_iter().filter(|p| p.kind == ProfileKind::Cmyk && p.name != working_cmyk) {
+            if ui.selectable_label(cur == p.name, crate::rtl::widget(ui, &p.name)).clicked() {
+                d.fields.insert("destination".into(), json!(p.name));
+            }
+        }
+        let installed = designcraft_engine::cmd::installed_profiles(false);
+        let more: Vec<_> = installed.iter().filter(|p| p.kind == ProfileKind::Cmyk && !known.contains(&p.name)).collect();
+        if !more.is_empty() {
+            ui.separator();
+            crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(lang, "Installed")).size(10.5));
+            for p in more {
+                if ui.selectable_label(false, crate::rtl::widget(ui, &p.name)).clicked() {
+                    d.fields.insert("_loadPath".into(), json!(p.path.to_string_lossy()));
+                }
+            }
+        }
+    });
+}
+
+/// Export PDF › Output › Load Profile…: the chosen file becomes the destination of the dialog if
+/// it is still open.
+fn load_pdf_destination(app: &mut DesignApp, path: String) -> Result<Value, String> {
+    if let Some(name) = load_cmyk_profile(app, path)
+        && let Some(d) = app.ui.dialog.as_mut().filter(|d| d.id == "pdfExport")
+    {
+        // The working CMYK by name is the menu's Working CMYK entry.
+        let name = if name == designcraft_color::cms::active_settings().cmyk { String::new() } else { name };
+        d.fields.insert("destination".into(), json!(name));
+    }
+    Ok(Value::Null)
+}
+
+/// Load the profile at `path` as Color Settings › Load Profile… does (it comes back at the next
+/// start) and return its name when it is a CMYK profile; anything else is reported.
+fn load_cmyk_profile(app: &mut DesignApp, path: String) -> Option<String> {
+    let info = match app.session.execute("color.loadProfile", &json!({"path": path})) {
+        Ok(info) => info,
+        Err(e) => {
+            app.status_error("Export PDF", e);
+            return None;
+        }
+    };
+    app.ui.color_profiles.retain(|p| p != &path);
+    app.ui.color_profiles.push(path);
+    let name = info["name"].as_str().unwrap_or_default().to_string();
+    if info["kind"] != "cmyk" {
+        app.status_error("Export PDF", format!("{name} is not a CMYK profile"));
+        return None;
+    }
+    Some(name)
+}
+
 /// File › Export PDF: the "Export PDF" options (General / Compression / Marks and Bleeds /
 /// Advanced). Selecting a preset fills the dependent fields; editing any other control flips the
 /// preset back to "Custom".
@@ -1213,16 +1280,11 @@ fn pdf_export(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     ui.add_enabled_ui(converting, |ui| {
         ui.horizontal(|ui| {
             crate::rtl::label(ui, crate::i18n::tr(lang, "Destination:"));
-            // The working CMYK once, first; then the other CMYK profiles the colour settings know.
-            let working_cmyk = designcraft_color::cms::active_settings().cmyk;
-            let working = format!("{} ({working_cmyk})", crate::i18n::tr(lang, "Working CMYK"));
-            let profiles: Vec<String> = designcraft_color::cms::profiles()
-                .into_iter()
-                .filter(|p| p.kind == designcraft_color::cms::ProfileKind::Cmyk && p.name != working_cmyk)
-                .map(|p| p.name)
-                .collect();
-            let opts: Vec<(&str, &str)> = std::iter::once(("", working.as_str())).chain(profiles.iter().map(|n| (n.as_str(), n.as_str()))).collect();
-            combo(ui, d, "destination", &opts);
+            pdf_destination_combo(lang, ui, d);
+            // Picked here, loaded by the caller (it can open a file dialog).
+            if ui.button(crate::rtl::widget(ui, crate::i18n::tr(lang, "Load Profile…"))).clicked() {
+                d.fields.insert("_loadProfile".into(), json!(true));
+            }
         });
     });
 
@@ -4277,7 +4339,20 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                     }
                     "fileInfo" => file_info_dialog(app, ui, &mut d),
                     "numberingSection" => crate::section_options::body(app, ui, &mut d),
-                    "pdfExport" => pdf_export(app, ui, &mut d),
+                    "pdfExport" => {
+                        pdf_export(app, ui, &mut d);
+                        // Output › Destination: an installed profile picked, or Load Profile….
+                        if let Some(path) = d.fields.remove("_loadPath").and_then(|v| v.as_str().map(str::to_string))
+                            && let Some(name) = load_cmyk_profile(app, path)
+                        {
+                            d.fields.insert("destination".into(), json!(name));
+                        }
+                        if d.fields.remove("_loadProfile").is_some()
+                            && let Err(e) = app.ask_open("icc", Bound::App, load_pdf_destination)
+                        {
+                            app.status_error("Export PDF", e);
+                        }
+                    }
                     "epubExport" => epub_export(app, ui, &mut d),
                     "alert" => {
                         let file = d.s("file");

@@ -3528,6 +3528,24 @@ fn pdf_export_destination_falls_back_to_the_working_cmyk() {
     }
 }
 
+/// Output › Destination: loading a profile file makes it the destination and remembers it for the
+/// next start; a profile that isn't CMYK is refused.
+#[test]
+fn pdf_destination_loads_cmyk_profiles_only() {
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.session.execute("file.new", &json!({})).unwrap();
+    let srgb = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/icc/sRGB-v2-magic.icc").to_string();
+    assert_eq!(load_cmyk_profile(&mut app, srgb), None, "an RGB profile is not a destination");
+    assert_eq!(load_cmyk_profile(&mut app, "/no/such/profile.icc".into()), None);
+    // A CMYK profile installed with macOS loads and is remembered for the next start.
+    let system = "/System/Library/ColorSync/Profiles/Generic CMYK Profile.icc";
+    if std::path::Path::new(system).exists() {
+        let name = load_cmyk_profile(&mut app, system.into()).unwrap();
+        assert!(designcraft_color::cms::profiles().iter().any(|p| p.name == name));
+        assert!(app.ui.color_profiles.iter().any(|p| p == system));
+    }
+}
+
 #[test]
 fn pdf_export_override_keeps_override() {
     let d = Dialog::new("pdfExport", json!({"bleed": false}));

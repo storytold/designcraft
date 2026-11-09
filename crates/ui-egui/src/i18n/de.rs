@@ -1893,6 +1893,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Convert to Destination", "In Zielprofil konvertieren"),
     ("Convert to Destination (Preserve Numbers)", "In Zielprofil konvertieren (Werte beibehalten)"),
     ("Destination:", "Ziel:"),
+    ("Installed", "Installiert"),
     ("Yellow", "Gelb"),
     ("Recent", "Zuletzt verwendet"),
     ("Saved", "Gespeichert"),
