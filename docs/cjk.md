@@ -101,6 +101,8 @@ working (tsume removes the side bearings before mojikumi runs).
     compression needed),
   - hanging punctuation as zero-width boxes allowed past the measure.
   Knuth–Plass already takes tiered stretch (`TIER_COST`), so this plugs into `kp_pass`.
+  The spacing the mojikumi table allows to be closed up is taken first, at no cost: a line that
+  fits by squeezing within the table is not a tight line.
 - Justification in `layout_line` distributes by the same tiers; the last line follows the
   paragraph's last-line alignment; CJK lines justify by default (JLREQ).
 - Korean: the Japanese composer with word-based breaking (spaces) by default; per-paragraph
