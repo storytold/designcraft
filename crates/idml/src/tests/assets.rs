@@ -404,9 +404,13 @@ fn emf_dib_record(w: u32, h: u32, depth: u16, table: &[u8], bits: &[u8]) -> Vec<
     bmi.resize(40, 0);
     bmi.extend(table);
     let mut rec = [le(81), le((80 + bmi.len() + bits.len()) as u32)].concat();
-    rec.resize(48, 0);
+    // xDest, yDest at 24..32, then the source rectangle at 32..48: the whole bitmap, as InDesign writes it.
+    rec.resize(24, 0);
+    rec.extend([le(0), le(0), le(0), le(0), le(w), le(h)].concat());
     rec.extend([le(80), le(bmi.len() as u32), le(80 + bmi.len() as u32), le(bits.len() as u32)].concat());
-    rec.resize(80, 0);
+    // cxDest, cyDest at 72..80.
+    rec.resize(72, 0);
+    rec.extend([le(w), le(h)].concat());
     rec.extend(&bmi);
     rec.extend(bits);
     rec
@@ -508,6 +512,34 @@ fn an_emf_stored_as_several_bitmap_bands_is_left_alone() {
     assert!(crate::emf_raster_to_bmp(&emf_of(&[band(10), band(20)])).is_none());
     assert!(crate::emf_raster_to_bmp(&emf_of(&[band(10), band(20), band(30)])).is_none());
     assert!(crate::emf_raster_to_bmp(&emf_of(&[band(10)])).is_some());
+}
+
+#[test]
+fn an_emf_that_draws_only_part_of_its_bitmap_is_left_alone() {
+    // The record's source rectangle crops the bitmap: showing the whole of it would show more than
+    // the EMF draws. A full source rectangle converts.
+    let full = emf_dib_record(2, 1, 24, &[], &[1, 2, 3, 4, 5, 6, 0, 0]);
+    assert!(crate::emf_raster_to_bmp(&emf_of(std::slice::from_ref(&full))).is_some());
+    for (at, value) in [(32usize, 1u32), (36, 1), (40, 1), (44, 2)] {
+        let mut cropped = full.clone();
+        cropped[at..at + 4].copy_from_slice(&value.to_le_bytes());
+        assert!(crate::emf_raster_to_bmp(&emf_of(&[cropped])).is_none(), "source rectangle field at {at} set to {value}");
+    }
+}
+
+#[test]
+fn a_mask_drawn_in_another_place_is_not_the_colour_bitmaps_mask() {
+    // A 1-bit bitmap of the same size is the colour bitmap's mask only if it is drawn in the same
+    // place; otherwise the picture is more than one bitmap and is left as it is.
+    let table = [0, 0, 0, 0, 255, 255, 255, 0];
+    let mask = emf_dib_record(2, 1, 1, &table, &[0b1000_0000, 0, 0, 0]);
+    let colour = emf_dib_record(2, 1, 24, &[], &[1, 2, 3, 4, 5, 6, 0, 0]);
+    assert!(crate::emf_raster_to_bmp(&emf_of(&[mask.clone(), colour.clone()])).is_some());
+    for at in [24usize, 28, 72, 76] {
+        let mut elsewhere = mask.clone();
+        elsewhere[at..at + 4].copy_from_slice(&7u32.to_le_bytes());
+        assert!(crate::emf_raster_to_bmp(&emf_of(&[elsewhere, colour.clone()])).is_none(), "mask destination field at {at}");
+    }
 }
 
 #[test]

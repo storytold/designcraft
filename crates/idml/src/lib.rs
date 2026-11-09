@@ -133,6 +133,9 @@ struct Dib<'a> {
     h: i32,
     depth: u16,
     compression: u32,
+    /// Where the record draws it (xDest, yDest, cxDest, cyDest), to tell a mask from a bitmap that
+    /// merely has the same size.
+    dest: [u32; 4],
     /// The BITMAPINFO (header and colour table).
     head: &'a [u8],
     px: &'a [u8],
@@ -211,7 +214,13 @@ fn emf_dibs(b: &[u8]) -> Option<Vec<Dib<'_>>> {
                 let int = |i: usize| i32::from_le_bytes([head[i], head[i + 1], head[i + 2], head[i + 3]]);
                 let (w, h) = (int(4), int(8));
                 if w > 0 && h != 0 && w < 1 << 15 && h.unsigned_abs() < 1 << 15 {
-                    out.push(Dib { w, h, depth: u16::from_le_bytes([head[14], head[15]]), compression: int(16) as u32, head, px });
+                    // A source rectangle that crops the bitmap: the whole bitmap would show more than
+                    // the EMF draws, so the EMF is left as it is. (xSrc, ySrc, cxSrc, cySrc at 32..48.)
+                    if (word(at + 32)?, word(at + 36)?, word(at + 40)?, word(at + 44)?) != (0, 0, w as usize, h.unsigned_abs() as usize) {
+                        return None;
+                    }
+                    let dest = [word(at + 24)? as u32, word(at + 28)? as u32, word(at + 72)? as u32, word(at + 76)? as u32];
+                    out.push(Dib { w, h, depth: u16::from_le_bytes([head[14], head[15]]), compression: int(16) as u32, dest, head, px });
                 }
             }
         }
@@ -231,7 +240,8 @@ fn emf_dibs(b: &[u8]) -> Option<Vec<Dib<'_>>> {
 pub(crate) fn emf_raster_to_bmp(b: &[u8]) -> Option<Vec<u8>> {
     let dibs = emf_dibs(b)?;
     let colour = dibs.iter().reduce(|best, d| if d.depth > best.depth { d } else { best })?;
-    let mask = dibs.iter().find(|d| d.depth == 1 && colour.depth > 1 && (d.w, d.h) == (colour.w, colour.h));
+    // A mask goes with the colour bitmap only if it is the same size and drawn in the same place.
+    let mask = dibs.iter().find(|d| d.depth == 1 && colour.depth > 1 && (d.w, d.h) == (colour.w, colour.h) && d.dest == colour.dest);
     // One bitmap, or a mask and the colour bitmap it goes with. A picture stored as several
     // bands (each stretched into its own rectangle, which is not read) is left as it is.
     if dibs.len() > 2 || (dibs.len() == 2 && mask.is_none()) {
