@@ -1255,10 +1255,10 @@ fn shape_segment(
     }
     for (run, up) in upright_runs(src, vertical && !p.tate_chu_yoko, mode.rotate_roman) {
         for (r, cjk) in kerning_runs(src, run, roman_only) {
-        let around = match replacement {
-            None => (text.get(..range.start + r.start).unwrap_or(""), text.get(range.start + r.end..).unwrap_or("")),
-            Some(_) => ("", ""),
-        };
+            let around = match replacement {
+                None => (text.get(..range.start + r.start).unwrap_or(""), text.get(range.start + r.end..).unwrap_or("")),
+                Some(_) => ("", ""),
+            };
             let f = match (up, cjk) {
                 (true, true) => &unkerned_upright_feats,
                 (true, false) => &upright_feats,
@@ -1266,9 +1266,9 @@ fn shape_segment(
                 (false, false) => &feats,
             };
             let g = shape_cached(face, &src[r.clone()], f, lang, caps, up, around);
-        upright.extend(std::iter::repeat_n(up, g.len()));
-        shaped.extend(g.into_iter().map(|g| ShapedGlyph { cluster: g.cluster + r.start, ..g }));
-    }
+            upright.extend(std::iter::repeat_n(up, g.len()));
+            shaped.extend(g.into_iter().map(|g| ShapedGlyph { cluster: g.cluster + r.start, ..g }));
+        }
     }
     // Upright glyphs fill the ideographic em box across the line.
     let (em_top, em_bottom) = face.em_box();

@@ -7381,7 +7381,12 @@ fn basic_character_formats(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
             d,
             cf,
             "kerning",
-            &[(json!({"kind": "metrics"}), "Metrics"), (json!({"kind": "metricsRomanOnly"}), "Metrics - Roman Only"), (json!({"kind": "optical"}), "Optical"), (json!({"kind": "none"}), "0")],
+            &[
+                (json!({"kind": "metrics"}), "Metrics"),
+                (json!({"kind": "metricsRomanOnly"}), "Metrics - Roman Only"),
+                (json!({"kind": "optical"}), "Optical"),
+                (json!({"kind": "none"}), "0"),
+            ],
         );
         crate::rtl::label(ui, crate::i18n::tr(lang, "Tracking:"));
         char_number(ui, d, cf, "tracking", "", 1.0, (-1000.0, 10000.0));

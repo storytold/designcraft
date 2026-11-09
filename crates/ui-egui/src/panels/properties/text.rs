@@ -607,7 +607,12 @@ pub(crate) fn kerning_control(app: &mut DesignApp, ui: &mut egui::Ui, id: &str, 
     let name = crate::i18n::tr(&app.ui.language, "Kerning");
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::ComboBox, true, name));
     egui::Popup::menu(&resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
-        for (text, v) in [("Metrics", json!({"kind": "metrics"})), ("Metrics - Roman Only", json!({"kind": "metricsRomanOnly"})), ("Optical", json!({"kind": "optical"})), ("0", json!({"kind": "none"}))] {
+        for (text, v) in [
+            ("Metrics", json!({"kind": "metrics"})),
+            ("Metrics - Roman Only", json!({"kind": "metricsRomanOnly"})),
+            ("Optical", json!({"kind": "optical"})),
+            ("0", json!({"kind": "none"})),
+        ] {
             if ui.selectable_label(label == text, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, text))).clicked() {
                 let _ = app.run("type.kernPair", json!({"kerning": v}));
                 ui.close();
