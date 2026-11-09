@@ -1701,12 +1701,14 @@ mod anchored_transform_tests {
     use designcraft_doc::build::NewDocument;
     use designcraft_geom::Unit;
 
+    /// Construct a tool context for anchored graphic interaction tests.
     fn context<'a>(d: &'a Document, s: &'a Selection, c: &'a Cache, l: &'a CanvasLayout, zoom: f64) -> ToolContext<'a> {
         ToolContext { doc: d, selection: s, cache: c, layout: l, zoom, layer: d.default_layer(), snap: SnapView::OFF, unit: Unit::Points, stroke_in_front: false, loaded: None }
     }
 
     /// A real composed graphic inside a story, so tests exercise hit testing
     /// and pointer dispatch instead of only constructing a synthetic drag.
+    /// Build a composed story containing a graphic and return its canvas hit point.
     fn anchored_fixture() -> (Document, ItemId, ItemId, Point) {
         use designcraft_doc::{AnchoredObject, AssetId, Graphic, ParaFormat, Shape, SpreadRef};
         use designcraft_geom::shapes;
@@ -1740,6 +1742,7 @@ mod anchored_transform_tests {
         (d, host, id, bounds.center())
     }
 
+    /// Verify overlapping handle tolerances choose the nearest handle.
     #[test]
     fn nearest_handle_prefers_closest_when_tolerances_overlap() {
         let rect = Rect::new(0.0, 0.0, 6.0, 6.0);
@@ -1748,6 +1751,7 @@ mod anchored_transform_tests {
         assert_eq!(nearest_handle(rect, Point::new(100.0, 100.0), 10.0), None);
     }
 
+    /// Verify content scaling uses local frame axes for vertical text.
     #[test]
     fn vertical_host_content_scale_uses_frame_width_not_canvas_height() {
         let d = Document::new(&NewDocument::default());
@@ -1770,6 +1774,7 @@ mod anchored_transform_tests {
         assert!(params["scale"].as_f64().is_some_and(|s| (s - 1.2).abs() < 1e-9), "{params:?}");
     }
 
+    /// Ensure text insertion cursors take precedence over graphic selection.
     #[test]
     fn anchored_image_click_selects_unless_text_cursor_is_loaded() {
         let (d, host, anchored, p) = anchored_fixture();
@@ -1786,6 +1791,7 @@ mod anchored_transform_tests {
         assert!(matches!(tool.drag, Drag::Place { .. }));
     }
 
+    /// Ensure a double click can enter text editing over anchored graphics.
     #[test]
     fn anchored_image_does_not_intercept_text_frame_double_click() {
         let (d, host, _, p) = anchored_fixture();
@@ -1799,6 +1805,7 @@ mod anchored_transform_tests {
             if name == "type" && cmd == "text.placeCaret" && params["frame"] == host.0), "{action:?}");
     }
 
+    /// Ensure page stacking order governs graphic hit testing.
     #[test]
     fn overlaid_spread_item_wins_over_anchored_graphic_but_background_does_not() {
         use designcraft_doc::{Shape, SpreadRef};
@@ -1826,6 +1833,7 @@ mod anchored_transform_tests {
             if cmd == "selection.set" && params["ids"] == json!([overlay.0]))), "{action:?}");
     }
 
+    /// Map canvas handles to the correct local edge for vertical text.
     #[test]
     fn vertical_text_right_handle_resizes_frame_top_not_right() {
         // Vertical text rotates text coordinates clockwise into canvas space.
@@ -1841,6 +1849,7 @@ mod anchored_transform_tests {
         assert!((to.x1 - frame.x1).abs() < 1e-9);
     }
 
+    /// Map content drag deltas into frame coordinates under rotation and zoom.
     #[test]
     fn content_move_respects_rotated_text_and_zoom() {
         let d = Document::new(&NewDocument::default());
@@ -1861,6 +1870,7 @@ mod anchored_transform_tests {
         }
     }
 
+    /// Verify vertical-host resize changes only the intended frame edge.
     #[test]
     fn vertical_host_resize_drag_emits_frame_top_edge_only() {
         let d = Document::new(&NewDocument::default());
@@ -1884,6 +1894,7 @@ mod anchored_transform_tests {
         }
     }
 
+    /// Ensure arbitrary host rotation preserves side-handle edge semantics.
     #[test]
     fn arbitrary_host_rotation_keeps_side_handles_on_a_single_edge() {
         let inverse = Affine::rotate(-30.0_f64.to_radians());
@@ -1891,6 +1902,7 @@ mod anchored_transform_tests {
         assert_eq!(mapped, 3, "a moderately rotated host must not turn a side drag into a corner crop");
     }
 
+    /// Verify crop handle mapping across quarter-turn rotations.
     #[test]
     fn crop_handles_map_consistently_for_quarter_turns() {
         for turns in 0..4 {

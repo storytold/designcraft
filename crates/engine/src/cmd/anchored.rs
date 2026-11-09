@@ -433,6 +433,7 @@ fn release(s: &mut Session, p: &Value) -> Result<Value> {
 mod tests {
     use super::*;
 
+    /// Exercise sequential frame cropping and content movement through real Session commands.
     #[test]
     fn actual_resize_and_content_transform_preserve_frame_and_caption() {
         use designcraft_doc::{AssetId, Graphic, Shape};
@@ -474,6 +475,7 @@ mod tests {
         assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().objects[0].caption_id, None);
     }
 
+    /// Reject invalid command inputs before attempting document mutations.
     #[test]
     fn anchored_commands_reject_invalid_parameters_without_mutating_document() {
         let mut session = Session::new();
@@ -510,6 +512,7 @@ mod tests {
         }
     }
 
+    /// Ensure repeated crops preserve graphic coordinates in frame space.
     #[test]
     fn consecutive_crops_keep_graphic_coordinates_in_frame_space() {
         use designcraft_geom::Point;
@@ -541,6 +544,7 @@ mod tests {
         assert!((moved.y - (initial.y - 4.0)).abs() < 1e-9);
     }
 
+    /// Ensure caption linking rejects non-graphic sources and never infers body text.
     #[test]
     fn linking_caption_never_guesses_body_text_or_accepts_non_graphics() {
         let mut s = Session::new();
