@@ -119,7 +119,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Option<image::RgbaImage> {
     }
 
     let colour_mode_data = r.block(false)?;
-    let icc = icc_profile(r.block(false)?);
+    let icc = image_resource(r.block(false)?, 1039);
     let layers = r.block(psb)?;
     let transparency = channels > colours && layer_count(layers, psb).is_some_and(|n| n < 0);
     let row_bytes = wu.checked_mul(usize::from(depth))?.div_ceil(8);
@@ -194,11 +194,29 @@ pub(crate) fn decode(bytes: &[u8]) -> Option<image::RgbaImage> {
     }
 }
 
-/// The ICC profile in the image resources section (resource 1039), if any.
-fn icc_profile(resources: &[u8]) -> Option<&[u8]> {
+/// Resolution (horizontal, vertical pixels per inch) from the ResolutionInfo image resource
+/// (1005, 16.16 fixed point); `None` without one, when it isn't positive, or for a damaged file
+/// (the resource is 16 bytes, so a shorter one is damaged too).
+pub(crate) fn resolution(bytes: &[u8]) -> Option<(f64, f64)> {
+    let mut r = Reader { b: bytes };
+    if r.take(4)? != b"8BPS" {
+        return None;
+    }
+    // Version, reserved, channels, height, width, depth, mode; then the colour mode data.
+    r.take(22)?;
+    r.block(false)?;
+    let info = image_resource(r.block(false)?, 1005).filter(|info| info.len() >= 16)?;
+    let fixed = |at: usize| Some(f64::from(u32::from_be_bytes(info.get(at..at + 4)?.try_into().ok()?)) / 65536.0);
+    let (h, v) = (fixed(0)?, fixed(8)?);
+    (h > 0.0 && v > 0.0).then_some((h, v))
+}
+
+/// The data of image resource `id` in the image resources section (1039 is the ICC profile,
+/// 1005 ResolutionInfo), if the file has it.
+fn image_resource(resources: &[u8], id: u16) -> Option<&[u8]> {
     let mut r = Reader { b: resources };
     while r.take(4)? == b"8BIM" {
-        let id = r.u16()?;
+        let found = r.u16()? == id;
         // Pascal name, padded to an even length including its length byte.
         let name_len = usize::from(*r.b.first()?);
         r.take((name_len + 2) & !1)?;
@@ -206,7 +224,7 @@ fn icc_profile(resources: &[u8]) -> Option<&[u8]> {
         if data.len() % 2 == 1 {
             r.take(1)?;
         }
-        if id == 1039 {
+        if found {
             return Some(data);
         }
     }
