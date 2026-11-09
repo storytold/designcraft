@@ -254,8 +254,9 @@ const INF: f64 = 10000.0;
 /// hair too wide.
 const FIT_EPS: f64 = 0.01;
 
-/// The same for a tab: InDesign lets a trailing tab run to a stop up to about 0.07 pt past the edge
-/// (a label frame made to end at its tab stop, its width stored with rounding).
+/// The same for a tab. InDesign kept a tab on the line when its stop lay 0.07 pt past the edge (a
+/// label frame made to end at its tab stop, its width stored with rounding). 0.1 pt is that
+/// measurement rounded up; other glyphs at the edge were not measured and keep `FIT_EPS`.
 const TAB_FIT_EPS: f64 = 0.1;
 
 /// Penalty for an emergency break inside a word wider than the measure: high, so a paragraph
@@ -958,14 +959,14 @@ pub fn greedy(
             let adv = if g.ch == '\t' { tab(line, x, i) } else { g.adv };
             let end_shrink = crate::mojikumi::end_elastic(g, sp.justify, sp.kinsoku_priority != 3)[1];
             let available = shrink + sp.box_elastic(g).1.iter().sum::<f64>() + end_shrink;
+            let eps = if g.ch == '\t' { TAB_FIT_EPS } else { FIT_EPS };
             if sp.kinsoku_priority == 2
-                && x + adv - hang_r > w + FIT_EPS
+                && x + adv - hang_r > w + eps
                 && let Some((end, hyphen)) = last_natural
             {
                 brk = Some((end, hyphen, false));
                 break;
             }
-            let eps = if g.ch == '\t' { TAB_FIT_EPS } else { FIT_EPS };
             if x + adv - hang_r > w + available.max(0.0) + eps
                 && i > start
                 && (last_ok.is_some() || glyphs.get(i - 1).is_none_or(|p| p.break_after != Some(false) && !p.no_break))

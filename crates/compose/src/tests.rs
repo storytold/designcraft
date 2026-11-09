@@ -8650,9 +8650,20 @@ fn cross_reference_text_breaks_at_its_spaces() {
 
 #[test]
 fn a_trailing_tab_stop_a_hair_beyond_the_frame_edge_still_fits() {
-    // InDesign lets a tab run to a stop that lies 0.07 pt beyond the frame (a label frame made to
+    // InDesign kept a tab on the line whose stop lies 0.07 pt beyond the frame (a label frame made to
     // end at its tab stop, its width stored with rounding): the tab doesn't wrap the line.
     let (d, sid, _) = doc_with("AB\t", Rect::new(0.0, 0.0, 36.0 - 0.07, 100.0), ParaAttrs::default());
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert_eq!(all_lines(&cs).len(), 1);
+    assert!(!cs.is_overset());
+}
+
+#[test]
+fn a_tab_a_hair_beyond_the_edge_does_not_wrap_after_an_earlier_break_either() {
+    // With an earlier natural break on the line ("A B\t"), push-out-first kinsoku compared the tab
+    // with the 0.01 pt tolerance and wrapped it; the tab's own allowance applies there too.
+    let para = ParaAttrs { kinsoku_type: Some("KinsokuPushOutFirst".into()), ..Default::default() };
+    let (d, sid, _) = doc_with("A B\t", Rect::new(0.0, 0.0, 36.0 - 0.07, 100.0), para);
     let cs = compose_story(&d, sid, &ComposeOptions::default());
     assert_eq!(all_lines(&cs).len(), 1);
     assert!(!cs.is_overset());
