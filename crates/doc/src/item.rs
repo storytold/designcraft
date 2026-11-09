@@ -122,6 +122,10 @@ pub struct Item {
     /// XML tag (Tags panel); its content is the element's content in XML export/import.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub xml_tag: String,
+    /// A frame meant for a graphic (InDesign's `ContentType="GraphicType"`, the Rectangle Frame
+    /// tool), as opposed to a plain shape: an empty one is a placeholder for an image.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub graphic_frame: bool,
     /// Groups: Isolate Blending (blend modes only within the group) and Knockout Group (the
     /// group's objects don't show through each other).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -173,6 +177,7 @@ impl Item {
             label: String::new(),
             alt_text: String::new(),
             xml_tag: String::new(),
+            graphic_frame: false,
             button: None,
             pdf_hidden_layers: Vec::new(),
             pdf_layer_override: false,
