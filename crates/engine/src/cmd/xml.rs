@@ -298,6 +298,10 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).to_string()
 }
 
+/// How deep elements may nest: deeper XML is refused rather than built (and dropped) recursively.
+const MAX_XML_DEPTH: usize = 64;
+
+/// The elements under the root.
 fn parse(xml: &str) -> std::result::Result<Vec<Element>, String> {
     use quick_xml::events::Event;
     let mut r = quick_xml::Reader::from_str(xml);
@@ -308,6 +312,9 @@ fn parse(xml: &str) -> std::result::Result<Vec<Element>, String> {
         match r.read_event().map_err(|e| e.to_string())? {
             Event::Start(e) => {
                 depth += 1;
+                if depth > MAX_XML_DEPTH {
+                    return Err(format!("elements nested deeper than {MAX_XML_DEPTH}"));
+                }
                 let name = String::from_utf8_lossy(e.local_name().as_ref()).to_string();
                 match depth {
                     2 => out.push(Element { name, text: String::new(), children: vec![], image: image_attrs(&e)? }),
@@ -617,7 +624,8 @@ fn import_xml(s: &mut Session, p: &Value) -> Result<Value> {
         .collect();
     let reverse: Vec<(String, String)> = d.xml.style_map.iter().map(|(st, t)| (t.clone(), st.clone())).collect();
     let mut fills: Vec<(StoryId, Vec<(Option<String>, String)>)> = Vec::new();
-    let mut images: Vec<(ItemId, String, Image)> = Vec::new();
+    // Images by tag, in order: each takes a frame only once it is placed in it.
+    let mut images: Vec<(String, Image)> = Vec::new();
     // Elements without a free frame of their tag, and those tags (once each, in order).
     let mut unmatched = 0;
     let mut unmatched_tags: Vec<String> = Vec::new();
@@ -629,12 +637,7 @@ fn import_xml(s: &mut Session, p: &Value) -> Result<Value> {
     };
     for mut el in elements {
         if let Some(image) = el.image.take() {
-            let Some(slot) = image_slots.iter_mut().find(|(t, _, used)| *t == el.name && !used) else {
-                miss(&el.name);
-                continue;
-            };
-            slot.2 = true;
-            images.push((slot.1, el.name, image));
+            images.push((el.name, image));
             continue;
         }
         let Some(slot) = slots.iter_mut().find(|(t, _, used)| *t == el.name && !used) else {
@@ -658,8 +661,14 @@ fn import_xml(s: &mut Session, p: &Value) -> Result<Value> {
     }
     // Each image fills its frame proportionally unless `fit` says otherwise; `crop` picks a PDF's
     // box. One that can't be placed is reported and the rest of the import goes on.
+    // A frame whose image failed stays free for the next element of its tag.
     let mut failed: Vec<Value> = Vec::new();
-    for (frame, tag, image) in images {
+    for (tag, image) in images {
+        let Some(slot) = image_slots.iter_mut().find(|(t, _, used)| *t == tag && !used) else {
+            miss(&tag);
+            continue;
+        };
+        let frame = slot.1;
         let path = href_path(&image.href, base.as_deref());
         let mut place = json!({"path": path, "frame": frame.0});
         if let Some(crop) = &image.crop {
@@ -675,7 +684,10 @@ fn import_xml(s: &mut Session, p: &Value) -> Result<Value> {
             None => Ok(Value::Null),
         });
         match done {
-            Ok(_) => placed += 1,
+            Ok(_) => {
+                slot.2 = true;
+                placed += 1;
+            }
             Err(e) => failed.push(json!({"tag": tag, "href": image.href, "error": e.to_string()})),
         }
     }
@@ -1066,6 +1078,41 @@ mod tests {
         // A 2:1 image in a square frame: filling covers the height, fitting shows the whole width.
         assert!((width(&s, fill) - 400.0).abs() < 0.5, "{}", width(&s, fill));
         assert!((width(&s, fit) - 200.0).abs() < 0.5, "{}", width(&s, fit));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Hostile nesting is refused, not walked: deeper than the limit is an error.
+    #[test]
+    fn deep_nesting_is_refused() {
+        let deep = format!("<Root><a>{}x{}</a></Root>", "<b>".repeat(super::MAX_XML_DEPTH), "</b>".repeat(super::MAX_XML_DEPTH));
+        assert!(super::parse(&deep).err().is_some_and(|e| e.contains("nested deeper")));
+        let ok = format!("<Root><a>{}x{}</a></Root>", "<b>".repeat(10), "</b>".repeat(10));
+        assert!(super::parse(&ok).is_ok());
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        assert!(s.execute("file.importXml", &json!({"text": deep})).is_err());
+    }
+
+    /// A frame takes an image only once it is placed: after a failed href, the next element of
+    /// the tag goes into the frame that stayed empty.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_failed_image_leaves_its_frame_to_the_next_element() {
+        use designcraft_doc::{Content, ItemId};
+        let dir = std::env::temp_dir().join(format!("dc-xml-retry-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = designcraft_render::Rendered { width: 20, height: 20, pixels: vec![200u8; 20 * 20 * 4] }.to_png();
+        std::fs::write(dir.join("ok.png"), &png).unwrap();
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let first = ItemId(s.execute("frame.create", &json!({"rect": [72, 72, 272, 272], "content": "graphic"})).unwrap()["id"].as_u64().unwrap());
+        s.execute("xml.tag", &json!({"tag": "photo", "ids": [first.0]})).unwrap();
+        let xml = "<Root><photo href=\"missing.png\"/><photo href=\"ok.png\"/></Root>";
+        let r = s.execute("file.importXml", &json!({"text": xml, "imageDir": dir.to_string_lossy()})).unwrap();
+        assert_eq!((r["placed"].as_u64(), r["unmatched"].as_u64()), (Some(1), Some(0)), "{r}");
+        assert_eq!(r["failed"][0]["href"], "missing.png", "{r}");
+        assert!(matches!(s.doc().unwrap().doc.item(first).unwrap().content, Content::Graphic(_)), "the second image fills the frame");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
