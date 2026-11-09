@@ -304,8 +304,10 @@ fn export_pdf_with_report_inner(doc: &Document, cache: &Cache, opts: &PdfOptions
     }
     if display_doc_title {
         // Apply after standard conversion too: PDF/X-1a writes a new catalog when flattening.
-        bytes = crate::transitions::display_document_title(&bytes)
-            .ok_or_else(|| PdfError::Write("the PDF document title viewer preference couldn't be set".into()))?;
+        match crate::transitions::display_document_title(&bytes) {
+            Some(b) => bytes = b,
+            None => warnings.push("the PDF document title viewer preference couldn't be set".into()),
+        }
     }
     warnings.dedup();
     Ok(ExportReport { bytes, pages: sheets.len(), warnings })
