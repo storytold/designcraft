@@ -279,7 +279,15 @@ impl Story {
             } else if mark == crate::endnotes::NOTE_MARK {
                 self.editorial.drain(k..(k + n).min(self.editorial.len()));
             } else {
+                let removed: std::collections::HashSet<_> = self.objects[k..(k + n).min(self.objects.len())]
+                    .iter().map(|o| o.item.id).collect();
                 self.objects.drain(k..(k + n).min(self.objects.len()));
+                // A deleted caption cannot remain referenced by an image in this story.
+                for obj in &mut self.objects {
+                    if obj.caption_id.is_some_and(|id| removed.contains(&id)) {
+                        std::sync::Arc::make_mut(obj).caption_id = None;
+                    }
+                }
             }
         }
     }
