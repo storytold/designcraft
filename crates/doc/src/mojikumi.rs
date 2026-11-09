@@ -219,11 +219,11 @@ pub fn class(c: char) -> i16 {
         | 'ー' | '々' | 'ゝ' | 'ゞ' | 'ヽ' | 'ヾ' => 3,
         '\u{3040}'..='\u{309f}' => 11,
         '\u{30a0}'..='\u{30ff}' | '\u{31f0}'..='\u{31ff}' => 33,
-        // Symbols that Japanese text sets full width as ideographs do (※ → ○ ★ ① Ⅱ § †): no space against
-        // kana, a quarter em against digits and Roman letters (checked against InDesign).
-        '§' | '¶' | '‖' | '†' | '‡' | '※' | '\u{2150}'..='\u{218f}' | '\u{2190}'..='\u{2211}' | '\u{2213}'..='\u{22ff}' | '\u{2460}'..='\u{24ff}' | '\u{25a0}'..='\u{27bf}' => {
-            12
-        }
+        // Symbols that Japanese text sets full width as ideographs do: no space against kana, a
+        // quarter em against digits and Roman letters. Only these were checked against InDesign
+        // (※ → ○ ★ ① Ⅱ § †); the arrows, operators, numerals, enclosed characters and shapes
+        // around them stay Roman until each is checked.
+        '§' | '†' | '※' | '→' | '○' | '★' | '①' | 'Ⅱ' => 12,
         '０'..='９' => 24,
         '0'..='9' => 25,
         '\u{2e80}'..='\u{a4cf}' | '\u{ac00}'..='\u{d7af}' | '\u{f900}'..='\u{faff}' | '\u{ff01}'..='\u{ff60}' | '\u{20000}'..='\u{323af}' => 12,
@@ -251,9 +251,45 @@ mod tests {
             assert_eq!(rules.pair(class(c), class('こ')).desired, 0.0, "{c}こ");
             assert_eq!(rules.pair(class(c), digit).desired, 0.25, "{c}6");
         }
-        // The minus sign U+2212 is not among them: whether InDesign spaces it as an ideograph is unchecked.
-        assert_ne!(class('\u{2212}'), 12);
+        // Their unchecked neighbours are not classified as ideographs: the minus sign, other
+        // arrows, operators, enclosed characters and shapes.
+        for c in ['\u{2212}', '\u{2211}', '\u{2260}', '\u{2191}', '\u{2461}', '\u{25a1}', '\u{2663}', '¶', '‖', '‡'] {
+            assert_ne!(class(c), 12, "{c:?}");
+        }
+        // Full-width digits meet the signs the same way: both are full width, so no space.
+        let wide = class('９');
+        assert_eq!(wide, 24);
+        assert_eq!(rules.pair(yen, wide).desired, 0.0, "￥９");
+        assert_eq!(rules.pair(wide, percent).desired, 0.0, "９％");
+        assert_eq!(rules.pair(class('＄'), digit).desired, 0.0, "＄96");
+        assert_eq!(rules.pair(digit, class('℃')).desired, 0.0, "96℃");
+        // Reverse order is not an abbreviation: the digit before ￥ and the percent before a digit.
+        assert_eq!(rules.pair(digit, yen).desired, 0.25);
+        assert_eq!(rules.pair(percent, digit).desired, 0.25);
         assert_eq!(rules.pair(digit, kanji).desired, 0.25);
+    }
+
+    #[test]
+    fn a_custom_table_overrides_the_solid_setting_of_abbreviation_signs() {
+        let mut styles = Styles::default();
+        styles.mojikumi_tables.push(MojikumiTable {
+            name: "Yen".into(),
+            based_on: "SimpChineseDefault".into(),
+            overrides: vec![MojikumiAki {
+                target_class: 25,
+                side_class: 8,
+                after: false,
+                minimum: 0.0,
+                desired: 0.125,
+                maximum: 0.25,
+                priority: 2,
+                does_not_float: false,
+            }],
+        });
+        let rule = Rules::resolve(&styles, "MojikumiTable/Yen").unwrap().unwrap();
+        assert_eq!(rule.pair(8, 25).desired, 0.125, "the table's row wins over the built-in rule");
+        // A pair the table does not mention keeps the built-in rule.
+        assert_eq!(rule.pair(25, 9).desired, 0.0);
     }
 
     #[test]

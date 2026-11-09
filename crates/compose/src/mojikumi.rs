@@ -40,20 +40,29 @@ fn em(g: &Glyph) -> f64 {
     g.face.units_per_em() * if g.upright { g.sy } else { g.sx }
 }
 
-/// Adobe-Japan1 CID fonts (Kozuka, Ryumin, ...): InDesign classes characters by CID, not by Unicode.
-fn adobe_japan1(g: &Glyph) -> bool {
+/// Is `postscript_name` that of an Adobe-Japan1 CID font (Kozuka, Ryumin, ...)? InDesign classes
+/// characters of such fonts by CID, not by Unicode. This is a heuristic on the PostScript name's
+/// prefix, case-sensitive, and the list covers the Adobe faces named below only: another
+/// Adobe-Japan1 font whose name starts differently keeps the Unicode (ideograph) class.
+fn adobe_japan1_name(postscript_name: Option<&str>) -> bool {
     const PREFIXES: [&str; 6] = ["Koz", "Ryumin", "GothicBBB", "FutoGo", "FutoMin", "MidashiGo"];
-    g.face.postscript_name().is_some_and(|n| PREFIXES.iter().any(|p| n.starts_with(p)))
+    postscript_name.is_some_and(|n| PREFIXES.iter().any(|p| n.starts_with(p)))
 }
 
-/// Class of a cluster's first glyph. Square unit symbols (㎡ ㎏ ㎝) are ideographs by Unicode, but in an
-/// Adobe-Japan1 font (Kozuka) InDesign sets them like Roman letters: no quarter em against "/" or digits
-/// ("¥12,000/㎡"). Other fonts (Yu Mincho) keep the ideograph spacing.
-fn class_of(g: &Glyph) -> i16 {
-    if matches!(g.rendered_char, '\u{3300}'..='\u{33ff}') && adobe_japan1(g) {
+/// Class of `c` set in a font with `postscript_name`. The whole CJK Compatibility block
+/// U+3300–U+33FF (square unit and abbreviation symbols such as ㎡ ㎏ ㎝) is ideographs by Unicode,
+/// but in an Adobe-Japan1 font (Kozuka) InDesign sets them like Roman letters: no quarter em against
+/// "/" or digits ("¥12,000/㎡"). Other fonts (Yu Mincho) keep the ideograph spacing.
+fn class_for(c: char, postscript_name: Option<&str>) -> i16 {
+    if matches!(c, '\u{3300}'..='\u{33ff}') && adobe_japan1_name(postscript_name) {
         return 18;
     }
-    rules::class(g.rendered_char)
+    rules::class(c)
+}
+
+/// Class of a cluster's first glyph (see [`class_for`]).
+fn class_of(g: &Glyph) -> i16 {
+    class_for(g.rendered_char, g.face.postscript_name())
 }
 
 pub fn apply(glyphs: &mut [Glyph], styles: &Styles, name: &str) {
@@ -235,4 +244,35 @@ pub fn start_elastic(g: &Glyph, justify: bool, shrink: bool) -> [f64; 2] {
         return [0.0; 2];
     }
     [if justify { (a.max - a.desired).max(0.0) * em(g) } else { 0.0 }, if shrink { (a.desired - a.min).max(0.0) * em(g) } else { 0.0 }]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn square_units_are_roman_only_in_adobe_japan1_fonts() {
+        for (c, name, want) in [
+            ('㎡', Some("KozMinPr6N-Regular"), 18),
+            ('㎏', Some("KozGoPr6N-Medium"), 18),
+            ('㎝', Some("Ryumin-Light"), 18),
+            ('㎡', Some("GothicBBB-Medium"), 18),
+            ('㎡', Some("YuMincho-Regular"), 12),
+            ('㎡', Some("kozminpr6n-regular"), 12), // the prefix test is case-sensitive
+            ('㎡', None, 12),
+            ('㎡', Some("Unrelated-Font"), 12),
+            ('漢', Some("KozMinPr6N-Regular"), 12), // only the compatibility block changes
+        ] {
+            assert_eq!(class_for(c, name), want, "{c} in {name:?}");
+        }
+        // Next to digits and "/" the Roman class closes the gap an ideograph would keep.
+        let styles = Styles::default();
+        let rules = Rules::resolve(&styles, "LineEndAllOneHalfEmEnum").unwrap().unwrap();
+        let (slash, digit) = (rules::class('/'), rules::class('2'));
+        let adobe = class_for('㎡', Some("KozMinPr6N-Regular"));
+        let yu = class_for('㎡', Some("YuMincho-Regular"));
+        assert_eq!(rules.pair(slash, adobe).desired, 0.0, "/㎡ in Kozuka");
+        assert_eq!(rules.pair(slash, yu).desired, 0.25, "/㎡ in Yu Mincho");
+        assert_eq!(rules.pair(adobe, digit).desired, 0.0, "㎡2 in Kozuka");
+    }
 }
