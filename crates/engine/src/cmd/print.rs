@@ -40,26 +40,46 @@ fn print(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+impl Session {
+    /// Check the active document's print ranges, layouts and PDF option values without
+    /// composing, exporting, reading files or contacting a printer. Desktop dialogs use this
+    /// before queuing background work, so a correctable option error stays in the dialog.
+    pub fn check_print_options(&self, p: &Value) -> Result<()> {
+        print_jobs(&self.doc()?.doc, p).map(|_| ())
+    }
+}
+
+/// Resolve the jobs and validate their option values using the same path for dialog admission
+/// and actual printing. Preparing PDF bytes and asking the platform spooler happen later.
+#[cfg(not(target_arch = "wasm32"))]
+fn print_jobs(d: &designcraft_doc::Document, p: &Value) -> Result<Vec<(String, Option<Vec<usize>>)>> {
+    super::export::check_pdf_options(p, d.page_count())?;
+    // Layouts: their pages, in one job or a job each (`None`: the pages `p` names).
+    match p.get("layouts") {
+        None | Some(Value::Null) => Ok(vec![(d.title.clone(), None)]),
+        Some(v) => {
+            let names: Vec<String> = serde_json::from_value(v.clone()).map_err(|_| bad("file.print", "`layouts` is a list of layout names"))?;
+            let groups = super::export_batch::layout_pages("file.print", d, &names)?;
+            Ok(if p.get("separateJobs").and_then(Value::as_bool).unwrap_or(false) {
+                groups.into_iter().map(|(name, pages)| (format!("{} - {name}", d.title), Some(pages))).collect()
+            } else {
+                vec![(d.title.clone(), Some(groups.into_iter().flat_map(|(_, p)| p).collect()))]
+            })
+        }
+    }
+}
+
+/// Validate and prepare every PDF before submitting any job, preserving the all-or-nothing
+/// preparation boundary. Dry runs build the same PDFs but never call the spooler callback.
+#[cfg(not(target_arch = "wasm32"))]
 fn print_with(
     s: &mut Session,
     p: &Value,
     mut submit: impl FnMut(&[u8], &craft_print::Job) -> std::result::Result<String, craft_print::Error>,
 ) -> Result<Value> {
     let d = &s.doc()?.doc;
+    let jobs = print_jobs(d, p)?;
     let opts = super::export::options(p, d.page_count())?;
-    // Layouts: their pages, in one job or a job each (`None`: the pages `p` names).
-    let jobs: Vec<(String, Option<Vec<usize>>)> = match p.get("layouts") {
-        None | Some(Value::Null) => vec![(d.title.clone(), None)],
-        Some(v) => {
-            let names: Vec<String> = serde_json::from_value(v.clone()).map_err(|_| bad("file.print", "`layouts` is a list of layout names"))?;
-            let groups = super::export_batch::layout_pages("file.print", d, &names)?;
-            if p.get("separateJobs").and_then(Value::as_bool).unwrap_or(false) {
-                groups.into_iter().map(|(name, pages)| (format!("{} - {name}", d.title), Some(pages))).collect()
-            } else {
-                vec![(d.title.clone(), Some(groups.into_iter().flat_map(|(_, p)| p).collect()))]
-            }
-        }
-    };
     let copies = p.get("copies").and_then(Value::as_u64).unwrap_or(1).clamp(1, 999) as u32;
     let dry = p.get("dryRun").and_then(Value::as_bool).unwrap_or(false);
     let mut out = Value::Null;
@@ -108,6 +128,33 @@ fn print_with(
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn print_option_checks_share_the_submission_validation_without_changing_the_session() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages":2})).unwrap();
+        let doc = s.doc().unwrap().doc.clone();
+        let cache = s.cache.clone();
+        let journal = s.journal.len();
+        s.check_print_options(&json!({"pages":"1", "layouts":[], "flatten":"high", "standard":"x4", "view":"fitPage", "created":0})).unwrap();
+        assert!(std::sync::Arc::ptr_eq(&doc, &s.doc().unwrap().doc));
+        assert!(std::sync::Arc::ptr_eq(&cache, &s.cache));
+        assert_eq!(s.journal.len(), journal);
+        for params in [
+            json!({"pages":"9"}),
+            json!({"layouts":["Missing layout"]}),
+            json!({"layouts":"Layout 1"}),
+            json!({"standard":"unknown"}),
+            json!({"flatten":"unknown"}),
+            json!({"created":"today"}),
+            json!({"view":"unknown"}),
+            json!({"pageLayout":"unknown"}),
+        ] {
+            let checked = s.check_print_options(&params).unwrap_err().to_string();
+            let submitted = print_with(&mut s, &params, |_, _| panic!("invalid options must not submit a job")).unwrap_err().to_string();
+            assert_eq!(checked, submitted, "{params}");
+        }
+    }
 
     #[test]
     fn print_builds_the_spool_command() {

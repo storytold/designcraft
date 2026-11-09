@@ -21,6 +21,8 @@ pub(crate) struct Pending {
 }
 
 impl Pending {
+    /// Run one immutable print snapshot with the caller's filesystem authority, waking the
+    /// window when a terminal result arrives. The UI retains a receiver, never a join wait.
     fn spawn(state: DocState, cache: Arc<Cache>, params: Value, wake: Option<egui::Context>, work: PrintFn) -> Result<Self, String> {
         let title = state.doc.title.clone();
         let (tx, result) = std::sync::mpsc::channel();
@@ -45,6 +47,8 @@ impl Pending {
     }
 }
 
+/// Give the worker its own session while retaining the selected document, fonts and composition
+/// cache. The existing engine command prepares and submits the job without touching live UI state.
 fn print(state: DocState, cache: Arc<Cache>, params: Value) -> PrintResult {
     let mut session = Session::new();
     session.cache = cache;
@@ -53,10 +57,13 @@ fn print(state: DocState, cache: Arc<Cache>, params: Value) -> PrintResult {
 }
 
 impl DesignApp {
+    /// Reject cheap option errors before dismissing the dialog, then queue PDF preparation and
+    /// native submission from the current document snapshot. Only one job is admitted at a time.
     pub(crate) fn start_print(&mut self, params: Value) -> PrintResult {
         if self.pending_print.is_some() {
             return Err(crate::i18n::tr(&self.ui.language, "Another print job is still running.").into());
         }
+        self.session.check_print_options(&params).map_err(|e| e.to_string())?;
         let state = self.session.doc().map_err(|e| e.to_string())?.clone();
         let cache = self.session.cache.clone();
         let work: PrintFn = Box::new(print);
@@ -92,6 +99,8 @@ impl DesignApp {
         }
     }
 
+    /// Report the engine's terminal spooler result, not merely that the worker has started.
+    /// Acceptance by the system spooler does not claim that paper has left a physical printer.
     pub(crate) fn print_completed(&mut self, result: &Value) {
         let printer = result["printer"].as_str().unwrap_or_else(|| crate::i18n::tr(&self.ui.language, "the default printer"));
         self.status(
@@ -116,8 +125,9 @@ mod tests {
     }
 
     fn synthetic_params() -> Value {
-        // This cannot reach a physical printer if async dispatch accidentally regresses.
-        json!({"layouts":["Synthetic missing layout"]})
+        // An explicit nonexistent queue cannot fall back to the physical default printer,
+        // even if asynchronous dispatch or the fake worker hook accidentally regresses.
+        json!({"printer":"DesignCraft synthetic regression queue (nonexistent)"})
     }
 
     fn finish(app: &mut DesignApp) {
@@ -200,7 +210,7 @@ mod tests {
         app.in_control = true;
         assert_eq!(app.run("file.print", params).unwrap()["pages"], 1);
         assert!(app.pending_print.is_none());
-        assert!(app.run("file.print", synthetic_params()).is_err());
+        assert!(app.run("file.print", json!({"pages":"2"})).is_err());
         assert!(app.pending_print.is_none());
     }
 
@@ -324,5 +334,48 @@ mod tests {
         assert_eq!(results.recv_timeout(Duration::from_secs(10)).unwrap(), [true, false, true, false, false, false]);
         finish(&mut app);
         assert_eq!(app.ui.status, "Sent 1 page(s) to Synthetic");
+    }
+
+    #[test]
+    fn invalid_print_options_keep_the_dialog_open_without_starting_a_worker() {
+        for fields in [
+            json!({"range":"range","pages":"2"}),
+            json!({"range":"range","pages":"not-a-range"}),
+            json!({"range":"layouts","layouts":["Missing layout"]}),
+            json!({"range":"layouts","layouts":"not a layout list"}),
+        ] {
+            let mut app = app();
+            app.test_print = Some(Box::new(|_, _, _| panic!("invalid dialog options must not start a worker")));
+            let original = crate::dialogs::Dialog::new("print", fields.clone());
+            app.ui.dialog = Some(original);
+            let error = crate::dialogs::confirm(&mut app).unwrap_err();
+            assert!(app.pending_print.is_none());
+            assert!(app.test_print.is_some(), "the worker hook must not even be consumed");
+            let dialog = app.ui.dialog.as_ref().unwrap();
+            assert_eq!(dialog.id, "print");
+            assert_eq!(dialog.s("status"), error);
+            for key in ["range", "pages", "layouts"] {
+                assert_eq!(dialog.fields.get(key), fields.get(key), "{key}: {fields}");
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_pdf_option_values_are_rejected_before_starting_a_worker() {
+        let mut app = app();
+        app.test_print = Some(Box::new(|_, _, _| panic!("invalid PDF options must not start a worker")));
+        for (key, value) in [
+            ("standard", json!("unknown")),
+            ("flatten", json!("unknown")),
+            ("created", json!("today")),
+            ("view", json!("unknown")),
+            ("pageLayout", json!("unknown")),
+        ] {
+            let mut params = synthetic_params();
+            params[key] = value;
+            assert!(app.run("file.print", params).is_err());
+            assert!(app.pending_print.is_none());
+            assert!(app.test_print.is_some());
+        }
     }
 }

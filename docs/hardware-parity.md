@@ -63,6 +63,8 @@ the queue's duplex default; printer-driver options UI and physical output valida
 
 Desktop UI print submission prepares and prints a document snapshot on a worker. The window
 continues processing events while the system spooler works, reports success only after it
-returns, and keeps an ordinary Quit pending until then. Direct engine/CLI/control commands keep
+returns, and keeps an ordinary Quit pending until then. Option validation runs before the worker
+starts so an invalid range or layout keeps the Print dialog open; other command feedback remains
+visible beside the pending-print indicator. Direct engine/CLI/control commands keep
 their synchronous result. Windows printing pins the multi-threaded Direct2D factory fix from
 craft-libs#605; printer discovery and native job cancellation/deadlines remain separate gaps.

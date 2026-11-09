@@ -145,7 +145,8 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
   craft-print: CUPS on macOS/Linux and the Windows PDF raster spooler. Physical printer fidelity
   remains a hardware check.
 - Desktop print submission runs on a document snapshot outside the UI thread, with a pending
-  indicator and terminal success/error reporting. Ordinary Quit waits for the pending job;
+  indicator and terminal success/error reporting. Invalid options keep the Print dialog open;
+  other command feedback stays visible while printing. Ordinary Quit waits for the pending job;
   printer discovery and native cancellation/deadlines remain unfinished (#734).
 - **Estimate:** 25–45 h. **Doc:** [hardware-parity.md](hardware-parity.md)
 

@@ -2,7 +2,8 @@
 
 - **2026-11-09** · Desktop print submission prepares a document snapshot and waits for the
   system spooler off the UI thread (#734). The window remains responsive, reports the terminal
-  success or error, and defers an ordinary Quit until the job returns. Windows printing includes
+  success or error, and defers an ordinary Quit until the job returns. Invalid options keep the
+  Print dialog open, and pending printing does not conceal other command feedback. Windows printing includes
   winprint's multi-threaded Direct2D factory fix (craft-libs#605). Printer discovery and native
   job cancellation remain separate work; no readiness percentage change.
 
