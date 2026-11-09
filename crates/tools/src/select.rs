@@ -1487,6 +1487,11 @@ impl Tool for SelectionTool {
         if let Some(l) = self.loaded.and_then(|l| l.resolve(cx.doc)) {
             return if crate::thread::port_at(cx, p).is_some() { Cursor::LoadedText } else { l.cursor(cx, p) };
         }
+        // A press on a port loads the text cursor (see `thread_pointer`), so it shows that, not
+        // the rotate cursor of the frame's corner zone.
+        if matches!(self.drag, Drag::None) && crate::thread::port_at(cx, p).is_some() {
+            return Cursor::LoadedText;
+        }
         match self.drag {
             Drag::Move { .. } => return Cursor::Move,
             Drag::Resize { handle, .. } => return handle_cursor(handle),
