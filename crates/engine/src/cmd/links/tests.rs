@@ -233,6 +233,48 @@ fn eps_status_tracks_source_bytes_across_save_update_relink_and_embed() {
 }
 
 #[test]
+fn relink_one_placement_splits_only_that_placement_from_a_shared_asset() {
+    let dir = std::env::temp_dir().join(format!("dc-links-placement-relink-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let a = dir.join("a.png");
+    let b = dir.join("b.png");
+    std::fs::write(&a, png(10, 10)).unwrap();
+    std::fs::write(&b, png(20, 10)).unwrap();
+
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    let first = s.execute("file.place", &json!({"path": a.to_string_lossy(), "x": 72, "y": 72, "width": 72})).unwrap();
+    let second = s.execute("file.place", &json!({"path": a.to_string_lossy(), "x": 180, "y": 72, "width": 72})).unwrap();
+    let first_id = ItemId(first["id"].as_u64().unwrap());
+    let second_id = ItemId(second["id"].as_u64().unwrap());
+
+    let shared = s.doc().unwrap().doc.item(first_id).and_then(Item::graphic).unwrap().asset;
+    assert_eq!(s.doc().unwrap().doc.item(second_id).and_then(Item::graphic).unwrap().asset, shared);
+
+    let relinked = s.execute("links.relink", &json!({"item": second_id.0, "path": b.to_string_lossy()})).unwrap();
+    let replacement = AssetId(relinked["asset"].as_u64().unwrap());
+    assert_ne!(replacement, shared);
+    assert_eq!(s.doc().unwrap().doc.item(first_id).and_then(Item::graphic).unwrap().asset, shared, "the first placement keeps A");
+    assert_eq!(s.doc().unwrap().doc.item(second_id).and_then(Item::graphic).unwrap().asset, replacement, "only the second placement changes");
+    assert_eq!(s.doc().unwrap().doc.assets[&shared].link.as_deref(), a.to_str());
+    assert_eq!(s.doc().unwrap().doc.assets[&replacement].link.as_deref(), b.to_str());
+
+    let go = s.execute("links.goTo", &json!({"item": second_id.0})).unwrap();
+    assert_eq!(go["ids"], json!([second_id.0]), "placement Go To selects only that item");
+
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.doc().unwrap().doc.item(first_id).and_then(Item::graphic).unwrap().asset, shared);
+    assert_eq!(s.doc().unwrap().doc.item(second_id).and_then(Item::graphic).unwrap().asset, shared, "undo restores the shared source");
+
+    // Asset-level Relink keeps its existing meaning: every placement of the source changes together.
+    s.execute("links.relink", &json!({"asset": shared.0, "path": b.to_string_lossy()})).unwrap();
+    assert_eq!(s.doc().unwrap().doc.item(first_id).and_then(Item::graphic).unwrap().asset, shared);
+    assert_eq!(s.doc().unwrap().doc.item(second_id).and_then(Item::graphic).unwrap().asset, shared);
+    assert_eq!(s.doc().unwrap().doc.assets[&shared].link.as_deref(), b.to_str());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn eps_legacy_preview_document_is_upgraded_by_update() {
     let dir = std::env::temp_dir().join(format!("dc-eps-legacy-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();

@@ -38,7 +38,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Relink…",
             ["Window", "Links"],
             None,
-            "{asset | story, path} — use another file for every placement of the graphic (keeps the selected PDF page; error if missing), or import another text file into the linked story",
+            "{asset | item | story, path} — with asset, use another file for every placement of the graphic; with item, relink only that placed graphic; with story, import another text file into the linked story (keeps the selected PDF page; error if missing)",
             has_doc,
             relink
         ),
@@ -82,11 +82,14 @@ pub fn specs() -> Vec<CommandSpec> {
                 })
             }
         ),
-        cmd!(noundo "links.goTo", "Go To Link", ["Window", "Links"], None, "{asset | story} — selects the frames showing the graphic or the linked text", has_doc, |s, p| {
+        cmd!(noundo "links.goTo", "Go To Link", ["Window", "Links"], None, "{asset | item | story} — selects all frames showing an asset, one placed graphic, or the linked text", has_doc, |s, p| {
             let st = s.doc_mut()?;
             let ids = match story_param(p) {
                 Some(sid) => st.doc.story(sid).map(|s| s.frames.clone()).unwrap_or_default(),
-                None => uses(&st.doc, asset_param(p, "links.goTo")?),
+                None => match item_param(p) {
+                    Some(id) => st.doc.item(id).and_then(Item::graphic).map(|_| vec![id]).unwrap_or_default(),
+                    None => uses(&st.doc, asset_param(p, "links.goTo")?),
+                },
             };
             if ids.is_empty() {
                 return Err(bad("links.goTo", "the graphic isn't placed"));
@@ -100,6 +103,10 @@ pub fn specs() -> Vec<CommandSpec> {
 
 fn asset_param(p: &Value, cmd: &str) -> Result<AssetId> {
     p.get("asset").and_then(Value::as_u64).map(AssetId).ok_or_else(|| bad(cmd, "missing asset"))
+}
+
+fn item_param(p: &Value) -> Option<ItemId> {
+    p.get("item").and_then(Value::as_u64).map(ItemId)
 }
 
 fn story_param(p: &Value) -> Option<StoryId> {
@@ -488,6 +495,39 @@ fn relink(s: &mut Session, p: &Value) -> Result<Value> {
             Ok(json!({"name": name, "warnings": warnings}))
         });
     }
+    if let Some(iid) = item_param(p) {
+        let aid = s
+            .doc()?
+            .doc
+            .item(iid)
+            .and_then(Item::graphic)
+            .map(|g| g.asset)
+            .ok_or_else(|| bad("links.relink", "no such placed graphic"))?;
+        let a = s.doc()?.doc.assets.get(&aid).ok_or_else(|| bad("links.relink", "no such graphic asset"))?;
+        // Build the replacement before the edit: a file that cannot be read leaves the document as it was.
+        let fresh = relinked_asset(a, Path::new(&path), &path)?;
+        let r = s.edit(|d, _| {
+            // Keep the normal shared-asset model. A placement that is relinked alone changes its
+            // Graphic.asset reference; other placements keep the original asset. add_asset reuses
+            // an existing asset when this target file is already present in the document.
+            let name = fresh.name.clone();
+            let mut replacement = (*fresh).clone();
+            replacement.id = AssetId(d.alloc());
+            let replacement_id = d.add_asset(replacement);
+            let it = d.item_mut(iid).ok_or_else(|| bad("links.relink", "no such placed graphic"))?;
+            let Content::Graphic(g) = &mut it.content else {
+                return Err(bad("links.relink", "item is not a placed graphic"));
+            };
+            if g.asset != aid {
+                return Err(bad("links.relink", "placed graphic changed before relink"));
+            }
+            g.asset = replacement_id;
+            Ok(json!({"name": name, "asset": replacement_id.0, "item": iid.0}))
+        });
+        s.image_link_checks.clear();
+        return r;
+    }
+
     let aid = asset_param(p, "links.relink")?;
     let a = s.doc()?.doc.assets.get(&aid).ok_or_else(|| bad("links.relink", "no such graphic"))?;
     // Build the replacement before the edit: a file that cannot be read leaves the document as it was.

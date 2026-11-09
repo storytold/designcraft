@@ -178,6 +178,28 @@ fn links_panel_distinguishes_same_named_sources_and_keeps_link_actions() {
 }
 
 #[test]
+fn links_panel_exposes_individual_placements_of_one_shared_asset() {
+    use designcraft_doc::{Content, ItemId};
+    use std::sync::Arc;
+
+    let path = "/project/assets/photo.svg";
+    let (mut app, items, assets) = linked_graphics(&[Some(path)]);
+    let second = ItemId(app.run("frame.create", json!({"rect": [180, 72, 252, 144]})).unwrap()["id"].as_u64().unwrap());
+    let graphic = app.session.active().unwrap().doc.item(items[0]).unwrap().graphic().unwrap().clone();
+    Arc::make_mut(&mut app.session.doc_mut().unwrap().doc).item_mut(second).unwrap().content = Content::Graphic(graphic);
+
+    let mut h = links_harness(app, 360.0);
+    let _ = h.get_by_label("↳ photo.svg 1");
+    h.get_by_label("↳ photo.svg 2").click();
+    h.run_steps(3);
+    h.get_by_label("Go To").click();
+    h.run_steps(3);
+    assert_eq!(h.state().session.active().unwrap().selection.items, vec![second]);
+    assert_eq!(h.state().session.active().unwrap().doc.item(items[0]).unwrap().graphic().unwrap().asset, assets[0]);
+    assert_eq!(h.state().session.active().unwrap().doc.item(second).unwrap().graphic().unwrap().asset, assets[0]);
+}
+
+#[test]
 fn links_panel_keeps_long_source_paths_inside_a_narrow_panel() {
     let path = "/project/assets/studio-a/very-long-folder-name/another-long-folder-name/photo.svg";
     let (app, _, _) = linked_graphics(&[Some(path)]);
