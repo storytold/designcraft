@@ -932,6 +932,98 @@ fn empty_and_populated_export_metadata_preserve_key_presence() {
     assert!(s.contains("Synthetic title") && s.contains("Test author"));
 }
 
+#[test]
+fn viewer_title_follows_the_effective_nonblank_metadata_title() {
+    use hayro_syntax::object::{Dict, Stream};
+
+    for (document, file_info, override_title, expected) in [
+        ("Document title", "", None, Some("Document title")),
+        ("File name", "File Info title", None, Some("File Info title")),
+        ("File name", "File Info title", Some("Export title"), Some("Export title")),
+        ("", "", Some("Export title"), Some("Export title")),
+        ("", "", None, None),
+        (" \t\n", "\u{2003}", None, None),
+        ("File name", "File Info title", Some(""), None),
+        ("File name", "File Info title", Some(" \t\u{2003}"), None),
+    ] {
+        for tagged in [false, true] {
+            let mut d = doc_with_text("A tagged paragraph");
+            d.title = document.into();
+            d.file_info.document_title = file_info.into();
+            let opts = PdfOptions { tagged, title: override_title.map(str::to_owned), created: Some(1_700_000_000), ..Default::default() };
+            let bytes = export_pdf(&d, &Cache::new(), &opts).unwrap();
+            let pdf = hayro_syntax::Pdf::new(bytes.clone()).unwrap();
+            let catalog = pdf.xref().get::<Dict<'_>>(pdf.xref().root_id()).unwrap();
+            let display = catalog.get::<Dict<'_>>(b"ViewerPreferences").and_then(|p| p.get::<bool>(b"DisplayDocTitle"));
+            assert_eq!(display == Some(true), expected.is_some(), "{document:?}, {file_info:?}, {override_title:?}, tagged={tagged}");
+            if let Some(title) = expected {
+                assert_eq!(crate::pdfx::info_text(&bytes, &pdf, b"Title").as_deref(), Some(title));
+                let xmp = catalog.get::<Stream<'_>>(b"Metadata").unwrap().decoded().unwrap().into_owned();
+                let xmp = String::from_utf8(xmp).unwrap();
+                assert!(xmp.contains("<dc:title>") && xmp.contains(title));
+            }
+            assert_eq!(catalog.contains_key(b"StructTreeRoot"), tagged);
+            if tagged {
+                assert_eq!(catalog.get::<Dict<'_>>(b"MarkInfo").unwrap().get::<bool>(b"Marked"), Some(true));
+            }
+            assert_eq!(pdf.pages().len(), 2);
+        }
+    }
+}
+
+#[test]
+fn displaying_the_title_preserves_existing_viewer_and_catalog_entries() {
+    use hayro_syntax::object::{Dict, Name};
+
+    let mut d = doc_with_text("Keep the structure tree");
+    d.title.clear();
+    let bytes = export_pdf(&d, &Cache::new(), &PdfOptions { tagged: true, ..Default::default() }).unwrap();
+    let parsed = hayro_syntax::Pdf::new(bytes.clone()).unwrap();
+    let root = parsed.xref().root_id();
+    let catalog = parsed.xref().get::<Dict<'_>>(root).unwrap();
+    let catalog = crate::optional_content::edited(
+        &catalog,
+        &[(b"ViewerPreferences", b"<</HideToolbar true/Direction/R2L/DisplayDocTitle false>>"), (b"PageMode", b"/FullScreen")],
+    )
+    .unwrap();
+    let bytes = crate::optional_content::append(&bytes, &[(root, catalog)], root).unwrap();
+    let bytes = crate::transitions::display_document_title(&bytes).unwrap();
+    let pdf = hayro_syntax::Pdf::new(bytes.clone()).unwrap();
+    let catalog = pdf.xref().get::<Dict<'_>>(pdf.xref().root_id()).unwrap();
+    let preferences = catalog.get::<Dict<'_>>(b"ViewerPreferences").unwrap();
+    assert_eq!(preferences.get::<bool>(b"DisplayDocTitle"), Some(true));
+    assert_eq!(preferences.get::<bool>(b"HideToolbar"), Some(true));
+    assert_eq!(preferences.get::<Name<'_>>(b"Direction").unwrap().as_ref(), b"R2L");
+    assert_eq!(catalog.get::<Name<'_>>(b"PageMode").unwrap().as_ref(), b"FullScreen");
+    assert!(catalog.get::<Dict<'_>>(b"StructTreeRoot").is_some());
+    assert!(catalog.get::<Dict<'_>>(b"Pages").is_some());
+    assert_eq!(pdf.pages().len(), 2);
+    assert_eq!(crate::transitions::display_document_title(&bytes).unwrap(), bytes, "already enabled: no update needed");
+}
+
+#[test]
+fn titled_standard_exports_keep_metadata_and_output_intents() {
+    use hayro_syntax::object::{Array, Dict, Stream};
+
+    let mut d = Document::new(&NewDocument::default());
+    d.file_info.document_title = "Standard export title".into();
+    for standard in [Standard::PdfX4, Standard::PdfX1a, Standard::PdfA2b] {
+        let opts = PdfOptions { standard, created: Some(1_700_000_000), ..Default::default() };
+        let bytes = export_pdf(&d, &Cache::new(), &opts).unwrap();
+        let pdf = hayro_syntax::Pdf::new(bytes.clone()).unwrap();
+        let catalog = pdf.xref().get::<Dict<'_>>(pdf.xref().root_id()).unwrap();
+        assert_eq!(catalog.get::<Dict<'_>>(b"ViewerPreferences").unwrap().get::<bool>(b"DisplayDocTitle"), Some(true), "{standard:?}");
+        assert_eq!(crate::pdfx::info_text(&bytes, &pdf, b"Title").as_deref(), Some("Standard export title"), "{standard:?}");
+        assert!(catalog.get::<Stream<'_>>(b"Metadata").is_some());
+        assert_eq!(pdf.pages().len(), 1);
+        if standard.is_pdfx() {
+            assert!(catalog.get::<Array<'_>>(b"OutputIntents").is_some());
+            let issues = if standard == Standard::PdfX4 { check_pdfx4(&bytes) } else { check_pdfx1a(&bytes) };
+            assert!(issues.is_empty(), "{standard:?}: {issues:?}");
+        }
+    }
+}
+
 /// File › File Info goes into the PDF's document information and XMP; the export options' title
 /// and author replace File Info's, and PDF/X-4 and Print Booklet keep them.
 #[test]

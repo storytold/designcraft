@@ -199,6 +199,7 @@ fn export_pdf_with_report_inner(doc: &Document, cache: &Cache, opts: &PdfOptions
     let title = opts.title.clone().unwrap_or_else(|| doc.title.clone());
     let created = opts.created.or_else(export_time);
     let metadata = Metadata { created: created.map(date_time), ..file_info_metadata(doc, opts.title.as_deref(), opts.author.as_deref()) };
+    let display_doc_title = metadata.title.as_deref().is_some_and(|title| !title.trim().is_empty());
     let mut writer = Writer::new(settings, metadata);
     let pdf = writer.document_mut();
 
@@ -300,6 +301,11 @@ fn export_pdf_with_report_inner(doc: &Document, cache: &Cache, opts: &PdfOptions
     }
     if opts.standard == Standard::PdfX1a {
         bytes = crate::pdfx1a::flatten_x1a(&bytes, opts.flatten_dpi, &page_graphics(doc, &sheets), &mut warnings)?;
+    }
+    if display_doc_title {
+        // Apply after standard conversion too: PDF/X-1a writes a new catalog when flattening.
+        bytes = crate::transitions::display_document_title(&bytes)
+            .ok_or_else(|| PdfError::Write("the PDF document title viewer preference couldn't be set".into()))?;
     }
     warnings.dedup();
     Ok(ExportReport { bytes, pages: sheets.len(), warnings })

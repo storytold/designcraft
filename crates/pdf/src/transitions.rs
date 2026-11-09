@@ -207,6 +207,30 @@ pub fn add_catalog_entries(pdf: &[u8], entries: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// Ask viewers to show the metadata title, preserving every other viewer preference.
+pub(crate) fn display_document_title(bytes: &[u8]) -> Option<Vec<u8>> {
+    use hayro_syntax::object::{Dict, Object};
+
+    let pdf = hayro_syntax::Pdf::new(bytes.to_vec()).ok()?;
+    let root = pdf.xref().root_id();
+    let catalog = pdf.xref().get::<Dict<'_>>(root)?;
+    let preferences = match catalog.get::<Object<'_>>(b"ViewerPreferences") {
+        None if !catalog.contains_key(b"ViewerPreferences") => return add_catalog_entries(bytes, "/ViewerPreferences<</DisplayDocTitle true>>"),
+        Some(Object::Null(_)) => b"<</DisplayDocTitle true>>".to_vec(),
+        Some(Object::Dict(preferences)) => {
+            if preferences.get::<bool>(b"DisplayDocTitle") == Some(true) {
+                return Some(bytes.to_vec());
+            }
+            crate::optional_content::edited(&preferences, &[(b"DisplayDocTitle", b"true")]).ok()?
+        }
+        _ => return None,
+    };
+    // Reuse the existing parsed-dictionary update for direct or referenced preferences;
+    // appending another ViewerPreferences key would discard the other settings in some readers.
+    let catalog = crate::optional_content::edited(&catalog, &[(b"ViewerPreferences", &preferences)]).ok()?;
+    crate::optional_content::append(bytes, &[(root, catalog)], root).ok()
+}
+
 #[cfg(test)]
 mod bracket_tests {
     use super::{add_page_entries, bracketed};
