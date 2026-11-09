@@ -671,7 +671,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Step and Repeat…",
             ["Edit"],
             Some("Cmd+Alt+U"),
-            "{count?: 1..1000, dx?, dy?, rows?, columns?, ids?} — copies of the selection (or ids) offset by (dx, dy); a selected ruler guide is copied along its own axis (the offset across it is ignored, copies stay within 1000000 pt of the spread origin) → {created, guides: [{page, index}]}; with rows/columns, a grid of at most 1000 cells, and at most 1000 item copies including group contents → {created, ids: the copies}",
+            "{count?: 1..1000, dx?, dy?, rows?, columns?, ids?} — copies of the selection (or ids) offset by (dx, dy); a selected ruler guide is copied by `dx` when vertical and by `dy` when horizontal (the other offset is ignored, copies stay within 1000000 pt of the spread origin) → {created, guides: [{page, index}]}; with rows/columns, a grid of at most 1000 cells, and at most 1000 item copies including group contents → {created, ids: the copies}",
             has_selection_or_guides,
             step_and_repeat
         ),
@@ -3671,8 +3671,9 @@ fn checked_step_offset(dx: f64, dy: f64, x: u64, y: u64) -> Result<Vec2> {
     Ok(Vec2::new(x, y))
 }
 
-/// Copies the selected ruler guides by `offsets`, moving each along its own axis and ignoring the
-/// offset across it. `None` when nothing is selected but objects, so the object path reports it.
+/// Copies the selected ruler guides by `offsets`, moving a vertical guide by the offsets' x and a
+/// horizontal one by their y, ignoring the other. `None` when nothing is selected but objects, so
+/// the object path reports it.
 fn step_and_repeat_guides(s: &mut Session, offsets: &[Vec2]) -> Result<Option<Value>> {
     let picked = s.doc()?.selection.guides.clone();
     if picked.is_empty() {
@@ -3800,8 +3801,8 @@ fn checked_step_repeat_targets(d: &Document, ids: &[ItemId], copies: usize, max_
 fn step_and_repeat(s: &mut Session, p: &Value) -> Result<Value> {
     let ids = targets(s, p)?;
     let offsets = step_repeat_offsets(p)?;
-    // No object was named and none is selected: a ruler guide may be, and it repeats along the
-    // axis it runs on — a horizontal guide only takes `dy`, a vertical one only `dx`.
+    // No object was named and none is selected: a ruler guide may be, and it repeats across
+    // its own line — a horizontal guide only takes `dy`, a vertical one only `dx`.
     if ids.is_empty()
         && p.get("id").is_none()
         && p.get("ids").is_none()
