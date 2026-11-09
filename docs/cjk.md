@@ -105,8 +105,6 @@ working (tsume removes the side bearings before mojikumi runs).
   paragraph's last-line alignment; CJK lines justify by default (JLREQ).
 - Korean: the Japanese composer with word-based breaking (spaces) by default; per-paragraph
   option for character-based breaking.
-- In a justified paragraph the line before a forced line break is justified too (the fill glue
-  there has no stretch); only a paragraph or column end leaves a line short.
 
 ### Vertical text, properly
 

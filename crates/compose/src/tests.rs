@@ -6677,15 +6677,7 @@ fn a_word_longer_than_the_line_breaks_at_the_column_edge() {
                 for l in &lines {
                     let ink: Vec<_> = l.glyphs.iter().filter(|g| g.visible && g.adv > 0.0).collect();
                     let right = ink.iter().map(|g| g.x + g.adv.min(natural[&g.byte])).fold(l.x0, f64::max);
-                    // As in InDesign, the tracking after the last glyph of a line hangs: it doesn't have to fit.
-                    let trailing = tracking / 1000.0 * 12.0;
-                    assert!(
-                        l.end_x - trailing <= l.x1 + 0.02 && right - trailing <= l.x1 + 0.02,
-                        "{what}: line {:?} ends at {} past {}",
-                        l.range,
-                        l.end_x,
-                        l.x1
-                    );
+                    assert!(l.end_x <= l.x1 + 0.02 && right <= l.x1 + 0.02, "{what}: line {:?} ends at {} past {}", l.range, l.end_x, l.x1);
                     for w in ink.windows(2) {
                         assert!(w[1].x >= w[0].x + natural[&w[0].byte] - 1e-6, "{what}: glyphs overlap at {}", w[1].byte);
                     }
@@ -8657,15 +8649,26 @@ fn cross_reference_text_breaks_at_its_spaces() {
 }
 
 #[test]
-fn tracking_after_the_last_glyph_of_a_line_does_not_have_to_fit() {
-    // InDesign sets a line of tracked text in a measure that holds every glyph but the tracking after the last.
-    let (mut d, sid, fid) = doc_with("nnnn", Rect::new(0.0, 0.0, 300.0, 100.0), ParaAttrs { hyphenate: Some(false), ..Default::default() });
-    d.story_mut(sid).unwrap().format_chars(0..4, |f| f.over.tracking = Some(500.0));
-    let wide = compose_story(&d, sid, &ComposeOptions::default());
-    let end_x = wide.frames[0].lines[0].end_x;
-    let tracking = 500.0 / 1000.0 * 12.0;
-    d.item_mut(fid).unwrap().path = designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, end_x - tracking + 0.5, 100.0));
-    let cs = compose_story(&d, sid, &ComposeOptions::default());
-    assert_eq!(all_lines(&cs).len(), 1, "the line fits without its trailing tracking");
-    assert!(!cs.is_overset());
+fn a_line_that_fits_only_by_hanging_its_last_glyph_keeps_it_before_a_forced_line_break() {
+    // The fill glue before a forced line break carries the hang of the break after it: the comma
+    // hangs past the measure, and the line is not given up (comma wrapped, or the line overset).
+    let k = designcraft_doc::cjk::Kinsoku { name: "Test".into(), no_start: ",".into(), hanging: ",".into(), ..Default::default() };
+    for align in [Align::Left, Align::LeftJustified] {
+        let para = ParaAttrs {
+            align: Some(align),
+            hyphenate: Some(false),
+            kinsoku: Some(Some(k.clone())),
+            kinsoku_hang: Some(designcraft_doc::cjk::KinsokuHang::Regular),
+            ..Default::default()
+        };
+        let (mut d, sid, fid) = doc_with("AB,\u{2028}AB", Rect::new(0.0, 0.0, 300.0, 100.0), para);
+        let initial = compose_story(&d, sid, &ComposeOptions::default());
+        let text_w = initial.frames[0].lines[0].glyphs.iter().take(2).map(|g| g.adv).sum::<f64>();
+        d.item_mut(fid).unwrap().path = designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, text_w + 1.0, 100.0));
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let lines = all_lines(&cs);
+        assert_eq!(lines.len(), 2, "{align:?}");
+        assert_eq!(lines[0].glyphs.iter().filter(|g| g.visible).count(), 3, "{align:?}: the comma stays on the first line");
+        assert!(!cs.is_overset(), "{align:?}");
+    }
 }

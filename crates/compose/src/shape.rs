@@ -58,9 +58,6 @@ pub struct Glyph {
     /// Resolved CJK boundary constraint, independent of glyph outlines.
     pub break_after: Option<bool>,
     pub cjk_hang: f64,
-    /// The tracking after this glyph, which hangs past the measure when the glyph ends a line (as in
-    /// InDesign, where a line that fits but for its last glyph's tracking is not overset).
-    pub track_hang: f64,
     pub moji: crate::mojikumi::Metrics,
     pub ideographic_space_elastic: bool,
     pub character_alignment: designcraft_doc::cjk::CharacterAlignment,
@@ -1136,7 +1133,6 @@ fn control_glyph(face: &Arc<FontFace>, p: &CharProps, auto_leading: TypeEnv, sty
         space: face.advance(face.glyph_for(' ')) * k * p.h_scale,
         break_after: None,
         cjk_hang: 0.0,
-        track_hang: 0.0,
         moji: crate::mojikumi::Metrics { explicit_before: p.leading_aki.is_some(), explicit_after: p.trailing_aki.is_some(), ..Default::default() },
         ideographic_space_elastic: false,
         character_alignment: p.character_alignment,
@@ -1302,7 +1298,6 @@ fn shape_segment(
             space,
             break_after: None,
             cjk_hang: 0.0,
-            track_hang: if last_in_cluster { tracking.max(0.0) } else { 0.0 },
             moji: crate::mojikumi::Metrics {
                 body,
                 explicit_before: p.leading_aki.is_some(),
