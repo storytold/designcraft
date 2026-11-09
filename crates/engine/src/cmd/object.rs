@@ -1079,10 +1079,19 @@ fn line_create(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// Deep-copy items `ids` from `src` into `dst` spread `to` (fresh ids; text frames get story copies).
 pub fn duplicate_from(dst: &mut Document, src: &Document, ids: &[ItemId], to: SpreadRef, off: Vec2) -> Result<Vec<ItemId>> {
+    duplicate_from_placements(dst, src, ids.iter().copied().map(|id| (id, to, off)))
+}
+
+/// Copy items to individual destinations while sharing story remapping across all copied frames.
+pub(crate) fn duplicate_from_placements(
+    dst: &mut Document,
+    src: &Document,
+    placements: impl IntoIterator<Item = (ItemId, SpreadRef, Vec2)>,
+) -> Result<Vec<ItemId>> {
     let mut out = Vec::new();
     let mut story_map: HashMap<StoryId, StoryId> = HashMap::new();
-    for id in ids {
-        let Some(it) = src.item(*id) else { continue };
+    for (id, to, off) in placements {
+        let Some(it) = src.item(id) else { continue };
         let mut copy = it.clone();
         copy.xf = Affine::translate(off) * copy.xf;
         renumber(dst, src, &mut copy, &mut story_map);

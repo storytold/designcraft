@@ -33,7 +33,9 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
   (#189); character formatting set at a caret is discarded (#289).
 - **Progress:** Move Pages (#348) validates one-based absolute positions in its dialog; the
   zero-based API is unchanged. Documents containing non-shuffling multi-page spreads reject
-  moves before mutation; support for those moves, paste and page dragging remain open.
+  moves before mutation; support for those moves, paste and page dragging remain open. Spread duplication
+  can still place copies outside fixed spreads, preserving page-local content and threaded text;
+  inserting copies inside a fixed spread remains unsupported.
 - **Evidence:** 16 issues from 2026-10-05 to 2026-10-10, mostly against the 0.4/0.5 release builds.
 - **Safety:** control-channel clicks and drags reject invalid or over-budget counts before
   queuing input (#732), including combined drag steps, repeated clicks and already pending events.
