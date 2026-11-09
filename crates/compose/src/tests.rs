@@ -6677,7 +6677,15 @@ fn a_word_longer_than_the_line_breaks_at_the_column_edge() {
                 for l in &lines {
                     let ink: Vec<_> = l.glyphs.iter().filter(|g| g.visible && g.adv > 0.0).collect();
                     let right = ink.iter().map(|g| g.x + g.adv.min(natural[&g.byte])).fold(l.x0, f64::max);
-                    assert!(l.end_x <= l.x1 + 0.02 && right <= l.x1 + 0.02, "{what}: line {:?} ends at {} past {}", l.range, l.end_x, l.x1);
+                    // As in InDesign, the tracking after the last glyph of a line hangs: it doesn't have to fit.
+                    let trailing = tracking / 1000.0 * 12.0;
+                    assert!(
+                        l.end_x - trailing <= l.x1 + 0.02 && right - trailing <= l.x1 + 0.02,
+                        "{what}: line {:?} ends at {} past {}",
+                        l.range,
+                        l.end_x,
+                        l.x1
+                    );
                     for w in ink.windows(2) {
                         assert!(w[1].x >= w[0].x + natural[&w[0].byte] - 1e-6, "{what}: glyphs overlap at {}", w[1].byte);
                     }
@@ -8644,6 +8652,39 @@ fn cross_reference_text_breaks_at_its_spaces() {
     for l in &lines {
         for w in l.split(' ').filter(|w| !w.is_empty()) {
             assert!(words.contains(&w), "a line breaks inside a word: {w:?} in {lines:?}");
+        }
+    }
+}
+
+#[test]
+fn tracking_after_the_last_glyph_of_a_line_does_not_have_to_fit() {
+    // InDesign sets a line of tracked text in a measure that holds every glyph but the tracking after the last.
+    let (mut d, sid, fid) = doc_with("nnnn", Rect::new(0.0, 0.0, 300.0, 100.0), ParaAttrs { hyphenate: Some(false), ..Default::default() });
+    d.story_mut(sid).unwrap().format_chars(0..4, |f| f.over.tracking = Some(500.0));
+    let wide = compose_story(&d, sid, &ComposeOptions::default());
+    let end_x = wide.frames[0].lines[0].end_x;
+    let tracking = 500.0 / 1000.0 * 12.0;
+    d.item_mut(fid).unwrap().path = designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, end_x - tracking + 0.5, 100.0));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert_eq!(all_lines(&cs).len(), 1, "the line fits without its trailing tracking");
+    assert!(!cs.is_overset());
+}
+
+#[test]
+fn trailing_tracking_does_not_move_aligned_lines_that_already_fit() {
+    // The hang applies only to a line that would otherwise overflow: a tracked line that fits is
+    // placed as it always was, right-aligned text ending at the edge and centred text in the middle.
+    for tracking in [0.0, 200.0] {
+        for align in [Align::Right, Align::Center] {
+            let para = ParaAttrs { align: Some(align), hyphenate: Some(false), ..Default::default() };
+            let (mut d, sid, _) = doc_with("nn", Rect::new(0.0, 0.0, 300.0, 100.0), para);
+            d.story_mut(sid).unwrap().format_chars(0..2, |f| f.over.tracking = Some(tracking));
+            let line = compose_story(&d, sid, &ComposeOptions::default()).frames[0].lines[0].clone();
+            let (start, end) = (line.glyphs[0].x, line.end_x);
+            match align {
+                Align::Right => assert!((end - line.x1).abs() < 0.02, "right, tracking {tracking}: ends at {end}, edge {}", line.x1),
+                _ => assert!(((start + end) / 2.0 - (line.x0 + line.x1) / 2.0).abs() < 0.02, "centre, tracking {tracking}"),
+            }
         }
     }
 }

@@ -342,7 +342,7 @@ pub(crate) fn hang_right(g: &Glyph, sp: &Spacing) -> f64 {
 }
 
 fn right_hang(g: &Glyph, sp: &Spacing) -> f64 {
-    g.cjk_hang.max(hang_right(g, sp)) - g.moji.end
+    g.cjk_hang.max(g.track_hang).max(hang_right(g, sp)) - g.moji.end
 }
 
 /// The part of a hyphen after `g` (of width `hw`) that hangs past the line's end.
@@ -583,7 +583,8 @@ fn overlong_words(items: &[Item], ig: &[usize], glyphs: &[Glyph], measure: f64) 
             Kind::Penalty if it.p >= INF => {}
             Kind::Glue | Kind::Penalty => {
                 if let Some((a, b)) = seg.take()
-                    && w > measure + FIT_EPS
+                    // The tracking after the word's last glyph hangs, so it does not make the word overlong.
+                    && w - glyphs.get(b).map_or(0.0, |g| g.track_hang) > measure + FIT_EPS
                 {
                     let marks = out.get_or_insert_with(|| vec![false; glyphs.len()]);
                     for i in a..b {
