@@ -215,7 +215,7 @@ pub(crate) fn display_document_title(bytes: &[u8]) -> Option<Vec<u8>> {
     let root = pdf.xref().root_id();
     let catalog = pdf.xref().get::<Dict<'_>>(root)?;
     let preferences = match catalog.get::<Object<'_>>(b"ViewerPreferences") {
-        None if !catalog.contains_key(b"ViewerPreferences") => return add_catalog_entries(bytes, "/ViewerPreferences<</DisplayDocTitle true>>"),
+        None if !catalog.contains_key(b"ViewerPreferences") => b"<</DisplayDocTitle true>>".to_vec(),
         Some(Object::Null(_)) => b"<</DisplayDocTitle true>>".to_vec(),
         Some(Object::Dict(preferences)) => {
             if preferences.get::<bool>(b"DisplayDocTitle") == Some(true) {
