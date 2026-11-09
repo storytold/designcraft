@@ -856,9 +856,15 @@ fn dropping_an_ase_file_loads_its_swatches() {
 /// A document with one empty frame at (36, 36)-(136, 136): the app, the frame's id and a screen point inside it
 /// and one outside it.
 fn app_with_drop_frame() -> (DesignApp, u64, egui::Pos2, egui::Pos2) {
+    app_with_drop_item("frame.create", json!({"rect": [36, 36, 136, 136]}))
+}
+
+/// A document with the one object `command` creates from `params`: the app, the object's id, the
+/// screen point of page point (80, 80) and that of (300, 300), off the object.
+fn app_with_drop_item(command: &str, params: serde_json::Value) -> (DesignApp, u64, egui::Pos2, egui::Pos2) {
     let mut app = DesignApp::new(Session::new(), Services::default());
     app.run("file.new", json!({})).unwrap();
-    let frame = app.run("frame.create", json!({"rect": [36, 36, 136, 136]})).unwrap()["id"].as_u64().unwrap();
+    let frame = app.run(command, params).unwrap()["id"].as_u64().unwrap();
     app.canvas_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0)));
     let _ = app.view_mut();
     let (view, rect) = (app.view().unwrap(), app.canvas_rect.unwrap());
@@ -1067,6 +1073,27 @@ fn a_graphic_dropped_on_a_compound_path_fills_it() {
     let it = d.item(designcraft_doc::ItemId(frame)).unwrap();
     assert!(matches!(it.content, designcraft_doc::Content::Graphic(_)));
     assert_eq!(it.path.subpaths.len(), 2, "it keeps its hole");
+}
+
+/// A line encloses no area, so graphics dropped on it don't fill it (#2290): the line stays a line
+/// and, as on any spot that isn't a frame, the images wait in the place cursor in drop order.
+#[test]
+fn graphics_dropped_on_a_line_leave_the_line_alone() {
+    let (mut app, line, on_line, _) = app_with_drop_item("line.create", json!({"a": [36, 80], "b": [136, 80]}));
+    let id = designcraft_doc::ItemId(line);
+    let before = serde_json::to_value(app.session.doc().unwrap().doc.item(id).unwrap()).unwrap();
+    assert!(canvas::drop_frame(&app, Some(on_line)).is_none(), "a line is no frame");
+    let (first, second) = (dropped_png("drop-on-line-first"), dropped_png("drop-on-line-second"));
+    let mut frame_free = true;
+    app.place_dropped(&first.to_string_lossy(), Some(on_line), &mut frame_free).unwrap();
+    app.place_dropped(&second.to_string_lossy(), Some(on_line), &mut frame_free).unwrap();
+    let _ = (std::fs::remove_file(&first), std::fs::remove_file(&second));
+    let d = &app.session.doc().unwrap().doc;
+    assert_eq!(d.spreads[0].items.len(), 1, "no new object");
+    assert_eq!(serde_json::to_value(d.item(id).unwrap()).unwrap(), before, "the line is unchanged");
+    let loaded = app.session.loaded.as_ref().expect("the first image loads the place cursor");
+    assert!(d.assets[&loaded.asset].name.contains("drop-on-line-first"));
+    assert_eq!(app.session.loaded_queue.len(), 1, "the second waits behind it");
 }
 
 #[test]

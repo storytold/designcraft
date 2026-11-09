@@ -361,8 +361,9 @@ impl DesignApp {
     }
 
     /// [`Self::open_dropped_at`] for one file of a drop. `frame_free` is whether the frame under the
-    /// pointer can still be filled: the first graphic of a drop takes it (and clears the flag), so
-    /// the files after it land at the pointer instead of replacing that graphic.
+    /// pointer can still be filled: the first graphic of a drop takes it, or a frame of its own at
+    /// the pointer when there is none, and clears the flag, so the files after it land at the
+    /// pointer instead of replacing that graphic.
     pub(crate) fn place_dropped(&mut self, path: &str, pointer: Option<egui::Pos2>, frame_free: &mut bool) -> Result<Value, String> {
         if path.to_ascii_lowercase().ends_with(".ase") {
             return self.run("swatch.load", json!({"path": path}));
@@ -376,7 +377,8 @@ impl DesignApp {
         }
         // A graphic dropped on a frame that takes one fills it, as File > Place does. Text keeps
         // getting a frame of its own, so it never replaces the image in a graphic frame.
-        let frame = if *frame_free && !designcraft_textimport::is_text_file(path) { canvas::drop_frame(self, pointer) } else { None };
+        let is_text = designcraft_textimport::is_text_file(path);
+        let frame = if *frame_free && !is_text { canvas::drop_frame(self, pointer) } else { None };
         if let Some(frame) = frame {
             let placed = self.open_file("file.place", json!({"path": path, "frame": frame.0}));
             if placed.is_ok() {
@@ -399,7 +401,13 @@ impl DesignApp {
                 o.insert("page".into(), json!(st.doc.first_page_of_spread(si) + pi + 1));
             }
         }
-        self.open_file("file.place", params)
+        let placed = self.open_file("file.place", params);
+        // A graphic placed in a frame of its own (dropped on a line or on the page) is under the
+        // pointer too, so the next file of the drop must not replace it (#2290).
+        if placed.is_ok() && !is_text {
+            *frame_free = false;
+        }
+        placed
     }
 
     /// Queue files the operating system asked the app to open. They can arrive before the window
