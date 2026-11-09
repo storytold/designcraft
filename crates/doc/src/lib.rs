@@ -1037,11 +1037,18 @@ impl Document {
         let owned_by = |d: &Self, frame: ItemId, story: StoryId| {
             d.item(frame).or_else(|| d.anchored_item(frame)).and_then(Item::text_frame).is_some_and(|t| t.story == story)
         };
-        let dangling: Vec<(StoryId, ItemId)> =
-            self.stories.iter().flat_map(|(sid, st)| st.frames.iter().filter(|f| !owned_by(self, **f, *sid)).map(|f| (*sid, *f))).collect();
-        for (sid, frame) in dangling {
+        // One pass per story: a hostile file can thread many missing ids into one story.
+        let kept: Vec<(StoryId, Vec<ItemId>)> = self
+            .stories
+            .iter()
+            .filter_map(|(sid, st)| {
+                let kept: Vec<ItemId> = st.frames.iter().copied().filter(|f| owned_by(self, *f, *sid)).collect();
+                (kept.len() < st.frames.len()).then_some((*sid, kept))
+            })
+            .collect();
+        for (sid, frames) in kept {
             if let Some(st) = self.story_mut(sid) {
-                st.frames.retain(|f| *f != frame);
+                st.frames = frames;
             }
         }
     }
