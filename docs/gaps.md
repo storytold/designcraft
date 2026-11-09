@@ -74,7 +74,7 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
   (#87).
 - **Impact:** an opened IDML reflows: different line breaks, different page count, overset text.
   Professionals notice on the first page.
-- **Estimate:** 70–125 h (harness 20–30, optical kerning tuning 5–10, then fixes by cluster).
+- **Estimate:** 70–125 h (harness 20–30, optical kerning: more faces in the fit 2–5, then fixes by cluster).
 - **Doc:** [typography-parity.md](typography-parity.md)
 
 ### 5. Startup crashes on some graphics hardware (S, H)
