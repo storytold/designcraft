@@ -253,7 +253,7 @@ impl ToolContext<'_> {
     /// Anchored graphics are composed inside text frames, not stored as spread items.
     /// Return their composed canvas bounds and the transform from frame space to canvas.
     /// The full transform includes vertical text and rotated spread views.
-    pub fn anchored_graphic_geometry(&self) -> Vec<(ItemId, Rect, Affine)> {
+    pub fn anchored_graphic_geometry(&self) -> Vec<(ItemId, Rect, Affine, ItemId)> {
         let mut out = Vec::new();
         for story in self.doc.stories.values() {
             let composed = self.cache.get(self.doc, story.id, None);
@@ -273,7 +273,7 @@ impl ToolContext<'_> {
                     let xf = parent * Affine::translate(placed.origin.to_vec2());
                     let rect = xf.transform_rect_bbox(item.bounds());
                     if rect.x0.is_finite() && rect.y0.is_finite() && rect.x1.is_finite() && rect.y1.is_finite() {
-                        out.push((item.id, rect, xf));
+                        out.push((item.id, rect, xf, frame.frame));
                     }
                 }
             }
@@ -283,11 +283,33 @@ impl ToolContext<'_> {
 
     /// Legacy canvas hit rectangles for selecting anchored graphics.
     pub fn anchored_graphic_bounds(&self) -> Vec<(ItemId, Rect)> {
-        self.anchored_graphic_geometry().into_iter().map(|(id, bounds, _)| (id, bounds)).collect()
+        self.anchored_graphic_geometry().into_iter().map(|(id, bounds, _, _)| (id, bounds)).collect()
     }
 
+    /// The frontmost anchored graphic under the pointer, unless a normal page
+    /// item is stacked over its host frame. Respect both layer order and the
+    /// order of items within the layer, rather than capturing clicks through
+    /// an overlaid object.
     pub fn hit_anchored_graphic(&self, p: Point) -> Option<ItemId> {
-        self.anchored_graphic_geometry().into_iter().rev().find_map(|(id, bounds, _)| bounds.contains(p).then_some(id))
+        let front = self.hit(p).and_then(|(_, id)| {
+            let loc = self.doc.find(id)?;
+            let item = self.doc.spread(loc.spread)?.items.get(loc.top())?;
+            Some((loc.spread, loc.top(), self.doc.layer_rank(item.layer)))
+        });
+        self.anchored_graphic_geometry().into_iter().rev().find_map(|(id, bounds, _, host_id)| {
+            if !bounds.contains(p) { return None; }
+            if let Some((front_spread, front_index, front_layer)) = front {
+                let host = self.doc.find(host_id)?;
+                let host_item = self.doc.spread(host.spread)?.items.get(host.top())?;
+                let host_layer = self.doc.layer_rank(host_item.layer);
+                if front_spread != host.spread || front_layer > host_layer
+                    || (front_layer == host_layer && front_index > host.top())
+                {
+                    return None;
+                }
+            }
+            Some(id)
+        })
     }
 
     /// The frontmost text frame under `p`, looking inside groups. [`Self::hit`] stops at the

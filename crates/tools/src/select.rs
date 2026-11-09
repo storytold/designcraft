@@ -1352,7 +1352,9 @@ impl Tool for SelectionTool {
         // Eight handles resize the story-owned object, not a spread item.
         if matches!(ev.kind, PointerKind::Down)
             && let [id] = cx.selection.items.as_slice()
-            && let Some((_, from, frame_to_canvas)) = cx.anchored_graphic_geometry().into_iter().find(|(candidate, _, _)| candidate == id)
+            && self.loaded.is_none()
+            && ev.click_count() < 2
+            && let Some((_, from, frame_to_canvas, _)) = cx.anchored_graphic_geometry().into_iter().find(|(candidate, _, _, _)| candidate == id)
             && let Some(handle) = handles(from).iter().position(|h| (h.x - p.x).abs() <= cx.tol(5.0) && (h.y - p.y).abs() <= cx.tol(5.0))
             && frame_to_canvas.determinant().abs() > 1e-12
             && let Some(item) = cx.doc.anchored_item(*id)
@@ -1364,21 +1366,6 @@ impl Tool for SelectionTool {
                 Drag::AnchoredResize { id: *id, handle, from, frame_from, canvas_to_frame: frame_to_canvas.inverse() }
             };
             return vec![Action::Begin(if ev.mods.alt { "Scale Anchored Image Content" } else { "Resize Anchored Image" }.into())];
-        }
-        // Anchored images have no spread-tree hit target. Select their story-owned ID
-        // directly; never pass a drag to the ordinary spread transform commands.
-        if matches!(ev.kind, PointerKind::Down)
-            && let Some(id) = cx.hit_anchored_graphic(p)
-        {
-            if ev.mods.alt && cx.selection.items == [id]
-                && let Some((_, _, frame_to_canvas)) = cx.anchored_graphic_geometry().into_iter().find(|(candidate, _, _)| *candidate == id)
-                && frame_to_canvas.determinant().abs() > 1e-12
-            {
-                self.drag = Drag::AnchoredContentMove { id, start: p, canvas_to_frame: frame_to_canvas.inverse() };
-                return vec![Action::Begin("Move Anchored Image Content".into())];
-            }
-            self.drag = Drag::None;
-            return vec![Action::Exec("selection.set".into(), json!({"ids": [id.0]}))];
         }
         if !self.direct
             && let Some(actions) = self.thread_pointer(cx, ev)
@@ -1414,6 +1401,23 @@ impl Tool for SelectionTool {
             self.drag = Drag::None;
             let content = !(cx.selection.content && cx.selection.contains(id));
             return vec![Action::Exec("selection.set".into(), json!({"ids": [id.0], "content": content}))];
+        }
+        // Anchored images have no spread-tree hit target. Select their story-owned ID
+        // directly; never pass a drag to the ordinary spread transform commands.
+        if matches!(ev.kind, PointerKind::Down)
+            && ev.click_count() < 2
+            && self.loaded.is_none()
+            && let Some(id) = cx.hit_anchored_graphic(p)
+        {
+            if ev.mods.alt && cx.selection.items == [id]
+                && let Some((_, _, frame_to_canvas, _)) = cx.anchored_graphic_geometry().into_iter().find(|(candidate, _, _, _)| *candidate == id)
+                && frame_to_canvas.determinant().abs() > 1e-12
+            {
+                self.drag = Drag::AnchoredContentMove { id, start: p, canvas_to_frame: frame_to_canvas.inverse() };
+                return vec![Action::Begin("Move Anchored Image Content".into())];
+            }
+            self.drag = Drag::None;
+            return vec![Action::Exec("selection.set".into(), json!({"ids": [id.0]}))];
         }
         match ev.kind {
             PointerKind::Move => {
@@ -1687,6 +1691,97 @@ mod anchored_transform_tests {
 
     fn context<'a>(d: &'a Document, s: &'a Selection, c: &'a Cache, l: &'a CanvasLayout, zoom: f64) -> ToolContext<'a> {
         ToolContext { doc: d, selection: s, cache: c, layout: l, zoom, layer: d.default_layer(), snap: SnapView::OFF, unit: Unit::Points, stroke_in_front: false, loaded: None }
+    }
+
+    /// A real composed graphic inside a story, so tests exercise hit testing
+    /// and pointer dispatch instead of only constructing a synthetic drag.
+    fn anchored_fixture() -> (Document, ItemId, ItemId, Point) {
+        use designcraft_doc::{AnchoredObject, AssetId, Graphic, ParaFormat, Shape, SpreadRef};
+        use designcraft_geom::shapes;
+        let mut d = Document::new(&NewDocument::default());
+        let layer = d.default_layer();
+        let (host, sid) = d.add_text_frame(
+            SpreadRef::Doc(0), Rect::new(72.0, 72.0, 420.0, 450.0),
+            layer, "Text after graphic.", ParaFormat::default(),
+        ).unwrap();
+        let id = ItemId(d.alloc());
+        let mut item = Item::new(id, layer, Shape::Rectangle, shapes::rectangle(Rect::new(0.0, 0.0, 60.0, 40.0)));
+        item.content = Content::Graphic(Graphic {
+            layer_options: None,
+            asset: AssetId(1),
+            size: (60.0, 40.0),
+            xf: Affine::IDENTITY,
+            clip: None,
+            auto_fit: Default::default(),
+            fit_align: 4,
+            crop: [0.0; 4],
+            wrap: Default::default(),
+            fill: Default::default(),
+        });
+        d.story_mut(sid).unwrap().insert_object(0, AnchoredObject::new(item, Default::default()));
+        let c = Cache::new();
+        let l = CanvasLayout::new(&d, false);
+        let s = Selection::default();
+        let geometry = context(&d, &s, &c, &l, 1.0).anchored_graphic_geometry();
+        let (_, bounds, _, found_host) = geometry.iter().find(|(graphic, _, _, _)| *graphic == id).unwrap();
+        assert_eq!(*found_host, host);
+        (d, host, id, bounds.center())
+    }
+
+    #[test]
+    fn anchored_image_click_selects_unless_text_cursor_is_loaded() {
+        let (d, host, anchored, p) = anchored_fixture();
+        let selection = Selection::default();
+        let cache = Cache::new();
+        let layout = CanvasLayout::new(&d, false);
+        let cx = context(&d, &selection, &cache, &layout, 1.0);
+        let mut tool = SelectionTool::new(false);
+        let ordinary = tool.pointer(&cx, &PointerEvent::new(PointerKind::Down, p.x, p.y));
+        assert_eq!(ordinary, vec![Action::Exec("selection.set".into(), json!({"ids": [anchored.0]}))]);
+        tool.loaded = Some(Loaded::new(host, true));
+        let loaded = tool.pointer(&cx, &PointerEvent::new(PointerKind::Down, p.x, p.y));
+        assert!(loaded.is_empty(), "loaded text cursor should handle the press: {loaded:?}");
+        assert!(matches!(tool.drag, Drag::Place { .. }));
+    }
+
+    #[test]
+    fn anchored_image_does_not_intercept_text_frame_double_click() {
+        let (d, host, _, p) = anchored_fixture();
+        let selection = Selection::default();
+        let cache = Cache::new();
+        let layout = CanvasLayout::new(&d, false);
+        let cx = context(&d, &selection, &cache, &layout, 1.0);
+        let mut tool = SelectionTool::new(false);
+        let action = tool.pointer(&cx, &PointerEvent::new(PointerKind::Down, p.x, p.y).with_clicks(2));
+        assert!(matches!(action.as_slice(), [Action::SwitchTool(name), Action::Exec(cmd, params)]
+            if name == "type" && cmd == "text.placeCaret" && params["frame"] == host.0), "{action:?}");
+    }
+
+    #[test]
+    fn overlaid_spread_item_wins_over_anchored_graphic_but_background_does_not() {
+        use designcraft_doc::{Shape, SpreadRef};
+        use designcraft_geom::shapes;
+        let (mut d, _, anchored, p) = anchored_fixture();
+        let layer = d.default_layer();
+        let overlay = ItemId(d.alloc());
+        let rect = Rect::new(p.x - 10.0, p.y - 10.0, p.x + 10.0, p.y + 10.0);
+        let item = Item::new(overlay, layer, Shape::Rectangle, shapes::rectangle(rect));
+        // Below the host the overlay must not mask the anchored image.
+        d.insert_item(SpreadRef::Doc(0), item.clone(), Some(0)).unwrap();
+        let selection = Selection::default();
+        let cache = Cache::new();
+        let layout = CanvasLayout::new(&d, false);
+        assert_eq!(context(&d, &selection, &cache, &layout, 1.0).hit_anchored_graphic(p), Some(anchored));
+        d.remove_item(overlay).unwrap();
+        d.insert_item(SpreadRef::Doc(0), item, None).unwrap();
+        let cache = Cache::new();
+        let layout = CanvasLayout::new(&d, false);
+        let cx = context(&d, &selection, &cache, &layout, 1.0);
+        assert_eq!(cx.hit_anchored_graphic(p), None);
+        let mut tool = SelectionTool::new(false);
+        let action = tool.pointer(&cx, &PointerEvent::new(PointerKind::Down, p.x, p.y));
+        assert!(action.iter().any(|a| matches!(a, Action::Exec(cmd, params)
+            if cmd == "selection.set" && params["ids"] == json!([overlay.0]))), "{action:?}");
     }
 
     #[test]
