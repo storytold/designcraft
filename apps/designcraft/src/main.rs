@@ -322,9 +322,9 @@ fn main() -> std::process::ExitCode {
     if let Some(icon) = app_icon() {
         options.viewport = options.viewport.with_icon(icon);
     }
-    // The adapter's largest texture side instead of eframe's 8192, so a window across several
-    // monitors keeps its surface (see `gpu_limits`).
-    gpu_limits::request_adapter_texture_size(&mut options);
+    // The adapter's largest texture side and buffer instead of eframe's 8192 and wgpu's 256 MiB, so a
+    // window across several monitors keeps its surface and a large frame its vertex buffer (see `gpu_limits`).
+    gpu_limits::request_adapter_sizes(&mut options);
     // The graphics backend, decided before the window exists: a driver that faults takes the
     // process down before any Rust code can catch it (see `gpu::backend`).
     let fallback = gpu::backend::Fallback::begin(
@@ -402,6 +402,12 @@ fn main() -> std::process::ExitCode {
                         info.device_type,
                         info.driver,
                         info.driver_info
+                    );
+                    let limits = rs.device.limits();
+                    log::info!(
+                        "graphics: largest texture side {}, largest buffer {} MiB",
+                        limits.max_texture_dimension_2d,
+                        limits.max_buffer_size >> 20
                     );
                     created.started_with(info.backend);
                     created.created(&cc.egui_ctx);
@@ -602,15 +608,21 @@ mod exit_recovery_tests {
         let wait_release = std::sync::Mutex::new(wait_release);
         app.services.background_write = Some(std::sync::Arc::new(move |_, _| {
             started.send(()).map_err(|e| e.to_string())?;
-            wait_release.lock().unwrap().recv().map_err(|e| e.to_string())
+            wait_release.lock().unwrap().recv_timeout(std::time::Duration::from_secs(10)).map_err(|e| e.to_string())
         }));
         let queued = app.run("app.exportPdf", json!({"path":dir.join("export.pdf").to_string_lossy()})).unwrap();
         assert_eq!(queued["queued"], true);
-        wait_started.recv_timeout(std::time::Duration::from_secs(30)).unwrap();
+        wait_started.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
         assert!(app.run("file.recovery.save", json!({})).is_err(), "the modal still blocks ordinary commands");
         let saved = preserve_documents_on_exit(&mut app);
         release.send(()).unwrap();
         saved.unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while app.pdf_export_active() && std::time::Instant::now() < deadline {
+            app.logic(&egui::Context::default());
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(!app.pdf_export_active(), "worker must finish before directory cleanup");
         let recovered = designcraft_engine::cmd::from_bytes(&std::fs::read(dir.join(format!("{uid}.designcraft"))).unwrap()).unwrap();
         assert_eq!(serde_json::to_value(&recovered).unwrap(), serde_json::to_value(doc.as_ref()).unwrap());
         assert!(std::sync::Arc::ptr_eq(&app.session.active().unwrap().doc, &doc));

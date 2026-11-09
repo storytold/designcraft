@@ -2174,7 +2174,7 @@ fn quick_apply_lists_styles_then_commands() {
 fn searched_ui_commands_run_without_parameters_and_keep_preferences() {
     // Without a value these reset a setting or need a place the test host always has.
     let searched: Vec<&str> = quick_commands().map(|c| c.0).collect();
-    for id in ["app.flattener", "view.screenMode", "view.zoom", "window.taskBarPin"] {
+    for id in ["app.flattener", "view.screenMode", "view.zoom", "window.taskBarPin", "app.pdfExportStatus", "app.cancelPdfExport"] {
         assert!(!searched.contains(&id), "{id} is searched");
     }
     // A placed PDF: a graphic with layers.

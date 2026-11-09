@@ -23,7 +23,9 @@ impl Lab {
     }
     /// Hue angle in degrees 0..360.
     pub fn hue(&self) -> f32 {
-        self.b.atan2(self.a).to_degrees().rem_euclid(360.0)
+        let h = self.b.atan2(self.a).to_degrees().rem_euclid(360.0);
+        // f32 rounding can turn a tiny negative angle into exactly 360.0.
+        if h >= 360.0 { 0.0 } else { h }
     }
     pub fn from_lch(l: f32, c: f32, h_deg: f32) -> Self {
         let h = h_deg.to_radians();
@@ -173,6 +175,13 @@ pub fn delta_e2000(x: Lab, y: Lab) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hue_tiny_negative_b_stays_below_360() {
+        let h = Lab::new(50.0, 10.0, -1e-6).hue();
+        assert!((0.0..360.0).contains(&h), "hue {h}");
+        assert_eq!(h, 0.0);
+    }
 
     #[test]
     fn white_and_black() {

@@ -33,6 +33,9 @@ impl DesignApp {
                 self.request_quit();
             }
         }
+        if self.pdf_export.cancelled() {
+            self.quit_after_export = false;
+        }
         self.update_screenshot_epoch(ctx);
         self.drain_control(ctx);
         updates_ui::tick(self, ctx);

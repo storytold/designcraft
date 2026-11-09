@@ -231,8 +231,9 @@ impl DesignApp {
     }
 
     /// [`Self::open_dropped_at`] for one file of a drop. `frame_free` is whether the frame under the
-    /// pointer can still be filled: the first graphic of a drop takes it (and clears the flag), so
-    /// the files after it land at the pointer instead of replacing that graphic.
+    /// pointer can still be filled: the first graphic of a drop takes it, or a frame of its own at
+    /// the pointer when there is none, and clears the flag, so the files after it land at the
+    /// pointer instead of replacing that graphic.
     pub(crate) fn place_dropped(&mut self, path: &str, pointer: Option<egui::Pos2>, frame_free: &mut bool) -> Result<Value, String> {
         if path.to_ascii_lowercase().ends_with(".ase") {
             return self.run("swatch.load", json!({"path": path}));
@@ -247,7 +248,8 @@ impl DesignApp {
         let mut params = json!({"path": path});
         // A graphic dropped on an empty or graphic frame fills it, as File > Place does. Text keeps
         // getting a frame of its own, so it never replaces the image in a graphic frame.
-        let frame = if *frame_free && !designcraft_textimport::is_text_file(path) { canvas::drop_frame(self, pointer) } else { None };
+        let is_text = designcraft_textimport::is_text_file(path);
+        let frame = if *frame_free && !is_text { canvas::drop_frame(self, pointer) } else { None };
         if let (Some(frame), Some(o)) = (frame, params.as_object_mut()) {
             o.insert("frame".into(), json!(frame.0));
         }
@@ -261,7 +263,9 @@ impl DesignApp {
             }
         }
         let placed = self.open_file("file.place", params);
-        if frame.is_some() && placed.is_ok() {
+        // A graphic placed in a frame of its own (dropped on a line or on the page) is under the
+        // pointer too, so the next file of the drop must not replace it (#2290).
+        if placed.is_ok() && !is_text {
             *frame_free = false;
         }
         placed

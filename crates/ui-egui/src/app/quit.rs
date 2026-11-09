@@ -21,6 +21,7 @@ impl DesignApp {
         if self.pdf_export.busy() && !self.quit_without_asking {
             if close_requested || self.close_requested_pending || self.quit_requested {
                 self.quit_after_export = true;
+                self.status("Quit queued until PDF export finishes");
                 self.close_requested_pending = false;
                 self.quit_requested = false;
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);

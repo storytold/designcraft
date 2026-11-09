@@ -24,3 +24,11 @@ success or failure. The engine's `file.exportPdf` remains synchronous for script
 Background jobs retain the caller’s automation roots. Output is checked on the worker and again before a custom host performs a deferred write, so moving export off the UI thread does not broaden filesystem access.
 
 When a caller grants several read or write roots, the worker and deferred writer retain the complete set. Each output must lie in a granted write root; their common parent and read-only roots remain refused.
+
+Cancellation is available during generation, before the writer claims the job. The
+worker's late result is discarded and editing resumes. The decoder still drains;
+another export waits for that one worker slot. Saving has no safe rollback for all
+host writers, so the UI disables cancellation once saving begins. Read-only document
+inspection, status and zoom/fit remain available during generation/saving. A queued
+Quit has visible feedback and is cleared if the export is cancelled. The version 2
+control contract and terminal-result schema are in `control-protocol.md`.

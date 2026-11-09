@@ -28,6 +28,11 @@ pub(crate) use files::browser_import_tests;
 pub use files::opens_as_document;
 
 impl DesignApp {
+    /// Whether a native PDF worker is still alive, including a cancelled decoder draining.
+    pub fn pdf_export_active(&self) -> bool {
+        self.pdf_export.worker_active()
+    }
+
     /// Start the background font scan, establish the monotonic timing origin, and initialize document, view, input, screenshot, dialog and control state.
     pub fn new(session: Session, services: Services) -> Self {
         // The font menus and the first file opened need the installed fonts: catalog them now.

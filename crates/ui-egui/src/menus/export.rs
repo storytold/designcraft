@@ -187,7 +187,7 @@ pub(crate) fn export_pdf(app: &mut DesignApp, p: &Value) -> Result<Value, String
         let ctx = app.egui_ctx.clone().unwrap_or_default();
         app.pdf_export.start(st, app.session.cache.clone(), path.clone(), params, ctx, app.services.background_write.clone())?;
         app.status("Exporting PDF…");
-        Ok(json!({"path":path,"queued":true}))
+        Ok(app.pdf_export.queued())
     }
     #[cfg(target_arch = "wasm32")]
     {

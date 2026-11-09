@@ -26,6 +26,15 @@ pub(super) fn window_control_available(app: &DesignApp, id: &str) -> bool {
 
 /// Is a command enabled (for menu greying)?
 pub fn enabled(app: &DesignApp, id: &str) -> bool {
+    if id == "app.cancelPdfExport" {
+        return app.pdf_export.cancellable();
+    }
+    if id == "app.pdfExportStatus" {
+        return true;
+    }
+    if id == "app.exportPdf" && app.pdf_export.worker_active() {
+        return false;
+    }
     if waits_for_ime(app, id) {
         return false;
     }

@@ -3,10 +3,50 @@ use super::{DesignApp, UiRequest, Value, canvas, dialogs, json, menus};
 impl DesignApp {
     /// THE entry point for every action (menus, shortcuts, palette, panels, control channel).
     pub fn run(&mut self, id: &str, params: Value) -> Result<Value, String> {
-        if self.pdf_export.busy() {
+        if matches!(id, "app.pdfExportStatus" | "app.cancelPdfExport") {
+            designcraft_engine::check_keys(id, "{operationId?}", &params).map_err(|e| e.to_string())?;
+        }
+        if id == "app.pdfExportStatus" {
+            if let Some(value) = params.get("operationId") {
+                let id = value.as_u64().filter(|id| *id != 0).ok_or("operationId must be a positive integer")?;
+                if self.pdf_export.status().operation_id != Some(id) {
+                    return Err("Unknown PDF export operation".into());
+                }
+            }
+            return serde_json::to_value(self.pdf_export.status()).map_err(|e| e.to_string());
+        }
+        if id == "app.cancelPdfExport" {
+            if let Some(value) = params.get("operationId") {
+                let id = value.as_u64().filter(|id| *id != 0).ok_or("operationId must be a positive integer")?;
+                if self.pdf_export.status().operation_id != Some(id) {
+                    return Err("Unknown PDF export operation".into());
+                }
+            }
+            if !self.pdf_export.cancel() {
+                return Err("PDF export is not cancellable; saving may have started".into());
+            }
+            self.quit_after_export = false;
+            self.status("PDF export cancelled");
+            return serde_json::to_value(self.pdf_export.status()).map_err(|e| e.to_string());
+        }
+        if self.pdf_export.busy()
+            && !matches!(
+                id,
+                "document.inspect"
+                    | "view.zoomIn"
+                    | "view.zoomOut"
+                    | "view.zoom"
+                    | "view.fitPage"
+                    | "view.fitSpread"
+                    | "view.fitSelection"
+                    | "view.actualSize"
+                    | "view.entirePasteboard"
+            )
+        {
             if id == "app.quit" {
                 self.quit_after_export = true;
-                return Ok(json!({"queued": true}));
+                self.status("Quit queued until PDF export finishes");
+                return Ok(self.pdf_export.queued());
             }
             return Err("Please wait for the PDF export to finish".into());
         }

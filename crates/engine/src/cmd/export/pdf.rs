@@ -191,7 +191,18 @@ pub(crate) fn pdf_export(s: &Session, p: &Value) -> Result<designcraft_pdf::Expo
     export_pdf_document(&s.doc()?.doc, &s.cache, p)
 }
 
-/// Export an immutable snapshot through the same pipeline as export, print and package.
+/// Export an immutable document snapshot through the export/print/package PDF pipeline.
+///
+/// `doc` is the snapshot to compose; callers retain its document font scope for the entire
+/// call. `cache` is the shared, internally synchronized composition cache. `p` accepts the
+/// same options object as `file.exportPdf` (page range, PDF standard, bleed, marks,
+/// flattening and view options). The path is not written by this function.
+///
+/// Returns a [`designcraft_pdf::ExportReport`] containing PDF bytes, page count and warnings.
+/// Errors include invalid options/page ranges, empty exports, composition or PDF generation
+/// failures. The document is never mutated; using an `Arc<Document>` snapshot and retaining
+/// its fonts lets a worker call this independently of the live session. The caller is
+/// responsible for file-access checks, atomic output writing and cancellation before writing.
 pub fn export_pdf_document(doc: &designcraft_doc::Document, cache: &designcraft_compose::Cache, p: &Value) -> Result<designcraft_pdf::ExportReport> {
     pdf_report(doc, cache, p)
 }
