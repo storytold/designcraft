@@ -190,7 +190,8 @@ fn emf_dibs(b: &[u8]) -> Option<Vec<Dib<'_>>> {
     while at.checked_add(8).is_some_and(|end| end <= b.len()) {
         let (kind, size) = (word(at)?, word(at + 4)?);
         if size < 8 || at.checked_add(size).is_none_or(|end| end > b.len()) {
-            break;
+            // A record that does not fit: the rest of the EMF is unread, so it is left as it is.
+            return None;
         }
         // A drawn shape, line, path, text or other bitmap draw beside the bitmap: the picture is a
         // vector drawing, or more than this one bitmap, that the bitmap alone would misrepresent,
@@ -338,6 +339,10 @@ pub(crate) fn sniff_image(b: &[u8]) -> (Option<&'static str>, Option<(u32, u32)>
     }
     if b.starts_with(b"BM") && b.len() >= 26 {
         let le = |i: usize| i32::from_le_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]]);
+        // A 12-byte BITMAPCOREHEADER holds 16-bit width and height.
+        if le(14) == 12 {
+            return (Some("image/bmp"), Some((u16::from_le_bytes([b[18], b[19]]) as u32, u16::from_le_bytes([b[20], b[21]]) as u32)));
+        }
         return (Some("image/bmp"), Some((le(18).unsigned_abs(), le(22).unsigned_abs())));
     }
     (None, None)
