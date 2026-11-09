@@ -251,8 +251,9 @@ impl ToolContext<'_> {
     }
 
     /// Anchored graphics are composed inside text frames, not stored as spread items.
-    /// Resolve their on-canvas rectangles from the current cached text composition.
-    pub fn anchored_graphic_bounds(&self) -> Vec<(ItemId, Rect)> {
+    /// Return their composed canvas bounds and the transform from frame space to canvas.
+    /// The full transform includes vertical text and rotated spread views.
+    pub fn anchored_graphic_geometry(&self) -> Vec<(ItemId, Rect, Affine)> {
         let mut out = Vec::new();
         for story in self.doc.stories.values() {
             let composed = self.cache.get(self.doc, story.id, None);
@@ -272,7 +273,7 @@ impl ToolContext<'_> {
                     let xf = parent * Affine::translate(placed.origin.to_vec2());
                     let rect = xf.transform_rect_bbox(item.bounds());
                     if rect.x0.is_finite() && rect.y0.is_finite() && rect.x1.is_finite() && rect.y1.is_finite() {
-                        out.push((item.id, rect));
+                        out.push((item.id, rect, xf));
                     }
                 }
             }
@@ -280,8 +281,13 @@ impl ToolContext<'_> {
         out
     }
 
+    /// Legacy canvas hit rectangles for selecting anchored graphics.
+    pub fn anchored_graphic_bounds(&self) -> Vec<(ItemId, Rect)> {
+        self.anchored_graphic_geometry().into_iter().map(|(id, bounds, _)| (id, bounds)).collect()
+    }
+
     pub fn hit_anchored_graphic(&self, p: Point) -> Option<ItemId> {
-        self.anchored_graphic_bounds().into_iter().rev().find_map(|(id, bounds)| bounds.contains(p).then_some(id))
+        self.anchored_graphic_geometry().into_iter().rev().find_map(|(id, bounds, _)| bounds.contains(p).then_some(id))
     }
 
     /// The frontmost text frame under `p`, looking inside groups. [`Self::hit`] stops at the

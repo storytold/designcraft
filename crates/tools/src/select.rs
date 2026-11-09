@@ -46,9 +46,10 @@ enum Drag {
         id: ItemId,
         handle: usize,
         from: Rect,
-        ratio: (f64, f64),
+        frame_from: Rect,
+        canvas_to_frame: Affine,
     },
-    AnchoredContentMove { id: ItemId, start: Point },
+    AnchoredContentMove { id: ItemId, start: Point, canvas_to_frame: Affine },
     AnchoredContentScale { id: ItemId, handle: usize, from: Rect },
     Resize {
         handle: usize,
@@ -504,6 +505,45 @@ fn content_bounds(cx: &ToolContext) -> Option<Rect> {
         acc = Some(acc.map_or(b, |have| have.union(b)));
     }
     acc
+}
+
+/// Convert a canvas delta to local frame points; translation does not affect deltas.
+fn affine_delta(xf: Affine, delta: Vec2) -> Vec2 {
+    xf * Point::new(delta.x, delta.y) - xf * Point::ORIGIN
+}
+
+/// Choose the frame edge corresponding to a canvas handle after the host rotation.
+/// We transform the canvas handle's inward direction into frame space.
+fn frame_handle_for_canvas_handle(canvas_to_frame: Affine, handle: usize) -> usize {
+    let (horizontal, vertical) = match handle {
+        0 => (1.0, 1.0),
+        1 => (0.0, 1.0),
+        2 => (-1.0, 1.0),
+        3 => (-1.0, 0.0),
+        4 => (-1.0, -1.0),
+        5 => (0.0, -1.0),
+        6 => (1.0, -1.0),
+        _ => (1.0, 0.0),
+    };
+    let mut local = affine_delta(canvas_to_frame, Vec2::new(horizontal, vertical));
+    // A side handle is always a single frame edge, even when its host is
+    // rotated by an arbitrary angle rather than a quarter turn.
+    if handle % 2 == 1 {
+        if local.x.abs() >= local.y.abs() { local.y = 0.0; } else { local.x = 0.0; }
+    }
+    let x = if local.x > 1e-7 { -1 } else if local.x < -1e-7 { 1 } else { 0 };
+    let y = if local.y > 1e-7 { -1 } else if local.y < -1e-7 { 1 } else { 0 };
+    match (x, y) {
+        (-1, -1) => 0,
+        (0, -1) => 1,
+        (1, -1) => 2,
+        (1, 0) => 3,
+        (1, 1) => 4,
+        (0, 1) => 5,
+        (-1, 1) => 6,
+        (-1, 0) => 7,
+        _ => handle,
+    }
 }
 
 /// Handle positions (canvas) of a rect: 0 TL, 1 T, 2 TR, 3 R, 4 BR, 5 B, 6 BL, 7 L.
@@ -1054,9 +1094,9 @@ impl SelectionTool {
     fn pointer_drag(&mut self, cx: &ToolContext, ev: &PointerEvent) -> Vec<Action> {
         let p = ev.pos;
         match self.drag.clone() {
-            Drag::AnchoredContentMove { id, start } => {
-                let dx = p.x - start.x;
-                let dy = p.y - start.y;
+            Drag::AnchoredContentMove { id, start, canvas_to_frame } => {
+                let delta = affine_delta(canvas_to_frame, p - start);
+                let (dx, dy) = (delta.x, delta.y);
                 vec![Action::Preview("anchored.contentTransform".into(), json!({"id": id.0, "dx": dx, "dy": dy}))]
             }
             Drag::AnchoredContentScale { id, handle, from } => {
@@ -1067,17 +1107,22 @@ impl SelectionTool {
                 let scale = aspect_scale(from, handle, to).clamp(0.01, 100.0);
                 vec![Action::Preview("anchored.contentTransform".into(), json!({"id": id.0, "scale": scale}))]
             }
-            Drag::AnchoredResize { id, handle, from, ratio } => {
-                // An anchored image cannot move its top edge into preceding text.
-                // Dragging a handle trims/reveals content; it does not scale the image.
-                let to = resize_edges_rect(from, handle, p);
-                let (rx, ry) = ratio;
+            Drag::AnchoredResize { id, handle, from, frame_from, canvas_to_frame } => {
+                // Resolve the screen handle back to its frame-space edge. A canvas
+                // right handle may be a frame top/bottom handle in vertical text.
+                let delta = p - handles(from)[handle];
+                let to_frame = resize_edges_rect(
+                    frame_from,
+                    frame_handle_for_canvas_handle(canvas_to_frame, handle),
+                    handles(frame_from)[frame_handle_for_canvas_handle(canvas_to_frame, handle)]
+                        + affine_delta(canvas_to_frame, delta),
+                );
                 vec![Action::Preview("anchored.resize".into(), json!({
                     "id": id.0,
-                    "left": (to.x0 - from.x0) * rx,
-                    "top": (to.y0 - from.y0) * ry,
-                    "right": (from.x1 - to.x1) * rx,
-                    "bottom": (from.y1 - to.y1) * ry
+                    "left": to_frame.x0 - frame_from.x0,
+                    "top": to_frame.y0 - frame_from.y0,
+                    "right": frame_from.x1 - to_frame.x1,
+                    "bottom": frame_from.y1 - to_frame.y1
                 }))]
             }
             Drag::Bracket { id, end } => {
@@ -1307,13 +1352,16 @@ impl Tool for SelectionTool {
         // Eight handles resize the story-owned object, not a spread item.
         if matches!(ev.kind, PointerKind::Down)
             && let [id] = cx.selection.items.as_slice()
-            && let Some((_, from)) = cx.anchored_graphic_bounds().into_iter().find(|(candidate, _)| candidate == id)
+            && let Some((_, from, frame_to_canvas)) = cx.anchored_graphic_geometry().into_iter().find(|(candidate, _, _)| candidate == id)
             && let Some(handle) = handles(from).iter().position(|h| (h.x - p.x).abs() <= cx.tol(5.0) && (h.y - p.y).abs() <= cx.tol(5.0))
+            && frame_to_canvas.determinant().abs() > 1e-12
+            && let Some(item) = cx.doc.anchored_item(*id)
         {
+            let frame_from = Rect::new(0.0, 0.0, item.bounds().width(), item.bounds().height());
             self.drag = if ev.mods.alt {
                 Drag::AnchoredContentScale { id: *id, handle, from }
             } else {
-                Drag::AnchoredResize { id: *id, handle, from, ratio: cx.doc.anchored_item(*id).map(|item| (item.bounds().width() / from.width().max(1e-9), item.bounds().height() / from.height().max(1e-9))).unwrap_or((1.0, 1.0)) }
+                Drag::AnchoredResize { id: *id, handle, from, frame_from, canvas_to_frame: frame_to_canvas.inverse() }
             };
             return vec![Action::Begin(if ev.mods.alt { "Scale Anchored Image Content" } else { "Resize Anchored Image" }.into())];
         }
@@ -1322,8 +1370,11 @@ impl Tool for SelectionTool {
         if matches!(ev.kind, PointerKind::Down)
             && let Some(id) = cx.hit_anchored_graphic(p)
         {
-            if ev.mods.alt && cx.selection.items == [id] {
-                self.drag = Drag::AnchoredContentMove { id, start: p };
+            if ev.mods.alt && cx.selection.items == [id]
+                && let Some((_, _, frame_to_canvas)) = cx.anchored_graphic_geometry().into_iter().find(|(candidate, _, _)| *candidate == id)
+                && frame_to_canvas.determinant().abs() > 1e-12
+            {
+                self.drag = Drag::AnchoredContentMove { id, start: p, canvas_to_frame: frame_to_canvas.inverse() };
                 return vec![Action::Begin("Move Anchored Image Content".into())];
             }
             self.drag = Drag::None;
@@ -1623,6 +1674,96 @@ fn edit_text_at(cx: &ToolContext, p: Point) -> Option<Vec<Action>> {
     }
     let (_, sp) = cx.layout.spread_at(p).unwrap_or((SpreadRef::Doc(0), p));
     Some(vec![Action::SwitchTool("type".into()), Action::Exec("text.placeCaret".into(), json!({"frame": id.0, "point": [sp.x, sp.y]}))])
+}
+
+#[cfg(test)]
+mod anchored_transform_tests {
+    use super::*;
+    use crate::{CanvasLayout, SnapView};
+    use designcraft_compose::Cache;
+    use designcraft_doc::{Document, Selection};
+    use designcraft_doc::build::NewDocument;
+    use designcraft_geom::Unit;
+
+    fn context<'a>(d: &'a Document, s: &'a Selection, c: &'a Cache, l: &'a CanvasLayout, zoom: f64) -> ToolContext<'a> {
+        ToolContext { doc: d, selection: s, cache: c, layout: l, zoom, layer: d.default_layer(), snap: SnapView::OFF, unit: Unit::Points, stroke_in_front: false, loaded: None }
+    }
+
+    #[test]
+    fn vertical_text_right_handle_resizes_frame_top_not_right() {
+        // Vertical text rotates text coordinates clockwise into canvas space.
+        let frame_to_canvas = Affine::rotate(std::f64::consts::FRAC_PI_2);
+        let to_frame = frame_to_canvas.inverse();
+        let right_handle = frame_handle_for_canvas_handle(to_frame, 3);
+        assert_eq!(right_handle, 1, "canvas right handle is frame top in vertical text");
+        let frame = Rect::new(0.0, 0.0, 100.0, 50.0);
+        let canvas_drag = Vec2::new(-12.0, 0.0);
+        let frame_drag = affine_delta(to_frame, canvas_drag);
+        let to = resize_edges_rect(frame, right_handle, handles(frame)[right_handle] + frame_drag);
+        assert!((to.y0 - 12.0).abs() < 1e-9);
+        assert!((to.x1 - frame.x1).abs() < 1e-9);
+    }
+
+    #[test]
+    fn content_move_respects_rotated_text_and_zoom() {
+        let d = Document::new(&NewDocument::default());
+        let selection = Selection::default();
+        let cache = Cache::new();
+        let layout = CanvasLayout::new(&d, false);
+        let inverse = Affine::rotate(-std::f64::consts::FRAC_PI_2);
+        for zoom in [0.5, 1.0, 2.0] {
+            let cx = context(&d, &selection, &cache, &layout, zoom);
+            let mut tool = SelectionTool::new(false);
+            tool.drag = Drag::AnchoredContentMove { id: ItemId(999), start: Point::new(50.0, 100.0), canvas_to_frame: inverse };
+            let actions = tool.pointer_drag(&cx, &PointerEvent::new(PointerKind::Drag, 70.0, 100.0));
+            let [Action::Preview(command, params)] = actions.as_slice() else { panic!("unexpected actions: {actions:?}") };
+            assert_eq!(command, "anchored.contentTransform");
+            assert_eq!(params["id"], 999);
+            assert!(params["dx"].as_f64().is_some_and(|x| x.abs() < 1e-9));
+            assert!(params["dy"].as_f64().is_some_and(|y| (y + 20.0).abs() < 1e-9));
+        }
+    }
+
+    #[test]
+    fn vertical_host_resize_drag_emits_frame_top_edge_only() {
+        let d = Document::new(&NewDocument::default());
+        let selection = Selection::default();
+        let cache = Cache::new();
+        let layout = CanvasLayout::new(&d, false);
+        let cx = context(&d, &selection, &cache, &layout, 2.0);
+        let frame = Rect::new(0.0, 0.0, 100.0, 50.0);
+        let to_canvas = Affine::translate((100.0, 100.0)) * Affine::rotate(std::f64::consts::FRAC_PI_2);
+        let from = to_canvas.transform_rect_bbox(frame);
+        let mut tool = SelectionTool::new(false);
+        tool.drag = Drag::AnchoredResize { id: ItemId(999), handle: 3, from, frame_from: frame, canvas_to_frame: to_canvas.inverse() };
+        let right_handle = handles(from)[3];
+        let actions = tool.pointer_drag(&cx, &PointerEvent::new(PointerKind::Drag, right_handle.x - 12.0, right_handle.y));
+        let [Action::Preview(command, params)] = actions.as_slice() else { panic!("unexpected actions: {actions:?}") };
+        assert_eq!(command, "anchored.resize");
+        assert_eq!(params["id"], 999);
+        assert!(params["top"].as_f64().is_some_and(|v| (v - 12.0).abs() < 1e-9));
+        for edge in ["left", "right", "bottom"] {
+            assert!(params[edge].as_f64().is_some_and(|v| v.abs() < 1e-9), "unexpected {edge}: {params:?}");
+        }
+    }
+
+    #[test]
+    fn arbitrary_host_rotation_keeps_side_handles_on_a_single_edge() {
+        let inverse = Affine::rotate(-30.0_f64.to_radians());
+        let mapped = frame_handle_for_canvas_handle(inverse, 3);
+        assert_eq!(mapped, 3, "a moderately rotated host must not turn a side drag into a corner crop");
+    }
+
+    #[test]
+    fn crop_handles_map_consistently_for_quarter_turns() {
+        for turns in 0..4 {
+            let inverse = Affine::rotate(-f64::from(turns) * std::f64::consts::FRAC_PI_2);
+            let mapped: Vec<usize> = (0..8).map(|h| frame_handle_for_canvas_handle(inverse, h)).collect();
+            let mut sorted = mapped.clone();
+            sorted.sort_unstable();
+            assert_eq!(sorted, (0..8).collect::<Vec<_>>(), "quarter turn {turns}: {mapped:?}");
+        }
+    }
 }
 
 #[cfg(test)]
