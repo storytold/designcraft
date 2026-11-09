@@ -34,7 +34,7 @@ graphics driver loses the user entirely. Overall numbers: [target-app-parity.md]
 | Windows ARM64 | ✓ | ~ build (CI workflow) | not exercised at runtime |
 | Linux (x86_64, aarch64; riscv64 tar.gz) | ✗ | ~ deb, AppImage, Flatpak | clipboard (#164), panels don't scroll (#267), CJK UI font (#332) |
 | FreeBSD | ✗ | ~ build | |
-| Web (WASM) | ✗ (InDesign on the web is not shipped) | ~ same UI, file picker, downloads; no control channel | |
+| Web (WASM) | ✗ (InDesign on the web is not shipped) | ~ same UI, file picker, downloads; control channel through `window.designcraft` (no TCP port) | |
 
 DesignCraft runs on more platforms than InDesign; what's missing is runtime testing on the ones
 the developers don't use daily.

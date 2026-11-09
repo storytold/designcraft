@@ -23,7 +23,7 @@ const APP: &str = "designcraft";
 const POLL_MS: i32 = 16;
 
 /// Put `window.designcraft` on the page and return the queue the app drains each frame (hand it to
-/// `WordApp::with_control`). An existing `window.designcraft` keeps the functions it already has.
+/// `DesignApp::with_control`). An existing `window.designcraft` keeps the functions it already has.
 pub fn install(ctx: egui::Context) -> Receiver<ControlRequest> {
     let (queue, requests) = channel::<ControlRequest>();
     let request: Request = Rc::new(move |method, params| {

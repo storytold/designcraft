@@ -237,7 +237,7 @@ cd apps/designcraft-web && trunk serve --release          # http://127.0.0.1:876
 You need [trunk](https://trunkrs.dev) and the `wasm32-unknown-unknown` target. The same app runs
 through eframe's web runner on WebGPU, falling back to WebGL2 (`?webgl` forces it; `?sample` opens
 the sample magazine). Open and Place use the browser's file picker, and dropping files works too.
-Save and Export download the file. The web build has no control channel.
+Save and Export download the file. The page can drive the app through `window.designcraft` (see `packaging/web/README.md`).
 
 ## Architecture
 
