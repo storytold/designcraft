@@ -1446,6 +1446,8 @@ pub(crate) fn hyphen_after(g: &Glyph) -> Glyph {
     h.rendered_char = '-';
     h.moji = Default::default();
     h.generated_text = None;
+    // The generated hyphen has no tracking after it, whatever the glyph before it had.
+    h.track_hang = 0.0;
     h
 }
 
