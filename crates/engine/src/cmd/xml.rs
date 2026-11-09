@@ -23,26 +23,86 @@ fn tagged(d: &Document) -> Vec<ItemId> {
     in_reading_order(d, |it| !it.xml_tag.is_empty())
 }
 
-/// Document-page objects that pass `keep`, in reading order, nested ones included.
+/// An object on a spread, or anchored in a story's text or table cells.
+fn any_item(d: &Document, id: ItemId) -> Option<&Item> {
+    d.item(id).or_else(|| d.anchored_item(id))
+}
+
+/// How deep text frames anchored in anchored text frames are followed.
+const MAX_ANCHOR_DEPTH: usize = 8;
+
+/// The text frames anchored in `st` (in its text and its table cells, in text order; the frames
+/// of an anchored group included), each followed by the text frames anchored in its own story.
+fn anchored_frames<'a>(d: &'a Document, st: &'a Story, depth: usize, out: &mut Vec<&'a Item>) {
+    if depth > MAX_ANCHOR_DEPTH {
+        return;
+    }
+    let mut objects = st.objects.iter();
+    for (pi, r) in st.para_ranges().into_iter().enumerate() {
+        if let Some(t) = st.para_table(pi) {
+            for c in &t.cells {
+                anchored_frames(d, &c.text, depth + 1, out);
+            }
+        }
+        for _ in st.text[r].matches(designcraft_doc::OBJECT_MARK) {
+            let Some(o) = objects.next() else { return };
+            let mut frames = Vec::new();
+            o.item.walk(&mut |it| {
+                if matches!(it.content, Content::Text(_)) {
+                    frames.push(it);
+                }
+            });
+            for it in frames {
+                out.push(it);
+                // A story threaded through several anchored frames is followed from its first.
+                if let Content::Text(tf) = &it.content
+                    && let Some(inner) = d.story(tf.story).filter(|s| s.frames.first() == Some(&it.id))
+                {
+                    anchored_frames(d, inner, depth + 1, out);
+                }
+            }
+        }
+    }
+}
+
+/// The text frames anchored in `it`'s story, when `it` is the story's first frame.
+fn anchored_in<'a>(d: &'a Document, it: &Item) -> Vec<&'a Item> {
+    let mut out = Vec::new();
+    if let Content::Text(tf) = &it.content
+        && let Some(st) = d.story(tf.story).filter(|s| s.frames.first() == Some(&it.id))
+    {
+        anchored_frames(d, st, 0, &mut out);
+    }
+    out
+}
+
+/// Document-page objects that pass `keep`, in reading order, nested ones included. A text frame
+/// anchored in a story (also in a table cell) comes right after the story's first frame.
 fn in_reading_order(d: &Document, keep: impl Fn(&Item) -> bool) -> Vec<ItemId> {
-    let mut keyed: Vec<((usize, i64, i64), ItemId)> = Vec::new();
+    let mut keyed: Vec<((usize, i64, i64), &Item)> = Vec::new();
     for (si, sp) in d.spreads.iter().enumerate() {
         let first = d.first_page_of_spread(si);
         for top in &sp.items {
             top.walk_placed(&mut |it: &Item, outer| {
-                if keep(it) {
-                    let b = it.placed_bounds(outer);
-                    let page = first + sp.page_at_x(b.center().x).unwrap_or(0);
-                    keyed.push(((page, (b.y0 * 10.0) as i64, (b.x0 * 10.0) as i64), it.id));
-                }
+                let b = it.placed_bounds(outer);
+                let page = first + sp.page_at_x(b.center().x).unwrap_or(0);
+                keyed.push(((page, (b.y0 * 10.0) as i64, (b.x0 * 10.0) as i64), it));
             });
         }
     }
     keyed.sort_by_key(|(k, _)| *k);
-    keyed.into_iter().map(|(_, i)| i).collect()
+    let mut out = Vec::new();
+    for (_, it) in keyed {
+        if keep(it) {
+            out.push(it.id);
+        }
+        out.extend(anchored_in(d, it).into_iter().filter(|a| keep(a)).map(|a| a.id));
+    }
+    out
 }
 
-/// Objects on the document pages whose centre lies on a page, not on the pasteboard.
+/// Objects on the document pages whose centre lies on a page, not on the pasteboard, and the
+/// text frames anchored in their stories.
 fn on_pages(d: &Document) -> std::collections::HashSet<ItemId> {
     let mut out = std::collections::HashSet::new();
     for sp in &d.spreads {
@@ -52,6 +112,7 @@ fn on_pages(d: &Document) -> std::collections::HashSet<ItemId> {
                 let c = it.placed_bounds(outer).center();
                 if sp.pages.iter().any(|pg| c.x >= pg.x && c.x <= pg.x + pg.width && c.y >= 0.0 && c.y <= pg.height) {
                     out.insert(it.id);
+                    out.extend(anchored_in(d, it).into_iter().map(|a| a.id));
                 }
             });
         }
@@ -95,13 +156,13 @@ fn auto_tag(s: &mut Session, p: &Value) -> Result<Value> {
     let mut used: std::collections::HashSet<String> = in_reading_order(d, |it| !it.xml_tag.is_empty())
         .into_iter()
         .filter(|i| !retagged.contains(i))
-        .filter_map(|i| d.item(i))
+        .filter_map(|i| any_item(d, i))
         .map(|it| it.xml_tag.clone())
         .collect();
     let mut next = [("text", 0usize), ("image", 0usize)];
     let mut plan: Vec<(ItemId, String, &'static str)> = Vec::new();
     for id in ids {
-        let Some(it) = d.item(id) else { continue };
+        let Some(it) = any_item(d, id) else { continue };
         let Some(kind) = frame_kind(it) else { continue };
         let name = it.name.trim();
         let tag = if use_names && valid_name(name) && !used.contains(name) {
@@ -126,9 +187,7 @@ fn auto_tag(s: &mut Session, p: &Value) -> Result<Value> {
                 let color = COLORS[d.xml.tags.len() % COLORS.len()];
                 d.xml.tags.push(XmlTag { name: tag.clone(), color });
             }
-            if let Some(it) = d.item_mut(*id) {
-                it.xml_tag = tag.clone();
-            }
+            d.update_placed_items(|it| it.id == *id, |it| it.xml_tag = tag.clone());
         }
         let tagged: Vec<Value> = plan.iter().map(|(id, tag, kind)| json!({"id": id.0, "tag": tag, "kind": kind})).collect();
         Ok(json!({"tagged": tagged}))
@@ -281,7 +340,7 @@ pub fn export_xml(d: &Document) -> String {
     // A story threaded through several tagged frames is written once, at its first.
     let mut written = std::collections::HashSet::new();
     for id in tagged(d) {
-        let Some(it) = d.item(id) else { continue };
+        let Some(it) = any_item(d, id) else { continue };
         let tag = &it.xml_tag;
         match &it.content {
             Content::Text(tf) => {
@@ -626,15 +685,13 @@ pub fn specs() -> Vec<CommandSpec> {
             let name = str_param(p, "name").unwrap_or("").to_string();
             let ids: Vec<ItemId> = {
                 let d = &s.doc()?.doc;
-                tagged(d).into_iter().filter(|i| d.item(*i).is_some_and(|it| it.xml_tag == name)).collect()
+                tagged(d).into_iter().filter(|i| any_item(d, *i).is_some_and(|it| it.xml_tag == name)).collect()
             };
             s.edit(|d, _| {
                 d.xml.tags.retain(|t| t.name != name);
                 d.xml.style_map.retain(|(_, t)| *t != name);
                 for id in &ids {
-                    if let Some(it) = d.item_mut(*id) {
-                        it.xml_tag.clear();
-                    }
+                    d.update_placed_items(|it| it.id == *id, |it| it.xml_tag.clear());
                 }
                 ok()
             })
@@ -679,9 +736,7 @@ pub fn specs() -> Vec<CommandSpec> {
                     d.xml.tags.push(XmlTag { name: t.clone(), color });
                 }
                 for id in &ids {
-                    if let Some(it) = d.item_mut(*id) {
-                        it.xml_tag = tag.clone().unwrap_or_default();
-                    }
+                    d.update_placed_items(|it| it.id == *id, |it| it.xml_tag = tag.clone().unwrap_or_default());
                 }
                 ok()
             })
@@ -691,7 +746,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Auto Tag Frames",
             [],
             None,
-            "{kinds?: [text, image] (default both), overwrite?: bool (retag tagged frames; default false), useNames?: bool (a valid XML Layers panel name is the tag unless another frame has it; default true)} — untagged frames on document pages get their name or text_1, image_1, … in reading order → {tagged: [{id, tag, kind}]}",
+            "{kinds?: [text, image] (default both), overwrite?: bool (retag tagged frames; default false), useNames?: bool (a valid XML Layers panel name is the tag unless another frame has it; default true)} — untagged frames on document pages, and text frames anchored in their text or table cells (right after their host), get their name or text_1, image_1, … in reading order → {tagged: [{id, tag, kind}]}",
             has_doc,
             auto_tag
         ),
@@ -730,7 +785,7 @@ pub fn specs() -> Vec<CommandSpec> {
             let d = &s.doc()?.doc;
             let elements: Vec<Value> = tagged(d)
                 .into_iter()
-                .filter_map(|id| d.item(id))
+                .filter_map(|id| any_item(d, id))
                 .map(|it| {
                     let (kind, text, tables) = match &it.content {
                         Content::Text(tf) => ("text", d.story(tf.story).map(|st| plain(&st.text)), d.story(tf.story).map(|st| st.tables.len())),
@@ -746,7 +801,7 @@ pub fn specs() -> Vec<CommandSpec> {
             const ID: &str = "xml.cells";
             let d = &s.doc()?.doc;
             let frame = p.get("id").and_then(Value::as_u64).map(ItemId).ok_or_else(|| bad(ID, "give the text frame's id"))?;
-            let sid = d.item(frame).and_then(|it| it.text_frame()).map(|tf| tf.story).ok_or_else(|| bad(ID, "not a text frame"))?;
+            let sid = any_item(d, frame).and_then(|it| it.text_frame()).map(|tf| tf.story).ok_or_else(|| bad(ID, "not a text frame"))?;
             let st = d.story(sid).ok_or_else(|| bad(ID, "no story"))?;
             // Where each cell is laid out: the first frame showing it.
             let composed = s.cache.get(d, sid, None);
@@ -877,8 +932,11 @@ fn import_xml(s: &mut Session, p: &Value) -> Result<Value> {
     });
     let d = &s.doc()?.doc;
     // Frames by tag, in reading order; each element takes the next free one.
-    let mut slots: Vec<(String, StoryId, bool)> =
-        tagged(d).into_iter().filter_map(|id| d.item(id)).filter_map(|it| it.text_frame().map(|tf| (it.xml_tag.clone(), tf.story, false))).collect();
+    let mut slots: Vec<(String, StoryId, bool)> = tagged(d)
+        .into_iter()
+        .filter_map(|id| any_item(d, id))
+        .filter_map(|it| it.text_frame().map(|tf| (it.xml_tag.clone(), tf.story, false)))
+        .collect();
     let mut image_slots: Vec<(String, ItemId, bool)> = tagged(d)
         .into_iter()
         .filter_map(|id| d.item(id))
@@ -1328,6 +1386,52 @@ mod tests {
         assert_eq!(bold(&s), ["Only"], "the style moves with the translation");
         s.execute("file.importXml", &json!({"text": "<Root><body>Only within. Not outside! End.</body></Root>"})).unwrap();
         assert_eq!(bold(&s), ["Only"], "XML without styled runs keeps the styles");
+    }
+
+    /// Text frames anchored in a story's text or in its table cells (as InDesign files have them)
+    /// take part: autoTag tags them right after their host frame, export writes them in that
+    /// order, and import fills them.
+    #[test]
+    fn anchored_text_frames_are_tagged_exported_and_filled() {
+        use designcraft_doc::{AnchorPosition, AnchoredObject, ItemId, StoryId};
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let host = s.execute("frame.create", &json!({"rect": [72, 72, 500, 400], "content": "text", "text": "Host", "caret": false})).unwrap();
+        let sid = StoryId(host["story"].as_u64().unwrap());
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 4, "focus": 4})).unwrap();
+        let tid = s.execute("table.insert", &json!({"rows": 1, "cols": 1})).unwrap()["table"].as_u64().unwrap();
+        let mut inner = Vec::new();
+        for text in ["In the text", "In the cell"] {
+            let f = s.execute("frame.create", &json!({"rect": [600, 72, 700, 120], "content": "text", "text": text, "caret": false})).unwrap();
+            inner.push(ItemId(f["id"].as_u64().unwrap()));
+        }
+        // Move both frames off the spread into the host's text and its cell (the stories stay).
+        s.edit(|d, _| {
+            let items: Vec<_> = inner.iter().map(|id| d.item(*id).unwrap().clone()).collect();
+            std::sync::Arc::make_mut(&mut d.spreads[0]).items.retain(|i| !inner.contains(&i.id));
+            let st = d.story_mut(sid).unwrap();
+            st.insert_object(2, AnchoredObject::new(items[0].clone(), AnchorPosition::default()));
+            let t = std::sync::Arc::make_mut(st.tables.get_mut(&tid).unwrap());
+            t.cells[0].text.insert_object(0, AnchoredObject::new(items[1].clone(), AnchorPosition::default()));
+            Ok(())
+        })
+        .unwrap();
+        let r = s.execute("xml.autoTag", &json!({})).unwrap();
+        let ids: Vec<u64> = r["tagged"].as_array().unwrap().iter().map(|t| t["id"].as_u64().unwrap()).collect();
+        assert_eq!(ids, vec![host["id"].as_u64().unwrap(), inner[0].0, inner[1].0], "{r}");
+        let x = s.execute("file.exportXml", &json!({})).unwrap()["text"].as_str().unwrap().to_string();
+        let at = |t: &str| x.find(t).unwrap_or_else(|| panic!("{t} in {x}"));
+        assert!(at("<text_2>In the text</text_2>") < at("<text_3>In the cell</text_3>"), "{x}");
+        let structure = s.execute("xml.structure", &json!({})).unwrap();
+        assert_eq!(structure["elements"].as_array().unwrap().len(), 3, "{structure}");
+        s.execute("file.importXml", &json!({"text": "<Root><text_2>Im Text</text_2><text_3>In der Zelle</text_3></Root>"})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        let story_of = |id: ItemId| d.anchored_item(id).and_then(|it| it.text_frame()).map(|tf| d.story(tf.story).unwrap().text.clone());
+        assert_eq!(story_of(inner[0]).as_deref(), Some("Im Text"));
+        assert_eq!(story_of(inner[1]).as_deref(), Some("In der Zelle"));
+        // Untagging reaches an anchored frame too.
+        s.execute("xml.tag", &json!({"tag": null, "ids": [inner[1].0]})).unwrap();
+        assert!(s.doc().unwrap().doc.anchored_item(inner[1]).unwrap().xml_tag.is_empty());
     }
 
     /// Cells from a file keep its IDs: export names each cell by its `id`, and import puts a cell
