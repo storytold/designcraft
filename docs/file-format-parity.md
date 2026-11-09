@@ -1,6 +1,6 @@
 # File format parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-02 · **Change:** minor (package PDF soft effects, hyperlinks and export warnings; PDF/X-4 visible unembedded font detection, #909; IDML liquid guide types, #872; .indd and .indt open through indd-utils; XLSX cached values preserve numeric precision and text; shared print spooler; Windows CI passes; content-indexed asset deduplication, #727) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-09 · **Change:** minor (IDML ruler guide colours and view thresholds; package PDF soft effects, hyperlinks and export warnings; PDF/X-4 visible unembedded font detection, #909; IDML liquid guide types, #872; .indd and .indt open through indd-utils; XLSX cached values preserve numeric precision and text; shared print spooler; Windows CI passes; content-indexed asset deduplication, #727) · **Target:** Adobe InDesign 2026 (21.6)
 
 Every format InDesign 2026 reads or writes, with DesignCraft's support, fidelity and tests. The
 InDesign list comes from its bundle's `Info.plist` (`CFBundleDocumentTypes`,
@@ -33,8 +33,10 @@ score below).
 
 IDML preserves stored page liquid rules and distinguishes liquid guides from ordinary ruler
 guides on document and parent pages. Guide positions, orientation, Fit to Page, lock state and
-layer survive interchange; literal XML and round-trip tests are in
-`crates/idml/src/tests/liquid_guides.rs`. Object liquid pins and resize constraints remain unmapped
+layer survive interchange (literal XML and round-trip tests in
+`crates/idml/src/tests/liquid_guides.rs`), and so do each guide's colour (any of the 37 UI colour
+names, or RGB) and view threshold, and those new guides get (`GuidePreference`); tests in
+`crates/idml/src/tests/ruler_guides.rs`. Object liquid pins and resize constraints remain unmapped
 (#872); this is not full liquid-layout interchange support.
 
 ## Output
@@ -122,6 +124,7 @@ up to 30 points.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-09 | minor | IDML reads and writes each ruler guide's colour and view threshold (`GuideColor`, `ViewThreshold`) and the defaults for new guides (`GuidePreference` `RulerGuidesColor`, `RulerGuidesViewThreshold`) |
 | 2026-10-19 | minor | PDF/X-4 export and `validate-pdf` report visible unembedded fonts by name and page, including placed forms; invisible text is exempt, operation- or depth-limited checks report incompleteness, and automatic font repair remains missing (#909) |
 | 2026-10-15 | minor | IDML retains liquid versus ruler guide types on document and parent pages, with literal XML and mixed-guide round-trip coverage; object liquid constraints remain unsupported (#872) |
 | 2026-10-13 | minor | Asset loading and compaction use content fingerprints with exact equality checks; tests cover equal-sized distinct buffers, shared copies, independent links and missing data (#727) |
