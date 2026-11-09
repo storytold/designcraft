@@ -18,7 +18,7 @@ pub fn specs() -> Vec<CommandSpec> {
         "Ruler Guides…",
         ["Layout"],
         None,
-        "{viewThreshold?: 5..4000 (percent; the guides are hidden below this zoom), color?: a guide colour name (Light Blue, Red, Green, Blue, Yellow, Magenta, Cyan, Gray, Black, Orange, Dark Green, Teal, Tan, Brown, Violet, Gold) or [r, g, b] (0–255), guides?: [{spread?, page, index}] (default: the selected guides), defaults?: bool (set what new guides get even with guides selected)} → {guides: n}; with no guide named or selected it sets the colour and view threshold of new ruler guides → {defaults: {viewThreshold, color}}. Options left out keep each guide's own",
+        "{viewThreshold?: 5..4000 (percent; the guides are hidden below this zoom), color?: a name from InDesign's UI colour list as for layers (Light Blue, Red, Green, … Grid Green, White; any case) or [r, g, b] (0–255), guides?: [{spread?, page, index}] (default: the selected guides), defaults?: bool (set what new guides get even with guides selected)} → {guides: n}; with no guide named or selected it sets the colour and view threshold of new ruler guides → {defaults: {viewThreshold, color}}. Options left out keep each guide's own",
         has_doc,
         run
     )]
@@ -275,6 +275,9 @@ mod tests {
         let list = s.execute("guide.list", &json!({})).unwrap();
         assert_eq!((&list[0]["viewThreshold"], &list[0]["color"]), (&json!(5.0), &json!("Cyan")));
         assert_eq!((&list[1]["viewThreshold"], &list[1]["color"]), (&json!(2500.0), &json!([12, 34, 56])));
+        // Any of InDesign's UI colours, by name in any case, and listed by its name.
+        s.execute(ID, &json!({"color": "grid green"})).unwrap();
+        assert_eq!(s.execute("guide.list", &json!({})).unwrap()[1]["color"], "Grid Green");
     }
 
     #[test]

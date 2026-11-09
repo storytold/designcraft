@@ -147,3 +147,68 @@ fn guide_options_are_written_and_read_back() {
     assert_eq!(options(&back), looks);
     assert_eq!(back.settings.ruler_guides, source.settings.ruler_guides);
 }
+
+/// Every one of InDesign's UI colours (IDML `UIColors`) a guide can have is read as itself and
+/// written back by the same name.
+#[test]
+fn every_ui_colour_name_round_trips() {
+    const UI_COLORS: [&str; 37] = [
+        "LightBlue",
+        "Red",
+        "Green",
+        "Blue",
+        "Yellow",
+        "Magenta",
+        "Cyan",
+        "Gray",
+        "Black",
+        "Orange",
+        "DarkGreen",
+        "Teal",
+        "Tan",
+        "Brown",
+        "Violet",
+        "Gold",
+        "DarkBlue",
+        "Pink",
+        "Lavender",
+        "BrickRed",
+        "OliveGreen",
+        "Peach",
+        "Burgundy",
+        "GrassGreen",
+        "Ochre",
+        "Purple",
+        "LightGray",
+        "Charcoal",
+        "GridBlue",
+        "GridOrange",
+        "Fiesta",
+        "LightOlive",
+        "Lipstick",
+        "CuteTeal",
+        "Sulphur",
+        "GridGreen",
+        "White",
+    ];
+    let props: Vec<String> = UI_COLORS.iter().map(|n| named("GuideColor", n)).collect();
+    let guides: Vec<(&str, &str)> = props.iter().map(|p| (r#"ViewThreshold="5""#, p.as_str())).collect();
+    let d = import_idml(&fixture(&guides, None)).unwrap();
+    let colors: Vec<[u8; 3]> = options(&d).iter().map(RulerGuideOptions::rgb).collect();
+    let distinct: std::collections::HashSet<_> = colors.iter().collect();
+    assert_eq!(distinct.len(), UI_COLORS.len(), "each name is a colour of its own: {colors:?}");
+    let bytes = export_idml(&d);
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).unwrap();
+    let mut b = Vec::new();
+    archive.by_name(&format!("Spreads/Spread_u{:x}.xml", d.spreads[0].id.0)).unwrap().read_to_end(&mut b).unwrap();
+    let spread = xml::parse(&b).unwrap();
+    let written: Vec<String> = spread
+        .find("Spread")
+        .unwrap()
+        .find("Page")
+        .unwrap()
+        .find_all("Guide")
+        .map(|g| g.prop_el("GuideColor").unwrap().text_content().trim().to_string())
+        .collect();
+    assert_eq!(written, UI_COLORS);
+}
