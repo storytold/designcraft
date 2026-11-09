@@ -75,6 +75,10 @@ fn activate_inner(app: &mut DesignApp, id: &str, params: &Value) {
         crate::dialogs::open_create_guides(app);
         return;
     }
+    if params.is_null() && id == "guide.options" {
+        let _ = crate::dialogs::open_ruler_guides(app);
+        return;
+    }
     if params.is_null() && id == "layout.marginsAndColumns" {
         crate::dialogs::open_margins_and_columns(app);
         return;

@@ -297,6 +297,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Pages", "Сторінки"),
     ("Margins and Columns…", "Поля та колонки…"),
     ("Create Guides…", "Створити напрямні…"),
+    ("Ruler Guides…", "Напрямні лінійки…"),
+    ("Ruler Guides", "Напрямні лінійки"),
     ("Numbering & Section Options…", "Параметри нумерації та розділів…"),
     ("Story Direction", "Напрямок тексту"),
     ("Horizontal", "Горизонтально"),

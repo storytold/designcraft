@@ -1,4 +1,4 @@
-//! Swatch Options, Color Group Options and Layer Options.
+//! Swatch Options, Color Group Options, Layer Options and Layout › Ruler Guides.
 
 use designcraft_color::{Color, ColorType, SwatchValue};
 use serde_json::{Map, Value, json};
@@ -274,31 +274,12 @@ pub fn open_layer_options(app: &mut DesignApp, id: Option<u64>) -> Result<(), St
 
 pub fn layer_options(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     let lang = app.ui.language.as_str();
-    let rgb: [u8; 3] = d.fields.get("rgb").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or([0, 0, 0]);
-    let named = designcraft_doc::LAYER_COLORS.iter().find(|(_, c)| *c == rgb).map(|(n, _)| *n);
     egui::Grid::new("layer_options").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
         caption(ui, lang, "Name:");
         text_field_named(ui, d, "name", 220.0, tr(lang, "Name"));
         ui.end_row();
         caption(ui, lang, "Color:");
-        ui.horizontal(|ui| {
-            let combo = craft_ui::ComboBox::from_id_salt("layer_color")
-                .selected_text(crate::rtl::widget(ui, tr(lang, named.unwrap_or("Custom"))))
-                .width(140.0)
-                .show_ui(ui, |ui| {
-                    for (n, c) in designcraft_doc::LAYER_COLORS {
-                        let swatch = egui::RichText::new("■ ").color(egui::Color32::from_rgb(c[0], c[1], c[2]));
-                        let mut job = egui::text::LayoutJob::default();
-                        swatch.append_to(&mut job, ui.style(), egui::FontSelection::Default, egui::Align::Center);
-                        egui::RichText::new(tr(lang, n)).append_to(&mut job, ui.style(), egui::FontSelection::Default, egui::Align::Center);
-                        if ui.selectable_label(named == Some(*n), job).clicked() {
-                            d.fields.insert("rgb".into(), json!(c));
-                        }
-                    }
-                });
-            let _ = crate::widgets::name_combo(combo, tr(lang, "Color"));
-            super::color_field(ui, d, "rgb");
-        });
+        ui_color_choice(ui, d, lang, "layer_color");
         ui.end_row();
     });
     ui.add_space(6.0);
@@ -320,6 +301,98 @@ pub fn confirm_layer_options(app: &mut DesignApp, d: &Dialog) -> Result<Value, S
         p[k] = json!(d.b(k));
     }
     app.run("layer.set", p)
+}
+
+/// The UI colour list of Layer Options and Ruler Guides, beside a custom colour button: the
+/// named colours, each with its swatch, and Custom for any other. The colour is the dialog's
+/// `rgb` ([r, g, b]); without one (guides of several colours) the list shows none.
+fn ui_color_choice(ui: &mut egui::Ui, d: &mut Dialog, lang: &str, salt: &str) {
+    let rgb: Option<[u8; 3]> = d.fields.get("rgb").and_then(|v| serde_json::from_value(v.clone()).ok());
+    let named = rgb.and_then(|rgb| designcraft_doc::LAYER_COLORS.iter().find(|(_, c)| *c == rgb).map(|(n, _)| *n));
+    let shown = match (rgb, named) {
+        (None, _) => "",
+        (Some(_), Some(n)) => n,
+        (Some(_), None) => "Custom",
+    };
+    ui.horizontal(|ui| {
+        let combo = craft_ui::ComboBox::from_id_salt(salt).selected_text(crate::rtl::widget(ui, tr(lang, shown))).width(140.0).show_ui(ui, |ui| {
+            for (n, c) in designcraft_doc::LAYER_COLORS {
+                let swatch = egui::RichText::new("■ ").color(egui::Color32::from_rgb(c[0], c[1], c[2]));
+                let mut job = egui::text::LayoutJob::default();
+                swatch.append_to(&mut job, ui.style(), egui::FontSelection::Default, egui::Align::Center);
+                egui::RichText::new(tr(lang, n)).append_to(&mut job, ui.style(), egui::FontSelection::Default, egui::Align::Center);
+                if ui.selectable_label(named == Some(*n), job).clicked() {
+                    d.fields.insert("rgb".into(), json!(c));
+                }
+            }
+        });
+        let _ = crate::widgets::name_combo(combo, tr(lang, "Color"));
+        super::color_field(ui, d, "rgb");
+    });
+}
+
+/// The Ruler Guides dialog's id.
+pub const RULER_GUIDES: &str = "rulerGuides";
+
+/// Layout › Ruler Guides…: the colour and view threshold of the selected guides, or, with none
+/// selected, those new guides get. An option the selected guides don't share starts blank and
+/// stays as each guide has it unless it is changed.
+pub fn open_ruler_guides(app: &mut DesignApp) -> Result<(), String> {
+    let st = app.session.active().ok_or("no document open")?;
+    let doc = &st.doc;
+    let looks: Vec<designcraft_doc::RulerGuideOptions> =
+        st.selection.guides.iter().filter_map(|g| doc.spread(g.spread)?.pages.get(g.page)?.guides.get(g.index).map(|g| g.options)).collect();
+    let defaults = looks.is_empty();
+    let looks = if defaults { vec![doc.settings.ruler_guides] } else { looks };
+    // A value all of them share, or null.
+    let shared = |f: &dyn Fn(&designcraft_doc::RulerGuideOptions) -> Value| {
+        let first = looks.first().map(f).unwrap_or(Value::Null);
+        if looks.iter().all(|o| f(o) == first) { first } else { Value::Null }
+    };
+    let threshold = shared(&|o| json!(threshold_text(o.view_threshold))).as_str().unwrap_or_default().to_string();
+    let rgb = shared(&|o| json!(o.rgb()));
+    let f = json!({"threshold": threshold, "threshold0": threshold, "rgb": rgb, "rgb0": rgb, "defaults": defaults});
+    app.ui.dialog = Some(Dialog::new(RULER_GUIDES, f));
+    Ok(())
+}
+
+/// A view threshold (1.0 = 100%) as the dialog shows it: "150%".
+fn threshold_text(t: f64) -> String {
+    format!("{}%", (t * 10_000.0).round() / 100.0)
+}
+
+/// Ruler Guides, laid out as InDesign's: View Threshold, then Color.
+pub fn ruler_guides(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
+    let lang = app.ui.language.as_str();
+    egui::Grid::new("ruler_guides").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+        caption(ui, lang, "View Threshold:");
+        text_field_named(ui, d, "threshold", 80.0, tr(lang, "View Threshold"));
+        ui.end_row();
+        caption(ui, lang, "Color:");
+        ui_color_choice(ui, d, lang, "ruler_guide_color");
+        ui.end_row();
+    });
+    status(ui, d);
+}
+
+/// OK: `guide.options` with what the dialog changed. A threshold is a percent, "%" optional.
+pub fn confirm_ruler_guides(app: &mut DesignApp, d: &Dialog) -> Result<Value, String> {
+    let mut p = json!({});
+    let threshold = d.s("threshold");
+    if threshold != d.s("threshold0") {
+        let percent = threshold.trim().trim_end_matches('%').trim().parse::<f64>().ok().filter(|v| v.is_finite());
+        let bad = || tr(&app.ui.language, "View Threshold must be a percentage from 5% to 4000%.").to_string();
+        p["viewThreshold"] = json!(percent.ok_or_else(bad)?);
+    }
+    if d.fields.get("rgb") != d.fields.get("rgb0")
+        && let Some(rgb) = d.fields.get("rgb").filter(|v| !v.is_null())
+    {
+        p["color"] = rgb.clone();
+    }
+    if d.b("defaults") {
+        p["defaults"] = json!(true);
+    }
+    app.run("guide.options", p)
 }
 
 #[cfg(test)]
@@ -410,6 +483,59 @@ mod tests {
         h.get_by_label("  OK  ").click();
         h.run_steps(3);
         assert!(h.state().session.active().unwrap().doc.swatch("[Black]").is_some());
+    }
+
+    /// Layout › Ruler Guides… on two selected guides of different colours: the colour starts
+    /// blank, a new threshold reaches both, and each keeps its own colour.
+    #[test]
+    fn ruler_guides_sets_the_threshold_of_the_selected_guides_and_keeps_their_colours() {
+        let mut app = app();
+        app.run("guide.add", json!({"orientation": "vertical", "position": 100.0, "page": 0})).unwrap();
+        app.run("guide.add", json!({"orientation": "horizontal", "position": 200.0, "page": 0})).unwrap();
+        app.run("guide.options", json!({"color": "Red"})).unwrap();
+        app.run("guide.select", json!({"guides": [{"page": 0, "index": 0}, {"page": 0, "index": 1}]})).unwrap();
+        let mut h = harness(app, |_, _| {});
+        crate::menus::activate(h.state_mut(), "guide.options", &serde_json::Value::Null);
+        h.run_steps(3);
+        let d = h.state().ui.dialog.clone().expect("Ruler Guides is open");
+        assert_eq!(d.id, super::RULER_GUIDES);
+        assert_eq!((d.s("threshold"), d.fields["rgb"].clone(), d.b("defaults")), ("5%".to_string(), serde_json::Value::Null, false));
+        retype(&mut h, "5%", "250%");
+        h.get_by_label("  OK  ").click();
+        h.run_steps(3);
+        assert!(h.state().ui.dialog.is_none(), "{:?}", h.state().ui.dialog);
+        let doc = &h.state().session.active().unwrap().doc;
+        let looks: Vec<_> = doc.spreads[0].pages[0].guides.iter().map(|g| g.options).collect();
+        assert_eq!(looks.iter().map(|o| o.view_threshold).collect::<Vec<_>>(), [2.5, 2.5]);
+        assert_eq!(looks.iter().map(|o| o.color).collect::<Vec<_>>(), [None, Some([255, 0, 0])]);
+    }
+
+    /// With no guide selected the dialog shows and sets what new guides get; a threshold out of
+    /// range keeps it open with the reason and changes nothing.
+    #[test]
+    fn ruler_guides_with_no_guide_selected_sets_the_defaults_for_new_guides() {
+        let mut h = harness(app(), |_, _| {});
+        crate::menus::activate(h.state_mut(), "guide.options", &serde_json::Value::Null);
+        h.run_steps(3);
+        let d = h.state().ui.dialog.clone().expect("Ruler Guides is open");
+        assert_eq!((d.s("threshold"), d.fields["rgb"].clone(), d.b("defaults")), ("5%".to_string(), json!([0, 255, 255]), true));
+        retype(&mut h, "5%", "4001");
+        h.get_by_label("  OK  ").click();
+        h.run_steps(3);
+        let d = h.state().ui.dialog.clone().expect("a bad threshold keeps the dialog open");
+        assert!(!d.s("status").is_empty());
+        let defaults = |h: &Harness<'static, DesignApp>| h.state().session.active().unwrap().doc.settings.ruler_guides;
+        assert!(defaults(&h).is_default());
+        // The colour list's own choice, then a threshold in range.
+        h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Color").click();
+        h.run_steps(2);
+        h.get_by_label("■ Magenta").click();
+        h.run_steps(2);
+        retype(&mut h, "4001", "75");
+        h.get_by_label("  OK  ").click();
+        h.run_steps(3);
+        assert!(h.state().ui.dialog.is_none(), "{:?}", h.state().ui.dialog);
+        assert_eq!(defaults(&h), designcraft_doc::RulerGuideOptions { color: Some([255, 79, 255]), view_threshold: 0.75 });
     }
 
     #[test]

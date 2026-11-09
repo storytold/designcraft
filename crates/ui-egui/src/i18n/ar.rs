@@ -297,6 +297,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Page", "صفحة"),
     ("Margins and Columns…", "الهوامش والأعمدة…"),
     ("Create Guides…", "إنشاء أدلة…"),
+    ("Ruler Guides…", "أدلة المسطرة…"),
+    ("Ruler Guides", "أدلة المسطرة"),
     ("Numbering & Section Options…", "خيارات الترقيم والأقسام…"),
     ("Go to Page…", "انتقال إلى صفحة…"),
     ("Go to Page", "انتقال إلى صفحة"),

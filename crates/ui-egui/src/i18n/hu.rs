@@ -342,6 +342,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Create Frame", "Keret létrehozása"),
     ("Create Guides", "Segédvonalak létrehozása"),
     ("Create Guides…", "Segédvonalak létrehozása…"),
+    ("Ruler Guides…", "Vonalzó-segédvonalak…"),
+    ("Ruler Guides", "Vonalzó-segédvonalak"),
     ("Create Line", "Vonal létrehozása"),
     ("Create Links When Placing Text Files", "Csatolások létrehozása szövegfájlok elhelyezésekor"),
     ("Create Merged Document…", "Egyesített dokumentum létrehozása…"),

@@ -105,6 +105,7 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "ui:app.parentOptions",
             "<",
             "cmd:layout.marginsAndColumns",
+            "cmd:guide.options",
             "cmd:layout.createGuides",
             "cmd:layout.createAlternate",
             "ui:app.alternateLayoutOptions",

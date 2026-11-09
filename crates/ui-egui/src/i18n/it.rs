@@ -294,6 +294,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Pages", "Pagine"),
     ("Margins and Columns…", "Margini e colonne…"),
     ("Create Guides…", "Crea guide…"),
+    ("Ruler Guides…", "Guide righello…"),
+    ("Ruler Guides", "Guide righello"),
     ("Numbering & Section Options…", "Opzioni di numerazione e sezione…"),
     ("Story Direction", "Direzione del brano"),
     ("Horizontal", "Orizzontale"),

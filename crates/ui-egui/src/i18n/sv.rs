@@ -99,6 +99,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Page", "Sida"),
     ("Margins and Columns…", "Marginaler och spalter…"),
     ("Create Guides…", "Skapa stödlinjer…"),
+    ("Ruler Guides…", "Linjalstödlinjer…"),
+    ("Ruler Guides", "Linjalstödlinjer"),
     ("Numbering & Section Options…", "Numrerings- och avsnittsalternativ…"),
     ("Go to Page…", "Gå till sida…"),
     ("Go to Page", "Gå till sida"),

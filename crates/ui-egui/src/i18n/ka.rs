@@ -207,6 +207,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Pages", "გვერდები"),
     ("Margins and Columns…", "ველები და სვეტები…"),
     ("Create Guides…", "დამხმარე ხაზების შექმნა…"),
+    ("Ruler Guides…", "სახაზავის დამხმარე ხაზები…"),
+    ("Ruler Guides", "სახაზავის დამხმარე ხაზები"),
     ("Numbering & Section Options…", "დანომვრისა და სექციის პარამეტრები…"),
     ("Story Direction", "ტექსტის მიმართულება"),
     ("Horizontal", "ჰორიზონტალური"),

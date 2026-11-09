@@ -183,6 +183,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Pages", "Strony"),
     ("Margins and Columns…", "Marginesy i łamy…"),
     ("Create Guides…", "Utwórz linie pomocnicze…"),
+    ("Ruler Guides…", "Linie pomocnicze linijki…"),
+    ("Ruler Guides", "Linie pomocnicze linijki"),
     ("Numbering & Section Options…", "Opcje numeracji i sekcji…"),
     ("Story Direction", "Kierunek tekstu"),
     ("Horizontal", "Poziomo"),

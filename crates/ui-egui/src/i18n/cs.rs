@@ -184,6 +184,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Pages", "Stránky"),
     ("Margins and Columns…", "Okraje a sloupce…"),
     ("Create Guides…", "Vytvořit vodítka…"),
+    ("Ruler Guides…", "Vodítka pravítka…"),
+    ("Ruler Guides", "Vodítka pravítka"),
     ("Numbering & Section Options…", "Možnosti číslování a oddílů…"),
     ("Story Direction", "Směr textu"),
     ("Horizontal", "Vodorovně"),

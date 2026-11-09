@@ -265,6 +265,24 @@ fn object_edge_snaps_when_guide_snap_is_off() {
     assert!(matches!(hit.guides.first(), Some(Overlay::Guide { .. })));
 }
 
+/// Layout › Ruler Guides › View Threshold: below it a guide is not drawn, and does not attract
+/// either; from it up it does.
+#[test]
+fn a_guide_below_its_view_threshold_is_not_a_target() {
+    let far = Rect::new(400.0, 400.0, 420.0, 420.0);
+    let (mut doc, _, _) = doc_with_items(far, far, 104.0);
+    Arc::make_mut(&mut doc.spreads[0]).pages[0].guides[0].options.view_threshold = 2.0;
+    let cache = Cache::new();
+    let layout = CanvasLayout::new(&doc, false);
+    let sel = Selection::default();
+    let line = Rect::new(103.0, 100.0, 103.0, 300.0);
+    for (zoom, pulled) in [(1.0, false), (1.99, false), (2.0, true), (3.0, true)] {
+        let cx = ToolContext { zoom, ..ctx_on(&doc, &sel, &cache, &layout) };
+        let dx = snap(&cx, move_req(line, &[])).delta.x;
+        assert_eq!(dx, if pulled { 1.0 } else { 0.0 }, "at {zoom}");
+    }
+}
+
 #[test]
 fn hidden_layer_guide_is_not_a_target() {
     let (mut doc, moving, _) = doc_with_items(Rect::new(80.0, 100.0, 102.0, 140.0), Rect::new(300.0, 100.0, 340.0, 140.0), 104.0);
