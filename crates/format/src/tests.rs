@@ -1060,3 +1060,22 @@ fn duplicate_ids_at_the_top_of_the_range_do_not_overflow() {
     assert_eq!(all_item_ids(&d), vec![u64::MAX, u64::MAX]);
     assert!(d.check().is_err());
 }
+
+#[test]
+fn formats_2_through_4_do_not_guess_legacy_baseline_metrics() {
+    let mut doc = Document::new(&NewDocument::default());
+    let layer = doc.default_layer();
+    let (id, _) = doc.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 200.0, 200.0), layer, "Modern", ParaFormat::default()).unwrap();
+    for version in 2..=4 {
+        let mut z = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        z.start_file("meta.json", zip::write::SimpleFileOptions::default()).unwrap();
+        z.write_all(serde_json::to_string(&json!({"format":"designcraft","version":version})).unwrap().as_bytes()).unwrap();
+        z.start_file("document.json", zip::write::SimpleFileOptions::default()).unwrap();
+        z.write_all(&serde_json::to_vec(&doc).unwrap()).unwrap();
+        let loaded = load(&z.finish().unwrap().into_inner()).unwrap();
+        assert!(
+            !loaded.item(id).unwrap().text_frame().unwrap().options.legacy_first_baseline,
+            "format {version} cannot distinguish pre/post metric-change documents"
+        );
+    }
+}

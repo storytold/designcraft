@@ -8663,3 +8663,17 @@ fn cross_reference_text_breaks_at_its_spaces() {
         }
     }
 }
+
+#[test]
+fn legacy_vertical_embox_keeps_the_historical_ascent() {
+    use designcraft_doc::FirstBaseline;
+    let db = designcraft_fonts::FontDb::global();
+    db.add_font(typo_test_font("LegacyVert 09", Some(700)));
+    let at = |legacy| {
+        first_baseline_in_dir("LegacyVert 09", true, |o| {
+            o.legacy_first_baseline = legacy;
+            o.first_baseline = FirstBaseline::EmboxHeight;
+        })
+    };
+    assert!((at(true) - at(false)).abs() < 0.001);
+}

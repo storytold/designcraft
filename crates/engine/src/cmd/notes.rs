@@ -67,6 +67,7 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
         let r = r.start.min(st.len())..r.end.min(st.len());
         st.delete(r.clone());
         let id = st.insert_note(r.start, &text, para).ok_or_else(|| bad("footnote.insert", "the story's footnotes don't match their references"))?;
+        d.adjust_text_ranges(t.story, r, designcraft_doc::FOOTNOTE_REF.len_utf8());
         sel.text = Some(TextSel { story: t.story, anchor: text.len(), focus: text.len(), frame: t.frame, cell: Some(CellAddr::footnote(id)) });
         Ok(json!({"story": t.story.0, "id": id}))
     })?;
@@ -162,8 +163,10 @@ fn delete(s: &mut Session, p: &Value) -> Result<Value> {
     let moved = s.edit(|d, sel| {
         let st = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
         let at = st.note_anchor(id).ok_or_else(|| bad("footnote.delete", format!("no footnote {id}")))?;
-        follow_delete(sel, sid, at..at + designcraft_doc::FOOTNOTE_REF.len_utf8());
-        st.delete(at..at + designcraft_doc::FOOTNOTE_REF.len_utf8());
+        let len = designcraft_doc::FOOTNOTE_REF.len_utf8();
+        follow_delete(sel, sid, at..at + len);
+        st.delete(at..at + len);
+        d.adjust_text_ranges(sid, at..at + len, 0);
         let moved = sel.text.is_some_and(|t| t.story == sid && t.cell == Some(CellAddr::footnote(id)));
         if moved {
             sel.text = Some(TextSel::caret(sid, at));

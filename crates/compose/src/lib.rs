@@ -4085,6 +4085,7 @@ fn first_baseline_offset(f: &FrameSpec, lead: f64, asc: f64, tops: Tops) -> f64 
             FirstBaseline::XHeight => asc * 0.5,
             FirstBaseline::Leading => lead,
             FirstBaseline::Fixed => 0.0,
+            FirstBaseline::EmboxHeight if f.vertical => asc,
             FirstBaseline::EmboxHeight => tops.em,
         };
         return off.max(f.opts.first_baseline_min);

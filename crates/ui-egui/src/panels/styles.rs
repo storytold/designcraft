@@ -254,6 +254,7 @@ mod tests {
         app.run("style.character.create", json!({"name": "Emphasis", "chars": {"underline": true}})).unwrap();
         app.run("style.character.apply", json!({"name": "Emphasis"})).unwrap();
         app.run("type.char", json!({"fill": "[Paper]"})).unwrap();
+        // These assertions cover style overrides; optional UI-symbol fonts are not required.
         let mut h =
             Harness::builder().allow_missing_glyphs().with_size(vec2(460.0, 300.0)).build_ui_state(|ui, app: &mut DesignApp| paragraph(app, ui), app);
         h.run_steps(3);
@@ -290,6 +291,7 @@ mod tests {
         app.run("type.para", json!({"spaceAfter": 6})).unwrap();
         let a = app.run("type.selectionAttrs", json!({})).unwrap();
         assert_eq!((a["paraOverrides"].as_u64(), a["charOverrides"].as_u64()), (Some(0), Some(0)));
+        // These assertions cover style overrides; optional UI-symbol fonts are not required.
         let mut h =
             Harness::builder().allow_missing_glyphs().with_size(vec2(360.0, 240.0)).build_ui_state(|ui, app: &mut DesignApp| paragraph(app, ui), app);
         h.run_steps(3);

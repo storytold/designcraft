@@ -71,7 +71,7 @@ so an unrelated file in the package folder cannot replace missing artwork.
 
 Format 4 remains reserved for upstream placed-layer capabilities. Working files that omit linked originals use native format 5. Portable or complete working files
 keep the older embedded format even when linked mode is selected. Older applications must ask for an update
-for a format-4 file rather than open it with silently missing artwork. Ordinary embedded files remain
+for a format-5 file rather than open it with silently missing artwork. Ordinary embedded files remain
 format 2 (format 3 when retaining EPS originals); opening older files never converts them to external storage automatically.
 
 Native format 1 layouts retain their original first-baseline calculations when opened. Saves
@@ -80,3 +80,7 @@ refuse them instead of silently moving text. Current documents without this sett
 format 2 (embedded), format 3 (embedded EPS), format 4 (placed layer options) or format 5 (linked). Changing the first-baseline kind in Text Frame
 Options adopts the current calculation for that frame. Reconfirming the same kind or changing
 unrelated frame options retains compatibility.
+
+### Legacy baseline scope
+
+Automatic migration applies only to format 1. Format 2 was introduced by the Keep Lines Together default change before the first-baseline metric changes; versions 2–4 therefore cannot identify which metrics originally composed a file. Automatically marking every such file legacy would move documents already composed with modern metrics. Their stored options remain unchanged. Inspect an affected layout before choosing first-baseline settings; format version alone cannot recover its original typography. Vertical Em Box Height keeps the historical ascent offset in both compatibility and modern modes.
