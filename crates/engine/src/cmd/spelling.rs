@@ -588,6 +588,14 @@ mod hyphenation_exception_tests {
 #[cfg(test)]
 mod hungarian_integration_tests {
     use super::*;
+    /// Require explicit selection of the verified Hungarian pack for these opt-in integration tests.
+    fn require_hu_pack() {
+        assert!(
+            option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")),
+            "select the verified hu Language pack before explicitly running this test"
+        );
+    }
+
     /// Build a small mixed-language document for spelling regressions.
     fn document(text: &str, lang: &str) -> (Session, u64) {
         let mut s = Session::new();
@@ -649,10 +657,7 @@ mod hungarian_integration_tests {
     #[test]
     #[ignore = "requires the verified hu Language pack; see docs/hungarian-language-support.md"]
     fn suggestions_are_cached_across_occurrences_and_stories() {
-        assert!(
-            option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")),
-            "select the verified hu Language pack before explicitly running this test"
-        );
+        require_hu_pack();
         let text = "hejesírás hejesírás";
         let (mut s, first) = document(text, "hu");
         let r = s.execute("frame.create", &json!({"rect":[36,36,500,700],"content":"text","text":text})).unwrap();
@@ -687,10 +692,7 @@ mod hungarian_integration_tests {
     #[test]
     #[ignore = "requires the verified hu Language pack; see docs/hungarian-language-support.md"]
     fn suggestion_cache_preserves_language_case_and_unsupported_runs() {
-        assert!(
-            option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")),
-            "select the verified hu Language pack before explicitly running this test"
-        );
+        require_hu_pack();
         let text = "typograpy typograpy Hejesírás hejesírás qzxw";
         let (mut s, sid) = document(text, "hu");
         for (start, end, lang) in [(0, 9, "English: USA"), (text.find("qzxw").unwrap(), text.len(), "German")] {
@@ -742,10 +744,7 @@ mod hungarian_integration_tests {
     #[test]
     #[ignore = "requires the verified hu Language pack; see docs/hungarian-language-support.md"]
     fn hungarian_initialization_respects_story_scope() {
-        assert!(
-            option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")),
-            "select the verified hu Language pack before explicitly running this test"
-        );
+        require_hu_pack();
         let (mut s, hu) = document("hejesírás", "hu");
         let r = s.execute("frame.create", &json!({"rect": [36,36,500,700], "content":"text", "text":"typograpy"})).unwrap();
         let en = r["story"].as_u64().unwrap();
@@ -769,10 +768,7 @@ mod hungarian_integration_tests {
     #[test]
     #[ignore = "requires the verified hu Language pack; see docs/hungarian-language-support.md"]
     fn mixed_story_initializes_hungarian() {
-        assert!(
-            option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")),
-            "select the verified hu Language pack before explicitly running this test"
-        );
+        require_hu_pack();
         let (mut s, sid) = document("typograpy hejesírás", "English: USA");
         s.execute("text.select", &json!({"story":sid,"anchor":10,"focus":"typograpy hejesírás".len()})).unwrap();
         s.execute("type.char", &json!({"attrs":{"language":"hu"}})).unwrap();
@@ -785,10 +781,7 @@ mod hungarian_integration_tests {
     #[test]
     #[ignore = "requires the verified hu Language pack; see docs/hungarian-language-support.md"]
     fn hungarian_text_preserves_compounds_numbers_case_and_byte_ranges() {
-        assert!(
-            option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")),
-            "select the verified hu Language pack before explicitly running this test"
-        );
+        require_hu_pack();
         let text = "Árvíztűrő tükörfúrógép munkavállalóinkkal 2026-ban 2026-ben hejesírás.";
         for lang in ["Hungarian", "hu", "hu-HU", "hu_HU"] {
             let (mut s, _) = document(text, lang);
@@ -806,10 +799,7 @@ mod hungarian_integration_tests {
     #[test]
     #[ignore = "requires the verified hu Language pack; see docs/hungarian-language-support.md"]
     fn formatting_does_not_split_a_word_but_language_does() {
-        assert!(
-            option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")),
-            "select the verified hu Language pack before explicitly running this test"
-        );
+        require_hu_pack();
         let (mut s, sid) = document("helyesírás typograpy", "hu");
         s.execute("text.select", &json!({"story":sid,"anchor":0,"focus":3})).unwrap();
         s.execute("type.char", &json!({"attrs":{"size":18}})).unwrap();
@@ -822,10 +812,7 @@ mod hungarian_integration_tests {
     #[test]
     #[ignore = "requires the verified hu Language pack; see docs/hungarian-language-support.md"]
     fn user_words_changes_and_undo_work_in_hungarian() {
-        assert!(
-            option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")),
-            "select the verified hu Language pack before explicitly running this test"
-        );
+        require_hu_pack();
         let (mut s, sid) = document("hejesírás qzxw", "hu");
         s.execute("spelling.addWord", &json!({"word":"qzxw"})).unwrap();
         assert_eq!(words(&mut s), ["hejesírás"]);
@@ -842,10 +829,7 @@ mod hungarian_integration_tests {
     #[test]
     #[ignore = "requires the verified hu Language pack; see docs/hungarian-language-support.md"]
     fn decomposed_accents_are_checked_without_changing_document_offsets() {
-        assert!(
-            option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")),
-            "select the verified hu Language pack before explicitly running this test"
-        );
+        require_hu_pack();
         let text = "tu\u{0308}ko\u{0308}rfu\u{0301}ro\u{0301}ge\u{0301}p hejesírás";
         let (mut s, _) = document(text, "hu");
         assert_eq!(words(&mut s), ["hejesírás"]);
@@ -863,10 +847,7 @@ mod hungarian_integration_tests {
     #[test]
     #[ignore = "requires the verified hu Language pack; see docs/hungarian-language-support.md"]
     fn hungarian_user_words_match_both_unicode_forms_and_legacy_case() {
-        assert!(
-            option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")),
-            "select the verified hu Language pack before explicitly running this test"
-        );
+        require_hu_pack();
         let composed = "qzxőr";
         let decomposed = "qzxo\u{030b}r";
         for text in [composed, decomposed] {

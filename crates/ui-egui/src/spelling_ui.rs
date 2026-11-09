@@ -410,6 +410,14 @@ pub(crate) fn show(app: &mut DesignApp, ctx: &egui::Context) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Require explicit selection of the verified Hungarian pack for these opt-in integration tests.
+    fn require_hu_pack() {
+        assert!(
+            option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")),
+            "select the verified hu Language pack before explicitly running this test"
+        );
+    }
+
     /// Build a completed spelling snapshot for scanner and dialog regressions.
     fn checked(app: &DesignApp, ctx: &egui::Context) -> Arc<Report> {
         let start = std::time::Instant::now();
@@ -544,11 +552,9 @@ mod tests {
     }
     /// Regression: browser scan deadline yields and preserves results.
     #[test]
+    #[ignore = "requires the verified hu Language pack; see docs/hungarian-language-support.md"]
     fn browser_scan_deadline_yields_and_preserves_results() {
-        if !option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")) {
-            eprintln!("requires the optional hu Language pack; see docs/hungarian-language-support.md");
-            return;
-        }
+        require_hu_pack();
         let mut session = SessionForTest::new();
         session.execute("file.new", &json!({})).unwrap();
         let text = "hejesírás árvi\u{301}z qzxw 2026-ban ".repeat(100);
@@ -605,12 +611,9 @@ mod tests {
     }
     /// Native timing of the browser's resumable scheduler, not a browser FPS test.
     #[test]
-    #[ignore = "manual spelling scheduler timing; run with --nocapture"]
+    #[ignore = "manual spelling scheduler timing; requires the verified hu Language pack; run with --nocapture"]
     fn browser_scan_timing() {
-        if !option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")) {
-            eprintln!("requires the optional hu Language pack; see docs/hungarian-language-support.md");
-            return;
-        }
+        require_hu_pack();
         for (name, language, sample, repeats) in [
             ("english-50k", "English", "hello world qzxw this is a test. ", 1600),
             ("hungarian-50k", "Hungarian", "Az asszony könnyen olvas hosszú szöveget. hejesírás 2026-ban. ", 850),
@@ -653,11 +656,9 @@ mod tests {
     }
     /// Regression: background cache tracks user words and language changes.
     #[test]
+    #[ignore = "requires the verified hu Language pack; see docs/hungarian-language-support.md"]
     fn background_cache_tracks_user_words_and_language_changes() {
-        if !option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")) {
-            eprintln!("requires the optional hu Language pack; see docs/hungarian-language-support.md");
-            return;
-        }
+        require_hu_pack();
         let mut app = DesignApp::new(SessionForTest::new(), crate::Services::default());
         let ctx = egui::Context::default();
         app.run("file.new", json!({})).unwrap();

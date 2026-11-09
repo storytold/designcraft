@@ -4,11 +4,13 @@ The document's character language selects Hungarian (`hu`, `hu-HU`, Hungarian
 or Magyar); choosing the UI language alone does not change a document's language.
 
 DesignCraft delegates Hungarian spelling, suggestions and nonstandard
-hyphenation to `craft-proof`. Its data comes from craft-i18n's pinned **hu Language
-pack**, never from a vendored Spellbook crate or app-local dictionary/pattern
-files. The original English proofing path is retained. The shared library and
-pack additions must be reviewed/published before replacing this development
-branch's dependency with the final shared revision.
+hyphenation to `craft-proof`. Nonstandard hyphenation uses craft-i18n's pinned
+**hu Language pack**, never a vendored Spellbook crate or app-local
+dictionary/pattern files. On native systems,
+spelling searches the configured dictionary folders, installed Language packs
+and system Hunspell dictionaries before falling back to an embedded pack.
+Consequently a native dictionary may supply Hungarian spelling even when the hu
+pack is embedded. The original English proofing path is retained.
 
 ## Data and build inputs
 
@@ -23,9 +25,9 @@ the pack. No language data is added to this repository.
 
 For release/test builds, download and verify the pack before building, then set:
 
-```
-CRAFT_PROOF_PACKS_DIR=/absolute/path/to/unpacked-language-packs
-CRAFT_PROOF_EMBED_PACKS=hu
+```sh
+export CRAFT_PROOF_PACKS_DIR=/absolute/path/to/unpacked-language-packs
+export CRAFT_PROOF_EMBED_PACKS=hu
 ```
 
 The folder contains `hu/pack.toml`, spelling files, hyphenation files and
@@ -33,8 +35,11 @@ The folder contains `hu/pack.toml`, spelling files, hyphenation files and
 and their licence texts. Parsing is lazy and Hungarian text alone uses the hu
 dictionary. The same optional input works on native systems and WASM, which
 cannot read an installed pack with std::fs. Installed native packs can also be
-selected through the shared pack API. Without the pack, the explicit spelling
-command reports that Hungarian data is unavailable.
+selected through the shared pack API. The explicit spelling command reports
+Hungarian data unavailable only when no matching native dictionary or selected
+embedded spelling pack can be loaded.
+A native spelling dictionary alone does not provide the nonstandard hyphenation
+patterns used for inserted letters.
 
 ## Layout and editing
 
@@ -65,20 +70,23 @@ removed implementation, not tests of craft-proof. Application layout, source
 text, PDF, mixed language, lazy loading and UI responsiveness regressions remain
 in their original crates.
 
-For review this branch pins the published commit of the companion
-[craft-libs #598](https://github.com/storytold/craft-libs/pull/598) using the upstream repository URL.
-No local Cargo source override is needed. Switch that pin to the upstream merge
-revision before merging the application change.
-
 HU-data-dependent application tests are explicitly ignored in the default suite,
 with the required pack recorded in each ignore reason. They assert the selected
-pack when invoked; missing data cannot silently pass. After setting the verified
-build inputs above, run the complete pack-dependent checks explicitly:
+pack when invoked; an unselected pack cannot silently pass. Selection assertions
+confirm the build input, not the provenance of a native spelling dictionary
+selected ahead of it.
+For pack-spelling verification, use an isolated environment with no matching
+native dictionaries; the shared library also tests the verified pack directly.
+After setting the verified build inputs above, run the pack-dependent checks
+explicitly:
 
 ```sh
-cargo test --locked -p designcraft-compose hungarian -- --include-ignored
-cargo test --locked -p designcraft-pdf hungarian -- --include-ignored
-cargo test --locked -p designcraft-engine cmd::spelling:: -- --include-ignored
+cargo test --locked -p designcraft-compose hungarian -- --include-ignored --test-threads=1
+cargo test --locked -p designcraft-pdf hungarian -- --include-ignored --test-threads=1
+cargo test --locked -p designcraft-engine cmd::spelling:: -- --include-ignored --test-threads=1
+cargo test --locked -p designcraft-ui-egui spelling_ui::tests::browser_scan_deadline_yields_and_preserves_results -- --ignored --test-threads=1
+cargo test --locked -p designcraft-ui-egui spelling_ui::tests::background_cache_tracks_user_words_and_language_changes -- --ignored --test-threads=1
+cargo test --locked -p designcraft-ui-egui spelling_ui::tests:: -- --test-threads=1
 ```
 
 Run those commands with one test thread on constrained machines. Builds without
@@ -91,4 +99,3 @@ explicitly uses the layout opt-in for nonstandard all-caps breaks, so ASSZONY
 can become ASZ-SZONY when capitalized-word hyphenation is enabled.
 
 Companion pack change: [craft-i18n #152](https://github.com/storytold/craft-i18n/pull/152).
-Merge and publish the shared library and pack before merging the application change.
