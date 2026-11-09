@@ -813,6 +813,7 @@ fn import_xml(s: &mut Session, p: &Value) -> Result<Value> {
                 .and_then(|a| a.link.clone().or_else(|| Some(a.name.clone())))
         };
         if image.fit.is_none() && image.crop.is_none() && holds.is_some_and(|l| image.href == format!("file://{l}") || path == l) {
+            slot.2 = true;
             placed += 1;
             continue;
         }
