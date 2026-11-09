@@ -2188,7 +2188,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Scale Tool", "Skalierenwerkzeug"),
     ("Shear Tool", "Verbiegenwerkzeug"),
     ("Gradient Swatch Tool", "Verlaufsfeld-Werkzeug"),
-    ("Gradient Feather Tool", "Verlaufsweichzeichnerwerkzeug"),
+    ("Gradient Feather Tool", "Weiche-Verlaufskante-Werkzeug"),
     ("Note Tool", "Notizwerkzeug"),
     ("Color Theme Tool", "Farbthemenwerkzeug"),
     ("Eyedropper Tool", "Pipettenwerkzeug"),
