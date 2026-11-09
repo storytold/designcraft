@@ -298,7 +298,13 @@ pub(super) fn draw_selection(app: &DesignApp, painter: &egui::Painter, xf: &Xf, 
             let Some(sid) = doc.item(*id).and_then(|i| i.text_frame()).map(|t| t.story) else { continue };
             let Some(story) = doc.story(sid) else { continue };
             for w in story.frames.windows(2) {
-                let (Some(a), Some(b)) = (port_pos(doc, layout, w[0], true), port_pos(doc, layout, w[1], false)) else { continue };
+                // From the out port square to the in port square, where `draw_ports` draws them.
+                let (Some(a), Some(b)) = (
+                    designcraft_tools::thread::port_center(doc, layout, w[0], true, xf.zoom),
+                    designcraft_tools::thread::port_center(doc, layout, w[1], false, xf.zoom),
+                ) else {
+                    continue;
+                };
                 let col = doc.item(w[0]).map(|i| layer_color(doc, i)).unwrap_or(color);
                 painter.line_segment([xf.to_screen(a), xf.to_screen(b)], Stroke::new(1.0, col));
             }
@@ -376,15 +382,6 @@ pub(super) fn text_frames_in<'a>(it: &'a Item, depth: usize, out: &mut Vec<(&'a 
         }
         _ => {}
     }
-}
-
-/// Port location (canvas): out port at bottom-right, in port at top-left.
-fn port_pos(doc: &Document, layout: &CanvasLayout, id: designcraft_doc::ItemId, out: bool) -> Option<Point> {
-    let it = doc.item(id)?;
-    let (a, _) = item_canvas_xf(doc, layout, id)?;
-    let r = it.inner_bounds();
-    let p = if out { Point::new(r.x1 - 10.0, r.y1) } else { Point::new(r.x0 + 10.0, r.y0) };
-    Some(a * it.xf * p)
 }
 
 #[allow(clippy::too_many_arguments)]
