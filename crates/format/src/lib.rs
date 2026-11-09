@@ -151,7 +151,17 @@ pub const PREVIEW: &str = "preview.png";
 
 /// The PNG bytes of a `.designcraft` file's preview, reading only the zip's directory and that
 /// entry. None for files without one (saved before previews, or legacy JSON) or that aren't ours.
-pub fn read_preview<R: Read + std::io::Seek>(file: R) -> Option<Vec<u8>> {
+pub fn read_preview<R: Read + std::io::Seek>(mut file: R) -> Option<Vec<u8>> {
+    // Only a zip can hold one. Anything else (an InDesign document, a PDF) is turned away after
+    // four bytes: the zip reader would search the whole file for a directory it hasn't got, which
+    // takes minutes for a large file on a network share (the start screen reads every recent
+    // file's preview before its first frame).
+    let mut magic = [0u8; 4];
+    file.read_exact(&mut magic).ok()?;
+    if &magic != b"PK\x03\x04" {
+        return None;
+    }
+    file.seek(std::io::SeekFrom::Start(0)).ok()?;
     let mut z = zip::ZipArchive::new(file).ok()?;
     let f = z.by_name(PREVIEW).ok()?;
     // A preview is small; a huge entry is not one we wrote.

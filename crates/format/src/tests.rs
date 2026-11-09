@@ -590,6 +590,33 @@ fn the_preview_is_read_back_without_the_document() {
     assert_eq!(read_preview(Cursor::new(Vec::new())), None);
 }
 
+/// A file that isn't a zip (an InDesign document among the recent files) is turned away after
+/// its first bytes, not searched through for a zip directory.
+#[test]
+fn a_file_that_is_no_zip_is_not_read_through_for_a_preview() {
+    struct Counting {
+        inner: Cursor<Vec<u8>>,
+        read: usize,
+    }
+    impl Read for Counting {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let n = self.inner.read(buf)?;
+            self.read += n;
+            Ok(n)
+        }
+    }
+    impl std::io::Seek for Counting {
+        fn seek(&mut self, to: std::io::SeekFrom) -> std::io::Result<u64> {
+            self.inner.seek(to)
+        }
+    }
+    let mut big = vec![0u8; 8 << 20];
+    big[..8].copy_from_slice(b"INDDFILE");
+    let mut r = Counting { inner: Cursor::new(big), read: 0 };
+    assert_eq!(read_preview(&mut r), None);
+    assert!(r.read <= 4, "read {} bytes", r.read);
+}
+
 #[test]
 fn a_preview_that_inflates_past_its_declared_size_is_refused() {
     use std::io::Write;
