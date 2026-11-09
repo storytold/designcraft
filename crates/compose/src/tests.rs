@@ -8647,3 +8647,13 @@ fn cross_reference_text_breaks_at_its_spaces() {
         }
     }
 }
+
+#[test]
+fn a_trailing_tab_stop_a_hair_beyond_the_frame_edge_still_fits() {
+    // InDesign lets a tab run to a stop that lies 0.07 pt beyond the frame (a label frame made to
+    // end at its tab stop, its width stored with rounding): the tab doesn't wrap the line.
+    let (d, sid, _) = doc_with("AB\t", Rect::new(0.0, 0.0, 36.0 - 0.07, 100.0), ParaAttrs::default());
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert_eq!(all_lines(&cs).len(), 1);
+    assert!(!cs.is_overset());
+}

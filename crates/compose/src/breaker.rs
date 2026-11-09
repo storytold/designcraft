@@ -254,6 +254,10 @@ const INF: f64 = 10000.0;
 /// hair too wide.
 const FIT_EPS: f64 = 0.01;
 
+/// The same for a tab: InDesign lets a trailing tab run to a stop up to about 0.07 pt past the edge
+/// (a label frame made to end at its tab stop, its width stored with rounding).
+const TAB_FIT_EPS: f64 = 0.1;
+
 /// Penalty for an emergency break inside a word wider than the measure: high, so a paragraph
 /// takes no more of them than it must, but below [`INF`] so they are legal.
 const EMERGENCY_PENALTY: f64 = 5000.0;
@@ -961,7 +965,8 @@ pub fn greedy(
                 brk = Some((end, hyphen, false));
                 break;
             }
-            if x + adv - hang_r > w + available.max(0.0) + FIT_EPS
+            let eps = if g.ch == '\t' { TAB_FIT_EPS } else { FIT_EPS };
+            if x + adv - hang_r > w + available.max(0.0) + eps
                 && i > start
                 && (last_ok.is_some() || glyphs.get(i - 1).is_none_or(|p| p.break_after != Some(false) && !p.no_break))
             {
