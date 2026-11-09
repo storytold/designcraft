@@ -47,8 +47,8 @@ fn svg_viewbox_size(data: &[u8]) -> Option<(f64, f64)> {
 }
 
 impl<'r> Importer<'r> {
-    /// The live text of a placed EPS (`<EPSText>`, e.g. a phone number set in a logo): one line in a
-    /// text frame that has no inset and puts its baseline where the EPS did.
+    /// The live text of a placed EPS (`<EPSText>`, e.g. a phone number set in a logo): its text in a
+    /// text frame that has no inset, puts its first baseline where the EPS did and is tall enough for each forced line break.
     fn eps_text(&mut self, e: &El, parent: Affine) -> Option<Item> {
         let data = base64_decode(&e.prop_el("EPSTextData")?.text_content());
         let t = crate::parse_eps_text(&data)?;
@@ -66,8 +66,9 @@ impl<'r> Importer<'r> {
             .filter(|c| *c != '\u{FEFF}')
             .map(|c| if matches!(c, '\n' | '\r' | '\u{2029}') { designcraft_doc::story::FORCED_LINE_BREAK } else { c })
             .collect();
+        let bottom = base + size * (0.5 + 1.2 * text.chars().filter(|c| *c == designcraft_doc::story::FORCED_LINE_BREAK).count() as f64);
         let right = x + pw.max(size * text.chars().count() as f64);
-        if text.is_empty() || ![s, x, base, size, right, base - size, base + size * 0.5].iter().all(|v| v.is_finite()) || size <= 0.0 {
+        if text.is_empty() || ![s, x, base, size, right, base - size, bottom].iter().all(|v| v.is_finite()) || size <= 0.0 {
             return None;
         }
         let id = ItemId(self.alloc());
@@ -75,7 +76,7 @@ impl<'r> Importer<'r> {
             self.item_ids.insert(sf.to_string(), id);
         }
         let layer = e.get("ItemLayer").and_then(|l| self.layer_ids.get(l)).copied().unwrap_or_else(|| self.layers[0].id);
-        let frame = Rect::new(x, base - size, right, base + size * 0.5);
+        let frame = Rect::new(x, base - size, right, bottom);
         let mut it = Item::new(id, layer, Shape::Rectangle, designcraft_geom::shapes::rectangle(frame));
         it.xf = parent * parse_affine(e.get("ItemTransform"));
         // The attributes every page item has, as in `item` below.
