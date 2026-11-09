@@ -221,7 +221,7 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
   Embedded IDML applies variants inside table-cell and footnote text; endnote variants are prepared,
   but IDML endnote structures/artwork are not serialized yet. IDML layer variants are embedded
   copies; external-only export is rejected when choices would be lost.
-- **Missing:** EPS is shown through its preview only (no PostScript interpreter); PSD layer
+- **Missing:** EPS is shown through its preview only (no PostScript interpreter; an IDML `EPSText` is imported as a plain text frame and written back as one); PSD layer
   comps beyond visibility; the Clipping Path Options dialog (tracing into a clip that keeps the
   frame, Threshold/Tolerance/Inset Frame preview, picking an alpha channel or a path saved in a
   TIFF/PSD); Text Wrap › Same As Clipping following an imported clipping path; Edit Original / Edit With; PDF placed as editable vectors (#227, #24);

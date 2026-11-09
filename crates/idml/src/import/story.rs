@@ -254,7 +254,7 @@ impl<'r> Importer<'r> {
                         b.push(&designcraft_doc::FOOTNOTE_REF.to_string(), &rcf);
                     }
                     // Anchored page items, including groups containing text frames.
-                    "Rectangle" | "Oval" | "Polygon" | "GraphicLine" | "Group" | "TextFrame" => {
+                    "Rectangle" | "Oval" | "Polygon" | "GraphicLine" | "Group" | "TextFrame" | "EPSText" => {
                         if let Some(item) = self.item(c, designcraft_geom::Affine::IDENTITY) {
                             use designcraft_doc::anchored::AnchorAlign as A;
                             // Each setting the item leaves unset comes from its object style chain,

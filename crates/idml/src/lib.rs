@@ -127,6 +127,59 @@ pub(crate) fn base64_decode(s: &str) -> Vec<u8> {
     out
 }
 
+/// One line of text InDesign keeps for an `<EPSText>` (the live text of a placed EPS), in the
+/// EPS's own coordinates.
+#[derive(Debug, PartialEq)]
+pub(crate) struct EpsText {
+    /// PostScript name, e.g. `YuMincho-Regular`.
+    pub font: String,
+    pub size: f64,
+    /// Left end of the baseline.
+    pub x: f64,
+    pub y: f64,
+    pub text: String,
+}
+
+/// Read `EPSTextData`: a few header bytes, the font name, five big-endian doubles (size, two
+/// reserved, size again, x, y), then the text: its length in characters, then runs of
+/// `0x40, n` + n bytes (8-bit characters) or `0x80, n` + n big-endian UTF-16 units, until the
+/// length is reached (`野地合板＠12` is a wide run of five characters and a narrow one of two).
+pub(crate) fn parse_eps_text(b: &[u8]) -> Option<EpsText> {
+    let string = |at: usize| -> Option<(String, usize)> {
+        let (total, mut at) = (*b.get(at)? as usize, at + 1);
+        let mut out = String::new();
+        let mut count = 0;
+        while count < total {
+            let (&kind, &len) = (b.get(at)?, b.get(at + 1)?);
+            let (len, start) = (len as usize, at + 2);
+            match kind {
+                0x40 => {
+                    out.extend(b.get(start..start + len)?.iter().map(|&c| c as char));
+                    at = start + len;
+                }
+                0x80 => {
+                    let units: Vec<u16> = b.get(start..start + len * 2)?.as_chunks::<2>().0.iter().map(|p| u16::from_be_bytes(*p)).collect();
+                    out.push_str(&String::from_utf16(&units).ok()?);
+                    at = start + len * 2;
+                }
+                _ => return None,
+            }
+            if len == 0 {
+                return None;
+            }
+            count += len;
+        }
+        Some((out, at))
+    };
+    let (font, o) = string(8)?;
+    let double = |i: usize| b.get(o + i..o + i + 8).map(|s| f64::from_be_bytes([s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]]));
+    let (size, x, y) = (double(0)?, double(32)?, double(40)?);
+    // The text record follows after the doubles and some zero padding.
+    let at = b.get(o + 48..)?.windows(4).position(|w| w == [2, 1, 1, 0])? + o + 48 + 4;
+    let (text, _) = string(at)?;
+    (size.is_finite() && size > 0.0 && x.is_finite() && y.is_finite() && !text.is_empty()).then_some(EpsText { font, size, x, y, text })
+}
+
 /// Sniff an image's MIME type and pixel size (PNG, JPEG, GIF, WebP, TIFF, PDF, EPS).
 pub(crate) fn sniff_image(b: &[u8]) -> (Option<&'static str>, Option<(u32, u32)>) {
     if designcraft_images::is_eps(b) {
