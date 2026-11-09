@@ -935,22 +935,23 @@ fn set_with_kerning(text: &str, kerning: designcraft_doc::Kerning) -> (f64, Vec<
 }
 
 #[test]
-fn optical_kerning_closes_open_pairs_and_leaves_stems() {
+fn optical_kerning_closes_open_pairs_and_stems_a_little() {
     use designcraft_doc::Kerning;
-    // `AV` and `To` set tighter than unkerned; `nn`, the reference pair, stays as the font set it.
+    // `AV` and `To` set tighter than unkerned, as in InDesign.
     for pair in ["AV", "To", "r."] {
         let (none, _) = set_with_kerning(pair, Kerning::None);
         let (optical, _) = set_with_kerning(pair, Kerning::Optical);
         assert!(optical < none - 0.5, "{pair}: optical {optical:.2} vs none {none:.2}");
     }
+    // Straight stems close up a little (InDesign: about 1/100 em for `nn`), never much.
     let (none, _) = set_with_kerning("nn", Kerning::None);
     let (optical, _) = set_with_kerning("nn", Kerning::Optical);
-    assert!((none - optical).abs() < 48.0 * 0.02, "nn: optical {optical:.2} vs none {none:.2}");
-    // Optical is measured, not the font's pairs: `HH` has no kern pair but its gap is wider
-    // than `nn`'s, so it closes up under Optical and not under Metrics.
+    assert!(optical <= none && none - optical < 48.0 * 0.03, "nn: optical {optical:.2} vs none {none:.2}");
+    // Optical is measured, not the font's pairs: `HH` has no kern pair, so Metrics leaves it,
+    // while Optical closes it up a little.
     let (metrics, _) = set_with_kerning("HH", Kerning::Metrics);
     let (optical, _) = set_with_kerning("HH", Kerning::Optical);
-    assert!(optical < metrics - 0.5, "HH: optical {optical:.2} vs metrics {metrics:.2}");
+    assert!(optical < metrics - 0.1, "HH: optical {optical:.2} vs metrics {metrics:.2}");
 }
 
 #[test]
@@ -962,7 +963,7 @@ fn optical_kerning_is_bounded_and_skips_spaces() {
     assert_eq!(none.len(), optical.len());
     for ((c, a), (_, b)) in none.iter().zip(&optical) {
         let em = (b - a) / 48.0;
-        assert!((-0.12 - 1e-6..=0.06 + 1e-6).contains(&em), "{c:?}: {em:.3} em");
+        assert!((-0.145 - 1e-6..=0.024 + 1e-6).contains(&em), "{c:?}: {em:.3} em");
         if c.is_whitespace() {
             assert!((a - b).abs() < 1e-9, "space before a word keeps its width");
         }

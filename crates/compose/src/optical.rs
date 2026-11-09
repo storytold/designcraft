@@ -2,16 +2,21 @@
 //! set to Optical.
 //!
 //! The font's own kern pairs are not used (Optical replaces Metrics, as in InDesign). Instead,
-//! each glyph's ink is sampled into horizontal bands across the em, and for each pair the gap
-//! between the left glyph's right edge and the right glyph's left edge is read in the bands where
-//! both have ink. The pair is then moved part of the way towards the font's natural stem-to-stem
-//! gap (the gap of the pair `nn`, or of `HH` then `oo` when the font lacks them), never closer
-//! than a fraction of it, and never by more than a small part of the em. `nn` itself stays as the
-//! font set it; diagonal pairs (`AV`, `To`) and letter-punctuation pairs (`r.`, `f,`) close up;
-//! round pairs such as `oo`, and pairs that already touch, open slightly.
+//! each glyph's ink is sampled into horizontal bands across the em, and for each pair the white
+//! between the two glyphs is read band by band from about the cap height to the baseline: the gap
+//! between the inks where both glyphs have some, a glyph's own side bearing plus some depth where
+//! only one has (the open side of `T`, `r`, `.`). Each band counts up to a limited depth, so a
+//! deep hollow counts little more than a moderately open one. The pair then moves towards one
+//! target, the same fraction of the em in every font, a little wider for wide fonts (measured by
+//! the advance of `n`). Open pairs close up harder than tight ones open; a pair never comes closer
+//! than a small gap between the inks, and never moves by more than part of the em.
 //!
-//! Profiles are cached per (face, glyph) and the reference gap per face, so body text in Optical
-//! costs one outline walk per distinct glyph.
+//! The constants are fitted to how InDesign sets ten text faces (sans and serif, regular and
+//! bold) under Optical, read from its kerning values: most text pairs, `nn` included, close up a
+//! little, `AV`, `To` and `P.` close up a lot, and pairs whose inks nearly touch (`VW`) open.
+//!
+//! Profiles are cached per (face, glyph) and the target per face, so body text in Optical costs
+//! one outline walk per distinct glyph.
 
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, PoisonError, RwLock};
@@ -26,13 +31,28 @@ use crate::shape::Glyph;
 const BANDS: usize = 28;
 const TOP: f64 = -1.0;
 const BOTTOM: f64 = 0.3;
-/// How far a pair moves towards the reference gap (1 = all the way).
-const PULL: f64 = 0.6;
-/// The ink gap a pair keeps at least, as a fraction of the reference gap.
-const FLOOR: f64 = 0.3;
+/// The bands whose centre lies in this zone are measured (em, y-down): cap height to baseline.
+const ZONE: (f64, f64) = (-0.868, 0.027);
+/// The white a band counts at most, in em, and the deeper limit of the open-pair term.
+const DEPTH: f64 = 0.218;
+const DEEP: f64 = 0.247;
+/// A band where only one glyph has ink counts that glyph's side bearing plus this many `DEEP`.
+const OPEN_SIDE: f64 = 1.26;
+/// The target white in em for a font whose `n` advances `TARGET_N` em; it grows by
+/// `TARGET_WIDTH` per em of a wider `n`.
+const TARGET: f64 = 0.1045;
+const TARGET_N: f64 = 0.55;
+const TARGET_WIDTH: f64 = 0.251;
+/// How far a pair moves towards the target: closing an open pair, opening a tight one.
+const CLOSE: f64 = 0.141;
+const OPEN: f64 = 0.289;
+/// The extra close-up per em of white the bands hold between `DEPTH` and `DEEP`.
+const DEEP_CLOSE: f64 = 2.0;
+/// The ink gap a pair keeps at least, in em.
+const FLOOR: f64 = 0.05;
 /// Tightest and loosest adjustment, in em.
-const MAX_TIGHTEN: f64 = -0.12;
-const MAX_LOOSEN: f64 = 0.06;
+const MAX_TIGHTEN: f64 = -0.145;
+const MAX_LOOSEN: f64 = 0.024;
 /// A glyph wider or taller than this many em is not measured.
 const MAX_EXTENT: f64 = 8.0;
 const PROFILE_CACHE_MAX: usize = 20_000;
@@ -104,21 +124,38 @@ impl Profile {
         Profile { bands }
     }
 
-    /// Mean and smallest ink gap between `self` (set first, advancing `adv`) and `next`, over the
-    /// bands where both have ink; `None` when they share fewer than two bands.
-    pub fn gap(&self, next: &Profile, adv: f64) -> Option<(f64, f64)> {
-        let gaps: Vec<f64> = self.bands.iter().zip(next.bands.iter()).filter_map(|(a, b)| Some(adv + b.as_ref()?.0 - a.as_ref()?.1)).collect();
-        if gaps.len() < 2 {
-            return None;
+    /// The white between `self` (set first, advancing `adv`) and `next` over the measured zone, in
+    /// font units: the mean over the bands of the white up to `DEPTH`, the same up to `DEEP`, and
+    /// the smallest gap between the inks (infinite where they share no band). A band where one
+    /// glyph has no ink counts the other's side bearing and some depth; `None` when neither glyph
+    /// has ink in the zone.
+    pub fn white(&self, next: &Profile, adv: f64, upem: f64) -> Option<(f64, f64, f64)> {
+        let (depth, deep) = (DEPTH * upem, DEEP * upem);
+        let (mut near, mut far, mut n, mut min) = (0.0, 0.0, 0usize, f64::INFINITY);
+        for (i, (a, b)) in self.bands.iter().zip(next.bands.iter()).enumerate() {
+            let centre = TOP + (i as f64 + 0.5) * (BOTTOM - TOP) / BANDS as f64;
+            if !(ZONE.0..=ZONE.1).contains(&centre) {
+                continue;
+            }
+            let white = match (a, b) {
+                (Some(a), Some(b)) => {
+                    let gap = adv + b.0 - a.1;
+                    min = min.min(gap);
+                    gap
+                }
+                (Some(a), None) => adv - a.1 + OPEN_SIDE * deep,
+                (None, Some(b)) => b.0 + OPEN_SIDE * deep,
+                (None, None) => continue,
+            };
+            near += white.min(depth);
+            far += white.min(deep);
+            n += 1;
         }
-        let mean = gaps.iter().sum::<f64>() / gaps.len() as f64;
-        let min = gaps.iter().copied().fold(f64::INFINITY, f64::min);
-        Some((mean, min))
+        (n > 0).then(|| (near / n as f64, far / n as f64, min))
     }
 }
 
 static PROFILES: LazyLock<RwLock<HashMap<(u32, u32), Arc<Profile>>>> = LazyLock::new(Default::default);
-static REFERENCES: LazyLock<RwLock<HashMap<u32, Option<f64>>>> = LazyLock::new(Default::default);
 
 fn profile_of(db: &ScopedFonts<'_>, face: &FontFace, gid: u32) -> Arc<Profile> {
     let key = (face.id(), gid);
@@ -133,24 +170,12 @@ fn profile_of(db: &ScopedFonts<'_>, face: &FontFace, gid: u32) -> Arc<Profile> {
     w.entry(key).or_insert(p).clone()
 }
 
-/// The font's natural gap between two straight stems, in font units: the mean ink gap of `nn`
-/// (or of `HH`, then `oo`, when the font lacks them). `None` when the font has none of them.
-fn reference_gap(db: &ScopedFonts<'_>, face: &FontFace) -> Option<f64> {
-    let id = face.id();
-    if let Some(r) = REFERENCES.read().unwrap_or_else(PoisonError::into_inner).get(&id) {
-        return *r;
-    }
-    let found = ['n', 'H', 'o'].into_iter().find_map(|c| {
-        let gid = face.glyph_for(c);
-        if gid == 0 {
-            return None;
-        }
-        let p = profile_of(db, face, gid);
-        let (mean, _) = p.gap(&p, face.advance(gid))?;
-        (mean > 0.0 && mean.is_finite()).then_some(mean)
-    });
-    REFERENCES.write().unwrap_or_else(PoisonError::into_inner).insert(id, found);
-    found
+/// The white a pair moves towards, in font units: `TARGET` em, wider for a font whose `n` is
+/// wider than `TARGET_N` em.
+fn target(face: &FontFace) -> f64 {
+    let n = face.glyph_for('n');
+    let width = if n == 0 { TARGET_N } else { face.advance(n) / face.upem };
+    (TARGET + TARGET_WIDTH * (width - TARGET_N)) * face.upem
 }
 
 /// Whether `c` takes part in optical kerning: letters of the Latin, Greek and Cyrillic scripts,
@@ -173,10 +198,12 @@ fn is_dash(c: char) -> bool {
     matches!(c, '-' | '\u{2010}'..='\u{2015}' | '\u{2E3A}' | '\u{2E3B}' | '\u{FE58}' | '\u{FF0D}')
 }
 
-/// The adjustment for a pair, in font units: how far the first glyph's advance moves.
-fn adjustment(reference: f64, mean: f64, min: f64, upem: f64) -> f64 {
-    let mut adj = (reference - mean) * PULL;
-    let floor = FLOOR * reference;
+/// The adjustment for a pair, in font units: how far the first glyph's advance moves. `near`,
+/// `far` and `min` are [`Profile::white`]'s.
+fn adjustment(target: f64, near: f64, far: f64, min: f64, upem: f64) -> f64 {
+    let off = near - target;
+    let mut adj = if off > 0.0 { -CLOSE * off } else { -OPEN * off } - DEEP_CLOSE * (far - DEPTH * upem).max(0.0);
+    let floor = FLOOR * upem;
     if min + adj < floor {
         adj = floor - min;
     }
@@ -203,13 +230,12 @@ pub(crate) fn kern_run(db: &ScopedFonts<'_>, run: &mut [Glyph], tracking: f64) {
             continue;
         }
         let face: &FontFace = &a.face;
-        let Some(reference) = reference_gap(db, face) else { continue };
         let (pa, pb) = (profile_of(db, face, a.gid), profile_of(db, face, b.gid));
         // The pair's distance as shaped (features such as `palt` change it), without tracking,
         // plus the glyphs' own x offsets; in font units.
         let adv = (a.adv - tracking + b.dx - a.dx) / a.sx;
-        let Some((mean, min)) = pa.gap(&pb, adv) else { continue };
-        let adj = adjustment(reference, mean, min, face.upem);
+        let Some((near, far, min)) = pa.white(&pb, adv, face.upem) else { continue };
+        let adj = adjustment(target(face), near, far, min, face.upem);
         if adj.is_finite()
             && let Some(g) = run.get_mut(i)
         {
@@ -234,29 +260,39 @@ mod tests {
         let inked: Vec<_> = p.bands.iter().flatten().collect();
         assert!(inked.len() >= 9 && inked.len() <= 12, "{} bands", inked.len());
         assert!(inked.iter().all(|(l, r)| (*l - 100.0).abs() < 1e-9 && (*r - 200.0).abs() < 1e-9));
-        // Two such stems 300 apart: the gap is 200 in every band.
-        let (mean, min) = p.gap(&p, 300.0).unwrap();
-        assert!((mean - 200.0).abs() < 1e-9 && (min - 200.0).abs() < 1e-9);
+        // Two such stems 300 apart: the white is 200 in every band that has ink; the bands above
+        // the x-height, empty in both, don't count.
+        let (near, far, min) = p.white(&p, 300.0, 1000.0).unwrap();
+        assert!((near - 200.0).abs() < 1e-9 && (far - 200.0).abs() < 1e-9 && (min - 200.0).abs() < 1e-9);
     }
 
     #[test]
-    fn no_shared_band_no_gap() {
-        let high = Profile::of(&rect(0.0, -900.0, 100.0, -700.0), 1000.0);
+    fn a_band_with_ink_on_one_side_counts_its_bearing_and_depth() {
+        let high = Profile::of(&rect(0.0, -800.0, 100.0, -600.0), 1000.0);
         let low = Profile::of(&rect(0.0, -100.0, 100.0, 0.0), 1000.0);
-        assert!(high.gap(&low, 200.0).is_none());
+        // No band has both inks: no smallest gap, and every inked band is open to `DEPTH`.
+        let (near, far, min) = high.white(&low, 200.0, 1000.0).unwrap();
+        assert!(min.is_infinite());
+        assert!((near - DEPTH * 1000.0).abs() < 1e-9 && (far - DEEP * 1000.0).abs() < 1e-9);
+        // Ink only below the baseline is outside the zone.
+        let tail = Profile::of(&rect(0.0, 100.0, 100.0, 250.0), 1000.0);
+        assert!(tail.white(&tail, 200.0, 1000.0).is_none());
     }
 
     #[test]
     fn adjustment_is_bounded_and_keeps_a_floor() {
-        // Reference 200: a pair already at 200 doesn't move.
-        assert!(adjustment(200.0, 200.0, 200.0, 1000.0).abs() < 1e-9);
-        // A wide pair tightens by PULL of the excess, up to the cap.
-        assert!((adjustment(200.0, 300.0, 300.0, 1000.0) + 60.0).abs() < 1e-9);
-        assert!((adjustment(200.0, 1000.0, 1000.0, 1000.0) + 120.0).abs() < 1e-9);
-        // Tightening never takes the smallest gap under the floor.
-        assert!((adjustment(200.0, 300.0, 70.0, 1000.0) + 10.0).abs() < 1e-9);
-        // A touching pair opens, up to the cap.
-        assert!((adjustment(200.0, 100.0, -50.0, 1000.0) - 60.0).abs() < 1e-9);
+        let adj = |near, far, min| adjustment(100.0, near, far, min, 1000.0);
+        // A pair at the target doesn't move.
+        assert!(adj(100.0, 100.0, 100.0).abs() < 1e-9);
+        // An open pair closes by CLOSE of the excess, a tight one opens by OPEN of the shortfall.
+        assert!((adj(200.0, 200.0, 200.0) + CLOSE * 100.0).abs() < 1e-9);
+        assert!((adj(50.0, 50.0, 60.0) - OPEN * 50.0).abs() < 1e-9);
+        // White deeper than DEPTH closes up harder.
+        assert!((adj(218.0, 247.0, 247.0) + CLOSE * 118.0 + DEEP_CLOSE * 29.0).abs() < 1e-9);
+        // Closing never takes the smallest gap under the floor; touching inks open, up to the cap.
+        assert!((adj(200.0, 200.0, 60.0) + 10.0).abs() < 1e-9);
+        assert!((adj(100.0, 100.0, -50.0) - MAX_LOOSEN * 1000.0).abs() < 1e-9);
+        assert!((adjustment(-1000.0, 247.0, 1000.0, f64::INFINITY, 1000.0) - MAX_TIGHTEN * 1000.0).abs() < 1e-9);
     }
 
     #[test]
