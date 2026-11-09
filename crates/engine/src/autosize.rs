@@ -139,10 +139,10 @@ pub fn fitted(d: &Document, fid: ItemId, sid: StoryId) -> Option<Rect> {
                 let col = ft.columns.get(l.column as usize).copied().unwrap_or(area);
                 let (lo, hi) = l.glyphs.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), g| (lo.min(g.x), hi.max(g.x + g.adv)));
                 let ink = if hi >= lo { hi - lo } else { 0.0 };
-                // The line slot is the column minus wrap; the paragraph's indents are inside it.
+                // The line slot is the column minus wrap; the paragraph's indents are inside it (a drop cap replaces the first-line indent).
                 let (start, end) = story.paras.get(l.para).map_or((0.0, 0.0), |pf| {
                     let (pp, _) = d.styles.resolve_para(pf);
-                    let first = if l.first_in_para { pp.first_line_indent } else { 0.0 };
+                    let first = if l.first_in_para && l.drop_cap.is_none() { pp.first_line_indent } else { 0.0 };
                     (pp.left_indent + first, pp.right_indent)
                 });
                 ink + (l.x0 - col.x0).max(0.0) + (col.x1 - l.x1).max(0.0) + start.max(0.0) + end.max(0.0)
