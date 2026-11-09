@@ -6057,7 +6057,7 @@ mod anchored_copy_tests {
         let inner_story = d.stories.get(&inner_sid).unwrap().clone();
         d.remove_item(inner).unwrap();
         d.stories.insert(inner_sid, inner_story);
-        d.story_mut(host_sid).unwrap().insert_object(0, AnchoredObject { item, position: Default::default() });
+        d.story_mut(host_sid).unwrap().insert_object(0, AnchoredObject { item, position: Default::default(), caption_id: None });
         d.check().unwrap();
         let src = d.clone();
         let copy = duplicate_from(&mut d, &src, &[host], SpreadRef::Doc(0), Vec2::new(10.0, 10.0)).unwrap();

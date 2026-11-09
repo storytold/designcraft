@@ -826,7 +826,7 @@ mod paste_tests {
                 let story = d.stories.get(&sid).unwrap().clone();
                 d.remove_item(id).unwrap();
                 d.stories.insert(sid, story);
-                d.story_mut(into).unwrap().insert_object(0, AnchoredObject { item, position: Default::default() });
+                d.story_mut(into).unwrap().insert_object(0, AnchoredObject { item, position: Default::default(), caption_id: None });
                 sid
             };
             let inner = anchor_frame(d, host_sid, "Inner");
@@ -912,7 +912,7 @@ mod paste_tests {
             d.stories.insert(sid, story);
             let mut group = Item::new(ItemId(d.alloc()), layer, Shape::Group, Default::default());
             group.content = Content::Group { items: vec![Arc::new(child)] };
-            d.story_mut(host_sid).unwrap().insert_object(0, AnchoredObject { item: group, position: Default::default() });
+            d.story_mut(host_sid).unwrap().insert_object(0, AnchoredObject { item: group, position: Default::default(), caption_id: None });
             d.check().unwrap();
             Ok(())
         })

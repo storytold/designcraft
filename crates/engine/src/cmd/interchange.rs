@@ -720,7 +720,7 @@ mod nested_layer_tests {
             let ids = [hidden.id, all_on.id];
             let mut nested = Story::new(StoryId(0));
             for item in [hidden, all_on] {
-                nested.insert_object(nested.len(), AnchoredObject { item, position: Default::default() });
+                nested.insert_object(nested.len(), AnchoredObject { item, position: Default::default(), caption_id: None });
             }
             let layer = doc.default_layer();
             let (_, sid) = doc.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 200.0, 200.0), layer, "Body", Default::default()).unwrap();
@@ -849,7 +849,7 @@ mod nested_layer_tests {
             let chosen = item.id;
             let layer = doc.default_layer();
             let (frame, sid) = doc.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 200.0, 200.0), layer, "Body", Default::default()).unwrap();
-            doc.story_mut(sid).unwrap().insert_object(0, AnchoredObject { item, position: Default::default() });
+            doc.story_mut(sid).unwrap().insert_object(0, AnchoredObject { item, position: Default::default(), caption_id: None });
             (frame, chosen)
         };
         s.execute("transform.move", &json!({"ids": [frame.0], "dx": 10, "dy": 10, "copy": true})).unwrap();
@@ -883,7 +883,7 @@ mod nested_layer_tests {
             let anchored = item.id;
             let layer = doc.default_layer();
             let (frame, sid) = doc.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 200.0, 200.0), layer, "Body", Default::default()).unwrap();
-            doc.story_mut(sid).unwrap().insert_object(0, AnchoredObject { item, position: Default::default() });
+            doc.story_mut(sid).unwrap().insert_object(0, AnchoredObject { item, position: Default::default(), caption_id: None });
             (frame, anchored)
         };
         s.execute("transform.move", &json!({"ids": [frame.0], "dx": 10, "dy": 10, "copy": true})).unwrap();
