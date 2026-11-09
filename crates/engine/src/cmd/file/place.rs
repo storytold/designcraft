@@ -8,6 +8,9 @@ use super::{
     str_param,
 };
 
+/// File › Place (`file.place`): places a file given by `path` or `base64` (asking for one when
+/// neither is given). Layout pages, media, text files (plain, Word, RTF, InCopy) and graphics each
+/// go their own way; a frame named outright must not be locked.
 pub(super) fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
     // The file's size and time before it is read (a linked text file remembers them).
     let mut before = None;

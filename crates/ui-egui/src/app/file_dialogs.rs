@@ -355,6 +355,7 @@ struct OpenFilter {
 #[cfg(not(target_arch = "wasm32"))]
 const GRAPHICS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "bmp", "psd", "svg", "pdf", "ai", "eps"];
 
+/// The file-type filters the open dialog offers for `purpose` (the `UiRequest::Pick` purpose).
 #[cfg(not(target_arch = "wasm32"))]
 fn open_filters(purpose: &str) -> &'static [OpenFilter] {
     match purpose {

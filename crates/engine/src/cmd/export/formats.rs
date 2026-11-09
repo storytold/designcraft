@@ -126,6 +126,10 @@ pub(super) fn has_story_target(s: &Session) -> std::result::Result<(), String> {
     crate::cmd::text::story_of(s, &Value::Null).map(|_| ()).ok_or_else(|| "edit text or select a text frame".into())
 }
 
+/// File › Export Text (`file.exportText`): writes the story being edited, or the selected frame's
+/// story, as plain text, RTF, tagged text or ICML. `format` wins; without it the path's
+/// extension decides (`.rtf`, `.icml`), and anything else is plain text. Without a path the text
+/// comes back in the result.
 pub(super) fn export_text(s: &mut Session, p: &Value) -> Result<Value> {
     const ID: &str = "file.exportText";
     let sid = crate::cmd::text::story_of(s, p).ok_or_else(|| bad(ID, "edit text or select a text frame"))?;

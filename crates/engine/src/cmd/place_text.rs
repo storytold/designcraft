@@ -408,6 +408,10 @@ fn add_flow_frame(
     Ok(fid)
 }
 
+/// Places a text file (plain, Word, RTF or an InCopy story) at the insertion point, into the
+/// named or selected frame, or into a new frame on the live area (`page`, `rect`). Applies the
+/// style options (`removeStyles`, `styleConflicts`, `styleMap`), links the file when asked and
+/// it is small enough, and autoflows when `autoflow` is set. One undo step.
 pub(super) fn place_text(
     s: &mut Session,
     p: &Value,
