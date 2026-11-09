@@ -735,6 +735,7 @@ fn shift_frame_stays_square_on_the_driving_guide() {
         locked: false,
         layer: None,
         liquid: false,
+        options: Default::default(),
     });
     let sel = Selection::default();
     let cache = Cache::new();
@@ -769,7 +770,15 @@ fn drag_onto_the_next_spread_snaps_to_that_guide() {
     let mut doc = Document::new(&NewDocument { pages: 2, facing_pages: false, ..NewDocument::default() });
     doc.settings.baseline_grid.increment = 0.0;
     let id = add_rect(&mut doc, Rect::new(100.0, 100.0, 160.0, 140.0));
-    let guide = |position: f64| Guide { orientation: Orientation::Horizontal, position, spread: true, locked: false, layer: None, liquid: false };
+    let guide = |position: f64| Guide {
+        orientation: Orientation::Horizontal,
+        position,
+        spread: true,
+        locked: false,
+        layer: None,
+        liquid: false,
+        options: Default::default(),
+    };
     Arc::make_mut(&mut doc.spreads[1]).pages[0].guides.push(guide(52.0));
     let sel = Selection::items(vec![id]);
     let cache = Cache::new();
@@ -932,6 +941,7 @@ fn pen_click_snaps_to_a_guide() {
         locked: false,
         layer: None,
         liquid: false,
+        options: Default::default(),
     });
     let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
     let mut cx = ctx(&d, &s, &c, &l);

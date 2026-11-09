@@ -444,6 +444,10 @@ pub struct DocSettings {
     /// EPUB Export Options › Split Document.
     #[serde(skip_serializing_if = "EpubSplit::is_off")]
     pub epub_split: EpubSplit,
+    /// Layout › Ruler Guides with no guide selected: the colour and view threshold of new ruler
+    /// guides (IDML `GuidePreference` `RulerGuidesColor`, `RulerGuidesViewThreshold`).
+    #[serde(skip_serializing_if = "RulerGuideOptions::is_default")]
+    pub ruler_guides: RulerGuideOptions,
 }
 
 fn is_true(b: &bool) -> bool {
@@ -510,6 +514,7 @@ impl Default for DocSettings {
             column_guides_locked: true,
             new_object: NewObjectColors::default(),
             epub_split: EpubSplit::Off,
+            ruler_guides: RulerGuideOptions::default(),
         }
     }
 }

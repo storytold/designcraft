@@ -49,7 +49,15 @@ fn doc_with_items(moving: Rect, other: Rect, guide_x: f64) -> (Document, ItemId,
     let moving_id = make(&mut doc, moving);
     let other_id = make(&mut doc, other);
     let page = &mut Arc::make_mut(&mut doc.spreads[0]).pages[0];
-    page.guides.push(Guide { orientation: Orientation::Vertical, position: guide_x, spread: false, locked: false, layer: None, liquid: false });
+    page.guides.push(Guide {
+        orientation: Orientation::Vertical,
+        position: guide_x,
+        spread: false,
+        locked: false,
+        layer: None,
+        liquid: false,
+        options: Default::default(),
+    });
     (doc, moving_id, other_id)
 }
 
@@ -372,6 +380,7 @@ fn parent_page_guides_snap_on_the_document_page() {
         locked: false,
         layer: None,
         liquid: false,
+        options: Default::default(),
     });
     let cache = Cache::new();
     let layout = CanvasLayout::new(&doc, false);
@@ -400,6 +409,7 @@ fn grid_beats_a_closer_guide() {
         locked: false,
         layer: None,
         liquid: false,
+        options: Default::default(),
     });
     let cache = Cache::new();
     let layout = CanvasLayout::new(&doc, false);

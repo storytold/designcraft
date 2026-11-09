@@ -1,4 +1,4 @@
-use super::{Affine, Color, DOM_VERSION, El, Node, PKG_NS, escape_id, num};
+use super::{Affine, Color, DOM_VERSION, El, Node, PKG_NS, escape_id, names, num};
 
 pub(crate) fn uid(n: u64) -> String {
     format!("u{n:x}")
@@ -28,6 +28,21 @@ pub(super) fn bool_s(b: bool) -> &'static str {
 
 pub(super) fn pct(v: f64) -> String {
     num(v * 100.0)
+}
+
+/// A UI colour property (`LayerColor`, `GuideColor`, ...): the colour's name when it is one of
+/// the named UI colours, its RGB as a list of 0–255 values otherwise.
+pub(super) fn ui_color_el(name: &str, rgb: [u8; 3]) -> El {
+    match names::layer_color_out(rgb) {
+        Some(n) => p(name, "enumeration", n),
+        None => {
+            let mut e = El::new(name).attr("type", "list");
+            for c in rgb {
+                e.push(p("ListItem", "double", num(f64::from(c))));
+            }
+            e
+        }
+    }
 }
 
 /// (model, space, value) for a colour.

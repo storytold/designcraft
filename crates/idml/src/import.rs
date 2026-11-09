@@ -10,8 +10,8 @@ use designcraft_doc::{
     Asset, AssetId, BaselineGrid, CellRange, CharAttrs, CharFormat, CharRun, CharacterStyle, Columns, ColumnsKind, Content, DirectionalFeather,
     DocSettings, Document, DropShadow, Effects, Fill, GradientFeather, GridAlign, GridRelative, Guide, Item, ItemId, Kerning, LAYER_COLORS, Layer,
     LayerId, ListType, Margins, ObjectStyle, Orientation, Page, PageId, PageSide, ParaAttrs, ParaFormat, ParagraphStyle, ParentInfo, RowHeightMode,
-    Rule, Section, Shape, SpanColumns, Spread, SpreadId, Story, StoryId, Stroke, Styles, TabStop, Table, TextFrame, TextFrameOptions, TextWrap,
-    story as st,
+    Rule, RulerGuideOptions, Section, Shape, SpanColumns, Spread, SpreadId, Story, StoryId, Stroke, Styles, TabStop, Table, TextFrame,
+    TextFrameOptions, TextWrap, story as st,
 };
 use designcraft_geom::corners::{Corner, CornerOptions};
 use designcraft_geom::{Affine, Anchor, PathData, Point, Rect, SubPath};
@@ -400,6 +400,9 @@ impl<'r> Importer<'r> {
                     }
                 }
                 "GridPreference" => self.grid_prefs(e),
+                "GuidePreference" => {
+                    self.settings.ruler_guides = spread::ruler_guide_options(e, "RulerGuidesViewThreshold", "RulerGuidesColor");
+                }
                 "PasteboardPreference" => {
                     if let Some(v) = e.get("PasteboardMargins").map(nums)
                         && v.len() == 2
