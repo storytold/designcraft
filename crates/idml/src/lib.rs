@@ -194,8 +194,8 @@ fn emf_dibs(b: &[u8]) -> Option<Vec<Dib<'_>>> {
         }
         // A drawn shape, line, path, text or other bitmap draw beside the bitmap: the picture is a
         // vector drawing, or more than this one bitmap, that the bitmap alone would misrepresent,
-        // so it is left as it is. (Polygons and lines 2..=8, 42..=47 and 54..=56; arcs 41 and
-        // 71..=74; paths 62..=64; BITBLT, STRETCHBLT, MASKBLT, PLGBLT, SETDIBITSTODEVICE 76..=80;
+        // so it is left as it is. (Polygons and lines 2..=8, 42..=47 and 54..=56; arcs 41;
+        // region fills 71..=74; paths 62..=64; BITBLT, STRETCHBLT, MASKBLT, PLGBLT, SETDIBITSTODEVICE 76..=80;
         // text 83, 84, 96, 97 and 108; 16-bit polylines 85..=92; ALPHABLEND, TRANSPARENTBLT and
         // GRADIENTFILL 114, 116, 118.)
         if matches!(kind, 2..=8 | 41..=47 | 54..=56 | 62..=64 | 71..=74 | 76..=80 | 83..=92 | 96 | 97 | 108 | 114 | 116 | 118) {
@@ -253,7 +253,12 @@ pub(crate) fn emf_raster_to_bmp(b: &[u8]) -> Option<Vec<u8>> {
     }
     // The decoders have no 16-bit BMP, and a mask needs an alpha channel: write 24-bit, or
     // 32-bit with the alpha mask (a V4 header) when there is a mask.
-    if !colour.holds_all_rows() || mask.is_some_and(|m| !m.holds_all_rows()) {
+    // Only uncompressed 16-, 24- and 32-bit colour rows (and an uncompressed mask) are read here.
+    if colour.compression != 0
+        || !matches!(colour.depth, 16 | 24 | 32)
+        || !colour.holds_all_rows()
+        || mask.is_some_and(|m| m.compression != 0 || !m.holds_all_rows())
+    {
         return None;
     }
     let (bytes, head) = if mask.is_some() { (4, 108) } else { (3, 40) };

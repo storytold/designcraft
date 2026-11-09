@@ -472,6 +472,12 @@ fn a_masked_emf_shows_its_colour_bitmap_with_the_mask_as_alpha() {
     assert_eq!(bmp[28..30], 32u16.to_le_bytes());
     assert_eq!(bmp[10..14], 122u32.to_le_bytes());
     assert_eq!(bmp[122..], [10, 20, 30, 0, 40, 50, 60, 255], "the first pixel is outside the mask");
+    let mut packed = emf_dib_record(2, 1, 24, &[], &[10, 20, 30, 40, 50, 60, 0, 0]);
+    packed[96..100].copy_from_slice(&3u32.to_le_bytes());
+    assert!(
+        crate::emf_raster_to_bmp(&emf_of(&[emf_dib_record(2, 1, 1, &table, &[0b0100_0000, 0, 0, 0]), packed])).is_none(),
+        "a compressed colour record is not read as raw rows"
+    );
 }
 
 #[test]
