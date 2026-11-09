@@ -1650,3 +1650,163 @@ fn a_line_fits_when_its_baseline_does() {
     assert!(!overset(&mut s, 78.5), "the line is set; its descenders hang below the frame");
     assert!(overset(&mut s, 50.0), "a baseline below the frame still oversets the line");
 }
+
+#[test]
+fn double_click_text_frame_enters_type_tool_and_escape_returns_to_previous_tool() {
+    use designcraft_tools::{Mods, PointerEvent, PointerKind, ToolKey};
+    let mut s = session();
+    let r = s.execute("frame.create", &json!({"rect": [36, 36, 300, 200], "content": "text"})).unwrap();
+    let fid = r["id"].as_u64().unwrap();
+    s.execute("text.insert", &json!({"text": "Testing double click and escape"})).unwrap();
+    s.execute("edit.deselectAll", &json!({})).unwrap();
+
+    let v = ViewInfo::at_zoom(1.0);
+
+    // 1. Direct Selection tool: double-click on text frame switches to Type tool
+    s.set_tool("directSelection");
+    assert_eq!(s.tool_id(), "directSelection");
+    assert!(!s.wants_text());
+
+    // Double-clicking on text frame places the caret
+    s.pointer(&PointerEvent::new(PointerKind::DoubleClick, 37.0, 48.0).with_clicks(2), v).unwrap();
+    assert_eq!(s.tool_id(), "type");
+    assert!(s.wants_text(), "should be in text editing mode after double-click");
+    let sel_start = s.doc().unwrap().selection.text.expect("caret should be placed in text on double-click");
+    assert_eq!(sel_start.frame, Some(designcraft_doc::ItemId(fid)), "caret must target the clicked text frame");
+    assert!(sel_start.is_caret(), "caret must be an insertion point (anchor == focus)");
+
+    // Return to directSelection tool
+    s.tool_key(ToolKey::Escape, Mods::default(), v).unwrap();
+    assert_eq!(s.tool_id(), "directSelection");
+
+    // Double-clicking further right along the line advances the caret relative to the click coordinate
+    s.pointer(&PointerEvent::new(PointerKind::DoubleClick, 100.0, 48.0).with_clicks(2), v).unwrap();
+    assert_eq!(s.tool_id(), "type");
+    let sel = s.doc().unwrap().selection.text.expect("caret should be placed in text on double-click");
+    assert!(sel.is_caret(), "must be a caret insertion point");
+    assert!(sel.focus > sel_start.focus, "caret offset must advance further into text with click coordinate");
+
+    // Observable effect: text insertion occurs at the active caret position
+    let insert_pos = sel.focus;
+    s.execute("text.insert", &json!({"text": "[caret] "})).unwrap();
+    let story_text = &s.doc().unwrap().doc.story(sel.story).unwrap().text;
+    assert!(story_text.contains("[caret] "), "inserted text must appear in story");
+    assert_eq!(&story_text[insert_pos..insert_pos + "[caret] ".len()], "[caret] ", "text must be inserted at the active caret position");
+
+    // 1st Escape exits text edit mode, keeps the frame selected, and returns to directSelection
+    let handled = s.tool_key(ToolKey::Escape, Mods::default(), v).unwrap();
+    assert!(handled);
+    assert_eq!(s.tool_id(), "directSelection");
+    assert!(!s.wants_text(), "should no longer be in text editing mode");
+    assert_eq!(s.doc().unwrap().selection.items, vec![designcraft_doc::ItemId(fid)], "text frame must remain selected after 1st Escape");
+
+    // 2nd Escape deselects the frame
+    let handled = s.tool_key(ToolKey::Escape, Mods::default(), v).unwrap();
+    assert!(handled);
+    assert_eq!(s.tool_id(), "directSelection");
+    assert!(s.doc().unwrap().selection.items.is_empty(), "frame must be deselected after 2nd Escape");
+
+    // 2. Selection tool: double-click on grouped text frame drills down to select child,
+    // and subsequent double-click enters Type tool.
+    let r2 = s.execute("frame.create", &json!({"rect": [350, 36, 500, 200], "content": "text"})).unwrap();
+    let fid2 = r2["id"].as_u64().unwrap();
+    let r3 = s.execute("frame.create", &json!({"rect": [350, 220, 500, 300], "content": "text"})).unwrap();
+    let fid3 = r3["id"].as_u64().unwrap();
+    s.execute("selection.set", &json!({"ids": [fid2, fid3]})).unwrap();
+    let r_grp = s.execute("object.group", &json!({})).unwrap();
+    let grp_id = r_grp["id"].as_u64().unwrap();
+    s.execute("edit.deselectAll", &json!({})).unwrap();
+
+    s.set_tool("selection");
+    assert_eq!(s.tool_id(), "selection");
+
+    // 1st Double-click on the grouped text frame drills down into the group and selects fid2
+    s.pointer(&PointerEvent::new(PointerKind::DoubleClick, 400.0, 100.0).with_clicks(2), v).unwrap();
+    assert_eq!(s.tool_id(), "selection", "1st double-click should drill down into group, remaining in Selection tool");
+    assert_eq!(s.doc().unwrap().selection.items, vec![designcraft_doc::ItemId(fid2)], "child text frame fid2 should now be selected");
+
+    // 2nd Double-click on selected text frame switches to Type tool
+    s.pointer(&PointerEvent::new(PointerKind::DoubleClick, 400.0, 100.0).with_clicks(2), v).unwrap();
+    assert_eq!(s.tool_id(), "type");
+    assert!(s.wants_text(), "grouped text frame should enter text editing mode");
+
+    // Caret placement: double-clicking nested text frame places the caret in that frame
+    let sel2 = s.doc().unwrap().selection.text.expect("caret should be placed in nested text frame");
+    assert_eq!(sel2.frame, Some(designcraft_doc::ItemId(fid2)), "caret must target the clicked nested frame");
+    assert!(sel2.is_caret(), "caret must be an insertion point");
+
+    // 1st Escape exits text edit mode, keeps the child frame selected, and returns to selection tool
+    let handled = s.tool_key(ToolKey::Escape, Mods::default(), v).unwrap();
+    assert!(handled);
+    assert_eq!(s.tool_id(), "selection");
+    assert!(!s.wants_text());
+    assert_eq!(s.doc().unwrap().selection.items, vec![designcraft_doc::ItemId(fid2)], "child text frame must remain selected after 1st Escape");
+
+    // 2nd Escape navigates up to the parent group
+    let handled = s.tool_key(ToolKey::Escape, Mods::default(), v).unwrap();
+    assert!(handled);
+    assert_eq!(s.tool_id(), "selection");
+    assert_eq!(s.doc().unwrap().selection.items, vec![designcraft_doc::ItemId(grp_id)], "parent group must be selected after 2nd Escape");
+
+    // 3rd Escape deselects the group
+    let handled = s.tool_key(ToolKey::Escape, Mods::default(), v).unwrap();
+    assert!(handled);
+    assert_eq!(s.tool_id(), "selection");
+    assert!(s.doc().unwrap().selection.items.is_empty(), "group must be deselected after 3rd Escape");
+
+    // 3. Escape when nothing is selected is a no-op
+    let handled = s.tool_key(ToolKey::Escape, Mods::default(), v).unwrap();
+    assert!(!handled, "Escape when nothing is selected should be a no-op");
+
+    // 4. Double-clicking a locked text frame must not switch to Type tool
+    let r_locked = s.execute("frame.create", &json!({"rect": [36, 250, 200, 350], "content": "text"})).unwrap();
+    let fid_locked = r_locked["id"].as_u64().unwrap();
+    s.execute("object.lock", &json!({"ids": [fid_locked]})).unwrap();
+    s.execute("edit.deselectAll", &json!({})).unwrap();
+
+    s.set_tool("selection");
+    s.pointer(&PointerEvent::new(PointerKind::DoubleClick, 50.0, 280.0).with_clicks(2), v).unwrap();
+    assert_eq!(s.tool_id(), "selection", "double-clicking locked frame must not switch tool");
+    assert!(!s.wants_text(), "double-clicking locked frame must not enter text editing");
+
+    s.set_tool("directSelection");
+    s.pointer(&PointerEvent::new(PointerKind::DoubleClick, 50.0, 280.0).with_clicks(2), v).unwrap();
+    assert_eq!(s.tool_id(), "directSelection", "directSelection must not switch tool on locked frame");
+    assert!(!s.wants_text());
+
+    // 5. Double-clicking a text frame in a locked group must not switch to Type tool
+    let r_grp_txt1 = s.execute("frame.create", &json!({"rect": [220, 250, 320, 350], "content": "text"})).unwrap();
+    let fid_grp_txt1 = r_grp_txt1["id"].as_u64().unwrap();
+    let r_grp_txt2 = s.execute("frame.create", &json!({"rect": [220, 360, 320, 450], "content": "text"})).unwrap();
+    let fid_grp_txt2 = r_grp_txt2["id"].as_u64().unwrap();
+    s.execute("selection.set", &json!({"ids": [fid_grp_txt1, fid_grp_txt2]})).unwrap();
+    let r_grp = s.execute("object.group", &json!({})).unwrap();
+    let grp_id = r_grp["id"].as_u64().unwrap();
+    s.execute("object.lock", &json!({"ids": [grp_id]})).unwrap();
+    s.execute("edit.deselectAll", &json!({})).unwrap();
+
+    s.set_tool("selection");
+    s.pointer(&PointerEvent::new(PointerKind::DoubleClick, 240.0, 280.0).with_clicks(2), v).unwrap();
+    assert_eq!(s.tool_id(), "selection");
+    assert!(!s.wants_text(), "double-clicking text in locked group must not enter text editing");
+
+    s.set_tool("directSelection");
+    s.pointer(&PointerEvent::new(PointerKind::DoubleClick, 240.0, 280.0).with_clicks(2), v).unwrap();
+    assert_eq!(s.tool_id(), "directSelection");
+    assert!(!s.wants_text(), "double-clicking text in locked group in directSelection must not enter text editing");
+
+    // 6. Double-clicking a non-text frame must not switch to Type tool
+    let r_rect = s.execute("frame.create", &json!({"rect": [36, 400, 200, 500], "content": "unassigned"})).unwrap();
+    let _ = r_rect["id"].as_u64().unwrap();
+    s.execute("edit.deselectAll", &json!({})).unwrap();
+
+    s.set_tool("selection");
+    s.pointer(&PointerEvent::new(PointerKind::DoubleClick, 50.0, 420.0).with_clicks(2), v).unwrap();
+    assert_eq!(s.tool_id(), "selection");
+    assert!(!s.wants_text(), "double-clicking non-text frame must not switch to Type tool");
+
+    s.set_tool("directSelection");
+    s.pointer(&PointerEvent::new(PointerKind::DoubleClick, 50.0, 420.0).with_clicks(2), v).unwrap();
+    assert_eq!(s.tool_id(), "directSelection");
+    assert!(!s.wants_text(), "double-clicking non-text frame in directSelection must not switch to Type tool");
+}

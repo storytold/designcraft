@@ -42,6 +42,8 @@ pub struct TypeTool {
     preedit: Option<Preedit>,
     /// A press on a table row or column border: a drag resizes it.
     border: Option<BorderDrag>,
+    /// Previous tool ID before switching to Type tool (e.g. "selection" or "directSelection").
+    pub prev_tool: Option<String>,
 }
 
 /// A table border under the pointer, and the frame's canvas → inner-space mapping.
@@ -375,7 +377,10 @@ impl Tool for TypeTool {
             ToolKey::Delete => vec![Action::Exec("text.delete".into(), json!({"forward": true, "word": mods.alt}))],
             ToolKey::Enter => vec![Action::Exec("text.insert".into(), json!({"text": if mods.shift { "\u{2028}" } else { "\n" }}))],
             ToolKey::Tab => vec![Action::Exec("text.insert".into(), json!({"text": "\t"}))],
-            ToolKey::Escape => vec![Action::SwitchTool("selection".into()), Action::Exec("text.exitToFrame".into(), json!({}))],
+            ToolKey::Escape => {
+                let target = self.prev_tool.as_deref().filter(|&t| t == "selection" || t == "directSelection").unwrap_or("selection");
+                vec![Action::SwitchTool(target.into()), Action::Exec("text.exitToFrame".into(), json!({}))]
+            }
             _ => vec![],
         }
     }
@@ -478,6 +483,15 @@ impl Tool for TypeTool {
             let r = it.inner_bounds();
             Some((m * Point::new(r.x1, r.y1 - 12.0), m * Point::new(r.x1, r.y1)))
         })
+    }
+
+    fn set_option(&mut self, key: &str, value: &serde_json::Value) {
+        match key {
+            "prevTool" | "previousTool" => {
+                self.prev_tool = value.as_str().map(String::from);
+            }
+            _ => {}
+        }
     }
 }
 

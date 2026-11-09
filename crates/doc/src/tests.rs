@@ -361,7 +361,7 @@ fn group_of(d: &mut Document, lid: LayerId, kids: Vec<std::sync::Arc<Item>>) -> 
 }
 
 #[test]
-fn ancestry_chain_follows_nested_groups_and_ignores_anchored_items() {
+fn ancestry_helpers_follow_nested_groups_and_ignore_anchored_items() {
     let mut d = doc();
     let lid = d.default_layer();
     let (f, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(10.0, 10.0, 100.0, 100.0), lid, "t", ParaFormat::default()).unwrap();
@@ -371,8 +371,13 @@ fn ancestry_chain_follows_nested_groups_and_ignores_anchored_items() {
     ig.content = Content::Group { items: vec![leaf] };
     let outer = group_of(&mut d, lid, vec![std::sync::Arc::new(ig)]);
     assert_eq!(d.ancestry_chain(f), vec![outer, inner, f]);
-    // Not on a spread (an unknown id, or one anchored in a story): no chain.
-    assert_eq!(d.ancestry_chain(ItemId(u64::MAX)), vec![]);
+    assert_eq!((d.parent_of(f), d.parent_of(inner), d.parent_of(outer)), (Some(inner), Some(outer), None));
+    // Not on a spread (an unknown id, or one anchored in a story): no chain, no parent.
+    assert_eq!((d.ancestry_chain(ItemId(u64::MAX)), d.parent_of(ItemId(u64::MAX))), (vec![], None));
+    // A click on the leaf picks the deepest selected ancestor, else the top-level group.
+    assert_eq!(d.selection_target(f, |_| false), outer);
+    assert_eq!(d.selection_target(f, |i| i == inner), inner);
+    assert_eq!(d.selection_target(f, |i| i == f || i == outer), f);
 }
 
 #[test]

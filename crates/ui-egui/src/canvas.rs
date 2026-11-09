@@ -2182,7 +2182,17 @@ fn context_target(app: &mut DesignApp, p: Point, zoom: f64) -> crate::menus::Con
     let Some((id, _)) = hit else { return ContextMenu::Canvas };
     let direct = app.session.tool_id() == "directSelection";
     let Some((target, selected)) = app.session.active().map(|st| {
-        let target = if direct { id } else { st.doc.top_level_of(id).unwrap_or(id) };
+        // As a Selection-tool click picks it: a selected child (or a selected group around it)
+        // stays picked, rather than being replaced by the top-level group.
+        let target = if direct {
+            id
+        } else {
+            let leaf = st.doc.item(id).and_then(|it| {
+                let (_, sp) = CanvasLayout::new(&st.doc, st.editing_parents).spread_at(p)?;
+                designcraft_doc::hit_descendant(it, sp, 4.0 / zoom.max(1e-6), &|c| !c.is_group())
+            });
+            st.doc.selection_target(leaf.unwrap_or(id), |i| st.selection.contains(i))
+        };
         (target, st.selection.contains(target))
     }) else {
         return ContextMenu::Canvas;
@@ -4124,6 +4134,29 @@ mod tests {
     }
 
     #[test]
+    fn right_clicking_a_selected_group_child_keeps_it_selected() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let a = app.run("frame.create", json!({"rect": [36, 36, 200, 200]})).unwrap()["id"].as_u64().unwrap();
+        let b = app.run("frame.create", json!({"rect": [250, 250, 400, 400]})).unwrap()["id"].as_u64().unwrap();
+        app.run("selection.set", json!({"ids": [a, b]})).unwrap();
+        let group = app.run("object.group", json!({})).unwrap()["id"].as_u64().unwrap();
+        let mut h = harness(app);
+        // A child picked with a drill-down stays the selection, as a Selection-tool click leaves it.
+        h.state_mut().run("selection.set", json!({"ids": [a]})).unwrap();
+        h.run_steps(3);
+        let on_a = screen_of(&h, 60.0, 60.0);
+        right_click(&mut h, on_a);
+        assert_eq!(selected(&h), [a], "the selected child is not replaced by its group");
+        // With nothing selected, the first click picks the top-level group as the tool does.
+        h.key_press(egui::Key::Escape);
+        h.state_mut().run("edit.deselectAll", json!({})).unwrap();
+        h.run_steps(3);
+        right_click(&mut h, on_a);
+        assert_eq!(selected(&h), [group]);
+    }
+
+    #[test]
     fn right_clicking_empty_canvas_offers_paste_after_a_copy() {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
         app.run("file.new", json!({})).unwrap();
@@ -4779,7 +4812,95 @@ mod tests {
     }
 
     #[test]
-    fn direct_selection_and_type_tool_clicks_reach_items_in_nested_groups() {
+    fn double_click_text_frame_with_direct_selection_switches_to_type_and_escape_returns() {
+        let (mut h, id) = typing("Hello world from text frame!");
+        // Switch to directSelection tool
+        h.state_mut().run("tool.select", json!({"tool": "directSelection"})).unwrap();
+        h.state_mut().run("edit.deselectAll", json!({})).unwrap();
+        assert_eq!(h.state().session.tool_id(), "directSelection");
+
+        let p = screen_at(&mut h, id, 0..5);
+        h.hover_at(p);
+        h.step();
+        // Double-click on text frame with directSelection tool
+        click(&mut h, p);
+        click(&mut h, p);
+        h.run_steps(5);
+
+        assert_eq!(h.state().session.tool_id(), "type");
+        assert!(h.state_mut().session.wants_text(), "should be in text editing mode");
+
+        // 1st Escape exits text edit mode, returns to directSelection tool, frame selected
+        h.key_press(egui::Key::Escape);
+        h.run_steps(5);
+        assert_eq!(h.state().session.tool_id(), "directSelection");
+        assert!(!h.state_mut().session.wants_text());
+        assert_eq!(h.state().session.doc().unwrap().selection.items, vec![designcraft_doc::ItemId(id)]);
+
+        // 2nd Escape deselects the frame; as before, Escape in Direct Selection then goes back to
+        // the Selection tool.
+        h.key_press(egui::Key::Escape);
+        h.run_steps(5);
+        assert_eq!(h.state().session.tool_id(), "selection");
+        assert!(h.state().session.doc().unwrap().selection.items.is_empty());
+    }
+
+    #[test]
+    fn double_click_grouped_text_frame_with_selection_tool_drills_down_and_escape_climbs_back() {
+        let (mut h, id) = typing("Grouped text frame content");
+        // Create another frame and group them together
+        let r2 = h.state_mut().run("frame.create", json!({"rect": [72, 450, 400, 550], "content": "text", "text": "Other frame"})).unwrap();
+        let id2 = r2["id"].as_u64().unwrap();
+        h.state_mut().run("selection.set", json!({"ids": [id, id2]})).unwrap();
+        let r_grp = h.state_mut().run("object.group", json!({})).unwrap();
+        let grp_id = r_grp["id"].as_u64().unwrap();
+
+        // Switch to selection tool and deselect all
+        h.state_mut().run("tool.select", json!({"tool": "selection"})).unwrap();
+        h.state_mut().run("edit.deselectAll", json!({})).unwrap();
+        assert_eq!(h.state().session.tool_id(), "selection");
+        assert!(h.state().session.doc().unwrap().selection.items.is_empty());
+
+        let p = screen_at(&mut h, id, 0..5);
+        h.hover_at(p);
+        h.step();
+
+        // 1st double-click on group over `id` drills down into group: selects `id`
+        click(&mut h, p);
+        click(&mut h, p);
+        h.run_steps(35);
+        assert_eq!(h.state().session.tool_id(), "selection");
+        assert_eq!(h.state().session.doc().unwrap().selection.items, vec![designcraft_doc::ItemId(id)]);
+
+        // 2nd double-click on selected `id` switches to Type tool
+        click(&mut h, p);
+        click(&mut h, p);
+        h.run_steps(5);
+        assert_eq!(h.state().session.tool_id(), "type");
+        assert!(h.state_mut().session.wants_text(), "should be editing text");
+
+        // 1st Escape exits text edit mode, returns to selection tool with child frame selected
+        h.key_press(egui::Key::Escape);
+        h.run_steps(5);
+        assert_eq!(h.state().session.tool_id(), "selection");
+        assert!(!h.state_mut().session.wants_text());
+        assert_eq!(h.state().session.doc().unwrap().selection.items, vec![designcraft_doc::ItemId(id)]);
+
+        // 2nd Escape selects parent group
+        h.key_press(egui::Key::Escape);
+        h.run_steps(5);
+        assert_eq!(h.state().session.tool_id(), "selection");
+        assert_eq!(h.state().session.doc().unwrap().selection.items, vec![designcraft_doc::ItemId(grp_id)]);
+
+        // 3rd Escape deselects
+        h.key_press(egui::Key::Escape);
+        h.run_steps(5);
+        assert_eq!(h.state().session.tool_id(), "selection");
+        assert!(h.state().session.doc().unwrap().selection.items.is_empty());
+    }
+
+    #[test]
+    fn direct_selection_click_and_type_tool_click_in_nested_groups() {
         let (mut h, id) = typing("Nested hello");
         let r2 = h.state_mut().run("frame.create", json!({"rect": [72, 450, 400, 550], "content": "text", "text": "Other frame"})).unwrap();
         let id2 = r2["id"].as_u64().unwrap();

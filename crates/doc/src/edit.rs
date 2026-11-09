@@ -199,6 +199,18 @@ impl Document {
         Some(self.spread(loc.spread)?.items[loc.top()].id)
     }
 
+    /// The immediate parent group of `id`, if `id` is nested inside a group. Only groups hold
+    /// items on a spread (see [`Item::children`]); anchored items live in stories and have no
+    /// parent here.
+    pub fn parent_of(&self, id: ItemId) -> Option<ItemId> {
+        let chain = self.ancestry_chain(id);
+        let (last, parents) = chain.split_last()?;
+        if *last != id {
+            return None;
+        }
+        parents.last().copied()
+    }
+
     /// Item IDs along the ancestry path from top-level down to `id` (inclusive); empty when `id`
     /// is not on a spread.
     pub fn ancestry_chain(&self, id: ItemId) -> Vec<ItemId> {
@@ -212,6 +224,14 @@ impl Document {
             items = it.children();
         }
         chain
+    }
+
+    /// The item a Selection-tool click on the leaf `leaf` picks: the deepest ancestor (or `leaf`
+    /// itself) that `is_selected` says is already selected, so a click inside a selected group
+    /// keeps drilling at that level, otherwise the top-level item. Clicks and the context menu
+    /// share this so they agree.
+    pub fn selection_target(&self, leaf: ItemId, is_selected: impl Fn(ItemId) -> bool) -> ItemId {
+        self.ancestry_chain(leaf).into_iter().rev().find(|&i| is_selected(i)).or_else(|| self.top_level_of(leaf)).unwrap_or(leaf)
     }
 
     /// Spread-space transform of the parent group chain of the item at `loc` (identity at top level).

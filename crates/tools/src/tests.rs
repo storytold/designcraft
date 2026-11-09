@@ -1938,7 +1938,120 @@ fn loaded_text_cursor_threads_into_a_frame_inside_a_group() {
 }
 
 #[test]
-fn direct_selection_and_type_tool_reach_items_in_group_and_nested_groups() {
+fn double_click_text_frame_switches_to_type_tool() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (fid, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(100.0, 100.0, 200.0, 200.0), lid, "standalone", ParaFormat::default()).unwrap();
+    let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+
+    // Selection tool double click
+    let mut t = create("selection");
+    let a = t.pointer(&cx, &PointerEvent::new(PointerKind::DoubleClick, 150.0, 150.0).with_clicks(2));
+    assert_eq!(
+        a,
+        vec![Action::SwitchTool("type".into()), Action::Exec("text.placeCaret".into(), serde_json::json!({"frame": fid.0, "point": [150.0, 150.0]}))]
+    );
+
+    // Direct Selection tool double click
+    let mut dt = create("directSelection");
+    let a = dt.pointer(&cx, &PointerEvent::new(PointerKind::DoubleClick, 150.0, 150.0).with_clicks(2));
+    assert_eq!(
+        a,
+        vec![Action::SwitchTool("type".into()), Action::Exec("text.placeCaret".into(), serde_json::json!({"frame": fid.0, "point": [150.0, 150.0]}))]
+    );
+
+    // Nested text frame inside a group
+    let (grouped_fid, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(300.0, 300.0, 400.0, 400.0), lid, "grouped", ParaFormat::default()).unwrap();
+    let child = d.spread_mut(SpreadRef::Doc(0)).unwrap().items.pop().unwrap();
+    let gid = ItemId(d.alloc());
+    let mut g = Item::new(gid, lid, Shape::Group, designcraft_geom::PathData::default());
+    g.content = designcraft_doc::item::Content::Group { items: vec![child] };
+    d.insert_item(SpreadRef::Doc(0), g, None).unwrap();
+
+    let cx = ctx(&d, &s, &c, &l);
+    // Direct Selection: double-clicking nested text frame directly switches to Type tool
+    let a = dt.pointer(&cx, &PointerEvent::new(PointerKind::DoubleClick, 350.0, 350.0).with_clicks(2));
+    assert_eq!(
+        a,
+        vec![
+            Action::SwitchTool("type".into()),
+            Action::Exec("text.placeCaret".into(), serde_json::json!({"frame": grouped_fid.0, "point": [350.0, 350.0]}))
+        ]
+    );
+
+    // Selection tool: 1st double-click drills down to select child item grouped_fid
+    let a = t.pointer(&cx, &PointerEvent::new(PointerKind::DoubleClick, 350.0, 350.0).with_clicks(2));
+    assert_eq!(a, vec![Action::Exec("selection.set".into(), serde_json::json!({"ids": [grouped_fid.0]}))]);
+
+    // Selection tool: 2nd double-click with grouped_fid selected switches to Type tool
+    let s_child = Selection::items(vec![grouped_fid]);
+    let cx_child = ctx(&d, &s_child, &c, &l);
+    let a2 = t.pointer(&cx_child, &PointerEvent::new(PointerKind::DoubleClick, 350.0, 350.0).with_clicks(2));
+    assert_eq!(
+        a2,
+        vec![
+            Action::SwitchTool("type".into()),
+            Action::Exec("text.placeCaret".into(), serde_json::json!({"frame": grouped_fid.0, "point": [350.0, 350.0]}))
+        ]
+    );
+
+    // In selection tool: pressing Escape when child is selected climbs up to parent group
+    let a_esc_child = t.key(&cx_child, ToolKey::Escape, Mods::default());
+    assert_eq!(a_esc_child, vec![Action::Exec("selection.set".into(), serde_json::json!({"ids": [gid.0]}))]);
+
+    // Pressing Escape on parent group deselects
+    let s_grp = Selection::items(vec![gid]);
+    let cx_grp = ctx(&d, &s_grp, &c, &l);
+    let a_esc_grp = t.key(&cx_grp, ToolKey::Escape, Mods::default());
+    assert_eq!(a_esc_grp, vec![Action::Exec("selection.set".into(), serde_json::json!({"ids": []}))]);
+}
+
+#[test]
+fn escape_in_type_tool_returns_to_previous_tool() {
+    let d = Document::new(&NewDocument::default());
+    let s = Selection {
+        text: Some(designcraft_doc::TextSel { story: designcraft_doc::StoryId(1), anchor: 0, focus: 0, frame: None, cell: None }),
+        ..Default::default()
+    };
+    let (c, l) = (Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+
+    // Default TypeTool without prevTool returns to selection
+    let mut t = create("type");
+    let a = t.key(&cx, ToolKey::Escape, Mods::default());
+    assert_eq!(a, vec![Action::SwitchTool("selection".into()), Action::Exec("text.exitToFrame".into(), serde_json::json!({}))]);
+
+    // TypeTool with prevTool = "directSelection" returns to directSelection
+    let mut t = create("type");
+    t.set_option("prevTool", &serde_json::json!("directSelection"));
+    let a = t.key(&cx, ToolKey::Escape, Mods::default());
+    assert_eq!(a, vec![Action::SwitchTool("directSelection".into()), Action::Exec("text.exitToFrame".into(), serde_json::json!({}))]);
+
+    // After exiting text edit, the text frame remains selected in the returned selection tool
+    let fid = ItemId(1);
+    let s_frame = Selection { items: vec![fid], text: None, ..Default::default() };
+    let cx_frame = ctx(&d, &s_frame, &c, &l);
+
+    // In directSelection tool with the frame selected: subsequent Escape deselects the frame
+    let mut dt = create("directSelection");
+    let a_subsequent = dt.key(&cx_frame, ToolKey::Escape, Mods::default());
+    assert_eq!(a_subsequent, vec![Action::Exec("selection.set".into(), serde_json::json!({"ids": []}))]);
+
+    // In selection tool with the standalone frame selected: subsequent Escape deselects the frame
+    let mut st = create("selection");
+    let a_subsequent_sel = st.key(&cx_frame, ToolKey::Escape, Mods::default());
+    assert_eq!(a_subsequent_sel, vec![Action::Exec("selection.set".into(), serde_json::json!({"ids": []}))]);
+
+    // If already deselected, Escape does not emit selection.set
+    let s_empty = Selection::default();
+    let cx_empty = ctx(&d, &s_empty, &c, &l);
+    assert_eq!(dt.key(&cx_empty, ToolKey::Escape, Mods::default()), vec![]);
+    assert_eq!(st.key(&cx_empty, ToolKey::Escape, Mods::default()), vec![]);
+}
+
+#[test]
+fn direct_selection_selects_item_directly_in_group_and_nested_groups() {
     let mut d = Document::new(&NewDocument::default());
     let lid = d.default_layer();
 
