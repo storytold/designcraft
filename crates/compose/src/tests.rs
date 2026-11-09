@@ -48,6 +48,18 @@ fn all_lines(cs: &ComposedStory) -> Vec<&Line> {
     cs.frames.iter().flat_map(|f| f.lines.iter()).collect()
 }
 
+/// A long run of soft hyphens composes: each one's hyphen width comes from the last other glyph,
+/// kept as the breaker goes (it searched back over the whole run for every one).
+#[test]
+fn a_run_of_soft_hyphens_composes() {
+    let text = format!("Word{}end", "\u{AD}".repeat(3_900));
+    let (d, sid, _) = doc_with(&text, Rect::new(36.0, 36.0, 300.0, 700.0), ParaAttrs::default());
+    let t = std::time::Instant::now();
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(t.elapsed() < std::time::Duration::from_secs(20), "{:?}", t.elapsed());
+    assert!(!all_lines(&cs).is_empty());
+}
+
 #[test]
 fn composes_simple_paragraph() {
     let (d, sid, _) = doc_with(LOREM, Rect::new(36.0, 36.0, 300.0, 700.0), ParaAttrs::default());
@@ -6172,7 +6184,8 @@ fn mojikumi_one_em_line_end_set_sets_closing_punctuation_full_width_at_line_end(
 }
 
 /// Consecutive punctuation touches (JLREQ 3.1.4): in 漢」。漢（「漢 the closing bracket and
-/// the full stop, and the two opening brackets, close up by half an em each.
+/// the full stop, and the two opening brackets, close up by half an em each, under both
+/// Japanese base sets (the full stop isn't at the line end, so the line-end rule doesn't apply).
 #[test]
 fn mojikumi_closes_up_consecutive_punctuation() {
     let family = "Mojikumi Consecutive";
@@ -6189,8 +6202,10 @@ fn mojikumi_closes_up_consecutive_punctuation() {
         (line.end_x - line.x0, g.face.units_per_em() * g.sx)
     };
     let (natural, em) = width("Nothing");
-    let (set, _) = width("LineEndAllOneHalfEmEnum");
-    assert!((natural - set - em).abs() < 0.01, "{natural} - {set} should be one em ({em})");
+    for name in ["LineEndAllOneHalfEmEnum", "LineEndAllOneEmEnum"] {
+        let (set, _) = width(name);
+        assert!((natural - set - em).abs() < 0.01, "{name}: {natural} - {set} should be one em ({em})");
+    }
 }
 
 fn ruled(text: &str, rect: Rect, columns: u32, edit: impl FnOnce(&mut Document, StoryId)) -> (Document, ItemId, Vec<Rect>) {

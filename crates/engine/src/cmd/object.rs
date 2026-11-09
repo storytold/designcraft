@@ -1704,6 +1704,13 @@ fn transform_set(s: &mut Session, p: &Value) -> Result<Value> {
                 } else {
                     let inner = it.xf.inverse() * m * it.xf;
                     bake(it, inner);
+                    // A pure move carries the placed graphic along; a resize leaves it at its size.
+                    let c = inner.as_coeffs();
+                    if let Content::Graphic(g) = &mut it.content
+                        && [c[0] - 1.0, c[1], c[2], c[3] - 1.0].iter().all(|v| v.abs() < 1e-9)
+                    {
+                        g.xf = inner * g.xf;
+                    }
                 }
             }
         }
@@ -2859,7 +2866,12 @@ fn clipping_path(s: &mut Session, p: &Value) -> Result<Value> {
             let Some(px) = designcraft_render::decode_pixmap_page(&asset.data, asset.page) else { continue };
             // A placed PDF cropped to a box: trace that box, which graphic space spans.
             let px = match designcraft_render::shown_box(asset) {
-                Some(frac) => designcraft_render::crop_pixmap(&px, frac).unwrap_or(px),
+                // A crop too big to trace is skipped, as a graphic that fails to decode is: tracing
+                // the whole page instead would trace something else than the box.
+                Some(frac) => match designcraft_render::crop_pixmap(&px, frac) {
+                    Some(cropped) => cropped,
+                    None => continue,
+                },
                 None => px,
             };
             let (pw, ph) = (px.width() as usize, px.height() as usize);
@@ -4658,6 +4670,40 @@ mod clipping_tests {
         assert!((b.x0 - 105.0).abs() < 1.5 && (b.x1 - 135.0).abs() < 1.5, "{b:?}");
         assert_eq!(it.shape, Shape::Path);
         assert!(s.execute("object.clippingPath", &json!({"ids": [f], "threshold": 255})).is_err());
+    }
+
+    /// A placed PDF whose crop box is too large to trace is skipped, not traced from the whole page.
+    #[test]
+    fn clipping_path_skips_a_pdf_whose_crop_is_too_large_to_trace() {
+        let content = "0 0 0 rg 10 10 50 50 re f";
+        let objs = [
+            "<</Type/Catalog/Pages 2 0 R>>".to_string(),
+            "<</Type/Pages/Kids[3 0 R]/Count 1>>".into(),
+            "<</Type/Page/Parent 2 0 R/MediaBox[-30000 -30000 30000 30000]/CropBox[0 0 100 100]/Contents 4 0 R>>".into(),
+            format!("<</Length {}>>\nstream\n{content}\nendstream", content.len()),
+        ];
+        let mut bytes = b"%PDF-1.7\n".to_vec();
+        let mut offsets = Vec::new();
+        for (i, body) in objs.iter().enumerate() {
+            offsets.push(bytes.len());
+            bytes.extend_from_slice(format!("{} 0 obj\n{body}\nendobj\n", i + 1).as_bytes());
+        }
+        let xref = bytes.len();
+        bytes.extend_from_slice(b"xref\n0 5\n0000000000 65535 f\r\n");
+        for at in offsets {
+            bytes.extend_from_slice(format!("{at:010} 00000 n\r\n").as_bytes());
+        }
+        bytes.extend_from_slice(format!("trailer\n<</Size 5/Root 1 0 R>>\nstartxref\n{xref}\n%%EOF\n").as_bytes());
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let f = s.execute("frame.create", &json!({"rect": [100, 100, 200, 200]})).unwrap()["id"].as_u64().unwrap();
+        let placed = s
+            .execute("file.place", &json!({"base64": super::super::file::base64_encode(&bytes), "name": "wide.pdf", "frame": f, "pdfCrop": "media"}));
+        assert!(placed.is_ok(), "{placed:?}");
+        let before = s.doc().unwrap().doc.item(ItemId(f)).unwrap().shape;
+        let e = s.execute("object.clippingPath", &json!({"ids": [f], "type": "alpha"}));
+        assert!(e.is_err(), "the graphic is skipped, so there is nothing to trace: {e:?}");
+        assert_eq!(s.doc().unwrap().doc.item(ItemId(f)).unwrap().shape, before, "the frame keeps its shape");
     }
 
     #[test]
