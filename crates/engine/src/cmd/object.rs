@@ -4102,7 +4102,9 @@ mod step_repeat_tests {
         assert_eq!(s.execute("edit.stepAndRepeat", &json!({"ids": [frame], "count": 1, "dx": 20.0})).unwrap()["created"], 1);
         assert_eq!(s.doc().unwrap().doc.spreads[0].pages[0].guides.len(), before, "the selected guide is untouched");
         s.execute("guide.add", &json!({"orientation": "vertical", "position": 999_990.0})).unwrap();
-        assert!(s.execute("edit.stepAndRepeat", &json!({"count": 1, "dx": 20.0})).is_err(), "a copy past the guide range is refused");
+        let antes = positions(&s, Orientation::Vertical);
+        assert!(s.execute("edit.stepAndRepeat", &json!({"count": 2, "dx": 10.0})).is_err(), "a copy past the guide range is refused");
+        assert_eq!(positions(&s, Orientation::Vertical), antes, "the first copy fitted and the second did not: neither is left behind");
     }
 
     #[test]
