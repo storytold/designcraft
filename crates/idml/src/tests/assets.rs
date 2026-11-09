@@ -393,3 +393,143 @@ fn the_swatch_applied_to_an_image_is_kept() {
     assert!(!images.iter().any(|e| e.contains("Swatch/None")), "{images:?}");
     assert_eq!(fills(&import_idml_with(&out, &reader).unwrap()), want);
 }
+
+/// One `EMR_STRETCHDIBITS` record: a `depth`-bit bitmap with an optional colour `table`.
+fn emf_dib_record(w: u32, h: u32, depth: u16, table: &[u8], bits: &[u8]) -> Vec<u8> {
+    let le = |v: u32| v.to_le_bytes();
+    let mut bmi = [le(40), le(w), le(h)].concat();
+    bmi.extend(1u16.to_le_bytes());
+    bmi.extend(depth.to_le_bytes());
+    bmi.extend([le(0), le(bits.len() as u32)].concat());
+    bmi.resize(40, 0);
+    bmi.extend(table);
+    let mut rec = [le(81), le((80 + bmi.len() + bits.len()) as u32)].concat();
+    rec.resize(48, 0);
+    rec.extend([le(80), le(bmi.len() as u32), le(80 + bmi.len() as u32), le(bits.len() as u32)].concat());
+    rec.resize(80, 0);
+    rec.extend(&bmi);
+    rec.extend(bits);
+    rec
+}
+
+/// An EMF the way InDesign embeds a pasted picture: header, the given records, `EMR_EOF`.
+fn emf_of(records: &[Vec<u8>]) -> Vec<u8> {
+    let le = |v: u32| v.to_le_bytes();
+    let mut b = [le(1), le(88)].concat();
+    b.resize(40, 0);
+    b.extend(b" EMF");
+    b.resize(88, 0);
+    for r in records {
+        b.extend(r);
+    }
+    b.extend([le(14), le(20), le(0), le(16), le(20)].concat());
+    b
+}
+
+/// An EMF holding one 24-bit bitmap.
+fn emf_with_bitmap(w: u32, h: u32, bgr: &[u8]) -> Vec<u8> {
+    emf_of(&[emf_dib_record(w, h, 24, &[], bgr)])
+}
+
+#[test]
+fn a_placed_emf_photo_imports_as_a_raster() {
+    // 2x1, 24-bit rows padded to four bytes: blue, green.
+    let bgr = [255, 0, 0, 0, 255, 0, 0, 0];
+    let emf = emf_with_bitmap(2, 1, &bgr);
+    let bmp = crate::emf_raster_to_bmp(&emf).unwrap();
+    assert_eq!(&bmp[..2], b"BM");
+    assert_eq!(bmp[10..14], 54u32.to_le_bytes());
+    assert_eq!(bmp[54..], bgr);
+    let frames = vec![frame(1, 0.0, 0.0, &image(1, "file:/art/photo.emf", Some(&emf)))];
+    let d = import_idml_with(&package(&frames), &|_: &str| None).unwrap();
+    let (id, _, _) = placements(&d)[0];
+    let a = d.assets.get(&id).unwrap();
+    assert_eq!(a.mime, "image/bmp");
+    assert_eq!(a.pixels, Some((2, 1)));
+
+    // Not an EMF, or an EMF with no bitmap in it: nothing to show.
+    assert!(crate::emf_raster_to_bmp(b"not an emf").is_none());
+    assert!(crate::emf_raster_to_bmp(&emf[..88]).is_none());
+}
+
+#[test]
+fn a_16_bit_emf_bitmap_is_widened_to_24_bit() {
+    // 2x1 at 5-5-5: pure red (0x7c00) and pure blue (0x001f), rows padded to four bytes.
+    let emf = emf_of(&[emf_dib_record(2, 1, 16, &[], &[0x00, 0x7c, 0x1f, 0x00])]);
+    let bmp = crate::emf_raster_to_bmp(&emf).unwrap();
+    assert_eq!(bmp[28..30], 24u16.to_le_bytes());
+    assert_eq!(bmp[54..60], [0, 0, 255, 255, 0, 0], "BGR: red, blue");
+}
+
+#[test]
+fn a_masked_emf_shows_its_colour_bitmap_with_the_mask_as_alpha() {
+    // InDesign writes a transparent picture as a 1-bit mask record (black, white), then the
+    // colour record; the picture shows where the mask is white.
+    let table = [0, 0, 0, 0, 255, 255, 255, 0];
+    let mask = emf_dib_record(2, 1, 1, &table, &[0b0100_0000, 0, 0, 0]);
+    let colour = emf_dib_record(2, 1, 24, &[], &[10, 20, 30, 40, 50, 60, 0, 0]);
+    let bmp = crate::emf_raster_to_bmp(&emf_of(&[mask, colour])).unwrap();
+    assert_eq!(bmp[28..30], 32u16.to_le_bytes());
+    assert_eq!(bmp[10..14], 122u32.to_le_bytes());
+    assert_eq!(bmp[122..], [10, 20, 30, 0, 40, 50, 60, 255], "the first pixel is outside the mask");
+}
+
+#[test]
+fn an_emf_that_also_draws_vectors_is_not_reduced_to_its_bitmap() {
+    let colour = emf_dib_record(2, 1, 24, &[], &[10, 20, 30, 40, 50, 60, 0, 0]);
+    // EMR_POLYGON16 (86), EMR_RECTANGLE (43): a drawing the bitmap alone would misrepresent.
+    for kind in [86u32, 43] {
+        let shape = [kind.to_le_bytes(), 8u32.to_le_bytes()].concat();
+        assert!(crate::emf_raster_to_bmp(&emf_of(&[colour.clone(), shape])).is_none(), "{kind}");
+    }
+    assert!(crate::emf_raster_to_bmp(&emf_of(&[colour])).is_some());
+}
+
+#[test]
+fn an_emf_with_other_drawing_records_is_left_alone() {
+    let colour = emf_dib_record(2, 1, 24, &[], &[10, 20, 30, 40, 50, 60, 0, 0]);
+    // ANGLEARC, BITBLT, STRETCHBLT, MASKBLT, PLGBLT, SETDIBITSTODEVICE, POLYTEXTOUTA/W, SMALLTEXTOUT,
+    // ALPHABLEND, TRANSPARENTBLT, GRADIENTFILL, EXTTEXTOUTW.
+    for kind in [41u32, 76, 77, 78, 79, 80, 96, 97, 108, 114, 116, 118, 84] {
+        let other = [kind.to_le_bytes(), 8u32.to_le_bytes()].concat();
+        assert!(crate::emf_raster_to_bmp(&emf_of(&[colour.clone(), other])).is_none(), "{kind}");
+    }
+}
+
+#[test]
+fn an_emf_stored_as_several_bitmap_bands_is_left_alone() {
+    let band = |fill: u8| emf_dib_record(2, 1, 24, &[], &[fill, fill, fill, fill, fill, fill, 0, 0]);
+    assert!(crate::emf_raster_to_bmp(&emf_of(&[band(10), band(20)])).is_none());
+    assert!(crate::emf_raster_to_bmp(&emf_of(&[band(10), band(20), band(30)])).is_none());
+    assert!(crate::emf_raster_to_bmp(&emf_of(&[band(10)])).is_some());
+}
+
+#[test]
+fn an_emf_header_cannot_size_a_buffer_the_file_does_not_fill() {
+    // 32767 x 32767 at 16 bits, or with a mask, but a few bytes of pixels: no allocation, no BMP.
+    let wide_16 = emf_of(&[emf_dib_record(32767, 32767, 16, &[], &[0; 8])]);
+    assert!(crate::emf_raster_to_bmp(&wide_16).is_none());
+    let table = [0, 0, 0, 0, 255, 255, 255, 0];
+    let mask = emf_dib_record(32767, 32767, 1, &table, &[0; 8]);
+    let colour = emf_dib_record(32767, 32767, 24, &[], &[0; 8]);
+    assert!(crate::emf_raster_to_bmp(&emf_of(&[mask, colour])).is_none());
+    // A record size that would wrap a 32-bit offset ends the scan instead of looping.
+    let mut huge = emf_of(&[]);
+    let at = 88;
+    huge.splice(at..at, [81u32.to_le_bytes(), u32::MAX.to_le_bytes()].concat());
+    assert!(crate::emf_raster_to_bmp(&huge).is_none());
+}
+
+#[test]
+fn a_linked_emf_keeps_the_files_bytes() {
+    // The bitmap is taken from data embedded in the document only: a linked file's bytes stay what
+    // the file holds, so the link status and packaging still match the file.
+    let emf = emf_with_bitmap(2, 1, &[255, 0, 0, 0, 255, 0, 0, 0]);
+    let frames = vec![frame(1, 0.0, 0.0, &image(1, "file:/art/photo.emf", None))];
+    let read = emf.clone();
+    let d = import_idml_with(&package(&frames), &move |_: &str| Some(read.clone())).unwrap();
+    let (id, _, _) = placements(&d)[0];
+    let a = d.assets.get(&id).unwrap();
+    assert_eq!(*a.data, emf);
+    assert_ne!(a.mime, "image/bmp");
+}
