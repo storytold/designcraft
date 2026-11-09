@@ -587,9 +587,9 @@ pub(crate) mod browser_import_tests {
         assert_eq!(*a.data, image(), "the Links folder's file: {}", app.ui.status);
     }
 
-    /// The web build relinks from files it is handed: chosen with Relink to Folder… (several at
-    /// once) or dropped. A dropped image named like a missing graphic relinks it instead of
-    /// being placed; one named like nothing is placed as before.
+    /// The web build relinks from files it is handed: chosen with Relink… (one graphic) or
+    /// Relink to Folder… (several at once). A dropped image is placed as before, even one named
+    /// like a missing graphic.
     #[test]
     fn delivered_files_relink_missing_graphics() {
         let mut app = app();

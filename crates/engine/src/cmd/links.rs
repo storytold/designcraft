@@ -471,8 +471,8 @@ fn relinked_asset(a: &designcraft_doc::Asset, read: &Path, link: &str) -> Result
     relinked_from(a, bytes, px, &read.display().to_string(), link, name)
 }
 
-/// [`relinked_asset`] from a file handed over as bytes with its name (the browser's file picker
-/// and drops give no path). A file of the same name as the link keeps the link's path, so the
+/// [`relinked_asset`] from a file handed over as bytes with its name (the browser's file and
+/// folder pickers give no path). A file of the same name as the link keeps the link's path, so the
 /// document still finds the file on the computer the link came from; another name becomes the
 /// link.
 fn relinked_bytes(a: &designcraft_doc::Asset, name: &str, bytes: Vec<u8>) -> Result<Arc<designcraft_doc::Asset>> {
