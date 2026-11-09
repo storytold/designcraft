@@ -91,9 +91,25 @@ impl DesignApp {
         match result {
             Ok(r) => self.print_completed(&r),
             Err(e) => {
-                // A deferred clean-window close must not hide a failed print job's error.
-                self.close_requested_pending = false;
-                self.quit_requested = false;
+                if !self.quit_without_asking {
+                    // Cancel both deferred Quit and a native Close received in this tick.
+                    // Consuming the event keeps handle_quit from treating it as a fresh close
+                    // (or opening an unsaved-changes dialog) after the error is reported.
+                    self.close_requested_pending = false;
+                    self.quit_requested = false;
+                    let cancel_close = ctx.input_mut(|input| {
+                        let viewport = input.raw.viewport_id;
+                        input.raw.viewports.get_mut(&viewport).is_some_and(|info| {
+                            let closing = info.close_requested();
+                            info.events.retain(|event| !matches!(event, egui::ViewportEvent::Close));
+                            closing
+                        })
+                    });
+                    if cancel_close {
+                        // eframe captured the original raw event before running app logic.
+                        ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                    }
+                }
                 self.status_error("Print", e);
             }
         }
@@ -118,18 +134,21 @@ mod tests {
     use std::sync::mpsc;
     use std::time::Duration;
 
+    /// A clean one-page document keeps close tests independent of unsaved-change prompts.
     fn app() -> DesignApp {
         let mut app = DesignApp::new(Session::new(), Services::default());
         app.run("file.new", json!({"title":"Printed snapshot"})).unwrap();
         app
     }
 
+    /// Valid print options name an unavailable queue as a second guard behind the fake driver.
     fn synthetic_params() -> Value {
         // An explicit nonexistent queue cannot fall back to the physical default printer,
         // even if asynchronous dispatch or the fake worker hook accidentally regresses.
         json!({"printer":"DesignCraft synthetic regression queue (nonexistent)"})
     }
 
+    /// Wait only in the test, then let the production nonblocking poll process the result.
     fn finish(app: &mut DesignApp) {
         let result = app.pending_print.as_ref().unwrap().result.recv_timeout(Duration::from_secs(10)).unwrap();
         // Put the received result back so the production polling path handles it.
@@ -139,6 +158,7 @@ mod tests {
         app.poll_print(&egui::Context::default());
     }
 
+    /// Drive one quit-handling frame, optionally carrying the native window close event.
     fn quit_frame(app: &mut DesignApp, ctx: &egui::Context, close: bool) -> Vec<egui::ViewportCommand> {
         let mut raw = egui::RawInput::default();
         if close {
@@ -149,6 +169,18 @@ mod tests {
         out.viewport_output.get(&egui::ViewportId::ROOT).map(|v| v.commands.clone()).unwrap_or_default()
     }
 
+    /// Run the actual logic-tick ordering: collect the print result before handling native Close.
+    fn logic_frame(app: &mut DesignApp, ctx: &egui::Context, close: bool) -> Vec<egui::ViewportCommand> {
+        let mut raw = egui::RawInput::default();
+        if close {
+            raw.viewports.entry(egui::ViewportId::ROOT).or_default().events.push(egui::ViewportEvent::Close);
+        }
+        let mut out = ctx.run_ui(raw, |ui| app.logic(ui.ctx()));
+        out.textures_delta.clear();
+        out.viewport_output.get(&egui::ViewportId::ROOT).map(|v| v.commands.clone()).unwrap_or_default()
+    }
+
+    /// A held fake driver leaves editing and tab closure responsive and prints the original snapshot.
     #[test]
     fn desktop_print_returns_before_the_driver_and_keeps_the_snapshot() {
         let mut app = app();
@@ -181,6 +213,7 @@ mod tests {
         assert_eq!(app.session.doc().unwrap().doc.title, "Another document");
     }
 
+    /// A terminal driver failure replaces the busy indicator without claiming submission success.
     #[test]
     fn print_worker_failure_is_reported_without_a_success_message() {
         let mut app = app();
@@ -191,6 +224,7 @@ mod tests {
         assert!(app.pending_print.is_none());
     }
 
+    /// An abandoned result channel clears the busy state and reports a terminal worker error.
     #[test]
     fn a_disconnected_worker_is_reported_instead_of_staying_busy() {
         let mut app = app();
@@ -202,6 +236,7 @@ mod tests {
         assert!(app.ui.status.contains("stopped without returning a result"));
     }
 
+    /// Script and dry-run calls retain their established synchronous result and validation behavior.
     #[test]
     fn control_and_dry_run_keep_the_synchronous_engine_result() {
         let mut app = app();
@@ -214,6 +249,7 @@ mod tests {
         assert!(app.pending_print.is_none());
     }
 
+    /// Dropping app state never joins a native worker that may be waiting on its driver.
     #[test]
     fn dropping_the_window_does_not_wait_for_the_print_worker() {
         let mut app = app();
@@ -230,6 +266,7 @@ mod tests {
         done.recv_timeout(Duration::from_secs(10)).unwrap();
     }
 
+    /// Ordinary menu Quit and native Close wait through a running job and resume after success.
     #[test]
     fn normal_quit_and_window_close_wait_responsively_for_the_print_job() {
         for window_close in [false, true] {
@@ -260,6 +297,7 @@ mod tests {
         }
     }
 
+    /// A resumed close still protects unsaved changes, while explicit forced exit stays available.
     #[test]
     fn deferred_quit_still_asks_about_unsaved_changes_and_forced_quit_is_unchanged() {
         let mut app = app();
@@ -286,6 +324,7 @@ mod tests {
         drop(tx);
     }
 
+    /// Failure cancels an earlier deferred Quit instead of hiding the error behind automatic exit.
     #[test]
     fn a_failed_job_cancels_deferred_quit_so_its_error_remains_visible() {
         let mut app = app();
@@ -304,6 +343,60 @@ mod tests {
         assert_eq!(app.ui.status, "Print: synthetic driver failure");
     }
 
+    /// A Close arriving in the failure's own logic tick is cancelled once, never replayed later.
+    #[test]
+    fn a_print_failure_and_native_close_in_the_same_tick_keep_the_error_visible() {
+        for dirty in [false, true] {
+            let mut app = app();
+            let ctx = egui::Context::default();
+            if dirty {
+                app.run("frame.create", json!({"rect":[36,36,120,120]})).unwrap();
+            }
+            let (tx, result) = mpsc::channel();
+            tx.send(Err("synthetic driver failure".into())).unwrap();
+            app.pending_print = Some(Pending { result, title: "Snapshot".into() });
+            assert_eq!(app.session.doc().unwrap().is_dirty(), dirty);
+
+            let commands = logic_frame(&mut app, &ctx, true);
+            assert!(commands.contains(&egui::ViewportCommand::CancelClose), "the current native close must not hide the failure: {commands:?}");
+            assert!(!commands.contains(&egui::ViewportCommand::Close));
+            assert!(app.pending_print.is_none());
+            assert!(!app.quit_requested && !app.close_requested_pending);
+            assert!(app.ui.dialog.is_none(), "the failed print cancels this close without an unsaved-changes prompt");
+            assert_eq!(app.ui.status, "Print: synthetic driver failure");
+
+            let commands = logic_frame(&mut app, &ctx, false);
+            assert!(!commands.contains(&egui::ViewportCommand::Close), "the cancelled close must not be deferred");
+            assert!(app.ui.dialog.is_none());
+            assert_eq!(app.ui.status, "Print: synthetic driver failure");
+            let commands = logic_frame(&mut app, &ctx, true);
+            if dirty {
+                assert!(commands.contains(&egui::ViewportCommand::CancelClose));
+                assert_eq!(app.ui.dialog.as_ref().unwrap().id, "closeDocument", "a later close still protects unsaved changes");
+            } else {
+                assert!(!commands.contains(&egui::ViewportCommand::CancelClose), "a later explicit close remains available");
+            }
+        }
+    }
+
+    /// A simultaneous print failure must not clear an explicit forced Quit queued for this tick.
+    #[test]
+    fn a_print_failure_keeps_forced_quit_requests_with_or_without_a_native_close() {
+        for native_close in [false, true] {
+            let mut app = app();
+            let ctx = egui::Context::default();
+            let (tx, result) = mpsc::channel();
+            tx.send(Err("synthetic driver failure".into())).unwrap();
+            app.pending_print = Some(Pending { result, title: "Snapshot".into() });
+            app.quit_without_asking = true;
+            app.request_quit();
+            let commands = logic_frame(&mut app, &ctx, native_close);
+            assert!(commands.contains(&egui::ViewportCommand::Close), "an explicit forced Quit must survive print failure: {commands:?}");
+            assert!(!commands.contains(&egui::ViewportCommand::CancelClose));
+        }
+    }
+
+    /// Moving a print to another thread preserves both allowed roots and denied sibling paths.
     #[test]
     fn the_print_worker_preserves_the_callers_read_and_write_roots() {
         let mut app = app();
@@ -336,6 +429,7 @@ mod tests {
         assert_eq!(app.ui.status, "Sent 1 page(s) to Synthetic");
     }
 
+    /// Invalid ranges and layouts leave their raw input and error in the open Print dialog.
     #[test]
     fn invalid_print_options_keep_the_dialog_open_without_starting_a_worker() {
         for fields in [
@@ -360,6 +454,7 @@ mod tests {
         }
     }
 
+    /// PDF value validation happens before consuming the fake-driver hook or starting a thread.
     #[test]
     fn invalid_pdf_option_values_are_rejected_before_starting_a_worker() {
         let mut app = app();

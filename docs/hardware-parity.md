@@ -68,3 +68,7 @@ starts so an invalid range or layout keeps the Print dialog open; other command 
 visible beside the pending-print indicator. Direct engine/CLI/control commands keep
 their synchronous result. Windows printing pins the multi-threaded Direct2D factory fix from
 craft-libs#605; printer discovery and native job cancellation/deadlines remain separate gaps.
+
+A print failure cancels an ordinary close that arrives in the same tick as well as an earlier
+deferred close. A later explicit close still follows the normal unsaved-document checks, and
+forced Quit remains available.

@@ -129,6 +129,8 @@ fn print_with(
 mod tests {
     use super::*;
 
+    /// Dialog admission leaves the session untouched and returns the same option errors as
+    /// submission, whose fake spooler must never be reached for invalid input.
     #[test]
     fn print_option_checks_share_the_submission_validation_without_changing_the_session() {
         let mut s = Session::new();
