@@ -7,7 +7,7 @@
 //! top-level row, those on its layer). Locked and hidden layers take drops only with Cmd/Ctrl
 //! held.
 
-use designcraft_doc::{Content, Document, Item, ItemId, LayerId};
+use designcraft_doc::{Content, Document, Item, ItemId, LayerId, SpreadRef};
 use egui::{Color32, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 use serde_json::json;
 
@@ -383,9 +383,10 @@ pub fn show(app: &mut DesignApp, ui: &mut Ui) {
     ui.data_mut(|d| d.insert_temp(last_id, now));
     let scrolled = std::cell::Cell::new(false);
     // Objects on the current spread, back to front.
-    let cur = crate::canvas::current_page(app).unwrap_or(0);
-    let spread_items: Vec<std::sync::Arc<Item>> =
-        doc.page_loc(cur).and_then(|(si, _)| doc.spreads.get(si)).map(|sp| sp.items.clone()).unwrap_or_default();
+    let fallback = if st.editing_parents { SpreadRef::Parent(0) } else { SpreadRef::Doc(0) };
+    let (spread_ref, page_in_spread) = crate::canvas::current_spread_page(app).unwrap_or((fallback, 0));
+    let spread = doc.spread(spread_ref);
+    let spread_items = spread.map_or(&[][..], |sp| sp.items.as_slice());
     let mut rows: Vec<Row> = Vec::new();
     let mut cmds: Vec<(&'static str, serde_json::Value)> = Vec::new();
     ui.spacing_mut().item_spacing.y = 0.0;
@@ -536,16 +537,16 @@ pub fn show(app: &mut DesignApp, ui: &mut Ui) {
     ui.add_space(6.0);
     ui.spacing_mut().item_spacing.y = 4.0;
     ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new(format!(
-                "{}: {}, {}",
-                crate::i18n::tr(&app.ui.language, "Page"),
-                app.session.page_label(cur),
-                crate::i18n::count_label(&app.ui.language, if doc.layers.len() == 1 { "layer" } else { "layers" }, doc.layers.len())
-            ))
-            .size(11.0)
-            .color(t.text_dim),
-        );
+        let count = crate::i18n::count_label(&app.ui.language, if doc.layers.len() == 1 { "layer" } else { "layers" }, doc.layers.len());
+        let caption = if let Some(parent) = spread.and_then(|sp| sp.parent.as_ref()) {
+            format!("{}, {count}", parent.label())
+        } else if let SpreadRef::Doc(si) = spread_ref {
+            let page = app.session.page_label(doc.first_page_of_spread(si) + page_in_spread);
+            format!("{}: {page}, {count}", crate::i18n::tr(&app.ui.language, "Page"))
+        } else {
+            count
+        };
+        ui.label(egui::RichText::new(caption).size(11.0).color(t.text_dim));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if icons::button(ui, "trash", 20.0, false, crate::i18n::tr(&app.ui.language, "Delete Layer")).clicked() {
                 let _ = app.run("layer.delete", json!({"id": active.0}));
@@ -651,6 +652,78 @@ mod tests {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
         app.run("file.new", json!({})).unwrap();
         app
+    }
+
+    #[test]
+    fn layers_follow_the_view_between_document_and_parent_spreads() {
+        use egui_kittest::kittest::Queryable;
+
+        let mut app = app();
+        app.canvas_rect = Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(800.0, 600.0)));
+        app.run("layout.parents.new", json!({"prefix": "B"})).unwrap();
+        for (spread, name) in [(SpreadRef::Doc(0), "Page object"), (SpreadRef::Parent(0), "A object"), (SpreadRef::Parent(1), "B object")] {
+            let id = app.run("frame.create", json!({"spread": spread, "rect": [36, 36, 100, 100]})).unwrap()["id"].clone();
+            app.run("object.rename", json!({"id": id, "name": name})).unwrap();
+        }
+        app.run("selection.set", json!({"ids": []})).unwrap();
+        crate::canvas::show_spread(&mut app, SpreadRef::Doc(0));
+        let mut h = panel(app);
+        for (parent, expected) in [(None, "Page object"), (Some("A"), "A object"), (Some("B"), "B object"), (None, "Page object")] {
+            h.state_mut().run("layout.parents.edit", json!({"on": parent.is_some(), "parent": parent})).unwrap();
+            if parent.is_none() {
+                crate::canvas::show_spread(h.state_mut(), SpreadRef::Doc(0));
+            }
+            h.run_steps(2);
+            for name in ["Page object", "A object", "B object"] {
+                assert_eq!(h.query_by_label(name).is_some(), name == expected, "{expected}: {name}");
+            }
+        }
+    }
+
+    #[test]
+    fn layers_panel_edits_only_objects_on_the_parent_in_view() {
+        use egui_kittest::kittest::Queryable;
+
+        let mut app = app();
+        app.canvas_rect = Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(800.0, 600.0)));
+        app.run("layout.parents.new", json!({"prefix": "B"})).unwrap();
+        let mut frame = |spread, name| {
+            let id = app.run("frame.create", json!({"spread": spread, "rect": [36, 36, 100, 100]})).unwrap()["id"].as_u64().unwrap();
+            app.run("object.rename", json!({"id": id, "name": name})).unwrap();
+            ItemId(id)
+        };
+        let page = frame(SpreadRef::Doc(0), "Page object");
+        let a = frame(SpreadRef::Parent(0), "A object");
+        let back = frame(SpreadRef::Parent(1), "B back");
+        let front = frame(SpreadRef::Parent(1), "B front");
+        let before = app.session.active().unwrap().doc.clone();
+        app.run("layout.parents.edit", json!({"parent": "B"})).unwrap();
+        let mut h = panel(app);
+
+        click(&mut h, row(0, 0.5, true));
+        assert_eq!(h.state().session.active().unwrap().selection.items, [back, front]);
+        click(&mut h, row(1, 0.5, false));
+        assert_eq!(h.state().session.active().unwrap().selection.items, [front]);
+
+        // A second click after the double-click interval starts inline rename.
+        let delay = h.ctx.options(|o| o.input_options.max_double_click_delay);
+        h.input_mut().time = Some(h.ctx.input(|i| i.time) + delay + 0.1);
+        click(&mut h, row(1, 0.5, false));
+        h.key_press(egui::Key::End);
+        h.get_by_role(egui::accesskit::Role::TextInput).type_text(" renamed");
+        h.run_steps(1);
+        h.key_press(egui::Key::Enter);
+        h.run_steps(2);
+        assert!(h.query_by_label("B front renamed").is_some());
+
+        drag(&mut h, row(1, 0.5, false), row(2, 0.8, false));
+        click(&mut h, pos2(8.0 + COL_W / 2.0, row(2, 0.5, false).y));
+        let doc = &h.state().session.active().unwrap().doc;
+        assert!(doc.item(front).unwrap().hidden);
+        assert_eq!(doc.parents[1].items.iter().map(|it| it.id).collect::<Vec<_>>(), [front, back]);
+        for id in [page, a] {
+            assert_eq!(serde_json::to_value(doc.item(id)).unwrap(), serde_json::to_value(before.item(id)).unwrap());
+        }
     }
 
     fn layers(app: &DesignApp) -> Vec<String> {
