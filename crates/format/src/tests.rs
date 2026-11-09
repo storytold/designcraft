@@ -2,6 +2,7 @@ use super::*;
 use designcraft_doc::build::NewDocument;
 use designcraft_doc::geom::Rect;
 use designcraft_doc::{Asset, ParaFormat, SpreadRef};
+use std::collections::HashSet;
 
 fn png_asset(d: &mut Document, data: &[u8]) -> AssetId {
     let aid = AssetId(d.alloc());
@@ -976,4 +977,31 @@ fn a_frame_threaded_into_another_story_stays_with_its_own() {
     back.check().unwrap();
     assert_eq!(back.stories[&sa].frames, vec![a]);
     assert_eq!(back.stories[&sb].frames, vec![b]);
+}
+
+/// A story takes a frame-level Vertical setting from its first frame that survives the thread
+/// repair, not from a frame the repair drops: another story's frame or one that is gone.
+#[test]
+fn frame_level_vertical_text_follows_the_first_frame_the_story_keeps() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (a, sa) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(10.0, 10.0, 200.0, 200.0), lid, "横", ParaFormat::default()).unwrap();
+    let (b, sb) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(10.0, 210.0, 200.0, 400.0), lid, "縦", ParaFormat::default()).unwrap();
+    let (gone, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(210.0, 10.0, 400.0, 200.0), lid, "", ParaFormat::default()).unwrap();
+    let (c, sc) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(210.0, 210.0, 400.0, 400.0), lid, "縦書き", ParaFormat::default()).unwrap();
+    // Story a threads b's vertical frame first; story c threads a deleted frame first.
+    d.story_mut(sa).unwrap().frames.insert(0, b);
+    d.story_mut(sc).unwrap().frames.insert(0, gone);
+    Arc::make_mut(&mut d.spreads[0]).items.retain(|i| i.id != gone);
+    let mut v = serde_json::to_value(&d).unwrap();
+    item_json(&mut v, a.0).unwrap()["content"]["options"]["vertical"] = json!(false);
+    item_json(&mut v, b.0).unwrap()["content"]["options"]["vertical"] = json!(true);
+    item_json(&mut v, c.0).unwrap()["content"]["options"]["vertical"] = json!(true);
+    let back = load(&serde_json::to_vec(&v).unwrap()).unwrap();
+    back.check().unwrap();
+    assert_eq!(back.stories[&sa].frames, vec![a]);
+    assert!(!back.stories[&sa].vertical, "a keeps only its own horizontal frame");
+    assert!(back.stories[&sb].vertical);
+    assert_eq!(back.stories[&sc].frames, vec![c]);
+    assert!(back.stories[&sc].vertical, "c's first kept frame is vertical");
 }

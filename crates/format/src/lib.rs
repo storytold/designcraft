@@ -12,7 +12,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::hash::BuildHasher;
 use std::io::{Cursor, Read, Write};
 use std::sync::Arc;
@@ -369,27 +369,35 @@ fn load_legacy_json(bytes: &[u8]) -> Result<Document, FormatError> {
 
 /// Bring older documents' JSON up to the current model. Vertical Type was a text frame option
 /// (`content.options.vertical`); it is the story's direction, which a story takes from its first
-/// frame.
+/// frame that is a text frame of that story (the frames the thread repair drops don't count).
 fn upgrade_json(doc: &mut Value) {
-    let mut vertical = HashSet::new();
-    vertical_frames(doc, &mut vertical, 0);
-    if vertical.is_empty() {
+    let mut frames = HashMap::new();
+    text_frames(doc, &mut frames, 0);
+    if !frames.values().any(|f| f.vertical) {
         return;
     }
     let Some(stories) = doc.get_mut("stories").and_then(Value::as_object_mut) else { return };
     for st in stories.values_mut() {
-        let first = st.get("frames").and_then(|f| f.get(0)).and_then(Value::as_u64);
-        if let (Some(f), Some(st)) = (first, st.as_object_mut())
-            && vertical.contains(&f)
-            && !st.contains_key("vertical")
-        {
+        let Some(st) = st.as_object_mut() else { continue };
+        let Some(sid) = st.get("id").and_then(Value::as_u64) else { continue };
+        let first = st
+            .get("frames")
+            .and_then(Value::as_array)
+            .and_then(|fs| fs.iter().filter_map(Value::as_u64).filter_map(|f| frames.get(&f)).find(|f| f.story == sid));
+        if first.is_some_and(|f| f.vertical) && !st.contains_key("vertical") {
             st.insert("vertical".into(), Value::Bool(true));
         }
     }
 }
 
-/// Ids of the text frames in `v` (any depth: groups, anchored objects) whose options say vertical.
-fn vertical_frames(v: &Value, out: &mut HashSet<u64>, depth: usize) {
+/// What [`upgrade_json`] needs of a text frame in an older document's JSON.
+struct LegacyTextFrame {
+    story: u64,
+    vertical: bool,
+}
+
+/// The text frames in `v` (any depth: groups, anchored objects) by id.
+fn text_frames(v: &Value, out: &mut HashMap<u64, LegacyTextFrame>, depth: usize) {
     // serde_json already refuses JSON nested deeper than 128 levels.
     if depth > 256 {
         return;
@@ -398,17 +406,18 @@ fn vertical_frames(v: &Value, out: &mut HashSet<u64>, depth: usize) {
         Value::Object(m) => {
             if let (Some(id), Some(c)) = (m.get("id").and_then(Value::as_u64), m.get("content"))
                 && c.get("type").and_then(Value::as_str) == Some("text")
-                && c.get("options").and_then(|o| o.get("vertical")).and_then(Value::as_bool) == Some(true)
+                && let Some(story) = c.get("story").and_then(Value::as_u64)
             {
-                out.insert(id);
+                let vertical = c.get("options").and_then(|o| o.get("vertical")).and_then(Value::as_bool) == Some(true);
+                out.entry(id).or_insert(LegacyTextFrame { story, vertical });
             }
             for c in m.values() {
-                vertical_frames(c, out, depth + 1);
+                text_frames(c, out, depth + 1);
             }
         }
         Value::Array(a) => {
             for c in a {
-                vertical_frames(c, out, depth + 1);
+                text_frames(c, out, depth + 1);
             }
         }
         _ => {}
