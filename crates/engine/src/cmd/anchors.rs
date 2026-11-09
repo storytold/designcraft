@@ -310,7 +310,7 @@ fn erase_or_smooth(s: &mut Session, p: &Value, smooth: bool) -> Result<Value> {
     pts.retain(|q| seen.insert((q.x.to_bits(), q.y.to_bits())));
     if pts.len() > MAX_DRAG_SAMPLES {
         let (n, last) = (pts.len(), pts.last().copied());
-        pts = (0..MAX_DRAG_SAMPLES).filter_map(|i| pts.get(i * n / MAX_DRAG_SAMPLES).copied()).chain(last).collect();
+        pts = (0..MAX_DRAG_SAMPLES).filter_map(|i| pts.get((i as u64 * n as u64 / MAX_DRAG_SAMPLES as u64) as usize).copied()).chain(last).collect();
     }
     s.edit(|d, sel| {
         path_editable(d, id, cmd)?;
@@ -687,7 +687,7 @@ mod tests {
         let pts: Vec<Value> = (0..=20).map(|i| json!({"p": [100.0 + i as f64 * 20.0, if i % 2 == 0 { 300.0 } else { 306.0 }]})).collect();
         let id = s.execute("path.create", &json!({"anchors": pts})).unwrap()["id"].as_u64().unwrap();
         // 60,000 samples along the middle of the path, each point repeated.
-        let drag: Vec<Value> = (0..60_000).map(|i| json!([200.0 + f64::from(i % 3000) * 0.05, 303.0])).collect();
+        let drag: Vec<Value> = (0..60_000).map(|i| json!([200.0 + f64::from(i % 6000) * 0.025, 303.0])).collect();
         let r = s.execute("path.erase", &json!({"id": id, "points": drag})).unwrap();
         assert_eq!(r["subpaths"], 2, "a gap in the middle");
     }
