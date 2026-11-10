@@ -90,8 +90,7 @@ fn with_pdf_layer_variants(doc: &Document, embed: bool) -> Result<Option<Documen
         let mut variant = (**asset).clone();
         variant.id = designcraft_doc::AssetId(out.alloc());
         variant.data = std::sync::Arc::new(bytes);
-        variant.link = None;
-        variant.link_fingerprint = None;
+        variant.set_link(None, None);
         let aid = variant.id;
         out.assets.insert(aid, std::sync::Arc::new(variant));
         variants.insert(id, aid);
@@ -194,9 +193,7 @@ fn import_report_with_previews(
         for asset in document.assets.values_mut() {
             if let Some((path, fingerprint)) = asset.link.as_ref().and_then(|link| resolved.borrow().get(link).cloned()) {
                 // Relocated packages must also use the new path for preflight and link updates.
-                let asset = std::sync::Arc::make_mut(asset);
-                asset.link = Some(path);
-                asset.link_fingerprint = Some(fingerprint);
+                std::sync::Arc::make_mut(asset).set_link(Some(path), fingerprint);
             }
         }
         resolve_packaged_links(&mut document, package);
@@ -360,36 +357,41 @@ pub(crate) fn resolve_packaged_links(document: &mut Document, package: Option<&s
             // A link relative to the document (what File › Package writes, `Links/logo.png`) is
             // held as the file it names, as every other link is, so preflight and updates find it.
             if std::path::Path::new(link).is_relative() {
-                std::sync::Arc::make_mut(asset).link = Some(path.to_string_lossy().into_owned());
+                // The same file under its full name: what is kept of it stays.
+                let loaded = asset.link_fingerprint;
+                std::sync::Arc::make_mut(asset).set_link(Some(path.to_string_lossy().into_owned()), loaded);
             }
             continue;
         }
         let Some(path) = packaged_link_candidates(link, Some(package)).into_iter().find(|p| crate::io::is_file(p)) else { continue };
-        std::sync::Arc::make_mut(asset).link = Some(path.to_string_lossy().into_owned());
+        // Another file than the link named, found again by name: the bytes weren't read from it.
+        std::sync::Arc::make_mut(asset).set_link(Some(path.to_string_lossy().into_owned()), None);
     }
 }
 
 /// The first candidate for `link` ([`packaged_link_candidates`]) that is a regular file no larger
-/// than [`MAX_LINKED_FILE_BYTES`] holding an image or a graphic, with its path.
+/// than [`MAX_LINKED_FILE_BYTES`] holding an image or a graphic, with its path and the size and
+/// time to keep with its bytes ([`super::links::loaded_fingerprint`]).
 #[cfg(not(target_arch = "wasm32"))]
-fn read_packaged_link(link: &str, package: Option<&std::path::Path>) -> Option<(String, Vec<u8>, designcraft_doc::Fingerprint)> {
+fn read_packaged_link(link: &str, package: Option<&std::path::Path>) -> Option<(String, Vec<u8>, Option<designcraft_doc::Fingerprint>)> {
     for path in packaged_link_candidates(link, package) {
         if !crate::io::is_file(&path) {
             continue;
         }
-        // Capture the version about to be read. If a syncing or network file changes during the
-        // read, its later metadata will differ and the next Links check will report it modified.
+        // The version about to be read: one that replaces it during the read (a syncing or
+        // network file) has other metadata, and the next Links check compares the bytes.
         let Ok(metadata) = crate::io::metadata(&path) else { continue };
         if metadata.len() > MAX_LINKED_FILE_BYTES {
             continue;
         }
-        let fingerprint = super::datamerge::fingerprint_from(&metadata);
+        let before = super::datamerge::fingerprint_from(&metadata);
         // At most one byte over the limit, in case the file grew since.
         let Ok(bytes) = crate::io::read_capped(&path, MAX_LINKED_FILE_BYTES) else { continue };
         if bytes.len() as u64 > MAX_LINKED_FILE_BYTES || !is_graphic(&bytes) {
             continue;
         }
-        return Some((path.to_string_lossy().into_owned(), bytes, fingerprint));
+        let loaded = super::links::loaded_fingerprint(Some(before), &bytes);
+        return Some((path.to_string_lossy().into_owned(), bytes, loaded));
     }
     None
 }
@@ -530,6 +532,9 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let (idml, png) = linked_idml("C:\\original-computer\\project\\Links\\illustrations\\logo.png", false).unwrap();
         std::fs::write(&path, &png).unwrap();
+        // Not written just now: its size and time can vouch for the imported bytes.
+        let earlier = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        std::fs::File::options().write(true).open(&path).unwrap().set_modified(earlier).unwrap();
         std::fs::write(dir.join("logo.png"), b"a different file with the same basename").unwrap();
 
         let doc = import(&idml, Some(&dir.join("x.idml"))).unwrap();

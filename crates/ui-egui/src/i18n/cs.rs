@@ -1500,7 +1500,6 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("unused", "nepoužito"),
     ("⚠ Missing", "⚠ Chybí"),
     ("Checking", "Kontroluje se"),
-    ("Checking links…", "Kontroluje se propojení…"),
     ("Link status is unavailable.", "Stav propojení není k dispozici."),
     ("▲ Modified", "▲ Změněno"),
     ("(Text Color)", "(Barva textu)"),

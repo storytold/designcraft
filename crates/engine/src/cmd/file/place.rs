@@ -95,7 +95,7 @@ pub(super) fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
         name,
         mime,
         link,
-        link_fingerprint: before,
+        link_fingerprint: crate::cmd::links::loaded_fingerprint(before, &bytes),
         data: Arc::new(bytes),
         pixels: Some((pw, ph)),
         pdf_crop,
@@ -208,16 +208,25 @@ pub(crate) fn crop_pdf(a: &mut Asset) -> Option<(f64, f64)> {
 }
 
 pub(crate) fn read_source(p: &Value) -> Result<(Vec<u8>, String, Option<String>)> {
+    read_linked_source(p).map(|(bytes, name, link, _)| (bytes, name, link))
+}
+
+/// [`read_source`], with the size and time to keep with a linked file's bytes
+/// ([`crate::cmd::links::loaded_fingerprint`]): the file's from before it is read, not those of a
+/// later version that replaces it while a network or syncing source is being loaded.
+fn read_linked_source(p: &Value) -> Result<(Vec<u8>, String, Option<String>, Option<designcraft_doc::Fingerprint>)> {
     if let Some(b) = str_param(p, "base64") {
-        return Ok((base64_decode(b), str_param(p, "name").unwrap_or("image").to_string(), None));
+        return Ok((base64_decode(b), str_param(p, "name").unwrap_or("image").to_string(), None, None));
     }
     let path = str_param(p, "path").ok_or_else(|| bad("place", "missing `path` or `base64`"))?;
+    let before = crate::cmd::datamerge::fingerprint_from_path(path);
     #[cfg(not(target_arch = "wasm32"))]
     let b = crate::io::read_file(path).map_err(EngineError::Other)?;
     #[cfg(target_arch = "wasm32")]
     let b: Vec<u8> = vec![];
     let name = std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.into());
-    Ok((b, name, Some(path.to_string())))
+    let loaded = crate::cmd::links::loaded_fingerprint(before, &b);
+    Ok((b, name, Some(path.to_string()), loaded))
 }
 
 fn eps_size(bytes: &[u8], command: &str) -> Result<Option<(f64, f64)>> {
@@ -246,11 +255,7 @@ pub(crate) fn validate_placement(size: (f64, f64), frame: Rect, xf: Affine, comm
 }
 
 pub(super) fn place_load(s: &mut Session, p: &Value) -> Result<Value> {
-    // Remember the file that is about to be read, not a later version that may replace it while a
-    // network or syncing source is being loaded. `file.place` uses the same ordering.
-    let link_fingerprint =
-        if str_param(p, "base64").is_none() { str_param(p, "path").and_then(crate::cmd::datamerge::fingerprint_from_path) } else { None };
-    let (bytes, name, link) = read_source(p)?;
+    let (bytes, name, link, link_fingerprint) = read_linked_source(p)?;
     let (pw, ph) = designcraft_render::image_size(&bytes).ok_or_else(|| bad("place.load", "unsupported or corrupt image"))?;
     let natural = eps_size(&bytes, "place.load")?.or_else(|| designcraft_render::natural_size(&bytes, 0)).unwrap_or((pw as f64, ph as f64));
     let mime = designcraft_render::image_mime(&bytes).to_string();
@@ -466,15 +471,24 @@ pub(super) mod image_place_tests {
     #[test]
     fn place_load_remembers_the_fingerprint_captured_for_its_link() {
         let image = image_file().unwrap();
-        let expected = crate::cmd::datamerge::fingerprint_from(&std::fs::metadata(image.path()).unwrap());
         let mut session = Session::new();
         session.execute("file.new", &json!({})).unwrap();
+        let load = |session: &mut Session| {
+            let loaded = session.execute("place.load", &json!({"path": image.path()})).unwrap();
+            session.doc().unwrap().doc.assets[&AssetId(loaded["asset"].as_u64().unwrap())].clone()
+        };
 
-        let loaded = session.execute("place.load", &json!({"path": image.path()})).unwrap();
-        let asset = &session.doc().unwrap().doc.assets[&AssetId(loaded["asset"].as_u64().unwrap())];
-
-        assert_eq!(asset.link_fingerprint, Some(expected));
+        // Written just now: another write in the same second would keep its time, so the time
+        // can't vouch for the bytes later and isn't kept.
+        let asset = load(&mut session);
+        assert_eq!(asset.link_fingerprint, None);
         assert_eq!(asset.link.as_deref(), image.path().to_str());
+
+        // A file that has been as it is for a while is remembered by its size and time.
+        image.as_file().set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(60)).unwrap();
+        let expected = crate::cmd::datamerge::fingerprint_from(&std::fs::metadata(image.path()).unwrap());
+        session.execute("file.new", &json!({})).unwrap();
+        assert_eq!(load(&mut session).link_fingerprint, Some(expected));
     }
 
     #[test]

@@ -1703,7 +1703,6 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("unused", "未使用"),
     ("⚠ Missing", "⚠ リンク切れ"),
     ("Checking", "確認中"),
-    ("Checking links…", "リンクを確認中…"),
     ("Link status is unavailable.", "リンクの状態を取得できません。"),
     ("▲ Modified", "▲ 変更済み"),
     ("(Text Color)", "(テキストカラー)"),

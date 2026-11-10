@@ -1940,7 +1940,6 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("▲ Modified", "▲ Módosítva"),
     ("⚠ Missing", "⚠ Hiányzik"),
     ("Checking", "Ellenőrzés"),
-    ("Checking links…", "Csatolások ellenőrzése…"),
     ("Link status is unavailable.", "A csatolások állapota nem érhető el."),
     ("⚠ out of date", "⚠ elavult"),
     ("Selection Tool", "Kijelölő eszköz"),

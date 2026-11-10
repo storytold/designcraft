@@ -310,12 +310,14 @@ fn write_links(d: &Document, root: &OutputRoot, dir: &Path, only: Option<&[Asset
         let path = dir.join(&name);
         root.write(&path, a.data.as_slice())?;
         let mut na = (**a).clone();
-        na.link = Some(match relative_to {
+        let link = match relative_to {
             Some(folder) => format!("{folder}/{name}"),
             None => path.to_string_lossy().to_string(),
-        });
-        // The copy is the linked file now: its size and time, not the original file's.
-        na.link_fingerprint = super::datamerge::fingerprint_of(&path);
+        };
+        // The copy is the linked file now, and the original's size and time say nothing of it.
+        // Its own are too recent to vouch for it yet: the first check compares the bytes and
+        // keeps them (`remember_link_files`).
+        na.set_link(Some(link), None);
         out.assets.insert(id, Arc::new(na));
         written.push(path);
     }

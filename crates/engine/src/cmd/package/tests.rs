@@ -328,16 +328,16 @@ fn package_writes_document_links_and_report() {
     let packed = super::super::from_bytes(&std::fs::read(doc_file).unwrap()).unwrap();
     let link = packed.assets.values().next().unwrap().link.clone().unwrap();
     assert!(link.contains("Links"), "{link}");
-    // The link is the copy now, so the size and time kept with it are the copy's, not the original file's.
-    let copy = fingerprint(&out.join("Links").join("logo.svg"));
-    assert_ne!(copy, fingerprint(&svg));
-    assert_eq!(packed.assets.values().next().unwrap().link_fingerprint, copy);
+    // The link is the copy now: the original file's size and time don't go with it (the copy's
+    // own are too recent to vouch for it; the first check compares the bytes and keeps them).
+    assert!(fingerprint(&out.join("Links").join("logo.svg")).is_some());
+    assert_eq!(packed.assets.values().next().unwrap().link_fingerprint, None);
     // Copy Links To relinks the open document.
     let r = s.execute("links.copyTo", &json!({"dir": dir.join("Copies").to_string_lossy()})).unwrap();
     assert_eq!(r["copied"], 1);
     let relinked = s.doc().unwrap().doc.assets.values().next().unwrap().clone();
     assert!(relinked.link.as_deref().unwrap().contains("Copies"));
-    assert_eq!(relinked.link_fingerprint, fingerprint(&dir.join("Copies").join("logo.svg")));
+    assert_eq!(relinked.link_fingerprint, None);
     let _ = std::fs::remove_dir_all(&dir);
 }
 

@@ -4149,7 +4149,6 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ("unused", ["unused", "inutilisé", "unused", "unused", "未使用"]),
     ("⚠ Missing", ["⚠ Missing", "⚠ Manquant", "⚠ Missing", "⚠ Missing", "⚠ 缺失"]),
     ("Checking", ["Wird geprüft", "Vérification", "Comprobando", "確認中", "正在检查"]),
-    ("Checking links…", ["Verknüpfungen werden geprüft …", "Vérification des liens…", "Comprobando vínculos…", "リンクを確認中…", "正在检查链接…"]),
     (
         "Link status is unavailable.",
         [

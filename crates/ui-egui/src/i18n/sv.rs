@@ -853,7 +853,6 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("unused", "oanvänd"),
     ("⚠ Missing", "⚠ Saknas"),
     ("Checking", "Kontrollerar"),
-    ("Checking links…", "Kontrollerar länkar…"),
     ("Link status is unavailable.", "Länkstatus är inte tillgänglig."),
     ("▲ Modified", "▲ Ändrad"),
     ("(Text Color)", "(Textfärg)"),

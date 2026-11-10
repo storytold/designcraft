@@ -1062,7 +1062,6 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("unused", "não utilizado"),
     ("⚠ Missing", "⚠ Ausente"),
     ("Checking", "Verificando"),
-    ("Checking links…", "Verificando links…"),
     ("Link status is unavailable.", "O status dos links não está disponível."),
     ("▲ Modified", "▲ Modificado"),
     ("(Text Color)", "(Cor do texto)"),

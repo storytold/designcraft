@@ -33,7 +33,7 @@ mod layout;
 pub mod library;
 mod linked;
 mod links;
-pub use links::{LinkListChecks, list_document_links, preview_document_links};
+pub use links::{LinkListChecks, list_document_links, preview_document_links, remember_link_files};
 mod liquid;
 mod lists;
 mod load_styles;

@@ -249,11 +249,12 @@ fn arrangement_accessible_name_is_localized_in_every_interface_language() {
     }
 }
 
-/// The Links panel's captions while its background check runs, and when it can't run.
+/// The Links panel's captions for a status its background check hasn't found yet, and for when
+/// the check can't run.
 #[test]
 fn links_panel_check_captions_are_localized_in_every_interface_language() {
     for (code, name) in LANGUAGES {
-        for key in ["Checking", "Checking links…", "Link status is unavailable."] {
+        for key in ["Checking", "Link status is unavailable."] {
             let label = tr(code, key);
             if code.is_empty() {
                 assert_eq!(label, key, "{name}");
