@@ -39,6 +39,7 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     let key = egui::Id::unique("links_panel");
     let now = ui.input(|i| i.time);
     let rev = (st.uid, st.revision);
+    let document_identity = st.identity_epoch;
     let cached: Option<(f64, (u64, u64), Vec<Value>)> = ui.data(|d| d.get_temp(key));
     let rows = match cached {
         Some((at, r, rows)) if r == rev && now - at < 0.5 => rows,
@@ -52,7 +53,6 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "No placed graphics.")).color(t.text_dim));
         return;
     }
-    let document_identity = st.identity_epoch;
     let sel_key = egui::Id::unique(("links_panel_sel", document_identity));
     let item_sel_key = egui::Id::unique(("links_panel_item_sel", document_identity));
     let mut chosen: Option<u64> = ui.data(|d| d.get_temp(sel_key));
