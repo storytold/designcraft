@@ -271,12 +271,8 @@ fn relink_one_placement_is_atomic_reuses_assets_and_cleans_orphans() {
 
     // Frame and placement geometry/fitting stay byte-for-byte the same except for Graphic.asset.
     let mut after_second = s.doc().unwrap().doc.item(second_id).unwrap().clone();
-    if let Content::Graphic(after_graphic) = &mut after_second.content {
-        after_graphic.asset = shared;
-    } else {
-        assert!(false, "the placed item must remain a graphic");
-        return;
-    }
+    let Content::Graphic(after_graphic) = &mut after_second.content else { panic!("the placed item must remain a graphic") };
+    after_graphic.asset = shared;
     assert_eq!(after_second, before_second);
 
     let go = s.execute("links.goTo", &json!({"item": second_id.0})).unwrap();
