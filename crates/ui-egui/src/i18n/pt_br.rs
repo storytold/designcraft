@@ -1061,6 +1061,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Set", "Definir"),
     ("unused", "não utilizado"),
     ("⚠ Missing", "⚠ Ausente"),
+    ("Checking", "Verificando"),
+    ("Link status is unavailable.", "O status dos links não está disponível."),
     ("▲ Modified", "▲ Modificado"),
     ("(Text Color)", "(Cor do texto)"),
     ("{count} glyphs — click to insert at the text cursor", "{count} glifos — clique para inserir no cursor do texto"),
