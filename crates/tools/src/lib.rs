@@ -378,7 +378,9 @@ impl ToolContext<'_> {
     /// Canvas bounds of the selected items' paths. Handles and resize use this geometric box.
     pub fn selection_bounds(&self) -> Option<Rect> {
         let mut r: Option<Rect> = None;
-        let anchored = self.anchored_graphic_bounds();
+        // Ordinary spread selections must not recompose every story on hover.
+        let needs_anchored = self.selection.items.iter().any(|id| self.doc.find(*id).is_none());
+        let anchored = if needs_anchored { self.anchored_graphic_bounds() } else { Vec::new() };
         for id in &self.selection.items {
             if let Some((_, b)) = anchored.iter().find(|(aid, _)| aid == id) {
                 r = Some(r.map_or(*b, |r| r.union(*b)));
