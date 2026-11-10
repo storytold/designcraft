@@ -30,6 +30,8 @@ pub mod icons;
 pub mod keys;
 pub mod menus;
 mod modal_drag;
+#[cfg(not(target_arch = "wasm32"))]
+mod network_glue;
 mod new_document;
 mod object_control;
 pub mod package_dialog;
@@ -282,6 +284,9 @@ pub struct DesignApp {
     pub cursors: cursors::Images,
     /// A panel's live preview (a slider being dragged), committed when it is let go.
     live_preview: LivePreview,
+    /// Print ▸ Network printer: the address, what the printer said, the job in flight.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) net_print: network_glue::NetTasks,
     pub(crate) updates_rt: updates_ui::Runtime,
 }
 

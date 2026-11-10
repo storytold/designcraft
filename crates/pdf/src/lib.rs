@@ -49,8 +49,8 @@ mod pdfx;
 mod pdfx1a;
 mod transitions;
 pub use export::{
-    BookletKind, BookletOptions, booklet_pairs, drawn_children, export_booklet, export_pdf, export_pdf_with_report, item_exported, layer_exported,
-    merge_pdfs, print_color, sheet_spreads, shown_parent_items,
+    BookletKind, BookletOptions, GrayPage, booklet_pairs, drawn_children, export_booklet, export_pdf, export_pdf_with_report, gray_pdf,
+    item_exported, layer_exported, merge_pdfs, print_color, rec709_luma, sheet_spreads, shown_parent_items,
 };
 pub use pdfx::{check_pdfx4, has_rgb_groups, make_pdfx4, pdfx_version};
 pub use pdfx1a::check_pdfx1a;
@@ -145,6 +145,11 @@ pub struct PdfOptions {
     pub tagged: bool,
     /// Interactive PDF: placed video and sound are embedded and play in Screen annotations.
     pub media: bool,
+    /// A print-only export: the pages carry no annotations at all (no hyperlinks, buttons, form
+    /// fields or media), only what is drawn. Annotations do not print, and a spooler path that
+    /// re-frames pages (shrink-to-fit) refuses a page that has any. Everything drawn keeps its
+    /// look; only the interactive layer is left out. Not for a PDF a person keeps.
+    pub print: bool,
     /// PDF/X-1a: the resolution (pixels per inch) craft-prepress's flattener rasterizes complex
     /// transparent regions at.
     pub flatten_dpi: f32,
@@ -178,6 +183,7 @@ impl Default for PdfOptions {
             created: None,
             tagged: false,
             media: false,
+            print: false,
             flatten_dpi: 300.0,
             shadows: Default::default(),
         }

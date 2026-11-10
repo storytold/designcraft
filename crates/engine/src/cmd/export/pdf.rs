@@ -188,12 +188,28 @@ pub(crate) fn print_pdf(
 /// The PDF that File › Export PDF writes for `p`, with its warnings: the print PDF
 /// ([`print_pdf`]) with its view options, timings and transitions. File › Print prints it.
 pub(crate) fn pdf_export(s: &Session, p: &Value) -> Result<designcraft_pdf::ExportReport> {
-    pdf_report(&s.doc()?.doc, &s.cache, p)
+    pdf_export_for(s, p, false)
+}
+
+/// [`pdf_export`], optionally as a print-only export (`print`: no annotations, for the print path).
+pub(crate) fn pdf_export_for(s: &Session, p: &Value, print: bool) -> Result<designcraft_pdf::ExportReport> {
+    pdf_export_of(&s.doc()?.doc, &s.cache, p, print)
 }
 
 /// [`pdf_export`] of `doc`: `file.package` writes its PDF of the packaged copy with it.
 pub(crate) fn pdf_report(doc: &designcraft_doc::Document, cache: &designcraft_compose::Cache, p: &Value) -> Result<designcraft_pdf::ExportReport> {
-    let opts = options(p, doc.page_count())?;
+    pdf_export_of(doc, cache, p, false)
+}
+
+/// [`pdf_export_for`] on a document and its render cache alone, so a snapshot of both can be exported off the session's thread.
+pub(crate) fn pdf_export_of(
+    doc: &designcraft_doc::Document,
+    cache: &designcraft_compose::Cache,
+    p: &Value,
+    print: bool,
+) -> Result<designcraft_pdf::ExportReport> {
+    let mut opts = options(p, doc.page_count())?;
+    opts.print = print;
     let ppi = flatten_ppi("file.exportPdf", p)?;
     let (cat, dest) = view_options(p)?;
     let mut r = print_pdf(doc, cache, &opts, ppi)?;

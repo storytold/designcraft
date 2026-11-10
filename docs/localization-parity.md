@@ -1,6 +1,6 @@
 # Localization parity
 
-> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-11-04 · **Change:** minor (Esperanto text language; Hungarian interface catalog, bundled-font coverage and flyout regression checks; Swedish interface) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-11-07 · **Change:** minor (network print messages go through the catalogs, German machine-drafted; previous: minor, Esperanto text language; Hungarian interface catalog, bundled-font coverage and flyout regression checks; Swedish interface) · **Target:** Adobe InDesign 2026 (21.6)
 
 Per-language status of the DesignCraft interface and of document typesetting in each script.
 Script-specific typesetting detail: [cjk.md](cjk.md), [cjk-typography.md](cjk-typography.md),
@@ -125,4 +125,5 @@ German variants have no automatic hyphenation; their German shaping and quotes a
 | 2026-10-10 | major | Created: catalogs measured (1,724 strings), the twelve key languages plus Italian and Ukrainian |
 | 2026-10-11 | minor | Czech (cs) added: 1,722 strings, plural categories handled |
 | 2026-10-13 | minor | Polish interface added (1,717 strings) |
+| 2026-10-18 | minor | Network print: the app's own messages ("Nothing to print", the job that did not start, "the printer", the alert title) go through `tr`; German rows machine-drafted, not yet reviewed. Catalog file list now names de, fr, pl and ru |
 | 2026-10-22 | minor | French and Italian hyphenation (hyph-fr, hyph-it): the French row and Document languages updated |

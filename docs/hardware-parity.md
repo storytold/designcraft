@@ -1,6 +1,6 @@
 # Hardware and platform parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-12 · **Change:** minor (font managers on macOS; shared print spooler; Windows CI passes; Windows mixed-DPI drag and windows wider than 8192 px don't crash) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-18 · **Change:** minor (font managers on macOS; shared print spooler; Windows CI passes; Windows mixed-DPI drag and windows wider than 8192 px don't crash; network printer jobs name a paper only for one-size documents and count sheets) · **Target:** Adobe InDesign 2026 (21.6)
 
 What InDesign does with hardware, per platform, against DesignCraft. Layout is not a
 GPU-hungry workload, so this dimension carries little weight, but a start that fails on a
@@ -20,7 +20,7 @@ graphics driver loses the user entirely. Overall numbers: [target-app-parity.md]
 | HiDPI / Retina | ✓ | ✓ | ✓ (drags across monitors with different scales keep the window's size: winit pinned to the rust-windowing/winit#4694 backport) | ✓ | ✓ |
 | UI scaling | ✓ | ✓ (menus and dialogs usable at larger scales, #281) | ✓ | ✓ | ✓ |
 | Multi-monitor, floating document windows | ✓ | ~ one window; New Window for the same document; the window may span monitors up to the GPU's largest texture (16384 px on DirectX 12, Vulkan and Metal hardware), and beyond it draws wrongly instead of closing | ~ | ~ | ✗ |
-| Printing | system print with PPDs, PostScript, separations | PDF to CUPS (`craft-print`) | Windows PDF raster spooler (`craft-print`) | PDF to CUPS (`craft-print`) | browser download |
+| Printing | system print with PPDs, PostScript, separations | PDF to CUPS (`craft-print`); network printer by IP address (WS-Print, IPP) | Windows PDF raster spooler (`craft-print`); network printer by IP address (WS-Print, IPP) | PDF to CUPS (`craft-print`); network printer by IP address (WS-Print, IPP) | browser download |
 | Colour-managed display (monitor profile) | ✓ | ✗ (working CMYK profile simulated; monitor profile not applied) | ✗ | ✗ | ✗ |
 | Touch / pen | Touch workspace (Windows), gestures | trackpad pinch/scroll | ~ | ~ | ~ |
 | Multi-core composition | single-threaded composer per story (documented by Adobe as mostly single-threaded) | parallel story composition (rayon), 6.7× on the sample | ✓ | ✓ | single-threaded |
@@ -54,6 +54,7 @@ the developers don't use daily.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-18 | minor | Network printer (File ▸ Print): a job names a paper only when every sheet is one known size (spreads and mixed sizes name none, so no sheet is fitted to page 1's paper); progress counts the PDF's sheets, not document pages; a job that ends under another dialog reports on the status line instead of replacing it; a failure to start shows in the Print dialog |
 | 2026-10-12 | trivial | Windows: dragging across monitors with different display scales doesn't grow the window and crash (winit pinned to the rust-windowing/winit#4694 backport); a window wider or taller than 8192 px keeps its surface, and a wgpu error logs instead of closing the app |
 | 2026-10-10 | major | Created from the code, InDesign 2026's GPU Performance features and the issue tracker |
 

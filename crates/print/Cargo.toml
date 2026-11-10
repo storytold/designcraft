@@ -1,0 +1,17 @@
+[package]
+name = "designcraft-print"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "DesignCraft network printing: WS-Print and IPP printers the person adds, behind craft-print's registry (the part of the print glue that is not UI)"
+
+[lints]
+workspace = true
+
+[dependencies]
+craft-print = { workspace = true }
+designcraft-render = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+craft-print = { workspace = true, features = ["testing"] }

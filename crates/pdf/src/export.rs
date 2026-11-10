@@ -36,7 +36,7 @@ mod paint;
 mod pipeline;
 mod walk;
 
-pub use booklet::{BookletKind, BookletOptions, booklet_pairs, export_booklet, merge_pdfs};
+pub use booklet::{BookletKind, BookletOptions, GrayPage, booklet_pairs, export_booklet, gray_pdf, merge_pdfs, rec709_luma};
 use common::TagEntry;
 pub(crate) use common::{norm, q, registration, regular, solid_fill, tf, to_path};
 use graphics::CoverageImage;
