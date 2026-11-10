@@ -148,7 +148,7 @@ impl Renderer {
     }
 
     fn draw_graphic_unclipped(&mut self, ctx: &mut RenderContext, f: &Frame, g: &designcraft_doc::Graphic, xf: Affine) {
-        let Some(asset) = f.doc.assets.get(&g.asset).filter(|a| !a.data.is_empty()) else {
+        let Some(asset) = f.doc.assets.get(&g.asset) else {
             draw_missing_graphic(ctx, f, g, xf);
             return;
         };
@@ -167,6 +167,10 @@ impl Renderer {
             ctx.fill_path(&tri);
             return;
         }
+        if asset.data.is_empty() {
+            draw_missing_graphic(ctx, f, g, xf);
+            return;
+        }
         if f.opts.quality == DisplayQuality::Fast {
             ctx.set_transform(f.view * xf * g.xf);
             ctx.set_paint(screen_color([178, 178, 178], 255));
@@ -181,7 +185,10 @@ impl Renderer {
             // An explicit choice (including all-on) that cannot be rewritten fails closed:
             // stale persisted/relinked choices must not reveal hidden source content.
             Some(hidden) => {
-                let Some(variant) = pdf_layers::layered(&asset.data, hidden) else { return };
+                let Some(variant) = pdf_layers::layered(&asset.data, hidden) else {
+                    draw_missing_graphic(ctx, f, g, xf);
+                    return;
+                };
                 variant
             }
             None => asset.data.clone(),
