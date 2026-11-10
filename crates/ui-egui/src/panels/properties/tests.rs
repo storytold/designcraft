@@ -81,7 +81,22 @@ fn links_harness(app: DesignApp, width: f32) -> Harness<'static, DesignApp> {
     );
     h.input_mut().max_texture_side = Some(8192);
     h.run_steps(3);
+    settle_links(&mut h);
     h
+}
+
+/// The link statuses come from a background check: step until it has finished and its rows are
+/// drawn.
+fn settle_links(h: &mut Harness<'static, DesignApp>) {
+    for _ in 0..500 {
+        h.run_steps(1);
+        if !h.state().links_worker.checking() {
+            h.run_steps(1);
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    panic!("the background link check did not finish");
 }
 
 /// With the caret in text, the Stroke panel offers the text's stroke options, not an empty panel.
@@ -165,6 +180,7 @@ fn links_panel_distinguishes_same_named_sources_and_keeps_link_actions() {
     assert_eq!(h.state().session.active().unwrap().selection.items, vec![items[1]]);
     h.get_by_label("Embed").click();
     h.run_steps(3);
+    settle_links(&mut h);
     assert!(h.state().session.active().unwrap().doc.assets[&assets[1]].link.is_none());
     assert_eq!(h.state().session.active().unwrap().doc.assets[&assets[0]].link.as_deref(), Some(first));
     assert!(h.query_by_label(second).is_none(), "an embedded graphic no longer shows a source path");

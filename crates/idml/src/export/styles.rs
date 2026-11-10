@@ -194,14 +194,18 @@ impl<'a> Ex<'a> {
             if let Some(t) = cs.fill_tint {
                 el.set("FillTint", pct(t as f64));
             }
+            let inset_names =
+                [("TextTopInset", "TopInset"), ("TextLeftInset", "LeftInset"), ("TextBottomInset", "BottomInset"), ("TextRightInset", "RightInset")];
             if let Some(i) = cs.insets {
-                for (k, v) in ["TopInset", "LeftInset", "BottomInset", "RightInset"].iter().zip(i) {
-                    el.set(k, num(v));
+                for ((text, old), v) in inset_names.iter().zip(i) {
+                    el.set(text, num(v));
+                    el.set(old, num(v));
                 }
             }
-            for (key, value) in ["TopInset", "LeftInset", "BottomInset", "RightInset"].iter().zip(cs.inset_overrides) {
+            for ((text, old), value) in inset_names.iter().zip(cs.inset_overrides) {
                 if let Some(value) = value {
-                    el.set(key, num(value));
+                    el.set(text, num(value));
+                    el.set(old, num(value));
                 }
             }
             if let Some(vj) = cs.vj {
