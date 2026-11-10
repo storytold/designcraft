@@ -1358,6 +1358,7 @@ fn keep_with_next_moves_a_heading() {
     assert_eq!(column_of_para(&cs, n - 2), vec![0]);
 }
 
+/// A heading that would end a column moves to the next one when the body after it keeps with it.
 #[test]
 fn keep_with_previous_moves_the_heading_before_it() {
     let h = 200.0;
@@ -1373,10 +1374,10 @@ fn keep_with_previous_moves_the_heading_before_it() {
     assert_eq!(column_of_para(&cs, n - 2), vec![0]);
 }
 
+/// Heading, then a description and an example that each keep with the paragraph before them:
+/// when the example doesn't fit, all three go to the next column.
 #[test]
 fn keep_with_previous_chain_moves_together() {
-    // Heading, then a description and an example that each keep with the paragraph before them:
-    // when the example doesn't fit, all three go to the next column.
     let h = 200.0;
     let n = lines_per_column(h);
     let (mut d, sid, _) = keep_doc(n - 2, &["Heading", "Description", "Example"], h);
@@ -1394,10 +1395,10 @@ fn keep_with_previous_chain_moves_together() {
     assert_eq!(column_of_para(&cs, n - 3), vec![0]);
 }
 
+/// Heading, a paragraph that tracked changes delete, then a body that keeps with the
+/// previous paragraph: the deleted paragraph takes no room, so the body keeps with the heading.
 #[test]
 fn keep_with_previous_skips_a_deleted_paragraph() {
-    // Heading, a paragraph that tracked changes delete, then a body that keeps with the
-    // previous paragraph: the deleted paragraph takes no room, so the body keeps with the heading.
     let h = 200.0;
     let n = lines_per_column(h);
     let (mut d, sid, _) = keep_doc(n - 1, &["Heading", "Removed", "Body text that follows the heading."], h);
@@ -1413,10 +1414,10 @@ fn keep_with_previous_skips_a_deleted_paragraph() {
     assert!(all_lines(&cs).iter().all(|l| !l.keep_violation), "the keep is met");
 }
 
+/// Fillers, a one-row table, then a body that keeps with the table: find a filler count where
+/// the table ends column 0 and the body starts column 1, then the keep moves the table too.
 #[test]
 fn keep_with_previous_moves_a_table_before_it() {
-    // Fillers, a one-row table, then a body that keeps with the table: find a filler count where
-    // the table ends column 0 and the body starts column 1, then the keep moves the table too.
     let h = 200.0;
     let n = lines_per_column(h);
     let build = |fillers: usize, keep: bool, height: f64| {
@@ -1450,6 +1451,7 @@ fn keep_with_previous_moves_a_table_before_it() {
     assert!(all_lines(&cs).iter().all(|l| !l.keep_violation), "the keep is met");
 }
 
+/// Keep with Previous on a story's first paragraph has nothing to keep with and changes nothing.
 #[test]
 fn keep_with_previous_on_the_first_paragraph_is_harmless() {
     let (mut d, sid, _) = keep_doc(3, &[], 200.0);
