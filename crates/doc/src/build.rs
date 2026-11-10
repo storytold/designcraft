@@ -581,12 +581,14 @@ impl Document {
 
     /// Delete absolute pages (items whose centre is on a deleted page are deleted too).
     pub fn delete_pages(&mut self, pages: &[usize]) -> Result<()> {
-        if pages.len() >= self.page_count() {
-            return Err(DocError::Invalid("a document needs at least one page".into()));
-        }
         let mut doomed: Vec<(usize, usize)> = pages.iter().filter_map(|p| self.page_loc(*p)).collect();
         doomed.sort();
         doomed.dedup();
+        // The pages it will remove, not the indices it was given: asking for [0, 0, 1, 2] of four
+        // pages removes three of them and leaves one, which is allowed.
+        if doomed.len() >= self.page_count() {
+            return Err(DocError::Invalid("a document needs at least one page".into()));
+        }
         let mut remove_items: Vec<ItemId> = Vec::new();
         for &(si, pi) in &doomed {
             let sp = &self.spreads[si];
@@ -852,6 +854,20 @@ impl Document {
             }
         };
         chain.into_iter().filter_map(|i| Some((i, self.parents.get(i)?.parent_page_at(pg.side, page)?))).collect()
+    }
+
+    /// The parent items page `page` of spread `sr` leaves out because they are overridden: the
+    /// page's own overrides and those of every parent page in [`Self::shown_parent_pages`]. A
+    /// parent page that overrode an item of its base and then deleted the override removed that
+    /// item from itself and from every page based on it (#1469). An override always names an item
+    /// of a parent further back, so one set covers the chain.
+    ///
+    /// Everything that works out which parent items a page shows -- drawing, PDF and PPTX export,
+    /// hit-testing, snapping, frame edges -- asks this, so they all hide the same items.
+    pub fn overridden_parent_items(&self, sr: SpreadRef, page: usize) -> HashSet<ItemId> {
+        let Some(pg) = self.spread(sr).and_then(|sp| sp.pages.get(page)) else { return HashSet::new() };
+        let behind = self.shown_parent_pages(sr, page).into_iter().filter_map(|(ppi, ppage)| self.parents.get(ppi)?.pages.get(ppage));
+        pg.overridden.iter().copied().chain(behind.flat_map(|p| p.overridden.iter().copied())).collect()
     }
 
     /// Whether basing parent `pi` on `base` would make a `based_on` cycle (or names no parent).
