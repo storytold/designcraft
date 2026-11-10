@@ -380,7 +380,9 @@ pub fn confirm_ruler_guides(app: &mut DesignApp, d: &Dialog) -> Result<Value, St
     let mut p = json!({});
     let threshold = d.s("threshold");
     if threshold != d.s("threshold0") {
-        let percent = threshold.trim().trim_end_matches('%').trim().parse::<f64>().ok().filter(|v| v.is_finite());
+        // Checked here, so that a number out of range gets the message in the interface language.
+        let in_range = |v: &f64| designcraft_doc::RulerGuideOptions::threshold_of_percent(*v).is_some();
+        let percent = threshold.trim().trim_end_matches('%').trim().parse::<f64>().ok().filter(in_range);
         let bad = || tr(&app.ui.language, "View Threshold must be a percentage from 5% to 4000%.").to_string();
         p["viewThreshold"] = json!(percent.ok_or_else(bad)?);
     }
@@ -523,7 +525,7 @@ mod tests {
         h.get_by_label("  OK  ").click();
         h.run_steps(3);
         let d = h.state().ui.dialog.clone().expect("a bad threshold keeps the dialog open");
-        assert!(!d.s("status").is_empty());
+        assert_eq!(d.s("status"), "View Threshold must be a percentage from 5% to 4000%.", "the range message, not the command's error");
         let defaults = |h: &Harness<'static, DesignApp>| h.state().session.active().unwrap().doc.settings.ruler_guides;
         assert!(defaults(&h).is_default());
         // The colour list's own choice, then a threshold in range.
