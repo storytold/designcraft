@@ -804,11 +804,11 @@ fn apply_options(opt: &mut MergeOptions, p: &Value) -> std::result::Result<(), S
     if let Some(v) = str_param(p, "range") {
         opt.range = v.to_string();
     }
-    if let Some(v) = str_param(p, "perPage") {
-        opt.per_page = v.to_string();
+    if let Some(v) = choice_param(p, "perPage")? {
+        opt.per_page = v;
     }
-    if let Some(v) = str_param(p, "arrange") {
-        opt.arrange = v.to_string();
+    if let Some(v) = choice_param(p, "arrange")? {
+        opt.arrange = v;
     }
     if let Some(raw) = p.get("insets") {
         let arr = raw.as_array().ok_or_else(|| "insets need four numbers".to_string())?;
@@ -846,6 +846,13 @@ fn apply_options(opt: &mut MergeOptions, p: &Value) -> std::result::Result<(), S
         }
     }
     Ok(())
+}
+
+fn choice_param(p: &Value, key: &str) -> std::result::Result<Option<String>, String> {
+    match p.get(key) {
+        None => Ok(None),
+        Some(v) => v.as_str().map(|s| Some(s.to_string())).ok_or_else(|| format!("{key} must be a string")),
+    }
 }
 
 fn number_param(p: &Value, key: &str) -> std::result::Result<Option<f64>, String> {
