@@ -9,7 +9,7 @@ use std::hash::BuildHasher;
 use std::sync::Arc;
 
 use crate::story::Story;
-use crate::{Asset, AssetId, Content, Document, Item};
+use crate::{Asset, AssetId, ButtonAction, Content, Document, Item};
 
 /// Nesting limit for groups, anchored objects, table cells and notes. A document nested deeper
 /// is treated as using every asset, so nothing it references is merged away or pruned.
@@ -66,6 +66,16 @@ impl Document {
         let chosen = |it: &Item| it.has_pdf_layer_override();
         self.spreads.iter().chain(&self.parents).flat_map(|spread| &spread.items).any(|item| item_any(item, 0, &chosen))
             || self.stories.values().any(|story| story_any(story, 0, &chosen))
+    }
+
+    /// Whether any button, on document or parent spreads, in groups or anchored, has a Go To
+    /// State, Next/Previous State or Destination action: a reader older than format version 5
+    /// cannot decode those and refuses the document. Exceeding the traversal budget
+    /// conservatively says yes.
+    pub fn has_state_button_actions(&self) -> bool {
+        let newer = |it: &Item| it.button.as_ref().is_some_and(ButtonAction::needs_version_5);
+        self.spreads.iter().chain(&self.parents).flat_map(|spread| &spread.items).any(|item| item_any(item, 0, &newer))
+            || self.stories.values().any(|story| story_any(story, 0, &newer))
     }
 
     /// Placements outside the ordinary document-spread frame walk used by preflight.
