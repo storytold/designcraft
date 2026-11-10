@@ -237,7 +237,7 @@ Use `execute` with `object.fit` to fit a selected graphic frame (or pass `ids`):
 | `inspect_document` | Pages, spreads, items (ids, bounds, fill, story), stories (overset), layers, styles, swatches, selection |
 | `get_story` | Text, frames, paragraphs, lines, overset of a story (`story` or text `frame`) |
 | `set_story_text` | Replace a story's text (`\n` = new paragraph) |
-| `new_document` | `file.new` (preset, intent, units, width, height, pages, startPage, facingPages, columns, gutter, margins, bleed, slug, title, primaryTextFrame) or `sample: true` |
+| `new_document` | `file.new` (preset, intent, units, width, height, pages, startPage, facingPages, binding, columns, gutter, margins, bleed, slug, title, primaryTextFrame) or `sample: true` |
 | `open_document` / `save_document` | Native `.designcraft` files |
 | `place_image` | Image from `path` or `base64` into `frame`, the selected frame, or a new frame at x, y, width |
 | `render_page` | Render a page → MCP image content (PNG, base64); optional `path` to also save it |
