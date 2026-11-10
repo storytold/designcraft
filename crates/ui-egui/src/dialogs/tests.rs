@@ -5038,3 +5038,18 @@ fn parent_resize_exact_dialog_keeps_its_target_and_rejects_invalid_input() {
     assert!(app.ui.dialog.is_some());
     assert!(std::sync::Arc::ptr_eq(&saved, &app.session.doc().unwrap().doc));
 }
+
+#[test]
+fn find_next_brings_the_text_it_found_into_view() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"preset": "A4", "pages": 5, "facingPages": false})).unwrap();
+    app.canvas_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 800.0)));
+    app.run("frame.create", json!({"spread": 4, "rect": [72, 72, 300, 200], "content": "text", "text": "zebra"})).unwrap();
+    app.run("selection.set", json!({"ids": []})).unwrap();
+    crate::canvas::go_to_page(&mut app, 0);
+    let spread = |app: &DesignApp| crate::canvas::view_centre(app).map(|(s, _)| s);
+    assert_eq!(spread(&app), Some(designcraft_doc::SpreadRef::Doc(0)));
+    let hit = app.run("find.next", json!({"find": "zebra", "scope": "document"})).unwrap();
+    assert_eq!(hit["start"], 0);
+    assert_eq!(spread(&app), Some(designcraft_doc::SpreadRef::Doc(4)), "the view went to the page with the match");
+}

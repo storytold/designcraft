@@ -53,6 +53,12 @@ impl DesignApp {
                     ctx.request_repaint();
                 }
             }
+            // Find Next brings the text it found into view, on whichever page its frame is.
+            Ok(v) if id == "find.next" && !v.is_null() => {
+                if let Some(frame) = self.session.active().and_then(|st| st.selection.text).and_then(|t| t.frame) {
+                    canvas::go_to_item(self, frame);
+                }
+            }
             Ok(_) => {}
         }
         if r.is_ok() && matches!(id, "file.open" | "file.openIdml" | "file.openBytes") {

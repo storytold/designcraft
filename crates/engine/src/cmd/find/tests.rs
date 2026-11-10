@@ -959,3 +959,38 @@ fn change_takes_any_selection_find_next_made() {
         assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().text, if grep { "a<a>" } else { "ab" });
     }
 }
+
+/// A Document search from a caret inside a story goes through the other stories and then back
+/// to that story's text before the caret, so a match there is found, once.
+#[test]
+fn document_find_next_comes_back_to_the_text_before_the_caret() {
+    let (mut s, a) = scope_session("red black");
+    let other = s.execute("frame.create", &json!({"rect": [150, 36, 100, 100], "content": "text", "text": "black"})).unwrap();
+    let b = designcraft_doc::StoryId(other["story"].as_u64().unwrap());
+    scope_select(&mut s, a, 6, 6);
+    let p = json!({"find": "red", "scope": "document"});
+    scope_hit(&mut s, &p, a, 0, 3);
+    assert_eq!(s.execute("find.next", &p).unwrap(), serde_json::Value::Null);
+    // Text after the caret is not searched a second time on the way back.
+    scope_select(&mut s, b, 2, 2);
+    let p = json!({"find": "black", "scope": "document"});
+    scope_hit(&mut s, &p, a, 4, 9);
+    scope_hit(&mut s, &p, b, 0, 5);
+    assert_eq!(s.execute("find.next", &p).unwrap(), serde_json::Value::Null);
+}
+
+/// Find Next selects its match in the frame of a threaded story that shows it.
+#[test]
+fn find_next_selects_the_threaded_frame_that_shows_the_match() {
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    let text = format!("{}zebra", "word ".repeat(200));
+    let first = s.execute("frame.create", &json!({"rect": [36, 36, 300, 80], "content": "text", "text": text})).unwrap();
+    let second = s.execute("frame.create", &json!({"rect": [36, 200, 300, 760], "content": "unassigned"})).unwrap();
+    s.execute("text.thread", &json!({"from": first["id"], "to": second["id"]})).unwrap();
+    s.execute("selection.set", &json!({"ids": []})).unwrap();
+    let hit = s.execute("find.next", &json!({"find": "zebra"})).unwrap();
+    assert_eq!(hit["start"], 1000);
+    let frame = s.doc().unwrap().selection.text.and_then(|t| t.frame).map(|f| f.0);
+    assert_eq!(frame, second["id"].as_u64());
+}
