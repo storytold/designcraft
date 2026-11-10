@@ -1163,14 +1163,31 @@ fn renumber_in(dst: &mut Document, src: &Document, it: &mut Item, stories: &mut 
 
 /// Fresh ids for the objects anchored in story copy `st`, its table cells, footnotes and endnotes (#1522).
 fn renumber_anchored(dst: &mut Document, src: &Document, st: &mut Story, stories: &mut HashMap<StoryId, StoryId>) {
+    let mut ids = HashMap::new();
     let mut fresh = |t: &mut Story| {
         for o in &mut t.objects {
-            renumber_in(dst, src, &mut Arc::make_mut(o).item, stories, false);
+            let obj = Arc::make_mut(o);
+            let old = obj.item.id;
+            renumber_in(dst, src, &mut obj.item, stories, false);
+            ids.insert(old, obj.item.id);
         }
     };
     st.for_each_text_mut(&mut fresh);
     for n in &mut st.endnotes {
         Arc::make_mut(n).text.for_each_text_mut(&mut fresh);
+    }
+    // Caption references belong to the copied story, never to its source.
+    let mut remap = |t: &mut Story| {
+        for o in &mut t.objects {
+            let obj = Arc::make_mut(o);
+            if let Some(id) = obj.caption_id {
+                obj.caption_id = ids.get(&id).copied();
+            }
+        }
+    };
+    st.for_each_text_mut(&mut remap);
+    for n in &mut st.endnotes {
+        Arc::make_mut(n).text.for_each_text_mut(&mut remap);
     }
 }
 
@@ -6044,6 +6061,39 @@ mod anchored_copy_tests {
         let doc = &s.doc().unwrap().doc;
         assert_eq!(doc.anchored_items().len(), 3);
         assert_reopens(doc);
+    }
+
+    /// Duplicating a linked graphic and caption must link the two new IDs, not the originals.
+    #[test]
+    fn duplicated_story_remaps_caption_link_and_reopens() {
+        let mut d = Document::new(&designcraft_doc::build::NewDocument::default());
+        let layer = d.default_layer();
+        let (host, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 300.0, 300.0), layer, "Host", ParaFormat::default()).unwrap();
+        let (caption, caption_sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 90.0, 30.0), layer, "Caption", ParaFormat::default()).unwrap();
+        let caption_item = d.item(caption).unwrap().clone();
+        let caption_story = d.stories.get(&caption_sid).unwrap().clone();
+        d.remove_item(caption).unwrap();
+        d.stories.insert(caption_sid, caption_story);
+        let graphic_id = ItemId(d.alloc());
+        let mut graphic = Item::new(graphic_id, layer, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 60.0, 40.0)));
+        graphic.content = Content::Graphic(designcraft_doc::Graphic {
+            layer_options: None, asset: designcraft_doc::AssetId(1), size: (60.0, 40.0), xf: designcraft_geom::Affine::IDENTITY,
+            clip: None, auto_fit: Default::default(), fit_align: 4, crop: [0.0; 4],
+            wrap: Default::default(), fill: Default::default(),
+        });
+        let mut linked = AnchoredObject::new(graphic, Default::default());
+        linked.caption_id = Some(caption);
+        d.story_mut(sid).unwrap().insert_object(0, linked);
+        d.story_mut(sid).unwrap().insert_object(1, AnchoredObject::new(caption_item, Default::default()));
+        assert_reopens(&d);
+        let src = d.clone();
+        let copied = duplicate_from(&mut d, &src, &[host], SpreadRef::Doc(0), Vec2::new(10.0, 10.0)).unwrap();
+        let new_sid = d.item(copied[0]).unwrap().text_frame().unwrap().story;
+        let objects = &d.story(new_sid).unwrap().objects;
+        assert_ne!(objects[0].item.id, graphic_id);
+        assert_ne!(objects[1].item.id, caption);
+        assert_eq!(objects[1].caption_id, Some(objects[0].item.id));
+        assert_reopens(&d);
     }
 
     // IDML import can anchor a text frame; its story is copied too, with the copy in its thread.
