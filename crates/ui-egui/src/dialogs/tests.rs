@@ -5108,3 +5108,37 @@ fn find_next_shows_a_match_on_a_parent_page_with_its_selection() {
     assert!(!st.editing_parents);
     assert_eq!(st.selection.text.map(|t| (t.story.0, t.range())), Some((doc_sid, 0..5)));
 }
+
+/// Enter in Find what finds the next match and leaves the field focused, to refine the search.
+#[test]
+fn enter_in_find_what_keeps_the_field_focused() {
+    use egui_kittest::{Harness, kittest::Queryable};
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("frame.create", json!({"rect": [36, 36, 400, 300], "content": "text", "text": "red and red"})).unwrap();
+    app.run("selection.set", json!({"ids": []})).unwrap();
+    app.run("app.findChange", json!({})).unwrap();
+    if let Some(d) = app.ui.dialog.as_mut() {
+        d.fields.insert("find".into(), json!("red"));
+    }
+    let mut h = Harness::builder().with_size(egui::vec2(1200.0, 900.0)).build_ui_state(
+        |ui, app: &mut DesignApp| {
+            let key = egui::Id::unique("find_focus_test_fonts");
+            if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
+                crate::theme::install_fonts(ui.ctx(), "");
+                ui.data_mut(|d| d.insert_temp(key, true));
+                return;
+            }
+            show(app, ui.ctx());
+        },
+        app,
+    );
+    h.run_steps(4);
+    h.get_by_role_and_label(egui::accesskit::Role::TextInput, "Find what:").click();
+    h.run_steps(2);
+    assert!(h.get_by_role_and_label(egui::accesskit::Role::TextInput, "Find what:").is_focused());
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    assert_eq!(h.state().session.doc().unwrap().selection.text.map(|t| t.range()), Some(0..3), "Enter found the first match");
+    assert!(h.get_by_role_and_label(egui::accesskit::Role::TextInput, "Find what:").is_focused(), "the field keeps focus");
+}
