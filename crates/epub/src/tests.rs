@@ -39,7 +39,7 @@ fn many_notes_keep_their_own_text() {
         let end = st.len();
         st.insert_endnote(end, &format!("end{i}z"), ParaFormat::default());
     }
-    let html = export_html(&d, &HtmlOptions::default());
+    let html = export_html(&d, &HtmlOptions::default()).unwrap();
     let at = |needle: &str| html.find(needle).unwrap_or_else(|| panic!("{needle}"));
     assert!(at("foot0z") < at("foot1z") && at("foot298z") < at("foot299z"));
     assert!(at("end0z") < at("end1z") && at("end298z") < at("end299z"));
@@ -107,7 +107,7 @@ fn anchored_objects_are_exported_in_place() {
     let bare = designcraft_doc::AnchoredObject::new(graphic(&mut d, ""), designcraft_doc::AnchorPosition::Inline { y_offset: 0.0 });
     let end = d.story(sid).unwrap().text.len();
     d.story_mut(sid).unwrap().insert_object(end, bare);
-    assert_eq!(images_without_alt(&d), vec!["dot.png".to_string()]);
+    assert_eq!(images_without_alt(&d).unwrap(), vec!["dot.png".to_string()]);
     let bytes = export_epub(&d, &EpubOptions::default()).unwrap();
     let mut z = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
     let mut html = String::new();
@@ -116,7 +116,7 @@ fn anchored_objects_are_exported_in_place() {
     assert!(html.contains(&format!("A{}B</p>", img("inline"))), "{html}");
     assert!(html.contains(&format!("C<span class=\"anchored\" style=\"display:block;text-align:center\">{}</span>D", img("above"))), "{html}");
     assert!(z.by_name(&format!("OEBPS/images/dot-{}.png", aid.0)).is_ok(), "the image is in the package");
-    let page = export_html(&d, &HtmlOptions::default());
+    let page = export_html(&d, &HtmlOptions::default()).unwrap();
     assert!(page.contains("alt=\"inline\"") && page.contains("alt=\"above\""), "{page}");
     // story_html on its own still leaves objects out.
     assert!(!story_html(&d, sid).contains("<img"));
@@ -371,7 +371,7 @@ fn chapters_split_before_a_single_paragraph_style() {
     assert!(nav.contains("href=\"content2.xhtml#s1-p0\"") && nav.contains("href=\"content3.xhtml#s1-p2\""), "{nav}");
     assert!(z.by_name("OEBPS/content4.xhtml").is_err());
     // HTML stays one page, without the marks.
-    let html = export_html(&d, &HtmlOptions::default());
+    let html = export_html(&d, &HtmlOptions::default()).unwrap();
     assert!(!html.contains(CHAPTER_MARK) && html.contains("Second text"));
 }
 
@@ -583,7 +583,7 @@ fn html_is_one_self_contained_page() {
     let mut d = Document::new(&NewDocument::default());
     let lid = d.default_layer();
     d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 300.0, 100.0), lid, "Hello <web>", ParaFormat::default()).unwrap();
-    let html = export_html(&d, &HtmlOptions { title: Some("T".into()), language: None, ..Default::default() });
+    let html = export_html(&d, &HtmlOptions { title: Some("T".into()), language: None, ..Default::default() }).unwrap();
     assert!(html.starts_with("<!DOCTYPE html>") && html.contains("<title>T</title>") && html.contains("Hello &lt;web&gt;"));
     assert!(html.contains("p.basic-paragraph"), "styles inline");
     assert_eq!(base64(b"Man"), "TWFu");
@@ -632,7 +632,7 @@ fn images_get_readable_names_and_no_file_name_alt() {
     let a = place(&mut d, "/tmp/Anim Frame (1).GIF", "image/gif", "", 36.0);
     let b = place(&mut d, "photo.jpg", "image/jpeg", "A heron", 120.0);
     let c = place(&mut d, "???.png", "image/png", "Mark", 200.0);
-    assert_eq!(images_without_alt(&d), vec!["/tmp/Anim Frame (1).GIF".to_string()]);
+    assert_eq!(images_without_alt(&d).unwrap(), vec!["/tmp/Anim Frame (1).GIF".to_string()]);
     let mut z = zip::ZipArchive::new(std::io::Cursor::new(export_epub(&d, &EpubOptions::default()).unwrap())).unwrap();
     let mut x = String::new();
     z.by_name("OEBPS/content.xhtml").unwrap().read_to_string(&mut x).unwrap();
@@ -699,7 +699,7 @@ fn generic_fallbacks_and_embedded_fonts() {
     assert!(opf.contains("<item id=\"font0\" href=\"fonts/0-montserrat-bold-italic.otf\" media-type=\"font/otf\"/>"), "{opf}");
     assert_eq!(read("OEBPS/fonts/0-montserrat-bold-italic.otf"), "OTTO font");
     // HTML takes the generic families too, and embeds nothing.
-    let html = export_html(&d, &HtmlOptions { generic_families: opts.generic_families.clone(), ..Default::default() });
+    let html = export_html(&d, &HtmlOptions { generic_families: opts.generic_families.clone(), ..Default::default() }).unwrap();
     assert!(html.contains("\"Montserrat\", sans-serif;") && !html.contains("@font-face"), "{html}");
 }
 
@@ -747,7 +747,7 @@ fn metadata_is_serialized_for_its_output_context() {
 
     let story = story_html(&d, sid);
     assert!(story.contains("<h2 class=\"Primary &quot;Copy&quot;\">A&amp;B &lt;C&gt; &quot;D&quot;</h2>"));
-    let html = export_html(&d, &HtmlOptions { title: None, language: Some("English (US)".into()), ..Default::default() });
+    let html = export_html(&d, &HtmlOptions { title: None, language: Some("English (US)".into()), ..Default::default() }).unwrap();
     assert!(html.contains("<html lang=\"und\">"));
     assert!(html.contains("<title>Field Notes &amp; &lt;Edition&gt;</title>"));
     assert!(html.contains("alt=\"Cover &quot;A&quot; &amp; B\""));
@@ -794,7 +794,7 @@ fn file_info_titles_the_epub_and_the_html_page() {
     assert!(o.contains("<dc:title>Spring &amp; Summer</dc:title>") && o.contains("<dc:creator>Ana Ruiz</dc:creator>"), "{o}");
     let o = opf(&d, &EpubOptions { title: Some("Proof".into()), author: Some("Studio".into()), ..Default::default() });
     assert!(o.contains("<dc:title>Proof</dc:title>") && o.contains("<dc:creator>Studio</dc:creator>"), "{o}");
-    let html = export_html(&d, &HtmlOptions::default());
+    let html = export_html(&d, &HtmlOptions::default()).unwrap();
     assert!(html.contains("<title>Spring &amp; Summer</title>"));
     d.file_info = Default::default();
     let o = opf(&d, &EpubOptions::default());
@@ -851,7 +851,7 @@ fn tables_footnotes_and_endnotes_are_exported() {
     z.by_name("OEBPS/nav.xhtml").unwrap().read_to_string(&mut nav).unwrap();
     assert!(nav.contains("href=\"content.xhtml#endnotes\""));
 
-    let page = export_html(&d, &HtmlOptions::default());
+    let page = export_html(&d, &HtmlOptions::default()).unwrap();
     assert!(page.contains("<aside role=\"doc-footnote\" id=\"fn-1\">") && page.contains("Cell B2") && page.contains("End note text"));
     assert!(!page.contains("epub:type"), "plain HTML has no EPUB namespace");
 }

@@ -18,6 +18,14 @@ const MAGIC: &[u8] = b"DCHYPH1\n";
 /// Most bytes a serialized dictionary may inflate to (the bundled English one is far smaller).
 pub const MAX_INFLATED_BYTES: usize = 64 << 20;
 
+/// Most bytes of plain words the front-coded form may reconstruct to. A small body can repeat a
+/// long prefix many times, so this is bounded separately from the inflated serialized size.
+const MAX_WORD_BYTES: usize = MAX_INFLATED_BYTES;
+
+/// Most entries a dictionary may hold; each costs an offset and a mask in memory. The bundled
+/// English dictionary has about 160,000, so a much larger one is not a dictionary we wrote.
+const MAX_ENTRIES: usize = MAX_INFLATED_BYTES / 16;
+
 impl Dictionary {
     /// Build from `(lowercase word, break mask)` pairs (sorted and de-duplicated here; the first
     /// entry of a duplicate wins).
@@ -80,7 +88,8 @@ impl Dictionary {
     }
 
     /// Deserialize data written by [`Dictionary::to_bytes`]. At most [`MAX_INFLATED_BYTES`] are
-    /// inflated: a few compressed bytes can stand for gigabytes.
+    /// inflated, and the words they reconstruct to are bounded too: a few compressed bytes can
+    /// stand for gigabytes.
     pub fn from_bytes(data: &[u8]) -> Result<Dictionary, String> {
         let raw = miniz_oxide::inflate::decompress_to_vec_with_limit(data, MAX_INFLATED_BYTES)
             .map_err(|e| format!("hyphenation dictionary: inflate failed (or over {} MB): {e:?}", MAX_INFLATED_BYTES >> 20))?;
@@ -99,6 +108,9 @@ impl Dictionary {
             i = end + 1;
             let s = std::str::from_utf8(&cur).map_err(|_| "hyphenation dictionary: bad utf-8")?;
             let (w, m) = parse_hyphenated(s);
+            if d.masks.len() >= MAX_ENTRIES || d.words.len().saturating_add(w.len()) > MAX_WORD_BYTES {
+                return Err(format!("hyphenation dictionary: more than {} MB of words or {MAX_ENTRIES} entries", MAX_WORD_BYTES >> 20));
+            }
             d.words.push_str(&w);
             d.offs.push(d.words.len() as u32);
             d.masks.push(m);
@@ -162,5 +174,23 @@ mod tests {
         assert!(bomb.len() < 1 << 20, "{}", bomb.len());
         let e = Dictionary::from_bytes(&bomb).err().unwrap_or_default();
         assert!(e.contains("inflate failed"), "{e}");
+    }
+
+    /// Front-coding can repeat one long word, so a small inflated body must not reconstruct to
+    /// gigabytes.
+    #[test]
+    fn a_front_coding_bomb_is_refused() {
+        let mut raw = MAGIC.to_vec();
+        raw.push(0);
+        raw.extend(std::iter::repeat_n(b'a', 255));
+        raw.push(b'\n');
+        for _ in 0..=MAX_WORD_BYTES / 255 {
+            raw.push(255);
+            raw.push(b'\n');
+        }
+        let bomb = miniz_oxide::deflate::compress_to_vec(&raw, 10);
+        assert!(bomb.len() < 1 << 20, "{}", bomb.len());
+        let e = Dictionary::from_bytes(&bomb).err().unwrap_or_default();
+        assert!(e.contains("MB of words"), "{e}");
     }
 }

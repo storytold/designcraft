@@ -342,8 +342,11 @@ pub fn specs() -> Vec<CommandSpec> {
                 let cache = designcraft_compose::Cache::new();
                 let r = designcraft_pdf::export_pdf_with_report(&super::interchange::with_pdf_boxes(&d), &cache, &designcraft_pdf::PdfOptions::default()).map_err(|e| EngineError::Other(e.to_string()))?;
                 // Every page's size from one opening of the chapter's PDF (not one per page).
-                let sizes: Vec<(f32, f32)> =
-                    designcraft_render::pdf_page_sizes(&r.bytes).unwrap_or_default().into_iter().map(|(w, h)| (w as f32, h as f32)).collect();
+                let sizes: Vec<(f32, f32)> = designcraft_render::pdf_page_sizes(&r.bytes)
+                    .ok_or_else(|| EngineError::Other(format!("cannot read the pages of {path}")))?
+                    .into_iter()
+                    .map(|(w, h)| (w as f32, h as f32))
+                    .collect();
                 parts.push((r.bytes, sizes));
             }
             let pages: usize = parts.iter().map(|p| p.1.len()).sum();

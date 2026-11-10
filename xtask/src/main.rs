@@ -11,6 +11,7 @@ mod pdf_deps;
 mod stats;
 mod version;
 
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 
@@ -273,6 +274,90 @@ fn dir_bytes(dir: &std::path::Path) -> u64 {
     total
 }
 
+/// One `tar -tvzf` listing line: a file's size, or a directory (which takes no bytes of its own).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TarEntry {
+    File(u64),
+    Dir,
+}
+
+fn is_tar_date(token: &str) -> bool {
+    if token.len() == 10 {
+        let b = token.as_bytes();
+        return b[4] == b'-' && b[7] == b'-' && b.iter().enumerate().all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit());
+    }
+    matches!(token, "Jan" | "Feb" | "Mar" | "Apr" | "May" | "Jun" | "Jul" | "Aug" | "Sep" | "Oct" | "Nov" | "Dec")
+}
+
+/// Parse one `tar -tvzf` line. GNU tar prints `mode owner/group size date time name`; BSD tar
+/// prints `mode owner group size date month day time name`, so the size is the field before the
+/// date in both. Anything but a regular file or directory (links, devices, fifos) is refused.
+fn tar_entry(line: &str) -> Option<TarEntry> {
+    let fields: Vec<&str> = line.split_whitespace().collect();
+    let kind = fields.first()?.chars().next()?;
+    let date = fields.iter().position(|f| is_tar_date(f))?;
+    let size = fields.get(date.checked_sub(1)?)?.parse::<u64>().ok()?;
+    match kind {
+        '-' => Some(TarEntry::File(size)),
+        'd' => Some(TarEntry::Dir),
+        _ => None,
+    }
+}
+
+/// Stream `tar -tvzf`, bounding the listing, its entry count and the bytes it would extract before
+/// any of them is written.
+fn check_tar(tgz: &Path) -> Result<(), String> {
+    let mut child =
+        Command::new("tar").args(["-tvzf"]).arg(tgz).stdout(Stdio::piped()).spawn().map_err(|e| format!("tar -tvzf: failed to spawn: {e}"))?;
+    let Some(stdout) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err("tar -tvzf: no listing output".into());
+    };
+    let mut entries = 0usize;
+    let mut bytes = 0u64;
+    let mut failure = None;
+    for line in BufReader::new(stdout).lines() {
+        let line = match line {
+            Ok(line) => line,
+            Err(e) => {
+                failure = Some(format!("tar -tvzf: read failed: {e}"));
+                break;
+            }
+        };
+        entries = entries.saturating_add(1);
+        if entries > PNGSUITE_MAX_ENTRIES {
+            failure = Some(format!("the PngSuite download isn't a tar.gz of at most {PNGSUITE_MAX_ENTRIES} entries"));
+            break;
+        }
+        match tar_entry(&line) {
+            Some(TarEntry::File(n)) => {
+                bytes = bytes.saturating_add(n);
+                if bytes > PNGSUITE_MAX_EXTRACTED {
+                    failure = Some(format!("the PngSuite archive expands to more than {PNGSUITE_MAX_EXTRACTED} bytes"));
+                    break;
+                }
+            }
+            Some(TarEntry::Dir) => {}
+            None => {
+                failure = Some("the PngSuite download holds an entry that is not a file or directory".into());
+                break;
+            }
+        }
+    }
+    if failure.is_some() {
+        let _ = child.kill();
+    }
+    let status = child.wait().map_err(|e| format!("tar -tvzf: wait failed: {e}"))?;
+    if let Some(e) = failure {
+        return Err(e);
+    }
+    if !status.success() {
+        return Err(format!("tar -tvzf: exited with {status}"));
+    }
+    Ok(())
+}
+
 fn cmd_corpus(download: bool) -> Result<(), String> {
     let corpus = root().join("corpus");
     println!(
@@ -293,7 +378,7 @@ Tests that use a corpus skip cleanly when it is absent.
         return Ok(());
     }
     let dest = corpus.join("pngsuite");
-    std::fs::create_dir_all(&dest).map_err(|e| format!("create {}: {e}", dest.display()))?;
+    std::fs::create_dir_all(&corpus).map_err(|e| format!("create {}: {e}", corpus.display()))?;
     let tgz = corpus.join("PngSuite-2017jul19.tgz");
     let mut curl = Command::new("curl");
     curl.args(["-fsSL", "--max-filesize"]).arg(PNGSUITE_MAX_ARCHIVE.to_string()).arg("-o").arg(&tgz).arg(PNGSUITE_URL);
@@ -305,22 +390,64 @@ Tests that use a corpus skip cleanly when it is absent.
     if std::fs::metadata(&tgz).map_or(true, |m| m.len() > PNGSUITE_MAX_ARCHIVE) {
         return refuse(format!("the PngSuite download is larger than {PNGSUITE_MAX_ARCHIVE} bytes"));
     }
-    let listing = Command::new("tar").arg("-tzf").arg(&tgz).output().map_err(|e| format!("tar -tzf: failed to spawn: {e}"))?;
-    if !listing.status.success() || listing.stdout.iter().filter(|b| **b == b'\n').count() > PNGSUITE_MAX_ENTRIES {
-        return refuse(format!("the PngSuite download isn't a tar.gz of at most {PNGSUITE_MAX_ENTRIES} entries"));
+    if let Err(e) = check_tar(&tgz) {
+        return refuse(e);
     }
+    // Extract into a staging directory and only publish it once every check has passed, so a
+    // failed download or a hostile archive never damages an existing corpus.
+    let staging = corpus.join(format!("pngsuite.staging-{}", std::process::id()));
+    if staging.exists() {
+        std::fs::remove_dir_all(&staging).map_err(|e| format!("remove stale {}: {e}", staging.display()))?;
+    }
+    std::fs::create_dir_all(&staging).map_err(|e| format!("create {}: {e}", staging.display()))?;
+    let discard_staging = || {
+        let _ = std::fs::remove_dir_all(&staging);
+    };
     let mut tar = Command::new("tar");
-    tar.arg("-xzf").arg(&tgz).arg("-C").arg(&dest);
+    tar.arg("-xzf").arg(&tgz).arg("-C").arg(&staging);
     if let Err(e) = run(tar, "tar -xzf PngSuite-2017jul19.tgz") {
-        let _ = std::fs::remove_dir_all(&dest);
+        discard_staging();
         return refuse(e);
     }
     let _ = std::fs::remove_file(&tgz);
-    if dir_bytes(&dest) > PNGSUITE_MAX_EXTRACTED {
-        let _ = std::fs::remove_dir_all(&dest);
-        return Err(format!("the PngSuite archive expanded to more than {PNGSUITE_MAX_EXTRACTED} bytes; removed {}", dest.display()));
+    if dir_bytes(&staging) > PNGSUITE_MAX_EXTRACTED {
+        discard_staging();
+        return Err(format!("the PngSuite archive expanded to more than {PNGSUITE_MAX_EXTRACTED} bytes; removed {}", staging.display()));
     }
-    let n = std::fs::read_dir(&dest).map(|d| d.flatten().filter(|e| e.path().extension().is_some_and(|x| x == "png")).count()).unwrap_or(0);
+    let n = std::fs::read_dir(&staging).map(|d| d.flatten().filter(|e| e.path().extension().is_some_and(|x| x == "png")).count()).unwrap_or(0);
+    if n == 0 {
+        discard_staging();
+        return Err("no PNG files extracted".into());
+    }
+    let backup = corpus.join(format!("pngsuite.old-{}", std::process::id()));
+    if backup.exists() {
+        std::fs::remove_dir_all(&backup).map_err(|e| format!("remove stale {}: {e}", backup.display()))?;
+    }
+    if dest.exists() {
+        std::fs::rename(&dest, &backup).map_err(|e| format!("move {} aside: {e}", dest.display()))?;
+    }
+    if let Err(e) = std::fs::rename(&staging, &dest) {
+        if backup.exists() {
+            let _ = std::fs::rename(&backup, &dest);
+        }
+        discard_staging();
+        return Err(format!("publish {}: {e}", dest.display()));
+    }
+    let _ = std::fs::remove_dir_all(&backup);
     println!("PngSuite: {n} PNG files in {}", dest.display());
-    if n == 0 { Err("no PNG files extracted".into()) } else { Ok(()) }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{TarEntry, tar_entry};
+
+    #[test]
+    fn parses_gnu_and_bsd_verbose_tar_listings() {
+        assert_eq!(tar_entry("-rw-r--r-- francesco/francesco 5 2026-11-06 23:28 a.file"), Some(TarEntry::File(5)));
+        assert_eq!(tar_entry("-rw-r--r--  0 user group  1234 Nov  6 23:28 dir/b file.png"), Some(TarEntry::File(1234)));
+        assert_eq!(tar_entry("drwxr-xr-x 1000/1000 0 2026-11-06 23:28 dir/"), Some(TarEntry::Dir));
+        assert_eq!(tar_entry("lrwxrwxrwx 1000/1000 0 2026-11-06 23:28 link -> a.file"), None);
+        assert_eq!(tar_entry("not a tar listing"), None);
+    }
 }

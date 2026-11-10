@@ -121,7 +121,12 @@ pub(crate) struct Body<'a> {
 
 /// The content in reading order as HTML sections and figures; `img_src` names each image
 /// (a package path, or a data URI for single-file HTML).
-pub(crate) fn body_html<'a>(doc: &'a Document, epub: bool, split: Option<&EpubSplit>, img_src: &dyn Fn(&str, &str, &[u8]) -> String) -> Body<'a> {
+pub(crate) fn body_html<'a>(
+    doc: &'a Document,
+    epub: bool,
+    split: Option<&EpubSplit>,
+    img_src: &dyn Fn(&str, &str, &[u8]) -> String,
+) -> Result<Body<'a>, EpubError> {
     let order = reading_order(doc);
     let mut writer = StoryWriter::new(doc, epub, Some(img_src));
     if let Some(split) = split {
@@ -178,13 +183,16 @@ pub(crate) fn body_html<'a>(doc: &'a Document, epub: bool, split: Option<&EpubSp
         }
         body.push_str(&endnotes);
     }
-    Body { html: body, images: writer.images, toc, no_alt: writer.no_alt }
+    if let Some(e) = writer.take_error() {
+        return Err(e);
+    }
+    Ok(Body { html: body, images: writer.images, toc, no_alt: writer.no_alt })
 }
 
 /// Placed and anchored images (not video or sound) without alt text, by asset name: they are exported as
 /// decorative (`alt=""`), which an export can report.
-pub fn images_without_alt(doc: &Document) -> Vec<String> {
-    body_html(doc, true, None, &|name, _, _| name.to_string()).no_alt
+pub fn images_without_alt(doc: &Document) -> Result<Vec<String>, EpubError> {
+    Ok(body_html(doc, true, None, &|name, _, _| name.to_string())?.no_alt)
 }
 
 /// Options for [`export_html`].
@@ -201,26 +209,32 @@ const MAX_DATA_URI_BYTES: usize = 512 * 1024 * 1024;
 
 /// File › Export › HTML: one self-contained page (styles inline, images as data URIs) with the
 /// document's stories and graphics in reading order.
-pub fn export_html(doc: &Document, opts: &HtmlOptions) -> String {
+pub fn export_html(doc: &Document, opts: &HtmlOptions) -> Result<String, EpubError> {
     let title = opts.title.clone().unwrap_or_else(|| doc.metadata_title().to_string());
     let language = opts.language.as_deref().unwrap_or("en");
     let lang = language_tag(language);
-    // Each placement embeds its own copy of the asset; past the budget a placement gets no source.
+    // Each placement embeds its own copy of the asset; past the budget the export fails rather
+    // than writing an image with no source.
     let spent = std::cell::Cell::new(0usize);
+    let error = std::cell::RefCell::new(None);
     let body = body_html(doc, false, None, &|_, mime, data| {
         let n = data.len().div_ceil(3).saturating_mul(4).saturating_add(mime.len() + 13);
         if n > MAX_DATA_URI_BYTES - spent.get() {
+            *error.borrow_mut() = Some(EpubError(format!("the export's images are more than {} MB as data URIs", MAX_DATA_URI_BYTES >> 20)));
             return String::new();
         }
         spent.set(spent.get() + n);
         format!("data:{mime};base64,{}", base64(data))
-    })
+    })?
     .html;
-    format!(
+    if let Some(e) = error.into_inner() {
+        return Err(e);
+    }
+    Ok(format!(
         "<!DOCTYPE html>\n<html lang=\"{lang}\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<meta name=\"generator\" content=\"DesignCraft\">\n<title>{}</title>\n<style>\nbody {{ max-width: 40em; margin: 2em auto; padding: 0 1em; }}\nfigure {{ margin: 1em 0; }} figure img {{ max-width: 100%; height: auto; }}\n{}</style>\n</head>\n<body>\n{body}</body>\n</html>\n",
         xml_text(&title),
         stylesheet_with(doc, &opts.generic_families, &[])
-    )
+    ))
 }
 
 pub(crate) fn base64(data: &[u8]) -> String {
