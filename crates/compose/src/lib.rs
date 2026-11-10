@@ -3474,6 +3474,7 @@ fn apply_desired_spacing(glyphs: &mut [Glyph], pp: &ParaProps) {
             g.adv = g.adv * gs + ls * g.space;
             g.sx *= gs;
             g.dx *= gs;
+            g.track_hang *= gs;
         }
     }
 }
