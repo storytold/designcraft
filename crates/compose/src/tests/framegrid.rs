@@ -17,11 +17,22 @@ fn grid_lines(text: &str, para: ParaAttrs, edit: impl FnOnce(&mut Document, Stor
 /// [`grid_lines`] with the first baseline `first` below the frame top (a fixed offset, so the
 /// test font's ascent doesn't move it).
 fn grid_lines_from(first: f64, text: &str, para: ParaAttrs, edit: impl FnOnce(&mut Document, StoryId)) -> (Vec<Line>, FrameRows) {
+    grid_lines_with(designcraft_doc::FirstBaseline::Fixed, first, text, para, edit)
+}
+
+/// [`grid_lines`] with the frame's first baseline offset `fb` and its minimum `min`.
+fn grid_lines_with(
+    fb: designcraft_doc::FirstBaseline,
+    min: f64,
+    text: &str,
+    para: ParaAttrs,
+    edit: impl FnOnce(&mut Document, StoryId),
+) -> (Vec<Line>, FrameRows) {
     let (mut d, sid, fid) = doc_with(text, Rect::new(0.0, 0.0, 300.0, 400.0), para);
     d.story_mut(sid).unwrap().frame_grid = Some(FrameGrid { size: 12.0, line_aki: 6.0, ..Default::default() });
     if let Some(tf) = d.item_mut(fid).and_then(|i| i.text_frame_mut()) {
-        tf.options.first_baseline = designcraft_doc::FirstBaseline::Fixed;
-        tf.options.first_baseline_min = first;
+        tf.options.first_baseline = fb;
+        tf.options.first_baseline_min = min;
     }
     edit(&mut d, sid);
     let rows = frame_specs(&d, sid)[0].frame_grid.expect("a frame grid frame has rows");
@@ -73,6 +84,21 @@ fn a_paragraphs_grid_alignment_puts_its_lines_on_the_rows() {
             assert!(close(w[1] - w[0], rows.pitch), "{r:?} line {k}: {y:?}");
         }
         assert!(close(y[0], rows.top + at), "{r:?} on the first row's {at}: {y:?}");
+    }
+}
+
+#[test]
+fn the_first_line_is_on_the_first_row_with_an_ascent_first_baseline() {
+    // InDesign: Ascent, Em Box Height and a 0 fixed offset all put a 12 pt line on the first row,
+    // even in a face whose ascender reaches above its em box; Leading puts it on the second.
+    for (fb, row) in [
+        (designcraft_doc::FirstBaseline::Ascent, 0.0),
+        (designcraft_doc::FirstBaseline::EmboxHeight, 0.0),
+        (designcraft_doc::FirstBaseline::Leading, 1.0),
+    ] {
+        let (lines, rows) = grid_lines_with(fb, 0.0, "漢字", aligned(R::EmCenter), |_, _| {});
+        let want = rows.top + row * rows.pitch + rows.cell / 2.0;
+        assert!(close(em_centre_of(&lines[0]), want), "{fb:?}: {} not {want}", em_centre_of(&lines[0]));
     }
 }
 

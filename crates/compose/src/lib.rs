@@ -1460,6 +1460,17 @@ fn position_line(input: PositionLineInput<'_, '_>) -> LinePosition {
         if cur.last_baseline.is_some() {
             baseline += cur.last_reference - reference;
         }
+        // A frame grid's first line, under an Ascent or Em Box Height first baseline, starts with
+        // its own em box at the column top, so it goes on the first row whatever the face's
+        // ascender (InDesign, observed black-box: Ascent sets as Em Box Height there).
+        let em_start = (f.frame_grid.is_some()
+            && cur.last_baseline.is_none()
+            && matches!(f.opts.first_baseline, FirstBaseline::Ascent | FirstBaseline::EmboxHeight))
+        .then(|| {
+            let above = -grid::reference_offset(line_glyphs, designcraft_doc::cjk::CharacterAlignment::EmTop);
+            col.y0 + above.max(f.opts.first_baseline_min)
+        })
+        .filter(|b| b.is_finite());
         let aligned = pp.grid_align == GridAlign::AllLines || (pp.grid_align == GridAlign::FirstLineOnly && line_no == 0);
         // A frame grid's rows replace the baseline grid; its ICF references take the line's em box.
         let line_ref = if f.frame_grid.is_some() { grid::frame_line_reference(pp.grid_reference) } else { pp.grid_reference };
@@ -1513,7 +1524,7 @@ fn position_line(input: PositionLineInput<'_, '_>) -> LinePosition {
                         .map(|(_, y)| y)
                         .or_else(|| (f.frame_grid.is_some() && cur.last_baseline.is_none()).then_some(g_start));
                     let band = grid::Band {
-                        natural: baseline + r,
+                        natural: em_start.unwrap_or(baseline) + r,
                         free,
                         pending: cur.pending,
                         fixed: n > 0,
