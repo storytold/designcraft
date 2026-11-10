@@ -93,7 +93,21 @@ pub const MAX_STROKE_SAMPLES: usize = 100_000;
 /// still gets them evenly; a path whose length isn't finite gets none.
 fn samples(bp: &BezPath, step: f64) -> Vec<Vec<(Point, Vec2)>> {
     let subs = subpaths(bp);
-    let total: f64 = subs.iter().flat_map(|s| s.segments()).map(|seg| seg.arclen(1e-3)).sum();
+    // kurbo's arclen of an all-equal quadratic is NaN; it has no length, so skip it.
+    let total: f64 = subs
+        .iter()
+        .flat_map(|s| s.segments())
+        .map(|seg| match seg {
+            PathSeg::Quad(q) if q.p0 == q.p1 && q.p1 == q.p2 => 0.0,
+            _ => seg.arclen(1e-3),
+        })
+        .sum();
+    if !total.is_finite() || !step.is_finite() || step <= 0.0 {
+        return Vec::new();
+    }
+    let step = step.max(total / MAX_STROKE_SAMPLES as f64);
+    subs.iter().map(|sub| subpath_samples(sub, step)).collect()
+}
     if !total.is_finite() || !step.is_finite() || step <= 0.0 {
         return Vec::new();
     }
@@ -103,7 +117,14 @@ fn samples(bp: &BezPath, step: f64) -> Vec<Vec<(Point, Vec2)>> {
 
 /// Points along one subpath every `step` of arc length, with the unit tangent there.
 fn subpath_samples(bp: &BezPath, step: f64) -> Vec<(Point, Vec2)> {
-    let lens: Vec<f64> = bp.segments().map(|seg| seg.arclen(1e-3)).collect();
+    // kurbo's arclen of an all-equal quadratic is NaN; it has no length, so skip it.
+    let lens: Vec<f64> = bp
+        .segments()
+        .map(|seg| match seg {
+            PathSeg::Quad(q) if q.p0 == q.p1 && q.p1 == q.p2 => 0.0,
+            _ => seg.arclen(1e-3),
+        })
+        .collect();
     let mut out = Vec::new();
     let mut carry = 0.0;
     for (seg, &len) in bp.segments().zip(&lens) {
@@ -223,6 +244,13 @@ mod tests {
         huge.line_to((f64::MAX, 0.0));
         assert!(samples(&huge, 1.0).is_empty());
         assert_eq!(samples(&line(), 10.0).len(), 11, "short paths sample as before");
+    }
+
+    #[test]
+    fn a_zero_length_quadratic_keeps_the_line_before_it() {
+        let mut bp = line();
+        bp.quad_to((100.0, 0.0), (100.0, 0.0));
+        assert_eq!(samples(&bp, 10.0).len(), 11);
     }
 
     #[test]
