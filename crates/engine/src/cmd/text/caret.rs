@@ -216,8 +216,12 @@ pub(super) fn release(s: &mut Session, p: &Value) -> Result<Value> {
     }
     s.edit(|d, sel| {
         let (piece_len, at, r) = {
+            let mut piece = d.text_story(sid, cell).ok_or(designcraft_doc::DocError::NoStory(sid))?.extract(r.clone());
+            // A dragged copy gets fresh ids for its anchored objects, as a pasted one (#2284).
+            if copy {
+                crate::cmd::object::renumber_slice(d, None, &mut piece);
+            }
             let st = d.text_story_mut(sid, cell).ok_or(designcraft_doc::DocError::NoStory(sid))?;
-            let piece = st.extract(r.clone());
             let mut at = b;
             if !copy {
                 st.delete(r.clone());
@@ -628,6 +632,39 @@ mod drag_text_tests {
         s.execute("text.release", &json!({"frame": fid, "point": at(&s, 2), "moved": false})).unwrap();
         let t = s.doc().unwrap().selection.text.unwrap();
         assert_eq!(t.anchor, t.focus);
+    }
+
+    // A range dragged with Alt (copied) gets fresh ids for its anchored objects, as a pasted one
+    // does (#2284).
+    #[test]
+    fn a_dragged_copy_of_an_anchored_object_gets_its_own_id() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 500, 200], "content": "text", "text": "Before after."})).unwrap();
+        let (fid, sid) = (r["id"].as_u64().unwrap(), r["story"].as_u64().unwrap());
+        let b = s.execute("frame.create", &json!({"rect": [450, 450, 462, 462]})).unwrap();
+        s.execute("anchored.insert", &json!({"ids": [b["id"]], "story": sid, "pos": 7})).unwrap();
+        let story = |s: &Session| s.doc().unwrap().doc.story(designcraft_doc::StoryId(sid)).unwrap().clone();
+        let original = story(&s).objects[0].item.id;
+        let line = |s: &Session| {
+            let d = &s.doc().unwrap().doc;
+            let cs = designcraft_compose::compose_story(d, designcraft_doc::StoryId(sid), &Default::default());
+            let l = &cs.frames[0].lines[0];
+            let g = l.glyphs.iter().find(|g| g.byte == 1).unwrap();
+            (json!([g.x + g.adv * 0.25, l.baseline - 3.0]), json!([l.end_x + 2.0, l.baseline - 3.0]))
+        };
+        let len = story(&s).len();
+        s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": len})).unwrap();
+        let (inside, end) = line(&s);
+        assert_eq!(s.execute("text.placeCaret", &json!({"frame": fid, "point": inside})).unwrap()["dragging"], true);
+        s.execute("text.release", &json!({"frame": fid, "point": end, "moved": true, "copy": true})).unwrap();
+        let st = story(&s);
+        assert_eq!(st.objects.len(), 2, "the copy holds the anchored object too");
+        assert_eq!(st.objects[0].item.id, original, "the original keeps its id");
+        assert_ne!(st.objects[1].item.id, original, "the copy has one of its own");
+        let doc = &s.doc().unwrap().doc;
+        doc.check().unwrap();
+        designcraft_format::load(&designcraft_format::save(doc).unwrap()).unwrap();
     }
 }
 
