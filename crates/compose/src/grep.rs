@@ -392,7 +392,8 @@ impl Grep {
             return Ok(None);
         }
         let Some(caps) = self.re.captures_from_pos(text, start).map_err(run_err)? else { return Ok(None) };
-        Ok(caps.get(0).map(|m| (m.range(), fancy_regex::Expander::default().expansion(template, &caps))))
+        let Some(m) = caps.get(0) else { return Ok(None) };
+        Ok(Some((m.range(), expand_within(&fancy_regex::Expander::default(), template, &caps, MAX_REPLACEMENT_BYTES)?)))
     }
 
     /// Non-empty matches in `text`, at most `limit` of them: an empty match styles nothing, so it
@@ -417,11 +418,8 @@ impl Grep {
             let Some(m) = caps.get(0) else { continue };
             // Captures can overlap (zero-width matches capturing the rest of the text): the expanded
             // texts can add up to far more than the text searched.
-            let expanded = exp.expansion(template, &caps);
-            bytes = bytes.saturating_add(expanded.len());
-            if bytes > MAX_REPLACEMENT_BYTES {
-                return Err(err(format!("GREP replacement stopped: the replacement text would pass {MAX_REPLACEMENT_BYTES} bytes")));
-            }
+            let expanded = expand_within(&exp, template, &caps, MAX_REPLACEMENT_BYTES - bytes)?;
+            bytes += expanded.len();
             out.push((m.range(), expanded));
             if first_only {
                 break;
@@ -433,6 +431,28 @@ impl Grep {
 
 /// Bytes of replacement text one Find/Change may build, all matches together.
 const MAX_REPLACEMENT_BYTES: usize = 64 * 1024 * 1024;
+
+/// `template` expanded for `caps`, refused as soon as it would pass `room` bytes: the text is
+/// never built past the budget.
+fn expand_within(exp: &fancy_regex::Expander, template: &str, caps: &fancy_regex::Captures<'_, str>, room: usize) -> Result<String, GrepError> {
+    struct Bounded(Vec<u8>, usize);
+    impl std::io::Write for Bounded {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            if b.len() > self.1 - self.0.len() {
+                return Err(std::io::Error::other("over budget"));
+            }
+            self.0.extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut sink = Bounded(Vec::new(), room);
+    exp.write_expansion(&mut sink, template, caps)
+        .map_err(|_| err(format!("GREP replacement stopped: the replacement text would pass {MAX_REPLACEMENT_BYTES} bytes")))?;
+    String::from_utf8(sink.0).map_err(|_| err("GREP replacement stopped: the replacement text is not valid UTF-8"))
+}
 
 fn run_err(e: fancy_regex::Error) -> GrepError {
     err(format!("GREP search stopped: {e}"))
@@ -450,6 +470,15 @@ mod tests {
         let e = g.replacements(&text, "$1", false).unwrap_err();
         assert!(e.to_string().contains("replacement"), "{e}");
         assert_eq!(g.replacements("abc", "$1", false).unwrap().len(), 4);
+    }
+
+    #[test]
+    fn one_expansion_stops_at_its_room() {
+        let g = grep("abc");
+        let caps = g.re.captures("abc").unwrap().unwrap();
+        let exp = fancy_regex::Expander::default();
+        assert_eq!(expand_within(&exp, "$0$0", &caps, 6).unwrap(), "abcabc");
+        assert!(expand_within(&exp, "$0$0", &caps, 5).is_err());
     }
 
     fn grep(p: &str) -> Grep {
