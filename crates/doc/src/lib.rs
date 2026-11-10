@@ -1142,7 +1142,10 @@ impl Document {
                         if caption == obj.item.id || !matches!(obj.item.content, crate::Content::Graphic(_)) {
                             return Err(DocError::Invalid(format!("invalid caption source {}", obj.item.id)));
                         }
-                        let target = st.objects.iter().find(|candidate| candidate.item.id == caption)
+                        let target = st
+                            .objects
+                            .iter()
+                            .find(|candidate| candidate.item.id == caption)
                             .ok_or_else(|| DocError::Invalid(format!("caption {caption} not in story {sid}")))?;
                         if !matches!(target.item.content, crate::Content::Text(_)) || !claimed_captions.insert(caption) {
                             return Err(DocError::Invalid(format!("caption {caption} is not unique anchored text")));

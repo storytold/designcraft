@@ -49,8 +49,18 @@ enum Drag {
         frame_from: Rect,
         canvas_to_frame: Affine,
     },
-    AnchoredContentMove { id: ItemId, start: Point, canvas_to_frame: Affine },
-    AnchoredContentScale { id: ItemId, handle: usize, from: Rect, frame_from: Rect, canvas_to_frame: Affine },
+    AnchoredContentMove {
+        id: ItemId,
+        start: Point,
+        canvas_to_frame: Affine,
+    },
+    AnchoredContentScale {
+        id: ItemId,
+        handle: usize,
+        from: Rect,
+        frame_from: Rect,
+        canvas_to_frame: Affine,
+    },
     Resize {
         handle: usize,
         start: Point,
@@ -529,10 +539,26 @@ fn frame_handle_for_canvas_handle(canvas_to_frame: Affine, handle: usize) -> usi
     // A side handle is always a single frame edge, even when its host is
     // rotated by an arbitrary angle rather than a quarter turn.
     if handle % 2 == 1 {
-        if local.x.abs() >= local.y.abs() { local.y = 0.0; } else { local.x = 0.0; }
+        if local.x.abs() >= local.y.abs() {
+            local.y = 0.0;
+        } else {
+            local.x = 0.0;
+        }
     }
-    let x = if local.x > 1e-7 { -1 } else if local.x < -1e-7 { 1 } else { 0 };
-    let y = if local.y > 1e-7 { -1 } else if local.y < -1e-7 { 1 } else { 0 };
+    let x = if local.x > 1e-7 {
+        -1
+    } else if local.x < -1e-7 {
+        1
+    } else {
+        0
+    };
+    let y = if local.y > 1e-7 {
+        -1
+    } else if local.y < -1e-7 {
+        1
+    } else {
+        0
+    };
     match (x, y) {
         (-1, -1) => 0,
         (0, -1) => 1,
@@ -574,7 +600,9 @@ fn selected_graphic(cx: &ToolContext) -> Option<(ItemId, Rect)> {
 /// Pick the nearest handle, not the first matching square: small graphics
 /// can have several handles inside the same screen-space tolerance.
 fn nearest_handle(bounds: Rect, p: Point, tol: f64) -> Option<usize> {
-    handles(bounds).iter().enumerate()
+    handles(bounds)
+        .iter()
+        .enumerate()
         .map(|(i, h)| (i, (h.x - p.x).hypot(h.y - p.y)))
         .filter(|(_, distance)| *distance <= tol)
         .min_by(|a, b| a.1.total_cmp(&b.1))
@@ -1129,16 +1157,18 @@ impl SelectionTool {
                 let to_frame = resize_edges_rect(
                     frame_from,
                     frame_handle_for_canvas_handle(canvas_to_frame, handle),
-                    handles(frame_from)[frame_handle_for_canvas_handle(canvas_to_frame, handle)]
-                        + affine_delta(canvas_to_frame, delta),
+                    handles(frame_from)[frame_handle_for_canvas_handle(canvas_to_frame, handle)] + affine_delta(canvas_to_frame, delta),
                 );
-                vec![Action::Preview("anchored.resize".into(), json!({
-                    "id": id.0,
-                    "left": to_frame.x0 - frame_from.x0,
-                    "top": to_frame.y0 - frame_from.y0,
-                    "right": frame_from.x1 - to_frame.x1,
-                    "bottom": frame_from.y1 - to_frame.y1
-                }))]
+                vec![Action::Preview(
+                    "anchored.resize".into(),
+                    json!({
+                        "id": id.0,
+                        "left": to_frame.x0 - frame_from.x0,
+                        "top": to_frame.y0 - frame_from.y0,
+                        "right": frame_from.x1 - to_frame.x1,
+                        "bottom": frame_from.y1 - to_frame.y1
+                    }),
+                )]
             }
             Drag::Bracket { id, end } => {
                 let Some((warp, xf, _, _)) = path_type_of(cx, id) else { return vec![] };
@@ -1425,7 +1455,8 @@ impl Tool for SelectionTool {
             && self.loaded.is_none()
             && let Some(id) = cx.hit_anchored_graphic(p)
         {
-            if ev.mods.alt && cx.selection.items == [id]
+            if ev.mods.alt
+                && cx.selection.items == [id]
                 && let Some((_, _, frame_to_canvas, _)) = cx.anchored_graphic_geometry().into_iter().find(|(candidate, _, _, _)| *candidate == id)
                 && frame_to_canvas.determinant().abs() > 1e-12
             {
@@ -1438,7 +1469,10 @@ impl Tool for SelectionTool {
             if ev.mods.shift {
                 return vec![Action::Exec("selection.toggle".into(), json!({"id": id.0}))];
             }
-            return vec![Action::Exec("selection.set".into(), if ev.mods.cmd { json!({"ids": [id.0], "add": true}) } else { json!({"ids": [id.0]}) })];
+            return vec![Action::Exec(
+                "selection.set".into(),
+                if ev.mods.cmd { json!({"ids": [id.0], "add": true}) } else { json!({"ids": [id.0]}) },
+            )];
         }
         match ev.kind {
             PointerKind::Move => {
@@ -1584,7 +1618,13 @@ impl Tool for SelectionTool {
                 v.extend(self.guides.iter().cloned());
                 v
             }
-            Drag::Move { .. } | Drag::Resize { .. } | Drag::AnchoredResize { .. } | Drag::AnchoredContentMove { .. } | Drag::AnchoredContentScale { .. } | Drag::Rotate { .. } | Drag::Anchor { .. } => self.guides.clone(),
+            Drag::Move { .. }
+            | Drag::Resize { .. }
+            | Drag::AnchoredResize { .. }
+            | Drag::AnchoredContentMove { .. }
+            | Drag::AnchoredContentScale { .. }
+            | Drag::Rotate { .. }
+            | Drag::Anchor { .. } => self.guides.clone(),
             // The whole graphic shows while it's resized, outside the frame too.
             Drag::ContentResize { id, .. } => vec![Overlay::ContentGhost(*id)],
             Drag::None | Drag::Bracket { .. } => brackets(cx),
@@ -1635,7 +1675,9 @@ impl Tool for SelectionTool {
         }
         match self.drag {
             Drag::Move { .. } => return Cursor::Move,
-            Drag::Resize { handle, .. } | Drag::AnchoredResize { handle, .. } | Drag::AnchoredContentScale { handle, .. } => return handle_cursor(handle),
+            Drag::Resize { handle, .. } | Drag::AnchoredResize { handle, .. } | Drag::AnchoredContentScale { handle, .. } => {
+                return handle_cursor(handle);
+            }
             Drag::AnchoredContentMove { .. } => return Cursor::HandGrab,
             Drag::Rotate { .. } => return Cursor::Rotate,
             Drag::Corner { .. } => return Cursor::Arrow,
@@ -1708,13 +1750,24 @@ mod anchored_transform_tests {
     use super::*;
     use crate::{CanvasLayout, SnapView};
     use designcraft_compose::Cache;
-    use designcraft_doc::{Document, Selection};
     use designcraft_doc::build::NewDocument;
+    use designcraft_doc::{Document, Selection};
     use designcraft_geom::Unit;
 
     /// Construct a tool context for anchored graphic interaction tests.
     fn context<'a>(d: &'a Document, s: &'a Selection, c: &'a Cache, l: &'a CanvasLayout, zoom: f64) -> ToolContext<'a> {
-        ToolContext { doc: d, selection: s, cache: c, layout: l, zoom, layer: d.default_layer(), snap: SnapView::OFF, unit: Unit::Points, stroke_in_front: false, loaded: None }
+        ToolContext {
+            doc: d,
+            selection: s,
+            cache: c,
+            layout: l,
+            zoom,
+            layer: d.default_layer(),
+            snap: SnapView::OFF,
+            unit: Unit::Points,
+            stroke_in_front: false,
+            loaded: None,
+        }
     }
 
     /// A real composed graphic inside a story, so tests exercise hit testing
@@ -1725,10 +1778,8 @@ mod anchored_transform_tests {
         use designcraft_geom::shapes;
         let mut d = Document::new(&NewDocument::default());
         let layer = d.default_layer();
-        let (host, sid) = d.add_text_frame(
-            SpreadRef::Doc(0), Rect::new(72.0, 72.0, 420.0, 450.0),
-            layer, "Text after graphic.", ParaFormat::default(),
-        ).unwrap();
+        let (host, sid) =
+            d.add_text_frame(SpreadRef::Doc(0), Rect::new(72.0, 72.0, 420.0, 450.0), layer, "Text after graphic.", ParaFormat::default()).unwrap();
         let id = ItemId(d.alloc());
         let mut item = Item::new(id, layer, Shape::Rectangle, shapes::rectangle(Rect::new(0.0, 0.0, 60.0, 40.0)));
         item.content = Content::Graphic(Graphic {
@@ -1774,10 +1825,7 @@ mod anchored_transform_tests {
         let to_canvas = Affine::translate((100.0, 100.0)) * Affine::rotate(std::f64::consts::FRAC_PI_2);
         let from = to_canvas.transform_rect_bbox(frame);
         let mut tool = SelectionTool::new(false);
-        tool.drag = Drag::AnchoredContentScale {
-            id: ItemId(999), handle: 1, from, frame_from: frame,
-            canvas_to_frame: to_canvas.inverse(),
-        };
+        tool.drag = Drag::AnchoredContentScale { id: ItemId(999), handle: 1, from, frame_from: frame, canvas_to_frame: to_canvas.inverse() };
         let h = handles(from)[1];
         let action = tool.pointer_drag(&cx, &PointerEvent::new(PointerKind::Drag, h.x, h.y - 20.0));
         let [Action::Preview(command, params)] = action.as_slice() else { panic!("{action:?}") };
@@ -1830,8 +1878,11 @@ mod anchored_transform_tests {
         let cx = context(&d, &selection, &cache, &layout, 1.0);
         let mut tool = SelectionTool::new(false);
         let action = tool.pointer(&cx, &PointerEvent::new(PointerKind::Down, p.x, p.y).with_clicks(2));
-        assert!(matches!(action.as_slice(), [Action::SwitchTool(name), Action::Exec(cmd, params)]
-            if name == "type" && cmd == "text.placeCaret" && params["frame"] == host.0), "{action:?}");
+        assert!(
+            matches!(action.as_slice(), [Action::SwitchTool(name), Action::Exec(cmd, params)]
+            if name == "type" && cmd == "text.placeCaret" && params["frame"] == host.0),
+            "{action:?}"
+        );
     }
 
     /// Ensure page stacking order governs graphic hit testing.
@@ -1858,8 +1909,11 @@ mod anchored_transform_tests {
         assert_eq!(cx.hit_anchored_graphic(p), None);
         let mut tool = SelectionTool::new(false);
         let action = tool.pointer(&cx, &PointerEvent::new(PointerKind::Down, p.x, p.y));
-        assert!(action.iter().any(|a| matches!(a, Action::Exec(cmd, params)
-            if cmd == "selection.set" && params["ids"] == json!([overlay.0]))), "{action:?}");
+        assert!(
+            action.iter().any(|a| matches!(a, Action::Exec(cmd, params)
+            if cmd == "selection.set" && params["ids"] == json!([overlay.0]))),
+            "{action:?}"
+        );
     }
 
     /// Map canvas handles to the correct local edge for vertical text.

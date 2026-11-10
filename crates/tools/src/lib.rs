@@ -260,7 +260,9 @@ impl ToolContext<'_> {
             for frame in &composed.frames {
                 let Some(loc) = self.doc.find(frame.frame) else { continue };
                 let Some(host) = self.doc.item_at(&loc) else { continue };
-                if host.hidden || host.locked || self.doc.layer(host.layer).is_some_and(|l| !l.visible || l.locked) { continue; }
+                if host.hidden || host.locked || self.doc.layer(host.layer).is_some_and(|l| !l.visible || l.locked) {
+                    continue;
+                }
                 let parent = self.layout.xf(loc.spread) * self.doc.parent_xf(&loc) * self.doc.text_xf(host);
                 for placed in &frame.objects {
                     let item = &placed.object.item;
@@ -297,14 +299,14 @@ impl ToolContext<'_> {
             Some((loc.spread, loc.top(), self.doc.layer_rank(item.layer)))
         });
         self.anchored_graphic_geometry().into_iter().rev().find_map(|(id, bounds, _, host_id)| {
-            if !bounds.contains(p) { return None; }
+            if !bounds.contains(p) {
+                return None;
+            }
             if let Some((front_spread, front_index, front_layer)) = front {
                 let host = self.doc.find(host_id)?;
                 let host_item = self.doc.spread(host.spread)?.items.get(host.top())?;
                 let host_layer = self.doc.layer_rank(host_item.layer);
-                if front_spread != host.spread || front_layer > host_layer
-                    || (front_layer == host_layer && front_index > host.top())
-                {
+                if front_spread != host.spread || front_layer > host_layer || (front_layer == host_layer && front_index > host.top()) {
                     return None;
                 }
             }

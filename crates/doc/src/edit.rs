@@ -1046,7 +1046,11 @@ mod placed_item_tests {
         let mut story = Story::new(sid);
         story.insert_object(
             0,
-            crate::AnchoredObject { item: Item::new(nested, layer, Shape::Rectangle, Default::default()), position: Default::default(), caption_id: None },
+            crate::AnchoredObject {
+                item: Item::new(nested, layer, Shape::Rectangle, Default::default()),
+                position: Default::default(),
+                caption_id: None,
+            },
         );
         for _ in 0..MAX_PLACEMENT_DEPTH + 2 {
             let mut outer = Story::new(sid);

@@ -6070,17 +6070,26 @@ mod anchored_copy_tests {
         let mut d = Document::new(&designcraft_doc::build::NewDocument::default());
         let layer = d.default_layer();
         let (host, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 300.0, 300.0), layer, "Host", ParaFormat::default()).unwrap();
-        let (caption, caption_sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 90.0, 30.0), layer, "Caption", ParaFormat::default()).unwrap();
+        let (caption, caption_sid) =
+            d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 90.0, 30.0), layer, "Caption", ParaFormat::default()).unwrap();
         let caption_item = d.item(caption).unwrap().clone();
         let caption_story = d.stories.get(&caption_sid).unwrap().clone();
         d.remove_item(caption).unwrap();
         d.stories.insert(caption_sid, caption_story);
         let graphic_id = ItemId(d.alloc());
-        let mut graphic = Item::new(graphic_id, layer, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 60.0, 40.0)));
+        let mut graphic =
+            Item::new(graphic_id, layer, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 60.0, 40.0)));
         graphic.content = Content::Graphic(designcraft_doc::Graphic {
-            layer_options: None, asset: designcraft_doc::AssetId(1), size: (60.0, 40.0), xf: designcraft_geom::Affine::IDENTITY,
-            clip: None, auto_fit: Default::default(), fit_align: 4, crop: [0.0; 4],
-            wrap: Default::default(), fill: Default::default(),
+            layer_options: None,
+            asset: designcraft_doc::AssetId(1),
+            size: (60.0, 40.0),
+            xf: designcraft_geom::Affine::IDENTITY,
+            clip: None,
+            auto_fit: Default::default(),
+            fit_align: 4,
+            crop: [0.0; 4],
+            wrap: Default::default(),
+            fill: Default::default(),
         });
         let mut linked = AnchoredObject::new(graphic, Default::default());
         linked.caption_id = Some(caption);

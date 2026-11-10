@@ -26,9 +26,11 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(
             "anchored.linkCaption",
             "Link Anchored Image and Caption",
-            [], None,
+            [],
+            None,
             "{image: unsigned item id, caption?: unsigned item id} — caption must be an anchored text frame in the same story, used by at most one image; omit caption to unlink; invalid values are errors",
-            has_doc, link_caption
+            has_doc,
+            link_caption
         ),
         cmd!(
             "anchored.resize",
@@ -42,9 +44,11 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(
             "anchored.contentTransform",
             "Move or Scale Anchored Image Content",
-            [], None,
+            [],
+            None,
             "{id, dx?, dy?, scale?} — require at least one; dx/dy in frame points (±1000000), scale 0.01..100 around natural graphic centre; can combine move and proportional scale without changing frame",
-            has_doc, transform_content
+            has_doc,
+            transform_content
         ),
         cmd!(
             "anchored.options",
@@ -80,8 +84,7 @@ pub fn specs() -> Vec<CommandSpec> {
 
 /// Reject transforms that cannot be serialized and safely inverted by later edits.
 fn valid_graphic_transform(xf: Affine) -> bool {
-    xf.as_coeffs().iter().all(|v| v.is_finite() && v.abs() <= 1.0e12)
-        && xf.determinant().is_finite() && xf.determinant().abs() >= 1.0e-12
+    xf.as_coeffs().iter().all(|v| v.is_finite() && v.abs() <= 1.0e12) && xf.determinant().is_finite() && xf.determinant().abs() >= 1.0e-12
 }
 
 /// Associate only explicitly identified objects; adjacent paragraphs are never guessed as captions.
@@ -91,16 +94,24 @@ fn link_caption(s: &mut Session, p: &Value) -> Result<Value> {
         None => None,
         Some(v) => Some(ItemId(v.as_u64().ok_or_else(|| bad("anchored.linkCaption", "caption must be an unsigned integer; omit to unlink"))?)),
     };
-    if caption == Some(image) { return Err(bad("anchored.linkCaption", "caption cannot be image")); }
+    if caption == Some(image) {
+        return Err(bad("anchored.linkCaption", "caption cannot be image"));
+    }
     s.edit(|d, _| {
-        let (sid, idx) = d.stories.values().find_map(|st| st.objects.iter().position(|o| o.item.id == image).map(|i| (st.id, i)))
+        let (sid, idx) = d
+            .stories
+            .values()
+            .find_map(|st| st.objects.iter().position(|o| o.item.id == image).map(|i| (st.id, i)))
             .ok_or_else(|| bad("anchored.linkCaption", "image not found"))?;
         let story = d.story_mut(sid).ok_or_else(|| bad("anchored.linkCaption", "story not found"))?;
         if !matches!(story.objects[idx].item.content, Content::Graphic(_)) {
             return Err(bad("anchored.linkCaption", "source is not a graphic"));
         }
         if let Some(cid) = caption {
-            let other = story.objects.iter().find(|o| o.item.id == cid)
+            let other = story
+                .objects
+                .iter()
+                .find(|o| o.item.id == cid)
                 .ok_or_else(|| bad("anchored.linkCaption", "caption must be anchored in the same story"))?;
             if !matches!(other.item.content, Content::Text(_)) {
                 return Err(bad("anchored.linkCaption", "caption must be an anchored text frame"));
@@ -125,7 +136,9 @@ fn resize_graphic(s: &mut Session, p: &Value) -> Result<Value> {
             None => 0.0,
             Some(value) => value.as_f64().ok_or_else(|| bad("anchored.resize", format!("{key} must be numeric")))?,
         };
-        if !v.is_finite() || v.abs() > 1_000_000.0 { return Err(bad("anchored.resize", format!("{key} out of range"))); }
+        if !v.is_finite() || v.abs() > 1_000_000.0 {
+            return Err(bad("anchored.resize", format!("{key} out of range")));
+        }
         Ok(v)
     };
     // Retain the legacy explicit-size command for scripts and existing documents.
@@ -147,9 +160,11 @@ fn resize_graphic(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let (left, top, right, bottom) = (read("left")?, read("top")?, read("right")?, read("bottom")?);
     s.edit(|d, _| {
-        let (sid, index) = d.stories.values().find_map(|story| {
-            story.objects.iter().position(|o| o.item.id == id).map(|i| (story.id, i))
-        }).ok_or_else(|| bad("anchored.resize", "anchored item not found"))?;
+        let (sid, index) = d
+            .stories
+            .values()
+            .find_map(|story| story.objects.iter().position(|o| o.item.id == id).map(|i| (story.id, i)))
+            .ok_or_else(|| bad("anchored.resize", "anchored item not found"))?;
         let story = d.story_mut(sid).ok_or_else(|| bad("anchored.resize", "story not found"))?;
         let obj = story.objects.get_mut(index).ok_or_else(|| bad("anchored.resize", "object not found"))?;
         let mut resized = obj.item.clone();
@@ -157,7 +172,9 @@ fn resize_graphic(s: &mut Session, p: &Value) -> Result<Value> {
             return Err(bad("anchored.resize", "object is not a graphic"));
         };
         let (old_w, old_h) = obj.size();
-        if old_w < 1.0 || old_h < 1.0 { return Err(bad("anchored.resize", "empty frame")); }
+        if old_w < 1.0 || old_h < 1.0 {
+            return Err(bad("anchored.resize", "empty frame"));
+        }
         if let Some((width, height)) = explicit_size {
             let sx = width / old_w;
             let sy = height / old_h;
@@ -182,8 +199,7 @@ fn resize_graphic(s: &mut Session, p: &Value) -> Result<Value> {
         if frame_xf.determinant().abs() < 1e-12 {
             return Err(bad("anchored.resize", "singular frame transform"));
         }
-        let image_bounds = (frame_xf * graphic.xf).transform_rect_bbox(
-            designcraft_geom::Rect::new(0.0, 0.0, graphic.size.0, graphic.size.1));
+        let image_bounds = (frame_xf * graphic.xf).transform_rect_bbox(designcraft_geom::Rect::new(0.0, 0.0, graphic.size.0, graphic.size.1));
         let l = left.clamp(image_bounds.x0.min(0.0), old_w - 1.0);
         let t = top.clamp(image_bounds.y0.min(0.0), old_h - 1.0);
         let r = right.clamp(old_w - image_bounds.x1.max(old_w), old_w - l - 1.0);
@@ -193,8 +209,7 @@ fn resize_graphic(s: &mut Session, p: &Value) -> Result<Value> {
         let sx = width / old_w;
         let sy = height / old_h;
         let inner_offset = frame_xf.inverse() * designcraft_geom::Point::new(-l, -t) - frame_xf.inverse() * designcraft_geom::Point::ORIGIN;
-        graphic.xf = Affine::scale_non_uniform(1.0 / sx, 1.0 / sy)
-            * Affine::translate(inner_offset) * graphic.xf;
+        graphic.xf = Affine::scale_non_uniform(1.0 / sx, 1.0 / sy) * Affine::translate(inner_offset) * graphic.xf;
         resized.xf = Affine::scale_non_uniform(sx, sy) * resized.xf;
         if !valid_graphic_transform(graphic.xf) || !valid_graphic_transform(resized.xf) {
             return Err(bad("anchored.resize", "invalid resulting graphic transform"));
@@ -214,7 +229,9 @@ fn transform_content(s: &mut Session, p: &Value) -> Result<Value> {
             None => default,
             Some(value) => value.as_f64().ok_or_else(|| bad("anchored.contentTransform", format!("{key} must be numeric")))?,
         };
-        if !v.is_finite() { return Err(bad("anchored.contentTransform", "non-finite transform")); }
+        if !v.is_finite() {
+            return Err(bad("anchored.contentTransform", "non-finite transform"));
+        }
         Ok(v)
     };
     if !["dx", "dy", "scale"].iter().any(|key| p.get(*key).is_some()) {
@@ -224,14 +241,21 @@ fn transform_content(s: &mut Session, p: &Value) -> Result<Value> {
     if dx.abs() > 1_000_000.0 || dy.abs() > 1_000_000.0 {
         return Err(bad("anchored.contentTransform", "movement exceeds 1000000 points"));
     }
-    if !(0.01..=100.0).contains(&scale) { return Err(bad("anchored.contentTransform", "invalid scale")); }
+    if !(0.01..=100.0).contains(&scale) {
+        return Err(bad("anchored.contentTransform", "invalid scale"));
+    }
     s.edit(|d, _| {
-        let (sid, index) = d.stories.values().find_map(|story| story.objects.iter().position(|o| o.item.id == id).map(|i| (story.id, i)))
+        let (sid, index) = d
+            .stories
+            .values()
+            .find_map(|story| story.objects.iter().position(|o| o.item.id == id).map(|i| (story.id, i)))
             .ok_or_else(|| bad("anchored.contentTransform", "anchored item not found"))?;
         let story = d.story_mut(sid).ok_or_else(|| bad("anchored.contentTransform", "story not found"))?;
         let obj = story.objects.get_mut(index).ok_or_else(|| bad("anchored.contentTransform", "object not found"))?;
         let mut edited = obj.item.clone();
-        let Content::Graphic(ref mut graphic) = edited.content else { return Err(bad("anchored.contentTransform", "not a graphic")); };
+        let Content::Graphic(ref mut graphic) = edited.content else {
+            return Err(bad("anchored.contentTransform", "not a graphic"));
+        };
         // Scaling around the graphic's natural centre preserves its proportions.
         let cx = graphic.size.0 / 2.0;
         let cy = graphic.size.1 / 2.0;
@@ -239,8 +263,7 @@ fn transform_content(s: &mut Session, p: &Value) -> Result<Value> {
             return Err(bad("anchored.contentTransform", "singular frame transform"));
         }
         let inner_delta = edited.xf.inverse() * designcraft_geom::Point::new(dx, dy) - edited.xf.inverse() * designcraft_geom::Point::ORIGIN;
-        graphic.xf = Affine::translate(inner_delta) * graphic.xf
-            * Affine::translate((cx, cy)) * Affine::scale(scale) * Affine::translate((-cx, -cy));
+        graphic.xf = Affine::translate(inner_delta) * graphic.xf * Affine::translate((cx, cy)) * Affine::scale(scale) * Affine::translate((-cx, -cy));
         if !valid_graphic_transform(graphic.xf) {
             return Err(bad("anchored.contentTransform", "invalid resulting graphic transform"));
         }
@@ -448,15 +471,23 @@ mod tests {
         let layer = s.doc().unwrap().doc.default_layer();
         let mut item = Item::new(id, layer, Shape::Rectangle, shapes::rectangle(Rect::new(0.0, 0.0, 100.0, 60.0)));
         item.content = Content::Graphic(Graphic {
-            layer_options: None, asset: AssetId(1), size: (100.0, 60.0), xf: Affine::IDENTITY,
-            clip: None, auto_fit: Default::default(), fit_align: 4, crop: [0.0; 4],
-            wrap: Default::default(), fill: Default::default(),
+            layer_options: None,
+            asset: AssetId(1),
+            size: (100.0, 60.0),
+            xf: Affine::IDENTITY,
+            clip: None,
+            auto_fit: Default::default(),
+            fit_align: 4,
+            crop: [0.0; 4],
+            wrap: Default::default(),
+            fill: Default::default(),
         });
         s.edit(|d, _| {
             d.alloc();
             d.story_mut(sid).unwrap().insert_object(0, AnchoredObject::new(item, Default::default()));
             Ok(json!({}))
-        }).unwrap();
+        })
+        .unwrap();
         let displayed = |s: &Session| {
             let obj = &s.doc().unwrap().doc.story(sid).unwrap().objects[0];
             let Content::Graphic(ref g) = obj.item.content else { panic!("not a graphic") };
@@ -508,8 +539,9 @@ mod tests {
                 assert!(session.execute("anchored.contentTransform", &params).is_err(), "{params}");
             }
         }
-        for params in [json!({"id": 1, "dx": 1000001}), json!({"id": 1, "dy": -1000001}),
-            json!({"id": 1, "scale": 0}), json!({"id": 1, "scale": 101})] {
+        for params in
+            [json!({"id": 1, "dx": 1000001}), json!({"id": 1, "dy": -1000001}), json!({"id": 1, "scale": 0}), json!({"id": 1, "scale": 101})]
+        {
             assert!(session.execute("anchored.contentTransform", &params).is_err(), "{params}");
         }
     }
@@ -529,8 +561,7 @@ mod tests {
             let sx = (old_width - left) / old_width;
             let inv = frame.inverse();
             let inner = inv * Point::new(-left, 0.0) - inv * Point::ORIGIN;
-            content = Affine::scale_non_uniform(1.0 / sx, 1.0)
-                * Affine::translate(inner) * content;
+            content = Affine::scale_non_uniform(1.0 / sx, 1.0) * Affine::translate(inner) * content;
             frame = Affine::scale_non_uniform(sx, 1.0) * frame;
             let displayed = frame * content * natural_point;
             assert!((displayed.x - (initial.x - (100.0 - old_width) - left)).abs() < 1e-9);
