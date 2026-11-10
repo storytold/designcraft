@@ -126,6 +126,7 @@ impl Default for RenderOptions {
             greek_below_px: 0.0,
             page_shadow: false,
             highlight_missing_fonts: false,
+            missing_graphics: false,
             highlight_hj: false,
             highlight_keeps: false,
             highlight_custom_tracking: false,

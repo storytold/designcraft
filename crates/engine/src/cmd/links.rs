@@ -169,12 +169,12 @@ pub(crate) type ImageChecks = std::collections::HashMap<(AssetId, usize, std::pa
 /// of press-size images would otherwise be read whole on every poll. A file changed in the last
 /// two seconds is never remembered (see [`settled`]).
 pub(crate) fn status_cached(a: &designcraft_doc::Asset, document: Option<&Path>, checks: &mut ImageChecks) -> &'static str {
-    let Some(link) = &a.link else { return "embedded" };
-    // Nothing was read from the file (a package's link that wasn't followed): missing, as in
-    // Preflight.
+    // Nothing was read from the file (a package's link that wasn't followed, an image an import
+    // found no data for): missing, as in Preflight.
     if a.data.is_empty() {
         return "missing";
     }
+    let Some(link) = &a.link else { return "embedded" };
     #[cfg(not(target_arch = "wasm32"))]
     {
         let Ok(path) = crate::io::document_path(link, document) else { return "missing" };

@@ -445,3 +445,14 @@ fn link_status_relink_update_embed() {
     assert_eq!(s.execute("links.list", &json!({})).unwrap()[0]["status"], "embedded");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// An image with no link and no data (an import that found no image data for it) is missing, as
+/// Preflight reports it, not embedded: there is nothing in the document to show.
+#[test]
+fn an_unlinked_image_without_data_is_missing() {
+    let empty = designcraft_doc::Asset { mime: "image/png".into(), ..Default::default() };
+    assert!(empty.link.is_none() && empty.data.is_empty());
+    assert_eq!(status_cached(&empty, None, &mut Default::default()), "missing");
+    let embedded = designcraft_doc::Asset { mime: "image/png".into(), data: std::sync::Arc::new(vec![1, 2, 3]), ..Default::default() };
+    assert_eq!(status_cached(&embedded, None, &mut Default::default()), "embedded");
+}
