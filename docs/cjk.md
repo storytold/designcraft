@@ -102,7 +102,10 @@ working (tsume removes the side bearings before mojikumi runs).
   - hanging punctuation as zero-width boxes allowed past the measure.
   Knuth–Plass already takes tiered stretch (`TIER_COST`), so this plugs into `kp_pass`.
   The spacing the mojikumi table allows to be closed up is taken first, at no cost: a line that
-  fits by squeezing within the table is not a tight line.
+  fits by squeezing within the table is not a tight line. This covers the table's shrink between
+  characters and at the line end, up to the squeeze the line can take. Between characters, glyphs
+  with a locked advance do not count; with kinsoku priority 3 nothing does. It is not yet limited to punctuation (whether
+  InDesign does so is unverified).
 - Justification in `layout_line` distributes by the same tiers; the last line follows the
   paragraph's last-line alignment; CJK lines justify by default (JLREQ).
 - Korean: the Japanese composer with word-based breaking (spaces) by default; per-paragraph
