@@ -605,6 +605,13 @@ pub struct Asset {
     /// Original location on disk (Links panel), if linked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link: Option<String>,
+    /// The size and modification time the linked file had when `data` was read from it, or when
+    /// it was last found to hold `data`: link status compares these first instead of reading a
+    /// large file from a network share again. They are the file's only together with `link` and
+    /// `data`: a new link goes through [`Asset::set_link`], and whoever replaces `data` sets or
+    /// clears them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link_fingerprint: Option<Fingerprint>,
     #[serde(skip)]
     pub data: Arc<Vec<u8>>,
     /// Pixel size for raster images.

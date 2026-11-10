@@ -854,6 +854,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Set", "Ange"),
     ("unused", "oanvänd"),
     ("⚠ Missing", "⚠ Saknas"),
+    ("Checking", "Kontrollerar"),
+    ("Link status is unavailable.", "Länkstatus är inte tillgänglig."),
     ("▲ Modified", "▲ Ändrad"),
     ("(Text Color)", "(Textfärg)"),
     ("{count} glyphs — click to insert at the text cursor", "{count} glyfer – klicka för att infoga vid textmarkören"),
