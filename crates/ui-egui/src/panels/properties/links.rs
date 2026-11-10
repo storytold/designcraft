@@ -52,8 +52,9 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "No placed graphics.")).color(t.text_dim));
         return;
     }
-    let sel_key = egui::Id::unique("links_panel_sel");
-    let item_sel_key = egui::Id::unique("links_panel_item_sel");
+    let document_identity = st.identity_epoch;
+    let sel_key = egui::Id::unique(("links_panel_sel", document_identity));
+    let item_sel_key = egui::Id::unique(("links_panel_item_sel", document_identity));
     let mut chosen: Option<u64> = ui.data(|d| d.get_temp(sel_key));
     let mut chosen_item: Option<u64> = ui.data(|d| d.get_temp(item_sel_key));
 
