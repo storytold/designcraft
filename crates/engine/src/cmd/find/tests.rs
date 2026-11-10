@@ -994,3 +994,21 @@ fn find_next_selects_the_threaded_frame_that_shows_the_match() {
     let frame = s.doc().unwrap().selection.text.and_then(|t| t.frame).map(|f| f.0);
     assert_eq!(frame, second["id"].as_u64());
 }
+
+/// Change/Find in another story leaves the way back to the starting story's text before the
+/// caret where it was: a match after the caret, found on the first pass, is not found again.
+#[test]
+fn a_change_in_another_story_keeps_the_text_before_the_caret_bounded() {
+    let (mut s, a) = scope_session("red X red");
+    let other = s.execute("frame.create", &json!({"rect": [150, 36, 300, 100], "content": "text", "text": "red"})).unwrap();
+    let b = designcraft_doc::StoryId(other["story"].as_u64().unwrap());
+    scope_select(&mut s, a, 5, 5);
+    let p = json!({"find": "red", "change": "blueblueblue", "scope": "document"});
+    scope_hit(&mut s, &p, a, 6, 9);
+    scope_hit(&mut s, &p, b, 0, 3);
+    let mut change = p.clone();
+    change["found"] = json!(true);
+    assert_eq!(s.execute("find.change", &change).unwrap()["count"], 1);
+    scope_hit(&mut s, &p, a, 0, 3);
+    assert_eq!(s.execute("find.next", &p).unwrap(), serde_json::Value::Null);
+}

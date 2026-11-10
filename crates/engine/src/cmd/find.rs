@@ -420,10 +420,15 @@ impl FindContext {
         }
         self.offset = old.start + new_len;
         self.last_match_end = Some(self.offset);
-        if let Some(w) = self.wrap.as_mut()
-            && *w >= old.end
-        {
-            *w = moved(*w);
+        // The boundary is a byte of the story the search started in: only a change there moves it,
+        // and a change across it ends it after the new text, which the first pass searched.
+        let in_wrap_story = self.order.first().and_then(|i| self.targets.get(*i)).is_some_and(|(tid, tcell, _)| *tid == sid && *tcell == cell);
+        if let Some(w) = self.wrap.as_mut().filter(|_| in_wrap_story) {
+            if *w >= old.end {
+                *w = moved(*w);
+            } else if *w > old.start {
+                *w = old.start + new_len;
+            }
         }
         let at = self.offset;
         let holds = |i: &usize| self.targets.get(*i).is_some_and(|(tid, tcell, r)| *tid == sid && *tcell == cell && r.start <= at && at <= r.end);
