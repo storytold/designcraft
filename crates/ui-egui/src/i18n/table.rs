@@ -1743,7 +1743,7 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ("Vertical Margins:", ["Vertical Margins:", "Marges verticales :", "Vertical Margins:", "Vertical Margins:", "垂直边距："]),
     ("Vertical justification", ["Vertical justification", "Justification verticale", "Vertical justification", "Vertical justification", "垂直对齐"]),
     ("View Threshold:", ["View Threshold:", "Seuil d'affichage :", "View Threshold:", "View Threshold:", "视图阈值："]),
-    ("View Threshold", ["Anzeigeschwelle", "Seuil d'affichage", "Umbral de visualización", "表示しきい値", "视图阈值"]),
+    ("View Threshold", ["Anzeigeschwelle", "Seuil d'affichage", "Umbral de visualización", "表示する最小倍率", "视图阈值"]),
     ("Ruler Guides…", ["Linealhilfslinien …", "Repères de règle…", "Guías de regla…", "定規ガイド…", "标尺参考线…"]),
     ("Ruler Guides", ["Linealhilfslinien", "Repères de règle", "Guías de regla", "定規ガイド", "标尺参考线"]),
     (
@@ -1752,7 +1752,7 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
             "Die Anzeigeschwelle muss ein Prozentwert von 5 % bis 4000 % sein.",
             "Le seuil d'affichage doit être un pourcentage entre 5 % et 4000 %.",
             "El umbral de visualización debe ser un porcentaje entre el 5 % y el 4000 %.",
-            "表示しきい値は 5% から 4000% の割合で指定してください。",
+            "表示する最小倍率は 5% から 4000% の範囲で指定してください。",
             "视图阈值必须是 5% 到 4000% 之间的百分比。",
         ],
     ),
