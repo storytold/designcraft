@@ -20,6 +20,15 @@ pub fn reading_order(doc: &Document) -> Vec<Block> {
         for a in doc.articles.iter().filter(|a| a.export) {
             for id in &a.items {
                 let Some(top) = doc.item(*id) else { continue };
+                // A hidden group, or one on a hidden layer, hides everything in it.
+                if doc.find(*id).is_some_and(|loc| {
+                    (1..loc.path.len()).any(|n| {
+                        doc.item_at(&designcraft_doc::ItemLoc { spread: loc.spread, path: loc.path[..n].to_vec() })
+                            .is_some_and(|g| g.hidden || hidden_layers.contains(&g.layer))
+                    })
+                }) {
+                    continue;
+                }
                 let mut push = |it: &Item| match &it.content {
                     Content::Text(tf) if !seen.contains(&tf.story) => {
                         seen.push(tf.story);

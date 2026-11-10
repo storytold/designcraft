@@ -162,11 +162,14 @@ fn page_text(d: &designcraft_doc::Document, cache: &designcraft_compose::Cache, 
             if d.page_of_item(ft.frame) != Some(abs) {
                 continue;
             }
-            // Pages render printing-only: a hidden or nonprinting frame, or one on a hidden or
-            // non-printable layer, isn't on the rendered page.
-            if d.item(ft.frame)
-                .is_some_and(|it| it.hidden || it.nonprinting || d.layers.iter().any(|l| (!l.visible || !l.printable) && l.id == it.layer))
-            {
+            // Pages render printing-only: a hidden or nonprinting frame, one on a hidden or
+            // non-printable layer, or one inside such a group, isn't on the rendered page.
+            let off =
+                |it: &designcraft_doc::Item| it.hidden || it.nonprinting || d.layers.iter().any(|l| (!l.visible || !l.printable) && l.id == it.layer);
+            if d.find(ft.frame).is_some_and(|loc| {
+                (1..=loc.path.len())
+                    .any(|n| d.item_at(&designcraft_doc::ItemLoc { spread: loc.spread, path: loc.path[..n].to_vec() }).is_some_and(off))
+            }) {
                 continue;
             }
             for l in &ft.lines {
