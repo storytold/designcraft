@@ -273,7 +273,7 @@ impl<'a> Ex<'a> {
             && self.embedded.saturating_add(asset.data.len()) <= super::MAX_EMBEDDED_BYTES;
         let mut props = Vec::new();
         if embed {
-            self.embedded += asset.data.len();
+            self.embedded = self.embedded.saturating_add(asset.data.len());
             let mut c = El::new("Contents");
             c.children.push(Node::CData(base64_encode(&asset.data)));
             props.push(c);

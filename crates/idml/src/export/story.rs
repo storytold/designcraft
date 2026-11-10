@@ -553,12 +553,8 @@ impl<'a> Ex<'a> {
                 c.children.extend(out);
                 csrs.push(c);
             }
-<<<<<<< HEAD
-            self.apply_tracked_changes(s, &f, &mut csrs, para_br, r.end);
-            let link = links.iter().find(|(_, l)| l.contains(&seg_start) || (l.start == seg_start && l.start == l.end)).map(|(i, _)| *i);
-=======
             self.apply_tracked_changes(&f, &mut csrs, para_br, runs, r.end);
->>>>>>> 534c40d (idml: story runs and marker offsets found once, object-style overlay by position, embedded image budget)
+            let link = links.iter().find(|(_, l)| l.contains(&seg_start) || (l.start == seg_start && l.start == l.end)).map(|(i, _)| *i);
             for c in csrs {
                 psr_csrs.push((link, c));
             }
