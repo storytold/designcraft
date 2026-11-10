@@ -12,8 +12,9 @@ fn a_failed_read_is_charged_to_the_budget() {
     z.write_all(&[7u8; 1000]).unwrap();
     let mut bytes = z.finish().unwrap().into_inner();
     // Flip a data byte: the entry reads in full, then fails its checksum.
-    let at = bytes.iter().position(|b| *b == 7).unwrap();
-    bytes[at] = 8;
+    // The payload is the only run of 1,000 consecutive 7s in the archive.
+    let start = bytes.windows(1000).position(|w| w.iter().all(|b| *b == 7)).expect("payload");
+    bytes[start] = 8;
     let mut archive = zip::ZipArchive::new(Cursor::new(bytes.as_slice())).unwrap();
     let mut left = 5000;
     assert_eq!(read_entry(&mut archive, "a", 4000, &mut left).unwrap(), None);
