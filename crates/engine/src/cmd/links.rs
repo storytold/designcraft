@@ -544,11 +544,7 @@ fn relink(s: &mut Session, p: &Value) -> Result<Value> {
 
         let r = s.edit(|d, _| {
             // Revalidate before mutating: a stale placement target must not allocate or add an asset.
-            let current = d
-                .item(iid)
-                .and_then(Item::graphic)
-                .map(|g| g.asset)
-                .ok_or_else(|| bad("links.relink", "item is not a placed graphic"))?;
+            let current = d.item(iid).and_then(Item::graphic).map(|g| g.asset).ok_or_else(|| bad("links.relink", "item is not a placed graphic"))?;
             if current != aid {
                 return Err(bad("links.relink", "placed graphic changed before relink"));
             }
