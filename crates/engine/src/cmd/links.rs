@@ -525,8 +525,8 @@ fn list(d: &Document, cache: &Cache, document: Option<&Path>, files: Option<&mut
                     }
                     status
                 }
-                None if a.link.is_none() => "embedded",
                 None if a.data.is_empty() || why.is_some() => "missing",
+                None if a.link.is_none() => "embedded",
                 None => "checking",
             };
             Some(json!({"asset": a.id.0, "name": a.name, "path": a.link, "status": status, "refused": why, "pixels": a.pixels, "pdfCrop": pdf_crop, "uses": uses}))

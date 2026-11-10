@@ -718,3 +718,28 @@ fn an_unlinked_image_without_data_is_missing() {
     let embedded = designcraft_doc::Asset { mime: "image/png".into(), data: std::sync::Arc::new(vec![1, 2, 3]), ..Default::default() };
     assert_eq!(status_cached(&embedded, None, &mut Default::default()), "embedded");
 }
+
+/// The Links panel's preview, which reads no file, names such an image missing too: the
+/// background check leaves an unlinked row as the preview showed it.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn the_preview_names_an_unlinked_image_without_data_missing() {
+    let dir = std::env::temp_dir().join(format!("dc-link-empty-preview-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("a.png");
+    std::fs::write(&path, png(10, 10)).unwrap();
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    let id = AssetId(s.execute("file.place", &json!({"path": path.to_string_lossy(), "x": 72, "y": 72})).unwrap()["asset"].as_u64().unwrap());
+    s.execute("links.embed", &json!({"asset": id.0})).unwrap();
+    let st = s.doc_mut().unwrap();
+    let mut d = (*st.doc).clone();
+    Arc::make_mut(d.assets.get_mut(&id).unwrap()).data = Arc::new(vec![]);
+    st.doc = Arc::new(d);
+    let st = s.doc().unwrap();
+    let rows = preview_document_links(&st.doc, &s.cache, None);
+    let row = rows.iter().find(|r| r["asset"] == id.0).unwrap();
+    assert_eq!(row["status"], "missing");
+    let _ = std::fs::remove_dir_all(&dir);
+}
