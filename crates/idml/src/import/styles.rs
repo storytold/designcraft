@@ -117,7 +117,9 @@ impl<'r> Importer<'r> {
                 e.prop("BasedOn").map(|r| self.cell_style_ref(&r)).or_else(|| Some(designcraft_doc::NO_CELL_STYLE.into())).filter(|n| *n != name);
             cs.fill = e.prop("FillColor").map(|c| self.swatch_ref(&c));
             cs.fill_tint = tint(e.num("FillTint"));
-            cs.inset_overrides = ["TopInset", "LeftInset", "BottomInset", "RightInset"].map(|k| e.num(k).map(|v| v.max(0.0)));
+            let inset_names =
+                [("TextTopInset", "TopInset"), ("TextLeftInset", "LeftInset"), ("TextBottomInset", "BottomInset"), ("TextRightInset", "RightInset")];
+            cs.inset_overrides = inset_names.map(|(text, old)| e.num(text).or_else(|| e.num(old)).map(|v| v.max(0.0)));
             if let [Some(top), Some(left), Some(bottom), Some(right)] = cs.inset_overrides {
                 cs.insets = Some([top, left, bottom, right]);
                 cs.inset_overrides = [None; 4];

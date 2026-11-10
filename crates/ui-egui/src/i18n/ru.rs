@@ -1494,6 +1494,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Set", "Задать"),
     ("unused", "не используется"),
     ("⚠ Missing", "⚠ Отсутствует"),
+    ("Checking", "Проверка"),
+    ("Link status is unavailable.", "Состояние связей недоступно."),
     ("▲ Modified", "▲ Изменено"),
     ("(Text Color)", "(Цвет текста)"),
     ("{count} glyphs — click to insert at the text cursor", "Глифов: {count} — щелкните, чтобы вставить в позиции текстового курсора"),

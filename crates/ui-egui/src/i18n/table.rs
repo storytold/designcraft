@@ -4187,6 +4187,17 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ("Set", ["Set", "Jeu", "Set", "Set", "样式集"]),
     ("unused", ["unused", "inutilisé", "unused", "unused", "未使用"]),
     ("⚠ Missing", ["⚠ Missing", "⚠ Manquant", "⚠ Missing", "⚠ Missing", "⚠ 缺失"]),
+    ("Checking", ["Wird geprüft", "Vérification", "Comprobando", "確認中", "正在检查"]),
+    (
+        "Link status is unavailable.",
+        [
+            "Der Verknüpfungsstatus ist nicht verfügbar.",
+            "L'état des liens n'est pas disponible.",
+            "El estado de los vínculos no está disponible.",
+            "リンクの状態を取得できません。",
+            "链接状态不可用。",
+        ],
+    ),
     ("▲ Modified", ["▲ Modified", "▲ Modifié", "▲ Modified", "▲ Modified", "▲ 已修改"]),
     ("(Text Color)", ["(Text Color)", "(Couleur du texte)", "(Text Color)", "(Text Color)", "（文本颜色）"]),
     (

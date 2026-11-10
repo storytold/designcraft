@@ -99,6 +99,10 @@ struct Ex<'a> {
     threads: HashMap<u64, (Option<u64>, Option<u64>)>,
     /// Cross-reference sources written so far: (Self, target anchor).
     xref_sources: Vec<(String, u64)>,
+    /// `HyperlinkTextSource`s written into the stories: (Self, index in `Document::hyperlinks`).
+    /// A link whose text crosses a paragraph gets one source per paragraph, since the element
+    /// nests inside a `ParagraphStyleRange` (#1446).
+    link_text_sources: Vec<(String, usize)>,
     /// Index topic path → first serialized sort key; See / See also cross-references.
     index_topics: BTreeMap<Vec<String>, String>,
     index_xrefs: Vec<(Vec<String>, &'static str, String)>,
@@ -114,6 +118,7 @@ impl<'a> Ex<'a> {
             fonts: BTreeMap::new(),
             threads: HashMap::new(),
             xref_sources: Vec::new(),
+            link_text_sources: Vec::new(),
             index_topics: BTreeMap::new(),
             index_xrefs: Vec::new(),
         };

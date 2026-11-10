@@ -1600,6 +1600,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Set", "დაყენება"),
     ("unused", "გამოუყენებელი"),
     ("⚠ Missing", "⚠ აკლია"),
+    ("Checking", "მოწმდება"),
+    ("Link status is unavailable.", "ბმულის სტატუსი მიუწვდომელია."),
     ("▲ Modified", "▲ შეცვლილია"),
     ("(Text Color)", "(ტექსტის ფერი)"),
     ("{count} glyphs — click to insert at the text cursor", "გლიფი: {count} — დაწკაპეთ ტექსტის კურსორთან ჩასასმელად"),
