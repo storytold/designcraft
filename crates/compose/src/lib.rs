@@ -1209,7 +1209,7 @@ fn apply_nested_line_styles(input: NestedLineStyleInput<'_, '_, '_>) {
         let cols_here = &cols[cur.fi];
         let col = span_rect(cols_here, cols_here[cur.col.min(cols_here.len() - 1)], pp.span_columns);
         let col = SplitCfg::of(pp).map_or(col, |c| c.sub_rect(col, 0));
-        let spacing = spacing_for(pp, base_chars.size, story);
+        let spacing = spacing_for(pp, base_chars.size, story, doc.settings.flexible_word_spacing);
         let mut lines: Vec<(std::ops::Range<usize>, String)> = Vec::new();
         for _ in 0..3 {
             // The same drop cap, spacing, hyphenation and breaker as the layout below.
@@ -2457,7 +2457,7 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
     let mut hyph_after = hyphenation_points(&story.text, &glyphs, pp, hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), base_chars));
     suppress_hyphens(&mut hyph_after, &glyphs, suppressed_hyphens);
     let base_size = base_chars.size;
-    let spacing = spacing_for(pp, base_size, story);
+    let spacing = spacing_for(pp, base_size, story, doc.settings.flexible_word_spacing);
     // An empty paragraph takes its height from its paragraph mark's character format.
     let mark_chars = if glyphs.is_empty() { doc.styles.resolve_char(base_chars, story.char_format_of(prange.start)) } else { base_chars.clone() };
     let mark_leading = match mark_chars.leading {
@@ -3390,11 +3390,16 @@ fn optical_for(pp: &ParaProps, story: &Story) -> (bool, Option<f64>) {
     }
 }
 
-/// Breaker parameters from the paragraph's settings.
-fn spacing_for(pp: &ParaProps, base_size: f64, story: &Story) -> Spacing {
+/// Breaker parameters from the paragraph's settings. `flexible`: the document lets justified lines
+/// squeeze word spaces below the Minimum (Preferences › Composition). Not for the Japanese
+/// composers: flexible spacing rates a line by its word spaces, and Japanese text mostly has none,
+/// so every line would rate alike and the composer's own preferences (push in or out first) would
+/// be lost.
+fn spacing_for(pp: &ParaProps, base_size: f64, story: &Story, flexible: bool) -> Spacing {
     let (optical, optical_size) = optical_for(pp, story);
     Spacing {
         justify: pp.align.is_justified(),
+        flexible: flexible && pp.align.is_justified() && !pp.composer.japanese(),
         word_min: pp.word_space_min,
         word_desired: pp.word_space_desired,
         word_max: pp.word_space_max,
@@ -4911,7 +4916,10 @@ fn distribute(line: &[Glyph], spaces: &[usize], extra: f64, sp: &Spacing, add: &
             } else if stretch {
                 g.space * (sp.word_max - sp.word_desired).max(0.0)
             } else {
-                g.space * (sp.word_desired - sp.word_min).max(0.0)
+                // A flexible line was chosen for spacing down to the floor (see
+                // `breaker::FLEX_FLOOR`): its spaces may shrink that far, or it would overrun.
+                let floor = if sp.flexible { crate::breaker::FLEX_FLOOR } else { sp.word_min };
+                g.space * (sp.word_desired - floor).max(0.0)
             }
         })
         .collect();

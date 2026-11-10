@@ -474,6 +474,25 @@ fn preferences_ok_sets_only_the_ruler_units_it_is_given() {
     }
 }
 
+/// CodeRabbit on #1190: a Preferences dialog opened without the Word Spacing below Minimum field
+/// keeps the document's setting; with it, OK sets it.
+#[test]
+fn preferences_ok_keeps_flexible_word_spacing_it_is_not_given() {
+    for (given, want) in [(None, true), (Some("false"), false)] {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        app.run("document.preferences", json!({"flexibleWordSpacing": true})).unwrap();
+        let mut fields = json!({"horizontalUnits": "points", "verticalUnits": "points", "bg.relativeTo": "topOfPage"});
+        if let Some(given) = given {
+            fields["flexibleWordSpacing"] = json!(given);
+        }
+        app.ui.dialog = Some(Dialog::new("preferences", fields));
+        confirm(&mut app).unwrap();
+        let prefs = app.run("document.preferences", json!({})).unwrap();
+        assert_eq!(prefs["flexibleWordSpacing"], json!(want), "given {given:?}");
+    }
+}
+
 #[test]
 fn enter_and_escape_close_the_style_menu_not_numbering_and_section_options() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());

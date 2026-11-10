@@ -8617,6 +8617,156 @@ fn anchored_text_frames_compose_against_the_grid_where_they_are_placed() {
     assert!(!Arc::ptr_eq(&before, &cache.get(&d, nsid, None)));
 }
 
+/// Flexible word spacing (Preferences › Composition, on for documents from IDML): a justified line
+/// squeezes its word spaces below the Minimum rather than set a much looser line, as InDesign
+/// does; strict, the Minimum is a limit. Both composers.
+mod flexible_word_spacing {
+    use super::*;
+
+    const HEAD: &str = "Agoranecroailurophobia is a fear of";
+
+    /// Natural width of `text` set left-aligned on one line, and of a word space.
+    fn natural(text: &str) -> (f64, f64) {
+        let (d, sid, _) =
+            doc_with(text, Rect::new(0.0, 0.0, 2000.0, 100.0), ParaAttrs { align: Some(Align::Left), hyphenate: Some(false), ..Default::default() });
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let l = all_lines(&cs)[0].clone();
+        let space = l.glyphs.iter().find(|g| g.rendered_char == ' ').map(|g| g.adv).unwrap();
+        (l.end_x - l.x0, space)
+    }
+
+    /// The text of the first line of `text` justified in a frame where `head` plus `next` needs its
+    /// word spaces at `squeeze` of their width (`flexible`: the document setting).
+    fn first_line(text: &str, next: &str, squeeze: f64, composer: Composer, flexible: bool) -> String {
+        let fits = format!("{HEAD} {next}");
+        let (w, space) = natural(&fits);
+        let spaces = fits.matches(' ').count() as f64;
+        let width = w - spaces * space * (1.0 - squeeze);
+        let para = ParaAttrs { align: Some(Align::LeftJustified), composer: Some(composer), hyphenate: Some(false), ..Default::default() };
+        let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, width, 400.0), para);
+        d.settings.flexible_word_spacing = flexible;
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let l = all_lines(&cs)[0];
+        text[l.range.clone()].trim_end().to_string()
+    }
+
+    #[test]
+    fn a_line_squeezes_below_the_minimum_rather_than_set_very_loose() {
+        let text = format!("{HEAD} crowds and open spaces.");
+        for composer in [Composer::Paragraph, Composer::SingleLine] {
+            // Spaces at 60% (below the 80% minimum) against a line of five words at about 350%.
+            assert_eq!(first_line(&text, "crowds", 0.6, composer, false), HEAD, "{composer:?}, strict: the minimum is a limit");
+            assert_eq!(first_line(&text, "crowds", 0.6, composer, true), format!("{HEAD} crowds"), "{composer:?}, flexible");
+        }
+    }
+
+    #[test]
+    fn a_line_stays_loose_when_it_is_only_a_little_loose() {
+        // "of it" squeezed to 60% is worse than "of" set a little loose.
+        let text = format!("{HEAD} it and open spaces.");
+        for composer in [Composer::Paragraph, Composer::SingleLine] {
+            assert_eq!(first_line(&text, "it", 0.6, composer, true), HEAD, "{composer:?}");
+        }
+    }
+
+    /// [`first_line`] with paragraph attributes of the test's own (justified, the composer and
+    /// hyphenation as given) → the first line's text, its placed width and the measure.
+    fn first_line_with(text: &str, next: &str, squeeze: f64, para: ParaAttrs, flexible: bool) -> (String, f64, f64) {
+        let fits = format!("{HEAD} {next}");
+        let (w, space) = natural(&fits);
+        let spaces = fits.matches(' ').count() as f64;
+        let width = w - spaces * space * (1.0 - squeeze);
+        let para = ParaAttrs { align: Some(Align::LeftJustified), hyphenate: Some(false), ..para };
+        let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, width, 400.0), para);
+        d.settings.flexible_word_spacing = flexible;
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let l = all_lines(&cs)[0];
+        (text[l.range.clone()].trim_end().to_string(), l.end_x - l.x0, width)
+    }
+
+    /// All lines of `text` in a frame `width` wide, as (text, placed width).
+    fn lines_of(text: &str, width: f64, para: ParaAttrs, flexible: bool) -> Vec<(String, f64)> {
+        let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, width, 2000.0), para);
+        d.settings.flexible_word_spacing = flexible;
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        all_lines(&cs).iter().map(|l| (text[l.range.clone()].to_string(), l.end_x - l.x0)).collect()
+    }
+
+    /// FredApps on #1190: where flexible spacing doesn't apply, switching it on changes nothing:
+    /// ragged text, and the Japanese composers (Japanese text has few word spaces to rate lines
+    /// by; they keep their own preferences).
+    #[test]
+    fn flexible_spacing_changes_nothing_where_it_does_not_apply() {
+        let text = format!("{HEAD} crowds and open spaces, {HEAD} it and open spaces in the evening light.");
+        for (align, composer) in [
+            (Align::Left, Composer::Paragraph),
+            (Align::Left, Composer::SingleLine),
+            (Align::LeftJustified, Composer::Japanese),
+            (Align::LeftJustified, Composer::JapaneseSingleLine),
+        ] {
+            let para = ParaAttrs { align: Some(align), composer: Some(composer), hyphenate: Some(false), ..Default::default() };
+            for width in [140.0, 190.0, 260.0] {
+                assert_eq!(
+                    lines_of(&text, width, para.clone(), true),
+                    lines_of(&text, width, para.clone(), false),
+                    "{align:?} {composer:?} at {width}"
+                );
+            }
+        }
+    }
+
+    /// FredApps on #1190: a justified line holding one word too long for the measure, with no
+    /// word spaces, breaks as in strict mode.
+    #[test]
+    fn a_word_without_spaces_breaks_as_in_strict_mode() {
+        let text = "Pneumonoultramicroscopicsilicovolcanoconiosis is long.";
+        for composer in [Composer::Paragraph, Composer::SingleLine] {
+            let para = ParaAttrs { align: Some(Align::LeftJustified), composer: Some(composer), hyphenate: Some(false), ..Default::default() };
+            let flexible = lines_of(text, 90.0, para.clone(), true);
+            assert!(flexible.len() > 1, "{composer:?}: {flexible:?}");
+            assert_eq!(flexible, lines_of(text, 90.0, para, false), "{composer:?}");
+        }
+    }
+
+    /// CodeRabbit on #1190: a line chosen for spaces below the Minimum is placed with them there,
+    /// within its measure, though letter spacing and glyph scaling can't shrink.
+    #[test]
+    fn a_squeezed_line_is_placed_within_its_measure() {
+        let text = format!("{HEAD} crowds and open spaces.");
+        for composer in [Composer::Paragraph, Composer::SingleLine] {
+            let para = ParaAttrs { composer: Some(composer), ..Default::default() };
+            // Spaces at 60%: below the 80% Minimum, which placement used to stop at.
+            let (line, width, measure) = first_line_with(&text, "crowds", 0.6, para, true);
+            assert_eq!(line, format!("{HEAD} crowds"), "{composer:?}");
+            assert!(width <= measure + 0.01, "{composer:?}: placed {width} in {measure}");
+        }
+    }
+
+    /// CodeRabbit on #1190: the Single-line Composer, squeezing a loose line, may take a word up
+    /// to its discretionary hyphen.
+    #[test]
+    fn a_squeezed_line_may_end_at_a_discretionary_hyphen() {
+        let text = format!("{HEAD} crowd\u{AD}ed and open spaces.");
+        let para = ParaAttrs { composer: Some(Composer::SingleLine), ..Default::default() };
+        // "crowd" plus its hyphen with spaces at 50% to 70%: the line runs out of room before the
+        // hyphen or after it, inside the word; either way it ends there.
+        for squeeze in [0.5, 0.6, 0.7] {
+            let (line, width, measure) = first_line_with(&text, "crowd-", squeeze, para.clone(), true);
+            assert_eq!(line, format!("{HEAD} crowd\u{AD}"), "spaces at {squeeze}");
+            assert!(width <= measure + 0.01, "spaces at {squeeze}: placed {width} in {measure}");
+        }
+    }
+
+    #[test]
+    fn spaces_never_squeeze_past_the_floor() {
+        // At 10% of their width the spaces would all but vanish: the line breaks before "crowds".
+        let text = format!("{HEAD} crowds and open spaces.");
+        for composer in [Composer::Paragraph, Composer::SingleLine] {
+            assert_eq!(first_line(&text, "crowds", 0.1, composer, true), HEAD, "{composer:?}");
+        }
+    }
+}
+
 /// A cross-reference's text breaks at its spaces like ordinary text (it is real text in
 /// InDesign), not inside words; edited text whose destination is gone shows its saved page.
 #[test]
