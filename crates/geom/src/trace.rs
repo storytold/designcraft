@@ -132,7 +132,12 @@ mod tests {
         let curve: Vec<Point> = (0..n).map(|i| Point::new(f64::from(i), (f64::from(i) * 1e-3).powi(3))).collect();
         assert!(rdp(&curve, 1e-12).len() > 2);
         // A zigzag of growing amplitude: every split takes the point next to the span's end.
-        let zigzag: Vec<Point> = (0..10_000).map(|i| { let x = f64::from(i); Point::new(x, if i % 2 == 0 { x } else { -x }) }).collect();
+        let zigzag: Vec<Point> = (0..10_000)
+            .map(|i| {
+                let x = f64::from(i);
+                Point::new(x, if i % 2 == 0 { x } else { -x })
+            })
+            .collect();
         assert_eq!(rdp(&zigzag, 0.0).len(), zigzag.len());
         assert!(rdp(&[], 1.0).is_empty());
         assert_eq!(rdp(&line[..1], 1.0).len(), 1);
