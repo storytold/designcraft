@@ -8663,5 +8663,5 @@ fn justified_cjk_lines_with_nothing_to_stretch_are_balanced_not_left_hopeless() 
     let (d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, natural * 0.95 / 3.0, 400.0), justified);
     let cs = compose_story(&d, sid, &ComposeOptions::default());
     let counts: Vec<usize> = all_lines(&cs).iter().map(|l| l.glyphs.iter().filter(|g| g.visible).count()).collect();
-    assert!(counts[0] >= 10 && counts[1] >= 10, "the first lines are full, not a lone bracket: {counts:?}");
+    assert_eq!(counts, [12, 12, 12, 2], "the lines are full, not a lone bracket first");
 }
