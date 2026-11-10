@@ -792,7 +792,7 @@ fn find_next(s: &mut Session, p: &Value) -> Result<Value> {
         s.find_context = Some(context);
         return Ok(Value::Null);
     };
-    let frame = hit_frame(&st.doc, sid, cell, a);
+    let frame = hit_frame(&s.cache, &st.doc, sid, cell, a);
     let cell_json = cell.map(|c| json!({"table": c.table, "row": c.row, "col": c.col}));
     let stm = s.doc_mut()?;
     stm.selection = Selection::text(TextSel { story: sid, anchor: a, focus: b, frame, cell });
@@ -809,14 +809,14 @@ fn find_next(s: &mut Session, p: &Value) -> Result<Value> {
 #[cfg(test)]
 mod tests;
 
-/// The frame that shows byte `at` of story `sid`: a story threaded through several frames is
-/// composed to find it (a table cell's text shows in its story's first frame).
-fn hit_frame(d: &Document, sid: StoryId, cell: Option<CellAddr>, at: usize) -> Option<designcraft_doc::ItemId> {
+/// The frame that shows byte `at` of story `sid`: for a story threaded through several frames,
+/// its composition as displayed tells (a table cell's text shows in its story's first frame).
+fn hit_frame(cache: &designcraft_compose::Cache, d: &Document, sid: StoryId, cell: Option<CellAddr>, at: usize) -> Option<designcraft_doc::ItemId> {
     let first = d.story(sid).and_then(|x| x.frames.first().copied());
     if cell.is_some() || d.story(sid).is_none_or(|x| x.frames.len() < 2) {
         return first;
     }
-    let cs = designcraft_compose::compose_story(d, sid, &designcraft_compose::ComposeOptions::default());
+    let cs = cache.get(d, sid, None);
     designcraft_compose::caret(&cs, at).and_then(|(fi, ..)| cs.frames.get(fi)).map(|f| f.frame).or(first)
 }
 
