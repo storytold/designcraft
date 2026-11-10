@@ -765,10 +765,12 @@ fn kp_pass(input: PassInput<'_>) -> Option<Vec<Break>> {
                     // Japanese or Chinese text with no word space: the characters take up what is left.
                     // With a word space, layout puts what the mojikumi and letter spacing cannot take
                     // into the word spaces, as the tiers above already rate; Hangul is spaced that way.
-                    // The space a break at a word space leaves at the head of the next line is not one.
-                    // With a mojikumi table, the characters take up only what the table allows (the
-                    // tiers above rate that), so the rating is for text set without one.
-                    let line = &line[line.iter().take_while(|g| g.is_justify_space()).count()..];
+                    // The space a break at a word space leaves at the head of the next line is not one
+                    // (a space that starts the paragraph is). With a mojikumi table, the characters
+                    // take up only what the table allows (the tiers above rate that), so the rating
+                    // is for text set without one.
+                    let lead = if n.pos == 0 { 0 } else { line.iter().take_while(|g| g.is_justify_space()).count() };
+                    let line = &line[lead..];
                     line.iter().any(|g| is_cjk(g.ch)) && !line.iter().any(|g| is_hangul(g.ch) || g.is_justify_space() || g.moji.active)
                 })
             {
