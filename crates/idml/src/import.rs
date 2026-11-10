@@ -349,6 +349,8 @@ impl<'r> Importer<'r> {
         self.next_id
     }
 
+    /// Reads the preference elements of Preferences.xml into the document settings, among them the
+    /// colour and view threshold new ruler guides get (`GuidePreference`).
     fn read_preferences(&mut self, top: &[El]) {
         // Preferences first (page size, facing pages).
         for e in top {
@@ -477,6 +479,8 @@ impl<'r> Importer<'r> {
         Ok(())
     }
 
+    /// Imports the document: preferences, fonts, graphics and styles first, then the layers (a layer
+    /// without a colour of its own takes the automatic UI colour turn) and the rest.
     fn run(&mut self, _root: &El, top: &[El]) -> Result<()> {
         self.read_preferences(top);
         self.read_composite_fonts(top);

@@ -65,6 +65,8 @@ impl<'a> Ex<'a> {
 
     // ---------- Preferences.xml ----------
 
+    /// Preferences.xml: the document's preferences, among them the
+    /// colour and view threshold new ruler guides get (`GuidePreference`).
     pub(super) fn prefs_part(&mut self) -> Vec<u8> {
         let d = self.d;
         let s = &d.settings;

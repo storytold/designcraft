@@ -30,6 +30,8 @@ pub fn activate(app: &mut DesignApp, id: &str, params: &Value) {
     }
 }
 
+/// Runs a menu or shortcut command: commands that need a dialog open it when called without
+/// parameters (Layout › Ruler Guides among them); the rest run directly.
 fn activate_inner(app: &mut DesignApp, id: &str, params: &Value) {
     // Object › Effects › Drop Shadow… (and its shortcut): the Effects dialog on that page.
     if params.is_null()

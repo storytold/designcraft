@@ -191,6 +191,8 @@ fn page_at(d: &Document, r: SpreadRef, x: f64) -> usize {
     d.spread(r).and_then(|sp| sp.page_at_x(x)).unwrap_or(0)
 }
 
+/// `guide.add`: adds a ruler guide (or, with `orientation: "both"`, a horizontal and a vertical one
+/// through `point`) to a page or the spread, with the document's colour and view threshold for new guides.
 fn add(s: &mut Session, p: &Value) -> Result<Value> {
     let r = super::spread_param(p, "guide.add")?;
     let spread_guide = p.get("spreadGuide").and_then(Value::as_bool).unwrap_or(false);
@@ -544,6 +546,8 @@ fn grid_positions(a: f64, b: f64, n: u64, gutter: f64) -> Result<Vec<f64>> {
     Ok(v)
 }
 
+/// `layout.createGuides`: Layout › Create Guides, rows and columns with gutters fitted to the margins
+/// or the page of one page or every page of the spread, optionally removing the existing ruler guides.
 fn create_guides(s: &mut Session, p: &Value) -> Result<Value> {
     let rows = guide_divisions(p, "rows")?;
     let cols = guide_divisions(p, "columns")?;

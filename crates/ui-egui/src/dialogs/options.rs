@@ -272,6 +272,7 @@ pub fn open_layer_options(app: &mut DesignApp, id: Option<u64>) -> Result<(), St
     Ok(())
 }
 
+/// Draws Layer Options: name, colour (any of the UI colours or custom) and the layer's flags.
 pub fn layer_options(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     let lang = app.ui.language.as_str();
     egui::Grid::new("layer_options").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
@@ -295,6 +296,7 @@ pub fn layer_options(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     status(ui, d);
 }
 
+/// Applies Layer Options through `layer.set`.
 pub fn confirm_layer_options(app: &mut DesignApp, d: &Dialog) -> Result<Value, String> {
     let mut p = json!({"id": d.fields.get("id").cloned().unwrap_or(Value::Null), "name": d.s("name"), "color": d.fields.get("rgb").cloned().unwrap_or(Value::Null)});
     for k in ["visible", "locked", "printable", "showGuides", "suppressWrapWhenHidden"] {
