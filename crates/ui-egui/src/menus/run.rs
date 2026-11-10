@@ -1193,5 +1193,10 @@ fn set_screen_mode(app: &mut DesignApp, mode: ScreenMode) {
             *view = v;
         }
     }
+    // Presentation takes the whole screen: no menu bar, dock or window frame around it.
+    let entering = mode == ScreenMode::Presentation;
+    if entering != presenting {
+        app.pending_window_commands.push(egui::ViewportCommand::Fullscreen(entering));
+    }
     app.ui.screen_mode = mode;
 }
