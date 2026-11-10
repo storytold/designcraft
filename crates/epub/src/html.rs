@@ -20,11 +20,12 @@ pub fn reading_order(doc: &Document) -> Vec<Block> {
         for a in doc.articles.iter().filter(|a| a.export) {
             for id in &a.items {
                 let Some(top) = doc.item(*id) else { continue };
-                // A hidden group, or one on a hidden layer, hides everything in it.
+                // A hidden item or group hides everything in it. The layer that counts is the
+                // top-level item's: pages draw a group's members on the group's layer.
                 if doc.find(*id).is_some_and(|loc| {
-                    (1..loc.path.len()).any(|n| {
+                    (1..=loc.path.len()).any(|n| {
                         doc.item_at(&designcraft_doc::ItemLoc { spread: loc.spread, path: loc.path[..n].to_vec() })
-                            .is_some_and(|g| g.hidden || hidden_layers.contains(&g.layer))
+                            .is_some_and(|g| g.hidden || n == 1 && hidden_layers.contains(&g.layer))
                     })
                 }) {
                     continue;
@@ -37,10 +38,10 @@ pub fn reading_order(doc: &Document) -> Vec<Block> {
                     Content::Graphic(_) => out.push(Block::Image(it.id)),
                     _ => {}
                 };
-                // Hidden items and items on hidden layers (with everything in them) aren't on the page.
+                // Hidden items (with everything in them) aren't on the page.
                 let mut stack = vec![top];
                 while let Some(it) = stack.pop() {
-                    if it.hidden || hidden_layers.contains(&it.layer) {
+                    if it.hidden {
                         continue;
                     }
                     push(it);
@@ -64,8 +65,8 @@ pub fn reading_order(doc: &Document) -> Vec<Block> {
                 continue;
             };
             let xf = *parent * it.xf;
-            // Hidden items and items on hidden layers (with everything in them) aren't on the page.
-            if it.hidden || hidden_layers.contains(&it.layer) {
+            // Hidden items, and top-level items on hidden layers (with everything in them), aren't on the page.
+            if it.hidden || stack.len() == 1 && hidden_layers.contains(&it.layer) {
                 continue;
             }
             let children = it.children();
