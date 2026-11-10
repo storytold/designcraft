@@ -90,7 +90,17 @@ pub(super) fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
         _ => PdfCrop::Crop,
     };
     let mime = designcraft_render::image_mime(&bytes).to_string();
-    let mut asset = Asset { page: pdf_page, name, mime, link, data: Arc::new(bytes), pixels: Some((pw, ph)), pdf_crop, ..Default::default() };
+    let mut asset = Asset {
+        page: pdf_page,
+        name,
+        mime,
+        link,
+        link_fingerprint: crate::cmd::links::loaded_fingerprint(before, &bytes),
+        data: Arc::new(bytes),
+        pixels: Some((pw, ph)),
+        pdf_crop,
+        ..Default::default()
+    };
     // The graphic's natural size: the box in points (the whole page when the box can't be found,
     // and then the document says so).
     let (bw, bh) = match crop_pdf(&mut asset) {
@@ -198,16 +208,25 @@ pub(crate) fn crop_pdf(a: &mut Asset) -> Option<(f64, f64)> {
 }
 
 pub(crate) fn read_source(p: &Value) -> Result<(Vec<u8>, String, Option<String>)> {
+    read_linked_source(p).map(|(bytes, name, link, _)| (bytes, name, link))
+}
+
+/// [`read_source`], with the size and time to keep with a linked file's bytes
+/// ([`crate::cmd::links::loaded_fingerprint`]): the file's from before it is read, not those of a
+/// later version that replaces it while a network or syncing source is being loaded.
+fn read_linked_source(p: &Value) -> Result<(Vec<u8>, String, Option<String>, Option<designcraft_doc::Fingerprint>)> {
     if let Some(b) = str_param(p, "base64") {
-        return Ok((base64_decode(b), str_param(p, "name").unwrap_or("image").to_string(), None));
+        return Ok((base64_decode(b), str_param(p, "name").unwrap_or("image").to_string(), None, None));
     }
     let path = str_param(p, "path").ok_or_else(|| bad("place", "missing `path` or `base64`"))?;
+    let before = crate::cmd::datamerge::fingerprint_from_path(path);
     #[cfg(not(target_arch = "wasm32"))]
     let b = crate::io::read_file(path).map_err(EngineError::Other)?;
     #[cfg(target_arch = "wasm32")]
     let b: Vec<u8> = vec![];
     let name = std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.into());
-    Ok((b, name, Some(path.to_string())))
+    let loaded = crate::cmd::links::loaded_fingerprint(before, &b);
+    Ok((b, name, Some(path.to_string()), loaded))
 }
 
 fn eps_size(bytes: &[u8], command: &str) -> Result<Option<(f64, f64)>> {
@@ -236,11 +255,11 @@ pub(crate) fn validate_placement(size: (f64, f64), frame: Rect, xf: Affine, comm
 }
 
 pub(super) fn place_load(s: &mut Session, p: &Value) -> Result<Value> {
-    let (bytes, name, link) = read_source(p)?;
+    let (bytes, name, link, link_fingerprint) = read_linked_source(p)?;
     let (pw, ph) = designcraft_render::image_size(&bytes).ok_or_else(|| bad("place.load", "unsupported or corrupt image"))?;
     let natural = eps_size(&bytes, "place.load")?.or_else(|| designcraft_render::natural_size(&bytes, 0)).unwrap_or((pw as f64, ph as f64));
     let mime = designcraft_render::image_mime(&bytes).to_string();
-    let asset = Asset { name, mime, link, data: Arc::new(bytes), pixels: Some((pw, ph)), ..Default::default() };
+    let asset = Asset { name, mime, link, link_fingerprint, data: Arc::new(bytes), pixels: Some((pw, ph)), ..Default::default() };
     load_cursor(s, asset, natural)
 }
 
@@ -378,7 +397,7 @@ fn place_layout_page(s: &mut Session, p: &Value, name: &str, bytes: &[u8]) -> Re
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 pub(super) mod image_place_tests {
-    use designcraft_doc::{Content, ItemId};
+    use designcraft_doc::{AssetId, Content, ItemId};
     use designcraft_geom::Rect;
     use serde_json::{Value, json};
 
@@ -447,6 +466,29 @@ pub(super) mod image_place_tests {
         session.execute("object.unlockAll", &json!({})).unwrap();
         session.execute("file.place", &json!({"path": image.path(), "frame": frame})).unwrap();
         assert!(matches!(session.doc().unwrap().doc.item(ItemId(frame)).unwrap().content, Content::Graphic(_)));
+    }
+
+    #[test]
+    fn place_load_remembers_the_fingerprint_captured_for_its_link() {
+        let image = image_file().unwrap();
+        let mut session = Session::new();
+        session.execute("file.new", &json!({})).unwrap();
+        let load = |session: &mut Session| {
+            let loaded = session.execute("place.load", &json!({"path": image.path()})).unwrap();
+            session.doc().unwrap().doc.assets[&AssetId(loaded["asset"].as_u64().unwrap())].clone()
+        };
+
+        // Written just now: another write in the same second would keep its time, so the time
+        // can't vouch for the bytes later and isn't kept.
+        let asset = load(&mut session);
+        assert_eq!(asset.link_fingerprint, None);
+        assert_eq!(asset.link.as_deref(), image.path().to_str());
+
+        // A file that has been as it is for a while is remembered by its size and time.
+        image.as_file().set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(60)).unwrap();
+        let expected = crate::cmd::datamerge::fingerprint_from(&std::fs::metadata(image.path()).unwrap());
+        session.execute("file.new", &json!({})).unwrap();
+        assert_eq!(load(&mut session).link_fingerprint, Some(expected));
     }
 
     #[test]
