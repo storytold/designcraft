@@ -43,15 +43,19 @@ fn named(tag: &str, name: &str) -> String {
     format!(r#"<Properties><{tag} type="enumeration">{name}</{tag}></Properties>"#)
 }
 
+/// A `GuideColor`-style property as an RGB list of `rgb`'s items.
 fn listed(tag: &str, rgb: &[&str]) -> String {
     let items: String = rgb.iter().map(|v| format!(r#"<ListItem type="double">{v}</ListItem>"#)).collect();
     format!(r#"<Properties><{tag} type="list">{items}</{tag}></Properties>"#)
 }
 
+/// The options of the first page's guides, in order.
 fn options(d: &Document) -> Vec<RulerGuideOptions> {
     d.spreads[0].pages[0].guides.iter().map(|g| g.options).collect()
 }
 
+/// Each guide's `ViewThreshold` and `GuideColor` are read; a threshold past 4000% is held to it,
+/// and one below 5%, a value that is not a number and a colour that can't be read keep the default.
 #[test]
 fn guide_colours_and_view_thresholds_are_read() {
     let o = |color: Option<[u8; 3]>, view_threshold: f64| RulerGuideOptions { color, view_threshold };
@@ -84,6 +88,8 @@ fn guide_colours_and_view_thresholds_are_read() {
     assert!(d.settings.ruler_guides.is_default(), "no GuidePreference: the defaults");
 }
 
+/// `GuidePreference`'s `RulerGuidesViewThreshold` and `RulerGuidesColor` become the document's
+/// defaults for new guides.
 #[test]
 fn the_guide_preference_sets_the_defaults_for_new_guides() {
     for (pref, want) in [
@@ -102,6 +108,8 @@ fn the_guide_preference_sets_the_defaults_for_new_guides() {
     }
 }
 
+/// Export writes each guide's threshold and colour and the `GuidePreference`, and import reads the
+/// same options back.
 #[test]
 fn guide_options_are_written_and_read_back() {
     let mut source = import_idml(&fixture(&[("", ""), ("", ""), ("", "")], None)).unwrap();

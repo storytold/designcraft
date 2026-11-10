@@ -12,6 +12,7 @@ use crate::{Result, Session};
 
 const ID: &str = "guide.options";
 
+/// The `guide.options` command (Layout › Ruler Guides…).
 pub fn specs() -> Vec<CommandSpec> {
     vec![cmd!(
         "guide.options",
@@ -54,6 +55,7 @@ struct Change {
 }
 
 impl Change {
+    /// `o` with the options given replaced; the others stay as `o` has them.
     fn apply(self, o: &RulerGuideOptions) -> RulerGuideOptions {
         let mut o = *o;
         if let Some(t) = self.threshold {
@@ -66,6 +68,8 @@ impl Change {
     }
 }
 
+/// `guide.options`: checks every parameter and every guide named before it changes anything, and
+/// adds no undo step when nothing changes.
 fn run(s: &mut Session, p: &Value) -> Result<Value> {
     let threshold = match p.get("viewThreshold") {
         None => None,
@@ -140,14 +144,18 @@ mod tests {
         s
     }
 
+    /// The guides of the first page.
     fn guides(s: &Session) -> Vec<Guide> {
         s.doc().unwrap().doc.spreads[0].pages[0].guides.clone()
     }
 
+    /// How many steps the document's undo history holds.
     fn undo_steps(s: &Session) -> usize {
         s.doc().unwrap().history.undo.len()
     }
 
+    /// The selected guide takes both options, the other guide and the defaults stay, and undo and
+    /// redo are one step.
     #[test]
     fn options_of_the_selected_guides_change_and_undo_in_one_step() {
         let mut s = session();
@@ -165,6 +173,8 @@ mod tests {
         assert_eq!(guides(&s)[1].options.color, Some([255, 0, 0]));
     }
 
+    /// A colour alone keeps each guide's threshold and a threshold alone each guide's colour; Cyan
+    /// is stored as the default.
     #[test]
     fn an_option_left_out_keeps_each_guides_own() {
         let mut s = session();
@@ -184,6 +194,8 @@ mod tests {
         assert_eq!(s.execute("guide.list", &json!({})).unwrap()[0]["color"], "Cyan");
     }
 
+    /// With nothing selected the defaults change, existing guides stay, and guides made afterwards
+    /// get the defaults.
     #[test]
     fn with_no_guide_selected_it_sets_what_new_guides_get() {
         let mut s = session();
@@ -208,6 +220,7 @@ mod tests {
         assert_eq!(s.doc().unwrap().doc.settings.ruler_guides, want);
     }
 
+    /// Options that change nothing add no undo step, for guides and for the defaults.
     #[test]
     fn the_same_options_again_add_no_undo_step() {
         let mut s = session();
@@ -220,6 +233,8 @@ mod tests {
         assert_eq!(undo_steps(&s), steps);
     }
 
+    /// Every kind of bad parameter is refused and leaves the document as it was; the ends of the
+    /// range are taken.
     #[test]
     fn bad_options_change_nothing() {
         let mut s = session();
@@ -252,6 +267,7 @@ mod tests {
         assert_eq!(guides(&s)[1].options.view_threshold, 40.0);
     }
 
+    /// A guide on a locked layer and a locked guide are refused and keep their options.
     #[test]
     fn locked_guides_and_guides_on_locked_layers_keep_their_options() {
         let mut s = session();
@@ -268,6 +284,8 @@ mod tests {
         assert_eq!(guides(&s)[0].options, RulerGuideOptions::default());
     }
 
+    /// `guide.list` gives each guide's threshold in percent and its colour, by name when it has
+    /// one.
     #[test]
     fn the_guide_list_reports_each_guides_options() {
         let mut s = session();
@@ -280,6 +298,8 @@ mod tests {
         assert_eq!(s.execute("guide.list", &json!({})).unwrap()[1]["color"], "Grid Green");
     }
 
+    /// The options survive the native format; default options are not written, and a guide saved
+    /// without them reads as the defaults.
     #[test]
     fn options_are_saved_with_the_document_and_old_files_read_as_defaults() {
         let mut s = session();
