@@ -581,12 +581,14 @@ impl Document {
 
     /// Delete absolute pages (items whose centre is on a deleted page are deleted too).
     pub fn delete_pages(&mut self, pages: &[usize]) -> Result<()> {
-        if pages.len() >= self.page_count() {
-            return Err(DocError::Invalid("a document needs at least one page".into()));
-        }
         let mut doomed: Vec<(usize, usize)> = pages.iter().filter_map(|p| self.page_loc(*p)).collect();
         doomed.sort();
         doomed.dedup();
+        // The pages it will remove, not the indices it was given: asking for [0, 0, 1, 2] of four
+        // pages removes three of them and leaves one, which is allowed.
+        if doomed.len() >= self.page_count() {
+            return Err(DocError::Invalid("a document needs at least one page".into()));
+        }
         let mut remove_items: Vec<ItemId> = Vec::new();
         for &(si, pi) in &doomed {
             let sp = &self.spreads[si];
