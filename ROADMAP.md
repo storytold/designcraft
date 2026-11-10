@@ -359,15 +359,14 @@ A string without a translation shows in English and fails no check; `cargo xtask
 | Hindi | hi | none | 0% |
 | Arabic | ar | partial (RTL UI and composition) | 85% |
 | French | fr | partial | 83% |
-| Portuguese (Brazil) | pt-br | partial | 61% |
+| Portuguese (Brazil) | pt-br | partial | ~100% |
 | Indonesian | id | none | 0% |
 | Japanese | ja | partial | 95% |
 | German | de | partial | 83% |
 | Korean | ko | none | 0% |
 | Vietnamese | vi | none | 0% |
 
-Also shipped: Czech (99%), Italian (85%), Ukrainian (83%), Polish (99%).
-Also shipped: Italian (85%), Ukrainian (83%), Georgian (100%), Swedish (99%).
+Also shipped (2026-11-04 `i18n-report`, of 2,939): Czech (69%), Italian (68%), Ukrainian (65%), Polish (64%), Georgian (98%), Swedish (98%), Hungarian (65%), Russian (63%).
 
 ## Upcoming
 
@@ -409,6 +408,7 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 Newest first.
 
 - **2026-11-06** · Preflight warns about white or [Paper] set to overprint (#2401): a fill, stroke or stroke gap, or ruby and kenten, in [Paper] or a colour that lays down no ink (C=0 M=0 Y=0 K=0, a 0% tint; a spot ink, such as a white ink or a varnish, prints whatever colour stands in for it), is reported as `whiteOverprint`, since it disappears on press. Text itself has no overprint, so white text in a frame set to Overprint Fill still knocks out and prints, and is not reported. Preflight no longer says PDF export drops ruby and kenten overprint, which it writes. No readiness percentage change.
+- **2026-11-04** · Interface Language › Português (Brasil) translates the whole interface: 996 strings the catalog lacked (tool names, window and guide commands, Keyboard Shortcuts sets, panel docking, Edit › Menus paths, the Japanese typesetting dialogs, special characters, Load Styles, Data Merge, Preflight, font replacement, the Package summary, OpenType features, page presets, About) and File › New's unit names, and a path is "demarcador" throughout. `cargo xtask i18n-report` counts 2,936 of 2,939 strings for pt-BR (1,933 before); only the Control panel's `IT`, `VA` and `Y:` captions stay English, as in every language. No readiness percentage change.
 - **2026-11-03** · `type.char` says when the font it applies isn't available (#2189): it returns `{"warnings": ["Missing font: Courier Prime (using Source Sans 3)"]}`, or `Missing font style: …` for a style the family doesn't have, in preflight's words. The font is still applied, as before, so Find Font and preflight list it. A script that asked for a font the machine doesn't have exported in the substitute with no word about it. No readiness percentage change.
 - **2026-11-02** · Packaged PDFs report their export warnings in the package result and Instructions.txt, and soft drop shadows and feathers in them are tested. Frame and text-range hyperlinks keep their source bounds when the frame is rasterized, including inside groups. No readiness percentage change.
 - **2026-11-01** · Parent page resizing (#1620): Properties, the Page Tool Control panel and on-page handles resize the selected parent page independently of document pages. Stable parent IDs, repeated resizing, anchors and liquid rules are preserved on the current command modules. Inline parent margin editing targets only the selected parent page and preserves opposite-page margins and document overrides; document commands retain their first-page default before the canvas is initialized. No readiness percentage change.
