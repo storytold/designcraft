@@ -548,6 +548,9 @@ impl Story {
     /// [`Story::format_chars`] over many ranges in one pass: `pieces` ascend and don't overlap, and
     /// `f` gets each piece's own value. Splitting and merging the runs happens once, not per range.
     pub fn format_pieces<T>(&mut self, pieces: &[(std::ops::Range<usize>, T)], mut f: impl FnMut(&mut CharFormat, &T)) {
+        // Each piece's ends floor to character boundaries, as in `format_chars`, so no run splits a char.
+        let pieces: Vec<(std::ops::Range<usize>, &T)> =
+            pieces.iter().map(|(p, v)| (floor_char_boundary(&self.text, p.start)..floor_char_boundary(&self.text, p.end), v)).collect();
         let mut out: Vec<CharRun> = Vec::with_capacity(self.chars.len() + pieces.len());
         let (mut j, mut start) = (0, 0);
         for r in std::mem::take(&mut self.chars) {
@@ -928,5 +931,19 @@ last");
         }
         b.format_pieces(&pieces, |f, v| f.style = format!("S{v}"));
         assert_eq!(a.chars, b.chars);
+    }
+
+    /// A piece that ends inside a multi-byte char floors to its boundary, like `format_chars`.
+    #[test]
+    fn format_pieces_floors_to_char_boundaries() {
+        let mut a = st("é");
+        let mut b = a.clone();
+        a.format_chars(1..2, |f| f.style = "X".into());
+        b.format_pieces(&[(1..2, ())], |f, ()| f.style = "X".into());
+        assert_eq!(a.chars, b.chars);
+        assert!(b.check().is_ok(), "{:?}", b.check());
+        let mut c = st("aé");
+        c.format_pieces(&[(0..2, ())], |f, ()| f.style = "X".into());
+        assert!(c.check().is_ok(), "{:?}", c.check());
     }
 }

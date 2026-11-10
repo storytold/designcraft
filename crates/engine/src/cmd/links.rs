@@ -300,15 +300,29 @@ struct Shown<'a> {
 /// Where an asset shows: frames on spreads (see [`uses`]) and anchored or inline objects, whose
 /// page and position come from the frame their story lays them out in.
 fn shown<'a>(d: &'a Document, cache: &Cache, aid: AssetId) -> Vec<Shown<'a>> {
+    // Pre-order over `root` and its descendants with an explicit stack (a deep group tree must not
+    // exhaust the call stack); `visit` gets each item and its parent's transform.
+    fn preorder<'a>(root: &'a Item, xf: Affine, mut visit: impl FnMut(&'a Item, Affine)) {
+        visit(root, xf);
+        let mut stack = vec![(root.children().iter(), xf * root.xf)];
+        while let Some((kids, xf)) = stack.last_mut() {
+            let Some(it) = kids.next() else {
+                stack.pop();
+                continue;
+            };
+            let xf = *xf;
+            visit(it, xf);
+            stack.push((it.children().iter(), xf * it.xf));
+        }
+    }
     fn walk<'a>(it: &'a Item, xf: Affine, aid: AssetId, page: Option<usize>, out: &mut Vec<Shown<'a>>) {
-        if let Content::Graphic(g) = &it.content
-            && g.asset == aid
-        {
-            out.push(Shown { item: it, page, parent_xf: xf });
-        }
-        for c in it.children() {
-            walk(c, xf * it.xf, aid, page, out);
-        }
+        preorder(it, xf, |it, xf| {
+            if let Content::Graphic(g) = &it.content
+                && g.asset == aid
+            {
+                out.push(Shown { item: it, page, parent_xf: xf });
+            }
+        });
     }
     // One walk with the group transforms and the spread's first page carried along; a lookup of each
     // placement (`Document::find`, `page_of_item`) searched the whole document per placement.
@@ -324,25 +338,16 @@ fn shown<'a>(d: &'a Document, cache: &Cache, aid: AssetId) -> Vec<Shown<'a>> {
             }
             SpreadRef::Parent(_) => None,
         };
-        fn graphics<'a>(
-            items: &'a [Arc<Item>],
-            xf: Affine,
-            aid: AssetId,
-            sp: &designcraft_doc::Spread,
-            first: Option<usize>,
-            out: &mut Vec<Shown<'a>>,
-        ) {
-            for it in items {
+        for top in &sp.items {
+            preorder(top, Affine::IDENTITY, |it, xf| {
                 if let Content::Graphic(g) = &it.content
                     && g.asset == aid
                 {
                     let page = first.map(|f| f + sp.page_at_x(it.bounds().center().x).unwrap_or(0));
                     out.push(Shown { item: it, page, parent_xf: xf });
                 }
-                graphics(it.children(), xf * it.xf, aid, sp, first, out);
-            }
+            });
         }
-        graphics(&sp.items, Affine::IDENTITY, aid, sp, first, &mut out);
     }
     for st in d.stories.values() {
         let mut composed = None;
