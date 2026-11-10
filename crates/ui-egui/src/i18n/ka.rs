@@ -1807,7 +1807,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Edit/Spelling", "რედაქტირება/მართლწერა"),
     ("Edit/Transparency Blend Space", "რედაქტირება/გამჭვირვალობის შერევის ფერთა სივრცე"),
     ("Edit/Transparency Flattener Presets", "რედაქტირება/გამჭვირვალობის გაბრტყელების პრესეტები"),
-    ("File/Export", "ფაილი/ექსპორტი"),
+    ("File/Export", "ფაილი/ექსპორტირება"),
     ("Layout/Index", "განლაგება/ინდექსი"),
     ("Layout/Pages", "განლაგება/გვერდები"),
     ("Object/Anchored Object", "ობიექტი/მიმაგრებული ობიექტი"),
