@@ -383,6 +383,8 @@ impl<'a> Ex<'a> {
         }
     }
 
+    /// Writes the paragraph's hyphenation, justification and spacing limits, keep options and
+    /// paragraph start position.
     fn para_flow_attrs(&self, el: &mut El, a: &ParaAttrs) {
         b!(a, el, hyphenate, "Hyphenation");
         n!(a, el, hyph_min_word, "HyphenateWordsLongerThan");

@@ -1093,6 +1093,8 @@ enum TableParagraphResult {
     Overset,
 }
 
+/// Places the table anchored in `paragraph`, moving it to the next column first when a keep
+/// (Keep with Next, or the next paragraph's Keep with Previous) couldn't be met where it was.
 fn place_table_paragraph(input: TableParagraphInput<'_>) -> TableParagraphResult {
     let TableParagraphInput {
         doc,
@@ -2674,6 +2676,7 @@ fn finish_paragraph(input: ParagraphFinishInput<'_>) -> ParagraphFinish {
     ParagraphFinish::Done(ends_split)
 }
 
+/// [`compose`] with an explicit font database, so tests can compose with their own fonts.
 fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &ComposeOptions, db: &FontDb) -> ComposedStory {
     let db = &db.scoped(doc.font_scope);
     let mut out = ComposedStory { story: story.id, rev: story.rev, text_len: story.text.len(), ..Default::default() };

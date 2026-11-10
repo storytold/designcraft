@@ -170,6 +170,8 @@ impl<'r> Importer<'r> {
         a
     }
 
+    /// Reads a paragraph's formatting from its IDML attributes, such as alignment, hyphenation and
+    /// keep options. Attributes it doesn't know are left unset.
     pub(super) fn para_attrs(&mut self, e: &El) -> ParaAttrs {
         let mut a = ParaAttrs::default();
         let u = |k: &str| e.num(k).map(|v| v.max(0.0) as u32);
