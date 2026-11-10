@@ -325,6 +325,27 @@ fn flattener_rasterises_spreads_with_transparency() {
 }
 
 #[test]
+fn hard_drop_shadows_export_as_vectors() {
+    // A shadowed title (as Scribus' text shadow imports) stays text in the PDF; a blurred
+    // shadow, or a hard one on a picture (whose silhouette is its pixels), is an image.
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    let t =
+        s.execute("frame.create", &json!({"rect": [36, 36, 300, 100], "content": "text", "text": "Spine", "caret": false})).unwrap()["id"].clone();
+    s.execute("object.dropShadow", &json!({"ids": [t], "on": true, "size": 0, "distance": 1.5})).unwrap();
+    let (_, n) = super::rasterize_effects(&s.doc().unwrap().doc, &s.cache, &Default::default());
+    assert_eq!(n, 0);
+    let png = designcraft_render::Rendered { width: 4, height: 4, pixels: vec![90; 4 * 4 * 4] }.to_png();
+    let g = s.execute("frame.create", &json!({"rect": [300, 400, 400, 500]})).unwrap()["id"].as_u64().unwrap();
+    s.execute("file.place", &json!({"base64": crate::cmd::file::base64_encode(&png), "name": "a.png", "frame": g})).unwrap();
+    s.execute("object.dropShadow", &json!({"ids": [g], "on": true, "size": 0})).unwrap();
+    let b = s.execute("frame.create", &json!({"rect": [100, 400, 200, 500]})).unwrap()["id"].clone();
+    s.execute("object.dropShadow", &json!({"ids": [b], "on": true, "size": 4})).unwrap();
+    let (_, n) = super::rasterize_effects(&s.doc().unwrap().doc, &s.cache, &Default::default());
+    assert_eq!(n, 2);
+}
+
+#[test]
 fn objects_with_soft_effects_keep_their_text_wrap_in_pdf() {
     let mut s = Session::new();
     s.execute("file.new", &json!({})).unwrap();

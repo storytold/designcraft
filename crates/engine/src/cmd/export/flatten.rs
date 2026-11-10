@@ -126,10 +126,17 @@ pub(super) fn threaded(d: &designcraft_doc::Document, it: &designcraft_doc::Item
     it.text_frame().and_then(|t| d.story(t.story)).is_some_and(|st| st.frames.len() > 1)
 }
 
-/// Soft effects other than the gradient feather (which PDF export draws itself).
+/// Soft effects other than the gradient feather and hard drop shadows (which PDF export draws
+/// itself).
 fn raster_effects(it: &designcraft_doc::Item) -> bool {
     let e = &it.effects;
-    e.drop_shadow.on
+    // A drop shadow without blur is an offset copy of the shape, or of the text of a frame
+    // without a fill; an image's or a group's silhouette is what it paints, so those stay images.
+    let hard_shadow = e.drop_shadow.size <= 0.0
+        && !matches!(it.content, designcraft_doc::Content::Graphic(_))
+        && !it.has_nested_items()
+        && it.children().is_empty();
+    (e.drop_shadow.on && !hard_shadow)
         || e.feather > 0.0
         || e.inner_shadow.on
         || e.outer_glow.on

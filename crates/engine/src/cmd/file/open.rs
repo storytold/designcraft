@@ -89,8 +89,11 @@ fn open_path(s: &mut Session, p: &Value) -> Result<Value> {
         if designcraft_idml::is_idml(&bytes) || (!native && (crate::cmd::interchange::is_indd(path, &bytes) || ext == "idml")) {
             return crate::cmd::interchange::open_idml(s, p);
         }
+        if !native && (crate::cmd::scribus::is_sla(&bytes) || ext == designcraft_sla::EXTENSION) {
+            return crate::cmd::scribus::open_sla(s, p);
+        }
         if !native && ext != designcraft_format::EXTENSION {
-            return Err(bad("file.open", format!("{path}: not a DesignCraft or IDML file")));
+            return Err(bad("file.open", format!("{path}: not a DesignCraft, IDML or Scribus file")));
         }
         let (mut d, mut warnings) = load_bytes(&bytes)?;
         crate::cmd::interchange::resolve_packaged_links(&mut d, Some(std::path::Path::new(path)));
@@ -158,6 +161,9 @@ pub(super) fn file_open_bytes(s: &mut Session, p: &Value) -> Result<Value> {
     // signature (or their name).
     if designcraft_idml::is_idml(&b) || crate::cmd::interchange::is_indd(str_param(p, "name").unwrap_or_default(), &b) {
         return crate::cmd::interchange::open_idml(s, p);
+    }
+    if crate::cmd::scribus::is_sla(&b) {
+        return crate::cmd::scribus::open_sla(s, p);
     }
     let (mut d, warnings) = load_bytes(&b)?;
     crate::cmd::datamerge::resolve_sources_on_open(&mut d, None);
