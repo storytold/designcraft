@@ -1117,7 +1117,7 @@ dependencies = [
 [[package]]
 name = "craft-proof"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=02bb05a088ac9eb4b0c768150913a5412e964d5a#02bb05a088ac9eb4b0c768150913a5412e964d5a"
+source = "git+https://github.com/storytold/craft-libs?rev=7e0a381477a304f77417da16e8a5ff7dfcef3082#7e0a381477a304f77417da16e8a5ff7dfcef3082"
 dependencies = [
  "log",
  "miniz_oxide 0.9.1",
@@ -1149,7 +1149,7 @@ dependencies = [
 [[package]]
 name = "craft-update"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=c5a1cbfb5f9049f9270955caffb5bee5997aebf7#c5a1cbfb5f9049f9270955caffb5bee5997aebf7"
+source = "git+https://github.com/storytold/craft-libs?rev=1b34eba41e62138fc2438d2734523b302840b45d#1b34eba41e62138fc2438d2734523b302840b45d"
 dependencies = [
  "chrono",
  "dunce",
@@ -7959,7 +7959,6 @@ dependencies = [
  "nix",
  "typed-path",
  "windows-sys 0.61.2",
- "zopfli",
 ]
 
 [[package]]

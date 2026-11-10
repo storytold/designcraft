@@ -435,13 +435,10 @@ pub struct Session {
     /// New Document's Preview: the preview document's uid and the uid of the document that was
     /// active before it (see [`Session::preview_new_document`]).
     pub(crate) new_document_preview: Option<(u64, Option<u64>)>,
-    /// Linked text files checked by the Links panel: path → the size and modification time the
-    /// file had and the hash of its contents then, so a file touched but not changed is read once.
-    pub(crate) text_link_checks: std::collections::HashMap<String, (designcraft_doc::Fingerprint, String)>,
-    /// Linked images checked against their files this session (`links.list` polls twice a second):
-    /// a file of the recorded size and time isn't read again.
-    pub(crate) image_link_checks:
-        std::collections::HashMap<(designcraft_doc::AssetId, usize, std::path::PathBuf), (designcraft_doc::Fingerprint, bool)>,
+    /// Linked text files and images checked against their files this session (`links.list` is
+    /// polled): a file of the recorded size and time isn't read again, and one touched but not
+    /// changed is read once.
+    pub(crate) link_checks: cmd::LinkListChecks,
 }
 
 impl Default for Session {
@@ -473,8 +470,7 @@ impl Session {
             clipboard_origin: 0.0,
             recovery_dir: None,
             text_clipboard: None,
-            text_link_checks: Default::default(),
-            image_link_checks: Default::default(),
+            link_checks: Default::default(),
             ui_requests: vec![],
             loaded: None,
             transforms: Default::default(),

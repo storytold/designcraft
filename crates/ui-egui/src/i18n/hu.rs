@@ -1940,6 +1940,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("⌥-click clears overrides", "⌥-kattintás törli a felülírásokat"),
     ("▲ Modified", "▲ Módosítva"),
     ("⚠ Missing", "⚠ Hiányzik"),
+    ("Checking", "Ellenőrzés"),
+    ("Link status is unavailable.", "A csatolások állapota nem érhető el."),
     ("⚠ out of date", "⚠ elavult"),
     ("Selection Tool", "Kijelölő eszköz"),
     ("Direct Selection Tool", "Közvetlen kijelölő eszköz"),
