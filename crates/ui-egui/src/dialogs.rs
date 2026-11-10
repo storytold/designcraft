@@ -3287,7 +3287,9 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                                     Ok(_) => crate::i18n::tr(&app.ui.language, "Found").to_string(),
                                     Err(e) => e,
                                 };
-                                if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Find Next"))).clicked() {
+                                // Enter is Find Next, as in InDesign, never the dialog's OK (Change All).
+                                let enter = !popup_open && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+                                if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Find Next"))).clicked() || enter {
                                     let r = app.run("find.next", params());
                                     let msg = next_status(app, r);
                                     d.fields.insert("status".into(), json!(msg));

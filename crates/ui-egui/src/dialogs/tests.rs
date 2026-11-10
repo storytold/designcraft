@@ -2193,14 +2193,6 @@ fn scope_confirm_case(action: &str) {
     scope_control(&mut app, &ctx, "ui.dialog.set", json!({"field": "change", "value": "blue"}));
     match action {
         "OK" => scope_click(&mut app, &ctx, screen, "OK"),
-        "Enter" => {
-            dialog_frame(
-                &mut app,
-                &ctx,
-                screen,
-                vec![egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }],
-            );
-        }
         "control" => {
             assert_eq!(scope_control(&mut app, &ctx, "ui.dialog.confirm", json!({}))["count"], 2);
         }
@@ -2218,9 +2210,17 @@ fn find_scope_dialog_ok_consumes_retained_bounds() {
     scope_confirm_case("OK");
 }
 
+/// Enter is Find Next within the retained bounds: the dialog stays and nothing changes.
 #[test]
-fn find_scope_dialog_enter_consumes_retained_bounds() {
-    scope_confirm_case("Enter");
+fn find_scope_dialog_enter_finds_next_within_retained_bounds() {
+    let (mut app, ctx, screen, sid) = scope_dialog();
+    scope_click(&mut app, &ctx, screen, "Find Next");
+    scope_selected(&app, sid, 0, 3);
+    let enter = egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+    dialog_frame(&mut app, &ctx, screen, vec![enter]);
+    assert!(app.ui.dialog.is_some());
+    scope_selected(&app, sid, 4, 7);
+    assert_eq!(app.session.doc().unwrap().doc.story(sid).unwrap().text, "red red | red");
 }
 
 #[test]
@@ -5052,4 +5052,23 @@ fn find_next_brings_the_text_it_found_into_view() {
     let hit = app.run("find.next", json!({"find": "zebra", "scope": "document"})).unwrap();
     assert_eq!(hit["start"], 0);
     assert_eq!(spread(&app), Some(designcraft_doc::SpreadRef::Doc(4)), "the view went to the page with the match");
+}
+
+#[test]
+fn enter_in_find_change_finds_the_next_match_and_changes_nothing() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let sid = app.run("frame.create", json!({"rect": [36, 36, 300, 200], "content": "text", "text": "red and red"})).unwrap()["story"].clone();
+    app.run("selection.set", json!({"ids": []})).unwrap();
+    app.run("app.findChange", json!({})).unwrap();
+    app.ui.dialog.as_mut().unwrap().fields.insert("find".into(), json!("red"));
+    let ctx = dialog_context("en");
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1178.0, 814.0));
+    dialog_frame(&mut app, &ctx, screen, vec![]);
+    let enter = egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+    dialog_frame(&mut app, &ctx, screen, vec![enter]);
+    assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some("findChange"), "the dialog stays open");
+    let st = app.session.doc().unwrap();
+    assert_eq!(st.doc.story(designcraft_doc::StoryId(sid.as_u64().unwrap())).unwrap().text, "red and red", "nothing changed");
+    assert_eq!(st.selection.text.map(|t| t.range()), Some(0..3), "the first match is selected");
 }
