@@ -769,8 +769,7 @@ fn kp_pass(input: PassInput<'_>) -> Option<Vec<Break>> {
                     // With a mojikumi table, the characters take up only what the table allows (the
                     // tiers above rate that), so the rating is for text set without one.
                     let line = &line[line.iter().take_while(|g| g.is_justify_space()).count()..];
-                    line.iter().any(|g| is_cjk(g.ch))
-                        && !line.iter().any(|g| is_hangul(g.ch) || g.is_justify_space() || g.moji.active)
+                    line.iter().any(|g| is_cjk(g.ch)) && !line.iter().any(|g| is_hangul(g.ch) || g.is_justify_space() || g.moji.active)
                 })
             {
                 // Rate the line by the space it leaves, so the composer prefers fuller lines: without
