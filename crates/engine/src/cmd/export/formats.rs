@@ -162,8 +162,11 @@ fn page_text(d: &designcraft_doc::Document, cache: &designcraft_compose::Cache, 
             if d.page_of_item(ft.frame) != Some(abs) {
                 continue;
             }
-            // A frame that is hidden, or on a hidden layer, isn't on the rendered page.
-            if d.item(ft.frame).is_some_and(|it| it.hidden || d.layers.iter().any(|l| !l.visible && l.id == it.layer)) {
+            // Pages render printing-only: a hidden or nonprinting frame, or one on a hidden or
+            // non-printable layer, isn't on the rendered page.
+            if d.item(ft.frame)
+                .is_some_and(|it| it.hidden || it.nonprinting || d.layers.iter().any(|l| (!l.visible || !l.printable) && l.id == it.layer))
+            {
                 continue;
             }
             for l in &ft.lines {
