@@ -538,13 +538,15 @@ pub fn show(app: &mut DesignApp, ui: &mut Ui) {
     ui.spacing_mut().item_spacing.y = 4.0;
     ui.horizontal(|ui| {
         let count = crate::i18n::count_label(&app.ui.language, if doc.layers.len() == 1 { "layer" } else { "layers" }, doc.layers.len());
-        let caption = if let Some(parent) = spread.and_then(|sp| sp.parent.as_ref()) {
-            format!("{}, {count}", parent.label())
-        } else if let SpreadRef::Doc(si) = spread_ref {
-            let page = app.session.page_label(doc.first_page_of_spread(si) + page_in_spread);
-            format!("{}: {page}, {count}", crate::i18n::tr(&app.ui.language, "Page"))
-        } else {
-            count
+        let caption = match spread_ref {
+            SpreadRef::Doc(si) => {
+                let page = app.session.page_label(doc.first_page_of_spread(si) + page_in_spread);
+                format!("{}: {page}, {count}", crate::i18n::tr(&app.ui.language, "Page"))
+            }
+            SpreadRef::Parent(_) => match spread.and_then(|sp| sp.parent.as_ref()) {
+                Some(parent) => format!("{}, {count}", parent.label()),
+                None => count,
+            },
         };
         ui.label(egui::RichText::new(caption).size(11.0).color(t.text_dim));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
