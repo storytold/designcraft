@@ -63,9 +63,8 @@ fn double_clicking_a_parent_shows_that_parent() {
     }
     // Parent rows show a rendered thumbnail.
     let id = st.doc.parents[2].id;
-    let rev = (st.uid, st.revision);
     let thumbs = super::THUMBS.lock().unwrap();
-    assert!(thumbs.as_ref().unwrap().keys().any(|k| (k.0, k.1) == rev && k.2 == super::ThumbOf::Parent(id)));
+    assert!(thumbs.as_ref().unwrap().keys().any(|k| (k.0, k.1) == (st.uid, super::ThumbOf::Parent(id))));
 }
 
 fn harness(app: DesignApp) -> Harness<'static, DesignApp> {
@@ -321,7 +320,7 @@ fn parent_thumbnails_follow_panel_options() {
         let id = st.doc.parents[0].id;
         let thumbs = super::THUMBS.lock().unwrap();
         let keys = thumbs.as_ref().map(|m| m.keys().copied().collect::<Vec<_>>()).unwrap_or_default();
-        keys.into_iter().filter(|k| k.0 == st.uid && k.2 == super::ThumbOf::Parent(id)).map(|k| k.3).collect::<Vec<_>>()
+        keys.into_iter().filter(|k| k.0 == st.uid && k.1 == super::ThumbOf::Parent(id)).map(|k| k.2).collect::<Vec<_>>()
     };
     assert_eq!(parent_thumb_heights(true), vec![IconSize::Large.row_h() as u32 - 5]);
     assert_eq!(parent_thumb_heights(false), Vec::<u32>::new());

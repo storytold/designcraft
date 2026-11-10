@@ -35,10 +35,12 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     }
     let Some(st) = app.session.active() else { return };
     let t = Tokens::get(ui.ctx());
-    // The list checks files on disk: refresh it at most twice a second.
+    // The list checks files on disk: refresh it at most twice a second. Key the cache on the
+    // document's content (its allocation), not the state revision — a selection-only change
+    // leaves every link on disk untouched.
     let key = egui::Id::unique("links_panel");
     let now = ui.input(|i| i.time);
-    let rev = (st.uid, st.revision);
+    let rev = (st.uid, std::sync::Arc::as_ptr(&st.doc) as u64);
     let cached: Option<(f64, (u64, u64), Vec<Value>)> = ui.data(|d| d.get_temp(key));
     let rows = match cached {
         Some((at, r, rows)) if r == rev && now - at < 0.5 => rows,

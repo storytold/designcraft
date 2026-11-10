@@ -1,8 +1,8 @@
 //! View › Separations Preview on the canvas: each visible spread exported as Export PDF prints
 //! it and separated into plates (`designcraft_engine::separations`), drawn over the spread.
 //!
-//! Sheets are kept per spread, keyed by document revision, resolution, print settings and color
-//! settings (the CMYK working space is the printing condition plates are separated for), so
+//! Sheets are kept per spread, keyed by document content version, resolution, print settings and
+//! color settings (the CMYK working space is the printing condition plates are separated for), so
 //! panning and redrawing reuse them. Separating runs on a background thread (native); while it
 //! runs the previous sheet of that spread stays on screen. On the web it runs on the UI thread
 //! at a lower resolution.
@@ -205,7 +205,7 @@ impl Preview {
         self.insert(done.key, done.sheet.map(Arc::new));
     }
 
-    /// The newest sheet of spread `si` (it may be of an earlier revision while the current one
+    /// The newest sheet of spread `si` (it may be of an earlier content version while the current one
     /// is being separated).
     pub fn sheet(&self, si: usize) -> Option<&Result<Arc<Sheet>, String>> {
         self.entries.iter().find(|e| e.key.spread == si).map(|e| &e.sheet)
@@ -241,7 +241,10 @@ pub fn dpi_for(zoom: f64, ppp: f64) -> f32 {
 
 fn key(app: &DesignApp, si: usize, dpi: f32) -> Option<(Key, Job)> {
     let st = app.session.active()?;
-    let key = Key { uid: st.uid, revision: st.revision, spread: si, dpi, print: print_settings(app), cms: designcraft_color::cms::generation() };
+    // Content version: the document's own allocation, which a selection-only change leaves
+    // untouched, so plates survive a click instead of being re-separated.
+    let rev = std::sync::Arc::as_ptr(&st.doc) as u64;
+    let key = Key { uid: st.uid, revision: rev, spread: si, dpi, print: print_settings(app), cms: designcraft_color::cms::generation() };
     Some((key.clone(), Job { key, doc: st.doc.clone(), cache: app.session.cache.clone() }))
 }
 
@@ -279,7 +282,7 @@ pub fn current_sheet(app: &mut DesignApp) -> Result<Arc<Sheet>, String> {
 /// preview is off).
 pub fn inspect(app: &DesignApp) -> serde_json::Value {
     let Some(view) = &app.ui.separations else { return serde_json::Value::Null };
-    let revision = app.session.active().map(|st| (st.uid, st.revision));
+    let revision = app.session.active().map(|st| (st.uid, std::sync::Arc::as_ptr(&st.doc) as u64));
     let preview = &app.canvas.separations;
     let sheets: Vec<serde_json::Value> = preview
         .entries
