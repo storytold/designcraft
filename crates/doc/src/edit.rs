@@ -195,6 +195,12 @@ impl Document {
         self.item_mut_at(&loc)
     }
 
+    /// An item wherever it is: on a spread (in a group too), or anchored in a story, also in a
+    /// table cell or a note.
+    pub fn item_any(&self, id: ItemId) -> Option<&Item> {
+        self.item(id).or_else(|| self.anchored_item(id))
+    }
+
     /// The top-level item (group root) containing `id`.
     pub fn top_level_of(&self, id: ItemId) -> Option<ItemId> {
         let loc = self.find(id)?;
