@@ -31,7 +31,7 @@ fn capped(name: impl std::fmt::Display) -> String {
 
 pub(super) fn aliases(font: &skrifa::FontRef<'_>, ids: &[StringId]) -> Vec<String> {
     let mut names: Vec<String> =
-        ids.iter().flat_map(|id| font.localized_strings(*id)).take(256).map(capped).filter(|name| !name.trim().is_empty()).collect();
+        ids.iter().flat_map(|id| font.localized_strings(*id)).take(256).filter(|name| !name.chars().all(char::is_whitespace)).map(capped).collect();
     names.sort();
     names.dedup();
     names
