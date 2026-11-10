@@ -68,7 +68,10 @@ pub fn go_to_item(app: &mut DesignApp, id: designcraft_doc::ItemId) {
     let Some(st) = app.session.active() else { return };
     let Some(loc) = st.doc.find(id) else { return };
     if st.editing_parents && matches!(loc.spread, SpreadRef::Doc(_)) {
-        let _ = app.run("layout.parents.edit", serde_json::json!({"on": false}));
+        // The selection (found text, say) stays.
+        if app.session.edit_parents_keeping_find(false).is_ok() {
+            app.after_engine();
+        }
     }
     let Some(st) = app.session.active() else { return };
     let layout = CanvasLayout::new(&st.doc, st.editing_parents);

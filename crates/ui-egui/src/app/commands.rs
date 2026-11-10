@@ -79,18 +79,15 @@ impl DesignApp {
     }
 
     /// Scroll to the frame Find Next found its text in. A match on a parent page turns parent
-    /// editing on, one on a document page turns it off; the found text stays selected for Change.
+    /// editing on, one on a document page turns it off; the found text stays selected for Change
+    /// and the search keeps its place.
     fn show_found_text(&mut self) {
         let Some(st) = self.session.active() else { return };
         let Some(frame) = st.selection.text.and_then(|t| t.frame) else { return };
         let on_parent = st.doc.find(frame).is_some_and(|l| matches!(l.spread, designcraft_doc::SpreadRef::Parent(_)));
         if st.editing_parents != on_parent {
-            let selection = st.selection.clone();
-            if self.session.execute("layout.parents.edit", &json!({"on": on_parent})).is_ok()
-                && let Ok(st) = self.session.doc_mut()
-            {
-                st.selection = selection;
-                st.bump_revision();
+            if let Err(e) = self.session.edit_parents_keeping_find(on_parent) {
+                self.status(e.to_string());
             }
             self.after_engine();
         }

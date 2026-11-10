@@ -3207,7 +3207,8 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                                 crit["kind"] = json!(d.s("objKind"));
                             }
                             ui.horizontal(|ui| {
-                                if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Find All"))).clicked() {
+                                // Enter is Find All here, the search Object mode has.
+                                if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Find All"))).clicked() || enter {
                                     let n = app.run("find.objects", crit.clone()).ok().and_then(|r| r["ids"].as_array().map(Vec::len)).unwrap_or(0);
                                     d.fields.insert("status".into(), json!(format!("{n} found")));
                                 }

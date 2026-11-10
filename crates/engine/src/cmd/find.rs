@@ -404,7 +404,7 @@ impl FindContext {
         self.uid == st.uid && Weak::ptr_eq(&self.document, &Arc::downgrade(&st.doc)) && self.revision == st.revision && self.selection == st.selection
     }
 
-    fn acknowledge(&mut self, st: &DocState) {
+    pub(crate) fn acknowledge(&mut self, st: &DocState) {
         self.revision = st.revision;
         self.selection = st.selection.clone();
     }

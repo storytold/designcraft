@@ -5109,6 +5109,59 @@ fn find_next_shows_a_match_on_a_parent_page_with_its_selection() {
     assert_eq!(st.selection.text.map(|t| (t.story.0, t.range())), Some((doc_sid, 0..5)));
 }
 
+/// Showing a match on a parent page (or back on a document page) keeps the search's place: each
+/// match is found once, then Find Next reports no more.
+#[test]
+fn find_next_goes_on_after_switching_to_and_from_the_parent_pages() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"pages": 2})).unwrap();
+    app.canvas_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 800.0)));
+    let r = app
+        .run("frame.create", json!({"spread": {"kind": "parent", "index": 0}, "rect": [72, 72, 300, 200], "content": "text", "text": "zebra"}))
+        .unwrap();
+    let parent_sid = r["story"].as_u64().unwrap();
+    app.run("selection.set", json!({"ids": []})).unwrap();
+    let found = |app: &mut DesignApp| {
+        let mut stories = vec![];
+        for _ in 0..4 {
+            if app.run("find.next", json!({"find": "zebra"})).unwrap().is_null() {
+                break;
+            }
+            stories.push(app.session.doc().unwrap().selection.text.unwrap().story.0);
+        }
+        stories
+    };
+    assert_eq!(found(&mut app), vec![parent_sid], "a lone match on a parent page is found once");
+
+    app.run("layout.parents.edit", json!({"on": false})).unwrap();
+    let r = app.run("frame.create", json!({"spread": 0, "rect": [72, 72, 300, 200], "content": "text", "text": "zebra"})).unwrap();
+    let doc_sid = r["story"].as_u64().unwrap();
+    app.run("selection.set", json!({"ids": []})).unwrap();
+    let mut stories = found(&mut app);
+    stories.sort_unstable();
+    let mut both = vec![parent_sid, doc_sid];
+    both.sort_unstable();
+    assert_eq!(stories, both, "matches on a parent and a document page are each found once, then no more");
+}
+
+/// Enter in Object mode runs Find All, the search that mode has.
+#[test]
+fn enter_in_find_change_object_mode_finds_all() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("frame.create", json!({"rect": [36, 36, 200, 200], "content": "text", "text": "a"})).unwrap();
+    app.run("selection.set", json!({"ids": []})).unwrap();
+    app.run("app.findChange", json!({})).unwrap();
+    app.ui.dialog.as_mut().unwrap().fields.insert("objectMode".into(), json!(true));
+    let ctx = dialog_context("en");
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1178.0, 814.0));
+    dialog_frame(&mut app, &ctx, screen, vec![]);
+    let enter = egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+    dialog_frame(&mut app, &ctx, screen, vec![enter]);
+    let d = app.ui.dialog.as_ref().expect("the dialog stays open");
+    assert_eq!(d.s("status"), "1 found");
+}
+
 /// Enter in Find what finds the next match and leaves the field focused, to refine the search.
 #[test]
 fn enter_in_find_what_keeps_the_field_focused() {
