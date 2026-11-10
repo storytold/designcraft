@@ -73,6 +73,24 @@ mod layer_tests {
         assert_eq!(order(&s), [l1, l2]);
     }
 
+    /// New layers take the UI colours in turn. The 37th starts again at Light Blue: it does not
+    /// take White, in which its selection outlines would not show on a white page.
+    #[test]
+    fn new_layers_take_the_ui_colours_in_turn_and_never_white() {
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        for _ in 0..39 {
+            s.execute("layer.new", &json!({})).unwrap();
+        }
+        // A new layer goes on top, so the list read backwards is the order they were made in.
+        let colors: Vec<[u8; 3]> = s.doc().unwrap().doc.layers.iter().rev().map(|l| l.color).collect();
+        assert_eq!(colors.len(), 40);
+        assert_eq!(colors[16], [0, 0, 135], "the 17th layer is Dark Blue");
+        assert_eq!(colors[35], [156, 222, 156], "the 36th is Grid Green");
+        assert_eq!((colors[36], colors[37]), (colors[0], colors[1]), "the 37th starts again at Light Blue");
+        assert!(!colors.contains(&[255, 255, 255]), "{colors:?}");
+    }
+
     #[test]
     fn merge_delete_unused_hide_and_lock_others() {
         let mut s = crate::Session::new();

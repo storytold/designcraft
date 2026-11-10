@@ -585,6 +585,16 @@ pub const LAYER_COLORS: &[(&str, [u8; 3])] = &[
     ("White", [255, 255, 255]),
 ];
 
+/// The colour a layer gets when none is chosen for it: the UI colours in turn, by the number of
+/// layers before it. White is left out of the turn, since a layer's selection outlines are drawn
+/// in its colour and would not show on a white page; it stays in the list to be chosen.
+pub fn auto_layer_color(layers_before: usize) -> [u8; 3] {
+    const WHITE: [u8; 3] = [255, 255, 255];
+    let in_turn = || LAYER_COLORS.iter().map(|(_, c)| *c).filter(|c| *c != WHITE);
+    let count = in_turn().count().max(1);
+    in_turn().nth(layers_before % count).unwrap_or_default()
+}
+
 /// An embedded file (placed image / PDF). Bytes are stored next to the JSON in the native format.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

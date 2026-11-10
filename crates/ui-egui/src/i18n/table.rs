@@ -1742,7 +1742,7 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ),
     ("Vertical Margins:", ["Vertical Margins:", "Marges verticales :", "Vertical Margins:", "Vertical Margins:", "垂直边距："]),
     ("Vertical justification", ["Vertical justification", "Justification verticale", "Vertical justification", "Vertical justification", "垂直对齐"]),
-    ("View Threshold:", ["View Threshold:", "Seuil d'affichage :", "View Threshold:", "View Threshold:", "视图阈值："]),
+    ("View Threshold:", ["View Threshold:", "Seuil d'affichage :", "Umbral de visualización:", "View Threshold:", "视图阈值："]),
     ("View Threshold", ["Anzeigeschwelle", "Seuil d'affichage", "Umbral de visualización", "表示する最小倍率", "视图阈值"]),
     ("Ruler Guides…", ["Linealhilfslinien …", "Repères de règle…", "Guías de regla…", "定規ガイド…", "标尺参考线…"]),
     ("Ruler Guides", ["Linealhilfslinien", "Repères de règle", "Guías de regla", "定規ガイド", "标尺参考线"]),

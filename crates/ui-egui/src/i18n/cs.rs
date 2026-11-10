@@ -491,6 +491,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Vertical Margins:", "Svislé okraje:"),
     ("Vertical justification", "Svislé zarovnání"),
     ("View Threshold:", "Práh zobrazení:"),
+    ("View Threshold", "Práh zobrazení"),
+    ("View Threshold must be a percentage from 5% to 4000%.", "Práh zobrazení musí být hodnota v procentech od 5 % do 4000 %."),
     ("Web", "Web"),
     ("Web Hyperlink", "Webový hypertextový odkaz"),
     ("Weight:", "Tloušťka:"),

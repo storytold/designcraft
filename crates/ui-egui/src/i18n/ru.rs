@@ -494,6 +494,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Vertical Margins:", "Вертикальные поля:"),
     ("Vertical justification", "Вертикальное выравнивание"),
     ("View Threshold:", "Порог просмотра:"),
+    ("View Threshold", "Порог просмотра"),
+    ("View Threshold must be a percentage from 5% to 4000%.", "Порог просмотра должен быть значением в процентах от 5% до 4000%."),
     ("Web", "Веб"),
     ("Web Hyperlink", "Веб-ссылка"),
     ("Weight:", "Толщина:"),

@@ -566,6 +566,17 @@ fn interface_strings() -> HashSet<&'static str> {
     keys
 }
 
+/// Layout › Ruler Guides: the dialog's own strings are translated in every interface language,
+/// the ones with a table of their own included (those never read the shared table).
+#[test]
+fn the_ruler_guides_dialog_is_translated_in_every_language() {
+    for (lang, _) in LANGUAGES.iter().filter(|(code, _)| !code.is_empty()) {
+        for key in ["Ruler Guides…", "Ruler Guides", "View Threshold:", "View Threshold", "View Threshold must be a percentage from 5% to 4000%."] {
+            assert_ne!(tr(lang, key), key, "{lang}: {key}");
+        }
+    }
+}
+
 #[test]
 fn czech_counts_use_the_plural_form_for_the_number() {
     for (noun, [one, few, other]) in cs::PLURALS {

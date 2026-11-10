@@ -1337,6 +1337,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Vertical Margins:", "الهوامش العمودية:"),
     ("Vertical justification", "المحاذاة العمودية"),
     ("View Threshold:", "حد العرض:"),
+    ("View Threshold", "حد العرض"),
+    ("View Threshold must be a percentage from 5% to 4000%.", "يجب أن يكون حد العرض نسبة مئوية من 5% إلى 4000%."),
     ("Web", "ويب"),
     ("Web Hyperlink", "رابط ويب"),
     ("When Scaling", "عند التحجيم"),

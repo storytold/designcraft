@@ -511,6 +511,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Vertical Margins:", "Marginesy pionowe:"),
     ("Vertical justification", "Wyrównanie w pionie"),
     ("View Threshold:", "Próg widoczności:"),
+    ("View Threshold", "Próg widoczności"),
+    ("View Threshold must be a percentage from 5% to 4000%.", "Próg widoczności musi być wartością procentową od 5% do 4000%."),
     ("Web", "Internet"),
     ("Web Hyperlink", "Hiperłącze internetowe"),
     ("Weight:", "Grubość:"),

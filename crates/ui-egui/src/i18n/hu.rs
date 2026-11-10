@@ -1834,6 +1834,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("View", "Nézet"),
     ("View Options", "Nézetbeállítások"),
     ("View Threshold:", "Megjelenítési küszöb:"),
+    ("View Threshold", "Megjelenítési küszöb"),
+    ("View Threshold must be a percentage from 5% to 4000%.", "A megjelenítési küszöbnek 5% és 4000% közötti százalékértéknek kell lennie."),
     ("View/Display Performance", "Nézet/Megjelenítési teljesítmény"),
     ("View/Extras", "Nézet/Kiegészítők"),
     ("View/Grids & Guides", "Nézet/Rácsok és segédvonalak"),

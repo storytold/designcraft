@@ -34,9 +34,9 @@ score below).
 IDML preserves stored page liquid rules and distinguishes liquid guides from ordinary ruler
 guides on document and parent pages. Guide positions, orientation, Fit to Page, lock state and
 layer survive interchange (literal XML and round-trip tests in
-`crates/idml/src/tests/liquid_guides.rs`), and so do each guide's colour (any of the 37 UI colour
-names, or RGB) and view threshold, and those new guides get (`GuidePreference`); tests in
-`crates/idml/src/tests/ruler_guides.rs`. Object liquid pins and resize constraints remain unmapped
+`crates/idml/src/tests/liquid_guides.rs`). Each guide's colour (any of the 37 UI colour names, or
+RGB) and view threshold survive too, and so do the colour and view threshold new guides get, which
+IDML keeps in `GuidePreference` (tests in `crates/idml/src/tests/ruler_guides.rs`). Object liquid pins and resize constraints remain unmapped
 (#872); this is not full liquid-layout interchange support.
 
 ## Output

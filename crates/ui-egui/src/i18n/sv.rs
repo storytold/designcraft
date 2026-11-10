@@ -1134,6 +1134,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Vertical Margins:", "Vertikala marginaler:"),
     ("Vertical justification", "Vertikal justering"),
     ("View Threshold:", "Visningströskel:"),
+    ("View Threshold", "Visningströskel"),
+    ("View Threshold must be a percentage from 5% to 4000%.", "Visningströskeln måste vara ett procentvärde från 5 % till 4000 %."),
     ("Web", "Webb"),
     ("Web Hyperlink", "Webbhyperlänk"),
     ("When Scaling", "Vid skalning"),

@@ -535,6 +535,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Vertical Margins:", "ვერტიკალური ველები:"),
     ("Vertical justification", "ვერტიკალური სწორება"),
     ("View Threshold:", "ხილვადობის ზღვარი:"),
+    ("View Threshold", "ხილვადობის ზღვარი"),
+    ("View Threshold must be a percentage from 5% to 4000%.", "ხილვადობის ზღვარი უნდა იყოს პროცენტული მნიშვნელობა 5%-დან 4000%-მდე."),
     ("Web", "ვები"),
     ("Web Hyperlink", "ვებბმული"),
     ("Weight:", "სისქე:"),

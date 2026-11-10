@@ -212,3 +212,34 @@ fn every_ui_colour_name_round_trips() {
         .collect();
     assert_eq!(written, UI_COLORS);
 }
+
+/// Layers without a `LayerColor`, or with a name that isn't a UI colour, take the UI colours in
+/// turn and never White: a layer's selection outlines are drawn in its colour.
+#[test]
+fn layers_without_a_colour_take_the_ui_colours_in_turn_and_never_white() {
+    let layers: String = (0..38)
+        .map(|i| {
+            let color = if i == 37 { named("LayerColor", "Chartreuse") } else { String::new() };
+            format!(r#"<Layer Self="L{i}" Name="Layer {i}" Visible="true" Locked="false">{color}</Layer>"#)
+        })
+        .collect();
+    let map = format!(
+        r#"<Document xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging" Self="d">
+  <idPkg:Preferences src="Resources/Preferences.xml"/>
+  {layers}
+  <idPkg:Spread src="Spreads/S.xml"/>
+</Document>"#
+    );
+    let prefs = r#"<Preferences><DocumentPreference PageWidth="500" PageHeight="700" FacingPages="false"/></Preferences>"#;
+    let spread = r#"<idPkg:Spread xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging">
+<Spread Self="s" PageCount="1"><Page Self="p" GeometricBounds="0 0 700 500" ItemTransform="1 0 0 1 0 -350"/></Spread>
+</idPkg:Spread>"#;
+    let d = import_idml(&zip_files(&[("designmap.xml", &map), ("Resources/Preferences.xml", prefs), ("Spreads/S.xml", spread)])).unwrap();
+    let colors: Vec<[u8; 3]> = d.layers.iter().map(|l| l.color).collect();
+    let count = |rgb: [u8; 3]| colors.iter().filter(|c| **c == rgb).count();
+    assert_eq!(colors.len(), 38);
+    assert_eq!(count([255, 255, 255]), 0, "no layer is White: {colors:?}");
+    // The 37th and 38th start again at Light Blue and Red; every other colour is used once.
+    assert_eq!((count([43, 155, 255]), count([255, 0, 0])), (2, 2));
+    assert_eq!((count([0, 0, 135]), count([156, 222, 156])), (1, 1), "Dark Blue and Grid Green");
+}

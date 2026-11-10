@@ -496,8 +496,8 @@ impl<'r> Importer<'r> {
                     let v: Vec<f64> = c.find_all("ListItem").filter_map(|i| i.text_content().trim().parse().ok()).collect();
                     if v.len() == 3 { [v[0] as u8, v[1] as u8, v[2] as u8] } else { LAYER_COLORS[0].1 }
                 }
-                Some(c) => names::layer_color_in(c.text_content().trim()).unwrap_or(LAYER_COLORS[self.layers.len() % LAYER_COLORS.len()].1),
-                None => LAYER_COLORS[self.layers.len() % LAYER_COLORS.len()].1,
+                Some(c) => names::layer_color_in(c.text_content().trim()).unwrap_or(designcraft_doc::auto_layer_color(self.layers.len())),
+                None => designcraft_doc::auto_layer_color(self.layers.len()),
             };
             self.layers.push(Layer {
                 id,
