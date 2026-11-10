@@ -525,11 +525,8 @@ fn pass_spacing(cx: &ToolContext, req: &SnapRequest<'_>, axis: Axis, tol: f64) -
         return None;
     }
     let mover = interval_on(req.rect, axis)?;
-    let boxes = spacing_intervals(cx, req, axis, &mover);
     // Every box is compared with every other (quadratic on each pointer move): none past the cap.
-    if boxes.len() > MAX_SPACING_BOXES {
-        return None;
-    }
+    let boxes = spacing_intervals(cx, req, axis, &mover)?;
     let stationary = stationary_gaps(&boxes);
     let low = nearest_side(&mover, &boxes, None, true);
     let high = nearest_side(&mover, &boxes, None, false);
@@ -565,18 +562,22 @@ fn pass_spacing(cx: &ToolContext, req: &SnapRequest<'_>, axis: Axis, tol: f64) -
 
 /// Top-level visible boxes that overlap `mover` on the other axis.
 ///
-/// The moving rect is not one of them. Parents are not walked.
-fn spacing_intervals(cx: &ToolContext, req: &SnapRequest<'_>, axis: Axis, mover: &Interval) -> Vec<Interval> {
+/// The moving rect is not one of them. Parents are not walked. `None` as soon as there would be
+/// more than [`MAX_SPACING_BOXES`], before any more are collected.
+fn spacing_intervals(cx: &ToolContext, req: &SnapRequest<'_>, axis: Axis, mover: &Interval) -> Option<Vec<Interval>> {
     let mut out = Vec::new();
-    let Some(sp) = cx.doc.spread(req.spread) else { return out };
+    let Some(sp) = cx.doc.spread(req.spread) else { return Some(out) };
     for item in &sp.items {
         let Some(rect) = item_target_rect(cx.selection, req, item) else { continue };
         let Some(span) = interval_on(rect, axis) else { continue };
         if ranges_overlap(mover.perp_lo, mover.perp_hi, span.perp_lo, span.perp_hi) {
+            if out.len() == MAX_SPACING_BOXES {
+                return None;
+            }
             out.push(span);
         }
     }
-    out
+    Some(out)
 }
 
 /// Most boxes on the mover's band that smart spacing compares; a spread with more has no spacing guides.

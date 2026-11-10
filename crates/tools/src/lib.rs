@@ -320,20 +320,26 @@ impl ToolContext<'_> {
     fn selected_with_canvas_xf(&self) -> Vec<(&Item, Affine)> {
         let mut want: std::collections::HashSet<ItemId> = self.selection.items.iter().copied().collect();
         let mut found: std::collections::HashMap<ItemId, (&Item, Affine)> = std::collections::HashMap::new();
+        // Pre-order with an explicit stack: a deep group tree must not exhaust the call stack.
         fn walk<'a>(
             items: &'a [std::sync::Arc<Item>],
-            xf: Affine,
             want: &mut std::collections::HashSet<ItemId>,
             found: &mut std::collections::HashMap<ItemId, (&'a Item, Affine)>,
         ) {
-            for it in items {
+            let mut stack = vec![(items.iter(), Affine::IDENTITY)];
+            while let Some((kids, xf)) = stack.last_mut() {
                 if want.is_empty() {
                     return;
                 }
+                let Some(it) = kids.next() else {
+                    stack.pop();
+                    continue;
+                };
+                let xf = *xf;
                 if want.remove(&it.id) {
                     found.insert(it.id, (it, xf));
                 }
-                walk(it.children(), xf * it.xf, want, found);
+                stack.push((it.children().iter(), xf * it.xf));
             }
         }
         for r in self.doc.spread_refs() {
@@ -342,7 +348,7 @@ impl ToolContext<'_> {
             }
             if let Some(sp) = self.doc.spread(r) {
                 let mut here = std::collections::HashMap::new();
-                walk(&sp.items, Affine::IDENTITY, &mut want, &mut here);
+                walk(&sp.items, &mut want, &mut here);
                 if !here.is_empty() {
                     let canvas = self.layout.xf(r);
                     found.extend(here.into_iter().map(|(id, (it, xf))| (id, (it, canvas * xf))));
