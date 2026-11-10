@@ -164,21 +164,23 @@ fn item_at(app: &DesignApp, p: Point, zoom: f64) -> Option<(designcraft_doc::Ite
     let tol = 4.0 / zoom.max(1e-6);
     let id = match sr {
         SpreadRef::Doc(si) => st.doc.hit_item(si, sp, tol)?,
-        _ => st.doc.spread(sr)?.items.iter().rev().find(|it| !it.locked && designcraft_doc::edit_hit(it, sp, tol))?.id,
+        SpreadRef::Parent(_) => st.doc.hit_parent_item(sr, sp, tol)?,
     };
     Some((id, sp))
 }
 
-/// The empty or graphic frame under a pointer over the canvas: a graphic dropped there fills it
-/// instead of becoming a new object. `None` when the pointer isn't over the canvas or over such a
-/// frame, and for a locked frame, which a drop never replaces.
+/// The frame under a pointer over the canvas that takes a graphic (empty, holding a graphic, or
+/// holding only graphics pasted into it): a graphic dropped there fills it instead of becoming a
+/// new object. `None` when the pointer isn't over the canvas or over such a frame, for a locked
+/// frame, which a drop never replaces, and for a line or any path that encloses no area, which
+/// would become a zero-height image frame (#2290), as the place cursor skips them.
 pub fn drop_frame(app: &DesignApp, screen: Option<Pos2>) -> Option<designcraft_doc::ItemId> {
     let rect = app.canvas_rect?;
     let pos = screen.filter(|p| rect.contains(*p))?;
     let v = app.view()?;
     let (id, _) = item_at(app, Xf::new(rect, v).to_canvas(pos), v.zoom)?;
     let it = app.session.active()?.doc.item(id)?;
-    (!it.locked && matches!(it.content, designcraft_doc::Content::Unassigned | designcraft_doc::Content::Graphic(_))).then_some(id)
+    (!it.locked && it.path.encloses_area() && it.takes_graphic()).then_some(id)
 }
 
 /// Wheel, pinch and Alt/Ctrl/Cmd + wheel over the canvas: zoom at the pointer, else scroll.

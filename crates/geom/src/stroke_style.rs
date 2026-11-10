@@ -38,7 +38,7 @@ fn offset_subpath(bp: &BezPath, d: f64, tol: f64, out: &mut BezPath) {
             PathSeg::Quad(q) => q.raise(),
             PathSeg::Cubic(c) => c,
         };
-        if (c.p3 - c.p0).hypot() < 1e-9 && (c.p1 - c.p0).hypot() < 1e-9 {
+        if (c.p3 - c.p0).hypot() < 1e-9 && (c.p1 - c.p0).hypot() < 1e-9 && (c.p2 - c.p0).hypot() < 1e-9 {
             continue;
         }
         let mut part = BezPath::new();
@@ -57,10 +57,18 @@ fn offset_subpath(bp: &BezPath, d: f64, tol: f64, out: &mut BezPath) {
 /// Bands (start, width) across a stroke, as fractions of the weight from its left edge.
 pub type Bands = [(f64, f64)];
 
+/// Most bands of a striped stroke that are drawn, and most path elements its fill may have:
+/// every band strokes the whole path again, so both multiply the path's size.
+pub const MAX_STRIPE_BANDS: usize = 64;
+const MAX_STRIPE_ELEMENTS: usize = 2_000_000;
+
 /// The filled area of a striped stroke of `weight` along `bp`.
 pub fn stripes(bp: &BezPath, weight: f64, bands: &Bands, tol: f64) -> BezPath {
     let mut out = BezPath::new();
-    for &(start, width) in bands {
+    for &(start, width) in bands.iter().take(MAX_STRIPE_BANDS) {
+        if out.elements().len() > MAX_STRIPE_ELEMENTS {
+            break;
+        }
         if width <= 0.0 {
             continue;
         }
@@ -139,6 +147,17 @@ pub fn hashed(bp: &BezPath, weight: f64, tol: f64) -> BezPath {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stripes_draw_at_most_the_band_cap() {
+        let mut line = BezPath::new();
+        line.move_to((0.0, 0.0));
+        line.line_to((100.0, 0.0));
+        let one = stripes(&line, 4.0, &[(0.0, 0.1)], 0.1).elements().len();
+        let many = vec![(0.0, 0.1); 100_000];
+        let all = stripes(&line, 4.0, &many, 0.1).elements().len();
+        assert_eq!(all, one * MAX_STRIPE_BANDS);
+    }
     use kurbo::Shape;
 
     fn line() -> BezPath {
@@ -146,6 +165,19 @@ mod tests {
         b.move_to((0.0, 0.0));
         b.line_to((100.0, 0.0));
         b
+    }
+
+    #[test]
+    fn stripes_keep_cubic_with_only_second_control_away_from_start() {
+        let mut path = BezPath::new();
+        path.move_to((0.0, 0.0));
+        path.curve_to((0.0, 0.0), (90.0, 0.0), (0.0, 0.0));
+        let offset = offset_path(&path, 2.0, 0.01).bounding_box();
+        assert!(offset.x1 > 39.0, "{offset:?}");
+        assert!(offset.y0 < -1.9 && offset.y1 > 1.9, "{offset:?}");
+        let filled = stripes(&path, 12.0, &[(0.0, 0.5), (0.75, 0.25)], 0.01);
+        assert!(filled.contains(Point::new(20.0, -3.0)));
+        assert!(filled.contains(Point::new(20.0, 3.0)));
     }
 
     #[test]
