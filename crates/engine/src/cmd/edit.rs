@@ -101,7 +101,9 @@ fn paste_text(s: &mut Session, text: Option<String>, formatted: bool) -> Result<
             return s.edit(|d, sel| {
                 let st = d.story_mut(t.story).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
                 let r = t.range();
-                st.delete(r.start.min(st.len())..r.end.min(st.len()));
+                let del = r.start.min(st.len())..r.end.min(st.len());
+                st.delete(del.clone());
+                d.adjust_text_ranges(t.story, del, 0);
                 // Fresh ids, story and asset copies for every paste, as on the page.
                 let mut stories = std::collections::HashMap::new();
                 let fresh: Vec<designcraft_doc::Item> = list
@@ -125,12 +127,19 @@ fn paste_text(s: &mut Session, text: Option<String>, formatted: bool) -> Result<
     // Footnotes, endnotes, editorial notes, cross-references and tables cannot be pasted into cells or footnotes.
     if use_clip && let Some((slice, _)) = clip {
         let slice = if t.cell.is_some() { strip_objects(&slice) } else { (*slice).clone() };
+        let slice_len = slice.text.len();
         return s.edit(|d, sel| {
-            let st = d.text_story_mut(t.story, t.cell).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
-            let r = t.range();
-            let r = r.start.min(st.len())..r.end.min(st.len());
-            st.delete(r.clone());
-            let end = st.insert_story(r.start, &slice);
+            let (end, r) = {
+                let st = d.text_story_mut(t.story, t.cell).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
+                let r = t.range();
+                let r = r.start.min(st.len())..r.end.min(st.len());
+                st.delete(r.clone());
+                let end = st.insert_story(r.start, &slice);
+                (end, r)
+            };
+            if t.cell.is_none() {
+                d.adjust_text_ranges(t.story, r, slice_len);
+            }
             sel.text = Some(designcraft_doc::TextSel { anchor: end, focus: end, ..t });
             Ok(json!({"pos": end, "formatted": true}))
         });
