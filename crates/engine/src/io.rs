@@ -21,8 +21,7 @@ use std::path::{Path, PathBuf};
 /// refused path is never handed to the file system; callers treat it as a missing file.
 pub fn document_path(stored: &str, document: Option<&Path>) -> Result<PathBuf, Refused> {
     let document = document.map(|d| std::path::absolute(d).unwrap_or_else(|_| d.to_path_buf()));
-    let path = craft_docpath::resolve(stored, document.as_deref())?;
-    if path.is_absolute() { Ok(path) } else { Err(Refused::Invalid) }
+    craft_docpath::resolve_absolute(stored, document.as_deref())
 }
 
 /// [`document_path`] for a path stored in a file inside `folder` (a data file's image names).
@@ -101,6 +100,15 @@ pub fn read_to_string(path: impl AsRef<Path>) -> Result<String, String> {
     touch(path);
     crate::file_access::check_read(path)?;
     std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// Make the folder at `path` and the folders above it, inside the automation write root when
+/// there is one.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn create_dir_all(path: impl AsRef<Path>) -> Result<(), String> {
+    let path = path.as_ref();
+    crate::file_access::check_write(path)?;
+    std::fs::create_dir_all(path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// Write `bytes` to the file at `path`, inside the automation write root when there is one.

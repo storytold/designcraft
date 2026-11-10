@@ -14,8 +14,9 @@
 //! fallback off.
 //!
 //! The fallback: before the window is created, `gpu.json` in the settings directory records the
-//! backend being tried; once a frame has been presented, or the graphics failed with an error the
-//! app caught (see `gpu::finish`), that entry is cleared. An entry still there at the next start
+//! backend being tried; once a frame has been presented, the window closed normally (even before
+//! its first frame), or the graphics failed with an error the app caught (see `gpu::finish`), that
+//! entry is cleared. An entry still there at the next start
 //! means the previous start never got that far — the driver crashed, or the app was killed
 //! meanwhile — so that backend joins `failed`, the next candidate is tried and the status bar says
 //! so. Backends a restart left out (`--gpu-skip=`, see `gpu`) aren't chosen for that start but
@@ -231,7 +232,21 @@ impl Fallback {
                 choice.backend.name(),
                 choice.record.failed
             ),
-            None => log::info!("graphics: {} (WGPU_BACKEND overrides)", choice.backend.name()),
+            // Not a switch from an unfinished start. `begin` has already returned when
+            // `WGPU_BACKEND` names a backend, so wgpu is not being told which to use here -- an
+            // empty or unrecognised value is no choice and reaches this line like an unset one.
+            // The message used to say the environment had been asked, which reads in a log as
+            // though the user had chosen the backend (#1343). What this start did choose is
+            // either the first candidate or the first one that has not failed before, so it says
+            // which of the two it is rather than claiming the first choice.
+            None if choice.record.failed.is_empty() => {
+                log::info!("graphics: {} (nothing has failed before; set WGPU_BACKEND to choose another)", choice.backend.name())
+            }
+            None => log::info!(
+                "graphics: {} (the first that hasn't failed before, after {:?}; set WGPU_BACKEND to choose another)",
+                choice.backend.name(),
+                choice.record.failed
+            ),
         }
         let instance = instance_backends(choice.backend, &choice.record.failed);
         Some(Fallback { backend: choice.backend, switched_from: choice.switched_from, instance, path, record: choice.record })
@@ -521,6 +536,23 @@ mod tests {
         } else {
             assert_eq!(s.switched_from, None);
         }
+        let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+    }
+
+    /// A window closed before its first frame (#2116): the app was created slowly or not at all,
+    /// so neither a frame nor `on_exit` cleared the record, but eframe ended cleanly. No driver
+    /// fault took that start down, so the next start keeps the backend.
+    #[test]
+    fn a_start_that_ends_cleanly_before_its_first_frame_does_not_fail_its_backend() {
+        let path = temp_path("clean-end");
+        let fallback = Fallback::begin_unforced(Some(path.clone()), V, &[]).expect("candidates");
+        let first = fallback.backend;
+        assert_eq!(read(&path).trying, Some(first));
+        let startup = super::super::Startup::new(Some(fallback), Vec::new());
+        assert_eq!(super::super::finish(Ok(Ok(())), &startup), Ok(()));
+        assert_eq!(read(&path).trying, None, "a clean end leaves no backend being tried");
+        let c = choose(candidates(), &read(&path), V, &[]).expect("candidates");
+        assert_eq!((c.backend, c.record.failed, c.switched_from), (first, Vec::new(), None));
         let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
     }
 

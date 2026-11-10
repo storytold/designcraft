@@ -126,24 +126,12 @@ pub fn now() -> i64 {
     }
 }
 
-/// (year, month 1–12, day 1–31) from days since 1970-01-01.
-///
-/// `NaiveDate` only covers about ±262143 years, but the system clock can run past it, so this
-/// stays exact for every `days`. The Gregorian calendar repeats every 400 years (146_097 days):
-/// chrono converts the day within its cycle and whole cycles go back into the year (an i128 so no
-/// `days` overflows), which matches the proleptic Gregorian answer the old hand-rolled code gave.
-/// 1970-01-01 is `num_days_from_ce` 719_163.
+/// (year, month 1–12, day 1–31) from days since 1970-01-01, exact for every `days`
+/// (see [`crate::time::date_parts`]).
 fn civil(days: i64) -> (i64, u32, u32) {
     use chrono::Datelike;
-    let (cycles, rest) = (days.div_euclid(146_097), days.rem_euclid(146_097));
-    match i32::try_from(rest + 719_163).ok().and_then(chrono::NaiveDate::from_num_days_from_ce_opt) {
-        Some(d) => {
-            let y = i128::from(d.year()) + i128::from(cycles) * 400;
-            (i64::try_from(y).unwrap_or(if y < 0 { i64::MIN } else { i64::MAX }), d.month(), d.day())
-        }
-        // Unreachable: `rest + 719_163` is always a valid CE day.
-        None => (1970, 1, 1),
-    }
+    let (y, d) = crate::time::date_parts(days);
+    (y, d.month(), d.day())
 }
 
 /// Days since 1970-01-01 of a civil date (inverse of [`civil`]), exact for any year.
@@ -187,6 +175,9 @@ pub fn parse_iso_date(s: &str) -> Option<i64> {
         let t = time.get(a..b)?;
         t.bytes().all(|c| c.is_ascii_digit()).then(|| t.parse().ok()).flatten()
     };
+    if time.get(2..3) != Some(":") {
+        return None;
+    }
     let (h, mi) = (tnum(0, 2)?, tnum(3, 5)?);
     let mut i = 5;
     let mut sec = 0;
@@ -207,8 +198,16 @@ pub fn parse_iso_date(s: &str) -> Option<i64> {
         None | Some('Z') => Some(secs),
         Some(sign @ ('+' | '-')) => {
             let z = zone.get(1..)?;
-            let zh: i64 = z.get(0..2)?.parse().ok()?;
-            let zm: i64 = z.get(2..).map(|r| r.trim_start_matches(':')).filter(|r| !r.is_empty()).map_or(Some(0), |r| r.parse().ok())?;
+            let digits = |t: &str| -> Option<i64> { t.bytes().all(|c| c.is_ascii_digit()).then(|| t.parse().ok()).flatten() };
+            let zh = digits(z.get(0..2)?)?;
+            let zm = match z.get(2..)? {
+                "" => 0,
+                r if r.len() == 2 => digits(r)?,
+                r => digits(r.strip_prefix(':').filter(|m| m.len() == 2)?)?,
+            };
+            if zh > 23 || zm > 59 {
+                return None;
+            }
             let off = zh * 3600 + zm * 60;
             Some(if sign == '+' { secs - off } else { secs + off })
         }
@@ -303,6 +302,12 @@ mod tests {
     use super::*;
 
     #[test]
+    fn iso_date_requires_colon_separator() {
+        assert_eq!(parse_iso_date("2019-12-16T09:48:00Z"), Some(1_576_489_680));
+        assert_eq!(parse_iso_date("2019-12-16T09x48:00Z"), None);
+    }
+
+    #[test]
     fn dates() {
         // 2026-10-01 14:05 UTC
         let t = 1_790_863_500;
@@ -344,6 +349,22 @@ mod tests {
         assert_eq!(parse_iso_date("2000-02-29"), Some(951_782_400));
         assert_eq!(parse_iso_date("2019-12-16T09:48:02.5+01:00").map(|t| format_date(t, "MM/dd/yy HH:mm")), Some("12/16/19 08:48".into()));
         for bad in ["", "2019", "2019-13-01", "2019-12-16T25:00", "2019-12-16T09:48+0x", "２０１９-12-16"] {
+            assert_eq!(parse_iso_date(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn iso_date_rejects_malformed_zone() {
+        for bad in [
+            "2019-12-16T09:48:02+-5:00",
+            "2019-12-16T09:48:02+05:+30",
+            "2019-12-16T09:48:02+24:00",
+            "2019-12-16T09:48:02+05:60",
+            "2019-12-16T09:48:02+05::30",
+            "2019-12-16T09:48:02+05:",
+            "2019-12-16T09:48:02+053",
+            "2019-12-16T09:48:02+05:3",
+        ] {
             assert_eq!(parse_iso_date(bad), None, "{bad}");
         }
     }

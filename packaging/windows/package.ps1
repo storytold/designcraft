@@ -90,13 +90,32 @@ Copy-Item (Join-Path $Bin 'designcraft.exe'), (Join-Path $Bin 'designcraft-cli.e
 
 & (Join-Path $PSScriptRoot 'sign.ps1') (Join-Path $Stage 'designcraft.exe') (Join-Path $Stage 'designcraft-cli.exe')
 
+# Required embedded-font notices ship independently of optional font inputs.
+Copy-Item -LiteralPath (Join-Path $Root 'NOTICE') -Destination $Stage
+
+# ---- font notices for the MSI ------------------------------------------------------------------
+# The portable ZIP already carries these notices; stage the complete files before MSI creation too.
+$Docs = Join-Path $Stage 'font-licences'
+New-Item -ItemType Directory -Force -Path $Docs | Out-Null
+$HasCraftFontLicences = 0
+if ($env:CRAFT_FONTS_DIR) {
+  foreach ($ofl in Get-ChildItem -Path (Join-Path $env:CRAFT_FONTS_DIR 'fonts\*\OFL.txt') -File -ErrorAction SilentlyContinue) {
+    Copy-Item -LiteralPath $ofl.FullName -Destination (Join-Path $Docs "OFL-$($ofl.Directory.Name).txt")
+    $HasCraftFontLicences = 1
+  }
+}
+# ---- end font notices for the MSI --------------------------------------------------------------
+
 # ---- MSI ---------------------------------------------------------------------------------------
 $Msi = Join-Path $Dist "designcraft-$Version-windows-$Arch.msi"
 Invoke-Native 'wix build' {
   wix build (Join-Path $PSScriptRoot 'designcraft.wxs') (Join-Path $PSScriptRoot 'installer-ui.wxs') -arch $Arch `
     -d "Version=$MsiVersion" -d "BinDir=$Stage" -d "IconPath=$(Join-Path $Root 'assets\app-icon\designcraft.ico')" `
+    -d "DocsDir=$Docs" -d "HasCraftFontLicences=$HasCraftFontLicences" `
     -o $Msi
 }
+# Check the compiled scope, path and registration contract before signing.
+& (Join-Path $PSScriptRoot 'check-install-policy.ps1') -MsiPath $Msi
 # wix writes its debug symbols (.wixpdb) next to the MSI; keep them out of the release assets.
 Remove-Item -Force -ErrorAction SilentlyContinue ([IO.Path]::ChangeExtension($Msi, '.wixpdb'))
 & (Join-Path $PSScriptRoot 'sign.ps1') $Msi
@@ -112,7 +131,7 @@ Set-Content -Encoding ascii -Path (Join-Path $Portable 'portable.txt') -Value @(
   'DesignCraft portable: preferences, logs and crash recovery are kept in the DesignCraftData folder',
   'next to designcraft.exe. Delete this file to use %APPDATA%\DesignCraft instead.'
 )
-foreach ($f in 'README.md', 'LICENSE', 'LICENSE-MIT', 'LICENSE-APACHE') {
+foreach ($f in 'README.md', 'LICENSE', 'LICENSE-MIT', 'LICENSE-APACHE', 'NOTICE') {
   $p = Join-Path $Root $f
   if (Test-Path $p) { Copy-Item $p $Portable }
 }

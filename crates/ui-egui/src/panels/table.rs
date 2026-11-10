@@ -69,13 +69,14 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         for (label, kind, names, cur) in [("Table Style", "table", tnames, tcur), ("Cell Style", "cell", cnames, ccur)] {
             ui.horizontal(|ui| {
                 caption(ui, crate::i18n::tr(&app.ui.language, label));
-                egui::ComboBox::from_id_salt(("tp_style", kind)).selected_text(&cur).width(130.0).show_ui(ui, |ui| {
+                let combo = craft_ui::ComboBox::from_id_salt(("tp_style", kind)).selected_text(&cur).width(130.0).show_ui(ui, |ui| {
                     for n in &names {
                         if ui.selectable_label(*n == cur, n).clicked() {
                             run(app, &format!("style.{kind}.apply"), json!({"name": n, "table": tid}));
                         }
                     }
                 });
+                let _ = crate::widgets::name_combo(combo, crate::i18n::tr(&app.ui.language, label));
                 if crate::icons::button(
                     ui,
                     "plus",
@@ -125,7 +126,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         let row = rows.get(r0).cloned().unwrap_or(Value::Null);
         let exactly = row["mode"] == "exactly";
         caption(ui, crate::i18n::tr(&app.ui.language, "Row Height"));
-        egui::ComboBox::from_id_salt("tp_rowmode")
+        let combo = craft_ui::ComboBox::from_id_salt("tp_rowmode")
             .selected_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, if exactly { "Exactly" } else { "At Least" })))
             .width(70.0)
             .show_ui(ui, |ui| {
@@ -136,6 +137,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                     }
                 }
             });
+        let _ = crate::widgets::name_combo(combo, crate::i18n::tr(&app.ui.language, "Row Height"));
         if let Some(h) = measure(ui, "tp_rowh", row["height"].as_f64(), unit, 64.0) {
             run(app, "table.setRowHeight", json!({"height": h}));
         }

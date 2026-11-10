@@ -130,7 +130,7 @@ impl ChapterBatch {
 fn writable_chapter(s: &Session, path: &str, command: &'static str) -> Result<()> {
     use std::path::Path;
 
-    if Path::new(path).extension().and_then(|ext| ext.to_str()).is_some_and(|ext| ext.eq_ignore_ascii_case("idml")) {
+    if Path::new(path).extension().and_then(std::ffi::OsStr::to_str).is_some_and(|ext| ext.eq_ignore_ascii_case("idml")) {
         return Err(bad(command, format!("cannot change imported IDML chapter {path}; convert it to a native DesignCraft document first")));
     }
     let target = crate::io::canonicalize(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
@@ -246,6 +246,7 @@ fn start_at(d: &mut designcraft_doc::Document, n: u32) {
                 prefix: String::new(),
                 marker: String::new(),
                 include_prefix: false,
+                layout: None,
             },
         );
     }
@@ -340,8 +341,9 @@ pub fn specs() -> Vec<CommandSpec> {
                 let _fonts = super::file::load_document_fonts(&mut d, path).0;
                 let cache = designcraft_compose::Cache::new();
                 let r = designcraft_pdf::export_pdf_with_report(&super::interchange::with_pdf_boxes(&d), &cache, &designcraft_pdf::PdfOptions::default()).map_err(|e| EngineError::Other(e.to_string()))?;
-                let n = designcraft_render::pdf_page_count(&r.bytes).unwrap_or(0);
-                let sizes: Vec<(f32, f32)> = (0..n).filter_map(|i| designcraft_render::pdf_page_size(&r.bytes, i)).map(|(w, h)| (w as f32, h as f32)).collect();
+                // Every page's size from one opening of the chapter's PDF (not one per page).
+                let sizes: Vec<(f32, f32)> =
+                    designcraft_render::pdf_page_sizes(&r.bytes).unwrap_or_default().into_iter().map(|(w, h)| (w as f32, h as f32)).collect();
                 parts.push((r.bytes, sizes));
             }
             let pages: usize = parts.iter().map(|p| p.1.len()).sum();

@@ -87,7 +87,9 @@ impl Document {
     /// The horizontal ruler of spread `r` in pieces `(from x, to x, base)`, spread coordinates,
     /// covering every x: one piece, or one per page for a page origin.
     pub fn ruler_pieces(&self, r: SpreadRef) -> Vec<(f64, f64, Point)> {
-        let Some(sp) = self.spread(r) else { return Vec::new() };
+        let Some(sp) = self.spread(r) else {
+            return Vec::new();
+        };
         if self.settings.ruler_origin != crate::RulerOrigin::Page || sp.pages.len() < 2 {
             return self.ruler_base(r, 0.0).map(|o| (f64::NEG_INFINITY, f64::INFINITY, o)).into_iter().collect();
         }
@@ -318,15 +320,16 @@ impl Document {
         let pos_to = other.frames.iter().position(|f| *f == to).unwrap_or(0);
         let after = other.frames.split_off(pos_to);
         let before = std::mem::take(&mut other.frames);
-        let (vertical, direction) = (other.vertical, other.direction);
+        let (vertical, direction, optical_margin) = (other.vertical, other.direction, other.optical_margin);
         let offset;
         {
             let st = self.story_mut(fs).ok_or(DocError::NoStory(fs))?;
             offset = if st.text.is_empty() { 0 } else { st.text.len().saturating_add(1) };
-            // The story keeps its own direction, even when it was empty and takes the other's text.
-            let own = (st.vertical, st.direction);
+            // The story keeps its own direction and options, even when it was empty and takes the
+            // other's text.
+            let own = (st.vertical, st.direction, st.optical_margin);
             st.append_story(other);
-            (st.vertical, st.direction) = own;
+            (st.vertical, st.direction, st.optical_margin) = own;
             let at = st.frames.iter().position(|f| *f == from).map_or(st.frames.len(), |p| p + 1);
             for (k, f) in after.iter().enumerate() {
                 st.frames.insert(at + k, *f);
@@ -345,6 +348,7 @@ impl Document {
             ns.frames = before.clone();
             ns.vertical = vertical;
             ns.direction = direction;
+            ns.optical_margin = optical_margin;
             for f in &before {
                 if let Some(t) = self.item_mut(*f).and_then(Item::text_frame_mut) {
                     t.story = nid;
@@ -363,7 +367,9 @@ impl Document {
         let from_empty = fs.is_none_or(|fs| self.story(fs).is_some_and(|s| s.text.is_empty() && s.frames == [from]));
         let ts = self.frame_story(to)?;
         let to_first = ts.and_then(|ts| self.story(ts)).is_some_and(|s| s.frames.first() == Some(&to));
-        let (Some(ts), true, true) = (ts, from_empty, to_first && from != to) else { return self.thread(from, to) };
+        let (Some(ts), true, true) = (ts, from_empty, to_first && from != to) else {
+            return self.thread(from, to);
+        };
         self.check_thread_links(from, to, true)?;
         if let Some(fs) = fs {
             self.stories.remove(&fs);
@@ -466,7 +472,9 @@ impl Document {
                 return Err(DocError::Invalid(format!("{id} is locked or on a locked layer")));
             }
         }
-        let (Some(fl), Some(tl)) = (self.find(from), self.find(to)) else { return Err(DocError::NoItem(to)) };
+        let (Some(fl), Some(tl)) = (self.find(from), self.find(to)) else {
+            return Err(DocError::NoItem(to));
+        };
         let same_place = match (fl.spread, tl.spread) {
             (SpreadRef::Doc(_), SpreadRef::Doc(_)) => true,
             (a, b) => a == b,
@@ -526,12 +534,12 @@ impl Document {
     /// stays with the first part and may become overset).
     pub fn unthread_after(&mut self, frame: ItemId) -> Result<()> {
         let sid = self.item(frame).and_then(|i| i.text_frame()).map(|t| t.story).ok_or(DocError::NoItem(frame))?;
-        let (tail, vertical, direction) = {
+        let (tail, vertical, direction, optical_margin) = {
             let st = self.story_mut(sid).ok_or(DocError::NoStory(sid))?;
             let p = st.frames.iter().position(|f| *f == frame).ok_or(DocError::NoItem(frame))?;
             let tail = st.frames.split_off(p + 1);
             st.rev = st.rev.wrapping_add(1);
-            (tail, st.vertical, st.direction)
+            (tail, st.vertical, st.direction, st.optical_margin)
         };
         if tail.is_empty() {
             return Ok(());
@@ -541,6 +549,7 @@ impl Document {
         ns.frames = tail.clone();
         ns.vertical = vertical;
         ns.direction = direction;
+        ns.optical_margin = optical_margin;
         self.stories.insert(nid, Arc::new(ns));
         for f in tail {
             if let Some(t) = self.item_mut(f).and_then(Item::text_frame_mut) {
@@ -554,20 +563,21 @@ impl Document {
     /// `frame` stays on the page with a new empty story.
     pub fn remove_from_thread(&mut self, frame: ItemId) -> Result<()> {
         let sid = self.item(frame).and_then(|i| i.text_frame()).map(|t| t.story).ok_or(DocError::NoItem(frame))?;
-        let (vertical, direction) = {
+        let (vertical, direction, optical_margin) = {
             let st = self.story_mut(sid).ok_or(DocError::NoStory(sid))?;
             if st.frames.len() < 2 {
                 return Err(DocError::Invalid(format!("frame {frame} is not threaded to another frame")));
             }
             st.frames.retain(|f| *f != frame);
             st.rev = st.rev.wrapping_add(1);
-            (st.vertical, st.direction)
+            (st.vertical, st.direction, st.optical_margin)
         };
         let nid = StoryId(self.alloc());
         let mut ns = Story::new(nid);
         ns.frames = vec![frame];
         ns.vertical = vertical;
         ns.direction = direction;
+        ns.optical_margin = optical_margin;
         self.stories.insert(nid, Arc::new(ns));
         let t = self.item_mut(frame).and_then(Item::text_frame_mut).ok_or(DocError::NoItem(frame))?;
         t.story = nid;
@@ -622,6 +632,22 @@ impl Document {
         None
     }
 
+    /// Hit test on a parent spread (master page): like [`Self::hit_item`], but also skips locked
+    /// items. Items on hidden or locked layers can't be picked there either.
+    pub fn hit_parent_item(&self, sr: SpreadRef, p: Point, tol: f64) -> Option<ItemId> {
+        let sp = self.spread(sr)?;
+        let mut items: Vec<&Arc<Item>> = sp.items.iter().collect();
+        items.sort_by_key(|i| self.layer_rank(i.layer));
+        items
+            .into_iter()
+            .rev()
+            .find(|it| {
+                let layer = self.layer(it.layer);
+                !it.locked && !it.hidden && !layer.is_some_and(|l| !l.visible || l.locked) && item_hit(it, p, tol)
+            })
+            .map(|it| it.id)
+    }
+
     /// The first item on a document or parent spread whose geometry isn't finite
     /// ([`Item::geometry_is_finite`]).
     pub fn non_finite_item(&self) -> Option<ItemId> {
@@ -636,6 +662,45 @@ impl Document {
             }
         }
         found
+    }
+
+    /// Every item on document and parent spreads, in groups, and among the objects anchored in
+    /// stories, including the stories in table cells and in notes: walks that must cover every
+    /// placement use this, not [`Document::all_items`].
+    pub fn placed_items(&self) -> Vec<&Item> {
+        let mut v = Vec::new();
+        for sp in self.spreads.iter().chain(&self.parents) {
+            for it in &sp.items {
+                placed_item(it, 0, &mut v);
+            }
+        }
+        for st in self.stories.values() {
+            placed_story_items(st, 0, &mut v);
+        }
+        v
+    }
+
+    /// Applies `f` to every placed item `hit` selects, wherever it sits: on document or parent
+    /// spreads, in groups, and anchored in a story (also inside table cells and notes).
+    /// Returns how many items `f` saw.
+    pub fn update_placed_items(&mut self, hit: impl Fn(&Item) -> bool, mut f: impl FnMut(&mut Item)) -> usize {
+        let mut n = 0;
+        for sp in self.spreads.iter_mut().chain(self.parents.iter_mut()) {
+            if !sp.items.iter().any(|it| has_hit(it, &hit)) {
+                continue;
+            }
+            for it in Arc::make_mut(sp).items.iter_mut() {
+                if has_hit(it, &hit) {
+                    update_placed_item(Arc::make_mut(it), 0, &hit, &mut f, &mut n);
+                }
+            }
+        }
+        for st in self.stories.values_mut() {
+            if story_has_hit(st, 0, &hit) {
+                update_story_items(Arc::make_mut(st), 0, &hit, &mut f, &mut n);
+            }
+        }
+        n
     }
 
     /// Every item id (pre-order) on document spreads.
@@ -728,19 +793,223 @@ impl Document {
         st.editorial.clear();
         st.fix_marks();
         st.rev = st.rev.wrapping_add(1);
+        self.prune_story_text_ranges(sid);
         Ok(())
     }
+
+    /// Prune text-anchored hyperlinks and placeholders for `story` (e.g. after wholesale story replacement).
+    pub fn prune_story_text_ranges(&mut self, story: StoryId) {
+        self.hyperlinks.retain(|h| match &h.source {
+            crate::HyperlinkSource::Text { story: sid, .. } => *sid != story,
+            _ => true,
+        });
+        self.data_merge.placeholders.retain(|ph| match &ph.anchor {
+            crate::PlaceholderAnchor::Text { story: sid, .. } => *sid != story,
+            _ => true,
+        });
+    }
+
+    /// Remaps text range `s..e` when `del_range` is replaced by `ins_len` bytes.
+    /// Returns `None` if the range is inverted (`s > e`) or emptied by the edit (`s < e && s_new >= e_new`).
+    pub fn remap_range(del_range: std::ops::Range<usize>, ins_len: usize, s: usize, e: usize) -> Option<(usize, usize)> {
+        if s > e {
+            return None;
+        }
+        let (da, db) = (del_range.start, del_range.end);
+        let del_before = db.min(s).saturating_sub(da);
+        let del_inside = db.min(e).saturating_sub(da.max(s));
+        let mut s_new = s.saturating_sub(del_before);
+        let mut e_new = e.saturating_sub(del_before).saturating_sub(del_inside);
+        if da < s || (da == s && db == s) {
+            s_new = s_new.saturating_add(ins_len);
+            e_new = e_new.saturating_add(ins_len);
+        } else if da < e {
+            e_new = e_new.saturating_add(ins_len);
+        }
+        if s < e && s_new >= e_new { None } else { Some((s_new, e_new)) }
+    }
+
+    /// Adjust story-external text references (hyperlinks and data-merge placeholders) after text
+    /// in `story` has `del_range` replaced by `ins_len` bytes.
+    pub fn adjust_text_ranges(&mut self, story: StoryId, del_range: std::ops::Range<usize>, ins_len: usize) {
+        self.hyperlinks.retain_mut(|h| {
+            if let crate::HyperlinkSource::Text { story: sid, start, end } = &mut h.source
+                && *sid == story
+            {
+                if let Some((ns, ne)) = Self::remap_range(del_range.clone(), ins_len, *start, *end) {
+                    *start = ns;
+                    *end = ne;
+                    return true;
+                }
+                return false;
+            }
+            true
+        });
+
+        self.data_merge.placeholders.retain_mut(|ph| {
+            if let crate::PlaceholderAnchor::Text { story: sid, start, end } = &mut ph.anchor
+                && *sid == story
+            {
+                if let Some((ns, ne)) = Self::remap_range(del_range.clone(), ins_len, *start, *end) {
+                    *start = ns;
+                    *end = ne;
+                    return true;
+                }
+                return false;
+            }
+            true
+        });
+    }
+
+    /// Shifts text ranges when a block of text in `story` is moved from `from` to `to` (the insertion offset after deletion).
+    /// Preserves the existing order of items in `hyperlinks` and `placeholders`.
+    pub fn move_text_ranges(&mut self, story: StoryId, from: std::ops::Range<usize>, to: usize) {
+        if from.is_empty() {
+            return;
+        }
+        let (da, db) = (from.start, from.end);
+        let len = db - da;
+
+        let remap_moved = |s: usize, e: usize| -> Option<(usize, usize)> {
+            if s >= da && e <= db {
+                Some((to + (s - da), to + (e - da)))
+            } else {
+                let (s1, e1) = Self::remap_range(da..db, 0, s, e)?;
+                Self::remap_range(to..to, len, s1, e1)
+            }
+        };
+
+        self.hyperlinks.retain_mut(|h| {
+            if let crate::HyperlinkSource::Text { story: sid, start, end } = &mut h.source
+                && *sid == story
+            {
+                if let Some((ns, ne)) = remap_moved(*start, *end) {
+                    *start = ns;
+                    *end = ne;
+                    return true;
+                }
+                return false;
+            }
+            true
+        });
+
+        self.data_merge.placeholders.retain_mut(|ph| {
+            if let crate::PlaceholderAnchor::Text { story: sid, start, end } = &mut ph.anchor
+                && *sid == story
+            {
+                if let Some((ns, ne)) = remap_moved(*start, *end) {
+                    *start = ns;
+                    *end = ne;
+                    return true;
+                }
+                return false;
+            }
+            true
+        });
+    }
+}
+
+/// How deep nested stories (a cell's text, a footnote's text, an endnote's text) are followed
+/// when every placement is visited. A document nested deeper is left alone.
+const MAX_PLACEMENT_DEPTH: usize = 64;
+
+/// The items anchored in `st`, and in the stories nested in its cells and notes, pre-order.
+fn placed_story_items<'a>(st: &'a Story, depth: usize, v: &mut Vec<&'a Item>) {
+    if depth > MAX_PLACEMENT_DEPTH {
+        return;
+    }
+    for o in &st.objects {
+        placed_item(&o.item, 0, v);
+    }
+    for c in st.tables.values().flat_map(|t| &t.cells) {
+        placed_story_items(&c.text, depth + 1, v);
+    }
+    for n in st.notes.iter().chain(&st.endnotes) {
+        placed_story_items(&n.text, depth + 1, v);
+    }
+}
+
+/// Whether `it` or anything in it is selected by `hit`.
+fn has_hit(it: &Item, hit: &impl Fn(&Item) -> bool) -> bool {
+    fn check(it: &Item, depth: usize, hit: &impl Fn(&Item) -> bool) -> bool {
+        hit(it) || (depth < MAX_PLACEMENT_DEPTH && it.children().iter().any(|child| check(child, depth + 1, hit)))
+    }
+    check(it, 0, hit)
+}
+
+/// [`Document::update_placed_items`] for one item: only the branches holding a hit are copied.
+fn update_placed_item(it: &mut Item, depth: usize, hit: &impl Fn(&Item) -> bool, f: &mut impl FnMut(&mut Item), n: &mut usize) {
+    if hit(it) {
+        f(it);
+        *n += 1;
+    }
+    if depth >= MAX_PLACEMENT_DEPTH {
+        return;
+    }
+    if let Some(children) = it.children_mut() {
+        for c in children.iter_mut().filter(|c| has_hit(c, hit)) {
+            update_placed_item(Arc::make_mut(c), depth + 1, hit, f, n);
+        }
+    }
+}
+
+/// [`Document::update_placed_items`] for the placements of one story, and of the stories nested
+/// in its cells and notes.
+fn update_story_items(st: &mut Story, depth: usize, hit: &impl Fn(&Item) -> bool, f: &mut impl FnMut(&mut Item), n: &mut usize) {
+    if depth > MAX_PLACEMENT_DEPTH {
+        return;
+    }
+    for o in st.objects.iter_mut() {
+        if has_hit(&o.item, hit) {
+            update_placed_item(&mut Arc::make_mut(o).item, 0, hit, f, n);
+        }
+    }
+    for t in st.tables.values_mut().filter(|t| t.cells.iter().any(|c| story_has_hit(&c.text, depth + 1, hit))) {
+        for c in &mut Arc::make_mut(t).cells {
+            if story_has_hit(&c.text, depth + 1, hit) {
+                update_story_items(&mut c.text, depth + 1, hit, f, n);
+            }
+        }
+    }
+    for note in st.notes.iter_mut().chain(st.endnotes.iter_mut()) {
+        if story_has_hit(&note.text, depth + 1, hit) {
+            update_story_items(&mut Arc::make_mut(note).text, depth + 1, hit, f, n);
+        }
+    }
+}
+
+fn placed_item<'a>(it: &'a Item, depth: usize, v: &mut Vec<&'a Item>) {
+    v.push(it);
+    if depth < MAX_PLACEMENT_DEPTH {
+        for child in it.children() {
+            placed_item(child, depth + 1, v);
+        }
+    }
+}
+
+fn story_has_hit(st: &Story, depth: usize, hit: &impl Fn(&Item) -> bool) -> bool {
+    depth <= MAX_PLACEMENT_DEPTH
+        && (st.objects.iter().any(|o| has_hit(&o.item, hit))
+            || st.tables.values().flat_map(|t| &t.cells).any(|c| story_has_hit(&c.text, depth + 1, hit))
+            || st.notes.iter().chain(&st.endnotes).any(|n| story_has_hit(&n.text, depth + 1, hit)))
 }
 
 /// Does `p` (in the item's parent space) hit `it`?
 pub fn item_hit(it: &Item, p: Point, tol: f64) -> bool {
-    if let Content::Group { items } = &it.content {
+    // A group is hit through its children. A frame with items pasted into it shows them clipped
+    // to its path, so it is hit by its own area: not where a nested image runs past the frame.
+    if let Content::Group { items } = &it.content
+        && !it.has_nested_items()
+    {
         let inner = it.xf.inverse() * p;
         return items.iter().any(|c| item_hit(c, inner, tol));
     }
     let inner = it.xf.inverse() * p;
     let bp = it.path.to_bezpath();
-    let area = !it.fill.is_none() || matches!(it.content, Content::Text(_) | Content::Graphic(_)) || it.path.is_closed() && it.shape != Shape::Path;
+    let area = !it.fill.is_none()
+        || matches!(it.content, Content::Text(_) | Content::Graphic(_))
+        || it.has_nested_items()
+        || it.path.is_closed() && it.shape != Shape::Path;
     if area && it.path.is_closed() && designcraft_geom::hit::fill_contains(&bp, designcraft_geom::FillRule::NonZero, inner) {
         return true;
     }
@@ -776,3 +1045,127 @@ pub fn hit_descendant(it: &Item, p: Point, tol: f64, want: &dyn Fn(&Item) -> boo
 /// How far from its path type on a path is hit (points): about a cap height of 12–18 pt type,
 /// either side (the type may sit on or under the path).
 const PATH_TYPE_REACH: f64 = 12.0;
+#[cfg(test)]
+mod placed_item_tests {
+    use super::*;
+
+    /// A frame at (100, 100)–(200, 200) holding an image pasted into it that runs 150 pt past it on
+    /// every side, as a document from InDesign keeps a cropped photo.
+    fn frame_with_nested_image() -> Item {
+        let layer = LayerId(1);
+        let mut image = Item::new(ItemId(2), layer, Shape::Rectangle, shapes::rectangle(Rect::new(0.0, 0.0, 400.0, 400.0)));
+        image.xf = Affine::translate((-150.0, -150.0));
+        image.content = Content::Graphic(crate::Graphic {
+            layer_options: None,
+            asset: crate::AssetId(1),
+            size: (400.0, 400.0),
+            xf: Affine::IDENTITY,
+            clip: None,
+            auto_fit: Default::default(),
+            fit_align: 4,
+            crop: [0.0; 4],
+            wrap: Default::default(),
+            fill: Default::default(),
+        });
+        let mut frame = Item::new(ItemId(1), layer, Shape::Rectangle, shapes::rectangle(Rect::new(0.0, 0.0, 100.0, 100.0)));
+        frame.xf = Affine::translate((100.0, 100.0));
+        frame.content = Content::Group { items: vec![Arc::new(image)] };
+        frame
+    }
+
+    /// The frame shows its nested image clipped, so a click where the image runs past the frame
+    /// hits nothing: clicking the empty page beside such a photo used to select it, so it could
+    /// not be deselected.
+    #[test]
+    fn a_frame_with_a_nested_image_is_hit_only_inside_the_frame() {
+        let frame = frame_with_nested_image();
+        assert!(frame.has_nested_items());
+        assert!(item_hit(&frame, Point::new(150.0, 150.0), 1.0), "inside the frame");
+        assert!(item_hit(&frame, Point::new(100.0, 150.0), 1.0), "on its edge");
+        for p in [Point::new(60.0, 60.0), Point::new(300.0, 150.0), Point::new(150.0, 330.0)] {
+            assert!(!item_hit(&frame, p, 1.0), "{p:?} is outside the frame, over the cropped image");
+        }
+        // A group is still hit through its children.
+        let mut group = frame.clone();
+        group.shape = Shape::Group;
+        assert!(item_hit(&group, Point::new(60.0, 60.0), 1.0));
+    }
+
+    /// Placing or dropping a graphic fills a frame holding only nested graphics, not one holding
+    /// other objects.
+    #[test]
+    fn a_frame_with_only_nested_graphics_takes_a_graphic() {
+        let frame = frame_with_nested_image();
+        assert!(frame.takes_graphic());
+        let mut other = frame.clone();
+        other.content = Content::Group { items: vec![Arc::new(Item::new(ItemId(3), LayerId(1), Shape::Rectangle, Default::default()))] };
+        assert!(!other.takes_graphic());
+        let mut group = frame;
+        group.shape = Shape::Group;
+        assert!(!group.takes_graphic(), "a group of images is not a frame");
+    }
+
+    #[test]
+    fn exhaustive_placements_keep_unselected_branches_shared() {
+        let mut d = Document::new(&Default::default());
+        let layer = d.default_layer();
+        let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 80.0, 80.0), layer, "Body", Default::default()).unwrap();
+        let id = ItemId(d.alloc());
+        let mut item = Item::new(id, layer, Shape::Rectangle, Default::default());
+        item.content = Content::Group { items: vec![Arc::new(Item::new(ItemId(d.alloc()), layer, Shape::Rectangle, Default::default()))] };
+        let child = item.children()[0].id;
+        let mut table = crate::Table::new(1, 1, 1, 0, 0, 20.0);
+        table.cells[0].text.insert_object(0, crate::AnchoredObject { item, position: Default::default() });
+        d.story_mut(sid).unwrap().insert_table(0, table);
+        let untouched = StoryId(d.alloc());
+        d.stories.insert(untouched, Arc::new(Story::new(untouched)));
+        let snapshot = d.clone();
+        assert!(d.placed_items().iter().any(|i| i.id == child));
+        assert_eq!(d.update_placed_items(|i| i.id == child, |i| i.hidden = true), 1);
+        assert!(d.placed_items().iter().find(|i| i.id == child).unwrap().hidden);
+        assert!(!snapshot.placed_items().iter().find(|i| i.id == child).unwrap().hidden);
+        assert!(Arc::ptr_eq(&d.stories[&untouched], &snapshot.stories[&untouched]));
+        assert!(Arc::ptr_eq(&d.spreads[0], &snapshot.spreads[0]));
+        let unchanged = d.clone();
+        let mut calls = 0;
+        assert_eq!(d.update_placed_items(|_| false, |_| calls += 1), 0);
+        assert_eq!(calls, 0);
+        assert!(d.spreads.iter().zip(&unchanged.spreads).all(|(a, b)| Arc::ptr_eq(a, b)));
+        assert!(d.parents.iter().zip(&unchanged.parents).all(|(a, b)| Arc::ptr_eq(a, b)));
+        assert!(d.stories.iter().all(|(id, st)| Arc::ptr_eq(st, &unchanged.stories[id])));
+    }
+    #[test]
+    fn exhaustive_placements_bound_nested_stories_and_groups() {
+        let mut d = Document::new(&Default::default());
+        let layer = d.default_layer();
+        let target = ItemId(d.alloc());
+        let mut item = Item::new(target, layer, Shape::Rectangle, Default::default());
+        for _ in 0..MAX_PLACEMENT_DEPTH + 2 {
+            let mut group = Item::new(ItemId(d.alloc()), layer, Shape::Rectangle, Default::default());
+            group.content = Content::Group { items: vec![Arc::new(item)] };
+            item = group;
+        }
+        d.insert_item(SpreadRef::Doc(0), item, None).unwrap();
+        assert!(!d.placed_items().iter().any(|i| i.id == target));
+        let mut calls = 0;
+        assert_eq!(d.update_placed_items(|i| i.id == target, |_| calls += 1), 0);
+        assert_eq!(calls, 0);
+
+        let nested = ItemId(d.alloc());
+        let sid = StoryId(d.alloc());
+        let mut story = Story::new(sid);
+        story.insert_object(
+            0,
+            crate::AnchoredObject { item: Item::new(nested, layer, Shape::Rectangle, Default::default()), position: Default::default() },
+        );
+        for _ in 0..MAX_PLACEMENT_DEPTH + 2 {
+            let mut outer = Story::new(sid);
+            outer.notes.push(Arc::new(crate::Footnote { id: 1, text: story }));
+            story = outer;
+        }
+        d.stories.insert(sid, Arc::new(story));
+        assert!(!d.placed_items().iter().any(|i| i.id == nested));
+        assert_eq!(d.update_placed_items(|i| i.id == nested, |_| calls += 1), 0);
+        assert_eq!(calls, 0);
+    }
+}

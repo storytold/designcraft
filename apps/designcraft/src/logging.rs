@@ -97,29 +97,9 @@ pub fn timestamp(t: SystemTime) -> String {
     // Pre-1970 is clamped to the epoch by `unwrap_or_default` above. `as_secs` is `u64`; a value
     // past `i64::MAX` seconds saturates rather than falling back to the epoch.
     let secs = i64::try_from(since.as_secs()).unwrap_or(i64::MAX);
-    let (y, t) = utc_parts(secs, since.subsec_nanos());
+    let (y, t) = designcraft_engine::doc::time::utc_parts(secs, since.subsec_nanos());
     // `{:04}` rather than `%Y`, which writes a `+` before years past 9999.
     format!("{y:04}-{}", t.format("%m-%dT%H:%M:%S%.3fZ"))
-}
-
-/// Unix seconds (+ nanos) → (proleptic Gregorian year, the same wall-clock instant moved into
-/// chrono's range by whole 400-year cycles). The calendar repeats every 400 years (146_097 days),
-/// so month, day and time of day come from chrono and only the year is carried, which keeps every
-/// `i64` exact. Replaces the old hand-rolled `civil_from_days`; chrono is the only calendar logic.
-fn utc_parts(secs: i64, nanos: u32) -> (i64, chrono::NaiveDateTime) {
-    use chrono::Datelike;
-    let (days, sod) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
-    let (cycles, rest) = (days.div_euclid(146_097), days.rem_euclid(146_097));
-    // `rest + 719_163` (1970-01-01 is CE day 719_163) is always a valid CE day, and `sod` < 86_400.
-    let date = i32::try_from(rest + 719_163).ok().and_then(chrono::NaiveDate::from_num_days_from_ce_opt);
-    let time = u32::try_from(sod).ok().and_then(|s| chrono::NaiveTime::from_num_seconds_from_midnight_opt(s, nanos.min(999_999_999)));
-    match (date, time) {
-        (Some(d), Some(t)) => {
-            let y = i128::from(d.year()) + i128::from(cycles) * 400;
-            (i64::try_from(y).unwrap_or(if y < 0 { i64::MIN } else { i64::MAX }), d.and_time(t))
-        }
-        _ => (1970, chrono::NaiveDateTime::default()), // unreachable
-    }
 }
 
 fn numbered(dir: &Path, n: usize) -> PathBuf {
@@ -141,10 +121,22 @@ pub fn rotate(dir: &Path) -> std::io::Result<(PathBuf, File)> {
     Ok((path, file))
 }
 
-/// One formatted log line: `<timestamp> <LEVEL> [<thread>] <target>: <message>\n`.
+/// One formatted log line: `<timestamp> <LEVEL> [<thread>] <target>: <message>\n`. A message
+/// of several lines (a backtrace) continues on lines that start with a tab, so a line break in
+/// what a message quotes (a file name, an identifier out of a document) can't pass for the start
+/// of another record; other control characters are written as escapes.
 pub fn format_line(ts: &str, level: log::Level, thread: &str, target: &str, message: &str) -> String {
     let message = message.strip_suffix('\n').unwrap_or(message);
-    format!("{ts} {level:<5} [{thread}] {target}: {message}\n")
+    let mut text = String::with_capacity(message.len());
+    for c in message.chars() {
+        match c {
+            '\n' => text.push_str("\n\t"),
+            '\t' => text.push(c),
+            c if c.is_control() => text.push_str(&c.escape_default().to_string()),
+            c => text.push(c),
+        }
+    }
+    format!("{ts} {level:<5} [{thread}] {target}: {text}\n")
 }
 
 /// Where formatted lines go besides standard error: kept in memory until a file is attached,
@@ -377,7 +369,12 @@ mod tests {
             "2026-10-08T07:59:17.728Z ERROR [main] designcraft_engine::guard: command `frame.create` panicked: boom\n"
         );
         // A multi-line message (a panic with a backtrace) keeps its lines; the record still ends in one newline.
-        assert!(format_line("t", log::Level::Error, "w", "x", "a\nb\n").ends_with("x: a\nb\n"));
+        assert!(format_line("t", log::Level::Error, "w", "x", "a\nb\n").ends_with("x: a\n\tb\n"));
+        // A name out of a document can't write a second record: its line breaks continue this
+        // one and a carriage return or an escape sequence is spelled out.
+        let forged =
+            format_line("t", log::Level::Warn, "w", "x", "cannot open `a.designcraft\n2026-01-01T00:00:00.000Z INFO  [main] x: all good\r\u{1b}[0m`");
+        assert_eq!(forged, "t WARN  [w] x: cannot open `a.designcraft\n\t2026-01-01T00:00:00.000Z INFO  [main] x: all good\\r\\u{1b}[0m`\n");
     }
 
     #[test]
