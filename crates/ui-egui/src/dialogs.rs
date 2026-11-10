@@ -3888,7 +3888,8 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                             .fill(crate::theme::Tokens::get(ui.ctx()).accent_strong),
                     )
                     .clicked()
-                    || (!popup_open && !multiline && ui.input(|i| i.key_pressed(egui::Key::Enter)))
+                    // Find/Change's Enter, with any modifier, is Find Next: its OK changes all.
+                    || (!popup_open && !multiline && d.id != "findChange" && ui.input(|i| i.key_pressed(egui::Key::Enter)))
                 {
                     result = Some(true);
                 }

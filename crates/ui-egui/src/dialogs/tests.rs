@@ -5071,4 +5071,11 @@ fn enter_in_find_change_finds_the_next_match_and_changes_nothing() {
     let st = app.session.doc().unwrap();
     assert_eq!(st.doc.story(designcraft_doc::StoryId(sid.as_u64().unwrap())).unwrap().text, "red and red", "nothing changed");
     assert_eq!(st.selection.text.map(|t| t.range()), Some(0..3), "the first match is selected");
+    for modifiers in [egui::Modifiers::COMMAND, egui::Modifiers::SHIFT] {
+        let enter = egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers };
+        dialog_frame(&mut app, &ctx, screen, vec![enter]);
+        assert!(app.ui.dialog.is_some(), "{modifiers:?}+Enter does not confirm the dialog");
+    }
+    let text = &app.session.doc().unwrap().doc.story(designcraft_doc::StoryId(sid.as_u64().unwrap())).unwrap().text;
+    assert_eq!(text, "red and red", "nothing changed");
 }
