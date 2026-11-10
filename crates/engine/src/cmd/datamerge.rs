@@ -466,8 +466,13 @@ fn add_placeholder(d: &mut Document, sel: &Selection, p: &Value, name: &str) -> 
             return Err(bad("data.placeholder.add", "text placeholders go in a story"));
         }
         let item = explicit_item.or_else(|| sel.items.first().copied()).ok_or_else(|| bad("data.placeholder.add", "select text or a frame"))?;
-        if d.item(item).is_none() {
+        let Some(target) = d.item(item) else {
             return Err(bad("data.placeholder.add", format!("no object with id {}", item.0)));
+        };
+        // A merge fills a QR placeholder as the frame's content; a generated code is a path, so its
+        // content would never change and every record would keep the old code.
+        if role == PlaceholderRole::Qr && target.alt_text.starts_with("QR code: ") {
+            return Err(bad("data.placeholder.add", "a qr placeholder needs an empty graphic frame, not an existing QR code"));
         }
         if matches!(role, PlaceholderRole::Image | PlaceholderRole::Qr)
             && let Some(it) = d.item_mut(item)
