@@ -62,11 +62,7 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     if let Some(item) = chosen_item {
         match rows.iter().find_map(|r| {
             let uses = r["uses"].as_array()?;
-            if uses.iter().any(|u| u["id"].as_u64() == Some(item)) {
-                Some((r["asset"].as_u64()?, uses.len()))
-            } else {
-                None
-            }
+            if uses.iter().any(|u| u["id"].as_u64() == Some(item)) { Some((r["asset"].as_u64()?, uses.len())) } else { None }
         }) {
             Some((asset, uses)) => {
                 chosen = Some(asset);
@@ -150,9 +146,8 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
                     let Some(item) = u["id"].as_u64() else { continue };
                     // Placement-level commands target ordinary page/group graphics. Anchored or
                     // inline occurrences are still listed, but use the shared source row.
-                    let selectable = app.session.active().is_some_and(|st| {
-                        st.doc.item(designcraft_doc::ItemId(item)).and_then(|it| it.graphic()).is_some()
-                    });
+                    let selectable =
+                        app.session.active().is_some_and(|st| st.doc.item(designcraft_doc::ItemId(item)).and_then(|it| it.graphic()).is_some());
                     let page = u["page"].as_str().unwrap_or("PB");
                     let label = format!("↳ {name} {}", index + 1);
                     let selected = chosen == Some(aid) && chosen_item == Some(item);
@@ -171,9 +166,11 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
                     let low = u["ppi"].as_f64().is_some_and(|p| p < 150.0);
                     crate::rtl::label(
                         ui,
-                        egui::RichText::new(format!("{page}{ppi}"))
-                            .size(11.0)
-                            .color(if low { egui::Color32::from_rgb(0xe8, 0xb3, 0x2c) } else { t.text_dim }),
+                        egui::RichText::new(format!("{page}{ppi}")).size(11.0).color(if low {
+                            egui::Color32::from_rgb(0xe8, 0xb3, 0x2c)
+                        } else {
+                            t.text_dim
+                        }),
                     );
                     ui.end_row();
                 }
@@ -207,10 +204,7 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     {
         let name = r["name"].as_str().unwrap_or("");
         if let Some(item) = chosen_item {
-            let index = r["uses"]
-                .as_array()
-                .and_then(|uses| uses.iter().position(|u| u["id"].as_u64() == Some(item)))
-                .map_or(1, |i| i + 1);
+            let index = r["uses"].as_array().and_then(|uses| uses.iter().position(|u| u["id"].as_u64() == Some(item))).map_or(1, |i| i + 1);
             crate::rtl::label(ui, egui::RichText::new(format!("Placement {index} of {name}")).strong().size(11.0));
             crate::rtl::label(
                 ui,
@@ -268,7 +262,13 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         if update.clicked() {
             update_links(app, source_target.clone());
         }
-        let embed_label = if is_text { "Unlink" } else if placement_scope { "Embed All" } else { "Embed" };
+        let embed_label = if is_text {
+            "Unlink"
+        } else if placement_scope {
+            "Embed All"
+        } else {
+            "Embed"
+        };
         let mut embed = ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, embed_label)));
         if placement_scope {
             embed = embed.on_hover_text("Embed applies to the shared source and therefore affects all placements.");
