@@ -328,9 +328,10 @@ fn pin_para_default<T: Clone>(doc: &mut Document, field: fn(&mut ParaAttrs) -> &
             *field(&mut s.para) = Some(old.clone());
         }
     }
-    let names: std::collections::HashSet<String> = doc.styles.paragraph.iter().map(|s| s.name.clone()).collect();
+    // Borrowed names: one entry per style already in memory, so no copy and no extra bound needed.
+    let names: std::collections::HashSet<&str> = doc.styles.paragraph.iter().map(|s| s.name.as_str()).collect();
     let mut pin = |st: &mut Story| {
-        for p in st.paras.iter_mut().filter(|p| !names.contains(&p.style)) {
+        for p in st.paras.iter_mut().filter(|p| !names.contains(p.style.as_str())) {
             let v = field(&mut p.para);
             if v.is_none() {
                 *v = Some(old.clone());
