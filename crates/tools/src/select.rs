@@ -1429,7 +1429,12 @@ impl Tool for SelectionTool {
                 return vec![Action::Begin("Move Anchored Image Content".into())];
             }
             self.drag = Drag::None;
-            return vec![Action::Exec("selection.set".into(), json!({"ids": [id.0]}))];
+            // Match ordinary item selection: Shift toggles membership, while Command
+            // preserves the existing selection and adds the clicked graphic.
+            if ev.mods.shift {
+                return vec![Action::Exec("selection.toggle".into(), json!({"id": id.0}))];
+            }
+            return vec![Action::Exec("selection.set".into(), if ev.mods.cmd { json!({"ids": [id.0], "add": true}) } else { json!({"ids": [id.0]}) })];
         }
         match ev.kind {
             PointerKind::Move => {
@@ -1789,6 +1794,24 @@ mod anchored_transform_tests {
         let loaded = tool.pointer(&cx, &PointerEvent::new(PointerKind::Down, p.x, p.y));
         assert!(loaded.is_empty(), "loaded text cursor should handle the press: {loaded:?}");
         assert!(matches!(tool.drag, Drag::Place { .. }));
+    }
+
+    /// Verify modifier-clicks preserve or toggle selection for anchored graphics.
+    #[test]
+    fn anchored_image_modifier_click_respects_selection_membership() {
+        let (d, _, anchored, p) = anchored_fixture();
+        let selection = Selection::default();
+        let cache = Cache::new();
+        let layout = CanvasLayout::new(&d, false);
+        let cx = context(&d, &selection, &cache, &layout, 1.0);
+        for (mods, command, params) in [
+            (Mods { shift: true, ..Default::default() }, "selection.toggle", json!({"id": anchored.0})),
+            (Mods { cmd: true, ..Default::default() }, "selection.set", json!({"ids": [anchored.0], "add": true})),
+        ] {
+            let mut tool = SelectionTool::new(false);
+            let actions = tool.pointer(&cx, &PointerEvent::new(PointerKind::Down, p.x, p.y).with_mods(mods));
+            assert_eq!(actions, vec![Action::Exec(command.into(), params)]);
+        }
     }
 
     /// Ensure a double click can enter text editing over anchored graphics.
