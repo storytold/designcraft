@@ -1,5 +1,20 @@
 /// English → [German, French, Spanish, Japanese, Simplified Chinese].
 pub(super) const TABLE: &[(&str, [&str; 5])] = &[
+    ("{count} Selected", ["{count} ausgewählt", "{count} sélectionné(s)", "{count} seleccionado(s)", "{count} 個を選択", "已选择 {count} 个"]),
+    (
+        "Update All Links",
+        ["Alle Verknüpfungen aktualisieren", "Mettre à jour tous les liens", "Actualizar todos los vínculos", "すべてのリンクを更新", "更新所有链接"],
+    ),
+    (
+        "More Link Options",
+        ["Weitere Verknüpfungsoptionen", "Autres options de lien", "Más opciones de vínculo", "その他のリンクオプション", "更多链接选项"],
+    ),
+    ("Link Info", ["Verknüpfungsinformationen", "Informations sur le lien", "Información de vínculo", "リンク情報", "链接信息"]),
+    ("Next Link", ["Nächste Verknüpfung", "Lien suivant", "Vínculo siguiente", "次のリンク", "下一个链接"]),
+    ("Previous Link", ["Vorherige Verknüpfung", "Lien précédent", "Vínculo anterior", "前のリンク", "上一个链接"]),
+    ("Format", ["Format", "Format", "Formato", "形式", "格式"]),
+    ("Dimensions", ["Abmessungen", "Dimensions", "Dimensiones", "寸法", "尺寸"]),
+    ("Effective PPI", ["Effektive ppi", "ppi effectif", "PPI efectivo", "有効 ppi", "有效 PPI"]),
     ("Keep In Frame", ["Im Rahmen behalten", "Conserver dans le bloc", "Mantener en el marco", "フレーム内に保持", "保持在框架内"]),
     ("Next Style:", ["Nächstes Format:", "Style suivant :", "Estilo siguiente:", "次のスタイル :", "下一样式："]),
     ("[Same style]", ["[Gleiches Format]", "[Même style]", "[Mismo estilo]", "[同じスタイル]", "[相同样式]"]),
@@ -4149,6 +4164,17 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ("unused", ["unused", "inutilisé", "unused", "unused", "未使用"]),
     ("⚠ Missing", ["⚠ Missing", "⚠ Manquant", "⚠ Missing", "⚠ Missing", "⚠ 缺失"]),
     ("▲ Modified", ["▲ Modified", "▲ Modifié", "▲ Modified", "▲ Modified", "▲ 已修改"]),
+    // The Links panel's status labels (tooltip, Link Info).
+    (
+        "Too large to check",
+        [
+            "Zu groß zum Prüfen",
+            "Trop volumineux pour être vérifié",
+            "Demasiado grande para comprobarlo",
+            "大きすぎて確認できません",
+            "太大，无法检查",
+        ],
+    ),
     ("(Text Color)", ["(Text Color)", "(Couleur du texte)", "(Text Color)", "(Text Color)", "（文本颜色）"]),
     (
         "{count} glyphs — click to insert at the text cursor",
