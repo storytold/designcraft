@@ -809,15 +809,20 @@ fn find_next(s: &mut Session, p: &Value) -> Result<Value> {
 #[cfg(test)]
 mod tests;
 
-/// The frame that shows byte `at` of story `sid`: for a story threaded through several frames,
-/// its composition as displayed tells (a table cell's text shows in its story's first frame).
+/// The frame that shows byte `at` of story `sid`, or of its table cell: for a story threaded
+/// through several frames, its composition as displayed tells (a footnote's text, its first frame).
 fn hit_frame(cache: &designcraft_compose::Cache, d: &Document, sid: StoryId, cell: Option<CellAddr>, at: usize) -> Option<designcraft_doc::ItemId> {
     let first = d.story(sid).and_then(|x| x.frames.first().copied());
-    if cell.is_some() || d.story(sid).is_none_or(|x| x.frames.len() < 2) {
+    if d.story(sid).is_none_or(|x| x.frames.len() < 2) {
         return first;
     }
     let cs = cache.get(d, sid, None);
-    designcraft_compose::caret(&cs, at).and_then(|(fi, ..)| cs.frames.get(fi)).map(|f| f.frame).or(first)
+    let fi = match cell {
+        Some(c) if c.footnote_id().is_some() => None,
+        Some(c) => designcraft_compose::find_cell(&cs, c.table, c.row, c.col).map(|(fi, ..)| fi),
+        None => designcraft_compose::caret(&cs, at).map(|(fi, ..)| fi),
+    };
+    fi.and_then(|fi| cs.frames.get(fi)).map(|f| f.frame).or(first)
 }
 
 /// Objects matching Find/Change › Object criteria, in document order (nested ones included).

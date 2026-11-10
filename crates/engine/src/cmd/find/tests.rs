@@ -1012,3 +1012,22 @@ fn a_change_in_another_story_keeps_the_text_before_the_caret_bounded() {
     scope_hit(&mut s, &p, a, 0, 3);
     assert_eq!(s.execute("find.next", &p).unwrap(), serde_json::Value::Null);
 }
+
+/// A match in a table cell selects the threaded frame that shows that cell.
+#[test]
+fn find_next_selects_the_threaded_frame_that_shows_the_cell() {
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    let first = s.execute("frame.create", &json!({"rect": [36, 36, 300, 120], "content": "text", "text": ""})).unwrap();
+    let second = s.execute("frame.create", &json!({"rect": [36, 200, 300, 760], "content": "unassigned"})).unwrap();
+    s.execute("text.thread", &json!({"from": first["id"], "to": second["id"]})).unwrap();
+    let sid = first["story"].as_u64().unwrap();
+    s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": 0})).unwrap();
+    s.execute("table.insert", &json!({"rows": 20, "cols": 1})).unwrap();
+    s.execute("table.setCell", &json!({"row": 19, "col": 0, "text": "zebra"})).unwrap();
+    s.execute("selection.set", &json!({"ids": []})).unwrap();
+    let hit = s.execute("find.next", &json!({"find": "zebra"})).unwrap();
+    assert_eq!(hit["cell"]["row"], 19, "{hit}");
+    let frame = s.doc().unwrap().selection.text.and_then(|t| t.frame).map(|f| f.0);
+    assert_eq!(frame, second["id"].as_u64());
+}

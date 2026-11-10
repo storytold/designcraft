@@ -3120,6 +3120,16 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                         });
                     }
                     "findChange" => {
+                        // Enter, with any modifier, is Find Next, as in InDesign. It is taken before a
+                        // field, checkbox or button here sees it: the fields keep focus, a focused
+                        // checkbox doesn't toggle, and neither OK nor Change All is ever pressed by it.
+                        let enter = !popup_open
+                            && ui.input_mut(|i| {
+                                let is_enter = |e: &egui::Event| matches!(e, egui::Event::Key { key: egui::Key::Enter, .. });
+                                let pressed = i.events.iter().any(|e| is_enter(e) && matches!(e, egui::Event::Key { pressed: true, .. }));
+                                i.events.retain(|e| !is_enter(e));
+                                pressed
+                            });
                         ui.horizontal(|ui| {
                             for (label, grep) in [("Text", false), ("GREP", true)] {
                                 if ui
@@ -3287,8 +3297,6 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                                     Ok(_) => crate::i18n::tr(&app.ui.language, "Found").to_string(),
                                     Err(e) => e,
                                 };
-                                // Enter is Find Next, as in InDesign, never the dialog's OK (Change All).
-                                let enter = !popup_open && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
                                 if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Find Next"))).clicked() || enter {
                                     let r = app.run("find.next", params());
                                     let msg = next_status(app, r);
