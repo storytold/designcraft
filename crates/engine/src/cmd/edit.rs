@@ -223,6 +223,7 @@ fn strip_objects(st: &designcraft_doc::Story) -> designcraft_doc::Story {
     out
 }
 
+/// Describe the available clipboard, undo, and editing commands.
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(noundo "edit.undo", "Undo", ["Edit"], Some("Cmd+Z"), "{}", can_undo, |s, _| {

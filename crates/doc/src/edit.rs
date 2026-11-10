@@ -993,6 +993,7 @@ mod placed_item_tests {
         assert!(!group.takes_graphic(), "a group of images is not a frame");
     }
 
+    /// Verify nested placement edits preserve unrelated copy-on-write branches.
     #[test]
     fn exhaustive_placements_keep_unselected_branches_shared() {
         let mut d = Document::new(&Default::default());
@@ -1022,6 +1023,7 @@ mod placed_item_tests {
         assert!(d.parents.iter().zip(&unchanged.parents).all(|(a, b)| Arc::ptr_eq(a, b)));
         assert!(d.stories.iter().all(|(id, st)| Arc::ptr_eq(st, &unchanged.stories[id])));
     }
+    /// Verify recursive placement traversal respects its maximum nesting depth.
     #[test]
     fn exhaustive_placements_bound_nested_stories_and_groups() {
         let mut d = Document::new(&Default::default());

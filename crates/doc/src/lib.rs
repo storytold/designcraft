@@ -1134,6 +1134,7 @@ impl Document {
             }
             // Caption references must be local, one-to-one, and target anchored text,
             // including table cells, footnotes, and endnotes.
+            /// Validate one-to-one caption links within one text scope and its nested scopes.
             fn check_captions(st: &Story, sid: StoryId) -> Result<()> {
                 let mut claimed_captions = std::collections::HashSet::new();
                 for obj in &st.objects {

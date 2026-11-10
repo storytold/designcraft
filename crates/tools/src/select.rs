@@ -581,12 +581,14 @@ fn nearest_handle(bounds: Rect, p: Point, tol: f64) -> Option<usize> {
         .map(|(i, _)| i)
 }
 
+/// Find the nearest handle for the selected placed graphic.
 fn content_handle_at(cx: &ToolContext, p: Point) -> Option<(ItemId, usize)> {
     let (id, b) = selected_graphic(cx)?;
     let tol = cx.tol(5.0);
     nearest_handle(b, p, tol).map(|h| (id, h))
 }
 
+/// Find an ordinary selection handle, excluding graphic-content handles.
 fn handle_at(cx: &ToolContext, p: Point) -> Option<usize> {
     // With a placed graphic selected, the handles are the graphic's, not the frame's.
     if selected_graphic(cx).is_some() {
@@ -1101,6 +1103,7 @@ impl SelectionTool {
         vec![Action::Preview("transform.move".into(), params)]
     }
 
+    /// Preview the active selection drag with its matching transform command.
     fn pointer_drag(&mut self, cx: &ToolContext, ev: &PointerEvent) -> Vec<Action> {
         let p = ev.pos;
         match self.drag.clone() {
@@ -1353,6 +1356,7 @@ impl Tool for SelectionTool {
         if self.direct { "directSelection" } else { "selection" }
     }
 
+    /// Dispatch selection pointer events for anchored graphics and ordinary frames.
     fn pointer(&mut self, cx: &ToolContext, ev: &PointerEvent) -> Vec<Action> {
         let p = ev.pos;
         // Selecting something else ends live-corner editing.
@@ -1566,6 +1570,7 @@ impl Tool for SelectionTool {
         }
     }
 
+    /// Draw selection feedback, including selected anchored-graphic handles.
     fn overlays(&self, cx: &ToolContext) -> Vec<Overlay> {
         let mut out = match &self.drag {
             Drag::Place { start, cur } if crate::thread::is_drag(cx, *start, *cur) => {
@@ -1602,6 +1607,7 @@ impl Tool for SelectionTool {
         out
     }
 
+    /// Choose the cursor for the current drag, handle, or hit target.
     fn cursor(&self, cx: &ToolContext, p: Point, _m: Mods) -> Cursor {
         if let Drag::Move { content: true, .. } = self.drag {
             return Cursor::HandGrab;

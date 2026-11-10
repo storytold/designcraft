@@ -553,6 +553,7 @@ mod placed_layer_tests {
         }
     }
 
+    /// Verify PDF layer selection survives flattening for this placement.
     fn check_choice(location: &str, all_on: bool) {
         let mut s = Session::new();
         s.execute("file.new", &json!({"width": 100, "height": 100, "pages": 1})).unwrap();

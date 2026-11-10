@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 use super::{CommandSpec, bad, cmd, has_doc, str_param};
 use crate::{Result, Session};
 
+/// Describe the commands for inserting, editing, and releasing anchored objects.
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(
@@ -397,6 +398,7 @@ fn options(s: &mut Session, p: &Value) -> Result<Value> {
     })
 }
 
+/// Move an anchored object back to its spread while preserving its visual placement.
 fn release(s: &mut Session, p: &Value) -> Result<Value> {
     let (sid, k) = object_ref(s, p, "anchored.release")?;
     let d0 = s.doc()?.doc.clone();

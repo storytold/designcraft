@@ -6050,6 +6050,7 @@ mod anchored_copy_tests {
         assert_reopens(doc);
     }
 
+    /// Verify repeated paste assigns distinct IDs to copied anchored objects.
     #[test]
     fn pasting_a_frame_with_an_anchored_object_twice_keeps_ids_unique() {
         let mut s = Session::new();
@@ -6097,6 +6098,7 @@ mod anchored_copy_tests {
     }
 
     // IDML import can anchor a text frame; its story is copied too, with the copy in its thread.
+    /// Verify copying an anchored text frame also duplicates its nested story.
     #[test]
     fn an_anchored_text_frame_gets_its_own_story_copy() {
         let mut d = Document::new(&designcraft_doc::build::NewDocument::default());
