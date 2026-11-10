@@ -100,6 +100,7 @@ pub fn specs() -> Vec<CommandSpec> {
                     return Err(bad("spelling.change", "range must address original UTF-8 character boundaries"));
                 }
                 st.replace(a..b, &to);
+                d.adjust_text_ranges(sid, a..b, to.len());
                 // The selection follows the text: a selected word stays selected at its new length.
                 let end = a + to.len();
                 let follow = |pos: usize| {

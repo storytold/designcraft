@@ -28,6 +28,8 @@ pub mod export_batch_dialog;
 pub mod i18n;
 pub mod icons;
 pub mod keys;
+#[cfg(not(target_arch = "wasm32"))]
+mod links_worker;
 pub mod menus;
 mod modal_drag;
 mod new_document;
@@ -152,6 +154,10 @@ pub struct DesignApp {
     pub(crate) page_history: HashMap<u64, page_history::PageHistory>,
     /// The canvas cache and rect of the pane in `pane` (the other pane's are in `other_pane`).
     pub canvas: CanvasCache,
+    /// Native link checks run separately because an unavailable network share may block for an
+    /// operating-system timeout.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) links_worker: links_worker::State,
     pub canvas_rect: Option<egui::Rect>,
     /// Window › Arrange › Split Window: two views of the document side by side.
     pub split: bool,
