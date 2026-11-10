@@ -16,6 +16,7 @@ mod hu;
 mod it;
 mod ja;
 mod ka;
+mod nl;
 mod pl;
 mod pt_br;
 mod ru;
@@ -40,6 +41,7 @@ pub const LANGUAGES: &[(&str, &str)] = &[
     ("ka", "ქართული"),
     ("hu", "Magyar"),
     ("sv", "Svenska"),
+    ("nl", "Nederlands"),
 ];
 
 /// The interface languages in the order the Preferences picker lists them: English first (the
@@ -101,6 +103,7 @@ fn lookup<'a>(lang: &str, s: &'a str) -> &'a str {
         return HUNGARIAN.get_or_init(|| hu::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
     }
     static SWEDISH: OnceLock<HashMap<&str, &str>> = OnceLock::new();
+    static DUTCH: OnceLock<HashMap<&str, &str>> = OnceLock::new();
     if lang == "ar" {
         return ARABIC.get_or_init(|| ar::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
     }
@@ -137,6 +140,9 @@ fn lookup<'a>(lang: &str, s: &'a str) -> &'a str {
     if lang == "sv" {
         return SWEDISH.get_or_init(|| sv::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
     }
+    if lang == "nl" {
+        return DUTCH.get_or_init(|| nl::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
+    }
     if lang == "uk" {
         return UKRAINIAN.get_or_init(|| uk::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
     }
@@ -167,6 +173,7 @@ pub fn tr_context<'a>(lang: &str, s: &'a str, context: &str) -> &'a str {
         "ja" => ja::CONTEXT,
         "ar" => ar::CONTEXT,
         "sv" => sv::CONTEXT,
+        "nl" => nl::CONTEXT,
         _ => &[],
     };
     let written = |text: &&str| !text.trim().is_empty();
@@ -198,6 +205,12 @@ pub(crate) fn swedish_has(s: &str) -> bool {
     sv::TABLE.iter().any(|(key, _)| *key == s)
 }
 
+/// Whether the Dutch catalog has an entry for `s` (many Dutch labels read like the English ones).
+#[cfg(test)]
+pub(crate) fn dutch_has(s: &str) -> bool {
+    nl::TABLE.iter().any(|(key, _)| *key == s)
+}
+
 /// Ukrainian, Russian, Polish and Georgian put the category before the value in count captions
 /// ("сторінок: 5", "страниц: 5", "Strony: 5", "გვერდი: 5"): every number stays grammatical in the
 /// languages with several plural forms, and Georgian nouns stay singular after numerals. Other
@@ -217,8 +230,22 @@ fn swedish_singular(noun: &str) -> Option<&'static str> {
     }
 }
 
+/// Dutch singular for a count of one, where it differs from the catalog's plural ("1 pagina",
+/// "5 pagina's"); "objecten", "lagen" and the rest follow the same rule.
+fn dutch_singular(noun: &str) -> Option<&'static str> {
+    match noun {
+        "pages" => Some("pagina"),
+        "stories" => Some("artikel"),
+        "warnings" => Some("waarschuwing"),
+        "errors" => Some("fout"),
+        "objects" => Some("object"),
+        "layers" => Some("laag"),
+        _ => None,
+    }
+}
+
 /// Caption for a counted category, e.g. `count_label("ru", "pages", 5)` is "страниц: 5". Czech
-/// picks the plural form for the count (1, 2–4, other); Swedish the singular for one.
+/// picks the plural form for the count (1, 2–4, other); Swedish and Dutch the singular for one.
 pub fn count_label(lang: &str, noun: &str, count: usize) -> String {
     if category_first(lang) {
         return format!("{}: {count}", tr(lang, noun));
@@ -226,6 +253,12 @@ pub fn count_label(lang: &str, noun: &str, count: usize) -> String {
     if lang == "sv"
         && count == 1
         && let Some(one) = swedish_singular(noun)
+    {
+        return format!("{count} {one}");
+    }
+    if lang == "nl"
+        && count == 1
+        && let Some(one) = dutch_singular(noun)
     {
         return format!("{count} {one}");
     }
@@ -301,6 +334,40 @@ mod swedish_tests {
         assert_eq!(count_label("sv", "pages", 1), "1 sida");
         assert_eq!(count_label("sv", "warnings", 1), "1 varning");
         assert_eq!(count_label("sv", "errors", 1), "1 fel");
+    }
+}
+
+#[cfg(test)]
+mod dutch_tests {
+    use super::*;
+
+    #[test]
+    fn dutch_catalog_preserves_placeholders_and_ellipses() {
+        let catalog: HashMap<_, _> = nl::TABLE.iter().copied().collect();
+        assert_eq!(catalog.len(), nl::TABLE.len(), "duplicate Dutch keys");
+        let placeholders = |s: &str| {
+            s.split('{').skip(1).filter_map(|part| part.split_once('}').map(|(name, _)| name.to_owned())).collect::<std::collections::BTreeSet<_>>()
+        };
+        for (key, translation) in nl::TABLE {
+            assert!(!translation.trim().is_empty(), "empty {key}");
+            assert_eq!(placeholders(key), placeholders(translation), "placeholders: {key}");
+            assert_eq!(key.ends_with('…'), translation.ends_with('…'), "ellipsis: {key}");
+            assert_eq!(tr("nl", key), *translation, "nl: {key}");
+        }
+        let contexts: std::collections::HashSet<_> = nl::CONTEXT.iter().map(|(key, scope, _)| (*key, *scope)).collect();
+        assert_eq!(contexts.len(), nl::CONTEXT.len(), "duplicate Dutch context keys");
+        for (key, context, expected) in nl::CONTEXT {
+            assert_eq!(placeholders(key), placeholders(expected), "placeholders: {key} ({context})");
+            assert_eq!(tr_context("nl", key, context), *expected, "nl {context}: {key}");
+        }
+        assert_eq!(tr("nl", "File"), "Bestand");
+        assert_eq!(tr("nl", "Save As…"), "Opslaan als…");
+        assert_eq!(tr("nl", "Unknown label"), "Unknown label");
+        assert!(!is_rtl("nl"));
+        assert_eq!(count_label("nl", "pages", 5), "5 pagina's");
+        assert_eq!(count_label("nl", "pages", 1), "1 pagina");
+        assert_eq!(count_label("nl", "warnings", 1), "1 waarschuwing");
+        assert_eq!(count_label("nl", "errors", 1), "1 fout");
     }
 }
 
