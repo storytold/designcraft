@@ -197,8 +197,8 @@ fn links_panel_exposes_individual_placements_and_makes_action_scope_clear() {
     h.run_steps(3);
     assert_eq!(h.state().session.active().unwrap().selection.items, vec![second]);
 
-    // Choosing the source row clears placement scope and restores source-wide labels.
-    h.get_by_label(path).click();
+    // Choosing the source name button clears placement scope and restores source-wide labels.
+    h.get_by_label("photo.svg").click();
     h.run_steps(3);
     let _ = h.get_by_label("Update");
     let _ = h.get_by_label("Embed");

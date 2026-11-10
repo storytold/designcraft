@@ -114,6 +114,7 @@ fn story_param(p: &Value) -> Option<StoryId> {
     p.get("story").and_then(Value::as_u64).map(StoryId)
 }
 
+/// The mutually exclusive target accepted by placement/source Links commands.
 #[derive(Clone, Copy)]
 enum LinkSelector {
     Asset(AssetId),
@@ -133,19 +134,13 @@ fn link_selector(p: &Value, cmd: &str) -> Result<LinkSelector> {
     let asset = id("asset")?;
     let item = id("item")?;
     let story = id("story")?;
-    let count = [asset.is_some(), item.is_some(), story.is_some()].into_iter().filter(|present| *present).count();
-    if count == 0 {
-        return Err(bad(cmd, "give exactly one of `asset`, `item`, or `story`"));
+    match (asset, item, story) {
+        (Some(id), None, None) => Ok(LinkSelector::Asset(AssetId(id))),
+        (None, Some(id), None) => Ok(LinkSelector::Item(ItemId(id))),
+        (None, None, Some(id)) => Ok(LinkSelector::Story(StoryId(id))),
+        (None, None, None) => Err(bad(cmd, "give exactly one of `asset`, `item`, or `story`")),
+        _ => Err(bad(cmd, "`asset`, `item`, and `story` are mutually exclusive")),
     }
-    if count > 1 {
-        return Err(bad(cmd, "`asset`, `item`, and `story` are mutually exclusive"));
-    }
-    Ok(match (asset, item, story) {
-        (Some(id), None, None) => LinkSelector::Asset(AssetId(id)),
-        (None, Some(id), None) => LinkSelector::Item(ItemId(id)),
-        (None, None, Some(id)) => LinkSelector::Story(StoryId(id)),
-        _ => unreachable!(),
-    })
 }
 
 /// FNV-1a (64-bit) of `bytes`, in hex: a linked text file's fingerprint.
@@ -593,7 +588,10 @@ fn relink(s: &mut Session, p: &Value) -> Result<Value> {
         return r;
     }
 
-    let LinkSelector::Asset(aid) = selector else { unreachable!() };
+    let aid = match selector {
+        LinkSelector::Asset(aid) => aid,
+        LinkSelector::Item(_) | LinkSelector::Story(_) => return Err(bad("links.relink", "unsupported selector")),
+    };
     let a = s.doc()?.doc.assets.get(&aid).ok_or_else(|| bad("links.relink", "no such graphic"))?;
     // Build the replacement before the edit: a file that cannot be read leaves the document as it was.
     let fresh = relinked_asset(a, Path::new(&path), &path)?;
