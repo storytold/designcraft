@@ -1517,11 +1517,14 @@ fn position_line(input: PositionLineInput<'_, '_>) -> LinePosition {
                         }
                         _ => n.max(1),
                     };
+                    // A frame grid's `g_start` moves with the line's reference, so the end of a band
+                    // is kept from the row tops and taken back to this line's reference here.
+                    let row_shift = f.frame_grid.map_or(0.0, |rows| g_start - rows.top);
                     // At the top of a column, a frame grid's first row is free: gyoudori given starts there.
                     let free = cur
                         .grid_next
                         .filter(|(b, _)| cur.last_baseline == Some(*b))
-                        .map(|(_, y)| y)
+                        .map(|(_, y)| y + row_shift)
                         .or_else(|| (f.frame_grid.is_some() && cur.last_baseline.is_none()).then_some(g_start));
                     let band = grid::Band {
                         natural: em_start.unwrap_or(baseline) + r,
@@ -1533,6 +1536,7 @@ fn position_line(input: PositionLineInput<'_, '_>) -> LinePosition {
                         at_reference: f.frame_grid.is_some(),
                     };
                     let (y, end) = grid::place((g_start, inc), pp.grid_reference, band);
+                    let end = end - row_shift;
                     baseline = y - r;
                     grid_end = Some(end);
                     if block {

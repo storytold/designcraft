@@ -172,6 +172,19 @@ fn gyoudori_given_is_used_as_given() {
 }
 
 #[test]
+fn a_paragraph_aligned_higher_in_its_row_takes_the_next_row() {
+    // Em Box Bottom, then Em Box Top (and the reverse, and Roman Baseline after Em Box Top): the
+    // second paragraph goes on the row after the first, not one row further.
+    for (a, b) in [(R::EmBottom, R::EmTop), (R::EmTop, R::EmBottom), (R::EmTop, R::Baseline), (R::Baseline, R::EmTop)] {
+        let (lines, rows) = grid_lines("AB\nCD", aligned(a), |d, sid| {
+            d.story_mut(sid).unwrap().format_paras(3..5, |p| p.para.grid_reference = Some(b));
+        });
+        let tops: Vec<f64> = lines.iter().map(|l| ((em_box(l).0 - rows.top) / rows.pitch).round()).collect();
+        assert_eq!(tops, [0.0, 1.0], "{a:?} then {b:?}");
+    }
+}
+
+#[test]
 fn space_before_moves_a_line_to_the_next_row_it_reaches() {
     // Space before 20 takes the next line past row 1 to row 2; 5 keeps it on row 1.
     for (space, row) in [(5.0, 1.0), (20.0, 2.0)] {
