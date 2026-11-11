@@ -854,6 +854,30 @@ fn tiling_rows_first_bottom_inset_and_refusals() {
     assert_eq!(s.documents().len(), before);
 }
 
+/// A two-page template merged for three records: six pages made in one insertion, each record's
+/// frame on its own pages, in record order.
+#[test]
+fn a_two_page_template_merges_onto_consecutive_pages() {
+    let mut s = Session::new();
+    new_doc(&mut s, 2);
+    text_frame(&mut s, [72.0, 72.0, 172.0, 172.0], "<<Name>>", None);
+    select_csv(&mut s, "Name\nA\nB\nC\n");
+    let r = exec(&mut s, "data.merge", json!({}));
+    assert_eq!(r["pages"], 6);
+    let d = &s.documents()[s.active_index().unwrap()].doc;
+    assert_eq!(d.page_count(), 6);
+    let mut at: Vec<(usize, String)> = Vec::new();
+    for st in d.stories.values() {
+        let f = d.item(*st.frames.first().unwrap()).unwrap();
+        let sp = d.spreads.iter().position(|sp| sp.items.iter().any(|i| i.id == f.id)).unwrap();
+        let page = d.first_page_of_spread(sp) + d.spreads[sp].page_at_x(f.bounds().center().x).unwrap_or(0);
+        at.push((page, st.text.clone()));
+    }
+    at.sort();
+    assert_eq!(at, vec![(0, "A".to_string()), (2, "B".to_string()), (4, "C".to_string())]);
+    d.check().unwrap();
+}
+
 /// An IME delete-surrounding while a record is previewed edits the template, not the filled
 /// record, and its undo step restores the template.
 #[test]
