@@ -129,8 +129,12 @@ pub(crate) fn parse(xml: &str) -> Result<El, ImportError> {
                     "gt" => ">".into(),
                     "quot" => "\"".into(),
                     "apos" => "'".into(),
-                    n if n.starts_with("#x") => u32::from_str_radix(&n[2..], 16).ok().and_then(char::from_u32).map(String::from).unwrap_or_default(),
-                    n if n.starts_with('#') => n[1..].parse::<u32>().ok().and_then(char::from_u32).map(String::from).unwrap_or_default(),
+                    n if n.starts_with("#x") && n[2..].bytes().all(|b| b.is_ascii_hexdigit()) => {
+                        u32::from_str_radix(&n[2..], 16).ok().and_then(char::from_u32).map(String::from).unwrap_or_default()
+                    }
+                    n if n.starts_with('#') && !n.starts_with("#x") && n[1..].bytes().all(|b| b.is_ascii_digit()) => {
+                        n[1..].parse::<u32>().ok().and_then(char::from_u32).map(String::from).unwrap_or_default()
+                    }
                     _ => String::new(),
                 };
                 if let Some(p) = stack.last_mut() {

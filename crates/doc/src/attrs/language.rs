@@ -93,6 +93,7 @@ pub fn language_tag(language: &str) -> Option<&'static str> {
         "urdu" => "ur",
         "hebrew" => "he",
         "georgian" => "ka",
+        "esperanto" => "eo",
         _ => return None,
     })
 }

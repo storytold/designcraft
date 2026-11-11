@@ -189,8 +189,11 @@ impl<'r> Importer<'r> {
         if let Some(tint) = tint(ce.num("FillTint")) {
             cell.fill_tint = tint;
         }
-        for (i, k) in ["TopInset", "LeftInset", "BottomInset", "RightInset"].iter().enumerate() {
-            if let Some(v) = ce.num(k) {
+        // Current InDesign writes `TextTopInset` and so on; the older `TopInset` names are the fallback.
+        let inset_names =
+            [("TextTopInset", "TopInset"), ("TextLeftInset", "LeftInset"), ("TextBottomInset", "BottomInset"), ("TextRightInset", "RightInset")];
+        for (i, (text, old)) in inset_names.iter().enumerate() {
+            if let Some(v) = ce.num(text).or_else(|| ce.num(old)) {
                 cell.insets[i] = v.max(0.0);
             }
         }

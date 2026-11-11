@@ -175,17 +175,22 @@ pub fn specs() -> Vec<CommandSpec> {
                 };
                 let text = super::text_param(p, "text");
                 s.edit(|d, sel| {
-                    let st = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
-                    let n = st.len();
-                    if a > b || b > n || !st.text.is_char_boundary(a) || !st.text.is_char_boundary(b) {
-                        let msg = format!("range {a}..{b} must be UTF-8 byte offsets on character boundaries, start <= end; the story is {n} bytes");
-                        return Err(bad("story.replaceRange", msg));
-                    }
-                    st.replace(a..b, &text);
-                    let len = st.len();
+                    let len = {
+                        let st = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
+                        let n = st.len();
+                        if a > b || b > n || !st.text.is_char_boundary(a) || !st.text.is_char_boundary(b) {
+                            let msg =
+                                format!("range {a}..{b} must be UTF-8 byte offsets on character boundaries, start <= end; the story is {n} bytes");
+                            return Err(bad("story.replaceRange", msg));
+                        }
+                        st.replace(a..b, &text);
+                        st.len()
+                    };
+                    d.adjust_text_ranges(sid, a..b, text.len());
                     if let Some(t) = sel.text.as_mut().filter(|t| t.story == sid) {
-                        t.anchor = floor_char_boundary(&st.text, t.anchor);
-                        t.focus = floor_char_boundary(&st.text, t.focus);
+                        let st_text = d.story(sid).map(|st| st.text.as_str()).unwrap_or("");
+                        t.anchor = floor_char_boundary(st_text, t.anchor);
+                        t.focus = floor_char_boundary(st_text, t.focus);
                     }
                     Ok(json!({"length": len}))
                 })
