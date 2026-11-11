@@ -3,7 +3,7 @@
 //! with inline elements, tables as `aid:` tables, untagged ones in tagged text as CALS tables,
 //! paragraphs ending in U+2029), and import of the texts of elements matched by their `Id`.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ops::Range;
 
 use designcraft_compose::xref::XrefIndex;
@@ -457,15 +457,63 @@ pub(super) fn addresses_ids(xml: &str) -> bool {
     texts_by_id(xml).is_ok_and(|t| !t.own.is_empty())
 }
 
+/// The CALS tables in `xml`, as export writes an untagged table, by the place of their start among
+/// the elements: `<table frame="…">` whose first element is a `tgroup`, with no text of its own (not
+/// any element named table).
+fn cals_tables(xml: &str) -> std::result::Result<HashSet<usize>, String> {
+    use quick_xml::events::Event;
+    // Open elements: their place, whether they may be CALS, whether their first element was a
+    // tgroup (none yet: `None`), and whether text of their own came.
+    let mut stack: Vec<(usize, bool, Option<bool>, bool)> = Vec::new();
+    let (mut out, mut n) = (HashSet::new(), 0usize);
+    let mut r = quick_xml::Reader::from_str(xml);
+    loop {
+        match r.read_event().map_err(|e| e.to_string())? {
+            ev @ (Event::Start(_) | Event::Empty(_)) => {
+                let (Event::Start(e) | Event::Empty(e)) = &ev else { continue };
+                if let Some(top) = stack.last_mut() {
+                    top.2.get_or_insert(e.local_name().as_ref() == b"tgroup");
+                }
+                if matches!(ev, Event::Start(_)) {
+                    let cand = e.local_name().as_ref() == b"table" && e.attributes().flatten().any(|a| a.key.as_ref() == b"frame");
+                    stack.push((n, cand, None, false));
+                }
+                n += 1;
+            }
+            Event::End(_) => {
+                if let Some((at, true, Some(true), false)) = stack.pop() {
+                    out.insert(at);
+                }
+            }
+            Event::Text(t) => {
+                if let Some(top) = stack.last_mut() {
+                    top.3 |= !t.decode().map_err(|e| e.to_string())?.trim().is_empty();
+                }
+            }
+            Event::GeneralRef(_) | Event::CData(_) => {
+                if let Some(top) = stack.last_mut() {
+                    top.3 = true;
+                }
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    Ok(out)
+}
+
 fn texts_by_id(xml: &str) -> std::result::Result<IdTexts, String> {
     use quick_xml::events::Event;
+    let cals = cals_tables(xml)?;
     let mut r = quick_xml::Reader::from_str(xml);
     // Open elements: the Id of each one that has one, and whether it is a table (a tagged one,
-    // aid:table="table", or an untagged one written as CALS `<table frame="…">`).
+    // aid:table="table", or an untagged one written as CALS).
     let mut stack: Vec<(Option<String>, bool)> = Vec::new();
     let mut texts = IdTexts::default();
-    let id_of = |e: &quick_xml::events::BytesStart| -> std::result::Result<(Option<String>, bool), String> {
-        let (mut id, mut table, mut frame) = (None, false, false);
+    let mut n = 0usize;
+    let mut id_of = |e: &quick_xml::events::BytesStart| -> std::result::Result<(Option<String>, bool), String> {
+        let (mut id, mut table) = (None, cals.contains(&n));
+        n += 1;
         for a in e.attributes() {
             let a = a.map_err(|e| e.to_string())?;
             let value = a.normalized_value(quick_xml::XmlVersion::Implicit1_0).map_err(|e| e.to_string())?;
@@ -473,12 +521,9 @@ fn texts_by_id(xml: &str) -> std::result::Result<IdTexts, String> {
                 id = Some(value.to_string());
             } else if a.key.as_ref() == b"aid:table" && value == "table" {
                 table = true;
-            } else if a.key.as_ref() == b"frame" {
-                frame = true;
             }
         }
-        // CALS, as export writes an untagged table: `<table frame="…">` (not any element named table).
-        Ok((id, table || (frame && e.local_name().as_ref() == b"table")))
+        Ok((id, table))
     };
     loop {
         match r.read_event().map_err(|e| e.to_string())? {
@@ -998,7 +1043,10 @@ fn put_parts(st: &mut Story, range: Range<usize>, parent: Option<u64>, p: &Paren
     own.push(at..range.end);
     for (r, piece) in own.into_iter().zip(pieces).rev() {
         if !r.is_empty() {
+            let (before, start, end) = (st.text.len(), r.start, r.end);
             replace_text(st, r, &piece, d, xrefs);
+            // The stretch as the change left it.
+            own_element(st, start..(end + st.text.len()).saturating_sub(before), parent, d);
         } else if !piece.is_empty() {
             // Between two children (or at an edge): the parent's text, not a child's.
             let mut fmt = st.char_format_at(r.start).clone();
@@ -1007,6 +1055,23 @@ fn put_parts(st: &mut Story, range: Range<usize>, parent: Option<u64>, p: &Paren
         }
     }
     true
+}
+
+/// Text in a parent's own stretch `range` of `st` that took a neighbour's element (a child's, or
+/// one outside the parent) goes back to the parent; elements without an Id inside it stay.
+fn own_element(st: &mut Story, range: Range<usize>, parent: Option<u64>, d: &Document) {
+    let leaked: Vec<Range<usize>> = st
+        .runs()
+        .filter(|(r, _)| r.start < range.end && r.end > range.start)
+        .filter(|(_, f)| match f.over.xml_element.filter(|id| *id != 0) {
+            Some(id) => child_of(d, id, parent).is_some() || parent.is_some_and(|p| !chain_of(d, id).contains(&p)),
+            None => parent.is_some(),
+        })
+        .map(|(r, _)| r.start.max(range.start)..r.end.min(range.end))
+        .collect();
+    for r in leaked {
+        st.format_chars(r, |f| f.over.xml_element = parent);
+    }
 }
 
 #[cfg(test)]
@@ -1446,6 +1511,59 @@ mod tests {
         assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().text, "Hallo-We-t");
     }
 
+    /// "Hallo Welt" with element 3 (Id P) over `parent` and its element 4 (Id C) over "Welt".
+    fn parent_and_child(parent: Option<std::ops::Range<usize>>) -> (Session, StoryId) {
+        let (mut s, sid) = tagged();
+        s.edit(|d, _| {
+            let el = |tag: &str, id: &str, parent: u64| XmlElement {
+                tag: tag.into(),
+                attrs: vec![("Id".into(), id.into())],
+                parent,
+                content: XmlContent::Text,
+                children: Vec::new(),
+            };
+            d.xml.elements.insert(3, el("Outer", "P", 1));
+            d.xml.elements.insert(4, el("Inner", "C", 3));
+            if let Some(st) = d.story_mut(sid) {
+                if let Some(r) = parent.clone() {
+                    st.format_chars(r, |f| f.over.xml_element = Some(3));
+                }
+                st.format_chars(6..10, |f| f.over.xml_element = Some(4));
+            }
+            Ok(())
+        })
+        .unwrap();
+        (s, sid)
+    }
+
+    /// A parent with no text of its own, only its child's, takes text around it.
+    #[test]
+    fn a_parent_with_only_its_childs_text_takes_text() {
+        let (mut s, sid) = parent_and_child(None);
+        let r = s.execute("file.importXml", &json!({"text": "<Root><Outer Id=\"P\">[<Inner Id=\"C\">Welt</Inner>]</Outer></Root>"})).unwrap();
+        assert_eq!(r["failed"], json!([]), "{r}");
+        let st = s.doc().unwrap().doc.story(sid).unwrap().clone();
+        assert_eq!(st.text, "Hallo [Welt]");
+        let at = |i: usize| st.format_after(i).over.xml_element;
+        assert_eq!((at(6), at(7), at(11)), (Some(3), Some(4), Some(3)));
+    }
+
+    /// A child at the end of its parent's text keeps its place; the parent's new text goes around it.
+    #[test]
+    fn a_child_at_the_end_of_its_parent_stays() {
+        let (mut s, sid) = parent_and_child(Some(5..6));
+        let before = s.doc().unwrap().doc.story(sid).unwrap().clone();
+        let xml = export(&mut s);
+        s.execute("file.importXml", &json!({"text": xml})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().chars, before.chars, "an unchanged export changes nothing");
+        let r = s.execute("file.importXml", &json!({"text": "<Root><Outer Id=\"P\">, <Inner Id=\"C\">Welt</Inner>!</Outer></Root>"})).unwrap();
+        assert_eq!(r["failed"], json!([]), "{r}");
+        let st = s.doc().unwrap().doc.story(sid).unwrap().clone();
+        assert_eq!(st.text, "Hallo, Welt!");
+        let at = |i: usize| st.format_after(i).over.xml_element;
+        assert_eq!((at(5), at(7), at(11)), (Some(3), Some(4), Some(3)));
+    }
+
     /// Children in another order than the document's: the parent is reported and left as it was.
     #[test]
     fn children_out_of_order_leave_their_parent() {
@@ -1500,6 +1618,8 @@ mod tests {
                 .collect::<String>()
         };
         assert_eq!(full("<Root><Story Id=\"S\">A<table>Hi</table>B</Story></Root>"), "AHiB");
+        assert_eq!(full("<Root><Story Id=\"S\">A<table frame=\"all\">Hi</table>B</Story></Root>"), "AHiB", "an inline table with a frame");
+        assert_eq!(full("<Root><Story Id=\"S\">A<table frame=\"all\"><b>Hi</b></table>B</Story></Root>"), "AHiB", "its first element isn't a tgroup");
         assert_eq!(
             full(
                 "<Root><Story Id=\"S\">A<table frame=\"all\"><tgroup cols=\"1\"><tbody><row><entry>Hi</entry></row></tbody></tgroup></table>B</Story></Root>"
