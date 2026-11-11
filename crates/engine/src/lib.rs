@@ -680,9 +680,24 @@ impl Session {
         Ok(r)
     }
 
-    /// Fails with `Disabled` unless the command is enabled or names objects it can act on.
+    /// Fails with `Disabled` unless the command is enabled or names objects or a table it can act on.
     fn check_enabled(&self, spec: &CommandSpec, id: &str, params: &Value) -> Result<()> {
         if let Err(e) = (spec.enabled)(self) {
+            // A table command that takes `story` and `table` acts on the table the call names, so
+            // the selection doesn't matter: with nothing selected, the caret outside a table, or
+            // selected rows the command can't act on, `{"table": 3}` still runs.
+            if let Some((story, table)) = cmd::named_table(spec, params)
+                && cmd::has_doc(self).is_ok()
+            {
+                if params.get("story").is_some() && story.is_none() {
+                    return Err(cmd::bad(id, "`story` must be a non-negative integer"));
+                }
+                let st = self.doc()?;
+                if !st.doc.stories.iter().any(|(sid, x)| story.is_none_or(|n| sid.0 == n) && x.tables.contains_key(&table)) {
+                    return Err(EngineError::Disabled(id.into(), format!("no table {table}")));
+                }
+                return Ok(());
+            }
             // A command that takes `ids` acts on the objects the call names, so the selection
             // doesn't matter: with a text caret, nothing selected, or a selection the command
             // can't act on, `{"ids": [5]}` still runs.

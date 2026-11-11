@@ -493,6 +493,71 @@ fn rows_columns_merge_and_options() {
     assert_eq!(st.doc.story(sid).unwrap().text, "Intro");
 }
 
+/// A table command given `story` and `table` acts on that table with nothing selected, the caret
+/// outside the table, or a selection it can't act on, and a table that isn't there is refused.
+#[test]
+fn table_commands_run_on_a_named_table_without_a_table_selection() {
+    let (mut s, sid, _) = session_with_frame();
+    let tid = s.execute("table.insert", &json!({"rows": 2, "cols": 2})).unwrap()["table"].as_u64().unwrap();
+    let size = |s: &mut Session| {
+        let t = s.execute("table.get", &json!({"story": sid, "table": tid})).unwrap();
+        (t["rows"].as_array().unwrap().len(), t["columns"].as_array().unwrap().len())
+    };
+    assert_eq!(size(&mut s), (2, 2));
+    s.execute("edit.deselectAll", &json!({})).unwrap();
+    s.execute("table.insertRow", &json!({"story": sid, "table": tid, "where": "below"})).unwrap();
+    assert_eq!(size(&mut s), (3, 2));
+    s.execute("table.insertColumnRight", &json!({"table": tid})).unwrap();
+    assert_eq!(size(&mut s), (3, 3));
+    s.execute("table.convertRowsToHeader", &json!({"story": sid, "table": tid, "rows": [0, 0]})).unwrap();
+    assert_eq!(s.execute("table.get", &json!({"table": tid})).unwrap()["headerRows"], 1);
+    // A selected header row can't become a header, but the named rows can.
+    s.execute("table.select", &json!({"table": tid, "rows": [0, 0], "what": "row"})).unwrap();
+    assert!(!crate::cmd::find_command("table.convertRowsToHeader").unwrap().info(&s).enabled);
+    s.execute("table.convertRowsToHeader", &json!({"table": tid, "rows": [1, 1]})).unwrap();
+    assert_eq!(s.execute("table.get", &json!({"table": tid})).unwrap()["headerRows"], 2);
+    // The caret in the story's text, outside the table.
+    s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": 0})).unwrap();
+    s.execute("table.deleteRow", &json!({"story": sid, "table": tid, "rows": [2, 2]})).unwrap();
+    assert_eq!(size(&mut s), (2, 3));
+    check(&s);
+    s.execute("edit.deselectAll", &json!({})).unwrap();
+    let disabled = |r: Result<Value>| match r {
+        Err(crate::EngineError::Disabled(_, why)) => why,
+        other => panic!("expected Disabled, got {other:?}"),
+    };
+    assert_eq!(disabled(s.execute("table.insertRow", &json!({"table": tid + 100}))), format!("no table {}", tid + 100));
+    assert_eq!(disabled(s.execute("table.insertRow", &json!({"story": sid + 100, "table": tid}))), format!("no table {tid}"));
+    for story in [json!("x"), json!(-1), json!(null)] {
+        let r = s.execute("table.insertRow", &json!({"story": story, "table": tid}));
+        assert!(matches!(r, Err(crate::EngineError::BadParams { .. })), "{r:?}");
+    }
+    assert_eq!(size(&mut s), (2, 3));
+}
+
+/// With nothing selected, the table commands stay disabled for menus and for calls that name no
+/// table.
+#[test]
+fn table_commands_stay_disabled_with_nothing_selected() {
+    let (mut s, _, _) = session_with_frame();
+    s.execute("table.insert", &json!({"rows": 2, "cols": 2})).unwrap();
+    let in_table = ["table.insertRow", "table.deleteColumn", "table.merge", "table.options", "table.selectTable", "style.table.apply"];
+    let in_cell = ["table.convertRowsToHeader", "table.nextCell"];
+    let info = |s: &Session, id: &str| crate::cmd::find_command(id).unwrap().info(s);
+    for id in in_table.iter().chain(&in_cell) {
+        assert!(info(&s, id).enabled, "{id} is enabled with the caret in a cell");
+    }
+    s.execute("edit.deselectAll", &json!({})).unwrap();
+    for (ids, reason) in [(&in_table[..], "place the insertion point in a table"), (&in_cell[..], "not in a table cell")] {
+        for id in ids {
+            let i = info(&s, id);
+            assert!(!i.enabled, "{id}");
+            assert_eq!(i.disabled_reason.as_deref(), Some(reason), "{id}");
+            assert!(matches!(s.execute(id, &json!({})), Err(crate::EngineError::Disabled(..))), "{id}");
+        }
+    }
+}
+
 /// `table.insert` styles the table in the same step; a style that isn't there, or isn't a name,
 /// leaves the story alone. Its dimensions stop at the documented limits.
 #[test]

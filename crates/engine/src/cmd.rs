@@ -331,6 +331,16 @@ pub(crate) fn named_targets(spec: &CommandSpec, p: &Value) -> Option<Vec<ItemId>
     id_param(p, "id").map(|i| vec![i])
 }
 
+/// The table a call names with `table`, and the story it names with `story` if any, for a
+/// command whose params document an optional `table`. `None` when the call names no table.
+pub(crate) fn named_table(spec: &CommandSpec, p: &Value) -> Option<(Option<u64>, u64)> {
+    if !spec.params.split(|c: char| !c.is_ascii_alphanumeric() && c != '?').any(|w| w == "table?") {
+        return None;
+    }
+    let table = p.get("table").and_then(Value::as_u64)?;
+    Some((p.get("story").and_then(Value::as_u64), table))
+}
+
 /// Targets: `ids` / `id` params or the selection.
 pub(crate) fn targets(s: &Session, p: &Value) -> Result<Vec<ItemId>> {
     if let Some(ids) = ids_param(p, "ids") {
