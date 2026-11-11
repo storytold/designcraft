@@ -1177,6 +1177,33 @@ fn shape_segment(
     out: &mut Vec<Glyph>,
     mode: Upright,
 ) {
+    // Generated text (a variable's value, a section marker) with a hyphen the face lacks: drawn as its
+    // hyphen-minus like story text, the generated text keeping the original character.
+    let missing_hyphen = |c: char| matches!(c, '\u{2010}' | '\u{2011}') && !face.covers(c);
+    if let Some(label) = replacement.filter(|l| l.chars().any(missing_hyphen) && face.covers('-')) {
+        let begin = out.len();
+        let mut from = 0;
+        for (at, c) in label.char_indices().filter(|(_, c)| missing_hyphen(*c)) {
+            if from < at {
+                shape_segment(db, text, range.clone(), label.get(from..at), p, face, auto_leading, styles, out, mode);
+            }
+            let hyphen = out.len();
+            shape_segment(db, text, range.clone(), Some("-"), p, face, auto_leading, styles, out, mode);
+            if let Some(g) = out.get_mut(hyphen) {
+                g.generated_text = Some(c.to_string().into());
+            }
+            from = at + c.len_utf8();
+        }
+        if from < label.len() {
+            shape_segment(db, text, range.clone(), label.get(from..), p, face, auto_leading, styles, out, mode);
+        }
+        // One carrier for the marker, as below.
+        for (i, glyph) in out[begin..].iter_mut().enumerate() {
+            glyph.len = if i == 0 { range.len() } else { 0 };
+            glyph.no_break = true;
+        }
+        return;
+    }
     // Generated labels need the same coverage fallback as ordinary text. Keep the
     // original marker address and one carrier even when several faces draw the label.
     if let Some(label) = replacement.filter(|_| auto_leading.glyph_fallback) {
