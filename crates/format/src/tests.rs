@@ -16,9 +16,10 @@ fn a_failed_read_is_charged_to_the_budget() {
     let start = bytes.windows(1000).position(|w| w.iter().all(|b| *b == 7)).expect("payload");
     bytes[start] = 8;
     let mut archive = zip::ZipArchive::new(Cursor::new(bytes.as_slice())).unwrap();
-    let mut left = 5000;
-    assert_eq!(read_entry(&mut archive, "a", 4000, &mut left).unwrap(), None);
-    assert_eq!(left, 4000);
+    let (mut left, mut stored_left) = (5000, 5000);
+    assert_eq!(read_entry(&mut archive, "a", 4000, &mut left, &mut stored_left).unwrap(), None);
+    // A failed stored read is charged to the stored budget only.
+    assert_eq!((left, stored_left), (5000, 4000));
 }
 
 fn png_asset(d: &mut Document, data: &[u8]) -> AssetId {

@@ -227,8 +227,12 @@ fn read_entry(
     let read = f.take(limit.saturating_add(1)).read_to_end(&mut v);
     let n = v.len() as u64;
     // What a failed read produced was inflated all the same: it counts against the archive's budget.
-    *left = left.saturating_sub(n);
     if read.is_err() {
+        if stored {
+            *stored_left = stored_left.saturating_sub(n);
+        } else {
+            *left = left.saturating_sub(n);
+        }
         return Ok(None);
     }
     if n > limit {
