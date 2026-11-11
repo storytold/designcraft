@@ -81,7 +81,22 @@ fn links_harness(app: DesignApp, width: f32) -> Harness<'static, DesignApp> {
     );
     h.input_mut().max_texture_side = Some(8192);
     h.run_steps(3);
+    settle_links(&mut h);
     h
+}
+
+/// The link statuses come from a background check: step until it has finished and its rows are
+/// drawn.
+fn settle_links(h: &mut Harness<'static, DesignApp>) {
+    for _ in 0..500 {
+        h.run_steps(1);
+        if !h.state().links_worker.checking() {
+            h.run_steps(1);
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    panic!("the background link check did not finish");
 }
 
 /// With the caret in text, the Stroke panel offers the text's stroke options, not an empty panel.
@@ -165,6 +180,7 @@ fn links_panel_distinguishes_same_named_sources_and_keeps_link_actions() {
     assert_eq!(h.state().session.active().unwrap().selection.items, vec![items[1]]);
     h.get_by_label("Embed").click();
     h.run_steps(3);
+    settle_links(&mut h);
     assert!(h.state().session.active().unwrap().doc.assets[&assets[1]].link.is_none());
     assert_eq!(h.state().session.active().unwrap().doc.assets[&assets[0]].link.as_deref(), Some(first));
     assert!(h.query_by_label(second).is_none(), "an embedded graphic no longer shows a source path");
@@ -175,6 +191,20 @@ fn links_panel_distinguishes_same_named_sources_and_keeps_link_actions() {
     h.get_by_label("Go To").click();
     h.run_steps(3);
     assert_eq!(h.state().session.active().unwrap().selection.items, vec![items[0]]);
+}
+
+#[test]
+fn links_panel_keeps_long_source_paths_inside_a_narrow_panel() {
+    let path = "/project/assets/studio-a/very-long-folder-name/another-long-folder-name/photo.svg";
+    let (app, _, _) = linked_graphics(&[Some(path)]);
+    let mut h = links_harness(app, 240.0);
+    let source = h.get_by_label(path).rect();
+    assert!(source.width() < 150.0, "the source is truncated to its column: {source:?}");
+    assert!(source.right() <= 240.0, "the source stays inside the narrow panel: {source:?}");
+    assert!(h.get_by_label("Page · PPI").rect().right() <= 240.0);
+    h.get_by_label(path).click();
+    h.run_steps(3);
+    assert!(h.output().shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Text(text) if text.galley.job.text == path && !text.galley.elided && text.visual_bounding_rect().right() <= 240.0)), "the selected path is painted in full and wraps inside the panel");
 }
 
 #[test]
@@ -191,33 +221,19 @@ fn links_panel_exposes_individual_placements_and_makes_action_scope_clear() {
     h.get_by_label("↳ photo.svg 2").click();
     h.run_steps(3);
     let _ = h.get_by_label("Placement 2 of photo.svg");
-    let _ = h.get_by_label("Update All");
-    let _ = h.get_by_label("Embed All");
+    let _ = h.get_by_label("Update");
+    let _ = h.get_by_label("Embed");
+    let _ = h.get_by_label("Relink and Go To affect this placement; Update and Embed affect all placements of the source.");
     h.get_by_label("Go To").click();
     h.run_steps(3);
     assert_eq!(h.state().session.active().unwrap().selection.items, vec![second]);
 
-    // Choosing the source name button clears placement scope and restores source-wide labels.
+    // Choosing the source name button clears placement scope.
     h.get_by_label("photo.svg").click();
     h.run_steps(3);
     let _ = h.get_by_label("Update");
     let _ = h.get_by_label("Embed");
-    assert!(h.query_by_label("Update All").is_none());
-    assert!(h.query_by_label("Embed All").is_none());
-}
-
-#[test]
-fn links_panel_keeps_long_source_paths_inside_a_narrow_panel() {
-    let path = "/project/assets/studio-a/very-long-folder-name/another-long-folder-name/photo.svg";
-    let (app, _, _) = linked_graphics(&[Some(path)]);
-    let mut h = links_harness(app, 240.0);
-    let source = h.get_by_label(path).rect();
-    assert!(source.width() < 150.0, "the source is truncated to its column: {source:?}");
-    assert!(source.right() <= 240.0, "the source stays inside the narrow panel: {source:?}");
-    assert!(h.get_by_label("Page · PPI").rect().right() <= 240.0);
-    h.get_by_label(path).click();
-    h.run_steps(3);
-    assert!(h.output().shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Text(text) if text.galley.job.text == path && !text.galley.elided && text.visual_bounding_rect().right() <= 240.0)), "the selected path is painted in full and wraps inside the panel");
+    assert!(h.query_by_label("Placement 2 of photo.svg").is_none());
 }
 
 #[test]

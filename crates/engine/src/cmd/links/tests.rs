@@ -76,6 +76,268 @@ fn unchanged_linked_images_are_not_read_again() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A file's time `secs` ago (a file changed in the last two seconds is always read).
+#[cfg(not(target_arch = "wasm32"))]
+fn set_age(path: &Path, secs: u64) {
+    let f = std::fs::File::options().write(true).open(path).unwrap();
+    f.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(secs)).unwrap();
+}
+
+/// The size and time an image was loaded at are kept with it, so a file that still has them is
+/// not read at all, also on the first check after a document is opened (nothing is remembered
+/// yet then, and reading every link of a document on a network share takes minutes). The bytes
+/// here differ from the file's on purpose: a status that read the file would say modified.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_linked_image_at_its_loaded_size_and_time_is_not_read() {
+    let dir = std::env::temp_dir().join(format!("dc-image-link-loaded-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("photo.bin");
+    std::fs::write(&path, b"file").unwrap();
+    set_age(&path, 60);
+    let loaded = crate::cmd::datamerge::fingerprint_of(&path).unwrap();
+    let asset = |link_fingerprint| designcraft_doc::Asset {
+        id: AssetId(1),
+        link: Some(path.to_string_lossy().into_owned()),
+        link_fingerprint,
+        data: Arc::new(b"data".to_vec()),
+        ..Default::default()
+    };
+    let status = |a: &designcraft_doc::Asset| status_cached(a, None, &mut ImageChecks::default());
+
+    assert_eq!(status(&asset(Some(loaded))), "ok", "the size and time it was loaded at: not read");
+    // No fingerprint (a document from before they were kept) or another time: compared.
+    assert_eq!(status(&asset(None)), "modified");
+    assert_eq!(status(&asset(Some(Fingerprint { mtime: loaded.mtime - 60, ..loaded }))), "modified", "a new time alone is compared");
+    // Bytes replaced without their fingerprint: it is of another size, so it isn't theirs.
+    let swapped = designcraft_doc::Asset { data: Arc::new(b"other bytes".to_vec()), ..asset(Some(loaded)) };
+    assert_eq!(status(&swapped), "modified");
+    // A time too recent to trust: another write in the same second would keep it.
+    set_age(&path, 0);
+    let recent = crate::cmd::datamerge::fingerprint_of(&path).unwrap();
+    assert_eq!(status(&asset(Some(recent))), "modified");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A file saved again unchanged, or copied, restored from a backup or checked out again, has a
+/// new time and the same bytes: it stays OK (only a new size is conclusive), read once per new
+/// time. The fingerprint is saved with the document, so every link of a copied project folder
+/// would otherwise show Modified.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_graphic_rewritten_with_the_same_bytes_stays_ok() {
+    let dir = std::env::temp_dir().join(format!("dc-link-touched-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("logo.png");
+    let image = png(2, 2);
+    let rewrite = |bytes: &[u8], age: u64| {
+        std::fs::write(&path, bytes).unwrap();
+        set_age(&path, age);
+    };
+    rewrite(&image, 300);
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    let aid = AssetId(s.execute("file.place", &json!({"path": path.to_string_lossy()})).unwrap()["asset"].as_u64().unwrap());
+    rewrite(&image, 60);
+    let a = s.doc().unwrap().doc.assets[&aid].clone();
+    assert!(a.link_fingerprint.is_some());
+    assert_ne!(a.link_fingerprint, crate::cmd::datamerge::fingerprint_of(&path), "the file has another time than when it was placed");
+    let mut checks = ImageChecks::default();
+    assert_eq!(status_cached(&a, None, &mut checks), "ok");
+    assert_eq!(s.execute("links.list", &json!({})).unwrap()[0]["status"], "ok");
+
+    // One byte changed, same size, at a time not seen before: compared again.
+    let mut changed = image.clone();
+    if let Some(last) = changed.last_mut() {
+        *last ^= 0xff;
+    }
+    rewrite(&changed, 120);
+    assert_eq!(status_cached(&a, None, &mut checks), "modified");
+    assert_eq!(s.execute("links.list", &json!({})).unwrap()[0]["status"], "modified");
+    // Update remembers the file it read, so the next check needs no read.
+    assert_eq!(s.execute("links.update", &json!({})).unwrap()["updated"], 1);
+    let a = s.doc().unwrap().doc.assets[&aid].clone();
+    assert_eq!(a.link_fingerprint, crate::cmd::datamerge::fingerprint_of(&path));
+    assert_eq!(s.execute("links.list", &json!({})).unwrap()[0]["status"], "ok");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The rows a UI shows while the files are checked on a worker thread come from the document
+/// alone: no file is looked at, not even for its size, so a share that doesn't answer can't
+/// hold them back.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn preview_rows_look_at_no_file() {
+    let dir = std::env::temp_dir().join(format!("dc-link-preview-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (linked, embedded, gone) = (dir.join("linked.png"), dir.join("embedded.png"), dir.join("gone.png"));
+    for (path, width) in [(&linked, 10), (&embedded, 11), (&gone, 12)] {
+        std::fs::write(path, png(width, 10)).unwrap();
+        set_age(path, 60);
+    }
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    let place = |s: &mut Session, path: &Path, x: u32| {
+        AssetId(s.execute("file.place", &json!({"path": path.to_string_lossy(), "x": x, "y": 72})).unwrap()["asset"].as_u64().unwrap())
+    };
+    let ids = [place(&mut s, &linked, 72), place(&mut s, &embedded, 144), place(&mut s, &gone, 216)];
+    s.execute("links.embed", &json!({"asset": ids[1].0})).unwrap();
+    std::fs::remove_file(&gone).unwrap();
+    let st = s.doc().unwrap();
+    assert!(st.doc.assets[&ids[0]].link_fingerprint.is_some(), "a placed file is remembered by its size and time");
+    assert!(st.doc.assets[&ids[1]].link_fingerprint.is_none(), "embed forgets the file");
+    let statuses = |rows: &[Value]| -> Vec<String> {
+        ids.iter().map(|id| rows.iter().find(|r| r["asset"] == id.0).unwrap()["status"].as_str().unwrap().to_string()).collect()
+    };
+
+    let (preview, seen) = crate::io::touched(|| preview_document_links(&st.doc, &s.cache, None));
+    assert!(seen.is_empty(), "the preview looked at {seen:?}");
+    assert_eq!(statuses(&preview), ["checking", "embedded", "checking"]);
+
+    // The check fills them in, with the rest of each row as in the preview.
+    let checked = list_document_links(&st.doc, &s.cache, None, &mut LinkListChecks::default(), &AtomicBool::new(false)).unwrap();
+    assert_eq!(statuses(&checked), ["ok", "embedded", "missing"]);
+    let without_status = |rows: &[Value]| -> Vec<Value> {
+        rows.iter()
+            .cloned()
+            .map(|mut row| {
+                if let Some(row) = row.as_object_mut() {
+                    row.remove("status");
+                }
+                row
+            })
+            .collect()
+    };
+    assert_eq!(without_status(&preview), without_status(&checked));
+    assert_eq!(Value::Array(checked), s.execute("links.list", &json!({})).unwrap(), "the same rows as links.list");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The size and time kept with bytes read from a linked file vouch for them later only if the
+/// file wasn't being written then: a file changed in the same second, or still being synced,
+/// keeps its time and size, and a status trusting them would say OK for other bytes.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_file_written_just_now_is_not_vouched_for_by_its_time() {
+    let dir = std::env::temp_dir().join(format!("dc-link-settled-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("photo.png");
+    let image = png(3, 3);
+    std::fs::write(&path, &image).unwrap();
+    let now = crate::cmd::datamerge::fingerprint_of(&path).unwrap();
+    assert_eq!(loaded_fingerprint(Some(now), &image), None, "written in the last two seconds");
+    set_age(&path, 60);
+    let settled = crate::cmd::datamerge::fingerprint_of(&path).unwrap();
+    assert_eq!(loaded_fingerprint(Some(settled), &image), Some(settled));
+    assert_eq!(loaded_fingerprint(Some(settled), &image[1..]), None, "the file changed while it was read");
+    assert_eq!(loaded_fingerprint(None, &image), None);
+
+    // Placed while it is that recent, then replaced by other bytes of the same size at the same
+    // time: the status reads the file instead of trusting the time.
+    std::fs::write(&path, &image).unwrap();
+    let written = std::fs::metadata(&path).unwrap().modified().unwrap();
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    let aid = AssetId(s.execute("file.place", &json!({"path": path.to_string_lossy()})).unwrap()["asset"].as_u64().unwrap());
+    assert_eq!(s.doc().unwrap().doc.assets[&aid].link_fingerprint, None);
+    let mut other = image.clone();
+    if let Some(last) = other.last_mut() {
+        *last ^= 0xff;
+    }
+    std::fs::write(&path, &other).unwrap();
+    std::fs::File::options().write(true).open(&path).unwrap().set_modified(written).unwrap();
+    assert_eq!(s.execute("links.list", &json!({})).unwrap()[0]["status"], "modified");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A check on a worker thread is told to stop when its document is no longer the one shown: it
+/// ends before the next file instead of asking a share that doesn't answer about hundreds more.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_stopped_check_looks_at_no_further_file() {
+    let dir = std::env::temp_dir().join(format!("dc-link-stop-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    for (name, x) in [("a.png", 72), ("b.png", 144)] {
+        let path = dir.join(name);
+        std::fs::write(&path, png(x, 10)).unwrap();
+        s.execute("file.place", &json!({"path": path.to_string_lossy(), "x": x, "y": 72})).unwrap();
+    }
+    let st = s.doc().unwrap();
+    let mut checks = LinkListChecks::default();
+
+    let stop = AtomicBool::new(true);
+    let (rows, seen) = crate::io::touched(|| list_document_links(&st.doc, &s.cache, None, &mut checks, &stop));
+    assert_eq!(rows, None);
+    assert!(seen.is_empty(), "a stopped check looked at {seen:?}");
+
+    stop.store(false, Ordering::Relaxed);
+    assert_eq!(list_document_links(&st.doc, &s.cache, None, &mut checks, &stop).map(|rows| rows.len()), Some(2));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A copied or restored project folder gives every linked file a new time. The check then
+/// compares the bytes, and what it found is kept with the document, so neither later checks nor
+/// the next session read the file again. The document isn't marked as changed by that.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_file_found_unchanged_by_its_bytes_is_remembered_with_the_document() {
+    let dir = std::env::temp_dir().join(format!("dc-link-remember-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("photo.png");
+    std::fs::write(&path, png(4, 4)).unwrap();
+    set_age(&path, 300);
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    let aid = AssetId(s.execute("file.place", &json!({"path": path.to_string_lossy()})).unwrap()["asset"].as_u64().unwrap());
+    s.execute("file.saveAs", &json!({"path": dir.join("doc.designcraft").to_string_lossy()})).unwrap();
+    assert!(!s.doc().unwrap().is_dirty());
+    set_age(&path, 60);
+    let file = crate::cmd::datamerge::fingerprint_of(&path).unwrap();
+    let check = |s: &Session, checks: &mut LinkListChecks| {
+        let st = s.doc().unwrap();
+        let rows = list_document_links(&st.doc, &s.cache, st.path.as_deref().map(Path::new), checks, &AtomicBool::new(false)).unwrap();
+        (rows[0]["status"].as_str().unwrap().to_string(), checks.take_verified())
+    };
+
+    // Read once and found unchanged; found again from what the check remembers.
+    let mut checks = LinkListChecks::default();
+    assert_eq!(check(&s, &mut checks), ("ok".to_string(), vec![(aid, file)]));
+    assert_eq!(checks.len(), 1);
+    assert_eq!(check(&s, &mut checks), ("ok".to_string(), vec![(aid, file)]));
+
+    // Not for another document state, another size, or a graphic that isn't linked.
+    let checked = s.doc().unwrap().doc.clone();
+    let other = Arc::new((*checked).clone());
+    assert_eq!(remember_link_files(&mut s, &other, &[(aid, file)]), 0);
+    assert_eq!(remember_link_files(&mut s, &checked, &[(aid, Fingerprint { size: file.size + 1, ..file })]), 0);
+    assert_eq!(remember_link_files(&mut s, &checked, &[(AssetId(u64::MAX), file)]), 0);
+    assert!(Arc::ptr_eq(&s.doc().unwrap().doc, &checked), "nothing kept, nothing changed");
+
+    assert_eq!(remember_link_files(&mut s, &checked, &[(aid, file)]), 1);
+    let st = s.doc().unwrap();
+    assert_eq!(st.doc.assets[&aid].link_fingerprint, Some(file));
+    assert!(!st.is_dirty(), "a saved document stays saved");
+    let kept = s.doc().unwrap().doc.clone();
+    assert_eq!(remember_link_files(&mut s, &kept, &[(aid, file)]), 0, "already kept");
+    // The next check, with nothing remembered (another session), reads nothing and has nothing new.
+    assert_eq!(check(&s, &mut LinkListChecks::default()), ("ok".to_string(), vec![]));
+
+    // What one worker remembers goes to the next.
+    let mut pooled = LinkListChecks::default();
+    assert!(pooled.is_empty());
+    pooled.absorb(checks);
+    assert_eq!(pooled.len(), 1);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A linked file's size is the document's choice, so a link is read under a cap (#1596).
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
