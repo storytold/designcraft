@@ -1500,6 +1500,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Set", "Sada"),
     ("unused", "nepoužito"),
     ("⚠ Missing", "⚠ Chybí"),
+    ("Checking", "Kontroluje se"),
+    ("Link status is unavailable.", "Stav propojení není k dispozici."),
     ("▲ Modified", "▲ Změněno"),
     ("(Text Color)", "(Barva textu)"),
     ("{count} glyphs — click to insert at the text cursor", "Glyfy: {count} — kliknutím vložíte na pozici textového kurzoru"),

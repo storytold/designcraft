@@ -1,6 +1,6 @@
 # Localization parity
 
-> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-11-04 · **Change:** minor (Esperanto text language; Hungarian interface catalog, bundled-font coverage and flyout regression checks; Swedish interface) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-11-04 · **Change:** minor (pt-BR catalog filled; Russian listed; Esperanto text language; Hungarian interface catalog, bundled-font coverage and flyout regression checks; Swedish interface) · **Target:** Adobe InDesign 2026 (21.6)
 
 Per-language status of the DesignCraft interface and of document typesetting in each script.
 Script-specific typesetting detail: [cjk.md](cjk.md), [cjk-typography.md](cjk-typography.md),
@@ -39,7 +39,7 @@ come as Middle East editions with an English or French interface and right-to-le
 | Hindi | hi | ✗ | 0 (0%) | none | Devanagari shaped by harfrust in documents but untested; no Hindi hyphenation or spelling | no | none | 20–30 |
 | Arabic | ar | Middle East edition (English/French UI) | 1,459 (85%) | menus, panels, most dialogs; no help | RTL UI text (`rtl.rs`: bidi + shaping); Arabic composition, kashida, digits, RTL stories and tables ✓ (arabic-typography.md); list bullets and multi-column RTL open (#100) | no | partial | 15–25 |
 | French | fr | ✓ | 1,438 (83%) | menus, panels, most dialogs; no help | Latin ✓; French hyphenation ✓ (hyph-fr) | no | partial | 6–10 |
-| Portuguese (Brazil) | pt-br | ✓ (pt) | 1,057 (61%) | menus, panels, some dialogs; no help | Latin ✓; Portuguese hyphenation ✓ | no | partial | 8–12 |
+| Portuguese (Brazil) | pt-br | ✓ (pt) | 2,936 of 2,939 (~100%, 2026-11-04 missing-translations report) | whole interface but the Control panel's `IT`, `VA` and `Y:` captions; no help | Latin ✓; Portuguese hyphenation ✓ | no | partial | 1–2 |
 | Indonesian | id | ✗ | 0 (0%) | none | Latin ✓ | no | none | 12–18 |
 | Japanese | ja | ✓ | 1,644 (95%) | whole interface (#272), vertical-type commands; no help | vertical text, kinsoku, aki, ruby, warichu ✓ (partial depth, cjk.md); canvas IME ✓, not checked by hand (#322); Japanese UI and Mincho fonts from craft-fonts | no | partial | 6–10 (+ IME checks, shared with zh) |
 | German | de | ✓ | 1,438 (83%) | menus, panels, most dialogs; no help | Latin ✓; German 2006 hyphenation ✓ (hyph-de-1996, MIT) | no | partial | 6–10 |
@@ -75,11 +75,20 @@ right-click flyouts in both Tools-panel layouts. Narrow-window coverage exercise
 scrolling, complete label/shortcut accessibility and selecting a scrolled row at 180 and
 240 points; the existing wide-window checks keep their assertions.
 
+Brazilian Portuguese (2026-11-04): `cargo xtask i18n-report` on main `ef6c3686` with this catalog
+counts 2,939 interface strings; pt-BR translates 2,936 of them (up from 1,933). Like every other
+language it leaves the Control panel's `IT`, `VA` and `Y:` captions in English. Tools are named "Ferramenta …", parent pages "página principal", stories "artigo" and
+paths "demarcador" ("traçado" is Stroke; Pathfinder keeps its name). The 996 new strings were AI-drafted and approved by
+the contributor; they are not yet checked in the running app, and a native-speaker review is
+pending. Older rows still use "página-pai" and "página mestra" for parent pages and "Matéria"
+for a story.
+
 ## Other shipped languages
 
 | Language | Code | UI strings translated | Status |
 |---|---|---|---|
 | Hungarian | hu | 1,906 entries + 4 context captions (2026-11-01); initial catalog native-reviewed | partial |
+| Russian | ru | 1,855 of 2,939 (63%, 2026-11-04 missing-translations report), count captions category-first | partial |
 | Czech | cs | 1,722 (99%), plural categories handled | partial |
 | Italian | it | 1,464 (85%) | partial |
 | Ukrainian | uk | 1,432 (83%), plural categories handled | partial |
@@ -87,7 +96,7 @@ scrolling, complete label/shortcut accessibility and selecting a scrolled row at
 | Georgian | ka | 1,724 (~100%: every catalog key plus the command labels the others lack), count captions as `noun: n` | partial (reviewed by a native speaker) |
 | Swedish | sv | 2,857 of 2,891 (99%, 2026-11-01 missing-translations report): menus, panels, dialogs and messages; singular for a count of one; AI-drafted with Claude Code from the English source, spot-checked by a native speaker (not every string) | partial |
 
-DesignCraft ships **6** interface languages beyond the twelve; InDesign ships 17 beyond its
+DesignCraft ships **8** interface languages beyond the twelve; InDesign ships 17 beyond its
 eight of the twelve (cs, da, el, en_GB, fi, hu, it, nb, nl, pl, ro, ru, sq, sv, tr, uk, zh_TW).
 
 ## Document languages
@@ -106,7 +115,7 @@ German variants have no automatic hyphenation; their German shaping and quotes a
 | Work | Opus 5.5 h |
 |---|---|
 | Fill the 83–85% catalogs (de, fr, es, zh, ar, it, uk; ~290 strings each) | 25–40 |
-| pt-BR to full | 8–12 |
+| pt-BR to full: check it in the running app; one term each for parent page and story | 1–2 |
 | New: Hindi, Indonesian, Korean, Vietnamese (1,724 strings, plural rules, tests) | 50–75 |
 | Canvas IME (zh, ja, ko): checks by hand with system IMEs, and fixes | 10–20 |
 | CJK UI font in every release build; Devanagari and Vietnamese rendering tests | 10–15 |
@@ -119,6 +128,7 @@ German variants have no automatic hyphenation; their German shaping and quotes a
 | Date | Change | Summary |
 |---|---|---|
 | 2026-11-06 | minor | Croatian hyphenation (hyph-hr): Document languages updated |
+| 2026-11-04 | minor | pt-BR catalog filled (996 strings and the unit names; path is "demarcador"): 2,936 of 2,939 strings by `i18n-report`, pt-BR to full 8–12 → 1–2 h; Russian (1,855) listed, eight languages beyond the twelve |
 | 2026-11-01 | minor | Initial Hungarian interface: 1,906 entries, four context captions, native review, bundled-font glyph coverage and wide/narrow flyout regressions |
 | 2026-10-11 | minor | Localized Japanese print, import and table controls; checked Japanese and English renders |
 | 2026-10-15 | minor | Swedish (`sv`) interface added |

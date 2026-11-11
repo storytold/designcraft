@@ -1058,6 +1058,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Set", "مجموعة"),
     ("unused", "غير مستخدم"),
     ("⚠ Missing", "⚠ مفقود"),
+    ("Checking", "جارٍ التحقق"),
+    ("Link status is unavailable.", "حالة الروابط غير متاحة."),
     ("▲ Modified", "▲ معدّل"),
     ("(Text Color)", "(لون النص)"),
     ("{count} glyphs — click to insert at the text cursor", "عدد المحارف: {count} — انقر للإدراج عند مؤشر النص"),
