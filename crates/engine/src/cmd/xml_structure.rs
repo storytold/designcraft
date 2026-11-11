@@ -428,12 +428,16 @@ struct IdTexts {
     /// Id → the element's own text: text inside an element nested in it with an Id of its own
     /// belongs to that one (the innermost element with an Id).
     own: BTreeMap<String, String>,
-    /// Id → all its text, its nested elements' included, but not that of a table in it (a story's
-    /// or a cell's text as it stands in the story).
-    full: BTreeMap<String, String>,
-    /// Id → its own text in pieces, with `None` where an element with an Id of its own sits in it
-    /// (not in a table in it): what a parent puts around its children, which fill themselves.
-    parts: BTreeMap<String, Vec<Option<String>>>,
+    /// Id → its own text in pieces around the elements with an Id of their own in it (not a table's
+    /// text, which is its cells'): what a parent puts around its children, which fill themselves.
+    parts: BTreeMap<String, Vec<Piece>>,
+}
+
+/// A piece of a parent's text in the XML: its own text, or the place of a child (by its Id).
+#[derive(Clone, Debug, PartialEq)]
+enum Piece {
+    Text(String),
+    Child(String),
 }
 
 /// The innermost open element with an Id, unless a table lies between it and what comes now.
@@ -482,21 +486,20 @@ fn texts_by_id(xml: &str) -> std::result::Result<IdTexts, String> {
                 let (id, table) = id_of(&e)?;
                 if let Some(i) = &id {
                     texts.own.entry(i.clone()).or_default();
-                    texts.full.entry(i.clone()).or_default();
                     texts.parts.entry(i.clone()).or_default();
-                    if let Some(p) = owner(&stack) {
-                        texts.parts.entry(p.clone()).or_default().push(None);
+                    // A table is no child of its parent's text: its text is its cells'.
+                    if !table && let Some(p) = owner(&stack) {
+                        texts.parts.entry(p.clone()).or_default().push(Piece::Child(i.clone()));
                     }
                 }
                 stack.push((id, table));
             }
             Event::Empty(e) => {
-                if let (Some(i), _) = id_of(&e)? {
+                if let (Some(i), table) = id_of(&e)? {
                     texts.own.entry(i.clone()).or_default();
-                    texts.full.entry(i.clone()).or_default();
-                    texts.parts.entry(i).or_default();
-                    if let Some(p) = owner(&stack) {
-                        texts.parts.entry(p.clone()).or_default().push(None);
+                    texts.parts.entry(i.clone()).or_default();
+                    if !table && let Some(p) = owner(&stack) {
+                        texts.parts.entry(p.clone()).or_default().push(Piece::Child(i));
                     }
                 }
             }
@@ -530,20 +533,9 @@ fn texts_by_id(xml: &str) -> std::result::Result<IdTexts, String> {
                     && let Some(parts) = texts.parts.get_mut(o)
                 {
                     match parts.last_mut() {
-                        Some(Some(t)) => t.push_str(&s),
-                        _ => parts.push(Some(s.clone())),
+                        Some(Piece::Text(t)) => t.push_str(&s),
+                        _ => parts.push(Piece::Text(s)),
                     }
-                }
-                // Every open element with an Id outside a table nested in it.
-                let mut in_table = false;
-                for (id, table) in stack.iter().rev() {
-                    if let Some(id) = id
-                        && !in_table
-                        && let Some(t) = texts.full.get_mut(id)
-                    {
-                        t.push_str(&s);
-                    }
-                    in_table |= *table;
                 }
             }
             Event::Eof => break,
@@ -703,7 +695,7 @@ pub fn import_by_id(s: &mut Session, xml: &str) -> Result<Value> {
     // cell elements all theirs last, so none undoes another. A table's text goes into its cells.
     let mut want: HashMap<u64, String> = HashMap::new();
     let mut outer: HashMap<u64, Parent> = HashMap::new();
-    let mut whole: Vec<(XmlContent, Parent)> = Vec::new();
+    let mut whole: Vec<(XmlContent, u64, Parent)> = Vec::new();
     let mut unmatched: Vec<String> = Vec::new();
     let mut tables: Vec<String> = Vec::new();
     let has_inline = |e: u64| d.xml.elements.values().any(|c| c.parent == e && c.content == XmlContent::Text);
@@ -712,9 +704,9 @@ pub fn import_by_id(s: &mut Session, xml: &str) -> Result<Value> {
             unmatched.push(k.clone());
             continue;
         };
-        let parent = || Parent { parts: texts.parts.get(k).cloned().unwrap_or_default(), full: texts.full.get(k).cloned().unwrap_or_default() };
+        let parent = || Parent { parts: texts.parts.get(k).cloned().unwrap_or_default() };
         match d.xml.elements.get(&e).map(|el| el.content) {
-            Some(c @ (XmlContent::Story { .. } | XmlContent::Cell { .. })) => whole.push((c, parent())),
+            Some(c @ (XmlContent::Story { .. } | XmlContent::Cell { .. })) => whole.push((c, e, parent())),
             Some(XmlContent::Table { .. }) => tables.push(k.clone()),
             _ if has_inline(e) => {
                 outer.insert(e, parent());
@@ -728,6 +720,7 @@ pub fn import_by_id(s: &mut Session, xml: &str) -> Result<Value> {
     let xrefs = s.cache.xref_index(d);
     let mut placed = 0usize;
     let mut failed: Vec<u64> = Vec::new();
+    let mut mismatched: Vec<u64> = Vec::new();
     s.edit(|d, _| {
         let snapshot = d.clone();
         let ids: Vec<StoryId> = d.stories.keys().copied().collect();
@@ -738,12 +731,12 @@ pub fn import_by_id(s: &mut Session, xml: &str) -> Result<Value> {
             }
         }
         for sid in &ids {
-            let holds = d.story(*sid).is_some_and(|st| holds_any(st, &outer));
+            let holds = d.story(*sid).is_some_and(|st| holds_parent(st, &outer, &snapshot));
             if holds && let Some(st) = d.story_mut(*sid) {
-                placed += fill_parents(st, &outer, &snapshot, Some(&xrefs));
+                placed += fill_parents(st, &outer, &snapshot, Some(&xrefs), &mut mismatched);
             }
         }
-        for (content, p) in &whole {
+        for (content, e, p) in &whole {
             let target = match *content {
                 XmlContent::Story { story } => d.story_mut(story),
                 XmlContent::Cell { table, cell } => ids
@@ -754,9 +747,12 @@ pub fn import_by_id(s: &mut Session, xml: &str) -> Result<Value> {
             };
             if let Some(st) = target {
                 let end = st.text.len();
-                put_parts(st, 0..end, None, p, &snapshot, Some(&xrefs));
-                st.rev = st.rev.wrapping_add(1);
-                placed += 1;
+                if put_parts(st, 0..end, None, p, &snapshot, Some(&xrefs)) {
+                    st.rev = st.rev.wrapping_add(1);
+                    placed += 1;
+                } else {
+                    mismatched.push(*e);
+                }
             }
         }
         Ok(())
@@ -766,6 +762,12 @@ pub fn import_by_id(s: &mut Session, xml: &str) -> Result<Value> {
         .filter_map(|e| d_attr_id(s, *e))
         .map(|id| json!({"id": id, "error": "an inline element can't be emptied: it would lose its place in the text"}))
         .collect();
+    failed.extend(
+        mismatched
+            .iter()
+            .filter_map(|e| d_attr_id(s, *e))
+            .map(|id| json!({"id": id, "error": "its elements with Ids aren't the document's (in that order): left as it was"})),
+    );
     failed.extend(tables.iter().map(|id| json!({"id": id, "error": "a table's text goes into its cells: address the cells by their Ids"})));
     Ok(json!({
         "placed": placed,
@@ -838,34 +840,47 @@ fn holds_any<V>(st: &Story, want: &HashMap<u64, V>) -> bool {
         || st.tables.values().any(|t| t.cells.iter().any(|c| holds_any(&c.text, want)))
 }
 
-/// A parent element's text in the XML: its own pieces around its children with Ids (`None`), and
-/// all of it (for when the document's children don't line up with the XML's).
+/// Whether `st` or a table in it holds text inside a wanted parent (its own, or only its children's).
+fn holds_parent<V>(st: &Story, want: &HashMap<u64, V>, d: &Document) -> bool {
+    st.runs().any(|(_, f)| f.over.xml_element.is_some_and(|id| chain_of(d, id).iter().any(|e| want.contains_key(e))))
+        || st.tables.values().any(|t| t.cells.iter().any(|c| holds_parent(&c.text, want, d)))
+}
+
+/// A parent element's text in the XML: its own pieces around its children with Ids.
 struct Parent {
-    parts: Vec<Option<String>>,
-    full: String,
+    parts: Vec<Piece>,
 }
 
 /// The inline elements with children: each one's own pieces put around its children in `st` and its
-/// table cells; returns how many.
-fn fill_parents(st: &mut Story, want: &HashMap<u64, Parent>, d: &Document, xrefs: Option<&XrefIndex>) -> usize {
+/// table cells, the innermost first (each on the stretches as the ones before left them); returns
+/// how many. A parent whose children aren't the XML's goes to `mismatched`.
+fn fill_parents(st: &mut Story, want: &HashMap<u64, Parent>, d: &Document, xrefs: Option<&XrefIndex>, mismatched: &mut Vec<u64>) -> usize {
     let mut n = 0;
-    let mut todo: Vec<(u64, Range<usize>)> = element_spans(st, d).into_iter().filter(|(id, _)| want.contains_key(id)).collect();
-    todo.sort_by_key(|(_, r)| std::cmp::Reverse(r.start));
-    for (id, r) in todo {
+    let mut done: Vec<u64> = Vec::new();
+    loop {
+        let next = element_spans(st, d)
+            .into_iter()
+            .filter(|(id, _)| want.contains_key(id) && !done.contains(id))
+            .max_by_key(|(id, r)| (chain_of(d, *id).len(), r.start));
+        let Some((id, r)) = next else { break };
+        done.push(id);
         if let Some(p) = want.get(&id) {
-            put_parts(st, r, Some(id), p, d, xrefs);
-            n += 1;
+            if put_parts(st, r, Some(id), p, d, xrefs) {
+                n += 1;
+            } else {
+                mismatched.push(id);
+            }
         }
     }
     let table_ids: Vec<u64> = st.tables.keys().copied().collect();
     for tid in table_ids {
-        if !st.tables.get(&tid).is_some_and(|t| t.cells.iter().any(|c| holds_any(&c.text, want))) {
+        if !st.tables.get(&tid).is_some_and(|t| t.cells.iter().any(|c| holds_parent(&c.text, want, d))) {
             continue;
         }
         if let Some(t) = st.tables.get_mut(&tid) {
             let t = std::sync::Arc::make_mut(t);
             for cell in &mut t.cells {
-                n += fill_parents(&mut cell.text, want, d, xrefs);
+                n += fill_parents(&mut cell.text, want, d, xrefs, mismatched);
             }
         }
     }
@@ -939,8 +954,9 @@ fn child_of(d: &Document, id: u64, parent: Option<u64>) -> Option<u64> {
 
 /// A parent's own pieces put into `range` of `st` around its children (its elements with an Id of
 /// their own), whose text, format and element stay as their own import left them. When the
-/// document's children don't line up with the XML's, the parent's whole text replaces the range.
-fn put_parts(st: &mut Story, range: Range<usize>, parent: Option<u64>, p: &Parent, d: &Document, xrefs: Option<&XrefIndex>) {
+/// document's children aren't the XML's, in that order, nothing changes and it returns false. A
+/// child the document knows but holds no text of here has no stretch to keep: the pieces around it join.
+fn put_parts(st: &mut Story, range: Range<usize>, parent: Option<u64>, p: &Parent, d: &Document, xrefs: Option<&XrefIndex>) -> bool {
     // The children's text in the story, in order.
     let mut children: Vec<(u64, Range<usize>)> = Vec::new();
     for (r, f) in st.runs() {
@@ -954,17 +970,23 @@ fn put_parts(st: &mut Story, range: Range<usize>, parent: Option<u64>, p: &Paren
             _ => children.push((child, a..b)),
         }
     }
+    let here: Vec<&str> = children.iter().filter_map(|(c, _)| d.xml.elements.get(c).and_then(|e| e.attr("Id"))).collect();
     // The XML's own pieces around its children.
+    let known = |c: &str| d.xml.elements.values().any(|e| e.attr("Id") == Some(c));
     let mut pieces = vec![String::new()];
+    let mut xml_children: Vec<&str> = Vec::new();
     for part in &p.parts {
         match part {
-            Some(t) => pieces.last_mut().map_or((), |last| last.push_str(t)),
-            None => pieces.push(String::new()),
+            Piece::Text(t) => pieces.last_mut().map_or((), |last| last.push_str(t)),
+            Piece::Child(c) if here.contains(&c.as_str()) || !known(c) => {
+                xml_children.push(c);
+                pieces.push(String::new());
+            }
+            Piece::Child(_) => {}
         }
     }
-    if pieces.len() != children.len() + 1 {
-        replace_text(st, range, &p.full, d, xrefs);
-        return;
+    if xml_children != here {
+        return false;
     }
     // The parent's own stretches between its children, last first so the earlier ones stay put.
     let mut own = Vec::new();
@@ -984,6 +1006,7 @@ fn put_parts(st: &mut Story, range: Range<usize>, parent: Option<u64>, p: &Paren
             st.insert_with(r.start, &piece, fmt);
         }
     }
+    true
 }
 
 #[cfg(test)]
@@ -1351,10 +1374,131 @@ mod tests {
         assert_eq!(r["unmatchedTags"], json!(["photo"]), "{r}");
     }
 
+    /// A story with a table element that has an Id: the table is no child of the story's text, so
+    /// re-importing the export fills the story.
+    #[test]
+    fn a_table_id_doesnt_stop_its_story() {
+        let (mut s, sid, _) = with_table(true);
+        s.edit(|d, _| {
+            for (k, id) in [(1, "S"), (3, "T")] {
+                if let Some(e) = d.xml.elements.get_mut(&k) {
+                    e.attrs = vec![("Id".into(), id.into())];
+                }
+            }
+            Ok(())
+        })
+        .unwrap();
+        let before = s.doc().unwrap().doc.story(sid).unwrap().clone();
+        let xml = export(&mut s);
+        let r = s.execute("file.importXml", &json!({"text": xml})).unwrap();
+        assert!(r["failed"].as_array().unwrap().iter().all(|f| f["id"] != json!("S")), "{r}");
+        assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().text, before.text);
+    }
+
+    /// Three inline elements nested ("Hallo Welt": P over "o" and "t", Q in it over " " and "l", C
+    /// in that over "We"), all changing: each takes its own text, the innermost first.
+    fn nested() -> (Session, StoryId) {
+        let (mut s, sid) = tagged();
+        s.edit(|d, _| {
+            let el = |tag: &str, id: &str, parent: u64| XmlElement {
+                tag: tag.into(),
+                attrs: vec![("Id".into(), id.into())],
+                parent,
+                content: XmlContent::Text,
+                children: Vec::new(),
+            };
+            d.xml.elements.insert(3, el("Outer", "P", 1));
+            d.xml.elements.insert(4, el("Mid", "Q", 3));
+            d.xml.elements.insert(5, el("Inner", "C", 4));
+            if let Some(st) = d.story_mut(sid) {
+                st.format_chars(4..5, |f| f.over.xml_element = Some(3));
+                st.format_chars(9..10, |f| f.over.xml_element = Some(3));
+                st.format_chars(5..6, |f| f.over.xml_element = Some(4));
+                st.format_chars(8..9, |f| f.over.xml_element = Some(4));
+                st.format_chars(6..8, |f| f.over.xml_element = Some(5));
+            }
+            Ok(())
+        })
+        .unwrap();
+        (s, sid)
+    }
+
+    #[test]
+    fn nested_parents_each_take_their_text() {
+        let (mut s, sid) = nested();
+        let xml = "<Root><Outer Id=\"P\">o<Mid Id=\"Q\">__<Inner Id=\"C\">We</Inner>LL</Mid>T</Outer></Root>";
+        let r = s.execute("file.importXml", &json!({"text": xml})).unwrap();
+        assert_eq!(r["failed"], json!([]), "{r}");
+        let st = s.doc().unwrap().doc.story(sid).unwrap().clone();
+        assert_eq!(st.text, "Hallo__WeLLT");
+        let at = |i: usize| st.format_after(i).over.xml_element;
+        assert_eq!((at(4), at(5), at(7), at(9), at(11)), (Some(3), Some(4), Some(5), Some(4), Some(3)));
+    }
+
+    /// A parent whose own text was emptied (only its child's text left) still takes new text.
+    #[test]
+    fn an_emptied_parent_takes_text_again() {
+        let (mut s, sid) = nested();
+        s.execute("file.importXml", &json!({"text": "<Root><Mid Id=\"Q\"><Inner Id=\"C\">We</Inner></Mid></Root>"})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().text, "HalloWet");
+        let r = s.execute("file.importXml", &json!({"text": "<Root><Mid Id=\"Q\">-<Inner Id=\"C\">We</Inner>-</Mid></Root>"})).unwrap();
+        assert_eq!(r["failed"], json!([]), "{r}");
+        assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().text, "Hallo-We-t");
+    }
+
+    /// Children in another order than the document's: the parent is reported and left as it was.
+    #[test]
+    fn children_out_of_order_leave_their_parent() {
+        let (mut s, sid) = story_with_id();
+        s.edit(|d, _| {
+            d.xml.elements.insert(
+                3,
+                XmlElement {
+                    tag: "Translation".into(),
+                    attrs: vec![("Id".into(), "8".into())],
+                    parent: 1,
+                    content: XmlContent::Text,
+                    children: Vec::new(),
+                },
+            );
+            if let Some(st) = d.story_mut(sid) {
+                st.format_chars(6..10, |f| f.over.xml_element = Some(3));
+            }
+            Ok(())
+        })
+        .unwrap();
+        let xml = "<Root><Story Id=\"S\"><Translation Id=\"8\">Welt</Translation> <Translation Id=\"7\">Hallo</Translation>!</Story></Root>";
+        let r = s.execute("file.importXml", &json!({"text": xml})).unwrap();
+        assert_eq!(r["failed"][0]["id"], json!("S"), "{r}");
+        assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().text, "Hallo Welt");
+    }
+
+    /// A child the document doesn't know: the parent is left as it was, its known (emptied) child
+    /// stays and can be filled later.
+    #[test]
+    fn an_unknown_child_leaves_its_parent() {
+        let (mut s, sid) = story_with_id();
+        let xml = "<Root><Story Id=\"S\"><Translation Id=\"7\"></Translation><X Id=\"99\">Extra</X> World</Story></Root>";
+        let r = s.execute("file.importXml", &json!({"text": xml})).unwrap();
+        let failed: Vec<&serde_json::Value> = r["failed"].as_array().unwrap().iter().map(|f| &f["id"]).collect();
+        assert_eq!(failed, [&json!("7"), &json!("S")], "{r}");
+        assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().text, "Hallo Welt");
+        s.execute("file.importXml", &json!({"text": "<Root><Translation Id=\"7\">Hello</Translation></Root>"})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().text, "Hello Welt");
+    }
+
     /// Only CALS markup (`<table frame="…">`) is a table; an element merely named so is text.
     #[test]
     fn only_cals_markup_counts_as_a_table() {
-        let full = |xml: &str| super::texts_by_id(xml).unwrap().full["S"].clone();
+        let full = |xml: &str| {
+            super::texts_by_id(xml).unwrap().parts["S"]
+                .iter()
+                .filter_map(|p| match p {
+                    super::Piece::Text(t) => Some(t.as_str()),
+                    super::Piece::Child(_) => None,
+                })
+                .collect::<String>()
+        };
         assert_eq!(full("<Root><Story Id=\"S\">A<table>Hi</table>B</Story></Root>"), "AHiB");
         assert_eq!(
             full(
