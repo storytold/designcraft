@@ -93,9 +93,11 @@ impl Asset {
     /// Whether `other` holds the same file: the same type, PDF page and crop, link and bytes. Files at
     /// different paths stay apart even with identical bytes, since each can be updated or
     /// relinked on its own. Assets without bytes (a link that couldn't be read) are the same only
-    /// when they link to the same path.
+    /// when they link to the same path, and an asset whose bytes are in the file but could not be
+    /// read is never the same as one that has none: merged into it, the mark that stops a save
+    /// from dropping those bytes would go with it.
     pub fn same_file(&self, other: &Asset) -> bool {
-        if self.mime != other.mime || self.page != other.page || self.pdf_crop != other.pdf_crop {
+        if self.mime != other.mime || self.page != other.page || self.pdf_crop != other.pdf_crop || self.unreadable != other.unreadable {
             return false;
         }
         if self.link != other.link {
@@ -412,6 +414,23 @@ mod tests {
 
     fn asset(id: u64, data: &[u8]) -> Asset {
         Asset { id: AssetId(id), name: "p.png".into(), mime: "image/png".into(), data: Arc::new(data.to_vec()), ..Default::default() }
+    }
+
+    /// An unreadable asset has no bytes, like a link that could not be read, and the two share a
+    /// path when the embedded copy of a linked file was damaged. Merged into the unmarked one,
+    /// the mark that refuses a save would be gone and the save would drop the bytes in the file
+    /// (noted in review).
+    #[test]
+    fn an_unreadable_asset_is_not_merged_into_one_without_bytes() {
+        let mut d = Document::new(&Default::default());
+        let link = Some("/images/p.png".to_string());
+        let missing = Asset { link: link.clone(), ..asset(1, &[]) };
+        let damaged = Asset { link, unreadable: true, ..asset(2, &[]) };
+        assert!(!missing.same_file(&damaged) && !damaged.same_file(&missing));
+        d.assets.insert(AssetId(1), Arc::new(missing));
+        d.assets.insert(AssetId(2), Arc::new(damaged));
+        assert_eq!(d.merge_duplicate_assets(), 0);
+        assert!(d.assets[&AssetId(2)].unreadable);
     }
 
     #[test]

@@ -3,6 +3,112 @@ use designcraft_doc::build::NewDocument;
 use designcraft_doc::geom::Rect;
 use designcraft_doc::{Asset, ParaFormat, SpreadRef};
 
+/// An asset entry that is present but unreadable (a bad CRC) was reported as absent: the
+/// image opened empty and the next save skipped it, so it was gone for good. The document
+/// still opens, the asset is marked, and saving refuses instead of writing the loss (#1592).
+#[test]
+fn a_corrupt_asset_is_not_silently_lost() {
+    let mut d = Document::new(&NewDocument::default());
+    let aid = png_asset(&mut d, &[1, 2, 3, 4, 5, 6, 7, 8]);
+    place(&mut d, aid, 0.0);
+    let good = save(&d).unwrap();
+
+    // Corrupt the asset entry's bytes, leaving the archive's structure intact, so the entry
+    // is found and its CRC fails.
+    let at = good.windows(8).position(|w| w == [1, 2, 3, 4, 5, 6, 7, 8]).expect("the stored PNG bytes are in the file");
+    let mut broken = good.clone();
+    broken[at..at + 8].copy_from_slice(&[9, 9, 9, 9, 9, 9, 9, 9]);
+
+    let d2 = load(&broken).expect("the document still opens: the layout is all there");
+    let a = d2.assets.get(&aid).expect("the asset is still listed");
+    assert!(a.unreadable, "the asset is marked unreadable, not treated as absent");
+    assert!(a.data.is_empty(), "and it has no bytes");
+
+    // Saving would write the document without the image. It refuses, and says what to do.
+    let err = save(&d2).expect_err("saving a document with an unreadable asset is refused");
+    let msg = err.to_string();
+    assert!(msg.contains("x.png") && msg.contains("Relink"), "the error names the asset and the way out: {msg}");
+
+    // The intact file is unaffected: it opens with its bytes and saves again.
+    let d3 = load(&good).unwrap();
+    assert!(!d3.assets[&aid].unreadable && !d3.assets[&aid].data.is_empty());
+    assert!(save(&d3).is_ok());
+}
+
+/// The document of [`a_corrupt_asset_is_not_silently_lost`], saved, and the same file with the
+/// asset entry's bytes damaged so that only its CRC fails.
+fn saved_with_a_damaged_asset() -> (AssetId, Vec<u8>, Vec<u8>) {
+    let mut d = Document::new(&NewDocument::default());
+    let aid = png_asset(&mut d, &[1, 2, 3, 4, 5, 6, 7, 8]);
+    place(&mut d, aid, 0.0);
+    let good = save(&d).unwrap();
+    let at = good.windows(8).position(|w| w == [1, 2, 3, 4, 5, 6, 7, 8]).expect("the stored PNG bytes are in the file");
+    let mut broken = good.clone();
+    broken[at..at + 8].copy_from_slice(&[9, 9, 9, 9, 9, 9, 9, 9]);
+    (aid, good, broken)
+}
+
+/// An entry the archive lists but that cannot be opened at all -- here marked encrypted -- was
+/// read as absent, as a bad CRC used to be: any `by_name` error became `None` (noted in review).
+#[test]
+fn an_asset_entry_that_cannot_be_opened_is_unreadable_not_absent() {
+    let (aid, good, _) = saved_with_a_damaged_asset();
+    let name = format!("assets/{}.png", aid.0);
+    // Set the encrypted bit (general purpose flag bit 0) in the entry's local and central headers.
+    let mut locked = good.clone();
+    let mut marked = 0;
+    for (sig, flags) in [(&[0x50u8, 0x4b, 0x03, 0x04], 6usize), (&[0x50, 0x4b, 0x01, 0x02], 8)] {
+        let name_at = if sig[2] == 3 { 30 } else { 46 };
+        let mut i = 0;
+        while let Some(p) = locked[i..].windows(4).position(|w| w == sig) {
+            let h = i + p;
+            if locked.get(h + name_at..h + name_at + name.len()) == Some(name.as_bytes()) {
+                locked[h + flags] |= 1;
+                marked += 1;
+            }
+            i = h + 4;
+        }
+    }
+    assert_eq!(marked, 2, "both headers of {name} are found");
+
+    let d = load(&locked).expect("the document still opens");
+    assert!(d.assets[&aid].unreadable, "the asset is marked unreadable, not treated as absent");
+    assert!(save(&d).is_err(), "and saving it is refused");
+}
+
+/// A read that fails part-way still spends what it decompressed from the archive's budget, or
+/// every damaged entry could expand to the per-entry limit (noted in review).
+#[test]
+fn a_failed_read_counts_against_the_archive_budget() {
+    let (aid, _, broken) = saved_with_a_damaged_asset();
+    let mut z = zip::ZipArchive::new(Cursor::new(broken.as_slice())).unwrap();
+    let limits = Limits::DEFAULT;
+    let (mut left, mut stored_left) = (limits.total, broken.len() as u64);
+    let r = read_entry(&mut z, &format!("assets/{}.png", aid.0), limits.asset, &mut left, &mut stored_left);
+    assert!(matches!(r, Err(FormatError::Unreadable(_))), "{r:?}");
+    // A saved asset is stored, so the bytes read before the CRC failed come out of the stored
+    // budget, the archive's own size.
+    assert_eq!((limits.total - left, broken.len() as u64 - stored_left), (0, 8), "the eight bytes read before the CRC failed are spent");
+}
+
+/// A crash-recovery checkpoint of a document holding an unreadable asset is written, not
+/// refused, and keeps the asset marked: the recovered document is refused a save in turn, and
+/// relinking is still the way out (noted in review).
+#[test]
+fn a_checkpoint_keeps_an_unreadable_asset_marked() {
+    let (aid, _, broken) = saved_with_a_damaged_asset();
+    let d = load(&broken).unwrap();
+    let checkpoint = save_checkpoint(&d, None).expect("a checkpoint is written");
+    let back = load(&checkpoint).unwrap();
+    assert!(back.assets[&aid].unreadable, "the asset is still marked");
+    assert!(back.assets[&aid].data.is_empty());
+    assert_eq!(back.spreads[0].items.len(), d.spreads[0].items.len(), "the layout came through");
+    assert!(save(&back).is_err(), "and the recovered document is refused a save as the opened one was");
+    // An ordinary save never writes the mark: one with no unreadable asset reads back clean.
+    let fresh = load(&save(&Document::new(&NewDocument::default())).unwrap()).unwrap();
+    assert!(fresh.assets.values().all(|a| !a.unreadable));
+}
+
 fn png_asset(d: &mut Document, data: &[u8]) -> AssetId {
     let aid = AssetId(d.alloc());
     let a =
