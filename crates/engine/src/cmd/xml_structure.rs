@@ -91,17 +91,7 @@ impl<'d> Index<'d> {
 
     /// The inline elements around text tagged `id`, outermost first.
     fn inline_chain(&self, id: u64) -> Vec<u64> {
-        let mut chain = Vec::new();
-        let mut cur = id;
-        while let Some(e) = self.el(cur).filter(|e| e.content == XmlContent::Text) {
-            chain.push(cur);
-            if chain.len() > 64 {
-                break;
-            }
-            cur = e.parent;
-        }
-        chain.reverse();
-        chain
+        chain_of(self.d, id)
     }
 
     fn element(&self, id: u64, out: &mut String, depth: usize) {
@@ -467,11 +457,11 @@ fn texts_by_id(xml: &str) -> std::result::Result<IdTexts, String> {
     use quick_xml::events::Event;
     let mut r = quick_xml::Reader::from_str(xml);
     // Open elements: the Id of each one that has one, and whether it is a table (a tagged one,
-    // aid:table="table", or an untagged one written as CALS `<table>`).
+    // aid:table="table", or an untagged one written as CALS `<table frame="…">`).
     let mut stack: Vec<(Option<String>, bool)> = Vec::new();
     let mut texts = IdTexts::default();
     let id_of = |e: &quick_xml::events::BytesStart| -> std::result::Result<(Option<String>, bool), String> {
-        let (mut id, mut table) = (None, e.local_name().as_ref() == b"table");
+        let (mut id, mut table, mut frame) = (None, false, false);
         for a in e.attributes() {
             let a = a.map_err(|e| e.to_string())?;
             let value = a.normalized_value(quick_xml::XmlVersion::Implicit1_0).map_err(|e| e.to_string())?;
@@ -479,9 +469,12 @@ fn texts_by_id(xml: &str) -> std::result::Result<IdTexts, String> {
                 id = Some(value.to_string());
             } else if a.key.as_ref() == b"aid:table" && value == "table" {
                 table = true;
+            } else if a.key.as_ref() == b"frame" {
+                frame = true;
             }
         }
-        Ok((id, table))
+        // CALS, as export writes an untagged table: `<table frame="…">` (not any element named table).
+        Ok((id, table || (frame && e.local_name().as_ref() == b"table")))
     };
     loop {
         match r.read_event().map_err(|e| e.to_string())? {
@@ -856,7 +849,7 @@ struct Parent {
 /// table cells; returns how many.
 fn fill_parents(st: &mut Story, want: &HashMap<u64, Parent>, d: &Document, xrefs: Option<&XrefIndex>) -> usize {
     let mut n = 0;
-    let mut todo: Vec<(u64, Range<usize>)> = element_ranges(st).into_iter().filter(|(id, _)| want.contains_key(id)).collect();
+    let mut todo: Vec<(u64, Range<usize>)> = element_spans(st, d).into_iter().filter(|(id, _)| want.contains_key(id)).collect();
     todo.sort_by_key(|(_, r)| std::cmp::Reverse(r.start));
     for (id, r) in todo {
         if let Some(p) = want.get(&id) {
@@ -882,19 +875,61 @@ fn fill_parents(st: &mut Story, want: &HashMap<u64, Parent>, d: &Document, xrefs
     n
 }
 
+/// The inline elements around text tagged `id`, outermost first, up to its story's or cell's element.
+/// Elements without content of their own between (a page item's, which isn't kept) count too inside a
+/// story or cell, not under the root, which writes those itself.
+fn chain_of(d: &Document, id: u64) -> Vec<u64> {
+    let (mut chain, mut between, mut inside) = (Vec::new(), Vec::new(), false);
+    let mut cur = id;
+    while let Some(e) = d.xml.elements.get(&cur) {
+        if chain.len() + between.len() > 64 {
+            break;
+        }
+        match e.content {
+            XmlContent::Text => {
+                chain.append(&mut between);
+                chain.push(cur);
+            }
+            XmlContent::None if !d.xml.root_children.contains(&cur) => between.push(cur),
+            XmlContent::Story { .. } | XmlContent::Table { .. } | XmlContent::Cell { .. } => {
+                inside = true;
+                break;
+            }
+            XmlContent::None => break,
+        }
+        cur = e.parent;
+    }
+    if inside {
+        chain.append(&mut between);
+    }
+    chain.reverse();
+    chain
+}
+
+/// Each element's whole stretch in `st`: from the first to the last run whose chain holds it (its
+/// own text and that of the elements in it).
+fn element_spans(st: &Story, d: &Document) -> Vec<(u64, Range<usize>)> {
+    let mut out: Vec<(u64, Range<usize>)> = Vec::new();
+    let mut at: HashMap<u64, usize> = HashMap::new();
+    for (r, f) in st.runs() {
+        let Some(id) = f.over.xml_element.filter(|id| *id != 0) else { continue };
+        for e in chain_of(d, id) {
+            match at.get(&e) {
+                Some(&i) => out[i].1.end = r.end,
+                None => {
+                    at.insert(e, out.len());
+                    out.push((e, r.clone()));
+                }
+            }
+        }
+    }
+    out
+}
+
 /// The element below `parent` (an inline element, or with `None` the story or cell itself) that has
 /// an Id of its own and holds the text tagged `id`, if any.
 fn child_of(d: &Document, id: u64, parent: Option<u64>) -> Option<u64> {
-    let mut chain = Vec::new();
-    let mut cur = id;
-    while let Some(e) = d.xml.elements.get(&cur) {
-        if e.content != XmlContent::Text || chain.len() > 64 {
-            break;
-        }
-        chain.push(cur);
-        cur = e.parent;
-    }
-    chain.reverse();
+    let chain = chain_of(d, id);
     let below = match parent {
         Some(p) => &chain[chain.iter().position(|e| *e == p)? + 1..],
         None => &chain[..],
@@ -1309,5 +1344,74 @@ mod tests {
         let r = s.execute("file.importXml", &json!({"text": xml})).unwrap();
         assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().text, "Hello Welt");
         assert_eq!((r["placed"].as_u64(), r["unmatchedIdCount"].as_u64(), r["unmatchedTags"].clone()), (Some(1), Some(0), json!(["photo"])), "{r}");
+        // an image inside an element with an Id is found too
+        let (mut s, _) = story_with_id();
+        let xml = "<Root><Story Id=\"S\">Hallo Welt<photo href=\"photo.png\"/></Story></Root>";
+        let r = s.execute("file.importXml", &json!({"text": xml})).unwrap();
+        assert_eq!(r["unmatchedTags"], json!(["photo"]), "{r}");
+    }
+
+    /// Only CALS markup (`<table frame="…">`) is a table; an element merely named so is text.
+    #[test]
+    fn only_cals_markup_counts_as_a_table() {
+        let full = |xml: &str| super::texts_by_id(xml).unwrap().full["S"].clone();
+        assert_eq!(full("<Root><Story Id=\"S\">A<table>Hi</table>B</Story></Root>"), "AHiB");
+        assert_eq!(
+            full(
+                "<Root><Story Id=\"S\">A<table frame=\"all\"><tgroup cols=\"1\"><tbody><row><entry>Hi</entry></row></tbody></tgroup></table>B</Story></Root>"
+            ),
+            "AB"
+        );
+    }
+
+    /// An element at the start of its parent's text: re-importing the export changes nothing, and
+    /// the parent's new text goes beside it.
+    #[test]
+    fn a_child_at_the_edge_of_its_parent_stays() {
+        let (mut s, sid) = tagged();
+        // "Hallo Welt": element 3 (Id P) over "o Welt", its element 4 (Id C) over its first char "o".
+        s.edit(|d, _| {
+            let el = |tag: &str, id: &str, parent: u64| XmlElement {
+                tag: tag.into(),
+                attrs: vec![("Id".into(), id.into())],
+                parent,
+                content: XmlContent::Text,
+                children: Vec::new(),
+            };
+            d.xml.elements.insert(3, el("Outer", "P", 1));
+            d.xml.elements.insert(4, el("Inner", "C", 3));
+            if let Some(st) = d.story_mut(sid) {
+                st.format_chars(5..10, |f| f.over.xml_element = Some(3));
+                st.format_chars(4..5, |f| f.over.xml_element = Some(4));
+            }
+            Ok(())
+        })
+        .unwrap();
+        let before = s.doc().unwrap().doc.story(sid).unwrap().clone();
+        let xml = export(&mut s);
+        s.execute("file.importXml", &json!({"text": xml})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().chars, before.chars, "an unchanged export changes nothing");
+        s.execute("file.importXml", &json!({"text": "<Root><Outer Id=\"P\"><Inner Id=\"C\">o</Inner> World</Outer></Root>"})).unwrap();
+        let st = s.doc().unwrap().doc.story(sid).unwrap().clone();
+        assert_eq!(st.text, "Hallo World");
+        assert_eq!(st.format_after(4).over.xml_element, Some(4), "the inner element keeps its place");
+    }
+
+    /// An element without content of its own (a page item's) inside a story is exported around its
+    /// elements' text, as the IDML export writes it.
+    #[test]
+    fn an_element_without_content_is_exported_around_its_elements() {
+        let (mut s, sid) = tagged();
+        s.edit(|d, _| {
+            let el = |tag: &str, parent: u64, content| XmlElement { tag: tag.into(), attrs: Vec::new(), parent, content, children: Vec::new() };
+            d.xml.elements.insert(3, el("Pic", 1, XmlContent::None));
+            d.xml.elements.insert(4, el("Caption", 3, XmlContent::Text));
+            if let Some(st) = d.story_mut(sid) {
+                st.format_chars(6..10, |f| f.over.xml_element = Some(4));
+            }
+            Ok(())
+        })
+        .unwrap();
+        assert!(export(&mut s).contains("<Pic><Caption>Welt</Caption></Pic>"), "{}", export(&mut s));
     }
 }

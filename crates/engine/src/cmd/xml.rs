@@ -310,6 +310,26 @@ fn percent_decode(s: &str) -> String {
 /// How deep elements may nest: deeper XML is refused rather than built (and dropped) recursively.
 const MAX_XML_DEPTH: usize = 64;
 
+/// The elements with an image (`href`) at any depth, in order: the images of XML whose text goes
+/// into elements by their Ids.
+fn images_anywhere(xml: &str) -> std::result::Result<Vec<Element>, String> {
+    use quick_xml::events::Event;
+    let mut r = quick_xml::Reader::from_str(xml);
+    let mut out = Vec::new();
+    loop {
+        match r.read_event().map_err(|e| e.to_string())? {
+            Event::Start(e) | Event::Empty(e) => {
+                if let Some(image) = image_attrs(&e)? {
+                    let name = String::from_utf8_lossy(e.local_name().as_ref()).to_string();
+                    out.push(Element { name, text: String::new(), children: vec![], image: Some(image) });
+                }
+            }
+            Event::Eof => return Ok(out),
+            _ => {}
+        }
+    }
+}
+
 /// The elements under the root.
 fn parse(xml: &str) -> std::result::Result<Vec<Element>, String> {
     use quick_xml::events::Event;
@@ -646,7 +666,7 @@ fn import_xml(s: &mut Session, p: &Value) -> Result<Value> {
 /// images with `images_only`, after an import by Id).
 fn import_by_tag(s: &mut Session, p: &Value, text: &str, images_only: bool) -> Result<Value> {
     const ID: &str = "file.importXml";
-    let elements = parse(text).map_err(|e| bad(ID, format!("not well-formed XML: {e}")))?;
+    let elements = if images_only { images_anywhere(text) } else { parse(text) }.map_err(|e| bad(ID, format!("not well-formed XML: {e}")))?;
     // Relative image paths: against `imageDir`, else the XML file's folder.
     let base = str_param(p, "imageDir").map(std::path::PathBuf::from).or_else(|| {
         str_param(p, "text").is_none().then(|| str_param(p, "path")).flatten().and_then(|x| std::path::Path::new(x).parent().map(Into::into))

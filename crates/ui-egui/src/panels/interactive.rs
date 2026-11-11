@@ -360,12 +360,14 @@ pub(crate) fn import_report(lang: &str, r: &Value) -> String {
     if tags > 0 {
         parts.push(tr("{n} without a free tagged frame ({tags})").replace("{tags}", &names("unmatchedTags")).replace("{n}", &tags.to_string()));
     }
+    // Elements not filled (by Id) and images not placed (by tag), each counted and named apart.
     let failed = r["failed"].as_array().map_or(&[][..], Vec::as_slice);
-    if let Some(first) = failed.first() {
-        let by_id = first.get("id").is_some();
-        let what = format!("{}: {}", first[if by_id { "id" } else { "tag" }].as_str().unwrap_or(""), first["error"].as_str().unwrap_or(""));
-        let line = if by_id { tr("{n} elements not filled ({first})") } else { tr("{n} images not placed ({first})") };
-        parts.push(line.replace("{n}", &failed.len().to_string()).replace("{first}", &what));
+    for (key, label) in [("id", "{n} elements not filled ({first})"), ("tag", "{n} images not placed ({first})")] {
+        let of_kind: Vec<&Value> = failed.iter().filter(|f| f.get(key).is_some()).collect();
+        if let Some(first) = of_kind.first() {
+            let what = format!("{}: {}", first[key].as_str().unwrap_or(""), first["error"].as_str().unwrap_or(""));
+            parts.push(tr(label).replace("{n}", &of_kind.len().to_string()).replace("{first}", &what));
+        }
     }
     format!("{}: {}", tr("Import XML"), parts.join(", "))
 }
@@ -941,6 +943,12 @@ mod import_xml_tests {
             "Import XML: 4 placed, 2 Ids without an element (17, 18), 1 without a free tagged frame (photo), 1 elements not filled (7: an inline element can't be emptied)"
         );
         assert!(import_report("de", &r).contains("2 Ids ohne Element (17, 18)"), "{}", import_report("de", &r));
+        // an element and an image failing are counted apart
+        let both = json!({
+            "placed": 1, "unmatched": 0,
+            "failed": [{"id": "7", "error": "x"}, {"tag": "photo", "href": "p.png", "error": "y"}]
+        });
+        assert_eq!(import_report("", &both), "Import XML: 1 placed, 1 elements not filled (7: x), 1 images not placed (photo: y)");
     }
 
     /// File › Import XML… asks for the file with a picker (not a field to type the path into)
