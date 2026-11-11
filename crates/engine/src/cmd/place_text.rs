@@ -90,6 +90,16 @@ fn map_styles(
             f.style = m.clone();
         }
     });
+    for t in imp.story.tables.values_mut() {
+        for cell in &mut std::sync::Arc::make_mut(t).cells {
+            let n = cell.text.len();
+            cell.text.format_chars(0..n, |f| {
+                if let Some(m) = rename.get(&f.style) {
+                    f.style = m.clone();
+                }
+            });
+        }
+    }
     rename
 }
 
@@ -131,6 +141,12 @@ fn strip(story: &mut Story) {
     let n = story.len();
     story.format_paras(0..n, |p| *p = ParaFormat { table: p.table, ..Default::default() });
     story.format_chars(0..n, |f| *f = Default::default());
+    for t in story.tables.values_mut() {
+        for cell in &mut std::sync::Arc::make_mut(t).cells {
+            let n = cell.text.len();
+            cell.text.format_chars(0..n, |f| *f = Default::default());
+        }
+    }
 }
 
 /// The story's whole text replaced by the import's (its frames stay).
