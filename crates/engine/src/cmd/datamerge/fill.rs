@@ -503,6 +503,8 @@ fn place_image(doc: &mut designcraft_doc::Document, item: ItemId, field: &str, c
         ..Default::default()
     });
     if let Some(it) = doc.item_mut(item) {
+        // Data Merge fits with its own options; the empty frame's ones would only linger.
+        it.empty_fitting = None;
         it.content = Content::Graphic(g);
     }
 }

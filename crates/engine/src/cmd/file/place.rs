@@ -146,8 +146,7 @@ pub(super) fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
             let k = (r.width() / bw).max(r.height() / bh);
             let (gw, gh) = (bw * k, bh * k);
             let xf = Affine::translate((r.x0 + (r.width() - gw) / 2.0, r.y0 + (r.height() - gh) / 2.0)) * Affine::scale(k);
-            validate_placement((bw, bh), r, xf, "file.place")?;
-            it.content = Content::Graphic(Graphic {
+            let mut g = Graphic {
                 layer_options: None,
                 asset: aid,
                 size: (bw, bh),
@@ -158,7 +157,13 @@ pub(super) fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
                 crop: [0.0; 4],
                 wrap: Default::default(),
                 fill: Default::default(),
-            });
+            };
+            // The empty frame's own Frame Fitting Options decide instead, and now belong to the graphic.
+            if let Some(f) = it.empty_fitting.take() {
+                f.apply(&mut g, r);
+            }
+            validate_placement((bw, bh), r, g.xf, "file.place")?;
+            it.content = Content::Graphic(g);
             fid
         } else {
             let sp = d.spread(spread).ok_or_else(|| bad("file.place", "no such spread"))?;
@@ -324,7 +329,14 @@ pub(super) fn place_drop(s: &mut Session, p: &Value) -> Result<Value> {
             fill: Default::default(),
         });
         let id = if let Some(fid) = frame {
-            d.item_mut(fid).ok_or(designcraft_doc::DocError::NoItem(fid))?.content = graphic;
+            let it = d.item_mut(fid).ok_or(designcraft_doc::DocError::NoItem(fid))?;
+            let mut graphic = graphic;
+            // The empty frame's own Frame Fitting Options decide instead, and now belong to the graphic.
+            if let (Some(f), Content::Graphic(g)) = (it.empty_fitting.take(), &mut graphic) {
+                f.apply(g, frame_rect);
+                validate_placement((nw, nh), frame_rect, g.xf, "place.drop")?;
+            }
+            it.content = graphic;
             fid
         } else {
             let id = ItemId(d.alloc());

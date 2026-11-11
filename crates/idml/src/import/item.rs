@@ -250,6 +250,9 @@ impl<'r> Importer<'r> {
                         }
                     }
                 } else {
+                    // An empty frame keeps its Frame Fitting Options for what is placed later: its
+                    // own, over those of its object style chain, as for a frame with a graphic.
+                    item.empty_fitting = self.with_style(e, "FrameFittingOption").as_ref().and_then(empty_fitting);
                     // Page items pasted into this frame (Paste Into).
                     let kids: Vec<Arc<Item>> = e
                         .elements()
@@ -417,6 +420,17 @@ fn clipping_path(g: &El, to_graphic: Affine) -> Option<Arc<designcraft_doc::Clip
     c.source_name = cs.get("AppliedPathName").filter(|n| *n != "$ID/").unwrap_or("").to_string();
     c.source_index = cs.num("Index").filter(|v| v.is_finite()).map_or(-1, |v| v.clamp(-1.0, i32::MAX as f64) as i32);
     Some(Arc::new(c))
+}
+
+/// A `FrameFittingOption` on a frame with no graphic; `None` when it sets nothing.
+fn empty_fitting(ff: &El) -> Option<designcraft_doc::EmptyFrameFitting> {
+    let f = designcraft_doc::EmptyFrameFitting {
+        fitting: ff.get("FittingOnEmptyFrame").map_or(designcraft_doc::Fitting::None, names::fitting_in),
+        auto_fit: ff.get("AutoFit") == Some("true"),
+        align: ff.get("FittingAlignment").map_or(4, names::anchor_in),
+        crop: [ff.num("TopCrop"), ff.num("LeftCrop"), ff.num("BottomCrop"), ff.num("RightCrop")].map(|v| v.unwrap_or(0.0)),
+    };
+    (!f.is_default()).then_some(f)
 }
 
 fn path_of(pg: &El) -> PathData {

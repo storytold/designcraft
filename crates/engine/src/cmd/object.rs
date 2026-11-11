@@ -3017,6 +3017,25 @@ fn fitting_options(s: &mut Session, p: &Value) -> Result<Value> {
         for id in &ids {
             let Some(it) = d.item_mut(*id) else { continue };
             let r = it.inner_bounds();
+            if matches!(it.content, Content::Unassigned) {
+                // An empty frame keeps the options for the graphic placed into it later.
+                let mut f = it.empty_fitting.unwrap_or_default();
+                if let Some(a) = align {
+                    f.align = a;
+                }
+                if let Some(c) = crop {
+                    f.crop = c;
+                }
+                if let Some(m) = fitting {
+                    f.fitting = m;
+                }
+                if let Some(a) = auto {
+                    f.auto_fit = a;
+                }
+                it.empty_fitting = (!f.is_default()).then_some(f);
+                n += 1;
+                continue;
+            }
             let Content::Graphic(g) = &mut it.content else { continue };
             if let Some(a) = align {
                 g.fit_align = a;
@@ -3055,7 +3074,9 @@ fn clear_fitting_options(s: &mut Session, p: &Value) -> Result<Value> {
     let set = |g: &designcraft_doc::Graphic| g.auto_fit != designcraft_doc::Fitting::None || g.crop != [0.0; 4] || g.fit_align != 4;
     let ids: Vec<ItemId> = targets(s, p)?
         .into_iter()
-        .filter(|id| doc.item(*id).is_some_and(|it| unlocked(doc, it) && matches!(&it.content, Content::Graphic(g) if set(g))))
+        .filter(|id| {
+            doc.item(*id).is_some_and(|it| unlocked(doc, it) && (it.empty_fitting.is_some() || matches!(&it.content, Content::Graphic(g) if set(g))))
+        })
         .collect();
     if ids.is_empty() {
         return Ok(json!({"changed": 0}));
@@ -3064,7 +3085,11 @@ fn clear_fitting_options(s: &mut Session, p: &Value) -> Result<Value> {
         let mut n = 0;
         for id in &ids {
             let Some(it) = d.item_mut(*id) else { continue };
-            let Content::Graphic(g) = &mut it.content else { continue };
+            let had = it.empty_fitting.take().is_some();
+            let Content::Graphic(g) = &mut it.content else {
+                n += usize::from(had);
+                continue;
+            };
             g.auto_fit = designcraft_doc::Fitting::None;
             g.crop = [0.0; 4];
             g.fit_align = 4;
@@ -4534,6 +4559,56 @@ mod fitting_tests {
         assert!((ra.width() - 20.0).abs() < 1e-9 && (rb.width() - 20.0).abs() < 1e-9, "sizes kept");
         assert!((ra.center().x - 120.0).abs() < 1e-9, "{ra:?}");
         assert!((rb.center().x - 280.0).abs() < 1e-9, "{rb:?}");
+    }
+
+    #[test]
+    fn an_empty_frames_fitting_options_apply_to_what_is_placed_in_it() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let png = designcraft_render::Rendered { width: 40, height: 20, pixels: vec![200; 40 * 20 * 4] }.to_png();
+        let f = s.execute("frame.create", &json!({"rect": [100, 100, 300, 300]})).unwrap()["id"].as_u64().unwrap();
+        assert!(matches!(s.doc().unwrap().doc.item(ItemId(f)).unwrap().content, Content::Unassigned));
+        s.execute("object.fittingOptions", &json!({"ids": [f], "fitting": "fitProportionally", "align": 0, "autoFit": true})).unwrap();
+        let fitting = s.doc().unwrap().doc.item(ItemId(f)).unwrap().empty_fitting.unwrap();
+        assert_eq!((fitting.fitting, fitting.align, fitting.auto_fit), (designcraft_doc::Fitting::FitProportionally, 0, true));
+        // Placing fits from the top-left instead of filling the frame, and the options move to the graphic.
+        s.execute("file.place", &json!({"base64": super::super::file::base64_encode(&png), "name": "a.png", "frame": f})).unwrap();
+        let it = s.doc().unwrap().doc.item(ItemId(f)).unwrap().clone();
+        let Content::Graphic(g) = &it.content else { panic!("graphic") };
+        let c = it.xf.transform_rect_bbox(g.xf.transform_rect_bbox(Rect::new(0.0, 0.0, g.size.0, g.size.1)));
+        assert!(
+            (c.x0 - 100.0).abs() < 1e-6 && (c.y0 - 100.0).abs() < 1e-6 && (c.width() - 200.0).abs() < 1e-6 && (c.height() - 100.0).abs() < 1e-6,
+            "{c:?}"
+        );
+        assert_eq!((g.auto_fit, g.fit_align), (designcraft_doc::Fitting::FitProportionally, 0));
+        assert!(it.empty_fitting.is_none());
+        // Clear Frame Fitting Options on an empty frame clears them; options that set nothing are none.
+        let e = s.execute("frame.create", &json!({"rect": [400, 100, 500, 200]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("object.fittingOptions", &json!({"ids": [e], "crop": 5})).unwrap();
+        assert_eq!(s.execute("object.clearFittingOptions", &json!({"ids": [e]})).unwrap()["changed"], 1);
+        assert!(s.doc().unwrap().doc.item(ItemId(e)).unwrap().empty_fitting.is_none());
+        s.execute("object.fittingOptions", &json!({"ids": [e], "fitting": "none", "align": 4, "crop": 0})).unwrap();
+        assert!(s.doc().unwrap().doc.item(ItemId(e)).unwrap().empty_fitting.is_none());
+    }
+
+    #[test]
+    fn clearing_fitting_options_clears_a_graphic_too_when_empty_frame_options_linger() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let png = designcraft_render::Rendered { width: 40, height: 20, pixels: vec![200; 40 * 20 * 4] }.to_png();
+        let f = s.execute("frame.create", &json!({"rect": [100, 100, 300, 300]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("file.place", &json!({"base64": super::super::file::base64_encode(&png), "name": "a.png", "frame": f})).unwrap();
+        s.execute("object.fittingOptions", &json!({"ids": [f], "fitting": "fitProportionally", "align": 0, "crop": 5, "autoFit": true})).unwrap();
+        // Options an empty frame had and something left behind (as media or Data Merge did).
+        s.edit(|d, _| {
+            d.item_mut(ItemId(f)).unwrap().empty_fitting = Some(designcraft_doc::EmptyFrameFitting::default());
+            Ok(())
+        })
+        .unwrap();
+        s.execute("object.clearFittingOptions", &json!({"ids": [f]})).unwrap();
+        let it = s.doc().unwrap().doc.item(ItemId(f)).unwrap().clone();
+        let Content::Graphic(g) = &it.content else { panic!("graphic") };
+        assert_eq!((g.auto_fit, g.crop, g.fit_align, it.empty_fitting), (designcraft_doc::Fitting::None, [0.0; 4], 4, None));
     }
 
     #[test]

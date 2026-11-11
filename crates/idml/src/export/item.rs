@@ -133,20 +133,16 @@ impl<'a> Ex<'a> {
             }
             Content::Graphic(g) => {
                 if g.auto_fit != designcraft_doc::Fitting::None || g.fit_align != 4 || g.crop != [0.0; 4] {
-                    el.push(
-                        El::new("FrameFittingOption")
-                            .attr("AutoFit", bool_s(g.auto_fit != designcraft_doc::Fitting::None))
-                            .attr("TopCrop", num(g.crop[0]))
-                            .attr("LeftCrop", num(g.crop[1]))
-                            .attr("BottomCrop", num(g.crop[2]))
-                            .attr("RightCrop", num(g.crop[3]))
-                            .attr("FittingOnEmptyFrame", names::fitting_out(g.auto_fit))
-                            .attr("FittingAlignment", names::anchor_out(g.fit_align)),
-                    );
+                    el.push(frame_fitting_el(g.auto_fit != designcraft_doc::Fitting::None, g.auto_fit, g.crop, g.fit_align));
                 }
                 if let Some(asset) = d.assets.get(&g.asset) {
                     let e = self.image_el(asset, g);
                     el.push(e);
+                }
+            }
+            Content::Unassigned => {
+                if let Some(f) = &it.empty_fitting {
+                    el.push(frame_fitting_el(f.auto_fit, f.fitting, f.crop, f.align));
                 }
             }
             _ => {}
@@ -322,6 +318,18 @@ impl<'a> Ex<'a> {
         }
         el
     }
+}
+
+/// `<FrameFittingOption>`: Auto-Fit, crop amounts, the fitting and the reference point.
+fn frame_fitting_el(auto_fit: bool, fitting: designcraft_doc::Fitting, crop: [f64; 4], align: u8) -> El {
+    El::new("FrameFittingOption")
+        .attr("AutoFit", bool_s(auto_fit))
+        .attr("TopCrop", num(crop[0]))
+        .attr("LeftCrop", num(crop[1]))
+        .attr("BottomCrop", num(crop[2]))
+        .attr("RightCrop", num(crop[3]))
+        .attr("FittingOnEmptyFrame", names::fitting_out(fitting))
+        .attr("FittingAlignment", names::anchor_out(align))
 }
 
 /// Style folder tree (names `A/B/C` → groups A, B).
