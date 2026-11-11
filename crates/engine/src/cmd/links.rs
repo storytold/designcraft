@@ -231,7 +231,7 @@ fn image_status(a: &designcraft_doc::Asset, document: Option<&Path>, checks: &mu
         {
             return if *same { ("ok", Some(now)) } else { ("modified", None) };
         }
-        let same = match crate::io::read_capped(&path, a.data.len() as u64) {
+        let same = match crate::io::read_regular_capped(&path, a.data.len() as u64) {
             Ok(b) => b == *a.data,
             Err(_) => return ("missing", None),
         };
@@ -275,7 +275,8 @@ pub(crate) fn settled(f: &Fingerprint) -> bool {
     }
 }
 
-/// Checked linked text files: path → (size and time, hash of the contents then).
+/// Checked linked text files: the file a link resolves to → (size and time, hash of the contents
+/// then).
 pub(crate) type TextChecks = std::collections::HashMap<String, (Fingerprint, String)>;
 
 /// Link status of a linked text file: `tooLarge` when it is the recorded size but over
@@ -299,7 +300,10 @@ pub(crate) fn text_status(l: &TextFileLink, checks: &mut TextChecks, document: O
         if l.mtime != 0 && now.mtime == l.mtime {
             return "ok";
         }
-        let hash = match checks.get(&l.path) {
+        // Remembered by the file the link resolves to, not the link's text: the same relative
+        // link in documents saved in different folders names different files.
+        let key = path.to_string_lossy().into_owned();
+        let hash = match checks.get(&key) {
             Some((at, hash)) if *at == now => hash.clone(),
             _ if now.size > MAX_TEXT_LINK_BYTES => return "tooLarge",
             _ => match read_text(&path) {
@@ -307,7 +311,7 @@ pub(crate) fn text_status(l: &TextFileLink, checks: &mut TextChecks, document: O
                     let hash = fnv_hex(&b);
                     // The time from before the read: a change during it is seen next time.
                     if settled(&at) {
-                        checks.insert(l.path.clone(), (at, hash.clone()));
+                        checks.insert(key, (at, hash.clone()));
                     }
                     hash
                 }
@@ -560,7 +564,7 @@ fn read_text(path: impl AsRef<Path>) -> Result<(Vec<u8>, Fingerprint)> {
         return Err(too_large());
     }
     // At most one byte over the limit, in case the file grew since.
-    let b = crate::io::read_capped(path, MAX_TEXT_LINK_BYTES).map_err(err)?;
+    let b = crate::io::read_regular_capped(path, MAX_TEXT_LINK_BYTES).map_err(err)?;
     if b.len() as u64 > MAX_TEXT_LINK_BYTES {
         return Err(too_large());
     }
@@ -597,7 +601,7 @@ fn reload(path: impl AsRef<Path>) -> Result<(Vec<u8>, (u32, u32))> {
 #[cfg(not(target_arch = "wasm32"))]
 fn reload_capped(path: impl AsRef<Path>, cap: u64) -> Result<(Vec<u8>, (u32, u32))> {
     let path = path.as_ref();
-    let b = crate::io::read_capped(path, cap).map_err(|e| EngineError::Other(format!("{}: {e}", path.display())))?;
+    let b = crate::io::read_regular_capped(path, cap).map_err(|e| EngineError::Other(format!("{}: {e}", path.display())))?;
     if b.len() as u64 > cap {
         return Err(bad("links", format!("{}: the linked file is larger than {} MB", path.display(), cap / (1024 * 1024))));
     }

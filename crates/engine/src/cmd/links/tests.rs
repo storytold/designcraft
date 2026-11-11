@@ -753,3 +753,48 @@ fn update_by_assets_is_one_step_and_refuses_bad_selectors() {
     assert_eq!(undo(&s), before + 1, "one undo step");
     assert_eq!((pixels(&s, aa), pixels(&s, ab), pixels(&s, ac)), (Some((8, 4)), Some((9, 4)), Some((6, 4))));
 }
+
+/// The same relative text link in two documents saved in different folders names two files: what
+/// was found about one isn't taken for the other, even at the same size and time (the checks a
+/// worker keeps are shared by every document it checks).
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn text_link_checks_are_kept_per_resolved_file() {
+    let root = tempfile::tempdir().unwrap();
+    let (one, two) = (root.path().join("one"), root.path().join("two"));
+    let when = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+    for (dir, words) in [(&one, "Words one"), (&two, "Words two")] {
+        std::fs::create_dir_all(dir).unwrap();
+        let file = dir.join("story.txt");
+        std::fs::write(&file, words).unwrap();
+        std::fs::File::options().write(true).open(&file).unwrap().set_modified(when).unwrap();
+    }
+    // Linked to folder one's text, with no time recorded so the contents are compared.
+    let l = TextFileLink { path: "story.txt".into(), size: 9, hash: fnv_hex(b"Words one"), ..Default::default() };
+    let mut checks = TextChecks::default();
+    assert_eq!(text_status(&l, &mut checks, Some(&one.join("doc.dcx"))), "ok");
+    assert_eq!(text_status(&l, &mut checks, Some(&two.join("doc.dcx"))), "modified", "folder two's file holds other words");
+    assert_eq!(text_status(&l, &mut checks, Some(&one.join("doc.dcx"))), "ok");
+}
+
+/// A FIFO or a device in place of a linked file is refused when it is opened, without waiting
+/// for a writer: a link check that looked at the file's metadata before it was swapped can't
+/// block on it.
+#[cfg(unix)]
+#[test]
+fn a_fifo_in_place_of_a_linked_file_is_refused_without_blocking() {
+    let dir = tempfile::tempdir().unwrap();
+    let fifo = dir.path().join("photo.png");
+    assert!(std::process::Command::new("mkfifo").arg(&fifo).status().unwrap().success());
+    let (tx, rx) = std::sync::mpsc::channel();
+    let at = fifo.clone();
+    std::thread::spawn(move || {
+        let _ = tx.send(crate::io::read_regular_capped(&at, 1024).map(|b| b.len()));
+    });
+    let read = rx.recv_timeout(std::time::Duration::from_secs(10)).expect("opening the FIFO blocked");
+    assert!(read.is_err(), "{read:?}");
+    assert!(crate::io::read_regular_capped("/dev/zero", 16).is_err());
+    let file = dir.path().join("real.png");
+    std::fs::write(&file, png(2, 2)).unwrap();
+    assert_eq!(crate::io::read_regular_capped(&file, 1 << 20).unwrap(), png(2, 2));
+}

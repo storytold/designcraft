@@ -105,15 +105,19 @@ fn edit_original(app: &mut DesignApp, p: &Value) -> Result<Value, String> {
     open_all(app, &files, None)
 }
 
-/// Opens each file (in `with`, or its default application) and remembers it for the update.
+/// Opens each file (in `with`, or its default application) and remembers each one as soon as it
+/// is open, so a later file that fails to open doesn't lose the update of those opened before it.
 fn open_all(app: &mut DesignApp, files: &[designcraft_engine::cmd::LinkOriginal], with: Option<&Path>) -> Result<Value, String> {
-    let launch = app.services.launch.as_mut().ok_or(UNAVAILABLE)?;
+    if app.services.launch.is_none() {
+        return Err(UNAVAILABLE.into());
+    }
     let mut opened = Vec::new();
     for f in files {
+        let launch = app.services.launch.as_mut().ok_or(UNAVAILABLE)?;
         launch(&f.path, with)?;
+        remember(app, std::slice::from_ref(f));
         opened.push(f.path.to_string_lossy().to_string());
     }
-    remember(app, files);
     Ok(json!({ "opened": opened }))
 }
 
@@ -132,9 +136,7 @@ fn edit_with(app: &mut DesignApp, p: &Value) -> Result<Value, String> {
             let with = v.as_str().filter(|s| !s.trim().is_empty()).ok_or("links.editWith: `app` must be the path of an application")?;
             let with = Path::new(with);
             #[cfg(not(target_arch = "wasm32"))]
-            if !designcraft_engine::io::exists(with) {
-                return Err(format!("links.editWith: no application at {}", with.display()));
-            }
+            check_application(with).map_err(|e| format!("links.editWith: {e}"))?;
             open_all(app, &files, Some(with))
         }
         // Other…: choose the application, then open the files in it.
@@ -142,6 +144,32 @@ fn edit_with(app: &mut DesignApp, p: &Value) -> Result<Value, String> {
             let p = p.clone();
             app.ask_open("application", Bound::Document, move |app, path| edit_with(app, &with_path(&p, "app", path)))
         }
+    }
+}
+
+/// Whether `app` is something `links.editWith` may start: the absolute path of an application
+/// bundle (`.app`) on macOS, of an `.exe` on Windows, or of an executable regular file elsewhere.
+/// A control client names it, so anything else (a script, a document, a relative name the
+/// launcher would look up) is refused: the command opens files in applications and runs nothing
+/// else.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn check_application(app: &Path) -> Result<(), String> {
+    if !app.is_absolute() {
+        return Err(format!("{}: not an absolute path to an application", app.display()));
+    }
+    if designcraft_engine::io::is_application(app) { Ok(()) } else { Err(format!("{} isn't an application", app.display())) }
+}
+
+/// Refuses a file marked executable: the Linux opener (`xdg-open`) may run such a file whatever
+/// its name says, and a linked file's permissions come with the document's folder, not from the
+/// user. Opening it in a chosen application (Edit With) only hands it over as an argument.
+#[cfg(not(target_arch = "wasm32"))]
+#[cfg_attr(any(target_os = "macos", target_os = "windows"), allow(dead_code))]
+pub(crate) fn check_not_executable(file: &Path) -> Result<(), String> {
+    if designcraft_engine::io::is_executable(file) {
+        Err(format!("{} is marked executable, so it isn't opened: use Edit With to choose an application", file.display()))
+    } else {
+        Ok(())
     }
 }
 
@@ -255,7 +283,7 @@ pub(crate) fn refresh_edited(app: &mut DesignApp) -> u64 {
         return 0;
     }
     let mut edited = std::mem::take(&mut app.edit_original.edited);
-    let mut updated = 0;
+    let mut changed = Vec::new();
     for e in edited.iter_mut().filter(|e| e.doc == active) {
         let now = stamp(&e.path);
         if now.is_none() || now == e.stamp {
@@ -269,12 +297,17 @@ pub(crate) fn refresh_edited(app: &mut DesignApp) -> u64 {
             continue;
         }
         e.stamp = now;
-        match app.run("links.update", json!({ "asset": e.asset })) {
-            Ok(r) => updated += r["updated"].as_u64().unwrap_or(0),
+        changed.push(e.asset);
+    }
+    edited.retain(|e| !e.path.as_os_str().is_empty());
+    // Every file changed since the last look, updated in one undo step.
+    let mut updated = 0;
+    if !changed.is_empty() {
+        match app.run("links.update", json!({ "assets": changed })) {
+            Ok(r) => updated = r["updated"].as_u64().unwrap_or(0),
             Err(err) => app.status(err),
         }
     }
-    edited.retain(|e| !e.path.as_os_str().is_empty());
     // Links opened meanwhile (from the update's status, never) come after the ones checked.
     edited.append(&mut app.edit_original.edited);
     app.edit_original.edited = edited;
@@ -317,6 +350,9 @@ pub fn launch_command(file: &Path, app: Option<&Path>) -> Result<std::process::C
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
+        if app.is_none() {
+            check_not_executable(file)?;
+        }
         let mut c = std::process::Command::new(app.map_or_else(|| PathBuf::from("xdg-open"), Path::to_path_buf));
         c.arg(file);
         Ok(c)

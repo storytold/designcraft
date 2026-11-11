@@ -52,6 +52,24 @@ fn select(app: &mut DesignApp, ids: &[u64]) {
     app.run("selection.set", json!({ "ids": ids })).unwrap();
 }
 
+/// Something `links.editWith` accepts as an application on this platform, in `dir`: an `.app`
+/// bundle on macOS, an `.exe` on Windows, an executable file elsewhere.
+fn application(dir: &Path) -> PathBuf {
+    if cfg!(target_os = "macos") {
+        let app = dir.join("Painter.app");
+        std::fs::create_dir(&app).unwrap();
+        return app;
+    }
+    let app = dir.join(if cfg!(windows) { "Painter.exe" } else { "Painter" });
+    std::fs::write(&app, "").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&app, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    app
+}
+
 fn same(a: &Path, b: &Path) -> bool {
     std::fs::canonicalize(a).unwrap() == std::fs::canonicalize(b).unwrap()
 }
@@ -110,8 +128,7 @@ fn edit_with_lists_the_hosts_applications_and_opens_the_file_in_the_one_chosen()
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("photo.png");
     std::fs::write(&file, png(4)).unwrap();
-    let painter = dir.path().join("Painter.app");
-    std::fs::create_dir(&painter).unwrap();
+    let painter = application(dir.path());
     let (mut app, launched) = app();
     let (linked, _) = place(&mut app, &file);
     select(&mut app, &[linked]);
@@ -225,4 +242,116 @@ fn the_mac_opener_is_open_with_the_application_when_one_is_chosen() {
     assert_eq!(c.get_args().collect::<Vec<_>>(), ["-a", "/Applications/Preview.app", "/tmp/x.png"]);
     // A relative path could read as an option.
     assert!(launch_command(Path::new("-a"), None).is_err());
+}
+
+/// `links.editWith` starts only an application: an absolute path to an application bundle on
+/// macOS (an `.exe` on Windows, an executable file elsewhere). A program, a script or a document
+/// named by a control client, or a relative name, is refused before anything is launched.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn edit_with_starts_only_an_application() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("photo.png");
+    std::fs::write(&file, png(4)).unwrap();
+    let script = dir.path().join("run.sh");
+    std::fs::write(&script, "#!/bin/sh\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let fake = dir.path().join("Fake.app");
+    std::fs::write(&fake, "not a bundle").unwrap();
+    let (mut app, launched) = app();
+    let (linked, _) = place(&mut app, &file);
+    select(&mut app, &[linked]);
+    let mut refused = vec![file.clone(), fake.clone(), PathBuf::from("Painter.app"), PathBuf::from("relative/tool")];
+    // An executable script is an application only where executables are (Linux).
+    if cfg!(any(target_os = "macos", target_os = "windows")) {
+        refused.push(script.clone());
+    }
+    for bad in &refused {
+        let e = app.run(EDIT_WITH, json!({"app": bad.to_string_lossy()})).unwrap_err();
+        assert!(e.contains("links.editWith"), "{bad:?}: {e}");
+        assert!(check_application(bad).is_err(), "{bad:?}");
+    }
+    assert!(launched.borrow().is_empty(), "nothing was started");
+    #[cfg(target_os = "macos")]
+    {
+        let bundle = dir.path().join("Painter.APP");
+        std::fs::create_dir(&bundle).unwrap();
+        assert!(check_application(&bundle).is_ok());
+        app.run(EDIT_WITH, json!({"app": bundle.to_string_lossy()})).unwrap();
+        assert_eq!(launched.borrow().len(), 1);
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    assert!(check_application(&script).is_ok());
+}
+
+/// A linked file marked executable isn't handed to the system's opener (`xdg-open` on Linux may
+/// run it whatever its name says); one that isn't is.
+#[cfg(unix)]
+#[test]
+fn an_executable_linked_file_is_not_given_to_the_opener() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("photo.png");
+    std::fs::write(&file, png(4)).unwrap();
+    assert!(check_not_executable(&file).is_ok());
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o744)).unwrap();
+    assert!(check_not_executable(&file).unwrap_err().contains("executable"));
+    #[cfg(not(target_os = "macos"))]
+    {
+        assert!(launch_command(&file, None).is_err(), "not opened by the system's opener");
+        assert!(launch_command(&file, Some(Path::new("/usr/bin/gimp"))).is_ok(), "an application chosen gets it as an argument");
+    }
+}
+
+/// Each file is remembered as soon as it opens: when a later one fails to open, the ones opened
+/// before it are still updated once they are saved.
+#[test]
+fn files_opened_before_a_failure_are_still_remembered() {
+    let dir = tempfile::tempdir().unwrap();
+    let (first, second) = (dir.path().join("first.png"), dir.path().join("second.png"));
+    std::fs::write(&first, png(4)).unwrap();
+    std::fs::write(&second, png(5)).unwrap();
+    let services = crate::Services {
+        launch: Some(Box::new(
+            |file: &Path, _: Option<&Path>| {
+                if file.file_name().is_some_and(|n| n == "second.png") { Err("no application for it".into()) } else { Ok(()) }
+            },
+        )),
+        ..Default::default()
+    };
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), services);
+    app.run("file.new", json!({})).unwrap();
+    let a = app.run("file.place", json!({"path": first.to_string_lossy(), "x": 10, "y": 10})).unwrap()["id"].as_u64().unwrap();
+    select(&mut app, &[]);
+    let b = app.run("file.place", json!({"path": second.to_string_lossy(), "x": 200, "y": 10})).unwrap()["id"].as_u64().unwrap();
+    select(&mut app, &[a, b]);
+    assert!(app.run(EDIT_ORIGINAL, json!({})).is_err(), "the second file didn't open");
+    std::fs::write(&first, png(9)).unwrap();
+    assert_eq!(refresh_edited(&mut app), 1, "the first one was remembered");
+}
+
+/// Files edited together and saved before the window is back in front are updated in one undo
+/// step.
+#[test]
+fn edited_files_that_changed_together_update_in_one_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let (first, second) = (dir.path().join("first.png"), dir.path().join("second.png"));
+    std::fs::write(&first, png(4)).unwrap();
+    std::fs::write(&second, png(5)).unwrap();
+    let (mut app, launched) = app();
+    let a = app.run("file.place", json!({"path": first.to_string_lossy(), "x": 10, "y": 10})).unwrap()["id"].as_u64().unwrap();
+    select(&mut app, &[]);
+    let b = app.run("file.place", json!({"path": second.to_string_lossy(), "x": 200, "y": 10})).unwrap()["id"].as_u64().unwrap();
+    select(&mut app, &[a, b]);
+    app.run(EDIT_ORIGINAL, json!({})).unwrap();
+    assert_eq!(launched.borrow().len(), 2);
+    std::fs::write(&first, png(9)).unwrap();
+    std::fs::write(&second, png(10)).unwrap();
+    let undo = app.session.doc().unwrap().history.undo.len();
+    assert_eq!(refresh_edited(&mut app), 2);
+    assert_eq!(app.session.doc().unwrap().history.undo.len(), undo + 1, "one undo step");
 }
