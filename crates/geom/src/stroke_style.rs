@@ -108,12 +108,6 @@ fn samples(bp: &BezPath, step: f64) -> Vec<Vec<(Point, Vec2)>> {
     let step = step.max(total / MAX_STROKE_SAMPLES as f64);
     subs.iter().map(|sub| subpath_samples(sub, step)).collect()
 }
-    if !total.is_finite() || !step.is_finite() || step <= 0.0 {
-        return Vec::new();
-    }
-    let step = step.max(total / MAX_STROKE_SAMPLES as f64);
-    subs.iter().map(|sub| subpath_samples(sub, step)).collect()
-}
 
 /// Points along one subpath every `step` of arc length, with the unit tangent there.
 fn subpath_samples(bp: &BezPath, step: f64) -> Vec<(Point, Vec2)> {
