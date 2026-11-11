@@ -796,9 +796,9 @@ fn claim_size(bytes: &mut [u8], name: &str, size: u32) {
     assert_eq!(patched, 2, "{name} not found in both headers");
 }
 
-/// A small archive whose `document.json` expands past the 256 MiB limit while claiming to
-/// hold one byte is refused once the limit is reached, with an error that says so, instead of
-/// being read whole into memory.
+/// A small archive whose `document.json` expands past the size it claims (one byte) toward the
+/// 256 MiB limit is refused without being read whole into memory, with an error that names
+/// `document.json`.
 #[test]
 fn oversized_document_json_is_refused() {
     let mut z = zip::ZipWriter::new(Cursor::new(Vec::new()));
