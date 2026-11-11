@@ -2701,6 +2701,28 @@ fn a_non_breaking_hyphen_the_font_lacks_is_drawn_as_its_hyphen() {
     assert_eq!(line_of(7), line_of(10));
 }
 
+/// Generated text (here a section marker) with a non-breaking hyphen the font lacks: drawn as its
+/// hyphen-minus too, the glyph's generated text keeping the original character.
+#[test]
+fn a_generated_non_breaking_hyphen_the_font_lacks_is_drawn_as_its_hyphen() {
+    use designcraft_fonts::testing::font_mapping;
+    let glyphs = [('1', '1'), ('K', 'K'), ('-', '-'), (' ', ' ')];
+    designcraft_fonts::FontDb::global().add_font(font_mapping("DC Test No NB Hyphen Marker", &glyphs).unwrap());
+    let text = format!("K {}", story::SECTION_MARKER);
+    let (mut d, sid, _) = doc_with(&text, Rect::new(100.0, 100.0, 400.0, 200.0), ParaAttrs::default());
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.font_family = Some("DC Test No NB Hyphen Marker".into()));
+    let opts = ComposeOptions { section_marker: Some("1\u{2011}K".into()), ..Default::default() };
+    let glyphs = compose_story(&d, sid, &opts).frames[0].lines[0].glyphs.clone();
+    let marker: Vec<_> = glyphs.iter().filter(|g| g.byte == 2).collect();
+    assert_eq!(marker.len(), 3, "{marker:?}");
+    assert!(marker.iter().all(|g| g.gid != 0), "no .notdef box: {marker:?}");
+    let texts: Vec<_> = marker.iter().map(|g| g.generated_text.as_deref().unwrap_or("")).collect();
+    assert_eq!(texts.concat(), "1\u{2011}K");
+    let plain = ComposeOptions { section_marker: Some("1-K".into()), ..Default::default() };
+    let hyphen = compose_story(&d, sid, &plain).frames[0].lines[0].glyphs.iter().filter(|g| g.byte == 2).nth(1).map(|g| g.gid);
+    assert_eq!(Some(marker[1].gid), hyphen, "the font's own hyphen");
+}
+
 #[test]
 fn page_numbers_take_the_digits_option() {
     use designcraft_fonts::testing::font_mapping;
