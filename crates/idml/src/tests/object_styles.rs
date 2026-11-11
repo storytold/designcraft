@@ -227,3 +227,43 @@ fn feathers_come_from_the_object_style_unless_its_category_turns_them_off() {
     assert!(fx[2].gradient_feather.on);
     assert!(!fx[2].directional_feather.on, "the item's own setting wins");
 }
+
+/// An empty frame for a graphic stays one (`ContentType="GraphicType"`), a rectangle InDesign gave
+/// the graphics frame style without one stays a plain shape, and export writes both back.
+#[test]
+fn graphic_frames_are_told_from_plain_shapes() {
+    let rect = |me: &str, kind: &str, x: u32| {
+        format!(
+            r#"    <Rectangle Self="{me}" ItemLayer="L1" ItemTransform="1 0 0 1 {x} 400" ContentType="{kind}" AppliedObjectStyle="ObjectStyle/$ID/[Normal Graphics Frame]">
+      <Properties><PathGeometry><GeometryPathType PathOpen="false"><PathPointArray>
+        <PathPointType Anchor="0 0"/><PathPointType Anchor="0 30"/><PathPointType Anchor="40 30"/><PathPointType Anchor="40 0"/>
+      </PathPointArray></GeometryPathType></PathGeometry></Properties>
+    </Rectangle>
+"#
+        )
+    };
+    let spread = SPREAD.replacen("  </Spread>", &format!("{}{}  </Spread>", rect("gf", "GraphicType", 100), rect("sh", "Unassigned", 200)), 1);
+    let bytes = zip_files(&[
+        ("designmap.xml", DESIGNMAP),
+        ("Resources/Graphic.xml", GRAPHIC),
+        ("Resources/Styles.xml", STYLES),
+        ("Resources/Preferences.xml", PREFS),
+        ("MasterSpreads/MasterSpread_m1.xml", MASTER),
+        ("Spreads/Spread_sp1.xml", &spread),
+        ("Stories/Story_s1.xml", STORY),
+    ]);
+    let flags = |d: &Document| {
+        let mut v: Vec<(bool, f64)> = Vec::new();
+        for it in &d.spreads[0].items {
+            if matches!(it.content, designcraft_doc::Content::Unassigned) && it.shape == designcraft_doc::Shape::Rectangle {
+                v.push((it.graphic_frame, it.bounds().x0.round()));
+            }
+        }
+        v.sort_by(|a, b| a.1.total_cmp(&b.1));
+        v.into_iter().map(|(g, _)| g).collect::<Vec<_>>()
+    };
+    let d = import_idml(&bytes).unwrap();
+    assert_eq!(flags(&d), [true, false], "the GraphicType frame, then the plain shape");
+    let back = import_idml(&export_idml(&d)).unwrap();
+    assert_eq!(flags(&back), [true, false], "written back as they were");
+}
