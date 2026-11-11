@@ -214,7 +214,7 @@ impl<'a> Ex<'a> {
                         ce.set(&format!("{side}StrokePriority"), priority);
                     }
                 }
-                let mut paras = self.story_paras(&cell.text);
+                let mut paras = self.story_paras_marked(&cell.text);
                 // A graphic cell holds its image as an inline object in the cell's first paragraph.
                 if let Some(g) = &cell.graphic
                     && let Some(object) = self.cell_graphic_el(g)
@@ -232,7 +232,8 @@ impl<'a> Ex<'a> {
                         }
                     }
                 }
-                for psr in paras {
+                let paras = self.wrap_inline_xml(paras);
+                for psr in self.cell_xml(t.id, r * t.ncols() + c, paras) {
                     ce.push(psr);
                 }
                 el.push(ce);

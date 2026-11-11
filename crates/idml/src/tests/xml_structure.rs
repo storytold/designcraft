@@ -113,3 +113,99 @@ fn xml_elements_are_read_with_their_content_and_attributes() {
     let cell = &table.cells[0].text;
     assert!(cell.runs().any(|(r, f)| f.over.xml_element == Some(cell_tr) && &cell.text[r] == "Motiv 498"));
 }
+
+/// Each element as (tag, attributes, content kind, parent's tag, its text), sorted: what an IDML
+/// round trip has to keep.
+fn structure(d: &Document) -> Vec<(String, Vec<(String, String)>, &'static str, String, String)> {
+    let text_of = |id: u64| -> String {
+        let mut out = String::new();
+        let mut stories: Vec<&designcraft_doc::Story> = d.stories.values().map(|s| &**s).collect();
+        for s in d.stories.values() {
+            for t in s.tables.values() {
+                stories.extend(t.cells.iter().map(|c| &c.text));
+            }
+        }
+        for s in stories {
+            out.extend(s.runs().filter(|(_, f)| f.over.xml_element == Some(id)).map(|(r, _)| s.text[r].to_string()));
+        }
+        out
+    };
+    let mut v: Vec<_> = d
+        .xml
+        .elements
+        .iter()
+        .map(|(id, e)| {
+            let kind = match e.content {
+                XmlContent::None => "none",
+                XmlContent::Story { .. } => "story",
+                XmlContent::Table { .. } => "table",
+                XmlContent::Cell { .. } => "cell",
+                XmlContent::Text => "text",
+            };
+            let parent = d.xml.elements.get(&e.parent).map_or("(root)".to_string(), |p| p.tag.clone());
+            (e.tag.clone(), e.attrs.clone(), kind, parent, text_of(*id))
+        })
+        .collect();
+    v.sort();
+    v
+}
+
+#[test]
+fn idml_export_keeps_the_xml_structure() {
+    let d = tagged();
+    let bytes = export_idml(&d);
+    let back = import_idml(&bytes).unwrap();
+    assert_eq!(structure(&back), structure(&d));
+    assert_eq!(back.xml.root, "Root");
+    assert_eq!(back.xml.root_children.len(), 1);
+    let story = back.stories.values().find(|s| s.text.contains("Intro")).unwrap();
+    assert_eq!(story.text, d.stories.values().find(|s| s.text.contains("Intro")).unwrap().text, "the text stays as it was");
+    // The tags keep their colours; the package names the XML parts as InDesign does.
+    assert_eq!(
+        back.xml.tags.iter().find(|t| t.name == "Translation").map(|t| t.color),
+        d.xml.tags.iter().find(|t| t.name == "Translation").map(|t| t.color)
+    );
+    let designmap = zip_text(&bytes, "designmap.xml");
+    assert!(
+        designmap.contains(r#"<idPkg:Tags src="XML/Tags.xml"/>"#) && designmap.contains(r#"<idPkg:BackingStory src="XML/BackingStory.xml"/>"#),
+        "{designmap}"
+    );
+}
+
+#[test]
+fn inline_elements_sit_where_indesign_puts_them() {
+    let bytes = export_idml(&tagged());
+    let story = zip_text(&bytes, "Stories/");
+    let root = crate::xml::parse(story.split("<?xml").find(|p| p.contains("Intro")).map(|p| format!("<?xml{p}")).unwrap().as_bytes()).unwrap();
+    // (the element's tag, the tag of the element it is written in)
+    fn walk(e: &crate::xml::El, out: &mut Vec<(String, String)>) {
+        for c in e.elements() {
+            if c.name == "XMLElement" {
+                out.push((c.get("MarkupTag").unwrap_or("").to_string(), e.name.clone()));
+            }
+            walk(c, out);
+        }
+    }
+    let mut placed = Vec::new();
+    walk(&root, &mut placed);
+    let place = |tag: &str| placed.iter().filter(|(t, _)| t == tag).map(|(_, p)| p.as_str()).collect::<Vec<_>>();
+    assert_eq!(place("XMLTag/Story"), ["Story"], "around the story's text");
+    // "Neu heute" spans two character ranges: around them in the paragraph; "Motiv 498" fits one.
+    assert_eq!(place("XMLTag/Translation"), ["ParagraphStyleRange", "CharacterStyleRange"], "{placed:?}");
+    assert_eq!(place("XMLTag/Table"), ["CharacterStyleRange"], "around the table, in its anchor's range");
+    assert_eq!(place("XMLTag/Cell"), ["Cell"]);
+    // Attributes follow the content, as InDesign writes them; the paragraph break stays outside.
+    let neu = story.find(r#"Name="Id" Value="1000""#).unwrap();
+    assert!(story[..neu].rfind("heute").is_some_and(|h| story[h..neu].find("<Br").is_none()), "{story}");
+    let backing = zip_text(&bytes, "XML/BackingStory.xml");
+    assert!(backing.contains(r#"MarkupTag="XMLTag/Story" XMLContent="#) && backing.contains("\u{feff}"), "{backing}");
+}
+
+#[test]
+fn a_document_without_xml_writes_no_xml_parts() {
+    let d = import_idml(&fixture()).unwrap();
+    assert!(d.xml.elements.is_empty());
+    let bytes = export_idml(&d);
+    assert!(zip_text(&bytes, "XML/").is_empty());
+    assert!(!zip_text(&bytes, "designmap.xml").contains("BackingStory"));
+}
