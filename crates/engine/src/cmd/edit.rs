@@ -111,6 +111,39 @@ pub fn copied_objects_text(s: &Session) -> String {
     if text.is_empty() { '\u{FFFC}'.to_string() } else { text }
 }
 
+/// A PNG picture of the copied objects, for the system clipboard (#2204): so pasting into another
+/// app (PhotoCraft, say) gets a usable picture instead of only the placeholder text above, which
+/// only this app's own Paste reads back as "the copied objects". Renders the clipping's own page 0
+/// at its original size (the copied items keep the position they held on the source page), so
+/// `None` only when there is nothing copied or the render itself fails.
+pub fn copied_objects_png(s: &Session) -> Option<Vec<u8>> {
+    let clip = s.clipboard.as_ref()?;
+    let opts = designcraft_render::RenderOptions { printing_only: true, ..Default::default() };
+    let img = designcraft_render::Renderer::new().render_page(clip, &s.cache, 0, 1.0, false, &opts)?;
+    Some(img.to_png())
+}
+
+#[cfg(test)]
+mod copied_objects_png_tests {
+    use super::*;
+
+    #[test]
+    fn renders_the_clipboard_s_own_page_0_and_is_none_with_nothing_copied() {
+        let mut s = Session::new();
+        assert!(copied_objects_png(&s).is_none(), "nothing copied yet");
+        s.execute("file.new", &json!({})).unwrap();
+        let a = s.execute("frame.create", &json!({"rect": [10, 10, 60, 60]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("object.fill", &json!({"ids": [a], "swatch": "[Black]"})).unwrap();
+        s.execute("selection.set", &json!({"ids": [a]})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+        let png = copied_objects_png(&s).expect("a copied object renders a picture");
+        let clip = s.clipboard.clone().unwrap();
+        let opts = designcraft_render::RenderOptions { printing_only: true, ..Default::default() };
+        let expected = designcraft_render::Renderer::new().render_page(&clip, &s.cache, 0, 1.0, false, &opts).unwrap().to_png();
+        assert_eq!(png, expected, "renders the clipping's own page 0, the same way the engine itself does it");
+    }
+}
+
 /// `text` (the system clipboard's) is what the last copy put there: objects were copied last and
 /// it is their placeholder, so Paste stands for the copied objects.
 fn is_objects_placeholder(s: &Session, text: &str) -> bool {

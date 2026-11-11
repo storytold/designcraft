@@ -52,6 +52,16 @@ impl DesignApp {
                     ctx.copy_text(t);
                     ctx.request_repaint();
                 }
+                // Also give another app (PhotoCraft, say) a picture to paste, not just the
+                // placeholder text above (#2204). `clipboard_set_object_copy` writes both
+                // together, so the picture never replaces the placeholder text this app's own
+                // Paste still needs.
+                if v.get("text").is_none()
+                    && let Some(set) = self.services.clipboard_set_object_copy.as_mut()
+                    && let Some(png) = designcraft_engine::cmd::copied_objects_png(&self.session)
+                {
+                    let _ = set(&self.object_clip_text.clone().unwrap_or_default(), &png);
+                }
             }
             Ok(_) => {}
         }
