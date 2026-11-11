@@ -120,14 +120,49 @@ fn too_long(s: &str) -> String {
     format!("the interpolated text of {preview} is longer than {MAX_INTERPOLATED_BYTES} bytes").replace('\n', " ")
 }
 
+/// Longest string a whole reference (`$last.text`) may copy in. A story is far smaller; the cap
+/// stops a loop of "read the story, paste it back" from doubling it until memory runs out.
+pub const MAX_REFERENCED_BYTES: usize = 64 << 20;
+
+/// Most bytes of strings one step's parameters may hold once its references are resolved: the
+/// limits above apply to each string, this one to a whole parameter tree (an array of 256
+/// references to a large string would pass each of them).
+pub const MAX_STEP_PARAM_BYTES: usize = 256 << 20;
+
+/// Roughly how many bytes cloning `v` allocates (its strings, plus a word per node).
+fn weight(v: &Value) -> usize {
+    match v {
+        Value::String(s) => s.len(),
+        Value::Array(a) => a.iter().fold(8, |n, x| n.saturating_add(weight(x))),
+        Value::Object(o) => o.iter().fold(8, |n, (k, x)| n.saturating_add(k.len()).saturating_add(weight(x))),
+        _ => 8,
+    }
+}
+
+fn charge(budget: &mut usize, bytes: usize) -> Result<(), String> {
+    *budget =
+        budget.checked_sub(bytes).ok_or_else(|| format!("the parameters of a step are longer than {MAX_STEP_PARAM_BYTES} bytes once resolved"))?;
+    Ok(())
+}
+
 /// Replace references in `params` with values from earlier `results`.
 pub fn resolve(params: &Value, results: &[Value]) -> Result<Value, String> {
+    resolve_in(params, results, MAX_REFERENCED_BYTES, &mut { MAX_STEP_PARAM_BYTES })
+}
+
+fn resolve_in(params: &Value, results: &[Value], max_ref: usize, budget: &mut usize) -> Result<Value, String> {
     Ok(match params {
         Value::String(s) => {
             if let Some(r) = s.strip_prefix('$').filter(|r| is_reference(r)) {
-                return lookup(r, results).cloned();
+                let v = lookup(r, results)?;
+                if matches!(v, Value::String(t) if t.len() > max_ref) {
+                    return Err(format!("`${r}` is longer than {max_ref} bytes"));
+                }
+                charge(budget, weight(v))?;
+                return Ok(v.clone());
             }
             if !s.contains("${") && !s.contains("$$") {
+                charge(budget, s.len())?;
                 return Ok(params.clone());
             }
             let mut out = String::new();
@@ -159,10 +194,13 @@ pub fn resolve(params: &Value, results: &[Value]) -> Result<Value, String> {
                 return Err(too_long(s));
             }
             out.push_str(rest);
+            charge(budget, out.len())?;
             Value::String(out)
         }
-        Value::Array(a) => Value::Array(a.iter().map(|v| resolve(v, results)).collect::<Result<_, _>>()?),
-        Value::Object(o) => Value::Object(o.iter().map(|(k, v)| Ok((k.clone(), resolve(v, results)?))).collect::<Result<_, String>>()?),
+        Value::Array(a) => Value::Array(a.iter().map(|v| resolve_in(v, results, max_ref, budget)).collect::<Result<_, _>>()?),
+        Value::Object(o) => {
+            Value::Object(o.iter().map(|(k, v)| Ok((k.clone(), resolve_in(v, results, max_ref, budget)?))).collect::<Result<_, String>>()?)
+        }
         v => v.clone(),
     })
 }
@@ -239,6 +277,18 @@ mod tests {
     }
 
     use super::*;
+
+    /// A whole reference to a long string is refused, and the strings of one step's parameters
+    /// share a budget (small limits here: the real ones would mean allocating them).
+    #[test]
+    fn whole_references_and_the_parameter_tree_are_bounded() {
+        let results = vec![json!({"text": "x".repeat(100)})];
+        assert!(resolve_in(&json!("$0.text"), &results, 100, &mut 1000).is_ok());
+        assert!(resolve_in(&json!("$0.text"), &results, 99, &mut 1000).unwrap_err().contains("longer than 99"));
+        let many = json!(["$0.text", "$0.text", "${0.text}"]);
+        assert!(resolve_in(&many, &results, 100, &mut 300).is_ok());
+        assert!(resolve_in(&many, &results, 100, &mut 299).unwrap_err().contains("once resolved"));
+    }
 
     #[test]
     fn leading_blank_lines_keep_line_numbers() {
