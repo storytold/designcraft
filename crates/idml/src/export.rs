@@ -125,7 +125,8 @@ struct Ex<'a> {
 }
 
 /// Image bytes one export embeds, counting each placement (IDML holds a copy per placement): past
-/// it a graphic is written without its contents.
+/// it a graphic that has a link of its own is written as that link without its contents (an
+/// image with no link is always embedded: it has nowhere else to live).
 const MAX_EMBEDDED_BYTES: usize = 512 * 1024 * 1024;
 
 impl<'a> Ex<'a> {

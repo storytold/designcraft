@@ -269,7 +269,9 @@ impl<'a> Ex<'a> {
             el.set("FillTint", pct(g.fill.tint as f64));
         }
         let wanted = !asset.data.is_empty() && (self.opts.embed_images || asset.link.is_none());
-        let embed = wanted && self.embedded.saturating_add(asset.data.len()) <= self.embed_limit;
+        // An image with no link of its own has nowhere else to live, so it is always embedded
+        // (dropping its data would lose it); only an image with a real link can fall back to it.
+        let embed = wanted && (asset.link.is_none() || self.embedded.saturating_add(asset.data.len()) <= self.embed_limit);
         if wanted && !embed {
             self.warnings.push(format!(
                 "image {} is written as a link, not embedded: the package already holds {} bytes of images (limit {})",
