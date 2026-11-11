@@ -535,6 +535,27 @@ fn table_commands_run_on_a_named_table_without_a_table_selection() {
     assert_eq!(size(&mut s), (2, 3));
 }
 
+/// A `story` that is not a non-negative integer is refused the same way whether or not a table is
+/// selected, and the table is left unchanged.
+#[test]
+fn a_bad_story_is_refused_with_or_without_a_table_selection() {
+    let (mut s, _, _) = session_with_frame();
+    let tid = s.execute("table.insert", &json!({"rows": 2, "cols": 2})).unwrap()["table"].as_u64().unwrap();
+    let rows = |s: &mut Session| s.execute("table.get", &json!({"table": tid})).unwrap()["rows"].as_array().unwrap().len();
+    for select in [json!({"table": tid, "rows": [0, 0], "what": "row"}), json!(null)] {
+        if select.is_null() {
+            s.execute("edit.deselectAll", &json!({})).unwrap();
+        } else {
+            s.execute("table.select", &select).unwrap();
+        }
+        for story in [json!("x"), json!(-1), json!(1.5), json!(null)] {
+            let r = s.execute("table.insertRow", &json!({"story": story, "table": tid}));
+            assert!(matches!(r, Err(crate::EngineError::BadParams { .. })), "{select} {story}: {r:?}");
+        }
+        assert_eq!(rows(&mut s), 2, "{select}");
+    }
+}
+
 /// With nothing selected, the table commands stay disabled for menus and for calls that name no
 /// table.
 #[test]

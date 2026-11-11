@@ -686,12 +686,10 @@ impl Session {
             // A table command that takes `story` and `table` acts on the table the call names, so
             // the selection doesn't matter: with nothing selected, the caret outside a table, or
             // selected rows the command can't act on, `{"table": 3}` still runs.
-            if let Some((story, table)) = cmd::named_table(spec, params)
+            if let Some(table) = cmd::named_table(spec, params)
                 && cmd::has_doc(self).is_ok()
             {
-                if params.get("story").is_some() && story.is_none() {
-                    return Err(cmd::bad(id, "`story` must be a non-negative integer"));
-                }
+                let story = cmd::table_story(params, id)?;
                 let st = self.doc()?;
                 if !st.doc.stories.iter().any(|(sid, x)| story.is_none_or(|n| sid.0 == n) && x.tables.contains_key(&table)) {
                     return Err(EngineError::Disabled(id.into(), format!("no table {table}")));
