@@ -268,9 +268,14 @@ impl<'a> Ex<'a> {
             el.set("FillColor", id.clone());
             el.set("FillTint", pct(g.fill.tint as f64));
         }
-        let embed = !asset.data.is_empty()
-            && (self.opts.embed_images || asset.link.is_none())
-            && self.embedded.saturating_add(asset.data.len()) <= super::MAX_EMBEDDED_BYTES;
+        let wanted = !asset.data.is_empty() && (self.opts.embed_images || asset.link.is_none());
+        let embed = wanted && self.embedded.saturating_add(asset.data.len()) <= self.embed_limit;
+        if wanted && !embed {
+            self.warnings.push(format!(
+                "image {} is written as a link, not embedded: the package already holds {} bytes of images (limit {})",
+                asset.name, self.embedded, self.embed_limit
+            ));
+        }
         let mut props = Vec::new();
         if embed {
             self.embedded = self.embedded.saturating_add(asset.data.len());
