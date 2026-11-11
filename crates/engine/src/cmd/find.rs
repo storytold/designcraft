@@ -511,7 +511,7 @@ fn scope(s: &Session, p: &Value) -> Result<FindContext> {
             target_text(d, t.story, None, &r)?;
             vec![(t.story, None, r)]
         }
-        // Table cells hold their own text outside `stories`; search them right after the story that anchors the table.
+        // Table cells and footnotes hold their own text outside `stories`; search them right after the story that anchors them.
         Domain::Document => d
             .stories
             .values()
@@ -520,7 +520,8 @@ fn scope(s: &Session, p: &Value) -> Result<FindContext> {
                     let cols = t.ncols().max(1);
                     t.cells.iter().enumerate().map(move |(i, c)| (x.id, Some(CellAddr { table: *id, row: i / cols, col: i % cols }), 0..c.text.len()))
                 });
-                std::iter::once((x.id, None, 0..x.len())).chain(cells)
+                let notes = x.notes.iter().map(move |n| (x.id, Some(CellAddr::footnote(n.id)), 0..n.text.len()));
+                std::iter::once((x.id, None, 0..x.len())).chain(cells).chain(notes)
             })
             .collect(),
     };
