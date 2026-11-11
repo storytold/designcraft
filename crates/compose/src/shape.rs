@@ -1181,6 +1181,9 @@ pub(crate) fn stand_in_offset(starts: Option<&[(usize, usize)]>, at: usize, to_s
     found.ok().map_or(at, |i| if to_shaped { starts[i].1 } else { starts[i].0 })
 }
 
+/// Shapes `range` of `text` in `face` into `out`: the story text, or `replacement` drawn in its place
+/// (generated text: a page number, a variable's value, a cross-reference). Hyphens the face lacks are
+/// shaped as its hyphen-minus ([`with_stand_in_hyphens`]); glyphs keep the original text and bytes.
 #[allow(clippy::too_many_arguments)]
 fn shape_segment(
     db: &ScopedFonts<'_>,
