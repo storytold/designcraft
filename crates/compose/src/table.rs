@@ -524,8 +524,13 @@ fn boundary_stroke<'a>(
     pattern: Option<&'a CellStroke>,
 ) -> Option<(&'a CellStroke, i32, EdgeSource)> {
     let supplied = |cell: &Cell, side: usize| cell.stroke_defined[side] || cell.border_overrides[side] || cell.stroke_priorities[side] != 0;
+    // Formatting the edge actually has (a cell style's or a local rule, or a native override). A priority
+    // alone isn't a rule: an IDML cell without stroke attributes on a side shares its neighbour's stroke
+    // there (InDesign shows the neighbour's on both cells), so its 1 pt default never wins against one.
+    let formatted = |cell: &Cell, side: usize| cell.stroke_defined[side] || (cell.border_overrides[side] && cell.stroke_priorities[side] == 0);
+    let priority_only = |cell: &Cell, side: usize| !cell.stroke_defined[side] && cell.stroke_priorities[side] != 0;
     let rank =
-        |cell: &Cell, side: usize| (cell.stroke_priorities[side], supplied(cell, side), supplied(cell, side) && cell.strokes[side].is_visible());
+        |cell: &Cell, side: usize| (cell.stroke_priorities[side], formatted(cell, side), formatted(cell, side) && cell.strokes[side].is_visible());
     let (owner, cell, side, outer) = match (before, after) {
         (Some((ao, a)), Some((bo, b))) => {
             // Table patterns supply missing interior edges; cell styles and local edits
@@ -542,7 +547,15 @@ fn boundary_stroke<'a>(
             // unspecified: prefer supplied formatting, then a visible supplied rule.
             // Metadata-free native / legacy cells retain lower/right top/left ownership,
             // including explicit None already stored there by older native editing code.
-            if rank(a, before_side) > rank(b, after_side) { (ao, a, before_side, false) } else { (bo, b, after_side, false) }
+            if priority_only(b, after_side) && formatted(a, before_side) {
+                (ao, a, before_side, false)
+            } else if priority_only(a, before_side) && formatted(b, after_side) {
+                (bo, b, after_side, false)
+            } else if rank(a, before_side) > rank(b, after_side) {
+                (ao, a, before_side, false)
+            } else {
+                (bo, b, after_side, false)
+            }
         }
         (Some((owner, a)), None) => (owner, a, before_side, true),
         (None, Some((owner, b))) => (owner, b, after_side, true),
