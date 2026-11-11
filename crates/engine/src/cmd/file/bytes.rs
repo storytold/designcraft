@@ -60,7 +60,12 @@ pub(super) fn to_bytes_with_preview(d: &Document, cache: &crate::Cache) -> Resul
     });
     let png =
         preview.and_then(|scale| designcraft_render::Renderer::new().render_page(d, cache, 0, scale, false, &Default::default())).map(|r| r.to_png());
-    save_bytes(d, png.as_deref())
+    let bytes = save_bytes(d, png.as_deref())?;
+    // `file.open` and `file.revert` refuse a longer file, so don't write one the app can't read back.
+    if bytes.len() as u64 > crate::io::MAX_FILE_BYTES {
+        return Err(EngineError::Other(format!("could not write the document: encoded file is longer than {} bytes", crate::io::MAX_FILE_BYTES)));
+    }
+    Ok(bytes)
 }
 
 pub fn from_bytes(b: &[u8]) -> Result<Document> {
