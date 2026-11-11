@@ -430,7 +430,7 @@ impl Grep {
 }
 
 /// Bytes of replacement text one Find/Change may build, all matches together.
-const MAX_REPLACEMENT_BYTES: usize = 64 * 1024 * 1024;
+pub const MAX_REPLACEMENT_BYTES: usize = 64 * 1024 * 1024;
 
 /// `template` expanded for `caps`, refused as soon as it would pass `room` bytes: the text is
 /// never built past the budget.

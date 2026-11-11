@@ -4,7 +4,7 @@
 use std::ops::Range;
 use std::sync::{Arc, Weak};
 
-use designcraft_compose::grep::{Grep, GrepOptions, translate_replacement};
+use designcraft_compose::grep::{Grep, GrepOptions, MAX_REPLACEMENT_BYTES, translate_replacement};
 use designcraft_doc::story::floor_char_boundary;
 use designcraft_doc::{CellAddr, Document, Selection, Story, StoryId, Styles, TextSel};
 use serde_json::{Value, json};
@@ -651,6 +651,7 @@ fn change(s: &mut Session, p: &Value) -> Result<Value> {
     let (count, changed) = s.edit(|d, sel| {
         let styles = d.styles.clone();
         let mut count = 0usize;
+        let mut built = 0usize;
         let mut changed = None;
         for (sid, cell, r) in targets {
             if found.as_ref().is_some_and(|(at, in_cell, _)| *at != sid || *in_cell != cell) {
@@ -674,6 +675,7 @@ fn change(s: &mut Session, p: &Value) -> Result<Value> {
                     .map(|(m, out)| (r.start + m.start..r.start + m.end, out))
                     .collect(),
             };
+            charge_replacements(&mut built, edits.iter().map(|(_, new)| new.len()), MAX_REPLACEMENT_BYTES)?;
             let Some(st) = d.text_story_mut(sid, cell) else { continue };
             for (range, new) in edits.iter().rev() {
                 let changed = if format_only {
@@ -779,6 +781,18 @@ fn find_next(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(out)
 }
 
+/// Adds the replacement lengths to `built`, the bytes one Find/Change has made across all its
+/// stories and cells; refused past `max`, which each story's own limit alone would not catch.
+fn charge_replacements(built: &mut usize, lens: impl Iterator<Item = usize>, max: usize) -> Result<()> {
+    for n in lens {
+        *built = built.saturating_add(n);
+        if *built > max {
+            return Err(bad("find.change", format!("the replacement text would pass {max} bytes in all")));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests;
 
@@ -826,10 +840,19 @@ fn find_objects(d: &designcraft_doc::Document, p: &Value) -> Vec<designcraft_doc
 mod object_find_tests {
     use serde_json::json;
 
+    use super::charge_replacements;
     use crate::Session;
 
     /// A GREP match that is empty (`^`, the start of each paragraph) gets the paragraph style:
     /// only character formatting needs characters.
+    #[test]
+    fn replacement_bytes_are_charged_across_targets() {
+        let mut built = 0;
+        assert!(charge_replacements(&mut built, [4, 4].into_iter(), 10).is_ok());
+        assert!(charge_replacements(&mut built, [3].into_iter(), 10).is_err(), "the second target pushes the total past the limit");
+        assert!(charge_replacements(&mut 0, [usize::MAX, 1].into_iter(), 10).is_err(), "no overflow");
+    }
+
     #[test]
     fn change_format_styles_paragraphs_of_empty_matches() {
         let mut s = Session::new();
