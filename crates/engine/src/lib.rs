@@ -392,6 +392,10 @@ pub struct Session {
     active: Option<usize>,
     /// An undoable command is running: the commands it runs are part of its undo step.
     in_undo_step: bool,
+    /// Scripts running one inside another, and the steps the outermost may still run
+    /// ([`script::MAX_SCRIPT_DEPTH`], [`script::MAX_SCRIPT_STEPS`]).
+    pub(crate) script_depth: usize,
+    pub(crate) script_steps: usize,
     pub prefs: Prefs,
     pub cache: Arc<Cache>,
     pub(crate) tool: Box<dyn designcraft_tools::Tool>,
@@ -461,6 +465,8 @@ impl Session {
             docs: vec![],
             active: None,
             in_undo_step: false,
+            script_depth: 0,
+            script_steps: 0,
             prefs: Prefs::default(),
             cache: Arc::new(Cache::new()),
             tool: designcraft_tools::create("selection"),
