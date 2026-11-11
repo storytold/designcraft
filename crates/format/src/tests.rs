@@ -355,6 +355,23 @@ fn format_1_keep_lines_without_mode_stays_all_lines() {
     assert!(!designcraft_doc::ParaProps::default().keep_all_lines);
 }
 
+/// A format-1 file with many styles upgrades in time linear in them (each style's chain was
+/// found by searching every style, twice over).
+#[test]
+fn format_1_upgrade_of_many_styles_is_linear() {
+    let mut d = Document::new(&NewDocument::default());
+    let st = d.styles_mut();
+    for i in 0..20_000 {
+        st.paragraph.push(para_style(&format!("S{i}"), (i % 2 == 1).then(|| format!("S{}", i - 1)).as_deref(), None));
+    }
+    let bytes = save_v1(&d);
+    let t = std::time::Instant::now();
+    let back = load(&bytes).unwrap();
+    assert!(t.elapsed() < std::time::Duration::from_secs(10), "{:?}", t.elapsed());
+    assert_eq!(back.styles.para("S0").unwrap().para.keep_all_lines, Some(true));
+    assert_eq!(back.styles.para("S1").unwrap().para.keep_all_lines, None, "based on S0, which is pinned");
+}
+
 /// Format 1 wrote paragraph rules, text frame options and numbered lists in full, so their
 /// old defaults (black rules, auto-size from the top centre, lists continuing across stories)
 /// load as saved. New documents take InDesign's.

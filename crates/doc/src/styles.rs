@@ -775,14 +775,29 @@ impl Styles {
 
     /// The paragraph style chain from root to `name` (cycle-safe): resolution starts at its first.
     pub fn para_chain(&self, name: &str) -> Vec<&ParagraphStyle> {
+        Self::para_chain_by(name, |n| self.para(n))
+    }
+
+    /// The paragraph styles by name, the first of each name (as [`Self::para`] finds it), for
+    /// callers that look up every style: one map instead of a search per style.
+    pub fn para_index(&self) -> std::collections::HashMap<&str, &ParagraphStyle> {
+        let mut index = std::collections::HashMap::new();
+        for s in &self.paragraph {
+            index.entry(s.name.as_str()).or_insert(s);
+        }
+        index
+    }
+
+    /// [`Self::para_chain`] with styles found through `find` (a [`Self::para_index`]).
+    pub fn para_chain_by<'a>(name: &str, find: impl Fn(&str) -> Option<&'a ParagraphStyle>) -> Vec<&'a ParagraphStyle> {
         let mut chain = Vec::new();
-        let mut cur = self.para(name);
+        let mut cur = find(name);
         while let Some(s) = cur {
             if chain.len() >= MAX_DEPTH || chain.iter().any(|c: &&ParagraphStyle| c.name == s.name) {
                 break;
             }
             chain.push(s);
-            cur = s.based_on.as_deref().and_then(|b| self.para(b));
+            cur = s.based_on.as_deref().and_then(&find);
         }
         chain.reverse();
         chain

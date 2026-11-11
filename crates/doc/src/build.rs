@@ -365,7 +365,7 @@ impl Document {
     /// number is a right page (a left page bound right to left), so a section that starts at 1 on
     /// a left page moves it to the right and the pages after it follow.
     pub fn repaginate(&mut self) {
-        let odd: Vec<bool> = (0..self.page_count()).map(|i| self.page_number(i) % 2 == 1).collect();
+        let odd: Vec<bool> = self.page_numbers(self.page_count()).into_iter().map(|n| n % 2 == 1).collect();
         // A layout starts a spread of its own.
         let layout_starts: HashSet<usize> = self.sections.iter().filter(|s| s.layout.is_some() && s.start > 0).map(|s| s.start).collect();
         let mut breaks: Vec<bool> = Vec::new();

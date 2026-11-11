@@ -983,6 +983,34 @@ impl Document {
         }
     }
 
+    /// [`Self::page_number`] of pages `0..count` in one pass (a document of continuing sections
+    /// would otherwise walk back through every earlier section for every page).
+    pub fn page_numbers(&self, count: usize) -> Vec<u32> {
+        let mut secs: Vec<&Section> = self.sections.iter().collect();
+        secs.sort_by_key(|s| s.start); // stable: of equal starts the last wins, as in `section_of`
+        let (mut nums, mut next): (Vec<u32>, usize) = (Vec::with_capacity(count.min(1 << 20)), 0);
+        for abs in 0..count {
+            while secs.get(next).is_some_and(|s| s.start <= abs) {
+                next += 1;
+            }
+            let n = match next.checked_sub(1).and_then(|i| secs.get(i)) {
+                None => u32::try_from(abs).unwrap_or(u32::MAX).saturating_add(1),
+                Some(sec) => {
+                    let into = u32::try_from(abs - sec.start).unwrap_or(u32::MAX);
+                    match sec.start_number {
+                        Some(n) => n.saturating_add(into),
+                        None => match sec.start.checked_sub(1).and_then(|p| nums.get(p)) {
+                            Some(prev) => prev.saturating_add(into).saturating_add(1),
+                            None => into.saturating_add(1),
+                        },
+                    }
+                }
+            };
+            nums.push(n);
+        }
+        nums
+    }
+
     /// The displayed page name ("1", "iv", "A-3"…) for an absolute page index, per sections.
     /// The chapter number in its style (`3`, `III`, `c`, `03`).
     pub fn chapter_label(&self) -> String {
@@ -1136,6 +1164,11 @@ impl Document {
             }
         }
         let mut ids = std::collections::HashSet::new();
+        // Every item's story (text frames), by id, and every (story, frame) of the threads: built
+        // once, so checking each reference both ways is a lookup, not a search of the document.
+        let mut frame_story: std::collections::HashMap<ItemId, Option<StoryId>> = std::collections::HashMap::new();
+        let threads: std::collections::HashSet<(StoryId, ItemId)> =
+            self.stories.iter().flat_map(|(sid, st)| st.frames.iter().map(move |f| (*sid, *f))).collect();
         for sp in self.spreads.iter().chain(self.parents.iter()) {
             for it in &sp.items {
                 let mut dup = None;
@@ -1143,11 +1176,18 @@ impl Document {
                     if !ids.insert(i.id.0) {
                         dup = Some(i.id);
                     }
+                    frame_story.insert(i.id, i.text_frame().map(|t| t.story));
                 });
                 if let Some(d) = dup {
                     return Err(DocError::Invalid(format!("duplicate item id {d}")));
                 }
             }
+        }
+        let embedded = self.anchored_items();
+        // An anchored item's story, by id (the first of an id, as a search would find it).
+        let mut anchored: std::collections::HashMap<ItemId, Option<StoryId>> = std::collections::HashMap::new();
+        for (_, item) in &embedded {
+            anchored.entry(item.id).or_insert_with(|| item.text_frame().map(|t| t.story));
         }
         for (sid, st) in &self.stories {
             st.check().map_err(DocError::Invalid)?;
@@ -1155,8 +1195,11 @@ impl Document {
                 return Err(DocError::Invalid(format!("story key {sid} != id {}", st.id)));
             }
             for f in &st.frames {
-                let item = self.item(*f).or_else(|| self.anchored_item(*f)).ok_or(DocError::NoItem(*f))?;
-                match item.text_frame().map(|t| t.story) {
+                let story = match frame_story.get(f) {
+                    Some(story) => *story,
+                    None => anchored.get(f).copied().ok_or(DocError::NoItem(*f))?,
+                };
+                match story {
                     Some(s) if s == *sid => {}
                     other => return Err(DocError::Invalid(format!("frame {f} in story {sid} points at {other:?}"))),
                 }
@@ -1168,7 +1211,7 @@ impl Document {
                 let mut bad = None;
                 it.walk(&mut |i| {
                     if let Some(t) = i.text_frame()
-                        && !self.stories.get(&t.story).is_some_and(|s| s.frames.contains(&i.id))
+                        && !threads.contains(&(t.story, i.id))
                     {
                         bad = Some(i.id);
                     }
@@ -1178,14 +1221,13 @@ impl Document {
                 }
             }
         }
-        let embedded = self.anchored_items();
         let mut edges: std::collections::HashMap<StoryId, Vec<StoryId>> = std::collections::HashMap::new();
         for (owner, item) in embedded {
             if !ids.insert(item.id.0) {
                 return Err(DocError::Invalid(format!("duplicate item id {}", item.id)));
             }
             if let Some(tf) = item.text_frame() {
-                if !self.stories.get(&tf.story).is_some_and(|s| s.frames.contains(&item.id)) {
+                if !threads.contains(&(tf.story, item.id)) {
                     return Err(DocError::Invalid(format!("embedded text frame {} not in its story's thread", item.id)));
                 }
                 edges.entry(owner).or_default().push(tf.story);

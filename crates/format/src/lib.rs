@@ -312,12 +312,14 @@ fn upgrade(doc: &mut Document, from: u32) {
 /// is missing.
 fn pin_para_default<T: Clone>(doc: &mut Document, field: fn(&mut ParaAttrs) -> &mut Option<T>, old: T) {
     let unset = |a: &ParaAttrs| field(&mut a.clone()).is_none();
+    // Every style is looked up by name: through one index, not a search of all styles each time.
+    let index = doc.styles.para_index();
     let roots: std::collections::HashSet<String> = doc
         .styles
         .paragraph
         .iter()
         .filter_map(|s| {
-            let chain = doc.styles.para_chain(&s.name);
+            let chain = designcraft_doc::Styles::para_chain_by(&s.name, |n| index.get(n).copied());
             if chain.iter().all(|c| unset(&c.para)) { chain.first().map(|c| c.name.clone()) } else { None }
         })
         .collect();
@@ -326,9 +328,10 @@ fn pin_para_default<T: Clone>(doc: &mut Document, field: fn(&mut ParaAttrs) -> &
             *field(&mut s.para) = Some(old.clone());
         }
     }
-    let styles = doc.styles.clone();
+    // Borrowed names: one entry per style already in memory, so no copy and no extra bound needed.
+    let names: std::collections::HashSet<&str> = doc.styles.paragraph.iter().map(|s| s.name.as_str()).collect();
     let mut pin = |st: &mut Story| {
-        for p in st.paras.iter_mut().filter(|p| styles.para(&p.style).is_none()) {
+        for p in st.paras.iter_mut().filter(|p| !names.contains(p.style.as_str())) {
             let v = field(&mut p.para);
             if v.is_none() {
                 *v = Some(old.clone());
