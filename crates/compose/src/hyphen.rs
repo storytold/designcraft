@@ -15,7 +15,9 @@
 //! names and German locale codes without a reform year or with 2006 use this set. Traditional,
 //! 1901 and unknown German variants have no automatic hyphenation; no old-spelling set is bundled.
 //! Esperanto breaks between morphemes rather than syllables ([`eo`]: our own segmenter, roots
-//! from Wiktionary).
+//! from Wiktionary). A word it can't split into known morphemes, a word with an apostrophe inside
+//! and a word over 64 chars stay whole; user-dictionary exceptions override it, as for the other
+//! languages.
 //!
 //! English lookup order for each word:
 //! 1. the **dictionary** ([`Dictionary::en_us`]) — the public-domain Moby Hyphenator II word list
@@ -548,8 +550,40 @@ mod tests {
         };
         assert_eq!(h("Malsanulejo"), "Mal-san-ul-ejo", "case kept, break points from the lowercase word");
         assert_eq!(h("tranĉilojn,"), "tranĉ-ilojn,");
-        assert_eq!(h("lernejo-direktoro"), format!("lern-ejo-{}", h("direktoro")), "each part of a compound");
+        assert_eq!(h("lernejo-direktoro"), "lern-ejo-direktoro", "each part of a compound; direktor is one root");
         assert_eq!(h("parolas"), "parolas", "never before the ending alone");
+        assert_eq!(h("xyzzyplugho"), "xyzzyplugho", "an unknown word stays whole");
+    }
+
+    #[test]
+    fn esperanto_words_with_an_apostrophe_are_not_broken() {
+        let eo = Lang::Esperanto;
+        // An apostrophe inside the word (`l'` glued to a noun): no break anywhere in it.
+        assert!(hyphen_points_in("l'malsanulejo", &Limits::default(), eo).is_empty());
+        assert!(hyphen_points_in("mal'sanulejo", &Limits::default(), eo).is_empty());
+        // An elided ending (`kor'` for `koro`) is trimmed like closing punctuation: the stem breaks.
+        assert_eq!(hyphen_points_in("malsanulej'", &Limits::default(), eo), vec![3, 6, 8]);
+        // Without the apostrophe, the same word breaks.
+        assert!(!hyphen_points_in("malsanulejo", &Limits::default(), eo).is_empty());
+    }
+
+    #[test]
+    fn esperanto_breaks_follow_the_paragraph_limits() {
+        let eo = Lang::Esperanto;
+        let pts = |w: &str, lim: &Limits| hyphen_points_in(w, lim, eo);
+        // Default limits: 5 letters or more, 2 before and after each break.
+        let d = Limits::default();
+        assert!(pts("sani", &d).is_empty(), "short word");
+        assert_eq!(pts("saneco", &d), vec![3]);
+        assert_eq!(pts("malsanulejo", &d), vec![3, 6, 8]);
+        // Stricter limits keep only the breaks they allow.
+        let strict = Limits { min_word: 7, after_first: 4, before_last: 4, capitalized: true };
+        assert!(pts("saneco", &strict).is_empty(), "6 letters < 7");
+        assert_eq!(pts("malsanulejo", &strict), vec![6], "3 letters before mal- and 3 after -ul are too few");
+        // Hyphenate Capitalized Words off keeps Malsanulejo whole.
+        let no_caps = Limits { capitalized: false, ..d };
+        assert!(pts("Malsanulejo", &no_caps).is_empty());
+        assert_eq!(pts("malsanulejo", &no_caps), vec![3, 6, 8]);
     }
 
     #[test]

@@ -27,3 +27,9 @@ hypher = { version = "0.1.8", default-features = false, features = ["alloc", "du
 designcraft-fonts = { workspace = true, features = ["testing"] }
 proptest = { workspace = true }
 serde_json = { workspace = true }
+sha2 = "0.10"
+
+# `cargo test` runs the generator's own tests too.
+[[example]]
+name = "eohyphgen"
+test = true
