@@ -213,7 +213,7 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ("Join", ["Join", "Joindre", "Unir", "Join", "连接"]),
     ("Convert Point", ["Convert Point", "Convertir le point", "Convertir punto", "Convert Point", "转换点"]),
     ("Hide Rulers", ["Lineale ausblenden", "Masquer les règles", "Ocultar reglas", "定規を隠す", "隐藏标尺"]),
-    ("Inches Decimal", ["Zoll dezimal", "Pouces décimaux", "Pulgadas decimales", "インチ（10 進）", "十进制英寸"]),
+    ("Inches Decimal", ["Zoll dezimal", "Pouces décimaux", "Pulgadas decimales", "デシマルインチ", "十进制英寸"]),
     (
         "Paste Vector Art",
         ["Vektorgrafik einfügen", "Coller l’illustration vectorielle", "Pegar ilustración vectorial", "ベクトルアートをペースト", "粘贴矢量图稿"],

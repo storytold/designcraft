@@ -604,3 +604,9 @@ fn czech_counts_use_the_plural_form_for_the_number() {
     // A noun without plural forms keeps the plain translation.
     assert_eq!(count_label("cs", "a new noun", 3), "3 a new noun");
 }
+
+#[test]
+fn japanese_names_decimal_inches_as_indesign_does() {
+    // InDesign's Japanese unit lists (Preferences › Units & Increments) read デシマルインチ.
+    assert_eq!(tr("ja", designcraft_geom::units::Unit::InchesDecimal.label()), "デシマルインチ");
+}
