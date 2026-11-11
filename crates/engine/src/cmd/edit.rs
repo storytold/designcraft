@@ -118,13 +118,16 @@ pub fn copied_objects_text(s: &Session) -> String {
 /// keep the spread-local position they held on the source page (`clip_doc`), which on a spread of
 /// facing pages can sit entirely on the page across from page 0 (so rendering just page 0's crop,
 /// as an earlier version of this function did, could show nothing at all, #2204 follow-up).
-/// `None` only when there is nothing copied, it has no visible bounds, or the render itself fails.
+/// `None` when there is nothing copied, it has no visible bounds, it is too large to render, or the PNG encode fails.
 pub fn copied_objects_png(s: &Session) -> Option<Vec<u8>> {
     let clip = s.clipboard.as_ref()?;
     let items = clip.spreads.first().map(|sp| sp.items.as_slice()).unwrap_or_default();
-    let bounds = items.iter().map(|it| it.bounds()).reduce(|a, b| a.union(b)).filter(|b| b.width() > 0.0 && b.height() > 0.0)?;
-    let w = bounds.width().round().clamp(1.0, f64::from(designcraft_render::MAX_SIDE)) as u32;
-    let h = bounds.height().round().clamp(1.0, f64::from(designcraft_render::MAX_SIDE)) as u32;
+    let bounds = items.iter().map(|it| it.visible_bounds()).reduce(|a, b| a.union(b)).filter(|b| b.width() > 0.0 && b.height() > 0.0)?;
+    if bounds.width() > f64::from(designcraft_render::MAX_SIDE) || bounds.height() > f64::from(designcraft_render::MAX_SIDE) {
+        return None;
+    }
+    let w = bounds.width().round().max(1.0) as u32;
+    let h = bounds.height().round().max(1.0) as u32;
     if u64::from(w) * u64::from(h) > designcraft_render::MAX_PAGE_PIXELS {
         return None;
     }
@@ -135,7 +138,7 @@ pub fn copied_objects_png(s: &Session) -> Option<Vec<u8>> {
     let opts = designcraft_render::RenderOptions { printing_only: true, background: None, paper: false, ..Default::default() };
     let placed = [designcraft_render::Placed { spread: SpreadRef::Doc(0), xf: designcraft_geom::Affine::translate(designcraft_geom::Vec2::ZERO) }];
     let img = designcraft_render::Renderer::new().render(clip, &s.cache, &placed, (w, h), view, &opts);
-    Some(img.to_png())
+    Some(img.to_png()).filter(|png| !png.is_empty())
 }
 
 #[cfg(test)]

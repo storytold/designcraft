@@ -59,11 +59,14 @@ impl DesignApp {
                 // placeholder text above (#2204). `clipboard_set_object_copy` writes both
                 // together, so the picture never replaces the placeholder text this app's own
                 // Paste still needs.
-                if v.get("text").is_none()
-                    && let Some(set) = self.services.clipboard_set_object_copy.as_mut()
-                    && let Some(png) = designcraft_engine::cmd::copied_objects_png(&self.session)
-                {
-                    let _ = set(&self.object_clip_text.clone().unwrap_or_default(), &png);
+                let wrote = v.get("text").is_none()
+                    && match (self.services.clipboard_set_object_copy.as_mut(), designcraft_engine::cmd::copied_objects_png(&self.session)) {
+                        (Some(set), Some(png)) => set(&self.object_clip_text.clone().unwrap_or_default(), &png).is_ok(),
+                        _ => false,
+                    };
+                // Nothing written natively: the clipboard's current text stands for this copy, as before.
+                if !wrote && self.native_menu && v.get("text").is_none() {
+                    self.object_clip_text = self.services.clipboard_text.as_mut().and_then(|f| f());
                 }
             }
             Ok(_) => {}
