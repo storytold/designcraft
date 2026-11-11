@@ -568,6 +568,35 @@ fn set_story_text_prunes_story_hyperlinks_and_placeholders() {
     assert_eq!(d.data_merge.placeholders[0].id, 20);
 }
 
+/// Many note references put in at once each get a note with an id of its own, in one pass.
+#[test]
+fn many_note_references_get_their_notes_at_once() {
+    let n = 20_000;
+    let mut st = Story::new(StoryId(1));
+    let refs = format!("{}{}", FOOTNOTE_REF.to_string().repeat(n), crate::ENDNOTE_REF.to_string().repeat(n));
+    st.insert(0, &refs);
+    assert_eq!((st.notes.len(), st.endnotes.len()), (n, n));
+    let ids: std::collections::HashSet<u64> = st.notes.iter().map(|x| x.id).collect();
+    assert_eq!(ids.len(), n);
+    let ids: std::collections::HashSet<u64> = st.endnotes.iter().map(|x| x.id).collect();
+    assert_eq!(ids.len(), n);
+}
+
+/// An existing note whose id is `u64::MAX` can't be counted past: the next note still gets an id
+/// of its own.
+#[test]
+fn note_ids_survive_a_maximal_existing_id() {
+    let mut st = Story::new(StoryId(1));
+    st.insert(0, &FOOTNOTE_REF.to_string());
+    st.insert(0, &crate::ENDNOTE_REF.to_string());
+    Arc::make_mut(&mut st.notes[0]).id = u64::MAX;
+    Arc::make_mut(&mut st.endnotes[0]).id = u64::MAX;
+    st.insert(0, &FOOTNOTE_REF.to_string());
+    st.insert(0, &crate::ENDNOTE_REF.to_string());
+    assert_ne!(st.notes[0].id, st.notes[1].id);
+    assert_ne!(st.endnotes[0].id, st.endnotes[1].id);
+}
+
 /// Exceptions are read in one pass: breaks are char positions of the lowercased word, a break
 /// at the start, at the end or twice in a row counts once or not at all, and a long exception
 /// full of breaks takes no longer than its length.
