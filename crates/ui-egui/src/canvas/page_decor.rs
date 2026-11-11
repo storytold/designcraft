@@ -10,6 +10,10 @@ pub(super) fn dashed(painter: &egui::Painter, a: Pos2, b: Pos2, stroke: Stroke, 
     painter.extend(egui::Shape::dashed_line(&[a, b], stroke, dash, gap));
 }
 
+/// The hairline around each spread and at its spine, where its pages meet: one dark grey on any
+/// paper colour and in either theme, so the binding edge reads like the spread's own edge.
+pub(super) const PAGE_EDGE: Color32 = Color32::from_rgb(0x4a, 0x4a, 0x4a);
+
 /// The most baseline grid lines drawn on a page: one per point of the tallest page (216 in).
 pub(super) const MAX_BASELINES: usize = 216 * 72;
 
@@ -52,6 +56,7 @@ pub(super) fn draw_guides(
         let Some(sp) = doc.spread(slot.spread) else { continue };
         if app.ui.guides {
             draw_bleed_and_slug(painter, xf, doc, slot, sp);
+            draw_spine(painter, xf, slot, sp);
         }
         let pasteboard = slot.xf.inverse().transform_rect_bbox(layout.pasteboard);
         for (pi, p) in sp.pages.iter().enumerate() {
@@ -78,6 +83,16 @@ fn draw_bleed_and_slug(painter: &egui::Painter, xf: &Xf, doc: &Document, slot: &
         if let Some(r) = r {
             painter.rect_stroke(rect(r), 0.0, Stroke::new(hair(painter), c32(color)), StrokeKind::Middle);
         }
+    }
+}
+
+/// The spine: a hairline at each edge where two pages of a spread meet
+/// ([`designcraft_doc::Spread::page_seams`]), in the spread edge's colour ([`PAGE_EDGE`]). Screen
+/// only, like the other guides; the paper is one rectangle and exports never show a seam.
+fn draw_spine(painter: &egui::Painter, xf: &Xf, slot: &SpreadSlot, sp: &designcraft_doc::Spread) {
+    let pt = |p: Point| xf.to_screen(slot.xf * p);
+    for (x, y0, y1) in sp.page_seams() {
+        painter.line_segment([pt(Point::new(x, y0)), pt(Point::new(x, y1))], Stroke::new(hair(painter), PAGE_EDGE));
     }
 }
 
