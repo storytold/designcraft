@@ -135,13 +135,13 @@ fn draw_cell_selection(
 ) {
     // Footnote text or a cell: its composed story and where it sits in the frame.
     let found = match cell.footnote_id() {
-        Some(id) => compose::find_note(cs, id).map(|(fi, n)| (fi, n.origin, n.text.clone())),
-        None => compose::find_cell(cs, cell.table, cell.row, cell.col).map(|(fi, _, pc)| (fi, pc.origin, pc.text.clone())),
+        Some(id) => compose::find_note(cs, id).map(|(fi, n)| (fi, designcraft_geom::Affine::translate(n.origin.to_vec2()), n.text.clone())),
+        None => compose::find_cell(cs, cell.table, cell.row, cell.col).map(|(fi, _, pc)| (fi, pc.text_xf(), pc.text.clone())),
     };
-    let Some((fi, origin, text)) = found else { return };
+    let Some((fi, text_xf, text)) = found else { return };
     let Some(ft) = cs.frames.get(fi) else { return };
     let (Some((a, _)), Some(it)) = (item_canvas_xf(doc, layout, ft.frame), doc.item(ft.frame)) else { return };
-    let m = a * doc.text_xf(it) * designcraft_geom::Affine::translate(origin.to_vec2());
+    let m = a * doc.text_xf(it) * text_xf;
     let range = ts.range();
     if !range.is_empty()
         && let Some(cft) = text.frames.first()
@@ -300,7 +300,7 @@ pub(super) fn frame_hidden_marks(text: &str, ft: &compose::FrameText) -> Vec<(Po
     for t in &ft.tables {
         for c in t.cells.iter().filter(|c| c.graphic.is_none()) {
             if let Some(cf) = c.text.frames.first() {
-                out.extend(frame_hidden_marks(&c.source, cf).into_iter().map(|(p, mark, centered, a)| (p + c.origin.to_vec2(), mark, centered, a)));
+                out.extend(frame_hidden_marks(&c.source, cf).into_iter().map(|(p, mark, centered, a)| (c.text_xf() * p, mark, centered, a)));
             }
         }
         if t.last {

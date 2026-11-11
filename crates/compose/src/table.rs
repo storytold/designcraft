@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use designcraft_doc::{Align, Cell, CellStroke, Document, ItemId, ParaProps, RowHeightMode, Table, TextFrameOptions, VerticalJustification};
-use designcraft_geom::{Point, Rect};
+use designcraft_geom::{Affine, Point, Rect};
 
 use crate::{ComposeOptions, ComposedStory, Cursor, FrameSpec, Line};
 
@@ -21,8 +21,11 @@ pub struct PlacedCell {
     pub rect: Rect,
     /// Fill swatch and tint (cell fill or alternating fill).
     pub fill: Option<(String, f32)>,
-    /// Where the cell's composed text (its frame 0, in content space) sits in the frame.
+    /// Where the cell's composed text (its frame 0, in content space) sits in the frame: the
+    /// frame position of the text's top left, which for rotated text is not the cell's.
     pub origin: Point,
+    /// Text rotation in degrees (0, 90, 180 or 270), clockwise on the page: 270 reads upwards.
+    pub rotation: f64,
     pub text: Arc<ComposedStory>,
     /// The cell's story text (exporters map glyphs back to text).
     pub source: Arc<str>,
@@ -108,6 +111,36 @@ impl TableFrag {
     }
 }
 
+impl PlacedCell {
+    /// Maps the cell's composed text (content space) to the frame: its rotation about the text's
+    /// top left, then the move to `origin`.
+    pub fn text_xf(&self) -> Affine {
+        let [c, s] = match quarter_turns(self.rotation) {
+            1 => [0.0, 1.0],
+            2 => [-1.0, 0.0],
+            3 => [0.0, -1.0],
+            _ => [1.0, 0.0],
+        };
+        Affine::new([c, s, -s, c, self.origin.x, self.origin.y])
+    }
+}
+
+/// A cell's text rotation as quarter turns (0..4), clockwise on the page.
+fn quarter_turns(rotation: f64) -> u8 {
+    if rotation.is_finite() { (rotation / 90.0).round().rem_euclid(4.0) as u8 } else { 0 }
+}
+
+/// The cell inset under its text's last line (the bottom of the rotated text box): insets stay
+/// on their physical sides when the text turns, as in InDesign.
+fn text_bottom_inset(cell: &Cell) -> f64 {
+    match quarter_turns(cell.rotation) {
+        1 => cell.insets[1],
+        2 => cell.insets[0],
+        3 => cell.insets[3],
+        _ => cell.insets[2],
+    }
+}
+
 struct CellLayout {
     text: Arc<ComposedStory>,
     content_h: f64,
@@ -128,7 +161,8 @@ impl CellLineExtent {
     }
 }
 
-/// Compose a cell story at width `w` (content space, top-left at the origin).
+/// Compose a cell story at width `w` (content space, top-left at the origin); `w` runs along
+/// the text's lines, so it is the cell's height for text turned by 90° or 270°.
 fn compose_cell(doc: &Document, cell: &Cell, w: f64, opts: &ComposeOptions, (left_page, right_page): (bool, bool)) -> CellLayout {
     let mut spec = FrameSpec {
         id: ItemId(0),
@@ -169,7 +203,7 @@ fn compose_cell(doc: &Document, cell: &Cell, w: f64, opts: &ComposeOptions, (lef
                     extent.bottom = extent.bottom.max(object.origin.y + object.size.1);
                 }
             }
-            extents.iter().map(|e| e.fit_height(cell.insets[2])).collect()
+            extents.iter().map(|e| e.fit_height(text_bottom_inset(cell))).collect()
         })
         .unwrap_or_default();
     // Check all lines: a large descender or lowered inline object on an earlier line can
@@ -221,24 +255,13 @@ pub(crate) fn place_table(
     let owners = table.owners();
     let is_owner = |r: usize, c: usize| owners[r * nc + c] == (r, c);
     let side = (frames[cur.fi].left_page, frames[cur.fi].right_page);
-    // Compose every owner cell.
-    let mut layouts: Vec<Option<CellLayout>> = Vec::with_capacity(nr * nc);
-    for r in 0..nr {
-        for c in 0..nc {
-            if !is_owner(r, c) {
-                layouts.push(None);
-                continue;
-            }
-            let cell = &table.cells[r * nc + c];
-            let cs = (cell.col_span.max(1) as usize).min(nc - c);
-            let w = colx[c + cs] - colx[c] - cell.insets[1] - cell.insets[3];
-            layouts.push(Some(compose_cell(doc, cell, w, opts, side)));
-        }
-    }
+    // Compose the owner cells whose text runs across the columns.
+    let mut layouts: Vec<Option<CellLayout>> = (0..nr * nc).map(|_| None).collect();
+    compose_cells(doc, table, &owners, (&colx, None), opts, side, &mut layouts);
     // Row heights.
     let need = |r: usize, c: usize| -> f64 {
         let cell = &table.cells[r * nc + c];
-        layouts[r * nc + c].as_ref().map_or(0.0, |l| l.content_h) + cell.insets[0] + cell.insets[2]
+        layouts[r * nc + c].as_ref().map_or(0.0, |l| l.content_h + cell.insets[0] + cell.insets[2])
     };
     let mut heights: Vec<f64> = table
         .rows
@@ -269,6 +292,7 @@ pub(crate) fn place_table(
             }
         }
     }
+    compose_cells(doc, table, &owners, (&colx, Some(&heights)), opts, side, &mut layouts);
     // Row groups that must stay together: end (exclusive) of the group starting at each row.
     let mut group_end: Vec<usize> = (0..nr).map(|r| r + 1).collect();
     {
@@ -371,6 +395,36 @@ pub(crate) fn place_table(
     true
 }
 
+/// Compose owner cells into `layouts`: without row `heights`, those whose text runs across their
+/// columns; with them, those turned by 90° or 270°. Turned text runs along the cell's height, so
+/// it is composed once the rows are sized and (as in InDesign) doesn't grow its row: text that
+/// doesn't fit across the column is overset.
+fn compose_cells(
+    doc: &Document,
+    table: &Table,
+    owners: &[(usize, usize)],
+    (colx, heights): (&[f64], Option<&[f64]>),
+    opts: &ComposeOptions,
+    side: (bool, bool),
+    layouts: &mut [Option<CellLayout>],
+) {
+    let (nr, nc) = (table.nrows(), table.ncols());
+    for r in 0..nr {
+        for c in 0..nc {
+            let cell = &table.cells[r * nc + c];
+            let sideways = quarter_turns(cell.rotation) % 2 == 1;
+            if owners[r * nc + c] != (r, c) || sideways != heights.is_some() {
+                continue;
+            }
+            let w = match heights {
+                Some(h) => h[r..(r + cell.row_span.max(1) as usize).min(nr)].iter().sum::<f64>() - cell.insets[0] - cell.insets[2],
+                None => colx[(c + cell.col_span.max(1) as usize).min(nc)] - colx[c] - cell.insets[1] - cell.insets[3],
+            };
+            layouts[r * nc + c] = Some(compose_cell(doc, cell, w, opts, side));
+        }
+    }
+}
+
 /// A cell's text cut to the lines that fit `clip_height`, with where the overset text begins.
 /// Uses the same baseline/bounds test as auto-growth, and retains a prefix: overset text cannot
 /// reappear after a line that did not fit.
@@ -454,20 +508,31 @@ fn emit(
             };
             let Some(lay) = layouts.get(r * nc + c).and_then(Option::as_ref) else { continue };
             let clip = Rect::new(rect.x0 + cell.insets[1], rect.y0 + cell.insets[0], rect.x1 - cell.insets[3], rect.y1 - cell.insets[2]);
-            let space = clip.height() - lay.content_h;
+            // Vertical justification works across the text's lines, sideways for turned text.
+            let turns = quarter_turns(cell.rotation);
+            let depth = if turns % 2 == 1 { clip.width() } else { clip.height() };
+            let space = depth - lay.content_h;
             let dy = match cell.vj {
                 VerticalJustification::Center if space > 0.0 => space / 2.0,
                 VerticalJustification::Bottom if space > 0.0 => space,
                 _ => 0.0,
             };
             let overset = space < -0.01 || lay.text.is_overset();
-            let text = if overset { clip_overset(lay, clip.height()) } else { lay.text.clone() };
+            let text = if overset { clip_overset(lay, depth) } else { lay.text.clone() };
+            // The frame position of the text's top left.
+            let origin = match turns {
+                1 => Point::new(clip.x1 - dy, clip.y0),
+                2 => Point::new(clip.x1, clip.y1 - dy),
+                3 => Point::new(clip.x0 + dy, clip.y1),
+                _ => Point::new(clip.x0, clip.y0 + dy),
+            };
             cells.push(PlacedCell {
                 row: r,
                 col: c,
                 rect,
                 fill,
-                origin: Point::new(clip.x0, clip.y0 + dy),
+                origin,
+                rotation: f64::from(turns) * 90.0,
                 text,
                 source: Arc::from(cell.text.text.as_str()),
                 clip,
@@ -750,7 +815,7 @@ pub fn hit_cell_with(
         }
         for c in &t.cells {
             if c.rect.contains(p) {
-                let local = Point::new(p.x - c.origin.x, p.y - c.origin.y);
+                let local = c.text_xf().inverse() * p;
                 let b = hit(&c.text, 0, local).unwrap_or(0);
                 return Some((t.table, c.row, c.col, b));
             }
@@ -829,10 +894,10 @@ pub fn find_cell(cs: &ComposedStory, table: u64, row: usize, col: usize) -> Opti
 /// (frame index, x, baseline, ascent, descent).
 pub fn cell_caret(cs: &ComposedStory, table: u64, row: usize, col: usize, pos: usize) -> Option<(usize, f64, f64, f64, f64)> {
     let (fi, _, c) = find_cell(cs, table, row, col)?;
-    match crate::caret(&c.text, pos) {
-        Some((_, x, bl, a, d)) => Some((fi, x + c.origin.x, bl + c.origin.y, a, d)),
-        None => Some((fi, c.origin.x, c.origin.y + 10.0, 9.0, 3.0)),
-    }
+    // The caret's baseline point follows turned text; its bar stays upright.
+    let (x, bl, a, d) = crate::caret(&c.text, pos).map_or((0.0, 10.0, 9.0, 3.0), |(_, x, bl, a, d)| (x, bl, a, d));
+    let p = c.text_xf() * Point::new(x, bl);
+    Some((fi, p.x, p.y, a, d))
 }
 
 #[cfg(test)]
@@ -1127,6 +1192,91 @@ mod height_tests {
             assert!(placed.text.frames[0].objects.is_empty());
             assert!(placed.text.frames[0].tables.is_empty());
         }
+    }
+
+    /// A narrow first column of rotated labels beside a wide one, rows sized `heights`.
+    fn rotated_table(text: &str, rotation: f64, heights: &[f64]) -> Table {
+        let mut table = Table::new(77, heights.len(), 2, 0, 0, 100.0);
+        table.columns[0].width = 20.0;
+        table.columns[1].width = 80.0;
+        for (row, &h) in table.rows.iter_mut().zip(heights) {
+            row.mode = RowHeightMode::AtLeast;
+            row.height = h;
+        }
+        let mut cell = text_cell(text, 3.0);
+        cell.insets = [2.0, 1.0, 3.0, 1.5];
+        cell.rotation = rotation;
+        cell.row_span = heights.len() as u32;
+        table.cells[0] = cell;
+        table
+    }
+
+    #[test]
+    fn rotated_text_runs_along_the_cell_height() {
+        // Cell Options › Text › Rotation 270°: the label reads upwards in one line in a column too
+        // narrow for it, instead of wrapping into word pieces.
+        let label = "Torhöhe ab";
+        assert!(measure(&text_cell(label, 3.0), 20.0 - 2.5).text.frames[0].lines.len() > 1, "unrotated, it would wrap");
+        let composed = compose_table(rotated_table(label, 270.0, &[60.0, 60.0]), 300.0);
+        let placed = composed.frames[0].tables[0].cell(0, 0).unwrap();
+        // The rotated box: as long as the two spanned rows less the top and bottom insets.
+        assert!((placed.rect.height() - 120.0).abs() < 1e-6, "rotated text doesn't grow its rows: {:?}", placed.rect);
+        assert_eq!(placed.rotation, 270.0);
+        assert!(!placed.overset);
+        let f = &placed.text.frames[0];
+        assert_eq!(f.lines.len(), 1);
+        assert!((f.columns[0].width() - (120.0 - 2.0 - 3.0)).abs() < 1e-6, "composed at the cell's height: {:?}", f.columns);
+        // It starts at the cell's bottom inset and reads upwards; the line's top faces the left
+        // inset (insets stay on their physical sides).
+        let line = &f.lines[0];
+        let xf = placed.text_xf();
+        let (start, end) = (xf * Point::new(line.x0, line.baseline), xf * Point::new(line.end_x, line.baseline));
+        assert!((start.y - (placed.rect.y1 - 3.0)).abs() < 1e-6, "{start:?} in {:?}", placed.rect);
+        assert!(end.y < start.y && (end.x - start.x).abs() < 1e-6);
+        let top = xf * Point::new(line.x0, line.baseline - line.ascent);
+        assert!(top.x < start.x && top.x >= placed.rect.x0 + 1.0 - 1e-6, "{top:?}");
+        assert!((start.x - (placed.rect.x0 + 1.0 + line.baseline)).abs() < 1e-6);
+
+        // 90° reads downwards from the top inset, the line's top facing the right inset; 180°
+        // turns it upside down at the bottom.
+        let composed = compose_table(rotated_table(label, 90.0, &[60.0, 60.0]), 300.0);
+        let placed = composed.frames[0].tables[0].cell(0, 0).unwrap();
+        let line = &placed.text.frames[0].lines[0];
+        let start = placed.text_xf() * Point::new(line.x0, line.baseline);
+        assert!((start.y - (placed.rect.y0 + 2.0)).abs() < 1e-6 && (start.x - (placed.rect.x1 - 1.5 - line.baseline)).abs() < 1e-6, "{start:?}");
+        let composed = compose_table(rotated_table("HS", 180.0, &[60.0]), 300.0);
+        let placed = composed.frames[0].tables[0].cell(0, 0).unwrap();
+        let line = &placed.text.frames[0].lines[0];
+        let start = placed.text_xf() * Point::new(line.x0, line.baseline);
+        assert!((start.x - (placed.rect.x1 - 1.5)).abs() < 1e-6 && (start.y - (placed.rect.y1 - 3.0 - line.baseline)).abs() < 1e-6, "{start:?}");
+    }
+
+    #[test]
+    fn rotated_text_justifies_across_its_lines_and_oversets_without_growing() {
+        let mut table = rotated_table("HS 160", 270.0, &[60.0]);
+        table.cells[0].vj = VerticalJustification::Center;
+        let depth = measure(&table.cells[0], 60.0 - 2.0 - 3.0).content_h;
+        let composed = compose_table(table, 300.0);
+        let placed = composed.frames[0].tables[0].cell(0, 0).unwrap();
+        let line = &placed.text.frames[0].lines[0];
+        let xf = placed.text_xf();
+        let top = xf * Point::new(0.0, 0.0);
+        let content = placed.clip;
+        // Centred across the column: the text's depth sits mid-way between the left and right insets.
+        assert!(((top.x - content.x0) - (content.x1 - top.x - depth)).abs() < 1e-6, "{top:?} {depth} {content:?}");
+        // Hit testing maps the point back into the turned text.
+        let mid = xf * Point::new((line.x0 + line.end_x) / 2.0, line.baseline - 1.0);
+        let (_, row, col, b) = hit_cell(&composed, 0, mid).unwrap();
+        assert_eq!((row, col), (0, 0));
+        assert!(b > 0 && b < "HS 160".len(), "{b}");
+
+        // Text that can't fit across the narrow column stays in its row and is overset.
+        let long = "Torhöhe ab OFF Torhöhe ab OFF Torhöhe ab OFF Torhöhe ab OFF";
+        let composed = compose_table(rotated_table(long, 270.0, &[40.0]), 300.0);
+        let placed = composed.frames[0].tables[0].cell(0, 0).unwrap();
+        assert!((placed.rect.height() - 40.0).abs() < 1e-6);
+        assert!(placed.overset);
+        assert_eq!(placed.text.frames[0].lines.len(), 1, "only the lines that fit across 17.5 pt");
     }
 }
 

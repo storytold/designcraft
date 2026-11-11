@@ -281,8 +281,7 @@ mod style_tests {
         let cell = got["cells"].as_array().unwrap().iter().find(|c| c["row"] == 0 && c["col"] == 0).unwrap().clone();
         assert_eq!((cell["firstBaseline"].as_str(), cell["firstBaselineMin"].as_f64()), (Some("capHeight"), Some(3.0)));
         assert!(s.execute("table.setCell", &json!({"row": 0, "col": 0, "firstBaseline": "middle"})).is_err());
-        // Cell Options › Text › Rotation: carried and written back, composed horizontally so far,
-        // which the IDML import reports (#1468).
+        // Cell Options › Text › Rotation: carried, composed turned and written back (#1468).
         for (given, want) in [(90, 90.0), (270, 270.0), (0, 0.0), (-90, 270.0), (450, 90.0)] {
             s.execute("table.setCell", &json!({"row": 0, "col": 0, "rotation": given})).unwrap_or_else(|e| panic!("{given}: {e}"));
             let cell = s.execute("table.get", &json!({})).unwrap()["cells"][0].clone();

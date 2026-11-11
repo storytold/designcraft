@@ -5327,11 +5327,10 @@ fn non_finite_number_lists_never_reach_the_model() {
     assert_eq!(doc.non_finite_item(), None);
 }
 
-/// Cell Options › Text › Rotation: the angle survives the round trip, and the import says it is
-/// not composed — narrow header columns of vertical labels come in horizontal and wrap mid-word,
-/// and nothing said so (#1468).
+/// Cell Options › Text › Rotation: the angle survives the round trip. Rotated text is composed
+/// turned, so the import no longer warns about it (#1468).
 #[test]
-fn rotated_cell_text_round_trips_and_the_import_says_it_is_not_composed() {
+fn rotated_cell_text_round_trips_without_an_import_warning() {
     let mut d = Document::new(&NewDocument::default());
     let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 300.0, 300.0), d.default_layer(), "", ParaFormat::default()).unwrap();
     let mut t = designcraft_doc::Table::new(7, 1, 3, 0, 0, 300.0);
@@ -5345,18 +5344,10 @@ fn rotated_cell_text_round_trips_and_the_import_says_it_is_not_composed() {
     let back = import_idml_report(&bytes, &|_| None).unwrap();
     let t = back.document.stories.values().find(|st| !st.tables.is_empty()).unwrap().tables.values().next().unwrap().clone();
     assert_eq!((t.cell(0, 0).unwrap().rotation, t.cell(0, 1).unwrap().rotation, t.cell(0, 2).unwrap().rotation), (90.0, 270.0, 0.0));
-    let about: Vec<&String> = back.warnings.iter().filter(|w| w.contains("rotated text")).collect();
-    assert_eq!(about.len(), 1, "one line for the file, not one per cell: {:?}", back.warnings);
-    assert!(about[0].starts_with("2 table cell(s)"), "{}", about[0]);
-    assert!(about[0].contains("composed horizontally"), "{}", about[0]);
-
-    // A file with no rotated cell says nothing.
-    let mut plain = Document::new(&NewDocument::default());
-    let (_, sid) =
-        plain.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 300.0, 300.0), plain.default_layer(), "", ParaFormat::default()).unwrap();
-    plain.story_mut(sid).unwrap().insert_table(0, designcraft_doc::Table::new(8, 1, 2, 0, 0, 200.0));
-    let quiet = import_idml_report(&export_idml(&plain), &|_| None).unwrap();
-    assert!(quiet.warnings.iter().all(|w| !w.contains("rotated text")), "{:?}", quiet.warnings);
+    assert!(back.warnings.iter().all(|w| !w.contains("rotated text")), "{:?}", back.warnings);
+    // And a second round trip writes the same angles again.
+    let again = zip_text(&export_idml(&back.document), "Stories/");
+    assert!(again.contains(r#"RotationAngle="90""#) && again.contains(r#"RotationAngle="270""#), "{again}");
 }
 
 #[test]

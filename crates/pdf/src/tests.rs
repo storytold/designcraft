@@ -1155,3 +1155,25 @@ fn an_item_a_parent_overrode_and_deleted_is_not_exported() {
     std::sync::Arc::make_mut(&mut d.parents[1]).pages[0].overridden.push(box_id);
     assert!(!has_box(&d), "removed on B, so the page using B exports no box");
 }
+
+#[test]
+fn rotated_cell_text_exports_turned() {
+    let mut d = Document::new(&NewDocument::default());
+    let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 336.0, 400.0), d.default_layer(), "", ParaFormat::default()).unwrap();
+    let mut t = designcraft_doc::Table::new(1, 1, 2, 0, 0, 120.0);
+    t.columns[0].width = 30.0;
+    t.columns[1].width = 90.0;
+    t.rows[0].mode = designcraft_doc::RowHeightMode::Exactly;
+    t.rows[0].height = 150.0;
+    let cell = t.cell_mut(0, 0).unwrap();
+    cell.text.insert(0, "Torhöhe ab OFF");
+    cell.rotation = 270.0;
+    d.story_mut(sid).unwrap().insert_table(0, t);
+    // One line of real text, drawn through a quarter turn: in PDF space (y up) reading upwards
+    // maps the text's x to the page's y, its y (down) to the page's x.
+    let text = extract_text(&export_pdf(&d, &Cache::new(), &PdfOptions::default()).unwrap()).concat();
+    assert!(text.contains("Torhöhe ab OFF"), "{text:?}");
+    let pdf = uncompressed(&d, PdfOptions::default());
+    let cms: Vec<&str> = pdf.match_indices(" cm").map(|(i, _)| pdf[..i].rsplit('q').next().unwrap_or("")).collect();
+    assert!(cms.iter().any(|m| m.trim_start().starts_with("0 1 1 0 ")), "no quarter turn in {cms:?}");
+}
