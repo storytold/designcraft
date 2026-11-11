@@ -983,6 +983,34 @@ impl Document {
         }
     }
 
+    /// [`Self::page_number`] of pages `0..count` in one pass (a document of continuing sections
+    /// would otherwise walk back through every earlier section for every page).
+    pub fn page_numbers(&self, count: usize) -> Vec<u32> {
+        let mut secs: Vec<&Section> = self.sections.iter().collect();
+        secs.sort_by_key(|s| s.start); // stable: of equal starts the last wins, as in `section_of`
+        let (mut nums, mut next): (Vec<u32>, usize) = (Vec::with_capacity(count.min(1 << 20)), 0);
+        for abs in 0..count {
+            while secs.get(next).is_some_and(|s| s.start <= abs) {
+                next += 1;
+            }
+            let n = match next.checked_sub(1).and_then(|i| secs.get(i)) {
+                None => u32::try_from(abs).unwrap_or(u32::MAX).saturating_add(1),
+                Some(sec) => {
+                    let into = u32::try_from(abs - sec.start).unwrap_or(u32::MAX);
+                    match sec.start_number {
+                        Some(n) => n.saturating_add(into),
+                        None => match sec.start.checked_sub(1).and_then(|p| nums.get(p)) {
+                            Some(prev) => prev.saturating_add(into).saturating_add(1),
+                            None => into.saturating_add(1),
+                        },
+                    }
+                }
+            };
+            nums.push(n);
+        }
+        nums
+    }
+
     /// The displayed page name ("1", "iv", "A-3"…) for an absolute page index, per sections.
     /// The chapter number in its style (`3`, `III`, `c`, `03`).
     pub fn chapter_label(&self) -> String {
