@@ -359,7 +359,7 @@ fn ends(cp: &Cp, seq: &[&str], i: usize, memo: &mut EndsMemo) -> Vec<usize> {
         if !memo.spend(len) {
             return vec![];
         }
-        return memo.map[&key].clone();
+        return memo.map.get(&key).cloned().unwrap_or_default();
     }
     if !memo.spend(1) {
         return vec![];
