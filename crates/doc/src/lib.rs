@@ -1154,6 +1154,37 @@ impl Document {
             if st.id != *sid {
                 return Err(DocError::Invalid(format!("story key {sid} != id {}", st.id)));
             }
+            // Caption references must be local, one-to-one, and target anchored text,
+            // including table cells, footnotes, and endnotes.
+            /// Validate one-to-one caption links within one text scope and its nested scopes.
+            fn check_captions(st: &Story, sid: StoryId) -> Result<()> {
+                let mut claimed_captions = std::collections::HashSet::new();
+                for obj in &st.objects {
+                    if let Some(caption) = obj.caption_id {
+                        if caption == obj.item.id || !matches!(obj.item.content, crate::Content::Graphic(_)) {
+                            return Err(DocError::Invalid(format!("invalid caption source {}", obj.item.id)));
+                        }
+                        let target = st
+                            .objects
+                            .iter()
+                            .find(|candidate| candidate.item.id == caption)
+                            .ok_or_else(|| DocError::Invalid(format!("caption {caption} not in story {sid}")))?;
+                        if !matches!(target.item.content, crate::Content::Text(_)) || !claimed_captions.insert(caption) {
+                            return Err(DocError::Invalid(format!("caption {caption} is not unique anchored text")));
+                        }
+                    }
+                }
+                for table in st.tables.values() {
+                    for cell in &table.cells {
+                        check_captions(&cell.text, sid)?;
+                    }
+                }
+                for note in st.notes.iter().chain(st.endnotes.iter()) {
+                    check_captions(&note.text, sid)?;
+                }
+                Ok(())
+            }
+            check_captions(st, *sid)?;
             for f in &st.frames {
                 let item = self.item(*f).or_else(|| self.anchored_item(*f)).ok_or(DocError::NoItem(*f))?;
                 match item.text_frame().map(|t| t.story) {

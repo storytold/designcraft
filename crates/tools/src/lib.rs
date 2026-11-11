@@ -250,6 +250,70 @@ impl ToolContext<'_> {
         self.doc.hit_item(si, sp, self.tol(4.0)).map(|id| (sr, id))
     }
 
+    /// Anchored graphics are composed inside text frames, not stored as spread items.
+    /// Return their composed canvas bounds and the transform from frame space to canvas.
+    /// The full transform includes vertical text and rotated spread views.
+    pub fn anchored_graphic_geometry(&self) -> Vec<(ItemId, Rect, Affine, ItemId)> {
+        let mut out = Vec::new();
+        for story in self.doc.stories.values() {
+            let composed = self.cache.get(self.doc, story.id, None);
+            for frame in &composed.frames {
+                let Some(loc) = self.doc.find(frame.frame) else { continue };
+                let Some(host) = self.doc.item_at(&loc) else { continue };
+                if host.hidden || host.locked || self.doc.layer(host.layer).is_some_and(|l| !l.visible || l.locked) {
+                    continue;
+                }
+                let parent = self.layout.xf(loc.spread) * self.doc.parent_xf(&loc) * self.doc.text_xf(host);
+                for placed in &frame.objects {
+                    let item = &placed.object.item;
+                    if !matches!(item.content, designcraft_doc::Content::Graphic(_)) || item.hidden || item.locked {
+                        continue;
+                    }
+                    if self.doc.layer(item.layer).is_some_and(|l| !l.visible || l.locked) {
+                        continue;
+                    }
+                    let xf = parent * Affine::translate(placed.origin.to_vec2());
+                    let rect = xf.transform_rect_bbox(item.bounds());
+                    if rect.x0.is_finite() && rect.y0.is_finite() && rect.x1.is_finite() && rect.y1.is_finite() {
+                        out.push((item.id, rect, xf, frame.frame));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Legacy canvas hit rectangles for selecting anchored graphics.
+    pub fn anchored_graphic_bounds(&self) -> Vec<(ItemId, Rect)> {
+        self.anchored_graphic_geometry().into_iter().map(|(id, bounds, _, _)| (id, bounds)).collect()
+    }
+
+    /// The frontmost anchored graphic under the pointer, unless a normal page
+    /// item is stacked over its host frame. Respect both layer order and the
+    /// order of items within the layer, rather than capturing clicks through
+    /// an overlaid object.
+    pub fn hit_anchored_graphic(&self, p: Point) -> Option<ItemId> {
+        let front = self.hit(p).and_then(|(_, id)| {
+            let loc = self.doc.find(id)?;
+            let item = self.doc.spread(loc.spread)?.items.get(loc.top())?;
+            Some((loc.spread, loc.top(), self.doc.layer_rank(item.layer)))
+        });
+        self.anchored_graphic_geometry().into_iter().rev().find_map(|(id, bounds, _, host_id)| {
+            if !bounds.contains(p) {
+                return None;
+            }
+            if let Some((front_spread, front_index, front_layer)) = front {
+                let host = self.doc.find(host_id)?;
+                let host_item = self.doc.spread(host.spread)?.items.get(host.top())?;
+                let host_layer = self.doc.layer_rank(host_item.layer);
+                if front_spread != host.spread || front_layer > host_layer || (front_layer == host_layer && front_index > host.top()) {
+                    return None;
+                }
+            }
+            Some(id)
+        })
+    }
+
     /// The frontmost text frame under `p`, looking inside groups. [`Self::hit`] stops at the
     /// group, so a loaded text cursor over a text frame in a group found nothing to thread into
     /// (gaps 27); InDesign threads into it.
@@ -317,7 +381,14 @@ impl ToolContext<'_> {
     /// Canvas bounds of the selected items' paths. Handles and resize use this geometric box.
     pub fn selection_bounds(&self) -> Option<Rect> {
         let mut r: Option<Rect> = None;
+        // Ordinary spread selections must not recompose every story on hover.
+        let needs_anchored = self.selection.items.iter().any(|id| self.doc.find(*id).is_none());
+        let anchored = if needs_anchored { self.anchored_graphic_bounds() } else { Vec::new() };
         for id in &self.selection.items {
+            if let Some((_, b)) = anchored.iter().find(|(aid, _)| aid == id) {
+                r = Some(r.map_or(*b, |r| r.union(*b)));
+                continue;
+            }
             let (Some(it), Some(xf)) = (self.doc.item(*id), self.item_canvas_xf(*id)) else { continue };
             let b = xf.transform_rect_bbox(it.bounds());
             r = Some(r.map_or(b, |r| r.union(b)));

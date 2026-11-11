@@ -270,6 +270,7 @@ fn strip_objects(st: &designcraft_doc::Story) -> designcraft_doc::Story {
     out
 }
 
+/// Describe the available clipboard, undo, and editing commands.
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(noundo "edit.undo", "Undo", ["Edit"], Some("Cmd+Z"), "{}", can_undo, |s, _| {
@@ -308,7 +309,7 @@ pub fn specs() -> Vec<CommandSpec> {
                     ids.push(*id);
                 }
             }
-            let ids: Vec<ItemId> = ids.into_iter().filter(|i| st.doc.item(*i).is_some()).collect();
+            let ids: Vec<ItemId> = ids.into_iter().filter(|i| st.doc.item(*i).is_some() || st.doc.anchored_item(*i).is_some()).collect();
             if add {
                 // Adding objects (no points) leaves no live points: Delete would otherwise remove
                 // the stale points instead of the objects.
@@ -873,7 +874,7 @@ mod paste_tests {
                 let story = d.stories.get(&sid).unwrap().clone();
                 d.remove_item(id).unwrap();
                 d.stories.insert(sid, story);
-                d.story_mut(into).unwrap().insert_object(0, AnchoredObject { item, position: Default::default() });
+                d.story_mut(into).unwrap().insert_object(0, AnchoredObject { item, position: Default::default(), caption_id: None });
                 sid
             };
             let inner = anchor_frame(d, host_sid, "Inner");
@@ -959,7 +960,7 @@ mod paste_tests {
             d.stories.insert(sid, story);
             let mut group = Item::new(ItemId(d.alloc()), layer, Shape::Group, Default::default());
             group.content = Content::Group { items: vec![Arc::new(child)] };
-            d.story_mut(host_sid).unwrap().insert_object(0, AnchoredObject { item: group, position: Default::default() });
+            d.story_mut(host_sid).unwrap().insert_object(0, AnchoredObject { item: group, position: Default::default(), caption_id: None });
             d.check().unwrap();
             Ok(())
         })

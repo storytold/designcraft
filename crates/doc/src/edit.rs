@@ -1105,6 +1105,7 @@ mod placed_item_tests {
         assert!(!group.takes_graphic(), "a group of images is not a frame");
     }
 
+    /// Verify nested placement edits preserve unrelated copy-on-write branches.
     #[test]
     fn exhaustive_placements_keep_unselected_branches_shared() {
         let mut d = Document::new(&Default::default());
@@ -1115,7 +1116,7 @@ mod placed_item_tests {
         item.content = Content::Group { items: vec![Arc::new(Item::new(ItemId(d.alloc()), layer, Shape::Rectangle, Default::default()))] };
         let child = item.children()[0].id;
         let mut table = crate::Table::new(1, 1, 1, 0, 0, 20.0);
-        table.cells[0].text.insert_object(0, crate::AnchoredObject { item, position: Default::default() });
+        table.cells[0].text.insert_object(0, crate::AnchoredObject { item, position: Default::default(), caption_id: None });
         d.story_mut(sid).unwrap().insert_table(0, table);
         let untouched = StoryId(d.alloc());
         d.stories.insert(untouched, Arc::new(Story::new(untouched)));
@@ -1134,6 +1135,7 @@ mod placed_item_tests {
         assert!(d.parents.iter().zip(&unchanged.parents).all(|(a, b)| Arc::ptr_eq(a, b)));
         assert!(d.stories.iter().all(|(id, st)| Arc::ptr_eq(st, &unchanged.stories[id])));
     }
+    /// Verify recursive placement traversal respects its maximum nesting depth.
     #[test]
     fn exhaustive_placements_bound_nested_stories_and_groups() {
         let mut d = Document::new(&Default::default());
@@ -1156,7 +1158,11 @@ mod placed_item_tests {
         let mut story = Story::new(sid);
         story.insert_object(
             0,
-            crate::AnchoredObject { item: Item::new(nested, layer, Shape::Rectangle, Default::default()), position: Default::default() },
+            crate::AnchoredObject {
+                item: Item::new(nested, layer, Shape::Rectangle, Default::default()),
+                position: Default::default(),
+                caption_id: None,
+            },
         );
         for _ in 0..MAX_PLACEMENT_DEPTH + 2 {
             let mut outer = Story::new(sid);

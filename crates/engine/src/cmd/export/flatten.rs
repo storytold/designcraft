@@ -553,6 +553,7 @@ mod placed_layer_tests {
         }
     }
 
+    /// Verify PDF layer selection survives flattening for this placement.
     fn check_choice(location: &str, all_on: bool) {
         let mut s = Session::new();
         s.execute("file.new", &json!({"width": 100, "height": 100, "pages": 1})).unwrap();
@@ -576,7 +577,7 @@ mod placed_layer_tests {
             if !matches!(location, "doc" | "parent") {
                 let item = (**d.spreads[0].items.iter().find(|it| it.id == id).unwrap()).clone();
                 Arc::make_mut(&mut d.spreads[0]).items.retain(|it| it.id != id);
-                let object = AnchoredObject { item, position: Default::default() };
+                let object = AnchoredObject { item, position: Default::default(), caption_id: None };
                 let story = d.story_mut(sid).unwrap();
                 match location {
                     "cell" => {

@@ -717,6 +717,7 @@ mod nested_layer_tests {
 
     // One default placement and two nested placements share bytes. The latter use a legacy
     // nonempty hidden list and explicit all-on, so each needs a different embedded variant.
+    /// Build a document with shared PDF assets in the requested text location.
     fn fixture(location: &str) -> (Session, ItemId, [ItemId; 2]) {
         let pdf = designcraft_render::pdf_hide_layers(&super::super::pdflayers::tests::two_layer_pdf(), &["Red".into()]).unwrap();
         let mut session = Session::new();
@@ -737,7 +738,7 @@ mod nested_layer_tests {
             let ids = [hidden.id, all_on.id];
             let mut nested = Story::new(StoryId(0));
             for item in [hidden, all_on] {
-                nested.insert_object(nested.len(), AnchoredObject { item, position: Default::default() });
+                nested.insert_object(nested.len(), AnchoredObject { item, position: Default::default(), caption_id: None });
             }
             let layer = doc.default_layer();
             let (_, sid) = doc.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 200.0, 200.0), layer, "Body", Default::default()).unwrap();
@@ -851,6 +852,7 @@ mod nested_layer_tests {
 
     // Duplicating a text frame that holds an anchored placed PDF copies the placement under a
     // fresh id (#1522). Export must apply the choice to both.
+    /// Verify an anchored PDF copy preserves its layer choice through IDML export.
     #[test]
     fn duplicated_frame_keeps_its_anchored_pdf_choice_in_idml() {
         let pdf = designcraft_render::pdf_hide_layers(&super::super::pdflayers::tests::two_layer_pdf(), &["Red".into()]).unwrap();
@@ -866,7 +868,7 @@ mod nested_layer_tests {
             let chosen = item.id;
             let layer = doc.default_layer();
             let (frame, sid) = doc.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 200.0, 200.0), layer, "Body", Default::default()).unwrap();
-            doc.story_mut(sid).unwrap().insert_object(0, AnchoredObject { item, position: Default::default() });
+            doc.story_mut(sid).unwrap().insert_object(0, AnchoredObject { item, position: Default::default(), caption_id: None });
             (frame, chosen)
         };
         s.execute("transform.move", &json!({"ids": [frame.0], "dx": 10, "dy": 10, "copy": true})).unwrap();
@@ -885,6 +887,7 @@ mod nested_layer_tests {
 
     // Duplication no longer shares anchored ids (#1522), so this fixture forces the shared id.
     // Conflicting choices must not silently select one variant; only the copy's choice changes.
+    /// Verify incompatible PDF layer choices cannot share a placement identifier.
     #[test]
     fn shared_id_with_divergent_pdf_choices_is_rejected() {
         let mut s = Session::new();
@@ -900,7 +903,7 @@ mod nested_layer_tests {
             let anchored = item.id;
             let layer = doc.default_layer();
             let (frame, sid) = doc.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 200.0, 200.0), layer, "Body", Default::default()).unwrap();
-            doc.story_mut(sid).unwrap().insert_object(0, AnchoredObject { item, position: Default::default() });
+            doc.story_mut(sid).unwrap().insert_object(0, AnchoredObject { item, position: Default::default(), caption_id: None });
             (frame, anchored)
         };
         s.execute("transform.move", &json!({"ids": [frame.0], "dx": 10, "dy": 10, "copy": true})).unwrap();
