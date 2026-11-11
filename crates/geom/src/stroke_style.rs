@@ -88,10 +88,15 @@ pub fn stripes(bp: &BezPath, weight: f64, bands: &Bands, tol: f64) -> BezPath {
 /// long) would otherwise take millions; past this the points spread out to fit the budget.
 pub const MAX_STROKE_SAMPLES: usize = 100_000;
 
+/// Points along `bp` every `step` of arc length, with the unit tangent there, all subpaths in turn.
+fn samples(bp: &BezPath, step: f64) -> Vec<(Point, Vec2)> {
+    sample_subpaths(bp, step).into_iter().flatten().collect()
+}
+
 /// Points along each subpath of `bp` every `step` of arc length, with the unit tangent there.
 /// When that would take more than [`MAX_STROKE_SAMPLES`] points, the step widens so the path
 /// still gets them evenly; a path whose length isn't finite gets none.
-fn samples(bp: &BezPath, step: f64) -> Vec<Vec<(Point, Vec2)>> {
+fn sample_subpaths(bp: &BezPath, step: f64) -> Vec<Vec<(Point, Vec2)>> {
     let subs = subpaths(bp);
     // kurbo's arclen of an all-equal quadratic is NaN; it has no length, so skip it.
     let total: f64 = subs
@@ -148,7 +153,7 @@ fn subpath_samples(bp: &BezPath, step: f64) -> Vec<(Point, Vec2)> {
 pub fn wavy(bp: &BezPath, weight: f64, tol: f64) -> BezPath {
     let wavelength = (weight * 4.0).max(2.0);
     let mut line = BezPath::new();
-    for pts in samples(bp, wavelength / 16.0) {
+    for pts in sample_subpaths(bp, wavelength / 16.0) {
         for (i, (p, t)) in pts.iter().enumerate() {
             let normal = Vec2::new(-t.y, t.x);
             let phase = i as f64 / 16.0 * std::f64::consts::TAU;
@@ -163,7 +168,7 @@ pub fn wavy(bp: &BezPath, weight: f64, tol: f64) -> BezPath {
 /// A straight-hash stroke: short ticks across the path, as wide as the weight.
 pub fn hashed(bp: &BezPath, weight: f64, tol: f64) -> BezPath {
     let mut ticks = BezPath::new();
-    for (p, t) in samples(bp, (weight * 0.6).max(1.0)).into_iter().flatten() {
+    for (p, t) in samples(bp, (weight * 0.6).max(1.0)) {
         let normal = Vec2::new(-t.y, t.x) * (weight / 2.0);
         ticks.move_to(p - normal);
         ticks.line_to(p + normal);
