@@ -61,7 +61,7 @@ pub fn specs() -> Vec<CommandSpec> {
             }
         ),
         cmd!(query "find.find", "Find", ["Edit", "Find/Change"], None,
-            "{find, grep?: bool, caseSensitive?: bool, wholeWord?: bool, scope?: document|story|selection, story?, findFormat?: {charStyle?, paraStyle?, chars?: resolved character attributes} (Find Format: only text with it all through; with an empty find, each stretch of text with it), change?|first?|found?|attrs?|charStyle?|paraStyle?: ignored (find.change takes them; one request serves all three Find/Change commands)} → matches [{story, start, end, text, cell?: {table, row, col}}] (document scope also searches table cells; start/end then index the cell's text)",
+            "{find, grep?: bool, caseSensitive?: bool, wholeWord?: bool, scope?: document|story|selection, story?, findFormat?: {charStyle?, paraStyle?, chars?: resolved character attributes} (Find Format: only text with it all through; with an empty find, each stretch of text with it), change?|first?|found?|attrs?|charStyle?|paraStyle?: ignored (find.change takes them; one request serves all three Find/Change commands)} → matches [{story, start, end, text, cell?: {table, row, col}}] (document scope also searches table cells and footnotes; start/end then index the cell's or footnote's text; a footnote match has cell {table: 18446744073709551615, row: footnote id, col: 0})",
             has_doc, find),
         cmd!(
             "find.change",
@@ -434,7 +434,7 @@ impl FindContext {
         self.last_match_end = None;
         self.order = (0..self.targets.len()).collect();
         let caret = st.selection.text.filter(|_| st.selection.cells.is_none());
-        // A caret in a searched cell starts there; one in a footnote starts at its story.
+        // A caret in a searched cell or footnote starts there.
         let start = st.selection.text.and_then(|t| {
             let at = |want: Option<CellAddr>| self.targets.iter().position(|(sid, cell, _)| *sid == t.story && *cell == want);
             at(t.cell).or_else(|| at(None))
