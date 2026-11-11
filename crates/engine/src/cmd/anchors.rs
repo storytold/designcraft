@@ -305,26 +305,38 @@ fn erase_or_smooth(s: &mut Session, p: &Value, smooth: bool) -> Result<Value> {
         .map(|a| a.iter().filter_map(|v| Some(Point::new(v.get(0)?.as_f64()?, v.get(1)?.as_f64()?))).collect())
         .unwrap_or_default();
     // Each sample is a search of every segment: repeated samples add nothing, and a drag has no use
-    // for more than MAX_DRAG_SAMPLES (evenly thinned, the first and last kept).
+    // for more than MAX_DRAG_SAMPLES (evenly thinned, the first and last kept). Whether the drag
+    // touched the path is decided on every distinct sample, though: see below.
     let mut seen = std::collections::HashSet::new();
     pts.retain(|q| seen.insert((q.x.to_bits(), q.y.to_bits())));
-    if pts.len() > MAX_DRAG_SAMPLES {
+    let thinned: Vec<Point> = if pts.len() > MAX_DRAG_SAMPLES {
         let (n, last) = (pts.len(), pts.last().copied());
-        pts = (0..MAX_DRAG_SAMPLES).filter_map(|i| pts.get((i as u64 * n as u64 / MAX_DRAG_SAMPLES as u64) as usize).copied()).chain(last).collect();
-    }
+        (0..MAX_DRAG_SAMPLES).filter_map(|i| pts.get((i as u64 * n as u64 / MAX_DRAG_SAMPLES as u64) as usize).copied()).chain(last).collect()
+    } else {
+        Vec::new()
+    };
     s.edit(|d, sel| {
         path_editable(d, id, cmd)?;
         let inv = to_inner(d, id).ok_or(designcraft_doc::DocError::NoItem(id))?;
         let scale = inv.determinant().abs().sqrt().max(1e-9);
         let it = d.item_mut(id).ok_or(designcraft_doc::DocError::NoItem(id))?;
         // Where the drag touched the path, per subpath.
-        let mut hits: Vec<(usize, usize, f64)> = Vec::new();
-        for q in &pts {
-            if let Some((si, seg, t, _, dist)) = it.path.nearest(inv * *q)
-                && dist <= tol * scale
-            {
-                hits.push((si, seg, t));
+        let hits_of = |set: &[Point]| -> Vec<(usize, usize, f64)> {
+            let mut hits = Vec::new();
+            for q in set {
+                if let Some((si, seg, t, _, dist)) = it.path.nearest(inv * *q)
+                    && dist <= tol * scale
+                {
+                    hits.push((si, seg, t));
+                }
             }
+            hits
+        };
+        // A long drag is searched thinned; only when that finds nothing are all its samples, so a
+        // touch the thinning skipped over still counts and a long drag is never refused for it.
+        let mut hits = hits_of(if thinned.is_empty() { &pts } else { &thinned });
+        if hits.is_empty() && !thinned.is_empty() {
+            hits = hits_of(&pts);
         }
         // The subpath with the most hits (the last of equals), counted in one pass.
         let mut counts = vec![0usize; it.path.subpaths.len()];
@@ -677,6 +689,18 @@ mod tests {
         let r = s.execute("path.erase", &json!({"id": id, "points": drag})).unwrap();
         assert_eq!(r["subpaths"], 2, "a gap in the middle");
         assert!(s.execute("path.erase", &json!({"id": id, "points": [[100, 600]]})).is_err());
+    }
+
+    /// A touch only thinning would skip still counts: a long drag is not refused as missing the path.
+    #[test]
+    fn a_touch_the_thinning_skips_still_counts() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let pts: Vec<Value> = (0..=20).map(|i| json!({"p": [100.0 + i as f64 * 20.0, 300.0]})).collect();
+        let id = s.execute("path.create", &json!({"anchors": pts})).unwrap()["id"].as_u64().unwrap();
+        // 6,000 distinct samples far from the path but one, at an index thinning to 4,096 drops.
+        let drag: Vec<Value> = (0..6_000).map(|i| if i == 3 { json!([200.0, 300.0]) } else { json!([200.0 + f64::from(i) * 0.01, 900.0]) }).collect();
+        assert!(s.execute("path.erase", &json!({"id": id, "points": drag})).is_ok());
     }
 
     /// A drag of many repeated and many distinct samples is thinned and still erases where it went.
