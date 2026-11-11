@@ -876,7 +876,12 @@ fn shape_run_raw(
         if matches!(c, '\u{2010}' | '\u{2011}') && !primary.covers(c) && primary.covers('-') {
             flush(seg_start, i, &seg_face, out);
             seg_start = i + c.len_utf8();
+            let from = out.len();
             shape_segment(db, text, i..i + c.len_utf8(), Some("-"), p, &primary, auto_leading, styles, out, sub.upright());
+            // Only the drawing changes: the text (in a PDF, also a list label's) stays the original character.
+            for g in &mut out[from..] {
+                g.generated_text = None;
+            }
             continue;
         }
         let special = matches!(
