@@ -40,6 +40,7 @@ fn shown(file: Vec<u8>, fill: Fill) -> Vec<[u8; 4]> {
             name: "a".into(),
             mime: "image/png".into(),
             link: None,
+            link_fingerprint: None,
             data: Arc::new(file),
             pixels: Some((3, 1)),
             pdf_crop: Default::default(),

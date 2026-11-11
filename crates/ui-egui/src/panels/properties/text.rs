@@ -578,6 +578,7 @@ pub(crate) const LANGUAGES: &[&str] = &[
     "Korean",
     "Arabic",
     "Hebrew",
+    "Esperanto",
 ];
 
 /// The Language list (Character panel, Properties ▸ Character): picking one sets the language of
