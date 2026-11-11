@@ -283,6 +283,27 @@ fn note_bytes(s: &Story, depth: usize) -> usize {
     n
 }
 
+/// A table cell's paragraph: its text in pieces, each with the character format of its run.
+type CellPara = Vec<(String, CharFormat)>;
+
+/// Put the runs' character formats back on a cell whose text was built from plain strings
+/// (the paragraphs of `paras` joined by `\n`).
+fn format_cell(text: &mut Story, paras: &[CellPara]) {
+    let mut at = 0;
+    for (i, para) in paras.iter().enumerate() {
+        if i > 0 {
+            at += 1;
+        }
+        for (s, fmt) in para {
+            let end = at + s.len();
+            if *fmt != CharFormat::default() {
+                text.format_chars(at..end, |f| *f = fmt.clone());
+            }
+            at = end;
+        }
+    }
+}
+
 /// Warnings one import reports. A document that earns more than this has earned the point.
 const MAX_WARNINGS: usize = 100;
 
@@ -342,20 +363,32 @@ impl Ctx {
                 }
                 "tbl" => {
                     let mut rows: Vec<Vec<String>> = Vec::new();
+                    // The same cells' runs, to put their character formats back.
+                    let mut runs: Vec<Vec<Vec<CellPara>>> = Vec::new();
                     for r in e.els().filter(|r| r.name == "tr") {
                         let mut row = Vec::new();
+                        let mut row_runs = Vec::new();
                         for c in r.els().filter(|c| c.name == "tc") {
                             let mut paras = Vec::new();
                             self.cell_paras(c, &mut paras);
-                            row.push(paras.join("\n"));
+                            row.push(paras.iter().map(|p| p.iter().map(|(s, _)| s.as_str()).collect::<String>()).collect::<Vec<_>>().join("\n"));
+                            row_runs.push(paras);
                         }
                         rows.push(row);
+                        runs.push(row_runs);
                     }
                     if rows.is_empty() {
                         continue;
                     }
                     self.next_table += 1;
-                    let t = Table::from_strings(self.next_table, &rows, 300.0, &ParaFormat::default(), &CharFormat::default());
+                    let mut t = Table::from_strings(self.next_table, &rows, 300.0, &ParaFormat::default(), &CharFormat::default());
+                    for (r, row) in runs.iter().enumerate() {
+                        for (c, paras) in row.iter().enumerate() {
+                            if let Some(cell) = t.cell_mut(r, c) {
+                                format_cell(&mut cell.text, paras);
+                            }
+                        }
+                    }
                     let len = st.len();
                     st.insert_table(len, t);
                     first = st.text.ends_with('\n');
@@ -370,16 +403,18 @@ impl Ctx {
         }
     }
 
-    /// The text of each paragraph in a table cell, read by the same run rules as body text.
-    /// Cells are plain text, so a page or column break in a cell ends its paragraph.
-    fn cell_paras(&mut self, el: &El, out: &mut Vec<String>) {
+    /// The pieces (text and character format) of each paragraph in a table cell, read by the same
+    /// run rules as body text. A page or column break in a cell ends its paragraph.
+    fn cell_paras(&mut self, el: &El, out: &mut Vec<CellPara>) {
         for e in el.els() {
             match e.name.as_str() {
                 "p" => {
                     let mut st = Story::new(StoryId(0));
                     self.inline(e, &mut st, false);
                     let is_break = |c: char| matches!(c, designcraft_doc::PAGE_BREAK | designcraft_doc::COLUMN_BREAK);
-                    out.push(st.text.chars().map(|c| if is_break(c) { '\n' } else { c }).collect());
+                    out.push(
+                        st.runs().map(|(r, f)| (st.slice(r).chars().map(|c| if is_break(c) { '\n' } else { c }).collect(), f.clone())).collect(),
+                    );
                 }
                 "sdt" => {
                     if let Some(c) = e.child("sdtContent") {
