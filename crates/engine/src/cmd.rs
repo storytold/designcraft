@@ -332,12 +332,16 @@ pub(crate) fn named_targets(spec: &CommandSpec, p: &Value) -> Option<Vec<ItemId>
 }
 
 /// The table a call names with `table`, for a command whose params document an optional `table`.
-/// `None` when the call names no table. [`table_story`] reads the `story` that goes with it.
-pub(crate) fn named_table(spec: &CommandSpec, p: &Value) -> Option<u64> {
+/// `None` when the call names no table. A `table` that is present but not a non-negative integer,
+/// `null` included, is an error. [`table_story`] reads the `story` that goes with it.
+pub(crate) fn named_table(spec: &CommandSpec, p: &Value, cmd: &str) -> Result<Option<u64>> {
     if !spec.params.split(|c: char| !c.is_ascii_alphanumeric() && c != '?').any(|w| w == "table?") {
-        return None;
+        return Ok(None);
     }
-    p.get("table").and_then(Value::as_u64)
+    match p.get("table") {
+        None => Ok(None),
+        Some(v) => v.as_u64().map(Some).ok_or_else(|| bad(cmd, "`table` must be a nonnegative integer")),
+    }
 }
 
 /// The `story` a table command's call names alongside `table`, or `None` when the call has no

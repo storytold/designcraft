@@ -78,6 +78,15 @@ fn table_target_rejects_wrong_typed_story_and_table_ids() {
         let error = s.execute("table.get", &params).unwrap_err();
         assert!(error.to_string().contains("no table"), "{error}");
     }
+    // With nothing in a table selected, a malformed `table` is refused as such, not as disabled.
+    s.execute("edit.deselectAll", &json!({})).unwrap();
+    for id in ["table.selectTable", "table.insertRow"] {
+        for value in [json!("other"), json!(-1), Value::Null] {
+            let error = s.execute(id, &json!({ "table": value })).unwrap_err();
+            assert!(!matches!(error, crate::EngineError::Disabled(..)) && error.to_string().contains("`table`"), "{id} {value}: {error}");
+        }
+    }
+    assert_eq!(s.doc().unwrap().history.undo.len(), undo);
 }
 
 #[test]
