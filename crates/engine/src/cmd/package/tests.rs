@@ -303,9 +303,14 @@ fn package_writes_document_links_and_report() {
     std::fs::create_dir_all(&dir).unwrap();
     let svg = dir.join("logo.svg");
     std::fs::write(&svg, r##"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40"><rect width="40" height="40"/></svg>"##).unwrap();
+    // An older file than the copies made of it below.
+    let earlier = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+    std::fs::File::options().write(true).open(&svg).unwrap().set_modified(earlier).unwrap();
+    let fingerprint = |path: &std::path::Path| crate::cmd::datamerge::fingerprint_of(path);
     let mut s = Session::new();
     s.execute("file.new", &json!({})).unwrap();
     s.execute("file.place", &json!({"path": svg.to_string_lossy(), "x": 100, "y": 100})).unwrap();
+    assert_eq!(s.doc().unwrap().doc.assets.values().next().unwrap().link_fingerprint, fingerprint(&svg));
     s.execute("frame.create", &json!({"rect": [72, 300, 400, 400], "content": "text", "text": "Hello"})).unwrap();
     let out = dir.join("Pkg");
     let r = s.execute("file.package", &json!({"dir": out.to_string_lossy(), "pdf": true, "instructions": "Print on matte."})).unwrap();
@@ -323,10 +328,16 @@ fn package_writes_document_links_and_report() {
     let packed = super::super::from_bytes(&std::fs::read(doc_file).unwrap()).unwrap();
     let link = packed.assets.values().next().unwrap().link.clone().unwrap();
     assert!(link.contains("Links"), "{link}");
+    // The link is the copy now: the original file's size and time don't go with it (the copy's
+    // own are too recent to vouch for it; the first check compares the bytes and keeps them).
+    assert!(fingerprint(&out.join("Links").join("logo.svg")).is_some());
+    assert_eq!(packed.assets.values().next().unwrap().link_fingerprint, None);
     // Copy Links To relinks the open document.
     let r = s.execute("links.copyTo", &json!({"dir": dir.join("Copies").to_string_lossy()})).unwrap();
     assert_eq!(r["copied"], 1);
-    assert!(s.doc().unwrap().doc.assets.values().next().unwrap().link.as_deref().unwrap().contains("Copies"));
+    let relinked = s.doc().unwrap().doc.assets.values().next().unwrap().clone();
+    assert!(relinked.link.as_deref().unwrap().contains("Copies"));
+    assert_eq!(relinked.link_fingerprint, None);
     let _ = std::fs::remove_dir_all(&dir);
 }
 

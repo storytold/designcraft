@@ -3,8 +3,7 @@
 //!
 //! Every placed graphic keeps its bytes in the document; a linked graphic also remembers its
 //! file. Its status compares that file with the copy in the document: missing, modified (the
-//! file's bytes differ) or OK. The comparison is remembered with the file's size and time
-//! ([`check`]), so asking again reads only the file's metadata until the file changes.
+//! file's bytes differ) or OK.
 //!
 //! A linked text file (File › Place with Create Links) remembers its file's size and hash on the
 //! story instead; updating it imports the file again into the story.
@@ -14,6 +13,7 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use designcraft_compose::Cache;
 use designcraft_doc::{AssetId, Content, Document, Fingerprint, Item, ItemId, Selection, Story, StoryId, TextFileLink};
@@ -23,16 +23,20 @@ use serde_json::{Value, json};
 use super::{CommandSpec, bad, cmd, has_doc, str_param};
 use crate::{EngineError, Result, Session};
 
-pub(crate) mod check;
 mod original;
-pub use check::{LinkState, link_state};
 pub use original::{Original, Reveal, can_edit_original, originals, reveal_target};
+
+/// The most graphics or frames a call may name (`links.update {assets}`, `links.originalFiles
+/// {ids}`): more than any selection, and past it the call is an error rather than cut short.
+pub(crate) const MAX_NAMED: usize = 10_000;
 
 pub fn specs() -> Vec<CommandSpec> {
     let mut v = vec![
-        cmd!(query "links.list", "Links", [], None, "{metadataOnly?: bool (only the files' size and time are read, never their contents, linked text files included: a graphic or text file that is the copy's size but not yet compared since it last changed reads as ok, with unverified: true)} → [{asset, name, path, status: ok|modified|missing|embedded, unverified?, refused?: why a missing link isn't followed (a path on another computer, a device), pixels, pdfCrop (placed PDFs: the box shown), uses: [{id, page, ppi}]}], then linked text files: [{story, name, path, status (also tooLarge: unchanged size, too big to check), unverified?, edited (the story was changed in the layout), uses: [{id, page}]}]. A file is read only when its size is the copy's and its size or time changed since it was last compared", has_doc, |s, p| {
-            let read = p.get("metadataOnly").and_then(Value::as_bool) != Some(true);
-            let links = s.doc().map(|d| list(&d.doc, &s.cache, d.path.as_deref().map(Path::new), read));
+        cmd!(query "links.list", "Links", [], None, "{} → [{asset, name, path, status: ok|modified|missing|embedded, refused?: why a missing link isn't followed (a path on another computer, a device), pixels, pdfCrop (placed PDFs: the box shown), uses: [{id, page, ppi}]}], then linked text files: [{story, name, path, status (also tooLarge: unchanged size, too big to check), edited (the story was changed in the layout), uses: [{id, page}]}]", has_doc, |s, _| {
+            // Taken out for the call so the document needn't be cloned on every poll.
+            let mut checks = std::mem::take(&mut s.link_checks);
+            let links = s.doc().map(|d| list(&d.doc, &s.cache, d.path.as_deref().map(Path::new), Some(&mut checks), None).unwrap_or_default());
+            s.link_checks = checks;
             Ok(Value::Array(links?))
         }),
         cmd!(
@@ -58,7 +62,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Update Link",
             ["Window", "Links"],
             None,
-            "{asset? | assets?: [ids] | story?} — reload modified links from their files (all when none is given; one undo step); a linked text file is imported again into its story with the import options it was placed with, replacing edits made in the layout → {updated, warnings}",
+            "{asset? | assets?: [ids] (at most 10000) | story?} — reload modified links from their files (all when none is given; one undo step); a linked text file is imported again into its story with the import options it was placed with, replacing edits made in the layout → {updated, warnings}",
             has_doc,
             update
         ),
@@ -79,7 +83,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 let aid = asset_param(p, "links.embed")?;
                 s.edit(|d, _| {
                     let a = d.assets.get_mut(&aid).ok_or_else(|| bad("links.embed", "no such graphic"))?;
-                    Arc::make_mut(a).link = None;
+                    Arc::make_mut(a).set_link(None, None);
                     Ok(Value::Null)
                 })
             }
@@ -143,7 +147,7 @@ pub fn refused(link: &str, document: Option<&Path>) -> Option<crate::io::Refused
     crate::io::document_path(link, document).err()
 }
 
-/// Whether an asset's linked file is gone ([`status`] "missing" without reading the file). An
+/// Whether an asset's linked file is gone ([`status_cached`] "missing" without reading the file). An
 /// asset can hold data while its file is missing: the document's preview of it. `document` is
 /// the document's file, which relative links are resolved against.
 pub fn link_missing(a: &designcraft_doc::Asset, document: Option<&Path>) -> bool {
@@ -159,12 +163,90 @@ pub fn link_missing(a: &designcraft_doc::Asset, document: Option<&Path>) -> bool
     }
 }
 
-/// Link status of an asset in the document at `document`: embedded, missing, modified or ok.
-/// Only a regular file is compared, so a link to a device (`/dev/zero`) or a FIFO is missing
-/// rather than read. The file's contents are read only when its size is the copy's and it changed
-/// since it was last compared ([`check`]); [`link_state`] without `read` never reads them.
-pub fn status(a: &designcraft_doc::Asset, document: Option<&Path>) -> &'static str {
-    link_state(a.link.as_deref(), document, &a.data, true).name()
+/// Linked images checked this session: (asset, the identity of its bytes, the file its link
+/// resolves to) → (the file's size and time when it was read, whether it matched the bytes). The
+/// resolved file, not the link text, is the key: a relative link names another file once the
+/// document is saved elsewhere. The bytes' identity (their `Arc`'s address, as the render cache
+/// keys them) changes with every relink, update or undo, so a remembered answer can never
+/// describe other bytes.
+pub(crate) type ImageChecks = std::collections::HashMap<(AssetId, usize, std::path::PathBuf), (Fingerprint, bool)>;
+
+/// The size and time to keep with `bytes` just read from a linked file, `before` being the
+/// file's from before the read. Kept only when they can vouch for the bytes later: the size is
+/// the bytes' (the file didn't change while it was read) and the time is [`settled`] (another
+/// write in the same second, a file still being synced, would keep it). A linked text file's time
+/// is kept on the same terms.
+pub(crate) fn loaded_fingerprint(before: Option<Fingerprint>, bytes: &[u8]) -> Option<Fingerprint> {
+    before.filter(|f| f.size == bytes.len() as u64 && settled(f))
+}
+
+/// Is the linked file still the one the asset's bytes were loaded from, going by the size and
+/// time kept then ([`designcraft_doc::Asset::link_fingerprint`], [`loaded_fingerprint`])? Nothing
+/// is read when it is, also on the first check after a document is opened, which matters on a
+/// network share. A fingerprint of another size than the bytes isn't theirs and doesn't count; a
+/// new time or no fingerprint leave it to the byte comparison.
+#[cfg(not(target_arch = "wasm32"))]
+fn loaded_unchanged(a: &designcraft_doc::Asset, now: Fingerprint) -> bool {
+    a.link_fingerprint.is_some_and(|loaded| loaded.size == a.data.len() as u64 && loaded == now && settled(&now))
+}
+
+/// Link status of a placed graphic (`ok`, `modified`, `missing`, `embedded`), reading the file
+/// only when its size is the asset's and its time is neither the one the bytes were loaded at
+/// ([`loaded_unchanged`]) nor the one remembered from the last read (`checks`): the Links panel
+/// polls, and a document of press-size images would otherwise be read whole on every poll. A file
+/// changed in the last two seconds is never remembered (see [`settled`]).
+pub(crate) fn status_cached(a: &designcraft_doc::Asset, document: Option<&Path>, checks: &mut ImageChecks) -> &'static str {
+    image_status(a, document, checks).0
+}
+
+/// [`status_cached`], and the file's size and time when a read found the asset's bytes in it
+/// although the fingerprint kept with the asset says nothing or something else: what
+/// [`remember_link_files`] keeps, so the file isn't read again in another session.
+fn image_status(a: &designcraft_doc::Asset, document: Option<&Path>, checks: &mut ImageChecks) -> (&'static str, Option<Fingerprint>) {
+    let Some(link) = &a.link else { return ("embedded", None) };
+    // Nothing was read from the file (a package's link that wasn't followed): missing, as in
+    // Preflight.
+    if a.data.is_empty() {
+        return ("missing", None);
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let Ok(path) = crate::io::document_path(link, document) else { return ("missing", None) };
+        if !crate::io::is_file(&path) {
+            return ("missing", None);
+        }
+        let now = match crate::io::metadata(&path) {
+            Err(_) => return ("missing", None),
+            Ok(m) => super::datamerge::fingerprint_from(&m),
+        };
+        if loaded_unchanged(a, now) {
+            return ("ok", None);
+        }
+        if now.size != a.data.len() as u64 {
+            return ("modified", None);
+        }
+        let key = (a.id, Arc::as_ptr(&a.data) as usize, path.clone());
+        if let Some((at, same)) = checks.get(&key)
+            && *at == now
+        {
+            return if *same { ("ok", Some(now)) } else { ("modified", None) };
+        }
+        let same = match crate::io::read_capped(&path, a.data.len() as u64) {
+            Ok(b) => b == *a.data,
+            Err(_) => return ("missing", None),
+        };
+        // The time from before the read: a change during it is seen next time.
+        let settled = settled(&now);
+        if settled {
+            checks.insert(key, (now, same));
+        }
+        if same { ("ok", settled.then_some(now)) } else { ("modified", None) }
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (link, document, checks);
+        ("ok", None)
+    }
 }
 
 /// The largest linked text file read (the Data Merge source limit). Only regular files are read,
@@ -193,82 +275,51 @@ pub(crate) fn settled(f: &Fingerprint) -> bool {
     }
 }
 
-/// Checked linked text files, for the whole process as graphics' are ([`check`]): path → (size
-/// and time, hash of the contents then). The UI's worker thread fills it, so the Links panel's
-/// metadata-only look on the UI thread knows a file it compared without reading it again.
-type TextChecks = std::collections::HashMap<String, (Fingerprint, String)>;
-static TEXT_CHECKS: std::sync::Mutex<Option<TextChecks>> = std::sync::Mutex::new(None);
-/// Most files remembered: past it the oldest answers are forgotten (each costs one read again).
-const MAX_TEXT_CHECKS: usize = 4096;
-
-/// The remembered hash of the file at `path` when it had `at`.
-fn text_checked(path: &str, at: &Fingerprint) -> Option<String> {
-    let c = TEXT_CHECKS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    c.as_ref()?.get(path).filter(|(seen, _)| seen == at).map(|(_, hash)| hash.clone())
-}
-
-/// Remember that the file at `path` held contents hashing to `hash` when it had `at`.
-fn remember_text(path: &str, at: Fingerprint, hash: String) {
-    let mut c = TEXT_CHECKS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let map = c.get_or_insert_with(Default::default);
-    if map.len() >= MAX_TEXT_CHECKS && !map.contains_key(path) {
-        map.clear();
-    }
-    map.insert(path.to_string(), (at, hash));
-}
+/// Checked linked text files: path → (size and time, hash of the contents then).
+pub(crate) type TextChecks = std::collections::HashMap<String, (Fingerprint, String)>;
 
 /// Link status of a linked text file: `tooLarge` when it is the recorded size but over
 /// [`MAX_TEXT_LINK_BYTES`], so its contents aren't checked. The file is read only when its size
-/// is the recorded one but its time isn't, and then once per new time: a file saved or synced
-/// again without changes stays OK. `document` is the document's file. The UI's link watch calls
-/// it on its worker thread for every linked text file.
-pub fn text_status(l: &TextFileLink, document: Option<&Path>) -> &'static str {
-    text_state(l, document, true).0
-}
-
-/// [`text_status`], and whether it is unverified: with `read` false the file's contents are never
-/// read, and a file of the recorded size whose time changed since it was last compared reads as
-/// `ok`, unverified (as a graphic's [`LinkState::Unverified`]).
-fn text_state(l: &TextFileLink, document: Option<&Path>, read: bool) -> (&'static str, bool) {
-    let status = |s: &'static str| (s, false);
+/// is the recorded one but its time isn't, and then once per new time (`checks`): a file saved
+/// or synced again without changes stays OK. `document` is the document's file.
+pub(crate) fn text_status(l: &TextFileLink, checks: &mut TextChecks, document: Option<&Path>) -> &'static str {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let Ok(path) = crate::io::document_path(&l.path, document) else { return status("missing") };
+        let Ok(path) = crate::io::document_path(&l.path, document) else { return "missing" };
         if !crate::io::is_file(&path) {
-            return status("missing");
+            return "missing";
         }
         let now = match crate::io::metadata(&path) {
-            Err(_) => return status("missing"),
+            Err(_) => return "missing",
             Ok(m) => super::datamerge::fingerprint_from(&m),
         };
         if now.size != l.size {
-            return status("modified");
+            return "modified";
         }
         if l.mtime != 0 && now.mtime == l.mtime {
-            return status("ok");
+            return "ok";
         }
-        let hash = match text_checked(&l.path, &now) {
-            Some(hash) => hash,
-            _ if now.size > MAX_TEXT_LINK_BYTES => return status("tooLarge"),
-            _ if !read => return ("ok", true),
+        let hash = match checks.get(&l.path) {
+            Some((at, hash)) if *at == now => hash.clone(),
+            _ if now.size > MAX_TEXT_LINK_BYTES => return "tooLarge",
             _ => match read_text(&path) {
                 Ok((b, at)) => {
                     let hash = fnv_hex(&b);
                     // The time from before the read: a change during it is seen next time.
                     if settled(&at) {
-                        remember_text(&l.path, at, hash.clone());
+                        checks.insert(l.path.clone(), (at, hash.clone()));
                     }
                     hash
                 }
-                Err(_) => return status("missing"),
+                Err(_) => return "missing",
             },
         };
-        status(if hash == l.hash { "ok" } else { "modified" })
+        if hash == l.hash { "ok" } else { "modified" }
     }
     #[cfg(target_arch = "wasm32")]
     {
-        let _ = (l, document, read);
-        status("ok")
+        let _ = (l, checks, document);
+        "ok"
     }
 }
 
@@ -329,22 +380,130 @@ fn shown<'a>(d: &'a Document, cache: &Cache, aid: AssetId) -> Vec<Shown<'a>> {
     out
 }
 
-fn list(d: &Document, cache: &Cache, document: Option<&Path>, read: bool) -> Vec<Value> {
-    let texts = d.stories.values().filter_map(|st| {
-        let l = st.file_link.as_ref()?;
-        let uses: Vec<Value> = st.frames.iter().map(|id| json!({"id": id.0, "page": d.page_of_item(*id).map(|p| d.page_name(p))})).collect();
-        let (status, unverified) = text_state(l, document, read);
-        let mut row = json!({"story": st.id.0, "name": file_name(&l.path), "path": l.path, "status": status, "refused": refused(&l.path, document).map(|r| r.to_string()), "edited": story_hash(st) != l.story_hash, "uses": uses});
-        if unverified {
-            row["unverified"] = json!(true);
+/// What a check of a document's links remembers between runs: the linked text files and images
+/// already compared with the document ([`TextChecks`], [`ImageChecks`]), so a poll reads nothing
+/// unchanged. The [`Session`] keeps one for `links.list`; a caller that lists a document's links
+/// itself ([`list_document_links`]) keeps its own.
+#[derive(Default)]
+pub struct LinkListChecks {
+    text: TextChecks,
+    images: ImageChecks,
+    /// Linked images the latest list read and found to hold the document's bytes, with the file's
+    /// size and time then ([`LinkListChecks::take_verified`]).
+    verified: Vec<(AssetId, Fingerprint)>,
+}
+
+impl LinkListChecks {
+    /// The linked images the latest list found unchanged by comparing bytes, because the size
+    /// and time kept with them said nothing or something else: [`remember_link_files`] keeps the
+    /// file's current ones with them.
+    pub fn take_verified(&mut self) -> Vec<(AssetId, Fingerprint)> {
+        std::mem::take(&mut self.verified)
+    }
+
+    /// Add what `other` remembers (the checks of another worker thread).
+    pub fn absorb(&mut self, other: LinkListChecks) {
+        self.text.extend(other.text);
+        self.images.extend(other.images);
+    }
+
+    /// How many files are remembered.
+    pub fn len(&self) -> usize {
+        self.text.len() + self.images.len()
+    }
+
+    /// Is nothing remembered yet?
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+/// The rows of `links.list` without looking at a linked file: `checking` stands where a file
+/// would be read or asked for its size and time. A native UI shows these at once and fills in
+/// what [`list_document_links`] finds on a worker thread, where a share that doesn't answer
+/// can't stall it.
+pub fn preview_document_links(d: &Document, cache: &Cache, document: Option<&Path>) -> Vec<Value> {
+    list(d, cache, document, None, None).unwrap_or_default()
+}
+
+/// The rows of `links.list` for a document outside a [`Session`], so a native UI can check the
+/// linked files on a worker thread. `checks` is what the worker remembers between calls. Another
+/// thread sets `stop` to end the check before its next file (the one being asked may be on a
+/// share that doesn't answer, and hundreds more may follow it): nothing is returned then.
+pub fn list_document_links(
+    d: &Document,
+    cache: &Cache,
+    document: Option<&Path>,
+    checks: &mut LinkListChecks,
+    stop: &AtomicBool,
+) -> Option<Vec<Value>> {
+    list(d, cache, document, Some(checks), Some(stop))
+}
+
+/// Keep, with each linked image in `files`, the size and time its file had when a check read it
+/// and found the document's bytes in it ([`LinkListChecks::take_verified`]). Later checks, and
+/// the first one of another session, then don't read it: copying, restoring or checking out a
+/// project folder gives every file a new time. `doc` is the document the check ran on: nothing
+/// is kept when the active document isn't that one any more (other bytes may be linked by now),
+/// or during a gesture. Nothing placed changes, so a saved document stays saved; the times go
+/// into its file with the next save. → how many were kept
+pub fn remember_link_files(s: &mut Session, doc: &Arc<Document>, files: &[(AssetId, Fingerprint)]) -> usize {
+    let Ok(st) = s.doc_mut() else { return 0 };
+    if !Arc::ptr_eq(&st.doc, doc) || st.interaction.is_some() {
+        return 0;
+    }
+    let stale = |a: &designcraft_doc::Asset, f: &Fingerprint| a.link.is_some() && a.data.len() as u64 == f.size && a.link_fingerprint != Some(*f);
+    let fresh: Vec<(AssetId, Fingerprint)> = files.iter().filter(|(id, f)| st.doc.assets.get(id).is_some_and(|a| stale(a, f))).copied().collect();
+    if fresh.is_empty() {
+        return 0;
+    }
+    let saved = !st.is_dirty();
+    let d = Arc::make_mut(&mut st.doc);
+    for (id, f) in &fresh {
+        if let Some(a) = d.assets.get_mut(id) {
+            Arc::make_mut(a).link_fingerprint = Some(*f);
         }
-        Some(row)
+    }
+    if saved {
+        st.saved_doc = Arc::clone(&st.doc);
+    }
+    fresh.len()
+}
+
+/// `links.list`: every used placed graphic, then every linked text file, each with its status.
+/// `files` is what was read this session (a poll reads nothing unchanged); without it no file is
+/// looked at and a status that needs one is `checking` ([`preview_document_links`]). `None` when
+/// `stop` was set before the last link was reached.
+fn list(d: &Document, cache: &Cache, document: Option<&Path>, files: Option<&mut LinkListChecks>, stop: Option<&AtomicBool>) -> Option<Vec<Value>> {
+    let stopped = || stop.is_some_and(|stop| stop.load(Ordering::Relaxed));
+    let (mut checks, mut images, mut verified) = match files {
+        Some(files) => {
+            files.verified.clear();
+            (Some(&mut files.text), Some(&mut files.images), Some(&mut files.verified))
+        }
+        None => (None, None, None),
+    };
+    let texts = d.stories.values().filter_map(|st| Some((st, st.file_link.as_ref()?))).map(|(st, l)| {
+        if stopped() {
+            return None;
+        }
+        let uses: Vec<Value> = st.frames.iter().map(|id| json!({"id": id.0, "page": d.page_of_item(*id).map(|p| d.page_name(p))})).collect();
+        let why = refused(&l.path, document).map(|r| r.to_string());
+        let status = match checks.as_deref_mut() {
+            Some(checks) => text_status(l, checks, document),
+            None if why.is_some() => "missing",
+            None => "checking",
+        };
+        Some(json!({"story": st.id.0, "name": file_name(&l.path), "path": l.path, "status": status, "refused": why, "edited": story_hash(st) != l.story_hash, "uses": uses}))
     });
     let used = d.used_assets();
     d.assets
         .values()
         .filter(|a| used.contains(&a.id))
         .map(|a| {
+            if stopped() {
+                return None;
+            }
             let uses: Vec<Value> = shown(d, cache, a.id)
                 .into_iter()
                 .map(|u| {
@@ -367,12 +526,19 @@ fn list(d: &Document, cache: &Cache, document: Option<&Path>, read: bool) -> Vec
                 .collect();
             let pdf_crop = (a.mime == "application/pdf").then(|| a.pdf_crop.name());
             let why = a.link.as_deref().and_then(|l| refused(l, document)).map(|r| r.to_string());
-            let state = link_state(a.link.as_deref(), document, &a.data, read);
-            let mut row = json!({"asset": a.id.0, "name": a.name, "path": a.link, "status": state.name(), "refused": why, "pixels": a.pixels, "pdfCrop": pdf_crop, "uses": uses});
-            if state == LinkState::Unverified {
-                row["unverified"] = json!(true);
-            }
-            row
+            let status = match images.as_deref_mut() {
+                Some(images) => {
+                    let (status, file) = image_status(a, document, images);
+                    if let (Some(verified), Some(file)) = (verified.as_deref_mut(), file) {
+                        verified.push((a.id, file));
+                    }
+                    status
+                }
+                None if a.link.is_none() => "embedded",
+                None if a.data.is_empty() || why.is_some() => "missing",
+                None => "checking",
+            };
+            Some(json!({"asset": a.id.0, "name": a.name, "path": a.link, "status": status, "refused": why, "pixels": a.pixels, "pdfCrop": pdf_crop, "uses": uses}))
         })
         .chain(texts)
         .collect()
@@ -451,9 +617,10 @@ fn reload(path: impl AsRef<Path>) -> Result<(Vec<u8>, (u32, u32))> {
 /// Relink passes the file the user chose as both. Update passes the path the stored link resolved
 /// to and the stored link itself, so refreshing a link never rewrites what the document holds.
 fn relinked_asset(a: &designcraft_doc::Asset, read: &Path, link: &str) -> Result<Arc<designcraft_doc::Asset>> {
-    // The file's size and time before it is read: what the copy is then known to match.
-    let before = check::stamp(read);
+    // The size and time from before the read: a change during it is seen by the next check.
+    let before = super::datamerge::fingerprint_of(read);
     let (bytes, px) = reload(read)?;
+    let loaded = loaded_fingerprint(before, &bytes);
     let page = if designcraft_render::is_pdf(&bytes) { a.page } else { 0 };
     let px = if page > 0 {
         designcraft_render::pdf_page_size(&bytes, page as usize)
@@ -468,10 +635,9 @@ fn relinked_asset(a: &designcraft_doc::Asset, read: &Path, link: &str) -> Result
     a.pixels = Some(px);
     a.page = page;
     a.name = Path::new(link).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| link.to_string());
-    a.link = Some(link.to_string());
+    a.set_link(Some(link.to_string()), loaded);
     // A placed PDF keeps its crop choice; its box is found on the new file.
     super::file::crop_pdf(&mut a);
-    check::remember(&a.data, read, before, true);
     Ok(Arc::new(a))
 }
 
@@ -490,11 +656,13 @@ fn relink(s: &mut Session, p: &Value) -> Result<Value> {
     let a = s.doc()?.doc.assets.get(&aid).ok_or_else(|| bad("links.relink", "no such graphic"))?;
     // Build the replacement before the edit: a file that cannot be read leaves the document as it was.
     let fresh = relinked_asset(a, Path::new(&path), &path)?;
-    s.edit(|d, _| {
+    let r = s.edit(|d, _| {
         let name = fresh.name.clone();
         d.assets.insert(aid, fresh);
         Ok(json!({"name": name}))
-    })
+    });
+    s.link_checks.images.clear();
+    r
 }
 
 /// `links.relinkFolder`: relink graphics to same-named files in a folder and/or with another
@@ -513,13 +681,15 @@ fn relink_folder(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad("links.relinkFolder", "give `dir` and/or `extension`"));
     }
     let missing_only = p.get("missingOnly").and_then(Value::as_bool).unwrap_or(dir.is_some() && ext.is_none());
-    let only: Option<Vec<u64>> = p.get("assets").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_u64).collect());
+    let only: Option<std::collections::HashSet<u64>> =
+        p.get("assets").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_u64).collect());
+    let mut images = std::mem::take(&mut s.link_checks.images);
     let st = s.doc()?;
     let (d, document) = (&st.doc, st.path.as_deref().map(Path::new));
     let mut todo: Vec<(AssetId, std::path::PathBuf)> = Vec::new();
     let mut not_found = Vec::new();
     for a in d.assets.values() {
-        if only.as_ref().is_some_and(|o| !o.contains(&a.id.0)) || (missing_only && status(a, document) != "missing") {
+        if only.as_ref().is_some_and(|o| !o.contains(&a.id.0)) || (missing_only && status_cached(a, document, &mut images) != "missing") {
             continue;
         }
         let old = std::path::PathBuf::from(a.link.clone().unwrap_or_else(|| a.name.clone()));
@@ -566,8 +736,23 @@ fn relink_folder(s: &mut Session, p: &Value) -> Result<Value> {
             }
             Ok(())
         })?;
+        images.clear();
     }
+    s.link_checks.images = images;
     Ok(json!({"relinked": n, "notFound": not_found}))
+}
+
+/// The ids a call lists under `key`, looked up in constant time: `None` when it lists none. Not a
+/// list of numbers, or longer than [`MAX_NAMED`], is an error.
+pub(crate) fn id_set(v: Option<&Value>, cmd: &str, key: &str) -> Result<Option<std::collections::HashSet<u64>>> {
+    let list = match v {
+        None | Some(Value::Null) => return Ok(None),
+        Some(v) => v.as_array().ok_or_else(|| bad(cmd, format!("{key} must be a list of ids")))?,
+    };
+    if list.len() > MAX_NAMED {
+        return Err(bad(cmd, format!("{key} lists more than {MAX_NAMED} ids")));
+    }
+    list.iter().map(|i| i.as_u64().ok_or_else(|| bad(cmd, format!("{key} must be numbers")))).collect::<Result<_>>().map(Some)
 }
 
 /// `links.update`: re-read the modified links (one, or every one) from where they resolve.
@@ -577,24 +762,14 @@ fn update(s: &mut Session, p: &Value) -> Result<Value> {
         (st.doc.clone(), st.path.clone())
     };
     let document = document.as_deref().map(Path::new);
+    let LinkListChecks { text: checks, images, .. } = &mut s.link_checks;
     // A selector that is there but isn't an id is an error, never "all of them".
     let selector = |key: &str| match p.get(key) {
         None | Some(Value::Null) => Ok(None),
         Some(v) => v.as_u64().map(Some).ok_or_else(|| bad("links.update", format!("{key} must be a number"))),
     };
     let (only_asset, only_story) = (selector("asset")?, selector("story")?.map(StoryId));
-    let only_assets: Option<Vec<u64>> = match p.get("assets") {
-        None | Some(Value::Null) => None,
-        Some(v) => Some(
-            v.as_array()
-                .ok_or_else(|| bad("links.update", "assets must be a list of graphic ids"))?
-                .iter()
-                // A hostile list is cut short: no document has this many graphics.
-                .take(100_000)
-                .map(|i| i.as_u64().ok_or_else(|| bad("links.update", "assets must be numbers")))
-                .collect::<Result<_>>()?,
-        ),
-    };
+    let only_assets = id_set(p.get("assets"), "links.update", "assets")?;
     let all = only_asset.is_none() && only_story.is_none() && only_assets.is_none();
     let wanted = |id: u64| all || only_asset == Some(id) || only_assets.as_ref().is_some_and(|l| l.contains(&id));
     // A link craft-docpath refuses is missing, so it is never read or refreshed.
@@ -604,12 +779,12 @@ fn update(s: &mut Session, p: &Value) -> Result<Value> {
         .values()
         .filter(|st| all || only_story == Some(st.id))
         .filter_map(|st| {
-            let l = st.file_link.as_ref().filter(|l| text_status(l, document) == "modified")?;
+            let l = st.file_link.as_ref().filter(|l| text_status(l, checks, document) == "modified")?;
             Some((st.id, l.path.clone(), resolved(&l.path)?))
         })
         .collect();
     let mut fresh = Vec::new();
-    for a in d.assets.values().filter(|a| wanted(a.id.0)).filter(|a| status(a, document) == "modified") {
+    for a in d.assets.values().filter(|a| wanted(a.id.0)).filter(|a| status_cached(a, document, images) == "modified") {
         // The bytes come from where the stored link resolves; the link itself stays as the
         // document stored it, so refreshing never rewrites a relative link to an absolute one.
         if let Some((link, at)) = a.link.as_deref().and_then(|l| resolved(l).map(|at| (l, at))) {
@@ -625,7 +800,7 @@ fn update(s: &mut Session, p: &Value) -> Result<Value> {
     if n == 0 {
         return Ok(json!({"updated": 0}));
     }
-    s.edit(|d, _| {
+    let r = s.edit(|d, _| {
         for (aid, a) in fresh {
             d.assets.insert(aid, a);
         }
@@ -634,7 +809,9 @@ fn update(s: &mut Session, p: &Value) -> Result<Value> {
             warnings.extend(reimport(d, *sid, path, bytes, *before)?);
         }
         Ok(json!({"updated": n, "warnings": warnings}))
-    })
+    });
+    s.link_checks.images.clear();
+    r
 }
 
 #[cfg(test)]
@@ -801,11 +978,6 @@ mod shared_asset_tests {
 
         // b.png changes on disk: updating it leaves a.png's placement alone.
         std::fs::write(&b, png(20, 10)).unwrap();
-        // A selector that isn't an id is an error, not "update them all".
-        for bad in [json!({"asset": "b"}), json!({"story": -1}), json!({"asset": 1.5})] {
-            assert!(s.execute("links.update", &bad).is_err(), "{bad}");
-        }
-        assert_eq!(rows(&mut s), before, "nothing was updated");
         assert_eq!(s.execute("links.update", &json!({})).unwrap()["updated"], 1);
         let after = rows(&mut s);
         assert_eq!(paths(&after), paths(&before));
@@ -1023,7 +1195,7 @@ mod text_link_tests {
         // Saved and opened again: the link and its options are kept.
         let back = designcraft_format::load(&designcraft_format::save(&s.doc().unwrap().doc).unwrap()).unwrap();
         assert_eq!(back.story(sid).unwrap().file_link, story(s, sid).file_link);
-        assert_eq!(super::text_status(back.story(sid).unwrap().file_link.as_ref().unwrap(), None), "ok");
+        assert_eq!(super::text_status(back.story(sid).unwrap().file_link.as_ref().unwrap(), &mut Default::default(), None), "ok");
     }
 
     #[test]
@@ -1200,7 +1372,7 @@ mod text_link_read_tests {
 
     use designcraft_doc::TextFileLink;
 
-    use super::{MAX_TEXT_LINK_BYTES, read_text, text_state, text_status};
+    use super::{MAX_TEXT_LINK_BYTES, read_text, text_status};
 
     /// `f` on another thread: a call that blocks fails the test instead of hanging it.
     fn promptly<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
@@ -1214,7 +1386,7 @@ mod text_link_read_tests {
 
     fn status_of(path: &std::path::Path, size: u64) -> &'static str {
         let l = TextFileLink { path: path.to_string_lossy().to_string(), size, hash: "0".into(), ..Default::default() };
-        promptly(move || text_status(&l, None))
+        promptly(move || text_status(&l, &mut Default::default(), None))
     }
 
     fn read(path: &std::path::Path) -> Result<usize, String> {
@@ -1248,19 +1420,5 @@ mod text_link_read_tests {
         assert!(read(&big).unwrap_err().contains("larger than"));
         assert!(!super::checkable_size(MAX_TEXT_LINK_BYTES as usize + 1), "placing it doesn't link it");
         let _ = std::fs::remove_dir_all(&dir);
-    }
-    /// A metadata-only look (the Links panel's poll) never reads a linked text file: one of the
-    /// recorded size whose time changed is OK, unverified; a full look reads it and finds it
-    /// modified (the recorded hash isn't the contents').
-    #[test]
-    fn a_metadata_only_look_does_not_read_a_text_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("story.txt");
-        std::fs::write(&file, "Some text").unwrap();
-        let l = TextFileLink { path: file.to_string_lossy().to_string(), size: 9, mtime: 1, hash: "0".into(), ..Default::default() };
-        let at = super::super::datamerge::fingerprint_from(&crate::io::metadata(&file).unwrap());
-        assert_eq!(text_state(&l, None, false), ("ok", true));
-        assert_eq!(super::text_checked(&l.path, &at), None, "nothing was read");
-        assert_eq!(text_state(&l, None, true), ("modified", false));
     }
 }

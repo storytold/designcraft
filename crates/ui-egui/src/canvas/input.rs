@@ -171,15 +171,16 @@ fn item_at(app: &DesignApp, p: Point, zoom: f64) -> Option<(designcraft_doc::Ite
 
 /// The frame under a pointer over the canvas that takes a graphic (empty, holding a graphic, or
 /// holding only graphics pasted into it): a graphic dropped there fills it instead of becoming a
-/// new object. `None` when the pointer isn't over the canvas or over such a frame, and for a
-/// locked frame, which a drop never replaces.
+/// new object. `None` when the pointer isn't over the canvas or over such a frame, for a locked
+/// frame, which a drop never replaces, and for a line or any path that encloses no area, which
+/// would become a zero-height image frame (#2290), as the place cursor skips them.
 pub fn drop_frame(app: &DesignApp, screen: Option<Pos2>) -> Option<designcraft_doc::ItemId> {
     let rect = app.canvas_rect?;
     let pos = screen.filter(|p| rect.contains(*p))?;
     let v = app.view()?;
     let (id, _) = item_at(app, Xf::new(rect, v).to_canvas(pos), v.zoom)?;
     let it = app.session.active()?.doc.item(id)?;
-    (!it.locked && it.takes_graphic()).then_some(id)
+    (!it.locked && it.path.encloses_area() && it.takes_graphic()).then_some(id)
 }
 
 /// Wheel, pinch and Alt/Ctrl/Cmd + wheel over the canvas: zoom at the pointer, else scroll.

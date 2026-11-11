@@ -33,7 +33,7 @@ pub fn specs() -> Vec<CommandSpec> {
         "Original Files",
         [],
         None,
-        "{asset? (a Links panel row) | ids?: [frame ids]} (default: the selected graphic frames) → {files: [{asset, name, path}]} — the linked files Edit Original opens; error when none is linked to a file on disk (embedded, missing, nothing placed selected) of a type DesignCraft places (graphic, video, sound: never a program, script or shortcut)",
+        "{asset? (a Links panel row) | ids?: [frame ids] (at most 10000)} (default: the selected graphic frames) → {files: [{asset, name, path}]} — the linked files Edit Original opens; error when none is linked to a file on disk (embedded, missing, nothing placed selected) of a type DesignCraft places (graphic, video, sound: never a program, script or shortcut)",
         has_doc,
         |s, p| {
             let files = originals(s, p)?;
@@ -57,11 +57,11 @@ fn named_assets(d: &Document, selection: &[designcraft_doc::ItemId], p: &Value) 
     let ids: Vec<designcraft_doc::ItemId> = match p.get("ids") {
         Some(v) => {
             let list = v.as_array().ok_or_else(|| bad(COMMAND, "ids must be a list of frame ids"))?;
-            // A hostile list is cut short: a selection is never this long.
-            list.iter()
-                .take(10_000)
-                .map(|i| i.as_u64().map(designcraft_doc::ItemId).ok_or_else(|| bad(COMMAND, "ids must be numbers")))
-                .collect::<Result<_>>()?
+            // A hostile list is refused: a selection is never this long.
+            if list.len() > super::MAX_NAMED {
+                return Err(bad(COMMAND, format!("ids lists more than {} frames", super::MAX_NAMED)));
+            }
+            list.iter().map(|i| i.as_u64().map(designcraft_doc::ItemId).ok_or_else(|| bad(COMMAND, "ids must be numbers"))).collect::<Result<_>>()?
         }
         None => selection.to_vec(),
     };

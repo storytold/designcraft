@@ -1,3 +1,6 @@
+// The checks run on the native worker only.
+#![cfg(not(target_arch = "wasm32"))]
+
 use std::path::Path;
 
 use egui::{Pos2, Rect, vec2};
@@ -15,9 +18,20 @@ fn png(w: u32) -> Vec<u8> {
 fn app() -> DesignApp {
     let launch: crate::edit_original::LaunchFn = Box::new(|_, _| Ok(()));
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services { launch: Some(launch), ..Default::default() });
-    app.link_watch.inline = true;
+    app.links_worker.inline = true;
     app.run("file.new", json!({})).unwrap();
     app
+}
+
+/// One frame of the watch with the window's focus as given.
+fn tick(app: &mut DesignApp, focused: Option<bool>) {
+    super::tick(app, &egui::Context::default(), focused);
+}
+
+/// The time between checks is up for the active document (the timer's check).
+fn timer(app: &mut DesignApp) {
+    let uid = app.session.active().unwrap().uid;
+    app.links_worker.expire(uid);
 }
 
 /// Places `file` (linked) at 100,100, 200 pt wide, with nothing left selected → (frame, asset).
@@ -39,7 +53,8 @@ fn undo_len(app: &DesignApp) -> usize {
     app.session.doc().unwrap().history.undo.len()
 }
 
-/// Coming back to the window checks every linked graphic; between checks nothing is looked at.
+/// Coming back to the window checks every linked graphic again at once; between checks nothing
+/// is looked at, until the time between checks is up.
 #[test]
 fn focus_regained_checks_the_links_again_and_so_does_the_timer() {
     let dir = tempfile::tempdir().unwrap();
@@ -47,28 +62,31 @@ fn focus_regained_checks_the_links_again_and_so_does_the_timer() {
     std::fs::write(&file, png(4)).unwrap();
     let mut app = app();
     let (_, asset) = place(&mut app, &file);
-    tick(&mut app, 0.0, Some(true));
+    tick(&mut app, Some(true));
     assert_eq!(state(&app, asset), Some(LinkState::Ok));
     // Another application saves a wider image while the window is away.
     std::fs::write(&file, png(9)).unwrap();
-    tick(&mut app, 0.5, Some(true));
+    tick(&mut app, Some(true));
+    tick(&mut app, Some(true));
     assert_eq!(state(&app, asset), Some(LinkState::Ok), "not due yet");
-    tick(&mut app, 0.6, Some(false));
-    tick(&mut app, 0.7, Some(true));
+    tick(&mut app, Some(false));
+    tick(&mut app, Some(true));
     assert_eq!(state(&app, asset), Some(LinkState::Modified), "focus regained: checked");
     // The preference is off: shown, not updated.
     assert_eq!(pixels(&app, asset), Some((4, 4)));
     // Missing, found by the timer alone.
     std::fs::remove_file(&file).unwrap();
-    tick(&mut app, 1.0, Some(true));
+    tick(&mut app, Some(true));
     assert_eq!(state(&app, asset), Some(LinkState::Modified), "not due yet");
-    tick(&mut app, 0.7 + CHECK_EVERY, Some(true));
+    timer(&mut app);
+    tick(&mut app, Some(true));
     assert_eq!(state(&app, asset), Some(LinkState::Missing));
     // Another document: what was found about this one isn't shown for it.
     let uid = app.session.active().unwrap().uid;
     app.run("file.new", json!({})).unwrap();
-    tick(&mut app, 10.0, Some(true));
+    tick(&mut app, Some(true));
     assert_eq!(app.link_watch.state(uid, asset), None);
+    assert!(!app.link_watch.flagged(app.session.active().unwrap().uid));
 }
 
 /// With Update Modified Links When DesignCraft Comes Back to the Front on, focus regained updates
@@ -83,31 +101,33 @@ fn the_auto_update_preference_updates_modified_links_on_focus() {
     assert!(!app.session.prefs.auto_update_links, "off by default");
     let (_, aa) = place(&mut app, &a);
     let (_, ab) = place(&mut app, &b);
-    tick(&mut app, 0.0, Some(true));
+    tick(&mut app, Some(true));
     std::fs::write(&a, png(8)).unwrap();
     std::fs::write(&b, png(10)).unwrap();
     // Off: focus back, nothing updated.
     let undo = undo_len(&app);
-    tick(&mut app, 0.1, Some(false));
-    tick(&mut app, 0.2, Some(true));
+    tick(&mut app, Some(false));
+    tick(&mut app, Some(true));
+    assert_eq!((state(&app, aa), state(&app, ab)), (Some(LinkState::Modified), Some(LinkState::Modified)));
     assert_eq!((pixels(&app, aa), pixels(&app, ab)), (Some((4, 4)), Some((5, 4))));
     assert_eq!(undo_len(&app), undo);
     // On: focus back updates both, in one step.
     app.run("prefs.set", json!({"autoUpdateLinks": true})).unwrap();
-    tick(&mut app, 0.3, Some(false));
-    tick(&mut app, 0.4, Some(true));
+    tick(&mut app, Some(false));
+    tick(&mut app, Some(true));
     assert_eq!((pixels(&app, aa), pixels(&app, ab)), (Some((8, 4)), Some((10, 4))));
     assert_eq!(undo_len(&app), undo + 1, "one undo step");
     assert_eq!((state(&app, aa), state(&app, ab)), (Some(LinkState::Ok), Some(LinkState::Ok)));
     // The timer alone never updates, even with the preference on.
     std::fs::write(&a, png(3)).unwrap();
-    tick(&mut app, 0.4 + CHECK_EVERY, Some(true));
+    timer(&mut app);
+    tick(&mut app, Some(true));
     assert_eq!(state(&app, aa), Some(LinkState::Modified));
     assert_eq!(pixels(&app, aa), Some((8, 4)));
-    // Undo puts the old copy back; the next check shows it modified again.
+    // Undo puts the old copy back; the next check (the document changed) shows it modified.
     app.run("prefs.set", json!({"autoUpdateLinks": false})).unwrap();
     app.run("edit.undo", json!({})).unwrap();
-    tick(&mut app, 0.4 + CHECK_EVERY + AFTER_EDIT, Some(true));
+    tick(&mut app, Some(true));
     assert_eq!(state(&app, ab), Some(LinkState::Modified));
 }
 
@@ -122,19 +142,21 @@ fn an_edit_original_file_is_updated_without_a_focus_change() {
     let (frame, asset) = place(&mut app, &file);
     app.run("selection.set", json!({"ids": [frame]})).unwrap();
     app.run(crate::edit_original::EDIT_ORIGINAL, json!({})).unwrap();
-    tick(&mut app, 0.0, Some(true));
+    tick(&mut app, Some(true));
     std::fs::write(&file, png(7)).unwrap();
     // The window stays focused as far as the host says: the timer finds it and updates it.
-    tick(&mut app, CHECK_EVERY, Some(true));
+    timer(&mut app);
+    tick(&mut app, Some(true));
     assert_eq!(pixels(&app, asset), Some((7, 4)));
     // While the window is away it waits.
     std::fs::write(&file, png(6)).unwrap();
-    tick(&mut app, 2.0 * CHECK_EVERY, Some(false));
+    timer(&mut app);
+    tick(&mut app, Some(false));
     assert_eq!(pixels(&app, asset), Some((7, 4)));
 }
 
-/// During a gesture nothing is updated (its next preview would put the old copy back) and the
-/// Edit Original file isn't marked as seen: the update comes once the gesture ends.
+/// During a gesture nothing is checked or updated (its next preview would put the old copy back)
+/// and the Edit Original file isn't marked as seen: the update comes once the gesture ends.
 #[test]
 fn updates_wait_for_a_gesture_to_end() {
     let dir = tempfile::tempdir().unwrap();
@@ -144,35 +166,97 @@ fn updates_wait_for_a_gesture_to_end() {
     let (frame, asset) = place(&mut app, &file);
     app.run("selection.set", json!({"ids": [frame]})).unwrap();
     app.run(crate::edit_original::EDIT_ORIGINAL, json!({})).unwrap();
-    tick(&mut app, 0.0, Some(true));
+    tick(&mut app, Some(true));
     std::fs::write(&file, png(7)).unwrap();
     app.session.begin_interaction("Move").unwrap();
     assert_eq!(crate::edit_original::refresh_edited(&mut app), 0);
-    tick(&mut app, CHECK_EVERY, Some(true));
+    timer(&mut app);
+    tick(&mut app, Some(true));
     assert_eq!(pixels(&app, asset), Some((4, 4)), "not during the gesture");
     app.session.commit_interaction().unwrap();
-    tick(&mut app, CHECK_EVERY + 0.1, Some(true));
+    tick(&mut app, Some(true));
     assert_eq!(pixels(&app, asset), Some((7, 4)), "after it");
 }
 
-/// A worker whose thread has ended doesn't stop the checks: the check runs here and the worker is
-/// dropped, for the next frame to start another.
+/// The badges and the panel share one check: checks run on the panel's background worker, and a
+/// document that links no file isn't checked at all.
 #[test]
-fn a_dead_worker_is_replaced_and_the_check_runs_here() {
+fn the_watch_uses_the_links_panels_worker() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("photo.png");
     std::fs::write(&file, png(4)).unwrap();
     let mut app = app();
+    app.links_worker.inline = false;
+    let ctx = egui::Context::default();
+    super::tick(&mut app, &ctx, Some(true));
+    assert!(!app.links_worker.checking(), "nothing linked: nothing checked");
     let (_, asset) = place(&mut app, &file);
-    let (tx, jobs) = std::sync::mpsc::channel();
-    drop(jobs);
-    let (_, rx) = std::sync::mpsc::channel();
-    app.link_watch.inline = false;
-    app.link_watch.worker = Some(Worker { tx, rx });
-    tick(&mut app, 0.0, Some(true));
-    assert!(app.link_watch.worker.is_none());
-    assert!(!app.link_watch.busy);
-    assert_eq!(state(&app, asset), Some(LinkState::Ok));
+    std::fs::write(&file, png(9)).unwrap();
+    let start = std::time::Instant::now();
+    while state(&app, asset) != Some(LinkState::Modified) {
+        assert!(start.elapsed() < std::time::Duration::from_secs(20), "the worker never answered");
+        super::tick(&mut app, &ctx, Some(true));
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(app.link_watch.flagged(app.session.active().unwrap().uid));
+}
+
+/// A check that finishes after the document changed (an edit, a Revert) doesn't update from what
+/// it found: it shows the badges, and the next check, of the document as it is now, updates.
+#[test]
+fn a_check_of_an_older_state_updates_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("photo.png");
+    std::fs::write(&file, png(4)).unwrap();
+    let mut app = app();
+    app.run("prefs.set", json!({"autoUpdateLinks": true})).unwrap();
+    let (frame, asset) = place(&mut app, &file);
+    tick(&mut app, Some(true));
+    std::fs::write(&file, png(9)).unwrap();
+    // Focus comes back and a check of the document as it is runs; then the document changes
+    // before the watch takes that check in.
+    tick(&mut app, Some(false));
+    app.link_watch.focused = Some(false);
+    let uid = app.session.active().unwrap().uid;
+    app.links_worker.recheck(uid);
+    app.link_watch.update_from = Some(std::time::Instant::now());
+    let (snapshot, _) = super::snapshot(&mut app).unwrap();
+    app.links_worker.refresh(&egui::Context::default(), &snapshot);
+    app.run("transform.move", json!({"ids": [frame], "dx": 10, "dy": 0})).unwrap();
+    let undo = undo_len(&app);
+    let now = super::snapshot(&mut app).unwrap().0.key;
+    super::take_in(&mut app, now);
+    assert_eq!(state(&app, asset), Some(LinkState::Modified), "the badge shows");
+    assert_eq!((pixels(&app, asset), undo_len(&app)), (Some((4, 4)), undo), "nothing updated");
+    assert!(app.link_watch.update_from.is_some(), "the request to update is kept");
+    // The next check is of the document as it is now: it updates.
+    tick(&mut app, Some(false));
+    assert_eq!(pixels(&app, asset), Some((9, 4)), "updated from a check of this state");
+}
+
+/// A linked text file that keeps its size but changes its words shows as modified in the Links
+/// panel once a check has compared it.
+#[test]
+fn a_text_file_changed_at_the_same_size_shows_modified_after_a_check() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("story.txt");
+    std::fs::write(&file, "Words one").unwrap();
+    let mut app = app();
+    app.run("file.place", json!({"path": file.to_string_lossy(), "link": true, "x": 100, "y": 100})).unwrap();
+    let text_row = |app: &DesignApp| {
+        let uid = app.session.active().unwrap().uid;
+        let latest = app.links_worker.latest(uid).unwrap();
+        latest.rows.iter().find(|r| r.get("story").is_some()).cloned().unwrap()
+    };
+    tick(&mut app, Some(true));
+    assert_eq!(text_row(&app)["status"], "ok");
+    // The same number of bytes, other words, saved a while ago.
+    std::fs::write(&file, "Words two").unwrap();
+    let past = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+    std::fs::File::options().write(true).open(&file).unwrap().set_modified(past).unwrap();
+    timer(&mut app);
+    tick(&mut app, Some(true));
+    assert_eq!(text_row(&app)["status"], "modified");
 }
 
 // ---- Canvas badges ----
@@ -218,6 +302,7 @@ fn clicking_a_modified_badge_updates_the_graphic_without_selecting_it() {
     let mut h = harness(app);
     assert!(shown_badges(&h).is_empty(), "an unchanged link has no badge");
     std::fs::write(&file, png(9)).unwrap();
+    timer(h.state_mut());
     h.run_steps(16);
     let badges = shown_badges(&h);
     assert_eq!(badges.len(), 1);
@@ -311,71 +396,4 @@ fn clicking_a_missing_badge_relinks() {
     let app = h.state();
     assert_eq!(pixels(app, asset), Some((6, 4)), "relinked to the file chosen");
     assert!(shown_badges(&h).is_empty());
-}
-
-/// A check that finishes after the document changed (an edit, a Revert) doesn't update from what
-/// it found: it shows the badges, and the next check, of the document as it is now, updates.
-#[test]
-fn a_check_of_an_older_revision_updates_nothing() {
-    let dir = tempfile::tempdir().unwrap();
-    let file = dir.path().join("photo.png");
-    std::fs::write(&file, png(4)).unwrap();
-    let mut app = app();
-    let (_, asset) = place(&mut app, &file);
-    std::fs::write(&file, png(9)).unwrap();
-    let st = app.session.active().unwrap();
-    let stale = Done { token: (st.uid, st.revision.wrapping_sub(1)), states: vec![(asset, LinkState::Modified)], update: true };
-    let undo = undo_len(&app);
-    apply(&mut app, stale);
-    assert_eq!(state(&app, asset), Some(LinkState::Modified), "the badge shows");
-    assert_eq!((pixels(&app, asset), undo_len(&app)), (Some((4, 4)), undo), "nothing updated");
-    assert!(app.link_watch.again && app.link_watch.update, "checked again, to update");
-    tick(&mut app, 0.0, Some(true));
-    assert_eq!(pixels(&app, asset), Some((9, 4)), "updated from a check of this revision");
-}
-
-/// A check that found nothing modified but finished after the document changed keeps the request
-/// to update: the next check, which finds the file modified, updates it.
-#[test]
-fn a_stale_check_that_found_nothing_keeps_the_update_request() {
-    let dir = tempfile::tempdir().unwrap();
-    let file = dir.path().join("photo.png");
-    std::fs::write(&file, png(4)).unwrap();
-    let mut app = app();
-    let (_, asset) = place(&mut app, &file);
-    let st = app.session.active().unwrap();
-    let stale = Done { token: (st.uid, st.revision.wrapping_sub(1)), states: vec![(asset, LinkState::Ok)], update: true };
-    apply(&mut app, stale);
-    assert!(app.link_watch.again && app.link_watch.update, "checked again, to update");
-    std::fs::write(&file, png(9)).unwrap();
-    tick(&mut app, 0.0, Some(true));
-    assert_eq!(pixels(&app, asset), Some((9, 4)), "the request to update survived");
-}
-
-/// A linked text file that keeps its size but changes its words shows as modified in the Links
-/// panel after a check: the panel's metadata-only look never reads it, and the worker's check
-/// compares it and the engine remembers the answer.
-#[test]
-fn a_text_file_changed_at_the_same_size_shows_modified_after_a_check() {
-    let dir = tempfile::tempdir().unwrap();
-    let file = dir.path().join("story.txt");
-    std::fs::write(&file, "Words one").unwrap();
-    let mut app = app();
-    app.run("file.place", json!({"path": file.to_string_lossy(), "link": true, "x": 100, "y": 100})).unwrap();
-    let text_row = |app: &mut DesignApp| {
-        let rows = app.session.execute("links.list", &json!({"metadataOnly": true})).unwrap();
-        rows.as_array().unwrap().iter().find(|r| r.get("story").is_some()).cloned().unwrap()
-    };
-    assert_eq!(text_row(&mut app)["status"], "ok");
-    // The same number of bytes, other words, saved a while ago (a time settled enough to be
-    // remembered).
-    std::fs::write(&file, "Words two").unwrap();
-    let past = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
-    std::fs::File::options().write(true).open(&file).unwrap().set_modified(past).unwrap();
-    let before = text_row(&mut app);
-    assert_eq!((before["status"].as_str(), before["unverified"].as_bool()), (Some("ok"), Some(true)), "not read on the UI thread");
-    tick(&mut app, 0.0, Some(true));
-    let after = text_row(&mut app);
-    assert_eq!(after["status"], "modified", "{after}");
-    assert_ne!(after["unverified"], true);
 }

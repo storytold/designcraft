@@ -7,8 +7,8 @@
 //! preview screen modes, exports or prints: they are drawn over the canvas, never rendered into
 //! the page. What they show comes from [`crate::link_watch`], so drawing them reads no file.
 
+use crate::link_watch::LinkState;
 use designcraft_doc::{Content, Item};
-use designcraft_engine::cmd::LinkState;
 use egui::{Align2, FontId, Pos2, Rect, Shape, Stroke, pos2, vec2};
 
 use super::{Affine, CanvasLayout, DesignApp, Tokens, Xf};

@@ -73,6 +73,11 @@ pub(crate) fn annotations(doc: &Document, cache: &designcraft_compose::Cache, sh
                     Some(i) => Target::Destination(XyzDestination::new(i, krilla::geom::Point::from_xy(0.0, 0.0)).into()),
                     None => continue,
                 },
+                // The page the anchor's text has landed on, as a cross-reference resolves it.
+                HyperlinkDest::Anchor(a) => match cache.xref_index(doc).page_index(*a).and_then(|p| sheet_of_page(doc, sheets, p)) {
+                    Some(i) => Target::Destination(XyzDestination::new(i, krilla::geom::Point::from_xy(0.0, 0.0)).into()),
+                    None => continue,
+                },
             };
             out.push(Annotation::new_link(LinkAnnotation::new(rect, target), Some(h.name.clone())));
         }

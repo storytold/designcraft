@@ -33,11 +33,10 @@ mod layout;
 pub mod library;
 mod linked;
 mod links;
-/// Edit › Edit Original and Links › Reveal in Finder: the linked files of the selected graphics;
-/// [`link_state`]: how a linked file compares with the copy in the document.
+/// Edit › Edit Original and Links › Reveal in Finder: the linked files of the selected graphics.
 pub use links::{
-    LinkState, Original as LinkOriginal, Reveal as LinkReveal, can_edit_original, link_state, originals as link_originals,
-    reveal_target as link_reveal_target, text_status as text_link_status,
+    LinkListChecks, Original as LinkOriginal, Reveal as LinkReveal, can_edit_original, list_document_links, originals as link_originals,
+    preview_document_links, remember_link_files, reveal_target as link_reveal_target,
 };
 mod liquid;
 mod lists;

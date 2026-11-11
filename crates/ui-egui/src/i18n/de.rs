@@ -1515,6 +1515,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Set", "Festlegen"),
     ("unused", "nicht verwendet"),
     ("⚠ Missing", "⚠ Fehlt"),
+    ("Checking", "Wird geprüft"),
+    ("Link status is unavailable.", "Der Verknüpfungsstatus ist nicht verfügbar."),
     ("▲ Modified", "▲ Geändert"),
     ("(Text Color)", "(Textfarbe)"),
     ("{count} glyphs — click to insert at the text cursor", "{count} Glyphen – zum Einfügen an der Einfügemarke klicken"),
