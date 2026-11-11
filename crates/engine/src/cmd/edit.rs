@@ -118,20 +118,26 @@ pub fn copied_objects_text(s: &Session) -> String {
 /// keep the spread-local position they held on the source page (`clip_doc`), which on a spread of
 /// facing pages can sit entirely on the page across from page 0 (so rendering just page 0's crop,
 /// as an earlier version of this function did, could show nothing at all, #2204 follow-up).
-/// `None` when there is nothing copied, it has no visible bounds, it is too large to render, or the PNG encode fails.
+/// `None` when there is nothing copied, it has no visible bounds, or the PNG encode fails.
+///
+/// Pixels a point the picture renders at: 300 ppi, sharp enough for a raster app's Paste (as
+/// InDesign itself rasterizes a copy for another app), scaled down only when that would be too
+/// large to render (`MAX_SIDE`, below) — never cropped, so a huge selection still renders, just
+/// at a lower resolution.
+const COPY_PNG_SCALE: f64 = 300.0 / 72.0;
+
 pub fn copied_objects_png(s: &Session) -> Option<Vec<u8>> {
     let clip = s.clipboard.as_ref()?;
     let items = clip.spreads.first().map(|sp| sp.items.as_slice()).unwrap_or_default();
     let bounds = items.iter().map(|it| it.visible_bounds()).reduce(|a, b| a.union(b)).filter(|b| b.width() > 0.0 && b.height() > 0.0)?;
-    if bounds.width() > f64::from(designcraft_render::MAX_SIDE) || bounds.height() > f64::from(designcraft_render::MAX_SIDE) {
-        return None;
-    }
-    let w = bounds.width().round().max(1.0) as u32;
-    let h = bounds.height().round().max(1.0) as u32;
+    let longest = bounds.width().max(bounds.height()).max(1.0);
+    let scale = COPY_PNG_SCALE.min(f64::from(designcraft_render::MAX_SIDE) / longest);
+    let w = (bounds.width() * scale).round().max(1.0) as u32;
+    let h = (bounds.height() * scale).round().max(1.0) as u32;
     if u64::from(w) * u64::from(h) > designcraft_render::MAX_PAGE_PIXELS {
         return None;
     }
-    let view = designcraft_geom::Affine::translate(-bounds.origin().to_vec2());
+    let view = designcraft_geom::Affine::scale(scale) * designcraft_geom::Affine::translate(-bounds.origin().to_vec2());
     // `paper: false`: the default `true` paints the page's own paper colour (white) under
     // everything, including a no-fill object, which hid the actual transparency this crop needs
     // (#2204 follow-up).
@@ -160,9 +166,10 @@ mod copied_objects_png_tests {
         s.execute("selection.set", &json!({"ids": [a]})).unwrap();
         s.execute("edit.copy", &json!({})).unwrap();
         let png = copied_objects_png(&s).expect("a copied object renders a picture");
-        assert_eq!(png_size(&png), (50, 50), "cropped to the copied item's own 50x50 bounds, not the whole page");
+        let expected = (50.0 * COPY_PNG_SCALE).round() as u32;
+        assert_eq!(png_size(&png), (expected, expected), "cropped to the copied item's own 50x50pt bounds at 300ppi, not the whole page");
         let img = image::load_from_memory(&png).unwrap().to_rgba8();
-        let px = img.get_pixel(25, 25);
+        let px = img.get_pixel(expected / 2, expected / 2);
         assert!(px[3] > 200 && px[0] < 50, "the fill itself is visible in the crop");
     }
 
@@ -199,9 +206,10 @@ mod copied_objects_png_tests {
         s.execute("selection.set", &json!({"ids": [a]})).unwrap();
         s.execute("edit.copy", &json!({})).unwrap();
         let png = copied_objects_png(&s).expect("a selection on the facing page still renders a picture");
-        assert_eq!(png_size(&png), (40, 40), "cropped to the item's own bounds wherever it sits in the spread");
+        let expected = (40.0 * COPY_PNG_SCALE).round() as u32;
+        assert_eq!(png_size(&png), (expected, expected), "cropped to the item's own 40x40pt bounds at 300ppi, wherever it sits in the spread");
         let img = image::load_from_memory(&png).unwrap().to_rgba8();
-        let px = img.get_pixel(20, 20);
+        let px = img.get_pixel(expected / 2, expected / 2);
         assert!(px[3] > 200 && px[0] < 50, "the fill is visible, not a blank page-0 crop (#2204 follow-up)");
     }
 }
