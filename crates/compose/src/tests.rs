@@ -2723,6 +2723,49 @@ fn a_generated_non_breaking_hyphen_the_font_lacks_is_drawn_as_its_hyphen() {
     assert_eq!(Some(marker[1].gid), hyphen, "the font's own hyphen");
 }
 
+/// The stand-in hyphen is shaped in its run, in story and generated text alike: kerning against its
+/// neighbours and spaces come out exactly as for a typed hyphen-minus.
+#[test]
+fn a_stand_in_hyphen_composes_like_a_typed_hyphen() {
+    use designcraft_fonts::testing::font_mapping;
+    let glyphs = [('T', 'T'), ('A', 'A'), ('V', 'V'), ('o', 'o'), ('-', '-'), (' ', ' ')];
+    designcraft_fonts::FontDb::global().add_font(font_mapping("DC Test No NB Hyphen Run", &glyphs).unwrap());
+    let compose = |story: &str, marker: &str| {
+        let text = format!("{story} {}", story::SECTION_MARKER);
+        let (mut d, sid, _) = doc_with(&text, Rect::new(100.0, 100.0, 500.0, 200.0), ParaAttrs::default());
+        d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.font_family = Some("DC Test No NB Hyphen Run".into()));
+        let opts = ComposeOptions { section_marker: Some(marker.into()), ..Default::default() };
+        let line = compose_story(&d, sid, &opts).frames[0].lines[0].clone();
+        line.glyphs.iter().map(|g| (g.gid, (g.x * 1000.0).round(), (g.adv * 1000.0).round(), g.upright)).collect::<Vec<_>>()
+    };
+    let typed = compose("T-A Vo-V", "T-A V-o");
+    let nb = compose("T\u{2011}A Vo\u{2011}V", "T\u{2011}A V\u{2010}o");
+    assert_eq!(nb, typed);
+}
+
+/// In a vertical frame with Rotate Roman, a stand-in hyphen keeps its own orientation: U+2011 isn't a
+/// half-width roman character, so it is set sideways like it, not upright like `-`.
+#[test]
+fn a_stand_in_hyphen_keeps_its_orientation_in_vertical_text() {
+    use designcraft_fonts::testing::font_mapping;
+    let glyphs = [('1', '1'), ('K', 'K'), ('-', '-')];
+    designcraft_fonts::FontDb::global().add_font(font_mapping("DC Test No NB Hyphen Vertical", &glyphs).unwrap());
+    let upright = |text: &str| {
+        let (mut d, sid, _) = doc_with(text, Rect::new(100.0, 100.0, 200.0, 400.0), ParaAttrs::default());
+        let st = d.story_mut(sid).unwrap();
+        st.vertical = true;
+        st.paras[0].para.rotate_roman = Some(true);
+        st.format_chars(0..text.len(), |f| f.over.font_family = Some("DC Test No NB Hyphen Vertical".into()));
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        cs.frames[0].lines[0].glyphs.iter().find(|g| g.byte == 1).map(|g| (g.upright, g.gid))
+    };
+    let (typed_up, typed_gid) = upright("1-K").unwrap();
+    let (nb_up, nb_gid) = upright("1\u{2011}K").unwrap();
+    assert!(typed_up, "Rotate Roman stands `-` upright");
+    assert!(!nb_up, "U+2011 keeps its own (sideways) orientation");
+    assert_eq!(nb_gid, typed_gid, "drawn with the font's hyphen");
+}
+
 #[test]
 fn page_numbers_take_the_digits_option() {
     use designcraft_fonts::testing::font_mapping;
