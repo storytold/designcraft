@@ -1564,6 +1564,52 @@ mod tests {
         assert_eq!((at(5), at(7), at(11)), (Some(3), Some(4), Some(3)));
     }
 
+    /// A wrapper with an Id and no text of its own (a Pic) around an element without one (its
+    /// Caption): the wrapper is found through the caption's text and takes the new text, in a story
+    /// and in a table cell.
+    #[test]
+    fn a_wrapper_takes_its_captions_text() {
+        let el = |tag: &str, attrs: Vec<(String, String)>, parent: u64, content: XmlContent| XmlElement {
+            tag: tag.into(),
+            attrs,
+            parent,
+            content,
+            children: Vec::new(),
+        };
+        let pic = |id: &str| vec![("Id".to_string(), id.to_string())];
+        let (mut s, sid) = tagged();
+        s.edit(|d, _| {
+            d.xml.elements.insert(3, el("Pic", pic("P"), 1, XmlContent::None));
+            d.xml.elements.insert(4, el("Caption", Vec::new(), 3, XmlContent::Text));
+            if let Some(st) = d.story_mut(sid) {
+                st.format_chars(6..10, |f| f.over.xml_element = Some(4));
+            }
+            Ok(())
+        })
+        .unwrap();
+        let r = s.execute("file.importXml", &json!({"text": "<Root><Pic Id=\"P\"><Caption>World</Caption></Pic></Root>"})).unwrap();
+        assert_eq!(r["failed"], json!([]), "{r}");
+        let st = s.doc().unwrap().doc.story(sid).unwrap().clone();
+        assert_eq!(st.text, "Hallo World");
+        assert_eq!(st.format_after(7).over.xml_element, Some(4), "the caption keeps its element");
+
+        let (mut s, sid, table) = with_table(true);
+        s.edit(|d, _| {
+            d.xml.elements.insert(5, el("Pic", pic("Q"), 4, XmlContent::None));
+            d.xml.elements.insert(6, el("Caption", Vec::new(), 5, XmlContent::Text));
+            if let Some(t) = d.story_mut(sid).and_then(|st| st.tables.get_mut(&table)) {
+                let cell = &mut std::sync::Arc::make_mut(t).cells[0].text;
+                let end = cell.text.len();
+                cell.format_chars(0..end, |f| f.over.xml_element = Some(6));
+            }
+            Ok(())
+        })
+        .unwrap();
+        let r = s.execute("file.importXml", &json!({"text": "<Root><Pic Id=\"Q\"><Caption>Bild</Caption></Pic></Root>"})).unwrap();
+        assert_eq!(r["failed"], json!([]), "{r}");
+        assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().tables[&table].cells[0].text.text, "Bild");
+    }
+
     /// Children in another order than the document's: the parent is reported and left as it was.
     #[test]
     fn children_out_of_order_leave_their_parent() {
