@@ -1164,6 +1164,50 @@ fn control_glyph(face: &Arc<FontFace>, p: &CharProps, auto_leading: TypeEnv, sty
     }
 }
 
+/// Generated text (a variable's value, a section marker) with a hyphen the face lacks: drawn as its
+/// hyphen-minus like story text, the generated text keeping the original character. False (nothing
+/// shaped) when the label has no such hyphen or the face has no hyphen-minus either.
+#[allow(clippy::too_many_arguments)]
+fn shape_generated_hyphens(
+    db: &ScopedFonts<'_>,
+    text: &str,
+    range: std::ops::Range<usize>,
+    label: &str,
+    p: &CharProps,
+    face: &Arc<FontFace>,
+    auto_leading: TypeEnv,
+    styles: &StyleRuns<'_>,
+    out: &mut Vec<Glyph>,
+    mode: Upright,
+) -> bool {
+    let missing_hyphen = |c: char| matches!(c, '\u{2010}' | '\u{2011}') && !face.covers(c);
+    if !label.chars().any(missing_hyphen) || !face.covers('-') {
+        return false;
+    }
+    let begin = out.len();
+    let mut from = 0;
+    for (at, c) in label.char_indices().filter(|(_, c)| missing_hyphen(*c)) {
+        if from < at {
+            shape_segment(db, text, range.clone(), label.get(from..at), p, face, auto_leading, styles, out, mode);
+        }
+        let hyphen = out.len();
+        shape_segment(db, text, range.clone(), Some("-"), p, face, auto_leading, styles, out, mode);
+        if let Some(g) = out.get_mut(hyphen) {
+            g.generated_text = Some(c.to_string().into());
+        }
+        from = at + c.len_utf8();
+    }
+    if from < label.len() {
+        shape_segment(db, text, range.clone(), label.get(from..), p, face, auto_leading, styles, out, mode);
+    }
+    // One carrier for the marker, as for a label drawn by several faces.
+    for (i, glyph) in out[begin..].iter_mut().enumerate() {
+        glyph.len = if i == 0 { range.len() } else { 0 };
+        glyph.no_break = true;
+    }
+    true
+}
+
 #[allow(clippy::too_many_arguments)]
 fn shape_segment(
     db: &ScopedFonts<'_>,
@@ -1177,31 +1221,9 @@ fn shape_segment(
     out: &mut Vec<Glyph>,
     mode: Upright,
 ) {
-    // Generated text (a variable's value, a section marker) with a hyphen the face lacks: drawn as its
-    // hyphen-minus like story text, the generated text keeping the original character.
-    let missing_hyphen = |c: char| matches!(c, '\u{2010}' | '\u{2011}') && !face.covers(c);
-    if let Some(label) = replacement.filter(|l| l.chars().any(missing_hyphen) && face.covers('-')) {
-        let begin = out.len();
-        let mut from = 0;
-        for (at, c) in label.char_indices().filter(|(_, c)| missing_hyphen(*c)) {
-            if from < at {
-                shape_segment(db, text, range.clone(), label.get(from..at), p, face, auto_leading, styles, out, mode);
-            }
-            let hyphen = out.len();
-            shape_segment(db, text, range.clone(), Some("-"), p, face, auto_leading, styles, out, mode);
-            if let Some(g) = out.get_mut(hyphen) {
-                g.generated_text = Some(c.to_string().into());
-            }
-            from = at + c.len_utf8();
-        }
-        if from < label.len() {
-            shape_segment(db, text, range.clone(), label.get(from..), p, face, auto_leading, styles, out, mode);
-        }
-        // One carrier for the marker, as below.
-        for (i, glyph) in out[begin..].iter_mut().enumerate() {
-            glyph.len = if i == 0 { range.len() } else { 0 };
-            glyph.no_break = true;
-        }
+    if let Some(label) = replacement
+        && shape_generated_hyphens(db, text, range.clone(), label, p, face, auto_leading, styles, out, mode)
+    {
         return;
     }
     // Generated labels need the same coverage fallback as ordinary text. Keep the
