@@ -1677,6 +1677,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Import XML", "XML importieren"),
     ("{n} placed", "{n} platziert"),
     ("{n} without a free tagged frame ({tags})", "{n} ohne freien Rahmen mit passendem Tag ({tags})"),
+    ("{n} Ids without an element ({ids})", "{n} Ids ohne Element ({ids})"),
+    ("{n} elements not filled ({first})", "{n} Elemente nicht gefüllt ({first})"),
     ("{n} images not placed ({first})", "{n} Bilder nicht platziert ({first})"),
     ("Auto Tag Frames", "Rahmen automatisch taggen"),
     (

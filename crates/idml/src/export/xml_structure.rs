@@ -180,16 +180,16 @@ impl<'a> Ex<'a> {
             for n in std::mem::take(&mut psr.children) {
                 match n {
                     Node::El(c) if c.name == "Properties" => keep.push(Node::El(c)),
-                    Node::El(mut c) => {
-                        // A range carries its element; ranges wrapped in something of their own (a
-                        // hyperlink source) give the wrapper the element of the first one.
-                        let id = match c.get(ELEMENT_MARK).and_then(|v| v.parse::<u64>().ok()) {
-                            Some(id) => Some(id),
-                            None => take_marks(&mut c),
-                        };
+                    // A range carries its element.
+                    Node::El(mut c) if c.get(ELEMENT_MARK).is_some() => {
+                        let id = c.get(ELEMENT_MARK).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
                         c.attrs.retain(|(k, _)| k != ELEMENT_MARK);
-                        let chain = id.map(|id| self.inline_chain(id)).unwrap_or_default();
-                        leaves.push(Leaf { para: p, chain, node: c });
+                        leaves.push(Leaf { para: p, chain: self.inline_chain(id), node: c });
+                    }
+                    // Ranges wrapped in something of their own (a hyperlink source).
+                    Node::El(c) => {
+                        let (chain, node) = self.wrap_ranges_in(c);
+                        leaves.push(Leaf { para: p, chain, node });
                     }
                     // Anything else of the paragraph stays at its place: before its text.
                     other => leaves.push(Leaf { para: p, chain: Vec::new(), node: wrap_node(other) }),
@@ -208,6 +208,34 @@ impl<'a> Ex<'a> {
                 _ => None,
             })
             .collect()
+    }
+
+    /// A wrapper of ranges (a hyperlink source): it goes into the inline elements all its ranges
+    /// share; those only some of them have are written inside it, around those ranges. Returns the
+    /// shared elements (outermost first) and the wrapper.
+    fn wrap_ranges_in(&self, mut w: El) -> (Vec<u64>, El) {
+        let mut inner = Vec::new();
+        for n in std::mem::take(&mut w.children) {
+            match n {
+                Node::El(mut c) => {
+                    let id = match c.get(ELEMENT_MARK).and_then(|v| v.parse::<u64>().ok()) {
+                        Some(id) => Some(id),
+                        None => take_marks(&mut c),
+                    };
+                    c.attrs.retain(|(k, _)| k != ELEMENT_MARK);
+                    inner.push(Leaf { para: 0, chain: id.map(|id| self.inline_chain(id)).unwrap_or_default(), node: c });
+                }
+                other => inner.push(Leaf { para: 0, chain: Vec::new(), node: wrap_node(other) }),
+            }
+        }
+        let ranges: Vec<&Vec<u64>> = inner.iter().filter(|l| l.node.name != "\u{1}node").map(|l| &l.chain).collect();
+        let mut shared = ranges.first().map(|c| (*c).clone()).unwrap_or_default();
+        for c in &ranges {
+            let k = shared.iter().zip(c.iter()).take_while(|(a, b)| a == b).count();
+            shared.truncate(k);
+        }
+        w.children = self.emit_ranges(inner, shared.len());
+        (shared, w)
     }
 
     /// Without inline elements: each paragraph's ranges back into it.

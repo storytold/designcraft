@@ -344,19 +344,27 @@ pub fn import_xml(app: &mut DesignApp) {
 }
 
 /// The status line for `file.importXml`'s result: how many elements were placed, which tags found
-/// no frame, and the first image that couldn't be placed.
+/// no frame (or, importing by Id, which Ids no element), and the first image or element that
+/// couldn't be placed.
 pub(crate) fn import_report(lang: &str, r: &Value) -> String {
     let tr = |s| crate::i18n::tr(lang, s);
     let n = |key: &str| r[key].as_u64().unwrap_or(0).to_string();
     let mut parts = vec![tr("{n} placed").replace("{n}", &n("placed"))];
-    let tags: Vec<&str> = r["unmatchedTags"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+    let names = |key: &str| r[key].as_array().into_iter().flatten().filter_map(Value::as_str).collect::<Vec<_>>().join(", ");
     if r["unmatched"].as_u64().unwrap_or(0) > 0 {
-        parts.push(tr("{n} without a free tagged frame ({tags})").replace("{n}", &n("unmatched")).replace("{tags}", &tags.join(", ")));
+        let line = if r.get("unmatchedIds").is_some() {
+            tr("{n} Ids without an element ({ids})").replace("{ids}", &names("unmatchedIds"))
+        } else {
+            tr("{n} without a free tagged frame ({tags})").replace("{tags}", &names("unmatchedTags"))
+        };
+        parts.push(line.replace("{n}", &n("unmatched")));
     }
     let failed = r["failed"].as_array().map_or(&[][..], Vec::as_slice);
     if let Some(first) = failed.first() {
-        let what = format!("{}: {}", first["tag"].as_str().unwrap_or(""), first["error"].as_str().unwrap_or(""));
-        parts.push(tr("{n} images not placed ({first})").replace("{n}", &failed.len().to_string()).replace("{first}", &what));
+        let by_id = first.get("id").is_some();
+        let what = format!("{}: {}", first[if by_id { "id" } else { "tag" }].as_str().unwrap_or(""), first["error"].as_str().unwrap_or(""));
+        let line = if by_id { tr("{n} elements not filled ({first})") } else { tr("{n} images not placed ({first})") };
+        parts.push(line.replace("{n}", &failed.len().to_string()).replace("{first}", &what));
     }
     format!("{}: {}", tr("Import XML"), parts.join(", "))
 }
@@ -919,6 +927,19 @@ mod import_xml_tests {
             "Import XML: 15 placed, 3 without a free tagged frame (pictogram_1, pictogram_2), 1 images not placed (logo: can't read x.eps)"
         );
         assert!(import_report("de", &bad).starts_with("XML importieren: 15 platziert, 3 ohne freien Rahmen"), "{}", import_report("de", &bad));
+    }
+
+    #[test]
+    fn the_report_names_unknown_ids_and_elements_not_filled_by_id() {
+        let r = json!({
+            "placed": 4, "unmatched": 2, "unmatchedIds": ["17", "18"],
+            "failed": [{"id": "7", "error": "an inline element can't be emptied"}]
+        });
+        assert_eq!(
+            import_report("", &r),
+            "Import XML: 4 placed, 2 Ids without an element (17, 18), 1 elements not filled (7: an inline element can't be emptied)"
+        );
+        assert!(import_report("de", &r).contains("2 Ids ohne Element (17, 18)"), "{}", import_report("de", &r));
     }
 
     /// File › Import XML… asks for the file with a picker (not a field to type the path into)

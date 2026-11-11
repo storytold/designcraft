@@ -72,11 +72,7 @@ impl<'r> Importer<'r> {
     pub(super) fn xml_structure(&mut self, top: &[El]) {
         for t in top.iter().filter(|e| e.local() == "XMLTag") {
             let name = t.get("Name").map(str::to_string).unwrap_or_else(|| tag_name(t.get("Self").unwrap_or("")));
-            let color = t
-                .find("Properties")
-                .and_then(|p| p.find("TagColor"))
-                .and_then(|c| crate::import::names::layer_color_in(c.text_content().trim()))
-                .unwrap_or([60, 140, 220]);
+            let color = t.find("Properties").and_then(|p| p.find("TagColor")).and_then(tag_color).unwrap_or([60, 140, 220]);
             if !name.is_empty() && !self.xml.tags.iter().any(|x| x.name == name) {
                 self.xml.tags.push(XmlTag { name, color });
             }
@@ -112,19 +108,53 @@ impl<'r> Importer<'r> {
             if let Some(el) = self.xml.elements.get_mut(&id) {
                 el.content = target;
             }
+            // Content that isn't kept: the elements read inside it become its children, so they
+            // aren't lost with it.
+            if target == XmlContent::None {
+                let kids: Vec<u64> = self.xml.elements.iter().filter(|(_, e)| e.parent == id).map(|(k, _)| *k).collect();
+                if let Some(el) = self.xml.elements.get_mut(&id) {
+                    for k in kids {
+                        if !el.children.contains(&k) {
+                            el.children.push(k);
+                        }
+                    }
+                }
+            }
         }
     }
 
     /// An element of the root that no story holds (its content wasn't read): kept with its own
-    /// children.
+    /// children. A child that is a story's element (read with its story) is that element, moved here.
     fn xml_detached(&mut self, e: &El, parent: u64) -> u64 {
         let id = self.alloc();
         let attrs = e.find_all("XMLAttribute").filter_map(|a| Some((a.get("Name")?.to_string(), a.get("Value").unwrap_or("").to_string()))).collect();
         let tag = tag_name(e.get("MarkupTag").unwrap_or("XMLTag/Element"));
-        let children: Vec<u64> = e.elements().filter(|c| c.local() == "XMLElement").map(|c| self.xml_detached(c, id)).collect();
+        let mut children = Vec::new();
+        for c in e.elements().filter(|c| c.local() == "XMLElement") {
+            let child = match c.get("Self").and_then(|s| self.xml.by_self.get(s)).copied() {
+                Some(known) => {
+                    if let Some(k) = self.xml.elements.get_mut(&known) {
+                        k.parent = id;
+                    }
+                    known
+                }
+                None => self.xml_detached(c, id),
+            };
+            children.push(child);
+        }
         self.xml.elements.insert(id, XmlElement { tag, attrs, parent, content: XmlContent::None, children });
         id
     }
+}
+
+/// A tag's colour: a named one, or (`type="list"`) its red, green and blue as three `ListItem`s.
+fn tag_color(c: &El) -> Option<[u8; 3]> {
+    if c.get("type") == Some("list") {
+        let v: Vec<u8> =
+            c.find_all("ListItem").filter_map(|i| i.text_content().trim().parse::<f64>().ok()).map(|x| x.clamp(0.0, 255.0).round() as u8).collect();
+        return <[u8; 3]>::try_from(v).ok();
+    }
+    crate::import::names::layer_color_in(c.text_content().trim())
 }
 
 /// The root `XMLElement` in the backing story.

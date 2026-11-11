@@ -61,6 +61,11 @@ const TAGGED_STORY: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 </idPkg:Story>"#;
 
 fn tagged() -> Document {
+    tagged_with(BACKING, TAGGED_STORY)
+}
+
+/// The tagged fixture with another backing story or story.
+fn tagged_with(backing: &str, story: &str) -> Document {
     let designmap = DESIGNMAP.replace(
         "  <idPkg:Story src=\"Stories/Story_s1.xml\"/>",
         "  <idPkg:Tags src=\"XML/Tags.xml\"/>\n  <idPkg:BackingStory src=\"XML/BackingStory.xml\"/>\n  <idPkg:Story src=\"Stories/Story_s1.xml\"/>",
@@ -72,8 +77,8 @@ fn tagged() -> Document {
         ("Resources/Preferences.xml", PREFS),
         ("MasterSpreads/MasterSpread_m1.xml", MASTER),
         ("Spreads/Spread_sp1.xml", SPREAD),
-        ("Stories/Story_s1.xml", TAGGED_STORY),
-        ("XML/BackingStory.xml", BACKING),
+        ("Stories/Story_s1.xml", story),
+        ("XML/BackingStory.xml", backing),
         ("XML/Tags.xml", TAGS),
     ]);
     import_idml(&bytes).unwrap()
@@ -208,4 +213,64 @@ fn a_document_without_xml_writes_no_xml_parts() {
     let bytes = export_idml(&d);
     assert!(zip_text(&bytes, "XML/").is_empty());
     assert!(!zip_text(&bytes, "designmap.xml").contains("BackingStory"));
+}
+
+/// A tag colour that isn't one of the named ones is written as a list and read back as one.
+#[test]
+fn a_custom_tag_colour_comes_back() {
+    let mut d = tagged();
+    if let Some(t) = d.xml.tags.iter_mut().find(|t| t.name == "Translation") {
+        t.color = [10, 20, 30];
+    }
+    let back = import_idml(&export_idml(&d)).unwrap();
+    assert_eq!(back.xml.tags.iter().find(|t| t.name == "Translation").map(|t| t.color), Some([10, 20, 30]));
+}
+
+/// A hyperlink over untagged text and an inline element: the element stays around its own text
+/// inside the link source, and the untagged text stays out of it.
+#[test]
+fn a_hyperlink_over_text_of_different_elements_keeps_them_apart() {
+    let mut d = tagged();
+    let sid = d.stories.values().find(|s| s.text.contains("Intro")).unwrap().id;
+    // "Intro " (untagged) and "Neu heute" (Translation 1000)
+    d.hyperlinks.push(designcraft_doc::Hyperlink {
+        id: 1,
+        name: "Link".into(),
+        source: designcraft_doc::HyperlinkSource::Text { story: sid, start: 0, end: 15 },
+        dest: designcraft_doc::HyperlinkDest::Url("https://example.com".into()),
+    });
+    let bytes = export_idml(&d);
+    assert!(zip_text(&bytes, "Stories/").contains("HyperlinkTextSource"), "the link is written");
+    assert_eq!(structure(&import_idml(&bytes).unwrap()), structure(&d));
+}
+
+/// A story's element that the backing story lists inside a wrapper element is that element, under
+/// the wrapper – not a second, empty one.
+#[test]
+fn a_story_element_inside_a_root_wrapper_stays_one_element() {
+    let backing = BACKING.replace(
+        r#"<XMLElement Self="di2i3" MarkupTag="XMLTag/Story" XMLContent="s1" />"#,
+        r#"<XMLElement Self="di2w" MarkupTag="XMLTag/Wrap"><XMLElement Self="di2i3" MarkupTag="XMLTag/Story" XMLContent="s1" /></XMLElement>"#,
+    );
+    let d = tagged_with(&backing, TAGGED_STORY);
+    let stories = by_tag(&d, "Story");
+    let [(wrap, we)] = by_tag(&d, "Wrap")[..] else { panic!("one Wrap element") };
+    assert_eq!(stories.len(), 1, "no second Story element");
+    assert_eq!(d.xml.root_children, vec![wrap]);
+    assert_eq!((stories[0].1.parent, &we.children), (wrap, &vec![stories[0].0]));
+    assert!(matches!(stories[0].1.content, XmlContent::Story { .. }));
+}
+
+/// Elements inside one whose content isn't kept (a page item) stay as its children.
+#[test]
+fn elements_inside_content_that_is_not_kept_stay() {
+    let story = TAGGED_STORY.replace(
+        r#"<CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]"><Content>Intro </Content></CharacterStyleRange>"#,
+        r#"<XMLElement Self="di2i3i9" MarkupTag="XMLTag/Pic" XMLContent="u999"><XMLElement Self="di2i3i9i1" MarkupTag="XMLTag/Caption"><CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]"><Content>Intro </Content></CharacterStyleRange></XMLElement></XMLElement>"#,
+    );
+    assert_ne!(story, TAGGED_STORY);
+    let d = tagged_with(BACKING, &story);
+    let [(_, pic)] = by_tag(&d, "Pic")[..] else { panic!("one Pic element") };
+    let [(caption, _)] = by_tag(&d, "Caption")[..] else { panic!("one Caption element") };
+    assert_eq!((pic.content, &pic.children), (XmlContent::None, &vec![caption]));
 }

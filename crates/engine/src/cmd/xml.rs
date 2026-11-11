@@ -619,8 +619,9 @@ fn text_or_path(p: &Value, id: &str) -> Result<String> {
 fn import_xml(s: &mut Session, p: &Value) -> Result<Value> {
     const ID: &str = "file.importXml";
     let text = text_or_path(p, ID)?;
-    // A document with InDesign's XML structure takes the texts of the elements by their Id.
-    if !s.doc()?.doc.xml.root_children.is_empty() {
+    // A document with InDesign's XML structure takes the texts of its elements by their Id when the
+    // XML addresses them so; other XML still fills the tagged frames.
+    if !s.doc()?.doc.xml.root_children.is_empty() && super::xml_structure::addresses_ids(&text) {
         return super::xml_structure::import_by_id(s, &text);
     }
     let elements = parse(&text).map_err(|e| bad(ID, format!("not well-formed XML: {e}")))?;
