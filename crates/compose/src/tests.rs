@@ -2743,6 +2743,21 @@ fn a_stand_in_hyphen_composes_like_a_typed_hyphen() {
     assert_eq!(nb, typed);
 }
 
+/// Offsets map between the original text and the stand-in text in both directions, for every character
+/// start and the end; an offset inside a character stays as it is.
+#[test]
+fn stand_in_offsets_map_both_ways() {
+    use crate::shape::stand_in_offset;
+    // "a‑b": a at 0, ‑ at 1..4, b at 4, end 5; in "a-b": 0, 1, 2, end 3.
+    let starts = [(0, 0), (1, 1), (4, 2), (5, 3)];
+    for (s, d) in starts {
+        assert_eq!(stand_in_offset(Some(&starts), s, true), d);
+        assert_eq!(stand_in_offset(Some(&starts), d, false), s);
+    }
+    assert_eq!(stand_in_offset(Some(&starts), 2, true), 2, "inside a character");
+    assert_eq!(stand_in_offset(None, 7, true), 7, "no stand-in");
+}
+
 /// In a vertical frame with Rotate Roman, a stand-in hyphen keeps its own orientation: U+2011 isn't a
 /// half-width roman character, so it is set sideways like it, not upright like `-`.
 #[test]

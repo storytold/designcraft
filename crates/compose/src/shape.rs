@@ -1174,10 +1174,11 @@ fn with_stand_in_hyphens(face: &FontFace, src: &str) -> Option<(String, Vec<(usi
 }
 
 /// A character start in `src` as its start in the stand-in text (`to_shaped`), or back.
-fn stand_in_offset(starts: Option<&[(usize, usize)]>, at: usize, to_shaped: bool) -> usize {
+pub(crate) fn stand_in_offset(starts: Option<&[(usize, usize)]>, at: usize, to_shaped: bool) -> usize {
     let Some(starts) = starts else { return at };
-    let found = if to_shaped { starts.iter().find(|(s, _)| *s == at) } else { starts.iter().find(|(_, d)| *d == at) };
-    found.map_or(at, |(s, d)| if to_shaped { *d } else { *s })
+    // Both columns rise strictly (one entry per character), so either can be searched.
+    let found = if to_shaped { starts.binary_search_by_key(&at, |(s, _)| *s) } else { starts.binary_search_by_key(&at, |(_, d)| *d) };
+    found.ok().map_or(at, |i| if to_shaped { starts[i].1 } else { starts[i].0 })
 }
 
 #[allow(clippy::too_many_arguments)]
