@@ -205,16 +205,22 @@ fn a_priority_without_a_rule_loses_an_equal_priority_tie_to_a_styled_edge() {
 /// spacer's top: InDesign still shows the spanning cell's rule there (the spacer has none of its own).
 #[test]
 fn a_priority_without_a_rule_loses_even_at_a_higher_priority() {
-    let mut table = rule_table(2, 1, 0, 0);
+    // Rows 0 and 1 merged into one cell, the spacer in row 2.
+    let mut table = rule_table(3, 1, 0, 0);
+    table.merge(CellRange::new(0, 0, 1, 0)).unwrap();
     set_rule(&mut table, 0, 0, 2, 0.5, 1);
-    let spacer = table.cell_mut(1, 0).unwrap();
+    let spacer = table.cell_mut(2, 0).unwrap();
     spacer.strokes[0] = CellStroke::default();
     spacer.stroke_priorities[0] = 82;
     spacer.border_overrides[0] = true;
     let composed = compose_table(table);
     let fragment = &composed.frames[0].tables[0];
+    let y = fragment.cell(2, 0).unwrap().rect.y0;
+    assert_eq!(fragment.cell(0, 0).unwrap().rect.y1, y, "the merged cell spans the two rows above the spacer");
     assert_eq!(fragment.strokes.len(), 1, "{:?}", fragment.strokes);
-    assert_eq!(fragment.strokes[0].stroke.weight, 0.5);
+    let rule = &fragment.strokes[0];
+    assert!(rule.a.y == y && rule.b.y == y && rule.stroke.weight == 0.5, "{rule:?}");
+    assert_eq!(rule.b.x - rule.a.x, 100.0);
 }
 
 #[test]
