@@ -556,6 +556,21 @@ fn a_bad_story_is_refused_with_or_without_a_table_selection() {
     }
 }
 
+/// An edit to a named table leaves a caret in footnote text where it was.
+#[test]
+fn a_named_table_edit_keeps_a_footnote_caret() {
+    let (mut s, sid, _) = session_with_frame();
+    let tid = s.execute("table.insert", &json!({"rows": 2, "cols": 2})).unwrap()["table"].as_u64().unwrap();
+    s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": 0})).unwrap();
+    s.execute("footnote.insert", &json!({"text": "Note"})).unwrap();
+    let before = s.doc().unwrap().selection.clone();
+    assert!(before.text.and_then(|t| t.cell).and_then(|c| c.footnote_id()).is_some(), "the caret is in the footnote");
+    s.execute("table.insertRow", &json!({"table": tid})).unwrap();
+    assert_eq!(s.execute("table.get", &json!({"table": tid})).unwrap()["rows"].as_array().unwrap().len(), 3);
+    assert_eq!(s.doc().unwrap().selection, before);
+    check(&s);
+}
+
 /// With nothing selected, the table commands stay disabled for menus and for calls that name no
 /// table.
 #[test]

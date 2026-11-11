@@ -116,8 +116,10 @@ pub(super) fn clamp_selection(d: &Document, sel: &mut Selection) {
             None => sel.cells = None,
         }
     }
+    // Footnote text is addressed as a cell too, but isn't in a table.
     if let Some(t) = sel.text
         && let Some(c) = t.cell
+        && c.footnote_id().is_none()
     {
         let story = d.story(t.story);
         match story.and_then(|x| x.tables.get(&c.table)) {
