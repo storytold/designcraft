@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use designcraft_compose::Cache;
-use designcraft_doc::{AssetId, Content, Document, Fingerprint, Item, ItemId, Selection, Story, StoryId, TextFileLink};
+use designcraft_doc::{AssetId, Content, Document, Fingerprint, Item, ItemId, Selection, SpreadRef, Story, StoryId, TextFileLink};
 use designcraft_geom::Affine;
 use serde_json::{Value, json};
 
@@ -329,23 +329,55 @@ struct Shown<'a> {
 /// Where an asset shows: frames on spreads (see [`uses`]) and anchored or inline objects, whose
 /// page and position come from the frame their story lays them out in.
 fn shown<'a>(d: &'a Document, cache: &Cache, aid: AssetId) -> Vec<Shown<'a>> {
-    fn walk<'a>(it: &'a Item, xf: Affine, aid: AssetId, page: Option<usize>, out: &mut Vec<Shown<'a>>) {
-        if let Content::Graphic(g) = &it.content
-            && g.asset == aid
-        {
-            out.push(Shown { item: it, page, parent_xf: xf });
-        }
-        for c in it.children() {
-            walk(c, xf * it.xf, aid, page, out);
+    // Pre-order over `root` and its descendants with an explicit stack (a deep group tree must not
+    // exhaust the call stack); `visit` gets each item and its parent's transform.
+    fn preorder<'a>(root: &'a Item, xf: Affine, mut visit: impl FnMut(&'a Item, Affine)) {
+        visit(root, xf);
+        let mut stack = vec![(root.children().iter(), xf * root.xf)];
+        while let Some((kids, xf)) = stack.last_mut() {
+            let Some(it) = kids.next() else {
+                stack.pop();
+                continue;
+            };
+            let xf = *xf;
+            visit(it, xf);
+            stack.push((it.children().iter(), xf * it.xf));
         }
     }
-    let mut out: Vec<Shown> = uses(d, aid)
-        .into_iter()
-        .filter_map(|id| {
-            let loc = d.find(id)?;
-            Some(Shown { item: d.item_at(&loc)?, page: d.page_of_item(id), parent_xf: d.parent_xf(&loc) })
-        })
-        .collect();
+    fn walk<'a>(it: &'a Item, xf: Affine, aid: AssetId, page: Option<usize>, out: &mut Vec<Shown<'a>>) {
+        preorder(it, xf, |it, xf| {
+            if let Content::Graphic(g) = &it.content
+                && g.asset == aid
+            {
+                out.push(Shown { item: it, page, parent_xf: xf });
+            }
+        });
+    }
+    // One walk with the group transforms and the spread's first page carried along; a lookup of each
+    // placement (`Document::find`, `page_of_item`) searched the whole document per placement.
+    let mut out: Vec<Shown> = Vec::new();
+    let mut next_page = 0;
+    for r in d.spread_refs() {
+        let Some(sp) = d.spread(r) else { continue };
+        let first = match r {
+            SpreadRef::Doc(_) => {
+                let f = next_page;
+                next_page += sp.pages.len();
+                Some(f)
+            }
+            SpreadRef::Parent(_) => None,
+        };
+        for top in &sp.items {
+            preorder(top, Affine::IDENTITY, |it, xf| {
+                if let Content::Graphic(g) = &it.content
+                    && g.asset == aid
+                {
+                    let page = first.map(|f| f + sp.page_at_x(it.bounds().center().x).unwrap_or(0));
+                    out.push(Shown { item: it, page, parent_xf: xf });
+                }
+            });
+        }
+    }
     for st in d.stories.values() {
         let mut composed = None;
         for (k, o) in st.objects.iter().enumerate() {
