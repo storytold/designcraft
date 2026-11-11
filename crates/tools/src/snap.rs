@@ -1217,6 +1217,7 @@ fn shown_parent_items(doc: &Document, spread: SpreadRef) -> Vec<(&Item, f64)> {
         if !page.show_parent_items {
             continue;
         }
+        let overridden = doc.overridden_parent_items(spread, pi);
         for (ppi, ppage) in doc.shown_parent_pages(spread, pi) {
             let Some(parent) = doc.parents.get(ppi) else { continue };
             let Some(parent_page) = parent.pages.get(ppage) else { continue };
@@ -1225,7 +1226,7 @@ fn shown_parent_items(doc: &Document, spread: SpreadRef) -> Vec<(&Item, f64)> {
                 continue;
             }
             for item in &parent.items {
-                if page.overridden.contains(&item.id) {
+                if overridden.contains(&item.id) {
                     continue;
                 }
                 // A facing parent only shows items whose center sits on the parent page this page uses.

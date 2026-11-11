@@ -194,6 +194,14 @@ pub struct Condition {
     pub visible: bool,
 }
 
+/// One layout of the document: absolute pages `start..end`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LayoutRange {
+    pub name: String,
+    pub start: usize,
+    pub end: usize,
+}
+
 impl Document {
     /// A stroke type with named styles resolved (unknown names draw solid).
     pub fn stroke_kind(&self, t: &StrokeType) -> StrokeType {
@@ -559,6 +567,13 @@ pub struct Asset {
     /// Original location on disk (Links panel), if linked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link: Option<String>,
+    /// The size and modification time the linked file had when `data` was read from it, or when
+    /// it was last found to hold `data`: link status compares these first instead of reading a
+    /// large file from a network share again. They are the file's only together with `link` and
+    /// `data`: a new link goes through [`Asset::set_link`], and whoever replaces `data` sets or
+    /// clears them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link_fingerprint: Option<Fingerprint>,
     #[serde(skip)]
     pub data: Arc<Vec<u8>>,
     /// Pixel size for raster images.
@@ -758,6 +773,21 @@ pub enum HyperlinkDest {
     Email(String),
     /// Absolute page index.
     Page(usize),
+    /// A text anchor ([`TextAnchor::id`]), as a cross-reference targets one. The page is
+    /// whichever page the anchor's text has landed on when the document is exported, so the link
+    /// follows its destination as the text reflows (#1446).
+    Anchor(u64),
+}
+
+impl HyperlinkDest {
+    /// The name a hyperlink is given when none is supplied.
+    pub fn label(&self) -> String {
+        match self {
+            HyperlinkDest::Url(u) | HyperlinkDest::Email(u) => u.clone(),
+            HyperlinkDest::Page(p) => format!("Page {}", p + 1),
+            HyperlinkDest::Anchor(a) => format!("Anchor {a}"),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -898,6 +928,32 @@ impl Document {
     /// Iterate all pages with their absolute index and spread index.
     pub fn pages(&self) -> impl Iterator<Item = (usize, usize, &Page)> {
         self.spreads.iter().enumerate().flat_map(|(si, s)| s.pages.iter().map(move |p| (si, p))).enumerate().map(|(i, (si, p))| (i, si, p))
+    }
+
+    /// The document's layouts (Layout › Create Alternate Layout), in page order: the pages up to
+    /// the first section that starts a layout are the first layout. Always at least one; a layout
+    /// whose pages are gone is skipped.
+    pub fn layouts(&self) -> Vec<LayoutRange> {
+        let n = self.page_count();
+        let mut starts: Vec<(usize, Option<&str>)> =
+            self.sections.iter().filter_map(|s| s.layout.as_deref().map(|l| (s.start, Some(l)))).filter(|(st, _)| *st < n).collect();
+        starts.sort_by_key(|(st, _)| *st);
+        starts.dedup_by_key(|(st, _)| *st);
+        if starts.first().is_none_or(|(st, _)| *st != 0) {
+            starts.insert(0, (0, None));
+        }
+        let mut out: Vec<LayoutRange> = Vec::with_capacity(starts.len());
+        for (k, (start, name)) in starts.iter().enumerate() {
+            let end = starts.get(k + 1).map_or(n, |(e, _)| *e);
+            let name = name.map_or_else(|| format!("Layout {}", k + 1), str::to_string);
+            out.push(LayoutRange { name, start: *start, end });
+        }
+        out
+    }
+
+    /// The layout holding absolute page `abs` (an index into [`Document::layouts`]).
+    pub fn layout_of(&self, abs: usize) -> usize {
+        self.layouts().iter().rposition(|l| l.start <= abs).unwrap_or(0)
     }
 
     /// The section containing absolute page `abs`.
