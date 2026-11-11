@@ -60,6 +60,7 @@ impl DesignApp {
                 // together, so the picture never replaces the placeholder text this app's own
                 // Paste still needs.
                 let wrote = v.get("text").is_none()
+                    && self.services.clipboard_set_object_copy.is_some()
                     && match (self.services.clipboard_set_object_copy.as_mut(), designcraft_engine::cmd::copied_objects_png(&self.session)) {
                         (Some(set), Some(png)) => set(&self.object_clip_text.clone().unwrap_or_default(), &png).is_ok(),
                         _ => false,
