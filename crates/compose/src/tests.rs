@@ -46,6 +46,18 @@ fn all_lines(cs: &ComposedStory) -> Vec<&Line> {
     cs.frames.iter().flat_map(|f| f.lines.iter()).collect()
 }
 
+/// A long run of soft hyphens composes: each one's hyphen width comes from the last other glyph,
+/// kept as the breaker goes (it searched back over the whole run for every one).
+#[test]
+fn a_run_of_soft_hyphens_composes() {
+    let text = format!("Word{}end", "\u{AD}".repeat(3_900));
+    let (d, sid, _) = doc_with(&text, Rect::new(36.0, 36.0, 300.0, 700.0), ParaAttrs::default());
+    let t = std::time::Instant::now();
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(t.elapsed() < std::time::Duration::from_secs(20), "{:?}", t.elapsed());
+    assert!(!all_lines(&cs).is_empty());
+}
+
 #[test]
 fn composes_simple_paragraph() {
     let (d, sid, _) = doc_with(LOREM, Rect::new(36.0, 36.0, 300.0, 700.0), ParaAttrs::default());
@@ -5692,6 +5704,43 @@ fn inline_object_only_line_does_not_reserve_phantom_font_descent() {
     d.story_mut(sid).unwrap().objects[0] =
         Arc::new(AnchoredObject::new(cs.frames[0].objects[0].object.item.clone(), AnchorPosition::Inline { y_offset: 7.0 }));
     assert!(compose_story(&d, sid, &ComposeOptions::default()).is_overset());
+}
+
+/// A story threaded over frames on pages 1 and 2, with a text frame anchored in the text that
+/// flows into the second frame: the anchored frame is on page 2, where it is placed, and its page
+/// number reads 2 (not the page of the host story's first frame).
+#[test]
+fn an_anchored_text_frame_in_a_later_frame_is_on_that_frames_page() {
+    use designcraft_doc::{AnchorPosition, AnchoredObject, story::FRAME_BREAK};
+    let mut d = Document::new(&NewDocument { pages: 2, facing_pages: false, ..Default::default() });
+    let lid = d.default_layer();
+    let text = format!("One{FRAME_BREAK}Two ");
+    let (first, host) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 336.0, 436.0), lid, &text, ParaFormat::default()).unwrap();
+    let (second, _) = d.add_text_frame(SpreadRef::Doc(1), Rect::new(36.0, 36.0, 336.0, 436.0), lid, "", ParaFormat::default()).unwrap();
+    d.thread(first, second).unwrap();
+    assert_eq!(d.story(host).unwrap().frames, vec![first, second]);
+    // A text frame showing a page number, anchored at the end of the host's text (in its second frame).
+    let (fid, sid) = d
+        .add_text_frame(
+            SpreadRef::Doc(0),
+            Rect::new(0.0, 0.0, 150.0, 40.0),
+            lid,
+            &designcraft_doc::story::PAGE_NUMBER.to_string(),
+            ParaFormat::default(),
+        )
+        .unwrap();
+    let item = d.item(fid).unwrap().clone();
+    d.spread_mut(SpreadRef::Doc(0)).unwrap().items.retain(|i| i.id != fid);
+    let st = d.story_mut(host).unwrap();
+    let n = st.len();
+    st.insert_object(n, AnchoredObject::new(item, AnchorPosition::Inline { y_offset: 0.0 }));
+    d.check().unwrap();
+    let placed = placed::placements(&d, sid, &mut |h| Arc::new(compose_story(&d, h, &ComposeOptions::default())));
+    let spec = &frame_specs_placed(&d, sid, &placed)[0];
+    assert_eq!((spec.page_name.as_deref(), spec.page), (Some("2"), Some(1)));
+    let cs = Cache::new().get(&d, sid, None);
+    let g = cs.frames[0].lines[0].glyphs.iter().find(|g| g.visible).unwrap();
+    assert_eq!(g.gid, g.face.get().glyph_for('2'), "the page number of page 2");
 }
 
 #[test]
