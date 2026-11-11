@@ -556,6 +556,107 @@ fn rows_columns_merge_and_options() {
     assert_eq!(st.doc.story(sid).unwrap().text, "Intro");
 }
 
+/// A table command given `story` and `table` acts on that table with nothing selected, the caret
+/// outside the table, or a selection it can't act on, and a table that isn't there is refused.
+#[test]
+fn table_commands_run_on_a_named_table_without_a_table_selection() {
+    let (mut s, sid, _) = session_with_frame();
+    let tid = s.execute("table.insert", &json!({"rows": 2, "cols": 2})).unwrap()["table"].as_u64().unwrap();
+    let size = |s: &mut Session| {
+        let t = s.execute("table.get", &json!({"story": sid, "table": tid})).unwrap();
+        (t["rows"].as_array().unwrap().len(), t["columns"].as_array().unwrap().len())
+    };
+    assert_eq!(size(&mut s), (2, 2));
+    s.execute("edit.deselectAll", &json!({})).unwrap();
+    s.execute("table.insertRow", &json!({"story": sid, "table": tid, "where": "below"})).unwrap();
+    assert_eq!(size(&mut s), (3, 2));
+    s.execute("table.insertColumnRight", &json!({"table": tid})).unwrap();
+    assert_eq!(size(&mut s), (3, 3));
+    s.execute("table.convertRowsToHeader", &json!({"story": sid, "table": tid, "rows": [0, 0]})).unwrap();
+    assert_eq!(s.execute("table.get", &json!({"table": tid})).unwrap()["headerRows"], 1);
+    // A selected header row can't become a header, but the named rows can.
+    s.execute("table.select", &json!({"table": tid, "rows": [0, 0], "what": "row"})).unwrap();
+    assert!(!crate::cmd::find_command("table.convertRowsToHeader").unwrap().info(&s).enabled);
+    s.execute("table.convertRowsToHeader", &json!({"table": tid, "rows": [1, 1]})).unwrap();
+    assert_eq!(s.execute("table.get", &json!({"table": tid})).unwrap()["headerRows"], 2);
+    // The caret in the story's text, outside the table.
+    s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": 0})).unwrap();
+    s.execute("table.deleteRow", &json!({"story": sid, "table": tid, "rows": [2, 2]})).unwrap();
+    assert_eq!(size(&mut s), (2, 3));
+    check(&s);
+    s.execute("edit.deselectAll", &json!({})).unwrap();
+    let disabled = |r: Result<Value>| match r {
+        Err(crate::EngineError::Disabled(_, why)) => why,
+        other => panic!("expected Disabled, got {other:?}"),
+    };
+    assert_eq!(disabled(s.execute("table.insertRow", &json!({"table": tid + 100}))), format!("no table {}", tid + 100));
+    assert_eq!(disabled(s.execute("table.insertRow", &json!({"story": sid + 100, "table": tid}))), format!("no table {tid}"));
+    for story in [json!("x"), json!(-1), json!(null)] {
+        let r = s.execute("table.insertRow", &json!({"story": story, "table": tid}));
+        assert!(matches!(r, Err(crate::EngineError::BadParams { .. })), "{r:?}");
+    }
+    assert_eq!(size(&mut s), (2, 3));
+}
+
+/// A `story` that is not a non-negative integer is refused the same way whether or not a table is
+/// selected, and the table is left unchanged.
+#[test]
+fn a_bad_story_is_refused_with_or_without_a_table_selection() {
+    let (mut s, _, _) = session_with_frame();
+    let tid = s.execute("table.insert", &json!({"rows": 2, "cols": 2})).unwrap()["table"].as_u64().unwrap();
+    let rows = |s: &mut Session| s.execute("table.get", &json!({"table": tid})).unwrap()["rows"].as_array().unwrap().len();
+    for select in [json!({"table": tid, "rows": [0, 0], "what": "row"}), json!(null)] {
+        if select.is_null() {
+            s.execute("edit.deselectAll", &json!({})).unwrap();
+        } else {
+            s.execute("table.select", &select).unwrap();
+        }
+        for story in [json!("x"), json!(-1), json!(1.5), json!(null)] {
+            let r = s.execute("table.insertRow", &json!({"story": story, "table": tid}));
+            assert!(matches!(r, Err(crate::EngineError::BadParams { .. })), "{select} {story}: {r:?}");
+        }
+        assert_eq!(rows(&mut s), 2, "{select}");
+    }
+}
+
+/// An edit to a named table leaves a caret in footnote text where it was.
+#[test]
+fn a_named_table_edit_keeps_a_footnote_caret() {
+    let (mut s, sid, _) = session_with_frame();
+    let tid = s.execute("table.insert", &json!({"rows": 2, "cols": 2})).unwrap()["table"].as_u64().unwrap();
+    s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": 0})).unwrap();
+    s.execute("footnote.insert", &json!({"text": "Note"})).unwrap();
+    let before = s.doc().unwrap().selection.clone();
+    assert!(before.text.and_then(|t| t.cell).and_then(|c| c.footnote_id()).is_some(), "the caret is in the footnote");
+    s.execute("table.insertRow", &json!({"table": tid})).unwrap();
+    assert_eq!(s.execute("table.get", &json!({"table": tid})).unwrap()["rows"].as_array().unwrap().len(), 3);
+    assert_eq!(s.doc().unwrap().selection, before);
+    check(&s);
+}
+
+/// With nothing selected, the table commands stay disabled for menus and for calls that name no
+/// table.
+#[test]
+fn table_commands_stay_disabled_with_nothing_selected() {
+    let (mut s, _, _) = session_with_frame();
+    s.execute("table.insert", &json!({"rows": 2, "cols": 2})).unwrap();
+    let in_table = ["table.insertRow", "table.deleteColumn", "table.merge", "table.options", "table.selectTable", "style.table.apply"];
+    let in_cell = ["table.convertRowsToHeader", "table.nextCell"];
+    let info = |s: &Session, id: &str| crate::cmd::find_command(id).unwrap().info(s);
+    for id in in_table.iter().chain(&in_cell) {
+        assert!(info(&s, id).enabled, "{id} is enabled with the caret in a cell");
+    }
+    s.execute("edit.deselectAll", &json!({})).unwrap();
+    for (ids, reason) in [(&in_table[..], "place the insertion point in a table"), (&in_cell[..], "not in a table cell")] {
+        for id in ids {
+            let i = info(&s, id);
+            assert!(!i.enabled, "{id}");
+            assert_eq!(i.disabled_reason.as_deref(), Some(reason), "{id}");
+            assert!(matches!(s.execute(id, &json!({})), Err(crate::EngineError::Disabled(..))), "{id}");
+        }
+    }
+}
+
 /// `table.insert` styles the table in the same step; a style that isn't there, or isn't a name,
 /// leaves the story alone. Its dimensions stop at the documented limits.
 #[test]

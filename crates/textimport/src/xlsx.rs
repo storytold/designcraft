@@ -12,7 +12,11 @@ use crate::{ImportError, Imported};
 /// "B12" → (row 11, column 1).
 fn cell_ref(r: &str) -> Option<(usize, usize)> {
     let letters: String = r.chars().take_while(char::is_ascii_alphabetic).collect();
-    let row: usize = r[letters.len()..].parse().ok()?;
+    let digits = &r[letters.len()..];
+    if !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let row: usize = digits.parse().ok()?;
     let col = letters.chars().try_fold(0usize, |acc, c| {
         let digit = (c.to_ascii_uppercase() as u8).checked_sub(b'A')? as usize + 1;
         acc.checked_mul(26)?.checked_add(digit)
@@ -329,6 +333,15 @@ mod tests {
             z.finish().unwrap();
         }
         buf.into_inner()
+    }
+
+    #[test]
+    fn cell_ref_rejects_signed_or_malformed_rows() {
+        assert_eq!(cell_ref("B12"), Some((11, 1)));
+        assert_eq!(cell_ref("A+1"), None);
+        assert_eq!(cell_ref("A-1"), None);
+        assert_eq!(cell_ref("A"), None);
+        assert_eq!(cell_ref("A1x"), None);
     }
 
     /// A `t="s"` cell materialises its own copy of the shared string, so one big string with many

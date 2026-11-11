@@ -33,6 +33,7 @@ mod layout;
 pub mod library;
 mod linked;
 mod links;
+pub use links::{LinkListChecks, list_document_links, preview_document_links, remember_link_files};
 mod liquid;
 mod lists;
 mod load_styles;
@@ -328,6 +329,24 @@ pub(crate) fn named_targets(spec: &CommandSpec, p: &Value) -> Option<Vec<ItemId>
         return (!ids.is_empty()).then_some(ids);
     }
     id_param(p, "id").map(|i| vec![i])
+}
+
+/// The table a call names with `table`, for a command whose params document an optional `table`.
+/// `None` when the call names no table. [`table_story`] reads the `story` that goes with it.
+pub(crate) fn named_table(spec: &CommandSpec, p: &Value) -> Option<u64> {
+    if !spec.params.split(|c: char| !c.is_ascii_alphanumeric() && c != '?').any(|w| w == "table?") {
+        return None;
+    }
+    p.get("table").and_then(Value::as_u64)
+}
+
+/// The `story` a table command's call names alongside `table`, or `None` when the call has no
+/// `story`. A `story` that is present but not a non-negative integer, `null` included, is an error.
+pub(crate) fn table_story(p: &Value, cmd: &str) -> Result<Option<u64>> {
+    match p.get("story") {
+        None => Ok(None),
+        Some(v) => v.as_u64().map(Some).ok_or_else(|| bad(cmd, "`story` must be a non-negative integer")),
+    }
 }
 
 /// Targets: `ids` / `id` params or the selection.
