@@ -61,13 +61,39 @@ fn touch(path: &Path) {
 /// take all the memory there is.
 pub const MAX_FILE_BYTES: u64 = 4 << 30;
 
+/// `File::open` for reading that never blocks in the open or the reads: a FIFO with no writer would
+/// otherwise hang the open, and a stream-backed pseudo-file that reports as regular (a tracefs
+/// `trace_pipe`) would hang the read. A read that would block is a `WouldBlock` error. Regular
+/// files are unaffected by the flag. Elsewhere (Windows, wasm) it is a plain open.
+fn open_read(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // `O_NONBLOCK` differs by OS and architecture; std exposes no constant for it.
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        const O_NONBLOCK: i32 = if cfg!(any(target_arch = "mips", target_arch = "mips64")) {
+            0x80
+        } else if cfg!(any(target_arch = "sparc", target_arch = "sparc64")) {
+            0x4000
+        } else {
+            0o4000
+        };
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        const O_NONBLOCK: i32 = 0x4; // macOS, iOS and the BSDs
+        options.custom_flags(O_NONBLOCK);
+    }
+    options.open(path)
+}
+
 /// The whole of the regular file at `path`, at most [`MAX_FILE_BYTES`] (the path checked already).
 fn read_whole(path: &Path) -> std::io::Result<Vec<u8>> {
     use std::io::Read;
     if !std::fs::metadata(path)?.is_file() {
         return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a regular file"));
     }
-    let file = std::fs::File::open(path)?;
+    let file = open_read(path)?;
     let meta = file.metadata()?;
     if !meta.is_file() {
         return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a regular file"));
@@ -106,7 +132,7 @@ pub fn read_capped(path: impl AsRef<Path>, cap: u64) -> std::io::Result<Vec<u8>>
     touch(path);
     crate::file_access::check_read(path).map_err(|e| std::io::Error::new(std::io::ErrorKind::PermissionDenied, e))?;
     let mut b = Vec::new();
-    std::fs::File::open(path)?.take(cap.saturating_add(1)).read_to_end(&mut b)?;
+    open_read(path)?.take(cap.saturating_add(1)).read_to_end(&mut b)?;
     Ok(b)
 }
 
@@ -117,7 +143,7 @@ pub fn open(path: impl AsRef<Path>) -> std::io::Result<std::fs::File> {
     let path = path.as_ref();
     touch(path);
     crate::file_access::check_read(path).map_err(|e| std::io::Error::new(std::io::ErrorKind::PermissionDenied, e))?;
-    std::fs::File::open(path)
+    open_read(path)
 }
 
 /// The text of the file at `path`, inside the automation read root when there is one.
@@ -229,5 +255,29 @@ mod read_tests {
         std::fs::write(&path, [0xff, 0xfe]).unwrap();
         assert!(read_to_string(&path).unwrap_err().contains("UTF-8"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    /// A FIFO nobody writes to must not hang a read (the open used to block forever).
+    #[test]
+    fn fifo_without_a_writer_does_not_block() {
+        let dir = std::env::temp_dir().join(format!("dc-fifo-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let fifo = dir.join("f");
+        if !std::process::Command::new("mkfifo").arg(&fifo).status().is_ok_and(|s| s.success()) {
+            return; // no mkfifo on this host
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let p = fifo.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send((read_whole(&p).is_err(), read_capped(&p, 9).is_ok()));
+        });
+        let got = rx.recv_timeout(std::time::Duration::from_secs(10));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(got, Ok((true, true)), "reads of a FIFO must return");
     }
 }
