@@ -12,7 +12,11 @@ use crate::{ImportError, Imported};
 /// "B12" → (row 11, column 1).
 fn cell_ref(r: &str) -> Option<(usize, usize)> {
     let letters: String = r.chars().take_while(char::is_ascii_alphabetic).collect();
-    let row: usize = r[letters.len()..].parse().ok()?;
+    let digits = &r[letters.len()..];
+    if !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let row: usize = digits.parse().ok()?;
     let col = letters.chars().try_fold(0usize, |acc, c| {
         let digit = (c.to_ascii_uppercase() as u8).checked_sub(b'A')? as usize + 1;
         acc.checked_mul(26)?.checked_add(digit)
@@ -123,6 +127,11 @@ fn place_row(cols: &[(usize, String)], min_c: usize, width: usize) -> (Vec<Strin
 /// The first used row is the header. Later rows that are entirely empty are left out.
 /// Cells past the header are kept so the caller can warn. Over 200 columns or 100,000
 /// data rows is an error and the grid is not built.
+/// What [`records`] reads of a sheet at most: the text of its cells and their number (the data
+/// merge limits, rows × columns, with room for cells outside the table).
+const MAX_RECORD_TEXT_BYTES: usize = 256 << 20;
+const MAX_RECORD_CELLS: usize = 2 * crate::DATA_MERGE_MAX_ROWS * crate::DATA_MERGE_MAX_COLS;
+
 pub fn records(bytes: &[u8], sheet: Option<&str>) -> Result<Vec<Vec<String>>, ImportError> {
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|e| ImportError::Corrupt(e.to_string()))?;
     let sheet_part = sheet_target(&mut zip, sheet)?;
@@ -133,11 +142,22 @@ pub fn records(bytes: &[u8], sheet: Option<&str>) -> Result<Vec<Vec<String>>, Im
         .map(|sst| sst.els().filter(|e| e.name == "si").map(string_item).collect())
         .unwrap_or_default();
     let mut cells: Vec<(usize, usize, String)> = Vec::new();
+    // Each `t="s"` cell is its own copy of a shared string: bounded as `import` bounds it, before
+    // the row and column limits below can apply (one large string referenced by many cells).
+    let mut text_bytes = 0usize;
     if let Some(data) = sheet_xml.child("sheetData") {
         for (ri, row) in data.els().filter(|e| e.name == "row").enumerate() {
             for (ci, c) in row.els().filter(|e| e.name == "c").enumerate() {
                 let (r, col) = c.attr("r").and_then(cell_ref).unwrap_or((ri, ci));
-                cells.push((r, col, value(c, &shared)));
+                let v = value(c, &shared);
+                text_bytes = text_bytes.saturating_add(v.len());
+                if text_bytes > MAX_RECORD_TEXT_BYTES || cells.len() >= MAX_RECORD_CELLS {
+                    return Err(ImportError::Corrupt(format!(
+                        "the sheet holds more than {} MB of text or {MAX_RECORD_CELLS} cells; the limit for a data source",
+                        MAX_RECORD_TEXT_BYTES >> 20
+                    )));
+                }
+                cells.push((r, col, v));
             }
         }
     }
@@ -313,6 +333,15 @@ mod tests {
             z.finish().unwrap();
         }
         buf.into_inner()
+    }
+
+    #[test]
+    fn cell_ref_rejects_signed_or_malformed_rows() {
+        assert_eq!(cell_ref("B12"), Some((11, 1)));
+        assert_eq!(cell_ref("A+1"), None);
+        assert_eq!(cell_ref("A-1"), None);
+        assert_eq!(cell_ref("A"), None);
+        assert_eq!(cell_ref("A1x"), None);
     }
 
     /// A `t="s"` cell materialises its own copy of the shared string, so one big string with many

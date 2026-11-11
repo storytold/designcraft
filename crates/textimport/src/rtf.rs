@@ -47,7 +47,13 @@ const SKIP: &[&str] = &[
     "info",
     "pict",
     "header",
+    "headerl",
+    "headerr",
+    "headerf",
     "footer",
+    "footerl",
+    "footerr",
+    "footerf",
     "footnote",
     "listtable",
     "listoverridetable",
@@ -309,6 +315,15 @@ fn cp1252(b: u8) -> char {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn header_and_footer_variants_are_skipped() {
+        for w in ["header", "headerl", "headerr", "headerf", "footer", "footerl", "footerr", "footerf"] {
+            let rtf = format!(r"{{\rtf1\ansi {{\{w} Page head\par}}Body text\par}}");
+            let text = import(rtf.as_bytes()).unwrap().story.text;
+            assert_eq!(text.trim_end(), "Body text", "{w}");
+        }
+    }
 
     #[test]
     fn out_of_range_unicode_escape_is_dropped() {
