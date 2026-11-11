@@ -12,7 +12,7 @@ repository = "https://github.com/storytold/designcraft"
 
 [workspace.dependencies]
 # Shared Hunspell reader and nonstandard hyphenation; hu data comes from a Language pack.
-craft-proof = { git = "https://github.com/storytold/craft-libs", rev = "7e0a381477a304f77417da16e8a5ff7dfcef3082" }
+craft-proof = { git = "https://github.com/storytold/craft-libs", rev = "c664fee740c5f0ec70e303f8c77d6beb17291b98" }
 # Shared reader and writer; publish the immutable revision before this consumer.
 craft-pdf = { git = "https://github.com/storytold/craft-libs", rev = "92d392cff132eaf53e13afff77f38b5c11b73aa0", version = "=0.1.0", default-features = false }
 # Shared keyboard bindings: chords, overrides, conflicts, egui dispatch, the Keyboard Shortcuts dialog.
