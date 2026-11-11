@@ -113,13 +113,28 @@ pub fn copied_objects_text(s: &Session) -> String {
 
 /// A PNG picture of the copied objects, for the system clipboard (#2204): so pasting into another
 /// app (PhotoCraft, say) gets a usable picture instead of only the placeholder text above, which
-/// only this app's own Paste reads back as "the copied objects". Renders the clipping's own page 0
-/// at its original size (the copied items keep the position they held on the source page), so
-/// `None` only when there is nothing copied or the render itself fails.
+/// only this app's own Paste reads back as "the copied objects". Cropped to the union of the
+/// copied items' own bounds, on a transparent background, rather than a whole page: the items
+/// keep the spread-local position they held on the source page (`clip_doc`), which on a spread of
+/// facing pages can sit entirely on the page across from page 0 (so rendering just page 0's crop,
+/// as an earlier version of this function did, could show nothing at all, #2204 follow-up).
+/// `None` only when there is nothing copied, it has no visible bounds, or the render itself fails.
 pub fn copied_objects_png(s: &Session) -> Option<Vec<u8>> {
     let clip = s.clipboard.as_ref()?;
-    let opts = designcraft_render::RenderOptions { printing_only: true, ..Default::default() };
-    let img = designcraft_render::Renderer::new().render_page(clip, &s.cache, 0, 1.0, false, &opts)?;
+    let items = clip.spreads.first().map(|sp| sp.items.as_slice()).unwrap_or_default();
+    let bounds = items.iter().map(|it| it.bounds()).reduce(|a, b| a.union(b)).filter(|b| b.width() > 0.0 && b.height() > 0.0)?;
+    let w = bounds.width().round().clamp(1.0, f64::from(designcraft_render::MAX_SIDE)) as u32;
+    let h = bounds.height().round().clamp(1.0, f64::from(designcraft_render::MAX_SIDE)) as u32;
+    if u64::from(w) * u64::from(h) > designcraft_render::MAX_PAGE_PIXELS {
+        return None;
+    }
+    let view = designcraft_geom::Affine::translate(-bounds.origin().to_vec2());
+    // `paper: false`: the default `true` paints the page's own paper colour (white) under
+    // everything, including a no-fill object, which hid the actual transparency this crop needs
+    // (#2204 follow-up).
+    let opts = designcraft_render::RenderOptions { printing_only: true, background: None, paper: false, ..Default::default() };
+    let placed = [designcraft_render::Placed { spread: SpreadRef::Doc(0), xf: designcraft_geom::Affine::translate(designcraft_geom::Vec2::ZERO) }];
+    let img = designcraft_render::Renderer::new().render(clip, &s.cache, &placed, (w, h), view, &opts);
     Some(img.to_png())
 }
 
@@ -127,8 +142,13 @@ pub fn copied_objects_png(s: &Session) -> Option<Vec<u8>> {
 mod copied_objects_png_tests {
     use super::*;
 
+    fn png_size(png: &[u8]) -> (u32, u32) {
+        let img = image::load_from_memory(png).expect("a valid PNG");
+        (img.width(), img.height())
+    }
+
     #[test]
-    fn renders_the_clipboard_s_own_page_0_and_is_none_with_nothing_copied() {
+    fn crops_to_the_copied_item_s_own_bounds_not_a_whole_page() {
         let mut s = Session::new();
         assert!(copied_objects_png(&s).is_none(), "nothing copied yet");
         s.execute("file.new", &json!({})).unwrap();
@@ -137,10 +157,49 @@ mod copied_objects_png_tests {
         s.execute("selection.set", &json!({"ids": [a]})).unwrap();
         s.execute("edit.copy", &json!({})).unwrap();
         let png = copied_objects_png(&s).expect("a copied object renders a picture");
-        let clip = s.clipboard.clone().unwrap();
-        let opts = designcraft_render::RenderOptions { printing_only: true, ..Default::default() };
-        let expected = designcraft_render::Renderer::new().render_page(&clip, &s.cache, 0, 1.0, false, &opts).unwrap().to_png();
-        assert_eq!(png, expected, "renders the clipping's own page 0, the same way the engine itself does it");
+        assert_eq!(png_size(&png), (50, 50), "cropped to the copied item's own 50x50 bounds, not the whole page");
+        let img = image::load_from_memory(&png).unwrap().to_rgba8();
+        let px = img.get_pixel(25, 25);
+        assert!(px[3] > 200 && px[0] < 50, "the fill itself is visible in the crop");
+    }
+
+    /// A copied text frame keeps its own "no fill" (the new-frame default, #2204 follow-up): the
+    /// renderer's `paper: true` default paints the page's own paper colour under everything,
+    /// which, left on, hid the crop's actual transparency behind an opaque white rectangle the
+    /// size of the whole frame (a real paste showed solid white instead of the frame's text on a
+    /// transparent background).
+    #[test]
+    fn a_no_fill_text_frame_keeps_its_own_transparency_not_the_page_s_paper() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let a = s.execute("frame.create", &json!({"rect": [10, 10, 60, 60], "content": "text", "text": "HI"})).unwrap()["id"].as_u64().unwrap();
+        s.execute("selection.set", &json!({"ids": [a]})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+        let png = copied_objects_png(&s).expect("a copied text frame renders a picture");
+        let img = image::load_from_memory(&png).unwrap().to_rgba8();
+        assert!(img.pixels().any(|px| px[3] == 0), "a corner away from the glyphs stays transparent, not opaque page paper");
+    }
+
+    /// With facing pages the first page sits alone, right of the spine, and other spreads hold a
+    /// left/right pair (`paste_in_place_keeps_the_side_of_the_spine`, above). A selection on the
+    /// right-hand page of such a spread sits outside page 0's own rectangle in spread-local
+    /// coordinates: the earlier `render_page`-based implementation cropped to that rectangle and
+    /// forced an opaque white background, so it rendered blank instead of the copied content
+    /// (#2204 follow-up, reported after #2604 as a real paste producing a blank picture).
+    #[test]
+    fn renders_a_selection_positioned_on_the_facing_page_across_from_page_0() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 4, "facingPages": true})).unwrap();
+        let w = s.doc().unwrap().doc.settings.page_width;
+        let a = s.execute("frame.create", &json!({"spread": 1, "rect": [w + 36.0, 36.0, w + 76.0, 76.0]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("object.fill", &json!({"ids": [a], "swatch": "[Black]"})).unwrap();
+        s.execute("selection.set", &json!({"ids": [a]})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+        let png = copied_objects_png(&s).expect("a selection on the facing page still renders a picture");
+        assert_eq!(png_size(&png), (40, 40), "cropped to the item's own bounds wherever it sits in the spread");
+        let img = image::load_from_memory(&png).unwrap().to_rgba8();
+        let px = img.get_pixel(20, 20);
+        assert!(px[3] > 200 && px[0] < 50, "the fill is visible, not a blank page-0 crop (#2204 follow-up)");
     }
 }
 

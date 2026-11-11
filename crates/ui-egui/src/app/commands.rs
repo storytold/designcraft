@@ -39,13 +39,16 @@ impl DesignApp {
                         self.object_clip_text = None;
                         Some(t.to_string())
                     }
-                    None if !self.native_menu => {
-                        self.object_clip_text = Some(designcraft_engine::cmd::copied_objects_text(&self.session));
-                        self.object_clip_text.clone()
-                    }
+                    // The native menu bar writes the system clipboard through
+                    // `clipboard_set_object_copy` below instead of egui's own `copy_text` (so
+                    // the placeholder text and the picture land together, never one clobbering
+                    // the other): `object_clip_text` still needs this copy's own placeholder,
+                    // not whatever text happened to be on the clipboard already (a stale copy
+                    // from another app, say), or another app's Paste would read that instead of
+                    // this copy's picture (#2204 follow-up).
                     None => {
-                        self.object_clip_text = self.services.clipboard_text.as_mut().and_then(|f| f());
-                        None
+                        self.object_clip_text = Some(designcraft_engine::cmd::copied_objects_text(&self.session));
+                        (!self.native_menu).then(|| self.object_clip_text.clone()).flatten()
                     }
                 };
                 if let (Some(t), Some(ctx)) = (text, &self.egui_ctx) {
