@@ -2676,6 +2676,31 @@ fn digits_option_draws_figures_in_another_script() {
     assert_ne!(gid(&plain, 4), gid(&hindi, 4));
 }
 
+/// A font without a non-breaking hyphen of its own draws it as its hyphen-minus (not .notdef), and
+/// the line still doesn't break there.
+#[test]
+fn a_non_breaking_hyphen_the_font_lacks_is_drawn_as_its_hyphen() {
+    use designcraft_fonts::testing::font_mapping;
+    let glyphs = [('1', '1'), ('K', 'K'), ('a', 'a'), ('n', 'n'), ('l', 'l'), ('-', '-'), (' ', ' ')];
+    designcraft_fonts::FontDb::global().add_font(font_mapping("DC Test No NB Hyphen", &glyphs).unwrap());
+    let compose = |text: &str, width: f64| {
+        let (mut d, sid, _) = doc_with(text, Rect::new(100.0, 100.0, 100.0 + width, 300.0), ParaAttrs::default());
+        d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.font_family = Some("DC Test No NB Hyphen".into()));
+        compose_story(&d, sid, &ComposeOptions::default())
+    };
+    let gid = |cs: &ComposedStory, b: usize| cs.frames[0].lines[0].glyphs.iter().find(|g| g.byte == b).map(|g| g.gid);
+    let nb = compose("1\u{2011}Kanal", 300.0);
+    let plain = compose("1-Kanal", 300.0);
+    assert_ne!(gid(&nb, 1), Some(0), "not the .notdef box");
+    assert_eq!(gid(&nb, 1), gid(&plain, 1), "the font's own hyphen");
+    // "Kanal 1‑Kanal" in a frame too narrow for it: the hyphen (byte 7) and the "K" after it (byte
+    // 10) stay on one line, where a hyphen-minus would allow a break between them.
+    let narrow = compose("Kanal 1\u{2011}Kanal", 40.0);
+    let line_of = |b: usize| narrow.frames.iter().flat_map(|f| &f.lines).position(|l| l.glyphs.iter().any(|g| g.byte == b));
+    assert!(narrow.frames.iter().map(|f| f.lines.len()).sum::<usize>() > 1, "the frame is narrow enough to break the line");
+    assert_eq!(line_of(7), line_of(10));
+}
+
 #[test]
 fn page_numbers_take_the_digits_option() {
     use designcraft_fonts::testing::font_mapping;

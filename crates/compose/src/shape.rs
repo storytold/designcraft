@@ -871,6 +871,14 @@ fn shape_run_raw(
                 continue;
             }
         }
+        // A hyphen without a glyph of its own in the font (the non-breaking U+2011, U+2010) is drawn as
+        // the font's hyphen-minus, as InDesign does; it stays the one character, so it still doesn't break.
+        if matches!(c, '\u{2010}' | '\u{2011}') && !primary.covers(c) && primary.covers('-') {
+            flush(seg_start, i, &seg_face, out);
+            seg_start = i + c.len_utf8();
+            shape_segment(db, text, i..i + c.len_utf8(), Some("-"), p, &primary, auto_leading, styles, out, sub.upright());
+            continue;
+        }
         let special = matches!(
             c,
             '\t' | story::FORCED_LINE_BREAK
