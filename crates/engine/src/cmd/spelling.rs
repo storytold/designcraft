@@ -337,11 +337,12 @@ mod tests {
     /// fifty copies of it per character.
     #[test]
     fn very_long_words_get_no_suggestions() {
-        let d = Dictionary::en_us();
-        let long = "a".repeat(MAX_SUGGEST_CHARS + 1);
-        let t = std::time::Instant::now();
-        assert!(suggest(d, &long).is_empty());
-        assert!(t.elapsed() < std::time::Duration::from_secs(1));
+        // The dictionary holds the longest allowed word, so deleting one letter of the 41-letter
+        // input would be a hit if the length cap were not applied.
+        let d = Dictionary::from_entries(vec![("a".repeat(MAX_SUGGEST_CHARS), 0)]);
+        assert_eq!(suggest(&d, &"a".repeat(MAX_SUGGEST_CHARS)), Vec::<String>::new());
+        assert_eq!(suggest(&d, &"a".repeat(MAX_SUGGEST_CHARS - 1)), vec!["a".repeat(MAX_SUGGEST_CHARS)]);
+        assert!(suggest(&d, &"a".repeat(MAX_SUGGEST_CHARS + 1)).is_empty());
     }
 
     #[test]
