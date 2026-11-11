@@ -1047,3 +1047,20 @@ fn text_hidden_by_inherited_conditions_or_deletion_is_not_exported() {
     let labels: Vec<String> = chapters::toc_entries(&d, &html::reading_order(&d)).into_iter().map(|(_, label, _)| label).collect();
     assert_eq!(labels, ["Public heading"]);
 }
+
+/// A threaded story is left out only when every one of its frames is hidden: a hidden first
+/// frame does not hide the frames after it.
+#[test]
+fn a_threaded_story_is_skipped_only_when_every_frame_is_hidden() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (a, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 300.0, 100.0), lid, "first", ParaFormat::default()).unwrap();
+    let (b, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 200.0, 300.0, 300.0), lid, "second", ParaFormat::default()).unwrap();
+    d.thread(a, b).unwrap();
+    let story = |d: &Document| html::reading_order(d).iter().filter(|x| **x == html::Block::Story(sid)).count();
+    assert_eq!(story(&d), 1);
+    d.item_mut(a).unwrap().hidden = true;
+    assert_eq!(story(&d), 1, "the visible second frame keeps the story");
+    d.item_mut(b).unwrap().hidden = true;
+    assert_eq!(story(&d), 0);
+}
