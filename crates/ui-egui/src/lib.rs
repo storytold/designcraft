@@ -24,9 +24,12 @@ pub mod cursors;
 pub mod dialogs;
 pub mod dock;
 pub mod effects_dialog;
+pub mod export_batch_dialog;
 pub mod i18n;
 pub mod icons;
 pub mod keys;
+#[cfg(not(target_arch = "wasm32"))]
+mod links_worker;
 pub mod menus;
 mod modal_drag;
 mod new_document;
@@ -71,7 +74,7 @@ use app::browser_import_tests;
 pub use app::opens_as_document;
 pub use clock::now_ms;
 pub use key_names::{drop_key_name_text, is_key_name};
-pub use services::{ClipboardFn, DownloadFn, Inbox, OpenAsyncFn, ReadFn, Services, WindowFrameFn, WriteFn};
+pub use services::{ClipboardFn, DownloadFn, Inbox, OpenAsyncFn, PointerFn, ReadFn, Services, WindowFrameFn, WriteFn};
 pub(crate) use state::second_window_viewport;
 pub use state::{CanvasCache, HiddenPanels, ImportRequest, ImportedFile, PdfExportSettings, Perf, SavedWorkspace, ScreenMode, Shown, UiState, View};
 
@@ -151,6 +154,10 @@ pub struct DesignApp {
     pub(crate) page_history: HashMap<u64, page_history::PageHistory>,
     /// The canvas cache and rect of the pane in `pane` (the other pane's are in `other_pane`).
     pub canvas: CanvasCache,
+    /// Native link checks run separately because an unavailable network share may block for an
+    /// operating-system timeout.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) links_worker: links_worker::State,
     pub canvas_rect: Option<egui::Rect>,
     /// Window › Arrange › Split Window: two views of the document side by side.
     pub split: bool,
