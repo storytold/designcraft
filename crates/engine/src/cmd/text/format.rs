@@ -398,6 +398,21 @@ pub(super) fn step_size(s: &mut Session, delta: f64) -> Result<Value> {
     format_chars(s, &json!({"size": (size + delta).clamp(0.1, 1296.0)}))
 }
 
+/// The selection's leading, stepped by `delta` points. Starts from the resolved value (size ×
+/// the paragraph's Auto Leading percentage) when the leading was `Auto`, as a plain point value
+/// from then on (After Effects and InDesign both leave Auto once it is stepped).
+pub(super) fn leading_step(s: &mut Session, delta: f64) -> Result<Value> {
+    let cur = selection_attrs(s, &json!({}))?;
+    let size = cur["chars"]["size"].as_f64().unwrap_or(12.0);
+    let auto_pct = cur["para"]["autoLeading"].as_f64().unwrap_or(1.2);
+    let current = match cur["chars"]["leading"]["kind"].as_str() {
+        Some("points") => cur["chars"]["leading"]["value"].as_f64().unwrap_or(size * auto_pct),
+        _ => size * auto_pct,
+    };
+    let value = (current + delta).clamp(0.0, 5000.0);
+    format_chars(s, &json!({"leading": {"kind": "points", "value": value}}))
+}
+
 pub(super) fn break_link(s: &mut Session, p: &Value) -> Result<Value> {
     use designcraft_doc::{CharFormat, CharProps, ParaProps};
     let para = match p.get("kind").and_then(Value::as_str).unwrap_or("paragraph") {
@@ -1206,5 +1221,30 @@ mod missing_font_tests {
                 assert_eq!(&s.execute("type.selectionAttrs", &json!({})).unwrap()["chars"]["fontFamily"], family, "{name}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod leading_step_tests {
+    use serde_json::json;
+
+    use crate::Session;
+
+    #[test]
+    fn steps_from_the_auto_leading_value_then_in_plain_points() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 300, 200], "content": "text", "text": "leading"})).unwrap();
+        s.execute("text.select", &json!({"story": r["story"], "anchor": 0, "focus": 7})).unwrap();
+        // 12pt text at the default Auto Leading (120%) starts at 14.4pt.
+        let leading = |s: &mut Session| s.execute("type.selectionAttrs", &json!({})).unwrap()["chars"]["leading"].clone();
+        let points = |v: &serde_json::Value| (v["kind"] == "points").then(|| v["value"].as_f64().unwrap());
+        assert_eq!(leading(&mut s), json!({"kind": "auto"}));
+        s.execute("type.leadingStep", &json!({"amount": 2.0})).unwrap();
+        assert!((points(&leading(&mut s)).unwrap() - 16.4).abs() < 1e-9);
+        s.execute("type.leadingStep", &json!({"amount": -2.0})).unwrap();
+        assert!((points(&leading(&mut s)).unwrap() - 14.4).abs() < 1e-9, "back to the resolved Auto value, now plain points");
+        s.execute("type.leadingStep", &json!({"amount": -20.0})).unwrap();
+        assert_eq!(leading(&mut s), json!({"kind": "points", "value": 0.0}), "clamped, never negative");
     }
 }

@@ -27,7 +27,7 @@ pub(crate) use format::{
     Target, TypingFormat, apply_char_attrs, effective_char_format, format_chars, format_paras, format_targets, format_targets_pub,
     rename_typing_swatch, validate_char_fill,
 };
-use format::{break_link, kern_pair, kern_step, link_style, para_toggle, pick_up_format, step_size, swap_fill_stroke};
+use format::{break_link, kern_pair, kern_step, leading_step, link_style, para_toggle, pick_up_format, step_size, swap_fill_stroke};
 use opentype::{open_type, open_type_features, set_features};
 pub(crate) use story::set_story_direction;
 use story::{selection_attrs, story_direction, story_options};
@@ -394,6 +394,15 @@ pub fn specs() -> Vec<CommandSpec> {
         ),
         cmd!("type.sizeUp", "Increase Point Size", [], Some("Cmd+Shift+."), "{}", has_text_or_frames, |s, _| step_size(s, 2.0)),
         cmd!("type.sizeDown", "Decrease Point Size", [], Some("Cmd+Shift+,"), "{}", has_text_or_frames, |s, _| step_size(s, -2.0)),
+        cmd!(
+            "type.leadingStep",
+            "Leading Step",
+            [],
+            None,
+            "{amount?: points (default 2; negative tightens)} — the leading of the selected text, in points; starting from the resolved value (size × the paragraph's Auto Leading percentage) when it was Auto",
+            has_text_or_frames,
+            |s, p| leading_step(s, p.get("amount").and_then(Value::as_f64).unwrap_or(2.0))
+        ),
         cmd!(
             "type.changeCase",
             "Change Case",
