@@ -19,6 +19,12 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(query "file.exportIdml", "Export IDML…", [], None,
             "{path?, embedImages?: true} — writes an IDML package to `path`, or returns {base64} without a path",
             has_doc, export_idml),
+        cmd!(query "file.exportScribus", "Export Scribus…", [], None,
+            "{path?, imageFolder?} — writes a Scribus 1.7 (.sla) document to `path` (placed images beside it, or in `imageFolder`), or returns {base64, images: [{path, base64}]} without a path",
+            has_doc, export_scribus),
+        cmd!(noundo "file.openScribus", "Open Scribus", [], None,
+            "{path | base64, name?} — opens a Scribus 1.7 (.sla) document as a new document (linked images are read beside the file; unsupported features join `warnings`) → {index, documentFonts, warnings}",
+            always, open_scribus),
         cmd!(noundo "file.openIdml", "Open IDML", [], None,
             "{path | base64, name?} — opens an IDML package, or an InDesign document or template (.indd, .indt: converted to IDML first; its conversion warnings join `warnings`), as a new document (linked images are read next to the file or from its Links/ folder; the fonts in a `Document Fonts` folder beside it load first) → {index, documentFonts, warnings: conversion warnings, package parts missing, font files skipped, GREP styles whose pattern can't compile}",
             always, open_idml),
@@ -396,6 +402,119 @@ fn read_packaged_link(link: &str, package: Option<&std::path::Path>) -> Option<(
     None
 }
 
+fn export_scribus(s: &mut Session, p: &Value) -> Result<Value> {
+    let st = s.doc()?;
+    let opts = designcraft_scribus::ExportOptions { image_folder: str_param(p, "imageFolder").map(str::to_string) };
+    let exported = designcraft_scribus::export_scribus_with(&st.doc, &opts);
+    match str_param(p, "path") {
+        Some(path) => {
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let base = std::path::Path::new(path).parent().unwrap_or_else(|| std::path::Path::new("."));
+                // Resolve every destination before writing anything: the images are extra files
+                // beside the chosen document, so an existing one is never replaced (it may be a
+                // newer linked file, not the copy this document holds), and a half-written
+                // export would leave a `.sla` naming images that are not there.
+                let mut destinations = Vec::with_capacity(exported.images.len());
+                for image in &exported.images {
+                    let rel = std::path::Path::new(&image.path);
+                    if rel.is_absolute() || rel.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+                        return Err(EngineError::Other(format!("{}: refusing to write an image outside the document's folder", image.path)));
+                    }
+                    let dest = base.join(rel);
+                    // Any existing entry is refused: a broken symlink would be replaced too.
+                    if crate::io::exists_for_write(&dest) {
+                        return Err(EngineError::Other(format!(
+                            "{}: refusing to overwrite an existing image beside the document; choose an empty folder",
+                            dest.display()
+                        )));
+                    }
+                    destinations.push(dest);
+                }
+                for (dest, image) in destinations.iter().zip(&exported.images) {
+                    if let Some(dir) = dest.parent()
+                        && !dir.as_os_str().is_empty()
+                    {
+                        crate::io::create_dir_all(dir).map_err(EngineError::Other)?;
+                    }
+                    crate::io::write_file(dest, &image.data).map_err(EngineError::Other)?;
+                }
+                crate::io::write_file(path, &exported.data).map_err(EngineError::Other)?;
+                Ok(json!({"path": path, "bytes": exported.data.len(), "images": exported.images.len()}))
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                let _ = (path, &exported);
+                Err(EngineError::Other("use file.exportScribus without a path on the web".into()))
+            }
+        }
+        None => {
+            let images: Vec<Value> = exported.images.iter().map(|i| json!({"path": i.path, "base64": base64_encode(&i.data)})).collect();
+            Ok(json!({"base64": base64_encode(&exported.data), "bytes": exported.data.len(), "images": images}))
+        }
+    }
+}
+
+pub(crate) fn open_scribus(s: &mut Session, p: &Value) -> Result<Value> {
+    let (bytes, package, title) = if let Some(b) = str_param(p, "base64") {
+        let name = str_param(p, "name").unwrap_or_default();
+        (base64_decode(b), None, without_document_extension(name).to_string())
+    } else if let Some(path) = str_param(p, "path") {
+        #[cfg(not(target_arch = "wasm32"))]
+        let b = crate::io::read_file(path).map_err(EngineError::Other)?;
+        #[cfg(target_arch = "wasm32")]
+        let b: Vec<u8> = Vec::new();
+        let pp = std::path::Path::new(path);
+        (b, Some(pp.to_path_buf()), pp.file_stem().map(|n| n.to_string_lossy().to_string()).unwrap_or_default())
+    } else {
+        return Err(bad("file.openScribus", "missing `path` or `base64`"));
+    };
+    // The image files the importer read, by the `ImageFileName` it asked for: the document keeps
+    // the resolved path, not the path as written beside the author's computer.
+    #[cfg(not(target_arch = "wasm32"))]
+    let resolved_links = std::cell::RefCell::new(std::collections::HashMap::<String, String>::new());
+    let read = |link: &str| -> Option<Vec<u8>> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            read_packaged_link(link, package.as_deref()).map(|(path, data)| {
+                resolved_links.borrow_mut().insert(link.to_string(), path);
+                data
+            })
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (link, package.as_deref());
+            None
+        }
+    };
+    let mut imported = designcraft_scribus::import_scribus_report(&bytes, &read).map_err(|e| EngineError::Other(e.to_string()))?;
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let resolved = resolved_links.borrow();
+        for asset in imported.document.assets.values_mut() {
+            let Some(link) = asset.link.as_deref() else { continue };
+            let Some(path) = resolved.get(link) else { continue };
+            // A linked file found beside the document is held as the file it names, so link
+            // status, preflight and updates find it.
+            std::sync::Arc::make_mut(asset).link = Some(path.clone());
+        }
+    }
+    if !title.is_empty() {
+        imported.document.title = title;
+    }
+    let (fonts, faces, font_warnings) = match str_param(p, "path").filter(|_| str_param(p, "base64").is_none()) {
+        Some(path) => super::file::load_document_fonts(&mut imported.document, path),
+        None => (None, 0, Vec::new()),
+    };
+    let mut warnings = imported.warnings;
+    warnings.extend(font_warnings);
+    warnings.extend(super::style::grep_style_warnings(&imported.document));
+    let mut st = DocState::new(imported.document, None);
+    st.fonts = fonts;
+    let i = s.add_document(st);
+    Ok(json!({"index": i, "documentFonts": faces, "warnings": warnings}))
+}
+
 pub(crate) fn open_idml(s: &mut Session, p: &Value) -> Result<Value> {
     let (bytes, package, file, title) = if let Some(b) = str_param(p, "base64") {
         let name = str_param(p, "name").unwrap_or_default();
@@ -482,7 +601,7 @@ pub(crate) fn has_indd_extension(name: &str) -> bool {
 /// `name` without a trailing .idml, .indd or .indt (any case).
 fn without_document_extension(name: &str) -> &str {
     match name.rsplit_once('.') {
-        Some((stem, ext)) if ["idml", "indd", "indt"].iter().any(|e| ext.eq_ignore_ascii_case(e)) => stem,
+        Some((stem, ext)) if ["idml", "indd", "indt", "sla"].iter().any(|e| ext.eq_ignore_ascii_case(e)) => stem,
         _ => name,
     }
 }
@@ -999,5 +1118,78 @@ mod nested_layer_tests {
     #[test]
     fn nested_idml_endnote_external_choices_are_rejected() {
         external("endnote");
+    }
+
+    #[test]
+    fn scribus_export_writes_a_file_that_opens_again() {
+        let dir = std::env::temp_dir().join(format!("dc-scribus-export-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("roundtrip.sla");
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("frame.create", &json!({"rect": [72, 72, 240, 120], "content": "text", "text": "Scribus round trip"})).unwrap();
+        let r = s.execute("file.exportScribus", &json!({"path": path.to_string_lossy()})).unwrap();
+        assert!(r["bytes"].as_u64().unwrap_or(0) > 1000, "{r}");
+        assert!(path.is_file());
+        let opened = s.execute("file.open", &json!({"path": path.to_string_lossy()})).unwrap();
+        assert_eq!(opened["warnings"].as_array().map(Vec::len), Some(0), "{opened}");
+        let st = s.doc().unwrap();
+        let text = st.doc.stories.values().find(|story| story.text.contains("Scribus")).expect("text came back");
+        assert_eq!(text.text, "Scribus round trip");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A Scribus document beside a real PNG it links to.
+    fn scribus_with_a_linked_image(dir: &std::path::Path) -> std::path::PathBuf {
+        std::fs::create_dir_all(dir).unwrap();
+        let png = designcraft_render::Rendered { width: 2, height: 2, pixels: vec![255; 16] }.to_png();
+        std::fs::write(dir.join("pic.png"), png).unwrap();
+        let xml = r##"<SCRIBUSUTF8NEW Version="1.7.4"><Document PageCount="1" PageWidth="100" PageHeight="100">
+          <Page PageNumber="0" PageXPosition="0" PageYPosition="0" PageWidth="100" PageHeight="100" BorderLeft="0" BorderRight="0" BorderTop="0" BorderBottom="0"/>
+          <PageObject XPosition="0" YPosition="0" OwnPage="0" ItemID="1" ItemType="2" Width="50" Height="50" FrameType="0"
+            ImageScaleX="1" ImageScaleY="1" ImageOffsetX="0" ImageOffsetY="0" ImageRotation="0" ImageFileName="pic.png"
+            Path="M0 0 L50 0 L50 50 L0 50 L0 0 Z" ContourLinePath="M0 0 L50 0 L50 50 L0 50 L0 0 Z" Layer="0"/>
+        </Document></SCRIBUSUTF8NEW>"##;
+        let path = dir.join("in.sla");
+        std::fs::write(&path, xml).unwrap();
+        path
+    }
+
+    #[test]
+    fn opening_a_scribus_document_binds_its_images_to_the_files_it_read() {
+        let root = std::env::temp_dir().join(format!("dc-scribus-links-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let path = scribus_with_a_linked_image(&root.join("src"));
+        let mut s = crate::Session::new();
+        s.execute("file.open", &json!({"path": path.to_string_lossy()})).unwrap();
+        let st = s.doc().unwrap();
+        let link = st.doc.assets.values().find_map(|a| a.link.clone()).expect("a linked image");
+        let resolved = std::path::Path::new(&link);
+        assert!(resolved.is_absolute(), "the image link is resolved beside the document: {link}");
+        assert!(resolved.is_file(), "{link}");
+        assert!(resolved.ends_with("pic.png"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn scribus_export_does_not_replace_images_already_beside_the_document() {
+        let root = std::env::temp_dir().join(format!("dc-scribus-sidecars-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let path = scribus_with_a_linked_image(&root.join("src"));
+        let mut s = crate::Session::new();
+        s.execute("file.open", &json!({"path": path.to_string_lossy()})).unwrap();
+        let out = root.join("out");
+        let sla = out.join("doc.sla");
+        let first = s.execute("file.exportScribus", &json!({"path": sla.to_string_lossy()})).unwrap();
+        assert_eq!(first["images"], 1, "{first}");
+        let image = out.join("pic.png");
+        assert!(image.is_file());
+        let before = std::fs::read(&image).unwrap();
+        // A second export must not replace the image (which may be a newer linked file).
+        let err = s.execute("file.exportScribus", &json!({"path": sla.to_string_lossy()})).unwrap_err();
+        assert!(format!("{err:?}").contains("refusing to overwrite"), "{err:?}");
+        assert_eq!(std::fs::read(&image).unwrap(), before, "the existing image is untouched");
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

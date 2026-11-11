@@ -86,11 +86,14 @@ fn open_path(s: &mut Session, p: &Value) -> Result<Value> {
         // then routes files whose content isn't recognised to the reader that explains why.
         let ext = std::path::Path::new(path).extension().and_then(std::ffi::OsStr::to_str).unwrap_or_default().to_ascii_lowercase();
         let native = designcraft_format::is_designcraft(&bytes) || bytes.trim_ascii_start().starts_with(b"{");
+        if designcraft_scribus::is_scribus(&bytes) || (!native && ext == "sla") {
+            return crate::cmd::interchange::open_scribus(s, p);
+        }
         if designcraft_idml::is_idml(&bytes) || (!native && (crate::cmd::interchange::is_indd(path, &bytes) || ext == "idml")) {
             return crate::cmd::interchange::open_idml(s, p);
         }
         if !native && ext != designcraft_format::EXTENSION {
-            return Err(bad("file.open", format!("{path}: not a DesignCraft or IDML file")));
+            return Err(bad("file.open", format!("{path}: not a DesignCraft, Scribus or IDML file")));
         }
         let (mut d, mut warnings) = load_bytes(&bytes)?;
         crate::cmd::interchange::resolve_packaged_links(&mut d, Some(std::path::Path::new(path)));
@@ -156,6 +159,9 @@ pub(super) fn file_open_bytes(s: &mut Session, p: &Value) -> Result<Value> {
     let b = base64_decode(str_param(p, "base64").unwrap_or(""));
     // IDML packages are recognised by their stored `mimetype` first entry, INDD files by their
     // signature (or their name).
+    if designcraft_scribus::is_scribus(&b) {
+        return crate::cmd::interchange::open_scribus(s, p);
+    }
     if designcraft_idml::is_idml(&b) || crate::cmd::interchange::is_indd(str_param(p, "name").unwrap_or_default(), &b) {
         return crate::cmd::interchange::open_idml(s, p);
     }

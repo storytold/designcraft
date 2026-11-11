@@ -784,6 +784,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Export EPUB…", "Експортувати EPUB…"),
     ("Export HTML…", "Експортувати HTML…"),
     ("Export IDML…", "Експортувати IDML…"),
+    ("Export Scribus…", "Експортувати Scribus…"),
     ("Export PDF (Interactive)…", "Експортувати PDF (інтерактивний)…"),
     ("Export Page as PNG…", "Експортувати сторінку в PNG…"),
     ("Export Selection as Snippet", "Експортувати виділення як фрагмент"),
