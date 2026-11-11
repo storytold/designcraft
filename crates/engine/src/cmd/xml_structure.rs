@@ -451,11 +451,12 @@ pub(super) fn addresses_ids(xml: &str) -> bool {
 fn texts_by_id(xml: &str) -> std::result::Result<IdTexts, String> {
     use quick_xml::events::Event;
     let mut r = quick_xml::Reader::from_str(xml);
-    // Open elements: the Id of each one that has one, and whether it is a table (aid:table="table").
+    // Open elements: the Id of each one that has one, and whether it is a table (a tagged one,
+    // aid:table="table", or an untagged one written as CALS `<table>`).
     let mut stack: Vec<(Option<String>, bool)> = Vec::new();
     let mut texts = IdTexts::default();
     let id_of = |e: &quick_xml::events::BytesStart| -> std::result::Result<(Option<String>, bool), String> {
-        let (mut id, mut table) = (None, false);
+        let (mut id, mut table) = (None, e.local_name().as_ref() == b"table");
         for a in e.attributes() {
             let a = a.map_err(|e| e.to_string())?;
             let value = a.normalized_value(quick_xml::XmlVersion::Implicit1_0).map_err(|e| e.to_string())?;
@@ -568,7 +569,7 @@ fn to_marker_edges(mut pre: usize, mut suf: usize, at: &[Range<usize>]) -> (usiz
 /// Puts `new` into `range` of `st`, replacing only the part that differs, so the formatting of
 /// what stays stays and changed text takes the format of the first character it replaces.
 /// Cross-references keep their place when their text (as export writes it) is still in `new`;
-/// other markers in the replaced part go with it.
+/// other markers (footnotes, anchors…, not in the XML) always stay.
 fn replace_text(st: &mut Story, range: Range<usize>, new: &str, d: &Document, xrefs: Option<&XrefIndex>) {
     // The element's text as export writes it, char by char, each with its byte range in the story.
     let mut view: Vec<char> = Vec::new();
@@ -602,32 +603,50 @@ fn replace_text(st: &mut Story, range: Range<usize>, new: &str, d: &Document, xr
     let b = if suf == 0 { at.last().map_or(range.end, |r| r.end) } else { at[view.len() - suf].start };
     let (a, b) = (a.min(b), a.max(b));
     let repl: String = new[pre..new.len() - suf].iter().collect();
-    // Cross-references in the changed part, kept where their text is found in the replacement.
-    let mut keep: Vec<(usize, String)> = Vec::new();
-    for (i, c) in st.text[a..b].char_indices() {
-        if c == designcraft_doc::XREF_MARK
-            && let Some(x) = st.xref_at(a + i)
-        {
-            keep.push((a + i, designcraft_compose::xref::xref_text(d, x, xrefs)));
-        }
-    }
-    // The replacement split around the kept references' texts, in order.
+    // The markers in the changed part: cross-references (with their text) and the others (footnotes,
+    // anchors, index entries…, which the XML doesn't show).
+    let markers: Vec<(usize, usize, Option<String>)> = st.text[a..b]
+        .char_indices()
+        .filter_map(|(i, c)| {
+            let pos = a + i;
+            if c == designcraft_doc::XREF_MARK {
+                st.xref_at(pos).map(|x| (pos, c.len_utf8(), Some(designcraft_compose::xref::xref_text(d, x, xrefs))))
+            } else {
+                ('\u{E000}'..='\u{E1FF}').contains(&c).then_some((pos, c.len_utf8(), None))
+            }
+        })
+        .collect();
+    // The replacement split around the kept markers, in order: a cross-reference stays where its text
+    // is found in the replacement (else it goes with the replaced text); every other marker stays,
+    // after the new text up to the next reference that stays.
     let mut pieces: Vec<String> = Vec::new();
-    let mut marks: Vec<usize> = Vec::new();
+    let mut marks: Vec<(usize, usize)> = Vec::new();
     let mut rest = repl.as_str();
-    for (pos, text) in &keep {
-        if let Some(k) = rest.find(text.as_str()).filter(|_| !text.is_empty()) {
-            pieces.push(rest[..k].to_string());
-            marks.push(*pos);
-            rest = &rest[k + text.len()..];
-        }
+    for (n, (pos, len, text)) in markers.iter().enumerate() {
+        let k = match text {
+            Some(t) => match rest.find(t.as_str()).filter(|_| !t.is_empty()) {
+                Some(k) => {
+                    pieces.push(rest[..k].to_string());
+                    marks.push((*pos, *len));
+                    rest = &rest[k + t.len()..];
+                    continue;
+                }
+                None => continue,
+            },
+            None => {
+                markers[n + 1..].iter().find_map(|(_, _, t)| t.as_deref().filter(|t| !t.is_empty()).and_then(|t| rest.find(t))).unwrap_or(rest.len())
+            }
+        };
+        pieces.push(rest[..k].to_string());
+        marks.push((*pos, *len));
+        rest = &rest[k..];
     }
     pieces.push(rest.to_string());
     // Replace the stretches between the kept marks, last first so the earlier ones stay put.
     let mut bounds = vec![a];
-    for m in &marks {
+    for (m, len) in &marks {
         bounds.push(*m);
-        bounds.push(m + designcraft_doc::XREF_MARK.len_utf8());
+        bounds.push(m + len);
     }
     bounds.push(b);
     let stretches: Vec<Range<usize>> = bounds.chunks(2).map(|w| w[0]..w[1]).collect();
@@ -655,33 +674,45 @@ pub fn import_by_id(s: &mut Session, xml: &str) -> Result<Value> {
             by_id.entry(v).or_insert(*id);
         }
     }
-    // Inline elements take their own text; story and cell elements all theirs (their nested
-    // elements' included), after those, so the two never undo each other.
+    // Inline elements take their own text, first the innermost; an inline element with inline
+    // elements in it then all its text (theirs included: its range runs across them), and story and
+    // cell elements all theirs last, so none undoes another. A table's text goes into its cells.
     let mut want: HashMap<u64, String> = HashMap::new();
+    let mut outer: HashMap<u64, String> = HashMap::new();
     let mut whole: Vec<(XmlContent, String)> = Vec::new();
     let mut unmatched: Vec<String> = Vec::new();
+    let mut tables: Vec<String> = Vec::new();
+    let has_inline = |e: u64| d.xml.elements.values().any(|c| c.parent == e && c.content == XmlContent::Text);
     for (k, t) in &texts.own {
         let Some(&e) = by_id.get(k.as_str()) else {
             unmatched.push(k.clone());
             continue;
         };
+        let full = || texts.full.get(k).cloned().unwrap_or_default();
         match d.xml.elements.get(&e).map(|el| el.content) {
-            Some(c @ (XmlContent::Story { .. } | XmlContent::Cell { .. })) => whole.push((c, texts.full.get(k).cloned().unwrap_or_default())),
+            Some(c @ (XmlContent::Story { .. } | XmlContent::Cell { .. })) => whole.push((c, full())),
+            Some(XmlContent::Table { .. }) => tables.push(k.clone()),
+            _ if has_inline(e) => {
+                outer.insert(e, full());
+            }
             _ => {
                 want.insert(e, t.clone());
             }
         }
     }
+    let matched = texts.own.len() - unmatched.len();
     let xrefs = s.cache.xref_index(d);
     let mut placed = 0usize;
     let mut failed: Vec<u64> = Vec::new();
     s.edit(|d, _| {
         let snapshot = d.clone();
         let ids: Vec<StoryId> = d.stories.keys().copied().collect();
-        for sid in &ids {
-            let holds = d.story(*sid).is_some_and(|st| holds_any(st, &want));
-            if holds && let Some(st) = d.story_mut(*sid) {
-                placed += fill(st, &want, &snapshot, Some(&xrefs), &mut failed);
+        for pass in [&want, &outer] {
+            for sid in &ids {
+                let holds = d.story(*sid).is_some_and(|st| holds_any(st, pass));
+                if holds && let Some(st) = d.story_mut(*sid) {
+                    placed += fill(st, pass, &snapshot, Some(&xrefs), &mut failed);
+                }
             }
         }
         for (content, t) in &whole {
@@ -702,13 +733,15 @@ pub fn import_by_id(s: &mut Session, xml: &str) -> Result<Value> {
         }
         Ok(())
     })?;
-    let failed: Vec<Value> = failed
+    let mut failed: Vec<Value> = failed
         .iter()
         .filter_map(|e| d_attr_id(s, *e))
         .map(|id| json!({"id": id, "error": "an inline element can't be emptied: it would lose its place in the text"}))
         .collect();
+    failed.extend(tables.iter().map(|id| json!({"id": id, "error": "a table's text goes into its cells: address the cells by their Ids"})));
     Ok(json!({
         "placed": placed,
+        "matched": matched,
         "unmatched": unmatched.len(),
         "unmatchedIds": unmatched.iter().take(50).collect::<Vec<_>>(),
         "failed": failed,
@@ -979,5 +1012,116 @@ mod tests {
         // Old "x12" against new "x02": the common end "2" stops inside it too.
         assert_eq!(super::to_marker_edges(1, 1, &at), (1, 0));
         assert_eq!(super::to_marker_edges(1, 0, &at), (1, 0), "an edge already at the marker stays");
+    }
+
+    /// A story element with an Id and an untagged (CALS) table: the table's text isn't the story's,
+    /// so an unchanged export changes neither.
+    #[test]
+    fn a_story_id_leaves_its_cals_table_alone() {
+        let (mut s, sid, table) = with_table(false);
+        s.edit(|d, _| {
+            if let Some(e) = d.xml.elements.get_mut(&1) {
+                e.attrs = vec![("Id".into(), "S".into())];
+            }
+            Ok(())
+        })
+        .unwrap();
+        let before = s.doc().unwrap().doc.story(sid).unwrap().clone();
+        let xml = export(&mut s);
+        assert!(xml.contains("<table "), "the table is CALS: {xml}");
+        s.execute("file.importXml", &json!({"text": xml})).unwrap();
+        let st = s.doc().unwrap().doc.story(sid).unwrap().clone();
+        assert_eq!((&st.text, &st.chars), (&before.text, &before.chars));
+        assert_eq!(st.tables[&table].cells[1].text.text, "B");
+    }
+
+    /// A table element's Id is reported: its text belongs to its cells.
+    #[test]
+    fn a_table_id_is_reported() {
+        let (mut s, _, _) = with_table(true);
+        s.edit(|d, _| {
+            if let Some(e) = d.xml.elements.get_mut(&3) {
+                e.attrs = vec![("Id".into(), "T".into())];
+            }
+            Ok(())
+        })
+        .unwrap();
+        let r = s.execute("file.importXml", &json!({"text": "<Root><Story><Table Id=\"T\" aid:table=\"table\">x</Table></Story></Root>"})).unwrap();
+        assert_eq!(r["failed"][0]["id"], json!("T"), "{r}");
+    }
+
+    /// An inline element with one inside it: re-importing the export changes nothing, and new texts
+    /// for both arrive in both.
+    #[test]
+    fn an_inline_element_keeps_the_text_of_one_inside_it() {
+        let (mut s, sid) = tagged();
+        // "Hallo Welt": element 3 (Id P) over "o We", element 4 (Id C) inside it over " ".
+        s.edit(|d, _| {
+            let el = |tag: &str, id: &str, parent: u64| XmlElement {
+                tag: tag.into(),
+                attrs: vec![("Id".into(), id.into())],
+                parent,
+                content: XmlContent::Text,
+                children: Vec::new(),
+            };
+            d.xml.elements.insert(3, el("Outer", "P", 1));
+            d.xml.elements.insert(4, el("Inner", "C", 3));
+            if let Some(st) = d.story_mut(sid) {
+                st.format_chars(6..8, |f| f.over.xml_element = Some(3));
+                st.format_chars(5..6, |f| f.over.xml_element = Some(4));
+                st.format_chars(4..5, |f| f.over.xml_element = Some(3));
+            }
+            Ok(())
+        })
+        .unwrap();
+        // element 2 (Id 7) keeps "Hall"
+        let before = s.doc().unwrap().doc.story(sid).unwrap().clone();
+        let xml = export(&mut s);
+        s.execute("file.importXml", &json!({"text": xml})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().chars, before.chars, "an unchanged export changes nothing");
+        let r = s.execute("file.importXml", &json!({"text": "<Root><Outer Id=\"P\">o<Inner Id=\"C\">-</Inner>We</Outer></Root>"})).unwrap();
+        assert_eq!(r["failed"], json!([]), "{r}");
+        let st = s.doc().unwrap().doc.story(sid).unwrap().clone();
+        assert_eq!(st.text, "Hallo-Welt");
+        assert_eq!(st.format_after(5).over.xml_element, Some(4), "the inner element keeps its new text");
+    }
+
+    /// A marker the XML doesn't show (an anchor) stays when the text around it changes.
+    #[test]
+    fn a_hidden_marker_stays_when_the_text_around_it_changes() {
+        let (mut s, sid) = tagged();
+        s.edit(|d, _| {
+            if let Some(st) = d.story_mut(sid) {
+                st.insert_anchor(2, "here");
+            }
+            Ok(())
+        })
+        .unwrap();
+        s.execute("file.importXml", &json!({"text": "<Root><Translation Id=\"7\">Hello</Translation></Root>"})).unwrap();
+        let st = s.doc().unwrap().doc.story(sid).unwrap().clone();
+        assert_eq!(st.anchors.len(), 1, "the anchor is kept");
+        assert_eq!(st.text.replace(designcraft_doc::ANCHOR_MARK, ""), "Hello Welt");
+    }
+
+    /// Ids that match no element leave the XML to the tagged frames.
+    #[test]
+    fn ids_matching_nothing_leave_xml_to_tagged_frames() {
+        let (mut s, sid) = tagged();
+        let frame = s.doc().unwrap().doc.all_items()[0].0;
+        s.execute("xml.tag", &json!({"tag": "headline", "ids": [frame]})).unwrap();
+        let r = s.execute("file.importXml", &json!({"text": "<Root><headline Id=\"x\">New</headline></Root>"})).unwrap();
+        assert_eq!(r["placed"], json!(1), "{r}");
+        assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().text, "New");
+    }
+
+    /// Images by tag in XML that fills elements by Id still go to tagged frames: one without its
+    /// frame is reported.
+    #[test]
+    fn images_by_tag_follow_an_import_by_id() {
+        let (mut s, sid) = tagged();
+        let xml = "<Root><Translation Id=\"7\">Hello</Translation><photo href=\"photo.png\"/></Root>";
+        let r = s.execute("file.importXml", &json!({"text": xml})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().text, "Hello Welt");
+        assert_eq!((r["placed"].as_u64(), r["unmatchedIdCount"].as_u64(), r["unmatchedTags"].clone()), (Some(1), Some(0), json!(["photo"])), "{r}");
     }
 }

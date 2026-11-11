@@ -620,11 +620,33 @@ fn import_xml(s: &mut Session, p: &Value) -> Result<Value> {
     const ID: &str = "file.importXml";
     let text = text_or_path(p, ID)?;
     // A document with InDesign's XML structure takes the texts of its elements by their Id when the
-    // XML addresses them so; other XML still fills the tagged frames.
+    // XML addresses some of them so, and then the images of the XML by their tags; other XML fills
+    // the tagged frames.
     if !s.doc()?.doc.xml.root_children.is_empty() && super::xml_structure::addresses_ids(&text) {
-        return super::xml_structure::import_by_id(s, &text);
+        let by_id = super::xml_structure::import_by_id(s, &text)?;
+        if by_id["matched"].as_u64().unwrap_or(0) > 0 {
+            let images = import_by_tag(s, p, &text, true)?;
+            let count = |r: &Value, k: &str| r[k].as_u64().unwrap_or(0);
+            let mut failed = by_id["failed"].as_array().cloned().unwrap_or_default();
+            failed.extend(images["failed"].as_array().cloned().unwrap_or_default());
+            return Ok(json!({
+                "placed": count(&by_id, "placed") + count(&images, "placed"),
+                "unmatched": count(&by_id, "unmatched") + count(&images, "unmatched"),
+                "unmatchedIdCount": count(&by_id, "unmatched"),
+                "unmatchedIds": by_id["unmatchedIds"],
+                "unmatchedTags": images["unmatchedTags"],
+                "failed": failed,
+            }));
+        }
     }
-    let elements = parse(&text).map_err(|e| bad(ID, format!("not well-formed XML: {e}")))?;
+    import_by_tag(s, p, &text, false)
+}
+
+/// Fills the tagged frames: each element of the XML takes the next free frame of its tag (only the
+/// images with `images_only`, after an import by Id).
+fn import_by_tag(s: &mut Session, p: &Value, text: &str, images_only: bool) -> Result<Value> {
+    const ID: &str = "file.importXml";
+    let elements = parse(text).map_err(|e| bad(ID, format!("not well-formed XML: {e}")))?;
     // Relative image paths: against `imageDir`, else the XML file's folder.
     let base = str_param(p, "imageDir").map(std::path::PathBuf::from).or_else(|| {
         str_param(p, "text").is_none().then(|| str_param(p, "path")).flatten().and_then(|x| std::path::Path::new(x).parent().map(Into::into))
@@ -655,6 +677,9 @@ fn import_xml(s: &mut Session, p: &Value) -> Result<Value> {
     for mut el in elements {
         if let Some(image) = el.image.take() {
             images.push((el.name, image));
+            continue;
+        }
+        if images_only {
             continue;
         }
         let Some(slot) = slots.iter_mut().find(|(t, _, used)| *t == el.name && !used) else {

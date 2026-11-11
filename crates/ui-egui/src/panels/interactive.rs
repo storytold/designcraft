@@ -351,13 +351,14 @@ pub(crate) fn import_report(lang: &str, r: &Value) -> String {
     let n = |key: &str| r[key].as_u64().unwrap_or(0).to_string();
     let mut parts = vec![tr("{n} placed").replace("{n}", &n("placed"))];
     let names = |key: &str| r[key].as_array().into_iter().flatten().filter_map(Value::as_str).collect::<Vec<_>>().join(", ");
-    if r["unmatched"].as_u64().unwrap_or(0) > 0 {
-        let line = if r.get("unmatchedIds").is_some() {
-            tr("{n} Ids without an element ({ids})").replace("{ids}", &names("unmatchedIds"))
-        } else {
-            tr("{n} without a free tagged frame ({tags})").replace("{tags}", &names("unmatchedTags"))
-        };
-        parts.push(line.replace("{n}", &n("unmatched")));
+    // An import by Id counts its unknown Ids apart; the rest of `unmatched` are tags without a frame.
+    let ids = r["unmatchedIdCount"].as_u64().unwrap_or(0);
+    let tags = r["unmatched"].as_u64().unwrap_or(0).saturating_sub(ids);
+    if ids > 0 {
+        parts.push(tr("{n} Ids without an element ({ids})").replace("{ids}", &names("unmatchedIds")).replace("{n}", &ids.to_string()));
+    }
+    if tags > 0 {
+        parts.push(tr("{n} without a free tagged frame ({tags})").replace("{tags}", &names("unmatchedTags")).replace("{n}", &tags.to_string()));
     }
     let failed = r["failed"].as_array().map_or(&[][..], Vec::as_slice);
     if let Some(first) = failed.first() {
@@ -932,12 +933,12 @@ mod import_xml_tests {
     #[test]
     fn the_report_names_unknown_ids_and_elements_not_filled_by_id() {
         let r = json!({
-            "placed": 4, "unmatched": 2, "unmatchedIds": ["17", "18"],
+            "placed": 4, "unmatched": 3, "unmatchedIdCount": 2, "unmatchedIds": ["17", "18"], "unmatchedTags": ["photo"],
             "failed": [{"id": "7", "error": "an inline element can't be emptied"}]
         });
         assert_eq!(
             import_report("", &r),
-            "Import XML: 4 placed, 2 Ids without an element (17, 18), 1 elements not filled (7: an inline element can't be emptied)"
+            "Import XML: 4 placed, 2 Ids without an element (17, 18), 1 without a free tagged frame (photo), 1 elements not filled (7: an inline element can't be emptied)"
         );
         assert!(import_report("de", &r).contains("2 Ids ohne Element (17, 18)"), "{}", import_report("de", &r));
     }

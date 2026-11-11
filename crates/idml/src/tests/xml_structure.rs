@@ -273,4 +273,9 @@ fn elements_inside_content_that_is_not_kept_stay() {
     let [(_, pic)] = by_tag(&d, "Pic")[..] else { panic!("one Pic element") };
     let [(caption, _)] = by_tag(&d, "Caption")[..] else { panic!("one Caption element") };
     assert_eq!((pic.content, &pic.children), (XmlContent::None, &vec![caption]));
+    // Exported, it is written around its caption's text, so both come back, one in the other.
+    let back = import_idml(&export_idml(&d)).unwrap();
+    let [(pic, _)] = by_tag(&back, "Pic")[..] else { panic!("Pic kept: {:?}", back.xml.elements) };
+    let [(_, caption)] = by_tag(&back, "Caption")[..] else { panic!("one Caption element") };
+    assert_eq!(caption.parent, pic);
 }

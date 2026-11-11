@@ -249,13 +249,31 @@ impl<'a> Ex<'a> {
     /// The inline elements around a range's text, outermost first (up to the story's or cell's).
     fn inline_chain(&self, id: u64) -> Vec<u64> {
         let mut chain = Vec::new();
+        // Elements whose content isn't kept (a page item) between: written around the text too when
+        // they are inside a story or cell (not when the backing story writes them, under the root).
+        let mut between = Vec::new();
+        let mut inside = false;
         let mut cur = id;
         while let Some(e) = self.d.xml.elements.get(&cur) {
-            if e.content != XmlContent::Text || chain.len() > 64 {
+            if chain.len() + between.len() > 64 {
                 break;
             }
-            chain.push(cur);
+            match e.content {
+                XmlContent::Text => {
+                    chain.append(&mut between);
+                    chain.push(cur);
+                }
+                XmlContent::None if !self.d.xml.root_children.contains(&cur) => between.push(cur),
+                XmlContent::Story { .. } | XmlContent::Table { .. } | XmlContent::Cell { .. } => {
+                    inside = true;
+                    break;
+                }
+                XmlContent::None => break,
+            }
             cur = e.parent;
+        }
+        if inside {
+            chain.append(&mut between);
         }
         chain.reverse();
         chain
