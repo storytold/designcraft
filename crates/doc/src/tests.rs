@@ -370,6 +370,25 @@ fn placed_pdf_without_a_crop_choice_loads_with_the_crop_box() {
     assert_eq!(Asset { pdf_box: Some([0.5, 0.5, 0.5, 0.9]), ..back }.shown_box(), None);
 }
 
+/// Checking a document looks each frame up once: 20,000 text frames check in well under a
+/// second (each lookup searched every item before).
+#[test]
+fn check_is_linear_in_the_frames() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    for i in 0..20_000 {
+        let y = f64::from(i % 100);
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, y, 10.0, y + 1.0), lid, "x", ParaFormat::default()).unwrap();
+    }
+    let t = std::time::Instant::now();
+    d.check().unwrap();
+    assert!(t.elapsed() < std::time::Duration::from_secs(10), "{:?}", t.elapsed());
+    // A frame its story names but the document doesn't have is still refused.
+    let sid = *d.stories.keys().next().unwrap();
+    Arc::make_mut(d.stories.get_mut(&sid).unwrap()).frames.push(ItemId(u64::MAX));
+    assert!(matches!(d.check(), Err(DocError::NoItem(ItemId(u64::MAX)))));
+}
+
 #[test]
 fn adjust_text_ranges_tracks_and_prunes_hyperlinks_and_placeholders() {
     let mut d = doc();
