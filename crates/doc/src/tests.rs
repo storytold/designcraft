@@ -380,6 +380,7 @@ fn page_numbers_in_one_pass_match_page_number() {
         prefix: String::new(),
         marker: String::new(),
         include_prefix: false,
+        layout: None,
     };
     // Out of order, a repeated start, continuing sections and one with its own number.
     d.sections = vec![sec(7, None), sec(2, Some(10)), sec(4, None), sec(7, Some(3)), sec(9, None), sec(11, Some(u32::MAX)), sec(12, None)];
@@ -391,6 +392,7 @@ fn page_numbers_in_one_pass_match_page_number() {
     assert_eq!(d.page_numbers(5000)[4999], 5000);
 }
 
+#[test]
 fn adjust_text_ranges_tracks_and_prunes_hyperlinks_and_placeholders() {
     let mut d = doc();
     let sid = StoryId(1);
