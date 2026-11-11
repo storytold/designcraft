@@ -163,12 +163,16 @@ fn page_text(d: &designcraft_doc::Document, cache: &designcraft_compose::Cache, 
                 continue;
             }
             // Pages render printing-only: a hidden or nonprinting frame or group around it, or a top-level item on a hidden or non-printable layer (members draw on its layer), isn't on the rendered page.
-            let off = |n: usize, it: &designcraft_doc::Item| {
-                it.hidden || it.nonprinting || n == 1 && d.layers.iter().any(|l| (!l.visible || !l.printable) && l.id == it.layer)
-            };
+            // Inside a multi-state object only the active state is drawn.
             if d.find(ft.frame).is_some_and(|loc| {
-                (1..=loc.path.len())
-                    .any(|n| d.item_at(&designcraft_doc::ItemLoc { spread: loc.spread, path: loc.path[..n].to_vec() }).is_some_and(|it| off(n, it)))
+                (1..=loc.path.len()).any(|n| {
+                    d.item_at(&designcraft_doc::ItemLoc { spread: loc.spread, path: loc.path[..n].to_vec() }).is_some_and(|it| {
+                        it.hidden
+                            || it.nonprinting
+                            || n == 1 && d.layers.iter().any(|l| (!l.visible || !l.printable) && l.id == it.layer)
+                            || n < loc.path.len() && !it.states.is_empty() && loc.path[n] != it.active_state
+                    })
+                })
             }) {
                 continue;
             }
