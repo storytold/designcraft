@@ -13,7 +13,8 @@
 //!   opacity rides on the filter colour's alpha.
 //! - Inner shadow: the inverse of the offset shape, blurred, clipped to the shape, on top.
 //! - Inner glow, bevel and emboss, satin: built like the inner shadow (an offset inverse of the
-//!   shape, blurred and clipped) with screen / multiply blending; satin XORs two offset copies.
+//!   shape, blurred and clipped) with screen / multiply blending; satin shows where two offset
+//!   copies' coverages differ.
 //! - Feather: the object is masked by its shape inset by half the width and blurred, so the
 //!   edge fades from ~0 at the path to full strength `width` inside.
 
@@ -273,7 +274,7 @@ impl Renderer {
                 let band = (bound(g.size) - choke).max(0.5);
                 self.with_blended_filters(ctx, f, reach, sigma, mix, (bp, xf), |me, c, fr| {
                     let spread = (sigma * 3.0 + band) / fr.px + 2.0;
-                    let Some(o) = offscreen(fr.view.transform_rect_bbox(reach), spread, c.width(), c.height()) else { return };
+                    let Some(o) = mask_offscreen(fr.view.transform_rect_bbox(reach), spread, c.width(), c.height()) else { return };
                     let mut off = RenderContext::new_with(o.width, o.height, vello_cpu::RenderSettings { num_threads: 0, ..Default::default() });
                     let view = Affine::scale(1.0 / o.scale) * Affine::translate((-o.x0, -o.y0)) * fr.view;
                     me.draw_body(&mut off, &Frame { mt: false, view, px: fr.px * o.scale, ..*fr }, it, bp, xf, page);
@@ -337,41 +338,32 @@ impl Renderer {
             let sigma = bound(st.size).max(0.0) / 2.0;
             let paint = color_of(&c, st.opacity.clamp(0.0, 1.0));
             let invert = st.invert;
-            self.with_blended_filters(ctx, f, reach, sigma, Mix::Multiply, (bp, xf), |me, c, fr| {
-                // One copy of the shape moved by `by`: the shape in the satin colour, or what the
-                // object paints (coloured below).
-                let copy = |me: &mut Renderer, c: &mut RenderContext, by: Vec2| match painted {
-                    Some((it, page)) => {
-                        let moved = Frame { view: fr.view * Affine::translate(by), ..*fr };
-                        me.draw_body(c, &moved, it, bp, xf, page);
-                    }
-                    None => {
-                        c.set_transform(fr.view * Affine::translate(by) * xf);
-                        c.set_paint(paint);
-                        c.fill_path(bp);
-                    }
-                };
-                c.set_transform(fr.view);
-                if painted.is_some() {
+            if let Some((it, page)) = painted {
+                // With a graphic, the object's coverage is drawn once offscreen and the two shifted
+                // copies are compared there, pixel by pixel, so a partly transparent pixel that
+                // both copies cover equally gets no satin.
+                self.with_blended_filters(ctx, f, reach, sigma, Mix::Multiply, (bp, xf), |me, c, fr| {
+                    // The copies' shift on the device.
+                    let shift = fr.view * off.to_point() - fr.view * kurbo::Point::ZERO;
+                    let spread = (sigma * 3.0) / fr.px + shift.hypot() + 2.0;
+                    let Some(o) = mask_offscreen(fr.view.transform_rect_bbox(reach), spread, c.width(), c.height()) else { return };
+                    let mut off_ctx = RenderContext::new_with(o.width, o.height, vello_cpu::RenderSettings { num_threads: 0, ..Default::default() });
+                    let view = Affine::scale(1.0 / o.scale) * Affine::translate((-o.x0, -o.y0)) * fr.view;
+                    me.draw_body(&mut off_ctx, &Frame { mt: false, view, px: fr.px * o.scale, ..*fr }, it, bp, xf, page);
+                    off_ctx.flush();
+                    let mut pm = vello_cpu::Pixmap::new(o.width, o.height);
+                    off_ctx.render(&mut pm, &mut me.resources);
+                    let mask = satin_mask(&pm, shift / o.scale, invert);
+                    // The satin colour where the copies differ, ...
+                    c.set_transform(fr.view);
                     c.push_layer(None, None, None, None, None);
-                }
-                c.push_layer(None, None, None, None, Some(blur(sigma)));
-                if painted.is_some() {
-                    c.push_layer(None, None, None, None, None);
-                }
-                if invert {
-                    copy(me, c, Vec2::ZERO);
-                }
-                c.set_transform(Affine::IDENTITY);
-                c.push_layer(None, Some(BlendMode::new(Mix::Normal, if invert { Compose::DestOut } else { Compose::SrcOver })), None, None, None);
-                copy(me, c, off);
-                c.set_transform(Affine::IDENTITY);
-                c.push_layer(None, Some(BlendMode::new(Mix::Normal, Compose::Xor)), None, None, None);
-                copy(me, c, -off);
-                c.pop_layer();
-                c.pop_layer();
-                if let Some((it, page)) = painted {
-                    // The satin colour where the copies cover, ...
+                    c.push_layer(None, None, None, None, Some(blur(sigma)));
+                    c.set_transform(Affine::translate((o.x0, o.y0)) * Affine::scale(o.scale));
+                    c.set_paint(vello_cpu::Image {
+                        image: vello_cpu::ImageSource::Pixmap(std::sync::Arc::new(mask)),
+                        sampler: peniko::ImageSampler::default(),
+                    });
+                    c.fill_rect(&Rect::new(0.0, 0.0, f64::from(o.width), f64::from(o.height)));
                     let pad = sigma * 4.0 + off.hypot() + 4.0 * fr.px;
                     c.set_transform(Affine::IDENTITY);
                     c.push_layer(None, Some(BlendMode::new(Mix::Normal, Compose::SrcIn)), None, None, None);
@@ -380,15 +372,37 @@ impl Renderer {
                     c.fill_rect(&reach.inflate(pad, pad));
                     c.pop_layer();
                     c.pop_layer();
-                    c.pop_layer();
                     // ... blurred and kept only where the object paints.
                     c.set_transform(Affine::IDENTITY);
                     c.push_layer(None, Some(BlendMode::new(Mix::Normal, Compose::DestIn)), None, None, None);
                     me.draw_body(c, fr, it, bp, xf, page);
                     c.pop_layer();
-                }
-                c.pop_layer();
-            });
+                    c.pop_layer();
+                });
+            } else {
+                self.with_blended_filters(ctx, f, reach, sigma, Mix::Multiply, (bp, xf), |_, c, fr| {
+                    // One copy of the shape in the satin colour, moved by `by`.
+                    let copy = |c: &mut RenderContext, by: Vec2| {
+                        c.set_transform(fr.view * Affine::translate(by) * xf);
+                        c.set_paint(paint);
+                        c.fill_path(bp);
+                    };
+                    c.set_transform(fr.view);
+                    c.push_layer(None, None, None, None, Some(blur(sigma)));
+                    if invert {
+                        copy(c, Vec2::ZERO);
+                    }
+                    c.set_transform(Affine::IDENTITY);
+                    c.push_layer(None, Some(BlendMode::new(Mix::Normal, if invert { Compose::DestOut } else { Compose::SrcOver })), None, None, None);
+                    copy(c, off);
+                    c.set_transform(Affine::IDENTITY);
+                    c.push_layer(None, Some(BlendMode::new(Mix::Normal, Compose::Xor)), None, None, None);
+                    copy(c, -off);
+                    c.pop_layer();
+                    c.pop_layer();
+                    c.pop_layer();
+                });
+            }
         }
         // Bevel and Emboss (inner bevel): highlight from the lit side, shadow from the other.
         if e.bevel.on {
@@ -583,6 +597,26 @@ fn offscreen(reach: Rect, spread: f64, width: u16, height: u16) -> Option<Offscr
     (w >= 1.0 && h >= 1.0).then_some(Offscreen { x0, y0, scale, width: w as u16, height: h as u16 })
 }
 
+/// The most pixels a coverage mask drawn offscreen ([`mask_offscreen`]) holds: 4096 × 4096.
+const MAX_MASK_PIXELS: f64 = 4096.0 * 4096.0;
+
+/// The offscreen image an object's coverage is drawn in to build an effect's mask: `reach` (device
+/// pixels) widened by `spread`, within the window widened the same way, as [`offscreen`] finds it,
+/// at a resolution low enough that the whole area fits within [`crate::MAX_SIDE`] a side and
+/// [`MAX_MASK_PIXELS`] in all. `None` when none of it shows.
+fn mask_offscreen(reach: Rect, spread: f64, width: u16, height: u16) -> Option<Offscreen> {
+    let screen = Rect::new(0.0, 0.0, f64::from(width), f64::from(height)).inflate(spread, spread);
+    let r = reach.inflate(spread, spread).intersect(screen);
+    let (x0, y0) = (r.x0.floor(), r.y0.floor());
+    let (w, h) = (r.x1.ceil() - x0, r.y1.ceil() - y0);
+    if !(w >= 1.0 && h >= 1.0) {
+        return None;
+    }
+    let scale = (spread / MAX_BLUR_SPREAD).max(1.0).max(w.max(h) / crate::MAX_SIDE as f64).max((w * h / MAX_MASK_PIXELS).sqrt());
+    let side = |len: f64| (len / scale).ceil().clamp(1.0, crate::MAX_SIDE as f64);
+    Some(Offscreen { x0, y0, scale, width: side(w) as u16, height: side(h) as u16 })
+}
+
 /// `pm`'s coverage shrunk by `r` pixels: each pixel takes the smallest alpha among itself and the
 /// points on circles of `r` and `r / 2` around it, as white premultiplied by that alpha. Pixels
 /// outside `pm` count as transparent.
@@ -601,6 +635,35 @@ fn erode(pm: &vello_cpu::Pixmap, r: f64) -> vello_cpu::Pixmap {
     for y in 0..h {
         for x in 0..w {
             let a = taps.iter().map(|&(dx, dy)| alpha(x.saturating_add(dx), y.saturating_add(dy))).min().unwrap_or(0);
+            data.push(vello_cpu::color::PremulRgba8 { r: a, g: a, b: a, a });
+        }
+    }
+    vello_cpu::Pixmap::from_parts(data, pm.width(), pm.height())
+}
+
+/// The satin coverage of `pm`'s two copies moved by `shift` and `-shift` pixels: at each pixel,
+/// how much the copies' coverages differ, or with `invert`, `pm`'s own coverage where they
+/// agree, as white premultiplied by that amount. Copies are sampled bilinearly; pixels outside
+/// `pm` count as transparent.
+fn satin_mask(pm: &vello_cpu::Pixmap, shift: Vec2, invert: bool) -> vello_cpu::Pixmap {
+    let (w, h) = (i64::from(pm.width()), i64::from(pm.height()));
+    let src = pm.data();
+    let alpha = |x: i64, y: i64| if x < 0 || y < 0 || x >= w || y >= h { 0.0 } else { f64::from(src[(y * w + x) as usize].a) / 255.0 };
+    let sample = |x: f64, y: f64| {
+        let (fx, fy) = (x.floor(), y.floor());
+        let (tx, ty) = (x - fx, y - fy);
+        let (ix, iy) = (fx as i64, fy as i64);
+        let top = alpha(ix, iy) * (1.0 - tx) + alpha(ix.saturating_add(1), iy) * tx;
+        let bottom = alpha(ix, iy.saturating_add(1)) * (1.0 - tx) + alpha(ix.saturating_add(1), iy.saturating_add(1)) * tx;
+        top * (1.0 - ty) + bottom * ty
+    };
+    let mut data = Vec::with_capacity(src.len());
+    for y in 0..h {
+        for x in 0..w {
+            let (px, py) = (x as f64, y as f64);
+            let diff = (sample(px - shift.x, py - shift.y) - sample(px + shift.x, py + shift.y)).abs();
+            let v = if invert { alpha(x, y) * (1.0 - diff) } else { diff };
+            let a = (v.clamp(0.0, 1.0) * 255.0).round() as u8;
             data.push(vello_cpu::color::PremulRgba8 { r: a, g: a, b: a, a });
         }
     }
@@ -639,6 +702,21 @@ mod tests {
         // much padding again inside vello's filter layer. Drawn at 1/14.65 it is 1,024 px wide.
         let wide = Offscreen { x0: -14852.0, y0: -14852.0, scale: 15_002.0 / 1024.0, width: 2062, height: 2062 };
         assert_eq!(offscreen(object, 15_002.0, 1440, 900), Some(wide));
+    }
+
+    /// A coverage mask covers the whole widened area at a lower resolution when it is wider than
+    /// `MAX_SIDE` or holds more than `MAX_MASK_PIXELS`; a small one stays at full resolution.
+    #[test]
+    fn a_coverage_mask_covers_its_whole_area_within_its_pixel_budget() {
+        let small = Offscreen { x0: 140.0, y0: 140.0, scale: 1.0, width: 220, height: 220 };
+        assert_eq!(mask_offscreen(Rect::new(150.0, 150.0, 350.0, 350.0), 10.0, 1440, 900), Some(small));
+        for (reach, w, h) in [(Rect::new(0.0, 0.0, 65_535.0, 100.0), u16::MAX, 100), (Rect::new(0.0, 0.0, 20_000.0, 20_000.0), 20_000, 20_000)] {
+            let o = mask_offscreen(reach, 10.0, w, h).unwrap();
+            assert_eq!((o.x0, o.y0), (-10.0, -10.0));
+            assert!(o.x0 + f64::from(o.width) * o.scale >= reach.x1 + 10.0, "{o:?}");
+            assert!(o.y0 + f64::from(o.height) * o.scale >= reach.y1 + 10.0, "{o:?}");
+            assert!(f64::from(o.width) * f64::from(o.height) <= MAX_MASK_PIXELS + f64::from(o.width) + f64::from(o.height), "{o:?}");
+        }
     }
 
     /// An inner shadow on a frame holding an image whose left half is transparent: the shadow
@@ -686,6 +764,43 @@ mod tests {
         }
     }
 
+    /// Satin on a frame holding a uniformly half-transparent image: where both copies cover the
+    /// same partial coverage (all of the image with a distance of 0, its middle with a short one),
+    /// plain satin leaves the image as it is; inverted satin shades it.
+    #[test]
+    fn satin_leaves_a_uniform_half_transparent_image_plain() {
+        for (distance, invert) in [(0.0, false), (40.0, false), (0.0, true)] {
+            let (d, mut it) = image_frame(|_| image::Rgba([255, 255, 255, 128]));
+            let s = &mut it.effects.satin;
+            s.on = true;
+            s.color = "[Black]".into();
+            s.opacity = 1.0;
+            s.angle = 0.0;
+            s.distance = distance;
+            s.size = 4.0;
+            s.invert = invert;
+            let lum = render_row(d, it);
+            // The image is white over a white page; satin multiplies black over it.
+            let shaded = lum(200) < 700;
+            assert_eq!(shaded, invert, "distance {distance}, invert {invert}: lum at x = 200 is {}", lum(200));
+        }
+    }
+
+    /// The satin mask is the difference of the shifted coverages: none where both copies cover the
+    /// same half coverage, half along an edge only one copy reaches, and the inverse keeps the
+    /// pixmap's own coverage where they agree.
+    #[test]
+    fn the_satin_mask_compares_partial_coverage() {
+        let half = vello_cpu::color::PremulRgba8 { r: 128, g: 128, b: 128, a: 128 };
+        let pm = vello_cpu::Pixmap::from_parts(vec![half; 40 * 40], 40, 40);
+        let plain = satin_mask(&pm, Vec2::new(3.0, 0.0), false);
+        assert_eq!(plain.sample(20, 20).a, 0);
+        assert_eq!(plain.sample(1, 20).a, 128);
+        let inverted = satin_mask(&pm, Vec2::new(3.0, 0.0), true);
+        assert_eq!(inverted.sample(20, 20).a, 128);
+        assert_eq!(inverted.sample(1, 20).a, 64);
+    }
+
     /// An inner glow from the center on a frame holding an image whose left half is transparent
     /// fills only the image's opaque part, fading toward that part's own edge.
     #[test]
@@ -721,12 +836,17 @@ mod tests {
     /// A 200 pt frame at (100, 100) holding a 20 × 20 image with a transparent left half and an
     /// opaque white right half, in a new document.
     fn half_image_frame() -> (designcraft_doc::Document, Item) {
+        image_frame(|x| if x < 10 { image::Rgba([0, 0, 0, 0]) } else { image::Rgba([255, 255, 255, 255]) })
+    }
+
+    /// A 200 pt frame at (100, 100) holding a 20 × 20 image whose pixels in column x are
+    /// `pixel(x)`, in a new document.
+    fn image_frame(pixel: impl Fn(u32) -> image::Rgba<u8>) -> (designcraft_doc::Document, Item) {
         use designcraft_doc::Document;
         use designcraft_doc::build::NewDocument;
         let mut d = Document::new(&NewDocument::default());
         let lid = d.default_layer();
-        // 20 × 20: transparent left half, opaque white right half.
-        let img = image::RgbaImage::from_fn(20, 20, |x, _| if x < 10 { image::Rgba([0, 0, 0, 0]) } else { image::Rgba([255, 255, 255, 255]) });
+        let img = image::RgbaImage::from_fn(20, 20, |x, _| pixel(x));
         let mut png = Vec::new();
         img.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
         let aid = designcraft_doc::AssetId(d.alloc());
