@@ -679,6 +679,8 @@ struct Written {
 /// document was saved, reverted or closed since the write started: its snapshot is then dropped
 /// instead of published, so a crash cannot offer back a copy older than the saved file.
 fn write_snapshot(entry: &Snapshot, cancelled: impl Fn() -> bool) -> Written {
+    #[cfg(any(test, feature = "testing"))]
+    testing::gate(&entry.dir);
     let (doc, meta) = files(&entry.dir, entry.uid);
     let published = publish_recovery_written(
         &doc,
@@ -812,7 +814,7 @@ pub(crate) fn finished(_s: &mut Session) -> Finished {
 mod worker {
     use std::collections::BTreeSet;
     use std::sync::mpsc::{Receiver, Sender};
-    use std::sync::{Mutex, OnceLock};
+    use std::sync::{Condvar, Mutex, OnceLock};
 
     use super::{Path, PathBuf, Result, Snapshot, write_snapshot};
 
@@ -834,6 +836,8 @@ mod worker {
         /// A document saved, reverted or closed while its write was queued or running: the
         /// snapshot it is producing must not be published.
         cancelled: Mutex<BTreeSet<(PathBuf, u64)>>,
+        /// Notified each time a write finishes and leaves `running`.
+        idle: Condvar,
     }
 
     static WRITER: OnceLock<Option<Writer>> = OnceLock::new();
@@ -850,6 +854,16 @@ mod worker {
             }
             if let Ok(mut cancelled) = self.cancelled.lock() {
                 cancelled.remove(&key);
+            }
+            self.idle.notify_all();
+        }
+
+        /// Block until no write is queued or running.
+        #[cfg(any(test, feature = "testing"))]
+        pub(super) fn wait_until_idle(&self) {
+            let mut running = self.running.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            while !running.is_empty() {
+                running = self.idle.wait(running).unwrap_or_else(std::sync::PoisonError::into_inner);
             }
         }
 
@@ -898,6 +912,7 @@ mod worker {
                     done: Mutex::new(done_rx),
                     running: Mutex::new(BTreeSet::new()),
                     cancelled: Mutex::new(BTreeSet::new()),
+                    idle: Condvar::new(),
                 })
             })
             .as_ref()
@@ -956,6 +971,107 @@ mod worker {
             return None;
         }
         Some(true)
+    }
+}
+
+/// Handshakes for tests of the recovery writer, in this crate and, with the `testing` feature, in
+/// the app's: hold a write at its start, and wait for the writer to finish.
+#[cfg(any(test, feature = "testing"))]
+pub mod testing {
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc::{Receiver, Sender};
+    use std::sync::{Arc, Mutex, PoisonError};
+    use std::thread::ThreadId;
+
+    struct Gate {
+        dir: PathBuf,
+        holder: ThreadId,
+        entered: Sender<()>,
+        go: Receiver<()>,
+        ran_on_holder: Arc<AtomicBool>,
+    }
+
+    static GATE: Mutex<Option<Gate>> = Mutex::new(None);
+
+    /// The next recovery write into one folder, held at its start until this is released or
+    /// dropped.
+    pub struct HeldWrite {
+        entered: Receiver<()>,
+        go: Option<Sender<()>>,
+        ran_on_holder: Arc<AtomicBool>,
+    }
+
+    /// Hold the next recovery write into `dir`. A write on another thread waits before it writes
+    /// anything; a write on the calling thread does not wait, and [`HeldWrite::ran_here`] reports it.
+    pub fn hold_next_write(dir: &Path) -> HeldWrite {
+        let (entered_tx, entered) = std::sync::mpsc::channel();
+        let (go, go_rx) = std::sync::mpsc::channel();
+        let ran_on_holder = Arc::new(AtomicBool::new(false));
+        let gate = Gate {
+            dir: dir.to_path_buf(),
+            holder: std::thread::current().id(),
+            entered: entered_tx,
+            go: go_rx,
+            ran_on_holder: ran_on_holder.clone(),
+        };
+        *GATE.lock().unwrap_or_else(PoisonError::into_inner) = Some(gate);
+        HeldWrite { entered, go: Some(go), ran_on_holder }
+    }
+
+    impl HeldWrite {
+        /// The held write ran on the thread that called [`hold_next_write`].
+        pub fn ran_here(&self) -> bool {
+            self.ran_on_holder.load(Ordering::SeqCst)
+        }
+
+        /// Block until the write has reached the gate.
+        pub fn wait_until_held(&self) {
+            let _ = self.entered.recv();
+        }
+
+        /// Let the held write go on.
+        pub fn release(mut self) {
+            if let Some(go) = self.go.take() {
+                let _ = go.send(());
+            }
+        }
+    }
+
+    impl Drop for HeldWrite {
+        fn drop(&mut self) {
+            // A gate no write reached is removed, so it cannot hold a later test's write.
+            let mut slot = GATE.lock().unwrap_or_else(PoisonError::into_inner);
+            if slot.as_ref().is_some_and(|gate| Arc::ptr_eq(&gate.ran_on_holder, &self.ran_on_holder)) {
+                *slot = None;
+            }
+        }
+    }
+
+    /// Called at the start of every recovery write.
+    pub(super) fn gate(dir: &Path) {
+        let gate = {
+            let mut slot = GATE.lock().unwrap_or_else(PoisonError::into_inner);
+            if slot.as_ref().is_some_and(|gate| gate.dir == dir) { slot.take() } else { None }
+        };
+        let Some(gate) = gate else { return };
+        if std::thread::current().id() == gate.holder {
+            gate.ran_on_holder.store(true, Ordering::SeqCst);
+            let _ = gate.entered.send(());
+            return;
+        }
+        let _ = gate.entered.send(());
+        // A dropped `HeldWrite` closes the channel, which also lets the write go on.
+        let _ = gate.go.recv();
+    }
+
+    /// Block until the background writer has no write queued or running.
+    pub fn wait_until_idle() {
+        // Nothing is written in the background on the web.
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(w) = super::worker::started() {
+            w.wait_until_idle();
+        }
     }
 }
 

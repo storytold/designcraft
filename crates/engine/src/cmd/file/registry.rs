@@ -70,8 +70,12 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(noundo "file.recovery.save", "Save Recovery Data", [], None,
             "{dir?, background?} — write every unsaved document to the recovery folder (the app does this on a timer; `background` queues the writes and returns at once) → {saved} or {queued}",
             always, |s, p| {
+            let background = match p.get("background") {
+                None | Some(Value::Null) => false,
+                Some(v) => v.as_bool().ok_or_else(|| bad("file.recovery.save", "`background` must be true or false"))?,
+            };
             let dir = recovery_dir(s, p, FolderAccess::Write)?;
-            if p.get("background").and_then(Value::as_bool).unwrap_or(false) {
+            if background {
                 return Ok(json!({"queued": crate::recovery::start_tracked(s, &dir)?}));
             }
             Ok(json!({"saved": crate::recovery::save_tracked(s, &dir)?}))

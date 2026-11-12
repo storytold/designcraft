@@ -151,18 +151,30 @@ fn the_recovery_timer_writes_off_the_interface_thread() {
     app.last_recovery = -1.0e9;
     let uid = app.session.documents()[0].uid;
     let entry = dir.path().join(format!("{uid}.designcraft"));
-    let mut written = false;
-    for _ in 0..600 {
+    // The writer stops at the start of the write until the test lets it go on, so a frame that
+    // waited for the write would never return.
+    let held = designcraft_engine::recovery::testing::hold_next_write(dir.path());
+    // egui discards a pass that needs another layout; the timer runs in the first pass it keeps.
+    for _ in 0..10 {
         shot_frame(&mut app, &ctx, egui::vec2(1400.0, 900.0));
-        // The timer fired and the write finished: the file is there and nothing is still queued.
-        if entry.exists() && !app.recovery_writing {
-            written = true;
+        if app.last_recovery > 0.0 {
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(5));
     }
-    assert!(written, "the timer's background write published the document");
-    assert!(app.last_recovery > 0.0, "the timer restarted its interval");
+    assert!(app.last_recovery > 0.0, "the timer fired and restarted its interval");
+    assert!(!held.ran_here(), "the timer wrote the recovery data on the interface thread");
+    assert!(app.recovery_writing, "the timer queued the write");
+    held.wait_until_held();
+    // While the write is held, the interface keeps drawing frames and taking edits.
+    app.run("frame.create", json!({"rect": [20, 20, 80, 80]})).unwrap();
+    shot_frame(&mut app, &ctx, egui::vec2(1400.0, 900.0));
+    assert!(app.recovery_writing, "the write is still held");
+    assert!(!entry.exists(), "nothing is published while the write is held");
+    held.release();
+    designcraft_engine::recovery::testing::wait_until_idle();
+    shot_frame(&mut app, &ctx, egui::vec2(1400.0, 900.0));
+    assert!(!app.recovery_writing, "the frame after the write took its result");
+    assert!(entry.exists(), "the timer's background write published the document");
     // The checkpoint is the document's: saving it removes the recovery entry.
     let saved = dir.path().join("saved.designcraft");
     app.run("file.saveAs", json!({"path": saved.to_string_lossy()})).unwrap();

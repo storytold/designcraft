@@ -135,20 +135,49 @@ fn background() -> std::sync::MutexGuard<'static, ()> {
     BACKGROUND.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// Poll `file.recovery.progress` until the background writer has nothing left, as the app does at
-/// the end of a frame.
+/// Wait for the background writer to have nothing left, then read `file.recovery.progress` as the
+/// app does at the end of a frame.
 fn finished_writes(s: &mut Session) -> usize {
-    let mut written = 0;
-    for _ in 0..1200 {
-        let v = s.execute("file.recovery.progress", &json!({})).unwrap();
-        assert_eq!(v["errors"], json!([]), "{v}");
-        written += v["written"].as_u64().unwrap_or(0) as usize;
-        if !v["busy"].as_bool().unwrap_or(false) {
-            return written;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
-    panic!("the background writer did not finish");
+    testing::wait_until_idle();
+    let v = s.execute("file.recovery.progress", &json!({})).unwrap();
+    assert_eq!(v["errors"], json!([]), "{v}");
+    assert_eq!(v["busy"], false, "{v}");
+    v["written"].as_u64().unwrap_or(0) as usize
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_background_save_returns_while_its_write_is_held() {
+    let _turn = background();
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = dirty_session();
+    s.recovery_dir = Some(dir.path().to_path_buf());
+    let uid = s.docs[0].uid;
+    let (file, _) = files(dir.path(), uid);
+    let held = testing::hold_next_write(dir.path());
+    let queued = s.execute("file.recovery.save", &json!({"background": true})).unwrap();
+    assert!(!held.ran_here(), "the write ran on the calling thread");
+    assert_eq!(queued["queued"], 1, "{queued}");
+    // The writer thread is stopped at the start of the write, and the session goes on.
+    held.wait_until_held();
+    let v = s.execute("file.recovery.progress", &json!({})).unwrap();
+    assert_eq!(v["busy"], true, "{v}");
+    s.execute("frame.create", &json!({"rect": [20, 20, 60, 60]})).unwrap();
+    assert!(!file.exists(), "nothing is published while the write is held");
+    held.release();
+    assert_eq!(finished_writes(&mut s), 1);
+    assert!(file.exists());
+    discard(dir.path(), uid);
+}
+
+#[test]
+fn a_background_save_rejects_a_background_that_is_not_true_or_false() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = dirty_session();
+    s.recovery_dir = Some(dir.path().to_path_buf());
+    let err = s.execute("file.recovery.save", &json!({"background": "yes"})).unwrap_err();
+    assert!(err.to_string().contains("`background` must be true or false"), "{err}");
+    assert!(list(dir.path()).is_empty(), "nothing was written");
 }
 
 #[test]
@@ -242,17 +271,10 @@ fn a_background_snapshot_whose_metadata_failed_is_still_the_documents_to_remove(
     std::fs::create_dir(&metadata).unwrap();
     let queued = s.execute("file.recovery.save", &json!({"background": true})).unwrap();
     assert_eq!(queued["queued"], 1, "{queued}");
-    let mut reported = None;
-    for _ in 0..1200 {
-        let v = s.execute("file.recovery.progress", &json!({})).unwrap();
-        if let Some(first) = v["errors"].as_array().and_then(|errors| errors.first()) {
-            reported = first.as_str().map(str::to_string);
-        }
-        if !v["busy"].as_bool().unwrap_or(false) {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
+    testing::wait_until_idle();
+    let v = s.execute("file.recovery.progress", &json!({})).unwrap();
+    assert_eq!(v["busy"], false, "{v}");
+    let reported = v["errors"].as_array().and_then(|errors| errors.first()).and_then(Value::as_str).map(str::to_string);
     let reported = reported.expect("the metadata failure is reported");
     assert!(reported.contains(&metadata.display().to_string()), "{reported}");
     assert!(document.exists(), "the primary landed");
