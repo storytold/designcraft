@@ -29,6 +29,8 @@ enum Model {
 #[derive(Clone, Debug, Default)]
 pub struct Dtd {
     elements: Vec<(String, Model)>,
+    /// Each declared name's first declaration (which wins), by name.
+    index: HashMap<String, usize>,
     /// Element → its `#REQUIRED` attributes.
     required: HashMap<String, Vec<String>>,
 }
@@ -47,7 +49,7 @@ impl Dtd {
     }
 
     fn model(&self, name: &str) -> Option<&Model> {
-        self.elements.iter().find(|(n, _)| n == name).map(|(_, m)| m)
+        self.elements.get(*self.index.get(name)?).map(|(_, m)| m)
     }
 }
 
@@ -252,6 +254,7 @@ pub fn parse(src: &str) -> Result<Dtd, String> {
             let rest = rest.trim_start();
             let name: String = rest.chars().take_while(|c| !c.is_whitespace()).collect();
             let model = parse_model(&rest[name.len()..]).map_err(|e| format!("<!ELEMENT {name}>: {e}"))?;
+            dtd.index.entry(name.clone()).or_insert(dtd.elements.len());
             dtd.elements.push((name, model));
         } else if let Some(rest) = d.strip_prefix("ATTLIST") {
             // name (attr type default)*; only `#REQUIRED` matters here.
@@ -607,6 +610,15 @@ mod tests {
         assert!(p.iter().any(|p| p.message == "`list` isn't allowed in `title`"), "{p:?}");
         assert!(parse("<!ELEMENT a (b, c | d)>").is_err());
         assert!(parse("just text").is_err());
+    }
+
+    /// An element declared twice keeps its first model (the index points there).
+    #[test]
+    fn the_first_declaration_of_an_element_wins() {
+        let dtd = parse("<!ELEMENT a (b)>\n<!ELEMENT b EMPTY>\n<!ELEMENT a EMPTY>").unwrap();
+        assert_eq!(dtd.element_names().collect::<Vec<_>>(), ["a", "b", "a"]);
+        assert_eq!(validate(&dtd, "<a><b/></a>"), vec![]);
+        assert!(!validate(&dtd, "<a/>").is_empty());
     }
 
     /// A few hundred bytes of nested parameter entities used to inflate multiplicatively across
