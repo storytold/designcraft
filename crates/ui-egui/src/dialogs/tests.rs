@@ -535,6 +535,87 @@ fn enter_on_a_diagonal_line_button_picks_it_and_leaves_the_dialog_open() {
     assert!(t.cells.iter().all(|c| c.diagonal.lines == designcraft_doc::DiagonalLines::TopLeft));
 }
 
+/// A document holding a 2×2 table with cell (0, 0) selected; returns the table id.
+fn table_document_for_diagonals(app: &mut DesignApp) -> u64 {
+    app.run("file.new", json!({})).unwrap();
+    app.run("frame.create", json!({"rect": [72, 72, 400, 400], "content": "text", "caret": true})).unwrap();
+    let tid = app.run("table.insert", json!({"rows": 2, "cols": 2})).unwrap()["table"].as_u64().unwrap();
+    app.run("table.select", json!({"rows": [0, 0], "cols": [0, 0]})).unwrap();
+    tid
+}
+
+/// The diagonal lines of the cells of table `tid` in document `doc`, row by row.
+fn diagonal_lines_of(app: &DesignApp, doc: usize, tid: u64) -> Vec<designcraft_doc::DiagonalLines> {
+    let st = &app.session.documents()[doc];
+    let t = st.doc.stories.values().find_map(|s| s.tables.get(&tid)).unwrap();
+    t.cells.iter().map(|c| c.diagonal.lines).collect()
+}
+
+#[test]
+fn diagonal_lines_dialog_applies_to_the_cells_and_document_it_opened_for() {
+    use designcraft_doc::DiagonalLines::{Crossed, None as No, TopRight};
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    let a = table_document_for_diagonals(&mut app);
+    // The selection moves to another cell while the dialog is open: OK still edits cell (0, 0).
+    app.run("app.diagonalLinesDialog", json!({})).unwrap();
+    app.run("table.select", json!({"rows": [1, 1], "cols": [1, 1]})).unwrap();
+    app.ui.dialog.as_mut().unwrap().fields.insert("lines".into(), json!("crossed"));
+    confirm(&mut app).unwrap();
+    assert!(app.ui.dialog.is_none());
+    assert_eq!(diagonal_lines_of(&app, 0, a), [Crossed, No, No, No]);
+    // Another document with a table selection becomes active: OK is refused and changes neither
+    // document, and the dialog stays open.
+    app.run("table.select", json!({"rows": [0, 0], "cols": [0, 0]})).unwrap();
+    app.run("app.diagonalLinesDialog", json!({})).unwrap();
+    let b = table_document_for_diagonals(&mut app);
+    app.ui.dialog.as_mut().unwrap().fields.insert("lines".into(), json!("topRight"));
+    assert!(confirm(&mut app).is_err());
+    assert!(app.ui.dialog.is_some(), "the dialog stays open while its document is open");
+    assert_eq!(diagonal_lines_of(&app, 1, b), [No; 4]);
+    assert_eq!(diagonal_lines_of(&app, 0, a), [Crossed, No, No, No]);
+    // Back in the first document, OK applies there.
+    app.run("file.activate", json!({"index": 0})).unwrap();
+    confirm(&mut app).unwrap();
+    assert_eq!(diagonal_lines_of(&app, 0, a), [TopRight, No, No, No]);
+    // A row is added above the target cell while the dialog is open: the document changed and the
+    // saved range would name another cell, so OK is refused, nothing changes and the dialog closes.
+    app.run("app.diagonalLinesDialog", json!({})).unwrap();
+    app.ui.dialog.as_mut().unwrap().fields.insert("lines".into(), json!("crossed"));
+    app.run("table.insertRowAbove", json!({})).unwrap();
+    assert!(confirm(&mut app).is_err());
+    assert!(app.ui.dialog.is_none(), "a dialog whose table changed closes");
+    // The new row takes the formatting of the row below it.
+    assert_eq!(diagonal_lines_of(&app, 0, a), [TopRight, No, TopRight, No, No, No]);
+    // The first document is closed while the dialog is open: OK is refused and the dialog closes.
+    app.run("app.diagonalLinesDialog", json!({})).unwrap();
+    app.ui.dialog.as_mut().unwrap().fields.insert("lines".into(), json!("crossed"));
+    app.run("file.close", json!({"index": 0})).unwrap();
+    assert!(confirm(&mut app).is_err());
+    assert!(app.ui.dialog.is_none(), "a dialog whose document was closed closes");
+    assert_eq!(diagonal_lines_of(&app, 0, b), [No; 4]);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn diagonal_lines_dialog_is_refused_after_its_document_is_reverted() {
+    use designcraft_doc::DiagonalLines::None as No;
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    let tid = table_document_for_diagonals(&mut app);
+    let dir = tempfile::tempdir().unwrap();
+    app.run("file.saveAs", json!({"path": dir.path().join("diagonal.designcraft")})).unwrap();
+    app.run("table.setCell", json!({"row": 1, "col": 1, "text": "unsaved"})).unwrap();
+    app.run("app.diagonalLinesDialog", json!({})).unwrap();
+    app.ui.dialog.as_mut().unwrap().fields.insert("lines".into(), json!("crossed"));
+    app.session.execute("file.revert", &json!({})).unwrap();
+    // The reverted document holds the same table; a selection in it does not let OK through.
+    let story = app.session.active().unwrap().doc.stories.iter().find(|(_, s)| s.tables.contains_key(&tid)).map(|(k, _)| k.0).unwrap();
+    app.run("text.select", json!({"story": story, "anchor": 0, "focus": 0})).unwrap();
+    app.run("table.select", json!({"rows": [0, 0], "cols": [0, 0]})).unwrap();
+    assert!(confirm(&mut app).is_err());
+    assert!(app.ui.dialog.is_none(), "a dialog whose document was reverted closes");
+    assert_eq!(diagonal_lines_of(&app, 0, tid), [No; 4]);
+}
+
 #[test]
 fn preferences_ok_saves_a_story_editor_size_that_loads_back() {
     // `ui.dialog.set` takes any value; a size that isn't finite is saved as `null`.

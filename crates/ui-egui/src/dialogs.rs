@@ -3988,16 +3988,71 @@ const DIAGONAL_LINES: [(&str, &str); 4] = [
 const DIAGONAL_KEYS: [&str; 8] = ["lines", "weight", "type", "color", "tint", "gapColor", "gapTint", "inFront"];
 
 /// Table › Cell Options › Diagonal Lines… for the target cells. The fields start from the
-/// cells' values (`seed`); OK applies the fields that differ from it.
+/// cells' values (`seed`); OK applies the fields that differ from it. The dialog keeps the
+/// document it opened in (`document`: uid, identity epoch and the address of its contents) and
+/// its target cells (`cells`).
 pub fn open_diagonal_lines(app: &mut DesignApp) -> Result<Value, String> {
+    app.ui.dialog = Some(diagonal_lines_dialog(app, Value::Null)?);
+    Ok(Value::Null)
+}
+
+/// The Diagonal Lines dialog for the target cells, with the `DIAGONAL_KEYS` values in `params`
+/// (from `ui.dialog.open`) entered in place of the cells' values.
+pub fn diagonal_lines_dialog(app: &mut DesignApp, params: Value) -> Result<Dialog, String> {
     let cur = app.session.execute("table.getCellDiagonal", &json!({})).map_err(|e| e.to_string())?;
+    let st = app.session.active().ok_or("no document open")?;
+    let document = json!({"uid": st.uid, "epoch": st.identity_epoch, "contents": diagonal_lines_contents(st)});
     let mut fields = Map::new();
     for k in DIAGONAL_KEYS {
         fields.insert(k.into(), cur[k].clone());
     }
     fields.insert("seed".into(), Value::Object(fields.clone()));
-    app.ui.dialog = Some(Dialog::new("diagonalLines", Value::Object(fields)));
-    Ok(Value::Null)
+    for k in DIAGONAL_KEYS {
+        if let Some(v) = params.get(k) {
+            fields.insert(k.into(), v.clone());
+        }
+    }
+    fields.insert("document".into(), document);
+    fields.insert("cells".into(), json!({"story": cur["story"], "table": cur["table"], "rows": cur["rows"], "cols": cur["cols"]}));
+    Ok(Dialog::new("diagonalLines", Value::Object(fields)))
+}
+
+/// Where the document a Diagonal Lines dialog opened in is now.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum DiagonalLinesDocument {
+    /// Active and unchanged since the dialog opened.
+    Ready,
+    /// Open, but another document is active.
+    Inactive,
+    /// Active, but edited since the dialog opened: the saved cell range may name other cells.
+    Changed,
+    /// Closed or reverted.
+    Gone,
+}
+
+/// The address of a document state's contents. An edit gives the document new contents, and a
+/// selection change keeps them. The contents an undoable edit replaced stay alive in the undo
+/// history, so new contents do not reuse their address while the dialog is open.
+fn diagonal_lines_contents(st: &designcraft_engine::DocState) -> u64 {
+    std::sync::Arc::as_ptr(&st.doc) as usize as u64
+}
+
+fn diagonal_lines_document(app: &DesignApp, d: &Dialog) -> DiagonalLinesDocument {
+    let saved = d.fields.get("document");
+    let get = |k: &str| saved.and_then(|s| s.get(k)).and_then(Value::as_u64);
+    let (Some(uid), Some(epoch), Some(contents)) = (get("uid"), get("epoch"), get("contents")) else {
+        return DiagonalLinesDocument::Gone;
+    };
+    let Some(i) = app.session.documents().iter().position(|st| st.uid == uid && st.identity_epoch == epoch) else {
+        return DiagonalLinesDocument::Gone;
+    };
+    if app.session.active_index() != Some(i) {
+        DiagonalLinesDocument::Inactive
+    } else if diagonal_lines_contents(&app.session.documents()[i]) != contents {
+        DiagonalLinesDocument::Changed
+    } else {
+        DiagonalLinesDocument::Ready
+    }
 }
 
 /// Cell Options › Diagonal Lines: the four line buttons, the Line Stroke fields and Draw.
@@ -4060,8 +4115,18 @@ fn diagonal_lines(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     });
 }
 
-/// Apply the Diagonal Lines fields that differ from the cells' values, as one `table.setCell`.
+/// Apply the Diagonal Lines fields that differ from the cells' values, as one `table.setCell`
+/// on the cells the dialog opened for, in the document it opened in.
 fn confirm_diagonal_lines(app: &mut DesignApp, d: &Dialog) -> Result<Value, String> {
+    match diagonal_lines_document(app, d) {
+        DiagonalLinesDocument::Ready => {}
+        DiagonalLinesDocument::Inactive => return Err("Diagonal Lines: the document the dialog opened in is not the active document".into()),
+        DiagonalLinesDocument::Changed => return Err("Diagonal Lines: the document changed while the dialog was open".into()),
+        DiagonalLinesDocument::Gone => return Err("Diagonal Lines: the document the dialog opened in was closed or reverted".into()),
+    }
+    let Some(Value::Object(cells)) = d.fields.get("cells") else {
+        return Err("Diagonal Lines: the dialog has no target cells".into());
+    };
     let seed = d.fields.get("seed").cloned().unwrap_or(Value::Null);
     let mut diagonal = Map::new();
     for k in DIAGONAL_KEYS {
@@ -4072,7 +4137,9 @@ fn confirm_diagonal_lines(app: &mut DesignApp, d: &Dialog) -> Result<Value, Stri
     if diagonal.is_empty() {
         return Ok(Value::Null);
     }
-    app.run("table.setCell", json!({"diagonal": diagonal}))
+    let mut params = cells.clone();
+    params.insert("diagonal".into(), Value::Object(diagonal));
+    app.run("table.setCell", Value::Object(params))
 }
 
 /// Delete absolute pages `pages` as the Pages panel and Layout › Pages › Delete Page do: when
@@ -4505,11 +4572,14 @@ fn confirm_part1(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
             r
         }
         "diagonalLines" => {
-            // On an error the dialog stays open to be corrected.
+            // On an error the dialog stays open to be corrected, unless the document it opened
+            // in was closed, reverted or edited.
             let r = confirm_diagonal_lines(app, &d);
             if let Err(e) = &r {
                 app.status(e.clone());
-                app.ui.dialog = Some(d);
+                if matches!(diagonal_lines_document(app, &d), DiagonalLinesDocument::Ready | DiagonalLinesDocument::Inactive) {
+                    app.ui.dialog = Some(d);
+                }
             }
             r
         }

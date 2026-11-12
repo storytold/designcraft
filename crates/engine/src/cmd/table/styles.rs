@@ -327,6 +327,12 @@ mod style_tests {
             (&serde_json::Value::Null, &json!(2.0), &json!("[Paper]"), &json!(false)),
             "{got}"
         );
+        let tid = s.doc().unwrap().doc.story(sid).unwrap().tables.keys().next().copied().unwrap();
+        assert_eq!(
+            (&got["story"], &got["table"], &got["rows"], &got["cols"]),
+            (&json!(sid.0), &json!(tid), &json!([0, 0]), &json!([0, 1])),
+            "the result names the target cells"
+        );
         let shown = s.execute("table.get", &json!({})).unwrap()["cells"][1]["diagonal"].clone();
         assert_eq!((&shown["lines"], &shown["inFront"]), (&json!("crossed"), &json!(false)));
         for bad in [json!({"lines": "x"}), json!({"lines": 1}), json!({"inFront": "yes"}), json!({"weight": -1}), json!("crossed")] {

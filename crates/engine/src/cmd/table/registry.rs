@@ -310,7 +310,7 @@ fn table_specs() -> Vec<CommandSpec> {
             "Get Cell Diagonal Lines",
             [],
             None,
-            "{story?, table?, rows?, cols?} → {lines, weight, color, tint, type, gapColor, gapTint, inFront} of the target cells' diagonal lines; a value that differs between them is null",
+            "{story?, table?, rows?, cols?} → {lines, weight, color, tint, type, gapColor, gapTint, inFront} of the target cells' diagonal lines (a value that differs between them is null), with story, table, rows: [a, b] and cols: [a, b] naming the target cells",
             in_table_or_ids,
             get_cell_diagonal
         ),

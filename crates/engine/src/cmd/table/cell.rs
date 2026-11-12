@@ -424,7 +424,8 @@ pub(super) fn get_cell_stroke(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(Value::Object(out))
 }
 
-/// The diagonal lines of the target cells and their stroke; values that differ are null.
+/// The diagonal lines of the target cells and their stroke; values that differ are null. The
+/// result also names the target cells (`story`, `table`, `rows`, `cols`).
 pub(super) fn get_cell_diagonal(s: &mut Session, p: &Value) -> Result<Value> {
     const ID: &str = "table.getCellDiagonal";
     let g = target(s, p, ID)?;
@@ -446,7 +447,15 @@ pub(super) fn get_cell_diagonal(s: &mut Session, p: &Value) -> Result<Value> {
             }
         }
     }
-    Ok(Value::Object(keys.iter().zip(slots).map(|(k, v)| ((*k).to_string(), v.unwrap_or(Value::Null))).collect()))
+    let mut out = serde_json::Map::new();
+    for (k, v) in keys.iter().zip(slots) {
+        out.insert((*k).into(), v.unwrap_or(Value::Null));
+    }
+    out.insert("story".into(), json!(g.story.0));
+    out.insert("table".into(), json!(g.table));
+    out.insert("rows".into(), json!([g.range.r0, g.range.r1]));
+    out.insert("cols".into(), json!([g.range.c0, g.range.c1]));
+    Ok(Value::Object(out))
 }
 
 /// Only saturation needs rebasing. Preserve every distinct priority's order and keep
