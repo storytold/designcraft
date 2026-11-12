@@ -6309,9 +6309,10 @@ fn wrap_rooms(ft: &FrameText, f: &FrameSpec, c: u32, spanned: bool, anchors: &[u
             {
                 // A contour beside or under this line whose box reaches the line's slot (the
                 // contour stays inside its box). Moved down by `d`, the line's band sweeps from its
-                // top to its baseline plus `d`; the contour's extent there only grows with `d`, so
-                // the furthest clear move is found by bisection to 0.01 pt.
-                let hits = |d: f64| contour.band_extent(top + dy, bottom + d + dy).and_then(|x| sided(e, col, x)).is_some_and(meets);
+                // top to its baseline plus `d`; the parts of the contour there only grow with `d`,
+                // so the furthest clear move is found by bisection to 0.01 pt. As when the line is
+                // set, the gaps between parts of the contour stay open.
+                let hits = |d: f64| contour.band_spans(top + dy, bottom + d + dy).into_iter().any(|x| sided(e, col, x).is_some_and(meets));
                 let (mut lo, mut hi) = ((r.y0 - bottom).max(0.0), (r.y1 - top).min(f.area.y1 - bottom).min(cap));
                 if lo < hi && hits(hi) {
                     if hits(lo) {

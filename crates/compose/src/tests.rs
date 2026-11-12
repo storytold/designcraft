@@ -723,6 +723,44 @@ fn vertical_justification_stops_where_a_contour_under_the_text_meets_it() {
     assert!(b > 122.0, "Bottom stopped the line at {b}, short of where the contour meets the column at 122.5");
 }
 
+/// A line set in the open middle of a U-shaped contour goes down between its arms: Bottom stops
+/// it on the contour's base, not where the line starts because the arms span its slot.
+#[test]
+fn vertical_justification_moves_a_line_down_between_the_arms_of_a_contour() {
+    use designcraft_doc::VerticalJustification::{Bottom, Top};
+    // Arms 0..15 and 45..60 from y = 0, joined by a base from y = 170 down to y = 190.
+    let pts = [
+        Point::new(0.0, 0.0),
+        Point::new(15.0, 0.0),
+        Point::new(15.0, 170.0),
+        Point::new(45.0, 170.0),
+        Point::new(45.0, 0.0),
+        Point::new(60.0, 0.0),
+        Point::new(60.0, 190.0),
+        Point::new(0.0, 190.0),
+    ];
+    let run = |vj| {
+        let (mut d, sid, fid) = doc_with("42", Rect::new(0.0, 0.0, 60.0, 200.0), ParaAttrs::default());
+        d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.vertical_justification = vj;
+        let lid = d.default_layer();
+        let path = designcraft_geom::path::PathData::single(designcraft_geom::path::SubPath::polyline(&pts, true));
+        let mut it = designcraft_doc::Item::new(ItemId(d.alloc()), lid, designcraft_doc::Shape::Polygon, path);
+        it.wrap.mode = WrapMode::Contour;
+        it.wrap.side = WrapSide::BothSides;
+        d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        assert!(!cs.is_overset());
+        let l = all_lines(&cs)[0];
+        (l.baseline, l.x0, l.x1)
+    };
+    let (top, x0, x1) = run(Top);
+    assert!(x0 >= 15.0 - 1e-6 && x1 <= 45.0 + 1e-6, "Top sets the line between the arms: {x0}..{x1}");
+    let (b, x0, x1) = run(Bottom);
+    assert!(x0 >= 15.0 - 1e-6 && x1 <= 45.0 + 1e-6, "Bottom keeps the line between the arms: {x0}..{x1}");
+    assert!(b <= 170.0 + 1e-6, "Bottom moved the baseline to {b}, into the contour's base at 170");
+    assert!(b > 169.9, "Bottom stopped the line at {b} (Top at {top}), short of the contour's base at 170");
+}
+
 /// An object anchored in the text and positioned from its anchor moves down with the lines, so
 /// Center places lines above it as it places them without its wrap.
 #[test]
