@@ -46,6 +46,7 @@ impl Renderer {
         let (width, height) = size;
         RICH_BLACK.with(|r| r.set(opts.rich_black));
         PLATE.with(|p| p.set(opts.plate));
+        self.kept.begin(doc);
         if let Some(hit) = self.cmyk_view.as_ref().filter(|entry| entry.matches(doc, spreads, width, height, view, opts, self.threads)) {
             let image = hit.image();
             self.stats = hit.stats();
@@ -90,7 +91,6 @@ impl Renderer {
         self.stats = FrameStats::default();
         self.stories.clear();
         self.glyphs.tick();
-        self.kept.begin(doc);
         if let Some(bg) = opts.background {
             ctx.set_transform(Affine::IDENTITY);
             ctx.set_paint(peniko::Color::from_rgba8(bg[0], bg[1], bg[2], bg[3]));

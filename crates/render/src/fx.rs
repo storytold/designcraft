@@ -513,7 +513,8 @@ impl Renderer {
             return;
         }
         let [a, b, c, d, e, g] = (f.view * xf).as_coeffs();
-        let (linear, anchor) = ([a, b, c, d], Vec2::new(e, g));
+        let [va, vb, vc, vd, _, _] = f.view.as_coeffs();
+        let (linear, anchor) = ([a, b, c, d, va, vb, vc, vd], Vec2::new(e, g));
         let plate = crate::PLATE.with(std::cell::Cell::get);
         let rich_black = crate::color::RICH_BLACK.with(std::cell::Cell::get);
         let key = (it.id, page, look.slot, plate);
@@ -606,8 +607,8 @@ struct Look {
 struct Kept {
     /// The object, with the transform it had.
     item: Item,
-    /// The linear part of the object's spread → device transform.
-    linear: [f64; 4],
+    /// The linear parts of the object's spread → device transform and of the view (the effect offset turns with the view).
+    linear: [f64; 8],
     /// The device position of the object's origin.
     anchor: Vec2,
     look: Look,
