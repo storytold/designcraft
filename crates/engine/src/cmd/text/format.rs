@@ -146,6 +146,98 @@ pub(crate) const MIN_TYPE_SIZE: f64 = 0.1;
 
 pub(crate) const MAX_TYPE_SIZE: f64 = 1296.0;
 
+/// Space Before, Space After and Space Between Paragraphs Using Same Style: 0 to 15552 pt, the
+/// limit `object.textFrameOptions` applies to its Paragraph Spacing Limit.
+pub(crate) const MAX_PARA_SPACE: f64 = 15552.0;
+
+/// The justification rows as fractions (1.0 = 100%): key stem, label, range.
+const JUSTIFICATION_ROWS: [(&str, &str, f64, f64); 3] =
+    [("wordSpace", "word spacing", 0.0, 10.0), ("letterSpace", "letter spacing", -1.0, 5.0), ("glyphScale", "glyph scaling", 0.5, 2.0)];
+
+/// Auto Leading: 0% to 500% of the type size.
+const MAX_AUTO_LEADING: f64 = 5.0;
+
+/// A fraction shown as a percent, without float noise (1.33 is "133").
+fn percent(v: f64) -> String {
+    let p = (v * 100.0 * 1000.0).round() / 1000.0;
+    format!("{p}")
+}
+
+/// Checks the paragraph spacing and justification values `attrs` sets: Space Before, Space After
+/// and same-style spacing 0 to [`MAX_PARA_SPACE`] pt; word spacing 0% to 1000%, letter spacing
+/// -100% to 500% and glyph scaling 50% to 200%; Auto Leading 0% to 500%; Single Word
+/// Justification left, center, right or fullyJustified. [`validate_justification_order`] checks
+/// the order of each row once the values are applied.
+pub(crate) fn validate_para_values(attrs: &ParaAttrs, command_id: &str) -> Result<()> {
+    use designcraft_doc::Align;
+    let spaces =
+        [("spaceBefore", attrs.space_before), ("spaceAfter", attrs.space_after), ("sameParaStyleSpacing", attrs.same_para_style_spacing.flatten())];
+    for (key, v) in spaces {
+        if let Some(v) = v
+            && !(0.0..=MAX_PARA_SPACE).contains(&v)
+        {
+            return Err(bad(command_id, format!("{key} {v}: 0 to {MAX_PARA_SPACE} pt")));
+        }
+    }
+    let rows = [
+        [attrs.word_space_min, attrs.word_space_desired, attrs.word_space_max],
+        [attrs.letter_space_min, attrs.letter_space_desired, attrs.letter_space_max],
+        [attrs.glyph_scale_min, attrs.glyph_scale_desired, attrs.glyph_scale_max],
+    ];
+    for ((stem, label, lo, hi), given) in JUSTIFICATION_ROWS.into_iter().zip(rows) {
+        for (suffix, v) in ["Min", "Desired", "Max"].into_iter().zip(given) {
+            if let Some(v) = v
+                && !(lo..=hi).contains(&v)
+            {
+                return Err(bad(command_id, format!("{stem}{suffix} {}%: {label} is {}% to {}%", percent(v), percent(lo), percent(hi))));
+            }
+        }
+    }
+    if let Some(v) = attrs.auto_leading
+        && !(0.0..=MAX_AUTO_LEADING).contains(&v)
+    {
+        return Err(bad(command_id, format!("autoLeading {}%: 0% to {}%", percent(v), percent(MAX_AUTO_LEADING))));
+    }
+    if let Some(a) = attrs.single_word_justify
+        && !matches!(a, Align::Left | Align::Center | Align::Right | Align::FullyJustified)
+    {
+        return Err(bad(command_id, format!("singleWordJustify {}: left, center, right or fullyJustified", json!(a))));
+    }
+    Ok(())
+}
+
+/// The justification rows (word spacing, letter spacing, glyph scaling) that attribute names in
+/// `keys` set or clear.
+pub(crate) fn justification_rows_named<'a>(keys: impl IntoIterator<Item = &'a str>) -> [bool; 3] {
+    let mut rows = [false; 3];
+    for key in keys {
+        let key = key.replace('_', "").to_ascii_lowercase();
+        for (row, (stem, ..)) in rows.iter_mut().zip(JUSTIFICATION_ROWS) {
+            *row |= key.starts_with(&stem.to_ascii_lowercase());
+        }
+    }
+    rows
+}
+
+/// Each justification row marked in `rows` needs Minimum ≤ Desired ≤ Maximum in `resolved`, the
+/// attributes of the paragraph or style after the change.
+pub(crate) fn validate_justification_order(resolved: &designcraft_doc::ParaProps, rows: [bool; 3], command_id: &str) -> Result<()> {
+    justification_order_error(resolved, rows).map_or(Ok(()), |m| Err(bad(command_id, m)))
+}
+
+/// What [`validate_justification_order`] refuses, as a message.
+pub(crate) fn justification_order_error(resolved: &designcraft_doc::ParaProps, rows: [bool; 3]) -> Option<String> {
+    let values = [
+        [resolved.word_space_min, resolved.word_space_desired, resolved.word_space_max],
+        [resolved.letter_space_min, resolved.letter_space_desired, resolved.letter_space_max],
+        [resolved.glyph_scale_min, resolved.glyph_scale_desired, resolved.glyph_scale_max],
+    ];
+    JUSTIFICATION_ROWS.into_iter().zip(values).zip(rows).find_map(|(((_, label, ..), [min, desired, max]), checked)| {
+        (checked && (min > desired || desired > max))
+            .then(|| format!("{label} needs Minimum ≤ Desired ≤ Maximum, not {}%, {}%, {}%", percent(min), percent(desired), percent(max)))
+    })
+}
+
 /// Byte `pos` is the hidden paragraph mark of an *empty* paragraph: the only character on that
 /// line, and so the one a line-affecting attribute like leading can land on right away instead of
 /// waiting for the next typed character (otherwise an empty line could never get its own leading).
@@ -315,11 +407,15 @@ pub(crate) fn format_paras(s: &mut Session, attrs: &Value) -> Result<Value> {
         a.set_json_over(k, v, &designcraft_doc::ParaProps::default()).map_err(|e| bad("type.para", e))?;
     }
     crate::cmd::style::check_grep_styles("type.para", &a)?;
+    validate_para_values(&a, "type.para")?;
+    let rows = justification_rows_named(obj.keys().map(String::as_str));
     // `null` removes the override (back to the style's value).
     let cleared: Vec<String> = obj.iter().filter(|(_, v)| v.is_null()).map(|(k, _)| k.clone()).collect();
     let targets = format_targets(s);
     s.edit(|d, _| {
         let styles = d.styles.clone();
+        // Minimum ≤ Desired ≤ Maximum holds over each paragraph's own values once they change.
+        let mut refused = None;
         for t in &targets {
             if let Some(st) = d.text_story_mut(t.story, t.cell) {
                 st.format_paras(t.range.clone(), |p| {
@@ -332,10 +428,15 @@ pub(crate) fn format_paras(s: &mut Session, attrs: &Value) -> Result<Value> {
                     for k in &cleared {
                         let _ = p.para.set_json(k, &Value::Null);
                     }
+                    if refused.is_none()
+                        && let Err(e) = validate_justification_order(&styles.resolve_para(p).0, rows, "type.para")
+                    {
+                        refused = Some(e);
+                    }
                 });
             }
         }
-        ok()
+        refused.map_or_else(ok, Err)
     })
 }
 
@@ -1076,7 +1177,7 @@ mod pick_up_format_tests {
 
 #[cfg(test)]
 mod size_bounds_tests {
-    use serde_json::json;
+    use serde_json::{Value, json};
 
     use crate::Session;
 
@@ -1110,6 +1211,135 @@ mod size_bounds_tests {
             let e = s.execute(command, &params).expect_err("refused").to_string();
             assert!(e.contains("0.1 to 1296 pt"), "{command}: {e}");
         }
+    }
+
+    /// `type.para` set any number for paragraph spacing and justification: a negative Space
+    /// Before, word spacing of 5000% and a Minimum above Maximum all went into the paragraph,
+    /// and Single Word Justification took any alignment. Values outside the ranges are refused,
+    /// nothing changes, and the ends of each range still apply.
+    #[test]
+    fn paragraph_spacing_and_justification_outside_their_ranges_are_refused() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 1})).unwrap();
+        let f = s.execute("frame.create", &json!({"rect": [20, 20, 400, 300], "content": "text", "text": "Hello world\nSecond"})).unwrap();
+        let select_all = |s: &mut Session| {
+            s.execute("text.select", &json!({"story": f["story"].clone(), "anchor": 0, "focus": 18})).unwrap();
+        };
+        let para = |s: &mut Session| s.execute("type.selectionAttrs", &json!({})).unwrap()["para"].clone();
+        select_all(&mut s);
+        let before = para(&mut s);
+        for (attrs, says) in [
+            (json!({"spaceBefore": -1}), "spaceBefore -1: 0 to 15552 pt"),
+            (json!({"spaceAfter": 15553}), "spaceAfter 15553: 0 to 15552 pt"),
+            (json!({"sameParaStyleSpacing": -2}), "sameParaStyleSpacing -2: 0 to 15552 pt"),
+            (json!({"wordSpaceMax": 10.5}), "wordSpaceMax 1050%: word spacing is 0% to 1000%"),
+            (json!({"wordSpaceMin": -0.1}), "wordSpaceMin -10%: word spacing is 0% to 1000%"),
+            (json!({"letterSpaceMin": -1.5}), "letterSpaceMin -150%: letter spacing is -100% to 500%"),
+            (json!({"letterSpaceMax": 5.5}), "letterSpaceMax 550%: letter spacing is -100% to 500%"),
+            (json!({"glyphScaleMin": 0.4}), "glyphScaleMin 40%: glyph scaling is 50% to 200%"),
+            (json!({"glyphScaleDesired": 2.1}), "glyphScaleDesired 210%: glyph scaling is 50% to 200%"),
+            (json!({"autoLeading": 6}), "autoLeading 600%: 0% to 500%"),
+            (json!({"autoLeading": -0.1}), "autoLeading -10%: 0% to 500%"),
+            (json!({"singleWordJustify": "leftJustified"}), "singleWordJustify \"leftJustified\": left, center, right or fullyJustified"),
+            // Desired word spacing is 100%, so a Minimum of 120% alone is out of order.
+            (json!({"wordSpaceMin": 1.2}), "word spacing needs Minimum ≤ Desired ≤ Maximum, not 120%, 100%, 133%"),
+            (
+                json!({"glyphScaleMin": 0.9, "glyphScaleDesired": 1.1, "glyphScaleMax": 1.0}),
+                "glyph scaling needs Minimum ≤ Desired ≤ Maximum, not 90%, 110%, 100%",
+            ),
+        ] {
+            select_all(&mut s);
+            let e = s.execute("type.para", &json!({"attrs": attrs})).expect_err("refused").to_string();
+            assert!(e.contains(says), "{attrs}: {e}");
+            assert_eq!(para(&mut s), before, "{attrs}");
+        }
+        // The ends of each range apply and read back.
+        for attrs in [
+            json!({"spaceBefore": 0, "spaceAfter": 15552, "sameParaStyleSpacing": 15552}),
+            json!({"wordSpaceMin": 0, "wordSpaceDesired": 0, "wordSpaceMax": 10}),
+            json!({"letterSpaceMin": -1, "letterSpaceDesired": 0, "letterSpaceMax": 5}),
+            json!({"glyphScaleMin": 0.5, "glyphScaleDesired": 1, "glyphScaleMax": 2}),
+            json!({"autoLeading": 5}),
+            json!({"autoLeading": 0, "singleWordJustify": "center"}),
+        ] {
+            select_all(&mut s);
+            s.execute("type.para", &json!({"attrs": attrs})).unwrap_or_else(|e| panic!("{attrs}: {e}"));
+            let got = para(&mut s);
+            let same = |a: &Value, b: &Value| a.as_f64().zip(b.as_f64()).map_or(a == b, |(a, b)| a == b);
+            for (k, v) in attrs.as_object().unwrap() {
+                assert!(same(&got[k], v), "{k}: {} for {v}", got[k]);
+            }
+        }
+        // The order holds over each paragraph's own values: with Desired 300% in the second
+        // paragraph only, a Maximum of 200% for both is refused and neither paragraph changes.
+        s.execute("text.select", &json!({"story": f["story"].clone(), "anchor": 12, "focus": 18})).unwrap();
+        s.execute("type.para", &json!({"attrs": {"wordSpaceMax": 5, "wordSpaceDesired": 3}})).unwrap();
+        select_all(&mut s);
+        let before = para(&mut s);
+        let e = s.execute("type.para", &json!({"attrs": {"wordSpaceMax": 2}})).expect_err("refused").to_string();
+        assert!(e.contains("not 0%, 300%, 200%"), "{e}");
+        assert_eq!(para(&mut s), before);
+        // Clearing a value is checked too: with Minimum 250% in the second paragraph, clearing
+        // its Desired back to the style's 100% is refused.
+        let second = |s: &mut Session| {
+            s.execute("text.select", &json!({"story": f["story"].clone(), "anchor": 12, "focus": 18})).unwrap();
+        };
+        second(&mut s);
+        s.execute("type.para", &json!({"attrs": {"wordSpaceMin": 2.5}})).unwrap();
+        second(&mut s);
+        let e = s.execute("type.para", &json!({"attrs": {"wordSpaceDesired": null}})).expect_err("refused").to_string();
+        assert!(e.contains("word spacing needs Minimum ≤ Desired ≤ Maximum, not 250%, 100%, 500%"), "{e}");
+        second(&mut s);
+        assert_eq!(para(&mut s)["wordSpaceDesired"].as_f64(), Some(3.0));
+        // Paragraph styles are checked the same way, over what the style resolves to.
+        let e = s.execute("style.paragraph.create", &json!({"name": "Loose", "para": {"autoLeading": 6}})).expect_err("refused").to_string();
+        assert!(e.contains("autoLeading 600%"), "{e}");
+        s.execute("style.paragraph.create", &json!({"name": "Body", "para": {"wordSpaceDesired": 1.2}})).unwrap();
+        let e = s.execute("style.paragraph.create", &json!({"name": "Tight", "para": {"wordSpaceMax": 0.9}})).expect_err("refused").to_string();
+        assert!(e.contains("not 80%, 100%, 90%"), "{e}");
+        let e = s
+            .execute("style.paragraph.create", &json!({"name": "Child", "basedOn": "Body", "para": {"wordSpaceMax": 1.1}}))
+            .expect_err("refused")
+            .to_string();
+        assert!(e.contains("not 80%, 120%, 110%"), "{e}");
+        let e = s.execute("style.paragraph.edit", &json!({"name": "Body", "para": {"wordSpaceMin": 1.3}})).expect_err("refused").to_string();
+        assert!(e.contains("not 130%, 120%, 133%"), "{e}");
+        let e = s.execute("style.paragraph.edit", &json!({"name": "Body", "para": {"spaceAfter": -3}})).expect_err("refused").to_string();
+        assert!(e.contains("spaceAfter -3: 0 to 15552 pt"), "{e}");
+        let style = s.doc().unwrap().doc.styles.para("Body").unwrap().para.clone();
+        assert_eq!((style.word_space_min, style.space_after), (None, None));
+        for name in ["Loose", "Tight", "Child"] {
+            assert!(s.doc().unwrap().doc.styles.para(name).is_none(), "{name}");
+        }
+        // A new Based On is checked over every row of what the style then resolves to.
+        s.execute("style.paragraph.create", &json!({"name": "Wide", "para": {"wordSpaceMin": 1.2, "wordSpaceDesired": 1.3}})).unwrap();
+        s.execute("style.paragraph.create", &json!({"name": "Narrow", "para": {"wordSpaceMax": 1.1}})).unwrap();
+        let e = s.execute("style.paragraph.edit", &json!({"name": "Wide", "basedOn": "Narrow"})).expect_err("refused").to_string();
+        assert!(e.contains("not 120%, 130%, 110%"), "{e}");
+        assert_eq!(s.doc().unwrap().doc.styles.para("Wide").unwrap().based_on, None);
+        // An edit is checked over the styles based on the edited style and the paragraphs using
+        // them, too.
+        s.execute("style.paragraph.create", &json!({"name": "Parent"})).unwrap();
+        s.execute("style.paragraph.create", &json!({"name": "Kid", "basedOn": "Parent", "para": {"wordSpaceMax": 1.1}})).unwrap();
+        let e = s.execute("style.paragraph.edit", &json!({"name": "Parent", "para": {"wordSpaceDesired": 1.2}})).expect_err("refused").to_string();
+        assert!(e.contains("paragraph style \"Kid\": word spacing needs Minimum ≤ Desired ≤ Maximum, not 80%, 120%, 110%"), "{e}");
+        // A footnote paragraph with its own Maximum of 10%, under a style edit that sets Desired
+        // to 20%.
+        select_all(&mut s);
+        s.execute("style.paragraph.apply", &json!({"name": "Parent", "clearOverrides": true})).unwrap();
+        s.execute("text.select", &json!({"story": f["story"].clone(), "anchor": 5, "focus": 5})).unwrap();
+        s.execute("footnote.insert", &json!({"text": "Note"})).unwrap();
+        s.execute("style.paragraph.apply", &json!({"name": "Parent", "clearOverrides": true})).unwrap();
+        s.execute("type.para", &json!({"attrs": {"letterSpaceMax": 0.1}})).unwrap();
+        let e = s
+            .execute("style.paragraph.edit", &json!({"name": "Parent", "para": {"letterSpaceDesired": 0.2, "letterSpaceMax": 0.5}}))
+            .expect_err("refused")
+            .to_string();
+        assert!(
+            e.contains(&format!("a paragraph of story {}: letter spacing needs Minimum ≤ Desired ≤ Maximum, not 0%, 20%, 10%", f["story"])),
+            "{e}"
+        );
+        assert_eq!(s.doc().unwrap().doc.styles.para("Parent").unwrap().para.letter_space_desired, None);
     }
 }
 

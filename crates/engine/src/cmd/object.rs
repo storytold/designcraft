@@ -2595,6 +2595,14 @@ fn text_frame_options(s: &mut Session, p: &Value) -> Result<Value> {
     let column_width = ranged("columnWidth", 0.0, 15552.0, "a number of points")?;
     let first_baseline_min = ranged("firstBaselineMin", 0.0, 15552.0, "a number of points")?;
     let spacing_limit = ranged("paragraphSpacingLimit", 0.0, 15552.0, "a number of points")?;
+    let inset = frame_inset_param(p)?;
+    let vertical_justification: Option<designcraft_doc::VerticalJustification> =
+        frame_choice_param(p, "verticalJustification", "top|center|bottom|justify")?;
+    let first_baseline: Option<designcraft_doc::FirstBaseline> =
+        frame_choice_param(p, "firstBaseline", "ascent|capHeight|leading|xHeight|fixed|emboxHeight")?;
+    let auto_size: Option<designcraft_doc::AutoSize> =
+        frame_choice_param(p, "autoSize", "off|heightOnly|widthOnly|heightAndWidth|heightAndWidthProportionally")?;
+    let columns_kind: Option<designcraft_doc::ColumnsKind> = frame_choice_param(p, "columnsKind", "fixedNumber|fixedWidth|flexibleWidth")?;
     let reference = match p.get("autoSizeReference") {
         None | Some(Value::Null) => None,
         Some(v) => Some(
@@ -2655,28 +2663,22 @@ fn text_frame_options(s: &mut Session, p: &Value) -> Result<Value> {
             if let Some(v) = p.get("gutter").and_then(Value::as_f64) {
                 o.gutter = v.max(0.0);
             }
-            match p.get("inset") {
-                Some(Value::Number(n)) => o.inset = [n.as_f64().unwrap_or(0.0); 4],
-                Some(v @ Value::Array(_)) => {
-                    if let Ok(a) = serde_json::from_value::<[Option<f64>; 4]>(v.clone()) {
-                        for (side, v) in o.inset.iter_mut().zip(a) {
-                            if let Some(v) = v {
-                                *side = v;
-                            }
-                        }
-                    }
+            for (side, v) in o.inset.iter_mut().zip(inset.unwrap_or_default()) {
+                if let Some(v) = v {
+                    *side = v;
                 }
-                _ => {}
             }
-            for (k, which) in [("verticalJustification", 0), ("firstBaseline", 1), ("autoSize", 2), ("columnsKind", 3)] {
-                if let Some(v) = p.get(k).cloned() {
-                    let _ = match which {
-                        0 => serde_json::from_value(v).map(|x| o.vertical_justification = x),
-                        1 => serde_json::from_value(v).map(|x| o.first_baseline = x),
-                        2 => serde_json::from_value(v).map(|x| o.auto_size = x),
-                        _ => serde_json::from_value(v).map(|x| o.columns_kind = x),
-                    };
-                }
+            if let Some(v) = vertical_justification {
+                o.vertical_justification = v;
+            }
+            if let Some(v) = first_baseline {
+                o.first_baseline = v;
+            }
+            if let Some(v) = auto_size {
+                o.auto_size = v;
+            }
+            if let Some(v) = columns_kind {
+                o.columns_kind = v;
             }
             if let Some(v) = reference {
                 o.auto_size_ref = v;
@@ -2750,6 +2752,40 @@ fn text_frame_options(s: &mut Session, p: &Value) -> Result<Value> {
         }
         Ok(json!({"changed": ids.len()}))
     })
+}
+
+/// `object.textFrameOptions` Inset Spacing: one number for every side, or [top, left, bottom,
+/// right] with null for a side that keeps its value; each side 0 to 15552 pt.
+fn frame_inset_param(p: &Value) -> Result<Option<[Option<f64>; 4]>> {
+    const ID: &str = "object.textFrameOptions";
+    let side = |v: &Value| match v.as_f64() {
+        Some(x) if x.is_finite() && (0.0..=15552.0).contains(&x) => Ok(x),
+        _ => Err(bad(ID, format!("inset must be a number of points from 0 to 15552, not {v}"))),
+    };
+    match p.get("inset") {
+        None | Some(Value::Null) => Ok(None),
+        Some(v @ Value::Number(_)) => Ok(Some([Some(side(v)?); 4])),
+        Some(Value::Array(a)) if a.len() == 4 => {
+            let mut sides = [None; 4];
+            for (s, v) in sides.iter_mut().zip(a) {
+                if !v.is_null() {
+                    *s = Some(side(v)?);
+                }
+            }
+            Ok(Some(sides))
+        }
+        Some(v) => Err(bad(ID, format!("inset must be a number or [top, left, bottom, right], not {v}"))),
+    }
+}
+
+/// An `object.textFrameOptions` choice: absent or null leaves it, a name outside `names` is an error.
+fn frame_choice_param<T: serde::de::DeserializeOwned>(p: &Value, key: &str, names: &str) -> Result<Option<T>> {
+    match p.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => {
+            serde_json::from_value(v.clone()).map(Some).map_err(|_| bad("object.textFrameOptions", format!("{key} must be one of {names}, not {v}")))
+        }
+    }
 }
 
 fn apply_custom_frame_grid(
@@ -6004,6 +6040,48 @@ mod frame_baseline_grid_tests {
         assert_eq!(grid(&s).map(|g| g.relative_to), Some(FrameGridRelative::TopMargin));
         s.execute("object.textFrameOptions", &json!({"ids": [id.0], "baselineGrid": null})).unwrap();
         assert_eq!(grid(&s), None);
+    }
+
+    /// A negative or huge inset, an inset list that isn't four sides, and a vertical
+    /// justification or first baseline that isn't one of the names were applied or skipped
+    /// without a word. They are refused and the frame keeps its options.
+    #[test]
+    fn text_frame_options_refuse_insets_and_names_outside_their_ranges() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [36, 36, 300, 300], "content": "text", "text": "Hello"})).unwrap();
+        let id = ItemId(r["id"].as_u64().unwrap());
+        let options = |s: &Session| s.doc().unwrap().doc.item(id).and_then(|i| i.text_frame()).map(|t| t.options.clone()).unwrap();
+        let before = options(&s);
+        for (params, says) in [
+            (json!({"inset": -1}), "inset must be a number of points from 0 to 15552"),
+            (json!({"inset": 15553}), "inset must be a number of points from 0 to 15552"),
+            (json!({"inset": [1, 2, 3]}), "inset must be a number or [top, left, bottom, right]"),
+            (json!({"inset": [1, 2, 3, -4]}), "inset must be a number of points from 0 to 15552"),
+            (json!({"inset": [1, "2", 3, 4]}), "inset must be a number of points from 0 to 15552"),
+            (json!({"inset": "6pt"}), "inset must be a number or [top, left, bottom, right]"),
+            (json!({"verticalJustification": "middle"}), "verticalJustification must be one of top|center|bottom|justify"),
+            (json!({"firstBaseline": "baseline"}), "firstBaseline must be one of"),
+            (json!({"autoSize": "both"}), "autoSize must be one of"),
+            (json!({"columnsKind": "flexible"}), "columnsKind must be one of"),
+            (json!({"paragraphSpacingLimit": -1}), "paragraphSpacingLimit must be a number of points from 0 to 15552"),
+            (json!({"firstBaselineMin": 20000}), "firstBaselineMin must be a number of points from 0 to 15552"),
+        ] {
+            let mut p = params.clone();
+            p["ids"] = json!([id.0]);
+            let e = s.execute("object.textFrameOptions", &p).expect_err("refused").to_string();
+            assert!(e.contains(says), "{params}: {e}");
+            assert_eq!(options(&s), before, "{params}");
+        }
+        // Values in range apply, the ends included, and null keeps a side.
+        s.execute("object.textFrameOptions", &json!({"ids": [id.0], "inset": [0, null, 15552, 4.5], "verticalJustification": "bottom"})).unwrap();
+        let o = options(&s);
+        assert_eq!(o.inset, [0.0, before.inset[1], 15552.0, 4.5]);
+        assert_eq!(o.vertical_justification, designcraft_doc::VerticalJustification::Bottom);
+        s.execute("object.textFrameOptions", &json!({"ids": [id.0], "inset": 6, "firstBaseline": "capHeight"})).unwrap();
+        let o = options(&s);
+        assert_eq!(o.inset, [6.0; 4]);
+        assert_eq!(o.first_baseline, designcraft_doc::FirstBaseline::CapHeight);
     }
 }
 

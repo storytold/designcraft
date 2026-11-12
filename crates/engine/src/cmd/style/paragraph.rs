@@ -416,6 +416,51 @@ fn continue_numbering(p: Option<&Value>, para: &mut ParaAttrs) {
     }
 }
 
+/// After an edit of paragraph style `name`: Minimum ≤ Desired ≤ Maximum in `rows` for the style,
+/// the styles based on it and the story paragraphs that use any of them.
+fn check_justification_after_edit(d: &designcraft_doc::Document, name: &str, rows: [bool; 3]) -> Result<()> {
+    const ID: &str = "style.paragraph.edit";
+    if !rows.contains(&true) {
+        return Ok(());
+    }
+    let styles = &d.styles;
+    let affected: Vec<&str> = styles.paragraph.iter().map(|st| st.name.as_str()).filter(|n| styles.para_based_on_cycles(name, n)).collect();
+    for n in &affected {
+        if let Some(m) = crate::cmd::text::justification_order_error(&styles.resolve_para_style(n).0, rows) {
+            return Err(bad(ID, if *n == name { m } else { format!("paragraph style {n:?}: {m}") }));
+        }
+    }
+    for st in d.stories.values() {
+        let mut check = |pf: &designcraft_doc::ParaFormat| {
+            if affected.contains(&pf.style.as_str()) { crate::cmd::text::justification_order_error(&styles.resolve_para(pf).0, rows) } else { None }
+        };
+        if let Some(m) = first_in_nested_paras(st, &mut check) {
+            return Err(bad(ID, format!("a paragraph of story {}: {m}", st.id.0)));
+        }
+    }
+    Ok(())
+}
+
+/// The first answer `f` gives for a paragraph of `story`, its table cells, footnotes or endnotes,
+/// at any depth. The walk keeps its own stack, so a deeply nested document can't exhaust the
+/// call stack.
+fn first_in_nested_paras(story: &designcraft_doc::Story, f: &mut impl FnMut(&designcraft_doc::ParaFormat) -> Option<String>) -> Option<String> {
+    let mut pending = vec![story];
+    while let Some(story) = pending.pop() {
+        if let Some(m) = story.paras.iter().find_map(&mut *f) {
+            return Some(m);
+        }
+        pending.extend(story.tables.values().flat_map(|t| t.cells.iter().map(|c| &c.text)));
+        pending.extend(story.notes.iter().chain(&story.endnotes).map(|n| &n.text));
+    }
+    None
+}
+
+/// The justification rows the `para` object of `p` sets or clears.
+fn justification_rows_given(p: &Value) -> [bool; 3] {
+    crate::cmd::text::justification_rows_named(p.get("para").and_then(Value::as_object).into_iter().flat_map(|o| o.keys().map(String::as_str)))
+}
+
 /// The style `p[key]` names: none when absent or null; anything but a name is refused.
 fn style_name_param(cmd: &str, p: &Value, key: &str) -> Result<Option<String>> {
     match p.get(key) {
@@ -434,6 +479,8 @@ pub(super) fn create_para(s: &mut Session, p: &Value) -> Result<Value> {
     continue_numbering(p.get("para"), &mut para);
     explicit_default_kinsoku(&mut para, p.get("para"));
     check_grep_styles("style.paragraph.create", &para)?;
+    crate::cmd::text::validate_para_values(&para, "style.paragraph.create")?;
+    let rows = justification_rows_given(p);
     let mut chars: CharAttrs = attrs("style.paragraph.create", "chars", p, |a: &mut CharAttrs, k, v| a.set_json(k, v))?;
     // Validate caller-supplied fills, not selection fills retained after a swatch is deleted.
     crate::cmd::text::validate_char_fill(&s.doc()?.doc, &chars, "style.paragraph.create")?;
@@ -467,6 +514,9 @@ pub(super) fn create_para(s: &mut Session, p: &Value) -> Result<Value> {
             return Err(bad("style.paragraph.create", format!("no style `{n}`")));
         }
         d.styles_mut().paragraph.push(ParagraphStyle { name: name.clone(), based_on, next_style: next, para, chars, shortcut: String::new() });
+        // Minimum ≤ Desired ≤ Maximum holds over what the style resolves to.
+        let (resolved, _) = d.styles.resolve_para_style(&name);
+        crate::cmd::text::validate_justification_order(&resolved, rows, "style.paragraph.create")?;
         Ok(json!({"name": name}))
     })
 }
@@ -578,9 +628,15 @@ pub(super) fn edit_para(s: &mut Session, p: &Value) -> Result<Value> {
         continue_numbering(p.get("para"), &mut para);
         explicit_default_kinsoku(&mut para, p.get("para"));
         check_grep_styles("style.paragraph.edit", &para)?;
+        crate::cmd::text::validate_para_values(&para, "style.paragraph.edit")?;
         let st = d.styles_mut().para_mut(&name).ok_or_else(|| bad("style.paragraph.edit", format!("no style `{name}`")))?;
         st.para.merge(&para);
         st.chars.merge(&chars);
+        // Minimum ≤ Desired ≤ Maximum holds over what the style resolves to: in the rows the edit
+        // names, or in every row when it changes Based On or resets the style.
+        let rows = if reset || based.is_some() { [true; 3] } else { justification_rows_given(p) };
+        check_justification_after_edit(d, &name, rows)?;
+        let st = d.styles_mut().para_mut(&name).ok_or_else(|| bad("style.paragraph.edit", format!("no style `{name}`")))?;
         match next {
             Some(Value::String(n)) => st.next_style = Some(n),
             Some(Value::Null) => st.next_style = None,
