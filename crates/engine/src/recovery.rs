@@ -649,6 +649,32 @@ struct Snapshot {
     own: bool,
     /// The folder's canonical key, for recording that a shared entry is this run's now.
     key: PathBuf,
+    /// The session that queued a background write ([`Session::recovery_owner`]), which takes its
+    /// result.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    owner: u64,
+}
+
+/// A number for each session, so background results go back to the session that queued them.
+/// Dropping it retires the number: results still queued for it are then dropped.
+pub(crate) struct Owner(pub(crate) u64);
+
+/// The numbers of the sessions that exist.
+static LIVE_OWNERS: std::sync::Mutex<std::collections::BTreeSet<u64>> = std::sync::Mutex::new(std::collections::BTreeSet::new());
+
+impl Owner {
+    pub(crate) fn new() -> Self {
+        static NEXT_OWNER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let id = NEXT_OWNER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        LIVE_OWNERS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(id);
+        Owner(id)
+    }
+}
+
+impl Drop for Owner {
+    fn drop(&mut self) {
+        LIVE_OWNERS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&self.0);
+    }
 }
 
 impl Snapshot {
@@ -662,6 +688,7 @@ impl Snapshot {
             // An entry this run did not write is never replaced, even one made since it checked.
             own: access.owns(d.uid),
             key: access.key.clone(),
+            owner: 0,
         }
     }
 }
@@ -700,7 +727,16 @@ fn write_snapshot(entry: &Snapshot, cancelled: impl Fn() -> bool) -> Written {
         WRITTEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert((entry.key.clone(), entry.uid));
     }
     let metadata = json!({"path": entry.path, "title": entry.title, "saved": designcraft_doc::vars::now()});
-    Written { published: true, error: publish_recovery_file(&meta, metadata.to_string().as_bytes(), entry.own).err() }
+    // A cancel after the primary landed removes it; the metadata must not be left without it.
+    let bytes = metadata.to_string();
+    let error = publish_recovery_written(
+        &meta,
+        entry.own,
+        |out| out.write_all(bytes.as_bytes()).map_err(|e| EngineError::Other(format!("{}: {e}", meta.display()))),
+        &cancelled,
+    )
+    .err();
+    Written { published: true, error }
 }
 
 /// Write recovery entries for dirty documents on a background thread and drop clean checkpoints
@@ -729,7 +765,8 @@ pub(crate) fn start_tracked(s: &mut Session, dir: &Path) -> Result<usize> {
                 continue;
             }
             let Some(document) = s.docs.get(index) else { continue };
-            let entry = Snapshot::of(&access, dir, document);
+            let mut entry = Snapshot::of(&access, dir, document);
+            entry.owner = s.recovery_owner.0;
             // A write still running for this document already holds a snapshot of it; the next
             // timer tick catches up with the edits made since.
             match worker::submit(entry) {
@@ -787,8 +824,20 @@ pub(crate) fn finished(s: &mut Session) -> Finished {
     let Some(w) = worker::started() else { return out };
     // Before draining: the worker sends a result before it clears the document as running, so a writer idle now has every result in the channel already.
     let busy = w.busy();
-    let done = w.done.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    while let Ok(d) = done.try_recv() {
+    // Results go to the session that queued them: another session has none of those documents,
+    // and would remove their snapshots as if they had been closed.
+    let mine: Vec<worker::Done> = {
+        let done = w.done.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut others = w.undelivered.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut all = std::mem::take(&mut *others);
+        all.extend(done.try_iter());
+        let (mine, rest): (Vec<_>, Vec<_>) = all.into_iter().partition(|d| d.owner == s.recovery_owner.0);
+        // A session that is gone takes nothing: its results are dropped rather than kept for ever.
+        let live = LIVE_OWNERS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        *others = rest.into_iter().filter(|d| live.contains(&d.owner)).collect();
+        mine
+    };
+    for d in mine {
         // A primary that landed belongs to this run even if its optional metadata failed: record
         // it, so Save and Close remove the snapshot instead of leaving it in the folder for ever.
         if d.published && record_checkpoint(s, d.dir, d.uid) {
@@ -826,11 +875,15 @@ mod worker {
         /// The primary document reached the folder (its optional metadata may have failed): the
         /// checkpoint must still be recorded, or Save and Close could not remove it.
         pub(super) published: bool,
+        /// The session that queued the write.
+        pub(super) owner: u64,
     }
 
     pub(super) struct Writer {
         jobs: Sender<Snapshot>,
         pub(super) done: Mutex<Receiver<Done>>,
+        /// Results taken from `done` by a session that did not queue them, kept for their own.
+        pub(super) undelivered: Mutex<Vec<Done>>,
         /// Documents queued or being written: a second write of one still holds nothing newer.
         running: Mutex<BTreeSet<(PathBuf, u64)>>,
         /// A document saved, reverted or closed while its write was queued or running: the
@@ -872,6 +925,9 @@ mod worker {
         /// as small as the work in flight.
         fn cancel(&self, dir: &Path, uid: u64) {
             let key = (dir.to_path_buf(), uid);
+            // A rename under way finishes first, so the caller's cleanup comes after it; a later
+            // one sees the mark.
+            let _publishing = super::PUBLISH.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             if !self.running.lock().is_ok_and(|running| running.contains(&key)) {
                 return;
             }
@@ -894,11 +950,11 @@ mod worker {
                 let spawned = std::thread::Builder::new().name("designcraft-recovery".into()).spawn(move || {
                     while let Ok(job) = job_rx.recv() {
                         let (published, error) = guarded_write(&job);
-                        let (dir, uid) = (job.dir, job.uid);
+                        let (dir, uid, owner) = (job.dir, job.uid, job.owner);
                         // The result before the document reads as idle: a writer that is not busy
                         // has already delivered it, so the interface never stops polling with an
                         // answer still on its way.
-                        let sent = done_tx.send(Done { dir: dir.clone(), uid, error, published }).is_ok();
+                        let sent = done_tx.send(Done { dir: dir.clone(), uid, error, published, owner }).is_ok();
                         if let Some(w) = WRITER.get().and_then(Option::as_ref) {
                             w.finish(&dir, uid);
                         }
@@ -910,6 +966,7 @@ mod worker {
                 spawned.ok().map(|_| Writer {
                     jobs,
                     done: Mutex::new(done_rx),
+                    undelivered: Mutex::new(Vec::new()),
                     running: Mutex::new(BTreeSet::new()),
                     cancelled: Mutex::new(BTreeSet::new()),
                     idle: Condvar::new(),
@@ -1124,6 +1181,11 @@ fn publish_recovery_file(path: &Path, bytes: &[u8], replace: bool) -> Result<()>
         .map(|_| ())
 }
 
+/// Serializes the last check for a cancelled write with the rename that publishes it, and with
+/// [`worker::cancel`].
+#[cfg(not(target_arch = "wasm32"))]
+static PUBLISH: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// [`publish_recovery_file`], with `write` filling the temporary file: a large document is written
 /// straight to disk instead of being built in memory first. Returns whether it was published;
 /// `cancelled` is asked after the bytes are written and before the rename, so a document saved or
@@ -1155,16 +1217,21 @@ fn publish_recovery_written(
         out.flush().map_err(|e| EngineError::Other(format!("{}: {e}", path.display())))?;
     }
     tmp.as_file_mut().sync_all().map_err(|e| EngineError::Other(format!("{}: {e}", path.display())))?;
-    // Last moment: the document was saved, reverted or closed while the bytes were written. The
-    // temporary file is dropped, so nothing of the stale snapshot stays.
-    if cancelled() {
-        return Ok(false);
+    {
+        // Held from the check to the rename: a cancel waits for a rename already under way (the
+        // cleanup after it then removes the file), and a rename after a cancel sees it.
+        let _publishing = PUBLISH.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Last moment: the document was saved, reverted or closed while the bytes were written.
+        // The temporary file is dropped, so nothing of the stale snapshot stays.
+        if cancelled() {
+            return Ok(false);
+        }
+        // Validate the non-followed leaf again immediately before renaming the randomized
+        // temporary file to its fixed sibling destination.
+        validate_recovery_dir(dir)?;
+        let published = if replace { tmp.persist(path) } else { tmp.persist_noclobber(path) };
+        published.map_err(|e| EngineError::Other(format!("{}: {}", path.display(), e.error)))?;
     }
-    // Validate the non-followed leaf again immediately before renaming the randomized temporary
-    // file to its fixed sibling destination.
-    validate_recovery_dir(dir)?;
-    let published = if replace { tmp.persist(path) } else { tmp.persist_noclobber(path) };
-    published.map_err(|e| EngineError::Other(format!("{}: {}", path.display(), e.error)))?;
     sync_recovery_dir(dir)?;
     Ok(true)
 }

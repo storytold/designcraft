@@ -170,6 +170,65 @@ fn a_background_save_returns_while_its_write_is_held() {
     discard(dir.path(), uid);
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_document_saved_while_its_write_is_held_leaves_no_snapshot() {
+    let _turn = background();
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = dirty_session();
+    s.recovery_dir = Some(dir.path().to_path_buf());
+    let uid = s.docs[0].uid;
+    let held = testing::hold_next_write(dir.path());
+    s.execute("file.recovery.save", &json!({"background": true})).unwrap();
+    held.wait_until_held();
+    let saved = dir.path().join("saved.designcraft");
+    s.execute("file.saveAs", &json!({"path": saved.to_string_lossy()})).unwrap();
+    held.release();
+    assert_eq!(finished_writes(&mut s), 0);
+    assert!(!files(dir.path(), uid).0.exists(), "the stale snapshot was not published");
+    assert!(!files(dir.path(), uid).1.exists(), "nor its metadata");
+    assert!(list(dir.path()).is_empty());
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_background_result_goes_to_the_session_that_queued_it() {
+    let _turn = background();
+    let dir = tempfile::tempdir().unwrap();
+    let mut queued_by = dirty_session();
+    queued_by.recovery_dir = Some(dir.path().to_path_buf());
+    let uid = queued_by.docs[0].uid;
+    let mut other = dirty_session();
+    queued_by.execute("file.recovery.save", &json!({"background": true})).unwrap();
+    testing::wait_until_idle();
+    // Another session has none of these documents: it must neither take the result nor remove
+    // the snapshot as if its document had been closed.
+    let v = other.execute("file.recovery.progress", &json!({})).unwrap();
+    assert_eq!(v["written"], 0, "{v}");
+    assert!(files(dir.path(), uid).0.exists(), "the snapshot is still there");
+    assert_eq!(finished_writes(&mut queued_by), 1);
+    assert!(queued_by.docs[0].recovery_entries.iter().any(|(d, u)| *u == uid && same_directory(d, dir.path())), "the checkpoint is recorded");
+    discard(dir.path(), uid);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn results_for_a_session_that_is_gone_are_not_kept() {
+    let _turn = background();
+    let dir = tempfile::tempdir().unwrap();
+    let mut gone = dirty_session();
+    gone.recovery_dir = Some(dir.path().to_path_buf());
+    let owner = gone.recovery_owner.0;
+    gone.execute("file.recovery.save", &json!({"background": true})).unwrap();
+    testing::wait_until_idle();
+    drop(gone);
+    let mut other = dirty_session();
+    other.execute("file.recovery.progress", &json!({})).unwrap();
+    let writer = worker::started().unwrap();
+    let kept = writer.undelivered.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    assert!(!kept.iter().any(|d| d.owner == owner), "a result nobody can take was kept");
+}
+
 #[test]
 fn a_background_save_rejects_a_background_that_is_not_true_or_false() {
     let dir = tempfile::tempdir().unwrap();
