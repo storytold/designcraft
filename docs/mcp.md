@@ -185,6 +185,12 @@ In connected mode every tool maps to a control-channel method (`engine.execute`,
 what the agent does shows up live in the window. A failed request is not resent: the operation may have completed,
 so inspect the document before retrying. The next request re-establishes the connection.
 
+## Table targets
+
+Table IDs can repeat across stories. For `execute` commands that target an existing table, supply `story` with `table`
+when an ID repeats. An ambiguous table-only request returns an error. Supplied `story` and `table` values must be
+nonnegative integers; `null` and values of other types return an error.
+
 ## Coordinates
 
 Points (1/72 in), y down, in **spread** space: on a single-page spread the page's top-left is (0, 0); on a facing
