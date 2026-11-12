@@ -589,6 +589,68 @@ mod color_theme_tests {
         assert_eq!((inset(&app, a), inset(&app, b)), (24.0, 0.0));
     }
 
+    /// A preview shown in one document goes when OK is refused, or Cancel is chosen, after another
+    /// document became active.
+    #[test]
+    fn text_frame_options_preview_goes_from_its_document_after_another_becomes_active() {
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        let make = |app: &mut crate::DesignApp| {
+            app.run("file.new", json!({})).unwrap();
+            let r = app.run("frame.create", json!({"rect": [36, 36, 300, 300], "content": "text", "text": "Hello"})).unwrap();
+            app.run("text.select", json!({"story": r["story"], "anchor": 2})).unwrap();
+            designcraft_doc::ItemId(r["id"].as_u64().unwrap())
+        };
+        let a = make(&mut app);
+        let first = |app: &DesignApp| {
+            let st = &app.session.documents()[0];
+            (st.doc.item(a).unwrap().text_frame().unwrap().options.columns, st.interaction.is_some())
+        };
+        let preview = |app: &mut DesignApp| {
+            let mut d = Dialog::new("textFrameOptions", json!({}));
+            seed_text_frame_options(app, &mut d);
+            d.fields.insert("columns".into(), json!("3"));
+            d.fields.insert("preview".into(), json!(true));
+            text_frame_preview(app, &mut d);
+            assert_eq!(first(app), (3, true), "previewed in the first document");
+            d
+        };
+        let d = preview(&mut app);
+        make(&mut app);
+        app.ui.dialog = Some(d);
+        let err = confirm(&mut app).unwrap_err().to_string();
+        assert!(err.contains("no longer the active one"), "{err}");
+        assert_eq!(first(&app), (1, false), "OK refused: the first document is as it was");
+        app.ui.dialog = None;
+        app.session.set_active(0);
+        let d = preview(&mut app);
+        app.session.set_active(1);
+        app.ui.dialog = Some(d);
+        cancel(&mut app);
+        assert_eq!(first(&app), (1, false), "Cancel: the first document is as it was");
+    }
+
+    /// Undo puts back the document's id counter, so a frame made after Undo can take the id of a
+    /// frame the dialog stored; OK is refused instead of changing the new frame.
+    #[test]
+    fn text_frame_options_from_the_type_tool_are_refused_after_undo_reuses_the_frame_id() {
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let a = app.run("frame.create", json!({"rect": [36, 36, 300, 120], "content": "text", "text": "First"})).unwrap();
+        app.run("text.select", json!({"story": a["story"], "anchor": 1})).unwrap();
+        let mut d = Dialog::new("textFrameOptions", json!({}));
+        seed_text_frame_options(&app, &mut d);
+        d.fields.insert("columns".into(), json!("3"));
+        app.run("edit.undo", json!({})).unwrap();
+        let b = app.run("frame.create", json!({"rect": [36, 200, 300, 300], "content": "text", "text": "Second"})).unwrap();
+        assert_eq!(a["id"], b["id"], "the new frame takes the undone frame's id");
+        app.run("text.select", json!({"story": b["story"], "anchor": 1})).unwrap();
+        app.ui.dialog = Some(d);
+        let err = confirm(&mut app).unwrap_err().to_string();
+        assert!(err.contains("changed after the dialog opened"), "{err}");
+        let b = designcraft_doc::ItemId(b["id"].as_u64().unwrap());
+        assert_eq!(app.session.doc().unwrap().doc.item(b).unwrap().text_frame().unwrap().options.columns, 1, "the new frame is unchanged");
+    }
+
     #[test]
     fn toc_right_indent_separator_survives_the_dialog_and_update() {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
@@ -1152,8 +1214,15 @@ fn seed_text_frame_options(app: &DesignApp, d: &mut Dialog) {
         // The document state those frames are in: another document, or the document after
         // Revert, can reuse their ids.
         d.fields.insert("_targetsDoc".into(), json!(app.session.active().map(|doc| doc.identity_epoch)));
+        // Undo puts back the document's id counter, so a frame made after it can take a stored id.
+        d.fields.insert("_targetsRevision".into(), json!(app.session.active().map(base_revision)));
     }
     d.fields.insert("_shown".into(), shown);
+}
+
+/// The document's revision without a preview on top: the one the open gesture began at.
+fn base_revision(st: &designcraft_engine::DocState) -> u64 {
+    st.interaction.as_ref().map_or(st.revision, |it| it.revision)
 }
 
 /// With the Type tool and no frame selected: the frame that shows the caret, or every frame that
@@ -1280,8 +1349,7 @@ fn text_frame_preview(app: &mut DesignApp, d: &mut Dialog) {
     let shown = d.fields.get(PREVIEWED).cloned();
     if !d.b("preview") {
         if shown.is_some() {
-            app.session.cancel_interaction();
-            d.fields.remove(PREVIEWED);
+            end_text_frame_preview(app, d);
             d.fields.remove("status");
         }
         return;
@@ -1291,8 +1359,7 @@ fn text_frame_preview(app: &mut DesignApp, d: &mut Dialog) {
         Err(e) => {
             // Values OK would refuse don't stay on the page: it goes back to how it was.
             if shown.is_some() {
-                app.session.cancel_interaction();
-                d.fields.remove(PREVIEWED);
+                end_text_frame_preview(app, d);
             }
             d.fields.insert("status".into(), json!(e));
             return;
@@ -1304,22 +1371,31 @@ fn text_frame_preview(app: &mut DesignApp, d: &mut Dialog) {
     // Nothing edited (yet, or any more): the page as it was.
     if params.as_object().is_some_and(|m| m.keys().all(|k| k == "ids")) {
         if shown.is_some() {
-            app.session.cancel_interaction();
-            d.fields.remove(PREVIEWED);
+            end_text_frame_preview(app, d);
         }
         return;
     }
-    if shown.is_none()
-        && let Err(e) = app.session.begin_interaction("Text Frame Options")
-    {
-        d.fields.insert("status".into(), json!(e.to_string()));
-        return;
+    if shown.is_none() {
+        if let Err(e) = app.session.begin_interaction("Text Frame Options") {
+            d.fields.insert("status".into(), json!(e.to_string()));
+            return;
+        }
+        d.fields.insert(PREVIEW_DOC.into(), json!(app.session.active().map(|doc| doc.uid)));
     }
     match app.session.preview("object.textFrameOptions", params.clone()) {
         Ok(()) => d.fields.remove("status"),
         Err(e) => d.fields.insert("status".into(), json!(e.to_string())),
     };
     d.fields.insert(PREVIEWED.into(), params);
+}
+
+/// The preview goes from the document it was shown in, also when another document is active now.
+fn end_text_frame_preview(app: &mut DesignApp, d: &mut Dialog) {
+    d.fields.remove(PREVIEWED);
+    match d.fields.remove(PREVIEW_DOC).as_ref().and_then(Value::as_u64) {
+        Some(uid) => app.session.cancel_interaction_of(uid),
+        None => app.session.cancel_interaction(),
+    }
 }
 
 /// Text Frame Options › General, as InDesign's: Columns (kind, number and width, gutter and
@@ -1568,8 +1644,8 @@ fn text_frame_baseline_grid(d: &Dialog, bad: &dyn Fn(&str) -> String) -> Result<
 fn confirm_text_frame_options(app: &mut DesignApp, d: &mut Dialog) -> Result<Value, String> {
     seed_text_frame_options(app, d);
     // The preview goes; the options are set once, as one undo step.
-    if d.fields.remove(PREVIEWED).is_some() {
-        app.session.cancel_interaction();
+    if d.fields.contains_key(PREVIEWED) {
+        end_text_frame_preview(app, d);
     }
     let p = text_frame_params(app, d)?;
     if p.keys().all(|k| k == "ids") {
@@ -1679,12 +1755,16 @@ fn text_frame_params(app: &DesignApp, d: &Dialog) -> Result<Map<String, Value>, 
 
 /// Typing in a frame: the frame that showed the caret, or every frame that held part of the
 /// selected text, when the dialog opened. Those ids are refused once another document is active,
-/// or once Revert has replaced the document.
+/// once Revert has replaced the document, or once the document has changed (Undo can give a new
+/// frame a stored id).
 fn text_frame_targets(app: &DesignApp, d: &Dialog) -> Result<Option<Value>, &'static str> {
     let Some(ids) = d.fields.get("_targets").cloned() else { return Ok(typing_frame_ids(app)) };
     let active = app.session.active().map(|doc| doc.identity_epoch);
     if d.fields.get("_targetsDoc").and_then(Value::as_u64) != active {
         return Err("the document the dialog opened on is no longer the active one");
+    }
+    if d.fields.get("_targetsRevision").and_then(Value::as_u64) != app.session.active().map(base_revision) {
+        return Err("the document changed after the dialog opened");
     }
     Ok(Some(ids))
 }
@@ -4258,7 +4338,11 @@ pub fn cancel(app: &mut DesignApp) {
     }
     crate::new_document::end_preview(app);
     if d.as_ref().is_some_and(|d| d.fields.contains_key(PREVIEWED)) {
-        app.session.cancel_interaction();
+        // Text Frame Options names the document its preview is in.
+        match d.as_ref().and_then(|d| d.fields.get(PREVIEW_DOC)).and_then(Value::as_u64) {
+            Some(uid) => app.session.cancel_interaction_of(uid),
+            None => app.session.cancel_interaction(),
+        }
     }
     app.cancel_pdf_import();
     if let Some(d) = d
@@ -8978,6 +9062,8 @@ fn toc_dialog(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
 }
 /// The params a previewing dialog shows on the page (its interaction is open while it is set).
 const PREVIEWED: &str = "_previewed";
+/// The uid of the document a Text Frame Options preview is shown in.
+const PREVIEW_DOC: &str = "_previewDoc";
 
 /// Edit › Step and Repeat, as in InDesign: Repeat (Count, or Rows and Columns with Create as a
 /// grid), Offset (Vertical, Horizontal, in the document's ruler units) and Preview, which shows
