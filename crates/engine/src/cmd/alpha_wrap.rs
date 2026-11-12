@@ -3,6 +3,7 @@
 //! The outline is traced once per image and threshold, in the image's pixel space, and kept on
 //! the document ([`designcraft_doc::AlphaOutline`]). Composition maps it through the graphic's
 //! current transform, so it follows the image when it is moved, scaled or refitted.
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use designcraft_doc::{AlphaOutline, AssetId, ContourType, Document, Item, WrapMode};
@@ -18,14 +19,14 @@ const MAX_EDGES: usize = 1 << 16;
 /// Trace the outlines new Alpha Channel contours need and drop the ones nothing uses. Cheap when
 /// nothing changed: tracing happens only for an image and threshold not seen before.
 pub(crate) fn sync(doc: &mut Document) {
-    let mut wanted: Vec<(AssetId, u8)> = Vec::new();
+    let mut wanted: BTreeSet<(AssetId, u8)> = BTreeSet::new();
     // Every frame, in groups and Paste Into containers too, with the wrap set on the frame or on
     // its placed graphic (Direct Selection sets the graphic's).
     let mut want = |it: &Item| {
         let Some(g) = it.graphic() else { return };
         for w in [&it.wrap, &g.wrap] {
-            if w.mode == WrapMode::Contour && w.contour == ContourType::AlphaChannel && !wanted.contains(&(g.asset, w.alpha_threshold)) {
-                wanted.push((g.asset, w.alpha_threshold));
+            if w.mode == WrapMode::Contour && w.contour == ContourType::AlphaChannel {
+                wanted.insert((g.asset, w.alpha_threshold));
             }
         }
     };
@@ -47,8 +48,9 @@ pub(crate) fn sync(doc: &mut Document) {
     // An outline traced from data the asset no longer has (relinked or updated) is traced again.
     let assets = &doc.assets;
     doc.alpha_outlines.retain(|o| wanted.contains(&(o.asset, o.threshold)) && assets.get(&o.asset).is_some_and(|a| o.traced_from(&a.data)));
+    let traced: BTreeSet<(AssetId, u8)> = doc.alpha_outlines.iter().map(|o| (o.asset, o.threshold)).collect();
     for (asset, threshold) in wanted {
-        if doc.alpha_outline(asset, threshold).is_some() {
+        if traced.contains(&(asset, threshold)) {
             continue;
         }
         let Some(a) = doc.assets.get(&asset).filter(|a| a.is_raster()) else { continue };
