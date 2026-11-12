@@ -394,6 +394,9 @@ pub(crate) struct FindContext {
     target: usize,
     offset: usize,
     last_match_end: Option<usize>,
+    /// A Document search that starts at a caret inside a story comes back to that story last,
+    /// for the matches that start before this byte.
+    wrap: Option<usize>,
 }
 
 impl FindContext {
@@ -401,7 +404,7 @@ impl FindContext {
         self.uid == st.uid && Weak::ptr_eq(&self.document, &Arc::downgrade(&st.doc)) && self.revision == st.revision && self.selection == st.selection
     }
 
-    fn acknowledge(&mut self, st: &DocState) {
+    pub(crate) fn acknowledge(&mut self, st: &DocState) {
         self.revision = st.revision;
         self.selection = st.selection.clone();
     }
@@ -417,11 +420,21 @@ impl FindContext {
         }
         self.offset = old.start + new_len;
         self.last_match_end = Some(self.offset);
+        // The boundary is a byte of the story the search started in: only a change there moves it,
+        // and a change across it ends it after the new text, which the first pass searched.
+        let in_wrap_story = self.order.first().and_then(|i| self.targets.get(*i)).is_some_and(|(tid, tcell, _)| *tid == sid && *tcell == cell);
+        if let Some(w) = self.wrap.as_mut().filter(|_| in_wrap_story) {
+            if *w >= old.end {
+                *w = moved(*w);
+            } else if *w > old.start {
+                *w = old.start + new_len;
+            }
+        }
         let at = self.offset;
-        if let Some(i) = self
-            .order
-            .iter()
-            .position(|i| self.targets.get(*i).is_some_and(|(tid, tcell, r)| *tid == sid && *tcell == cell && r.start <= at && at <= r.end))
+        let holds = |i: &usize| self.targets.get(*i).is_some_and(|(tid, tcell, r)| *tid == sid && *tcell == cell && r.start <= at && at <= r.end);
+        // The story the search came back to keeps its place at the end.
+        if !self.order.get(self.target).is_some_and(holds)
+            && let Some(i) = self.order.iter().position(holds)
         {
             self.target = i;
         }
@@ -432,6 +445,7 @@ impl FindContext {
     fn restart(&mut self, st: &DocState) -> Result<()> {
         self.target = 0;
         self.last_match_end = None;
+        self.wrap = None;
         self.order = (0..self.targets.len()).collect();
         let caret = st.selection.text.filter(|_| st.selection.cells.is_none());
         // A caret in a searched cell starts there; one in a footnote starts at its story.
@@ -454,6 +468,11 @@ impl FindContext {
             let text = target_text(&st.doc, *sid, *cell, r)?;
             if text.get(self.offset.saturating_sub(r.start)..).is_none() {
                 return Err(bad("find", "invalid UTF-8 search cursor"));
+            }
+            // The text before the caret is searched after every other story, as InDesign does.
+            if self.domain == Domain::Document && self.offset > r.start {
+                self.wrap = Some(self.offset);
+                self.order.push(self.order[0]);
             }
         }
         Ok(())
@@ -536,6 +555,7 @@ fn scope(s: &Session, p: &Value) -> Result<FindContext> {
         target: 0,
         offset: 0,
         last_match_end: None,
+        wrap: None,
     };
     context.restart(st)?;
     Ok(context)
@@ -748,7 +768,8 @@ fn find_next(s: &mut Session, p: &Value) -> Result<Value> {
         if text.get(from..).is_none() {
             return Err(bad("find", "invalid UTF-8 search cursor"));
         }
-        if let Some(m) = re.find_at(&st.doc, sid, cell, &r, text, from)? {
+        let back = context.wrap.filter(|_| context.target > 0 && context.target + 1 == context.order.len());
+        if let Some(m) = re.find_at(&st.doc, sid, cell, &r, text, from)?.filter(|m| back.is_none_or(|w| r.start + m.start < w)) {
             let (a, b) = (r.start + m.start, r.start + m.end);
             // Match find_iter/captures_iter: suppress an empty match adjacent to the
             // previous match's end, but keep adjacent nonempty matches.
@@ -771,7 +792,7 @@ fn find_next(s: &mut Session, p: &Value) -> Result<Value> {
         s.find_context = Some(context);
         return Ok(Value::Null);
     };
-    let frame = st.doc.story(sid).and_then(|x| x.frames.first().copied());
+    let frame = hit_frame(&s.cache, &st.doc, sid, cell, a);
     let cell_json = cell.map(|c| json!({"table": c.table, "row": c.row, "col": c.col}));
     let stm = s.doc_mut()?;
     stm.selection = Selection::text(TextSel { story: sid, anchor: a, focus: b, frame, cell });
@@ -787,6 +808,22 @@ fn find_next(s: &mut Session, p: &Value) -> Result<Value> {
 
 #[cfg(test)]
 mod tests;
+
+/// The frame that shows byte `at` of story `sid`, or of its table cell: for a story threaded
+/// through several frames, its composition as displayed tells (a footnote's text, its first frame).
+fn hit_frame(cache: &designcraft_compose::Cache, d: &Document, sid: StoryId, cell: Option<CellAddr>, at: usize) -> Option<designcraft_doc::ItemId> {
+    let first = d.story(sid).and_then(|x| x.frames.first().copied());
+    if d.story(sid).is_none_or(|x| x.frames.len() < 2) {
+        return first;
+    }
+    let cs = cache.get(d, sid, None);
+    let fi = match cell {
+        Some(c) if c.footnote_id().is_some() => None,
+        Some(c) => designcraft_compose::find_cell(&cs, c.table, c.row, c.col).map(|(fi, ..)| fi),
+        None => designcraft_compose::caret(&cs, at).map(|(fi, ..)| fi),
+    };
+    fi.and_then(|fi| cs.frames.get(fi)).map(|f| f.frame).or(first)
+}
 
 /// Objects matching Find/Change › Object criteria, in document order (nested ones included).
 fn find_objects(d: &designcraft_doc::Document, p: &Value) -> Vec<designcraft_doc::ItemId> {

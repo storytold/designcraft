@@ -959,3 +959,95 @@ fn change_takes_any_selection_find_next_made() {
         assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().text, if grep { "a<a>" } else { "ab" });
     }
 }
+
+/// A Document search from a caret inside a story goes through the other stories and then back
+/// to that story's text before the caret, so a match there is found, once.
+#[test]
+fn document_find_next_comes_back_to_the_text_before_the_caret() {
+    let (mut s, a) = scope_session("red black");
+    let other = s.execute("frame.create", &json!({"rect": [150, 36, 100, 100], "content": "text", "text": "black"})).unwrap();
+    let b = designcraft_doc::StoryId(other["story"].as_u64().unwrap());
+    scope_select(&mut s, a, 6, 6);
+    let p = json!({"find": "red", "scope": "document"});
+    scope_hit(&mut s, &p, a, 0, 3);
+    assert_eq!(s.execute("find.next", &p).unwrap(), serde_json::Value::Null);
+    // Text after the caret is not searched a second time on the way back.
+    scope_select(&mut s, b, 2, 2);
+    let p = json!({"find": "black", "scope": "document"});
+    scope_hit(&mut s, &p, a, 4, 9);
+    scope_hit(&mut s, &p, b, 0, 5);
+    assert_eq!(s.execute("find.next", &p).unwrap(), serde_json::Value::Null);
+}
+
+/// Switching to the parent pages to show a match keeps the match selected and the search's place,
+/// where `layout.parents.edit` alone would start the search again from the match.
+#[test]
+fn editing_parents_keeping_find_goes_on_after_the_match() {
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    let r = s
+        .execute("frame.create", &json!({"spread": {"kind": "parent", "index": 0}, "rect": [72, 72, 300, 200], "content": "text", "text": "zebra"}))
+        .unwrap();
+    let sid = r["story"].as_u64().unwrap();
+    s.execute("selection.set", &json!({"ids": []})).unwrap();
+    let p = json!({"find": "zebra"});
+    assert_eq!(s.execute("find.next", &p).unwrap()["start"], 0);
+    s.edit_parents_keeping_find(true).unwrap();
+    let st = s.doc().unwrap();
+    assert!(st.editing_parents);
+    assert_eq!(st.selection.text.map(|t| (t.story.0, t.range())), Some((sid, 0..5)), "the match stays selected");
+    assert_eq!(s.execute("find.next", &p).unwrap(), serde_json::Value::Null, "no match is found twice");
+}
+
+/// Find Next selects its match in the frame of a threaded story that shows it.
+#[test]
+fn find_next_selects_the_threaded_frame_that_shows_the_match() {
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    let text = format!("{}zebra", "word ".repeat(200));
+    let first = s.execute("frame.create", &json!({"rect": [36, 36, 300, 80], "content": "text", "text": text})).unwrap();
+    let second = s.execute("frame.create", &json!({"rect": [36, 200, 300, 760], "content": "unassigned"})).unwrap();
+    s.execute("text.thread", &json!({"from": first["id"], "to": second["id"]})).unwrap();
+    s.execute("selection.set", &json!({"ids": []})).unwrap();
+    let hit = s.execute("find.next", &json!({"find": "zebra"})).unwrap();
+    assert_eq!(hit["start"], 1000);
+    let frame = s.doc().unwrap().selection.text.and_then(|t| t.frame).map(|f| f.0);
+    assert_eq!(frame, second["id"].as_u64());
+}
+
+/// Change/Find in another story leaves the way back to the starting story's text before the
+/// caret where it was: a match after the caret, found on the first pass, is not found again.
+#[test]
+fn a_change_in_another_story_keeps_the_text_before_the_caret_bounded() {
+    let (mut s, a) = scope_session("red X red");
+    let other = s.execute("frame.create", &json!({"rect": [150, 36, 300, 100], "content": "text", "text": "red"})).unwrap();
+    let b = designcraft_doc::StoryId(other["story"].as_u64().unwrap());
+    scope_select(&mut s, a, 5, 5);
+    let p = json!({"find": "red", "change": "blueblueblue", "scope": "document"});
+    scope_hit(&mut s, &p, a, 6, 9);
+    scope_hit(&mut s, &p, b, 0, 3);
+    let mut change = p.clone();
+    change["found"] = json!(true);
+    assert_eq!(s.execute("find.change", &change).unwrap()["count"], 1);
+    scope_hit(&mut s, &p, a, 0, 3);
+    assert_eq!(s.execute("find.next", &p).unwrap(), serde_json::Value::Null);
+}
+
+/// A match in a table cell selects the threaded frame that shows that cell.
+#[test]
+fn find_next_selects_the_threaded_frame_that_shows_the_cell() {
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    let first = s.execute("frame.create", &json!({"rect": [36, 36, 300, 120], "content": "text", "text": ""})).unwrap();
+    let second = s.execute("frame.create", &json!({"rect": [36, 200, 300, 760], "content": "unassigned"})).unwrap();
+    s.execute("text.thread", &json!({"from": first["id"], "to": second["id"]})).unwrap();
+    let sid = first["story"].as_u64().unwrap();
+    s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": 0})).unwrap();
+    s.execute("table.insert", &json!({"rows": 20, "cols": 1})).unwrap();
+    s.execute("table.setCell", &json!({"row": 19, "col": 0, "text": "zebra"})).unwrap();
+    s.execute("selection.set", &json!({"ids": []})).unwrap();
+    let hit = s.execute("find.next", &json!({"find": "zebra"})).unwrap();
+    assert_eq!(hit["cell"]["row"], 19, "{hit}");
+    let frame = s.doc().unwrap().selection.text.and_then(|t| t.frame).map(|f| f.0);
+    assert_eq!(frame, second["id"].as_u64());
+}

@@ -2193,14 +2193,6 @@ fn scope_confirm_case(action: &str) {
     scope_control(&mut app, &ctx, "ui.dialog.set", json!({"field": "change", "value": "blue"}));
     match action {
         "OK" => scope_click(&mut app, &ctx, screen, "OK"),
-        "Enter" => {
-            dialog_frame(
-                &mut app,
-                &ctx,
-                screen,
-                vec![egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }],
-            );
-        }
         "control" => {
             assert_eq!(scope_control(&mut app, &ctx, "ui.dialog.confirm", json!({}))["count"], 2);
         }
@@ -2218,9 +2210,17 @@ fn find_scope_dialog_ok_consumes_retained_bounds() {
     scope_confirm_case("OK");
 }
 
+/// Enter is Find Next within the retained bounds: the dialog stays and nothing changes.
 #[test]
-fn find_scope_dialog_enter_consumes_retained_bounds() {
-    scope_confirm_case("Enter");
+fn find_scope_dialog_enter_finds_next_within_retained_bounds() {
+    let (mut app, ctx, screen, sid) = scope_dialog();
+    scope_click(&mut app, &ctx, screen, "Find Next");
+    scope_selected(&app, sid, 0, 3);
+    let enter = egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+    dialog_frame(&mut app, &ctx, screen, vec![enter]);
+    assert!(app.ui.dialog.is_some());
+    scope_selected(&app, sid, 4, 7);
+    assert_eq!(app.session.doc().unwrap().doc.story(sid).unwrap().text, "red red | red");
 }
 
 #[test]
@@ -5037,4 +5037,161 @@ fn parent_resize_exact_dialog_keeps_its_target_and_rejects_invalid_input() {
     assert!(confirm(&mut app).is_err());
     assert!(app.ui.dialog.is_some());
     assert!(std::sync::Arc::ptr_eq(&saved, &app.session.doc().unwrap().doc));
+}
+
+#[test]
+fn find_next_brings_the_text_it_found_into_view() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"preset": "A4", "pages": 5, "facingPages": false})).unwrap();
+    app.canvas_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 800.0)));
+    app.run("frame.create", json!({"spread": 4, "rect": [72, 72, 300, 200], "content": "text", "text": "zebra"})).unwrap();
+    app.run("selection.set", json!({"ids": []})).unwrap();
+    crate::canvas::go_to_page(&mut app, 0);
+    let spread = |app: &DesignApp| crate::canvas::view_centre(app).map(|(s, _)| s);
+    assert_eq!(spread(&app), Some(designcraft_doc::SpreadRef::Doc(0)));
+    let hit = app.run("find.next", json!({"find": "zebra", "scope": "document"})).unwrap();
+    assert_eq!(hit["start"], 0);
+    assert_eq!(spread(&app), Some(designcraft_doc::SpreadRef::Doc(4)), "the view went to the page with the match");
+}
+
+#[test]
+fn enter_in_find_change_finds_the_next_match_and_changes_nothing() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let sid = app.run("frame.create", json!({"rect": [36, 36, 300, 200], "content": "text", "text": "red and red"})).unwrap()["story"].clone();
+    app.run("selection.set", json!({"ids": []})).unwrap();
+    app.run("app.findChange", json!({})).unwrap();
+    app.ui.dialog.as_mut().unwrap().fields.insert("find".into(), json!("red"));
+    let ctx = dialog_context("en");
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1178.0, 814.0));
+    dialog_frame(&mut app, &ctx, screen, vec![]);
+    let enter = egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+    dialog_frame(&mut app, &ctx, screen, vec![enter]);
+    assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some("findChange"), "the dialog stays open");
+    let st = app.session.doc().unwrap();
+    assert_eq!(st.doc.story(designcraft_doc::StoryId(sid.as_u64().unwrap())).unwrap().text, "red and red", "nothing changed");
+    assert_eq!(st.selection.text.map(|t| t.range()), Some(0..3), "the first match is selected");
+    // With a modifier, Enter is Find Next too, never OK (Change All).
+    for (modifiers, range) in [(egui::Modifiers::COMMAND, 8..11), (egui::Modifiers::SHIFT, 8..11)] {
+        let enter = egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers };
+        dialog_frame(&mut app, &ctx, screen, vec![enter]);
+        assert!(app.ui.dialog.is_some(), "{modifiers:?}+Enter does not confirm the dialog");
+        assert_eq!(app.session.doc().unwrap().selection.text.map(|t| t.range()), Some(range), "{modifiers:?}+Enter");
+    }
+    let text = &app.session.doc().unwrap().doc.story(designcraft_doc::StoryId(sid.as_u64().unwrap())).unwrap().text;
+    assert_eq!(text, "red and red", "nothing changed");
+}
+
+#[test]
+fn find_next_shows_a_match_on_a_parent_page_with_its_selection() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"pages": 2})).unwrap();
+    app.canvas_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 800.0)));
+    let r = app
+        .run("frame.create", json!({"spread": {"kind": "parent", "index": 0}, "rect": [72, 72, 300, 200], "content": "text", "text": "zebra"}))
+        .unwrap();
+    let sid = r["story"].as_u64().unwrap();
+    app.run("selection.set", json!({"ids": []})).unwrap();
+    assert!(!app.session.doc().unwrap().editing_parents);
+    app.run("find.next", json!({"find": "zebra"})).unwrap();
+    let st = app.session.doc().unwrap();
+    assert!(st.editing_parents, "the parent page is shown");
+    assert_eq!(st.selection.text.map(|t| (t.story.0, t.range())), Some((sid, 0..5)), "the match stays selected");
+    // Back on a document page's text, parent editing ends and that match stays selected.
+    let r = app.run("frame.create", json!({"spread": 0, "rect": [72, 72, 300, 200], "content": "text", "text": "zebra"})).unwrap();
+    let doc_sid = r["story"].as_u64().unwrap();
+    app.run("selection.set", json!({"ids": []})).unwrap();
+    app.run("layout.parents.edit", json!({"on": true})).unwrap();
+    app.run("text.select", json!({"story": sid, "anchor": 5, "focus": 5})).unwrap();
+    app.run("find.next", json!({"find": "zebra"})).unwrap();
+    let st = app.session.doc().unwrap();
+    assert!(!st.editing_parents);
+    assert_eq!(st.selection.text.map(|t| (t.story.0, t.range())), Some((doc_sid, 0..5)));
+}
+
+/// Showing a match on a parent page (or back on a document page) keeps the search's place: each
+/// match is found once, then Find Next reports no more.
+#[test]
+fn find_next_goes_on_after_switching_to_and_from_the_parent_pages() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"pages": 2})).unwrap();
+    app.canvas_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 800.0)));
+    let r = app
+        .run("frame.create", json!({"spread": {"kind": "parent", "index": 0}, "rect": [72, 72, 300, 200], "content": "text", "text": "zebra"}))
+        .unwrap();
+    let parent_sid = r["story"].as_u64().unwrap();
+    app.run("selection.set", json!({"ids": []})).unwrap();
+    let found = |app: &mut DesignApp| {
+        let mut stories = vec![];
+        for _ in 0..4 {
+            if app.run("find.next", json!({"find": "zebra"})).unwrap().is_null() {
+                break;
+            }
+            stories.push(app.session.doc().unwrap().selection.text.unwrap().story.0);
+        }
+        stories
+    };
+    assert_eq!(found(&mut app), vec![parent_sid], "a lone match on a parent page is found once");
+
+    app.run("layout.parents.edit", json!({"on": false})).unwrap();
+    let r = app.run("frame.create", json!({"spread": 0, "rect": [72, 72, 300, 200], "content": "text", "text": "zebra"})).unwrap();
+    let doc_sid = r["story"].as_u64().unwrap();
+    app.run("selection.set", json!({"ids": []})).unwrap();
+    let mut stories = found(&mut app);
+    stories.sort_unstable();
+    let mut both = vec![parent_sid, doc_sid];
+    both.sort_unstable();
+    assert_eq!(stories, both, "matches on a parent and a document page are each found once, then no more");
+}
+
+/// Enter in Object mode runs Find All, the search that mode has.
+#[test]
+fn enter_in_find_change_object_mode_finds_all() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("frame.create", json!({"rect": [36, 36, 200, 200], "content": "text", "text": "a"})).unwrap();
+    app.run("selection.set", json!({"ids": []})).unwrap();
+    app.run("app.findChange", json!({})).unwrap();
+    app.ui.dialog.as_mut().unwrap().fields.insert("objectMode".into(), json!(true));
+    let ctx = dialog_context("en");
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1178.0, 814.0));
+    dialog_frame(&mut app, &ctx, screen, vec![]);
+    let enter = egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+    dialog_frame(&mut app, &ctx, screen, vec![enter]);
+    let d = app.ui.dialog.as_ref().expect("the dialog stays open");
+    assert_eq!(d.s("status"), "1 found");
+}
+
+/// Enter in Find what finds the next match and leaves the field focused, to refine the search.
+#[test]
+fn enter_in_find_what_keeps_the_field_focused() {
+    use egui_kittest::{Harness, kittest::Queryable};
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("frame.create", json!({"rect": [36, 36, 400, 300], "content": "text", "text": "red and red"})).unwrap();
+    app.run("selection.set", json!({"ids": []})).unwrap();
+    app.run("app.findChange", json!({})).unwrap();
+    if let Some(d) = app.ui.dialog.as_mut() {
+        d.fields.insert("find".into(), json!("red"));
+    }
+    let mut h = Harness::builder().with_size(egui::vec2(1200.0, 900.0)).build_ui_state(
+        |ui, app: &mut DesignApp| {
+            let key = egui::Id::unique("find_focus_test_fonts");
+            if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
+                crate::theme::install_fonts(ui.ctx(), "");
+                ui.data_mut(|d| d.insert_temp(key, true));
+                return;
+            }
+            show(app, ui.ctx());
+        },
+        app,
+    );
+    h.run_steps(4);
+    h.get_by_role_and_label(egui::accesskit::Role::TextInput, "Find what:").click();
+    h.run_steps(2);
+    assert!(h.get_by_role_and_label(egui::accesskit::Role::TextInput, "Find what:").is_focused());
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    assert_eq!(h.state().session.doc().unwrap().selection.text.map(|t| t.range()), Some(0..3), "Enter found the first match");
+    assert!(h.get_by_role_and_label(egui::accesskit::Role::TextInput, "Find what:").is_focused(), "the field keeps focus");
 }
