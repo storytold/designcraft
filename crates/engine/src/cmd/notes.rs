@@ -221,7 +221,13 @@ fn cell_reading_order(t: &Table) -> Vec<(usize, usize)> {
 
 /// The cell a footnote command names, when `table` is given (`row` and `col` then follow it).
 fn note_cell(p: &Value, cmd: &str) -> Result<Option<CellAddr>> {
-    let Some(table) = p.get("table").filter(|v| !v.is_null()) else { return Ok(None) };
+    let Some(table) = p.get("table").filter(|v| !v.is_null()) else {
+        let given = |key: &str| p.get(key).is_some_and(|v| !v.is_null());
+        if given("row") || given("col") {
+            return Err(bad(cmd, "a cell needs `table` with `row` and `col`"));
+        }
+        return Ok(None);
+    };
     let table = table.as_u64().ok_or_else(|| bad(cmd, "`table` must be a table id"))?;
     let index = |key: &str| -> Result<usize> {
         let v = p.get(key).and_then(Value::as_u64).ok_or_else(|| bad(cmd, format!("a cell needs `{key}`")))?;
@@ -248,7 +254,7 @@ fn set_text(s: &mut Session, p: &Value) -> Result<Value> {
         let len = n.text.len();
         n.text.replace(0..len, &text);
         // A caret in the replaced text goes to its end.
-        if let Some(t) = sel.text.as_mut().filter(|t| t.story == sid && t.cell == Some(CellAddr::footnote(id))) {
+        if let Some(t) = sel.text.as_mut().filter(|t| cell.is_none() && t.story == sid && t.cell == Some(CellAddr::footnote(id))) {
             (t.anchor, t.focus) = (n.text.len(), n.text.len());
         }
         Ok(Value::Null)
@@ -263,20 +269,22 @@ fn delete(s: &mut Session, p: &Value) -> Result<Value> {
         let st = note_story(d, sid, cell, "footnote.delete")?;
         let at = st.note_anchor(id).ok_or_else(|| bad("footnote.delete", format!("no footnote {id}")))?;
         let len = designcraft_doc::FOOTNOTE_REF.len_utf8();
-        if cell.is_none() {
-            follow_delete(sel, sid, at..at + len);
+        match cell {
+            None => follow_delete(sel, sid, at..at + len),
+            Some(c) => {
+                if let Some(t) = sel.text.as_mut().filter(|t| t.story == sid && t.cell == Some(c)) {
+                    let back = |i: usize| if i > at { i - (i - at).min(len) } else { i };
+                    (t.anchor, t.focus) = (back(t.anchor), back(t.focus));
+                }
+            }
         }
         st.delete(at..at + len);
         if cell.is_none() {
             d.adjust_text_ranges(sid, at..at + len, 0);
         }
-        let moved = sel.text.is_some_and(|t| t.story == sid && t.cell == Some(CellAddr::footnote(id)));
+        let moved = cell.is_none() && sel.text.is_some_and(|t| t.story == sid && t.cell == Some(CellAddr::footnote(id)));
         if moved {
-            let frame = sel.text.and_then(|t| t.frame);
-            sel.text = Some(match cell {
-                Some(c) => TextSel { story: sid, anchor: at, focus: at, frame, cell: Some(c) },
-                None => TextSel::caret(sid, at),
-            });
+            sel.text = Some(TextSel::caret(sid, at));
         }
         Ok(moved)
     })?;
