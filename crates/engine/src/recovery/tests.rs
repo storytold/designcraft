@@ -126,6 +126,194 @@ fn recovery_data_is_private_to_the_user() {
     }
 }
 
+/// The recovery writer is one thread for the whole process, and its results go to whichever
+/// session polls it: tests that submit to it take turns, so one test's write or error is never
+/// drained by another.
+static BACKGROUND: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn background() -> std::sync::MutexGuard<'static, ()> {
+    BACKGROUND.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Poll `file.recovery.progress` until the background writer has nothing left, as the app does at
+/// the end of a frame.
+fn finished_writes(s: &mut Session) -> usize {
+    let mut written = 0;
+    for _ in 0..1200 {
+        let v = s.execute("file.recovery.progress", &json!({})).unwrap();
+        assert_eq!(v["errors"], json!([]), "{v}");
+        written += v["written"].as_u64().unwrap_or(0) as usize;
+        if !v["busy"].as_bool().unwrap_or(false) {
+            return written;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    panic!("the background writer did not finish");
+}
+
+#[test]
+fn a_background_save_writes_recovery_data_the_app_can_recover() {
+    let _turn = background();
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = dirty_session();
+    s.recovery_dir = Some(dir.path().to_path_buf());
+    // The timer's call: the interface thread does not wait for the deflate or the file writes.
+    let queued = s.execute("file.recovery.save", &json!({"background": true})).unwrap();
+    assert_eq!(queued["queued"], 1, "{queued}");
+    assert_eq!(finished_writes(&mut s), 1);
+    assert_eq!(list(dir.path()).len(), 1);
+    assert!(s.docs[0].recovery_entries.iter().any(|(d, _)| same_directory(d, dir.path())), "the checkpoint is recorded");
+    // Recovering it gives the unsaved edits back.
+    let mut reopened = Session::new();
+    assert_eq!(open(&mut reopened, dir.path()).unwrap().len(), 1);
+    assert_eq!(reopened.doc().unwrap().doc.spreads[0].items.len(), 1);
+    assert!(reopened.doc().unwrap().is_dirty());
+    discard(dir.path(), reopened.doc().unwrap().uid);
+}
+
+#[test]
+fn a_snapshot_that_finishes_after_the_save_is_dropped() {
+    // A write of a large document runs for seconds: the user can save while it does. The saved
+    // document's checkpoint is consumed then, and the write must not put a stale snapshot back.
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = dirty_session();
+    s.recovery_dir = Some(dir.path().to_path_buf());
+    let uid = s.docs[0].uid;
+    // The snapshot the writer took before the save.
+    let entry = Snapshot::of(&prepare_save(&s, dir.path()).unwrap(), dir.path(), &s.docs[0]);
+    let saved = dir.path().join("saved.designcraft");
+    s.execute("file.saveAs", &json!({"path": saved.to_string_lossy()})).unwrap();
+    assert!(!s.docs[0].is_dirty());
+    // The write lands after the save.
+    let written = write_snapshot(&entry, || false);
+    assert!(written.published && written.error.is_none(), "the snapshot landed");
+    let (file, _) = files(dir.path(), uid);
+    assert!(file.exists());
+    assert!(!record_checkpoint(&mut s, dir.path().to_path_buf(), uid), "a saved document records no checkpoint");
+    assert!(!file.exists(), "its snapshot is not left to be recovered");
+    assert!(list(dir.path()).is_empty());
+    // A document still unsaved does record one.
+    s.execute("frame.create", &json!({"rect": [10, 10, 50, 50]})).unwrap();
+    let entry = Snapshot::of(&prepare_save(&s, dir.path()).unwrap(), dir.path(), &s.docs[0]);
+    let written = write_snapshot(&entry, || false);
+    assert!(written.published && written.error.is_none(), "the second snapshot landed");
+    assert!(record_checkpoint(&mut s, dir.path().to_path_buf(), uid));
+    assert!(s.docs[0].recovery_entries.iter().any(|(d, u)| *u == uid && d == dir.path()));
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_snapshot_whose_metadata_failed_is_still_the_documents_to_remove() {
+    // The primary document is the recovery data; its metadata is optional. A metadata failure
+    // must not leave the published snapshot untracked, or Save and Close would not remove it and
+    // it would stay in the folder for ever.
+    let root = tempfile::tempdir().unwrap();
+    let dir = run_dir(root.path()).unwrap();
+    let mut s = dirty_session();
+    s.recovery_dir = Some(dir.clone());
+    let uid = s.docs[0].uid;
+    let (document, metadata) = files(&dir, uid);
+    // The folder is this run's own, so the entry is its own; a folder takes the metadata's name,
+    // which makes the optional write fail after the primary landed.
+    std::fs::create_dir(&metadata).unwrap();
+    let err = save_tracked(&mut s, &dir).unwrap_err();
+    assert!(err.to_string().contains(&metadata.display().to_string()), "{err}");
+    assert!(document.exists(), "the primary landed");
+    assert!(s.docs[0].recovery_entries.iter().any(|(d, u)| *u == uid && same_directory(d, &dir)), "and is tracked");
+    // Saving the document removes the snapshot this run wrote.
+    let saved = root.path().join("saved.designcraft");
+    s.execute("file.saveAs", &json!({"path": saved.to_string_lossy()})).unwrap();
+    assert!(!document.exists(), "Save removed the snapshot");
+    assert!(s.docs[0].recovery_entries.is_empty());
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_background_snapshot_whose_metadata_failed_is_still_the_documents_to_remove() {
+    // The background writer's result must be applied the same way: a published primary is the
+    // document's snapshot even when its optional metadata fails.
+    let _turn = background();
+    let root = tempfile::tempdir().unwrap();
+    let dir = run_dir(root.path()).unwrap();
+    let mut s = dirty_session();
+    s.recovery_dir = Some(dir.clone());
+    let uid = s.docs[0].uid;
+    let (document, metadata) = files(&dir, uid);
+    std::fs::create_dir(&metadata).unwrap();
+    let queued = s.execute("file.recovery.save", &json!({"background": true})).unwrap();
+    assert_eq!(queued["queued"], 1, "{queued}");
+    let mut reported = None;
+    for _ in 0..1200 {
+        let v = s.execute("file.recovery.progress", &json!({})).unwrap();
+        if let Some(first) = v["errors"].as_array().and_then(|errors| errors.first()) {
+            reported = first.as_str().map(str::to_string);
+        }
+        if !v["busy"].as_bool().unwrap_or(false) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let reported = reported.expect("the metadata failure is reported");
+    assert!(reported.contains(&metadata.display().to_string()), "{reported}");
+    assert!(document.exists(), "the primary landed");
+    assert!(s.docs[0].recovery_entries.iter().any(|(d, u)| *u == uid && same_directory(d, &dir)), "and is tracked");
+    // Saving the document removes the snapshot this run wrote.
+    let saved = root.path().join("saved.designcraft");
+    s.execute("file.saveAs", &json!({"path": saved.to_string_lossy()})).unwrap();
+    assert!(!document.exists(), "Save removed the snapshot");
+}
+
+#[test]
+fn a_write_cancelled_midway_publishes_nothing() {
+    // Save/Revert/Close during a write marks it cancelled; the snapshot must not land after it,
+    // even if the app crashes before the next interface frame discards it.
+    let dir = tempfile::tempdir().unwrap();
+    let s = dirty_session();
+    let entry = Snapshot::of(&prepare_save(&s, dir.path()).unwrap(), dir.path(), &s.docs[0]);
+    let written = write_snapshot(&entry, || true);
+    assert!(!written.published && written.error.is_none(), "a cancelled write is not an error");
+    assert!(list(dir.path()).is_empty(), "a cancelled write leaves no snapshot");
+    assert!(!files(dir.path(), entry.uid).0.exists(), "nor its document");
+    assert!(!files(dir.path(), entry.uid).1.exists(), "nor its metadata");
+    // The temporary file it was written to is dropped, not left behind.
+    assert!(
+        std::fs::read_dir(dir.path()).unwrap().all(|e| e.is_ok_and(|e| !e.file_name().to_string_lossy().starts_with(".designcraft-recovery-"))),
+        "no temporary file is left"
+    );
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn only_a_queued_write_is_cancelled() {
+    // A mark for a document with no write in flight would stay in the writer's set for ever.
+    let dir = tempfile::tempdir().unwrap();
+    worker::cancel(dir.path(), 7);
+    assert!(!worker::cancelled(dir.path(), 7), "nothing was queued for it");
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_panicking_recovery_write_is_an_error_and_the_writer_keeps_going() {
+    let err = worker::guarded(|| -> Result<()> { panic!("boom") }).unwrap_err();
+    assert!(err.to_string().contains("panicked") && err.to_string().contains("boom"), "{err}");
+    assert_eq!(worker::guarded(|| Ok(7)).unwrap(), 7, "the next write still runs");
+}
+
+#[test]
+fn a_saved_document_is_not_written_in_the_background() {
+    // The autosave writes unsaved documents only.
+    let _turn = background();
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = dirty_session();
+    s.recovery_dir = Some(dir.path().to_path_buf());
+    let saved = dir.path().join("saved.designcraft");
+    s.execute("file.saveAs", &json!({"path": saved.to_string_lossy()})).unwrap();
+    let queued = s.execute("file.recovery.save", &json!({"background": true})).unwrap();
+    assert_eq!(queued["queued"], 0, "{queued}");
+    assert_eq!(finished_writes(&mut s), 0);
+    assert!(list(dir.path()).is_empty());
+}
+
 #[test]
 fn existing_recovery_directory_is_used() {
     let root = tempfile::tempdir().unwrap();
