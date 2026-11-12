@@ -397,6 +397,7 @@ fn no_other_sessions_write_of_the_uid_is_queued_during_a_write_now() {
     let now = worker::write_now(dir.path(), uid, writing.recovery_owner.0).expect("nothing else is in flight");
     let err = other.execute("file.recovery.save", &json!({"background": true})).unwrap_err();
     assert!(err.to_string().contains("another session"), "another session's write was not reported as a conflict: {err}");
+    assert!(err.to_string().contains("another session"), "{err}");
     assert!(worker::write_now(dir.path(), uid, other.recovery_owner.0).is_none(), "a second write now of the uid started");
     // The session holding the write now skips its own background write instead.
     assert_eq!(writing.execute("file.recovery.save", &json!({"background": true})).unwrap()["queued"], 0);
