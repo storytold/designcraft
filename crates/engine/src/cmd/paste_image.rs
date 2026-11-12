@@ -28,7 +28,7 @@ pub fn specs() -> Vec<CommandSpec> {
         "Paste Image",
         [],
         None,
-        "{base64: an image file (PNG/JPEG/GIF/WebP/TIFF/BMP) as base64, name?: its name in the Links panel ending in an image extension (default \"Pasted image.png\"), spread?, at?: [x, y] (spread coords of the image's center; default the first page's center)} → {id, asset} — embedded; a selected empty frame takes the image, otherwise a new frame holds it at its stored resolution (72 ppi when none) and at most 60% of the page width",
+        "{base64: an image file (PNG/JPEG/GIF/WebP/TIFF/BMP) as base64, name?: its name in the Links panel ending in an image extension (default \"Pasted image.png\"), spread?, at?: [x, y] (spread coords of the image's center; default the first page's center)} → {id, asset} — embedded; a selected empty frame takes the image, otherwise a new frame holds it at one point per pixel, as File › Place sizes an image, and at most 60% of the page width",
         has_doc,
         paste_image
     )]
@@ -140,8 +140,8 @@ fn paste_image(s: &mut Session, p: &Value) -> Result<Value> {
         Some(at) => at,
         None => sp.pages.first().map_or(Point::ZERO, |pg| pg.bounds().center()),
     };
-    // The size File › Place gives it: the stored resolution (72 ppi when none), at most 60% of
-    // the page width.
+    // The size File › Place gives it: one point per pixel (`designcraft_images::natural_size`), at
+    // most 60% of the page width.
     let (nw, nh) = designcraft_render::natural_size(&bytes, 0).unwrap_or((f64::from(pw), f64::from(ph)));
     let w = nw.min(d.settings.page_width * 0.6);
     let h = nh * w / nw;
