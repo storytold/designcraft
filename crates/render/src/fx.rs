@@ -287,6 +287,7 @@ impl Renderer {
             }
         }
         // Satin: the shape shifted both ways along the angle, blurred, where exactly one covers.
+        // With a graphic, the shape is what the object paints, as for the inner shadow.
         if e.satin.on
             && let Some(c) = doc.resolve_color(&e.satin.color, 1.0)
         {
@@ -295,25 +296,56 @@ impl Renderer {
             let sigma = bound(st.size).max(0.0) / 2.0;
             let paint = color_of(&c, st.opacity.clamp(0.0, 1.0));
             let invert = st.invert;
-            self.with_blended_filters(ctx, f, reach, sigma, Mix::Multiply, (bp, xf), |_, c, fr| {
+            self.with_blended_filters(ctx, f, reach, sigma, Mix::Multiply, (bp, xf), |me, c, fr| {
+                // One copy of the shape moved by `by`: the shape in the satin colour, or what the
+                // object paints (coloured below).
+                let copy = |me: &mut Renderer, c: &mut RenderContext, by: Vec2| match painted {
+                    Some((it, page)) => {
+                        let moved = Frame { view: fr.view * Affine::translate(by), ..*fr };
+                        me.draw_body(c, &moved, it, bp, xf, page);
+                    }
+                    None => {
+                        c.set_transform(fr.view * Affine::translate(by) * xf);
+                        c.set_paint(paint);
+                        c.fill_path(bp);
+                    }
+                };
                 c.set_transform(fr.view);
+                if painted.is_some() {
+                    c.push_layer(None, None, None, None, None);
+                }
                 c.push_layer(None, None, None, None, Some(blur(sigma)));
+                if painted.is_some() {
+                    c.push_layer(None, None, None, None, None);
+                }
                 if invert {
-                    c.set_transform(fr.view * xf);
-                    c.set_paint(paint);
-                    c.fill_path(bp);
+                    copy(me, c, Vec2::ZERO);
                 }
                 c.set_transform(Affine::IDENTITY);
                 c.push_layer(None, Some(BlendMode::new(Mix::Normal, if invert { Compose::DestOut } else { Compose::SrcOver })), None, None, None);
-                c.set_transform(fr.view * Affine::translate(off) * xf);
-                c.set_paint(paint);
-                c.fill_path(bp);
+                copy(me, c, off);
                 c.set_transform(Affine::IDENTITY);
                 c.push_layer(None, Some(BlendMode::new(Mix::Normal, Compose::Xor)), None, None, None);
-                c.set_transform(fr.view * Affine::translate(-off) * xf);
-                c.fill_path(bp);
+                copy(me, c, -off);
                 c.pop_layer();
                 c.pop_layer();
+                if let Some((it, page)) = painted {
+                    // The satin colour where the copies cover, ...
+                    let pad = sigma * 4.0 + off.hypot() + 4.0 * fr.px;
+                    c.set_transform(Affine::IDENTITY);
+                    c.push_layer(None, Some(BlendMode::new(Mix::Normal, Compose::SrcIn)), None, None, None);
+                    c.set_transform(fr.view);
+                    c.set_paint(paint);
+                    c.fill_rect(&reach.inflate(pad, pad));
+                    c.pop_layer();
+                    c.pop_layer();
+                    c.pop_layer();
+                    // ... blurred and kept only where the object paints.
+                    c.set_transform(Affine::IDENTITY);
+                    c.push_layer(None, Some(BlendMode::new(Mix::Normal, Compose::DestIn)), None, None, None);
+                    me.draw_body(c, fr, it, bp, xf, page);
+                    c.pop_layer();
+                }
                 c.pop_layer();
             });
         }
@@ -548,8 +580,52 @@ mod tests {
     /// lines the image's opaque part (its edge in the middle of the frame), not only the frame.
     #[test]
     fn an_inner_shadow_follows_a_transparent_images_edge() {
+        let (d, mut it) = half_image_frame();
+        let s = &mut it.effects.inner_shadow;
+        s.on = true;
+        s.color = "[Black]".into();
+        s.opacity = 1.0;
+        s.distance = 0.0;
+        s.size = 20.0;
+        let lum = render_row(d, it);
+        // The image's opaque part starts at x = 200: just inside it the shadow darkens it; in its
+        // middle (x = 250, 50 pt from every edge but the frame's right one) it stays light.
+        assert!(lum(204) + 60 < lum(250), "shadow at the image's own edge: {} vs {}", lum(204), lum(250));
+        // The transparent half shows the page: no shadow painted there.
+        assert!(lum(150) > 700, "nothing over the transparent part: {}", lum(150));
+    }
+
+    /// Satin on a frame holding an image whose left half is transparent multiplies only over the
+    /// image's opaque part, plain or inverted: the page shows through the transparent half.
+    #[test]
+    fn satin_follows_a_transparent_images_edge() {
+        for invert in [false, true] {
+            let (d, mut it) = half_image_frame();
+            let s = &mut it.effects.satin;
+            s.on = true;
+            s.color = "[Black]".into();
+            s.opacity = 1.0;
+            s.angle = 0.0;
+            s.distance = 100.0;
+            s.size = 4.0;
+            s.invert = invert;
+            let lum = render_row(d, it);
+            // The copies are 50 pt to each side. Over the frame they leave the satin on 100 to 150
+            // (plain) or 150 to 250 (inverted), over the transparent half of the image.
+            let clear = if invert { 175 } else { 125 };
+            assert!(lum(clear) > 700, "invert {invert}: satin over the transparent part at x = {clear}: {}", lum(clear));
+            // Over the image's opaque part the copies (150 to 250 and 250 to 350) leave plain satin on
+            // all of it and inverted satin on none of it.
+            let shaded = lum(225) < 100;
+            assert_eq!(shaded, !invert, "invert {invert}: lum at x = 225 is {}", lum(225));
+        }
+    }
+
+    /// A 200 pt frame at (100, 100) holding a 20 × 20 image with a transparent left half and an
+    /// opaque white right half, in a new document.
+    fn half_image_frame() -> (designcraft_doc::Document, Item) {
+        use designcraft_doc::Document;
         use designcraft_doc::build::NewDocument;
-        use designcraft_doc::{Document, SpreadRef};
         let mut d = Document::new(&NewDocument::default());
         let lid = d.default_layer();
         // 20 × 20: transparent left half, opaque white right half.
@@ -586,25 +662,19 @@ mod tests {
             wrap: Default::default(),
             fill: Default::default(),
         });
-        let s = &mut it.effects.inner_shadow;
-        s.on = true;
-        s.color = "[Black]".into();
-        s.opacity = 1.0;
-        s.distance = 0.0;
-        s.size = 20.0;
-        d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+        (d, it)
+    }
+
+    /// The first page with `it` added, rendered at 100%: the sum of R, G and B at x on row 200.
+    fn render_row(mut d: designcraft_doc::Document, it: Item) -> impl Fn(u32) -> u32 {
+        d.insert_item(designcraft_doc::SpreadRef::Doc(0), it, None).unwrap();
         let cache = crate::Cache::new();
         let mut r = Renderer::new();
         r.threads = 0;
         let page = r.render_page(&d, &cache, 0, 1.0, false, &crate::RenderOptions::default()).unwrap();
-        let lum = |x: u32| {
+        move |x: u32| {
             let p = page.pixel(x, 200);
             u32::from(p[0]) + u32::from(p[1]) + u32::from(p[2])
-        };
-        // The image's opaque part starts at x = 200: just inside it the shadow darkens it; in its
-        // middle (x = 250, 50 pt from every edge but the frame's right one) it stays light.
-        assert!(lum(204) + 60 < lum(250), "shadow at the image's own edge: {} vs {}", lum(204), lum(250));
-        // The transparent half shows the page: no shadow painted there.
-        assert!(lum(150) > 700, "nothing over the transparent part: {}", lum(150));
+        }
     }
 }
