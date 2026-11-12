@@ -2512,6 +2512,12 @@ fn type_shortcuts_insert_spaces_justify_all_lines_and_open_paragraph_rules() {
     assert!(!menu_enabled(&app, "app.insertEmSpace") && !menu_enabled(&app, "app.insertEnSpace"));
     press(&mut app, &ctx, Key::M, Modifiers::COMMAND | Modifiers::SHIFT);
     assert_eq!(story_text(&app, &story), "ab");
+    // Selected text: the spaces go in at an insertion point only, so the selection stays.
+    app.run("text.select", json!({"story": story, "anchor": 0, "focus": 2})).unwrap();
+    assert!(!menu_enabled(&app, "app.insertEmSpace") && !menu_enabled(&app, "app.insertEnSpace"));
+    press(&mut app, &ctx, Key::M, Modifiers::COMMAND | Modifiers::SHIFT);
+    press(&mut app, &ctx, Key::N, Modifiers::COMMAND | Modifiers::SHIFT);
+    assert_eq!(story_text(&app, &story), "ab", "a selection is not replaced by a space");
     app.run("text.select", json!({"story": story, "anchor": 1, "focus": 1})).unwrap();
     assert!(menu_enabled(&app, "app.insertEmSpace") && menu_enabled(&app, "app.insertEnSpace"));
     press(&mut app, &ctx, Key::M, Modifiers::COMMAND | Modifiers::SHIFT);
