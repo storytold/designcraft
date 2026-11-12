@@ -319,6 +319,44 @@ fn x1a_dropped_inks_warning_says_they_wont_print() {
     assert!(warnings.iter().all(|w| !w.contains("converted to process")), "{warnings:?}");
 }
 
+/// The `k` (DeviceCMYK fill) operands of the first page's content, in order.
+fn cmyk_fills(bytes: &[u8]) -> Vec<Vec<String>> {
+    let pdf = Pdf::new(bytes.to_vec()).unwrap();
+    let pages = pdf.pages();
+    let content = pages.iter().next().unwrap().page_stream().unwrap().to_vec();
+    let text = String::from_utf8_lossy(&content);
+    let tokens: Vec<&str> = text.split_whitespace().collect();
+    tokens.iter().enumerate().filter(|(i, t)| **t == "k" && *i >= 4).map(|(i, _)| tokens[i - 4..i].iter().map(|s| s.to_string()).collect()).collect()
+}
+
+/// An RGB fill converts into the output intent's CMYK with the rendering intent of the colour
+/// settings (#2579): perceptual and absolute colorimetric don't print relative colorimetric's
+/// numbers.
+#[test]
+fn x1a_converts_rgb_fills_with_the_rendering_intent() {
+    use designcraft_color::cms::{Cms, ColorSettings, Intent};
+    let mut d = Document::new(&NewDocument::default());
+    d.swatches.push(Swatch::color("Blue", Color::rgb(40.0 / 255.0, 60.0 / 255.0, 180.0 / 255.0)));
+    add(&mut d, Rect::new(72.0, 72.0, 172.0, 172.0), "Blue", |_| {});
+    let opts = PdfOptions { standard: Standard::PdfX1a, ..PdfOptions::default() };
+    let fills = |intent: Intent| {
+        let cms = Cms::new(&ColorSettings { intent, bpc: false, ..ColorSettings::default() }).unwrap();
+        let r = crate::export::export_pdf_with_cms(&d, &Cache::new(), &opts, &cms).unwrap();
+        assert_eq!(check_pdfx1a(&r.bytes), Vec::<String>::new(), "{intent:?}");
+        let fills = cmyk_fills(&r.bytes);
+        assert_eq!(fills.len(), 1, "{intent:?}: {fills:?}");
+        fills
+    };
+    let relative = fills(Intent::RelativeColorimetric);
+    let perceptual = fills(Intent::Perceptual);
+    let absolute = fills(Intent::AbsoluteColorimetric);
+    assert_ne!(perceptual, relative, "perceptual");
+    assert_ne!(absolute, relative, "absolute colorimetric");
+    // Relative colorimetric is left to the flattener, as before.
+    let default = export_pdf_with_report(&d, &Cache::new(), &opts).unwrap();
+    assert_eq!(cmyk_fills(&default.bytes), relative);
+}
+
 /// The output intent and the identification are read as objects: whitespace between tokens (as
 /// qpdf and Ghostscript write them) doesn't hide them.
 #[test]

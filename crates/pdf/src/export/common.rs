@@ -153,7 +153,7 @@ impl Exporter<'_> {
                         self.doc.swatch(ink).filter(|w| matches!(w.value, SwatchValue::Color { color_type: ColorType::Spot, .. })).unwrap_or(sw);
                     let SwatchValue::Color { color, .. } = &target.value else { break };
                     if process {
-                        return Some(device(&designcraft_color::swatch::apply_tint(*color, t), self.rgb_only));
+                        return Some(self.process(&designcraft_color::swatch::apply_tint(*color, t)));
                     }
                     let space = SeparationSpace::new(SeparationColorant::Custom(target.name.clone()), regular(color, self.rgb_only));
                     return Some(SepColor::new(q(t), space).into());
@@ -161,6 +161,18 @@ impl Exporter<'_> {
                 _ => break,
             }
         }
-        self.doc.resolve_color(name, tint).map(|c| device(&c, self.rgb_only))
+        self.doc.resolve_color(name, tint).map(|c| self.process(&c))
+    }
+
+    /// A process colour in its own device space, except RGB in PDF/X-1a with a rendering intent
+    /// other than relative colorimetric: converted here into CMYK with that intent, as the
+    /// flattener would convert it relative colorimetric.
+    fn process(&self, c: &Color) -> krilla::color::Color {
+        if let (Some(conversion), Color::Rgb { r, g, b }) = (&self.x1a_process, *c)
+            && let Some([c, m, y, k]) = conversion.cmyk([q(r), q(g), q(b)])
+        {
+            return device(&Color::cmyk(c, m, y, k), self.rgb_only);
+        }
+        device(c, self.rgb_only)
     }
 }
