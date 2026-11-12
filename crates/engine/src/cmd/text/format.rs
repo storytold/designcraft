@@ -1080,8 +1080,9 @@ mod align_param_tests {
 
     use crate::Session;
 
-    /// `type.align` with no `align` applied Align Left, so a script that misspelled the key
-    /// (`{"alignment": "center"}`) changed the paragraph to the opposite of what it asked for.
+    /// `type.align` with empty params (`{}`) or a bare value (`"center"`) applied Align Left.
+    /// A misspelled key and an unknown value were already refused, and each case checks which
+    /// check refuses it.
     #[test]
     fn type_align_without_a_value_is_refused_and_changes_nothing() {
         let mut s = Session::new();
@@ -1092,8 +1093,16 @@ mod align_param_tests {
         let align = |s: &mut Session| s.execute("type.selectionAttrs", &json!({})).unwrap()["para"]["align"].clone();
         assert_eq!(align(&mut s), json!("right"));
         let steps = s.doc().unwrap().history.undo.len();
-        for params in [json!({}), json!({"alignment": "center"}), json!("center"), json!({"align": "middle"})] {
-            assert!(s.execute("type.align", &params).is_err(), "{params}");
+        // `{}` and `"center"` reach the command without `align`. The parameter check refuses
+        // `{"alignment": …}` and the value parser refuses `"middle"`.
+        for (params, refusal) in [
+            (json!({}), "`align` required"),
+            (json!("center"), "`align` required"),
+            (json!({"alignment": "center"}), "unknown parameter `alignment`"),
+            (json!({"align": "middle"}), "middle"),
+        ] {
+            let err = s.execute("type.align", &params).unwrap_err().to_string();
+            assert!(err.contains(refusal), "{params}: {err}");
             assert_eq!(align(&mut s), json!("right"), "{params}");
             assert_eq!(s.doc().unwrap().history.undo.len(), steps, "{params}: no undo step");
         }
