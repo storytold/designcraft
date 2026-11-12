@@ -329,8 +329,10 @@ impl Renderer {
             }
         }
         // Satin: the shape shifted both ways along the angle, blurred, where exactly one covers.
-        // With a graphic, the shape is what the object paints, as for the inner shadow.
+        // With a graphic, the shape is what the object paints, as for the inner shadow. Plain
+        // satin on a graphic with no distance compares two equal copies and is not drawn.
         if e.satin.on
+            && !(painted.is_some() && !e.satin.invert && e.satin.distance == 0.0)
             && let Some(c) = doc.resolve_color(&e.satin.color, 1.0)
         {
             let st = &e.satin;
