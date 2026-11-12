@@ -1957,6 +1957,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Third Space", "მესამედი შორისი"),
     ("Title Case", "ყოველი სიტყვა მთავრულით"),
     ("Top:", "ზემოთ:"),
+    ("Inset:", "შეწევა:"),
     ("Trademark Symbol", "სავაჭრო ნიშნის სიმბოლო"),
     ("Transform Again Individually", "გარდაქმნის ცალ-ცალკე გამეორება"),
     ("Transform Sequence Again", "გარდაქმნების მიმდევრობის გამეორება"),

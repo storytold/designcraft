@@ -1891,6 +1891,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Third Space", "Trzecia firetu"),
     ("Title Case", "Wielkie Litery Wyrazów"),
     ("Top:", "Góra:"),
+    ("Inset:", "Margines wewnętrzny:"),
     ("Trademark Symbol", "Symbol znaku towarowego"),
     ("Transform Again Individually", "Przekształć ponownie osobno"),
     ("Transform Sequence Again", "Powtórz sekwencję przekształceń"),

@@ -1730,6 +1730,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Top Margin", "Felső margó"),
     ("Top of Page", "Oldal teteje"),
     ("Top:", "Fent:"),
+    ("Inset:", "Belső margó:"),
     ("Track Changes", "Változások követése"),
     ("Track Changes in All Stories", "Változások követése minden szövegfolyamban"),
     ("Tracking", "Betűköz"),

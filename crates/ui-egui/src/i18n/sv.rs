@@ -65,6 +65,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Gutter:", "Spaltmellanrum:"),
     ("Fit Guides to:", "Anpassa stödlinjer till:"),
     ("Top:", "Överkant:"),
+    ("Inset:", "Infällning:"),
     ("Bottom:", "Nederkant:"),
     ("Inside:", "Inre:"),
     ("Outside:", "Yttre:"),

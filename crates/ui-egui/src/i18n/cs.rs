@@ -1916,6 +1916,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Third Space", "Třetina čtverčíku"),
     ("Title Case", "Velká Počáteční Písmena"),
     ("Top:", "Nahoře:"),
+    ("Inset:", "Odsazení:"),
     ("Trademark Symbol", "Symbol ochranné známky"),
     ("Transform Again Individually", "Transformovat znovu jednotlivě"),
     ("Transform Sequence Again", "Transformovat posloupnost znovu"),
