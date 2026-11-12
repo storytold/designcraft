@@ -74,7 +74,8 @@ revision; stories compose in parallel (rayon) on native targets. After an edit o
 or formatting, composing starts at the paragraph before the first changed one and stops at the
 first unchanged paragraph it reaches in the state it had before the edit; the lines above and
 below are copied from the composition before the edit (`crates/compose/src/reuse.rs`). An edit
-that moves lines into other frames is composed to the story's end. A story is composed whole
+that moves lines into other frames composes on until a paragraph starts in the same frame and
+place as before, or to the story's end. A story is composed whole
 when it has footnotes, endnotes, tables, anchored objects, named lists, tracked deletions,
 balanced columns, vertical justification other than Top, column rules, type on a path, spanning
 or split paragraphs, or paragraph borders or shading, and when its layout goes back over a
