@@ -611,7 +611,7 @@ fn czech_counts_use_the_plural_form_for_the_number() {
 #[test]
 fn hebrew_catalog_is_selectable_rtl_and_preserves_english_keys() {
     let mut seen = HashSet::new();
-    assert_eq!(he::TABLE.len(), 1288, "initial Hebrew source-linked table changed");
+    assert_eq!(he::TABLE.len(), 1298, "initial Hebrew source-linked table changed");
     for (source, translated) in he::TABLE {
         assert!(seen.insert(*source), "duplicate Hebrew source key: {source}");
         assert!(!translated.trim().is_empty(), "empty Hebrew: {source}");
@@ -707,6 +707,24 @@ fn hebrew_parallel_round4_document_translations() {
         ("Records per page", "רשומות בעמוד"),
         ("The library is empty. Select objects and Add Selection.", "הספרייה ריקה. בחרו אובייקטים ולחצו על ״הוספת הבחירה״."),
         ("A PNG or JPEG file; left empty, the first page is the cover.", "קובץ PNG או JPEG; אם משאירים ריק, העמוד הראשון ישמש ככריכה."),
+    ] {
+        assert_eq!(tr("he", source), expected, "Hebrew localization regression: {source}");
+    }
+}
+
+#[test]
+fn hebrew_parallel_round4_typography_translations() {
+    for (source, expected) in [
+        ("Apply Superscript", "החלת כתב עילי"),
+        ("Superscript", "כתב עילי"),
+        ("Superscript:", "כתב עילי:"),
+        ("List Type:", "סוג רשימה:"),
+        ("Minimum Space Before First Footnote:", "מרווח מזערי לפני הערת השוליים הראשונה:"),
+        ("Text After:", "טקסט אחרי:"),
+        ("Underline", "קו תחתון"),
+        ("Underline On", "הפעלת קו תחתון"),
+        ("Underline Options", "אפשרויות קו תחתון"),
+        ("Hyperlink from the selected text or frames", "היפר־קישור מהטקסט או מהמסגרות שנבחרו"),
     ] {
         assert_eq!(tr("he", source), expected, "Hebrew localization regression: {source}");
     }
