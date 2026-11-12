@@ -1,6 +1,6 @@
 # UI and interaction parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-02 · **Change:** patch (the Pen previews the curve while a smooth point is dragged and curves the rubber band after one, #1438; a Custom text variable defined with a number shows its digits, #2093; Table of Contents dialog: title field keeps its width, More Options toggles without losing hidden settings; Story panel; text Control panel Character/Paragraph modes; Properties ••• expands Character and Paragraph; live corners work; document views row: scrollbars, Alt pans while editing text; Tabs panel listed as present (#343); spring-loaded Zoom navigation; paragraph style override feedback and clearing) · **Target:** Adobe InDesign 2026 (21.6, Medium Dark, macOS)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-02 · **Change:** patch (Preflight panel laid out as InDesign's; the Pen previews the curve while a smooth point is dragged and curves the rubber band after one, #1438; a Custom text variable defined with a number shows its digits, #2093; Table of Contents dialog: title field keeps its width, More Options toggles without losing hidden settings; Story panel; text Control panel Character/Paragraph modes; Properties ••• expands Character and Paragraph; live corners work; document views row: scrollbars, Alt pans while editing text; Tabs panel listed as present (#343); spring-loaded Zoom navigation; paragraph style override feedback and clearing) · **Target:** Adobe InDesign 2026 (21.6, Medium Dark, macOS)
 
 Tools, handles, snapping, nudging, modifiers, shortcuts, panels, menus, context menus and feel,
 against InDesign 2026. The look was measured from the running app
@@ -32,6 +32,7 @@ basics of editing fail for too many users on Windows and Linux.
 | Direct Selection, Pen family, Pencil, Scissors | ✓ | ✓ | ~ | the Pen previews the segment while a smooth point is dragged out and curves the rubber band out of a smooth point's direction line (`pen_previews_the_curve_while_dragging_and_after_a_smooth_point`, #1438); moving reference point "0" fails (#337) |
 | Live corners (yellow handle) | ✓ | ✓ widget on a selected rectangle frame; diamonds drag the corner size (Shift: one corner), Alt-click steps the shape (Shift+Alt: all) | ✓ | #186 |
 | Content grabber, frame fitting by double-click | ✓ | ✓ | ✓ | |
+| Preflight panel: On and profile, category › rule › object tree with pages, Info, count and Pages | ✓ | ✓ the same layout with the one built-in [Basic] profile; no profile editing or page ranges yet | ~ | Learn Skills Daily course, chapter 13 |
 | Overset mark (red + at the out port) | selected frame only | every overset frame, groups included, while frame edges show | ✓ | a deliberate step past InDesign: grouped labels that overflow were invisible until Preflight |
 | Smart guides, snapping to guides/grid/baseline | ✓ | ✓ (2,049-line `snap.rs`) | ~ | vertical smart spacing between two rectangles (#188) |
 | Nudging with arrows, Shift ×10 | ✓ | ✓ | ✓ | |
