@@ -390,6 +390,11 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ("Add CMYK Swatch", ["CMYK-Farbfeld hinzufügen", "Ajouter une nuance CMJN", "Añadir muestra CMYK", "CMYK スウォッチを追加", "添加 CMYK 色板"]),
     ("Added swatch", ["Farbfeld hinzugefügt", "Nuance ajoutée", "Muestra añadida", "スウォッチを追加しました", "已添加色板"]),
     (
+        "Include Inside Edges",
+        ["Innenkanten einschließen", "Inclure les bords intérieurs", "Incluir bordes interiores", "内側エッジを含める", "包含内边缘"],
+    ),
+    ("Alpha Channel", ["Alphakanal", "Couche alpha", "Canal alfa", "アルファチャンネル", "Alpha 通道"]),
+    (
         "Bulleted & Numbered Lists",
         [
             "Aufzählungszeichen und nummerierte Listen",

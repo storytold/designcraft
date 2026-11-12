@@ -578,9 +578,9 @@ fn degenerate_dash_patterns_draw_solid_and_fill_types_close_table_corners() {
     let (fid, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 336.0, 400.0), lid, "", ParaFormat::default()).unwrap();
     d.item_mut(fid).unwrap().stroke = designcraft_doc::Stroke { weight: 2.0, kind: fine.clone(), ..Default::default() };
     let mut t = designcraft_doc::Table::new(1, 2, 2, 0, 0, 200.0);
-    for r in 0..2 {
-        t.rows[r].height = 60.0;
-        t.rows[r].mode = designcraft_doc::RowHeightMode::Exactly;
+    for row in t.rows.iter_mut().take(2) {
+        row.height = 60.0;
+        row.mode = designcraft_doc::RowHeightMode::Exactly;
     }
     let stroke = |kind| designcraft_doc::CellStroke { weight: 8.0, kind, gap_color: "C=100 M=0 Y=0 K=0".into(), ..Default::default() };
     for cell in &mut t.cells {
