@@ -1,7 +1,8 @@
+use super::guides::ruler_tick_of;
 use super::input::pointer_elsewhere;
 use super::page_decor::dashed;
 use super::view::current_slot;
-use super::{CanvasLayout, DesignApp, Document, Point, Pos2, RULER, Rect, SpreadSlot, Stroke, Tokens, Value, Xf, json, pos2, vec2};
+use super::{CanvasLayout, DRect, DesignApp, Document, Point, Pos2, RULER, Rect, SpreadSlot, Stroke, Tokens, Value, Xf, json, pos2, vec2};
 
 /// Paint ruler bands and ticks, the zero-point crosshair, guide previews, and ticks restarted at each page origin.
 #[allow(clippy::too_many_arguments)]
@@ -22,8 +23,9 @@ pub(super) fn draw_rulers(app: &DesignApp, ui: &egui::Ui, full: Rect, rect: Rect
     // land (kept on the pasteboard, as the engine keeps it) and crosshair lines show the spot.
     // Cmd-dragged, the lines are the two guides it makes; locked, a plain drag does nothing.
     let dragged = ui.data(|d| d.get_temp::<Pos2>(egui::Id::unique((ZERO_POINT_DRAG, app.pane)))).filter(|p| !corner.contains(*p));
-    let guides = ui.input(|i| i.modifiers.command);
-    let moving = dragged.filter(|_| !guides && !doc.settings.zero_point_locked).and_then(|p| zero_point_at(app, xf, p));
+    let mods = ui.input(|i| i.modifiers);
+    let guides = mods.command;
+    let moving = dragged.filter(|_| !guides && !doc.settings.zero_point_locked).and_then(|p| zero_point_at(app, xf, p, mods));
     let cross = if guides { dragged } else { moving.map(|(_, c)| xf.to_screen(c)) };
     if let Some(p) = cross {
         let m = Stroke::new(1.0, t.text_dim);
@@ -235,7 +237,7 @@ const ZERO_POINT_DRAG: &str = "canvas_zero_point_drag";
 pub(super) fn zero_point_drag(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, rect: Rect, xf: &Xf) -> bool {
     let id = egui::Id::unique((ZERO_POINT_DRAG, app.pane));
     let corner = Rect::from_min_max(resp.rect.min, rect.min);
-    let (pressed, released, down, origin, latest, dbl, command) = ui.input(|i| {
+    let (pressed, released, down, origin, latest, dbl, mods) = ui.input(|i| {
         (
             i.pointer.primary_pressed(),
             i.pointer.primary_released(),
@@ -243,7 +245,7 @@ pub(super) fn zero_point_drag(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egu
             i.pointer.press_origin(),
             i.pointer.latest_pos(),
             i.pointer.button_double_clicked(egui::PointerButton::Primary),
-            i.modifiers.command,
+            i.modifiers,
         )
     });
     let mut at: Option<Pos2> = ui.data(|d| d.get_temp(id));
@@ -268,7 +270,7 @@ pub(super) fn zero_point_drag(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egu
         return false;
     }
     let locked = app.session.active().is_none_or(|st| st.doc.settings.zero_point_locked);
-    if command {
+    if mods.command {
         if !corner.contains(p) && rect.contains(p) {
             corner_guides(app, xf, p);
         }
@@ -276,7 +278,7 @@ pub(super) fn zero_point_drag(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egu
         if dbl {
             let _ = app.run("view.zeroPoint", json!({"reset": true}));
         } else if !corner.contains(p)
-            && let Some((zp, _)) = zero_point_at(app, xf, p)
+            && let Some((zp, _)) = zero_point_at(app, xf, p, mods)
         {
             let _ = app.run("view.zeroPoint", json!({ "at": zp }));
         }
@@ -286,13 +288,63 @@ pub(super) fn zero_point_drag(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egu
 
 /// A screen point as a zero point (its offset from the ruler origin of the spread in view, kept
 /// on the pasteboard as the engine keeps it), and where that zero point is on the canvas.
-fn zero_point_at(app: &DesignApp, xf: &Xf, p: Pos2) -> Option<([f64; 2], Point)> {
+/// Snapped like a dragged ruler guide (#2635): to guides, margins, columns, bleed, the document
+/// grid and smart-guide targets under the current snap settings. Shift snaps to the ruler's
+/// ticks instead and Command suspends snapping, as for guides.
+pub(super) fn zero_point_at(app: &DesignApp, xf: &Xf, p: Pos2, mods: egui::Modifiers) -> Option<([f64; 2], Point)> {
     let st = app.session.active()?;
     let layout = CanvasLayout::new(&st.doc, st.editing_parents);
     let slot = layout.slots.get(current_slot(app, &layout)?)?;
     let sp = slot.to_spread(xf.to_canvas(p));
     let base = st.doc.ruler_base(slot.spread, sp.x)?;
     let zp = st.doc.clamp_zero_point([sp.x - base.x, sp.y - base.y])?;
+    let at = Point::new(base.x + zp[0], base.y + zp[1]);
+    if mods.command {
+        return Some((zp, slot.to_canvas(at)));
+    }
+    let snapped = if mods.shift {
+        // One axis at a time, as a guide snaps on its own axis: x from the horizontal ruler's
+        // ticks (a vertical guide's axis), y from the vertical ruler's.
+        let x = ruler_tick_of(&st.doc, slot, designcraft_doc::Orientation::Vertical, xf.zoom, at).unwrap_or(at.x);
+        let y = ruler_tick_of(&st.doc, slot, designcraft_doc::Orientation::Horizontal, xf.zoom, at).unwrap_or(at.y);
+        Point::new(x, y)
+    } else {
+        // A zero-size rect, as a point: the guide gesture's passes (no baseline grid, which
+        // would catch a move almost anywhere), so the zero point meets the same targets a
+        // dragged ruler guide does.
+        let cx = designcraft_tools::ToolContext {
+            doc: &st.doc,
+            selection: &st.selection,
+            cache: &app.session.cache,
+            layout: &layout,
+            zoom: xf.zoom.max(1e-6),
+            layer: st.active_layer,
+            snap: app.ui.snap_view(),
+            unit: app.ui.units,
+            stroke_in_front: false,
+            loaded: None,
+        };
+        let s = designcraft_tools::snap::snap(
+            &cx,
+            designcraft_tools::SnapRequest {
+                spread: slot.spread,
+                gesture: designcraft_tools::Gesture::Guide,
+                rect: DRect::from_points(at, at),
+                x_edges: [true; 3],
+                y_edges: [true; 3],
+                exclude: &[],
+                exclude_guides: &[],
+                copying: false,
+                lengths: [None, None],
+                angle: None,
+                radius: 0.0,
+                pointer: at,
+            },
+        );
+        at + s.delta
+    };
+    // A snap that goes non-finite keeps the raw point.
+    let zp = st.doc.clamp_zero_point([snapped.x - base.x, snapped.y - base.y]).unwrap_or(zp);
     Some((zp, slot.to_canvas(Point::new(base.x + zp[0], base.y + zp[1]))))
 }
 

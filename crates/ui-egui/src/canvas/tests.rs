@@ -1472,6 +1472,169 @@ fn the_ruler_corner_drags_resets_and_locks_the_zero_point() {
     assert_ne!(zero_point(&h), [0.0, 0.0], "a locked zero point isn't reset");
 }
 
+/// Dragging the zero point snaps to ruler guides, as a dragged ruler guide does (#2635):
+/// dropped 3 screen px off the crossing of a vertical guide at x 200 and a horizontal
+/// guide at y 400, it lands on the crossing, not where the pointer is.
+#[test]
+fn dragging_the_zero_point_snaps_to_a_ruler_guide() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    for (orientation, position) in [("vertical", 200.0), ("horizontal", 400.0)] {
+        app.run("guide.add", json!({"orientation": orientation, "position": position})).unwrap();
+    }
+    let mut h = fast_harness(app);
+    let rect = h.state().canvas_rect.unwrap();
+    let corner = rect.min - vec2(RULER / 2.0, RULER / 2.0);
+    let (dest, expected) = {
+        let app = h.state();
+        let xf = Xf::new(rect, app.view().unwrap());
+        let st = app.session.active().unwrap();
+        let layout = CanvasLayout::new(&st.doc, false);
+        let slot = layout.slots[current_slot(app, &layout).unwrap()];
+        // 3 screen px off the crossing on both axes: inside the 4 px snap zone.
+        let off = 3.0 / xf.zoom;
+        let dest = xf.to_screen(slot.xf * Point::new(200.0 + off, 400.0 + off));
+        let b = st.doc.spread(slot.spread).unwrap().bounds();
+        (dest, [200.0 - b.x0, 400.0 - b.y0])
+    };
+    corner_drag(&mut h, corner, dest);
+    let zp = zero_point(&h);
+    assert!((zp[0] - expected[0]).abs() < 0.5 && (zp[1] - expected[1]).abs() < 0.5, "{zp:?} vs {expected:?}");
+}
+
+/// Shift-dragging the zero point snaps to the ruler's ticks, as a Shift-dragged guide does
+/// (#2635): dropped 0.4 of a tick off the nearest tick on both axes, it lands on the ticks.
+#[test]
+fn shift_dragging_the_zero_point_snaps_to_a_ruler_tick() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let mut h = fast_harness(app);
+    let rect = h.state().canvas_rect.unwrap();
+    let corner = rect.min - vec2(RULER / 2.0, RULER / 2.0);
+    let (dest, expected) = {
+        let app = h.state();
+        let xf = Xf::new(rect, app.view().unwrap());
+        let st = app.session.active().unwrap();
+        let layout = CanvasLayout::new(&st.doc, false);
+        let slot = layout.slots[current_slot(app, &layout).unwrap()];
+        let pieces = ruler_pieces(app, &st.doc, &layout, st.doc.zero_point());
+        let first = pieces.first().unwrap();
+        // 0.4 of a tick off the nearest tick on both axes, in canvas coordinates.
+        let (major_x, sub_x) = st.doc.settings.horizontal_units.ruler_ticks(xf.zoom);
+        let (major_y, sub_y) = st.doc.settings.vertical_units.ruler_ticks(xf.zoom);
+        let step_x = major_x / f64::from(sub_x.max(1));
+        let step_y = major_y / f64::from(sub_y.max(1));
+        let c = Point::new(first.2.x + 3.4 * step_x, first.2.y + 2.4 * step_y);
+        // The horizontal ruler restarts at each page: the piece under the point measures x,
+        // the first piece measures y.
+        let piece = pieces.iter().find(|(from, to, _)| *from <= c.x && c.x < *to).unwrap_or(first);
+        let tick = |v: f64, origin: f64, step: f64| origin + ((v - origin) / step).round() * step;
+        let t = Point::new(tick(c.x, piece.2.x, step_x), tick(c.y, first.2.y, step_y));
+        let b = st.doc.spread(slot.spread).unwrap().bounds();
+        let esp = slot.to_spread(t);
+        (xf.to_screen(c), [esp.x - b.x0, esp.y - b.y0])
+    };
+    h.event(egui::Event::ModifiersChanged(egui::Modifiers::SHIFT));
+    h.step();
+    corner_drag(&mut h, corner, dest);
+    h.event(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+    h.step();
+    let zp = zero_point(&h);
+    assert!((zp[0] - expected[0]).abs() < 0.5 && (zp[1] - expected[1]).abs() < 0.5, "{zp:?} vs {expected:?}");
+}
+
+/// Command held, the zero point lands where the pointer is: snapping is suspended (#2635).
+/// Command-dragging from the corner makes guides instead, so this calls the shared spot
+/// directly, 3 screen px off the crossing of a vertical guide at 200 and a horizontal at 400.
+#[test]
+fn command_dragging_the_zero_point_does_not_snap() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    for (orientation, position) in [("vertical", 200.0), ("horizontal", 400.0)] {
+        app.run("guide.add", json!({"orientation": orientation, "position": position})).unwrap();
+    }
+    let h = fast_harness(app);
+    let rect = h.state().canvas_rect.unwrap();
+    let (dest, expected) = {
+        let app = h.state();
+        let xf = Xf::new(rect, app.view().unwrap());
+        let st = app.session.active().unwrap();
+        let layout = CanvasLayout::new(&st.doc, false);
+        let slot = layout.slots[current_slot(app, &layout).unwrap()];
+        let off = 3.0 / xf.zoom;
+        let dest = xf.to_screen(slot.xf * Point::new(200.0 + off, 400.0 + off));
+        let b = st.doc.spread(slot.spread).unwrap().bounds();
+        let sp = slot.to_spread(xf.to_canvas(dest));
+        (dest, [sp.x - b.x0, sp.y - b.y0])
+    };
+    let app = h.state();
+    let xf = Xf::new(rect, app.view().unwrap());
+    let (zp, _) = zero_point_at(app, &xf, dest, egui::Modifiers::COMMAND).unwrap();
+    assert!((zp[0] - expected[0]).abs() < 0.5 && (zp[1] - expected[1]).abs() < 0.5, "{zp:?} vs {expected:?}");
+}
+
+/// Snap to Guides and Smart Guides off: the zero point goes where the pointer is (#2635).
+#[test]
+fn with_snapping_off_dragging_the_zero_point_stays_at_the_pointer() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    for (orientation, position) in [("vertical", 200.0), ("horizontal", 400.0)] {
+        app.run("guide.add", json!({"orientation": orientation, "position": position})).unwrap();
+    }
+    let mut h = fast_harness(app);
+    h.state_mut().ui.snap_to_guides = false;
+    h.state_mut().ui.smart_guides = false;
+    let rect = h.state().canvas_rect.unwrap();
+    let corner = rect.min - vec2(RULER / 2.0, RULER / 2.0);
+    let (dest, raw, crossing) = {
+        let app = h.state();
+        let xf = Xf::new(rect, app.view().unwrap());
+        let st = app.session.active().unwrap();
+        let layout = CanvasLayout::new(&st.doc, false);
+        let slot = layout.slots[current_slot(app, &layout).unwrap()];
+        let off = 3.0 / xf.zoom;
+        let dest = xf.to_screen(slot.xf * Point::new(200.0 + off, 400.0 + off));
+        let b = st.doc.spread(slot.spread).unwrap().bounds();
+        (dest, [200.0 + off - b.x0, 400.0 + off - b.y0], [200.0 - b.x0, 400.0 - b.y0])
+    };
+    corner_drag(&mut h, corner, dest);
+    let zp = zero_point(&h);
+    assert!((zp[0] - raw[0]).abs() < 0.5 && (zp[1] - raw[1]).abs() < 0.5, "{zp:?} vs raw {raw:?}");
+    assert!((zp[0] - crossing[0]).abs() > 1.0 && (zp[1] - crossing[1]).abs() > 1.0, "{zp:?} snapped to {crossing:?}");
+}
+
+/// The baseline grid does not pull the zero point: like a dragged guide, it passes the
+/// baseline lines a moved object would meet (#2635). The default grid starts at 36 with a
+/// 12-point increment, so the line below is a baseline line; dropped 3 screen px off it, the
+/// zero point stays where the pointer is.
+#[test]
+fn dragging_the_zero_point_passes_the_baseline_grid() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let mut h = fast_harness(app);
+    let rect = h.state().canvas_rect.unwrap();
+    let corner = rect.min - vec2(RULER / 2.0, RULER / 2.0);
+    let (dest, expected) = {
+        let app = h.state();
+        let xf = Xf::new(rect, app.view().unwrap());
+        let st = app.session.active().unwrap();
+        let layout = CanvasLayout::new(&st.doc, false);
+        let slot = layout.slots[current_slot(app, &layout).unwrap()];
+        let grid = &st.doc.settings.baseline_grid;
+        assert!(grid.increment.is_finite() && grid.increment > 0.0, "the test needs a baseline grid");
+        let page_y0 = st.doc.spread(slot.spread).unwrap().pages[0].bounds().y0;
+        let line = page_y0 + grid.start + grid.increment * 22.0;
+        // 3 screen px off the line: inside the 4 px snap zone.
+        let off = 3.0 / xf.zoom;
+        let dest = xf.to_screen(slot.xf * Point::new(100.0, line + off));
+        let b = st.doc.spread(slot.spread).unwrap().bounds();
+        (dest, [100.0 - b.x0, line + off - b.y0])
+    };
+    corner_drag(&mut h, corner, dest);
+    let zp = zero_point(&h);
+    assert!((zp[0] - expected[0]).abs() < 0.5 && (zp[1] - expected[1]).abs() < 0.5, "{zp:?} vs {expected:?}");
+}
+
 #[test]
 fn cmd_dragging_the_ruler_corner_makes_a_guide_each_way() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
