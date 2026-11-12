@@ -110,15 +110,21 @@ pub fn character(app: &mut DesignApp, ui: &mut egui::Ui) {
 fn object_style_of_selection(app: &DesignApp) -> Option<(String, bool)> {
     let st = app.session.active()?;
     let it = st.selection.items.first().and_then(|i| st.doc.item(*i))?;
+    Some((it.object_style.clone(), overrides_its_style(&st.doc, it)))
+}
+
+/// Whether `it` differs from its object style: its own attributes, or a text frame's paragraphs
+/// in other styles than the object style gives them.
+fn overrides_its_style(doc: &designcraft_doc::Document, it: &designcraft_doc::Item) -> bool {
+    let Some(os) = doc.styles.object_style(&it.object_style) else { return false };
     let mut styled = it.clone();
-    let mut over = false;
-    if let Some(os) = st.doc.styles.object_style(&it.object_style) {
-        os.apply_to(&mut styled);
-        if let Some(tf) = it.text_frame() {
-            over = st.doc.story(tf.story).is_some_and(|s| !os.story_follows(&st.doc.styles, s));
-        }
-    }
-    Some((it.object_style.clone(), over || styled != *it))
+    os.apply_to(&mut styled);
+    styled != *it || it.text_frame().is_some_and(|tf| doc.story(tf.story).is_some_and(|s| !os.story_follows(&doc.styles, s)))
+}
+
+/// Whether any selected object differs from its object style (Clear Overrides clears them all).
+fn selection_overrides_styles(app: &DesignApp) -> bool {
+    app.session.active().is_some_and(|st| st.selection.items.iter().filter_map(|i| st.doc.item(*i)).any(|it| overrides_its_style(&st.doc, it)))
 }
 
 /// Window › Styles › Object Styles, as InDesign's: the selected object's style on top (`+` when
@@ -188,7 +194,7 @@ pub fn object(app: &mut DesignApp, ui: &mut egui::Ui) {
                     crate::object_style_dialog::open_new(app);
                 }
             }
-            let over = current.as_ref().is_some_and(|c| c.1);
+            let over = selection_overrides_styles(app);
             if ui.add_enabled_ui(over, |ui| icons::button(ui, "style-clear", 20.0, false, crate::i18n::tr(&lang, "Clear Overrides"))).inner.clicked()
                 && over
             {
@@ -407,6 +413,40 @@ mod tests {
         h.run_steps(3);
         let styles = h.state().session.active().unwrap().doc.styles.object.iter().map(|o| o.name.clone()).collect::<Vec<_>>();
         assert!(styles.contains(&"Object Style 1".to_string()), "{styles:?}");
+    }
+
+    /// Clear Overrides is on when any selected frame differs from its style, not only the first;
+    /// the label on top describes the first.
+    #[test]
+    fn clear_overrides_is_on_when_a_later_selected_frame_is_overridden() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let frame = |app: &mut DesignApp, x: f64| {
+            app.run("frame.create", json!({"rect": [x, 36, x + 100.0, 136], "content": "graphic"})).unwrap()["id"].as_u64().unwrap()
+        };
+        let (a, b) = (frame(&mut app, 36.0), frame(&mut app, 200.0));
+        app.run("style.object.create", json!({"name": "Framed", "fromSelection": false, "stroke": {"swatch": "[Paper]", "weight": 3}})).unwrap();
+        app.run("style.object.apply", json!({"name": "Framed", "ids": [a, b]})).unwrap();
+        app.run("object.stroke", json!({"weight": 1, "ids": [b]})).unwrap();
+        app.run("selection.set", json!({"ids": [a, b]})).unwrap();
+        let mut h = Harness::builder().with_size(vec2(320.0, 260.0)).build_ui_state(
+            |ui, app: &mut DesignApp| {
+                let id = egui::Id::unique("test_fonts");
+                if ui.data(|d| d.get_temp::<bool>(id)).is_none() {
+                    crate::theme::install_fonts(ui.ctx(), "");
+                    ui.data_mut(|d| d.insert_temp(id, true));
+                    return;
+                }
+                object(app, ui);
+            },
+            app,
+        );
+        h.run_steps(4);
+        assert_eq!(h.get_all_by_label("Framed").count(), 2, "the first frame follows its style");
+        h.get_by_label("Clear Overrides").click();
+        h.run_steps(3);
+        let weight = |h: &Harness<DesignApp>| h.state().session.active().unwrap().doc.item(designcraft_doc::ItemId(b)).unwrap().stroke.weight;
+        assert_eq!(weight(&h), 3.0);
     }
 
     #[test]

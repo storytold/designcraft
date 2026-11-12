@@ -752,8 +752,9 @@ fn object_style_effects_follow_the_style_until_overridden() {
     assert_eq!(s.doc().unwrap().revision, rev);
 }
 
-/// `style.object.create` and `edit` refuse an unknown swatch, a misspelled setting, a word or null
-/// for a switch, a rename that isn't a name and a corner size outside 0–10000 pt.
+/// `style.object.create` and `edit` refuse an unknown swatch, a misspelled setting (a stroke type's
+/// included), a word or null for a switch, a rename that isn't a name, a corner size outside
+/// 0–10000 pt and a stroke gap tint outside 0–1.
 #[test]
 fn object_style_parameters_are_checked() {
     let mut s = session();
@@ -768,6 +769,11 @@ fn object_style_parameters_are_checked() {
         json!({"corners": {"size": -1}}),
         json!({"corners": {"size": 10_001}}),
         json!({"applyNextStyle": null}),
+        json!({"stroke": {"gapTint": -1}}),
+        json!({"stroke": {"gapTint": 1.5}}),
+        json!({"stroke": {"type": {"kind": "dashed", "pattern": [2, 2], "patern": [4, 4]}}}),
+        json!({"stroke": {"type": {"kind": "solid", "pattern": [2, 2]}}}),
+        json!({"stroke": {"type": {"bands": [[0, 0.5]]}}}),
     ] {
         let mut p = bad.clone();
         p["name"] = json!("Framed");
@@ -785,6 +791,15 @@ fn object_style_parameters_are_checked() {
     }
     let names: Vec<_> = s.doc().unwrap().doc.styles.object.iter().map(|o| o.name.clone()).collect();
     assert!(!names.iter().any(|n| n == "Other" || n == "Odd"), "{names:?}");
+}
+
+/// An edit that leaves the style as it is answers with the same fields as one that changes it.
+#[test]
+fn an_object_style_edit_that_changes_nothing_reports_no_restyled_frames() {
+    let mut s = session();
+    s.execute("style.object.create", &json!({"name": "Framed", "fromSelection": false})).unwrap();
+    let r = s.execute("style.object.edit", &json!({"name": "Framed"})).unwrap();
+    assert_eq!((r["name"].as_str(), r["updated"].as_u64(), r["restyled"].as_u64()), (Some("Framed"), Some(0), Some(0)), "{r}");
 }
 
 /// The course's "Rounded Corner Image, White Stroke" style: made from a frame with rounded corners
