@@ -1984,6 +1984,19 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Measure Tool", "Mérőeszköz"),
     ("Hand Tool", "Kéz eszköz"),
     ("Zoom Tool", "Nagyító eszköz"),
+    ("Apply Next Style", "Következő stílus alkalmazása"),
+    ("Text Frame General Options", "Szövegkeret általános beállításai"),
+    ("New Object Style", "Új objektumstílus"),
+    ("Object Style Options", "Objektumstílus beállításai"),
+    ("Object Style Options…", "Objektumstílus beállításai…"),
+    ("Basic Attributes", "Alapattribútumok"),
+    ("Stroke & Corner Options", "Körvonal- és sarokbeállítások"),
+    ("Effects for:", "Hatások ehhez:"),
+    ("Create New Style", "Új stílus létrehozása"),
+    ("Clear Overrides", "Felülírások törlése"),
+    ("Shape:", "Alakzat:"),
+    ("(no attributes)", "(nincsenek attribútumok)"),
+    ("Enter a style name.", "Adjon meg egy stílusnevet."),
 ];
 
 pub(super) const CONTEXT: &[(&str, &str, &str)] =

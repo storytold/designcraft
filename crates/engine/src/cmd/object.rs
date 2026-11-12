@@ -610,8 +610,8 @@ pub fn specs() -> Vec<CommandSpec> {
             "Text Frame Options…",
             ["Object"],
             Some("Cmd+B"),
-            "{columns? (1..40), gutter? (pt, 0..15552), inset?: number|[t,l,b,r] (pt, each 0..15552; a list has four sides, null keeps that side), verticalJustification?: top|center|bottom|justify, paragraphSpacingLimit? (pt: Justify adds at most this between paragraphs, the rest between lines), columnsKind?: fixedNumber|fixedWidth|flexibleWidth, columnWidth? (pt, Fixed Width), firstBaseline?: ascent|capHeight|leading|xHeight|emboxHeight|fixed, firstBaselineMin? (pt), autoSize?: off|heightOnly|widthOnly|heightAndWidth|heightAndWidthProportionally, autoSizeReference?: topLeft|topCenter|topRight|leftCenter|center|rightCenter|bottomLeft|bottomCenter|bottomRight (the point that stays put), useMinimumHeight?: bool, minimumHeight? (pt), useMinimumWidth?: bool, minimumWidth? (pt), noLineBreaks?: bool, ignoreWrap?, balanceColumns?, columnRule?: bool, columnRuleWeight? (pt), columnRuleColor? (swatch name), columnRuleTint? (0..1), columnRuleOffset? (pt, horizontal), columnRuleTopInset? (pt), columnRuleBottomInset? (pt), baselineGrid?: {start? (pt), increment? (pt), relativeTo?: page|margin|frame|inset} (the frame's custom baseline grid; fields not given keep the frame's, or come from the document grid; null turns it off), vertical?: bool (sets the story direction of the frames' stories, as Type ▸ Story Direction), ids?}",
-            has_selection,
+            "{columns? (1..40), gutter? (pt, 0..15552), inset?: number|[t,l,b,r] (pt, each 0..15552; a list has four sides, null keeps that side), verticalJustification?: top|center|bottom|justify, paragraphSpacingLimit? (pt: Justify adds at most this between paragraphs, the rest between lines), columnsKind?: fixedNumber|fixedWidth|flexibleWidth, columnWidth? (pt, Fixed Width), firstBaseline?: ascent|capHeight|leading|xHeight|emboxHeight|fixed, firstBaselineMin? (pt), autoSize?: off|heightOnly|widthOnly|heightAndWidth|heightAndWidthProportionally, autoSizeReference?: topLeft|topCenter|topRight|leftCenter|center|rightCenter|bottomLeft|bottomCenter|bottomRight (the point that stays put), useMinimumHeight?: bool, minimumHeight? (pt), useMinimumWidth?: bool, minimumWidth? (pt), noLineBreaks?: bool, ignoreWrap?, balanceColumns?, columnRule?: bool, columnRuleWeight? (pt), columnRuleColor? (swatch name), columnRuleTint? (0..1), columnRuleOffset? (pt, horizontal), columnRuleTopInset? (pt), columnRuleBottomInset? (pt), baselineGrid?: {start? (pt), increment? (pt), relativeTo?: page|margin|frame|inset} (the frame's custom baseline grid; fields not given keep the frame's, or come from the document grid; null turns it off), vertical?: bool (sets the story direction of the frames' stories, as Type ▸ Story Direction), ids? (without ids or selected objects: the frame showing the text caret, or every frame holding part of the selected text)}",
+            has_selection_or_text,
             text_frame_options
         ),
         cmd!(
@@ -2729,14 +2729,45 @@ fn content_type(s: &mut Session, p: &Value) -> Result<Value> {
 /// The most columns a text frame takes.
 const MAX_FRAME_COLUMNS: u64 = 40;
 
+/// The frames `object.textFrameOptions` changes when the call names none: the selected objects,
+/// or with the Type tool the frame that shows the caret or every frame holding part of the
+/// selected text.
+pub fn text_frame_options_frames(s: &Session) -> Vec<ItemId> {
+    let Ok(st) = s.doc() else { return Vec::new() };
+    if !st.selection.items.is_empty() {
+        return st.selection.items.clone();
+    }
+    st.selection.text.map(|t| text_selection_frames(s, &t)).unwrap_or_default()
+}
+
+/// Text Frame Options act on the selected objects, or with the Type tool on the frames that hold
+/// the caret or the selected text.
+fn has_selection_or_text(s: &Session) -> std::result::Result<(), String> {
+    if s.active().is_some_and(|d| d.selection.text.is_some()) {
+        return Ok(());
+    }
+    has_selection(s)
+}
+
 fn text_frame_options(s: &mut Session, p: &Value) -> Result<Value> {
     const ID: &str = "object.textFrameOptions";
     let st = s.doc()?;
-    let mut ids = targets(s, p)?;
-    if ids.is_empty()
-        && let Some(t) = st.selection.text
-    {
-        ids = st.doc.story(t.story).map(|s| s.frames.clone()).unwrap_or_default();
+    // A call that names its objects acts on those; an empty `ids` names nothing. `ids`, when
+    // given, wins over `id`, and a value that is not an object id is an error.
+    let ids = match (p.get("ids"), p.get("id")) {
+        (Some(v), _) => v
+            .as_array()
+            .and_then(|a| a.iter().map(|x| x.as_u64().map(ItemId)).collect::<Option<Vec<_>>>())
+            .ok_or_else(|| bad(ID, format!("ids must be a list of object ids, not {v}")))?,
+        (None, Some(v)) => vec![v.as_u64().map(ItemId).ok_or_else(|| bad(ID, format!("id must be an object id, not {v}")))?],
+        (None, None) => text_frame_options_frames(s),
+    };
+    // With a text caret the command runs before named objects are checked.
+    if let Some(gone) = ids.iter().find(|i| st.doc.item(**i).is_none()) {
+        return Err(bad(ID, format!("no object with id {}", gone.0)));
+    }
+    if ids.is_empty() {
+        return Err(bad(ID, super::NOTHING_SELECTED));
     }
     let ranged = |key: &str, lo: f64, hi: f64, what: &str| match p.get(key) {
         None | Some(Value::Null) => Ok(None),
@@ -2833,8 +2864,10 @@ fn text_frame_options(s: &mut Session, p: &Value) -> Result<Value> {
         Some(Value::String(c)) if st.doc.swatch(c).is_some() => Some(c.clone()),
         Some(v) => return Err(bad(ID, format!("no swatch {v}"))),
     };
+    let (before, revision) = (Arc::clone(&st.doc), st.revision);
+    let find = s.find_context.take();
     let p = p.clone();
-    s.edit(|d, _| {
+    let edited = s.edit(|d, _| {
         for id in &ids {
             let Some(tf) = d.item_mut(*id).and_then(Item::text_frame_mut) else { continue };
             let o = &mut tf.options;
@@ -2921,6 +2954,7 @@ fn text_frame_options(s: &mut Session, p: &Value) -> Result<Value> {
             if fixed_width
                 && ["columnsKind", "columnWidth", "columns", "gutter", "inset"].iter().any(|k| p.get(*k).is_some())
                 && let Some(r) = d.item(*id).map(Item::inner_bounds)
+                && ((r.width() - width).abs() >= 1e-9 || !width.is_finite())
             {
                 let r = super::finite_rect("object.textFrameOptions", Rect::new(r.x0, r.y0, r.x0 + width, r.y1))?;
                 crate::autosize::resize(d, *id, r);
@@ -2932,7 +2966,84 @@ fn text_frame_options(s: &mut Session, p: &Value) -> Result<Value> {
             super::text::set_story_direction(d, &stories, v);
         }
         Ok(json!({"changed": ids.len()}))
-    })
+    });
+    let changed = match edited {
+        Ok(v) => v,
+        Err(e) => {
+            s.find_context = find;
+            return Err(e);
+        }
+    };
+    // Options the frames already have: the document, its revision and the Find Next scope go back
+    // to what they were, which leaves no undo step. Only the frames and their stories are compared.
+    let st = s.doc_mut()?;
+    let same = ids.iter().all(|id| {
+        let (now, was) = (st.doc.item(*id), before.item(*id));
+        now == was && now.and_then(Item::text_frame).is_none_or(|t| st.doc.story(t.story) == before.story(t.story))
+    });
+    if same {
+        st.doc = before;
+        st.revision = revision;
+        s.find_context = find;
+        return Ok(json!({"changed": 0}));
+    }
+    Ok(changed)
+}
+
+/// The frames Text Frame Options acts on from the Type tool: the frame that shows the caret, or
+/// every frame that holds part of the selected text. Text past the last frame counts as the last
+/// frame's.
+fn text_selection_frames(s: &Session, t: &TextSel) -> Vec<ItemId> {
+    let Ok(st) = s.doc() else { return Vec::new() };
+    let Some(story) = st.doc.story(t.story) else { return Vec::new() };
+    let last = story.frames.last().copied();
+    let cs = s.cache.get(&st.doc, t.story, None);
+    // In footnote text or a table cell, `anchor` and `focus` index that text: the frame the caret
+    // is drawn in (the placed footnote, or the cell's first non-repeated occurrence), else the
+    // frame that shows the footnote reference or the table's anchor character.
+    if let Some(c) = t.cell {
+        let (drawn, anchor) = match c.footnote_id() {
+            Some(id) => (designcraft_compose::find_note(&cs, id).map(|(fi, _)| fi), story.note_anchor(id)),
+            None => (designcraft_compose::find_cell(&cs, c.table, c.row, c.col).map(|(fi, ..)| fi), story.table_anchor(c.table)),
+        };
+        return drawn
+            .or_else(|| anchor.and_then(|a| designcraft_compose::caret(&cs, a)).map(|(fi, ..)| fi))
+            .and_then(|fi| cs.frames.get(fi))
+            .map(|f| f.frame)
+            .or_else(|| t.frame.filter(|f| story.frames.contains(f)))
+            .or(last)
+            .into_iter()
+            .collect();
+    }
+    let r = t.range();
+    // The frame the caret at the start is drawn in; the caret's stored frame only when no line
+    // holds it.
+    let caret_frame = || {
+        designcraft_compose::caret(&cs, r.start)
+            .and_then(|(fi, ..)| cs.frames.get(fi))
+            .map(|f| f.frame)
+            .or_else(|| t.frame.filter(|f| story.frames.contains(f) && cs.overset_at.is_none_or(|o| r.start < o)))
+    };
+    // A frame's range stops before the paragraph return that ends its last line; the return
+    // belongs to that frame.
+    let end_of = |f: &designcraft_compose::FrameText| f.range.end + usize::from(story.text.as_bytes().get(f.range.end) == Some(&b'\n'));
+    let mut frames: Vec<ItemId> = if t.is_caret() {
+        caret_frame().into_iter().collect()
+    } else {
+        cs.frames.iter().filter(|f| f.range.start < r.end && r.start < end_of(f)).map(|f| f.frame).collect()
+    };
+    // Selected text no frame holds goes with the line before it.
+    if frames.is_empty() {
+        frames.extend(caret_frame());
+    }
+    let overset = cs.overset_at.is_some_and(|o| r.end > o);
+    if let Some(l) = last
+        && (frames.is_empty() || overset)
+        && !frames.contains(&l)
+    {
+        frames.push(l);
+    }
+    frames
 }
 
 /// `object.textFrameOptions` Inset Spacing: one number for every side, or [top, left, bottom,
@@ -5037,6 +5148,7 @@ mod named_target_tests {
         s.execute("file.new", &json!({})).unwrap();
         let r = s.execute("frame.create", &json!({"rect": [36, 36, 300, 300], "content": "text", "text": "Hello"})).unwrap();
         assert!(s.doc().unwrap().selection.items.is_empty(), "frame.create leaves a text caret");
+        s.execute("edit.deselectAll", &json!({})).unwrap();
         let e = s.execute("object.textFrameOptions", &json!({"columns": 2})).unwrap_err().to_string();
         assert!(e.contains("nothing selected"), "{e}");
         s.execute("object.textFrameOptions", &json!({"ids": [r["id"]], "columns": 2})).unwrap();
@@ -5053,6 +5165,257 @@ mod named_target_tests {
         assert_eq!(columns(&s), Some(2));
         // Commands documented with `ids` honour `id` too.
         assert_eq!(s.execute("conveyor.collect", &json!({"id": r["id"]})).unwrap()["count"], 1);
+    }
+}
+
+#[cfg(test)]
+mod type_tool_frame_options_tests {
+    use super::*;
+    use designcraft_doc::VerticalJustification;
+
+    /// One story threaded through two frames, with text in both: (first frame, second frame, story).
+    fn two_frame_thread(s: &mut Session) -> (ItemId, ItemId, StoryId) {
+        s.execute("file.new", &json!({})).unwrap();
+        let text = (0..40).map(|i| format!("Line {i} of the threaded story.")).collect::<Vec<_>>().join(" ");
+        let a = s.execute("frame.create", &json!({"rect": [36, 36, 300, 120], "content": "text", "text": text})).unwrap();
+        let b = s.execute("frame.create", &json!({"rect": [36, 200, 300, 700], "content": "text", "text": ""})).unwrap();
+        let (a, b) = (ItemId(a["id"].as_u64().unwrap()), ItemId(b["id"].as_u64().unwrap()));
+        s.execute("text.thread", &json!({"from": a.0, "to": b.0})).unwrap();
+        let sid = s.doc().unwrap().doc.item(a).and_then(Item::text_frame).unwrap().story;
+        (a, b, sid)
+    }
+
+    /// The story bytes `frame` shows.
+    fn shown(s: &Session, sid: StoryId, frame: ItemId) -> std::ops::Range<usize> {
+        let cs = designcraft_compose::compose_story(&s.doc().unwrap().doc, sid, &Default::default());
+        cs.frame(frame).unwrap().range.clone()
+    }
+
+    fn options(s: &Session, id: ItemId) -> TextFrameOptions {
+        s.doc().unwrap().doc.item(id).and_then(Item::text_frame).unwrap().options.clone()
+    }
+
+    fn undo_steps(s: &Session) -> usize {
+        s.doc().unwrap().history.undo.len()
+    }
+
+    /// With the Type tool, Text Frame Options change the frame that shows the caret, not every
+    /// frame of the story.
+    #[test]
+    fn a_caret_changes_the_frame_it_is_in() {
+        let mut s = Session::new();
+        let (a, b, sid) = two_frame_thread(&mut s);
+        let (ra, rb) = (shown(&s, sid, a), shown(&s, sid, b));
+        assert!(!ra.is_empty() && !rb.is_empty(), "both frames hold text: {ra:?} {rb:?}");
+        s.execute("text.select", &json!({"story": sid.0, "anchor": rb.start + 2})).unwrap();
+        assert!(s.doc().unwrap().selection.items.is_empty());
+        let steps = undo_steps(&s);
+        s.execute("object.textFrameOptions", &json!({"columns": 3, "verticalJustification": "center", "inset": 6})).unwrap();
+        assert_eq!(
+            (options(&s, b).columns, options(&s, b).vertical_justification, options(&s, b).inset),
+            (3, VerticalJustification::Center, [6.0; 4])
+        );
+        assert_eq!((options(&s, a).columns, options(&s, a).vertical_justification), (1, VerticalJustification::Top), "the first frame is left alone");
+        assert_eq!(undo_steps(&s), steps + 1, "one undo step");
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(options(&s, b).columns, 1);
+        // A caret in the first frame changes the first frame.
+        s.execute("text.select", &json!({"story": sid.0, "anchor": ra.start + 2})).unwrap();
+        s.execute("object.textFrameOptions", &json!({"verticalJustification": "bottom"})).unwrap();
+        assert_eq!(
+            (options(&s, a).vertical_justification, options(&s, b).vertical_justification),
+            (VerticalJustification::Bottom, VerticalJustification::Top)
+        );
+    }
+
+    /// A caret moved to the start of the second frame keeps the first frame as its stored frame;
+    /// the options go to the frame the caret is drawn in.
+    #[test]
+    fn a_caret_at_a_frame_boundary_changes_the_frame_it_is_drawn_in() {
+        let mut s = Session::new();
+        let (a, b, sid) = two_frame_thread(&mut s);
+        let rb = shown(&s, sid, b);
+        let cs = designcraft_compose::compose_story(&s.doc().unwrap().doc, sid, &Default::default());
+        let drawn = designcraft_compose::caret(&cs, rb.start).and_then(|(fi, ..)| cs.frames.get(fi)).map(|f| f.frame);
+        assert_eq!(drawn, Some(b), "the caret at the boundary is drawn in the second frame");
+        s.doc_mut().unwrap().selection = Selection::text(TextSel { story: sid, anchor: rb.start, focus: rb.start, frame: Some(a), cell: None });
+        s.execute("object.textFrameOptions", &json!({"columns": 2})).unwrap();
+        assert_eq!((options(&s, a).columns, options(&s, b).columns), (1, 2));
+    }
+
+    /// Selected text that runs from one frame into the next changes both frames.
+    #[test]
+    fn selected_text_changes_every_frame_it_runs_through() {
+        let mut s = Session::new();
+        let (a, b, sid) = two_frame_thread(&mut s);
+        let (ra, rb) = (shown(&s, sid, a), shown(&s, sid, b));
+        s.execute("text.select", &json!({"story": sid.0, "anchor": ra.end - 3, "focus": rb.start + 3})).unwrap();
+        s.execute("object.textFrameOptions", &json!({"columns": 2})).unwrap();
+        assert_eq!((options(&s, a).columns, options(&s, b).columns), (2, 2));
+        // Text inside one frame changes that frame only.
+        s.execute("text.select", &json!({"story": sid.0, "anchor": rb.start + 1, "focus": rb.start + 6})).unwrap();
+        s.execute("object.textFrameOptions", &json!({"columns": 4})).unwrap();
+        assert_eq!((options(&s, a).columns, options(&s, b).columns), (2, 4));
+    }
+
+    /// A selected paragraph return at the end of the first frame changes the first frame.
+    #[test]
+    fn a_selected_return_at_the_end_of_a_frame_changes_that_frame() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let text = (0..40).map(|i| format!("Paragraph {i}")).collect::<Vec<_>>().join("\n");
+        let a = s.execute("frame.create", &json!({"rect": [36, 36, 300, 120], "content": "text", "text": text})).unwrap();
+        let b = s.execute("frame.create", &json!({"rect": [36, 200, 300, 700], "content": "text", "text": ""})).unwrap();
+        let (a, b) = (ItemId(a["id"].as_u64().unwrap()), ItemId(b["id"].as_u64().unwrap()));
+        s.execute("text.thread", &json!({"from": a.0, "to": b.0})).unwrap();
+        let sid = s.doc().unwrap().doc.item(a).and_then(Item::text_frame).unwrap().story;
+        let (ra, rb) = (shown(&s, sid, a), shown(&s, sid, b));
+        assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().text.as_bytes()[ra.end], b'\n', "the first frame ends before a return");
+        assert_eq!(rb.start, ra.end + 1, "the second frame starts after it");
+        s.execute("text.select", &json!({"story": sid.0, "anchor": ra.end, "focus": ra.end + 1})).unwrap();
+        s.execute("object.textFrameOptions", &json!({"columns": 2})).unwrap();
+        assert_eq!((options(&s, a).columns, options(&s, b).columns), (2, 1));
+        // From that return into the second frame, with the first frame back as it was: both frames.
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!((shown(&s, sid, a), shown(&s, sid, b)), (ra.clone(), rb.clone()));
+        s.execute("text.select", &json!({"story": sid.0, "anchor": ra.end, "focus": rb.start + 3})).unwrap();
+        s.execute("object.textFrameOptions", &json!({"columns": 3})).unwrap();
+        assert_eq!((options(&s, a).columns, options(&s, b).columns), (3, 3));
+    }
+
+    /// An empty `ids` names no frame, so it does not fall back to the caret's frame.
+    #[test]
+    fn empty_ids_with_a_caret_is_an_error() {
+        let mut s = Session::new();
+        let (a, b, sid) = two_frame_thread(&mut s);
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 2})).unwrap();
+        let before = s.doc().unwrap().doc.clone();
+        let e = s.execute("object.textFrameOptions", &json!({"ids": [], "columns": 3})).unwrap_err().to_string();
+        assert!(e.contains("nothing selected"), "{e}");
+        // An id that is not in the document is refused too.
+        let e = s.execute("object.textFrameOptions", &json!({"ids": [99999, b.0], "columns": 3})).unwrap_err().to_string();
+        assert!(e.contains("no object with id 99999"), "{e}");
+        assert!(std::sync::Arc::ptr_eq(&before, &s.doc().unwrap().doc), "nothing changed");
+        assert_eq!((options(&s, a).columns, options(&s, b).columns), (1, 1));
+    }
+
+    /// An `ids` that is not a list of object ids is refused, not read as the selected frame or the
+    /// caret's frame.
+    #[test]
+    fn malformed_ids_are_an_error() {
+        let mut s = Session::new();
+        let (a, b, sid) = two_frame_thread(&mut s);
+        s.execute("selection.set", &json!({"ids": [b.0]})).unwrap();
+        let before = s.doc().unwrap().doc.clone();
+        for p in [json!({"ids": "bad", "columns": 2}), json!({"ids": [b.0, "x"], "columns": 2}), json!({"ids": null, "columns": 2})] {
+            let e = s.execute("object.textFrameOptions", &p).unwrap_err().to_string();
+            assert!(e.contains("ids must be a list of object ids"), "{p}: {e}");
+        }
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 2})).unwrap();
+        let e = s.execute("object.textFrameOptions", &json!({"ids": "bad", "columns": 2})).unwrap_err().to_string();
+        assert!(e.contains("ids must be a list of object ids"), "with a caret: {e}");
+        assert!(std::sync::Arc::ptr_eq(&before, &s.doc().unwrap().doc), "nothing changed");
+        assert_eq!((options(&s, a).columns, options(&s, b).columns), (1, 1));
+    }
+
+    /// Options the frame already has change nothing and add no undo step.
+    #[test]
+    fn unchanged_options_add_no_undo_step() {
+        let mut s = Session::new();
+        let (_, b, sid) = two_frame_thread(&mut s);
+        let rb = shown(&s, sid, b);
+        s.execute("text.select", &json!({"story": sid.0, "anchor": rb.start + 2})).unwrap();
+        let steps = undo_steps(&s);
+        let (before, revision) = (s.doc().unwrap().doc.clone(), s.doc().unwrap().revision);
+        let r = s.execute("object.textFrameOptions", &json!({"columns": 1, "verticalJustification": "top", "inset": 0})).unwrap();
+        assert_eq!(r["changed"], 0);
+        assert!(std::sync::Arc::ptr_eq(&before, &s.doc().unwrap().doc), "nothing changed");
+        assert_eq!(s.doc().unwrap().revision, revision, "the revision stays");
+        assert_eq!(undo_steps(&s), steps);
+        // The same holds for selected frames, Fixed Width columns included.
+        s.execute("selection.set", &json!({"ids": [b.0]})).unwrap();
+        s.execute("object.textFrameOptions", &json!({"gutter": options(&s, b).gutter})).unwrap();
+        assert_eq!(undo_steps(&s), steps);
+        let fixed = json!({"columnsKind": "fixedWidth", "columnWidth": 100.3, "columns": 2, "gutter": 12.1});
+        s.execute("object.textFrameOptions", &fixed).unwrap();
+        assert_eq!(undo_steps(&s), steps + 1);
+        assert_eq!(s.execute("object.textFrameOptions", &fixed).unwrap()["changed"], 0);
+        assert_eq!(undo_steps(&s), steps + 1, "the same Fixed Width options again add no undo step");
+    }
+
+    /// A caret in footnote text changes the frame that shows the footnote, with or without a
+    /// stored frame on the caret.
+    #[test]
+    fn a_caret_in_a_footnote_changes_the_frame_that_shows_it() {
+        for (in_second, stored) in [(false, None), (true, None), (false, Some(true))] {
+            let mut s = Session::new();
+            let (a, b, sid) = two_frame_thread(&mut s);
+            let r = shown(&s, sid, if in_second { b } else { a });
+            s.execute("text.select", &json!({"story": sid.0, "anchor": r.start + 2})).unwrap();
+            s.execute("footnote.insert", &json!({"text": "Note."})).unwrap();
+            let mut t = s.doc().unwrap().selection.text.unwrap();
+            assert!(t.cell.and_then(|c| c.footnote_id()).is_some(), "the caret is in the footnote: {t:?}");
+            if let Some(second) = stored {
+                t.frame = Some(if second { b } else { a });
+                s.doc_mut().unwrap().selection = Selection::text(t);
+            }
+            s.execute("object.textFrameOptions", &json!({"columns": 2})).unwrap();
+            let want = if in_second { (1, 2) } else { (2, 1) };
+            assert_eq!((options(&s, a).columns, options(&s, b).columns), want, "footnote in the second frame: {in_second}, stored frame: {stored:?}");
+        }
+    }
+
+    /// A caret in a table cell changes the frame that shows the cell, with or without a stored
+    /// frame on the caret.
+    #[test]
+    fn a_caret_in_a_table_cell_changes_the_frame_that_shows_it() {
+        for (in_second, stored) in [(false, None), (true, None), (false, Some(true))] {
+            let mut s = Session::new();
+            let (a, b, sid) = two_frame_thread(&mut s);
+            let r = shown(&s, sid, if in_second { b } else { a });
+            s.execute("text.select", &json!({"story": sid.0, "anchor": r.start + 2})).unwrap();
+            s.execute("table.insert", &json!({"rows": 1, "cols": 1})).unwrap();
+            let mut t = s.doc().unwrap().selection.text.unwrap();
+            assert!(t.cell.is_some_and(|c| c.footnote_id().is_none()), "the caret is in the cell: {t:?}");
+            if let Some(second) = stored {
+                t.frame = Some(if second { b } else { a });
+                s.doc_mut().unwrap().selection = Selection::text(t);
+            }
+            s.execute("object.textFrameOptions", &json!({"columns": 2})).unwrap();
+            let want = if in_second { (1, 2) } else { (2, 1) };
+            assert_eq!((options(&s, a).columns, options(&s, b).columns), want, "table in the second frame: {in_second}, stored frame: {stored:?}");
+        }
+    }
+
+    /// A caret in a repeated footer row is drawn in the footer's own occurrence at the end of the
+    /// table: that frame changes, not the earlier frame that shows a repeat of the footer.
+    #[test]
+    fn a_caret_in_a_repeated_footer_changes_the_frame_with_the_footer_itself() {
+        let mut s = Session::new();
+        let (a, b, sid) = two_frame_thread(&mut s);
+        let ra = shown(&s, sid, a);
+        s.execute("text.select", &json!({"story": sid.0, "anchor": ra.start + 2})).unwrap();
+        s.execute("table.insert", &json!({"rows": 15, "cols": 1, "footerRows": 1})).unwrap();
+        s.execute("table.options", &json!({"repeatFooter": true})).unwrap();
+        let t = s.doc().unwrap().selection.text.unwrap();
+        let table = t.cell.unwrap().table;
+        let footer = s.doc().unwrap().doc.story(sid).unwrap().tables.get(&table).unwrap().nrows() - 1;
+        let cs = designcraft_compose::compose_story(&s.doc().unwrap().doc, sid, &Default::default());
+        let placed = |f: ItemId| {
+            cs.frame(f)
+                .unwrap()
+                .tables
+                .iter()
+                .filter(|tf| tf.table == table)
+                .filter_map(|tf| tf.cell(footer, 0))
+                .map(|c| c.repeated)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!((placed(a), placed(b)), (vec![true], vec![false]), "the footer repeats in the first frame and ends the table in the second");
+        s.doc_mut().unwrap().selection =
+            Selection::text(TextSel { cell: Some(designcraft_doc::CellAddr { table, row: footer, col: 0 }), anchor: 0, focus: 0, frame: None, ..t });
+        s.execute("object.textFrameOptions", &json!({"columns": 2})).unwrap();
+        assert_eq!((options(&s, a).columns, options(&s, b).columns), (1, 2));
     }
 }
 

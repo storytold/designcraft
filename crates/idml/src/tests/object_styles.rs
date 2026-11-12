@@ -149,6 +149,71 @@ fn item_overrides_and_disabled_categories_turn_style_effects_off() {
     assert!((ds.opacity - 0.75).abs() < 1e-6);
 }
 
+/// An object style's paragraph style and Apply Next Style (`ApplyNextParagraphStyle`) round-trip.
+#[test]
+fn object_style_apply_next_style_round_trips() {
+    let mut d = small_doc();
+    let styles = std::sync::Arc::make_mut(&mut d.styles);
+    styles.paragraph.push(designcraft_doc::ParagraphStyle {
+        name: "Opener".into(),
+        based_on: None,
+        next_style: Some(designcraft_doc::BASIC_PARAGRAPH.into()),
+        para: Default::default(),
+        chars: Default::default(),
+        shortcut: String::new(),
+    });
+    for (name, next) in [("Chained", true), ("Single", false)] {
+        styles.object.push(designcraft_doc::ObjectStyle {
+            name: name.into(),
+            paragraph_style: Some("Opener".into()),
+            apply_next_style: next,
+            ..Default::default()
+        });
+    }
+    let back = import_idml(&export_idml(&d)).unwrap();
+    for (name, next) in [("Chained", true), ("Single", false)] {
+        let os = back.styles.object_style(name).unwrap();
+        assert_eq!((os.paragraph_style.as_deref(), os.apply_next_style), (Some("Opener"), next), "{name}");
+    }
+}
+
+/// A style's Text Frame General Options take each setting its own `TextFramePreference` leaves out
+/// from the style it is based on (named by its id or bare name, and only when that style doesn't
+/// turn the category off), and export and import keep the merged options.
+#[test]
+fn object_style_text_frame_options_inherit_from_the_based_on_style() {
+    let styles = r#"<ObjectStyle Self="ObjectStyle/Box" Name="Box" EnableTextFrameGeneralOptions="true">
+      <Properties><BasedOn type="string">$ID/[None]</BasedOn></Properties>
+      <TextFramePreference TextColumnCount="2" VerticalJustification="CenterAlign"/>
+    </ObjectStyle>
+    <ObjectStyle Self="ObjectStyle/Inset" Name="Inset" EnableTextFrameGeneralOptions="true">
+      <Properties><BasedOn type="object">ObjectStyle/Box</BasedOn></Properties>
+      <TextFramePreference InsetSpacing="9"/>
+    </ObjectStyle>
+    <ObjectStyle Self="ObjectStyle/Bare" Name="Bare" EnableTextFrameGeneralOptions="true">
+      <Properties><BasedOn type="string">Box</BasedOn></Properties>
+      <TextFramePreference InsetSpacing="3"/>
+    </ObjectStyle>
+    <ObjectStyle Self="ObjectStyle/Off" Name="Off" EnableTextFrameGeneralOptions="false">
+      <Properties><BasedOn type="string">$ID/[None]</BasedOn></Properties>
+      <TextFramePreference TextColumnCount="5"/>
+    </ObjectStyle>
+    <ObjectStyle Self="ObjectStyle/OnOff" Name="OnOff" EnableTextFrameGeneralOptions="true">
+      <Properties><BasedOn type="object">ObjectStyle/Off</BasedOn></Properties>
+      <TextFramePreference InsetSpacing="1"/>
+    </ObjectStyle>"#;
+    let d = fixture(styles, &[]);
+    let tf = d.styles.object_style("Inset").and_then(|s| s.text_frame.clone()).expect("Inset sets text frame options");
+    assert_eq!((tf.inset, tf.columns, tf.vertical_justification), ([9.0; 4], 2, designcraft_doc::VerticalJustification::Center));
+    let bare = d.styles.object_style("Bare").and_then(|s| s.text_frame.clone()).expect("Bare sets text frame options");
+    assert_eq!((bare.inset, bare.columns), ([3.0; 4], 2), "a BasedOn given as a bare name");
+    let on_off = d.styles.object_style("OnOff").and_then(|s| s.text_frame.clone()).expect("OnOff sets text frame options");
+    assert_eq!((on_off.inset, on_off.columns), ([1.0; 4], 1), "a based-on style with the category off gives nothing");
+    let back = import_idml(&export_idml(&d)).unwrap();
+    let again = back.styles.object_style("Inset").and_then(|s| s.text_frame.clone()).expect("after a round trip");
+    assert!(again.general_eq(&tf), "{again:?}");
+}
+
 #[test]
 fn exported_frames_keep_their_own_values_over_their_object_style() {
     let mut d = small_doc();
@@ -165,6 +230,43 @@ fn exported_frames_keep_their_own_values_over_their_object_style() {
     let back = import_idml(&export_idml(&d)).unwrap();
     let got = back.spreads[0].items.iter().find(|i| i.object_style == "Ruled").and_then(|i| i.text_frame()).unwrap();
     assert_eq!(got.options, want);
+}
+
+/// Items without corners keep none after export and import, though their object style, the style
+/// it is based on, or `[None]` (read after every style chain) sets rounded corners.
+#[test]
+fn exported_frames_keep_no_corners_over_their_object_style() {
+    let mut d = small_doc();
+    let lid = d.default_layer();
+    let id = designcraft_doc::ItemId(d.alloc());
+    let rect = designcraft_doc::Item::new(id, lid, Shape::Rectangle, shapes::rectangle(Rect::new(40.0, 420.0, 200.0, 500.0)));
+    d.insert_item(SpreadRef::Doc(0), rect, None).unwrap();
+    let rounded = Some(designcraft_geom::corners::CornerOptions {
+        corners: [designcraft_geom::corners::Corner { shape: CornerShape::Rounded, size: 12.0 }; 4],
+    });
+    let styles = std::sync::Arc::make_mut(&mut d.styles);
+    styles.object.push(designcraft_doc::ObjectStyle { name: "Round".into(), corners: rounded, ..Default::default() });
+    styles.object.push(designcraft_doc::ObjectStyle { name: "Child".into(), based_on: Some("Round".into()), ..Default::default() });
+    match styles.object.iter_mut().find(|o| o.name == designcraft_doc::NO_OBJECT_STYLE) {
+        Some(none) => none.corners = rounded,
+        None => {
+            styles.object.push(designcraft_doc::ObjectStyle { name: designcraft_doc::NO_OBJECT_STYLE.into(), corners: rounded, ..Default::default() })
+        }
+    }
+    styles.object.push(designcraft_doc::ObjectStyle { name: "Plain".into(), ..Default::default() });
+    let names = ["Round", "Child", designcraft_doc::NO_OBJECT_STYLE, "Plain"];
+    let ids: Vec<_> = d.spreads.iter().flat_map(|s| s.items.iter().map(|i| i.id)).take(4).collect();
+    assert_eq!(ids.len(), 4);
+    for (id, style) in ids.iter().zip(names) {
+        let it = d.item_mut(*id).unwrap();
+        it.object_style = style.into();
+        assert!(it.corners.is_none());
+    }
+    let back = import_idml(&export_idml(&d)).unwrap();
+    for style in names {
+        let it = back.spreads.iter().flat_map(|s| s.items.iter()).find(|i| i.object_style == style).unwrap();
+        assert!(it.corners.is_none(), "{style}: {:?}", it.corners);
+    }
 }
 
 #[test]
@@ -226,4 +328,87 @@ fn feathers_come_from_the_object_style_unless_its_category_turns_them_off() {
     assert!(fx[1].directional_feather.on);
     assert!(fx[2].gradient_feather.on);
     assert!(!fx[2].directional_feather.on, "the item's own setting wins");
+}
+
+/// A style that sets one corner takes the others from the style it is based on, so applying it
+/// keeps the based-on style's rounded corners; and a style's named corners go to the anchors at
+/// those corners of a frame whose path runs top left, bottom left, bottom right, top right.
+#[test]
+fn a_style_setting_one_corner_inherits_the_others_and_names_them() {
+    let child = r#"<ObjectStyle Self="ObjectStyle/Child" Name="Child" TopRightCornerOption="BevelCorner" TopRightCornerRadius="4">
+      <Properties><BasedOn type="object">ObjectStyle/Round</BasedOn></Properties>
+    </ObjectStyle>"#;
+    let d = fixture(&format!("{ROUND}{child}"), &[(r#"AppliedObjectStyle="ObjectStyle/Child""#, "")]);
+    let style = d.styles.object.iter().find(|s| s.name == "Child").unwrap();
+    let c = style.corners.expect("the child sets corners").corners;
+    assert_eq!(c.map(|c| c.shape), [CornerShape::Rounded, CornerShape::Bevel, CornerShape::Rounded, CornerShape::Rounded], "{c:?}");
+    assert_eq!(c.map(|c| c.size), [17.0, 4.0, 17.0, 17.0]);
+    // Applied to the fixture's frame (anchors top left, bottom left, bottom right, top right):
+    // the bevel goes to the top right anchor, the last.
+    let mut it = (*d.spreads[0].items[0]).clone();
+    it.corners = Default::default();
+    style.apply_to(&mut it);
+    assert_eq!(it.corners.corners.map(|c| c.shape), [CornerShape::Rounded, CornerShape::Rounded, CornerShape::Rounded, CornerShape::Bevel]);
+}
+
+/// A style that turns Stroke & Corner Options on without corner attributes of its own takes all
+/// four corners from the style it is based on.
+#[test]
+fn a_style_turning_corners_on_inherits_all_four() {
+    let child = r#"<ObjectStyle Self="ObjectStyle/Plain" Name="Plain" EnableStrokeAndCornerOptions="true">
+      <Properties><BasedOn type="object">ObjectStyle/Round</BasedOn></Properties>
+    </ObjectStyle>"#;
+    let d = fixture(&format!("{ROUND}{child}"), &[]);
+    let c = d.styles.object.iter().find(|s| s.name == "Plain").and_then(|s| s.corners).expect("inherited corners").corners;
+    assert_eq!((c.map(|c| c.shape), c.map(|c| c.size)), ([CornerShape::Rounded; 4], [17.0; 4]));
+}
+
+/// A style with no Stroke & Corner Options or Text Frame General Options flag and no settings of
+/// its own takes each category from the style it is based on: on, off, or (for a style based on
+/// `[None]`) not set.
+#[test]
+fn a_style_without_category_flags_takes_them_from_its_based_on_style() {
+    let styles = r#"<ObjectStyle Self="ObjectStyle/Framed" Name="Framed" EnableTextFrameGeneralOptions="true">
+      <Properties><BasedOn type="string">$ID/[None]</BasedOn></Properties>
+      <TextFramePreference TextColumnCount="3"/>
+    </ObjectStyle>
+    <ObjectStyle Self="ObjectStyle/Off" Name="Off" EnableStrokeAndCornerOptions="false" EnableTextFrameGeneralOptions="false"
+      TopLeftCornerOption="RoundedCorner">
+      <Properties><BasedOn type="object">ObjectStyle/Round</BasedOn></Properties>
+      <TextFramePreference TextColumnCount="4"/>
+    </ObjectStyle>
+    <ObjectStyle Self="ObjectStyle/RoundKid" Name="RoundKid">
+      <Properties><BasedOn type="object">ObjectStyle/Round</BasedOn></Properties>
+    </ObjectStyle>
+    <ObjectStyle Self="ObjectStyle/FramedKid" Name="FramedKid">
+      <Properties><BasedOn type="object">ObjectStyle/Framed</BasedOn></Properties>
+    </ObjectStyle>
+    <ObjectStyle Self="ObjectStyle/OffKid" Name="OffKid">
+      <Properties><BasedOn type="object">ObjectStyle/Off</BasedOn></Properties>
+    </ObjectStyle>
+    <ObjectStyle Self="ObjectStyle/Bare" Name="Bare">
+      <Properties><BasedOn type="string">$ID/[None]</BasedOn></Properties>
+    </ObjectStyle>"#;
+    let d = fixture(&format!("{ROUND}{styles}"), &[]);
+    let style = |n: &str| d.styles.object_style(n).cloned().unwrap();
+    let c = style("RoundKid").corners.expect("RoundKid inherits Round's corners").corners;
+    assert_eq!((c.map(|c| c.shape), c.map(|c| c.size)), ([CornerShape::Rounded; 4], [17.0; 4]));
+    assert_eq!(style("FramedKid").text_frame.map(|t| t.columns), Some(3), "FramedKid inherits Framed's text frame options");
+    for n in ["OffKid", "Bare"] {
+        assert!(style(n).corners.is_none() && style(n).text_frame.is_none(), "{n}: {:?}", style(n));
+    }
+    assert!(style(designcraft_doc::NO_OBJECT_STYLE).corners.is_some(), "[None] keeps the corners it sets itself");
+}
+
+/// An object style giving its corners only with the legacy all-corners `CornerOption` and
+/// `CornerRadius` keeps them, so applying it to another frame rounds it.
+#[test]
+fn a_style_with_legacy_all_corner_attributes_keeps_its_corners() {
+    let legacy = r#"<ObjectStyle Self="ObjectStyle/Legacy" Name="Legacy" CornerOption="RoundedCorner" CornerRadius="9">
+      <Properties><BasedOn type="string">$ID/[None]</BasedOn></Properties>
+    </ObjectStyle>"#;
+    let d = fixture(legacy, &[]);
+    let style = d.styles.object.iter().find(|s| s.name == "Legacy").unwrap();
+    let c = style.corners.expect("the legacy corners").corners;
+    assert!(c.iter().all(|c| c.shape == CornerShape::Rounded && c.size == 9.0), "{c:?}");
 }
