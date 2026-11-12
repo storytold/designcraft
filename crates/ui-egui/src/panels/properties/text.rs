@@ -599,7 +599,9 @@ fn text_frame_insets(app: &mut DesignApp, ui: &mut Ui, fid: designcraft_doc::Ite
         if let Some(v) = place(ui, sub(b, 20.0, 0.0, 76.0, FIELD_H), |ui| {
             NumField::measure("tfInset", Some(inset[0]), u).width(76.0).spinner().range(0.0, 15552.0).show(ui)
         }) {
-            let _ = app.run("object.textFrameOptions", json!({"inset": v}));
+            // The top inset is the one kept from the outline; the other sides stay, so a
+            // rectangular frame that holds part of the same selected text keeps them too.
+            let _ = app.run("object.textFrameOptions", json!({"inset": [v, null, null, null]}));
         }
         return;
     }

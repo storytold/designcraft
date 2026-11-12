@@ -1383,7 +1383,7 @@ fn properties_text_frame_shows_while_typing_and_changes_the_caret_frame() {
 }
 
 /// A non-rectangular text frame shows one Inset, which sets the distance its text keeps from
-/// the outline.
+/// the outline (its top inset; the other sides stay).
 #[test]
 fn properties_text_frame_shows_one_inset_for_an_oval() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
@@ -1395,8 +1395,10 @@ fn properties_text_frame_shows_one_inset_for_an_oval() {
     let mut h = panel(app);
     let f = text_frame_fields(&h);
     assert_eq!(f.len(), 3, "columns, gutter and one inset: {f:?}");
+    h.state_mut().run("object.textFrameOptions", json!({"ids": [id], "inset": [1, 2, 3, 4]})).unwrap();
+    h.run_steps(2);
     type_in_field(&mut h, f[2], "8pt");
-    assert_eq!(frame_options(h.state(), id).inset, [8.0; 4]);
+    assert_eq!(frame_options(h.state(), id).inset, [8.0, 2.0, 3.0, 4.0]);
 }
 
 /// Type on a path sets one line along the path: Properties › Text Frame shows no insets and no
