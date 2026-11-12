@@ -104,7 +104,7 @@ impl Dialog {
             None => String::new(),
         }
     }
-    fn m(&self, k: &str) -> Option<f64> {
+    pub(crate) fn m(&self, k: &str) -> Option<f64> {
         self.m_in(k, self.unit)
     }
     /// A measure where a bare number is in `unit`.
@@ -1166,47 +1166,11 @@ fn seed_text_frame_options(app: &DesignApp, d: &mut Dialog) {
     }
     let o = selected_frame_options(app).unwrap_or_default();
     let units = app.session.active().map(|s| s.doc.settings.horizontal_units).unwrap_or(Unit::Picas);
-    let fm = |v: f64| json!(format_measure(v, units));
-    // Fixed Number: the width each column gets in the frame (shown, as in InDesign).
-    let inner = selected_frame_width(app).map(|w| w - o.inset[1] - o.inset[3]).unwrap_or(0.0);
-    let n = o.columns.max(1) as f64;
-    let width = match o.columns_kind {
-        designcraft_doc::ColumnsKind::FixedWidth if o.column_width > 0.0 => o.column_width,
-        _ => ((inner - o.gutter * (n - 1.0)) / n).max(0.0),
-    };
-    let kind = |v: Value| v.as_str().unwrap_or_default().to_string();
-    // A frame without a custom baseline grid shows the document grid's start and increment.
-    let grid = o.baseline_grid.unwrap_or_else(|| {
-        let g = app.session.active().map(|s| s.doc.settings.baseline_grid.clone()).unwrap_or_default();
-        let relative_to = match g.relative_to {
-            designcraft_doc::GridRelative::TopOfPage => designcraft_doc::FrameGridRelative::TopOfPage,
-            designcraft_doc::GridRelative::TopMargin => designcraft_doc::FrameGridRelative::TopMargin,
-        };
-        designcraft_doc::FrameBaselineGrid { start: g.start, increment: g.increment, relative_to }
-    });
-    let mut shown = json!({
-        "columns": o.columns, "gutter": fm(o.gutter),
-        "columnsKind": kind(serde_json::to_value(o.columns_kind).unwrap_or_default()), "columnWidth": fm(width),
-        "balanceColumns": o.balance_columns, "ignoreWrap": o.ignore_wrap,
-        "firstBaseline": kind(serde_json::to_value(o.first_baseline).unwrap_or_default()), "firstBaselineMin": fm(o.first_baseline_min),
-        "insetTop": fm(o.inset[0]), "insetLeft": fm(o.inset[1]), "insetBottom": fm(o.inset[2]), "insetRight": fm(o.inset[3]),
-        "verticalJustification": serde_json::to_value(o.vertical_justification).unwrap_or(Value::Null),
-        "paragraphSpacingLimit": fm(o.vj_paragraph_spacing_limit),
-        "columnRule": o.column_rule, "columnRuleWeight": format_measure(o.column_rule_weight, Unit::Points), "columnRuleColor": o.column_rule_color,
-        "columnRuleTint": percent(o.column_rule_tint), "columnRuleTopInset": fm(o.column_rule_top_inset),
-        "columnRuleBottomInset": fm(o.column_rule_bottom_inset), "columnRuleOffset": fm(o.column_rule_offset),
-        "autoSize": serde_json::to_value(o.auto_size).unwrap_or(Value::Null),
-        "autoSizeReference": designcraft_engine::autosize::REFERENCES.get(usize::from(o.auto_size_ref)).copied().unwrap_or("topCenter"),
-        "useMinimumHeight": o.auto_size_use_min_height, "minimumHeight": fm(o.auto_size_min_height),
-        "useMinimumWidth": o.auto_size_use_min_width, "minimumWidth": fm(o.auto_size_min_width),
-        "noLineBreaks": o.auto_size_no_line_breaks,
-        "customGrid": o.baseline_grid.is_some(), "gridStart": fm(grid.start), "gridIncrement": fm(grid.increment),
-        "gridRelativeTo": grid.relative_to.name(),
-    });
+    let mut shown = text_frame_fields(&o, units, selected_frame_width(app), &document_grid(app));
     // A non-rectangular frame shows one Inset (its top inset, the one kept from the outline).
     let shaped = selected_frame_is_shaped(app);
     if shaped && let Value::Object(m) = &mut shown {
-        m.insert("inset".into(), fm(o.inset[0]));
+        m.insert("inset".into(), json!(format_measure(o.inset[0], units)));
     }
     d.fields.insert("_shaped".into(), json!(shaped));
     if let Value::Object(m) = &shown {
@@ -1231,6 +1195,59 @@ fn seed_text_frame_options(app: &DesignApp, d: &mut Dialog) {
         d.fields.insert("_targetsRevision".into(), json!(app.session.active().map(base_revision)));
     }
     d.fields.insert("_shown".into(), shown);
+}
+
+/// The active document's baseline grid (the default one without a document).
+pub(crate) fn document_grid(app: &DesignApp) -> designcraft_doc::BaselineGrid {
+    app.session.active().map(|s| s.doc.settings.baseline_grid.clone()).unwrap_or_default()
+}
+
+/// Text frame options `o` as the Text Frame Options dialog's fields, measures in `units`; with the
+/// frame's width, a Fixed Number column shows the width it gets. Without a custom baseline grid of
+/// its own, the frame shows `doc_grid`'s start and increment.
+pub(crate) fn text_frame_fields(
+    o: &designcraft_doc::TextFrameOptions,
+    units: Unit,
+    frame_width: Option<f64>,
+    doc_grid: &designcraft_doc::BaselineGrid,
+) -> Value {
+    let fm = |v: f64| json!(format_measure(v, units));
+    // Fixed Number: the width each column gets in the frame (shown, as in InDesign).
+    let inner = frame_width.map(|w| w - o.inset[1] - o.inset[3]).unwrap_or(0.0);
+    let n = o.columns.max(1) as f64;
+    let width = match o.columns_kind {
+        designcraft_doc::ColumnsKind::FixedWidth if o.column_width > 0.0 => o.column_width,
+        _ => ((inner - o.gutter * (n - 1.0)) / n).max(0.0),
+    };
+    let kind = |v: Value| v.as_str().unwrap_or_default().to_string();
+    // A frame without a custom baseline grid shows the document grid's start and increment.
+    let grid = o.baseline_grid.unwrap_or_else(|| {
+        let g = doc_grid;
+        let relative_to = match g.relative_to {
+            designcraft_doc::GridRelative::TopOfPage => designcraft_doc::FrameGridRelative::TopOfPage,
+            designcraft_doc::GridRelative::TopMargin => designcraft_doc::FrameGridRelative::TopMargin,
+        };
+        designcraft_doc::FrameBaselineGrid { start: g.start, increment: g.increment, relative_to }
+    });
+    json!({
+        "columns": o.columns, "gutter": fm(o.gutter),
+        "columnsKind": kind(serde_json::to_value(o.columns_kind).unwrap_or_default()), "columnWidth": fm(width),
+        "balanceColumns": o.balance_columns, "ignoreWrap": o.ignore_wrap,
+        "firstBaseline": kind(serde_json::to_value(o.first_baseline).unwrap_or_default()), "firstBaselineMin": fm(o.first_baseline_min),
+        "insetTop": fm(o.inset[0]), "insetLeft": fm(o.inset[1]), "insetBottom": fm(o.inset[2]), "insetRight": fm(o.inset[3]),
+        "verticalJustification": serde_json::to_value(o.vertical_justification).unwrap_or(Value::Null),
+        "paragraphSpacingLimit": fm(o.vj_paragraph_spacing_limit),
+        "columnRule": o.column_rule, "columnRuleWeight": format_measure(o.column_rule_weight, Unit::Points), "columnRuleColor": o.column_rule_color,
+        "columnRuleTint": percent(o.column_rule_tint), "columnRuleTopInset": fm(o.column_rule_top_inset),
+        "columnRuleBottomInset": fm(o.column_rule_bottom_inset), "columnRuleOffset": fm(o.column_rule_offset),
+        "autoSize": serde_json::to_value(o.auto_size).unwrap_or(Value::Null),
+        "autoSizeReference": designcraft_engine::autosize::REFERENCES.get(usize::from(o.auto_size_ref)).copied().unwrap_or("topCenter"),
+        "useMinimumHeight": o.auto_size_use_min_height, "minimumHeight": fm(o.auto_size_min_height),
+        "useMinimumWidth": o.auto_size_use_min_width, "minimumWidth": fm(o.auto_size_min_width),
+        "noLineBreaks": o.auto_size_no_line_breaks,
+        "customGrid": o.baseline_grid.is_some(), "gridStart": fm(grid.start), "gridIncrement": fm(grid.increment),
+        "gridRelativeTo": grid.relative_to.name(),
+    })
 }
 
 /// The document's revision without a preview on top: the one the open gesture began at.
@@ -1415,7 +1432,7 @@ fn end_text_frame_preview(app: &mut DesignApp, d: &mut Dialog) {
 /// maximum, Balance Columns), Inset Spacing (top and bottom, the link, left and right; one Inset
 /// for a non-rectangular frame), Vertical Justification (align, paragraph spacing limit) and
 /// Ignore Text Wrap.
-fn general(lang: &str, ui: &mut egui::Ui, d: &mut Dialog) {
+pub(crate) fn general(lang: &str, ui: &mut egui::Ui, d: &mut Dialog) {
     let tr = |s: &'static str| crate::i18n::tr(lang, s);
     let (cap, field, cap2) = (64.0, 110.0, 70.0);
     framed(ui, None, |ui| {
@@ -3279,6 +3296,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         crate::export_batch_dialog::ID => crate::i18n::tr(&app.ui.language, "Export Layouts and Versions"),
         crate::package_dialog::ID => crate::i18n::tr(&app.ui.language, "Package"),
         crate::package_dialog::INSTRUCTIONS => crate::i18n::tr(&app.ui.language, "Printing Instructions"),
+        crate::object_style_dialog::ID => crate::i18n::tr(&app.ui.language, crate::object_style_dialog::title(&d)),
         id => match id.strip_prefix("cmd:").and_then(designcraft_engine::find_command) {
             Some(c) => crate::i18n::tr(&app.ui.language, c.label.trim_end_matches('…')),
             None => crate::i18n::tr(&app.ui.language, "Dialog"),
@@ -3304,6 +3322,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
             "colorPicker" => 580.0,
             crate::package_dialog::ID => 720.0,
             crate::package_dialog::INSTRUCTIONS => 520.0,
+            crate::object_style_dialog::ID => 760.0,
             _ => 640.0,
         };
         let width = preferred_width.min(available.x);
@@ -3650,6 +3669,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                     crate::export_batch_dialog::ID => crate::export_batch_dialog::show(app, ui, &mut d),
                     crate::package_dialog::ID => crate::package_dialog::show(app, ui, &mut d),
                     crate::package_dialog::INSTRUCTIONS => crate::package_dialog::show_instructions(app, ui, &mut d),
+                    crate::object_style_dialog::ID => crate::object_style_dialog::show(app, ui, &mut d),
                     "preferences" => preferences(app, ui, &mut d, body_height),
                     "print" => print_dialog(app, ui, &mut d),
                     "pdfImport" => {
@@ -5434,6 +5454,16 @@ fn confirm_part6(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
                 && app.ui.dialog.is_none()
             {
                 app.status(e.clone());
+                app.ui.dialog = Some(d);
+            }
+            r
+        }
+        crate::object_style_dialog::ID => {
+            let r = crate::object_style_dialog::confirm(app, &d);
+            if let Err(e) = &r {
+                // Keep the dialog and its edits open with the reason (an empty or taken name).
+                let mut d = d.clone();
+                d.fields.insert("status".into(), json!(e));
                 app.ui.dialog = Some(d);
             }
             r
