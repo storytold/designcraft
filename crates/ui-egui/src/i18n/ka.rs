@@ -1254,6 +1254,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("In justified Arabic text", "ორმხრივად სწორებულ არაბულ ტექსტში"),
     ("Korean Line Breaks:", "კორეული სტრიქონების წყვეტა:"),
     ("Between syllables (not only at spaces)", "მარცვლებს შორის (არა მხოლოდ ჰარებთან)"),
+    ("Auto Leading:", "ავტომატური სტრიქონთაშორისი:"),
+    ("Single Word Justification:", "ერთი სიტყვის სწორება:"),
     ("Binding:", "აკინძვა:"),
     ("Ruby:", "რუბი:"),
     ("Set over the selected text; empty removes it.", "დაისმება მონიშნული ტექსტის თავზე; ცარიელი წაშლის მას."),

@@ -7689,7 +7689,7 @@ fn shown_rule(d: &Dialog, prefix: &str, which: &str, current: &Value) -> Value {
 }
 
 /// The paragraph attributes of the Justification controls.
-pub const JUSTIFY_ATTRS: [&str; 12] = [
+pub const JUSTIFY_ATTRS: [&str; 14] = [
     "wordSpaceMin",
     "wordSpaceDesired",
     "wordSpaceMax",
@@ -7699,6 +7699,8 @@ pub const JUSTIFY_ATTRS: [&str; 12] = [
     "glyphScaleMin",
     "glyphScaleDesired",
     "glyphScaleMax",
+    "autoLeading",
+    "singleWordJustify",
     "composer",
     "kashidas",
     "koreanCharBreaks",
@@ -7711,9 +7713,29 @@ const JUSTIFY_ROWS: [(&str, &str, (f64, f64)); 3] = [
     ("Glyph Scaling", "glyphScale", (50.0, 200.0)),
 ];
 
+/// The allowed Auto Leading, in percent of the type size.
+const AUTO_LEADING_RANGE: (f64, f64) = (0.0, 500.0);
+
+/// The Single Word Justification choices: (attribute value, label).
+const SINGLE_WORD_CHOICES: [(&str, &str); 4] =
+    [("left", "Align Left"), ("center", "Align Center"), ("right", "Align Right"), ("fullyJustified", "Full Justify")];
+
 /// Checks the edited spacing values: each within its range, and minimum ≤ desired ≤ maximum
-/// (values left mixed are not compared).
+/// (values left mixed are not compared); an edited Auto Leading within its range, and an edited
+/// Single Word Justification one of its choices.
 fn check_justification(d: &Dialog, prefix: &str, current: &Value) -> Result<(), String> {
+    if let Some(v) = d.fields.get(&format!("{prefix}autoLeading")) {
+        let (lo, hi) = AUTO_LEADING_RANGE;
+        let pct = v.as_f64().map(|x| x * 100.0).filter(|x| x.is_finite()).ok_or("Justification: Auto Leading is not a number")?;
+        if !(lo..=hi).contains(&pct) {
+            return Err(format!("Justification: Auto Leading must be between {lo}% and {hi}%"));
+        }
+    }
+    if let Some(v) = d.fields.get(&format!("{prefix}singleWordJustify"))
+        && !SINGLE_WORD_CHOICES.iter().any(|(k, _)| v.as_str() == Some(k))
+    {
+        return Err(format!("Justification: Single Word Justification cannot be {v}"));
+    }
     for (label, stem, (lo, hi)) in JUSTIFY_ROWS {
         let mut edited = false;
         let mut known = Vec::new();
@@ -7916,6 +7938,29 @@ fn justification(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, prefix: &str, cu
             }
             ui.end_row();
         }
+        crate::rtl::label(ui, crate::i18n::tr(lang, "Auto Leading:"));
+        let auto = cur(d, "autoLeading").as_f64().map(|x| x * 100.0);
+        if let Some(n) = ui.scope(|ui| crate::widgets::number(ui, &format!("ps{prefix}autoLeading"), auto, "%", 60.0, 0)).inner {
+            d.fields.insert(format!("{prefix}autoLeading"), json!(n / 100.0));
+        }
+        ui.end_row();
+        let single_label = crate::rtl::label(ui, crate::i18n::tr(lang, "Single Word Justification:"));
+        let single = cur(d, "singleWordJustify");
+        // Mixed (null) shows blank until a choice is made.
+        let shown = SINGLE_WORD_CHOICES.iter().find(|(k, _)| single.as_str() == Some(k)).map_or("", |(_, label)| label);
+        craft_ui::ComboBox::from_id_salt(("singleWordJustify", prefix))
+            .selected_text(crate::rtl::widget(ui, crate::i18n::tr(lang, shown)))
+            .width(130.0)
+            .show_ui(ui, |ui| {
+                for (v, label) in SINGLE_WORD_CHOICES {
+                    if ui.selectable_label(single.as_str() == Some(v), crate::rtl::widget(ui, crate::i18n::tr(lang, label))).clicked() {
+                        d.fields.insert(format!("{prefix}singleWordJustify"), json!(v));
+                    }
+                }
+            })
+            .response
+            .labelled_by(single_label.id);
+        ui.end_row();
         crate::rtl::label(ui, crate::i18n::tr(lang, "Composer:"));
         let composer = cur(d, "composer");
         // Mixed (null) selects neither; a Japanese composer keeps its kind.

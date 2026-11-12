@@ -1155,6 +1155,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("In justified Arabic text", "Im arabischen Blocksatz"),
     ("Korean Line Breaks:", "Koreanische Zeilenumbrüche:"),
     ("Between syllables (not only at spaces)", "Zwischen Silben (nicht nur an Leerzeichen)"),
+    ("Auto Leading:", "Automatischer Zeilenabstand:"),
+    ("Single Word Justification:", "Ausrichtung einzelner Wörter:"),
     ("Binding:", "Bindung:"),
     ("Ruby:", "Ruby:"),
     ("Set over the selected text; empty removes it.", "Wird über den ausgewählten Text gesetzt; leer entfernt es."),
