@@ -273,6 +273,9 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let hair = 1.0 / ui.ctx().pixels_per_point();
     for slot in &layout.slots {
         painter.rect_stroke(xf.rect(slot.bounds), 0.0, Stroke::new(hair, page_decor::PAGE_EDGE), StrokeKind::Outside);
+        if let Some(spread) = doc.spread(slot.spread) {
+            page_decor::draw_spine(&painter, &xf, slot, spread);
+        }
     }
     if !preview {
         let drag = ui.data(|d| d.get_temp::<GuideDrag>(egui::Id::unique(GUIDE_DRAG)));

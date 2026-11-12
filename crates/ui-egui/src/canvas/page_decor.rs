@@ -56,7 +56,6 @@ pub(super) fn draw_guides(
         let Some(sp) = doc.spread(slot.spread) else { continue };
         if app.ui.guides {
             draw_bleed_and_slug(painter, xf, doc, slot, sp);
-            draw_spine(painter, xf, slot, sp);
         }
         let pasteboard = slot.xf.inverse().transform_rect_bbox(layout.pasteboard);
         for (pi, p) in sp.pages.iter().enumerate() {
@@ -88,8 +87,8 @@ fn draw_bleed_and_slug(painter: &egui::Painter, xf: &Xf, doc: &Document, slot: &
 
 /// The spine: a hairline at each edge where two pages of a spread meet
 /// ([`designcraft_doc::Spread::page_seams`]), in the spread edge's colour ([`PAGE_EDGE`]). Screen
-/// only, like the other guides; the paper is one rectangle and exports never show a seam.
-fn draw_spine(painter: &egui::Painter, xf: &Xf, slot: &SpreadSlot, sp: &designcraft_doc::Spread) {
+/// only; the paper is one rectangle and exports never show a seam.
+pub(super) fn draw_spine(painter: &egui::Painter, xf: &Xf, slot: &SpreadSlot, sp: &designcraft_doc::Spread) {
     let pt = |p: Point| xf.to_screen(slot.xf * p);
     for (x, y0, y1) in sp.page_seams() {
         painter.line_segment([pt(Point::new(x, y0)), pt(Point::new(x, y1))], Stroke::new(hair(painter), PAGE_EDGE));

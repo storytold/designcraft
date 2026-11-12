@@ -152,18 +152,18 @@ fn the_spine_sits_where_the_pages_of_a_right_to_left_spread_meet() {
 }
 
 #[test]
-fn the_spine_line_hides_with_the_other_guides() {
-    for (guides, mode) in [(false, ScreenMode::Normal), (true, ScreenMode::Preview), (true, ScreenMode::Presentation)] {
+fn the_spine_line_remains_visible_in_preview_modes() {
+    for mode in [ScreenMode::Preview, ScreenMode::Presentation] {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-        app.run("file.new", serde_json::json!({"pages": 3, "facingPages": true})).unwrap();
-        app.ui.guides = guides;
+        app.run("file.new", serde_json::json!({"pages": 4, "facingPages": true})).unwrap();
+        canvas_shapes(&mut app);
+        app.run("view.goToPage", serde_json::json!({"page": 2})).unwrap();
+        app.ui.guides = true;
         app.ui.screen_mode = mode;
         let shapes = canvas_shapes(&mut app);
-        let st = app.session.active().unwrap();
-        let layout = CanvasLayout::new(&st.doc, false);
-        let xf = Xf::new(app.canvas_rect.unwrap(), app.view().unwrap());
-        let left = xf.rect(layout.page_rect(&st.doc, 1).unwrap());
-        assert_eq!(vertical_lines_at(&shapes, left.max.x, left), 0, "guides={guides} mode={mode:?}");
+        let spine_lines =
+            shapes.iter().filter(|c| matches!(&c.shape, egui::Shape::LineSegment { stroke, .. } if stroke.color == page_decor::PAGE_EDGE)).count();
+        assert_eq!(spine_lines, 1, "mode={mode:?}");
     }
 }
 
