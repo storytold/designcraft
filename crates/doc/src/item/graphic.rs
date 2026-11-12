@@ -277,9 +277,20 @@ pub fn media_kind(mime: &str) -> Option<&'static str> {
     }
 }
 
-/// MIME type of a media file by its extension.
+/// Extensions of the graphic files Place offers (images, PDF, SVG, Illustrator and EPS). Video and
+/// sound go by [`media_mime`].
+pub const GRAPHIC_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "bmp", "psd", "svg", "pdf", "ai", "eps"];
+
+/// Whether a file name ends in the extension of a graphic, video or sound file DesignCraft places
+/// ([`GRAPHIC_EXTENSIONS`], [`media_mime`]): a name with trailing dots or spaces doesn't.
+pub fn placeable_graphic_name(name: &str) -> bool {
+    let ext = name.rsplit_once('.').map_or("", |(_, e)| e).to_ascii_lowercase();
+    GRAPHIC_EXTENSIONS.contains(&ext.as_str()) || media_mime(name).is_some()
+}
+
+/// MIME type of a media file by its extension. A name without a dot has no extension.
 pub fn media_mime(name: &str) -> Option<&'static str> {
-    let ext = name.rsplit('.').next()?.to_ascii_lowercase();
+    let ext = name.rsplit_once('.')?.1.to_ascii_lowercase();
     Some(match ext.as_str() {
         "mp4" | "m4v" => "video/mp4",
         "mov" => "video/quicktime",
@@ -292,6 +303,22 @@ pub fn media_mime(name: &str) -> Option<&'static str> {
         "aac" => "audio/aac",
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod name_tests {
+    use super::*;
+
+    #[test]
+    fn a_name_without_an_extension_is_not_placeable() {
+        for bare in ["mp3", "MOV", "png", "wav"] {
+            assert!(media_mime(bare).is_none(), "{bare}");
+            assert!(!placeable_graphic_name(bare), "{bare}");
+        }
+        assert_eq!(media_mime("clip.MOV"), Some("video/quicktime"));
+        assert!(placeable_graphic_name("song.mp3"));
+        assert!(placeable_graphic_name("photo.png"));
+    }
 }
 
 /// A button's On Release action.

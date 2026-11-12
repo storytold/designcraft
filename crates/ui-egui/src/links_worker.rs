@@ -5,6 +5,9 @@
 //! panel's rows therefore come from the document alone, on the UI thread, and their statuses
 //! from a check on a worker thread: the statuses last found stay until newer ones arrive, so an
 //! unavailable share can't stop the application from repainting or accepting input.
+//!
+//! The canvas's link badges ([`crate::link_watch`]) take their statuses from the same checks, so
+//! a document's files are asked once whether the panel is shown or not.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -217,6 +220,8 @@ struct Checked {
     /// As in [`Done`]: `key` names this document only while its allocation is kept.
     _pin: Weak<Document>,
     rows: Vec<Value>,
+    /// When it started and ended, on the worker's clock.
+    started: Instant,
     finished: Instant,
     /// When its files are asked again.
     due: Instant,
@@ -262,12 +267,53 @@ pub(crate) struct State {
     shown: Option<(Option<Instant>, Arc<Vec<Value>>)>,
     live: Arc<AtomicUsize>,
     pool: Pool,
+    /// A document whose files must be asked again by a check that starts after the given time,
+    /// whatever the last one found ([`State::recheck`]).
+    recheck: Option<(u64, Instant)>,
     #[cfg(test)]
     hooks: Option<Hooks>,
+    /// Check on the calling thread, without a worker (tests that drive the link watch).
+    #[cfg(test)]
+    pub(crate) inline: bool,
+}
+
+/// The latest check of a document, as [`State::latest`] gives it.
+pub(crate) struct Latest<'a> {
+    /// The state of the document it checked.
+    pub(crate) key: Key,
+    /// When it started and when it ended.
+    pub(crate) started: Instant,
+    pub(crate) finished: Instant,
+    /// Its rows, each with the status found (`links.list`).
+    pub(crate) rows: &'a [Value],
 }
 
 impl State {
     pub(crate) fn rows(&mut self, ctx: &egui::Context, snapshot: Snapshot) -> Rows {
+        let (verified, unavailable) = self.refresh(ctx, &snapshot);
+        let values = self.shown(&snapshot);
+        Rows { values, unavailable, verified }
+    }
+
+    /// The latest check of document `uid`, of whatever state of it.
+    pub(crate) fn latest(&self, uid: u64) -> Option<Latest<'_>> {
+        self.checked.get(&uid).map(|c| Latest { key: c.key, started: c.started, finished: c.finished, rows: &c.rows })
+    }
+
+    /// Ask document `uid`'s files again now (the window is back in front: another application
+    /// may have saved them), by a check that starts from now on.
+    pub(crate) fn recheck(&mut self, uid: u64) {
+        self.recheck = Some((uid, Instant::now()));
+    }
+
+    /// Take in a finished check and start the next one when it is due, without building the rows
+    /// to draw: what [`State::rows`] does first, and all the link watch needs. → the files found
+    /// unchanged (see [`Rows::verified`]), and whether no check can run for now.
+    pub(crate) fn refresh(&mut self, ctx: &egui::Context, snapshot: &Snapshot) -> (Vec<(AssetId, Fingerprint)>, bool) {
+        #[cfg(test)]
+        if self.inline {
+            return (self.refresh_inline(snapshot), false);
+        }
         let key = snapshot.key;
         let mut verified = Vec::new();
         match self.worker.as_ref().map(Worker::poll) {
@@ -286,6 +332,7 @@ impl State {
                         key: done.key,
                         _pin: done.pin,
                         rows,
+                        started: done.finished.checked_sub(done.took).unwrap_or(done.finished),
                         finished: done.finished,
                         due: done.finished + refresh_after(done.took),
                     });
@@ -326,7 +373,7 @@ impl State {
             }
         }
 
-        let due = self.checked.get(&key.uid).is_none_or(|checked| checked.key != key || Instant::now() >= checked.due);
+        let due = self.due(key);
         if due && self.in_flight.is_none() && self.retry_at.is_none() {
             self.next_token = self.next_token.wrapping_add(1);
             let (token, stop) = (self.next_token, Arc::new(AtomicBool::new(false)));
@@ -338,7 +385,6 @@ impl State {
             }
         }
 
-        let values = self.shown(&snapshot);
         if let Some(at) = self.retry_at {
             // Nothing else wakes the panel for the next try.
             ctx.request_repaint_after(at.saturating_duration_since(Instant::now()));
@@ -347,7 +393,51 @@ impl State {
         {
             ctx.request_repaint_after(checked.due.saturating_duration_since(Instant::now()));
         }
-        Rows { values, unavailable: self.retry_at.is_some(), verified }
+        (verified, self.retry_at.is_some())
+    }
+
+    /// Whether the document shown as `key` needs a check: none yet of this state of it, the last
+    /// one's time is up, or it started before a [`State::recheck`].
+    fn due(&self, key: Key) -> bool {
+        let asked_again = |checked: &Checked| self.recheck.is_some_and(|(uid, at)| uid == key.uid && checked.started < at);
+        self.checked.get(&key.uid).is_none_or(|checked| checked.key != key || Instant::now() >= checked.due || asked_again(checked))
+    }
+
+    /// [`State::refresh`] with the check run here, when one is due.
+    #[cfg(test)]
+    fn refresh_inline(&mut self, snapshot: &Snapshot) -> Vec<(AssetId, Fingerprint)> {
+        if !self.due(snapshot.key) {
+            return Vec::new();
+        }
+        let started = Instant::now();
+        let mut checks = std::mem::take(&mut *self.pool.lock().unwrap_or_else(PoisonError::into_inner));
+        let rows = designcraft_engine::cmd::list_document_links(
+            &snapshot.doc,
+            &snapshot.cache,
+            snapshot.document.as_deref(),
+            &mut checks,
+            &AtomicBool::new(false),
+        );
+        let verified = checks.take_verified();
+        self.pool.lock().unwrap_or_else(PoisonError::into_inner).absorb(checks);
+        let finished = Instant::now();
+        self.keep(Checked {
+            key: snapshot.key,
+            _pin: Arc::downgrade(&snapshot.doc),
+            rows: rows.unwrap_or_default(),
+            started,
+            finished,
+            due: finished + REFRESH_MIN,
+        });
+        verified
+    }
+
+    /// Make the latest check of document `uid` due now, as if its time were up (tests).
+    #[cfg(test)]
+    pub(crate) fn expire(&mut self, uid: u64) {
+        if let Some(checked) = self.checked.get_mut(&uid) {
+            checked.due = Instant::now();
+        }
     }
 
     fn spawn(&self, ctx: &egui::Context) -> Option<Worker> {

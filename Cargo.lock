@@ -1634,6 +1634,7 @@ dependencies = [
  "egui_extras",
  "egui_kittest",
  "log",
+ "quick-xml 0.41.0",
  "raw-window-handle",
  "serde",
  "serde_json",

@@ -290,6 +290,46 @@ fn hand_pan(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, xf: &
     false
 }
 
+/// A press on a link badge is the badge's, not the tool's: no selection, no drag. Its release on
+/// the same badge updates or relinks the graphic. Whether the badge took this pass. `screen`: the
+/// painted canvas, where badges show (not the rulers). `busy`: a tool or guide gesture, the Hand
+/// or a menu has the pointer, so a badge can't take a new press.
+fn badge_press(
+    app: &mut DesignApp,
+    ui: &egui::Ui,
+    resp: &egui::Response,
+    xf: &Xf,
+    screen: Rect,
+    (pressed, released, origin, latest): (bool, bool, Option<Pos2>, Option<Pos2>),
+    busy: bool,
+) -> bool {
+    let id = egui::Id::unique(("canvas_badge_press", app.pane));
+    let held: Option<crate::canvas::link_badges::Badge> = ui.data(|d| d.get_temp(id));
+    // A guide drag under way keeps the pointer.
+    let busy = busy || ui.data(|d| d.get_temp::<super::guides::GuideDrag>(egui::Id::unique(super::guides::GUIDE_DRAG))).is_some();
+    let at = |p: Pos2| crate::canvas::link_badges::badge_at(app, xf, screen, p).filter(|_| screen.contains(p));
+    let mut held = held.or_else(|| {
+        let o = origin.filter(|_| pressed && !busy && resp.hovered())?;
+        at(o)
+    });
+    let Some(b) = held.take() else { return false };
+    if released || !ui.input(|i| i.pointer.primary_down()) {
+        ui.data_mut(|d| d.remove::<crate::canvas::link_badges::Badge>(id));
+        let on_it = latest.is_some_and(|p| at(p).is_some_and(|now| now.asset == b.asset));
+        if released && on_it {
+            crate::canvas::link_badges::activate(app, b);
+        }
+    } else {
+        ui.data_mut(|d| d.insert_temp(id, b));
+    }
+    true
+}
+
+/// The painted canvas, in screen points: the rulers are outside it.
+fn painted(xf: &Xf, rect: Rect, resp: &egui::Response) -> Rect {
+    if xf.rot == 0 { rect } else { resp.rect }
+}
+
 /// A release ends the press run's last click; remembers where and when for the next press.
 fn note_release(ui: &egui::Ui, clicks_id: egui::Id, latest: Option<Pos2>, now: f64) {
     if let Some(c) = ui.data(|d| d.get_temp::<Clicks>(clicks_id)) {
@@ -322,23 +362,28 @@ pub(super) fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::
     if hand_pan(app, ui, resp, &xf, space, wants_text, menu_open) {
         return;
     }
-    if ruler_drags(app, ui, resp, rect, &xf, space, menu_open) {
+    let down_id = egui::Id::unique(("canvas_pointer_down", app.pane));
+    let mut down: bool = ui.data(|d| d.get_temp(down_id)).unwrap_or(false);
+    let (pressed, released, origin, latest, now) =
+        ui.input(|i| (i.pointer.primary_pressed(), i.pointer.primary_released(), i.pointer.press_origin(), i.pointer.latest_pos(), i.time));
+    // A complete click can arrive in one pass: release clears egui's held origin.
+    // Recover the actual primary press position, preserving the origin for held gestures.
+    let origin = origin.or_else(|| recent_primary_press(ui));
+    let view = painted(&xf, rect, resp);
+    // A press on a link badge isn't the tool's (the keyboard below still is), nor a guide's: a
+    // badge drawn over a guide takes a new press.
+    let badge = badge_press(app, ui, resp, &xf, view, (pressed, released, origin, latest), space || menu_open || down);
+    if !badge && ruler_drags(app, ui, resp, rect, &xf, space, menu_open) {
         return;
     }
     let m = ui.input(|i| mods(i, space));
     let vi = app.view_info();
     let pos = |p: Pos2| xf.to_canvas(p);
     let mut events: Vec<PointerEvent> = Vec::new();
-    let down_id = egui::Id::unique(("canvas_pointer_down", app.pane));
-    let mut down: bool = ui.data(|d| d.get_temp(down_id)).unwrap_or(false);
     let clicks_id = egui::Id::unique(("canvas_clicks", app.pane));
-    let (pressed, released, origin, latest, now) =
-        ui.input(|i| (i.pointer.primary_pressed(), i.pointer.primary_released(), i.pointer.press_origin(), i.pointer.latest_pos(), i.time));
-    // A complete click can arrive in one pass: release clears egui's held origin.
-    // Recover the actual primary press position, preserving the origin for held gestures.
-    let origin = origin.or_else(|| recent_primary_press(ui));
-    let in_view = |o: Pos2| if xf.rot == 0 { rect.contains(o) } else { resp.rect.contains(o) };
+    let in_view = |o: Pos2| view.contains(o);
     if pressed
+        && !badge
         && !space
         && !menu_open
         && let Some(o) = origin.filter(|o| in_view(*o) && resp.hovered())
@@ -373,7 +418,10 @@ pub(super) fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::
         let p = latest.unwrap_or(rect.center());
         events.push(PointerEvent { kind: PointerKind::Up, pos: pos(p), mods: m, clicks: 1 });
         down = false;
-    } else if !down && let Some(p) = resp.hover_pos() {
+    } else if !down
+        && !badge
+        && let Some(p) = resp.hover_pos()
+    {
         events.push(PointerEvent { kind: PointerKind::Move, pos: pos(p), mods: m, clicks: 1 });
     }
     ui.data_mut(|d| d.insert_temp(down_id, down));

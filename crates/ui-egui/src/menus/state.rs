@@ -190,6 +190,12 @@ pub fn menu_enabled(app: &DesignApp, id: &str) -> bool {
     if id == "view.goBack" || id == "view.goForward" {
         return crate::canvas::can_go_through_history(app, if id == "view.goBack" { -1 } else { 1 });
     }
+    if id == crate::edit_original::EDIT_ORIGINAL || id == crate::edit_original::EDIT_WITH {
+        return crate::edit_original::available(app);
+    }
+    if id == crate::reveal::REVEAL {
+        return crate::reveal::available(app);
+    }
     if ui_label(id).is_some() {
         return app.session.active().is_some() || id.starts_with("app.") || id.starts_with("window.") || id.starts_with("help.");
     }

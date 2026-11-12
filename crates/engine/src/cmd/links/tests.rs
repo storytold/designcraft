@@ -707,3 +707,94 @@ fn link_status_relink_update_embed() {
     assert_eq!(s.execute("links.list", &json!({})).unwrap()[0]["status"], "embedded");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `links.update {assets}` updates the graphics it names in one undo step, however many; a
+/// selector that isn't an id, or a list past [`MAX_NAMED`], is an error that updates nothing,
+/// never "update them all"; an empty list or unknown ids update nothing.
+#[test]
+fn update_by_assets_is_one_step_and_refuses_bad_selectors() {
+    let dir = tempfile::tempdir().unwrap();
+    let (a, b, c) = (dir.path().join("a.png"), dir.path().join("b.png"), dir.path().join("c.png"));
+    for (f, w) in [(&a, 4), (&b, 5), (&c, 6)] {
+        std::fs::write(f, png(w, 4)).unwrap();
+    }
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    let mut asset = |f: &std::path::Path| {
+        s.doc_mut().unwrap().selection = Default::default();
+        s.execute("file.place", &json!({"path": f.to_string_lossy()})).unwrap()["asset"].as_u64().unwrap()
+    };
+    let (aa, ab, ac) = (asset(&a), asset(&b), asset(&c));
+    for (f, w) in [(&a, 8), (&b, 9), (&c, 10)] {
+        std::fs::write(f, png(w, 4)).unwrap();
+    }
+    let pixels = |s: &Session, id: u64| s.doc().unwrap().doc.assets[&AssetId(id)].pixels;
+    let undo = |s: &Session| s.doc().unwrap().history.undo.len();
+    let before = undo(&s);
+    let too_many = json!({"assets": vec![aa; MAX_NAMED + 1]});
+    for bad in [
+        json!({"asset": "b"}),
+        json!({"asset": 1.5}),
+        json!({"story": -1}),
+        json!({"assets": 3}),
+        json!({"assets": ["x"]}),
+        json!({"assets": [-1]}),
+        json!({"assets": [1.5]}),
+        too_many,
+    ] {
+        assert!(s.execute("links.update", &bad).is_err(), "{bad}");
+    }
+    for nothing in [json!({"assets": []}), json!({"assets": [u64::MAX]})] {
+        assert_eq!(s.execute("links.update", &nothing).unwrap()["updated"], 0, "{nothing}");
+    }
+    assert_eq!((pixels(&s, aa), undo(&s)), (Some((4, 4)), before), "nothing was updated");
+    // Two of three, named twice: one step.
+    assert_eq!(s.execute("links.update", &json!({"assets": [aa, ab, aa]})).unwrap()["updated"], 2);
+    assert_eq!(undo(&s), before + 1, "one undo step");
+    assert_eq!((pixels(&s, aa), pixels(&s, ab), pixels(&s, ac)), (Some((8, 4)), Some((9, 4)), Some((6, 4))));
+}
+
+/// The same relative text link in two documents saved in different folders names two files: what
+/// was found about one isn't taken for the other, even at the same size and time (the checks a
+/// worker keeps are shared by every document it checks).
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn text_link_checks_are_kept_per_resolved_file() {
+    let root = tempfile::tempdir().unwrap();
+    let (one, two) = (root.path().join("one"), root.path().join("two"));
+    let when = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+    for (dir, words) in [(&one, "Words one"), (&two, "Words two")] {
+        std::fs::create_dir_all(dir).unwrap();
+        let file = dir.join("story.txt");
+        std::fs::write(&file, words).unwrap();
+        std::fs::File::options().write(true).open(&file).unwrap().set_modified(when).unwrap();
+    }
+    // Linked to folder one's text, with no time recorded so the contents are compared.
+    let l = TextFileLink { path: "story.txt".into(), size: 9, hash: fnv_hex(b"Words one"), ..Default::default() };
+    let mut checks = TextChecks::default();
+    assert_eq!(text_status(&l, &mut checks, Some(&one.join("doc.dcx"))), "ok");
+    assert_eq!(text_status(&l, &mut checks, Some(&two.join("doc.dcx"))), "modified", "folder two's file holds other words");
+    assert_eq!(text_status(&l, &mut checks, Some(&one.join("doc.dcx"))), "ok");
+}
+
+/// A FIFO or a device in place of a linked file is refused when it is opened, without waiting
+/// for a writer: a link check that looked at the file's metadata before it was swapped can't
+/// block on it.
+#[cfg(unix)]
+#[test]
+fn a_fifo_in_place_of_a_linked_file_is_refused_without_blocking() {
+    let dir = tempfile::tempdir().unwrap();
+    let fifo = dir.path().join("photo.png");
+    assert!(std::process::Command::new("mkfifo").arg(&fifo).status().unwrap().success());
+    let (tx, rx) = std::sync::mpsc::channel();
+    let at = fifo.clone();
+    std::thread::spawn(move || {
+        let _ = tx.send(crate::io::read_regular_capped(&at, 1024).map(|b| b.len()));
+    });
+    let read = rx.recv_timeout(std::time::Duration::from_secs(10)).expect("opening the FIFO blocked");
+    assert!(read.is_err(), "{read:?}");
+    assert!(crate::io::read_regular_capped("/dev/zero", 16).is_err());
+    let file = dir.path().join("real.png");
+    std::fs::write(&file, png(2, 2)).unwrap();
+    assert_eq!(crate::io::read_regular_capped(&file, 1 << 20).unwrap(), png(2, 2));
+}

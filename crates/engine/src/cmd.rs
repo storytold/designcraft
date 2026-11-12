@@ -33,7 +33,11 @@ mod layout;
 pub mod library;
 mod linked;
 mod links;
-pub use links::{LinkListChecks, list_document_links, preview_document_links, remember_link_files};
+/// Edit › Edit Original and Links › Reveal in Finder: the linked files of the selected graphics.
+pub use links::{
+    LinkListChecks, Original as LinkOriginal, Reveal as LinkReveal, can_edit_original, list_document_links, originals as link_originals,
+    preview_document_links, remember_link_files, reveal_target as link_reveal_target,
+};
 mod liquid;
 mod lists;
 mod load_styles;

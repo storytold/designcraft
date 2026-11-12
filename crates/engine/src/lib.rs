@@ -248,6 +248,10 @@ pub struct Prefs {
     /// Preferences › File Handling › Create Links When Placing Text Files: placed text files are
     /// linked (Links panel) unless `file.place` says otherwise.
     pub link_text_files: bool,
+    /// Preferences › File Handling › Update Modified Links When DesignCraft Comes Back to the
+    /// Front: the UI updates the modified graphics it finds when its window gains focus again.
+    /// Off by default, as in the reference app (its link badges show them instead).
+    pub auto_update_links: bool,
     /// File › Open Recent: documents opened or saved, most recent first.
     pub recent_files: Vec<String>,
     /// Preferences › File Handling › Number of Recent Items to Display (0 keeps no list).
@@ -380,6 +384,7 @@ impl Default for Prefs {
             show_note_anchors: true,
             recovery_minutes: 0.5,
             link_text_files: false,
+            auto_update_links: false,
             recent_files: Vec::new(),
             recent_files_max: 20,
             default_units: DefaultUnits::default(),

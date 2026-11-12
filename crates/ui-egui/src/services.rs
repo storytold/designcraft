@@ -44,6 +44,16 @@ pub struct Services {
     /// (Windows custom title bar, #1295). `None` when the window is decorated or the platform
     /// needs no fixing.
     pub window_frame: Option<WindowFrameFn>,
+    /// Opens a file in an application, or in its default one (Edit › Edit Original and Edit
+    /// With). `None` where no other application can be started (the browser): the commands are
+    /// disabled.
+    pub launch: Option<crate::edit_original::LaunchFn>,
+    /// The applications that can open a file, for Edit › Edit With (macOS). `None`: the submenu
+    /// has Other… only.
+    pub applications: Option<crate::edit_original::ApplicationsFn>,
+    /// Shows a file in the system's file manager (Links › Reveal in Finder, Explorer or File
+    /// Manager). `None` where there is none (the browser): the command is disabled.
+    pub reveal: Option<crate::reveal::RevealFn>,
     /// The pointer's place on the screen, asked when a file is dropped: a file dragged in from
     /// another application brings no pointer events with it (winit reports none during a drag on
     /// macOS), so without it a drop can't tell which frame it landed on. `None`: a drop without

@@ -23,8 +23,15 @@ use serde_json::{Value, json};
 use super::{CommandSpec, bad, cmd, has_doc, str_param};
 use crate::{EngineError, Result, Session};
 
+mod original;
+pub use original::{Original, Reveal, can_edit_original, originals, reveal_target};
+
+/// The most graphics or frames a call may name (`links.update {assets}`, `links.originalFiles
+/// {ids}`): more than any selection, and past it the call is an error rather than cut short.
+pub(crate) const MAX_NAMED: usize = 10_000;
+
 pub fn specs() -> Vec<CommandSpec> {
-    vec![
+    let mut v = vec![
         cmd!(query "links.list", "Links", [], None, "{} → [{asset, name, path, status: ok|modified|missing|embedded, refused?: why a missing link isn't followed (a path on another computer, a device), pixels, pdfCrop (placed PDFs: the box shown), uses: [{id, page, ppi}]}], then linked text files: [{story, name, path, status (also tooLarge: unchanged size, too big to check), edited (the story was changed in the layout), uses: [{id, page}]}]", has_doc, |s, _| {
             // Taken out for the call so the document needn't be cloned on every poll.
             let mut checks = std::mem::take(&mut s.link_checks);
@@ -55,7 +62,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Update Link",
             ["Window", "Links"],
             None,
-            "{asset? | story?} — reload modified links from their files (all when neither); a linked text file is imported again into its story with the import options it was placed with, replacing edits made in the layout → {updated, warnings}",
+            "{asset? | assets?: [ids] (at most 10000) | story?} — reload modified links from their files (all when none is given; one undo step); a linked text file is imported again into its story with the import options it was placed with, replacing edits made in the layout → {updated, warnings}",
             has_doc,
             update
         ),
@@ -94,7 +101,9 @@ pub fn specs() -> Vec<CommandSpec> {
             st.bump_revision();
             Ok(json!({"ids": ids.iter().map(|i| i.0).collect::<Vec<_>>()}))
         }),
-    ]
+    ];
+    v.extend(original::specs());
+    v
 }
 
 fn asset_param(p: &Value, cmd: &str) -> Result<AssetId> {
@@ -222,7 +231,7 @@ fn image_status(a: &designcraft_doc::Asset, document: Option<&Path>, checks: &mu
         {
             return if *same { ("ok", Some(now)) } else { ("modified", None) };
         }
-        let same = match crate::io::read_capped(&path, a.data.len() as u64) {
+        let same = match crate::io::read_regular_capped(&path, a.data.len() as u64) {
             Ok(b) => b == *a.data,
             Err(_) => return ("missing", None),
         };
@@ -266,7 +275,8 @@ pub(crate) fn settled(f: &Fingerprint) -> bool {
     }
 }
 
-/// Checked linked text files: path → (size and time, hash of the contents then).
+/// Checked linked text files: the file a link resolves to → (size and time, hash of the contents
+/// then).
 pub(crate) type TextChecks = std::collections::HashMap<String, (Fingerprint, String)>;
 
 /// Link status of a linked text file: `tooLarge` when it is the recorded size but over
@@ -290,7 +300,10 @@ pub(crate) fn text_status(l: &TextFileLink, checks: &mut TextChecks, document: O
         if l.mtime != 0 && now.mtime == l.mtime {
             return "ok";
         }
-        let hash = match checks.get(&l.path) {
+        // Remembered by the file the link resolves to, not the link's text: the same relative
+        // link in documents saved in different folders names different files.
+        let key = path.to_string_lossy().into_owned();
+        let hash = match checks.get(&key) {
             Some((at, hash)) if *at == now => hash.clone(),
             _ if now.size > MAX_TEXT_LINK_BYTES => return "tooLarge",
             _ => match read_text(&path) {
@@ -298,7 +311,7 @@ pub(crate) fn text_status(l: &TextFileLink, checks: &mut TextChecks, document: O
                     let hash = fnv_hex(&b);
                     // The time from before the read: a change during it is seen next time.
                     if settled(&at) {
-                        checks.insert(l.path.clone(), (at, hash.clone()));
+                        checks.insert(key, (at, hash.clone()));
                     }
                     hash
                 }
@@ -551,7 +564,7 @@ fn read_text(path: impl AsRef<Path>) -> Result<(Vec<u8>, Fingerprint)> {
         return Err(too_large());
     }
     // At most one byte over the limit, in case the file grew since.
-    let b = crate::io::read_capped(path, MAX_TEXT_LINK_BYTES).map_err(err)?;
+    let b = crate::io::read_regular_capped(path, MAX_TEXT_LINK_BYTES).map_err(err)?;
     if b.len() as u64 > MAX_TEXT_LINK_BYTES {
         return Err(too_large());
     }
@@ -588,7 +601,7 @@ fn reload(path: impl AsRef<Path>) -> Result<(Vec<u8>, (u32, u32))> {
 #[cfg(not(target_arch = "wasm32"))]
 fn reload_capped(path: impl AsRef<Path>, cap: u64) -> Result<(Vec<u8>, (u32, u32))> {
     let path = path.as_ref();
-    let b = crate::io::read_capped(path, cap).map_err(|e| EngineError::Other(format!("{}: {e}", path.display())))?;
+    let b = crate::io::read_regular_capped(path, cap).map_err(|e| EngineError::Other(format!("{}: {e}", path.display())))?;
     if b.len() as u64 > cap {
         return Err(bad("links", format!("{}: the linked file is larger than {} MB", path.display(), cap / (1024 * 1024))));
     }
@@ -672,7 +685,8 @@ fn relink_folder(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad("links.relinkFolder", "give `dir` and/or `extension`"));
     }
     let missing_only = p.get("missingOnly").and_then(Value::as_bool).unwrap_or(dir.is_some() && ext.is_none());
-    let only: Option<Vec<u64>> = p.get("assets").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_u64).collect());
+    let only: Option<std::collections::HashSet<u64>> =
+        p.get("assets").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_u64).collect());
     let mut images = std::mem::take(&mut s.link_checks.images);
     let st = s.doc()?;
     let (d, document) = (&st.doc, st.path.as_deref().map(Path::new));
@@ -732,6 +746,19 @@ fn relink_folder(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"relinked": n, "notFound": not_found}))
 }
 
+/// The ids a call lists under `key`, looked up in constant time: `None` when it lists none. Not a
+/// list of numbers, or longer than [`MAX_NAMED`], is an error.
+pub(crate) fn id_set(v: Option<&Value>, cmd: &str, key: &str) -> Result<Option<std::collections::HashSet<u64>>> {
+    let list = match v {
+        None | Some(Value::Null) => return Ok(None),
+        Some(v) => v.as_array().ok_or_else(|| bad(cmd, format!("{key} must be a list of ids")))?,
+    };
+    if list.len() > MAX_NAMED {
+        return Err(bad(cmd, format!("{key} lists more than {MAX_NAMED} ids")));
+    }
+    list.iter().map(|i| i.as_u64().ok_or_else(|| bad(cmd, format!("{key} must be numbers")))).collect::<Result<_>>().map(Some)
+}
+
 /// `links.update`: re-read the modified links (one, or every one) from where they resolve.
 fn update(s: &mut Session, p: &Value) -> Result<Value> {
     let (d, document) = {
@@ -740,8 +767,15 @@ fn update(s: &mut Session, p: &Value) -> Result<Value> {
     };
     let document = document.as_deref().map(Path::new);
     let LinkListChecks { text: checks, images, .. } = &mut s.link_checks;
-    let (only_asset, only_story) = (p.get("asset").and_then(Value::as_u64), story_param(p));
-    let all = only_asset.is_none() && only_story.is_none();
+    // A selector that is there but isn't an id is an error, never "all of them".
+    let selector = |key: &str| match p.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => v.as_u64().map(Some).ok_or_else(|| bad("links.update", format!("{key} must be a number"))),
+    };
+    let (only_asset, only_story) = (selector("asset")?, selector("story")?.map(StoryId));
+    let only_assets = id_set(p.get("assets"), "links.update", "assets")?;
+    let all = only_asset.is_none() && only_story.is_none() && only_assets.is_none();
+    let wanted = |id: u64| all || only_asset == Some(id) || only_assets.as_ref().is_some_and(|l| l.contains(&id));
     // A link craft-docpath refuses is missing, so it is never read or refreshed.
     let resolved = |link: &str| crate::io::document_path(link, document).ok();
     let texts: Vec<(StoryId, String, std::path::PathBuf)> = d
@@ -754,7 +788,7 @@ fn update(s: &mut Session, p: &Value) -> Result<Value> {
         })
         .collect();
     let mut fresh = Vec::new();
-    for a in d.assets.values().filter(|a| all || only_asset == Some(a.id.0)).filter(|a| status_cached(a, document, images) == "modified") {
+    for a in d.assets.values().filter(|a| wanted(a.id.0)).filter(|a| status_cached(a, document, images) == "modified") {
         // The bytes come from where the stored link resolves; the link itself stays as the
         // document stored it, so refreshing never rewrites a relative link to an absolute one.
         if let Some((link, at)) = a.link.as_deref().and_then(|l| resolved(l).map(|at| (l, at))) {

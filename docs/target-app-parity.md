@@ -1,6 +1,6 @@
 # DesignCraft parity with Adobe InDesign
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-04 · **Change:** minor (pt-BR interface ~100%, Localization unchanged at 45%; Text Frame Options layout, Preview and Paragraph Spacing Limit; Swatches rows show InDesign's type columns; Keyboard Shortcuts on craft-keymap's shared dialog, with shortcut sets; Convert Variable to Text; list buttons with the default hanging indent; custom anchored objects honour Relative to Spine; PDF/X-4 visible unembedded font detection, #909; autoflow fills the following pages first; File ▸ Open Recent; .indd and .indt open through indd-utils; text threads by hand; image clipping paths from IDML; anchored objects wrap text; Tabs panel listed as present (#343); spring-loaded Zoom navigation; recovery checkpoint retention; cancelable macOS Dock Quit; Based on Parent; object styles carry effects; colour management on craft-cms, Coated FOGRA39 default CMYK; swatches on placed greyscale and bitmap images) · **Target:** Adobe InDesign 2026 (21.6.0.57, macOS)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-10 · **Change:** minor (Edit › Edit Original and Edit With, with the link updated when the window is back in front; pt-BR interface ~100%, Localization unchanged at 45%; Text Frame Options layout, Preview and Paragraph Spacing Limit; Swatches rows show InDesign's type columns; Keyboard Shortcuts on craft-keymap's shared dialog, with shortcut sets; Convert Variable to Text; list buttons with the default hanging indent; custom anchored objects honour Relative to Spine; PDF/X-4 visible unembedded font detection, #909; autoflow fills the following pages first; File ▸ Open Recent; .indd and .indt open through indd-utils; text threads by hand; image clipping paths from IDML; anchored objects wrap text; Tabs panel listed as present (#343); spring-loaded Zoom navigation; recovery checkpoint retention; cancelable macOS Dock Quit; Based on Parent; object styles carry effects; colour management on craft-cms, Coated FOGRA39 default CMYK; swatches on placed greyscale and bitmap images) · **Target:** Adobe InDesign 2026 (21.6.0.57, macOS)
 
 The authoritative assessment of how close DesignCraft is to Adobe InDesign. [ROADMAP.md](../ROADMAP.md)
 summarizes it; [gaps.md](gaps.md) lists every known shortfall one at a time; the feature-by-feature
@@ -112,7 +112,7 @@ twice.
 | Paragraph, character and object styles | 10% | 65% | dialogs, based-on, nested/GREP, Quick Apply |
 | Frames, shapes, transform, arrange, align | 10% | 70% | full tool set; copy/paste problems counted under interaction |
 | Colour, swatches, stroke | 8% | 60% | hex entry, CMS depth |
-| Images: place, fit, links, wrap | 10% | 60% | EPS preview only, Edit Original missing |
+| Images: place, fit, links, wrap | 10% | 60% | EPS preview only |
 | Tables | 5% | 55% | anchored objects in cells, Table Options submenus |
 | Layers | 3% | 75% | |
 | Effects and transparency | 3% | 50% | fidelity unmeasured |
@@ -209,7 +209,7 @@ table is the one summed.
 | Transform | 100% | 70% | 10–20 | Rotate 180°; transform panel depth |
 | Fill, stroke, colour | 100% | 60% | 20–35 | hex entry (#323); Assign Profiles / Convert to Profile; color-managed proofing depth; Adobe Color Themes OOS |
 | Effects & transparency | 100% | 50% | 20–30 | effects fidelity vs InDesign unmeasured; Clear Effects / Clear All Transparency; flattener depth |
-| Placing & links | 93% | 55% | 20–35 | EPS is preview-only (no PostScript interpreter); Edit Original; placed PDF layer visibility; INDD page place |
+| Placing & links | 93% | 55% | 20–35 | EPS is preview-only (no PostScript interpreter); placed PDF layer visibility; INDD page place |
 | Type & text frames | 99% | 45% | 40–60 | Primary Text Frame pages users can't delete (alpha blocker, #165); autoflow sets new frames on following pages instead of flowing into their primary text frame; caret formatting discarded (#289); Notes/Track Changes menus; frame grids |
 | Typography | 100% | 45% | (typography dimension) | see [typography-parity.md](typography-parity.md) |
 | Styles | 100% | 60% | 15–25 | Paragraph Styles edit/delete reported failing (#169); style options depth |
