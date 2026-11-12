@@ -1337,3 +1337,30 @@ fn a_previewed_image_gets_its_alpha_channel_outline() {
     assert!(d.alpha_outlines[0].width > 0 && !d.alpha_outlines[0].outer.subpaths.is_empty());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The overset count data merge reports is composed with the merged images' Alpha Channel
+/// outlines: a caption over the image's transparent part is set, not counted as overset.
+#[test]
+fn a_merge_counts_overset_text_with_the_merged_images_outlines() {
+    let dir = scratch("alpha-merge");
+    // Visible only in the left quarter.
+    let mut pixels = vec![0u8; 64 * 64 * 4];
+    for y in 0..64 {
+        for x in 0..16 {
+            pixels[(y * 64 + x) * 4 + 3] = 255;
+        }
+    }
+    std::fs::write(dir.join("cut.png"), designcraft_render::Rendered { width: 64, height: 64, pixels }.to_png()).unwrap();
+    write(&dir.join("pics.csv"), "Photo\ncut.png\n");
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    exec(&mut s, "data.source.select", json!({"path": dir.join("pics.csv")}));
+    let frame = exec(&mut s, "frame.create", json!({"rect": [100.0, 100.0, 300.0, 300.0], "content": "graphic"}));
+    exec(&mut s, "data.placeholder.add", json!({"field": "Photo", "role": "image", "item": frame["id"]}));
+    exec(&mut s, "data.options", json!({"fitting": "fitContentToFrame"}));
+    exec(&mut s, "object.textWrap", json!({"ids": [frame["id"]], "mode": "contour", "contour": "alphaChannel", "offset": 0}));
+    text_frame(&mut s, [220.0, 180.0, 290.0, 220.0], "Hi", None);
+    let r = exec(&mut s, "data.merge", json!({}));
+    assert_eq!(r["oversetStories"], 0, "the caption sits beside the image's visible pixels: {r}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

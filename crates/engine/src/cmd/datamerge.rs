@@ -263,6 +263,8 @@ fn merge_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     merged.data_merge.placeholders.clear();
     merged.title = format!("{} merged", src.title);
     let pages = merged.page_count();
+    // The merged images' Alpha Channel outlines first: the overset count composes with them.
+    crate::cmd::alpha_wrap::sync(&mut merged);
     let overset = overset_count(&merged);
     let records = selected.len();
     let missing_json: Vec<Value> = missing.iter().map(|m| json!({"record": m.record, "field": m.field, "path": m.path})).collect();
