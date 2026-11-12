@@ -365,6 +365,9 @@ pub struct Exclusion {
     /// An anchored object in the frame's own story: it wraps only lines that start after this
     /// story byte (its anchor).
     pub after: Option<usize>,
+    /// For an anchored object in the frame's own story: the baseline of the line holding its
+    /// anchor when the exclusion was taken from it.
+    pub anchor_baseline: Option<f64>,
 }
 
 impl Exclusion {
@@ -897,7 +900,7 @@ fn wrap_exclusion(
     if let Some(custom) = wrap.path.as_ref().and_then(|p| Contour::of(&p.to_bezpath(), inv * xf, 0.0)) {
         let rect = custom.bounds();
         let contour = matches!(wrap.mode, WrapMode::BoundingBox | WrapMode::Contour).then_some(custom);
-        return Exclusion { rect, mode: wrap.mode, side, contour, after: None };
+        return Exclusion { rect, mode: wrap.mode, side, contour, after: None, anchor_baseline: None };
     }
     let contour = if wrap.mode == WrapMode::Contour { outline() } else { None }.and_then(|src| {
         let mut c = Contour::of(&src.path, inv * xf, o[0])?;
@@ -910,7 +913,7 @@ fn wrap_exclusion(
         Some(c)
     });
     let rect = contour.as_ref().map_or_else(|| inv.transform_rect_bbox(r), Contour::bounds);
-    Exclusion { rect, mode: wrap.mode, side, contour, after: None }
+    Exclusion { rect, mode: wrap.mode, side, contour, after: None, anchor_baseline: None }
 }
 
 /// The outline a contour wrap follows, in the frame's inner space, with what clips it.
@@ -3629,7 +3632,9 @@ fn finish_composition(input: FinishInput<'_>) -> ComposedStory {
         let before: Vec<f64> = ft.tables.iter().map(|t| ft.lines.get(t.line).map_or(0.0, |l| l.baseline)).collect();
         let spanned = ft.columns.len() > 1 && ft.lines.iter().any(|l| span_paras.get(l.para) == Some(&true))
             || ft.lines.iter().any(|l| split_paras.get(l.para) == Some(&true));
-        vertical_justify(ft, f, spanned, &doc.footnote_options);
+        let anchors: Vec<usize> =
+            if ft.objects.is_empty() { Vec::new() } else { story.text.match_indices(designcraft_doc::OBJECT_MARK).map(|(i, _)| i).collect() };
+        vertical_justify(ft, f, spanned, &doc.footnote_options, &anchors);
         for (t, b) in ft.tables.iter_mut().zip(before) {
             let now = ft.lines.get(t.line).map_or(b, |l| l.baseline);
             t.shift(now - b);
@@ -5955,8 +5960,9 @@ fn rule_decos(doc: &Document, r: &designcraft_doc::Rule, rect: Rect, (color, tin
     out
 }
 
-/// `spanned`: a paragraph spans the frame's columns, so the lines move together.
-fn vertical_justify(ft: &mut FrameText, f: &FrameSpec, spanned: bool, notes: &designcraft_doc::FootnoteOptions) {
+/// `spanned`: a paragraph spans the frame's columns, so the lines move together. `anchors`: the
+/// story byte of each anchored object's mark, by object index.
+fn vertical_justify(ft: &mut FrameText, f: &FrameSpec, spanned: bool, notes: &designcraft_doc::FootnoteOptions, anchors: &[usize]) {
     if ft.lines.is_empty() || f.opts.vertical_justification == VerticalJustification::Top {
         return;
     }
@@ -5966,6 +5972,7 @@ fn vertical_justify(ft: &mut FrameText, f: &FrameSpec, spanned: bool, notes: &de
     // Per column (or all lines together).
     let ncols = if spanned { 1 } else { ft.columns.len().max(1) as u32 };
     for c in 0..ncols {
+        let (rooms, follow) = wrap_rooms(ft, f, c, spanned, anchors);
         let idx: Vec<usize> = ft.lines.iter().enumerate().filter(|(_, l)| spanned || l.column == c).map(|(i, _)| i).collect();
         if idx.is_empty() {
             continue;
@@ -5987,6 +5994,13 @@ fn vertical_justify(ft: &mut FrameText, f: &FrameSpec, spanned: bool, notes: &de
         // `space`: the room under the bottom of the text.
         let inside = f.vertical || note_top <= f.area.y1;
         let space = if inside { limit - ink_bottom } else { limit - last_baseline };
+        // Center and Bottom move the lines together: the nearest text wrap under them is the
+        // bottom of the room they move down into, so the room is the least any line has before a
+        // wrap stops it. Justify checks each row's room below.
+        let space = match f.opts.vertical_justification {
+            VerticalJustification::Justify => space,
+            _ => idx.iter().map(|&i| rooms[i]).fold(space, f64::min),
+        };
         if space <= 0.0 {
             continue;
         }
@@ -6043,16 +6057,30 @@ fn vertical_justify(ft: &mut FrameText, f: &FrameSpec, spanned: bool, notes: &de
             }
             None => true,
         };
+        // Each row moves no further than a text wrap under it allows. An object that moves with its
+        // anchor's row (Justify) limits how much further than that row a later row moves.
+        let mut row_of = vec![None; ft.lines.len()];
+        for (&i, &k) in idx.iter().zip(&rows) {
+            row_of[i] = Some(k);
+        }
+        let follow: Vec<(usize, usize, f64)> = follow
+            .iter()
+            .filter_map(|&(i, a, room)| Some((row_of.get(i).copied().flatten()?, row_of.get(a).copied().flatten()?, room.max(0.0))))
+            .collect();
+        let clear = |shift: &[f64]| {
+            idx.iter().zip(&rows).all(|(&i, &k)| shift[k] <= rooms[i].max(0.0) + 1e-9)
+                && follow.iter().all(|&(k, m, room)| shift[k] - shift[m] <= room + 1e-9)
+        };
         // The lowest lines are tested first: they are the ones a narrowing outline stops.
         let fits = |shift: &[f64]| {
             idx.iter().zip(&rows).rev().all(|(&i, &k)| {
                 let l = &ft.lines[i];
                 shift[k] <= 0.0 || ((k == n || l.baseline + l.descent + shift[k] <= limit + 1e-9) && in_outline(l, k == n, shift[k]))
-            })
+            }) && clear(shift)
         };
         // Every row moves no less as `space` grows, so in a rectangular frame the most room that
-        // fits is found by halving. A shaped frame can narrow and widen again further down: there
-        // the rooms are scanned from the most down to none, every point (at most 512 steps, each
+        // fits (and keeps every row clear of the wraps under it) is found by halving. A shaped
+        // frame can narrow and widen again further down: there the rooms are scanned from the most down to none, every point (at most 512 steps, each
         // usually stopped by the lowest line), and the step between the first that fits and the
         // one above it is then halved.
         let mut shift = shifts(space);
@@ -6092,6 +6120,152 @@ fn vertical_justify(ft: &mut FrameText, f: &FrameSpec, spanned: bool, notes: &de
             }
         }
     }
+}
+
+/// How far each line of column `c` (every column when `spanned`) may move down before a text
+/// wrap stops it, by index in `ft.lines` (infinite without one); a table fragment's room counts
+/// for its line. No line moves into a wrap under its slot. As when lines are set around a wrap, a
+/// line's band runs from its top to its baseline, so a baseline may come down to a wrap's top; a
+/// table fragment stops with its bottom there. A wrap without a contour counts by its bounding
+/// box. Beside or under a contour, the line moves down only as far as its band stays clear of the
+/// contour on its way down (to 0.01 pt). Only wraps that reach into a line's column (or the
+/// columns it spans) count, as when the lines are set. An anchored object that moves with the
+/// lines being justified (inline, above the line, or positioned from its anchor and not kept
+/// within its column) is skipped, except under Justify, where it moves with the row of its
+/// anchor's line: its wrap is taken where the object sits before the lines move, and its rooms go
+/// in the second list as (line, anchor's line, room), so a line moves down at most that much
+/// further than the anchor's row. Justify keeps the first row in place, so its room stays
+/// infinite. `anchors` holds the story byte of each anchored object's mark, by object index.
+fn wrap_rooms(ft: &FrameText, f: &FrameSpec, c: u32, spanned: bool, anchors: &[usize]) -> (Vec<f64>, Vec<(usize, usize, f64)>) {
+    const EPS: f64 = 1e-6;
+    // One-sided wraps also block the column on the other side of the object: the x-range wrap
+    // `e` keeps text out of in column `col`, from the object's x-range `a..b` there (None when that
+    // range misses the column).
+    let sided = |e: &Exclusion, col: Rect, (a, b): (f64, f64)| -> Option<(f64, f64)> {
+        let r = e.rect;
+        (a < col.x1 && b > col.x0).then_some(match e.side {
+            WrapSide::LeftSide => (a, f64::INFINITY),
+            WrapSide::RightSide => (f64::NEG_INFINITY, b),
+            WrapSide::LargestArea if r.x0 - col.x0 >= col.x1 - r.x1 => (a, f64::INFINITY),
+            WrapSide::LargestArea => (f64::NEG_INFINITY, b),
+            WrapSide::BothSides | WrapSide::TowardsSpine | WrapSide::AwayFromSpine => (a, b),
+        })
+    };
+    // The x-range a wrap under the text keeps it out of in column `col`; None when text may stay beside it.
+    let blocked = |e: &Exclusion, col: Rect| -> Option<(f64, f64)> {
+        let r = e.rect;
+        match e.mode {
+            WrapMode::None => None,
+            WrapMode::JumpObject | WrapMode::JumpToNextColumn => (r.x0 < col.x1 && r.x1 > col.x0).then_some((f64::NEG_INFINITY, f64::INFINITY)),
+            WrapMode::BoundingBox | WrapMode::Contour => sided(e, col, (r.x0, r.x1)),
+        }
+    };
+    let in_col = |k: u32| spanned || k == c;
+    let justify = f.opts.vertical_justification == VerticalJustification::Justify;
+    // The object whose mark is at each story byte, placed on one of these lines (the first one
+    // listed).
+    let mut by_anchor = HashMap::new();
+    for o in ft.objects.iter().filter(|o| ft.lines.get(o.line).is_some_and(|l| in_col(l.column))) {
+        if let Some(&a) = anchors.get(o.index) {
+            by_anchor.entry(a).or_insert(o);
+        }
+    }
+    // An own-story anchored object whose anchor is on one of these lines and whose position
+    // follows its line moves with the text: the index in `ft.lines` of its anchor's line, and how
+    // much lower that line was when the wrap was taken (an earlier pass placed the object after
+    // moving the lines).
+    let moves_with_text = |e: &Exclusion| -> Option<(usize, f64)> {
+        let o = *by_anchor.get(&e.after?)?;
+        let follows = match &o.object.position {
+            designcraft_doc::AnchorPosition::Inline { .. } | designcraft_doc::AnchorPosition::AboveLine { .. } => true,
+            // Kept within the column, it can stop at the column's edge instead of following.
+            designcraft_doc::AnchorPosition::Custom { y_relative, keep_within_column, .. } => {
+                *y_relative == designcraft_doc::anchored::AnchorRelative::Anchor && !keep_within_column
+            }
+        };
+        let now = ft.lines.get(o.line).map_or(0.0, |l| l.baseline);
+        follows.then(|| (o.line, e.anchor_baseline.map_or(0.0, |b| b - now)))
+    };
+    // Each wrap's object is looked up once, not for every line.
+    let moving: Vec<Option<(usize, f64)>> = f.exclusions.iter().map(moves_with_text).collect();
+    // Justify keeps the first row (its segments and a table on them) in place, so wraps under it
+    // set no limit.
+    let first = ft.lines.iter().find(|l| in_col(l.column)).map(|l| l.baseline);
+    let fixed = |line: usize| justify && ft.lines.get(line).zip(first).is_some_and(|(l, b)| (l.baseline - b).abs() <= 1e-9);
+    // (line, story byte, column, slot x-range, top, bottom) of each line (its band runs from its
+    // top to its baseline) and table fragment.
+    let lines = ft
+        .lines
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| in_col(l.column))
+        .map(|(i, l)| (i, l.range.start, l.column, l.x0, l.x1, l.baseline - l.ascent, l.baseline));
+    let tables = ft.tables.iter().filter(|t| in_col(t.column)).map(|t| (t.line, t.anchor, t.column, t.rect.x0, t.rect.x1, t.rect.y0, t.rect.y1));
+    let mut rooms = vec![f64::INFINITY; ft.lines.len()];
+    let mut follow = Vec::new();
+    for (line, start, k, x0, x1, top, bottom) in lines.chain(tables) {
+        let Some(&before) = rooms.get(line) else { continue };
+        if fixed(line) {
+            continue;
+        }
+        let mut room = before;
+        // A line that spans columns reaches past its own column.
+        let col = ft.columns.get(k as usize).copied().unwrap_or(f.area);
+        let col = Rect { x0: col.x0.min(x0), x1: col.x1.max(x1), ..col };
+        let meets = |(a, b): (f64, f64)| a < x1 - EPS && b > x0 + EPS;
+        for (e, &anchor) in f.exclusions.iter().zip(&moving).filter(|(e, _)| e.wraps_line(start)) {
+            if anchor.is_some() && !justify {
+                continue;
+            }
+            // The wrap where its object sits before the lines move (moved up by `dy`), and how
+            // far it lets this line move down (relative to its anchor's row for an object that
+            // moves with the text).
+            let dy = anchor.map_or(0.0, |(_, dy)| dy);
+            let cap = if anchor.is_some() { f64::INFINITY } else { room };
+            let mut room_e = f64::INFINITY;
+            let r = Rect { y0: e.rect.y0 - dy, y1: e.rect.y1 - dy, ..e.rect };
+            if let (WrapMode::BoundingBox | WrapMode::Contour, Some(contour)) = (e.mode, &e.contour)
+                && r.y1 > top
+                && sided(e, col, (r.x0, r.x1)).is_some_and(meets)
+            {
+                // A contour beside or under this line whose box reaches the line's slot (the
+                // contour stays inside its box). Moved down by `d`, the line's band sweeps from its
+                // top to its baseline plus `d`; the contour's extent there only grows with `d`, so
+                // the furthest clear move is found by bisection to 0.01 pt.
+                let hits = |d: f64| contour.band_extent(top + dy, bottom + d + dy).and_then(|x| sided(e, col, x)).is_some_and(meets);
+                let (mut lo, mut hi) = ((r.y0 - bottom).max(0.0), (r.y1 - top).min(f.area.y1 - bottom).min(cap));
+                if lo < hi && hits(hi) {
+                    if hits(lo) {
+                        hi = lo;
+                    }
+                    for _ in 0..64 {
+                        if hi - lo <= 0.01 {
+                            break;
+                        }
+                        let mid = (lo + hi) / 2.0;
+                        if hits(mid) {
+                            hi = mid;
+                        } else {
+                            lo = mid;
+                        }
+                    }
+                    room_e = lo;
+                }
+            } else if r.y0 >= bottom - EPS {
+                // A wrap at or under this line.
+                if blocked(e, col).is_some_and(meets) {
+                    room_e = r.y0 - bottom;
+                }
+            }
+            match anchor {
+                Some((a, _)) if room_e.is_finite() => follow.push((line, a, room_e)),
+                Some(_) => {}
+                None => room = room.min(room_e),
+            }
+        }
+        rooms[line] = room;
+    }
+    (rooms, follow)
 }
 
 // ---------- caret and hit testing (Type tool) ----------
