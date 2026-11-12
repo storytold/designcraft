@@ -186,7 +186,7 @@ pub fn stroke_fields(app: &mut DesignApp, ui: &mut Ui, id: &str, v: &Value) -> O
     egui::Grid::new((id, "cell_stroke")).num_columns(2).spacing(vec2(8.0, 6.0)).show(ui, |ui| {
         caption(ui, tr(&lang, "Weight:"));
         let wid = format!("{id}_weight");
-        if let Some(w) = NumField::number(&wid, v["weight"].as_f64(), " pt", 3).width(86.0).spinner().presets(WEIGHTS).range(0.0, 1000.0).show(ui) {
+        if let Some(w) = NumField::points(&wid, v["weight"].as_f64(), 3).width(86.0).spinner().presets(WEIGHTS).range(0.0, 1000.0).show(ui) {
             out = Some(("weight", json!(w)));
         }
         ui.end_row();

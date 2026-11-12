@@ -796,7 +796,7 @@ mod layer_tests {
                 let format = d.xref_formats[0].name.clone();
                 let st = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
                 let end = st.len();
-                st.insert_xref(end, designcraft_doc::CrossRef { target: a, format });
+                st.insert_xref(end, designcraft_doc::CrossRef { target: a, format, ..Default::default() });
                 Ok(a)
             })
             .unwrap();
@@ -848,7 +848,7 @@ mod layer_tests {
         fn add_anchor(st: &mut Story, id: u64) {
             st.insert_anchor(0, "Nested heading");
             Arc::make_mut(&mut st.anchors[0]).id = id;
-            st.insert_xref(st.len(), designcraft_doc::CrossRef { target: id, format: String::new() });
+            st.insert_xref(st.len(), designcraft_doc::CrossRef { target: id, ..Default::default() });
         }
         fn collect(st: &Story, values: &mut Vec<(u64, u64)>) {
             for (a, x) in st.anchors.iter().zip(st.xrefs.iter()) {

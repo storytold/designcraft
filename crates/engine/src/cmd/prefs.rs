@@ -50,12 +50,14 @@ pub fn specs() -> Vec<CommandSpec> {
             "Preferences",
             [],
             None,
-            "{showHiddenCharacters?, typographersQuotes?, polygonSides?, starInset?, scaleStrokes?, dimensionsIncludeStroke?, transformationsAreTotals?, absolutePageNumbers?, highlightHj?, highlightKeeps?, highlightCustomTracking?, highlightSubstitutedFonts?, richBlackOutput?, favoriteFonts?: [family], recentFonts?: [family], showFontNamesInEnglish?, smartTextReflow?, autocorrect?, autocorrectList?: [[word, correction]], showAddedText?, showNoteAnchors?, cjkFeatures?: bool|null (CJK-only menu items and dialogs shown; null follows the interface language), linkTextFiles? (Create Links When Placing Text Files), recoveryMinutes?, recentFilesMax?: 0–100} → all application preferences",
+            "{showHiddenCharacters?, typographersQuotes?, polygonSides?, starInset?, scaleStrokes?, dimensionsIncludeStroke?, transformationsAreTotals?, absolutePageNumbers?, highlightHj?, highlightKeeps?, highlightCustomTracking?, highlightSubstitutedFonts?, richBlackOutput?, favoriteFonts?: [family], recentFonts?: [family], showFontNamesInEnglish?, smartTextReflow?, autocorrect?, autocorrectList?: [[word, correction]], showAddedText?, showNoteAnchors?, cjkFeatures?: bool|null (CJK-only menu items and dialogs shown; null follows the interface language), linkTextFiles? (Create Links When Placing Text Files), recoveryMinutes?, recentFilesMax?: 0–100, defaultUnits?: {horizontalUnits?, verticalUnits?, rulerOrigin?, keyboardIncrement? (pt), kerningIncrement? (1/1000 em)} (Units & Increments of new documents)} → all application preferences",
             super::always,
             |s, p| {
                 let cur = serde_json::to_value(&s.prefs).map_err(|e| bad("prefs.set", e.to_string()))?;
                 let new = merge("prefs.set", cur, p, None)?;
-                s.prefs = serde_json::from_value(new).map_err(|e| bad("prefs.set", e.to_string()))?;
+                let prefs: crate::Prefs = serde_json::from_value(new).map_err(|e| bad("prefs.set", e.to_string()))?;
+                prefs.default_units.check().map_err(|e| bad("prefs.set", e))?;
+                s.prefs = prefs;
                 s.prefs.trim_recent_files();
                 serde_json::to_value(&s.prefs).map_err(|e| bad("prefs.set", e.to_string()))
             }
@@ -100,6 +102,9 @@ fn merge(cmd: &str, mut cur: Value, p: &Value, allowed: Option<&[&str]>) -> Resu
         match (c.get_mut(k), v) {
             (Some(Value::Object(old)), Value::Object(v)) => {
                 for (k2, v2) in v {
+                    if !old.is_empty() && !old.contains_key(k2) {
+                        return Err(bad(cmd, format!("unknown preference {k}.{k2}")));
+                    }
                     old.insert(k2.clone(), v2.clone());
                 }
             }
@@ -127,6 +132,7 @@ mod tests {
         s.execute("prefs.set", &json!({"showFontNamesInEnglish": true})).unwrap();
         assert!(s.prefs.show_font_names_in_english);
         assert!(s.execute("prefs.set", &json!({"nope": 1})).is_err());
+        assert!(s.execute("prefs.set", &json!({"defaultUnits": {"horizontalUnit": "inches"}})).is_err());
         s.execute("file.new", &json!({})).unwrap();
         let r = s
             .execute("document.preferences", &json!({"horizontalUnits": "millimeters", "keyboardIncrement": 2.5, "grid": {"subdivisions": 4}}))
@@ -140,6 +146,53 @@ mod tests {
         assert!(s.execute("document.preferences", &json!({"pageWidth": 100})).is_err(), "Document Setup's, not Preferences'");
         s.execute("edit.undo", &json!({})).unwrap();
         assert_eq!(s.doc().unwrap().doc.settings.horizontal_units, designcraft_geom::Unit::Picas);
+    }
+
+    /// Units & Increments set with no document open are what new documents start with, as in
+    /// InDesign: a reader who works in inches sets them once, not in every file.
+    #[test]
+    fn default_units_are_what_new_documents_start_with() {
+        use designcraft_geom::Unit;
+        let mut s = Session::new();
+        let r = s
+            .execute(
+                "prefs.set",
+                &json!({"defaultUnits": {"horizontalUnits": "inches", "verticalUnits": "inches", "keyboardIncrement": 0.5, "rulerOrigin": "page"}}),
+            )
+            .unwrap();
+        assert_eq!(r["defaultUnits"]["horizontalUnits"], "inches");
+        assert_eq!(r["defaultUnits"]["kerningIncrement"], 20.0, "the rest kept");
+        s.execute("file.new", &json!({})).unwrap();
+        let st = s.doc().unwrap().doc.settings.clone();
+        assert_eq!((st.horizontal_units, st.vertical_units), (Unit::Inches, Unit::Inches));
+        assert_eq!((st.keyboard_increment, st.ruler_origin), (0.5, designcraft_doc::RulerOrigin::Page));
+        assert!(!s.doc().unwrap().is_dirty(), "made so, not edited");
+        // Inches across, millimetres down: New Document's units (the horizontal ones) keep the
+        // vertical preference; other units picked there set both rulers.
+        s.execute("prefs.set", &json!({"defaultUnits": {"verticalUnits": "millimeters"}})).unwrap();
+        s.execute("file.new", &json!({"units": "inches"})).unwrap();
+        let st = s.doc().unwrap().doc.settings.clone();
+        assert_eq!((st.horizontal_units, st.vertical_units), (Unit::Inches, Unit::Millimeters));
+        s.execute("file.new", &json!({"units": "points"})).unwrap();
+        let st = s.doc().unwrap().doc.settings.clone();
+        assert_eq!((st.horizontal_units, st.vertical_units), (Unit::Points, Unit::Points));
+        // A preset keeps its own units, both of them, even when the default horizontal units are
+        // the preset's.
+        s.execute("prefs.set", &json!({"defaultUnits": {"horizontalUnits": "millimeters", "verticalUnits": "inches"}})).unwrap();
+        s.execute("file.new", &json!({"preset": "A4"})).unwrap();
+        let st = s.doc().unwrap().doc.settings.clone();
+        assert_eq!((st.horizontal_units, st.vertical_units), (Unit::Millimeters, Unit::Millimeters));
+        assert_eq!(st.keyboard_increment, 0.5, "the increments still apply");
+        s.execute("prefs.set", &json!({"defaultUnits": {"horizontalUnits": "inches", "verticalUnits": "millimeters"}})).unwrap();
+        // New Document opens with them; bad values are refused and change nothing.
+        assert_eq!(s.default_new_document().units, Unit::Inches);
+        for bad in [json!({"horizontalUnits": "furlongs"}), json!({"keyboardIncrement": 0}), json!({"kerningIncrement": -5})] {
+            assert!(s.execute("prefs.set", &json!({"defaultUnits": bad})).is_err(), "{bad}");
+        }
+        assert_eq!(s.prefs.default_units.keyboard_increment, 0.5);
+        // Kept with the application preferences.
+        let saved: crate::Prefs = serde_json::from_slice(&serde_json::to_vec(&s.prefs).unwrap()).unwrap();
+        assert_eq!(saved.default_units, s.prefs.default_units);
     }
 }
 

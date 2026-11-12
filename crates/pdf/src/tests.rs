@@ -178,6 +178,12 @@ fn spreads_and_ranges() {
     assert_eq!(parse_page_range("1-2, 4", 4).unwrap(), vec![0, 1, 3]);
     assert_eq!(parse_page_range("3-", 4).unwrap(), vec![2, 3]);
     assert_eq!(parse_page_range("", 2).unwrap(), vec![0, 1]);
+    // Ranges that overlap many times over: each page is selected once, in the order first named.
+    let overlapping = std::iter::repeat_n("1-20000, 5-19000", 500).collect::<Vec<_>>().join(",");
+    let t = std::time::Instant::now();
+    assert_eq!(parse_page_range(&overlapping, 20000).unwrap().len(), 20000);
+    assert!(t.elapsed() < std::time::Duration::from_secs(5), "{:?}", t.elapsed());
+    assert_eq!(parse_page_range("3, 1-3", 4).unwrap(), vec![2, 0, 1]);
     assert!(parse_page_range("5", 4).is_err());
     assert!(parse_page_range("x", 4).is_err());
     let bytes = export_pdf(&d, &Cache::new(), &PdfOptions { pages: Some(vec![1, 2]), ..Default::default() }).unwrap();
@@ -279,6 +285,32 @@ fn cmyk_tiff() -> (Vec<u8>, Vec<u8>) {
     (b, px)
 }
 
+/// A black `side`² 1-bit grey PNG: well under 1 MB, it decodes to `side`² bytes.
+pub(crate) fn blank_png(side: u32) -> Vec<u8> {
+    use std::io::Write;
+    let chunk = |out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]| {
+        out.extend((data.len() as u32).to_be_bytes());
+        let mut crc = flate2::Crc::new();
+        crc.update(kind);
+        crc.update(data);
+        out.extend(kind);
+        out.extend(data);
+        out.extend(crc.sum().to_be_bytes());
+    };
+    let row = vec![0u8; 1 + side.div_ceil(8) as usize];
+    let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+    for _ in 0..side {
+        z.write_all(&row).unwrap();
+    }
+    let mut ihdr = [side.to_be_bytes(), side.to_be_bytes()].concat();
+    ihdr.extend([1, 0, 0, 0, 0]);
+    let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+    chunk(&mut png, b"IHDR", &ihdr);
+    chunk(&mut png, b"IDAT", &z.finish().unwrap());
+    chunk(&mut png, b"IEND", &[]);
+    png
+}
+
 fn place(d: &mut Document, data: Vec<u8>, px: (u32, u32)) {
     let asset = designcraft_doc::AssetId(d.alloc());
     let mime = designcraft_images::mime(&data).into();
@@ -347,6 +379,19 @@ fn a_cut_off_image_is_skipped_not_fatal() {
         let r = export_pdf_with_report(&d, &Cache::new(), &PdfOptions::default()).unwrap();
         assert!(r.warnings.is_empty(), "{format:?}: {:?}", r.warnings);
         assert_eq!(image_xobjects(&r.bytes).len(), 1, "{format:?}");
+    }
+}
+
+/// A raster past the RGBA budget is skipped with a warning, also when images are recompressed (#1586).
+#[test]
+fn an_image_past_the_decode_budget_is_skipped_with_a_warning() {
+    let side = 16_385;
+    let mut d = doc_with_text("still here");
+    place(&mut d, blank_png(side), (side, side));
+    for compress_images in [false, true] {
+        let r = export_pdf_with_report(&d, &Cache::new(), &PdfOptions { compress_images, ..Default::default() }).unwrap();
+        assert!(r.warnings.iter().any(|w| w.contains("could not be decoded and was skipped")), "compress_images {compress_images}: {:?}", r.warnings);
+        assert!(image_xobjects(&r.bytes).is_empty(), "compress_images {compress_images}");
     }
 }
 
@@ -1046,4 +1091,30 @@ fn each_page_shows_its_own_composition() {
     // Parent items first, then the page's own.
     assert_eq!(extract_text(&bytes), ["Folio1Alpha", "Folio2Bravo", "Folio3Charlie"]);
     assert_eq!(export_pdf(&d, &cache, &opts).unwrap(), bytes, "a warm cache exports the same bytes");
+}
+
+/// A parent page that overrode an item of its base and deleted the override hides that item on
+/// the pages that use it. The canvas hid it but PDF export, which looked only at the page's own
+/// overrides, still drew it (#1469).
+#[test]
+fn an_item_a_parent_overrode_and_deleted_is_not_exported() {
+    let mut d = Document::new(&NewDocument { pages: 1, facing_pages: false, ..Default::default() });
+    let lid = d.default_layer();
+    let a = d.parents[0].id;
+    let margins = d.parents[0].pages[0].margins;
+    let b = d.add_parent("B", "Parent", 1, 0.0, margins);
+    let box_id = ItemId(d.alloc());
+    let rect = Rect::new(100.0, 100.0, 200.0, 160.0);
+    let mut it = Item::new(box_id, lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(rect));
+    it.fill = Fill::swatch(designcraft_color::swatch::BLACK);
+    d.insert_item(SpreadRef::Parent(0), it, None).unwrap();
+    std::sync::Arc::make_mut(&mut d.parents[1]).parent.as_mut().unwrap().based_on = Some(a);
+    std::sync::Arc::make_mut(&mut d.spreads[0]).pages[0].parent = Some(b);
+    let has_box = |d: &Document| {
+        let (_, paths) = drawn(&export_pdf(d, &Cache::new(), &PdfOptions::default()).unwrap());
+        paths.iter().any(|r| (r.width() - rect.width()).abs() < 0.5 && (r.height() - rect.height()).abs() < 0.5)
+    };
+    assert!(has_box(&d), "the page exports parent A's box through parent B");
+    std::sync::Arc::make_mut(&mut d.parents[1]).pages[0].overridden.push(box_id);
+    assert!(!has_box(&d), "removed on B, so the page using B exports no box");
 }

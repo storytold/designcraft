@@ -29,6 +29,7 @@ use designcraft_compose::ShownOn;
 /// Shadow offset (spread units) for an InDesign angle (degrees, light direction) and distance.
 pub(crate) fn offset(angle: f64, distance: f64) -> Vec2 {
     let a = angle.to_radians();
+    let distance = bound(distance);
     Vec2::new(-a.cos() * distance, a.sin() * distance)
 }
 
@@ -37,33 +38,43 @@ pub(crate) fn outset(it: &Item) -> f64 {
     let e = &it.effects;
     let mut o: f64 = 0.0;
     if e.drop_shadow.on {
-        o = o.max(e.drop_shadow.distance.abs() + e.drop_shadow.size.abs() * 1.6 + 1.0);
+        o = o.max(bound(e.drop_shadow.distance).abs() + bound(e.drop_shadow.size).abs() * 1.6 + 1.0);
     }
     if e.outer_glow.on {
-        o = o.max(e.outer_glow.size.abs() * 1.6 + 1.0);
+        o = o.max(bound(e.outer_glow.size).abs() * 1.6 + 1.0);
     }
     o
 }
 
 /// (blur σ, growth) in points for an effect `size` with `pct` percent hardened.
 fn split(size: f64, pct: f64) -> (f64, f64) {
-    let size = size.max(0.0);
+    let size = bound(size).max(0.0);
     let p = (pct / 100.0).clamp(0.0, 1.0);
     (size * (1.0 - p) / 2.0, size * p)
 }
 
+/// Largest blur standard deviation handed to the filter planner, in points: far wider than any
+/// page, so a larger one looks the same. Its planner squares the value in f32, so an unbounded
+/// finite size would overflow to infinity there and never finish.
+const MAX_SIGMA: f64 = 1.0e6;
+
+/// Largest effect extent (size, distance, feather width) used for geometry, in points: twice the
+/// largest blur, so a size of any finite value, or infinity, cannot overflow later arithmetic
+/// (`sigma * 3.0`, padding, reach). NaN is 0.
+fn bound(v: f64) -> f64 {
+    if v.is_nan() { 0.0 } else { v.clamp(-2.0 * MAX_SIGMA, 2.0 * MAX_SIGMA) }
+}
+
+fn std_dev(sigma: f64) -> f32 {
+    if sigma.is_nan() { 0.0 } else { sigma.clamp(0.0, MAX_SIGMA) as f32 }
+}
+
 fn blur(sigma: f64) -> Filter {
-    Filter::from_primitive(FilterPrimitive::GaussianBlur { std_deviation: sigma.max(0.0) as f32, edge_mode: EdgeMode::None })
+    Filter::from_primitive(FilterPrimitive::GaussianBlur { std_deviation: std_dev(sigma), edge_mode: EdgeMode::None })
 }
 
 fn shadow(sigma: f64, color: peniko::Color) -> Filter {
-    Filter::from_primitive(FilterPrimitive::DropShadowOnly {
-        dx: 0.0,
-        dy: 0.0,
-        std_deviation: sigma.max(0.0) as f32,
-        color,
-        edge_mode: EdgeMode::None,
-    })
+    Filter::from_primitive(FilterPrimitive::DropShadowOnly { dx: 0.0, dy: 0.0, std_deviation: std_dev(sigma), color, edge_mode: EdgeMode::None })
 }
 
 /// Keep what was drawn in the current layer as much as `it`'s gradient feather says. Cover the
@@ -102,19 +113,25 @@ impl Renderer {
         let mut below = vec![];
         if e.outer_glow.on {
             let g = &e.outer_glow;
-            below.push((Vec2::ZERO, g.size, g.spread, g.color.clone(), g.opacity));
+            below.push((Vec2::ZERO, g.size, g.spread, g.color.clone(), g.opacity, g.mode));
         }
         if e.drop_shadow.on {
             let d = &e.drop_shadow;
-            below.push((offset(doc.light_angle(d.angle, d.global_light), d.distance), d.size, d.spread, d.color.clone(), d.opacity));
+            below.push((offset(doc.light_angle(d.angle, d.global_light), d.distance), d.size, d.spread, d.color.clone(), d.opacity, d.mode));
         }
-        for (off, size, pct, color, opacity) in below {
+        for (off, size, pct, color, opacity, mode) in below {
             let Some(c) = doc.resolve_color(&color, 1.0) else { continue };
             let (sigma, grow) = split(size, pct);
             let filter = shadow(sigma, color_of(&c, opacity.clamp(0.0, 1.0)));
             // The offset moves the geometry, not the filter: vello drops layer content that lies
             // entirely outside the viewport before filtering.
             let r = (reach + off).inflate(grow, grow);
+            // The effect's blend sees what's behind the object: a layer around the filtered one.
+            let mix = crate::blend_mode(mode).mix;
+            if mix != Mix::Normal {
+                ctx.set_transform(Affine::IDENTITY);
+                ctx.push_layer(None, Some(BlendMode::new(mix, Compose::SrcOver)), None, None, None);
+            }
             self.with_filters(ctx, f, r, sigma, None, |me, c, fr| {
                 let moved = Frame { view: fr.view * Affine::translate(off), ..*fr };
                 c.set_transform(moved.view);
@@ -128,6 +145,9 @@ impl Renderer {
                 }
                 c.pop_layer();
             });
+            if mix != Mix::Normal {
+                ctx.pop_layer();
+            }
         }
         // Gradient feather: the object (feathered or not) drawn in its own layer, then kept as
         // much as the opacity gradient says.
@@ -141,7 +161,7 @@ impl Renderer {
         // fade); Sharp and Rounded corners follow the inset shape more tightly than Diffused.
         if e.feather > 0.0 && it.path.is_closed() {
             let fo = &e.feather_options;
-            let w = e.feather * (1.0 - fo.choke.clamp(0.0, 100.0) / 100.0).max(0.01);
+            let w = bound(e.feather) * (1.0 - fo.choke.clamp(0.0, 100.0) / 100.0).max(0.01);
             let (sigma, join) = match fo.corners {
                 designcraft_doc::FeatherCorners::Diffused => (w / 4.0, kurbo::Join::Round),
                 designcraft_doc::FeatherCorners::Rounded => (w / 3.0, kurbo::Join::Round),
@@ -221,7 +241,19 @@ impl Renderer {
             let s = &e.inner_shadow;
             let (sigma, choke) = split(s.size, s.choke);
             let off = offset(doc.light_angle(s.angle, s.global_light), s.distance);
-            self.inner_edge(ctx, f, reach, bp, xf, off, sigma, choke, color_of(&c, s.opacity.clamp(0.0, 1.0)), Mix::Normal, painted);
+            self.inner_edge(
+                ctx,
+                f,
+                reach,
+                bp,
+                xf,
+                off,
+                sigma,
+                choke,
+                color_of(&c, s.opacity.clamp(0.0, 1.0)),
+                crate::blend_mode(s.mode).mix,
+                painted,
+            );
         }
         // Inner glow: from the edges inwards (or out from the centre), screened over the object.
         if e.inner_glow.on
@@ -245,7 +277,7 @@ impl Renderer {
                     c.push_layer(None, Some(BlendMode::new(Mix::Normal, Compose::DestOut)), None, None, None);
                     c.set_transform(fr.view * xf);
                     c.set_paint(peniko::Color::BLACK);
-                    c.set_stroke(kurbo::Stroke::new((g.size - choke).max(0.5) * 2.0).with_join(kurbo::Join::Round));
+                    c.set_stroke(kurbo::Stroke::new((bound(g.size) - choke).max(0.5) * 2.0).with_join(kurbo::Join::Round));
                     c.stroke_path(bp);
                     c.pop_layer();
                     c.pop_layer();
@@ -260,7 +292,7 @@ impl Renderer {
         {
             let st = &e.satin;
             let off = offset(st.angle, st.distance / 2.0);
-            let sigma = st.size.max(0.0) / 2.0;
+            let sigma = bound(st.size).max(0.0) / 2.0;
             let paint = color_of(&c, st.opacity.clamp(0.0, 1.0));
             let invert = st.invert;
             self.with_blended_filters(ctx, f, reach, sigma, Mix::Multiply, (bp, xf), |_, c, fr| {
@@ -288,8 +320,8 @@ impl Renderer {
         // Bevel and Emboss (inner bevel): highlight from the lit side, shadow from the other.
         if e.bevel.on {
             let b = &e.bevel;
-            let off = offset(doc.light_angle(b.angle, b.global_light), b.size * (b.depth / 100.0).clamp(0.01, 10.0) * 0.5);
-            let sigma = b.size.max(0.0) / 2.0;
+            let off = offset(doc.light_angle(b.angle, b.global_light), bound(b.size) * (b.depth / 100.0).clamp(0.01, 10.0) * 0.5);
+            let sigma = bound(b.size).max(0.0) / 2.0;
             if let Some(c) = doc.resolve_color(&b.highlight, 1.0) {
                 // The inverse shape moved away from the light lights the edges facing it.
                 self.inner_edge(ctx, f, reach, bp, xf, off, sigma, 0.0, color_of(&c, b.highlight_opacity.clamp(0.0, 1.0)), Mix::Screen, painted);
@@ -319,6 +351,8 @@ impl Renderer {
         mix: Mix,
         painted: Option<(&Item, ShownOn)>,
     ) {
+        let sigma = bound(sigma).max(0.0);
+        let choke = bound(choke);
         if let Some((it, page)) = painted {
             self.with_blended_filters(ctx, f, reach, sigma, mix, (bp, xf), |me, c, fr| {
                 let pad = sigma * 4.0 + choke + off.hypot() + 4.0 * fr.px;
@@ -404,8 +438,9 @@ impl Renderer {
         clip: Option<(&BezPath, Affine)>,
         draw: impl FnOnce(&mut Self, &mut RenderContext, &Frame),
     ) {
+        let sigma = bound(sigma).max(0.0);
         // 3σ of the Gaussian in pixels, plus a pixel of antialiasing.
-        let spread = sigma.max(0.0) * 3.0 / f.px + 2.0;
+        let spread = sigma * 3.0 / f.px + 2.0;
         if !f.mt && spread <= MAX_BLUR_SPREAD {
             push_clip(ctx, f, clip);
             draw(self, ctx, f);
@@ -477,6 +512,25 @@ fn offscreen(reach: Rect, spread: f64, width: u16, height: u16) -> Option<Offscr
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_huge_blur_size_reaches_the_planner_finite_and_squarable() {
+        use super::{MAX_SIGMA, bound, std_dev};
+        for v in [f64::MAX, f64::INFINITY, f64::NEG_INFINITY, f64::NAN] {
+            let b = bound(v);
+            assert!(b.is_finite() && (b * 3.0 + 4.0 * b).is_finite(), "{v}");
+        }
+        assert_eq!(bound(7.5), 7.5);
+        assert_eq!(super::split(f64::MAX, 50.0), (MAX_SIGMA / 2.0 * 2.0 * 0.5, 2.0 * MAX_SIGMA * 0.5));
+        for s in [1.0e300, f64::MAX, f64::INFINITY] {
+            let d = std_dev(s);
+            assert_eq!(f64::from(d), MAX_SIGMA);
+            assert!((d * d).is_finite());
+        }
+        assert_eq!(std_dev(-3.0), 0.0);
+        assert_eq!(std_dev(f64::NAN), 0.0);
+        assert_eq!(std_dev(12.5), 12.5);
+    }
+
     use super::*;
 
     #[test]

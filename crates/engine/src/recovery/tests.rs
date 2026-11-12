@@ -183,6 +183,37 @@ fn symlink_recovery_directory_is_rejected() {
     assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
 }
 
+/// A link planted among a checked folder's entries doesn't get its target read: not as metadata
+/// (listed as is) and not as a document (recovered).
+#[cfg(unix)]
+#[test]
+fn linked_recovery_entries_are_not_read() {
+    use std::os::unix::fs::symlink;
+
+    let root = tempfile::tempdir().unwrap();
+    let (dir, elsewhere) = (root.path().join("recovery"), root.path().join("elsewhere"));
+    std::fs::create_dir(&dir).unwrap();
+    std::fs::create_dir(&elsewhere).unwrap();
+    // A real document whose metadata is a link to a private file.
+    assert_eq!(save(&unsaved("real"), &dir).unwrap(), 1);
+    let uid = list(&dir)[0].0;
+    std::fs::write(elsewhere.join("secret.json"), br#"{"path": "/home/someone/secret.designcraft"}"#).unwrap();
+    std::fs::remove_file(dir.join(format!("{uid}.json"))).unwrap();
+    symlink(elsewhere.join("secret.json"), dir.join(format!("{uid}.json"))).unwrap();
+    // A document entry that is a link to a document elsewhere.
+    assert_eq!(save(&unsaved("elsewhere"), &elsewhere).unwrap(), 1);
+    let linked = list(&elsewhere)[0].0;
+    symlink(elsewhere.join(format!("{linked}.designcraft")), dir.join("9000000.designcraft")).unwrap();
+
+    let entries = list(&dir);
+    assert_eq!(entries.iter().map(|e| e.0).collect::<Vec<_>>(), [uid, 9_000_000]);
+    assert_eq!(entries[0].1, json!({}), "the linked metadata counts as none");
+    let mut s = Session::new();
+    assert_eq!(open(&mut s, &dir).unwrap().len(), 1);
+    assert_eq!(texts(&s), ["real"]);
+    assert!(std::fs::symlink_metadata(dir.join("9000000.designcraft")).unwrap().file_type().is_symlink(), "left as it was");
+}
+
 #[test]
 fn a_run_has_a_locked_folder_of_its_own() {
     let root = tempfile::tempdir().unwrap();

@@ -87,8 +87,27 @@ fn first_page_ref(pdf: &[u8]) -> Option<usize> {
     s[i..].split_whitespace().next()?.parse().ok()
 }
 
+/// Every page sharing a spread with one of `pages` (0-based), for an export that puts whole
+/// spreads on a sheet. The pages come back in document order.
+fn with_their_spreads(s: &Session, pages: &[usize]) -> Vec<usize> {
+    let Some(st) = s.active() else { return pages.to_vec() };
+    let d = &st.doc;
+    let spreads: std::collections::BTreeSet<usize> = pages.iter().filter_map(|p| d.page_loc(*p)).map(|(si, _)| si).collect();
+    if spreads.is_empty() {
+        return pages.to_vec();
+    }
+    (0..d.page_count()).filter(|p| d.page_loc(*p).is_some_and(|(si, _)| spreads.contains(&si))).collect()
+}
+
 pub(super) fn export_pdf(s: &mut Session, p: &Value) -> Result<Value> {
-    let r = pdf_export(s, p)?;
+    let mut r = pdf_export(s, p)?;
+    // Text the pages have no room for is not in the file: say so, as preflight does (#1465).
+    // A spread export puts the whole spread on the sheet, so choosing page 2 exports page 3 as
+    // well and page 3's overset is as absent from the file as page 2's would be. The selection
+    // is widened to the spreads it touches before the warnings are collected (noted in review).
+    let opts = options(p, s.doc()?.doc.page_count())?;
+    let warn_pages = opts.pages.as_deref().map(|pages| if opts.spreads { with_their_spreads(s, pages) } else { pages.to_vec() });
+    r.warnings.extend(crate::cmd::preflight::overset_warnings(s, warn_pages.as_deref()));
     match str_param(p, "path") {
         Some(path) => {
             write_file(path, &r.bytes)?;
@@ -169,41 +188,21 @@ pub(crate) fn print_pdf(
 /// The PDF that File › Export PDF writes for `p`, with its warnings: the print PDF
 /// ([`print_pdf`]) with its view options, timings and transitions. File › Print prints it.
 pub(crate) fn pdf_export(s: &Session, p: &Value) -> Result<designcraft_pdf::ExportReport> {
-    let st = s.doc()?;
-    let opts = options(p, st.doc.page_count())?;
+    pdf_report(&s.doc()?.doc, &s.cache, p)
+}
+
+/// [`pdf_export`] of `doc`: `file.package` writes its PDF of the packaged copy with it.
+pub(crate) fn pdf_report(doc: &designcraft_doc::Document, cache: &designcraft_compose::Cache, p: &Value) -> Result<designcraft_pdf::ExportReport> {
+    let opts = options(p, doc.page_count())?;
     let ppi = flatten_ppi("file.exportPdf", p)?;
-    let mut r = print_pdf(&st.doc, &s.cache, &opts, ppi)?;
-    let doc: &designcraft_doc::Document = &st.doc;
+    let (cat, dest) = view_options(p)?;
+    let mut r = print_pdf(doc, cache, &opts, ppi)?;
     let spreads = designcraft_pdf::sheet_spreads(doc, &opts);
-    // Interactive PDF view options.
-    let mut cat = String::new();
-    if p.get("fullScreen").and_then(Value::as_bool) == Some(true) {
-        cat.push_str("/PageMode/FullScreen");
-    } else if p.get("bookmarksPanel").and_then(Value::as_bool) == Some(true) {
-        cat.push_str("/PageMode/UseOutlines");
-    }
-    match str_param(p, "pageLayout") {
-        Some("single") => cat.push_str("/PageLayout/SinglePage"),
-        Some("continuous") => cat.push_str("/PageLayout/OneColumn"),
-        Some("twoUp") => cat.push_str("/PageLayout/TwoPageLeft"),
-        Some("twoUpCover") => cat.push_str("/PageLayout/TwoPageRight"),
-        Some("twoUpContinuous") => cat.push_str("/PageLayout/TwoColumnRight"),
-        Some(o) => return Err(bad("file.exportPdf", format!("unknown pageLayout `{o}`"))),
-        None => {}
-    }
-    if let Some(v) = str_param(p, "view") {
-        // The first page opens with this view (pages are objects in order, so refer by index 0).
-        let dest = match v {
-            "fitPage" => "/Fit",
-            "fitWidth" => "/FitH null",
-            "actual" => "/XYZ null null 1",
-            o => {
-                return Err(bad("file.exportPdf", format!("unknown view `{o}` (fitPage, fitWidth, actual)")));
-            }
-        };
-        if let Some(first) = first_page_ref(&r.bytes) {
-            cat.push_str(&format!("/OpenAction[{first} 0 R{dest}]"));
-        }
+    let mut cat = cat;
+    if let Some(dest) = dest
+        && let Some(first) = first_page_ref(&r.bytes)
+    {
+        cat.push_str(&format!("/OpenAction[{first} 0 R{dest}]"));
     }
     if !cat.is_empty() {
         match designcraft_pdf::add_catalog_entries(&r.bytes, &cat) {
@@ -213,8 +212,7 @@ pub(crate) fn pdf_export(s: &Session, p: &Value) -> Result<designcraft_pdf::Expo
     }
     // Flip pages every N seconds (presentation).
     if let Some(secs) = p.get("advanceSeconds").and_then(Value::as_f64).filter(|s| *s > 0.0) {
-        let n = designcraft_pdf::sheet_spreads(doc, &opts).len();
-        let dur: Vec<Option<String>> = (0..n).map(|_| Some(format!("/Dur {secs:.2}"))).collect();
+        let dur: Vec<Option<String>> = (0..spreads.len()).map(|_| Some(format!("/Dur {secs:.2}"))).collect();
         match designcraft_pdf::add_page_entries(&r.bytes, &dur) {
             Some(b) => r.bytes = b,
             None => r.warnings.push("page timings couldn't be set".into()),
@@ -230,6 +228,44 @@ pub(crate) fn pdf_export(s: &Session, p: &Value) -> Result<designcraft_pdf::Expo
         }
     }
     Ok(r)
+}
+
+/// The catalog entries of the interactive view options in `p` (page mode and layout) and the
+/// destination the first page opens at (`view`); unknown values are refused.
+fn view_options(p: &Value) -> Result<(String, Option<&'static str>)> {
+    let mut cat = String::new();
+    if p.get("fullScreen").and_then(Value::as_bool) == Some(true) {
+        cat.push_str("/PageMode/FullScreen");
+    } else if p.get("bookmarksPanel").and_then(Value::as_bool) == Some(true) {
+        cat.push_str("/PageMode/UseOutlines");
+    }
+    match str_param(p, "pageLayout") {
+        Some("single") => cat.push_str("/PageLayout/SinglePage"),
+        Some("continuous") => cat.push_str("/PageLayout/OneColumn"),
+        Some("twoUp") => cat.push_str("/PageLayout/TwoPageLeft"),
+        Some("twoUpCover") => cat.push_str("/PageLayout/TwoPageRight"),
+        Some("twoUpContinuous") => cat.push_str("/PageLayout/TwoColumnRight"),
+        Some(o) => return Err(bad("file.exportPdf", format!("unknown pageLayout `{o}`"))),
+        None => {}
+    }
+    // The first page opens with this view (pages are objects in order, so refer by index 0).
+    let dest = match str_param(p, "view") {
+        None => None,
+        Some("fitPage") => Some("/Fit"),
+        Some("fitWidth") => Some("/FitH null"),
+        Some("actual") => Some("/XYZ null null 1"),
+        Some(o) => return Err(bad("file.exportPdf", format!("unknown view `{o}` (fitPage, fitWidth, actual)"))),
+    };
+    Ok((cat, dest))
+}
+
+/// Refuses PDF options `p` that [`pdf_report`] would refuse for a document of `pages` pages,
+/// without exporting: `file.package` checks them before it writes anything.
+pub(crate) fn check_pdf_options(p: &Value, pages: usize) -> Result<()> {
+    options(p, pages)?;
+    flatten_ppi("file.exportPdf", p)?;
+    view_options(p)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -459,5 +495,221 @@ mod page_list_tests {
         // A page that does not exist is still refused, and an empty list still exports nothing.
         assert!(s.execute("file.exportPdf", &json!({"pages": [5]})).is_err());
         assert!(s.execute("file.exportPdf", &json!({"pages": []})).is_err());
+    }
+}
+
+#[cfg(test)]
+mod overset_tests {
+    use serde_json::json;
+
+    use crate::Session;
+
+    /// A page-based export leaves out the text its frames have no room for, and said nothing
+    /// about it: an imported 58-page form lost whole sentences — a data-consent clause, a
+    /// statutory rule, the last row of two tables — with `warnings` empty while preflight
+    /// reported 19 overset stories (#1465).
+    #[test]
+    fn an_export_warns_about_the_text_the_pages_had_no_room_for() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"width": 300, "height": 200, "pages": 2, "facingPages": false, "margins": 0})).unwrap();
+        let text = "First line is visible.\nSecond paragraph does not fit: this sentence carries the legal notice and must not vanish from the PDF without a warning.";
+        let frame = s.execute("frame.create", &json!({"rect": [20, 20, 280, 60], "content": "text", "text": text})).unwrap();
+        let (id, sid) = (frame["id"].as_u64().unwrap(), frame["story"].clone());
+
+        // What preflight says about the same frame, for the warning to agree with.
+        let issues = s.execute("preflight.run", &json!({})).unwrap();
+        let overset = issues["issues"].as_array().unwrap().iter().find(|i| i["kind"] == "overset").expect("preflight reports it").clone();
+        assert_eq!(overset["message"], "Overset text: 76 characters");
+
+        for command in ["file.exportPdf", "file.exportPptx"] {
+            let r = s.execute(command, &json!({})).unwrap();
+            let warnings = r["warnings"].as_array().expect("warnings").clone();
+            let about: Vec<&str> = warnings.iter().filter_map(|w| w.as_str()).filter(|w| w.contains("not in the export")).collect();
+            assert_eq!(about.len(), 1, "{command}: {warnings:?}");
+            let w = about[0];
+            assert!(w.contains("page 1"), "{command}: the page it is on: {w}");
+            assert!(w.contains("76 character"), "{command}: the count preflight gives: {w}");
+            assert!(w.contains(&format!("frame {id}")), "{command}: the frame: {w}");
+        }
+
+        // The pages being exported are the ones reported on: page 2 has no overset frame.
+        let r = s.execute("file.exportPdf", &json!({"pages": [2]})).unwrap();
+        assert_eq!(r["warnings"], json!([]), "{r}");
+
+        // A reflowable export carries the whole story, so it has nothing to report.
+        let r = s.execute("file.exportHtml", &json!({})).unwrap();
+        assert_eq!(r["warnings"], json!([]), "{r}");
+        assert!(r["text"].as_str().unwrap().contains("must not vanish"), "the HTML has the text the PDF left out");
+
+        // `overset` is the index where the text stops fitting; `oversetChars` is how much is left,
+        // which is the number preflight reports. The two were read as the same thing.
+        let story = s.execute("story.get", &json!({"story": sid})).unwrap();
+        assert_eq!(story["overset"], json!(68), "{story}");
+        assert_eq!(story["oversetChars"], json!(76), "{story}");
+
+        // A frame the text fits: nothing is reported anywhere.
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"width": 300, "height": 200, "pages": 1, "facingPages": false, "margins": 0})).unwrap();
+        let frame = s.execute("frame.create", &json!({"rect": [20, 20, 280, 180], "content": "text", "text": "Short."})).unwrap();
+        for command in ["file.exportPdf", "file.exportPptx"] {
+            assert_eq!(s.execute(command, &json!({})).unwrap()["warnings"], json!([]), "{command}");
+        }
+        let story = s.execute("story.get", &json!({"story": frame["story"].clone()})).unwrap();
+        assert!(story["overset"].is_null() && story["oversetChars"].is_null(), "{story}");
+    }
+
+    /// A sheet draws its spread's items without asking which page each one sits on, so a frame
+    /// straddling two pages is drawn, in part, on both. Choosing the page by the frame's centre
+    /// alone meant a frame centred on a page the export leaves out had its warning dropped while
+    /// the part on an exported page went into the file (#1493 review).
+    #[test]
+    fn an_export_warns_about_a_frame_that_only_crosses_into_one_of_its_pages() {
+        let mut s = Session::new();
+        // Facing pages, so pages 2 and 3 are one spread and a frame can straddle their boundary.
+        s.execute("file.new", &json!({"width": 300, "height": 200, "pages": 4, "facingPages": true, "margins": 0})).unwrap();
+        let text = "First line is visible.\nSecond paragraph does not fit: this sentence carries the legal notice and must not vanish from the PDF without a warning.";
+        // Spread 1 is pages 2-3; its page 2 runs x 0..300 and page 3 runs x 300..600. The frame
+        // is centred on page 3 and reaches back over the boundary into page 2.
+        let frame = json!({"spread": 1, "rect": [260, 20, 420, 60], "content": "text", "text": text});
+        let id = s.execute("frame.create", &frame).unwrap()["id"].as_u64().unwrap();
+
+        let about = |s: &mut Session, pages: serde_json::Value| {
+            let params = if pages.is_null() { json!({}) } else { json!({"pages": pages}) };
+            let r = s.execute("file.exportPdf", &params).unwrap();
+            let ws = r["warnings"].as_array().cloned().unwrap_or_default();
+            ws.iter().filter_map(|w| w.as_str()).filter(|w| w.contains("not in the export")).map(str::to_owned).collect::<Vec<_>>()
+        };
+
+        // The whole document: reported once, at the page the frame is centred on.
+        let all = about(&mut s, serde_json::Value::Null);
+        assert_eq!(all.len(), 1, "{all:?}");
+        assert!(all[0].contains("page 3") && all[0].contains(&format!("frame {id}")), "{}", all[0]);
+
+        // Exporting page 3 alone: the centre page, reported as before.
+        let three = about(&mut s, json!([3]));
+        assert_eq!(three.len(), 1, "{three:?}");
+        assert!(three[0].contains("page 3"), "{}", three[0]);
+
+        // Exporting page 2 alone: the frame's centre is on page 3, which is not in the export --
+        // but part of the frame is drawn on page 2, so it is still reported, and the page named is
+        // one the export has.
+        let two = about(&mut s, json!([2]));
+        assert_eq!(two.len(), 1, "a frame crossing into page 2 is reported: {two:?}");
+        assert!(two[0].contains("page 2"), "and the page it names is an exported one: {}", two[0]);
+        assert!(two[0].contains(&format!("frame {id}")), "{}", two[0]);
+
+        // A page the frame does not reach at all: nothing to say.
+        assert_eq!(about(&mut s, json!([4])), Vec::<String>::new());
+    }
+
+    /// `overset` indexes `text` in UTF-8 bytes, not characters: a client that slices a JavaScript
+    /// string at it cuts the wrong place once the text is not ASCII (noted in review).
+    #[test]
+    fn overset_is_a_byte_offset_into_the_text() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"width": 300, "height": 200, "pages": 1, "facingPages": false, "margins": 0})).unwrap();
+        // Accented letters are two bytes each, so the byte offset runs ahead of the character index.
+        let text = "Réservé à l'évaluation détaillée des éléments.\nCette phrase dépasse le cadre et n'est pas dans le PDF exporté du tout.";
+        let frame = s.execute("frame.create", &json!({"rect": [20, 20, 280, 40], "content": "text", "text": text})).unwrap();
+        let story = s.execute("story.get", &json!({"story": frame["story"].clone()})).unwrap();
+        let at = story["overset"].as_u64().expect("it oversets") as usize;
+        assert!(text.is_char_boundary(at), "a byte offset that splits no character: {at}");
+        assert!(at > text[..at].chars().count(), "ahead of the character index: {at} bytes, {} characters", text[..at].chars().count());
+        // And `oversetChars` counts characters, which is why the two numbers differ.
+        assert_eq!(story["oversetChars"], json!(text[at..].chars().count()), "{story}");
+    }
+
+    /// A parent page's frame is composed once per page that shows it: its page number marker is
+    /// that page's, so the same frame fits on page 1 and oversets on page 10 -- and a parent page
+    /// no exported page uses puts nothing in the file to be missing. Composing it once with no
+    /// page reported neither: every selection got the same unpaged warning (noted in review).
+    #[test]
+    fn a_parent_frame_is_checked_on_the_pages_that_show_it() {
+        let about = |r: &serde_json::Value| -> Vec<String> {
+            r["warnings"]
+                .as_array()
+                .map(|w| w.iter().filter_map(|w| w.as_str()).filter(|w| w.contains("not in the export")).map(str::to_string).collect())
+                .unwrap_or_default()
+        };
+
+        // A parent page that only page 1 uses.
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"width": 300, "height": 200, "pages": 2, "facingPages": false, "margins": 0})).unwrap();
+        s.execute("layout.pages.applyParent", &json!({"pages": [1], "parent": null})).unwrap();
+        let text = "First line is visible.\nSecond paragraph does not fit: this sentence carries the legal notice and must not vanish from the PDF without a warning.";
+        let frame = s
+            .execute("frame.create", &json!({"spread": {"kind": "parent", "index": 0}, "rect": [20, 20, 280, 60], "content": "text", "text": text}))
+            .unwrap();
+        let id = frame["id"].as_u64().unwrap();
+
+        let w = about(&s.execute("file.exportPdf", &json!({"pages": [1]})).unwrap());
+        assert_eq!(w.len(), 1, "page 1 shows the parent: {w:?}");
+        assert!(w[0].contains("page 1") && w[0].contains(&format!("frame {id}")) && w[0].contains("76 character"), "{}", w[0]);
+
+        // Page 2 has no parent, so nothing of that frame is in its export to be missing.
+        let r = s.execute("file.exportPdf", &json!({"pages": [2]})).unwrap();
+        assert!(about(&r).is_empty(), "page 2 does not use the parent: {r}");
+
+        // Page-dependent text: the marker is one digit up to page 9 and two from page 10, and the
+        // wider line no longer fits. 112 pt is the width where that is the only difference.
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"width": 300, "height": 200, "pages": 12, "facingPages": false, "margins": 0})).unwrap();
+        let text = format!("Continued on page {}", designcraft_doc::story::PAGE_NUMBER);
+        s.execute("frame.create", &json!({"spread": {"kind": "parent", "index": 0}, "rect": [20, 20, 132, 36], "content": "text", "text": text}))
+            .unwrap();
+
+        for page in [1, 9] {
+            let r = s.execute("file.exportPdf", &json!({"pages": [page]})).unwrap();
+            assert!(about(&r).is_empty(), "page {page} fits one digit: {r}");
+        }
+        let w = about(&s.execute("file.exportPdf", &json!({"pages": [10]})).unwrap());
+        assert_eq!(w.len(), 1, "two digits do not fit: {w:?}");
+        assert!(w[0].contains("page 10"), "{}", w[0]);
+
+        // The whole document: one line naming every page it happens on, not one line per page.
+        let w = about(&s.execute("file.exportPdf", &json!({})).unwrap());
+        assert_eq!(w.len(), 1, "one line for the story: {w:?}");
+        assert!(w[0].starts_with("pages 10, 11, 12:"), "{}", w[0]);
+    }
+
+    /// A spread export puts the whole spread on the sheet, so choosing one page of it exports its
+    /// partner too -- and that partner's overset is just as absent from the file. Reporting only
+    /// the pages that were named left it unmentioned (noted in review of #1465).
+    #[test]
+    fn a_spread_export_warns_about_the_pages_it_takes_with_it() {
+        let mut s = Session::new();
+        // Facing pages: 2 and 3 share a spread, 1 is the cover on its own.
+        s.execute("file.new", &json!({"width": 200, "height": 200, "pages": 4, "facingPages": true, "margins": 0})).unwrap();
+        let text = "First line is visible.\nSecond paragraph does not fit: this sentence carries the legal notice and must not vanish from the PDF without a warning.";
+        // A frame on page 3, whose text does not fit it. `frame.create` takes a spread and
+        // spread coordinates, so page 3's own bounds say where to put it.
+        let (si, b) = {
+            let d = &s.active().expect("a document").doc;
+            let (si, pi) = d.page_loc(2).expect("page 3 is there");
+            (si, d.spreads[si].pages[pi].bounds())
+        };
+        let rect = json!([b.x0 + 20.0, b.y0 + 20.0, b.x0 + 180.0, b.y0 + 60.0]);
+        let frame = s.execute("frame.create", &json!({"spread": si, "rect": rect, "content": "text", "text": text})).unwrap();
+        let id = frame["id"].as_u64().unwrap();
+        let about = |r: &serde_json::Value| -> Vec<String> {
+            r["warnings"]
+                .as_array()
+                .map(|w| w.iter().filter_map(|w| w.as_str()).filter(|w| w.contains("not in the export")).map(str::to_string).collect())
+                .unwrap_or_default()
+        };
+
+        // Page by page, choosing page 2 reports nothing: page 2 holds no overset frame.
+        let r = s.execute("file.exportPdf", &json!({"pages": [2]})).unwrap();
+        assert!(about(&r).is_empty(), "page 2 alone has nothing to report: {r}");
+
+        // As spreads, choosing page 2 exports page 3 with it, so page 3's overset is reported.
+        let r = s.execute("file.exportPdf", &json!({"pages": [2], "spreads": true})).unwrap();
+        let w = about(&r);
+        assert_eq!(w.len(), 1, "the page that came along is reported too: {r}");
+        assert!(w[0].contains("page 3") && w[0].contains(&format!("frame {id}")), "{}", w[0]);
+
+        // And a page on another spread entirely is still not reported.
+        let r = s.execute("file.exportPdf", &json!({"pages": [1], "spreads": true})).unwrap();
+        assert!(about(&r).is_empty(), "the cover's spread holds no overset frame: {r}");
     }
 }
