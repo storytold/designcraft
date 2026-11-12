@@ -40,15 +40,35 @@ pub(crate) fn offset(angle: f64, distance: f64) -> Vec2 {
 
 /// How far (points) the effects of `it` reach outside its geometry.
 pub(crate) fn outset(it: &Item) -> f64 {
+    outset_scaled(it, 1.0)
+}
+
+/// [`outset`] for an item whose transform stretches lengths by up to `scale`: the blur and the
+/// shadow's distance are spread lengths, but the spread's growth is stroked through the item's
+/// transform and grows with it.
+pub(crate) fn outset_scaled(it: &Item, scale: f64) -> f64 {
     let e = &it.effects;
+    let extra = |size: f64, pct: f64| split(size, pct).1 * (scale - 1.0).max(0.0);
     let mut o: f64 = 0.0;
     if e.drop_shadow.on {
-        o = o.max(bound(e.drop_shadow.distance).abs() + bound(e.drop_shadow.size).abs() * 1.6 + 1.0);
+        let s = &e.drop_shadow;
+        o = o.max(bound(s.distance).abs() + bound(s.size).abs() * 1.6 + 1.0 + extra(s.size, s.spread));
     }
     if e.outer_glow.on {
-        o = o.max(bound(e.outer_glow.size).abs() * 1.6 + 1.0);
+        let g = &e.outer_glow;
+        o = o.max(bound(g.size).abs() * 1.6 + 1.0 + extra(g.size, g.spread));
     }
     o
+}
+
+/// The largest factor `m` stretches a length by (its linear part's largest singular value), or
+/// None when that is not finite.
+pub(crate) fn max_scale(m: Affine) -> Option<f64> {
+    let [a, b, c, d, _, _] = m.as_coeffs();
+    let s = a * a + b * b + c * c + d * d;
+    let det = a * d - b * c;
+    let v = ((s + (s * s - 4.0 * det * det).max(0.0).sqrt()) / 2.0).sqrt();
+    v.is_finite().then_some(v)
 }
 
 /// Whether `it` has a basic feather: a width on a closed shape.
@@ -120,7 +140,9 @@ impl Renderer {
     pub(crate) fn draw_item_fx(&mut self, ctx: &mut RenderContext, f: &Frame, it: &Item, bp: &BezPath, xf: Affine, page: ShownOn) {
         let doc = f.doc;
         let e = &it.effects;
-        let sw = if it.stroke.is_none() { 0.0 } else { it.stroke.extent() };
+        // The stroke and the effects' growth are drawn through `xf`, which stretches them.
+        let scale = max_scale(xf).unwrap_or(1.0);
+        let sw = if it.stroke.is_none() { 0.0 } else { it.stroke.extent() * scale };
         // Spread-space reach of what the object paints.
         let reach = xf.transform_rect_bbox(bp.bounding_box()).inflate(sw + 1.0, sw + 1.0);
         // The silhouette is the shape when the object paints its area (fill / image); text frames
@@ -150,7 +172,7 @@ impl Renderer {
             let filter = shadow(sigma, paint);
             // The offset moves the geometry, not the filter: vello drops layer content that lies
             // entirely outside the viewport before filtering.
-            let r = (reach + off).inflate(grow, grow);
+            let r = (reach + off).inflate(grow * scale, grow * scale);
             // The effect's blend sees what's behind the object: a layer around the filtered one.
             let mix = crate::blend_mode(mode).mix;
             if mix != Mix::Normal {
@@ -1513,6 +1535,88 @@ mod tests {
                         );
                     }
                 }
+            }
+        }
+    }
+
+    /// A hardened outer glow is stroked through the item's transform, so a scaled item's glow
+    /// grows with it. The multithreaded renderer draws the glow offscreen, cropped to its reach,
+    /// and that reach scales too.
+    #[test]
+    fn a_scaled_items_hard_glow_is_not_cropped() {
+        use designcraft_doc::build::NewDocument;
+        use designcraft_doc::{Document, SpreadRef};
+        let mut d = Document::new(&NewDocument::default());
+        let lid = d.default_layer();
+        let mut it = Item::new(
+            designcraft_doc::ItemId(d.alloc()),
+            lid,
+            designcraft_doc::Shape::Rectangle,
+            designcraft_geom::shapes::rectangle(Rect::new(50.0, 50.0, 90.0, 90.0)),
+        );
+        it.xf = Affine::scale(3.0);
+        it.fill = designcraft_doc::Fill::swatch(designcraft_color::swatch::BLACK);
+        let g = &mut it.effects.outer_glow;
+        (g.on, g.color, g.opacity, g.size, g.spread) = (true, designcraft_color::swatch::BLACK.into(), 1.0, 20.0, 100.0);
+        // max_scale's own cases: a plain scale, a rotation and a shear.
+        assert_eq!(max_scale(it.xf), Some(3.0));
+        assert!((max_scale(Affine::rotate(0.7)).unwrap() - 1.0).abs() < 1e-12);
+        assert!((max_scale(Affine::skew(1.0, 0.0)).unwrap() - (1.0 + 5f64.sqrt()) / 2.0).abs() < 1e-12);
+        assert_eq!(max_scale(Affine::scale(f64::INFINITY)), None);
+        // The 20 pt growth is 60 pt on the spread: the glow covers 90..330.
+        assert_eq!(outset_scaled(&it, 3.0), outset(&it) + 40.0);
+        d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+        let cache = crate::Cache::new();
+        for threads in [0, 2] {
+            let mut r = Renderer::new();
+            r.threads = threads;
+            let page = r.render_page(&d, &cache, 0, 1.0, false, &crate::RenderOptions::default()).unwrap();
+            let p = page.pixel(100, 210);
+            let lum = u32::from(p[0]) + u32::from(p[1]) + u32::from(p[2]);
+            assert!(lum < 200, "{threads} threads: the glow 50 pt left of the scaled square is drawn, luminance {lum}");
+        }
+    }
+
+    /// Culling measures a scaled item's stroke and hardened glow as they are drawn, through its
+    /// transform, so a view (or a repaint patch) that shows only that part still draws it.
+    #[test]
+    fn a_scaled_items_hard_glow_and_stroke_are_not_culled() {
+        use designcraft_doc::build::NewDocument;
+        use designcraft_doc::{Document, SpreadRef};
+        let square = |glow: bool| {
+            let mut d = Document::new(&NewDocument::default());
+            let lid = d.default_layer();
+            let mut it = Item::new(
+                designcraft_doc::ItemId(d.alloc()),
+                lid,
+                designcraft_doc::Shape::Rectangle,
+                designcraft_geom::shapes::rectangle(Rect::new(50.0, 50.0, 90.0, 90.0)),
+            );
+            it.xf = Affine::scale(3.0);
+            it.fill = designcraft_doc::Fill::swatch(designcraft_color::swatch::BLACK);
+            if glow {
+                let g = &mut it.effects.outer_glow;
+                (g.on, g.color, g.opacity, g.size, g.spread) = (true, designcraft_color::swatch::BLACK.into(), 1.0, 20.0, 100.0);
+            } else {
+                (it.stroke.swatch, it.stroke.weight) = (designcraft_color::swatch::BLACK.into(), 20.0);
+            }
+            d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+            d
+        };
+        let cache = crate::Cache::new();
+        let opts = crate::RenderOptions { background: Some([255, 255, 255, 255]), ..Default::default() };
+        // The square covers 150..270 on the spread. Its glow grows 60 pt (to 90), past the
+        // unscaled 33 pt reach; its 20 pt stroke is 60 pt wide (to 120), past the unscaled 22 pt.
+        for (glow, x) in [(true, 95.0), (false, 123.0)] {
+            let d = square(glow);
+            for threads in [0, 2] {
+                let mut r = Renderer::new();
+                r.threads = threads;
+                let place = [crate::Placed { spread: SpreadRef::Doc(0), xf: Affine::IDENTITY }];
+                let image = r.render(&d, &cache, &place, (4, 20), Affine::translate((-x, -200.0)), &opts);
+                let p = image.pixel(1, 10);
+                let lum = u32::from(p[0]) + u32::from(p[1]) + u32::from(p[2]);
+                assert!(lum < 200, "glow {glow}, {threads} threads: the view at x {x} shows the scaled square's edge, luminance {lum}");
             }
         }
     }
