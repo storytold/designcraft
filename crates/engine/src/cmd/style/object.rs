@@ -237,7 +237,7 @@ fn text_frame_param(
 /// A true/false parameter, when given.
 fn bool_param(cmd: &str, p: &Value, key: &str) -> Result<Option<bool>> {
     match p.get(key) {
-        None | Some(Value::Null) => Ok(None),
+        None => Ok(None),
         Some(Value::Bool(b)) => Ok(Some(*b)),
         Some(_) => Err(bad(cmd, format!("`{key}` must be true or false"))),
     }
