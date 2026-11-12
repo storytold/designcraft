@@ -388,6 +388,7 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 ## Progress log
 
+- **2026-11-12** · Center, Bottom and Justify vertical justification in a shaped frame test each moved line against the outline down to its baseline. The descenders of earlier lines may cross the outline, as the last line's do, so an outline that narrows under an earlier line no longer holds the text higher by that line's descent. No readiness percentage change.
 - **2026-11-12** · The status bar's preflight count and the Preflight panel take their issues from a check on a background worker, which checks the newest state of the document and shows the issues last found meanwhile. Moving or resizing a frame and typing no longer wait for a check of the whole document on every drag step and keystroke. No readiness percentage change.
 - **2026-11-04** · Striped strokes retain out-and-back cubic segments whose second control point is away from the coincident endpoints and first control point. A geometry regression checks the offset extent and both stripe bands. No readiness percentage change.
 - **2026-11-04** · Esperanto is a text language (Character › Language, `type.char {language: "Esperanto"}`, IDML `$ID/Esperanto`): tag `eo`, English-style quotes; not hyphenated yet (#1201). No readiness percentage change.
