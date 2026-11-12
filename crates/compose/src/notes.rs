@@ -132,6 +132,11 @@ pub(crate) struct Notes {
     floor: HashMap<usize, f64>,
 }
 
+/// Whether composition can number footnotes directly or inside a paragraph's table.
+pub(crate) fn has_notes_or_tables(story: &Story) -> bool {
+    !story.notes.is_empty() || (0..story.paras.len()).any(|pi| story.para_table(pi).is_some())
+}
+
 impl Notes {
     /// The story's notes. `start` is where numbering begins: a table cell continues the
     /// numbering of the story holding the table, so its notes take their place in the story's
@@ -140,10 +145,7 @@ impl Notes {
         let refs: Vec<usize> = if story.notes.is_empty() { Vec::new() } else { story.text.match_indices(FOOTNOTE_REF).map(|(i, _)| i).collect() };
         let start = match start {
             Some(n) => n,
-            None => {
-                let has_notes = !refs.is_empty() || (0..story.paras.len()).any(|pi| story.para_table(pi).is_some());
-                NoteNumber { num: if has_notes { doc.footnote_start(story.id) } else { 1 }, key: None }
-            }
+            None => NoteNumber { num: if has_notes_or_tables(story) { doc.footnote_start(story.id) } else { 1 }, key: None },
         };
         Notes {
             numbers: vec![start.num; refs.len()],

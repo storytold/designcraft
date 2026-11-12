@@ -253,8 +253,9 @@ pub(crate) fn place_table(
     // Compose owner cells in logical row/column order; column 0 is already rightmost in RTL.
     // Cell footnotes are numbered in the host story's sequence, so each cell carries on from the
     // one before it and the host story continues after the table.
-    // ponytail: page/spread/section restarts number later-page cells of a table that breaks
-    // across pages as on its first page; recompute numbering per placed row fragment to fix this.
+    // ponytail: page/spread/section restarts use the pre-pagination page, including later-page
+    // cells and a table whose first row moves to the next page; recompute numbering per placed
+    // row fragment to fix this.
     let page = frames[cur.fi].page;
     let mut note_number = notes.cell_start(doc, page);
     let mut layouts: Vec<Option<CellLayout>> = (0..nr * nc).map(|_| None).collect();
@@ -1052,6 +1053,28 @@ mod height_tests {
         let cs = crate::compose_story(&doc, later, &ComposeOptions::default());
         assert!(!cs.is_overset());
         assert_eq!(note_labels(&cs.frames[0].tables[0].cell(0, 0).unwrap().text), ["2"]);
+    }
+
+    #[test]
+    fn cached_table_only_story_updates_after_earlier_story_note() {
+        let mut doc = Document::new(&NewDocument::default());
+        doc.footnote_options.restart = designcraft_doc::notes::NoteRestart::Never;
+        doc.footnote_options.start_at = 1;
+        let (_, earlier) =
+            doc.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 200.0, 200.0), doc.default_layer(), "Before", ParaFormat::default()).unwrap();
+        doc.story_mut(earlier).unwrap().insert_note(6, "Earlier note.", ParaFormat::default()).unwrap();
+        let (_, later) =
+            doc.add_text_frame(SpreadRef::Doc(0), Rect::new(220.0, 0.0, 420.0, 700.0), doc.default_layer(), "", ParaFormat::default()).unwrap();
+        doc.story_mut(later).unwrap().insert_table(0, single_table(note_cell()));
+        let cache = crate::Cache::new();
+        let before = cache.get(&doc, later, None);
+        assert!(!before.is_overset());
+        assert_eq!(note_labels(&before.frames[0].tables[0].cell(0, 0).unwrap().text), ["2"]);
+        let story = doc.story_mut(earlier).unwrap();
+        story.insert_note(story.len(), "Another earlier note.", ParaFormat::default()).unwrap();
+        let after = cache.get(&doc, later, None);
+        assert!(!after.is_overset());
+        assert_eq!(note_labels(&after.frames[0].tables[0].cell(0, 0).unwrap().text), ["3"]);
     }
 
     #[test]

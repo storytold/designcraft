@@ -272,7 +272,7 @@ impl Cache {
             format!("{:?}", doc.xref_formats).hash(&mut h);
             sig.extend([doc_signature(doc) as usize, h.finish() as usize]);
         }
-        if !story.notes.is_empty() {
+        if crate::notes::has_notes_or_tables(story) {
             // Footnote numbers continue from earlier stories; layout follows the options.
             use std::hash::{Hash, Hasher};
             let mut h = std::collections::hash_map::DefaultHasher::new();
