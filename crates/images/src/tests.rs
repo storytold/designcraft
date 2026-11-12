@@ -597,6 +597,19 @@ fn reduced_jpegs_decode_at_a_half_quarter_or_eighth_rounded_up() {
 }
 
 #[test]
+fn a_thin_reduced_jpeg_keeps_its_long_side_at_the_requested_reduction() {
+    // The short side rounds up to 1 at every reduction, so it cannot pick the scale.
+    for (w, h) in [(100, 2), (2, 100)] {
+        let jpeg = gradient_jpeg(w, h, false);
+        for (shrink, long) in [(1, 50), (2, 25), (3, 13)] {
+            let img = decode_rgba_reduced(&jpeg, shrink).unwrap();
+            let size = if w > h { (long, 1) } else { (1, long) };
+            assert_eq!(img.dimensions(), size, "{w} × {h}, shrink {shrink}");
+        }
+    }
+}
+
+#[test]
 fn reduced_decoding_is_for_jpegs_and_survives_damaged_ones() {
     let gray = decode_rgba_reduced(&gradient_jpeg(64, 64, true), 2).unwrap();
     assert_eq!(gray.dimensions(), (16, 16));

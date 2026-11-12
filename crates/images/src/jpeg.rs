@@ -100,7 +100,14 @@ pub(crate) fn decode_reduced(bytes: &[u8], shrink: u8) -> Option<(image::RgbaIma
         }
     }
     let reduced = |n: u16| u16::try_from(u32::from(n).div_ceil(1 << shrink)).ok();
-    let (w, h) = d.scale(reduced(info.width)?, reduced(info.height)?).ok()?;
+    let expected = (reduced(info.width)?, reduced(info.height)?);
+    // The decoder takes the smallest scale that meets either requested side, and a short side
+    // rounds up to the same size at several scales, so only the long side is requested.
+    let request = if info.width >= info.height { (expected.0, u16::MAX) } else { (u16::MAX, expected.1) };
+    let (w, h) = d.scale(request.0, request.1).ok()?;
+    if (w, h) != expected {
+        return None;
+    }
     let px = d.decode().ok()?;
     let pixels = usize::from(w).checked_mul(usize::from(h))?;
     let rgba: Vec<u8> = if colour {
