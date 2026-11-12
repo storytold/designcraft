@@ -874,6 +874,13 @@ fn images_in_view_are_decoded_together_before_drawing() {
         (0..3).map(|i| place(&mut d, Rect::new(20.0 + 90.0 * i as f64, 20.0, 100.0 + 90.0 * i as f64, 100.0), 200 + i as u8, false)).collect();
     let hidden = place(&mut d, Rect::new(20.0, 150.0, 100.0, 230.0), 10, true);
     let outside = place(&mut d, Rect::new(400.0, 600.0, 500.0, 700.0), 20, false);
+    // Scaled 4 times, a 10 point stroke reaches 40 points out: from 320 to the left of the view's
+    // edge at 300. The render draws this image, so it is decoded ahead too.
+    let stretched = place(&mut d, Rect::new(0.0, 0.0, 20.0, 20.0), 30, false);
+    let sid = d.spread(SpreadRef::Doc(0)).unwrap().items.last().unwrap().id;
+    let it = d.item_mut(sid).unwrap();
+    it.xf = Affine::translate((320.0, 20.0)) * Affine::scale(4.0);
+    it.stroke = designcraft_doc::Stroke { swatch: designcraft_color::swatch::BLACK.into(), weight: 10.0, ..Default::default() };
     // Decodes logged from here on with these buffers' addresses are theirs (they live on).
     let since = images::DECODED_ON.lock().unwrap().len();
     let cache = Cache::new();
@@ -894,6 +901,8 @@ fn images_in_view_are_decoded_together_before_drawing() {
         assert_eq!(on.len(), 1, "image {i} decoded once");
         assert_ne!(on[0], me, "image {i} decoded ahead, off the render thread");
     }
+    let on = decoded_on(&stretched);
+    assert!(on.len() == 1 && on[0] != me, "a scaled image whose stroke reaches the view is decoded ahead: {on:?}");
     assert!(decoded_on(&hidden).is_empty(), "a hidden image is not decoded");
     assert!(decoded_on(&outside).is_empty(), "an image out of view is not decoded");
 }

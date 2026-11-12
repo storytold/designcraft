@@ -99,8 +99,11 @@ fn wanted_in(f: &Frame, it: &Item, parent: Affine, depth: usize, out: &mut Vec<i
         }
         return;
     }
-    let vb = xf.transform_rect_bbox(it.inner_bounds()).inflate(it.stroke.extent() + 2.0, it.stroke.extent() + 2.0);
-    let fx_outset = if it.effects.any() && f.opts.quality != DisplayQuality::Fast { fx::outset(it) } else { 0.0 };
+    // As draw_item_inner culls: the stroke and the effects' growth stretch with `xf`.
+    let scale = fx::max_scale(xf).unwrap_or(1.0);
+    let stroke = it.stroke.extent() * scale;
+    let vb = xf.transform_rect_bbox(it.inner_bounds()).inflate(stroke + 2.0, stroke + 2.0);
+    let fx_outset = if it.effects.any() && f.opts.quality != DisplayQuality::Fast { fx::outset_scaled(it, scale) } else { 0.0 };
     if !rect_overlaps(vb.inflate(fx_outset, fx_outset), f.visible) {
         return;
     }
