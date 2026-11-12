@@ -2,6 +2,19 @@
 //! Clean-room wording based on DesignCraft's own English command and interface labels.
 
 pub(super) const TABLE: &[(&str, &str)] = &[
+    ("Direction", "כיוון"),
+    ("Horizontal", "אופקי"),
+    ("Vertical", "אנכי"),
+    ("On", "מופעל"),
+    ("Off", "כבוי"),
+    ("None", "ללא"),
+    ("[None]", "[ללא]"),
+    ("Quick Actions", "פעולות מהירות"),
+    ("More Options", "אפשרויות נוספות"),
+    ("Dialog", "תיבת דו־שיח"),
+    ("General", "כללי"),
+    ("Justification", "יישור לשני הצדדים"),
+
     // GrokBot code-context review, independently checked against active native UI callsites.
     ("Desired", "רצוי"),
     ("forcedLineBreak", "מעבר שורה כפוי"),

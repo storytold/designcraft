@@ -611,7 +611,7 @@ fn czech_counts_use_the_plural_form_for_the_number() {
 #[test]
 fn hebrew_catalog_is_selectable_rtl_and_preserves_english_keys() {
     let mut seen = HashSet::new();
-    assert_eq!(he::TABLE.len(), 1313, "Hebrew source-linked table changed");
+    assert_eq!(he::TABLE.len(), 1325, "Hebrew source-linked table changed");
     for (source, translated) in he::TABLE {
         assert!(seen.insert(*source), "duplicate Hebrew source key: {source}");
         assert!(!translated.trim().is_empty(), "empty Hebrew: {source}");
@@ -788,4 +788,24 @@ fn hebrew_grokbot_context_reviewed_live_ui_labels() {
         assert_eq!(tr("he", source), expected, "new Hebrew UI label: {source}");
     }
     assert_eq!(tr("en", "Desired"), "Desired", "English UI must remain unchanged");
+}
+
+#[test]
+fn hebrew_core_dialog_controls_are_translated() {
+    for (source, expected) in [
+        ("Direction", "כיוון"),
+        ("Horizontal", "אופקי"),
+        ("Vertical", "אנכי"),
+        ("On", "מופעל"),
+        ("Off", "כבוי"),
+        ("None", "ללא"),
+        ("[None]", "[ללא]"),
+        ("Quick Actions", "פעולות מהירות"),
+        ("More Options", "אפשרויות נוספות"),
+        ("Dialog", "תיבת דו־שיח"),
+        ("General", "כללי"),
+        ("Justification", "יישור לשני הצדדים"),
+    ] {
+        assert_eq!(tr("he", source), expected, "Hebrew native UI control: {source}");
+    }
 }
