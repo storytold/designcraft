@@ -516,13 +516,21 @@ pub(super) fn quick_actions_text(app: &mut DesignApp, ui: &mut Ui) {
     }
 }
 
-/// Text Frame section: columns, gutter, [Options].
+/// The text frame the Text Frame section shows, as Text Frame Options shows it: the first selected
+/// frame, the frame that shows the caret, or the first frame holding selected text. Its id and its
+/// options.
+pub(super) fn text_frame_target(app: &DesignApp) -> Option<(designcraft_doc::ItemId, designcraft_doc::TextFrameOptions)> {
+    let st = app.session.active()?;
+    let fid = designcraft_engine::cmd::text_frame_options_frames(&app.session).first().copied()?;
+    Some((fid, st.doc.item(fid)?.text_frame()?.options.clone()))
+}
+
+/// Text Frame section: columns, gutter, [Options]. With the Type tool it changes the frame that
+/// shows the caret, or every frame that holds part of the selected text.
 pub(super) fn text_frame_section(app: &mut DesignApp, ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
     let u = units(app);
-    let Some(st) = app.session.active() else { return };
-    let fid = st.selection.items.first().copied().or_else(|| st.selection.text.and_then(|t| t.frame));
-    let Some(opts) = fid.and_then(|f| st.doc.item(f)).and_then(|i| i.text_frame()).map(|t| t.options.clone()) else { return };
+    let Some((_, opts)) = text_frame_target(app) else { return };
     let b = block(ui, FIELD_H);
     icons::paint(ui.painter(), sub(b, 0.0, 1.0, 19.0, 19.0), "text-columns", t.icon);
     if let Some(v) = place(ui, sub(b, 22.0, 0.0, 54.0, FIELD_H), |ui| {

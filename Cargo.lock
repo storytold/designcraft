@@ -1575,6 +1575,7 @@ dependencies = [
 name = "designcraft-render"
 version = "0.20.1"
 dependencies = [
+ "bytemuck",
  "craft-pdf",
  "designcraft-color",
  "designcraft-compose",

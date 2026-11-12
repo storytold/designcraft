@@ -513,6 +513,7 @@ fn hostile_wrap_geometry_terminates() {
         side: WrapSide::BothSides,
         contour: None,
         after: None,
+        anchor_baseline: None,
     };
     let f = &mut specs[0];
     f.exclusions.push(ex(f64::NAN, f64::NAN, f64::NAN, f64::NAN, WrapMode::JumpObject));
@@ -571,6 +572,318 @@ fn wrap_on_both_sides_sets_text_left_then_right_of_the_object() {
     let top = pairs.first().unwrap().0.x1;
     assert!(top > mid + 5.0, "top {top}, middle {mid}");
     assert!(!cs.is_overset());
+}
+
+/// A 60 × 200 pt frame at the origin holding `text` with vertical justification `vj`, and a bar
+/// at `bar` whose text wrap `wrap` keeps 1 mm above it: (baseline, descent) of each line, the
+/// text area and the wrap's top (None when the bar doesn't wrap the frame).
+fn bar_chart_lines(
+    text: &str,
+    vj: designcraft_doc::VerticalJustification,
+    wrap: WrapMode,
+    side: WrapSide,
+    bar: Rect,
+) -> (Vec<(f64, f64)>, Rect, Option<f64>) {
+    let (mut d, sid, fid) = doc_with(text, Rect::new(0.0, 0.0, 60.0, 200.0), ParaAttrs::default());
+    d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.vertical_justification = vj;
+    let lid = d.default_layer();
+    let id = ItemId(d.alloc());
+    let mut it = designcraft_doc::Item::new(id, lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(bar));
+    it.wrap.mode = wrap;
+    it.wrap.side = side;
+    it.wrap.offsets = [72.0 / 25.4, 0.0, 0.0, 0.0];
+    d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+    let spec = frame_specs(&d, sid).remove(0);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    let lines = all_lines(&cs).iter().map(|l| (l.baseline, l.descent)).collect();
+    (lines, spec.area, spec.exclusions.first().map(|e| e.rect.y0))
+}
+
+/// Bottom, Center and Justify keep the lines out of a text wrap under them: a number aligned to
+/// the bottom of its frame sits on the wrap's top offset over a bar instead of on the bar (#1831),
+/// with every wrap mode that stops text there.
+#[test]
+fn vertical_justification_stops_at_a_wrap_under_the_text() {
+    use designcraft_doc::VerticalJustification::{Bottom, Center, Justify, Top};
+    let bar = Rect::new(0.0, 150.0, 60.0, 300.0);
+    for wrap in [WrapMode::BoundingBox, WrapMode::Contour, WrapMode::JumpObject, WrapMode::JumpToNextColumn] {
+        let run = |vj, text| bar_chart_lines(text, vj, wrap, WrapSide::BothSides, bar);
+        let (top, _, wrap_top) = run(Top, "42");
+        let wrap_top = wrap_top.unwrap();
+        assert!((wrap_top - (150.0 - 72.0 / 25.4)).abs() < 1e-6, "{wrap:?}: the wrap's top is 1 mm above the bar: {wrap_top}");
+
+        let (bottom, _, _) = run(Bottom, "42");
+        let b = bottom[0].0;
+        assert!((b - wrap_top).abs() < 1e-6, "{wrap:?}: Bottom put the baseline at {b}, not on the wrap's top at {wrap_top}");
+        assert!(b > top[0].0 + 50.0, "{wrap:?}: Bottom moved the line down: {b}, {}", top[0].0);
+
+        // Center takes half the room Bottom takes.
+        let (center, _, _) = run(Center, "42");
+        assert!((center[0].0 - top[0].0 - (b - top[0].0) / 2.0).abs() < 1e-6, "{wrap:?}: Center at {}, Bottom at {b}", center[0].0);
+
+        // Justify keeps the first baseline and puts the last where Bottom puts it.
+        let (top2, _, _) = run(Top, "12\n34");
+        let (bottom2, _, _) = run(Bottom, "12\n34");
+        let (justify, _, _) = run(Justify, "12\n34");
+        assert_eq!(justify.len(), 2);
+        assert!((justify[0].0 - top2[0].0).abs() < 1e-6, "{wrap:?}: Justify moved the first line: {justify:?}");
+        assert!((justify[1].0 - bottom2[1].0).abs() < 1e-6, "{wrap:?}: Justify {justify:?}, Bottom {bottom2:?}");
+        assert!(justify[1].0 <= wrap_top + 1e-6);
+    }
+}
+
+/// Without a wrap, or beside one, Bottom still moves the text down to the text area's bottom.
+#[test]
+fn vertical_justification_passes_wraps_that_do_not_stop_the_text() {
+    use designcraft_doc::VerticalJustification::Bottom;
+    // Wrap off: the number goes down over the bar.
+    let (lines, area, wrap_top) = bar_chart_lines("42", Bottom, WrapMode::None, WrapSide::BothSides, Rect::new(0.0, 150.0, 60.0, 300.0));
+    assert!(wrap_top.is_none());
+    assert!((lines[0].0 - area.y1).abs() < 1e-6, "{lines:?}, bottom {}", area.y1);
+    // A bar on the right half from the frame's top: the number is set beside it and goes down
+    // beside it.
+    let (lines, area, wrap_top) = bar_chart_lines("42", Bottom, WrapMode::BoundingBox, WrapSide::BothSides, Rect::new(30.0, 0.0, 60.0, 300.0));
+    assert!(wrap_top.is_some());
+    assert!((lines[0].0 - area.y1).abs() < 1e-6, "{lines:?}, bottom {}", area.y1);
+}
+
+/// A one-sided wrap in the second column leaves the first column's lines free to go down, as it
+/// leaves them when they are set.
+#[test]
+fn vertical_justification_passes_a_one_sided_wrap_in_another_column() {
+    let (mut d, sid, fid) = doc_with("One", Rect::new(0.0, 0.0, 400.0, 200.0), ParaAttrs::default());
+    let o = &mut d.item_mut(fid).unwrap().text_frame_mut().unwrap().options;
+    o.columns = 2;
+    o.vertical_justification = designcraft_doc::VerticalJustification::Bottom;
+    let lid = d.default_layer();
+    let mut it = designcraft_doc::Item::new(
+        ItemId(d.alloc()),
+        lid,
+        designcraft_doc::Shape::Rectangle,
+        designcraft_geom::shapes::rectangle(Rect::new(250.0, 100.0, 350.0, 300.0)),
+    );
+    it.wrap.mode = WrapMode::BoundingBox;
+    it.wrap.side = WrapSide::RightSide;
+    d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let l = all_lines(&cs)[0];
+    assert_eq!(l.column, 0);
+    assert!((l.baseline - 200.0).abs() < 1e-6, "baseline {}", l.baseline);
+}
+
+/// Beside a contour that widens further down, Bottom moves a line only as far as its band stays
+/// clear of the contour.
+#[test]
+fn vertical_justification_stops_where_a_contour_beside_the_text_widens() {
+    use designcraft_doc::VerticalJustification::{Bottom, Top};
+    // Right edge fixed at 60, left edge x = 55 − 50y/190 from y = 0 down to y = 190.
+    let edge = |y: f64| 55.0 - 50.0 * y / 190.0;
+    let pts = [Point::new(55.0, 0.0), Point::new(60.0, 0.0), Point::new(60.0, 190.0), Point::new(5.0, 190.0)];
+    let run = |vj| {
+        let (mut d, sid, fid) = doc_with("42", Rect::new(0.0, 0.0, 60.0, 200.0), ParaAttrs::default());
+        d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.vertical_justification = vj;
+        let lid = d.default_layer();
+        let path = designcraft_geom::path::PathData::single(designcraft_geom::path::SubPath::polyline(&pts, true));
+        let mut it = designcraft_doc::Item::new(ItemId(d.alloc()), lid, designcraft_doc::Shape::Polygon, path);
+        it.wrap.mode = WrapMode::Contour;
+        it.wrap.side = WrapSide::BothSides;
+        d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        assert!(!cs.is_overset());
+        let l = all_lines(&cs)[0];
+        (l.baseline, l.x1)
+    };
+    let (top, x1) = run(Top);
+    assert!(x1 <= edge(top) + 1e-6, "Top sets the line clear of the contour: x1 {x1}, edge {}", edge(top));
+    let (bottom, x1) = run(Bottom);
+    assert!(bottom >= top - 1e-6 && bottom < 190.0, "Bottom at {bottom}, Top at {top}");
+    assert!(x1 <= edge(bottom) + 1e-6, "Bottom moved the line into the contour: baseline {bottom}, x1 {x1}, edge {}", edge(bottom));
+}
+
+/// Under a contour whose box starts beside the column and which widens into it further down,
+/// Bottom moves a line down to where the contour meets its slot, not to the top of the box.
+#[test]
+fn vertical_justification_stops_where_a_contour_under_the_text_meets_it() {
+    // Left edge x = 70 − 40(y − 100)/90 from y = 100 down to y = 190: it crosses the column's
+    // right edge (60) at y = 122.5.
+    let pts = [Point::new(70.0, 100.0), Point::new(80.0, 100.0), Point::new(80.0, 190.0), Point::new(30.0, 190.0)];
+    let (mut d, sid, fid) = doc_with("42", Rect::new(0.0, 0.0, 60.0, 200.0), ParaAttrs::default());
+    d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.vertical_justification = designcraft_doc::VerticalJustification::Bottom;
+    let lid = d.default_layer();
+    let path = designcraft_geom::path::PathData::single(designcraft_geom::path::SubPath::polyline(&pts, true));
+    let mut it = designcraft_doc::Item::new(ItemId(d.alloc()), lid, designcraft_doc::Shape::Polygon, path);
+    it.wrap.mode = WrapMode::Contour;
+    it.wrap.side = WrapSide::BothSides;
+    d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    let b = all_lines(&cs)[0].baseline;
+    assert!(b <= 122.5 + 1e-6, "Bottom moved the baseline to {b}, past where the contour meets the column at 122.5");
+    assert!(b > 122.0, "Bottom stopped the line at {b}, short of where the contour meets the column at 122.5");
+}
+
+/// An object anchored in the text and positioned from its anchor moves down with the lines, so
+/// Center places lines above it as it places them without its wrap.
+#[test]
+fn vertical_justification_passes_an_anchored_object_that_moves_with_the_text() {
+    let baselines = |wrap| {
+        let (mut d, sid, fid) = doc_with("One\nTwo", Rect::new(0.0, 0.0, 300.0, 400.0), ParaAttrs::default());
+        d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.vertical_justification = designcraft_doc::VerticalJustification::Center;
+        // Hung 40 pt under the first line's baseline, under the second line.
+        anchor_box(&mut d, sid, 1, 0.0, 40.0, true, wrap);
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        all_lines(&cs).iter().map(|l| l.baseline).collect::<Vec<_>>()
+    };
+    let plain = baselines(WrapMode::None);
+    let wrapped = baselines(WrapMode::BoundingBox);
+    assert_eq!(plain.len(), 2);
+    assert!(plain[0] > 150.0, "Center moved the lines down: {plain:?}");
+    assert_eq!(plain.len(), wrapped.len());
+    assert!(plain.iter().zip(&wrapped).all(|(a, b)| (a - b).abs() < 1e-6), "without the wrap {plain:?}, with it {wrapped:?}");
+}
+
+/// Justify keeps the first line in place, so a wrap between it and the next line does not stop
+/// the later lines from spreading down to the text area's bottom.
+#[test]
+fn vertical_justify_passes_a_wrap_under_the_first_line() {
+    let (mut d, sid, fid) = doc_with("One\nTwo\nSix", Rect::new(0.0, 0.0, 300.0, 400.0), ParaAttrs::default());
+    d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.vertical_justification = designcraft_doc::VerticalJustification::Justify;
+    let lid = d.default_layer();
+    let mut it = designcraft_doc::Item::new(
+        ItemId(d.alloc()),
+        lid,
+        designcraft_doc::Shape::Rectangle,
+        designcraft_geom::shapes::rectangle(Rect::new(0.0, 20.0, 300.0, 40.0)),
+    );
+    it.wrap.mode = WrapMode::JumpObject;
+    d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    assert_eq!(lines.len(), 3);
+    assert!(
+        lines[0].baseline < 20.0 && lines[1].baseline - lines[1].ascent >= 40.0 - 1e-6,
+        "{:?}",
+        lines.iter().map(|l| l.baseline).collect::<Vec<_>>()
+    );
+    let last = lines[2];
+    assert!((last.baseline - 400.0).abs() < 1e-6, "{:?}", lines.iter().map(|l| l.baseline).collect::<Vec<_>>());
+}
+
+/// Justify moves each row by its own share of the space, so a wrap between the second and third
+/// rows limits the second row's move, not the third's.
+#[test]
+fn vertical_justify_limits_each_row_by_the_wrap_under_it() {
+    use designcraft_doc::VerticalJustification::{Justify, Top};
+    let para = ParaAttrs { space_before: Some(40.0), ..Default::default() };
+    let run = |vj, bar: Option<Rect>| {
+        let (mut d, sid, fid) = doc_with("One\nTwo\nSix", Rect::new(0.0, 0.0, 300.0, 400.0), para.clone());
+        d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.vertical_justification = vj;
+        if let Some(bar) = bar {
+            let lid = d.default_layer();
+            let mut it =
+                designcraft_doc::Item::new(ItemId(d.alloc()), lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(bar));
+            it.wrap.mode = WrapMode::JumpObject;
+            d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+        }
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        all_lines(&cs).iter().map(|l| (l.baseline, l.ascent, l.descent)).collect::<Vec<_>>()
+    };
+    let top = run(Top, None);
+    assert_eq!(top.len(), 3);
+    let b2 = top[1].0;
+    let (b3, a3, _) = top[2];
+    // A bar 20 pt under the second baseline, clear of the third line.
+    let bar = Rect::new(0.0, b2 + 20.0, 300.0, b2 + 30.0);
+    assert!(b3 - a3 > bar.y1, "the third line starts under the bar: {top:?}");
+    let set = run(Top, Some(bar));
+    assert!(set.iter().zip(&top).all(|(a, b)| (a.0 - b.0).abs() < 1e-6), "the bar moves no line: {set:?}");
+    let justify = run(Justify, Some(bar));
+    assert!((justify[0].0 - top[0].0).abs() < 1e-6, "{justify:?}");
+    // The second row's baseline comes down to the bar; the third row moves twice as far.
+    let moved = justify[1].0 - b2;
+    assert!((moved - 20.0).abs() < 1e-6, "the second row moved {moved}: {justify:?}");
+    assert!((justify[2].0 - b3 - 2.0 * moved).abs() < 1e-6, "{justify:?}");
+}
+
+/// Each anchored object's own position decides whether its wrap moves with the text: a fixed
+/// object without a wrap on the same line leaves the moving one skipped.
+#[test]
+fn vertical_justification_matches_each_wrap_to_its_anchored_object() {
+    let baselines = |wrap| {
+        let (mut d, sid, fid) = doc_with("One\nTwo", Rect::new(0.0, 0.0, 300.0, 400.0), ParaAttrs::default());
+        d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.vertical_justification = designcraft_doc::VerticalJustification::Center;
+        // A fixed object from the frame's top, then one hung 40 pt under the first line.
+        anchor_box(&mut d, sid, 1, 150.0, 0.0, false, WrapMode::None);
+        anchor_box(&mut d, sid, 1 + OBJECT_LEN, 0.0, 40.0, true, wrap);
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        assert_eq!(cs.frames[0].objects.len(), 2);
+        all_lines(&cs).iter().map(|l| l.baseline).collect::<Vec<_>>()
+    };
+    let plain = baselines(WrapMode::None);
+    let wrapped = baselines(WrapMode::BoundingBox);
+    assert!(plain[0] > 150.0, "Center moved the lines down: {plain:?}");
+    assert_eq!(plain.len(), wrapped.len());
+    assert!(plain.iter().zip(&wrapped).all(|(a, b)| (a - b).abs() < 1e-6), "without the wrap {plain:?}, with it {wrapped:?}");
+}
+
+/// An object positioned from its anchor but kept within its column can stop at the column's
+/// bottom, so Bottom does not move the lines after its anchor into it.
+#[test]
+fn vertical_justification_stops_at_an_anchored_object_kept_within_its_column() {
+    let (mut d, sid, fid) = doc_with("One\nTwo", Rect::new(0.0, 0.0, 300.0, 400.0), ParaAttrs::default());
+    d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.vertical_justification = designcraft_doc::VerticalJustification::Bottom;
+    anchor_box(&mut d, sid, 1, 0.0, 40.0, true, WrapMode::BoundingBox);
+    if let designcraft_doc::AnchorPosition::Custom { keep_within_column, .. } =
+        &mut std::sync::Arc::make_mut(&mut d.story_mut(sid).unwrap().objects[0]).position
+    {
+        *keep_within_column = true;
+    }
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    let o = &cs.frames[0].objects[0];
+    let (top, bottom) = (o.origin.y, o.origin.y + 60.0);
+    assert!(bottom <= 400.0 + 1e-6, "the object stays in the column: {top}..{bottom}");
+    let l = lines[1];
+    assert!(
+        l.baseline <= top + 1e-6 || l.baseline - l.ascent >= bottom - 1e-6,
+        "the second line at {} meets the object at {top}..{bottom}",
+        l.baseline
+    );
+}
+
+/// Justify keeps the first line in place and moves later lines further, so an object anchored in
+/// the first line and hung under the last one still stops the lines after its anchor.
+#[test]
+fn vertical_justify_stops_at_an_object_anchored_above_the_lines_it_wraps() {
+    let (mut d, sid, fid) = doc_with("One\nTwo\nSix", Rect::new(0.0, 0.0, 300.0, 400.0), ParaAttrs::default());
+    d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.vertical_justification = designcraft_doc::VerticalJustification::Justify;
+    anchor_box(&mut d, sid, 1, 0.0, 50.0, true, WrapMode::BoundingBox);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    assert_eq!(lines.len(), 3);
+    let top = cs.frames[0].objects[0].origin.y;
+    assert!((top - lines[0].baseline - 50.0).abs() < 1e-6, "the object hangs 50 pt under the first line: {top}, {}", lines[0].baseline);
+    let last = lines[2].baseline;
+    assert!(last <= top + 1e-6, "Justify moved the last line to {last}, into the object at {top}");
+    assert!(last > lines[0].baseline + 40.0, "Justify spread the lines: {:?}", lines.iter().map(|l| l.baseline).collect::<Vec<_>>());
+}
+
+/// Justify moves an object anchored in the second line with that line, so the third line spreads
+/// down until it meets the object where it ends up, not where it started.
+#[test]
+fn vertical_justify_follows_an_object_anchored_in_a_later_line() {
+    let (mut d, sid, fid) = doc_with("One\nTwo\nSix", Rect::new(0.0, 0.0, 300.0, 400.0), ParaAttrs::default());
+    d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.vertical_justification = designcraft_doc::VerticalJustification::Justify;
+    anchor_box(&mut d, sid, 5, 0.0, 40.0, true, WrapMode::BoundingBox);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    assert_eq!(lines.len(), 3);
+    let baselines = lines.iter().map(|l| l.baseline).collect::<Vec<_>>();
+    let top = cs.frames[0].objects[0].origin.y;
+    assert!((top - lines[1].baseline - 40.0).abs() < 1e-6, "the object hangs 40 pt under the second line: {top}, {baselines:?}");
+    let last = lines[2].baseline;
+    assert!((top - last).abs() < 1e-6, "Justify moved the last line to {last}, not down to the object at {top}: {baselines:?}");
 }
 
 /// An Alpha Channel contour counts only where the graphic's clipping path shows the image: here
@@ -2347,7 +2660,7 @@ fn vertical_justification_counts_table_fragment_bottoms() {
         let mut spec = frame_specs(&d, sid).remove(0);
         spec.opts.vertical_justification = mode;
 
-        vertical_justify(&mut ft, &spec, false, &d.footnote_options);
+        vertical_justify(&mut ft, &spec, false, &d.footnote_options, &[], &[]);
 
         let moved = ft.lines[anchor].baseline - baseline;
         let limit = ft.notes[0].rect.y0 - d.footnote_options.space_before;
@@ -2438,6 +2751,176 @@ fn vertical_justification_keeps_earlier_descenders_inside() {
     // Justify leaves the first line where it is, so the last baseline still reaches the inset.
     let (area, _, last) = compose_with(Justify);
     assert!((last - area.y1).abs() < 1e-6, "Justify: last baseline at {last}, text area at {}", area.y1);
+}
+
+/// With Align to Baseline Grid, Center and Bottom move the lines by whole grid steps, so every
+/// line stays on the grid: Bottom puts the last baseline on the lowest grid line above the bottom
+/// inset, and Center on the grid line nearest the centered place. Justify keeps the first and last
+/// lines on the grid and spreads the lines between them.
+#[test]
+fn vertical_justification_keeps_grid_aligned_lines_on_the_grid() {
+    use designcraft_doc::GridAlign;
+    use designcraft_doc::VerticalJustification::{self, Bottom, Center, Justify, Top};
+    let compose_with = |mode: VerticalJustification, align: GridAlign| {
+        let mut area = Rect::ZERO;
+        let (lines, grid) = grid_doc("One\nTwo\nThree", ParaAttrs { grid_align: Some(align), ..Default::default() }, |d, sid| {
+            let spec = frame_specs(d, sid).remove(0);
+            area = spec.area;
+            d.item_mut(spec.id).unwrap().text_frame_mut().unwrap().options.vertical_justification = mode;
+        });
+        (area, lines.iter().map(|l| l.baseline).collect::<Vec<_>>(), grid)
+    };
+    let (area, top, grid) = compose_with(Top, GridAlign::AllLines);
+    let inc = grid.1;
+    assert_eq!(top.len(), 3);
+    assert!(top.iter().all(|&b| on_grid(b, grid)), "Top: {top:?}");
+    assert!(!on_grid(area.y1, grid), "the bottom inset is between grid lines: {area:?}");
+
+    let (_, bottom, _) = compose_with(Bottom, GridAlign::AllLines);
+    assert!(bottom.iter().all(|&b| on_grid(b, grid)), "Bottom keeps every line on the grid: {bottom:?}");
+    let last = bottom[2];
+    assert!(last <= area.y1 + 1e-6 && last > area.y1 - inc, "Bottom: last baseline {last} on the lowest grid line above {}", area.y1);
+    assert!((bottom[1] - bottom[0] - (top[1] - top[0])).abs() < 1e-6, "Bottom keeps the leading");
+
+    let (_, center, _) = compose_with(Center, GridAlign::AllLines);
+    assert!(center.iter().all(|&b| on_grid(b, grid)), "Center keeps every line on the grid: {center:?}");
+    let shift = center[0] - top[0];
+    let ideal = (area.y1 - top[2]) / 2.0;
+    assert!(shift > 1.0 && (shift - ideal).abs() <= inc / 2.0 + 1e-6, "Center: moved {shift}, centered at {ideal}");
+    assert!(center[2] <= area.y1 + 1e-6);
+
+    let (_, justify, _) = compose_with(Justify, GridAlign::AllLines);
+    assert!((justify[0] - top[0]).abs() < 1e-6, "Justify keeps the first baseline: {justify:?}");
+    assert!(on_grid(justify[2], grid), "Justify keeps the last line on the grid: {justify:?}");
+    assert!(justify[2] <= area.y1 + 1e-6 && justify[2] > area.y1 - inc, "Justify: last baseline {} near {}", justify[2], area.y1);
+    assert!((justify[1] - justify[0] - (justify[2] - justify[1])).abs() < 1e-6, "Justify spreads the lines evenly: {justify:?}");
+
+    // First lines only: each paragraph here is one line, so Bottom keeps every line on the grid.
+    let (_, first_only, _) = compose_with(Bottom, GridAlign::FirstLineOnly);
+    assert!(first_only.iter().all(|&b| on_grid(b, grid)), "Bottom, first lines only: {first_only:?}");
+
+    // Justify with a paragraph that wraps: with all lines aligned the last line lands on the grid;
+    // with first lines only it is not a first line, so it goes down to the bottom inset.
+    let wrapped = "The first line of this paragraph sits on the baseline grid, and the lines after it keep the leading they have.";
+    let justify_wrapped = |align: GridAlign| {
+        let (lines, _) = grid_doc(wrapped, ParaAttrs { grid_align: Some(align), ..Default::default() }, |d, sid| {
+            let spec = frame_specs(d, sid).remove(0);
+            d.item_mut(spec.id).unwrap().text_frame_mut().unwrap().options.vertical_justification = Justify;
+        });
+        lines.iter().map(|l| l.baseline).collect::<Vec<_>>()
+    };
+    let all = justify_wrapped(GridAlign::AllLines);
+    assert!(all.len() >= 2, "the paragraph wraps: {all:?}");
+    let last = all[all.len() - 1];
+    assert!(on_grid(last, grid) && last <= area.y1 + 1e-6 && last > area.y1 - inc, "Justify, all lines: last baseline {last}");
+    let first_lines = justify_wrapped(GridAlign::FirstLineOnly);
+    assert!(first_lines.len() >= 2, "the paragraph wraps: {first_lines:?}");
+    let last = first_lines[first_lines.len() - 1];
+    assert!((last - area.y1).abs() < 1e-6 && !on_grid(last, grid), "Justify, first lines only: last baseline {last}, inset at {}", area.y1);
+
+    // Without grid alignment the last baseline goes down to the bottom inset.
+    let (_, free, _) = compose_with(Bottom, GridAlign::None);
+    assert!((free[2] - area.y1).abs() < 1e-6, "Bottom without the grid: {free:?}");
+}
+
+/// A grid increment too small for the room to be counted in steps, or too large to double, leaves
+/// a grid-aligned line at a finite place inside the text area with Bottom, Center and Justify.
+#[test]
+fn vertical_justification_with_an_extreme_grid_increment_stays_finite() {
+    use designcraft_doc::GridAlign;
+    use designcraft_doc::VerticalJustification::{self, Bottom, Center, Justify, Top};
+    // The grid starts at the line's natural baseline, so the line sits on it before it moves.
+    let (natural, grid) = grid_doc("One", ParaAttrs { grid_align: Some(GridAlign::None), ..Default::default() }, |_, _| {});
+    let natural = natural[0].baseline;
+    let start = natural - grid.0;
+    let compose_with = |mode: VerticalJustification, inc: f64| {
+        let mut area = Rect::ZERO;
+        let (lines, _) = grid_doc("One", ParaAttrs { grid_align: Some(GridAlign::AllLines), ..Default::default() }, |d, sid| {
+            let spec = frame_specs(d, sid).remove(0);
+            area = spec.area;
+            let opts = &mut d.item_mut(spec.id).unwrap().text_frame_mut().unwrap().options;
+            opts.baseline_grid = Some(designcraft_doc::FrameBaselineGrid::new(start, inc));
+            opts.vertical_justification = mode;
+        });
+        (area, lines[0].baseline)
+    };
+    for inc in [1e-310, 1e308] {
+        let (_, top) = compose_with(Top, inc);
+        assert!((top - natural).abs() < 1e-6, "Top with increment {inc:e}: baseline {top}, natural {natural}");
+        for mode in [Bottom, Center, Justify] {
+            let (area, b) = compose_with(mode, inc);
+            assert!(b.is_finite() && b >= top - 1e-6 && b <= area.y1 + 1e-6, "{mode:?} with increment {inc:e}: baseline {b}, text area {area:?}");
+        }
+    }
+    // A step far smaller than the room: Bottom takes the room as it does without a grid.
+    let (area, b) = compose_with(Bottom, 1e-310);
+    assert!((b - area.y1).abs() < 1e-6, "Bottom with a tiny increment: baseline {b}, text area {area:?}");
+    // A step far larger than the room: the line does not move.
+    let (_, b) = compose_with(Center, 1e308);
+    assert!((b - natural).abs() < 1e-6, "Center with a huge increment: baseline {b}, natural {natural}");
+
+    // A grid that starts away from the line, with a step too small to count the distance: the line
+    // is placed as it is without a grid.
+    for mode in [Top, Bottom, Center, Justify] {
+        let mut area = Rect::ZERO;
+        let (lines, _) = grid_doc("One", ParaAttrs { grid_align: Some(GridAlign::AllLines), ..Default::default() }, |d, sid| {
+            let spec = frame_specs(d, sid).remove(0);
+            area = spec.area;
+            let opts = &mut d.item_mut(spec.id).unwrap().text_frame_mut().unwrap().options;
+            opts.baseline_grid = Some(designcraft_doc::FrameBaselineGrid::new(start - 5.0, 1e-310));
+            opts.vertical_justification = mode;
+        });
+        let b = lines[0].baseline;
+        assert!(b.is_finite() && b >= natural - 1e-6 && b <= area.y1 + 1e-6, "{mode:?}, grid away from the line: baseline {b}, text area {area:?}");
+        if mode == Top {
+            assert!((b - natural).abs() < 1e-6, "Top, grid away from the line: baseline {b}, natural {natural}");
+        }
+    }
+}
+
+/// In a shaped frame that narrows and widens again, Align to Baseline Grid takes the grid step
+/// nearest the place Bottom or Center would choose at which the line's slot fits the outline:
+/// Bottom goes up past steps in the narrow part, and Center goes down a step when the step nearest
+/// the middle is in the narrow part and the next one fits.
+#[test]
+fn vertical_justification_on_the_grid_skips_steps_that_leave_a_shaped_frame() {
+    use designcraft_doc::GridAlign;
+    use designcraft_doc::VerticalJustification::{self, Bottom, Center, Top};
+    use designcraft_geom::{Anchor, PathData, Point, SubPath};
+    // Full width down to 100 pt, a waist at 150 pt, full width again from 200 to 230 pt, then a
+    // point at 300 pt.
+    let pts = [(0.0, 0.0), (300.0, 0.0), (300.0, 100.0), (200.0, 150.0), (300.0, 200.0), (300.0, 230.0), (150.0, 300.0)];
+    let pts: Vec<(f64, f64)> = pts.iter().copied().chain([(0.0, 230.0), (0.0, 200.0), (100.0, 150.0), (0.0, 100.0)]).collect();
+    let compose_with = |mode: VerticalJustification, inc: f64| {
+        let para = ParaAttrs { grid_align: Some(GridAlign::AllLines), ..Default::default() };
+        let (mut d, sid, fid) = doc_with("Typography", Rect::new(0.0, 0.0, 300.0, 300.0), para);
+        let it = d.item_mut(fid).unwrap();
+        it.path = PathData::single(SubPath { anchors: pts.iter().map(|&(x, y)| Anchor::corner(Point::new(x, y))).collect(), closed: true });
+        let o = &mut it.text_frame_mut().unwrap().options;
+        o.inset = [0.0; 4];
+        o.baseline_grid = Some(designcraft_doc::FrameBaselineGrid::new(0.0, inc));
+        o.vertical_justification = mode;
+        let grid = frame_specs(&d, sid)[0].grid.unwrap();
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let l = all_lines(&cs)[0];
+        (grid, l.baseline, l.baseline - l.ascent)
+    };
+    let lower = |b: f64, band_top: f64| band_top >= 200.0 - 1e-6 && b <= 230.0 + 1e-6;
+
+    // A 40 pt grid: the lowest room ends between 160 and 200 pt, and the steps above it down to
+    // 120 pt put the line in the waist.
+    let (grid, top, _) = compose_with(Top, 40.0);
+    assert!(on_grid(top, grid), "Top: baseline {top} on the grid {grid:?}");
+    let (_, b, band_top) = compose_with(Bottom, 40.0);
+    assert!(on_grid(b, grid), "Bottom: baseline {b} on the grid {grid:?}");
+    assert!(b <= 100.0 + 1e-6 || lower(b, band_top), "Bottom: the line's band {band_top}..{b} reaches into the narrow part");
+    assert!(b > top, "Bottom moves the line down a grid step that fits: {b}, Top at {top}");
+
+    // A 45 pt grid: the step nearest the middle puts the baseline at 180 pt, in the waist; the
+    // step below it fits in the lower full-width part.
+    let (grid, b, band_top) = compose_with(Center, 45.0);
+    assert!(on_grid(b, grid), "Center: baseline {b} on the grid {grid:?}");
+    assert!(lower(b, band_top), "Center: the line's band {band_top}..{b} is not in the lower full-width part");
 }
 
 /// A corner radius leaves a Cap Height first line where it sits in a rectangular frame, with Top
@@ -2570,6 +3053,69 @@ fn vertical_justification_keeps_lines_inside_a_shaped_frame() {
     let (first, last) = (lines[0], lines[lines.len() - 1]);
     assert!(first.baseline - first.ascent >= 200.0 - 1e-6, "Bottom: first line top at {}", first.baseline - first.ascent);
     assert!((last.baseline - 260.0).abs() < 1e-3, "Bottom: last baseline at {}", last.baseline);
+}
+
+/// In a shaped frame with a text wrap under the text, Center, Bottom and Justify keep the lines
+/// inside the outline and out of the wrap together: in a triangle that widens downward, Bottom and
+/// Justify put the last baseline on the wrap's top and Center moves half as far; in one that
+/// narrows downward, the outline stops the lines above the wrap, where they stop without it.
+#[test]
+fn vertical_justification_keeps_a_shaped_frame_and_a_wrap_under_the_text_together() {
+    use designcraft_doc::VerticalJustification::{self, Bottom, Center, Justify, Top};
+    use designcraft_geom::{Anchor, PathData, Point, SubPath};
+    let compose_with = |tri: [Point; 3], mode: VerticalJustification, bar: bool| {
+        let (mut d, sid, fid) = doc_with("Typography\ngypsy", Rect::new(0.0, 0.0, 300.0, 300.0), ParaAttrs::default());
+        let it = d.item_mut(fid).unwrap();
+        it.path = PathData::single(SubPath { anchors: tri.iter().map(|&p| Anchor::corner(p)).collect(), closed: true });
+        let o = &mut it.text_frame_mut().unwrap().options;
+        o.vertical_justification = mode;
+        o.inset = [0.0; 4];
+        if bar {
+            let lid = d.default_layer();
+            let mut it = designcraft_doc::Item::new(
+                ItemId(d.alloc()),
+                lid,
+                designcraft_doc::Shape::Rectangle,
+                designcraft_geom::shapes::rectangle(Rect::new(0.0, 250.0, 300.0, 400.0)),
+            );
+            it.wrap.mode = WrapMode::JumpObject;
+            d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+        }
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        assert!(!cs.is_overset(), "{mode:?}");
+        let lines: Vec<Line> = all_lines(&cs).into_iter().cloned().collect();
+        assert!(lines.len() >= 2, "{mode:?}: {lines:?}");
+        lines
+    };
+    let up = [Point::new(150.0, 0.0), Point::new(300.0, 300.0), Point::new(0.0, 300.0)];
+    let top = compose_with(up, Top, true);
+    let top_last = top[top.len() - 1].baseline;
+    for mode in [Bottom, Justify] {
+        let lines = compose_with(up, mode, true);
+        let last = lines[lines.len() - 1].baseline;
+        assert!((last - 250.0).abs() < 1e-3, "{mode:?}: last baseline at {last}, wrap top at 250: {lines:?}");
+        for (k, l) in lines.iter().enumerate() {
+            let bottom = if k + 1 == lines.len() { l.baseline } else { l.baseline + l.descent };
+            let top = l.baseline - l.ascent;
+            for (x, y) in [(l.x0, top), (l.x1, top), (l.x0, bottom), (l.x1, bottom)] {
+                assert!((x - 150.0).abs() <= y / 2.0 + 1e-3, "{mode:?}: line {k} corner ({x}, {y}) outside the triangle: {lines:?}");
+            }
+        }
+    }
+    let center = compose_with(up, Center, true);
+    let center_last = center[center.len() - 1].baseline;
+    assert!((center_last - (top_last + 250.0) / 2.0).abs() < 1e-3, "Center: last baseline at {center_last}, Top at {top_last}");
+
+    let down = [Point::new(0.0, 0.0), Point::new(300.0, 0.0), Point::new(150.0, 300.0)];
+    for mode in [Center, Bottom, Justify] {
+        let with = compose_with(down, mode, true);
+        let without = compose_with(down, mode, false);
+        assert!(without[without.len() - 1].baseline < 250.0, "{mode:?}: {without:?}");
+        assert_eq!(with.len(), without.len());
+        for (a, b) in with.iter().zip(&without) {
+            assert!((a.baseline - b.baseline).abs() < 1e-3, "{mode:?}: {with:?} with the wrap, {without:?} without");
+        }
+    }
 }
 
 #[test]

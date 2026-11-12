@@ -16,33 +16,49 @@ pub fn decode_pixmap_page(bytes: &[u8], page: u32) -> Option<Pixmap> {
     }
     if designcraft_images::is_svg(bytes) {
         let (px, w, h) = designcraft_images::render_svg(bytes, 3000)?;
-        let data = px.as_chunks::<4>().0.iter().map(|p| vello_cpu::color::PremulRgba8 { r: p[0], g: p[1], b: p[2], a: p[3] }).collect();
-        return Some(Pixmap::from_parts(data, w.min(u16::MAX as u32) as u16, h.min(u16::MAX as u32) as u16));
+        return Some(Pixmap::from_parts(premul_pixels(px), w.min(u16::MAX as u32) as u16, h.min(u16::MAX as u32) as u16));
     }
-    premultiplied(&designcraft_images::decode_rgba(bytes)?)
+    premultiplied(designcraft_images::decode_rgba(bytes)?)
 }
 
 /// [`decode_pixmap`] of a JPEG at 1/2^`shrink` of its size, `shrink` 1 to
 /// [`designcraft_images::MAX_REDUCED_SHRINK`], without a full-size decode. `None` where only a
 /// full decode applies (other formats, CMYK JPEGs).
 pub(crate) fn decode_pixmap_reduced(bytes: &[u8], shrink: u8) -> Option<Pixmap> {
-    premultiplied(&designcraft_images::decode_rgba_reduced(bytes, shrink)?)
+    premultiplied(designcraft_images::decode_rgba_reduced(bytes, shrink)?)
 }
 
-fn premultiplied(img: &image::RgbaImage) -> Option<Pixmap> {
+fn premultiplied(img: image::RgbaImage) -> Option<Pixmap> {
     let (w, h) = img.dimensions();
     if w == 0 || h == 0 || w > u16::MAX as u32 || h > u16::MAX as u32 {
         return None;
     }
-    let data: Vec<vello_cpu::color::PremulRgba8> = img
-        .pixels()
-        .map(|p| {
-            let a = p[3] as u16;
-            let m = |c: u8| ((c as u16 * a + 127) / 255) as u8;
-            vello_cpu::color::PremulRgba8 { r: m(p[0]), g: m(p[1]), b: m(p[2]), a: p[3] }
-        })
-        .collect();
-    Some(Pixmap::from_parts(data, w as u16, h as u16))
+    let mut px = img.into_raw();
+    px.truncate(w as usize * h as usize * 4);
+    Some(Pixmap::from_parts(premultiply(px), w as u16, h as u16))
+}
+
+/// Premultiply straight-alpha RGBA bytes in place and return them as pixmap pixels. Opaque pixels
+/// are left as they are.
+pub(crate) fn premultiply(mut px: Vec<u8>) -> Vec<vello_cpu::color::PremulRgba8> {
+    for p in px.as_chunks_mut::<4>().0 {
+        let a = p[3];
+        if a != 255 {
+            let m = |c: u8| ((c as u16 * a as u16 + 127) / 255) as u8;
+            p[0] = m(p[0]);
+            p[1] = m(p[1]);
+            p[2] = m(p[2]);
+        }
+    }
+    premul_pixels(px)
+}
+
+/// Premultiplied RGBA bytes as pixmap pixels, in the same allocation when its capacity is a whole
+/// number of pixels and in a copy otherwise.
+fn premul_pixels(px: Vec<u8>) -> Vec<vello_cpu::color::PremulRgba8> {
+    bytemuck::allocation::try_cast_vec(px).unwrap_or_else(|(_, px)| {
+        px.as_chunks::<4>().0.iter().map(|p| vello_cpu::color::PremulRgba8 { r: p[0], g: p[1], b: p[2], a: p[3] }).collect()
+    })
 }
 
 /// Box-filter downsample by 2.
@@ -97,8 +113,8 @@ pub fn image_size(bytes: &[u8]) -> Option<(u32, u32)> {
 }
 
 /// Natural size of a placed graphic, unrounded: a PDF page (crop box) and an SVG in points, a raster
-/// in pixels, an EPS its bounding box independently of preview pixels. Placed graphics are drawn at
-/// this size; `image_size` rounds it to whole pixels for display.
+/// at its stored resolution (72 ppi without one), an EPS its bounding box independently of preview pixels. Placed graphics are drawn at
+/// this size; `image_size` gives a raster's pixel size and rounds a PDF page or SVG to whole points.
 pub fn natural_size(bytes: &[u8], page: usize) -> Option<(f64, f64)> {
     if is_pdf(bytes) {
         return pdf_page_size(bytes, page).map(|(w, h)| (w.max(1e-3), h.max(1e-3)));
