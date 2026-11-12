@@ -1739,6 +1739,57 @@ fn text_frame_options_change_only_what_was_edited() {
 }
 
 #[test]
+fn text_frame_options_link_the_insets_only_when_every_selected_frame_has_even_sides() {
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let frame = |app: &mut DesignApp, rect: [u32; 4], inset: Value| {
+        let r = app.run("frame.create", json!({"rect": rect, "content": "text", "text": "Hello"})).unwrap();
+        let id = r["id"].as_u64().unwrap();
+        app.run("object.textFrameOptions", json!({"ids": [id], "inset": inset})).unwrap();
+        (designcraft_doc::ItemId(id), r["story"].clone())
+    };
+    let (even, _) = frame(&mut app, [36, 36, 236, 236], json!(6));
+    let (uneven, uneven_story) = frame(&mut app, [300, 36, 500, 236], json!([1, 2, 3, 4]));
+    let (other_even, other_even_story) = frame(&mut app, [36, 300, 236, 500], json!(9));
+    let inset = |app: &DesignApp, id| app.session.doc().unwrap().doc.item(id).unwrap().text_frame().unwrap().options.inset;
+    let seeded = |app: &DesignApp| {
+        let mut d = Dialog::new("textFrameOptions", json!({}));
+        seed_text_frame_options(app, &mut d);
+        d
+    };
+    // The frame with even sides is selected first: the uneven one still turns the link off.
+    app.run("selection.set", json!({"ids": [even.0, uneven.0]})).unwrap();
+    let mut d = seeded(&app);
+    assert_eq!(d.s("insetTop"), "0p6");
+    assert!(!d.b("insetLinked"), "a selected frame with uneven sides leaves the link off");
+    // Top edited while unlinked: only Top changes, and each frame keeps its other sides.
+    d.fields.insert("insetTop".into(), json!("1p0"));
+    app.ui.dialog = Some(d);
+    confirm(&mut app).unwrap();
+    assert_eq!(inset(&app, even), [12.0, 6.0, 6.0, 6.0]);
+    assert_eq!(inset(&app, uneven), [12.0, 2.0, 3.0, 4.0]);
+    // A frame with even sides alone keeps the link on; selected with the uneven one, the link is off.
+    app.run("selection.set", json!({"ids": [other_even.0]})).unwrap();
+    assert!(seeded(&app).b("insetLinked"));
+    app.run("selection.set", json!({"ids": [other_even.0, uneven.0]})).unwrap();
+    assert!(!seeded(&app).b("insetLinked"));
+    // A caret: the frames the dialog changes decide.
+    app.run("text.select", json!({"story": uneven_story, "anchor": 0, "focus": 0})).unwrap();
+    assert!(!seeded(&app).b("insetLinked"));
+    app.run("text.select", json!({"story": other_even_story, "anchor": 0, "focus": 0})).unwrap();
+    assert!(seeded(&app).b("insetLinked"));
+    // A story threaded on into the uneven frame: a caret placed in the first frame changes only
+    // that frame, and a caret with no frame changes every frame of the story.
+    let (first, story) = frame(&mut app, [300, 300, 500, 500], json!(6));
+    let (last, _) = frame(&mut app, [300, 520, 500, 700], json!([1, 2, 3, 4]));
+    app.run("text.thread", json!({"from": first.0, "to": last.0})).unwrap();
+    app.run("text.placeCaret", json!({"frame": first.0, "point": [310, 310]})).unwrap();
+    assert!(seeded(&app).b("insetLinked"));
+    app.run("text.select", json!({"story": story, "anchor": 0, "focus": 0})).unwrap();
+    assert!(!seeded(&app).b("insetLinked"));
+}
+
+#[test]
 fn toc_dialog_adds_a_style_and_ok_makes_the_table_of_contents() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.run("file.newSample", json!({})).unwrap();
@@ -4045,6 +4096,113 @@ fn create_guides_dialog_covers_the_spread_in_view() {
     ctl(&mut app, "ui.dialog.set", json!({"field": "target", "value": "page"}));
     assert_eq!(ctl(&mut app, "ui.dialog.confirm", json!({}))["ok"], true);
     assert_eq!(guide_counts(&app), vec![0, 2, 2, 0, 4, 0]);
+}
+
+#[test]
+fn go_to_row_dialog_selects_the_row_and_shows_its_page() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"pages": 2, "facingPages": false})).unwrap();
+    app.canvas_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0)));
+    let a = app.run("frame.create", json!({"rect": [72, 72, 400, 200], "content": "text", "text": ""})).unwrap();
+    let b = app.run("frame.create", json!({"spread": 1, "rect": [72, 72, 400, 600], "content": "unassigned"})).unwrap();
+    app.run("text.thread", json!({"from": a["id"], "to": b["id"]})).unwrap();
+    app.run("text.select", json!({"story": a["story"], "anchor": 0, "focus": 0})).unwrap();
+    app.run("table.insert", json!({"rows": 20, "cols": 2, "headerRows": 1})).unwrap();
+    for row in 0..21 {
+        app.run("table.setRowHeight", json!({"row": row, "height": 20, "mode": "exactly"})).unwrap();
+    }
+    app.run("table.select", json!({"rows": [2, 2]})).unwrap();
+    crate::canvas::go_to_page(&mut app, 0);
+    crate::menus::activate(&mut app, "table.goToRow", &Value::Null);
+    let d = app.ui.dialog.clone().unwrap();
+    assert_eq!(d.id, "goToRow");
+    assert_eq!((d.s("section"), d.s("row")), ("body".to_string(), "2".to_string()), "it opens on the selected row");
+    assert!(d.b("hasHeader") && !d.b("hasFooter"));
+    // A row that is not a whole number keeps the dialog open with the reason, and the view stays.
+    ctl(&mut app, "ui.dialog.set", json!({"field": "row", "value": "x"}));
+    assert_eq!(ctl(&mut app, "ui.dialog.confirm", json!({}))["ok"], false);
+    assert!(app.ui.dialog.as_ref().is_some_and(|d| d.id == "goToRow" && d.fields.contains_key("status")));
+    assert_eq!(crate::canvas::current_page(&app), Some(0));
+    ctl(&mut app, "ui.dialog.set", json!({"field": "row", "value": "20"}));
+    assert_eq!(ctl(&mut app, "ui.dialog.confirm", json!({}))["ok"], true);
+    assert!(app.ui.dialog.is_none());
+    let range = app.session.active().unwrap().selection.cells.unwrap().range;
+    assert_eq!((range.r0, range.r1, range.c0, range.c1), (20, 20, 0, 1));
+    assert_eq!(crate::canvas::current_page(&app), Some(1), "the view goes to the page that shows the row");
+}
+
+/// Go to Row's OK scrolls the row to the middle of the view at the same zoom: a row off screen on the
+/// page in view, and a row on another page away from that page's center.
+#[test]
+fn go_to_row_dialog_scrolls_the_row_to_the_middle_of_the_view() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"pages": 2, "facingPages": false})).unwrap();
+    app.canvas_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0)));
+    let a = app.run("frame.create", json!({"rect": [72, 72, 400, 200], "content": "text", "text": ""})).unwrap();
+    let b = app.run("frame.create", json!({"spread": 1, "rect": [72, 72, 400, 600], "content": "unassigned"})).unwrap();
+    app.run("text.thread", json!({"from": a["id"], "to": b["id"]})).unwrap();
+    app.run("text.select", json!({"story": a["story"], "anchor": 0, "focus": 0})).unwrap();
+    app.run("table.insert", json!({"rows": 20, "cols": 2, "headerRows": 1})).unwrap();
+    for row in 0..21 {
+        app.run("table.setRowHeight", json!({"row": row, "height": 20, "mode": "exactly"})).unwrap();
+    }
+    app.run("table.select", json!({"rows": [1, 1]})).unwrap();
+    crate::canvas::go_to_page(&mut app, 0);
+    crate::canvas::set_zoom(&mut app, 4.0);
+    // The row's middle and the view's middle, from top to bottom, on the canvas.
+    let middles = |app: &mut DesignApp, row: u64| {
+        let r = app.run("table.goToRow", json!({"row": row})).unwrap();
+        let spread: designcraft_doc::SpreadRef = serde_json::from_value(r["spread"].clone()).unwrap();
+        let n: Vec<f64> = r["rowBounds"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+        let st = app.session.active().unwrap();
+        let slot = designcraft_tools::CanvasLayout::new(&st.doc, false).slot(spread).unwrap().xf;
+        let row_y = slot.transform_rect_bbox(designcraft_geom::Rect::new(n[0], n[1], n[2], n[3])).center().y;
+        let (v, rect) = (app.view().unwrap(), app.canvas_rect.unwrap());
+        (row_y, v.origin.y + rect.height() as f64 / 2.0 / v.zoom)
+    };
+    let x = app.view().unwrap().origin.x;
+    for row in ["3", "20"] {
+        crate::menus::activate(&mut app, "table.goToRow", &Value::Null);
+        ctl(&mut app, "ui.dialog.set", json!({"field": "row", "value": row}));
+        assert_eq!(ctl(&mut app, "ui.dialog.confirm", json!({}))["ok"], true);
+        let (row_y, view_y) = middles(&mut app, row.parse().unwrap());
+        assert!((row_y - view_y).abs() < 0.5, "row {row} is in the middle of the view: {row_y} against {view_y}");
+        let v = app.view().unwrap();
+        assert!((v.zoom - 4.0).abs() < 1e-9, "the zoom stays");
+        assert!((v.origin.x - x).abs() < 1e-9, "the row was in view across, so the view does not scroll sideways");
+    }
+    assert_eq!(crate::canvas::current_page(&app), Some(1));
+}
+
+/// Go to Row's OK goes to the row of the table in the document the dialog was opened for, even
+/// when another document became active meanwhile; when that document has closed, nothing is selected.
+#[test]
+fn go_to_row_dialog_goes_to_the_document_it_was_opened_for() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    let table_doc = |app: &mut DesignApp, title: &str| {
+        app.run("file.new", json!({"title": title})).unwrap();
+        let r = app.run("frame.create", json!({"rect": [72, 72, 500, 700], "content": "text", "text": ""})).unwrap();
+        app.run("text.select", json!({"story": r["story"], "anchor": 0, "focus": 0})).unwrap();
+        app.run("table.insert", json!({"rows": 3, "cols": 2})).unwrap();
+    };
+    table_doc(&mut app, "first");
+    crate::menus::activate(&mut app, "table.goToRow", &Value::Null);
+    table_doc(&mut app, "second");
+    setup_fields(&mut app, json!({"row": "3"}));
+    confirm(&mut app).unwrap();
+    let active = app.session.active().unwrap();
+    assert_eq!(active.doc.title, "first", "the dialog's document becomes active");
+    assert_eq!(active.selection.cells.map(|c| (c.range.r0, c.range.r1)), Some((2, 2)));
+    let second = app.session.documents().iter().find(|d| d.doc.title == "second").unwrap();
+    assert!(second.selection.cells.is_none(), "the other document's selection stays");
+
+    crate::menus::activate(&mut app, "table.goToRow", &Value::Null);
+    app.run("file.close", json!({})).unwrap();
+    let before = app.session.active().unwrap().selection.clone();
+    setup_fields(&mut app, json!({"row": "1"}));
+    assert_eq!(confirm(&mut app), Ok(Value::Null));
+    assert!(app.ui.dialog.is_none());
+    assert_eq!(app.session.active().unwrap().selection, before, "the dialog's document closed");
 }
 
 #[test]

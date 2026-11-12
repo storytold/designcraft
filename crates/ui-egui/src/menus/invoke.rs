@@ -83,6 +83,10 @@ fn activate_inner(app: &mut DesignApp, id: &str, params: &Value) {
         app.ui.dialog = Some(crate::dialogs::Dialog::new("textFrameOptions", json!({})));
         return;
     }
+    if params.is_null() && id == "table.goToRow" {
+        crate::dialogs::open_go_to_row(app);
+        return;
+    }
     // New Paragraph/Character Style…: the style options for the new style.
     if params.is_null() && matches!(id, "style.paragraph.create" | "style.character.create") {
         crate::dialogs::open_new_style(app, id == "style.paragraph.create");
