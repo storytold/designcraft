@@ -280,6 +280,63 @@ fn saving_in_one_session_leaves_another_sessions_write_alone() {
 
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
+fn a_write_now_cancels_a_background_write_to_the_same_folder_spelled_another_way() {
+    let _turn = background();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("sub")).unwrap();
+    let spelled = dir.path().join("sub").join("..");
+    let mut s = dirty_session();
+    s.recovery_dir = Some(spelled.clone());
+    let uid = s.docs[0].uid;
+    let held = testing::hold_next_write(&spelled);
+    s.execute("file.recovery.save", &json!({"background": true})).unwrap();
+    held.wait_until_held();
+    // The newer state, written now under the folder's plain name.
+    s.execute("frame.create", &json!({"rect": [20, 20, 60, 60]})).unwrap();
+    s.execute("file.recovery.save", &json!({"dir": dir.path().to_string_lossy()})).unwrap();
+    assert!(worker::cancelled(&spelled, uid), "the older write is cancelled");
+    held.release();
+    testing::wait_until_idle();
+    let _ = s.execute("file.recovery.progress", &json!({})).unwrap();
+    let mut reopened = Session::new();
+    assert_eq!(open(&mut reopened, dir.path()).unwrap().len(), 1);
+    assert_eq!(reopened.doc().unwrap().doc.spreads[0].items.len(), 2, "the newer snapshot was kept");
+    discard(dir.path(), reopened.doc().unwrap().uid);
+    discard(dir.path(), uid);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn queued_background_writes_count_toward_the_checkpoint_limit() {
+    let _turn = background();
+    let mut s = dirty_session();
+    let folders: Vec<tempfile::TempDir> = (0..=MAX_RECOVERY_ENTRIES).map(|_| tempfile::tempdir().unwrap()).collect();
+    // The first write is held, so every later one is still queued when the next is asked for.
+    let held = testing::hold_next_write(folders[0].path());
+    for folder in &folders[..MAX_RECOVERY_ENTRIES] {
+        let queued = s.execute("file.recovery.save", &json!({"background": true, "dir": folder.path().to_string_lossy()})).unwrap();
+        assert_eq!(queued["queued"], 1, "{queued}");
+    }
+    let over = folders[MAX_RECOVERY_ENTRIES].path();
+    let err = s.execute("file.recovery.save", &json!({"background": true, "dir": over.to_string_lossy()})).unwrap_err();
+    assert!(err.to_string().contains("too many recovery checkpoints"), "{err}");
+    // Saving cancels the queued writes: they no longer count once the document changes again.
+    let saved = folders[0].path().join("saved.designcraft");
+    s.execute("file.saveAs", &json!({"path": saved.to_string_lossy()})).unwrap();
+    s.execute("frame.create", &json!({"rect": [20, 20, 60, 60]})).unwrap();
+    let queued = s.execute("file.recovery.save", &json!({"background": true, "dir": over.to_string_lossy()})).unwrap();
+    assert_eq!(queued["queued"], 1, "{queued}");
+    held.release();
+    assert_eq!(finished_writes(&mut s), 1, "only the write queued after the save is a checkpoint");
+    assert_eq!(list(over).len(), 1);
+    let uid = s.docs[0].uid;
+    for folder in &folders {
+        discard(folder.path(), uid);
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
 fn results_for_a_session_that_is_gone_are_not_kept() {
     let _turn = background();
     let dir = tempfile::tempdir().unwrap();
