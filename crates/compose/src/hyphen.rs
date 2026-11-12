@@ -8,7 +8,8 @@
 //! under MIT. Those are the **monotonic** patterns, which is what `hypher` maps `el` to, so
 //! polytonic text hyphenates by them as well. French is `hyph-fr.tex` 2.13 from hyph-utf8 (Daniel
 //! Flipo, Bernard Gaulle, Arthur Reutenauer), MIT; Italian is `hyph-it.tex` 4.9 from hyph-utf8
-//! (Claudio Beccari), LPPL or MIT, taken under MIT. A word with an elision (`l'imprimerie`)
+//! (Claudio Beccari), LPPL or MIT, taken under MIT. Czech is `hyph-cs-sojka.tex` 2021-07-21 (Petr Sojka, Ondřej Sojka), MIT; Polish is
+//! `hyph-pl.tex` 3.0a from hyph-utf8 (Hanna Kołodziejska, Bogusław Jackowski, Marek Ryćko), MIT. A word with an elision (`l'imprimerie`)
 //! hyphenates after its apostrophe.
 //! German uses `hyph-de-1996.tex` (2024-02-28, Deutschsprachige Trennmustermannschaft, MIT):
 //! despite the filename, these are the reformed 2006 spelling patterns. Only the two 2006 reform
