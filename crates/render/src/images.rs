@@ -250,9 +250,9 @@ pub(crate) fn warm(wants: Vec<Want>) -> usize {
                 *held.entry((k.0, k.1)).or_default() += size_of(&e.pm);
             }
         }
-        let in_view = held.values().sum::<usize>();
         // Smaller levels alone don't make an asset cached.
         held.retain(|k, _| c.map.contains_key(&(k.0, k.1, 0)));
+        let in_view = held.values().sum::<usize>();
         for k in index.keys() {
             if c.bad.contains_key(k) {
                 held.entry(*k).or_default();
@@ -278,7 +278,9 @@ pub(crate) fn warm(wants: Vec<Want>) -> usize {
             continue;
         }
         pixels = total;
-        jobs.push((decoding, wanted));
+        // The estimate covers the decoded image and its converted pixels; leave headroom for
+        // temporary buffers inside individual format decoders.
+        jobs.push((decoding.saturating_mul(3) / 2, wanted));
     }
     if jobs.len() < 2 {
         return 0;
