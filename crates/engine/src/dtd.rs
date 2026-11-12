@@ -309,7 +309,39 @@ pub fn parse(src: &str) -> Result<Dtd, String> {
 
 /// What `ends` has worked out for one sequence of children: the end positions of a group (by the
 /// address of its node, which lives as long as the model) from a position.
-type EndsMemo = HashMap<(usize, usize), Vec<usize>>;
+struct EndsMemo {
+    map: HashMap<(usize, usize), Vec<usize>>,
+    /// Matching steps left (shared by a whole validation); at zero `ends` stops and `over` is set.
+    left: usize,
+    /// End positions held in `map`; past [`MAX_STORED_ENDS`] results are no longer kept.
+    stored: usize,
+    over: bool,
+}
+
+/// Matching steps one validation may take across all its elements (a step is a position handled or
+/// compared). Valid documents with thousands of children per element use a small fraction.
+const MAX_MATCH_STEPS: usize = 8 * 1024 * 1024;
+/// End positions the memo may hold at once (8 bytes each).
+const MAX_STORED_ENDS: usize = 4 * 1024 * 1024;
+/// Element nesting depth: `check` recurses and keeps each level's full path.
+const MAX_XML_DEPTH: usize = 256;
+/// Elements in the document being validated.
+const MAX_XML_NODES: usize = 4 * 1024 * 1024;
+/// Problems reported before the list stops.
+const MAX_PROBLEMS: usize = 10_000;
+
+impl EndsMemo {
+    /// Spend `n` steps; false once the budget is gone.
+    fn spend(&mut self, n: usize) -> bool {
+        if self.over || n > self.left {
+            self.left = 0;
+            self.over = true;
+            return false;
+        }
+        self.left -= n;
+        true
+    }
+}
 
 /// End positions after `cp` matches a prefix of `seq[i..]`.
 ///
@@ -321,8 +353,16 @@ fn ends(cp: &Cp, seq: &[&str], i: usize, memo: &mut EndsMemo) -> Vec<usize> {
         return if seq.get(i) == Some(&n.as_str()) { vec![i + 1] } else { vec![] };
     }
     let key = (std::ptr::from_ref(cp) as usize, i);
-    if let Some(done) = memo.get(&key) {
-        return done.clone();
+    if let Some(done) = memo.map.get(&key) {
+        // Charged before the clone, and a failed charge ends the match.
+        let len = done.len();
+        if !memo.spend(len) {
+            return vec![];
+        }
+        return memo.map.get(&key).cloned().unwrap_or_default();
+    }
+    if !memo.spend(1) {
+        return vec![];
     }
     let mut out: Vec<usize> = match cp {
         Cp::Name(_) => vec![],
@@ -333,6 +373,9 @@ fn ends(cp: &Cp, seq: &[&str], i: usize, memo: &mut EndsMemo) -> Vec<usize> {
                 let mut next = Vec::new();
                 for p in at {
                     next.extend(ends(c, seq, p, memo));
+                }
+                if !memo.spend(next.len()) {
+                    return vec![];
                 }
                 next.sort_unstable();
                 next.dedup();
@@ -349,16 +392,21 @@ fn ends(cp: &Cp, seq: &[&str], i: usize, memo: &mut EndsMemo) -> Vec<usize> {
         }
         Cp::Rep(c, r) => {
             let mut all = if *r == '+' { vec![] } else { vec![i] };
+            // `all` as a set too: a list search per position made long repeats quadratic.
+            let mut have: std::collections::HashSet<usize> = all.iter().copied().collect();
             let mut frontier = ends(c, seq, i, memo);
             if *r == '?' {
                 all.extend(frontier);
             } else {
                 while !frontier.is_empty() {
-                    let new: Vec<usize> = frontier.iter().copied().filter(|p| !all.contains(p)).collect();
+                    if !memo.spend(frontier.len()) {
+                        break;
+                    }
+                    let new: Vec<usize> = frontier.iter().copied().filter(|p| have.insert(*p)).collect();
                     all.extend(&new);
                     let mut next = Vec::new();
                     for p in new.into_iter().filter(|&p| p > i) {
-                        next.extend(ends(c, seq, p, memo).into_iter().filter(|p| !all.contains(p)));
+                        next.extend(ends(c, seq, p, memo).into_iter().filter(|p| !have.contains(p)));
                     }
                     // Two paths to one position are one position: kept apart they multiply per round.
                     next.sort_unstable();
@@ -371,7 +419,10 @@ fn ends(cp: &Cp, seq: &[&str], i: usize, memo: &mut EndsMemo) -> Vec<usize> {
     };
     out.sort_unstable();
     out.dedup();
-    memo.insert(key, out.clone());
+    if !memo.over && memo.stored + out.len() <= MAX_STORED_ENDS {
+        memo.stored += out.len();
+        memo.map.insert(key, out.clone());
+    }
     out
 }
 
@@ -396,6 +447,7 @@ fn read_tree(xml: &str) -> Result<Node, String> {
     use quick_xml::events::Event;
     let mut r = quick_xml::Reader::from_str(xml);
     let mut stack: Vec<Node> = Vec::new();
+    let mut count = 0usize;
     let node = |e: &quick_xml::events::BytesStart| Node {
         name: String::from_utf8_lossy(e.name().as_ref()).to_string(),
         attrs: e.attributes().flatten().map(|a| String::from_utf8_lossy(a.key.as_ref()).to_string()).collect(),
@@ -403,8 +455,20 @@ fn read_tree(xml: &str) -> Result<Node, String> {
         text: false,
     };
     loop {
-        match r.read_event().map_err(|e| e.to_string())? {
-            Event::Start(e) => stack.push(node(&e)),
+        let event = r.read_event().map_err(|e| e.to_string())?;
+        if matches!(event, Event::Start(_) | Event::Empty(_)) {
+            count += 1;
+            if count > MAX_XML_NODES {
+                return Err(format!("more than {MAX_XML_NODES} elements"));
+            }
+        }
+        match event {
+            Event::Start(e) => {
+                if stack.len() >= MAX_XML_DEPTH {
+                    return Err(format!("elements nested more than {MAX_XML_DEPTH} deep"));
+                }
+                stack.push(node(&e));
+            }
             Event::Empty(e) => {
                 let n = node(&e);
                 match stack.last_mut() {
@@ -437,8 +501,15 @@ fn read_tree(xml: &str) -> Result<Node, String> {
     }
 }
 
-fn check(dtd: &Dtd, n: &Node, path: &str, out: &mut Vec<Problem>) {
-    let mut problem = |m: String| out.push(Problem { path: path.to_string(), message: m });
+fn check(dtd: &Dtd, n: &Node, path: &str, out: &mut Vec<Problem>, steps: &mut usize) {
+    if out.len() >= MAX_PROBLEMS {
+        return;
+    }
+    let mut problem = |m: String| {
+        if out.len() < MAX_PROBLEMS {
+            out.push(Problem { path: path.to_string(), message: m });
+        }
+    };
     match dtd.model(&n.name) {
         None => problem(format!("`{}` isn't declared in the DTD", n.name)),
         Some(Model::Any) => {}
@@ -459,7 +530,12 @@ fn check(dtd: &Dtd, n: &Node, path: &str, out: &mut Vec<Problem>) {
                 problem(format!("`{}` can't contain text", n.name));
             }
             let seq: Vec<&str> = n.children.iter().map(|c| c.name.as_str()).collect();
-            if !ends(cp, &seq, 0, &mut EndsMemo::new()).contains(&seq.len()) {
+            let mut memo = EndsMemo { map: HashMap::new(), left: *steps, stored: 0, over: false };
+            let matched = ends(cp, &seq, 0, &mut memo).contains(&seq.len());
+            *steps = memo.left;
+            if memo.over {
+                problem(format!("`{}` has too many children to check against its content model", n.name));
+            } else if !matched {
                 let got = if seq.is_empty() { "nothing".to_string() } else { seq.join(", ") };
                 problem(format!("`{}` contains {got}; the DTD asks for {}", n.name, show(cp)));
             }
@@ -474,7 +550,7 @@ fn check(dtd: &Dtd, n: &Node, path: &str, out: &mut Vec<Problem>) {
     for c in &n.children {
         let k = seen.entry(c.name.as_str()).or_default();
         *k += 1;
-        check(dtd, c, &format!("{path}/{}[{k}]", c.name), out);
+        check(dtd, c, &format!("{path}/{}[{k}]", c.name), out, steps);
     }
 }
 
@@ -484,7 +560,10 @@ pub fn validate(dtd: &Dtd, xml: &str) -> Vec<Problem> {
         Ok(root) => {
             let mut out = Vec::new();
             let path = root.name.clone();
-            check(dtd, &root, &path, &mut out);
+            check(dtd, &root, &path, &mut out, &mut { MAX_MATCH_STEPS });
+            if out.len() >= MAX_PROBLEMS {
+                out.push(Problem { path: String::new(), message: "further problems are not listed".into() });
+            }
             out
         }
         Err(e) => vec![Problem { path: String::new(), message: format!("not well-formed XML: {e}") }],
@@ -742,5 +821,30 @@ mod tests {
         let problems = validate(&dtd, &format!("<r>{}</r>", "<a/>".repeat(41)));
         assert_eq!(problems.len(), 1, "{problems:?}");
         assert!(problems[0].message.starts_with("`r` contains a, a, a"), "{problems:?}");
+    }
+
+    #[test]
+    fn nested_repeats_over_many_children_stop_at_the_step_budget() {
+        let dtd = parse("<!ELEMENT r ((a*)*)><!ELEMENT a EMPTY>").unwrap();
+        assert_eq!(validate(&dtd, &format!("<r>{}</r>", "<a/>".repeat(1000))), vec![]);
+        let problems = validate(&dtd, &format!("<r>{}</r>", "<a/>".repeat(20_000)));
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].message.contains("too many children"), "{problems:?}");
+    }
+
+    #[test]
+    fn xml_nesting_is_bounded() {
+        let dtd = parse("<!ELEMENT a ANY>").unwrap();
+        let deep = |n: usize| format!("{}{}", "<a>".repeat(n), "</a>".repeat(n));
+        assert_eq!(validate(&dtd, &deep(MAX_XML_DEPTH)), vec![]);
+        let problems = validate(&dtd, &deep(MAX_XML_DEPTH + 1));
+        assert!(problems[0].message.contains("nested more than"), "{problems:?}");
+    }
+
+    #[test]
+    fn problems_are_capped() {
+        let dtd = parse("<!ELEMENT r EMPTY>").unwrap();
+        let problems = validate(&dtd, &format!("<r>{}</r>", "<x/>".repeat(MAX_PROBLEMS + 50)));
+        assert!(problems.len() <= MAX_PROBLEMS + 1, "{}", problems.len());
     }
 }
