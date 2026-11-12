@@ -86,7 +86,9 @@ pub(super) fn duplicate_layer(s: &mut Session, p: &Value) -> Result<Value> {
             let Some(sp) = src.spread(r) else { continue };
             for it in sp.items.iter().filter(|it| it.layer == id) {
                 let mut copy = Item::clone(it);
-                super::super::object::renumber(d, &src, &mut copy, &mut stories);
+                if !super::super::object::renumber(d, &src, &mut copy, &mut stories) {
+                    return Err(bad(ID, "the layer's objects are nested too deeply to copy"));
+                }
                 map_ids(it, &copy, &mut ids);
                 copies.push((r, copy));
             }
@@ -113,8 +115,10 @@ pub(super) fn duplicate_layer(s: &mut Session, p: &Value) -> Result<Value> {
         // and those of the other copies point at, and tables with ids of their own, the tables in its cells and notes
         // included, allocated in story order.
         let mut anchors = HashMap::new();
+        // The copies' own anchors are given ids below, so only the other stories' anchors count as taken.
+        let copied: HashSet<StoryId> = stories.values().copied().collect();
         let mut used = HashSet::new();
-        for st in d.stories.values() {
+        for st in d.stories.values().filter(|st| !copied.contains(&st.id)) {
             anchor_ids(st, &mut used);
         }
         let mut order: Vec<(StoryId, StoryId)> = stories.iter().map(|(old, new)| (*old, *new)).collect();
@@ -125,7 +129,10 @@ pub(super) fn duplicate_layer(s: &mut Session, p: &Value) -> Result<Value> {
                 st.link = Some((stories.get(&parent).copied().unwrap_or(parent), revision));
             }
             st.frames = src.story(*old).map(|o| o.frames.iter().filter_map(|f| ids.get(f).copied()).collect()).unwrap_or_default();
-            for (k, a) in (1..).zip(st.anchors.iter_mut()) {
+            // The copy's anchors may already have new ids: each is keyed by the id of the original's anchor, which the
+            // copied cross-references still point at.
+            let originals: Vec<u64> = src.story(*old).map(|o| o.anchors.iter().map(|a| a.id).collect()).unwrap_or_default();
+            for ((k, a), orig_id) in (1..).zip(st.anchors.iter_mut()).zip(originals) {
                 // `story id << 24 | n`, as anchors are made, or a new id when another anchor has that one or the story id
                 // does not fit.
                 let made = new.0.checked_mul(1 << 24).and_then(|base| base.checked_add(k)).filter(|id| !used.contains(id));
@@ -138,7 +145,7 @@ pub(super) fn duplicate_layer(s: &mut Session, p: &Value) -> Result<Value> {
                         }
                     },
                 };
-                anchors.insert(a.id, id);
+                anchors.insert(orig_id, id);
                 used.insert(id);
                 Arc::make_mut(a).id = id;
             }
@@ -250,11 +257,10 @@ fn map_anchored(orig: &Story, copy: &Story, ids: &mut HashMap<ItemId, ItemId>) {
     for (o, c) in orig.objects.iter().zip(&copy.objects) {
         map_ids(&o.item, &c.item, ids);
     }
-    for (k, t) in &orig.tables {
-        if let Some(ct) = copy.tables.get(k) {
-            for (o, c) in t.cells.iter().zip(&ct.cells) {
-                map_anchored(&o.text, &c.text, ids);
-            }
+    // Copied tables have new ids, given in the order of the old ones, so the two maps list them in the same order.
+    for (t, ct) in orig.tables.values().zip(copy.tables.values()) {
+        for (o, c) in t.cells.iter().zip(&ct.cells) {
+            map_anchored(&o.text, &c.text, ids);
         }
     }
     for (o, c) in orig.notes.iter().chain(&orig.endnotes).zip(copy.notes.iter().chain(&copy.endnotes)) {
@@ -1127,6 +1133,35 @@ mod layer_tests {
         let before = s.doc().unwrap().doc.layers.clone();
         assert!(s.execute("layer.duplicate", &json!({"id": base})).is_err());
         assert_eq!(s.doc().unwrap().doc.layers, before, "nothing changes");
+    }
+
+    /// An empty group inside 64 others: within the layer's depth check, which counts the objects below a group, but
+    /// past the limit of the copy, which counts the group itself.
+    #[test]
+    fn duplicate_layer_refuses_an_empty_group_at_the_copy_limit() {
+        use designcraft_doc::{Content, ItemId};
+        use std::sync::Arc;
+
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let base = s.doc().unwrap().doc.layers[0].id.0;
+        let f = s.execute("frame.create", &json!({"rect": [0, 0, 10, 10]})).unwrap()["id"].as_u64().unwrap();
+        let d = Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+        let mut it = d.item(ItemId(f)).cloned().unwrap();
+        it.content = Content::Group { items: Vec::new() };
+        for _ in 0..super::MAX_COPY_DEPTH {
+            let mut group = it.clone();
+            group.id = ItemId(d.alloc());
+            group.content = Content::Group { items: vec![Arc::new(it)] };
+            it = group;
+        }
+        let items = &mut Arc::make_mut(&mut d.spreads[0]).items;
+        items.retain(|i| i.id.0 != f);
+        items.push(Arc::new(it));
+        let before = s.doc().unwrap().doc.clone();
+        let e = s.execute("layer.duplicate", &json!({"id": base})).unwrap_err().to_string();
+        assert!(e.contains("too deeply to copy"), "{e}");
+        assert_eq!(s.doc().unwrap().doc, before, "nothing changes");
     }
 
     #[test]
