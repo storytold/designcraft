@@ -91,11 +91,6 @@ pub(super) fn duplicate_layer(s: &mut Session, p: &Value) -> Result<Value> {
                 copies.push((r, copy));
             }
         }
-        // Every copy has its id before overrides are pointed at the copied parent items.
-        for (r, mut copy) in copies {
-            move_copy(&mut copy, new_id, &ids);
-            d.insert_item(r, copy, None)?;
-        }
         // A story copy holds the same anchored objects as the original: they get ids of their own, and the stories of
         // anchored text frames get copies in turn. The story copies are taken in story order.
         let mut pending: Vec<StoryId> = stories.values().copied().collect();
@@ -105,6 +100,17 @@ pub(super) fn duplicate_layer(s: &mut Session, p: &Value) -> Result<Value> {
             let Some(mut st) = d.story(new).cloned() else { continue };
             renumber_anchored(d, &mut st, new_id, &mut stories, &mut ids, &mut pending);
             d.stories.insert(new, Arc::new(st));
+        }
+        // Every copy, anchored objects included, has its id before overrides are pointed at the copied parent items and
+        // live captions at the copied objects.
+        for (r, mut copy) in copies {
+            move_copy(&mut copy, new_id, &ids);
+            d.insert_item(r, copy, None)?;
+        }
+        for new in stories.values() {
+            if let Some(st) = d.story_mut(*new) {
+                move_anchored(st, new_id, &ids);
+            }
         }
         // Each story copy gets its frames in the original order, text anchors of its own, which its cross-references
         // and those of the other copies point at, and tables with ids of their own, the tables in its cells and notes
@@ -372,6 +378,22 @@ fn move_copy(it: &mut Item, to: LayerId, ids: &HashMap<ItemId, ItemId>) {
     }
     for c in it.children_mut().into_iter().flatten() {
         move_copy(Arc::make_mut(c), to, ids);
+    }
+}
+
+/// Run [`move_copy`] on the anchored objects of `st` and of the stories of its table cells and notes. [`too_deep`] bounds
+/// the nesting.
+fn move_anchored(st: &mut Story, to: LayerId, ids: &HashMap<ItemId, ItemId>) {
+    for o in &mut st.objects {
+        move_copy(&mut Arc::make_mut(o).item, to, ids);
+    }
+    for t in st.tables.values_mut() {
+        for c in &mut Arc::make_mut(t).cells {
+            move_anchored(&mut c.text, to, ids);
+        }
+    }
+    for n in st.notes.iter_mut().chain(st.endnotes.iter_mut()) {
+        move_anchored(&mut Arc::make_mut(n).text, to, ids);
     }
 }
 
@@ -693,6 +715,27 @@ mod layer_tests {
         let caption = copies.iter().find_map(|i| i.live_caption.as_ref()).unwrap();
         assert_eq!(caption.source, frame.id, "the caption's copy follows the frame's copy");
         assert_ne!(frame.id.0, a);
+    }
+
+    #[test]
+    fn duplicate_layer_points_copied_live_captions_at_copied_anchored_objects() {
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let base = s.doc().unwrap().doc.layers[0].id.0;
+        let a = s.execute("frame.create", &json!({"rect": [450, 450, 474, 490]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("object.caption", &json!({"ids": [a], "text": "{name}", "live": true})).unwrap();
+        let text = json!({"rect": [72, 72, 400, 400], "content": "text", "text": "Before after."});
+        let f = s.execute("frame.create", &text).unwrap()["id"].as_u64().unwrap();
+        let sid = s.doc().unwrap().doc.item(designcraft_doc::ItemId(f)).unwrap().text_frame().unwrap().story;
+        // The caption's source moves into the story and keeps its id.
+        s.execute("anchored.insert", &json!({"ids": [a], "story": sid.0, "pos": 7})).unwrap();
+        let copy = s.execute("layer.duplicate", &json!({"id": base})).unwrap()["id"].as_u64().unwrap();
+        let d = &s.doc().unwrap().doc;
+        let anchored = d.anchored_items().into_iter().map(|(_, i)| i).find(|i| i.layer.0 == copy).unwrap();
+        assert_ne!(anchored.id.0, a);
+        let copies = on_layer(d, copy);
+        let caption = copies.iter().find_map(|i| i.live_caption.as_ref()).unwrap();
+        assert_eq!(caption.source, anchored.id, "the caption's copy follows the anchored object's copy");
     }
 
     #[test]
