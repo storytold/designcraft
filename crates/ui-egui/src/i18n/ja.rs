@@ -32,6 +32,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Cut", "カット"),
     ("Copy", "コピー"),
     ("Paste", "ペースト"),
+    ("Apply Next Style", "次のスタイルを適用"),
+    ("Text Frame General Options", "テキストフレーム一般オプション"),
     ("Stroke Type", "線の種類"),
     ("Corner Shape", "角のシェイプ"),
     ("Corner Size and Shape:", "角のサイズとシェイプ:"),
