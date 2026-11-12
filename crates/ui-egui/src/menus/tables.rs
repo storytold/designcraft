@@ -469,6 +469,8 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "-",
             "cmd:table.distributeRows",
             "cmd:table.distributeColumns",
+            "-",
+            "cmd:table.goToRow",
         ],
     ),
     (
