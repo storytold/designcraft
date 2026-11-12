@@ -83,6 +83,7 @@ fn thumb(app: &mut DesignApp, ctx: &egui::Context, of: ThumbOf, h: f32) -> Optio
     }
     if let Some((rev, t)) = map.get(&key) {
         if *rev == st.revision {
+            ctx.data_mut(|d| d.insert_temp(clock_id, clock));
             return Some(t.clone());
         }
         let wait = THUMB_QUIET_SECS - (now - clock.changed_at);
