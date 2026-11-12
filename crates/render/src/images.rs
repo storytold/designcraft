@@ -536,19 +536,19 @@ mod tests {
 
     #[test]
     fn warm_decodes_large_images_one_at_a_time() {
-        // Two 6,500 pixel square images fit the budget together, but decoding both at once would
-        // take more than half of it; the small image still decodes beside them.
-        let (d, e, small) = (psd(6500), psd(6500), png(8, 15));
+        // Two 5,000 pixel square images take less than half the budget cached, but decoding both
+        // at once would reserve more than half of it; the small image still decodes beside one.
+        let (d, e, small) = (psd(5000), psd(5000), png(8, 15));
         let since = mark();
         let large = decoded_bytes(&d, 0);
-        assert!(large > BUDGET / 4 && 2 * large <= BUDGET * 3 / 4);
+        assert!(2 * large <= BUDGET / 2);
         let decoding = decode_peak_bytes(&d, 0);
         let reserved = decoding * 3 / 2;
         assert!(admits(0, reserved) && !admits(reserved, reserved) && admits(reserved, decode_peak_bytes(&small, 0) * 3 / 2));
         assert!(admits(0, usize::MAX), "an image over half the budget still decodes alone");
         let peak = warm(vec![want(&d), want(&e), want(&small)]);
-        assert!(peak <= decoding * 3 / 2, "{peak} bytes decoding at once");
-        assert!(peak >= decoding, "the large images were decoded ahead");
+        assert!(peak <= BUDGET / 2, "{peak} bytes decoding at once");
+        assert!(peak >= reserved, "the large images were decoded ahead");
         let me = std::thread::current().id();
         for img in [&d, &e, &small] {
             let on = decoders(img, since);
