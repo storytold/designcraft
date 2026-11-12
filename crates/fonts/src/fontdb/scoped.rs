@@ -67,8 +67,13 @@ impl ScopedFonts<'_> {
         // there, so `Source Serif 4 Semibold` `Regular` finds Source Serif 4 Regular: another
         // face, which Find Font and preflight called exact (#2618).
         let names = |f: &str| f.eq_ignore_ascii_case(&face.family) || face.family_aliases.iter().any(|alias| alias.eq_ignore_ascii_case(f));
+        // A style with axis settings (`Regular {wght:650}`) matches by its base name only on a
+        // face those settings apply to (an instance); a static face draws without them.
+        let axes_apply = !style.contains('{') || !face.coords.is_empty();
         let wws_named = |w: &(String, String)| {
-            std::iter::once(family).chain(alternate_names(family)).any(|f| w.0.eq_ignore_ascii_case(f)) && norm(&w.1) == norm(base_style(style))
+            std::iter::once(family).chain(alternate_names(family)).any(|f| w.0.eq_ignore_ascii_case(f))
+                && norm(&w.1) == norm(base_style(style))
+                && axes_apply
         };
         if !std::iter::once(family).chain(alternate_names(family)).any(names) {
             return face.wws.as_ref().is_some_and(wws_named);
