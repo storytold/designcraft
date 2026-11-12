@@ -67,21 +67,38 @@ pub(crate) const MAX_SHRINK: u8 = 3;
 
 /// A YCbCr, RGB or grayscale JPEG decoded at 1/2^`shrink` of its size, each side rounded up, for
 /// `shrink` 1 to [`MAX_SHRINK`]: straight RGBA and whether the image has colour. `None` for CMYK,
-/// 12-bit and lossless JPEGs, other formats and anything that doesn't decode.
+/// 12-bit and lossless JPEGs, other formats and anything that doesn't decode. `None` as well for a
+/// JPEG whose full size is over the full decode's limit, and for a progressive JPEG whose
+/// full-size coefficients take more than [`MAX_BYTES`]; the full decode applies its own limits to
+/// those.
 pub(crate) fn decode_reduced(bytes: &[u8], shrink: u8) -> Option<(image::RgbaImage, bool)> {
-    use jpeg_decoder::PixelFormat;
+    use jpeg_decoder::{CodingProcess, PixelFormat};
     if !bytes.starts_with(&[0xFF, 0xD8]) || shrink == 0 || shrink > MAX_SHRINK {
         return None;
     }
     let mut d = jpeg_decoder::Decoder::new(bytes);
+    // This limits the output only, which is the reduced size.
     d.set_max_decoding_buffer_size(MAX_BYTES);
     d.read_info().ok()?;
     let info = d.info()?;
+    if crate::over_rgba_budget(u32::from(info.width), u32::from(info.height)) {
+        return None;
+    }
     let colour = match info.pixel_format {
         PixelFormat::RGB24 => true,
         PixelFormat::L8 => false,
         PixelFormat::L16 | PixelFormat::CMYK32 => return None,
     };
+    if info.coding_process == CodingProcess::DctProgressive {
+        // A progressive JPEG holds every coefficient of the full-size image (two bytes each) until
+        // its last scan, whatever the output size. Each component is counted at the full size and
+        // each side is rounded up to the largest MCU (32 pixels): an upper bound.
+        let side = |n: u16| u64::from(n).next_multiple_of(32);
+        let components: u64 = if colour { 3 } else { 1 };
+        if side(info.width) * side(info.height) * components * 2 > MAX_BYTES as u64 {
+            return None;
+        }
+    }
     let reduced = |n: u16| u16::try_from(u32::from(n).div_ceil(1 << shrink)).ok();
     let (w, h) = d.scale(reduced(info.width)?, reduced(info.height)?).ok()?;
     let px = d.decode().ok()?;

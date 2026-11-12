@@ -611,3 +611,61 @@ fn reduced_decoding_is_for_jpegs_and_survives_damaged_ones() {
         }
     }
 }
+
+#[test]
+fn reduced_decoding_refuses_a_jpeg_whose_size_the_size_check_cannot_read() {
+    let jpeg = gradient_jpeg(64, 48, false);
+    assert_eq!(decode_rgba_reduced(&jpeg, 1).unwrap().dimensions(), (32, 24));
+    // A stray byte after the start marker: the JPEG decoder skips it, but `pixel_size` doesn't
+    // recognize the file, so `too_large_to_decode` has no size to check.
+    let mut stray = jpeg.clone();
+    stray.insert(2, 0);
+    assert_eq!(pixel_size(&stray), None);
+    assert!(decode_rgba_reduced(&stray, 1).is_none());
+    assert!(decode_rgba(&stray).is_none());
+}
+
+/// A progressive JPEG with only its DC scan, `w` × `h` with `components` 1×1-sampled components:
+/// every coefficient is zero (a flat mid-gray image).
+fn progressive_jpeg(w: u16, h: u16, components: u8) -> Vec<u8> {
+    let mut out = vec![0xFF, 0xD8];
+    // One quantization table of ones.
+    out.extend([0xFF, 0xDB, 0, 67, 0]);
+    out.extend([1; 64]);
+    // Start of frame, progressive DCT.
+    out.extend([0xFF, 0xC2, 0, 8 + 3 * components, 8]);
+    out.extend(h.to_be_bytes());
+    out.extend(w.to_be_bytes());
+    out.push(components);
+    for id in 1..=components {
+        out.extend([id, 0x11, 0]);
+    }
+    // A DC table with one code, "0", for a difference of 0.
+    out.extend([0xFF, 0xC4, 0, 20, 0x00, 1]);
+    out.extend([0; 15]);
+    out.push(0);
+    // The DC scan of every component (Ss, Se, Ah/Al all 0), then zero bits.
+    out.extend([0xFF, 0xDA, 0, 6 + 2 * components, components]);
+    for id in 1..=components {
+        out.extend([id, 0x00]);
+    }
+    out.extend([0, 0, 0]);
+    out.extend([0; 16]);
+    out.extend([0xFF, 0xD9]);
+    out
+}
+
+#[test]
+fn reduced_decoding_refuses_progressive_jpegs_whose_full_size_coefficients_are_over_the_limit() {
+    let small = decode_rgba_reduced(&progressive_jpeg(64, 48, 3), 3).unwrap();
+    assert_eq!(small.dimensions(), (8, 6));
+    // 10,240 × 8,800 is within the RGBA limit, but its three components' coefficients take
+    // 10,240 × 8,800 × 3 × 2 bytes, over 512 MiB, whatever the output size.
+    let large = progressive_jpeg(10_240, 8_800, 3);
+    assert_eq!(pixel_size(&large), Some((10_240, 8_800)));
+    assert!(!too_large_to_decode(&large));
+    assert!(decode_rgba_reduced(&large, 3).is_none());
+    // One component of the same size stays under the limit.
+    let gray = decode_rgba_reduced(&progressive_jpeg(10_240, 8_800, 1), 3).unwrap();
+    assert_eq!(gray.dimensions(), (1_280, 1_100));
+}
