@@ -232,6 +232,43 @@ fn exported_frames_keep_their_own_values_over_their_object_style() {
     assert_eq!(got.options, want);
 }
 
+/// Items without corners keep none after export and import, though their object style, the style
+/// it is based on, or `[None]` (read after every style chain) sets rounded corners.
+#[test]
+fn exported_frames_keep_no_corners_over_their_object_style() {
+    let mut d = small_doc();
+    let lid = d.default_layer();
+    let id = designcraft_doc::ItemId(d.alloc());
+    let rect = designcraft_doc::Item::new(id, lid, Shape::Rectangle, shapes::rectangle(Rect::new(40.0, 420.0, 200.0, 500.0)));
+    d.insert_item(SpreadRef::Doc(0), rect, None).unwrap();
+    let rounded = Some(designcraft_geom::corners::CornerOptions {
+        corners: [designcraft_geom::corners::Corner { shape: CornerShape::Rounded, size: 12.0 }; 4],
+    });
+    let styles = std::sync::Arc::make_mut(&mut d.styles);
+    styles.object.push(designcraft_doc::ObjectStyle { name: "Round".into(), corners: rounded, ..Default::default() });
+    styles.object.push(designcraft_doc::ObjectStyle { name: "Child".into(), based_on: Some("Round".into()), ..Default::default() });
+    match styles.object.iter_mut().find(|o| o.name == designcraft_doc::NO_OBJECT_STYLE) {
+        Some(none) => none.corners = rounded,
+        None => {
+            styles.object.push(designcraft_doc::ObjectStyle { name: designcraft_doc::NO_OBJECT_STYLE.into(), corners: rounded, ..Default::default() })
+        }
+    }
+    styles.object.push(designcraft_doc::ObjectStyle { name: "Plain".into(), ..Default::default() });
+    let names = ["Round", "Child", designcraft_doc::NO_OBJECT_STYLE, "Plain"];
+    let ids: Vec<_> = d.spreads.iter().flat_map(|s| s.items.iter().map(|i| i.id)).take(4).collect();
+    assert_eq!(ids.len(), 4);
+    for (id, style) in ids.iter().zip(names) {
+        let it = d.item_mut(*id).unwrap();
+        it.object_style = style.into();
+        assert!(it.corners.is_none());
+    }
+    let back = import_idml(&export_idml(&d)).unwrap();
+    for style in names {
+        let it = back.spreads.iter().flat_map(|s| s.items.iter()).find(|i| i.object_style == style).unwrap();
+        assert!(it.corners.is_none(), "{style}: {:?}", it.corners);
+    }
+}
+
 #[test]
 fn text_wrap_side_and_contour_come_from_the_style_for_frames_and_placed_graphics() {
     let styles = r#"<ObjectStyle Self="ObjectStyle/Contour" Name="Contour">

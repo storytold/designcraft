@@ -106,6 +106,8 @@ struct Ex<'a> {
     /// Index topic path → first serialized sort key; See / See also cross-references.
     index_topics: BTreeMap<Vec<String>, String>,
     index_xrefs: Vec<(Vec<String>, &'static str, String)>,
+    /// Object style name → whether its chain or `[None]` sets corners, found once per style.
+    style_corners: HashMap<String, bool>,
 }
 
 impl<'a> Ex<'a> {
@@ -121,6 +123,7 @@ impl<'a> Ex<'a> {
             link_text_sources: Vec::new(),
             index_topics: BTreeMap::new(),
             index_xrefs: Vec::new(),
+            style_corners: HashMap::new(),
         };
         ex.assign_swatch_ids();
         for s in d.stories.values() {

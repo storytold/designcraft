@@ -87,8 +87,10 @@ impl<'a> Ex<'a> {
             el.set("GradientStrokeAngle", num(a));
         }
         self.stroke_attrs(&mut el, &it.stroke);
-        // Corner options: map path-order corners to the named corners by geometry.
-        if !it.corners.is_none() {
+        // Corner options: map path-order corners to the named corners by geometry. An item without
+        // corners whose object style chain sets some writes None, so an import does not give it
+        // the style's corners.
+        if !it.corners.is_none() || self.style_sets_corners(os) {
             let names_by_index = corner_names(&it.path);
             for (i, c) in it.corners.corners.iter().enumerate() {
                 let n = names_by_index[i];
@@ -151,6 +153,36 @@ impl<'a> Ex<'a> {
             _ => {}
         }
         el
+    }
+
+    /// Whether object style `name`, a style it is based on, or `[None]` (which an import reads
+    /// after every item's style chain) sets corners other than None. A built-in style the
+    /// document lacks counts as its default.
+    fn style_sets_corners(&mut self, name: &str) -> bool {
+        if let Some(&known) = self.style_corners.get(name) {
+            return known;
+        }
+        let defaults = designcraft_doc::Styles::default();
+        let style = |n: &str| self.d.styles.object_style(n).or_else(|| defaults.object_style(n));
+        let rounds = |os: &designcraft_doc::ObjectStyle| os.corners.is_some_and(|c| !c.is_none());
+        let mut seen: Vec<&str> = Vec::new();
+        let mut cur = Some(name);
+        let mut found = false;
+        while let Some(n) = cur.take() {
+            if seen.contains(&n) {
+                break;
+            }
+            let Some(os) = style(n) else { break };
+            if rounds(os) {
+                found = true;
+                break;
+            }
+            seen.push(n);
+            cur = os.based_on.as_deref();
+        }
+        let found = found || style(designcraft_doc::NO_OBJECT_STYLE).is_some_and(rounds);
+        self.style_corners.insert(name.to_string(), found);
+        found
     }
 
     fn append_transparency(&self, el: &mut El, it: &Item, os: &str) {
