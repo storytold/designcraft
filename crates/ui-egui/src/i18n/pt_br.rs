@@ -1,6 +1,17 @@
 //! Original Brazilian Portuguese interface translations, written from the English source
 //! using ordinary Brazilian Portuguese computing vocabulary.
 pub(super) const TABLE: &[(&str, &str)] = &[
+    ("Distribute Objects:", "Distribuir objetos:"),
+    ("Distribute Spacing:", "Distribuir espaçamento:"),
+    ("Use Spacing", "Usar espaçamento"),
+    ("Distribute top edges", "Distribuir bordas superiores"),
+    ("Distribute vertical centers", "Distribuir centros verticais"),
+    ("Distribute bottom edges", "Distribuir bordas inferiores"),
+    ("Distribute left edges", "Distribuir bordas esquerdas"),
+    ("Distribute horizontal centers", "Distribuir centros horizontais"),
+    ("Distribute right edges", "Distribuir bordas direitas"),
+    ("Distribute vertical space", "Distribuir espaço vertical"),
+    ("Distribute horizontal space", "Distribuir espaço horizontal"),
     ("Fewer Options", "Menos opções"),
     ("Tab Character", "Caractere de tabulação"),
     ("Right Indent Tab", "Tabulação de recuo à direita"),

@@ -4,6 +4,17 @@
 //! Portuguese, Japanese, Italian and Ukrainian tables has a row here, plus a few labels that only
 //! the code or the command table use.
 pub(super) const TABLE: &[(&str, &str)] = &[
+    ("Distribute Objects:", "ობიექტების განაწილება:"),
+    ("Distribute Spacing:", "ინტერვალის განაწილება:"),
+    ("Use Spacing", "ინტერვალის გამოყენება"),
+    ("Distribute top edges", "ზედა კიდეების განაწილება"),
+    ("Distribute vertical centers", "ვერტიკალური ცენტრების განაწილება"),
+    ("Distribute bottom edges", "ქვედა კიდეების განაწილება"),
+    ("Distribute left edges", "მარცხენა კიდეების განაწილება"),
+    ("Distribute horizontal centers", "ჰორიზონტალური ცენტრების განაწილება"),
+    ("Distribute right edges", "მარჯვენა კიდეების განაწილება"),
+    ("Distribute vertical space", "ვერტიკალური ინტერვალის განაწილება"),
+    ("Distribute horizontal space", "ჰორიზონტალური ინტერვალის განაწილება"),
     ("Fewer Options", "ნაკლები პარამეტრი"),
     ("Tab Character", "ტაბულაციის სიმბოლო"),
     ("File", "ფაილი"),

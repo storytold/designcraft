@@ -32,7 +32,7 @@ pub(crate) use links::run_update_links;
 pub use links::{info_panel, links_panel, preflight_panel, update_links};
 #[cfg(test)]
 use object::align_to_icon;
-use object::{align_row, appearance_section, guide_section, quick_actions_object, transform_section, wrap_section};
+use object::{align_row, appearance_section, distribute_rows, guide_section, quick_actions_object, transform_section, wrap_section};
 pub(crate) use object::{corner_shape_button, corner_type_dropdown, paint_corner_shape, preview_row, ref_point_proxy, stroke_type_dropdown};
 pub use object_panels::{align_panel, attributes_panel, effects_panel, pathfinder_panel, stroke_panel, wrap_panel};
 use object_panels::{anchor_point_sections, pathfinder_row};
@@ -181,6 +181,9 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     }
     section(ui, crate::i18n::tr(&app.ui.language, "Align"), true);
     align_row(app, ui);
+    if i.count > 1 {
+        distribute_rows(app, ui, i.count);
+    }
     divider(ui);
     section(ui, crate::i18n::tr(&app.ui.language, "Flex Layout"), true);
     flex_section(app, ui);

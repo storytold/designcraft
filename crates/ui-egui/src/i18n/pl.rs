@@ -2,6 +2,17 @@
 //! are welcome. Terminology follows common Polish DTP usage
 //! (rozkładówka, łam, strona wzorcowa, obszar informacyjny) and the sibling ArtCraft catalogs.
 pub(super) const TABLE: &[(&str, &str)] = &[
+    ("Distribute Objects:", "Rozmieść obiekty:"),
+    ("Distribute Spacing:", "Rozmieść odstępy:"),
+    ("Use Spacing", "Użyj odstępu"),
+    ("Distribute top edges", "Rozmieść górne krawędzie"),
+    ("Distribute vertical centers", "Rozmieść środki w pionie"),
+    ("Distribute bottom edges", "Rozmieść dolne krawędzie"),
+    ("Distribute left edges", "Rozmieść lewe krawędzie"),
+    ("Distribute horizontal centers", "Rozmieść środki w poziomie"),
+    ("Distribute right edges", "Rozmieść prawe krawędzie"),
+    ("Distribute vertical space", "Rozmieść odstępy w pionie"),
+    ("Distribute horizontal space", "Rozmieść odstępy w poziomie"),
     ("Fewer Options", "Mniej opcji"),
     ("Tab Character", "Znak tabulacji"),
     ("File", "Plik"),

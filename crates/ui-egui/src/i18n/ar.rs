@@ -1,5 +1,16 @@
 //! Original Arabic interface translations, stored in logical Unicode order.
 pub(super) const TABLE: &[(&str, &str)] = &[
+    ("Distribute Objects:", "توزيع الكائنات:"),
+    ("Distribute Spacing:", "توزيع المسافات:"),
+    ("Use Spacing", "استخدام المسافة"),
+    ("Distribute top edges", "توزيع الحواف العلوية"),
+    ("Distribute vertical centers", "توزيع المراكز الرأسية"),
+    ("Distribute bottom edges", "توزيع الحواف السفلية"),
+    ("Distribute left edges", "توزيع الحواف اليسرى"),
+    ("Distribute horizontal centers", "توزيع المراكز الأفقية"),
+    ("Distribute right edges", "توزيع الحواف اليمنى"),
+    ("Distribute vertical space", "توزيع المسافة الرأسية"),
+    ("Distribute horizontal space", "توزيع المسافة الأفقية"),
     ("Fewer Options", "خيارات أقل"),
     ("Tab Character", "محرف جدولة"),
     ("File", "ملف"),

@@ -3,6 +3,17 @@
 //! product's localization was used). Phrases shared with the MIT OR Apache-2.0 Czech catalogs of
 //! the ArtCraft siblings (VectorCraft, PhotoCraft) are kept identical; see ASSETS.md for sources.
 pub(super) const TABLE: &[(&str, &str)] = &[
+    ("Distribute Objects:", "Rozmístit objekty:"),
+    ("Distribute Spacing:", "Rozmístit mezery:"),
+    ("Use Spacing", "Použít mezeru"),
+    ("Distribute top edges", "Rozmístit horní okraje"),
+    ("Distribute vertical centers", "Rozmístit svislé středy"),
+    ("Distribute bottom edges", "Rozmístit dolní okraje"),
+    ("Distribute left edges", "Rozmístit levé okraje"),
+    ("Distribute horizontal centers", "Rozmístit vodorovné středy"),
+    ("Distribute right edges", "Rozmístit pravé okraje"),
+    ("Distribute vertical space", "Rozmístit svislé mezery"),
+    ("Distribute horizontal space", "Rozmístit vodorovné mezery"),
     ("Fewer Options", "Méně možností"),
     ("Tab Character", "Znak tabulátoru"),
     ("File", "Soubor"),

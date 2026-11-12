@@ -2,6 +2,17 @@
 //! Common phrases are adapted from the MIT OR Apache-2.0 ArtCraft sibling catalogs
 //! (VectorCraft, PhotoCraft, WordCraft and DeckCraft); see ASSETS.md for pinned sources.
 pub(super) const TABLE: &[(&str, &str)] = &[
+    ("Distribute Objects:", "Розподілити об’єкти:"),
+    ("Distribute Spacing:", "Розподілити інтервали:"),
+    ("Use Spacing", "Використовувати інтервал"),
+    ("Distribute top edges", "Розподілити за верхніми краями"),
+    ("Distribute vertical centers", "Розподілити за вертикальними центрами"),
+    ("Distribute bottom edges", "Розподілити за нижніми краями"),
+    ("Distribute left edges", "Розподілити за лівими краями"),
+    ("Distribute horizontal centers", "Розподілити за горизонтальними центрами"),
+    ("Distribute right edges", "Розподілити за правими краями"),
+    ("Distribute vertical space", "Розподілити інтервали по вертикалі"),
+    ("Distribute horizontal space", "Розподілити інтервали по горизонталі"),
     ("Fewer Options", "Менше параметрів"),
     ("Tab Character", "Символ табуляції"),
     ("Right Indent Tab", "Табуляція правого відступу"),

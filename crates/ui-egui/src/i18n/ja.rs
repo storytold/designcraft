@@ -3,6 +3,17 @@
 //! Portuguese tables has a row here; the menu titles and panel names that were already Japanese in the
 //! shared table are carried over unchanged.
 pub(super) const TABLE: &[(&str, &str)] = &[
+    ("Distribute Objects:", "オブジェクトの分布:"),
+    ("Distribute Spacing:", "等間隔に分布:"),
+    ("Use Spacing", "間隔を指定"),
+    ("Distribute top edges", "上端を分布"),
+    ("Distribute vertical centers", "垂直方向中央を分布"),
+    ("Distribute bottom edges", "下端を分布"),
+    ("Distribute left edges", "左端を分布"),
+    ("Distribute horizontal centers", "水平方向中央を分布"),
+    ("Distribute right edges", "右端を分布"),
+    ("Distribute vertical space", "垂直方向に等間隔に分布"),
+    ("Distribute horizontal space", "水平方向に等間隔に分布"),
     ("Fewer Options", "オプションを減らす"),
     ("Tab Character", "タブ文字"),
     ("File", "ファイル"),

@@ -299,7 +299,7 @@ impl Item {
     /// Bounds of the outline under `outer` (then this item's own transform). A group's are its
     /// children's outlines transformed by the full transform, which a rotated group's box of its
     /// children's boxes would overstate.
-    fn bounds_under(&self, outer: Affine) -> Option<Rect> {
+    pub fn bounds_under(&self, outer: Affine) -> Option<Rect> {
         let xf = outer * self.xf;
         if self.shape == Shape::Group
             && let Content::Group { items } = &self.content

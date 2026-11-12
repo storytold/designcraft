@@ -3,6 +3,17 @@
 //! Brazilian Portuguese, Italian and Ukrainian tables has a row here; the German column of the shared
 //! table is carried over and stays the fallback for keys added there after this table.
 pub(super) const TABLE: &[(&str, &str)] = &[
+    ("Distribute Objects:", "Objekte verteilen:"),
+    ("Distribute Spacing:", "Abstand verteilen:"),
+    ("Use Spacing", "Abstand verwenden"),
+    ("Distribute top edges", "Obere Kanten verteilen"),
+    ("Distribute vertical centers", "Vertikale Mittelpunkte verteilen"),
+    ("Distribute bottom edges", "Untere Kanten verteilen"),
+    ("Distribute left edges", "Linke Kanten verteilen"),
+    ("Distribute horizontal centers", "Horizontale Mittelpunkte verteilen"),
+    ("Distribute right edges", "Rechte Kanten verteilen"),
+    ("Distribute vertical space", "Vertikalen Abstand verteilen"),
+    ("Distribute horizontal space", "Horizontalen Abstand verteilen"),
     ("Fewer Options", "Weniger Optionen"),
     ("Tab Character", "Tabulatorzeichen"),
     ("File", "Datei"),

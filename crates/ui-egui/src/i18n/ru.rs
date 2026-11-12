@@ -3,6 +3,17 @@
 //! The translations are our own; counted nouns are genitive plurals because the caption puts the
 //! category before the number ("страниц: 5"), see `count_label`.
 pub(super) const TABLE: &[(&str, &str)] = &[
+    ("Distribute Objects:", "Распределить объекты:"),
+    ("Distribute Spacing:", "Распределить интервалы:"),
+    ("Use Spacing", "Использовать интервал"),
+    ("Distribute top edges", "Распределить по верхним краям"),
+    ("Distribute vertical centers", "Распределить по вертикальным центрам"),
+    ("Distribute bottom edges", "Распределить по нижним краям"),
+    ("Distribute left edges", "Распределить по левым краям"),
+    ("Distribute horizontal centers", "Распределить по горизонтальным центрам"),
+    ("Distribute right edges", "Распределить по правым краям"),
+    ("Distribute vertical space", "Распределить интервалы по вертикали"),
+    ("Distribute horizontal space", "Распределить интервалы по горизонтали"),
     ("Fewer Options", "Меньше параметров"),
     ("Tab Character", "Символ табуляции"),
     ("File", "Файл"),

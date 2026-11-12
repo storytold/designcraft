@@ -2,6 +2,17 @@
 //! Swedish software vocabulary; no other catalog and no proprietary localisation was used.
 //! AI-drafted with Claude Code; spot-checked by a native Swedish speaker, not every string reviewed.
 pub(super) const TABLE: &[(&str, &str)] = &[
+    ("Distribute Objects:", "Fördela objekt:"),
+    ("Distribute Spacing:", "Fördela mellanrum:"),
+    ("Use Spacing", "Använd mellanrum"),
+    ("Distribute top edges", "Fördela överkanter"),
+    ("Distribute vertical centers", "Fördela lodräta mittpunkter"),
+    ("Distribute bottom edges", "Fördela underkanter"),
+    ("Distribute left edges", "Fördela vänsterkanter"),
+    ("Distribute horizontal centers", "Fördela vågräta mittpunkter"),
+    ("Distribute right edges", "Fördela högerkanter"),
+    ("Distribute vertical space", "Fördela lodräta mellanrum"),
+    ("Distribute horizontal space", "Fördela vågräta mellanrum"),
     ("File", "Arkiv"),
     ("Edit", "Redigera"),
     ("Layout", "Layout"),

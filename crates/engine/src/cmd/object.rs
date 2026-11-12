@@ -724,7 +724,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Distribute",
             ["Window", "Object & Layout", "Align"],
             None,
-            "{axis: horizontal|vertical, by?: centers|spacing, spacing?: points, ids?}",
+            "{axis: horizontal|vertical, by?: centers|spacing, edge?: top|vcenter|bottom|left|hcenter|right (Distribute Objects: that line of each object, evenly between the outermost ones or `spacing` apart from the first; `axis` follows from it), spacing?: points, ids?}",
             has_selection,
             distribute
         ),
@@ -3317,53 +3317,127 @@ fn blend_param(p: &Value, cmd: &str) -> Result<Option<BlendMode>> {
 
 fn distribute(s: &mut Session, p: &Value) -> Result<Value> {
     let ids = targets(s, p)?;
-    if ids.len() < 3 && p.get("spacing").is_none() {
+    // `spacing` is a number of points for both modes; anything else is an error, not "even".
+    let fixed = match p.get("spacing") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(v.as_f64().filter(|v| v.is_finite()).ok_or_else(|| bad("object.distribute", "spacing must be a finite number"))?),
+    };
+    if ids.len() < 3 && fixed.is_none() {
         return Err(bad("object.distribute", "select at least three objects"));
     }
+    match p.get("edge") {
+        None | Some(Value::Null) => {}
+        Some(Value::String(edge)) => return distribute_by_edge(s, &ids, edge, fixed),
+        Some(v) => return Err(bad("object.distribute", format!("edge must be left, hcenter, right, top, vcenter or bottom, not {v}"))),
+    }
     let horizontal = str_param(p, "axis") != Some("vertical");
-    let by_spacing = str_param(p, "by") == Some("spacing") || p.get("spacing").is_some();
-    let fixed = p.get("spacing").and_then(Value::as_f64);
+    let by_spacing = str_param(p, "by") == Some("spacing") || fixed.is_some();
+    let d = &s.doc()?.doc;
+    let mut items: Vec<(ItemId, Rect)> = ids.iter().filter_map(|i| distribution_bounds(d, *i).map(|bounds| (*i, bounds))).collect();
+    let key = |r: &Rect| if horizontal { r.x0 } else { r.y0 };
+    items.sort_by(|a, b| key(&a.1).total_cmp(&key(&b.1)));
+    let n = items.len();
+    if n < 2 {
+        return ok();
+    }
+    let (first, last) = (items[0].1, items[n - 1].1);
+    let lo = |r: &Rect| if horizontal { r.x0 } else { r.y0 };
+    let hi = |r: &Rect| if horizontal { r.x1 } else { r.y1 };
+    let size = |r: &Rect| hi(r) - lo(r);
+    let mut targets: Vec<f64> = Vec::with_capacity(n);
+    if by_spacing {
+        let total: f64 = items.iter().map(|(_, r)| size(r)).sum();
+        let gap = fixed.unwrap_or_else(|| (hi(&last) - lo(&first) - total) / (n - 1) as f64);
+        let mut pos = lo(&first);
+        for (_, r) in &items {
+            targets.push(pos);
+            pos += size(r) + gap;
+        }
+    } else {
+        let c0 = (lo(&first) + hi(&first)) / 2.0;
+        let c1 = (lo(&last) + hi(&last)) / 2.0;
+        for (k, (_, r)) in items.iter().enumerate() {
+            targets.push(c0 + (c1 - c0) * k as f64 / (n - 1) as f64 - size(r) / 2.0);
+        }
+    }
+    let moves: Vec<(ItemId, f64)> = items.iter().zip(targets).map(|((id, r), t)| (*id, t - lo(r))).collect();
+    // Keep locked items in the spacing calculation, as align does for its reference.
+    move_along(s, &moves, horizontal)
+}
+
+/// Selected children are measured in spread space, including their container transforms.
+fn distribution_bounds(d: &Document, id: ItemId) -> Option<Rect> {
+    let location = d.find(id)?;
+    Some(d.item_at(&location)?.bounds_under(d.parent_xf(&location)).unwrap_or(Rect::ZERO))
+}
+
+/// Validate all displacements before editing. Locked objects remain references but never move;
+/// a selection with no editable displacement must not dirty the document or add an undo step.
+fn move_along(s: &mut Session, moves: &[(ItemId, f64)], horizontal: bool) -> Result<Value> {
+    if moves.iter().any(|(_, delta)| !delta.is_finite()) {
+        return Err(bad("object.distribute", "the spacing puts objects out of range"));
+    }
+    let document = &s.doc()?.doc;
+    let moves: Vec<_> = moves
+        .iter()
+        .filter_map(|(id, delta)| {
+            if *delta == 0.0 || path_editable(document, *id, "object.distribute").is_err() {
+                return None;
+            }
+            let location = document.find(*id)?;
+            let delta = if horizontal { Vec2::new(*delta, 0.0) } else { Vec2::new(0.0, *delta) };
+            Some((*id, linear_inverse(document.parent_xf(&location), delta)))
+        })
+        .collect();
+    if moves.is_empty() {
+        return ok();
+    }
     s.edit(|d, _| {
-        let mut items: Vec<(ItemId, Rect)> = ids.iter().filter_map(|i| d.item(*i).map(|it| (*i, it.bounds()))).collect();
-        let key = |r: &Rect| if horizontal { r.x0 } else { r.y0 };
-        items.sort_by(|a, b| key(&a.1).total_cmp(&key(&b.1)));
-        let n = items.len();
-        if n < 2 {
-            return ok();
-        }
-        let (first, last) = (items[0].1, items[n - 1].1);
-        let lo = |r: &Rect| if horizontal { r.x0 } else { r.y0 };
-        let hi = |r: &Rect| if horizontal { r.x1 } else { r.y1 };
-        let size = |r: &Rect| hi(r) - lo(r);
-        let mut targets: Vec<f64> = Vec::with_capacity(n);
-        if by_spacing {
-            let total: f64 = items.iter().map(|(_, r)| size(r)).sum();
-            let gap = fixed.unwrap_or_else(|| (hi(&last) - lo(&first) - total) / (n - 1) as f64);
-            let mut pos = lo(&first);
-            for (_, r) in &items {
-                targets.push(pos);
-                pos += size(r) + gap;
-            }
-        } else {
-            let c0 = (lo(&first) + hi(&first)) / 2.0;
-            let c1 = (lo(&last) + hi(&last)) / 2.0;
-            for (k, (_, r)) in items.iter().enumerate() {
-                targets.push(c0 + (c1 - c0) * k as f64 / (n - 1) as f64 - size(r) / 2.0);
-            }
-        }
-        for ((id, r), t) in items.iter().zip(targets) {
-            let delta = t - lo(r);
+        for (id, delta) in &moves {
             if let Some(it) = d.item_mut(*id) {
-                // Keep locked items in the spacing calculation, as align does for its reference.
-                if it.locked {
-                    continue;
-                }
-                let v = if horizontal { Vec2::new(delta, 0.0) } else { Vec2::new(0.0, delta) };
-                it.xf = Affine::translate(v) * it.xf;
+                it.xf = Affine::translate(*delta) * it.xf;
             }
         }
         ok()
     })
+}
+
+/// Distribute Objects by a line of each object, as InDesign's six buttons: its top, vertical
+/// centre or bottom (or left, horizontal centre, right), evenly between the outermost objects'
+/// lines, or `spacing` apart from the first one's.
+fn distribute_by_edge(s: &mut Session, ids: &[ItemId], edge: &str, spacing: Option<f64>) -> Result<Value> {
+    const ID: &str = "object.distribute";
+    let (horizontal, at) = match edge {
+        "left" => (true, 0.0),
+        "hcenter" => (true, 0.5),
+        "right" => (true, 1.0),
+        "top" => (false, 0.0),
+        "vcenter" => (false, 0.5),
+        "bottom" => (false, 1.0),
+        other => return Err(bad(ID, format!("unknown edge `{other}`"))),
+    };
+    let d = &s.doc()?.doc;
+    let line = |r: &Rect| if horizontal { r.x0 + (r.x1 - r.x0) * at } else { r.y0 + (r.y1 - r.y0) * at };
+    let mut items: Vec<(ItemId, f64)> = ids.iter().filter_map(|i| distribution_bounds(d, *i).map(|bounds| (*i, line(&bounds)))).collect();
+    items.sort_by(|a, b| a.1.total_cmp(&b.1));
+    let n = items.len();
+    let (Some(&(_, first)), Some(&(_, last))) = (items.first(), items.last()) else { return ok() };
+    if n < 2 {
+        return ok();
+    }
+    let moves: Vec<(ItemId, f64)> = items
+        .iter()
+        .enumerate()
+        .map(|(k, (id, cur))| {
+            let target = match spacing {
+                Some(gap) => first + gap * k as f64,
+                None => first + (last - first) * k as f64 / (n - 1) as f64,
+            };
+            (*id, target - cur)
+        })
+        .collect();
+    // Locked items count as references but stay where they are, as with align.
+    move_along(s, &moves, horizontal)
 }
 
 fn anchor_from(v: &Value) -> Option<designcraft_geom::Anchor> {
@@ -3905,6 +3979,125 @@ mod arrange_tests {
 #[cfg(test)]
 mod step_repeat_tests {
     use super::*;
+
+    #[test]
+    fn distribute_respects_locked_layers_and_ancestors_without_an_undo_step() {
+        for layer_lock in [false, true] {
+            for edge in [true, false] {
+                let mut s = Session::new();
+                s.execute("file.new", &json!({})).unwrap();
+                let a = s.execute("frame.create", &json!({"rect": [0, 0, 10, 10]})).unwrap()["id"].as_u64().unwrap();
+                let layer = if layer_lock {
+                    let id = s.execute("layer.new", &json!({"name": "Locked art"})).unwrap()["id"].as_u64().unwrap();
+                    s.execute("layer.activate", &json!({"id": id})).unwrap();
+                    Some(id)
+                } else {
+                    None
+                };
+                let b = s.execute("frame.create", &json!({"rect": [0, 20, 10, 30]})).unwrap()["id"].as_u64().unwrap();
+                let group = if let Some(layer) = layer {
+                    s.execute("layer.set", &json!({"id": layer, "locked": true})).unwrap();
+                    None
+                } else {
+                    let spare = s.execute("frame.create", &json!({"rect": [20, 20, 30, 30]})).unwrap()["id"].as_u64().unwrap();
+                    let group = s.execute("object.group", &json!({"ids": [b, spare]})).unwrap()["id"].as_u64().unwrap();
+                    s.execute("object.lock", &json!({"ids": [group]})).unwrap();
+                    Some(group)
+                };
+                let before = s.doc().unwrap().doc.clone();
+                let undo = s.doc().unwrap().history.undo.len();
+                let params = if edge {
+                    json!({"ids": [a, b], "edge": "top", "spacing": 50})
+                } else {
+                    json!({"ids": [a, b], "axis": "vertical", "by": "spacing", "spacing": 50})
+                };
+                s.execute("object.distribute", &params).unwrap();
+                assert!(Arc::ptr_eq(&before, &s.doc().unwrap().doc), "locked targets leave the document untouched");
+                assert_eq!(s.doc().unwrap().history.undo.len(), undo);
+                if let Some(layer) = layer {
+                    s.execute("layer.set", &json!({"id": layer, "locked": false})).unwrap();
+                } else {
+                    s.execute("object.unlockAll", &json!({})).unwrap();
+                    assert!(!s.doc().unwrap().doc.item(ItemId(group.unwrap())).unwrap().locked);
+                }
+                s.execute("object.distribute", &params).unwrap();
+                assert_ne!(s.doc().unwrap().doc.item(ItemId(b)).unwrap().xf, before.item(ItemId(b)).unwrap().xf, "unlocking permits the move");
+            }
+        }
+    }
+
+    #[test]
+    fn distribute_edges_measure_and_move_children_in_spread_space() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let a = s.execute("frame.create", &json!({"rect": [0, 0, 10, 10]})).unwrap()["id"].as_u64().unwrap();
+        let b = s.execute("frame.create", &json!({"rect": [0, 20, 10, 30]})).unwrap()["id"].as_u64().unwrap();
+        let c = s.execute("frame.create", &json!({"rect": [0, 200, 10, 210]})).unwrap()["id"].as_u64().unwrap();
+        let spare = s.execute("frame.create", &json!({"rect": [20, 20, 30, 30]})).unwrap()["id"].as_u64().unwrap();
+        let group = s.execute("object.group", &json!({"ids": [b, spare]})).unwrap()["id"].as_u64().unwrap();
+        s.edit(|d, _| {
+            d.item_mut(ItemId(group)).unwrap().xf = Affine::new([0.0, 2.0, -1.0, 0.0, 150.0, 30.0]);
+            Ok(())
+        })
+        .unwrap();
+        let before = s.doc().unwrap().doc.clone();
+        let bounds = |s: &Session, id| {
+            let d = &s.doc().unwrap().doc;
+            let loc = d.find(ItemId(id)).unwrap();
+            d.item_at(&loc).unwrap().bounds_under(d.parent_xf(&loc)).unwrap()
+        };
+        let old = bounds(&s, b);
+        assert!(old.y0 > 0.0 && old.y0 < 100.0);
+        s.execute("object.distribute", &json!({"ids": [a, b, c], "edge": "top"})).unwrap();
+        let moved = bounds(&s, b);
+        assert!((moved.y0 - 100.0).abs() < 1e-9, "the middle top is in spread coordinates: {moved:?}");
+        assert_eq!((moved.x0, moved.x1), (old.x0, old.x1), "vertical distribution does not move it sideways");
+        let undo = s.doc().unwrap().history.undo.len();
+        s.execute("object.distribute", &json!({"ids": [a, b, c], "edge": "top"})).unwrap();
+        assert_eq!(s.doc().unwrap().history.undo.len(), undo, "already distributed: no undo step");
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.spreads, before.spreads);
+    }
+
+    /// Distribute Objects by an edge: the tops evenly between the outermost ones, or a set
+    /// distance apart (two objects suffice then); a centre line works the same.
+    #[test]
+    fn distribute_objects_by_their_edges_or_a_spacing() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let ids: Vec<u64> = [(72.0, 72.0, 40.0), (200.0, 90.0, 80.0), (320.0, 300.0, 20.0)]
+            .iter()
+            .map(|(x, y, h)| s.execute("frame.create", &json!({"rect": [x, y, x + 60.0, y + h]})).unwrap()["id"].as_u64().unwrap())
+            .collect();
+        let top = |s: &Session, id: u64| s.doc().unwrap().doc.item(ItemId(id)).unwrap().bounds().y0;
+        let mid = |s: &Session, id: u64| {
+            let r = s.doc().unwrap().doc.item(ItemId(id)).unwrap().bounds();
+            (r.y0 + r.y1) / 2.0
+        };
+        s.execute("object.distribute", &json!({"edge": "top", "ids": ids})).unwrap();
+        assert_eq!([top(&s, ids[0]), top(&s, ids[1]), top(&s, ids[2])], [72.0, 186.0, 300.0], "the tops evenly spaced");
+        s.execute("object.distribute", &json!({"edge": "vcenter", "ids": ids})).unwrap();
+        let m = [mid(&s, ids[0]), mid(&s, ids[1]), mid(&s, ids[2])];
+        assert!((m[1] - m[0] - (m[2] - m[1])).abs() < 1e-9, "the centres evenly spaced: {m:?}");
+        s.execute("object.distribute", &json!({"edge": "top", "spacing": 50, "ids": [ids[0], ids[1]]})).unwrap();
+        assert_eq!(top(&s, ids[1]) - top(&s, ids[0]), 50.0, "Use Spacing: two objects, 50 pt apart");
+        assert!(s.execute("object.distribute", &json!({"edge": "middle", "ids": ids})).is_err());
+        let before = s.doc().unwrap().doc.clone();
+        for spacing in [json!("50"), json!(true), json!([1])] {
+            for edge in [json!("top"), Value::Null] {
+                let e = s.execute("object.distribute", &json!({"edge": edge, "spacing": spacing, "ids": ids})).unwrap_err();
+                assert!(e.to_string().contains("spacing must be a finite number"), "{e}");
+            }
+        }
+        // An edge that isn't a name, and a spacing too large to add up: errors, nothing moves.
+        for edge in [json!(42), json!(true)] {
+            assert!(s.execute("object.distribute", &json!({"edge": edge, "ids": ids})).is_err(), "{edge}");
+        }
+        for edge in [json!("top"), Value::Null] {
+            assert!(s.execute("object.distribute", &json!({"edge": edge, "spacing": f64::MAX, "ids": ids})).is_err(), "{edge}");
+        }
+        assert!(std::sync::Arc::ptr_eq(&before, &s.doc().unwrap().doc), "nothing moved");
+    }
 
     /// With nothing selected, fill and stroke set the colours new shapes are drawn with, as
     /// InDesign's document defaults; frames for graphics and text keep theirs.

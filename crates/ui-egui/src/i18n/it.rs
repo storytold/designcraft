@@ -1,6 +1,17 @@
 //! Original Italian interface translations, written from the English source
 //! using ordinary Italian desktop-publishing vocabulary.
 pub(super) const TABLE: &[(&str, &str)] = &[
+    ("Distribute Objects:", "Distribuisci oggetti:"),
+    ("Distribute Spacing:", "Distribuisci spaziatura:"),
+    ("Use Spacing", "Usa spaziatura"),
+    ("Distribute top edges", "Distribuisci bordi superiori"),
+    ("Distribute vertical centers", "Distribuisci centri verticali"),
+    ("Distribute bottom edges", "Distribuisci bordi inferiori"),
+    ("Distribute left edges", "Distribuisci bordi sinistri"),
+    ("Distribute horizontal centers", "Distribuisci centri orizzontali"),
+    ("Distribute right edges", "Distribuisci bordi destri"),
+    ("Distribute vertical space", "Distribuisci spazio verticale"),
+    ("Distribute horizontal space", "Distribuisci spazio orizzontale"),
     ("Fewer Options", "Meno opzioni"),
     ("Tab Character", "Carattere di tabulazione"),
     ("Right Indent Tab", "Tabulazione rientro destro"),
