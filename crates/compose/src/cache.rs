@@ -85,6 +85,18 @@ fn doc_signature(doc: &Document) -> u64 {
     (Arc::as_ptr(&doc.styles) as usize).hash(&mut h);
     format!("{:?}", doc.text_variables).hash(&mut h);
     sections_hash(doc).hash(&mut h);
+    outlines_hash(doc).hash(&mut h);
+    h.finish()
+}
+
+/// The Alpha Channel outlines text wraps around: a relink traces a new one while the items and
+/// stories stay the same.
+fn outlines_hash(doc: &Document) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for o in &doc.alpha_outlines {
+        o.serial.hash(&mut h);
+    }
     h.finish()
 }
 
@@ -405,6 +417,7 @@ fn signature(doc: &Document, story: &Arc<Story>) -> (Vec<usize>, Vec<Arc<Item>>)
         sections_hash(doc) as usize,
         doc.font_scope as usize,
         usize::from(g.relative_to == designcraft_doc::GridRelative::TopMargin),
+        outlines_hash(doc) as usize,
     ];
     sig.extend([g.start, g.increment].into_iter().flat_map(bits));
     let mut keep = Vec::new();

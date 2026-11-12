@@ -62,7 +62,16 @@ pub(crate) fn sync(doc: &mut Document) {
 /// The empty outline standing for an image `trace` found none in: zero-size, which composition
 /// takes as no outline, and dropped like a traced one when the asset's data changes.
 fn no_outline(data: &Arc<Vec<u8>>, asset: AssetId, threshold: u8) -> AlphaOutline {
-    AlphaOutline { asset, threshold, width: 0, height: 0, outer: Default::default(), holes: Default::default(), source: Arc::downgrade(data) }
+    AlphaOutline {
+        asset,
+        threshold,
+        width: 0,
+        height: 0,
+        outer: Default::default(),
+        holes: Default::default(),
+        source: Arc::downgrade(data),
+        serial: AlphaOutline::next_serial(),
+    }
 }
 
 /// The outline of the pixels of `data` more opaque than `threshold`. None for an image that
@@ -112,7 +121,8 @@ pub(crate) fn trace(data: &Arc<Vec<u8>>, asset: AssetId, threshold: u8) -> Optio
                 PathData::from_bezpath(&p)
             };
             let source = Arc::downgrade(data);
-            return Some(AlphaOutline { asset, threshold, width: w, height: h, outer: path(&outer), holes: path(&holes), source });
+            let serial = AlphaOutline::next_serial();
+            return Some(AlphaOutline { asset, threshold, width: w, height: h, outer: path(&outer), holes: path(&holes), source, serial });
         }
         finer = Some((mask, cols, rows));
         grid /= 2;
@@ -426,6 +436,40 @@ mod tests {
         assert!(o.traced_from(&narrower));
         let b = o.outer.bounds().unwrap();
         assert_eq!((b.x0, b.x1), (24.0, 40.0), "the new image's outline");
+    }
+
+    /// A wrap with the default threshold saves as it did before thresholds were stored; another
+    /// threshold is saved.
+    #[test]
+    fn the_default_threshold_is_left_out_of_a_saved_wrap() {
+        let v = serde_json::to_value(designcraft_doc::TextWrap::default()).unwrap();
+        assert!(v.get("alphaThreshold").is_none(), "{v}");
+        let back: designcraft_doc::TextWrap = serde_json::from_value(v).unwrap();
+        assert_eq!(back.alpha_threshold, designcraft_doc::DEFAULT_ALPHA_THRESHOLD);
+        let w = designcraft_doc::TextWrap { alpha_threshold: 200, ..Default::default() };
+        assert_eq!(serde_json::to_value(w).unwrap()["alphaThreshold"], 200);
+    }
+
+    /// A relink that changes only the image data recomposes the text around the new outline.
+    #[test]
+    fn text_is_composed_again_around_a_relinked_images_outline() {
+        let (mut s, image, story) = page(&png(|x, _| x < 32), [180.0, 150.0, 220.0, 178.0]);
+        s.execute("object.textWrap", &json!({"ids": [image], "contour": "alphaChannel"})).unwrap();
+        assert!(!overset(&s, story), "the left half is visible: the caption on the right is set");
+        let Some(designcraft_doc::Content::Graphic(g)) =
+            s.doc().unwrap().doc.item(designcraft_doc::ItemId(image.as_u64().unwrap())).map(|it| it.content.clone())
+        else {
+            panic!("a graphic")
+        };
+        let right = Arc::new(png(|x, _| x >= 32));
+        s.edit(|d, _| {
+            let mut a = (**d.assets.get(&g.asset).unwrap()).clone();
+            a.data = right.clone();
+            d.assets.insert(g.asset, Arc::new(a));
+            Ok(())
+        })
+        .unwrap();
+        assert!(overset(&s, story), "the right half is visible now: it covers the caption");
     }
 
     /// An image anchored in text keeps its outline: anchored objects wrap the lines after their

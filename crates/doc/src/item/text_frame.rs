@@ -303,11 +303,16 @@ pub struct TextWrap {
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub inside_edges: bool,
     /// Alpha Channel contour: pixels more opaque than this (0..254) count as the image.
+    #[serde(skip_serializing_if = "is_default_alpha_threshold")]
     pub alpha_threshold: u8,
 }
 
 /// DesignCraft's default alpha threshold for Alpha Channel contour wraps.
 pub const DEFAULT_ALPHA_THRESHOLD: u8 = 25;
+
+fn is_default_alpha_threshold(t: &u8) -> bool {
+    *t == DEFAULT_ALPHA_THRESHOLD
+}
 
 impl Default for TextWrap {
     fn default() -> Self {
