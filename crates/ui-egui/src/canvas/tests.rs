@@ -1152,6 +1152,14 @@ fn objects_copied_here_still_paste_as_objects_until_another_image_is_copied() {
     copy_elsewhere(&clip, Some(url), Some((5, 5)));
     crate::menus::activate(&mut app, "edit.paste", &Value::Null);
     assert_eq!(pasted_image(&app).map(|(px, _)| px), Some((5, 5)), "the image copied again with the same address");
+    // Empty text beside the older image counts as no text at the copy too.
+    copy_elsewhere(&clip, Some(""), Some((7, 7)));
+    app.run("selection.set", json!({"ids": [id]})).unwrap();
+    crate::menus::activate(&mut app, "edit.copy", &Value::Null);
+    let items = app.session.doc().unwrap().doc.spreads[0].items.len();
+    crate::menus::activate(&mut app, "edit.paste", &Value::Null);
+    assert_eq!(app.session.doc().unwrap().doc.spreads[0].items.len(), items + 1, "the copied text frame is pasted");
+    assert_eq!(pasted_image(&app), None);
 }
 
 #[test]

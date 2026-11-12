@@ -53,7 +53,8 @@ impl DesignApp {
                         self.object_clip_text.clone()
                     }
                     None => {
-                        self.object_clip_text = self.services.clipboard_text.as_mut().and_then(|f| f());
+                        // Empty text counts as no text, as Paste reads it.
+                        self.object_clip_text = self.services.clipboard_text.as_mut().and_then(|f| f()).filter(|t| !t.is_empty());
                         self.object_clip_change = self.services.clipboard_change.as_mut().and_then(|f| f());
                         None
                     }
