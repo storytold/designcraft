@@ -170,6 +170,9 @@ pub fn menu_enabled(app: &DesignApp, id: &str) -> bool {
     if matches!(id, "app.justificationDialog" | "app.hyphenationDialog") {
         return enabled(app, "type.para");
     }
+    if id == "app.graphicCell" {
+        return enabled(app, "table.placeGraphic");
+    }
     if id.starts_with("fit.") {
         return enabled(app, "object.fit");
     }

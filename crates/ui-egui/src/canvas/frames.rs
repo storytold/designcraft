@@ -56,12 +56,13 @@ pub(super) fn draw_frames(app: &DesignApp, painter: &egui::Painter, xf: &Xf, doc
         let a = slot.xf;
         // Parent items on document pages, and base parents' items on a parent spread: dotted edges.
         for (pi, page) in sp.pages.iter().enumerate() {
+            let overridden = doc.overridden_parent_items(slot.spread, pi);
             for (ppi, ppg) in doc.shown_parent_pages(slot.spread, pi) {
                 let Some(parent) = doc.parents.get(ppi) else { continue };
                 let Some(ppage) = parent.pages.get(ppg) else { continue };
                 let dx = page.x - ppage.x;
                 for it in &parent.items {
-                    if (parent.pages.len() > 1 && parent.page_at_x(it.bounds().center().x) != Some(ppg)) || page.overridden.contains(&it.id) {
+                    if (parent.pages.len() > 1 && parent.page_at_x(it.bounds().center().x) != Some(ppg)) || overridden.contains(&it.id) {
                         continue;
                     }
                     let col = doc.layer(it.layer).map(|l| c32(l.color)).unwrap_or(Color32::LIGHT_BLUE);
@@ -113,14 +114,19 @@ fn draw_item_edges(painter: &egui::Painter, xf: &Xf, doc: &Document, it: &Item, 
         return;
     }
     let col = doc.layer(it.layer).map(|l| c32(l.color)).unwrap_or(Color32::LIGHT_BLUE);
-    if let Content::Group { items } = &it.content {
+    // A group shows its children's edges. A frame with items pasted into it shows only its own:
+    // they are clipped to it, and their edges would run out past it (#2345).
+    if let Content::Group { items } = &it.content
+        && it.is_group()
+    {
         for c in items {
             draw_item_edges(painter, xf, doc, c, a * it.xf);
         }
         return;
     }
-    // Frames without a stroke show their edge; shapes with strokes are visible already.
-    let show = it.stroke.is_none() || matches!(it.content, Content::Text(_) | Content::Graphic(_));
+    // Frames without a stroke show their edge, as do frames holding content; other shapes with
+    // strokes are visible already.
+    let show = it.stroke.is_none() || it.has_nested_items() || matches!(it.content, Content::Text(_) | Content::Graphic(_));
     if show {
         for poly in path_screen(it, xf, a) {
             painter.add(egui::Shape::line(poly, Stroke::new(hair(painter), col.gamma_multiply(0.75))));
@@ -128,12 +134,36 @@ fn draw_item_edges(painter: &egui::Painter, xf: &Xf, doc: &Document, it: &Item, 
     }
     // Empty graphic frame: the X.
     if it.object_style == designcraft_doc::BASIC_GRAPHICS_FRAME && matches!(it.content, Content::Unassigned) {
-        let r = it.inner_bounds();
         let m = a * it.xf;
-        let p = |x: f64, y: f64| xf.to_screen(m * Point::new(x, y));
-        painter.line_segment([p(r.x0, r.y0), p(r.x1, r.y1)], Stroke::new(hair(painter), col.gamma_multiply(0.75)));
-        painter.line_segment([p(r.x1, r.y0), p(r.x0, r.y1)], Stroke::new(hair(painter), col.gamma_multiply(0.75)));
+        for (p0, p1) in frame_x(it) {
+            painter.line_segment([xf.to_screen(m * p0), xf.to_screen(m * p1)], Stroke::new(hair(painter), col.gamma_multiply(0.75)));
+        }
     }
+}
+
+/// The X of an empty graphic frame, in its own space: a four-cornered frame joins its opposite
+/// corners, so a frame slanted with Direct Selection keeps its X corner to corner, as InDesign
+/// draws it; other shapes span their bounds.
+pub(super) fn frame_x(it: &Item) -> [(Point, Point); 2] {
+    // A rectangle (slanted or not: four corner points, no handles). Ellipses, polygons (a
+    // four-sided one is a diamond) and curved paths keep the X across their bounds. Edited points
+    // make any of them a path: a four-cornered one whose corners would cross as a plus (a diamond,
+    // edited) keeps the bounds too.
+    let crosses = |a: Point, b: Point| {
+        let d = b - a;
+        d.x.abs() > 0.18 * d.hypot() && d.y.abs() > 0.18 * d.hypot()
+    };
+    if matches!(it.shape, designcraft_doc::Shape::Rectangle | designcraft_doc::Shape::Path)
+        && let [sp] = it.path.subpaths.as_slice()
+        && sp.closed
+        && let [c0, c1, c2, c3] = sp.anchors.as_slice()
+        && sp.anchors.iter().all(|a| a.h_in == a.p && a.h_out == a.p)
+        && (it.shape == designcraft_doc::Shape::Rectangle || (crosses(c0.p, c2.p) && crosses(c1.p, c3.p)))
+    {
+        return [(c0.p, c2.p), (c1.p, c3.p)];
+    }
+    let r = it.inner_bounds();
+    [(Point::new(r.x0, r.y0), Point::new(r.x1, r.y1)), (Point::new(r.x1, r.y0), Point::new(r.x0, r.y1))]
 }
 
 /// Layer colour of the first selected item: live-corner marks are outlined in it.
@@ -151,64 +181,40 @@ pub(super) enum LinkBadge {
     Missing,
 }
 
-pub(super) type LinkStatuses = std::sync::Arc<std::collections::HashMap<u64, String>>;
-
-/// The link badges' check: the last result, the document state it was made for, and a check
-/// running off the UI thread.
-#[derive(Clone, Default)]
-pub(super) struct LinkCheck {
-    /// Document uid and revision of `map`, and when it was made.
-    pub(super) key: (u64, u64),
-    at: f64,
-    map: LinkStatuses,
-    /// A check running, for that document state: it fills the slot when done.
-    pub(super) pending: Option<((u64, u64), std::sync::Arc<std::sync::Mutex<Option<std::collections::HashMap<u64, String>>>>)>,
-}
-
-/// The Links panel's status of each linked asset ("ok", "modified", "missing"), for the link
-/// badges. Checking reads the linked files, so it runs on a background thread when the document
-/// changes and at most once a second otherwise; the badges show the last result meanwhile (none
-/// for another document).
-pub(super) fn link_statuses(app: &mut DesignApp, ctx: &egui::Context, doc: &Document) -> LinkStatuses {
+/// Reuse the Links panel's persistent worker and its per-file checks. Both surfaces see the
+/// same results, without a second worker or repeated whole-file reads just for canvas badges.
+pub(super) fn link_statuses(app: &mut DesignApp, ctx: &egui::Context, doc: &Document) -> std::collections::HashMap<u64, String> {
     if !doc.assets.values().any(|a| a.link.is_some()) {
         return Default::default();
     }
     let Some(st) = app.session.active() else { return Default::default() };
-    let key = (st.uid, st.revision);
-    let now = ctx.input(|i| i.time);
-    // An idle canvas still draws again when the check is due, so a file changed on disk shows.
-    ctx.request_repaint_after(std::time::Duration::from_secs(1));
-    let id = egui::Id::unique(("link_badge_status", app.pane));
-    let mut check = ctx.data(|d| d.get_temp::<LinkCheck>(id)).unwrap_or_default();
-    if let Some((for_key, slot)) = check.pending.clone()
-        && let Some(map) = slot.lock().unwrap_or_else(|e| e.into_inner()).take()
-    {
-        (check.key, check.at, check.map, check.pending) = (for_key, now, std::sync::Arc::new(map), None);
-    }
-    let due = check.key != key || now - check.at >= 1.0;
-    if due && check.pending.is_none() {
-        let assets: Vec<(u64, std::sync::Arc<designcraft_doc::Asset>)> =
-            doc.assets.iter().filter(|(_, a)| a.link.is_some()).map(|(id, a)| (id.0, a.clone())).collect();
-        let document = st.path.clone();
-        let slot = std::sync::Arc::new(std::sync::Mutex::new(None));
-        let run = {
-            let (slot, ctx) = (slot.clone(), ctx.clone());
-            move || {
-                let path = document.as_deref().map(std::path::Path::new);
-                let map = assets.iter().map(|(id, a)| (*id, designcraft_engine::cmd::link_status(a, path).to_string())).collect();
-                *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(map);
-                ctx.request_repaint();
-            }
+    #[cfg(not(target_arch = "wasm32"))]
+    let rows = {
+        let doc = std::sync::Arc::clone(&st.doc);
+        let snapshot = crate::links_worker::Snapshot {
+            key: crate::links_worker::Key::new(st.uid, &doc, st.path.as_deref()),
+            doc: std::sync::Arc::clone(&doc),
+            cache: std::sync::Arc::clone(&app.session.cache),
+            document: st.path.as_ref().map(std::path::PathBuf::from),
         };
-        #[cfg(not(target_arch = "wasm32"))]
-        std::thread::spawn(run);
-        #[cfg(target_arch = "wasm32")]
-        run();
-        check.pending = Some((key, slot));
-    }
-    let map = if check.key.0 == key.0 { check.map.clone() } else { Default::default() };
-    ctx.data_mut(|d| d.insert_temp(id, check));
-    map
+        let refresh = app.links_worker.rows(ctx, snapshot);
+        if !refresh.verified.is_empty() {
+            designcraft_engine::cmd::remember_link_files(&mut app.session, &doc, &refresh.verified);
+        }
+        refresh.values
+    };
+    #[cfg(target_arch = "wasm32")]
+    let rows = {
+        let _ = ctx;
+        designcraft_engine::cmd::preview_document_links(doc, &app.session.cache, st.path.as_deref().map(std::path::Path::new))
+    };
+    rows.iter()
+        .filter_map(|row| {
+            let id = row["asset"].as_u64()?;
+            doc.assets.get(&designcraft_doc::AssetId(id))?.link.as_ref()?;
+            Some((id, row["status"].as_str()?.to_owned()))
+        })
+        .collect()
 }
 
 /// View › Extras › Show Link Badge: every frame showing a linked file carries a badge on its top
@@ -233,8 +239,8 @@ pub(super) fn link_badges(
             return;
         }
         match &it.content {
-            Content::Group { items } => {
-                for c in items {
+            Content::Group { .. } => {
+                for c in it.shown_children() {
                     walk(doc, xf, c, a * it.xf, status, out);
                 }
             }

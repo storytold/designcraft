@@ -162,9 +162,8 @@ pub(crate) fn format_chars(s: &mut Session, attrs: &Value) -> Result<Value> {
         }
     }
     validate_char_fill(&s.doc()?.doc, &a, "type.char")?;
-    let warnings = missing_font_warnings(&s.doc()?.doc, &a);
-    let result = if warnings.is_empty() { Value::Null } else { json!({ "warnings": warnings }) };
     let cleared: Vec<String> = attrs.as_object().map(|o| o.iter().filter(|(_, v)| v.is_null()).map(|(k, _)| k.clone()).collect()).unwrap_or_default();
+    let sets_font = a.font_family.is_some() || a.font_style.is_some() || cleared.iter().any(|k| k == "fontFamily" || k == "fontStyle");
     let targets = format_targets(s);
     // A caret in text: the format is for the next typing. On an empty paragraph's hidden mark it
     // also formats the mark right away, since the mark alone sets that line's height; typing there
@@ -187,31 +186,50 @@ pub(crate) fn format_chars(s: &mut Session, attrs: &Value) -> Result<Value> {
             })?;
         }
         s.typing_format = Some(f);
-        return Ok(result);
+        return if sets_font { font_warnings(s, &targets) } else { ok() };
     }
     s.edit(|d, _| {
         apply_char_attrs(d, &targets, &a, &cleared);
-        Ok(result)
-    })
+        ok()
+    })?;
+    if sets_font { font_warnings(s, &targets) } else { ok() }
 }
 
 /// A font family or style the app doesn't have is still applied, so the document keeps its name
-/// and preflight and Find Font list it, but a substitute draws the text. Say so, in preflight's
-/// words, instead of succeeding silently.
-fn missing_font_warnings(document: &designcraft_doc::Document, attrs: &CharAttrs) -> Vec<String> {
-    let Some(family) = attrs.font_family.as_deref().filter(|f| !f.trim().is_empty()) else {
-        return vec![];
-    };
-    let db = designcraft_fonts::FontDb::global().scoped(document.font_scope);
-    let style = attrs.font_style.as_deref().unwrap_or("Regular");
-    let face = db.face(family, style);
-    if !db.has_family(family) {
-        vec![format!("Missing font: {family} (using {})", face.family)]
-    } else if attrs.font_style.is_some() && !db.has_style(family, style) {
-        vec![format!("Missing font style: {family} {style} (using {} {})", face.family, face.style)]
-    } else {
-        vec![]
+/// and preflight and Find Font list it, but a substitute draws the text. After a change to the
+/// family or style, say which of the fonts the formatted text now resolves to are missing, in
+/// preflight's words: the text's own family with a new style, a new family with the text's style,
+/// and a composite font's entries for the characters it sets, as `font.list` resolves them. At a
+/// caret, the font the next typing gets (a composite font picks it per character typed).
+fn font_warnings(s: &Session, targets: &[Target]) -> Result<Value> {
+    let d = &s.doc()?.doc;
+    let mut used = crate::cmd::fonts::FontTally::new();
+    for t in targets {
+        let Some(story) = d.text_story(t.story, t.cell) else { continue };
+        if !t.range.is_empty() {
+            crate::cmd::fonts::tally_range(d, story, t.range.clone(), &mut used);
+            continue;
+        }
+        let Some(para) = story.paras.get(story.para_at(t.range.start)) else { continue };
+        let (_, base) = d.styles.resolve_para(para);
+        let next = d.styles.resolve_char(&base, &effective_char_format(s, t)?);
+        if d.styles.composite_font(&next.font_family).is_none() {
+            used.entry((next.font_family, next.font_style)).or_default();
+        }
     }
+    let warnings: Vec<String> = crate::cmd::fonts::describe_fonts(d, used)
+        .into_iter()
+        .filter_map(|f| {
+            if f.missing {
+                Some(format!("Missing font: {} (using {})", f.family, f.resolved_family))
+            } else if f.style_missing {
+                Some(format!("Missing font style: {} {} (using {} {})", f.family, f.style, f.resolved_family, f.resolved_style))
+            } else {
+                None
+            }
+        })
+        .collect();
+    Ok(if warnings.is_empty() { Value::Null } else { json!({ "warnings": warnings }) })
 }
 
 /// Kerning spaces a character from the next one, so the pair at a caret is kerned through the
@@ -1057,6 +1075,46 @@ mod pick_up_format_tests {
 }
 
 #[cfg(test)]
+mod align_param_tests {
+    use serde_json::json;
+
+    use crate::Session;
+
+    /// `type.align` with empty params (`{}`) or a bare value (`"center"`) applied Align Left.
+    /// A misspelled key and an unknown value were already refused, and each case checks which
+    /// check refuses it.
+    #[test]
+    fn type_align_without_a_value_is_refused_and_changes_nothing() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 1})).unwrap();
+        let f = s.execute("frame.create", &json!({"rect": [20, 20, 400, 300], "content": "text", "text": "Hello world"})).unwrap();
+        s.execute("text.select", &json!({"story": f["story"].clone(), "anchor": 0, "focus": 5})).unwrap();
+        s.execute("type.align", &json!({"align": "right"})).unwrap();
+        let align = |s: &mut Session| s.execute("type.selectionAttrs", &json!({})).unwrap()["para"]["align"].clone();
+        assert_eq!(align(&mut s), json!("right"));
+        let steps = s.doc().unwrap().history.undo.len();
+        // `{}` and `"center"` reach the command without `align`. The parameter check refuses
+        // `{"alignment": …}` and the value parser refuses `"middle"`.
+        for (params, refusal) in [
+            (json!({}), "`align` required"),
+            (json!("center"), "`align` required"),
+            (json!({"alignment": "center"}), "unknown parameter `alignment`"),
+            (json!({"align": "middle"}), "middle"),
+        ] {
+            let err = s.execute("type.align", &params).unwrap_err().to_string();
+            assert!(err.contains(refusal), "{params}: {err}");
+            assert_eq!(align(&mut s), json!("right"), "{params}");
+            assert_eq!(s.doc().unwrap().history.undo.len(), steps, "{params}: no undo step");
+        }
+        // A named value still applies, and null removes the override.
+        s.execute("type.align", &json!({"align": "center"})).unwrap();
+        assert_eq!(align(&mut s), json!("center"));
+        s.execute("type.align", &json!({"align": null})).unwrap();
+        assert_eq!(align(&mut s), json!("left"));
+    }
+}
+
+#[cfg(test)]
 mod size_bounds_tests {
     use serde_json::json;
 
@@ -1097,34 +1155,96 @@ mod size_bounds_tests {
 
 #[cfg(test)]
 mod missing_font_tests {
-    use serde_json::json;
+    use serde_json::{Value, json};
 
     use crate::Session;
 
     /// A font the app doesn't have was applied with no word about it, so a script that asked for
     /// Courier Prime exported a PDF in the substitute and exited 0. It is still applied (preflight
-    /// and Find Font list it), and the command now says which font is missing.
+    /// and Find Font list it), and the command says which font the text now resolves to is
+    /// missing: the pair of family and style it ends up with, whichever of the two the call set,
+    /// and a composite font's entries rather than its name.
     #[test]
-    fn a_font_that_is_not_available_is_applied_with_a_warning() {
-        let mut s = Session::new();
-        s.execute("file.new", &json!({"pages": 1})).unwrap();
-        let f = s.execute("frame.create", &json!({"rect": [20, 20, 400, 300], "content": "text", "text": "Hello world"})).unwrap();
-        for (attrs, warning) in [
-            (json!({"fontFamily": "Source Serif 4", "fontStyle": "Bold"}), None),
-            (json!({"fontFamily": "Nonexistent Sans"}), Some("Missing font: Nonexistent Sans (using ")),
-            (json!({"fontFamily": "Source Serif 4", "fontStyle": "Nope"}), Some("Missing font style: Source Serif 4 Nope (using Source Serif 4 ")),
-        ] {
+    fn a_font_change_warns_about_the_font_the_text_resolves_to() {
+        let composite = |name: &str, family: &str| ("style.compositeFont.set", json!({"name": name, "entries": [{"family": family}]}));
+        let typed = |attrs: Value| ("type.char", json!({"attrs": attrs}));
+        let rows: [(&str, Vec<(&str, Value)>, bool, Value, Option<&str>); 11] = [
+            ("family and style, both installed", vec![], false, json!({"fontFamily": "Source Serif 4", "fontStyle": "Bold"}), None),
+            ("family only, missing", vec![], false, json!({"fontFamily": "Nonexistent Sans"}), Some("Missing font: Nonexistent Sans (using ")),
+            (
+                "family and a style it lacks",
+                vec![],
+                false,
+                json!({"fontFamily": "Source Serif 4", "fontStyle": "Nope"}),
+                Some("Missing font style: Source Serif 4 Nope (using Source Serif 4 "),
+            ),
+            (
+                "style only, one the text's family has",
+                vec![typed(json!({"fontFamily": "Source Serif 4"}))],
+                false,
+                json!({"fontStyle": "Bold"}),
+                None,
+            ),
+            (
+                "style only, one the text's family lacks",
+                vec![typed(json!({"fontFamily": "Source Serif 4"}))],
+                false,
+                json!({"fontStyle": "Nope"}),
+                Some("Missing font style: Source Serif 4 Nope (using "),
+            ),
+            (
+                "family only, keeping a style the new family lacks",
+                vec![typed(json!({"fontFamily": "Source Serif 4", "fontStyle": "Nope"}))],
+                false,
+                json!({"fontFamily": "Source Sans 3"}),
+                Some("Missing font style: Source Sans 3 Nope (using "),
+            ),
+            ("a composite font of installed fonts", vec![composite("Mixed", "Source Serif 4")], false, json!({"fontFamily": "Mixed"}), None),
+            (
+                "a composite font with a missing entry",
+                vec![composite("Gone", "Nonexistent Sans")],
+                false,
+                json!({"fontFamily": "Gone"}),
+                Some("Missing font: Nonexistent Sans (using "),
+            ),
+            (
+                "family only at a caret, for the next typing",
+                vec![],
+                true,
+                json!({"fontFamily": "Nonexistent Sans"}),
+                Some("Missing font: Nonexistent Sans (using "),
+            ),
+            (
+                "style only at a caret",
+                vec![typed(json!({"fontFamily": "Source Serif 4"}))],
+                true,
+                json!({"fontStyle": "Nope"}),
+                Some("Missing font style: Source Serif 4 Nope (using "),
+            ),
+            ("a change that leaves the font alone", vec![typed(json!({"fontFamily": "Nonexistent Sans"}))], false, json!({"size": 14}), None),
+        ];
+        for (name, before, caret, attrs, warning) in rows {
+            let mut s = Session::new();
+            s.execute("file.new", &json!({"pages": 1})).unwrap();
+            let f = s.execute("frame.create", &json!({"rect": [20, 20, 400, 300], "content": "text", "text": "Hello world"})).unwrap();
             s.execute("text.select", &json!({"story": f["story"].clone(), "anchor": 0, "focus": 5})).unwrap();
+            for (command, params) in before {
+                s.execute(command, &params).unwrap();
+            }
+            if caret {
+                s.execute("text.select", &json!({"story": f["story"].clone(), "anchor": 5, "focus": 5})).unwrap();
+            }
             let r = s.execute("type.char", &json!({"attrs": attrs})).unwrap();
             match warning {
-                None => assert_eq!(r, json!(null), "{attrs}"),
-                Some(w) => assert!(r["warnings"][0].as_str().is_some_and(|m| m.starts_with(w)), "{attrs}: {r}"),
+                None => assert_eq!(r, json!(null), "{name}"),
+                Some(w) => {
+                    assert!(r["warnings"].as_array().is_some_and(|ws| ws.iter().any(|m| m.as_str().is_some_and(|m| m.starts_with(w)))), "{name}: {r}")
+                }
             }
-            assert_eq!(s.execute("type.selectionAttrs", &json!({})).unwrap()["chars"]["fontFamily"], attrs["fontFamily"], "{attrs}");
+            // The font is applied whatever the warning says.
+            if let Some(family) = attrs.get("fontFamily").filter(|_| !caret) {
+                assert_eq!(&s.execute("type.selectionAttrs", &json!({})).unwrap()["chars"]["fontFamily"], family, "{name}");
+            }
         }
-        // At a caret the font is for the next typing, and the warning is the same.
-        s.execute("text.select", &json!({"story": f["story"].clone(), "anchor": 5, "focus": 5})).unwrap();
-        let r = s.execute("type.char", &json!({"attrs": {"fontFamily": "Nonexistent Sans"}})).unwrap();
-        assert!(r["warnings"][0].as_str().is_some_and(|m| m.starts_with("Missing font: Nonexistent Sans")), "{r}");
     }
 }

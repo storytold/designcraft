@@ -71,6 +71,102 @@ fn a_press_after_a_drag_is_not_a_double_click() {
     assert_eq!(press(Some(up), 0.0, 1.0), 1);
 }
 
+/// The shapes the canvas paints for a new document, after two frames (the first lays out).
+fn canvas_shapes(app: &mut DesignApp) -> Vec<egui::epaint::ClippedShape> {
+    let ctx = egui::Context::default();
+    let mut shapes = Vec::new();
+    for _ in 0..2 {
+        let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 900.0))), ..Default::default() };
+        let mut out = ctx.run_ui(raw, |ui| show(app, ui));
+        out.textures_delta.clear();
+        shapes = out.shapes;
+    }
+    shapes
+}
+
+/// The spine-coloured vertical hairlines at screen x `x` that run the full height of `page`
+/// (the spine of one spread shares its x with the pages of the spreads above and below it).
+fn vertical_lines_at(shapes: &[egui::epaint::ClippedShape], x: f32, page: Rect) -> usize {
+    let spine = page_decor::PAGE_EDGE;
+    shapes
+        .iter()
+        .filter(|c| match &c.shape {
+            egui::Shape::LineSegment { points: [a, b], stroke } => {
+                stroke.color == spine
+                    && (a.x - x).abs() < 0.01
+                    && (b.x - x).abs() < 0.01
+                    && a.y.min(b.y) <= page.min.y + 0.01
+                    && a.y.max(b.y) >= page.max.y - 0.01
+            }
+            _ => false,
+        })
+        .count()
+}
+
+#[test]
+fn a_spread_shows_a_spine_line_between_its_pages() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", serde_json::json!({"pages": 3, "facingPages": true})).unwrap();
+    let shapes = canvas_shapes(&mut app);
+    let st = app.session.active().unwrap();
+    let layout = CanvasLayout::new(&st.doc, false);
+    let xf = Xf::new(app.canvas_rect.unwrap(), app.view().unwrap());
+    // One spine at each edge two pages of a spread share, the full page height, and none
+    // at the outer edges of a spread or around a page on a spread of its own.
+    let mut pairs = 0;
+    for (si, sp) in st.doc.spreads.iter().enumerate() {
+        let first = st.doc.first_page_of_spread(si);
+        let rects: Vec<Rect> = (0..sp.pages.len()).map(|pi| xf.rect(layout.page_rect(&st.doc, first + pi).unwrap())).collect();
+        for w in rects.windows(2) {
+            assert!((w[0].max.x - w[1].min.x).abs() < 0.01, "pages of a spread meet");
+            assert_eq!(vertical_lines_at(&shapes, w[0].max.x, w[0]), 1, "spine in spread {si}");
+            pairs += 1;
+        }
+        let (left, right) = (rects[0], rects[rects.len() - 1]);
+        assert_eq!(vertical_lines_at(&shapes, left.min.x, left), 0, "outer left edge of spread {si}");
+        assert_eq!(vertical_lines_at(&shapes, right.max.x, right), 0, "outer right edge of spread {si}");
+    }
+    assert!(pairs > 0, "the document has a spread with two pages");
+}
+
+#[test]
+fn the_spine_sits_where_the_pages_of_a_right_to_left_spread_meet() {
+    // Bound right to left, the spread lists its right page first. With pages of different
+    // sizes, the line must be at their shared edge, not halfway between the outer ones, and
+    // run the height of the taller page, not stop at the shorter one listed first.
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", serde_json::json!({"pages": 3, "facingPages": true})).unwrap();
+    app.run("layout.documentSetup", serde_json::json!({"binding": "rightToLeft"})).unwrap();
+    let settings = &app.session.active().unwrap().doc.settings;
+    let (w, h) = (settings.page_width, settings.page_height);
+    app.run("layout.pageSize", serde_json::json!({"pages": [2], "width": w * 0.6, "height": h * 0.6})).unwrap();
+    let shapes = canvas_shapes(&mut app);
+    let st = app.session.active().unwrap();
+    let layout = CanvasLayout::new(&st.doc, false);
+    let xf = Xf::new(app.canvas_rect.unwrap(), app.view().unwrap());
+    let (right, left) = (xf.rect(layout.page_rect(&st.doc, 1).unwrap()), xf.rect(layout.page_rect(&st.doc, 2).unwrap()));
+    assert!((left.max.x - right.min.x).abs() < 0.01, "page 3 is the left page, page 2 the right");
+    assert!((left.width() - right.width()).abs() > 1.0, "the pages differ in width");
+    assert!(left.height() - right.height() > 1.0, "page 3 is the taller page");
+    assert_eq!(vertical_lines_at(&shapes, left.max.x, left), 1);
+}
+
+#[test]
+fn the_spine_line_hides_with_the_other_guides() {
+    for (guides, mode) in [(false, ScreenMode::Normal), (true, ScreenMode::Preview), (true, ScreenMode::Presentation)] {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", serde_json::json!({"pages": 3, "facingPages": true})).unwrap();
+        app.ui.guides = guides;
+        app.ui.screen_mode = mode;
+        let shapes = canvas_shapes(&mut app);
+        let st = app.session.active().unwrap();
+        let layout = CanvasLayout::new(&st.doc, false);
+        let xf = Xf::new(app.canvas_rect.unwrap(), app.view().unwrap());
+        let left = xf.rect(layout.page_rect(&st.doc, 1).unwrap());
+        assert_eq!(vertical_lines_at(&shapes, left.max.x, left), 0, "guides={guides} mode={mode:?}");
+    }
+}
+
 /// While a page's render is on its way the page shows paper, not the black of its shadow.
 #[test]
 fn pages_show_paper_under_their_render() {
@@ -155,20 +251,18 @@ fn linked_pictures_carry_the_link_badge() {
     let ctx = egui::Context::default();
     let xf = Xf::new(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 900.0)), &View::default());
     // The check runs off the UI thread: ask until the result for this document state is in.
-    let badges = |app: &mut DesignApp| {
+    let badges = |app: &mut DesignApp, expected: &str| {
         let doc = app.session.active().unwrap().doc.clone();
-        let key = (app.session.active().unwrap().uid, app.session.active().unwrap().revision);
         for _ in 0..1000 {
             let status = link_statuses(app, &ctx, &doc);
-            let check = ctx.data(|d| d.get_temp::<LinkCheck>(egui::Id::unique(("link_badge_status", app.pane)))).unwrap();
-            if check.key == key && check.pending.is_none() {
+            if !status.is_empty() && status.values().all(|s| s == expected) {
                 return link_badges(&doc, &CanvasLayout::new(&doc, false), &xf, &status);
             }
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
         panic!("the link check didn't finish");
     };
-    let b = badges(&mut app);
+    let b = badges(&mut app, "ok");
     assert_eq!(b.len(), 1, "only the linked picture: {b:?}");
     assert_eq!(b[0].1, LinkBadge::Linked);
     let doc = app.session.active().unwrap().doc.clone();
@@ -185,7 +279,7 @@ fn linked_pictures_carry_the_link_badge() {
     let (a, _) = item_canvas_xf(&doc, &CanvasLayout::new(&doc, false), designcraft_doc::ItemId(linked)).unwrap();
     let ib = it.inner_bounds();
     let (tl, tr) = (xf.to_screen(a * it.xf * Point::new(ib.x0, ib.y0)), xf.to_screen(a * it.xf * Point::new(ib.x1, ib.y0)));
-    let c = badges(&mut app)[0].0;
+    let c = badges(&mut app, "ok")[0].0;
     let along = (tr - tl).normalized();
     let off = c - tl;
     assert!((off.dot(along) - 16.0).abs() < 0.5 && (off.x * along.y - off.y * along.x).abs() < 0.5, "on the rotated top edge: {off:?}");
@@ -197,16 +291,178 @@ fn linked_pictures_carry_the_link_badge() {
         .as_u64()
         .unwrap();
     app.run("file.place", json!({"path": path.to_string_lossy(), "frame": pf})).unwrap();
-    assert_eq!(badges(&mut app).len(), 2, "the parent page's picture too");
+    assert_eq!(badges(&mut app, "ok").len(), 2, "the parent page's picture too");
     // The file gone: the badge says so (the check runs again once the document changes).
     std::fs::remove_file(&path).unwrap();
     app.run("frame.create", json!({"rect": [400, 400, 420, 420]})).unwrap();
-    assert_eq!(badges(&mut app)[0].1, LinkBadge::Missing);
+    assert_eq!(badges(&mut app, "missing")[0].1, LinkBadge::Missing);
     // View › Extras › Hide Link Badge.
     assert_eq!(crate::menus::checked(&app, "view.linkBadge", &json!({})), Some(true));
     app.run("view.linkBadge", json!({})).unwrap();
     assert!(!app.ui.link_badge);
     assert_eq!(crate::menus::checked(&app, "view.linkBadge", &json!({})), Some(false));
+    // Check the drawing entry point, not just the toggle's stored value.
+    let doc = app.session.active().unwrap().doc.clone();
+    let layout = CanvasLayout::new(&doc, false);
+    let paint = |app: &mut DesignApp| {
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            draw_link_badges(app, ui.ctx(), ui.painter(), &doc, &layout, &xf);
+        });
+        output.textures_delta.clear();
+        output.shapes.iter().filter(|shape| matches!(shape.shape, egui::Shape::Circle(_))).count()
+    };
+    assert_eq!(paint(&mut app), 0, "hidden badges draw no missing-file circles");
+    app.run("view.linkBadge", json!({})).unwrap();
+    assert!(paint(&mut app) > 0, "shown badges draw the missing-file circles");
+}
+
+/// The badge is editing chrome for visible artwork, so inactive object states do not show it.
+#[test]
+fn link_badges_follow_the_active_object_state() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("state.png");
+    std::fs::write(&file, designcraft_render::Rendered { width: 10, height: 10, pixels: vec![200; 400] }.to_png()).unwrap();
+    let mut ids = Vec::new();
+    for x in [72, 300] {
+        let id = app.run("frame.create", json!({"rect": [x, 72, x + 100, 172]})).unwrap()["id"].as_u64().unwrap();
+        app.run("file.place", json!({"path": file, "frame": id})).unwrap();
+        ids.push(id);
+    }
+    let group = app.run("object.group", json!({"ids": ids})).unwrap()["id"].as_u64().unwrap();
+    let xf = Xf::new(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 900.0)), &View::default());
+    let badges = |app: &DesignApp| {
+        let doc = &app.session.active().unwrap().doc;
+        link_badges(doc, &CanvasLayout::new(doc, false), &xf, &std::collections::HashMap::new())
+    };
+    let all = badges(&app);
+    assert_eq!(all.len(), 2, "ordinary groups show all linked children");
+    for (active, expected) in all.iter().enumerate() {
+        app.session
+            .edit(|d, _| {
+                let group = d.item_mut(designcraft_doc::ItemId(group)).unwrap();
+                group.states = vec!["First".into(), "Second".into()];
+                group.active_state = active;
+                Ok(())
+            })
+            .unwrap();
+        let shown = badges(&app);
+        assert_eq!(shown.len(), 1, "only the active state has a badge");
+        assert_eq!(shown[0], *expected);
+    }
+}
+
+/// An empty graphic frame's X joins its corners: a rectangle's, and a frame slanted by
+/// moving its top points, as in the Zero2Graphic tutorial's row of parallelograms.
+#[test]
+fn an_empty_frames_x_follows_its_corners() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let id = app.run("frame.create", json!({"rect": [100, 100, 200, 160]})).unwrap()["id"].as_u64().unwrap();
+    let x = |app: &DesignApp| {
+        let it = app.session.active().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap().clone();
+        let m = it.xf;
+        frame_x(&it).map(|(a, b)| {
+            let (a, b) = (m * a, m * b);
+            [(a.x.round(), a.y.round()), (b.x.round(), b.y.round())]
+        })
+    };
+    let mut lines = x(&app).to_vec();
+    lines.iter_mut().for_each(|l| l.sort_by(|a, b| a.partial_cmp(b).unwrap()));
+    lines.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    assert_eq!(lines, vec![[(100.0, 100.0), (200.0, 160.0)], [(100.0, 160.0), (200.0, 100.0)]], "corner to corner");
+    // Slant it: the two top points move 30 pt right.
+    let it = app.session.active().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap().clone();
+    let top: Vec<Value> =
+        it.path.subpaths[0].anchors.iter().enumerate().filter(|(_, a)| (it.xf * a.p).y < 130.0).map(|(k, _)| json!([0, k])).collect();
+    assert_eq!(top.len(), 2);
+    app.run("path.moveAnchors", json!({"id": id, "anchors": top, "dx": 30, "dy": 0})).unwrap();
+    let mut lines = x(&app).to_vec();
+    lines.iter_mut().for_each(|l| l.sort_by(|a, b| a.partial_cmp(b).unwrap()));
+    lines.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    assert_eq!(lines, vec![[(100.0, 160.0), (230.0, 100.0)], [(130.0, 100.0), (200.0, 160.0)]], "the slanted corners");
+    // An ellipse frame (four smooth anchors) keeps the X across its bounds, not a plus.
+    let e = app.run("frame.create", json!({"rect": [300, 100, 400, 160], "shape": "ellipse"})).unwrap()["id"].as_u64().unwrap();
+    let it = app.session.active().unwrap().doc.item(designcraft_doc::ItemId(e)).unwrap().clone();
+    let mut lines: Vec<[(f64, f64); 2]> = frame_x(&it)
+        .map(|(a, b)| {
+            let (a, b) = (it.xf * a, it.xf * b);
+            [(a.x.round(), a.y.round()), (b.x.round(), b.y.round())]
+        })
+        .to_vec();
+    lines.iter_mut().for_each(|l| l.sort_by(|a, b| a.partial_cmp(b).unwrap()));
+    lines.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    assert_eq!(lines, vec![[(300.0, 100.0), (400.0, 160.0)], [(300.0, 160.0), (400.0, 100.0)]], "the ellipse's bounds");
+    // So does a four-sided polygon frame (a diamond): its corners would cross as a plus.
+    let mut diamond = it.clone();
+    diamond.shape = designcraft_doc::Shape::Polygon;
+    for a in &mut diamond.path.subpaths[0].anchors {
+        (a.h_in, a.h_out) = (a.p, a.p);
+    }
+    let lines: Vec<_> = frame_x(&diamond).to_vec();
+    assert!(lines.iter().all(|(a, b)| (a.x - b.x).abs() > 1e-6 && (a.y - b.y).abs() > 1e-6), "diagonals, not a plus: {lines:?}");
+    // Still after one of its points moves (which makes it a path).
+    let p = app.run("frame.create", json!({"rect": [300, 200, 400, 260], "shape": "polygon", "sides": 4, "starInset": 0})).unwrap()["id"]
+        .as_u64()
+        .unwrap();
+    app.run("path.moveAnchors", json!({"id": p, "anchors": [[0, 0]], "dx": 5, "dy": 0})).unwrap();
+    let it = app.session.active().unwrap().doc.item(designcraft_doc::ItemId(p)).unwrap().clone();
+    assert_eq!(it.shape, designcraft_doc::Shape::Path);
+    let lines: Vec<_> = frame_x(&it).to_vec();
+    assert!(lines.iter().all(|(a, b)| (a.x - b.x).abs() > 1e-6 && (a.y - b.y).abs() > 1e-6), "an edited diamond: {lines:?}");
+}
+
+/// A graphic pasted into a smaller Pen-drawn shape (Edit › Paste Into) is clipped to it, and so
+/// are the frame edges: the shape shows its own edge, not the whole graphic's past it (#2345).
+#[test]
+fn a_frame_with_pasted_in_content_shows_its_own_edge_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let png = dir.path().join("photo.png");
+    std::fs::write(&png, designcraft_render::Rendered { width: 300, height: 300, pixels: vec![90; 300 * 300 * 4] }.to_png()).unwrap();
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let big = app.run("frame.create", json!({"rect": [60, 60, 360, 360]})).unwrap()["id"].as_u64().unwrap();
+    app.run("file.place", json!({"path": png.to_string_lossy(), "frame": big})).unwrap();
+    let pts: Vec<Value> = [[160, 160], [260, 170], [240, 260], [170, 250]].iter().map(|p| json!({"p": p})).collect();
+    let shape = app.run("path.create", json!({"anchors": pts, "closed": true})).unwrap()["id"].as_u64().unwrap();
+    app.run("selection.set", json!({"ids": [big]})).unwrap();
+    app.run("edit.cut", json!({})).unwrap();
+    app.run("selection.set", json!({"ids": [shape]})).unwrap();
+    app.run("edit.pasteInto", json!({})).unwrap();
+    app.run("edit.deselectAll", json!({})).unwrap();
+    assert!(app.ui.frame_edges);
+    let ctx = egui::Context::default();
+    let mut shapes = Vec::new();
+    for _ in 0..2 {
+        let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 900.0))), ..Default::default() };
+        let mut out = ctx.run_ui(raw, |ui| show(&mut app, ui));
+        out.textures_delta.clear();
+        shapes = out.shapes;
+    }
+    let st = app.session.active().unwrap();
+    let doc = &st.doc;
+    let it = doc.item(designcraft_doc::ItemId(shape)).unwrap();
+    assert!(it.has_nested_items(), "the graphic is inside the shape");
+    let layout = CanvasLayout::new(doc, false);
+    let xf = Xf::new(app.canvas_rect.unwrap(), app.view().unwrap());
+    let (a, _) = item_canvas_xf(doc, &layout, it.id).unwrap();
+    let frame = xf.rect(a.transform_rect_bbox(it.bounds()));
+    let edge = frames::layer_color(doc, it).gamma_multiply(0.75);
+    let edges: Vec<Rect> = shapes
+        .iter()
+        .filter_map(|c| match &c.shape {
+            egui::Shape::Path(p) if p.stroke.color == egui::epaint::ColorMode::Solid(edge) => Some(Rect::from_points(&p.points)),
+            _ => None,
+        })
+        .collect();
+    for r in &edges {
+        assert!(frame.expand(0.5).contains_rect(*r), "an edge line at {r:?} runs outside the frame at {frame:?}");
+    }
+    assert!(
+        edges.iter().any(|r| (r.min - frame.min).length() < 0.5 && (r.max - frame.max).length() < 0.5),
+        "the frame's own edge is drawn: {edges:?} vs {frame:?}"
+    );
 }
 
 /// Each preview mode's shown area: Preview stops at the trim, Bleed reaches the bleed box and

@@ -16,14 +16,12 @@ mod editorial;
 mod endnotes;
 mod export;
 pub(crate) use export::print_pdf;
+pub mod export_batch;
 mod file;
 mod file_info;
 pub(crate) mod find;
 pub use edit::copied_objects_text;
 pub use find::same_find_domain;
-/// A linked asset's Links panel status ("ok", "modified", "missing", "embedded"), as `links.list`
-/// reports it; it reads the linked file, so callers may run it off the UI thread.
-pub use links::status as link_status;
 pub(crate) mod flex;
 mod fonts;
 pub(crate) mod guides;
@@ -35,6 +33,7 @@ mod layout;
 pub mod library;
 mod linked;
 mod links;
+pub use links::{LinkListChecks, list_document_links, preview_document_links, remember_link_files};
 mod liquid;
 mod lists;
 mod load_styles;
@@ -178,6 +177,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(file_info::specs());
         v.extend(interchange::specs());
         v.extend(export::specs());
+        v.extend(export_batch::specs());
         v.extend(edit::specs());
         v.extend(paste_svg::specs());
         v.extend(endnotes::specs());
@@ -329,6 +329,24 @@ pub(crate) fn named_targets(spec: &CommandSpec, p: &Value) -> Option<Vec<ItemId>
         return (!ids.is_empty()).then_some(ids);
     }
     id_param(p, "id").map(|i| vec![i])
+}
+
+/// The table a call names with `table`, for a command whose params document an optional `table`.
+/// `None` when the call names no table. [`table_story`] reads the `story` that goes with it.
+pub(crate) fn named_table(spec: &CommandSpec, p: &Value) -> Option<u64> {
+    if !spec.params.split(|c: char| !c.is_ascii_alphanumeric() && c != '?').any(|w| w == "table?") {
+        return None;
+    }
+    p.get("table").and_then(Value::as_u64)
+}
+
+/// The `story` a table command's call names alongside `table`, or `None` when the call has no
+/// `story`. A `story` that is present but not a non-negative integer, `null` included, is an error.
+pub(crate) fn table_story(p: &Value, cmd: &str) -> Result<Option<u64>> {
+    match p.get("story") {
+        None => Ok(None),
+        Some(v) => v.as_u64().map(Some).ok_or_else(|| bad(cmd, "`story` must be a non-negative integer")),
+    }
 }
 
 /// Targets: `ids` / `id` params or the selection.
