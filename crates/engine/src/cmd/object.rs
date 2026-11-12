@@ -382,7 +382,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Drop Shadow",
             ["Object", "Effects"],
             Some("Cmd+Alt+M"),
-            "{on?: bool, distance?, angle?, globalLight?: bool, opacity?, size?, spread? (%), color? (swatch), mode?: blend mode (multiply…), ids?}",
+            "{on?: bool, distance?, angle?, globalLight?: bool, opacity?, size?, spread? (%), noise? (%), knockout?: bool (Object Knocks Out Shadow), honorsEffects?: bool (Shadow Honors Other Effects), color? (swatch), mode?: blend mode (multiply…), ids?}",
             has_selection,
             |s, p| {
                 let mode = blend_param(p, "object.dropShadow")?;
@@ -402,6 +402,9 @@ pub fn specs() -> Vec<CommandSpec> {
                     if let Some(m) = mode {
                         ds.mode = m;
                     }
+                    ds.noise = f64_or(&p2, "noise", ds.noise).clamp(0.0, 100.0);
+                    ds.knockout = p2.get("knockout").and_then(Value::as_bool).or(ds.knockout);
+                    ds.honors_effects = p2.get("honorsEffects").and_then(Value::as_bool).unwrap_or(ds.honors_effects);
                 })
             }
         ),
@@ -410,7 +413,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Inner Shadow",
             ["Object", "Effects"],
             None,
-            "{on?: bool, distance?, angle?, globalLight?: bool, opacity?, size?, choke? (%), color?, mode?: blend mode, ids?}",
+            "{on?: bool, distance?, angle?, globalLight?: bool, opacity?, size?, choke? (%), noise? (%), color?, mode?: blend mode, ids?}",
             has_selection,
             |s, p| {
                 let mode = blend_param(p, "object.innerShadow")?;
@@ -423,6 +426,7 @@ pub fn specs() -> Vec<CommandSpec> {
                     e.global_light = p2.get("globalLight").and_then(Value::as_bool).unwrap_or(e.global_light);
                     e.opacity = f64_or(&p2, "opacity", e.opacity as f64) as f32;
                     e.size = f64_or(&p2, "size", e.size);
+                    e.noise = f64_or(&p2, "noise", e.noise).clamp(0.0, 100.0);
                     e.choke = f64_or(&p2, "choke", e.choke);
                     if let Some(c) = str_param(&p2, "color") {
                         e.color = c.into();
@@ -438,7 +442,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Outer Glow",
             ["Object", "Effects"],
             None,
-            "{on?: bool, opacity?, size?, spread? (%), color?, mode?: blend mode (screen…), ids?}",
+            "{on?: bool, opacity?, size?, spread? (%), noise? (%), technique?: softer|precise, color?, mode?: blend mode (screen…), ids?}",
             has_selection,
             |s, p| {
                 let mode = blend_param(p, "object.outerGlow")?;
@@ -446,6 +450,10 @@ pub fn specs() -> Vec<CommandSpec> {
                 set_effects(s, p, "object.outerGlow", move |fx| {
                     let e = &mut fx.outer_glow;
                     e.on = p2.get("on").and_then(Value::as_bool).unwrap_or(!e.on);
+                    e.noise = f64_or(&p2, "noise", e.noise).clamp(0.0, 100.0);
+                    if let Some(t) = p2.get("technique").and_then(|v| serde_json::from_value(v.clone()).ok()) {
+                        e.technique = t;
+                    }
                     e.opacity = f64_or(&p2, "opacity", e.opacity as f64) as f32;
                     e.size = f64_or(&p2, "size", e.size);
                     e.spread = f64_or(&p2, "spread", e.spread);
@@ -497,7 +505,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Inner Glow",
             ["Object", "Effects"],
             None,
-            "{on?: bool, opacity?, size?, choke? (%), center?: bool (glow from the centre), color?, ids?}",
+            "{on?: bool, opacity?, size?, choke? (%), noise? (%), center?: bool (glow from the centre), color?, ids?}",
             has_selection,
             |s, p| {
                 let p2 = p.clone();
@@ -508,6 +516,7 @@ pub fn specs() -> Vec<CommandSpec> {
                     e.size = f64_or(&p2, "size", e.size);
                     e.choke = f64_or(&p2, "choke", e.choke);
                     e.center = p2.get("center").and_then(Value::as_bool).unwrap_or(e.center);
+                    e.noise = f64_or(&p2, "noise", e.noise).clamp(0.0, 100.0);
                     if let Some(c) = str_param(&p2, "color") {
                         e.color = c.into();
                     }
@@ -2318,6 +2327,10 @@ fn sanitize_effects(e: &mut designcraft_doc::Effects) -> Result<()> {
     len(&mut ds.distance)?;
     len(&mut ds.size)?;
     pct(&mut ds.spread)?;
+    pct(&mut ds.noise)?;
+    pct(&mut e.inner_shadow.noise)?;
+    pct(&mut e.outer_glow.noise)?;
+    pct(&mut e.inner_glow.noise)?;
     let is = &mut e.inner_shadow;
     op(&mut is.opacity)?;
     ang(&mut is.angle)?;
@@ -2355,6 +2368,22 @@ fn sanitize_effects(e: &mut designcraft_doc::Effects) -> Result<()> {
     Ok(())
 }
 
+/// The effects as JSON with every effect written out, also those at their defaults (which a
+/// document leaves out): a patch then changes only the fields it gives, and the others keep
+/// InDesign's defaults (a shadow's Multiply…), not those of a document saved before they existed.
+fn full_effects_json(e: &designcraft_doc::Effects) -> serde_json::Result<Value> {
+    let mut v = serde_json::to_value(e)?;
+    v["innerShadow"] = serde_json::to_value(&e.inner_shadow)?;
+    v["outerGlow"] = serde_json::to_value(&e.outer_glow)?;
+    v["innerGlow"] = serde_json::to_value(&e.inner_glow)?;
+    v["bevel"] = serde_json::to_value(&e.bevel)?;
+    v["satin"] = serde_json::to_value(&e.satin)?;
+    v["featherOptions"] = serde_json::to_value(&e.feather_options)?;
+    v["directionalFeather"] = serde_json::to_value(&e.directional_feather)?;
+    v["gradientFeather"] = serde_json::to_value(&e.gradient_feather)?;
+    Ok(v)
+}
+
 fn effects_all(s: &mut Session, p: &Value) -> Result<Value> {
     const ID: &str = "object.effects";
     let patch = match p.get("effects") {
@@ -2390,16 +2419,7 @@ fn effects_all(s: &mut Session, p: &Value) -> Result<Value> {
                 continue;
             }
             if let Some(patch) = &patch {
-                let mut cur = serde_json::to_value(&it.effects).map_err(|e| bad(ID, e.to_string()))?;
-                // Default effects are left out of the serialized form; a patch without `mode` would
-                // then read the legacy Normal instead of the effect's current (Multiply, Screen) mode.
-                for (key, now) in
-                    [("innerShadow", serde_json::to_value(&it.effects.inner_shadow)), ("outerGlow", serde_json::to_value(&it.effects.outer_glow))]
-                {
-                    if let (Some(o), Ok(now)) = (cur.as_object_mut(), now) {
-                        o.entry(key).or_insert(now);
-                    }
-                }
+                let mut cur = full_effects_json(&it.effects).map_err(|e| bad(ID, e.to_string()))?;
                 merge_json(&mut cur, patch);
                 let mut fx: designcraft_doc::Effects = serde_json::from_value(cur).map_err(|e| bad(ID, format!("effects: {e}")))?;
                 sanitize_effects(&mut fx)?;
@@ -4356,6 +4376,18 @@ mod light_tests {
         assert!(std::sync::Arc::ptr_eq(&before, &s.doc().unwrap().doc), "nothing changed");
         s.execute("object.dropShadow", &json!({"mode": null, "ids": [id]})).unwrap();
         assert_eq!(s.doc().unwrap().doc.item(ItemId(id)).unwrap().effects.drop_shadow.mode, BlendMode::Screen, "null keeps the mode");
+        s.execute("object.dropShadow", &json!({"noise": 30, "knockout": false, "honorsEffects": true, "ids": [id]})).unwrap();
+        s.execute("object.outerGlow", &json!({"noise": 150, "technique": "precise", "ids": [id]})).unwrap();
+        s.execute("object.innerShadow", &json!({"noise": 5, "ids": [id]})).unwrap();
+        let fx = s.doc().unwrap().doc.item(ItemId(id)).unwrap().effects.clone();
+        assert_eq!((fx.drop_shadow.noise, fx.drop_shadow.knockout, fx.drop_shadow.honors_effects), (30.0, Some(false), true));
+        assert_eq!((fx.outer_glow.noise, fx.outer_glow.technique), (100.0, designcraft_doc::GlowTechnique::Precise));
+        assert_eq!(fx.inner_shadow.noise, 5.0);
+        // An effect turned on through object.effects starts with InDesign's defaults.
+        let id2 = s.execute("frame.create", &json!({"rect": [200, 72, 300, 172]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("object.effects", &json!({"ids": [id2], "effects": {"innerShadow": {"on": true}, "outerGlow": {"on": true}}})).unwrap();
+        let fx = s.doc().unwrap().doc.item(ItemId(id2)).unwrap().effects.clone();
+        assert_eq!((fx.inner_shadow.mode, fx.outer_glow.mode), (BlendMode::Multiply, BlendMode::Screen));
     }
 
     #[test]

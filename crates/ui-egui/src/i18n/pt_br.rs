@@ -1,6 +1,9 @@
 //! Original Brazilian Portuguese interface translations, written from the English source
 //! using ordinary Brazilian Portuguese computing vocabulary.
 pub(super) const TABLE: &[(&str, &str)] = &[
+    ("Noise:", "Ruído:"),
+    ("Object Knocks Out Shadow", "O objeto bloqueia a própria sombra"),
+    ("Shadow Honors Other Effects", "A sombra respeita outros efeitos"),
     ("Fewer Options", "Menos opções"),
     ("Tab Character", "Caractere de tabulação"),
     ("Right Indent Tab", "Tabulação de recuo à direita"),

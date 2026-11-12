@@ -1,5 +1,8 @@
 //! Original Arabic interface translations, stored in logical Unicode order.
 pub(super) const TABLE: &[(&str, &str)] = &[
+    ("Noise:", "التشويش:"),
+    ("Object Knocks Out Shadow", "الكائن يحجب الظل"),
+    ("Shadow Honors Other Effects", "الظل يراعي التأثيرات الأخرى"),
     ("Fewer Options", "خيارات أقل"),
     ("Tab Character", "محرف جدولة"),
     ("File", "ملف"),

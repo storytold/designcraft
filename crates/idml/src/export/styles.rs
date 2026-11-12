@@ -142,16 +142,16 @@ impl<'a> Ex<'a> {
             if let Some(tf) = &os.text_frame {
                 el.push(text_frame_pref(tf, &self.sw(&tf.column_rule_color)));
             }
-            // Effects: a style with effects sets the drop shadow and feather, never blending.
+            // A style with effects sets the supported shadow, glow and feather categories, never blending.
             let on = bool_s(os.effects.is_some());
             el.push(
                 El::new("ObjectStyleObjectEffectsCategorySettings")
                     .attr("EnableTransparency", "false")
                     .attr("EnableDropShadow", on)
                     .attr("EnableFeather", on)
-                    .attr("EnableInnerShadow", "false")
-                    .attr("EnableOuterGlow", "false")
-                    .attr("EnableInnerGlow", "false")
+                    .attr("EnableInnerShadow", on)
+                    .attr("EnableOuterGlow", on)
+                    .attr("EnableInnerGlow", on)
                     .attr("EnableBevelEmboss", "false")
                     .attr("EnableSatin", "false")
                     .attr("EnableDirectionalFeather", "false")

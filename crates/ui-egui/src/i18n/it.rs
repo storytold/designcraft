@@ -1,6 +1,9 @@
 //! Original Italian interface translations, written from the English source
 //! using ordinary Italian desktop-publishing vocabulary.
 pub(super) const TABLE: &[(&str, &str)] = &[
+    ("Noise:", "Disturbo:"),
+    ("Object Knocks Out Shadow", "L'oggetto fora l'ombra"),
+    ("Shadow Honors Other Effects", "L'ombra rispetta gli altri effetti"),
     ("Fewer Options", "Meno opzioni"),
     ("Tab Character", "Carattere di tabulazione"),
     ("Right Indent Tab", "Tabulazione rientro destro"),

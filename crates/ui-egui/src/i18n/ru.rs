@@ -3,6 +3,9 @@
 //! The translations are our own; counted nouns are genitive plurals because the caption puts the
 //! category before the number ("страниц: 5"), see `count_label`.
 pub(super) const TABLE: &[(&str, &str)] = &[
+    ("Noise:", "Шум:"),
+    ("Object Knocks Out Shadow", "Объект исключает тень"),
+    ("Shadow Honors Other Effects", "Тень учитывает другие эффекты"),
     ("Fewer Options", "Меньше параметров"),
     ("Tab Character", "Символ табуляции"),
     ("File", "Файл"),

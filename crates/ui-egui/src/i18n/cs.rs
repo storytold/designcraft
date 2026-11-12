@@ -3,6 +3,9 @@
 //! product's localization was used). Phrases shared with the MIT OR Apache-2.0 Czech catalogs of
 //! the ArtCraft siblings (VectorCraft, PhotoCraft) are kept identical; see ASSETS.md for sources.
 pub(super) const TABLE: &[(&str, &str)] = &[
+    ("Noise:", "Šum:"),
+    ("Object Knocks Out Shadow", "Objekt vykrojí stín"),
+    ("Shadow Honors Other Effects", "Stín respektuje ostatní efekty"),
     ("Fewer Options", "Méně možností"),
     ("Tab Character", "Znak tabulátoru"),
     ("File", "Soubor"),

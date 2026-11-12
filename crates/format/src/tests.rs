@@ -3,6 +3,28 @@ use designcraft_doc::build::NewDocument;
 use designcraft_doc::geom::Rect;
 use designcraft_doc::{Asset, ParaFormat, SpreadRef};
 
+#[test]
+fn shadow_knockout_preserves_legacy_absence_and_explicit_values() {
+    use designcraft_doc::{Item, ItemId, Shape};
+    let mut doc = Document::new(&NewDocument::default());
+    let id = ItemId(doc.alloc());
+    let mut item = Item::new(id, doc.default_layer(), Shape::Rectangle, designcraft_doc::geom::shapes::rectangle(Rect::new(0.0, 0.0, 50.0, 50.0)));
+    item.opacity = 0.5;
+    item.effects.drop_shadow = serde_json::from_value(json!({"on": true, "opacity": 0.7})).unwrap();
+    assert_eq!(item.effects.drop_shadow.knockout, None);
+    doc.insert_item(SpreadRef::Doc(0), item, None).unwrap();
+    for knockout in [None, Some(false), Some(true)] {
+        doc.item_mut(id).unwrap().effects.drop_shadow.knockout = knockout;
+        for bytes in [save(&doc).unwrap(), serde_json::to_vec(&doc).unwrap()] {
+            let loaded = load(&bytes).unwrap();
+            assert_eq!(loaded.item(id).unwrap().effects.drop_shadow.knockout, knockout);
+            assert_eq!(loaded.item(id).unwrap().opacity, 0.5);
+            let resaved = load(&save(&loaded).unwrap()).unwrap();
+            assert_eq!(resaved.item(id).unwrap().effects.drop_shadow.knockout, knockout);
+        }
+    }
+}
+
 /// An entry that fails after inflating (a bad checksum) still uses up the archive's byte budget.
 #[test]
 fn a_failed_read_is_charged_to_the_budget() {

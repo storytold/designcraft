@@ -4240,8 +4240,26 @@ fn object_style_effects_round_trip() {
     use designcraft_doc::{DropShadow, Effects, ObjectStyle};
     let mut d = Document::new(&NewDocument::default());
     let fx = Effects {
-        drop_shadow: DropShadow { on: true, distance: 5.0, size: 12.0, opacity: 0.28, ..Default::default() },
+        drop_shadow: DropShadow {
+            on: true,
+            distance: 5.0,
+            size: 12.0,
+            opacity: 0.28,
+            noise: 12.0,
+            knockout: Some(false),
+            honors_effects: true,
+            ..Default::default()
+        },
         feather: 3.0,
+        inner_shadow: designcraft_doc::InnerShadow { on: true, noise: 24.0, choke: 30.0, ..Default::default() },
+        outer_glow: designcraft_doc::OuterGlow { on: true, noise: 38.0, technique: designcraft_doc::GlowTechnique::Precise, ..Default::default() },
+        inner_glow: designcraft_doc::InnerGlow {
+            on: true,
+            noise: 52.0,
+            technique: designcraft_doc::GlowTechnique::Precise,
+            center: true,
+            ..Default::default()
+        },
         ..Default::default()
     };
     d.styles_mut().object.push(ObjectStyle { name: "Photo".into(), effects: Some(fx.clone()), ..Default::default() });
@@ -4274,7 +4292,12 @@ fn object_style_effects_round_trip() {
     let ds = &got.drop_shadow;
     assert!(ds.on && ds.size == 12.0 && (ds.opacity - 0.28).abs() < 1e-6, "{ds:?}");
     assert!((ds.distance - 5.0).abs() < 1e-6 && (ds.angle - DropShadow::default().angle).abs() < 1e-6, "{ds:?}");
+    // Noise, Object Knocks Out Shadow and Shadow Honors Other Effects.
+    assert!(ds.noise == 12.0 && ds.knockout == Some(false) && ds.honors_effects, "{ds:?}");
     assert_eq!(got.feather, 3.0);
+    assert_eq!(got.inner_shadow, fx.inner_shadow);
+    assert_eq!(got.outer_glow, fx.outer_glow);
+    assert_eq!(got.inner_glow, fx.inner_glow);
     assert!(style("Plain").effects.is_none());
     // The frame's effects are the style's, so it follows later edits of the style.
     let frames: Vec<_> = back.spreads[0].items.iter().filter(|i| i.object_style == "Photo").collect();
@@ -4314,6 +4337,51 @@ fn object_style_effects_import_by_category_and_based_on() {
     assert_eq!((child.drop_shadow.size, child.feather), (9.0, 6.0), "settings from the BasedOn style");
     assert!(fx("Off").is_none());
     assert!(!fx("Loop").unwrap().drop_shadow.on);
+}
+
+#[test]
+fn standalone_glow_noise_and_legacy_shadow_absence_survive_idml() {
+    use designcraft_doc::{DropShadow, Effects, GlowTechnique, InnerGlow, InnerShadow, Item, ItemId, OuterGlow};
+    for effects in [
+        Effects { inner_shadow: InnerShadow { on: true, noise: 17.0, ..Default::default() }, ..Default::default() },
+        Effects { outer_glow: OuterGlow { on: true, noise: 29.0, technique: GlowTechnique::Precise, ..Default::default() }, ..Default::default() },
+        Effects { inner_glow: InnerGlow { on: true, noise: 43.0, center: true, ..Default::default() }, ..Default::default() },
+        Effects { drop_shadow: DropShadow { on: true, knockout: None, ..Default::default() }, ..Default::default() },
+    ] {
+        let mut doc = Document::new(&NewDocument::default());
+        let id = ItemId(doc.alloc());
+        let mut item = Item::new(id, doc.default_layer(), Shape::Rectangle, shapes::rectangle(Rect::new(20.0, 20.0, 80.0, 80.0)));
+        item.name = "effect-only".into();
+        item.effects = effects.clone();
+        doc.insert_item(SpreadRef::Doc(0), item, None).unwrap();
+        let back = import_idml(&export_idml(&doc)).unwrap();
+        let got = &back.spreads[0].items.iter().find(|it| it.name == "effect-only").unwrap().effects;
+        assert_eq!(got.inner_shadow, effects.inner_shadow);
+        assert_eq!(got.outer_glow, effects.outer_glow);
+        assert_eq!(got.inner_glow, effects.inner_glow);
+        assert_eq!(got.drop_shadow.knockout, effects.drop_shadow.knockout);
+    }
+}
+
+#[test]
+fn partial_glow_style_edits_retain_inherited_settings_and_category_flags() {
+    let styles = r#"
+      <ObjectStyle Self="ObjectStyle/Base" Name="Base">
+        <TransparencySetting><OuterGlowSetting Applied="true" Size="9" Technique="Precise" Noise="38"/></TransparencySetting>
+        <ObjectStyleObjectEffectsCategorySettings EnableOuterGlow="true"/>
+      </ObjectStyle>
+      <ObjectStyle Self="ObjectStyle/Padded" Name="Padded">
+        <Properties><BasedOn type="object">ObjectStyle/Base</BasedOn></Properties>
+        <TransparencySetting><OuterGlowSetting Noise="52"/></TransparencySetting>
+        <ObjectStyleObjectEffectsCategorySettings EnableFeather="false"/>
+      </ObjectStyle>"#;
+    let doc = inset_fixture("", styles);
+    let effects = |name: &str| doc.styles.object.iter().find(|s| s.name == name).unwrap().effects.as_ref().unwrap();
+    let child = &effects("Padded").outer_glow;
+    assert!(child.on, "a child changing Noise keeps its inherited enabled glow");
+    assert_eq!((child.size, child.noise, child.technique), (9.0, 52.0, designcraft_doc::GlowTechnique::Precise));
+    assert_eq!(effects("Base").outer_glow.noise, 38.0);
+    assert_eq!(&doc.spreads[0].items[0].effects.outer_glow, child, "style edits and placed artwork resolve the same effect");
 }
 
 #[test]

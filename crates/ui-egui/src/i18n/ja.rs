@@ -3,6 +3,9 @@
 //! Portuguese tables has a row here; the menu titles and panel names that were already Japanese in the
 //! shared table are carried over unchanged.
 pub(super) const TABLE: &[(&str, &str)] = &[
+    ("Noise:", "ノイズ :"),
+    ("Object Knocks Out Shadow", "オブジェクトでシャドウを抜く"),
+    ("Shadow Honors Other Effects", "シャドウに他の効果を使用"),
     ("Fewer Options", "オプションを減らす"),
     ("Tab Character", "タブ文字"),
     ("File", "ファイル"),

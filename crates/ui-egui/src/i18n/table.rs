@@ -1,5 +1,20 @@
 /// English → [German, French, Spanish, Japanese, Simplified Chinese].
 pub(super) const TABLE: &[(&str, [&str; 5])] = &[
+    ("Noise:", ["Rauschen:", "Bruit :", "Ruido:", "ノイズ :", "杂色："]),
+    (
+        "Object Knocks Out Shadow",
+        ["Objekt spart Schatten aus", "L'objet masque l'ombre", "El objeto cubre la sombra", "オブジェクトでシャドウを抜く", "对象挖空阴影"],
+    ),
+    (
+        "Shadow Honors Other Effects",
+        [
+            "Schatten berücksichtigt andere Effekte",
+            "L'ombre tient compte des autres effets",
+            "La sombra respeta otros efectos",
+            "シャドウに他の効果を使用",
+            "阴影接受其他效果",
+        ],
+    ),
     ("Keep In Frame", ["Im Rahmen behalten", "Conserver dans le bloc", "Mantener en el marco", "フレーム内に保持", "保持在框架内"]),
     ("Next Style:", ["Nächstes Format:", "Style suivant :", "Estilo siguiente:", "次のスタイル :", "下一样式："]),
     ("[Same style]", ["[Gleiches Format]", "[Même style]", "[Mismo estilo]", "[同じスタイル]", "[相同样式]"]),

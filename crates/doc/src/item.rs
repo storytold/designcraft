@@ -408,6 +408,16 @@ mod tests {
         assert_eq!(DropShadow::default().mode, BlendMode::Multiply);
         assert_eq!(InnerShadow::default().mode, BlendMode::Multiply);
         assert_eq!(OuterGlow::default().mode, BlendMode::Screen);
+        // Absence is the legacy composite, distinct from an explicit disabled knockout.
+        let old: DropShadow = serde_json::from_str(r#"{"on": true}"#).unwrap();
+        assert_eq!(old.knockout, None);
+        assert_eq!(DropShadow::default().knockout, Some(true));
+        for knockout in [None, Some(false), Some(true)] {
+            let shadow = DropShadow { knockout, ..old.clone() };
+            let saved = serde_json::to_value(&shadow).unwrap();
+            assert_eq!(saved.get("knockout").is_some(), knockout.is_some());
+            assert_eq!(serde_json::from_value::<DropShadow>(saved).unwrap(), shadow);
+        }
         let saved = serde_json::to_value(DropShadow { mode: BlendMode::Screen, ..Default::default() }).unwrap();
         assert_eq!(serde_json::from_value::<DropShadow>(saved).unwrap().mode, BlendMode::Screen, "round trip");
     }

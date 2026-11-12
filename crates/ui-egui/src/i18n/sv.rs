@@ -2,6 +2,9 @@
 //! Swedish software vocabulary; no other catalog and no proprietary localisation was used.
 //! AI-drafted with Claude Code; spot-checked by a native Swedish speaker, not every string reviewed.
 pub(super) const TABLE: &[(&str, &str)] = &[
+    ("Noise:", "Brus:"),
+    ("Object Knocks Out Shadow", "Objektet maskerar skuggan"),
+    ("Shadow Honors Other Effects", "Skuggan tar hänsyn till andra effekter"),
     ("File", "Arkiv"),
     ("Edit", "Redigera"),
     ("Layout", "Layout"),

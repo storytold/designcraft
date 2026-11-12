@@ -4,6 +4,9 @@
 //! Portuguese, Japanese, Italian and Ukrainian tables has a row here, plus a few labels that only
 //! the code or the command table use.
 pub(super) const TABLE: &[(&str, &str)] = &[
+    ("Noise:", "ხმაური:"),
+    ("Object Knocks Out Shadow", "ობიექტი ფარავს ჩრდილს"),
+    ("Shadow Honors Other Effects", "ჩრდილი ითვალისწინებს სხვა ეფექტებს"),
     ("Fewer Options", "ნაკლები პარამეტრი"),
     ("Tab Character", "ტაბულაციის სიმბოლო"),
     ("File", "ფაილი"),

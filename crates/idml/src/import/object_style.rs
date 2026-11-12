@@ -114,7 +114,55 @@ impl<'r> Importer<'r> {
                 // Without the attribute (earlier DesignCraft exports) the shadow stays Normal, as it
                 // rendered then; a new shadow's default is Multiply.
                 mode: ds.get("BlendMode").map_or(designcraft_color::BlendMode::Normal, names::blend_in),
+                noise: finite(ds.num("Noise")).unwrap_or(0.0).clamp(0.0, 100.0),
+                knockout: ds.boolean("KnockedOut"),
+                honors_effects: ds.boolean("HonorOtherEffects").unwrap_or(false),
             };
+        }
+        if let Some(e) = t.find("InnerShadowSetting").filter(|e| e.boolean("Applied") == Some(true)) {
+            let def = designcraft_doc::InnerShadow::default();
+            fx.inner_shadow = designcraft_doc::InnerShadow {
+                on: true,
+                color: e.get("EffectColor").map(|c| self.swatch_ref(c)).unwrap_or(def.color),
+                mode: e.get("BlendMode").map_or(def.mode, names::blend_in),
+                opacity: finite(e.num("Opacity")).map_or(def.opacity, |n| (n / 100.0).clamp(0.0, 1.0) as f32),
+                angle: finite(e.num("Angle")).unwrap_or(def.angle),
+                distance: finite(e.num("Distance")).unwrap_or(def.distance).max(0.0),
+                global_light: e.boolean("UseGlobalLight").unwrap_or(false),
+                size: finite(e.num("Size")).unwrap_or(def.size).max(0.0),
+                choke: finite(e.num("ChokeAmount")).unwrap_or(0.0).clamp(0.0, 100.0),
+                noise: finite(e.num("Noise")).unwrap_or(0.0).clamp(0.0, 100.0),
+            };
+        }
+        for (name, inner) in [("OuterGlowSetting", false), ("InnerGlowSetting", true)] {
+            if let Some(e) = t.find(name).filter(|e| e.boolean("Applied") == Some(true)) {
+                let technique = if e.get("Technique") == Some("Precise") {
+                    designcraft_doc::GlowTechnique::Precise
+                } else {
+                    designcraft_doc::GlowTechnique::Softer
+                };
+                let color = e.get("EffectColor").map(|c| self.swatch_ref(c)).unwrap_or_else(|| designcraft_color::swatch::PAPER.into());
+                let mode = e.get("BlendMode").map_or(designcraft_color::BlendMode::Screen, names::blend_in);
+                let opacity = finite(e.num("Opacity")).map_or(0.75, |n| (n / 100.0).clamp(0.0, 1.0) as f32);
+                let size = finite(e.num("Size")).unwrap_or(7.0).max(0.0);
+                let spread = finite(e.num("Spread")).unwrap_or(0.0).clamp(0.0, 100.0);
+                let noise = finite(e.num("Noise")).unwrap_or(0.0).clamp(0.0, 100.0);
+                if inner {
+                    fx.inner_glow = designcraft_doc::InnerGlow {
+                        on: true,
+                        color,
+                        mode,
+                        opacity,
+                        size,
+                        choke: spread,
+                        noise,
+                        technique,
+                        center: e.get("Source") == Some("CenterSourced"),
+                    };
+                } else {
+                    fx.outer_glow = designcraft_doc::OuterGlow { on: true, color, mode, opacity, size, spread, noise, technique };
+                }
+            }
         }
         if let Some(f) = t.find("FeatherSetting")
             && f.get("Mode").is_some_and(|m| m != "None")
@@ -140,23 +188,39 @@ impl<'r> Importer<'r> {
         }
     }
 
-    /// An object style's drop shadow and feather. Each is read when the effects category turns it
-    /// on (without category settings: when its setting is on), from the nearest style in the
-    /// BasedOn chain that has the setting. `None` when the style sets neither.
+    /// An object style's supported effects, resolved attribute by attribute along BasedOn.
+    /// Category flags inherit independently, as they do for placed items in `with_style`.
     pub(super) fn style_effects(&mut self, e: &El) -> Option<Effects> {
         let mut chain = self.object_style_bases(e.get("Self").map(str::to_string));
         if chain.is_empty() {
             chain.push(e);
         }
-        let category = chain.iter().find_map(|s| s.find("ObjectStyleObjectEffectsCategorySettings")).cloned();
-        let setting = |name: &str| chain.iter().find_map(|s| s.find("TransparencySetting")?.find(name)).cloned();
+        let setting = |name: &str| {
+            let mut merged: Option<El> = None;
+            for style in chain.iter().rev() {
+                if let Some(value) = style.find("TransparencySetting").and_then(|t| t.find(name)) {
+                    match &mut merged {
+                        Some(base) => overlay(base, value, 0),
+                        None => merged = Some(value.clone()),
+                    }
+                }
+            }
+            merged
+        };
         let mut t = El::new("TransparencySetting");
         let mut any = false;
-        for (name, flag) in [("DropShadowSetting", "EnableDropShadow"), ("FeatherSetting", "EnableFeather")] {
+        for (name, flag) in [
+            ("DropShadowSetting", "EnableDropShadow"),
+            ("FeatherSetting", "EnableFeather"),
+            ("InnerShadowSetting", "EnableInnerShadow"),
+            ("OuterGlowSetting", "EnableOuterGlow"),
+            ("InnerGlowSetting", "EnableInnerGlow"),
+        ] {
             let el = setting(name);
-            let on = match &category {
-                Some(c) => c.get(flag) == Some("true"),
-                None => el.as_ref().and_then(|x| x.get("Mode")).is_some_and(|m| m != "None"),
+            let category = chain.iter().find_map(|s| s.find("ObjectStyleObjectEffectsCategorySettings").and_then(|c| c.get(flag)));
+            let on = match category {
+                Some(value) => value == "true",
+                None => el.as_ref().is_some_and(|x| x.get("Mode").is_some_and(|m| m != "None") || x.boolean("Applied") == Some(true)),
             };
             any |= on;
             if let (true, Some(el)) = (on, el) {
