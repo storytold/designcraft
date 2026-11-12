@@ -157,7 +157,10 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
   notes before fitting, and repeated headers/footers do not duplicate notes (#2611).
 - **Still missing:** cell-footnote numbering in the enclosing story (#2612), insertion (#2613),
   listing (#2614), and editing existing cell notes on the canvas. The caret currently resolves
-  footnote ids only in the host story, not in its table cells.
+  footnote ids only in the host story, not in its table cells. With Span Footnotes Across
+  Columns in a multi-column frame, a cell note first placed in a later column does not rewind
+  earlier columns overlapping its enlarged area; this needs the story-level relayout path.
+  Notes whose references are clipped by fixed-height rows also remain a follow-up.
 - **Missing:** anchored objects in cells not drawn (#163); Table ▸ Table Options and Cell Options
   submenus as InDesign lays them out, Diagonal Lines, Edit Header/Footer; general reliability
   (#20).

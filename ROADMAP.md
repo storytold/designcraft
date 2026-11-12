@@ -14,7 +14,10 @@ DesignCraft aims at full Adobe InDesign parity — and to be better: faster, ope
 
 - **2026-11-13** · Table-cell footnotes share the column-foot stack with body notes (#2611).
   Row-group fitting reserves their height, and repeated headers and footers place each note
-  once. Cell-note numbering (#2612) and editing remain separate work. No readiness percentage change.
+  once. Page-dependent notes recompose after row movement; header notes follow the first body
+  group, and non-repeating footer notes reserve space only for the final group. Cell-note numbering
+  (#2612), editing, spanning-note rewind and clipped-reference filtering remain separate work.
+  No readiness percentage change.
 - **2026-11-06** · Automation roots refuse `COM¹` to `LPT³` and a device name before a colon (`COM1:`, `NUL:x`). A batch-export layout of that name is written with a leading `_` on every platform. No readiness percentage change.
 - **2026-10-30** · Document Fonts lookup treats a bare document filename's empty parent as the current directory (#2014), preserving case-insensitive discovery and automation read-root checks. No readiness percentage change.
 - **2026-10-27** · Automatic recovery writes off the interface thread, straight to disk: on a

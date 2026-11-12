@@ -101,8 +101,8 @@ pub(crate) struct Notes {
     pub num: u32,
     pub key: Option<usize>,
     pub placed: Vec<Placed>,
-    /// Composed footnote text by (source, label, width, page sides).
-    cache: HashMap<(NoteSource, String, u64, bool, bool), (Arc<ComposedStory>, NoteMetrics)>,
+    /// Composed footnote text by (source, label, width, page sides, page).
+    cache: HashMap<(NoteSource, String, u64, bool, bool, Option<usize>), (Arc<ComposedStory>, NoteMetrics)>,
     notes: Vec<Arc<designcraft_doc::Footnote>>,
     /// Footnotes span the columns of their frame.
     span: bool,
@@ -200,7 +200,7 @@ impl Notes {
         let o = &doc.footnote_options;
         let shown = format!("{label}{}", o.separator);
         // The page side sets towards/away-from-spine alignment and spine-relative anchored objects.
-        let key = (source, shown, w.to_bits(), f.left_page, f.right_page);
+        let key = (source, shown, w.to_bits(), f.left_page, f.right_page, f.page);
         if let Some(c) = self.cache.get(&key) {
             return c.clone();
         }

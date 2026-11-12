@@ -3412,6 +3412,107 @@ fn table_cell_footnotes_move_with_the_row_group() {
 }
 
 #[test]
+fn table_cell_footnotes_recompose_page_markers_after_row_moves() {
+    let (mut d, sid, _) = doc_with("Before.", Rect::new(0.0, 0.0, 200.0, 200.0), ParaAttrs::default());
+    let mut table = designcraft_doc::Table::new(77, 2, 1, 0, 0, 180.0);
+    for (row, height) in table.rows.iter_mut().zip([50.0, 100.0]) {
+        row.mode = designcraft_doc::RowHeightMode::Exactly;
+        row.height = height;
+    }
+    table.cells[1].text.insert(0, "Cell.");
+    table.cells[1].text.insert_note(4, &format!("{}\nSecond line.\nThird line.", story::PAGE_NUMBER), ParaFormat::default());
+    let st = d.story_mut(sid).unwrap();
+    st.insert_table(st.len(), table);
+    let mut frames = frame_specs(&d, sid);
+    frames[0].page = Some(0);
+    frames[0].page_name = Some("1".into());
+    let mut second = frames[0].clone();
+    second.id = ItemId(999);
+    second.page = Some(1);
+    second.page_name = Some("2".into());
+    frames.push(second);
+    let cs = compose(&d, d.story(sid).unwrap(), &frames, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    assert_eq!(cs.frames[0].tables[0].cells[0].row, 0);
+    assert!(cs.frames[0].notes.is_empty());
+    assert_eq!(cs.frames[1].tables[0].cells[0].row, 1);
+    let note = &cs.frames[1].notes[0];
+    let expected = Story::with_text(StoryId(0), &note.source.replace(story::PAGE_NUMBER, "2"), ParaFormat::default());
+    let plain = compose(&d, &expected, &frames[1..], &ComposeOptions::default());
+    // The note label also maps to byte zero, but only the marker consumes source bytes.
+    let marker_gid = note.text.frames[0].lines[0].glyphs.iter().find(|g| g.byte == 0 && g.len > 0).unwrap().gid;
+    assert_eq!(marker_gid, plain.frames[0].lines[0].glyphs.iter().find(|g| g.byte == 0).unwrap().gid);
+}
+
+#[test]
+fn table_cell_footnotes_keep_story_indices_when_first_reference_is_deleted() {
+    let (mut d, sid, fid) = doc_with("", Rect::new(0.0, 0.0, 200.0, 300.0), ParaAttrs::default());
+    let mut table = designcraft_doc::Table::new(77, 1, 1, 0, 0, 180.0);
+    let cell = &mut table.cells[0];
+    cell.text.insert(0, "Cell.");
+    cell.text.insert_note(0, "Hidden note.", ParaFormat::default());
+    cell.text.insert_note(cell.text.len(), "Visible note.", ParaFormat::default());
+    cell.text.format_chars(0..designcraft_doc::FOOTNOTE_REF.len_utf8(), |f| f.over.change = Some(designcraft_doc::ChangeMark::Deleted));
+    let id = cell.text.notes[1].id;
+    d.story_mut(sid).unwrap().insert_table(0, table);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let notes = &cs.frame(fid).unwrap().notes;
+    assert_eq!(notes.len(), 1);
+    assert_eq!(notes[0].id, id);
+    assert_eq!(notes[0].index, 1);
+}
+
+#[test]
+fn table_cell_footnotes_header_moves_with_first_body_group() {
+    let (mut d, sid, fid) = doc_with("Before.\nMore text.\nStill before.", Rect::new(0.0, 0.0, 420.0, 200.0), ParaAttrs::default());
+    d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = 2;
+    let mut table = designcraft_doc::Table::new(77, 1, 1, 1, 0, 180.0);
+    for (row, height) in table.rows.iter_mut().zip([30.0, 110.0]) {
+        row.mode = designcraft_doc::RowHeightMode::Exactly;
+        row.height = height;
+    }
+    table.cells[0].text.insert(0, "Header.");
+    table.cells[0].text.insert_note(0, "Header note.\nSecond line.", ParaFormat::default());
+    let st = d.story_mut(sid).unwrap();
+    st.insert_table(st.len(), table);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    let ft = cs.frame(fid).unwrap();
+    assert_eq!(ft.tables.len(), 1);
+    assert_eq!(ft.tables[0].column, 1);
+    assert!(ft.tables[0].cell(0, 0).is_some());
+    assert_eq!(ft.notes.len(), 1);
+    assert_eq!(ft.notes[0].column, ft.tables[0].column);
+}
+
+#[test]
+fn table_cell_footnotes_nonrepeating_footer_reserves_only_final_group() {
+    let (mut d, sid, fid) = doc_with("", Rect::new(0.0, 0.0, 420.0, 150.0), ParaAttrs::default());
+    d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = 2;
+    d.footnote_options.space_before = 5.0;
+    let mut table = designcraft_doc::Table::new(77, 2, 1, 0, 1, 180.0);
+    table.options.repeat_footer = false;
+    for (row, height) in table.rows.iter_mut().zip([90.0, 60.0, 20.0]) {
+        row.mode = designcraft_doc::RowHeightMode::Exactly;
+        row.height = height;
+    }
+    table.cells[2].text.insert(0, "Footer.");
+    table.cells[2].text.insert_note(0, "Footer note.\nSecond.\nThird.\nFourth.", ParaFormat::default());
+    d.story_mut(sid).unwrap().insert_table(0, table);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    let ft = cs.frame(fid).unwrap();
+    assert_eq!(ft.tables.len(), 2);
+    assert_eq!(ft.tables[0].column, 0);
+    assert_eq!(ft.tables[0].cells.iter().map(|c| c.row).collect::<Vec<_>>(), [0]);
+    assert_eq!(ft.tables[1].column, 1);
+    assert_eq!(ft.tables[1].cells.iter().map(|c| c.row).collect::<Vec<_>>(), [1, 2]);
+    assert_eq!(ft.notes.len(), 1);
+    assert_eq!(ft.notes[0].column, 1);
+    assert!(ft.tables[1].rect.y1 <= ft.notes[0].rect.y0 - d.footnote_options.space_before + 0.01);
+}
+
+#[test]
 fn table_cell_footnotes_are_not_duplicated_by_repeated_headers_and_footers() {
     let (mut d, sid, fid) = doc_with("", Rect::new(0.0, 0.0, 420.0, 200.0), ParaAttrs::default());
     d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = 2;
