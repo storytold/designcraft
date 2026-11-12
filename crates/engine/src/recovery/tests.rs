@@ -184,10 +184,55 @@ fn a_document_saved_while_its_write_is_held_leaves_no_snapshot() {
     let saved = dir.path().join("saved.designcraft");
     s.execute("file.saveAs", &json!({"path": saved.to_string_lossy()})).unwrap();
     held.release();
-    assert_eq!(finished_writes(&mut s), 0);
+    // Before the session takes the result: a crash now must not find the stale snapshot.
+    testing::wait_until_idle();
     assert!(!files(dir.path(), uid).0.exists(), "the stale snapshot was not published");
     assert!(!files(dir.path(), uid).1.exists(), "nor its metadata");
+    assert_eq!(finished_writes(&mut s), 0);
     assert!(list(dir.path()).is_empty());
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_document_saved_while_its_write_to_a_named_folder_is_held_leaves_no_snapshot() {
+    // A folder given to `file.recovery.save` is not the session's, and is not in the document's
+    // entries until the write's result is taken.
+    let _turn = background();
+    let named = tempfile::tempdir().unwrap();
+    let mut s = dirty_session();
+    let uid = s.docs[0].uid;
+    let held = testing::hold_next_write(named.path());
+    let queued = s.execute("file.recovery.save", &json!({"background": true, "dir": named.path().to_string_lossy()})).unwrap();
+    assert_eq!(queued["queued"], 1, "{queued}");
+    held.wait_until_held();
+    let saved = named.path().join("saved.designcraft");
+    s.execute("file.saveAs", &json!({"path": saved.to_string_lossy()})).unwrap();
+    held.release();
+    // Before the session takes the result: a crash now must not find the stale snapshot.
+    testing::wait_until_idle();
+    assert!(!files(named.path(), uid).0.exists(), "the stale snapshot was not published");
+    assert_eq!(finished_writes(&mut s), 0);
+    assert!(list(named.path()).is_empty());
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn saving_removes_a_finished_write_to_a_named_folder_whose_result_was_not_taken() {
+    let _turn = background();
+    let named = tempfile::tempdir().unwrap();
+    let mut s = dirty_session();
+    let uid = s.docs[0].uid;
+    s.execute("file.recovery.save", &json!({"background": true, "dir": named.path().to_string_lossy()})).unwrap();
+    testing::wait_until_idle();
+    assert!(files(named.path(), uid).0.exists(), "the write finished");
+    let saved = named.path().join("saved.designcraft");
+    s.execute("file.saveAs", &json!({"path": saved.to_string_lossy()})).unwrap();
+    assert!(!files(named.path(), uid).0.exists(), "Save removed the snapshot before its result was taken");
+    // Edited again before the result is taken: the removed snapshot is not its checkpoint.
+    s.execute("frame.create", &json!({"rect": [20, 20, 60, 60]})).unwrap();
+    assert_eq!(finished_writes(&mut s), 0);
+    assert!(!s.docs[0].recovery_entries.iter().any(|(d, _)| same_directory(d, named.path())), "no checkpoint for a removed snapshot");
+    assert!(list(named.path()).is_empty());
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -208,6 +253,28 @@ fn a_background_result_goes_to_the_session_that_queued_it() {
     assert!(files(dir.path(), uid).0.exists(), "the snapshot is still there");
     assert_eq!(finished_writes(&mut queued_by), 1);
     assert!(queued_by.docs[0].recovery_entries.iter().any(|(d, u)| *u == uid && same_directory(d, dir.path())), "the checkpoint is recorded");
+    discard(dir.path(), uid);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn saving_in_one_session_leaves_another_sessions_write_alone() {
+    let _turn = background();
+    let dir = tempfile::tempdir().unwrap();
+    let mut queued_by = dirty_session();
+    queued_by.recovery_dir = Some(dir.path().to_path_buf());
+    let uid = queued_by.docs[0].uid;
+    // The same uid in another session (recovered documents keep the uids of their entries).
+    let mut other = dirty_session();
+    other.docs[0].uid = uid;
+    let held = testing::hold_next_write(dir.path());
+    queued_by.execute("file.recovery.save", &json!({"background": true})).unwrap();
+    held.wait_until_held();
+    let elsewhere = tempfile::tempdir().unwrap();
+    other.execute("file.saveAs", &json!({"path": elsewhere.path().join("other.designcraft").to_string_lossy()})).unwrap();
+    held.release();
+    assert_eq!(finished_writes(&mut queued_by), 1);
+    assert!(files(dir.path(), uid).0.exists(), "the other session's save did not cancel this write");
     discard(dir.path(), uid);
 }
 
@@ -709,6 +776,11 @@ fn restart_recovery_child() {
     }
 }
 
+/// A child process starts with a copy of every open file of this one until it runs its program, so
+/// a lock file closed meanwhile stays locked: a test that closes a lock and expects it free does
+/// not run while a child is started.
+static SPAWN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn run_restart_case(mode: &str) {
     let source = restart_fixture();
     if mode == "max_uid" {
@@ -717,12 +789,20 @@ fn run_restart_case(mode: &str) {
         std::fs::rename(doc, max_doc).unwrap();
         std::fs::rename(meta, max_meta).unwrap();
     }
-    let output = std::process::Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", "recovery::tests::restart_recovery_child", "--ignored", "--nocapture"])
-        .env("DESIGNCRAFT_TEST_RECOVERY_SOURCE", source.path())
-        .env("DESIGNCRAFT_TEST_RECOVERY_MODE", mode)
-        .output()
-        .unwrap();
+    // `spawn` returns once the child runs its program, and its copies of this process's files
+    // are closed by then.
+    let child = {
+        let _spawning = SPAWN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "recovery::tests::restart_recovery_child", "--ignored", "--nocapture"])
+            .env("DESIGNCRAFT_TEST_RECOVERY_SOURCE", source.path())
+            .env("DESIGNCRAFT_TEST_RECOVERY_MODE", mode)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap()
+    };
+    let output = child.wait_with_output().unwrap();
     assert!(output.status.success(), "fresh child failed: {}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
     let child_stdout = String::from_utf8_lossy(&output.stdout);
     assert!(child_stdout.contains("test result: ok. 1 passed; 0 failed;"), "the fresh-process helper did not run exactly once: {child_stdout}");
@@ -953,6 +1033,8 @@ fn documents_of_two_apps_that_ended_are_both_recovered() {
 fn a_running_apps_recovery_data_is_left_alone() {
     let root = tempfile::tempdir().unwrap();
     let running = run_left(root.path(), "run-7-0", "still open", 1);
+    // No child starts while the lock is open, so closing it frees it (see `SPAWN`).
+    let _no_spawn = SPAWN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let lock = std::fs::File::open(running.join(LOCK)).unwrap();
     lock.try_lock().unwrap();
     let own = run_dir(root.path()).unwrap();

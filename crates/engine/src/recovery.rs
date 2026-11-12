@@ -514,6 +514,15 @@ pub(crate) fn discard_document(s: &mut Session, index: usize, default_dir: Optio
     {
         entries.push((dir.to_path_buf(), uid));
     }
+    // Background writes still queued or running for it, in any folder (one named by
+    // `file.recovery.save {dir}` is not in its entries until the write's result is taken): none
+    // may publish after this point, and what one already published is removed below.
+    #[cfg(not(target_arch = "wasm32"))]
+    for dir in worker::cancel_document(uid, s.recovery_owner.0) {
+        if !entries.iter().any(|(entry_dir, entry_uid)| *entry_uid == uid && same_directory(entry_dir, &dir)) {
+            entries.push((dir, uid));
+        }
+    }
     for (dir, uid) in entries {
         // Session ownership governs deletion as well as writes: never consume another live
         // document's only source merely because its old uid matches this unrelated document.
@@ -861,7 +870,7 @@ pub(crate) fn finished(_s: &mut Session) -> Finished {
 /// gigabytes of placed files is written without stopping the interface.
 #[cfg(not(target_arch = "wasm32"))]
 mod worker {
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::sync::mpsc::{Receiver, Sender};
     use std::sync::{Condvar, Mutex, OnceLock};
 
@@ -884,8 +893,9 @@ mod worker {
         pub(super) done: Mutex<Receiver<Done>>,
         /// Results taken from `done` by a session that did not queue them, kept for their own.
         pub(super) undelivered: Mutex<Vec<Done>>,
-        /// Documents queued or being written: a second write of one still holds nothing newer.
-        running: Mutex<BTreeSet<(PathBuf, u64)>>,
+        /// Documents queued or being written, with the session that queued each: a second write
+        /// of one still holds nothing newer.
+        running: Mutex<BTreeMap<(PathBuf, u64), u64>>,
         /// A document saved, reverted or closed while its write was queued or running: the
         /// snapshot it is producing must not be published.
         cancelled: Mutex<BTreeSet<(PathBuf, u64)>>,
@@ -928,12 +938,41 @@ mod worker {
             // A rename under way finishes first, so the caller's cleanup comes after it; a later
             // one sees the mark.
             let _publishing = super::PUBLISH.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            if !self.running.lock().is_ok_and(|running| running.contains(&key)) {
+            if !self.running.lock().is_ok_and(|running| running.contains_key(&key)) {
                 return;
             }
             if let Ok(mut cancelled) = self.cancelled.lock() {
                 cancelled.insert(key);
             }
+        }
+
+        /// [`Writer::cancel`] for every folder a write of `uid` queued by session `owner` is queued
+        /// or running for. Returns those folders, and the folders of its finished writes whose
+        /// results nobody has taken.
+        fn cancel_document(&self, uid: u64, owner: u64) -> Vec<PathBuf> {
+            // Held while results are read: the writer checks for a cancel and sends its result
+            // under it, so a result sent after this sees the cancel.
+            let _publishing = super::PUBLISH.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let keys: Vec<(PathBuf, u64)> = self
+                .running
+                .lock()
+                .map(|running| running.iter().filter(|((_, u), o)| *u == uid && **o == owner).map(|(key, _)| key.clone()).collect())
+                .unwrap_or_default();
+            if let Ok(mut cancelled) = self.cancelled.lock() {
+                cancelled.extend(keys.iter().cloned());
+            }
+            let mut dirs: Vec<PathBuf> = keys.into_iter().map(|(dir, _)| dir).collect();
+            // Results stay queued for their session; only their folders are read here.
+            let done = self.done.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut undelivered = self.undelivered.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            undelivered.extend(done.try_iter());
+            for d in undelivered.iter_mut().filter(|d| d.uid == uid && d.owner == owner && d.published) {
+                dirs.push(d.dir.clone());
+                // The caller removes that snapshot: its result must not record it as a checkpoint
+                // once the document has changed again.
+                d.published = false;
+            }
+            dirs
         }
 
         fn cancelled(&self, dir: &Path, uid: u64) -> bool {
@@ -954,7 +993,12 @@ mod worker {
                         // The result before the document reads as idle: a writer that is not busy
                         // has already delivered it, so the interface never stops polling with an
                         // answer still on its way.
-                        let sent = done_tx.send(Done { dir: dir.clone(), uid, error, published, owner }).is_ok();
+                        let sent = {
+                            let _publishing = super::PUBLISH.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                            // Cancelled after it was published: the canceller removes the snapshot.
+                            let published = published && !cancelled(&dir, uid);
+                            done_tx.send(Done { dir: dir.clone(), uid, error, published, owner }).is_ok()
+                        };
                         if let Some(w) = WRITER.get().and_then(Option::as_ref) {
                             w.finish(&dir, uid);
                         }
@@ -967,7 +1011,7 @@ mod worker {
                     jobs,
                     done: Mutex::new(done_rx),
                     undelivered: Mutex::new(Vec::new()),
-                    running: Mutex::new(BTreeSet::new()),
+                    running: Mutex::new(BTreeMap::new()),
                     cancelled: Mutex::new(BTreeSet::new()),
                     idle: Condvar::new(),
                 })
@@ -985,6 +1029,11 @@ mod worker {
         if let Some(w) = started() {
             w.cancel(dir, uid);
         }
+    }
+
+    /// Do not publish any write of `uid` in flight (see [`Writer::cancel_document`]).
+    pub(super) fn cancel_document(uid: u64, owner: u64) -> Vec<PathBuf> {
+        started().map(|w| w.cancel_document(uid, owner)).unwrap_or_default()
     }
 
     /// Whether that write is already marked as cancelled (see [`Writer::cancelled`]).
@@ -1016,9 +1065,10 @@ mod worker {
         let w = writer()?;
         let mut running = w.running.lock().ok()?;
         let key = (entry.dir.clone(), entry.uid);
-        if !running.insert(key.clone()) {
+        if running.contains_key(&key) {
             return Some(false);
         }
+        running.insert(key.clone(), entry.owner);
         // A write is wanted again: whatever cancelled the last one does not apply to this one.
         if let Ok(mut cancelled) = w.cancelled.lock() {
             cancelled.remove(&key);
