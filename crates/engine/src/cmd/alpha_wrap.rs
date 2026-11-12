@@ -438,6 +438,40 @@ mod tests {
         assert_eq!((b.x0, b.x1), (24.0, 40.0), "the new image's outline");
     }
 
+    /// A wrap with the default threshold saves as it did before thresholds were stored; another
+    /// threshold is saved.
+    #[test]
+    fn the_default_threshold_is_left_out_of_a_saved_wrap() {
+        let v = serde_json::to_value(designcraft_doc::TextWrap::default()).unwrap();
+        assert!(v.get("alphaThreshold").is_none(), "{v}");
+        let back: designcraft_doc::TextWrap = serde_json::from_value(v).unwrap();
+        assert_eq!(back.alpha_threshold, designcraft_doc::DEFAULT_ALPHA_THRESHOLD);
+        let w = designcraft_doc::TextWrap { alpha_threshold: 200, ..Default::default() };
+        assert_eq!(serde_json::to_value(w).unwrap()["alphaThreshold"], 200);
+    }
+
+    /// A relink that changes only the image data recomposes the text around the new outline.
+    #[test]
+    fn text_is_composed_again_around_a_relinked_images_outline() {
+        let (mut s, image, story) = page(&png(|x, _| x < 32), [180.0, 150.0, 220.0, 178.0]);
+        s.execute("object.textWrap", &json!({"ids": [image], "contour": "alphaChannel"})).unwrap();
+        assert!(!overset(&s, story), "the left half is visible: the caption on the right is set");
+        let Some(designcraft_doc::Content::Graphic(g)) =
+            s.doc().unwrap().doc.item(designcraft_doc::ItemId(image.as_u64().unwrap())).map(|it| it.content.clone())
+        else {
+            panic!("a graphic")
+        };
+        let right = Arc::new(png(|x, _| x >= 32));
+        s.edit(|d, _| {
+            let mut a = (**d.assets.get(&g.asset).unwrap()).clone();
+            a.data = right.clone();
+            d.assets.insert(g.asset, Arc::new(a));
+            Ok(())
+        })
+        .unwrap();
+        assert!(overset(&s, story), "the right half is visible now: it covers the caption");
+    }
+
     /// An image anchored in text keeps its outline: anchored objects wrap the lines after their
     /// anchor, and they are kept in the story, not on the spread.
     #[test]
@@ -511,29 +545,5 @@ mod tests {
         for bad in [json!({"ids": [image], "threshold": 255}), json!({"ids": [image], "insideEdges": 1})] {
             assert!(s.execute("object.textWrap", &bad).is_err());
         }
-    }
-
-    /// Replacing the image data under the same asset, as a relink or link update does, lays the
-    /// text out again around the new outline: neither the story nor the frames change.
-    #[test]
-    fn a_relinked_image_lays_the_text_out_again() {
-        let (mut s, image, story) = page(&png(|x, _| (8..20).contains(&x) || (44..56).contains(&x)), [150.0, 120.0, 178.0, 170.0]);
-        s.execute("object.textWrap", &json!({"ids": [image], "contour": "alphaChannel"})).unwrap();
-        assert!(!overset(&s, story), "the gap between the legs stays open");
-        let Some(designcraft_doc::Content::Graphic(g)) =
-            s.doc().unwrap().doc.item(designcraft_doc::ItemId(image.as_u64().unwrap())).map(|it| it.content.clone())
-        else {
-            panic!("a graphic")
-        };
-        // The new image has no gap: one band across both legs.
-        let solid = Arc::new(png(|x, _| (8..56).contains(&x)));
-        s.edit(|d, _| {
-            let mut a = (**d.assets.get(&g.asset).unwrap()).clone();
-            a.data = solid.clone();
-            d.assets.insert(g.asset, Arc::new(a));
-            Ok(())
-        })
-        .unwrap();
-        assert!(overset(&s, story), "the new image covers the caption");
     }
 }

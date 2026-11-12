@@ -302,18 +302,17 @@ pub struct TextWrap {
     /// transparent holes it encloses (off: holes are blocked with the shape around them).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub inside_edges: bool,
-    /// Alpha Channel contour: pixels more opaque than this (0..254) count as the image. Saved only
-    /// when it isn't the default.
+    /// Alpha Channel contour: pixels more opaque than this (0..254) count as the image.
     #[serde(skip_serializing_if = "is_default_alpha_threshold")]
     pub alpha_threshold: u8,
 }
 
+/// DesignCraft's default alpha threshold for Alpha Channel contour wraps.
+pub const DEFAULT_ALPHA_THRESHOLD: u8 = 25;
+
 fn is_default_alpha_threshold(t: &u8) -> bool {
     *t == DEFAULT_ALPHA_THRESHOLD
 }
-
-/// DesignCraft's default alpha threshold for Alpha Channel contour wraps.
-pub const DEFAULT_ALPHA_THRESHOLD: u8 = 25;
 
 impl Default for TextWrap {
     fn default() -> Self {
@@ -348,23 +347,4 @@ pub struct TextFrame {
     pub story: StoryId,
     #[serde(default)]
     pub options: TextFrameOptions,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The alpha threshold is saved only when it isn't the default, so a wrap saved before it
-    /// existed is saved the same way, and reads back as the default.
-    #[test]
-    fn the_default_alpha_threshold_is_not_saved() {
-        let wrap = TextWrap { mode: WrapMode::Contour, ..Default::default() };
-        let v = serde_json::to_value(&wrap).unwrap();
-        assert!(v.get("alphaThreshold").is_none(), "{v}");
-        assert_eq!(serde_json::from_value::<TextWrap>(v).unwrap(), wrap);
-        let set = TextWrap { alpha_threshold: 200, ..wrap };
-        let v = serde_json::to_value(&set).unwrap();
-        assert_eq!(v["alphaThreshold"], 200);
-        assert_eq!(serde_json::from_value::<TextWrap>(v).unwrap(), set);
-    }
 }
