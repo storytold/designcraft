@@ -197,6 +197,28 @@ fn cmd_shift_click_overrides_parent_item() {
     assert_eq!(a, vec![Action::Exec("layout.overrideParentItems".into(), serde_json::json!({"page": 0, "ids": [pid.0]}))]);
 }
 
+/// A parent page that overrode an item of its base and deleted the override hides it on the pages
+/// that use it, so a click there finds nothing to override: the hit list is what the renderer
+/// draws, and it looked only at the page's own overrides (#1469).
+#[test]
+fn an_item_a_parent_overrode_and_deleted_is_not_hit() {
+    let mut d = Document::new(&NewDocument { pages: 1, facing_pages: false, ..Default::default() });
+    let lid = d.default_layer();
+    let a = d.parents[0].id;
+    let b = d.add_parent("B", "Opening", 1, 12.0, designcraft_doc::Margins::uniform(36.0));
+    Arc::make_mut(&mut d.parents[1]).parent.as_mut().unwrap().based_on = Some(a);
+    d.apply_parent(&[0], Some(b)).unwrap();
+    let (a_item, _) = d.add_text_frame(SpreadRef::Parent(0), Rect::new(100.0, 100.0, 200.0, 200.0), lid, "a", ParaFormat::default()).unwrap();
+    let hit = |d: &Document| {
+        let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(d, false));
+        let off = l.xf(SpreadRef::Doc(0)).translation();
+        ctx(d, &s, &c, &l).hit_parent_on_page(Point::new(150.0 + off.x, 150.0 + off.y))
+    };
+    assert_eq!(hit(&d).map(|(_, id)| id), Some(a_item), "A's item shows through B and is hit");
+    Arc::make_mut(&mut d.parents[1]).pages[0].overridden.push(a_item);
+    assert_eq!(hit(&d), None, "removed on B: nothing there to hit");
+}
+
 /// On a page whose parent B is based on A, A's items are hit too, B's win where they overlap, and
 /// nothing is hit when the page hides parent items.
 #[test]
@@ -218,6 +240,25 @@ fn parent_hit_reaches_base_parent_items_topmost_first() {
     assert_eq!(hit(&d, 175.0, 175.0), Some((0, b_item)), "B's item is drawn over A's");
     Arc::make_mut(&mut d.spreads[0]).pages[0].show_parent_items = false;
     assert_eq!(hit(&d, 120.0, 120.0), None);
+}
+
+/// While editing parent pages, a click doesn't pick items on a hidden or locked layer (#2221).
+#[test]
+fn parent_mode_hit_skips_hidden_and_locked_layers() {
+    let mut d = Document::new(&NewDocument { pages: 1, facing_pages: false, ..Default::default() });
+    let lid = d.default_layer();
+    let (id, _) = d.add_text_frame(SpreadRef::Parent(0), Rect::new(100.0, 100.0, 200.0, 200.0), lid, "a", ParaFormat::default()).unwrap();
+    let hit = |d: &Document| {
+        let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(d, true));
+        let p = l.to_canvas(SpreadRef::Parent(0), Point::new(150.0, 150.0));
+        ctx(d, &s, &c, &l).hit(p)
+    };
+    assert_eq!(hit(&d), Some((SpreadRef::Parent(0), id)));
+    d.layer_mut(lid).unwrap().visible = false;
+    assert_eq!(hit(&d), None, "hidden layer");
+    d.layer_mut(lid).unwrap().visible = true;
+    d.layer_mut(lid).unwrap().locked = true;
+    assert_eq!(hit(&d), None, "locked layer");
 }
 
 #[test]
@@ -1730,6 +1771,7 @@ fn eyedropper_samples_a_placed_image_and_matches_other_objects() {
             name: "photo.png".into(),
             mime: "image/png".into(),
             link: None,
+            link_fingerprint: None,
             data: std::sync::Arc::new(vec![]),
             pixels: Some((100, 100)),
             page: 0,

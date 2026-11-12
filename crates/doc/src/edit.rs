@@ -632,6 +632,22 @@ impl Document {
         None
     }
 
+    /// Hit test on a parent spread (master page): like [`Self::hit_item`], but also skips locked
+    /// items. Items on hidden or locked layers can't be picked there either.
+    pub fn hit_parent_item(&self, sr: SpreadRef, p: Point, tol: f64) -> Option<ItemId> {
+        let sp = self.spread(sr)?;
+        let mut items: Vec<&Arc<Item>> = sp.items.iter().collect();
+        items.sort_by_key(|i| self.layer_rank(i.layer));
+        items
+            .into_iter()
+            .rev()
+            .find(|it| {
+                let layer = self.layer(it.layer);
+                !it.locked && !it.hidden && !layer.is_some_and(|l| !l.visible || l.locked) && item_hit(it, p, tol)
+            })
+            .map(|it| it.id)
+    }
+
     /// The first item on a document or parent spread whose geometry isn't finite
     /// ([`Item::geometry_is_finite`]).
     pub fn non_finite_item(&self) -> Option<ItemId> {
@@ -777,7 +793,119 @@ impl Document {
         st.editorial.clear();
         st.fix_marks();
         st.rev = st.rev.wrapping_add(1);
+        self.prune_story_text_ranges(sid);
         Ok(())
+    }
+
+    /// Prune text-anchored hyperlinks and placeholders for `story` (e.g. after wholesale story replacement).
+    pub fn prune_story_text_ranges(&mut self, story: StoryId) {
+        self.hyperlinks.retain(|h| match &h.source {
+            crate::HyperlinkSource::Text { story: sid, .. } => *sid != story,
+            _ => true,
+        });
+        self.data_merge.placeholders.retain(|ph| match &ph.anchor {
+            crate::PlaceholderAnchor::Text { story: sid, .. } => *sid != story,
+            _ => true,
+        });
+    }
+
+    /// Remaps text range `s..e` when `del_range` is replaced by `ins_len` bytes.
+    /// Returns `None` if the range is inverted (`s > e`) or emptied by the edit (`s < e && s_new >= e_new`).
+    pub fn remap_range(del_range: std::ops::Range<usize>, ins_len: usize, s: usize, e: usize) -> Option<(usize, usize)> {
+        if s > e {
+            return None;
+        }
+        let (da, db) = (del_range.start, del_range.end);
+        let del_before = db.min(s).saturating_sub(da);
+        let del_inside = db.min(e).saturating_sub(da.max(s));
+        let mut s_new = s.saturating_sub(del_before);
+        let mut e_new = e.saturating_sub(del_before).saturating_sub(del_inside);
+        if da < s || (da == s && db == s) {
+            s_new = s_new.saturating_add(ins_len);
+            e_new = e_new.saturating_add(ins_len);
+        } else if da < e {
+            e_new = e_new.saturating_add(ins_len);
+        }
+        if s < e && s_new >= e_new { None } else { Some((s_new, e_new)) }
+    }
+
+    /// Adjust story-external text references (hyperlinks and data-merge placeholders) after text
+    /// in `story` has `del_range` replaced by `ins_len` bytes.
+    pub fn adjust_text_ranges(&mut self, story: StoryId, del_range: std::ops::Range<usize>, ins_len: usize) {
+        self.hyperlinks.retain_mut(|h| {
+            if let crate::HyperlinkSource::Text { story: sid, start, end } = &mut h.source
+                && *sid == story
+            {
+                if let Some((ns, ne)) = Self::remap_range(del_range.clone(), ins_len, *start, *end) {
+                    *start = ns;
+                    *end = ne;
+                    return true;
+                }
+                return false;
+            }
+            true
+        });
+
+        self.data_merge.placeholders.retain_mut(|ph| {
+            if let crate::PlaceholderAnchor::Text { story: sid, start, end } = &mut ph.anchor
+                && *sid == story
+            {
+                if let Some((ns, ne)) = Self::remap_range(del_range.clone(), ins_len, *start, *end) {
+                    *start = ns;
+                    *end = ne;
+                    return true;
+                }
+                return false;
+            }
+            true
+        });
+    }
+
+    /// Shifts text ranges when a block of text in `story` is moved from `from` to `to` (the insertion offset after deletion).
+    /// Preserves the existing order of items in `hyperlinks` and `placeholders`.
+    pub fn move_text_ranges(&mut self, story: StoryId, from: std::ops::Range<usize>, to: usize) {
+        if from.is_empty() {
+            return;
+        }
+        let (da, db) = (from.start, from.end);
+        let len = db - da;
+
+        let remap_moved = |s: usize, e: usize| -> Option<(usize, usize)> {
+            if s >= da && e <= db {
+                Some((to + (s - da), to + (e - da)))
+            } else {
+                let (s1, e1) = Self::remap_range(da..db, 0, s, e)?;
+                Self::remap_range(to..to, len, s1, e1)
+            }
+        };
+
+        self.hyperlinks.retain_mut(|h| {
+            if let crate::HyperlinkSource::Text { story: sid, start, end } = &mut h.source
+                && *sid == story
+            {
+                if let Some((ns, ne)) = remap_moved(*start, *end) {
+                    *start = ns;
+                    *end = ne;
+                    return true;
+                }
+                return false;
+            }
+            true
+        });
+
+        self.data_merge.placeholders.retain_mut(|ph| {
+            if let crate::PlaceholderAnchor::Text { story: sid, start, end } = &mut ph.anchor
+                && *sid == story
+            {
+                if let Some((ns, ne)) = remap_moved(*start, *end) {
+                    *start = ns;
+                    *end = ne;
+                    return true;
+                }
+                return false;
+            }
+            true
+        });
     }
 }
 

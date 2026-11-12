@@ -249,6 +249,23 @@ fn arrangement_accessible_name_is_localized_in_every_interface_language() {
     }
 }
 
+/// The Links panel's captions for a status its background check hasn't found yet, and for when
+/// the check can't run.
+#[test]
+fn links_panel_check_captions_are_localized_in_every_interface_language() {
+    for (code, name) in LANGUAGES {
+        for key in ["Checking", "Link status is unavailable."] {
+            let label = tr(code, key);
+            if code.is_empty() {
+                assert_eq!(label, key, "{name}");
+            } else {
+                assert_ne!(label, key, "{name} still shows the English caption");
+                assert!(!label.trim().is_empty(), "{name}: {key}");
+            }
+        }
+    }
+}
+
 /// Checks language-specific context precedence and fallback to the plain translation.
 #[test]
 fn context_captions_come_from_their_context_or_the_plain_translation() {
@@ -466,8 +483,18 @@ fn interface_strings() -> HashSet<&'static str> {
     keys.extend(crate::credits::SortKey::ALL.iter().flat_map(|key| [key.label().0, key.label().1]));
     // Docking chrome labels reach `tr` through craft-ui's localizer.
     keys.extend(crate::panel_docking::DOCK_LABELS.iter().map(|(_, english)| *english));
+    // File › New's Units list passes each unit's name to `tr`.
+    keys.extend(crate::new_document::NEW_DOCUMENT_UNITS.map(|unit| unit.label()));
     // UI labels passed to `tr` that no other catalog has yet.
     keys.extend([
+        "Auto-Sizing",
+        "Color Theme",
+        "Imported {count} shortcuts from “{set}”; {unmatched} items not matched, {unreadable} unreadable.",
+        "Minimum Height",
+        "Minimum Width",
+        "No Line Breaks",
+        "Reference Point",
+        "This document uses unavailable fonts. Choose replacements, or select Done to continue with fallback fonts.",
         "180°",
         "Create Links When Placing Text Files",
         "Delete Character Style…",
