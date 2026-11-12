@@ -984,5 +984,41 @@ mod tests {
             r.render(&d, &cache, &placed, (500, 450), Affine::IDENTITY, &opts);
         }
         assert_eq!(r.kept.drawn, 3);
+        // Renders served from the CMYK viewport snapshot count towards the expiry too.
+        assert!(!r.kept.entries.is_empty());
+        for _ in 0..=KEEP_RENDERS {
+            r.render(&d, &cache, &placed, (500, 450), Affine::IDENTITY, &opts);
+        }
+        assert_eq!(r.kept.drawn, 3, "the snapshot served every render");
+        assert!(r.kept.entries.is_empty(), "images unused for {KEEP_RENDERS} renders are dropped");
+    }
+
+    /// A view turned 90° with the frame turned back by 90° leaves the frame where it was on the
+    /// device, but turns the shadow's offset: the shadow is drawn again.
+    #[test]
+    fn a_turned_view_draws_the_shadow_again() {
+        use designcraft_doc::SpreadRef;
+        let (mut d, id) = shadowed_image();
+        let cache = crate::Cache::new();
+        let placed = [crate::Placed { spread: SpreadRef::Doc(0), xf: Affine::IDENTITY }];
+        let opts = crate::RenderOptions { background: Some([255, 255, 255, 255]), ..Default::default() };
+        let mut kept = Renderer::new();
+        kept.threads = 2;
+        let view = Affine::scale(1.5);
+        kept.render(&d, &cache, &placed, (500, 450), view, &opts);
+        assert_eq!(kept.kept.drawn, 1);
+        // Exact quarter turns, so that the frame's spread → device transform stays the same.
+        let (turn, back) = (Affine::new([0.0, 1.0, -1.0, 0.0, 0.0, 0.0]), Affine::new([0.0, -1.0, 1.0, 0.0, 0.0, 0.0]));
+        let it = d.item_mut(id).unwrap();
+        it.xf = back * it.xf;
+        assert_eq!((view * turn * it.xf).as_coeffs(), (view * Affine::translate((100.0, 100.0))).as_coeffs());
+        let turned = view * turn;
+        let image = kept.render(&d, &cache, &placed, (500, 450), turned, &opts);
+        let mut r = Renderer::new();
+        r.threads = 2;
+        let fresh = r.render(&d, &crate::Cache::new(), &placed, (500, 450), turned, &opts);
+        let worst = image.pixels.iter().zip(&fresh.pixels).map(|(x, y)| x.abs_diff(*y)).max().unwrap_or(0);
+        assert!(worst <= 1, "off by {worst}");
+        assert_eq!(kept.kept.drawn, 2);
     }
 }
