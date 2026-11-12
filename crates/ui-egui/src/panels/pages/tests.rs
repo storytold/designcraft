@@ -373,6 +373,34 @@ fn an_edit_redraws_only_thumbnails_in_view_one_per_frame() {
     assert!((2..60).all(|abs| !cached(abs)), "no thumbnail of a deleted page is kept");
 }
 
+/// Switching to a document whose thumbnails are all current stores that document in the clock,
+/// so the next frames do not scan the whole cache again.
+#[test]
+fn switching_to_a_cached_document_stores_it_in_the_clock() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    let ctx = egui::Context::default();
+    let frame = |app: &mut DesignApp| {
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(280.0, 520.0))),
+            time: Some(0.0),
+            ..Default::default()
+        };
+        ctx.run_ui(raw, |ui| show(app, ui)).textures_delta.clear();
+    };
+    for _ in 0..2 {
+        app.run("file.new", json!({"pages": 2, "facingPages": false})).unwrap();
+        frame(&mut app);
+    }
+    app.session.set_active(0);
+    let st = app.session.active().unwrap();
+    let first = (st.uid, st.revision);
+    let before = THUMB_RENDERS.with(std::cell::Cell::get);
+    frame(&mut app);
+    assert_eq!(THUMB_RENDERS.with(std::cell::Cell::get), before, "the first document's thumbnails are current");
+    let clock = ctx.data(|d| d.get_temp::<ThumbClock>(egui::Id::unique("pages_thumb_clock"))).unwrap();
+    assert_eq!(clock.doc, first);
+}
+
 #[test]
 fn parents_are_added_duplicated_and_renamed_from_the_panel() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
