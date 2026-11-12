@@ -86,7 +86,9 @@ fn source(p: &Value, id: &str) -> Result<Document> {
         _ => return Err(bad(id, "give `path` or `base64`")),
     };
     if name.to_lowercase().ends_with(".idml") {
-        designcraft_idml::import_idml(&bytes).map_err(|e| bad(id, e.to_string()))
+        designcraft_idml::import_idml_report_with_fonts(&bytes, &|_| None, &std::collections::HashMap::new(), &super::interchange::glyph_char)
+            .map(|r| r.document)
+            .map_err(|e| bad(id, e.to_string()))
     } else {
         super::file::from_bytes(&bytes).map_err(|e| bad(id, e.to_string()))
     }

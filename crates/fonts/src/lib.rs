@@ -684,6 +684,20 @@ mod resolution_tests {
         assert!(scope.canonical_family("An Unavailable Original Family").is_none());
         assert_eq!(scope.face("An Unavailable Original Family", "Regular").family, FALLBACK_FAMILY);
     }
+
+    /// A bullet InDesign stores as a glyph id comes back as the character that draws it (#2620).
+    #[test]
+    fn char_for_glyph_finds_the_character_that_draws_a_glyph() {
+        let db = FontDb::with_font_dirs(Vec::new());
+        // U+F034 (where a symbol font keeps its `4`) and `4` draw different glyphs here.
+        db.add_font(testing::font_mapping("DC Test Symbols", &[('a', 'a'), ('4', 'X'), ('\u{F034}', 'Z')]).unwrap());
+        let face = db.face("DC Test Symbols", "Regular");
+        assert_eq!(face.char_for_glyph(face.glyph_for('a')), Some('a'));
+        // `4` reaches another glyph, so the private-use character is the one that draws it.
+        assert_eq!(face.char_for_glyph(face.glyph_for('\u{F034}')), Some('\u{F034}'));
+        assert_eq!(face.char_for_glyph(0), None, ".notdef has no character");
+        assert_eq!(face.char_for_glyph(u32::MAX), None, "a glyph no character reaches");
+    }
 }
 
 #[cfg(test)]

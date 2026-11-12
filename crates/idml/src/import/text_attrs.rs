@@ -291,11 +291,18 @@ impl<'r> Importer<'r> {
         a.number_style = e.prop("NumberingFormat").and_then(|v| names::numbering_format_in(&v));
         a.number_expression = e.prop("NumberingExpression");
         a.list_separator = e.prop("BulletsTextAfter");
+        // A glyph of a named font (`GlyphWithFont`) is mapped once the bullet font is read.
+        let mut bullet_glyph = None;
         if let Some(b) = e.prop_el("BulletChar") {
-            // A glyph of a named font (`GlyphWithFont`) has no character to map to.
-            let unicode = matches!(b.get("BulletCharacterType"), Some("UnicodeOnly" | "UnicodeWithFont"));
-            if let Some(c) = b.get("BulletCharacterValue").and_then(|v| v.trim().parse::<u32>().ok()).and_then(char::from_u32).filter(|_| unicode) {
-                a.bullet_char = Some(c.to_string());
+            let value = b.get("BulletCharacterValue").and_then(|v| v.trim().parse::<u32>().ok());
+            match b.get("BulletCharacterType") {
+                Some("UnicodeOnly" | "UnicodeWithFont") => {
+                    if let Some(c) = value.and_then(char::from_u32) {
+                        a.bullet_char = Some(c.to_string());
+                    }
+                }
+                Some("GlyphWithFont") => bullet_glyph = value,
+                _ => {}
             }
         }
         a.balance_ragged = e.prop("BalanceRaggedLines").map(|v| v.trim() != "NoBalancing" && v.trim() != "false");
@@ -363,7 +370,42 @@ impl<'r> Importer<'r> {
             let f = f.trim();
             a.bullet_font_style = Some(if f == "Nothing" || f == "$ID/" { String::new() } else { f.trim_start_matches("$ID/").to_string() });
         }
+        if let Some(gid) = bullet_glyph {
+            self.glyph_bullet(gid, &mut a);
+        }
         a
+    }
+
+    /// A bullet stored as glyph `gid` of the bullet font this element names becomes the character
+    /// that draws it (#2620). When the font can't be read, the default `•` in the text font
+    /// stands in: `•` in a symbol font such as Webdings is an empty box. Without a font named
+    /// here the font and glyph are the paragraph style's, already read with it.
+    fn glyph_bullet(&mut self, gid: u32, a: &mut ParaAttrs) {
+        let Some(family) = a.bullet_font.clone().filter(|f| !f.is_empty()) else { return };
+        let style = a.bullet_font_style.clone().unwrap_or_default();
+        let key = (family, style, gid);
+        let c = match self.glyph_chars.get(&key) {
+            Some(c) => *c,
+            None => {
+                let c = (self.glyph_char)(&key.0, &key.1, gid);
+                if c.is_none() {
+                    let (family, style, _) = &key;
+                    let font = if style.is_empty() { family.clone() } else { format!("{family} {style}") };
+                    self.warnings
+                        .push(format!("bullet glyph {gid} of {font}: the font is not available, so the bullet is drawn as • in the text font"));
+                }
+                self.glyph_chars.insert(key, c);
+                c
+            }
+        };
+        match c {
+            Some(c) => a.bullet_char = Some(c.to_string()),
+            None => {
+                a.bullet_char = Some("\u{2022}".into());
+                a.bullet_font = Some(String::new());
+                a.bullet_font_style = Some(String::new());
+            }
+        }
     }
 
     fn read_nested_styles(&self, e: &El, attrs: &mut ParaAttrs) {

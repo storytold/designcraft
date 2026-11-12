@@ -78,6 +78,21 @@ pub fn import_idml_report_with_previews(
     read_link: &dyn Fn(&str) -> Option<Vec<u8>>,
     previews: &HashMap<String, Arc<Vec<u8>>>,
 ) -> Result<Imported> {
+    import_idml_report_with_fonts(bytes, read_link, previews, &|_, _, _| None)
+}
+
+/// Finds the character that draws a glyph: (font family, font style, glyph id) → character.
+pub type GlyphChar<'a> = &'a dyn Fn(&str, &str, u32) -> Option<char>;
+
+/// [`import_idml_report_with_previews`], with `glyph_char` to turn a bullet InDesign stores as
+/// a glyph of a font (`GlyphWithFont`, a Webdings arrow) into the character that draws it (#2620).
+/// This crate reads no fonts, so without it such a bullet is drawn as `•` in the text font.
+pub fn import_idml_report_with_fonts(
+    bytes: &[u8],
+    read_link: &dyn Fn(&str) -> Option<Vec<u8>>,
+    previews: &HashMap<String, Arc<Vec<u8>>>,
+    glyph_char: GlyphChar<'_>,
+) -> Result<Imported> {
     let mut pkg = Package::open(bytes)?;
     if let Some(m) = pkg.part("mimetype")?
         && String::from_utf8_lossy(&m).trim() != MIMETYPE
@@ -105,7 +120,7 @@ pub fn import_idml_report_with_previews(
             top.push(c.clone());
         }
     }
-    let mut im = Importer::new(read_link, previews);
+    let mut im = Importer::new(read_link, previews, glyph_char);
     if let Some(m) = pkg.part("META-INF/metadata.xml")? {
         let m = String::from_utf8_lossy(&m);
         im.created = xmp_date(&m, "xmp:CreateDate");
@@ -161,6 +176,11 @@ struct Importer<'r> {
     read_link: &'r dyn Fn(&str) -> Option<Vec<u8>>,
     /// Graphic `Self` → stand-in image for a linked file that can't be read.
     previews: &'r HashMap<String, Arc<Vec<u8>>>,
+    /// See [`import_idml_report_with_fonts`].
+    glyph_char: GlyphChar<'r>,
+    /// (family, style, glyph id) → what `glyph_char` found, so a font's `cmap` is searched, and a
+    /// missing font warned about, once and not for every paragraph.
+    glyph_chars: HashMap<(String, String, u32), Option<char>>,
     next_id: u64,
     /// Cells every table in this import has reserved. One table is capped, but a file chooses
     /// how many tables it has, so the cap has to be document-wide as well (noted in review).
@@ -264,7 +284,7 @@ struct Importer<'r> {
 }
 
 impl<'r> Importer<'r> {
-    fn new(read_link: &'r dyn Fn(&str) -> Option<Vec<u8>>, previews: &'r HashMap<String, Arc<Vec<u8>>>) -> Self {
+    fn new(read_link: &'r dyn Fn(&str) -> Option<Vec<u8>>, previews: &'r HashMap<String, Arc<Vec<u8>>>, glyph_char: GlyphChar<'r>) -> Self {
         let specials: Vec<Swatch> = designcraft_color::default_swatches().into_iter().filter(|s| s.locked).collect();
         let mut swatch_names = HashMap::new();
         swatch_names.insert("Swatch/None".to_string(), swatch::NONE.to_string());
@@ -277,6 +297,8 @@ impl<'r> Importer<'r> {
         Importer {
             read_link,
             previews,
+            glyph_char,
+            glyph_chars: HashMap::new(),
             next_id: 0,
             table_cells: 0,
             table_warnings: 0,
