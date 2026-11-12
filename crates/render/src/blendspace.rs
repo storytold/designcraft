@@ -285,7 +285,7 @@ fn srgb_in(table: &[[f32; 3]], cmyk: [f32; 4]) -> [f32; 3] {
     out
 }
 
-/// Rows of the ink passes' area one conversion thread takes at least.
+/// Rows of the ink passes' area one conversion thread takes at least; the last band can hold fewer.
 const MIN_BAND_ROWS: usize = 32;
 
 /// The blended inks, the C/M/Y complements in `cmy` and the K complement in `black` (`width`
@@ -334,7 +334,7 @@ fn inks_to_screen(cmy: &mut [PremulRgba8], black: &[PremulRgba8], width: usize, 
             convert(c, k);
         }
     }
-    bands
+    parts.len()
 }
 
 impl Renderer {
@@ -740,6 +740,18 @@ mod tests {
         let (four, bands) = render(4);
         assert_eq!(bands, 4, "a band per render thread");
         assert_eq!(four.pixels, one.pixels);
+    }
+
+    /// The returned count is the number of bands converted: 1,281 rows on 40 threads split into
+    /// bands of 33 rows, which makes 39 bands.
+    #[test]
+    fn ink_conversion_returns_the_bands_it_converted() {
+        let rows = 1281;
+        let mut cmy = vec![PremulRgba8 { r: 0, g: 255, b: 255, a: 255 }; rows];
+        let black = vec![PremulRgba8 { r: 255, g: 255, b: 255, a: 255 }; rows];
+        assert_eq!(inks_to_screen(&mut cmy, &black, 1, false, 40), 39);
+        assert!(cmy.iter().all(|c| *c == cmy[0]), "every band is converted");
+        assert_ne!(cmy[0], PremulRgba8 { r: 0, g: 255, b: 255, a: 255 });
     }
 
     #[test]
