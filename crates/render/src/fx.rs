@@ -17,13 +17,16 @@
 //! - Feather: the object is masked by its shape inset by half the width and blurred, so the
 //!   edge fades from ~0 at the path to full strength `width` inside.
 
-use designcraft_doc::Item;
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use designcraft_doc::{Asset, AssetId, DocSettings, Document, InkManager, Item, ItemId, Layer, StrokeStyleDef};
 use designcraft_geom::{Affine, BezPath, Rect, Shape, Vec2};
 use vello_common::filter_effects::{EdgeMode, Filter, FilterPrimitive};
 use vello_cpu::peniko::{self, BlendMode, Compose, Mix};
-use vello_cpu::{RenderContext, kurbo};
+use vello_cpu::{Pixmap, RenderContext, kurbo};
 
-use crate::{Frame, Renderer, color_of};
+use crate::{Frame, RenderOptions, Renderer, color_of};
 use designcraft_compose::ShownOn;
 
 /// Shadow offset (spread units) for an InDesign angle (degrees, light direction) and distance.
@@ -113,16 +116,25 @@ impl Renderer {
         let mut below = vec![];
         if e.outer_glow.on {
             let g = &e.outer_glow;
-            below.push((Vec2::ZERO, g.size, g.spread, g.color.clone(), g.opacity, g.mode));
+            below.push((Slot::OuterGlow, Vec2::ZERO, g.size, g.spread, g.color.clone(), g.opacity, g.mode));
         }
         if e.drop_shadow.on {
             let d = &e.drop_shadow;
-            below.push((offset(doc.light_angle(d.angle, d.global_light), d.distance), d.size, d.spread, d.color.clone(), d.opacity, d.mode));
+            below.push((
+                Slot::DropShadow,
+                offset(doc.light_angle(d.angle, d.global_light), d.distance),
+                d.size,
+                d.spread,
+                d.color.clone(),
+                d.opacity,
+                d.mode,
+            ));
         }
-        for (off, size, pct, color, opacity, mode) in below {
+        for (slot, off, size, pct, color, opacity, mode) in below {
             let Some(c) = doc.resolve_color(&color, 1.0) else { continue };
             let (sigma, grow) = split(size, pct);
-            let filter = shadow(sigma, color_of(&c, opacity.clamp(0.0, 1.0)));
+            let paint = color_of(&c, opacity.clamp(0.0, 1.0));
+            let filter = shadow(sigma, paint);
             // The offset moves the geometry, not the filter: vello drops layer content that lies
             // entirely outside the viewport before filtering.
             let r = (reach + off).inflate(grow, grow);
@@ -132,7 +144,8 @@ impl Renderer {
                 ctx.set_transform(Affine::IDENTITY);
                 ctx.push_layer(None, Some(BlendMode::new(mix, Compose::SrcOver)), None, None, None);
             }
-            self.with_filters(ctx, f, r, sigma, None, |me, c, fr| {
+            let look = Look { slot, off, sigma, grow, paint: paint.components };
+            self.with_kept_filters(ctx, f, it, xf, page, look, r, |me, c, fr| {
                 let moved = Frame { view: fr.view * Affine::translate(off), ..*fr };
                 c.set_transform(moved.view);
                 c.push_layer(None, None, None, None, Some(filter));
@@ -448,23 +461,251 @@ impl Renderer {
             return;
         }
         let Some(o) = offscreen(f.view.transform_rect_bbox(reach), spread, ctx.width(), ctx.height()) else { return };
+        // Clip where the result is at full resolution: offscreen unless that is reduced.
+        let (inner, outer) = if o.scale > 1.0 { (None, clip) } else { (clip, None) };
+        let pm = self.draw_offscreen(f, &o, inner, draw);
+        push_clip(ctx, f, outer);
+        place(ctx, o.x0, o.y0, o.scale, Arc::new(pm));
+        pop_clip(ctx, outer);
+    }
+
+    /// `draw` into the single-threaded offscreen image `o`.
+    fn draw_offscreen(
+        &mut self,
+        f: &Frame,
+        o: &Offscreen,
+        clip: Option<(&BezPath, Affine)>,
+        draw: impl FnOnce(&mut Self, &mut RenderContext, &Frame),
+    ) -> Pixmap {
         let mut off = RenderContext::new_with(o.width, o.height, vello_cpu::RenderSettings { num_threads: 0, ..Default::default() });
         let view = Affine::scale(1.0 / o.scale) * Affine::translate((-o.x0, -o.y0)) * f.view;
         let shifted = Frame { mt: false, view, px: f.px * o.scale, ..*f };
-        // Clip where the result is at full resolution: offscreen unless that is reduced.
-        let (inner, outer) = if o.scale > 1.0 { (None, clip) } else { (clip, None) };
-        push_clip(&mut off, &shifted, inner);
+        push_clip(&mut off, &shifted, clip);
         draw(self, &mut off, &shifted);
-        pop_clip(&mut off, inner);
+        pop_clip(&mut off, clip);
         off.flush();
-        let mut pm = vello_cpu::Pixmap::new(o.width, o.height);
+        let mut pm = Pixmap::new(o.width, o.height);
         off.render(&mut pm, &mut self.resources);
-        push_clip(ctx, f, outer);
-        ctx.set_transform(Affine::translate((o.x0, o.y0)) * Affine::scale(o.scale));
-        ctx.set_paint(vello_cpu::Image { image: vello_cpu::ImageSource::Pixmap(std::sync::Arc::new(pm)), sampler: peniko::ImageSampler::default() });
-        ctx.fill_rect(&Rect::new(0.0, 0.0, f64::from(o.width), f64::from(o.height)));
-        pop_clip(ctx, outer);
-        ctx.set_transform(Affine::IDENTITY);
+        pm
+    }
+
+    /// [`Renderer::with_filters`] for a drop shadow or an outer glow of `it`, keeping its image
+    /// between renders. While the object, its effect, the view's scale and rotation, the render
+    /// options and the document's colours, styles and images stay the same, a move of the object
+    /// or of the view by whole device pixels places the kept image again instead of drawing and
+    /// blurring it. Only multithreaded contexts (the canvas) keep images, and only of objects
+    /// without text or nested items.
+    #[allow(clippy::too_many_arguments)]
+    fn with_kept_filters(
+        &mut self,
+        ctx: &mut RenderContext,
+        f: &Frame,
+        it: &Item,
+        xf: Affine,
+        page: ShownOn,
+        look: Look,
+        reach: Rect,
+        draw: impl FnOnce(&mut Self, &mut RenderContext, &Frame),
+    ) {
+        let keepable = f.mt && it.text_frame().is_none() && it.children().is_empty() && it.media.is_none();
+        if !keepable {
+            self.with_filters(ctx, f, reach, look.sigma, None, draw);
+            return;
+        }
+        let [a, b, c, d, e, g] = (f.view * xf).as_coeffs();
+        let (linear, anchor) = ([a, b, c, d], Vec2::new(e, g));
+        let plate = crate::PLATE.with(std::cell::Cell::get);
+        let rich_black = crate::color::RICH_BLACK.with(std::cell::Cell::get);
+        let key = (it.id, page, look.slot, plate);
+        let tick = self.kept.tick;
+        if let Some(k) = self.kept.entries.get_mut(&key)
+            && k.look == look
+            && k.linear == linear
+            && k.px == f.px
+            && k.rich_black == rich_black
+            && k.opts == *f.opts
+            && (Item { xf: k.item.xf, ..it.clone() }) == k.item
+        {
+            let shift = anchor - k.anchor;
+            let (dx, dy) = (shift.x.round(), shift.y.round());
+            if (shift.x - dx).abs() < 1e-3 && (shift.y - dy).abs() < 1e-3 {
+                k.used = tick;
+                let (x0, y0, scale, image) = (k.x0 + dx, k.y0 + dy, k.scale, k.image.clone());
+                place(ctx, x0, y0, scale, image);
+                return;
+            }
+        }
+        // The whole effect, not only the part in view, so that it can be placed anywhere later.
+        let spread = bound(look.sigma).max(0.0) * 3.0 / f.px + 2.0;
+        let whole = f.view.transform_rect_bbox(reach).inflate(spread, spread);
+        let covers = |o: &Offscreen| f64::from(o.width) * o.scale >= whole.x1 - o.x0 && f64::from(o.height) * o.scale >= whole.y1 - o.y0;
+        let Some(o) = fit(whole, spread).filter(|o| usize::from(o.width) * usize::from(o.height) <= KEEP_MAX_PIXELS && covers(o)) else {
+            self.with_filters(ctx, f, reach, look.sigma, None, draw);
+            return;
+        };
+        let image = Arc::new(self.draw_offscreen(f, &o, None, draw));
+        #[cfg(test)]
+        {
+            self.kept.drawn += 1;
+        }
+        place(ctx, o.x0, o.y0, o.scale, image.clone());
+        let kept = Kept {
+            item: it.clone(),
+            linear,
+            anchor,
+            look,
+            opts: f.opts.clone(),
+            px: f.px,
+            rich_black,
+            x0: o.x0,
+            y0: o.y0,
+            scale: o.scale,
+            image,
+            used: tick,
+        };
+        self.kept.insert(f.doc, key, kept);
+    }
+}
+
+/// Paint `image` with its top-left corner at device pixel (`x0`, `y0`), each of its pixels
+/// covering `scale` device pixels.
+fn place(ctx: &mut RenderContext, x0: f64, y0: f64, scale: f64, image: Arc<Pixmap>) {
+    let (w, h) = (f64::from(image.width()), f64::from(image.height()));
+    ctx.set_transform(Affine::translate((x0, y0)) * Affine::scale(scale));
+    ctx.set_paint(vello_cpu::Image { image: vello_cpu::ImageSource::Pixmap(image), sampler: peniko::ImageSampler::default() });
+    ctx.fill_rect(&Rect::new(0.0, 0.0, w, h));
+    ctx.set_transform(Affine::IDENTITY);
+}
+
+/// Pixels one kept effect image may have; a larger one is drawn each time.
+const KEEP_MAX_PIXELS: usize = 4 << 20;
+/// Pixels all kept effect images may have together (128 MiB).
+const KEEP_BUDGET: usize = 32 << 20;
+/// Renders an image no render has placed is kept for.
+const KEEP_RENDERS: u64 = 256;
+
+/// The effect below an object a kept image is of.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum Slot {
+    OuterGlow,
+    DropShadow,
+}
+
+/// What an effect image looks like apart from the object: its offset (spread space), blur,
+/// growth and colour.
+#[derive(Clone, Copy, PartialEq)]
+struct Look {
+    slot: Slot,
+    off: Vec2,
+    sigma: f64,
+    grow: f64,
+    paint: [f32; 4],
+}
+
+/// One kept effect image and what it was drawn from.
+struct Kept {
+    /// The object, with the transform it had.
+    item: Item,
+    /// The linear part of the object's spread → device transform.
+    linear: [f64; 4],
+    /// The device position of the object's origin.
+    anchor: Vec2,
+    look: Look,
+    opts: RenderOptions,
+    px: f64,
+    rich_black: bool,
+    x0: f64,
+    y0: f64,
+    scale: f64,
+    image: Arc<Pixmap>,
+    used: u64,
+}
+
+/// What every kept image depends on besides its object.
+struct Deps {
+    colors: designcraft_color::cms::ColorSettings,
+    swatches: Vec<designcraft_color::Swatch>,
+    settings: DocSettings,
+    inks: InkManager,
+    stroke_styles: Vec<StrokeStyleDef>,
+    layers: Vec<Layer>,
+    /// Held, so that an asset changed in place or a new one at the same address is a new `Arc`.
+    assets: Vec<(AssetId, Arc<Asset>)>,
+}
+
+impl Deps {
+    fn of(doc: &Document) -> Self {
+        Deps {
+            colors: designcraft_color::cms::active_settings(),
+            swatches: doc.swatches.clone(),
+            settings: doc.settings.clone(),
+            inks: doc.inks.clone(),
+            stroke_styles: doc.stroke_styles.clone(),
+            layers: doc.layers.clone(),
+            assets: doc.assets.iter().map(|(id, a)| (*id, a.clone())).collect(),
+        }
+    }
+    fn same(&self, doc: &Document) -> bool {
+        self.colors == designcraft_color::cms::active_settings()
+            && self.swatches == doc.swatches
+            && self.settings == doc.settings
+            && self.inks == doc.inks
+            && self.stroke_styles == doc.stroke_styles
+            && self.layers == doc.layers
+            && self.assets.len() == doc.assets.len()
+            && self.assets.iter().zip(&doc.assets).all(|((a, p), (b, x))| a == b && Arc::ptr_eq(p, x))
+    }
+}
+
+/// Drop shadows and outer glows kept between renders ([`Renderer::with_kept_filters`]), at most
+/// [`KEEP_BUDGET`] pixels; the images used longest ago go first, and an image no render placed
+/// in [`KEEP_RENDERS`] renders goes too.
+#[derive(Default)]
+pub(crate) struct KeptEffects {
+    deps: Option<Deps>,
+    entries: HashMap<(ItemId, ShownOn, Slot, Option<u8>), Kept>,
+    pixels: usize,
+    tick: u64,
+    /// Effect images drawn for keeping (tests).
+    #[cfg(test)]
+    pub(crate) drawn: usize,
+}
+
+impl KeptEffects {
+    /// Start a render of `doc`: drop every image when what they depend on changed.
+    pub(crate) fn begin(&mut self, doc: &Document) {
+        self.tick += 1;
+        if !self.deps.as_ref().is_some_and(|d| d.same(doc)) {
+            self.clear();
+            return;
+        }
+        let tick = self.tick;
+        let before = self.entries.len();
+        self.entries.retain(|_, k| k.used + KEEP_RENDERS >= tick);
+        if self.entries.len() != before {
+            self.pixels = self.entries.values().map(|k| k.image.width() as usize * k.image.height() as usize).sum();
+        }
+    }
+    pub(crate) fn clear(&mut self) {
+        self.entries.clear();
+        self.pixels = 0;
+        self.deps = None;
+    }
+    fn insert(&mut self, doc: &Document, key: (ItemId, ShownOn, Slot, Option<u8>), kept: Kept) {
+        if self.deps.is_none() {
+            self.deps = Some(Deps::of(doc));
+        }
+        let size = |k: &Kept| k.image.width() as usize * k.image.height() as usize;
+        self.pixels += size(&kept);
+        if let Some(old) = self.entries.insert(key, kept) {
+            self.pixels -= size(&old);
+        }
+        while self.pixels > KEEP_BUDGET {
+            let Some(oldest) = self.entries.iter().min_by_key(|(_, k)| k.used).map(|(key, _)| *key) else { break };
+            if let Some(old) = self.entries.remove(&oldest) {
+                self.pixels -= size(&old);
+            }
+        }
     }
 }
 
@@ -502,7 +743,15 @@ struct Offscreen {
 /// [`MAX_BLUR_SPREAD`], at most `MAX_SIDE` a side. `None` when none of it shows.
 fn offscreen(reach: Rect, spread: f64, width: u16, height: u16) -> Option<Offscreen> {
     let screen = Rect::new(0.0, 0.0, f64::from(width), f64::from(height)).inflate(spread, spread);
-    let r = reach.inflate(spread, spread).intersect(screen);
+    fit(reach.inflate(spread, spread).intersect(screen), spread)
+}
+
+/// The offscreen image covering `r` (device pixels) for a blur of `spread`, or `None` when it is
+/// empty, not finite or more than `MAX_SIDE` a side.
+fn fit(r: Rect, spread: f64) -> Option<Offscreen> {
+    if !(r.x0.is_finite() && r.y0.is_finite() && r.x1.is_finite() && r.y1.is_finite()) {
+        return None;
+    }
     let (x0, y0) = (r.x0.floor(), r.y0.floor());
     let scale = (spread / MAX_BLUR_SPREAD).max(1.0);
     let side = |len: f64| (len / scale).ceil().min(crate::MAX_SIDE as f64);
@@ -606,5 +855,133 @@ mod tests {
         assert!(lum(204) + 60 < lum(250), "shadow at the image's own edge: {} vs {}", lum(204), lum(250));
         // The transparent half shows the page: no shadow painted there.
         assert!(lum(150) > 700, "nothing over the transparent part: {}", lum(150));
+    }
+
+    /// A document with one image frame casting a drop shadow, and the frame's id.
+    fn shadowed_image() -> (designcraft_doc::Document, designcraft_doc::ItemId) {
+        use designcraft_doc::build::NewDocument;
+        use designcraft_doc::{Document, SpreadRef};
+        let mut d = Document::new(&NewDocument::default());
+        let lid = d.default_layer();
+        let img = image::RgbaImage::from_fn(64, 48, |x, y| image::Rgba([(x * 4) as u8, (y * 5) as u8, 128, 255]));
+        let mut png = Vec::new();
+        img.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
+        let aid = designcraft_doc::AssetId(d.alloc());
+        d.assets.insert(
+            aid,
+            Arc::new(designcraft_doc::Asset {
+                id: aid,
+                name: "photo.png".into(),
+                mime: "image/png".into(),
+                data: Arc::new(png),
+                pixels: Some((64, 48)),
+                ..Default::default()
+            }),
+        );
+        let id = designcraft_doc::ItemId(d.alloc());
+        let mut it = Item::new(id, lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 160.0, 120.0)));
+        it.xf = Affine::translate((100.0, 100.0));
+        it.content = designcraft_doc::Content::Graphic(designcraft_doc::Graphic {
+            layer_options: None,
+            asset: aid,
+            size: (160.0, 120.0),
+            xf: Affine::IDENTITY,
+            clip: None,
+            auto_fit: Default::default(),
+            fit_align: 4,
+            crop: [0.0; 4],
+            wrap: Default::default(),
+            fill: Default::default(),
+        });
+        let s = &mut it.effects.drop_shadow;
+        (s.on, s.color, s.opacity, s.size, s.distance) = (true, "[Black]".into(), 0.75, 12.0, 9.0);
+        d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+        (d, id)
+    }
+
+    /// Moving a shadowed frame, or the view, by whole pixels places the kept shadow again: the
+    /// shadow is drawn and blurred once, and every frame matches a render that draws it afresh.
+    /// A new effect setting, zoom, colour or a move by part of a pixel draws it again.
+    #[test]
+    fn a_moved_shadow_is_drawn_once_and_placed_again() {
+        use designcraft_doc::SpreadRef;
+        let (mut d, id) = shadowed_image();
+        let cache = crate::Cache::new();
+        let placed = [crate::Placed { spread: SpreadRef::Doc(0), xf: Affine::IDENTITY }];
+        let opts = crate::RenderOptions { background: Some([255, 255, 255, 255]), ..Default::default() };
+        let mut kept = Renderer::new();
+        kept.threads = 2;
+        let render =
+            |r: &mut Renderer, d: &designcraft_doc::Document, size: (u32, u32), view: Affine| r.render(d, &cache, &placed, size, view, &opts);
+        let fresh = |d: &designcraft_doc::Document, size: (u32, u32), view: Affine| {
+            let mut r = Renderer::new();
+            r.threads = 2;
+            r.render(d, &crate::Cache::new(), &placed, size, view, &opts)
+        };
+        let close = |a: &crate::Rendered, b: &crate::Rendered, what: &str| {
+            let worst = a.pixels.iter().zip(&b.pixels).map(|(x, y)| x.abs_diff(*y)).max().unwrap_or(0);
+            assert!(a.pixels.len() == b.pixels.len() && worst <= 1, "{what}: off by {worst}");
+        };
+        let view = Affine::scale(1.5);
+        close(&render(&mut kept, &d, (500, 450), view), &fresh(&d, (500, 450), view), "first render");
+        assert_eq!(kept.kept.drawn, 1);
+        for step in 1..=4 {
+            let it = d.item_mut(id).unwrap();
+            it.xf = Affine::translate((2.0, 4.0 / 3.0)) * it.xf;
+            close(&render(&mut kept, &d, (500, 450), view), &fresh(&d, (500, 450), view), "after a move");
+            // A patch of the view, as the canvas repaints after an edit.
+            let patch = Affine::translate((-150.0, -140.0)) * view;
+            close(&render(&mut kept, &d, (120, 90), patch), &fresh(&d, (120, 90), patch), "a patch");
+            assert_eq!(kept.kept.drawn, 1, "step {step}: placed again, not drawn");
+        }
+        // Panning by whole pixels.
+        let panned = Affine::translate((-37.0, 11.0)) * view;
+        close(&render(&mut kept, &d, (500, 450), panned), &fresh(&d, (500, 450), panned), "panned");
+        assert_eq!(kept.kept.drawn, 1);
+        // Part of a pixel, another zoom, another size, another colour: drawn again.
+        let it = d.item_mut(id).unwrap();
+        it.xf = Affine::translate((0.25, 0.0)) * it.xf;
+        render(&mut kept, &d, (500, 450), view);
+        assert_eq!(kept.kept.drawn, 2);
+        render(&mut kept, &d, (500, 450), Affine::scale(2.0));
+        assert_eq!(kept.kept.drawn, 3);
+        d.item_mut(id).unwrap().effects.drop_shadow.size = 20.0;
+        close(&render(&mut kept, &d, (500, 450), view), &fresh(&d, (500, 450), view), "a new size");
+        assert_eq!(kept.kept.drawn, 4);
+        d.swatches.push(designcraft_color::Swatch::color("Extra", designcraft_color::Color::rgb8(1, 2, 3)));
+        render(&mut kept, &d, (500, 450), view);
+        assert_eq!(kept.kept.drawn, 5, "a swatch change drops kept images");
+        // An image changed in place (its only document owner editing it).
+        let asset = d.assets.values_mut().next().unwrap();
+        Arc::make_mut(asset).name = "edited.png".into();
+        render(&mut kept, &d, (500, 450), view);
+        assert_eq!(kept.kept.drawn, 6, "an edited image drops kept images");
+        // Single-threaded renders (exports) draw as before and keep nothing.
+        let mut single = Renderer::new();
+        single.threads = 0;
+        render(&mut single, &d, (500, 450), view);
+        assert_eq!(single.kept.drawn, 0);
+    }
+
+    /// In the CMYK blend space view the ink passes keep an image per plate, placed again on a move.
+    #[test]
+    fn the_ink_passes_keep_their_shadows() {
+        use designcraft_doc::SpreadRef;
+        let (mut d, id) = shadowed_image();
+        d.settings.blend_space = designcraft_doc::BlendSpace::Cmyk;
+        let cache = crate::Cache::new();
+        let placed = [crate::Placed { spread: SpreadRef::Doc(0), xf: Affine::IDENTITY }];
+        let opts = crate::RenderOptions { blend_space_view: true, background: Some([255, 255, 255, 255]), ..Default::default() };
+        let mut r = Renderer::new();
+        r.threads = 2;
+        r.render(&d, &cache, &placed, (500, 450), Affine::IDENTITY, &opts);
+        // One for each ink pass, and one for the ordinary drawing around their area.
+        assert_eq!(r.kept.drawn, 3);
+        for _ in 0..3 {
+            let it = d.item_mut(id).unwrap();
+            it.xf = Affine::translate((3.0, 1.0)) * it.xf;
+            r.render(&d, &cache, &placed, (500, 450), Affine::IDENTITY, &opts);
+        }
+        assert_eq!(r.kept.drawn, 3);
     }
 }

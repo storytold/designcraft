@@ -15,6 +15,7 @@ impl Renderer {
             drawing_items: Vec::new(),
             cmyk_view: None,
             cmyk_ran: false,
+            kept: Default::default(),
             #[cfg(test)]
             cmyk_passes: 0,
             #[cfg(test)]
@@ -26,11 +27,12 @@ impl Renderer {
         }
     }
 
-    /// Drop cached glyph paths and the CMYK viewport (rebuilt on demand).
+    /// Drop cached glyph paths, effect images and the CMYK viewport (rebuilt on demand).
     pub fn clear_caches(&mut self) {
         self.cmyk_view = None;
         self.glyphs.clear();
         self.stories.clear();
+        self.kept.clear();
     }
 
     /// Number of text frames whose glyph paths are cached.
@@ -88,6 +90,7 @@ impl Renderer {
         self.stats = FrameStats::default();
         self.stories.clear();
         self.glyphs.tick();
+        self.kept.begin(doc);
         if let Some(bg) = opts.background {
             ctx.set_transform(Affine::IDENTITY);
             ctx.set_paint(peniko::Color::from_rgba8(bg[0], bg[1], bg[2], bg[3]));
