@@ -752,6 +752,41 @@ fn object_style_effects_follow_the_style_until_overridden() {
     assert_eq!(s.doc().unwrap().revision, rev);
 }
 
+/// `style.object.create` and `edit` refuse an unknown swatch, a misspelled setting, a word or null
+/// for a switch, a rename that isn't a name and a corner size outside 0–10000 pt.
+#[test]
+fn object_style_parameters_are_checked() {
+    let mut s = session();
+    s.execute("style.object.create", &json!({"name": "Framed", "fromSelection": false})).unwrap();
+    for bad in [
+        json!({"fill": "Nope"}),
+        json!({"fill": {"swatch": "Nope"}}),
+        json!({"stroke": {"swatch": "Nope"}}),
+        json!({"stroke": {"wieght": 5}}),
+        json!({"fill": {"tnt": 0.5}}),
+        json!({"corners": {"shpae": "rounded"}}),
+        json!({"corners": {"size": -1}}),
+        json!({"corners": {"size": 10_001}}),
+        json!({"applyNextStyle": null}),
+    ] {
+        let mut p = bad.clone();
+        p["name"] = json!("Framed");
+        assert!(s.execute("style.object.edit", &p).is_err(), "{bad}");
+        p["name"] = json!("Other");
+        assert!(s.execute("style.object.create", &p).is_err(), "{bad}");
+    }
+    let c = json!({"shape": "rounded", "size": -1});
+    assert!(s.execute("style.object.create", &json!({"name": "Odd", "corners": {"corners": [c, c, c, c]}})).is_err());
+    for from in [json!("yes"), json!(null)] {
+        assert!(s.execute("style.object.create", &json!({"name": "Other", "fromSelection": from})).is_err(), "{from}");
+    }
+    for rename in [json!(3), json!(null), json!(true)] {
+        assert!(s.execute("style.object.edit", &json!({"name": "Framed", "rename": rename})).is_err(), "{rename}");
+    }
+    let names: Vec<_> = s.doc().unwrap().doc.styles.object.iter().map(|o| o.name.clone()).collect();
+    assert!(!names.iter().any(|n| n == "Other" || n == "Odd"), "{names:?}");
+}
+
 /// The course's "Rounded Corner Image, White Stroke" style: made from a frame with rounded corners
 /// and a paper stroke, applied to another frame, then edited (a thicker stroke, bigger corners):
 /// the frames that follow the style change, one with its own stroke keeps it; a rename follows.
@@ -792,30 +827,6 @@ fn object_styles_carry_corners_and_their_stroke_and_corners_can_be_edited() {
     assert!(s.execute("style.object.edit", &json!({"name": "Framed", "rename": "[Basic Text Frame]"})).is_err());
     assert!(s.execute("style.object.edit", &json!({"name": "[Basic Graphics Frame]", "rename": "Mine"})).is_err());
     assert!(s.execute("style.object.edit", &json!({"name": "Framed", "corners": {"size": "big"}})).is_err());
-    // An unknown swatch, a misspelled setting and a word for a switch are refused.
-    for bad in [
-        json!({"fill": "Nope"}),
-        json!({"fill": {"swatch": "Nope"}}),
-        json!({"stroke": {"swatch": "Nope"}}),
-        json!({"stroke": {"wieght": 5}}),
-        json!({"fill": {"tnt": 0.5}}),
-        json!({"corners": {"shpae": "rounded"}}),
-    ] {
-        let mut p = bad.clone();
-        p["name"] = json!("Framed");
-        assert!(s.execute("style.object.edit", &p).is_err(), "{bad}");
-        p["name"] = json!("Other");
-        assert!(s.execute("style.object.create", &p).is_err(), "{bad}");
-    }
-    assert!(s.execute("style.object.create", &json!({"name": "Other", "fromSelection": "yes"})).is_err());
-    assert!(s.execute("style.object.create", &json!({"name": "Other", "fromSelection": null})).is_err());
-    assert!(s.execute("style.object.edit", &json!({"name": "Framed", "applyNextStyle": null})).is_err());
-    // A size outside 0–10000 pt is refused, not changed.
-    for size in [-1.0, 10_001.0] {
-        assert!(s.execute("style.object.edit", &json!({"name": "Framed", "corners": {"size": size}})).is_err(), "{size}");
-        let c = json!({"shape": "rounded", "size": size});
-        assert!(s.execute("style.object.create", &json!({"name": "Odd", "corners": {"corners": [c, c, c, c]}})).is_err(), "{size}");
-    }
     // A negative stroke weight is refused when creating a style as when editing one.
     let styles = s.doc().unwrap().doc.styles.object.len();
     for cmd in ["style.object.create", "style.object.edit"] {

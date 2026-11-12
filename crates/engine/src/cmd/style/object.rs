@@ -367,6 +367,9 @@ pub(super) fn edit_object(s: &mut Session, p: &Value) -> Result<Value> {
     if let Some(tf) = text_frame_param(CMD, p, old.text_frame.as_ref())? {
         new.text_frame = tf;
     }
+    if p.get("rename").is_some_and(|r| !r.is_string()) {
+        return Err(bad(CMD, "`rename` must be a style name"));
+    }
     let rename = str_param(p, "rename").map(str::trim).filter(|r| *r != name).map(str::to_string);
     if let Some(r) = &rename {
         let builtin = name.starts_with('[') && name.ends_with(']');
