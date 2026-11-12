@@ -1739,6 +1739,57 @@ fn text_frame_options_change_only_what_was_edited() {
 }
 
 #[test]
+fn text_frame_options_link_the_insets_only_when_every_selected_frame_has_even_sides() {
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let frame = |app: &mut DesignApp, rect: [u32; 4], inset: Value| {
+        let r = app.run("frame.create", json!({"rect": rect, "content": "text", "text": "Hello"})).unwrap();
+        let id = r["id"].as_u64().unwrap();
+        app.run("object.textFrameOptions", json!({"ids": [id], "inset": inset})).unwrap();
+        (designcraft_doc::ItemId(id), r["story"].clone())
+    };
+    let (even, _) = frame(&mut app, [36, 36, 236, 236], json!(6));
+    let (uneven, uneven_story) = frame(&mut app, [300, 36, 500, 236], json!([1, 2, 3, 4]));
+    let (other_even, other_even_story) = frame(&mut app, [36, 300, 236, 500], json!(9));
+    let inset = |app: &DesignApp, id| app.session.doc().unwrap().doc.item(id).unwrap().text_frame().unwrap().options.inset;
+    let seeded = |app: &DesignApp| {
+        let mut d = Dialog::new("textFrameOptions", json!({}));
+        seed_text_frame_options(app, &mut d);
+        d
+    };
+    // The frame with even sides is selected first: the uneven one still turns the link off.
+    app.run("selection.set", json!({"ids": [even.0, uneven.0]})).unwrap();
+    let mut d = seeded(&app);
+    assert_eq!(d.s("insetTop"), "0p6");
+    assert!(!d.b("insetLinked"), "a selected frame with uneven sides leaves the link off");
+    // Top edited while unlinked: only Top changes, and each frame keeps its other sides.
+    d.fields.insert("insetTop".into(), json!("1p0"));
+    app.ui.dialog = Some(d);
+    confirm(&mut app).unwrap();
+    assert_eq!(inset(&app, even), [12.0, 6.0, 6.0, 6.0]);
+    assert_eq!(inset(&app, uneven), [12.0, 2.0, 3.0, 4.0]);
+    // A frame with even sides alone keeps the link on; selected with the uneven one, the link is off.
+    app.run("selection.set", json!({"ids": [other_even.0]})).unwrap();
+    assert!(seeded(&app).b("insetLinked"));
+    app.run("selection.set", json!({"ids": [other_even.0, uneven.0]})).unwrap();
+    assert!(!seeded(&app).b("insetLinked"));
+    // A caret: the frames the dialog changes decide.
+    app.run("text.select", json!({"story": uneven_story, "anchor": 0, "focus": 0})).unwrap();
+    assert!(!seeded(&app).b("insetLinked"));
+    app.run("text.select", json!({"story": other_even_story, "anchor": 0, "focus": 0})).unwrap();
+    assert!(seeded(&app).b("insetLinked"));
+    // A story threaded on into the uneven frame: a caret placed in the first frame changes only
+    // that frame, and a caret with no frame changes every frame of the story.
+    let (first, story) = frame(&mut app, [300, 300, 500, 500], json!(6));
+    let (last, _) = frame(&mut app, [300, 520, 500, 700], json!([1, 2, 3, 4]));
+    app.run("text.thread", json!({"from": first.0, "to": last.0})).unwrap();
+    app.run("text.placeCaret", json!({"frame": first.0, "point": [310, 310]})).unwrap();
+    assert!(seeded(&app).b("insetLinked"));
+    app.run("text.select", json!({"story": story, "anchor": 0, "focus": 0})).unwrap();
+    assert!(!seeded(&app).b("insetLinked"));
+}
+
+#[test]
 fn toc_dialog_adds_a_style_and_ok_makes_the_table_of_contents() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.run("file.newSample", json!({})).unwrap();
