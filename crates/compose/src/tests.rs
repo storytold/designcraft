@@ -2300,6 +2300,104 @@ fn vertical_justification_counts_table_fragment_bottoms() {
     }
 }
 
+/// Center, Bottom and Justify place the text between its first baseline (where Top sets it) and
+/// its last baseline: Bottom and Justify put the last baseline on the bottom inset, and Center
+/// leaves as much room under the last baseline as above the first line (#1999).
+#[test]
+fn vertical_justification_measures_to_the_last_baseline() {
+    use designcraft_doc::VerticalJustification::{self, Bottom, Center, Justify, Top};
+    let compose_inset = |mode: VerticalJustification, first: FirstBaseline, bottom_inset: f64| {
+        let (mut d, sid, fid) = doc_with("Typography\ngypsy", Rect::new(0.0, 0.0, 200.0, 300.0), ParaAttrs::default());
+        let o = &mut d.item_mut(fid).unwrap().text_frame_mut().unwrap().options;
+        o.vertical_justification = mode;
+        o.first_baseline = first;
+        o.inset = [6.0, 6.0, bottom_inset, 6.0];
+        let area = frame_specs(&d, sid)[0].area;
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        (area, all_lines(&cs).iter().map(|l| (l.baseline, l.descent)).collect::<Vec<_>>())
+    };
+    let compose_with = |mode, first| compose_inset(mode, first, 9.0);
+    for first in [FirstBaseline::Ascent, FirstBaseline::CapHeight] {
+        let (area, top) = compose_with(Top, first);
+        assert!((area.y1 - 291.0).abs() < 1e-9, "the bottom inset bounds the text area: {area:?}");
+        assert_eq!(top.len(), 2);
+        let last = |v: &[(f64, f64)]| v[v.len() - 1];
+
+        let (_, bottom) = compose_with(Bottom, first);
+        assert!((last(&bottom).0 - area.y1).abs() < 1e-6, "{first:?}: Bottom puts the last baseline on the inset: {bottom:?}");
+        assert!(last(&bottom).0 + last(&bottom).1 > area.y1 + 1.0, "{first:?}: the descenders reach into the inset");
+        assert!((bottom[1].0 - bottom[0].0 - (top[1].0 - top[0].0)).abs() < 1e-6, "{first:?}: Bottom keeps the leading");
+
+        let (_, justify) = compose_with(Justify, first);
+        assert!((justify[0].0 - top[0].0).abs() < 1e-6, "{first:?}: Justify keeps the first baseline: {justify:?}");
+        assert!((last(&justify).0 - area.y1).abs() < 1e-6, "{first:?}: Justify puts the last baseline on the inset: {justify:?}");
+
+        let (_, center) = compose_with(Center, first);
+        let shift = center[0].0 - top[0].0;
+        assert!(shift > 1.0);
+        assert!((center[1].0 - top[1].0 - shift).abs() < 1e-6, "{first:?}: Center moves every line alike");
+        assert!((area.y1 - last(&center).0 - shift).abs() < 1e-6, "{first:?}: Center leaves equal room above and below: {center:?}");
+
+        // A bottom inset smaller than the descent: the descenders end on the frame's edge.
+        for inset in [0.0, 1.0] {
+            for mode in [Bottom, Justify] {
+                let (area, lines) = compose_inset(mode, first, inset);
+                let (b, desc) = last(&lines);
+                assert!(desc > inset + 0.5);
+                assert!((b + desc - (area.y1 + inset)).abs() < 1e-6, "{first:?} {mode:?} inset {inset}: descenders end at {}", b + desc);
+            }
+        }
+    }
+}
+
+/// A corner radius leaves a Cap Height first line where it sits in a rectangular frame, with Top
+/// and with Center: a line's band above the text area isn't held to the frame's outline (#1999).
+#[test]
+fn a_corner_radius_keeps_a_cap_height_line_in_place() {
+    use designcraft_doc::VerticalJustification::{self, Center, Top};
+    use designcraft_geom::corners::{CornerOptions, CornerShape};
+    let mm = 72.0 / 25.4;
+    let rect = Rect::new(0.0, 0.0, 29.553 * mm, 9.593 * mm);
+    let compose_with = |radius: f64, mode: VerticalJustification| {
+        let (mut d, sid, fid) = doc_with("137mm", rect, ParaAttrs::default());
+        let item = d.item_mut(fid).unwrap();
+        item.corners = CornerOptions::uniform(CornerShape::Rounded, radius);
+        let o = &mut item.text_frame_mut().unwrap().options;
+        o.vertical_justification = mode;
+        o.first_baseline = FirstBaseline::CapHeight;
+        o.inset = [0.0; 4];
+        d.story_mut(sid).unwrap().format_chars(0.."137mm".len(), |f| {
+            f.over.size = Some(19.0);
+            f.over.leading = Some(designcraft_doc::Leading::Points(19.0));
+        });
+        let spec = frame_specs(&d, sid).remove(0);
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        assert!(!cs.is_overset());
+        (spec.outline.is_some(), spec.area, cs.frames[0].lines[0].baseline)
+    };
+    let (square, area, top) = compose_with(0.0, Top);
+    let (rounded, _, rounded_top) = compose_with(0.1 * mm, Top);
+    assert!(!square && rounded, "only the radius gives the frame an outline");
+    assert!((rounded_top - top).abs() < 1e-6, "Top: {rounded_top} with a radius, {top} without");
+    let (_, _, center) = compose_with(0.0, Center);
+    let (_, _, rounded_center) = compose_with(0.1 * mm, Center);
+    assert!((center - (area.y1 + top) / 2.0).abs() < 1e-6, "Center: the last baseline halfway between {top} and {}: {center}", area.y1);
+    assert!((rounded_center - center).abs() < 1e-6, "Center: {rounded_center} with a radius, {center} without");
+
+    // In a shaped frame the outline holds the descenders: with Bottom they end on the text area's
+    // bottom, not in the bottom inset.
+    let (mut d, sid, fid) = doc_with("gypsy", Rect::new(0.0, 0.0, 200.0, 100.0), ParaAttrs::default());
+    let item = d.item_mut(fid).unwrap();
+    item.corners = CornerOptions::uniform(CornerShape::Rounded, 6.0);
+    let o = &mut item.text_frame_mut().unwrap().options;
+    o.vertical_justification = designcraft_doc::VerticalJustification::Bottom;
+    o.inset = [0.0, 0.0, 12.0, 0.0];
+    let area = frame_specs(&d, sid)[0].area;
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let l = &cs.frames[0].lines[0];
+    assert!((l.baseline + l.descent - area.y1).abs() < 1e-6, "descenders end at {}, text area at {}", l.baseline + l.descent, area.y1);
+}
+
 #[test]
 fn table_rows_clear_footnotes_and_continue_in_the_next_column() {
     for span in [false, true] {

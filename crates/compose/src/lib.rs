@@ -4311,9 +4311,10 @@ fn wrap_slot(
 #[allow(clippy::too_many_arguments)]
 fn free_slots(f: &FrameSpec, col: Rect, y0: f64, y1: f64, desc: f64, size: f64, rtl: bool, line_start: usize) -> Vec<(f64, f64)> {
     // A shaped frame: the parts of the band its outline covers (a concave one can give several),
-    // descenders included: they stay inside the frame.
+    // descenders included: they stay inside the frame. The part of the band above the column's
+    // top is not tested, as in a rectangular frame: a Cap Height first line reaches above it.
     let mut free = match &f.outline {
-        Some(o) => o.intervals(col.x0, col.x1, y0, y1 + desc.max(0.0)),
+        Some(o) => o.intervals(col.x0, col.x1, y0.max(col.y0).min(y1), y1 + desc.max(0.0)),
         None => vec![(col.x0, col.x1)],
     };
     let mut cut = f.outline.is_some();
@@ -5495,23 +5496,39 @@ fn vertical_justify(ft: &mut FrameText, f: &FrameSpec, spanned: bool, notes: &de
     let ncols = if spanned { 1 } else { ft.columns.len().max(1) as u32 };
     for c in 0..ncols {
         let idx: Vec<usize> = ft.lines.iter().enumerate().filter(|(_, l)| spanned || l.column == c).map(|(i, _)| i).collect();
-        let (Some(&a), Some(_)) = (idx.first(), idx.last()) else { continue };
-        let bottom = idx.iter().map(|&i| ft.lines[i].baseline + ft.lines[i].descent).fold(f64::NEG_INFINITY, f64::max);
-        let bottom = ft.tables.iter().filter(|t| spanned || t.column == c).map(|t| t.rect.y1).fold(bottom, f64::max);
-        let limit = ft
+        if idx.is_empty() {
+            continue;
+        }
+        let note_top = ft
             .notes
             .iter()
             .filter(|n| spanned || notes.span_columns || n.column == c)
             .map(|n| n.rect.y0 - notes.space_before)
-            .fold(f.area.y1, f64::min);
-        let space = limit - bottom;
-        if space <= 0.0 {
+            .fold(f64::INFINITY, f64::min);
+        let limit = note_top.min(f.area.y1);
+        let tables = ft.tables.iter().filter(|t| spanned || t.column == c).map(|t| t.rect.y1).fold(f64::NEG_INFINITY, f64::max);
+        let last_baseline = idx.iter().map(|&i| ft.lines[i].baseline).fold(tables, f64::max);
+        let ink_bottom = idx.iter().map(|&i| ft.lines[i].baseline + ft.lines[i].descent).fold(tables, f64::max);
+        // The bottom of the text is the last baseline, as the top is the first baseline: the
+        // descenders of the last line may reach into the bottom inset, but not past the frame's
+        // edge, and in a shaped frame not past the text area (its outline holds the descenders).
+        // Above footnotes, and in vertical frames, the descenders stay inside the text area, as
+        // when the lines are fitted.
+        // `space`: the room under the bottom of the text; `room`: how far its last line may move.
+        let (space, room) = if f.vertical || note_top <= f.area.y1 {
+            (limit - ink_bottom, f64::INFINITY)
+        } else {
+            let edge = if f.outline.is_some() { f.area.y1 } else { f.area.y1 + f.opts.inset[2].max(0.0) };
+            (limit - last_baseline, edge - ink_bottom)
+        };
+        if space <= 0.0 || room <= 0.0 {
             continue;
         }
-        let _ = a;
+        let center = (space / 2.0).min(room);
+        let space = space.min(room);
         let before: Vec<f64> = idx.iter().map(|&i| ft.lines[i].baseline).collect();
         match f.opts.vertical_justification {
-            VerticalJustification::Center => idx.iter().for_each(|&i| ft.lines[i].baseline += space / 2.0),
+            VerticalJustification::Center => idx.iter().for_each(|&i| ft.lines[i].baseline += center),
             VerticalJustification::Bottom => idx.iter().for_each(|&i| ft.lines[i].baseline += space),
             VerticalJustification::Justify => {
                 // Segments of one line (beside an object) share a row and move together.
