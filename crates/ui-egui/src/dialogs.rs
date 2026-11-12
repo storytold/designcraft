@@ -1162,26 +1162,7 @@ pub(crate) fn text_frame_fields(
         "noLineBreaks": o.auto_size_no_line_breaks,
         "customGrid": o.baseline_grid.is_some(), "gridStart": fm(grid.start), "gridIncrement": fm(grid.increment),
         "gridRelativeTo": grid.relative_to.name(),
-    });
-    if let Value::Object(m) = &shown {
-        for (k, v) in m {
-            d.fields.entry(k.clone()).or_insert_with(|| v.clone());
-        }
-    }
-    d.fields.entry("insetLinked".to_string()).or_insert_with(|| json!(o.inset.iter().all(|v| (v - o.inset[0]).abs() < 1e-9)));
-    // The frame's width: Fixed Number shows each column's width from it as the fields change.
-    if let Some(w) = selected_frame_width(app) {
-        d.fields.insert("_frameWidth".into(), json!(w));
-    }
-    // Typing in a frame: the frames taken when the dialog opens, so a preview that reflows the
-    // text into another frame does not change which frames the options apply to.
-    if let Some(ids) = typing_frame_ids(app) {
-        d.fields.insert("_targets".into(), ids);
-        // The document state those frames are in: another document, or the document after
-        // Revert, can reuse their ids.
-        d.fields.insert("_targetsDoc".into(), json!(app.session.active().map(|doc| doc.identity_epoch)));
-    }
-    d.fields.insert("_shown".into(), shown);
+    })
 }
 
 /// With the Type tool and no frame selected: the frame that shows the caret, or every frame that
