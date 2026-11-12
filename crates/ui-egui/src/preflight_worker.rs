@@ -151,7 +151,10 @@ fn issues_at(app: &mut DesignApp, ctx: &egui::Context, now: f64) -> Option<Arc<V
         if let Some(wait) = state.worker.retry_wait() {
             if wait.is_zero() {
                 found.asked_at = now;
-                state.worker.ask(ctx, of, doc, &cache, true);
+                if !state.worker.ask(ctx, of, doc, &cache, true) {
+                    // Come back when a new worker may be tried again.
+                    ctx.request_repaint_after(RETRY_AFTER);
+                }
             } else {
                 // Come back when a new worker may be tried.
                 ctx.request_repaint_after(wait);
