@@ -62,6 +62,44 @@ pub(crate) fn decode_cmyk(bytes: &[u8]) -> Option<(CmykRaster, Option<Vec<u8>>)>
     Some((raster, icc))
 }
 
+/// The largest reduction [`decode_reduced`] reads straight from a JPEG's 8×8 blocks: 1/8.
+pub(crate) const MAX_SHRINK: u8 = 3;
+
+/// A YCbCr, RGB or grayscale JPEG decoded at 1/2^`shrink` of its size, each side rounded up, for
+/// `shrink` 1 to [`MAX_SHRINK`]: straight RGBA and whether the image has colour. `None` for CMYK,
+/// 12-bit and lossless JPEGs, other formats and anything that doesn't decode.
+pub(crate) fn decode_reduced(bytes: &[u8], shrink: u8) -> Option<(image::RgbaImage, bool)> {
+    use jpeg_decoder::PixelFormat;
+    if !bytes.starts_with(&[0xFF, 0xD8]) || shrink == 0 || shrink > MAX_SHRINK {
+        return None;
+    }
+    let mut d = jpeg_decoder::Decoder::new(bytes);
+    d.set_max_decoding_buffer_size(MAX_BYTES);
+    d.read_info().ok()?;
+    let info = d.info()?;
+    let colour = match info.pixel_format {
+        PixelFormat::RGB24 => true,
+        PixelFormat::L8 => false,
+        PixelFormat::L16 | PixelFormat::CMYK32 => return None,
+    };
+    let reduced = |n: u16| u16::try_from(u32::from(n).div_ceil(1 << shrink)).ok();
+    let (w, h) = d.scale(reduced(info.width)?, reduced(info.height)?).ok()?;
+    let px = d.decode().ok()?;
+    let pixels = usize::from(w).checked_mul(usize::from(h))?;
+    let rgba: Vec<u8> = if colour {
+        if px.len() != pixels.checked_mul(3)? {
+            return None;
+        }
+        px.as_chunks::<3>().0.iter().flat_map(|p| [p[0], p[1], p[2], 255]).collect()
+    } else {
+        if px.len() != pixels {
+            return None;
+        }
+        px.iter().flat_map(|&v| [v, v, v, 255]).collect()
+    };
+    Some((image::RgbaImage::from_raw(u32::from(w), u32::from(h), rgba)?, colour))
+}
+
 /// Whether an APP14 "Adobe" segment comes before the image data.
 fn adobe_marker(bytes: &[u8]) -> bool {
     let mut i = 2;

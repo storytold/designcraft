@@ -19,7 +19,17 @@ pub fn decode_pixmap_page(bytes: &[u8], page: u32) -> Option<Pixmap> {
         let data = px.as_chunks::<4>().0.iter().map(|p| vello_cpu::color::PremulRgba8 { r: p[0], g: p[1], b: p[2], a: p[3] }).collect();
         return Some(Pixmap::from_parts(data, w.min(u16::MAX as u32) as u16, h.min(u16::MAX as u32) as u16));
     }
-    let img = designcraft_images::decode_rgba(bytes)?;
+    premultiplied(&designcraft_images::decode_rgba(bytes)?)
+}
+
+/// [`decode_pixmap`] of a JPEG at 1/2^`shrink` of its size, `shrink` 1 to
+/// [`designcraft_images::MAX_REDUCED_SHRINK`], without a full-size decode. `None` where only a
+/// full decode applies (other formats, CMYK JPEGs).
+pub(crate) fn decode_pixmap_reduced(bytes: &[u8], shrink: u8) -> Option<Pixmap> {
+    premultiplied(&designcraft_images::decode_rgba_reduced(bytes, shrink)?)
+}
+
+fn premultiplied(img: &image::RgbaImage) -> Option<Pixmap> {
     let (w, h) = img.dimensions();
     if w == 0 || h == 0 || w > u16::MAX as u32 || h > u16::MAX as u32 {
         return None;

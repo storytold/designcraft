@@ -561,3 +561,53 @@ fn a_webp_icc_chunk_that_declares_more_than_it_holds_is_refused_before_decoding(
     assert!(webp_icc_is_sane(b"\x89PNG not a webp"));
     assert!(webp_icc_is_sane(&webp_with(&[(b"VP8L", 6, &[0; 6])])));
 }
+
+/// A JPEG of a smooth gradient, `w` × `h`.
+fn gradient_jpeg(w: u32, h: u32, gray: bool) -> Vec<u8> {
+    let rgb = image::RgbImage::from_fn(w, h, |x, y| image::Rgb([(x * 255 / w) as u8, (y * 255 / h) as u8, 128]));
+    let img = if gray { image::DynamicImage::ImageRgb8(rgb).into_luma8().into() } else { image::DynamicImage::ImageRgb8(rgb) };
+    let mut out = Vec::new();
+    img.write_with_encoder(image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 90)).unwrap();
+    out
+}
+
+#[test]
+fn reduced_jpegs_decode_at_a_half_quarter_or_eighth_rounded_up() {
+    let jpeg = gradient_jpeg(1001, 77, false);
+    let full = decode_rgba(&jpeg).unwrap();
+    for (shrink, size) in [(1, (501, 39)), (2, (251, 20)), (3, (126, 10))] {
+        let img = decode_rgba_reduced(&jpeg, shrink).unwrap();
+        assert_eq!(img.dimensions(), size, "shrink {shrink}");
+        // The same picture as the full decode sampled at the block centres, give or take rounding.
+        let step = 1u32 << shrink;
+        let (mut total, mut n) = (0u64, 0u64);
+        for y in 0..size.1 - 1 {
+            for x in 0..size.0 - 1 {
+                let (p, q) = (img.get_pixel(x, y).0, full.get_pixel(x * step + step / 2, y * step + step / 2).0);
+                total += (0..3).map(|c| u64::from(p[c].abs_diff(q[c]))).sum::<u64>();
+                n += 3;
+                assert_eq!(p[3], 255);
+            }
+        }
+        assert!(total / n <= 3, "shrink {shrink}: mean difference {}", total / n);
+    }
+    // Only 1/2, 1/4 and 1/8 are read from the blocks.
+    assert!(decode_rgba_reduced(&jpeg, 0).is_none());
+    assert!(decode_rgba_reduced(&jpeg, 4).is_none());
+}
+
+#[test]
+fn reduced_decoding_is_for_jpegs_and_survives_damaged_ones() {
+    let gray = decode_rgba_reduced(&gradient_jpeg(64, 64, true), 2).unwrap();
+    assert_eq!(gray.dimensions(), (16, 16));
+    assert!(gray.pixels().all(|p| p[0] == p[1] && p[1] == p[2] && p[3] == 255));
+    let png = png_from_rgba(16, 16, vec![255; 16 * 16 * 4]).unwrap();
+    assert!(decode_rgba_reduced(&png, 1).is_none());
+    assert!(decode_rgba_reduced(&[0xFF, 0xD8], 1).is_none());
+    let jpeg = gradient_jpeg(200, 150, false);
+    for n in (0..jpeg.len()).step_by(37) {
+        if let Some(img) = decode_rgba_reduced(&jpeg[..n], 1) {
+            assert_eq!(img.dimensions(), (100, 75));
+        }
+    }
+}

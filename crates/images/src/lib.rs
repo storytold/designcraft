@@ -442,6 +442,24 @@ pub fn decode_rgba(bytes: &[u8]) -> Option<image::RgbaImage> {
     to_display_rgba(px, Some(&icc), &DisplayColour::active())
 }
 
+/// The largest `shrink` [`decode_rgba_reduced`] takes: 3, an eighth of each side.
+pub const MAX_REDUCED_SHRINK: u8 = jpeg::MAX_SHRINK;
+
+/// [`decode_rgba`] of a JPEG at 1/2^`shrink` of its size (`shrink` 1 to [`MAX_REDUCED_SHRINK`], each
+/// side rounded up), read from its compressed blocks without a full-size decode. The embedded ICC
+/// profile is applied as [`decode_rgba`] applies it. `None` where only a full decode applies: other
+/// formats, CMYK, 12-bit and lossless JPEGs, and files [`decode_rgba`] refuses as too large.
+pub fn decode_rgba_reduced(bytes: &[u8], shrink: u8) -> Option<image::RgbaImage> {
+    use colour::{DisplayColour, Pixels, to_display_rgba};
+    if too_large_to_decode(bytes) {
+        return None;
+    }
+    let (rgba, has_colour) = jpeg::decode_reduced(bytes, shrink)?;
+    let Some(icc) = embedded_icc(bytes) else { return Some(rgba) };
+    let px = if has_colour { Pixels::Rgb(rgba) } else { Pixels::Gray(rgba) };
+    to_display_rgba(px, Some(&icc), &DisplayColour::active())
+}
+
 /// False when `bytes` is a WebP whose `ICCP` chunk declares more bytes than the file holds or than
 /// [`colour::MAX_ICC_BYTES`]. The decoder sizes its buffer from the declared length before it reads
 /// anything, so such a file must not reach `icc_profile()`; its pixels decode without it.
