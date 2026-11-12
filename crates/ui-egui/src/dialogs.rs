@@ -1102,6 +1102,9 @@ fn seed_text_frame_options(app: &DesignApp, d: &mut Dialog) {
     // text into another frame does not change which frames the options apply to.
     if let Some(ids) = typing_frame_ids(app) {
         d.fields.insert("_targets".into(), ids);
+        // The document state those frames are in: another document, or the document after
+        // Revert, can reuse their ids.
+        d.fields.insert("_targetsDoc".into(), json!(app.session.active().map(|doc| doc.identity_epoch)));
     }
     d.fields.insert("_shown".into(), shown);
 }
@@ -1605,12 +1608,22 @@ fn text_frame_params(app: &DesignApp, d: &Dialog) -> Result<Map<String, Value>, 
             json!(d.m("paragraphSpacingLimit").filter(|v| *v >= 0.0).ok_or_else(|| bad("the paragraph spacing limit is not a measure"))?),
         );
     }
-    // Typing in a frame: the options apply to the frame that showed the caret, or to every frame
-    // that held part of the selected text, when the dialog opened.
-    if let Some(ids) = d.fields.get("_targets").cloned().or_else(|| typing_frame_ids(app)) {
+    if let Some(ids) = text_frame_targets(app, d).map_err(bad)? {
         p.insert("ids".into(), ids);
     }
     Ok(p)
+}
+
+/// Typing in a frame: the frame that showed the caret, or every frame that held part of the
+/// selected text, when the dialog opened. Those ids are refused once another document is active,
+/// or once Revert has replaced the document.
+fn text_frame_targets(app: &DesignApp, d: &Dialog) -> Result<Option<Value>, &'static str> {
+    let Some(ids) = d.fields.get("_targets").cloned() else { return Ok(typing_frame_ids(app)) };
+    let active = app.session.active().map(|doc| doc.identity_epoch);
+    if d.fields.get("_targetsDoc").and_then(Value::as_u64) != active {
+        return Err("the document the dialog opened on is no longer the active one");
+    }
+    Ok(Some(ids))
 }
 
 /// File › Document Setup, filled from the document.

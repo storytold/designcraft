@@ -1389,6 +1389,59 @@ fn text_frame_options_set_columns_baseline_and_wrap_as_indesign_does() {
     assert_eq!((opts(&app).columns_kind, opts(&app).column_width), (designcraft_doc::ColumnsKind::FixedNumber, 120.0));
 }
 
+/// The frames Text Frame Options took while typing belong to the document it opened on: when
+/// another document becomes active before OK, OK changes nothing there.
+#[test]
+fn text_frame_options_from_the_type_tool_stay_with_their_document() {
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    let make = |app: &mut crate::DesignApp| {
+        app.run("file.new", json!({})).unwrap();
+        let r = app.run("frame.create", json!({"rect": [36, 36, 300, 300], "content": "text", "text": "Hello"})).unwrap();
+        let (id, story) = (r["id"].as_u64().unwrap(), r["story"].as_u64().unwrap());
+        app.run("text.select", json!({"story": story, "anchor": 2})).unwrap();
+        id
+    };
+    let a = make(&mut app);
+    let mut d = Dialog::new("textFrameOptions", json!({}));
+    seed_text_frame_options(&app, &mut d);
+    assert_eq!(d.fields.get("_targets"), Some(&json!([a])));
+    d.fields.insert("columns".into(), json!(3));
+    // A second document, with a caret in a frame that has the same id, becomes active.
+    let b = make(&mut app);
+    assert_eq!(a, b);
+    app.ui.dialog = Some(d);
+    let err = confirm(&mut app).unwrap_err().to_string();
+    assert!(err.contains("no longer the active one"), "{err}");
+    let columns = app.session.active().unwrap().doc.item(designcraft_doc::ItemId(b)).and_then(|i| i.text_frame().map(|t| t.options.columns));
+    assert_eq!(columns, Some(1), "the other document's frame is unchanged");
+}
+
+/// Revert replaces the document while Text Frame Options taken while typing stay open: OK is
+/// refused, since the saved frame ids can name another frame in the reverted document.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn text_frame_options_from_the_type_tool_are_refused_after_revert() {
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    app.run("file.saveAs", json!({"path": dir.path().join("revert.designcraft")})).unwrap();
+    let a = app.run("frame.create", json!({"rect": [36, 36, 300, 120], "content": "text", "text": "Unsaved"})).unwrap();
+    app.run("text.select", json!({"story": a["story"], "anchor": 1})).unwrap();
+    let mut d = Dialog::new("textFrameOptions", json!({}));
+    seed_text_frame_options(&app, &mut d);
+    d.fields.insert("columns".into(), json!(3));
+    app.run("file.revert", json!({})).unwrap();
+    let b = app.run("frame.create", json!({"rect": [36, 200, 300, 300], "content": "text", "text": "After"})).unwrap();
+    assert_eq!(a["id"], b["id"], "the reverted document gives a new frame the same id");
+    app.ui.dialog = Some(d);
+    let err = confirm(&mut app).unwrap_err().to_string();
+    assert!(err.contains("no longer the active one"), "{err}");
+    assert!(app.ui.dialog.is_some(), "the dialog stays open");
+    let b = designcraft_doc::ItemId(b["id"].as_u64().unwrap());
+    let columns = app.session.active().unwrap().doc.item(b).and_then(|i| i.text_frame().map(|t| t.options.columns));
+    assert_eq!(columns, Some(1), "the new frame is unchanged");
+}
+
 #[test]
 fn baseline_grid_increment_error_explains_the_positive_measure_rule() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
