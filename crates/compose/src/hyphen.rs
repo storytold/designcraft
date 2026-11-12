@@ -14,6 +14,10 @@
 //! despite the filename, these are the reformed 2006 spelling patterns. Only the two 2006 reform
 //! names and German locale codes without a reform year or with 2006 use this set. Traditional,
 //! 1901 and unknown German variants have no automatic hyphenation; no old-spelling set is bundled.
+//! Esperanto breaks between morphemes rather than syllables ([`eo`]: our own segmenter, roots
+//! from Wiktionary). A word it can't split into known morphemes, a word with an apostrophe inside
+//! and a word over 64 chars stay whole; user-dictionary exceptions override it, as for the other
+//! languages.
 //!
 //! English lookup order for each word:
 //! 1. the **dictionary** ([`Dictionary::en_us`]) — the public-domain Moby Hyphenator II word list
@@ -26,6 +30,7 @@
 //! Then the paragraph's limits ([`Limits`]) are applied.
 
 pub mod dict;
+pub mod eo;
 pub mod patgen;
 pub mod patterns;
 
@@ -80,6 +85,7 @@ impl Default for Limits {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Lang {
     English,
+    Esperanto,
     Patterns(hypher::Lang),
 }
 
@@ -99,6 +105,9 @@ impl Lang {
         }
         if sub == "en" {
             return Some(Lang::English);
+        }
+        if sub == "eo" {
+            return Some(Lang::Esperanto);
         }
         let b = sub.as_bytes();
         if b.len() != 2 {
@@ -139,6 +148,14 @@ fn core_breaks(core: &[char], lang: Lang) -> (Vec<usize>, Source) {
     let n = core.len();
     if n < 2 {
         return (vec![], Source::None);
+    }
+    if lang == Lang::Esperanto {
+        if core.contains(&'\'') {
+            return (vec![], Source::None);
+        }
+        let pts = eo::breaks(core);
+        let src = if pts.is_empty() { Source::None } else { Source::Dictionary };
+        return (pts, src);
     }
     if let Lang::Patterns(l) = lang {
         if let Some(ap) = core.iter().rposition(|&c| c == '\'') {
@@ -521,6 +538,52 @@ mod tests {
         assert_eq!(h("teatro"), "tea-tro", "a vowel run stays whole");
         assert_eq!(h("calle"), "ca-lle", "ll stays whole");
         assert!(Lang::for_language("Swedish").is_none(), "only languages built in");
+    }
+
+    #[test]
+    fn esperanto_breaks_between_morphemes() {
+        let eo = Lang::for_language("Esperanto").unwrap();
+        assert_eq!(eo, Lang::for_language("eo").unwrap());
+        let h = |w: &str| {
+            let pts = hyphen_points_in(w, &Limits::default(), eo);
+            w.chars().enumerate().map(|(i, c)| if pts.contains(&i) { format!("-{c}") } else { c.to_string() }).collect::<String>()
+        };
+        assert_eq!(h("Malsanulejo"), "Mal-san-ul-ejo", "case kept, break points from the lowercase word");
+        assert_eq!(h("tranĉilojn,"), "tranĉ-ilojn,");
+        assert_eq!(h("lernejo-direktoro"), "lern-ejo-direktoro", "each part of a compound; direktor is one root");
+        assert_eq!(h("parolas"), "parolas", "never before the ending alone");
+        assert_eq!(h("xyzzyplugho"), "xyzzyplugho", "an unknown word stays whole");
+    }
+
+    #[test]
+    fn esperanto_words_with_an_apostrophe_are_not_broken() {
+        let eo = Lang::Esperanto;
+        // An apostrophe inside the word (`l'` glued to a noun): no break anywhere in it.
+        assert!(hyphen_points_in("l'malsanulejo", &Limits::default(), eo).is_empty());
+        assert!(hyphen_points_in("mal'sanulejo", &Limits::default(), eo).is_empty());
+        // An elided ending (`kor'` for `koro`) is trimmed like closing punctuation: the stem breaks.
+        assert_eq!(hyphen_points_in("malsanulej'", &Limits::default(), eo), vec![3, 6, 8]);
+        // Without the apostrophe, the same word breaks.
+        assert!(!hyphen_points_in("malsanulejo", &Limits::default(), eo).is_empty());
+    }
+
+    #[test]
+    fn esperanto_breaks_follow_the_paragraph_limits() {
+        let eo = Lang::Esperanto;
+        let pts = |w: &str, lim: &Limits| hyphen_points_in(w, lim, eo);
+        // Default limits: 5 letters or more, 2 before and after each break.
+        let d = Limits::default();
+        assert!(pts("sani", &d).is_empty(), "short word");
+        assert_eq!(pts("saneco", &d), vec![3]);
+        assert_eq!(pts("malsanulejo", &d), vec![3, 6, 8]);
+        // Stricter limits keep only the breaks they allow.
+        let strict = Limits { min_word: 7, after_first: 4, before_last: 4, capitalized: true };
+        assert!(pts("saneco", &strict).is_empty(), "6 letters < 7");
+        assert_eq!(pts("malsanulejo", &strict), vec![6], "3 letters before mal- and 3 after -ul are too few");
+        // Hyphenate Capitalized Words off keeps Malsanulejo whole.
+        let no_caps = Limits { capitalized: false, ..d };
+        assert!(pts("Malsanulejo", &no_caps).is_empty());
+        assert_eq!(pts("malsanulejo", &no_caps), vec![3, 6, 8]);
     }
 
     #[test]

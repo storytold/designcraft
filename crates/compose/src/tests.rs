@@ -4628,6 +4628,38 @@ fn norwegian_text_gets_norwegian_hyphenation() {
     }
 }
 
+/// The lines of an Esperanto paragraph composed in a column of `width` points.
+fn esperanto_lines(text: &str, width: f64, exceptions: &[&str]) -> Vec<String> {
+    let (mut d, sid, _) = doc_with(text, Rect::new(36.0, 36.0, width, 700.0), ParaAttrs::default());
+    d.hyphenation_exceptions = exceptions.iter().map(|e| e.to_string()).collect();
+    let st = d.story_mut(sid).unwrap();
+    let n = st.len();
+    st.format_chars(0..n, |f| f.over.language = Some("Esperanto".into()));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    all_lines(&cs).into_iter().map(|l| format!("{}{}", text[l.range.clone()].trim_end(), if l.hyphenated { "-" } else { "" })).collect()
+}
+
+#[test]
+fn esperanto_text_breaks_between_morphemes() {
+    let text = "malsanulejoj lernejanoj tranĉiloj vaporŝipoj esperantistoj malfacilaĵoj";
+    let lines = esperanto_lines(text, 76.0, &[]);
+    // Every hyphen falls between two morphemes, never inside a root or before the ending alone.
+    let want = ["mal-", "san-", "ulejoj", "lern-", "ejanoj", "tranĉ-", "iloj", "vapor-", "ŝipoj", "esper-", "antistoj", "mal-", "facil-", "aĵoj"];
+    assert_eq!(lines, want, "{lines:#?}");
+}
+
+#[test]
+fn a_user_exception_overrides_the_esperanto_segmenter() {
+    let text = "malsanulejoj malsanulejoj malsanulejoj";
+    let lines = esperanto_lines(text, 95.0, &[]);
+    assert!(lines.iter().any(|l| l.ends_with("mal-") || l.ends_with("malsan-") || l.ends_with("malsanul-")), "{lines:#?}");
+    // With `malsanulejoj` in the user dictionary broken only after `malsanu`, that is the only break.
+    let lines = esperanto_lines(text, 95.0, &["malsanu~lejoj"]);
+    let hyphenated: Vec<&String> = lines.iter().filter(|l| l.ends_with('-')).collect();
+    assert!(!hyphenated.is_empty(), "{lines:#?}");
+    assert!(hyphenated.iter().all(|l| l.ends_with("malsanu-")), "{lines:#?}");
+}
+
 #[test]
 fn cjk_aki_adds_space_without_scaling_outlines() {
     let (mut d, sid, _) = doc_with("AB", Rect::new(0.0, 0.0, 300.0, 100.0), ParaAttrs::default());
