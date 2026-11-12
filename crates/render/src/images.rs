@@ -172,6 +172,54 @@ pub(crate) struct Want {
     pub on_screen: f64,
 }
 
+/// Dimensions of the JPEG mip level selected for a request. `None` means the request uses the
+/// full decode or is not an eligible JPEG, so warming must reserve its full decode size.
+fn reduced_sizes(bytes: &Arc<Vec<u8>>, page: u32, width_pt: f64, on_screen: f64) -> Option<Vec<(u32, u32)>> {
+    if page != 0 || !bytes.starts_with(&[0xFF, 0xD8]) {
+        return None;
+    }
+    let (mut w, mut h) = crate::image_size(bytes)?;
+    let ppt = w as f64 / width_pt.max(1e-6);
+    let mut sizes = vec![(w, h)];
+    while ppt / (1u64 << sizes.len()) as f64 >= on_screen * 1.2 && w > 64 && h > 64 && sizes.len() <= 8 {
+        (w, h) = ((w / 2).max(1), (h / 2).max(1));
+        sizes.push((w, h));
+    }
+    Some(sizes)
+}
+
+/// Cache and peak decode estimates for a group of requests that all use reduced JPEG mips.
+fn reduced_estimates(wants: &[Want]) -> Option<(usize, usize)> {
+    let mut dims = None;
+    let mut levels = [false; 9];
+    let mut peak = 0usize;
+    for w in wants {
+        let sizes = reduced_sizes(&w.bytes, w.page, w.width_pt, w.on_screen)?;
+        let level = sizes.len() - 1;
+        if level == 0 {
+            return None;
+        }
+        let shrink = level.min(usize::from(designcraft_images::MAX_REDUCED_SHRINK));
+        for cached in shrink..=level {
+            levels[cached] = true;
+        }
+        let denom = 1u32 << shrink;
+        let (w_px, h_px) = sizes[0];
+        // The reduced decoder rounds each side up before the mip is cropped to `sizes[shrink]`.
+        let decode_pixels = w_px.div_ceil(denom) as usize * h_px.div_ceil(denom) as usize;
+        peak = peak.max(decode_pixels.saturating_mul(8));
+        if dims.as_ref().is_none_or(|d: &Vec<(u32, u32)>| d.len() < sizes.len()) {
+            dims = Some(sizes);
+        }
+    }
+    let dims = dims?;
+    let cached = levels.iter().enumerate().filter(|(_, keep)| **keep).fold(0usize, |n, (level, _)| {
+        let (w, h) = dims[level];
+        n.saturating_add(w as usize * h as usize * 4)
+    });
+    Some((cached, peak))
+}
+
 /// Threads [`warm`] decodes on (1 on the web, which has none).
 fn workers() -> usize {
     #[cfg(target_arch = "wasm32")]
@@ -270,7 +318,8 @@ pub(crate) fn warm(wants: Vec<Want>) -> usize {
         if held.contains_key(&key) {
             continue;
         }
-        let (size, decoding) = wanted.first().map_or((0, 0), |w| decode_sizes(&w.bytes, w.page));
+        let full = wanted.first().map_or((0, 0), |w| decode_sizes(&w.bytes, w.page));
+        let (size, decoding) = reduced_estimates(&wanted).unwrap_or(full);
         // A store past the budget evicts down to three quarters of it: the images in view must
         // fit in that, unless they and the rest fit in the budget.
         let total = pixels.saturating_add(size);
@@ -338,21 +387,12 @@ fn waited(job: &[Want]) {
 /// and halved from there, so a screen-sized level needs no full-size decode. `None` when the
 /// full size is drawn, for other formats and for JPEGs only a full decode reads (CMYK).
 fn reduced(bytes: &Arc<Vec<u8>>, page: u32, width_pt: f64, on_screen: f64) -> Option<Arc<Pixmap>> {
-    if page != 0 || !bytes.starts_with(&[0xFF, 0xD8]) {
-        return None;
-    }
     let id = Arc::as_ptr(bytes) as usize;
     if with(|c| c.bad.contains_key(&(id, page))) {
         return None;
     }
     // The level `mip` picks from a full decode, with each level's size as `halve` gives it.
-    let (mut w, mut h) = crate::image_size(bytes)?;
-    let ppt = w as f64 / width_pt.max(1e-6);
-    let mut sizes = vec![(w, h)];
-    while ppt / (1u64 << sizes.len()) as f64 >= on_screen * 1.2 && w > 64 && h > 64 && sizes.len() <= 8 {
-        (w, h) = ((w / 2).max(1), (h / 2).max(1));
-        sizes.push((w, h));
-    }
+    let sizes = reduced_sizes(bytes, page, width_pt, on_screen)?;
     let level = u8::try_from(sizes.len() - 1).ok()?;
     if level == 0 {
         return None;
@@ -506,10 +546,11 @@ mod tests {
         let large = decoded_bytes(&d, 0);
         assert!(large > BUDGET / 4 && 2 * large <= BUDGET * 3 / 4);
         let decoding = decode_peak_bytes(&d, 0);
-        assert!(admits(0, decoding) && !admits(decoding, decoding) && admits(decoding, decode_peak_bytes(&small, 0)));
+        let reserved = decoding * 3 / 2;
+        assert!(admits(0, reserved) && !admits(reserved, reserved) && admits(reserved, decode_peak_bytes(&small, 0) * 3 / 2));
         assert!(admits(0, usize::MAX), "an image over half the budget still decodes alone");
         let peak = warm(vec![want(&d), want(&e), want(&small)]);
-        assert!(peak <= BUDGET / 2, "{peak} bytes decoding at once");
+        assert!(peak <= decoding * 3 / 2, "{peak} bytes decoding at once");
         assert!(peak >= decoding, "the large images were decoded ahead");
         let me = std::thread::current().id();
         for img in [&d, &e, &small] {
@@ -526,8 +567,9 @@ mod tests {
         let (f, g) = (psd(5500), psd(5500));
         let decoding = decode_peak_bytes(&f, 0);
         assert_eq!(decoding, 5500 * 5500 * 9, "9 bytes a pixel for a PSD");
-        assert!(2 * decoded_bytes(&f, 0) <= BUDGET / 2 && !admits(decoding, decode_peak_bytes(&g, 0)));
-        assert_eq!(warm(vec![want(&f), want(&g)]), decoding, "one decode at a time");
+        let reserved = decoding * 3 / 2;
+        assert!(2 * decoded_bytes(&f, 0) <= BUDGET / 2 && !admits(reserved, decode_peak_bytes(&g, 0) * 3 / 2));
+        assert_eq!(warm(vec![want(&f), want(&g)]), reserved, "one decode at a time");
         // 16-bit RGBA decodes at 8 bytes a pixel before its RGBA copy.
         let mut deep = Vec::new();
         let img = image::ImageBuffer::<image::Rgba<u16>, Vec<u16>>::from_pixel(4, 4, image::Rgba([9, 0, 0, 65535]));
@@ -599,6 +641,17 @@ mod tests {
         // The full size is still a full decode.
         let full = mip(&bytes, 0, 1024.0, 1.0).unwrap();
         assert_eq!((full.width(), full.height()), (1024, 768));
+    }
+
+    #[test]
+    fn warm_estimates_a_jpegs_reduced_levels() {
+        let bytes = jpeg(1024, 768);
+        let want = Want { bytes: bytes.clone(), page: 0, width_pt: 1024.0, on_screen: 0.1 };
+        let (cached, peak) = reduced_estimates(&[want]).unwrap();
+        assert_eq!(cached, 128 * 96 * 4, "only the selected eighth-size mip is cached");
+        assert_eq!(peak, 128 * 96 * 8, "only the selected eighth-size mip is decoded");
+        let full = decode_sizes(&bytes, 0);
+        assert!(cached < full.0 && peak < full.1, "reduced estimates {cached}/{peak}, full {full:?}");
     }
 
     #[test]
