@@ -386,7 +386,7 @@ pub struct Contour {
 }
 
 /// Points a contour outline may have; a larger outline wraps around its bounding box.
-const MAX_CONTOUR_POINTS: usize = 8192;
+pub const MAX_CONTOUR_POINTS: usize = 8192;
 
 impl Contour {
     /// The outline of `path` (after `to_inner`), flattened; None if it is empty or too detailed.
@@ -587,7 +587,8 @@ pub fn exclusion(doc: &Document, other: &Item, xf: Affine, inv: Affine, left_pag
     let group = other.shape == designcraft_doc::Shape::Group;
     let b =
         if group { (xf * other.xf.inverse()).transform_rect_bbox(other.bounds()) } else { other.path.transformed(xf).bounds().unwrap_or(Rect::ZERO) };
-    wrap_exclusion(&other.wrap, b, || (!group).then(|| contour_path(doc, other, &other.wrap)), xf, inv, left_page)
+    let e = wrap_exclusion(&other.wrap, b, || (!group).then(|| contour_path(doc, other, &other.wrap)), xf, inv, left_page);
+    nothing_visible_wraps_nothing(doc, other, &other.wrap, e)
 }
 
 /// The wrap exclusion of the graphic placed in frame `it` (arguments as for [`exclusion`]): around
@@ -595,7 +596,26 @@ pub fn exclusion(doc: &Document, other: &Item, xf: Affine, inv: Affine, left_pag
 pub fn graphic_exclusion(doc: &Document, it: &Item, xf: Affine, inv: Affine, left_page: bool) -> Option<Exclusion> {
     let g = it.graphic()?;
     let shown = g.shown_bounds(it.inner_bounds())?;
-    Some(wrap_exclusion(&g.wrap, xf.transform_rect_bbox(shown), || Some(contour_path(doc, it, &g.wrap)), xf, inv, left_page))
+    let e = wrap_exclusion(&g.wrap, xf.transform_rect_bbox(shown), || Some(contour_path(doc, it, &g.wrap)), xf, inv, left_page);
+    Some(nothing_visible_wraps_nothing(doc, it, &g.wrap, e))
+}
+
+/// An Alpha Channel contour around an image with no pixel more opaque than the threshold leaves
+/// the text alone (the exclusion's mode becomes None).
+fn nothing_visible_wraps_nothing(doc: &Document, it: &Item, wrap: &designcraft_doc::TextWrap, mut e: Exclusion) -> Exclusion {
+    if wrap.mode == WrapMode::Contour
+        && wrap.contour == designcraft_doc::ContourType::AlphaChannel
+        && wrap.path.is_none()
+        && let Some(g) = it.graphic()
+        && let Some(o) = doc.alpha_outline(g.asset, wrap.alpha_threshold)
+        && o.width > 0
+        && o.height > 0
+        && o.outer.subpaths.is_empty()
+    {
+        e.mode = WrapMode::None;
+        e.contour = None;
+    }
+    e
 }
 
 /// The exclusion of `wrap` around an object with spread-space bounds `b`; `outline` gives its
@@ -637,8 +657,9 @@ fn wrap_exclusion(
 /// The outline a contour wrap of `kind` around frame `it` follows, in the frame's inner space, and
 /// for an outline taken from the placed graphic, the frame path that clips it. Bounding Box
 /// follows the part of the placed graphic the frame shows; Same As Clipping follows the graphic's
-/// clipping path when it has one; detected edges, alpha channels and image paths need the image,
-/// so they follow the frame's path (as other frames do).
+/// clipping path when it has one; Alpha Channel follows the image's traced outline when the
+/// engine has traced one; detected edges and image paths follow the frame's path (as other
+/// frames do).
 fn contour_path(doc: &Document, it: &Item, wrap: &designcraft_doc::TextWrap) -> (designcraft_geom::BezPath, Option<designcraft_geom::BezPath>) {
     let frame = designcraft_geom::corners::apply(&it.path, &it.corners);
     let kind = wrap.contour;
@@ -765,11 +786,14 @@ fn wrap_obstacles(
     }
     let xf = parent * it.xf;
     let left = || left_page(parent.transform_rect_bbox(it.bounds()).center().x);
+    // An exclusion whose mode came back None (nothing visible to wrap) is left out.
     if it.wrap.mode != WrapMode::None {
-        out.push(exclusion(doc, it, xf, inv, left()));
+        out.extend(Some(exclusion(doc, it, xf, inv, left())).filter(|e| e.mode != WrapMode::None));
     }
     match &it.content {
-        Content::Graphic(g) if g.wrap.mode != WrapMode::None => out.extend(graphic_exclusion(doc, it, xf, inv, left())),
+        Content::Graphic(g) if g.wrap.mode != WrapMode::None => {
+            out.extend(graphic_exclusion(doc, it, xf, inv, left()).filter(|e| e.mode != WrapMode::None))
+        }
         Content::Group { .. } => {
             for c in it.shown_children() {
                 wrap_obstacles(doc, c, xf, inv, skip, left_page, depth + 1, out);

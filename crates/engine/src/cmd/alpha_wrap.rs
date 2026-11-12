@@ -91,7 +91,12 @@ pub(crate) fn trace(data: &Arc<Vec<u8>>, asset: AssetId, threshold: u8) -> Optio
                 mask
             }
         };
-        if let Some((outer, holes)) = rings(&mask, cols as usize, rows as usize) {
+        // Composition follows an outline of at most MAX_CONTOUR_POINTS path elements (holes
+        // included, for Include Inside Edges): a ring of k points is k + 1 elements with its close.
+        let fits = |outer: &[Vec<(i32, i32)>], holes: &[Vec<(i32, i32)>]| {
+            outer.iter().chain(holes).map(|r| r.len() + 1).sum::<usize>() <= designcraft_compose::MAX_CONTOUR_POINTS
+        };
+        if let Some((outer, holes)) = rings(&mask, cols as usize, rows as usize).filter(|(o, h)| fits(o, h)) {
             let (sx, sy) = (f64::from(w) / f64::from(cols), f64::from(h) / f64::from(rows));
             let path = |rings: &[Vec<(i32, i32)>]| {
                 let mut p = BezPath::new();
@@ -240,15 +245,44 @@ mod tests {
 
     /// A 64 × 64 PNG: visible where `on(x, y)`.
     fn png(on: impl Fn(usize, usize) -> bool) -> Vec<u8> {
-        let mut pixels = vec![0; 64 * 64 * 4];
-        for y in 0..64 {
-            for x in 0..64 {
-                let i = (y * 64 + x) * 4;
+        png_sized(64, on)
+    }
+
+    /// A `size` × `size` PNG: visible where `on(x, y)`.
+    fn png_sized(size: usize, on: impl Fn(usize, usize) -> bool) -> Vec<u8> {
+        let mut pixels = vec![0; size * size * 4];
+        for y in 0..size {
+            for x in 0..size {
+                let i = (y * size + x) * 4;
                 pixels[i] = 120;
                 pixels[i + 3] = if on(x, y) { 255 } else { 0 };
             }
         }
-        designcraft_render::Rendered { width: 64, height: 64, pixels }.to_png()
+        designcraft_render::Rendered { width: size as u32, height: size as u32, pixels }.to_png()
+    }
+
+    /// An outline too detailed for composition (here 4,096 separate dots, 20,480 path elements
+    /// on the finest grid) is traced on a coarser grid until composition can follow it.
+    #[test]
+    fn a_fragmented_outline_is_traced_coarser_until_composition_can_follow_it() {
+        let dots = png_sized(256, |x, y| x % 4 == 0 && y % 4 == 0);
+        let o = trace(&Arc::new(dots), AssetId(1), 25).unwrap();
+        let elements = o.outer.to_bezpath().elements().len() + o.holes.to_bezpath().elements().len();
+        assert!(elements > 0 && elements <= designcraft_compose::MAX_CONTOUR_POINTS, "{elements} path elements");
+    }
+
+    /// An image with no pixel more opaque than the threshold leaves the text alone: with the
+    /// frame's contour the caption over it is overset, with Alpha Channel it is set.
+    #[test]
+    fn an_image_with_nothing_visible_wraps_no_text() {
+        let (mut s, image, story) = page(&png(|_, _| false), [150.0, 150.0, 178.0, 178.0]);
+        assert!(overset(&s, story), "the frame's contour covers the caption");
+        s.execute("object.textWrap", &json!({"ids": [image], "contour": "alphaChannel"})).unwrap();
+        assert!(!overset(&s, story), "nothing visible: nothing wraps");
+        // The same for the wrap set on the placed graphic.
+        s.execute("object.textWrap", &json!({"ids": [image], "mode": "none"})).unwrap();
+        s.execute("object.textWrap", &json!({"ids": [image], "content": true, "mode": "contour", "contour": "alphaChannel"})).unwrap();
+        assert!(!overset(&s, story));
     }
 
     #[test]
