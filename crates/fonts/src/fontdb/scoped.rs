@@ -62,8 +62,13 @@ impl ScopedFonts<'_> {
             return false;
         }
         let face = self.face(family, style);
+        Self::is_named_style(&face, family, style) || (face.coords.is_empty() && face.style_aliases.iter().any(|alias| norm(alias) == norm(style)))
+    }
+
+    /// Is `face`, found for `family`, named `style` by its own style name or, for an optical-size
+    /// face, its WWS names? Not by an alias: a Light face's legacy subfamily is often "Regular".
+    fn is_named_style(face: &FontFace, family: &str, style: &str) -> bool {
         norm(&face.style) == norm(style)
-            || (face.coords.is_empty() && face.style_aliases.iter().any(|alias| norm(alias) == norm(style)))
             // An optical-size face asked for by its WWS names.
             || face.wws.as_ref().is_some_and(|w| w.0.eq_ignore_ascii_case(family) && norm(&w.1) == norm(style))
     }
@@ -258,6 +263,13 @@ impl ScopedFonts<'_> {
 
     fn find_or_load(&self, family: &str, style: &str) -> Option<Arc<FontFace>> {
         if let Some(f) = self.find(family, style) {
+            // Only the document's fonts, without a face named that style (the closest style, or a
+            // Light face whose legacy subfamily is "Regular"): the installed family, not loaded
+            // yet, may have one (#2619).
+            #[cfg(not(target_arch = "wasm32"))]
+            if !style.contains('{') && !Self::is_named_style(&f, family, style) && !self.db.is_loaded(family) && self.db.load_cataloged(family) {
+                return self.find(family, style);
+            }
             return Some(f);
         }
         #[cfg(not(target_arch = "wasm32"))]
@@ -359,17 +371,16 @@ impl ScopedFonts<'_> {
             return self.instance(family, style);
         }
         let faces = self.db.read_faces();
-        // The document's fonts first: they stand in for other fonts of the same name.
+        // The document's fonts first: they stand in for other fonts of the same name and style,
+        // and add to the other styles of their family (#2619).
         let named = |f: &&Arc<FontFace>| f.family.eq_ignore_ascii_case(family);
-        let own: Vec<&Arc<FontFace>> = self.own().iter().filter(named).collect();
-        let mut cands: Vec<&Arc<FontFace>> = if own.is_empty() { faces.iter().filter(named).collect() } else { own };
+        let mut cands: Vec<&Arc<FontFace>> = self.own().iter().filter(named).chain(faces.iter().filter(named)).collect();
         // No face of that typographic family: the family may be a WWS name, whose faces carry
         // their WWS style names.
         let by_wws = cands.is_empty();
         if by_wws {
             let aliased = |f: &&Arc<FontFace>| has_wws_family(f, family);
-            let own: Vec<&Arc<FontFace>> = self.own().iter().filter(aliased).collect();
-            cands = if own.is_empty() { faces.iter().filter(aliased).collect() } else { own };
+            cands = self.own().iter().filter(aliased).chain(faces.iter().filter(aliased)).collect();
         }
         if cands.is_empty() {
             return None;
