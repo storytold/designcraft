@@ -88,7 +88,7 @@ pub fn image_size(bytes: &[u8]) -> Option<(u32, u32)> {
 
 /// Natural size of a placed graphic, unrounded: a PDF page (crop box) and an SVG in points, a raster
 /// at its stored resolution (72 ppi without one), an EPS its bounding box independently of preview pixels. Placed graphics are drawn at
-/// this size; `image_size` rounds it to whole pixels for display.
+/// this size; `image_size` gives a raster's pixel size and rounds a PDF page or SVG to whole points.
 pub fn natural_size(bytes: &[u8], page: usize) -> Option<(f64, f64)> {
     if is_pdf(bytes) {
         return pdf_page_size(bytes, page).map(|(w, h)| (w.max(1e-3), h.max(1e-3)));

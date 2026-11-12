@@ -178,7 +178,7 @@ pub fn tiff_resolution(tiff: &[u8]) -> Option<(f64, f64)> {
 /// The pHYs chunk: pixels-per-unit in x and y plus the unit (1 = meter → dpi).
 fn png_resolution(bytes: &[u8]) -> Option<(f64, f64)> {
     let mut pos = 8;
-    for _ in 0..64 {
+    loop {
         let len = u32::from_be_bytes(bytes.get(pos..pos + 4)?.try_into().ok()?) as usize;
         let kind = bytes.get(pos + 4..pos + 8)?;
         if kind == b"pHYs" {
@@ -189,7 +189,7 @@ fn png_resolution(bytes: &[u8]) -> Option<(f64, f64)> {
             }
             return None;
         }
-        if kind == b"IEND" {
+        if kind == b"IEND" || kind == b"IDAT" {
             return None;
         }
         pos = pos.checked_add(8)?.checked_add(len)?.checked_add(4)?;
@@ -197,7 +197,6 @@ fn png_resolution(bytes: &[u8]) -> Option<(f64, f64)> {
             return None;
         }
     }
-    None
 }
 
 // ---------- WebP ----------
@@ -207,7 +206,7 @@ fn webp_resolution(bytes: &[u8]) -> Option<(f64, f64)> {
     let riff = u32::from_le_bytes(bytes.get(4..8)?.try_into().ok()?) as usize;
     let end = 12usize.checked_add(riff)?.min(bytes.len());
     let mut pos = 12;
-    for _ in 0..64 {
+    loop {
         let kind = bytes.get(pos..pos + 4)?;
         let size = u32::from_le_bytes(bytes.get(pos + 4..pos + 8)?.try_into().ok()?) as usize;
         let data = pos.checked_add(8)?;
@@ -223,7 +222,6 @@ fn webp_resolution(bytes: &[u8]) -> Option<(f64, f64)> {
         }
         pos = data.checked_add(size.checked_add(size & 1)?)?;
     }
-    None
 }
 
 // ---------- BMP ----------
