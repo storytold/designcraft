@@ -1294,10 +1294,63 @@ struct SubstitutionInput<'a> {
     var_story: bool,
     var_cache: &'a mut HashMap<(Option<usize>, bool), Arc<Vec<String>>>,
     notes: &'a mut Notes,
+    /// The marks in the story before `range`.
+    marks: MarkCounts,
+}
+
+/// Endnote references, anchored-object marks and cross-reference marks in a stretch of story text.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct MarkCounts {
+    endnotes: usize,
+    objects: usize,
+    xrefs: usize,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Bytes of story text [`MarkCounts::of`] has read on this thread.
+    static MARK_BYTES_SCANNED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+impl MarkCounts {
+    /// The marks in `text`.
+    fn of(text: &str) -> Self {
+        #[cfg(test)]
+        MARK_BYTES_SCANNED.with(|n| n.set(n.get() + text.len()));
+        let mut m = Self::default();
+        for c in text.chars() {
+            match c {
+                designcraft_doc::ENDNOTE_REF => m.endnotes += 1,
+                designcraft_doc::OBJECT_MARK => m.objects += 1,
+                designcraft_doc::XREF_MARK => m.xrefs += 1,
+                _ => {}
+            }
+        }
+        m
+    }
+
+    /// The marks before each paragraph of `ranges` (the story's paragraphs, in order), read in
+    /// one pass over the story. Empty when the story holds no endnotes, anchored objects or
+    /// cross-references.
+    fn before_paragraphs(story: &Story, ranges: &[Range<usize>]) -> Vec<Self> {
+        if story.endnotes.is_empty() && story.objects.is_empty() && story.xrefs.is_empty() {
+            return Vec::new();
+        }
+        let mut total = Self::default();
+        ranges
+            .iter()
+            .map(|r| {
+                let before = total;
+                let m = story.text.get(r.clone()).map_or_else(Self::default, Self::of);
+                total = Self { endnotes: total.endnotes + m.endnotes, objects: total.objects + m.objects, xrefs: total.xrefs + m.xrefs };
+                before
+            })
+            .collect()
+    }
 }
 
 fn paragraph_substitution(input: SubstitutionInput<'_>) -> SubstCtx {
-    let SubstitutionInput { doc, story, range: prange, props: pp, frame: cur_frame, opts, var_story, var_cache, notes } = input;
+    let SubstitutionInput { doc, story, range: prange, props: pp, frame: cur_frame, opts, var_story, var_cache, notes, marks } = input;
     let var_values = if var_story {
         let page = opts.page.or_else(|| cur_frame.and_then(|f| f.page));
         // A parent page itself (not composed for one of the pages it applies to).
@@ -1319,13 +1372,13 @@ fn paragraph_substitution(input: SubstitutionInput<'_>) -> SubstCtx {
     };
     if !story.endnotes.is_empty() {
         // Endnote reference numbers continue through the document.
-        let first = doc.endnote_start(story.id).saturating_add(story.text[..prange.start].matches(designcraft_doc::ENDNOTE_REF).count() as u32);
+        let first = doc.endnote_start(story.id).saturating_add(u32::try_from(marks.endnotes).unwrap_or(u32::MAX));
         for (k, (i, _)) in story.text[prange.clone()].match_indices(designcraft_doc::ENDNOTE_REF).enumerate() {
             sub.notes.insert(prange.start + i, doc.endnote_options.label(first.saturating_add(k as u32)));
         }
     }
     if !story.objects.is_empty() {
-        let before = story.text[..prange.start].matches(designcraft_doc::OBJECT_MARK).count();
+        let before = marks.objects;
         for (k, (i, _)) in story.text[prange.clone()].match_indices(designcraft_doc::OBJECT_MARK).enumerate() {
             let Some(o) = story.objects.get(before + k) else { continue };
             let (w, h) = o.size();
@@ -1338,7 +1391,7 @@ fn paragraph_substitution(input: SubstitutionInput<'_>) -> SubstCtx {
         }
     }
     if !story.xrefs.is_empty() {
-        sub.xrefs = xref::texts_in(doc, story, prange.clone(), opts.xrefs.as_deref());
+        sub.xrefs = xref::texts_after(doc, story, prange.clone(), marks.xrefs, opts.xrefs.as_deref());
     }
     if notes.active() {
         notes.number_refs(doc, prange.clone(), cur_frame.and_then(|f| f.page), &mut sub);
@@ -3157,6 +3210,8 @@ fn compose_run(
     let mut list_counter = ListCounter::default();
     // Named lists number independently of layout: one pass up front, for the labels.
     let named_labels = named_list_labels(doc, story, &para_ranges, &deleted);
+    // Endnote, anchored-object and cross-reference marks before each paragraph, for their numbers.
+    let marks_before = MarkCounts::before_paragraphs(story, &para_ranges);
     // Border and shading of each paragraph set, drawn once the lines are in place.
     let mut boxes: Vec<Option<ParaBox>> = vec![None; np];
     // Keep options: paragraphs are re-laid from a snapshot when a keep is violated, either forced
@@ -3316,6 +3371,7 @@ fn compose_run(
             var_story,
             var_cache: &mut var_cache,
             notes: &mut notes,
+            marks: marks_before.get(pi).copied().unwrap_or_default(),
         });
         #[cfg(test)]
         reuse::SHAPED.with(|n| n.set(n.get() + 1));

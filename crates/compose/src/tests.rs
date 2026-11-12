@@ -8689,6 +8689,73 @@ fn spine_relative_anchored_notes_stay_in_the_outside_margin_on_both_pages() {
 
 const OBJECT_LEN: usize = designcraft_doc::OBJECT_MARK.len_utf8();
 
+/// A story of `paras` paragraphs, each with an inline anchored object at its start, an endnote
+/// reference after it and a cross-reference that shows `Ref<k>.` for paragraph `k`.
+fn story_with_marks(paras: usize) -> (Document, StoryId) {
+    let text = vec!["Some words, a note and an object."; paras].join("\n");
+    let (mut d, sid, _) = doc_with(&text, Rect::new(0.0, 0.0, 400.0, 20_000.0), ParaAttrs::default());
+    let starts: Vec<usize> = d.story(sid).unwrap().para_ranges().iter().map(|r| r.start).collect();
+    let lid = d.default_layer();
+    for (k, &s) in starts.iter().enumerate().rev() {
+        let it = designcraft_doc::Item::new(
+            ItemId(d.alloc()),
+            lid,
+            designcraft_doc::Shape::Rectangle,
+            designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 6.0, 6.0)),
+        );
+        let story = d.story_mut(sid).unwrap();
+        story.insert_xref(s + 19, designcraft_doc::CrossRef { text: Some(format!("Ref{k}.")), ..Default::default() });
+        story.insert_endnote(s + 10, "An endnote.", ParaFormat::default());
+        story.insert_object(s, designcraft_doc::AnchoredObject::new(it, designcraft_doc::AnchorPosition::Inline { y_offset: 0.0 }));
+    }
+    (d, sid)
+}
+
+/// The marks before each paragraph match a count from the story start, for every kind of mark.
+#[test]
+fn mark_counts_before_each_paragraph_match_a_count_from_the_start() {
+    let (d, sid) = story_with_marks(5);
+    let story = d.story(sid).unwrap();
+    let ranges = story.para_ranges();
+    let counts = MarkCounts::before_paragraphs(story, &ranges);
+    assert_eq!(counts.len(), ranges.len());
+    for (k, (r, m)) in ranges.iter().zip(&counts).enumerate() {
+        let head = &story.text[..r.start];
+        assert_eq!(m.endnotes, head.matches(designcraft_doc::ENDNOTE_REF).count(), "paragraph {k}");
+        assert_eq!(m.objects, head.matches(designcraft_doc::OBJECT_MARK).count(), "paragraph {k}");
+        assert_eq!(m.xrefs, head.matches(designcraft_doc::XREF_MARK).count(), "paragraph {k}");
+        assert_eq!(*m, MarkCounts { endnotes: k, objects: k, xrefs: k }, "paragraph {k}");
+    }
+    // Each paragraph shows its own cross-reference's text, so the composer numbers the
+    // cross-references from the marks before the paragraph.
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let shown: String = cs.frames[0].lines.iter().flat_map(|l| l.glyphs.iter().filter(|g| g.visible).map(|g| g.rendered_char)).collect();
+    let refs: Vec<&str> = shown.match_indices("Ref").map(|(i, _)| &shown[i..i + 5]).collect();
+    assert_eq!(refs, ["Ref0.", "Ref1.", "Ref2.", "Ref3.", "Ref4."], "{shown:?}");
+    // A story without endnotes, anchored objects or cross-references reads nothing.
+    let (plain, psid, _) = doc_with("One\nTwo", Rect::new(0.0, 0.0, 300.0, 300.0), ParaAttrs::default());
+    let p = plain.story(psid).unwrap();
+    assert!(MarkCounts::before_paragraphs(p, &p.para_ranges()).is_empty());
+}
+
+/// Composing a story with endnotes, anchored objects and cross-references reads its text for their numbers in one
+/// pass, so four times the paragraphs read about four times the bytes, not sixteen times.
+#[test]
+fn composing_reads_marks_once_per_story() {
+    let scanned = |paras: usize| {
+        let (d, sid) = story_with_marks(paras);
+        MARK_BYTES_SCANNED.with(|n| n.set(0));
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        assert!(!cs.is_overset());
+        assert_eq!(cs.frames[0].objects.len(), paras);
+        (MARK_BYTES_SCANNED.with(std::cell::Cell::get), d.story(sid).unwrap().text.len())
+    };
+    let (small, small_len) = scanned(40);
+    let (big, big_len) = scanned(160);
+    assert!(small > 0);
+    assert!(big * small_len <= 2 * small * big_len, "40 paragraphs read {small} of {small_len} bytes, 160 read {big} of {big_len}");
+}
+
 #[test]
 fn anchored_object_wraps_its_own_storys_later_lines() {
     let text = [LOREM; 4].join(" ");
