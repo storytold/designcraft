@@ -230,7 +230,7 @@ pub(super) fn hair(painter: &egui::Painter) -> f32 {
 
 const ZERO_POINT_DRAG: &str = "canvas_zero_point_drag";
 
-/// The ruler corner: drag from it and the zero point lands where the pointer is released; a click
+/// The ruler corner: drag from it and the zero point lands where the pointer is released, snapped as a dragged ruler guide is (`zero_point_at`); a click
 /// that stays in the corner leaves it; a double-click resets it. Locked, the corner ignores both.
 /// Cmd-dragged (Ctrl elsewhere), it makes a horizontal and a vertical guide instead.
 /// Holds the pointer position while dragging; returns true while it owns the pointer.
@@ -343,8 +343,12 @@ pub(super) fn zero_point_at(app: &DesignApp, xf: &Xf, p: Pos2, mods: egui::Modif
         );
         at + s.delta
     };
-    // A snap that goes non-finite keeps the raw point.
-    let zp = st.doc.clamp_zero_point([snapped.x - base.x, snapped.y - base.y]).unwrap_or(zp);
+    // Measured from the page under the snapped spot (a page ruler origin), as an unsnapped drop there is; a snap that goes non-finite keeps the raw point.
+    let (base, zp) = st
+        .doc
+        .ruler_base(slot.spread, snapped.x)
+        .and_then(|b| Some((b, st.doc.clamp_zero_point([snapped.x - b.x, snapped.y - b.y])?)))
+        .unwrap_or((base, zp));
     Some((zp, slot.to_canvas(Point::new(base.x + zp[0], base.y + zp[1]))))
 }
 
