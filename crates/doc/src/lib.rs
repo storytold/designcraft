@@ -674,9 +674,19 @@ pub struct AlphaOutline {
     /// under the same id, and the outline is traced again. (Weak, so it doesn't keep old image
     /// data alive, and its address can't be reused by new data while it's held.)
     pub source: std::sync::Weak<Vec<u8>>,
+    /// A number no other outline made in this process has ([`AlphaOutline::next_serial`]).
+    /// Composition caches compare it: an outline traced again after a relink has a new one,
+    /// while a dropped outline's address can be reused.
+    pub serial: u64,
 }
 
 impl AlphaOutline {
+    /// A serial number not given out before in this process.
+    pub fn next_serial() -> u64 {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// Traced from `data`, the asset's current image data.
     pub fn traced_from(&self, data: &Arc<Vec<u8>>) -> bool {
         std::ptr::eq(self.source.as_ptr(), Arc::as_ptr(data))

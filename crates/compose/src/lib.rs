@@ -388,6 +388,10 @@ pub struct Contour {
 /// Points a contour outline may have; a larger outline wraps around its bounding box.
 pub const MAX_CONTOUR_POINTS: usize = 8192;
 
+/// Edge visits a clipped contour may take for one line band; past it, the line's spans come from
+/// the two shapes' projections instead of their intersection.
+const MAX_CLIPPED_WORK: usize = 1 << 20;
+
 impl Contour {
     /// The outline of `path` (after `to_inner`), flattened; None if it is empty or too detailed.
     fn of(path: &designcraft_geom::BezPath, to_inner: designcraft_geom::Affine, offset: f64) -> Option<Contour> {
@@ -448,24 +452,162 @@ impl Contour {
         }
         if !self.clip.is_empty() {
             let clip = rings_band_spans(&self.clip, low, high);
-            let mut cut = Vec::new();
-            let (mut i, mut j) = (0, 0);
-            while let (Some(&(a, b)), Some(&(c, d))) = (spans.get(i), clip.get(j)) {
-                let (lo, hi) = (a.max(c), b.min(d));
-                // A zero-width span (a vertical open path) is kept where the clip covers it.
-                if lo < hi || (a == b && lo == hi) {
-                    cut.push((lo, hi));
-                }
-                if b < d {
-                    i += 1;
-                } else {
-                    j += 1;
-                }
-            }
-            spans = cut;
+            // A fragmented frame, or shapes too detailed to compare within each line's budget,
+            // take the common part of the two projections, which can block more than the frame
+            // shows.
+            let exact = if clip.len() > 128 { None } else { clipped_band_spans(&self.rings, &self.clip, low, high) };
+            spans = exact.unwrap_or_else(|| intersect_spans(&spans, &clip));
         }
         merge_spans(spans.into_iter().map(|(a, b)| (a - self.offset, b + self.offset)).collect())
     }
+}
+
+/// The sorted spans in both `a` and `b` (each sorted and merged). A zero-width span (a vertical
+/// open path) is kept where the other covers it.
+fn intersect_spans(a: &[(f64, f64)], b: &[(f64, f64)]) -> Vec<(f64, f64)> {
+    let mut out = Vec::new();
+    let (mut i, mut j) = (0, 0);
+    while let (Some(&(p, q)), Some(&(r, s))) = (a.get(i), b.get(j)) {
+        let (lo, hi) = (p.max(r), q.min(s));
+        if lo < hi || (lo == hi && (p == q || r == s)) {
+            out.push((lo, hi));
+        }
+        if q < s {
+            i += 1;
+        } else {
+            j += 1;
+        }
+    }
+    out
+}
+
+/// Occupied intervals across the band `y0..y1` of the part of `rings` inside `clip` (both filled
+/// by the non-zero rule). A vertical line through a point of that part either crosses the middle
+/// of the band inside both shapes, or stops inside the band on an edge of one shape that lies
+/// inside the other. The spans are the middle slice of both shapes and the parts of each
+/// shape's edges in the band that lie inside the other, so a part of the outline outside the
+/// clip blocks nothing, even where it shares x positions with the clip in the same band.
+/// None when that takes more than [`MAX_CLIPPED_WORK`] edge visits.
+fn clipped_band_spans(rings: &[Vec<Point>], clip: &[Vec<Point>], y0: f64, y1: f64) -> Option<Vec<(f64, f64)>> {
+    let middle = y0 * 0.5 + y1 * 0.5;
+    let mut spans = intersect_spans(&merge_spans(middle_spans(rings, middle)), &merge_spans(middle_spans(clip, middle)));
+    let mut budget = MAX_CLIPPED_WORK;
+    edges_inside(rings, clip, y0, y1, &mut budget, &mut spans)?;
+    edges_inside(clip, rings, y0, y1, &mut budget, &mut spans)?;
+    Some(merge_spans(spans))
+}
+
+/// Takes `n` edge visits from `budget`; None when it doesn't hold that many.
+fn spend(budget: &mut usize, n: usize) -> Option<()> {
+    *budget = budget.checked_sub(n)?;
+    Some(())
+}
+
+/// Pushes to `out` the x-ranges of the parts of `rings`' edges within the band `y0..y1` that lie
+/// inside `other` or on its boundary. None when `budget` runs out.
+fn edges_inside(rings: &[Vec<Point>], other: &[Vec<Point>], y0: f64, y1: f64, budget: &mut usize, out: &mut Vec<(f64, f64)>) -> Option<()> {
+    let n = other.iter().map(Vec::len).sum::<usize>().max(1);
+    for ring in rings {
+        let Some(&last) = ring.last() else { continue };
+        let mut a = last;
+        for &b in ring {
+            let dy = b.y - a.y;
+            if a.y.max(b.y) >= y0 && a.y.min(b.y) <= y1 {
+                let (t0, t1) = if dy.abs() < 1e-12 {
+                    (0.0, 1.0)
+                } else {
+                    let (u, v) = ((y0 - a.y) / dy, (y1 - a.y) / dy);
+                    (u.min(v).clamp(0.0, 1.0), u.max(v).clamp(0.0, 1.0))
+                };
+                let (p, q) = (a + (b - a) * t0, a + (b - a) * t1);
+                segment_inside(p, q, other, n, budget, out)?;
+            }
+            a = b;
+        }
+    }
+    Some(())
+}
+
+/// Pushes to `out` the x-ranges of the parts of segment `p`–`q` inside `rings` (`n` edges) or on
+/// their boundary: the segment is split where it meets their edges, and each piece is tested at
+/// its middle. Each pass over the edges takes `n` from `budget`; None when it runs out.
+fn segment_inside(p: Point, q: Point, rings: &[Vec<Point>], n: usize, budget: &mut usize, out: &mut Vec<(f64, f64)>) -> Option<()> {
+    let r = q - p;
+    let len2 = r.hypot2();
+    if !len2.is_finite() {
+        return Some(());
+    }
+    let at = |t: f64| p + r * t;
+    spend(budget, n)?;
+    if len2 < 1e-24 {
+        if inside_or_on(rings, p) {
+            out.push((p.x, p.x));
+        }
+        return Some(());
+    }
+    let (ylo, yhi) = (p.y.min(q.y), p.y.max(q.y));
+    let mut ts = vec![0.0, 1.0];
+    for ring in rings {
+        let Some(&last) = ring.last() else { continue };
+        let mut c = last;
+        for &d in ring {
+            if c.y.max(d.y) >= ylo - 1e-9 && c.y.min(d.y) <= yhi + 1e-9 {
+                let e = d - c;
+                let denom = r.cross(e);
+                let w = c - p;
+                if denom.abs() > 1e-12 * (len2 * e.hypot2()).sqrt() {
+                    let (t, u) = (w.cross(e) / denom, w.cross(r) / denom);
+                    if (-1e-9..=1.0 + 1e-9).contains(&u) && (0.0..=1.0).contains(&t) {
+                        ts.push(t);
+                    }
+                } else if w.cross(r).abs() <= 1e-9 * len2.sqrt() {
+                    // Collinear: the edge's ends split the segment.
+                    for t in [w.dot(r) / len2, (d - p).dot(r) / len2] {
+                        if (0.0..=1.0).contains(&t) {
+                            ts.push(t);
+                        }
+                    }
+                }
+            }
+            c = d;
+        }
+    }
+    ts.sort_by(f64::total_cmp);
+    ts.dedup_by(|a, b| (*a - *b).abs() < 1e-12);
+    for w in ts.windows(2) {
+        let (u, v) = (w[0], w[1]);
+        spend(budget, n)?;
+        if inside_or_on(rings, at(u * 0.5 + v * 0.5)) {
+            let (x0, x1) = (at(u).x, at(v).x);
+            out.push((x0.min(x1), x0.max(x1)));
+        }
+    }
+    Some(())
+}
+
+/// Is `pt` inside `rings` (non-zero rule) or within a hair of one of their edges?
+fn inside_or_on(rings: &[Vec<Point>], pt: Point) -> bool {
+    let mut winding = 0i32;
+    for ring in rings {
+        let Some(&last) = ring.last() else { continue };
+        let mut a = last;
+        for &b in ring {
+            let e = b - a;
+            let len2 = e.hypot2();
+            let t = if len2 > 0.0 { ((pt - a).dot(e) / len2).clamp(0.0, 1.0) } else { 0.0 };
+            if (a + e * t - pt).hypot2() < 1e-18 {
+                return true;
+            }
+            if (a.y <= pt.y && pt.y < b.y) || (b.y <= pt.y && pt.y < a.y) {
+                let x = a.x + (pt.y - a.y) / e.y * e.x;
+                if x > pt.x {
+                    winding += if e.y > 0.0 { 1 } else { -1 };
+                }
+            }
+            a = b;
+        }
+    }
+    winding != 0
 }
 
 /// Sorted, overlapping spans joined. Zero-width spans (a vertical edge of an open path) are kept:
@@ -485,9 +627,7 @@ fn merge_spans(mut spans: Vec<(f64, f64)>) -> Vec<(f64, f64)> {
 }
 
 fn rings_band_spans(rings: &[Vec<Point>], y0: f64, y1: f64) -> Vec<(f64, f64)> {
-    let mut spans = Vec::new();
-    let mut crossings = Vec::new();
-    let middle = y0 * 0.5 + y1 * 0.5;
+    let mut spans = middle_spans(rings, y0 * 0.5 + y1 * 0.5);
     for ring in rings {
         let Some(&last) = ring.last() else { continue };
         let mut a = last;
@@ -503,6 +643,21 @@ fn rings_band_spans(rings: &[Vec<Point>], y0: f64, y1: f64) -> Vec<(f64, f64)> {
                 let (x0, x1) = (a.x + t0 * (b.x - a.x), a.x + t1 * (b.x - a.x));
                 spans.push((x0.min(x1), x0.max(x1)));
             }
+            a = b;
+        }
+    }
+    merge_spans(spans)
+}
+
+/// The intervals of the line at height `middle` inside `rings` (non-zero rule), unsorted.
+fn middle_spans(rings: &[Vec<Point>], middle: f64) -> Vec<(f64, f64)> {
+    let mut spans = Vec::new();
+    let mut crossings = Vec::new();
+    for ring in rings {
+        let Some(&last) = ring.last() else { continue };
+        let mut a = last;
+        for &b in ring {
+            let dy = b.y - a.y;
             if (a.y <= middle && middle < b.y) || (b.y <= middle && middle < a.y) {
                 let x = a.x + (middle - a.y) / dy * (b.x - a.x);
                 if x.is_finite() {
@@ -524,7 +679,7 @@ fn rings_band_spans(rings: &[Vec<Point>], y0: f64, y1: f64) -> Vec<(f64, f64)> {
         winding += delta;
         previous = Some(x);
     }
-    merge_spans(spans)
+    spans
 }
 
 /// The closed polylines of `path` (after `to_inner`), flattened; None if it is empty or too detailed.

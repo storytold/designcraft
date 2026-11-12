@@ -62,7 +62,16 @@ pub(crate) fn sync(doc: &mut Document) {
 /// The empty outline standing for an image `trace` found none in: zero-size, which composition
 /// takes as no outline, and dropped like a traced one when the asset's data changes.
 fn no_outline(data: &Arc<Vec<u8>>, asset: AssetId, threshold: u8) -> AlphaOutline {
-    AlphaOutline { asset, threshold, width: 0, height: 0, outer: Default::default(), holes: Default::default(), source: Arc::downgrade(data) }
+    AlphaOutline {
+        asset,
+        threshold,
+        width: 0,
+        height: 0,
+        outer: Default::default(),
+        holes: Default::default(),
+        source: Arc::downgrade(data),
+        serial: AlphaOutline::next_serial(),
+    }
 }
 
 /// The outline of the pixels of `data` more opaque than `threshold`. None for an image that
@@ -112,7 +121,8 @@ pub(crate) fn trace(data: &Arc<Vec<u8>>, asset: AssetId, threshold: u8) -> Optio
                 PathData::from_bezpath(&p)
             };
             let source = Arc::downgrade(data);
-            return Some(AlphaOutline { asset, threshold, width: w, height: h, outer: path(&outer), holes: path(&holes), source });
+            let serial = AlphaOutline::next_serial();
+            return Some(AlphaOutline { asset, threshold, width: w, height: h, outer: path(&outer), holes: path(&holes), source, serial });
         }
         finer = Some((mask, cols, rows));
         grid /= 2;
@@ -501,5 +511,29 @@ mod tests {
         for bad in [json!({"ids": [image], "threshold": 255}), json!({"ids": [image], "insideEdges": 1})] {
             assert!(s.execute("object.textWrap", &bad).is_err());
         }
+    }
+
+    /// Replacing the image data under the same asset, as a relink or link update does, lays the
+    /// text out again around the new outline: neither the story nor the frames change.
+    #[test]
+    fn a_relinked_image_lays_the_text_out_again() {
+        let (mut s, image, story) = page(&png(|x, _| (8..20).contains(&x) || (44..56).contains(&x)), [150.0, 120.0, 178.0, 170.0]);
+        s.execute("object.textWrap", &json!({"ids": [image], "contour": "alphaChannel"})).unwrap();
+        assert!(!overset(&s, story), "the gap between the legs stays open");
+        let Some(designcraft_doc::Content::Graphic(g)) =
+            s.doc().unwrap().doc.item(designcraft_doc::ItemId(image.as_u64().unwrap())).map(|it| it.content.clone())
+        else {
+            panic!("a graphic")
+        };
+        // The new image has no gap: one band across both legs.
+        let solid = Arc::new(png(|x, _| (8..56).contains(&x)));
+        s.edit(|d, _| {
+            let mut a = (**d.assets.get(&g.asset).unwrap()).clone();
+            a.data = solid.clone();
+            d.assets.insert(g.asset, Arc::new(a));
+            Ok(())
+        })
+        .unwrap();
+        assert!(overset(&s, story), "the new image covers the caption");
     }
 }

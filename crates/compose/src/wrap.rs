@@ -18,7 +18,7 @@
 //!   is composed at most that many more times (at least [`MIN_PASSES`]), and never more than
 //!   [`MAX_PASSES`].
 
-use designcraft_doc::{AnchorPosition, AnchoredObject, Document, Item, OBJECT_MARK, PageSide, SpreadRef, Story, StoryId, WrapMode};
+use designcraft_doc::{AnchorPosition, AnchoredObject, Document, Item, OBJECT_MARK, PageSide, SpreadRef, Story, StoryId};
 use designcraft_geom::Affine;
 
 use crate::{ComposeOptions, ComposedStory, Exclusion, FrameSpec};
@@ -48,8 +48,9 @@ pub(crate) struct Obstacle<'a> {
     anchor: Option<usize>,
 }
 
+/// The wrap may be set on the frame or on its placed graphic (Direct Selection).
 fn wraps(o: &AnchoredObject) -> bool {
-    o.item.wrap.mode != WrapMode::None && !o.item.hidden
+    o.item.has_wrap() && !o.item.hidden
 }
 
 /// Does `story` have an anchored object whose wrap can push text?

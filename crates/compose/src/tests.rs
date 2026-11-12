@@ -7581,6 +7581,38 @@ fn anchored_object_wraps_another_storys_text() {
     assert!(lines_in_band(&moved, 200.0, 260.0).iter().all(|l| l.x0 >= left + 100.0 - 1e-6));
 }
 
+/// An anchored frame whose wrap is set only on its placed graphic (Direct Selection) wraps
+/// another story's text as a wrap set on the frame does.
+#[test]
+fn anchored_graphic_wrap_wraps_another_storys_text() {
+    let long = [LOREM; 3].join(" ");
+    let (mut d, a, fa) = doc_with("Anchor here.", Rect::new(0.0, 0.0, 300.0, 400.0), ParaAttrs::default());
+    let lid = d.default_layer();
+    let (_, b) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(320.0, 0.0, 620.0, 400.0), lid, &long, ParaFormat::default()).unwrap();
+    let left = all_lines(&compose_story(&d, b, &ComposeOptions::default()))[0].x0;
+    let area = d.item(fa).unwrap().text_area();
+    anchor_box(&mut d, a, 0, left - area.x0, 100.0 - area.y0, false, WrapMode::None);
+    let wrap = designcraft_doc::TextWrap { mode: WrapMode::BoundingBox, ..Default::default() };
+    let obj = std::sync::Arc::make_mut(&mut d.story_mut(a).unwrap().objects[0]);
+    obj.item.content = designcraft_doc::Content::Graphic(designcraft_doc::Graphic {
+        layer_options: None,
+        asset: designcraft_doc::AssetId(1),
+        size: (100.0, 60.0),
+        xf: designcraft_geom::Affine::IDENTITY,
+        clip: None,
+        auto_fit: designcraft_doc::Fitting::None,
+        fit_align: 0,
+        crop: [0.0; 4],
+        wrap,
+        fill: Default::default(),
+    });
+    let cs = compose_story(&d, b, &ComposeOptions::default());
+    let band = lines_in_band(&cs, 100.0, 160.0);
+    assert!(!band.is_empty());
+    assert!(band.iter().all(|l| l.x0 >= left + 100.0 - 1e-6), "{:?}", band.iter().map(|l| l.x0).collect::<Vec<_>>());
+    assert!(lines_in_band(&cs, 0.0, 80.0).iter().all(|l| (l.x0 - left).abs() < 1e-6));
+}
+
 /// An anchored object's wrap is built as a page item's: a contour on both sides of an oval sets
 /// text left and right of it, closer in where the oval narrows.
 #[test]
@@ -8477,6 +8509,51 @@ fn a_vertical_open_path_keeps_its_offset() {
     assert_eq!(c.within(&frame, designcraft_geom::Affine::IDENTITY).band_spans(40.0, 50.0), vec![(7.0, 13.0)]);
     let c = Contour::of(&path, designcraft_geom::Affine::IDENTITY, 0.0).unwrap();
     assert_eq!(c.band_spans(40.0, 50.0), vec![(10.0, 10.0)]);
+}
+
+/// An outline counts only where its frame shows it: a part of it in a notch of the frame blocks
+/// nothing, even where the frame covers the same x positions lower in the same line band.
+#[test]
+fn a_clipped_contour_blocks_only_what_its_frame_shows() {
+    let poly = |pts: &[(f64, f64)]| {
+        let mut p = designcraft_geom::BezPath::new();
+        p.move_to(pts[0]);
+        for &q in &pts[1..] {
+            p.line_to(q);
+        }
+        p.close_path();
+        p
+    };
+    let id = designcraft_geom::Affine::IDENTITY;
+    // An L-shaped frame with a notch at x 10..40 above y = 6.
+    let frame = poly(&[(0.0, 0.0), (10.0, 0.0), (10.0, 6.0), (40.0, 6.0), (40.0, 10.0), (0.0, 10.0)]);
+    // An outline in the notch only.
+    let c = Contour::of(&poly(&[(20.0, 0.0), (40.0, 0.0), (40.0, 4.0), (20.0, 4.0)]), id, 0.0).unwrap();
+    assert_eq!(c.band_spans(0.0, 10.0), vec![(20.0, 40.0)]);
+    assert_eq!(c.within(&frame, id).band_spans(0.0, 10.0), Vec::<(f64, f64)>::new(), "the frame shows none of it");
+    // Reaching below the notch, where the frame shows it from y = 6 to 8.
+    let c = Contour::of(&poly(&[(20.0, 0.0), (40.0, 0.0), (40.0, 8.0), (20.0, 8.0)]), id, 0.0).unwrap();
+    assert_eq!(c.within(&frame, id).band_spans(0.0, 10.0), vec![(20.0, 40.0)]);
+    // A band that crosses both shapes whole keeps their common part, widened by the offset.
+    let c = Contour::of(&poly(&[(5.0, -10.0), (30.0, -10.0), (30.0, 20.0), (5.0, 20.0)]), id, 2.0).unwrap();
+    assert_eq!(c.within(&frame, id).band_spans(7.0, 9.0), vec![(3.0, 32.0)]);
+    // A frame in more than 128 pieces across the band takes the common part of the projections.
+    let mut fragmented = frame.clone();
+    for i in 0..200 {
+        let x = 1000.0 + 2.0 * f64::from(i);
+        fragmented.extend(poly(&[(x, 0.0), (x + 1.0, 0.0), (x + 1.0, 10.0), (x, 10.0)]).elements().iter().copied());
+    }
+    let c = Contour::of(&poly(&[(20.0, 0.0), (40.0, 0.0), (40.0, 4.0), (20.0, 4.0)]), id, 0.0).unwrap();
+    assert_eq!(c.within(&fragmented, id).band_spans(0.0, 10.0), vec![(20.0, 40.0)]);
+    // So does a frame and an outline too detailed to compare within a line's budget: here 2,000
+    // points on the frame's bottom edge and on the outline's top edge.
+    let mut detailed = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 6.0), (40.0, 6.0), (40.0, 10.0)];
+    detailed.extend((1..2000).map(|i| (40.0 - 0.02 * f64::from(i), 10.0)));
+    detailed.push((0.0, 10.0));
+    let mut notch: Vec<(f64, f64)> = (0..2000).map(|i| (20.0 + 0.01 * f64::from(i), 0.0)).collect();
+    notch.extend([(40.0, 0.0), (40.0, 4.0), (20.0, 4.0)]);
+    let c = Contour::of(&poly(&notch), id, 0.0).unwrap();
+    assert_eq!(c.within(&poly(&detailed), id).band_spans(0.0, 10.0), vec![(20.0, 40.0)]);
 }
 
 /// Rule Above's offset runs from the first line's baseline up to the rule's bottom edge, as in
