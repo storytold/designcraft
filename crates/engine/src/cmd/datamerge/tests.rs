@@ -1536,6 +1536,76 @@ fn merged_records_give_anchored_objects_their_own_ids() {
     designcraft_format::load(&designcraft_format::save(doc).unwrap()).unwrap();
 }
 
+/// A record previewed into an image placeholder whose frame wraps with an Alpha Channel contour
+/// gets the image's outline, as an edit would.
+#[test]
+fn a_previewed_image_gets_its_alpha_channel_outline() {
+    let dir = scratch("alpha-preview");
+    let mut pixels = vec![0u8; 64 * 64 * 4];
+    for y in 0..64 {
+        for x in 16..48 {
+            pixels[(y * 64 + x) * 4 + 3] = 255;
+        }
+    }
+    std::fs::write(dir.join("cut.png"), designcraft_render::Rendered { width: 64, height: 64, pixels }.to_png()).unwrap();
+    write(&dir.join("pics.csv"), "Photo\ncut.png\n");
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    exec(&mut s, "data.source.select", json!({"path": dir.join("pics.csv")}));
+    let frame = exec(&mut s, "frame.create", json!({"rect": [0.0, 0.0, 200.0, 100.0], "content": "graphic"}));
+    exec(&mut s, "data.placeholder.add", json!({"field": "Photo", "role": "image", "item": frame["id"]}));
+    exec(&mut s, "object.textWrap", json!({"ids": [frame["id"]], "mode": "contour", "contour": "alphaChannel"}));
+    assert!(s.doc().unwrap().doc.alpha_outlines.is_empty(), "no image placed yet");
+    exec(&mut s, "data.preview", json!({"record": 1}));
+    let d = &s.doc().unwrap().doc;
+    assert_eq!(d.alpha_outlines.len(), 1, "the previewed image is traced");
+    assert!(d.alpha_outlines[0].width > 0 && !d.alpha_outlines[0].outer.subpaths.is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The overset count data merge reports is composed with the merged images' Alpha Channel
+/// outlines: a caption over the image's transparent part is set, not counted as overset. With a
+/// bounding box wrap the same caption is overset, so the count depends on the outline.
+#[test]
+fn a_merge_counts_overset_text_with_the_merged_images_outlines() {
+    let (r, outlines) = merge_with_wrap("alpha-merge", json!({"mode": "contour", "contour": "alphaChannel", "offset": 0}));
+    assert_eq!(r["oversetStories"], 0, "the caption sits beside the image's visible pixels: {r}");
+    assert_eq!(outlines, 1, "the merged document has the image's outline");
+    let (r, _) = merge_with_wrap("alpha-merge-box", json!({"mode": "boundingBox", "offset": 0}));
+    assert_eq!(r["oversetStories"], 1, "the image's frame covers the caption: {r}");
+}
+
+/// Merges one record whose image is visible only in its left quarter into a graphic placeholder
+/// with the text wrap `wrap`, beside a caption over the image's transparent part. Returns the
+/// merge's answer and the number of nonempty Alpha Channel outlines in the merged document.
+fn merge_with_wrap(name: &str, wrap: Value) -> (Value, usize) {
+    let dir = scratch(name);
+    // Visible only in the left quarter.
+    let mut pixels = vec![0u8; 64 * 64 * 4];
+    for y in 0..64 {
+        for x in 0..16 {
+            pixels[(y * 64 + x) * 4 + 3] = 255;
+        }
+    }
+    std::fs::write(dir.join("cut.png"), designcraft_render::Rendered { width: 64, height: 64, pixels }.to_png()).unwrap();
+    write(&dir.join("pics.csv"), "Photo\ncut.png\n");
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    exec(&mut s, "data.source.select", json!({"path": dir.join("pics.csv")}));
+    let frame = exec(&mut s, "frame.create", json!({"rect": [100.0, 100.0, 300.0, 300.0], "content": "graphic"}));
+    exec(&mut s, "data.placeholder.add", json!({"field": "Photo", "role": "image", "item": frame["id"]}));
+    exec(&mut s, "data.options", json!({"fitting": "fitContentToFrame"}));
+    let mut params = wrap;
+    params["ids"] = json!([frame["id"]]);
+    exec(&mut s, "object.textWrap", params);
+    text_frame(&mut s, [220.0, 180.0, 290.0, 220.0], "Hi", None);
+    let r = exec(&mut s, "data.merge", json!({}));
+    let doc = &s.documents()[s.active_index().unwrap()].doc;
+    let outlines = doc.alpha_outlines.iter().filter(|o| o.width > 0 && !o.outer.subpaths.is_empty()).count();
+    let _ = std::fs::remove_dir_all(&dir);
+    (r, outlines)
+}
+
 /// The cell texts of the first table in the active document's first story that has one.
 fn cell_texts(s: &Session) -> Vec<String> {
     let doc = &s.documents()[s.active_index().unwrap()].doc;
