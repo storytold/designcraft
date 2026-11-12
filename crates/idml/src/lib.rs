@@ -59,7 +59,7 @@ mod xml;
 mod tests;
 
 pub use export::export_icml;
-pub use export::{ExportOptions, export_idml, export_idml_with};
+pub use export::{ExportOptions, export_idml, export_idml_report, export_idml_with};
 pub use import::{Imported, import_idml, import_idml_report, import_idml_report_with_previews, import_idml_with};
 pub use import::{ImportedStory, MAX_ICML_BYTES, import_icml, is_icml};
 

@@ -152,7 +152,7 @@ pub(super) fn export_text(s: &mut Session, p: &Value) -> Result<Value> {
             let bytes = designcraft_idml::export_icml(doc, sid).map_err(|e| bad(ID, e.to_string()))?;
             String::from_utf8(bytes).map_err(|e| bad(ID, e.to_string()))?
         }
-        _ => designcraft_textimport::export::plain_text(story),
+        _ => designcraft_textimport::export::plain_text(doc, story),
     };
     match path {
         Some(path) => {
@@ -169,13 +169,30 @@ fn page_text(d: &designcraft_doc::Document, cache: &designcraft_compose::Cache, 
     let mut out = String::new();
     for st in d.stories.values() {
         let cs = cache.get(d, st.id, None);
+        let spans = d.visible_spans(st);
         for ft in &cs.frames {
             if d.page_of_item(ft.frame) != Some(abs) {
                 continue;
             }
+            // Pages render printing-only: a hidden or nonprinting frame or group around it, or a top-level item on a hidden or non-printable layer (members draw on its layer), isn't on the rendered page.
+            // Inside a multi-state object only the active state is drawn.
+            if d.find(ft.frame).is_some_and(|loc| {
+                (1..=loc.path.len()).any(|n| {
+                    d.item_at(&designcraft_doc::ItemLoc { spread: loc.spread, path: loc.path[..n].to_vec() }).is_some_and(|it| {
+                        it.hidden
+                            || it.nonprinting
+                            || n == 1 && d.layers.iter().any(|l| (!l.visible || !l.printable) && l.id == it.layer)
+                            || n < loc.path.len() && !it.states.is_empty() && loc.path[n] != it.active_state
+                    })
+                })
+            }) {
+                continue;
+            }
             for l in &ft.lines {
                 let r = l.range.start.min(st.text.len())..l.range.end.min(st.text.len());
-                let t: String = st.text[r].chars().filter(|c| !('\u{E000}'..='\u{F8FF}').contains(c)).collect();
+                // The line's text as it shows: hidden conditional text and deletions left out.
+                let t: String =
+                    designcraft_doc::Document::visible_text(st, &spans, r).chars().filter(|c| !('\u{E000}'..='\u{F8FF}').contains(c)).collect();
                 if !t.trim().is_empty() {
                     out.push_str(t.trim_end_matches('\n'));
                     out.push('\n');

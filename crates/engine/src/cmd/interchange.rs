@@ -18,7 +18,7 @@ use crate::{DocState, EngineError, Result, Session};
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(query "file.exportIdml", "Export IDML…", [], None,
-            "{path?, embedImages?: true} — writes an IDML package to `path`, or returns {base64} without a path",
+            "{path?, embedImages?: true} — writes an IDML package to `path`, or returns {base64} without a path; `warnings` names each image written as a link because the embedded-image limit was reached",
             has_doc, export_idml),
         cmd!(noundo "file.openIdml", "Open IDML", [], None,
             "{path | base64, name?} — opens an IDML package, or an InDesign document or template (.indd, .indt: converted to IDML first; its conversion warnings join `warnings`), as a new document (linked images are read next to the file or from its Links/ folder; the fonts in a `Document Fonts` folder beside it load first) → {index, documentFonts, warnings: conversion warnings, package parts missing, font files skipped, GREP styles whose pattern can't compile}",
@@ -30,15 +30,19 @@ fn export_idml(s: &mut Session, p: &Value) -> Result<Value> {
     let st = s.doc()?;
     let opts = designcraft_idml::ExportOptions { embed_images: p.get("embedImages").and_then(Value::as_bool).unwrap_or(true) };
     let layer_doc = with_pdf_layer_variants(&st.doc, opts.embed_images)?;
-    let bytes = designcraft_idml::export_idml_with(layer_doc.as_ref().unwrap_or(&st.doc), &opts);
-    match str_param(p, "path") {
+    let (bytes, warnings) = designcraft_idml::export_idml_report(layer_doc.as_ref().unwrap_or(&st.doc), &opts);
+    let mut out = match str_param(p, "path") {
         Some(path) => {
             #[cfg(not(target_arch = "wasm32"))]
             crate::io::write_file(path, &bytes).map_err(EngineError::Other)?;
-            Ok(json!({"path": path, "bytes": bytes.len()}))
+            json!({"path": path, "bytes": bytes.len()})
         }
-        None => Ok(json!({"base64": base64_encode(&bytes), "bytes": bytes.len()})),
+        None => json!({"base64": base64_encode(&bytes), "bytes": bytes.len()}),
+    };
+    if !warnings.is_empty() {
+        out["warnings"] = json!(warnings);
     }
+    Ok(out)
 }
 
 /// Whether a placement holds an Object Layer Options choice an export can still apply: a graphic

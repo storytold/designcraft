@@ -86,6 +86,11 @@ fn required_version(doc: &Document) -> u32 {
 }
 
 fn save_with_large_entries_from(doc: &Document, preview: Option<&[u8]>, large_entry: usize) -> Result<Vec<u8>, FormatError> {
+    save_within(doc, preview, large_entry, Limits::DEFAULT)
+}
+
+/// [`save_with_large_entries_from`], deflating only what a reader with `limits` inflates.
+fn save_within(doc: &Document, preview: Option<&[u8]>, large_entry: usize, limits: Limits) -> Result<Vec<u8>, FormatError> {
     // JSON writes infinity and NaN as null, which no load accepts: the file would not open.
     if let Some(id) = doc.non_finite_item() {
         return Err(FormatError::Unsaveable(format!("object {} has a position or size that is not a finite number", id.0)));
@@ -103,8 +108,8 @@ fn save_with_large_entries_from(doc: &Document, preview: Option<&[u8]>, large_en
         z.write_all(MIME.as_bytes()).map_err(|e| FormatError::Io(e.to_string()))?;
         z.start_file("meta.json", deflate).map_err(io)?;
         let version = required_version(doc);
-        let meta = json!({"format": "designcraft", "version": version, "generator": concat!("DesignCraft ", env!("CARGO_PKG_VERSION"))});
-        z.write_all(meta.to_string().as_bytes()).map_err(|e| FormatError::Io(e.to_string()))?;
+        let meta = json!({"format": "designcraft", "version": version, "generator": concat!("DesignCraft ", env!("CARGO_PKG_VERSION"))}).to_string();
+        z.write_all(meta.as_bytes()).map_err(|e| FormatError::Io(e.to_string()))?;
         if let Some(png) = preview {
             z.start_file(PREVIEW, stored).map_err(io)?;
             z.write_all(png).map_err(|e| FormatError::Io(e.to_string()))?;
@@ -112,12 +117,23 @@ fn save_with_large_entries_from(doc: &Document, preview: Option<&[u8]>, large_en
         z.start_file("document.json", deflate).map_err(io)?;
         let json = serde_json::to_vec_pretty(doc).map_err(|e| FormatError::Io(e.to_string()))?;
         z.write_all(&json).map_err(|e| FormatError::Io(e.to_string()))?;
+        // Opening caps what deflated entries expand to, one asset and all of them together, while a
+        // stored entry opens at any size. An asset deflated past those caps would save but never
+        // open again (#2283), so it is stored as is instead.
+        let mut deflate_left = limits.total.saturating_sub(meta.len() as u64).saturating_sub(json.len() as u64);
         for (id, a) in &doc.assets {
             if a.data.is_empty() {
                 continue;
             }
+            let len = a.data.len() as u64;
             // Already-compressed images are stored as-is.
-            let opts = if matches!(a.mime.as_str(), "image/png" | "image/jpeg" | "image/gif" | "image/webp") { stored } else { deflate };
+            let compressed = matches!(a.mime.as_str(), "image/png" | "image/jpeg" | "image/gif" | "image/webp");
+            let opts = if compressed || len > limits.asset || len > deflate_left {
+                stored
+            } else {
+                deflate_left = deflate_left.saturating_sub(len);
+                deflate
+            };
             let opts = opts.large_file(a.data.len() >= large_entry);
             z.start_file(format!("assets/{}.{}", id.0, ext_for(&a.mime)), opts).map_err(io)?;
             z.write_all(&a.data).map_err(|e| FormatError::Io(e.to_string()))?;
@@ -183,7 +199,8 @@ const MAX_ENTRIES: usize = 100_000;
 /// bytes in the archive, which is already in memory, and all stored entries read together are
 /// held to the archive's own size), so a placed image — stored as is by [`save`] — opens whatever
 /// its size and doesn't count against the budget. Saving has no cap, and this keeps every saved
-/// document openable (#2166).
+/// document openable (#2166): [`save`] deflates an asset only while it stays within these limits,
+/// and stores the rest as is (#2283).
 #[derive(Clone, Copy, Debug)]
 struct Limits {
     /// Most bytes `meta.json` or `document.json` may expand to.
@@ -224,10 +241,17 @@ fn read_entry(
         return Err(too_big());
     }
     let mut v = Vec::new();
-    if f.take(limit.saturating_add(1)).read_to_end(&mut v).is_err() {
+    let read = f.take(limit.saturating_add(1)).read_to_end(&mut v);
+    let n = v.len() as u64;
+    // What a failed read produced was inflated all the same: it counts against the archive's budget.
+    if read.is_err() {
+        if stored {
+            *stored_left = stored_left.saturating_sub(n);
+        } else {
+            *left = left.saturating_sub(n);
+        }
         return Ok(None);
     }
-    let n = v.len() as u64;
     if n > limit {
         return Err(too_big());
     }
@@ -312,12 +336,14 @@ fn upgrade(doc: &mut Document, from: u32) {
 /// is missing.
 fn pin_para_default<T: Clone>(doc: &mut Document, field: fn(&mut ParaAttrs) -> &mut Option<T>, old: T) {
     let unset = |a: &ParaAttrs| field(&mut a.clone()).is_none();
+    // Every style is looked up by name: through one index, not a search of all styles each time.
+    let index = doc.styles.para_index();
     let roots: std::collections::HashSet<String> = doc
         .styles
         .paragraph
         .iter()
         .filter_map(|s| {
-            let chain = doc.styles.para_chain(&s.name);
+            let chain = designcraft_doc::Styles::para_chain_by(&s.name, |n| index.get(n).copied());
             if chain.iter().all(|c| unset(&c.para)) { chain.first().map(|c| c.name.clone()) } else { None }
         })
         .collect();
@@ -326,9 +352,10 @@ fn pin_para_default<T: Clone>(doc: &mut Document, field: fn(&mut ParaAttrs) -> &
             *field(&mut s.para) = Some(old.clone());
         }
     }
-    let styles = doc.styles.clone();
+    // Borrowed names: one entry per style already in memory, so no copy and no extra bound needed.
+    let names: std::collections::HashSet<&str> = doc.styles.paragraph.iter().map(|s| s.name.as_str()).collect();
     let mut pin = |st: &mut Story| {
-        for p in st.paras.iter_mut().filter(|p| styles.para(&p.style).is_none()) {
+        for p in st.paras.iter_mut().filter(|p| !names.contains(p.style.as_str())) {
             let v = field(&mut p.para);
             if v.is_none() {
                 *v = Some(old.clone());

@@ -1,10 +1,11 @@
 //! Paragraph, character and object styles with based-on inheritance.
 
+use designcraft_geom::corners::CornerOptions;
 use serde::{Deserialize, Serialize};
 
 use crate::attrs::{CharAttrs, CharProps, ParaAttrs, ParaProps};
 use crate::item::{Effects, Fill, Item, Stroke, TextFrameOptions};
-use crate::story::{BASIC_PARAGRAPH, CharFormat, NO_CHAR_STYLE, ParaFormat};
+use crate::story::{BASIC_PARAGRAPH, CharFormat, NO_CHAR_STYLE, ParaFormat, Story};
 
 pub const NO_PARA_STYLE: &str = "[No Paragraph Style]";
 pub const BASIC_GRAPHICS_FRAME: &str = "[Basic Graphics Frame]";
@@ -53,17 +54,30 @@ pub struct ObjectStyle {
     pub stroke: Option<Stroke>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub paragraph_style: Option<String>,
+    /// Paragraph Styles › Apply Next Style: the paragraph style goes on a text frame's first
+    /// paragraph, and each paragraph after it takes the Next Style of the one before.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub apply_next_style: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text_frame: Option<TextFrameOptions>,
     /// Effects (drop shadow, feather, glows…). An item using the style follows them until its own
     /// effects differ from the style's (a local override).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effects: Option<Effects>,
+    /// Corner Options (Stroke & Corner Options): each corner's shape and size, by name (top left,
+    /// top right, bottom right, bottom left), as InDesign's; an item takes them at the anchors at
+    /// those corners ([`CornerOptions::named_to_path`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub corners: Option<CornerOptions>,
 }
 
 impl ObjectStyle {
-    /// Gives `it` the fill, stroke, effects and text frame options this style sets.
+    /// Gives `it` the fill, stroke, corners, effects and text frame General options this style
+    /// sets. A text frame keeps its baseline, auto-size, column rule and Type on a Path settings.
     pub fn apply_to(&self, it: &mut Item) {
+        if let Some(c) = self.corners {
+            it.corners = c.named_to_path(&it.path);
+        }
         if let Some(f) = &self.fill {
             it.fill = f.clone();
         }
@@ -74,8 +88,61 @@ impl ObjectStyle {
             it.effects = e.clone();
         }
         if let (Some(tf), Some(o)) = (it.text_frame_mut(), &self.text_frame) {
-            tf.options = o.clone();
+            tf.options.set_general(o);
         }
+    }
+
+    /// The paragraph style of each of a text frame's `n` paragraphs under this style: its
+    /// paragraph style for all of them, or with Apply Next Style that one first and then each
+    /// one's Next Style. `None` when the style sets no paragraph style.
+    pub fn paragraph_styles(&self, styles: &Styles, n: usize) -> Option<Vec<String>> {
+        let mut cur = self.paragraph_style.clone()?;
+        let mut out = Vec::with_capacity(n);
+        for _ in 0..n {
+            out.push(cur.clone());
+            if self.apply_next_style
+                && let Some(next) = styles.para(&cur).and_then(|s| s.next_style.clone())
+            {
+                cur = next;
+            }
+        }
+        Some(out)
+    }
+
+    /// Whether a story's paragraphs are in the paragraph styles this style gives them (they
+    /// always are when it sets none).
+    pub fn story_follows(&self, styles: &Styles, st: &Story) -> bool {
+        self.paragraph_styles(styles, st.paras.len()).is_none_or(|want| st.paras.iter().zip(&want).all(|(f, w)| f.style == *w))
+    }
+
+    /// After an edit from `old`: the paragraphs of `st` still in the paragraph style `old` gives
+    /// them (every paragraph, when `old` set none) with the one this style gives each, where that
+    /// differs. A paragraph in another style is left out.
+    pub fn restyle_from(&self, old: &ObjectStyle, styles: &Styles, st: &Story) -> Vec<(usize, String)> {
+        let n = st.paras.len();
+        let Some(want) = self.paragraph_styles(styles, n) else { return Vec::new() };
+        let was = old.paragraph_styles(styles, n);
+        st.paras
+            .iter()
+            .zip(want)
+            .enumerate()
+            .filter(|(i, (f, w))| was.as_ref().is_none_or(|was| f.style == was[*i]) && f.style != *w)
+            .map(|(i, (_, w))| (i, w))
+            .collect()
+    }
+
+    /// Put a story's paragraphs in the paragraph styles this style gives them; `false` when it
+    /// sets none or they already are.
+    pub fn restyle(&self, styles: &Styles, st: &mut Story) -> bool {
+        if self.story_follows(styles, st) {
+            return false;
+        }
+        let Some(want) = self.paragraph_styles(styles, st.paras.len()) else { return false };
+        for (f, w) in st.paras.iter_mut().zip(want) {
+            f.style = w;
+        }
+        st.rev = st.rev.wrapping_add(1);
+        true
     }
 }
 
@@ -775,14 +842,29 @@ impl Styles {
 
     /// The paragraph style chain from root to `name` (cycle-safe): resolution starts at its first.
     pub fn para_chain(&self, name: &str) -> Vec<&ParagraphStyle> {
+        Self::para_chain_by(name, |n| self.para(n))
+    }
+
+    /// The paragraph styles by name, the first of each name (as [`Self::para`] finds it), for
+    /// callers that look up every style: one map instead of a search per style.
+    pub fn para_index(&self) -> std::collections::HashMap<&str, &ParagraphStyle> {
+        let mut index = std::collections::HashMap::new();
+        for s in &self.paragraph {
+            index.entry(s.name.as_str()).or_insert(s);
+        }
+        index
+    }
+
+    /// [`Self::para_chain`] with styles found through `find` (a [`Self::para_index`]).
+    pub fn para_chain_by<'a>(name: &str, find: impl Fn(&str) -> Option<&'a ParagraphStyle>) -> Vec<&'a ParagraphStyle> {
         let mut chain = Vec::new();
-        let mut cur = self.para(name);
+        let mut cur = find(name);
         while let Some(s) = cur {
             if chain.len() >= MAX_DEPTH || chain.iter().any(|c: &&ParagraphStyle| c.name == s.name) {
                 break;
             }
             chain.push(s);
-            cur = s.based_on.as_deref().and_then(|b| self.para(b));
+            cur = s.based_on.as_deref().and_then(&find);
         }
         chain.reverse();
         chain

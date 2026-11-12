@@ -143,7 +143,7 @@ config works across the suite) keep the agent to the folders you give it:
   folder that doesn't exist is refused, as is a link that leads nowhere (writing through it would
   create its target). The result is compared with each root by whole folder names: `/work2/x` is not
   inside `/work`. On Windows case is ignored, UNC paths (`\\server\share\...`) are resolved like
-  drive-letter ones, and device names (`CON`, `NUL`, `COM1`...) are refused.
+  drive-letter ones, and device names (`CON`, `NUL`, `COM1`, `COM¹`, including before a colon) are refused.
 - A refused path is an ordinary tool error the agent can read and correct, for example
   `automation path rejected: outside the write root /work/project/out: /etc/x.designcraft` (with
   several, `outside the write roots /work/project/out, /tmp/scratch: ...`) or
@@ -185,6 +185,12 @@ In connected mode every tool maps to a control-channel method (`engine.execute`,
 what the agent does shows up live in the window. A failed request is not resent: the operation may have completed,
 so inspect the document before retrying. The next request re-establishes the connection.
 
+## Table targets
+
+Table IDs can repeat across stories. For `execute` commands that target an existing table, supply `story` with `table`
+when an ID repeats. An ambiguous table-only request returns an error. Supplied `story` and `table` values must be
+nonnegative integers; `null` and values of other types return an error.
+
 ## Coordinates
 
 Points (1/72 in), y down, in **spread** space: on a single-page spread the page's top-left is (0, 0); on a facing
@@ -205,6 +211,14 @@ in `story.replaceRange`: there an offset inside a character, an `end` past the e
 is an error that gives the story length in bytes, and the story is left unchanged. A `find.find` or `find.next` match
 that has a `cell` (`{table, row, col}`) is in that table cell's text, and its `start` / `end` count from the start of
 the cell.
+
+## Tables without a selection
+
+A table command acts on the selected cells or on the table that holds the insertion point. A command whose params list
+`story?` and `table?` also runs when nothing in a table is selected, or the selection is one it can't act on, if the
+call passes `table` (the id that `table.insert` and `table.get` return) and, optionally, `story`. A `table` that is not
+in the document, or not in the given `story`, is an error, and so is a `story` that is not a non-negative integer. The
+Table menu items stay disabled while nothing in a table is selected.
 
 ## Text and image fitting
 
