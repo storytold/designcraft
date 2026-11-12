@@ -509,6 +509,8 @@ pub(crate) fn discard_document(s: &mut Session, index: usize, default_dir: Optio
     // A completed Save/Close/Revert consumes the provenance, even when removal fails. A stale
     // source uid must never become a future claim on another document's checkpoint.
     let mut entries = std::mem::take(&mut doc.recovery_entries);
+    // The checkpoints are going away, so what they held goes with them.
+    doc.recovery_revisions.clear();
     if let Some(dir) = default_dir
         && !entries.iter().any(|(entry_dir, entry_uid)| *entry_uid == uid && same_directory(entry_dir, dir))
     {
@@ -533,6 +535,29 @@ fn same_directory(a: &Path, b: &Path) -> bool {
 
 fn has_checkpoint(doc: &DocState, dir: &Path) -> bool {
     doc.recovery_entries.iter().any(|(entry_dir, uid)| *uid == doc.uid && same_directory(entry_dir, dir))
+}
+
+/// Whether the checkpoint already in `dir` holds this document as it is now, so rewriting it would
+/// produce the same bytes. Recorded per folder: a checkpoint in one folder says nothing about
+/// another's.
+fn checkpoint_is_current(doc: &DocState, dir: &Path) -> bool {
+    // The record only says what was written; the files must still be there. Something outside
+    // this run (a cleanup, the user) may have removed them, and a skipped write would then leave
+    // the unsaved document with nothing to recover from.
+    let (document, metadata) = files(dir, doc.uid);
+    has_checkpoint(doc, dir)
+        && doc.recovery_revisions.iter().any(|(entry_dir, revision)| *revision == doc.revision && same_directory(entry_dir, dir))
+        && document.is_file()
+        && metadata.is_file()
+}
+
+/// Record that `dir`'s checkpoint now holds the document's current revision.
+fn record_checkpoint_revision(doc: &mut DocState, dir: &Path) {
+    let revision = doc.revision;
+    match doc.recovery_revisions.iter_mut().find(|(entry_dir, _)| same_directory(entry_dir, dir)) {
+        Some(entry) => entry.1 = revision,
+        None => doc.recovery_revisions.push((dir.to_path_buf(), revision)),
+    }
 }
 
 fn protect_retained_sources(s: &Session, dir: &Path) -> Result<()> {
@@ -600,7 +625,13 @@ pub(crate) fn save_tracked(s: &mut Session, dir: &Path) -> Result<usize> {
             discard_document(s, index, Some(dir));
             continue;
         }
+        // A document nobody has touched since its last checkpoint here is already on disk: do not
+        // serialize the whole file (every placed image included) again.
+        if s.docs.get(index).is_some_and(|document| checkpoint_is_current(document, dir)) {
+            continue;
+        }
         let Some(document) = s.docs.get_mut(index) else { continue };
+        document.recovery_revisions.retain(|(entry_dir, _)| !same_directory(entry_dir, dir));
         let (doc, meta) = files(dir, document.uid);
         let bytes = designcraft_format::save(document.preview_stash.as_deref().unwrap_or(document.doc.as_ref()))
             .map_err(|e| EngineError::Other(e.to_string()))?;
@@ -614,6 +645,7 @@ pub(crate) fn save_tracked(s: &mut Session, dir: &Path) -> Result<usize> {
         }
         let metadata = json!({"path": document.path, "title": document.title(), "saved": designcraft_doc::vars::now()});
         publish_recovery_file(&meta, metadata.to_string().as_bytes(), replace)?;
+        record_checkpoint_revision(document, dir);
         n += 1;
     }
     Ok(n)
@@ -889,6 +921,10 @@ fn open_with_publisher(s: &mut Session, dir: &Path, mut publish: impl FnMut(&Pat
                         Ok(()) => {
                             discard(dir, uid);
                             state.recovery_entries = vec![(destination.clone(), state.uid)];
+                            // Both files written from this very document: the next tick has
+                            // nothing to redo. Not recorded when the metadata failed, so that tick
+                            // writes the entry again rather than leaving it without its path.
+                            record_checkpoint_revision(state, &destination);
                         }
                         Err(e) => log::warn!("recovery entry {uid} kept: {e}"),
                     }
