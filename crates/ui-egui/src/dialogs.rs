@@ -1106,9 +1106,11 @@ fn text_frame_options_dialog(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog)
     }
     ui.set_min_width(560.0);
     ui.horizontal_top(|ui| {
-        // A fixed height: the separator would otherwise stretch the dialog to the window.
-        ui.set_min_height(330.0);
-        ui.set_max_height(330.0);
+        // A fixed height: the separator would otherwise stretch the dialog to the window. A
+        // non-rectangular frame's Inset row needs one more row.
+        let height = if d.b("_shaped") { 360.0 } else { 330.0 };
+        ui.set_min_height(height);
+        ui.set_max_height(height);
         section_list(
             &lang,
             ui,

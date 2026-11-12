@@ -1549,6 +1549,14 @@ fn text_frame_options_dims_the_sides_for_a_non_rectangular_frame() {
         }
         assert_eq!(h.query_by_label("Inset:").is_some(), shaped, "{shape}: the Inset caption");
         assert_eq!(h.query_by_label("Increase tfo_inset").is_some(), shaped, "{shape}: the Inset field");
+        // The General tab fits in the dialog's fixed height: the buttons stay put on another tab.
+        let (wrap, cancel) = (h.get_by_label("Ignore Text Wrap").rect().bottom(), h.get_by_label("Cancel").rect().top());
+        assert!(wrap < cancel, "{shape}: Ignore Text Wrap ends at {wrap}, below the top of Cancel at {cancel}");
+        h.get_by_label("Auto-Size").click();
+        h.run_steps(3);
+        assert_eq!(h.get_by_label("Cancel").rect().top(), cancel, "{shape}: the buttons stay put on another tab");
+        h.get_by_label("General").click();
+        h.run_steps(3);
         // The link toggles only for a rectangle.
         let linked = |h: &Harness<'_, DesignApp>| h.state().ui.dialog.as_ref().unwrap().b("insetLinked");
         let before = linked(&h);
