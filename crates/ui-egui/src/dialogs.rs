@@ -766,6 +766,42 @@ mod color_theme_tests {
         assert!(st.interaction.is_none());
     }
 
+    /// OK, and Preview switched off, end a Create Guides preview in the document it is shown in
+    /// while another document is active, and leave that document's own interaction alone.
+    #[test]
+    fn a_create_guides_preview_ends_in_its_own_document() {
+        let open = |app: &mut DesignApp| {
+            app.run("file.new", json!({})).unwrap();
+            let before = app.session.active().unwrap().doc.clone();
+            let mut d = Dialog::new(
+                "createGuides",
+                json!({"rows": "2", "columns": "2", "rowGutter": "0", "columnGutter": "0", "fitTo": "page", "preview": true}),
+            );
+            layout_dialog_preview(app, &mut d, "layout.createGuides", "Create Guides");
+            assert_ne!(app.session.active().unwrap().doc, before, "previewed");
+            app.run("file.new", json!({})).unwrap();
+            (d, before)
+        };
+        // OK with the second document active.
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        let (d, before) = open(&mut app);
+        app.ui.dialog = Some(d);
+        confirm(&mut app).unwrap();
+        let first = &app.session.documents()[0];
+        assert_eq!(first.doc, before, "the preview goes from the first document");
+        assert!(first.interaction.is_none());
+        // Preview off with the second document active and in a gesture of its own.
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        let (mut d, before) = open(&mut app);
+        app.session.begin_interaction("Move").unwrap();
+        d.fields.insert("preview".into(), json!(false));
+        layout_dialog_preview(&mut app, &mut d, "layout.createGuides", "Create Guides");
+        assert!(app.session.active().unwrap().interaction.is_some(), "the second document's own interaction stays");
+        let first = &app.session.documents()[0];
+        assert_eq!(first.doc, before, "the preview goes from the first document");
+        assert!(first.interaction.is_none());
+    }
+
     #[test]
     fn toc_right_indent_separator_survives_the_dialog_and_update() {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
@@ -1470,7 +1506,7 @@ fn text_frame_preview(app: &mut DesignApp, d: &mut Dialog) {
     let shown = d.fields.get(PREVIEWED).cloned();
     if !d.b("preview") {
         if shown.is_some() {
-            end_text_frame_preview(app, d);
+            end_dialog_preview(app, d);
             d.fields.remove("status");
         }
         return;
@@ -1480,7 +1516,7 @@ fn text_frame_preview(app: &mut DesignApp, d: &mut Dialog) {
         Err(e) => {
             // Values OK would refuse don't stay on the page: it goes back to how it was.
             if shown.is_some() {
-                end_text_frame_preview(app, d);
+                end_dialog_preview(app, d);
             }
             d.fields.insert("status".into(), json!(e));
             return;
@@ -1492,7 +1528,7 @@ fn text_frame_preview(app: &mut DesignApp, d: &mut Dialog) {
     // Nothing edited (yet, or any more): the page as it was.
     if params.as_object().is_some_and(|m| m.keys().all(|k| k == "ids")) {
         if shown.is_some() {
-            end_text_frame_preview(app, d);
+            end_dialog_preview(app, d);
         }
         return;
     }
@@ -1510,8 +1546,9 @@ fn text_frame_preview(app: &mut DesignApp, d: &mut Dialog) {
     d.fields.insert(PREVIEWED.into(), params);
 }
 
-/// The preview goes from the document it was shown in, also when another document is active now.
-fn end_text_frame_preview(app: &mut DesignApp, d: &mut Dialog) {
+/// A dialog's preview goes from the document it was shown in, also when another document is
+/// active now.
+fn end_dialog_preview(app: &mut DesignApp, d: &mut Dialog) {
     d.fields.remove(PREVIEWED);
     match d.fields.remove(PREVIEW_DOC).as_ref().and_then(Value::as_u64) {
         Some(uid) => app.session.cancel_interaction_of(uid),
@@ -1780,7 +1817,7 @@ fn confirm_text_frame_options(app: &mut DesignApp, d: &mut Dialog) -> Result<Val
     seed_text_frame_options(app, d);
     // The preview goes; the options are set once, as one undo step.
     if d.fields.contains_key(PREVIEWED) {
-        end_text_frame_preview(app, d);
+        end_dialog_preview(app, d);
     }
     let p = text_frame_params(app, d)?;
     if p.keys().all(|k| k == "ids") {
@@ -2282,8 +2319,7 @@ fn layout_dialog_preview(app: &mut DesignApp, d: &mut Dialog, cmd: &str, label: 
     let shown = d.fields.get(PREVIEWED).cloned();
     if !d.b("preview") {
         if shown.is_some() {
-            app.session.cancel_interaction();
-            d.fields.remove(PREVIEWED);
+            end_dialog_preview(app, d);
             d.fields.remove("status");
         }
         return;
@@ -4750,13 +4786,13 @@ fn format_style_options(lang: &str, ui: &mut egui::Ui, fd: &mut Dialog, styles: 
 
 /// Apply the open dialog.
 pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
-    let Some(d) = app.ui.dialog.take() else { return Err("no dialog open".into()) };
+    let Some(mut d) = app.ui.dialog.take() else { return Err("no dialog open".into()) };
     if d.id == crate::shortcuts_dialog::DIALOG_ID {
         return crate::shortcuts_dialog::close(app, true).map(|()| Value::Null);
     }
     if matches!(d.id.as_str(), "paragraphStyleOptions" | "characterStyleOptions") && d.fields.contains_key(PREVIEWED) {
         // Restore the original before the ordinary command commits one undoable edit.
-        app.session.cancel_interaction();
+        end_dialog_preview(app, &mut d);
     }
     if d.id != "pdfImport" || !d.b("async") {
         app.cancel_pdf_import();
@@ -4777,16 +4813,15 @@ fn confirm_part1(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
             result
         }
         "createGuides" | "marginsAndColumns" => {
-            // The preview goes; the change is made once, as one undo step.
+            // The preview goes from its document; the change is made once, as one undo step.
+            let mut d = d;
             if d.fields.contains_key(PREVIEWED) {
-                app.session.cancel_interaction();
+                end_dialog_preview(app, &mut d);
             }
             let cmd = if d.id == "createGuides" { "layout.createGuides" } else { "layout.marginsAndColumns" };
             let r = layout_dialog_params(&d).and_then(|p| app.run(cmd, p));
             if let Err(e) = &r {
                 // A value that does not parse, or a refused one, keeps the dialog open to be fixed.
-                let mut d = d.clone();
-                d.fields.remove(PREVIEWED);
                 d.fields.insert("status".into(), json!(e));
                 app.ui.dialog = Some(d);
             }
@@ -4984,9 +5019,10 @@ fn confirm_part2(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
             app.run("type.para", json!({"attrs": attrs}))
         }
         "hyphenation" => {
-            // The preview goes; the edits are made once, as one undo step.
+            // The preview goes from its document; the edits are made once, as one undo step.
+            let mut d = d;
             if d.fields.contains_key(PREVIEWED) {
-                app.session.cancel_interaction();
+                end_dialog_preview(app, &mut d);
             }
             let attrs = hyphenation_edits(&d);
             if attrs.is_empty() {
@@ -4995,8 +5031,6 @@ fn confirm_part2(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
             app.run("type.para", json!({"attrs": attrs})).inspect_err(|e| {
                 // The dialog stays open, with the reason, to be corrected.
                 app.status(e.clone());
-                let mut d = d;
-                d.fields.remove(PREVIEWED);
                 d.fields.insert("status".into(), json!(e));
                 app.ui.dialog = Some(d);
             })
@@ -5583,30 +5617,28 @@ fn confirm_part6(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
             result
         }
         CORNER_OPTIONS => {
-            // The preview goes; the corners change once, as one undo step.
-            if d.fields.contains_key(PREVIEWED) {
-                app.session.cancel_interaction();
-            }
+            // The preview goes from its document; the corners change once, as one undo step.
             let mut d = d;
+            if d.fields.contains_key(PREVIEWED) {
+                end_dialog_preview(app, &mut d);
+            }
             seed_corner_options(app, &mut d);
             link_corners(&mut d);
             let r = corner_options_params(&d).and_then(|p| app.run("object.cornerOptions", p));
             if let Err(e) = &r {
-                d.fields.remove(PREVIEWED);
                 d.fields.insert("status".into(), json!(e));
                 app.ui.dialog = Some(d);
             }
             r
         }
         STEP_AND_REPEAT => {
-            // The preview goes; the copies are made once, as one undo step.
+            // The preview goes from its document; the copies are made once, as one undo step.
+            let mut d = d;
             if d.fields.contains_key(PREVIEWED) {
-                app.session.cancel_interaction();
+                end_dialog_preview(app, &mut d);
             }
             let r = step_and_repeat_params(app, &d).and_then(|p| app.run("edit.stepAndRepeat", p));
             if let Err(e) = &r {
-                let mut d = d.clone();
-                d.fields.remove(PREVIEWED);
                 d.fields.insert("status".into(), json!(e));
                 app.ui.dialog = Some(d);
             }
@@ -5824,8 +5856,7 @@ fn style_options_preview(app: &mut DesignApp, d: &mut Dialog) {
     let shown = d.fields.get(PREVIEWED).cloned();
     if !d.b("preview") || d.b("new") {
         if shown.is_some() {
-            app.session.cancel_interaction();
-            d.fields.remove(PREVIEWED);
+            end_dialog_preview(app, d);
             d.fields.remove("status");
         }
         return;
@@ -5835,8 +5866,7 @@ fn style_options_preview(app: &mut DesignApp, d: &mut Dialog) {
     // line says why.
     if paragraph && let Err(e) = check_paragraph_style_justification(app, d) {
         if shown.is_some() {
-            app.session.cancel_interaction();
-            d.fields.remove(PREVIEWED);
+            end_dialog_preview(app, d);
         }
         d.fields.insert("status".into(), json!(e));
         return;
@@ -8341,8 +8371,7 @@ fn hyphenation_preview(app: &mut DesignApp, d: &mut Dialog) {
     let shown = d.fields.get(PREVIEWED).cloned();
     if !d.b("preview") {
         if shown.is_some() {
-            app.session.cancel_interaction();
-            d.fields.remove(PREVIEWED);
+            end_dialog_preview(app, d);
         }
         return;
     }
@@ -8367,8 +8396,7 @@ fn hyphenation_preview(app: &mut DesignApp, d: &mut Dialog) {
         }
         // Rejected settings: the paragraphs go back, and the reason shows until they change.
         Err(e) => {
-            app.session.cancel_interaction();
-            d.fields.remove(PREVIEWED);
+            end_dialog_preview(app, d);
             d.fields.insert("status".into(), json!(e.to_string()));
             d.fields.insert(PREVIEW_FAILED.into(), params);
         }
@@ -9304,8 +9332,7 @@ fn step_and_repeat_preview(app: &mut DesignApp, d: &mut Dialog) {
     let shown = d.fields.get(PREVIEWED).cloned();
     if !d.b("preview") {
         if shown.is_some() {
-            app.session.cancel_interaction();
-            d.fields.remove(PREVIEWED);
+            end_dialog_preview(app, d);
             d.fields.remove("status");
         }
         return;
@@ -9507,8 +9534,7 @@ fn corner_options_preview(app: &mut DesignApp, d: &mut Dialog) {
     let shown = d.fields.get(PREVIEWED).cloned();
     if !d.b("preview") {
         if shown.is_some() {
-            app.session.cancel_interaction();
-            d.fields.remove(PREVIEWED);
+            end_dialog_preview(app, d);
             d.fields.remove("status");
         }
         return;
