@@ -1078,7 +1078,7 @@ dependencies = [
 [[package]]
 name = "craft-khmer"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=0b478944aa27a5bef1f51508c57bd236f272326d#0b478944aa27a5bef1f51508c57bd236f272326d"
+source = "git+https://github.com/storytold/craft-libs?rev=bef543b3731e624f963572e8c11b9545faf136f8#bef543b3731e624f963572e8c11b9545faf136f8"
 dependencies = [
  "brotli",
  "brotli-decompressor",
@@ -1151,7 +1151,7 @@ dependencies = [
 [[package]]
 name = "craft-update"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=1b34eba41e62138fc2438d2734523b302840b45d#1b34eba41e62138fc2438d2734523b302840b45d"
+source = "git+https://github.com/storytold/craft-libs?rev=6e03f65bf45181db77ba6229716e6624db9eb25b#6e03f65bf45181db77ba6229716e6624db9eb25b"
 dependencies = [
  "chrono",
  "dunce",
@@ -1161,6 +1161,7 @@ dependencies = [
  "image",
  "log",
  "plist",
+ "rustix 1.1.5",
  "semver",
  "serde",
  "serde_json",
@@ -1319,7 +1320,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft"
-version = "0.17.0"
+version = "0.20.1"
 dependencies = [
  "arboard",
  "craft-update",
@@ -1344,7 +1345,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-cli"
-version = "0.17.0"
+version = "0.20.1"
 dependencies = [
  "designcraft-color",
  "designcraft-compose",
@@ -1361,7 +1362,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-color"
-version = "0.17.0"
+version = "0.20.1"
 dependencies = [
  "craft-cms",
  "kurbo",
@@ -1373,7 +1374,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-compose"
-version = "0.17.0"
+version = "0.20.1"
 dependencies = [
  "craft-khmer",
  "designcraft-color",
@@ -1394,7 +1395,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-doc"
-version = "0.17.0"
+version = "0.20.1"
 dependencies = [
  "chrono",
  "designcraft-color",
@@ -1407,7 +1408,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-engine"
-version = "0.17.0"
+version = "0.20.1"
 dependencies = [
  "caseless",
  "craft-atomic",
@@ -1447,7 +1448,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-epub"
-version = "0.17.0"
+version = "0.20.1"
 dependencies = [
  "chrono",
  "designcraft-color",
@@ -1457,7 +1458,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-fonts"
-version = "0.17.0"
+version = "0.20.1"
 dependencies = [
  "core-text",
  "harfrust 0.13.3",
@@ -1470,7 +1471,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-format"
-version = "0.17.0"
+version = "0.20.1"
 dependencies = [
  "designcraft-doc",
  "designcraft-images",
@@ -1482,7 +1483,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-geom"
-version = "0.17.0"
+version = "0.20.1"
 dependencies = [
  "flo_curves",
  "kurbo",
@@ -1495,7 +1496,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-idml"
-version = "0.17.0"
+version = "0.20.1"
 dependencies = [
  "designcraft-color",
  "designcraft-compose",
@@ -1510,13 +1511,14 @@ dependencies = [
 
 [[package]]
 name = "designcraft-images"
-version = "0.17.0"
+version = "0.20.1"
 dependencies = [
  "craft-cms",
  "designcraft-color",
  "designcraft-fonts",
  "flate2",
  "image",
+ "jpeg-decoder",
  "log",
  "quick-xml 0.41.0",
  "resvg",
@@ -1528,7 +1530,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-mcp"
-version = "0.17.0"
+version = "0.20.1"
 dependencies = [
  "designcraft-engine",
  "designcraft-geom",
@@ -1541,7 +1543,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-pdf"
-version = "0.17.0"
+version = "0.20.1"
 dependencies = [
  "chrono",
  "craft-cms",
@@ -1567,7 +1569,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-pptx"
-version = "0.17.0"
+version = "0.20.1"
 dependencies = [
  "chrono",
  "designcraft-color",
@@ -1585,8 +1587,9 @@ dependencies = [
 
 [[package]]
 name = "designcraft-render"
-version = "0.17.0"
+version = "0.20.1"
 dependencies = [
+ "bytemuck",
  "craft-pdf",
  "designcraft-color",
  "designcraft-compose",
@@ -1604,7 +1607,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-textimport"
-version = "0.17.0"
+version = "0.20.1"
 dependencies = [
  "designcraft-doc",
  "quick-xml 0.41.0",
@@ -1613,7 +1616,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-tools"
-version = "0.17.0"
+version = "0.20.1"
 dependencies = [
  "designcraft-color",
  "designcraft-compose",
@@ -1625,7 +1628,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-ui-egui"
-version = "0.17.0"
+version = "0.20.1"
 dependencies = [
  "craft-dialogs",
  "craft-keymap",
@@ -1659,7 +1662,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-web"
-version = "0.17.0"
+version = "0.20.1"
 dependencies = [
  "designcraft-engine",
  "designcraft-format",
@@ -3317,6 +3320,12 @@ dependencies = [
  "getrandom 0.4.3",
  "libc",
 ]
+
+[[package]]
+name = "jpeg-decoder"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "00810f1d8b74be64b13dbf3db89ac67740615d6c891f0e7b6179326533011a07"
 
 [[package]]
 name = "js-sys"
@@ -7695,7 +7704,7 @@ checksum = "9440ea3e5aeabb0ac63af70daf835274065238cdd0cec83418f417eae38bacee"
 
 [[package]]
 name = "xtask"
-version = "0.17.0"
+version = "0.20.1"
 dependencies = [
  "serde_json",
 ]
