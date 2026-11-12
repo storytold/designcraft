@@ -491,7 +491,7 @@ impl Renderer {
 
     /// [`Renderer::with_filters`] for a drop shadow or an outer glow of `it`, keeping its image
     /// between renders. While the object, its effect, the view's scale and rotation, the render
-    /// options and the document's colours, styles and images stay the same, a move of the object
+    /// options and the document's colors, styles, layers and images stay the same, a move of the object
     /// or of the view by whole device pixels places the kept image again instead of drawing and
     /// blurring it. Only multithreaded contexts (the canvas) keep images, and only of objects
     /// without text or nested items.
