@@ -1294,10 +1294,63 @@ struct SubstitutionInput<'a> {
     var_story: bool,
     var_cache: &'a mut HashMap<(Option<usize>, bool), Arc<Vec<String>>>,
     notes: &'a mut Notes,
+    /// The marks in the story before `range`.
+    marks: MarkCounts,
+}
+
+/// Endnote references, anchored-object marks and cross-reference marks in a stretch of story text.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct MarkCounts {
+    endnotes: usize,
+    objects: usize,
+    xrefs: usize,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Bytes of story text [`MarkCounts::of`] has read on this thread.
+    static MARK_BYTES_SCANNED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+impl MarkCounts {
+    /// The marks in `text`.
+    fn of(text: &str) -> Self {
+        #[cfg(test)]
+        MARK_BYTES_SCANNED.with(|n| n.set(n.get() + text.len()));
+        let mut m = Self::default();
+        for c in text.chars() {
+            match c {
+                designcraft_doc::ENDNOTE_REF => m.endnotes += 1,
+                designcraft_doc::OBJECT_MARK => m.objects += 1,
+                designcraft_doc::XREF_MARK => m.xrefs += 1,
+                _ => {}
+            }
+        }
+        m
+    }
+
+    /// The marks before each paragraph of `ranges` (the story's paragraphs, in order), read in
+    /// one pass over the story. Empty when the story holds no endnotes, anchored objects or
+    /// cross-references.
+    fn before_paragraphs(story: &Story, ranges: &[Range<usize>]) -> Vec<Self> {
+        if story.endnotes.is_empty() && story.objects.is_empty() && story.xrefs.is_empty() {
+            return Vec::new();
+        }
+        let mut total = Self::default();
+        ranges
+            .iter()
+            .map(|r| {
+                let before = total;
+                let m = story.text.get(r.clone()).map_or_else(Self::default, Self::of);
+                total = Self { endnotes: total.endnotes + m.endnotes, objects: total.objects + m.objects, xrefs: total.xrefs + m.xrefs };
+                before
+            })
+            .collect()
+    }
 }
 
 fn paragraph_substitution(input: SubstitutionInput<'_>) -> SubstCtx {
-    let SubstitutionInput { doc, story, range: prange, props: pp, frame: cur_frame, opts, var_story, var_cache, notes } = input;
+    let SubstitutionInput { doc, story, range: prange, props: pp, frame: cur_frame, opts, var_story, var_cache, notes, marks } = input;
     let var_values = if var_story {
         let page = opts.page.or_else(|| cur_frame.and_then(|f| f.page));
         // A parent page itself (not composed for one of the pages it applies to).
@@ -1319,13 +1372,13 @@ fn paragraph_substitution(input: SubstitutionInput<'_>) -> SubstCtx {
     };
     if !story.endnotes.is_empty() {
         // Endnote reference numbers continue through the document.
-        let first = doc.endnote_start(story.id).saturating_add(story.text[..prange.start].matches(designcraft_doc::ENDNOTE_REF).count() as u32);
+        let first = doc.endnote_start(story.id).saturating_add(u32::try_from(marks.endnotes).unwrap_or(u32::MAX));
         for (k, (i, _)) in story.text[prange.clone()].match_indices(designcraft_doc::ENDNOTE_REF).enumerate() {
             sub.notes.insert(prange.start + i, doc.endnote_options.label(first.saturating_add(k as u32)));
         }
     }
     if !story.objects.is_empty() {
-        let before = story.text[..prange.start].matches(designcraft_doc::OBJECT_MARK).count();
+        let before = marks.objects;
         for (k, (i, _)) in story.text[prange.clone()].match_indices(designcraft_doc::OBJECT_MARK).enumerate() {
             let Some(o) = story.objects.get(before + k) else { continue };
             let (w, h) = o.size();
@@ -1338,7 +1391,7 @@ fn paragraph_substitution(input: SubstitutionInput<'_>) -> SubstCtx {
         }
     }
     if !story.xrefs.is_empty() {
-        sub.xrefs = xref::texts_in(doc, story, prange.clone(), opts.xrefs.as_deref());
+        sub.xrefs = xref::texts_after(doc, story, prange.clone(), marks.xrefs, opts.xrefs.as_deref());
     }
     if notes.active() {
         notes.number_refs(doc, prange.clone(), cur_frame.and_then(|f| f.page), &mut sub);
@@ -3157,6 +3210,8 @@ fn compose_run(
     let mut list_counter = ListCounter::default();
     // Named lists number independently of layout: one pass up front, for the labels.
     let named_labels = named_list_labels(doc, story, &para_ranges, &deleted);
+    // Endnote, anchored-object and cross-reference marks before each paragraph, for their numbers.
+    let marks_before = MarkCounts::before_paragraphs(story, &para_ranges);
     // Border and shading of each paragraph set, drawn once the lines are in place.
     let mut boxes: Vec<Option<ParaBox>> = vec![None; np];
     // Keep options: paragraphs are re-laid from a snapshot when a keep is violated, either forced
@@ -3316,6 +3371,7 @@ fn compose_run(
             var_story,
             var_cache: &mut var_cache,
             notes: &mut notes,
+            marks: marks_before.get(pi).copied().unwrap_or_default(),
         });
         #[cfg(test)]
         reuse::SHAPED.with(|n| n.set(n.get() + 1));
@@ -3626,6 +3682,8 @@ struct FinishInput<'a> {
 fn finish_composition(input: FinishInput<'_>) -> ComposedStory {
     let FinishInput { doc, story, frames, cols, notes, out, boxes, span_paras, split_paras, grid_paras, styles_tab } = input;
     notes.finish(doc, story, frames, cols, out);
+    // The story byte of each anchored object's mark, found once for every frame that holds one.
+    let mut marks: Option<Vec<usize>> = None;
     // Ranges, content heights and vertical justification.
     for (fi, ft) in out.frames.iter_mut().enumerate() {
         let f = &frames[fi];
@@ -3641,9 +3699,12 @@ fn finish_composition(input: FinishInput<'_>) -> ComposedStory {
         let before: Vec<f64> = ft.tables.iter().map(|t| ft.lines.get(t.line).map_or(0.0, |l| l.baseline)).collect();
         let spanned = ft.columns.len() > 1 && ft.lines.iter().any(|l| span_paras.get(l.para) == Some(&true))
             || ft.lines.iter().any(|l| split_paras.get(l.para) == Some(&true));
-        let anchors: Vec<usize> =
-            if ft.objects.is_empty() { Vec::new() } else { story.text.match_indices(designcraft_doc::OBJECT_MARK).map(|(i, _)| i).collect() };
-        vertical_justify(ft, f, spanned, &doc.footnote_options, grid_paras, &anchors);
+        let anchors: &[usize] = if ft.objects.is_empty() {
+            &[]
+        } else {
+            marks.get_or_insert_with(|| story.text.match_indices(designcraft_doc::OBJECT_MARK).map(|(i, _)| i).collect())
+        };
+        vertical_justify(ft, f, spanned, &doc.footnote_options, grid_paras, anchors);
         for (t, b) in ft.tables.iter_mut().zip(before) {
             let now = ft.lines.get(t.line).map_or(b, |l| l.baseline);
             t.shift(now - b);
@@ -6077,18 +6138,19 @@ fn vertical_justify(
             None => true,
         };
         // Each row moves no further than a text wrap under it allows. An object that moves with its
-        // anchor's row (Justify) limits how much further than that row a later row moves.
+        // anchor's row (Justify) lets a later row move its room plus how far the object moves.
         let mut row_of = vec![None; ft.lines.len()];
         for (&i, &k) in idx.iter().zip(&rows) {
             row_of[i] = Some(k);
         }
-        let follow: Vec<(usize, usize, f64)> = follow
+        let follow: Vec<(usize, usize, f64, f64)> = follow
             .iter()
-            .filter_map(|&(i, a, room)| Some((row_of.get(i).copied().flatten()?, row_of.get(a).copied().flatten()?, room.max(0.0))))
+            .filter_map(|&(i, a, room, pin)| Some((row_of.get(i).copied().flatten()?, row_of.get(a).copied().flatten()?, room.max(0.0), pin)))
             .collect();
+        // The object moves only once its anchor's row has moved `pin`.
         let clear = |shift: &[f64]| {
             idx.iter().zip(&rows).all(|(&i, &k)| shift[k] <= rooms[i].max(0.0) + 1e-9)
-                && follow.iter().all(|&(k, m, room)| shift[k] - shift[m] <= room + 1e-9)
+                && follow.iter().all(|&(k, m, room, pin)| shift[k] <= room + (shift[m] - pin).max(0.0) + 1e-9)
         };
         // The lowest lines are tested first: they are the ones a narrowing outline stops.
         let fits = |shift: &[f64]| {
@@ -6206,13 +6268,16 @@ fn vertical_justify(
 /// box. Beside or under a contour, the line moves down only as far as its band stays clear of the
 /// contour on its way down (to 0.01 pt). Only wraps that reach into a line's column (or the
 /// columns it spans) count, as when the lines are set. An anchored object that moves with the
-/// lines being justified (inline, above the line, or positioned from its anchor and not kept
-/// within its column) is skipped, except under Justify, where it moves with the row of its
-/// anchor's line: its wrap is taken where the object sits before the lines move, and its rooms go
-/// in the second list as (line, anchor's line, room), so a line moves down at most that much
-/// further than the anchor's row. Justify keeps the first row in place, so its room stays
-/// infinite. `anchors` holds the story byte of each anchored object's mark, by object index.
-fn wrap_rooms(ft: &FrameText, f: &FrameSpec, c: u32, spanned: bool, anchors: &[usize]) -> (Vec<f64>, Vec<(usize, usize, f64)>) {
+/// lines being justified (inline, above the line, or positioned from its anchor) is skipped,
+/// except under Justify, where it moves with the row of its anchor's line: its wrap is taken where
+/// the object sits before the lines move, and its rooms go in the second list as (line, anchor's
+/// line, room, pin), so a line moves down at most the room plus how far the anchor's row moves
+/// past `pin`. An object positioned from its anchor and kept within its column moves with its
+/// anchor's row until it stops at the column's bottom, so in every mode a line moves down at most
+/// the room under it plus the distance the object can move. Held at the column's top, the object
+/// moves only after its anchor's row has moved `pin` (0 for the other objects), and until then a
+/// line keeps the whole room. Justify keeps the first row in place, so its room stays infinite. `anchors` holds the story byte of each anchored object's mark, by object index.
+fn wrap_rooms(ft: &FrameText, f: &FrameSpec, c: u32, spanned: bool, anchors: &[usize]) -> (Vec<f64>, Vec<(usize, usize, f64, f64)>) {
     const EPS: f64 = 1e-6;
     // One-sided wraps also block the column on the other side of the object: the x-range wrap
     // `e` keeps text out of in column `col`, from the object's x-range `a..b` there (None when that
@@ -6247,23 +6312,43 @@ fn wrap_rooms(ft: &FrameText, f: &FrameSpec, c: u32, spanned: bool, anchors: &[u
         }
     }
     // An own-story anchored object whose anchor is on one of these lines and whose position
-    // follows its line moves with the text: the index in `ft.lines` of its anchor's line, and how
-    // much lower that line was when the wrap was taken (an earlier pass placed the object after
-    // moving the lines).
-    let moves_with_text = |e: &Exclusion| -> Option<(usize, f64)> {
+    // follows its line moves with the text: the index in `ft.lines` of its anchor's line, how
+    // much lower the object was when the wrap was taken (an earlier pass placed the object after
+    // moving the lines), and, for one kept within its column, how far its line moves before the
+    // object leaves the column's top and how far the object then moves before it stops at the
+    // column's bottom (none and infinite for the others).
+    let moves_with_text = |e: &Exclusion| -> Option<(usize, f64, f64, f64)> {
         let o = *by_anchor.get(&e.after?)?;
-        let follows = match &o.object.position {
-            designcraft_doc::AnchorPosition::Inline { .. } | designcraft_doc::AnchorPosition::AboveLine { .. } => true,
-            // Kept within the column, it can stop at the column's edge instead of following.
-            designcraft_doc::AnchorPosition::Custom { y_relative, keep_within_column, .. } => {
-                *y_relative == designcraft_doc::anchored::AnchorRelative::Anchor && !keep_within_column
+        let l = ft.lines.get(o.line)?;
+        let now = l.baseline;
+        let dy = e.anchor_baseline.map_or(0.0, |b| b - now);
+        match &o.object.position {
+            designcraft_doc::AnchorPosition::Inline { .. } | designcraft_doc::AnchorPosition::AboveLine { .. } => {
+                Some((o.line, dy, 0.0, f64::INFINITY))
             }
-        };
-        let now = ft.lines.get(o.line).map_or(0.0, |l| l.baseline);
-        follows.then(|| (o.line, e.anchor_baseline.map_or(0.0, |b| b - now)))
+            designcraft_doc::AnchorPosition::Custom { y_relative, keep_within_column, y_offset, object_point, .. }
+                if *y_relative == designcraft_doc::anchored::AnchorRelative::Anchor =>
+            {
+                if !keep_within_column {
+                    return Some((o.line, dy, 0.0, f64::INFINITY));
+                }
+                // Placed as the lines' final positions place it: from its anchor's baseline,
+                // held between the column's top and bottom.
+                let col = ft.columns.get(l.column as usize).copied().unwrap_or(f.area);
+                let h = o.size.1;
+                let ofy = [0.0, 0.5, 1.0][(*object_point / 3).min(2) as usize];
+                let (lo, hi) = (col.y0, (col.y1 - h).max(col.y0));
+                let place = |b: f64| b + y_offset - h * ofy;
+                let raw = place(now);
+                let y = raw.clamp(lo, hi);
+                let then = e.anchor_baseline.map_or(y, |b| place(b).clamp(lo, hi));
+                Some((o.line, then - y, (lo - raw).max(0.0), (hi - y).max(0.0)))
+            }
+            designcraft_doc::AnchorPosition::Custom { .. } => None,
+        }
     };
     // Each wrap's object is looked up once, not for every line.
-    let moving: Vec<Option<(usize, f64)>> = f.exclusions.iter().map(moves_with_text).collect();
+    let moving: Vec<Option<(usize, f64, f64, f64)>> = f.exclusions.iter().map(moves_with_text).collect();
     // Justify keeps the first row (its segments and a table on them) in place, so wraps under it
     // set no limit.
     let first = ft.lines.iter().find(|l| in_col(l.column)).map(|l| l.baseline);
@@ -6290,13 +6375,15 @@ fn wrap_rooms(ft: &FrameText, f: &FrameSpec, c: u32, spanned: bool, anchors: &[u
         let col = Rect { x0: col.x0.min(x0), x1: col.x1.max(x1), ..col };
         let meets = |(a, b): (f64, f64)| a < x1 - EPS && b > x0 + EPS;
         for (e, &anchor) in f.exclusions.iter().zip(&moving).filter(|(e, _)| e.wraps_line(start)) {
-            if anchor.is_some() && !justify {
+            // Center and Bottom move every row as far: only an object kept within its column, which
+            // can stop at the column's edges, holds the lines back.
+            if anchor.is_some_and(|(_, _, _, slack)| slack == f64::INFINITY) && !justify {
                 continue;
             }
             // The wrap where its object sits before the lines move (moved up by `dy`), and how
             // far it lets this line move down (relative to its anchor's row for an object that
             // moves with the text).
-            let dy = anchor.map_or(0.0, |(_, dy)| dy);
+            let dy = anchor.map_or(0.0, |(_, dy, _, _)| dy);
             let cap = if anchor.is_some() { f64::INFINITY } else { room };
             let mut room_e = f64::INFINITY;
             let r = Rect { y0: e.rect.y0 - dy, y1: e.rect.y1 - dy, ..e.rect };
@@ -6335,7 +6422,18 @@ fn wrap_rooms(ft: &FrameText, f: &FrameSpec, c: u32, spanned: bool, anchors: &[u
                 }
             }
             match anchor {
-                Some((a, _)) if room_e.is_finite() => follow.push((line, a, room_e)),
+                // An object kept within its column moves once its line has moved `pin` (to leave
+                // the column's top) and stops after moving `slack` (at the column's bottom).
+                Some((a, _, pin, slack)) if room_e.is_finite() => {
+                    if room_e >= pin {
+                        if justify {
+                            follow.push((line, a, room_e, pin));
+                        }
+                        room = room.min(room_e + slack);
+                    } else {
+                        room = room.min(room_e);
+                    }
+                }
                 Some(_) => {}
                 None => room = room.min(room_e),
             }

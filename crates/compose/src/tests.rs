@@ -890,6 +890,92 @@ fn vertical_justification_stops_at_an_anchored_object_kept_within_its_column() {
     );
 }
 
+/// An object positioned from its anchor and kept within its column moves with its anchor's line
+/// until it reaches the column's bottom, so Bottom moves the lines above it down that far, not
+/// only as far as where the object starts.
+#[test]
+fn vertical_justification_moves_an_object_kept_within_its_column_until_it_stops() {
+    use designcraft_doc::VerticalJustification::{Bottom, Center, Justify};
+    for vj in [Bottom, Center, Justify] {
+        let (mut d, sid, fid) = doc_with("One\nTwo", Rect::new(0.0, 0.0, 300.0, 400.0), ParaAttrs::default());
+        d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.vertical_justification = vj;
+        // Hung 40 pt under the first baseline, under the second line, and far above the column's
+        // bottom.
+        anchor_box(&mut d, sid, 1, 0.0, 40.0, true, WrapMode::BoundingBox);
+        if let designcraft_doc::AnchorPosition::Custom { keep_within_column, .. } =
+            &mut std::sync::Arc::make_mut(&mut d.story_mut(sid).unwrap().objects[0]).position
+        {
+            *keep_within_column = true;
+        }
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let lines = all_lines(&cs);
+        let o = &cs.frames[0].objects[0];
+        let (top, bottom) = (o.origin.y, o.origin.y + 60.0);
+        let l = lines[1];
+        assert!(l.baseline <= top + 1e-6, "{vj:?}: the second line at {} meets the object at {top}..{bottom}", l.baseline);
+        match vj {
+            // The object stops at the column's bottom and the second line comes down onto it.
+            Bottom => {
+                assert!((bottom - 400.0).abs() < 1e-6, "{vj:?}: the object stopped at {top}..{bottom}, above the column's bottom");
+                assert!(l.baseline > top - 0.01, "{vj:?}: the second line stopped at {}, above the object at {top}", l.baseline);
+            }
+            // Justify keeps the first line, and the object anchored in it, in place; the second
+            // line comes down onto the object.
+            Justify => {
+                assert!((top - lines[0].baseline - 40.0).abs() < 1e-6, "{vj:?}: the object moved to {top}..{bottom}");
+                assert!(l.baseline > top - 0.01, "{vj:?}: the second line stopped at {}, above the object at {top}", l.baseline);
+            }
+            // Center moves the lines half of the room under them: the object moves with them.
+            _ => assert!(bottom < 400.0 - 1e-6 && l.baseline > 150.0, "{vj:?}: second line at {}, object at {top}..{bottom}", l.baseline),
+        }
+    }
+}
+
+/// An object anchored in the first line, positioned from its anchor and kept within its column,
+/// is held at the column's top. Justify keeps the first line in place, so the object stays there,
+/// and the second line comes down onto the wider lower part of its contour.
+#[test]
+fn vertical_justify_keeps_the_room_under_an_object_held_at_the_columns_top() {
+    use designcraft_doc::anchored::AnchorRelative as R;
+    let (mut d, sid, fid) = doc_with("One\nTwo", Rect::new(0.0, 0.0, 300.0, 400.0), ParaAttrs::default());
+    d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.vertical_justification = designcraft_doc::VerticalJustification::Justify;
+    // Beside the lines at x 250..300 down to y 100, then x 100..300 down to y 160.
+    let pts = [
+        Point::new(150.0, 0.0),
+        Point::new(200.0, 0.0),
+        Point::new(200.0, 160.0),
+        Point::new(0.0, 160.0),
+        Point::new(0.0, 100.0),
+        Point::new(150.0, 100.0),
+    ];
+    let lid = d.default_layer();
+    let path = designcraft_geom::path::PathData::single(designcraft_geom::path::SubPath::polyline(&pts, true));
+    let mut it = designcraft_doc::Item::new(ItemId(d.alloc()), lid, designcraft_doc::Shape::Polygon, path);
+    it.wrap.mode = WrapMode::Contour;
+    it.wrap.side = WrapSide::BothSides;
+    // 50 pt above the first baseline, so the column's top holds it.
+    let position = designcraft_doc::AnchorPosition::Custom {
+        x_relative: R::TextFrame,
+        y_relative: R::Anchor,
+        x_offset: 100.0,
+        y_offset: -50.0,
+        object_point: 0,
+        ref_point: 0,
+        keep_within_column: true,
+        spine_relative: false,
+    };
+    d.story_mut(sid).unwrap().insert_object(1, designcraft_doc::AnchoredObject::new(it, position));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    assert_eq!(lines.len(), 2);
+    let top = cs.frames[0].objects[0].origin.y;
+    assert!(lines[0].baseline < 50.0 && top.abs() < 1e-6, "the object is held at the column's top: {top}, {}", lines[0].baseline);
+    let wide = top + 100.0;
+    let b = lines[1].baseline;
+    assert!(b <= wide + 1e-6, "Justify moved the second line to {b}, into the contour's wider part at {wide}");
+    assert!(b > wide - 0.01, "Justify stopped the second line at {b}, short of the contour's wider part at {wide}");
+}
+
 /// Justify keeps the first line in place and moves later lines further, so an object anchored in
 /// the first line and hung under the last one still stops the lines after its anchor.
 #[test]
@@ -8602,6 +8688,73 @@ fn spine_relative_anchored_notes_stay_in_the_outside_margin_on_both_pages() {
 }
 
 const OBJECT_LEN: usize = designcraft_doc::OBJECT_MARK.len_utf8();
+
+/// A story of `paras` paragraphs, each with an inline anchored object at its start, an endnote
+/// reference after it and a cross-reference that shows `Ref<k>.` for paragraph `k`.
+fn story_with_marks(paras: usize) -> (Document, StoryId) {
+    let text = vec!["Some words, a note and an object."; paras].join("\n");
+    let (mut d, sid, _) = doc_with(&text, Rect::new(0.0, 0.0, 400.0, 20_000.0), ParaAttrs::default());
+    let starts: Vec<usize> = d.story(sid).unwrap().para_ranges().iter().map(|r| r.start).collect();
+    let lid = d.default_layer();
+    for (k, &s) in starts.iter().enumerate().rev() {
+        let it = designcraft_doc::Item::new(
+            ItemId(d.alloc()),
+            lid,
+            designcraft_doc::Shape::Rectangle,
+            designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 6.0, 6.0)),
+        );
+        let story = d.story_mut(sid).unwrap();
+        story.insert_xref(s + 19, designcraft_doc::CrossRef { text: Some(format!("Ref{k}.")), ..Default::default() });
+        story.insert_endnote(s + 10, "An endnote.", ParaFormat::default());
+        story.insert_object(s, designcraft_doc::AnchoredObject::new(it, designcraft_doc::AnchorPosition::Inline { y_offset: 0.0 }));
+    }
+    (d, sid)
+}
+
+/// The marks before each paragraph match a count from the story start, for every kind of mark.
+#[test]
+fn mark_counts_before_each_paragraph_match_a_count_from_the_start() {
+    let (d, sid) = story_with_marks(5);
+    let story = d.story(sid).unwrap();
+    let ranges = story.para_ranges();
+    let counts = MarkCounts::before_paragraphs(story, &ranges);
+    assert_eq!(counts.len(), ranges.len());
+    for (k, (r, m)) in ranges.iter().zip(&counts).enumerate() {
+        let head = &story.text[..r.start];
+        assert_eq!(m.endnotes, head.matches(designcraft_doc::ENDNOTE_REF).count(), "paragraph {k}");
+        assert_eq!(m.objects, head.matches(designcraft_doc::OBJECT_MARK).count(), "paragraph {k}");
+        assert_eq!(m.xrefs, head.matches(designcraft_doc::XREF_MARK).count(), "paragraph {k}");
+        assert_eq!(*m, MarkCounts { endnotes: k, objects: k, xrefs: k }, "paragraph {k}");
+    }
+    // Each paragraph shows its own cross-reference's text, so the composer numbers the
+    // cross-references from the marks before the paragraph.
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let shown: String = cs.frames[0].lines.iter().flat_map(|l| l.glyphs.iter().filter(|g| g.visible).map(|g| g.rendered_char)).collect();
+    let refs: Vec<&str> = shown.match_indices("Ref").map(|(i, _)| &shown[i..i + 5]).collect();
+    assert_eq!(refs, ["Ref0.", "Ref1.", "Ref2.", "Ref3.", "Ref4."], "{shown:?}");
+    // A story without endnotes, anchored objects or cross-references reads nothing.
+    let (plain, psid, _) = doc_with("One\nTwo", Rect::new(0.0, 0.0, 300.0, 300.0), ParaAttrs::default());
+    let p = plain.story(psid).unwrap();
+    assert!(MarkCounts::before_paragraphs(p, &p.para_ranges()).is_empty());
+}
+
+/// Composing a story with endnotes, anchored objects and cross-references reads its text for their numbers in one
+/// pass, so four times the paragraphs read about four times the bytes, not sixteen times.
+#[test]
+fn composing_reads_marks_once_per_story() {
+    let scanned = |paras: usize| {
+        let (d, sid) = story_with_marks(paras);
+        MARK_BYTES_SCANNED.with(|n| n.set(0));
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        assert!(!cs.is_overset());
+        assert_eq!(cs.frames[0].objects.len(), paras);
+        (MARK_BYTES_SCANNED.with(std::cell::Cell::get), d.story(sid).unwrap().text.len())
+    };
+    let (small, small_len) = scanned(40);
+    let (big, big_len) = scanned(160);
+    assert!(small > 0);
+    assert!(big * small_len <= 2 * small * big_len, "40 paragraphs read {small} of {small_len} bytes, 160 read {big} of {big_len}");
+}
 
 #[test]
 fn anchored_object_wraps_its_own_storys_later_lines() {
