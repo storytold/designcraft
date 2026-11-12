@@ -699,16 +699,29 @@ fn hebrew_parallel_round4_document_translations() {
     for (source, expected) in [
         ("Book", "ספר"),
         ("Recent files", "קבצים אחרונים"),
-        ("Number of Recent Items to Display:", "מספר הפריטים האחרונים להצגה:"),
+        (
+            "Number of Recent Items to Display:",
+            "מספר הפריטים האחרונים להצגה:",
+        ),
         ("Place", "הצבה"),
         ("Place and Link", "הצבה וקישור"),
         ("Place with Import Options…", "הצבה עם אפשרויות ייבוא…"),
         ("Update Link", "עדכון קישור"),
         ("Records per page", "רשומות בעמוד"),
-        ("The library is empty. Select objects and Add Selection.", "הספרייה ריקה. בחרו אובייקטים ולחצו על ״הוספת הבחירה״."),
-        ("A PNG or JPEG file; left empty, the first page is the cover.", "קובץ PNG או JPEG; אם משאירים ריק, העמוד הראשון ישמש ככריכה."),
+        (
+            "The library is empty. Select objects and Add Selection.",
+            "הספרייה ריקה. בחרו אובייקטים ולחצו על ״הוספת הבחירה״.",
+        ),
+        (
+            "A PNG or JPEG file; left empty, the first page is the cover.",
+            "קובץ PNG או JPEG; אם משאירים ריק, העמוד הראשון ישמש ככריכה.",
+        ),
     ] {
-        assert_eq!(tr("he", source), expected, "Hebrew localization regression: {source}");
+        assert_eq!(
+            tr("he", source),
+            expected,
+            "Hebrew localization regression: {source}"
+        );
     }
 }
 
@@ -719,14 +732,24 @@ fn hebrew_parallel_round4_typography_translations() {
         ("Superscript", "כתב עילי"),
         ("Superscript:", "כתב עילי:"),
         ("List Type:", "סוג רשימה:"),
-        ("Minimum Space Before First Footnote:", "מרווח מזערי לפני הערת השוליים הראשונה:"),
+        (
+            "Minimum Space Before First Footnote:",
+            "מרווח מזערי לפני הערת השוליים הראשונה:",
+        ),
         ("Text After:", "טקסט אחרי:"),
         ("Underline", "קו תחתון"),
         ("Underline On", "הפעלת קו תחתון"),
         ("Underline Options", "אפשרויות קו תחתון"),
-        ("Hyperlink from the selected text or frames", "היפר־קישור מהטקסט או מהמסגרות שנבחרו"),
+        (
+            "Hyperlink from the selected text or frames",
+            "היפר־קישור מהטקסט או מהמסגרות שנבחרו",
+        ),
     ] {
-        assert_eq!(tr("he", source), expected, "Hebrew localization regression: {source}");
+        assert_eq!(
+            tr("he", source),
+            expected,
+            "Hebrew localization regression: {source}"
+        );
     }
 }
 
@@ -744,6 +767,10 @@ fn hebrew_parallel_round4_appearance_translations() {
         ("Toggle Fill and Stroke", "החלפה בין מילוי לקו מתאר"),
         ("Default Fill and Stroke", "מילוי וקו מתאר כברירת מחדל"),
     ] {
-        assert_eq!(tr("he", source), expected, "Hebrew localization regression: {source}");
+        assert_eq!(
+            tr("he", source),
+            expected,
+            "Hebrew localization regression: {source}"
+        );
     }
 }
