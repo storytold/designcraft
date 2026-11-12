@@ -538,8 +538,8 @@ mod layer_tests {
         assert_eq!(st.text, orig.text, "the copy holds the whole text");
         // Thread order as in the original (a's copy first, though b's copy was made first), without c.
         let pos = |id: designcraft_doc::ItemId| d.find(id).map(|l| l.path.clone());
-        let order: Vec<_> = st.frames.iter().map(|f| d.item(*f).unwrap().xf).collect();
-        let want: Vec<_> = [a, b].iter().map(|f| d.item(designcraft_doc::ItemId(*f)).unwrap().xf).collect();
+        let order: Vec<_> = st.frames.iter().map(|f| d.item(*f).unwrap().path.clone()).collect();
+        let want: Vec<_> = [a, b].iter().map(|f| d.item(designcraft_doc::ItemId(*f)).unwrap().path.clone()).collect();
         assert_eq!(order, want);
         assert!(st.frames.iter().all(|f| pos(*f).is_some()));
     }
