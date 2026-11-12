@@ -479,6 +479,7 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ("Gutter:", ["Steg:", "Gouttière :", "Medianil:", "間隔:", "栏间距："]),
     ("Fit Guides to:", ["Hilfslinien einpassen in:", "Ajuster les repères à :", "Ajustar guías a:", "ガイドの適用先:", "参考线适合："]),
     ("Top:", ["Oben:", "Haut :", "Superior:", "天:", "上："]),
+    ("Inset:", ["Versatz:", "Marge intérieure :", "Margen interior:", "フレーム内マージン :", "内边距："]),
     ("Bottom:", ["Unten:", "Bas :", "Inferior:", "地:", "下："]),
     ("Inside:", ["Innen:", "Intérieur :", "Interior:", "ノド:", "内："]),
     ("Outside:", ["Außen:", "Extérieur :", "Exterior:", "小口:", "外："]),
@@ -3480,6 +3481,11 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
             "在音节之间（不仅在空格处）",
         ],
     ),
+    ("Auto Leading:", ["Automatischer Zeilenabstand:", "Interlignage automatique :", "Interlineado automático:", "自動行送り:", "自动行距："]),
+    (
+        "Single Word Justification:",
+        ["Ausrichtung einzelner Wörter:", "Justification des mots isolés :", "Justificación de palabra única:", "単語のみの行の揃え:", "单字齐行："],
+    ),
     ("Binding:", ["Binding:", "Reliure :", "Binding:", "Binding:", "装订方向："]),
     ("Ruby:", ["Ruby:", "Ruby :", "Ruby:", "Ruby:", "旁注："]),
     (
@@ -4148,6 +4154,17 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ("Set", ["Set", "Jeu", "Set", "Set", "样式集"]),
     ("unused", ["unused", "inutilisé", "unused", "unused", "未使用"]),
     ("⚠ Missing", ["⚠ Missing", "⚠ Manquant", "⚠ Missing", "⚠ Missing", "⚠ 缺失"]),
+    ("Checking", ["Wird geprüft", "Vérification", "Comprobando", "確認中", "正在检查"]),
+    (
+        "Link status is unavailable.",
+        [
+            "Der Verknüpfungsstatus ist nicht verfügbar.",
+            "L'état des liens n'est pas disponible.",
+            "El estado de los vínculos no está disponible.",
+            "リンクの状態を取得できません。",
+            "链接状态不可用。",
+        ],
+    ),
     ("▲ Modified", ["▲ Modified", "▲ Modifié", "▲ Modified", "▲ Modified", "▲ 已修改"]),
     ("(Text Color)", ["(Text Color)", "(Couleur du texte)", "(Text Color)", "(Text Color)", "（文本颜色）"]),
     (
