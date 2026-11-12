@@ -211,13 +211,7 @@ impl<'r> Importer<'r> {
                 None
             };
             let effects = self.style_effects(e);
-            // Corner options, when the style sets them (Stroke & Corner Options), by name. A style
-            // that sets some corners takes the others from the styles it is based on, as the style
-            // holds all four.
-            let corners = (e.get("EnableStrokeAndCornerOptions") != Some("false") && corners(e, "").is_some())
-                .then(|| corners_in(&levels, ""))
-                .flatten()
-                .map(|c| CornerOptions { corners: c });
+            let corners = style_corners(e, &levels);
             let apply_next_style = paragraph_style.is_some() && e.get("ApplyNextParagraphStyle") == Some("true");
             let s = ObjectStyle { name: name.clone(), based_on, fill, stroke, paragraph_style, apply_next_style, text_frame, effects, corners };
             match self.styles.object.iter_mut().find(|o| o.name == name) {
@@ -416,6 +410,21 @@ impl<'r> Importer<'r> {
             skip_last: el.num(&format!("SkipLastAlternatingStroke{kind}s")).map(|v| v.max(0.0) as u32),
         }
     }
+}
+
+/// Object style `e`'s corner options (Stroke & Corner Options), by name, when it sets them. A style
+/// that sets some corners, or turns the category on, takes the others from the styles in `levels`
+/// (`e` and the styles it is based on) that don't turn the category off.
+fn style_corners(e: &El, levels: &[&El]) -> Option<CornerOptions> {
+    match e.get("EnableStrokeAndCornerOptions") {
+        Some("false") => return None,
+        Some("true") => {}
+        _ => {
+            corners(e, "")?;
+        }
+    }
+    let on: Vec<&El> = levels.iter().copied().filter(|l| l.get("EnableStrokeAndCornerOptions") != Some("false")).collect();
+    corners_in(&on, "").map(|c| CornerOptions { corners: c })
 }
 
 /// Object style `e`, then the styles it is based on, nearest first (cycle-safe, at most 16). A

@@ -792,6 +792,12 @@ fn object_styles_carry_corners_and_their_stroke_and_corners_can_be_edited() {
     assert!(s.execute("style.object.edit", &json!({"name": "Framed", "rename": "[Basic Text Frame]"})).is_err());
     assert!(s.execute("style.object.edit", &json!({"name": "[Basic Graphics Frame]", "rename": "Mine"})).is_err());
     assert!(s.execute("style.object.edit", &json!({"name": "Framed", "corners": {"size": "big"}})).is_err());
+    // A size outside 0–10000 pt is refused, not changed.
+    for size in [-1.0, 10_001.0] {
+        assert!(s.execute("style.object.edit", &json!({"name": "Framed", "corners": {"size": size}})).is_err(), "{size}");
+        let c = json!({"shape": "rounded", "size": size});
+        assert!(s.execute("style.object.create", &json!({"name": "Odd", "corners": {"corners": [c, c, c, c]}})).is_err(), "{size}");
+    }
     // A negative stroke weight is refused when creating a style as when editing one.
     let styles = s.doc().unwrap().doc.styles.object.len();
     for cmd in ["style.object.create", "style.object.edit"] {
@@ -921,6 +927,11 @@ fn object_style_text_frame_general_options_leave_the_other_frame_settings() {
     assert_eq!(r["updated"], 1);
     let o = options(&s, a);
     assert_eq!((o.inset, o.ignore_wrap, o.auto_size), ([1.0, 2.0, 3.0, 4.0], true, AutoSize::HeightOnly));
+    // Each option follows on its own: the frame's own inset stays and the new column count arrives.
+    s.execute("object.textFrameOptions", &json!({"ids": [a], "inset": 9})).unwrap();
+    s.execute("style.object.edit", &json!({"name": name, "textFrame": {"columns": 3}})).unwrap();
+    let o = options(&s, a);
+    assert_eq!((o.columns, o.inset), (3, [9.0; 4]));
 
     // Threaded frames: the story's paragraphs take one Next Style chain across both frames.
     s.execute("text.thread", &json!({"from": a, "to": b})).unwrap();

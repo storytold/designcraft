@@ -293,11 +293,9 @@ fn corners_param(
         let size = sz.as_f64().filter(|v| v.is_finite()).ok_or_else(|| bad(cmd, "corner size must be a number"))?;
         c.corners.iter_mut().for_each(|k| k.size = size);
     }
-    for k in &mut c.corners {
-        if !k.size.is_finite() {
-            return Err(bad(cmd, "corner sizes must be finite"));
-        }
-        k.size = k.size.clamp(0.0, 10_000.0);
+    // Sizes given in this call must be 0–10000 pt.
+    if (o.contains_key("corners") || o.contains_key("size")) && !c.corners.iter().all(|k| k.size.is_finite() && (0.0..=10_000.0).contains(&k.size)) {
+        return Err(bad(cmd, "corner sizes must be 0–10000 pt"));
     }
     Ok(Some(Some(c)))
 }
@@ -386,7 +384,7 @@ pub(super) fn edit_object(s: &mut Session, p: &Value) -> Result<Value> {
                 || fill.as_ref().is_some_and(|(o, _)| it.fill == *o)
                 || stroke.as_ref().is_some_and(|(o, _)| it.stroke == *o)
                 || corners.as_ref().is_some_and(|(o, _)| it.corners == o.named_to_path(&it.path))
-                || frame.as_ref().is_some_and(|(o, _)| it.text_frame().is_some_and(|t| t.options.general_eq(o)))
+                || frame.as_ref().is_some_and(|(o, n)| it.text_frame().is_some_and(|t| t.options.clone().follow_general(o, n)))
         };
         let updated = d.update_items(
             |it| it.object_style == new.name && follows(it),
@@ -411,11 +409,12 @@ pub(super) fn edit_object(s: &mut Session, p: &Value) -> Result<Value> {
                 {
                     it.corners = n.named_to_path(&it.path);
                 }
+                // Each General option follows on its own, so a frame's own inset stays while a
+                // new column count reaches it.
                 if let Some((o, n)) = &frame
                     && let Some(tf) = it.text_frame_mut()
-                    && tf.options.general_eq(o)
                 {
-                    tf.options.set_general(n);
+                    tf.options.follow_general(o, n);
                 }
             },
         );

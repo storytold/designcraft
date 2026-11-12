@@ -314,6 +314,18 @@ fn a_style_setting_one_corner_inherits_the_others_and_names_them() {
     assert_eq!(it.corners.corners.map(|c| c.shape), [CornerShape::Rounded, CornerShape::Rounded, CornerShape::Rounded, CornerShape::Bevel]);
 }
 
+/// A style that turns Stroke & Corner Options on without corner attributes of its own takes all
+/// four corners from the style it is based on.
+#[test]
+fn a_style_turning_corners_on_inherits_all_four() {
+    let child = r#"<ObjectStyle Self="ObjectStyle/Plain" Name="Plain" EnableStrokeAndCornerOptions="true">
+      <Properties><BasedOn type="object">ObjectStyle/Round</BasedOn></Properties>
+    </ObjectStyle>"#;
+    let d = fixture(&format!("{ROUND}{child}"), &[]);
+    let c = d.styles.object.iter().find(|s| s.name == "Plain").and_then(|s| s.corners).expect("inherited corners").corners;
+    assert_eq!((c.map(|c| c.shape), c.map(|c| c.size)), ([CornerShape::Rounded; 4], [17.0; 4]));
+}
+
 /// An object style giving its corners only with the legacy all-corners `CornerOption` and
 /// `CornerRadius` keeps them, so applying it to another frame rounds it.
 #[test]

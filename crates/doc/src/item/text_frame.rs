@@ -268,6 +268,22 @@ impl TextFrameOptions {
             && self.ignore_wrap == other.ignore_wrap
     }
 
+    /// Each General option that is `old`'s here takes `new`'s; the others stay. `true` when one
+    /// changed.
+    pub fn follow_general(&mut self, old: &TextFrameOptions, new: &TextFrameOptions) -> bool {
+        let mut changed = false;
+        macro_rules! follow {
+            ($($f:ident),*) => {$(
+                if self.$f == old.$f && self.$f != new.$f {
+                    self.$f = new.$f;
+                    changed = true;
+                }
+            )*};
+        }
+        follow!(columns, columns_kind, gutter, column_width, balance_columns, inset, vertical_justification, vj_paragraph_spacing_limit, ignore_wrap);
+        changed
+    }
+
     /// Copies the General options of `from` (see [`Self::GENERAL_KEYS`]). Baseline, auto-size,
     /// column rule and Type on a Path settings stay as they are.
     pub fn set_general(&mut self, from: &TextFrameOptions) {
