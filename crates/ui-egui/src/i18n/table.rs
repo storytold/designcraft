@@ -3480,6 +3480,11 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
             "在音节之间（不仅在空格处）",
         ],
     ),
+    ("Auto Leading:", ["Automatischer Zeilenabstand:", "Interlignage automatique :", "Interlineado automático:", "自動行送り:", "自动行距："]),
+    (
+        "Single Word Justification:",
+        ["Ausrichtung einzelner Wörter:", "Justification des mots isolés :", "Justificación de palabra única:", "単語のみの行の揃え:", "单字齐行："],
+    ),
     ("Binding:", ["Binding:", "Reliure :", "Binding:", "Binding:", "装订方向："]),
     ("Ruby:", ["Ruby:", "Ruby :", "Ruby:", "Ruby:", "旁注："]),
     (

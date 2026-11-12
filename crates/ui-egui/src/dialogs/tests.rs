@@ -1130,6 +1130,129 @@ fn justification_dialog_leaves_mixed_fields_alone_and_refuses_bad_values() {
     }
 }
 
+/// The Justification dialog shows Auto Leading and Single Word Justification, OK sets them on the
+/// selected paragraph as one undo step, bad values keep the dialog open, and both values survive
+/// saving and opening the native file and an IDML export.
+#[test]
+fn justification_dialog_sets_auto_leading_and_single_word_justification() {
+    use egui_kittest::{Harness, kittest::Queryable};
+    let (mut app, story) = two_paragraphs();
+    app.run("app.justificationDialog", json!({})).unwrap();
+    let d = app.ui.dialog.clone().unwrap();
+    let current = d.fields["current"].clone();
+    assert_eq!((current["autoLeading"].clone(), current["singleWordJustify"].clone()), (json!(1.2), json!("fullyJustified")));
+    let mut h = Harness::builder().with_size(egui::vec2(1000.0, 800.0)).build_ui_state(
+        |ui, app: &mut DesignApp| {
+            let key = egui::Id::unique("justification_single_word_fonts");
+            if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
+                crate::theme::install_fonts(ui.ctx(), "");
+                ui.data_mut(|d| d.insert_temp(key, true));
+                return;
+            }
+            show(app, ui.ctx());
+        },
+        app,
+    );
+    h.run_steps(3);
+    assert!(h.query_by_label("Auto Leading:").is_some());
+    assert!(h.query_by_label("Single Word Justification:").is_some());
+    use egui::accesskit::Role;
+    // The dropdown shows the paragraph's Full Justify. Picking Full Justify again is no edit.
+    h.get_by(|n| n.role() == Role::ComboBox && n.value().as_deref() == Some("Full Justify")).click();
+    h.run_steps(3);
+    h.get_by(|n| n.role() != Role::ComboBox && n.label().as_deref() == Some("Full Justify")).click();
+    h.run_steps(3);
+    assert!(!h.state().ui.dialog.as_ref().unwrap().fields.contains_key("singleWordJustify"), "the paragraph's own choice is no edit");
+    // Pick Align Center.
+    h.get_by(|n| n.role() == Role::ComboBox && n.value().as_deref() == Some("Full Justify")).click();
+    h.run_steps(3);
+    h.get_by_label("Align Center").click();
+    h.run_steps(3);
+    let mut app = std::mem::replace(h.state_mut(), DesignApp::new(designcraft_engine::Session::new(), crate::Services::default()));
+    drop(h);
+    let ctx = egui::Context::default();
+    assert_eq!(app.ui.dialog.as_ref().unwrap().fields["singleWordJustify"], "center", "the choice is the edit");
+
+    // Out of range or not a choice: an error, the dialog stays open, nothing changes.
+    let d = app.ui.dialog.clone().unwrap();
+    let before = undo_steps(&app);
+    let bad = [
+        ("autoLeading", json!(5.01)),
+        ("autoLeading", json!(-0.01)),
+        ("autoLeading", json!(f64::NAN)),
+        ("singleWordJustify", json!("leftJustified")),
+    ];
+    for (key, v) in bad {
+        app.ui.dialog = Some(d.clone());
+        app.ui.dialog.as_mut().unwrap().fields.insert(key.into(), v.clone());
+        assert!(confirm(&mut app).is_err(), "{key} = {v}");
+        assert!(app.ui.dialog.as_ref().is_some_and(|d| d.fields.contains_key("justifyError")), "{key}: the dialog shows why");
+    }
+    assert_eq!(undo_steps(&app), before);
+
+    // A typed percent is stored as the whole percent the field shows, so 500.4% (shown as 500%)
+    // and -0.4% (shown as 0%) are accepted.
+    for (typed, stored) in [(500.4, 5.0), (-0.4, 0.0), (149.6, 1.5)] {
+        assert_eq!(auto_leading_typed(typed), stored, "{typed}%");
+        let mut probe = d.clone();
+        probe.fields.insert("autoLeading".into(), json!(auto_leading_typed(typed)));
+        assert_eq!(check_justification(&probe, "", &current), Ok(()), "{typed}%");
+    }
+
+    app.ui.dialog = Some(d);
+    app.ui.dialog.as_mut().unwrap().fields.insert("autoLeading".into(), json!(1.5));
+    draw(&mut app, &ctx);
+    confirm(&mut app).unwrap();
+    assert_eq!(undo_steps(&app), before + 1, "one undo step");
+    let both = |app: &mut DesignApp, story: &Value, at| (para_attr(app, story, at, "autoLeading"), para_attr(app, story, at, "singleWordJustify"));
+    assert_eq!(both(&mut app, &story, 0), (json!(1.5), json!("center")));
+    assert_eq!(both(&mut app, &story, 4), (json!(1.2), json!("fullyJustified")), "only the selected paragraph");
+
+    // Both paragraphs selected: the fields that differ show blank, and OK with no edit adds no undo step.
+    app.run("text.select", json!({"story": story, "anchor": 0, "focus": 7})).unwrap();
+    app.run("app.justificationDialog", json!({})).unwrap();
+    draw(&mut app, &ctx);
+    let current = app.ui.dialog.as_ref().unwrap().fields["current"].clone();
+    assert_eq!((current["autoLeading"].clone(), current["singleWordJustify"].clone()), (Value::Null, Value::Null));
+    let before = undo_steps(&app);
+    confirm(&mut app).unwrap();
+    assert_eq!(undo_steps(&app), before);
+
+    // Saved and opened again, natively and through IDML.
+    let native = app.run("file.serialize", json!({})).unwrap();
+    app.run("file.openBytes", json!({"name": "justify.designcraft", "base64": native["base64"]})).unwrap();
+    assert_eq!(both(&mut app, &story, 0), (json!(1.5), json!("center")));
+    let idml = app.run("file.exportIdml", json!({})).unwrap();
+    app.run("file.openBytes", json!({"name": "justify.idml", "base64": idml["base64"]})).unwrap();
+    let doc = &app.session.doc().unwrap().doc;
+    let sid = doc.stories.iter().find(|(_, s)| s.text == "One\nTwo").map(|(id, _)| *id).expect("the story comes back");
+    let story = serde_json::to_value(sid).unwrap();
+    assert_eq!(both(&mut app, &story, 0), (json!(1.5), json!("center")));
+    assert_eq!(both(&mut app, &story, 4), (json!(1.2), json!("fullyJustified")));
+}
+
+/// Paragraph Style Options › Justification sets Auto Leading and Single Word Justification on the
+/// style, and refuses an Auto Leading out of range.
+#[test]
+fn paragraph_style_options_justification_sets_auto_leading_and_single_word_justification() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("style.paragraph.create", json!({"name": "Headline"})).unwrap();
+    let ctx = egui::Context::default();
+    app.ui.dialog = Some(Dialog::new("paragraphStyleOptions", json!({"name": "Headline", "section": "justify"})));
+    draw(&mut app, &ctx);
+    app.ui.dialog.as_mut().unwrap().fields.insert("p.autoLeading".into(), json!(6.0));
+    assert!(confirm(&mut app).unwrap_err().contains("Auto Leading"));
+    let style = |app: &DesignApp| app.session.doc().unwrap().doc.styles.para("Headline").unwrap().para.clone();
+    assert_eq!(style(&app).auto_leading, None, "nothing saved");
+    app.ui.dialog.as_mut().unwrap().fields.insert("p.autoLeading".into(), json!(1.0));
+    app.ui.dialog.as_mut().unwrap().fields.insert("p.singleWordJustify".into(), json!("right"));
+    draw(&mut app, &ctx);
+    confirm(&mut app).unwrap();
+    let para = style(&app);
+    assert_eq!((para.auto_leading, para.single_word_justify), (Some(1.0), Some(designcraft_doc::Align::Right)));
+}
+
 fn command_app(id: &str, fields: Value) -> DesignApp {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.ui.dialog = Some(Dialog::new(&format!("cmd:{id}"), fields));

@@ -409,6 +409,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("In justified Arabic text", "I marginaljusterad arabisk text"),
     ("Korean Line Breaks:", "Koreanska radbrytningar:"),
     ("Between syllables (not only at spaces)", "Mellan stavelser (inte bara vid blanksteg)"),
+    ("Auto Leading:", "Automatiskt radavstånd:"),
+    ("Single Word Justification:", "Justering av enstaka ord:"),
     ("Minimum Space Before First Footnote:", "Minsta avstånd före första fotnoten:"),
     ("Space Between Footnotes:", "Avstånd mellan fotnoter:"),
     ("Offset:", "Förskjutning:"),
