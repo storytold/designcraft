@@ -2,7 +2,7 @@
 //! repaint just those regions (typing in a frame repaints the frame, not the window).
 //!
 //! Conservative: anything whose effect can reach beyond the changed items' own bounds (styles,
-//! swatches, layers, parent pages, text wrap, effects, text that other stories show through
+//! swatches, layers, parent pages, placed files, text wrap, effects, text that other stories show through
 //! cross-references, variables or footnote numbers) reports "everything" (`None`).
 
 use std::collections::HashMap;
@@ -33,6 +33,9 @@ pub fn damage_with(old: &Document, new: &Document, cache: Option<&designcraft_co
         || old.spreads.len() != new.spreads.len()
         || old.parents.len() != new.parents.len()
         || old.parents.iter().zip(&new.parents).any(|(a, b)| !Arc::ptr_eq(a, b))
+        // A relinked or updated file changes what unchanged items show.
+        || old.assets.len() != new.assets.len()
+        || old.assets.iter().zip(&new.assets).any(|((ka, a), (kb, b))| ka != kb || !Arc::ptr_eq(a, b))
     {
         return None;
     }
@@ -226,6 +229,43 @@ mod tests {
         let dmg = damage(&old, &d).unwrap();
         assert!(dmg.iter().any(|(_, r)| r.contains(designcraft_geom::Point::new(100.0, 100.0))));
         assert!(dmg.iter().any(|(_, r)| r.contains(designcraft_geom::Point::new(350.0, 100.0))));
+    }
+
+    #[test]
+    fn relinking_an_asset_damages_the_frame_showing_it() {
+        use designcraft_doc::{Asset, AssetId, Content, Graphic};
+        let mut d = Document::new(&NewDocument { pages: 1, ..Default::default() });
+        let lid = d.default_layer();
+        let aid = AssetId(d.alloc());
+        d.assets.insert(aid, Arc::new(Asset { id: aid, name: "a.png".into(), mime: "image/png".into(), ..Default::default() }));
+        let mut it = Item::new(
+            ItemId(d.alloc()),
+            lid,
+            designcraft_doc::Shape::Rectangle,
+            designcraft_geom::shapes::rectangle(Rect::new(100.0, 100.0, 200.0, 200.0)),
+        );
+        it.content = Content::Graphic(Graphic {
+            layer_options: None,
+            asset: aid,
+            size: (100.0, 100.0),
+            xf: designcraft_geom::Affine::IDENTITY,
+            clip: None,
+            auto_fit: Default::default(),
+            fit_align: 4,
+            crop: [0.0; 4],
+            wrap: Default::default(),
+            fill: Default::default(),
+        });
+        Arc::make_mut(&mut d.spreads[0]).items.push(Arc::new(it));
+        let old = d.clone();
+        // Relink: the same asset id now holds other bytes; the item itself is unchanged.
+        let fresh = Asset { data: Arc::new(vec![1, 2, 3]), link: Some("/new/a.png".into()), ..(*d.assets[&aid]).clone() };
+        d.assets.insert(aid, Arc::new(fresh));
+        let dmg = damage(&old, &d);
+        assert!(
+            dmg.as_ref().is_none_or(|v| v.iter().any(|(_, r)| r.contains(designcraft_geom::Point::new(150.0, 150.0)))),
+            "relink reported damage {dmg:?}"
+        );
     }
 
     #[test]

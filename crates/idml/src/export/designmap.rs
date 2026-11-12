@@ -117,10 +117,14 @@ impl<'a> Ex<'a> {
                     prefix: String::new(),
                     marker: String::new(),
                     include_prefix: false,
+                    layout: None,
                 },
             );
         }
         let total = d.page_count();
+        // Alternate layouts: every section names the layout it is in (InDesign's AlternateLayout).
+        let layouts = d.layouts();
+        let alternates = layouts.len() > 1 || secs.iter().any(|s| s.layout.is_some());
         for (i, s) in secs.iter().enumerate() {
             if s.start >= total {
                 continue;
@@ -137,6 +141,9 @@ impl<'a> Ex<'a> {
                 el.set("PageNumberStart", n);
             }
             el = el.attr("Marker", &s.marker).attr("PageStart", uid(page.id.0)).attr("SectionPrefix", &s.prefix);
+            if alternates && let Some(l) = layouts.iter().rfind(|l| l.start <= s.start) {
+                el = el.attr("AlternateLayout", &l.name).attr("AlternateLayoutLength", l.end.saturating_sub(l.start));
+            }
             root.push(with_props(el, vec![p("PageNumberStyle", "enumeration", names::number_style_out(s.style))]));
         }
         if !self.index_topics.is_empty() || !self.index_xrefs.is_empty() {
@@ -148,6 +155,78 @@ impl<'a> Ex<'a> {
         }
         for (name, _) in stories {
             root.push(El::new("idPkg:Story").attr("src", name));
+        }
+        // The document's own hyperlinks (#1446): a destination element, a source element for a
+        // page item (a text source is already in its story) and a `Hyperlink` joining them.
+        // Stories are written before this, so `link_text_sources` is complete.
+        let text_sources: Vec<(String, usize)> = std::mem::take(&mut self.link_text_sources);
+        for (i, h) in d.hyperlinks.iter().enumerate() {
+            use designcraft_doc::{HyperlinkDest as De, HyperlinkSource as So};
+            // A text destination is already written where its anchor sits.
+            let dest = match &h.dest {
+                // Resolved first, as the page branch resolves its page: an anchor whose text was
+                // deleted names no element, so the file would hold a `Hyperlink` whose
+                // `Destination` points at nothing -- import only warns and InDesign may refuse
+                // the file (noted in review).
+                De::Anchor(a) => d.find_anchor(*a).map(|_| anchor_self(*a)),
+                De::Url(u) => Some(self.url_dest_el(&mut root, u, &h.name)),
+                De::Email(e) => Some(self.url_dest_el(&mut root, &format!("mailto:{e}"), &h.name)),
+                De::Page(p) => d.page(*p).map(|pg| {
+                    // One element per page, as `url_dest_el` writes one per URL: every link to
+                    // the same page pushed another `HyperlinkPageDestination` with the same
+                    // `Self`, and IDML's references rely on a `Self` naming one element (noted
+                    // in review).
+                    let me = format!("HyperlinkPageDestination/p{}", pg.id.0);
+                    if !has_self(&root, "HyperlinkPageDestination", &me) {
+                        root.push(
+                            El::new("HyperlinkPageDestination")
+                                .attr("Self", &me)
+                                .attr("Name", &h.name)
+                                .attr("DestinationPage", uid(pg.id.0))
+                                .attr("ViewSetting", "FitPage")
+                                .attr("Hidden", "false"),
+                        );
+                    }
+                    me
+                }),
+            };
+            let Some(dest) = dest else { continue };
+            // One `Hyperlink` per source element: a link whose text crosses a paragraph has one
+            // source per paragraph, so each piece stays clickable.
+            let sources: Vec<String> = match &h.source {
+                So::Item { id } if d.item(*id).is_some() => {
+                    // The link's index as well as the item's: InDesign joins one source to one
+                    // destination, so three links on one frame are three source elements, and
+                    // naming them all `i{item}` gave three elements one `Self` (noted in review).
+                    let me = format!("HyperlinkPageItemSource/i{}k{i}", id.0);
+                    root.push(
+                        El::new("HyperlinkPageItemSource")
+                            .attr("Self", &me)
+                            .attr("Name", &h.name)
+                            .attr("SourcePageItem", uid(id.0))
+                            .attr("Hidden", "false"),
+                    );
+                    vec![me]
+                }
+                So::Item { .. } => vec![],
+                So::Text { .. } => text_sources.iter().filter(|(_, k)| *k == i).map(|(me, _)| me.clone()).collect(),
+            };
+            for src in sources {
+                let mut el = El::new("Hyperlink")
+                    .attr("Self", self.fresh())
+                    .attr("Name", &h.name)
+                    .attr("Source", src)
+                    .attr("Visible", "true")
+                    .attr("Highlight", "None")
+                    .attr("Width", "Thin")
+                    .attr("BorderStyle", "Solid")
+                    .attr("Hidden", "false")
+                    .attr("DestinationUniqueKey", h.id & 0xFFFF_FFFF);
+                let mut props = El::new("Properties");
+                props.push(p("Destination", "object", &dest));
+                el.push(props);
+                root.push(el);
+            }
         }
         for (src, target) in self.xref_sources.clone() {
             let mut h = El::new("Hyperlink")
@@ -206,10 +285,10 @@ fn xref_format_el(i: usize, f: &designcraft_doc::XrefFormat) -> El {
     };
     let mut rest = f.definition.as_str();
     while let Some(a) = rest.find('<') {
+        let Some(b) = rest[a..].find('>') else { break };
         if a > 0 {
             block(&mut el, "CustomStringBuildingBlock", &rest[..a], "", false);
         }
-        let Some(b) = rest[a..].find('>') else { break };
         let tag = rest[a + 1..a + b].trim().trim_end_matches('/').trim();
         let attr = |k: &str| tag.find(&format!("{k}=\"")).and_then(|i| tag[i + k.len() + 2..].split('"').next()).unwrap_or("").to_string();
         match tag.split_whitespace().next().unwrap_or("") {
@@ -349,4 +428,60 @@ fn text_variable_el(v: &designcraft_doc::vars::TextVariable) -> El {
         e.push(s);
     }
     e
+}
+
+impl Ex<'_> {
+    /// A `HyperlinkURLDestination` for `url`, written once however many links lead to it.
+    fn url_dest_el(&mut self, root: &mut El, url: &str, name: &str) -> String {
+        let me = format!("HyperlinkURLDestination/u{:x}", fnv(url));
+        if !has_self(root, "HyperlinkURLDestination", &me) {
+            root.push(
+                El::new("HyperlinkURLDestination")
+                    .attr("Self", &me)
+                    .attr("Name", if name.is_empty() { url } else { name })
+                    .attr("DestinationURL", url)
+                    .attr("Hidden", "false"),
+            );
+        }
+        me
+    }
+}
+
+/// A short stable name for a string, so one URL gives one destination element.
+fn fnv(s: &str) -> u64 {
+    s.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3))
+}
+
+/// Whether `root` already holds an element of this name with this `Self`. IDML references name
+/// one element, so a `Self` written twice is a broken file.
+fn has_self(root: &El, name: &str, me: &str) -> bool {
+    root.children.iter().any(|n| matches!(n, crate::xml::Node::El(e) if e.name == name && e.get("Self") == Some(me)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::xml::Node;
+
+    fn custom_text(definition: &str) -> String {
+        let f = designcraft_doc::XrefFormat { name: "x".into(), definition: definition.into() };
+        xref_format_el(0, &f)
+            .children
+            .iter()
+            .filter_map(|n| match n {
+                Node::El(e) if e.get("BlockType") == Some("CustomStringBuildingBlock") => e.get("CustomText").map(str::to_string),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn xref_format_unclosed_angle_bracket_keeps_text_once() {
+        assert_eq!(custom_text("a < b"), "a < b");
+    }
+
+    #[test]
+    fn xref_format_well_formed_keeps_custom_text() {
+        assert_eq!(custom_text("p <pageNum /> of <chapNum />"), "p  of ");
+    }
 }

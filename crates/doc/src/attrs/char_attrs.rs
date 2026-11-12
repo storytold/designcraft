@@ -86,7 +86,7 @@ attr_set! {
         kenten_font: String = String::new(),
         kenten_font_style: String = String::new(),
         /// Mark size in points; `None` is half the text size.
-        kenten_size: Option<f64> = None,
+        kenten_size: Option<f64> = None => "deserialize_explicit_value",
         /// Horizontal / vertical scale of the mark, 1.0 = 100%.
         kenten_x_scale: f64 = 1.0,
         kenten_y_scale: f64 = 1.0,
@@ -99,10 +99,10 @@ attr_set! {
         /// Mark fill and stroke swatches (empty = the text's), tints and stroke weight (`None` =
         /// the text's).
         kenten_fill: String = String::new(),
-        kenten_fill_tint: Option<f32> = None,
+        kenten_fill_tint: Option<f32> = None => "deserialize_explicit_value",
         kenten_stroke: String = String::new(),
-        kenten_stroke_tint: Option<f32> = None,
-        kenten_stroke_weight: Option<f64> = None,
+        kenten_stroke_tint: Option<f32> = None => "deserialize_explicit_value",
+        kenten_stroke_weight: Option<f64> = None => "deserialize_explicit_value",
         kenten_overprint_fill: crate::cjk_settings::AdornmentOverprint = crate::cjk_settings::AdornmentOverprint::Auto,
         kenten_overprint_stroke: crate::cjk_settings::AdornmentOverprint = crate::cjk_settings::AdornmentOverprint::Auto,
         // Shatai (斜体): the character is compressed across the direction at `shatai_angle`.
@@ -126,7 +126,7 @@ attr_set! {
         ruby_font: String = String::new(),
         ruby_font_style: String = String::new(),
         /// Points; `None` is half the parent size.
-        ruby_font_size: Option<f64> = None,
+        ruby_font_size: Option<f64> = None => "deserialize_explicit_value",
         /// 1.0 = 100%.
         ruby_x_scale: f64 = 1.0,
         ruby_y_scale: f64 = 1.0,
@@ -147,10 +147,10 @@ attr_set! {
         ruby_scaling_min: f64 = 0.66,
         /// Ruby colour: empty is the text's colour; `None` tint and weight follow the text.
         ruby_fill: String = String::new(),
-        ruby_fill_tint: Option<f32> = None,
+        ruby_fill_tint: Option<f32> = None => "deserialize_explicit_value",
         ruby_stroke: String = String::new(),
-        ruby_stroke_tint: Option<f32> = None,
-        ruby_stroke_weight: Option<f64> = None,
+        ruby_stroke_tint: Option<f32> = None => "deserialize_explicit_value",
+        ruby_stroke_weight: Option<f64> = None => "deserialize_explicit_value",
         ruby_overprint_fill: crate::cjk_settings::AdornmentOverprint = crate::cjk_settings::AdornmentOverprint::Auto,
         ruby_overprint_stroke: crate::cjk_settings::AdornmentOverprint = crate::cjk_settings::AdornmentOverprint::Auto,
         /// Digits (World-Ready): how 0–9 are drawn.

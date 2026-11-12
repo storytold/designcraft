@@ -6,6 +6,15 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
 
+/// DesignCraft as craft-update knows it, with its 128 px icon and accent colour: the update
+/// prompt shows both, and an AppImage's menu entry gets the icon.
+#[cfg(not(target_arch = "wasm32"))]
+pub const UPDATE_APP: craft_update::app::App = craft_update::app::App {
+    icon_png: Some(include_bytes!("../../../assets/app-icon/hicolor/128x128/apps/ai.storyteller.designcraft.png")),
+    accent: Some([0x7b, 0xb5, 0x1c]),
+    ..craft_update::suite::DESIGNCRAFT
+};
+
 pub mod about;
 pub mod canvas;
 pub mod chrome;
@@ -15,13 +24,17 @@ pub mod cursors;
 pub mod dialogs;
 pub mod dock;
 pub mod effects_dialog;
+pub mod export_batch_dialog;
 pub mod i18n;
 pub mod icons;
 pub mod keys;
+#[cfg(not(target_arch = "wasm32"))]
+mod links_worker;
 pub mod menus;
 mod modal_drag;
 mod new_document;
 mod object_control;
+pub mod package_dialog;
 mod page_history;
 mod panel_docking;
 pub mod panels;
@@ -61,7 +74,7 @@ use app::browser_import_tests;
 pub use app::opens_as_document;
 pub use clock::now_ms;
 pub use key_names::{drop_key_name_text, is_key_name};
-pub use services::{ClipboardFn, DownloadFn, Inbox, OpenAsyncFn, ReadFn, Services, WriteFn};
+pub use services::{ClipboardFn, DownloadFn, Inbox, OpenAsyncFn, PointerFn, ReadFn, Services, WindowFrameFn, WriteFn};
 pub(crate) use state::second_window_viewport;
 pub use state::{CanvasCache, HiddenPanels, ImportRequest, ImportedFile, PdfExportSettings, Perf, SavedWorkspace, ScreenMode, Shown, UiState, View};
 
@@ -141,6 +154,10 @@ pub struct DesignApp {
     pub(crate) page_history: HashMap<u64, page_history::PageHistory>,
     /// The canvas cache and rect of the pane in `pane` (the other pane's are in `other_pane`).
     pub canvas: CanvasCache,
+    /// Native link checks run separately because an unavailable network share may block for an
+    /// operating-system timeout.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) links_worker: links_worker::State,
     pub canvas_rect: Option<egui::Rect>,
     /// Window › Arrange › Split Window: two views of the document side by side.
     pub split: bool,
@@ -303,6 +320,9 @@ pub fn cjk_features(app: &DesignApp) -> bool {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod window_frame_tests;
 
 /// The whole window in a headless test harness, at a chosen window size.
 #[cfg(test)]

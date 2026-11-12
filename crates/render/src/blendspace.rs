@@ -28,6 +28,9 @@ pub(crate) struct CachedView {
     stats: crate::FrameStats,
     threads: u16,
 }
+/// Rounds [`transparent_area`](Renderer::transparent_area) grows the blend area by joining touching objects.
+const MAX_AREA_ROUNDS: usize = 64;
+
 impl CachedView {
     pub(crate) const MAX_BYTES: usize = 64 << 20;
     #[allow(clippy::too_many_arguments)]
@@ -326,12 +329,19 @@ impl Renderer {
         // Objects the area touches join it whole, so none is drawn partly through the ink passes
         // and partly through the ordinary drawing (their colour conversions differ slightly).
         let Some(mut area) = area else { return Some(Rect::ZERO) };
-        for _ in 0..items.len() {
+        // A chain of overlapping objects joins one more per round (a pass over every item each), so the
+        // rounds are capped; past that the area is everything, a larger area the passes blend exactly.
+        let mut settled = false;
+        for _ in 0..MAX_AREA_ROUNDS.min(items.len()) {
             let grown = items.iter().filter(|(r, _)| r.intersect(area).area() > 0.0).fold(area, |a, (r, _)| a.union(*r));
             if grown == area {
+                settled = true;
                 break;
             }
             area = grown;
+        }
+        if !settled && items.len() > MAX_AREA_ROUNDS {
+            area = items.iter().fold(area, |a, (r, _)| a.union(*r));
         }
         Some(f.view.transform_rect_bbox(area))
     }

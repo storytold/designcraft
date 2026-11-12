@@ -45,12 +45,12 @@ pub fn reading_order(doc: &Document) -> Vec<Block> {
                 continue;
             };
             let xf = *parent * it.xf;
+            if it.hidden {
+                continue;
+            }
             let children = it.children();
             if !children.is_empty() {
                 stack.push((children.iter(), xf));
-            }
-            if it.hidden {
-                continue;
             }
             let block = match &it.content {
                 Content::Text(tf) => {
@@ -129,6 +129,17 @@ pub(crate) fn body_html<'a>(doc: &'a Document, epub: bool, split: Option<&EpubSp
     }
     let mut body = String::new();
     let mut toc = toc_entries(doc, &order);
+    // `Document::item` searches every spread: one pre-order index for all the placed graphics.
+    let mut items: std::collections::HashMap<ItemId, &Item> = std::collections::HashMap::new();
+    if order.iter().any(|b| matches!(b, Block::Image(_))) {
+        for sp in doc.spreads.iter().map(|s| &**s).chain(doc.parents.iter().map(|s| &**s)) {
+            for it in &sp.items {
+                it.walk(&mut |i| {
+                    items.entry(i.id).or_insert(i);
+                });
+            }
+        }
+    }
     for (k, b) in order.iter().enumerate() {
         match b {
             // The endnote frame's text is generated from the endnotes, which end the body as a
@@ -139,7 +150,7 @@ pub(crate) fn body_html<'a>(doc: &'a Document, epub: bool, split: Option<&EpubSp
                 let _ = write!(body, "<section id=\"{anchor}\">\n{}</section>\n", writer.story(*sid, epub.then_some(anchor.as_str())));
             }
             Block::Image(iid) => {
-                let Some(it) = doc.item(*iid) else { continue };
+                let Some(&it) = items.get(iid) else { continue };
                 let Some((markup, media)) = writer.graphic(it) else { continue };
                 if media {
                     let _ = writeln!(body, "<figure>{markup}</figure>");
@@ -185,13 +196,26 @@ pub struct HtmlOptions {
     pub generic_families: BTreeMap<String, String>,
 }
 
+/// Bytes of data URIs one HTML export may write (a document can place one large asset many times).
+const MAX_DATA_URI_BYTES: usize = 512 * 1024 * 1024;
+
 /// File › Export › HTML: one self-contained page (styles inline, images as data URIs) with the
 /// document's stories and graphics in reading order.
 pub fn export_html(doc: &Document, opts: &HtmlOptions) -> String {
     let title = opts.title.clone().unwrap_or_else(|| doc.metadata_title().to_string());
     let language = opts.language.as_deref().unwrap_or("en");
     let lang = language_tag(language);
-    let body = body_html(doc, false, None, &|_, mime, data| format!("data:{mime};base64,{}", base64(data))).html;
+    // Each placement embeds its own copy of the asset; past the budget a placement gets no source.
+    let spent = std::cell::Cell::new(0usize);
+    let body = body_html(doc, false, None, &|_, mime, data| {
+        let n = data.len().div_ceil(3).saturating_mul(4).saturating_add(mime.len() + 13);
+        if n > MAX_DATA_URI_BYTES - spent.get() {
+            return String::new();
+        }
+        spent.set(spent.get() + n);
+        format!("data:{mime};base64,{}", base64(data))
+    })
+    .html;
     format!(
         "<!DOCTYPE html>\n<html lang=\"{lang}\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<meta name=\"generator\" content=\"DesignCraft\">\n<title>{}</title>\n<style>\nbody {{ max-width: 40em; margin: 2em auto; padding: 0 1em; }}\nfigure {{ margin: 1em 0; }} figure img {{ max-width: 100%; height: auto; }}\n{}</style>\n</head>\n<body>\n{body}</body>\n</html>\n",
         xml_text(&title),
