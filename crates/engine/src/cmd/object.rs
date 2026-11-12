@@ -1161,16 +1161,19 @@ fn renumber_in(dst: &mut Document, src: &Document, it: &mut Item, stories: &mut 
     }
 }
 
-/// Fresh ids for the objects anchored in story copy `st`, its table cells, footnotes and endnotes (#1522).
+/// Fresh ids for the objects anchored in story copy `st`, its table cells, footnotes and endnotes, at every depth
+/// (#1522).
 fn renumber_anchored(dst: &mut Document, src: &Document, st: &mut Story, stories: &mut HashMap<StoryId, StoryId>) {
-    let mut fresh = |t: &mut Story| {
-        for o in &mut t.objects {
-            renumber_in(dst, src, &mut Arc::make_mut(o).item, stories, false);
+    for o in &mut st.objects {
+        renumber_in(dst, src, &mut Arc::make_mut(o).item, stories, false);
+    }
+    for t in st.tables.values_mut() {
+        for c in &mut Arc::make_mut(t).cells {
+            renumber_anchored(dst, src, &mut c.text, stories);
         }
-    };
-    st.for_each_text_mut(&mut fresh);
-    for n in &mut st.endnotes {
-        Arc::make_mut(n).text.for_each_text_mut(&mut fresh);
+    }
+    for n in st.notes.iter_mut().chain(st.endnotes.iter_mut()) {
+        renumber_anchored(dst, src, &mut Arc::make_mut(n).text, stories);
     }
 }
 

@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use designcraft_doc::{Content, Guide, Hyperlink, HyperlinkSource, Item, ItemId, SpreadRef, Story, StoryId};
+use designcraft_doc::{Guide, Hyperlink, HyperlinkSource, Item, ItemId, SpreadRef, Story, StoryId};
 
 use super::{LAYER_COLORS, Layer, LayerId, Result, Session, Value, bad, json, ok};
 
@@ -91,15 +91,12 @@ pub(super) fn duplicate_layer(s: &mut Session, p: &Value) -> Result<Value> {
                 copies.push((r, copy));
             }
         }
-        // A story copy holds the same anchored objects as the original: they get ids of their own, and the stories of
-        // anchored text frames get copies in turn. The story copies are taken in story order.
-        let mut pending: Vec<StoryId> = stories.values().copied().collect();
-        pending.sort_unstable();
-        pending.reverse();
-        while let Some(new) = pending.pop() {
-            let Some(mut st) = d.story(new).cloned() else { continue };
-            renumber_anchored(d, &mut st, new_id, &mut stories, &mut ids, &mut pending);
-            d.stories.insert(new, Arc::new(st));
+        // The story copies hold copies of the original's anchored objects with ids of their own (and copies of the
+        // stories of anchored text frames): record each copy's id against the original's.
+        for (old, new) in &stories {
+            if let (Some(orig), Some(copy)) = (src.story(*old), d.story(*new)) {
+                map_anchored(orig, copy, &mut ids);
+            }
         }
         // Every copy, anchored objects included, has its id before overrides are pointed at the copied parent items and
         // live captions at the copied objects.
@@ -242,27 +239,21 @@ fn too_deep(it: &Item, d: &designcraft_doc::Document, seen: &mut std::collection
     false
 }
 
-/// Give the items anchored in `st`, and in the stories of its table cells and notes, new ids from `d` (recorded in `ids`)
-/// and layer `to`. An anchored text frame's story gets one copy, recorded in `stories`, that every copied frame of the
-/// story shares; a new copy goes on `pending`, and its frame list is filled in afterwards. [`too_deep`] bounds the nesting.
-fn renumber_anchored(
-    d: &mut designcraft_doc::Document,
-    st: &mut Story,
-    to: LayerId,
-    stories: &mut HashMap<StoryId, StoryId>,
-    ids: &mut HashMap<ItemId, ItemId>,
-    pending: &mut Vec<StoryId>,
-) {
-    for o in &mut st.objects {
-        renumber_anchored_item(d, &mut Arc::make_mut(o).item, to, stories, ids, pending);
+/// Run [`map_ids`] on the items anchored in story `orig` and in its copy `copy`, and in the stories of their table cells
+/// and notes. [`too_deep`] bounds the nesting.
+fn map_anchored(orig: &Story, copy: &Story, ids: &mut HashMap<ItemId, ItemId>) {
+    for (o, c) in orig.objects.iter().zip(&copy.objects) {
+        map_ids(&o.item, &c.item, ids);
     }
-    for t in st.tables.values_mut() {
-        for c in &mut Arc::make_mut(t).cells {
-            renumber_anchored(d, &mut c.text, to, stories, ids, pending);
+    for (k, t) in &orig.tables {
+        if let Some(ct) = copy.tables.get(k) {
+            for (o, c) in t.cells.iter().zip(&ct.cells) {
+                map_anchored(&o.text, &c.text, ids);
+            }
         }
     }
-    for n in st.notes.iter_mut().chain(st.endnotes.iter_mut()) {
-        renumber_anchored(d, &mut Arc::make_mut(n).text, to, stories, ids, pending);
+    for (o, c) in orig.notes.iter().chain(&orig.endnotes).zip(copy.notes.iter().chain(&copy.endnotes)) {
+        map_anchored(&o.text, &c.text, ids);
     }
 }
 
@@ -340,39 +331,6 @@ fn remap_xrefs(st: &mut Story, map: &HashMap<u64, u64>) {
     }
     for n in st.notes.iter_mut().chain(st.endnotes.iter_mut()) {
         remap_xrefs(&mut Arc::make_mut(n).text, map);
-    }
-}
-
-/// [`renumber_anchored`] for one anchored item and its descendants.
-fn renumber_anchored_item(
-    d: &mut designcraft_doc::Document,
-    it: &mut Item,
-    to: LayerId,
-    stories: &mut HashMap<StoryId, StoryId>,
-    ids: &mut HashMap<ItemId, ItemId>,
-    pending: &mut Vec<StoryId>,
-) {
-    let id = ItemId(d.alloc());
-    ids.insert(it.id, id);
-    it.id = id;
-    it.layer = to;
-    if let Content::Text(tf) = &mut it.content {
-        tf.story = match stories.get(&tf.story) {
-            Some(n) => *n,
-            None => {
-                let n = StoryId(d.alloc());
-                let mut copy = d.story(tf.story).cloned().unwrap_or_else(|| Story::new(n));
-                copy.id = n;
-                copy.frames.clear();
-                d.stories.insert(n, Arc::new(copy));
-                stories.insert(tf.story, n);
-                pending.push(n);
-                n
-            }
-        };
-    }
-    for c in it.children_mut().into_iter().flatten() {
-        renumber_anchored_item(d, Arc::make_mut(c), to, stories, ids, pending);
     }
 }
 
@@ -906,6 +864,39 @@ mod layer_tests {
         let mut redone = Vec::new();
         collect(s.doc().unwrap().doc.story(copied).unwrap(), &mut redone);
         assert_eq!(redone, after);
+    }
+
+    #[test]
+    fn duplicate_layer_gives_objects_anchored_in_endnotes_of_cells_their_own_ids() {
+        use designcraft_doc::AnchoredObject;
+        use std::sync::Arc;
+
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let base = s.doc().unwrap().doc.layers[0].id.0;
+        let a = s.execute("frame.create", &json!({"rect": [450, 450, 474, 490]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("object.caption", &json!({"ids": [a], "text": "{name}", "live": true})).unwrap();
+        let f = s.execute("frame.create", &json!({"rect": [72, 72, 400, 400], "content": "text", "text": "Rows"})).unwrap()["id"].as_u64().unwrap();
+        let sid = s.doc().unwrap().doc.item(designcraft_doc::ItemId(f)).unwrap().text_frame().unwrap().story;
+        let d = Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+        // The caption's source moves into an endnote of a table cell and keeps its id.
+        let it = d.item(designcraft_doc::ItemId(a)).cloned().unwrap();
+        Arc::make_mut(&mut d.spreads[0]).items.retain(|i| i.id.0 != a);
+        let mut table = designcraft_doc::Table::new(d.alloc(), 1, 1, 0, 0, 40.0);
+        let cell = &mut table.cells[0].text;
+        cell.insert_endnote(cell.len(), "Endnote", Default::default()).unwrap();
+        Arc::make_mut(&mut cell.endnotes[0]).text.insert_object(0, AnchoredObject::new(it, Default::default()));
+        d.story_mut(sid).unwrap().insert_table(0, table);
+        d.check().unwrap();
+        let copy = s.execute("layer.duplicate", &json!({"id": base})).unwrap()["id"].as_u64().unwrap();
+        let d = &s.doc().unwrap().doc;
+        d.check().unwrap();
+        let anchored: Vec<_> = d.anchored_items().into_iter().map(|(_, i)| (i.id, i.layer.0)).collect();
+        assert_eq!(anchored.len(), 2);
+        let copied = anchored.iter().find(|i| i.1 == copy).unwrap().0;
+        assert_ne!(copied.0, a, "the copy has an id of its own");
+        let caption = on_layer(d, copy).iter().find_map(|i| i.live_caption.clone()).unwrap();
+        assert_eq!(caption.source, copied, "the caption's copy follows the anchored object's copy");
     }
 
     #[test]
