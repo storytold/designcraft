@@ -7,6 +7,39 @@ use super::{
 
 // ---------------------------------------------------------------- Text
 
+/// Keep the style preview's font swatch on the reading-start edge of the dropdown.
+/// This is display geometry only: the document's style identifier is unchanged.
+fn text_style_preview_geometry(rect: Rect, rtl: bool) -> (Rect, egui::Pos2, egui::Align2) {
+    let inset = 6.0;
+    let swatch_size = vec2(22.0, 22.0);
+    let swatch_x = if rtl { rect.right() - inset - swatch_size.x } else { rect.left() + inset };
+    let swatch = Rect::from_min_size(pos2(swatch_x, rect.top() + inset), swatch_size);
+    let text_x = if rtl { swatch.left() - 8.0 } else { swatch.right() + 8.0 };
+    let anchor = if rtl { egui::Align2::RIGHT_CENTER } else { egui::Align2::LEFT_CENTER };
+    (swatch, pos2(text_x, rect.center().y), anchor)
+}
+
+#[cfg(test)]
+mod text_style_preview_tests {
+    use super::*;
+
+    #[test]
+    fn style_preview_mirrors_swatch_and_text_anchor_for_hebrew_without_moving_the_row() {
+        let row = Rect::from_min_size(pos2(100.0, 200.0), vec2(300.0, 34.0));
+        let (left_swatch, left_text, left_align) = text_style_preview_geometry(row, false);
+        let (right_swatch, right_text, right_align) = text_style_preview_geometry(row, true);
+        assert_eq!(left_swatch.left(), 106.0);
+        assert_eq!(right_swatch.right(), 394.0);
+        assert_eq!(left_swatch.size(), right_swatch.size());
+        assert_eq!(left_swatch.center().y, right_swatch.center().y);
+        assert_eq!(left_text.x, left_swatch.right() + 8.0);
+        assert_eq!(right_text.x, right_swatch.left() - 8.0);
+        assert_eq!(left_text.y, right_text.y);
+        assert_eq!(left_align, egui::Align2::LEFT_CENTER);
+        assert_eq!(right_align, egui::Align2::RIGHT_CENTER);
+    }
+}
+
 pub(super) fn text_style_section(app: &mut DesignApp, ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
     section(ui, crate::i18n::tr(&app.ui.language, "Text Style"), true);
@@ -41,13 +74,13 @@ pub(super) fn text_style_section(app: &mut DesignApp, ui: &mut Ui) {
     let style_kind = crate::i18n::tr(&app.ui.language, if tab == 0 { "Paragraph Style" } else { "Character Style" }).to_owned();
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::ComboBox, true, &style_kind));
     // "Ag" swatch + style name.
-    let ag = Rect::from_min_size(resp.rect.min + vec2(6.0, 6.0), vec2(22.0, 22.0));
+    let (ag, label_pos, label_anchor) = text_style_preview_geometry(resp.rect, crate::i18n::is_rtl(&app.ui.language));
     ui.painter().rect_filled(ag, 1.0, egui::Color32::WHITE);
     ui.painter().text(ag.center(), egui::Align2::CENTER_CENTER, "Ag", egui::FontId::new(13.0, egui::FontFamily::Proportional), egui::Color32::BLACK);
     crate::rtl::paint(
         &ui.painter().with_clip_rect(resp.rect.shrink2(vec2(20.0, 0.0))),
-        pos2(ag.max.x + 8.0, resp.rect.center().y),
-        egui::Align2::LEFT_CENTER,
+        label_pos,
+        label_anchor,
         &label,
         egui::FontId::proportional(11.5),
         t.text,
