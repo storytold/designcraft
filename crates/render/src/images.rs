@@ -282,6 +282,18 @@ pub(crate) fn warm(wants: Vec<Want>) -> usize {
             }
         }
     }
+    // The reduced JPEG level [`reduced`] takes for each drawing of an asset, when every drawing
+    // of it takes one.
+    let targets: HashMap<(usize, u32), Vec<u8>> = assets
+        .iter()
+        .filter_map(|(key, wanted)| {
+            let levels = wanted
+                .iter()
+                .map(|w| reduced_sizes(&w.bytes, w.page, w.width_pt, w.on_screen).and_then(|s| u8::try_from(s.len() - 1).ok()).filter(|l| *l > 0))
+                .collect::<Option<Vec<u8>>>()?;
+            Some((*key, levels))
+        })
+        .collect();
     // The bytes each asset in view holds in the cache, when it is cached or failed, and the bytes
     // of everything else cached. Its levels become the most recently used, so the stores below
     // evict other images first.
@@ -295,8 +307,11 @@ pub(crate) fn warm(wants: Vec<Want>) -> usize {
                 *held.entry((k.0, k.1)).or_default() += size_of(&e.pm);
             }
         }
-        // Smaller levels alone don't make an asset cached.
-        held.retain(|k, _| c.map.contains_key(&(k.0, k.1, 0)));
+        // Smaller levels alone don't make an asset cached, unless they are the reduced JPEG levels
+        // every drawing of it takes.
+        held.retain(|k, _| {
+            c.map.contains_key(&(k.0, k.1, 0)) || targets.get(k).is_some_and(|ls| ls.iter().all(|l| c.map.contains_key(&(k.0, k.1, *l))))
+        });
         let in_view = held.values().sum::<usize>();
         for k in index.keys() {
             if c.bad.contains_key(k) {
@@ -614,6 +629,17 @@ mod tests {
         let mut out = Vec::new();
         img.write_with_encoder(image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 90)).unwrap();
         Arc::new(out)
+    }
+
+    #[test]
+    fn warm_counts_cached_reduced_jpeg_levels_as_cached() {
+        // Drawn at a tenth of their pixels, two JPEGs decode at a reduced level only; once that
+        // level is cached, a later warm has nothing to decode.
+        let (a, b) = (jpeg(1024, 768), jpeg(1024, 768));
+        let small = |bytes: &Arc<Vec<u8>>| Want { bytes: bytes.clone(), page: 0, width_pt: 1024.0, on_screen: 0.1 };
+        assert!(warm(vec![small(&a), small(&b)]) > 0, "decoded ahead");
+        assert!(lookup((Arc::as_ptr(&a) as usize, 0, 0)).is_none(), "no full-size decode is kept");
+        assert_eq!(warm(vec![small(&a), small(&b)]), 0, "nothing left to decode");
     }
 
     #[test]
