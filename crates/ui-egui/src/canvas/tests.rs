@@ -71,17 +71,26 @@ fn a_press_after_a_drag_is_not_a_double_click() {
     assert_eq!(press(Some(up), 0.0, 1.0), 1);
 }
 
-/// The shapes the canvas paints for a new document, after two frames (the first lays out).
+/// The shapes the canvas paints for a new document with every spread in view, after two frames
+/// (the first lays out).
 fn canvas_shapes(app: &mut DesignApp) -> Vec<egui::epaint::ClippedShape> {
     let ctx = egui::Context::default();
     let mut shapes = Vec::new();
     for _ in 0..2 {
-        let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 900.0))), ..Default::default() };
-        let mut out = ctx.run_ui(raw, |ui| show(app, ui));
-        out.textures_delta.clear();
-        shapes = out.shapes;
+        shapes = canvas_frame_shapes(app, &ctx);
+        if let Some(rect) = app.canvas_rect {
+            fit(app, rect, "all");
+        }
     }
     shapes
+}
+
+/// One frame of the canvas alone in a 1440 by 900 window: the shapes it paints.
+fn canvas_frame_shapes(app: &mut DesignApp, ctx: &egui::Context) -> Vec<egui::epaint::ClippedShape> {
+    let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 900.0))), ..Default::default() };
+    let mut out = ctx.run_ui(raw, |ui| show(app, ui));
+    out.textures_delta.clear();
+    out.shapes
 }
 
 /// The spine-coloured vertical hairlines at screen x `x` that run the full height of `page`
@@ -172,14 +181,7 @@ fn the_spine_line_remains_visible_in_preview_modes() {
 fn pages_show_paper_under_their_render() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.run("file.new", serde_json::json!({"pages": 3, "facingPages": true})).unwrap();
-    let ctx = egui::Context::default();
-    let mut shapes = Vec::new();
-    for _ in 0..2 {
-        let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 900.0))), ..Default::default() };
-        let mut out = ctx.run_ui(raw, |ui| show(&mut app, ui));
-        out.textures_delta.clear();
-        shapes = out.shapes;
-    }
+    let shapes = canvas_shapes(&mut app);
     let st = app.session.active().unwrap();
     let layout = CanvasLayout::new(&st.doc, false);
     let xf = Xf::new(app.canvas_rect.unwrap(), app.view().unwrap());
@@ -1051,6 +1053,183 @@ fn edit_paste_from_the_menu_pastes_svg_on_the_system_clipboard_as_paths() {
     assert_eq!(app.session.doc().unwrap().doc.spreads[0].items.len(), items, "no paths added");
 }
 
+/// A fake system clipboard: its text, a bitmap of a given size and the change count that every
+/// copy raises.
+#[derive(Default)]
+struct FakeClip {
+    text: Option<String>,
+    image: Option<(u32, u32)>,
+    change: i64,
+}
+
+type FakeClipboard = std::rc::Rc<std::cell::RefCell<FakeClip>>;
+
+/// Another application copies `text` and an image of `image` pixels.
+fn copy_elsewhere(clip: &FakeClipboard, text: Option<&str>, image: Option<(u32, u32)>) {
+    let mut c = clip.borrow_mut();
+    (c.text, c.image, c.change) = (text.map(str::to_string), image, c.change + 1);
+}
+
+fn fake_clipboard(text: Option<&str>, image: Option<(u32, u32)>) -> (FakeClipboard, crate::Services) {
+    let clip = FakeClipboard::default();
+    copy_elsewhere(&clip, text, image);
+    let (t, i, c) = (clip.clone(), clip.clone(), clip.clone());
+    let services = crate::Services {
+        clipboard_text: Some(Box::new(move || t.borrow().text.clone())),
+        clipboard_image: Some(Box::new(move || {
+            let (width, height) = i.borrow().image?;
+            // Sizes past the paste limit are refused before their pixels are read.
+            let len = if u64::from(width) * u64::from(height) > designcraft_engine::cmd::MAX_PASTED_PIXELS { 0 } else { width * height * 4 };
+            Some(crate::ClipboardImage::Pixels { width, height, rgba: vec![90; len as usize] })
+        })),
+        clipboard_change: Some(Box::new(move || Some(c.borrow().change))),
+        ..Default::default()
+    };
+    (clip, services)
+}
+
+/// The embedded image the selected frame shows: its pixel size and the asset's name.
+fn pasted_image(app: &DesignApp) -> Option<((u32, u32), String)> {
+    let st = app.session.doc().unwrap();
+    let id = *st.selection.items.first()?;
+    let designcraft_doc::Content::Graphic(g) = &st.doc.item(id)?.content else { return None };
+    let asset = &st.doc.assets[&g.asset];
+    assert_eq!(asset.link, None, "embedded");
+    Some((asset.pixels?, asset.name.clone()))
+}
+
+#[test]
+fn edit_paste_from_the_menu_places_the_clipboard_image() {
+    let (clip, services) = fake_clipboard(None, Some((40, 30)));
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), services);
+    app.native_menu = true;
+    app.run("file.new", json!({})).unwrap();
+    crate::menus::activate(&mut app, "edit.paste", &Value::Null);
+    assert_eq!(pasted_image(&app), Some(((40, 30), designcraft_engine::cmd::PASTED_IMAGE_NAME.to_string())));
+    // A browser puts the image's address beside it: the image wins.
+    copy_elsewhere(&clip, Some("https://example.com/cat.png"), Some((8, 6)));
+    crate::menus::activate(&mut app, "edit.paste", &Value::Null);
+    assert_eq!(pasted_image(&app).map(|(px, _)| px), Some((8, 6)));
+    // Empty text beside the image counts as no text.
+    copy_elsewhere(&clip, Some(""), Some((12, 9)));
+    crate::menus::activate(&mut app, "edit.paste", &Value::Null);
+    assert_eq!(pasted_image(&app).map(|(px, _)| px), Some((12, 9)));
+    // Other text wins over a picture of it.
+    copy_elsewhere(&clip, Some("Some words"), Some((8, 6)));
+    crate::menus::activate(&mut app, "edit.paste", &Value::Null);
+    assert_eq!(pasted_image(&app), None);
+    assert!(app.session.doc().unwrap().selection.text.is_none(), "a text frame, selected as an object");
+    // Too many pixels: refused with a message, and nothing is added.
+    copy_elsewhere(&clip, None, Some((9000, 8000)));
+    let items = app.session.doc().unwrap().doc.spreads[0].items.len();
+    crate::menus::activate(&mut app, "edit.paste", &Value::Null);
+    assert_eq!(app.session.doc().unwrap().doc.spreads[0].items.len(), items);
+    assert!(app.ui.status.contains("64 million"), "{}", app.ui.status);
+}
+
+#[test]
+fn objects_copied_here_still_paste_as_objects_until_another_image_is_copied() {
+    // A native menu: Copy leaves the system clipboard (here an older image) alone.
+    let (clip, services) = fake_clipboard(None, Some((40, 30)));
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), services);
+    app.native_menu = true;
+    app.run("file.new", json!({})).unwrap();
+    let id = app.run("frame.create", json!({"rect": [100, 100, 200, 200], "content": "text"})).unwrap()["id"].clone();
+    app.run("selection.set", json!({"ids": [id]})).unwrap();
+    crate::menus::activate(&mut app, "edit.copy", &Value::Null);
+    crate::menus::activate(&mut app, "edit.paste", &Value::Null);
+    assert_eq!(pasted_image(&app), None, "the copied text frame");
+    assert_ne!(app.session.doc().unwrap().selection.items.first().map(|i| i.0), id.as_u64());
+    // The same image copied again in another application is a new copy.
+    copy_elsewhere(&clip, None, Some((40, 30)));
+    crate::menus::activate(&mut app, "edit.paste", &Value::Null);
+    assert_eq!(pasted_image(&app).map(|(px, _)| px), Some((40, 30)), "an image copied since then");
+    // The same goes for an image whose address was on the clipboard at the copy.
+    let url = "https://example.com/cat.png";
+    copy_elsewhere(&clip, Some(url), Some((5, 5)));
+    app.run("selection.set", json!({"ids": [id]})).unwrap();
+    crate::menus::activate(&mut app, "edit.copy", &Value::Null);
+    crate::menus::activate(&mut app, "edit.paste", &Value::Null);
+    assert_eq!(pasted_image(&app), None, "the copied text frame again");
+    copy_elsewhere(&clip, Some(url), Some((5, 5)));
+    crate::menus::activate(&mut app, "edit.paste", &Value::Null);
+    assert_eq!(pasted_image(&app).map(|(px, _)| px), Some((5, 5)), "the image copied again with the same address");
+    // Empty text beside the older image counts as no text at the copy too.
+    copy_elsewhere(&clip, Some(""), Some((7, 7)));
+    app.run("selection.set", json!({"ids": [id]})).unwrap();
+    crate::menus::activate(&mut app, "edit.copy", &Value::Null);
+    let items = app.session.doc().unwrap().doc.spreads[0].items.len();
+    crate::menus::activate(&mut app, "edit.paste", &Value::Null);
+    assert_eq!(app.session.doc().unwrap().doc.spreads[0].items.len(), items + 1, "the copied text frame is pasted");
+    assert_eq!(pasted_image(&app), None);
+}
+
+#[test]
+fn a_paste_image_event_after_an_object_copy_does_not_paste_the_older_image() {
+    // A native menu: Copy leaves the older image on the system clipboard.
+    let (clip, services) = fake_clipboard(None, Some((40, 30)));
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), services);
+    app.native_menu = true;
+    app.run("file.new", json!({})).unwrap();
+    let id = app.run("frame.create", json!({"rect": [100, 100, 200, 200], "content": "text"})).unwrap()["id"].clone();
+    app.run("selection.set", json!({"ids": [id]})).unwrap();
+    crate::menus::activate(&mut app, "edit.copy", &Value::Null);
+    app.run("selection.set", json!({"ids": []})).unwrap();
+    let mut h = harness(app);
+    let image = |w, h| egui::Event::PasteImage(std::sync::Arc::new(egui::ColorImage::filled([w, h], egui::Color32::RED)));
+    let items = h.state().session.doc().unwrap().doc.spreads[0].items.len();
+    h.input_mut().events.push(image(40, 30));
+    h.run_steps(2);
+    assert_eq!(h.state().session.doc().unwrap().doc.spreads[0].items.len(), items, "the older image is not pasted");
+    // An image copied since then pastes.
+    copy_elsewhere(&clip, None, Some((20, 10)));
+    h.input_mut().events.push(image(20, 10));
+    h.run_steps(2);
+    assert_eq!(pasted_image(h.state()).map(|(px, _)| px), Some((20, 10)));
+}
+
+#[test]
+fn the_paste_keys_place_an_image_in_the_selected_empty_frame_but_not_in_text() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let frame = app.run("frame.create", json!({"rect": [100, 100, 300, 250]})).unwrap()["id"].as_u64().unwrap();
+    app.run("selection.set", json!({"ids": [frame]})).unwrap();
+    let mut h = harness(app);
+    let image = || egui::Event::PasteImage(std::sync::Arc::new(egui::ColorImage::filled([20, 10], egui::Color32::RED)));
+    h.input_mut().events.push(image());
+    h.run_steps(2);
+    assert_eq!(h.state().session.doc().unwrap().selection.items.first().map(|i| i.0), Some(frame), "the frame took it");
+    assert_eq!(pasted_image(h.state()).map(|(px, _)| px), Some((20, 10)));
+    // While text is edited, the image is not pasted and the status bar says why.
+    let story = h.state_mut().run("frame.create", json!({"rect": [10, 400, 300, 600], "content": "text"})).unwrap()["story"].clone();
+    h.state_mut().run("text.select", json!({"story": story, "anchor": 0, "focus": 0})).unwrap();
+    let items = h.state().session.doc().unwrap().doc.spreads[0].items.len();
+    h.input_mut().events.push(image());
+    h.run_steps(2);
+    assert_eq!(h.state().session.doc().unwrap().doc.spreads[0].items.len(), items);
+    assert!(h.state().ui.status.contains("stop editing the text"), "{}", h.state().ui.status);
+}
+
+#[test]
+fn a_paste_keys_image_past_the_size_limit_is_refused_without_copying_its_pixels() {
+    // The size says 72 million pixels; the four pixels it holds are not copied.
+    let big = egui::ColorImage { size: [9000, 8000], source_size: egui::vec2(9000.0, 8000.0), pixels: vec![egui::Color32::RED; 4] };
+    let image = crate::ClipboardImage::from_color_image(&big);
+    let crate::ClipboardImage::Pixels { width, height, rgba } = &image else { panic!("a bitmap") };
+    assert_eq!((*width, *height, rgba.len()), (9000, 8000, 0));
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let items = app.session.doc().unwrap().doc.spreads[0].items.len();
+    assert!(app.paste_clipboard_image(image).is_err());
+    assert_eq!(app.session.doc().unwrap().doc.spreads[0].items.len(), items);
+    assert!(app.ui.status.contains("64 million"), "{}", app.ui.status);
+    // An image within the limit keeps its pixels.
+    let small = crate::ClipboardImage::from_color_image(&egui::ColorImage::filled([3, 2], egui::Color32::RED));
+    let crate::ClipboardImage::Pixels { width, height, rgba } = small else { panic!("a bitmap") };
+    assert_eq!((width, height), (3, 2));
+    assert_eq!(rgba, [255, 0, 0, 255].repeat(6));
+}
+
 #[test]
 fn selected_merged_owners_paint_the_same_row_and_column_targets() {
     for column in [true, false] {
@@ -1270,6 +1449,71 @@ fn overset_mark_sits_on_the_out_port_once() {
     app.session.execute("selection.set", &json!({"ids": [id]})).unwrap();
     let marks = overset_marks(&app, &doc, &layout, &doc.spreads[0].items, zoom, &ported_frames(&app, &doc));
     assert!(marks.is_empty());
+}
+
+/// An idle frame of the canvas paints the spreads in view and looks up their stories: a document
+/// ten times as long adds no shape and no story lookup, and the view shows the same shapes.
+#[test]
+fn an_idle_canvas_frame_does_the_same_work_for_a_longer_document() {
+    // Every page holds an empty frame and an overset text frame with a story of its own.
+    let work = |pages: usize| {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"pages": pages, "facingPages": false})).unwrap();
+        let text = "far too much text for a frame this small, over and over again ".repeat(8);
+        for page in 0..pages {
+            app.run("frame.create", json!({"spread": page, "rect": [36, 36, 300, 200]})).unwrap();
+            app.run("frame.create", json!({"spread": page, "rect": [36, 300, 200, 340], "content": "text", "text": text})).unwrap();
+        }
+        app.run("edit.deselectAll", json!({})).unwrap();
+        let ctx = egui::Context::default();
+        canvas_frame_shapes(&mut app, &ctx);
+        go_to_page(&mut app, 0);
+        canvas_frame_shapes(&mut app, &ctx);
+        assert_eq!(current_page(&app), Some(0));
+        // With nothing composed, the stories composed after one more frame are the ones it looked up.
+        app.session.cache.clear();
+        let shapes = canvas_frame_shapes(&mut app, &ctx);
+        let showing = shapes.iter().filter(|s| s.clip_rect.intersects(s.shape.visual_bounding_rect())).count();
+        let doc = &app.session.active().unwrap().doc;
+        let composed = doc.stories.keys().filter(|id| app.session.cache.composed_for(doc, **id).is_some()).count();
+        (shapes.len(), showing, composed)
+    };
+    let (short, long) = (work(4), work(40));
+    assert_eq!(long.1, short.1, "shapes in view");
+    assert_eq!(long.0, short.0, "shapes painted");
+    assert_eq!(long.2, short.2, "stories looked up");
+    assert!((1..4).contains(&long.2), "the stories in view, not all 40: {}", long.2);
+}
+
+/// A frame on the pasteboard keeps its edges while its page is out of view, in a rotated view
+/// too, and a view that shows none of it paints none of them.
+#[test]
+fn frame_edges_are_painted_for_the_frames_in_view() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let id = app.run("frame.create", json!({"rect": [-300, 100, -200, 200], "content": "text", "text": "a"})).unwrap()["id"].as_u64().unwrap();
+    app.run("edit.deselectAll", json!({})).unwrap();
+    let doc = app.session.doc().unwrap().doc.clone();
+    let layout = CanvasLayout::new(&doc, false);
+    let it = out_frame(&doc, id);
+    let (a, _) = item_canvas_xf(&doc, &layout, it.id).unwrap();
+    let frame = a.transform_rect_bbox(it.bounds());
+    assert!(frame.x1 < layout.slots[0].bounds.x0 - 150.0, "the frame is on the pasteboard, left of the page");
+    let window = Rect::from_min_size(Pos2::ZERO, vec2(200.0, 200.0));
+    let edges = |xf: Xf| {
+        let ctx = egui::Context::default();
+        let mut out = ctx.run_ui(egui::RawInput { screen_rect: Some(window), ..Default::default() }, |ui| {
+            draw_frames(&app, &ui.painter_at(window), &xf, &doc, &layout);
+        });
+        out.textures_delta.clear();
+        out.shapes.iter().filter(|s| matches!(s.shape, egui::Shape::Path(_))).count()
+    };
+    // The frame 20 points inside a window too small to reach the page.
+    let near = Xf { min: Pos2::ZERO, origin: Point::new(frame.x0 - 20.0, frame.y0 - 20.0), zoom: 1.0, rot: 0, pivot: window.center() };
+    assert_eq!(edges(near), 1);
+    assert_eq!(edges(Xf { rot: 1, ..near }), 1);
+    // The same window over the page: the frame is out of view.
+    assert_eq!(edges(Xf { origin: Point::new(layout.slots[0].bounds.x0, frame.y0 - 20.0), ..near }), 0);
 }
 
 #[test]

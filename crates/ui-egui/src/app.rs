@@ -55,6 +55,7 @@ impl DesignApp {
             canvas: CanvasCache::new(),
             #[cfg(not(target_arch = "wasm32"))]
             links_worker: crate::links_worker::State::default(),
+            preflight: crate::preflight_worker::State::default(),
             canvas_rect: None,
             split: false,
             second_window: false,
@@ -113,6 +114,7 @@ impl DesignApp {
             egui_ctx: None,
             in_control: false,
             object_clip_text: None,
+            object_clip_change: None,
             ime_marked: None,
             ime_discard: false,
             canvas_ime: false,
