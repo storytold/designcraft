@@ -300,7 +300,7 @@ pub fn info_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
 
 pub fn preflight_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
-    let issues = designcraft_engine::cmd::preflight::check(&app.session, 150.0);
+    let issues = crate::preflight_worker::issues(app, ui.ctx()).unwrap_or_default();
     let errors = issues.iter().filter(|i| i.severity == "error").count();
     ui.horizontal(|ui| {
         let (r, _) = ui.allocate_exact_size(vec2(10.0, 10.0), egui::Sense::hover());
@@ -323,7 +323,7 @@ pub fn preflight_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         );
     });
     divider(ui);
-    for i in issues {
+    for i in issues.iter() {
         let page = i.page.filter(|_| app.session.active().is_some()).map(|p| app.session.page_label(p));
         let text = format!("{}  {}", if i.severity == "error" { "⛔" } else { "⚠" }, i.message);
         let resp = ui.add(egui::Button::new(egui::RichText::new(text).size(11.0)).frame(false));
