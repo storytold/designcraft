@@ -1,8 +1,10 @@
 use super::color::{PLATE, RICH_BLACK, blend_space_view, rect_overlaps};
 use super::decode::now;
+use super::draw::wanted_images;
 use super::types::{Frame, FrameStats, MAX_PAGE_PIXELS, MAX_SIDE, Placed, RenderOptions, Rendered, default_threads};
 use super::{
-    Affine, Cache, Document, HashMap, PageSide, Rect, RenderContext, Renderer, Resources, SpreadRef, Vec2, blendspace, kurbo, peniko, text, vello_cpu,
+    Affine, Cache, Document, HashMap, PageSide, Rect, RenderContext, Renderer, Resources, SpreadRef, Vec2, blendspace, images, kurbo, peniko, text,
+    vello_cpu,
 };
 
 impl Renderer {
@@ -100,17 +102,26 @@ impl Renderer {
         }
         let px = 1.0 / view.determinant().abs().sqrt().max(1e-12);
         let canvas_visible = view.inverse().transform_rect_bbox(Rect::new(0.0, 0.0, w as f64, h as f64));
-        for pl in spreads {
-            let Some(sp) = doc.spread(pl.spread) else { continue };
-            let sview = view * pl.xf;
-            let visible = pl.xf.inverse().transform_rect_bbox(canvas_visible);
-            let bounds = sp.bounds();
-            // Cull spreads far outside the viewport (pasteboard items may extend; allow a margin).
-            if !rect_overlaps(bounds.inflate(2000.0, 2000.0), visible) {
-                continue;
+        let frames: Vec<(Frame, SpreadRef)> = spreads
+            .iter()
+            .filter_map(|pl| {
+                let sp = doc.spread(pl.spread)?;
+                let visible = pl.xf.inverse().transform_rect_bbox(canvas_visible);
+                // Cull spreads far outside the viewport (pasteboard items may extend; allow a margin).
+                rect_overlaps(sp.bounds().inflate(2000.0, 2000.0), visible)
+                    .then_some((Frame { doc, cache, view: view * pl.xf, visible, px, opts, mt }, pl.spread))
+            })
+            .collect();
+        // Decode the images in view that aren't cached yet together, before drawing them.
+        if images::can_warm() {
+            let mut wanted = Vec::new();
+            for (f, sr) in &frames {
+                wanted_images(f, *sr, &mut wanted);
             }
-            let f = Frame { doc, cache, view: sview, visible, px, opts, mt };
-            self.draw_spread(&mut ctx, &f, pl.spread);
+            images::warm(wanted);
+        }
+        for (f, sr) in &frames {
+            self.draw_spread(&mut ctx, f, *sr);
         }
         ctx.flush();
         // Render straight into the returned buffer (no extra copy of the frame).

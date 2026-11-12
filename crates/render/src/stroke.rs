@@ -6,6 +6,30 @@ use super::{
     pdf_layers, peniko, vello_cpu,
 };
 
+/// The pixels drawing placed graphic `g` takes from the image cache, the page rectangle they
+/// cover in graphic space and that page's height (points). `None` for video and sound, Fast
+/// display and a PDF whose hidden layers can't be applied (none of these draw image pixels).
+pub(crate) fn image_want(f: &Frame, asset: &designcraft_doc::Asset, g: &designcraft_doc::Graphic, xf: Affine) -> Option<(images::Want, Rect, f64)> {
+    if designcraft_doc::media_kind(&asset.mime).is_some() || f.opts.quality == DisplayQuality::Fast {
+        return None;
+    }
+    // Pick a mip level close to the on-screen size (Typical: a 72 ppi proxy).
+    let on_screen = (f.view * xf * g.xf).determinant().abs().sqrt();
+    let on_screen = if f.opts.quality == DisplayQuality::Typical { on_screen.min(1.0) } else { on_screen };
+    let hidden = HIDDEN_LAYERS.with(|h| h.borrow().clone());
+    let data = match hidden.as_deref().filter(|_| is_pdf(&asset.data)) {
+        // An explicit choice (including all-on) that cannot be rewritten fails closed:
+        // stale persisted/relinked choices must not reveal hidden source content.
+        Some(hidden) => pdf_layers::layered(&asset.data, hidden)?,
+        None => asset.data.clone(),
+    };
+    // A placed PDF cropped to a box: the whole page, placed so that the box spans graphic space.
+    let [l, t, r, b] = shown_box(asset).unwrap_or([0.0, 0.0, 1.0, 1.0]);
+    let (page_w, page_h) = (g.size.0 / (r - l), g.size.1 / (b - t));
+    let page = Rect::new(-l * page_w, -t * page_h, (1.0 - l) * page_w, (1.0 - t) * page_h);
+    Some((images::Want { bytes: data, page: asset.page, width_pt: page_w, on_screen }, page, page_h))
+}
+
 /// `stroke` as round dots `weight` wide, one every `2 × weight`. Kurbo's stroker drops
 /// zero-length dashes, so each dot is a dash a hair long, centred where the zero-length dash
 /// would be (so the path's ends get dots too).
@@ -170,24 +194,9 @@ impl Renderer {
             ctx.fill_rect(&Rect::new(0.0, 0.0, g.size.0, g.size.1));
             return;
         }
-        // Pick a mip level close to the on-screen size (Typical: a 72 ppi proxy).
-        let on_screen = (f.view * xf * g.xf).determinant().abs().sqrt();
-        let on_screen = if f.opts.quality == DisplayQuality::Typical { on_screen.min(1.0) } else { on_screen };
-        let hidden = HIDDEN_LAYERS.with(|h| h.borrow().clone());
-        let data = match hidden.as_deref().filter(|_| is_pdf(&asset.data)) {
-            // An explicit choice (including all-on) that cannot be rewritten fails closed:
-            // stale persisted/relinked choices must not reveal hidden source content.
-            Some(hidden) => {
-                let Some(variant) = pdf_layers::layered(&asset.data, hidden) else { return };
-                variant
-            }
-            None => asset.data.clone(),
-        };
-        // A placed PDF cropped to a box: the whole page, placed so that the box spans graphic space.
-        let [l, t, r, b] = shown_box(asset).unwrap_or([0.0, 0.0, 1.0, 1.0]);
-        let (page_w, page_h) = (g.size.0 / (r - l), g.size.1 / (b - t));
-        let page = Rect::new(-l * page_w, -t * page_h, (1.0 - l) * page_w, (1.0 - t) * page_h);
-        let Some(pm) = images::mip(&data, asset.page, page_w, on_screen) else { return };
+        let Some((want, page, page_h)) = image_want(f, asset, g, xf) else { return };
+        let page_w = want.width_pt;
+        let Some(pm) = images::mip(&want.bytes, want.page, page_w, want.on_screen) else { return };
         // A coloured image is already in the plate's inks (its colours come from `color_of`).
         let pm = match (colorize::colorized(f.doc, &g.fill, &asset.data, &pm), PLATE.with(std::cell::Cell::get)) {
             (Some(coloured), _) => coloured,

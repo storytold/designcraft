@@ -6,16 +6,46 @@ pub fn decode_pixmap(bytes: &[u8]) -> Option<Pixmap> {
     decode_pixmap_page(bytes, 0)
 }
 
+/// Longer side (pixels) PDF pages and SVGs are drawn at by [`decode_pixmap_page`].
+const VECTOR_SIDE: u32 = 3000;
+
+/// About how many bytes [`decode_pixmap_page`] of `bytes` takes, with its smaller levels (a third
+/// more): PDF pages and SVGs at [`VECTOR_SIDE`] pixels on the longer side, an EPS without a
+/// preview at up to 8 pixels per point and 4000 pixels on the longer side (as its PostScript is
+/// drawn), other images and previews at their pixel size. 0 when the size can't be read.
+pub(crate) fn decoded_bytes(bytes: &[u8], page: u32) -> usize {
+    let drawn = |(w, h): (f64, f64), side: f64, most: f64| {
+        let k = (side / w.max(h).max(1e-3)).min(most);
+        ((w * k).round().max(1.0), (h * k).round().max(1.0))
+    };
+    let size = if designcraft_images::is_eps(bytes) {
+        image_size(bytes).zip(designcraft_images::eps_size(bytes)).map(|((pw, ph), (w, h))| {
+            // Without a preview, the pixel size is the 2 pixels per point placeholder's.
+            let placeholder = ((w * 2.0).round().clamp(2.0, 4000.0), (h * 2.0).round().clamp(2.0, 4000.0));
+            let px = (pw as f64, ph as f64);
+            if px == placeholder { drawn((w, h), 4000.0, 8.0) } else { px }
+        })
+    } else if is_pdf(bytes) {
+        // As render_pdf_page scales: at most 8 times the page size.
+        pdf_page_size(bytes, page as usize).map(|s| drawn(s, VECTOR_SIDE as f64, 8.0))
+    } else if designcraft_images::is_svg(bytes) {
+        designcraft_images::natural_size(bytes).map(|s| drawn(s, VECTOR_SIDE as f64, f64::INFINITY))
+    } else {
+        image_size(bytes).map(|(w, h)| (w as f64, h as f64))
+    };
+    size.map_or(0, |(w, h)| (w * h * 16.0 / 3.0) as usize)
+}
+
 /// [`decode_pixmap`] for page `page` of a PDF (other formats have one page).
 pub fn decode_pixmap_page(bytes: &[u8], page: u32) -> Option<Pixmap> {
     // Documents retain the EPS source; only display its TIFF preview or placeholder.
     let proxy = if designcraft_images::is_eps(bytes) { Some(designcraft_images::eps_proxy(bytes)?.0) } else { None };
     let bytes = proxy.as_deref().unwrap_or(bytes);
     if is_pdf(bytes) {
-        return render_pdf_page(bytes, page as usize, 3000);
+        return render_pdf_page(bytes, page as usize, VECTOR_SIDE);
     }
     if designcraft_images::is_svg(bytes) {
-        let (px, w, h) = designcraft_images::render_svg(bytes, 3000)?;
+        let (px, w, h) = designcraft_images::render_svg(bytes, VECTOR_SIDE)?;
         let data = px.as_chunks::<4>().0.iter().map(|p| vello_cpu::color::PremulRgba8 { r: p[0], g: p[1], b: p[2], a: p[3] }).collect();
         return Some(Pixmap::from_parts(data, w.min(u16::MAX as u32) as u16, h.min(u16::MAX as u32) as u16));
     }
