@@ -2499,14 +2499,14 @@ fn story_text(app: &crate::DesignApp, story: &Value) -> String {
 }
 
 #[test]
-fn indesigns_type_shortcuts_insert_spaces_justify_all_lines_and_open_paragraph_rules() {
+fn type_shortcuts_insert_spaces_justify_all_lines_and_open_paragraph_rules() {
     use egui::{Key, Modifiers};
     let ctx = egui::Context::default();
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.run("file.new", json!({})).unwrap();
     let frame = app.run("frame.create", json!({"rect": [36, 36, 300, 200], "content": "text", "text": "ab"})).unwrap();
     let story = frame["story"].clone();
-    // A selected frame and no insertion point: the spaces have nowhere to go, as in InDesign.
+    // A selected frame and no insertion point: the spaces have nowhere to go.
     app.run("selection.set", json!({"ids": [frame["id"]]})).unwrap();
     assert!(app.session.doc().unwrap().selection.text.is_none());
     assert!(!menu_enabled(&app, "app.insertEmSpace") && !menu_enabled(&app, "app.insertEnSpace"));
@@ -2521,7 +2521,7 @@ fn indesigns_type_shortcuts_insert_spaces_justify_all_lines_and_open_paragraph_r
     app.run("type.justify", json!({})).unwrap();
     press(&mut app, &ctx, Key::F, Modifiers::COMMAND | Modifiers::SHIFT);
     assert_eq!(app.run("type.selectionAttrs", json!({})).unwrap()["para"]["align"], "fullyJustified", "⇧⌘F justifies all lines");
-    // Guard: ⌥⇧⌘J is another chord (InDesign's Justification…); the rules want Shift up.
+    // Guard: ⌥⇧⌘J is another chord (Justification…); the rules want Shift up.
     press(&mut app, &ctx, Key::J, Modifiers::COMMAND | Modifiers::ALT | Modifiers::SHIFT);
     assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some("justification"), "⌥⇧⌘J opens Justification");
     app.ui.dialog = None;
@@ -2579,6 +2579,27 @@ fn native_insert_shortcuts_leave_the_document_alone_while_a_field_has_focus() {
         assert_eq!(story_text(&app, &story), "ab", "{id}");
     }
     assert_eq!(app.ui.palette.as_deref(), Some("x"));
+}
+
+#[test]
+fn native_insert_shortcuts_leave_the_document_alone_while_a_dialog_or_quick_apply_is_open() {
+    // The same cases stop the window's shortcuts. In the first frame nothing has keyboard focus
+    // yet, so only the open dialog or Quick Apply keeps the character out of the story.
+    for open in ["", "dialog", "palette"] {
+        let ctx = egui::Context::default();
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.session.execute("file.new", &json!({})).unwrap();
+        let story = app.run("frame.create", json!({"rect": [36, 36, 300, 200], "content": "text", "text": "ab"})).unwrap()["story"].clone();
+        app.run("text.select", json!({"story": story, "anchor": 1, "focus": 1})).unwrap();
+        match open {
+            "dialog" => app.ui.dialog = Some(crate::dialogs::Dialog::new("paragraphRules", json!({}))),
+            "palette" => app.ui.palette = Some(String::new()),
+            _ => {}
+        }
+        native_frame(&mut app, &ctx, vec![], Some("app.insertEmSpace"));
+        let want = if open.is_empty() { "a\u{2003}b" } else { "ab" };
+        assert_eq!(story_text(&app, &story), want, "{open:?}");
+    }
 }
 
 #[test]

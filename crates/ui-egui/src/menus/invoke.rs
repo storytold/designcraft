@@ -146,9 +146,11 @@ pub fn activate_native(app: &mut DesignApp, ctx: &egui::Context, id: &str, param
     if params.is_null() && ctx.text_edit_focused() && forward_to_text_edit(app, ctx, id) {
         return;
     }
-    // The menu bar takes ⇧⌘M before the window: with a field focused (Story Editor, Find/Change)
-    // or a dialog open, the character would land at the canvas caret behind it.
-    if params.is_null() && (ctx.text_edit_focused() || app.ui.dialog.is_some()) && TEXT_INSERTS.contains(&id) {
+    // The menu bar takes ⇧⌘M before the window: with a field focused (Story Editor, Find/Change),
+    // a dialog or Quick Apply open, an input method composing or a context menu open, the
+    // character would land at the canvas caret behind it. The window's shortcuts stop for the
+    // same cases.
+    if params.is_null() && (ctx.text_edit_focused() || super::keys::keys_taken(app, ctx)) && TEXT_INSERTS.contains(&id) {
         return;
     }
     // The canvas text editor is not an egui TextEdit, so its clipboard events must pass through

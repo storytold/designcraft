@@ -387,6 +387,7 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 ## Progress log
 
+- **2026-11-12** · Type shortcuts: Justify All Lines ⇧⌘F, Insert White Space › Em Space ⇧⌘M and En Space ⇧⌘N (shown in the menu, enabled at an insertion point), Paragraph Rules… ⌥⌘J (shown in the Paragraph panel menu). On the Mac a menu-bar insert (Em/En Space, Current Page Number) no longer types into the document while a text field has focus, a dialog or Quick Apply is open, or an input method is composing. An alignment the paragraphs already have records no undo step (#1138). No readiness percentage change.
 - **2026-11-04** · Striped strokes retain out-and-back cubic segments whose second control point is away from the coincident endpoints and first control point. A geometry regression checks the offset extent and both stripe bands. No readiness percentage change.
 - **2026-11-04** · Esperanto is a text language (Character › Language, `type.char {language: "Esperanto"}`, IDML `$ID/Esperanto`): tag `eo`, English-style quotes; not hyphenated yet (#1201). No readiness percentage change.
 
@@ -860,5 +861,3 @@ The shared craft-installer UI preserves this revision's install options and prov
 - **2026-10-15** · Windows recovery folders validate the identity of the live locked file without reading it through a second handle. Missing or replaced locks disable writes and cleanup; regression tests cover retained exclusive locking and replacement-file protection. No readiness percentage change.
 
 - PDF reader infrastructure: pinned shared parsing/rasterization, transformed page-box geometry and explicit failures for known incomplete layered-PDF exports. Application ownership and parity targets are unchanged.
-
-- **2026-10-16** · InDesign's type shortcuts: Justify All Lines ⇧⌘F, Insert White Space › Em Space ⇧⌘M and En Space ⇧⌘N (shown in the menu, enabled at an insertion point), Paragraph Rules… ⌥⌘J (shown in the Paragraph panel menu). On the Mac a menu-bar insert (Em/En Space, Current Page Number) no longer types into the document while a text field has focus. No readiness percentage change.
