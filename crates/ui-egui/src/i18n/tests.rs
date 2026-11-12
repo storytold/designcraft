@@ -4,6 +4,7 @@ use std::collections::HashSet;
 /// Every per-language table `tr` looks up, by interface language.
 const LANGUAGE_TABLES: &[(&str, &[(&str, &str)])] = &[
     ("ar", ar::TABLE),
+    ("he", he::TABLE),
     ("cs", cs::TABLE),
     ("de", de::TABLE),
     ("fr", fr::TABLE),
@@ -603,4 +604,36 @@ fn czech_counts_use_the_plural_form_for_the_number() {
     }
     // A noun without plural forms keeps the plain translation.
     assert_eq!(count_label("cs", "a new noun", 3), "3 a new noun");
+}
+
+/// Hebrew is an RTL *interface* option, without changing document language or user-defined data.
+/// This also locks the initial catalog to English labels in the application's own source.
+#[test]
+fn hebrew_catalog_is_selectable_rtl_and_preserves_english_keys() {
+    let mut seen = HashSet::new();
+    assert_eq!(he::TABLE.len(), 119, "initial Hebrew source-linked table changed");
+    for (source, translated) in he::TABLE {
+        assert!(seen.insert(*source), "duplicate Hebrew source key: {source}");
+        assert!(!translated.trim().is_empty(), "empty Hebrew: {source}");
+        assert!(ar::TABLE.iter().any(|(existing, _)| existing == source), "not an existing source-verified DesignCraft UI key: {source}");
+        let fields = |text: &str| {
+            let mut fields: Vec<String> =
+                text.split('{').skip(1).filter_map(|part| part.split_once('}').map(|(field, _)| field.to_owned())).collect();
+            fields.sort_unstable();
+            fields
+        };
+        assert_eq!(fields(source), fields(translated), "placeholders: {source}");
+        assert_eq!(source.ends_with('…'), translated.ends_with('…'), "ellipsis: {source}");
+        assert_eq!(tr("he", source), *translated, "Hebrew lookup: {source}");
+        assert!(translated.chars().any(|c| ('\u{05d0}'..='\u{05ea}').contains(&c)), "no Hebrew letters in {source}");
+    }
+    assert!(LANGUAGES.iter().any(|(code, native)| *code == "he" && *native == "עברית"));
+    assert!(picker_languages().iter().any(|(code, native)| *code == "he" && *native == "עברית"));
+    assert!(is_rtl("he"), "Hebrew menus and panels must use the existing RTL UI layout");
+    assert!(is_rtl("ar"), "Arabic RTL support must remain unchanged");
+    assert!(!is_rtl("en"), "English UI must remain LTR");
+    assert_eq!(tr("he", "File"), "קובץ");
+    assert_eq!(tr("he", "Save As…"), "שמירה בשם…");
+    assert_eq!(tr("he", "Arrangement"), "סידור");
+    assert_eq!(tr("he", "A user-defined untranslated label"), "A user-defined untranslated label");
 }
