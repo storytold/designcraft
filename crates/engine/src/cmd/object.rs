@@ -610,7 +610,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Text Frame Options…",
             ["Object"],
             Some("Cmd+B"),
-            "{columns? (1..40), gutter? (pt, 0..15552), inset?: number|[t,l,b,r] (pt, each 0..15552; null keeps that side), verticalJustification?: top|center|bottom|justify, paragraphSpacingLimit? (pt), columnsKind?: fixedNumber|fixedWidth|flexibleWidth, columnWidth? (pt), firstBaseline?, firstBaselineMin? (pt), autoSize?, autoSizeReference?, useMinimumHeight?, minimumHeight?, useMinimumWidth?, minimumWidth?, noLineBreaks?, ignoreWrap?, balanceColumns?, columnRule?, columnRuleWeight?, columnRuleColor?, columnRuleTint?, columnRuleOffset?, columnRuleTopInset?, columnRuleBottomInset?, baselineGrid?, vertical?, ids? (without ids or selected objects: caret frame or every frame holding selected text)}",
+            "{columns? (1..40), gutter? (pt, 0..15552), inset?: number|[t,l,b,r] (pt, each 0..15552; a list has four sides, null keeps that side), verticalJustification?: top|center|bottom|justify, paragraphSpacingLimit? (pt: Justify adds at most this between paragraphs, the rest between lines), columnsKind?: fixedNumber|fixedWidth|flexibleWidth, columnWidth? (pt, Fixed Width), firstBaseline?: ascent|capHeight|leading|xHeight|emboxHeight|fixed, firstBaselineMin? (pt), autoSize?: off|heightOnly|widthOnly|heightAndWidth|heightAndWidthProportionally, autoSizeReference?: topLeft|topCenter|topRight|leftCenter|center|rightCenter|bottomLeft|bottomCenter|bottomRight (the point that stays put), useMinimumHeight?: bool, minimumHeight? (pt), useMinimumWidth?: bool, minimumWidth? (pt), noLineBreaks?: bool, ignoreWrap?, balanceColumns?, columnRule?: bool, columnRuleWeight? (pt), columnRuleColor? (swatch name), columnRuleTint? (0..1), columnRuleOffset? (pt, horizontal), columnRuleTopInset? (pt), columnRuleBottomInset? (pt), baselineGrid?: {start? (pt), increment? (pt), relativeTo?: page|margin|frame|inset} (the frame's custom baseline grid; fields not given keep the frame's, or come from the document grid; null turns it off), vertical?: bool (sets the story direction of the frames' stories, as Type ▸ Story Direction), ids? (without ids or selected objects: the frame showing the text caret, or every frame holding part of the selected text)}",
             has_selection_or_text,
             text_frame_options
         ),
@@ -2704,6 +2704,8 @@ fn content_type(s: &mut Session, p: &Value) -> Result<Value> {
     })
 }
 
+/// The most columns a text frame takes.
+const MAX_FRAME_COLUMNS: u64 = 40;
 /// The frames `object.textFrameOptions` changes when the call names none: the selected objects,
 /// or with the Type tool the frame that shows the caret or every frame holding part of the
 /// selected text.
@@ -2723,9 +2725,6 @@ fn has_selection_or_text(s: &Session) -> std::result::Result<(), String> {
     }
     has_selection(s)
 }
-
-/// The most columns a text frame takes.
-const MAX_FRAME_COLUMNS: u64 = 40;
 
 fn text_frame_options(s: &mut Session, p: &Value) -> Result<Value> {
     const ID: &str = "object.textFrameOptions";

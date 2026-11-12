@@ -2420,6 +2420,34 @@ fn edits_patch_the_canvas_only_at_full_resolution() {
     }
 }
 
+/// Moving a frame with a drop shadow repaints the regions the frame and its shadow cover, as
+/// moving one without a shadow does, instead of rendering the whole canvas again on every step.
+#[test]
+fn moving_a_frame_with_a_drop_shadow_patches_the_canvas() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    let ctx = egui::Context::default();
+    let frame = |app: &mut DesignApp| {
+        let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1200.0, 900.0))), ..Default::default() };
+        let mut out = ctx.run_ui(raw, |ui| {
+            app.logic(ui.ctx());
+            app.ui(ui);
+        });
+        out.textures_delta.clear();
+    };
+    app.run("file.new", json!({})).unwrap();
+    app.run("frame.create", json!({"rect": [72, 72, 200, 180], "content": "unassigned"})).unwrap();
+    app.run("object.fill", json!({"swatch": "[Black]"})).unwrap();
+    app.run("object.dropShadow", json!({"on": true})).unwrap();
+    for _ in 0..3 {
+        frame(&mut app);
+    }
+    for step in 1..=3 {
+        app.run("transform.move", json!({"dx": 4, "dy": 2})).unwrap();
+        frame(&mut app);
+        assert_eq!(app.canvas.patches, step, "drag step {step} repaints only what changed");
+    }
+}
+
 /// The Type tool's caret at the end of a new text frame holding `text`, the app's first frames
 /// drawn; returns the story id.
 fn typing_app(app: &mut DesignApp, ctx: &egui::Context, text: &str) -> Value {

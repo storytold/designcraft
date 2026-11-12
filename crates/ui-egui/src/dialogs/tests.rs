@@ -1831,15 +1831,15 @@ fn text_frame_options_link_the_insets_only_when_every_selected_frame_has_even_si
     assert!(!seeded(&app).b("insetLinked"));
     app.run("text.select", json!({"story": other_even_story, "anchor": 0, "focus": 0})).unwrap();
     assert!(seeded(&app).b("insetLinked"));
-    // A story threaded on into the uneven frame: a caret placed in the first frame changes only
-    // that frame, and a caret with no frame changes every frame of the story.
+    // A story threaded on into the uneven frame: a caret placed in the first frame, or a caret
+    // with no stored frame drawn in the first frame, changes only that frame.
     let (first, story) = frame(&mut app, [300, 300, 500, 500], json!(6));
     let (last, _) = frame(&mut app, [300, 520, 500, 700], json!([1, 2, 3, 4]));
     app.run("text.thread", json!({"from": first.0, "to": last.0})).unwrap();
     app.run("text.placeCaret", json!({"frame": first.0, "point": [310, 310]})).unwrap();
     assert!(seeded(&app).b("insetLinked"));
     app.run("text.select", json!({"story": story, "anchor": 0, "focus": 0})).unwrap();
-    assert!(!seeded(&app).b("insetLinked"));
+    assert!(seeded(&app).b("insetLinked"));
 }
 
 #[test]
