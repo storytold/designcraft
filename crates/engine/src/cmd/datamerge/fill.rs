@@ -228,6 +228,7 @@ pub fn fill_row(
     let Pending { mut reps, links, parent, mut report } = pending;
     typed_reps(doc, fields, row, maps, &placeholders, &mut reps);
     apply_reps(doc, &reps);
+    fill_nested_markers(doc, fields, row, maps);
     for (anchor, dest, field) in links {
         let anchor = match anchor {
             PlaceholderAnchor::Text { story, start, end } => {
@@ -328,6 +329,75 @@ fn typed_reps(
             }
             reps.push(Rep { story: mapped, start, end, text: cell_of(fields, row, &name).to_string() });
         }
+    }
+}
+
+/// How deep the merge follows texts inside texts (a table in a cell of a table, a note in a cell).
+/// Documents don't come anywhere near it; a file that goes deeper is filled down to here instead of
+/// exhausting the stack.
+pub(super) const MAX_NESTED_DEPTH: usize = 32;
+
+/// The `<<Field>>` markers in the table cells, footnotes and endnotes of the stories being filled.
+/// Those texts are stories inside their story, which no placeholder can name and `typed_reps`
+/// doesn't read, so a field in a table was left as its marker (#2315). A story, table or note is
+/// copied only when something inside it holds a marker of a known field.
+fn fill_nested_markers(doc: &mut designcraft_doc::Document, fields: &[DataField], row: &[String], maps: &Maps) {
+    let mut mapped: Vec<StoryId> = maps.stories.values().copied().collect();
+    mapped.sort();
+    mapped.dedup();
+    for sid in mapped {
+        if !doc.story(sid).is_some_and(|st| inner_has(st, fields, 0)) {
+            continue;
+        }
+        let Some(st) = doc.story_mut(sid) else { continue };
+        fill_inner(st, fields, row, 0);
+    }
+}
+
+/// Whether `st`'s own text holds a marker of a known field.
+fn own_has(st: &Story, fields: &[DataField]) -> bool {
+    find_markers(&st.text).iter().any(|(_, _, name)| fields.iter().any(|f| f.name == *name))
+}
+
+/// Whether a text inside `st` (a table cell, footnote or endnote, or one inside those), not `st`'s
+/// own text, holds a marker of a known field.
+fn inner_has(st: &Story, fields: &[DataField], depth: usize) -> bool {
+    if depth >= MAX_NESTED_DEPTH {
+        return false;
+    }
+    let holds = |t: &Story| own_has(t, fields) || inner_has(t, fields, depth + 1);
+    st.tables.values().any(|t| t.cells.iter().any(|c| holds(&c.text))) || st.notes.iter().chain(&st.endnotes).any(|n| holds(&n.text))
+}
+
+/// Fill the known fields' markers in the texts inside `st`, not in its own text.
+fn fill_inner(st: &mut Story, fields: &[DataField], row: &[String], depth: usize) {
+    if depth >= MAX_NESTED_DEPTH {
+        return;
+    }
+    let holds = |t: &Story| own_has(t, fields) || inner_has(t, fields, depth + 1);
+    for t in st.tables.values_mut() {
+        if t.cells.iter().any(|c| holds(&c.text)) {
+            for c in &mut Arc::make_mut(t).cells {
+                fill_own(&mut c.text, fields, row);
+                fill_inner(&mut c.text, fields, row, depth + 1);
+            }
+        }
+    }
+    for n in st.notes.iter_mut().chain(st.endnotes.iter_mut()) {
+        if holds(&n.text) {
+            let n = Arc::make_mut(n);
+            fill_own(&mut n.text, fields, row);
+            fill_inner(&mut n.text, fields, row, depth + 1);
+        }
+    }
+}
+
+/// Replace the markers of known fields in `st`'s own text with the record's values.
+fn fill_own(st: &mut Story, fields: &[DataField], row: &[String]) {
+    let found: Vec<(usize, usize, String)> =
+        find_markers(&st.text).into_iter().filter(|(_, _, name)| fields.iter().any(|f| f.name == *name)).collect();
+    for (start, end, name) in found.into_iter().rev() {
+        st.replace(start..end, cell_of(fields, row, &name));
     }
 }
 

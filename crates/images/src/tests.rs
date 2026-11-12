@@ -534,3 +534,30 @@ fn gif_tone_and_cmyk_inks_check_the_rgba_budget() {
     assert!(too_large_to_decode(&tiff));
     assert_eq!(decode_cmyk_tiff(&tiff), None);
 }
+
+fn webp_with(chunks: &[(&[u8; 4], u32, &[u8])]) -> Vec<u8> {
+    let mut v = b"RIFF\0\0\0\0WEBP".to_vec();
+    for (id, declared, body) in chunks {
+        v.extend_from_slice(*id);
+        v.extend_from_slice(&declared.to_le_bytes());
+        v.extend_from_slice(body);
+        if body.len() % 2 == 1 {
+            v.push(0);
+        }
+    }
+    v
+}
+
+/// A WebP that declares an `ICCP` chunk larger than the file (or than the ICC cap) never reaches the
+/// decoder's profile read, which would size a buffer from the declared length.
+#[test]
+fn a_webp_icc_chunk_that_declares_more_than_it_holds_is_refused_before_decoding() {
+    assert!(webp_icc_is_sane(&webp_with(&[(b"VP8X", 10, &[0; 10]), (b"ICCP", 4, &[1; 4])])));
+    // An odd-sized chunk before it is padded to even.
+    assert!(webp_icc_is_sane(&webp_with(&[(b"EXIF", 3, &[0; 3]), (b"ICCP", 4, &[1; 4])])));
+    assert!(!webp_icc_is_sane(&webp_with(&[(b"VP8X", 10, &[0; 10]), (b"ICCP", u32::MAX, &[1; 4])])));
+    assert!(!webp_icc_is_sane(&webp_with(&[(b"ICCP", 100, &[1; 4])])));
+    assert!(embedded_icc(&webp_with(&[(b"ICCP", u32::MAX, &[1; 4])])).is_none());
+    assert!(webp_icc_is_sane(b"\x89PNG not a webp"));
+    assert!(webp_icc_is_sane(&webp_with(&[(b"VP8L", 6, &[0; 6])])));
+}

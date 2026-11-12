@@ -306,9 +306,11 @@ fn overlay(base: &mut El, top: &El, depth: usize) {
         *base = top.clone();
         return;
     }
+    // Where `base`'s Properties child is, once (a search per attribute otherwise).
+    let props = base.children.iter().position(|n| matches!(n, Node::El(p) if p.local() == "Properties"));
     for (k, v) in &top.attrs {
         base.set(k, v);
-        if let Some(Node::El(p)) = base.children.iter_mut().find(|n| matches!(n, Node::El(p) if p.local() == "Properties")) {
+        if let Some(Node::El(p)) = props.and_then(|at| base.children.get_mut(at)) {
             p.children.retain(|n| !matches!(n, Node::El(x) if x.local() == k));
         }
     }
@@ -323,22 +325,26 @@ fn overlay(base: &mut El, top: &El, depth: usize) {
     // The k-th child of a name merges with the k-th child of that name in `base` (repeated elements
     // such as gradient stops pair up in order).
     let mut seen: HashMap<&str, usize> = HashMap::new();
+    // Positions in `base.children` of its elements, by name, in order: the k-th is a lookup, not a
+    // scan from the first child (many repeated names made the scans quadratic).
+    let mut at: HashMap<String, Vec<usize>> = HashMap::new();
+    for (i, b) in base.children.iter().enumerate() {
+        if let Node::El(b) = b {
+            at.entry(b.local().to_string()).or_default().push(i);
+        }
+    }
     for n in &top.children {
         match n {
             Node::El(c) => {
                 let k = seen.entry(c.local()).or_insert(0);
-                let slot = base
-                    .children
-                    .iter_mut()
-                    .filter_map(|b| match b {
-                        Node::El(b) if b.local() == c.local() => Some(b),
-                        _ => None,
-                    })
-                    .nth(*k);
+                let slot = at.get(c.local()).and_then(|v| v.get(*k)).copied();
                 *k += 1;
-                match slot {
-                    Some(b) => overlay(b, c, depth + 1),
-                    None => base.children.push(n.clone()),
+                match slot.and_then(|i| base.children.get_mut(i)) {
+                    Some(Node::El(b)) => overlay(b, c, depth + 1),
+                    _ => {
+                        at.entry(c.local().to_string()).or_default().push(base.children.len());
+                        base.children.push(n.clone());
+                    }
                 }
             }
             Node::Text(_) | Node::CData(_) if has_text => base.children.push(n.clone()),
