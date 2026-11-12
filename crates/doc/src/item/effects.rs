@@ -21,9 +21,10 @@ pub struct DropShadow {
     #[serde(skip_serializing_if = "is_zero")]
     pub noise: f64,
     /// Object Knocks Out Shadow: no shadow shows through the object where it is translucent
-    /// (InDesign: on; a document saved before reads off, as it was drawn).
-    #[serde(default)]
-    pub knockout: bool,
+    /// New shadows start on. An absent value preserves legacy grouped opacity and no knockout;
+    /// it must not be interpreted as an explicit off, which composites translucent shadows separately.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub knockout: Option<bool>,
     /// Shadow Honors Other Effects: the shadow takes the object's feathered silhouette.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub honors_effects: bool,
@@ -44,7 +45,7 @@ impl Default for DropShadow {
             on: false,
             mode: BlendMode::Multiply,
             noise: 0.0,
-            knockout: true,
+            knockout: Some(true),
             honors_effects: false,
             color: designcraft_color::swatch::BLACK.into(),
             opacity: 0.75,

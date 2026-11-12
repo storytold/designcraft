@@ -199,8 +199,8 @@ fn shadow_under(f: impl FnOnce(&mut designcraft_doc::DropShadow), opacity: f32) 
 /// object; off, it darkens it.
 #[test]
 fn a_translucent_object_knocks_out_its_shadow() {
-    let on = shadow_under(|s| s.knockout = true, 0.5);
-    let off = shadow_under(|s| s.knockout = false, 0.5);
+    let on = shadow_under(|s| s.knockout = Some(true), 0.5);
+    let off = shadow_under(|s| s.knockout = Some(false), 0.5);
     let (a, b) = (lum(on.pixel(80, 80)), lum(off.pixel(80, 80)));
     assert!(a > b + 60, "knocked out {a} vs showing through {b}");
     // Outside the object the shadow is the same.
@@ -218,13 +218,30 @@ fn a_translucent_object_knocks_out_its_shadow() {
             spread: 100.0,
             opacity: 1.0,
             mode: designcraft_color::BlendMode::Normal,
-            knockout,
+            knockout: Some(knockout),
             ..Default::default()
         };
         render(&d)
     };
     let (on, off) = (feathered(true), feathered(false));
     assert!(lum(on.pixel(52, 80)) > lum(off.pixel(52, 80)) + 60, "{:?} vs {:?}", on.pixel(52, 80), off.pixel(52, 80));
+}
+
+/// A pre-knockout document fades the object and shadow as one group. Reading absence as an
+/// explicit off darkens the translucent object; an explicit off still needs that new behavior.
+#[test]
+fn legacy_shadows_keep_grouped_opacity() {
+    let old = shadow_under(|s| s.knockout = None, 0.5);
+    let no_shadow = shadow_under(|s| s.on = false, 0.5);
+    let explicit_off = shadow_under(|s| s.knockout = Some(false), 0.5);
+    let old_pixel = lum(old.pixel(80, 80));
+    assert!(
+        old_pixel.abs_diff(lum(no_shadow.pixel(80, 80))) < 4,
+        "legacy shadow stays behind the body before its opacity: {:?} versus {:?}",
+        old.pixel(80, 80),
+        no_shadow.pixel(80, 80)
+    );
+    assert!(old_pixel > lum(explicit_off.pixel(80, 80)) + 60);
 }
 
 /// The standard deviation of the luminance over a square of pixels.
@@ -323,6 +340,23 @@ fn a_shadow_that_honors_other_effects_follows_the_feather() {
     };
     let (hard, honored) = (shadow(false), shadow(true));
     assert!(lum(honored.pixel(112, 80)) > lum(hard.pixel(112, 80)) + 30, "{:?} vs {:?}", honored.pixel(112, 80), hard.pixel(112, 80));
+}
+
+/// A screened glow over blank paper shows in its colour: it blends with the objects below, and
+/// the paper is not one of them.
+#[test]
+fn screened_outer_glow_shows_on_blank_paper() {
+    let mut d = doc();
+    let id = rect_item(&mut d, Rect::new(50.0, 50.0, 110.0, 110.0), "[Black]");
+    let g = &mut d.item_mut(id).unwrap().effects.outer_glow;
+    g.on = true;
+    g.size = 12.0;
+    g.color = "C=0 M=0 Y=100 K=0".into();
+    g.opacity = 1.0;
+    g.mode = designcraft_color::BlendMode::Screen;
+    let img = render(&d);
+    let p = img.pixel(46, 80);
+    assert!(p[2] < 200 && p[0] > p[2] + 40, "yellow glow beside the item: {p:?}");
 }
 
 #[test]

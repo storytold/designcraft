@@ -161,7 +161,17 @@ impl<'a> Ex<'a> {
         let styled = self.d.styles.object_effects(os).is_some();
         let ds = &it.effects.drop_shadow;
         let (gf, df) = (&it.effects.gradient_feather, &it.effects.directional_feather);
-        if it.opacity < 1.0 || it.blend != designcraft_color::BlendMode::Normal || ds.on || it.effects.feather > 0.0 || gf.on || df.on || styled {
+        if it.opacity < 1.0
+            || it.blend != designcraft_color::BlendMode::Normal
+            || ds.on
+            || it.effects.inner_shadow.on
+            || it.effects.outer_glow.on
+            || it.effects.inner_glow.on
+            || it.effects.feather > 0.0
+            || gf.on
+            || df.on
+            || styled
+        {
             let mut t = El::new("TransparencySetting");
             t.push(El::new("BlendingSetting").attr("BlendMode", names::blend_out(it.blend)).attr("Opacity", pct(it.opacity as f64)));
             for c in self.effect_els(&it.effects, styled) {
@@ -212,20 +222,58 @@ impl<'a> Ex<'a> {
         let ds = &e.drop_shadow;
         if ds.on || all {
             let a = self.d.light_angle(ds.angle, ds.global_light).to_radians();
+            let mut shadow = El::new("DropShadowSetting")
+                .attr("Mode", if ds.on { "Drop" } else { "None" })
+                .attr("XOffset", num(-ds.distance * a.cos()))
+                .attr("YOffset", num(ds.distance * a.sin()))
+                .attr("Size", num(ds.size))
+                .attr("Spread", num(ds.spread))
+                .attr("Opacity", pct(ds.opacity as f64))
+                .attr("BlendMode", names::blend_out(ds.mode))
+                .attr("Noise", num(ds.noise))
+                .attr("HonorOtherEffects", if ds.honors_effects { "true" } else { "false" })
+                .attr("EffectColor", self.sw(&ds.color));
+            if let Some(knockout) = ds.knockout {
+                shadow.set("KnockedOut", bool_s(knockout));
+            }
+            out.push(shadow);
+        }
+        let inner = &e.inner_shadow;
+        if inner.on || all {
             out.push(
-                El::new("DropShadowSetting")
-                    .attr("Mode", if ds.on { "Drop" } else { "None" })
-                    .attr("XOffset", num(-ds.distance * a.cos()))
-                    .attr("YOffset", num(ds.distance * a.sin()))
-                    .attr("Size", num(ds.size))
-                    .attr("Spread", num(ds.spread))
-                    .attr("Opacity", pct(ds.opacity as f64))
-                    .attr("BlendMode", names::blend_out(ds.mode))
-                    .attr("Noise", num(ds.noise))
-                    .attr("KnockedOut", if ds.knockout { "true" } else { "false" })
-                    .attr("HonorOtherEffects", if ds.honors_effects { "true" } else { "false" })
-                    .attr("EffectColor", self.sw(&ds.color)),
+                El::new("InnerShadowSetting")
+                    .attr("Applied", bool_s(inner.on))
+                    .attr("EffectColor", self.sw(&inner.color))
+                    .attr("BlendMode", names::blend_out(inner.mode))
+                    .attr("Opacity", pct(inner.opacity as f64))
+                    .attr("Angle", num(self.d.light_angle(inner.angle, inner.global_light)))
+                    .attr("Distance", num(inner.distance))
+                    .attr("UseGlobalLight", "false")
+                    .attr("ChokeAmount", num(inner.choke))
+                    .attr("Size", num(inner.size))
+                    .attr("Noise", num(inner.noise)),
             );
+        }
+        let (outer, inner) = (&e.outer_glow, &e.inner_glow);
+        for (name, on, color, mode, opacity, size, spread, noise, technique) in [
+            ("OuterGlowSetting", outer.on, &outer.color, outer.mode, outer.opacity, outer.size, outer.spread, outer.noise, outer.technique),
+            ("InnerGlowSetting", inner.on, &inner.color, inner.mode, inner.opacity, inner.size, inner.choke, inner.noise, inner.technique),
+        ] {
+            if on || all {
+                let mut glow = El::new(name)
+                    .attr("Applied", bool_s(on))
+                    .attr("EffectColor", self.sw(color))
+                    .attr("BlendMode", names::blend_out(mode))
+                    .attr("Opacity", pct(opacity as f64))
+                    .attr("Size", num(size))
+                    .attr("Spread", num(spread))
+                    .attr("Noise", num(noise))
+                    .attr("Technique", if technique == designcraft_doc::GlowTechnique::Precise { "Precise" } else { "Softer" });
+                if name == "InnerGlowSetting" {
+                    glow.set("Source", if inner.center { "CenterSourced" } else { "EdgeSourced" });
+                }
+                out.push(glow);
+            }
         }
         if e.feather > 0.0 || all {
             let corners = match e.feather_options.corners {
@@ -327,6 +375,9 @@ impl<'a> Ex<'a> {
     }
 }
 
+/// Most nested style folders one style name can create.
+const MAX_STYLE_GROUP_DEPTH: usize = 32;
+
 /// Style folder tree (names `A/B/C` → groups A, B).
 #[derive(Default)]
 pub(super) struct Group {
@@ -340,7 +391,8 @@ impl Group {
         let mut segs: Vec<&str> = if builtin { vec![name] } else { name.split('/').collect() };
         let _leaf = segs.pop();
         let mut g = self;
-        for s in segs {
+        // Deeper folders than this are not made (the style lands in the deepest one), so the recursive `emit` is bounded.
+        for s in segs.into_iter().take(MAX_STYLE_GROUP_DEPTH) {
             let i = match g.groups.iter().position(|(n, _)| n == s) {
                 Some(i) => i,
                 None => {
@@ -516,4 +568,24 @@ pub(crate) fn path_to_uri(path: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod group_depth_tests {
+    use super::*;
+
+    #[test]
+    fn a_style_name_with_many_separators_makes_bounded_folders() {
+        let mut g = Group::default();
+        g.insert(&"a/".repeat(10_000), El::new("S"));
+        let (mut depth, mut cur) = (0, &g);
+        while let Some((_, next)) = cur.groups.first() {
+            depth += 1;
+            cur = next;
+        }
+        assert_eq!(depth, MAX_STYLE_GROUP_DEPTH);
+        assert_eq!(cur.styles.len(), 1);
+        let mut root = El::new("Root");
+        g.emit(&mut root, "K", "");
+    }
 }

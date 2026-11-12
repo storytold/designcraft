@@ -3,6 +3,28 @@ use designcraft_doc::build::NewDocument;
 use designcraft_doc::geom::Rect;
 use designcraft_doc::{Asset, ParaFormat, SpreadRef};
 
+#[test]
+fn shadow_knockout_preserves_legacy_absence_and_explicit_values() {
+    use designcraft_doc::{Item, ItemId, Shape};
+    let mut doc = Document::new(&NewDocument::default());
+    let id = ItemId(doc.alloc());
+    let mut item = Item::new(id, doc.default_layer(), Shape::Rectangle, designcraft_doc::geom::shapes::rectangle(Rect::new(0.0, 0.0, 50.0, 50.0)));
+    item.opacity = 0.5;
+    item.effects.drop_shadow = serde_json::from_value(json!({"on": true, "opacity": 0.7})).unwrap();
+    assert_eq!(item.effects.drop_shadow.knockout, None);
+    doc.insert_item(SpreadRef::Doc(0), item, None).unwrap();
+    for knockout in [None, Some(false), Some(true)] {
+        doc.item_mut(id).unwrap().effects.drop_shadow.knockout = knockout;
+        for bytes in [save(&doc).unwrap(), serde_json::to_vec(&doc).unwrap()] {
+            let loaded = load(&bytes).unwrap();
+            assert_eq!(loaded.item(id).unwrap().effects.drop_shadow.knockout, knockout);
+            assert_eq!(loaded.item(id).unwrap().opacity, 0.5);
+            let resaved = load(&save(&loaded).unwrap()).unwrap();
+            assert_eq!(resaved.item(id).unwrap().effects.drop_shadow.knockout, knockout);
+        }
+    }
+}
+
 fn png_asset(d: &mut Document, data: &[u8]) -> AssetId {
     let aid = AssetId(d.alloc());
     let a =
@@ -52,6 +74,85 @@ fn save_uncompacted(d: &Document) -> Vec<u8> {
     }
     z.finish().unwrap();
     buf.into_inner()
+}
+
+/// A `.designcraft` with the given asset entries, each stored as is or deflated.
+fn archive_with(d: &Document, entries: &[(AssetId, &[u8], bool)]) -> Vec<u8> {
+    let mut buf = Cursor::new(Vec::new());
+    let mut z = zip::ZipWriter::new(&mut buf);
+    let stored = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    let deflate = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    z.start_file("mimetype", stored).unwrap();
+    z.write_all(MIME.as_bytes()).unwrap();
+    z.start_file("meta.json", deflate).unwrap();
+    z.write_all(json!({"format": "designcraft", "version": VERSION}).to_string().as_bytes()).unwrap();
+    z.start_file("document.json", deflate).unwrap();
+    z.write_all(&serde_json::to_vec(d).unwrap()).unwrap();
+    for (id, data, as_is) in entries {
+        z.start_file(format!("assets/{}.png", id.0), if *as_is { stored } else { deflate }).unwrap();
+        z.write_all(data).unwrap();
+    }
+    z.finish().unwrap();
+    buf.into_inner()
+}
+
+/// Bytes that don't compress (a simple generator, so the test needs no crate).
+fn noise(n: usize) -> Vec<u8> {
+    let mut x: u32 = 0x9e37_79b9;
+    (0..n)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            (x >> 24) as u8
+        })
+        .collect()
+}
+
+/// #2166: saving has no size cap, so opening must keep every saved document openable. A stored
+/// entry (how placed images are saved) can't expand and opens at any size; the total budget is
+/// never below the archive's own size. Deflated entries stay capped, so a zip bomb is refused.
+#[test]
+fn stored_assets_open_at_any_size_while_deflated_ones_stay_capped() {
+    let mut d = Document::new(&NewDocument::default());
+    let big = noise(50_000);
+    let a = png_asset(&mut d, &big);
+    let b = png_asset(&mut d, &big);
+    d.assets.values_mut().for_each(|a| Arc::make_mut(a).data = Arc::new(Vec::new()));
+    place(&mut d, a, 0.0);
+    place(&mut d, b, 0.0);
+    // A budget that fits the document's JSON but not the two 50 000-byte assets together.
+    let json_len = serde_json::to_vec(&d).unwrap().len() as u64;
+    let tight = Limits { json: 256 << 20, asset: 1_000, total: json_len + 10_000 };
+    assert!(tight.total < 100_000, "the JSON is {json_len} bytes; the budget must stay under the two assets");
+
+    // Two stored assets, each over the asset cap and together over the total: both open.
+    let bytes = archive_with(&d, &[(a, &big, true), (b, &big, true)]);
+    let doc = load_zip_within(&bytes, tight).expect("stored entries open at their own size");
+    assert_eq!(doc.assets[&a].data.len(), 50_000);
+    // (Identical bytes come back as one asset: `load` merges duplicates.)
+    assert_eq!(doc.assets.len(), 1);
+    assert!(doc.all_items().iter().filter_map(|i| doc.item(*i)?.graphic()).all(|g| g.asset == a), "both placements show it");
+
+    // A deflated entry past the cap is refused, whether it really is that big ...
+    let bytes = archive_with(&d, &[(a, &big, false), (b, &big, true)]);
+    let e = load_zip_within(&bytes, tight).expect_err("a deflated entry over the cap").to_string();
+    assert!(e.contains("larger than the 1000-byte limit"), "{e}");
+    // ... or claims to be (a few KB that expand to megabytes).
+    let bomb = vec![0u8; 3 << 20];
+    let bytes = archive_with(&d, &[(a, &bomb, false), (b, &big, true)]);
+    assert!(bytes.len() < 64 << 10, "the bomb is small on disk: {}", bytes.len());
+    assert!(load_zip_within(&bytes, tight).is_err(), "a zip bomb is refused");
+
+    // The default limits read the same stored archive, and what `save` writes round-trips.
+    let bytes = archive_with(&d, &[(a, &big, true), (b, &big, true)]);
+    assert_eq!(load_zip(&bytes).unwrap().assets[&a].data.len(), 50_000);
+    Arc::make_mut(d.assets.get_mut(&a).unwrap()).data = Arc::new(big.clone());
+    Arc::make_mut(d.assets.get_mut(&b).unwrap()).data = Arc::new(big.clone());
+    let saved = save(&d).unwrap();
+    let doc = load_zip_within(&saved, tight).expect("what save writes opens under a cap smaller than its images");
+    // (`save` merges the two identical assets into one.)
+    assert!(!doc.assets.is_empty() && doc.assets.values().all(|x| x.data.len() == 50_000), "every saved image is back");
 }
 
 #[test]
@@ -274,6 +375,23 @@ fn format_1_keep_lines_without_mode_stays_all_lines() {
     let p = &now.story(sid).unwrap().paras[0];
     assert!(!now.styles.resolve_para(p).0.keep_all_lines);
     assert!(!designcraft_doc::ParaProps::default().keep_all_lines);
+}
+
+/// A format-1 file with many styles upgrades in time linear in them (each style's chain was
+/// found by searching every style, twice over).
+#[test]
+fn format_1_upgrade_of_many_styles_is_linear() {
+    let mut d = Document::new(&NewDocument::default());
+    let st = d.styles_mut();
+    for i in 0..20_000 {
+        st.paragraph.push(para_style(&format!("S{i}"), (i % 2 == 1).then(|| format!("S{}", i - 1)).as_deref(), None));
+    }
+    let bytes = save_v1(&d);
+    let t = std::time::Instant::now();
+    let back = load(&bytes).unwrap();
+    assert!(t.elapsed() < std::time::Duration::from_secs(10), "{:?}", t.elapsed());
+    assert_eq!(back.styles.para("S0").unwrap().para.keep_all_lines, Some(true));
+    assert_eq!(back.styles.para("S1").unwrap().para.keep_all_lines, None, "based on S0, which is pinned");
 }
 
 /// Format 1 wrote paragraph rules, text frame options and numbered lists in full, so their
@@ -555,6 +673,14 @@ fn r7a_nullable_document(local_clear: bool, style_clear: bool) -> Document {
         underline_offset: Some(Some(1.0)),
         strikethrough_weight: Some(Some(2.0)),
         strikethrough_offset: Some(Some(1.0)),
+        kenten_size: Some(Some(14.0)),
+        kenten_fill_tint: Some(Some(0.3)),
+        kenten_stroke_tint: Some(Some(0.4)),
+        kenten_stroke_weight: Some(Some(2.0)),
+        ruby_font_size: Some(Some(14.0)),
+        ruby_fill_tint: Some(Some(0.3)),
+        ruby_stroke_tint: Some(Some(0.4)),
+        ruby_stroke_weight: Some(Some(2.0)),
         ..Default::default()
     };
     // Legacy JSON loads as format 1, whose upgrade pins Keep Lines Together and Align Left
@@ -564,6 +690,7 @@ fn r7a_nullable_document(local_clear: bool, style_clear: bool) -> Document {
         start_at: Some(Some(7)),
         paragraph_kashida_width: Some(Some(0.5)),
         kinsoku: Some(Some(Default::default())),
+        list_tab: Some(Some(36.0)),
         keep_all_lines: Some(true),
         drop_cap_align_left: Some(true),
         ..Default::default()
@@ -578,9 +705,18 @@ fn r7a_nullable_document(local_clear: bool, style_clear: bool) -> Document {
         underline_offset: Some(None),
         strikethrough_weight: Some(None),
         strikethrough_offset: Some(None),
+        kenten_size: Some(None),
+        kenten_fill_tint: Some(None),
+        kenten_stroke_tint: Some(None),
+        kenten_stroke_weight: Some(None),
+        ruby_font_size: Some(None),
+        ruby_fill_tint: Some(None),
+        ruby_stroke_tint: Some(None),
+        ruby_stroke_weight: Some(None),
         ..Default::default()
     };
-    let clear_para = ParaAttrs { start_at: Some(None), paragraph_kashida_width: Some(None), kinsoku: Some(None), ..Default::default() };
+    let clear_para =
+        ParaAttrs { start_at: Some(None), paragraph_kashida_width: Some(None), kinsoku: Some(None), list_tab: Some(None), ..Default::default() };
     let selected = if style_clear {
         std::sync::Arc::make_mut(&mut d.styles).paragraph.push(designcraft_doc::styles::ParagraphStyle {
             name: "Defaults".into(),
@@ -621,6 +757,15 @@ fn r7a_assert_nullable_defaults_survive(d: &Document) {
     assert_eq!(expected.0.paragraph_kashida_width, None);
     assert_eq!(expected.0.kinsoku, None);
     assert_eq!(expected.1.leading_aki, None);
+    assert_eq!(expected.0.list_tab, None);
+    assert_eq!(expected.1.kenten_size, None);
+    assert_eq!(expected.1.kenten_fill_tint, None);
+    assert_eq!(expected.1.kenten_stroke_tint, None);
+    assert_eq!(expected.1.kenten_stroke_weight, None);
+    assert_eq!(expected.1.ruby_font_size, None);
+    assert_eq!(expected.1.ruby_fill_tint, None);
+    assert_eq!(expected.1.ruby_stroke_tint, None);
+    assert_eq!(expected.1.ruby_stroke_weight, None);
     // Legacy JSON is format 1: its upgrade pins older defaults on the other styles, so only
     // the native ZIP compares as the whole document.
     for (bytes, native) in [(save(d).unwrap(), true), (serde_json::to_vec(d).unwrap(), false)] {

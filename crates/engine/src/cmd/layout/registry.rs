@@ -1,9 +1,11 @@
 use super::layers::set_layer;
 use super::margins::{adjust_layout, column_guides_unlocked, margin_boxes, move_column_guide, set_margins_columns, set_page_width};
 use super::pages::{document_setup, page_options, page_size};
-use super::parents::{parent_options, parent_ref, parent_spread_index};
+use super::parents::{
+    parent_label_taken, parent_name_param, parent_options, parent_page_size, parent_page_target, parent_prefix_param, parent_ref, parent_spread_index,
+};
 use super::sections::{ChapterEdit, SectionEdit, chapter_numbering, start_number};
-use super::{CommandSpec, LAYER_COLORS, Layer, LayerId, Margins, SpreadId, Value, bad, cmd, has_doc, json, ok, str_param};
+use super::{CommandSpec, LAYER_COLORS, Layer, LayerId, Margins, Result, SpreadId, Value, bad, cmd, has_doc, json, ok, str_param};
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
@@ -12,7 +14,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Insert Pages…",
             ["Layout", "Pages"],
             Some("Cmd+Shift+P"),
-            "{count?: 1 (1 to 9999), after?: 0-based page index (default: the last page), parent?: id|\"A-Parent\"|\"A\"|null}",
+            "{count?: 1 (1 to 9999), after?: 0-based page index (default: the last page; past it: at the end), before?: 0-based page index (instead of `after`; 0: at the start), parent?: id|\"A-Parent\"|\"A\"|null}",
             has_doc,
             |s, p| {
                 const ID: &str = "layout.pages.insert";
@@ -27,12 +29,30 @@ pub fn specs() -> Vec<CommandSpec> {
                 };
                 let st = s.doc()?;
                 let n = st.doc.page_count();
-                // An `after` past the last page appends, which `insert_after_u64_max_appends_at_the_end`
-                // pins deliberately.
-                let after = p.get("after").and_then(Value::as_u64).map(|v| usize::try_from(v).unwrap_or(usize::MAX)).unwrap_or(n.saturating_sub(1));
+                // A placement given (null included) must be a page index; only when neither is
+                // given do the pages go after the last.
+                if p.get("after").is_some() && p.get("before").is_some() {
+                    return Err(bad("layout.pages.insert", "give `after` or `before`, not both"));
+                }
+                // `before` names a page of the document; an `after` past the last page appends
+                // (`insert_pages_bounds.rs` pins that).
+                let index = |k: &str| match p.get(k) {
+                    None => Ok(None),
+                    Some(v) => v
+                        .as_u64()
+                        .map(|v| usize::try_from(v).unwrap_or(usize::MAX))
+                        .filter(|&i| k == "after" || i < n)
+                        .map(|i| Some(i.min(n.saturating_sub(1))))
+                        .ok_or_else(|| bad(ID, format!("`{k}` must be the index of one of the {n} pages, not {v}"))),
+                };
+                // The page the new ones follow; none: they go first.
+                let after = match (index("after")?, index("before")?) {
+                    (_, Some(b)) => b.checked_sub(1),
+                    (a, None) => Some(a.unwrap_or(n.saturating_sub(1))),
+                };
                 let parent = parent_ref(ID, &st.doc, p.get("parent"))?.unwrap_or_else(|| st.doc.parents.first().map(|x| x.id));
                 s.edit(|d, _| {
-                    let ids = d.insert_pages(Some(after), count, parent)?;
+                    let ids = d.insert_pages(after, count, parent)?;
                     Ok(json!({"pages": ids.len(), "total": d.page_count()}))
                 })
             }
@@ -61,19 +81,25 @@ pub fn specs() -> Vec<CommandSpec> {
                 })
             }
         ),
-        cmd!("layout.pages.delete", "Delete Pages", ["Layout", "Pages"], None, "{pages: [index]}", has_doc, |s, p| {
-            let pages: Vec<usize> = p
-                .get("pages")
-                .and_then(Value::as_array)
-                .map(|a| a.iter().filter_map(Value::as_u64).map(|v| v as usize).collect())
-                .unwrap_or_default();
-            s.edit(|d, sel| {
-                d.delete_pages(&pages)?;
-                sel.items.retain(|i| d.item(*i).is_some());
-                sel.text = sel.text.filter(|t| d.story(t.story).is_some());
-                ok()
-            })
-        }),
+        cmd!(
+            "layout.pages.delete",
+            "Delete Pages",
+            ["Layout", "Pages"],
+            None,
+            "{pages: [0-based page indices]} → {deleted: how many pages were removed}",
+            has_doc,
+            |s, p| {
+                const ID: &str = "layout.pages.delete";
+                let pages = page_indices(ID, s.doc()?.doc.page_count(), p)?;
+                let deleted = distinct_pages(&pages);
+                s.edit(|d, sel| {
+                    d.delete_pages(&pages)?;
+                    sel.items.retain(|i| d.item(*i).is_some());
+                    sel.text = sel.text.filter(|t| d.story(t.story).is_some());
+                    Ok(json!({"deleted": deleted}))
+                })
+            }
+        ),
         cmd!("layout.pages.move", "Move Pages…", ["Layout", "Pages"], None, "{from, to}", has_doc, |s, p| {
             let from = p.get("from").and_then(Value::as_u64).ok_or_else(|| bad("layout.pages.move", "missing from"))? as usize;
             let to = p.get("to").and_then(Value::as_u64).ok_or_else(|| bad("layout.pages.move", "missing to"))? as usize;
@@ -145,42 +171,82 @@ pub fn specs() -> Vec<CommandSpec> {
             "Apply Parent to Pages…",
             ["Layout", "Pages"],
             None,
-            "{pages: [index], parent: id|\"A-Parent\"|\"A\"|null (null or \"[None]\" clears)}",
+            "{pages: [0-based page indices], parent: id|\"A-Parent\"|\"A\"|null (null or \"[None]\" clears)} → {applied: how many pages took the parent}",
             has_doc,
             |s, p| {
-                let pages: Vec<usize> = p
-                    .get("pages")
-                    .and_then(Value::as_array)
-                    .map(|a| a.iter().filter_map(Value::as_u64).map(|v| v as usize).collect())
-                    .unwrap_or_default();
-                let parent = parent_ref("layout.pages.applyParent", &s.doc()?.doc, p.get("parent"))?.unwrap_or(None);
+                const ID: &str = "layout.pages.applyParent";
+                let pages = page_indices(ID, s.doc()?.doc.page_count(), p)?;
+                let applied = distinct_pages(&pages);
+                let parent = parent_ref(ID, &s.doc()?.doc, p.get("parent"))?.unwrap_or(None);
                 s.edit(|d, _| {
                     d.apply_parent(&pages, parent)?;
-                    ok()
+                    Ok(json!({"applied": applied}))
                 })
             }
         ),
-        cmd!("layout.parents.new", "New Parent…", ["Layout", "Pages"], None, "{prefix?, name?: \"Parent\"}", has_doc, |s, p| {
-            let name = str_param(p, "name").unwrap_or("Parent").to_string();
-            s.edit(|d, _| {
-                let prefix = str_param(p, "prefix").map(str::to_string).unwrap_or_else(|| d.next_parent_prefix());
-                let src = d.page(0).cloned();
-                let (columns, margins) =
-                    src.as_ref().map_or_else(|| (designcraft_doc::Columns::default(), Margins::uniform(36.0)), |p| (p.columns.clone(), p.margins));
-                let id = d.add_parent(&prefix, &name, columns.count, columns.gutter, margins);
-                // Dragged column guides carry over to the parent pages they still fit, mirrored
-                // on the parent page across the spine from the first page.
-                if let (Some(src), Some(sp)) = (&src, d.parents.iter_mut().find(|x| x.id == id)) {
-                    for pg in &mut std::sync::Arc::make_mut(sp).pages {
-                        let columns = pg.columns_from(src);
-                        if columns.valid_positions(pg.margin_rect().width()).is_some() {
-                            pg.columns.positions = columns.positions;
+        cmd!(
+            "layout.parents.new",
+            "New Parent…",
+            ["Layout", "Pages"],
+            None,
+            "{prefix?: 1–4 characters without `-` (default: the next free letter), name?: \"Parent\", basedOn?: id|\"A-Parent\"|\"A\"|null} → {id, prefix}",
+            has_doc,
+            |s, p| {
+                const ID: &str = "layout.parents.new";
+                let name = parent_name_param(ID, p)?.unwrap_or_else(|| "Parent".into());
+                let prefix = parent_prefix_param(ID, p)?;
+                let base = parent_ref(ID, &s.doc()?.doc, p.get("basedOn"))?.flatten();
+                s.edit(|d, _| {
+                    let prefix = prefix.unwrap_or_else(|| d.next_parent_prefix());
+                    let label = designcraft_doc::ParentInfo { prefix: prefix.clone(), name: name.clone(), based_on: None }.label();
+                    if parent_label_taken(d, &label, None) {
+                        return Err(bad(ID, format!("a parent named {label} exists")));
+                    }
+                    let src = d.page(0).cloned();
+                    let (columns, margins) = src
+                        .as_ref()
+                        .map_or_else(|| (designcraft_doc::Columns::default(), Margins::uniform(36.0)), |p| (p.columns.clone(), p.margins));
+                    let id = d.add_parent(&prefix, &name, columns.count, columns.gutter, margins);
+                    // Dragged column guides carry over to the parent pages they still fit, mirrored
+                    // on the parent page across the spine from the first page.
+                    if let (Some(src), Some(sp)) = (&src, d.parents.iter_mut().find(|x| x.id == id)) {
+                        for pg in &mut std::sync::Arc::make_mut(sp).pages {
+                            let columns = pg.columns_from(src);
+                            if columns.valid_positions(pg.margin_rect().width()).is_some() {
+                                pg.columns.positions = columns.positions;
+                            }
                         }
                     }
-                }
-                Ok(json!({"id": id.0, "prefix": prefix}))
-            })
-        }),
+                    if let Some(info) = d.parents.iter_mut().find(|x| x.id == id).map(std::sync::Arc::make_mut).and_then(|x| x.parent.as_mut()) {
+                        info.based_on = base;
+                    }
+                    Ok(json!({"id": id.0, "prefix": prefix}))
+                })
+            }
+        ),
+        cmd!(
+            "layout.parents.duplicate",
+            "Duplicate Parent Spread",
+            ["Layout", "Pages"],
+            None,
+            "{parent: id|\"A-Parent\"|\"A\"} — a copy with the next free prefix, its pages and items → {id, prefix}",
+            has_doc,
+            |s, p| {
+                const ID: &str = "layout.parents.duplicate";
+                let Some(Some(id)) = parent_ref(ID, &s.doc()?.doc, p.get("parent"))? else {
+                    return Err(bad(ID, "`parent` names the parent to duplicate"));
+                };
+                s.edit(|d, _| {
+                    let prefix = d.next_parent_prefix();
+                    let src = d.clone();
+                    let ids: Vec<_> =
+                        src.parent_index(id).and_then(|i| src.parents.get(i)).map(|sp| sp.items.iter().map(|i| i.id).collect()).unwrap_or_default();
+                    let (new, at) = d.duplicate_parent_shell(id, &prefix)?;
+                    crate::cmd::object::duplicate_from(d, &src, &ids, designcraft_doc::SpreadRef::Parent(at), designcraft_geom::Vec2::ZERO)?;
+                    Ok(json!({"id": new.0, "prefix": prefix}))
+                })
+            }
+        ),
         cmd!(
             "layout.parents.delete",
             "Delete Parent",
@@ -243,7 +309,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Parent Options…",
             [],
             None,
-            "{parent: id|\"B-Parent\"|\"B\", basedOn: id|\"A-Parent\"|\"A\"|null (= [None])} — the parent shows its base's items under its own, and so do the pages that use it → {parent, basedOn}",
+            "{parent: id|\"B-Parent\"|\"B\", prefix?: 1–4 characters without `-`, name?, basedOn?: id|\"A-Parent\"|\"A\"|null (= [None])} — rename the parent; with a base it shows the base's items under its own, and so do the pages that use it → {parent, prefix, name, basedOn}",
             has_doc,
             parent_options
         ),
@@ -373,6 +439,7 @@ pub fn specs() -> Vec<CommandSpec> {
                                     prefix: String::new(),
                                     marker: String::new(),
                                     include_prefix: false,
+                                    layout: None,
                                 },
                             );
                         }
@@ -485,6 +552,30 @@ pub fn specs() -> Vec<CommandSpec> {
             page_size
         ),
         cmd!(
+            "layout.parentPageSize",
+            "Parent Page Size",
+            [],
+            None,
+            "{parent: spread id, page: 0-based parent page index, width?, height?, anchor?: 0–8} — resize only this parent page, keeping document page sizes independent",
+            has_doc,
+            parent_page_size
+        ),
+        cmd!(
+            noundo "layout.selectParentPage", "Select Parent Page", [], None,
+            "{parent: spread id|null, page?: 0-based parent page index} — select a parent page with the Page tool; null clears the selection",
+            has_doc, |s, p| {
+                let target = match p.get("parent") {
+                    Some(Value::Null) => None,
+                    _ => Some(parent_page_target(&s.doc()?.doc, p, "layout.selectParentPage")?),
+                };
+                let st = s.doc_mut()?;
+                st.selection = Default::default();
+                st.selection.parent_page = target.map(|(si, pi)| (st.doc.parents[si].id, pi));
+                st.bump_revision();
+                ok()
+            }
+        ),
+        cmd!(
             "layout.pageOptions",
             "Page Options",
             [],
@@ -518,6 +609,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 st.selection = designcraft_doc::Selection::items(ids);
             }
             st.selection.page = page;
+            st.selection.parent_page = None;
             st.bump_revision();
             Ok(json!({"page": page.map(|p| p + 1)}))
         }
@@ -739,4 +831,130 @@ pub fn specs() -> Vec<CommandSpec> {
             ok()
         }),
     ]
+}
+
+/// The page indices a `layout.pages.*` command was given, in the order it passed them.
+///
+/// Both commands count pages from 0. An index past the last page used to be dropped in
+/// silence, so a caller that was off by one deleted a different range and still read
+/// `ok`; the sentence is the one the MCP export commands have used since #70.
+fn page_indices(id: &str, count: usize, p: &Value) -> Result<Vec<usize>> {
+    // A list that is missing, is not a list, or holds something that is not a whole number is
+    // refused rather than filtered: dropping an entry silently is the same mistake this fixes,
+    // one level up — the caller would be told a page was handled when it never was.
+    let raw = p.get("pages").and_then(Value::as_array).ok_or_else(|| bad(id, "pages takes a list of page indices"))?;
+    let mut out = Vec::with_capacity(raw.len());
+    for v in raw {
+        let n = v.as_u64().ok_or_else(|| bad(id, format!("pages takes whole numbers, and {v} is not one")))?;
+        let i = usize::try_from(n).unwrap_or(usize::MAX);
+        if i >= count {
+            return Err(bad(id, format!("no page {i} (the document has {count} pages, indices are 0-based)")));
+        }
+        out.push(i);
+    }
+    Ok(out)
+}
+
+/// How many pages a list of indices names, counting a repeated index once.
+fn distinct_pages(pages: &[usize]) -> usize {
+    let mut v = pages.to_vec();
+    v.sort_unstable();
+    v.dedup();
+    v.len()
+}
+
+#[cfg(test)]
+mod page_index_tests {
+    use serde_json::json;
+
+    fn four_pages() -> crate::Session {
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({"pages": 4})).unwrap();
+        s
+    }
+
+    fn pages_left(s: &crate::Session) -> usize {
+        s.doc().unwrap().doc.page_count()
+    }
+
+    /// An index past the last page is an error that names it, and nothing is removed.
+    #[test]
+    fn a_page_index_past_the_end_is_refused_and_nothing_is_deleted() {
+        let mut s = four_pages();
+        let err = s.execute("layout.pages.delete", &json!({"pages": [4]})).unwrap_err().to_string();
+        assert!(err.contains("no page 4"), "the message names the index: {err}");
+        assert!(err.contains("indices are 0-based"), "and the base: {err}");
+        assert_eq!(pages_left(&s), 4, "nothing went");
+    }
+
+    /// The reply says how many pages went, and a page named twice is one page.
+    #[test]
+    fn deleting_says_how_many_pages_went() {
+        let mut s = four_pages();
+        let r = s.execute("layout.pages.delete", &json!({"pages": [0, 1]})).unwrap();
+        assert_eq!(r["deleted"], 2);
+        assert_eq!(pages_left(&s), 2);
+        // A page named twice is one page, not two.
+        let mut s = four_pages();
+        let r = s.execute("layout.pages.delete", &json!({"pages": [1, 1]})).unwrap();
+        assert_eq!(r["deleted"], 1);
+        assert_eq!(pages_left(&s), 3);
+    }
+
+    /// Three pages named of four leave one, which is allowed even with a repeat.
+    #[test]
+    fn a_page_named_twice_does_not_count_as_two_against_the_last_one_left() {
+        // Four pages, three named (one of them twice): that leaves one and is allowed.
+        let mut s = four_pages();
+        let r = s.execute("layout.pages.delete", &json!({"pages": [0, 0, 1, 2]})).unwrap();
+        assert_eq!(r["deleted"], 3);
+        assert_eq!(pages_left(&s), 1);
+    }
+
+    /// Applying a parent reports how many pages took it, and the pages really do.
+    #[test]
+    fn applying_a_parent_says_how_many_pages_took_it() {
+        let mut s = four_pages();
+        s.execute("layout.parents.new", &json!({"prefix": "B"})).unwrap();
+        let r = s.execute("layout.pages.applyParent", &json!({"pages": [1, 2], "parent": "B"})).unwrap();
+        assert_eq!(r["applied"], 2);
+        let doc = s.doc().unwrap();
+        for page in [1usize, 2] {
+            assert!(doc.doc.page(page).unwrap().parent.is_some(), "page {page} took the parent");
+        }
+    }
+
+    /// Refused before the edit starts, so no page changes parent.
+    #[test]
+    fn a_page_index_past_the_end_is_refused_by_a_parent() {
+        let mut s = four_pages();
+        // Pages are born on the default parent A, so what must not change is which parent they have.
+        let b = s.execute("layout.parents.new", &json!({"prefix": "B"})).unwrap()["id"].as_u64().unwrap();
+        let before: Vec<_> = (0..4).map(|i| s.doc().unwrap().doc.page(i).unwrap().parent.map(|p| p.0)).collect();
+        let err = s.execute("layout.pages.applyParent", &json!({"pages": [4], "parent": "B"})).unwrap_err().to_string();
+        assert!(err.contains("no page 4"), "{err}");
+        let after: Vec<_> = (0..4).map(|i| s.doc().unwrap().doc.page(i).unwrap().parent.map(|p| p.0)).collect();
+        assert_eq!(before, after, "no page changed parent");
+        assert!(!after.contains(&Some(b)), "and none took B");
+    }
+
+    /// A malformed list is refused instead of quietly dropping the entries it cannot read.
+    #[test]
+    fn a_malformed_page_list_is_refused_instead_of_ignored() {
+        let mut s = four_pages();
+        for list in [json!({"pages": "4"}), json!({"pages": [1, "2"]}), json!({})] {
+            let err = s.execute("layout.pages.delete", &list).unwrap_err().to_string();
+            assert!(err.contains("pages takes"), "refused: {list} → {err}");
+        }
+        assert_eq!(pages_left(&s), 4, "and nothing went");
+    }
+
+    /// Both commands' `params` doc states that the indices count from 0.
+    #[test]
+    fn both_commands_state_the_base_in_their_params() {
+        for id in ["layout.pages.delete", "layout.pages.applyParent"] {
+            let spec = crate::cmd::command_specs().iter().find(|s| s.id == id).unwrap();
+            assert!(spec.params.contains("0-based"), "{id} says its base: {}", spec.params);
+        }
+    }
 }

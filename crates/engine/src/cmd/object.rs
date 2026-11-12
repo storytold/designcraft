@@ -403,7 +403,7 @@ pub fn specs() -> Vec<CommandSpec> {
                         ds.mode = m;
                     }
                     ds.noise = f64_or(&p2, "noise", ds.noise).clamp(0.0, 100.0);
-                    ds.knockout = p2.get("knockout").and_then(Value::as_bool).unwrap_or(ds.knockout);
+                    ds.knockout = p2.get("knockout").and_then(Value::as_bool).or(ds.knockout);
                     ds.honors_effects = p2.get("honorsEffects").and_then(Value::as_bool).unwrap_or(ds.honors_effects);
                 })
             }
@@ -619,7 +619,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Text Frame Options…",
             ["Object"],
             Some("Cmd+B"),
-            "{columns?, gutter?, inset?: number|[t,l,b,r] (null keeps that side), verticalJustification?: top|center|bottom|justify, columnsKind?: fixedNumber|fixedWidth, columnWidth? (pt, Fixed Width), firstBaseline?: ascent|capHeight|leading|xHeight|emboxHeight|fixed, firstBaselineMin? (pt), autoSize?: off|heightOnly|widthOnly|heightAndWidth|heightAndWidthProportionally, autoSizeReference?: topLeft|topCenter|topRight|leftCenter|center|rightCenter|bottomLeft|bottomCenter|bottomRight (the point that stays put), useMinimumHeight?: bool, minimumHeight? (pt), useMinimumWidth?: bool, minimumWidth? (pt), noLineBreaks?: bool, ignoreWrap?, balanceColumns?, columnRule?: bool, columnRuleWeight? (pt), columnRuleColor? (swatch name), columnRuleTint? (0..1), columnRuleOffset? (pt, horizontal), columnRuleTopInset? (pt), columnRuleBottomInset? (pt), baselineGrid?: {start? (pt), increment? (pt), relativeTo?: page|margin|frame|inset} (the frame's custom baseline grid; fields not given keep the frame's, or come from the document grid; null turns it off), vertical?: bool (sets the story direction of the frames' stories, as Type ▸ Story Direction), ids?}",
+            "{columns?, gutter?, inset?: number|[t,l,b,r] (null keeps that side), verticalJustification?: top|center|bottom|justify, paragraphSpacingLimit? (pt: Justify adds at most this between paragraphs, the rest between lines), columnsKind?: fixedNumber|fixedWidth, columnWidth? (pt, Fixed Width), firstBaseline?: ascent|capHeight|leading|xHeight|emboxHeight|fixed, firstBaselineMin? (pt), autoSize?: off|heightOnly|widthOnly|heightAndWidth|heightAndWidthProportionally, autoSizeReference?: topLeft|topCenter|topRight|leftCenter|center|rightCenter|bottomLeft|bottomCenter|bottomRight (the point that stays put), useMinimumHeight?: bool, minimumHeight? (pt), useMinimumWidth?: bool, minimumWidth? (pt), noLineBreaks?: bool, ignoreWrap?, balanceColumns?, columnRule?: bool, columnRuleWeight? (pt), columnRuleColor? (swatch name), columnRuleTint? (0..1), columnRuleOffset? (pt, horizontal), columnRuleTopInset? (pt), columnRuleBottomInset? (pt), baselineGrid?: {start? (pt), increment? (pt), relativeTo?: page|margin|frame|inset} (the frame's custom baseline grid; fields not given keep the frame's, or come from the document grid; null turns it off), vertical?: bool (sets the story direction of the frames' stories, as Type ▸ Story Direction), ids?}",
             has_selection,
             text_frame_options
         ),
@@ -628,7 +628,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Corner Options…",
             ["Object"],
             None,
-            "{shape: none|rounded|inverseRounded|inset|bevel|fancy, size, corners?: [{shape, size}] (4 entries in path order: top-left, top-right, bottom-right, bottom-left; replaces shape and size), ids?}",
+            "{shape: none|rounded|inverseRounded|inset|bevel|fancy, size, corners?: [{shape, size} | null] (4 entries in path order: top-left, top-right, bottom-right, bottom-left; replaces shape and size; null keeps that corner of each object), ids?}",
             has_selection,
             corner_options
         ),
@@ -637,7 +637,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Text Wrap",
             ["Window"],
             Some("Cmd+Alt+W"),
-            "{mode?: none|boundingBox|contour|jumpObject|jumpToNextColumn (boundingBox when absent, unless side or contour is given: then unchanged), offset?: number|[t,l,b,r], invert?: bool, side?: bothSides|leftSide|rightSide|towardsSpine|awayFromSpine|largestArea, contour?: boundingBox|graphicFrame|sameAsClipping, content?: bool (the placed graphic instead of its frame; default: whether the selection is the frame's content), ids?}; offset or contour drops an imported custom wrap boundary",
+            "{mode?: none|boundingBox|contour|jumpObject|jumpToNextColumn (boundingBox when absent, unless side or contour is given; null or those: each object's own, unchanged), offset?: number|[t,l,b,r] (a null side keeps each object's own), invert?: bool, side?: bothSides|leftSide|rightSide|towardsSpine|awayFromSpine|largestArea, contour?: boundingBox|graphicFrame|sameAsClipping, content?: bool (the placed graphic instead of its frame; default: whether the selection is the frame's content), ids?}; offset or contour drops an imported custom wrap boundary",
             has_selection,
             text_wrap
         ),
@@ -658,6 +658,15 @@ pub fn specs() -> Vec<CommandSpec> {
             "{autoFit?: bool, fitting?: none|fillProportionally|fitProportionally|fitContentToFrame|centerContent, align?: 0..8 (reference point, 4 = centre), crop?: n | [t, l, b, r] (negative adds space), ids?}",
             has_selection,
             fitting_options
+        ),
+        cmd!(
+            "object.clearFittingOptions",
+            "Clear Frame Fitting Options",
+            ["Object", "Fitting"],
+            None,
+            "{ids?} — the frames' fitting options back to the defaults: no auto-fit, no crop amounts, the centre reference point; the content stays where it is",
+            has_selection,
+            clear_fitting_options
         ),
         cmd!("object.rename", "Rename", [], None, "{id | ids?, name}", has_doc, |s, p| {
             let name = str_param(p, "name").unwrap_or("").to_string();
@@ -701,7 +710,15 @@ pub fn specs() -> Vec<CommandSpec> {
             path_reverse
         ),
         cmd!("path.close", "Close Path", ["Object", "Paths"], None, "{id, subpath?: index (default every subpath)}", has_doc, path_close),
-        cmd!("path.moveAnchors", "Move Anchors", [], None, "{id, anchors: [[subpath, index]], dx, dy, handle?: in|out}", has_doc, path_move_anchors),
+        cmd!(
+            "path.moveAnchors",
+            "Move Anchors",
+            [],
+            None,
+            "{id, anchors: [[subpath, index]], dx, dy, handle?: in|out} | {points: [[id, subpath, index, dx?, dy?]], dx?, dy?} (anchors of several paths, as Direct Selection drags them: one step; a point's own dx, dy win over the shared ones) — spread space",
+            has_doc,
+            path_move_anchors
+        ),
         cmd!(
             "object.align",
             "Align",
@@ -1097,9 +1114,15 @@ fn adopt_or_dangle(dst: &mut Document, src: &Document, id: AssetId) -> AssetId {
 
 /// Give `it` (an item of `src`) fresh ids from `dst`, with copies of its stories and the assets it uses.
 pub(crate) fn renumber(dst: &mut Document, src: &Document, it: &mut Item, stories: &mut HashMap<StoryId, StoryId>) {
+    renumber_in(dst, src, it, stories, true);
+}
+
+/// `adopt` is false inside a story copy, whose asset references the copy has already adopted.
+fn renumber_in(dst: &mut Document, src: &Document, it: &mut Item, stories: &mut HashMap<StoryId, StoryId>, adopt: bool) {
     it.id = ItemId(dst.alloc());
     let my_id = it.id;
-    if let Some(m) = it.media.as_mut()
+    if adopt
+        && let Some(m) = it.media.as_mut()
         && let Some(p) = m.poster
     {
         m.poster = Some(adopt_or_dangle(dst, src, p));
@@ -1121,8 +1144,10 @@ pub(crate) fn renumber(dst: &mut Document, src: &Document, it: &mut Item, storie
                     }
                     designcraft_doc::remap_story_assets(&mut st, &assets);
                     st.frames.clear();
-                    dst.stories.insert(n, Arc::new(st));
+                    // Mapped first: the map is the seen-set that stops story recursion.
                     stories.insert(tf.story, n);
+                    renumber_anchored(dst, src, &mut st, stories);
+                    dst.stories.insert(n, Arc::new(st));
                     n
                 }
             };
@@ -1132,14 +1157,29 @@ pub(crate) fn renumber(dst: &mut Document, src: &Document, it: &mut Item, storie
             }
         }
         Content::Graphic(g) => {
-            g.asset = adopt_or_dangle(dst, src, g.asset);
+            if adopt {
+                g.asset = adopt_or_dangle(dst, src, g.asset);
+            }
         }
         Content::Group { items } => {
             for c in items.iter_mut() {
-                renumber(dst, src, Arc::make_mut(c), stories);
+                renumber_in(dst, src, Arc::make_mut(c), stories, adopt);
             }
         }
         Content::Unassigned => {}
+    }
+}
+
+/// Fresh ids for the objects anchored in story copy `st`, its table cells, footnotes and endnotes (#1522).
+fn renumber_anchored(dst: &mut Document, src: &Document, st: &mut Story, stories: &mut HashMap<StoryId, StoryId>) {
+    let mut fresh = |t: &mut Story| {
+        for o in &mut t.objects {
+            renumber_in(dst, src, &mut Arc::make_mut(o).item, stories, false);
+        }
+    };
+    st.for_each_text_mut(&mut fresh);
+    for n in &mut st.endnotes {
+        Arc::make_mut(n).text.for_each_text_mut(&mut fresh);
     }
 }
 
@@ -1673,6 +1713,13 @@ fn transform_set(s: &mut Session, p: &Value) -> Result<Value> {
                 } else {
                     let inner = it.xf.inverse() * m * it.xf;
                     bake(it, inner);
+                    // A pure move carries the placed graphic along; a resize leaves it at its size.
+                    let c = inner.as_coeffs();
+                    if let Content::Graphic(g) = &mut it.content
+                        && [c[0] - 1.0, c[1], c[2], c[3] - 1.0].iter().all(|v| v.abs() < 1e-9)
+                    {
+                        g.xf = inner * g.xf;
+                    }
                 }
             }
         }
@@ -2122,13 +2169,18 @@ fn text_wrap(s: &mut Session, p: &Value) -> Result<Value> {
         None => None,
     };
     let mode: Option<WrapMode> = match p.get("mode") {
+        // Null keeps each object's own mode (an edit of the offsets or Invert alone).
+        Some(Value::Null) => None,
         Some(v) => Some(serde_json::from_value(v.clone()).map_err(|_| bad("object.textWrap", "unknown mode"))?),
         None if side.is_some() || contour.is_some() => None,
         None => Some(WrapMode::BoundingBox),
     };
-    let off = match p.get("offset") {
-        Some(Value::Number(n)) => Some([n.as_f64().unwrap_or(0.0); 4]),
-        Some(v) => serde_json::from_value(v.clone()).ok(),
+    // Per side [top, left, bottom, right]; a null side keeps each object's own offset there, so
+    // an edit of one side keeps the others of every object.
+    // An array with no number in it changes no offset (and so keeps a custom boundary).
+    let off: Option<[Option<f64>; 4]> = match p.get("offset") {
+        Some(Value::Number(n)) => Some([n.as_f64(); 4]),
+        Some(v) => serde_json::from_value::<[Option<f64>; 4]>(v.clone()).ok().filter(|o| o.iter().any(Option::is_some)),
         None => None,
     };
     let invert = p.get("invert").and_then(Value::as_bool);
@@ -2148,7 +2200,11 @@ fn text_wrap(s: &mut Session, p: &Value) -> Result<Value> {
                 w.mode = m;
             }
             if let Some(o) = off {
-                w.offsets = o;
+                for (w, v) in w.offsets.iter_mut().zip(o) {
+                    if let Some(v) = v {
+                        *w = v;
+                    }
+                }
             }
             if let Some(v) = invert {
                 w.invert = v;
@@ -2173,19 +2229,31 @@ fn corner_options(s: &mut Session, p: &Value) -> Result<Value> {
     use designcraft_geom::corners::{Corner, CornerOptions, CornerShape};
     let opts = match p.get("corners") {
         Some(v) => {
-            let corners: [Corner; 4] =
-                serde_json::from_value(v.clone()).map_err(|e| bad("object.cornerOptions", format!("corners: four {{shape, size}} entries ({e})")))?;
-            if corners.iter().any(|c| !c.size.is_finite() || c.size < 0.0) {
+            let corners: [Option<Corner>; 4] = serde_json::from_value(v.clone())
+                .map_err(|e| bad("object.cornerOptions", format!("corners: four {{shape, size}} or null entries ({e})")))?;
+            if corners.iter().flatten().any(|c| !c.size.is_finite() || c.size < 0.0) {
                 return Err(bad("object.cornerOptions", "corner sizes must be finite and not negative"));
             }
-            CornerOptions { corners }
+            corners
         }
         None => {
             let shape = p.get("shape").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or(CornerShape::Rounded);
-            CornerOptions::uniform(shape, f64_or(p, "size", 12.0))
+            CornerOptions::uniform(shape, f64_or(p, "size", 12.0)).corners.map(Some)
         }
     };
-    set_flag(s, p, move |i| i.corners = opts, false)
+    // A null corner keeps each object's own.
+    set_flag(
+        s,
+        p,
+        move |i| {
+            for (c, new) in i.corners.corners.iter_mut().zip(opts) {
+                if let Some(new) = new {
+                    *c = new;
+                }
+            }
+        },
+        false,
+    )
 }
 
 /// `object.matchAttributes`: the selected objects (or `ids`) take `from`'s appearance.
@@ -2546,6 +2614,7 @@ fn text_frame_options(s: &mut Session, p: &Value) -> Result<Value> {
     let min_width = ranged("minimumWidth", 0.0, crate::autosize::MAX_SIDE, "a number of points")?;
     let column_width = ranged("columnWidth", 0.0, 15552.0, "a number of points")?;
     let first_baseline_min = ranged("firstBaselineMin", 0.0, 15552.0, "a number of points")?;
+    let spacing_limit = ranged("paragraphSpacingLimit", 0.0, 15552.0, "a number of points")?;
     let reference = match p.get("autoSizeReference") {
         None | Some(Value::Null) => None,
         Some(v) => Some(
@@ -2632,6 +2701,7 @@ fn text_frame_options(s: &mut Session, p: &Value) -> Result<Value> {
             if let Some(v) = reference {
                 o.auto_size_ref = v;
             }
+            o.vj_paragraph_spacing_limit = spacing_limit.unwrap_or(o.vj_paragraph_spacing_limit);
             if let Some(v) = p.get("useMinimumHeight").and_then(Value::as_bool) {
                 o.auto_size_use_min_height = v;
             }
@@ -2816,7 +2886,12 @@ fn clipping_path(s: &mut Session, p: &Value) -> Result<Value> {
             let Some(px) = designcraft_render::decode_pixmap_page(&asset.data, asset.page) else { continue };
             // A placed PDF cropped to a box: trace that box, which graphic space spans.
             let px = match designcraft_render::shown_box(asset) {
-                Some(frac) => designcraft_render::crop_pixmap(&px, frac).unwrap_or(px),
+                // A crop too big to trace is skipped, as a graphic that fails to decode is: tracing
+                // the whole page instead would trace something else than the box.
+                Some(frac) => match designcraft_render::crop_pixmap(&px, frac) {
+                    Some(cropped) => cropped,
+                    None => continue,
+                },
                 None => px,
             };
             let (pw, ph) = (px.width() as usize, px.height() as usize);
@@ -2979,9 +3054,40 @@ fn fitting_options(s: &mut Session, p: &Value) -> Result<Value> {
             } else if fitting.is_some() && g.auto_fit != designcraft_doc::Fitting::None {
                 g.auto_fit = mode;
             }
-            if let Some(xf) = g.fitted(r, mode) {
+            // Turning Auto-Fit off alone leaves the picture where the user put it.
+            let turn_off_only = auto == Some(false) && fitting.is_none() && align.is_none() && crop.is_none();
+            if !turn_off_only && let Some(xf) = g.fitted(r, mode) {
                 g.xf = xf;
             }
+            n += 1;
+        }
+        Ok(json!({"changed": n}))
+    })
+}
+
+/// Clear Frame Fitting Options: auto-fit off, no crop, the centre reference point. The content
+/// stays where it is, as in InDesign.
+fn clear_fitting_options(s: &mut Session, p: &Value) -> Result<Value> {
+    // Locked frames (or frames on a locked layer) keep their options, as with Fit; frames whose
+    // options are already clear are left out; with nothing to change, no edit (and no empty undo
+    // step).
+    let doc = &s.doc()?.doc;
+    let set = |g: &designcraft_doc::Graphic| g.auto_fit != designcraft_doc::Fitting::None || g.crop != [0.0; 4] || g.fit_align != 4;
+    let ids: Vec<ItemId> = targets(s, p)?
+        .into_iter()
+        .filter(|id| doc.item(*id).is_some_and(|it| unlocked(doc, it) && matches!(&it.content, Content::Graphic(g) if set(g))))
+        .collect();
+    if ids.is_empty() {
+        return Ok(json!({"changed": 0}));
+    }
+    s.edit(|d, _| {
+        let mut n = 0;
+        for id in &ids {
+            let Some(it) = d.item_mut(*id) else { continue };
+            let Content::Graphic(g) = &mut it.content else { continue };
+            g.auto_fit = designcraft_doc::Fitting::None;
+            g.crop = [0.0; 4];
+            g.fit_align = 4;
             n += 1;
         }
         Ok(json!({"changed": n}))
@@ -3321,29 +3427,36 @@ fn path_create(s: &mut Session, p: &Value) -> Result<Value> {
 fn path_append(s: &mut Session, p: &Value) -> Result<Value> {
     let id = super::id_param(p, "id").ok_or_else(|| bad("path.appendAnchor", "missing id"))?;
     let a = p.get("anchor").and_then(anchor_from).ok_or_else(|| bad("path.appendAnchor", "missing anchor"))?;
-    let subpath = p.get("subpath").and_then(Value::as_u64);
+    // An omitted subpath is the last one; one given must name a subpath (never falls back).
+    let subpath = match p.get("subpath") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(v.as_u64().ok_or_else(|| bad("path.appendAnchor", "`subpath` must be a subpath index"))?),
+    };
     let at_start = match p.get("at") {
         None => false,
         Some(v) if v.as_str() == Some("end") => false,
         Some(v) if v.as_str() == Some("start") => true,
         Some(_) => return Err(bad("path.appendAnchor", "`at` must be `start` or `end`")),
     };
-    s.edit(|d, _| {
+    s.edit(|d, sel| {
         path_editable(d, id, "path.appendAnchor")?;
         let loc = d.find(id).ok_or(designcraft_doc::DocError::NoItem(id))?;
         let inv = (d.parent_xf(&loc) * d.item_at(&loc).map(|i| i.xf).unwrap_or_default()).inverse();
         let it = d.item_mut(id).ok_or(designcraft_doc::DocError::NoItem(id))?;
-        let sp = match subpath {
-            Some(i) => {
-                usize::try_from(i).ok().and_then(|i| it.path.subpaths.get_mut(i)).ok_or_else(|| bad("path.appendAnchor", "no such subpath"))?
-            }
-            None => it.path.subpaths.last_mut().ok_or_else(|| bad("path.appendAnchor", "empty path"))?,
+        let si = match subpath {
+            Some(i) => usize::try_from(i).ok().filter(|i| *i < it.path.subpaths.len()).ok_or_else(|| bad("path.appendAnchor", "no such subpath"))?,
+            None => it.path.subpaths.len().checked_sub(1).ok_or_else(|| bad("path.appendAnchor", "empty path"))?,
         };
+        let sp = &mut it.path.subpaths[si];
         if sp.closed {
             return Err(bad("path.appendAnchor", "the subpath is closed"));
         }
         if at_start {
             sp.anchors.insert(0, a.transform(inv));
+            // The selected points of this sub-path move up one place with the others.
+            for a in sel.anchors.iter_mut().filter(|a| a.0 == id && a.1 == si) {
+                a.2 += 1;
+            }
         } else {
             sp.anchors.push(a.transform(inv));
         }
@@ -3422,7 +3535,7 @@ fn path_reverse(s: &mut Session, p: &Value) -> Result<Value> {
     {
         path_editable(doc, *id, "path.reverse")?;
     }
-    s.edit(|d, _| {
+    s.edit(|d, sel| {
         let mut reversed = 0;
         for id in &editable {
             let Some(it) = d.item_mut(*id) else { continue };
@@ -3432,6 +3545,11 @@ fn path_reverse(s: &mut Session, p: &Value) -> Result<Value> {
             for (i, sp) in it.path.subpaths.iter_mut().enumerate() {
                 if only.is_some_and(|o| o != i) {
                     continue;
+                }
+                // Selected points keep pointing at the same points, now counted from the other end.
+                let n = sp.anchors.len();
+                for a in sel.anchors.iter_mut().filter(|a| a.0 == *id && a.1 == i && a.2 < n) {
+                    a.2 = n - 1 - a.2;
                 }
                 sp.anchors.reverse();
                 for a in &mut sp.anchors {
@@ -3466,38 +3584,75 @@ fn path_close(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn path_move_anchors(s: &mut Session, p: &Value) -> Result<Value> {
-    let id = super::id_param(p, "id").ok_or_else(|| bad("path.moveAnchors", "missing id"))?;
-    let which: Vec<(usize, usize)> = p.get("anchors").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
+    // The anchors to move, by path: `points` (several paths) or `id` with `anchors`.
+    // Each anchor with its own spread-space movement, when the points give one.
+    let mut targets: Vec<(ItemId, Vec<(usize, usize, Option<Vec2>)>)> = Vec::new();
+    // A `points` that isn't a list is an error, never the `id` form (which could move another path).
+    let points = match p.get("points") {
+        None | Some(Value::Null) => None,
+        Some(Value::Array(a)) => Some(a),
+        Some(_) => return Err(bad("path.moveAnchors", "`points` must be a list of [id, subpath, index, dx?, dy?]")),
+    };
+    if let Some(points) = points {
+        for v in points {
+            let n = |i: usize| v.get(i).and_then(Value::as_u64).and_then(|x| usize::try_from(x).ok());
+            let (Some(id), Some(si), Some(ai)) = (v.get(0).and_then(Value::as_u64), n(1), n(2)) else {
+                return Err(bad("path.moveAnchors", "each point is [id, subpath, index] or [id, subpath, index, dx, dy]"));
+            };
+            let own = match (v.get(3), v.get(4)) {
+                (None, None) => None,
+                (Some(x), Some(y)) => match (x.as_f64(), y.as_f64()) {
+                    (Some(x), Some(y)) if x.is_finite() && y.is_finite() => Some(Vec2::new(x, y)),
+                    _ => return Err(bad("path.moveAnchors", "a point's dx and dy are finite numbers")),
+                },
+                _ => return Err(bad("path.moveAnchors", "a point gives both dx and dy, or neither")),
+            };
+            match targets.iter_mut().find(|(i, _)| i.0 == id) {
+                Some((_, which)) => which.push((si, ai, own)),
+                None => targets.push((ItemId(id), vec![(si, ai, own)])),
+            }
+        }
+    } else {
+        let id = super::id_param(p, "id").ok_or_else(|| bad("path.moveAnchors", "missing id"))?;
+        let which: Vec<(usize, usize)> = p.get("anchors").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
+        targets.push((id, which.into_iter().map(|(s, a)| (s, a, None)).collect()));
+    }
     let d0 = Vec2::new(f64_or(p, "dx", 0.0), f64_or(p, "dy", 0.0));
     let handle = str_param(p, "handle").map(str::to_string);
     s.edit(|d, _| {
-        path_editable(d, id, "path.moveAnchors")?;
-        let loc = d.find(id).ok_or(designcraft_doc::DocError::NoItem(id))?;
-        let m = d.parent_xf(&loc) * d.item_at(&loc).map(|i| i.xf).unwrap_or_default();
-        // Spread-space delta → inner-space delta (linear part only).
-        let inv = m.inverse();
-        let dv = (inv * Point::new(d0.x, d0.y)) - (inv * Point::ZERO);
-        let it = d.item_mut(id).ok_or(designcraft_doc::DocError::NoItem(id))?;
-        for (si, ai) in &which {
-            let Some(a) = it.path.anchor_mut(*si, *ai) else { continue };
-            match handle.as_deref() {
-                Some("in") => {
-                    a.h_in += dv;
-                    if a.kind == designcraft_geom::AnchorKind::Smooth {
-                        a.h_out = a.p - (a.h_in - a.p);
-                    }
-                }
-                Some("out") => {
-                    a.h_out += dv;
-                    if a.kind == designcraft_geom::AnchorKind::Smooth {
-                        a.h_in = a.p - (a.h_out - a.p);
-                    }
-                }
-                _ => a.translate(dv),
-            }
+        for (id, _) in &targets {
+            path_editable(d, *id, "path.moveAnchors")?;
         }
-        if it.shape == Shape::Rectangle || it.shape == Shape::Oval || it.shape == Shape::Polygon {
-            it.shape = Shape::Path;
+        for (id, which) in &targets {
+            let id = *id;
+            let loc = d.find(id).ok_or(designcraft_doc::DocError::NoItem(id))?;
+            let m = d.parent_xf(&loc) * d.item_at(&loc).map(|i| i.xf).unwrap_or_default();
+            // Spread-space delta → inner-space delta (linear part only).
+            let inv = m.inverse();
+            let inner = |d: Vec2| (inv * Point::new(d.x, d.y)) - (inv * Point::ZERO);
+            let it = d.item_mut(id).ok_or(designcraft_doc::DocError::NoItem(id))?;
+            for (si, ai, own) in which {
+                let dv = inner(own.unwrap_or(d0));
+                let Some(a) = it.path.anchor_mut(*si, *ai) else { continue };
+                match handle.as_deref() {
+                    Some("in") => {
+                        a.h_in += dv;
+                        if a.kind == designcraft_geom::AnchorKind::Smooth {
+                            a.h_out = a.p - (a.h_in - a.p);
+                        }
+                    }
+                    Some("out") => {
+                        a.h_out += dv;
+                        if a.kind == designcraft_geom::AnchorKind::Smooth {
+                            a.h_in = a.p - (a.h_out - a.p);
+                        }
+                    }
+                    _ => a.translate(dv),
+                }
+            }
+            if it.shape == Shape::Rectangle || it.shape == Shape::Oval || it.shape == Shape::Polygon {
+                it.shape = Shape::Path;
+            }
         }
         ok()
     })
@@ -4225,7 +4380,7 @@ mod light_tests {
         s.execute("object.outerGlow", &json!({"noise": 150, "technique": "precise", "ids": [id]})).unwrap();
         s.execute("object.innerShadow", &json!({"noise": 5, "ids": [id]})).unwrap();
         let fx = s.doc().unwrap().doc.item(ItemId(id)).unwrap().effects.clone();
-        assert_eq!((fx.drop_shadow.noise, fx.drop_shadow.knockout, fx.drop_shadow.honors_effects), (30.0, false, true));
+        assert_eq!((fx.drop_shadow.noise, fx.drop_shadow.knockout, fx.drop_shadow.honors_effects), (30.0, Some(false), true));
         assert_eq!((fx.outer_glow.noise, fx.outer_glow.technique), (100.0, designcraft_doc::GlowTechnique::Precise));
         assert_eq!(fx.inner_shadow.noise, 5.0);
         // An effect turned on through object.effects starts with InDesign's defaults.
@@ -4444,6 +4599,60 @@ mod fitting_tests {
         let g = back.spreads.iter().flat_map(|sp| sp.items.iter()).find_map(|i| i.graphic().cloned()).unwrap();
         assert_eq!(g.auto_fit, designcraft_doc::Fitting::FillProportionally);
     }
+
+    /// Turning Auto-Fit off by itself keeps a moved picture where it is.
+    #[test]
+    fn auto_fit_off_alone_keeps_the_picture_position() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let f = s.execute("frame.create", &json!({"rect": [100, 100, 300, 300]})).unwrap()["id"].as_u64().unwrap();
+        let png = designcraft_render::Rendered { width: 40, height: 20, pixels: vec![200; 40 * 20 * 4] }.to_png();
+        s.execute("file.place", &json!({"base64": crate::cmd::base64_encode(&png), "name": "p.png", "frame": f})).unwrap();
+        s.execute("object.fittingOptions", &json!({"ids": [f], "autoFit": true, "fitting": "fitProportionally"})).unwrap();
+        let xf = |s: &Session| s.doc().unwrap().doc.item(designcraft_doc::ItemId(f)).unwrap().graphic().unwrap().xf;
+        s.edit(|d, _| {
+            if let Some(Content::Graphic(g)) = d.item_mut(ItemId(f)).map(|it| &mut it.content) {
+                g.xf = designcraft_geom::Affine::translate((7.0, 9.0)) * g.xf;
+            }
+            Ok(Value::Null)
+        })
+        .unwrap();
+        let moved = xf(&s);
+        s.execute("object.fittingOptions", &json!({"ids": [f], "autoFit": false})).unwrap();
+        assert_eq!(xf(&s), moved);
+    }
+
+    /// Clear Frame Fitting Options puts auto-fit, crop and the reference point back to their
+    /// defaults and leaves the picture where it is.
+    #[test]
+    fn clear_fitting_options_resets_the_frames_options_and_keeps_the_picture() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let f = s.execute("frame.create", &json!({"rect": [72, 72, 272, 172]})).unwrap()["id"].as_u64().unwrap();
+        let png = designcraft_render::Rendered { width: 40, height: 20, pixels: vec![200; 40 * 20 * 4] }.to_png();
+        s.execute("file.place", &json!({"base64": crate::cmd::base64_encode(&png), "name": "p.png", "frame": f})).unwrap();
+        s.execute("object.fittingOptions", &json!({"ids": [f], "autoFit": true, "fitting": "fitProportionally", "crop": 10, "align": 0})).unwrap();
+        let graphic = |s: &Session| s.doc().unwrap().doc.item(designcraft_doc::ItemId(f)).unwrap().graphic().unwrap().clone();
+        let before = graphic(&s);
+        assert_ne!(before.auto_fit, designcraft_doc::Fitting::None);
+        s.execute("object.clearFittingOptions", &json!({"ids": [f]})).unwrap();
+        let g = graphic(&s);
+        assert_eq!(g.auto_fit, designcraft_doc::Fitting::None);
+        assert_eq!(g.crop, [0.0; 4]);
+        assert_eq!(g.fit_align, 4, "the centre reference point");
+        assert_eq!(g.xf, before.xf, "the picture stays where it is");
+        let undo = s.doc().unwrap().history.undo.len();
+        let r = s.execute("object.clearFittingOptions", &json!({"ids": [f]})).unwrap();
+        assert_eq!((r["changed"].as_u64(), s.doc().unwrap().history.undo.len()), (Some(0), undo), "already clear: no change, no step");
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(graphic(&s).crop, [10.0; 4], "one undo step");
+        s.execute("object.lock", &json!({"ids": [f]})).unwrap();
+        let undo = s.doc().unwrap().history.undo.len();
+        let r = s.execute("object.clearFittingOptions", &json!({"ids": [f]})).unwrap();
+        assert_eq!(r["changed"], 0);
+        assert_eq!(graphic(&s).crop, [10.0; 4], "a locked frame keeps its options");
+        assert_eq!(s.doc().unwrap().history.undo.len(), undo, "no empty undo step");
+    }
 }
 
 #[cfg(test)]
@@ -4493,6 +4702,40 @@ mod clipping_tests {
         assert!((b.x0 - 105.0).abs() < 1.5 && (b.x1 - 135.0).abs() < 1.5, "{b:?}");
         assert_eq!(it.shape, Shape::Path);
         assert!(s.execute("object.clippingPath", &json!({"ids": [f], "threshold": 255})).is_err());
+    }
+
+    /// A placed PDF whose crop box is too large to trace is skipped, not traced from the whole page.
+    #[test]
+    fn clipping_path_skips_a_pdf_whose_crop_is_too_large_to_trace() {
+        let content = "0 0 0 rg 10 10 50 50 re f";
+        let objs = [
+            "<</Type/Catalog/Pages 2 0 R>>".to_string(),
+            "<</Type/Pages/Kids[3 0 R]/Count 1>>".into(),
+            "<</Type/Page/Parent 2 0 R/MediaBox[-30000 -30000 30000 30000]/CropBox[0 0 100 100]/Contents 4 0 R>>".into(),
+            format!("<</Length {}>>\nstream\n{content}\nendstream", content.len()),
+        ];
+        let mut bytes = b"%PDF-1.7\n".to_vec();
+        let mut offsets = Vec::new();
+        for (i, body) in objs.iter().enumerate() {
+            offsets.push(bytes.len());
+            bytes.extend_from_slice(format!("{} 0 obj\n{body}\nendobj\n", i + 1).as_bytes());
+        }
+        let xref = bytes.len();
+        bytes.extend_from_slice(b"xref\n0 5\n0000000000 65535 f\r\n");
+        for at in offsets {
+            bytes.extend_from_slice(format!("{at:010} 00000 n\r\n").as_bytes());
+        }
+        bytes.extend_from_slice(format!("trailer\n<</Size 5/Root 1 0 R>>\nstartxref\n{xref}\n%%EOF\n").as_bytes());
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let f = s.execute("frame.create", &json!({"rect": [100, 100, 200, 200]})).unwrap()["id"].as_u64().unwrap();
+        let placed = s
+            .execute("file.place", &json!({"base64": super::super::file::base64_encode(&bytes), "name": "wide.pdf", "frame": f, "pdfCrop": "media"}));
+        assert!(placed.is_ok(), "{placed:?}");
+        let before = s.doc().unwrap().doc.item(ItemId(f)).unwrap().shape;
+        let e = s.execute("object.clippingPath", &json!({"ids": [f], "type": "alpha"}));
+        assert!(e.is_err(), "the graphic is skipped, so there is nothing to trace: {e:?}");
+        assert_eq!(s.doc().unwrap().doc.item(ItemId(f)).unwrap().shape, before, "the frame keeps its shape");
     }
 
     #[test]
@@ -5630,12 +5873,14 @@ mod effects_command_tests {
         let it = st.doc.item(ItemId(id)).unwrap();
         let e = &it.effects;
         assert!(e.inner_shadow.on && e.inner_shadow.angle == 120.0 && e.inner_shadow.size == 7.0);
+        assert_eq!(e.inner_shadow.mode, designcraft_color::BlendMode::Multiply, "a patch without a mode keeps the default");
         assert!(e.drop_shadow.on && e.drop_shadow.distance == 10.0 && e.drop_shadow.size == 9.0, "untouched fields stay");
         assert_eq!((e.feather, it.opacity, it.blend), (4.0, 0.5, designcraft_color::BlendMode::Multiply));
         // Out of range values are kept in range; garbage changes nothing.
         s.execute("object.effects", &json!({"ids": [id], "effects": {"outerGlow": {"on": true, "opacity": 3, "spread": 400, "size": -5}}})).unwrap();
         let og = s.doc().unwrap().doc.item(ItemId(id)).unwrap().effects.outer_glow.clone();
         assert_eq!((og.opacity, og.spread, og.size), (1.0, 100.0, 0.0));
+        assert_eq!(og.mode, designcraft_color::BlendMode::Screen);
         let before = s.doc().unwrap().doc.clone();
         for bad in [json!({"effects": {"dropShadow": {"distance": "far"}}}), json!({"effects": 5}), json!({"blend": "loud"}), json!({"opacity": "x"})]
         {
@@ -5791,5 +6036,77 @@ mod frame_baseline_grid_tests {
         assert_eq!(grid(&s).map(|g| g.relative_to), Some(FrameGridRelative::TopMargin));
         s.execute("object.textFrameOptions", &json!({"ids": [id.0], "baselineGrid": null})).unwrap();
         assert_eq!(grid(&s), None);
+    }
+}
+
+#[cfg(test)]
+mod anchored_copy_tests {
+    use super::*;
+    use designcraft_doc::AnchoredObject;
+
+    /// A text frame with an inline rectangle; returns the frame and the anchored item's id.
+    fn frame_with_inline_box(s: &mut Session) -> (ItemId, ItemId) {
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 400], "content": "text", "text": "Before after."})).unwrap();
+        let frame = ItemId(r["id"].as_u64().unwrap());
+        let sid = s.doc().unwrap().doc.item(frame).unwrap().text_frame().unwrap().story;
+        let b = s.execute("frame.create", &json!({"rect": [450, 450, 474, 490]})).unwrap();
+        s.execute("anchored.insert", &json!({"ids": [b["id"]], "story": sid.0, "pos": 7})).unwrap();
+        (frame, s.doc().unwrap().doc.story(sid).unwrap().objects[0].item.id)
+    }
+
+    fn assert_reopens(doc: &Document) {
+        doc.check().unwrap();
+        designcraft_format::load(&designcraft_format::save(doc).unwrap()).unwrap();
+    }
+
+    // #1522: the copy kept the anchored object's id, and the saved file no longer opened.
+    #[test]
+    fn duplicating_a_frame_with_an_anchored_object_saves_a_file_that_reopens() {
+        let mut s = Session::new();
+        let (frame, anchored) = frame_with_inline_box(&mut s);
+        s.execute("transform.move", &json!({"ids": [frame.0], "dx": 10, "dy": 10, "copy": true})).unwrap();
+        let doc = &s.doc().unwrap().doc;
+        assert_eq!(doc.anchored_items().iter().filter(|(_, i)| i.id == anchored).count(), 1);
+        assert_eq!(doc.anchored_items().len(), 2);
+        assert_reopens(doc);
+    }
+
+    #[test]
+    fn pasting_a_frame_with_an_anchored_object_twice_keeps_ids_unique() {
+        let mut s = Session::new();
+        let (frame, _) = frame_with_inline_box(&mut s);
+        s.execute("selection.set", &json!({"ids": [frame.0]})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+        s.execute("edit.paste", &json!({})).unwrap();
+        s.execute("edit.paste", &json!({})).unwrap();
+        let doc = &s.doc().unwrap().doc;
+        assert_eq!(doc.anchored_items().len(), 3);
+        assert_reopens(doc);
+    }
+
+    // IDML import can anchor a text frame; its story is copied too, with the copy in its thread.
+    #[test]
+    fn an_anchored_text_frame_gets_its_own_story_copy() {
+        let mut d = Document::new(&designcraft_doc::build::NewDocument::default());
+        let layer = d.default_layer();
+        let (host, host_sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 300.0, 300.0), layer, "Host", ParaFormat::default()).unwrap();
+        let (inner, inner_sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 50.0, 50.0), layer, "Inner", ParaFormat::default()).unwrap();
+        let item = d.item(inner).unwrap().clone();
+        let inner_story = d.stories.get(&inner_sid).unwrap().clone();
+        d.remove_item(inner).unwrap();
+        d.stories.insert(inner_sid, inner_story);
+        d.story_mut(host_sid).unwrap().insert_object(0, AnchoredObject { item, position: Default::default() });
+        d.check().unwrap();
+        let src = d.clone();
+        let copy = duplicate_from(&mut d, &src, &[host], SpreadRef::Doc(0), Vec2::new(10.0, 10.0)).unwrap();
+        let copy_sid = d.item(copy[0]).unwrap().text_frame().unwrap().story;
+        let anchored = &d.story(copy_sid).unwrap().objects[0].item;
+        assert_ne!(anchored.id, inner);
+        let anchored_sid = anchored.text_frame().unwrap().story;
+        assert_ne!(anchored_sid, inner_sid);
+        assert_eq!(d.story(anchored_sid).unwrap().frames, [anchored.id]);
+        assert_eq!(d.story(inner_sid).unwrap().frames, [inner]);
+        assert_reopens(&d);
     }
 }

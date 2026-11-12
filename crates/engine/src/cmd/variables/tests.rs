@@ -1,5 +1,10 @@
 use super::*;
 
+fn shown_on_parent(s: &Session, d: &designcraft_doc::Document, sid: designcraft_doc::StoryId) -> usize {
+    let cs = s.cache.get(d, sid, None);
+    cs.frames.iter().flat_map(|f| f.lines.iter()).map(|l| l.glyphs.iter().filter(|g| g.visible && g.adv > 0.0).count()).sum()
+}
+
 /// A parent-page page-number marker follows Numbering & Section Options: changing a section's
 /// start number renames its pages without changing their index or the number of sections, and
 /// the marker composed for a page shows the new name.
@@ -285,6 +290,30 @@ fn delete_variable_reaches_table_cells() {
     assert_eq!(t.cells[0].text.text, format!("Alpha|{}", var_char(nb).unwrap()));
 }
 
+/// A custom variable whose text holds its own instance marker: deleting it puts that text in
+/// once per instance, without the value's own marker, and ends (the text put in isn't searched
+/// for instances again).
+#[test]
+fn delete_variable_whose_value_holds_its_marker_ends() {
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    s.execute("variables.define", &json!({"name": "A", "type": "custom", "text": "a"})).unwrap();
+    let a = s.doc().unwrap().doc.variable("A").unwrap();
+    let marker = var_char(a).unwrap();
+    s.execute("variables.define", &json!({"name": "A", "type": "custom", "text": format!("<{marker}>")})).unwrap();
+    let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 300], "content": "text", "text": format!("x{marker}y{marker}z")})).unwrap();
+    let sid = s.doc().unwrap().doc.item(designcraft_doc::ItemId(r["id"].as_u64().unwrap())).unwrap().text_frame().unwrap().story;
+    // A link on the last "z": its range follows the text put in (without the marker).
+    let z = format!("x{marker}y{marker}").len();
+    s.execute("text.select", &json!({"story": sid.0, "anchor": z, "focus": z + 1})).unwrap();
+    s.execute("hyperlink.create", &json!({"url": "https://example.org"})).unwrap();
+    s.execute("variables.delete", &json!({"name": "A"})).unwrap();
+    let d = &s.doc().unwrap().doc;
+    assert_eq!(d.stories.values().next().unwrap().text, "x<>y<>z");
+    let designcraft_doc::HyperlinkSource::Text { start, end, .. } = &d.hyperlinks[0].source else { panic!("a text link") };
+    assert_eq!((*start, *end), (6, 7));
+}
+
 /// Deleting a variable flattens its instances in footnotes and endnotes too and moves the
 /// instances of later variables down.
 #[test]
@@ -350,6 +379,14 @@ fn running_header_on_parent_page_follows_headings() {
     assert_eq!(idx.value("Heading", false, Default::default(), 2), "Epsilon");
     let list = s.execute("variables.list", &json!({})).unwrap();
     assert!(list.as_array().unwrap().iter().any(|v| v["name"] == "Last Page Number" && v["value"] == "3"));
+    // On the parent page itself the header shows which variable it holds, not a blank. Text with
+    // no page that isn't on a parent shows the variable's text before and after, as before.
+    let head = d.variable("Chapter Head").unwrap();
+    assert_eq!(crate::compose::vars::values_shown(&d, None, true, Some(&idx))[head], "<Chapter Head>");
+    assert_eq!(crate::compose::vars::values_shown(&d, None, false, Some(&idx))[head], "");
+    assert_eq!(crate::compose::vars::values(&d, None, Some(&idx))[head], "", "values() is the no-parent case");
+    assert_eq!(crate::compose::vars::values_shown(&d, Some(2), true, Some(&idx))[head], "Epsilon", "composed for a page: its entry");
+    assert!(shown_on_parent(&s, &d, sid) > p1, "the parent shows <Chapter Head>, longer than Alpha");
     // Deleting a variable flattens its instances to text.
     s.execute("variables.delete", &json!({"name": "Last Page Number"})).unwrap();
     assert!(s.doc().unwrap().doc.story(sid).unwrap().text.ends_with(" · 3"));
@@ -420,4 +457,31 @@ fn running_header_orders_stories_by_their_first_heading() {
     let idx = s.cache.running_index(&d);
     assert_eq!(idx.value("Heading", false, designcraft_doc::vars::Use::FirstOnPage, 0), "Beta");
     assert_eq!(idx.value("Heading", false, designcraft_doc::vars::Use::LastOnPage, 0), "Gamma");
+}
+
+/// #2093: a Custom variable whose text arrives as a number (the dialog types a typed `2026` as
+/// one) shows those digits; it showed nothing at all before.
+#[test]
+fn a_custom_variable_defined_with_a_number_shows_its_digits() {
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    s.execute("variables.define", &json!({"name": "Year", "type": "custom", "text": 2026})).unwrap();
+    s.execute("variables.define", &json!({"name": "Half", "type": "custom", "text": 0.5})).unwrap();
+    s.execute("variables.define", &json!({"name": "Word", "type": "custom", "text": "year"})).unwrap();
+    s.execute("variables.define", &json!({"name": "Flag", "type": "custom", "text": true})).unwrap();
+    // Anything else is refused, and a variable of that name keeps its text; no text is empty text.
+    assert!(s.execute("variables.define", &json!({"name": "Year", "type": "custom", "text": {"y": 2026}})).is_err());
+    assert!(s.execute("variables.define", &json!({"name": "Year", "type": "custom", "text": [2026]})).is_err());
+    s.execute("variables.define", &json!({"name": "Blank", "type": "custom"})).unwrap();
+    let list = s.execute("variables.list", &json!({})).unwrap();
+    let value = |name: &str| list.as_array().unwrap().iter().find(|v| v["name"] == name).unwrap()["value"].as_str().unwrap().to_string();
+    assert_eq!((value("Year"), value("Half"), value("Word")), ("2026".to_string(), "0.5".to_string(), "year".to_string()));
+    assert_eq!((value("Flag"), value("Blank")), ("true".to_string(), String::new()));
+    // Inserted into a story, the instance composes as four digits.
+    let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 300], "content": "text", "text": ""})).unwrap();
+    let sid = s.doc().unwrap().doc.item(designcraft_doc::ItemId(r["id"].as_u64().unwrap())).unwrap().text_frame().unwrap().story;
+    s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": 0})).unwrap();
+    s.execute("variables.insert", &json!({"name": "Year"})).unwrap();
+    let d = s.doc().unwrap().doc.clone();
+    assert_eq!(shown_on_parent(&s, &d, sid), 4, "2026 shows");
 }

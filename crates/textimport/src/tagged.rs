@@ -37,7 +37,7 @@ fn escape_value(v: &str) -> String {
     out
 }
 
-/// A tag value with the escapes `escape_value` writes (`\\`, `\<`, `\>`) decoded. Any other
+/// A tag value (cut to [`crate::MAX_NAME_CHARS`]: style names are copied into every paragraph) with the escapes `escape_value` writes (`\\`, `\<`, `\>`) decoded. Any other
 /// backslash, including a trailing one, stays literal, as older files and InDesign's `\:` expect.
 fn unescape_value(v: &str) -> String {
     let mut out = String::with_capacity(v.len());
@@ -53,7 +53,7 @@ fn unescape_value(v: &str) -> String {
             out.push(c);
         }
     }
-    out
+    crate::capped_name(out)
 }
 
 /// The first format version whose `cFont` and `cTypeface` values are escaped like style names.
@@ -62,7 +62,7 @@ const ESCAPED_FONTS_VERSION: u32 = 8;
 
 /// A `cFont` or `cTypeface` value: decoded in files that escape it, literal in older ones.
 fn font_value(v: &str, escaped: bool) -> String {
-    if escaped { unescape_value(v) } else { v.to_string() }
+    if escaped { unescape_value(v) } else { crate::capped_name(v.to_string()) }
 }
 
 /// `story` as Tagged Text.
@@ -143,6 +143,8 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
     let mut fmt = CharFormat::default();
     let mut para_styles: Vec<String> = Vec::new();
     let mut char_styles: Vec<String> = Vec::new();
+    // The names in each list, for membership (the lists keep the order the file names them).
+    let (mut para_seen, mut char_seen) = (std::collections::HashSet::new(), std::collections::HashSet::new());
     let mut warnings = Vec::new();
     let push = |paras: &mut Vec<(String, Vec<(String, CharFormat)>)>, c: char, fmt: &CharFormat| {
         let Some((_, runs)) = paras.last_mut() else { return };
@@ -198,7 +200,7 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
                     "ParaStyle" => {
                         started = true;
                         let v = unescape_value(value);
-                        if !v.is_empty() && !para_styles.contains(&v) {
+                        if !v.is_empty() && para_seen.insert(v.clone()) {
                             para_styles.push(v.clone());
                         }
                         if let Some(p) = paras.last_mut() {
@@ -208,7 +210,7 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
                     "CharStyle" => {
                         let v = unescape_value(value);
                         fmt.style = if v.is_empty() { NO_CHAR_STYLE.into() } else { v.clone() };
-                        if !v.is_empty() && !char_styles.contains(&v) {
+                        if !v.is_empty() && char_seen.insert(v.clone()) {
                             char_styles.push(v);
                         }
                     }
@@ -218,9 +220,10 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
                     // keeps its style's size (#1593).
                     "cSize" => fmt.over.size = value.trim().parse().ok().and_then(designcraft_doc::attrs::imported_type_size),
                     "DefineParaStyle" | "DefineCharStyle" => {
-                        let nm = value.split('=').next().unwrap_or("").to_string();
-                        let list = if name == "DefineParaStyle" { &mut para_styles } else { &mut char_styles };
-                        if !nm.is_empty() && !list.contains(&nm) {
+                        let nm = crate::capped_name(value.split('=').next().unwrap_or("").to_string());
+                        let (list, seen) =
+                            if name == "DefineParaStyle" { (&mut para_styles, &mut para_seen) } else { (&mut char_styles, &mut char_seen) };
+                        if !nm.is_empty() && seen.insert(nm.clone()) {
                             list.push(nm);
                         }
                     }
@@ -442,5 +445,12 @@ mod tests {
             u16.extend(u.to_le_bytes());
         }
         assert_eq!(import(&u16).unwrap().story.text, "Hi");
+    }
+
+    #[test]
+    fn a_long_style_name_is_cut() {
+        let name = "N".repeat(100_000);
+        assert_eq!(unescape_value(&name).len(), crate::MAX_NAME_CHARS);
+        assert_eq!(unescape_value("Body"), "Body");
     }
 }

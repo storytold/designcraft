@@ -282,6 +282,16 @@ impl Item {
         self.shape != Shape::Group && matches!(&self.content, Content::Group { items } if !items.is_empty())
     }
 
+    /// A frame a placed or dropped graphic fills: an empty one, one holding a graphic, or one
+    /// holding only graphics pasted into it (as a document from InDesign keeps a frame's image).
+    pub fn takes_graphic(&self) -> bool {
+        match &self.content {
+            Content::Unassigned | Content::Graphic(_) => true,
+            Content::Group { items } => self.has_nested_items() && items.iter().all(|c| matches!(c.content, Content::Graphic(_))),
+            _ => false,
+        }
+    }
+
     pub fn bounds(&self) -> Rect {
         self.bounds_under(Affine::IDENTITY).unwrap_or(Rect::ZERO)
     }
@@ -398,9 +408,16 @@ mod tests {
         assert_eq!(DropShadow::default().mode, BlendMode::Multiply);
         assert_eq!(InnerShadow::default().mode, BlendMode::Multiply);
         assert_eq!(OuterGlow::default().mode, BlendMode::Screen);
-        // Object Knocks Out Shadow starts on (as InDesign), and reads off when saved before.
+        // Absence is the legacy composite, distinct from an explicit disabled knockout.
         let old: DropShadow = serde_json::from_str(r#"{"on": true}"#).unwrap();
-        assert!(!old.knockout && DropShadow::default().knockout);
+        assert_eq!(old.knockout, None);
+        assert_eq!(DropShadow::default().knockout, Some(true));
+        for knockout in [None, Some(false), Some(true)] {
+            let shadow = DropShadow { knockout, ..old.clone() };
+            let saved = serde_json::to_value(&shadow).unwrap();
+            assert_eq!(saved.get("knockout").is_some(), knockout.is_some());
+            assert_eq!(serde_json::from_value::<DropShadow>(saved).unwrap(), shadow);
+        }
         let saved = serde_json::to_value(DropShadow { mode: BlendMode::Screen, ..Default::default() }).unwrap();
         assert_eq!(serde_json::from_value::<DropShadow>(saved).unwrap().mode, BlendMode::Screen, "round trip");
     }
