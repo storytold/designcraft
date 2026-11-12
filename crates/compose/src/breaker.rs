@@ -1089,7 +1089,9 @@ pub fn balanced(glyphs: &[Glyph], hyph_after: &[bool], sp: &Spacing, width: &dyn
     let ok = |f: f64| -> Option<Vec<Break>> {
         let w = |j: usize| width(j) * f;
         let br = knuth_plass(glyphs, hyph_after, sp, &w);
-        (br.len() == n && br.iter().enumerate().all(|(j, b)| line_width(glyphs, b) <= w(j) + 0.01)).then_some(br)
+        (br.len() == n
+            && br.iter().enumerate().all(|(j, b)| line_width(glyphs, b) <= w(j) - if j + 1 == n { sp.last_line_indent } else { 0.0 } + 0.01))
+        .then_some(br)
     };
     let (mut lo, mut hi) = (0.3, 1.0);
     let mut best = base;
