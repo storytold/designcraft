@@ -8372,6 +8372,51 @@ fn cache_recomposes_when_the_baseline_grid_changes() {
     assert!((la.baseline - lb.baseline).abs() > 1.0, "{} {}", la.baseline, lb.baseline);
 }
 
+/// A cache over another uses its compositions of the same state, and composes an older state
+/// without replacing the other cache's composition of the current one.
+#[test]
+fn a_cache_over_another_reads_it_without_writing_to_it() {
+    let (old, sid, _) = doc_with(LOREM, Rect::new(0.0, 0.0, 200.0, 600.0), ParaAttrs::default());
+    let mut new = old.clone();
+    new.story_mut(sid).unwrap().rev += 1;
+    let base = Arc::new(Cache::new());
+    let current = base.get(&new, sid, None);
+    let reader = Cache::over(Arc::clone(&base));
+    assert!(reader.base().is_some_and(|b| Arc::ptr_eq(b, &base)));
+    assert!(Arc::ptr_eq(&reader.get(&new, sid, None), &current), "the base's composition is used");
+    let earlier = reader.get(&old, sid, None);
+    assert!(!Arc::ptr_eq(&earlier, &current));
+    assert!(Arc::ptr_eq(&reader.get(&old, sid, None), &earlier), "kept in the reader");
+    assert!(Arc::ptr_eq(&base.get(&new, sid, None), &current), "the base keeps the current state's composition");
+    assert!(base.composed_for(&old, sid).is_none(), "the base holds nothing of the older state");
+}
+
+/// The cross-reference and running-header indexes are built from compositions that depend on the
+/// baseline grid and the font scope, so a change to either builds them again, in a cache and in a
+/// cache over it.
+#[test]
+fn the_document_indexes_are_rebuilt_when_the_grid_or_font_scope_changes() {
+    let para = ParaAttrs { grid_align: Some(GridAlign::AllLines), ..Default::default() };
+    let (d, _, _) = doc_with(LOREM, Rect::new(0.0, 0.0, 200.0, 600.0), para);
+    let base = Arc::new(Cache::new());
+    let (xrefs, running) = (base.xref_index(&d), base.running_index(&d));
+    let mut grid = d.clone();
+    grid.settings.baseline_grid.increment = 30.0;
+    let mut scope = d.clone();
+    scope.font_scope += 1;
+    for (changed, what) in [(&grid, "grid"), (&scope, "font scope")] {
+        let reader = Cache::over(Arc::clone(&base));
+        assert!(!Arc::ptr_eq(&reader.xref_index(changed), &xrefs), "{what}: the base's cross-reference index is not used");
+        assert!(!Arc::ptr_eq(&reader.running_index(changed), &running), "{what}: the base's running-header index is not used");
+        let own = Cache::new();
+        let (x, r) = (own.xref_index(&d), own.running_index(&d));
+        assert!(!Arc::ptr_eq(&own.xref_index(changed), &x), "{what}: cross-reference index rebuilt");
+        assert!(!Arc::ptr_eq(&own.running_index(changed), &r), "{what}: running-header index rebuilt");
+    }
+    let reader = Cache::over(Arc::clone(&base));
+    assert!(Arc::ptr_eq(&reader.xref_index(&d), &xrefs), "the same state uses the base's index");
+}
+
 /// Two single pages 618 pt tall, top margins 36 and 48, each with an overset 11/13 story aligned
 /// to a baseline grid (start 0, increment 13) and a frame filling its margin box (bottom 582).
 fn grid_margin_doc(relative_to: designcraft_doc::GridRelative) -> (Document, [StoryId; 2]) {
@@ -8780,6 +8825,50 @@ fn anchored_frames_in_one_host_compose_it_once() {
     assert_eq!(placed.len(), 3, "{placed:?}");
     // The cache and the uncached path agree on where the frames go.
     assert_eq!(Cache::new().get(&d, nsid, None).frames.len(), compose_story(&d, nsid, &ComposeOptions::default()).frames.len());
+}
+
+/// A text frame anchored in a text frame that is itself anchored in a frame on page 1 is placed
+/// through both hosts: on page 1, at the inner object's spot in the outer anchored frame.
+#[test]
+fn a_frame_anchored_in_an_anchored_frame_is_placed_through_both_hosts() {
+    let mut d = Document::new(&NewDocument { pages: 1, ..Default::default() });
+    let lid = d.default_layer();
+    let body = "One.\nTwo.\nThree.";
+    let (bf, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 400.0, 400.0), lid, body, ParaFormat::default()).unwrap();
+    let frame = |d: &mut Document, text: &str, w: f64, h: f64| {
+        let (fid, fsid) = (ItemId(d.alloc()), StoryId(d.alloc()));
+        let mut story = Story::with_text(fsid, text, ParaFormat::default());
+        story.frames.push(fid);
+        d.stories.insert(fsid, Arc::new(story));
+        let mut it =
+            designcraft_doc::Item::new(fid, lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, w, h)));
+        it.content = Content::Text(designcraft_doc::TextFrame { story: fsid, options: Default::default() });
+        (it, fsid)
+    };
+    let (outer, osid) = frame(&mut d, "Outer text", 200.0, 100.0);
+    let (inner, isid) = frame(&mut d, "Inner", 80.0, 30.0);
+    let (outer_id, inner_id) = (outer.id, inner.id);
+    d.story_mut(osid).unwrap().insert_object("Outer ".len(), designcraft_doc::AnchoredObject::new(inner, Default::default()));
+    d.story_mut(sid).unwrap().insert_object(body.find("Two").unwrap(), designcraft_doc::AnchoredObject::new(outer, Default::default()));
+
+    let placed = placed::placements(&d, isid, &mut |h| Arc::new(compose_story(&d, h, &ComposeOptions::default())));
+    assert_eq!(placed.len(), 1, "{placed:?}");
+    let (id, p) = placed[0];
+    assert_eq!((id, p.spread), (inner_id, SpreadRef::Doc(0)));
+    // The body frame's object, then the outer frame's object, each at its composed origin.
+    let host = compose_story(&d, sid, &ComposeOptions::default());
+    let o1 = &host.frame(bf).unwrap().objects[0];
+    let mid = compose_story(&d, osid, &ComposeOptions::default());
+    let o2 = &mid.frame(outer_id).unwrap().objects[0];
+    let want = d.item(bf).unwrap().xf
+        * Affine::translate(o1.origin.to_vec2())
+        * d.anchored_item(outer_id).unwrap().xf
+        * Affine::translate(o2.origin.to_vec2());
+    let (got, want) = (p.xf.as_coeffs(), want.as_coeffs());
+    assert!(got.iter().zip(want).all(|(a, b)| (a - b).abs() < 1e-9), "{got:?} != {want:?}");
+    assert_eq!(frame_specs_placed(&d, isid, &placed)[0].page, Some(0));
+    // The cache places it the same way.
+    assert_eq!(Cache::new().get(&d, isid, None).frames.len(), 1);
 }
 
 /// A marginal note (an anchored text frame, Only Align First Line to Grid, 9/10) hangs 15 pt
