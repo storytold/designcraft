@@ -852,6 +852,47 @@ fn vertical_justification_stops_at_an_anchored_object_kept_within_its_column() {
     );
 }
 
+/// An object positioned from its anchor and kept within its column moves with its anchor's line
+/// until it reaches the column's bottom, so Bottom moves the lines above it down that far, not
+/// only as far as where the object starts.
+#[test]
+fn vertical_justification_moves_an_object_kept_within_its_column_until_it_stops() {
+    use designcraft_doc::VerticalJustification::{Bottom, Center, Justify};
+    for vj in [Bottom, Center, Justify] {
+        let (mut d, sid, fid) = doc_with("One\nTwo", Rect::new(0.0, 0.0, 300.0, 400.0), ParaAttrs::default());
+        d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.vertical_justification = vj;
+        // Hung 40 pt under the first baseline, under the second line, and far above the column's
+        // bottom.
+        anchor_box(&mut d, sid, 1, 0.0, 40.0, true, WrapMode::BoundingBox);
+        if let designcraft_doc::AnchorPosition::Custom { keep_within_column, .. } =
+            &mut std::sync::Arc::make_mut(&mut d.story_mut(sid).unwrap().objects[0]).position
+        {
+            *keep_within_column = true;
+        }
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let lines = all_lines(&cs);
+        let o = &cs.frames[0].objects[0];
+        let (top, bottom) = (o.origin.y, o.origin.y + 60.0);
+        let l = lines[1];
+        assert!(l.baseline <= top + 1e-6, "{vj:?}: the second line at {} meets the object at {top}..{bottom}", l.baseline);
+        match vj {
+            // The object stops at the column's bottom and the second line comes down onto it.
+            Bottom => {
+                assert!((bottom - 400.0).abs() < 1e-6, "{vj:?}: the object stopped at {top}..{bottom}, above the column's bottom");
+                assert!(l.baseline > top - 0.01, "{vj:?}: the second line stopped at {}, above the object at {top}", l.baseline);
+            }
+            // Justify keeps the first line, and the object anchored in it, in place; the second
+            // line comes down onto the object.
+            Justify => {
+                assert!((top - lines[0].baseline - 40.0).abs() < 1e-6, "{vj:?}: the object moved to {top}..{bottom}");
+                assert!(l.baseline > top - 0.01, "{vj:?}: the second line stopped at {}, above the object at {top}", l.baseline);
+            }
+            // Center moves the lines half of the room under them: the object moves with them.
+            _ => assert!(bottom < 400.0 - 1e-6 && l.baseline > 150.0, "{vj:?}: second line at {}, object at {top}..{bottom}", l.baseline),
+        }
+    }
+}
+
 /// Justify keeps the first line in place and moves later lines further, so an object anchored in
 /// the first line and hung under the last one still stops the lines after its anchor.
 #[test]
