@@ -5,7 +5,8 @@
 //! wrapping item on the frames' spreads, and the same for every story whose anchored objects wrap
 //! its text ([`crate::wrap::neighbours`]). An anchored frame's entry also records where its host
 //! story's composition places it. Entries hold clones of those `Arc`s, so the pointers
-//! can't be reused by other allocations while the entry lives.
+//! can't be reused by other allocations while the entry lives. The document's Alpha Channel
+//! outlines count by serial number, which no other outline shares.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -91,6 +92,18 @@ fn doc_signature(doc: &Document) -> u64 {
     // The compositions the indexes are built from also depend on these (see `signature`).
     let g = &doc.settings.baseline_grid;
     (doc.font_scope, g.relative_to == designcraft_doc::GridRelative::TopMargin, g.start.to_bits(), g.increment.to_bits()).hash(&mut h);
+    outlines_hash(doc).hash(&mut h);
+    h.finish()
+}
+
+/// The Alpha Channel outlines text wraps around: a relink traces a new one while the items and
+/// stories stay the same.
+fn outlines_hash(doc: &Document) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for o in &doc.alpha_outlines {
+        o.serial.hash(&mut h);
+    }
     h.finish()
 }
 
@@ -451,6 +464,7 @@ fn signature(doc: &Document, story: &Arc<Story>) -> (Vec<usize>, Vec<Arc<Item>>)
         sections_hash(doc) as usize,
         doc.font_scope as usize,
         usize::from(g.relative_to == designcraft_doc::GridRelative::TopMargin),
+        outlines_hash(doc) as usize,
     ];
     sig.extend([g.start, g.increment].into_iter().flat_map(bits));
     let mut keep = Vec::new();
