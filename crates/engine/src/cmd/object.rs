@@ -1281,19 +1281,41 @@ fn retarget_xrefs(copy: &mut Story, orig: &Story, map: &HashMap<u64, u64>, depth
     }
 }
 
-/// Fresh ids for the objects anchored in story copy `st`, its table cells, footnotes and endnotes (#1522), each `depth`
-/// levels deep. False when one of them nests groups deeper than [`MAX_COPY_DEPTH`].
+/// Fresh ids for the objects anchored in story copy `st`, its table cells, footnotes and endnotes down to
+/// [`MAX_COPY_DEPTH`] levels (#1522), each `depth` levels deep. False when one of them nests groups deeper than
+/// [`MAX_COPY_DEPTH`], or when the stories below that level hold anchored objects, tables or notes.
 #[must_use = "false means the copy is incomplete and must not be inserted"]
 fn renumber_anchored(dst: &mut Document, src: &Document, st: &mut Story, stories: &mut HashMap<StoryId, StoryId>, depth: usize) -> bool {
+    renumber_anchored_in(dst, src, st, stories, depth, 0)
+}
+
+/// [`renumber_anchored`] for a story `level` table cells and notes below the story copy.
+#[must_use = "false means the copy is incomplete and must not be inserted"]
+fn renumber_anchored_in(
+    dst: &mut Document,
+    src: &Document,
+    st: &mut Story,
+    stories: &mut HashMap<StoryId, StoryId>,
+    depth: usize,
+    level: usize,
+) -> bool {
     let mut complete = true;
-    let mut fresh = |t: &mut Story| {
-        for o in &mut t.objects {
-            complete &= renumber_in(dst, src, &mut Arc::make_mut(o).item, stories, depth, false);
+    for o in &mut st.objects {
+        complete &= renumber_in(dst, src, &mut Arc::make_mut(o).item, stories, depth, false);
+    }
+    if level >= MAX_COPY_DEPTH {
+        let leaf = |s: &Story| s.objects.is_empty() && s.tables.is_empty() && s.notes.is_empty() && s.endnotes.is_empty();
+        return complete
+            && st.tables.values().all(|t| t.cells.iter().all(|c| leaf(&c.text)))
+            && st.notes.iter().chain(&st.endnotes).all(|n| leaf(&n.text));
+    }
+    for t in st.tables.values_mut() {
+        for c in &mut Arc::make_mut(t).cells {
+            complete &= renumber_anchored_in(dst, src, &mut c.text, stories, depth, level + 1);
         }
-    };
-    st.for_each_text_mut(&mut fresh);
-    for n in &mut st.endnotes {
-        Arc::make_mut(n).text.for_each_text_mut(&mut fresh);
+    }
+    for n in st.notes.iter_mut().chain(st.endnotes.iter_mut()) {
+        complete &= renumber_anchored_in(dst, src, &mut Arc::make_mut(n).text, stories, depth, level + 1);
     }
     complete
 }
@@ -6103,6 +6125,48 @@ mod copy_ids_tests {
         s.execute("edit.copy", &json!({})).unwrap();
         assert!(s.execute("edit.paste", &json!({})).is_err());
         assert_eq!(s.doc().unwrap().doc, before, "nothing is pasted");
+    }
+
+    #[test]
+    fn objects_anchored_in_cells_nested_too_deeply_are_not_copied() {
+        use std::sync::Arc;
+
+        // The first cell of the story's table holds `n` tables, each in the first cell of the one before, and the cell
+        // of the innermost one holds an anchored object.
+        fn nested(n: usize) -> crate::Session {
+            let mut s = crate::Session::new();
+            let (f, sid) = marked_frame(&mut s);
+            let leaf = s.execute("frame.create", &json!({"rect": [0, 0, 10, 10]})).unwrap()["id"].as_u64().unwrap();
+            let d = Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+            let item = d.item(designcraft_doc::ItemId(leaf)).cloned().unwrap();
+            Arc::make_mut(&mut d.spreads[0]).items.retain(|i| i.id.0 != leaf);
+            let mut chain: Option<designcraft_doc::Table> = None;
+            for _ in 0..n {
+                let mut t = designcraft_doc::Table::new(d.alloc(), 1, 1, 0, 0, 40.0);
+                match chain.take() {
+                    Some(inner) => {
+                        t.cells[0].text.insert_table(0, inner);
+                    }
+                    None => {
+                        t.cells[0].text.insert_object(0, designcraft_doc::AnchoredObject::new(item.clone(), Default::default()));
+                    }
+                }
+                chain = Some(t);
+            }
+            let st = d.story_mut(sid).unwrap();
+            let text = &mut Arc::make_mut(st.tables.values_mut().next().unwrap()).cells[0].text;
+            text.insert_table(text.len(), chain.unwrap());
+            s.execute("selection.set", &json!({"ids": [f]})).unwrap();
+            s
+        }
+        let mut s = nested(super::MAX_COPY_DEPTH - 1);
+        s.execute("edit.duplicate", &json!({})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.anchored_items().len(), 2, "the anchored object is copied");
+        let mut s = nested(super::MAX_COPY_DEPTH);
+        let before = s.doc().unwrap().doc.clone();
+        let e = s.execute("edit.duplicate", &json!({})).unwrap_err().to_string();
+        assert!(e.contains("too deeply to copy"), "{e}");
+        assert_eq!(s.doc().unwrap().doc, before, "nothing is copied");
     }
 
     #[test]
