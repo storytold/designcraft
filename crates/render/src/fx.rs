@@ -1576,4 +1576,48 @@ mod tests {
             assert!(lum < 200, "{threads} threads: the glow 50 pt left of the scaled square is drawn, luminance {lum}");
         }
     }
+
+    /// Culling measures a scaled item's stroke and hardened glow as they are drawn, through its
+    /// transform, so a view (or a repaint patch) that shows only that part still draws it.
+    #[test]
+    fn a_scaled_items_hard_glow_and_stroke_are_not_culled() {
+        use designcraft_doc::build::NewDocument;
+        use designcraft_doc::{Document, SpreadRef};
+        let square = |glow: bool| {
+            let mut d = Document::new(&NewDocument::default());
+            let lid = d.default_layer();
+            let mut it = Item::new(
+                designcraft_doc::ItemId(d.alloc()),
+                lid,
+                designcraft_doc::Shape::Rectangle,
+                designcraft_geom::shapes::rectangle(Rect::new(50.0, 50.0, 90.0, 90.0)),
+            );
+            it.xf = Affine::scale(3.0);
+            it.fill = designcraft_doc::Fill::swatch(designcraft_color::swatch::BLACK);
+            if glow {
+                let g = &mut it.effects.outer_glow;
+                (g.on, g.color, g.opacity, g.size, g.spread) = (true, designcraft_color::swatch::BLACK.into(), 1.0, 20.0, 100.0);
+            } else {
+                (it.stroke.swatch, it.stroke.weight) = (designcraft_color::swatch::BLACK.into(), 20.0);
+            }
+            d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+            d
+        };
+        let cache = crate::Cache::new();
+        let opts = crate::RenderOptions { background: Some([255, 255, 255, 255]), ..Default::default() };
+        // The square covers 150..270 on the spread. Its glow grows 60 pt (to 90), past the
+        // unscaled 33 pt reach; its 20 pt stroke is 60 pt wide (to 120), past the unscaled 22 pt.
+        for (glow, x) in [(true, 95.0), (false, 123.0)] {
+            let d = square(glow);
+            for threads in [0, 2] {
+                let mut r = Renderer::new();
+                r.threads = threads;
+                let place = [crate::Placed { spread: SpreadRef::Doc(0), xf: Affine::IDENTITY }];
+                let image = r.render(&d, &cache, &place, (4, 20), Affine::translate((-x, -200.0)), &opts);
+                let p = image.pixel(1, 10);
+                let lum = u32::from(p[0]) + u32::from(p[1]) + u32::from(p[2]);
+                assert!(lum < 200, "glow {glow}, {threads} threads: the view at x {x} shows the scaled square's edge, luminance {lum}");
+            }
+        }
+    }
 }
