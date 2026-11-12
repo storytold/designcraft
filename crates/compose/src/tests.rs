@@ -893,6 +893,51 @@ fn vertical_justification_moves_an_object_kept_within_its_column_until_it_stops(
     }
 }
 
+/// An object anchored in the first line, positioned from its anchor and kept within its column,
+/// is held at the column's top. Justify keeps the first line in place, so the object stays there,
+/// and the second line comes down onto the wider lower part of its contour.
+#[test]
+fn vertical_justify_keeps_the_room_under_an_object_held_at_the_columns_top() {
+    use designcraft_doc::anchored::AnchorRelative as R;
+    let (mut d, sid, fid) = doc_with("One\nTwo", Rect::new(0.0, 0.0, 300.0, 400.0), ParaAttrs::default());
+    d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.vertical_justification = designcraft_doc::VerticalJustification::Justify;
+    // Beside the lines at x 250..300 down to y 100, then x 100..300 down to y 160.
+    let pts = [
+        Point::new(150.0, 0.0),
+        Point::new(200.0, 0.0),
+        Point::new(200.0, 160.0),
+        Point::new(0.0, 160.0),
+        Point::new(0.0, 100.0),
+        Point::new(150.0, 100.0),
+    ];
+    let lid = d.default_layer();
+    let path = designcraft_geom::path::PathData::single(designcraft_geom::path::SubPath::polyline(&pts, true));
+    let mut it = designcraft_doc::Item::new(ItemId(d.alloc()), lid, designcraft_doc::Shape::Polygon, path);
+    it.wrap.mode = WrapMode::Contour;
+    it.wrap.side = WrapSide::BothSides;
+    // 50 pt above the first baseline, so the column's top holds it.
+    let position = designcraft_doc::AnchorPosition::Custom {
+        x_relative: R::TextFrame,
+        y_relative: R::Anchor,
+        x_offset: 100.0,
+        y_offset: -50.0,
+        object_point: 0,
+        ref_point: 0,
+        keep_within_column: true,
+        spine_relative: false,
+    };
+    d.story_mut(sid).unwrap().insert_object(1, designcraft_doc::AnchoredObject::new(it, position));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    assert_eq!(lines.len(), 2);
+    let top = cs.frames[0].objects[0].origin.y;
+    assert!(lines[0].baseline < 50.0 && top.abs() < 1e-6, "the object is held at the column's top: {top}, {}", lines[0].baseline);
+    let wide = top + 100.0;
+    let b = lines[1].baseline;
+    assert!(b <= wide + 1e-6, "Justify moved the second line to {b}, into the contour's wider part at {wide}");
+    assert!(b > wide - 0.01, "Justify stopped the second line at {b}, short of the contour's wider part at {wide}");
+}
+
 /// Justify keeps the first line in place and moves later lines further, so an object anchored in
 /// the first line and hung under the last one still stops the lines after its anchor.
 #[test]

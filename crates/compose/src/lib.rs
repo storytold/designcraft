@@ -6083,18 +6083,19 @@ fn vertical_justify(
             None => true,
         };
         // Each row moves no further than a text wrap under it allows. An object that moves with its
-        // anchor's row (Justify) limits how much further than that row a later row moves.
+        // anchor's row (Justify) lets a later row move its room plus how far the object moves.
         let mut row_of = vec![None; ft.lines.len()];
         for (&i, &k) in idx.iter().zip(&rows) {
             row_of[i] = Some(k);
         }
-        let follow: Vec<(usize, usize, f64)> = follow
+        let follow: Vec<(usize, usize, f64, f64)> = follow
             .iter()
-            .filter_map(|&(i, a, room)| Some((row_of.get(i).copied().flatten()?, row_of.get(a).copied().flatten()?, room.max(0.0))))
+            .filter_map(|&(i, a, room, pin)| Some((row_of.get(i).copied().flatten()?, row_of.get(a).copied().flatten()?, room.max(0.0), pin)))
             .collect();
+        // The object moves only once its anchor's row has moved `pin`.
         let clear = |shift: &[f64]| {
             idx.iter().zip(&rows).all(|(&i, &k)| shift[k] <= rooms[i].max(0.0) + 1e-9)
-                && follow.iter().all(|&(k, m, room)| shift[k] - shift[m] <= room + 1e-9)
+                && follow.iter().all(|&(k, m, room, pin)| shift[k] <= room + (shift[m] - pin).max(0.0) + 1e-9)
         };
         // The lowest lines are tested first: they are the ones a narrowing outline stops.
         let fits = |shift: &[f64]| {
@@ -6215,12 +6216,13 @@ fn vertical_justify(
 /// lines being justified (inline, above the line, or positioned from its anchor) is skipped,
 /// except under Justify, where it moves with the row of its anchor's line: its wrap is taken where
 /// the object sits before the lines move, and its rooms go in the second list as (line, anchor's
-/// line, room), so a line moves down at most that much further than the anchor's row. An object
-/// positioned from its anchor and kept within its column moves with its anchor's row until it
-/// stops at the column's bottom, so in every mode a line moves down at most the room under it plus
-/// the distance the object can move. Justify keeps the first row in place, so its room stays
-/// infinite. `anchors` holds the story byte of each anchored object's mark, by object index.
-fn wrap_rooms(ft: &FrameText, f: &FrameSpec, c: u32, spanned: bool, anchors: &[usize]) -> (Vec<f64>, Vec<(usize, usize, f64)>) {
+/// line, room, pin), so a line moves down at most the room plus how far the anchor's row moves
+/// past `pin`. An object positioned from its anchor and kept within its column moves with its
+/// anchor's row until it stops at the column's bottom, so in every mode a line moves down at most
+/// the room under it plus the distance the object can move. Held at the column's top, the object
+/// moves only after its anchor's row has moved `pin` (0 for the other objects), and until then a
+/// line keeps the whole room. Justify keeps the first row in place, so its room stays infinite. `anchors` holds the story byte of each anchored object's mark, by object index.
+fn wrap_rooms(ft: &FrameText, f: &FrameSpec, c: u32, spanned: bool, anchors: &[usize]) -> (Vec<f64>, Vec<(usize, usize, f64, f64)>) {
     const EPS: f64 = 1e-6;
     // One-sided wraps also block the column on the other side of the object: the x-range wrap
     // `e` keeps text out of in column `col`, from the object's x-range `a..b` there (None when that
@@ -6369,7 +6371,7 @@ fn wrap_rooms(ft: &FrameText, f: &FrameSpec, c: u32, spanned: bool, anchors: &[u
                 Some((a, _, pin, slack)) if room_e.is_finite() => {
                     if room_e >= pin {
                         if justify {
-                            follow.push((line, a, room_e - pin));
+                            follow.push((line, a, room_e, pin));
                         }
                         room = room.min(room_e + slack);
                     } else {
