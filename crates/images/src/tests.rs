@@ -626,6 +626,56 @@ fn png_phys_sets_natural_size() {
     assert_eq!(natural_size(&plain), Some((4.0, 4.0)));
 }
 
+/// A pHYs chunk behind 100 text chunks is still read, and the scan stops at the first IDAT.
+#[test]
+fn png_phys_after_many_chunks_is_read() {
+    fn chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
+        out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        out.extend_from_slice(kind);
+        out.extend_from_slice(data);
+        out.extend_from_slice(&[0, 0, 0, 0]);
+    }
+    let mut phys = 11811u32.to_be_bytes().repeat(2);
+    phys.push(1);
+    let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+    chunk(&mut png, b"IHDR", &[0; 13]);
+    for _ in 0..100 {
+        chunk(&mut png, b"tEXt", b"Comment\x00x");
+    }
+    let mut late = png.clone();
+    chunk(&mut png, b"pHYs", &phys);
+    let (dx, dy) = raster_resolution(&png).unwrap();
+    assert!((dx - 300.0).abs() < 0.05 && (dy - 300.0).abs() < 0.05, "{dx} x {dy}");
+    // A pHYs after the image data is not read.
+    chunk(&mut late, b"IDAT", &[0; 4]);
+    chunk(&mut late, b"pHYs", &phys);
+    assert_eq!(raster_resolution(&late), None);
+}
+
+/// An EXIF chunk stored after 100 animation frames of a WebP is still read.
+#[test]
+fn webp_exif_after_many_frames_is_read() {
+    fn chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
+        out.extend_from_slice(kind);
+        out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        out.extend_from_slice(data);
+        if data.len() % 2 == 1 {
+            out.push(0);
+        }
+    }
+    let mut body = b"WEBP".to_vec();
+    chunk(&mut body, b"VP8X", &[0; 10]);
+    chunk(&mut body, b"ANIM", &[0; 6]);
+    for _ in 0..100 {
+        chunk(&mut body, b"ANMF", &[0; 17]);
+    }
+    chunk(&mut body, b"EXIF", &tiff_bytes((300, 1), (300, 1), Some(2)));
+    let mut webp = b"RIFF".to_vec();
+    webp.extend_from_slice(&(body.len() as u32).to_le_bytes());
+    webp.extend_from_slice(&body);
+    assert_eq!(raster_resolution(&webp), Some((300.0, 300.0)));
+}
+
 /// A real encoder-written BMP with the header pixels-per-meter patched (compression and image
 /// size stay zero, as the encoder writes them).
 fn bmp_with_ppm(ppm: i32) -> Vec<u8> {
