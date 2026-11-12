@@ -26,6 +26,10 @@ pub struct Dialog {
     /// from when it opened, so a bare `50` means what it did then. `None` falls back to `unit`.
     #[serde(skip)]
     pub vertical_unit: Option<Unit>,
+    /// The document contents the dialog opened with (Diagonal Lines), held while it is open: an
+    /// edit replaces them, so a dialog whose document holds other contents knows it was edited.
+    #[serde(skip)]
+    pub contents: Option<std::sync::Arc<designcraft_doc::Document>>,
 }
 
 impl Dialog {
@@ -85,7 +89,7 @@ impl Dialog {
         if id == "ruby" {
             fields.entry("section".to_string()).or_insert(json!("cjk.rubyPlacement"));
         }
-        Dialog { id: id.into(), fields, unit: Unit::Picas, vertical_unit: None }
+        Dialog { id: id.into(), fields, unit: Unit::Picas, vertical_unit: None, contents: None }
     }
     /// Set a field and report a genuine Find domain/mode transition to the caller.
     pub(crate) fn set_field(&mut self, key: &str, value: Value) -> bool {
@@ -4184,8 +4188,8 @@ const DIAGONAL_KEYS: [&str; 8] = ["lines", "weight", "type", "color", "tint", "g
 
 /// Table › Cell Options › Diagonal Lines… for the target cells. The fields start from the
 /// cells' values (`seed`); OK applies the fields that differ from it. The dialog keeps the
-/// document it opened in (`document`: uid, identity epoch and the address of its contents) and
-/// its target cells (`cells`).
+/// document it opened in (`document`: uid and identity epoch, and `Dialog::contents`) and its
+/// target cells (`cells`).
 pub fn open_diagonal_lines(app: &mut DesignApp) -> Result<Value, String> {
     app.ui.dialog = Some(diagonal_lines_dialog(app, Value::Null)?);
     Ok(Value::Null)
@@ -4196,7 +4200,8 @@ pub fn open_diagonal_lines(app: &mut DesignApp) -> Result<Value, String> {
 pub fn diagonal_lines_dialog(app: &mut DesignApp, params: Value) -> Result<Dialog, String> {
     let cur = app.session.execute("table.getCellDiagonal", &json!({})).map_err(|e| e.to_string())?;
     let st = app.session.active().ok_or("no document open")?;
-    let document = json!({"uid": st.uid, "epoch": st.identity_epoch, "contents": diagonal_lines_contents(st)});
+    let document = json!({"uid": st.uid, "epoch": st.identity_epoch});
+    let contents = st.doc.clone();
     let mut fields = Map::new();
     for k in DIAGONAL_KEYS {
         fields.insert(k.into(), cur[k].clone());
@@ -4209,7 +4214,9 @@ pub fn diagonal_lines_dialog(app: &mut DesignApp, params: Value) -> Result<Dialo
     }
     fields.insert("document".into(), document);
     fields.insert("cells".into(), json!({"story": cur["story"], "table": cur["table"], "rows": cur["rows"], "cols": cur["cols"]}));
-    Ok(Dialog::new("diagonalLines", Value::Object(fields)))
+    let mut d = Dialog::new("diagonalLines", Value::Object(fields));
+    d.contents = Some(contents);
+    Ok(d)
 }
 
 /// Where the document a Diagonal Lines dialog opened in is now.
@@ -4225,17 +4232,12 @@ enum DiagonalLinesDocument {
     Gone,
 }
 
-/// The address of a document state's contents. An edit gives the document new contents, and a
-/// selection change keeps them. The contents an undoable edit replaced stay alive in the undo
-/// history, so new contents do not reuse their address while the dialog is open.
-fn diagonal_lines_contents(st: &designcraft_engine::DocState) -> u64 {
-    std::sync::Arc::as_ptr(&st.doc) as usize as u64
-}
-
+/// An edit gives the document new contents, and a selection change keeps them. The dialog holds
+/// the contents it opened with, so no new contents can take their address while it is open.
 fn diagonal_lines_document(app: &DesignApp, d: &Dialog) -> DiagonalLinesDocument {
     let saved = d.fields.get("document");
     let get = |k: &str| saved.and_then(|s| s.get(k)).and_then(Value::as_u64);
-    let (Some(uid), Some(epoch), Some(contents)) = (get("uid"), get("epoch"), get("contents")) else {
+    let (Some(uid), Some(epoch), Some(contents)) = (get("uid"), get("epoch"), d.contents.as_ref()) else {
         return DiagonalLinesDocument::Gone;
     };
     let Some(i) = app.session.documents().iter().position(|st| st.uid == uid && st.identity_epoch == epoch) else {
@@ -4243,7 +4245,7 @@ fn diagonal_lines_document(app: &DesignApp, d: &Dialog) -> DiagonalLinesDocument
     };
     if app.session.active_index() != Some(i) {
         DiagonalLinesDocument::Inactive
-    } else if diagonal_lines_contents(&app.session.documents()[i]) != contents {
+    } else if !std::sync::Arc::ptr_eq(&app.session.documents()[i].doc, contents) {
         DiagonalLinesDocument::Changed
     } else {
         DiagonalLinesDocument::Ready
@@ -4512,6 +4514,7 @@ fn format_settings(app: &mut DesignApp, ctx: &egui::Context, d: &mut Dialog) {
         fields: d.fields.get(FORMAT_EDIT).and_then(Value::as_object).cloned().unwrap_or_default(),
         unit: d.unit,
         vertical_unit: None,
+        contents: None,
     };
     let base = json!({});
     let cf = CharFields { base: &base, sparse: true };

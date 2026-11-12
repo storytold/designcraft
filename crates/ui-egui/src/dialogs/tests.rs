@@ -595,6 +595,28 @@ fn diagonal_lines_dialog_applies_to_the_cells_and_document_it_opened_for() {
     assert_eq!(diagonal_lines_of(&app, 0, b), [No; 4]);
 }
 
+#[test]
+fn diagonal_lines_dialog_is_refused_when_new_contents_reuse_the_old_address() {
+    use designcraft_doc::DiagonalLines::None as No;
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    let tid = table_document_for_diagonals(&mut app);
+    app.run("app.diagonalLinesDialog", json!({})).unwrap();
+    app.ui.dialog.as_mut().unwrap().fields.insert("lines".into(), json!("crossed"));
+    // A row is added above the target cell, and the edit is undone: the contents the dialog
+    // opened with are back, and the undo stack no longer holds them.
+    app.run("table.insertRowAbove", json!({})).unwrap();
+    let edited = (*app.session.active().unwrap().doc).clone();
+    app.session.execute("edit.undo", &json!({})).unwrap();
+    // The edited contents are written in place when nothing else holds the old contents, at the
+    // address an allocation that reuses freed memory would give them. The saved cell range now
+    // names the new row.
+    let st = app.session.active_mut().unwrap();
+    *std::sync::Arc::make_mut(&mut st.doc) = edited;
+    assert!(confirm(&mut app).is_err());
+    assert!(app.ui.dialog.is_none(), "a dialog whose table changed closes");
+    assert_eq!(diagonal_lines_of(&app, 0, tid), [No; 6]);
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn diagonal_lines_dialog_is_refused_after_its_document_is_reverted() {
