@@ -611,7 +611,7 @@ fn czech_counts_use_the_plural_form_for_the_number() {
 #[test]
 fn hebrew_catalog_is_selectable_rtl_and_preserves_english_keys() {
     let mut seen = HashSet::new();
-    assert_eq!(he::TABLE.len(), 1278, "initial Hebrew source-linked table changed");
+    assert_eq!(he::TABLE.len(), 1288, "initial Hebrew source-linked table changed");
     for (source, translated) in he::TABLE {
         assert!(seen.insert(*source), "duplicate Hebrew source key: {source}");
         assert!(!translated.trim().is_empty(), "empty Hebrew: {source}");
@@ -692,4 +692,22 @@ fn hebrew_catalog_is_selectable_rtl_and_preserves_english_keys() {
     assert_eq!(tr("he", "Relink…"), "קישור מחדש…");
     assert_eq!(tr("he", "Page (1–{count}):"), "עמוד (1–{count}):");
     assert_eq!(tr("he", "A user-defined untranslated label"), "A user-defined untranslated label");
+}
+
+#[test]
+fn hebrew_parallel_round4_document_translations() {
+    for (source, expected) in [
+        ("Book", "ספר"),
+        ("Recent files", "קבצים אחרונים"),
+        ("Number of Recent Items to Display:", "מספר הפריטים האחרונים להצגה:"),
+        ("Place", "הצבה"),
+        ("Place and Link", "הצבה וקישור"),
+        ("Place with Import Options…", "הצבה עם אפשרויות ייבוא…"),
+        ("Update Link", "עדכון קישור"),
+        ("Records per page", "רשומות בעמוד"),
+        ("The library is empty. Select objects and Add Selection.", "הספרייה ריקה. בחרו אובייקטים ולחצו על ״הוספת הבחירה״."),
+        ("A PNG or JPEG file; left empty, the first page is the cover.", "קובץ PNG או JPEG; אם משאירים ריק, העמוד הראשון ישמש ככריכה."),
+    ] {
+        assert_eq!(tr("he", source), expected, "Hebrew localization regression: {source}");
+    }
 }
