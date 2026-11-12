@@ -912,3 +912,124 @@ fn a_webp_icc_chunk_that_declares_more_than_it_holds_is_refused_before_decoding(
     assert!(webp_icc_is_sane(b"\x89PNG not a webp"));
     assert!(webp_icc_is_sane(&webp_with(&[(b"VP8L", 6, &[0; 6])])));
 }
+
+/// A JPEG of a smooth gradient, `w` × `h`.
+fn gradient_jpeg(w: u32, h: u32, gray: bool) -> Vec<u8> {
+    let rgb = image::RgbImage::from_fn(w, h, |x, y| image::Rgb([(x * 255 / w) as u8, (y * 255 / h) as u8, 128]));
+    let img = if gray { image::DynamicImage::ImageRgb8(rgb).into_luma8().into() } else { image::DynamicImage::ImageRgb8(rgb) };
+    let mut out = Vec::new();
+    img.write_with_encoder(image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 90)).unwrap();
+    out
+}
+
+#[test]
+fn reduced_jpegs_decode_at_a_half_quarter_or_eighth_rounded_up() {
+    let jpeg = gradient_jpeg(1001, 77, false);
+    let full = decode_rgba(&jpeg).unwrap();
+    for (shrink, size) in [(1, (501, 39)), (2, (251, 20)), (3, (126, 10))] {
+        let img = decode_rgba_reduced(&jpeg, shrink).unwrap();
+        assert_eq!(img.dimensions(), size, "shrink {shrink}");
+        // The same picture as the full decode sampled at the block centres, give or take rounding.
+        let step = 1u32 << shrink;
+        let (mut total, mut n) = (0u64, 0u64);
+        for y in 0..size.1 - 1 {
+            for x in 0..size.0 - 1 {
+                let (p, q) = (img.get_pixel(x, y).0, full.get_pixel(x * step + step / 2, y * step + step / 2).0);
+                total += (0..3).map(|c| u64::from(p[c].abs_diff(q[c]))).sum::<u64>();
+                n += 3;
+                assert_eq!(p[3], 255);
+            }
+        }
+        assert!(total / n <= 3, "shrink {shrink}: mean difference {}", total / n);
+    }
+    // Only 1/2, 1/4 and 1/8 are read from the blocks.
+    assert!(decode_rgba_reduced(&jpeg, 0).is_none());
+    assert!(decode_rgba_reduced(&jpeg, 4).is_none());
+}
+
+#[test]
+fn a_thin_reduced_jpeg_keeps_its_long_side_at_the_requested_reduction() {
+    // The short side rounds up to 1 at every reduction, so it cannot pick the scale.
+    for (w, h) in [(100, 2), (2, 100)] {
+        let jpeg = gradient_jpeg(w, h, false);
+        for (shrink, long) in [(1, 50), (2, 25), (3, 13)] {
+            let img = decode_rgba_reduced(&jpeg, shrink).unwrap();
+            let size = if w > h { (long, 1) } else { (1, long) };
+            assert_eq!(img.dimensions(), size, "{w} × {h}, shrink {shrink}");
+        }
+    }
+}
+
+#[test]
+fn reduced_decoding_is_for_jpegs_and_survives_damaged_ones() {
+    let gray = decode_rgba_reduced(&gradient_jpeg(64, 64, true), 2).unwrap();
+    assert_eq!(gray.dimensions(), (16, 16));
+    assert!(gray.pixels().all(|p| p[0] == p[1] && p[1] == p[2] && p[3] == 255));
+    let png = png_from_rgba(16, 16, vec![255; 16 * 16 * 4]).unwrap();
+    assert!(decode_rgba_reduced(&png, 1).is_none());
+    assert!(decode_rgba_reduced(&[0xFF, 0xD8], 1).is_none());
+    let jpeg = gradient_jpeg(200, 150, false);
+    for n in (0..jpeg.len()).step_by(37) {
+        if let Some(img) = decode_rgba_reduced(&jpeg[..n], 1) {
+            assert_eq!(img.dimensions(), (100, 75));
+        }
+    }
+}
+
+#[test]
+fn reduced_decoding_refuses_a_jpeg_whose_size_the_size_check_cannot_read() {
+    let jpeg = gradient_jpeg(64, 48, false);
+    assert_eq!(decode_rgba_reduced(&jpeg, 1).unwrap().dimensions(), (32, 24));
+    // A stray byte after the start marker: the JPEG decoder skips it, but `pixel_size` doesn't
+    // recognize the file, so `too_large_to_decode` has no size to check.
+    let mut stray = jpeg.clone();
+    stray.insert(2, 0);
+    assert_eq!(pixel_size(&stray), None);
+    assert!(decode_rgba_reduced(&stray, 1).is_none());
+    assert!(decode_rgba(&stray).is_none());
+}
+
+/// A progressive JPEG with only its DC scan, `w` × `h` with `components` 1×1-sampled components:
+/// every coefficient is zero (a flat mid-gray image).
+fn progressive_jpeg(w: u16, h: u16, components: u8) -> Vec<u8> {
+    let mut out = vec![0xFF, 0xD8];
+    // One quantization table of ones.
+    out.extend([0xFF, 0xDB, 0, 67, 0]);
+    out.extend([1; 64]);
+    // Start of frame, progressive DCT.
+    out.extend([0xFF, 0xC2, 0, 8 + 3 * components, 8]);
+    out.extend(h.to_be_bytes());
+    out.extend(w.to_be_bytes());
+    out.push(components);
+    for id in 1..=components {
+        out.extend([id, 0x11, 0]);
+    }
+    // A DC table with one code, "0", for a difference of 0.
+    out.extend([0xFF, 0xC4, 0, 20, 0x00, 1]);
+    out.extend([0; 15]);
+    out.push(0);
+    // The DC scan of every component (Ss, Se, Ah/Al all 0), then zero bits.
+    out.extend([0xFF, 0xDA, 0, 6 + 2 * components, components]);
+    for id in 1..=components {
+        out.extend([id, 0x00]);
+    }
+    out.extend([0, 0, 0]);
+    out.extend([0; 16]);
+    out.extend([0xFF, 0xD9]);
+    out
+}
+
+#[test]
+fn reduced_decoding_refuses_progressive_jpegs_whose_full_size_coefficients_are_over_the_limit() {
+    let small = decode_rgba_reduced(&progressive_jpeg(64, 48, 3), 3).unwrap();
+    assert_eq!(small.dimensions(), (8, 6));
+    // 10,240 × 8,800 is within the RGBA limit, but its three components' coefficients take
+    // 10,240 × 8,800 × 3 × 2 bytes, over 512 MiB, whatever the output size.
+    let large = progressive_jpeg(10_240, 8_800, 3);
+    assert_eq!(pixel_size(&large), Some((10_240, 8_800)));
+    assert!(!too_large_to_decode(&large));
+    assert!(decode_rgba_reduced(&large, 3).is_none());
+    // One component of the same size stays under the limit.
+    let gray = decode_rgba_reduced(&progressive_jpeg(10_240, 8_800, 1), 3).unwrap();
+    assert_eq!(gray.dimensions(), (1_280, 1_100));
+}
