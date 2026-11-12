@@ -91,6 +91,24 @@ fn save_with_large_entries_from(doc: &Document, preview: Option<&[u8]>, large_en
 
 /// [`save_with_large_entries_from`], deflating only what a reader with `limits` inflates.
 fn save_within(doc: &Document, preview: Option<&[u8]>, large_entry: usize, limits: Limits) -> Result<Vec<u8>, FormatError> {
+    let mut buf = Cursor::new(Vec::new());
+    write_with_large_entries_from(&mut buf, doc, preview, large_entry, limits)?;
+    Ok(buf.into_inner())
+}
+
+/// Write the package to `out` instead of returning it in memory: a document with gigabytes of
+/// placed files needs no second copy in RAM (recovery snapshots, large saves).
+pub fn write<W: Write + std::io::Seek>(out: &mut W, doc: &Document, preview: Option<&[u8]>) -> Result<(), FormatError> {
+    write_with_large_entries_from(out, doc, preview, LARGE_ENTRY, Limits::DEFAULT)
+}
+
+fn write_with_large_entries_from<W: Write + std::io::Seek>(
+    out: &mut W,
+    doc: &Document,
+    preview: Option<&[u8]>,
+    large_entry: usize,
+    limits: Limits,
+) -> Result<(), FormatError> {
     // JSON writes infinity and NaN as null, which no load accepts: the file would not open.
     if let Some(id) = doc.non_finite_item() {
         return Err(FormatError::Unsaveable(format!("object {} has a position or size that is not a finite number", id.0)));
@@ -99,9 +117,8 @@ fn save_within(doc: &Document, preview: Option<&[u8]>, large_entry: usize, limit
     compact.compact_assets();
     let doc = &compact;
     let io = |e: zip::result::ZipError| FormatError::Io(e.to_string());
-    let mut buf = Cursor::new(Vec::new());
     {
-        let mut z = zip::ZipWriter::new(&mut buf);
+        let mut z = zip::ZipWriter::new(out);
         let stored = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
         let deflate = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
         z.start_file("mimetype", stored).map_err(io)?;
@@ -140,7 +157,7 @@ fn save_within(doc: &Document, preview: Option<&[u8]>, large_entry: usize, limit
         }
         z.finish().map_err(io)?;
     }
-    Ok(buf.into_inner())
+    Ok(())
 }
 
 /// The file name extension of a DesignCraft document.
