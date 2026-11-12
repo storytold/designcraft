@@ -1005,13 +1005,14 @@ fn selected_frame_options(app: &DesignApp) -> Option<designcraft_doc::TextFrameO
     st.doc.item(fid)?.text_frame().map(|t| t.options.clone())
 }
 
-/// Whether the selected text frame (the first selected item, or the frame of the caret) has an
+/// Whether every selected text frame (the selected items, or the frame of the caret) has an
 /// outline that is not its own axis-aligned rectangle: an oval, a polygon, rounded or other corner
 /// options. Its text keeps one inset from the outline, as compose sets it; type on a path doesn't.
+/// A selection that mixes them with rectangular frames shows the four sides, so each frame keeps
+/// the sides left as shown.
 fn selected_frame_is_shaped(app: &DesignApp) -> bool {
-    let shaped = || {
-        let st = app.session.active()?;
-        let fid = st.selection.items.first().copied().or_else(|| st.selection.text.and_then(|t| t.frame))?;
+    let Some(st) = app.session.active() else { return false };
+    let shaped = |fid: designcraft_doc::ItemId| -> Option<bool> {
         let item = st.doc.item(fid)?;
         if item.text_frame()?.options.path.is_some() {
             return Some(false);
@@ -1019,7 +1020,11 @@ fn selected_frame_is_shaped(app: &DesignApp) -> bool {
         let bp = if item.corners.is_none() { item.path.to_bezpath() } else { designcraft_geom::corners::apply(&item.path, &item.corners) };
         Some(designcraft_compose::FrameOutline::new(&bp, 0.0).is_some())
     };
-    shaped().unwrap_or(false)
+    if st.selection.items.is_empty() {
+        let Some(fid) = st.selection.text.and_then(|t| t.frame) else { return false };
+        return shaped(fid).unwrap_or(false);
+    }
+    st.selection.items.iter().all(|&fid| shaped(fid).unwrap_or(false))
 }
 
 /// Object › Text Frame Options shows the selected frame's options. `_shown` keeps what it showed,
