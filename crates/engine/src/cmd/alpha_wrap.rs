@@ -5,7 +5,7 @@
 //! current transform, so it follows the image when it is moved, scaled or refitted.
 use std::sync::Arc;
 
-use designcraft_doc::{AlphaOutline, AssetId, ContourType, Document, WrapMode};
+use designcraft_doc::{AlphaOutline, AssetId, ContourType, Document, Item, WrapMode};
 use designcraft_geom::{BezPath, PathData, Point};
 
 /// Images larger than this many pixels aren't traced (their contour follows the frame).
@@ -19,18 +19,26 @@ const MAX_EDGES: usize = 1 << 16;
 /// nothing changed: tracing happens only for an image and threshold not seen before.
 pub(crate) fn sync(doc: &mut Document) {
     let mut wanted: Vec<(AssetId, u8)> = Vec::new();
+    // Every frame, in groups and Paste Into containers too, with the wrap set on the frame or on
+    // its placed graphic (Direct Selection sets the graphic's).
+    let mut want = |it: &Item| {
+        let Some(g) = it.graphic() else { return };
+        for w in [&it.wrap, &g.wrap] {
+            if w.mode == WrapMode::Contour && w.contour == ContourType::AlphaChannel && !wanted.contains(&(g.asset, w.alpha_threshold)) {
+                wanted.push((g.asset, w.alpha_threshold));
+            }
+        }
+    };
     for sp in doc.spreads.iter().chain(doc.parents.iter()) {
-        // Every frame, in groups and Paste Into containers too, with the wrap set on the frame or
-        // on its placed graphic (Direct Selection sets the graphic's).
         for top in &sp.items {
-            top.walk(&mut |it| {
-                let Some(g) = it.graphic() else { return };
-                for w in [&it.wrap, &g.wrap] {
-                    if w.mode == WrapMode::Contour && w.contour == ContourType::AlphaChannel && !wanted.contains(&(g.asset, w.alpha_threshold)) {
-                        wanted.push((g.asset, w.alpha_threshold));
-                    }
-                }
-            });
+            top.walk(&mut want);
+        }
+    }
+    // Objects anchored in text wrap the lines after their anchor; anchored_items lists their
+    // children too.
+    if doc.has_anchored_items() {
+        for (_, it) in doc.anchored_items() {
+            want(it);
         }
     }
     if wanted.is_empty() && doc.alpha_outlines.is_empty() {
@@ -69,12 +77,20 @@ pub(crate) fn trace(data: &Arc<Vec<u8>>, asset: AssetId, threshold: u8) -> Optio
         return None;
     }
     let mut grid = MAX_GRID;
+    // The previous grid's mask: a grid half as fine is made from it without reading the pixels again.
+    let mut finer: Option<(Vec<bool>, u32, u32)> = None;
     while grid >= 16 {
         let (cols, rows) = (w.min(grid), h.min(grid));
-        let (mask, transparent) = occupancy(img.as_raw(), w, h, cols, rows, threshold);
-        if !transparent {
-            return None;
-        }
+        let mask = match finer.as_ref().and_then(|(m, fc, fr)| coarsen(m, *fc, *fr, cols, rows)) {
+            Some(m) => m,
+            None => {
+                let (mask, transparent) = occupancy(img.as_raw(), w, h, cols, rows, threshold);
+                if !transparent {
+                    return None;
+                }
+                mask
+            }
+        };
         if let Some((outer, holes)) = rings(&mask, cols as usize, rows as usize) {
             let (sx, sy) = (f64::from(w) / f64::from(cols), f64::from(h) / f64::from(rows));
             let path = |rings: &[Vec<(i32, i32)>]| {
@@ -93,9 +109,31 @@ pub(crate) fn trace(data: &Arc<Vec<u8>>, asset: AssetId, threshold: u8) -> Optio
             let source = Arc::downgrade(data);
             return Some(AlphaOutline { asset, threshold, width: w, height: h, outer: path(&outer), holes: path(&holes), source });
         }
+        finer = Some((mask, cols, rows));
         grid /= 2;
     }
     None
+}
+
+/// The `cols` × `rows` mask made from a `fc` × `fr` one, when each side has the same number of
+/// cells or twice as many (a pixel's coarse cell is then its fine cell, or half of it). None
+/// otherwise: the pixels are read again.
+fn coarsen(mask: &[bool], fc: u32, fr: u32, cols: u32, rows: u32) -> Option<Vec<bool>> {
+    let step = |fine: u32, coarse: u32| match fine {
+        f if f == coarse => Some(1),
+        f if u64::from(f) == 2 * u64::from(coarse) => Some(2),
+        _ => None,
+    };
+    let (sx, sy) = (step(fc, cols)?, step(fr, rows)?);
+    let (fc, cols) = (fc as usize, cols as usize);
+    let mut out = vec![false; cols * rows as usize];
+    for (i, _) in mask.iter().enumerate().filter(|(_, v)| **v) {
+        let (x, y) = (i % fc, i / fc);
+        if let Some(c) = out.get_mut(y / sy * cols + x / sx) {
+            *c = true;
+        }
+    }
+    Some(out)
 }
 
 /// Which cells of a `cols` × `rows` grid hold a pixel of the `w` × `h` RGBA image `rgba` more
@@ -104,13 +142,22 @@ pub(crate) fn trace(data: &Arc<Vec<u8>>, asset: AssetId, threshold: u8) -> Optio
 fn occupancy(rgba: &[u8], w: u32, h: u32, cols: u32, rows: u32, threshold: u8) -> (Vec<bool>, bool) {
     let mut mask = vec![false; (cols as usize) * (rows as usize)];
     let mut transparent = false;
-    for (i, px) in rgba.as_chunks::<4>().0.iter().enumerate() {
-        let alpha = px[3];
-        transparent |= alpha < 255;
-        if alpha > threshold {
-            let (x, y) = ((i as u64) % u64::from(w), (i as u64) / u64::from(w));
-            let (gx, gy) = (x * u64::from(cols) / u64::from(w), y * u64::from(rows) / u64::from(h));
-            if let Some(c) = mask.get_mut((gy * u64::from(cols) + gx) as usize) {
+    // A pixel's cell is (x * cols / w, y * rows / h). Along a row the column is counted up as x
+    // passes each cell's edge (cols <= w, so at most one edge per pixel) instead of divided out.
+    for (y, row) in rgba.chunks_exact(w as usize * 4).take(h as usize).enumerate() {
+        let base = (y as u64 * u64::from(rows) / u64::from(h)) as usize * cols as usize;
+        let (mut gx, mut acc, mut edge) = (0usize, 0u64, u64::from(w));
+        for px in row.as_chunks::<4>().0 {
+            if acc >= edge {
+                gx += 1;
+                edge += u64::from(w);
+            }
+            acc += u64::from(cols);
+            let alpha = px[3];
+            transparent |= alpha < 255;
+            if alpha > threshold
+                && let Some(c) = mask.get_mut(base + gx)
+            {
                 *c = true;
             }
         }
@@ -218,6 +265,39 @@ mod tests {
         assert!(trace(&Arc::new(png(|_, _| true)), AssetId(1), 25).is_none());
     }
 
+    /// The cell masks match a pixel-by-pixel count (cell = x * cols / w, y * rows / h), and a
+    /// mask half as fine made from the finer one matches the mask read from the pixels.
+    #[test]
+    fn cell_masks_match_the_pixels_and_coarser_masks_match_the_finer_ones() {
+        let (w, h) = (600u32, 300u32);
+        // An irregular pattern: visible where a small hash says so.
+        let on = |x: u32, y: u32| (x.wrapping_mul(2_654_435_761) ^ y.wrapping_mul(40_503)).rotate_left(7).is_multiple_of(7);
+        let mut rgba = vec![0u8; (w * h * 4) as usize];
+        for y in 0..h {
+            for x in 0..w {
+                rgba[((y * w + x) * 4 + 3) as usize] = if on(x, y) { 255 } else { 0 };
+            }
+        }
+        for (cols, rows) in [(256, 256), (128, 128), (100, 37), (600, 300)] {
+            let mut expect = vec![false; (cols * rows) as usize];
+            for y in 0..h {
+                for x in 0..w {
+                    if on(x, y) {
+                        expect[((y * rows / h) * cols + x * cols / w) as usize] = true;
+                    }
+                }
+            }
+            assert_eq!(occupancy(&rgba, w, h, cols, rows, 25), (expect, true), "{cols} x {rows}");
+        }
+        let (fine, _) = occupancy(&rgba, w, h, 256, 256, 25);
+        assert_eq!(coarsen(&fine, 256, 256, 128, 128), Some(occupancy(&rgba, w, h, 128, 128, 25).0));
+        // Same count on one side, twice on the other.
+        let (fine, _) = occupancy(&rgba, w, h, 128, 256, 25);
+        assert_eq!(coarsen(&fine, 128, 256, 128, 128), Some(occupancy(&rgba, w, h, 128, 128, 25).0));
+        // Any other ratio is read from the pixels.
+        assert_eq!(coarsen(&fine, 128, 256, 100, 128), None);
+    }
+
     #[test]
     fn an_alpha_channel_contour_is_traced_when_set_and_kept_out_of_the_saved_file() {
         let mut s = Session::new();
@@ -312,6 +392,27 @@ mod tests {
         assert!(o.traced_from(&narrower));
         let b = o.outer.bounds().unwrap();
         assert_eq!((b.x0, b.x1), (24.0, 40.0), "the new image's outline");
+    }
+
+    /// An image anchored in text keeps its outline: anchored objects wrap the lines after their
+    /// anchor, and they are kept in the story, not on the spread.
+    #[test]
+    fn an_anchored_image_keeps_its_outline() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let data = png(|x, _| (16..48).contains(&x));
+        let image = s
+            .execute("file.place", &json!({"base64": crate::cmd::file::base64_encode(&data), "name": "cut.png", "x": 100, "y": 100, "width": 128}))
+            .unwrap()["id"]
+            .as_u64()
+            .unwrap();
+        s.execute("object.textWrap", &json!({"ids": [image], "mode": "contour", "contour": "alphaChannel"})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.alpha_outlines.len(), 1);
+        let t = s.execute("frame.create", &json!({"rect": [36, 300, 400, 500], "content": "text", "text": "Before after."})).unwrap();
+        s.execute("anchored.insert", &json!({"ids": [image], "story": t["story"], "pos": 7})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        assert!(d.anchored_item(designcraft_doc::ItemId(image)).is_some(), "the image is in the text");
+        assert_eq!(d.alpha_outlines.len(), 1, "the anchored image keeps its outline");
     }
 
     /// An image placed 128 pt wide at (100, 100) (2 pt per pixel), its wrap a contour with no
