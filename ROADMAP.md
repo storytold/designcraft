@@ -387,6 +387,7 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 ## Progress log
 
+- **2026-11-12** · An edit of a long threaded story composes the paragraphs it can change and copies the other lines from the composition before the edit; every typed character composed the whole story. In a 240-paragraph story a typed character composes 3 paragraphs (240 before). An edit that moves lines into other frames is composed to the story's end, and stories with footnotes, tables, anchored objects, balanced columns or keep options that move lines are composed whole (#2298). No readiness percentage change.
 - **2026-11-04** · Striped strokes retain out-and-back cubic segments whose second control point is away from the coincident endpoints and first control point. A geometry regression checks the offset extent and both stripe bands. No readiness percentage change.
 - **2026-11-04** · Esperanto is a text language (Character › Language, `type.char {language: "Esperanto"}`, IDML `$ID/Esperanto`): tag `eo`, English-style quotes; not hyphenated yet (#1201). No readiness percentage change.
 

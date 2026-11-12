@@ -6,12 +6,17 @@
 //! its text ([`crate::wrap::neighbours`]). An anchored frame's entry also records where its host
 //! story's composition places it. Entries hold clones of those `Arc`s, so the pointers
 //! can't be reused by other allocations while the entry lives.
+//!
+//! When only the story itself differs from an entry's (an edit of its text or formatting), the
+//! new composition starts from the entry's and composes the paragraphs the edit can change
+//! ([`crate::reuse`]).
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use designcraft_doc::{Document, Item, Story, StoryId, Styles};
 
+use crate::reuse::{Reuse, Trace};
 use crate::vars::RunningIndex;
 use crate::{ComposeOptions, ComposedStory};
 
@@ -50,6 +55,25 @@ struct Entry {
     _keep: (Arc<Story>, Arc<Styles>, Vec<Arc<Item>>, Vec<Arc<Story>>),
     out: Arc<ComposedStory>,
     stamp: u64,
+    /// For composing the story again after an edit ([`crate::reuse`]).
+    trace: Option<Arc<Trace>>,
+}
+
+/// The story an entry was composed from, its composition and that composition's trace.
+type Before = (Arc<Story>, Arc<ComposedStory>, Arc<Trace>);
+
+/// How many leading values of a [`signature`] identify the story's own allocation and revision;
+/// the rest is everything else the composition was made from.
+const STORY_SIG: usize = 2;
+
+impl Entry {
+    /// What composing for `sig` can take from this entry: set when only the story itself differs
+    /// (an edit of its text or formatting) and the entry's composition left a trace.
+    fn before(&self, sig: &[usize]) -> Option<Before> {
+        let trace = self.trace.as_ref()?;
+        (self.sig.len() == sig.len() && self.sig.get(STORY_SIG..) == sig.get(STORY_SIG..))
+            .then(|| (self._keep.0.clone(), self.out.clone(), trace.clone()))
+    }
 }
 
 #[derive(Default)]
@@ -244,33 +268,38 @@ impl Cache {
             std::hash::Hash::hash(&doc.list_start(sid, &l.name), &mut h);
             sig.push(std::hash::Hasher::finish(&h) as usize);
         }
-        {
+        let before = {
             let mut g = self.map.lock().unwrap_or_else(PoisonError::into_inner);
             g.1 += 1;
             let stamp = g.1;
-            if let Some(e) = g.0.get_mut(&key)
-                && e.sig == sig
-            {
-                e.stamp = stamp;
-                return e.out.clone();
+            match g.0.get_mut(&key) {
+                Some(e) if e.sig == sig => {
+                    e.stamp = stamp;
+                    return e.out.clone();
+                }
+                Some(e) => e.before(&sig),
+                None => None,
             }
-        }
+        };
         // Parent-page items are composed per page: markers show its name, variables need its index.
         let page = page.filter(|_| with_vars);
         let running = running.then(|| self.running_index(doc));
         let others: Vec<Arc<ComposedStory>> = neighbours.iter().map(|n| self.neighbour(doc, *n, depth, resolved)).collect();
-        let out = Arc::new(crate::wrap::compose_among(
+        let (out, trace) = crate::wrap::compose_among_traced(
             doc,
             sid,
             &ComposeOptions { page_name, section_marker, page, running, label: None, xrefs: with_xrefs.then(|| self.xref_index(doc)), placed },
             &others.iter().map(|o| &**o).collect::<Vec<_>>(),
-        ));
+            before.as_ref().map(|(story, composed, trace)| Reuse { story, composed, trace }),
+        );
+        let (out, trace) = (Arc::new(out), trace.map(Arc::new));
         let mut g = self.map.lock().unwrap_or_else(PoisonError::into_inner);
         let stamp = g.1;
         if g.0.len() > 4096 {
             g.0.retain(|_, e| stamp - e.stamp < 64);
         }
-        let replaced = g.0.insert(key, Entry { sig, _keep: (story.clone(), doc.styles.clone(), keep_items, keep_stories), out: out.clone(), stamp });
+        let replaced =
+            g.0.insert(key, Entry { sig, _keep: (story.clone(), doc.styles.clone(), keep_items, keep_stories), out: out.clone(), stamp, trace });
         drop(g);
         // Only the composition that is shown (not one made for another story's wrap).
         if key.1 == ShownOn::Own
