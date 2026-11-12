@@ -200,14 +200,11 @@ fn reduced_estimates(wants: &[Want]) -> Option<(usize, usize)> {
             return None;
         }
         let shrink = level.min(usize::from(designcraft_images::MAX_REDUCED_SHRINK));
+        let (decoded_w, decoded_h) = designcraft_images::reduced_jpeg_size(&w.bytes, shrink as u8)?;
         for cached in shrink..=level {
             levels[cached] = true;
         }
-        let denom = 1u32 << shrink;
-        let (w_px, h_px) = sizes[0];
-        // The reduced decoder rounds each side up before the mip is cropped to `sizes[shrink]`.
-        let decode_pixels = w_px.div_ceil(denom) as usize * h_px.div_ceil(denom) as usize;
-        peak = peak.max(decode_pixels.saturating_mul(8));
+        peak = peak.max(decoded_w as usize * decoded_h as usize * 8);
         if dims.as_ref().is_none_or(|d: &Vec<(u32, u32)>| d.len() < sizes.len()) {
             dims = Some(sizes);
         }

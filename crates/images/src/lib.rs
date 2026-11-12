@@ -510,6 +510,12 @@ pub fn decode_rgba_reduced(bytes: &[u8], shrink: u8) -> Option<image::RgbaImage>
     to_display_rgba(px, Some(&icc), &DisplayColour::active())
 }
 
+/// Dimensions of a JPEG decoded at `1/2^shrink`, without decoding its pixels. `None` when the
+/// reduced decoder cannot handle the image.
+pub fn reduced_jpeg_size(bytes: &[u8], shrink: u8) -> Option<(u32, u32)> {
+    jpeg::reduced_size(bytes, shrink)
+}
+
 /// False when `bytes` is a WebP whose `ICCP` chunk declares more bytes than the file holds or than
 /// [`colour::MAX_ICC_BYTES`]. The decoder sizes its buffer from the declared length before it reads
 /// anything, so such a file must not reach `icc_profile()`; its pixels decode without it.
