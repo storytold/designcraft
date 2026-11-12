@@ -67,7 +67,7 @@ pub(crate) const MAX_SHRINK: u8 = 3;
 
 /// Output size of a JPEG reduction without decoding pixels. `None` when the reduced decoder
 /// cannot handle the JPEG, including its full-size resource limits.
-pub(crate) fn reduced_size(bytes: &[u8], shrink: u8) -> Option<(u32, u32, usize)> {
+pub(crate) fn reduced_estimate(bytes: &[u8], shrink: u8) -> Option<(u32, u32, usize)> {
     use jpeg_decoder::{CodingProcess, PixelFormat};
     if !bytes.starts_with(&[0xFF, 0xD8]) || shrink == 0 || shrink > MAX_SHRINK {
         return None;
