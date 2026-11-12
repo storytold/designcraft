@@ -11,9 +11,11 @@
 pub mod atomic;
 pub mod autosize;
 pub mod cmd;
+pub mod dictionaries;
 pub mod dtd;
 pub mod file_access;
 pub mod guard;
+pub mod hyphenation;
 pub mod io;
 pub mod links;
 pub mod math;
