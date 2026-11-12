@@ -433,9 +433,32 @@ pub fn decode_rgba(bytes: &[u8]) -> Option<image::RgbaImage> {
     to_display_rgba(px, Some(&icc), &DisplayColour::active())
 }
 
+/// False when `bytes` is a WebP whose `ICCP` chunk declares more bytes than the file holds or than
+/// [`colour::MAX_ICC_BYTES`]. The decoder sizes its buffer from the declared length before it reads
+/// anything, so such a file must not reach `icc_profile()`; its pixels decode without it.
+pub fn webp_icc_is_sane(bytes: &[u8]) -> bool {
+    if bytes.get(0..4) != Some(b"RIFF") || bytes.get(8..12) != Some(b"WEBP") {
+        return true;
+    }
+    let mut pos = 12usize;
+    while let Some(head) = bytes.get(pos..pos.saturating_add(8)) {
+        let size = u32::from_le_bytes([head[4], head[5], head[6], head[7]]) as usize;
+        let body = pos + 8;
+        if &head[..4] == b"ICCP" {
+            return size <= colour::MAX_ICC_BYTES && body.saturating_add(size) <= bytes.len();
+        }
+        // Chunks are padded to an even size.
+        pos = body.saturating_add(size).saturating_add(size & 1);
+    }
+    true
+}
+
 /// The ICC profile embedded in a PNG, JPEG, TIFF or WebP.
 fn embedded_icc(bytes: &[u8]) -> Option<Vec<u8>> {
     use image::ImageDecoder;
+    if !webp_icc_is_sane(bytes) {
+        return None;
+    }
     let mut d = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?.into_decoder().ok()?;
     d.icc_profile().ok().flatten()
 }

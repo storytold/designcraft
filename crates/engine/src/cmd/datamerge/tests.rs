@@ -1364,3 +1364,13 @@ fn a_merge_counts_overset_text_with_the_merged_images_outlines() {
     assert_eq!(r["oversetStories"], 0, "the caption sits beside the image's visible pixels: {r}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn select_records_stops_expanding_once_the_limit_is_met_but_still_checks_every_range() {
+    // 4 billion records in a range would not finish if it were expanded; the limit stops it.
+    let idx = parse::select_records(u32::MAX as usize, "range", 1, "1-3,1-4294967295,2-4294967295", Some(5)).unwrap();
+    assert_eq!(idx, vec![0, 1, 2, 3, 4]);
+    // A later token that is out of range is still an error.
+    assert!(parse::select_records(10, "range", 1, "1-10,5-11", Some(2)).is_err());
+    assert!(parse::select_records(10, "range", 1, "1-2,0", Some(2)).is_err());
+}
