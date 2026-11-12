@@ -13,7 +13,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Insert Footnote",
             ["Type"],
             None,
-            "{text?} — a footnote reference at the insertion point; the caret moves into the new footnote's text",
+            "{text?} — a footnote reference at the insertion point; the caret moves into the new footnote's text (in a table cell it stays in the cell, after its reference)",
             in_story_text,
             insert
         ),
@@ -67,8 +67,9 @@ pub fn specs() -> Vec<CommandSpec> {
 
 fn in_story_text(s: &Session) -> std::result::Result<(), String> {
     super::has_text(s)?;
+    // A table cell takes a footnote, as InDesign does; footnote text does not (no nested notes).
     match s.active().and_then(|d| d.selection.text) {
-        Some(t) if t.cell.is_some() => Err("footnotes can't be inserted in table cells or other footnotes".into()),
+        Some(t) if t.cell.is_some_and(|c| c.footnote_id().is_some()) => Err("footnotes can't be inserted in other footnotes".into()),
         _ => Ok(()),
     }
 }
@@ -86,13 +87,29 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
     let r = s.edit(|d, sel| {
         let t = sel.text.ok_or_else(|| bad("footnote.insert", "no insertion point"))?;
         let para = ParaFormat { style: d.footnote_options.para_style.clone(), ..Default::default() };
-        let st = d.story_mut(t.story).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
-        let r = t.range();
-        let r = r.start.min(st.len())..r.end.min(st.len());
-        st.delete(r.clone());
-        let id = st.insert_note(r.start, &text, para).ok_or_else(|| bad("footnote.insert", "the story's footnotes don't match their references"))?;
-        d.adjust_text_ranges(t.story, r, designcraft_doc::FOOTNOTE_REF.len_utf8());
-        sel.text = Some(TextSel { story: t.story, anchor: text.len(), focus: text.len(), frame: t.frame, cell: Some(CellAddr::footnote(id)) });
+        let (id, r) = {
+            let st = d.text_story_mut(t.story, t.cell).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
+            let r = t.range();
+            let r = r.start.min(st.len())..r.end.min(st.len());
+            st.delete(r.clone());
+            let id =
+                st.insert_note(r.start, &text, para).ok_or_else(|| bad("footnote.insert", "the story's footnotes don't match their references"))?;
+            (id, r)
+        };
+        let step = designcraft_doc::FOOTNOTE_REF.len_utf8();
+        if t.cell.is_none() {
+            d.adjust_text_ranges(t.story, r.clone(), step);
+        }
+        sel.text = Some(match t.cell {
+            None => TextSel { story: t.story, anchor: text.len(), focus: text.len(), frame: t.frame, cell: Some(CellAddr::footnote(id)) },
+            // A table cell's footnote text has no address of its own yet: the caret stays in the
+            // cell, after the reference (the note's text comes from `text`).
+            Some(c) => {
+                sel.cells = None;
+                let at = r.start + step;
+                TextSel { story: t.story, anchor: at, focus: at, frame: t.frame, cell: Some(c) }
+            }
+        });
         Ok(json!({"story": t.story.0, "id": id}))
     })?;
     s.typing_format = None;
@@ -375,12 +392,83 @@ mod tests {
     }
 
     #[test]
-    fn not_in_cells() {
+    fn not_in_footnote_text() {
         let (mut s, sid) = session_with_text();
         s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": 0})).unwrap();
         s.execute("footnote.insert", &json!({"text": "x"})).unwrap();
         // Caret is now in footnote text: no nested footnotes.
-        assert!(s.execute("footnote.insert", &json!({})).is_err());
+        let e = s.execute("footnote.insert", &json!({})).unwrap_err().to_string();
+        assert!(e.contains("other footnotes"), "{e}");
+    }
+
+    /// A table cell takes a footnote, as InDesign does: the reference and its note live in the
+    /// cell's own story, the way an imported cell footnote is stored.
+    #[test]
+    fn insert_footnote_in_a_table_cell() {
+        let (mut s, sid, tid) = session_with_table();
+        let r = s.execute("footnote.insert", &json!({"text": "A cell note."})).unwrap();
+        let id = r["id"].as_u64().unwrap();
+        let st = s.doc().unwrap().doc.story(sid).unwrap().clone();
+        let cell = st.tables.get(&tid).unwrap().cell(0, 0).unwrap().clone();
+        assert_eq!(cell.text.text, format!("Left{}", designcraft_doc::FOOTNOTE_REF));
+        assert_eq!(cell.text.notes.len(), 1);
+        assert_eq!(cell.text.notes[0].id, id);
+        assert_eq!(cell.text.notes[0].text.text, "A cell note.");
+        // The body story takes no part.
+        assert!(st.notes.is_empty());
+        assert_eq!(st.text.matches(designcraft_doc::FOOTNOTE_REF).count(), 0);
+        // The caret stays in the cell, after the reference; typing carries on in the cell and the
+        // note keeps its text.
+        let t = s.doc().unwrap().selection.text.unwrap();
+        assert_eq!(t.cell, Some(CellAddr { table: tid, row: 0, col: 0 }));
+        let after_ref = "Left".len() + designcraft_doc::FOOTNOTE_REF.len_utf8();
+        assert_eq!((t.anchor, t.focus), (after_ref, after_ref));
+        assert!(s.doc().unwrap().selection.cells.is_none(), "the cell is no longer selected as a whole");
+        s.execute("text.insert", &json!({"text": "!"})).unwrap();
+        let cell = s.doc().unwrap().doc.story(sid).unwrap().tables.get(&tid).unwrap().cell(0, 0).unwrap().clone();
+        assert_eq!(cell.text.text, format!("Left{}!", designcraft_doc::FOOTNOTE_REF));
+        assert_eq!(cell.text.notes[0].text.text, "A cell note.");
+        s.doc().unwrap().doc.check().unwrap();
+        // Undo takes the reference and its note away; redo brings them back.
+        s.execute("edit.undo", &json!({})).unwrap(); // the typed "!"
+        s.execute("edit.undo", &json!({})).unwrap(); // the footnote
+        let cell = s.doc().unwrap().doc.story(sid).unwrap().tables.get(&tid).unwrap().cell(0, 0).unwrap().clone();
+        assert_eq!(cell.text.text, "Left");
+        assert!(cell.text.notes.is_empty());
+        s.execute("edit.redo", &json!({})).unwrap();
+        let cell = s.doc().unwrap().doc.story(sid).unwrap().tables.get(&tid).unwrap().cell(0, 0).unwrap().clone();
+        assert_eq!(cell.text.text, format!("Left{}", designcraft_doc::FOOTNOTE_REF));
+        assert_eq!(cell.text.notes.len(), 1);
+        assert_eq!(cell.text.notes[0].text.text, "A cell note.");
+    }
+
+    /// A cell footnote survives Save and Open.
+    #[test]
+    fn a_cell_footnote_survives_save_and_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cell-footnote.designcraft");
+        let (mut s, sid, tid) = session_with_table();
+        s.execute("footnote.insert", &json!({"text": "A cell note."})).unwrap();
+        s.execute("file.saveAs", &json!({"path": path.to_string_lossy()})).unwrap();
+        let mut back = Session::new();
+        back.execute("file.open", &json!({"path": path.to_string_lossy()})).unwrap();
+        let st = back.doc().unwrap().doc.story(sid).unwrap().clone();
+        let cell = st.tables.get(&tid).unwrap().cell(0, 0).unwrap().clone();
+        assert_eq!(cell.text.text, format!("Left{}", designcraft_doc::FOOTNOTE_REF));
+        assert_eq!(cell.text.notes[0].text.text, "A cell note.");
+    }
+
+    /// A text frame whose 2×2 table has "Left" in its first cell and a caret in it.
+    fn session_with_table() -> (Session, StoryId, u64) {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 1})).unwrap();
+        let frame = s.execute("frame.create", &json!({"rect": [36, 36, 300, 400], "content": "text"})).unwrap();
+        let sid = StoryId(frame["story"].as_u64().unwrap());
+        let tid = s.execute("table.insert", &json!({"rows": 2, "cols": 2})).unwrap()["table"].as_u64().unwrap();
+        s.execute("table.setCell", &json!({"story": sid.0, "table": tid, "row": 0, "col": 0, "text": "Left"})).unwrap();
+        s.execute("table.select", &json!({"story": sid.0, "table": tid, "rows": [0, 0], "cols": [0, 0]})).unwrap();
+        s.execute("text.move", &json!({"dir": "storyEnd"})).unwrap();
+        (s, sid, tid)
     }
 
     #[test]
