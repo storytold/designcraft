@@ -2291,7 +2291,7 @@ fn vertical_justification_counts_table_fragment_bottoms() {
         let mut spec = frame_specs(&d, sid).remove(0);
         spec.opts.vertical_justification = mode;
 
-        vertical_justify(&mut ft, &spec, false, &d.footnote_options);
+        vertical_justify(&mut ft, &spec, false, &d.footnote_options, &[]);
 
         let moved = ft.lines[anchor].baseline - baseline;
         let limit = ft.notes[0].rect.y0 - d.footnote_options.space_before;
@@ -2382,6 +2382,57 @@ fn vertical_justification_keeps_earlier_descenders_inside() {
     // Justify leaves the first line where it is, so the last baseline still reaches the inset.
     let (area, _, last) = compose_with(Justify);
     assert!((last - area.y1).abs() < 1e-6, "Justify: last baseline at {last}, text area at {}", area.y1);
+}
+
+/// With Align to Baseline Grid, Center and Bottom move the lines by whole grid steps, so every
+/// line stays on the grid: Bottom puts the last baseline on the lowest grid line above the bottom
+/// inset, and Center on the grid line nearest the centered place. Justify keeps the first and last
+/// lines on the grid and spreads the lines between them.
+#[test]
+fn vertical_justification_keeps_grid_aligned_lines_on_the_grid() {
+    use designcraft_doc::GridAlign;
+    use designcraft_doc::VerticalJustification::{self, Bottom, Center, Justify, Top};
+    let compose_with = |mode: VerticalJustification, align: GridAlign| {
+        let mut area = Rect::ZERO;
+        let (lines, grid) = grid_doc("One\nTwo\nThree", ParaAttrs { grid_align: Some(align), ..Default::default() }, |d, sid| {
+            let spec = frame_specs(d, sid).remove(0);
+            area = spec.area;
+            d.item_mut(spec.id).unwrap().text_frame_mut().unwrap().options.vertical_justification = mode;
+        });
+        (area, lines.iter().map(|l| l.baseline).collect::<Vec<_>>(), grid)
+    };
+    let (area, top, grid) = compose_with(Top, GridAlign::AllLines);
+    let inc = grid.1;
+    assert_eq!(top.len(), 3);
+    assert!(top.iter().all(|&b| on_grid(b, grid)), "Top: {top:?}");
+    assert!(!on_grid(area.y1, grid), "the bottom inset is between grid lines: {area:?}");
+
+    let (_, bottom, _) = compose_with(Bottom, GridAlign::AllLines);
+    assert!(bottom.iter().all(|&b| on_grid(b, grid)), "Bottom keeps every line on the grid: {bottom:?}");
+    let last = bottom[2];
+    assert!(last <= area.y1 + 1e-6 && last > area.y1 - inc, "Bottom: last baseline {last} on the lowest grid line above {}", area.y1);
+    assert!((bottom[1] - bottom[0] - (top[1] - top[0])).abs() < 1e-6, "Bottom keeps the leading");
+
+    let (_, center, _) = compose_with(Center, GridAlign::AllLines);
+    assert!(center.iter().all(|&b| on_grid(b, grid)), "Center keeps every line on the grid: {center:?}");
+    let shift = center[0] - top[0];
+    let ideal = (area.y1 - top[2]) / 2.0;
+    assert!(shift > 1.0 && (shift - ideal).abs() <= inc / 2.0 + 1e-6, "Center: moved {shift}, centered at {ideal}");
+    assert!(center[2] <= area.y1 + 1e-6);
+
+    let (_, justify, _) = compose_with(Justify, GridAlign::AllLines);
+    assert!((justify[0] - top[0]).abs() < 1e-6, "Justify keeps the first baseline: {justify:?}");
+    assert!(on_grid(justify[2], grid), "Justify keeps the last line on the grid: {justify:?}");
+    assert!(justify[2] <= area.y1 + 1e-6 && justify[2] > area.y1 - inc, "Justify: last baseline {} near {}", justify[2], area.y1);
+    assert!((justify[1] - justify[0] - (justify[2] - justify[1])).abs() < 1e-6, "Justify spreads the lines evenly: {justify:?}");
+
+    // First lines only: each paragraph here is one line, so Bottom keeps every line on the grid.
+    let (_, first_only, _) = compose_with(Bottom, GridAlign::FirstLineOnly);
+    assert!(first_only.iter().all(|&b| on_grid(b, grid)), "Bottom, first lines only: {first_only:?}");
+
+    // Without grid alignment the last baseline goes down to the bottom inset.
+    let (_, free, _) = compose_with(Bottom, GridAlign::None);
+    assert!((free[2] - area.y1).abs() < 1e-6, "Bottom without the grid: {free:?}");
 }
 
 /// A corner radius leaves a Cap Height first line where it sits in a rectangular frame, with Top

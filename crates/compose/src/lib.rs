@@ -2737,6 +2737,9 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
     // and in split columns.
     let mut span_paras = vec![false; np];
     let mut split_paras = vec![false; np];
+    // Each paragraph's Align to Baseline Grid (vertical justification moves grid-aligned lines by
+    // whole grid steps).
+    let mut grid_paras = vec![GridAlign::None; np];
     'paras: while pi <= np {
         cur.pi = pi;
         cur.limits = Rc::clone(&limits);
@@ -2896,6 +2899,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
         // it, a paragraph moves on to the next sub-column.
         let split_cfg = SplitCfg::of(&pp);
         split_paras[pi] = split_cfg.is_some();
+        grid_paras[pi] = pp.grid_align;
         if cur.split.is_some_and(|s| Some(s.cfg) != split_cfg) {
             cur.split = None;
         }
@@ -3124,6 +3128,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
         boxes: &boxes,
         span_paras: &span_paras,
         split_paras: &split_paras,
+        grid_paras: &grid_paras,
         styles_tab,
     })
 }
@@ -3138,11 +3143,12 @@ struct FinishInput<'a> {
     boxes: &'a [Option<ParaBox>],
     span_paras: &'a [bool],
     split_paras: &'a [bool],
+    grid_paras: &'a [GridAlign],
     styles_tab: Vec<RunStyle>,
 }
 
 fn finish_composition(input: FinishInput<'_>) -> ComposedStory {
-    let FinishInput { doc, story, frames, cols, notes, out, boxes, span_paras, split_paras, styles_tab } = input;
+    let FinishInput { doc, story, frames, cols, notes, out, boxes, span_paras, split_paras, grid_paras, styles_tab } = input;
     notes.finish(doc, story, frames, cols, out);
     // Ranges, content heights and vertical justification.
     for (fi, ft) in out.frames.iter_mut().enumerate() {
@@ -3159,7 +3165,7 @@ fn finish_composition(input: FinishInput<'_>) -> ComposedStory {
         let before: Vec<f64> = ft.tables.iter().map(|t| ft.lines.get(t.line).map_or(0.0, |l| l.baseline)).collect();
         let spanned = ft.columns.len() > 1 && ft.lines.iter().any(|l| span_paras.get(l.para) == Some(&true))
             || ft.lines.iter().any(|l| split_paras.get(l.para) == Some(&true));
-        vertical_justify(ft, f, spanned, &doc.footnote_options);
+        vertical_justify(ft, f, spanned, &doc.footnote_options, grid_paras);
         for (t, b) in ft.tables.iter_mut().zip(before) {
             let now = ft.lines.get(t.line).map_or(b, |l| l.baseline);
             t.shift(now - b);
@@ -5484,8 +5490,9 @@ fn rule_decos(doc: &Document, r: &designcraft_doc::Rule, rect: Rect, (color, tin
     out
 }
 
-/// `spanned`: a paragraph spans the frame's columns, so the lines move together.
-fn vertical_justify(ft: &mut FrameText, f: &FrameSpec, spanned: bool, notes: &designcraft_doc::FootnoteOptions) {
+/// `spanned`: a paragraph spans the frame's columns, so the lines move together. `grid_aligns`:
+/// each paragraph's Align to Baseline Grid setting.
+fn vertical_justify(ft: &mut FrameText, f: &FrameSpec, spanned: bool, notes: &designcraft_doc::FootnoteOptions, grid_aligns: &[GridAlign]) {
     if ft.lines.is_empty() || f.opts.vertical_justification == VerticalJustification::Top {
         return;
     }
@@ -5563,10 +5570,13 @@ fn vertical_justify(ft: &mut FrameText, f: &FrameSpec, spanned: bool, notes: &de
         let fits = |shift: &[f64]| {
             idx.iter().zip(&rows).all(|(&i, &k)| k == n || shift[k] <= 0.0 || ft.lines[i].baseline + ft.lines[i].descent + shift[k] <= limit + 1e-9)
         };
-        // Every row moves no less as `space` grows, so the most room that fits is found by halving.
-        let mut shift = shifts(space);
-        if !fits(&shift) {
-            let (mut lo, mut hi) = (0.0, space);
+        // Every row moves no less as the room grows, so the most room that fits, up to `top`, is
+        // found by halving.
+        let most_room = |top: f64| -> f64 {
+            if fits(&shifts(top)) {
+                return top;
+            }
+            let (mut lo, mut hi) = (0.0, top);
             for _ in 0..60 {
                 let mid = (lo + hi) / 2.0;
                 if fits(&shifts(mid)) {
@@ -5575,8 +5585,39 @@ fn vertical_justify(ft: &mut FrameText, f: &FrameSpec, spanned: bool, notes: &de
                     hi = mid;
                 }
             }
-            shift = shifts(lo);
-        }
+            lo
+        };
+        // Lines aligned to the baseline grid move by whole grid steps, so they stay on the grid.
+        // With Justify only the last row has to land on the grid (the first row doesn't move).
+        let on_grid = |i: usize| {
+            let line = &ft.lines[i];
+            match grid_aligns.get(line.para) {
+                Some(GridAlign::AllLines) => true,
+                Some(GridAlign::FirstLineOnly) => line.first_in_para,
+                _ => false,
+            }
+        };
+        let center = f.opts.vertical_justification == VerticalJustification::Center;
+        let step = f.grid.map(|(_, inc)| inc).filter(|inc| *inc > 0.0 && inc.is_finite()).filter(|_| match f.opts.vertical_justification {
+            VerticalJustification::Justify => idx.iter().zip(&rows).any(|(&i, &k)| k == n && on_grid(i)),
+            _ => idx.iter().any(|&i| on_grid(i)),
+        });
+        let shift = match step {
+            None => shifts(most_room(space)),
+            Some(inc) => {
+                // The room one grid step takes: Center moves the lines by half the room.
+                let unit = if center { 2.0 * inc } else { inc };
+                let room = most_room(if center { 2.0 * space } else { space });
+                // The last baseline stays above the bottom of the text, and the rows above it fit.
+                let most = (space / inc + 1e-9).floor().min((room / unit + 1e-9).floor()).max(0.0);
+                // Bottom and Justify take the lowest grid line, Center the one nearest the middle.
+                let mut steps = if center { (space / 2.0 / inc).round().min(most) } else { most };
+                if steps > 0.0 && !fits(&shifts(steps * unit)) {
+                    steps -= 1.0;
+                }
+                shifts(steps * unit)
+            }
+        };
         let before: Vec<f64> = idx.iter().map(|&i| ft.lines[i].baseline).collect();
         for (&i, &k) in idx.iter().zip(&rows) {
             ft.lines[i].baseline += shift[k];
