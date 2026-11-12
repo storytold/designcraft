@@ -95,6 +95,35 @@ fn export_to_an_unknown_file_type_is_an_error() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// `run --export` prints what the PDF export reports, and `script --export` dropped it: the same
+/// PDF with a drop shadow came out of a script with nothing on stderr.
+#[test]
+fn script_export_prints_the_export_warnings_as_run_does() {
+    let dir = std::env::temp_dir().join(format!("dc-cli-warnings-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let steps = [
+        r#"frame.create={"rect": [72, 72, 300, 200]}"#,
+        r#"object.fill={"ids": ["$0.id"], "swatch": "[Black]"}"#,
+        r#"object.dropShadow={"ids": ["$0.id"], "on": true, "distance": 8, "size": 6}"#,
+    ];
+    let script = dir.join("shadow.dcs");
+    std::fs::write(&script, steps.join("\n")).unwrap();
+    let pdf = dir.join("shadow.pdf");
+    let pdf = pdf.to_str().unwrap();
+    let mut run = vec!["run"];
+    for step in steps {
+        run.extend(["--cmd", step]);
+    }
+    run.extend(["--export", pdf]);
+    for args in [run, vec!["script", script.to_str().unwrap(), "--export", pdf]] {
+        let out = cli().args(&args).output().unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "{}: {err}", args[0]);
+        assert!(err.contains("warning: 1 object(s) with soft effects"), "{}: {err}", args[0]);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// With `--connect` the exports happen in the running app. `--export copy.designcraft` saves a
 /// copy there: Save As would make the copy the file the open document saves to from then on.
 #[test]
@@ -627,7 +656,10 @@ fn thumbnail_refuses_an_output_that_names_the_input() {
     let doc = dir.join("a.designcraft");
     make_document(&doc);
     let saved = std::fs::read(&doc).unwrap();
+    #[cfg(unix)]
     let mut outs = vec![doc.clone(), dir.join(".").join("a.designcraft")];
+    #[cfg(not(unix))]
+    let outs = vec![doc.clone(), dir.join(".").join("a.designcraft")];
     #[cfg(unix)]
     {
         let link = dir.join("link.png");
@@ -663,3 +695,141 @@ fn thumbnail_replaces_another_existing_file() {
     assert_eq!(w.max(h), 128, "{w}×{h}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The argument bugs photocraft#7071 lists, measured here: every one of them was live in this
+/// parser too. Each case names the photocraft issue it comes from.
+#[test]
+fn the_argument_parser_refuses_what_it_cannot_mean() {
+    let dir = std::env::temp_dir().join(format!("dc-cli-args-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    // photocraft#423: `<sub> --help` was read as an unknown option. It asks about the
+    // subcommand, goes to stdout and succeeds.
+    for sub in ["run", "commands", "describe", "app", "mcp", "perf", "bench", "validate-pdf", "links"] {
+        let out = cli().args([sub, "--help"]).output().unwrap();
+        assert!(out.status.success(), "{sub} --help: {}", String::from_utf8_lossy(&out.stderr));
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(text.contains(&format!("designcraft-cli {sub}")), "{sub} --help names it: {text:?}");
+        assert!(!text.contains("unknown option"), "{sub} --help: {text:?}");
+    }
+    // `script --help` keeps its own longer help, which it had already.
+    let out = cli().args(["script", "--help"]).output().unwrap();
+    assert!(out.status.success() && String::from_utf8_lossy(&out.stdout).contains("Script text, one step per line"));
+
+    // photocraft#6944: an option took the next token whatever it was, so `--export --scale`
+    // wrote a file called `--scale` in the working directory.
+    let out = cli().current_dir(&dir).args(["run", "--sample", "--export", "--scale"]).output().unwrap();
+    assert!(!out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("another option") && err.contains("./--scale"), "{err:?}");
+    assert!(!dir.join("--scale").exists(), "nothing was written");
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "and no other file either");
+
+    // A name that really does start with `-` is still reachable, the way the shell reaches one.
+    let out = cli().current_dir(&dir).args(["run", "--sample", "--export", "./-dash.png"]).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(dir.join("-dash.png").is_file(), "{:?}", std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name()).collect::<Vec<_>>());
+
+    // A missing value is found before anything runs, so an export earlier on the line does not
+    // happen: reported later, `--export first.png --scale --export second.png` wrote first.png
+    // and only then failed, overwriting a file that was already there (noted in review).
+    let first = dir.join("first.png");
+    std::fs::write(&first, b"older file").unwrap();
+    let out =
+        cli().current_dir(&dir).args(["run", "--sample", "--export", first.to_str().unwrap(), "--scale", "--export", "second.png"]).output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{err:?}");
+    assert!(err.contains("--scale needs a value"), "{err:?}");
+    assert_eq!(std::fs::read(&first).unwrap(), b"older file", "the file that was already there is untouched");
+    assert!(!dir.join("second.png").exists(), "and nothing else is written");
+    std::fs::remove_file(&first).unwrap();
+
+    // A missing value is still a missing value, with the message it had.
+    let out = cli().args(["run", "--sample", "--export"]).output().unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--export needs a value"));
+
+    // And a missing value in front of an export is still a missing value: the order of the
+    // options is beside the point until `--scale` has one, and "put it before its --export" was
+    // advice for a list that already does that.
+    let out = cli().current_dir(&dir).args(["run", "--sample", "--scale", "--export", "out.png"]).output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{err:?}");
+    assert!(err.contains("--scale needs a value"), "{err:?}");
+    assert!(!err.contains("has no --export"), "{err:?}");
+    // `./--export` is a file name, which is no way out of a missing `--scale`.
+    assert!(!err.contains("./"), "{err:?}");
+    assert!(!dir.join("out.png").exists(), "and nothing is exported");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// photocraft#1108: an argument that is not UTF-8 panicked in `std::env::args` ("called
+/// `Result::unwrap()` on an `Err` value"). Such a name cannot reach the engine, whose paths are
+/// `str`, so it is a usage error.
+#[cfg(unix)]
+#[test]
+fn an_argument_that_is_not_utf8_is_an_error_not_a_panic() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    let out = cli().arg("info").arg(OsStr::from_bytes(b"/tmp/caf\xe9.designcraft")).output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "an error, not a panic (101): {err:?}");
+    assert!(err.contains("not valid UTF-8"), "{err:?}");
+    assert!(!err.contains("panicked"), "{err:?}");
+}
+
+/// `<sub> --help` answers about that subcommand, which is right where the subcommand exists. For
+/// one that does not, it printed the whole usage and **succeeded**, so `typo` on its own was an
+/// error while `typo --help` was not, and a script checking the exit status carried on past a
+/// misspelled command (noted in review).
+#[test]
+fn an_unknown_subcommand_is_an_error_even_with_help_after_it() {
+    for sub in ["typo", "nonsense", "valdiate-pdf", "runn"] {
+        for help in ["--help", "-h"] {
+            let out = cli().arg(sub).arg(help).output().unwrap();
+            assert_eq!(out.status.code(), Some(1), "{sub} {help} must fail");
+            assert!(out.stdout.is_empty(), "{sub} {help} must not answer on stdout: {:?}", String::from_utf8_lossy(&out.stdout));
+            let err = String::from_utf8_lossy(&out.stderr);
+            assert!(err.contains("usage: designcraft-cli"), "{sub} {help}: {err:?}");
+        }
+    }
+
+    // Every subcommand the usage lists still answers on stdout and succeeds, so this is not a
+    // block on subcommand help. The list is read from the usage text, as the code's own check is.
+    let subs: Vec<&str> = USAGE_SUBCOMMANDS.iter().copied().filter(|s| !s.starts_with('-')).collect();
+    assert!(subs.len() >= 8, "the usage lists {} subcommands", subs.len());
+    for sub in subs {
+        let out = cli().arg(sub).arg("--help").output().unwrap();
+        assert_eq!(out.status.code(), Some(0), "{sub} --help must succeed: {:?}", String::from_utf8_lossy(&out.stderr));
+        assert!(!out.stdout.is_empty(), "{sub} --help must answer on stdout");
+    }
+}
+
+/// A subcommand's help has to name the options that subcommand accepts. `validate-pdf` takes
+/// `--standard x4|x1a` -- its own usage string and the module docs both say so -- but the line in
+/// the global `USAGE`, which is what `validate-pdf --help` slices out, left it off, so the option
+/// was hidden from the only place a user would look (noted in review).
+#[test]
+fn subcommand_help_names_the_options_that_subcommand_takes() {
+    let help = |sub: &str| {
+        let out = cli().arg(sub).arg("--help").output().unwrap();
+        assert_eq!(out.status.code(), Some(0), "{sub} --help: {:?}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    let v = help("validate-pdf");
+    assert!(v.contains("--standard"), "validate-pdf --help hides --standard: {v:?}");
+    // The option is refused for a value it cannot mean, so the help and the parser agree on it.
+    let out = cli().arg("validate-pdf").arg("x.pdf").arg("--standard").arg("x9").output().unwrap();
+    assert_eq!(out.status.code(), Some(1), "an unknown standard is refused");
+
+    // A couple of others, so this is about subcommand help in general and not one line.
+    assert!(help("run").contains("--cmd"), "run --help hides --cmd");
+    assert!(help("mcp").contains("--automation-read-root"), "mcp --help hides its roots");
+}
+
+/// The subcommands the binary's usage text lists. Kept here rather than imported because the
+/// binary is not a library; the assertion above on the count is what notices if it drifts.
+const USAGE_SUBCOMMANDS: &[&str] = &["run", "commands", "describe", "script", "app", "mcp", "perf", "bench", "validate-pdf", "links"];
