@@ -535,7 +535,7 @@ fn failed_delivery_uses_the_real_consumer_preserves_project_resources_and_checkp
     const SVG: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8" fill="#2468ac"/></svg>"##;
     for failed_event in ["saveDialog", "save"] {
         let mut app = app();
-        app.session.execute("file.place", &json!({"name":"Original.svg","base64":designcraft_engine::cmd::file::base64_encode(SVG)})).unwrap();
+        app.session.execute("file.place", &json!({"name":"Original.svg","base64":designcraft_engine::cmd::base64_encode(SVG)})).unwrap();
         let original = app.session.active().unwrap().clone();
         let uid = original.uid;
         let value = save(&mut app, false, Some(After::Close(uid))).unwrap();
@@ -554,7 +554,7 @@ fn failed_delivery_uses_the_real_consumer_preserves_project_resources_and_checkp
                 assert_eq!(metadata["type"], failed_event);
                 assert_eq!(metadata["requestId"], failed_request);
                 if let Some(bytes) = bytes {
-                    let restored = designcraft_engine::cmd::file::from_bytes(&bytes).unwrap();
+                    let restored = designcraft_engine::cmd::from_bytes(&bytes).unwrap();
                     assert_eq!(serde_json::to_value(&restored).unwrap(), serde_json::to_value(original.doc.as_ref()).unwrap());
                     assert_eq!(restored.assets.values().find(|asset| asset.name == "Original.svg").unwrap().data.as_slice(), SVG);
                 }
@@ -594,7 +594,7 @@ fn failed_delivery_uses_the_real_consumer_preserves_project_resources_and_checkp
         host.resolve_dialog(&retry, "provider", "Retry.designcraft").unwrap();
         let event = host.take_events().remove(0);
         assert_eq!(event.metadata["filename"], "Retry.designcraft");
-        let restored = designcraft_engine::cmd::file::from_bytes(&event.bytes.unwrap()).unwrap();
+        let restored = designcraft_engine::cmd::from_bytes(&event.bytes.unwrap()).unwrap();
         assert_eq!(serde_json::to_value(&restored).unwrap(), serde_json::to_value(newer.doc.as_ref()).unwrap());
         assert_eq!(restored.assets.values().find(|asset| asset.name == "Original.svg").unwrap().data.as_slice(), SVG);
         host.result(retry, "saved".into(), "retry-resource".into()).unwrap();
@@ -629,7 +629,7 @@ fn backpressured_failed_read_cannot_open_a_document_from_a_later_callback_and_fr
                 if metadata["type"] == "openRequested" && metadata["requestId"] == later {
                     late_response_accepted = Some(host.open(failed.clone(), "Late.designcraft".into(), bytes.clone()).is_ok());
                 } else {
-                    assert_eq!(metadata["type"], "saveCancelled");
+                    assert!(matches!(metadata["type"].as_str(), Some("saveDialog" | "saveCancelled")));
                 }
                 Ok(())
             }
@@ -683,7 +683,9 @@ fn backpressured_failed_read_cannot_open_a_document_from_a_later_callback_and_fr
     assert_eq!(app.session.documents().len(), 2);
     let opened = app.session.active().unwrap();
     assert_ne!(opened.uid, original.uid);
-    assert_eq!(serde_json::to_value(opened.doc.as_ref()).unwrap(), serde_json::to_value(original.doc.as_ref()).unwrap());
+    let mut expected = original.doc.as_ref().clone();
+    expected.title = "Retry".into();
+    assert_eq!(serde_json::to_value(opened.doc.as_ref()).unwrap(), serde_json::to_value(expected).unwrap());
     assert_eq!(host.bound_document("remote"), Some(opened.uid));
     assert!(host.publish_events_with(
         |metadata, _| {

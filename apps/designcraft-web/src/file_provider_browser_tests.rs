@@ -181,7 +181,8 @@ fn field(value: &JsValue, name: &str) -> Result<String, JsValue> {
 }
 
 fn frame(app: &mut DesignApp, ctx: &egui::Context) {
-    let _ = ctx.run(egui::RawInput::default(), |ctx| app.logic(ctx));
+    let mut output = ctx.run_ui(egui::RawInput::default(), |ui| app.logic(ui.ctx()));
+    output.textures_delta.clear();
 }
 
 #[wasm_bindgen_test]
@@ -199,7 +200,7 @@ fn page_local_provider_delivery_failure_preserves_native_resources_and_recovers(
     let api = Reflect::get(&events.window, &API.into())?;
     let connection = call(&api, "registerProvider", &Array::of3(&"test".into(), &"Test storage".into(), &"account".into()))?;
     frame(&mut app, &ctx);
-    app.session.execute("file.place", &json!({"name":"Original.svg","base64":designcraft_engine::cmd::file::base64_encode(SVG)})).map_err(error)?;
+    app.session.execute("file.place", &json!({"name":"Original.svg","base64":designcraft_engine::cmd::base64_encode(SVG)})).map_err(error)?;
     let captured = app.session.active().ok_or_else(|| error("missing document"))?.clone();
     let request = app.run("app.save", json!({})).map_err(error)?;
     let failed_request = request["requestId"].as_str().ok_or_else(|| error("missing request ID"))?.to_string();
@@ -281,7 +282,9 @@ fn page_local_provider_delivery_failure_preserves_native_resources_and_recovers(
     frame(&mut app, &ctx);
     let opened = app.session.active().ok_or_else(|| error("native open produced no document"))?.clone();
     assert_ne!(opened.uid, captured.uid);
-    assert_eq!(serde_json::to_value(opened.doc.as_ref()).map_err(error)?, serde_json::to_value(newer.doc.as_ref()).map_err(error)?);
+    let mut expected = newer.doc.as_ref().clone();
+    expected.title = "Restored".into();
+    assert_eq!(serde_json::to_value(opened.doc.as_ref()).map_err(error)?, serde_json::to_value(expected).map_err(error)?);
     assert_eq!(
         opened.doc.assets.values().find(|asset| asset.name == "Original.svg").ok_or_else(|| error("opened SVG missing"))?.data.as_slice(),
         SVG

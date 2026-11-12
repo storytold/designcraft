@@ -3939,6 +3939,7 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ),
     ("Greek", ["Greek", "Grec", "Greek", "Greek", "希腊语"]),
     ("Hebrew", ["Hebrew", "Hébreu", "Hebrew", "Hebrew", "希伯来语"]),
+    ("Esperanto", ["Esperanto", "Espéranto", "Esperanto", "エスペラント語", "世界语"]),
     ("Hindi", ["Hindi", "Hindi", "Hindi", "Hindi", "印地语"]),
     ("Hungarian", ["Hungarian", "Hongrois", "Hungarian", "Hungarian", "匈牙利语"]),
     (
@@ -4107,6 +4108,18 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ("Box", ["Box", "Boîte", "Box", "Box", "方框"]),
     ("Comb", ["Comb", "Peigne", "Comb", "Comb", "梳状"]),
     ("Cover", ["Cover", "Recouvrir", "Cover", "Cover", "覆盖"]),
+    ("Cover Image:", ["Titelbild:", "Image de couverture :", "Imagen de portada:", "表紙画像 :", "封面图像："]),
+    ("Choose…", ["Auswählen …", "Choisir…", "Elegir…", "選択…", "选择…"]),
+    (
+        "A PNG or JPEG file; left empty, the first page is the cover.",
+        [
+            "Eine PNG- oder JPEG-Datei; bleibt das Feld leer, ist die erste Seite das Titelbild.",
+            "Un fichier PNG ou JPEG ; laissé vide, la première page sert de couverture.",
+            "Un archivo PNG o JPEG; si se deja vacío, la primera página es la portada.",
+            "PNG または JPEG ファイル。空のままにすると最初のページが表紙になります。",
+            "PNG 或 JPEG 文件；留空时第一页即为封面。",
+        ],
+    ),
     ("Dissolve", ["Dissolve", "Dissolution", "Dissolve", "Dissolve", "溶解"]),
     ("Fade", ["Fade", "Fondu", "Fade", "Fade", "淡入淡出"]),
     ("Push", ["Push", "Pousser", "Push", "Push", "推入"]),
@@ -4135,6 +4148,17 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ("Set", ["Set", "Jeu", "Set", "Set", "样式集"]),
     ("unused", ["unused", "inutilisé", "unused", "unused", "未使用"]),
     ("⚠ Missing", ["⚠ Missing", "⚠ Manquant", "⚠ Missing", "⚠ Missing", "⚠ 缺失"]),
+    ("Checking", ["Wird geprüft", "Vérification", "Comprobando", "確認中", "正在检查"]),
+    (
+        "Link status is unavailable.",
+        [
+            "Der Verknüpfungsstatus ist nicht verfügbar.",
+            "L'état des liens n'est pas disponible.",
+            "El estado de los vínculos no está disponible.",
+            "リンクの状態を取得できません。",
+            "链接状态不可用。",
+        ],
+    ),
     ("▲ Modified", ["▲ Modified", "▲ Modifié", "▲ Modified", "▲ Modified", "▲ 已修改"]),
     ("(Text Color)", ["(Text Color)", "(Couleur du texte)", "(Text Color)", "(Text Color)", "（文本颜色）"]),
     (

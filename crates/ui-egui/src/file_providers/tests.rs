@@ -63,6 +63,37 @@ fn replies_cannot_cross_the_chosen_destination_or_an_open_resource_alias() {
     assert!(h.result(request, "saved".into(), "already-open".into()).is_err());
 }
 #[test]
+fn queued_durable_acknowledgments_reserve_their_resource() {
+    let h = host();
+    let (first, first_uid) = capture(&h, false);
+    let (second, second_uid) = capture(&h, false);
+    assert_ne!(first_uid, second_uid);
+    h.resolve_dialog(&first, "provider", "first.designcraft").unwrap();
+    h.resolve_dialog(&second, "provider", "second.designcraft").unwrap();
+    h.result(first, "saved".into(), "shared".into()).unwrap();
+    assert!(h.result(second.clone(), "saved".into(), "shared".into()).is_err());
+    h.result(second, "saved".into(), "distinct".into()).unwrap();
+    let actions = h.take_actions();
+    assert!(matches!(&actions[..], [
+        Action::Save { capture: a, resource: first_resource, .. },
+        Action::Save { capture: b, resource: second_resource, .. },
+    ] if a.doc == first_uid && b.doc == second_uid && first_resource == "shared" && second_resource == "distinct"));
+}
+
+#[test]
+fn an_earlier_queued_open_reserves_the_resource_until_binding() {
+    let h = host();
+    let connection = h.snapshot()["connectionId"].as_str().unwrap().to_owned();
+    h.set_resources(&connection, vec![Resource { id: "shared".into(), name: "read.designcraft".into(), updated_at: String::new() }]).unwrap();
+    let read = h.request_open("shared").unwrap();
+    h.open(read, "read.designcraft".into(), vec![1]).unwrap();
+    let (save, _) = capture(&h, false);
+    h.resolve_dialog(&save, "provider", "new.designcraft").unwrap();
+    assert!(h.result(save.clone(), "saved".into(), "shared".into()).is_err());
+    h.result(save, "saved".into(), "new-resource".into()).unwrap();
+}
+
+#[test]
 fn unregister_clears_cached_account_documents_before_reconnect() {
     let h = host();
     h.state().bindings.insert(42, "account-a-resource".into());

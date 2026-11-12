@@ -132,6 +132,14 @@ impl State {
         });
         captures.chain(events).chain(actions).fold(0, usize::saturating_add)
     }
+    fn resource_owned_elsewhere(&self, doc: u64, resource: &str) -> bool {
+        let already_bound = self.bindings.get(&doc).is_some_and(|id| id == resource);
+        self.bindings.iter().any(|(uid, id)| *uid != doc && id == resource)
+            || self.actions.iter().any(|action| match action {
+                Action::Save { capture, status, resource: accepted, .. } => status == "saved" && capture.doc != doc && accepted == resource,
+                Action::Open { resource: opening, .. } => !already_bound && opening == resource,
+            })
+    }
     fn pending_for(&self, doc: u64) -> bool {
         self.dialogs.values().chain(self.pending.values()).any(|c| c.snapshots.iter().any(|d| d.uid == doc))
             || self.finishing_saves.values().any(|aliases| aliases.contains(&doc))
@@ -307,8 +315,8 @@ impl Host {
         {
             return Err("result does not match the chosen destination".into());
         }
-        if status == "saved" && s.bindings.iter().any(|(doc, id)| *doc != capture.doc && *id == resource) {
-            return Err("resource is bound to another open document".into());
+        if status == "saved" && s.resource_owned_elsewhere(capture.doc, &resource) {
+            return Err("resource is in use by another document or a pending open".into());
         }
         if status == "saved" && capture.intent == "saveAs" && s.bindings.get(&capture.doc) == Some(&resource) {
             return Err("Save As must produce a distinct resource".into());
@@ -410,19 +418,19 @@ impl Host {
             Some("openRequested") => {
                 // An admitted read or scheduled terminal already owns completion.
                 // Never turn that settled owner into a second, conflicting failure.
-                if !s.queued_opens.contains(request) {
-                    if let Some(resource) = s.opens.get(request).cloned() {
-                        // A full event queue retains the read/alias maps. Settle completion
-                        // now so a later callback in this batch cannot admit these bytes.
-                        s.queued_opens.insert(request.into());
-                        s.finished.push_back(Terminal {
-                            request: request.into(),
-                            metadata: json!({"type":"openFailed", "requestId":request, "resourceId":resource,
-                                "error":"Provider event delivery failed."}),
-                            owner: TerminalOwner::Open,
-                        });
-                        s.flush_finished();
-                    }
+                if !s.queued_opens.contains(request)
+                    && let Some(resource) = s.opens.get(request).cloned()
+                {
+                    // A full event queue retains the read/alias maps. Settle completion
+                    // now so a later callback in this batch cannot admit these bytes.
+                    s.queued_opens.insert(request.into());
+                    s.finished.push_back(Terminal {
+                        request: request.into(),
+                        metadata: json!({"type":"openFailed", "requestId":request, "resourceId":resource,
+                            "error":"Provider event delivery failed."}),
+                        owner: TerminalOwner::Open,
+                    });
+                    s.flush_finished();
                 }
                 None
             }
