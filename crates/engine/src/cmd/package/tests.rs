@@ -303,9 +303,14 @@ fn package_writes_document_links_and_report() {
     std::fs::create_dir_all(&dir).unwrap();
     let svg = dir.join("logo.svg");
     std::fs::write(&svg, r##"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40"><rect width="40" height="40"/></svg>"##).unwrap();
+    // An older file than the copies made of it below.
+    let earlier = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+    std::fs::File::options().write(true).open(&svg).unwrap().set_modified(earlier).unwrap();
+    let fingerprint = |path: &std::path::Path| crate::cmd::datamerge::fingerprint_of(path);
     let mut s = Session::new();
     s.execute("file.new", &json!({})).unwrap();
     s.execute("file.place", &json!({"path": svg.to_string_lossy(), "x": 100, "y": 100})).unwrap();
+    assert_eq!(s.doc().unwrap().doc.assets.values().next().unwrap().link_fingerprint, fingerprint(&svg));
     s.execute("frame.create", &json!({"rect": [72, 300, 400, 400], "content": "text", "text": "Hello"})).unwrap();
     let out = dir.join("Pkg");
     let r = s.execute("file.package", &json!({"dir": out.to_string_lossy(), "pdf": true, "instructions": "Print on matte."})).unwrap();
@@ -323,10 +328,16 @@ fn package_writes_document_links_and_report() {
     let packed = super::super::from_bytes(&std::fs::read(doc_file).unwrap()).unwrap();
     let link = packed.assets.values().next().unwrap().link.clone().unwrap();
     assert!(link.contains("Links"), "{link}");
+    // The link is the copy now: the original file's size and time don't go with it (the copy's
+    // own are too recent to vouch for it; the first check compares the bytes and keeps them).
+    assert!(fingerprint(&out.join("Links").join("logo.svg")).is_some());
+    assert_eq!(packed.assets.values().next().unwrap().link_fingerprint, None);
     // Copy Links To relinks the open document.
     let r = s.execute("links.copyTo", &json!({"dir": dir.join("Copies").to_string_lossy()})).unwrap();
     assert_eq!(r["copied"], 1);
-    assert!(s.doc().unwrap().doc.assets.values().next().unwrap().link.as_deref().unwrap().contains("Copies"));
+    let relinked = s.doc().unwrap().doc.assets.values().next().unwrap().clone();
+    assert!(relinked.link.as_deref().unwrap().contains("Copies"));
+    assert_eq!(relinked.link_fingerprint, None);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -439,6 +450,56 @@ fn package_copies_the_fallback_fonts_that_draw_text() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The package holds the font as the document loaded it: a link put at its path since (to a
+/// private file, say) isn't followed, and its permissions are the file's.
+#[cfg(unix)]
+#[test]
+fn packaged_fonts_are_the_loaded_bytes_not_what_is_at_the_path_now() {
+    use designcraft_fonts::DOCUMENT_FONTS_FOLDER;
+    use designcraft_fonts::testing::{font_with, installed_face};
+    let dir = std::env::temp_dir().join(format!("dc-package-font-swapped-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let from = dir.join("loaded.ttf");
+    let bytes = font_with("DocFont Package Swapped", &['S']).unwrap();
+    std::fs::write(&from, &bytes).unwrap();
+    let face = installed_face(bytes.clone(), from.clone()).unwrap();
+    std::fs::remove_file(&from).unwrap();
+    std::fs::write(dir.join("secret"), b"private").unwrap();
+    std::os::unix::fs::symlink(dir.join("secret"), &from).unwrap();
+    let root = OutputRoot::new(dir.clone()).unwrap();
+    let fonts = dir.join("Pkg").join(DOCUMENT_FONTS_FOLDER);
+    std::fs::create_dir_all(&fonts).unwrap();
+    let (mut copied, mut taken, mut files) = (Vec::new(), Taken::default(), Vec::new());
+    assert_eq!(copy_font(&root, &face, &fonts, &mut copied, &mut taken, &mut files), "");
+    assert_eq!(std::fs::read(fonts.join("loaded.ttf")).unwrap(), bytes);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn packaging_into_a_fonts_own_folder_neither_overwrites_nor_packages_a_changed_font() {
+    use designcraft_fonts::testing::{font_with, installed_face};
+    let dir = std::env::temp_dir().join(format!("dc-package-font-same-file-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let from = dir.join("loaded.ttf");
+    let bytes = font_with("DocFont Package Same File", &['S']).unwrap();
+    std::fs::write(&from, &bytes).unwrap();
+    let face = installed_face(bytes.clone(), from.clone()).unwrap();
+    let root = OutputRoot::new(dir.clone()).unwrap();
+    let copy = |taken: &mut Taken| copy_font(&root, &face, &dir, &mut Vec::new(), taken, &mut Vec::new());
+    // Unchanged since it loaded: already where it is wanted.
+    assert_eq!(copy(&mut Taken::default()), "");
+    assert_eq!(std::fs::read(&from).unwrap(), bytes);
+    // Changed on disk since: the package can't hold the loaded font there, and the new file is kept.
+    let newer = font_with("DocFont Package Same File", &['S', 'T']).unwrap();
+    std::fs::write(&from, &newer).unwrap();
+    let note = copy(&mut Taken::default());
+    assert!(note.contains("not copied") && note.contains("changed on disk"), "{note}");
+    assert_eq!(std::fs::read(&from).unwrap(), newer);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn packaged_fonts_keep_a_font_extension() {
@@ -456,7 +517,7 @@ fn packaged_fonts_keep_a_font_extension() {
     let root = OutputRoot::new(dir.clone()).unwrap();
     let fonts = dir.join("Pkg").join(DOCUMENT_FONTS_FOLDER);
     std::fs::create_dir_all(&fonts).unwrap();
-    let (mut copied, mut taken, mut files) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut copied, mut taken, mut files) = (Vec::new(), Taken::default(), Vec::new());
     assert_eq!(copy_font(&root, &face, &fonts, &mut copied, &mut taken, &mut files), "");
     assert_eq!(files, [fonts.join("12345.ttf")]);
     let db = designcraft_fonts::FontDb::global();
@@ -484,13 +545,20 @@ fn package_uses_portable_names_inside_the_selected_directory() {
     for name in ["COM¹", "COM²", "COM³", "LPT¹", "LPT²", "LPT³"] {
         assert!(is_reserved_windows_name(name), "{name}");
     }
-    let mut taken = Vec::new();
+    let mut taken = Taken::default();
     assert_eq!(unique_name("Logo.svg".into(), &mut taken), "Logo.svg");
     assert_eq!(unique_name("logo.svg".into(), &mut taken), "logo 2.svg");
     assert_eq!(unique_name("Résumé.pdf".into(), &mut taken), "Résumé.pdf");
     assert_eq!(unique_name("Re\u{301}sume\u{301}.pdf".into(), &mut taken), "Re\u{301}sume\u{301} 2.pdf");
     assert_eq!(unique_name("ΟΣ.txt".into(), &mut taken), "ΟΣ.txt");
     assert_eq!(unique_name("ος.txt".into(), &mut taken), "ος 2.txt");
+    // Many files of one name are numbered in order, each without trying every earlier number.
+    let mut taken = Taken::default();
+    for k in 1..=2000 {
+        let expected = if k == 1 { "logo.png".to_string() } else { format!("logo {k}.png") };
+        assert_eq!(unique_name("logo.png".into(), &mut taken), expected);
+    }
+    assert_eq!(unique_name("logo 7.png".into(), &mut taken), "logo 7 2.png", "a name already given out is still numbered");
 
     let dir = std::env::temp_dir().join(format!("dc-package-safe-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);

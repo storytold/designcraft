@@ -1,6 +1,6 @@
 //! Live preflight (the Preflight panel and the status-bar indicator): overset text, missing
 //! fonts and glyphs, missing or low-resolution graphics, RGB content in print documents, empty
-//! text frames.
+//! text frames, white or [Paper] set to overprint.
 
 use designcraft_compose::ComposedStory;
 use designcraft_doc::{Content, Document, Intent, Item, SpreadRef};
@@ -11,6 +11,8 @@ use serde_json::{Value, json};
 
 use super::{CommandSpec, cmd, has_doc};
 use crate::{Result, Session};
+
+mod white_overprint;
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -268,6 +270,9 @@ pub fn check(s: &Session, min_ppi: f64) -> Vec<Issue> {
     let mut missing_fonts: Vec<String> = Vec::new();
     let mut unsupported_typography = std::collections::BTreeSet::new();
     let mut missing: Vec<(FaceRef, Vec<char>, designcraft_doc::ItemId)> = Vec::new();
+    // Ruby and kenten set to overprint in white, by the frame that shows them (`None`: a note's,
+    // a cell's or an unplaced story, which has no frame of its own).
+    let mut white_text: std::collections::BTreeMap<Option<designcraft_doc::ItemId>, Vec<&'static str>> = std::collections::BTreeMap::new();
     for story in d.stories.values() {
         let cs = s.cache.get(d, story.id, None);
         missing_glyphs(&cs, None, 0, &mut missing);
@@ -292,6 +297,8 @@ pub fn check(s: &Session, min_ppi: f64) -> Vec<Issue> {
     // Nested note and cell text uses paragraph rules too.
     super::fonts::for_each_story(d, &mut |story| {
         let ranges = story.para_ranges();
+        // The byte ranges its frames show, asked for at the first white ruby or kenten.
+        let mut shown = None;
         for (pi, pf) in story.paras.iter().enumerate() {
             let (para, base) = d.styles.resolve_para(pf);
             let Some(range) = ranges.get(pi) else { continue };
@@ -327,13 +334,16 @@ pub fn check(s: &Session, min_ppi: f64) -> Vec<Issue> {
             }
             for (run, f) in story.runs().filter(|(run, _)| run.start < range.end && run.end > range.start) {
                 let props = d.styles.resolve_char(&base, f);
-                {
-                    use designcraft_doc::cjk_settings::AdornmentOverprint as O;
-                    let kenten = props.kenten && (props.kenten_overprint_fill == O::On || props.kenten_overprint_stroke == O::On);
-                    let ruby = !props.ruby.is_empty() && (props.ruby_overprint_fill == O::On || props.ruby_overprint_stroke == O::On);
-                    if kenten || ruby {
-                        unsupported_typography
-                            .insert("Ruby and kenten overprint show in Overprint Preview, but PDF export doesn't write overprint".to_string());
+                let white = white_overprint::adornments(d, &props);
+                if !white.is_empty() {
+                    let shown = shown.get_or_insert_with(|| white_overprint::frame_ranges(s, d, story));
+                    for frame in white_overprint::frames_showing(story, shown, run.start.max(range.start)..run.end.min(range.end)) {
+                        let parts = white_text.entry(frame).or_default();
+                        for part in &white {
+                            if !parts.contains(part) {
+                                parts.push(part);
+                            }
+                        }
                     }
                 }
                 if has_rtl
@@ -376,6 +386,20 @@ pub fn check(s: &Session, min_ppi: f64) -> Vec<Issue> {
     for message in unsupported_typography {
         out.push(Issue { severity: "warning", kind: "unsupportedTypography", message, item: None, page: None });
     }
+    let (white_items, printed_frames) = white_overprint::printed(s, d);
+    for (item, parts) in white_text {
+        // A frame PDF export leaves out (hidden, nonprinting, on a hidden or nonprintable layer,
+        // on a parent page no page shows) prints none of its text.
+        let page = match item {
+            Some(id) => match printed_frames.get(&id) {
+                Some(page) => *page,
+                None => continue,
+            },
+            None => None,
+        };
+        out.extend(white_overprint::issue(&parts, item.map(|i| i.0), page));
+    }
+    out.extend(white_items);
     for (face, chars, item) in missing {
         let listed: Vec<String> = chars.iter().take(MISSING_GLYPHS_LISTED).map(char::to_string).collect();
         let more = chars.len().saturating_sub(MISSING_GLYPHS_LISTED);

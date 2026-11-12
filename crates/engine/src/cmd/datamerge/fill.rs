@@ -228,6 +228,7 @@ pub fn fill_row(
     let Pending { mut reps, links, parent, mut report } = pending;
     typed_reps(doc, fields, row, maps, &placeholders, &mut reps);
     apply_reps(doc, &reps);
+    fill_nested_markers(doc, fields, row, maps);
     for (anchor, dest, field) in links {
         let anchor = match anchor {
             PlaceholderAnchor::Text { story, start, end } => {
@@ -331,16 +332,90 @@ fn typed_reps(
     }
 }
 
+/// How deep the merge follows texts inside texts (a table in a cell of a table, a note in a cell).
+/// Documents don't come anywhere near it; a file that goes deeper is filled down to here instead of
+/// exhausting the stack.
+pub(super) const MAX_NESTED_DEPTH: usize = 32;
+
+/// The `<<Field>>` markers in the table cells, footnotes and endnotes of the stories being filled.
+/// Those texts are stories inside their story, which no placeholder can name and `typed_reps`
+/// doesn't read, so a field in a table was left as its marker (#2315). A story, table or note is
+/// copied only when something inside it holds a marker of a known field.
+fn fill_nested_markers(doc: &mut designcraft_doc::Document, fields: &[DataField], row: &[String], maps: &Maps) {
+    let mut mapped: Vec<StoryId> = maps.stories.values().copied().collect();
+    mapped.sort();
+    mapped.dedup();
+    for sid in mapped {
+        if !doc.story(sid).is_some_and(|st| inner_has(st, fields, 0)) {
+            continue;
+        }
+        let Some(st) = doc.story_mut(sid) else { continue };
+        fill_inner(st, fields, row, 0);
+    }
+}
+
+/// Whether `st`'s own text holds a marker of a known field.
+fn own_has(st: &Story, fields: &[DataField]) -> bool {
+    find_markers(&st.text).iter().any(|(_, _, name)| fields.iter().any(|f| f.name == *name))
+}
+
+/// Whether a text inside `st` (a table cell, footnote or endnote, or one inside those), not `st`'s
+/// own text, holds a marker of a known field.
+fn inner_has(st: &Story, fields: &[DataField], depth: usize) -> bool {
+    if depth >= MAX_NESTED_DEPTH {
+        return false;
+    }
+    let holds = |t: &Story| own_has(t, fields) || inner_has(t, fields, depth + 1);
+    st.tables.values().any(|t| t.cells.iter().any(|c| holds(&c.text))) || st.notes.iter().chain(&st.endnotes).any(|n| holds(&n.text))
+}
+
+/// Fill the known fields' markers in the texts inside `st`, not in its own text.
+fn fill_inner(st: &mut Story, fields: &[DataField], row: &[String], depth: usize) {
+    if depth >= MAX_NESTED_DEPTH {
+        return;
+    }
+    let holds = |t: &Story| own_has(t, fields) || inner_has(t, fields, depth + 1);
+    for t in st.tables.values_mut() {
+        if t.cells.iter().any(|c| holds(&c.text)) {
+            for c in &mut Arc::make_mut(t).cells {
+                fill_own(&mut c.text, fields, row);
+                fill_inner(&mut c.text, fields, row, depth + 1);
+            }
+        }
+    }
+    for n in st.notes.iter_mut().chain(st.endnotes.iter_mut()) {
+        if holds(&n.text) {
+            let n = Arc::make_mut(n);
+            fill_own(&mut n.text, fields, row);
+            fill_inner(&mut n.text, fields, row, depth + 1);
+        }
+    }
+}
+
+/// Replace the markers of known fields in `st`'s own text with the record's values.
+fn fill_own(st: &mut Story, fields: &[DataField], row: &[String]) {
+    let found: Vec<(usize, usize, String)> =
+        find_markers(&st.text).into_iter().filter(|(_, _, name)| fields.iter().any(|f| f.name == *name)).collect();
+    for (start, end, name) in found.into_iter().rev() {
+        st.replace(start..end, cell_of(fields, row, &name));
+    }
+}
+
 fn find_markers(text: &str) -> Vec<(usize, usize, String)> {
     let mut out = Vec::new();
     let mut i = 0;
+    // The next `>>` at or after the `<<` being looked at: found once, kept until passed, so the
+    // text is scanned once however many `<<` it holds (not again from every one of them).
+    let mut close: Option<usize> = Some(0);
     while i < text.len() {
-        if text[i..].starts_with("<<")
-            && let Some(rel) = text[i + 2..].find(">>")
-        {
-            let name = &text[i + 2..i + 2 + rel];
+        if text[i..].starts_with("<<") {
+            if close.is_some_and(|c| c < i + 2) {
+                close = text[i + 2..].find(">>").map(|rel| i + 2 + rel);
+            }
+            let Some(c) = close else { break };
+            let name = &text[i + 2..c];
             if !name.is_empty() && !name.contains(['<', '>', '\n']) {
-                let end = i + 2 + rel + 2;
+                let end = c + 2;
                 out.push((i, end, name.to_string()));
                 i = end;
                 continue;
@@ -410,10 +485,7 @@ fn create_link(doc: &mut designcraft_doc::Document, anchor: PlaceholderAnchor, d
         }
     };
     let id = doc.alloc();
-    let name = match &dest {
-        HyperlinkDest::Url(u) | HyperlinkDest::Email(u) => u.clone(),
-        HyperlinkDest::Page(p) => format!("Page {}", p + 1),
-    };
+    let name = dest.label();
     doc.hyperlinks.push(Hyperlink { id, name, source, dest });
     true
 }
@@ -571,6 +643,25 @@ fn anchor_is_parent(doc: &designcraft_doc::Document, anchor: &PlaceholderAnchor)
 
 fn cell_of<'a>(fields: &[DataField], row: &'a [String], name: &str) -> &'a str {
     fields.iter().position(|f| f.name == name).and_then(|i| row.get(i)).map(String::as_str).unwrap_or("")
+}
+
+#[cfg(test)]
+mod marker_tests {
+    use super::find_markers;
+
+    #[test]
+    fn markers_are_found_in_one_pass() {
+        let found = find_markers;
+        assert_eq!(found("a <<Name>> b <<x>>"), [(2, 10, "Name".to_string()), (13, 18, "x".to_string())]);
+        assert_eq!(found("<<>> <<a<b>> <<ok>>"), [(13, 19, "ok".to_string())]);
+        assert_eq!(found("<<<<a>>"), [(2, 7, "a".to_string())]);
+        // Many `<<` with no `>>` to close them: linear, not a search from each of them.
+        let open = "<<".repeat(200_000);
+        let t = std::time::Instant::now();
+        assert!(found(&open).is_empty());
+        assert!(found(&format!("{open}>>")).is_empty(), "a name made of `<` isn't one");
+        assert!(t.elapsed() < std::time::Duration::from_secs(5), "{:?}", t.elapsed());
+    }
 }
 
 #[cfg(test)]
