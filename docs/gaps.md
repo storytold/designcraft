@@ -154,8 +154,8 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
 
 ### 12. Tables in depth (F)
 - **Missing:** anchored objects in cells not drawn (#163); Table ▸ Table Options and Cell Options
-  submenus as InDesign lays them out, Diagonal Lines, Edit Header/Footer,
-  Go to Row; general reliability (#20).
+  submenus as InDesign lays them out, Diagonal Lines, Edit Header/Footer; general reliability
+  (#20).
 - **Estimate:** 25–40 h.
 
 ### 13. Hyphenation and spelling languages (T, L)
@@ -231,10 +231,16 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
 - **Estimate:** 30–60 h (PostScript interpreter is a large separate project: +80–150 h).
 
 ### 20. Performance on large documents (P)
-- **Missing:** incremental composition (recompose from the edited paragraph; 8 ms keystroke
-  budget), benchmarks against InDesign on long books and image-heavy catalogues.
+- **Missing:** the 8 ms keystroke budget in long stories: an edit that moves lines into other
+  frames composes the story to its end, the lines an edit keeps are copied, and stories with
+  footnotes, endnotes, tables, anchored objects, named lists, tracked deletions, balanced
+  columns, vertical justification other than Top, column rules, type on a path, spanning or
+  split paragraphs, paragraph borders or shading, or keep options that move lines compose
+  whole; benchmarks
+  against InDesign on long books and image-heavy catalogues.
 - **Have:** compose 300k characters ~38 ms warm, damage-region repaint (< 1 ms while typing),
-  parallel story composition.
+  parallel story composition, and an edit composes only the paragraphs it can change in a plain
+  story (240 paragraphs: 3 composed for a typed character).
 - **Estimate:** 40–80 h.
 
 ### 26. Autoflow flows into the primary text frame of the pages that follow (F)

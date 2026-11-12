@@ -3,16 +3,42 @@ use super::face::FontFace;
 use super::system::CatalogEntry;
 use super::{Arc, MetadataProvider, StringId};
 
+/// Characters kept of one decoded name: a name record can be 64 KB, and a font has many of them,
+/// kept for every face (a real family or style name is far shorter).
+const MAX_NAME_CHARS: usize = 256;
+
+fn capped(name: impl std::fmt::Display) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    // Stops decoding at the cap: the name is never built in full.
+    let mut room = MAX_NAME_CHARS;
+    struct Cap<'a>(&'a mut String, &'a mut usize);
+    impl std::fmt::Write for Cap<'_> {
+        fn write_str(&mut self, s: &str) -> std::fmt::Result {
+            for c in s.chars() {
+                if *self.1 == 0 {
+                    return Err(std::fmt::Error);
+                }
+                *self.1 -= 1;
+                self.0.push(c);
+            }
+            Ok(())
+        }
+    }
+    let _ = write!(Cap(&mut out, &mut room), "{name}");
+    out
+}
+
 pub(super) fn aliases(font: &skrifa::FontRef<'_>, ids: &[StringId]) -> Vec<String> {
     let mut names: Vec<String> =
-        ids.iter().flat_map(|id| font.localized_strings(*id)).take(256).map(|name| name.to_string()).filter(|name| !name.trim().is_empty()).collect();
+        ids.iter().flat_map(|id| font.localized_strings(*id)).take(256).filter(|name| !name.chars().all(char::is_whitespace)).map(capped).collect();
     names.sort();
     names.dedup();
     names
 }
 
 pub(super) fn name(font: &skrifa::FontRef<'_>, ids: &[StringId]) -> Option<String> {
-    ids.iter().find_map(|id| font.localized_strings(*id).english_or_first().map(|s| s.to_string()).filter(|s| !s.is_empty()))
+    ids.iter().find_map(|id| font.localized_strings(*id).english_or_first().map(capped).filter(|s| !s.is_empty()))
 }
 
 /// A face's family and style names (the default instance's style for a variable font).
@@ -115,4 +141,14 @@ pub(super) fn style_weight(style: &str) -> f32 {
 pub(super) fn style_italic(style: &str) -> bool {
     let s = norm(style);
     s.contains("italic") || s.contains("oblique") || s == "it"
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn decoded_names_are_capped() {
+        assert_eq!(super::capped("Arial"), "Arial");
+        let long = "é".repeat(10_000);
+        assert_eq!(super::capped(&long).chars().count(), super::MAX_NAME_CHARS);
+    }
 }

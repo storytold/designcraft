@@ -381,7 +381,12 @@ fn paragraph_panel_menu(app: &mut DesignApp, ui: &mut Ui, p: &Value) {
         ("Paragraph Rules…", "app.paragraphRulesDialog"),
         ("Paragraph Borders and Shading…", "app.paragraphBordersDialog"),
     ] {
-        if item(ui, label, None, true) {
+        let mut b = egui::Button::new(crate::rtl::widget(ui, crate::i18n::tr(&lang, label)));
+        if let Some(sc) = crate::menus::shortcut_of(app, id) {
+            b = b.shortcut_text(crate::menus::shortcut_text(&sc));
+        }
+        if ui.add(b).clicked() {
+            ui.close();
             command = Some(id);
         }
     }
