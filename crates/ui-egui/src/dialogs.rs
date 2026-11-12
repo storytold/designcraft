@@ -104,7 +104,7 @@ impl Dialog {
             None => String::new(),
         }
     }
-    fn m(&self, k: &str) -> Option<f64> {
+    pub(crate) fn m(&self, k: &str) -> Option<f64> {
         self.m_in(k, self.unit)
     }
     /// A measure where a bare number is in `unit`.
@@ -1054,9 +1054,44 @@ fn seed_text_frame_options(app: &DesignApp, d: &mut Dialog) {
     }
     let o = selected_frame_options(app).unwrap_or_default();
     let units = app.session.active().map(|s| s.doc.settings.horizontal_units).unwrap_or(Unit::Picas);
+    let mut shown = text_frame_fields(&o, units, selected_frame_width(app), &document_grid(app));
+    // A non-rectangular frame shows one Inset (its top inset, the one kept from the outline).
+    let shaped = selected_frame_is_shaped(app);
+    if shaped && let Value::Object(m) = &mut shown {
+        m.insert("inset".into(), json!(format_measure(o.inset[0], units)));
+    }
+    d.fields.insert("_shaped".into(), json!(shaped));
+    if let Value::Object(m) = &shown {
+        for (k, v) in m {
+            d.fields.entry(k.clone()).or_insert_with(|| v.clone());
+        }
+    }
+    // Linked only when no selected frame has uneven sides, so a typed side cannot overwrite them.
+    d.fields.entry("insetLinked".to_string()).or_insert_with(|| json!(selected_frames_have_even_insets(app)));
+    // The frame's width: Fixed Number shows each column's width from it as the fields change.
+    if let Some(w) = selected_frame_width(app) {
+        d.fields.insert("_frameWidth".into(), json!(w));
+    }
+    d.fields.insert("_shown".into(), shown);
+}
+
+/// The active document's baseline grid (the default one without a document).
+pub(crate) fn document_grid(app: &DesignApp) -> designcraft_doc::BaselineGrid {
+    app.session.active().map(|s| s.doc.settings.baseline_grid.clone()).unwrap_or_default()
+}
+
+/// Text frame options `o` as the Text Frame Options dialog's fields, measures in `units`; with the
+/// frame's width, a Fixed Number column shows the width it gets. Without a custom baseline grid of
+/// its own, the frame shows `doc_grid`'s start and increment.
+pub(crate) fn text_frame_fields(
+    o: &designcraft_doc::TextFrameOptions,
+    units: Unit,
+    frame_width: Option<f64>,
+    doc_grid: &designcraft_doc::BaselineGrid,
+) -> Value {
     let fm = |v: f64| json!(format_measure(v, units));
     // Fixed Number: the width each column gets in the frame (shown, as in InDesign).
-    let inner = selected_frame_width(app).map(|w| w - o.inset[1] - o.inset[3]).unwrap_or(0.0);
+    let inner = frame_width.map(|w| w - o.inset[1] - o.inset[3]).unwrap_or(0.0);
     let n = o.columns.max(1) as f64;
     let width = match o.columns_kind {
         designcraft_doc::ColumnsKind::FixedWidth if o.column_width > 0.0 => o.column_width,
@@ -1065,14 +1100,14 @@ fn seed_text_frame_options(app: &DesignApp, d: &mut Dialog) {
     let kind = |v: Value| v.as_str().unwrap_or_default().to_string();
     // A frame without a custom baseline grid shows the document grid's start and increment.
     let grid = o.baseline_grid.unwrap_or_else(|| {
-        let g = app.session.active().map(|s| s.doc.settings.baseline_grid.clone()).unwrap_or_default();
+        let g = doc_grid;
         let relative_to = match g.relative_to {
             designcraft_doc::GridRelative::TopOfPage => designcraft_doc::FrameGridRelative::TopOfPage,
             designcraft_doc::GridRelative::TopMargin => designcraft_doc::FrameGridRelative::TopMargin,
         };
         designcraft_doc::FrameBaselineGrid { start: g.start, increment: g.increment, relative_to }
     });
-    let mut shown = json!({
+    json!({
         "columns": o.columns, "gutter": fm(o.gutter),
         "columnsKind": kind(serde_json::to_value(o.columns_kind).unwrap_or_default()), "columnWidth": fm(width),
         "balanceColumns": o.balance_columns, "ignoreWrap": o.ignore_wrap,
@@ -1090,25 +1125,7 @@ fn seed_text_frame_options(app: &DesignApp, d: &mut Dialog) {
         "noLineBreaks": o.auto_size_no_line_breaks,
         "customGrid": o.baseline_grid.is_some(), "gridStart": fm(grid.start), "gridIncrement": fm(grid.increment),
         "gridRelativeTo": grid.relative_to.name(),
-    });
-    // A non-rectangular frame shows one Inset (its top inset, the one kept from the outline).
-    let shaped = selected_frame_is_shaped(app);
-    if shaped && let Value::Object(m) = &mut shown {
-        m.insert("inset".into(), fm(o.inset[0]));
-    }
-    d.fields.insert("_shaped".into(), json!(shaped));
-    if let Value::Object(m) = &shown {
-        for (k, v) in m {
-            d.fields.entry(k.clone()).or_insert_with(|| v.clone());
-        }
-    }
-    // Linked only when no selected frame has uneven sides, so a typed side cannot overwrite them.
-    d.fields.entry("insetLinked".to_string()).or_insert_with(|| json!(selected_frames_have_even_insets(app)));
-    // The frame's width: Fixed Number shows each column's width from it as the fields change.
-    if let Some(w) = selected_frame_width(app) {
-        d.fields.insert("_frameWidth".into(), json!(w));
-    }
-    d.fields.insert("_shown".into(), shown);
+    })
 }
 
 /// A 0..1 tint as a percentage ("40", "12.5").
@@ -1270,7 +1287,7 @@ fn text_frame_preview(app: &mut DesignApp, d: &mut Dialog) {
 /// maximum, Balance Columns), Inset Spacing (top and bottom, the link, left and right; one Inset
 /// for a non-rectangular frame), Vertical Justification (align, paragraph spacing limit) and
 /// Ignore Text Wrap.
-fn general(lang: &str, ui: &mut egui::Ui, d: &mut Dialog) {
+pub(crate) fn general(lang: &str, ui: &mut egui::Ui, d: &mut Dialog) {
     let tr = |s: &'static str| crate::i18n::tr(lang, s);
     let (cap, field, cap2) = (64.0, 110.0, 70.0);
     framed(ui, None, |ui| {
@@ -3122,6 +3139,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         crate::export_batch_dialog::ID => crate::i18n::tr(&app.ui.language, "Export Layouts and Versions"),
         crate::package_dialog::ID => crate::i18n::tr(&app.ui.language, "Package"),
         crate::package_dialog::INSTRUCTIONS => crate::i18n::tr(&app.ui.language, "Printing Instructions"),
+        crate::object_style_dialog::ID => crate::i18n::tr(&app.ui.language, crate::object_style_dialog::title(&d)),
         id => match id.strip_prefix("cmd:").and_then(designcraft_engine::find_command) {
             Some(c) => crate::i18n::tr(&app.ui.language, c.label.trim_end_matches('…')),
             None => crate::i18n::tr(&app.ui.language, "Dialog"),
@@ -3147,6 +3165,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
             "colorPicker" => 580.0,
             crate::package_dialog::ID => 720.0,
             crate::package_dialog::INSTRUCTIONS => 520.0,
+            crate::object_style_dialog::ID => 760.0,
             _ => 640.0,
         };
         let width = preferred_width.min(available.x);
@@ -3493,6 +3512,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                     crate::export_batch_dialog::ID => crate::export_batch_dialog::show(app, ui, &mut d),
                     crate::package_dialog::ID => crate::package_dialog::show(app, ui, &mut d),
                     crate::package_dialog::INSTRUCTIONS => crate::package_dialog::show_instructions(app, ui, &mut d),
+                    crate::object_style_dialog::ID => crate::object_style_dialog::show(app, ui, &mut d),
                     "preferences" => preferences(app, ui, &mut d, body_height),
                     "print" => print_dialog(app, ui, &mut d),
                     "pdfImport" => {
@@ -5273,6 +5293,16 @@ fn confirm_part6(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
                 && app.ui.dialog.is_none()
             {
                 app.status(e.clone());
+                app.ui.dialog = Some(d);
+            }
+            r
+        }
+        crate::object_style_dialog::ID => {
+            let r = crate::object_style_dialog::confirm(app, &d);
+            if let Err(e) = &r {
+                // Keep the dialog and its edits open with the reason (an empty or taken name).
+                let mut d = d.clone();
+                d.fields.insert("status".into(), json!(e));
                 app.ui.dialog = Some(d);
             }
             r
