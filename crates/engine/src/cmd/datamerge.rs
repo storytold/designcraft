@@ -503,6 +503,9 @@ fn add_placeholder(d: &mut Document, sel: &Selection, p: &Value, name: &str) -> 
     } else if field.kind == DataFieldKind::Image {
         // An image field at the insertion point places the image inline in the text.
         PlaceholderRole::Image
+    } else if field.kind == DataFieldKind::Qr {
+        // A QR field at the insertion point is refused below: QR codes bind to a frame.
+        PlaceholderRole::Qr
     } else {
         PlaceholderRole::Text
     };

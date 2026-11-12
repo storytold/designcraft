@@ -817,6 +817,20 @@ fn an_image_field_at_the_insertion_point_merges_as_an_inline_image() {
     assert!((wide.1 - width).abs() < 0.01 && (wide.2 - width / 8.0).abs() < 0.01, "a wide image is scaled down to the frame: {wide:?}");
 }
 
+/// A QR field at a text insertion point is refused instead of merging its payload as text.
+#[test]
+fn a_qr_field_at_the_insertion_point_is_refused() {
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    select_csv(&mut s, "@Photo,#Code\n/x.png,hello\n");
+    let made = text_frame(&mut s, [36.0, 36.0, 300.0, 300.0], "Hi ", None);
+    exec(&mut s, "text.select", json!({"story": made["story"], "anchor": 3, "focus": 3}));
+    let msg = err(&mut s, "data.placeholder.add", json!({"field": "Code"}));
+    assert!(msg.contains("bind to a frame"), "{msg}");
+    assert_eq!(texts(&s), vec!["Hi ".to_string()]);
+    assert!(s.documents()[0].doc.data_merge.placeholders.is_empty());
+}
+
 /// A typed `<<name>>` marker for an image column places the image too, from an absolute path;
 /// an explicit text role still writes the path as text.
 #[test]
