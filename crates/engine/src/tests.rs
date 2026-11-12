@@ -980,6 +980,28 @@ fn object_style_text_frame_general_options_leave_the_other_frame_settings() {
     assert!(s.execute("style.object.edit", &json!({"name": name, "textFrame": {"columns": 60}})).is_err());
 }
 
+/// A stroke added to a style that set none reaches a drawn shape still carrying its default 1 pt
+/// stroke and a frame with none, and leaves a shape or text frame with its own stroke.
+#[test]
+fn a_stroke_added_to_an_object_style_reaches_default_strokes() {
+    use designcraft_doc::ItemId;
+    let mut s = session();
+    s.execute("style.object.create", &json!({"name": "Boxed", "fromSelection": false})).unwrap();
+    let frame = |s: &mut Session, x: f64, content: &str| {
+        s.execute("frame.create", &json!({"rect": [x, 36, x + 50.0, 86], "content": content, "caret": false})).unwrap()["id"].as_u64().unwrap()
+    };
+    let (shape, text, own) = (frame(&mut s, 36.0, "unassigned"), frame(&mut s, 100.0, "text"), frame(&mut s, 200.0, "unassigned"));
+    let stroked_text = frame(&mut s, 300.0, "text");
+    s.execute("object.stroke", &json!({"ids": [own], "weight": 9})).unwrap();
+    s.execute("object.stroke", &json!({"ids": [stroked_text], "weight": 1})).unwrap();
+    s.execute("style.object.apply", &json!({"name": "Boxed", "ids": [shape, text, own, stroked_text]})).unwrap();
+    let r = s.execute("style.object.edit", &json!({"name": "Boxed", "stroke": {"weight": 4}})).unwrap();
+    assert_eq!(r["updated"], 2, "{r}");
+    let weight = |s: &Session, id: u64| s.doc().unwrap().doc.item(ItemId(id)).unwrap().stroke.weight;
+    assert_eq!((weight(&s, shape), weight(&s, text), weight(&s, own)), (4.0, 4.0, 9.0));
+    assert_eq!(weight(&s, stroked_text), 1.0, "a text frame's own 1 pt stroke stays");
+}
+
 #[test]
 fn object_style_effects_reach_grouped_and_anchored_items() {
     use designcraft_doc::ItemId;

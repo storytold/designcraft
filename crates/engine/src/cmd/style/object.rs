@@ -402,17 +402,23 @@ pub(super) fn edit_object(s: &mut Session, p: &Value) -> Result<Value> {
         // most frames). An attribute the style no longer sets stays as it is on the items.
         let effects = (new.effects != old.effects).then_some(new.effects.clone()).flatten().map(|e| (old.effects.clone().unwrap_or_default(), e));
         let fill = (new.fill != old.fill).then_some(new.fill.clone()).flatten().map(|f| (old.fill.clone().unwrap_or_default(), f));
-        let stroke = (new.stroke != old.stroke)
-            .then_some(new.stroke.clone())
-            .flatten()
-            .map(|f| (old.stroke.clone().unwrap_or_else(designcraft_doc::Stroke::none), f));
+        let stroke = (new.stroke != old.stroke).then_some(new.stroke.clone()).flatten().map(|f| (old.stroke.clone(), f));
+        // With no stroke in the style before, an item with no stroke (a frame's default) or a
+        // 1 pt black one (a drawn shape's default) follows.
+        let stroke_follows = |it: &Item, old: &Option<designcraft_doc::Stroke>| match old {
+            Some(o) => it.stroke == *o,
+            None => {
+                it.stroke == designcraft_doc::Stroke::none()
+                    || (matches!(it.content, designcraft_doc::Content::Unassigned) && it.stroke == designcraft_doc::Stroke::default())
+            }
+        };
         let corners = (new.corners != old.corners).then_some(new.corners).flatten().map(|c| (old.corners.unwrap_or_default(), c));
         let frame =
             (new.text_frame != old.text_frame).then_some(new.text_frame.clone()).flatten().map(|t| (old.text_frame.clone().unwrap_or_default(), t));
         let follows = |it: &Item| {
             effects.as_ref().is_some_and(|(o, _)| it.effects == *o)
                 || fill.as_ref().is_some_and(|(o, _)| it.fill == *o)
-                || stroke.as_ref().is_some_and(|(o, _)| it.stroke == *o)
+                || stroke.as_ref().is_some_and(|(o, _)| stroke_follows(it, o))
                 || corners.as_ref().is_some_and(|(o, _)| it.corners == o.named_to_path(&it.path))
                 || frame.as_ref().is_some_and(|(o, n)| it.text_frame().is_some_and(|t| t.options.clone().follow_general(o, n)))
         };
@@ -430,7 +436,7 @@ pub(super) fn edit_object(s: &mut Session, p: &Value) -> Result<Value> {
                     it.fill = n.clone();
                 }
                 if let Some((o, n)) = &stroke
-                    && it.stroke == *o
+                    && stroke_follows(it, o)
                 {
                     it.stroke = n.clone();
                 }
