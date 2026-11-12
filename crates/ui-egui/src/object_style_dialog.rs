@@ -28,18 +28,29 @@ const ATTRIBUTES: [(&str, &str); 6] = [
 
 /// The fields of the Paragraph Styles and Text Frame General Options pages: the style's paragraph
 /// style (`""`: none), Apply Next Style, and text frame options `tf` as the Text Frame Options
-/// dialog shows them (`tfBase` keeps the options the page doesn't show).
+/// dialog shows them (`tfBase` keeps the options as they are, `tfShown` the fields as first shown).
 fn text_fields(app: &DesignApp, fields: &mut Value, paragraph: Option<&str>, next: bool, tf: &designcraft_doc::TextFrameOptions) {
-    let units = app.session.active().map_or(designcraft_geom::Unit::Picas, |s| s.doc.settings.horizontal_units);
     fields["paragraphStyle"] = json!(paragraph.unwrap_or(""));
     fields["applyNext"] = json!(next);
     fields["tfBase"] = serde_json::to_value(tf).unwrap_or_default();
     fields["insetLinked"] = json!(tf.inset.iter().all(|v| (v - tf.inset[0]).abs() < 1e-9));
-    if let (Value::Object(f), Value::Object(shown)) =
-        (fields, crate::dialogs::text_frame_fields(tf, units, None, &crate::dialogs::document_grid(app)))
-    {
+    let shown = crate::dialogs::text_frame_fields(tf, doc_units(app), None, &crate::dialogs::document_grid(app));
+    fields["tfShown"] = shown.clone();
+    if let (Value::Object(f), Value::Object(shown)) = (fields, shown) {
         f.extend(shown);
     }
+}
+
+/// The active document's ruler unit, which a bare number in a measurement field is in.
+fn doc_units(app: &DesignApp) -> designcraft_geom::Unit {
+    app.session.active().map_or(designcraft_geom::Unit::Picas, |s| s.doc.settings.horizontal_units)
+}
+
+/// The dialog with `fields`, reading bare numbers in the document's ruler unit.
+fn dialog(app: &DesignApp, fields: Value) -> Dialog {
+    let mut d = Dialog::new(ID, fields);
+    d.unit = doc_units(app);
+    d
 }
 
 /// The active document as the dialog records it: its uid and the epoch that File › Revert
@@ -85,7 +96,7 @@ pub fn open_new(app: &mut DesignApp) {
         "apply": from,
     });
     text_fields(app, &mut fields, None, false, &frame.unwrap_or_default());
-    app.ui.dialog = Some(Dialog::new(ID, fields));
+    app.ui.dialog = Some(dialog(app, fields));
 }
 
 /// Object Style Options for style `name`; refused for a style the document doesn't have and for
@@ -116,7 +127,7 @@ pub fn open_edit(app: &mut DesignApp, name: &str) -> Result<(), String> {
         "apply": false,
     });
     text_fields(app, &mut fields, os.paragraph_style.as_deref(), os.apply_next_style, &os.text_frame.clone().unwrap_or_default());
-    app.ui.dialog = Some(Dialog::new(ID, fields));
+    app.ui.dialog = Some(dialog(app, fields));
     Ok(())
 }
 
@@ -157,23 +168,31 @@ fn frame_options(d: &Dialog) -> Result<Option<designcraft_doc::TextFrameOptions>
     }
     let mut o: designcraft_doc::TextFrameOptions = d.fields.get("tfBase").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
     let bad = |what: &str| format!("Text Frame General Options: {what}");
-    let measure = |key: &str| d.m(key).filter(|v| v.is_finite() && (0.0..=15552.0).contains(v));
+    // A field still as first shown keeps the option's value, which the field shows rounded.
+    let shown = d.fields.get("tfShown").cloned().unwrap_or(Value::Null);
+    let measure = |key: &str, was: f64| {
+        if d.fields.get(key).is_some_and(|v| *v == shown[key]) {
+            return Some(was);
+        }
+        d.m(key).filter(|v| v.is_finite() && (0.0..=15552.0).contains(v))
+    };
     o.columns = d
         .n("columns")
         .filter(|n| (1.0..=40.0).contains(n) && n.fract() == 0.0)
         .ok_or_else(|| bad("the number of columns is a whole number from 1 to 40"))? as u32;
-    o.gutter = measure("gutter").ok_or_else(|| bad("the gutter is not a measure"))?;
+    o.gutter = measure("gutter", o.gutter).ok_or_else(|| bad("the gutter is not a measure"))?;
     o.columns_kind = serde_json::from_value(json!(d.s("columnsKind"))).unwrap_or(o.columns_kind);
     if o.columns_kind == designcraft_doc::ColumnsKind::FixedWidth {
-        o.column_width = measure("columnWidth").ok_or_else(|| bad("the column width is not a measure"))?;
+        o.column_width = measure("columnWidth", o.column_width).ok_or_else(|| bad("the column width is not a measure"))?;
     }
     o.balance_columns = d.b("balanceColumns");
     for (side, key) in o.inset.iter_mut().zip(["insetTop", "insetLeft", "insetBottom", "insetRight"]) {
-        *side = measure(key).ok_or_else(|| bad("an inset is not a measure"))?;
+        *side = measure(key, *side).ok_or_else(|| bad("an inset is not a measure"))?;
     }
     o.vertical_justification = serde_json::from_value(json!(d.s("verticalJustification"))).unwrap_or(o.vertical_justification);
     if o.vertical_justification == designcraft_doc::VerticalJustification::Justify {
-        o.vj_paragraph_spacing_limit = measure("paragraphSpacingLimit").ok_or_else(|| bad("the paragraph spacing limit is not a measure"))?;
+        o.vj_paragraph_spacing_limit =
+            measure("paragraphSpacingLimit", o.vj_paragraph_spacing_limit).ok_or_else(|| bad("the paragraph spacing limit is not a measure"))?;
     }
     o.ignore_wrap = d.b("ignoreWrap");
     Ok(Some(o))
@@ -198,6 +217,10 @@ pub fn confirm(app: &mut DesignApp, d: &Dialog) -> Result<Value, String> {
     let mut p = attrs(d);
     p.insert("textFrame".into(), frame_options(d)?.map_or(Value::Null, |o| general_json(&o)));
     if d.b("new") {
+        // A name another style has is refused, as Object Style Options refuses it.
+        if app.session.active().is_some_and(|st| st.doc.styles.object_style(&name).is_some()) {
+            return Err(format!("an object style is already named `{name}`"));
+        }
         p.insert("name".into(), json!(name));
         p.insert("fromSelection".into(), json!(false));
         let r = app.run("style.object.create", Value::Object(p)).map_err(|e| e.to_string())?;
@@ -775,8 +798,8 @@ mod tests {
         assert!(app.ui.dialog.as_ref().is_some_and(|d| d.b("new")));
     }
 
-    /// A refused OK (an empty name, a name another style has) keeps the dialog and its edits,
-    /// with the reason shown.
+    /// A refused OK (an empty name, a name another style has, in Object Style Options and in New
+    /// Object Style) keeps the dialog and its edits, with the reason shown.
     #[test]
     fn a_refused_ok_keeps_the_dialog_open_with_the_reason() {
         let (mut app, _) = app_with_frame();
@@ -801,6 +824,69 @@ mod tests {
         let e = crate::dialogs::confirm(&mut app).unwrap_err();
         assert!(e.contains("already named"), "{e}");
         assert!(app.ui.dialog.as_ref().is_some_and(|d| d.s("status") == e));
+        // New Object Style with a name another style has makes no style under another name.
+        app.ui.dialog = None;
+        let count = |app: &DesignApp| app.session.active().unwrap().doc.styles.object.len();
+        let before = count(&app);
+        open_new(&mut app);
+        if let Some(d) = app.ui.dialog.as_mut() {
+            d.fields.insert("name".into(), json!("Taken"));
+        }
+        let e = crate::dialogs::confirm(&mut app).unwrap_err();
+        assert!(e.contains("already named"), "{e}");
+        assert!(app.ui.dialog.as_ref().is_some_and(|d| d.s("status") == e));
+        assert_eq!(count(&app), before, "no style was made");
+    }
+
+    fn app_with_text_frame(units: &str) -> DesignApp {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        app.run("document.preferences", json!({"horizontalUnits": units, "verticalUnits": units})).unwrap();
+        let r = app.run("frame.create", json!({"rect": [36, 36, 336, 336], "content": "text", "caret": false})).unwrap();
+        app.run("selection.set", json!({"ids": [r["id"]]})).unwrap();
+        app
+    }
+
+    /// In a document measured in millimeters, a bare number in a Text Frame General Options field
+    /// is millimeters, in New Object Style and in Object Style Options.
+    #[test]
+    fn bare_numbers_are_in_the_documents_ruler_unit() {
+        let mut app = app_with_text_frame("millimeters");
+        let mm = 72.0 / 25.4;
+        let frame = |app: &DesignApp| app.session.active().unwrap().doc.styles.object_style("Metric").and_then(|s| s.text_frame.clone()).unwrap();
+        open_new(&mut app);
+        if let Some(d) = app.ui.dialog.as_mut() {
+            d.fields.insert("name".into(), json!("Metric"));
+            for k in ["insetTop", "insetLeft", "insetBottom", "insetRight"] {
+                d.fields.insert(k.into(), json!("6"));
+            }
+        }
+        crate::dialogs::confirm(&mut app).unwrap();
+        assert!(frame(&app).inset.iter().all(|v| (v - 6.0 * mm).abs() < 1e-6), "{:?}", frame(&app).inset);
+        open_edit(&mut app, "Metric").unwrap();
+        if let Some(d) = app.ui.dialog.as_mut() {
+            d.fields.insert("columns".into(), json!("2"));
+            d.fields.insert("gutter".into(), json!("5"));
+        }
+        crate::dialogs::confirm(&mut app).unwrap();
+        assert!((frame(&app).gutter - 5.0 * mm).abs() < 1e-6, "{}", frame(&app).gutter);
+    }
+
+    /// Object Style Options keeps a General measurement the user did not edit exactly as the style
+    /// has it, though the field shows it rounded.
+    #[test]
+    fn general_measurements_left_alone_keep_their_value() {
+        let mut app = app_with_text_frame("points");
+        let tf = json!({"gutter": 2.123456, "inset": [1.23456, 2.34567, 3.45678, 4.56789]});
+        app.run("style.object.create", json!({"name": "Precise", "fromSelection": false, "textFrame": tf})).unwrap();
+        open_edit(&mut app, "Precise").unwrap();
+        if let Some(d) = app.ui.dialog.as_mut() {
+            d.fields.insert("name".into(), json!("Precise Too"));
+            d.fields.insert("insetTop".into(), json!("7 pt"));
+        }
+        crate::dialogs::confirm(&mut app).unwrap();
+        let o = app.session.active().unwrap().doc.styles.object_style("Precise Too").and_then(|s| s.text_frame.clone()).unwrap();
+        assert_eq!((o.gutter, o.inset), (2.123456, [7.0, 2.34567, 3.45678, 4.56789]));
     }
 
     /// Object Style Options and New Object Style act only on the document they opened for. With

@@ -867,6 +867,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Last Page", "Utolsó oldal"),
     ("Last Spread", "Utolsó oldalpár"),
     ("Layer Options…", "Réteg beállításai…"),
+    ("Duplicate Layer \"{name}\"", "„{name}” réteg duplikálása"),
     ("Layers", "Rétegek"),
     ("Layout", "Elrendezés"),
     ("Layout/Index", "Elrendezés/Tárgymutató"),

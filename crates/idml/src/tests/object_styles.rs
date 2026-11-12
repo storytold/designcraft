@@ -177,6 +177,20 @@ fn object_style_apply_next_style_round_trips() {
     }
 }
 
+/// A style that sets no corners keeps none after export and import, though the style it is based
+/// on sets rounded corners.
+#[test]
+fn a_style_without_corners_keeps_none_over_its_based_on_style() {
+    let mut d = small_doc();
+    let rounded = Some(designcraft_geom::corners::CornerOptions::uniform(CornerShape::Rounded, 12.0));
+    let styles = std::sync::Arc::make_mut(&mut d.styles);
+    styles.object.push(designcraft_doc::ObjectStyle { name: "Round".into(), corners: rounded, ..Default::default() });
+    styles.object.push(designcraft_doc::ObjectStyle { name: "Square".into(), based_on: Some("Round".into()), ..Default::default() });
+    let back = import_idml(&export_idml(&d)).unwrap();
+    assert_eq!(back.styles.object_style("Round").and_then(|s| s.corners), rounded);
+    assert_eq!(back.styles.object_style("Square").and_then(|s| s.corners), None);
+}
+
 /// A style's Text Frame General Options take each setting its own `TextFramePreference` leaves out
 /// from the style it is based on (named by its id or bare name, and only when that style doesn't
 /// turn the category off), and export and import keep the merged options.

@@ -2181,6 +2181,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Color Group Options…", "Alternativ för färggrupp…"),
     ("Layer Options", "Lageralternativ"),
     ("Layer Options for \"{name}\"…", "Lageralternativ för \"{name}\"…"),
+    ("Duplicate Layer \"{name}\"", "Duplicera lagret ”{name}”"),
     ("Swatch Name:", "Färgrutenamn:"),
     ("Name with Color Value", "Namn med färgvärde"),
     ("Color Type:", "Färgtyp:"),
