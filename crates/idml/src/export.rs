@@ -65,9 +65,20 @@ pub fn export_idml(doc: &Document) -> Vec<u8> {
 
 /// Export with options, using the index sort-key conflict policy of [`export_idml`].
 pub fn export_idml_with(doc: &Document, opts: &ExportOptions) -> Vec<u8> {
+    export_idml_report(doc, opts).0
+}
+
+/// [`export_idml_with`] and its warnings: an image written as a link only because the export's
+/// embedded-image limit was reached is named in one, so the package is not silently incomplete.
+pub fn export_idml_report(doc: &Document, opts: &ExportOptions) -> (Vec<u8>, Vec<String>) {
+    export_with_limit(doc, opts, MAX_EMBEDDED_BYTES)
+}
+
+pub(crate) fn export_with_limit(doc: &Document, opts: &ExportOptions, embed_limit: usize) -> (Vec<u8>, Vec<String>) {
     let mut ex = Ex::new(doc, opts);
+    ex.embed_limit = embed_limit;
     let parts = ex.build();
-    zip_parts(&parts)
+    (zip_parts(&parts), ex.warnings)
 }
 
 fn zip_parts(parts: &[(String, Vec<u8>)]) -> Vec<u8> {
@@ -106,7 +117,17 @@ struct Ex<'a> {
     /// Index topic path → first serialized sort key; See / See also cross-references.
     index_topics: BTreeMap<Vec<String>, String>,
     index_xrefs: Vec<(Vec<String>, &'static str, String)>,
+    /// Bytes of image data written into `<Contents>` so far (see [`MAX_EMBEDDED_BYTES`]).
+    embedded: usize,
+    embed_limit: usize,
+    /// Images written as links because the embed limit was reached (one line per placement).
+    warnings: Vec<String>,
 }
+
+/// Image bytes one export embeds, counting each placement (IDML holds a copy per placement): past
+/// it a graphic that has a link of its own is written as that link without its contents (an
+/// image with no link is always embedded: it has nowhere else to live).
+const MAX_EMBEDDED_BYTES: usize = 512 * 1024 * 1024;
 
 impl<'a> Ex<'a> {
     fn new(d: &'a Document, opts: &'a ExportOptions) -> Self {
@@ -121,6 +142,9 @@ impl<'a> Ex<'a> {
             link_text_sources: Vec::new(),
             index_topics: BTreeMap::new(),
             index_xrefs: Vec::new(),
+            embedded: 0,
+            embed_limit: MAX_EMBEDDED_BYTES,
+            warnings: Vec::new(),
         };
         ex.assign_swatch_ids();
         for s in d.stories.values() {
