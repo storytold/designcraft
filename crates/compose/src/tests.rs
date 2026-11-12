@@ -573,6 +573,62 @@ fn wrap_on_both_sides_sets_text_left_then_right_of_the_object() {
     assert!(!cs.is_overset());
 }
 
+/// An Alpha Channel contour counts only where the graphic's clipping path shows the image: here
+/// the visible pixels are in the right half and the clipping path shows the left half, so the
+/// image wraps nothing; inverted, the clipping path shows the right half and the image wraps.
+#[test]
+fn an_alpha_channel_contour_stops_at_the_clipping_path() {
+    use designcraft_geom::{PathData, Point, SubPath};
+    let rect = |x0: f64, x1: f64| {
+        PathData::single(SubPath::polyline(&[Point::new(x0, 0.0), Point::new(x1, 0.0), Point::new(x1, 200.0), Point::new(x0, 200.0)], true))
+    };
+    let lines_beside = |invert: bool| {
+        let (mut d, sid, _) = doc_with(&[LOREM; 4].join(" "), Rect::new(0.0, 0.0, 300.0, 800.0), ParaAttrs::default());
+        let lid = d.default_layer();
+        let asset = designcraft_doc::AssetId(d.alloc());
+        let mut it = designcraft_doc::Item::new(
+            ItemId(d.alloc()),
+            lid,
+            designcraft_doc::Shape::Rectangle,
+            designcraft_geom::shapes::rectangle(Rect::new(150.0, 100.0, 300.0, 300.0)),
+        );
+        let mut clip = designcraft_doc::ClippingPath::new(designcraft_doc::ClippingKind::DetectEdges, rect(0.0, 75.0));
+        clip.invert = invert;
+        it.content = designcraft_doc::Content::Graphic(designcraft_doc::Graphic {
+            layer_options: None,
+            asset,
+            size: (150.0, 200.0),
+            xf: designcraft_geom::Affine::translate((150.0, 100.0)),
+            clip: Some(std::sync::Arc::new(clip)),
+            auto_fit: Default::default(),
+            fit_align: 0,
+            crop: [0.0; 4],
+            wrap: Default::default(),
+            fill: Default::default(),
+        });
+        it.wrap.mode = WrapMode::Contour;
+        it.wrap.side = WrapSide::LeftSide;
+        it.wrap.contour = designcraft_doc::ContourType::AlphaChannel;
+        d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+        d.alpha_outlines.push(std::sync::Arc::new(designcraft_doc::AlphaOutline {
+            asset,
+            threshold: designcraft_doc::DEFAULT_ALPHA_THRESHOLD,
+            width: 150,
+            height: 200,
+            outer: rect(75.0, 150.0),
+            holes: PathData::default(),
+            source: std::sync::Weak::new(),
+            serial: designcraft_doc::AlphaOutline::next_serial(),
+        }));
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        cs.frames[0].lines.iter().filter(|l| l.baseline - l.ascent > 100.0 && l.baseline + l.descent < 300.0).map(|l| l.x1).collect::<Vec<_>>()
+    };
+    let shown_left = lines_beside(false);
+    assert!(!shown_left.is_empty() && shown_left.iter().all(|x| *x > 260.0), "nothing visible wraps nothing: {shown_left:?}");
+    let shown_right = lines_beside(true);
+    assert!(!shown_right.is_empty() && shown_right.iter().all(|x| *x <= 225.0 + 1e-6), "the right half wraps: {shown_right:?}");
+}
+
 /// Same As Clipping follows a placed graphic's clipping path: beside a triangle that widens
 /// downwards, text reaches further in at the narrow top than at the wide bottom.
 #[test]
