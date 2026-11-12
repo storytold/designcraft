@@ -9452,6 +9452,126 @@ fn a_frame_anchored_in_an_anchored_frame_is_placed_through_both_hosts() {
     assert_eq!(Cache::new().get(&d, isid, None).frames.len(), 1);
 }
 
+/// An unplaced `w` × `h` text frame showing a new story of `text`, ready to anchor.
+fn anchored_text_frame(d: &mut Document, text: &str, w: f64, h: f64) -> (designcraft_doc::Item, StoryId) {
+    let lid = d.default_layer();
+    let (fid, fsid) = (ItemId(d.alloc()), StoryId(d.alloc()));
+    let mut story = Story::with_text(fsid, text, ParaFormat::default());
+    story.frames.push(fid);
+    d.stories.insert(fsid, Arc::new(story));
+    let mut it =
+        designcraft_doc::Item::new(fid, lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, w, h)));
+    it.content = Content::Text(designcraft_doc::TextFrame { story: fsid, options: Default::default() });
+    (it, fsid)
+}
+
+/// A one-page document whose body frame holds `outer` anchored before its second line. Returns
+/// the body frame and the body story's composition.
+fn body_holding(d: &mut Document, outer: designcraft_doc::Item) -> (ItemId, ComposedStory) {
+    let lid = d.default_layer();
+    let body = "One.\nTwo.\nThree.";
+    let (bf, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 400.0, 400.0), lid, body, ParaFormat::default()).unwrap();
+    d.story_mut(sid).unwrap().insert_object(body.find("Two").unwrap(), designcraft_doc::AnchoredObject::new(outer, Default::default()));
+    (bf, compose_story(d, sid, &ComposeOptions::default()))
+}
+
+/// `isid`'s one frame, `inner`, is placed on page 1 with parent space `want`, and the cache
+/// composes it there.
+fn assert_placed_on_page_one(d: &Document, isid: StoryId, inner: ItemId, want: Affine) {
+    let placed = placed::placements(d, isid, &mut |h| Arc::new(compose_story(d, h, &ComposeOptions::default())));
+    assert_eq!(placed.len(), 1, "{placed:?}");
+    let (id, p) = placed[0];
+    assert_eq!((id, p.spread), (inner, SpreadRef::Doc(0)));
+    let (got, want) = (p.xf.as_coeffs(), want.as_coeffs());
+    assert!(got.iter().zip(want).all(|(a, b)| (a - b).abs() < 1e-9), "{got:?} != {want:?}");
+    assert_eq!(frame_specs_placed(d, isid, &placed)[0].page, Some(0));
+    assert_eq!(Cache::new().get(d, isid, None).frames.len(), 1);
+}
+
+/// A text frame anchored in an anchored text frame that is a member of an anchored group with a
+/// rotation and a scale is placed through the group's transform and the member's own.
+#[test]
+fn a_frame_anchored_in_a_grouped_anchored_frame_is_placed_through_the_group() {
+    let mut d = Document::new(&NewDocument { pages: 1, ..Default::default() });
+    let (mut outer, osid) = anchored_text_frame(&mut d, "Outer text", 200.0, 100.0);
+    let (inner, isid) = anchored_text_frame(&mut d, "Inner", 80.0, 30.0);
+    let (outer_id, inner_id) = (outer.id, inner.id);
+    outer.xf = Affine::translate((12.0, 7.0));
+    d.story_mut(osid).unwrap().insert_object("Outer ".len(), designcraft_doc::AnchoredObject::new(inner, Default::default()));
+    let mut g =
+        designcraft_doc::Item::new(ItemId(d.alloc()), d.default_layer(), designcraft_doc::Shape::Group, designcraft_geom::PathData::default());
+    g.content = Content::Group { items: vec![Arc::new(outer)] };
+    g.xf = Affine::rotate(0.25) * Affine::scale(1.25);
+    let (gid, gxf) = (g.id, g.xf);
+    let (bf, host) = body_holding(&mut d, g);
+
+    let o1 = &host.frame(bf).unwrap().objects[0];
+    // The composed group keeps its rotation and scale; its offset puts its box at the object's origin.
+    let gxf_placed = o1.object.item.xf;
+    assert_eq!((o1.object.item.id, gxf_placed.as_coeffs()[..4].to_vec()), (gid, gxf.as_coeffs()[..4].to_vec()));
+    let mid = compose_story(&d, osid, &ComposeOptions::default());
+    let o2 = &mid.frame(outer_id).unwrap().objects[0];
+    let want = d.text_xf(d.item(bf).unwrap())
+        * Affine::translate(o1.origin.to_vec2())
+        * gxf_placed
+        * d.text_xf(d.anchored_item(outer_id).unwrap())
+        * Affine::translate(o2.origin.to_vec2());
+    assert_placed_on_page_one(&d, isid, inner_id, want);
+}
+
+/// A text frame anchored in a footnote of an anchored text frame is placed through the footnote's
+/// spot in that frame as well as both hosts.
+#[test]
+fn a_frame_anchored_in_a_footnote_of_an_anchored_frame_is_placed_through_the_footnote() {
+    let mut d = Document::new(&NewDocument { pages: 1, ..Default::default() });
+    let (outer, osid) = anchored_text_frame(&mut d, "Outer text", 200.0, 120.0);
+    let (inner, isid) = anchored_text_frame(&mut d, "Inner", 80.0, 30.0);
+    let (outer_id, inner_id) = (outer.id, inner.id);
+    let st = d.story_mut(osid).unwrap();
+    st.insert_note("Outer".len(), "Note text", ParaFormat::default());
+    Arc::make_mut(&mut st.notes[0]).text.insert_object("Note ".len(), designcraft_doc::AnchoredObject::new(inner, Default::default()));
+    let (bf, host) = body_holding(&mut d, outer);
+
+    let o1 = &host.frame(bf).unwrap().objects[0];
+    let mid = compose_story(&d, osid, &ComposeOptions::default());
+    let note = &mid.frame(outer_id).unwrap().notes[0];
+    let o2 = &note.text.frames[0].objects[0];
+    let want = d.text_xf(d.item(bf).unwrap())
+        * Affine::translate(o1.origin.to_vec2())
+        * d.text_xf(d.anchored_item(outer_id).unwrap())
+        * Affine::translate(note.origin.to_vec2())
+        * Affine::translate(o2.origin.to_vec2());
+    assert_placed_on_page_one(&d, isid, inner_id, want);
+}
+
+/// A text frame anchored in a table cell of an anchored text frame is placed through the cell's
+/// spot in that frame as well as both hosts.
+#[test]
+fn a_frame_anchored_in_a_table_cell_of_an_anchored_frame_is_placed_through_the_cell() {
+    let mut d = Document::new(&NewDocument { pages: 1, ..Default::default() });
+    let (outer, osid) = anchored_text_frame(&mut d, "Outer text", 200.0, 150.0);
+    let (inner, isid) = anchored_text_frame(&mut d, "Inner", 80.0, 30.0);
+    let (outer_id, inner_id) = (outer.id, inner.id);
+    let mut table = designcraft_doc::Table::new(77, 1, 1, 0, 0, 180.0);
+    table.cells[0].text.insert(0, "Cell ");
+    table.cells[0].text.insert_object("Cell ".len(), designcraft_doc::AnchoredObject::new(inner, Default::default()));
+    let st = d.story_mut(osid).unwrap();
+    let end = st.len();
+    st.insert_table(end, table);
+    let (bf, host) = body_holding(&mut d, outer);
+
+    let o1 = &host.frame(bf).unwrap().objects[0];
+    let mid = compose_story(&d, osid, &ComposeOptions::default());
+    let cell = &mid.frame(outer_id).unwrap().tables[0].cells[0];
+    let o2 = &cell.text.frames[0].objects[0];
+    let want = d.text_xf(d.item(bf).unwrap())
+        * Affine::translate(o1.origin.to_vec2())
+        * d.text_xf(d.anchored_item(outer_id).unwrap())
+        * Affine::translate(cell.origin.to_vec2())
+        * Affine::translate(o2.origin.to_vec2());
+    assert_placed_on_page_one(&d, isid, inner_id, want);
+}
+
 /// A marginal note (an anchored text frame, Only Align First Line to Grid, 9/10) hangs 15 pt
 /// above its anchor's baseline on a right-hand page. It composes against the document grid where
 /// it is placed: its first line moves down onto the grid line, the second follows 10 pt below,
