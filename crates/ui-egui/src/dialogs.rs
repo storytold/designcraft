@@ -589,6 +589,30 @@ mod color_theme_tests {
         assert_eq!((inset(&app, a), inset(&app, b)), (24.0, 0.0));
     }
 
+    /// With the caret in the oval second frame of a thread whose first frame has uneven insets, the
+    /// dialog shows the one Inset of the oval and keeps the link on: both follow the frame it changes.
+    #[test]
+    fn text_frame_options_from_the_type_tool_show_the_inset_of_the_caret_frame() {
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let text = (0..40).map(|i| format!("Line {i} of the threaded story.")).collect::<Vec<_>>().join(" ");
+        let a = app.run("frame.create", json!({"rect": [36, 36, 300, 120], "content": "text", "text": text})).unwrap();
+        let b =
+            app.run("frame.create", json!({"rect": [36, 200, 300, 700], "shape": "ellipse", "content": "text", "text": "", "caret": false})).unwrap();
+        let (a, b, sid) =
+            (designcraft_doc::ItemId(a["id"].as_u64().unwrap()), designcraft_doc::ItemId(b["id"].as_u64().unwrap()), a["story"].as_u64().unwrap());
+        app.run("text.thread", json!({"from": a.0, "to": b.0})).unwrap();
+        app.run("object.textFrameOptions", json!({"ids": [a.0], "inset": [1, 2, 3, 4]})).unwrap();
+        let cs = designcraft_compose::compose_story(&app.session.doc().unwrap().doc, designcraft_doc::StoryId(sid), &Default::default());
+        let caret = cs.frame(b).unwrap().range.start + 2;
+        app.run("text.select", json!({"story": sid, "anchor": caret})).unwrap();
+        let mut d = Dialog::new("textFrameOptions", json!({}));
+        seed_text_frame_options(&app, &mut d);
+        assert_eq!(d.fields.get("_targets"), Some(&json!([b.0])));
+        assert!(d.b("_shaped"), "the oval shows one Inset");
+        assert!(d.b("insetLinked"), "the first frame's uneven sides do not turn the link off");
+    }
+
     /// A preview shown in one document goes when OK is refused, or Cancel is chosen, after another
     /// document became active.
     #[test]
@@ -1105,25 +1129,17 @@ fn selected_frame_options(app: &DesignApp) -> Option<designcraft_doc::TextFrameO
 }
 
 /// True when every text frame the dialog changes has the same inset on all four sides: the
-/// selected items, else the caret's frame, else every frame of the caret's story.
+/// selected items, else the frame that shows the caret or every frame holding selected text.
 fn selected_frames_have_even_insets(app: &DesignApp) -> bool {
     let Some(st) = app.session.active() else {
         return true;
     };
-    let mut ids = st.selection.items.clone();
-    if ids.is_empty()
-        && let Some(t) = st.selection.text
-    {
-        ids = match t.frame {
-            Some(f) => vec![f],
-            None => st.doc.story(t.story).map(|s| s.frames.clone()).unwrap_or_default(),
-        };
-    }
+    let ids = designcraft_engine::cmd::text_frame_options_frames(&app.session);
     ids.iter().filter_map(|id| st.doc.item(*id)?.text_frame()).all(|t| t.options.inset.iter().all(|v| (v - t.options.inset[0]).abs() < 1e-9))
 }
 
-/// Whether every selected text frame (the selected items, or the frame of the caret) has an
-/// outline that is not its own axis-aligned rectangle: an oval, a polygon, rounded or other corner
+/// Whether every text frame the dialog changes (the selected items, else the frame that shows the
+/// caret or every frame holding selected text) has an outline that is not its own axis-aligned rectangle: an oval, a polygon, rounded or other corner
 /// options. Its text keeps one inset from the outline, as compose sets it; type on a path doesn't.
 /// A selection that mixes them with rectangular frames shows the four sides, so each frame keeps
 /// the sides left as shown.
@@ -1137,11 +1153,8 @@ fn selected_frame_is_shaped(app: &DesignApp) -> bool {
         let bp = if item.corners.is_none() { item.path.to_bezpath() } else { designcraft_geom::corners::apply(&item.path, &item.corners) };
         Some(designcraft_compose::FrameOutline::new(&bp, 0.0).is_some())
     };
-    if st.selection.items.is_empty() {
-        let Some(fid) = st.selection.text.and_then(|t| t.frame) else { return false };
-        return shaped(fid).unwrap_or(false);
-    }
-    st.selection.items.iter().all(|&fid| shaped(fid).unwrap_or(false))
+    let ids = designcraft_engine::cmd::text_frame_options_frames(&app.session);
+    !ids.is_empty() && ids.iter().all(|&fid| shaped(fid).unwrap_or(false))
 }
 
 /// Object › Text Frame Options shows the selected frame's options. `_shown` keeps what it showed,
