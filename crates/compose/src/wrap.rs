@@ -46,6 +46,8 @@ pub(crate) struct Obstacle<'a> {
     xf: Affine,
     /// Story byte of the anchor, for obstacles in their own story.
     anchor: Option<usize>,
+    /// Baseline of the line holding the anchor, for obstacles in their own story.
+    anchor_baseline: Option<f64>,
 }
 
 fn wraps(o: &AnchoredObject) -> bool {
@@ -126,7 +128,8 @@ pub(crate) fn obstacles<'a>(doc: &Document, story: &'a Story, cs: &ComposedStory
             } else {
                 None
             };
-            out.push(Obstacle { spread: loc.spread, item: &obj.item, xf, anchor });
+            let anchor_baseline = anchor.and_then(|_| ft.lines.get(o.line)).map(|l| l.baseline);
+            out.push(Obstacle { spread: loc.spread, item: &obj.item, xf, anchor, anchor_baseline });
         }
     }
     out
@@ -157,6 +160,7 @@ pub(crate) fn exclusions(doc: &Document, specs: &[FrameSpec], obs: &[Obstacle]) 
                 let r = e.rect;
                 if r.is_finite() && r.x0 < a.x1 && r.x1 > a.x0 && r.y0 < a.y1 && r.y1 > a.y0 {
                     e.after = ob.anchor;
+                    e.anchor_baseline = ob.anchor_baseline;
                     ex.push(e);
                 }
             }

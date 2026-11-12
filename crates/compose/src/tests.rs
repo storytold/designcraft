@@ -513,6 +513,7 @@ fn hostile_wrap_geometry_terminates() {
         side: WrapSide::BothSides,
         contour: None,
         after: None,
+        anchor_baseline: None,
     };
     let f = &mut specs[0];
     f.exclusions.push(ex(f64::NAN, f64::NAN, f64::NAN, f64::NAN, WrapMode::JumpObject));
@@ -639,12 +640,12 @@ fn vertical_justification_passes_wraps_that_do_not_stop_the_text() {
     // Wrap off: the number goes down over the bar.
     let (lines, area, wrap_top) = bar_chart_lines("42", Bottom, WrapMode::None, WrapSide::BothSides, Rect::new(0.0, 150.0, 60.0, 300.0));
     assert!(wrap_top.is_none());
-    assert!(lines[0].0 > 150.0 && lines[0].0 <= area.y1 + 1e-6, "{lines:?}");
+    assert!((lines[0].0 + lines[0].1 - area.y1).abs() < 1e-6, "{lines:?}, bottom {}", area.y1);
     // A bar on the right half from the frame's top: the number is set beside it and goes down
     // beside it.
     let (lines, area, wrap_top) = bar_chart_lines("42", Bottom, WrapMode::BoundingBox, WrapSide::BothSides, Rect::new(30.0, 0.0, 60.0, 300.0));
     assert!(wrap_top.is_some());
-    assert!(lines[0].0 > 150.0 && lines[0].0 <= area.y1 + 1e-6, "{lines:?}");
+    assert!((lines[0].0 + lines[0].1 - area.y1).abs() < 1e-6, "{lines:?}, bottom {}", area.y1);
 }
 
 /// A one-sided wrap in the second column leaves the first column's lines free to go down, as it
@@ -866,6 +867,23 @@ fn vertical_justify_stops_at_an_object_anchored_above_the_lines_it_wraps() {
     let last = lines[2].baseline;
     assert!(last <= top + 1e-6, "Justify moved the last line to {last}, into the object at {top}");
     assert!(last > lines[0].baseline + 40.0, "Justify spread the lines: {:?}", lines.iter().map(|l| l.baseline).collect::<Vec<_>>());
+}
+
+/// Justify moves an object anchored in the second line with that line, so the third line spreads
+/// down until it meets the object where it ends up, not where it started.
+#[test]
+fn vertical_justify_follows_an_object_anchored_in_a_later_line() {
+    let (mut d, sid, fid) = doc_with("One\nTwo\nSix", Rect::new(0.0, 0.0, 300.0, 400.0), ParaAttrs::default());
+    d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.vertical_justification = designcraft_doc::VerticalJustification::Justify;
+    anchor_box(&mut d, sid, 5, 0.0, 40.0, true, WrapMode::BoundingBox);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    assert_eq!(lines.len(), 3);
+    let baselines = lines.iter().map(|l| l.baseline).collect::<Vec<_>>();
+    let top = cs.frames[0].objects[0].origin.y;
+    assert!((top - lines[1].baseline - 40.0).abs() < 1e-6, "the object hangs 40 pt under the second line: {top}, {baselines:?}");
+    let last = lines[2].baseline;
+    assert!((top - last).abs() < 1e-6, "Justify moved the last line to {last}, not down to the object at {top}: {baselines:?}");
 }
 
 /// Same As Clipping follows a placed graphic's clipping path: beside a triangle that widens
