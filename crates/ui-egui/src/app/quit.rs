@@ -10,7 +10,13 @@ impl DesignApp {
     /// keep documents whose earlier answer was Don't Save, including their history and recovery.
     pub(crate) fn handle_quit(&mut self, ctx: &egui::Context) {
         let close_requested = ctx.input(|i| i.viewport().close_requested());
-        if self.host_order_pending() || crate::file_provider_app::busy(self) {
+        let provider_block = crate::file_provider_app::application_block(self);
+        if self.host_order_pending() || provider_block.is_some() {
+            if (close_requested || self.quit_requested)
+                && let Some(reason) = provider_block
+            {
+                self.status(reason);
+            }
             if close_requested {
                 self.close_requested_pending = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -83,8 +89,8 @@ impl DesignApp {
     /// terminate before egui receives its queued Close; an unfinished/stale plan leaves every
     /// document live so the host can preserve its recovery data instead.
     pub fn finish_confirmed_quit(&mut self) -> Result<(), String> {
-        if crate::file_provider_app::busy(self) {
-            return Err("finish or cancel pending provider operations before quitting".into());
+        if let Some(reason) = crate::file_provider_app::application_block(self) {
+            return Err(reason.into());
         }
         let approved =
             self.quitting.as_ref().is_some_and(|q| q.pending.is_none()) && self.ui.dialog.is_none() && self.next_unapproved_document().is_none();

@@ -100,8 +100,25 @@ fn record_result(drafts: &mut Drafts, key: egui::Id, focused: bool, changed: boo
     }
 }
 
-pub(super) fn armed(ctx: &egui::Context) -> bool {
-    state(ctx).armed
+pub(super) fn discard(ctx: &egui::Context, owner: Owner) -> usize {
+    let mut drafts = state(ctx);
+    if !drafts.armed {
+        return 0;
+    }
+    let keys: Vec<_> = drafts.fields.extract_if(|_, field| field.owner == owner && field.dirty).map(|(key, _)| key).collect();
+    ctx.data_mut(|data| {
+        for &key in &keys {
+            data.remove::<String>(key);
+            data.remove::<egui::text_edit::TextEditState>(key.with("te"));
+        }
+        data.insert_temp(state_id(), drafts);
+    });
+    ctx.memory_mut(|memory| {
+        for key in &keys {
+            memory.surrender_focus(key.with("te"));
+        }
+    });
+    keys.len()
 }
 
 pub(super) fn any_pending(ctx: &egui::Context) -> bool {

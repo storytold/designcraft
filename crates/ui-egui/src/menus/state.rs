@@ -29,6 +29,9 @@ pub fn enabled(app: &DesignApp, id: &str) -> bool {
     if id == "file.openProviderResource" {
         return app.file_providers.enabled();
     }
+    if id == "edit.discardNumericDrafts" {
+        return crate::file_provider_app::active_numeric_drafts(app);
+    }
     if waits_for_ime(app, id) {
         return false;
     }
@@ -163,6 +166,9 @@ pub fn checked(app: &DesignApp, id: &str, params: &Value) -> Option<bool> {
 
 /// Enablement for menu display (UI commands need a document unless they're app/window-level).
 pub fn menu_enabled(app: &DesignApp, id: &str) -> bool {
+    if id == "edit.discardNumericDrafts" {
+        return enabled(app, id);
+    }
     if waits_for_ime(app, id) {
         return false;
     }

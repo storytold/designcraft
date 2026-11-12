@@ -135,7 +135,8 @@ pub fn native_menu_tree() -> Vec<(&'static str, Vec<Item>)> {
     let in_app_menu = |id: &str| MAC_APP_MENU.iter().any(|m| matches!(m, AppMenuItem::Cmd { command, .. } if *command == id));
     let mut tree = menu_tree();
     for (title, entries) in &mut tree {
-        without_commands(entries, &in_app_menu);
+        // The browser-only provider can arm numeric drafts after startup. The native menu is static.
+        without_commands(entries, &|id| in_app_menu(id) || id == "edit.discardNumericDrafts");
         if *title == "Window" {
             let minimize = Item::Cmd { label: "Minimize".into(), id: "window.minimize".into(), params: Value::Null, shortcut: Some("Cmd+M") };
             entries.splice(0..0, [minimize, Item::Sep]);

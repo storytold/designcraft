@@ -135,6 +135,8 @@ const NOT_SEARCHED: &[&str] = &[
     "file.openProviderResource",
     "app.swatchOptionsDialog",
     "app.colorGroupOptionsDialog",
+    // Requires pending numeric drafts in the active document.
+    "edit.discardNumericDrafts",
     // Without a value these clear the flattener preset, go to Normal screen mode or 100% zoom.
     "app.flattener",
     "view.screenMode",
@@ -194,6 +196,13 @@ pub fn command_search(app: &DesignApp, query: &str) -> Vec<QuickItem> {
 #[allow(clippy::unwrap_used)]
 mod provider_command_tests {
     use super::*;
+
+    #[test]
+    fn quick_apply_never_offers_discard_numeric_drafts() {
+        let session = designcraft_engine::Session::new();
+        let items = quick_apply_items(&session, "edit.discardNumericDrafts", false);
+        assert!(items.is_empty());
+    }
 
     #[test]
     fn provider_open_stays_discoverable_but_argumentless_search_never_offers_it() {

@@ -7,8 +7,8 @@ pub const CJK_ONLY: &[&str] = &["type.tateChuYoko", "app.rubyDialog", "type.kent
 /// Whether command `id` has a menu item or Quick Apply entry in the current interface (CJK-only
 /// ones need [`crate::cjk_features`]).
 pub fn shown(app: &DesignApp, id: &str) -> bool {
-    if id == "file.openProviderResource" {
-        return app.file_providers.enabled();
+    if matches!(id, "file.openProviderResource" | "edit.discardNumericDrafts") {
+        return super::state::enabled(app, id);
     }
     !CJK_ONLY.contains(&id) || crate::cjk_features(app)
 }
@@ -24,6 +24,7 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
         None,
         "{connectionId, resourceId} — request a native file from the enabled provider account; returns pending and requestId without changing local file.open",
     ),
+    ("edit.discardNumericDrafts", "Discard Numeric Drafts", None, "{} — discard only uncommitted numeric fields in the active document"),
     ("app.placeDialog", "Place…", Some("Cmd+D"), "{path?} — without a path, choose the file in a dialog"),
     ("app.saveDialog", "Save As…", Some("Cmd+Shift+S"), "{path?} — without a path, choose where in a dialog"),
     ("app.save", "Save", Some("Cmd+S"), "{}"),

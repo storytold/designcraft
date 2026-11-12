@@ -3,7 +3,10 @@ use super::{DesignApp, UiRequest, Value, canvas, dialogs, json, menus};
 impl DesignApp {
     /// THE entry point for every action (menus, shortcuts, palette, panels, control channel).
     pub fn run(&mut self, id: &str, params: Value) -> Result<Value, String> {
-        crate::file_provider_app::guard_command(self, id, &params)?;
+        if let Err(error) = crate::file_provider_app::guard_command(self, id, &params) {
+            self.status(error.clone());
+            return Err(error);
+        }
         if let Some(r) = menus::run_ui(self, id, &params) {
             if let Some(ctx) = self.egui_ctx.clone() {
                 crate::file_provider_app::observe_ui(self, &ctx);

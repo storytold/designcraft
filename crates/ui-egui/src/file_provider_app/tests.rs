@@ -116,7 +116,8 @@ fn pending_a_guards_only_a_while_b_can_close_in_each_save_phase() {
         }
         app.run("file.new", json!({})).unwrap();
         let b = active_uid(&app);
-        assert!(app.run("file.close", json!({"index":0})).is_err());
+        let error = app.run("file.close", json!({"index":0})).unwrap_err();
+        assert_eq!(app.ui.status, error);
         activate(&mut app, a);
         // Revert's engine implementation ignores index and acts on active A.
         assert!(app.run("file.revert", json!({"index":1})).is_err());
@@ -126,6 +127,46 @@ fn pending_a_guards_only_a_while_b_can_close_in_each_save_phase() {
         app.run("file.close", json!({})).unwrap();
         assert!(has_document(&app, a));
         assert!(!has_document(&app, b));
+    }
+}
+
+#[test]
+fn idle_provider_does_not_refuse_close_for_transient_editor_state() {
+    for kind in ["interaction", "preview", "ime"] {
+        let mut app = app();
+        match kind {
+            "interaction" => app.session.begin_interaction("Transient preview").unwrap(),
+            "preview" => {
+                let doc = app.session.active_mut().unwrap();
+                doc.preview_stash = Some(doc.doc.clone());
+            }
+            _ => {
+                app.session.execute("frame.create", &json!({"rect":[36,36,300,200],"content":"text"})).unwrap();
+                app.session.set_tool("type");
+                app.session.tool_preedit("marked", None, designcraft_engine::ViewInfo::default()).unwrap();
+                assert!(app.session.tool_composing());
+            }
+        }
+        assert!(guard_command(&app, "file.revert", &json!({})).is_ok(), "{kind}");
+        app.run("file.close", json!({})).unwrap();
+        assert!(app.session.documents().is_empty(), "{kind}");
+    }
+}
+
+#[test]
+fn provider_save_dialog_suggests_a_portable_native_name_without_changing_the_title() {
+    let long = "🧪".repeat(120);
+    let cases = [("Q1/Q2 report", "Q1 Q2 report.designcraft"), ("   ", "Untitled.designcraft"), ("CON", "_CON.designcraft")];
+    for (title, expected) in
+        cases.into_iter().map(|(title, name)| (title, name.to_string())).chain([(long.as_str(), format!("{}.designcraft", "🧪".repeat(60)))])
+    {
+        let mut app = app();
+        std::sync::Arc::make_mut(&mut app.session.active_mut().unwrap().doc).title = title.into();
+        save(&mut app, false, None).unwrap();
+        let events = app.file_providers.take_events();
+        assert_eq!(events[0].metadata["type"], "saveDialog");
+        assert_eq!(events[0].metadata["filename"], expected);
+        assert_eq!(app.session.active().unwrap().doc.title, title);
     }
 }
 
@@ -275,7 +316,7 @@ fn continuations_keep_global_quit_guarded_after_the_host_has_released_its_owner(
     tick(&mut app);
     app.file_providers.take_events();
     assert!(!app.file_providers.busy());
-    assert!(busy(&app));
+    assert!(application_block(&app).is_some());
     assert!(app.finish_confirmed_quit().is_err());
     assert!(app.run("app.close", json!({})).is_err());
     assert!(app.run("app.revert", json!({})).is_err());
@@ -283,7 +324,7 @@ fn continuations_keep_global_quit_guarded_after_the_host_has_released_its_owner(
     assert!(save(&mut app, false, None).is_err());
     assert!(has_document(&app, a));
     settled(&mut app, &egui::Context::default());
-    assert!(!busy(&app));
+    assert!(application_block(&app).is_none());
 }
 
 #[test]
@@ -409,11 +450,21 @@ fn closing_by_uid_rejects_a_replaced_identity_and_preserves_an_unrelated_active_
 #[test]
 fn admitted_close_continuations_are_bounded_even_after_their_transport_owners_finish() {
     let mut app = app();
-    for _ in 0..MAX_CONTINUATIONS {
-        choose(&mut app, Some(After::Test(Box::new(|_| Ok(Value::Null)))));
+    for index in 0..MAX_CONTINUATIONS {
+        let request = choose(&mut app, Some(After::Test(Box::new(|_| Ok(Value::Null)))));
+        app.file_providers.resolve_dialog(&request, "provider", "Captured.designcraft").unwrap();
+        app.file_providers.take_events();
+        app.file_providers.result(request, "saved".into(), format!("continuation-{index}")).unwrap();
+        // Apply transport completion only. Settled UI callbacks have deliberately not run.
+        tick(&mut app);
+        app.file_providers.take_events();
+        assert!(!app.file_providers.busy());
         app.run("file.new", json!({})).unwrap();
     }
-    assert!(save(&mut app, false, Some(After::Test(Box::new(|_| Ok(Value::Null))))).is_err());
+    assert_eq!(app.provider_after.len(), MAX_CONTINUATIONS);
+    assert!(app.provider_after.values().all(|after| after.ready));
+    let error = save(&mut app, false, Some(After::Test(Box::new(|_| Ok(Value::Null))))).unwrap_err();
+    assert_eq!(error, "finish or cancel pending save continuations before starting another");
     assert_eq!(app.provider_after.len(), MAX_CONTINUATIONS);
 }
 

@@ -1,13 +1,14 @@
 //! Native DesignCraft projects over an optional same-origin storage provider.
 use crate::{
     DesignApp,
-    file_providers::{Action, Capture, Host},
+    file_providers::{Action, Capture, Host, suggested_native_name},
 };
 use serde_json::{Value, json};
 
 pub(crate) mod drafts;
 
 const MAX_CONTINUATIONS: usize = 16;
+const FINISH_DRAFT: &str = "Finish the numeric edit or use Edit › Discard Numeric Drafts on its document";
 
 pub(crate) enum After {
     Close(u64),
@@ -61,26 +62,47 @@ pub(crate) struct PendingAfter {
     callback: After,
 }
 
-pub(crate) fn busy(app: &DesignApp) -> bool {
-    app.file_providers.busy() || !app.provider_after.is_empty() || app.egui_ctx.as_ref().is_some_and(drafts::any_pending)
+pub(crate) fn application_block(app: &DesignApp) -> Option<&'static str> {
+    if app.egui_ctx.as_ref().is_some_and(drafts::any_pending) {
+        Some(FINISH_DRAFT)
+    } else if app.file_providers.busy() || !app.provider_after.is_empty() {
+        Some("Finish or cancel pending provider operations first")
+    } else {
+        None
+    }
 }
 
-fn pending_for(app: &DesignApp, uid: u64) -> bool {
-    app.file_providers.pending_for(uid)
-        || app.provider_after.values().any(|after| after.uid == uid)
-        || app.egui_ctx.as_ref().is_some_and(|ctx| {
-            app.session.documents().iter().find(|doc| doc.uid == uid).is_some_and(|doc| drafts::pending(ctx, (uid, doc.identity_epoch)))
-        })
+fn provider_pending_for(app: &DesignApp, uid: u64) -> bool {
+    app.file_providers.pending_for(uid) || app.provider_after.values().any(|after| after.uid == uid)
+}
+
+fn numeric_pending_for(app: &DesignApp, identity: (u64, u64)) -> bool {
+    app.egui_ctx.as_ref().is_some_and(|ctx| drafts::pending(ctx, identity))
+}
+
+pub(crate) fn active_numeric_drafts(app: &DesignApp) -> bool {
+    active_identity(app).is_some_and(|identity| numeric_pending_for(app, identity))
+}
+
+pub(crate) fn discard_active_numeric_drafts(app: &mut DesignApp) -> Result<Value, String> {
+    let identity = active_identity(app).ok_or("no document")?;
+    let ctx = app.egui_ctx.as_ref().ok_or("no numeric drafts in the active document")?;
+    let discarded = drafts::discard(ctx, identity);
+    if discarded == 0 {
+        return Err("no numeric drafts in the active document".into());
+    }
+    app.status("Discarded numeric drafts");
+    Ok(json!({"discarded":discarded}))
 }
 
 /// Revert ignores command parameters in the engine; Close alone accepts an explicit index.
 pub(crate) fn guard_command(app: &DesignApp, id: &str, params: &Value) -> Result<(), String> {
-    let ui_armed = app.egui_ctx.as_ref().is_some_and(drafts::armed);
-    if !busy(app) && !app.file_providers.connected() && !ui_armed {
+    if !matches!(id, "file.close" | "file.revert" | "app.close" | "app.revert") {
         return Ok(());
     }
-    if matches!(id, "app.close" | "app.revert") && (busy(app) || app.egui_ctx.as_ref().is_some_and(drafts::any_pending)) {
-        return Err("finish or cancel pending provider operations before closing or reverting the application".into());
+    let Some(reason) = application_block(app) else { return Ok(()) };
+    if matches!(id, "app.close" | "app.revert") {
+        return Err(reason.into());
     }
     let index = match id {
         "file.close" => match params.get("index") {
@@ -91,7 +113,10 @@ pub(crate) fn guard_command(app: &DesignApp, id: &str, params: &Value) -> Result
         _ => return Ok(()),
     };
     let doc = index.and_then(|index| app.session.documents().get(index)).ok_or("document is no longer open")?;
-    if pending_for(app, doc.uid) || doc.interaction.is_some() || doc.preview_stash.is_some() || ime_pending(app, (doc.uid, doc.identity_epoch)) {
+    if numeric_pending_for(app, (doc.uid, doc.identity_epoch)) {
+        return Err(FINISH_DRAFT.into());
+    }
+    if provider_pending_for(app, doc.uid) {
         return Err("finish or cancel the pending provider operation for this document before closing or reverting".into());
     }
     Ok(())
@@ -104,14 +129,18 @@ pub(crate) fn save(app: &mut DesignApp, save_as: bool, after: Option<After>) -> 
     let host = app.file_providers.clone();
     let connection = host.connection().ok_or("file provider is not connected")?;
     let doc = app.session.active().ok_or("no document")?;
-    if pending_for(app, doc.uid) {
+    if numeric_pending_for(app, (doc.uid, doc.identity_epoch)) {
+        app.status(FINISH_DRAFT);
+        return Err(FINISH_DRAFT.into());
+    }
+    if provider_pending_for(app, doc.uid) {
         return Err("a provider operation is already pending for this document".into());
     }
     if doc.preview_stash.is_some() {
         return Err("leave Data Merge Preview before saving with a file provider".into());
     }
     let (uid, revision, identity_epoch, snapshot) = (doc.uid, doc.revision, doc.identity_epoch, doc.clone());
-    let name = host.bound_filename(uid).unwrap_or_else(|| format!("{}.designcraft", doc.doc.title));
+    let name = host.bound_filename(uid).unwrap_or_else(|| suggested_native_name(&doc.doc.title));
     let serialized = app.session.execute("file.serialize", &json!({})).map_err(|e| e.to_string())?;
     let base64 = serialized["base64"].as_str().ok_or("native encoder returned no project")?;
     let bytes = designcraft_engine::cmd::base64_decode(base64);

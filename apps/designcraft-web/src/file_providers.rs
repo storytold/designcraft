@@ -40,6 +40,10 @@ fn bounded_string(value: JsValue, max_units: u32) -> Result<String, JsValue> {
     text.as_string().ok_or_else(|| error("invalid resource field"))
 }
 
+fn optional_string(value: JsValue, max_units: u32) -> Result<String, JsValue> {
+    if value.is_undefined() { Ok(String::new()) } else { bounded_string(value, max_units) }
+}
+
 fn resource(value: JsValue) -> Result<Resource, JsValue> {
     if value.is_null() || !value.is_object() || Array::is_array(&value) {
         return Err(error("resource entries must be objects"));
@@ -164,7 +168,7 @@ pub fn install(host: Host, ctx: egui::Context) -> Result<(), JsValue> {
     let wake = ctx.clone();
     let cancel_open = Closure::<dyn FnMut(JsValue, JsValue) -> Result<(), JsValue>>::new(move |request, message| {
         let request = bounded_string(request, 160)?;
-        let message = bounded_string(message, 1024)?;
+        let message = optional_string(message, 1024)?;
         h.cancel_open(request, message).map_err(error)?;
         wake_later(&wake);
         Ok(())
@@ -177,7 +181,7 @@ pub fn install(host: Host, ctx: egui::Context) -> Result<(), JsValue> {
     let result = Closure::<dyn FnMut(JsValue, JsValue, JsValue) -> Result<(), JsValue>>::new(move |request, status, resource| {
         let request = bounded_string(request, 160)?;
         let status = bounded_string(status, 8)?;
-        let resource = bounded_string(resource, 160)?;
+        let resource = if status == "saved" { bounded_string(resource, 160)? } else { optional_string(resource, 160)? };
         h.result(request, status, resource).map_err(error)?;
         wake_later(&wake);
         Ok(())

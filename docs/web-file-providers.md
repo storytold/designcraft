@@ -21,9 +21,9 @@ editor through the protocol object. The capability is independent of the optiona
 | setResources | (connectionId, resources). Replace this account's native project list. |
 | requestOpen | (resourceId) -> requestId. IDs must occur in the current connection's resource list. |
 | openResource | (requestId, filename, Uint8Array). Replies only to a live, single-use open request. |
-| cancelOpen | (requestId, error). Empty error means cancellation. |
+| cancelOpen | (requestId, error?). An omitted or empty error means cancellation. |
 | resolveSaveDialog | (requestId, destination, filename). destination is provider, device or cancel. |
-| saveResult | (requestId, status, resourceId). status is saved, download, failed or cancel. |
+| saveResult | (requestId, status, resourceId?). `saved` requires a valid resource ID. `download`, `failed`, and `cancel` may omit it. |
 | snapshot | Returns provider/namespace/connectionId, enabled, resources, documents and pending state. |
 
 The namespace must identify the authenticated account, not its display name. A new connection ID
@@ -83,6 +83,9 @@ it or commits another tab's IME/data-merge preview; surviving focus is kept by U
 Numeric text drafts do not yet advance an engine revision. A bounded internal registry keeps these
 drafts with their document UID/epoch and viewport, including parked drafts. Close/Revert/Save must wait
 for that document's draft to commit or cancel; another document's field does not block its closure.
+If the original field is hidden, switch to its document and choose **Edit › Discard Numeric Drafts**.
+This explicit action works after disconnection and clears only the active document's uncommitted
+numeric buffers. Its saved document and other open documents' drafts remain available.
 Before the first opt-in the original numeric widget IDs and behavior stay in use. A focused legacy
 field is adopted without changing its ID when a provider connects. After opting in, document scopes
 stay stable through enable/disable and unregister, preserving open drafts; they are retired when the
@@ -101,7 +104,8 @@ offline persistence, autosave recovery or an inactivity/login implementation.
 ## Open and Recents
 
 The existing Home screen and File > Open Recent display a separate provider section while enabled.
-Local Recents retain their own storage and behavior. Provider headings use the application's official
+Home gives provider files a scrollable list with a fixed maximum height, so device Recents and document
+presets remain reachable even when the provider supplies its full list. Local Recents retain their own storage and behavior. Provider headings use the application's official
 i18n lookup and RTL text shaping; untranslated keys keep the normal English fallback. Provider labels
 and resource names remain user data and are not translated. Publish only the current account's native files
 with setResources; the editor never scans a VM or guesses a path from a name.

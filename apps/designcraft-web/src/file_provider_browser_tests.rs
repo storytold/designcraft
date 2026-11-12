@@ -12,7 +12,7 @@ use serde_json::json;
 use wasm_bindgen::{JsCast, JsValue, closure::Closure};
 use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
 
-use super::{API, CURRENT_CONTEXT, EVENT, error, install, object, publish};
+use super::{API, CURRENT_CONTEXT, EVENT, Host, error, install, object, publish};
 
 wasm_bindgen_test_configure!(run_in_browser);
 
@@ -185,6 +185,24 @@ fn frame(app: &mut DesignApp, ctx: &egui::Context) {
     output.textures_delta.clear();
 }
 
+fn omitted_non_saved_resources(api: &JsValue, app: &mut DesignApp, host: &Host, ctx: &egui::Context, events: &Events) -> Result<(), JsValue> {
+    for (status, destination, event) in
+        [("failed", "provider", "saveFailed"), ("download", "device", "downloaded"), ("cancel", "provider", "saveCancelled")]
+    {
+        let result = app.run("app.save", json!({})).map_err(error)?;
+        let request = result["requestId"].as_str().ok_or_else(|| error("missing save request"))?;
+        call(api, "resolveSaveDialog", &Array::of3(&request.into(), &destination.into(), &"Optional.designcraft".into()))?;
+        publish(host, ctx);
+        assert!(call(api, "saveResult", &Array::of3(&request.into(), &status.into(), &JsValue::NULL)).is_err());
+        call(api, "saveResult", &Array::of2(&request.into(), &status.into()))?;
+        frame(app, ctx);
+        publish(host, ctx);
+        assert!(events.matching(event)?.iter().any(|detail| field(detail, "requestId").is_ok_and(|id| id == request)));
+        assert!(!host.busy());
+    }
+    Ok(())
+}
+
 #[wasm_bindgen_test]
 fn page_local_provider_delivery_failure_preserves_native_resources_and_recovers() -> Result<(), JsValue> {
     let mut events = Events::new()?;
@@ -256,6 +274,8 @@ fn page_local_provider_delivery_failure_preserves_native_resources_and_recovers(
     assert_eq!(serde_json::to_value(&restored).map_err(error)?, serde_json::to_value(newer.doc.as_ref()).map_err(error)?);
     let asset = restored.assets.values().find(|asset| asset.name == "Original.svg").ok_or_else(|| error("embedded SVG missing"))?;
     assert_eq!(asset.data.as_slice(), SVG);
+    assert!(call(&api, "saveResult", &Array::of2(&retry.clone().into(), &"saved".into())).is_err());
+    assert!(host.pending_for(captured.uid));
     call(&api, "saveResult", &Array::of3(&retry.clone().into(), &"saved".into(), &"saved-resource".into()))?;
     frame(&mut app, &ctx);
     assert!(!app.session.active().ok_or_else(|| error("missing saved document"))?.is_dirty());
@@ -335,9 +355,11 @@ fn page_local_provider_delivery_failure_preserves_native_resources_and_recovers(
     assert_eq!(cancelled.len(), 1);
     let read = call(&api, "requestOpen", &Array::of1(&"saved-resource".into()))?;
     publish(&host, &ctx);
-    call(&api, "cancelOpen", &Array::of2(&read, &"".into()))?;
+    assert!(call(&api, "cancelOpen", &Array::of2(&read, &JsValue::NULL)).is_err());
+    call(&api, "cancelOpen", &Array::of1(&read))?;
     publish(&host, &ctx);
     assert_eq!(events.matching("openCancelled")?.len(), 1);
+    omitted_non_saved_resources(&api, &mut app, &host, &ctx, &events)?;
     assert!(!events.blocked_unregistrations.borrow().is_empty());
     assert!(
         events.blocked_unregistrations.borrow().iter().all(|blocked| *blocked),

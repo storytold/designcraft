@@ -13,6 +13,7 @@ const MAX_PENDING: usize = 16;
 const MAX_EVENTS: usize = 64;
 const MAX_RESOURCES: usize = 100;
 const EXTENSION: &str = ".designcraft";
+const MAX_FILENAME_BYTES: usize = 255;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -545,22 +546,45 @@ impl Host {
     }
     /// Uses the application's selected language, with the ordinary untranslated-key fallback.
     pub fn recent_ui_in(&self, ui: &mut egui::Ui, language: &str) -> Option<RecentChoice> {
+        self.recent_ui_with_height(ui, language, None)
+    }
+
+    pub(crate) fn start_screen_recents(&self, ui: &mut egui::Ui, language: &str) -> Option<RecentChoice> {
+        self.recent_ui_with_height(ui, language, Some(180.0))
+    }
+
+    fn recent_ui_with_height(&self, ui: &mut egui::Ui, language: &str, max_height: Option<f32>) -> Option<RecentChoice> {
         let (label, resources, enabled, connection) = {
             let s = self.state();
             (s.provider.as_ref().map(|p| p.label.clone()), s.resources.clone(), s.enabled, s.connection.clone())
         };
         let label = label.filter(|_| enabled)?;
-        let mut choice = None;
         ui.add_space(12.0);
         ui.label(crate::rtl::widget(ui, egui::RichText::new(recent_heading(language, &label)).strong()));
-        if resources.is_empty() {
+        let choice = if resources.is_empty() {
             ui.label(crate::rtl::widget(ui, egui::RichText::new(crate::i18n::tr(language, "No recent files from this provider")).weak()));
-        }
-        for resource in resources {
-            if ui.button(crate::rtl::widget(ui, &resource.name)).on_hover_text(&resource.updated_at).clicked() {
-                choice = Some(RecentChoice { connection_id: connection.clone(), resource_id: resource.id });
+            None
+        } else {
+            let render_rows = |ui: &mut egui::Ui| {
+                let mut choice = None;
+                for resource in resources {
+                    if ui.button(crate::rtl::widget(ui, &resource.name)).on_hover_text(&resource.updated_at).clicked() {
+                        choice = Some(RecentChoice { connection_id: connection.clone(), resource_id: resource.id });
+                    }
+                }
+                choice
+            };
+            if let Some(height) = max_height {
+                egui::ScrollArea::vertical()
+                    .id_salt(("start-provider-recents", &connection))
+                    .max_height(height)
+                    .min_scrolled_height(1.0)
+                    .show(ui, render_rows)
+                    .inner
+            } else {
+                render_rows(ui)
             }
-        }
+        };
         ui.separator();
         ui.label(crate::rtl::widget(ui, egui::RichText::new(crate::i18n::tr(language, "Recent files on this device")).weak()));
         choice
@@ -586,9 +610,16 @@ fn valid_id(value: &str) -> bool {
 fn valid_label(value: &str) -> bool {
     !value.trim().is_empty() && value.len() <= 100 && !value.chars().any(char::is_control)
 }
+pub(crate) fn suggested_native_name(title: &str) -> String {
+    let safe = designcraft_engine::cmd::export_batch::safe_name(title);
+    let end = safe.floor_char_boundary(MAX_FILENAME_BYTES - EXTENSION.len());
+    let stem = safe.get(..end).unwrap_or(&safe).trim_end_matches(['.', ' ']);
+    format!("{stem}{EXTENSION}")
+}
+
 fn valid_native_name(value: &str) -> bool {
     !value.trim().is_empty()
-        && value.len() <= 255
+        && value.len() <= MAX_FILENAME_BYTES
         && !value.chars().any(|c| c.is_control() || matches!(c, '/' | '\\'))
         && value.to_ascii_lowercase().ends_with(EXTENSION)
 }

@@ -54,6 +54,7 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "cmd:edit.pasteInto",
             "cmd:edit.pasteInPlace",
             "cmd:edit.clear",
+            "ui:edit.discardNumericDrafts",
             "-",
             "cmd:edit.duplicate",
             "ui:app.placeAndLink",

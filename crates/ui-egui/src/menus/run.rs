@@ -87,6 +87,7 @@ fn flag(b: &mut bool) -> Result<Value, String> {
 fn run_ui_part1(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, String>> {
     Some(match id {
         "file.openProviderResource" => crate::file_provider_app::open_resource(app, p),
+        "edit.discardNumericDrafts" => crate::file_provider_app::discard_active_numeric_drafts(app),
         "window.minimize" => {
             app.pending_window_commands.push(egui::ViewportCommand::Minimized(true));
             Ok(Value::Null)
