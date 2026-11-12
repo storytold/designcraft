@@ -8,10 +8,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use designcraft_doc::{
-    Asset, AssetId, Content, DataField, Fill, Fitting, Graphic, Hyperlink, HyperlinkDest, HyperlinkSource, Item, ItemId, MergeOptions,
-    PlaceholderAnchor, PlaceholderRole, Shape, SpreadRef, Story, StoryId,
+    AnchorPosition, AnchoredObject, Asset, AssetId, Content, DataField, DataFieldKind, Fill, Fitting, Graphic, Hyperlink, HyperlinkDest,
+    HyperlinkSource, Item, ItemId, MergeOptions, OBJECT_MARK, PlaceholderAnchor, PlaceholderRole, Shape, SpreadRef, Story, StoryId,
 };
-use designcraft_geom::{Affine, Rect, Vec2};
+use designcraft_geom::{Affine, Rect, Vec2, shapes};
 
 use super::parse::image_candidates;
 use crate::EngineError;
@@ -147,6 +147,16 @@ struct Rep {
     start: usize,
     end: usize,
     text: String,
+    /// An inline image that takes the range's place; `text` is then its object mark.
+    object: Option<AnchoredObject>,
+}
+
+/// An image field at a text range: the placed image goes into the text in the marker's place.
+struct InlineImage {
+    story: StoryId,
+    start: usize,
+    end: usize,
+    field: String,
 }
 
 /// Where `fill_row` looks for linked images: the merge options and the two search folders.
@@ -199,6 +209,7 @@ impl ImageCache {
 #[derive(Default)]
 struct Pending {
     reps: Vec<Rep>,
+    images: Vec<InlineImage>,
     links: Vec<(PlaceholderAnchor, HyperlinkDest, String)>,
     parent: bool,
     report: FillReport,
@@ -225,8 +236,14 @@ pub fn fill_row(
             PlaceholderAnchor::Item { .. } => plan_item(doc, maps, ph, &cell, record, sources, &mut pending),
         }
     }
-    let Pending { mut reps, links, parent, mut report } = pending;
-    typed_reps(doc, fields, row, maps, &placeholders, &mut reps);
+    let Pending { mut reps, mut images, links, parent, mut report } = pending;
+    typed_reps(doc, fields, row, maps, &placeholders, &mut reps, &mut images);
+    for InlineImage { story, start, end, field } in images {
+        let cell = cell_of(fields, row, &field);
+        let object = inline_image(doc, story, &field, cell, record, sources, &mut report);
+        let text = if object.is_some() { OBJECT_MARK.to_string() } else { String::new() };
+        reps.push(Rep { story, start, end, text, object });
+    }
     apply_reps(doc, &reps);
     for (anchor, dest, field) in links {
         let anchor = match anchor {
@@ -261,13 +278,14 @@ fn plan_text(
         return;
     };
     match ph.role {
-        PlaceholderRole::Text => pending.reps.push(Rep { story: mapped, start, end, text: cell }),
+        PlaceholderRole::Text => pending.reps.push(Rep { story: mapped, start, end, text: cell, object: None }),
+        PlaceholderRole::Image => pending.images.push(InlineImage { story: mapped, start, end, field: ph.field.clone() }),
         PlaceholderRole::Hyperlink => {
             if let Some(dest) = classify_link(&cell) {
                 pending.links.push((PlaceholderAnchor::Text { story: mapped, start, end }, dest, ph.field.clone()));
             }
         }
-        PlaceholderRole::Image | PlaceholderRole::Qr => {}
+        PlaceholderRole::Qr => {}
     }
 }
 
@@ -306,6 +324,7 @@ fn typed_reps(
     maps: &Maps,
     placeholders: &[designcraft_doc::Placeholder],
     reps: &mut Vec<Rep>,
+    images: &mut Vec<InlineImage>,
 ) {
     let mut stories: Vec<(StoryId, StoryId)> = maps.stories.iter().map(|(a, b)| (*a, *b)).collect();
     stories.sort_by_key(|(a, _)| a.0);
@@ -315,7 +334,9 @@ fn typed_reps(
         let covers: Vec<(usize, usize)> = placeholders
             .iter()
             .filter_map(|ph| match (&ph.role, &ph.anchor) {
-                (PlaceholderRole::Text, PlaceholderAnchor::Text { story, start, end }) if *story == original => Some((*start, *end)),
+                (PlaceholderRole::Text | PlaceholderRole::Image, PlaceholderAnchor::Text { story, start, end }) if *story == original => {
+                    Some((*start, *end))
+                }
                 _ => None,
             })
             .collect();
@@ -323,10 +344,12 @@ fn typed_reps(
             if covers.iter().any(|(a, b)| start < *b && end > *a) {
                 continue;
             }
-            if !fields.iter().any(|f| f.name == name) {
+            let Some(field) = fields.iter().find(|f| f.name == name) else { continue };
+            if field.kind == DataFieldKind::Image {
+                images.push(InlineImage { story: mapped, start, end, field: name });
                 continue;
             }
-            reps.push(Rep { story: mapped, start, end, text: cell_of(fields, row, &name).to_string() });
+            reps.push(Rep { story: mapped, start, end, text: cell_of(fields, row, &name).to_string(), object: None });
         }
     }
 }
@@ -367,6 +390,15 @@ fn apply_reps(doc: &mut designcraft_doc::Document, reps: &[Rep]) {
         for r in mine {
             if r.start <= r.end && r.end <= st.text.len() {
                 st.replace(r.start..r.end, &r.text);
+                // The replacement made a blank object for its mark; the image takes that slot.
+                if let Some(obj) = &r.object
+                    && st.text.get(r.start..).is_some_and(|t| t.starts_with(OBJECT_MARK))
+                {
+                    let k = st.text[..r.start].matches(OBJECT_MARK).count();
+                    if let Some(slot) = st.objects.get_mut(k) {
+                        *slot = Arc::new(obj.clone());
+                    }
+                }
             }
         }
     }
@@ -420,10 +452,19 @@ fn create_link(doc: &mut designcraft_doc::Document, anchor: PlaceholderAnchor, d
     true
 }
 
-fn place_image(doc: &mut designcraft_doc::Document, item: ItemId, field: &str, cell: &str, record: u32, sources: &Sources, report: &mut FillReport) {
-    let Sources { options, data_dir, doc_dir, images } = *sources;
+/// An image file named by a cell: where it was found, its bytes, its pixel size and its natural size.
+struct LoadedImage {
+    path: PathBuf,
+    bytes: Arc<Vec<u8>>,
+    pixels: (u32, u32),
+    natural: (f64, f64),
+}
+
+/// The first candidate for `cell` that reads and decodes; `None` when none does.
+fn load_image(cell: &str, sources: &Sources) -> Option<LoadedImage> {
+    let Sources { data_dir, doc_dir, images, .. } = *sources;
     let cands = image_candidates(cell, data_dir, doc_dir);
-    let found = cands.iter().find_map(|p| {
+    let (path, bytes) = cands.iter().find_map(|p| {
         // Read once per merge: many records naming one file is the normal case, and reading it
         // per record is the amplification (#1595).
         let bytes = images.get_or_read(p, || {
@@ -435,23 +476,98 @@ fn place_image(doc: &mut designcraft_doc::Document, item: ItemId, field: &str, c
             crate::io::read_file(p).ok().filter(|b| !b.is_empty())
         })?;
         Some((p.clone(), bytes))
+    })?;
+    let (pixels, natural) = designcraft_render::image_size(&bytes).zip(designcraft_render::natural_size(&bytes, 0))?;
+    Some(LoadedImage { path, bytes, pixels, natural })
+}
+
+fn report_missing(report: &mut FillReport, record: u32, field: &str, cell: &str) {
+    report.missing.push(MissingImage { record, field: field.to_string(), path: cell.to_string() });
+    report.warnings.push(format!("Record {record}, field {field}: missing image {cell}."));
+}
+
+/// Add `image` to the document as a new asset, linked to its file when the options say so.
+fn add_image_asset(doc: &mut designcraft_doc::Document, image: LoadedImage, field: &str, options: &MergeOptions) -> AssetId {
+    let fresh = AssetId(doc.alloc());
+    let name = image.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| field.to_string());
+    let link = options.link_images.then(|| image.path.to_string_lossy().into_owned());
+    doc.add_asset(Asset {
+        id: fresh,
+        name,
+        mime: designcraft_render::image_mime(&image.bytes).to_string(),
+        link,
+        // The cached buffer is shared with every other record naming this file, rather than
+        // copied per record (#1595).
+        data: image.bytes,
+        pixels: Some(image.pixels),
+        ..Default::default()
+    })
+}
+
+/// The image `cell` names, as an inline object for the text of `story`. It comes in at its
+/// natural size, scaled down to fit the smallest text column of the story's frames (never scaled up).
+fn inline_image(
+    doc: &mut designcraft_doc::Document,
+    story: StoryId,
+    field: &str,
+    cell: &str,
+    record: u32,
+    sources: &Sources,
+    report: &mut FillReport,
+) -> Option<AnchoredObject> {
+    let Some(image) = load_image(cell, sources) else {
+        report_missing(report, record, field, cell);
+        return None;
+    };
+    let (nw, nh) = image.natural;
+    let frame = doc.story(story).and_then(|st| st.frames.first().copied()).and_then(|id| doc.item(id));
+    let layer = frame.map_or_else(|| doc.default_layer(), |it| it.layer);
+    // The marker may flow into any of the story's frames: fit the smallest column among them.
+    let fit = designcraft_compose::frame_specs(doc, story)
+        .iter()
+        .flat_map(|f| f.columns())
+        .map(|b| (b.width() / nw).min(b.height() / nh))
+        .reduce(f64::min)
+        .unwrap_or(1.0);
+    let k = if fit.is_finite() && fit > 0.0 { fit.min(1.0) } else { 1.0 };
+    let rect = Rect::new(0.0, 0.0, nw * k, nh * k);
+    let xf = Affine::scale(k);
+    if super::super::file::validate_placement((nw, nh), rect, xf, "data.merge").is_err() {
+        report.missing.push(MissingImage { record, field: field.to_string(), path: cell.to_string() });
+        report.warnings.push(format!("Record {record}, field {field}: image {cell} exceeds finite geometry limits."));
+        return None;
+    }
+    let asset = add_image_asset(doc, image, field, sources.options);
+    let mut it = Item::new(ItemId(doc.alloc()), layer, Shape::Rectangle, shapes::rectangle(rect));
+    it.object_style = doc.styles.default_graphic_frame.clone();
+    if let Some(e) = doc.styles.object_effects(&it.object_style) {
+        it.effects = e.clone();
+    }
+    it.content = Content::Graphic(Graphic {
+        layer_options: None,
+        asset,
+        size: (nw, nh),
+        xf,
+        auto_fit: Fitting::None,
+        fit_align: 0,
+        crop: [0.0; 4],
+        wrap: Default::default(),
+        clip: None,
+        fill: Default::default(),
     });
-    let Some((path, bytes)) = found else {
+    Some(AnchoredObject::new(it, AnchorPosition::default()))
+}
+
+fn place_image(doc: &mut designcraft_doc::Document, item: ItemId, field: &str, cell: &str, record: u32, sources: &Sources, report: &mut FillReport) {
+    let options = sources.options;
+    let Some(image) = load_image(cell, sources) else {
         if let Some(it) = doc.item_mut(item) {
             it.content = Content::Unassigned;
         }
-        report.missing.push(MissingImage { record, field: field.to_string(), path: cell.to_string() });
-        report.warnings.push(format!("Record {record}, field {field}: missing image {cell}."));
+        report_missing(report, record, field, cell);
         return;
     };
-    let Some(((pw, ph), (nw, nh))) = designcraft_render::image_size(&bytes).zip(designcraft_render::natural_size(&bytes, 0)) else {
-        if let Some(it) = doc.item_mut(item) {
-            it.content = Content::Unassigned;
-        }
-        report.missing.push(MissingImage { record, field: field.to_string(), path: cell.to_string() });
-        report.warnings.push(format!("Record {record}, field {field}: missing image {cell}."));
-        return;
-    };
+    let (nw, nh) = image.natural;
     let Some(inner) = doc.item(item).map(|it| it.inner_bounds()) else {
         report.warnings.push(format!("Record {record}, field {field}: missing image {cell}."));
         report.missing.push(MissingImage { record, field: field.to_string(), path: cell.to_string() });
@@ -488,20 +604,7 @@ fn place_image(doc: &mut designcraft_doc::Document, item: ItemId, field: &str, c
         report.warnings.push(format!("Record {record}, field {field}: image {cell} exceeds finite geometry limits."));
         return;
     }
-    let fresh = AssetId(doc.alloc());
-    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| field.to_string());
-    let link = options.link_images.then(|| path.to_string_lossy().into_owned());
-    g.asset = doc.add_asset(Asset {
-        id: fresh,
-        name,
-        mime: designcraft_render::image_mime(&bytes).to_string(),
-        link,
-        // The cached buffer is shared with every other record naming this file, rather than
-        // copied per record (#1595).
-        data: bytes,
-        pixels: Some((pw, ph)),
-        ..Default::default()
-    });
+    g.asset = add_image_asset(doc, image, field, options);
     if let Some(it) = doc.item_mut(item) {
         it.content = Content::Graphic(g);
     }
@@ -661,5 +764,16 @@ mod image_path_tests {
         let (data, doc) = (Path::new("/work/data"), Path::new("/work/doc"));
         let found = image_candidates("img/x.png", Some(data), Some(doc));
         assert_eq!(found, [data.join("img").join("x.png"), doc.join("img").join("x.png")]);
+    }
+
+    /// A path that starts with one separator is tried as it is, then beside the data file and the
+    /// document without the separator. Two separators still name another computer.
+    #[cfg(unix)]
+    #[test]
+    fn a_rooted_image_cell_is_also_tried_beside_the_data_and_the_document() {
+        let (data, doc) = (Path::new("/work/data"), Path::new("/work/doc"));
+        let found = image_candidates("/img/x.png", Some(data), Some(doc));
+        assert_eq!(found, [Path::new("/img/x.png").to_path_buf(), data.join("img").join("x.png"), doc.join("img").join("x.png")]);
+        assert!(image_candidates("//192.0.2.1/img/x.png", Some(data), Some(doc)).is_empty());
     }
 }

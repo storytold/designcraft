@@ -58,7 +58,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Insert Field",
             [],
             None,
-            "{field, role?: text|image|qr|hyperlink, story?, at?, end?, item?} → {id}",
+            "{field, role?: text|image|qr|hyperlink, story?, at?, end?, item?} → {id}; an image field at a text insertion point merges as an inline image",
             has_doc,
             placeholder_add
         ),
@@ -484,8 +484,11 @@ fn add_placeholder(d: &mut Document, sel: &Selection, p: &Value, name: &str) -> 
         true
     } else if explicit_story || role_param == Some("text") {
         false
-    } else if matches!(role_param, Some("image" | "qr")) {
+    } else if role_param == Some("qr") {
         true
+    } else if role_param == Some("image") {
+        // An image role with the insertion point in text places an inline image there.
+        sel.text.is_none()
     } else {
         sel.text.is_none() && !sel.items.is_empty()
     };
@@ -497,6 +500,9 @@ fn add_placeholder(d: &mut Document, sel: &Selection, p: &Value, name: &str) -> 
             DataFieldKind::Qr => PlaceholderRole::Qr,
             DataFieldKind::Text => return Err(bad("data.placeholder.add", "say which role to use on this frame")),
         }
+    } else if field.kind == DataFieldKind::Image {
+        // An image field at the insertion point places the image inline in the text.
+        PlaceholderRole::Image
     } else {
         PlaceholderRole::Text
     };
@@ -515,14 +521,14 @@ fn add_placeholder(d: &mut Document, sel: &Selection, p: &Value, name: &str) -> 
         }
         PlaceholderAnchor::Item { id: item }
     } else {
-        if matches!(role, PlaceholderRole::Image | PlaceholderRole::Qr) {
-            return Err(bad("data.placeholder.add", "image and qr placeholders bind to a frame"));
+        if role == PlaceholderRole::Qr {
+            return Err(bad("data.placeholder.add", "qr placeholders bind to a frame"));
         }
         let (story, at, end) = text_target(p, sel).ok_or_else(|| bad("data.placeholder.add", "select text or a frame"))?;
         if d.story(story).is_none() {
             return Err(bad("data.placeholder.add", "no story"));
         }
-        if role == PlaceholderRole::Text {
+        if matches!(role, PlaceholderRole::Text | PlaceholderRole::Image) {
             let marker = format!("<<{name}>>");
             let at = {
                 let text = d.story(story).map(|st| st.text.clone()).unwrap_or_default();
@@ -574,7 +580,7 @@ pub(crate) fn sync_placeholders(doc: &mut Document) {
             }
             PlaceholderAnchor::Text { story, start, end } => {
                 let text = doc.story(story).map(|st| st.text.clone()).unwrap_or_default();
-                if ph.role != PlaceholderRole::Text {
+                if !matches!(ph.role, PlaceholderRole::Text | PlaceholderRole::Image) {
                     if start <= end && end <= text.len() {
                         keep.push(ph);
                     }
