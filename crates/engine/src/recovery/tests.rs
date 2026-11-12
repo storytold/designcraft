@@ -707,6 +707,32 @@ fn a_clean_document_leaves_another_sessions_write_queued_behind_its_own() {
 
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
+fn a_background_recovery_write_reports_another_sessions_held_write() {
+    let _turn = background();
+    let dir = tempfile::tempdir().unwrap();
+    let mut first = dirty_session();
+    first.recovery_dir = Some(dir.path().to_path_buf());
+    let uid = first.docs[0].uid;
+    let mut second = dirty_session();
+    second.recovery_dir = Some(dir.path().to_path_buf());
+    second.docs[0].uid = uid;
+    second.execute("frame.create", &json!({"rect": [20, 20, 60, 60]})).unwrap();
+
+    let held = testing::hold_next_write(dir.path());
+    first.execute("file.recovery.save", &json!({"background": true})).unwrap();
+    held.wait_until_held();
+
+    let err = second.execute("file.recovery.save", &json!({"background": true})).unwrap_err();
+    assert!(err.to_string().contains("another session"), "{err}");
+
+    held.release();
+    assert_eq!(finished_writes(&mut first), 1);
+    assert!(files(dir.path(), uid).0.exists(), "the first session's recovery file remains intact");
+    discard(dir.path(), uid);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
 fn a_clean_document_in_another_session_leaves_this_sessions_write_alone() {
     let _turn = background();
     let dir = tempfile::tempdir().unwrap();

@@ -886,8 +886,14 @@ pub(crate) fn start_tracked(s: &mut Session, dir: &Path) -> Result<usize> {
             // A write still running for this document already holds a snapshot of it; the next
             // timer tick catches up with the edits made since.
             match worker::submit(entry) {
-                Some(true) => queued += 1,
-                Some(false) => {}
+                Some(worker::Submit::Queued) => queued += 1,
+                Some(worker::Submit::AlreadyQueued) => {}
+                Some(worker::Submit::Conflict) => {
+                    return Err(crate::EngineError::Other(format!(
+                        "recovery data for document {} is already being written by another session",
+                        document.uid
+                    )));
+                }
                 None => {
                     // No thread: write this one here rather than lose the recovery data.
                     let written = write_snapshot(&Snapshot::of(&access, dir, document), || false);
@@ -1326,24 +1332,33 @@ mod worker {
         })
     }
 
-    /// Queue a document's write. `None`: no writer thread (the caller writes it itself);
-    /// `Some(false)`: one for this document is still queued or running.
-    pub(super) fn submit(entry: Snapshot) -> Option<bool> {
+    pub(super) enum Submit {
+        Queued,
+        AlreadyQueued,
+        Conflict,
+    }
+
+    /// Queue a document's write. `None`: no writer thread (the caller writes it itself).
+    pub(super) fn submit(entry: Snapshot) -> Option<Submit> {
         let w = writer()?;
         let mut running = w.running.lock().ok()?;
         let key = (entry.key.clone(), entry.uid);
-        // A session is writing this document now: this write waits for a later turn.
-        if w.writing_now.lock().is_ok_and(|now| now.contains_key(&key)) {
-            return Some(false);
+        // Another session's save or recovery write owns this destination. Check ownership while
+        // holding the same reservation locks used to queue or publish writes.
+        if let Some(owner) = w.writing_now.lock().ok().and_then(|now| now.get(&key).copied()) {
+            return Some(if owner == entry.owner { Submit::AlreadyQueued } else { Submit::Conflict });
         }
         if let Some(q) = running.get_mut(&key) {
             // The write in flight was cancelled (the document was saved since), so it holds
             // nothing to recover: this one follows it, in place of any that was waiting.
             if w.cancelled.lock().is_ok_and(|cancelled| cancelled.contains(&key)) {
+                if q.next.as_ref().is_some_and(|next| next.owner != entry.owner) {
+                    return Some(Submit::Conflict);
+                }
                 q.next = Some(entry);
-                return Some(true);
+                return Some(Submit::Queued);
             }
-            return Some(false);
+            return Some(if q.owner == entry.owner { Submit::AlreadyQueued } else { Submit::Conflict });
         }
         running.insert(key.clone(), Queued { owner: entry.owner, dir: entry.dir.clone(), next: None });
         // A write is wanted again: whatever cancelled the last one does not apply to this one.
@@ -1354,7 +1369,7 @@ mod worker {
             running.remove(&key);
             return None;
         }
-        Some(true)
+        Some(Submit::Queued)
     }
 }
 
