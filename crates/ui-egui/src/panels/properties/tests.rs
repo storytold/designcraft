@@ -1405,7 +1405,7 @@ fn properties_text_frame_shows_while_typing_and_changes_the_caret_frame() {
 }
 
 /// A non-rectangular text frame shows one Inset, which sets the distance its text keeps from
-/// the outline (its top inset; the other sides stay).
+/// the outline. The composer also bounds its text by all four insets, so the field sets all four.
 #[test]
 fn properties_text_frame_shows_one_inset_for_an_oval() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
@@ -1420,7 +1420,51 @@ fn properties_text_frame_shows_one_inset_for_an_oval() {
     h.state_mut().run("object.textFrameOptions", json!({"ids": [id], "inset": [1, 2, 3, 4]})).unwrap();
     h.run_steps(2);
     type_in_field(&mut h, f[2], "8pt");
-    assert_eq!(frame_options(h.state(), id).inset, [8.0, 2.0, 3.0, 4.0]);
+    assert_eq!(frame_options(h.state(), id).inset, [8.0; 4]);
+}
+
+/// Lowering an oval's uniform inset with the one Inset field lowers every side, so no hidden
+/// side keeps the old inset and the text area that goes with it.
+#[test]
+fn properties_text_frame_one_inset_lowers_a_uniform_inset_on_every_side() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let id = app.run("frame.create", json!({"rect": [72, 72, 300, 300], "shape": "ellipse", "content": "text", "text": "Hello"})).unwrap()["id"]
+        .as_u64()
+        .unwrap();
+    app.run("object.textFrameOptions", json!({"ids": [id], "inset": 96})).unwrap();
+    app.run("selection.set", json!({"ids": [id]})).unwrap();
+    let mut h = panel(app);
+    let f = text_frame_fields(&h);
+    assert_eq!(f.len(), 3, "columns, gutter and one inset: {f:?}");
+    type_in_field(&mut h, f[2], "0pt");
+    assert_eq!(frame_options(h.state(), id).inset, [0.0; 4]);
+}
+
+/// With selected text that runs from an oval into a rectangular frame, the one Inset field
+/// changes the top inset of both, and each frame keeps its other sides.
+#[test]
+fn properties_text_frame_one_inset_keeps_the_sides_of_a_rectangle_in_the_selection() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let text = (0..40).map(|i| format!("Line {i} of the threaded story.")).collect::<Vec<_>>().join(" ");
+    let a = app.run("frame.create", json!({"rect": [72, 72, 300, 300], "shape": "ellipse", "content": "text", "text": text})).unwrap();
+    let b = app.run("frame.create", json!({"rect": [72, 400, 300, 760], "content": "text", "text": "", "caret": false})).unwrap();
+    let (oval, rect, sid) = (a["id"].as_u64().unwrap(), b["id"].as_u64().unwrap(), a["story"].as_u64().unwrap());
+    app.run("text.thread", json!({"from": oval, "to": rect})).unwrap();
+    app.run("object.textFrameOptions", json!({"ids": [oval, rect], "inset": [1, 2, 3, 4]})).unwrap();
+    app.run("text.select", json!({"story": sid, "anchor": 0, "focus": text.len()})).unwrap();
+    assert_eq!(
+        designcraft_engine::cmd::text_frame_options_frames(&app.session),
+        [designcraft_doc::ItemId(oval), designcraft_doc::ItemId(rect)],
+        "the selected text runs through both frames"
+    );
+    let mut h = panel(app);
+    let f = text_frame_fields(&h);
+    assert_eq!(f.len(), 3, "columns, gutter and one inset for the first frame, an oval: {f:?}");
+    type_in_field(&mut h, f[2], "8pt");
+    assert_eq!(frame_options(h.state(), oval).inset, [8.0, 2.0, 3.0, 4.0]);
+    assert_eq!(frame_options(h.state(), rect).inset, [8.0, 2.0, 3.0, 4.0]);
 }
 
 /// Type on a path sets one line along the path: Properties › Text Frame shows no insets and no

@@ -525,8 +525,13 @@ pub(super) fn text_frame_target(app: &DesignApp) -> Option<(designcraft_doc::Ite
     let fid = designcraft_engine::cmd::text_frame_options_frames(&app.session).first().copied()?;
     let item = st.doc.item(fid)?;
     let opts = item.text_frame()?.options.clone();
-    let shaped = opts.path.is_none() && designcraft_compose::FrameOutline::of_item(item, 0.0).is_some();
-    Some((fid, opts, shaped))
+    Some((fid, opts, is_shaped(item)))
+}
+
+/// Whether a text frame's outline is not its own rectangle, where its text keeps one inset from
+/// the outline. Type on a path is not shaped.
+fn is_shaped(item: &designcraft_doc::Item) -> bool {
+    item.text_frame().is_some_and(|tf| tf.options.path.is_none()) && designcraft_compose::FrameOutline::of_item(item, 0.0).is_some()
 }
 
 /// Text Frame section: columns, gutter, [Options]; Inset Spacing (Top and Bottom, the link that
@@ -596,9 +601,19 @@ fn text_frame_insets(app: &mut DesignApp, ui: &mut Ui, fid: designcraft_doc::Ite
         if let Some(v) = place(ui, sub(b, 20.0, 0.0, 76.0, FIELD_H), |ui| {
             NumField::measure("tfInset", Some(inset[0]), u).width(76.0).spinner().range(0.0, 15552.0).show(ui)
         }) {
-            // The top inset is the one kept from the outline; the other sides stay, so a
-            // rectangular frame that holds part of the same selected text keeps them too.
-            let _ = app.run("object.textFrameOptions", json!({"inset": [v, null, null, null]}));
+            // The composer also bounds the text by the frame's rectangle less all four insets, so
+            // when every frame it changes is shaped the one Inset sets all four. With a
+            // rectangular frame among them (part of the same selected text), only the top inset
+            // changes and each frame keeps its other sides.
+            let all_shaped = app.session.active().is_some_and(|st| {
+                designcraft_engine::cmd::text_frame_options_frames(&app.session)
+                    .iter()
+                    .filter_map(|id| st.doc.item(*id))
+                    .filter(|it| it.text_frame().is_some_and(|tf| tf.options.path.is_none()))
+                    .all(is_shaped)
+            });
+            let inset = if all_shaped { json!(v) } else { json!([v, null, null, null]) };
+            let _ = app.run("object.textFrameOptions", json!({"inset": inset}));
         }
         return;
     }
