@@ -120,6 +120,14 @@ impl Exporter<'_> {
         true
     }
 
+    /// A process colour as Output › Color Conversion writes it (unchanged without one).
+    pub(crate) fn proc(&self, c: &Color) -> Color {
+        match &self.convert {
+            Some(cv) => cv.color(c),
+            None => *c,
+        }
+    }
+
     pub(crate) fn warn(&mut self, w: impl Into<String>) {
         let w = w.into();
         if !self.warnings.contains(&w) {
@@ -153,14 +161,14 @@ impl Exporter<'_> {
                         self.doc.swatch(ink).filter(|w| matches!(w.value, SwatchValue::Color { color_type: ColorType::Spot, .. })).unwrap_or(sw);
                     let SwatchValue::Color { color, .. } = &target.value else { break };
                     if process {
-                        return Some(device(&designcraft_color::swatch::apply_tint(*color, t), self.rgb_only));
+                        return Some(device(&self.proc(&designcraft_color::swatch::apply_tint(*color, t)), self.rgb_only));
                     }
-                    let space = SeparationSpace::new(SeparationColorant::Custom(target.name.clone()), regular(color, self.rgb_only));
+                    let space = SeparationSpace::new(SeparationColorant::Custom(target.name.clone()), regular(&self.proc(color), self.rgb_only));
                     return Some(SepColor::new(q(t), space).into());
                 }
                 _ => break,
             }
         }
-        self.doc.resolve_color(name, tint).map(|c| device(&c, self.rgb_only))
+        self.doc.resolve_color(name, tint).map(|c| device(&self.proc(&c), self.rgb_only))
     }
 }

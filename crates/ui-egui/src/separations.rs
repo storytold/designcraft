@@ -218,7 +218,7 @@ pub fn print_settings(app: &DesignApp) -> Print {
     let flatten = if s.flatten.is_empty() { app.ui.flattener.as_str() } else { s.flatten.as_str() };
     Print {
         standard: designcraft_engine::separations::Standard::parse(&s.standard).unwrap_or_default(),
-        compress_images: s.compress_images,
+        compress_images: s.color_compression == "jpeg",
         flatten: match flatten {
             "high" => Some(300.0),
             "medium" => Some(150.0),
