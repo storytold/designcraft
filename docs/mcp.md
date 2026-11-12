@@ -143,7 +143,7 @@ config works across the suite) keep the agent to the folders you give it:
   folder that doesn't exist is refused, as is a link that leads nowhere (writing through it would
   create its target). The result is compared with each root by whole folder names: `/work2/x` is not
   inside `/work`. On Windows case is ignored, UNC paths (`\\server\share\...`) are resolved like
-  drive-letter ones, and device names (`CON`, `NUL`, `COM1`...) are refused.
+  drive-letter ones, and device names (`CON`, `NUL`, `COM1`, `COM¹`, including before a colon) are refused.
 - A refused path is an ordinary tool error the agent can read and correct, for example
   `automation path rejected: outside the write root /work/project/out: /etc/x.designcraft` (with
   several, `outside the write roots /work/project/out, /tmp/scratch: ...`) or
