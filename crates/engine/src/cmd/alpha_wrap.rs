@@ -52,7 +52,7 @@ pub(crate) fn sync(doc: &mut Document) {
             continue;
         }
         let Some(a) = doc.assets.get(&asset).filter(|a| a.is_raster()) else { continue };
-        // An image with no outline (opaque, unreadable, too large) is remembered as an empty
+        // An image with no outline (unreadable, too large) is remembered as an empty
         // one, so later edits don't decode it again; the contour is then the frame's.
         let o = trace(&a.data, asset, threshold).unwrap_or_else(|| no_outline(&a.data, asset, threshold));
         doc.alpha_outlines.push(Arc::new(o));
@@ -74,8 +74,8 @@ fn no_outline(data: &Arc<Vec<u8>>, asset: AssetId, threshold: u8) -> AlphaOutlin
     }
 }
 
-/// The outline of the pixels of `data` more opaque than `threshold`. None for an image that
-/// can't be read, is too large, or has no transparency (its contour is its rectangle).
+/// The outline of the pixels of `data` more opaque than `threshold`: an image with no
+/// transparency gives its rectangle. None for an image that can't be read or is too large.
 pub(crate) fn trace(data: &Arc<Vec<u8>>, asset: AssetId, threshold: u8) -> Option<AlphaOutline> {
     let (w, h) = designcraft_images::pixel_size(data)?;
     if w == 0 || h == 0 || u64::from(w) * u64::from(h) > MAX_PIXELS {
@@ -92,13 +92,7 @@ pub(crate) fn trace(data: &Arc<Vec<u8>>, asset: AssetId, threshold: u8) -> Optio
         let (cols, rows) = (w.min(grid), h.min(grid));
         let mask = match finer.as_ref().and_then(|(m, fc, fr)| coarsen(m, *fc, *fr, cols, rows)) {
             Some(m) => m,
-            None => {
-                let (mask, transparent) = occupancy(img.as_raw(), w, h, cols, rows, threshold);
-                if !transparent {
-                    return None;
-                }
-                mask
-            }
+            None => occupancy(img.as_raw(), w, h, cols, rows, threshold),
         };
         // Composition follows an outline of at most MAX_CONTOUR_POINTS path elements (holes
         // included, for Include Inside Edges): a ring of k points is k + 1 elements with its close.
@@ -152,11 +146,9 @@ fn coarsen(mask: &[bool], fc: u32, fr: u32, cols: u32, rows: u32) -> Option<Vec<
 }
 
 /// Which cells of a `cols` × `rows` grid hold a pixel of the `w` × `h` RGBA image `rgba` more
-/// opaque than `threshold` (a cell is visible when any of its pixels is), and whether the image
-/// has any transparency.
-fn occupancy(rgba: &[u8], w: u32, h: u32, cols: u32, rows: u32, threshold: u8) -> (Vec<bool>, bool) {
+/// opaque than `threshold` (a cell is visible when any of its pixels is).
+fn occupancy(rgba: &[u8], w: u32, h: u32, cols: u32, rows: u32, threshold: u8) -> Vec<bool> {
     let mut mask = vec![false; (cols as usize) * (rows as usize)];
-    let mut transparent = false;
     // A pixel's cell is (x * cols / w, y * rows / h). Along a row the column is counted up as x
     // passes each cell's edge (cols <= w, so at most one edge per pixel) instead of divided out.
     for (y, row) in rgba.chunks_exact(w as usize * 4).take(h as usize).enumerate() {
@@ -168,16 +160,14 @@ fn occupancy(rgba: &[u8], w: u32, h: u32, cols: u32, rows: u32, threshold: u8) -
                 edge += u64::from(w);
             }
             acc += u64::from(cols);
-            let alpha = px[3];
-            transparent |= alpha < 255;
-            if alpha > threshold
+            if px[3] > threshold
                 && let Some(c) = mask.get_mut(base + gx)
             {
                 *c = true;
             }
         }
     }
-    (mask, transparent)
+    mask
 }
 
 /// The closed boundaries of the visible cells, split into outer boundaries and the boundaries of
@@ -305,8 +295,10 @@ mod tests {
         let (a, b) = (o.outer.bounds().unwrap(), o.holes.bounds().unwrap());
         assert_eq!((a.x0, a.y0, a.x1, a.y1), (8.0, 8.0, 56.0, 56.0));
         assert_eq!((b.x0, b.y0, b.x1, b.y1), (24.0, 24.0, 40.0, 40.0));
-        // An opaque image has no alpha outline.
-        assert!(trace(&Arc::new(png(|_, _| true)), AssetId(1), 25).is_none());
+        // An opaque image's outline is its rectangle.
+        let o = trace(&Arc::new(png(|_, _| true)), AssetId(1), 25).unwrap();
+        let a = o.outer.bounds().unwrap();
+        assert_eq!((a.x0, a.y0, a.x1, a.y1, o.holes.subpaths.len()), (0.0, 0.0, 64.0, 64.0, 0));
     }
 
     /// The cell masks match a pixel-by-pixel count (cell = x * cols / w, y * rows / h), and a
@@ -331,13 +323,13 @@ mod tests {
                     }
                 }
             }
-            assert_eq!(occupancy(&rgba, w, h, cols, rows, 25), (expect, true), "{cols} x {rows}");
+            assert_eq!(occupancy(&rgba, w, h, cols, rows, 25), expect, "{cols} x {rows}");
         }
-        let (fine, _) = occupancy(&rgba, w, h, 256, 256, 25);
-        assert_eq!(coarsen(&fine, 256, 256, 128, 128), Some(occupancy(&rgba, w, h, 128, 128, 25).0));
+        let fine = occupancy(&rgba, w, h, 256, 256, 25);
+        assert_eq!(coarsen(&fine, 256, 256, 128, 128), Some(occupancy(&rgba, w, h, 128, 128, 25)));
         // Same count on one side, twice on the other.
-        let (fine, _) = occupancy(&rgba, w, h, 128, 256, 25);
-        assert_eq!(coarsen(&fine, 128, 256, 128, 128), Some(occupancy(&rgba, w, h, 128, 128, 25).0));
+        let fine = occupancy(&rgba, w, h, 128, 256, 25);
+        assert_eq!(coarsen(&fine, 128, 256, 128, 128), Some(occupancy(&rgba, w, h, 128, 128, 25)));
         // Any other ratio is read from the pixels.
         assert_eq!(coarsen(&fine, 128, 256, 100, 128), None);
     }
@@ -366,10 +358,9 @@ mod tests {
         assert!(s.doc().unwrap().doc.alpha_outlines.is_empty());
     }
 
-    /// An image with no outline (here opaque) is remembered as an empty one: later edits don't
-    /// trace it again, and the contour is the frame's.
+    /// An outline is traced once: later edits keep it.
     #[test]
-    fn an_image_with_no_outline_is_not_traced_on_every_edit() {
+    fn an_outline_is_not_traced_on_every_edit() {
         let mut s = Session::new();
         s.execute("file.new", &json!({})).unwrap();
         let data = png(|_, _| true);
@@ -380,10 +371,22 @@ mod tests {
         s.execute("object.textWrap", &json!({"ids": [id], "mode": "contour", "contour": "alphaChannel"})).unwrap();
         let first = s.doc().unwrap().doc.alpha_outlines.clone();
         assert_eq!(first.len(), 1, "remembered");
-        assert_eq!((first[0].width, first[0].height), (0, 0), "as no outline");
         s.execute("frame.create", &json!({"rect": [300, 300, 350, 350]})).unwrap();
         let after = &s.doc().unwrap().doc.alpha_outlines;
         assert!(Arc::ptr_eq(&first[0], &after[0]), "kept, not traced again");
+    }
+
+    /// An opaque image's Alpha Channel contour is its rectangle, not the frame: moved within its
+    /// frame, it leaves the empty part of the frame to the text.
+    #[test]
+    fn an_opaque_image_wraps_its_rectangle() {
+        let (mut s, image, story) = page(&png(|_, _| true), [105.0, 150.0, 125.0, 178.0]);
+        s.execute("object.textWrap", &json!({"ids": [image], "contour": "alphaChannel"})).unwrap();
+        assert!(overset(&s, story), "the image covers the caption");
+        // The graphic moved 30 pt right within its frame: the frame's left 30 pt are empty.
+        s.execute("selection.set", &json!({"ids": [image], "content": true})).unwrap();
+        s.execute("transform.move", &json!({"dx": 30, "dy": 0})).unwrap();
+        assert!(!overset(&s, story), "the empty part of the frame takes the caption");
     }
 
     /// Outlines are traced for a wrap set on the placed graphic and for frames inside groups, and
