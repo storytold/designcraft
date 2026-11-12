@@ -1858,8 +1858,14 @@ fn position_line(input: PositionLineInput<'_, '_>) -> LinePosition {
         if cur.last_baseline.is_some() {
             baseline += cur.last_reference - reference;
         }
-        let grid = f.grid.filter(|&(_, inc)| {
-            inc > 0.0 && inc.is_finite() && (pp.grid_align == GridAlign::AllLines || (pp.grid_align == GridAlign::FirstLineOnly && line_no == 0))
+        // A step so small that the column holds more steps than an f64 can count is no grid: the
+        // line is placed as it is without one.
+        let countable = |g_start: f64, inc: f64| [baseline, col.y0, col.y1].iter().all(|y| ((y - g_start) / inc).is_finite());
+        let grid = f.grid.filter(|&(g_start, inc)| {
+            inc > 0.0
+                && inc.is_finite()
+                && countable(g_start, inc)
+                && (pp.grid_align == GridAlign::AllLines || (pp.grid_align == GridAlign::FirstLineOnly && line_no == 0))
         });
         if let Some((g_start, inc)) = grid {
             let n = pp.grid_gyoudori.min(grid::MAX_GYOUDORI);
@@ -3192,6 +3198,9 @@ fn compose_run(
     // and in split columns.
     let mut span_paras = vec![false; np];
     let mut split_paras = vec![false; np];
+    // Each paragraph's Align to Baseline Grid (vertical justification moves grid-aligned lines by
+    // whole grid steps).
+    let mut grid_paras = vec![GridAlign::None; np];
     // Composing again after an edit starts at the paragraph above it ([`reuse`]). The entries
     // for the paragraphs before that one are never read: going back over a paragraph abandons the
     // pass.
@@ -3366,6 +3375,7 @@ fn compose_run(
         // it, a paragraph moves on to the next sub-column.
         let split_cfg = SplitCfg::of(&pp);
         split_paras[pi] = split_cfg.is_some();
+        grid_paras[pi] = pp.grid_align;
         if cur.split.is_some_and(|s| Some(s.cfg) != split_cfg) {
             cur.split = None;
         }
@@ -3595,6 +3605,7 @@ fn compose_run(
             boxes: &boxes,
             span_paras: &span_paras,
             split_paras: &split_paras,
+            grid_paras: &grid_paras,
             styles_tab,
         });
         (out, trace)
@@ -3611,11 +3622,12 @@ struct FinishInput<'a> {
     boxes: &'a [Option<ParaBox>],
     span_paras: &'a [bool],
     split_paras: &'a [bool],
+    grid_paras: &'a [GridAlign],
     styles_tab: Vec<RunStyle>,
 }
 
 fn finish_composition(input: FinishInput<'_>) -> ComposedStory {
-    let FinishInput { doc, story, frames, cols, notes, out, boxes, span_paras, split_paras, styles_tab } = input;
+    let FinishInput { doc, story, frames, cols, notes, out, boxes, span_paras, split_paras, grid_paras, styles_tab } = input;
     notes.finish(doc, story, frames, cols, out);
     // The story byte of each anchored object's mark, found once for every frame that holds one.
     let mut marks: Option<Vec<usize>> = None;
@@ -3639,7 +3651,7 @@ fn finish_composition(input: FinishInput<'_>) -> ComposedStory {
         } else {
             marks.get_or_insert_with(|| story.text.match_indices(designcraft_doc::OBJECT_MARK).map(|(i, _)| i).collect())
         };
-        vertical_justify(ft, f, spanned, &doc.footnote_options, anchors);
+        vertical_justify(ft, f, spanned, &doc.footnote_options, grid_paras, anchors);
         for (t, b) in ft.tables.iter_mut().zip(before) {
             let now = ft.lines.get(t.line).map_or(b, |l| l.baseline);
             t.shift(now - b);
@@ -5967,7 +5979,15 @@ fn rule_decos(doc: &Document, r: &designcraft_doc::Rule, rect: Rect, (color, tin
 
 /// `spanned`: a paragraph spans the frame's columns, so the lines move together. `anchors`: the
 /// story byte of each anchored object's mark, by object index.
-fn vertical_justify(ft: &mut FrameText, f: &FrameSpec, spanned: bool, notes: &designcraft_doc::FootnoteOptions, anchors: &[usize]) {
+/// `grid_aligns`: each paragraph's Align to Baseline Grid setting.
+fn vertical_justify(
+    ft: &mut FrameText,
+    f: &FrameSpec,
+    spanned: bool,
+    notes: &designcraft_doc::FootnoteOptions,
+    grid_aligns: &[GridAlign],
+    anchors: &[usize],
+) {
     if ft.lines.is_empty() || f.opts.vertical_justification == VerticalJustification::Top {
         return;
     }
@@ -6083,24 +6103,29 @@ fn vertical_justify(ft: &mut FrameText, f: &FrameSpec, spanned: bool, notes: &de
                 shift[k] <= 0.0 || ((k == n || l.baseline + l.descent + shift[k] <= limit + 1e-9) && in_outline(l, k == n, shift[k]))
             }) && clear(shift)
         };
-        // Every row moves no less as `space` grows, so in a rectangular frame the most room that
-        // fits (and keeps every row clear of the wraps under it) is found by halving. A shaped
-        // frame can narrow and widen again further down: there the rooms are scanned from the most down to none, every point (at most 512 steps, each
-        // usually stopped by the lowest line), and the step between the first that fits and the
-        // one above it is then halved.
-        let mut shift = shifts(space);
-        if !fits(&shift) {
-            let steps = if f.outline.is_some() { space.ceil().clamp(64.0, 512.0) as usize } else { 1 };
-            let (mut lo, mut hi) = (0.0, space);
-            for j in 1..steps {
-                let s = space * (steps - j) as f64 / steps as f64;
-                if fits(&shifts(s)) {
-                    lo = s;
-                    break;
-                }
-                hi = s;
+        // In a rectangular frame fit decreases monotonically as the shift grows. A shaped
+        // frame can narrow and widen again, so scan from the largest shift before refining the
+        // first fitting interval. This also bounds the room used for baseline-grid quantization
+        // and preserves clearance from fixed and anchor-following wraps.
+        let most_room = |top: f64| -> f64 {
+            if fits(&shifts(top)) {
+                return top;
             }
-            for _ in 0..50 {
+            let (mut lo, mut hi) = if f.outline.is_some() {
+                let steps = top.ceil().clamp(64.0, 512.0) as usize;
+                let mut found = (0.0, top);
+                for j in 1..=steps {
+                    let candidate = top * (steps - j) as f64 / steps as f64;
+                    if fits(&shifts(candidate)) {
+                        found = (candidate, top * (steps - j + 1) as f64 / steps as f64);
+                        break;
+                    }
+                }
+                found
+            } else {
+                (0.0, top)
+            };
+            for _ in 0..60 {
                 let mid = (lo + hi) / 2.0;
                 if fits(&shifts(mid)) {
                     lo = mid;
@@ -6108,8 +6133,60 @@ fn vertical_justify(ft: &mut FrameText, f: &FrameSpec, spanned: bool, notes: &de
                     hi = mid;
                 }
             }
-            shift = shifts(lo);
-        }
+            lo
+        };
+        // Lines aligned to the baseline grid move by whole grid steps, so they stay on the grid.
+        // With Justify only the last row has to land on the grid (the first row doesn't move).
+        let on_grid = |i: usize| {
+            let line = &ft.lines[i];
+            match grid_aligns.get(line.para) {
+                Some(GridAlign::AllLines) => true,
+                Some(GridAlign::FirstLineOnly) => line.first_in_para,
+                _ => false,
+            }
+        };
+        let center = f.opts.vertical_justification == VerticalJustification::Center;
+        let step = f.grid.map(|(_, inc)| inc).filter(|inc| *inc > 0.0 && inc.is_finite()).filter(|_| match f.opts.vertical_justification {
+            VerticalJustification::Justify => idx.iter().zip(&rows).any(|(&i, &k)| k == n && on_grid(i)),
+            _ => idx.iter().any(|&i| on_grid(i)),
+        });
+        let shift = match step {
+            None => shifts(most_room(space)),
+            // A step so small that the room holds more steps than an f64 can count: the lines take
+            // the room as they do without a grid, and stay within one step of a grid line.
+            Some(inc) if !(space / inc).is_finite() => shifts(most_room(space)),
+            Some(inc) => {
+                // The room one grid step takes: Center moves the lines by half the room.
+                let unit = if center { 2.0 * inc } else { inc };
+                let room = most_room(if center { 2.0 * space } else { space });
+                // The last baseline stays above the bottom of the text, and the rows above it fit.
+                let most = (space / inc + 1e-9).floor().min((room / unit + 1e-9).floor()).max(0.0);
+                // Bottom and Justify take the lowest grid line, Center the one nearest the middle.
+                let target = if center { (space / 2.0 / inc).round().min(most) } else { most };
+                // A shaped frame can narrow and widen again, so the target step may not fit: take
+                // the fitting step nearest it, up to `most` (the lower one on a tie, and no step
+                // when that is as near), and leave the lines in place when none within
+                // `MAX_GRID_TRIES` steps of it fits.
+                const MAX_GRID_TRIES: usize = 512;
+                let mut steps = 0.0;
+                for d in 0..MAX_GRID_TRIES {
+                    let (below, above) = (target - d as f64, target + d as f64);
+                    if below <= 0.0 {
+                        break;
+                    }
+                    if fits(&shifts(below * unit)) {
+                        steps = below;
+                        break;
+                    }
+                    if d > 0 && above <= most && fits(&shifts(above * unit)) {
+                        steps = above;
+                        break;
+                    }
+                }
+                // With no step taken the lines stay put, even when Center's doubled step overflows.
+                shifts(if steps > 0.0 { steps * unit } else { 0.0 })
+            }
+        };
         let before: Vec<f64> = idx.iter().map(|&i| ft.lines[i].baseline).collect();
         for (&i, &k) in idx.iter().zip(&rows) {
             ft.lines[i].baseline += shift[k];
