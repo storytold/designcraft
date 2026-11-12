@@ -5691,14 +5691,20 @@ fn wrap_rooms(ft: &FrameText, f: &FrameSpec, c: u32, spanned: bool, anchors: &[u
     };
     let in_col = |k: u32| spanned || k == c;
     let justify = f.opts.vertical_justification == VerticalJustification::Justify;
+    // The object whose mark is at each story byte, placed on one of these lines (the first one
+    // listed).
+    let mut by_anchor = HashMap::new();
+    for o in ft.objects.iter().filter(|o| ft.lines.get(o.line).is_some_and(|l| in_col(l.column))) {
+        if let Some(&a) = anchors.get(o.index) {
+            by_anchor.entry(a).or_insert(o);
+        }
+    }
     // An own-story anchored object whose anchor is on one of these lines and whose position
     // follows its line moves with the text: the index in `ft.lines` of its anchor's line, and how
     // much lower that line was when the wrap was taken (an earlier pass placed the object after
     // moving the lines).
     let moves_with_text = |e: &Exclusion| -> Option<(usize, f64)> {
-        let a = e.after?;
-        // The object whose mark is the anchor, placed on one of these lines.
-        let o = ft.objects.iter().find(|o| anchors.get(o.index) == Some(&a) && ft.lines.get(o.line).is_some_and(|l| in_col(l.column)))?;
+        let o = *by_anchor.get(&e.after?)?;
         let follows = match &o.object.position {
             designcraft_doc::AnchorPosition::Inline { .. } | designcraft_doc::AnchorPosition::AboveLine { .. } => true,
             // Kept within the column, it can stop at the column's edge instead of following.
@@ -5709,6 +5715,8 @@ fn wrap_rooms(ft: &FrameText, f: &FrameSpec, c: u32, spanned: bool, anchors: &[u
         let now = ft.lines.get(o.line).map_or(0.0, |l| l.baseline);
         follows.then(|| (o.line, e.anchor_baseline.map_or(0.0, |b| b - now)))
     };
+    // Each wrap's object is looked up once, not for every line.
+    let moving: Vec<Option<(usize, f64)>> = f.exclusions.iter().map(moves_with_text).collect();
     // Justify keeps the first row (its segments and a table on them) in place, so wraps under it
     // set no limit.
     let first = ft.lines.iter().find(|l| in_col(l.column)).map(|l| l.baseline);
@@ -5734,8 +5742,7 @@ fn wrap_rooms(ft: &FrameText, f: &FrameSpec, c: u32, spanned: bool, anchors: &[u
         let col = ft.columns.get(k as usize).copied().unwrap_or(f.area);
         let col = Rect { x0: col.x0.min(x0), x1: col.x1.max(x1), ..col };
         let meets = |(a, b): (f64, f64)| a < x1 - EPS && b > x0 + EPS;
-        for e in f.exclusions.iter().filter(|e| e.wraps_line(start)) {
-            let anchor = moves_with_text(e);
+        for (e, &anchor) in f.exclusions.iter().zip(&moving).filter(|(e, _)| e.wraps_line(start)) {
             if anchor.is_some() && !justify {
                 continue;
             }
