@@ -1,6 +1,6 @@
 //! Type › Insert Footnote, Document Footnote Options, footnote inspection and editing.
 
-use designcraft_doc::{CellAddr, FootnoteOptions, ParaFormat, Story, StoryId, TABLE_ANCHOR, Table, TextDirection, TextSel};
+use designcraft_doc::{CellAddr, FootnoteOptions, ParaFormat, Story, StoryId, TABLE_ANCHOR, Table, TextSel};
 use serde_json::{Value, json};
 
 use super::{CommandSpec, bad, cmd, has_doc};
@@ -205,15 +205,14 @@ fn collect_notes(st: &Story, root: StoryId, path: &mut Vec<(u64, usize, usize)>,
     }
 }
 
-/// The cells a table is read in: row by row, and by the table's direction within a row.
+/// The cells a table is read in: row by row, each from its first column (on the right in a
+/// right-to-left table, which lays its columns out mirrored).
 fn cell_reading_order(t: &Table) -> Vec<(usize, usize)> {
     let (nr, nc) = (t.nrows(), t.ncols());
     let owners = t.owners();
-    let rtl = t.options.direction == TextDirection::RightToLeft;
     let mut cells = Vec::new();
     for r in 0..nr {
-        for i in 0..nc {
-            let c = if rtl { nc - 1 - i } else { i };
+        for c in 0..nc {
             let Some(at) = r.checked_mul(nc).and_then(|x| x.checked_add(c)) else { continue };
             if owners.get(at) == Some(&(r, c)) {
                 cells.push((r, c));
@@ -485,11 +484,12 @@ mod tests {
     }
 
     #[test]
-    fn table_cells_are_read_in_the_table_direction() {
+    fn table_cells_are_read_from_each_rows_first_column() {
         let mut t = Table::new(1, 2, 2, 0, 0, 100.0);
         assert_eq!(cell_reading_order(&t), [(0, 0), (0, 1), (1, 0), (1, 1)]);
-        t.options.direction = TextDirection::RightToLeft;
-        assert_eq!(cell_reading_order(&t), [(0, 1), (0, 0), (1, 1), (1, 0)]);
+        // A right-to-left table lays column 0 out on the right, so it is still read first.
+        t.options.direction = designcraft_doc::TextDirection::RightToLeft;
+        assert_eq!(cell_reading_order(&t), [(0, 0), (0, 1), (1, 0), (1, 1)]);
     }
 
     #[test]
