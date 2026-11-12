@@ -314,6 +314,30 @@ fn saving_in_one_session_leaves_another_sessions_write_alone() {
 
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
+fn saving_in_one_session_leaves_another_sessions_write_to_the_same_folder_alone() {
+    let _turn = background();
+    let dir = tempfile::tempdir().unwrap();
+    let mut queued_by = dirty_session();
+    queued_by.recovery_dir = Some(dir.path().to_path_buf());
+    let uid = queued_by.docs[0].uid;
+    // The same uid and recovery folder in another session.
+    let mut other = dirty_session();
+    other.recovery_dir = Some(dir.path().to_path_buf());
+    other.docs[0].uid = uid;
+    let held = testing::hold_next_write(dir.path());
+    queued_by.execute("file.recovery.save", &json!({"background": true})).unwrap();
+    held.wait_until_held();
+    let elsewhere = tempfile::tempdir().unwrap();
+    other.execute("file.saveAs", &json!({"path": elsewhere.path().join("other.designcraft").to_string_lossy()})).unwrap();
+    assert!(!worker::cancelled(dir.path(), uid), "the other session's save cancelled this write");
+    held.release();
+    assert_eq!(finished_writes(&mut queued_by), 1);
+    assert!(files(dir.path(), uid).0.exists(), "this session's snapshot was kept");
+    discard(dir.path(), uid);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
 fn a_write_now_cancels_a_background_write_to_the_same_folder_spelled_another_way() {
     let _turn = background();
     let dir = tempfile::tempdir().unwrap();

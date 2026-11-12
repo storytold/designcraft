@@ -539,9 +539,10 @@ pub(crate) fn discard_document(s: &mut Session, index: usize, default_dir: Optio
         if !s.docs.iter().enumerate().any(|(other_index, owner)| {
             other_index != index && owner.recovery_entries.iter().any(|(entry_dir, entry_uid)| *entry_uid == uid && same_directory(entry_dir, &dir))
         }) {
-            // A write of it still running must not publish its snapshot after this point.
+            // A write of it this session still runs must not publish its snapshot after this
+            // point; another session's write of the same uid is its own.
             #[cfg(not(target_arch = "wasm32"))]
-            worker::cancel(&dir, uid);
+            worker::cancel_owned(&dir, uid, owner);
             discard(&dir, uid, owner);
         }
     }
@@ -1041,21 +1042,25 @@ mod worker {
 
         /// Do not publish the snapshot being written for `dir`/`uid`: the document was saved,
         /// reverted or closed. Only a write that is queued or running is marked, so the set stays
-        /// as small as the work in flight.
-        fn cancel(&self, dir: &Path, uid: u64) {
+        /// as small as the work in flight. With `owner`, only writes that session queued are
+        /// marked: another session's write of the same uid stays.
+        fn cancel(&self, dir: &Path, uid: u64, owner: Option<u64>) {
             let canonical = key(dir, uid);
+            let mine = |queued_by: u64| owner.is_none_or(|owner| owner == queued_by);
             // A rename under way finishes first, so the caller's cleanup comes after it; a later
             // one sees the mark.
             let _publishing = super::PUBLISH.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             // The folder's canonical path, or its name as given: a link in the path may lead
             // elsewhere now than when the write was queued.
             let Ok(mut running) = self.running.lock() else { return };
-            let keys: Vec<(PathBuf, u64)> =
-                running.iter().filter(|(k, q)| **k == canonical || (k.1 == uid && q.dir == dir)).map(|(k, _)| k.clone()).collect();
-            // A write queued to follow it is older than what the caller has now, too.
-            for k in &keys {
-                if let Some(q) = running.get_mut(k) {
+            let mut keys = Vec::new();
+            for (k, q) in running.iter_mut().filter(|(k, q)| **k == canonical || (k.1 == uid && q.dir == dir)) {
+                // A write queued to follow it is older than what the caller has now, too.
+                if q.next.as_ref().is_some_and(|n| mine(n.owner)) {
                     q.next = None;
+                }
+                if mine(q.owner) {
+                    keys.push(k.clone());
                 }
             }
             if let Ok(mut cancelled) = self.cancelled.lock() {
@@ -1181,7 +1186,14 @@ mod worker {
     /// Do not publish the snapshot being written for `dir`/`uid` (see [`Writer::cancel`]).
     pub(super) fn cancel(dir: &Path, uid: u64) {
         if let Some(w) = started() {
-            w.cancel(dir, uid);
+            w.cancel(dir, uid, None);
+        }
+    }
+
+    /// [`cancel`] for the writes session `owner` queued.
+    pub(super) fn cancel_owned(dir: &Path, uid: u64, owner: u64) {
+        if let Some(w) = started() {
+            w.cancel(dir, uid, Some(owner));
         }
     }
 
