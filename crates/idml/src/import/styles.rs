@@ -199,8 +199,9 @@ impl<'r> Importer<'r> {
                 .flatten();
             let levels = based_on_levels(e, &objects_by_self);
             // Text Frame General Options: each attribute from the nearest style whose
-            // `TextFramePreference` sets it, among the styles that don't turn the category off.
-            let text_frame = if e.get("EnableTextFrameGeneralOptions") == Some("true") {
+            // `TextFramePreference` sets it, among the styles that don't turn the category off. A
+            // style without the category flag takes it from the style it is based on.
+            let text_frame = if category_on(&levels, "EnableTextFrameGeneralOptions", |_| false) {
                 let prefs: Vec<&El> = levels
                     .iter()
                     .filter(|l| l.get("EnableTextFrameGeneralOptions") != Some("false"))
@@ -211,7 +212,7 @@ impl<'r> Importer<'r> {
                 None
             };
             let effects = self.style_effects(e);
-            let corners = style_corners(e, &levels);
+            let corners = style_corners(&levels);
             let apply_next_style = paragraph_style.is_some() && e.get("ApplyNextParagraphStyle") == Some("true");
             let s = ObjectStyle { name: name.clone(), based_on, fill, stroke, paragraph_style, apply_next_style, text_frame, effects, corners };
             match self.styles.object.iter_mut().find(|o| o.name == name) {
@@ -412,19 +413,32 @@ impl<'r> Importer<'r> {
     }
 }
 
-/// Object style `e`'s corner options (Stroke & Corner Options), by name, when it sets them. A style
-/// that sets some corners, or turns the category on, takes the others from the styles in `levels`
-/// (`e` and the styles it is based on) that don't turn the category off.
-fn style_corners(e: &El, levels: &[&El]) -> Option<CornerOptions> {
-    match e.get("EnableStrokeAndCornerOptions") {
-        Some("false") => return None,
-        Some("true") => {}
-        _ => {
-            corners(e, "")?;
-        }
+/// The corner options (Stroke & Corner Options) of the object style that starts `levels` (the
+/// style, then the styles it is based on), by name, when it sets them. A style that sets some
+/// corners, or turns the category on (itself or through the style it is based on), takes the
+/// others from the styles in `levels` that don't turn the category off.
+fn style_corners(levels: &[&El]) -> Option<CornerOptions> {
+    if !category_on(levels, "EnableStrokeAndCornerOptions", |l| corners(l, "").is_some()) {
+        return None;
     }
     let on: Vec<&El> = levels.iter().copied().filter(|l| l.get("EnableStrokeAndCornerOptions") != Some("false")).collect();
     corners_in(&on, "").map(|c| CornerOptions { corners: c })
+}
+
+/// Whether the style chain `levels` (a style, then the styles it is based on) turns the category
+/// whose flag is `flag` on. The nearest style that gives the flag decides; a style without it
+/// turns the category on when `own` finds settings of its own. A `[None]` after the first style
+/// ends the chain, as a `BasedOn` of `[None]` names no style.
+fn category_on(levels: &[&El], flag: &str, own: impl Fn(&El) -> bool) -> bool {
+    let none = |l: &&El| l.get("Self") == Some("ObjectStyle/$ID/[None]");
+    for l in levels.iter().take(1).chain(levels.iter().skip(1).take_while(|l| !none(l))) {
+        match l.get(flag) {
+            Some(v) => return v == "true",
+            None if own(l) => return true,
+            None => {}
+        }
+    }
+    false
 }
 
 /// Object style `e`, then the styles it is based on, nearest first (cycle-safe, at most 16). A

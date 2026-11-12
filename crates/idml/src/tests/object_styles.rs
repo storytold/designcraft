@@ -363,6 +363,43 @@ fn a_style_turning_corners_on_inherits_all_four() {
     assert_eq!((c.map(|c| c.shape), c.map(|c| c.size)), ([CornerShape::Rounded; 4], [17.0; 4]));
 }
 
+/// A style with no Stroke & Corner Options or Text Frame General Options flag and no settings of
+/// its own takes each category from the style it is based on: on, off, or (for a style based on
+/// `[None]`) not set.
+#[test]
+fn a_style_without_category_flags_takes_them_from_its_based_on_style() {
+    let styles = r#"<ObjectStyle Self="ObjectStyle/Framed" Name="Framed" EnableTextFrameGeneralOptions="true">
+      <Properties><BasedOn type="string">$ID/[None]</BasedOn></Properties>
+      <TextFramePreference TextColumnCount="3"/>
+    </ObjectStyle>
+    <ObjectStyle Self="ObjectStyle/Off" Name="Off" EnableStrokeAndCornerOptions="false" EnableTextFrameGeneralOptions="false"
+      TopLeftCornerOption="RoundedCorner">
+      <Properties><BasedOn type="object">ObjectStyle/Round</BasedOn></Properties>
+      <TextFramePreference TextColumnCount="4"/>
+    </ObjectStyle>
+    <ObjectStyle Self="ObjectStyle/RoundKid" Name="RoundKid">
+      <Properties><BasedOn type="object">ObjectStyle/Round</BasedOn></Properties>
+    </ObjectStyle>
+    <ObjectStyle Self="ObjectStyle/FramedKid" Name="FramedKid">
+      <Properties><BasedOn type="object">ObjectStyle/Framed</BasedOn></Properties>
+    </ObjectStyle>
+    <ObjectStyle Self="ObjectStyle/OffKid" Name="OffKid">
+      <Properties><BasedOn type="object">ObjectStyle/Off</BasedOn></Properties>
+    </ObjectStyle>
+    <ObjectStyle Self="ObjectStyle/Bare" Name="Bare">
+      <Properties><BasedOn type="string">$ID/[None]</BasedOn></Properties>
+    </ObjectStyle>"#;
+    let d = fixture(&format!("{ROUND}{styles}"), &[]);
+    let style = |n: &str| d.styles.object_style(n).cloned().unwrap();
+    let c = style("RoundKid").corners.expect("RoundKid inherits Round's corners").corners;
+    assert_eq!((c.map(|c| c.shape), c.map(|c| c.size)), ([CornerShape::Rounded; 4], [17.0; 4]));
+    assert_eq!(style("FramedKid").text_frame.map(|t| t.columns), Some(3), "FramedKid inherits Framed's text frame options");
+    for n in ["OffKid", "Bare"] {
+        assert!(style(n).corners.is_none() && style(n).text_frame.is_none(), "{n}: {:?}", style(n));
+    }
+    assert!(style(designcraft_doc::NO_OBJECT_STYLE).corners.is_some(), "[None] keeps the corners it sets itself");
+}
+
 /// An object style giving its corners only with the legacy all-corners `CornerOption` and
 /// `CornerRadius` keeps them, so applying it to another frame rounds it.
 #[test]
