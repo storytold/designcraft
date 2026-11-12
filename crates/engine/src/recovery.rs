@@ -1532,7 +1532,7 @@ fn publish_recovery_file(path: &Path, bytes: &[u8], replace: bool) -> Result<()>
 }
 
 /// Serializes the last check for a cancelled write with the rename that publishes it, and with
-/// [`worker::cancel`].
+/// [`worker::cancel_owned`] and [`worker::cancel_document`].
 #[cfg(not(target_arch = "wasm32"))]
 static PUBLISH: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -1753,6 +1753,12 @@ fn open_with_publisher(s: &mut Session, dir: &Path, mut publish: impl FnMut(&Pat
         if s.docs.iter().any(|d| {
             d.recovery_entries.iter().any(|(entry_dir, entry_uid)| *entry_uid == uid && directory_key(entry_dir).is_ok_and(|key| key == source_key))
         }) {
+            continue;
+        }
+        // A background write of this session that is running, or finished with its result not
+        // taken yet, is a live document's checkpoint, not an entry to recover.
+        #[cfg(not(target_arch = "wasm32"))]
+        if worker::pending_folders(uid, owner).iter().any(|pending| directory_key(pending).is_ok_and(|key| key == source_key)) {
             continue;
         }
         #[cfg(not(target_arch = "wasm32"))]

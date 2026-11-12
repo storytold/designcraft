@@ -244,6 +244,24 @@ fn saving_removes_a_finished_write_to_a_named_folder_whose_result_was_not_taken(
 
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
+fn opening_recovery_leaves_a_finished_background_write_whose_result_was_not_taken() {
+    let _turn = background();
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = dirty_session();
+    s.recovery_dir = Some(dir.path().to_path_buf());
+    let uid = s.docs[0].uid;
+    s.execute("file.recovery.save", &json!({"background": true})).unwrap();
+    testing::wait_until_idle();
+    assert!(files(dir.path(), uid).0.exists(), "the write finished");
+    assert!(open(&mut s, dir.path()).unwrap().is_empty(), "the live document's own snapshot is not recovered");
+    assert_eq!(s.docs.len(), 1);
+    assert_eq!(finished_writes(&mut s), 1);
+    assert_eq!(list(dir.path()).len(), 1);
+    discard(dir.path(), uid);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
 fn an_edit_after_a_save_is_written_after_the_cancelled_write_stops() {
     let _turn = background();
     let dir = tempfile::tempdir().unwrap();
