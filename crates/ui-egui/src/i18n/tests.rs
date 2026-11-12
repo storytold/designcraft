@@ -611,7 +611,7 @@ fn czech_counts_use_the_plural_form_for_the_number() {
 #[test]
 fn hebrew_catalog_is_selectable_rtl_and_preserves_english_keys() {
     let mut seen = HashSet::new();
-    assert_eq!(he::TABLE.len(), 887, "initial Hebrew source-linked table changed");
+    assert_eq!(he::TABLE.len(), 1032, "initial Hebrew source-linked table changed");
     for (source, translated) in he::TABLE {
         assert!(seen.insert(*source), "duplicate Hebrew source key: {source}");
         assert!(!translated.trim().is_empty(), "empty Hebrew: {source}");
@@ -652,6 +652,15 @@ fn hebrew_catalog_is_selectable_rtl_and_preserves_english_keys() {
     assert_eq!(tr("he", "Apply Table Style"), "החלת סגנון טבלה");
     assert_eq!(tr("he", "Tagged PDF"), "PDF מתויג");
     assert_eq!(tr("he", "Insert Footnote"), "הוספת הערת שוליים");
+    assert_eq!(tr("he", "No errors"), "לא נמצאו שגיאות");
+    assert_eq!(tr("he", "No text selected"), "לא נבחר טקסט");
+    assert_eq!(tr("he", "Delete Hyperlink"), "מחיקת היפר־קישור");
+    assert_eq!(tr("he", "New Book…"), "ספר חדש…");
+    assert_eq!(tr("he", "No data source"), "אין מקור נתונים");
+    assert_eq!(tr("he", "Check Spelling"), "בדיקת איות");
+    assert_eq!(tr("he", "Insert Row Below"), "הוספת שורה מתחת");
+    assert_eq!(tr("he", "Paragraph Shading"), "הצללת פסקה");
+    assert_eq!(tr("he", "New Hyperlink…"), "היפר־קישור חדש…");
     assert_eq!(tr("he", "Table Panel"), "חלונית טבלה");
     assert_eq!(tr("he", "Delete Row"), "מחיקת שורה");
     assert_eq!(tr("he", "Insert Column"), "הוספת עמודה");
