@@ -268,9 +268,19 @@ impl<'a> Ex<'a> {
             el.set("FillColor", id.clone());
             el.set("FillTint", pct(g.fill.tint as f64));
         }
-        let embed = !asset.data.is_empty() && (self.opts.embed_images || asset.link.is_none());
+        let wanted = !asset.data.is_empty() && (self.opts.embed_images || asset.link.is_none());
+        // An image with no link of its own has nowhere else to live, so it is always embedded
+        // (dropping its data would lose it); only an image with a real link can fall back to it.
+        let embed = wanted && (asset.link.is_none() || self.embedded.saturating_add(asset.data.len()) <= self.embed_limit);
+        if wanted && !embed {
+            self.warnings.push(format!(
+                "image {} is written as a link, not embedded: the package already holds {} bytes of images (limit {})",
+                asset.name, self.embedded, self.embed_limit
+            ));
+        }
         let mut props = Vec::new();
         if embed {
+            self.embedded = self.embedded.saturating_add(asset.data.len());
             let mut c = El::new("Contents");
             c.children.push(Node::CData(base64_encode(&asset.data)));
             props.push(c);
@@ -324,6 +334,9 @@ impl<'a> Ex<'a> {
     }
 }
 
+/// Most nested style folders one style name can create.
+const MAX_STYLE_GROUP_DEPTH: usize = 32;
+
 /// Style folder tree (names `A/B/C` → groups A, B).
 #[derive(Default)]
 pub(super) struct Group {
@@ -337,7 +350,8 @@ impl Group {
         let mut segs: Vec<&str> = if builtin { vec![name] } else { name.split('/').collect() };
         let _leaf = segs.pop();
         let mut g = self;
-        for s in segs {
+        // Deeper folders than this are not made (the style lands in the deepest one), so the recursive `emit` is bounded.
+        for s in segs.into_iter().take(MAX_STYLE_GROUP_DEPTH) {
             let i = match g.groups.iter().position(|(n, _)| n == s) {
                 Some(i) => i,
                 None => {
@@ -513,4 +527,24 @@ pub(crate) fn path_to_uri(path: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod group_depth_tests {
+    use super::*;
+
+    #[test]
+    fn a_style_name_with_many_separators_makes_bounded_folders() {
+        let mut g = Group::default();
+        g.insert(&"a/".repeat(10_000), El::new("S"));
+        let (mut depth, mut cur) = (0, &g);
+        while let Some((_, next)) = cur.groups.first() {
+            depth += 1;
+            cur = next;
+        }
+        assert_eq!(depth, MAX_STYLE_GROUP_DEPTH);
+        assert_eq!(cur.styles.len(), 1);
+        let mut root = El::new("Root");
+        g.emit(&mut root, "K", "");
+    }
 }

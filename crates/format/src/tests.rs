@@ -3,6 +3,25 @@ use designcraft_doc::build::NewDocument;
 use designcraft_doc::geom::Rect;
 use designcraft_doc::{Asset, ParaFormat, SpreadRef};
 
+/// An entry that fails after inflating (a bad checksum) still uses up the archive's byte budget.
+#[test]
+fn a_failed_read_is_charged_to_the_budget() {
+    let mut z = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    let stored = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    z.start_file("a", stored).unwrap();
+    z.write_all(&[7u8; 1000]).unwrap();
+    let mut bytes = z.finish().unwrap().into_inner();
+    // Flip a data byte: the entry reads in full, then fails its checksum.
+    // The payload is the only run of 1,000 consecutive 7s in the archive.
+    let start = bytes.windows(1000).position(|w| w.iter().all(|b| *b == 7)).expect("payload");
+    bytes[start] = 8;
+    let mut archive = zip::ZipArchive::new(Cursor::new(bytes.as_slice())).unwrap();
+    let (mut left, mut stored_left) = (5000, 5000);
+    assert_eq!(read_entry(&mut archive, "a", 4000, &mut left, &mut stored_left).unwrap(), None);
+    // A failed stored read is charged to the stored budget only.
+    assert_eq!((left, stored_left), (5000, 4000));
+}
+
 fn png_asset(d: &mut Document, data: &[u8]) -> AssetId {
     let aid = AssetId(d.alloc());
     let a =
@@ -52,6 +71,123 @@ fn save_uncompacted(d: &Document) -> Vec<u8> {
     }
     z.finish().unwrap();
     buf.into_inner()
+}
+
+/// A `.designcraft` with the given asset entries, each stored as is or deflated.
+fn archive_with(d: &Document, entries: &[(AssetId, &[u8], bool)]) -> Vec<u8> {
+    let mut buf = Cursor::new(Vec::new());
+    let mut z = zip::ZipWriter::new(&mut buf);
+    let stored = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    let deflate = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    z.start_file("mimetype", stored).unwrap();
+    z.write_all(MIME.as_bytes()).unwrap();
+    z.start_file("meta.json", deflate).unwrap();
+    z.write_all(json!({"format": "designcraft", "version": VERSION}).to_string().as_bytes()).unwrap();
+    z.start_file("document.json", deflate).unwrap();
+    z.write_all(&serde_json::to_vec(d).unwrap()).unwrap();
+    for (id, data, as_is) in entries {
+        z.start_file(format!("assets/{}.png", id.0), if *as_is { stored } else { deflate }).unwrap();
+        z.write_all(data).unwrap();
+    }
+    z.finish().unwrap();
+    buf.into_inner()
+}
+
+/// Bytes that don't compress (a simple generator, so the test needs no crate).
+fn noise(n: usize) -> Vec<u8> {
+    let mut x: u32 = 0x9e37_79b9;
+    (0..n)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            (x >> 24) as u8
+        })
+        .collect()
+}
+
+/// #2166: saving has no size cap, so opening must keep every saved document openable. A stored
+/// entry (how placed images are saved) can't expand and opens at any size; the total budget is
+/// never below the archive's own size. Deflated entries stay capped, so a zip bomb is refused.
+#[test]
+fn stored_assets_open_at_any_size_while_deflated_ones_stay_capped() {
+    let mut d = Document::new(&NewDocument::default());
+    let big = noise(50_000);
+    let a = png_asset(&mut d, &big);
+    let b = png_asset(&mut d, &big);
+    d.assets.values_mut().for_each(|a| Arc::make_mut(a).data = Arc::new(Vec::new()));
+    place(&mut d, a, 0.0);
+    place(&mut d, b, 0.0);
+    // A budget that fits the document's JSON but not the two 50 000-byte assets together.
+    let json_len = serde_json::to_vec(&d).unwrap().len() as u64;
+    let tight = Limits { json: 256 << 20, asset: 1_000, total: json_len + 10_000 };
+    assert!(tight.total < 100_000, "the JSON is {json_len} bytes; the budget must stay under the two assets");
+
+    // Two stored assets, each over the asset cap and together over the total: both open.
+    let bytes = archive_with(&d, &[(a, &big, true), (b, &big, true)]);
+    let doc = load_zip_within(&bytes, tight).expect("stored entries open at their own size");
+    assert_eq!(doc.assets[&a].data.len(), 50_000);
+    // (Identical bytes come back as one asset: `load` merges duplicates.)
+    assert_eq!(doc.assets.len(), 1);
+    assert!(doc.all_items().iter().filter_map(|i| doc.item(*i)?.graphic()).all(|g| g.asset == a), "both placements show it");
+
+    // A deflated entry past the cap is refused, whether it really is that big ...
+    let bytes = archive_with(&d, &[(a, &big, false), (b, &big, true)]);
+    let e = load_zip_within(&bytes, tight).expect_err("a deflated entry over the cap").to_string();
+    assert!(e.contains("larger than the 1000-byte limit"), "{e}");
+    // ... or claims to be (a few KB that expand to megabytes).
+    let bomb = vec![0u8; 3 << 20];
+    let bytes = archive_with(&d, &[(a, &bomb, false), (b, &big, true)]);
+    assert!(bytes.len() < 64 << 10, "the bomb is small on disk: {}", bytes.len());
+    assert!(load_zip_within(&bytes, tight).is_err(), "a zip bomb is refused");
+
+    // The default limits read the same stored archive, and what `save` writes round-trips.
+    let bytes = archive_with(&d, &[(a, &big, true), (b, &big, true)]);
+    assert_eq!(load_zip(&bytes).unwrap().assets[&a].data.len(), 50_000);
+    Arc::make_mut(d.assets.get_mut(&a).unwrap()).data = Arc::new(big.clone());
+    Arc::make_mut(d.assets.get_mut(&b).unwrap()).data = Arc::new(big.clone());
+    let saved = save(&d).unwrap();
+    let doc = load_zip_within(&saved, tight).expect("what save writes opens under a cap smaller than its images");
+    // (`save` merges the two identical assets into one.)
+    assert!(!doc.assets.is_empty() && doc.assets.values().all(|x| x.data.len() == 50_000), "every saved image is back");
+}
+
+fn tiff_asset(d: &mut Document, data: Vec<u8>) -> AssetId {
+    let aid = AssetId(d.alloc());
+    let a = Asset { id: aid, name: "x.tif".into(), mime: "image/tiff".into(), data: Arc::new(data), pixels: Some((1, 1)), ..Default::default() };
+    d.assets.insert(aid, Arc::new(a));
+    place(d, aid, 0.0);
+    aid
+}
+
+fn is_deflated(bytes: &[u8], aid: AssetId) -> bool {
+    let mut z = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+    z.by_name(&format!("assets/{}.tif", aid.0)).unwrap().compression() == zip::CompressionMethod::Deflated
+}
+
+/// #2283: `save` deflates a TIFF, BMP or PSD, and opening caps what a deflated asset (and all of
+/// them together) may expand to. One past either cap is stored as is, so the document opens again.
+#[test]
+fn assets_too_big_to_inflate_are_stored_so_the_document_reopens() {
+    let mut d = Document::new(&NewDocument::default());
+    let big = tiff_asset(&mut d, noise(5_000));
+    let b = tiff_asset(&mut d, noise(3_000));
+    let c = tiff_asset(&mut d, noise(3_000).into_iter().rev().collect());
+    let small = tiff_asset(&mut d, vec![0; 500]);
+    // Room for the JSON, the small asset and one 3 000-byte asset, not two.
+    let json_len = serde_json::to_vec_pretty(&d).unwrap().len() as u64;
+    let tight = Limits { json: 256 << 20, asset: 4_000, total: json_len + 500 + 500 + 4_000 };
+
+    let saved = save_within(&d, None, LARGE_ENTRY, tight).unwrap();
+    let back = load_zip_within(&saved, tight).expect("a saved document opens under the limits it was saved for");
+    for aid in [big, b, c, small] {
+        assert_eq!(back.assets[&aid].data, d.assets[&aid].data, "asset {} round-trips", aid.0);
+    }
+    assert!(!is_deflated(&saved, big), "an asset over the per-asset cap is stored");
+    assert!(!(is_deflated(&saved, b) && is_deflated(&saved, c)), "the two together would pass the total budget");
+    // Within the limits nothing changes: everything still deflates under the defaults.
+    let normal = save(&d).unwrap();
+    assert!([big, b, c, small].iter().all(|a| is_deflated(&normal, *a)));
 }
 
 #[test]
@@ -274,6 +410,23 @@ fn format_1_keep_lines_without_mode_stays_all_lines() {
     let p = &now.story(sid).unwrap().paras[0];
     assert!(!now.styles.resolve_para(p).0.keep_all_lines);
     assert!(!designcraft_doc::ParaProps::default().keep_all_lines);
+}
+
+/// A format-1 file with many styles upgrades in time linear in them (each style's chain was
+/// found by searching every style, twice over).
+#[test]
+fn format_1_upgrade_of_many_styles_is_linear() {
+    let mut d = Document::new(&NewDocument::default());
+    let st = d.styles_mut();
+    for i in 0..20_000 {
+        st.paragraph.push(para_style(&format!("S{i}"), (i % 2 == 1).then(|| format!("S{}", i - 1)).as_deref(), None));
+    }
+    let bytes = save_v1(&d);
+    let t = std::time::Instant::now();
+    let back = load(&bytes).unwrap();
+    assert!(t.elapsed() < std::time::Duration::from_secs(10), "{:?}", t.elapsed());
+    assert_eq!(back.styles.para("S0").unwrap().para.keep_all_lines, Some(true));
+    assert_eq!(back.styles.para("S1").unwrap().para.keep_all_lines, None, "based on S0, which is pinned");
 }
 
 /// Format 1 wrote paragraph rules, text frame options and numbered lists in full, so their

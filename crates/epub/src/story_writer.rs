@@ -50,7 +50,16 @@ pub(crate) struct StoryWriter<'a, 'f> {
     heading_ids: Option<String>,
     /// Where EPUB content files start (see [`starts_chapter`]).
     pub(crate) split: EpubSplit,
+    /// Per story (by address): the byte offsets of its footnote and endnote references, so a note's
+    /// index is a search, not a count over the text before it.
+    note_refs: std::collections::HashMap<usize, (Vec<usize>, Vec<usize>)>,
+    /// Bytes of variable values still allowed into the output (see [`MAX_VARIABLE_BYTES`]).
+    variable_bytes: usize,
 }
+
+/// Bytes of variable values one export may write: one stored value referenced many times would
+/// otherwise multiply into the output.
+const MAX_VARIABLE_BYTES: usize = 64 * 1024 * 1024;
 
 impl<'a, 'f> StoryWriter<'a, 'f> {
     pub(crate) fn new(doc: &'a Document, epub: bool, img_src: Option<&'f dyn Fn(&str, &str, &[u8]) -> String>) -> Self {
@@ -69,7 +78,20 @@ impl<'a, 'f> StoryWriter<'a, 'f> {
             no_alt: Vec::new(),
             heading_ids: None,
             split: doc.settings.epub_split.clone(),
+            note_refs: std::collections::HashMap::new(),
+            variable_bytes: MAX_VARIABLE_BYTES,
         }
+    }
+
+    /// Index of the footnote (or endnote) whose reference is at byte `pos` of `st`
+    /// (`Story::notes_before` / `endnotes_before`, from offsets found once per story).
+    fn note_index(&mut self, st: &Story, pos: usize, endnote: bool) -> usize {
+        let (foot, end) = self.note_refs.entry(std::ptr::from_ref(st) as usize).or_insert_with(|| {
+            let at = |c: char| st.text.match_indices(c).map(|(i, _)| i).collect::<Vec<_>>();
+            (at(FOOTNOTE_REF), at(ENDNOTE_REF))
+        });
+        let list = if endnote { end } else { foot };
+        list.partition_point(|&p| p < pos)
     }
 
     fn epub_type(&self, t: &str) -> String {
@@ -98,9 +120,15 @@ impl<'a, 'f> StoryWriter<'a, 'f> {
         let mut lead = lead;
         let mut list: Option<&str> = None;
         let mut pre: Option<(String, bool)> = None;
+        let runs: Vec<(std::ops::Range<usize>, &story::CharFormat)> = st.runs().collect();
         for (pi, (r, pf)) in st.para_ranges().into_iter().zip(&st.paras).enumerate() {
             let Some(text) = st.text.get(r.clone()) else { continue };
-            let table = pf.table.and_then(|id| st.tables.get(&id)).filter(|_| text.contains(story::TABLE_ANCHOR));
+            let base = doc.styles.resolve_para(pf).1;
+            // A table whose anchor is hidden or deleted is off the page, so it stays out.
+            let table = pf
+                .table
+                .and_then(|id| st.tables.get(&id))
+                .filter(|_| text.find(story::TABLE_ANCHOR).is_some_and(|at| !doc.hides_run(&base, st.char_format_of(r.start + at))));
             let only_table = table.is_some() && text.chars().all(|c| c == story::TABLE_ANCHOR || c.is_whitespace());
             if !only_table || !lead.is_empty() {
                 // Export Tagging: the style's element and class.
@@ -145,7 +173,7 @@ impl<'a, 'f> StoryWriter<'a, 'f> {
                 lead = "";
                 let mut after = String::new();
                 if !only_table {
-                    self.runs(st, r, depth, out, &mut after);
+                    self.runs(st, &runs, r, &base, depth, out, &mut after);
                 }
                 if tag == "pre" {
                     // Closed when the next paragraph isn't a line of the same block.
@@ -182,7 +210,7 @@ impl<'a, 'f> StoryWriter<'a, 'f> {
             if c != FOOTNOTE_REF && c != ENDNOTE_REF && c != OBJECT_MARK {
                 continue;
             }
-            t.push_str(&run_text(doc, raw.get(seg_start..i).unwrap_or_default()));
+            t.push_str(&run_text(doc, raw.get(seg_start..i).unwrap_or_default(), &mut self.variable_bytes));
             seg_start = i + c.len_utf8();
             if c == OBJECT_MARK {
                 let k = mark.unwrap_or_else(|| st.text.get(..a).map_or(0, |t| t.matches(OBJECT_MARK).count()));
@@ -198,21 +226,33 @@ impl<'a, 'f> StoryWriter<'a, 'f> {
                 }
             }
         }
-        t.push_str(&run_text(doc, raw.get(seg_start..).unwrap_or_default()));
+        t.push_str(&run_text(doc, raw.get(seg_start..).unwrap_or_default(), &mut self.variable_bytes));
         t
     }
 
-    /// The runs of paragraph `para` of `st`; footnotes go to `after`.
-    fn runs(&mut self, st: &Story, para: std::ops::Range<usize>, depth: usize, out: &mut String, after: &mut String) {
+    /// The runs of paragraph `para` of `st` (`runs`: the story's, collected once; `base`: the
+    /// paragraph's base character attributes); footnotes go to `after`.
+    #[allow(clippy::too_many_arguments)]
+    fn runs(
+        &mut self,
+        st: &Story,
+        runs: &[(std::ops::Range<usize>, &story::CharFormat)],
+        para: std::ops::Range<usize>,
+        base: &designcraft_doc::CharProps,
+        depth: usize,
+        out: &mut String,
+        after: &mut String,
+    ) {
         let doc = self.doc;
-        for (rr, f) in st.runs() {
+        let first = runs.partition_point(|(rr, _)| rr.end <= para.start);
+        for (rr, f) in runs.iter().skip(first).take_while(|(rr, _)| rr.start < para.end).map(|(rr, f)| (rr.clone(), *f)) {
             let a = rr.start.max(para.start);
             let b = rr.end.min(para.end);
             if a >= b {
                 continue;
             }
-            // Hidden conditional text isn't exported.
-            if f.over.conditions.as_deref().is_some_and(|c| doc.conditions_hide(c)) || f.over.change == Some(designcraft_doc::ChangeMark::Deleted) {
+            // Hidden conditional text (the styles' conditions included) and deletions aren't exported.
+            if doc.hides_run(base, f) {
                 continue;
             }
             let Some(raw) = st.text.get(a..b) else { continue };
@@ -303,7 +343,8 @@ impl<'a, 'f> StoryWriter<'a, 'f> {
     /// The footnote whose reference is at byte `pos` of `st`: a note reference in `out`, the note
     /// itself in `after`.
     fn footnote(&mut self, st: &Story, pos: usize, depth: usize, out: &mut String, after: &mut String) {
-        let Some(note) = st.notes.get(st.notes_before(pos)) else { return };
+        let k = self.note_index(st, pos, false);
+        let Some(note) = st.notes.get(k) else { return };
         let doc = self.doc;
         let o = &doc.footnote_options;
         let n = self.next_footnote;
@@ -325,7 +366,8 @@ impl<'a, 'f> StoryWriter<'a, 'f> {
     /// The endnote whose reference is at byte `pos` of `st`: a note reference in `out`; the note
     /// joins the endnotes section.
     fn endnote(&mut self, st: &Story, pos: usize, depth: usize, out: &mut String) {
-        let Some(note) = st.endnotes.get(st.endnotes_before(pos)) else { return };
+        let k = self.note_index(st, pos, true);
+        let Some(note) = st.endnotes.get(k) else { return };
         let n = self.next_endnote;
         self.next_endnote = n.saturating_add(1);
         self.endnote_ids = self.endnote_ids.saturating_add(1);
@@ -416,13 +458,21 @@ impl<'a, 'f> StoryWriter<'a, 'f> {
     }
 }
 
-/// Run text with variables replaced by their values.
-fn run_text(doc: &Document, raw: &str) -> String {
+/// Run text with variables replaced by their values; `left` is what the export may still write
+/// of them (a value that doesn't fit is left out).
+fn run_text(doc: &Document, raw: &str, left: &mut usize) -> String {
     if raw.chars().any(|c| designcraft_doc::vars::var_index(c).is_some()) {
         let sub: String = raw
             .chars()
             .map(|c| match designcraft_doc::vars::var_index(c) {
-                Some(i) => doc.variable_value(i, None).unwrap_or_default(),
+                Some(i) => {
+                    let v = doc.variable_value(i, None).unwrap_or_default();
+                    if v.len() > *left {
+                        return String::new();
+                    }
+                    *left -= v.len();
+                    v
+                }
                 None => c.to_string(),
             })
             .collect();

@@ -26,6 +26,36 @@ fn exports_valid_package_in_reading_order() {
     assert!(z.by_name("OEBPS/nav.xhtml").is_ok());
 }
 
+/// Many footnotes and endnotes each export with their own text, in reference order.
+#[test]
+fn many_notes_keep_their_own_text() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 300.0, 400.0), lid, "x", ParaFormat::default()).unwrap();
+    let st = d.story_mut(sid).unwrap();
+    for i in 0..300 {
+        let end = st.len();
+        st.insert_note(end, &format!("foot{i}z"), ParaFormat::default());
+        let end = st.len();
+        st.insert_endnote(end, &format!("end{i}z"), ParaFormat::default());
+    }
+    let html = export_html(&d, &HtmlOptions::default());
+    let at = |needle: &str| html.find(needle).unwrap_or_else(|| panic!("{needle}"));
+    assert!(at("foot0z") < at("foot1z") && at("foot298z") < at("foot299z"));
+    assert!(at("end0z") < at("end1z") && at("end298z") < at("end299z"));
+}
+
+/// A huge title is cut before it is copied into every content file.
+#[test]
+fn a_huge_title_is_capped() {
+    let d = tables_and_notes();
+    let opts = EpubOptions { title: Some("T".repeat(5000)), ..EpubOptions::default() };
+    let mut z = zip::ZipArchive::new(std::io::Cursor::new(export_epub(&d, &opts).unwrap())).unwrap();
+    let mut s = String::new();
+    z.by_name("OEBPS/content.xhtml").unwrap().read_to_string(&mut s).unwrap();
+    assert!(s.contains(&"T".repeat(1024)) && !s.contains(&"T".repeat(1025)), "{}", s.len());
+}
+
 /// #766: anchored graphics are exported where they are anchored (inline in the text, an
 /// above-line object as a block of its own), and their images go into the package.
 #[test]
@@ -994,4 +1024,73 @@ fn grouped_text(hidden: bool) -> Document {
 fn hidden_group_children_are_not_exported() {
     assert!(html::reading_order(&grouped_text(true)).is_empty());
     assert_eq!(html::reading_order(&grouped_text(false)).len(), 1);
+}
+
+/// Text hidden by a condition the paragraph style carries, and text marked deleted, are off the
+/// page: neither the HTML body nor the navigation labels show them. A frame on a hidden layer
+/// isn't exported at all.
+#[test]
+fn text_hidden_by_inherited_conditions_or_deletion_is_not_exported() {
+    use designcraft_doc::{ChangeMark, CharAttrs, Condition, ParagraphStyle};
+    let mut d = Document::new(&NewDocument::default());
+    d.conditions.push(Condition { name: "Secret".into(), color: [0, 0, 0], visible: false });
+    d.styles_mut().paragraph.push(ParagraphStyle {
+        name: "Classified".into(),
+        based_on: None,
+        next_style: None,
+        para: Default::default(),
+        chars: CharAttrs { conditions: Some(vec!["Secret".into()]), ..Default::default() },
+        shortcut: String::new(),
+    });
+    let lid = d.default_layer();
+    let (_, sid) = d
+        .add_text_frame(
+            SpreadRef::Doc(0),
+            Rect::new(36.0, 36.0, 300.0, 100.0),
+            lid,
+            "Public heading\nclassified line\nkept dropped",
+            ParaFormat::default(),
+        )
+        .unwrap();
+    let st = d.story_mut(sid).unwrap();
+    let c = st.text.find("classified").unwrap();
+    st.format_paras(c..c + 1, |p| p.style = "Classified".into());
+    let g = st.text.find(" dropped").unwrap();
+    st.format_chars(g..g + 8, |f| f.over = CharAttrs { change: Some(ChangeMark::Deleted), ..Default::default() });
+    let hidden_layer = designcraft_doc::LayerId(d.alloc());
+    d.layers.push(designcraft_doc::Layer {
+        id: hidden_layer,
+        name: "Hidden".into(),
+        color: [0, 0, 0],
+        visible: false,
+        locked: false,
+        printable: true,
+        show_guides: true,
+        suppress_wrap_when_hidden: false,
+    });
+    d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 200.0, 300.0, 300.0), hidden_layer, "On a hidden layer", ParaFormat::default()).unwrap();
+    let html = html::export_html(&d, &html::HtmlOptions::default());
+    assert!(html.contains("Public heading") && html.contains("kept"), "{html}");
+    for gone in ["classified line", "dropped", "On a hidden layer"] {
+        assert!(!html.contains(gone), "{gone} must not be exported: {html}");
+    }
+    let labels: Vec<String> = chapters::toc_entries(&d, &html::reading_order(&d)).into_iter().map(|(_, label, _)| label).collect();
+    assert_eq!(labels, ["Public heading"]);
+}
+
+/// A threaded story is left out only when every one of its frames is hidden: a hidden first
+/// frame does not hide the frames after it.
+#[test]
+fn a_threaded_story_is_skipped_only_when_every_frame_is_hidden() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (a, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 300.0, 100.0), lid, "first", ParaFormat::default()).unwrap();
+    let (b, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 200.0, 300.0, 300.0), lid, "second", ParaFormat::default()).unwrap();
+    d.thread(a, b).unwrap();
+    let story = |d: &Document| html::reading_order(d).iter().filter(|x| **x == html::Block::Story(sid)).count();
+    assert_eq!(story(&d), 1);
+    d.item_mut(a).unwrap().hidden = true;
+    assert_eq!(story(&d), 1, "the visible second frame keeps the story");
+    d.item_mut(b).unwrap().hidden = true;
+    assert_eq!(story(&d), 0);
 }

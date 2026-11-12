@@ -14,6 +14,10 @@ pub struct RecentPreview {
     pub rgba: Vec<u8>,
 }
 
+/// The most pixels a recent file's preview may have to be shown (its PNG is bounded by
+/// `designcraft_format::MAX_PREVIEW_BYTES`, but a small PNG can claim a huge picture).
+const MAX_PREVIEW_PIXELS: u64 = 1 << 24;
+
 /// The picture a `.designcraft` file saved of its first page; None when the file is gone, isn't
 /// ours, or was saved before files had one (it gets one when saved again).
 pub fn recent_preview(path: &str) -> Option<RecentPreview> {
@@ -21,6 +25,12 @@ pub fn recent_preview(path: &str) -> Option<RecentPreview> {
     {
         // Only the zip directory and the preview entry are read, not the whole document.
         let png = designcraft_format::read_preview(std::io::BufReader::new(crate::io::open(path).ok()?))?;
+        // A preview is a small picture: one whose header claims more pixels than that isn't
+        // decoded (a decode is bounded, but not at thumbnail size).
+        let (w, h) = designcraft_images::pixel_size(&png)?;
+        if u64::from(w).saturating_mul(u64::from(h)) > MAX_PREVIEW_PIXELS {
+            return None;
+        }
         let img = designcraft_images::decode_rgba(&png)?;
         let (width, height) = img.dimensions();
         Some(RecentPreview { width, height, rgba: img.into_raw() })

@@ -742,10 +742,236 @@ fn role_overrides_column_kind_qr_and_hyperlink() {
             HyperlinkDest::Email(v) => format!("email:{v}"),
             HyperlinkDest::Url(v) => format!("url:{v}"),
             HyperlinkDest::Page(n) => format!("page:{n}"),
+            HyperlinkDest::Anchor(a) => format!("anchor:{a}"),
         });
     }
     kinds.sort();
     assert_eq!(kinds, vec!["email:a@b.c".to_string(), "url:https://example.com".to_string()]);
+}
+
+fn write_png_sized(path: &Path, width: u32, height: u32) {
+    let pixels = vec![255; width as usize * height as usize * 4];
+    let bytes = designcraft_render::Rendered { width, height, pixels }.to_png();
+    assert_eq!(designcraft_render::image_size(&bytes), Some((width, height)), "the fixture png must decode");
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    std::fs::write(path, bytes).unwrap();
+}
+
+/// The images anchored in the stories of document `index`, as (file name, width, height), by name.
+fn inline_images(s: &Session, index: usize) -> Vec<(String, f64, f64)> {
+    let doc = &s.documents()[index].doc;
+    let mut out = Vec::new();
+    for st in doc.stories.values() {
+        for o in &st.objects {
+            if let Content::Graphic(g) = &o.item.content {
+                let name = doc.assets.get(&g.asset).map(|a| a.name.clone()).unwrap_or_default();
+                let (w, h) = o.size();
+                out.push((name, w, h));
+            }
+        }
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+/// An image field inserted at a text insertion point placed the path as text. It places the
+/// image in the text: at its natural size, scaled down to fit the frame, with a missing file
+/// reported and its marker removed.
+#[test]
+fn an_image_field_at_the_insertion_point_merges_as_an_inline_image() {
+    let dir = scratch("inline-image");
+    let data = dir.join("data");
+    write_png_sized(&data.join("pics").join("small.png"), 40, 20);
+    write_png_sized(&data.join("pics").join("wide.png"), 800, 100);
+    write(&data.join("cards.csv"), "Name,@Photo\nAda,pics/small.png\nGrace,pics/wide.png\nKai,pics/none.png\n");
+
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    exec(&mut s, "data.source.select", json!({"path": data.join("cards.csv")}));
+    let made = text_frame(&mut s, [36.0, 36.0, 236.0, 236.0], "Photo: ", None);
+    exec(&mut s, "text.select", json!({"story": made["story"], "anchor": 7, "focus": 7}));
+    exec(&mut s, "data.placeholder.add", json!({"field": "Photo"}));
+    let template = &s.documents()[0].doc;
+    assert_eq!(template.stories.values().next().unwrap().text, "Photo: <<Photo>>");
+    let width = template.item(designcraft_doc::ItemId(made["id"].as_u64().unwrap())).unwrap().inner_bounds().width();
+
+    exec(&mut s, "data.preview", json!({"record": 1}));
+    assert_eq!(inline_images(&s, 0).len(), 1, "the preview shows the image");
+    exec(&mut s, "data.preview.stop", json!({}));
+
+    let r = exec(&mut s, "data.merge", json!({}));
+    assert_eq!(r["records"], 3);
+    let missing = r["missingImages"].as_array().unwrap();
+    assert_eq!(missing.len(), 1, "{missing:?}");
+    assert_eq!((missing[0]["record"].as_u64(), missing[0]["path"].as_str()), (Some(3), Some("pics/none.png")));
+    let mark = designcraft_doc::OBJECT_MARK;
+    assert_eq!(texts(&s), vec!["Photo: ".to_string(), format!("Photo: {mark}"), format!("Photo: {mark}")]);
+    let placed = inline_images(&s, s.active_index().unwrap());
+    assert_eq!(placed.len(), 2, "{placed:?}");
+    let (small, wide) = (&placed[0], &placed[1]);
+    assert_eq!(small.0, "small.png");
+    assert!((small.1 - 40.0).abs() < 0.01 && (small.2 - 20.0).abs() < 0.01, "a small image keeps its natural size: {small:?}");
+    assert_eq!(wide.0, "wide.png");
+    assert!((wide.1 - width).abs() < 0.01 && (wide.2 - width / 8.0).abs() < 0.01, "a wide image is scaled down to the frame: {wide:?}");
+}
+
+/// A QR field at a text insertion point is refused instead of merging its payload as text.
+#[test]
+fn a_qr_field_at_the_insertion_point_is_refused() {
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    select_csv(&mut s, "@Photo,#Code\n/x.png,hello\n");
+    let made = text_frame(&mut s, [36.0, 36.0, 300.0, 300.0], "Hi ", None);
+    exec(&mut s, "text.select", json!({"story": made["story"], "anchor": 3, "focus": 3}));
+    let msg = err(&mut s, "data.placeholder.add", json!({"field": "Code"}));
+    assert!(msg.contains("bind to a frame"), "{msg}");
+    assert_eq!(texts(&s), vec!["Hi ".to_string()]);
+    assert!(s.documents()[0].doc.data_merge.placeholders.is_empty());
+}
+
+/// An explicit QR role at a text insertion point is refused too, rather than binding the QR code
+/// to a selected frame the caret is not in.
+#[test]
+fn an_explicit_qr_role_at_the_insertion_point_is_refused() {
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    select_csv(&mut s, "Name,#Code\nAda,hello\n");
+    let made = text_frame(&mut s, [36.0, 36.0, 300.0, 300.0], "Hi ", None);
+    let other = text_frame(&mut s, [36.0, 400.0, 300.0, 600.0], "", None);
+    let other_id = designcraft_doc::ItemId(other["id"].as_u64().unwrap());
+    let sid = StoryId(made["story"].as_u64().unwrap());
+    let doc = s.doc_mut().unwrap();
+    doc.selection = Selection::text(TextSel { story: sid, anchor: 3, focus: 3, frame: None, cell: None });
+    doc.selection.items = vec![other_id];
+    let msg = err(&mut s, "data.placeholder.add", json!({"field": "Code", "role": "qr"}));
+    assert!(msg.contains("bind to a frame"), "{msg}");
+    let doc = &s.documents()[0].doc;
+    assert!(doc.data_merge.placeholders.is_empty());
+    assert_eq!(doc.item(other_id).unwrap().label, "", "the other frame is not bound");
+}
+
+/// Fields inserted one after another at the insertion point keep their order: the caret moves
+/// past each marker, as after typing.
+#[test]
+fn fields_inserted_at_the_insertion_point_keep_their_order() {
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    select_csv(&mut s, "Name,City,@Photo\nAda,Paris,/x.png\n");
+    let made = text_frame(&mut s, [36.0, 36.0, 300.0, 300.0], "Hi ", None);
+    exec(&mut s, "text.select", json!({"story": made["story"], "anchor": 3, "focus": 3}));
+    exec(&mut s, "data.placeholder.add", json!({"field": "Name", "role": "text"}));
+    exec(&mut s, "data.placeholder.add", json!({"field": "City", "role": "text"}));
+    exec(&mut s, "data.placeholder.add", json!({"field": "Photo"}));
+    assert_eq!(texts(&s), vec!["Hi <<Name>><<City>><<Photo>>".to_string()]);
+    let t = s.documents()[0].selection.text.unwrap();
+    assert_eq!((t.anchor, t.focus), (28, 28));
+}
+
+/// A typed `<<name>>` marker for an image column places the image too, from an absolute path;
+/// an explicit text role still writes the path as text.
+#[test]
+fn a_typed_image_marker_places_the_image_and_a_text_role_keeps_the_path() {
+    let dir = scratch("typed-image");
+    let pic = dir.join("pic.png");
+    write_png_sized(&pic, 10, 30);
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    select_csv(&mut s, &format!("@Photo\n{}\n", pic.display()));
+    text_frame(&mut s, [36.0, 36.0, 300.0, 300.0], "A <<Photo>> B", None);
+    let r = exec(&mut s, "data.merge", json!({}));
+    assert_eq!(r["missingImages"].as_array().map(Vec::len), Some(0));
+    assert_eq!(texts(&s), vec![format!("A {} B", designcraft_doc::OBJECT_MARK)]);
+    let placed = inline_images(&s, s.active_index().unwrap());
+    assert_eq!(placed.len(), 1);
+    assert!((placed[0].1 - 10.0).abs() < 0.01 && (placed[0].2 - 30.0).abs() < 0.01, "{placed:?}");
+
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    select_csv(&mut s, &format!("@Photo\n{}\n", pic.display()));
+    let made = text_frame(&mut s, [36.0, 36.0, 300.0, 300.0], "", None);
+    exec(&mut s, "text.select", json!({"story": made["story"], "anchor": 0, "focus": 0}));
+    exec(&mut s, "data.placeholder.add", json!({"field": "Photo", "role": "text"}));
+    exec(&mut s, "data.merge", json!({}));
+    assert_eq!(texts(&s), vec![pic.display().to_string()]);
+    assert!(inline_images(&s, s.active_index().unwrap()).is_empty());
+}
+
+/// An explicit image role at a text insertion point places an inline image too, and in a frame
+/// with two columns the image is scaled down to one column's width.
+#[test]
+fn an_inline_image_role_at_text_fits_one_column() {
+    let dir = scratch("inline-columns");
+    let pic = dir.join("wide.png");
+    write_png_sized(&pic, 800, 100);
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    select_csv(&mut s, &format!("@Photo\n{}\n", pic.display()));
+    let made = text_frame(&mut s, [36.0, 36.0, 456.0, 336.0], "", None);
+    exec(&mut s, "object.textFrameOptions", json!({"ids": [made["id"]], "columns": 2, "gutter": 20}));
+    exec(&mut s, "text.select", json!({"story": made["story"], "anchor": 0, "focus": 0}));
+    exec(&mut s, "data.placeholder.add", json!({"field": "Photo", "role": "image"}));
+    let r = exec(&mut s, "data.merge", json!({}));
+    assert_eq!(r["missingImages"].as_array().map(Vec::len), Some(0), "{r}");
+    let placed = inline_images(&s, s.active_index().unwrap());
+    assert_eq!(placed.len(), 1, "{placed:?}");
+    // 420 pt wide, less the 20 pt gutter, gives two 200 pt columns.
+    assert!((placed[0].1 - 200.0).abs() < 0.01 && (placed[0].2 - 25.0).abs() < 0.01, "{placed:?}");
+
+    // The story threads on into a 100 pt frame: the image fits that one, wherever the marker lands.
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    select_csv(&mut s, &format!("@Photo\n{}\n", pic.display()));
+    let made = text_frame(&mut s, [36.0, 36.0, 456.0, 336.0], "", None);
+    let small = exec(&mut s, "frame.create", json!({"rect": [36.0, 400.0, 136.0, 500.0], "content": "unassigned"}));
+    exec(&mut s, "text.thread", json!({"from": made["id"], "to": small["id"]}));
+    exec(&mut s, "text.select", json!({"story": made["story"], "anchor": 0, "focus": 0}));
+    exec(&mut s, "data.placeholder.add", json!({"field": "Photo"}));
+    exec(&mut s, "data.merge", json!({}));
+    let placed = inline_images(&s, s.active_index().unwrap());
+    assert_eq!(placed.len(), 1, "{placed:?}");
+    assert!(placed[0].1 <= 100.0 + 0.01, "{placed:?}");
+}
+
+/// A cell that starts with one separator (`\pics\a.png`) and names no file from the drive's root
+/// is found beside the data file.
+#[test]
+fn an_image_path_with_a_leading_separator_is_found_beside_the_data_file() {
+    let dir = scratch("rooted-image");
+    let data = dir.join("data");
+    write_png_sized(&data.join("dc-merge-rooted-pics").join("a.png"), 12, 12);
+    write(&data.join("cards.csv"), "@Photo\n\\dc-merge-rooted-pics\\a.png\n/dc-merge-rooted-pics/a.png\n");
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    exec(&mut s, "data.source.select", json!({"path": data.join("cards.csv")}));
+    let frame = exec(&mut s, "frame.create", json!({"rect": [36.0, 36.0, 80.0, 80.0], "content": "graphic"}));
+    exec(&mut s, "data.placeholder.add", json!({"field": "Photo", "item": frame["id"]}));
+    let r = exec(&mut s, "data.merge", json!({}));
+    assert_eq!(r["records"], 2);
+    assert_eq!(r["missingImages"].as_array().map(Vec::len), Some(0), "{r}");
+}
+
+/// A file at an earlier candidate that is not an image does not hide a valid image at a later
+/// one: the search goes on past it.
+#[test]
+fn a_non_image_file_beside_the_data_does_not_hide_the_image_beside_the_document() {
+    let dir = scratch("undecodable-image");
+    let (data, docs) = (dir.join("data"), dir.join("docs"));
+    write(&data.join("pics").join("a.png"), "not an image");
+    write_png_sized(&docs.join("pics").join("a.png"), 12, 12);
+    write(&data.join("cards.csv"), "@Photo\npics/a.png\n");
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    exec(&mut s, "data.source.select", json!({"path": data.join("cards.csv")}));
+    exec(&mut s, "file.save", json!({"path": docs.join("layout.designcraft")}));
+    let frame = exec(&mut s, "frame.create", json!({"rect": [36.0, 36.0, 80.0, 80.0], "content": "graphic"}));
+    exec(&mut s, "data.placeholder.add", json!({"field": "Photo", "item": frame["id"]}));
+    exec(&mut s, "data.options", json!({"linkImages": true}));
+    let r = exec(&mut s, "data.merge", json!({}));
+    assert_eq!(r["missingImages"].as_array().map(Vec::len), Some(0), "{r}");
+    let link = graphic_link(&s).unwrap_or_default();
+    assert!(link.contains("docs"), "{link}");
 }
 
 #[test]
@@ -851,6 +1077,30 @@ fn tiling_rows_first_bottom_inset_and_refusals() {
     let msg = err(&mut s, "data.merge", json!({}));
     assert!(msg.contains("one page"), "{msg}");
     assert_eq!(s.documents().len(), before);
+}
+
+/// A two-page template merged for three records: six pages made in one insertion, each record's
+/// frame on its own pages, in record order.
+#[test]
+fn a_two_page_template_merges_onto_consecutive_pages() {
+    let mut s = Session::new();
+    new_doc(&mut s, 2);
+    text_frame(&mut s, [72.0, 72.0, 172.0, 172.0], "<<Name>>", None);
+    select_csv(&mut s, "Name\nA\nB\nC\n");
+    let r = exec(&mut s, "data.merge", json!({}));
+    assert_eq!(r["pages"], 6);
+    let d = &s.documents()[s.active_index().unwrap()].doc;
+    assert_eq!(d.page_count(), 6);
+    let mut at: Vec<(usize, String)> = Vec::new();
+    for st in d.stories.values() {
+        let f = d.item(*st.frames.first().unwrap()).unwrap();
+        let sp = d.spreads.iter().position(|sp| sp.items.iter().any(|i| i.id == f.id)).unwrap();
+        let page = d.first_page_of_spread(sp) + d.spreads[sp].page_at_x(f.bounds().center().x).unwrap_or(0);
+        at.push((page, st.text.clone()));
+    }
+    at.sort();
+    assert_eq!(at, vec![(0, "A".to_string()), (2, "B".to_string()), (4, "C".to_string())]);
+    d.check().unwrap();
 }
 
 /// An IME delete-surrounding while a record is previewed edits the template, not the filled
@@ -1284,4 +1534,198 @@ fn merged_records_give_anchored_objects_their_own_ids() {
     assert_eq!(doc.anchored_items().len(), 2);
     doc.check().unwrap();
     designcraft_format::load(&designcraft_format::save(doc).unwrap()).unwrap();
+}
+
+/// The cell texts of the first table in the active document's first story that has one.
+fn cell_texts(s: &Session) -> Vec<String> {
+    let doc = &s.documents()[s.active_index().unwrap()].doc;
+    let t = doc.stories.values().find_map(|st| st.tables.values().next().cloned()).expect("a table");
+    t.cells.iter().map(|c| c.text.text.clone()).collect()
+}
+
+/// A field inserted with the insertion point in a table cell goes into that cell, and the
+/// preview and the merge fill it. The cell's offsets used to put the marker in the table's own
+/// story, outside the table, and the merge never read a cell's text (#2315).
+#[test]
+fn a_field_inserted_in_a_table_cell_goes_there_and_is_filled() {
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    select_csv(&mut s, "Name,City\nAda,London\nGrace,Arlington\n");
+    let made = text_frame(&mut s, [36.0, 36.0, 400.0, 200.0], "Who\tWhere", None);
+    exec(&mut s, "text.select", json!({"story": made["story"], "anchor": 0, "focus": 9}));
+    exec(&mut s, "table.convertFromText", json!({"columnSeparator": "tab"}));
+    let story_text = |s: &Session| s.documents()[s.active_index().unwrap()].doc.stories.values().next().unwrap().text.clone();
+    let before = story_text(&s);
+    exec(&mut s, "table.select", json!({"story": made["story"], "rows": [0, 0], "cols": [1, 1]}));
+    let r = exec(&mut s, "data.placeholder.add", json!({"field": "City"}));
+    assert_eq!(r["marker"], "<<City>>", "{r}");
+    assert_eq!(cell_texts(&s), ["Who", "<<City>>Where"], "the marker is in the cell with the caret");
+    assert_eq!(story_text(&s), before, "and not in the table's story");
+
+    exec(&mut s, "data.preview", json!({"record": 2}));
+    assert_eq!(cell_texts(&s), ["Who", "ArlingtonWhere"], "the preview fills the cell");
+    exec(&mut s, "data.preview.stop", json!({}));
+    assert_eq!(cell_texts(&s), ["Who", "<<City>>Where"], "stopping it puts the marker back");
+    exec(&mut s, "data.merge", json!({}));
+    let merged = &s.documents()[s.active_index().unwrap()].doc;
+    let mut cities: Vec<String> =
+        merged.stories.values().flat_map(|st| st.tables.values().map(|t| t.cells[1].text.text.clone()).collect::<Vec<_>>()).collect();
+    cities.sort();
+    assert_eq!(cities, ["ArlingtonWhere", "LondonWhere"], "one table per record, filled");
+}
+
+/// A field typed (or inserted) in text that is then converted to a table is filled in its cell.
+#[test]
+fn a_field_converted_into_a_table_is_filled_in_its_cell() {
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    select_csv(&mut s, "Name,City\nAda,London\n");
+    let made = text_frame(&mut s, [36.0, 36.0, 400.0, 200.0], "Name\t<<Name>>", None);
+    exec(&mut s, "text.select", json!({"story": made["story"], "anchor": 0, "focus": 13}));
+    exec(&mut s, "table.convertFromText", json!({"columnSeparator": "tab"}));
+    assert_eq!(cell_texts(&s), ["Name", "<<Name>>"]);
+    exec(&mut s, "data.preview", json!({"record": 1}));
+    assert_eq!(cell_texts(&s), ["Name", "Ada"], "the field is filled in its cell");
+}
+
+/// A table `Who⇥Where` with the caret in its second cell, and a source with `Name` and `City`.
+fn table_with_caret_in_cell(s: &mut Session, csv: &str) -> Value {
+    new_doc(s, 1);
+    select_csv(s, csv);
+    let made = text_frame(s, [36.0, 36.0, 400.0, 200.0], "Who\tWhere", None);
+    exec(s, "text.select", json!({"story": made["story"], "anchor": 0, "focus": 9}));
+    exec(s, "table.convertFromText", json!({"columnSeparator": "tab"}));
+    exec(s, "table.select", json!({"story": made["story"], "rows": [0, 0], "cols": [1, 1]}));
+    made
+}
+
+/// After a field goes into a cell the caret is after it, in that cell, and the cell selection is
+/// gone: typing goes on after the field instead of replacing the cell, field and all.
+#[test]
+fn typing_after_a_field_inserted_in_a_cell_goes_on_after_it() {
+    let mut s = Session::new();
+    table_with_caret_in_cell(&mut s, "Name,City\nAda,London\n");
+    exec(&mut s, "data.placeholder.add", json!({"field": "City"}));
+    let sel = &s.documents()[s.active_index().unwrap()].selection;
+    assert!(sel.cells.is_none(), "no cell selection left");
+    exec(&mut s, "text.insert", json!({"text": ", "}));
+    assert_eq!(cell_texts(&s), ["Who", "<<City>>, Where"]);
+}
+
+/// A position that a merged cell covers is the merged cell's: the field goes into the merged cell,
+/// where it shows, not into the hidden one under it.
+#[test]
+fn a_field_inserted_in_a_merged_cell_goes_where_it_shows() {
+    let mut s = Session::new();
+    let made = table_with_caret_in_cell(&mut s, "Name,City\nAda,London\n");
+    exec(&mut s, "table.merge", json!({"story": made["story"], "rows": [0, 0], "cols": [0, 1]}));
+    exec(&mut s, "table.select", json!({"story": made["story"], "rows": [0, 0], "cols": [1, 1]}));
+    exec(&mut s, "data.placeholder.add", json!({"field": "City"}));
+    let cells = cell_texts(&s);
+    assert!(cells[0].contains("<<City>>"), "in the merged cell: {cells:?}");
+    assert!(!cells[1].contains("<<City>>"), "not in the covered one: {cells:?}");
+    exec(&mut s, "data.preview", json!({"record": 1}));
+    assert!(cell_texts(&s)[0].contains("London"), "and filled: {:?}", cell_texts(&s));
+}
+
+/// A field whose name a marker can't hold (it has `<` or `>`) can't be filled from a cell, so it
+/// isn't inserted there; in body text it still becomes an anchored placeholder.
+#[test]
+fn a_field_named_with_angle_brackets_is_refused_in_a_cell() {
+    let mut s = Session::new();
+    let made = table_with_caret_in_cell(&mut s, "Customer <ID>,City\n7,London\n");
+    let e = s.execute("data.placeholder.add", &json!({"field": "Customer <ID>"})).expect_err("refused").to_string();
+    assert!(e.contains("can't be inserted in a table cell"), "{e}");
+    assert_eq!(cell_texts(&s), ["Who", "Where"], "nothing inserted");
+    let other = text_frame(&mut s, [36.0, 300.0, 400.0, 400.0], "No. ", None);
+    exec(&mut s, "text.select", json!({"story": other["story"], "anchor": 4, "focus": 4}));
+    assert!(exec(&mut s, "data.placeholder.add", json!({"field": "Customer <ID>"}))["id"].is_u64(), "body text still takes it");
+    let _ = made;
+}
+
+/// An image field with the insertion point in a table cell is refused with a message about image
+/// fields, and nothing is inserted; with role text its marker goes into the cell.
+#[test]
+fn an_image_field_in_a_cell_is_refused_unless_its_role_is_text() {
+    let mut s = Session::new();
+    table_with_caret_in_cell(&mut s, "Name,@Photo\nAda,pics/a.png\n");
+    for params in [json!({"field": "Photo"}), json!({"field": "Photo", "role": "image"})] {
+        let e = s.execute("data.placeholder.add", &params).expect_err("refused").to_string();
+        assert!(e.contains("an image field can't go in a table cell or a note"), "{e}");
+        assert!(!e.contains("hyperlink"), "{e}");
+        assert_eq!(cell_texts(&s), ["Who", "Where"], "nothing inserted");
+    }
+    let r = exec(&mut s, "data.placeholder.add", json!({"field": "Photo", "role": "text"}));
+    assert_eq!(r["marker"], "<<Photo>>", "{r}");
+    assert_eq!(cell_texts(&s), ["Who", "<<Photo>>Where"]);
+    exec(&mut s, "data.preview", json!({"record": 1}));
+    assert_eq!(cell_texts(&s), ["Who", "pics/a.pngWhere"], "the text role merges the path");
+}
+
+/// Endnote text is filled too: it is a text inside its story, like a footnote's.
+#[test]
+fn a_field_in_an_endnote_is_filled() {
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    select_csv(&mut s, "Name,City\nAda,London\n");
+    let made = text_frame(&mut s, [36.0, 36.0, 400.0, 200.0], "See the note", None);
+    exec(&mut s, "text.select", json!({"story": made["story"], "anchor": 12, "focus": 12}));
+    exec(&mut s, "endnote.insert", json!({"text": "From <<City>>"}));
+    let endnotes = |s: &Session| -> Vec<String> {
+        s.documents()[s.active_index().unwrap()].doc.stories.values().flat_map(|st| st.endnotes.iter().map(|e| e.text.text.clone())).collect()
+    };
+    assert_eq!(endnotes(&s), ["From <<City>>"]);
+    exec(&mut s, "data.preview", json!({"record": 1}));
+    assert_eq!(endnotes(&s), ["From London"]);
+}
+
+/// Tables nested in cells far deeper than any document goes are filled down to the merge's depth
+/// limit, and the preview returns instead of exhausting the stack.
+#[test]
+fn deeply_nested_tables_are_filled_down_to_the_limit_without_overflowing() {
+    use designcraft_doc::{Cell, ParaFormat, Table};
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    select_csv(&mut s, "Name,City\nAda,London\n");
+    let made = text_frame(&mut s, [36.0, 36.0, 400.0, 200.0], "x", None);
+    let sid = StoryId(made["story"].as_u64().unwrap());
+    // `depth` tables, each in the one cell of the next, each cell's own text `<<Name>>`.
+    let nest = |depth: usize| {
+        let mut inner: Option<Table> = None;
+        for i in 0..depth {
+            let mut t = Table::new(1000 + i as u64, 1, 1, 0, 0, 100.0);
+            t.cells[0] = Cell::with_text("<<Name>>", ParaFormat::default());
+            if let Some(child) = inner.take() {
+                t.cells[0].text.insert_table(0, child);
+            }
+            inner = Some(t);
+        }
+        inner.unwrap()
+    };
+    s.edit(|d, _| {
+        d.story_mut(sid).unwrap().insert_table(0, nest(500));
+        Ok(())
+    })
+    .unwrap();
+    exec(&mut s, "data.preview", json!({"record": 1}));
+    let doc = &s.documents()[s.active_index().unwrap()].doc;
+    let mut t = doc.story(sid).unwrap().tables.values().next().unwrap().clone();
+    let mut filled = Vec::new();
+    for _ in 0..40 {
+        filled.push(t.cells[0].text.text.contains("Ada"));
+        let Some(next) = t.cells[0].text.tables.values().next().cloned() else { break };
+        t = next;
+    }
+    assert!(filled[..super::fill::MAX_NESTED_DEPTH].iter().all(|f| *f), "filled down to the limit: {filled:?}");
+    assert!(!filled[super::fill::MAX_NESTED_DEPTH], "and not past it");
+}
+
+#[test]
+fn select_records_stops_expanding_once_the_limit_is_met_but_still_checks_every_range() {
+    // 4 billion records in a range would not finish if it were expanded; the limit stops it.
+    let idx = parse::select_records(u32::MAX as usize, "range", 1, "1-3,1-4294967295,2-4294967295", Some(5)).unwrap();
+    assert_eq!(idx, vec![0, 1, 2, 3, 4]);
+    // A later token that is out of range is still an error.
+    assert!(parse::select_records(10, "range", 1, "1-10,5-11", Some(2)).is_err());
+    assert!(parse::select_records(10, "range", 1, "1-2,0", Some(2)).is_err());
 }
