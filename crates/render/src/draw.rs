@@ -17,7 +17,12 @@ fn draw_body_fill(ctx: &mut RenderContext, f: &Frame, it: &Item, bp: &BezPath, x
         ctx.push_layer(None, Some(BlendMode::new(Mix::Multiply, Compose::SrcOver)), None, None, None);
     }
     if set_fill_paint(ctx, doc, &it.fill, bp.bounding_box()) {
+        ctx.set_fill_rule(match it.path.fill_rule {
+            designcraft_geom::FillRule::EvenOdd => peniko::Fill::EvenOdd,
+            designcraft_geom::FillRule::NonZero => peniko::Fill::NonZero,
+        });
         ctx.fill_path(bp);
+        ctx.set_fill_rule(peniko::Fill::NonZero);
     }
     ctx.reset_paint_transform();
     if op {
