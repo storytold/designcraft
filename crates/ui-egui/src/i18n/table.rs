@@ -479,6 +479,7 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ("Gutter:", ["Steg:", "Gouttière :", "Medianil:", "間隔:", "栏间距："]),
     ("Fit Guides to:", ["Hilfslinien einpassen in:", "Ajuster les repères à :", "Ajustar guías a:", "ガイドの適用先:", "参考线适合："]),
     ("Top:", ["Oben:", "Haut :", "Superior:", "天:", "上："]),
+    ("Inset:", ["Versatz:", "Marge intérieure :", "Margen interior:", "フレーム内マージン :", "内边距："]),
     ("Bottom:", ["Unten:", "Bas :", "Inferior:", "地:", "下："]),
     ("Inside:", ["Innen:", "Intérieur :", "Interior:", "ノド:", "内："]),
     ("Outside:", ["Außen:", "Extérieur :", "Exterior:", "小口:", "外："]),

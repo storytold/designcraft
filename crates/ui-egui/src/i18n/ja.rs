@@ -2057,6 +2057,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Third Space", "三分スペース"),
     ("Title Case", "各単語の先頭を大文字に"),
     ("Top:", "上:"),
+    ("Inset:", "フレーム内マージン:"),
     ("Trademark Symbol", "商標記号"),
     ("Transform Again Individually", "個別に再変形"),
     ("Transform Sequence Again", "一連の変形を再実行"),

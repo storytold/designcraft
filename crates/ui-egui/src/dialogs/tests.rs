@@ -1436,6 +1436,100 @@ fn text_frame_options_set_a_custom_baseline_grid_relative_to() {
     assert_eq!(grid(&app), None);
 }
 
+/// A non-rectangular frame (an oval, or a rectangle with rounded corners) shows one Inset, the
+/// distance kept from its outline, and OK sends it as one value for all four sides. A rectangle
+/// keeps the four side fields.
+#[test]
+fn text_frame_options_set_one_inset_for_a_non_rectangular_frame() {
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let oval = app.run("frame.create", json!({"rect": [36, 36, 336, 236], "shape": "ellipse", "content": "text", "text": "Hello"})).unwrap();
+    let oval = designcraft_doc::ItemId(oval["id"].as_u64().unwrap());
+    let rect = app.run("frame.create", json!({"rect": [36, 300, 336, 500], "content": "text", "text": "Hello"})).unwrap();
+    let rect = designcraft_doc::ItemId(rect["id"].as_u64().unwrap());
+    app.run("object.textFrameOptions", json!({"ids": [oval.0, rect.0], "inset": [6, 2, 3, 4]})).unwrap();
+    let opts = |app: &DesignApp, id| app.session.doc().unwrap().doc.item(id).unwrap().text_frame().unwrap().options.clone();
+    let open = |app: &mut DesignApp, id: designcraft_doc::ItemId| {
+        app.run("selection.set", json!({"ids": [id.0]})).unwrap();
+        let mut d = Dialog::new("textFrameOptions", json!({}));
+        seed_text_frame_options(app, &mut d);
+        d
+    };
+    // The oval shows its top inset as the one Inset.
+    let d = open(&mut app, oval);
+    assert!(d.b("_shaped"));
+    assert_eq!(d.s("inset"), "0p6");
+    // OK without edits changes nothing, and adds no undo step.
+    let undo = app.session.doc().unwrap().history.undo.len();
+    app.ui.dialog = Some(d);
+    assert_eq!(confirm(&mut app).unwrap(), Value::Null);
+    assert_eq!(app.session.doc().unwrap().history.undo.len(), undo);
+    // Inset set to 1p0: all four sides take it.
+    let mut d = open(&mut app, oval);
+    d.fields.insert("inset".into(), json!("1p0"));
+    app.ui.dialog = Some(d);
+    confirm(&mut app).unwrap();
+    assert_eq!(opts(&app, oval).inset, [12.0; 4]);
+    assert_eq!(app.session.doc().unwrap().history.undo.len(), undo + 1, "one undo step");
+    // A value that isn't a measure is refused and the frame keeps its inset.
+    let mut d = open(&mut app, oval);
+    d.fields.insert("inset".into(), json!("not a measure"));
+    app.ui.dialog = Some(d);
+    assert!(confirm(&mut app).unwrap_err().to_string().contains("the inset is not a measure"));
+    assert_eq!(opts(&app, oval).inset, [12.0; 4]);
+    // A rectangle shows the four sides; with rounded corners it is not rectangular either.
+    let d = open(&mut app, rect);
+    assert!(!d.b("_shaped") && !d.fields.contains_key("inset"), "a rectangle shows the four sides");
+    app.run("object.cornerOptions", json!({"ids": [rect.0], "shape": "rounded", "size": 12})).unwrap();
+    let d = open(&mut app, rect);
+    assert!(d.b("_shaped"));
+    assert_eq!(d.s("inset"), "0p6");
+}
+
+/// The dialog dims Top, Left, Bottom, Right and the link for a non-rectangular frame and adds an
+/// Inset field; for a rectangle it shows no Inset field and the sides stay editable.
+#[test]
+fn text_frame_options_dims_the_sides_for_a_non_rectangular_frame() {
+    use egui_kittest::{
+        Harness,
+        kittest::{NodeT, Queryable},
+    };
+    for shaped in [true, false] {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let shape = if shaped { "ellipse" } else { "rectangle" };
+        let r = app.run("frame.create", json!({"rect": [36, 36, 336, 236], "shape": shape, "content": "text", "text": "Hello"})).unwrap();
+        app.run("selection.set", json!({"ids": [r["id"]]})).unwrap();
+        app.ui.dialog = Some(Dialog::new("textFrameOptions", json!({})));
+        // The General tab's Columns and Align dropdowns have no accessible name yet.
+        let mut h = Harness::builder().with_size(egui::vec2(1000.0, 800.0)).with_accessibility_check(false).build_ui_state(
+            |ui, app: &mut DesignApp| {
+                let key = egui::Id::unique("text_frame_inset_test_fonts");
+                if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
+                    crate::theme::install_fonts(ui.ctx(), "");
+                    ui.data_mut(|d| d.insert_temp(key, true));
+                    return;
+                }
+                show(app, ui.ctx());
+            },
+            app,
+        );
+        h.run_steps(3);
+        for side in ["insetTop", "insetLeft", "insetBottom", "insetRight"] {
+            let label = format!("Increase tfo_{side}");
+            assert_eq!(h.get_by_label(&label).accesskit_node().is_disabled(), shaped, "{shape}: {side}");
+        }
+        assert_eq!(h.query_by_label("Inset:").is_some(), shaped, "{shape}: the Inset caption");
+        assert_eq!(h.query_by_label("Increase tfo_inset").is_some(), shaped, "{shape}: the Inset field");
+        // The link toggles only for a rectangle.
+        let linked = |h: &Harness<'_, DesignApp>| h.state().ui.dialog.as_ref().unwrap().b("insetLinked");
+        let before = linked(&h);
+        h.get_by_label("Make all settings the same").click();
+        h.run_steps(3);
+        assert_eq!(linked(&h) != before, !shaped, "{shape}: the link");
+    }
+}
+
 #[test]
 fn text_frame_options_change_only_what_was_edited() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());

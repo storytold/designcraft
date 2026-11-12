@@ -1468,6 +1468,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Keep Options", "Opções de manter"),
     ("Span Columns", "Abranger colunas"),
     ("Top:", "Superior:"),
+    ("Inset:", "Recuo:"),
     ("Left:", "Esquerda:"),
     ("Bottom:", "Inferior:"),
     ("Right:", "Direita:"),

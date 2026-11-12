@@ -1898,6 +1898,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Third Space", "Треть шпации"),
     ("Title Case", "Каждое слово с прописной"),
     ("Top:", "Сверху:"),
+    ("Inset:", "Отступ:"),
     ("Trademark Symbol", "Знак товарного знака"),
     ("Transform Again Individually", "Повторить трансформирование по отдельности"),
     ("Transform Sequence Again", "Повторить последовательность трансформирования"),
