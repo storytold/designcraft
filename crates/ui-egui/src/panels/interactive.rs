@@ -212,6 +212,27 @@ pub fn tags(app: &mut DesignApp, ui: &mut egui::Ui) {
     if (has_sel || text_sel) && ui.small_button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Untag Selection"))).clicked() {
         let _ = if text_sel { app.run("xml.tagText", json!({"tag": null})) } else { app.run("xml.tag", json!({"tag": null})) };
     }
+    if ui
+        .button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Auto Tag Frames")))
+        .on_hover_ui(|ui| {
+            crate::rtl::label(
+                ui,
+                crate::i18n::tr(
+                    &app.ui.language,
+                    "Tags every untagged text and graphic frame: by its name in the Layers panel, else text_1, image_1, …",
+                ),
+            );
+        })
+        .clicked()
+    {
+        match app.run("xml.autoTag", json!({})) {
+            Ok(r) => {
+                let report = auto_tag_report(&app.ui.language, &r);
+                app.status(report);
+            }
+            Err(e) => app.status_error("Auto Tag Frames", e),
+        }
+    }
     let mut markers = app.ui.tag_markers;
     if ui.checkbox(&mut markers, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Show Tag Markers"))).changed() {
         let _ = app.run("view.tagMarkers", json!({"on": markers}));
@@ -279,9 +300,56 @@ pub fn tags(app: &mut DesignApp, ui: &mut egui::Ui) {
             let _ = app.run("app.exportXml", json!({}));
         }
         if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Import XML…"))).clicked() {
-            ask_then_run(app, "xml", "Import XML", |path| ("file.importXml", json!({"path": path})));
+            import_xml(app);
         }
     });
+}
+
+/// The status line for `xml.autoTag`'s result: how many frames it tagged.
+pub(crate) fn auto_tag_report(lang: &str, r: &Value) -> String {
+    let n = r["tagged"].as_array().map_or(0, Vec::len);
+    let what = if n == 0 {
+        crate::i18n::tr(lang, "no untagged frames").to_string()
+    } else {
+        crate::i18n::tr(lang, "{n} frames tagged").replace("{n}", &n.to_string())
+    };
+    format!("{}: {what}", crate::i18n::tr(lang, "Auto Tag Frames"))
+}
+
+/// File ▸ Import XML… and the Tags panel's button: asks for the XML file, imports it and says in
+/// the status line what was placed and what wasn't.
+pub fn import_xml(app: &mut DesignApp) {
+    let asked = app.ask_open("xml", Bound::Document, |app, path| {
+        match app.run("file.importXml", json!({"path": path})) {
+            Ok(r) => {
+                let report = import_report(&app.ui.language, &r);
+                app.status(report);
+            }
+            Err(e) => app.status_error("Import XML", e),
+        }
+        Ok(Value::Null)
+    });
+    if let Err(e) = asked {
+        app.status_error("Import XML", e);
+    }
+}
+
+/// The status line for `file.importXml`'s result: how many elements were placed, which tags found
+/// no frame, and the first image that couldn't be placed.
+pub(crate) fn import_report(lang: &str, r: &Value) -> String {
+    let tr = |s| crate::i18n::tr(lang, s);
+    let n = |key: &str| r[key].as_u64().unwrap_or(0).to_string();
+    let mut parts = vec![tr("{n} placed").replace("{n}", &n("placed"))];
+    let tags: Vec<&str> = r["unmatchedTags"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+    if r["unmatched"].as_u64().unwrap_or(0) > 0 {
+        parts.push(tr("{n} without a free tagged frame ({tags})").replace("{n}", &n("unmatched")).replace("{tags}", &tags.join(", ")));
+    }
+    let failed = r["failed"].as_array().map_or(&[][..], Vec::as_slice);
+    if let Some(first) = failed.first() {
+        let what = format!("{}: {}", first["tag"].as_str().unwrap_or(""), first["error"].as_str().unwrap_or(""));
+        parts.push(tr("{n} images not placed ({first})").replace("{n}", &failed.len().to_string()).replace("{first}", &what));
+    }
+    format!("{}: {}", tr("Import XML"), parts.join(", "))
 }
 
 /// Asks for a file for `purpose`, then runs the command `command(path)` names; a failure shows
@@ -785,6 +853,89 @@ pub fn track_changes(app: &mut DesignApp, ui: &mut egui::Ui) {
             let _ = app.run("changes.rejectAll", json!({}));
         }
     });
+}
+
+#[cfg(test)]
+mod import_xml_tests {
+    use serde_json::json;
+
+    use super::*;
+    use crate::app::file_dialogs::testing::answer_with;
+
+    /// The Tags panel's Auto Tag Frames button tags the untagged frames and says how many.
+    #[test]
+    fn auto_tag_button_tags_frames_and_reports() {
+        use egui_kittest::{Harness, kittest::Queryable};
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let head = app.run("frame.create", json!({"rect": [72, 72, 400, 120], "content": "text", "text": "Title", "caret": false})).unwrap();
+        app.run("frame.create", json!({"rect": [72, 200, 300, 400], "content": "graphic"})).unwrap();
+        app.run("object.rename", json!({"id": head["id"], "name": "headline"})).unwrap();
+        let mut h = Harness::builder().with_size(egui::vec2(320.0, 520.0)).build_ui_state(
+            |ui, app: &mut DesignApp| {
+                let key = egui::Id::unique("test_fonts");
+                if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
+                    crate::theme::install_fonts(ui.ctx(), "");
+                    ui.data_mut(|d| d.insert_temp(key, true));
+                    return;
+                }
+                tags(app, ui);
+            },
+            app,
+        );
+        h.run_steps(3);
+        h.get_by_label("Auto Tag Frames").click();
+        h.run_steps(2);
+        let tags = h.state_mut().session.execute("xml.structure", &json!({})).unwrap();
+        let names: Vec<&str> = tags["elements"].as_array().unwrap().iter().filter_map(|e| e["tag"].as_str()).collect();
+        assert_eq!(names, ["headline", "image_1"]);
+        assert_eq!(h.state().ui.status, "Auto Tag Frames: 2 frames tagged");
+        // Nothing left untagged: said so.
+        h.get_by_label("Auto Tag Frames").click();
+        h.run_steps(2);
+        assert_eq!(h.state().ui.status, "Auto Tag Frames: no untagged frames");
+        assert_eq!(auto_tag_report("de", &json!({"tagged": [1, 2, 3]})), "Rahmen automatisch taggen: 3 Rahmen getaggt");
+    }
+
+    #[test]
+    fn the_report_names_unmatched_tags_and_the_first_failed_image() {
+        let ok = json!({"placed": 18, "unmatched": 0, "unmatchedTags": [], "failed": []});
+        assert_eq!(import_report("", &ok), "Import XML: 18 placed");
+        let bad = json!({
+            "placed": 15, "unmatched": 3, "unmatchedTags": ["pictogram_1", "pictogram_2"],
+            "failed": [{"tag": "logo", "href": "x.eps", "error": "can't read x.eps"}]
+        });
+        assert_eq!(
+            import_report("", &bad),
+            "Import XML: 15 placed, 3 without a free tagged frame (pictogram_1, pictogram_2), 1 images not placed (logo: can't read x.eps)"
+        );
+        assert!(import_report("de", &bad).starts_with("XML importieren: 15 platziert, 3 ohne freien Rahmen"), "{}", import_report("de", &bad));
+    }
+
+    /// File › Import XML… asks for the file with a picker (not a field to type the path into)
+    /// and reports what the import did in the status line.
+    #[test]
+    fn the_menu_asks_for_the_file_and_reports_in_the_status_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let xml = dir.path().join("content.xml");
+        std::fs::write(&xml, "<Root><headline>New</headline><photo href=\"missing.png\"/><extra>x</extra></Root>").unwrap();
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.answer_dialogs(answer_with(Some(xml.to_string_lossy().to_string())));
+        app.run("file.new", json!({})).unwrap();
+        let head = app.run("frame.create", json!({"rect": [72, 72, 400, 120], "content": "text", "text": "Old", "caret": false})).unwrap();
+        let photo = app.run("frame.create", json!({"rect": [72, 200, 300, 400], "content": "graphic"})).unwrap();
+        app.run("xml.tag", json!({"tag": "headline", "ids": [head["id"]]})).unwrap();
+        app.run("xml.tag", json!({"tag": "photo", "ids": [photo["id"]]})).unwrap();
+
+        crate::menus::activate(&mut app, "file.importXml", &Value::Null);
+        assert!(app.ui.dialog.is_none(), "no typed-path dialog");
+        assert_eq!(app.file_dialogs.queued(), 1, "a file picker is asked for");
+        app.settle_dialogs();
+        let status = app.ui.status.clone();
+        assert!(status.starts_with("Import XML: 1 placed, 1 without a free tagged frame (extra), 1 images not placed (photo: "), "{status}");
+        let story = app.run("story.get", json!({"story": head["story"]})).unwrap();
+        assert_eq!(story["text"], "New");
+    }
 }
 
 #[cfg(test)]
