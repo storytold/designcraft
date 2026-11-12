@@ -2429,8 +2429,9 @@ fn a_corner_radius_keeps_a_cap_height_line_in_place() {
     }
 
     // A corner radius doesn't change where Bottom and Justify put the last baseline: on the
-    // bottom inset, as in a rectangular frame, with the descenders in the inset.
-    for insets in [[6.0; 4], [0.0, 0.0, 12.0, 0.0]] {
+    // bottom inset, as in a rectangular frame, with the descenders in the inset. Each radius is
+    // smaller than the inset, so the rounded corner stays clear of the text area.
+    for (insets, big) in [([6.0; 4], 4.0), ([0.0, 0.0, 12.0, 0.0], 6.0)] {
         for mode in [Bottom, Justify] {
             let compose_frame = |radius: f64| {
                 let (mut d, sid, fid) = doc_with("Typography\ngypsy", Rect::new(0.0, 0.0, 200.0, 100.0), ParaAttrs::default());
@@ -2444,7 +2445,7 @@ fn a_corner_radius_keeps_a_cap_height_line_in_place() {
                 (area, all_lines(&cs).iter().map(|l| l.baseline).collect::<Vec<_>>())
             };
             let (area, square) = compose_frame(0.0);
-            for radius in [0.1 * mm, 6.0] {
+            for radius in [0.1 * mm, big] {
                 let (_, rounded) = compose_frame(radius);
                 assert_eq!(rounded.len(), square.len());
                 for (r, s) in rounded.iter().zip(&square) {
@@ -2455,6 +2456,64 @@ fn a_corner_radius_keeps_a_cap_height_line_in_place() {
             assert!((last - area.y1).abs() < 1e-6, "{mode:?} insets {insets:?}: last baseline at {last}, inset at {}", area.y1);
         }
     }
+}
+
+/// In a shaped frame, Center, Bottom and Justify keep each moved line's slot inside the outline:
+/// a triangle that narrows downward holds the lines where their slots still fit, and one that
+/// widens downward lets Bottom put the last baseline on the frame's bottom.
+#[test]
+fn vertical_justification_keeps_lines_inside_a_shaped_frame() {
+    use designcraft_doc::VerticalJustification::{self, Bottom, Center, Justify};
+    use designcraft_geom::{Anchor, PathData, Point, SubPath};
+    let r = Rect::new(0.0, 0.0, 300.0, 300.0);
+    let compose_with = |tri: [Point; 3], mode: VerticalJustification| {
+        let (mut d, sid, fid) = doc_with("Typography\ngypsy", r, ParaAttrs::default());
+        let it = d.item_mut(fid).unwrap();
+        it.path = PathData::single(SubPath { anchors: tri.iter().map(|&p| Anchor::corner(p)).collect(), closed: true });
+        let o = &mut it.text_frame_mut().unwrap().options;
+        o.vertical_justification = mode;
+        o.inset = [0.0; 4];
+        let spec = frame_specs(&d, sid).remove(0);
+        assert!(spec.outline.is_some());
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let lines: Vec<Line> = all_lines(&cs).into_iter().cloned().collect();
+        assert!(lines.len() >= 2, "{mode:?}: {lines:?}");
+        (spec.area, lines)
+    };
+    // Narrowing downward: |x - 150| <= (300 - y) / 2 over each slot's band, the last line's
+    // descenders left out.
+    let down = [Point::new(0.0, 0.0), Point::new(300.0, 0.0), Point::new(150.0, 300.0)];
+    for mode in [Center, Bottom, Justify] {
+        let (area, lines) = compose_with(down, mode);
+        for (k, l) in lines.iter().enumerate() {
+            let bottom = if k + 1 == lines.len() { l.baseline } else { l.baseline + l.descent };
+            let top = (l.baseline - l.ascent).max(area.y0);
+            for (x, y) in [(l.x0, top), (l.x1, top), (l.x0, bottom), (l.x1, bottom)] {
+                assert!((x - 150.0).abs() <= (300.0 - y) / 2.0 + 1e-3, "{mode:?}: line {k} corner ({x}, {y}) outside the triangle: {lines:?}");
+            }
+        }
+    }
+    // Widening downward: moving down keeps every slot inside, so Bottom goes all the way.
+    let up = [Point::new(150.0, 0.0), Point::new(300.0, 300.0), Point::new(0.0, 300.0)];
+    let (area, lines) = compose_with(up, Bottom);
+    let last = lines[lines.len() - 1].baseline;
+    assert!((last - area.y1).abs() < 1e-6, "Bottom: last baseline at {last}, frame bottom at {}: {lines:?}", area.y1);
+
+    // Narrowing at a waist, full width again from 200 to 260 pt, then a point: Bottom sets the
+    // lines in the lower full-width part, past the waist.
+    let pts = [(0.0, 0.0), (300.0, 0.0), (300.0, 100.0), (200.0, 150.0), (300.0, 200.0), (300.0, 260.0), (150.0, 300.0)];
+    let pts: Vec<(f64, f64)> = pts.iter().copied().chain([(0.0, 260.0), (0.0, 200.0), (100.0, 150.0), (0.0, 100.0)]).collect();
+    let (mut d, sid, fid) = doc_with("Typography\ngypsy", r, ParaAttrs::default());
+    let it = d.item_mut(fid).unwrap();
+    it.path = PathData::single(SubPath { anchors: pts.iter().map(|&(x, y)| Anchor::corner(Point::new(x, y))).collect(), closed: true });
+    let o = &mut it.text_frame_mut().unwrap().options;
+    o.vertical_justification = Bottom;
+    o.inset = [0.0; 4];
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    let (first, last) = (lines[0], lines[lines.len() - 1]);
+    assert!(first.baseline - first.ascent >= 200.0 - 1e-6, "Bottom: first line top at {}", first.baseline - first.ascent);
+    assert!((last.baseline - 260.0).abs() < 1e-3, "Bottom: last baseline at {}", last.baseline);
 }
 
 #[test]

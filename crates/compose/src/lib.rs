@@ -5514,7 +5514,8 @@ fn vertical_justify(ft: &mut FrameText, f: &FrameSpec, spanned: bool, notes: &de
         // frames as in rectangular ones. Above footnotes, and in vertical frames, the descenders
         // stay inside the text area, as when the lines are fitted.
         // `space`: the room under the bottom of the text.
-        let space = if f.vertical || note_top <= f.area.y1 { limit - ink_bottom } else { limit - last_baseline };
+        let inside = f.vertical || note_top <= f.area.y1;
+        let space = if inside { limit - ink_bottom } else { limit - last_baseline };
         if space <= 0.0 {
             continue;
         }
@@ -5560,14 +5561,42 @@ fn vertical_justify(ft: &mut FrameText, f: &FrameSpec, spanned: bool, notes: &de
         };
         // Only the last row's descenders hang below the bottom of the text: an earlier line whose
         // ink reaches below the last baseline (tight leading) isn't moved past the text area.
-        let fits = |shift: &[f64]| {
-            idx.iter().zip(&rows).all(|(&i, &k)| k == n || shift[k] <= 0.0 || ft.lines[i].baseline + ft.lines[i].descent + shift[k] <= limit + 1e-9)
+        // In a shaped frame each moved line's slot stays inside the outline over its new band, as
+        // when the line was fitted: a frame that narrows towards the bottom holds the text higher.
+        let in_outline = |l: &Line, last: bool, dy: f64| match &f.outline {
+            Some(o) => {
+                let b = l.baseline + dy;
+                let desc = if last && !inside { 0.0 } else { l.descent.max(0.0) };
+                let tol = 1e-6;
+                o.intervals(l.x0, l.x1, (b - l.ascent).max(f.area.y0).min(b), b + desc).iter().any(|&(a, z)| a <= l.x0 + tol && z >= l.x1 - tol)
+            }
+            None => true,
         };
-        // Every row moves no less as `space` grows, so the most room that fits is found by halving.
+        // The lowest lines are tested first: they are the ones a narrowing outline stops.
+        let fits = |shift: &[f64]| {
+            idx.iter().zip(&rows).rev().all(|(&i, &k)| {
+                let l = &ft.lines[i];
+                shift[k] <= 0.0 || ((k == n || l.baseline + l.descent + shift[k] <= limit + 1e-9) && in_outline(l, k == n, shift[k]))
+            })
+        };
+        // Every row moves no less as `space` grows, so in a rectangular frame the most room that
+        // fits is found by halving. A shaped frame can narrow and widen again further down: there
+        // the rooms are scanned from the most down to none, every point (at most 512 steps, each
+        // usually stopped by the lowest line), and the step between the first that fits and the
+        // one above it is then halved.
         let mut shift = shifts(space);
         if !fits(&shift) {
+            let steps = if f.outline.is_some() { space.ceil().clamp(64.0, 512.0) as usize } else { 1 };
             let (mut lo, mut hi) = (0.0, space);
-            for _ in 0..60 {
+            for j in 1..steps {
+                let s = space * (steps - j) as f64 / steps as f64;
+                if fits(&shifts(s)) {
+                    lo = s;
+                    break;
+                }
+                hi = s;
+            }
+            for _ in 0..50 {
                 let mid = (lo + hi) / 2.0;
                 if fits(&shifts(mid)) {
                     lo = mid;
