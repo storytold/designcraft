@@ -2968,6 +2968,10 @@ pub(super) const TABLE: &[(&str, &str)] = &[
         "Links and Images: {found} linked, {modified} changed, {missing} not found",
         "Länkar och bilder: {found} länkade, {modified} ändrade, {missing} hittades inte",
     ),
+    ("Stroke:", "Kontur:"),
+    ("Fill:", "Fyllning:"),
+    ("Clear all effects and make object opaque", "Rensa alla effekter och gör objektet ogenomskinligt"),
+    ("Remove effects from the selected target", "Ta bort effekter från det markerade målet"),
 ];
 
 pub(super) const CONTEXT: &[(&str, &str, &str)] = &[

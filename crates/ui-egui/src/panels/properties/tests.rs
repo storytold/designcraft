@@ -238,37 +238,68 @@ fn properties_character_section_sets_the_language() {
     assert_eq!(language(h.state_mut()), "French");
 }
 
-/// Drop shadow Distance and Size in the Effects panel read and show the document's unit, as
-/// the Effects dialog does (#1523): in picas a typed `7` is 7 picas in both.
+/// The panel's fx badge opens the shadow controls in the Effects dialog. They retain the
+/// document-unit behavior from #1523: in picas a typed `7` is 7 picas.
 #[test]
-fn effects_panel_shadow_fields_use_the_document_unit() {
+fn effects_panel_opens_shadow_fields_in_the_document_unit() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), Default::default());
     app.run("file.new", json!({})).unwrap();
     let id = app.run("frame.create", json!({"rect": [72, 72, 144, 144]})).unwrap()["id"].clone();
     app.run("selection.set", json!({"ids": [id]})).unwrap();
     app.run("object.dropShadow", json!({"on": true, "distance": 7.0, "size": 5.0})).unwrap();
+    let undo = app.session.doc().unwrap().history.undo.len();
     let shadow = |app: &DesignApp| {
         let d = app.session.doc().unwrap().doc.item(designcraft_doc::ItemId(id.as_u64().unwrap())).unwrap().effects.drop_shadow.clone();
         (d.distance, d.size)
     };
-    let mut h = panel_harness(app, effects_panel);
+    let mut h = Harness::builder().with_size(vec2(1000.0, 800.0)).build_ui_state(
+        |ui, app: &mut DesignApp| {
+            let id = egui::Id::unique("test_fonts");
+            if ui.data(|d| d.get_temp::<bool>(id)).is_none() {
+                crate::theme::install_fonts(ui.ctx(), "en");
+                ui.data_mut(|d| d.insert_temp(id, true));
+                return;
+            }
+            effects_panel(app, ui);
+            crate::dialogs::show(app, ui.ctx());
+        },
+        app,
+    );
     h.run_steps(3);
-    let values =
-        |h: &Harness<'static, DesignApp>| -> Vec<String> { h.get_all_by_role(egui::accesskit::Role::TextInput).filter_map(|n| n.value()).collect() };
+    h.get_all_by_label("fx").next().unwrap().click();
+    h.run_steps(3);
+    assert_eq!(h.state().ui.dialog.as_ref().unwrap().fields["page"], "dropShadow");
+    let values = |h: &Harness<'static, DesignApp>| -> Vec<String> {
+        h.query_all_by(|n| matches!(n.role(), egui::accesskit::Role::SpinButton | egui::accesskit::Role::TextInput))
+            .filter_map(|n| n.value())
+            .collect()
+    };
     let shown = values(&h);
     assert!(shown.contains(&"0p7".to_string()) && shown.contains(&"0p5".to_string()), "{shown:?}");
     for (old, typed, want) in [("0p7", "7", (84.0, 5.0)), ("0p5", "3mm", (84.0, 3.0 * designcraft_geom::units::PT_PER_MM))] {
-        let field = h.get_all_by_role(egui::accesskit::Role::TextInput).find(|n| n.value().as_deref() == Some(old)).unwrap();
-        field.focus();
-        h.run_steps(1);
+        let at = h
+            .query_all_by(|n| matches!(n.role(), egui::accesskit::Role::SpinButton | egui::accesskit::Role::TextInput))
+            .find(|n| n.value().as_deref() == Some(old))
+            .unwrap()
+            .rect()
+            .center();
+        h.hover_at(at);
+        h.drag_at(at);
+        h.drop_at(at);
+        h.run_steps(2);
         h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
-        h.get_all_by_role(egui::accesskit::Role::TextInput).find(|n| n.is_focused()).unwrap().type_text(typed);
+        h.event(egui::Event::Text(typed.into()));
         h.run_steps(1);
-        h.key_press(egui::Key::Enter);
+        h.key_press(egui::Key::Tab);
         h.run_steps(3);
         let got = shadow(h.state_mut());
         assert!((got.0 - want.0).abs() < 1e-3 && (got.1 - want.1).abs() < 1e-3, "{typed}: {got:?}, want {want:?}");
     }
+    h.get_by_label("  OK  ").click();
+    h.run_steps(3);
+    assert_eq!(h.state().session.doc().unwrap().history.undo.len(), undo + 1);
+    h.state_mut().run("edit.undo", json!({})).unwrap();
+    assert_eq!(shadow(h.state()), (7.0, 5.0));
 }
 
 /// Properties › Character and Paragraph •••, as in InDesign: the sections expand in place,
