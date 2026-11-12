@@ -338,6 +338,56 @@ fn saving_in_one_session_leaves_another_sessions_write_to_the_same_folder_alone(
 
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
+fn a_write_now_in_one_session_leaves_another_sessions_write_of_the_same_uid_alone() {
+    let _turn = background();
+    let dir = tempfile::tempdir().unwrap();
+    let mut queued_by = dirty_session();
+    queued_by.recovery_dir = Some(dir.path().to_path_buf());
+    let uid = queued_by.docs[0].uid;
+    // The same uid in another session, with two objects instead of one.
+    let mut other = dirty_session();
+    other.docs[0].uid = uid;
+    other.execute("frame.create", &json!({"rect": [20, 20, 60, 60]})).unwrap();
+    let held = testing::hold_next_write(dir.path());
+    queued_by.execute("file.recovery.save", &json!({"background": true})).unwrap();
+    held.wait_until_held();
+    let err = save(&other, dir.path()).unwrap_err();
+    assert!(err.to_string().contains("still being written"), "{err}");
+    let err = other.execute("file.recovery.save", &json!({"dir": dir.path().to_string_lossy()})).unwrap_err();
+    assert!(err.to_string().contains("still being written"), "{err}");
+    assert!(!worker::cancelled(dir.path(), uid), "the other session's write now cancelled this write");
+    held.release();
+    assert_eq!(finished_writes(&mut queued_by), 1);
+    let mut reopened = Session::new();
+    assert_eq!(open(&mut reopened, dir.path()).unwrap().len(), 1);
+    assert_eq!(reopened.doc().unwrap().doc.spreads[0].items.len(), 1, "the queued session's snapshot was kept");
+    discard(dir.path(), reopened.doc().unwrap().uid);
+    discard(dir.path(), uid);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn no_other_sessions_write_of_the_uid_is_queued_during_a_write_now() {
+    let _turn = background();
+    let dir = tempfile::tempdir().unwrap();
+    let writing = dirty_session();
+    let uid = writing.docs[0].uid;
+    let mut other = dirty_session();
+    other.recovery_dir = Some(dir.path().to_path_buf());
+    other.docs[0].uid = uid;
+    let now = worker::write_now(dir.path(), uid, writing.recovery_owner.0).expect("nothing else is in flight");
+    let queued = other.execute("file.recovery.save", &json!({"background": true})).unwrap();
+    assert_eq!(queued["queued"], 0, "another session's write was queued during the write now: {queued}");
+    assert!(worker::write_now(dir.path(), uid, other.recovery_owner.0).is_none(), "a second write now of the uid started");
+    drop(now);
+    let queued = other.execute("file.recovery.save", &json!({"background": true})).unwrap();
+    assert_eq!(queued["queued"], 1, "{queued}");
+    assert_eq!(finished_writes(&mut other), 1);
+    discard(dir.path(), uid);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
 fn a_write_now_cancels_a_background_write_to_the_same_folder_spelled_another_way() {
     let _turn = background();
     let dir = tempfile::tempdir().unwrap();
@@ -733,7 +783,7 @@ fn a_cancel_stops_a_write_before_the_package_is_finished() {
 fn only_a_queued_write_is_cancelled() {
     // A mark for a document with no write in flight would stay in the writer's set for ever.
     let dir = tempfile::tempdir().unwrap();
-    worker::cancel(dir.path(), 7);
+    worker::cancel_owned(dir.path(), 7, 1);
     assert!(!worker::cancelled(dir.path(), 7), "nothing was queued for it");
 }
 

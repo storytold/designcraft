@@ -583,10 +583,33 @@ fn prepare_save(s: &Session, dir: &Path) -> Result<Access> {
     Ok(access)
 }
 
+/// Refuse a write now while another session's background write of one of the dirty documents'
+/// uids to `dir` is queued or running. A write now cancels only this session's writes.
+#[cfg(not(target_arch = "wasm32"))]
+fn check_no_other_write(s: &Session, dir: &Path) -> Result<()> {
+    let preview = s.new_document_preview();
+    for document in s.docs.iter().filter(|d| d.is_dirty() && preview != Some(d.uid)) {
+        if worker::queued_by_other(dir, document.uid, s.recovery_owner.0) {
+            return Err(still_being_written(dir));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn still_being_written(dir: &Path) -> EngineError {
+    EngineError::Other(format!(
+        "{}: another document's recovery data is still being written here; try again or choose another recovery folder",
+        dir.display()
+    ))
+}
+
 /// Write recovery entries for dirty documents and drop clean checkpoints. Returns how many
 /// were written. Command callers use the tracked variant without configuring automatic recovery.
 pub fn save(s: &Session, dir: &Path) -> Result<usize> {
     let access = prepare_save(s, dir)?;
+    #[cfg(not(target_arch = "wasm32"))]
+    check_no_other_write(s, dir)?;
     let mut n = 0;
     for d in &s.docs {
         // New Document's preview is not a document until Create makes it one.
@@ -601,9 +624,10 @@ pub fn save(s: &Session, dir: &Path) -> Result<usize> {
             continue;
         }
         // The caller asked for this write now: nothing has cancelled it.
-        // A background write of an older state must not land over this one.
+        // A background write of an older state this session queued must not land over this one,
+        // and no other session's write of the uid is queued until it is done.
         #[cfg(not(target_arch = "wasm32"))]
-        worker::cancel(dir, d.uid);
+        let _now = worker::write_now(dir, d.uid, s.recovery_owner.0).ok_or_else(|| still_being_written(dir))?;
         if let Some(e) = write_snapshot(&Snapshot::of(&access, dir, d), || false).error {
             return Err(e);
         }
@@ -617,6 +641,8 @@ pub fn save(s: &Session, dir: &Path) -> Result<usize> {
 pub(crate) fn save_tracked(s: &mut Session, dir: &Path) -> Result<usize> {
     reject_overfull_checkpoints(s, dir)?;
     let access = prepare_save(s, dir)?;
+    #[cfg(not(target_arch = "wasm32"))]
+    check_no_other_write(s, dir)?;
     let mut n = 0;
     let preview = s.new_document_preview();
     for index in 0..s.docs.len() {
@@ -629,9 +655,10 @@ pub(crate) fn save_tracked(s: &mut Session, dir: &Path) -> Result<usize> {
             continue;
         }
         let Some(document) = s.docs.get(index) else { continue };
-        // A background write of an older state must not land over this one.
+        // A background write of an older state this session queued must not land over this one,
+        // and no other session's write of the uid is queued until it is done.
         #[cfg(not(target_arch = "wasm32"))]
-        worker::cancel(dir, document.uid);
+        let _now = worker::write_now(dir, document.uid, s.recovery_owner.0).ok_or_else(|| still_being_written(dir))?;
         let entry = Snapshot::of(&access, dir, document);
         let written = write_snapshot(&entry, || false);
         // The primary is the recovery data; its metadata is optional. Track the primary before
@@ -980,6 +1007,9 @@ mod worker {
         /// A document saved, reverted or closed while its write was queued or running: the
         /// snapshot it is producing must not be published.
         cancelled: Mutex<BTreeSet<(PathBuf, u64)>>,
+        /// Documents a session is writing now on its own thread, with that session: no background
+        /// write of one is queued until it is done (see [`write_now`]).
+        writing_now: Mutex<BTreeMap<(PathBuf, u64), u64>>,
         /// Notified each time a write finishes and leaves `running`.
         idle: Condvar,
     }
@@ -1131,6 +1161,48 @@ mod worker {
             dirs
         }
 
+        /// Whether a session other than `owner` has a write of `dir`/`uid` queued or running that
+        /// is not cancelled, or queued to follow one.
+        fn queued_by_other(&self, dir: &Path, uid: u64, owner: u64) -> bool {
+            let running = self.running.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            self.other_in_flight(&running, dir, uid, owner)
+        }
+
+        /// [`Writer::queued_by_other`] with `running` held, counting writes now as well.
+        fn other_in_flight(&self, running: &BTreeMap<(PathBuf, u64), Queued>, dir: &Path, uid: u64, owner: u64) -> bool {
+            let canonical = key(dir, uid);
+            running
+                .iter()
+                .filter(|(k, q)| **k == canonical || (k.1 == uid && q.dir == dir))
+                .any(|(k, q)| (q.owner != owner && !self.cancelled(k)) || q.next.as_ref().is_some_and(|n| n.owner != owner))
+                || self.writing_now.lock().is_ok_and(|now| now.get(&canonical).is_some_and(|by| *by != owner))
+        }
+
+        /// Start a write now of `dir`/`uid` by session `owner`. Returns `None` while another
+        /// session's write of it is in flight. Otherwise cancels this session's writes of it (as
+        /// [`Writer::cancel`]) and records the write now under the returned key, all under one
+        /// hold of `running`.
+        fn write_now(&self, dir: &Path, uid: u64, owner: u64) -> Option<(PathBuf, u64)> {
+            let canonical = key(dir, uid);
+            let _publishing = super::PUBLISH.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut running = self.running.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if self.other_in_flight(&running, dir, uid, owner) {
+                return None;
+            }
+            let mut keys = Vec::new();
+            for (k, q) in running.iter_mut().filter(|(k, q)| **k == canonical || (k.1 == uid && q.dir == dir)) {
+                q.next = None;
+                keys.push(k.clone());
+            }
+            if let Ok(mut cancelled) = self.cancelled.lock() {
+                cancelled.extend(keys);
+            }
+            if let Ok(mut now) = self.writing_now.lock() {
+                now.insert(canonical.clone(), owner);
+            }
+            Some(canonical)
+        }
+
         /// `key` as in [`Writer::finish`].
         fn cancelled(&self, key: &(PathBuf, u64)) -> bool {
             self.cancelled.lock().is_ok_and(|cancelled| cancelled.contains(key))
@@ -1172,6 +1244,7 @@ mod worker {
                     undelivered: Mutex::new(Vec::new()),
                     running: Mutex::new(BTreeMap::new()),
                     cancelled: Mutex::new(BTreeSet::new()),
+                    writing_now: Mutex::new(BTreeMap::new()),
                     idle: Condvar::new(),
                 })
             })
@@ -1183,18 +1256,39 @@ mod worker {
         WRITER.get().and_then(Option::as_ref)
     }
 
-    /// Do not publish the snapshot being written for `dir`/`uid` (see [`Writer::cancel`]).
-    pub(super) fn cancel(dir: &Path, uid: u64) {
-        if let Some(w) = started() {
-            w.cancel(dir, uid, None);
-        }
-    }
-
-    /// [`cancel`] for the writes session `owner` queued.
+    /// Do not publish the snapshot session `owner` is having written for `dir`/`uid` (see
+    /// [`Writer::cancel`]).
     pub(super) fn cancel_owned(dir: &Path, uid: u64, owner: u64) {
         if let Some(w) = started() {
             w.cancel(dir, uid, Some(owner));
         }
+    }
+
+    /// A write now in progress; dropping it lets background writes of its document queue again.
+    pub(super) struct WriteNow(Option<(PathBuf, u64)>);
+
+    impl Drop for WriteNow {
+        fn drop(&mut self) {
+            if let (Some(key), Some(w)) = (self.0.take(), started())
+                && let Ok(mut now) = w.writing_now.lock()
+            {
+                now.remove(&key);
+            }
+        }
+    }
+
+    /// See [`Writer::write_now`]. `None` while another session's write of `dir`/`uid` is in
+    /// flight. Without a writer thread there are no background writes to wait for.
+    pub(super) fn write_now(dir: &Path, uid: u64, owner: u64) -> Option<WriteNow> {
+        match writer() {
+            Some(w) => w.write_now(dir, uid, owner).map(|key| WriteNow(Some(key))),
+            None => Some(WriteNow(None)),
+        }
+    }
+
+    /// See [`Writer::queued_by_other`].
+    pub(super) fn queued_by_other(dir: &Path, uid: u64, owner: u64) -> bool {
+        started().is_some_and(|w| w.queued_by_other(dir, uid, owner))
     }
 
     /// See [`Writer::pending_folders`].
@@ -1238,6 +1332,10 @@ mod worker {
         let w = writer()?;
         let mut running = w.running.lock().ok()?;
         let key = (entry.key.clone(), entry.uid);
+        // A session is writing this document now: this write waits for a later turn.
+        if w.writing_now.lock().is_ok_and(|now| now.contains_key(&key)) {
+            return Some(false);
+        }
         if let Some(q) = running.get_mut(&key) {
             // The write in flight was cancelled (the document was saved since), so it holds
             // nothing to recover: this one follows it, in place of any that was waiting.
