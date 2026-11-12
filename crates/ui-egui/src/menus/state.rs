@@ -176,6 +176,11 @@ pub fn menu_enabled(app: &DesignApp, id: &str) -> bool {
     if id.starts_with("fit.") {
         return enabled(app, "object.fit");
     }
+    // Em Space and En Space go in at an insertion point only; they do not replace selected text.
+    if matches!(id, "app.insertEmSpace" | "app.insertEnSpace") {
+        let caret = app.session.active().and_then(|d| d.selection.text).is_some_and(|t| t.is_caret());
+        return caret && enabled(app, "text.insert");
+    }
     // Go to Row runs on a named table from anywhere; the menu item needs the selection in a table.
     if id == "table.goToRow" {
         return enabled(app, "table.selectColumn");

@@ -272,7 +272,7 @@ pub enum ContourType {
     BoundingBox,
     /// Edges detected in the image. Composition follows the frame path.
     DetectEdges,
-    /// The image's alpha channel. Composition follows the frame path.
+    /// The image's alpha channel. Composition follows the outline of the image's visible pixels.
     AlphaChannel,
     /// A path saved in the image. Composition follows the frame path.
     PhotoshopPath,
@@ -284,7 +284,7 @@ pub enum ContourType {
 }
 
 /// Text Wrap panel settings.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct TextWrap {
     pub mode: WrapMode,
@@ -298,6 +298,35 @@ pub struct TextWrap {
     /// item transforms it with the path; other path edits keep it as it is.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<PathData>,
+    /// Contour Options › Include Inside Edges: an Alpha Channel contour also lets text into the
+    /// transparent holes it encloses (off: holes are blocked with the shape around them).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub inside_edges: bool,
+    /// Alpha Channel contour: pixels more opaque than this (0..254) count as the image.
+    #[serde(skip_serializing_if = "is_default_alpha_threshold")]
+    pub alpha_threshold: u8,
+}
+
+/// DesignCraft's default alpha threshold for Alpha Channel contour wraps.
+pub const DEFAULT_ALPHA_THRESHOLD: u8 = 25;
+
+fn is_default_alpha_threshold(t: &u8) -> bool {
+    *t == DEFAULT_ALPHA_THRESHOLD
+}
+
+impl Default for TextWrap {
+    fn default() -> Self {
+        TextWrap {
+            mode: WrapMode::default(),
+            offsets: [0.0; 4],
+            invert: false,
+            side: WrapSide::default(),
+            contour: ContourType::default(),
+            path: None,
+            inside_edges: false,
+            alpha_threshold: DEFAULT_ALPHA_THRESHOLD,
+        }
+    }
 }
 
 impl TextWrap {
