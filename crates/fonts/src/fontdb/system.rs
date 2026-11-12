@@ -328,6 +328,9 @@ impl FontDb {
         sys.chain_tried.clear();
         sys.coverage.clear();
         sys.coverage_ranges = 0;
+        drop(sys);
+        // Styles installed since their family was loaded can now be found (#2617).
+        self.styles_tried.lock().unwrap_or_else(PoisonError::into_inner).clear();
         count
     }
 
@@ -452,6 +455,38 @@ impl FontDb {
             p
         };
         // The whole family arrives at once (see `insert_faces`).
+        let mut faces = Vec::new();
+        for p in paths {
+            if let Some(data) = self.read_installed(&p) {
+                faces.extend(self.new_faces(data, FontSource::Installed(p)));
+            }
+        }
+        self.insert_faces(faces) > 0
+    }
+
+    /// Load the installed files that hold `style` of `family` (by its typographic or WWS names),
+    /// for a family loaded before that style was installed (#2617). Each family and style is
+    /// looked for once per scan of the font folders, so a style that isn't installed costs one
+    /// catalog search. Returns whether any face was added.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn load_cataloged_style(&self, family: &str, style: &str) -> bool {
+        let ns = norm(style);
+        let paths: Vec<std::path::PathBuf> = {
+            // Held while the catalog is read: a rescan clears it only after its catalog is in.
+            let mut tried = self.styles_tried.lock().unwrap_or_else(PoisonError::into_inner);
+            if !tried.insert((family.to_lowercase(), ns.clone())) {
+                return false;
+            }
+            let cat = self.read_catalog();
+            let named = |c: &CatalogEntry| {
+                (c.family.eq_ignore_ascii_case(family) && norm(&c.style) == ns)
+                    || c.wws.as_ref().is_some_and(|w| w.0.eq_ignore_ascii_case(family) && norm(&w.1) == ns)
+            };
+            let mut p: Vec<_> = cat.iter().filter(|c| named(c)).map(|c| c.path.clone()).collect();
+            p.sort();
+            p.dedup();
+            p
+        };
         let mut faces = Vec::new();
         for p in paths {
             if let Some(data) = self.read_installed(&p) {
