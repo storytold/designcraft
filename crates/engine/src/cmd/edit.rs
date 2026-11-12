@@ -111,6 +111,19 @@ pub fn copied_objects_text(s: &Session) -> String {
     if text.is_empty() { '\u{FFFC}'.to_string() } else { text }
 }
 
+/// Pixels a point [`copied_objects_png`]'s picture renders at: 300 ppi, sharp enough for a
+/// raster app's Paste (as InDesign itself rasterizes a copy for another app), scaled down only
+/// when that would be too large to render (`MAX_SIDE`/`MAX_PAGE_PIXELS`, below) — never cropped,
+/// so a huge selection still renders, just at a lower resolution.
+const COPY_PNG_SCALE: f64 = 300.0 / 72.0;
+
+/// The visible bounds of the copied items (spread 0's), or `None` with nothing copied or no
+/// visible bounds.
+fn copied_bounds(clip: &designcraft_doc::Document) -> Option<designcraft_geom::Rect> {
+    let items = clip.spreads.first().map(|sp| sp.items.as_slice()).unwrap_or_default();
+    items.iter().map(|it| it.visible_bounds()).reduce(|a, b| a.union(b)).filter(|b| b.width() > 0.0 && b.height() > 0.0)
+}
+
 /// A PNG picture of the copied objects, for the system clipboard (#2204): so pasting into another
 /// app (PhotoCraft, say) gets a usable picture instead of only the placeholder text above, which
 /// only this app's own Paste reads back as "the copied objects". Cropped to the union of the
@@ -119,19 +132,15 @@ pub fn copied_objects_text(s: &Session) -> String {
 /// facing pages can sit entirely on the page across from page 0 (so rendering just page 0's crop,
 /// as an earlier version of this function did, could show nothing at all, #2204 follow-up).
 /// `None` when there is nothing copied, it has no visible bounds, or the PNG encode fails.
-///
-/// Pixels a point the picture renders at: 300 ppi, sharp enough for a raster app's Paste (as
-/// InDesign itself rasterizes a copy for another app), scaled down only when that would be too
-/// large to render (`MAX_SIDE`, below) — never cropped, so a huge selection still renders, just
-/// at a lower resolution.
-const COPY_PNG_SCALE: f64 = 300.0 / 72.0;
-
 pub fn copied_objects_png(s: &Session) -> Option<Vec<u8>> {
     let clip = s.clipboard.as_ref()?;
-    let items = clip.spreads.first().map(|sp| sp.items.as_slice()).unwrap_or_default();
-    let bounds = items.iter().map(|it| it.visible_bounds()).reduce(|a, b| a.union(b)).filter(|b| b.width() > 0.0 && b.height() > 0.0)?;
+    let bounds = copied_bounds(clip)?;
     let longest = bounds.width().max(bounds.height()).max(1.0);
-    let scale = COPY_PNG_SCALE.min(f64::from(designcraft_render::MAX_SIDE) / longest);
+    // A very wide-or-tall selection could stay under MAX_SIDE on its own long axis yet still
+    // exceed MAX_PAGE_PIXELS once both axes are scaled: cap the scale by the pixel budget too, a
+    // touch under its exact square root so rounding the final w/h up never crosses it.
+    let budget = (designcraft_render::MAX_PAGE_PIXELS as f64 / (bounds.width().max(1.0) * bounds.height().max(1.0))).sqrt() * 0.999;
+    let scale = COPY_PNG_SCALE.min(f64::from(designcraft_render::MAX_SIDE) / longest).min(budget);
     let w = (bounds.width() * scale).round().max(1.0) as u32;
     let h = (bounds.height() * scale).round().max(1.0) as u32;
     if u64::from(w) * u64::from(h) > designcraft_render::MAX_PAGE_PIXELS {
@@ -145,6 +154,71 @@ pub fn copied_objects_png(s: &Session) -> Option<Vec<u8>> {
     let placed = [designcraft_render::Placed { spread: SpreadRef::Doc(0), xf: designcraft_geom::Affine::translate(designcraft_geom::Vec2::ZERO) }];
     let img = designcraft_render::Renderer::new().render(clip, &s.cache, &placed, (w, h), view, &opts);
     Some(img.to_png()).filter(|png| !png.is_empty())
+}
+
+/// A one-page PDF of the copied objects, cropped to their own visible bounds like
+/// [`copied_objects_png`]: a vector picture for another app's Paste, so pasting into PhotoCraft
+/// (say) can offer Smart Object, not only a flattened picture (#2204 follow-up). `None` for the
+/// same reasons as `copied_objects_png`, or if the PDF itself can't be built.
+pub fn copied_objects_pdf(s: &Session) -> Option<Vec<u8>> {
+    let clip = s.clipboard.as_ref()?;
+    let bounds = copied_bounds(clip)?;
+    let mut doc = (**clip).clone();
+    let shift = designcraft_geom::Affine::translate(-bounds.origin().to_vec2());
+    let sp = Arc::make_mut(doc.spreads.first_mut()?);
+    for it in &mut sp.items {
+        let it = Arc::make_mut(it);
+        it.xf = shift * it.xf;
+    }
+    let page = sp.pages.first_mut()?;
+    page.x = 0.0;
+    page.width = bounds.width();
+    page.height = bounds.height();
+    // Not a parent page's own content, which `clip_doc` leaves untouched on this one.
+    page.parent = None;
+    let opts = designcraft_pdf::PdfOptions { pages: Some(vec![0]), ..Default::default() };
+    let r = super::export::print_pdf(&doc, &s.cache, &opts, None).ok()?;
+    (!r.bytes.is_empty()).then_some(r.bytes)
+}
+
+#[cfg(test)]
+mod copied_objects_pdf_tests {
+    use super::*;
+
+    #[test]
+    fn crops_the_pdf_page_to_the_copied_item_s_own_bounds() {
+        let mut s = Session::new();
+        assert!(copied_objects_pdf(&s).is_none(), "nothing copied yet");
+        s.execute("file.new", &json!({})).unwrap();
+        let a = s.execute("frame.create", &json!({"rect": [10, 10, 60, 90]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("object.fill", &json!({"ids": [a], "swatch": "[Black]"})).unwrap();
+        s.execute("selection.set", &json!({"ids": [a]})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+        let pdf = copied_objects_pdf(&s).expect("a copied object makes a PDF");
+        assert!(pdf.starts_with(b"%PDF-"), "a real PDF, not something else");
+        let file = hayro_syntax::Pdf::new(pdf).expect("a valid PDF");
+        assert_eq!(file.pages().len(), 1);
+        let (w, h) = file.pages()[0].base_dimensions();
+        assert!((w - 50.0).abs() < 0.5 && (h - 80.0).abs() < 0.5, "the page is the item's own 50x80 bounds, not the whole document page: {w}x{h}");
+    }
+
+    /// On a facing-pages spread, the same bug class [`copied_objects_png`]'s own test above
+    /// guards against: the copied item sits outside the page `clip_doc` leaves at spread 0's
+    /// first page's own geometry.
+    #[test]
+    fn crops_the_pdf_page_even_when_the_item_sits_on_the_facing_page() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 4, "facingPages": true})).unwrap();
+        let w = s.doc().unwrap().doc.settings.page_width;
+        let a = s.execute("frame.create", &json!({"spread": 1, "rect": [w + 36.0, 36.0, w + 76.0, 76.0]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("object.fill", &json!({"ids": [a], "swatch": "[Black]"})).unwrap();
+        s.execute("selection.set", &json!({"ids": [a]})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+        let pdf = copied_objects_pdf(&s).expect("a selection on the facing page still makes a PDF");
+        let file = hayro_syntax::Pdf::new(pdf).expect("a valid PDF");
+        let (pw, ph) = file.pages()[0].base_dimensions();
+        assert!((pw - 40.0).abs() < 0.5 && (ph - 40.0).abs() < 0.5, "cropped to the item's own 40x40 bounds: {pw}x{ph}");
+    }
 }
 
 #[cfg(test)]
@@ -211,6 +285,28 @@ mod copied_objects_png_tests {
         let img = image::load_from_memory(&png).unwrap().to_rgba8();
         let px = img.get_pixel(expected / 2, expected / 2);
         assert!(px[3] > 200 && px[0] < 50, "the fill is visible, not a blank page-0 crop (#2204 follow-up)");
+    }
+
+    /// A large, roughly square selection stays under `MAX_SIDE` on its own at 300 ppi (its one
+    /// long axis), but both axes scaled together would exceed `MAX_PAGE_PIXELS`: capping the
+    /// scale by `MAX_SIDE` alone still rendered, at a size the final guard then refused outright
+    /// (`None`) instead of scaling further down to fit, unlike every smaller selection.
+    #[test]
+    fn a_large_square_selection_scales_down_to_fit_the_pixel_budget_instead_of_failing() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"width": 7000, "height": 7000})).unwrap();
+        let a = s.execute("frame.create", &json!({"rect": [0, 0, 6000, 6000]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("object.fill", &json!({"ids": [a], "swatch": "[Black]"})).unwrap();
+        s.execute("selection.set", &json!({"ids": [a]})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+        let png = copied_objects_png(&s).expect("a large selection still renders, at a lower resolution, not None");
+        // The PNG's own IHDR chunk (width then height, big-endian u32, at bytes 16 and 20): the
+        // `image` crate's convenience decoder refuses a picture this large outright (its own
+        // decompression-bomb guard), which the production code never goes through.
+        let w = u32::from_be_bytes(png[16..20].try_into().unwrap());
+        let h = u32::from_be_bytes(png[20..24].try_into().unwrap());
+        assert!(u64::from(w) * u64::from(h) <= designcraft_render::MAX_PAGE_PIXELS, "{w}x{h} exceeds the pixel budget");
+        assert!(w <= designcraft_render::MAX_SIDE && h <= designcraft_render::MAX_SIDE, "{w}x{h} exceeds MAX_SIDE");
     }
 }
 
