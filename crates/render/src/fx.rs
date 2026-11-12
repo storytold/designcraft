@@ -736,6 +736,16 @@ mod tests {
                             );
                         }
                     }
+                    // Inside the bevel and glow bands the effect still shows, faded with the object
+                    // where the feather reaches.
+                    let inside = px(&plain, threads, 110);
+                    for inner in [1, 2] {
+                        let with = px(&doc(image, feather, inner), threads, 110);
+                        assert!(
+                            diff(with, inside) > 0,
+                            "image {image} feather {feather} inner {inner} threads {threads}: {with:?} at 110, {inside:?} without the effect"
+                        );
+                    }
                 }
             }
         }
