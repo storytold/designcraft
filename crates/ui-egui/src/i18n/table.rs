@@ -1232,7 +1232,10 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
             "按比例适合内容",
         ],
     ),
-    ("Fit Content to Frame", ["Fit Content to Frame", "Ajuster le contenu au bloc", "Ajustar el contenido al marco", "Fit Content to Frame", "内容适合框架"]),
+    (
+        "Fit Content to Frame",
+        ["Fit Content to Frame", "Ajuster le contenu au bloc", "Ajustar el contenido al marco", "Fit Content to Frame", "内容适合框架"],
+    ),
     ("Fitting:", ["Fitting:", "Ajustement :", "Ajuste:", "Fitting:", "适合："]),
     (
         "Flattener preset",
