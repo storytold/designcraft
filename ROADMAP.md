@@ -388,6 +388,7 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 ## Progress log
 
+- **2026-11-12** · With the insertion point in footnote text, the table commands (Insert Row, Delete Column, Merge Cells, Table Options, Select Table, table styles) are disabled, as they are outside a table, instead of failing with "no table 18446744073709551615". A call that names a table still runs. No readiness percentage change.
 - **2026-11-12** · The status bar's preflight count and the Preflight panel take their issues from a check on a background worker, which checks the newest state of the document and shows the issues last found meanwhile. Moving or resizing a frame and typing no longer wait for a check of the whole document on every drag step and keystroke. No readiness percentage change.
 - **2026-11-04** · Striped strokes retain out-and-back cubic segments whose second control point is away from the coincident endpoints and first control point. A geometry regression checks the offset extent and both stripe bands. No readiness percentage change.
 - **2026-11-04** · Esperanto is a text language (Character › Language, `type.char {language: "Esperanto"}`, IDML `$ID/Esperanto`): tag `eo`, English-style quotes; not hyphenated yet (#1201). No readiness percentage change.

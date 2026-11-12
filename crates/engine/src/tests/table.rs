@@ -643,6 +643,51 @@ fn a_named_table_edit_keeps_a_footnote_caret() {
     check(&s);
 }
 
+/// A caret in footnote text is not in a table: the table commands that need one are disabled
+/// there, also when the caret's offset in the footnote falls on a table's paragraph in the main
+/// story, and a call that names a table still runs.
+#[test]
+fn table_commands_are_disabled_in_footnote_text() {
+    let in_table = ["table.insertRow", "table.deleteColumn", "table.merge", "table.options", "table.selectTable", "style.table.apply"];
+    let info = |s: &Session, id: &str| crate::cmd::find_command(id).unwrap().info(s);
+    for on_table in [false, true] {
+        let (mut s, sid, _) = session_with_frame();
+        let tid = if on_table {
+            s.execute("story.setText", &json!({"story": sid, "text": "Hello"})).unwrap();
+            s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": 0})).unwrap();
+            let tid = s.execute("table.insert", &json!({"rows": 2, "cols": 2})).unwrap()["table"].as_u64().unwrap();
+            let end = s.doc().unwrap().doc.story(designcraft_doc::StoryId(sid)).unwrap().text.len();
+            s.execute("text.select", &json!({"story": sid, "anchor": end, "focus": end})).unwrap();
+            s.execute("footnote.insert", &json!({})).unwrap();
+            tid
+        } else {
+            let tid = s.execute("table.insert", &json!({"rows": 2, "cols": 2})).unwrap()["table"].as_u64().unwrap();
+            s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": 0})).unwrap();
+            s.execute("footnote.insert", &json!({"text": "Note"})).unwrap();
+            tid
+        };
+        let before = s.doc().unwrap().selection.clone();
+        let caret = before.text.unwrap();
+        assert!(caret.cell.and_then(|c| c.footnote_id()).is_some(), "the caret is in the footnote");
+        let story = s.doc().unwrap().doc.story(designcraft_doc::StoryId(sid)).unwrap();
+        assert_eq!(story.table_at(caret.focus).is_some(), on_table, "focus {}", caret.focus);
+        for id in in_table {
+            let i = info(&s, id);
+            assert!(!i.enabled, "{id} {on_table}");
+            assert_eq!(i.disabled_reason.as_deref(), Some("place the insertion point in a table"), "{id} {on_table}");
+            assert!(matches!(s.execute(id, &json!({})), Err(crate::EngineError::Disabled(..))), "{id} {on_table}");
+        }
+        // A query that takes any selection and names no table is told where to put the caret.
+        let error = s.execute("table.get", &json!({})).unwrap_err().to_string();
+        assert!(error.contains("place the insertion point in a table"), "{on_table}: {error}");
+        assert_eq!(s.doc().unwrap().selection, before);
+        s.execute("table.insertRow", &json!({"table": tid})).unwrap();
+        assert_eq!(s.execute("table.get", &json!({"table": tid})).unwrap()["rows"].as_array().unwrap().len(), 3);
+        assert_eq!(s.doc().unwrap().selection, before);
+        check(&s);
+    }
+}
+
 /// With nothing selected, the table commands stay disabled for menus and for calls that name no
 /// table.
 #[test]
