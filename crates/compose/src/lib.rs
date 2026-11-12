@@ -1858,8 +1858,14 @@ fn position_line(input: PositionLineInput<'_, '_>) -> LinePosition {
         if cur.last_baseline.is_some() {
             baseline += cur.last_reference - reference;
         }
-        let grid = f.grid.filter(|&(_, inc)| {
-            inc > 0.0 && inc.is_finite() && (pp.grid_align == GridAlign::AllLines || (pp.grid_align == GridAlign::FirstLineOnly && line_no == 0))
+        // A step so small that the column holds more steps than an f64 can count is no grid: the
+        // line is placed as it is without one.
+        let countable = |g_start: f64, inc: f64| [baseline, col.y0, col.y1].iter().all(|y| ((y - g_start) / inc).is_finite());
+        let grid = f.grid.filter(|&(g_start, inc)| {
+            inc > 0.0
+                && inc.is_finite()
+                && countable(g_start, inc)
+                && (pp.grid_align == GridAlign::AllLines || (pp.grid_align == GridAlign::FirstLineOnly && line_no == 0))
         });
         if let Some((g_start, inc)) = grid {
             let n = pp.grid_gyoudori.min(grid::MAX_GYOUDORI);
@@ -6152,8 +6158,14 @@ fn vertical_justify(
                 let most = (space / inc + 1e-9).floor().min((room / unit + 1e-9).floor()).max(0.0);
                 // Bottom and Justify take the lowest grid line, Center the one nearest the middle.
                 let mut steps = if center { (space / 2.0 / inc).round().min(most) } else { most };
-                if steps > 0.0 && !fits(&shifts(steps * unit)) {
-                    steps -= 1.0;
+                // A shaped frame can narrow and widen again, so a lower step may not fit either: take
+                // the nearest step that fits, and leave the lines in place when none of the next
+                // `MAX_GRID_TRIES` does.
+                const MAX_GRID_TRIES: usize = 512;
+                let mut tries = 0;
+                while steps > 0.0 && !fits(&shifts(steps * unit)) {
+                    tries += 1;
+                    steps = if tries < MAX_GRID_TRIES { steps - 1.0 } else { 0.0 };
                 }
                 // With no step taken the lines stay put, even when Center's doubled step overflows.
                 shifts(if steps > 0.0 { steps * unit } else { 0.0 })

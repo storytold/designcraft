@@ -2799,6 +2799,25 @@ fn vertical_justification_keeps_grid_aligned_lines_on_the_grid() {
     let (_, first_only, _) = compose_with(Bottom, GridAlign::FirstLineOnly);
     assert!(first_only.iter().all(|&b| on_grid(b, grid)), "Bottom, first lines only: {first_only:?}");
 
+    // Justify with a paragraph that wraps: with all lines aligned the last line lands on the grid;
+    // with first lines only it is not a first line, so it goes down to the bottom inset.
+    let wrapped = "The first line of this paragraph sits on the baseline grid, and the lines after it keep the leading they have.";
+    let justify_wrapped = |align: GridAlign| {
+        let (lines, _) = grid_doc(wrapped, ParaAttrs { grid_align: Some(align), ..Default::default() }, |d, sid| {
+            let spec = frame_specs(d, sid).remove(0);
+            d.item_mut(spec.id).unwrap().text_frame_mut().unwrap().options.vertical_justification = Justify;
+        });
+        lines.iter().map(|l| l.baseline).collect::<Vec<_>>()
+    };
+    let all = justify_wrapped(GridAlign::AllLines);
+    assert!(all.len() >= 2, "the paragraph wraps: {all:?}");
+    let last = all[all.len() - 1];
+    assert!(on_grid(last, grid) && last <= area.y1 + 1e-6 && last > area.y1 - inc, "Justify, all lines: last baseline {last}");
+    let first_lines = justify_wrapped(GridAlign::FirstLineOnly);
+    assert!(first_lines.len() >= 2, "the paragraph wraps: {first_lines:?}");
+    let last = first_lines[first_lines.len() - 1];
+    assert!((last - area.y1).abs() < 1e-6 && !on_grid(last, grid), "Justify, first lines only: last baseline {last}, inset at {}", area.y1);
+
     // Without grid alignment the last baseline goes down to the bottom inset.
     let (_, free, _) = compose_with(Bottom, GridAlign::None);
     assert!((free[2] - area.y1).abs() < 1e-6, "Bottom without the grid: {free:?}");
@@ -2839,6 +2858,57 @@ fn vertical_justification_with_an_extreme_grid_increment_stays_finite() {
     // A step far larger than the room: the line does not move.
     let (_, b) = compose_with(Center, 1e308);
     assert!((b - natural).abs() < 1e-6, "Center with a huge increment: baseline {b}, natural {natural}");
+
+    // A grid that starts away from the line, with a step too small to count the distance: the line
+    // is placed as it is without a grid.
+    for mode in [Top, Bottom, Center, Justify] {
+        let mut area = Rect::ZERO;
+        let (lines, _) = grid_doc("One", ParaAttrs { grid_align: Some(GridAlign::AllLines), ..Default::default() }, |d, sid| {
+            let spec = frame_specs(d, sid).remove(0);
+            area = spec.area;
+            let opts = &mut d.item_mut(spec.id).unwrap().text_frame_mut().unwrap().options;
+            opts.baseline_grid = Some(designcraft_doc::FrameBaselineGrid::new(start - 5.0, 1e-310));
+            opts.vertical_justification = mode;
+        });
+        let b = lines[0].baseline;
+        assert!(b.is_finite() && b >= natural - 1e-6 && b <= area.y1 + 1e-6, "{mode:?}, grid away from the line: baseline {b}, text area {area:?}");
+        if mode == Top {
+            assert!((b - natural).abs() < 1e-6, "Top, grid away from the line: baseline {b}, natural {natural}");
+        }
+    }
+}
+
+/// In a shaped frame that narrows and widens again, Bottom with Align to Baseline Grid takes the
+/// lowest grid step at which the line's slot fits the outline, even when the grid steps next to
+/// the lowest room all fall in the narrow part.
+#[test]
+fn vertical_justification_on_the_grid_skips_steps_that_leave_a_shaped_frame() {
+    use designcraft_doc::GridAlign;
+    use designcraft_doc::VerticalJustification::Bottom;
+    use designcraft_geom::{Anchor, PathData, Point, SubPath};
+    // Full width down to 100 pt, a waist at 150 pt, full width again from 200 to 230 pt, then a
+    // point at 300 pt.
+    let pts = [(0.0, 0.0), (300.0, 0.0), (300.0, 100.0), (200.0, 150.0), (300.0, 200.0), (300.0, 230.0), (150.0, 300.0)];
+    let pts: Vec<(f64, f64)> = pts.iter().copied().chain([(0.0, 230.0), (0.0, 200.0), (100.0, 150.0), (0.0, 100.0)]).collect();
+    let para = ParaAttrs { grid_align: Some(GridAlign::AllLines), ..Default::default() };
+    let (mut d, sid, fid) = doc_with("Typography", Rect::new(0.0, 0.0, 300.0, 300.0), para);
+    let it = d.item_mut(fid).unwrap();
+    it.path = PathData::single(SubPath { anchors: pts.iter().map(|&(x, y)| Anchor::corner(Point::new(x, y))).collect(), closed: true });
+    let o = &mut it.text_frame_mut().unwrap().options;
+    o.inset = [0.0; 4];
+    o.baseline_grid = Some(designcraft_doc::FrameBaselineGrid::new(0.0, 40.0));
+    let grid = frame_specs(&d, sid)[0].grid.unwrap();
+    let top = all_lines(&compose_story(&d, sid, &ComposeOptions::default()))[0].baseline;
+    assert!(on_grid(top, grid), "Top: baseline {top} on the grid {grid:?}");
+    d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.vertical_justification = Bottom;
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let l = all_lines(&cs)[0];
+    let (b, band_top) = (l.baseline, l.baseline - l.ascent);
+    assert!(on_grid(b, grid), "Bottom: baseline {b} on the grid {grid:?}");
+    let upper = b <= 100.0 + 1e-6;
+    let lower = band_top >= 200.0 - 1e-6 && b <= 230.0 + 1e-6;
+    assert!(upper || lower, "Bottom: the line's band {band_top}..{b} reaches into the narrow part");
+    assert!(b > top, "Bottom moves the line down a grid step that fits: {b}, Top at {top}");
 }
 
 /// A corner radius leaves a Cap Height first line where it sits in a rectangular frame, with Top
