@@ -5495,24 +5495,38 @@ fn vertical_justify(ft: &mut FrameText, f: &FrameSpec, spanned: bool, notes: &de
     let ncols = if spanned { 1 } else { ft.columns.len().max(1) as u32 };
     for c in 0..ncols {
         let idx: Vec<usize> = ft.lines.iter().enumerate().filter(|(_, l)| spanned || l.column == c).map(|(i, _)| i).collect();
-        let (Some(&a), Some(_)) = (idx.first(), idx.last()) else { continue };
-        let bottom = idx.iter().map(|&i| ft.lines[i].baseline + ft.lines[i].descent).fold(f64::NEG_INFINITY, f64::max);
-        let bottom = ft.tables.iter().filter(|t| spanned || t.column == c).map(|t| t.rect.y1).fold(bottom, f64::max);
+        let (Some(_), Some(_)) = (idx.first(), idx.last()) else { continue };
+        // Typographic bottom (descenders must stay inside after the shift).
+        let metric_bottom = idx.iter().map(|&i| ft.lines[i].baseline + ft.lines[i].descent).fold(f64::NEG_INFINITY, f64::max);
+        let metric_bottom = ft.tables.iter().filter(|t| spanned || t.column == c).map(|t| t.rect.y1).fold(metric_bottom, f64::max);
+        // Visual fit bottom: last baseline (and table bottoms). Counting full font descent here
+        // pushed Cap Height / figure lines high (#1999, #1771); table cells already fit by baseline.
+        let fit_bottom = idx.iter().map(|&i| ft.lines[i].baseline).fold(f64::NEG_INFINITY, f64::max);
+        let fit_bottom = ft.tables.iter().filter(|t| spanned || t.column == c).map(|t| t.rect.y1).fold(fit_bottom, f64::max);
         let limit = ft
             .notes
             .iter()
             .filter(|n| spanned || notes.span_columns || n.column == c)
             .map(|n| n.rect.y0 - notes.space_before)
             .fold(f.area.y1, f64::min);
-        let space = limit - bottom;
-        if space <= 0.0 {
+        let metric_space = limit - metric_bottom;
+        if metric_space <= 0.0 {
             continue;
         }
-        let _ = a;
         let before: Vec<f64> = idx.iter().map(|&i| ft.lines[i].baseline).collect();
         match f.opts.vertical_justification {
-            VerticalJustification::Center => idx.iter().for_each(|&i| ft.lines[i].baseline += space / 2.0),
-            VerticalJustification::Bottom => idx.iter().for_each(|&i| ft.lines[i].baseline += space),
+            // Cap Height centres by last baseline (figures have little ink below it; #1999).
+            // Other first-baseline modes keep equal metric slack above and below.
+            VerticalJustification::Center => {
+                let shift = if f.opts.first_baseline == FirstBaseline::CapHeight {
+                    let visual = (limit - fit_bottom).max(0.0) / 2.0;
+                    visual.min(metric_space)
+                } else {
+                    metric_space / 2.0
+                };
+                idx.iter().for_each(|&i| ft.lines[i].baseline += shift);
+            }
+            VerticalJustification::Bottom => idx.iter().for_each(|&i| ft.lines[i].baseline += metric_space),
             VerticalJustification::Justify => {
                 // Segments of one line (beside an object) share a row and move together.
                 let rows: Vec<usize> = idx
@@ -5537,9 +5551,13 @@ fn vertical_justify(ft: &mut FrameText, f: &FrameSpec, spanned: bool, notes: &de
                         }
                     }
                     let gaps = starts.iter().filter(|s| **s).count();
-                    let limit = f.opts.vj_paragraph_spacing_limit.max(0.0);
-                    let para = if gaps > 0 && limit > 0.0 { (space / gaps as f64).min(limit) } else { 0.0 };
-                    let per = (space - para * gaps as f64) / n as f64;
+                    let para_limit = f.opts.vj_paragraph_spacing_limit.max(0.0);
+                    let para = if gaps > 0 && para_limit > 0.0 {
+                        (metric_space / gaps as f64).min(para_limit)
+                    } else {
+                        0.0
+                    };
+                    let per = (metric_space - para * gaps as f64) / n as f64;
                     let mut shift = vec![0.0; n + 1];
                     for k in 1..=n {
                         shift[k] = shift[k - 1] + per + if starts[k] { para } else { 0.0 };
