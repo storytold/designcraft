@@ -6,6 +6,9 @@ impl DesignApp {
         if let Some(r) = menus::run_ui(self, id, &params) {
             return r;
         }
+        if matches!(id, "edit.undo" | "edit.redo") {
+            dialogs::end_preview_before_history(self);
+        }
         // Only user-initiated runs touch the system clipboard, never the control channel's.
         let system_clipboard = !self.in_control && !self.control_input_frame.load(std::sync::atomic::Ordering::Relaxed);
         let mut params = if system_clipboard {
