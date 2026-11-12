@@ -611,7 +611,7 @@ fn czech_counts_use_the_plural_form_for_the_number() {
 #[test]
 fn hebrew_catalog_is_selectable_rtl_and_preserves_english_keys() {
     let mut seen = HashSet::new();
-    assert_eq!(he::TABLE.len(), 1032, "initial Hebrew source-linked table changed");
+    assert_eq!(he::TABLE.len(), 1217, "initial Hebrew source-linked table changed");
     for (source, translated) in he::TABLE {
         assert!(seen.insert(*source), "duplicate Hebrew source key: {source}");
         assert!(!translated.trim().is_empty(), "empty Hebrew: {source}");
@@ -653,6 +653,16 @@ fn hebrew_catalog_is_selectable_rtl_and_preserves_english_keys() {
     assert_eq!(tr("he", "Tagged PDF"), "PDF מתויג");
     assert_eq!(tr("he", "Insert Footnote"), "הוספת הערת שוליים");
     assert_eq!(tr("he", "No errors"), "לא נמצאו שגיאות");
+    assert_eq!(tr("he", "Hyphenate"), "חלוקת מילים באמצעות מקפים");
+    assert_eq!(tr("he", "Smart Text Reflow"), "זרימת טקסט חכמה");
+    assert_eq!(tr("he", "Baseline Grid"), "רשת קווי בסיס");
+    assert_eq!(tr("he", "Frame Fitting"), "התאמת מסגרת");
+    assert_eq!(tr("he", "Smart Guides"), "קווי עזר חכמים");
+    assert_eq!(tr("he", "Apply Parent to Pages…"), "החלת עמוד אב על עמודים…");
+    assert_eq!(tr("he", "Convert Text to Table"), "המרת טקסט לטבלה");
+    assert_eq!(tr("he", "Margins and Columns"), "שוליים ועמודות");
+    assert_eq!(tr("he", "This swatch can't be edited."), "לא ניתן לערוך את דוגמית הצבע הזו.");
+    assert_eq!(tr("he", "Layer Options for \"{name}\"…"), "אפשרויות השכבה ״{name}״…");
     assert_eq!(tr("he", "No text selected"), "לא נבחר טקסט");
     assert_eq!(tr("he", "Delete Hyperlink"), "מחיקת היפר־קישור");
     assert_eq!(tr("he", "New Book…"), "ספר חדש…");
