@@ -39,18 +39,35 @@ impl DesignApp {
                         self.object_clip_text = None;
                         Some(t.to_string())
                     }
-                    None if !self.native_menu => {
-                        self.object_clip_text = Some(designcraft_engine::cmd::copied_objects_text(&self.session));
-                        self.object_clip_text.clone()
-                    }
+                    // The native menu bar writes the system clipboard through
+                    // `clipboard_set_object_copy` below instead of egui's own `copy_text` (so
+                    // the placeholder text and the picture land together, never one clobbering
+                    // the other): `object_clip_text` still needs this copy's own placeholder,
+                    // not whatever text happened to be on the clipboard already (a stale copy
+                    // from another app, say), or another app's Paste would read that instead of
+                    // this copy's picture (#2204 follow-up).
                     None => {
-                        self.object_clip_text = self.services.clipboard_text.as_mut().and_then(|f| f());
-                        None
+                        self.object_clip_text = Some(designcraft_engine::cmd::copied_objects_text(&self.session));
+                        (!self.native_menu).then(|| self.object_clip_text.clone()).flatten()
                     }
                 };
                 if let (Some(t), Some(ctx)) = (text, &self.egui_ctx) {
                     ctx.copy_text(t);
                     ctx.request_repaint();
+                }
+                // Also give another app (PhotoCraft, say) a picture to paste, not just the
+                // placeholder text above (#2204). `clipboard_set_object_copy` writes both
+                // together, so the picture never replaces the placeholder text this app's own
+                // Paste still needs.
+                let wrote = v.get("text").is_none()
+                    && self.services.clipboard_set_object_copy.is_some()
+                    && match (self.services.clipboard_set_object_copy.as_mut(), designcraft_engine::cmd::copied_objects_png(&self.session)) {
+                        (Some(set), Some(png)) => set(&self.object_clip_text.clone().unwrap_or_default(), &png).is_ok(),
+                        _ => false,
+                    };
+                // Nothing written natively: the clipboard's current text stands for this copy, as before.
+                if !wrote && self.native_menu && v.get("text").is_none() {
+                    self.object_clip_text = self.services.clipboard_text.as_mut().and_then(|f| f());
                 }
             }
             Ok(_) => {}

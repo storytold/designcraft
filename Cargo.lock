@@ -1418,6 +1418,7 @@ dependencies = [
  "hayro-cmap",
  "hayro-interpret",
  "hayro-syntax",
+ "image",
  "indd",
  "kurbo",
  "log",

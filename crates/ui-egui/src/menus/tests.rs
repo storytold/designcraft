@@ -1910,10 +1910,19 @@ fn paste_with_no_insertion_point_makes_a_text_frame_from_other_apps_text() {
     assert_eq!(document_items(&app), (3, 1));
     assert_eq!(selected_text(&app), None, "the copied rectangle, not a text frame");
 
-    // A native menu: Paste reads the system clipboard.
+    // A native menu: Paste reads the system clipboard, which Copy's own native write keeps in
+    // step with (so a later Paste recognizes its own copy's placeholder, not foreign text).
     let clip = std::rc::Rc::new(std::cell::RefCell::new(Some("Menu text".to_string())));
     let read = clip.clone();
-    let services = crate::Services { clipboard_text: Some(Box::new(move || read.borrow().clone())), ..Default::default() };
+    let write = clip.clone();
+    let services = crate::Services {
+        clipboard_text: Some(Box::new(move || read.borrow().clone())),
+        clipboard_set_object_copy: Some(Box::new(move |text: &str, _png: &[u8]| {
+            *write.borrow_mut() = Some(text.to_string());
+            Ok(())
+        })),
+        ..Default::default()
+    };
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), services);
     app.native_menu = true;
     app.session.execute("file.new", &json!({})).unwrap();

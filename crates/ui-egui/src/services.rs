@@ -10,6 +10,10 @@ pub type OpenAsyncFn = Box<dyn FnMut(ImportRequest)>;
 pub type DownloadFn = Box<dyn FnMut(&str, &[u8]) -> Result<(), String>>;
 
 pub type ClipboardFn = Box<dyn FnMut() -> Option<String>>;
+/// Writes an object copy's placeholder text and a PNG picture of it to the system clipboard
+/// together, as one atomic write where the platform needs it (so the picture doesn't replace the
+/// placeholder text this app's own Paste still needs, #2204).
+pub type ClipboardObjectCopyFn = Box<dyn FnMut(&str, &[u8]) -> Result<(), String>>;
 
 /// Keeps the window's frame as the app needs it; called once per frame, before it is laid out.
 pub type WindowFrameFn = Box<dyn FnMut()>;
@@ -40,6 +44,10 @@ pub struct Services {
     /// The system clipboard's text, for Paste chosen from a menu (egui only delivers it with the
     /// paste keys, which a native menu bar takes first).
     pub clipboard_text: Option<ClipboardFn>,
+    /// [`ClipboardObjectCopyFn`]: `None` where the platform has no atomic multi-type write, which
+    /// leaves an object copy's picture off the system clipboard (so only this app's own Paste
+    /// reads it back) rather than risk losing the placeholder text.
+    pub clipboard_set_object_copy: Option<ClipboardObjectCopyFn>,
     /// Keeps the undecorated window borderless, so the content and the pointer stay aligned
     /// (Windows custom title bar, #1295). `None` when the window is decorated or the platform
     /// needs no fixing.
