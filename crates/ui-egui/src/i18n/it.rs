@@ -1,6 +1,8 @@
 //! Original Italian interface translations, written from the English source
 //! using ordinary Italian desktop-publishing vocabulary.
 pub(super) const TABLE: &[(&str, &str)] = &[
+    ("Clear Effects", "Cancella effetti"),
+    ("Clear All Transparency", "Cancella tutta la trasparenza"),
     ("Fewer Options", "Meno opzioni"),
     ("Tab Character", "Carattere di tabulazione"),
     ("Right Indent Tab", "Tabulazione rientro destro"),

@@ -2,6 +2,12 @@
 //! Swedish software vocabulary; no other catalog and no proprietary localisation was used.
 //! AI-drafted with Claude Code; spot-checked by a native Swedish speaker, not every string reviewed.
 pub(super) const TABLE: &[(&str, &str)] = &[
+    ("Clear all effects and make object opaque", "Rensa alla effekter och gör objektet ogenomskinligt"),
+    ("Remove effects from the selected target", "Ta bort effekter från det markerade målet"),
+    ("Fill:", "Fyllning:"),
+    ("Stroke:", "Kontur:"),
+    ("Clear Effects", "Rensa effekter"),
+    ("Clear All Transparency", "Rensa all transparens"),
     ("File", "Arkiv"),
     ("Edit", "Redigera"),
     ("Layout", "Layout"),

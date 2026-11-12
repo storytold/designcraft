@@ -2,6 +2,8 @@
 //! Common phrases are adapted from the MIT OR Apache-2.0 ArtCraft sibling catalogs
 //! (VectorCraft, PhotoCraft, WordCraft and DeckCraft); see ASSETS.md for pinned sources.
 pub(super) const TABLE: &[(&str, &str)] = &[
+    ("Clear Effects", "Очистити ефекти"),
+    ("Clear All Transparency", "Очистити всю прозорість"),
     ("Fewer Options", "Менше параметрів"),
     ("Tab Character", "Символ табуляції"),
     ("Right Indent Tab", "Табуляція правого відступу"),

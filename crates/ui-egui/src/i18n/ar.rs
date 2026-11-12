@@ -1,5 +1,7 @@
 //! Original Arabic interface translations, stored in logical Unicode order.
 pub(super) const TABLE: &[(&str, &str)] = &[
+    ("Clear Effects", "مسح التأثيرات"),
+    ("Clear All Transparency", "مسح كل الشفافية"),
     ("Fewer Options", "خيارات أقل"),
     ("Tab Character", "محرف جدولة"),
     ("File", "ملف"),

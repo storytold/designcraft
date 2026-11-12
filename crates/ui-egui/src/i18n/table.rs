@@ -1,5 +1,10 @@
 /// English → [German, French, Spanish, Japanese, Simplified Chinese].
 pub(super) const TABLE: &[(&str, [&str; 5])] = &[
+    ("Clear Effects", ["Effekte löschen", "Effacer les effets", "Borrar efectos", "効果をクリア", "清除效果"]),
+    (
+        "Clear All Transparency",
+        ["Alle Transparenzen löschen", "Effacer toute la transparence", "Borrar toda la transparencia", "すべての透明をクリア", "清除全部透明度"],
+    ),
     ("Keep In Frame", ["Im Rahmen behalten", "Conserver dans le bloc", "Mantener en el marco", "フレーム内に保持", "保持在框架内"]),
     ("Next Style:", ["Nächstes Format:", "Style suivant :", "Estilo siguiente:", "次のスタイル :", "下一样式："]),
     ("[Same style]", ["[Gleiches Format]", "[Même style]", "[Mismo estilo]", "[同じスタイル]", "[相同样式]"]),

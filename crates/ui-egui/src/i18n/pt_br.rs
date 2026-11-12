@@ -1,6 +1,8 @@
 //! Original Brazilian Portuguese interface translations, written from the English source
 //! using ordinary Brazilian Portuguese computing vocabulary.
 pub(super) const TABLE: &[(&str, &str)] = &[
+    ("Clear Effects", "Limpar efeitos"),
+    ("Clear All Transparency", "Limpar toda a transparência"),
     ("Fewer Options", "Menos opções"),
     ("Tab Character", "Caractere de tabulação"),
     ("Right Indent Tab", "Tabulação de recuo à direita"),

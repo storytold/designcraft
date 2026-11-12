@@ -3,6 +3,8 @@
 //! Brazilian Portuguese, Italian and Ukrainian tables has a row here; the German column of the shared
 //! table is carried over and stays the fallback for keys added there after this table.
 pub(super) const TABLE: &[(&str, &str)] = &[
+    ("Clear Effects", "Effekte löschen"),
+    ("Clear All Transparency", "Alle Transparenzen löschen"),
     ("Fewer Options", "Weniger Optionen"),
     ("Tab Character", "Tabulatorzeichen"),
     ("File", "Datei"),

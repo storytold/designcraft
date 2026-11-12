@@ -4,6 +4,8 @@
 //! Portuguese, Japanese, Italian and Ukrainian tables has a row here, plus a few labels that only
 //! the code or the command table use.
 pub(super) const TABLE: &[(&str, &str)] = &[
+    ("Clear Effects", "ეფექტების გასუფთავება"),
+    ("Clear All Transparency", "მთელი გამჭვირვალობის გასუფთავება"),
     ("Fewer Options", "ნაკლები პარამეტრი"),
     ("Tab Character", "ტაბულაციის სიმბოლო"),
     ("File", "ფაილი"),

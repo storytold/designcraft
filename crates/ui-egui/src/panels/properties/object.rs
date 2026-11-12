@@ -500,10 +500,77 @@ pub(super) fn appearance_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) 
         if icon_toggle(ui, "frame-dashed", false, crate::i18n::tr(&app.ui.language, "Frame Fitting")).clicked() {
             show_panel(app, "textWrap");
         }
-        if icon_toggle(ui, "fx", i.shadow, crate::i18n::tr(&app.ui.language, "Effects: Drop Shadow")).clicked() {
-            let _ = app.run("object.dropShadow", json!({"on": !i.shadow}));
+        effects_button(app, ui);
+    });
+}
+
+/// The effects applied to the selection's first object, as Effects dialog pages, in the
+/// dialog's order (for the link beside the button); and, over every selected object, whether
+/// any has an effect (Clear Effects) and whether any has transparency other than plain (Clear
+/// All Transparency).
+pub(super) fn applied_effects(app: &DesignApp) -> (Vec<&'static str>, bool, bool) {
+    let Some(st) = app.session.active() else { return (Vec::new(), false, false) };
+    let items: Vec<&designcraft_doc::Item> = st.selection.items.iter().filter_map(|id| st.doc.item(*id)).collect();
+    let pages = items.first().map(|it| crate::effects_dialog::applied_pages(&it.effects)).unwrap_or_default();
+    let any_effect = items.iter().any(|it| !crate::effects_dialog::applied_pages(&it.effects).is_empty());
+    let transparent = any_effect || items.iter().any(|it| it.opacity < 1.0 || it.blend != designcraft_color::BlendMode::Normal);
+    (pages, any_effect, transparent)
+}
+
+/// Properties › Appearance › fx, as InDesign's: a menu of the effects (each opens the Effects
+/// dialog on its page), Clear Effects, Clear All Transparency and Global Light…; beside it, the
+/// first effect applied, a link to it in the dialog.
+fn effects_button(app: &mut DesignApp, ui: &mut Ui) {
+    let lang = app.ui.language.clone();
+    let (applied, any_effect, transparent) = applied_effects(app);
+    let fx = icon_toggle(ui, "fx", !applied.is_empty(), crate::i18n::tr(&lang, "Effects"));
+    let mut page = None;
+    let mut clear = None;
+    let mut global_light = false;
+    egui::Popup::menu(&fx).show(|ui| {
+        for (p, label) in crate::effects_dialog::PAGES {
+            if ui.button(crate::rtl::widget(ui, format!("{}…", crate::i18n::tr(&lang, label)))).clicked() {
+                page = Some(p);
+                ui.close();
+            }
+            // InDesign keeps Transparency apart from the effects.
+            if p == "transparency" {
+                ui.separator();
+            }
+        }
+        ui.separator();
+        if ui.add_enabled(any_effect, egui::Button::new(crate::rtl::widget(ui, crate::i18n::tr(&lang, "Clear Effects")))).clicked() {
+            clear = Some(false);
+            ui.close();
+        }
+        if ui.add_enabled(transparent, egui::Button::new(crate::rtl::widget(ui, crate::i18n::tr(&lang, "Clear All Transparency")))).clicked() {
+            clear = Some(true);
+            ui.close();
+        }
+        ui.separator();
+        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&lang, "Global Light…"))).clicked() {
+            global_light = true;
+            ui.close();
         }
     });
+    if let Some(&first) = applied.first()
+        && let Some((_, label)) = crate::effects_dialog::PAGES.iter().find(|(p, _)| *p == first)
+    {
+        let text = crate::i18n::tr(&lang, label);
+        let w = crate::rtl::plain(ui.ctx(), text, egui::FontId::proportional(widgets::LABEL_SIZE), Tokens::get(ui.ctx()).text).size().x + 4.0;
+        if link_label(ui, text, w).clicked() {
+            page = Some(first);
+        }
+    }
+    if let Some(p) = page {
+        crate::effects_dialog::open(app, p);
+    }
+    if let Some(opaque) = clear {
+        let _ = app.run("object.clearEffects", if opaque { json!({"opaque": true}) } else { json!({}) });
+    }
+    if global_light {
+        crate::menus::activate(app, "object.globalLight", &Value::Null);
+    }
 }
 
 /// The Color Picker for a Fill or Stroke chip (a double-click on it, as in InDesign), with the

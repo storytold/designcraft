@@ -3,6 +3,8 @@
 //! Portuguese tables has a row here; the menu titles and panel names that were already Japanese in the
 //! shared table are carried over unchanged.
 pub(super) const TABLE: &[(&str, &str)] = &[
+    ("Clear Effects", "効果をクリア"),
+    ("Clear All Transparency", "すべての透明をクリア"),
     ("Fewer Options", "オプションを減らす"),
     ("Tab Character", "タブ文字"),
     ("File", "ファイル"),
