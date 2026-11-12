@@ -479,6 +479,7 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ("Gutter:", ["Steg:", "Gouttière :", "Medianil:", "間隔:", "栏间距："]),
     ("Fit Guides to:", ["Hilfslinien einpassen in:", "Ajuster les repères à :", "Ajustar guías a:", "ガイドの適用先:", "参考线适合："]),
     ("Top:", ["Oben:", "Haut :", "Superior:", "天:", "上："]),
+    ("Inset:", ["Versatz:", "Marge intérieure :", "Margen interior:", "フレーム内マージン :", "内边距："]),
     ("Bottom:", ["Unten:", "Bas :", "Inferior:", "地:", "下："]),
     ("Inside:", ["Innen:", "Intérieur :", "Interior:", "ノド:", "内："]),
     ("Outside:", ["Außen:", "Extérieur :", "Exterior:", "小口:", "外："]),
@@ -1253,6 +1254,7 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ("Generate QR Code", ["Generate QR Code", "Générer un code QR", "Generate QR Code", "Generate QR Code", "生成二维码"]),
     ("Go To", ["Go To", "Atteindre", "Go To", "Go To", "转到"]),
     ("Go to Page", ["Go to Page", "Atteindre la page", "Go to Page", "Go to Page", "转到页面"]),
+    ("Go to Row", ["Go to Row", "Atteindre la ligne", "Go to Row", "Go to Row", "转到行"]),
     ("Gutter", ["Gutter", "Gouttière", "Gutter", "Gutter", "栏间距"]),
     ("Header Rows", ["Header Rows", "Lignes d'en-tête", "Header Rows", "Header Rows", "表头行"]),
     ("Height", ["Height", "Hauteur", "Height", "Height", "高度"]),
@@ -2254,6 +2256,7 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
         ],
     ),
     ("Go to Page…", ["Go to Page…", "Atteindre la page…", "Go to Page…", "Go to Page…", "转到页面…"]),
+    ("Go to Row…", ["Go to Row…", "Atteindre la ligne…", "Go to Row…", "Go to Row…", "转到行…"]),
     ("Gradient Feather", ["Gradient Feather", "Contour progressif dégradé", "Gradient Feather", "Gradient Feather", "渐变羽化"]),
     ("Gridify", ["Gridify", "Mettre en grille", "Gridify", "Gridify", "网格化"]),
     ("Group Transparency", ["Group Transparency", "Transparence du groupe", "Group Transparency", "Group Transparency", "编组透明度"]),
@@ -3480,6 +3483,11 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
             "在音节之间（不仅在空格处）",
         ],
     ),
+    ("Auto Leading:", ["Automatischer Zeilenabstand:", "Interlignage automatique :", "Interlineado automático:", "自動行送り:", "自动行距："]),
+    (
+        "Single Word Justification:",
+        ["Ausrichtung einzelner Wörter:", "Justification des mots isolés :", "Justificación de palabra única:", "単語のみの行の揃え:", "单字齐行："],
+    ),
     ("Binding:", ["Binding:", "Reliure :", "Binding:", "Binding:", "装订方向："]),
     ("Ruby:", ["Ruby:", "Ruby :", "Ruby:", "Ruby:", "旁注："]),
     (
@@ -3939,6 +3947,7 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ),
     ("Greek", ["Greek", "Grec", "Greek", "Greek", "希腊语"]),
     ("Hebrew", ["Hebrew", "Hébreu", "Hebrew", "Hebrew", "希伯来语"]),
+    ("Esperanto", ["Esperanto", "Espéranto", "Esperanto", "エスペラント語", "世界语"]),
     ("Hindi", ["Hindi", "Hindi", "Hindi", "Hindi", "印地语"]),
     ("Hungarian", ["Hungarian", "Hongrois", "Hungarian", "Hungarian", "匈牙利语"]),
     (
@@ -4147,6 +4156,17 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ("Set", ["Set", "Jeu", "Set", "Set", "样式集"]),
     ("unused", ["unused", "inutilisé", "unused", "unused", "未使用"]),
     ("⚠ Missing", ["⚠ Missing", "⚠ Manquant", "⚠ Missing", "⚠ Missing", "⚠ 缺失"]),
+    ("Checking", ["Wird geprüft", "Vérification", "Comprobando", "確認中", "正在检查"]),
+    (
+        "Link status is unavailable.",
+        [
+            "Der Verknüpfungsstatus ist nicht verfügbar.",
+            "L'état des liens n'est pas disponible.",
+            "El estado de los vínculos no está disponible.",
+            "リンクの状態を取得できません。",
+            "链接状态不可用。",
+        ],
+    ),
     ("▲ Modified", ["▲ Modified", "▲ Modifié", "▲ Modified", "▲ Modified", "▲ 已修改"]),
     ("(Text Color)", ["(Text Color)", "(Couleur du texte)", "(Text Color)", "(Text Color)", "（文本颜色）"]),
     (

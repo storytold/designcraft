@@ -856,9 +856,15 @@ fn dropping_an_ase_file_loads_its_swatches() {
 /// A document with one empty frame at (36, 36)-(136, 136): the app, the frame's id and a screen point inside it
 /// and one outside it.
 fn app_with_drop_frame() -> (DesignApp, u64, egui::Pos2, egui::Pos2) {
+    app_with_drop_item("frame.create", json!({"rect": [36, 36, 136, 136]}))
+}
+
+/// A document with the one object `command` creates from `params`: the app, the object's id, the
+/// screen point of page point (80, 80) and that of (300, 300), off the object.
+fn app_with_drop_item(command: &str, params: serde_json::Value) -> (DesignApp, u64, egui::Pos2, egui::Pos2) {
     let mut app = DesignApp::new(Session::new(), Services::default());
     app.run("file.new", json!({})).unwrap();
-    let frame = app.run("frame.create", json!({"rect": [36, 36, 136, 136]})).unwrap()["id"].as_u64().unwrap();
+    let frame = app.run(command, params).unwrap()["id"].as_u64().unwrap();
     app.canvas_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0)));
     let _ = app.view_mut();
     let (view, rect) = (app.view().unwrap(), app.canvas_rect.unwrap());
@@ -927,6 +933,65 @@ fn a_graphic_dropped_on_a_frame_fills_it() {
     let d = &app.session.doc().unwrap().doc;
     assert_eq!(d.spreads[0].items.len(), 2, "the text has a new frame");
     assert!(matches!(d.item(designcraft_doc::ItemId(frame)).unwrap().content, designcraft_doc::Content::Graphic(_)));
+}
+
+/// A file dragged in from the Finder brings no pointer events (winit sends none during a drag on
+/// macOS): the drop asks the system where the pointer is, so one dropped on a frame fills it.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_file_dropped_without_pointer_events_fills_the_frame_under_the_system_pointer() {
+    // At any UI scale: the system's pointer is in unscaled points, egui's are divided by the scale.
+    for zoom in [1.0f32, 2.0] {
+        let (mut app, frame, inside, _) = app_with_drop_frame();
+        // The window's content starts at (300, 200) in egui's points.
+        let window = egui::vec2(300.0, 200.0);
+        app.services.pointer = Some(Box::new(move || Some(((inside + window).to_vec2() * zoom).to_pos2())));
+        let path = dropped_png("drop-system-pointer");
+        app.pending_drops.push(crate::PendingDrop { path: path.to_string_lossy().into_owned(), pointer: None, generation: app.input_generation() });
+        let ctx = egui::Context::default();
+        ctx.set_zoom_factor(zoom);
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO + window, egui::vec2(1400.0, 900.0));
+        let mut raw = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, rect.size())), ..Default::default() };
+        raw.viewports.insert(egui::ViewportId::ROOT, egui::ViewportInfo { inner_rect: Some(rect), ..Default::default() });
+        ctx.run_ui(raw, |ui| app.take_pending_drops(ui.ctx())).textures_delta.clear();
+        let _ = std::fs::remove_file(&path);
+        assert!(app.pending_drops.is_empty());
+        let d = &app.session.doc().unwrap().doc;
+        assert_eq!(d.spreads[0].items.len(), 1, "no new object at {zoom}");
+        let designcraft_doc::Content::Graphic(g) = &d.item(designcraft_doc::ItemId(frame)).unwrap().content else {
+            panic!("the frame under the pointer is filled at {zoom}")
+        };
+        assert!(d.assets[&g.asset].name.contains("drop-system-pointer"));
+    }
+}
+
+/// A line encloses no area, so a graphic dropped on it gets a frame of its own at the drop point
+/// and the line stays a line, as with the place cursor (#2290). A second graphic of the same drop
+/// gets a frame of its own too, instead of replacing the first in the frame the first one got.
+#[test]
+fn graphics_dropped_on_a_line_leave_the_line_alone() {
+    let (mut app, line, on_line, _) = app_with_drop_item("line.create", json!({"a": [36, 80], "b": [136, 80]}));
+    let id = designcraft_doc::ItemId(line);
+    let before = serde_json::to_value(app.session.doc().unwrap().doc.item(id).unwrap()).unwrap();
+    assert!(canvas::drop_frame(&app, Some(on_line)).is_none(), "a line is no frame");
+    let (first, second) = (dropped_png("drop-on-line-first"), dropped_png("drop-on-line-second"));
+    let mut frame_free = true;
+    let a = app.place_dropped(&first.to_string_lossy(), Some(on_line), &mut frame_free);
+    assert!(!frame_free, "the first graphic is under the pointer now");
+    let b = app.place_dropped(&second.to_string_lossy(), Some(on_line), &mut frame_free);
+    let _ = (std::fs::remove_file(&first), std::fs::remove_file(&second));
+    let a = designcraft_doc::ItemId(a.unwrap()["id"].as_u64().unwrap());
+    let b = designcraft_doc::ItemId(b.unwrap()["id"].as_u64().unwrap());
+    assert!(a != id && b != id && a != b, "each graphic has a new frame: {a:?} {b:?}");
+    let d = &app.session.doc().unwrap().doc;
+    assert_eq!(d.spreads[0].items.len(), 3);
+    assert_eq!(serde_json::to_value(d.item(id).unwrap()).unwrap(), before, "the line is unchanged");
+    for (placed, name) in [(a, "drop-on-line-first"), (b, "drop-on-line-second")] {
+        let it = d.item(placed).unwrap();
+        let designcraft_doc::Content::Graphic(g) = &it.content else { panic!("{name} is in its frame") };
+        assert!(d.assets[&g.asset].name.contains(name), "{name}");
+        assert!(it.path.encloses_area() && it.bounds().height() > 1.0, "a real frame, not a zero-height one: {:?}", it.bounds());
+    }
 }
 
 #[test]
