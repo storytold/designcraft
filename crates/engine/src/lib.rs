@@ -146,7 +146,9 @@ fn next_revision() -> u64 {
 
 impl DocState {
     /// Initialize saved/live document identity, revision, epoch, active default layer, empty history with limit 1,000 and the initial path.
-    pub fn new(doc: Document, path: Option<String>) -> Self {
+    pub fn new(mut doc: Document, path: Option<String>) -> Self {
+        // Alpha Channel contour outlines aren't saved: trace them for the document as opened.
+        crate::cmd::alpha_wrap::sync(&mut doc);
         let active_layer = doc.working_layer();
         let doc = Arc::new(doc);
         let revision = next_revision();
@@ -392,6 +394,10 @@ pub struct Session {
     active: Option<usize>,
     /// An undoable command is running: the commands it runs are part of its undo step.
     in_undo_step: bool,
+    /// Scripts running one inside another, and the steps the outermost may still run
+    /// ([`script::MAX_SCRIPT_DEPTH`], [`script::MAX_SCRIPT_STEPS`]).
+    pub(crate) script_depth: usize,
+    pub(crate) script_steps: usize,
     pub prefs: Prefs,
     pub cache: Arc<Cache>,
     pub(crate) tool: Box<dyn designcraft_tools::Tool>,
@@ -461,6 +467,8 @@ impl Session {
             docs: vec![],
             active: None,
             in_undo_step: false,
+            script_depth: 0,
+            script_steps: 0,
             prefs: Prefs::default(),
             cache: Arc::new(Cache::new()),
             tool: designcraft_tools::create("selection"),
@@ -674,9 +682,22 @@ impl Session {
         Ok(r)
     }
 
-    /// Fails with `Disabled` unless the command is enabled or names objects it can act on.
+    /// Fails with `Disabled` unless the command is enabled or names objects or a table it can act on.
     fn check_enabled(&self, spec: &CommandSpec, id: &str, params: &Value) -> Result<()> {
         if let Err(e) = (spec.enabled)(self) {
+            // A table command that takes `story` and `table` acts on the table the call names, so
+            // the selection doesn't matter: with nothing selected, the caret outside a table, or
+            // selected rows the command can't act on, `{"table": 3}` still runs.
+            if cmd::has_doc(self).is_ok()
+                && let Some(table) = cmd::named_table(spec, params, id)?
+            {
+                let story = cmd::table_story(params, id)?;
+                let st = self.doc()?;
+                if !st.doc.stories.iter().any(|(sid, x)| story.is_none_or(|n| sid.0 == n) && x.tables.contains_key(&table)) {
+                    return Err(EngineError::Disabled(id.into(), format!("no table {table}")));
+                }
+                return Ok(());
+            }
             // A command that takes `ids` acts on the objects the call names, so the selection
             // doesn't matter: with a text caret, nothing selected, or a selection the command
             // can't act on, `{"ids": [5]}` still runs.
@@ -811,6 +832,7 @@ impl Session {
         let r = f(&mut doc, &mut sel)?;
         crate::cmd::sync_placeholders(&mut doc);
         crate::cmd::flex::sync(&mut doc);
+        crate::cmd::alpha_wrap::sync(&mut doc);
         // The generated endnote story first: it replaces its text, anchored frames pasted into it
         // included.
         doc.sync_endnote_story();
