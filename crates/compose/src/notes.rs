@@ -77,6 +77,18 @@ pub(crate) struct NoteColumn<'a> {
     pub(crate) frame: &'a FrameSpec,
 }
 
+/// The page, spread or section a reference on absolute page `page` counts in (none when numbering
+/// never restarts, or when the frame is on no page).
+fn restart_key(doc: &Document, page: Option<usize>) -> Option<usize> {
+    let p = page?;
+    match doc.footnote_options.restart {
+        NoteRestart::Never => None,
+        NoteRestart::Page => Some(p),
+        NoteRestart::Spread => doc.page_loc(p).map(|l| l.0),
+        NoteRestart::Section => Some(doc.section_of(p).map_or(0, |s| s.start)),
+    }
+}
+
 /// Height of footnotes stacked baseline to baseline, from the top of the footnote area to the
 /// last footnote's descent.
 fn stack_height<'a>(notes: impl IntoIterator<Item = &'a NoteMetrics>, space_between: f64) -> f64 {
@@ -91,6 +103,14 @@ fn stack_height<'a>(notes: impl IntoIterator<Item = &'a NoteMetrics>, space_betw
         descent = m.descent;
     }
     h.map_or(0.0, |h| h + descent)
+}
+
+/// The number a story's next footnote reference takes, and the restart unit it counts in.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NoteNumber {
+    pub num: u32,
+    /// The page, spread or section the number counts in (none when numbering never restarts).
+    pub key: Option<usize>,
 }
 
 pub(crate) struct Notes {
@@ -113,20 +133,50 @@ pub(crate) struct Notes {
 }
 
 impl Notes {
-    pub fn new(doc: &Document, story: &Story) -> Notes {
+    /// The story's notes. `start` is where numbering begins: a table cell continues the
+    /// numbering of the story holding the table, so its notes take their place in the story's
+    /// one sequence; anything else starts from the document's numbering for this story.
+    pub fn continuing(doc: &Document, story: &Story, start: Option<NoteNumber>) -> Notes {
         let refs: Vec<usize> = if story.notes.is_empty() { Vec::new() } else { story.text.match_indices(FOOTNOTE_REF).map(|(i, _)| i).collect() };
-        let start = if refs.is_empty() { 1 } else { doc.footnote_start(story.id) };
+        let start = match start {
+            Some(n) => n,
+            None => {
+                let has_notes = !refs.is_empty() || (0..story.paras.len()).any(|pi| story.para_table(pi).is_some());
+                NoteNumber { num: if has_notes { doc.footnote_start(story.id) } else { 1 }, key: None }
+            }
+        };
         Notes {
-            numbers: vec![start; refs.len()],
+            numbers: vec![start.num; refs.len()],
             refs,
-            num: start,
-            key: None,
+            num: start.num,
+            key: start.key,
             placed: Vec::new(),
             cache: HashMap::new(),
             notes: story.notes.clone(),
             span: doc.footnote_options.span_columns,
             floor: HashMap::new(),
         }
+    }
+
+    /// Numbering after the story's last reference, for the next cell or continuation to carry on.
+    pub fn next_number(&self) -> NoteNumber {
+        NoteNumber { num: self.num, key: self.key }
+    }
+
+    /// Where the numbering of a table cell's notes begins: the host story's next number, or a
+    /// fresh count when the cell is on a different page, spread or section and numbering restarts.
+    pub fn cell_start(&self, doc: &Document, page: Option<usize>) -> NoteNumber {
+        let o = &doc.footnote_options;
+        match restart_key(doc, page) {
+            Some(key) if self.key != Some(key) => NoteNumber { num: o.start_at, key: Some(key) },
+            _ => NoteNumber { num: self.num, key: self.key },
+        }
+    }
+
+    /// Carry on numbering from `at` (the host story continues after its table's cells).
+    pub fn resume(&mut self, at: NoteNumber) {
+        self.num = at.num;
+        self.key = at.key;
     }
 
     /// Whether a note placed in (fi, col) shares the footnote area of column (`fi`, `ci`).
@@ -147,12 +197,7 @@ impl Notes {
     /// Number the references in a paragraph (shaped on `page`) and hand their labels to the shaper.
     pub fn number_refs(&mut self, doc: &Document, prange: Range<usize>, page: Option<usize>, sub: &mut SubstCtx) {
         let o = &doc.footnote_options;
-        let key = page.and_then(|p| match o.restart {
-            NoteRestart::Never => None,
-            NoteRestart::Page => Some(p),
-            NoteRestart::Spread => doc.page_loc(p).map(|l| l.0),
-            NoteRestart::Section => Some(doc.section_of(p).map_or(0, |s| s.start)),
-        });
+        let key = restart_key(doc, page);
         let a = self.refs.partition_point(|&b| b < prange.start);
         let b = self.refs.partition_point(|&b| b < prange.end);
         for k in a..b {
@@ -229,6 +274,7 @@ impl Notes {
             label: Some(key.1.clone()),
             xrefs: opts.xrefs.clone(),
             placed: Vec::new(),
+            notes_start: None,
         };
         let cs = crate::compose(doc, &note.text, std::slice::from_ref(&spec), &nopts);
         let lines = cs.frames.first().map(|ft| ft.lines.as_slice()).unwrap_or_default();

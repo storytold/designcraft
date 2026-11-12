@@ -49,7 +49,7 @@ use designcraft_geom::{Affine, Point, Rect};
 use crate::breaker::{Break, Spacing};
 pub use crate::cache::{Cache, ShownOn};
 use crate::notes::{NoteColumn, Notes};
-pub use crate::notes::{find_note, hit_note, hit_note_with, note_caret};
+pub use crate::notes::{NoteNumber, find_note, hit_note, hit_note_with, note_caret};
 pub use crate::outline::FrameOutline;
 use crate::parabox::ParaBox;
 pub use crate::placed::Placement;
@@ -342,6 +342,9 @@ pub struct ComposedStory {
     pub overset_at: Option<usize>,
     pub styles: Vec<RunStyle>,
     pub text_len: usize,
+    /// Numbering after this story and its nested table cells, for the next cell to continue.
+    /// Set after composition even when only nested cells contain footnotes.
+    pub notes_after: Option<NoteNumber>,
 }
 
 impl ComposedStory {
@@ -1044,6 +1047,9 @@ pub struct ComposeOptions {
     /// Where the story's anchored frames sit on their spreads; an anchored frame not listed is
     /// composed where it is stored, on no page.
     pub placed: Vec<(ItemId, Placement)>,
+    /// Where the story's footnote numbering starts, when it continues a host story's sequence
+    /// (a table cell). None starts from the document's numbering for this story.
+    pub notes_start: Option<NoteNumber>,
 }
 
 /// Nesting depth past which wrap obstacles inside groups are not collected.
@@ -3234,7 +3240,7 @@ fn compose_run(
     let mut restores = 0usize;
     let mut pi = 0;
     let var_story = vars::has_vars(story);
-    let mut notes = Notes::new(doc, story);
+    let mut notes = Notes::continuing(doc, story, opts.notes_start);
     let mut note_snaps: Vec<(u32, Option<usize>, usize)> = Vec::with_capacity(np);
     let mut var_cache: std::collections::HashMap<(Option<usize>, bool), std::sync::Arc<Vec<String>>> = Default::default();
     // Column balancing above spanning paragraphs: settled and trial bottoms by band, the search
@@ -3791,6 +3797,7 @@ fn finish_composition(input: FinishInput<'_>) -> ComposedStory {
         }
     }
     out.styles = styles_tab;
+    out.notes_after = Some(notes.next_number());
     mark_keep_violations(doc, story, out);
     std::mem::take(out)
 }

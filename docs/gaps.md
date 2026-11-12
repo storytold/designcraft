@@ -164,6 +164,10 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
 - **Missing:** anchored objects in cells not drawn (#163); Table ▸ Table Options and Cell Options
   submenus as InDesign lays them out, Diagonal Lines, Edit Header/Footer; general reliability
   (#20).
+- **Have:** table-cell footnotes continue the host story's numbering in logical reading order,
+  including RTL and nested tables (#2612). Notes still sit inside their cells (#2611 is separate).
+- **Limit:** page/spread/section restarts use the table's starting page for every cell when a
+  table breaks across pages; numbering per placed row fragment remains open.
 - **Estimate:** 25–40 h.
 
 ### 13. Hyphenation and spelling languages (T, L)
