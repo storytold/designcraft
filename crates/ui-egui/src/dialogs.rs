@@ -1099,9 +1099,9 @@ fn seed_text_frame_options(app: &DesignApp, d: &mut Dialog) {
     }
     d.fields.insert("_shaped".into(), json!(shaped));
     if let Some(targets) = typing_frame_ids(app) {
-        d.fields.entry("_targets".into()).or_insert(targets);
+        d.fields.entry("_targets").or_insert(targets);
         if let Some(epoch) = app.session.active().map(|doc| doc.identity_epoch) {
-            d.fields.entry("_targetsDoc".into()).or_insert(json!(epoch));
+            d.fields.entry("_targetsDoc").or_insert(json!(epoch));
         }
     }
     if let Value::Object(m) = &shown {
