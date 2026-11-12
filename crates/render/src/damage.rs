@@ -11,6 +11,8 @@ use std::sync::Arc;
 use designcraft_doc::{Document, Item, ItemId, SpreadRef, Story, StoryId};
 use designcraft_geom::Rect;
 
+use crate::fx::max_scale;
+
 /// Changed regions in spread coordinates, or `None` when the whole view must be repainted.
 pub fn damage(old: &Document, new: &Document) -> Option<Vec<(SpreadRef, Rect)>> {
     damage_with(old, new, None)
@@ -167,21 +169,16 @@ fn item_area(it: &Item) -> Option<Rect> {
     if !ok {
         return None;
     }
-    // The stroke is drawn through the item's transform. The item's own drop shadow and outer glow
-    // reach `fx::outset` past what it paints; its inner effects and feathers stay inside the shape.
-    let stroke = it.stroke.extent().max(0.0) * max_scale(it.xf)?;
-    let pad = stroke + 2.0 + if it.is_text_frame() { 24.0 } else { 0.0 } + crate::fx::outset(it);
+    // The stroke and the effects' spread are drawn through the item's transform. The item's own
+    // drop shadow and outer glow reach `fx::outset_scaled` past what it paints; its inner effects
+    // and feathers stay inside the shape.
+    let scale = max_scale(it.xf)?;
+    let stroke = it.stroke.extent().max(0.0) * scale;
+    let pad = stroke + 2.0 + if it.is_text_frame() { 24.0 } else { 0.0 } + crate::fx::outset_scaled(it, scale);
+    if !pad.is_finite() {
+        return None;
+    }
     Some(painted_bounds(it)?.inflate(pad, pad))
-}
-
-/// The largest factor `m` stretches a length by (its linear part's largest singular value), or
-/// None when that is not finite.
-fn max_scale(m: designcraft_geom::Affine) -> Option<f64> {
-    let [a, b, c, d, _, _] = m.as_coeffs();
-    let s = a * a + b * b + c * c + d * d;
-    let det = a * d - b * c;
-    let v = ((s + (s * s - 4.0 * det * det).max(0.0).sqrt()) / 2.0).sqrt();
-    v.is_finite().then_some(v)
 }
 
 /// An item's bounds, grown to its text: text is composed in the box around the frame's path in
@@ -427,6 +424,23 @@ mod tests {
             let changed = changed_pixels_in_damage(&old, &d);
             assert!(changed.iter().any(|p| !Rect::new(98.0, 98.0, 312.0, 242.0).contains(*p)), "glow {glow}: the effect paints outside the object");
         }
+        // A hardened glow on a scaled object: its growth is stroked through the transform, so it
+        // reaches three times as far on the spread as the glow's size says.
+        let mut d = Document::new(&NewDocument { pages: 1, ..Default::default() });
+        let lid = d.default_layer();
+        let id = ItemId(d.alloc());
+        let mut it = Item::new(id, lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(50.0, 50.0, 90.0, 90.0)));
+        it.xf = designcraft_geom::Affine::scale(3.0);
+        it.fill = designcraft_doc::Fill::swatch(designcraft_color::swatch::BLACK);
+        let g = &mut it.effects.outer_glow;
+        (g.on, g.color, g.opacity, g.size, g.spread) = (true, designcraft_color::swatch::BLACK.into(), 1.0, 20.0, 100.0);
+        d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+        let old = d.clone();
+        let it = d.item_mut(id).unwrap();
+        it.xf = designcraft_geom::Affine::translate((60.0, 40.0)) * it.xf;
+        // The square covers 150..270 before the move; its glow reaches 60 pt past that.
+        let changed = changed_pixels_in_damage(&old, &d);
+        assert!(changed.iter().any(|p| p.x < 110.0), "the hard glow grows with the object's scale");
         // An effect on an object inside a group is drawn through the group's transform: unbounded.
         let mut d = Document::new(&NewDocument { pages: 1, ..Default::default() });
         let lid = d.default_layer();
