@@ -1277,3 +1277,23 @@ fn transform_flips_and_rotates_from_properties() {
     // The angle and scale fields are there.
     assert!(h.query_by(|n| n.role() == egui::accesskit::Role::TextInput && n.value().as_deref() == Some("90°")).is_some());
 }
+
+/// With the Type tool, the Text Frame section shows the frame Text Frame Options change: the frame
+/// the caret is drawn in, not the caret's stored frame.
+#[test]
+fn text_frame_section_shows_the_frame_that_shows_the_caret() {
+    use designcraft_doc::{ItemId, Selection, StoryId, TextSel};
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let text = (0..40).map(|i| format!("Line {i} of the threaded story.")).collect::<Vec<_>>().join(" ");
+    let a = app.run("frame.create", json!({"rect": [36, 36, 300, 120], "content": "text", "text": text})).unwrap();
+    let b = app.run("frame.create", json!({"rect": [36, 200, 300, 700], "content": "text", "text": "", "caret": false})).unwrap();
+    let (a, b, sid) = (a["id"].as_u64().unwrap(), b["id"].as_u64().unwrap(), a["story"].as_u64().unwrap());
+    app.run("text.thread", json!({"from": a, "to": b})).unwrap();
+    app.run("object.textFrameOptions", json!({"ids": [b], "columns": 3})).unwrap();
+    // The end of the story is drawn in the second frame; the caret's stored frame is the first.
+    app.session.doc_mut().unwrap().selection =
+        Selection::text(TextSel { story: StoryId(sid), anchor: text.len(), focus: text.len(), frame: Some(ItemId(a)), cell: None });
+    let shown = super::text::text_frame_target(&app).map(|(id, o)| (id, o.columns));
+    assert_eq!(shown, Some((ItemId(b), 3)));
+}

@@ -2592,9 +2592,16 @@ fn has_selection_or_text(s: &Session) -> std::result::Result<(), String> {
 fn text_frame_options(s: &mut Session, p: &Value) -> Result<Value> {
     const ID: &str = "object.textFrameOptions";
     let st = s.doc()?;
-    // A call that names its objects acts on those; an empty `ids` names nothing.
-    let named = p.get("ids").is_some() || p.get("id").is_some();
-    let ids = if named { targets(s, p)? } else { text_frame_options_frames(s) };
+    // A call that names its objects acts on those; an empty `ids` names nothing. `ids`, when
+    // given, wins over `id`, and a value that is not an object id is an error.
+    let ids = match (p.get("ids"), p.get("id")) {
+        (Some(v), _) => v
+            .as_array()
+            .and_then(|a| a.iter().map(|x| x.as_u64().map(ItemId)).collect::<Option<Vec<_>>>())
+            .ok_or_else(|| bad(ID, format!("ids must be a list of object ids, not {v}")))?,
+        (None, Some(v)) => vec![v.as_u64().map(ItemId).ok_or_else(|| bad(ID, format!("id must be an object id, not {v}")))?],
+        (None, None) => text_frame_options_frames(s),
+    };
     // With a text caret the command runs before named objects are checked.
     if let Some(gone) = ids.iter().find(|i| st.doc.item(**i).is_none()) {
         return Err(bad(ID, format!("no object with id {}", gone.0)));
@@ -5071,6 +5078,25 @@ mod type_tool_frame_options_tests {
         // An id that is not in the document is refused too.
         let e = s.execute("object.textFrameOptions", &json!({"ids": [99999, b.0], "columns": 3})).unwrap_err().to_string();
         assert!(e.contains("no object with id 99999"), "{e}");
+        assert!(std::sync::Arc::ptr_eq(&before, &s.doc().unwrap().doc), "nothing changed");
+        assert_eq!((options(&s, a).columns, options(&s, b).columns), (1, 1));
+    }
+
+    /// An `ids` that is not a list of object ids is refused, not read as the selected frame or the
+    /// caret's frame.
+    #[test]
+    fn malformed_ids_are_an_error() {
+        let mut s = Session::new();
+        let (a, b, sid) = two_frame_thread(&mut s);
+        s.execute("selection.set", &json!({"ids": [b.0]})).unwrap();
+        let before = s.doc().unwrap().doc.clone();
+        for p in [json!({"ids": "bad", "columns": 2}), json!({"ids": [b.0, "x"], "columns": 2}), json!({"ids": null, "columns": 2})] {
+            let e = s.execute("object.textFrameOptions", &p).unwrap_err().to_string();
+            assert!(e.contains("ids must be a list of object ids"), "{p}: {e}");
+        }
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 2})).unwrap();
+        let e = s.execute("object.textFrameOptions", &json!({"ids": "bad", "columns": 2})).unwrap_err().to_string();
+        assert!(e.contains("ids must be a list of object ids"), "with a caret: {e}");
         assert!(std::sync::Arc::ptr_eq(&before, &s.doc().unwrap().doc), "nothing changed");
         assert_eq!((options(&s, a).columns, options(&s, b).columns), (1, 1));
     }
