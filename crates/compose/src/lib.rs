@@ -406,10 +406,6 @@ impl Region<'_> {
     fn fills(self, winding: i32) -> bool {
         if self.even_odd { winding % 2 != 0 } else { winding != 0 }
     }
-
-    fn edges(self) -> usize {
-        self.rings.iter().map(Vec::len).sum()
-    }
 }
 
 /// Points a contour outline may have; a larger outline wraps around its bounding box.
@@ -545,17 +541,54 @@ fn intersect_spans(a: &[(f64, f64)], b: &[(f64, f64)]) -> Vec<(f64, f64)> {
 /// one shape that lies inside the others. The spans are the middle slice of all the shapes and
 /// the parts of each shape's edges in the band that lie inside the others, so a part of the
 /// outline outside a clip blocks nothing, even where it shares x positions with the clip in the
-/// same band. None when that takes more than [`MAX_CLIPPED_WORK`] edge visits.
+/// same band. Only the edges that reach the band are visited. None when that takes more than
+/// [`MAX_CLIPPED_WORK`] edge visits.
 fn clipped_band_spans(shapes: &[Region], y0: f64, y1: f64) -> Option<Vec<(f64, f64)>> {
     let middle = y0 * 0.5 + y1 * 0.5;
     let mut slices = shapes.iter().map(|s| merge_spans(middle_spans(*s, middle)));
     let first = slices.next()?;
     let mut spans = slices.fold(first, |a, b| intersect_spans(&a, &b));
+    let banded: Vec<BandEdges> = shapes.iter().map(|s| BandEdges::of(*s, y0, y1)).collect();
     let mut budget = MAX_CLIPPED_WORK;
-    for k in 0..shapes.len() {
-        edges_inside(shapes, k, y0, y1, &mut budget, &mut spans)?;
+    for k in 0..banded.len() {
+        edges_inside(&banded, k, y0, y1, &mut budget, &mut spans)?;
     }
     Some(merge_spans(spans))
+}
+
+/// The edges of a shape that reach a line band, with a margin above and below. Every point
+/// [`segment_inside`] tests lies within the margin, and an edge that doesn't reach a point's y
+/// neither crosses the ray from it nor passes within a hair of it, so these edges give the same
+/// inside and on-edge answers as the whole shape for those points.
+struct BandEdges {
+    edges: Vec<(Point, Point)>,
+    even_odd: bool,
+}
+
+impl BandEdges {
+    /// Margin added above and below the band; well above the side step in [`segment_inside`].
+    const MARGIN: f64 = 1e-3;
+
+    fn of(shape: Region, y0: f64, y1: f64) -> BandEdges {
+        let (lo, hi) = (y0 - Self::MARGIN, y1 + Self::MARGIN);
+        let mut edges = Vec::new();
+        for ring in shape.rings {
+            let Some(&last) = ring.last() else { continue };
+            let mut a = last;
+            for &b in ring {
+                if a.y.max(b.y) >= lo && a.y.min(b.y) <= hi {
+                    edges.push((a, b));
+                }
+                a = b;
+            }
+        }
+        BandEdges { edges, even_odd: shape.even_odd }
+    }
+
+    /// Is a point with this winding number filled?
+    fn fills(&self, winding: i32) -> bool {
+        if self.even_odd { winding % 2 != 0 } else { winding != 0 }
+    }
 }
 
 /// Takes `n` edge visits from `budget`; None when it doesn't hold that many.
@@ -567,25 +600,19 @@ fn spend(budget: &mut usize, n: usize) -> Option<()> {
 /// Pushes to `out` the x-ranges of the parts of the edges of `shapes[k]` within the band `y0..y1`
 /// that bound the part of the plane inside all of `shapes` ([`segment_inside`]). None when
 /// `budget` runs out.
-fn edges_inside(shapes: &[Region], k: usize, y0: f64, y1: f64, budget: &mut usize, out: &mut Vec<(f64, f64)>) -> Option<()> {
-    let n = shapes.iter().map(|o| o.edges()).sum::<usize>().max(1);
-    let rings = shapes.get(k)?.rings;
-    for ring in rings {
-        let Some(&last) = ring.last() else { continue };
-        let mut a = last;
-        for &b in ring {
-            let dy = b.y - a.y;
-            if a.y.max(b.y) >= y0 && a.y.min(b.y) <= y1 {
-                let (t0, t1) = if dy.abs() < 1e-12 {
-                    (0.0, 1.0)
-                } else {
-                    let (u, v) = ((y0 - a.y) / dy, (y1 - a.y) / dy);
-                    (u.min(v).clamp(0.0, 1.0), u.max(v).clamp(0.0, 1.0))
-                };
-                let (p, q) = (a + (b - a) * t0, a + (b - a) * t1);
-                segment_inside(p, q, shapes, k, n, budget, out)?;
-            }
-            a = b;
+fn edges_inside(shapes: &[BandEdges], k: usize, y0: f64, y1: f64, budget: &mut usize, out: &mut Vec<(f64, f64)>) -> Option<()> {
+    let n = shapes.iter().map(|o| o.edges.len()).sum::<usize>().max(1);
+    for &(a, b) in &shapes.get(k)?.edges {
+        let dy = b.y - a.y;
+        if a.y.max(b.y) >= y0 && a.y.min(b.y) <= y1 {
+            let (t0, t1) = if dy.abs() < 1e-12 {
+                (0.0, 1.0)
+            } else {
+                let (u, v) = ((y0 - a.y) / dy, (y1 - a.y) / dy);
+                (u.min(v).clamp(0.0, 1.0), u.max(v).clamp(0.0, 1.0))
+            };
+            let (p, q) = (a + (b - a) * t0, a + (b - a) * t1);
+            segment_inside(p, q, shapes, k, n, budget, out)?;
         }
     }
     Some(())
@@ -597,14 +624,14 @@ fn edges_inside(shapes: &[Region], k: usize, y0: f64, y1: f64, budget: &mut usiz
 /// the points just beside it on one side are inside all the shapes. Where `shapes[k]` has no area
 /// on either side (an open path), it counts when it is inside the other shapes or on their
 /// boundary. Each pass over the edges takes `n` from `budget`; None when it runs out.
-fn segment_inside(p: Point, q: Point, shapes: &[Region], k: usize, n: usize, budget: &mut usize, out: &mut Vec<(f64, f64)>) -> Option<()> {
+fn segment_inside(p: Point, q: Point, shapes: &[BandEdges], k: usize, n: usize, budget: &mut usize, out: &mut Vec<(f64, f64)>) -> Option<()> {
     let r = q - p;
     let len2 = r.hypot2();
     if !len2.is_finite() {
         return Some(());
     }
     let at = |t: f64| p + r * t;
-    let in_others = |pt: Point| shapes.iter().enumerate().all(|(i, s)| i == k || inside_or_on(*s, pt));
+    let in_others = |pt: Point| shapes.iter().enumerate().all(|(i, s)| i == k || inside_or_on(s, pt));
     spend(budget, n)?;
     if len2 < 1e-24 {
         if in_others(p) {
@@ -615,7 +642,7 @@ fn segment_inside(p: Point, q: Point, shapes: &[Region], k: usize, n: usize, bud
     // A step to either side of the segment, well above rounding at page coordinates.
     let side = r.turn_90() * (1e-6 / len2.sqrt());
     let bounds_the_part = |m: Point| {
-        let own = shapes.get(k).copied();
+        let own = shapes.get(k);
         let in_own = |pt: Point| own.is_some_and(|s| inside_or_on(s, pt));
         let (a, b) = (m + side, m - side);
         match (in_own(a), in_own(b)) {
@@ -625,29 +652,24 @@ fn segment_inside(p: Point, q: Point, shapes: &[Region], k: usize, n: usize, bud
     };
     let (ylo, yhi) = (p.y.min(q.y), p.y.max(q.y));
     let mut ts = vec![0.0, 1.0];
-    for ring in shapes.iter().enumerate().filter(|(i, _)| *i != k).flat_map(|(_, s)| s.rings) {
-        let Some(&last) = ring.last() else { continue };
-        let mut c = last;
-        for &d in ring {
-            if c.y.max(d.y) >= ylo - 1e-9 && c.y.min(d.y) <= yhi + 1e-9 {
-                let e = d - c;
-                let denom = r.cross(e);
-                let w = c - p;
-                if denom.abs() > 1e-12 * (len2 * e.hypot2()).sqrt() {
-                    let (t, u) = (w.cross(e) / denom, w.cross(r) / denom);
-                    if (-1e-9..=1.0 + 1e-9).contains(&u) && (0.0..=1.0).contains(&t) {
+    for &(c, d) in shapes.iter().enumerate().filter(|(i, _)| *i != k).flat_map(|(_, s)| &s.edges) {
+        if c.y.max(d.y) >= ylo - 1e-9 && c.y.min(d.y) <= yhi + 1e-9 {
+            let e = d - c;
+            let denom = r.cross(e);
+            let w = c - p;
+            if denom.abs() > 1e-12 * (len2 * e.hypot2()).sqrt() {
+                let (t, u) = (w.cross(e) / denom, w.cross(r) / denom);
+                if (-1e-9..=1.0 + 1e-9).contains(&u) && (0.0..=1.0).contains(&t) {
+                    ts.push(t);
+                }
+            } else if w.cross(r).abs() <= 1e-9 * len2.sqrt() {
+                // Collinear: the edge's ends split the segment.
+                for t in [w.dot(r) / len2, (d - p).dot(r) / len2] {
+                    if (0.0..=1.0).contains(&t) {
                         ts.push(t);
-                    }
-                } else if w.cross(r).abs() <= 1e-9 * len2.sqrt() {
-                    // Collinear: the edge's ends split the segment.
-                    for t in [w.dot(r) / len2, (d - p).dot(r) / len2] {
-                        if (0.0..=1.0).contains(&t) {
-                            ts.push(t);
-                        }
                     }
                 }
             }
-            c = d;
         }
     }
     ts.sort_by(f64::total_cmp);
@@ -663,26 +685,22 @@ fn segment_inside(p: Point, q: Point, shapes: &[Region], k: usize, n: usize, bud
     Some(())
 }
 
-/// Is `pt` inside `shape` or within a hair of one of its edges?
-fn inside_or_on(shape: Region, pt: Point) -> bool {
+/// Is `pt`, a point within the band of `shape`'s edges, inside the shape or within a hair of one
+/// of its edges?
+fn inside_or_on(shape: &BandEdges, pt: Point) -> bool {
     let mut winding = 0i32;
-    for ring in shape.rings {
-        let Some(&last) = ring.last() else { continue };
-        let mut a = last;
-        for &b in ring {
-            let e = b - a;
-            let len2 = e.hypot2();
-            let t = if len2 > 0.0 { ((pt - a).dot(e) / len2).clamp(0.0, 1.0) } else { 0.0 };
-            if (a + e * t - pt).hypot2() < 1e-18 {
-                return true;
+    for &(a, b) in &shape.edges {
+        let e = b - a;
+        let len2 = e.hypot2();
+        let t = if len2 > 0.0 { ((pt - a).dot(e) / len2).clamp(0.0, 1.0) } else { 0.0 };
+        if (a + e * t - pt).hypot2() < 1e-18 {
+            return true;
+        }
+        if (a.y <= pt.y && pt.y < b.y) || (b.y <= pt.y && pt.y < a.y) {
+            let x = a.x + (pt.y - a.y) / e.y * e.x;
+            if x > pt.x {
+                winding += if e.y > 0.0 { 1 } else { -1 };
             }
-            if (a.y <= pt.y && pt.y < b.y) || (b.y <= pt.y && pt.y < a.y) {
-                let x = a.x + (pt.y - a.y) / e.y * e.x;
-                if x > pt.x {
-                    winding += if e.y > 0.0 { 1 } else { -1 };
-                }
-            }
-            a = b;
         }
     }
     shape.fills(winding)

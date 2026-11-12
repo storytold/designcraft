@@ -59,7 +59,7 @@ Fidelity: **unmeasured** unless stated.
 | Paragraph rules, borders, shading | ✓ | ✓ | ✓ | |
 | Balance ragged lines | ✓ | ✓ | ✓ | |
 | Optical margin alignment | per story with a size, Ignore Optical Margin per paragraph and style | ✓ (hang table of our own, scaled by the story's size; Story panel; IDML `StoryPreference`, `IgnoreEdgeAlignment`) | ~ | hang amounts are ours, InDesign's unknown (#947) |
-| Text wrap | bounding box, shape, jump object/column, wrap sides (text on both sides of an object), contour options, on page items and anchored objects | ✓ | ~ | Alpha Channel contours follow the outline of the image's visible pixels; Detect Edges and Photoshop Path contours follow the frame's path |
+| Text wrap | bounding box, shape, jump object/column, wrap sides (text on both sides of an object), contour options, on page items and anchored objects | ✓ | ~ | Alpha Channel contours follow the outline of the image's visible pixels (an image over 40 megapixels, or one that can't be decoded, follows the frame's path); Detect Edges and Photoshop Path contours follow the frame's path |
 | Anchored objects | inline, above line, custom | ✓ | ~ | anchored objects in table cells not drawn (#163) |
 | Footnotes, endnotes | ✓ | ✓ | ~ | footnotes don't split across columns yet |
 | Type on a path | ✓ | ✓ | ✓ | |

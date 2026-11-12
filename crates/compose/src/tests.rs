@@ -8612,6 +8612,36 @@ fn a_clipped_contour_blocks_only_what_its_frame_shows() {
     assert_eq!(c.within(&poly(&detailed), id).band_spans(0.0, 10.0), vec![(20.0, 40.0)]);
 }
 
+/// Edges far above or below a line band cost a clipped contour nothing there: an outline with
+/// 7,000 points well below the band still gets the exact spans, not the projections' common part.
+#[test]
+fn a_clipped_contours_budget_counts_only_edges_in_the_band() {
+    let poly = |pts: &[(f64, f64)]| {
+        let mut p = designcraft_geom::BezPath::new();
+        p.move_to(pts[0]);
+        for &q in &pts[1..] {
+            p.line_to(q);
+        }
+        p.close_path();
+        p
+    };
+    let id = designcraft_geom::Affine::IDENTITY;
+    // The L-shaped frame of the test above, with its notch at x 10..40 above y = 6.
+    let frame = poly(&[(0.0, 0.0), (10.0, 0.0), (10.0, 6.0), (40.0, 6.0), (40.0, 10.0), (0.0, 10.0)]);
+    // An outline in the notch and to the right of the frame, with 40 teeth along its top in the
+    // band and a 7,000-point zigzag along its bottom at y = 200.
+    let mut pts = vec![(20.0, 0.0)];
+    for i in 0..40 {
+        let x = 40.0 + 0.5 * f64::from(i);
+        pts.extend([(x, 0.0), (x + 0.25, 0.5)]);
+    }
+    pts.push((60.0, 0.0));
+    pts.extend((0..7000).map(|i| (60.0 - 10.0 * f64::from(i) / 6999.0, if i % 2 == 0 { 200.0 } else { 201.0 })));
+    pts.extend([(50.0, 4.0), (20.0, 4.0)]);
+    let c = Contour::of(&poly(&pts), id, 0.0).unwrap();
+    assert_eq!(c.within(&frame, id).band_spans(0.0, 10.0), Vec::<(f64, f64)>::new(), "the frame shows none of it");
+}
+
 /// Rule Above's offset runs from the first line's baseline up to the rule's bottom edge, as in
 /// InDesign: a rule set clear of the cap height sits between the rows, not across the row above
 /// (an INDD project list whose rules crossed the previous paragraph's text).
