@@ -1,6 +1,6 @@
 //! Embedded raster resolution: the density a placed graphic was saved with, so placing honors
-//! it instead of assuming 72 ppi (#1991: a 600 px photo saved at 600 dpi places one inch wide,
-//! as in InDesign). Reads JFIF/EXIF from JPEG (and EXIF from WebP), pHYs from PNG, the resolution
+//! it instead of assuming 72 ppi (#1991: a 600 px photo saved at 600 dpi places one inch wide).
+//! Reads JFIF/EXIF from JPEG (and EXIF from WebP), pHYs from PNG, the resolution
 //! tags from TIFF, and the header density from BMP. GIF, PSD and files without (usable) metadata
 //! report nothing and keep the pixel-is-a-point size.
 
@@ -78,10 +78,10 @@ fn jpeg_resolution(bytes: &[u8]) -> Option<(f64, f64)> {
         if m == 0xE0 && jfif.is_none() {
             jfif = jfif_density(payload);
         } else if m == 0xE1
-            && let Some(dpi) = exif_resolution(payload)
+            && let Some(dpi) = exif_resolution(payload).filter(|dpi| sane_resolution(*dpi))
         {
-            // A non-EXIF APP1 (XMP, ICC, ...) parses to nothing: keep scanning, since a
-            // later APP1 can still carry the EXIF resolution.
+            // A non-EXIF APP1 (XMP, ICC, ...) or an unusable EXIF density parses to nothing:
+            // keep scanning, so a later APP1 or the JFIF density still sets the size.
             return Some(dpi);
         }
         pos += len;

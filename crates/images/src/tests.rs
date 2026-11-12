@@ -537,6 +537,19 @@ fn jpeg_exif_resolution_beats_jfif() {
     assert_eq!(raster_resolution(&zero), None);
 }
 
+/// An EXIF density of 0 ppi (or any value outside the usable range) does not hide the JFIF
+/// density: the 600x900 px photo at a JFIF 300 dpi still places 144 x 216 pt.
+#[test]
+fn unusable_exif_density_keeps_the_jfif_density() {
+    for exif in [(0, 1), (1, 4), (1_000_000, 1)] {
+        let mut app = jfif_app(1, 300, 300);
+        app.extend_from_slice(&exif_app(&tiff_bytes(exif, exif, Some(2))));
+        let jpg = jpeg_with(&app);
+        assert_eq!(raster_resolution(&jpg), Some((300.0, 300.0)), "EXIF {exif:?}");
+        assert_eq!(natural_size(&jpg), Some((144.0, 216.0)), "EXIF {exif:?}");
+    }
+}
+
 /// Big-endian EXIF parses too.
 #[test]
 fn jpeg_exif_big_endian_parses() {

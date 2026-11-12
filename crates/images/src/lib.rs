@@ -374,8 +374,8 @@ pub fn natural_size(bytes: &[u8]) -> Option<(f64, f64)> {
         return Some((bb[2] - bb[0], bb[3] - bb[1])).filter(|(w, h)| w.is_finite() && h.is_finite() && *w > 0.0 && *h > 0.0);
     }
     let (w, h) = pixel_size(bytes)?;
-    // Honor the file's density (#1991): a 600 px photo saved at 600 dpi places one inch wide,
-    // as in InDesign. Absurd metadata falls back to a pixel per point.
+    // Honor the file's density (#1991): a 600 px photo saved at 600 dpi places one inch wide.
+    // Absurd metadata falls back to a pixel per point.
     match raster_resolution(bytes) {
         Some(dpi) if resolution::sane_resolution(dpi) => Some((w as f64 * 72.0 / dpi.0, h as f64 * 72.0 / dpi.1)),
         _ => Some((w as f64, h as f64)),
