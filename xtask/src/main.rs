@@ -289,9 +289,12 @@ fn expands_within(tgz: &Path, max: u64) -> Result<bool, String> {
     let n = std::io::copy(&mut out.take(max.saturating_add(1)), &mut std::io::sink()).map_err(|e| format!("tar -xzOf: {e}"))?;
     if n > max {
         let _ = child.kill();
+        let _ = child.wait();
+        return Ok(false);
     }
-    let _ = child.wait();
-    Ok(n <= max)
+    // Within the cap only counts when tar read the whole archive: an early exit proves nothing.
+    let status = child.wait().map_err(|e| format!("tar -xzOf: {e}"))?;
+    if status.success() { Ok(true) } else { Err(format!("tar -xzOf {} failed ({status}); archive refused", tgz.display())) }
 }
 
 fn cmd_corpus(download: bool) -> Result<(), String> {
@@ -363,6 +366,10 @@ mod corpus_tests {
         if made.is_ok_and(|s| s.success()) {
             assert_eq!(expands_within(&tgz, 100_000), Ok(true));
             assert_eq!(expands_within(&tgz, 99_999), Ok(false));
+            // A truncated archive makes tar fail: not a within-cap answer.
+            let bytes = std::fs::read(&tgz).unwrap();
+            std::fs::write(&tgz, &bytes[..bytes.len() / 2]).unwrap();
+            assert!(expands_within(&tgz, 1 << 20).is_err());
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
