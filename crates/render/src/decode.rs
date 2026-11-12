@@ -12,18 +12,39 @@ const VECTOR_SIDE: u32 = 3000;
 /// About how many bytes [`decode_pixmap_page`] of `bytes` takes, with its smaller levels (a third
 /// more): PDF pages and SVGs at [`VECTOR_SIDE`] pixels on the longer side, an EPS without a
 /// preview at up to 8 pixels per point and 4000 pixels on the longer side (as its PostScript is
-/// drawn), other images and previews at their pixel size. 0 when the size can't be read.
+/// drawn) or at its placeholder's size when that is larger, other images and previews at their
+/// pixel size. 0 when the size can't be read.
+#[cfg(test)]
 pub(crate) fn decoded_bytes(bytes: &[u8], page: u32) -> usize {
+    decode_sizes(bytes, page).0
+}
+
+/// [`decoded_bytes`] of `bytes`, and about how many bytes [`decode_pixmap_page`] of it holds at
+/// once while it runs: a raster as decoded and its RGBA copy, or that copy and the premultiplied
+/// pixels, whichever is more ([`designcraft_images::decode_bytes_per_pixel`]: 8 bytes a pixel
+/// for 8-bit color, 12 for 16-bit RGBA, an EPS as its TIFF preview). PDF pages, SVGs and EPS
+/// files without a preview count 8 bytes a pixel. Both are 0 when the size can't be read.
+pub(crate) fn decode_sizes(bytes: &[u8], page: u32) -> (usize, usize) {
+    let Some((w, h)) = drawn_size(bytes, page) else { return (0, 0) };
+    let raster = !is_pdf(bytes) && !designcraft_images::is_svg(bytes);
+    let per_pixel = if raster { designcraft_images::decode_bytes_per_pixel(bytes) } else { 8 } as f64;
+    ((w * h * 16.0 / 3.0) as usize, (w * h * per_pixel) as usize)
+}
+
+/// The pixel size [`decode_pixmap_page`] of `bytes` draws at, as [`decoded_bytes`] describes it.
+fn drawn_size(bytes: &[u8], page: u32) -> Option<(f64, f64)> {
     let drawn = |(w, h): (f64, f64), side: f64, most: f64| {
         let k = (side / w.max(h).max(1e-3)).min(most);
         ((w * k).round().max(1.0), (h * k).round().max(1.0))
     };
-    let size = if designcraft_images::is_eps(bytes) {
+    if designcraft_images::is_eps(bytes) {
         image_size(bytes).zip(designcraft_images::eps_size(bytes)).map(|((pw, ph), (w, h))| {
-            // Without a preview, the pixel size is the 2 pixels per point placeholder's.
+            // Without a preview, the pixel size is the 2 pixels per point placeholder's. The
+            // PostScript may be drawn instead, at another size: count the larger of the two.
             let placeholder = ((w * 2.0).round().clamp(2.0, 4000.0), (h * 2.0).round().clamp(2.0, 4000.0));
             let px = (pw as f64, ph as f64);
-            if px == placeholder { drawn((w, h), 4000.0, 8.0) } else { px }
+            let rendered = drawn((w, h), 4000.0, 8.0);
+            if px == placeholder && rendered.0 * rendered.1 > px.0 * px.1 { rendered } else { px }
         })
     } else if is_pdf(bytes) {
         // As render_pdf_page scales: at most 8 times the page size.
@@ -32,8 +53,7 @@ pub(crate) fn decoded_bytes(bytes: &[u8], page: u32) -> usize {
         designcraft_images::natural_size(bytes).map(|s| drawn(s, VECTOR_SIDE as f64, f64::INFINITY))
     } else {
         image_size(bytes).map(|(w, h)| (w as f64, h as f64))
-    };
-    size.map_or(0, |(w, h)| (w * h * 16.0 / 3.0) as usize)
+    }
 }
 
 /// [`decode_pixmap`] for page `page` of a PDF (other formats have one page).

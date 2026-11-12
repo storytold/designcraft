@@ -442,6 +442,39 @@ pub fn decode_rgba(bytes: &[u8]) -> Option<image::RgbaImage> {
     to_display_rgba(px, Some(&icc), &DisplayColour::active())
 }
 
+/// About how many bytes a pixel [`decode_rgba`] of `bytes` holds at once, with a premultiplied
+/// copy of its result: the samples as stored beside the copy they are converted to, and at least
+/// 8 (the RGBA result and its premultiplied copy). 16-bit CMYK TIFF samples are narrowed into an
+/// 8-bit copy and CMYK alpha is split off into one, so a 16-bit CMYKA TIFF counts 15. An EPS
+/// counts as its TIFF preview, or 8 for its placeholder or drawn PostScript.
+pub fn decode_bytes_per_pixel(bytes: &[u8]) -> usize {
+    if is_eps(bytes) {
+        return eps::preview(bytes).map_or(8, |(tiff, _)| if is_eps(tiff) { 8 } else { decode_bytes_per_pixel(tiff) });
+    }
+    if is_psd(bytes) {
+        // RGBA-sized channels, an alpha plane, and the RGBA copy of CMYK inks.
+        return 9;
+    }
+    if let Some(mut d) = tiff_decoder(bytes) {
+        let cmyk = match d.colortype() {
+            Ok(tiff::ColorType::CMYK(bits)) => Some((4, bits)),
+            Ok(tiff::ColorType::CMYKA(bits)) => Some((5, bits)),
+            _ => None,
+        };
+        if let Some((samples, bits)) = cmyk {
+            let stored = samples * usize::from(bits).div_ceil(8);
+            let copy = if bits > 8 || samples == 5 { samples } else { 0 };
+            return (stored + copy).max(samples + 4).max(8);
+        }
+    }
+    let sample = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()
+        .and_then(|r| r.into_decoder().ok())
+        .map_or(4, |d| usize::from(image::ImageDecoder::color_type(&d).bytes_per_pixel()));
+    (sample + 4).max(8)
+}
+
 /// False when `bytes` is a WebP whose `ICCP` chunk declares more bytes than the file holds or than
 /// [`colour::MAX_ICC_BYTES`]. The decoder sizes its buffer from the declared length before it reads
 /// anything, so such a file must not reach `icc_profile()`; its pixels decode without it.

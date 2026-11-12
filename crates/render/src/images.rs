@@ -11,7 +11,7 @@ use std::sync::{Arc, Condvar, Mutex};
 
 use vello_cpu::Pixmap;
 
-use crate::decode::decoded_bytes;
+use crate::decode::decode_sizes;
 use crate::{decode_pixmap_page, halve};
 
 /// Decoded pixels kept (bytes).
@@ -190,18 +190,20 @@ fn admits(in_flight: usize, size: usize) -> bool {
     in_flight == 0 || in_flight.saturating_add(size) <= BUDGET / 2
 }
 
-/// Bytes decoding at once and the most there were, with the signal that some finished.
-type Gate = (Mutex<(usize, usize)>, Condvar);
+/// Bytes [`warm`] is decoding at once in every render in the process (canvas worker, thumbnails,
+/// exports), with the signal that some finished.
+static GATE: (Mutex<usize>, Condvar) = (Mutex::new(0), Condvar::new());
 
-/// Takes a finished decode's bytes off its [`Gate`] when dropped.
-struct Release<'a>(&'a Gate, usize);
+/// Takes a finished decode's bytes off [`GATE`] and off its own call's count when dropped.
+struct Release<'a>(&'a AtomicUsize, usize);
 
 impl Drop for Release<'_> {
     fn drop(&mut self) {
-        let mut g = self.0.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        g.0 = g.0.saturating_sub(self.1);
+        self.0.fetch_sub(self.1, Ordering::Relaxed);
+        let mut g = GATE.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        *g = g.saturating_sub(self.1);
         drop(g);
-        self.0.1.notify_all();
+        GATE.1.notify_all();
     }
 }
 
@@ -210,8 +212,8 @@ impl Drop for Release<'_> {
 /// of decoding them one after another. Does nothing when fewer than two images need decoding.
 /// The images in view that are cached count against the cache budget first; a new image that
 /// would take the total past what the cache keeps (by its pixel size) is left to the render.
-/// Decodes wait while those in flight together would take more than half the budget. Returns
-/// the most bytes (estimated) that were decoding at once.
+/// Decodes wait while those in flight in every render together would take more than half the
+/// budget. Returns the most bytes (estimated) this call had decoding at once.
 pub(crate) fn warm(wants: Vec<Want>) -> usize {
     let workers = workers();
     if workers < 2 {
@@ -263,7 +265,7 @@ pub(crate) fn warm(wants: Vec<Want>) -> usize {
         if held.contains_key(&key) {
             continue;
         }
-        let size = wanted.first().map_or(0, |w| decoded_bytes(&w.bytes, w.page));
+        let (size, decoding) = wanted.first().map_or((0, 0), |w| decode_sizes(&w.bytes, w.page));
         // A store past the budget evicts down to three quarters of it: the images in view must
         // fit in that, unless they and the rest fit in the budget.
         let total = pixels.saturating_add(size);
@@ -271,29 +273,34 @@ pub(crate) fn warm(wants: Vec<Want>) -> usize {
             continue;
         }
         pixels = total;
-        jobs.push((size, wanted));
+        jobs.push((decoding, wanted));
     }
     if jobs.len() < 2 {
         return 0;
     }
-    // While it converts the pixels, a decode holds buffers of about its size besides the cache:
-    // a decode waits while those in flight would take it past half the budget (one always runs).
-    let gate: Gate = (Mutex::new((0, 0)), Condvar::new());
-    let lock = || gate.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    // While it converts the pixels, a decode holds the buffers `decode_sizes` counts: a
+    // decode waits while those in flight in any render would take it past half the budget (one
+    // always runs).
+    let lock = || GATE.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let next = AtomicUsize::new(0);
+    // This call's bytes decoding, and the most there were.
+    let (mine, peak) = (AtomicUsize::new(0), AtomicUsize::new(0));
     std::thread::scope(|s| {
         for _ in 0..workers.min(jobs.len()) {
             let work = || {
                 while let Some((size, job)) = jobs.get(next.fetch_add(1, Ordering::Relaxed)) {
                     let mut g = lock();
-                    while !admits(g.0, *size) {
-                        g = gate.1.wait(g).unwrap_or_else(std::sync::PoisonError::into_inner);
+                    while !admits(*g, *size) {
+                        #[cfg(test)]
+                        waited(job);
+                        g = GATE.1.wait(g).unwrap_or_else(std::sync::PoisonError::into_inner);
                     }
-                    g.0 += size;
-                    g.1 = g.1.max(g.0);
+                    *g = g.saturating_add(*size);
+                    let now = mine.fetch_add(*size, Ordering::Relaxed).saturating_add(*size);
+                    peak.fetch_max(now, Ordering::Relaxed);
                     drop(g);
                     // Released even if the decode panics, so no other decode waits forever.
-                    let _release = Release(&gate, *size);
+                    let _release = Release(&mine, *size);
                     for w in job {
                         let _ = mip(&w.bytes, w.page, w.width_pt, w.on_screen);
                     }
@@ -305,7 +312,19 @@ pub(crate) fn warm(wants: Vec<Want>) -> usize {
             }
         }
     });
-    gate.0.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner).1
+    peak.into_inner()
+}
+
+/// The images whose decode waited at [`GATE`] (the address of the encoded bytes), with the
+/// signal that one did.
+#[cfg(test)]
+static WAITED: (Mutex<Vec<usize>>, Condvar) = (Mutex::new(Vec::new()), Condvar::new());
+
+#[cfg(test)]
+fn waited(job: &[Want]) {
+    let id = job.first().map_or(0, |w| Arc::as_ptr(&w.bytes) as usize);
+    WAITED.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(id);
+    WAITED.1.notify_all();
 }
 
 /// Drop every decoded image.
@@ -320,6 +339,11 @@ pub fn clear() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::decode::decoded_bytes;
+
+    fn decode_peak_bytes(bytes: &[u8], page: u32) -> usize {
+        decode_sizes(bytes, page).1
+    }
 
     #[test]
     fn failed_assets_are_capped_and_oldest_is_dropped() {
@@ -403,21 +427,74 @@ mod tests {
 
     #[test]
     fn warm_decodes_large_images_one_at_a_time() {
-        // Two 7,000 pixel square images fit the budget together, but decoding both at once would
+        // Two 6,500 pixel square images fit the budget together, but decoding both at once would
         // take more than half of it; the small image still decodes beside them.
-        let (d, e, small) = (psd(7000), psd(7000), png(8, 15));
+        let (d, e, small) = (psd(6500), psd(6500), png(8, 15));
         let since = mark();
         let large = decoded_bytes(&d, 0);
         assert!(large > BUDGET / 4 && 2 * large <= BUDGET * 3 / 4);
-        assert!(admits(0, large) && !admits(large, large) && admits(large, decoded_bytes(&small, 0)));
+        let decoding = decode_peak_bytes(&d, 0);
+        assert!(admits(0, decoding) && !admits(decoding, decoding) && admits(decoding, decode_peak_bytes(&small, 0)));
         assert!(admits(0, usize::MAX), "an image over half the budget still decodes alone");
         let peak = warm(vec![want(&d), want(&e), want(&small)]);
         assert!(peak <= BUDGET / 2, "{peak} bytes decoding at once");
-        assert!(peak >= large, "the large images were decoded ahead");
+        assert!(peak >= decoding, "the large images were decoded ahead");
         let me = std::thread::current().id();
         for img in [&d, &e, &small] {
             let on = decoders(img, since);
             assert!(on.len() == 1 && on[0] != me);
         }
+    }
+
+    #[test]
+    fn warm_counts_a_decode_at_its_peak() {
+        // A decode holds the RGBA copy beside the decoded or the premultiplied pixels: two 5,500
+        // pixel square images would take less than half the budget cached, but more than half of
+        // it while both decode, so they decode one at a time.
+        let (f, g) = (psd(5500), psd(5500));
+        let decoding = decode_peak_bytes(&f, 0);
+        assert_eq!(decoding, 5500 * 5500 * 9, "9 bytes a pixel for a PSD");
+        assert!(2 * decoded_bytes(&f, 0) <= BUDGET / 2 && !admits(decoding, decode_peak_bytes(&g, 0)));
+        assert_eq!(warm(vec![want(&f), want(&g)]), decoding, "one decode at a time");
+        // 16-bit RGBA decodes at 8 bytes a pixel before its RGBA copy.
+        let mut deep = Vec::new();
+        let img = image::ImageBuffer::<image::Rgba<u16>, Vec<u16>>::from_pixel(4, 4, image::Rgba([9, 0, 0, 65535]));
+        img.write_to(&mut std::io::Cursor::new(&mut deep), image::ImageFormat::Png).unwrap();
+        assert_eq!(decode_peak_bytes(&deep, 0), 16 * 12);
+        assert_eq!(decode_peak_bytes(&png(8, 1), 0), 64 * 8);
+    }
+
+    #[test]
+    fn warm_waits_for_decodes_in_other_renders() {
+        // Another render's decodes take half the budget: this render's decodes wait for them.
+        let (a, b) = (png(8, 17), png(8, 19));
+        let ids = [Arc::as_ptr(&a) as usize, Arc::as_ptr(&b) as usize];
+        let (since, decoded_since) = (WAITED.0.lock().unwrap().len(), mark());
+        let other = BUDGET / 2;
+        *GATE.0.lock().unwrap() += other;
+        let done = std::sync::atomic::AtomicBool::new(false);
+        let (waited, peak) = std::thread::scope(|s| {
+            let render = s.spawn(|| {
+                let peak = warm(vec![want(&a), want(&b)]);
+                let w = WAITED.0.lock().unwrap();
+                done.store(true, Ordering::SeqCst);
+                drop(w);
+                WAITED.1.notify_all();
+                peak
+            });
+            let seen = |w: &Vec<usize>| w.iter().skip(since).any(|id| ids.contains(id));
+            let mut w = WAITED.0.lock().unwrap();
+            while !seen(&w) && !done.load(Ordering::SeqCst) {
+                w = WAITED.1.wait(w).unwrap();
+            }
+            let waited = seen(&w);
+            drop(w);
+            *GATE.0.lock().unwrap() -= other;
+            GATE.1.notify_all();
+            (waited, render.join().unwrap())
+        });
+        assert!(waited, "decoded beside the other render's decodes");
+        assert_eq!((decoders(&a, decoded_since).len(), decoders(&b, decoded_since).len()), (1, 1));
+        assert!(peak > 0 && peak <= BUDGET / 2, "{peak} bytes decoding at once");
     }
 }

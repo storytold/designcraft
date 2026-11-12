@@ -98,7 +98,7 @@ pub fn eps_size(bytes: &[u8]) -> Option<(f64, f64)> {
     ((0.001..=20_000.0).contains(&w) && (0.001..=20_000.0).contains(&h)).then_some((w, h))
 }
 
-fn preview(bytes: &[u8]) -> Option<(&[u8], (u32, u32))> {
+pub(crate) fn preview(bytes: &[u8]) -> Option<(&[u8], (u32, u32))> {
     let (_, tiff) = sections(bytes);
     let tiff = tiff?;
     let (w, h) = crate::pixel_size(tiff)?;

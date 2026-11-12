@@ -372,6 +372,32 @@ fn cmyk_tiff_keeps_inks() {
     assert_eq!(decode_cmyk_tiff(&b[..b.len() / 2]), None, "truncated");
 }
 
+/// A decode holds the samples as stored beside the copy they are converted to.
+#[test]
+fn decode_bytes_per_pixel_counts_the_stored_samples_and_their_copy() {
+    use tiff::encoder::colortype::{CMYK8, CMYK16, CMYKA8, RGB16};
+    assert_eq!(decode_bytes_per_pixel(&tiff_of::<CMYK8>(1, 1, &[0; 4], false)), 8);
+    assert_eq!(decode_bytes_per_pixel(&tiff_of::<CMYKA8>(1, 1, &[0; 5], true)), 10);
+    assert_eq!(decode_bytes_per_pixel(&tiff_of::<CMYK16>(1, 1, &[0; 4], false)), 12);
+    assert_eq!(decode_bytes_per_pixel(&tiff_of::<RGB16>(1, 1, &[0; 3], false)), 10);
+    let mut psd = b"8BPS".to_vec();
+    psd.resize(26, 0);
+    assert_eq!(decode_bytes_per_pixel(&psd), 9);
+    assert_eq!(decode_bytes_per_pixel(b"not an image"), 8);
+    // An EPS counts as its TIFF preview, or 8 without one.
+    let ps = b"%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 10 10\nnewpath\n%%EOF\n";
+    assert_eq!(decode_bytes_per_pixel(ps), 8);
+    let preview = tiff_of::<CMYK16>(1, 1, &[0; 4], false);
+    let mut dos = vec![0xC5, 0xD0, 0xD3, 0xC6];
+    for v in [30, ps.len(), 0, 0, 30 + ps.len(), preview.len()] {
+        dos.extend((v as u32).to_le_bytes());
+    }
+    dos.extend([0xFF, 0xFF]);
+    dos.extend_from_slice(ps);
+    dos.extend_from_slice(&preview);
+    assert_eq!(decode_bytes_per_pixel(&dos), 12);
+}
+
 /// Indexed colour (PhotometricInterpretation 3), which the `tiff` encoder has no type for.
 struct Palette<const BITS: u16>;
 impl<const BITS: u16> tiff::encoder::colortype::ColorType for Palette<BITS> {

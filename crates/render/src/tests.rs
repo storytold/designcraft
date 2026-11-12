@@ -792,6 +792,14 @@ fn decode_size_estimates_match_the_decodes() {
     let drawn = pm.width() as usize * pm.height() as usize * 16 / 3;
     assert!(drawn > 200 * 100 * 16 / 3, "drawn above 2 pixels per point: {}×{}", pm.width(), pm.height());
     assert!(decode::decoded_bytes(eps, 0) >= drawn);
+    // A wide EPS whose PostScript isn't drawn keeps its placeholder, clamped to 4000 pixels on
+    // each side: it is budgeted at no less than that.
+    let eps = b"%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 10000 4000\n%%EndComments\n0 0 moveto 10 10 lineto stroke\n%%EOF\n";
+    let pm = decode_pixmap_page(eps, 0).unwrap();
+    assert_eq!((pm.width(), pm.height()), (4000, 4000));
+    let px = pm.width() as usize * pm.height() as usize;
+    assert!(decode::decoded_bytes(eps, 0) >= px * 16 / 3);
+    assert!(decode::decode_sizes(eps, 0).1 >= px * 8);
 }
 
 #[test]
