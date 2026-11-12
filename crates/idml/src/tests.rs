@@ -330,12 +330,19 @@ fn indesign_text_defaults() -> Vec<AttrRow> {
         "RuleBelow": "false" => false, "true" => true, |r| r.0.rule_below.on;
         "RuleBelowColor": "Text Color" => designcraft_doc::TEXT_COLOR, "Color/Black" => "[Black]", |r| r.0.rule_below.color;
         "RuleBelowTint": "-1" => 1.0f32, "50" => 0.5f32, |r| r.0.rule_below.tint;
+        "RuleBelowType": "StrokeStyle/$ID/Solid" => designcraft_doc::StrokeType::Solid, "StrokeStyle/$ID/Wavy" => designcraft_doc::StrokeType::Wavy, |r| r.0.rule_below.kind;
+        "RuleBelowGapColor": "Swatch/None" => "[None]", "Color/Black" => "[Black]", |r| r.0.rule_below.gap_color;
+        "RuleBelowGapTint": "-1" => 1.0f32, "50" => 0.5f32, |r| r.0.rule_below.gap_tint;
+        "KeepRuleAboveInFrame": "false" => false, "true" => true, |r| r.0.rule_above.keep_in_frame;
         "ParagraphShadingOn": "false" => false, "true" => true, |r| r.0.shading_on;
         "ParagraphShadingColor": "Color/Black" => "[Black]", "Swatch/None" => "[None]", |r| r.0.shading_color;
         "ParagraphShadingTint": "20" => 0.2f32, "50" => 0.5f32, |r| r.0.shading_tint;
         "ParagraphBorderOn": "false" => false, "true" => true, |r| r.0.border_on;
         "ParagraphBorderColor": "Color/Black" => "[Black]", "Swatch/None" => "[None]", |r| r.0.border_color;
         "ParagraphBorderTint": "-1" => 1.0f32, "50" => 0.5f32, |r| r.0.border_tint;
+        "ParagraphShadingOverprint": "false" => false, "true" => true, |r| r.0.shading_overprint;
+        "ParagraphBorderOverprint": "false" => false, "true" => true, |r| r.0.border_overprint;
+        "ParagraphBorderGapOverprint": "false" => false, "true" => true, |r| r.0.border_gap_overprint;
         "FontStyle": "Regular" => "Regular", "Bold" => "Bold", |r| r.1.font_style;
         "PointSize": "12" => 12.0, "9" => 9.0, |r| r.1.size;
         "Leading": "Auto" => Leading::Auto, "14" => Leading::Points(14.0), |r| r.1.leading;
@@ -552,6 +559,14 @@ fn basic_paragraph_is_normal_paragraph_style() {
     assert!(zip_text(&bytes, "Stories/").contains(r#"AppliedParagraphStyle="ParagraphStyle/$ID/NormalParagraphStyle""#));
     let back = import_idml(&bytes).unwrap();
     assert_eq!(back.styles.paragraph.iter().filter(|p| p.name == st::BASIC_PARAGRAPH).count(), 1);
+}
+
+/// Like InDesign, the export carries the document's default story preference, which IDML readers expect.
+#[test]
+fn export_writes_the_document_story_preference() {
+    let d = import_idml_with(&fixture(), &|_| None).unwrap();
+    let prefs = zip_text(&export_idml(&d), "Resources/Preferences.xml");
+    assert!(prefs.contains(r#"<StoryPreference OpticalMarginAlignment="false" OpticalMarginSize="12" FrameType="TextFrameType" StoryOrientation="Horizontal" StoryDirection="LeftToRightDirection"/>"#), "{prefs}");
 }
 
 /// Page items, frames, tables and preferences an IDML file leaves unset are InDesign's defaults
@@ -1291,7 +1306,7 @@ fn round_trips_cross_references() {
         d.add_text_frame(SpreadRef::Doc(0), Rect::new(40.0, 40.0, 400.0, 400.0), lid, "Results: found\nSee .", ParaFormat::default()).unwrap();
     let target = d.paragraph_anchor(sid, 0).unwrap();
     let at = d.story(sid).unwrap().text.find(" .").unwrap() + 1;
-    d.story_mut(sid).unwrap().insert_xref(at, designcraft_doc::CrossRef { target, format: "Paragraph Text".into() });
+    d.story_mut(sid).unwrap().insert_xref(at, designcraft_doc::CrossRef { target, format: "Paragraph Text".into(), ..Default::default() });
     d.xref_formats.push(designcraft_doc::XrefFormat {
         name: "Mine".into(),
         definition: "(<partialPara delim=\":\" includeDelim=\"true\" />, p. <pageNum />)".into(),
@@ -1303,6 +1318,7 @@ fn round_trips_cross_references() {
     assert_eq!(s.text, d.story(sid).unwrap().text);
     assert_eq!(s.xrefs.len(), 1);
     assert_eq!(s.xrefs[0].format, "Paragraph Text");
+    assert_eq!(s.xrefs[0].text, None, "generated text reads back as generated");
     let (tsid, tpos) = back.find_anchor(s.xrefs[0].target).expect("target resolves");
     assert_eq!((tsid, tpos), (s.id, 0));
     let mine = back.xref_format("Mine").unwrap();
@@ -1346,6 +1362,426 @@ fn cross_reference_source_nesting_keeps_formatting() {
     assert_eq!(a.chars[0].format.over.tracking, Some(200.0));
     assert_eq!(a.chars[0].format.over.size, Some(11.0));
     assert_eq!(ga, gb);
+}
+
+/// Three review findings about hyperlinks whose text is not in a story of the document.
+///
+/// A table cell's and a footnote's story are built under the `StoryId(0)` placeholder, so a link
+/// recorded against one names a story nothing can look up, with offsets into text that is not
+/// there. Those links are dropped, and the report says where they were rather than claiming
+/// their source was not a run of text. And the index's topic cross-references go in at the start
+/// of the first story with text *after* the ranges were recorded, so a range in that story has
+/// to move along with them or the link covers the wrong words.
+#[test]
+fn links_whose_text_is_not_in_a_document_story_are_dropped_and_the_rest_still_fit() {
+    const LINKS: &str = r#"
+  <HyperlinkPageDestination Self="hpd1" Name="Plate" DestinationPage="p2" ViewSetting="FitPage"/>
+  <HyperlinkURLDestination Self="hud1" Name="Site" DestinationURL="https://example.com/" Hidden="false"/>
+  <Hyperlink Self="h1" Name="To the plate" Source="hts1" Visible="true" DestinationUniqueKey="1">
+    <Properties><Destination type="object">hpd1</Destination></Properties>
+  </Hyperlink>
+  <Hyperlink Self="h2" Name="From a cell" Source="hts_cell" Visible="true" DestinationUniqueKey="2">
+    <Properties><Destination type="object">hud1</Destination></Properties>
+  </Hyperlink>
+  <Hyperlink Self="h3" Name="Into a cell" Source="hts1b" Visible="true" DestinationUniqueKey="3">
+    <Properties><Destination type="object">htd_cell</Destination></Properties>
+  </Hyperlink>
+  <Index Self="ix">
+    <Topic Self="b" Name="Beta"/>
+    <Topic Self="a" Name="Alpha"><CrossReference Self="see" ReferencedTopic="b" CrossReferenceType="See"/></Topic>
+  </Index>
+"#;
+    // The story holds the two links whose text is its own, and a table whose cell holds a
+    // hyperlink source and a hyperlink text destination.
+    let story = r#"<?xml version="1.0" encoding="UTF-8"?>
+<idPkg:Story xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging" DOMVersion="16.0">
+  <Story Self="s1">
+    <ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/$ID/NormalParagraphStyle">
+      <CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]">
+        <Content>See </Content>
+      </CharacterStyleRange>
+      <HyperlinkTextSource Self="hts1" Name="To the plate" Hidden="false">
+        <CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]">
+          <Content>the plate</Content>
+        </CharacterStyleRange>
+      </HyperlinkTextSource>
+      <CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]">
+        <Content> overleaf and </Content>
+      </CharacterStyleRange>
+      <HyperlinkTextSource Self="hts1b" Name="Into a cell" Hidden="false">
+        <CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]">
+          <Content>in the table</Content>
+        </CharacterStyleRange>
+      </HyperlinkTextSource>
+      <CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]">
+        <Content>.</Content>
+        <Table Self="tb1" HeaderRowCount="0" FooterRowCount="0">
+          <Row Name="0" MinimumHeight="24"/>
+          <Column Name="0" SingleColumnWidth="60"/>
+          <Cell Name="0:0" AppliedCellStyle="CellStyle/$ID/[None]">
+            <ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/$ID/NormalParagraphStyle">
+              <CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]">
+                <Content>Cell </Content>
+              </CharacterStyleRange>
+              <HyperlinkTextSource Self="hts_cell" Name="From a cell" Hidden="false">
+                <CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]">
+                  <Content>link</Content>
+                </CharacterStyleRange>
+              </HyperlinkTextSource>
+              <CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]">
+                <HyperlinkTextDestination Self="htd_cell" Name="Cell caption"/>
+                <Content> here</Content>
+              </CharacterStyleRange>
+            </ParagraphStyleRange>
+          </Cell>
+        </Table>
+      </CharacterStyleRange>
+    </ParagraphStyleRange>
+  </Story>
+</idPkg:Story>"#;
+    let map = DESIGNMAP.replace("</Document>", &format!("{LINKS}</Document>"));
+    let bytes = zip_files(&[
+        ("designmap.xml", &map),
+        ("Resources/Graphic.xml", GRAPHIC),
+        ("Resources/Styles.xml", STYLES),
+        ("Resources/Preferences.xml", PREFS),
+        ("MasterSpreads/MasterSpread_m1.xml", MASTER),
+        ("Spreads/Spread_sp1.xml", SPREAD),
+        ("Stories/Story_s1.xml", story),
+    ]);
+    let r = import_idml_report(&bytes, &|_| None).unwrap();
+    let d = r.document;
+    d.check().unwrap();
+
+    use designcraft_doc::HyperlinkSource as S;
+    // Only the link whose text is in a story of the document survives.
+    assert_eq!(d.hyperlinks.len(), 1, "{:?}", d.hyperlinks);
+    let S::Text { story, start, end } = d.hyperlinks[0].source else { panic!("{:?}", d.hyperlinks[0].source) };
+    let text = &d.story(story).expect("the link names a story the document has").text;
+
+    // And its range still covers its own words after the index markers went in at the start.
+    assert_eq!(text.get(start..end), Some("the plate"), "the link covers the text it came from, in {text:?}");
+
+    // The two that cannot be represented say where they were, rather than that their source was
+    // not a run of text -- it was, just not in a story of the document.
+    let cell: Vec<&String> = r.warnings.iter().filter(|w| w.contains("table cell or a footnote")).collect();
+    assert_eq!(cell.len(), 2, "both are reported: {:?}", r.warnings);
+    assert!(cell.iter().any(|w| w.contains("From a cell") && w.contains("its source is text")), "{cell:?}");
+    assert!(cell.iter().any(|w| w.contains("Into a cell") && w.contains("it leads to text")), "{cell:?}");
+    assert!(!r.warnings.iter().any(|w| w.contains("is not a page item or a run of text")), "{:?}", r.warnings);
+}
+/// IDML carries a hyperlink as a source element, a destination element and a `Hyperlink` that
+/// joins them. Only `CrossReferenceSource` was mapped, so an image frame linked to a photo and a
+/// run of text linked to a page were dropped on import, although both are native here
+/// (`hyperlink.create`) and both export to PDF (#1446).
+#[test]
+fn page_item_and_text_hyperlinks_survive_import() {
+    // `img` is the Rectangle of the spread fixture; `p2` its second page.
+    const LINKS: &str = r#"
+  <HyperlinkURLDestination Self="hud1" Name="Photo" DestinationURL="https://example.com/photo.jpg" Hidden="false"/>
+  <HyperlinkURLDestination Self="hud2" Name="Mail" DestinationURL="mailto:studio@example.com" Hidden="false"/>
+  <HyperlinkPageDestination Self="hpd1" Name="Plate" DestinationPage="p2" ViewSetting="FitPage"/>
+  <HyperlinkPageItemSource Self="hpis1" Name="img" SourcePageItem="img" Hidden="false"/>
+  <HyperlinkPageItemSource Self="hpis2" Name="o" SourcePageItem="o" Hidden="false"/>
+  <Hyperlink Self="h1" Name="Photo link" Source="hpis1" Visible="true" DestinationUniqueKey="1">
+    <Properties><Destination type="object">hud1</Destination></Properties>
+  </Hyperlink>
+  <Hyperlink Self="h2" Name="Write to us" Source="hpis2" Visible="true" DestinationUniqueKey="2">
+    <Properties><Destination type="object">hud2</Destination></Properties>
+  </Hyperlink>
+  <Hyperlink Self="h3" Name="To the plate" Source="hts1" Visible="true" DestinationUniqueKey="3">
+    <Properties><Destination type="object">hpd1</Destination></Properties>
+  </Hyperlink>
+  <Hyperlink Self="h4" Name="Nothing" Source="hpis9" Visible="true" DestinationUniqueKey="4">
+    <Properties><Destination type="object">hud1</Destination></Properties>
+  </Hyperlink>
+  <HyperlinkExternalPageDestination Self="hepd1" Name="Another file" DestinationPath="elsewhere.indd" DestinationPageIndex="2"/>
+  <HyperlinkPageItemSource Self="hpis4" Name="g" SourcePageItem="g" Hidden="false"/>
+  <Hyperlink Self="h6" Name="Out of the file" Source="hpis4" Visible="true" DestinationUniqueKey="6">
+    <Properties><Destination type="object">hepd1</Destination></Properties>
+  </Hyperlink>
+  <HyperlinkPageItemSource Self="hpis3" Name="t1" SourcePageItem="t1" Hidden="false"/>
+  <Hyperlink Self="h5" Name="To the caption" Source="hpis3" Visible="true" DestinationUniqueKey="5">
+    <Properties><Destination type="object">htd1</Destination></Properties>
+  </Hyperlink>
+"#;
+    let story = r#"<?xml version="1.0" encoding="UTF-8"?>
+<idPkg:Story xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging" DOMVersion="16.0">
+  <Story Self="s1">
+    <ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/$ID/NormalParagraphStyle">
+      <CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]">
+        <Content>See </Content>
+      </CharacterStyleRange>
+      <HyperlinkTextSource Self="hts1" Name="To the plate" Hidden="false">
+        <CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]">
+          <Content>the plate</Content>
+        </CharacterStyleRange>
+      </HyperlinkTextSource>
+      <CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]">
+        <Content> overleaf, </Content>
+        <HyperlinkTextDestination Self="htd1" Name="Plate caption"/>
+        <Content>here.</Content>
+      </CharacterStyleRange>
+    </ParagraphStyleRange>
+  </Story>
+</idPkg:Story>"#;
+    let map = DESIGNMAP.replace("</Document>", &format!("{LINKS}</Document>"));
+    let bytes = zip_files(&[
+        ("designmap.xml", &map),
+        ("Resources/Graphic.xml", GRAPHIC),
+        ("Resources/Styles.xml", STYLES),
+        ("Resources/Preferences.xml", PREFS),
+        ("MasterSpreads/MasterSpread_m1.xml", MASTER),
+        ("Spreads/Spread_sp1.xml", SPREAD),
+        ("Stories/Story_s1.xml", story),
+    ]);
+    let r = import_idml_report(&bytes, &|_| None).unwrap();
+    let d = r.document;
+    d.check().unwrap();
+
+    use designcraft_doc::{HyperlinkDest as D, HyperlinkSource as S};
+    assert_eq!(d.hyperlinks.len(), 4, "three page items and one text run: {:?}", d.hyperlinks);
+
+    // The image frame links to a URL. Its source is the item the IDML named, not any item.
+    let photo = d.hyperlinks.iter().find(|h| h.name == "Photo link").expect("the page-item link");
+    let S::Item { id } = photo.source else { panic!("a page item source: {:?}", photo.source) };
+    assert_eq!(d.item(id).map(|i| i.id), Some(id), "the source item is in the document");
+    assert_eq!(photo.dest, D::Url("https://example.com/photo.jpg".into()));
+
+    // A `mailto:` URL destination is an email link, as `hyperlink.create` makes one.
+    let mail = d.hyperlinks.iter().find(|h| h.name == "Write to us").expect("the mail link");
+    assert_eq!(mail.dest, D::Email("studio@example.com".into()));
+
+    // The text source covers the text it wrapped, and the page destination is that page's index.
+    let plate = d.hyperlinks.iter().find(|h| h.name == "To the plate").expect("the text link");
+    let S::Text { story: sid, start, end } = plate.source else { panic!("a text source: {:?}", plate.source) };
+    let text = &d.story(sid).unwrap().text;
+    assert_eq!(&text[start..end], "the plate", "the source is the text the element wrapped");
+    assert_eq!(plate.dest, D::Page(1), "`p2` is the second page");
+
+    // A text destination is a text anchor, which a link can point at since #1555: the page it
+    // leads to is wherever that text has landed, so the link follows its target as text reflows.
+    let caption = d.hyperlinks.iter().find(|h| h.name == "To the caption").expect("the anchor link");
+    let D::Anchor(aid) = caption.dest else { panic!("an anchor destination: {:?}", caption.dest) };
+    let (asid, apos) = d.find_anchor(aid).expect("the anchor resolves");
+    assert_eq!(&d.story(asid).unwrap().text[..apos], "See the plate overleaf, ", "the anchor is where the element stood");
+
+    // A `Hyperlink` whose source is not in the file is dropped, not guessed at, and the import
+    // report says so rather than letting it go missing silently.
+    assert!(!d.hyperlinks.iter().any(|h| h.name == "Nothing"), "a link with no source is not imported");
+    assert!(
+        r.warnings.iter().any(|w| w.contains("hyperlink Nothing") && w.contains("hpis9") && w.contains("dropped")),
+        "the report names the link it dropped: {:?}",
+        r.warnings
+    );
+
+    // A destination kind this importer does not read is reported as that, not as missing: a link
+    // into another document is something InDesign writes and we have nowhere to put yet.
+    assert!(!d.hyperlinks.iter().any(|h| h.name == "Out of the file"), "an external-page link is not imported");
+    assert!(
+        r.warnings.iter().any(|w| w.contains("hyperlink Out of the file") && w.contains("HyperlinkExternalPageDestination")),
+        "the report says which kind it could not read: {:?}",
+        r.warnings
+    );
+}
+
+/// The other direction of #1446: a document's own hyperlinks are written to IDML and read back.
+/// Export wrote none of them, so a link made here (or imported from an InDesign file) was lost
+/// the moment the document went out as IDML.
+#[test]
+fn round_trips_page_item_and_text_hyperlinks() {
+    use designcraft_doc::{Hyperlink, HyperlinkDest as D, HyperlinkSource as S};
+
+    let mut d = Document::new(&NewDocument { pages: 2, ..NewDocument::default() });
+    let lid = d.default_layer();
+    let (_, sid) =
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(40.0, 40.0, 400.0, 400.0), lid, "See the plate overleaf.", ParaFormat::default()).unwrap();
+    let photo = designcraft_doc::ItemId(d.alloc());
+    let frame = designcraft_doc::Item::new(photo, lid, Shape::Rectangle, shapes::rectangle(Rect::new(40.0, 420.0, 200.0, 500.0)));
+    d.insert_item(SpreadRef::Doc(0), frame, None).unwrap();
+    let caption = d.paragraph_anchor(sid, 0).unwrap();
+
+    // One of each kind a link can have: a frame to a URL, a frame to an email address, a frame to
+    // a text anchor, and a run of text to a page.
+    let at = d.story(sid).unwrap().text.find("the plate").unwrap();
+    for (name, source, dest) in [
+        ("Photo", S::Item { id: photo }, D::Url("https://example.com/photo.jpg".into())),
+        ("Studio", S::Item { id: photo }, D::Email("studio@example.com".into())),
+        ("Caption", S::Item { id: photo }, D::Anchor(caption)),
+        ("Plate", S::Text { story: sid, start: at, end: at + "the plate".len() }, D::Page(1)),
+    ] {
+        let id = d.alloc();
+        d.hyperlinks.push(Hyperlink { id, name: name.into(), source, dest });
+    }
+    d.check().unwrap();
+
+    let idml = export_idml(&d);
+    let back = import_idml(&idml).unwrap();
+    back.check().unwrap();
+
+    let named = |n: &str| back.hyperlinks.iter().find(|h| h.name == n).unwrap_or_else(|| panic!("{n} came back: {:?}", back.hyperlinks));
+    assert_eq!(back.hyperlinks.len(), 4, "every link came back: {:?}", back.hyperlinks);
+    assert_eq!(named("Photo").dest, D::Url("https://example.com/photo.jpg".into()));
+    assert_eq!(named("Studio").dest, D::Email("studio@example.com".into()), "an email link is not written as a bare URL");
+    assert_eq!(named("Plate").dest, D::Page(1), "the page destination is the same page");
+
+    // The frame links point at the frame, which has a new id on the way through.
+    let S::Item { id } = named("Photo").source else { panic!("a page item source: {:?}", named("Photo").source) };
+    assert!(back.item(id).is_some(), "the source frame is in the document");
+    assert_eq!(back.item(id).map(|i| i.shape), Some(Shape::Rectangle), "and it is the frame the link was on");
+
+    // The text link covers the same words, and the anchor link resolves to the same paragraph.
+    let S::Text { story, start, end } = named("Plate").source else { panic!("a text source: {:?}", named("Plate").source) };
+    assert_eq!(&back.story(story).unwrap().text[start..end], "the plate");
+    let D::Anchor(a) = named("Caption").dest else { panic!("an anchor destination: {:?}", named("Caption").dest) };
+    assert_eq!(back.find_anchor(a).map(|(_, pos)| pos), Some(0), "the anchor is the paragraph it was on");
+
+    // One destination element per URL, however many links lead to it.
+    let text = zip_text(&idml, "designmap.xml");
+    assert_eq!(text.matches("<HyperlinkURLDestination").count(), 2, "one for the photo and one for the mailto: {text}");
+    assert_eq!(text.matches("mailto:studio@example.com").count(), 1);
+
+    // Every `Self` names one element. Three links sit on `photo`, so there are three source
+    // elements and they cannot share a `Self`; the page destination is written once however
+    // many links lead to it, as the URL destinations are (noted in review).
+    let selfs: Vec<&str> = text.match_indices("Self=\"").map(|(i, _)| &text[i + 6..][..text[i + 6..].find('"').unwrap_or(0)]).collect();
+    let mut seen = std::collections::HashSet::new();
+    let repeated: Vec<&&str> = selfs.iter().filter(|s| !seen.insert(**s)).collect();
+    assert!(repeated.is_empty(), "no Self is written twice, but these are: {repeated:?}");
+    assert_eq!(text.matches("<HyperlinkPageItemSource").count(), 3, "one per link on the frame: {text}");
+    assert_eq!(text.matches("<HyperlinkPageDestination").count(), 1, "one for the page, not one per link to it: {text}");
+}
+
+/// A link to an anchor whose text has been deleted names no element, so writing it put a
+/// `Hyperlink` in the file whose `Destination` points at nothing: import only warns, and
+/// InDesign may refuse the file. The anchor is resolved first, as the page destination's page is
+/// (noted in review of #1446).
+#[test]
+fn a_link_to_an_anchor_the_document_no_longer_has_is_not_written() {
+    use designcraft_doc::{Hyperlink, HyperlinkDest as D, HyperlinkSource as S};
+
+    let mut d = Document::new(&NewDocument { pages: 2, ..NewDocument::default() });
+    let lid = d.default_layer();
+    let (_, sid) =
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(40.0, 40.0, 400.0, 400.0), lid, "See the plate overleaf.", ParaFormat::default()).unwrap();
+    let photo = designcraft_doc::ItemId(d.alloc());
+    let frame = designcraft_doc::Item::new(photo, lid, Shape::Rectangle, shapes::rectangle(Rect::new(40.0, 420.0, 200.0, 500.0)));
+    d.insert_item(SpreadRef::Doc(0), frame, None).unwrap();
+
+    // An anchor id the document has never had, alongside a link that is fine.
+    for (name, dest) in [("Dangling", D::Anchor(999_999)), ("Fine", D::Page(1))] {
+        let id = d.alloc();
+        d.hyperlinks.push(Hyperlink { id, name: name.into(), source: S::Item { id: photo }, dest });
+    }
+    assert!(d.find_anchor(999_999).is_none(), "the document really has no such anchor");
+    d.check().unwrap();
+
+    let idml = export_idml(&d);
+    let text = zip_text(&idml, "designmap.xml");
+    assert!(!text.contains("Dangling"), "the dangling link is not written: {text}");
+    assert_eq!(text.matches("<Hyperlink ").count(), 1, "only the link that leads somewhere: {text}");
+
+    let back = import_idml(&idml).unwrap();
+    back.check().unwrap();
+    assert_eq!(back.hyperlinks.len(), 1, "{:?}", back.hyperlinks);
+    assert_eq!(back.hyperlinks[0].name, "Fine");
+    let _ = sid;
+}
+
+/// A `HyperlinkTextSource` nests inside a `ParagraphStyleRange`, so a link whose text crosses a
+/// paragraph cannot be one element: it is written as one source per paragraph, and each piece
+/// comes back as a link of its own. Pinned so the behaviour is a decision and not a surprise, and
+/// so it is clear what has to change if IDML ever lets one source span paragraphs (#1446).
+#[test]
+fn a_hyperlink_across_a_paragraph_is_written_as_one_source_per_paragraph() {
+    use designcraft_doc::{Hyperlink, HyperlinkDest as D, HyperlinkSource as S};
+
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (_, sid) =
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(40.0, 40.0, 400.0, 400.0), lid, "first line\nsecond line", ParaFormat::default()).unwrap();
+    let text = d.story(sid).unwrap().text.clone();
+    let (start, end) = (text.find("line").unwrap(), text.find("second").unwrap() + "second".len());
+    let id = d.alloc();
+    d.hyperlinks.push(Hyperlink {
+        id,
+        name: "Across".into(),
+        source: S::Text { story: sid, start, end },
+        dest: D::Url("https://example.com/".into()),
+    });
+    d.check().unwrap();
+
+    let idml = export_idml(&d);
+    assert_eq!(zip_text(&idml, "Stories/").matches("<HyperlinkTextSource").count(), 2, "one source in each paragraph");
+
+    let back = import_idml(&idml).unwrap();
+    back.check().unwrap();
+    let across: Vec<_> = back.hyperlinks.iter().filter(|h| h.name == "Across").collect();
+    assert_eq!(across.len(), 2, "each piece is a link of its own: {:?}", back.hyperlinks);
+    let piece = |h: &Hyperlink| {
+        let S::Text { story, start, end } = h.source else { panic!("a text source: {:?}", h.source) };
+        back.story(story).unwrap().text[start..end].to_string()
+    };
+    let mut pieces: Vec<String> = across.iter().map(|h| piece(h)).collect();
+    pieces.sort();
+    // The first piece keeps the paragraph break, because the link's range covered it: the break
+    // is the last character of its paragraph, so the source that wraps that paragraph's text
+    // wraps the break with it. Between them the pieces cover exactly what the link covered.
+    assert_eq!(pieces, vec!["line\n".to_string(), "second".to_string()], "between them they cover the text the link was on");
+    assert_eq!(pieces.concat(), d.story(sid).unwrap().text[start..end], "and nothing of it is lost or added");
+    assert!(across.iter().all(|h| h.dest == D::Url("https://example.com/".into())), "both pieces lead where the link led");
+}
+
+/// A link from a frame anchored in text is kept, but PDF export finds a link's frame among the
+/// spreads' items, where an anchored frame is not: the import report says the PDF will not have it,
+/// rather than the link going missing from the PDF without a word.
+#[test]
+fn a_link_from_an_anchored_frame_is_kept_and_reported() {
+    const LINKS: &str = r#"
+  <HyperlinkURLDestination Self="hud1" Name="Photo" DestinationURL="https://example.com/photo.jpg" Hidden="false"/>
+  <HyperlinkPageItemSource Self="hpis1" Name="thumb" SourcePageItem="inl" Hidden="false"/>
+  <HyperlinkPageItemSource Self="hpis2" Name="img" SourcePageItem="img" Hidden="false"/>
+  <Hyperlink Self="h1" Name="Thumbnail link" Source="hpis1" Visible="true" DestinationUniqueKey="1">
+    <Properties><Destination type="object">hud1</Destination></Properties>
+  </Hyperlink>
+  <Hyperlink Self="h2" Name="Frame link" Source="hpis2" Visible="true" DestinationUniqueKey="2">
+    <Properties><Destination type="object">hud1</Destination></Properties>
+  </Hyperlink>
+"#;
+    let story = r#"<?xml version="1.0" encoding="UTF-8"?>
+<idPkg:Story xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging" DOMVersion="16.0">
+  <Story Self="s1">
+    <ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/$ID/NormalParagraphStyle">
+      <CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]">
+        <Content>See </Content>
+        <Rectangle Self="inl" ItemTransform="1 0 0 1 0 0">
+          <Properties><PathGeometry><GeometryPathType PathOpen="false"><PathPointArray>
+            <PathPointType Anchor="0 0"/><PathPointType Anchor="0 10"/><PathPointType Anchor="10 10"/><PathPointType Anchor="10 0"/>
+          </PathPointArray></GeometryPathType></PathGeometry></Properties>
+          <AnchoredObjectSetting AnchoredPosition="InlinePosition"/>
+        </Rectangle>
+        <Content> here.</Content>
+      </CharacterStyleRange>
+    </ParagraphStyleRange>
+  </Story>
+</idPkg:Story>"#;
+    let map = DESIGNMAP.replace("</Document>", &format!("{LINKS}</Document>"));
+    let bytes = zip_files(&[
+        ("designmap.xml", &map),
+        ("Resources/Graphic.xml", GRAPHIC),
+        ("Resources/Styles.xml", STYLES),
+        ("Resources/Preferences.xml", PREFS),
+        ("MasterSpreads/MasterSpread_m1.xml", MASTER),
+        ("Spreads/Spread_sp1.xml", SPREAD),
+        ("Stories/Story_s1.xml", story),
+    ]);
+    let r = import_idml_report(&bytes, &|_| None).unwrap();
+    let d = r.document;
+    d.check().unwrap();
+    assert!(d.hyperlinks.iter().any(|h| h.name == "Thumbnail link"), "the link is kept: {:?}", d.hyperlinks);
+    let anchored: Vec<&String> = r.warnings.iter().filter(|w| w.contains("anchored in text")).collect();
+    assert_eq!(anchored.len(), 1, "one report, for the anchored frame's link: {:?}", r.warnings);
+    assert!(anchored[0].contains("hyperlink Thumbnail link"), "{anchored:?}");
 }
 
 #[test]
@@ -2972,6 +3408,38 @@ fn round_trips_the_zero_point_and_ruler_origin() {
     assert_eq!(fixture("NaN 4").settings.zero_point, [0.0, 0.0]);
 }
 
+/// Q is `Q` in IDML, as InDesign writes it (`U` is another unit). Units DesignCraft lacks are
+/// read as points, and the import report says so.
+#[test]
+fn ruler_units_in_q_and_ha_round_trip_and_unknown_units_are_reported() {
+    use designcraft_geom::Unit;
+    let mut d = Document::new(&NewDocument::default());
+    for (h, v) in [(Unit::Q, Unit::Ha), (Unit::Ha, Unit::Q), (Unit::Millimeters, Unit::Points)] {
+        (d.settings.horizontal_units, d.settings.vertical_units) = (h, v);
+        let bytes = export_idml(&d);
+        let back = import_idml(&bytes).unwrap();
+        assert_eq!((back.settings.horizontal_units, back.settings.vertical_units), (h, v));
+    }
+    d.settings.horizontal_units = Unit::Q;
+    let prefs = zip_text(&export_idml(&d), "Resources/Preferences.xml");
+    assert!(prefs.contains(r#"HorizontalMeasurementUnits="Q""#), "{prefs}");
+
+    let prefs =
+        PREFS.replace("<MarginPreference", r#"<ViewPreference HorizontalMeasurementUnits="U" VerticalMeasurementUnits="Q"/><MarginPreference"#);
+    let zip = zip_files(&[
+        ("designmap.xml", DESIGNMAP),
+        ("Resources/Graphic.xml", GRAPHIC),
+        ("Resources/Styles.xml", STYLES),
+        ("Resources/Preferences.xml", &prefs),
+        ("MasterSpreads/MasterSpread_m1.xml", MASTER),
+        ("Spreads/Spread_sp1.xml", SPREAD),
+        ("Stories/Story_s1.xml", STORY),
+    ]);
+    let r = import_idml_report(&zip, &|_| None).unwrap();
+    assert_eq!((r.document.settings.horizontal_units, r.document.settings.vertical_units), (Unit::Points, Unit::Q));
+    assert!(r.warnings.iter().any(|w| w.contains("horizontal ruler units `U`")), "{:?}", r.warnings);
+}
+
 #[test]
 fn round_trips_lock_column_guides() {
     let mut d = Document::new(&NewDocument::default());
@@ -3841,6 +4309,7 @@ fn object_style_effects_import_by_category_and_based_on() {
     let base = fx("Base").unwrap();
     assert!(base.drop_shadow.on && base.drop_shadow.size == 9.0 && (base.drop_shadow.distance - 5.0).abs() < 1e-9);
     assert_eq!(base.feather, 0.0, "EnableFeather=false");
+    assert_eq!(base.drop_shadow.mode, designcraft_color::BlendMode::Normal, "no BlendMode: Normal, as earlier exports rendered");
     let child = fx("Child").unwrap();
     assert_eq!((child.drop_shadow.size, child.feather), (9.0, 6.0), "settings from the BasedOn style");
     assert!(fx("Off").is_none());
@@ -3924,6 +4393,45 @@ fn style_names_ending_in_a_space_and_partial_rule_overrides_import() {
     assert!(black.on, "the rule stays on");
     assert_eq!((black.weight, black.offset), (16.0, -3.0), "weight and offset come from the base style");
     assert_ne!(black.color, white.color, "only the colour is overridden");
+}
+
+#[test]
+fn a_style_setting_only_a_rules_type_gap_or_keep_in_frame_overrides_it() {
+    let styles = STYLES.replace(
+        r#"  </RootParagraphStyleGroup>"#,
+        r#"    <ParagraphStyle Self="ParagraphStyle/Base" Name="Base" RuleBelow="true" RuleBelowLineWeight="3">
+      <Properties><BasedOn type="string">$ID/[No paragraph style]</BasedOn></Properties>
+    </ParagraphStyle>
+    <ParagraphStyle Self="ParagraphStyle/Wavy" Name="Wavy" RuleBelowType="StrokeStyle/$ID/Wavy">
+      <Properties><BasedOn type="object">ParagraphStyle/Base</BasedOn></Properties>
+    </ParagraphStyle>
+    <ParagraphStyle Self="ParagraphStyle/Gap" Name="Gap" RuleBelowGapColor="Color/Black">
+      <Properties><BasedOn type="string">$ID/[No paragraph style]</BasedOn></Properties>
+    </ParagraphStyle>
+    <ParagraphStyle Self="ParagraphStyle/Kept" Name="Kept" KeepRuleAboveInFrame="true">
+      <Properties><BasedOn type="string">$ID/[No paragraph style]</BasedOn></Properties>
+    </ParagraphStyle>
+    <ParagraphStyle Self="ParagraphStyle/TextGap" Name="TextGap" RuleBelowGapColor="$ID/Text Color" RuleAboveColor="$ID/Text Color">
+      <Properties><BasedOn type="string">$ID/[No paragraph style]</BasedOn><RuleAboveGapColor type="string">Text Color</RuleAboveGapColor></Properties>
+    </ParagraphStyle>
+  </RootParagraphStyleGroup>"#,
+    );
+    let d = import_idml(&fixture_with_table_styles(&styles, STORY)).unwrap();
+    let style = |n: &str| d.styles.paragraph.iter().find(|s| s.name == n).unwrap().para.clone();
+    let wavy = style("Wavy").rule_below.expect("the type alone overrides the rule");
+    assert_eq!((wavy.on, wavy.weight, wavy.kind), (true, 3.0, designcraft_doc::StrokeType::Wavy), "the rest from the based-on style");
+    let gap = style("Gap").rule_below.expect("the gap colour alone, with no on or weight in the chain");
+    assert!(!gap.on && gap.gap_color != designcraft_color::swatch::NONE, "{gap:?}");
+    assert!(style("Kept").rule_above.expect("Keep In Frame alone").keep_in_frame);
+    // Text Color, in either spelling, for a gap and a rule colour.
+    let text = style("TextGap");
+    let (below, above) = (text.rule_below.expect("rule below"), text.rule_above.expect("rule above"));
+    assert_eq!(below.gap_color, designcraft_doc::TEXT_COLOR);
+    assert_eq!((above.gap_color.as_str(), above.color.as_str()), (designcraft_doc::TEXT_COLOR, designcraft_doc::TEXT_COLOR));
+    // And it is written back as Text Color, not as no swatch.
+    let back = import_idml(&export_idml(&d)).unwrap();
+    let below = back.styles.paragraph.iter().find(|s| s.name == "TextGap").unwrap().para.rule_below.clone().unwrap();
+    assert_eq!(below.gap_color, designcraft_doc::TEXT_COLOR, "round-trips");
 }
 
 #[test]
@@ -4582,6 +5090,98 @@ fn cell_first_baseline_comes_from_cell_styles_table_regions_and_cells_and_round_
     assert_eq!(s2.first_baseline, Some(FirstBaseline::CapHeight));
 }
 
+/// A TOC style as InDesign writes it: `$ID/`-prefixed separator (`^y`, the right indent tab) and entry style.
+const TOC_STYLES: &str = r#"<idPkg:Styles xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging">
+<RootParagraphStyleGroup>
+  <ParagraphStyle Self="ParagraphStyle/Heading 1" Name="Heading 1"/>
+  <ParagraphStyleGroup Self="psg-toc" Name="TOC">
+    <ParagraphStyle Self="ParagraphStyle/TOC%3aTOC body text" Name="TOC:TOC body text" Capitalization="AllCaps"/>
+    <ParagraphStyle Self="ParagraphStyle/TOC%3aTOC Header" Name="TOC:TOC Header"/>
+  </ParagraphStyleGroup>
+</RootParagraphStyleGroup>
+<RootCharacterStyleGroup><CharacterStyle Self="CharacterStyle/TOC Page Number" Name="TOC Page Number"/></RootCharacterStyleGroup>
+<TOCStyle Self="TOCStyle/$ID/DefaultTOCStyleName" TitleStyle="ParagraphStyle/TOC%3aTOC Header" Title="Table of Contents" Name="$ID/DefaultTOCStyleName">
+  <TOCStyleEntry Self="e1" Name="Heading 1" Level="1" PageNumberPosition="AfterEntry" Separator="$ID/^y">
+    <Properties><FormatStyle type="object">ParagraphStyle/$ID/TOC%3aTOC body text</FormatStyle>
+    <PageNumberStyle type="object">CharacterStyle/TOC Page Number</PageNumberStyle>
+    <SeparatorStyle type="string">$ID/[Same Style]</SeparatorStyle></Properties>
+  </TOCStyleEntry>
+</TOCStyle></idPkg:Styles>"#;
+
+const TOC_STORY: &str = r#"<idPkg:Story xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging">
+<Story Self="s1" AppliedTOCStyle="TOCStyle/$ID/DefaultTOCStyleName"><ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/TOC%3aTOC body text"><CharacterStyleRange><Content>Welcome</Content></CharacterStyleRange></ParagraphStyleRange></Story></idPkg:Story>"#;
+
+#[test]
+fn toc_style_entries_read_id_prefixed_separators_and_styles() {
+    let d = import_idml(&fixture_with_table_styles(TOC_STYLES, TOC_STORY)).unwrap();
+    let toc = d.toc.as_ref().expect("the story's TOC style is imported");
+    let entry = toc.entries.iter().find(|e| e.style == "Heading 1").unwrap();
+    assert_eq!(entry.separator.as_deref(), Some("\u{E006}"), "right-indent tabs must not become ordinary tab stops");
+    assert_eq!(entry.entry_style.as_deref(), Some("TOC/TOC body text"));
+    assert_eq!(entry.page_number_style.as_deref(), Some("TOC Page Number"));
+    assert_eq!(toc.title_style.as_deref(), Some("TOC/TOC Header"));
+}
+
+#[test]
+fn toc_style_entries_fall_back_on_malformed_and_unsupported_values() {
+    let long = "x".repeat(65);
+    let entries = format!(
+        r#"<TOCStyleEntry Self="e1" Name="Heading 1" Level="abc" PageNumberPosition="Sideways" Separator="$ID/^q">
+    <Properties><FormatStyle type="object">ParagraphStyle/Missing</FormatStyle>
+    <PageNumberStyle type="object">CharacterStyle/$ID/[None]</PageNumberStyle>
+    <SeparatorStyle type="object">CharacterStyle/Missing</SeparatorStyle></Properties>
+  </TOCStyleEntry>
+  <TOCStyleEntry Self="e2" Name="TOC:TOC Header" Level="12" Separator="{long}"/>
+  <TOCStyleEntry Self="e3" Name="Heading 1" Level="2" Separator="^t"/>
+  <TOCStyleEntry Self="e4" Name="" Level="3"/>"#
+    );
+    let start = TOC_STYLES.find("<TOCStyleEntry").unwrap();
+    let end = TOC_STYLES.find("</TOCStyle>").unwrap();
+    let styles = format!("{}{entries}\n{}", &TOC_STYLES[..start], &TOC_STYLES[end..])
+        .replace(r#"TitleStyle="ParagraphStyle/TOC%3aTOC Header""#, r#"TitleStyle="ParagraphStyle/Missing""#);
+    let d = import_idml(&fixture_with_table_styles(&styles, TOC_STORY)).unwrap();
+    d.check().unwrap();
+    let toc = d.toc.as_ref().expect("the TOC style is still imported");
+    assert_eq!(toc.title_style, None, "a title style the document lacks is dropped");
+    assert_eq!(toc.entries.len(), 3, "an entry without a style name is skipped: {:?}", toc.entries);
+    let e1 = &toc.entries[0];
+    assert_eq!(e1.level, 1, "an unreadable level falls back to 1");
+    assert_eq!(e1.page_number, designcraft_doc::TocPageNumber::After, "an unknown page-number position falls back to After");
+    assert_eq!(e1.separator.as_deref(), Some("^q"), "an unknown special-character code is kept as written");
+    assert_eq!(
+        (e1.entry_style.as_deref(), e1.page_number_style.as_deref(), e1.separator_style.as_deref()),
+        (None, None, None),
+        "undefined and [None] styles are no style"
+    );
+    let e2 = &toc.entries[1];
+    assert_eq!(e2.level, 9, "a level past 9 is clamped");
+    assert_eq!(e2.separator, None, "an over-long separator is dropped");
+    assert_eq!((toc.entries[2].level, toc.entries[2].separator.as_deref()), (2, None), "a plain tab is the default separator");
+}
+
+#[test]
+fn toc_style_references_in_indented_properties_resolve() {
+    // Property children laid out on their own lines: the whitespace around a reference isn't
+    // part of the style name.
+    let styles = TOC_STYLES
+        .replace(
+            ">ParagraphStyle/$ID/TOC%3aTOC body text<",
+            ">
+      ParagraphStyle/$ID/TOC%3aTOC body text
+    <",
+        )
+        .replace(
+            ">CharacterStyle/TOC Page Number<",
+            ">
+      CharacterStyle/TOC Page Number
+    <",
+        );
+    let d = import_idml(&fixture_with_table_styles(&styles, TOC_STORY)).unwrap();
+    let entry = d.toc.as_ref().unwrap().entries.iter().find(|e| e.style == "Heading 1").unwrap();
+    assert_eq!(entry.entry_style.as_deref(), Some("TOC/TOC body text"));
+    assert_eq!(entry.page_number_style.as_deref(), Some("TOC Page Number"));
+}
+
 /// A graphic placed in a table cell is written into the cell, not dropped.
 #[test]
 fn exports_graphic_in_table_cell() {
@@ -4746,6 +5346,41 @@ fn split_document_round_trips() {
     assert!(split(&back, "Part") && split(&back, "Chapter") && !split(&back, "Body"));
 }
 
+/// Export Tagging (tag and class) of paragraph and character styles comes from the style's EPUB
+/// export tag map, not another export type's, and is written back.
+#[test]
+fn export_tags_round_trip() {
+    let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<idPkg:Styles xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging" DOMVersion="16.0">
+  <RootCharacterStyleGroup Self="rc">
+    <CharacterStyle Self="CharacterStyle/$ID/[No character style]" Name="$ID/[No character style]"/>
+    <CharacterStyle Self="CharacterStyle/Lead" Name="Lead">
+      <StyleExportTagMap Self="cs1" ExportType="PDF" ExportTag="Artifact" ExportClass="" ExportAttributes=""/>
+      <StyleExportTagMap Self="cs2" ExportType="EPUB" ExportTag="em" ExportClass="lead" ExportAttributes="" SplitDocument="false" EmitCss="true"/>
+    </CharacterStyle>
+  </RootCharacterStyleGroup>
+  <RootParagraphStyleGroup Self="rp">
+    <ParagraphStyle Self="ParagraphStyle/$ID/[No paragraph style]" Name="$ID/[No paragraph style]" PointSize="12"/>
+    <ParagraphStyle Self="ParagraphStyle/Chapter" Name="Chapter" SplitDocument="false">
+      <StyleExportTagMap Self="ps1" ExportType="PDF" ExportTag="H1" ExportClass="" ExportAttributes=""/>
+      <StyleExportTagMap Self="ps2" ExportType="EPUB" ExportTag="h1" ExportClass="title" ExportAttributes="" SplitDocument="false" EmitCss="true"/>
+    </ParagraphStyle>
+    <ParagraphStyle Self="ParagraphStyle/Body" Name="Body"/>
+  </RootParagraphStyleGroup>
+</idPkg:Styles>"#;
+    let d = import_idml_with(&fixture_with_styles(xml), &|_| None).unwrap();
+    let tag = |d: &designcraft_doc::Document, name: &str, character: bool| {
+        d.styles.export_tag(name, character).map(|t| (t.tag.clone(), t.class.clone(), t.split))
+    };
+    let check = |d: &designcraft_doc::Document| {
+        assert_eq!(tag(d, "Chapter", false), Some(("h1".into(), "title".into(), false)));
+        assert_eq!(tag(d, "Lead", true), Some(("em".into(), "lead".into(), false)));
+        assert_eq!(tag(d, "Body", false), None);
+    };
+    check(&d);
+    check(&import_idml(&export_idml(&d)).unwrap());
+}
+
 /// EPUB Export Options › Split Document: off, one style (built in or not) or the styles' export
 /// tags, read from the file's `EPubExportPreference` and written back.
 #[test]
@@ -4776,4 +5411,56 @@ fn epub_split_document_round_trips() {
         assert_eq!(d.settings.epub_split, want, "{attrs}");
         assert_eq!(import_idml(&export_idml(&d)).unwrap().settings.epub_split, want, "{attrs}");
     }
+}
+
+/// Text typed over a cross-reference's generated text is kept as shown, its page number live
+/// (InDesign's cross-reference page number variable, found by its `AssociatedTextVariable`),
+/// tracked insertions in and deletions out. The edits survive export and import.
+#[test]
+fn keeps_edited_cross_reference_text() {
+    let story = r#"<?xml version="1.0" encoding="UTF-8"?>
+<idPkg:Story xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging" DOMVersion="16.0">
+<Story Self="s1"><ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/$ID/NormalParagraphStyle">
+<CrossReferenceSource Self="x1" AppliedFormat="n"><CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]"><Content>Page </Content></CharacterStyleRange><CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]"><TextVariableInstance Self="v1" Name="Seitenzahl" ResultText="7" AssociatedTextVariable="dTextVariablen&lt;?AID 001b?&gt;TV XRefPageNumber"/></CharacterStyleRange><CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]"><Content>: Bove, Vinny. </Content><Change Self="c1" ChangeType="InsertedText"><Content>"Advent Horizon."</Content></Change><Change Self="c2" ChangeType="DeletedText"><Content> (draft)</Content></Change><Content> 1996.</Content></CharacterStyleRange></CrossReferenceSource>
+<CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]"><Content> and </Content></CharacterStyleRange>
+<CrossReferenceSource Self="x2" AppliedFormat="n"><CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]"><Content>"Intro" on page </Content><TextVariableInstance Self="v2" Name="&lt;?AID 001b?&gt;TV XRefPageNumber" ResultText="3" AssociatedTextVariable="dTextVariablen&lt;?AID 001b?&gt;TV XRefPageNumber"/></CharacterStyleRange></CrossReferenceSource>
+</ParagraphStyleRange></Story></idPkg:Story>"#;
+    let d = import_idml(&fixture_with_story(story)).unwrap();
+    d.check().unwrap();
+    let s = d.stories.values().find(|s| !s.xrefs.is_empty()).expect("story with cross-references");
+    assert_eq!(s.xrefs.len(), 2);
+    assert_eq!(s.xrefs[0].text.as_deref(), Some("Page <pageNum />: Bove, Vinny. \"Advent Horizon.\" 1996."));
+    assert_eq!(s.xrefs[0].page.as_deref(), Some("7"));
+    // Its destination is gone: the text and page it last showed.
+    assert_eq!(designcraft_compose::xref::xref_text(&d, &s.xrefs[0], None), "Page 7: Bove, Vinny. \"Advent Horizon.\" 1996.");
+    assert_eq!(s.xrefs[1].text.as_deref(), Some("\"Intro\" on page <pageNum />"), "with no destination to generate from, the text as shown");
+    let back = import_idml(&export_idml(&d)).unwrap();
+    back.check().unwrap();
+    let b = back.stories.values().find(|s| !s.xrefs.is_empty()).unwrap();
+    assert_eq!(b.xrefs[0].text, s.xrefs[0].text);
+    assert_eq!(b.xrefs[0].page, s.xrefs[0].page);
+}
+
+/// Saved cross-reference text counts as generated only when it is exactly what its format
+/// generates for its destination: text added after it (or anywhere else) is an edit, and kept.
+#[test]
+fn only_exactly_generated_cross_reference_text_is_regenerated() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(40.0, 40.0, 400.0, 400.0), lid, "Results\nSee", ParaFormat::default()).unwrap();
+    let target = d.paragraph_anchor(sid, 0).unwrap();
+    d.xref_formats.push(designcraft_doc::XrefFormat { name: "Page".into(), definition: "Page <pageNum />".into() });
+    for t in ["Page <pageNum />, revised", "Page <pageNum />", "Seite <pageNum />"] {
+        let st = d.story_mut(sid).unwrap();
+        let end = st.len();
+        st.insert(end, " ");
+        let x = designcraft_doc::CrossRef { target, format: "Page".into(), text: Some(t.into()), page: Some("1".into()) };
+        st.insert_xref(end + 1, x);
+    }
+    d.check().unwrap();
+    let back = import_idml(&export_idml(&d)).unwrap();
+    back.check().unwrap();
+    let s = back.stories.values().find(|s| !s.xrefs.is_empty()).unwrap();
+    let got: Vec<Option<&str>> = s.xrefs.iter().map(|x| x.text.as_deref()).collect();
+    assert_eq!(got, [Some("Page <pageNum />, revised"), None, Some("Seite <pageNum />")]);
 }

@@ -1,6 +1,6 @@
 use super::{
     CellAddr, CellRange, Document, Result, Selection, Session, StoryId, Table, TableSel, TextSel, Value, bad, compose, floor_char_boundary, has_doc,
-    str_param,
+    str_param, table_story,
 };
 
 // ---------- enablement and targeting ----------
@@ -25,7 +25,13 @@ pub(super) fn in_table_or_ids(s: &Session) -> std::result::Result<(), String> {
 
 pub(super) fn in_cell(s: &Session) -> std::result::Result<(), String> {
     has_doc(s)?;
-    if s.active().is_some_and(|d| d.selection.text.is_some_and(|t| t.cell.is_some())) { Ok(()) } else { Err("not in a table cell".into()) }
+    // Footnote text is addressed as a cell too, but isn't in a table.
+    let in_table = |c: CellAddr| c.footnote_id().is_none();
+    if s.active().is_some_and(|d| d.selection.text.is_some_and(|t| t.cell.is_some_and(in_table))) {
+        Ok(())
+    } else {
+        Err("not in a table cell".into())
+    }
 }
 
 /// The table a command acts on and its target cell range.
@@ -52,8 +58,8 @@ pub(super) fn target(s: &Session, p: &Value, cmd: &str) -> Result<Tgt> {
     let st = s.doc()?;
     let doc = &st.doc;
     let explicit_table = p.get("table").and_then(Value::as_u64);
-    let explicit_story = p.get("story").and_then(Value::as_u64).map(StoryId);
     let (story, table, range) = if let Some(tid) = explicit_table {
+        let explicit_story = table_story(p, cmd)?.map(StoryId);
         let sid = explicit_story.or_else(|| find_table(doc, tid)).ok_or_else(|| bad(cmd, format!("no table {tid}")))?;
         (sid, tid, None)
     } else if let Some(c) = st.selection.cells {
@@ -110,8 +116,10 @@ pub(super) fn clamp_selection(d: &Document, sel: &mut Selection) {
             None => sel.cells = None,
         }
     }
+    // Footnote text is addressed as a cell too, but isn't in a table.
     if let Some(t) = sel.text
         && let Some(c) = t.cell
+        && c.footnote_id().is_none()
     {
         let story = d.story(t.story);
         match story.and_then(|x| x.tables.get(&c.table)) {

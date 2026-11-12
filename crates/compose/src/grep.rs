@@ -13,6 +13,9 @@
 //! - Lookahead, lookbehind, atomic groups, possessive quantifiers, backreferences and `\K` are
 //!   supported. Backtracking is capped ([`BACKTRACK_LIMIT`]), so a pathological pattern stops
 //!   with an error instead of hanging.
+//! - Subroutine calls and recursion (`\g<name>`, `\g<1>`, `\g<-1>`) are not part of the dialect
+//!   and are refused: the regex engine inlines each call while compiling, so a short pattern whose
+//!   groups call each other more than once expands exponentially.
 
 use std::fmt;
 use std::ops::Range;
@@ -30,6 +33,11 @@ pub const BACKTRACK_LIMIT: usize = 200_000;
 /// on every relayout (#1598). A paragraph cannot usefully carry more styled runs than this, and
 /// a scan that reaches it stops with what it has.
 pub const MAX_MATCHES_PER_PARAGRAPH: usize = 4096;
+/// Searches [`Grep::find_nonempty`] may run per match it is allowed to return. Empty matches
+/// don't count toward that match limit, but each one is still a search (a lookaround can scan the
+/// rest of the paragraph): without this a pattern that only ever matches empty searched once per
+/// character, quadratic in the paragraph's length.
+pub const SEARCHES_PER_MATCH: usize = 4;
 /// Compiled program size cap (bytes) for the underlying regex engine.
 const SIZE_LIMIT: usize = 4 << 20;
 
@@ -363,7 +371,13 @@ impl Grep {
             (false, true) => "(?m)",
             (false, false) => "",
         };
-        let re = fancy_regex::RegexBuilder::new(&format!("{flags}{pat}"))
+        let pat = format!("{flags}{pat}");
+        // Refused before compiling: the compiler inlines every subroutine call (to a fixed depth),
+        // so `(a\g<1>\g<1>)` costs time and memory exponential in that depth.
+        if fancy_regex::Expr::parse_tree(&pat).is_ok_and(|t| t.contains_subroutines) {
+            return Err(err("GREP: subroutine calls and recursion are not supported"));
+        }
+        let re = fancy_regex::RegexBuilder::new(&pat)
             .backtrack_limit(BACKTRACK_LIMIT)
             .delegate_size_limit(SIZE_LIMIT)
             .delegate_dfa_size_limit(SIZE_LIMIT)
@@ -385,15 +399,37 @@ impl Grep {
         self.re.find_iter(text).take(limit).map(|m| m.map(|m| m.range()).map_err(run_err)).collect()
     }
 
+    /// The first match starting at or after byte `start`, with its replacement: `template`
+    /// expanded as [`Self::replacements`] does.
+    pub fn replacement_at(&self, text: &str, start: usize, template: &str) -> Result<Option<(Range<usize>, String)>, GrepError> {
+        if start > text.len() || !text.is_char_boundary(start) {
+            return Ok(None);
+        }
+        let Some(caps) = self.re.captures_from_pos(text, start).map_err(run_err)? else { return Ok(None) };
+        Ok(caps.get(0).map(|m| (m.range(), fancy_regex::Expander::default().expansion(template, &caps))))
+    }
+
     /// Non-empty matches in `text`, at most `limit` of them: an empty match styles nothing, so it
-    /// doesn't count toward a GREP style's cap.
-    pub fn find_nonempty(&self, text: &str, limit: usize) -> Result<Vec<Range<usize>>, GrepError> {
-        self.re
-            .find_iter(text)
-            .filter(|m| !m.as_ref().is_ok_and(|m| m.range().is_empty()))
-            .take(limit)
-            .map(|m| m.map(|m| m.range()).map_err(run_err))
-            .collect()
+    /// doesn't count toward a GREP style's cap. Empty matches still cost a search each, so the
+    /// scan stops after `limit` × [`SEARCHES_PER_MATCH`] searches in all.
+    ///
+    /// The flag is true when the search budget ran out with text left to scan, so the matches may
+    /// be incomplete (reaching `limit` is not flagged: the caller sees the full vector).
+    pub fn find_nonempty(&self, text: &str, limit: usize) -> Result<(Vec<Range<usize>>, bool), GrepError> {
+        let mut it = self.re.find_iter(text);
+        let mut out = Vec::new();
+        for _ in 0..limit.saturating_mul(SEARCHES_PER_MATCH) {
+            if out.len() >= limit {
+                return Ok((out, false));
+            }
+            let Some(m) = it.next() else { return Ok((out, false)) };
+            let r = m.map_err(run_err)?.range();
+            if !r.is_empty() {
+                out.push(r);
+            }
+        }
+        let more = out.len() < limit && it.next().transpose().map_err(run_err)?.is_some();
+        Ok((out, more))
     }
 
     /// Matches in `text` and their replacements, `template` expanded per match (`$1`…; see
@@ -485,6 +521,32 @@ mod tests {
         let g = grep(r"(\d+)\h(\l+)");
         let tpl = translate_replacement(r"$2~S$1x\r\$$");
         assert_eq!(g.replacements("5 kg", &tpl, false).unwrap(), [(0..4, "kg\u{A0}5x\n$$".to_string())]);
+    }
+
+    #[test]
+    fn subroutine_calls_are_refused() {
+        // Each group calls itself twice: compiling inlines 2^depth copies.
+        for p in [r"(a\g<1>\g<1>)", r"(?<x>a\g<x>\g<x>)", r"(?<x>a|b\g<x>)", r"(a)(b)\g<-1>", r"(a)\g<1>"] {
+            let t = std::time::Instant::now();
+            let e = Grep::new(p, GrepOptions::default()).unwrap_err();
+            assert!(e.0.contains("subroutine"), "{p}: {e}");
+            assert!(t.elapsed().as_secs() < 5, "{p}");
+        }
+        // Backreferences and groups are still fine.
+        assert_eq!(found(r"(a)\1", "xaa"), ["aa"]);
+        assert_eq!(found(r"(?<x>a)\k<x>", "xaa"), ["aa"]);
+    }
+
+    #[test]
+    fn empty_matches_use_up_the_search_budget() {
+        // A pattern that matches empty at every character: the non-empty match at the end is
+        // found within the budget and not past it.
+        let g = grep("a*");
+        let near = format!("{}a", "b".repeat(10 * SEARCHES_PER_MATCH - 2));
+        let (ms, exhausted) = g.find_nonempty(&near, 10).unwrap();
+        assert_eq!((ms.len(), ms[0].clone(), exhausted), (1, near.len() - 1..near.len(), false));
+        let far = format!("{}a", "b".repeat(10 * SEARCHES_PER_MATCH + 50));
+        assert_eq!(g.find_nonempty(&far, 10).unwrap(), (vec![], true), "the scan stops at the search budget and says so");
     }
 
     #[test]

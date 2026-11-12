@@ -90,6 +90,7 @@ fn nested_and_item_rotations_are_combined_before_measuring_graphics() {
             name: "Grouped image".into(),
             mime: "image/svg+xml".into(),
             link: None,
+            link_fingerprint: None,
             data: Arc::new(br#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><rect width="1" height="1" fill="red"/></svg>"#.to_vec()),
             pixels: None,
             page: 0,

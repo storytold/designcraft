@@ -1,6 +1,7 @@
-use serde_json::json;
+use serde_json::{Value, json};
 
 use super::{Session, doc};
+use crate::Result;
 
 fn session_with_frame() -> (Session, u64, u64) {
     let mut s = Session::new();
@@ -125,6 +126,72 @@ fn table_edit_after_anchor_removal_floors_parent_caret() {
         assert_eq!(table_for(&s, other_sid, other_tid), &expected_other);
         check(&s);
     }
+}
+
+/// Footnote text is addressed as a cell, but the table commands don't take it for one.
+#[test]
+fn the_cell_commands_refuse_footnote_text() {
+    let (mut s, sid, _) = session_with_frame();
+    s.execute("story.setText", &json!({"story": sid, "text": "Hello"})).unwrap();
+    s.execute("text.select", &json!({"story": sid, "anchor": 5, "focus": 5})).unwrap();
+    s.execute("footnote.insert", &json!({"text": "Note"})).unwrap();
+    let before = s.doc().unwrap().selection.clone();
+    assert!(before.text.and_then(|t| t.cell).and_then(|c| c.footnote_id()).is_some(), "the caret is in the footnote");
+    for cmd in ["table.toggleSelection", "table.prevCell", "table.nextCell"] {
+        assert!(s.execute(cmd, &json!({})).is_err(), "{cmd}");
+    }
+    assert_eq!(s.doc().unwrap().selection, before);
+    // A Tab there is typed into the footnote, not taken for the next cell.
+    s.execute("text.insert", &json!({"text": "\t"})).unwrap();
+    let notes = s.execute("footnote.list", &json!({})).unwrap();
+    assert!(notes[0]["text"].as_str().is_some_and(|t| t.contains('\t')), "{notes}");
+}
+
+/// Esc in a table toggles between the text and the cell (InDesign's Esc): the caret in a cell
+/// selects that cell, and selected cells select the first one's text; Shift+Tab goes back a cell.
+#[test]
+fn escape_toggles_text_and_cell_selection() {
+    let (mut s, sid, _) = session_with_frame();
+    let tid = s.execute("table.insert", &json!({"rows": 2, "cols": 2})).unwrap()["table"].as_u64().unwrap();
+    s.execute("table.nextCell", &json!({})).unwrap();
+    s.execute("text.insert", &json!({"text": "Phone"})).unwrap();
+    let cell = designcraft_doc::CellAddr { table: tid, row: 0, col: 1 };
+    assert_eq!(s.execute("table.toggleSelection", &json!({})).unwrap(), json!({"cells": true}));
+    let sel = s.doc().unwrap().selection.clone();
+    let cells = sel.cells.unwrap();
+    assert_eq!((cells.story.0, cells.table, cells.range), (sid, tid, designcraft_doc::CellRange::cell(0, 1)));
+    assert_eq!(sel.text.unwrap().cell, Some(cell));
+    assert_eq!(s.execute("table.toggleSelection", &json!({})).unwrap(), json!({"cells": false}));
+    let sel = s.doc().unwrap().selection.clone();
+    assert!(sel.cells.is_none());
+    let t = sel.text.unwrap();
+    assert_eq!((t.cell, t.range()), (Some(cell), 0..5), "the cell's text is selected");
+    s.execute("table.prevCell", &json!({})).unwrap();
+    assert_eq!(s.doc().unwrap().selection.text.unwrap().cell, Some(designcraft_doc::CellAddr { col: 0, ..cell }));
+    // With the cell selected, typing replaces its text and leaves the caret after it.
+    s.execute("table.nextCell", &json!({})).unwrap();
+    s.execute("table.toggleSelection", &json!({})).unwrap();
+    s.execute("text.insert", &json!({"text": "Fax"})).unwrap();
+    let t = s.execute("table.get", &json!({"table": tid})).unwrap();
+    assert_eq!(t["cells"][1]["text"], "Fax");
+    let sel = s.doc().unwrap().selection.clone();
+    assert!(sel.cells.is_none());
+    assert_eq!(sel.text.unwrap().range(), 3..3);
+    // Moving the caret leaves the cell selection: typing inserts at the caret, not over the cell.
+    s.execute("table.toggleSelection", &json!({})).unwrap();
+    s.execute("text.move", &json!({"dir": "right"})).unwrap();
+    assert!(s.doc().unwrap().selection.cells.is_none());
+    s.execute("text.insert", &json!({"text": "!"})).unwrap();
+    assert_eq!(s.execute("table.get", &json!({"table": tid})).unwrap()["cells"][1]["text"], "F!ax");
+    // A selection that starts inside a merged cell goes back to the merged cell's text.
+    s.execute("table.select", &json!({"rows": [0, 1], "cols": [0, 0]})).unwrap();
+    s.execute("table.merge", &json!({})).unwrap();
+    s.execute("table.select", &json!({"rows": [1, 1], "cols": [0, 1]})).unwrap();
+    s.execute("table.toggleSelection", &json!({})).unwrap();
+    assert_eq!(s.doc().unwrap().selection.text.unwrap().cell, Some(designcraft_doc::CellAddr { row: 0, col: 0, ..cell }));
+    // Outside a table there is nothing to toggle.
+    s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": 0})).unwrap();
+    assert!(s.execute("table.toggleSelection", &json!({})).is_err());
 }
 
 fn selected_merged_table(column: bool) -> (Session, u64, u64, u64) {
@@ -426,6 +493,130 @@ fn rows_columns_merge_and_options() {
     assert_eq!(st.doc.story(sid).unwrap().text, "Intro");
 }
 
+/// A table command given `story` and `table` acts on that table with nothing selected, the caret
+/// outside the table, or a selection it can't act on, and a table that isn't there is refused.
+#[test]
+fn table_commands_run_on_a_named_table_without_a_table_selection() {
+    let (mut s, sid, _) = session_with_frame();
+    let tid = s.execute("table.insert", &json!({"rows": 2, "cols": 2})).unwrap()["table"].as_u64().unwrap();
+    let size = |s: &mut Session| {
+        let t = s.execute("table.get", &json!({"story": sid, "table": tid})).unwrap();
+        (t["rows"].as_array().unwrap().len(), t["columns"].as_array().unwrap().len())
+    };
+    assert_eq!(size(&mut s), (2, 2));
+    s.execute("edit.deselectAll", &json!({})).unwrap();
+    s.execute("table.insertRow", &json!({"story": sid, "table": tid, "where": "below"})).unwrap();
+    assert_eq!(size(&mut s), (3, 2));
+    s.execute("table.insertColumnRight", &json!({"table": tid})).unwrap();
+    assert_eq!(size(&mut s), (3, 3));
+    s.execute("table.convertRowsToHeader", &json!({"story": sid, "table": tid, "rows": [0, 0]})).unwrap();
+    assert_eq!(s.execute("table.get", &json!({"table": tid})).unwrap()["headerRows"], 1);
+    // A selected header row can't become a header, but the named rows can.
+    s.execute("table.select", &json!({"table": tid, "rows": [0, 0], "what": "row"})).unwrap();
+    assert!(!crate::cmd::find_command("table.convertRowsToHeader").unwrap().info(&s).enabled);
+    s.execute("table.convertRowsToHeader", &json!({"table": tid, "rows": [1, 1]})).unwrap();
+    assert_eq!(s.execute("table.get", &json!({"table": tid})).unwrap()["headerRows"], 2);
+    // The caret in the story's text, outside the table.
+    s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": 0})).unwrap();
+    s.execute("table.deleteRow", &json!({"story": sid, "table": tid, "rows": [2, 2]})).unwrap();
+    assert_eq!(size(&mut s), (2, 3));
+    check(&s);
+    s.execute("edit.deselectAll", &json!({})).unwrap();
+    let disabled = |r: Result<Value>| match r {
+        Err(crate::EngineError::Disabled(_, why)) => why,
+        other => panic!("expected Disabled, got {other:?}"),
+    };
+    assert_eq!(disabled(s.execute("table.insertRow", &json!({"table": tid + 100}))), format!("no table {}", tid + 100));
+    assert_eq!(disabled(s.execute("table.insertRow", &json!({"story": sid + 100, "table": tid}))), format!("no table {tid}"));
+    for story in [json!("x"), json!(-1), json!(null)] {
+        let r = s.execute("table.insertRow", &json!({"story": story, "table": tid}));
+        assert!(matches!(r, Err(crate::EngineError::BadParams { .. })), "{r:?}");
+    }
+    assert_eq!(size(&mut s), (2, 3));
+}
+
+/// A `story` that is not a non-negative integer is refused the same way whether or not a table is
+/// selected, and the table is left unchanged.
+#[test]
+fn a_bad_story_is_refused_with_or_without_a_table_selection() {
+    let (mut s, _, _) = session_with_frame();
+    let tid = s.execute("table.insert", &json!({"rows": 2, "cols": 2})).unwrap()["table"].as_u64().unwrap();
+    let rows = |s: &mut Session| s.execute("table.get", &json!({"table": tid})).unwrap()["rows"].as_array().unwrap().len();
+    for select in [json!({"table": tid, "rows": [0, 0], "what": "row"}), json!(null)] {
+        if select.is_null() {
+            s.execute("edit.deselectAll", &json!({})).unwrap();
+        } else {
+            s.execute("table.select", &select).unwrap();
+        }
+        for story in [json!("x"), json!(-1), json!(1.5), json!(null)] {
+            let r = s.execute("table.insertRow", &json!({"story": story, "table": tid}));
+            assert!(matches!(r, Err(crate::EngineError::BadParams { .. })), "{select} {story}: {r:?}");
+        }
+        assert_eq!(rows(&mut s), 2, "{select}");
+    }
+}
+
+/// An edit to a named table leaves a caret in footnote text where it was.
+#[test]
+fn a_named_table_edit_keeps_a_footnote_caret() {
+    let (mut s, sid, _) = session_with_frame();
+    let tid = s.execute("table.insert", &json!({"rows": 2, "cols": 2})).unwrap()["table"].as_u64().unwrap();
+    s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": 0})).unwrap();
+    s.execute("footnote.insert", &json!({"text": "Note"})).unwrap();
+    let before = s.doc().unwrap().selection.clone();
+    assert!(before.text.and_then(|t| t.cell).and_then(|c| c.footnote_id()).is_some(), "the caret is in the footnote");
+    s.execute("table.insertRow", &json!({"table": tid})).unwrap();
+    assert_eq!(s.execute("table.get", &json!({"table": tid})).unwrap()["rows"].as_array().unwrap().len(), 3);
+    assert_eq!(s.doc().unwrap().selection, before);
+    check(&s);
+}
+
+/// With nothing selected, the table commands stay disabled for menus and for calls that name no
+/// table.
+#[test]
+fn table_commands_stay_disabled_with_nothing_selected() {
+    let (mut s, _, _) = session_with_frame();
+    s.execute("table.insert", &json!({"rows": 2, "cols": 2})).unwrap();
+    let in_table = ["table.insertRow", "table.deleteColumn", "table.merge", "table.options", "table.selectTable", "style.table.apply"];
+    let in_cell = ["table.convertRowsToHeader", "table.nextCell"];
+    let info = |s: &Session, id: &str| crate::cmd::find_command(id).unwrap().info(s);
+    for id in in_table.iter().chain(&in_cell) {
+        assert!(info(&s, id).enabled, "{id} is enabled with the caret in a cell");
+    }
+    s.execute("edit.deselectAll", &json!({})).unwrap();
+    for (ids, reason) in [(&in_table[..], "place the insertion point in a table"), (&in_cell[..], "not in a table cell")] {
+        for id in ids {
+            let i = info(&s, id);
+            assert!(!i.enabled, "{id}");
+            assert_eq!(i.disabled_reason.as_deref(), Some(reason), "{id}");
+            assert!(matches!(s.execute(id, &json!({})), Err(crate::EngineError::Disabled(..))), "{id}");
+        }
+    }
+}
+
+/// `table.insert` styles the table in the same step; a style that isn't there, or isn't a name,
+/// leaves the story alone. Its dimensions stop at the documented limits.
+#[test]
+fn insert_table_with_a_style_is_one_step() {
+    let (mut s, sid, _) = session_with_frame();
+    s.execute("style.table.create", &json!({"name": "Grid"})).unwrap();
+    for bad in [json!("Missing"), json!(7)] {
+        assert!(s.execute("table.insert", &json!({"tableStyle": bad})).is_err(), "{bad}");
+    }
+    assert!(s.doc().unwrap().doc.story(designcraft_doc::StoryId(sid)).unwrap().tables.is_empty());
+    for over in [json!({"rows": 501}), json!({"cols": 201}), json!({"headerRows": 101})] {
+        assert!(s.execute("table.insert", &over).is_err(), "{over}");
+    }
+    let r = s.execute("table.insert", &json!({"rows": 500, "cols": 200, "headerRows": 100, "tableStyle": "Grid"})).unwrap();
+    let t = s.execute("table.get", &json!({"table": r["table"]})).unwrap();
+    assert_eq!(t["style"], "Grid");
+    let n = |k: &str| t[k].as_array().unwrap().len() as u64;
+    use crate::cmd::table::{MAX_BODY_ROWS, MAX_COLUMNS, MAX_HEADER_FOOTER_ROWS};
+    assert_eq!((n("rows"), n("columns")), (MAX_BODY_ROWS + MAX_HEADER_FOOTER_ROWS, MAX_COLUMNS));
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert!(s.doc().unwrap().doc.story(designcraft_doc::StoryId(sid)).unwrap().tables.is_empty(), "one undo");
+}
+
 #[test]
 fn convert_text_to_table_and_back() {
     let (mut s, sid, _) = session_with_frame();
@@ -442,6 +633,74 @@ fn convert_text_to_table_and_back() {
     s.execute("table.convertToText", &json!({"table": r["table"]})).unwrap();
     check(&s);
     assert_eq!(s.doc().unwrap().doc.story(designcraft_doc::StoryId(sid)).unwrap().text, "Ink\tCoverage\nPlum\t80%\nSunset\t45%\nAfter");
+}
+
+/// InDesign's Convert Text to Table and Convert Table to Text separators: tab, comma, paragraph or
+/// any characters; with one separator for both, rows of Number of Columns cells; a Table Style.
+#[test]
+fn convert_text_to_table_with_indesigns_separators() {
+    let (mut s, sid, _) = session_with_frame();
+    let convert = |s: &mut Session, text: &str, p: Value| -> Result<Value> {
+        s.execute("story.setText", &json!({"story": sid, "text": format!("{text}\nAfter")})).unwrap();
+        s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": text.len()})).unwrap();
+        s.execute("table.convertFromText", &p)
+    };
+    let cells = |s: &mut Session, r: &Value| -> (usize, Vec<String>) {
+        let t = s.execute("table.get", &json!({"table": r["table"]})).unwrap();
+        let texts = t["cells"].as_array().unwrap().iter().map(|c| c["text"].as_str().unwrap().to_string()).collect();
+        (t["columns"].as_array().unwrap().len(), texts)
+    };
+    // Comma-separated columns, paragraphs for rows.
+    let r = convert(&mut s, "Ink, Coverage\nPlum, 80%", json!({"columnSeparator": "comma"})).unwrap();
+    assert_eq!(cells(&mut s, &r), (2, vec!["Ink".into(), "Coverage".into(), "Plum".into(), "80%".into()]));
+    check(&s);
+    // The lesson's list: one paragraph per cell; with two columns, two cells a row.
+    let list = "Name:\nAddress:\nCity:\nState:";
+    let r = convert(&mut s, list, json!({"columnSeparator": "paragraph", "rowSeparator": "paragraph", "columns": 2})).unwrap();
+    assert_eq!(r["rows"], 2);
+    assert_eq!(cells(&mut s, &r).0, 2);
+    let r = convert(&mut s, list, json!({"columnSeparator": "tab"})).unwrap();
+    assert_eq!((r["rows"].as_u64(), cells(&mut s, &r).0), (Some(4), 1), "a column of paragraphs");
+    // Any characters separate: here " | " between columns and ";" between rows.
+    let r = convert(&mut s, "a | b;c | d", json!({"columnSeparator": " | ", "rowSeparator": ";"})).unwrap();
+    assert_eq!(cells(&mut s, &r), (2, vec!["a".into(), "b".into(), "c".into(), "d".into()]));
+    // A table style is applied to the new table.
+    s.execute("style.table.create", &json!({"name": "Grid"})).unwrap();
+    let r = convert(&mut s, "x\ty", json!({"tableStyle": "Grid"})).unwrap();
+    assert_eq!(s.execute("table.get", &json!({"table": r["table"]})).unwrap()["style"], "Grid");
+    // A short last row: its padding cell takes the text's format too.
+    let r = convert(&mut s, "a\nb\nc", json!({"columnSeparator": "paragraph", "rowSeparator": "paragraph", "columns": 2})).unwrap();
+    let t = s.doc().unwrap().doc.story(designcraft_doc::StoryId(sid)).unwrap().tables[&r["table"].as_u64().unwrap()].clone();
+    let fmt = |c: usize| t.cell(1, c).unwrap().text.chars[0].format.clone();
+    assert_eq!(fmt(1), fmt(0), "the padding cell's format is the text's");
+    for bad in [
+        json!({"columnSeparator": ""}),
+        json!({"rowSeparator": 3}),
+        json!({"columns": 0}),
+        json!({"columns": crate::cmd::table::MAX_COLUMNS + 1}),
+        json!({"tableStyle": "Missing"}),
+        json!({"tableStyle": 123}),
+    ] {
+        assert!(convert(&mut s, "p\tq", bad.clone()).is_err(), "{bad}");
+    }
+    // Text that would make too wide or too big a table is refused, and stays as it was.
+    use crate::cmd::table::{MAX_COLUMNS, MAX_CONVERTED_CELLS};
+    let wide = vec!["x"; MAX_COLUMNS as usize + 1].join("\t");
+    assert!(convert(&mut s, &wide, json!({})).is_err(), "a row wider than a table can be");
+    let long = vec!["a\tb"; MAX_CONVERTED_CELLS as usize / 2 + 1].join("\n");
+    assert!(convert(&mut s, &long, json!({})).is_err(), "more cells than a table can have");
+    assert_eq!(s.doc().unwrap().doc.story(designcraft_doc::StoryId(sid)).unwrap().text, format!("{long}\nAfter"));
+    let tall = vec!["a"; designcraft_doc::MAX_TABLE_ROWS + 1].join("\n");
+    assert!(convert(&mut s, &tall, json!({})).is_err(), "more rows than a table can have");
+    assert_eq!(s.doc().unwrap().doc.story(designcraft_doc::StoryId(sid)).unwrap().text, format!("{tall}\nAfter"), "no text is dropped");
+    let at_most = vec!["x"; MAX_COLUMNS as usize].join("\t");
+    assert!(convert(&mut s, &at_most, json!({})).is_ok(), "a row as wide as a table can be");
+    check(&s);
+    // Back to text with a comma between columns and a tab between rows.
+    let r = convert(&mut s, "Plum\t80%\nSunset\t45%", json!({})).unwrap();
+    s.execute("table.convertToText", &json!({"table": r["table"], "columnSeparator": "comma", "rowSeparator": "tab"})).unwrap();
+    check(&s);
+    assert_eq!(s.doc().unwrap().doc.story(designcraft_doc::StoryId(sid)).unwrap().text, "Plum,80%\tSunset,45%\nAfter");
 }
 
 #[test]

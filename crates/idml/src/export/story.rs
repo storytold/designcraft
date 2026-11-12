@@ -327,12 +327,45 @@ impl<'a> Ex<'a> {
         segs
     }
 
+    /// A cross-reference source's text: what its format generates, or the text typed over it, its
+    /// page numbers as InDesign's live cross-reference page number (as InDesign writes them, so
+    /// generated text reads back as generated).
+    fn xref_content(&mut self, c: &mut El, x: &designcraft_doc::CrossRef) {
+        let t = match &x.text {
+            Some(t) => t.clone(),
+            None => self.d.generated_xref_text(x.target, &x.format).unwrap_or_else(|| "??".into()),
+        };
+        let page = x.page.clone().unwrap_or_else(|| "?".into());
+        for (n, part) in t.split(designcraft_doc::xref::PAGE_NUM_BLOCK).enumerate() {
+            if n > 0 {
+                c.push(
+                    El::new("TextVariableInstance")
+                        .attr("Self", self.fresh())
+                        .attr("Name", "<?AID 001b?>TV XRefPageNumber")
+                        .attr("ResultText", &page)
+                        .attr("AssociatedTextVariable", "dTextVariablen<?AID 001b?>TV XRefPageNumber"),
+                );
+            }
+            if !part.is_empty() {
+                let mut content = El::new("Content");
+                content.children.push(Node::Text(part.to_string()));
+                c.push(content);
+            }
+        }
+    }
+
     fn story_para(&mut self, s: &Story, pi: usize, r: std::ops::Range<usize>, last: bool) -> El {
         let pf = s.paras.get(pi).cloned().unwrap_or_default();
         let mut psr = self.psr_el(&pf);
         let ends_with_break = s.text.get(r.clone()).and_then(|t| t.chars().next_back()).is_some_and(st::is_break_char);
         let segs = Self::paragraph_runs(s, &r);
+        // A hyperlink on a run of text is written as a `HyperlinkTextSource` around the
+        // ranges it covers, so the runs are cut at its edges first (#1446).
+        let (links, segs) = self.cut_runs_at_links(s, &r, segs);
         let nseg = segs.len();
+        // Each segment's ranges, with the link they belong to; wrapped once the paragraph is
+        // built so that consecutive ranges of one link share a single source element.
+        let mut psr_csrs: Vec<(Option<usize>, El)> = Vec::new();
         for (k, (rr, f)) in segs.into_iter().enumerate() {
             let seg_start = rr.start;
             let text = &s.text[rr];
@@ -419,14 +452,8 @@ impl<'a> Ex<'a> {
                     if let Some(x) = s.xrefs.get(k) {
                         let me = self.fresh();
                         let fmt = self.d.xref_formats.iter().position(|ff| ff.name == x.format).map_or("n".to_string(), xref_format_self);
-                        let text = self.d.xref_values(x.target).map_or("??".into(), |mut v| {
-                            v.page = "?".into();
-                            designcraft_doc::xref::expand(self.d.xref_format(&x.format).map_or("<fullPara />", |ff| ff.definition.as_str()), &v)
-                        });
                         let mut c = self.csr_el(&f);
-                        let mut content = El::new("Content");
-                        content.children.push(Node::Text(text));
-                        c.push(content);
+                        self.xref_content(&mut c, x);
                         let mut src = El::new("CrossReferenceSource")
                             .attr("Self", &me)
                             .attr("AppliedFormat", fmt)
@@ -499,11 +526,80 @@ impl<'a> Ex<'a> {
                 csrs.push(c);
             }
             self.apply_tracked_changes(s, &f, &mut csrs, para_br, r.end);
+            let link = links.iter().find(|(_, l)| l.contains(&seg_start) || (l.start == seg_start && l.start == l.end)).map(|(i, _)| *i);
             for c in csrs {
-                psr.push(c);
+                psr_csrs.push((link, c));
             }
         }
+        self.wrap_link_sources(&mut psr, psr_csrs);
         psr
+    }
+
+    /// The hyperlinks on story text that fall in the paragraph `r` (each link's index and its
+    /// range clipped to `r`), and the paragraph's runs `segs` cut at their edges, so a link's
+    /// ranges can be wrapped on their own (#1446).
+    fn cut_runs_at_links(
+        &self,
+        s: &Story,
+        r: &std::ops::Range<usize>,
+        segs: Vec<(std::ops::Range<usize>, CharFormat)>,
+    ) -> (Vec<(usize, std::ops::Range<usize>)>, Vec<(std::ops::Range<usize>, CharFormat)>) {
+        let links: Vec<(usize, std::ops::Range<usize>)> = self
+            .d
+            .hyperlinks
+            .iter()
+            .enumerate()
+            .filter_map(|(i, h)| match &h.source {
+                designcraft_doc::HyperlinkSource::Text { story, start, end } if *story == s.id => {
+                    let (a, b) = ((*start).max(r.start), (*end).min(r.end));
+                    (a < b).then_some((i, a..b))
+                }
+                _ => None,
+            })
+            .collect();
+        let mut cuts: Vec<usize> = links.iter().flat_map(|(_, l)| [l.start, l.end]).collect();
+        cuts.sort_unstable();
+        cuts.dedup();
+        let segs = segs.into_iter().fold(Vec::new(), |mut out: Vec<(std::ops::Range<usize>, CharFormat)>, (rr, f)| {
+            let mut at = rr.start;
+            for c in cuts.iter().copied().filter(|c| rr.start < *c && *c < rr.end) {
+                out.push((at..c, f.clone()));
+                at = c;
+            }
+            out.push((at..rr.end, f));
+            out
+        });
+        (links, segs)
+    }
+
+    /// Push the paragraph's character ranges into `psr`, with each run of consecutive ranges of
+    /// one link inside a single `HyperlinkTextSource` (#1446).
+    fn wrap_link_sources(&mut self, psr: &mut El, psr_csrs: Vec<(Option<usize>, El)>) {
+        let mut groups: Vec<(Option<usize>, Vec<El>)> = Vec::new();
+        for (link, c) in psr_csrs {
+            match groups.last_mut() {
+                Some((l, v)) if *l == link => v.push(c),
+                _ => groups.push((link, vec![c])),
+            }
+        }
+        for (link, cs) in groups {
+            match link.and_then(|i| self.d.hyperlinks.get(i).map(|h| (i, h.name.clone()))) {
+                None => {
+                    for c in cs {
+                        psr.push(c);
+                    }
+                }
+                Some((i, name)) => {
+                    let me = self.fresh();
+                    let mut src = El::new("HyperlinkTextSource").attr("Self", &me).attr("Name", name).attr("Hidden", "false");
+                    for c in cs {
+                        src.push(c);
+                    }
+                    psr.push(src);
+                    self.link_text_sources.push((me, i));
+                }
+            }
+        }
     }
 
     pub(super) fn psr_el(&mut self, pf: &ParaFormat) -> El {
