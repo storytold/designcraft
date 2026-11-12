@@ -212,6 +212,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("New Hyperlink", "Nouvel hyperlien"),
     ("New Hyperlink Destination", "Nouvelle destination d'hyperlien"),
     ("New Layer", "Nouveau calque"),
+    ("Duplicate Layer \"{name}\"", "Dupliquer le calque « {name} »"),
     ("New Page Reference", "Nouvelle référence de page"),
     ("New Parent", "Nouveau gabarit"),
     ("Export Layouts and Versions…", "Exporter les mises en page et versions…"),
