@@ -210,6 +210,8 @@ fn preview_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     let images = ImageCache::default();
     let sources = Sources { options: &options, data_dir: data_dir.as_deref(), doc_dir: doc_dir.as_deref(), images: &images };
     fill_row(&mut doc, &source.fields, &row, record as u32, &maps, &sources);
+    // An image the record placed gets its Alpha Channel outline, as an edit's would.
+    crate::cmd::alpha_wrap::sync(&mut doc);
     st.doc = Arc::new(doc);
     st.preview_record = Some(record as u32);
     st.bump_revision();
@@ -261,6 +263,8 @@ fn merge_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     merged.data_merge.placeholders.clear();
     merged.title = format!("{} merged", src.title);
     let pages = merged.page_count();
+    // The merged images' Alpha Channel outlines first: the overset count composes with them.
+    crate::cmd::alpha_wrap::sync(&mut merged);
     let overset = overset_count(&merged);
     let records = selected.len();
     let missing_json: Vec<Value> = missing.iter().map(|m| json!({"record": m.record, "field": m.field, "path": m.path})).collect();

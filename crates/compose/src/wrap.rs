@@ -18,7 +18,7 @@
 //!   is composed at most that many more times (at least [`MIN_PASSES`]), and never more than
 //!   [`MAX_PASSES`].
 
-use designcraft_doc::{AnchorPosition, AnchoredObject, Document, Item, OBJECT_MARK, PageSide, SpreadRef, Story, StoryId, WrapMode};
+use designcraft_doc::{AnchorPosition, AnchoredObject, Document, Item, OBJECT_MARK, PageSide, SpreadRef, Story, StoryId};
 use designcraft_geom::Affine;
 
 use crate::{ComposeOptions, ComposedStory, Exclusion, FrameSpec};
@@ -50,8 +50,9 @@ pub(crate) struct Obstacle<'a> {
     anchor_baseline: Option<f64>,
 }
 
+/// The wrap may be set on the frame or on its placed graphic (Direct Selection).
 fn wraps(o: &AnchoredObject) -> bool {
-    o.item.wrap.mode != WrapMode::None && !o.item.hidden
+    o.item.has_wrap() && !o.item.hidden
 }
 
 /// Does `story` have an anchored object whose wrap can push text?
@@ -155,7 +156,7 @@ pub(crate) fn exclusions(doc: &Document, specs: &[FrameSpec], obs: &[Obstacle]) 
         let a = spec.area;
         for ob in obs.iter().filter(|o| o.spread == loc.spread) {
             let mut found = Vec::new();
-            crate::wrap_obstacles(ob.item, ob.xf, inv, spec.id, &left, 0, &mut found);
+            crate::wrap_obstacles(doc, ob.item, ob.xf, inv, spec.id, &left, 0, &mut found);
             for mut e in found {
                 let r = e.rect;
                 if r.is_finite() && r.x0 < a.x1 && r.x1 > a.x0 && r.y0 < a.y1 && r.y1 > a.y0 {
