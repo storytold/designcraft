@@ -175,7 +175,7 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         };
         if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Relink…"))).clicked() {
             let target = with("path", Value::Null);
-            let asked = app.ask_open("relink", Bound::Document, move |app, path| {
+            let asked = app.ask_open(crate::app::file_dialogs::relink_purpose(is_text), Bound::Document, move |app, path| {
                 let _ = app.run("links.relink", crate::app::file_dialogs::with_path(&target, "path", path));
                 Ok(Value::Null)
             });

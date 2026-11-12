@@ -88,13 +88,20 @@ fn applied_styles(d: &Document) -> (BTreeSet<String>, BTreeSet<String>) {
 
 /// What the story placed from an InCopy file uses, brought into `d` (see the module comment),
 /// and the story to insert: its graphics and anchored objects given ids of `d`. A text file of
-/// another kind brings nothing more: its story is inserted as it is.
-pub(crate) fn adopt<'a>(d: &mut Document, imp: &'a Imported, src: Option<&Document>, rename: &HashMap<String, String>) -> Cow<'a, Story> {
+/// another kind brings nothing more: its story is inserted as it is. The anchored frames' stories
+/// get the style options `imp.story` got: stripped with `remove`, else styles named by `rename`.
+pub(crate) fn adopt<'a>(
+    d: &mut Document,
+    imp: &'a Imported,
+    src: Option<&Document>,
+    rename: &HashMap<String, String>,
+    remove: bool,
+) -> Cow<'a, Story> {
     let Some(src) = src else { return Cow::Borrowed(&imp.story) };
     adopt_resources(d, src);
     link_next_styles(d, src, imp, rename);
     let mut story = imp.story.clone();
-    let mut copies = Copies::default();
+    let mut copies = Copies { stories: HashMap::new(), rename, remove };
     adopt_story(d, src, &mut story, 0, &mut copies);
     copies.thread(d, src);
     Cow::Owned(story)
@@ -102,13 +109,15 @@ pub(crate) fn adopt<'a>(d: &mut Document, imp: &'a Imported, src: Option<&Docume
 
 /// The stories of the file copied into the document so far: source id → the copy's id and the
 /// anchored frames showing it (source id, new id). A story several anchored frames share is
-/// copied once, so the copies can't outnumber the file's stories however the frames nest.
-#[derive(Default)]
-struct Copies {
+/// copied once, so the copies can't outnumber the file's stories however the frames nest. Each
+/// copy takes the placement's style options (`rename`, `remove`).
+struct Copies<'a> {
     stories: HashMap<StoryId, (StoryId, Vec<(ItemId, ItemId)>)>,
+    rename: &'a HashMap<String, String>,
+    remove: bool,
 }
 
-impl Copies {
+impl Copies<'_> {
     /// Each copied story is threaded through the copies of its frames, in the file's thread
     /// order; frames the file's story doesn't list (or a story the file lacks) follow in the
     /// order they were met in, so every frame still shows its story.
@@ -265,6 +274,7 @@ fn renumber_item(d: &mut Document, src: &Document, it: &mut Item, depth: usize, 
             inner.frames.clear();
             inner.file_link = None;
             inner.link = None;
+            super::restyle(&mut inner, copies.remove, copies.rename);
             adopt_story(d, src, &mut inner, depth + 1, copies);
             d.stories.insert(new, Arc::new(inner));
             tf.story = new;

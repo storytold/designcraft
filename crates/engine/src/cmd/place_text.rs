@@ -79,18 +79,50 @@ fn map_styles(
             s.based_on = Some(b.clone());
         }
     }
-    let n = imp.story.len();
-    imp.story.format_paras(0..n, |p| {
-        if let Some(m) = rename.get(&p.style) {
-            p.style = m.clone();
-        }
-    });
-    imp.story.format_chars(0..n, |f| {
-        if let Some(m) = rename.get(&f.style) {
-            f.style = m.clone();
-        }
-    });
+    restyle(&mut imp.story, false, &rename);
     rename
+}
+
+/// `story` and every text inside it: its table cells, footnotes and endnotes, at any depth (the
+/// importers' parsers bound how deep they nest).
+fn each_text(story: &mut Story, f: &mut impl FnMut(&mut Story)) {
+    f(story);
+    for t in story.tables.values_mut() {
+        for c in &mut std::sync::Arc::make_mut(t).cells {
+            each_text(&mut c.text, f);
+        }
+    }
+    for n in story.notes.iter_mut().chain(story.endnotes.iter_mut()) {
+        each_text(&mut std::sync::Arc::make_mut(n).text, f);
+    }
+}
+
+/// The style options applied to placed text, its notes and table cells included: with `remove`
+/// (Remove Styles and Formatting) it is stripped, otherwise its paragraph and character styles
+/// take the names `rename` gives them (`styleMap` and Auto Rename). Anchored text frames' stories
+/// get the same through [`icml::adopt`].
+fn restyle(story: &mut Story, remove: bool, rename: &std::collections::HashMap<String, String>) {
+    if !remove && rename.is_empty() {
+        return;
+    }
+    each_text(story, &mut |text: &mut Story| {
+        let n = text.len();
+        if remove {
+            text.format_paras(0..n, |p| *p = ParaFormat { table: p.table, ..Default::default() });
+            text.format_chars(0..n, |f| *f = Default::default());
+            return;
+        }
+        text.format_paras(0..n, |p| {
+            if let Some(m) = rename.get(&p.style) {
+                p.style = m.clone();
+            }
+        });
+        text.format_chars(0..n, |f| {
+            if let Some(m) = rename.get(&f.style) {
+                f.style = m.clone();
+            }
+        });
+    });
 }
 
 fn add_styles(d: &mut Document, imp: &designcraft_textimport::Imported, conflict: Conflict) {
@@ -126,11 +158,10 @@ fn add_styles(d: &mut Document, imp: &designcraft_textimport::Imported, conflict
     }
 }
 
-/// "Remove styles and formatting": every paragraph [Basic Paragraph], no local formatting.
+/// "Remove styles and formatting": every paragraph [Basic Paragraph], no local formatting, in
+/// the story's notes and table cells too.
 fn strip(story: &mut Story) {
-    let n = story.len();
-    story.format_paras(0..n, |p| *p = ParaFormat { table: p.table, ..Default::default() });
-    story.format_chars(0..n, |f| *f = Default::default());
+    restyle(story, true, &std::collections::HashMap::new());
 }
 
 /// The story's whole text replaced by the import's (its frames stay).
@@ -192,7 +223,7 @@ pub(crate) fn reimport(
         link.style_map.into_iter().filter(|(_, to)| d.styles.para(to).is_some() || d.styles.char_style(to).is_some()).collect();
     let map = map_styles(d, &mut imp, &map, conflict);
     add_styles(d, &imp, conflict);
-    let src = icml::adopt(d, &imp, resources.as_ref(), &map);
+    let src = icml::adopt(d, &imp, resources.as_ref(), &map, link.remove_styles);
     let replaced = if resources.is_some() { icml::anchored_stories(d, sid) } else { Vec::new() };
     let story = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
     fill(story, &src);
@@ -456,7 +487,7 @@ pub(super) fn place_text(
     }
     s.edit(|d, sel| {
         add_styles(d, &imp, conflict);
-        let src = icml::adopt(d, &imp, resources.as_ref(), &map);
+        let src = icml::adopt(d, &imp, resources.as_ref(), &map, remove);
         let sid = if let Some(t) = caret {
             // Into the text at the insertion point (replacing the selection).
             let story = d.story_mut(t.story).ok_or(designcraft_doc::DocError::NoStory(t.story))?;

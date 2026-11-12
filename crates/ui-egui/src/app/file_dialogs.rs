@@ -355,6 +355,20 @@ struct OpenFilter {
 #[cfg(not(target_arch = "wasm32"))]
 const GRAPHICS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "bmp", "psd", "svg", "pdf", "ai", "eps"];
 
+/// The text files File › Place reads, which a linked story can also be relinked to.
+#[cfg(not(target_arch = "wasm32"))]
+const TEXT: &[&str] = &["docx", "rtf", "txt", "md", "icml", "xlsx"];
+
+/// The name of the [`TEXT`] filter.
+#[cfg(not(target_arch = "wasm32"))]
+const TEXT_FILTER: &str = "Text (Word, RTF, plain, InCopy, Excel)";
+
+/// The open dialog purpose for Relink: a linked text file (`text`) is relinked to a text file,
+/// as the Links panel addresses it by its story; anything else to a graphic.
+pub(crate) fn relink_purpose(text: bool) -> &'static str {
+    if text { "relinkText" } else { "relink" }
+}
+
 /// The file-type filters the open dialog offers for `purpose` (the `UiRequest::Pick` purpose).
 #[cfg(not(target_arch = "wasm32"))]
 fn open_filters(purpose: &str) -> &'static [OpenFilter] {
@@ -369,6 +383,7 @@ fn open_filters(purpose: &str) -> &'static [OpenFilter] {
         "dtd" => &[OpenFilter { name: "DTD", extensions: &["dtd"] }],
         "library" => &[OpenFilter { name: "Object Library", extensions: &["dclib"] }],
         "relink" => &[OpenFilter { name: "Graphics", extensions: GRAPHICS }],
+        "relinkText" => &[OpenFilter { name: TEXT_FILTER, extensions: TEXT }],
         "dataMerge" => &[OpenFilter { name: "Data source (CSV, TSV, text, Excel)", extensions: &["csv", "tsv", "tab", "txt", "xlsx"] }],
         "place" => &[
             OpenFilter {
@@ -406,7 +421,7 @@ fn open_filters(purpose: &str) -> &'static [OpenFilter] {
                 ],
             },
             OpenFilter { name: "Graphics", extensions: GRAPHICS },
-            OpenFilter { name: "Text (Word, RTF, plain, InCopy, Excel)", extensions: &["docx", "rtf", "txt", "md", "icml", "xlsx"] },
+            OpenFilter { name: TEXT_FILTER, extensions: TEXT },
             OpenFilter { name: "Video and sound", extensions: &["mp4", "m4v", "mov", "webm", "mp3", "m4a", "wav", "ogg"] },
         ],
         _ => &[
@@ -517,7 +532,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::testing::answer_with;
-    use super::{ALL_FILES, open_filters, picked_save_path, save_dialog_start, suggested_extension};
+    use super::{ALL_FILES, open_filters, picked_save_path, relink_purpose, save_dialog_start, suggested_extension};
 
     #[test]
     fn relink_open_dialog_lists_graphics() {
@@ -526,6 +541,15 @@ mod tests {
             assert!(exts.contains(&ext), "{ext} is missing from the relink dialog: {exts:?}");
         }
         assert!(!exts.contains(&"designcraft") && !exts.contains(&"idml"));
+    }
+
+    /// Relink of a linked story (an InCopy story or another text file) offers the text files
+    /// File › Place reads, and only those; a graphic's Relink keeps offering graphics.
+    #[test]
+    fn relink_of_a_linked_story_lists_text_files() {
+        let exts = |text: bool| -> Vec<&str> { open_filters(relink_purpose(text)).iter().flat_map(|f| f.extensions.iter().copied()).collect() };
+        assert_eq!(exts(true), ["docx", "rtf", "txt", "md", "icml", "xlsx"]);
+        assert!(exts(false).contains(&"png") && !exts(false).contains(&"icml"), "{:?}", exts(false));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! Placing InCopy stories (ICML) and exporting a story as one.
 
-use designcraft_doc::{Content, Document, ItemId, ParaFormat, StoryId};
+use designcraft_doc::{CharFormat, Content, Document, ItemId, ParaFormat, StoryId};
 use serde_json::{Value, json};
 
 use crate::Session;
@@ -191,6 +191,72 @@ fn existing_styles_win_unless_redefined() {
         // Styles the document lacked come in either way.
         assert!(doc(&s).styles.para("Text").is_some() && doc(&s).styles.char_style("Mark").is_some(), "{conflicts}");
     }
+}
+
+/// Place `icml` into a frame three ways, each in a new document with paragraph styles `Lead` and
+/// `Body` and character styles `Mark` and `Strong`: Auto Rename, `styleMap` Lead → Body and
+/// Mark → Strong, and Remove Styles and Formatting. Every (paragraph style, character style) pair
+/// `styles` reads from the placed story must be what that option makes of (`Lead`, `Mark`).
+fn check_style_options(icml: &str, styles: impl Fn(&Document, StoryId) -> Vec<(String, String)>) {
+    let none = (ParaFormat::default().style, CharFormat::default().style);
+    let cases = [
+        (json!({"styleConflicts": "autoRename"}), ("Lead_wrd_1".to_string(), "Mark_wrd_1".to_string())),
+        (json!({"styleMap": {"Lead": "Body", "Mark": "Strong"}}), ("Body".into(), "Strong".into())),
+        (json!({"removeStyles": true}), none),
+    ];
+    for (mut options, want) in cases {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        for name in ["Lead", "Body"] {
+            s.execute("style.paragraph.create", &json!({"name": name})).unwrap();
+        }
+        for name in ["Mark", "Strong"] {
+            s.execute("style.character.create", &json!({"name": name})).unwrap();
+        }
+        let frame = s.execute("frame.create", &json!({"rect": [36, 36, 400, 600], "content": "text"})).unwrap();
+        options["frame"] = frame["id"].clone();
+        let r = place(&mut s, icml, options.clone()).unwrap();
+        let got = styles(doc(&s), StoryId(r["story"].as_u64().unwrap()));
+        assert!(!got.is_empty() && got.iter().all(|g| *g == want), "{options}: {got:?}, want {want:?}");
+        doc(&s).check().unwrap();
+    }
+}
+
+/// The style options reach a placed story's footnotes and table cells, not only its own text.
+#[test]
+fn style_options_reach_notes_and_table_cells() {
+    let (mut src, sid) = source();
+    src.edit(|d, _| {
+        let story = d.story_mut(sid).unwrap();
+        let note = &mut std::sync::Arc::make_mut(&mut story.notes[0]).text;
+        let table = std::sync::Arc::make_mut(story.tables.values_mut().next().unwrap());
+        for text in [note, &mut table.cell_mut(0, 1).unwrap().text] {
+            let n = text.len();
+            text.format_paras(0..n, |p| p.style = "Lead".into());
+            text.format_chars(0..n, |f| f.style = "Mark".into());
+        }
+        Ok(())
+    })
+    .unwrap();
+    let icml = icml_of(&mut src, sid);
+    check_style_options(&icml, |d, sid| {
+        let story = d.story(sid).unwrap();
+        let cell = &story.tables.values().next().and_then(|t| t.cell(0, 1)).unwrap().text;
+        [&story.notes[0].text, cell].iter().map(|t| (t.paras[0].style.clone(), t.chars[0].format.style.clone())).collect()
+    });
+}
+
+/// The style options reach the stories of a placed story's anchored text frames.
+#[test]
+fn style_options_reach_anchored_frame_stories() {
+    let styled = r#"<ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/Lead"><CharacterStyleRange AppliedCharacterStyle="CharacterStyle/Mark"><Content>Boxed</Content></CharacterStyleRange></ParagraphStyleRange>"#;
+    let icml = ANCHORED_FRAME.replace("<ParagraphStyleRange><CharacterStyleRange><Content>Boxed</Content></CharacterStyleRange></ParagraphStyleRange>", styled);
+    assert!(icml.contains(styled));
+    check_style_options(&icml, |d, sid| {
+        let story = d.story(sid).unwrap();
+        let boxed = d.story(story.objects[0].item.text_frame().unwrap().story).unwrap();
+        vec![(boxed.paras[0].style.clone(), boxed.chars[0].format.style.clone())]
+    });
 }
 
 #[test]
