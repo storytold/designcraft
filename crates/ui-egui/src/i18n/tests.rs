@@ -611,7 +611,7 @@ fn czech_counts_use_the_plural_form_for_the_number() {
 #[test]
 fn hebrew_catalog_is_selectable_rtl_and_preserves_english_keys() {
     let mut seen = HashSet::new();
-    assert_eq!(he::TABLE.len(), 1308, "initial Hebrew source-linked table changed");
+    assert_eq!(he::TABLE.len(), 1313, "Hebrew source-linked table changed");
     for (source, translated) in he::TABLE {
         assert!(seen.insert(*source), "duplicate Hebrew source key: {source}");
         assert!(!translated.trim().is_empty(), "empty Hebrew: {source}");
@@ -773,4 +773,19 @@ fn hebrew_parallel_round4_appearance_translations() {
             "Hebrew localization regression: {source}"
         );
     }
+}
+
+#[test]
+fn hebrew_grokbot_context_reviewed_live_ui_labels() {
+    for (source, expected) in [
+        ("Desired", "רצוי"),
+        ("forcedLineBreak", "מעבר שורה כפוי"),
+        ("emSpace", "רווח Em"),
+        ("enSpace", "רווח En"),
+        ("dropcap", "אות פתיח"),
+    ] {
+        assert!(ar::TABLE.iter().any(|(english, _)| english == source), "missing source key: {source}");
+        assert_eq!(tr("he", source), expected, "new Hebrew UI label: {source}");
+    }
+    assert_eq!(tr("en", "Desired"), "Desired", "English UI must remain unchanged");
 }

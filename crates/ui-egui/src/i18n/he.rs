@@ -2,6 +2,12 @@
 //! Clean-room wording based on DesignCraft's own English command and interface labels.
 
 pub(super) const TABLE: &[(&str, &str)] = &[
+    // GrokBot code-context review, independently checked against active native UI callsites.
+    ("Desired", "רצוי"),
+    ("forcedLineBreak", "מעבר שורה כפוי"),
+    ("emSpace", "רווח Em"),
+    ("enSpace", "רווח En"),
+    ("dropcap", "אות פתיח"),
     ("Fewer Options", "פחות אפשרויות"),
     ("Tab Character", "תו טאב"),
     ("File", "קובץ"),
