@@ -63,6 +63,9 @@ pub struct Cache {
     /// The composition each story (page-independent key) had before its latest recomposition,
     /// with the story revision it was composed from (repaint only the frames an edit changed).
     previous: Mutex<HashMap<StoryId, (Vec<usize>, Arc<ComposedStory>)>>,
+    /// A cache this one reads without writing to: a composition or index found there for the same
+    /// inputs is used, and anything composed is kept here only.
+    base: Option<Arc<Cache>>,
 }
 
 /// A signature's hash, standing in for it in another story's signature.
@@ -86,6 +89,9 @@ fn doc_signature(doc: &Document) -> u64 {
     (Arc::as_ptr(&doc.styles) as usize).hash(&mut h);
     format!("{:?}", doc.text_variables).hash(&mut h);
     sections_hash(doc).hash(&mut h);
+    // The compositions the indexes are built from also depend on these (see `signature`).
+    let g = &doc.settings.baseline_grid;
+    (doc.font_scope, g.relative_to == designcraft_doc::GridRelative::TopMargin, g.start.to_bits(), g.increment.to_bits()).hash(&mut h);
     outlines_hash(doc).hash(&mut h);
     h.finish()
 }
@@ -115,6 +121,18 @@ fn sections_hash(doc: &Document) -> u64 {
 impl Cache {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// An empty cache that also uses what `base` holds for the same inputs, and never changes
+    /// `base`. A reader of an older state of the document composes that state here instead of
+    /// replacing the compositions of the current state in `base`.
+    pub fn over(base: Arc<Cache>) -> Self {
+        Cache { base: Some(base), ..Self::default() }
+    }
+
+    /// The cache given to [`Cache::over`].
+    pub fn base(&self) -> Option<&Arc<Cache>> {
+        self.base.as_ref()
     }
 
     /// The composed story, from cache or freshly composed. `page` is the absolute page a
@@ -268,6 +286,14 @@ impl Cache {
                 return e.out.clone();
             }
         }
+        if let Some(base) = &self.base {
+            let g = base.map.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some(e) = g.0.get(&key)
+                && e.sig == sig
+            {
+                return e.out.clone();
+            }
+        }
         // Parent-page items are composed per page: markers show its name, variables need its index.
         let page = page.filter(|_| with_vars);
         let running = running.then(|| self.running_index(doc));
@@ -381,6 +407,12 @@ impl Cache {
         {
             return r.clone();
         }
+        if let Some(base) = &self.base
+            && let Some((s, r)) = &*base.xrefs.lock().unwrap_or_else(PoisonError::into_inner)
+            && *s == sig
+        {
+            return r.clone();
+        }
         let r = Arc::new(crate::xref::XrefIndex::build(doc, &|sid| self.get(doc, sid, None)));
         *self.xrefs.lock().unwrap_or_else(PoisonError::into_inner) = Some((sig, r.clone()));
         r
@@ -390,6 +422,12 @@ impl Cache {
     pub fn running_index(&self, doc: &Document) -> Arc<RunningIndex> {
         let sig = doc_signature(doc);
         if let Some((s, r)) = &*self.running.lock().unwrap_or_else(PoisonError::into_inner)
+            && *s == sig
+        {
+            return r.clone();
+        }
+        if let Some(base) = &self.base
+            && let Some((s, r)) = &*base.running.lock().unwrap_or_else(PoisonError::into_inner)
             && *s == sig
         {
             return r.clone();

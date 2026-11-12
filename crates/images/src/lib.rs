@@ -373,6 +373,15 @@ pub fn natural_size(bytes: &[u8]) -> Option<(f64, f64)> {
     Some((w as f64, h as f64))
 }
 
+/// Unpremultiplied RGBA pixels, rows top to bottom, as a PNG file with no resolution stored.
+/// `None` when `rgba` doesn't hold exactly `width × height` pixels.
+pub fn png_from_rgba(width: u32, height: u32, rgba: Vec<u8>) -> Option<Vec<u8>> {
+    let img = image::RgbaImage::from_raw(width, height, rgba)?;
+    let mut png = Vec::new();
+    image::DynamicImage::ImageRgba8(img).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).ok()?;
+    Some(png)
+}
+
 /// Pixel dimensions of a raster.
 pub fn pixel_size(bytes: &[u8]) -> Option<(u32, u32)> {
     if let Some(p) = palette_tiff(bytes) {
