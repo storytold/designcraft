@@ -468,6 +468,121 @@ fn a_snapshot_whose_metadata_failed_is_still_the_documents_to_remove() {
 
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
+fn a_snapshot_whose_folder_sync_failed_is_still_the_documents_to_remove() {
+    // The rename put the snapshot in place before the folder sync failed: it is tracked, so Save
+    // removes it.
+    let root = tempfile::tempdir().unwrap();
+    let dir = run_dir(root.path()).unwrap();
+    let mut s = dirty_session();
+    s.recovery_dir = Some(dir.clone());
+    let uid = s.docs[0].uid;
+    let (document, _) = files(&dir, uid);
+    testing::fail_next_sync(&dir);
+    let err = save_tracked(&mut s, &dir).unwrap_err();
+    assert!(err.to_string().contains("sync failed"), "{err}");
+    assert!(document.exists(), "the snapshot landed");
+    assert!(s.docs[0].recovery_entries.iter().any(|(d, u)| *u == uid && same_directory(d, &dir)), "and is tracked");
+    let saved = root.path().join("saved.designcraft");
+    s.execute("file.saveAs", &json!({"path": saved.to_string_lossy()})).unwrap();
+    assert!(!document.exists(), "Save removed the snapshot");
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_document_undone_to_its_saved_state_while_its_write_is_held_leaves_no_snapshot() {
+    let _turn = background();
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = dirty_session();
+    s.recovery_dir = Some(dir.path().to_path_buf());
+    let uid = s.docs[0].uid;
+    let held = testing::hold_next_write(dir.path());
+    s.execute("file.recovery.save", &json!({"background": true})).unwrap();
+    held.wait_until_held();
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert!(!s.docs[0].is_dirty(), "back to the state it had");
+    // A save of recovery data now drops the clean document's checkpoint, and the held write of
+    // the older state must not publish after it.
+    save(&s, dir.path()).unwrap();
+    held.release();
+    testing::wait_until_idle();
+    assert!(!files(dir.path(), uid).0.exists(), "the older snapshot was not published");
+    let _ = s.execute("file.recovery.progress", &json!({}));
+    assert!(list(dir.path()).is_empty());
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_document_undone_to_its_saved_state_loses_the_snapshot_a_finished_write_left_in_another_folder() {
+    let _turn = background();
+    let dir = tempfile::tempdir().unwrap();
+    let other = tempfile::tempdir().unwrap();
+    let mut s = dirty_session();
+    s.recovery_dir = Some(other.path().to_path_buf());
+    let uid = s.docs[0].uid;
+    s.execute("file.recovery.save", &json!({"background": true})).unwrap();
+    // Written, but its result not yet taken by the session.
+    testing::wait_until_idle();
+    assert!(files(other.path(), uid).0.exists());
+    s.execute("edit.undo", &json!({})).unwrap();
+    save(&s, dir.path()).unwrap();
+    assert!(!files(other.path(), uid).0.exists(), "the snapshot of the older state is removed");
+    let _ = s.execute("file.recovery.progress", &json!({}));
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_clean_document_leaves_another_sessions_write_queued_behind_its_own() {
+    let _turn = background();
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = dirty_session();
+    a.recovery_dir = Some(dir.path().to_path_buf());
+    let uid = a.docs[0].uid;
+    let mut b = dirty_session();
+    b.recovery_dir = Some(dir.path().to_path_buf());
+    b.docs[0].uid = uid;
+    b.execute("frame.create", &json!({"rect": [20, 20, 60, 60]})).unwrap();
+    let held = testing::hold_next_write(dir.path());
+    a.execute("file.recovery.save", &json!({"background": true})).unwrap();
+    held.wait_until_held();
+    // A write now cancels the held one; the other session's write is queued to follow it.
+    a.execute("file.recovery.save", &json!({"dir": dir.path().to_string_lossy()})).unwrap();
+    b.execute("file.recovery.save", &json!({"background": true})).unwrap();
+    a.execute("edit.undo", &json!({})).unwrap();
+    assert!(!a.docs[0].is_dirty());
+    save(&a, dir.path()).unwrap();
+    held.release();
+    assert_eq!(finished_writes(&mut b), 1, "the other session's write ran");
+    let mut reopened = Session::new();
+    assert_eq!(open(&mut reopened, dir.path()).unwrap().len(), 1);
+    assert_eq!(reopened.doc().unwrap().doc.spreads[0].items.len(), 2, "its snapshot was kept");
+    discard(dir.path(), uid);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_clean_document_in_another_session_leaves_this_sessions_write_alone() {
+    let _turn = background();
+    let dir = tempfile::tempdir().unwrap();
+    let mut queued_by = dirty_session();
+    queued_by.recovery_dir = Some(dir.path().to_path_buf());
+    let uid = queued_by.docs[0].uid;
+    // The same uid, clean, in another session.
+    let mut other = Session::new();
+    other.execute("file.new", &json!({})).unwrap();
+    other.docs[0].uid = uid;
+    assert!(!other.docs[0].is_dirty());
+    let held = testing::hold_next_write(dir.path());
+    queued_by.execute("file.recovery.save", &json!({"background": true})).unwrap();
+    held.wait_until_held();
+    save(&other, dir.path()).unwrap();
+    held.release();
+    assert_eq!(finished_writes(&mut queued_by), 1);
+    assert!(files(dir.path(), uid).0.exists(), "the other session's save did not cancel this write");
+    discard(dir.path(), uid);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
 fn a_background_snapshot_whose_metadata_failed_is_still_the_documents_to_remove() {
     // The background writer's result must be applied the same way: a published primary is the
     // document's snapshot even when its optional metadata fails.

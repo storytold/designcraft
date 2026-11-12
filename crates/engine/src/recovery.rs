@@ -580,6 +580,12 @@ pub fn save(s: &Session, dir: &Path) -> Result<usize> {
     for d in &s.docs {
         // New Document's preview is not a document until Create makes it one.
         if !d.is_dirty() || s.new_document_preview() == Some(d.uid) {
+            // A background write this session queued of an older state must not publish after
+            // this discard, and what one already wrote in another folder is removed too.
+            #[cfg(not(target_arch = "wasm32"))]
+            for other in worker::cancel_document(d.uid, s.recovery_owner.0) {
+                discard(&other, d.uid);
+            }
             discard(dir, d.uid);
             continue;
         }
@@ -762,6 +768,8 @@ fn write_snapshot(entry: &Snapshot, cancelled: impl Fn() -> bool) -> Written {
     #[cfg(any(test, feature = "testing"))]
     testing::gate(&entry.dir);
     let (doc, meta) = files(&entry.dir, entry.uid);
+    // Set at the rename: an error after it (syncing the folder) leaves the entry on disk.
+    let landed = std::cell::Cell::new(false);
     let published = publish_recovery_written(
         &doc,
         entry.own,
@@ -774,6 +782,7 @@ fn write_snapshot(entry: &Snapshot, cancelled: impl Fn() -> bool) -> Written {
         // and remove (Save and Close must clean up the snapshot they wrote). Recorded with the
         // rename, so a cleanup after it can remove the entry.
         || {
+            landed.set(true);
             if !entry.own {
                 WRITTEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert((entry.key.clone(), entry.uid));
             }
@@ -785,6 +794,8 @@ fn write_snapshot(entry: &Snapshot, cancelled: impl Fn() -> bool) -> Written {
         // reports an error, which is the cancel's and not a failure.
         Ok(false) => return Written { published: false, error: None },
         Err(_) if cancelled() => return Written { published: false, error: None },
+        // Renamed into place, then the folder sync failed: the entry is there to track and clean up.
+        Err(e) if landed.get() => return Written { published: true, error: Some(e) },
         Err(e) => return Written { published: false, error: Some(e) },
     }
     let metadata = json!({"path": entry.path, "title": entry.title, "saved": designcraft_doc::vars::now()});
@@ -1048,10 +1059,15 @@ mod worker {
             let mut dirs = Vec::new();
             if let Ok(mut running) = self.running.lock() {
                 let mut keys = Vec::new();
-                for (key, q) in running.iter_mut().filter(|((_, u), q)| *u == uid && q.owner == owner) {
-                    keys.push(key.clone());
-                    dirs.push(q.dir.clone());
-                    q.next = None;
+                for (key, q) in running.iter_mut().filter(|((_, u), _)| *u == uid) {
+                    // A write another session queued to follow stays queued.
+                    if q.next.as_ref().is_some_and(|n| n.owner == owner) {
+                        q.next = None;
+                    }
+                    if q.owner == owner {
+                        keys.push(key.clone());
+                        dirs.push(q.dir.clone());
+                    }
                 }
                 if let Ok(mut cancelled) = self.cancelled.lock() {
                     cancelled.extend(keys);
@@ -1315,6 +1331,23 @@ pub mod testing {
             w.wait_until_idle();
         }
     }
+
+    static FAIL_SYNC: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+    /// Make the next folder sync after a recovery file is renamed into `dir` fail.
+    pub fn fail_next_sync(dir: &Path) {
+        *FAIL_SYNC.lock().unwrap_or_else(PoisonError::into_inner) = Some(dir.to_path_buf());
+    }
+
+    /// Whether this sync of `dir` is the one [`fail_next_sync`] asked to fail.
+    pub(super) fn sync_fails(dir: &Path) -> bool {
+        let mut slot = FAIL_SYNC.lock().unwrap_or_else(PoisonError::into_inner);
+        if slot.as_deref() == Some(dir) {
+            *slot = None;
+            return true;
+        }
+        false
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1460,6 +1493,10 @@ fn is_link_like(metadata: &std::fs::Metadata) -> bool {
 #[cfg(not(target_arch = "wasm32"))]
 fn sync_recovery_dir(dir: &Path) -> Result<()> {
     validate_recovery_dir(dir)?;
+    #[cfg(any(test, feature = "testing"))]
+    if testing::sync_fails(dir) {
+        return Err(EngineError::Other(format!("{}: sync failed", dir.display())));
+    }
 
     #[cfg(unix)]
     {
