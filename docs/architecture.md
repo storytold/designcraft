@@ -72,7 +72,16 @@ AppKit callback never runs the confirmation dialogs inside a modal termination l
 ## Composition and rendering
 
 The compose cache is keyed by story revision, frame geometry, style revision and font database
-revision; stories compose in parallel (rayon) on native targets. Composition produces per-frame
+revision; stories compose in parallel (rayon) on native targets. After an edit of a story's text
+or formatting, composing starts at the paragraph before the first changed one and stops at the
+first unchanged paragraph it reaches in the state it had before the edit; the lines above and
+below are copied from the composition before the edit (`crates/compose/src/reuse.rs`). An edit
+that moves lines into other frames composes on until a paragraph starts in the same frame and
+place as before, or to the story's end. A story is composed whole
+when it has footnotes, endnotes, tables, anchored objects, named lists, tracked deletions,
+balanced columns, vertical justification other than Top, column rules, type on a path, spanning
+or split paragraphs, or paragraph borders or shading, and when its layout goes back over a
+paragraph (keep options). Composition produces per-frame
 lines with positioned glyph runs, decorations, anchors and overset. The canvas renders on a
 background worker with vello_cpu into tiles; after an edit only frames whose composition changed
 are re-rendered and patched (damage regions, pixel-identical to a full render). The GPU (wgpu:
