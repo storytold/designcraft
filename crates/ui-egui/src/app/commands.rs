@@ -6,6 +6,16 @@ impl DesignApp {
         if let Some(r) = menus::run_ui(self, id, &params) {
             return r;
         }
+        // Scripts retain the engine's synchronous print result. A desktop action must leave
+        // the event loop free while PDF preparation and the system driver run.
+        #[cfg(not(target_arch = "wasm32"))]
+        if id == "file.print" && !self.in_control && params.get("dryRun").and_then(Value::as_bool) != Some(true) {
+            let result = self.start_print(params);
+            if let Err(e) = &result {
+                self.status_error("Print", e);
+            }
+            return result;
+        }
         // Only user-initiated runs touch the system clipboard, never the control channel's.
         let system_clipboard = !self.in_control && !self.control_input_frame.load(std::sync::atomic::Ordering::Relaxed);
         let mut params = if system_clipboard { self.with_system_clipboard(id, params) } else { params };

@@ -1,6 +1,6 @@
 # Hardware and platform parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-12 · **Change:** minor (font managers on macOS; shared print spooler; Windows CI passes; Windows mixed-DPI drag and windows wider than 8192 px don't crash) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-09 · **Change:** minor (responsive desktop print submission; font managers on macOS; shared print spooler; Windows CI passes; Windows mixed-DPI drag and windows wider than 8192 px don't crash) · **Target:** Adobe InDesign 2026 (21.6)
 
 What InDesign does with hardware, per platform, against DesignCraft. Layout is not a
 GPU-hungry workload, so this dimension carries little weight, but a start that fails on a
@@ -60,3 +60,15 @@ the developers don't use daily.
 Windows submission now uses shared craft-print. It selects matching or default driver paper,
 shrinks oversized sheets to the printable area without enlarging smaller ones, and preserves
 the queue's duplex default; printer-driver options UI and physical output validation remain open.
+
+Desktop UI print submission prepares and prints a document snapshot on a worker. The window
+continues processing events while the system spooler works, reports success only after it
+returns, and keeps an ordinary Quit pending until then. Option validation runs before the worker
+starts so an invalid range or layout keeps the Print dialog open; other command feedback remains
+visible beside the pending-print indicator. Direct engine/CLI/control commands keep
+their synchronous result. Windows printing pins the multi-threaded Direct2D factory fix from
+craft-libs#605; printer discovery and native job cancellation/deadlines remain separate gaps.
+
+A print failure cancels an ordinary close that arrives in the same tick as well as an earlier
+deferred close. A later explicit close still follows the normal unsaved-document checks, and
+forced Quit remains available.

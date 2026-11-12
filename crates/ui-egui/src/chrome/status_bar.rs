@@ -83,6 +83,25 @@ fn show_preflight(app: &mut DesignApp) {
     }
 }
 
+/// Keep command feedback readable alongside the independent pending-print indicator.
+fn show_status(app: &DesignApp, ui: &mut egui::Ui, font: egui::FontId, color: Color32) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(print) = &app.pending_print {
+        let printing = crate::i18n::tr(&app.ui.language, "Printing…");
+        if !app.ui.status.is_empty() && app.ui.status != printing {
+            ui.label(egui::RichText::new(&app.ui.status).font(font.clone()).color(color));
+            ui.separator();
+        }
+        ui.add(egui::Spinner::new().size(10.0));
+        let status = if app.close_requested_pending { "Waiting for printing to finish before closing…" } else { "Printing…" };
+        let text = format!("{} {}", crate::i18n::tr(&app.ui.language, status), print.title);
+        ui.label(egui::RichText::new(text).font(font).color(color));
+        return;
+    }
+    ui.label(egui::RichText::new(&app.ui.status).font(font).color(color));
+}
+
+/// Draw document navigation, preflight state and command feedback without hiding pending printing.
 pub fn status_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     let resp = egui::Panel::bottom("status_bar")
@@ -93,7 +112,7 @@ pub fn status_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
             ui.horizontal_centered(|ui| {
                 let small = egui::FontId::proportional(10.5);
                 if app.session.active().is_none() {
-                    ui.label(egui::RichText::new(&app.ui.status).font(small).color(t.text_dim));
+                    show_status(app, ui, small, t.text_dim);
                     return;
                 }
                 let z = app.view().map(|v| v.zoom).unwrap_or(1.0);
@@ -196,9 +215,51 @@ pub fn status_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
                     show_preflight(app);
                 }
                 ui.add_space(12.0);
-                ui.label(egui::RichText::new(&app.ui.status).font(small).color(t.text_dim));
+                show_status(app, ui, small, t.text_dim);
             });
         });
     let r = resp.response.rect;
     ui.painter().line_segment([r.left_top(), r.right_top()], Stroke::new(1.0, t.border));
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+    use egui_kittest::kittest::Queryable;
+
+    /// A pending driver must not conceal a later Save error, including while Quit is deferred.
+    #[test]
+    fn pending_print_keeps_other_command_errors_visible() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"title":"Printed snapshot"})).unwrap();
+        let (release, wait) = std::sync::mpsc::channel();
+        app.test_print = Some(Box::new(move |_, _, _| {
+            wait.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+            Ok(json!({"pages":1}))
+        }));
+        // An explicit nonexistent queue prevents fallback to a physical default printer.
+        app.run("file.print", json!({"printer":"DesignCraft synthetic regression queue (nonexistent)"})).unwrap();
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(1000.0, 100.0)).build_ui_state(
+            |ui, app| {
+                ui.horizontal(|ui| show_status(app, ui, egui::FontId::proportional(10.5), Color32::WHITE));
+            },
+            app,
+        );
+        assert!(h.query_by_label("Printing… Printed snapshot").is_some());
+        h.state_mut().status_error("Save", "synthetic disk full");
+        h.run_steps(2);
+        assert!(h.query_by_label("Save: synthetic disk full").is_some());
+        assert!(h.query_by_label("Printing… Printed snapshot").is_some());
+        h.state_mut().close_requested_pending = true;
+        h.run_steps(2);
+        assert!(h.query_by_label("Save: synthetic disk full").is_some());
+        assert!(h.query_by_label("Waiting for printing to finish before closing… Printed snapshot").is_some());
+        let app = h.state_mut();
+        app.ui.dialog = Some(crate::dialogs::Dialog::new("test", json!({})));
+        crate::dialogs::open_print(app);
+        assert_eq!(app.ui.dialog.as_ref().unwrap().id, "test", "a second Print dialog must not start printer discovery");
+        h.run_steps(2);
+        assert!(h.query_by_label("Print: Another print job is still running.").is_some());
+        release.send(()).unwrap();
+    }
 }

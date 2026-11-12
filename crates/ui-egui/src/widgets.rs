@@ -909,6 +909,8 @@ mod tests {
             ui.disable();
             let _ = NumField::number("Opacity", Some(50.0), "%", 0).spinner().presets(PRESETS).show(ui);
         });
+        // Debug overlays include source paths; their glyphs are unrelated to enabled-state checks.
+        h.ctx.set_missing_glyph_policy(egui::MissingGlyphPolicy::Tofu);
         h.ctx.all_styles_mut(|style| style.debug.show_interactive_widgets = true);
         h.run_steps(2);
         let metadata_enabled = |label: &str| {

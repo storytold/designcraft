@@ -652,8 +652,15 @@ fn user_dictionary(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     });
 }
 
-/// File › Print, with the printers the system knows.
+/// File › Print, with the printers the system knows, unless a submission is already pending.
 pub fn open_print(app: &mut DesignApp) {
+    // Discovery can wait on the Windows PrintTicket lock held by an active submission.
+    // Reject a second dialog before querying the driver, so the event loop stays responsive.
+    #[cfg(not(target_arch = "wasm32"))]
+    if app.pending_print.is_some() {
+        app.status_error("Print", crate::i18n::tr(&app.ui.language, "Another print job is still running."));
+        return;
+    }
     let p = app.session.execute("file.printers", &json!({})).unwrap_or_default();
     let printer = p["default"].as_str().map(str::to_string).or_else(|| p["printers"][0].as_str().map(str::to_string)).unwrap_or_default();
     app.ui.dialog = Some(Dialog::new(
@@ -4741,6 +4748,10 @@ fn confirm_part3(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
                     return Err(e);
                 }
             };
+            // The desktop print worker reports success after submission, on a later frame.
+            if r.get("pending").and_then(Value::as_bool) == Some(true) {
+                return Ok(r);
+            }
             let printer = r["printer"].as_str().unwrap_or_else(|| crate::i18n::tr(&app.ui.language, "the default printer"));
             app.status(
                 crate::i18n::tr(&app.ui.language, "Sent {count} page(s) to {printer}")
