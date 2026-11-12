@@ -173,8 +173,14 @@ pub(super) fn export_png(s: &mut Session, p: &Value) -> Result<Value> {
             .filter(|v| v.is_finite() && (MIN_PPI..=MAX_PPI).contains(v))
             .ok_or_else(|| bad(ID, format!("ppi must be a number from {MIN_PPI} to {MAX_PPI}, not {v}")))?,
     };
-    let transparent = p.get("transparent").and_then(Value::as_bool).unwrap_or(false);
-    let bleed = p.get("bleed").and_then(Value::as_bool).unwrap_or(false);
+    // A switch given as anything but true or false is refused, as an out-of-range `ppi` is:
+    // `"true"` or `1` read as false exported without what was asked for (noted in review).
+    let flag = |k: &str| match p.get(k) {
+        None | Some(Value::Null) => Ok(false),
+        Some(Value::Bool(b)) => Ok(*b),
+        Some(v) => Err(bad(ID, format!("{k} must be true or false, not {v}"))),
+    };
+    let (transparent, bleed) = (flag("transparent")?, flag("bleed")?);
     let path = str_param(p, "path").map(str::to_string);
     let scale = ppi / 72.0;
     // Paper is artwork: a transparent background means not drawing it either, or every page would
@@ -186,11 +192,14 @@ pub(super) fn export_png(s: &mut Session, p: &Value) -> Result<Value> {
     let mut out = Vec::new();
     let mut inline = 0;
     for &abs in &pages {
-        let img = renderer
-            .render_page_on(&st.doc, &s.cache, abs, scale, bleed, &opts, background)
-            .ok_or_else(|| bad(ID, format!("page {} is too large to render at {ppi} ppi", abs + 1)))?;
-        let (width, height) = (img.width, img.height);
-        let bytes = img.to_png();
+        // The rendered pixels are let go once encoded, before the PNG is written or turned into
+        // base64, so a page never holds both at once (noted in review).
+        let (width, height, bytes) = {
+            let img = renderer
+                .render_page_on(&st.doc, &s.cache, abs, scale, bleed, &opts, background)
+                .ok_or_else(|| bad(ID, format!("page {} is too large to render at {ppi} ppi", abs + 1)))?;
+            (img.width, img.height, img.to_png())
+        };
         match &path {
             Some(path) => {
                 let file = page_file_name(path, abs + 1, pages.len() > 1);
@@ -555,6 +564,68 @@ mod export_png_tests {
             assert_eq!(image["page"], json!(i + 1), "{image}");
             assert!(base64_decode(image["base64"].as_str().unwrap()).starts_with(b"\x89PNG"), "page {} is a PNG", i + 1);
         }
+    }
+
+    /// With `path`, every page is its own file, numbered when there are several (`out-1.png`,
+    /// `out-2.png`) and named as given for one; each entry gives the file's path, page, byte count
+    /// and pixel size, and the file holds those bytes (noted in review: only the naming was tested).
+    #[test]
+    fn pages_exported_to_a_path_are_files_of_their_own() {
+        let dir = std::env::temp_dir().join(format!("dc-export-png-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 2, "facingPages": false, "width": 100, "height": 50})).unwrap();
+        let out = dir.join("out.png").to_string_lossy().into_owned();
+        let r = s.execute("file.exportPng", &json!({"path": out, "ppi": 144})).unwrap();
+        assert!(r.get("images").is_none(), "{r}");
+        let files = r["files"].as_array().expect("files").clone();
+        assert_eq!((files.len(), r["pages"].clone()), (2, json!(2)), "{r}");
+        for (i, f) in files.iter().enumerate() {
+            let path = dir.join(format!("out-{}.png", i + 1));
+            assert_eq!(f["path"].as_str(), Some(path.to_string_lossy().as_ref()), "{f}");
+            assert_eq!((f["page"].clone(), f["width"].clone(), f["height"].clone()), (json!(i + 1), json!(200), json!(100)), "{f}");
+            let bytes = std::fs::read(&path).unwrap();
+            assert!(bytes.starts_with(b"\x89PNG") && f["bytes"] == json!(bytes.len()), "{f}");
+        }
+        let one = dir.join("single.png").to_string_lossy().into_owned();
+        let r = s.execute("file.exportPng", &json!({"path": one, "pages": "2", "ppi": 72})).unwrap();
+        assert_eq!((r["files"][0]["path"].as_str(), r["files"][0]["page"].clone()), (Some(one.as_str()), json!(2)), "{r}");
+        assert!(std::path::Path::new(&one).is_file() && !dir.join("single-2.png").exists(), "one page keeps the name");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `bleed: true` adds the document bleed on every side; without it the page is its own size
+    /// (noted in review: never tested).
+    #[test]
+    fn bleed_adds_the_document_bleed_on_every_side() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 1, "facingPages": false, "width": 100, "height": 50, "bleed": 9})).unwrap();
+        let size = |s: &mut Session, p| {
+            let r = s.execute("file.exportPng", &p).unwrap();
+            (r["images"][0]["width"].clone(), r["images"][0]["height"].clone())
+        };
+        assert_eq!(size(&mut s, json!({"ppi": 72})), (json!(100), json!(50)));
+        assert_eq!(size(&mut s, json!({"ppi": 72, "bleed": true})), (json!(118), json!(68)));
+        assert_eq!(size(&mut s, json!({"ppi": 144, "bleed": true})), (json!(236), json!(136)), "the bleed scales with the resolution");
+    }
+
+    /// `transparent` and `bleed` take true or false only: `"true"` or `1` used to be read as false
+    /// and the export went ahead without them (noted in review). Refused, nothing is written.
+    #[test]
+    fn switches_that_are_not_true_or_false_are_refused() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 1, "width": 100, "height": 50})).unwrap();
+        let dir = std::env::temp_dir().join(format!("dc-export-png-flags-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("p.png");
+        for (k, v) in [("transparent", json!("true")), ("transparent", json!(1)), ("bleed", json!("yes")), ("bleed", json!([true]))] {
+            let err = s.execute("file.exportPng", &json!({"path": path.to_string_lossy(), k: v})).unwrap_err().to_string();
+            assert!(err.contains(&format!("{k} must be true or false")), "{k} {v}: {err}");
+            assert!(!path.exists(), "{k} {v}: nothing written");
+        }
+        assert!(s.execute("file.exportPng", &json!({"transparent": null, "bleed": false})).is_ok(), "null and false are fine");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The command offered itself with no document open and then failed at `s.doc()`, unlike
