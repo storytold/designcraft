@@ -1467,6 +1467,66 @@ fn properties_text_frame_one_inset_keeps_the_sides_of_a_rectangle_in_the_selecti
     assert_eq!(frame_options(h.state(), rect).inset, [8.0, 2.0, 3.0, 4.0]);
 }
 
+/// With selected text that runs through two rectangular frames, the inset link starts off when
+/// one of them has uneven sides, even while the frame the section shows has four equal insets, so
+/// a changed Top leaves the other sides of each frame as they were.
+#[test]
+fn properties_text_frame_inset_link_starts_off_when_another_frame_has_uneven_sides() {
+    for even_first in [true, false] {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let text = (0..40).map(|i| format!("Line {i} of the threaded story.")).collect::<Vec<_>>().join(" ");
+        let a = app.run("frame.create", json!({"rect": [36, 36, 300, 120], "content": "text", "text": text})).unwrap();
+        let b = app.run("frame.create", json!({"rect": [36, 200, 300, 700], "content": "text", "text": "", "caret": false})).unwrap();
+        let (a, b, sid) = (a["id"].as_u64().unwrap(), b["id"].as_u64().unwrap(), a["story"].as_u64().unwrap());
+        app.run("text.thread", json!({"from": a, "to": b})).unwrap();
+        let (even, uneven) = if even_first { (a, b) } else { (b, a) };
+        app.run("object.textFrameOptions", json!({"ids": [even], "inset": 5})).unwrap();
+        app.run("object.textFrameOptions", json!({"ids": [uneven], "inset": [1, 2, 3, 4]})).unwrap();
+        app.run("text.select", json!({"story": sid, "anchor": 0, "focus": text.len()})).unwrap();
+        assert_eq!(
+            designcraft_engine::cmd::text_frame_options_frames(&app.session),
+            [designcraft_doc::ItemId(a), designcraft_doc::ItemId(b)],
+            "the selected text runs through both frames"
+        );
+        let mut h = panel(app);
+        let f = text_frame_fields(&h);
+        assert_eq!(f.len(), 6, "columns, gutter and four insets: {f:?}");
+        type_in_field(&mut h, f[2], "8pt");
+        assert_eq!(frame_options(h.state(), even).inset, [8.0, 5.0, 5.0, 5.0], "even frame first: {even_first}");
+        assert_eq!(frame_options(h.state(), uneven).inset, [8.0, 2.0, 3.0, 4.0], "even frame first: {even_first}");
+    }
+}
+
+/// A link turned on for one frame does not carry over to selected text that runs from that frame
+/// into a frame with uneven sides: the link starts off there, and a changed Top leaves the other
+/// sides as they were.
+#[test]
+fn properties_text_frame_inset_link_of_one_frame_does_not_carry_to_a_text_selection() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let text = (0..40).map(|i| format!("Line {i} of the threaded story.")).collect::<Vec<_>>().join(" ");
+    let a = app.run("frame.create", json!({"rect": [36, 36, 300, 120], "content": "text", "text": text})).unwrap();
+    let b = app.run("frame.create", json!({"rect": [36, 200, 300, 700], "content": "text", "text": "", "caret": false})).unwrap();
+    let (a, b, sid) = (a["id"].as_u64().unwrap(), b["id"].as_u64().unwrap(), a["story"].as_u64().unwrap());
+    app.run("text.thread", json!({"from": a, "to": b})).unwrap();
+    app.run("object.textFrameOptions", json!({"ids": [a], "inset": 5})).unwrap();
+    app.run("object.textFrameOptions", json!({"ids": [b], "inset": [1, 2, 3, 4]})).unwrap();
+    app.run("selection.set", json!({"ids": [a]})).unwrap();
+    let mut h = panel(app);
+    // Off, then on again: the link of the first frame alone is now turned on by hand.
+    click_in_text_frame(&mut h, "Make all settings the same");
+    click_in_text_frame(&mut h, "Make all settings the same");
+    // The caret at the start of the story is in the first frame; the selection runs into the second.
+    h.state_mut().run("text.select", json!({"story": sid, "anchor": text.len(), "focus": 0})).unwrap();
+    h.run_steps(3);
+    let f = text_frame_fields(&h);
+    assert_eq!(f.len(), 6, "columns, gutter and four insets: {f:?}");
+    type_in_field(&mut h, f[2], "8pt");
+    assert_eq!(frame_options(h.state(), a).inset, [8.0, 5.0, 5.0, 5.0]);
+    assert_eq!(frame_options(h.state(), b).inset, [8.0, 2.0, 3.0, 4.0]);
+}
+
 /// Type on a path sets one line along the path: Properties › Text Frame shows no insets and no
 /// vertical justification buttons for it.
 #[test]

@@ -618,12 +618,17 @@ fn text_frame_insets(app: &mut DesignApp, ui: &mut Ui, fid: designcraft_doc::Ite
         return;
     }
     let b = block(ui, 2.0 * FIELD_H + 5.0);
-    // The link's state belongs to the frame of this document state: another frame, or a frame
-    // with the same id in another document or after Revert, starts linked when its four insets
-    // are the same.
+    // The link's state belongs to the frames the field changes in this document state: other
+    // frames, or frames with the same ids in another document or after Revert, start linked when
+    // every one of them has four equal insets, so a frame with uneven sides keeps them when one
+    // side changes.
     let doc_epoch = app.session.active().map_or(0, |st| st.identity_epoch);
-    let link_id = egui::Id::unique(("prop_tf_inset_linked", doc_epoch, fid.0));
-    let same = inset.iter().all(|v| (v - inset[0]).abs() < 1e-9);
+    let targets = designcraft_engine::cmd::text_frame_options_frames(&app.session);
+    let target_ids: Vec<u64> = targets.iter().map(|id| id.0).collect();
+    let link_id = egui::Id::unique(("prop_tf_inset_linked", doc_epoch, fid.0, target_ids));
+    let even = |i: &[f64; 4]| i.iter().all(|v| (v - i[0]).abs() < 1e-9);
+    let same = even(&inset)
+        && app.session.active().is_none_or(|st| targets.iter().filter_map(|id| st.doc.item(*id)?.text_frame()).all(|tf| even(&tf.options.inset)));
     let linked = ui.data(|d| d.get_temp::<bool>(link_id)).unwrap_or(same);
     let mut set = None;
     // Insets are [top, left, bottom, right].
