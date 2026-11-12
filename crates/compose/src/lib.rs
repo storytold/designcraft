@@ -5510,63 +5510,76 @@ fn vertical_justify(ft: &mut FrameText, f: &FrameSpec, spanned: bool, notes: &de
         let last_baseline = idx.iter().map(|&i| ft.lines[i].baseline).fold(tables, f64::max);
         let ink_bottom = idx.iter().map(|&i| ft.lines[i].baseline + ft.lines[i].descent).fold(tables, f64::max);
         // The bottom of the text is the last baseline, as the top is the first baseline: the
-        // descenders of the last line may reach into the bottom inset, but not past the frame's
-        // edge, and in a shaped frame not past the text area (its outline holds the descenders).
-        // Above footnotes, and in vertical frames, the descenders stay inside the text area, as
-        // when the lines are fitted.
-        // `space`: the room under the bottom of the text; `room`: how far its last line may move.
-        let (space, room) = if f.vertical || note_top <= f.area.y1 {
-            (limit - ink_bottom, f64::INFINITY)
-        } else {
-            let edge = if f.outline.is_some() { f.area.y1 } else { f.area.y1 + f.opts.inset[2].max(0.0) };
-            (limit - last_baseline, edge - ink_bottom)
-        };
-        if space <= 0.0 || room <= 0.0 {
+        // descenders of the last line hang below it, into the bottom inset and past it, in shaped
+        // frames as in rectangular ones. Above footnotes, and in vertical frames, the descenders
+        // stay inside the text area, as when the lines are fitted.
+        // `space`: the room under the bottom of the text.
+        let space = if f.vertical || note_top <= f.area.y1 { limit - ink_bottom } else { limit - last_baseline };
+        if space <= 0.0 {
             continue;
         }
-        let center = (space / 2.0).min(room);
-        let space = space.min(room);
-        let before: Vec<f64> = idx.iter().map(|&i| ft.lines[i].baseline).collect();
-        match f.opts.vertical_justification {
-            VerticalJustification::Center => idx.iter().for_each(|&i| ft.lines[i].baseline += center),
-            VerticalJustification::Bottom => idx.iter().for_each(|&i| ft.lines[i].baseline += space),
-            VerticalJustification::Justify => {
-                // Segments of one line (beside an object) share a row and move together.
-                let rows: Vec<usize> = idx
-                    .iter()
-                    .scan((0usize, f64::NAN), |(row, prev), &i| {
-                        let b = ft.lines[i].baseline;
-                        if !prev.is_nan() && (b - *prev).abs() > 1e-9 {
-                            *row += 1;
-                        }
-                        *prev = b;
-                        Some(*row)
-                    })
-                    .collect();
-                let n = rows.last().copied().unwrap_or(0);
-                if n > 0 {
-                    // Paragraph Spacing Limit: the space goes between paragraphs, up to the limit
-                    // each; what is left spreads over every line (all of it with no limit).
-                    let mut starts = vec![false; n + 1];
-                    for (&i, &k) in idx.iter().zip(&rows) {
-                        if k > 0 && ft.lines[i].first_in_para {
-                            starts[k] = true;
-                        }
-                    }
-                    let gaps = starts.iter().filter(|s| **s).count();
-                    let limit = f.opts.vj_paragraph_spacing_limit.max(0.0);
-                    let para = if gaps > 0 && limit > 0.0 { (space / gaps as f64).min(limit) } else { 0.0 };
+        // Segments of one line (beside an object) share a row and move together.
+        let rows: Vec<usize> = idx
+            .iter()
+            .scan((0usize, f64::NAN), |(row, prev), &i| {
+                let b = ft.lines[i].baseline;
+                if !prev.is_nan() && (b - *prev).abs() > 1e-9 {
+                    *row += 1;
+                }
+                *prev = b;
+                Some(*row)
+            })
+            .collect();
+        let n = rows.last().copied().unwrap_or(0);
+        // Paragraph Spacing Limit: with Justify the space goes between paragraphs, up to the limit
+        // each; what is left spreads over every line (all of it with no limit).
+        let mut starts = vec![false; n + 1];
+        for (&i, &k) in idx.iter().zip(&rows) {
+            if k > 0 && ft.lines[i].first_in_para {
+                starts[k] = true;
+            }
+        }
+        let gaps = starts.iter().filter(|s| **s).count();
+        let para_limit = f.opts.vj_paragraph_spacing_limit.max(0.0);
+        // How far each row moves when the text takes `space` more room.
+        let shifts = |space: f64| -> Vec<f64> {
+            match f.opts.vertical_justification {
+                VerticalJustification::Center => vec![space / 2.0; n + 1],
+                VerticalJustification::Bottom => vec![space; n + 1],
+                VerticalJustification::Justify if n > 0 => {
+                    let para = if gaps > 0 && para_limit > 0.0 { (space / gaps as f64).min(para_limit) } else { 0.0 };
                     let per = (space - para * gaps as f64) / n as f64;
                     let mut shift = vec![0.0; n + 1];
                     for k in 1..=n {
                         shift[k] = shift[k - 1] + per + if starts[k] { para } else { 0.0 };
                     }
-                    for (&i, &k) in idx.iter().zip(&rows) {
-                        ft.lines[i].baseline += shift[k];
-                    }
+                    shift
+                }
+                _ => vec![0.0; n + 1],
+            }
+        };
+        // Only the last row's descenders hang below the bottom of the text: an earlier line whose
+        // ink reaches below the last baseline (tight leading) isn't moved past the text area.
+        let fits = |shift: &[f64]| {
+            idx.iter().zip(&rows).all(|(&i, &k)| k == n || shift[k] <= 0.0 || ft.lines[i].baseline + ft.lines[i].descent + shift[k] <= limit + 1e-9)
+        };
+        // Every row moves no less as `space` grows, so the most room that fits is found by halving.
+        let mut shift = shifts(space);
+        if !fits(&shift) {
+            let (mut lo, mut hi) = (0.0, space);
+            for _ in 0..60 {
+                let mid = (lo + hi) / 2.0;
+                if fits(&shifts(mid)) {
+                    lo = mid;
+                } else {
+                    hi = mid;
                 }
             }
-            _ => {}
+            shift = shifts(lo);
+        }
+        let before: Vec<f64> = idx.iter().map(|&i| ft.lines[i].baseline).collect();
+        for (&i, &k) in idx.iter().zip(&rows) {
+            ft.lines[i].baseline += shift[k];
         }
         // A drop cap moves with its line.
         for (&i, b) in idx.iter().zip(before) {

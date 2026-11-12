@@ -2338,27 +2338,63 @@ fn vertical_justification_measures_to_the_last_baseline() {
         assert!((center[1].0 - top[1].0 - shift).abs() < 1e-6, "{first:?}: Center moves every line alike");
         assert!((area.y1 - last(&center).0 - shift).abs() < 1e-6, "{first:?}: Center leaves equal room above and below: {center:?}");
 
-        // A bottom inset smaller than the descent: the descenders end on the frame's edge.
+        // A bottom inset smaller than the descent: the last baseline still sits on the inset, and
+        // the descenders reach past the frame's edge.
         for inset in [0.0, 1.0] {
             for mode in [Bottom, Justify] {
                 let (area, lines) = compose_inset(mode, first, inset);
                 let (b, desc) = last(&lines);
                 assert!(desc > inset + 0.5);
-                assert!((b + desc - (area.y1 + inset)).abs() < 1e-6, "{first:?} {mode:?} inset {inset}: descenders end at {}", b + desc);
+                assert!((b - area.y1).abs() < 1e-6, "{first:?} {mode:?} inset {inset}: last baseline at {b}, inset at {}", area.y1);
             }
         }
     }
 }
 
+/// With tight leading an earlier line's descenders can reach below the last baseline: Bottom keeps
+/// them inside the text area, and only the last line's descenders hang into the bottom inset.
+#[test]
+fn vertical_justification_keeps_earlier_descenders_inside() {
+    use designcraft_doc::VerticalJustification::{self, Bottom, Center, Justify};
+    let compose_with = |mode: VerticalJustification| {
+        let (mut d, sid, fid) = doc_with("Big\nx", Rect::new(0.0, 0.0, 200.0, 300.0), ParaAttrs::default());
+        let o = &mut d.item_mut(fid).unwrap().text_frame_mut().unwrap().options;
+        o.vertical_justification = mode;
+        o.inset = [6.0; 4];
+        let st = d.story_mut(sid).unwrap();
+        st.format_chars(0..3, |f| f.over.size = Some(48.0));
+        st.format_chars(4..5, |f| f.over.leading = Some(designcraft_doc::Leading::Points(2.0)));
+        let area = frame_specs(&d, sid)[0].area;
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let lines: Vec<(f64, f64)> = all_lines(&cs).iter().map(|l| (l.baseline, l.descent)).collect();
+        assert_eq!(lines.len(), 2);
+        if mode != Justify {
+            assert!(lines[0].0 + lines[0].1 > lines[1].0 + 1.0, "the first line's ink reaches below the last baseline: {lines:?}");
+        }
+        (area, lines[0].0 + lines[0].1, lines[1].0)
+    };
+    // Bottom moves both lines until the first line's ink meets the text area's bottom.
+    let (area, ink, _) = compose_with(Bottom);
+    assert!((ink - area.y1).abs() < 1e-6, "Bottom: first line's ink ends at {ink}, text area at {}", area.y1);
+    // Center moves both lines, as far as the first line's ink allows.
+    let (area, ink, _) = compose_with(Center);
+    assert!(ink <= area.y1 + 1e-6, "Center: first line's ink ends at {ink}, text area at {}", area.y1);
+    // Justify leaves the first line where it is, so the last baseline still reaches the inset.
+    let (area, _, last) = compose_with(Justify);
+    assert!((last - area.y1).abs() < 1e-6, "Justify: last baseline at {last}, text area at {}", area.y1);
+}
+
 /// A corner radius leaves a Cap Height first line where it sits in a rectangular frame, with Top
 /// and with Center: a line's band above the text area isn't held to the frame's outline (#1999).
+/// Center puts the last baseline halfway between where Top sets it and the bottom inset, also in
+/// a frame too short for the descenders below it.
 #[test]
 fn a_corner_radius_keeps_a_cap_height_line_in_place() {
-    use designcraft_doc::VerticalJustification::{self, Center, Top};
+    use designcraft_doc::VerticalJustification::{self, Bottom, Center, Justify, Top};
     use designcraft_geom::corners::{CornerOptions, CornerShape};
     let mm = 72.0 / 25.4;
-    let rect = Rect::new(0.0, 0.0, 29.553 * mm, 9.593 * mm);
-    let compose_with = |radius: f64, mode: VerticalJustification| {
+    let compose_tall = |height: f64, radius: f64, mode: VerticalJustification| {
+        let rect = Rect::new(0.0, 0.0, 29.553 * mm, height);
         let (mut d, sid, fid) = doc_with("137mm", rect, ParaAttrs::default());
         let item = d.item_mut(fid).unwrap();
         item.corners = CornerOptions::uniform(CornerShape::Rounded, radius);
@@ -2375,6 +2411,7 @@ fn a_corner_radius_keeps_a_cap_height_line_in_place() {
         assert!(!cs.is_overset());
         (spec.outline.is_some(), spec.area, cs.frames[0].lines[0].baseline)
     };
+    let compose_with = |radius: f64, mode: VerticalJustification| compose_tall(9.593 * mm, radius, mode);
     let (square, area, top) = compose_with(0.0, Top);
     let (rounded, _, rounded_top) = compose_with(0.1 * mm, Top);
     assert!(!square && rounded, "only the radius gives the frame an outline");
@@ -2384,18 +2421,40 @@ fn a_corner_radius_keeps_a_cap_height_line_in_place() {
     assert!((center - (area.y1 + top) / 2.0).abs() < 1e-6, "Center: the last baseline halfway between {top} and {}: {center}", area.y1);
     assert!((rounded_center - center).abs() < 1e-6, "Center: {rounded_center} with a radius, {center} without");
 
-    // In a shaped frame the outline holds the descenders: with Bottom they end on the text area's
-    // bottom, not in the bottom inset.
-    let (mut d, sid, fid) = doc_with("gypsy", Rect::new(0.0, 0.0, 200.0, 100.0), ParaAttrs::default());
-    let item = d.item_mut(fid).unwrap();
-    item.corners = CornerOptions::uniform(CornerShape::Rounded, 6.0);
-    let o = &mut item.text_frame_mut().unwrap().options;
-    o.vertical_justification = designcraft_doc::VerticalJustification::Bottom;
-    o.inset = [0.0, 0.0, 12.0, 0.0];
-    let area = frame_specs(&d, sid)[0].area;
-    let cs = compose_story(&d, sid, &ComposeOptions::default());
-    let l = &cs.frames[0].lines[0];
-    assert!((l.baseline + l.descent - area.y1).abs() < 1e-6, "descenders end at {}, text area at {}", l.baseline + l.descent, area.y1);
+    // Frames too short for the descenders under a centered last baseline.
+    for height in [22.0, 20.0, 19.0] {
+        let (_, area, top) = compose_tall(height, 0.0, Top);
+        let (_, _, center) = compose_tall(height, 0.0, Center);
+        assert!((center - (area.y1 + top) / 2.0).abs() < 1e-6, "{height} pt: Center at {center}, Top at {top}, inset at {}", area.y1);
+    }
+
+    // A corner radius doesn't change where Bottom and Justify put the last baseline: on the
+    // bottom inset, as in a rectangular frame, with the descenders in the inset.
+    for insets in [[6.0; 4], [0.0, 0.0, 12.0, 0.0]] {
+        for mode in [Bottom, Justify] {
+            let compose_frame = |radius: f64| {
+                let (mut d, sid, fid) = doc_with("Typography\ngypsy", Rect::new(0.0, 0.0, 200.0, 100.0), ParaAttrs::default());
+                let item = d.item_mut(fid).unwrap();
+                item.corners = CornerOptions::uniform(CornerShape::Rounded, radius);
+                let o = &mut item.text_frame_mut().unwrap().options;
+                o.vertical_justification = mode;
+                o.inset = insets;
+                let area = frame_specs(&d, sid)[0].area;
+                let cs = compose_story(&d, sid, &ComposeOptions::default());
+                (area, all_lines(&cs).iter().map(|l| l.baseline).collect::<Vec<_>>())
+            };
+            let (area, square) = compose_frame(0.0);
+            for radius in [0.1 * mm, 6.0] {
+                let (_, rounded) = compose_frame(radius);
+                assert_eq!(rounded.len(), square.len());
+                for (r, s) in rounded.iter().zip(&square) {
+                    assert!((r - s).abs() < 1e-6, "{mode:?} insets {insets:?} radius {radius}: {rounded:?} with a radius, {square:?} without");
+                }
+            }
+            let last = square[square.len() - 1];
+            assert!((last - area.y1).abs() < 1e-6, "{mode:?} insets {insets:?}: last baseline at {last}, inset at {}", area.y1);
+        }
+    }
 }
 
 #[test]
