@@ -38,6 +38,7 @@ pub mod package_dialog;
 mod page_history;
 mod panel_docking;
 pub mod panels;
+mod preflight_worker;
 mod prefs;
 pub mod render_worker;
 mod rtl;
@@ -158,6 +159,8 @@ pub struct DesignApp {
     /// operating-system timeout.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) links_worker: links_worker::State,
+    /// Live preflight: the issues last found for the active document.
+    pub(crate) preflight: preflight_worker::State,
     pub canvas_rect: Option<egui::Rect>,
     /// Window › Arrange › Split Window: two views of the document side by side.
     pub split: bool,

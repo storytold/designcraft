@@ -1351,6 +1351,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("In justified Arabic text", "両端揃えのアラビア語テキストで使用"),
     ("Korean Line Breaks:", "韓国語の改行:"),
     ("Between syllables (not only at spaces)", "音節間で改行 (スペース以外も可)"),
+    ("Auto Leading:", "自動行送り:"),
+    ("Single Word Justification:", "単語のみの行の揃え:"),
     ("Binding:", "綴じ方向:"),
     ("Ruby:", "ルビ:"),
     ("Set over the selected text; empty removes it.", "選択したテキストの上にルビを付けます。空欄にすると削除します。"),

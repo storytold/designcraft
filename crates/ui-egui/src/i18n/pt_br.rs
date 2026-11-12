@@ -1962,6 +1962,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Utilities", "Utilitários"),
     ("Korean Line Breaks:", "Quebras de linha em coreano:"),
     ("Between syllables (not only at spaces)", "Entre sílabas (não apenas nos espaços)"),
+    ("Auto Leading:", "Entrelinha automática:"),
+    ("Single Word Justification:", "Justificação de palavra única:"),
     ("Show Font Names in English", "Mostrar nomes de fontes em inglês"),
     ("Missing Glyphs", "Glifos ausentes"),
     ("Draw Missing Glyphs from Fallback Fonts", "Desenhar glifos ausentes com fontes substitutas"),
