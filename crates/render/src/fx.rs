@@ -265,7 +265,48 @@ impl Renderer {
             let sigma = if g.technique == designcraft_doc::GlowTechnique::Precise { sigma * 0.4 } else { sigma };
             let mix = crate::blend_mode(g.mode).mix;
             let paint = color_of(&c, g.opacity.clamp(0.0, 1.0));
-            if g.center {
+            if g.center
+                && let Some((it, page)) = painted
+            {
+                // With a graphic, the glow fills what the object paints, shrunk by the band: the
+                // object's coverage is drawn once offscreen and eroded by the band there.
+                let band = (bound(g.size) - choke).max(0.5);
+                self.with_blended_filters(ctx, f, reach, sigma, mix, (bp, xf), |me, c, fr| {
+                    let spread = (sigma * 3.0 + band) / fr.px + 2.0;
+                    let Some(o) = offscreen(fr.view.transform_rect_bbox(reach), spread, c.width(), c.height()) else { return };
+                    let mut off = RenderContext::new_with(o.width, o.height, vello_cpu::RenderSettings { num_threads: 0, ..Default::default() });
+                    let view = Affine::scale(1.0 / o.scale) * Affine::translate((-o.x0, -o.y0)) * fr.view;
+                    me.draw_body(&mut off, &Frame { mt: false, view, px: fr.px * o.scale, ..*fr }, it, bp, xf, page);
+                    off.flush();
+                    let mut pm = vello_cpu::Pixmap::new(o.width, o.height);
+                    off.render(&mut pm, &mut me.resources);
+                    let mask = erode(&pm, band / (fr.px * o.scale));
+                    // The eroded coverage in the glow color, ...
+                    c.set_transform(fr.view);
+                    c.push_layer(None, None, None, None, None);
+                    c.push_layer(None, None, None, None, Some(blur(sigma)));
+                    c.set_transform(Affine::translate((o.x0, o.y0)) * Affine::scale(o.scale));
+                    c.set_paint(vello_cpu::Image {
+                        image: vello_cpu::ImageSource::Pixmap(std::sync::Arc::new(mask)),
+                        sampler: peniko::ImageSampler::default(),
+                    });
+                    c.fill_rect(&Rect::new(0.0, 0.0, f64::from(o.width), f64::from(o.height)));
+                    let pad = sigma * 4.0 + band + 4.0 * fr.px;
+                    c.set_transform(Affine::IDENTITY);
+                    c.push_layer(None, Some(BlendMode::new(Mix::Normal, Compose::SrcIn)), None, None, None);
+                    c.set_transform(fr.view);
+                    c.set_paint(paint);
+                    c.fill_rect(&reach.inflate(pad, pad));
+                    c.pop_layer();
+                    c.pop_layer();
+                    // ... blurred and kept only where the object paints.
+                    c.set_transform(Affine::IDENTITY);
+                    c.push_layer(None, Some(BlendMode::new(Mix::Normal, Compose::DestIn)), None, None, None);
+                    me.draw_body(c, fr, it, bp, xf, page);
+                    c.pop_layer();
+                    c.pop_layer();
+                });
+            } else if g.center {
                 self.with_blended_filters(ctx, f, reach, sigma, mix, (bp, xf), |_, c, fr| {
                     c.set_transform(fr.view);
                     c.push_layer(None, None, None, None, Some(blur(sigma)));
@@ -542,6 +583,30 @@ fn offscreen(reach: Rect, spread: f64, width: u16, height: u16) -> Option<Offscr
     (w >= 1.0 && h >= 1.0).then_some(Offscreen { x0, y0, scale, width: w as u16, height: h as u16 })
 }
 
+/// `pm`'s coverage shrunk by `r` pixels: each pixel takes the smallest alpha among itself and the
+/// points on circles of `r` and `r / 2` around it, as white premultiplied by that alpha. Pixels
+/// outside `pm` count as transparent.
+fn erode(pm: &vello_cpu::Pixmap, r: f64) -> vello_cpu::Pixmap {
+    let (w, h) = (i64::from(pm.width()), i64::from(pm.height()));
+    let src = pm.data();
+    let mut taps = vec![(0_i64, 0_i64)];
+    for k in 0..16_u8 {
+        let d = if k % 2 == 0 { r } else { r / 2.0 };
+        let a = f64::from(k) * std::f64::consts::PI / 8.0;
+        taps.push(((a.cos() * d).round() as i64, (a.sin() * d).round() as i64));
+    }
+    taps.dedup();
+    let alpha = |x: i64, y: i64| if x < 0 || y < 0 || x >= w || y >= h { 0 } else { src[(y * w + x) as usize].a };
+    let mut data = Vec::with_capacity(src.len());
+    for y in 0..h {
+        for x in 0..w {
+            let a = taps.iter().map(|&(dx, dy)| alpha(x.saturating_add(dx), y.saturating_add(dy))).min().unwrap_or(0);
+            data.push(vello_cpu::color::PremulRgba8 { r: a, g: a, b: a, a });
+        }
+    }
+    vello_cpu::Pixmap::from_parts(data, pm.width(), pm.height())
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -619,6 +684,38 @@ mod tests {
             let shaded = lum(225) < 100;
             assert_eq!(shaded, !invert, "invert {invert}: lum at x = 225 is {}", lum(225));
         }
+    }
+
+    /// An inner glow from the center on a frame holding an image whose left half is transparent
+    /// fills only the image's opaque part, fading toward that part's own edge.
+    #[test]
+    fn a_center_inner_glow_follows_a_transparent_images_edge() {
+        let (d, mut it) = half_image_frame();
+        let g = &mut it.effects.inner_glow;
+        g.on = true;
+        g.center = true;
+        g.color = "[Black]".into();
+        g.opacity = 1.0;
+        g.size = 20.0;
+        g.mode = Default::default();
+        let lum = render_row(d, it);
+        // The transparent half shows the page: no glow painted there.
+        assert!(lum(150) > 700, "nothing over the transparent part: {}", lum(150));
+        // The opaque part runs from x = 200 to 300: dark in its middle, light at its own left edge.
+        assert!(lum(250) + 60 < lum(204), "glow fades toward the image's own edge: {} vs {}", lum(250), lum(204));
+    }
+
+    /// Eroding keeps a half-transparent area at half coverage away from its edge and clears the
+    /// band along the edge.
+    #[test]
+    fn erosion_keeps_partial_coverage_and_clears_the_edge_band() {
+        let half = vello_cpu::color::PremulRgba8 { r: 128, g: 128, b: 128, a: 128 };
+        let pm = vello_cpu::Pixmap::from_parts(vec![half; 40 * 40], 40, 40);
+        let out = erode(&pm, 5.0);
+        assert_eq!(out.sample(20, 20).a, 128);
+        assert_eq!(out.sample(2, 20).a, 0);
+        assert_eq!(out.sample(20, 37).a, 0);
+        assert_eq!(out.sample(6, 20).a, 128);
     }
 
     /// A 200 pt frame at (100, 100) holding a 20 × 20 image with a transparent left half and an
