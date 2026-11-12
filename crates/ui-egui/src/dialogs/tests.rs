@@ -3886,12 +3886,20 @@ fn retype_beside(h: &mut egui_kittest::Harness<'static, crate::test_window::Wind
     h.run_steps(3);
 }
 
+/// The dialog's "Make all settings the same" links, in reading order: the Properties panel's
+/// own links (its Text Frame insets, with a caret in a frame) are to the right of its Quick
+/// Actions heading's left edge and are left out.
+fn dialog_links(h: &egui_kittest::Harness<'static, crate::test_window::Window>) -> Vec<egui::Rect> {
+    use egui_kittest::kittest::Queryable;
+    let panel_left = h.query_by_label("Quick Actions").map_or(f32::INFINITY, |n| n.rect().left());
+    h.get_all_by_label("Make all settings the same").map(|n| n.rect()).filter(|r| r.center().x < panel_left).collect()
+}
+
 /// The course's chapter 40: Paragraph Border's four weights are linked as InDesign's, so a
 /// side typed in sets all four; with the link off ("Make all settings the same") a side is set
 /// alone, as the lesson gives the border only a thick left side. The corners link the same way.
 #[test]
 fn paragraph_border_sides_and_corners_link_as_indesigns() {
-    use egui_kittest::kittest::Queryable;
     let (app, _) = ruled_paragraph();
     let mut h = crate::test_window::open(app, egui::vec2(1400.0, 900.0));
     h.state_mut().app.ui.dialog = Some(Dialog::new("paragraphStyleOptions", json!({"name": "Ruled Child", "section": "border", "p.borderOn": true})));
@@ -3906,7 +3914,7 @@ fn paragraph_border_sides_and_corners_link_as_indesigns() {
     // The link of the weights (0), corners (1) or offsets (2), where it is now: the dialog
     // scrolls as fields take focus.
     let link = |h: &egui_kittest::Harness<'static, crate::test_window::Window>, n: usize| {
-        let links: Vec<egui::Rect> = h.get_all_by_label("Make all settings the same").map(|n| n.rect()).collect();
+        let links = dialog_links(h);
         assert_eq!(links.len(), 3, "weights, corners and offsets each have a link");
         links[n].center()
     };
@@ -3963,7 +3971,7 @@ fn paragraph_shading_page_is_laid_out_as_indesigns() {
     assert_eq!(field(&h, "shadingOverprint"), json!(true));
     // The corners' link (0) and the offsets' (1).
     let link = |h: &egui_kittest::Harness<'static, crate::test_window::Window>, n: usize| {
-        let links: Vec<egui::Rect> = h.get_all_by_label("Make all settings the same").map(|n| n.rect()).collect();
+        let links = dialog_links(h);
         assert_eq!(links.len(), 2, "corners and offsets each have a link");
         links[n].center()
     };
