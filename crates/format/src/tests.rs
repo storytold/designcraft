@@ -3,6 +3,25 @@ use designcraft_doc::build::NewDocument;
 use designcraft_doc::geom::Rect;
 use designcraft_doc::{Asset, ParaFormat, SpreadRef};
 
+/// An entry that fails after inflating (a bad checksum) still uses up the archive's byte budget.
+#[test]
+fn a_failed_read_is_charged_to_the_budget() {
+    let mut z = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    let stored = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    z.start_file("a", stored).unwrap();
+    z.write_all(&[7u8; 1000]).unwrap();
+    let mut bytes = z.finish().unwrap().into_inner();
+    // Flip a data byte: the entry reads in full, then fails its checksum.
+    // The payload is the only run of 1,000 consecutive 7s in the archive.
+    let start = bytes.windows(1000).position(|w| w.iter().all(|b| *b == 7)).expect("payload");
+    bytes[start] = 8;
+    let mut archive = zip::ZipArchive::new(Cursor::new(bytes.as_slice())).unwrap();
+    let (mut left, mut stored_left) = (5000, 5000);
+    assert_eq!(read_entry(&mut archive, "a", 4000, &mut left, &mut stored_left).unwrap(), None);
+    // A failed stored read is charged to the stored budget only.
+    assert_eq!((left, stored_left), (5000, 4000));
+}
+
 fn png_asset(d: &mut Document, data: &[u8]) -> AssetId {
     let aid = AssetId(d.alloc());
     let a =

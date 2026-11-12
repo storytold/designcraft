@@ -159,7 +159,11 @@ pub fn select_records(count: usize, records: &str, one: u32, range: &str, limit:
             let i = record_index(one, count)?;
             idx.push(i);
         }
-        "range" => select_range(range, count, &mut idx, &mut seen)?,
+        "range" => {
+            // Past this many records nothing more can be kept, so later ranges are only validated.
+            let keep = limit.filter(|l| *l > 0).map_or(count, |l| count.min(l as usize));
+            select_range(range, count, keep, &mut idx, &mut seen)?
+        }
         other => return Err(format!("unknown records value \"{other}\"")),
     }
     if let Some(limit) = limit {
@@ -175,7 +179,9 @@ pub fn select_records(count: usize, records: &str, one: u32, range: &str, limit:
 }
 
 /// Expand a comma-separated list of record numbers and `a-b` ranges into `idx`, skipping repeats.
-fn select_range(range: &str, count: usize, idx: &mut Vec<usize>, seen: &mut std::collections::HashSet<usize>) -> Result<(), String> {
+/// Every token is still checked, but once `idx` holds `keep` records no more are expanded, so
+/// repeated or overlapping ranges cost nothing past that point.
+fn select_range(range: &str, count: usize, keep: usize, idx: &mut Vec<usize>, seen: &mut std::collections::HashSet<usize>) -> Result<(), String> {
     if range.trim().is_empty() {
         return Err("no records".into());
     }
@@ -194,8 +200,11 @@ fn select_range(range: &str, count: usize, idx: &mut Vec<usize>, seen: &mut std:
         if a > b {
             return Err(format!("range {a}-{b} is reversed"));
         }
+        // Both ends in range means every record between them is.
+        record_index(a, count)?;
+        record_index(b, count)?;
         let mut n = a;
-        while n <= b {
+        while n <= b && idx.len() < keep {
             let i = record_index(n, count)?;
             if seen.insert(i) {
                 idx.push(i);
