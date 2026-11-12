@@ -58,7 +58,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Insert Field",
             [],
             None,
-            "{field, role?: text|image|qr|hyperlink, story?, at?, end?, item?} → {id}",
+            "{field, role?: text|image|qr|hyperlink, story?, at?, end?, item?} → {id}; an image field at a text insertion point merges as an inline image; with the insertion point in a table cell or a note → {cell: true, marker} (a typed marker, not an anchored placeholder; an image field there is an error unless role is text)",
             has_doc,
             placeholder_add
         ),
@@ -470,7 +470,7 @@ fn overset_count(doc: &Document) -> usize {
         .count()
 }
 
-fn add_placeholder(d: &mut Document, sel: &Selection, p: &Value, name: &str) -> Result<Value> {
+fn add_placeholder(d: &mut Document, sel: &mut Selection, p: &Value, name: &str) -> Result<Value> {
     let (source_id, field) = {
         let source = d.data_merge.sources.first().ok_or_else(|| bad("data.placeholder.add", "select a data source"))?;
         let field =
@@ -484,8 +484,13 @@ fn add_placeholder(d: &mut Document, sel: &Selection, p: &Value, name: &str) -> 
         true
     } else if explicit_story || role_param == Some("text") {
         false
-    } else if matches!(role_param, Some("image" | "qr")) {
-        true
+    } else if role_param == Some("qr") {
+        // A QR role with the insertion point in text is refused below rather than bound to a
+        // selected frame the caret is not in.
+        sel.text.is_none()
+    } else if role_param == Some("image") {
+        // An image role with the insertion point in text places an inline image there.
+        sel.text.is_none()
     } else {
         sel.text.is_none() && !sel.items.is_empty()
     };
@@ -497,6 +502,12 @@ fn add_placeholder(d: &mut Document, sel: &Selection, p: &Value, name: &str) -> 
             DataFieldKind::Qr => PlaceholderRole::Qr,
             DataFieldKind::Text => return Err(bad("data.placeholder.add", "say which role to use on this frame")),
         }
+    } else if field.kind == DataFieldKind::Image {
+        // An image field at the insertion point places the image inline in the text.
+        PlaceholderRole::Image
+    } else if field.kind == DataFieldKind::Qr {
+        // A QR field at the insertion point is refused below: QR codes bind to a frame.
+        PlaceholderRole::Qr
     } else {
         PlaceholderRole::Text
     };
@@ -515,14 +526,58 @@ fn add_placeholder(d: &mut Document, sel: &Selection, p: &Value, name: &str) -> 
         }
         PlaceholderAnchor::Item { id: item }
     } else {
-        if matches!(role, PlaceholderRole::Image | PlaceholderRole::Qr) {
-            return Err(bad("data.placeholder.add", "image and qr placeholders bind to a frame"));
+        if role == PlaceholderRole::Qr {
+            return Err(bad("data.placeholder.add", "qr placeholders bind to a frame"));
+        }
+        // The insertion point is in a table cell or a footnote: the field goes into that text as
+        // its marker, which the merge fills as it fills a typed one. Such a text is a story of its
+        // own that a placeholder can't name, and the selection's offsets are its own, so they used
+        // to put the marker in the table's story instead (#2315).
+        if !explicit_story
+            && let Some(t) = sel.text
+            && let Some(pressed) = t.cell
+        {
+            // The merge fills such a text with the record's value as text, so an image there
+            // would merge as its path.
+            if role == PlaceholderRole::Image {
+                return Err(bad(
+                    "data.placeholder.add",
+                    "an image field can't go in a table cell or a note; bind it to a frame, or insert it with role text to merge its path",
+                ));
+            }
+            if role != PlaceholderRole::Text {
+                return Err(bad("data.placeholder.add", "a hyperlink field can't go in a table cell or a note; insert it as text"));
+            }
+            // The merge finds a marker by its name, so a name that can't be read back out of one
+            // would stay a marker: say so rather than insert it.
+            if name.is_empty() || name.contains(['<', '>', '\n']) {
+                return Err(bad(
+                    "data.placeholder.add",
+                    format!("the field \"{name}\" can't be inserted in a table cell or a note: its name holds < > or a line break"),
+                ));
+            }
+            // A position a merged cell covers is the merged cell's: the field goes where it shows.
+            let cell = d.story(t.story).and_then(|st| st.tables.get(&pressed.table)).map_or(pressed, |tab| {
+                let (row, col) = tab.owner(pressed.row, pressed.col);
+                designcraft_doc::CellAddr { row, col, ..pressed }
+            });
+            let marker = format!("<<{name}>>");
+            let st = d.text_story_mut(t.story, Some(cell)).ok_or_else(|| bad("data.placeholder.add", "no table cell there"))?;
+            let at = if cell == pressed { t.range().start.min(st.text.len()) } else { st.text.len() };
+            let at = designcraft_doc::floor_char_boundary(&st.text, at);
+            st.replace(at..at, &marker);
+            // The caret goes after the field, in that text, as after typing; a cell selection
+            // would have the next keystroke replace the whole cell, field and all.
+            let end = at + marker.len();
+            sel.cells = None;
+            sel.text = Some(designcraft_doc::TextSel { anchor: end, focus: end, cell: Some(cell), ..t });
+            return Ok(json!({"cell": true, "marker": marker}));
         }
         let (story, at, end) = text_target(p, sel).ok_or_else(|| bad("data.placeholder.add", "select text or a frame"))?;
         if d.story(story).is_none() {
             return Err(bad("data.placeholder.add", "no story"));
         }
-        if role == PlaceholderRole::Text {
+        if matches!(role, PlaceholderRole::Text | PlaceholderRole::Image) {
             let marker = format!("<<{name}>>");
             let at = {
                 let text = d.story(story).map(|st| st.text.clone()).unwrap_or_default();
@@ -532,6 +587,11 @@ fn add_placeholder(d: &mut Document, sel: &Selection, p: &Value, name: &str) -> 
                 st.replace(at..at, &marker);
             }
             d.adjust_text_ranges(story, at..at, marker.len());
+            // The caret moves past the field, as after typing, so the next field goes after it.
+            if let Some(t) = sel.text.as_mut().filter(|t| t.story == story && t.cell.is_none()) {
+                let shift = |pos: usize| if pos >= at { pos + marker.len() } else { pos };
+                (t.anchor, t.focus) = (shift(t.anchor), shift(t.focus));
+            }
             PlaceholderAnchor::Text { story, start: at, end: at.saturating_add(marker.len()) }
         } else {
             let text = d.story(story).map(|st| st.text.clone()).unwrap_or_default();
@@ -574,7 +634,7 @@ pub(crate) fn sync_placeholders(doc: &mut Document) {
             }
             PlaceholderAnchor::Text { story, start, end } => {
                 let text = doc.story(story).map(|st| st.text.clone()).unwrap_or_default();
-                if ph.role != PlaceholderRole::Text {
+                if !matches!(ph.role, PlaceholderRole::Text | PlaceholderRole::Image) {
                     if start <= end && end <= text.len() {
                         keep.push(ph);
                     }

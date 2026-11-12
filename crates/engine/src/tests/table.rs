@@ -18,6 +18,78 @@ fn check(s: &Session) {
 }
 
 #[test]
+fn table_id_without_story_rejects_multiple_matching_stories() {
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    let first = s.execute("frame.create", &json!({"rect": [36, 36, 300, 200], "content": "text"})).unwrap();
+    let first_story = first["story"].as_u64().unwrap();
+    let shared_id = s.execute("table.insert", &json!({"rows": 1, "cols": 1})).unwrap()["table"].as_u64().unwrap();
+    let second = s.execute("frame.create", &json!({"rect": [320, 36, 580, 200], "content": "text"})).unwrap();
+    let second_story = second["story"].as_u64().unwrap();
+    let second_id = s.execute("table.insert", &json!({"rows": 2, "cols": 1})).unwrap()["table"].as_u64().unwrap();
+    s.edit(|d, _| {
+        let story = d.story_mut(doc::StoryId(second_story)).unwrap();
+        let mut table = (*story.tables.remove(&second_id).unwrap()).clone();
+        table.id = shared_id;
+        story.tables.insert(shared_id, std::sync::Arc::new(table));
+        for para in &mut story.paras {
+            if para.table == Some(second_id) {
+                para.table = Some(shared_id);
+            }
+        }
+        Ok(())
+    })
+    .unwrap();
+    check(&s);
+
+    let error = s.execute("table.get", &json!({"table": shared_id})).unwrap_err();
+    assert!(error.to_string().contains("multiple stories"), "{error}");
+    assert!(error.to_string().contains("story"), "{error}");
+    assert_eq!(s.execute("table.get", &json!({"story": first_story, "table": shared_id})).unwrap()["rows"].as_array().unwrap().len(), 1);
+    assert_eq!(s.execute("table.get", &json!({"story": second_story, "table": shared_id})).unwrap()["rows"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn table_target_rejects_wrong_typed_story_and_table_ids() {
+    let (mut s, story, _) = session_with_frame();
+    let table = s.execute("table.insert", &json!({"rows": 1, "cols": 1})).unwrap()["table"].as_u64().unwrap();
+    for (key, value) in [
+        ("story", json!("other")),
+        ("story", json!("")),
+        ("story", json!(-1)),
+        ("story", json!(1.5)),
+        ("story", Value::Null),
+        ("table", json!("other")),
+        ("table", json!("")),
+        ("table", json!(-1)),
+        ("table", json!(1.5)),
+        ("table", Value::Null),
+    ] {
+        let mut params = json!({"story": story, "table": table});
+        params[key] = value;
+        let error = s.execute("table.get", &params).unwrap_err();
+        assert!(error.to_string().contains(&format!("`{key}`")), "{key}: {error}");
+    }
+    let undo = s.doc().unwrap().history.undo.len();
+    let error = s.execute("table.setCell", &json!({"story": null, "table": table, "insets": 7})).unwrap_err();
+    assert!(error.to_string().contains("`story`"), "{error}");
+    assert_eq!(s.doc().unwrap().history.undo.len(), undo);
+    for params in [json!({"story": story, "table": u64::MAX}), json!({"story": u64::MAX, "table": table})] {
+        let error = s.execute("table.get", &params).unwrap_err();
+        assert!(error.to_string().contains("no table"), "{error}");
+    }
+    // With nothing in a table selected, a malformed `table` is refused as such, not as disabled.
+    s.execute("edit.deselectAll", &json!({})).unwrap();
+    for id in ["table.selectTable", "table.insertRow"] {
+        for value in [json!("other"), json!(-1), Value::Null] {
+            let error = s.execute(id, &json!({ "table": value })).unwrap_err();
+            assert!(!matches!(error, crate::EngineError::Disabled(..)) && error.to_string().contains("`table`"), "{id} {value}: {error}");
+        }
+    }
+    assert_eq!(s.doc().unwrap().history.undo.len(), undo);
+}
+
+#[test]
 fn table_text_replacement_floors_utf8_selection_and_allows_quote_typing() {
     for (original, (a, b), replacement, (after_a, after_b), quoted) in [
         ("a", (1, 1), "é", (0, 0), Some("“é")), // Exact caret/quote baseline.

@@ -133,6 +133,13 @@ impl Xf {
     }
 }
 
+/// Whether the canvas rectangle `r`, grown by `margin` screen points, reaches into `clip`. A
+/// rectangle with a coordinate that is not finite counts as in view.
+fn in_view(xf: &Xf, clip: Rect, r: DRect, margin: f32) -> bool {
+    let s = xf.rect(r);
+    !s.is_finite() || s.expand(margin).intersects(clip)
+}
+
 /// A guide being dragged out or moved: its line, what caught it, and where it is beside the pointer (#1282).
 fn draw_guide_drag(app: &DesignApp, painter: &egui::Painter, xf: &Xf, g: &GuideDrag, p: Pos2, rect: Rect, t: &Tokens) {
     let col = Color32::from_rgb(74, 227, 255);
@@ -188,7 +195,9 @@ fn paint_render(app: &DesignApp, painter: &egui::Painter, xf: &Xf, doc: &Documen
             // Preview: only the shown area of each spread keeps its content.
             for slot in &layout.slots {
                 let r = shown_area(app, doc, xf, slot);
-                painter.with_clip_rect(r.intersect(screen)).add(egui::Shape::mesh(mesh.clone()));
+                if r.intersects(screen) {
+                    painter.with_clip_rect(r.intersect(screen)).add(egui::Shape::mesh(mesh.clone()));
+                }
             }
         } else {
             painter.add(egui::Shape::mesh(mesh));
@@ -252,8 +261,11 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let preview = app.ui.screen_mode != ScreenMode::Normal;
     let bg = if app.ui.screen_mode == ScreenMode::Presentation { Color32::BLACK } else { t.pasteboard };
     painter.rect_filled(screen, 0.0, bg);
+    // The spreads whose pages, shadow or edge reach into the view: the others paint none of them.
+    let clip = painter.clip_rect();
+    let in_sight: Vec<&SpreadSlot> = layout.slots.iter().filter(|slot| in_view(&xf, clip, slot.bounds, 2.0)).collect();
     // Page shadow: a hard 1.5 pt black offset on the right and bottom (InDesign 2026).
-    for slot in &layout.slots {
+    for slot in &in_sight {
         let r = xf.rect(slot.bounds);
         painter.rect_filled(r.translate(vec2(1.5, 1.5)), 0.0, Color32::BLACK);
     }
@@ -261,7 +273,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     // not the shadow's black, until its render arrives.
     let [r, g, b, _] = doc.resolve_color(designcraft_color::swatch::PAPER, 1.0).unwrap_or(designcraft_color::Color::WHITE).to_rgba8(1.0);
     let paper = Color32::from_rgb(r, g, b);
-    for slot in &layout.slots {
+    for slot in &in_sight {
         for page in doc.spread(slot.spread).map(|sp| sp.pages.as_slice()).unwrap_or_default() {
             painter.rect_filled(xf.rect(slot.xf.transform_rect_bbox(page.bounds())), 0.0, paper);
         }
@@ -271,7 +283,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     paint_render(app, &painter, &xf, &doc, &layout, screen, preview);
     crate::separations::paint(app, ui.ctx(), &painter, &xf, &layout, screen);
     let hair = 1.0 / ui.ctx().pixels_per_point();
-    for slot in &layout.slots {
+    for slot in &in_sight {
         painter.rect_stroke(xf.rect(slot.bounds), 0.0, Stroke::new(hair, page_decor::PAGE_EDGE), StrokeKind::Outside);
     }
     if !preview {
