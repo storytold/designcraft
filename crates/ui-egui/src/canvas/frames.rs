@@ -3,8 +3,8 @@ use super::render::c32;
 use super::rulers::hair;
 use super::text_overlay::draw_text_selection;
 use super::{
-    Affine, CanvasLayout, Color32, Content, DRect, DesignApp, Document, Item, Point, Pos2, Rect, Selection, Stroke, StrokeKind, Xf, compose, pos2,
-    vec2,
+    Affine, CanvasLayout, Color32, Content, DRect, DesignApp, Document, Item, Point, Pos2, Rect, Selection, Stroke, StrokeKind, Xf, compose, in_view,
+    pos2, vec2,
 };
 
 /// Spread-space → canvas transform for an item at `loc`.
@@ -51,21 +51,31 @@ pub(super) fn draw_frames(app: &DesignApp, painter: &egui::Painter, xf: &Xf, doc
         return;
     }
     let ported = ported_frames(app, doc);
+    // Only the objects that reach into the view are drawn, and only their stories are looked up:
+    // an object out of view adds no shapes and no work on its story.
+    let clip = painter.clip_rect();
+    let parent_items = doc.parents.iter().any(|p| !p.items.is_empty());
     for slot in &layout.slots {
         let Some(sp) = doc.spread(slot.spread) else { continue };
         let a = slot.xf;
         // Parent items on document pages, and base parents' items on a parent spread: dotted edges.
-        for (pi, page) in sp.pages.iter().enumerate() {
+        for (pi, page) in sp.pages.iter().enumerate().filter(|_| parent_items) {
+            let mut overridden = None;
             for (ppi, ppg) in doc.shown_parent_pages(slot.spread, pi) {
                 let Some(parent) = doc.parents.get(ppi) else { continue };
                 let Some(ppage) = parent.pages.get(ppg) else { continue };
                 let dx = page.x - ppage.x;
+                let shifted = a * Affine::translate((dx, 0.0));
                 for it in &parent.items {
-                    if (parent.pages.len() > 1 && parent.page_at_x(it.bounds().center().x) != Some(ppg)) || page.overridden.contains(&it.id) {
+                    let bounds = it.bounds();
+                    if (parent.pages.len() > 1 && parent.page_at_x(bounds.center().x) != Some(ppg))
+                        || !in_view(xf, clip, shifted.transform_rect_bbox(bounds), EDGE_MARGIN)
+                        || overridden.get_or_insert_with(|| doc.overridden_parent_items(slot.spread, pi)).contains(&it.id)
+                    {
                         continue;
                     }
                     let col = doc.layer(it.layer).map(|l| c32(l.color)).unwrap_or(Color32::LIGHT_BLUE);
-                    for poly in path_screen(it, xf, a * Affine::translate((dx, 0.0))) {
+                    for poly in path_screen(it, xf, shifted) {
                         for w in poly.windows(2) {
                             dashed(painter, w[0], w[1], Stroke::new(hair(painter), col.gamma_multiply(0.8)), 2.0, 2.0);
                         }
@@ -73,13 +83,15 @@ pub(super) fn draw_frames(app: &DesignApp, painter: &egui::Painter, xf: &Xf, doc
                 }
             }
         }
-        for it in &sp.items {
+        let seen: Vec<&std::sync::Arc<Item>> =
+            sp.items.iter().filter(|it| reach(it, 0).is_none_or(|r| in_view(xf, clip, a.transform_rect_bbox(r), EDGE_MARGIN))).collect();
+        for it in &seen {
             draw_item_edges(painter, xf, doc, it, a);
         }
         // Every overset frame, selected or not and inside groups too, shows its red mark at the
         // out port (InDesign shows it only on the selected frame; a report in Preflight is easy
         // to miss while laying out).
-        for (it, c) in overset_marks(app, doc, layout, &sp.items, xf.zoom, &ported) {
+        for (it, c) in seen.iter().flat_map(|it| overset_marks(app, doc, layout, std::slice::from_ref(*it), xf.zoom, &ported)) {
             let c = xf.to_screen(c);
             let s = designcraft_tools::thread::PORT_SIZE_PX as f32;
             painter.rect_filled(Rect::from_center_size(c, vec2(s, s)), 0.0, Color32::WHITE);
@@ -92,7 +104,7 @@ pub(super) fn draw_frames(app: &DesignApp, painter: &egui::Painter, xf: &Xf, doc
         if app.ui.tagged_frames {
             for top in &sp.items {
                 top.walk(&mut |it: &Item| {
-                    if it.xml_tag.is_empty() {
+                    if it.xml_tag.is_empty() || !in_view(xf, clip, (a * it.xf).transform_rect_bbox(it.inner_bounds()), EDGE_MARGIN) {
                         return;
                     }
                     let Some(t) = doc.xml.tags.iter().find(|t| t.name == it.xml_tag) else { return };
@@ -108,19 +120,46 @@ pub(super) fn draw_frames(app: &DesignApp, painter: &egui::Painter, xf: &Xf, doc
     }
 }
 
+/// How far, in screen points, an object's edges and port marks paint past its bounds: the 8.5 pt
+/// port square is centred on the frame's edge.
+const EDGE_MARGIN: f32 = 8.0;
+
+/// A rectangle around `it` and everything nested in it, in its parent's space: every anchor and
+/// handle of its path, and those of the objects grouped or pasted into it, which can lie outside
+/// its own outline. None when the nesting is deeper than [`PORT_GROUP_DEPTH`].
+fn reach(it: &Item, depth: usize) -> Option<DRect> {
+    if depth > PORT_GROUP_DEPTH {
+        return None;
+    }
+    let mut all: Option<DRect> = None;
+    let mut add = |r: DRect| all = Some(all.map_or(r, |a| a.union(r)));
+    for p in it.path.subpaths.iter().flat_map(|sp| &sp.anchors).flat_map(|a| [a.p, a.h_in, a.h_out]) {
+        add(DRect::from_points(p, p));
+    }
+    for c in it.children() {
+        add(reach(c, depth + 1)?);
+    }
+    Some(it.xf.transform_rect_bbox(all.unwrap_or(DRect::ZERO)))
+}
+
 fn draw_item_edges(painter: &egui::Painter, xf: &Xf, doc: &Document, it: &Item, a: Affine) {
     if it.hidden || doc.layer(it.layer).is_some_and(|l| !l.visible) {
         return;
     }
     let col = doc.layer(it.layer).map(|l| c32(l.color)).unwrap_or(Color32::LIGHT_BLUE);
-    if let Content::Group { items } = &it.content {
+    // A group shows its children's edges. A frame with items pasted into it shows only its own:
+    // they are clipped to it, and their edges would run out past it (#2345).
+    if let Content::Group { items } = &it.content
+        && it.is_group()
+    {
         for c in items {
             draw_item_edges(painter, xf, doc, c, a * it.xf);
         }
         return;
     }
-    // Frames without a stroke show their edge; shapes with strokes are visible already.
-    let show = it.stroke.is_none() || matches!(it.content, Content::Text(_) | Content::Graphic(_));
+    // Frames without a stroke show their edge, as do frames holding content; other shapes with
+    // strokes are visible already.
+    let show = it.stroke.is_none() || it.has_nested_items() || matches!(it.content, Content::Text(_) | Content::Graphic(_));
     if show {
         for poly in path_screen(it, xf, a) {
             painter.add(egui::Shape::line(poly, Stroke::new(hair(painter), col.gamma_multiply(0.75))));

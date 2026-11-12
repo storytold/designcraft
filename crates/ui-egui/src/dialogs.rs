@@ -794,6 +794,31 @@ fn print_dialog(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
                 }
                 text_field(ui, d, "pages", 120.0);
             });
+            // Alternate layouts: print chosen layouts, together or as a job each.
+            let layouts: Vec<String> = app.session.active().map(|st| st.doc.layouts().into_iter().map(|l| l.name).collect()).unwrap_or_default();
+            if layouts.len() > 1 {
+                if ui.radio(range == "layouts", crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Layouts:"))).clicked() {
+                    d.fields.insert("range".into(), json!("layouts"));
+                }
+                ui.add_enabled_ui(range == "layouts", |ui| {
+                    let mut chosen: Vec<String> =
+                        d.fields.get("layouts").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_else(|| layouts.clone());
+                    ui.horizontal_wrapped(|ui| {
+                        for name in &layouts {
+                            let mut on = chosen.contains(name);
+                            if ui.checkbox(&mut on, name.as_str()).changed() {
+                                if on {
+                                    chosen.push(name.clone());
+                                } else {
+                                    chosen.retain(|x| x != name);
+                                }
+                            }
+                        }
+                    });
+                    d.fields.insert("layouts".into(), json!(layouts.iter().filter(|n| chosen.contains(n)).collect::<Vec<_>>()));
+                    check(ui, d, "separateJobs", crate::i18n::tr(&app.ui.language, "Print each layout separately"));
+                });
+            }
         });
         ui.end_row();
         ui.label("");
@@ -804,6 +829,9 @@ fn print_dialog(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
         });
         ui.end_row();
     });
+    if let Some(st) = d.fields.get("status").and_then(Value::as_str) {
+        crate::rtl::label(ui, egui::RichText::new(st).color(ui.visuals().error_fg_color));
+    }
 }
 
 /// The presets offered by the Export PDF dialog, in display order. The stored value is the
@@ -904,6 +932,20 @@ fn pdf_export(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     ui.horizontal(|ui| {
         crate::rtl::label(ui, crate::i18n::tr(lang, "Page Range:"));
         text_field(ui, d, "pages", 160.0);
+        // Alternate layouts: one click puts a layout's pages in the range.
+        let layouts = app.session.active().map(|st| st.doc.layouts()).unwrap_or_default();
+        if layouts.len() > 1 {
+            craft_ui::ComboBox::from_id_salt("pdf_layout").selected_text(crate::i18n::tr(lang, "Layout…")).width(120.0).show_ui(ui, |ui| {
+                if ui.selectable_label(false, crate::i18n::tr(lang, "All")).clicked() {
+                    d.fields.insert("pages".into(), json!("all"));
+                }
+                for l in &layouts {
+                    if ui.selectable_label(false, &l.name).clicked() {
+                        d.fields.insert("pages".into(), json!(format!("{}-{}", l.start.saturating_add(1), l.end)));
+                    }
+                }
+            });
+        }
     });
     check(ui, d, "spreads", crate::i18n::tr(lang, "Spreads"));
 
@@ -963,6 +1005,46 @@ fn selected_frame_options(app: &DesignApp) -> Option<designcraft_doc::TextFrameO
     st.doc.item(fid)?.text_frame().map(|t| t.options.clone())
 }
 
+/// True when every text frame the dialog changes has the same inset on all four sides: the
+/// selected items, else the caret's frame, else every frame of the caret's story.
+fn selected_frames_have_even_insets(app: &DesignApp) -> bool {
+    let Some(st) = app.session.active() else {
+        return true;
+    };
+    let mut ids = st.selection.items.clone();
+    if ids.is_empty()
+        && let Some(t) = st.selection.text
+    {
+        ids = match t.frame {
+            Some(f) => vec![f],
+            None => st.doc.story(t.story).map(|s| s.frames.clone()).unwrap_or_default(),
+        };
+    }
+    ids.iter().filter_map(|id| st.doc.item(*id)?.text_frame()).all(|t| t.options.inset.iter().all(|v| (v - t.options.inset[0]).abs() < 1e-9))
+}
+
+/// Whether every selected text frame (the selected items, or the frame of the caret) has an
+/// outline that is not its own axis-aligned rectangle: an oval, a polygon, rounded or other corner
+/// options. Its text keeps one inset from the outline, as compose sets it; type on a path doesn't.
+/// A selection that mixes them with rectangular frames shows the four sides, so each frame keeps
+/// the sides left as shown.
+fn selected_frame_is_shaped(app: &DesignApp) -> bool {
+    let Some(st) = app.session.active() else { return false };
+    let shaped = |fid: designcraft_doc::ItemId| -> Option<bool> {
+        let item = st.doc.item(fid)?;
+        if item.text_frame()?.options.path.is_some() {
+            return Some(false);
+        }
+        let bp = if item.corners.is_none() { item.path.to_bezpath() } else { designcraft_geom::corners::apply(&item.path, &item.corners) };
+        Some(designcraft_compose::FrameOutline::new(&bp, 0.0).is_some())
+    };
+    if st.selection.items.is_empty() {
+        let Some(fid) = st.selection.text.and_then(|t| t.frame) else { return false };
+        return shaped(fid).unwrap_or(false);
+    }
+    st.selection.items.iter().all(|&fid| shaped(fid).unwrap_or(false))
+}
+
 /// Object › Text Frame Options shows the selected frame's options. `_shown` keeps what it showed,
 /// so OK sends only the fields the user changed. Fields given when the dialog opened count as
 /// changed.
@@ -990,7 +1072,7 @@ fn seed_text_frame_options(app: &DesignApp, d: &mut Dialog) {
         };
         designcraft_doc::FrameBaselineGrid { start: g.start, increment: g.increment, relative_to }
     });
-    let shown = json!({
+    let mut shown = json!({
         "columns": o.columns, "gutter": fm(o.gutter),
         "columnsKind": kind(serde_json::to_value(o.columns_kind).unwrap_or_default()), "columnWidth": fm(width),
         "balanceColumns": o.balance_columns, "ignoreWrap": o.ignore_wrap,
@@ -1009,12 +1091,19 @@ fn seed_text_frame_options(app: &DesignApp, d: &mut Dialog) {
         "customGrid": o.baseline_grid.is_some(), "gridStart": fm(grid.start), "gridIncrement": fm(grid.increment),
         "gridRelativeTo": grid.relative_to.name(),
     });
+    // A non-rectangular frame shows one Inset (its top inset, the one kept from the outline).
+    let shaped = selected_frame_is_shaped(app);
+    if shaped && let Value::Object(m) = &mut shown {
+        m.insert("inset".into(), fm(o.inset[0]));
+    }
+    d.fields.insert("_shaped".into(), json!(shaped));
     if let Value::Object(m) = &shown {
         for (k, v) in m {
             d.fields.entry(k.clone()).or_insert_with(|| v.clone());
         }
     }
-    d.fields.entry("insetLinked".to_string()).or_insert_with(|| json!(o.inset.iter().all(|v| (v - o.inset[0]).abs() < 1e-9)));
+    // Linked only when no selected frame has uneven sides, so a typed side cannot overwrite them.
+    d.fields.entry("insetLinked".to_string()).or_insert_with(|| json!(selected_frames_have_even_insets(app)));
     // The frame's width: Fixed Number shows each column's width from it as the fields change.
     if let Some(w) = selected_frame_width(app) {
         d.fields.insert("_frameWidth".into(), json!(w));
@@ -1036,9 +1125,11 @@ fn text_frame_options_dialog(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog)
     }
     ui.set_min_width(560.0);
     ui.horizontal_top(|ui| {
-        // A fixed height: the separator would otherwise stretch the dialog to the window.
-        ui.set_min_height(330.0);
-        ui.set_max_height(330.0);
+        // A fixed height: the separator would otherwise stretch the dialog to the window. A
+        // non-rectangular frame's Inset row needs one more row.
+        let height = if d.b("_shaped") { 360.0 } else { 330.0 };
+        ui.set_min_height(height);
+        ui.set_max_height(height);
         section_list(
             &lang,
             ui,
@@ -1176,8 +1267,9 @@ fn text_frame_preview(app: &mut DesignApp, d: &mut Dialog) {
 }
 
 /// Text Frame Options › General, as InDesign's: Columns (kind, number and width, gutter and
-/// maximum, Balance Columns), Inset Spacing (top and bottom, the link, left and right), Vertical
-/// Justification (align, paragraph spacing limit) and Ignore Text Wrap.
+/// maximum, Balance Columns), Inset Spacing (top and bottom, the link, left and right; one Inset
+/// for a non-rectangular frame), Vertical Justification (align, paragraph spacing limit) and
+/// Ignore Text Wrap.
 fn general(lang: &str, ui: &mut egui::Ui, d: &mut Dialog) {
     let tr = |s: &'static str| crate::i18n::tr(lang, s);
     let (cap, field, cap2) = (64.0, 110.0, 70.0);
@@ -1201,8 +1293,10 @@ fn general(lang: &str, ui: &mut egui::Ui, d: &mut Dialog) {
                 // Fixed Number: each column's width, from the frame, the insets and the gutter.
                 let frame = d.fields.get("_frameWidth").and_then(Value::as_f64);
                 let n = d.n("columns").unwrap_or(1.0).max(1.0);
+                // A non-rectangular frame keeps its sides until its one Inset is changed.
+                let (left, right) = if d.b("_shaped") && edited(d, "inset") { ("inset", "inset") } else { ("insetLeft", "insetRight") };
                 let width = frame.map(|w| {
-                    let inner = w - d.m("insetLeft").unwrap_or(0.0) - d.m("insetRight").unwrap_or(0.0);
+                    let inner = w - d.m(left).unwrap_or(0.0) - d.m(right).unwrap_or(0.0);
                     ((inner - d.m("gutter").unwrap_or(0.0) * (n - 1.0)) / n).max(0.0)
                 });
                 let _ = crate::widgets::NumField::measure("tfo_auto_width", width, d.unit).width(field).spinner().enabled(false).show(ui);
@@ -1220,6 +1314,9 @@ fn general(lang: &str, ui: &mut egui::Ui, d: &mut Dialog) {
         check(ui, d, "balanceColumns", tr("Balance Columns"));
     });
     framed(ui, Some(tr("Inset Spacing")), |ui| {
+        // A non-rectangular frame: the four sides are dimmed and one Inset sets the distance kept
+        // from the outline.
+        let shaped = d.b("_shaped");
         // While linked, a side typed in sets all four ("Make all settings the same").
         let sides = ["insetTop", "insetLeft", "insetBottom", "insetRight"];
         let before: Vec<String> = sides.iter().map(|k| d.s(k)).collect();
@@ -1228,24 +1325,32 @@ fn general(lang: &str, ui: &mut egui::Ui, d: &mut Dialog) {
         {
             ui.horizontal(|ui| {
                 caption_at(ui, tr(l1), cap);
-                spin_measure(ui, d, k1, field, true);
+                spin_measure(ui, d, k1, field, !shaped);
                 ui.add_space(8.0);
                 if r == 0 {
                     let linked = d.b("insetLinked");
                     let tip = tr("Make all settings the same");
-                    if crate::widgets::icon_toggle_sized(ui, if linked { "link" } else { "link-broken" }, linked, tip, egui::vec2(22.0, 21.0))
-                        .clicked()
-                    {
+                    let toggle = ui.add_enabled_ui(!shaped, |ui| {
+                        crate::widgets::icon_toggle_sized(ui, if linked { "link" } else { "link-broken" }, linked, tip, egui::vec2(22.0, 21.0))
+                    });
+                    if toggle.inner.clicked() {
                         d.fields.insert("insetLinked".into(), json!(!linked));
                     }
                 } else {
                     ui.add_space(22.0 + ui.spacing().item_spacing.x);
                 }
                 caption_at(ui, tr(l2), cap2 - 30.0);
-                spin_measure(ui, d, k2, field, true);
+                spin_measure(ui, d, k2, field, !shaped);
             });
         }
-        if d.b("insetLinked")
+        if shaped {
+            ui.horizontal(|ui| {
+                caption_at(ui, tr("Inset:"), cap);
+                spin_measure(ui, d, "inset", field, true);
+            });
+        }
+        if !shaped
+            && d.b("insetLinked")
             && let Some(k) = sides.iter().zip(&before).find(|(k, b)| d.s(k) != **b).map(|(k, _)| *k)
         {
             let v = d.fields.get(k).cloned().unwrap_or_default();
@@ -2940,6 +3045,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         "closeDocument" => crate::i18n::tr(&app.ui.language, "Unsaved Changes"),
         "deletePages" => crate::i18n::tr(&app.ui.language, "Warning"),
         "pagesPanelOptions" => crate::i18n::tr(&app.ui.language, "Panel Options"),
+        "parentOptions" => crate::i18n::tr(&app.ui.language, "Parent Options"),
         "updateLink" => crate::i18n::tr(&app.ui.language, "Update Link"),
         "menus" => crate::i18n::tr(&app.ui.language, "Menu Customization"),
         "importOptions" => crate::i18n::tr(&app.ui.language, "Import Options"),
@@ -2958,6 +3064,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         "colorGroupOptions" => crate::i18n::tr(&app.ui.language, "Color Group Options"),
         "layerSettings" => crate::i18n::tr(&app.ui.language, "Layer Options"),
         crate::effects_dialog::ID => crate::i18n::tr(&app.ui.language, "Effects"),
+        crate::export_batch_dialog::ID => crate::i18n::tr(&app.ui.language, "Export Layouts and Versions"),
         crate::package_dialog::ID => crate::i18n::tr(&app.ui.language, "Package"),
         crate::package_dialog::INSTRUCTIONS => crate::i18n::tr(&app.ui.language, "Printing Instructions"),
         id => match id.strip_prefix("cmd:").and_then(designcraft_engine::find_command) {
@@ -2973,13 +3080,15 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         let available = (ctx.content_rect().size() - frame_margin - egui::vec2(16.0, 16.0)).max(egui::Vec2::splat(1.0));
         let preferred_width: f32 = match d.id.as_str() {
             "alert" => 440.0,
-            "closeDocument" | "updateLink" | "deletePages" | "newWorkspace" | "pagesPanelOptions" | "insertTable" | "convertTableToText" => 380.0,
+            "closeDocument" | "updateLink" | "deletePages" | "newWorkspace" | "pagesPanelOptions" | "parentOptions" | "insertTable"
+            | "convertTableToText" => 380.0,
             "insertPages" => 440.0,
             "convertTextToTable" => 420.0,
             "newDocument" => 960.0,
             "hyphenation" => 560.0,
             "numberingSection" => 560.0,
             crate::effects_dialog::ID => 720.0,
+            crate::export_batch_dialog::ID => 660.0,
             "colorPicker" => 580.0,
             crate::package_dialog::ID => 720.0,
             crate::package_dialog::INSTRUCTIONS => 520.0,
@@ -3326,6 +3435,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                     "colorGroupOptions" => options::color_group_options(app, ui, &mut d),
                     "layerSettings" => options::layer_options(app, ui, &mut d),
                     crate::effects_dialog::ID => crate::effects_dialog::show(app, ui, &mut d),
+                    crate::export_batch_dialog::ID => crate::export_batch_dialog::show(app, ui, &mut d),
                     crate::package_dialog::ID => crate::package_dialog::show(app, ui, &mut d),
                     crate::package_dialog::INSTRUCTIONS => crate::package_dialog::show_instructions(app, ui, &mut d),
                     "preferences" => preferences(app, ui, &mut d, body_height),
@@ -3591,6 +3701,34 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                             combo(ui, &mut d, "resize", &resizes);
                         });
                     }
+                    "parentOptions" => {
+                        // As InDesign's: Prefix, Name, Based on Parent (Number of Pages is the
+                        // parent spread's own).
+                        let lang = app.ui.language.clone();
+                        egui::Grid::new("parent_options").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+                            crate::rtl::label(ui, crate::i18n::tr(&lang, "Prefix:"));
+                            text_field(ui, &mut d, "prefix", 60.0);
+                            ui.end_row();
+                            crate::rtl::label(ui, crate::i18n::tr(&lang, "Name:"));
+                            text_field(ui, &mut d, "name", 200.0);
+                            ui.end_row();
+                            crate::rtl::label(ui, crate::i18n::tr(&lang, "Based on Parent:"));
+                            let bases: Vec<(String, String)> = d
+                                .fields
+                                .get("bases")
+                                .and_then(Value::as_array)
+                                .map(|a| a.iter().filter_map(|b| Some((b.get(0)?.as_str()?.to_string(), b.get(1)?.as_str()?.to_string()))).collect())
+                                .unwrap_or_default();
+                            let none = crate::i18n::tr(&lang, "[None]").to_string();
+                            let mut opts: Vec<(&str, &str)> = vec![("", none.as_str())];
+                            opts.extend(bases.iter().map(|(v, l)| (v.as_str(), l.as_str())));
+                            combo(ui, &mut d, "basedOn", &opts);
+                            ui.end_row();
+                        });
+                        if let Some(st) = d.fields.get("status").and_then(Value::as_str) {
+                            crate::rtl::label(ui, st);
+                        }
+                    }
                     "updateLink" => {
                         let text = crate::i18n::tr(
                             &app.ui.language,
@@ -3786,6 +3924,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
             "updateLink" => crate::i18n::tr(&app.ui.language, "  Update  ").to_string(),
             "findFont" => crate::i18n::tr(&app.ui.language, "Replace All").to_string(),
             "newDocument" => format!("  {}  ", crate::i18n::tr(&app.ui.language, "Create")),
+            crate::export_batch_dialog::ID => format!("  {}  ", crate::i18n::tr(&app.ui.language, "Export…")),
             crate::package_dialog::ID => crate::i18n::tr(&app.ui.language, "Package…").to_string(),
             crate::package_dialog::INSTRUCTIONS => crate::i18n::tr(&app.ui.language, "Continue").to_string(),
             _ => crate::i18n::tr(&app.ui.language, "  OK  ").to_string(),
@@ -4638,13 +4777,33 @@ fn confirm_part3(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
             app.place_file(json!({"path": d.s("path"), "pdfPage": page, "pdfCrop": if crop.is_empty() { "crop".to_string() } else { crop }}))
         }
         "print" => {
-            let pages = if d.s("range") == "all" { Value::Null } else { json!(d.s("pages")) };
+            let pages = if d.s("range") == "range" { json!(d.s("pages")) } else { Value::Null };
             let printer = d.s("printer");
-            let r = app.run(
-                "file.print",
-                json!({"printer": if printer.is_empty() { Value::Null } else { json!(printer) }, "copies": d.n("copies").unwrap_or(1.0).max(1.0) as u64,
-                    "pages": pages, "spreads": d.b("spreads"), "marks": d.b("marks"), "bleed": d.b("bleed")}),
-            )?;
+            let mut params = json!({"printer": if printer.is_empty() { Value::Null } else { json!(printer) }, "copies": d.n("copies").unwrap_or(1.0).max(1.0) as u64,
+                "pages": pages, "spreads": d.b("spreads"), "marks": d.b("marks"), "bleed": d.b("bleed")});
+            if d.s("range") == "layouts" {
+                let chosen = d.fields.get("layouts").cloned().unwrap_or_else(|| json!([]));
+                if chosen.as_array().is_some_and(Vec::is_empty) {
+                    // Keep the dialog open, saying why.
+                    let e = crate::i18n::tr(&app.ui.language, "Choose at least one layout.").to_string();
+                    let mut d = d.clone();
+                    d.fields.insert("status".into(), json!(e));
+                    app.ui.dialog = Some(d);
+                    return Err(e);
+                }
+                params["layouts"] = chosen;
+                params["separateJobs"] = json!(d.b("separateJobs"));
+            }
+            let r = match app.run("file.print", params) {
+                Ok(r) => r,
+                Err(e) => {
+                    // Keep the dialog (and the layouts chosen) open, saying why.
+                    let mut d = d;
+                    d.fields.insert("status".into(), json!(e));
+                    app.ui.dialog = Some(d);
+                    return Err(e);
+                }
+            };
             let printer = r["printer"].as_str().unwrap_or_else(|| crate::i18n::tr(&app.ui.language, "the default printer"));
             app.status(
                 crate::i18n::tr(&app.ui.language, "Sent {count} page(s) to {printer}")
@@ -4870,6 +5029,19 @@ fn confirm_part5(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
             }
             app.run("layout.pages.delete", json!({"pages": d.fields.get("pages").cloned().unwrap_or_else(|| json!([]))}))
         }
+        "parentOptions" => {
+            let base = d.s("basedOn");
+            let base = base.parse::<u64>().map_or(Value::Null, |id| json!(id));
+            let parent = d.fields.get("parent").cloned().unwrap_or(Value::Null);
+            let r = app.run("layout.parents.options", json!({"parent": parent, "prefix": d.s("prefix"), "name": d.s("name"), "basedOn": base}));
+            if let Err(e) = &r {
+                // A refused prefix or name: the dialog stays, with what was typed, saying why.
+                let mut d = d;
+                d.fields.insert("status".into(), json!(e));
+                app.ui.dialog = Some(d);
+            }
+            r
+        }
         "pagesPanelOptions" => {
             use crate::panels::pages::{IconSize, PanelResize};
             let o = &mut app.ui.pages_panel;
@@ -4999,6 +5171,7 @@ fn confirm_part6(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
         }
         "alert" => Ok(Value::Null),
         crate::effects_dialog::ID => crate::effects_dialog::confirm(app, &d),
+        crate::export_batch_dialog::ID => crate::export_batch_dialog::confirm(app, &d),
         crate::package_dialog::ID | crate::package_dialog::INSTRUCTIONS => {
             let r = if d.id == crate::package_dialog::ID {
                 crate::package_dialog::confirm(app, &d)
@@ -5079,6 +5252,9 @@ fn confirm_part6(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
                         p.insert(f.key, value.clone());
                     }
                 }
+            }
+            if cid == "layout.alternate.options" {
+                drop_unchanged_size(&d, &mut p);
             }
             let r = app.run(cid, Value::Object(p));
             if let Err(e) = &r {
@@ -7576,7 +7752,7 @@ fn shown_rule(d: &Dialog, prefix: &str, which: &str, current: &Value) -> Value {
 }
 
 /// The paragraph attributes of the Justification controls.
-pub const JUSTIFY_ATTRS: [&str; 12] = [
+pub const JUSTIFY_ATTRS: [&str; 14] = [
     "wordSpaceMin",
     "wordSpaceDesired",
     "wordSpaceMax",
@@ -7586,6 +7762,8 @@ pub const JUSTIFY_ATTRS: [&str; 12] = [
     "glyphScaleMin",
     "glyphScaleDesired",
     "glyphScaleMax",
+    "autoLeading",
+    "singleWordJustify",
     "composer",
     "kashidas",
     "koreanCharBreaks",
@@ -7598,9 +7776,35 @@ const JUSTIFY_ROWS: [(&str, &str, (f64, f64)); 3] = [
     ("Glyph Scaling", "glyphScale", (50.0, 200.0)),
 ];
 
+/// The allowed Auto Leading, in percent of the type size.
+const AUTO_LEADING_RANGE: (f64, f64) = (0.0, 500.0);
+
+/// The Auto Leading stored for a percent typed into its field: the whole percent the field shows.
+fn auto_leading_typed(pct: f64) -> f64 {
+    // Adding 0.0 turns a rounded -0 into 0.
+    (pct.round() + 0.0) / 100.0
+}
+
+/// The Single Word Justification choices: (attribute value, label).
+const SINGLE_WORD_CHOICES: [(&str, &str); 4] =
+    [("left", "Align Left"), ("center", "Align Center"), ("right", "Align Right"), ("fullyJustified", "Full Justify")];
+
 /// Checks the edited spacing values: each within its range, and minimum ≤ desired ≤ maximum
-/// (values left mixed are not compared).
+/// (values left mixed are not compared); an edited Auto Leading within its range, and an edited
+/// Single Word Justification one of its choices.
 fn check_justification(d: &Dialog, prefix: &str, current: &Value) -> Result<(), String> {
+    if let Some(v) = d.fields.get(&format!("{prefix}autoLeading")) {
+        let (lo, hi) = AUTO_LEADING_RANGE;
+        let pct = v.as_f64().map(|x| x * 100.0).filter(|x| x.is_finite()).ok_or("Justification: Auto Leading is not a number")?;
+        if !(lo..=hi).contains(&pct) {
+            return Err(format!("Justification: Auto Leading must be between {lo}% and {hi}%"));
+        }
+    }
+    if let Some(v) = d.fields.get(&format!("{prefix}singleWordJustify"))
+        && !SINGLE_WORD_CHOICES.iter().any(|(k, _)| v.as_str() == Some(k))
+    {
+        return Err(format!("Justification: Single Word Justification cannot be {v}"));
+    }
     for (label, stem, (lo, hi)) in JUSTIFY_ROWS {
         let mut edited = false;
         let mut known = Vec::new();
@@ -7803,6 +8007,35 @@ fn justification(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, prefix: &str, cu
             }
             ui.end_row();
         }
+        crate::rtl::label(ui, crate::i18n::tr(lang, "Auto Leading:"));
+        let auto = cur(d, "autoLeading").as_f64().map(|x| x * 100.0);
+        if let Some(n) = ui.scope(|ui| crate::widgets::number(ui, &format!("ps{prefix}autoLeading"), auto, "%", 60.0, 0)).inner {
+            d.fields.insert(format!("{prefix}autoLeading"), json!(auto_leading_typed(n)));
+        }
+        ui.end_row();
+        let single_label = crate::rtl::label(ui, crate::i18n::tr(lang, "Single Word Justification:"));
+        let single = cur(d, "singleWordJustify");
+        // Mixed (null) shows blank until a choice is made.
+        let shown = SINGLE_WORD_CHOICES.iter().find(|(k, _)| single.as_str() == Some(k)).map_or("", |(_, label)| label);
+        craft_ui::ComboBox::from_id_salt(("singleWordJustify", prefix))
+            .selected_text(crate::rtl::widget(ui, crate::i18n::tr(lang, shown)))
+            .width(130.0)
+            .show_ui(ui, |ui| {
+                for (v, label) in SINGLE_WORD_CHOICES {
+                    if ui.selectable_label(single.as_str() == Some(v), crate::rtl::widget(ui, crate::i18n::tr(lang, label))).clicked() {
+                        // The paragraphs' own choice is no edit, so OK adds no undo step for it.
+                        let key = format!("{prefix}singleWordJustify");
+                        if current["singleWordJustify"].as_str() == Some(v) {
+                            d.fields.remove(&key);
+                        } else {
+                            d.fields.insert(key, json!(v));
+                        }
+                    }
+                }
+            })
+            .response
+            .labelled_by(single_label.id);
+        ui.end_row();
         crate::rtl::label(ui, crate::i18n::tr(lang, "Composer:"));
         let composer = cur(d, "composer");
         // Mixed (null) selects neither; a Japanese composer keeps its kind.
@@ -8260,6 +8493,23 @@ fn command_form(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     });
     if let Some(st) = d.fields.get("status").and_then(Value::as_str) {
         ui.label(egui::RichText::new(st).color(crate::theme::Tokens::get(ui.ctx()).text_dim));
+    }
+}
+
+/// Alternate Layout Options: the size fields start at the layout's first page's size (`sizeWas`),
+/// and one left as it was isn't sent: it would resize every page of the layout to it.
+fn drop_unchanged_size(d: &Dialog, p: &mut Map<String, Value>) {
+    let num = |v: Option<&Value>| match v {
+        Some(Value::Number(n)) => n.as_f64(),
+        Some(Value::String(s)) => s.trim().parse::<f64>().ok(),
+        _ => None,
+    };
+    let was = d.fields.get("sizeWas").and_then(Value::as_array);
+    for (k, key) in ["width", "height"].into_iter().enumerate() {
+        let before = num(was.and_then(|a| a.get(k)));
+        if num(p.get(key)).zip(before).is_some_and(|(now, before)| (now - before).abs() < 1e-6) {
+            p.remove(key);
+        }
     }
 }
 
