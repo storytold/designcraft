@@ -12,6 +12,7 @@ pub mod colour;
 mod eps;
 mod jpeg;
 mod psd;
+mod resolution;
 mod tone;
 pub use eps::{bounding_box as eps_bounding_box, eps_pixel_size, eps_png, eps_proxy, eps_size, is_eps};
 pub use tone::{Tone, tone};
@@ -358,8 +359,11 @@ pub fn svg_tree(bytes: &[u8]) -> Option<usvg::Tree> {
     usvg::Tree::from_data(&xml, svg_options()).ok()
 }
 
-/// Natural size of a placed graphic in points: rasters at 72 ppi (one pixel per point), PSDs
-/// likewise, SVGs from their width/height (CSS pixels), PDFs are the caller's.
+pub use resolution::raster_resolution;
+
+/// Natural size of a placed graphic in points: rasters at their embedded resolution when sane
+/// (one pixel per point, 72 ppi, without usable metadata), PSDs likewise, SVGs from their
+/// width/height (CSS pixels), PDFs are the caller's.
 pub fn natural_size(bytes: &[u8]) -> Option<(f64, f64)> {
     if is_svg(bytes) {
         let s = svg_tree(bytes)?.size();
@@ -370,7 +374,12 @@ pub fn natural_size(bytes: &[u8]) -> Option<(f64, f64)> {
         return Some((bb[2] - bb[0], bb[3] - bb[1])).filter(|(w, h)| w.is_finite() && h.is_finite() && *w > 0.0 && *h > 0.0);
     }
     let (w, h) = pixel_size(bytes)?;
-    Some((w as f64, h as f64))
+    // Honor the file's density (#1991): a 600 px photo saved at 600 dpi places one inch wide.
+    // Absurd metadata falls back to a pixel per point.
+    match raster_resolution(bytes) {
+        Some(dpi) if resolution::sane_resolution(dpi) => Some((w as f64 * 72.0 / dpi.0, h as f64 * 72.0 / dpi.1)),
+        _ => Some((w as f64, h as f64)),
+    }
 }
 
 /// Unpremultiplied RGBA pixels, rows top to bottom, as a PNG file with no resolution stored.
@@ -407,7 +416,12 @@ const MAX_RGBA_BYTES: u64 = 1 << 30;
 /// Whether a raster's header gives it more pixels than [`decode_rgba`] decodes.
 pub fn too_large_to_decode(bytes: &[u8]) -> bool {
     // `image` limits only its own output, which can be a quarter of the RGBA copy or less.
-    pixel_size(bytes).is_some_and(|(w, h)| u64::from(w).saturating_mul(u64::from(h)).saturating_mul(4) > MAX_RGBA_BYTES)
+    pixel_size(bytes).is_some_and(|(w, h)| over_rgba_budget(w, h))
+}
+
+/// Whether a `w` × `h` raster takes more than [`MAX_RGBA_BYTES`] as RGBA.
+fn over_rgba_budget(w: u32, h: u32) -> bool {
+    u64::from(w).saturating_mul(u64::from(h)).saturating_mul(4) > MAX_RGBA_BYTES
 }
 
 /// Straight (non-premultiplied) RGBA8 of a raster in display sRGB: an embedded ICC profile is
@@ -439,6 +453,27 @@ pub fn decode_rgba(bytes: &[u8]) -> Option<image::RgbaImage> {
     let rgba = decode_to_rgba8(&img);
     let Some(icc) = embedded_icc(bytes) else { return Some(rgba) };
     let px = if img.color().has_color() { Pixels::Rgb(rgba) } else { Pixels::Gray(rgba) };
+    to_display_rgba(px, Some(&icc), &DisplayColour::active())
+}
+
+/// The largest `shrink` [`decode_rgba_reduced`] takes: 3, an eighth of each side.
+pub const MAX_REDUCED_SHRINK: u8 = jpeg::MAX_SHRINK;
+
+/// [`decode_rgba`] of a JPEG at 1/2^`shrink` of its size (`shrink` 1 to [`MAX_REDUCED_SHRINK`], each
+/// side rounded up), read from its compressed blocks without a full-size decode. The embedded ICC
+/// profile is applied as [`decode_rgba`] applies it. `None` where only a full decode applies: other
+/// formats, CMYK, 12-bit and lossless JPEGs, files whose size [`pixel_size`] cannot read, and files
+/// [`decode_rgba`] refuses as too large.
+pub fn decode_rgba_reduced(bytes: &[u8], shrink: u8) -> Option<image::RgbaImage> {
+    use colour::{DisplayColour, Pixels, to_display_rgba};
+    // The size check must have a size to check: a header only the JPEG decoder reads is refused.
+    pixel_size(bytes)?;
+    if too_large_to_decode(bytes) {
+        return None;
+    }
+    let (rgba, has_colour) = jpeg::decode_reduced(bytes, shrink)?;
+    let Some(icc) = embedded_icc(bytes) else { return Some(rgba) };
+    let px = if has_colour { Pixels::Rgb(rgba) } else { Pixels::Gray(rgba) };
     to_display_rgba(px, Some(&icc), &DisplayColour::active())
 }
 

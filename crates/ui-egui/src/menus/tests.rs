@@ -346,6 +346,33 @@ fn pdf_export_menu_item_opens_the_dialog_or_exports() {
     assert!(app.ui.dialog.is_none());
 }
 
+/// With the Type tool in the second frame of a thread, Cmd+B opens Text Frame Options, and OK
+/// changes the frame that shows the caret.
+#[test]
+fn text_frame_options_open_from_the_type_tool() {
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let text = (0..40).map(|i| format!("Line {i} of the threaded story.")).collect::<Vec<_>>().join(" ");
+    let a = app.run("frame.create", json!({"rect": [36, 36, 300, 120], "content": "text", "text": text})).unwrap();
+    let b = app.run("frame.create", json!({"rect": [36, 200, 300, 700], "content": "text", "text": "", "caret": false})).unwrap();
+    let (a, b, sid) = (a["id"].as_u64().unwrap(), b["id"].as_u64().unwrap(), a["story"].as_u64().unwrap());
+    app.run("text.thread", json!({"from": a, "to": b})).unwrap();
+    // The end of the story is in the second frame.
+    app.run("text.select", json!({"story": sid, "anchor": text.len()})).unwrap();
+    assert!(super::state::enabled(&app, "object.textFrameOptions"), "the menu item is enabled while typing");
+    let ctx = egui::Context::default();
+    press_keys(&mut app, &ctx, &[(egui::Key::B, egui::Modifiers::COMMAND)]);
+    assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some("textFrameOptions"), "Cmd+B opens the dialog while typing");
+    if let Some(d) = app.ui.dialog.as_mut() {
+        d.fields.insert("columns".into(), json!(3));
+    }
+    crate::dialogs::confirm(&mut app).unwrap();
+    let columns = |app: &crate::DesignApp, id: u64| {
+        app.session.active().unwrap().doc.item(designcraft_doc::ItemId(id)).and_then(|i| i.text_frame().map(|t| t.options.columns))
+    };
+    assert_eq!((columns(&app, a), columns(&app, b)), (Some(1), Some(3)));
+}
+
 #[test]
 fn snap_preferences_are_a_command() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
