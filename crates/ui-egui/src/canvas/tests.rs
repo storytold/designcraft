@@ -1201,6 +1201,26 @@ fn the_paste_keys_place_an_image_in_the_selected_empty_frame_but_not_in_text() {
 }
 
 #[test]
+fn a_paste_keys_image_past_the_size_limit_is_refused_without_copying_its_pixels() {
+    // The size says 72 million pixels; the four pixels it holds are not copied.
+    let big = egui::ColorImage { size: [9000, 8000], source_size: egui::vec2(9000.0, 8000.0), pixels: vec![egui::Color32::RED; 4] };
+    let image = crate::ClipboardImage::from_color_image(&big);
+    let crate::ClipboardImage::Pixels { width, height, rgba } = &image else { panic!("a bitmap") };
+    assert_eq!((*width, *height, rgba.len()), (9000, 8000, 0));
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let items = app.session.doc().unwrap().doc.spreads[0].items.len();
+    assert!(app.paste_clipboard_image(image).is_err());
+    assert_eq!(app.session.doc().unwrap().doc.spreads[0].items.len(), items);
+    assert!(app.ui.status.contains("64 million"), "{}", app.ui.status);
+    // An image within the limit keeps its pixels.
+    let small = crate::ClipboardImage::from_color_image(&egui::ColorImage::filled([3, 2], egui::Color32::RED));
+    let crate::ClipboardImage::Pixels { width, height, rgba } = small else { panic!("a bitmap") };
+    assert_eq!((width, height), (3, 2));
+    assert_eq!(rgba, [255, 0, 0, 255].repeat(6));
+}
+
+#[test]
 fn selected_merged_owners_paint_the_same_row_and_column_targets() {
     for column in [true, false] {
         for merged in [false, true] {
