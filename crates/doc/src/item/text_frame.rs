@@ -306,7 +306,7 @@ pub struct TextWrap {
     pub alpha_threshold: u8,
 }
 
-/// InDesign's default alpha threshold for contour wraps.
+/// DesignCraft's default alpha threshold for Alpha Channel contour wraps.
 pub const DEFAULT_ALPHA_THRESHOLD: u8 = 25;
 
 impl Default for TextWrap {
