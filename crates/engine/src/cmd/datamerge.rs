@@ -485,7 +485,9 @@ fn add_placeholder(d: &mut Document, sel: &mut Selection, p: &Value, name: &str)
     } else if explicit_story || role_param == Some("text") {
         false
     } else if role_param == Some("qr") {
-        true
+        // A QR role with the insertion point in text is refused below rather than bound to a
+        // selected frame the caret is not in.
+        sel.text.is_none()
     } else if role_param == Some("image") {
         // An image role with the insertion point in text places an inline image there.
         sel.text.is_none()
@@ -585,6 +587,11 @@ fn add_placeholder(d: &mut Document, sel: &mut Selection, p: &Value, name: &str)
                 st.replace(at..at, &marker);
             }
             d.adjust_text_ranges(story, at..at, marker.len());
+            // The caret moves past the field, as after typing, so the next field goes after it.
+            if let Some(t) = sel.text.as_mut().filter(|t| t.story == story && t.cell.is_none()) {
+                let shift = |pos: usize| if pos >= at { pos + marker.len() } else { pos };
+                (t.anchor, t.focus) = (shift(t.anchor), shift(t.focus));
+            }
             PlaceholderAnchor::Text { story, start: at, end: at.saturating_add(marker.len()) }
         } else {
             let text = d.story(story).map(|st| st.text.clone()).unwrap_or_default();

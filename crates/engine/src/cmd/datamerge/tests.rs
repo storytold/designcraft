@@ -831,6 +831,44 @@ fn a_qr_field_at_the_insertion_point_is_refused() {
     assert!(s.documents()[0].doc.data_merge.placeholders.is_empty());
 }
 
+/// An explicit QR role at a text insertion point is refused too, rather than binding the QR code
+/// to a selected frame the caret is not in.
+#[test]
+fn an_explicit_qr_role_at_the_insertion_point_is_refused() {
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    select_csv(&mut s, "Name,#Code\nAda,hello\n");
+    let made = text_frame(&mut s, [36.0, 36.0, 300.0, 300.0], "Hi ", None);
+    let other = text_frame(&mut s, [36.0, 400.0, 300.0, 600.0], "", None);
+    let other_id = designcraft_doc::ItemId(other["id"].as_u64().unwrap());
+    let sid = StoryId(made["story"].as_u64().unwrap());
+    let doc = s.doc_mut().unwrap();
+    doc.selection = Selection::text(TextSel { story: sid, anchor: 3, focus: 3, frame: None, cell: None });
+    doc.selection.items = vec![other_id];
+    let msg = err(&mut s, "data.placeholder.add", json!({"field": "Code", "role": "qr"}));
+    assert!(msg.contains("bind to a frame"), "{msg}");
+    let doc = &s.documents()[0].doc;
+    assert!(doc.data_merge.placeholders.is_empty());
+    assert_eq!(doc.item(other_id).unwrap().label, "", "the other frame is not bound");
+}
+
+/// Fields inserted one after another at the insertion point keep their order: the caret moves
+/// past each marker, as after typing.
+#[test]
+fn fields_inserted_at_the_insertion_point_keep_their_order() {
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    select_csv(&mut s, "Name,City,@Photo\nAda,Paris,/x.png\n");
+    let made = text_frame(&mut s, [36.0, 36.0, 300.0, 300.0], "Hi ", None);
+    exec(&mut s, "text.select", json!({"story": made["story"], "anchor": 3, "focus": 3}));
+    exec(&mut s, "data.placeholder.add", json!({"field": "Name", "role": "text"}));
+    exec(&mut s, "data.placeholder.add", json!({"field": "City", "role": "text"}));
+    exec(&mut s, "data.placeholder.add", json!({"field": "Photo"}));
+    assert_eq!(texts(&s), vec!["Hi <<Name>><<City>><<Photo>>".to_string()]);
+    let t = s.documents()[0].selection.text.unwrap();
+    assert_eq!((t.anchor, t.focus), (28, 28));
+}
+
 /// A typed `<<name>>` marker for an image column places the image too, from an absolute path;
 /// an explicit text role still writes the path as text.
 #[test]

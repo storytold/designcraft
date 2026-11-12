@@ -91,8 +91,9 @@ external PDF/X certification.
 marks text or a frame as a field (`role`: text, image, qr, hyperlink). An image field (a `@` column) inserted at a text
 insertion point, or typed there as `<<name>>`, merges as an inline image at its natural size, scaled down to fit the
 frame. The merge writes only text into a table cell or a note: an image field inserted there is refused unless `role`
-is `text`, and its `<<name>>` marker, inserted or typed, merges as the path. A QR field (a `#` column) inserted at a
-text insertion point is refused; bind it to a frame instead. An image
+is `text`, and its `<<name>>` marker, inserted or typed, merges as the path. A QR field (a `#` column) or `role: "qr"`
+at a text insertion point is refused; bind it to a frame with `item` instead. A field inserted at the insertion point
+puts the caret after its marker. An image
 path is absolute or relative to the data file's folder, then the document's; a path that starts with one separator
 (`\Photos\a.jpg`) is tried from the drive's root first. `data.options` sets records, tiling and image fitting;
 `data.preview {record}` / `data.preview.stop` show one record without saving it.
