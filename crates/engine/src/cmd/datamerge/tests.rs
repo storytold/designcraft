@@ -1310,3 +1310,30 @@ fn merged_records_give_anchored_objects_their_own_ids() {
     doc.check().unwrap();
     designcraft_format::load(&designcraft_format::save(doc).unwrap()).unwrap();
 }
+
+/// A record previewed into an image placeholder whose frame wraps with an Alpha Channel contour
+/// gets the image's outline, as an edit would.
+#[test]
+fn a_previewed_image_gets_its_alpha_channel_outline() {
+    let dir = scratch("alpha-preview");
+    let mut pixels = vec![0u8; 64 * 64 * 4];
+    for y in 0..64 {
+        for x in 16..48 {
+            pixels[(y * 64 + x) * 4 + 3] = 255;
+        }
+    }
+    std::fs::write(dir.join("cut.png"), designcraft_render::Rendered { width: 64, height: 64, pixels }.to_png()).unwrap();
+    write(&dir.join("pics.csv"), "Photo\ncut.png\n");
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    exec(&mut s, "data.source.select", json!({"path": dir.join("pics.csv")}));
+    let frame = exec(&mut s, "frame.create", json!({"rect": [0.0, 0.0, 200.0, 100.0], "content": "graphic"}));
+    exec(&mut s, "data.placeholder.add", json!({"field": "Photo", "role": "image", "item": frame["id"]}));
+    exec(&mut s, "object.textWrap", json!({"ids": [frame["id"]], "mode": "contour", "contour": "alphaChannel"}));
+    assert!(s.doc().unwrap().doc.alpha_outlines.is_empty(), "no image placed yet");
+    exec(&mut s, "data.preview", json!({"record": 1}));
+    let d = &s.doc().unwrap().doc;
+    assert_eq!(d.alpha_outlines.len(), 1, "the previewed image is traced");
+    assert!(d.alpha_outlines[0].width > 0 && !d.alpha_outlines[0].outer.subpaths.is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}

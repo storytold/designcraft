@@ -451,8 +451,10 @@ impl Contour {
             let mut cut = Vec::new();
             let (mut i, mut j) = (0, 0);
             while let (Some(&(a, b)), Some(&(c, d))) = (spans.get(i), clip.get(j)) {
-                if a.max(c) < b.min(d) {
-                    cut.push((a.max(c), b.min(d)));
+                let (lo, hi) = (a.max(c), b.min(d));
+                // A zero-width span (a vertical open path) is kept where the clip covers it.
+                if lo < hi || (a == b && lo == hi) {
+                    cut.push((lo, hi));
                 }
                 if b < d {
                     i += 1;
@@ -466,8 +468,10 @@ impl Contour {
     }
 }
 
+/// Sorted, overlapping spans joined. Zero-width spans (a vertical edge of an open path) are kept:
+/// the wrap offset widens them, and without one they still split the line there.
 fn merge_spans(mut spans: Vec<(f64, f64)>) -> Vec<(f64, f64)> {
-    spans.retain(|(a, b)| a.is_finite() && b.is_finite() && b - a > 1e-9);
+    spans.retain(|(a, b)| a.is_finite() && b.is_finite() && b >= a);
     spans.sort_by(|a, b| a.0.total_cmp(&b.0));
     let mut out: Vec<(f64, f64)> = Vec::new();
     for (a, b) in spans {

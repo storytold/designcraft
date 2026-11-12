@@ -210,6 +210,8 @@ fn preview_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     let images = ImageCache::default();
     let sources = Sources { options: &options, data_dir: data_dir.as_deref(), doc_dir: doc_dir.as_deref(), images: &images };
     fill_row(&mut doc, &source.fields, &row, record as u32, &maps, &sources);
+    // An image the record placed gets its Alpha Channel outline, as an edit's would.
+    crate::cmd::alpha_wrap::sync(&mut doc);
     st.doc = Arc::new(doc);
     st.preview_record = Some(record as u32);
     st.bump_revision();
