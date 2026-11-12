@@ -24,6 +24,7 @@ mod outline;
 mod overlay;
 mod parabox;
 mod placed;
+mod reuse;
 mod ruby;
 pub mod shape;
 pub mod shatai;
@@ -1492,6 +1493,9 @@ fn frame_columns_and_text(frames: &[FrameSpec], direction: designcraft_doc::Text
 }
 
 struct ParagraphProgressInput<'a> {
+    /// Nothing is left to lay: the rest of the story is in place, or the pass is abandoned
+    /// ([`reuse::Pass::step`]).
+    done: bool,
     paragraph: usize,
     count: usize,
     balance_frames: usize,
@@ -1511,7 +1515,10 @@ enum ParagraphProgress {
 }
 
 fn paragraph_progress(input: ParagraphProgressInput<'_>) -> ParagraphProgress {
-    let ParagraphProgressInput { paragraph, count, balance_frames, trial, limits, cursor, columns, frames, out, may_retry } = input;
+    let ParagraphProgressInput { done, paragraph, count, balance_frames, trial, limits, cursor, columns, frames, out, may_retry } = input;
+    if done {
+        return ParagraphProgress::Complete;
+    }
     if paragraph < count {
         return ParagraphProgress::Continue;
     }
@@ -3135,6 +3142,40 @@ fn finish_paragraph(input: ParagraphFinishInput<'_>) -> ParagraphFinish {
 }
 
 fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &ComposeOptions, db: &FontDb) -> ComposedStory {
+    compose_run(doc, story, frames, opts, db, None, false).map(|(out, _)| out).unwrap_or_default()
+}
+
+/// [`compose`], leaving a trace for composing the story again after an edit when it can
+/// ([`reuse`]). With `before` (the story before an edit, its composition and trace), only the
+/// paragraphs the edit can change are composed, when the trace covers the edit.
+pub(crate) fn compose_traced(
+    doc: &Document,
+    story: &Story,
+    frames: &[FrameSpec],
+    opts: &ComposeOptions,
+    before: Option<reuse::Reuse<'_>>,
+) -> (ComposedStory, Option<reuse::Trace>) {
+    let db = FontDb::global();
+    if before.is_some()
+        && let Some(done) = compose_run(doc, story, frames, opts, db, before.as_ref(), true)
+    {
+        return done;
+    }
+    compose_run(doc, story, frames, opts, db, None, true).unwrap_or_default()
+}
+
+/// Compose `story` into `frames`, from its start or from what `before` holds for it; with
+/// `traced`, also give the trace when the composition can leave one. `None` only with `before`:
+/// its trace does not cover the edit, so the story has to be composed from its start.
+fn compose_run(
+    doc: &Document,
+    story: &Story,
+    frames: &[FrameSpec],
+    opts: &ComposeOptions,
+    db: &FontDb,
+    before: Option<&reuse::Reuse<'_>>,
+    traced: bool,
+) -> Option<(ComposedStory, Option<reuse::Trace>)> {
     let db = &db.scoped(doc.font_scope);
     let mut out = ComposedStory { story: story.id, rev: story.rev, text_len: story.text.len(), ..Default::default() };
     let mut styles_tab: Vec<RunStyle> = Vec::new();
@@ -3203,6 +3244,14 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
     // and in split columns.
     let mut span_paras = vec![false; np];
     let mut split_paras = vec![false; np];
+    // Composing again after an edit starts at the paragraph above it ([`reuse`]). The entries
+    // for the paragraphs before that one are never read: going back over a paragraph abandons the
+    // pass.
+    let plain = traced && reuse::plain(story, frames, opts, &named_labels, &deleted);
+    let (mut pass, start) = reuse::Pass::new(before, story, plain, reuse::Start { pi, cur, list_counter, info }, &mut out, &mut styles_tab);
+    (pi, cur, list_counter, info) = (start.pi, start.cur, start.list_counter, start.info);
+    snaps.extend((0..pi).map(|_| Snapshot::take(&out, &cur, &list_counter)));
+    note_snaps.resize(pi, (notes.num, notes.key, 0));
     'paras: while pi <= np {
         cur.pi = pi;
         cur.limits = Rc::clone(&limits);
@@ -3213,8 +3262,12 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
         note_snaps.truncate(pi);
         note_snaps.push((notes.num, notes.key, notes.placed.len()));
         info.truncate(pi);
+        // Whether nothing is left to lay: the rest of the story is in place, copied from its
+        // composition before an edit, or that composition turned out not to hold for this one.
+        let done = pass.step((pi, np), snaps.last(), &mut out, &mut styles_tab, &mut info);
         // A balancing trial whose band ran past its frame: re-lay the band with more room.
-        if trial.as_ref().is_some_and(|t| cur.fi > t.key.0)
+        if !done
+            && trial.as_ref().is_some_and(|t| cur.fi > t.key.0)
             && let Some(j) = trial_failed(&mut trial, &mut limits, balance_runs < balance_budget)
         {
             balance_runs += 1;
@@ -3223,6 +3276,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             continue 'paras;
         }
         match paragraph_progress(ParagraphProgressInput {
+            done,
             paragraph: pi,
             count: np,
             balance_frames,
@@ -3310,6 +3364,8 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             notes: &mut notes,
             marks: marks_before.get(pi).copied().unwrap_or_default(),
         });
+        #[cfg(test)]
+        reuse::SHAPED.with(|n| n.set(n.get() + 1));
         let shaped = shape_paragraph(ParagraphShapeInput {
             db,
             doc,
@@ -3581,17 +3637,20 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
         cur.pending += if spans_in_current_frame || ends_split { pp.space_after.max(pp.span_space_after) } else { pp.space_after };
         pi += 1;
     }
-    finish_composition(FinishInput {
-        doc,
-        story,
-        frames,
-        cols: &cols,
-        notes: &mut notes,
-        out: &mut out,
-        boxes: &boxes,
-        span_paras: &span_paras,
-        split_paras: &split_paras,
-        styles_tab,
+    pass.trace(reuse::plain_end(&span_paras, &split_paras, &boxes), &snaps, info).map(|trace| {
+        let out = finish_composition(FinishInput {
+            doc,
+            story,
+            frames,
+            cols: &cols,
+            notes: &mut notes,
+            out: &mut out,
+            boxes: &boxes,
+            span_paras: &span_paras,
+            split_paras: &split_paras,
+            styles_tab,
+        });
+        (out, trace)
     })
 }
 
@@ -4035,7 +4094,7 @@ pub fn deleted_paras(story: &Story, ranges: &[Range<usize>]) -> Vec<bool> {
 }
 
 /// Where a placed paragraph sits (for keep resolution).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 struct ParaInfo {
     start: (usize, usize),
     /// Started at the top of a column (moving it can't help).
