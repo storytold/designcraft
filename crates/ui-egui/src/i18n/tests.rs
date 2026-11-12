@@ -611,7 +611,7 @@ fn czech_counts_use_the_plural_form_for_the_number() {
 #[test]
 fn hebrew_catalog_is_selectable_rtl_and_preserves_english_keys() {
     let mut seen = HashSet::new();
-    assert_eq!(he::TABLE.len(), 1298, "initial Hebrew source-linked table changed");
+    assert_eq!(he::TABLE.len(), 1308, "initial Hebrew source-linked table changed");
     for (source, translated) in he::TABLE {
         assert!(seen.insert(*source), "duplicate Hebrew source key: {source}");
         assert!(!translated.trim().is_empty(), "empty Hebrew: {source}");
@@ -725,6 +725,24 @@ fn hebrew_parallel_round4_typography_translations() {
         ("Underline On", "הפעלת קו תחתון"),
         ("Underline Options", "אפשרויות קו תחתון"),
         ("Hyperlink from the selected text or frames", "היפר־קישור מהטקסט או מהמסגרות שנבחרו"),
+    ] {
+        assert_eq!(tr("he", source), expected, "Hebrew localization regression: {source}");
+    }
+}
+
+#[test]
+fn hebrew_parallel_round4_appearance_translations() {
+    for (source, expected) in [
+        ("Drop Shadow", "הטלת צל"),
+        ("Effects: Drop Shadow", "אפקטים: הטלת צל"),
+        ("Inner Shadow", "צל פנימי"),
+        ("Alternating Row Fills", "מילוי שורות לסירוגין"),
+        ("Align Left", "יישור לשמאל"),
+        ("Align Center", "יישור למרכז"),
+        ("Align Right", "יישור לימין"),
+        ("Swap Fill and Stroke", "החלפת מילוי וקו מתאר"),
+        ("Toggle Fill and Stroke", "החלפה בין מילוי לקו מתאר"),
+        ("Default Fill and Stroke", "מילוי וקו מתאר כברירת מחדל"),
     ] {
         assert_eq!(tr("he", source), expected, "Hebrew localization regression: {source}");
     }
