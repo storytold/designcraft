@@ -790,10 +790,7 @@ pub(crate) fn frame_specs_placed(doc: &Document, sid: StoryId, placed: &[(ItemId
         // area (all four insets) still bounds the lines.
         let outline = match &tf.options.path {
             Some(_) => None,
-            None => {
-                let bp = if item.corners.is_none() { item.path.to_bezpath() } else { designcraft_geom::corners::apply(&item.path, &item.corners) };
-                FrameOutline::new(&bp, tf.options.inset[0])
-            }
+            None => FrameOutline::of_item(item, tf.options.inset[0]),
         };
         // Vertical type: composed in the turned box; wraps and page rects turned with it.
         let vertical = doc.frame_vertical(item);

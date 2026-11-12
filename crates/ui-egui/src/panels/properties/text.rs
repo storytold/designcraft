@@ -525,10 +525,7 @@ pub(super) fn text_frame_target(app: &DesignApp) -> Option<(designcraft_doc::Ite
     let fid = designcraft_engine::cmd::text_frame_options_frames(&app.session).first().copied()?;
     let item = st.doc.item(fid)?;
     let opts = item.text_frame()?.options.clone();
-    let shaped = opts.path.is_none() && {
-        let bp = if item.corners.is_none() { item.path.to_bezpath() } else { designcraft_geom::corners::apply(&item.path, &item.corners) };
-        designcraft_compose::FrameOutline::new(&bp, 0.0).is_some()
-    };
+    let shaped = opts.path.is_none() && designcraft_compose::FrameOutline::of_item(item, 0.0).is_some();
     Some((fid, opts, shaped))
 }
 
