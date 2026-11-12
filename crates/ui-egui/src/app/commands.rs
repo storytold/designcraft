@@ -8,7 +8,14 @@ impl DesignApp {
         }
         // Only user-initiated runs touch the system clipboard, never the control channel's.
         let system_clipboard = !self.in_control && !self.control_input_frame.load(std::sync::atomic::Ordering::Relaxed);
-        let mut params = if system_clipboard { self.with_system_clipboard(id, params) } else { params };
+        let mut params = if system_clipboard {
+            match self.with_system_clipboard(id, params) {
+                super::clipboard::Pasted::Params(params) => params,
+                super::clipboard::Pasted::Image(image) => return self.paste_clipboard_image(image),
+            }
+        } else {
+            params
+        };
         // Vector art copied in another app (Illustrator, VectorCraft, Figma) is SVG markup on the
         // system clipboard: with no insertion point it pastes as editable paths where text would go.
         let typing = self.session.active().is_some_and(|d| d.selection.text.is_some());
@@ -37,14 +44,18 @@ impl DesignApp {
                 let text = match v.get("text").and_then(Value::as_str) {
                     Some(t) => {
                         self.object_clip_text = None;
+                        self.object_clip_change = None;
                         Some(t.to_string())
                     }
                     None if !self.native_menu => {
                         self.object_clip_text = Some(designcraft_engine::cmd::copied_objects_text(&self.session));
+                        self.object_clip_change = None;
                         self.object_clip_text.clone()
                     }
                     None => {
-                        self.object_clip_text = self.services.clipboard_text.as_mut().and_then(|f| f());
+                        // Empty text counts as no text, as Paste reads it.
+                        self.object_clip_text = self.services.clipboard_text.as_mut().and_then(|f| f()).filter(|t| !t.is_empty());
+                        self.object_clip_change = self.services.clipboard_change.as_mut().and_then(|f| f());
                         None
                     }
                 };
