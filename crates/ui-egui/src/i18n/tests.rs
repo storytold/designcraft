@@ -611,7 +611,7 @@ fn czech_counts_use_the_plural_form_for_the_number() {
 #[test]
 fn hebrew_catalog_is_selectable_rtl_and_preserves_english_keys() {
     let mut seen = HashSet::new();
-    assert_eq!(he::TABLE.len(), 119, "initial Hebrew source-linked table changed");
+    assert_eq!(he::TABLE.len(), 226, "initial Hebrew source-linked table changed");
     for (source, translated) in he::TABLE {
         assert!(seen.insert(*source), "duplicate Hebrew source key: {source}");
         assert!(!translated.trim().is_empty(), "empty Hebrew: {source}");
@@ -635,5 +635,9 @@ fn hebrew_catalog_is_selectable_rtl_and_preserves_english_keys() {
     assert_eq!(tr("he", "File"), "קובץ");
     assert_eq!(tr("he", "Save As…"), "שמירה בשם…");
     assert_eq!(tr("he", "Arrangement"), "סידור");
+    assert_eq!(tr("he", "Font Size"), "גודל גופן");
+    assert_eq!(tr("he", "Hyphenation…"), "חלוקת מילים…");
+    assert_eq!(tr("he", "Panel Options…"), "אפשרויות חלונית…");
+    assert_eq!(tr("he", "Create Flex Layout"), "יצירת פריסת Flex");
     assert_eq!(tr("he", "A user-defined untranslated label"), "A user-defined untranslated label");
 }
