@@ -8372,6 +8372,51 @@ fn cache_recomposes_when_the_baseline_grid_changes() {
     assert!((la.baseline - lb.baseline).abs() > 1.0, "{} {}", la.baseline, lb.baseline);
 }
 
+/// A cache over another uses its compositions of the same state, and composes an older state
+/// without replacing the other cache's composition of the current one.
+#[test]
+fn a_cache_over_another_reads_it_without_writing_to_it() {
+    let (old, sid, _) = doc_with(LOREM, Rect::new(0.0, 0.0, 200.0, 600.0), ParaAttrs::default());
+    let mut new = old.clone();
+    new.story_mut(sid).unwrap().rev += 1;
+    let base = Arc::new(Cache::new());
+    let current = base.get(&new, sid, None);
+    let reader = Cache::over(Arc::clone(&base));
+    assert!(reader.base().is_some_and(|b| Arc::ptr_eq(b, &base)));
+    assert!(Arc::ptr_eq(&reader.get(&new, sid, None), &current), "the base's composition is used");
+    let earlier = reader.get(&old, sid, None);
+    assert!(!Arc::ptr_eq(&earlier, &current));
+    assert!(Arc::ptr_eq(&reader.get(&old, sid, None), &earlier), "kept in the reader");
+    assert!(Arc::ptr_eq(&base.get(&new, sid, None), &current), "the base keeps the current state's composition");
+    assert!(base.composed_for(&old, sid).is_none(), "the base holds nothing of the older state");
+}
+
+/// The cross-reference and running-header indexes are built from compositions that depend on the
+/// baseline grid and the font scope, so a change to either builds them again, in a cache and in a
+/// cache over it.
+#[test]
+fn the_document_indexes_are_rebuilt_when_the_grid_or_font_scope_changes() {
+    let para = ParaAttrs { grid_align: Some(GridAlign::AllLines), ..Default::default() };
+    let (d, _, _) = doc_with(LOREM, Rect::new(0.0, 0.0, 200.0, 600.0), para);
+    let base = Arc::new(Cache::new());
+    let (xrefs, running) = (base.xref_index(&d), base.running_index(&d));
+    let mut grid = d.clone();
+    grid.settings.baseline_grid.increment = 30.0;
+    let mut scope = d.clone();
+    scope.font_scope += 1;
+    for (changed, what) in [(&grid, "grid"), (&scope, "font scope")] {
+        let reader = Cache::over(Arc::clone(&base));
+        assert!(!Arc::ptr_eq(&reader.xref_index(changed), &xrefs), "{what}: the base's cross-reference index is not used");
+        assert!(!Arc::ptr_eq(&reader.running_index(changed), &running), "{what}: the base's running-header index is not used");
+        let own = Cache::new();
+        let (x, r) = (own.xref_index(&d), own.running_index(&d));
+        assert!(!Arc::ptr_eq(&own.xref_index(changed), &x), "{what}: cross-reference index rebuilt");
+        assert!(!Arc::ptr_eq(&own.running_index(changed), &r), "{what}: running-header index rebuilt");
+    }
+    let reader = Cache::over(Arc::clone(&base));
+    assert!(Arc::ptr_eq(&reader.xref_index(&d), &xrefs), "the same state uses the base's index");
+}
+
 /// Two single pages 618 pt tall, top margins 36 and 48, each with an overset 11/13 story aligned
 /// to a baseline grid (start 0, increment 13) and a frame filling its margin box (bottom 582).
 fn grid_margin_doc(relative_to: designcraft_doc::GridRelative) -> (Document, [StoryId; 2]) {
