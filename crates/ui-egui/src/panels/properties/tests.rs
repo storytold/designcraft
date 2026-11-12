@@ -1357,6 +1357,28 @@ fn properties_text_frame_sets_inset_spacing_and_vertical_justification() {
     assert_eq!(frame_options(h.state(), id).vertical_justification, VerticalJustification::Center);
 }
 
+/// Insets unlinked before Revert start linked again in the reverted document, whose frame has the
+/// same id and four equal insets.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn properties_text_frame_inset_link_starts_linked_after_revert() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let id = app.run("frame.create", json!({"rect": [72, 72, 300, 300], "content": "text", "text": "Hello"})).unwrap()["id"].as_u64().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    app.run("file.saveAs", json!({"path": dir.path().join("revert.designcraft")})).unwrap();
+    app.run("selection.set", json!({"ids": [id]})).unwrap();
+    let mut h = panel(app);
+    click_in_text_frame(&mut h, "Make all settings the same");
+    h.state_mut().run("frame.create", json!({"rect": [320, 72, 400, 150], "content": "text", "text": "unsaved"})).unwrap();
+    h.state_mut().run("file.revert", json!({})).unwrap();
+    h.state_mut().run("selection.set", json!({"ids": [id]})).unwrap();
+    h.run_steps(3);
+    let f = text_frame_fields(&h);
+    type_in_field(&mut h, f[4], "6pt");
+    assert_eq!(frame_options(h.state(), id).inset, [6.0; 4], "linked: the bottom inset sets all four");
+}
+
 /// With the Type tool in the second frame of a thread, Properties shows the Text Frame section,
 /// and its insets and vertical justification change that frame and not the first.
 #[test]

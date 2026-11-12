@@ -603,10 +603,11 @@ fn text_frame_insets(app: &mut DesignApp, ui: &mut Ui, fid: designcraft_doc::Ite
         return;
     }
     let b = block(ui, 2.0 * FIELD_H + 5.0);
-    // The link's state belongs to the frame of this document: another frame, or a frame with the
-    // same id in another document, starts linked when its four insets are the same.
-    let doc_uid = app.session.active().map_or(0, |st| st.uid);
-    let link_id = egui::Id::unique(("prop_tf_inset_linked", doc_uid, fid.0));
+    // The link's state belongs to the frame of this document state: another frame, or a frame
+    // with the same id in another document or after Revert, starts linked when its four insets
+    // are the same.
+    let doc_epoch = app.session.active().map_or(0, |st| st.identity_epoch);
+    let link_id = egui::Id::unique(("prop_tf_inset_linked", doc_epoch, fid.0));
     let same = inset.iter().all(|v| (v - inset[0]).abs() < 1e-9);
     let linked = ui.data(|d| d.get_temp::<bool>(link_id)).unwrap_or(same);
     let mut set = None;
