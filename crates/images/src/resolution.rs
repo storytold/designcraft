@@ -203,8 +203,9 @@ fn png_resolution(bytes: &[u8]) -> Option<(f64, f64)> {
 
 /// A WebP EXIF chunk carries a TIFF header: reuse the TIFF resolution tags.
 fn webp_resolution(bytes: &[u8]) -> Option<(f64, f64)> {
+    // The RIFF size counts the bytes after the size field itself (offset 8).
     let riff = u32::from_le_bytes(bytes.get(4..8)?.try_into().ok()?) as usize;
-    let end = 12usize.checked_add(riff)?.min(bytes.len());
+    let end = 8usize.checked_add(riff)?.min(bytes.len());
     let mut pos = 12;
     loop {
         let kind = bytes.get(pos..pos + 4)?;

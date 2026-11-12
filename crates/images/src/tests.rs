@@ -676,6 +676,40 @@ fn webp_exif_after_many_frames_is_read() {
     assert_eq!(raster_resolution(&webp), Some((300.0, 300.0)));
 }
 
+/// The RIFF size counts the bytes after its own field (offset 8): an EXIF chunk that runs past
+/// the declared container is not read, even when trailing bytes follow the container.
+#[test]
+fn webp_exif_past_the_declared_riff_end_is_not_read() {
+    let mut body = b"WEBP".to_vec();
+    body.extend_from_slice(b"VP8X");
+    body.extend_from_slice(&10u32.to_le_bytes());
+    body.extend_from_slice(&[0; 10]);
+    let exif = tiff_bytes((300, 1), (300, 1), Some(2));
+    body.extend_from_slice(b"EXIF");
+    body.extend_from_slice(&(exif.len() as u32).to_le_bytes());
+    body.extend_from_slice(&exif);
+    if exif.len() % 2 == 1 {
+        body.push(0);
+    }
+    let riff = |size: usize, trailing: usize| {
+        let mut webp = b"RIFF".to_vec();
+        webp.extend_from_slice(&(size as u32).to_le_bytes());
+        webp.extend_from_slice(&body);
+        webp.extend_from_slice(&vec![0xAA; trailing]);
+        webp
+    };
+    // The exact size, with or without trailing data, reads the chunk.
+    assert_eq!(raster_resolution(&riff(body.len(), 0)), Some((300.0, 300.0)));
+    assert_eq!(raster_resolution(&riff(body.len(), 4)), Some((300.0, 300.0)));
+    // A size declared 4 bytes short ends the container inside the EXIF chunk.
+    assert_eq!(raster_resolution(&riff(body.len() - 4, 4)), None);
+    assert_eq!(raster_resolution(&riff(body.len() - 4, 0)), None);
+    // A file cut inside the EXIF chunk is not read either.
+    let mut cut = riff(body.len(), 0);
+    cut.truncate(cut.len() - 6);
+    assert_eq!(raster_resolution(&cut), None);
+}
+
 /// A real encoder-written BMP with the header pixels-per-meter patched (compression and image
 /// size stay zero, as the encoder writes them).
 fn bmp_with_ppm(ppm: i32) -> Vec<u8> {
