@@ -1112,12 +1112,14 @@ fn adopt_or_dangle(dst: &mut Document, src: &Document, id: AssetId) -> AssetId {
 /// the stories of `src` copied so far to their copies. False when its groups, or the tables and notes in the table cells
 /// of its stories, nest deeper than [`MAX_COPY_DEPTH`]: the items and tables below that keep their ids, and the copy
 /// must not be used.
+#[must_use = "false means the copy is incomplete and must not be inserted"]
 pub(crate) fn renumber(dst: &mut Document, src: &Document, it: &mut Item, stories: &mut HashMap<StoryId, StoryId>) -> bool {
     renumber_in(dst, src, it, stories, 0, true)
 }
 
 /// [`renumber`] for an item `depth` groups deep. `adopt` is false inside a story copy, whose asset references the copy
 /// has already adopted.
+#[must_use = "false means the copy is incomplete and must not be inserted"]
 fn renumber_in(dst: &mut Document, src: &Document, it: &mut Item, stories: &mut HashMap<StoryId, StoryId>, depth: usize, adopt: bool) -> bool {
     it.id = ItemId(dst.alloc());
     let my_id = it.id;
@@ -1190,6 +1192,7 @@ fn renumber_in(dst: &mut Document, src: &Document, it: &mut Item, stories: &mut 
 /// levels. Cross-references in `st` and in the copies `stories` already lists point at the copies of their
 /// destinations where those are copied, and the copy's paragraphs follow its tables. False when tables or notes in
 /// table cells nest deeper than [`MAX_COPY_DEPTH`]: the tables below that keep their ids, and the copy must not be used.
+#[must_use = "false means the copy is incomplete and must not be inserted"]
 fn renumber_marks(dst: &mut Document, src: &Document, stories: &HashMap<StoryId, StoryId>, st: &mut Story) -> bool {
     let base = st.id.0 << 24;
     let mut anchors = HashMap::new();
@@ -1243,6 +1246,7 @@ fn retarget_copies(dst: &mut Document, src: &Document, stories: &HashMap<StoryId
 /// Give the tables of `st`, and those in the stories of their cells and of the notes of `st` down to
 /// [`MAX_COPY_DEPTH`] levels, new ids from `dst`, each story's in the order of their old ids, and point the stories'
 /// paragraphs at them. False when the stories below that depth hold tables or notes.
+#[must_use = "false means the copy is incomplete and must not be inserted"]
 fn renumber_tables(dst: &mut Document, st: &mut Story, depth: usize) -> bool {
     let mut tables = HashMap::new();
     for (old, mut table) in std::mem::take(&mut st.tables) {
@@ -1320,6 +1324,7 @@ fn retarget_xrefs(copy: &mut Story, orig: &Story, map: &HashMap<u64, u64>, depth
 
 /// Fresh ids for the objects anchored in story copy `st`, its table cells, footnotes and endnotes (#1522), each `depth`
 /// levels deep. False when one of them nests groups deeper than [`MAX_COPY_DEPTH`].
+#[must_use = "false means the copy is incomplete and must not be inserted"]
 fn renumber_anchored(dst: &mut Document, src: &Document, st: &mut Story, stories: &mut HashMap<StoryId, StoryId>, depth: usize) -> bool {
     let mut complete = true;
     let mut fresh = |t: &mut Story| {
