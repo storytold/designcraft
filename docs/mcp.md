@@ -206,6 +206,14 @@ is an error that gives the story length in bytes, and the story is left unchange
 that has a `cell` (`{table, row, col}`) is in that table cell's text, and its `start` / `end` count from the start of
 the cell.
 
+## Tables without a selection
+
+A table command acts on the selected cells or on the table that holds the insertion point. A command whose params list
+`story?` and `table?` also runs when nothing in a table is selected, or the selection is one it can't act on, if the
+call passes `table` (the id that `table.insert` and `table.get` return) and, optionally, `story`. A `table` that is not
+in the document, or not in the given `story`, is an error, and so is a `story` that is not a non-negative integer. The
+Table menu items stay disabled while nothing in a table is selected.
+
 ## Text and image fitting
 
 Hyphenation is on by default for new text (`hyphenate: true`). To turn it off, select the text or a text frame,

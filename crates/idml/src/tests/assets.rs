@@ -540,3 +540,42 @@ fn an_eps_text_anchored_in_text_is_imported() {
     let tf = texts[0].1.text_frame().unwrap();
     assert_eq!(d.story(tf.story).unwrap().text, "0120-672-334");
 }
+
+/// Past the embedded-image limit an export still succeeds: the images that no longer fit are
+/// written as links, and each is named in a warning.
+#[test]
+fn export_past_the_embed_limit_warns_for_each_image_written_as_a_link() {
+    let bytes = vec![42u8; 300];
+    let reader = |p: &str| p.ends_with("couple.jpg").then(|| bytes.clone());
+    let frames = vec![
+        frame(1, 0.0, 1.0, &image(1, PHOTO, None)),
+        frame(2, 100.0, 2.0, &image(2, PHOTO, None)),
+        frame(3, 200.0, 3.0, &image(3, PHOTO, None)),
+        frame(4, 300.0, 4.0, &image(4, "file:/elsewhere/copy.jpg", Some(&bytes))),
+    ];
+    let d = import_idml_with(&package(&frames), &reader).unwrap();
+    let opts = ExportOptions { embed_images: true };
+    // Four placements of 300 bytes each; the limit holds two.
+    let (out, warnings) = crate::export::export_with_limit(&d, &opts, 700);
+    assert_eq!(warnings.len(), 2, "{warnings:?}");
+    assert!(warnings.iter().all(|w| w.contains("written as a link")), "{warnings:?}");
+    assert_eq!(import_idml_with(&out, &reader).unwrap().assets.len(), 2);
+    assert!(crate::export::export_with_limit(&d, &opts, 1200).1.is_empty());
+}
+
+/// An image with no link of its own is embedded even past the limit: it has no other home, and
+/// dropping its data would lose it.
+#[test]
+fn an_unlinked_image_is_embedded_past_the_embed_limit() {
+    let bytes = vec![42u8; 300];
+    let reader = |p: &str| p.ends_with("couple.jpg").then(|| bytes.clone());
+    let frames = vec![frame(1, 0.0, 1.0, &image(1, PHOTO, None)), frame(2, 100.0, 2.0, &image(2, PHOTO, None))];
+    let mut d = import_idml_with(&package(&frames), &reader).unwrap();
+    for a in d.assets.values_mut() {
+        std::sync::Arc::make_mut(a).link = None;
+    }
+    let (out, warnings) = crate::export::export_with_limit(&d, &ExportOptions { embed_images: true }, 100);
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let back = import_idml_with(&out, &|_: &str| None).unwrap();
+    assert!(!back.assets.is_empty() && back.assets.values().all(|a| a.data.as_slice() == bytes.as_slice()));
+}

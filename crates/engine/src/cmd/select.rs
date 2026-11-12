@@ -133,7 +133,8 @@ fn convert_shape(s: &mut Session, p: &Value) -> Result<Value> {
     const ID: &str = "object.convertShape";
     let to = str_param(p, "to").ok_or_else(|| bad(ID, "`to` required"))?.to_string();
     let ids = targets(s, p)?;
-    let sides = s.prefs.polygon_sides;
+    // The preference as object.polygon takes it: 3–100 sides, whatever prefs.set was given.
+    let sides = s.prefs.polygon_sides.clamp(3, 100);
     let inset = s.prefs.star_inset;
     s.edit(|d, _| {
         let mut changed = 0;

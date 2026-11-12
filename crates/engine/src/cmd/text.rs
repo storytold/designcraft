@@ -238,8 +238,9 @@ pub fn specs() -> Vec<CommandSpec> {
             has_text_or_frames,
             |s, p| format_paras(s, p.get("attrs").unwrap_or(p))
         ),
-        cmd!("type.align", "Align", [], None, "{align: left|center|right|leftJustified|…}", has_text_or_frames, |s, p| {
-            format_paras(s, &json!({"align": p.get("align").cloned().unwrap_or(json!("left"))}))
+        cmd!("type.align", "Align", [], None, "{align: left|center|right|leftJustified|…|null} (required)", has_text_or_frames, |s, p| {
+            let align = p.get("align").cloned().ok_or_else(|| bad("type.align", "`align` required"))?;
+            format_paras(s, &json!({ "align": align }))
         }),
         cmd!("type.alignLeft", "Align Left", [], Some("Cmd+Shift+L"), "{}", has_text_or_frames, |s, _| format_paras(s, &json!({"align": "left"}))),
         cmd!("type.alignCenter", "Align Center", [], Some("Cmd+Shift+C"), "{}", has_text_or_frames, |s, _| format_paras(
