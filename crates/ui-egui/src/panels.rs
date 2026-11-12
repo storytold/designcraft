@@ -299,9 +299,13 @@ pub fn text_attrs(app: &mut DesignApp) -> Option<Value> {
     if v.is_null() { None } else { Some(serde_json::to_value(v).ok()?) }
 }
 
-/// Count the preflight errors last found for the active document (0 until its first check ends).
-pub fn preflight_errors(app: &mut DesignApp, ctx: &egui::Context) -> usize {
-    crate::preflight_worker::issues(app, ctx).map_or(0, |issues| issues.iter().filter(|i| i.severity == "error").count())
+/// Count the preflight errors last found for the active document: `None` until its first check
+/// ends, and 0 with no document open.
+pub fn preflight_errors(app: &mut DesignApp, ctx: &egui::Context) -> Option<usize> {
+    match crate::preflight_worker::issues(app, ctx) {
+        Some(issues) => Some(issues.iter().filter(|i| i.severity == "error").count()),
+        None => app.session.active().is_none().then_some(0),
+    }
 }
 
 /// Height of one swatch-menu row.

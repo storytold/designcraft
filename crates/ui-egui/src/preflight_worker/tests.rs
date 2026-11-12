@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use egui::vec2;
+use egui_kittest::kittest::Queryable;
 use serde_json::json;
 
 use super::Checked;
@@ -28,6 +29,14 @@ fn found(app: &crate::DesignApp) -> Option<(usize, bool)> {
     let now = current(app);
     let f = app.preflight.found.iter().find(|f| f.of.uid == now.uid)?;
     Some((f.issues.iter().filter(|i| i.severity == "error").count(), f.of.same(&now)))
+}
+
+/// Waits for the worker's next result and keeps it, as a frame that polls would. Panics when the
+/// worker has ended without one.
+#[cfg(not(target_arch = "wasm32"))]
+fn wait_for_worker(app: &mut crate::DesignApp) {
+    let Some(found) = app.preflight.worker.wait() else { panic!("the preflight worker ended before it sent a result") };
+    app.preflight.keep(found);
 }
 
 /// A worker whose thread never takes a job: the test reads the queue.
@@ -298,9 +307,39 @@ fn the_worker_checks_and_the_interface_thread_does_not() {
     assert_eq!(h.state().app.preflight.inline_checks, 0, "no check ran on the interface thread");
     // The last frame handed the current state to the worker, whose last answer is for it.
     while found(&h.state().app) != Some((1, true)) {
-        super::wait_for_worker(&mut h.state_mut().app);
+        wait_for_worker(&mut h.state_mut().app);
     }
     let issues = super::issues(&mut h.state_mut().app, &ctx).unwrap();
     assert_eq!(issues.iter().filter(|i| i.severity == "error").count(), 1);
     assert_eq!(h.state().app.preflight.inline_checks, 0, "the worker's answer is kept, not checked again");
+}
+
+/// Until the active document's first check ends, the status bar and the Preflight panel show that
+/// it is being checked, not a clean result.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn the_first_check_shows_as_checking() {
+    let (mut app, _) = overset_app();
+    app.ui.dock_tab = "properties".into();
+    let (_jobs, _done) = stalled_worker(&mut app);
+    let mut h = test_window::open(app, vec2(1200.0, 700.0));
+    h.state_mut().app.run("window.panel", json!({"panel": "preflight"})).unwrap();
+    h.run_steps(5);
+    assert!(h.state().app.preflight.found.is_empty(), "nothing found yet");
+    assert_eq!(h.state().app.preflight.inline_checks, 0);
+    assert!(h.query_by_label("Checking ▾").is_some(), "the status bar shows the check");
+    assert!(h.query_by_label("No errors ▾").is_none());
+    assert!(h.query_by_label("Checking").is_some(), "the Preflight panel shows the check");
+    assert!(h.query_by_label("No errors").is_none());
+}
+
+/// Waiting for a worker that ended before it answered fails the test instead of leaving it
+/// waiting.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+#[should_panic(expected = "the preflight worker ended before it sent a result")]
+fn waiting_for_a_worker_that_ended_fails() {
+    let (mut app, _) = overset_app();
+    drop(stalled_worker(&mut app));
+    wait_for_worker(&mut app);
 }

@@ -420,13 +420,5 @@ pub(crate) fn start_worker(app: &mut DesignApp, ctx: &egui::Context) {
     app.preflight.worker.channels = spawn(ctx.clone(), &app.preflight.worker.live);
 }
 
-/// Waits in a test for the worker's next result and keeps it, as a frame that polls would.
-#[cfg(all(test, not(target_arch = "wasm32")))]
-pub(crate) fn wait_for_worker(app: &mut DesignApp) {
-    if let Some(found) = app.preflight.worker.wait() {
-        app.preflight.keep(found);
-    }
-}
-
 #[cfg(test)]
 mod tests;
