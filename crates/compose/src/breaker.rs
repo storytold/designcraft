@@ -55,6 +55,9 @@ pub struct Spacing {
     pub korean_char_breaks: bool,
     /// 0: minimum adjustment; 1: push in; 2: push out first; 3: push out only.
     pub kinsoku_priority: u8,
+    /// Last Line Right Indent (points): the paragraph's last line is this much narrower than
+    /// the others; negative makes it wider (a contents entry's page number at the frame edge).
+    pub last_line_indent: f64,
 }
 
 impl Default for Spacing {
@@ -78,6 +81,7 @@ impl Default for Spacing {
             optical_size: None,
             korean_char_breaks: false,
             kinsoku_priority: 0,
+            last_line_indent: 0.0,
         }
     }
 }
@@ -741,7 +745,8 @@ fn kp_pass(input: PassInput<'_>) -> Option<Vec<Break>> {
         for &a in &active {
             let n = arena[a];
             let l = sw[b] - n.tw + pw - it.hang;
-            let target = width(n.line).max(1.0);
+            // The line ending at the paragraph end is the last one: its measure has the last-line indent.
+            let target = if b + 1 == m { width(n.line) - sp.last_line_indent } else { width(n.line) }.max(1.0);
             let mut y = [0.0; 3];
             let mut z = [0.0; 3];
             for t in 0..3 {
@@ -921,90 +926,23 @@ pub fn greedy(
     if n == 0 {
         return vec![Break { start: 0, end: 0, next: 0, hyphen: false, forced: true }];
     }
-    let may_hyphenate = |hyphens: u32| sp.hyphen_limit == 0 || hyphens < sp.hyphen_limit;
+    // Where a line ending at `end` lets the next one start (past the spaces the break trims).
+    let next_after = |end: usize| (end..n).find(|&i| !glyphs[i].is_space()).unwrap_or(n);
+    let trailing_forced = glyphs.last().is_some_and(|g| g.ch == designcraft_doc::story::FORCED_LINE_BREAK);
     while start < n {
-        let w = width(line).max(1.0);
-        let mut x = -hang_left(&glyphs[start], sp) + glyphs[start].moji.start;
-        let mut shrink = crate::mojikumi::start_elastic(&glyphs[start], sp.justify, sp.kinsoku_priority != 3)[1];
-        let mut last_natural: Option<(usize, bool)> = None;
-        let mut last_ok: Option<(usize, bool)> = None; // (break position = end glyph, hyphen)
-        let mut last_space: Option<(usize, f64)> = None; // (break position, line width there)
-        let mut i = start;
-        let mut brk: Option<(usize, bool, bool)> = None;
-        while i < n {
-            let g = &glyphs[i];
-            if is_forced(g.ch) {
-                brk = Some((i + 1, false, true));
-                break;
+        let mut line_end = greedy_line(glyphs, hyph_after, sp, GreedyLine { start, line, width: width(line).max(1.0), hyphens }, &mut hy_cache, tab);
+        // A trailing forced line break leaves an empty last line below, so no line here is last.
+        if sp.last_line_indent != 0.0 && !trailing_forced {
+            // The last line has its own measure: it is last when its text up to the paragraph
+            // end fits that measure; a line that would reach the end only at the full measure
+            // (a positive last-line indent) breaks as the narrower last line would.
+            let last_width = (width(line) - sp.last_line_indent).max(1.0);
+            let last = greedy_line(glyphs, hyph_after, sp, GreedyLine { start, line, width: last_width, hyphens }, &mut hy_cache, tab);
+            if next_after(last.0) >= n || next_after(line_end.0) >= n {
+                line_end = last;
             }
-            if g.is_space() && !g.no_break && g.break_after != Some(false) {
-                if sp.justify {
-                    shrink += sp.space_elastic(g).1;
-                }
-                last_ok = Some((i, false));
-                if x <= w + FIT_EPS {
-                    last_natural = last_ok;
-                }
-                last_space = Some((i, x));
-                x += g.adv;
-                i += 1;
-                continue;
-            }
-            let hang_r = right_hang(g, sp);
-            let adv = if g.ch == '\t' { tab(line, x, i) } else { g.adv };
-            let end_shrink = crate::mojikumi::end_elastic(g, sp.justify, sp.kinsoku_priority != 3)[1];
-            let available = shrink + sp.box_elastic(g).1.iter().sum::<f64>() + end_shrink;
-            if sp.kinsoku_priority == 2
-                && x + adv - hang_r > w + FIT_EPS
-                && let Some((end, hyphen)) = last_natural
-            {
-                brk = Some((end, hyphen, false));
-                break;
-            }
-            if x + adv - hang_r > w + available.max(0.0) + FIT_EPS
-                && i > start
-                && (last_ok.is_some() || glyphs.get(i - 1).is_none_or(|p| p.break_after != Some(false) && !p.no_break))
-            {
-                // Overflow: break at the last opportunity, else before this glyph.
-                brk = Some(match last_ok {
-                    // Hyphenation zone: break before the word if that leaves little space.
-                    Some((_, true)) if !sp.justify && sp.hyph_zone > 0.0 && last_space.is_some_and(|(_, xs)| w - xs < sp.hyph_zone) => {
-                        (last_space.map_or(i, |s| s.0), false, false)
-                    }
-                    Some((p, h)) => (p, h, false),
-                    None => (emergency_split(glyphs, start, i), false, false),
-                });
-                break;
-            }
-            x += adv;
-            shrink += sp.box_elastic(g).1.iter().sum::<f64>();
-            if i + 1 < n && !glyphs[i + 1].is_space() && !g.no_break && g.break_after != Some(false) {
-                if g.ch == SOFT_HYPHEN {
-                    if may_hyphenate(hyphens) {
-                        let hw = hyphen_width(g, &mut hy_cache);
-                        let hy = (hw - hyphen_hang(g, hw, sp)).max(0.0);
-                        if x + hy <= w + shrink + FIT_EPS {
-                            last_ok = Some((i + 1, true));
-                        }
-                    }
-                } else if matches!(g.ch, '-' | '\u{2010}' | '\u{2013}' | '\u{2014}' | '/')
-                    || g.break_after.unwrap_or_else(|| cjk_break(g, &glyphs[i + 1], sp))
-                {
-                    last_ok = Some((i + 1, false));
-                    if x - hang_r <= w + FIT_EPS {
-                        last_natural = last_ok;
-                    }
-                } else if hyph_after[i] && may_hyphenate(hyphens) {
-                    let hw = hyphen_width(g, &mut hy_cache);
-                    let hy = (hw - hyphen_hang(g, hw, sp)).max(0.0);
-                    if x + hy <= w + shrink + FIT_EPS {
-                        last_ok = Some((i + 1, true));
-                    }
-                }
-            }
-            i += 1;
         }
-        let (end, hyphen, forced) = brk.unwrap_or((n, false, true));
+        let (end, hyphen, forced) = line_end;
         hyphens = if hyphen { hyphens + 1 } else { 0 };
         let mut vis_end = end;
         while vis_end > start && glyphs[vis_end - 1].is_space() {
@@ -1024,12 +962,114 @@ pub fn greedy(
     }
     // A forced line break as the very last glyph leaves an empty final line (InDesign shows it);
     // a column, frame or page break there ends the paragraph.
-    if let Some(last) = glyphs.last()
-        && last.ch == designcraft_doc::story::FORCED_LINE_BREAK
-    {
+    if trailing_forced {
         out.push(Break { start: n, end: n, next: n, hyphen: false, forced: true });
     }
     out
+}
+
+/// One line for [`greedy`]: where it starts, its index, its measure and the hyphenated lines
+/// before it.
+struct GreedyLine {
+    start: usize,
+    line: usize,
+    width: f64,
+    hyphens: u32,
+}
+
+/// Scans one line from `start` and returns where it ends: (end glyph, hyphenated, forced).
+fn greedy_line(
+    glyphs: &[Glyph],
+    hyph_after: &[bool],
+    sp: &Spacing,
+    at: GreedyLine,
+    hy_cache: &mut Vec<(u32, f64)>,
+    tab: &dyn Fn(usize, f64, usize) -> f64,
+) -> (usize, bool, bool) {
+    let GreedyLine { start, line, width: w, hyphens } = at;
+    let n = glyphs.len();
+    let may_hyphenate = |hyphens: u32| sp.hyphen_limit == 0 || hyphens < sp.hyphen_limit;
+    let mut x = -hang_left(&glyphs[start], sp) + glyphs[start].moji.start;
+    let mut shrink = crate::mojikumi::start_elastic(&glyphs[start], sp.justify, sp.kinsoku_priority != 3)[1];
+    let mut last_natural: Option<(usize, bool)> = None;
+    let mut last_ok: Option<(usize, bool)> = None; // (break position = end glyph, hyphen)
+    let mut last_space: Option<(usize, f64)> = None; // (break position, line width there)
+    let mut i = start;
+    let mut brk: Option<(usize, bool, bool)> = None;
+    while i < n {
+        let g = &glyphs[i];
+        if is_forced(g.ch) {
+            brk = Some((i + 1, false, true));
+            break;
+        }
+        if g.is_space() && !g.no_break && g.break_after != Some(false) {
+            if sp.justify {
+                shrink += sp.space_elastic(g).1;
+            }
+            last_ok = Some((i, false));
+            if x <= w + FIT_EPS {
+                last_natural = last_ok;
+            }
+            last_space = Some((i, x));
+            x += g.adv;
+            i += 1;
+            continue;
+        }
+        let hang_r = right_hang(g, sp);
+        let adv = if g.ch == '\t' { tab(line, x, i) } else { g.adv };
+        let end_shrink = crate::mojikumi::end_elastic(g, sp.justify, sp.kinsoku_priority != 3)[1];
+        let available = shrink + sp.box_elastic(g).1.iter().sum::<f64>() + end_shrink;
+        if sp.kinsoku_priority == 2
+            && x + adv - hang_r > w + FIT_EPS
+            && let Some((end, hyphen)) = last_natural
+        {
+            brk = Some((end, hyphen, false));
+            break;
+        }
+        if x + adv - hang_r > w + available.max(0.0) + FIT_EPS
+            && i > start
+            && (last_ok.is_some() || glyphs.get(i - 1).is_none_or(|p| p.break_after != Some(false) && !p.no_break))
+        {
+            // Overflow: break at the last opportunity, else before this glyph.
+            brk = Some(match last_ok {
+                // Hyphenation zone: break before the word if that leaves little space.
+                Some((_, true)) if !sp.justify && sp.hyph_zone > 0.0 && last_space.is_some_and(|(_, xs)| w - xs < sp.hyph_zone) => {
+                    (last_space.map_or(i, |s| s.0), false, false)
+                }
+                Some((p, h)) => (p, h, false),
+                None => (emergency_split(glyphs, start, i), false, false),
+            });
+            break;
+        }
+        x += adv;
+        shrink += sp.box_elastic(g).1.iter().sum::<f64>();
+        if i + 1 < n && !glyphs[i + 1].is_space() && !g.no_break && g.break_after != Some(false) {
+            if g.ch == SOFT_HYPHEN {
+                if may_hyphenate(hyphens) {
+                    let hw = hyphen_width(g, hy_cache);
+                    let hy = (hw - hyphen_hang(g, hw, sp)).max(0.0);
+                    if x + hy <= w + shrink + FIT_EPS {
+                        last_ok = Some((i + 1, true));
+                    }
+                }
+            } else if matches!(g.ch, '-' | '\u{2010}' | '\u{2013}' | '\u{2014}' | '/')
+                || g.break_after.unwrap_or_else(|| cjk_break(g, &glyphs[i + 1], sp))
+            {
+                last_ok = Some((i + 1, false));
+                if x - hang_r <= w + FIT_EPS {
+                    last_natural = last_ok;
+                }
+            } else if hyph_after[i] && may_hyphenate(hyphens) {
+                let hw = hyphen_width(g, hy_cache);
+                let hy = (hw - hyphen_hang(g, hw, sp)).max(0.0);
+                if x + hy <= w + shrink + FIT_EPS {
+                    last_ok = Some((i + 1, true));
+                }
+            }
+        }
+        i += 1;
+    }
+    brk.unwrap_or((n, false, true))
 }
 
 /// Natural width of a broken line (with its inserted hyphen).

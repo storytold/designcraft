@@ -1832,6 +1832,13 @@ fn place_sub_objects(
     }
 }
 
+/// A line's (left, right) indents with the Last Line Right Indent added on the paragraph's last
+/// line, at its end side (the left in a right-to-left paragraph), as the breaker measured it.
+fn with_last_line_indent((left, right): (f64, f64), last: bool, spacing: &Spacing, rtl: bool) -> (f64, f64) {
+    let ind = if last { spacing.last_line_indent } else { 0.0 };
+    if rtl { (left + ind, right) } else { (left, right + ind) }
+}
+
 /// Sets one paragraph's lines, column after column and frame after frame. It stops when the
 /// paragraph ends, when the frames run out, or when an earlier paragraph has to be set again.
 fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLines<'_>) -> LinePlacement {
@@ -2098,9 +2105,10 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
                 None if rtl => (pp.left_indent, pp.right_indent + first_line),
                 None => (pp.left_indent + first_line, pp.right_indent),
             };
+            let last = k + 1 == breaks.len();
+            let (ind_l, ind_r) = with_last_line_indent((ind_l, ind_r), last, spacing, rtl);
             let lx0 = x0 + ind_l;
             let lx1 = x1 - ind_r;
-            let last = k + 1 == breaks.len();
             // The break character that ends this line, if any (it is the line's last glyph).
             let brk =
                 if b.forced && e > s { e.checked_sub(1).and_then(|i| glyphs.get(i)).map(|g| g.ch).filter(|&c| breaker::is_forced(c)) } else { None };
@@ -3419,6 +3427,7 @@ fn spacing_for(pp: &ParaProps, base_size: f64, story: &Story) -> Spacing {
             "KinsokuPushOutOnly" => 3,
             _ => 0,
         },
+        last_line_indent: if pp.last_line_indent.is_finite() { pp.last_line_indent } else { 0.0 },
     }
 }
 
