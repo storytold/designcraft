@@ -8,10 +8,12 @@ use super::{
 pub(super) fn in_table(s: &Session) -> std::result::Result<(), String> {
     has_doc(s)?;
     let st = s.active().ok_or("no document open")?;
-    if st.selection.cells.is_some() || st.selection.text.is_some_and(|t| t.cell.is_some()) {
+    // Footnote text is addressed as a cell too, but isn't in a table.
+    if st.selection.cells.is_some() || st.selection.text.is_some_and(|t| t.cell.is_some_and(|c| c.footnote_id().is_none())) {
         return Ok(());
     }
     if let Some(t) = st.selection.text
+        && t.cell.is_none()
         && st.doc.story(t.story).is_some_and(|x| x.table_at(t.focus).is_some())
     {
         return Ok(());
@@ -81,6 +83,7 @@ pub(super) fn target(s: &Session, p: &Value, cmd: &str) -> Result<Tgt> {
         (c.story, c.table, Some(c.range))
     } else if let Some(t) = st.selection.text {
         match t.cell {
+            Some(c) if c.footnote_id().is_some() => return Err(bad(cmd, "place the insertion point in a table")),
             Some(c) => (t.story, c.table, Some(CellRange::cell(c.row, c.col))),
             None => {
                 let tid = doc.story(t.story).and_then(|x| x.table_at(t.focus)).ok_or_else(|| bad(cmd, "the insertion point is not in a table"))?;

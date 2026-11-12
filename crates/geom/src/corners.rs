@@ -60,7 +60,7 @@ pub struct CornerOptions {
 /// anchors at four different corners keeps a rectangle's order.
 pub fn named_slots(path: &PathData) -> [usize; 4] {
     let rect_order = [0, 1, 2, 3];
-    let Some(sp) = path.subpaths.first() else { return rect_order };
+    let [sp] = path.subpaths.as_slice() else { return rect_order };
     let Some(b) = path.bounds() else { return rect_order };
     if sp.anchors.len() != 4 {
         return rect_order;
@@ -317,6 +317,14 @@ mod tests {
         assert_eq!(named.named_to_path(&rectangle(Rect::new(0.0, 0.0, 10.0, 10.0))), named);
         let tri = PathData::single(SubPath::polyline(&[Point::new(0.0, 0.0), Point::new(10.0, 0.0), Point::new(5.0, 9.0)], true));
         assert_eq!(named.named_to_path(&tri), named);
+        // A path of two rectangles keeps the order: one subpath's order can't name the other's
+        // anchors.
+        let two = PathData::new(vec![
+            SubPath::polyline(&[Point::new(0.0, 0.0), Point::new(0.0, 100.0), Point::new(100.0, 100.0), Point::new(100.0, 0.0)], true),
+            SubPath::polyline(&[Point::new(40.0, 40.0), Point::new(60.0, 40.0), Point::new(60.0, 60.0), Point::new(40.0, 60.0)], true),
+        ]);
+        assert_eq!(named_slots(&two), [0, 1, 2, 3]);
+        assert_eq!(named.named_to_path(&two), named);
     }
 
     #[test]

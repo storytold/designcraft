@@ -1504,6 +1504,7 @@ dependencies = [
  "designcraft-fonts",
  "flate2",
  "image",
+ "jpeg-decoder",
  "log",
  "quick-xml 0.41.0",
  "resvg",
@@ -1574,6 +1575,7 @@ dependencies = [
 name = "designcraft-render"
 version = "0.20.1"
 dependencies = [
+ "bytemuck",
  "craft-pdf",
  "designcraft-color",
  "designcraft-compose",
@@ -3304,6 +3306,12 @@ dependencies = [
  "getrandom 0.4.3",
  "libc",
 ]
+
+[[package]]
+name = "jpeg-decoder"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "00810f1d8b74be64b13dbf3db89ac67740615d6c891f0e7b6179326533011a07"
 
 [[package]]
 name = "js-sys"
