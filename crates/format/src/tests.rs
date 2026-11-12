@@ -175,7 +175,8 @@ fn assets_too_big_to_inflate_are_stored_so_the_document_reopens() {
     let c = tiff_asset(&mut d, noise(3_000).into_iter().rev().collect());
     let small = tiff_asset(&mut d, vec![0; 500]);
     // Room for the JSON, the small asset and one 3 000-byte asset, not two.
-    let json_len = serde_json::to_vec_pretty(&d).unwrap().len() as u64;
+    // `save` writes the JSON compact (#2316): measure it the same way.
+    let json_len = serde_json::to_vec(&d).unwrap().len() as u64;
     let tight = Limits { json: 256 << 20, asset: 4_000, total: json_len + 500 + 500 + 4_000 };
 
     let saved = save_within(&d, None, LARGE_ENTRY, tight).unwrap();
