@@ -71,17 +71,26 @@ fn a_press_after_a_drag_is_not_a_double_click() {
     assert_eq!(press(Some(up), 0.0, 1.0), 1);
 }
 
-/// The shapes the canvas paints for a new document, after two frames (the first lays out).
+/// The shapes the canvas paints for a new document with every spread in view, after two frames
+/// (the first lays out).
 fn canvas_shapes(app: &mut DesignApp) -> Vec<egui::epaint::ClippedShape> {
     let ctx = egui::Context::default();
     let mut shapes = Vec::new();
     for _ in 0..2 {
-        let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 900.0))), ..Default::default() };
-        let mut out = ctx.run_ui(raw, |ui| show(app, ui));
-        out.textures_delta.clear();
-        shapes = out.shapes;
+        shapes = canvas_frame_shapes(app, &ctx);
+        if let Some(rect) = app.canvas_rect {
+            fit(app, rect, "all");
+        }
     }
     shapes
+}
+
+/// One frame of the canvas alone in a 1440 by 900 window: the shapes it paints.
+fn canvas_frame_shapes(app: &mut DesignApp, ctx: &egui::Context) -> Vec<egui::epaint::ClippedShape> {
+    let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 900.0))), ..Default::default() };
+    let mut out = ctx.run_ui(raw, |ui| show(app, ui));
+    out.textures_delta.clear();
+    out.shapes
 }
 
 /// The spine-coloured vertical hairlines at screen x `x` that run the full height of `page`
@@ -172,14 +181,7 @@ fn the_spine_line_hides_with_the_other_guides() {
 fn pages_show_paper_under_their_render() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.run("file.new", serde_json::json!({"pages": 3, "facingPages": true})).unwrap();
-    let ctx = egui::Context::default();
-    let mut shapes = Vec::new();
-    for _ in 0..2 {
-        let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 900.0))), ..Default::default() };
-        let mut out = ctx.run_ui(raw, |ui| show(&mut app, ui));
-        out.textures_delta.clear();
-        shapes = out.shapes;
-    }
+    let shapes = canvas_shapes(&mut app);
     let st = app.session.active().unwrap();
     let layout = CanvasLayout::new(&st.doc, false);
     let xf = Xf::new(app.canvas_rect.unwrap(), app.view().unwrap());
@@ -1447,6 +1449,71 @@ fn overset_mark_sits_on_the_out_port_once() {
     app.session.execute("selection.set", &json!({"ids": [id]})).unwrap();
     let marks = overset_marks(&app, &doc, &layout, &doc.spreads[0].items, zoom, &ported_frames(&app, &doc));
     assert!(marks.is_empty());
+}
+
+/// An idle frame of the canvas paints the spreads in view and looks up their stories: a document
+/// ten times as long adds no shape and no story lookup, and the view shows the same shapes.
+#[test]
+fn an_idle_canvas_frame_does_the_same_work_for_a_longer_document() {
+    // Every page holds an empty frame and an overset text frame with a story of its own.
+    let work = |pages: usize| {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"pages": pages, "facingPages": false})).unwrap();
+        let text = "far too much text for a frame this small, over and over again ".repeat(8);
+        for page in 0..pages {
+            app.run("frame.create", json!({"spread": page, "rect": [36, 36, 300, 200]})).unwrap();
+            app.run("frame.create", json!({"spread": page, "rect": [36, 300, 200, 340], "content": "text", "text": text})).unwrap();
+        }
+        app.run("edit.deselectAll", json!({})).unwrap();
+        let ctx = egui::Context::default();
+        canvas_frame_shapes(&mut app, &ctx);
+        go_to_page(&mut app, 0);
+        canvas_frame_shapes(&mut app, &ctx);
+        assert_eq!(current_page(&app), Some(0));
+        // With nothing composed, the stories composed after one more frame are the ones it looked up.
+        app.session.cache.clear();
+        let shapes = canvas_frame_shapes(&mut app, &ctx);
+        let showing = shapes.iter().filter(|s| s.clip_rect.intersects(s.shape.visual_bounding_rect())).count();
+        let doc = &app.session.active().unwrap().doc;
+        let composed = doc.stories.keys().filter(|id| app.session.cache.composed_for(doc, **id).is_some()).count();
+        (shapes.len(), showing, composed)
+    };
+    let (short, long) = (work(4), work(40));
+    assert_eq!(long.1, short.1, "shapes in view");
+    assert_eq!(long.0, short.0, "shapes painted");
+    assert_eq!(long.2, short.2, "stories looked up");
+    assert!((1..4).contains(&long.2), "the stories in view, not all 40: {}", long.2);
+}
+
+/// A frame on the pasteboard keeps its edges while its page is out of view, in a rotated view
+/// too, and a view that shows none of it paints none of them.
+#[test]
+fn frame_edges_are_painted_for_the_frames_in_view() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let id = app.run("frame.create", json!({"rect": [-300, 100, -200, 200], "content": "text", "text": "a"})).unwrap()["id"].as_u64().unwrap();
+    app.run("edit.deselectAll", json!({})).unwrap();
+    let doc = app.session.doc().unwrap().doc.clone();
+    let layout = CanvasLayout::new(&doc, false);
+    let it = out_frame(&doc, id);
+    let (a, _) = item_canvas_xf(&doc, &layout, it.id).unwrap();
+    let frame = a.transform_rect_bbox(it.bounds());
+    assert!(frame.x1 < layout.slots[0].bounds.x0 - 150.0, "the frame is on the pasteboard, left of the page");
+    let window = Rect::from_min_size(Pos2::ZERO, vec2(200.0, 200.0));
+    let edges = |xf: Xf| {
+        let ctx = egui::Context::default();
+        let mut out = ctx.run_ui(egui::RawInput { screen_rect: Some(window), ..Default::default() }, |ui| {
+            draw_frames(&app, &ui.painter_at(window), &xf, &doc, &layout);
+        });
+        out.textures_delta.clear();
+        out.shapes.iter().filter(|s| matches!(s.shape, egui::Shape::Path(_))).count()
+    };
+    // The frame 20 points inside a window too small to reach the page.
+    let near = Xf { min: Pos2::ZERO, origin: Point::new(frame.x0 - 20.0, frame.y0 - 20.0), zoom: 1.0, rot: 0, pivot: window.center() };
+    assert_eq!(edges(near), 1);
+    assert_eq!(edges(Xf { rot: 1, ..near }), 1);
+    // The same window over the page: the frame is out of view.
+    assert_eq!(edges(Xf { origin: Point::new(layout.slots[0].bounds.x0, frame.y0 - 20.0), ..near }), 0);
 }
 
 #[test]
