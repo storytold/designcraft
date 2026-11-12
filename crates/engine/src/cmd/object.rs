@@ -2807,11 +2807,24 @@ fn text_selection_frames(s: &Session, t: &TextSel) -> Vec<ItemId> {
     let Ok(st) = s.doc() else { return Vec::new() };
     let Some(story) = st.doc.story(t.story) else { return Vec::new() };
     let last = story.frames.last().copied();
-    // In a table cell, `anchor` and `focus` index the cell's text: the frame the caret is shown in.
-    if t.cell.is_some() {
-        return t.frame.filter(|f| story.frames.contains(f)).or(last).into_iter().collect();
-    }
     let cs = s.cache.get(&st.doc, t.story, None);
+    // In footnote text or a table cell, `anchor` and `focus` index that text: the frame the caret
+    // is drawn in (the placed footnote, or the cell's first non-repeated occurrence), else the
+    // frame that shows the footnote reference or the table's anchor character.
+    if let Some(c) = t.cell {
+        let (drawn, anchor) = match c.footnote_id() {
+            Some(id) => (designcraft_compose::find_note(&cs, id).map(|(fi, _)| fi), story.note_anchor(id)),
+            None => (designcraft_compose::find_cell(&cs, c.table, c.row, c.col).map(|(fi, ..)| fi), story.table_anchor(c.table)),
+        };
+        return drawn
+            .or_else(|| anchor.and_then(|a| designcraft_compose::caret(&cs, a)).map(|(fi, ..)| fi))
+            .and_then(|fi| cs.frames.get(fi))
+            .map(|f| f.frame)
+            .or_else(|| t.frame.filter(|f| story.frames.contains(f)))
+            .or(last)
+            .into_iter()
+            .collect();
+    }
     let r = t.range();
     // The frame the caret at the start is drawn in; the caret's stored frame only when no line
     // holds it.
@@ -5085,6 +5098,81 @@ mod type_tool_frame_options_tests {
         assert_eq!(undo_steps(&s), steps + 1);
         assert_eq!(s.execute("object.textFrameOptions", &fixed).unwrap()["changed"], 0);
         assert_eq!(undo_steps(&s), steps + 1, "the same Fixed Width options again add no undo step");
+    }
+
+    /// A caret in footnote text changes the frame that shows the footnote, with or without a
+    /// stored frame on the caret.
+    #[test]
+    fn a_caret_in_a_footnote_changes_the_frame_that_shows_it() {
+        for (in_second, stored) in [(false, None), (true, None), (false, Some(true))] {
+            let mut s = Session::new();
+            let (a, b, sid) = two_frame_thread(&mut s);
+            let r = shown(&s, sid, if in_second { b } else { a });
+            s.execute("text.select", &json!({"story": sid.0, "anchor": r.start + 2})).unwrap();
+            s.execute("footnote.insert", &json!({"text": "Note."})).unwrap();
+            let mut t = s.doc().unwrap().selection.text.unwrap();
+            assert!(t.cell.and_then(|c| c.footnote_id()).is_some(), "the caret is in the footnote: {t:?}");
+            if let Some(second) = stored {
+                t.frame = Some(if second { b } else { a });
+                s.doc_mut().unwrap().selection = Selection::text(t);
+            }
+            s.execute("object.textFrameOptions", &json!({"columns": 2})).unwrap();
+            let want = if in_second { (1, 2) } else { (2, 1) };
+            assert_eq!((options(&s, a).columns, options(&s, b).columns), want, "footnote in the second frame: {in_second}, stored frame: {stored:?}");
+        }
+    }
+
+    /// A caret in a table cell changes the frame that shows the cell, with or without a stored
+    /// frame on the caret.
+    #[test]
+    fn a_caret_in_a_table_cell_changes_the_frame_that_shows_it() {
+        for (in_second, stored) in [(false, None), (true, None), (false, Some(true))] {
+            let mut s = Session::new();
+            let (a, b, sid) = two_frame_thread(&mut s);
+            let r = shown(&s, sid, if in_second { b } else { a });
+            s.execute("text.select", &json!({"story": sid.0, "anchor": r.start + 2})).unwrap();
+            s.execute("table.insert", &json!({"rows": 1, "cols": 1})).unwrap();
+            let mut t = s.doc().unwrap().selection.text.unwrap();
+            assert!(t.cell.is_some_and(|c| c.footnote_id().is_none()), "the caret is in the cell: {t:?}");
+            if let Some(second) = stored {
+                t.frame = Some(if second { b } else { a });
+                s.doc_mut().unwrap().selection = Selection::text(t);
+            }
+            s.execute("object.textFrameOptions", &json!({"columns": 2})).unwrap();
+            let want = if in_second { (1, 2) } else { (2, 1) };
+            assert_eq!((options(&s, a).columns, options(&s, b).columns), want, "table in the second frame: {in_second}, stored frame: {stored:?}");
+        }
+    }
+
+    /// A caret in a repeated footer row is drawn in the footer's own occurrence at the end of the
+    /// table: that frame changes, not the earlier frame that shows a repeat of the footer.
+    #[test]
+    fn a_caret_in_a_repeated_footer_changes_the_frame_with_the_footer_itself() {
+        let mut s = Session::new();
+        let (a, b, sid) = two_frame_thread(&mut s);
+        let ra = shown(&s, sid, a);
+        s.execute("text.select", &json!({"story": sid.0, "anchor": ra.start + 2})).unwrap();
+        s.execute("table.insert", &json!({"rows": 15, "cols": 1, "footerRows": 1})).unwrap();
+        s.execute("table.options", &json!({"repeatFooter": true})).unwrap();
+        let t = s.doc().unwrap().selection.text.unwrap();
+        let table = t.cell.unwrap().table;
+        let footer = s.doc().unwrap().doc.story(sid).unwrap().tables.get(&table).unwrap().nrows() - 1;
+        let cs = designcraft_compose::compose_story(&s.doc().unwrap().doc, sid, &Default::default());
+        let placed = |f: ItemId| {
+            cs.frame(f)
+                .unwrap()
+                .tables
+                .iter()
+                .filter(|tf| tf.table == table)
+                .filter_map(|tf| tf.cell(footer, 0))
+                .map(|c| c.repeated)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!((placed(a), placed(b)), (vec![true], vec![false]), "the footer repeats in the first frame and ends the table in the second");
+        s.doc_mut().unwrap().selection =
+            Selection::text(TextSel { cell: Some(designcraft_doc::CellAddr { table, row: footer, col: 0 }), anchor: 0, focus: 0, frame: None, ..t });
+        s.execute("object.textFrameOptions", &json!({"columns": 2})).unwrap();
+        assert_eq!((options(&s, a).columns, options(&s, b).columns), (1, 2));
     }
 }
 

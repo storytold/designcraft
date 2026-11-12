@@ -228,7 +228,8 @@ With a text selection, this formats the selected paragraphs; with selected text 
 `object.textFrameOptions` (columns, inset spacing, vertical justification and the rest of Text Frame Options) acts on
 the selected frames or on the `ids` the call passes. With the Type tool and no frame selected, it acts on the frame that
 shows the insertion point, or on every frame that holds part of the selected text, not on the other frames of the
-thread. An empty `ids` is an error. Options a frame already has leave the document unchanged and add no undo step.
+thread. With the insertion point in a footnote or a table cell, it acts on the frame that shows the footnote or the
+cell. An empty `ids` is an error. Options a frame already has leave the document unchanged and add no undo step.
 
 ```text
 execute          {"command": "object.textFrameOptions", "params": {"verticalJustification": "center", "inset": 6}}
