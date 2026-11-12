@@ -799,6 +799,7 @@ fn object_styles_carry_corners_and_their_stroke_and_corners_can_be_edited() {
         json!({"stroke": {"swatch": "Nope"}}),
         json!({"stroke": {"wieght": 5}}),
         json!({"fill": {"tnt": 0.5}}),
+        json!({"corners": {"shpae": "rounded"}}),
     ] {
         let mut p = bad.clone();
         p["name"] = json!("Framed");
@@ -1000,6 +1001,27 @@ fn a_stroke_added_to_an_object_style_reaches_default_strokes() {
     let weight = |s: &Session, id: u64| s.doc().unwrap().doc.item(ItemId(id)).unwrap().stroke.weight;
     assert_eq!((weight(&s, shape), weight(&s, text), weight(&s, own)), (4.0, 4.0, 9.0));
     assert_eq!(weight(&s, stroked_text), 1.0, "a text frame's own 1 pt stroke stays");
+}
+
+/// A paragraph-style edit of an object style reaches each paragraph still in the old style, and a
+/// paragraph given another style keeps it.
+#[test]
+fn an_object_style_edit_restyles_paragraph_by_paragraph() {
+    use designcraft_doc::ItemId;
+    let mut s = session();
+    for n in ["Body", "Lead", "Own"] {
+        s.execute("style.paragraph.create", &json!({"name": n})).unwrap();
+    }
+    s.execute("style.object.create", &json!({"name": "Boxed", "fromSelection": false, "paragraphStyle": "Body"})).unwrap();
+    let r = s.execute("frame.create", &json!({"rect": [36, 36, 336, 336], "content": "text", "text": "One\nTwo\nThree", "caret": false})).unwrap();
+    let (id, story) = (r["id"].as_u64().unwrap(), r["story"].clone());
+    s.execute("style.object.apply", &json!({"name": "Boxed", "ids": [id]})).unwrap();
+    s.execute("text.select", &json!({"story": story, "anchor": 4, "focus": 7})).unwrap();
+    s.execute("style.paragraph.apply", &json!({"name": "Own"})).unwrap();
+    s.execute("style.object.edit", &json!({"name": "Boxed", "paragraphStyle": "Lead"})).unwrap();
+    let d = &s.doc().unwrap().doc;
+    let sid = d.item(ItemId(id)).unwrap().text_frame().unwrap().story;
+    assert_eq!(d.story(sid).unwrap().paras.iter().map(|p| p.style.as_str()).collect::<Vec<_>>(), ["Lead", "Own", "Lead"]);
 }
 
 /// A text frame anchored in a story (as IDML import places one) takes a new paragraph style of

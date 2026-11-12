@@ -309,6 +309,9 @@ fn corners_param(
         return Ok(Some(None));
     }
     let o = v.as_object().ok_or_else(|| bad(cmd, "`corners` must be an object or null"))?;
+    if let Some(k) = o.keys().find(|k| !["shape", "size", "corners"].contains(&k.as_str())) {
+        return Err(bad(cmd, format!("corners.{k} is not a corner setting (shape, size, corners)")));
+    }
     let mut c = if o.contains_key("corners") {
         serde_json::from_value::<designcraft_geom::corners::CornerOptions>(v.clone()).map_err(|e| bad(cmd, format!("corners: {e}")))?
     } else {
@@ -395,7 +398,7 @@ pub(super) fn edit_object(s: &mut Session, p: &Value) -> Result<Value> {
                     *n = r.clone();
                 }
             }
-            d.update_items(|it| it.object_style == name, |it| it.object_style = r.clone());
+            d.update_placed_items(|it| it.object_style == name, |it| it.object_style = r.clone());
         }
         // An item follows each attribute the style sets while it has the style's value. When the
         // style didn't set it before, items with the default follow (the default styles are on
@@ -454,8 +457,8 @@ pub(super) fn edit_object(s: &mut Session, p: &Value) -> Result<Value> {
                 }
             },
         );
-        // The text of the frames using the style takes a new paragraph style (or chain) while it
-        // is in the old one's; when the style set none before, all of it does.
+        // Each paragraph of the frames using the style takes the new paragraph style (or chain)
+        // while it is in the old one's; when the style set none before, every paragraph does.
         let mut restyled = 0;
         if new.paragraph_style.is_some() && (new.paragraph_style != old.paragraph_style || new.apply_next_style != old.apply_next_style) {
             // Frames on spreads and parents, in groups, and anchored in stories, table cells and
@@ -466,10 +469,16 @@ pub(super) fn edit_object(s: &mut Session, p: &Value) -> Result<Value> {
             stories.dedup();
             let styles = d.styles.clone();
             for sid in stories {
-                if d.story(sid).is_some_and(|st| old.story_follows(&styles, st))
+                let changes = d.story(sid).map(|st| new.restyle_from(&old, &styles, st)).unwrap_or_default();
+                if !changes.is_empty()
                     && let Some(st) = d.story_mut(sid)
-                    && new.restyle(&styles, st)
                 {
+                    for (i, w) in changes {
+                        if let Some(f) = st.paras.get_mut(i) {
+                            f.style = w;
+                        }
+                    }
+                    st.rev = st.rev.wrapping_add(1);
                     restyled += 1;
                 }
             }

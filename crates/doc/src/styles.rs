@@ -115,6 +115,22 @@ impl ObjectStyle {
         self.paragraph_styles(styles, st.paras.len()).is_none_or(|want| st.paras.iter().zip(&want).all(|(f, w)| f.style == *w))
     }
 
+    /// After an edit from `old`: the paragraphs of `st` still in the paragraph style `old` gives
+    /// them (every paragraph, when `old` set none) with the one this style gives each, where that
+    /// differs. A paragraph in another style is left out.
+    pub fn restyle_from(&self, old: &ObjectStyle, styles: &Styles, st: &Story) -> Vec<(usize, String)> {
+        let n = st.paras.len();
+        let Some(want) = self.paragraph_styles(styles, n) else { return Vec::new() };
+        let was = old.paragraph_styles(styles, n);
+        st.paras
+            .iter()
+            .zip(want)
+            .enumerate()
+            .filter(|(i, (f, w))| was.as_ref().is_none_or(|was| f.style == was[*i]) && f.style != *w)
+            .map(|(i, (_, w))| (i, w))
+            .collect()
+    }
+
     /// Put a story's paragraphs in the paragraph styles this style gives them; `false` when it
     /// sets none or they already are.
     pub fn restyle(&self, styles: &Styles, st: &mut Story) -> bool {
