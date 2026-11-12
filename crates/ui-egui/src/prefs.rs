@@ -33,6 +33,8 @@ impl UiState {
                 intact &= recover_docking(workspace);
             }
         }
+        // Older single-theme files keep their look; unparsable appearance values fall back to defaults.
+        crate::appearance::migrate_saved(&mut saved);
         let mut ui: UiState = serde_json::from_value(saved)?;
         clear_stale_open_panels(&mut ui);
         intact &= migrate(&mut ui.docking, &mut ui.floating, &ui.docking_hidden, ui.dock_expanded, ui.icon_groups.as_deref());

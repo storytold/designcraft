@@ -15,7 +15,7 @@
 //!   sends them (marked text with its converting clause in characters, then the committed text)
 //! - `ui.move {x, y}` / `ui.click {x, y, button?, count?, shift?…}` / `ui.drag {x, y, toX, toY, steps?}`:
 //!   real egui pointer input in screen points (reaches every widget: panels, flyouts, dialogs)
-//! - `ui.set {brightness?, panel?, dockTab?, rulers?, outline?, …}`
+//! - `ui.set {brightness?, appearanceMode?, panel?, dockTab?, rulers?, outline?, …}`
 //! - `ui.dialog.set {field, value}` / `ui.dialog.confirm` / `ui.dialog.cancel`
 //! - `ui.resize {width, height}`, `ui.focus`, `ui.screenshot {path?}`
 //! - `ui.render {path?, scale?}`: render the active artboard headlessly (PNG)
@@ -319,6 +319,12 @@ fn handle_request(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest
             if let Some(b) = s("brightness") {
                 r = app.run("window.brightness", json!({"brightness": b}));
             }
+            if let Some(m) = s("appearanceMode") {
+                r = app.run("window.appearanceMode", json!({"mode": m}));
+                if r.is_err() {
+                    return wrap(r);
+                }
+            }
             if let Some(pn) = s("panel") {
                 r = app.run("window.panel", json!({"panel": pn}));
             }
@@ -516,6 +522,14 @@ mod automation_contract_tests {
         assert_eq!(app.session.doc().unwrap().history.undo.len(), history);
         app.run("style.paragraph.edit", json!({"name":designcraft_doc::BASIC_PARAGRAPH,"chars":{"size":18}})).unwrap();
         assert_eq!(app.session.doc().unwrap().history.undo.len(), history + 1);
+    }
+    #[test]
+    fn ui_set_reports_a_bad_appearance_mode_even_with_later_settings() {
+        let mut app = app();
+        let ctx = egui::Context::default();
+        let response = call(&mut app, &ctx, "ui.set", json!({"appearanceMode": "sepia", "panel": "properties"}));
+        assert_eq!(response["ok"], false, "{response}");
+        assert_eq!(app.ui.appearance_mode, crate::theme::AppearanceMode::Dark);
     }
     fn app() -> DesignApp {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());

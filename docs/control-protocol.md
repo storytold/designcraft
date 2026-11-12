@@ -44,7 +44,7 @@ so only enable it while you use it. Transport: `apps/designcraft/src/control_ser
 | `ui.ime` | `{preedit?, active?: [start, end], commit?}` | Input method events as the system IME sends them: marked text (shown in place, `active` is the clause being converted, in characters) and the committed text (typed as one `text.insert`) |
 | `ui.paste` | `{text}` | What Ctrl/Cmd+V delivers from the system clipboard: text into the text being edited, or SVG markup (vector art copied in Illustrator, VectorCraft or Figma) as editable paths in the middle of the view |
 | `ui.move` / `ui.click` / `ui.drag` | screen points, `button?: left\|right\|middle`, `count?: 1–255` (click/drag, default 1), `steps?: positive integer` (drag, default 8) | Real egui pointer input — reaches every widget, menu and panel |
-| `ui.set` | `{brightness?, panel?, rulers?, guides?, frameEdges?, baselineGrid?, documentGrid?, textThreads?, screenMode?, zoom?, page?, fit?}` | UI state |
+| `ui.set` | `{appearanceMode?, brightness?, panel?, rulers?, guides?, frameEdges?, baselineGrid?, documentGrid?, textThreads?, screenMode?, zoom?, page?, fit?}` | UI state |
 | `ui.dialog.open` | `{id, fields?}` | Open a dialog by id (e.g. `paragraphStyleOptions` or `characterStyleOptions` with `{name, section}`, or `{new: true}` for a new style) |
 | `ui.dialog.set` / `ui.dialog.confirm` / `ui.dialog.cancel` | `{field, value}` | Fill and confirm the open dialog |
 | `ui.resize`, `ui.focus` | | Window control |
@@ -60,6 +60,14 @@ merged document; the template stays as it was ([agents.md](agents.md#data-merge)
 Headless window screenshots (locked screen, hidden window): `cargo run -p designcraft-ui-egui --example ui_shot -- script.jsonl`, where each line is one of the requests above, `{"shot": "/abs/out.png"}` or `{"steps": n}` (renders the whole UI offscreen with wgpu).
 
 The MCP server (`designcraft-cli mcp`) wraps the same methods for Claude and other agents.
+
+Appearance standardisation follows [PhotoCraft #1981](https://github.com/storytold/photocraft/pull/1981).
+`engine.execute` accepts `window.appearanceMode {mode?, darkTheme?, lightTheme?}` and
+`window.nextAppearanceMode {}`. Modes are `auto`, `light`, `dark`; the header cycles in that
+order. Defaults remain Dark / Medium Dark; Auto is opt-in and falls back to Dark when the
+system gives no answer. Separate light/dark selections survive mode changes. Existing single
+`brightness` settings migrate to their fixed family. Preferences › Interface shows native
+page-layout previews for each family. Linux follows the portal signal without polling.
 
 ### Click and drag limits
 

@@ -631,6 +631,8 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "ui:window.hidePanelsExceptTools",
             "ui:window.toolsDoubleColumn",
             "-",
+            "ui:window.appearanceMode",
+            "ui:window.nextAppearanceMode",
             "ui:window.brightness",
         ],
     ),

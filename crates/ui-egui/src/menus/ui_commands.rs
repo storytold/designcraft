@@ -412,7 +412,19 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ),
     ("window.deleteWorkspace", "Delete Workspace…", None, "{name}"),
     ("window.resetWorkspace", "Reset Workspace", None, "{} — back to the current workspace as saved (or its defaults)"),
-    ("window.brightness", "Interface Color Theme", None, "{brightness: dark|mediumDark|mediumLight|light|highContrast}"),
+    (
+        "window.brightness",
+        "Interface Color Theme",
+        None,
+        "{brightness: dark|mediumDark|mediumLight|light|highContrast} — also fixes the appearance mode to that theme's family",
+    ),
+    (
+        "window.appearanceMode",
+        "Appearance Mode",
+        None,
+        "{mode?: auto|dark|light, darkTheme?: dark|mediumDark|highContrast, lightTheme?: light|mediumLight} — auto follows the system",
+    ),
+    ("window.nextAppearanceMode", "Next Appearance Mode", None, "{} — Auto, Light, Dark, then Auto again"),
 ];
 
 pub fn ui_label(id: &str) -> Option<(&'static str, Option<&'static str>)> {

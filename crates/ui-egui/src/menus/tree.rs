@@ -59,6 +59,17 @@ pub(super) fn parse_entries(entries: &[&str]) -> Vec<Item> {
                 })
                 .collect();
             out.push(Item::Sub("Interface Color Theme".into(), items));
+        } else if e == "ui:window.appearanceMode" {
+            let items = crate::theme::AppearanceMode::ALL
+                .iter()
+                .map(|m| Item::Cmd {
+                    label: m.label().to_string(),
+                    id: "window.appearanceMode".into(),
+                    params: json!({"mode": m.id()}),
+                    shortcut: None,
+                })
+                .collect();
+            out.push(Item::Sub("Appearance Mode".into(), items));
         } else {
             let (_, id) = e.split_once(':').unwrap_or(("cmd", e));
             // `id|Label|{params}`: a fixed-parameter variant of a command.
