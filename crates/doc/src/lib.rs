@@ -251,6 +251,52 @@ impl Document {
     pub fn conditions_hide(&self, conds: &[String]) -> bool {
         !conds.is_empty() && conds.iter().all(|c| self.conditions.iter().any(|x| x.name == *c && !x.visible))
     }
+
+    /// Is text with character format `f`, in a paragraph whose base character attributes are
+    /// `base` (`Styles::resolve_para`), left off the page: hidden by its effective conditions
+    /// (the paragraph's and character style's included) or marked deleted? Exports leave it out
+    /// as composition does.
+    pub fn hides_run(&self, base: &CharProps, f: &CharFormat) -> bool {
+        let props = self.styles.resolve_char(base, f);
+        props.change == ChangeMark::Deleted || self.conditions_hide(&props.conditions)
+    }
+
+    /// The byte ranges of `st` that show, in order: the runs [`Self::hides_run`] hides left out.
+    /// Paragraphs and runs are walked together, once; take it once per story.
+    pub fn visible_spans(&self, st: &Story) -> Vec<std::ops::Range<usize>> {
+        let mut out: Vec<std::ops::Range<usize>> = Vec::new();
+        let runs: Vec<(std::ops::Range<usize>, &CharFormat)> = st.runs().collect();
+        let mut k = 0;
+        for (pi, pr) in st.para_ranges().iter().enumerate() {
+            let base = st.paras.get(pi).map(|pf| self.styles.resolve_para(pf).1).unwrap_or_default();
+            while runs.get(k).is_some_and(|(rr, _)| rr.end <= pr.start) {
+                k += 1;
+            }
+            for (rr, f) in runs.iter().skip(k).take_while(|(rr, _)| rr.start < pr.end) {
+                let (a, b) = (rr.start.max(pr.start), rr.end.min(pr.end));
+                if a >= b || self.hides_run(&base, f) {
+                    continue;
+                }
+                match out.last_mut() {
+                    Some(last) if last.end == a => last.end = b,
+                    _ => out.push(a..b),
+                }
+            }
+        }
+        out
+    }
+
+    /// The text of `st` within `range` that lies in `spans` ([`Self::visible_spans`] of `st`).
+    pub fn visible_text(st: &Story, spans: &[std::ops::Range<usize>], range: std::ops::Range<usize>) -> String {
+        let first = spans.partition_point(|s| s.end <= range.start);
+        let mut out = String::new();
+        for s in spans.iter().skip(first).take_while(|s| s.start < range.end) {
+            if let Some(t) = st.text.get(s.start.max(range.start)..s.end.min(range.end)) {
+                out.push_str(t);
+            }
+        }
+        out
+    }
 }
 
 /// Ink Manager settings for output, by swatch name. Output applies them through a
