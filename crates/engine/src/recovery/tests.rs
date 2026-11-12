@@ -388,15 +388,18 @@ fn a_write_now_in_one_session_leaves_another_sessions_write_of_the_same_uid_alon
 fn no_other_sessions_write_of_the_uid_is_queued_during_a_write_now() {
     let _turn = background();
     let dir = tempfile::tempdir().unwrap();
-    let writing = dirty_session();
+    let mut writing = dirty_session();
+    writing.recovery_dir = Some(dir.path().to_path_buf());
     let uid = writing.docs[0].uid;
     let mut other = dirty_session();
     other.recovery_dir = Some(dir.path().to_path_buf());
     other.docs[0].uid = uid;
     let now = worker::write_now(dir.path(), uid, writing.recovery_owner.0).expect("nothing else is in flight");
-    let queued = other.execute("file.recovery.save", &json!({"background": true})).unwrap();
-    assert_eq!(queued["queued"], 0, "another session's write was queued during the write now: {queued}");
+    let err = other.execute("file.recovery.save", &json!({"background": true})).unwrap_err();
+    assert!(err.to_string().contains("another session"), "another session's write was not reported as a conflict: {err}");
     assert!(worker::write_now(dir.path(), uid, other.recovery_owner.0).is_none(), "a second write now of the uid started");
+    // The session holding the write now skips its own background write instead.
+    assert_eq!(writing.execute("file.recovery.save", &json!({"background": true})).unwrap()["queued"], 0);
     drop(now);
     let queued = other.execute("file.recovery.save", &json!({"background": true})).unwrap();
     assert_eq!(queued["queued"], 1, "{queued}");
@@ -724,6 +727,8 @@ fn a_background_recovery_write_reports_another_sessions_held_write() {
 
     let err = second.execute("file.recovery.save", &json!({"background": true})).unwrap_err();
     assert!(err.to_string().contains("another session"), "{err}");
+    // The session whose write is held skips its own second write instead.
+    assert_eq!(first.execute("file.recovery.save", &json!({"background": true})).unwrap()["queued"], 0);
 
     held.release();
     assert_eq!(finished_writes(&mut first), 1);
