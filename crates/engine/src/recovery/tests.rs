@@ -237,6 +237,33 @@ fn saving_removes_a_finished_write_to_a_named_folder_whose_result_was_not_taken(
 
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
+fn an_edit_after_a_save_is_written_after_the_cancelled_write_stops() {
+    let _turn = background();
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = dirty_session();
+    s.recovery_dir = Some(dir.path().to_path_buf());
+    let uid = s.docs[0].uid;
+    let held = testing::hold_next_write(dir.path());
+    s.execute("file.recovery.save", &json!({"background": true})).unwrap();
+    held.wait_until_held();
+    let saved = tempfile::tempdir().unwrap();
+    s.execute("file.saveAs", &json!({"path": saved.path().join("saved.designcraft").to_string_lossy()})).unwrap();
+    s.execute("frame.create", &json!({"rect": [20, 20, 60, 60]})).unwrap();
+    // The held write was cancelled: the new edit is queued behind it instead of waiting for the
+    // next timer tick.
+    let queued = s.execute("file.recovery.save", &json!({"background": true})).unwrap();
+    assert_eq!(queued["queued"], 1, "{queued}");
+    held.release();
+    assert_eq!(finished_writes(&mut s), 1);
+    let mut reopened = Session::new();
+    assert_eq!(open(&mut reopened, dir.path()).unwrap().len(), 1);
+    assert_eq!(reopened.doc().unwrap().doc.spreads[0].items.len(), 2, "the snapshot after the edit was written");
+    discard(dir.path(), reopened.doc().unwrap().uid);
+    discard(dir.path(), uid);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
 fn a_background_result_goes_to_the_session_that_queued_it() {
     let _turn = background();
     let dir = tempfile::tempdir().unwrap();

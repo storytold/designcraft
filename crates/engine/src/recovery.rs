@@ -737,17 +737,20 @@ fn write_snapshot(entry: &Snapshot, cancelled: impl Fn() -> bool) -> Written {
         entry.own,
         |out| designcraft_format::write(out, &entry.doc, None).map_err(|e| EngineError::Other(e.to_string())),
         &cancelled,
+        // Written: in a folder that is not this run's own, the entry is now this run's to replace
+        // and remove (Save and Close must clean up the snapshot they wrote). Recorded with the
+        // rename, so a cleanup after it can remove the entry.
+        || {
+            if !entry.own {
+                WRITTEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert((entry.key.clone(), entry.uid));
+            }
+        },
     );
     match published {
         Ok(true) => {}
         // Cancelled while writing: no snapshot and no metadata for it.
         Ok(false) => return Written { published: false, error: None },
         Err(e) => return Written { published: false, error: Some(e) },
-    }
-    // Written: in a folder that is not this run's own, the entry is now this run's to replace and
-    // remove (Save and Close must clean up the snapshot they wrote).
-    if !entry.own {
-        WRITTEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert((entry.key.clone(), entry.uid));
     }
     let metadata = json!({"path": entry.path, "title": entry.title, "saved": designcraft_doc::vars::now()});
     // A cancel after the primary landed removes it; the metadata must not be left without it.
@@ -757,6 +760,7 @@ fn write_snapshot(entry: &Snapshot, cancelled: impl Fn() -> bool) -> Written {
         entry.own,
         |out| out.write_all(bytes.as_bytes()).map_err(|e| EngineError::Other(format!("{}: {e}", meta.display()))),
         &cancelled,
+        || {},
     )
     .err();
     Written { published: true, error }
@@ -921,6 +925,9 @@ mod worker {
     struct Queued {
         owner: u64,
         dir: PathBuf,
+        /// A newer write of the same document and folder, queued after this one was cancelled:
+        /// it is written as soon as this one stops.
+        next: Option<Snapshot>,
     }
 
     static WRITER: OnceLock<Option<Writer>> = OnceLock::new();
@@ -935,16 +942,30 @@ mod worker {
             self.running.lock().is_ok_and(|running| !running.is_empty())
         }
 
-        /// `key` is the job's ([`Snapshot::key`], uid).
-        fn finish(&self, key: &(PathBuf, u64)) {
-            let key = key.clone();
-            if let Ok(mut running) = self.running.lock() {
-                running.remove(&key);
-            }
-            if let Ok(mut cancelled) = self.cancelled.lock() {
-                cancelled.remove(&key);
-            }
+        /// `key` is the job's ([`Snapshot::key`], uid). Returns the write queued to follow it.
+        fn finish(&self, key: &(PathBuf, u64)) -> Option<Snapshot> {
+            let next = match self.running.lock() {
+                Ok(mut running) => {
+                    let next = running.get_mut(key).and_then(|q| q.next.take());
+                    match (&next, running.get_mut(key)) {
+                        (Some(n), Some(q)) => {
+                            q.owner = n.owner;
+                            q.dir = n.dir.clone();
+                        }
+                        _ => {
+                            running.remove(key);
+                        }
+                    }
+                    // The mark was for the write that stopped, not the one that follows it.
+                    if let Ok(mut cancelled) = self.cancelled.lock() {
+                        cancelled.remove(key);
+                    }
+                    next
+                }
+                Err(_) => None,
+            };
             self.idle.notify_all();
+            next
         }
 
         /// Block until no write is queued or running.
@@ -966,11 +987,15 @@ mod worker {
             let _publishing = super::PUBLISH.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             // The folder's canonical path, or its name as given: a link in the path may lead
             // elsewhere now than when the write was queued.
-            let keys: Vec<(PathBuf, u64)> = self
-                .running
-                .lock()
-                .map(|running| running.iter().filter(|(k, q)| **k == canonical || (k.1 == uid && q.dir == dir)).map(|(k, _)| k.clone()).collect())
-                .unwrap_or_default();
+            let Ok(mut running) = self.running.lock() else { return };
+            let keys: Vec<(PathBuf, u64)> =
+                running.iter().filter(|(k, q)| **k == canonical || (k.1 == uid && q.dir == dir)).map(|(k, _)| k.clone()).collect();
+            // A write queued to follow it is older than what the caller has now, too.
+            for k in &keys {
+                if let Some(q) = running.get_mut(k) {
+                    q.next = None;
+                }
+            }
             if let Ok(mut cancelled) = self.cancelled.lock() {
                 cancelled.extend(keys);
             }
@@ -985,15 +1010,17 @@ mod worker {
             let _publishing = super::PUBLISH.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             // The canonical keys to mark, and the folders as the session named them, which is how
             // the cleanup finds this run's folder.
-            let (keys, mut dirs): (Vec<(PathBuf, u64)>, Vec<PathBuf>) = self
-                .running
-                .lock()
-                .map(|running| {
-                    running.iter().filter(|((_, u), q)| *u == uid && q.owner == owner).map(|(key, q)| (key.clone(), q.dir.clone())).unzip()
-                })
-                .unwrap_or_default();
-            if let Ok(mut cancelled) = self.cancelled.lock() {
-                cancelled.extend(keys);
+            let mut dirs = Vec::new();
+            if let Ok(mut running) = self.running.lock() {
+                let mut keys = Vec::new();
+                for (key, q) in running.iter_mut().filter(|((_, u), q)| *u == uid && q.owner == owner) {
+                    keys.push(key.clone());
+                    dirs.push(q.dir.clone());
+                    q.next = None;
+                }
+                if let Ok(mut cancelled) = self.cancelled.lock() {
+                    cancelled.extend(keys);
+                }
             }
             // Results stay queued for their session; only their folders are read here.
             let done = self.done.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -1011,13 +1038,20 @@ mod worker {
         /// The folders of writes of `uid` queued by session `owner` that are in flight, or finished
         /// and published with their results not taken yet: checkpoints its entries do not hold yet.
         fn pending_folders(&self, uid: u64, owner: u64) -> Vec<PathBuf> {
-            let keys: Vec<(PathBuf, u64)> = self
+            // A cancelled write publishes nothing; a write queued to follow it does.
+            let mut dirs: Vec<PathBuf> = self
                 .running
                 .lock()
-                .map(|running| running.iter().filter(|((_, u), q)| *u == uid && q.owner == owner).map(|(key, _)| key.clone()).collect())
+                .map(|running| {
+                    running
+                        .iter()
+                        .filter(|(key, q)| {
+                            key.1 == uid && ((q.owner == owner && !self.cancelled(key)) || q.next.as_ref().is_some_and(|n| n.owner == owner))
+                        })
+                        .map(|((dir, _), _)| dir.clone())
+                        .collect()
+                })
                 .unwrap_or_default();
-            // A cancelled write publishes nothing.
-            let mut dirs: Vec<PathBuf> = keys.into_iter().filter(|key| !self.cancelled(key)).map(|(dir, _)| dir).collect();
             let done = self.done.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             let mut undelivered = self.undelivered.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             undelivered.extend(done.try_iter());
@@ -1038,24 +1072,25 @@ mod worker {
                 let (jobs, job_rx) = std::sync::mpsc::channel::<Snapshot>();
                 let (done_tx, done_rx) = std::sync::mpsc::channel::<Done>();
                 let spawned = std::thread::Builder::new().name("designcraft-recovery".into()).spawn(move || {
-                    while let Ok(job) = job_rx.recv() {
-                        let (published, error) = guarded_write(&job);
-                        let key = (job.key.clone(), job.uid);
-                        let (dir, uid, owner) = (job.dir, job.uid, job.owner);
-                        // The result before the document reads as idle: a writer that is not busy
-                        // has already delivered it, so the interface never stops polling with an
-                        // answer still on its way.
-                        let sent = {
-                            let _publishing = super::PUBLISH.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                            // Cancelled after it was published: the canceller removes the snapshot.
-                            let published = published && !started().is_some_and(|w| w.cancelled(&key));
-                            done_tx.send(Done { dir, uid, error, published, owner }).is_ok()
-                        };
-                        if let Some(w) = WRITER.get().and_then(Option::as_ref) {
-                            w.finish(&key);
-                        }
-                        if !sent {
-                            break;
+                    while let Ok(first) = job_rx.recv() {
+                        let mut queued = Some(first);
+                        while let Some(job) = queued.take() {
+                            let (published, error) = guarded_write(&job);
+                            let key = (job.key.clone(), job.uid);
+                            let (dir, uid, owner) = (job.dir, job.uid, job.owner);
+                            // The result before the document reads as idle: a writer that is not
+                            // busy has already delivered it, so the interface never stops polling
+                            // with an answer still on its way.
+                            let sent = {
+                                let _publishing = super::PUBLISH.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                                // Cancelled after it was published: the canceller removes the snapshot.
+                                let published = published && !started().is_some_and(|w| w.cancelled(&key));
+                                done_tx.send(Done { dir, uid, error, published, owner }).is_ok()
+                            };
+                            queued = WRITER.get().and_then(Option::as_ref).and_then(|w| w.finish(&key));
+                            if !sent {
+                                return;
+                            }
                         }
                     }
                 });
@@ -1124,10 +1159,16 @@ mod worker {
         let w = writer()?;
         let mut running = w.running.lock().ok()?;
         let key = (entry.key.clone(), entry.uid);
-        if running.contains_key(&key) {
+        if let Some(q) = running.get_mut(&key) {
+            // The write in flight was cancelled (the document was saved since), so it holds
+            // nothing to recover: this one follows it, in place of any that was waiting.
+            if w.cancelled.lock().is_ok_and(|cancelled| cancelled.contains(&key)) {
+                q.next = Some(entry);
+                return Some(true);
+            }
             return Some(false);
         }
-        running.insert(key.clone(), Queued { owner: entry.owner, dir: entry.dir.clone() });
+        running.insert(key.clone(), Queued { owner: entry.owner, dir: entry.dir.clone(), next: None });
         // A write is wanted again: whatever cancelled the last one does not apply to this one.
         if let Ok(mut cancelled) = w.cancelled.lock() {
             cancelled.remove(&key);
@@ -1286,8 +1327,14 @@ fn secure_recovery_dir(_dir: &Path) -> Result<bool> {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn publish_recovery_file(path: &Path, bytes: &[u8], replace: bool) -> Result<()> {
-    publish_recovery_written(path, replace, |out| out.write_all(bytes).map_err(|e| EngineError::Other(format!("{}: {e}", path.display()))), || false)
-        .map(|_| ())
+    publish_recovery_written(
+        path,
+        replace,
+        |out| out.write_all(bytes).map_err(|e| EngineError::Other(format!("{}: {e}", path.display()))),
+        || false,
+        || {},
+    )
+    .map(|_| ())
 }
 
 /// Serializes the last check for a cancelled write with the rename that publishes it, and with
@@ -1298,13 +1345,15 @@ static PUBLISH: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// [`publish_recovery_file`], with `write` filling the temporary file: a large document is written
 /// straight to disk instead of being built in memory first. Returns whether it was published;
 /// `cancelled` is asked after the bytes are written and before the rename, so a document saved or
-/// closed meanwhile leaves nothing behind.
+/// closed meanwhile leaves nothing behind. `on_publish` runs right after the rename, before a
+/// cancel can.
 #[cfg(not(target_arch = "wasm32"))]
 fn publish_recovery_written(
     path: &Path,
     replace: bool,
     write: impl FnOnce(&mut std::io::BufWriter<&mut std::fs::File>) -> Result<()>,
     cancelled: impl Fn() -> bool,
+    on_publish: impl FnOnce(),
 ) -> Result<bool> {
     let Some(dir) = path.parent() else {
         return Err(EngineError::Other(format!("{} has no parent folder", path.display())));
@@ -1340,6 +1389,7 @@ fn publish_recovery_written(
         validate_recovery_dir(dir)?;
         let published = if replace { tmp.persist(path) } else { tmp.persist_noclobber(path) };
         published.map_err(|e| EngineError::Other(format!("{}: {}", path.display(), e.error)))?;
+        on_publish();
     }
     sync_recovery_dir(dir)?;
     Ok(true)
@@ -1406,6 +1456,7 @@ fn publish_recovery_written(
     _replace: bool,
     _write: impl FnOnce(&mut std::io::BufWriter<&mut std::fs::File>) -> Result<()>,
     _cancelled: impl Fn() -> bool,
+    _on_publish: impl FnOnce(),
 ) -> Result<bool> {
     Err(EngineError::Other("recovery files are unavailable on the web".into()))
 }
