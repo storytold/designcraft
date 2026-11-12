@@ -155,6 +155,8 @@ pub struct Renderer {
     cmyk_view: Option<blendspace::CachedView>,
     /// Whether the last render ran the CMYK ink passes (only then is its view worth keeping).
     cmyk_ran: bool,
+    /// Drop shadow and outer glow images kept between renders.
+    kept: fx::KeptEffects,
     #[cfg(test)]
     cmyk_passes: usize,
     /// Pixels the last ink pass covered (tests).
