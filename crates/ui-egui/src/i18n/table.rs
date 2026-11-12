@@ -1263,7 +1263,7 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
         "Horizontal Gridline Every:",
         [
             "Horizontal Gridline Every:",
-            "Ligne de grille horizontale tous les:",
+            "Ligne de grille horizontale tous les :",
             "Línea horizontal de rejilla cada:",
             "Horizontal Gridline Every:",
             "水平网格线间隔：",
