@@ -68,7 +68,7 @@ pub(super) fn duplicate_layer(s: &mut Session, p: &Value) -> Result<Value> {
     let id = LayerId(p.get("id").and_then(Value::as_u64).ok_or_else(|| bad(ID, "missing id"))?);
     let r = s.edit(|d, _| {
         let i = d.layers.iter().position(|l| l.id == id).ok_or_else(|| bad(ID, "no such layer"))?;
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = HashMap::new();
         if d.spreads.iter().chain(&d.parents).flat_map(|sp| sp.items.iter()).any(|it| it.layer == id && too_deep(it, d, &mut seen)) {
             return Err(bad(ID, "the layer's objects are nested too deeply to copy"));
         }
@@ -205,20 +205,22 @@ fn map_ids(orig: &Item, copy: &Item, ids: &mut HashMap<ItemId, ItemId>) {
     }
 }
 
-/// A layer whose groups, anchored objects, table cells and notes nest deeper than this within one story or object is
-/// not duplicated.
+/// A layer whose groups, anchored objects, table cells and notes nest deeper than this, counted from an object on a
+/// spread through the stories its anchored text frames show, is not duplicated.
 const MAX_COPY_DEPTH: usize = 64;
 
-/// Whether `it`, or a story its text frames reach directly or through anchored text frames, nests groups, anchored
-/// objects, table cells and notes deeper than [`MAX_COPY_DEPTH`]. Stories in `seen` were checked already and are skipped.
-fn too_deep(it: &Item, d: &designcraft_doc::Document, seen: &mut std::collections::HashSet<StoryId>) -> bool {
-    fn item(it: &Item, depth: usize, next: &mut Vec<StoryId>) -> bool {
+/// Whether `it`, with the stories its text frames reach directly or through anchored text frames, nests groups,
+/// anchored objects, table cells and notes deeper than [`MAX_COPY_DEPTH`] in all: a story counts from the depth of the
+/// frame that shows it, as copying it recurses on from there. `seen` holds the deepest level each story was checked at;
+/// a story reached again no deeper is skipped.
+fn too_deep(it: &Item, d: &designcraft_doc::Document, seen: &mut HashMap<StoryId, usize>) -> bool {
+    fn item(it: &Item, depth: usize, next: &mut Vec<(StoryId, usize)>) -> bool {
         if let Some(t) = it.text_frame() {
-            next.push(t.story);
+            next.push((t.story, depth));
         }
         depth > MAX_COPY_DEPTH || it.children().iter().any(|c| item(c, depth + 1, next))
     }
-    fn story(st: &Story, depth: usize, next: &mut Vec<StoryId>) -> bool {
+    fn story(st: &Story, depth: usize, next: &mut Vec<(StoryId, usize)>) -> bool {
         depth > MAX_COPY_DEPTH
             || st.objects.iter().any(|o| item(&o.item, depth + 1, next))
             || st.tables.values().flat_map(|t| &t.cells).any(|c| story(&c.text, depth + 1, next))
@@ -228,10 +230,13 @@ fn too_deep(it: &Item, d: &designcraft_doc::Document, seen: &mut std::collection
     if item(it, 0, &mut next) {
         return true;
     }
-    while let Some(sid) = next.pop() {
-        if seen.insert(sid)
-            && let Some(st) = d.story(sid)
-            && story(st, 0, &mut next)
+    while let Some((sid, depth)) = next.pop() {
+        if seen.get(&sid).is_some_and(|&checked| checked >= depth) {
+            continue;
+        }
+        seen.insert(sid, depth);
+        if let Some(st) = d.story(sid)
+            && story(st, depth, &mut next)
         {
             return true;
         }
@@ -1083,6 +1088,42 @@ mod layer_tests {
             let f = s.execute("frame.create", &json!({"rect": [0, 0, 10, 10]})).unwrap()["id"].as_u64().unwrap();
             g = s.execute("object.group", &json!({"ids": [g, f]})).unwrap()["id"].as_u64().unwrap();
         }
+        let before = s.doc().unwrap().doc.layers.clone();
+        assert!(s.execute("layer.duplicate", &json!({"id": base})).is_err());
+        assert_eq!(s.doc().unwrap().doc.layers, before, "nothing changes");
+    }
+
+    /// Two stories, each anchoring groups nested 40 deep, the innermost group of the first holding a text frame that
+    /// shows the second: within the limit in each story, past it in all.
+    #[test]
+    fn duplicate_layer_refuses_nesting_too_deep_across_stories() {
+        use designcraft_doc::{AnchoredObject, Content, Item, ItemId};
+        use std::sync::Arc;
+
+        fn nest(d: &mut designcraft_doc::Document, mut it: Item, levels: usize) -> Item {
+            for _ in 0..levels {
+                let mut group = it.clone();
+                group.id = ItemId(d.alloc());
+                group.content = Content::Group { items: vec![Arc::new(it)] };
+                it = group;
+            }
+            it
+        }
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let base = s.doc().unwrap().doc.layers[0].id.0;
+        let f = s.execute("frame.create", &json!({"rect": [72, 72, 400, 400], "content": "text", "text": "Top"})).unwrap()["id"].as_u64().unwrap();
+        let g = s.execute("frame.create", &json!({"rect": [0, 0, 60, 30], "content": "text", "text": "Inner"})).unwrap()["id"].as_u64().unwrap();
+        let h = s.execute("frame.create", &json!({"rect": [0, 0, 10, 10]})).unwrap()["id"].as_u64().unwrap();
+        let d = Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+        let top = d.item(ItemId(f)).unwrap().text_frame().unwrap().story;
+        let (inner_frame, leaf) = (d.item(ItemId(g)).cloned().unwrap(), d.item(ItemId(h)).cloned().unwrap());
+        let inner = inner_frame.text_frame().unwrap().story;
+        Arc::make_mut(&mut d.spreads[0]).items.retain(|i| i.id.0 != g && i.id.0 != h);
+        let deep_leaf = nest(d, leaf, 40);
+        d.story_mut(inner).unwrap().insert_object(0, AnchoredObject::new(deep_leaf, Default::default()));
+        let deep_frame = nest(d, inner_frame, 40);
+        d.story_mut(top).unwrap().insert_object(0, AnchoredObject::new(deep_frame, Default::default()));
         let before = s.doc().unwrap().doc.layers.clone();
         assert!(s.execute("layer.duplicate", &json!({"id": base})).is_err());
         assert_eq!(s.doc().unwrap().doc.layers, before, "nothing changes");
