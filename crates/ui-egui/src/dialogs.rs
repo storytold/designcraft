@@ -802,6 +802,138 @@ mod color_theme_tests {
         assert!(first.interaction.is_none());
     }
 
+    /// A field changed while another document is active does not write the preview into that
+    /// document, or into its own interaction; the status line says why, and the preview follows
+    /// the field again once its document is active. Preview off there ends the preview in its own
+    /// document and clears the reason.
+    #[test]
+    fn a_preview_is_not_written_into_another_document() {
+        type Writer = fn(&mut DesignApp, &mut Dialog);
+        let guides: Writer = |app, d| layout_dialog_preview(app, d, "layout.createGuides", "Create Guides");
+        let cases: [(&str, Value, &str, Value, Writer); 4] = [
+            (
+                "createGuides",
+                json!({"rows": "2", "columns": "2", "rowGutter": "0", "columnGutter": "0", "fitTo": "page", "preview": true}),
+                "rows",
+                json!("3"),
+                guides,
+            ),
+            (STEP_AND_REPEAT, json!({"count": "2", "preview": true}), "count", json!("3"), step_and_repeat_preview),
+            ("textFrameOptions", json!({"columns": "2", "preview": true}), "columns", json!("3"), text_frame_preview),
+            ("hyphenation", json!({"hyphMinWord": 6, "preview": true}), "hyphMinWord", json!(8), hyphenation_preview),
+        ];
+        for (id, fields, key, value, write) in cases {
+            let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+            let frame = |app: &mut DesignApp| {
+                app.run("file.new", json!({})).unwrap();
+                let f = app.run("frame.create", json!({"rect": [36, 36, 300, 120], "content": "text", "text": "Text", "caret": false})).unwrap();
+                app.run("selection.set", json!({"ids": [f["id"]]})).unwrap();
+            };
+            frame(&mut app);
+            let mut d = Dialog::new(id, json!({}));
+            if id == "textFrameOptions" {
+                seed_text_frame_options(&app, &mut d);
+            }
+            let shown = fields[key].clone();
+            for (k, v) in fields.as_object().unwrap() {
+                d.fields.insert(k.clone(), v.clone());
+            }
+            let before = app.session.active().unwrap().doc.clone();
+            write(&mut app, &mut d);
+            let first = app.session.active().unwrap().doc.clone();
+            assert!(app.session.active().unwrap().interaction.is_some(), "{id}: previewed {:?}", d.fields.get("status"));
+            frame(&mut app);
+            app.session.begin_interaction("Move").unwrap();
+            let second = app.session.active().unwrap().doc.clone();
+            d.fields.insert(key.into(), value.clone());
+            write(&mut app, &mut d);
+            assert_eq!(app.session.active().unwrap().doc, second, "{id}: the second document is not changed");
+            assert_eq!(d.fields.get("status"), Some(&json!(PREVIEW_IN_OTHER_DOCUMENT)), "{id}");
+            assert_eq!(app.session.documents()[0].doc, first, "{id}: the first document keeps its preview");
+            // The field goes back to the value shown before the first document is active again:
+            // the reason goes, and the preview stays as it is.
+            d.fields.insert(key.into(), shown);
+            app.session.cancel_interaction();
+            app.session.set_active(0);
+            write(&mut app, &mut d);
+            assert!(!d.fields.contains_key("status"), "{id}: {:?}", d.fields.get("status"));
+            assert_eq!(app.session.active().unwrap().doc, first, "{id}");
+            d.fields.insert(key.into(), value.clone());
+            write(&mut app, &mut d);
+            assert!(!d.fields.contains_key("status"), "{id}: {:?}", d.fields.get("status"));
+            assert_ne!(app.session.active().unwrap().doc, first, "{id}: the preview follows the field");
+            // Preview off with the second document active.
+            app.session.set_active(1);
+            write(&mut app, &mut d);
+            assert_eq!(d.fields.get("status"), Some(&json!(PREVIEW_IN_OTHER_DOCUMENT)), "{id}");
+            d.fields.insert("preview".into(), json!(false));
+            write(&mut app, &mut d);
+            assert!(!d.fields.contains_key("status"), "{id}: {:?}", d.fields.get("status"));
+            let first = &app.session.documents()[0];
+            assert_eq!(first.doc, before, "{id}: the preview goes from the first document");
+            assert!(first.interaction.is_none(), "{id}");
+        }
+    }
+
+    /// A Text Frame Options preview at a text caret stays in its document while another document
+    /// is active, also when that document has no frame the dialog could take.
+    #[test]
+    fn a_text_frame_options_preview_stays_while_another_document_is_active() {
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let a = app.run("frame.create", json!({"rect": [36, 36, 300, 120], "content": "text", "text": "First"})).unwrap();
+        app.run("text.select", json!({"story": a["story"], "anchor": 1})).unwrap();
+        let mut d = Dialog::new("textFrameOptions", json!({}));
+        seed_text_frame_options(&app, &mut d);
+        d.fields.insert("columns".into(), json!("2"));
+        d.fields.insert("preview".into(), json!(true));
+        text_frame_preview(&mut app, &mut d);
+        let previewed = app.session.active().unwrap().doc.clone();
+        app.run("file.new", json!({})).unwrap();
+        d.fields.insert("columns".into(), json!("3"));
+        text_frame_preview(&mut app, &mut d);
+        assert_eq!(d.fields.get("status"), Some(&json!(PREVIEW_IN_OTHER_DOCUMENT)));
+        let first = &app.session.documents()[0];
+        assert_eq!(first.doc, previewed, "the preview stays");
+        assert!(first.interaction.is_some());
+    }
+
+    /// OK in Create Guides waits while the active document has an interaction of its own: the
+    /// dialog stays open with the reason, and nothing changes in either document until it ends.
+    #[test]
+    fn create_guides_ok_waits_for_another_documents_interaction() {
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let before = app.session.active().unwrap().doc.clone();
+        let mut d = Dialog::new(
+            "createGuides",
+            json!({"rows": "2", "columns": "2", "rowGutter": "0", "columnGutter": "0", "fitTo": "page", "preview": true}),
+        );
+        layout_dialog_preview(&mut app, &mut d, "layout.createGuides", "Create Guides");
+        let previewed = app.session.active().unwrap().doc.clone();
+        app.ui.dialog = Some(d);
+        app.run("file.new", json!({})).unwrap();
+        app.run("frame.create", json!({"rect": [36, 36, 300, 300]})).unwrap();
+        app.session.begin_interaction("Move").unwrap();
+        let second = app.session.active().unwrap().doc.clone();
+        let err = confirm(&mut app).unwrap_err();
+        assert_eq!(err, FINISH_OPEN_INTERACTION);
+        let d = app.ui.dialog.as_ref().expect("the dialog stays open");
+        assert_eq!(d.fields.get("status"), Some(&json!(FINISH_OPEN_INTERACTION)));
+        assert_eq!(app.session.active().unwrap().doc, second, "no guides in the second document");
+        assert!(app.session.active().unwrap().interaction.is_some());
+        assert_eq!(app.session.documents()[0].doc, previewed, "the preview stays");
+        // Once the interaction ends, OK makes the guides in the active document.
+        app.session.cancel_interaction();
+        let second = app.session.active().unwrap().doc.clone();
+        confirm(&mut app).unwrap();
+        assert!(app.ui.dialog.is_none());
+        assert_ne!(app.session.active().unwrap().doc, second, "the guides are made");
+        let first = &app.session.documents()[0];
+        assert_eq!(first.doc, before, "the preview goes from the first document");
+        assert!(first.interaction.is_none());
+    }
+
     #[test]
     fn toc_right_indent_separator_survives_the_dialog_and_update() {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
@@ -1511,6 +1643,9 @@ fn text_frame_preview(app: &mut DesignApp, d: &mut Dialog) {
         }
         return;
     }
+    if preview_in_other_document(app, d) {
+        return;
+    }
     let params = match text_frame_params(app, d) {
         Ok(p) => Value::Object(p),
         Err(e) => {
@@ -1554,6 +1689,42 @@ fn end_dialog_preview(app: &mut DesignApp, d: &mut Dialog) {
         Some(uid) => app.session.cancel_interaction_of(uid),
         None => app.session.cancel_interaction(),
     }
+}
+
+/// The status line while a dialog's preview is shown in a document that is not the active one.
+const PREVIEW_IN_OTHER_DOCUMENT: &str = "The preview is shown in another document. Switch back to that document to change it.";
+
+/// The status line when OK would make its change inside the active document's own interaction.
+const FINISH_OPEN_INTERACTION: &str = "Finish the action in progress in the active document before you click OK.";
+
+/// Refuses a preview update while the dialog's preview is shown in a document other than the
+/// active one (the update would be written into the active document), with the reason on the
+/// status line. Once that document is active again, the reason goes.
+fn preview_in_other_document(app: &DesignApp, d: &mut Dialog) -> bool {
+    let active = app.session.active().map(|st| st.uid);
+    if d.fields.get(PREVIEW_DOC).and_then(Value::as_u64).is_none_or(|uid| Some(uid) == active) {
+        if d.fields.get("status").and_then(Value::as_str) == Some(PREVIEW_IN_OTHER_DOCUMENT) {
+            d.fields.remove("status");
+        }
+        return false;
+    }
+    d.fields.insert("status".into(), json!(PREVIEW_IN_OTHER_DOCUMENT));
+    true
+}
+
+/// Refuses OK in a previewing dialog while the active document has an interaction of its own
+/// (not the dialog's preview), which the change would be made inside; the dialog stays open with
+/// the reason on the status line, and its preview stays.
+fn refuse_ok_during_interaction(app: &mut DesignApp, mut d: Dialog) -> Result<Dialog, String> {
+    let busy = app.session.active().is_some_and(|st| {
+        st.interaction.is_some() && !(d.fields.contains_key(PREVIEWED) && d.fields.get(PREVIEW_DOC).and_then(Value::as_u64) == Some(st.uid))
+    });
+    if !busy {
+        return Ok(d);
+    }
+    d.fields.insert("status".into(), json!(FINISH_OPEN_INTERACTION));
+    app.ui.dialog = Some(d);
+    Err(FINISH_OPEN_INTERACTION.into())
 }
 
 /// Ends the open dialog's preview before Undo or Redo runs in the document it is shown in, so they
@@ -2331,7 +2502,7 @@ fn layout_dialog_preview(app: &mut DesignApp, d: &mut Dialog, cmd: &str, label: 
             return;
         }
     };
-    if shown.as_ref() == Some(&params) {
+    if preview_in_other_document(app, d) || shown.as_ref() == Some(&params) {
         return;
     }
     if shown.is_none()
@@ -4790,6 +4961,19 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
     if d.id == crate::shortcuts_dialog::DIALOG_ID {
         return crate::shortcuts_dialog::close(app, true).map(|()| Value::Null);
     }
+    if matches!(
+        d.id.as_str(),
+        "createGuides"
+            | "marginsAndColumns"
+            | "textFrameOptions"
+            | "hyphenation"
+            | "paragraphStyleOptions"
+            | "characterStyleOptions"
+            | CORNER_OPTIONS
+            | STEP_AND_REPEAT
+    ) {
+        d = refuse_ok_during_interaction(app, d)?;
+    }
     if matches!(d.id.as_str(), "paragraphStyleOptions" | "characterStyleOptions") && d.fields.contains_key(PREVIEWED) {
         // Restore the original before the ordinary command commits one undoable edit.
         end_dialog_preview(app, &mut d);
@@ -5859,6 +6043,9 @@ fn style_options_preview(app: &mut DesignApp, d: &mut Dialog) {
             end_dialog_preview(app, d);
             d.fields.remove("status");
         }
+        return;
+    }
+    if preview_in_other_document(app, d) {
         return;
     }
     let paragraph = d.id == "paragraphStyleOptions";
@@ -8372,11 +8559,14 @@ fn hyphenation_preview(app: &mut DesignApp, d: &mut Dialog) {
     if !d.b("preview") {
         if shown.is_some() {
             end_dialog_preview(app, d);
+            if d.fields.get("status").and_then(Value::as_str) == Some(PREVIEW_IN_OTHER_DOCUMENT) {
+                d.fields.remove("status");
+            }
         }
         return;
     }
     let params = json!({"attrs": hyphenation_edits(d)});
-    if shown.as_ref() == Some(&params) || d.fields.get(PREVIEW_FAILED) == Some(&params) {
+    if preview_in_other_document(app, d) || shown.as_ref() == Some(&params) || d.fields.get(PREVIEW_FAILED) == Some(&params) {
         return;
     }
     if shown.is_none()
@@ -9337,6 +9527,9 @@ fn step_and_repeat_preview(app: &mut DesignApp, d: &mut Dialog) {
         }
         return;
     }
+    if preview_in_other_document(app, d) {
+        return;
+    }
     let params = match step_and_repeat_params(app, d) {
         Ok(p) => p,
         Err(e) => {
@@ -9546,7 +9739,7 @@ fn corner_options_preview(app: &mut DesignApp, d: &mut Dialog) {
             return;
         }
     };
-    if shown.as_ref() == Some(&params) {
+    if preview_in_other_document(app, d) || shown.as_ref() == Some(&params) {
         return;
     }
     if shown.is_none()
