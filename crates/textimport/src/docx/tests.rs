@@ -255,6 +255,27 @@ fn imports_styles_runs_footnotes_and_tables() {
 
 /// A content control inside a paragraph (`w:sdt`) keeps its text, also around a hyperlink.
 #[test]
+fn the_language_of_runs_and_defaults_is_kept() {
+    let run = |lang: &str, text: &str| format!(r#"<w:r><w:rPr><w:lang w:val="{lang}"/></w:rPr><w:t>{text}</w:t></w:r>"#);
+    let document = format!(
+        r#"<w:document {W}><w:body><w:p>{}{}{}{}</w:p><w:p><w:r><w:t>бит</w:t></w:r></w:p></w:body></w:document>"#,
+        run("sr-Latn-RS", "reč"),
+        run("sr-Cyrl-BA", "реч"),
+        run("de-DE", "Wort"),
+        run("x-none", "?"),
+    );
+    let styles = format!(
+        r#"<w:styles {W}><w:docDefaults><w:rPrDefault><w:rPr><w:lang w:val="sr-Cyrl-RS"/></w:rPr></w:rPrDefault></w:docDefaults>
+           <w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/></w:style></w:styles>"#
+    );
+    let imp = import(&docx(&document, &styles, "")).unwrap();
+    let languages: Vec<Option<String>> = imp.story.runs().map(|(_, f)| f.over.language.clone()).collect();
+    let name = |n: &str| Some(n.to_string());
+    assert_eq!(languages, [name("Serbian: Latin"), name("Serbian: Cyrillic"), name("de-DE"), None]);
+    assert_eq!(imp.para_styles[0].chars.language.as_deref(), Some("Serbian: Cyrillic"), "the document's default");
+}
+
+#[test]
 fn inline_content_control_text_is_kept() {
     let document = format!(
         r#"<w:document {W}><w:body>
