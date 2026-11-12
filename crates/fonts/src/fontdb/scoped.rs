@@ -68,7 +68,7 @@ impl ScopedFonts<'_> {
         // face, which Find Font and preflight called exact (#2618).
         let names = |f: &str| f.eq_ignore_ascii_case(&face.family) || face.family_aliases.iter().any(|alias| alias.eq_ignore_ascii_case(f));
         let wws_named = |w: &(String, String)| {
-            std::iter::once(family).chain(alternate_names(family)).any(|f| w.0.eq_ignore_ascii_case(f)) && norm(&w.1) == norm(style)
+            std::iter::once(family).chain(alternate_names(family)).any(|f| w.0.eq_ignore_ascii_case(f)) && norm(&w.1) == norm(base_style(style))
         };
         if !std::iter::once(family).chain(alternate_names(family)).any(names) {
             return face.wws.as_ref().is_some_and(wws_named);
