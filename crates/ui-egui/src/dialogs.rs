@@ -4138,12 +4138,18 @@ fn cell_options_edges_changed(app: &mut DesignApp, d: &mut Dialog, edges: &crate
         let v = cur.get(k).cloned().unwrap_or(Value::Null);
         // Null shows mixed values; the user can't type it.
         let field = d.fields.get(k).filter(|f| !f.is_null());
-        if field.is_none() || field == seed.get(k) {
+        if field.is_none_or(|f| same_cell_value(seed.get(k), k, f)) {
             d.fields.insert(k.into(), v.clone());
         }
         seed.insert(k.into(), v);
     }
     d.fields.insert("seed".into(), Value::Object(seed));
+}
+
+/// Whether the dialog field `k` holds the cells' value `seed`. The Type list picks a stroke type
+/// by name (`"solid"`), and the cells' value is the type itself (`{"kind": "solid"}`).
+fn same_cell_value(seed: Option<&Value>, k: &str, v: &Value) -> bool {
+    seed == Some(v) || (k == "type" && v.as_str().is_some_and(|name| seed == Some(&json!({"kind": name}))))
 }
 
 /// Apply the Cell Options fields that differ from the cells' values, as one `table.setCell`.
@@ -4152,7 +4158,7 @@ fn confirm_cell_options(app: &mut DesignApp, d: &Dialog) -> Result<Value, String
     let mut stroke = Map::new();
     let mut params = Map::new();
     for (k, is_stroke) in CELL_OPTION_KEYS {
-        let Some(v) = d.fields.get(k).filter(|v| !v.is_null() && seed.get(k) != Some(*v)) else { continue };
+        let Some(v) = d.fields.get(k).filter(|v| !v.is_null() && !same_cell_value(seed.get(k), k, v)) else { continue };
         match (is_stroke, k) {
             (true, _) => {
                 stroke.insert(k.into(), v.clone());
@@ -4327,7 +4333,7 @@ fn confirm_diagonal_lines(app: &mut DesignApp, d: &Dialog) -> Result<Value, Stri
     let seed = d.fields.get("seed").cloned().unwrap_or(Value::Null);
     let mut diagonal = Map::new();
     for k in DIAGONAL_KEYS {
-        if let Some(v) = d.fields.get(k).filter(|v| !v.is_null() && seed.get(k) != Some(*v)) {
+        if let Some(v) = d.fields.get(k).filter(|v| !v.is_null() && !same_cell_value(seed.get(k), k, v)) {
             diagonal.insert(k.into(), v.clone());
         }
     }

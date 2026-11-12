@@ -414,6 +414,46 @@ fn cell_options_dialog_draws_and_applies_only_changed_values_to_the_chosen_edges
 }
 
 #[test]
+fn cell_options_ok_edits_nothing_when_the_picked_stroke_type_is_the_cells() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("frame.create", json!({"rect": [72, 72, 400, 400], "content": "text", "caret": true})).unwrap();
+    app.run("table.insert", json!({"rows": 2, "cols": 2})).unwrap();
+    app.run("table.select", json!({"what": "table"})).unwrap();
+    app.run("app.cellOptionsDialog", json!({})).unwrap();
+    let d = app.ui.dialog.as_mut().unwrap();
+    assert_eq!(d.fields["seed"]["type"], json!({"kind": "solid"}));
+    // The Type list picks a stroke type by name.
+    d.fields.insert("type".into(), json!("solid"));
+    let (undo, revision) = {
+        let st = app.session.active().unwrap();
+        (st.history.undo.len(), st.revision)
+    };
+    confirm(&mut app).unwrap();
+    let st = app.session.active().unwrap();
+    assert_eq!((st.history.undo.len(), st.revision), (undo, revision), "no edit and no undo step");
+}
+
+#[test]
+fn cell_options_edge_change_reseeds_a_picked_stroke_type_that_was_the_cells() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("frame.create", json!({"rect": [72, 72, 400, 400], "content": "text", "caret": true})).unwrap();
+    app.run("table.insert", json!({"rows": 2, "cols": 2})).unwrap();
+    app.run("table.select", json!({"what": "table"})).unwrap();
+    app.run("table.setCell", json!({"stroke": {"type": "dotted", "edges": "innerHorizontal"}})).unwrap();
+    app.run("app.cellOptionsDialog", json!({})).unwrap();
+    let mut d = app.ui.dialog.take().unwrap();
+    cell_options_edges_changed(&mut app, &mut d, &[true, true, true, true, false, false]);
+    assert_eq!(d.fields["seed"]["type"], json!({"kind": "solid"}));
+    // Solid picked by name for the outer edges is what they show; the inner horizontal edges
+    // chosen next show their own type.
+    d.fields.insert("type".into(), json!("solid"));
+    cell_options_edges_changed(&mut app, &mut d, &[false, false, false, false, true, false]);
+    assert_eq!(d.fields["type"], json!({"kind": "dotted"}));
+}
+
+#[test]
 fn cell_options_edge_changes_reseed_every_stroke_field_and_survive_a_bad_seed() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.run("file.new", json!({})).unwrap();
@@ -615,6 +655,24 @@ fn diagonal_lines_dialog_is_refused_when_new_contents_reuse_the_old_address() {
     assert!(confirm(&mut app).is_err());
     assert!(app.ui.dialog.is_none(), "a dialog whose table changed closes");
     assert_eq!(diagonal_lines_of(&app, 0, tid), [No; 6]);
+}
+
+#[test]
+fn diagonal_lines_dialog_ok_edits_nothing_when_the_picked_stroke_type_is_the_cells() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    table_document_for_diagonals(&mut app);
+    app.run("app.diagonalLinesDialog", json!({})).unwrap();
+    let d = app.ui.dialog.as_mut().unwrap();
+    assert_eq!(d.fields["seed"]["type"], json!({"kind": "solid"}));
+    // The Type list picks a stroke type by name.
+    d.fields.insert("type".into(), json!("solid"));
+    let (undo, revision) = {
+        let st = app.session.active().unwrap();
+        (st.history.undo.len(), st.revision)
+    };
+    confirm(&mut app).unwrap();
+    let st = app.session.active().unwrap();
+    assert_eq!((st.history.undo.len(), st.revision), (undo, revision), "no edit and no undo step");
 }
 
 #[cfg(not(target_arch = "wasm32"))]
