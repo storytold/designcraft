@@ -59,7 +59,7 @@ impl DesignApp {
         if !typing
             && !ours
             && !copied_here
-            && text.is_none_or(is_bare_address)
+            && text.is_none_or(|t| t.trim().is_empty() || is_bare_address(t))
             && let Some(image) = self.services.clipboard_image.as_mut().and_then(|f| f())
         {
             return Pasted::Image(image);
