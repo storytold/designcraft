@@ -233,7 +233,10 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
 ### 20. Performance on large documents (P)
 - **Missing:** the 8 ms keystroke budget in long stories: an edit that moves lines into other
   frames composes the story to its end, the lines an edit keeps are copied, and stories with
-  footnotes, tables, anchored objects or keep options that move lines compose whole; benchmarks
+  footnotes, endnotes, tables, anchored objects, named lists, tracked deletions, balanced
+  columns, vertical justification other than Top, column rules, type on a path, spanning or
+  split paragraphs, paragraph borders or shading, or keep options that move lines compose
+  whole; benchmarks
   against InDesign on long books and image-heavy catalogues.
 - **Have:** compose 300k characters ~38 ms warm, damage-region repaint (< 1 ms while typing),
   parallel story composition, and an edit composes only the paragraphs it can change in a plain

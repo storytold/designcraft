@@ -309,6 +309,11 @@ impl Reuse<'_> {
     /// At paragraph `pi` of the edited story, in the state `snap` with `styles` and `info` as
     /// they are: when the composition before the edit was in that state before the same
     /// paragraph, copy what it set from there on into `out`, `styles` and `info`, and say so.
+    ///
+    /// The copied lines keep their run-style indexes, so this needs `styles` to equal the old
+    /// table up to that point. A run style that the edit uses for the first time takes a new
+    /// index, and the story then composes on until the old composition added the same style at
+    /// the same index, or to its end. The result is the same; only the time differs.
     pub(crate) fn rejoin(
         &self,
         plan: &Plan,
