@@ -723,6 +723,44 @@ fn vertical_justification_stops_where_a_contour_under_the_text_meets_it() {
     assert!(b > 122.0, "Bottom stopped the line at {b}, short of where the contour meets the column at 122.5");
 }
 
+/// A line set in the open middle of a U-shaped contour goes down between its arms: Bottom stops
+/// it on the contour's base, not where the line starts because the arms span its slot.
+#[test]
+fn vertical_justification_moves_a_line_down_between_the_arms_of_a_contour() {
+    use designcraft_doc::VerticalJustification::{Bottom, Top};
+    // Arms 0..15 and 45..60 from y = 0, joined by a base from y = 170 down to y = 190.
+    let pts = [
+        Point::new(0.0, 0.0),
+        Point::new(15.0, 0.0),
+        Point::new(15.0, 170.0),
+        Point::new(45.0, 170.0),
+        Point::new(45.0, 0.0),
+        Point::new(60.0, 0.0),
+        Point::new(60.0, 190.0),
+        Point::new(0.0, 190.0),
+    ];
+    let run = |vj| {
+        let (mut d, sid, fid) = doc_with("42", Rect::new(0.0, 0.0, 60.0, 200.0), ParaAttrs::default());
+        d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.vertical_justification = vj;
+        let lid = d.default_layer();
+        let path = designcraft_geom::path::PathData::single(designcraft_geom::path::SubPath::polyline(&pts, true));
+        let mut it = designcraft_doc::Item::new(ItemId(d.alloc()), lid, designcraft_doc::Shape::Polygon, path);
+        it.wrap.mode = WrapMode::Contour;
+        it.wrap.side = WrapSide::BothSides;
+        d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        assert!(!cs.is_overset());
+        let l = all_lines(&cs)[0];
+        (l.baseline, l.x0, l.x1)
+    };
+    let (top, x0, x1) = run(Top);
+    assert!(x0 >= 15.0 - 1e-6 && x1 <= 45.0 + 1e-6, "Top sets the line between the arms: {x0}..{x1}");
+    let (b, x0, x1) = run(Bottom);
+    assert!(x0 >= 15.0 - 1e-6 && x1 <= 45.0 + 1e-6, "Bottom keeps the line between the arms: {x0}..{x1}");
+    assert!(b <= 170.0 + 1e-6, "Bottom moved the baseline to {b}, into the contour's base at 170");
+    assert!(b > 169.9, "Bottom stopped the line at {b} (Top at {top}), short of the contour's base at 170");
+}
+
 /// An object anchored in the text and positioned from its anchor moves down with the lines, so
 /// Center places lines above it as it places them without its wrap.
 #[test]
@@ -3019,13 +3057,13 @@ fn vertical_justification_keeps_lines_inside_a_shaped_frame() {
         assert!(lines.len() >= 2, "{mode:?}: {lines:?}");
         (spec.area, lines)
     };
-    // Narrowing downward: |x - 150| <= (300 - y) / 2 over each slot's band, the last line's
-    // descenders left out.
+    // Narrowing downward: |x - 150| <= (300 - y) / 2 over each slot's band, from the line's top to
+    // its baseline.
     let down = [Point::new(0.0, 0.0), Point::new(300.0, 0.0), Point::new(150.0, 300.0)];
     for mode in [Center, Bottom, Justify] {
         let (area, lines) = compose_with(down, mode);
         for (k, l) in lines.iter().enumerate() {
-            let bottom = if k + 1 == lines.len() { l.baseline } else { l.baseline + l.descent };
+            let bottom = l.baseline;
             let top = (l.baseline - l.ascent).max(area.y0);
             for (x, y) in [(l.x0, top), (l.x1, top), (l.x0, bottom), (l.x1, bottom)] {
                 assert!((x - 150.0).abs() <= (300.0 - y) / 2.0 + 1e-3, "{mode:?}: line {k} corner ({x}, {y}) outside the triangle: {lines:?}");
@@ -3053,6 +3091,33 @@ fn vertical_justification_keeps_lines_inside_a_shaped_frame() {
     let (first, last) = (lines[0], lines[lines.len() - 1]);
     assert!(first.baseline - first.ascent >= 200.0 - 1e-6, "Bottom: first line top at {}", first.baseline - first.ascent);
     assert!((last.baseline - 260.0).abs() < 1e-3, "Bottom: last baseline at {}", last.baseline);
+}
+
+/// In a shaped frame, Center and Bottom move every line until its slot reaches the outline at its
+/// baseline: an earlier line's descenders may cross the outline, as the last line's do. A frame
+/// full width down to 20 pt and half width below it holds the first line's baseline at 20 pt.
+#[test]
+fn vertical_justification_lets_earlier_descenders_cross_a_shaped_frame() {
+    use designcraft_doc::VerticalJustification::{Bottom, Center};
+    use designcraft_geom::{Anchor, PathData, Point, SubPath};
+    let pts = [(0.0, 0.0), (300.0, 0.0), (300.0, 20.0), (150.0, 20.0), (150.0, 300.0), (0.0, 300.0)];
+    for mode in [Center, Bottom] {
+        let (mut d, sid, fid) = doc_with("Typography\ngypsy", Rect::new(0.0, 0.0, 300.0, 300.0), ParaAttrs::default());
+        let it = d.item_mut(fid).unwrap();
+        it.path = PathData::single(SubPath { anchors: pts.iter().map(|&(x, y)| Anchor::corner(Point::new(x, y))).collect(), closed: true });
+        let o = &mut it.text_frame_mut().unwrap().options;
+        o.vertical_justification = mode;
+        o.inset = [0.0; 4];
+        assert!(frame_specs(&d, sid)[0].outline.is_some());
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let lines = all_lines(&cs);
+        assert_eq!(lines.len(), 2, "{mode:?}: {lines:?}");
+        let (first, last) = (lines[0], lines[1]);
+        assert!((first.x1 - 300.0).abs() < 1e-6 && (last.x1 - 150.0).abs() < 1e-6, "{mode:?}: slots {lines:?}");
+        assert!(first.descent > 1.0, "{mode:?}: {first:?}");
+        assert!((first.baseline - 20.0).abs() < 1e-3, "{mode:?}: first baseline at {}, step at 20", first.baseline);
+        assert!(last.baseline <= 300.0 + 1e-6, "{mode:?}: last baseline at {}", last.baseline);
+    }
 }
 
 /// In a shaped frame with a text wrap under the text, Center, Bottom and Justify keep the lines
@@ -9620,6 +9685,126 @@ fn a_frame_anchored_in_an_anchored_frame_is_placed_through_both_hosts() {
     assert_eq!(frame_specs_placed(&d, isid, &placed)[0].page, Some(0));
     // The cache places it the same way.
     assert_eq!(Cache::new().get(&d, isid, None).frames.len(), 1);
+}
+
+/// An unplaced `w` × `h` text frame showing a new story of `text`, ready to anchor.
+fn anchored_text_frame(d: &mut Document, text: &str, w: f64, h: f64) -> (designcraft_doc::Item, StoryId) {
+    let lid = d.default_layer();
+    let (fid, fsid) = (ItemId(d.alloc()), StoryId(d.alloc()));
+    let mut story = Story::with_text(fsid, text, ParaFormat::default());
+    story.frames.push(fid);
+    d.stories.insert(fsid, Arc::new(story));
+    let mut it =
+        designcraft_doc::Item::new(fid, lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, w, h)));
+    it.content = Content::Text(designcraft_doc::TextFrame { story: fsid, options: Default::default() });
+    (it, fsid)
+}
+
+/// A one-page document whose body frame holds `outer` anchored before its second line. Returns
+/// the body frame and the body story's composition.
+fn body_holding(d: &mut Document, outer: designcraft_doc::Item) -> (ItemId, ComposedStory) {
+    let lid = d.default_layer();
+    let body = "One.\nTwo.\nThree.";
+    let (bf, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 400.0, 400.0), lid, body, ParaFormat::default()).unwrap();
+    d.story_mut(sid).unwrap().insert_object(body.find("Two").unwrap(), designcraft_doc::AnchoredObject::new(outer, Default::default()));
+    (bf, compose_story(d, sid, &ComposeOptions::default()))
+}
+
+/// `isid`'s one frame, `inner`, is placed on page 1 with parent space `want`, and the cache
+/// composes it there.
+fn assert_placed_on_page_one(d: &Document, isid: StoryId, inner: ItemId, want: Affine) {
+    let placed = placed::placements(d, isid, &mut |h| Arc::new(compose_story(d, h, &ComposeOptions::default())));
+    assert_eq!(placed.len(), 1, "{placed:?}");
+    let (id, p) = placed[0];
+    assert_eq!((id, p.spread), (inner, SpreadRef::Doc(0)));
+    let (got, want) = (p.xf.as_coeffs(), want.as_coeffs());
+    assert!(got.iter().zip(want).all(|(a, b)| (a - b).abs() < 1e-9), "{got:?} != {want:?}");
+    assert_eq!(frame_specs_placed(d, isid, &placed)[0].page, Some(0));
+    assert_eq!(Cache::new().get(d, isid, None).frames.len(), 1);
+}
+
+/// A text frame anchored in an anchored text frame that is a member of an anchored group with a
+/// rotation and a scale is placed through the group's transform and the member's own.
+#[test]
+fn a_frame_anchored_in_a_grouped_anchored_frame_is_placed_through_the_group() {
+    let mut d = Document::new(&NewDocument { pages: 1, ..Default::default() });
+    let (mut outer, osid) = anchored_text_frame(&mut d, "Outer text", 200.0, 100.0);
+    let (inner, isid) = anchored_text_frame(&mut d, "Inner", 80.0, 30.0);
+    let (outer_id, inner_id) = (outer.id, inner.id);
+    outer.xf = Affine::translate((12.0, 7.0));
+    d.story_mut(osid).unwrap().insert_object("Outer ".len(), designcraft_doc::AnchoredObject::new(inner, Default::default()));
+    let mut g =
+        designcraft_doc::Item::new(ItemId(d.alloc()), d.default_layer(), designcraft_doc::Shape::Group, designcraft_geom::PathData::default());
+    g.content = Content::Group { items: vec![Arc::new(outer)] };
+    g.xf = Affine::rotate(0.25) * Affine::scale(1.25);
+    let (gid, gxf) = (g.id, g.xf);
+    let (bf, host) = body_holding(&mut d, g);
+
+    let o1 = &host.frame(bf).unwrap().objects[0];
+    // The composed group keeps its rotation and scale; its offset puts its box at the object's origin.
+    let gxf_placed = o1.object.item.xf;
+    assert_eq!((o1.object.item.id, gxf_placed.as_coeffs()[..4].to_vec()), (gid, gxf.as_coeffs()[..4].to_vec()));
+    let mid = compose_story(&d, osid, &ComposeOptions::default());
+    let o2 = &mid.frame(outer_id).unwrap().objects[0];
+    let want = d.text_xf(d.item(bf).unwrap())
+        * Affine::translate(o1.origin.to_vec2())
+        * gxf_placed
+        * d.text_xf(d.anchored_item(outer_id).unwrap())
+        * Affine::translate(o2.origin.to_vec2());
+    assert_placed_on_page_one(&d, isid, inner_id, want);
+}
+
+/// A text frame anchored in a footnote of an anchored text frame is placed through the footnote's
+/// spot in that frame as well as both hosts.
+#[test]
+fn a_frame_anchored_in_a_footnote_of_an_anchored_frame_is_placed_through_the_footnote() {
+    let mut d = Document::new(&NewDocument { pages: 1, ..Default::default() });
+    let (outer, osid) = anchored_text_frame(&mut d, "Outer text", 200.0, 120.0);
+    let (inner, isid) = anchored_text_frame(&mut d, "Inner", 80.0, 30.0);
+    let (outer_id, inner_id) = (outer.id, inner.id);
+    let st = d.story_mut(osid).unwrap();
+    st.insert_note("Outer".len(), "Note text", ParaFormat::default());
+    Arc::make_mut(&mut st.notes[0]).text.insert_object("Note ".len(), designcraft_doc::AnchoredObject::new(inner, Default::default()));
+    let (bf, host) = body_holding(&mut d, outer);
+
+    let o1 = &host.frame(bf).unwrap().objects[0];
+    let mid = compose_story(&d, osid, &ComposeOptions::default());
+    let note = &mid.frame(outer_id).unwrap().notes[0];
+    let o2 = &note.text.frames[0].objects[0];
+    let want = d.text_xf(d.item(bf).unwrap())
+        * Affine::translate(o1.origin.to_vec2())
+        * d.text_xf(d.anchored_item(outer_id).unwrap())
+        * Affine::translate(note.origin.to_vec2())
+        * Affine::translate(o2.origin.to_vec2());
+    assert_placed_on_page_one(&d, isid, inner_id, want);
+}
+
+/// A text frame anchored in a table cell of an anchored text frame is placed through the cell's
+/// spot in that frame as well as both hosts.
+#[test]
+fn a_frame_anchored_in_a_table_cell_of_an_anchored_frame_is_placed_through_the_cell() {
+    let mut d = Document::new(&NewDocument { pages: 1, ..Default::default() });
+    let (outer, osid) = anchored_text_frame(&mut d, "Outer text", 200.0, 150.0);
+    let (inner, isid) = anchored_text_frame(&mut d, "Inner", 80.0, 30.0);
+    let (outer_id, inner_id) = (outer.id, inner.id);
+    let mut table = designcraft_doc::Table::new(77, 1, 1, 0, 0, 180.0);
+    table.cells[0].text.insert(0, "Cell ");
+    table.cells[0].text.insert_object("Cell ".len(), designcraft_doc::AnchoredObject::new(inner, Default::default()));
+    let st = d.story_mut(osid).unwrap();
+    let end = st.len();
+    st.insert_table(end, table);
+    let (bf, host) = body_holding(&mut d, outer);
+
+    let o1 = &host.frame(bf).unwrap().objects[0];
+    let mid = compose_story(&d, osid, &ComposeOptions::default());
+    let cell = &mid.frame(outer_id).unwrap().tables[0].cells[0];
+    let o2 = &cell.text.frames[0].objects[0];
+    let want = d.text_xf(d.item(bf).unwrap())
+        * Affine::translate(o1.origin.to_vec2())
+        * d.text_xf(d.anchored_item(outer_id).unwrap())
+        * Affine::translate(cell.origin.to_vec2())
+        * Affine::translate(o2.origin.to_vec2());
+    assert_placed_on_page_one(&d, isid, inner_id, want);
 }
 
 /// A marginal note (an anchored text frame, Only Align First Line to Grid, 9/10) hangs 15 pt

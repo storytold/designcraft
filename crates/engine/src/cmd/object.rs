@@ -26,6 +26,22 @@ pub(crate) fn known_swatch(doc: &designcraft_doc::Document, name: &str, cmd: &st
     Err(bad(cmd, format!("{key}: no swatch named `{name}`{hint}; create one with `swatch.create` and use its returned name")))
 }
 
+/// The fields of a stroke `type` object must be `kind` and the one its kind takes (`pattern` for
+/// dashed, `bands` for stripes, `name` for style). `kind` is the type's own, else `base_kind`.
+pub(crate) fn check_stroke_type_fields(v: &Value, base_kind: Option<&str>, cmd: &str) -> Result<()> {
+    let Some(fields) = v.as_object() else { return Ok(()) };
+    let field = match v.get("kind").and_then(Value::as_str).or(base_kind) {
+        Some("dashed") => Some("pattern"),
+        Some("stripes") => Some("bands"),
+        Some("style") => Some("name"),
+        _ => None,
+    };
+    match fields.keys().find(|key| *key != "kind" && Some(key.as_str()) != field) {
+        Some(key) => Err(bad(cmd, format!("type: unknown field `{key}`"))),
+        None => Ok(()),
+    }
+}
+
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(
@@ -265,19 +281,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 let kind: Option<designcraft_doc::StrokeType> = p
                     .get("type")
                     .map(|v| {
-                        if let Some(fields) = v.as_object() {
-                            let field = match v.get("kind").and_then(Value::as_str) {
-                                Some("dashed") => Some("pattern"),
-                                Some("stripes") => Some("bands"),
-                                Some("style") => Some("name"),
-                                _ => None,
-                            };
-                            for key in fields.keys() {
-                                if key != "kind" && Some(key.as_str()) != field {
-                                    return Err(bad("object.stroke", format!("type: unknown field `{key}`")));
-                                }
-                            }
-                        }
+                        check_stroke_type_fields(v, None, "object.stroke")?;
                         serde_json::from_value(v.clone()).map_err(|e| bad("object.stroke", format!("type: {e}")))
                     })
                     .transpose()?;
@@ -2728,7 +2732,6 @@ fn content_type(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// The most columns a text frame takes.
 const MAX_FRAME_COLUMNS: u64 = 40;
-
 /// The frames `object.textFrameOptions` changes when the call names none: the selected objects,
 /// or with the Type tool the frame that shows the caret or every frame holding part of the
 /// selected text.

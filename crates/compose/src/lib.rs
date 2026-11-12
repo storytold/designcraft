@@ -1205,10 +1205,7 @@ pub(crate) fn frame_specs_placed(doc: &Document, sid: StoryId, placed: &[(ItemId
         // area (all four insets) still bounds the lines.
         let outline = match &tf.options.path {
             Some(_) => None,
-            None => {
-                let bp = if item.corners.is_none() { item.path.to_bezpath() } else { designcraft_geom::corners::apply(&item.path, &item.corners) };
-                FrameOutline::new(&bp, tf.options.inset[0])
-            }
+            None => FrameOutline::of_item(item, tf.options.inset[0]),
         };
         // Vertical type: composed in the turned box; wraps and page rects turned with it.
         let vertical = doc.frame_vertical(item);
@@ -6066,12 +6063,14 @@ fn vertical_justify(
         };
         // Only the last row's descenders hang below the bottom of the text: an earlier line whose
         // ink reaches below the last baseline (tight leading) isn't moved past the text area.
-        // In a shaped frame each moved line's slot stays inside the outline over its new band, as
-        // when the line was fitted: a frame that narrows towards the bottom holds the text higher.
-        let in_outline = |l: &Line, last: bool, dy: f64| match &f.outline {
+        // In a shaped frame each moved line's slot stays inside the outline from its top down to
+        // its baseline: a frame that narrows towards the bottom holds the text higher. Every moved
+        // line's descenders may cross the outline, as the last line's do below the bottom of the
+        // text; above footnotes, and in vertical frames, they stay inside.
+        let in_outline = |l: &Line, dy: f64| match &f.outline {
             Some(o) => {
                 let b = l.baseline + dy;
-                let desc = if last && !inside { 0.0 } else { l.descent.max(0.0) };
+                let desc = if inside { l.descent.max(0.0) } else { 0.0 };
                 let tol = 1e-6;
                 o.intervals(l.x0, l.x1, (b - l.ascent).max(f.area.y0).min(b), b + desc).iter().any(|&(a, z)| a <= l.x0 + tol && z >= l.x1 - tol)
             }
@@ -6095,7 +6094,7 @@ fn vertical_justify(
         let fits = |shift: &[f64]| {
             idx.iter().zip(&rows).rev().all(|(&i, &k)| {
                 let l = &ft.lines[i];
-                shift[k] <= 0.0 || ((k == n || l.baseline + l.descent + shift[k] <= limit + 1e-9) && in_outline(l, k == n, shift[k]))
+                shift[k] <= 0.0 || ((k == n || l.baseline + l.descent + shift[k] <= limit + 1e-9) && in_outline(l, shift[k]))
             }) && clear(shift)
         };
         // In a rectangular frame fit decreases monotonically as the shift grows. A shaped
@@ -6307,9 +6306,10 @@ fn wrap_rooms(ft: &FrameText, f: &FrameSpec, c: u32, spanned: bool, anchors: &[u
             {
                 // A contour beside or under this line whose box reaches the line's slot (the
                 // contour stays inside its box). Moved down by `d`, the line's band sweeps from its
-                // top to its baseline plus `d`; the contour's extent there only grows with `d`, so
-                // the furthest clear move is found by bisection to 0.01 pt.
-                let hits = |d: f64| contour.band_extent(top + dy, bottom + d + dy).and_then(|x| sided(e, col, x)).is_some_and(meets);
+                // top to its baseline plus `d`; the parts of the contour there only grow with `d`,
+                // so the furthest clear move is found by bisection to 0.01 pt. As when the line is
+                // set, the gaps between parts of the contour stay open.
+                let hits = |d: f64| contour.band_spans(top + dy, bottom + d + dy).into_iter().any(|x| sided(e, col, x).is_some_and(meets));
                 let (mut lo, mut hi) = ((r.y0 - bottom).max(0.0), (r.y1 - top).min(f.area.y1 - bottom).min(cap));
                 if lo < hi && hits(hi) {
                     if hits(lo) {
