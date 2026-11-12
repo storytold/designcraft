@@ -8156,6 +8156,25 @@ fn cache_recomposes_when_the_baseline_grid_changes() {
     assert!((la.baseline - lb.baseline).abs() > 1.0, "{} {}", la.baseline, lb.baseline);
 }
 
+/// A cache over another uses its compositions of the same state, and composes an older state
+/// without replacing the other cache's composition of the current one.
+#[test]
+fn a_cache_over_another_reads_it_without_writing_to_it() {
+    let (old, sid, _) = doc_with(LOREM, Rect::new(0.0, 0.0, 200.0, 600.0), ParaAttrs::default());
+    let mut new = old.clone();
+    new.story_mut(sid).unwrap().rev += 1;
+    let base = Arc::new(Cache::new());
+    let current = base.get(&new, sid, None);
+    let reader = Cache::over(Arc::clone(&base));
+    assert!(reader.base().is_some_and(|b| Arc::ptr_eq(b, &base)));
+    assert!(Arc::ptr_eq(&reader.get(&new, sid, None), &current), "the base's composition is used");
+    let earlier = reader.get(&old, sid, None);
+    assert!(!Arc::ptr_eq(&earlier, &current));
+    assert!(Arc::ptr_eq(&reader.get(&old, sid, None), &earlier), "kept in the reader");
+    assert!(Arc::ptr_eq(&base.get(&new, sid, None), &current), "the base keeps the current state's composition");
+    assert!(base.composed_for(&old, sid).is_none(), "the base holds nothing of the older state");
+}
+
 /// Two single pages 618 pt tall, top margins 36 and 48, each with an overset 11/13 story aligned
 /// to a baseline grid (start 0, increment 13) and a frame filling its margin box (bottom 582).
 fn grid_margin_doc(relative_to: designcraft_doc::GridRelative) -> (Document, [StoryId; 2]) {

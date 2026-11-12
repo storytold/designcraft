@@ -212,6 +212,53 @@ fn a_blocked_check_of_another_document_is_superseded() {
     assert!(jobs.try_recv().is_ok(), "queued on the same worker");
 }
 
+/// A worker checking an older state of the document leaves the interface thread's composition of
+/// the current state in its cache.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_check_of_an_older_state_keeps_the_current_compositions() {
+    let (mut app, id) = overset_app();
+    let (older, _) = Checked::new(&app).unwrap();
+    let older_doc = Arc::clone(&app.session.active().unwrap().doc);
+    app.run("transform.move", json!({"ids": [id], "dx": 1.0, "dy": 0.0})).unwrap();
+    let doc = Arc::clone(&app.session.active().unwrap().doc);
+    let sid = *doc.stories.keys().next().unwrap();
+    let cache = Arc::clone(&app.session.cache);
+    let current = cache.get(&doc, sid, None);
+    let mut own = None;
+    let found = super::check(&mut own, super::Job { of: older, doc: Arc::clone(&older_doc), cache: Arc::clone(&cache) });
+    assert_eq!(found.issues.iter().filter(|i| i.severity == "error").count(), 1);
+    assert!(Arc::ptr_eq(&cache.get(&doc, sid, None), &current), "the current state's composition is kept");
+    // The worker keeps its compositions for the next check of the document over the same cache.
+    let earlier = own.as_ref().unwrap().1.get(&older_doc, sid, None);
+    let (of, doc) = Checked::new(&app).unwrap();
+    super::check(&mut own, super::Job { of, doc, cache: Arc::clone(&cache) });
+    assert!(Arc::ptr_eq(&own.as_ref().unwrap().1.get(&older_doc, sid, None), &earlier), "kept for the next check");
+    let reloaded = Arc::new(designcraft_compose::Cache::new());
+    let (of, doc) = Checked::new(&app).unwrap();
+    super::check(&mut own, super::Job { of, doc, cache: Arc::clone(&reloaded) });
+    assert!(own.as_ref().unwrap().1.base().is_some_and(|b| Arc::ptr_eq(b, &reloaded)), "a new cache after a font reload");
+}
+
+/// Closing the last document drops the job waiting for a busy worker, which holds that document.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn closing_the_last_document_drops_the_waiting_job() {
+    let (mut app, id) = overset_app();
+    let ctx = egui::Context::default();
+    let (_jobs, _done) = stalled_worker(&mut app);
+    for dx in [1.0, -1.0] {
+        app.run("transform.move", json!({"ids": [id], "dx": dx, "dy": 0.0})).unwrap();
+        assert!(super::issues(&mut app, &ctx).is_none());
+    }
+    assert!(app.preflight.worker.waiting.is_some());
+    app.run("file.close", json!({})).unwrap();
+    assert!(app.session.active().is_none());
+    assert!(super::issues(&mut app, &ctx).is_none());
+    assert!(app.preflight.worker.waiting.is_none(), "the waiting job is dropped");
+    assert!(app.preflight.found.is_empty());
+}
+
 /// A result for another document keeps the active document's issues, and the issues of at most
 /// `MAX_DOCUMENTS` documents are kept.
 #[cfg(not(target_arch = "wasm32"))]

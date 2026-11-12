@@ -40,6 +40,10 @@ const MAX_WORKERS: usize = 4;
 // this long.
 #[cfg(not(target_arch = "wasm32"))]
 const RETRY_AFTER: Duration = Duration::from_secs(30);
+// A worker given no job for this long drops its own compositions, which keep the document they
+// were made from alive after it closes.
+#[cfg(not(target_arch = "wasm32"))]
+const FORGET_AFTER: Duration = Duration::from_secs(60);
 
 /// A state of a document as a check sees it: which document, which state of it with which
 /// compositions (a font reload replaces the cache and bumps the revision), and where it is saved
@@ -118,7 +122,17 @@ pub(crate) fn issues(app: &mut DesignApp, ctx: &egui::Context) -> Option<Arc<Vec
 }
 
 fn issues_at(app: &mut DesignApp, ctx: &egui::Context, now: f64) -> Option<Arc<Vec<Issue>>> {
-    let (of, doc) = Checked::new(app)?;
+    let Some((of, doc)) = Checked::new(app) else {
+        // A job waiting for the worker would keep a closed document alive.
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            app.preflight.worker.waiting = None;
+            for done in app.preflight.worker.poll() {
+                app.preflight.keep(done);
+            }
+        }
+        return None;
+    };
     let cache = Arc::clone(&app.session.cache);
     let state = &mut app.preflight;
     #[cfg(not(target_arch = "wasm32"))]
@@ -355,13 +369,17 @@ fn spawn(ctx: egui::Context, live: &Arc<std::sync::atomic::AtomicUsize>) -> Opti
         .name("designcraft-preflight".into())
         .spawn(move || {
             let _alive = alive;
-            while let Ok(job) = jobs.recv() {
-                let started = Instant::now();
-                let issues = check_document(&job.doc, &job.cache, job.of.path.as_deref().map(std::path::Path::new), MIN_PPI);
-                let found = Found { of: job.of, issues: Arc::new(issues), took: started.elapsed(), asked_at: 0.0 };
-                // The checked state isn't kept alive by its check once the result is sent.
-                drop(job.doc);
-                if done_tx.send(found).is_err() {
+            let mut own = None;
+            loop {
+                let job = match jobs.recv_timeout(FORGET_AFTER) {
+                    Ok(job) => job,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        own = None;
+                        continue;
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                };
+                if done_tx.send(check(&mut own, job)).is_err() {
                     break;
                 }
                 ctx.request_repaint();
@@ -369,6 +387,28 @@ fn spawn(ctx: egui::Context, live: &Arc<std::sync::atomic::AtomicUsize>) -> Opti
         })
         .ok()?;
     Some((tx, rx))
+}
+
+/// Checks `job` with the worker's own compositions, `own`.
+#[cfg(not(target_arch = "wasm32"))]
+fn check(own: &mut Option<(u64, Cache)>, job: Job) -> Found {
+    let started = Instant::now();
+    let issues = check_document(&job.doc, reader(own, &job), job.of.path.as_deref().map(std::path::Path::new), MIN_PPI);
+    // The checked state isn't kept alive by its check once the result is sent.
+    drop(job.doc);
+    Found { of: job.of, issues: Arc::new(issues), took: started.elapsed(), asked_at: 0.0 }
+}
+
+/// The cache a worker checks `job` with: a cache over the interface thread's cache, which the
+/// worker reads and never writes. The worker keeps it for the next job of the same document over
+/// the same cache.
+#[cfg(not(target_arch = "wasm32"))]
+fn reader<'a>(own: &'a mut Option<(u64, Cache)>, job: &Job) -> &'a Cache {
+    let reuse = own.as_ref().is_some_and(|(uid, c)| *uid == job.of.uid && c.base().is_some_and(|b| Arc::ptr_eq(b, &job.cache)));
+    if !reuse {
+        *own = None;
+    }
+    &own.get_or_insert_with(|| (job.of.uid, Cache::over(Arc::clone(&job.cache)))).1
 }
 
 /// Starts the worker in a test, where checks otherwise run on the interface thread.
