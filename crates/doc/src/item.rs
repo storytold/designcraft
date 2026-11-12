@@ -122,6 +122,10 @@ pub struct Item {
     /// XML tag (Tags panel); its content is the element's content in XML export/import.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub xml_tag: String,
+    /// A frame meant for a graphic (InDesign's `ContentType="GraphicType"`, the Rectangle Frame
+    /// tool), as opposed to a plain shape: an empty one is a placeholder for an image.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub graphic_frame: bool,
     /// Groups: Isolate Blending (blend modes only within the group) and Knockout Group (the
     /// group's objects don't show through each other).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -173,6 +177,7 @@ impl Item {
             label: String::new(),
             alt_text: String::new(),
             xml_tag: String::new(),
+            graphic_frame: false,
             button: None,
             pdf_hidden_layers: Vec::new(),
             pdf_layer_override: false,
@@ -386,6 +391,27 @@ impl Item {
         f(self);
         for c in self.children() {
             c.walk(f);
+        }
+    }
+
+    /// Bounds in spread space of this item placed under `outer`, its groups' transform (as
+    /// [`Item::walk_placed`] gives it).
+    pub fn placed_bounds(&self, outer: Affine) -> Rect {
+        self.bounds_under(outer).unwrap_or(Rect::ZERO)
+    }
+
+    /// [`Item::walk`], with each item's outer transform: a nested item is placed by its groups'
+    /// transforms too, which its own [`Item::bounds`] leaves out. Bounds cost a walk of a group's
+    /// items, so callers measure ([`Item::placed_bounds`]) only the items they need.
+    pub fn walk_placed<'a>(&'a self, f: &mut impl FnMut(&'a Item, Affine)) {
+        self.walk_placed_under(Affine::IDENTITY, f);
+    }
+
+    fn walk_placed_under<'a>(&'a self, outer: Affine, f: &mut impl FnMut(&'a Item, Affine)) {
+        f(self, outer);
+        let xf = outer * self.xf;
+        for c in self.children() {
+            c.walk_placed_under(xf, f);
         }
     }
 }
