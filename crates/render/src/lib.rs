@@ -163,6 +163,9 @@ pub struct Renderer {
     /// Items the last ink pass drew (tests).
     #[cfg(test)]
     cmyk_pass_items: usize,
+    /// Bands of rows the last ink passes' colours were converted in (tests).
+    #[cfg(test)]
+    cmyk_convert_bands: usize,
     pub threads: u16,
     pub stats: FrameStats,
 }

@@ -12,6 +12,7 @@ use crate::{Frame, Placed, RenderOptions, Rendered, Renderer};
 use designcraft_color::BlendMode as DcBlend;
 use designcraft_doc::{Document, Item, SpreadRef};
 use designcraft_geom::{Affine, Rect, Shape};
+use vello_cpu::color::PremulRgba8;
 use vello_cpu::{RenderContext, peniko};
 
 /// At most one viewport, capped at 64 MiB. The snapshot shares the document's large Arcs;
@@ -284,6 +285,58 @@ fn srgb_in(table: &[[f32; 3]], cmyk: [f32; 4]) -> [f32; 3] {
     out
 }
 
+/// Rows of the ink passes' area one conversion thread takes at least.
+const MIN_BAND_ROWS: usize = 32;
+
+/// The blended inks, the C/M/Y complements in `cmy` and the K complement in `black` (`width`
+/// pixels a row), converted to screen colours in `cmy`. With render threads, bands of rows are
+/// converted on that many threads at once. Returns the number of bands.
+fn inks_to_screen(cmy: &mut [PremulRgba8], black: &[PremulRgba8], width: usize, rich_black: bool, threads: u16) -> usize {
+    let table = srgb_table();
+    let convert = |cmy: &mut [PremulRgba8], black: &[PremulRgba8]| {
+        for (c, k) in cmy.iter_mut().zip(black) {
+            if c.a == 0 {
+                continue;
+            }
+            let a = c.a as f32;
+            let inks = [1.0 - c.r as f32 / a, 1.0 - c.g as f32 / a, 1.0 - c.b as f32 / a, 1.0 - k.r as f32 / a];
+            let rgb = if rich_black && inks[0..3].iter().all(|v| *v <= 1e-3) && inks[3] >= 0.999 { [0.0; 3] } else { srgb_in(&table, inks) };
+            let [r, g, b] = rgb.map(|v| (v.clamp(0.0, 1.0) * a).round() as u8);
+            (c.r, c.g, c.b) = (r, g, b);
+        }
+    };
+    let rows = cmy.len().checked_div(width).unwrap_or(0);
+    let bands = usize::from(threads).min(rows / MIN_BAND_ROWS).max(1);
+    if cfg!(target_arch = "wasm32") || bands == 1 {
+        convert(cmy, black);
+        return 1;
+    }
+    let chunk = rows.div_ceil(bands) * width;
+    let mut parts: Vec<(&mut [PremulRgba8], &[PremulRgba8])> = cmy.chunks_mut(chunk).zip(black.chunks(chunk)).collect();
+    let convert = &convert;
+    let mut failed = Vec::new();
+    std::thread::scope(|s| {
+        let mut each = parts.iter_mut().enumerate();
+        let first = each.next();
+        for (i, (c, k)) in each {
+            if let Err(e) = std::thread::Builder::new().spawn_scoped(s, move || convert(c, k)) {
+                log::warn!("CMYK view: a conversion thread did not start ({e})");
+                failed.push(i);
+            }
+        }
+        if let Some((_, (c, k))) = first {
+            convert(c, k);
+        }
+    });
+    // A band whose thread did not start is converted here.
+    for i in failed {
+        if let Some((c, k)) = parts.get_mut(i) {
+            convert(c, k);
+        }
+    }
+    bands
+}
+
 impl Renderer {
     /// The view pixels the spread's transparency can change: the union of its transparent
     /// objects (opacity, blend, effects, knockout, also nested or anchored) with their effects'
@@ -413,16 +466,10 @@ impl Renderer {
         crate::PLATE.with(|p| p.set(f.opts.plate));
         self.stats.items = (self.stats.items - stats.items) / 2 + stats.items;
         self.stats.glyphs = (self.stats.glyphs - stats.glyphs) / 2 + stats.glyphs;
-        let table = srgb_table();
-        for (c, k) in cmy.data_mut().iter_mut().zip(black.data()) {
-            if c.a == 0 {
-                continue;
-            }
-            let a = c.a as f32;
-            let inks = [1.0 - c.r as f32 / a, 1.0 - c.g as f32 / a, 1.0 - c.b as f32 / a, 1.0 - k.r as f32 / a];
-            let rgb = if f.opts.rich_black && inks[0..3].iter().all(|v| *v <= 1e-3) && inks[3] >= 0.999 { [0.0; 3] } else { srgb_in(&table, inks) };
-            let [r, g, b] = rgb.map(|v| (v.clamp(0.0, 1.0) * a).round() as u8);
-            (c.r, c.g, c.b) = (r, g, b);
+        let _bands = inks_to_screen(cmy.data_mut(), black.data(), usize::from(aw), f.opts.rich_black, threads);
+        #[cfg(test)]
+        {
+            self.cmyk_convert_bands = _bands;
         }
         ctx.set_transform(Affine::translate((area.x0, area.y0)));
         ctx.set_paint(vello_cpu::Image { image: vello_cpu::ImageSource::Pixmap(std::sync::Arc::new(cmy)), sampler: peniko::ImageSampler::default() });
@@ -667,6 +714,32 @@ mod tests {
             assert_eq!(out[3], cmy[3], "conversion preserves coverage");
             assert!(out[..3].iter().all(|v| *v <= out[3]), "output remains premultiplied");
         }
+    }
+
+    /// With render threads, the ink passes' colours are converted in that many bands of rows at
+    /// once, each band by its own thread, and the result is the same as converting on one thread.
+    #[test]
+    fn ink_colours_convert_in_a_band_per_render_thread() {
+        let mut doc = document();
+        rectangle(&mut doc, SpreadRef::Doc(0), Rect::new(-20.0, -5.0, 180.0, 125.0), "C=100 M=0 Y=0 K=0", DcBlend::Multiply);
+        let render = |threads: u16| {
+            let mut renderer = Renderer::new();
+            renderer.threads = threads;
+            let image = renderer.render(
+                &doc,
+                &Cache::new(),
+                &[Placed { spread: SpreadRef::Doc(0), xf: Affine::IDENTITY }],
+                (400, 300),
+                Affine::scale(2.0) * Affine::translate((30.0, 10.0)),
+                &RenderOptions { blend_space_view: true, background: Some([180, 180, 180, 255]), ..Default::default() },
+            );
+            (image, renderer.cmyk_convert_bands)
+        };
+        let (one, bands) = render(0);
+        assert_eq!(bands, 1);
+        let (four, bands) = render(4);
+        assert_eq!(bands, 4, "a band per render thread");
+        assert_eq!(four.pixels, one.pixels);
     }
 
     #[test]
