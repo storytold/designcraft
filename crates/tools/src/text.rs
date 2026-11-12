@@ -390,7 +390,7 @@ impl Tool for TypeTool {
             let steps = if mods.cmd || mods.ctrl { 5.0 } else { 1.0 };
             vec![Action::Exec("type.kernStep".into(), json!({"steps": sign * steps}))]
         };
-        // Option/Alt+Up/Down: the leading of the selection (or the caret's paragraph); with Cmd
+        // Option/Alt+Up/Down: the leading of the selection (at a caret, of the next typing); with Cmd
         // (Ctrl elsewhere), five times the increment, as the kerning/tracking step above.
         let lead = |sign: f64| {
             let amount = if mods.cmd || mods.ctrl { 10.0 } else { 2.0 };
