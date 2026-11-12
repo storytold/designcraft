@@ -510,9 +510,10 @@ pub fn decode_rgba_reduced(bytes: &[u8], shrink: u8) -> Option<image::RgbaImage>
     to_display_rgba(px, Some(&icc), &DisplayColour::active())
 }
 
-/// Dimensions of a JPEG decoded at `1/2^shrink`, without decoding its pixels. `None` when the
-/// reduced decoder cannot handle the image.
-pub fn reduced_jpeg_size(bytes: &[u8], shrink: u8) -> Option<(u32, u32)> {
+/// Dimensions and estimated peak bytes for a JPEG decoded at `1/2^shrink`, without decoding its
+/// pixels. Progressive JPEG coefficient buffers are included. `None` when the reduced decoder
+/// cannot handle the image.
+pub fn reduced_jpeg_size(bytes: &[u8], shrink: u8) -> Option<(u32, u32, usize)> {
     jpeg::reduced_size(bytes, shrink)
 }
 

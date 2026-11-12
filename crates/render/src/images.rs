@@ -200,11 +200,11 @@ fn reduced_estimates(wants: &[Want]) -> Option<(usize, usize)> {
             return None;
         }
         let shrink = level.min(usize::from(designcraft_images::MAX_REDUCED_SHRINK));
-        let (decoded_w, decoded_h) = designcraft_images::reduced_jpeg_size(&w.bytes, shrink as u8)?;
+        let (_, _, decode_peak) = designcraft_images::reduced_jpeg_size(&w.bytes, shrink as u8)?;
         for cached in levels.iter_mut().take(level + 1).skip(shrink) {
             *cached = true;
         }
-        peak = peak.max(decoded_w as usize * decoded_h as usize * 8);
+        peak = peak.max(decode_peak);
         if dims.as_ref().is_none_or(|d: &Vec<(u32, u32)>| d.len() < sizes.len()) {
             dims = Some(sizes);
         }

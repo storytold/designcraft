@@ -67,7 +67,7 @@ pub(crate) const MAX_SHRINK: u8 = 3;
 
 /// Output size of a JPEG reduction without decoding pixels. `None` when the reduced decoder
 /// cannot handle the JPEG, including its full-size resource limits.
-pub(crate) fn reduced_size(bytes: &[u8], shrink: u8) -> Option<(u32, u32)> {
+pub(crate) fn reduced_size(bytes: &[u8], shrink: u8) -> Option<(u32, u32, usize)> {
     use jpeg_decoder::{CodingProcess, PixelFormat};
     if !bytes.starts_with(&[0xFF, 0xD8]) || shrink == 0 || shrink > MAX_SHRINK {
         return None;
@@ -84,15 +84,21 @@ pub(crate) fn reduced_size(bytes: &[u8], shrink: u8) -> Option<(u32, u32)> {
     if crate::over_rgba_budget(u32::from(info.width), u32::from(info.height)) {
         return None;
     }
-    if info.coding_process == CodingProcess::DctProgressive {
+    let progressive_bytes = if info.coding_process == CodingProcess::DctProgressive {
         let side = |n: u16| u64::from(n).next_multiple_of(32);
         let components: u64 = if colour { 3 } else { 1 };
-        if side(info.width) * side(info.height) * components * 2 > MAX_BYTES as u64 {
+        let bytes = side(info.width) * side(info.height) * components * 2;
+        if bytes > MAX_BYTES as u64 {
             return None;
         }
-    }
+        usize::try_from(bytes).ok()?
+    } else {
+        0
+    };
     let reduced = |n: u16| u32::from(n).div_ceil(1 << shrink);
-    Some((reduced(info.width), reduced(info.height)))
+    let (width, height) = (reduced(info.width), reduced(info.height));
+    let output_bytes = width as usize * height as usize * 8;
+    Some((width, height, progressive_bytes.saturating_add(output_bytes)))
 }
 
 /// A YCbCr, RGB or grayscale JPEG decoded at 1/2^`shrink` of its size, each side rounded up, for
