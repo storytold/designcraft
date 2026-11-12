@@ -113,6 +113,7 @@ impl DesignApp {
             egui_ctx: None,
             in_control: false,
             object_clip_text: None,
+            object_clip_change: None,
             ime_marked: None,
             ime_discard: false,
             canvas_ime: false,
