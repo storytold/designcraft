@@ -792,6 +792,21 @@ fn object_styles_carry_corners_and_their_stroke_and_corners_can_be_edited() {
     assert!(s.execute("style.object.edit", &json!({"name": "Framed", "rename": "[Basic Text Frame]"})).is_err());
     assert!(s.execute("style.object.edit", &json!({"name": "[Basic Graphics Frame]", "rename": "Mine"})).is_err());
     assert!(s.execute("style.object.edit", &json!({"name": "Framed", "corners": {"size": "big"}})).is_err());
+    // An unknown swatch, a misspelled setting and a word for a switch are refused.
+    for bad in [
+        json!({"fill": "Nope"}),
+        json!({"fill": {"swatch": "Nope"}}),
+        json!({"stroke": {"swatch": "Nope"}}),
+        json!({"stroke": {"wieght": 5}}),
+        json!({"fill": {"tnt": 0.5}}),
+    ] {
+        let mut p = bad.clone();
+        p["name"] = json!("Framed");
+        assert!(s.execute("style.object.edit", &p).is_err(), "{bad}");
+        p["name"] = json!("Other");
+        assert!(s.execute("style.object.create", &p).is_err(), "{bad}");
+    }
+    assert!(s.execute("style.object.create", &json!({"name": "Other", "fromSelection": "yes"})).is_err());
     // A size outside 0–10000 pt is refused, not changed.
     for size in [-1.0, 10_001.0] {
         assert!(s.execute("style.object.edit", &json!({"name": "Framed", "corners": {"size": size}})).is_err(), "{size}");

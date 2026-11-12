@@ -131,7 +131,9 @@ fn merge_json(base: &mut Value, top: Value, depth: usize) {
 
 pub(super) fn create_object(s: &mut Session, p: &Value) -> Result<Value> {
     let base = str_param(p, "name").unwrap_or("Object Style 1").to_string();
-    let from_sel = p.get("fromSelection").and_then(Value::as_bool).unwrap_or(true);
+    const CREATE: &str = "style.object.create";
+    check_swatches(CREATE, s, p)?;
+    let from_sel = bool_param(CREATE, p, "fromSelection")?.unwrap_or(true);
     let src = if from_sel { s.doc()?.selection.items.first().and_then(|i| s.doc().ok()?.doc.item(*i).cloned()) } else { None };
     let mut os = ObjectStyle::default();
     if let Some(it) = &src {
@@ -141,7 +143,6 @@ pub(super) fn create_object(s: &mut Session, p: &Value) -> Result<Value> {
         os.text_frame = it.text_frame().map(|t| t.options.clone());
         os.effects = Some(it.effects.clone());
     }
-    const CREATE: &str = "style.object.create";
     if let Some(f) = fill_param(CREATE, p, os.fill.as_ref())? {
         os.fill = f;
     }
@@ -169,6 +170,23 @@ pub(super) fn create_object(s: &mut Session, p: &Value) -> Result<Value> {
         d.styles_mut().object.push(os.clone());
         Ok(json!({"name": name}))
     })
+}
+
+/// The swatches this call gives (`fill` as a name or `fill.swatch`, `stroke.swatch` and
+/// `stroke.gapSwatch`) must be swatches of the document.
+fn check_swatches(cmd: &str, s: &Session, p: &Value) -> Result<()> {
+    let doc = &s.doc()?.doc;
+    let given = [
+        ("fill", p.get("fill").and_then(|f| f.as_str().or_else(|| f.get("swatch").and_then(Value::as_str)))),
+        ("stroke", p.get("stroke").and_then(|f| f.get("swatch")).and_then(Value::as_str)),
+        ("stroke gap", p.get("stroke").and_then(|f| f.get("gapSwatch")).and_then(Value::as_str)),
+    ];
+    for (key, name) in given {
+        if let Some(name) = name {
+            crate::cmd::object::known_swatch(doc, name, cmd, key)?;
+        }
+    }
+    Ok(())
 }
 
 /// `paragraphStyle`: a paragraph style's name, or null (the object style sets none).
@@ -200,7 +218,7 @@ fn text_frame_param(
             o.insert("inset".into(), json!([n, n, n, n]));
         }
     }
-    let tf = group_param(cmd, &p, "textFrame", base.unwrap_or(&designcraft_doc::TextFrameOptions::default()))?;
+    let tf = group_param(cmd, &p, "textFrame", base.unwrap_or(&designcraft_doc::TextFrameOptions::default()), &[])?;
     if let Some(Some(o)) = &tf {
         // Only the values given in this call are checked.
         let given = |k: &str| p.get("textFrame").is_some_and(|t| t.get(k).is_some());
@@ -228,7 +246,8 @@ fn bool_param(cmd: &str, p: &Value, key: &str) -> Result<Option<bool>> {
 /// `p.stroke` merged over `base` (as [`group_param`]), refused when the weight isn't a number ≥ 0
 /// or the tint isn't 0–1.
 fn stroke_param(cmd: &str, p: &Value, base: Option<&designcraft_doc::Stroke>) -> Result<Option<Option<designcraft_doc::Stroke>>> {
-    let st = group_param(cmd, p, "stroke", base.unwrap_or(&designcraft_doc::Stroke::default()))?;
+    let optional = ["gapOverprint", "gradientAngle", "gradientVector"];
+    let st = group_param(cmd, p, "stroke", base.unwrap_or(&designcraft_doc::Stroke::default()), &optional)?;
     if let Some(Some(st)) = &st {
         if !(st.weight.is_finite() && st.weight >= 0.0) {
             return Err(bad(cmd, "stroke weight must be a number ≥ 0"));
@@ -241,13 +260,23 @@ fn stroke_param(cmd: &str, p: &Value, base: Option<&designcraft_doc::Stroke>) ->
 }
 
 /// `p[key]`, an attribute group of a style, merged field by field over `base`: `None` when not
-/// given, `Some(None)` for null (the style no longer sets it).
-fn group_param<T: serde::Serialize + serde::de::DeserializeOwned>(cmd: &str, p: &Value, key: &str, base: &T) -> Result<Option<Option<T>>> {
+/// given, `Some(None)` for null (the style no longer sets it). A field `base` doesn't write and
+/// `optional` doesn't name is refused.
+fn group_param<T: serde::Serialize + serde::de::DeserializeOwned>(
+    cmd: &str,
+    p: &Value,
+    key: &str,
+    base: &T,
+    optional: &[&str],
+) -> Result<Option<Option<T>>> {
     match p.get(key) {
         None => Ok(None),
         Some(Value::Null) => Ok(Some(None)),
-        Some(v @ Value::Object(_)) => {
+        Some(v @ Value::Object(given)) => {
             let mut cur = serde_json::to_value(base).map_err(|e| bad(cmd, e.to_string()))?;
+            if let Some(k) = given.keys().find(|k| cur.get(k.as_str()).is_none() && !optional.contains(&k.as_str())) {
+                return Err(bad(cmd, format!("{key}.{k} is not a {key} setting")));
+            }
             merge_json(&mut cur, v.clone(), 0);
             serde_json::from_value(cur).map(|t| Some(Some(t))).map_err(|e| bad(cmd, format!("{key}: {e}")))
         }
@@ -260,7 +289,7 @@ fn fill_param(cmd: &str, p: &Value, base: Option<&designcraft_doc::Fill>) -> Res
     if let Some(sw) = p.get("fill").and_then(Value::as_str) {
         return Ok(Some(Some(designcraft_doc::Fill::swatch(sw))));
     }
-    let fill = group_param(cmd, p, "fill", base.unwrap_or(&designcraft_doc::Fill::default()))?;
+    let fill = group_param(cmd, p, "fill", base.unwrap_or(&designcraft_doc::Fill::default()), &["gradientAngle", "gradientVector"])?;
     if let Some(Some(f)) = &fill
         && !(f.tint.is_finite() && (0.0..=1.0).contains(&f.tint))
     {
@@ -307,6 +336,7 @@ pub(super) fn edit_object(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad(CMD, format!("`{name}` can't be edited")));
     }
     let old = s.doc()?.doc.styles.object_style(&name).cloned().ok_or_else(|| bad(CMD, format!("no object style `{name}`")))?;
+    check_swatches(CMD, s, p)?;
     let mut new = old.clone();
     if p.get("effects").is_some_and(Value::is_null) {
         if EFFECT_KEYS.iter().any(|k| p.get(k).is_some()) {
