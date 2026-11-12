@@ -41,6 +41,7 @@ mod mathexpr;
 mod media;
 mod notes;
 mod object;
+pub use object::text_frame_options_frames;
 mod overrides;
 mod package;
 pub mod params;

@@ -556,6 +556,39 @@ mod color_theme_tests {
         assert_eq!(opts(&app).columns, 1, "one undo step");
     }
 
+    /// Opened with the caret on the last line of a frame, Text Frame Options keep acting on that
+    /// frame while a preview pushes the caret's line into the next frame of the thread.
+    #[test]
+    fn text_frame_options_keep_their_frame_while_the_preview_reflows_the_caret() {
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let text = (0..40).map(|i| format!("Line {i} of the threaded story.")).collect::<Vec<_>>().join(" ");
+        let a = app.run("frame.create", json!({"rect": [36, 36, 300, 120], "content": "text", "text": text})).unwrap();
+        let b = app.run("frame.create", json!({"rect": [36, 200, 300, 700], "content": "text", "text": "", "caret": false})).unwrap();
+        let (a, b, sid) =
+            (designcraft_doc::ItemId(a["id"].as_u64().unwrap()), designcraft_doc::ItemId(b["id"].as_u64().unwrap()), a["story"].as_u64().unwrap());
+        app.run("text.thread", json!({"from": a.0, "to": b.0})).unwrap();
+        let shown = |app: &DesignApp, f| {
+            let cs = designcraft_compose::compose_story(&app.session.doc().unwrap().doc, designcraft_doc::StoryId(sid), &Default::default());
+            cs.frame(f).unwrap().range.clone()
+        };
+        let caret = shown(&app, a).end - 1;
+        app.run("text.select", json!({"story": sid, "anchor": caret})).unwrap();
+        let inset = |app: &DesignApp, f| app.session.doc().unwrap().doc.item(f).unwrap().text_frame().unwrap().options.inset[0];
+        let mut d = Dialog::new("textFrameOptions", json!({}));
+        seed_text_frame_options(&app, &mut d);
+        d.fields.insert("inset".into(), json!("2p0"));
+        d.fields.insert("preview".into(), json!(true));
+        text_frame_preview(&mut app, &mut d);
+        assert!(shown(&app, b).contains(&caret), "the preview moved the caret's line into the next frame");
+        d.fields.insert("columns".into(), json!("2"));
+        text_frame_preview(&mut app, &mut d);
+        assert_eq!((inset(&app, a), inset(&app, b)), (24.0, 0.0), "the preview stays on the first frame");
+        app.ui.dialog = Some(d);
+        confirm(&mut app).unwrap();
+        assert_eq!((inset(&app, a), inset(&app, b)), (24.0, 0.0));
+    }
+
     #[test]
     fn toc_right_indent_separator_survives_the_dialog_and_update() {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
@@ -991,18 +1024,22 @@ fn pdf_export(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     }
 }
 
+/// The first frame Text Frame Options changes: the first selected item, the frame that shows the
+/// caret, or the first frame holding selected text.
+fn options_frame(app: &DesignApp) -> Option<designcraft_doc::ItemId> {
+    designcraft_engine::cmd::text_frame_options_frames(&app.session).first().copied()
+}
+
 /// The selected text frame's width (its own, before rotation).
 fn selected_frame_width(app: &DesignApp) -> Option<f64> {
     let st = app.session.active()?;
-    let fid = st.selection.items.first().copied().or_else(|| st.selection.text.and_then(|t| t.frame))?;
-    Some(st.doc.item(fid)?.inner_bounds().width())
+    Some(st.doc.item(options_frame(app)?)?.inner_bounds().width())
 }
 
-/// The options of the selected text frame (the first selected item, or the frame of the caret).
+/// The options of the frame Text Frame Options shows.
 fn selected_frame_options(app: &DesignApp) -> Option<designcraft_doc::TextFrameOptions> {
     let st = app.session.active()?;
-    let fid = st.selection.items.first().copied().or_else(|| st.selection.text.and_then(|t| t.frame))?;
-    st.doc.item(fid)?.text_frame().map(|t| t.options.clone())
+    st.doc.item(options_frame(app)?)?.text_frame().map(|t| t.options.clone())
 }
 
 /// Object › Text Frame Options shows the selected frame's options. `_shown` keeps what it showed,
@@ -1061,7 +1098,23 @@ fn seed_text_frame_options(app: &DesignApp, d: &mut Dialog) {
     if let Some(w) = selected_frame_width(app) {
         d.fields.insert("_frameWidth".into(), json!(w));
     }
+    // Typing in a frame: the frames taken when the dialog opens, so a preview that reflows the
+    // text into another frame does not change which frames the options apply to.
+    if let Some(ids) = typing_frame_ids(app) {
+        d.fields.insert("_targets".into(), ids);
+    }
     d.fields.insert("_shown".into(), shown);
+}
+
+/// With the Type tool and no frame selected: the frame that shows the caret, or every frame that
+/// holds part of the selected text.
+fn typing_frame_ids(app: &DesignApp) -> Option<Value> {
+    let st = app.session.active()?;
+    if !st.selection.items.is_empty() || st.selection.text.is_none() {
+        return None;
+    }
+    let ids: Vec<u64> = designcraft_engine::cmd::text_frame_options_frames(&app.session).iter().map(|f| f.0).collect();
+    Some(json!(ids))
 }
 
 /// A 0..1 tint as a percentage ("40", "12.5").
@@ -1552,12 +1605,10 @@ fn text_frame_params(app: &DesignApp, d: &Dialog) -> Result<Map<String, Value>, 
             json!(d.m("paragraphSpacingLimit").filter(|v| *v >= 0.0).ok_or_else(|| bad("the paragraph spacing limit is not a measure"))?),
         );
     }
-    // Typing in a frame: the options apply to that frame.
-    if let Some(st) = app.session.active()
-        && st.selection.items.is_empty()
-        && let Some(f) = st.selection.text.and_then(|t| t.frame)
-    {
-        p.insert("ids".into(), json!([f.0]));
+    // Typing in a frame: the options apply to the frame that showed the caret, or to every frame
+    // that held part of the selected text, when the dialog opened.
+    if let Some(ids) = d.fields.get("_targets").cloned().or_else(|| typing_frame_ids(app)) {
+        p.insert("ids".into(), ids);
     }
     Ok(p)
 }
