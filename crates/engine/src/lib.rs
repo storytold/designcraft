@@ -414,6 +414,7 @@ pub struct Session {
     pub recovery_dir: Option<std::path::PathBuf>,
     /// This session's number for the background recovery writer, which returns each result to
     /// the session that queued it.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub(crate) recovery_owner: recovery::Owner,
     /// Copied text with its formatting (a frameless story slice), its plain text, and what pasting
     /// it needs from its document: a copy holding only the stories its anchored text frames show

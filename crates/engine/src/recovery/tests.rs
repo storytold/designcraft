@@ -514,6 +514,26 @@ fn a_write_cancelled_midway_publishes_nothing() {
     );
 }
 
+#[test]
+fn a_cancel_stops_a_write_before_the_package_is_finished() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = dirty_session();
+    let entry = Snapshot::of(&prepare_save(&s, dir.path()).unwrap(), dir.path(), &s.docs[0]);
+    // Cancelled once the write has started: the first check passes, every later one fails.
+    let checks = std::cell::Cell::new(0);
+    let written = write_snapshot(&entry, || {
+        checks.set(checks.get() + 1);
+        checks.get() > 1
+    });
+    assert!(!written.published && written.error.is_none(), "a stopped write is not an error");
+    assert!(checks.get() >= 2, "the write checked again before it finished");
+    assert!(!files(dir.path(), entry.uid).0.exists(), "nothing was published");
+    assert!(
+        std::fs::read_dir(dir.path()).unwrap().all(|e| e.is_ok_and(|e| !e.file_name().to_string_lossy().starts_with(".designcraft-recovery-"))),
+        "no temporary file is left"
+    );
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn only_a_queued_write_is_cancelled() {

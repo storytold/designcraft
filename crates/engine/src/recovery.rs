@@ -725,6 +725,36 @@ struct Written {
     error: Option<EngineError>,
 }
 
+/// A writer that fails once `cancelled` says so, checked before each write of at most
+/// [`STOP_CHECK_BYTES`].
+struct StopWhen<'a, W, C> {
+    out: &'a mut W,
+    cancelled: &'a C,
+}
+
+/// The most [`StopWhen`] writes between two checks for a cancel.
+const STOP_CHECK_BYTES: usize = 1 << 20;
+
+impl<W: std::io::Write, C: Fn() -> bool> std::io::Write for StopWhen<'_, W, C> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if (self.cancelled)() {
+            return Err(std::io::Error::other("recovery write cancelled"));
+        }
+        // A large placed file is written in pieces, so a cancel does not wait for all of it.
+        self.out.write(&buf[..buf.len().min(STOP_CHECK_BYTES)])
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.out.flush()
+    }
+}
+
+impl<W: std::io::Seek, C> std::io::Seek for StopWhen<'_, W, C> {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        self.out.seek(pos)
+    }
+}
+
 /// Publish a document's recovery entry before its optional metadata. `cancelled` says whether the
 /// document was saved, reverted or closed since the write started: its snapshot is then dropped
 /// instead of published, so a crash cannot offer back a copy older than the saved file.
@@ -735,7 +765,10 @@ fn write_snapshot(entry: &Snapshot, cancelled: impl Fn() -> bool) -> Written {
     let published = publish_recovery_written(
         &doc,
         entry.own,
-        |out| designcraft_format::write(out, &entry.doc, None).map_err(|e| EngineError::Other(e.to_string())),
+        // A cancel stops the write at its next chunk instead of after the whole package.
+        |out| {
+            designcraft_format::write(&mut StopWhen { out, cancelled: &cancelled }, &entry.doc, None).map_err(|e| EngineError::Other(e.to_string()))
+        },
         &cancelled,
         // Written: in a folder that is not this run's own, the entry is now this run's to replace
         // and remove (Save and Close must clean up the snapshot they wrote). Recorded with the
@@ -748,8 +781,10 @@ fn write_snapshot(entry: &Snapshot, cancelled: impl Fn() -> bool) -> Written {
     );
     match published {
         Ok(true) => {}
-        // Cancelled while writing: no snapshot and no metadata for it.
+        // Cancelled while writing: no snapshot and no metadata for it. A write stopped part way
+        // reports an error, which is the cancel's and not a failure.
         Ok(false) => return Written { published: false, error: None },
+        Err(_) if cancelled() => return Written { published: false, error: None },
         Err(e) => return Written { published: false, error: Some(e) },
     }
     let metadata = json!({"path": entry.path, "title": entry.title, "saved": designcraft_doc::vars::now()});
@@ -758,7 +793,7 @@ fn write_snapshot(entry: &Snapshot, cancelled: impl Fn() -> bool) -> Written {
     let error = publish_recovery_written(
         &meta,
         entry.own,
-        |out| out.write_all(bytes.as_bytes()).map_err(|e| EngineError::Other(format!("{}: {e}", meta.display()))),
+        |out| std::io::Write::write_all(out, bytes.as_bytes()).map_err(|e| EngineError::Other(format!("{}: {e}", meta.display()))),
         &cancelled,
         || {},
     )
