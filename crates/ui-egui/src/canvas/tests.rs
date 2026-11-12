@@ -274,9 +274,20 @@ fn ruler_guides_show_their_colour_from_their_view_threshold() {
         let x = xf.to_screen(slot.xf * Point::new(100.0, 200.0));
         (x, guide_at(app, &xf, x).map(|(_, page, index, _)| (page, index)))
     };
+    // The canvas paints only what reaches into the view, so each zoom centres the view between
+    // the two guides (x = 200) to keep both of them in it.
+    let centre = |app: &mut DesignApp| {
+        let rect = app.canvas_rect.unwrap();
+        let xf = Xf::new(rect, app.view().unwrap());
+        let slot = CanvasLayout::new(&app.session.active().unwrap().doc, false).slots[0];
+        let p = xf.to_screen(slot.xf * Point::new(200.0, 200.0));
+        let v = app.view_mut().unwrap();
+        v.origin = Point::new(v.origin.x + f64::from(p.x - rect.center().x) / v.zoom, v.origin.y + f64::from(p.y - rect.center().y) / v.zoom);
+    };
     lines(&mut app, red);
     for (zoom, drawn) in [(1.0, false), (1.4, false), (2.0, true), (4.0, true)] {
         view::set_zoom(&mut app, zoom);
+        centre(&mut app);
         let red_lines = lines(&mut app, red);
         let (x, picked) = at(&app);
         if drawn {
