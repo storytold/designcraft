@@ -5,7 +5,8 @@
 //! wrapping item on the frames' spreads, and the same for every story whose anchored objects wrap
 //! its text ([`crate::wrap::neighbours`]). An anchored frame's entry also records where its host
 //! story's composition places it. Entries hold clones of those `Arc`s, so the pointers
-//! can't be reused by other allocations while the entry lives.
+//! can't be reused by other allocations while the entry lives. The document's Alpha Channel
+//! outlines count by serial number, which no other outline shares.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -62,6 +63,9 @@ pub struct Cache {
     /// The composition each story (page-independent key) had before its latest recomposition,
     /// with the story revision it was composed from (repaint only the frames an edit changed).
     previous: Mutex<HashMap<StoryId, (Vec<usize>, Arc<ComposedStory>)>>,
+    /// A cache this one reads without writing to: a composition or index found there for the same
+    /// inputs is used, and anything composed is kept here only.
+    base: Option<Arc<Cache>>,
 }
 
 /// A signature's hash, standing in for it in another story's signature.
@@ -85,6 +89,21 @@ fn doc_signature(doc: &Document) -> u64 {
     (Arc::as_ptr(&doc.styles) as usize).hash(&mut h);
     format!("{:?}", doc.text_variables).hash(&mut h);
     sections_hash(doc).hash(&mut h);
+    // The compositions the indexes are built from also depend on these (see `signature`).
+    let g = &doc.settings.baseline_grid;
+    (doc.font_scope, g.relative_to == designcraft_doc::GridRelative::TopMargin, g.start.to_bits(), g.increment.to_bits()).hash(&mut h);
+    outlines_hash(doc).hash(&mut h);
+    h.finish()
+}
+
+/// The Alpha Channel outlines text wraps around: a relink traces a new one while the items and
+/// stories stay the same.
+fn outlines_hash(doc: &Document) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for o in &doc.alpha_outlines {
+        o.serial.hash(&mut h);
+    }
     h.finish()
 }
 
@@ -102,6 +121,18 @@ fn sections_hash(doc: &Document) -> u64 {
 impl Cache {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// An empty cache that also uses what `base` holds for the same inputs, and never changes
+    /// `base`. A reader of an older state of the document composes that state here instead of
+    /// replacing the compositions of the current state in `base`.
+    pub fn over(base: Arc<Cache>) -> Self {
+        Cache { base: Some(base), ..Self::default() }
+    }
+
+    /// The cache given to [`Cache::over`].
+    pub fn base(&self) -> Option<&Arc<Cache>> {
+        self.base.as_ref()
     }
 
     /// The composed story, from cache or freshly composed. `page` is the absolute page a
@@ -126,6 +157,14 @@ impl Cache {
         let c = self.get_with(doc, sid, ShownOn::Own, cross, depth, resolved);
         resolved.insert((sid, cross, depth), c.clone());
         c
+    }
+
+    /// Where the host story places anchored text frame `fid`, one of story `sid`'s frames; `None` for
+    /// a frame on a spread.
+    pub fn placement(&self, doc: &Document, sid: StoryId, fid: designcraft_doc::ItemId) -> Option<crate::Placement> {
+        let mut resolved = Resolved::new();
+        let placed = crate::placed::placements(doc, sid, &mut |host| self.resolve(doc, host, true, 1, &mut resolved));
+        placed.into_iter().find_map(|(id, p)| (id == fid).then_some(p))
     }
 
     /// [`Cache::get_on`], wrapped by other stories' anchored objects only when `cross` is set, for
@@ -255,6 +294,14 @@ impl Cache {
                 return e.out.clone();
             }
         }
+        if let Some(base) = &self.base {
+            let g = base.map.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some(e) = g.0.get(&key)
+                && e.sig == sig
+            {
+                return e.out.clone();
+            }
+        }
         // Parent-page items are composed per page: markers show its name, variables need its index.
         let page = page.filter(|_| with_vars);
         let running = running.then(|| self.running_index(doc));
@@ -368,6 +415,12 @@ impl Cache {
         {
             return r.clone();
         }
+        if let Some(base) = &self.base
+            && let Some((s, r)) = &*base.xrefs.lock().unwrap_or_else(PoisonError::into_inner)
+            && *s == sig
+        {
+            return r.clone();
+        }
         let r = Arc::new(crate::xref::XrefIndex::build(doc, &|sid| self.get(doc, sid, None)));
         *self.xrefs.lock().unwrap_or_else(PoisonError::into_inner) = Some((sig, r.clone()));
         r
@@ -377,6 +430,12 @@ impl Cache {
     pub fn running_index(&self, doc: &Document) -> Arc<RunningIndex> {
         let sig = doc_signature(doc);
         if let Some((s, r)) = &*self.running.lock().unwrap_or_else(PoisonError::into_inner)
+            && *s == sig
+        {
+            return r.clone();
+        }
+        if let Some(base) = &self.base
+            && let Some((s, r)) = &*base.running.lock().unwrap_or_else(PoisonError::into_inner)
             && *s == sig
         {
             return r.clone();
@@ -405,6 +464,7 @@ fn signature(doc: &Document, story: &Arc<Story>) -> (Vec<usize>, Vec<Arc<Item>>)
         sections_hash(doc) as usize,
         doc.font_scope as usize,
         usize::from(g.relative_to == designcraft_doc::GridRelative::TopMargin),
+        outlines_hash(doc) as usize,
     ];
     sig.extend([g.start, g.increment].into_iter().flat_map(bits));
     let mut keep = Vec::new();

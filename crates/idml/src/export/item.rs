@@ -268,9 +268,19 @@ impl<'a> Ex<'a> {
             el.set("FillColor", id.clone());
             el.set("FillTint", pct(g.fill.tint as f64));
         }
-        let embed = !asset.data.is_empty() && (self.opts.embed_images || asset.link.is_none());
+        let wanted = !asset.data.is_empty() && (self.opts.embed_images || asset.link.is_none());
+        // An image with no link of its own has nowhere else to live, so it is always embedded
+        // (dropping its data would lose it); only an image with a real link can fall back to it.
+        let embed = wanted && (asset.link.is_none() || self.embedded.saturating_add(asset.data.len()) <= self.embed_limit);
+        if wanted && !embed {
+            self.warnings.push(format!(
+                "image {} is written as a link, not embedded: the package already holds {} bytes of images (limit {})",
+                asset.name, self.embedded, self.embed_limit
+            ));
+        }
         let mut props = Vec::new();
         if embed {
+            self.embedded = self.embedded.saturating_add(asset.data.len());
             let mut c = El::new("Contents");
             c.children.push(Node::CData(base64_encode(&asset.data)));
             props.push(c);
@@ -387,7 +397,7 @@ fn text_wrap_pref(w: &designcraft_doc::TextWrap) -> El {
                 .attr("Right", num(w.offsets[3]))])
             .collect(),
     )
-    .child(El::new("ContourOption").attr("ContourType", names::contour_type_out(w.contour)).attr("IncludeInsideEdges", "false"))
+    .child(El::new("ContourOption").attr("ContourType", names::contour_type_out(w.contour)).attr("IncludeInsideEdges", bool_s(w.inside_edges)))
 }
 
 pub(super) fn text_frame_pref(o: &TextFrameOptions, rule_color: &str) -> El {
