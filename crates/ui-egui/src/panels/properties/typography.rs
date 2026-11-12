@@ -4,6 +4,23 @@ use super::{
     vec2, widgets,
 };
 
+/// Match the Character panel's logical label/field ordering to the UI reading direction.
+/// The command IDs and stored values are deliberately unaffected.
+fn character_row_layout(language: &str) -> egui::Layout {
+    if crate::i18n::is_rtl(language) { egui::Layout::right_to_left(Align::Center) } else { egui::Layout::left_to_right(Align::Center) }
+}
+
+#[cfg(test)]
+mod character_row_layout_tests {
+    use super::*;
+
+    #[test]
+    fn language_and_digits_rows_follow_interface_direction() {
+        assert_eq!(character_row_layout("en").main_dir, egui::Direction::LeftToRight);
+        assert_eq!(character_row_layout("he").main_dir, egui::Direction::RightToLeft);
+    }
+}
+
 pub fn character_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     let Some(a) = text_attrs(app) else {
         crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Select text or a text frame."));
@@ -17,7 +34,7 @@ pub fn character_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     variable_font_axes(app, ui, &fam, &sty);
     // Language: hyphenation, spelling and typographer's quotes follow it.
     let lang = c["language"].as_str().unwrap_or("English: USA").to_string();
-    ui.horizontal(|ui| {
+    ui.with_layout(character_row_layout(&app.ui.language), |ui| {
         caption(ui, crate::i18n::tr(&app.ui.language, "Language"));
         let combo = craft_ui::ComboBox::from_id_salt("char_language")
             .selected_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, &lang)))
@@ -27,7 +44,7 @@ pub fn character_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     });
     // Digits (World-Ready): how the figures 0-9 are drawn (Arabic 0123, Hindi ٠١٢٣, Farsi ۰۱۲۳).
     let digits = c["digits"].as_str().unwrap_or("default").to_string();
-    ui.horizontal(|ui| {
+    ui.with_layout(character_row_layout(&app.ui.language), |ui| {
         caption(ui, crate::i18n::tr(&app.ui.language, "Digits"));
         let cur = DIGIT_OPTIONS
             .iter()
