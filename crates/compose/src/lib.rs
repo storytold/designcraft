@@ -5604,6 +5604,9 @@ fn vertical_justify(ft: &mut FrameText, f: &FrameSpec, spanned: bool, notes: &de
         });
         let shift = match step {
             None => shifts(most_room(space)),
+            // A step so small that the room holds more steps than an f64 can count: the lines take
+            // the room as they do without a grid, and stay within one step of a grid line.
+            Some(inc) if !(space / inc).is_finite() => shifts(most_room(space)),
             Some(inc) => {
                 // The room one grid step takes: Center moves the lines by half the room.
                 let unit = if center { 2.0 * inc } else { inc };
@@ -5615,7 +5618,8 @@ fn vertical_justify(ft: &mut FrameText, f: &FrameSpec, spanned: bool, notes: &de
                 if steps > 0.0 && !fits(&shifts(steps * unit)) {
                     steps -= 1.0;
                 }
-                shifts(steps * unit)
+                // With no step taken the lines stay put, even when Center's doubled step overflows.
+                shifts(if steps > 0.0 { steps * unit } else { 0.0 })
             }
         };
         let before: Vec<f64> = idx.iter().map(|&i| ft.lines[i].baseline).collect();

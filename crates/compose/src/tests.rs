@@ -2435,6 +2435,43 @@ fn vertical_justification_keeps_grid_aligned_lines_on_the_grid() {
     assert!((free[2] - area.y1).abs() < 1e-6, "Bottom without the grid: {free:?}");
 }
 
+/// A grid increment too small for the room to be counted in steps, or too large to double, leaves
+/// a grid-aligned line at a finite place inside the text area with Bottom, Center and Justify.
+#[test]
+fn vertical_justification_with_an_extreme_grid_increment_stays_finite() {
+    use designcraft_doc::GridAlign;
+    use designcraft_doc::VerticalJustification::{self, Bottom, Center, Justify, Top};
+    // The grid starts at the line's natural baseline, so the line sits on it before it moves.
+    let (natural, grid) = grid_doc("One", ParaAttrs { grid_align: Some(GridAlign::None), ..Default::default() }, |_, _| {});
+    let natural = natural[0].baseline;
+    let start = natural - grid.0;
+    let compose_with = |mode: VerticalJustification, inc: f64| {
+        let mut area = Rect::ZERO;
+        let (lines, _) = grid_doc("One", ParaAttrs { grid_align: Some(GridAlign::AllLines), ..Default::default() }, |d, sid| {
+            let spec = frame_specs(d, sid).remove(0);
+            area = spec.area;
+            let opts = &mut d.item_mut(spec.id).unwrap().text_frame_mut().unwrap().options;
+            opts.baseline_grid = Some(designcraft_doc::FrameBaselineGrid::new(start, inc));
+            opts.vertical_justification = mode;
+        });
+        (area, lines[0].baseline)
+    };
+    for inc in [1e-310, 1e308] {
+        let (_, top) = compose_with(Top, inc);
+        assert!((top - natural).abs() < 1e-6, "Top with increment {inc:e}: baseline {top}, natural {natural}");
+        for mode in [Bottom, Center, Justify] {
+            let (area, b) = compose_with(mode, inc);
+            assert!(b.is_finite() && b >= top - 1e-6 && b <= area.y1 + 1e-6, "{mode:?} with increment {inc:e}: baseline {b}, text area {area:?}");
+        }
+    }
+    // A step far smaller than the room: Bottom takes the room as it does without a grid.
+    let (area, b) = compose_with(Bottom, 1e-310);
+    assert!((b - area.y1).abs() < 1e-6, "Bottom with a tiny increment: baseline {b}, text area {area:?}");
+    // A step far larger than the room: the line does not move.
+    let (_, b) = compose_with(Center, 1e308);
+    assert!((b - natural).abs() < 1e-6, "Center with a huge increment: baseline {b}, natural {natural}");
+}
+
 /// A corner radius leaves a Cap Height first line where it sits in a rectangular frame, with Top
 /// and with Center: a line's band above the text area isn't held to the frame's outline (#1999).
 /// Center puts the last baseline halfway between where Top sets it and the bottom inset, also in
