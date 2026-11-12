@@ -7716,6 +7716,12 @@ const JUSTIFY_ROWS: [(&str, &str, (f64, f64)); 3] = [
 /// The allowed Auto Leading, in percent of the type size.
 const AUTO_LEADING_RANGE: (f64, f64) = (0.0, 500.0);
 
+/// The Auto Leading stored for a percent typed into its field: the whole percent the field shows.
+fn auto_leading_typed(pct: f64) -> f64 {
+    // Adding 0.0 turns a rounded -0 into 0.
+    (pct.round() + 0.0) / 100.0
+}
+
 /// The Single Word Justification choices: (attribute value, label).
 const SINGLE_WORD_CHOICES: [(&str, &str); 4] =
     [("left", "Align Left"), ("center", "Align Center"), ("right", "Align Right"), ("fullyJustified", "Full Justify")];
@@ -7941,7 +7947,7 @@ fn justification(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, prefix: &str, cu
         crate::rtl::label(ui, crate::i18n::tr(lang, "Auto Leading:"));
         let auto = cur(d, "autoLeading").as_f64().map(|x| x * 100.0);
         if let Some(n) = ui.scope(|ui| crate::widgets::number(ui, &format!("ps{prefix}autoLeading"), auto, "%", 60.0, 0)).inner {
-            d.fields.insert(format!("{prefix}autoLeading"), json!(n / 100.0));
+            d.fields.insert(format!("{prefix}autoLeading"), json!(auto_leading_typed(n)));
         }
         ui.end_row();
         let single_label = crate::rtl::label(ui, crate::i18n::tr(lang, "Single Word Justification:"));
@@ -7954,7 +7960,13 @@ fn justification(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, prefix: &str, cu
             .show_ui(ui, |ui| {
                 for (v, label) in SINGLE_WORD_CHOICES {
                     if ui.selectable_label(single.as_str() == Some(v), crate::rtl::widget(ui, crate::i18n::tr(lang, label))).clicked() {
-                        d.fields.insert(format!("{prefix}singleWordJustify"), json!(v));
+                        // The paragraphs' own choice is no edit, so OK adds no undo step for it.
+                        let key = format!("{prefix}singleWordJustify");
+                        if current["singleWordJustify"].as_str() == Some(v) {
+                            d.fields.remove(&key);
+                        } else {
+                            d.fields.insert(key, json!(v));
+                        }
                     }
                 }
             })

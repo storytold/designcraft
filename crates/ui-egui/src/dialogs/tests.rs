@@ -1156,8 +1156,15 @@ fn justification_dialog_sets_auto_leading_and_single_word_justification() {
     h.run_steps(3);
     assert!(h.query_by_label("Auto Leading:").is_some());
     assert!(h.query_by_label("Single Word Justification:").is_some());
-    // The dropdown shows the paragraph's Full Justify; pick Align Center.
-    h.get_by(|n| n.role() == egui::accesskit::Role::ComboBox && n.value().as_deref() == Some("Full Justify")).click();
+    use egui::accesskit::Role;
+    // The dropdown shows the paragraph's Full Justify. Picking Full Justify again is no edit.
+    h.get_by(|n| n.role() == Role::ComboBox && n.value().as_deref() == Some("Full Justify")).click();
+    h.run_steps(3);
+    h.get_by(|n| n.role() != Role::ComboBox && n.label().as_deref() == Some("Full Justify")).click();
+    h.run_steps(3);
+    assert!(!h.state().ui.dialog.as_ref().unwrap().fields.contains_key("singleWordJustify"), "the paragraph's own choice is no edit");
+    // Pick Align Center.
+    h.get_by(|n| n.role() == Role::ComboBox && n.value().as_deref() == Some("Full Justify")).click();
     h.run_steps(3);
     h.get_by_label("Align Center").click();
     h.run_steps(3);
@@ -1170,8 +1177,8 @@ fn justification_dialog_sets_auto_leading_and_single_word_justification() {
     let d = app.ui.dialog.clone().unwrap();
     let before = undo_steps(&app);
     let bad = [
-        ("autoLeading", json!(5.004)),
-        ("autoLeading", json!(-0.004)),
+        ("autoLeading", json!(5.01)),
+        ("autoLeading", json!(-0.01)),
         ("autoLeading", json!(f64::NAN)),
         ("singleWordJustify", json!("leftJustified")),
     ];
@@ -1182,6 +1189,15 @@ fn justification_dialog_sets_auto_leading_and_single_word_justification() {
         assert!(app.ui.dialog.as_ref().is_some_and(|d| d.fields.contains_key("justifyError")), "{key}: the dialog shows why");
     }
     assert_eq!(undo_steps(&app), before);
+
+    // A typed percent is stored as the whole percent the field shows, so 500.4% (shown as 500%)
+    // and -0.4% (shown as 0%) are accepted.
+    for (typed, stored) in [(500.4, 5.0), (-0.4, 0.0), (149.6, 1.5)] {
+        assert_eq!(auto_leading_typed(typed), stored, "{typed}%");
+        let mut probe = d.clone();
+        probe.fields.insert("autoLeading".into(), json!(auto_leading_typed(typed)));
+        assert_eq!(check_justification(&probe, "", &current), Ok(()), "{typed}%");
+    }
 
     app.ui.dialog = Some(d);
     app.ui.dialog.as_mut().unwrap().fields.insert("autoLeading".into(), json!(1.5));
