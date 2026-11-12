@@ -42,10 +42,26 @@ fn text_fields(app: &DesignApp, fields: &mut Value, paragraph: Option<&str>, nex
     }
 }
 
+/// The active document as the dialog records it: its uid and the epoch that File › Revert
+/// changes.
+fn document_key(app: &DesignApp) -> Value {
+    app.session.active().map_or(Value::Null, |st| json!([st.uid, st.identity_epoch]))
+}
+
+/// The document the dialog was opened on is still the active one and was not reverted since, so
+/// OK never gives its settings to another document's style of the same name.
+fn same_document(app: &DesignApp, d: &Dialog) -> Result<(), String> {
+    let key = document_key(app);
+    if !key.is_null() && d.fields.get("doc") == Some(&key) { Ok(()) } else { Err(format!("the active document changed after {} opened", title(d))) }
+}
+
 /// The dialog for a new style from the selected object (its fill, stroke, corners and effects,
 /// as InDesign's New Object Style), named "Object Style n".
 pub fn open_new(app: &mut DesignApp) {
+    let doc = document_key(app);
     let Some(st) = app.session.active() else { return };
+    // Apply Style to Selection applies the style to the objects selected now.
+    let targets: Vec<u64> = st.selection.items.iter().map(|i| i.0).collect();
     let it = st.selection.items.first().and_then(|i| st.doc.item(*i)).cloned();
     let taken = |n: &str| st.doc.styles.object_style(n).is_some();
     let name = (1..).map(|i| format!("Object Style {i}")).find(|n| !taken(n)).unwrap_or_default();
@@ -54,6 +70,8 @@ pub fn open_new(app: &mut DesignApp) {
     let frame = it.as_ref().and_then(|i| i.text_frame()).map(|t| t.options.clone());
     let mut fields = json!({
         "new": true,
+        "doc": doc,
+        "targets": targets,
         "name": name,
         "basedOn": designcraft_doc::NO_OBJECT_STYLE,
         "fill": it.as_ref().map(|i| i.fill.clone()).unwrap_or_default(),
@@ -81,6 +99,7 @@ pub fn open_edit(app: &mut DesignApp, name: &str) -> Result<(), String> {
     }
     let mut fields = json!({
         "new": false,
+        "doc": document_key(app),
         "orig": name,
         "name": name,
         "basedOn": os.based_on.as_deref().unwrap_or(designcraft_doc::NO_OBJECT_STYLE),
@@ -171,6 +190,7 @@ fn general_json(o: &designcraft_doc::TextFrameOptions) -> Value {
 
 /// OK: the new style (applied to the selection when asked), or the edited one.
 pub fn confirm(app: &mut DesignApp, d: &Dialog) -> Result<Value, String> {
+    same_document(app, d)?;
     let name = d.s("name").trim().to_string();
     if name.is_empty() {
         return Err(crate::i18n::tr(&app.ui.language, "Enter a style name.").to_string());
@@ -183,10 +203,21 @@ pub fn confirm(app: &mut DesignApp, d: &Dialog) -> Result<Value, String> {
         let r = app.run("style.object.create", Value::Object(p)).map_err(|e| e.to_string())?;
         let made = r["name"].as_str().unwrap_or(&name).to_string();
         // The style exists now, so OK again mustn't make a second one: a refused apply (locked
-        // objects) goes to the status line and the dialog closes.
+        // objects) goes to the status line and the dialog closes. The style goes to the objects
+        // selected when the dialog opened that still exist, not to a selection made since.
+        let targets: Vec<u64> = app.session.active().map_or_else(Vec::new, |st| {
+            d.fields
+                .get("targets")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_u64)
+                .filter(|id| st.doc.item(designcraft_doc::ItemId(*id)).is_some())
+                .collect()
+        });
         if d.b("apply")
-            && app.session.active().is_some_and(|st| !st.selection.items.is_empty())
-            && let Err(e) = app.run("style.object.apply", json!({"name": made}))
+            && !targets.is_empty()
+            && let Err(e) = app.run("style.object.apply", json!({"name": made, "ids": targets}))
         {
             app.status(e.to_string());
         }
@@ -770,5 +801,89 @@ mod tests {
         let e = crate::dialogs::confirm(&mut app).unwrap_err();
         assert!(e.contains("already named"), "{e}");
         assert!(app.ui.dialog.as_ref().is_some_and(|d| d.s("status") == e));
+    }
+
+    /// Object Style Options and New Object Style act only on the document they opened for. With
+    /// another document active, after their document closed, or after it was reverted, OK keeps
+    /// the dialog open with the reason and changes no style.
+    #[test]
+    fn the_dialog_acts_only_on_the_document_it_opened_for() {
+        let name = designcraft_doc::BASIC_GRAPHICS_FRAME;
+        let weights = |app: &DesignApp| -> Vec<f64> {
+            app.session
+                .documents()
+                .iter()
+                .map(|st| st.doc.styles.object_style(name).and_then(|s| s.stroke.as_ref()).map_or(-1.0, |s| s.weight))
+                .collect()
+        };
+        let edit = |app: &mut DesignApp| {
+            open_edit(app, name).unwrap();
+            if let Some(d) = app.ui.dialog.as_mut() {
+                set(d, &["stroke", "weight"], json!(9.0));
+            }
+        };
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"title": "A"})).unwrap();
+        app.run("file.new", json!({"title": "B"})).unwrap();
+        app.session.set_active(0);
+        let before = weights(&app);
+        assert_eq!(before.len(), 2);
+
+        // Options opened on A, OK with B active: B has a style of the same name.
+        edit(&mut app);
+        app.session.set_active(1);
+        let e = crate::dialogs::confirm(&mut app).unwrap_err();
+        assert!(e.contains("active document changed"), "{e}");
+        assert!(app.ui.dialog.as_ref().is_some_and(|d| d.s("status") == e), "the dialog stays open with the reason");
+        assert_eq!(weights(&app), before, "neither document's style changed");
+
+        // New Object Style opened on A makes nothing in B, and OK works once A is active again.
+        app.ui.dialog = None;
+        app.session.set_active(0);
+        open_new(&mut app);
+        app.session.set_active(1);
+        assert!(crate::dialogs::confirm(&mut app).is_err());
+        assert!(app.session.documents().iter().all(|st| st.doc.styles.object_style("Object Style 1").is_none()));
+        app.session.set_active(0);
+        crate::dialogs::confirm(&mut app).unwrap();
+        assert!(app.session.documents()[0].doc.styles.object_style("Object Style 1").is_some());
+        assert!(app.session.documents()[1].doc.styles.object_style("Object Style 1").is_none());
+
+        // Options opened on A, A closed: B is active and keeps its style.
+        edit(&mut app);
+        app.session.execute("file.close", &json!({"index": 0})).unwrap();
+        assert!(crate::dialogs::confirm(&mut app).is_err());
+        assert_eq!(weights(&app), vec![before[1]]);
+        app.ui.dialog = None;
+
+        // Options opened on B, B reverted: the reverted document keeps its style.
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let dir = tempfile::tempdir().unwrap();
+            app.run("file.saveAs", json!({"path": dir.path().join("revert.designcraft")})).unwrap();
+            app.run("frame.create", json!({"rect": [72, 72, 144, 144], "content": "graphic"})).unwrap();
+            edit(&mut app);
+            app.run("file.revert", json!({})).unwrap();
+            assert!(crate::dialogs::confirm(&mut app).is_err());
+            assert_eq!(weights(&app), vec![before[1]]);
+        }
+    }
+
+    /// Apply Style to Selection applies the new style to the objects selected when the dialog
+    /// opened, not to a selection made while it was open.
+    #[test]
+    fn apply_style_to_selection_uses_the_selection_the_dialog_opened_with() {
+        let (mut app, a) = app_with_frame();
+        let b = app.run("frame.create", json!({"rect": [200, 72, 300, 172], "content": "graphic"})).unwrap()["id"].as_u64().unwrap();
+        app.run("selection.set", json!({"ids": [a]})).unwrap();
+        open_new(&mut app);
+        if let Some(d) = app.ui.dialog.as_mut() {
+            d.fields.insert("name".into(), json!("Picked"));
+        }
+        app.run("selection.set", json!({"ids": [b]})).unwrap();
+        crate::dialogs::confirm(&mut app).unwrap();
+        let style = |id: u64| app.session.active().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap().object_style.clone();
+        assert_eq!(style(a), "Picked");
+        assert_ne!(style(b), "Picked");
     }
 }
