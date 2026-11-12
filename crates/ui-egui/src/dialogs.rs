@@ -1005,6 +1005,24 @@ fn selected_frame_options(app: &DesignApp) -> Option<designcraft_doc::TextFrameO
     st.doc.item(fid)?.text_frame().map(|t| t.options.clone())
 }
 
+/// True when every text frame the dialog changes has the same inset on all four sides: the
+/// selected items, else the caret's frame, else every frame of the caret's story.
+fn selected_frames_have_even_insets(app: &DesignApp) -> bool {
+    let Some(st) = app.session.active() else {
+        return true;
+    };
+    let mut ids = st.selection.items.clone();
+    if ids.is_empty()
+        && let Some(t) = st.selection.text
+    {
+        ids = match t.frame {
+            Some(f) => vec![f],
+            None => st.doc.story(t.story).map(|s| s.frames.clone()).unwrap_or_default(),
+        };
+    }
+    ids.iter().filter_map(|id| st.doc.item(*id)?.text_frame()).all(|t| t.options.inset.iter().all(|v| (v - t.options.inset[0]).abs() < 1e-9))
+}
+
 /// Object › Text Frame Options shows the selected frame's options. `_shown` keeps what it showed,
 /// so OK sends only the fields the user changed. Fields given when the dialog opened count as
 /// changed.
@@ -1056,7 +1074,8 @@ fn seed_text_frame_options(app: &DesignApp, d: &mut Dialog) {
             d.fields.entry(k.clone()).or_insert_with(|| v.clone());
         }
     }
-    d.fields.entry("insetLinked".to_string()).or_insert_with(|| json!(o.inset.iter().all(|v| (v - o.inset[0]).abs() < 1e-9)));
+    // Linked only when no selected frame has uneven sides, so a typed side cannot overwrite them.
+    d.fields.entry("insetLinked".to_string()).or_insert_with(|| json!(selected_frames_have_even_insets(app)));
     // The frame's width: Fixed Number shows each column's width from it as the fields change.
     if let Some(w) = selected_frame_width(app) {
         d.fields.insert("_frameWidth".into(), json!(w));
