@@ -34,6 +34,9 @@ pub fn language_tag(language: &str) -> Option<&'static str> {
             "zh"
         });
     }
+    if let ["sr", script @ ("cyrl" | "latn"), ..] = *words {
+        return Some(if script == "cyrl" { "sr-Cyrl" } else { "sr-Latn" });
+    }
     if let Some(tag) = locale_code(&words) {
         return intern_tag(tag);
     }
@@ -49,6 +52,8 @@ pub fn language_tag(language: &str) -> Option<&'static str> {
         "portuguese brazilian" => Some("pt-BR"),
         "norwegian bokmål" | "norwegian bokmal" => Some("nb"),
         "norwegian nynorsk" => Some("nn"),
+        "serbian cyrillic" => Some("sr-Cyrl"),
+        "serbian latin" => Some("sr-Latn"),
         _ => None,
     };
     if variant.is_some() {

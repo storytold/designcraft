@@ -14,6 +14,7 @@ pub mod cmd;
 pub mod dtd;
 pub mod file_access;
 pub mod guard;
+pub mod hyphenation;
 pub mod io;
 pub mod links;
 pub mod math;
