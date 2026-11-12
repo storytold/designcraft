@@ -611,7 +611,7 @@ fn czech_counts_use_the_plural_form_for_the_number() {
 #[test]
 fn hebrew_catalog_is_selectable_rtl_and_preserves_english_keys() {
     let mut seen = HashSet::new();
-    assert_eq!(he::TABLE.len(), 1217, "initial Hebrew source-linked table changed");
+    assert_eq!(he::TABLE.len(), 1278, "initial Hebrew source-linked table changed");
     for (source, translated) in he::TABLE {
         assert!(seen.insert(*source), "duplicate Hebrew source key: {source}");
         assert!(!translated.trim().is_empty(), "empty Hebrew: {source}");
@@ -654,6 +654,18 @@ fn hebrew_catalog_is_selectable_rtl_and_preserves_english_keys() {
     assert_eq!(tr("he", "Insert Footnote"), "הוספת הערת שוליים");
     assert_eq!(tr("he", "No errors"), "לא נמצאו שגיאות");
     assert_eq!(tr("he", "Hyphenate"), "חלוקת מילים באמצעות מקפים");
+    assert_eq!(tr("he", "Edit/Spelling"), "עריכה/איות");
+    assert_eq!(tr("he", "Object/Clipping Path"), "אובייקט/נתיב חיתוך");
+    assert_eq!(tr("he", "Object/Transform Again"), "אובייקט/חזרה על שינוי הצורה");
+    assert_eq!(tr("he", "Type/Insert Special Character/Symbols"), "טקסט/הוספת תו מיוחד/סמלים");
+    assert_eq!(tr("he", "Type/Hyperlinks & Cross-References"), "טקסט/היפר־קישורים והפניות צולבות");
+    assert_eq!(tr("he", "Type/Track Changes"), "טקסט/מעקב אחר שינויים");
+    assert_eq!(tr("he", "View/Grids & Guides"), "תצוגה/רשתות וקווי עזר");
+    assert_eq!(tr("he", "Window/Type & Tables"), "חלון/טקסט וטבלאות");
+    assert_eq!(tr("he", "Type on a Path"), "טקסט על נתיב");
+    assert_eq!(tr("he", "Document Footnote Options..."), "אפשרויות הערות שוליים במסמך...");
+    assert_eq!(tr("he", "Object States"), "מצבי אובייקט");
+    assert_eq!(tr("he", "Color Blindness – Protanopia"), "עיוורון צבעים – פרוטנופיה");
     assert_eq!(tr("he", "Smart Text Reflow"), "זרימת טקסט חכמה");
     assert_eq!(tr("he", "Baseline Grid"), "רשת קווי בסיס");
     assert_eq!(tr("he", "Frame Fitting"), "התאמת מסגרת");
