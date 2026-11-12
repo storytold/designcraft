@@ -1,5 +1,12 @@
 use super::*;
 
+/// [`super::discard`] as the session that wrote or recovered the entry, if one did.
+fn discard(dir: &Path, uid: u64) {
+    let key = directory_key(dir).ok().map(|key| (key, uid));
+    let owner = key.and_then(|key| WRITTEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&key).copied());
+    super::discard(dir, uid, owner.unwrap_or(0));
+}
+
 fn dirty_session() -> Session {
     let mut session = Session::new();
     session.execute("file.new", &json!({})).unwrap();
@@ -440,6 +447,51 @@ fn a_snapshot_that_finishes_after_the_save_is_dropped() {
     assert!(s.docs[0].recovery_entries.iter().any(|(d, u)| *u == uid && d == dir.path()));
 }
 
+#[test]
+fn a_shared_folders_entry_is_only_its_writing_sessions() {
+    // A recovered entry keeps the uid it was written under, which a document of another session
+    // in the same process can have.
+    let dir = tempfile::tempdir().unwrap();
+    let writer = dirty_session();
+    let uid = writer.docs[0].uid;
+    assert_eq!(save(&writer, dir.path()).unwrap(), 1);
+    let (file, _) = files(dir.path(), uid);
+    let snapshot = std::fs::read(&file).unwrap();
+    // Another session's clean document with that uid: its discard leaves the entry alone.
+    let mut clean = Session::new();
+    clean.execute("file.new", &json!({})).unwrap();
+    clean.docs[0].uid = uid;
+    assert_eq!(save(&clean, dir.path()).unwrap(), 0);
+    assert!(file.exists(), "another session's discard removed the entry");
+    // Another session's edited document with that uid: it does not write over the entry.
+    let mut edited = dirty_session();
+    edited.docs[0].uid = uid;
+    assert!(save(&edited, dir.path()).is_err());
+    assert_eq!(std::fs::read(&file).unwrap(), snapshot, "another session wrote over the entry");
+    super::discard(dir.path(), uid, writer.recovery_owner.0);
+    assert!(!file.exists(), "the writing session removes its entry");
+}
+
+#[test]
+fn a_snapshot_queued_as_the_sessions_own_is_recorded_when_it_lands() {
+    // A write taken while the shared folder's entry was this session's, published after a cleanup
+    // dropped that record: Save and Close must still remove what it put there.
+    let dir = tempfile::tempdir().unwrap();
+    let s = dirty_session();
+    let uid = s.docs[0].uid;
+    let owner = s.recovery_owner.0;
+    assert_eq!(save(&s, dir.path()).unwrap(), 1);
+    let entry = Snapshot::of(&prepare_save(&s, dir.path()).unwrap(), dir.path(), &s.docs[0]);
+    assert!(entry.own);
+    super::discard(dir.path(), uid, owner);
+    let (file, _) = files(dir.path(), uid);
+    assert!(!file.exists());
+    let written = write_snapshot(&entry, || false);
+    assert!(written.published && written.error.is_none(), "the snapshot landed");
+    super::discard(dir.path(), uid, owner);
+    assert!(!file.exists(), "the snapshot it wrote is the session's to remove");
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn a_snapshot_whose_metadata_failed_is_still_the_documents_to_remove() {
@@ -544,12 +596,15 @@ fn a_clean_document_leaves_another_sessions_write_queued_behind_its_own() {
     let held = testing::hold_next_write(dir.path());
     a.execute("file.recovery.save", &json!({"background": true})).unwrap();
     held.wait_until_held();
-    // A write now cancels the held one; the other session's write is queued to follow it.
+    // A write now cancels the held one. The other session does not write over the entry it left.
     a.execute("file.recovery.save", &json!({"dir": dir.path().to_string_lossy()})).unwrap();
-    b.execute("file.recovery.save", &json!({"background": true})).unwrap();
+    let err = b.execute("file.recovery.save", &json!({"background": true})).unwrap_err();
+    assert!(err.to_string().contains("did not write"), "{err}");
     a.execute("edit.undo", &json!({})).unwrap();
     assert!(!a.docs[0].is_dirty());
     save(&a, dir.path()).unwrap();
+    // Once that entry is gone, the other session's write is queued to follow the held one.
+    b.execute("file.recovery.save", &json!({"background": true})).unwrap();
     held.release();
     assert_eq!(finished_writes(&mut b), 1, "the other session's write ran");
     let mut reopened = Session::new();

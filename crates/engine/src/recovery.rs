@@ -272,30 +272,39 @@ fn relock(dir: &Path, created: bool) -> Result<bool> {
 }
 
 /// Entries this process wrote or recovered in folders that are not its run's own: (canonical
-/// folder, uid). Document uids start at 1 in every process, so a shared folder's entry under
-/// one of this run's uids may be another run's.
-static WRITTEN: std::sync::Mutex<std::collections::BTreeSet<(PathBuf, u64)>> = std::sync::Mutex::new(std::collections::BTreeSet::new());
+/// folder, uid), with the session that wrote or recovered each ([`Session::recovery_owner`]).
+/// Document uids start at 1 in every process, so a shared folder's entry under one of this run's
+/// uids may be another run's; and a recovered entry keeps the uid it was written under, which a
+/// document of another session can have.
+static WRITTEN: std::sync::Mutex<std::collections::BTreeMap<(PathBuf, u64), u64>> = std::sync::Mutex::new(std::collections::BTreeMap::new());
 
-/// What this run may do in a recovery folder.
+/// What a session may do in a recovery folder.
 struct Access {
     /// This run's own folder (`run_dir`): every entry in it is this run's.
     own: bool,
     key: PathBuf,
+    /// The session asking ([`Session::recovery_owner`]).
+    owner: u64,
 }
 
 impl Access {
     fn owns(&self, uid: u64) -> bool {
-        self.own || WRITTEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner).contains(&(self.key.clone(), uid))
+        self.own || WRITTEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&(self.key.clone(), uid)) == Some(&self.owner)
     }
 
     fn record(&self, uid: u64) {
         if !self.own {
-            WRITTEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert((self.key.clone(), uid));
+            WRITTEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert((self.key.clone(), uid), self.owner);
         }
     }
 
+    /// Drop the record of an entry this session wrote or recovered; another session's stays.
     fn forget(&self, uid: u64) {
-        WRITTEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&(self.key.clone(), uid));
+        let mut written = WRITTEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let key = (self.key.clone(), uid);
+        if written.get(&key) == Some(&self.owner) {
+            written.remove(&key);
+        }
     }
 
     /// Refuse an entry of another run before anything is written: this run never replaces it.
@@ -319,9 +328,9 @@ impl Access {
     }
 }
 
-/// Check what this run may do in `dir`. A folder that is not this run's own may be the folder
-/// of another running app, whose lock that app holds: this run leaves it alone.
-fn access(dir: &Path, created: bool) -> Result<Access> {
+/// Check what session `owner` may do in `dir`. A folder that is not this run's own may be the
+/// folder of another running app, whose lock that app holds: this run leaves it alone.
+fn access(dir: &Path, created: bool, owner: u64) -> Result<Access> {
     #[cfg(not(target_arch = "wasm32"))]
     let own = relock(dir, created)?;
     #[cfg(not(target_arch = "wasm32"))]
@@ -333,7 +342,7 @@ fn access(dir: &Path, created: bool) -> Result<Access> {
         let _ = created;
         false
     };
-    Ok(Access { own, key: directory_key(dir)? })
+    Ok(Access { own, key: directory_key(dir)?, owner })
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -485,13 +494,13 @@ fn read_entry_file(path: &Path) -> std::io::Result<Vec<u8>> {
 }
 
 /// Remove a document's recovery entry (it was saved or closed). In a folder that is not this
-/// run's own, only an entry this run wrote or recovered is removed.
-pub fn discard(dir: &Path, uid: u64) {
+/// run's own, only an entry session `owner` wrote or recovered is removed.
+pub fn discard(dir: &Path, uid: u64, owner: u64) {
     #[cfg(not(target_arch = "wasm32"))]
     if validate_recovery_dir(dir).is_err() {
         return;
     }
-    let Ok(access) = access(dir, false) else { return };
+    let Ok(access) = access(dir, false, owner) else { return };
     if !access.owns(uid) {
         return;
     }
@@ -504,6 +513,7 @@ pub fn discard(dir: &Path, uid: u64) {
 /// Consume this document's checkpoint provenance after Save/Close/Revert. A default-directory
 /// uid may also be another live recovered document's retained source after a failed republish.
 pub(crate) fn discard_document(s: &mut Session, index: usize, default_dir: Option<&Path>) {
+    let owner = s.recovery_owner.0;
     let Some(doc) = s.docs.get_mut(index) else { return };
     let uid = doc.uid;
     // A completed Save/Close/Revert consumes the provenance, even when removal fails. A stale
@@ -518,7 +528,7 @@ pub(crate) fn discard_document(s: &mut Session, index: usize, default_dir: Optio
     // `file.recovery.save {dir}` is not in its entries until the write's result is taken): none
     // may publish after this point, and what one already published is removed below.
     #[cfg(not(target_arch = "wasm32"))]
-    for dir in worker::cancel_document(uid, s.recovery_owner.0) {
+    for dir in worker::cancel_document(uid, owner) {
         if !entries.iter().any(|(entry_dir, entry_uid)| *entry_uid == uid && same_directory(entry_dir, &dir)) {
             entries.push((dir, uid));
         }
@@ -532,7 +542,7 @@ pub(crate) fn discard_document(s: &mut Session, index: usize, default_dir: Optio
             // A write of it still running must not publish its snapshot after this point.
             #[cfg(not(target_arch = "wasm32"))]
             worker::cancel(&dir, uid);
-            discard(&dir, uid);
+            discard(&dir, uid, owner);
         }
     }
 }
@@ -563,7 +573,7 @@ fn prepare_save(s: &Session, dir: &Path) -> Result<Access> {
     // coincides with an unrelated live document in a manually configured recovery directory.
     protect_retained_sources(s, dir)?;
     let created = secure_recovery_dir(dir)?;
-    let access = access(dir, created)?;
+    let access = access(dir, created, s.recovery_owner.0)?;
     // New Document's preview is never written.
     let preview = s.new_document_preview();
     for document in s.docs.iter().filter(|d| d.is_dirty() && preview != Some(d.uid)) {
@@ -584,9 +594,9 @@ pub fn save(s: &Session, dir: &Path) -> Result<usize> {
             // this discard, and what one already wrote in another folder is removed too.
             #[cfg(not(target_arch = "wasm32"))]
             for other in worker::cancel_document(d.uid, s.recovery_owner.0) {
-                discard(&other, d.uid);
+                discard(&other, d.uid, s.recovery_owner.0);
             }
-            discard(dir, d.uid);
+            discard(dir, d.uid, s.recovery_owner.0);
             continue;
         }
         // The caller asked for this write now: nothing has cancelled it.
@@ -676,7 +686,9 @@ struct Snapshot {
     title: String,
     /// Whether this run may replace an entry already in the folder.
     own: bool,
-    /// The folder's canonical key, for recording that a shared entry is this run's now.
+    /// The folder is not this run's own: the entry, once written, is recorded as the session's.
+    shared: bool,
+    /// The folder's canonical key, for recording that a shared entry is this session's now.
     key: PathBuf,
     /// The session that queued a background write ([`Session::recovery_owner`]), which takes its
     /// result.
@@ -716,8 +728,9 @@ impl Snapshot {
             title: d.title(),
             // An entry this run did not write is never replaced, even one made since it checked.
             own: access.owns(d.uid),
+            shared: !access.own,
             key: access.key.clone(),
-            owner: 0,
+            owner: access.owner,
         }
     }
 }
@@ -778,13 +791,15 @@ fn write_snapshot(entry: &Snapshot, cancelled: impl Fn() -> bool) -> Written {
             designcraft_format::write(&mut StopWhen { out, cancelled: &cancelled }, &entry.doc, None).map_err(|e| EngineError::Other(e.to_string()))
         },
         &cancelled,
-        // Written: in a folder that is not this run's own, the entry is now this run's to replace
-        // and remove (Save and Close must clean up the snapshot they wrote). Recorded with the
-        // rename, so a cleanup after it can remove the entry.
+        // Written: in a folder that is not this run's own, the entry is now this session's to
+        // replace and remove (Save and Close must clean up the snapshot they wrote). Recorded with
+        // the rename, so a cleanup after it can remove the entry, and recorded even when the
+        // entry was this session's as the write was queued: a cleanup since may have dropped that
+        // record.
         || {
             landed.set(true);
-            if !entry.own {
-                WRITTEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert((entry.key.clone(), entry.uid));
+            if entry.shared {
+                WRITTEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert((entry.key.clone(), entry.uid), entry.owner);
             }
         },
     );
@@ -867,6 +882,7 @@ pub(crate) fn start_tracked(s: &mut Session, dir: &Path) -> Result<usize> {
 /// whether a checkpoint was recorded.
 #[cfg(not(target_arch = "wasm32"))]
 fn record_checkpoint(s: &mut Session, dir: PathBuf, uid: u64) -> bool {
+    let owner = s.recovery_owner.0;
     match s.docs.iter_mut().find(|doc| doc.uid == uid) {
         Some(doc) if doc.is_dirty() => {
             if !has_checkpoint(doc, &dir) {
@@ -878,7 +894,7 @@ fn record_checkpoint(s: &mut Session, dir: PathBuf, uid: u64) -> bool {
         // crash, and the timer writes only when a document is dirty, so nothing else would
         // remove it.
         Some(_) | None => {
-            discard(&dir, uid);
+            discard(&dir, uid, owner);
             false
         }
     }
@@ -1604,10 +1620,11 @@ pub fn open(s: &mut Session, dir: &Path) -> Result<Vec<usize>> {
 fn open_with_publisher(s: &mut Session, dir: &Path, mut publish: impl FnMut(&Path, &[u8]) -> Result<()>) -> Result<Vec<usize>> {
     #[cfg(not(target_arch = "wasm32"))]
     validate_recovery_dir(dir)?;
-    let source = access(dir, false)?;
+    let owner = s.recovery_owner.0;
+    let source = access(dir, false, owner)?;
     let destination = s.recovery_dir.clone().unwrap_or_else(|| dir.to_path_buf());
     let created = secure_recovery_dir(&destination)?;
-    let target = access(&destination, created)?;
+    let target = access(&destination, created, owner)?;
     let source_key = source.key.clone();
     let destination_key = target.key.clone();
     let mut opened = Vec::new();
@@ -1665,7 +1682,7 @@ fn open_with_publisher(s: &mut Session, dir: &Path, mut publish: impl FnMut(&Pat
                     let meta = json!({"path": state.path, "title": state.title(), "saved": designcraft_doc::vars::now()});
                     match publish(&metadata, meta.to_string().as_bytes()) {
                         Ok(()) => {
-                            discard(dir, uid);
+                            discard(dir, uid, owner);
                             state.recovery_entries = vec![(destination.clone(), state.uid)];
                         }
                         Err(e) => log::warn!("recovery entry {uid} kept: {e}"),
