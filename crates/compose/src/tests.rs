@@ -7797,6 +7797,50 @@ fn anchored_object_wraps_another_storys_text() {
     assert!(lines_in_band(&moved, 200.0, 260.0).iter().all(|l| l.x0 >= left + 100.0 - 1e-6));
 }
 
+/// A neighbour's list numbers come from earlier stories: renumbering one of those widens the
+/// neighbour's label, which moves its anchored object and the text that wraps around it.
+#[test]
+fn cache_recomposes_when_a_neighbours_list_start_changes() {
+    use designcraft_doc::anchored::AnchorRelative as R;
+    let steps = ParaAttrs { list_name: Some("Steps".into()), ..numbered(designcraft_doc::NumberStyle::Arabic, "^#. ") };
+    // Story C numbers "Steps" first; it wraps nothing, so it is no neighbour of B.
+    let (mut d, c, _) = doc_with("Earlier step", Rect::new(0.0, 500.0, 300.0, 600.0), steps.clone());
+    d.settings.lists.push(designcraft_doc::NumberedList { name: "Steps".into(), continue_across_stories: true });
+    let lid = d.default_layer();
+    let (_, a) = d
+        .add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 300.0, 400.0), lid, "Step", ParaFormat { para: steps, ..Default::default() })
+        .unwrap();
+    let (_, b) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(320.0, 0.0, 620.0, 400.0), lid, &[LOREM; 3].join(" "), ParaFormat::default()).unwrap();
+    // A's object follows its anchor across into B's frame, after A's list label.
+    let mut it = designcraft_doc::Item::new(
+        ItemId(d.alloc()),
+        lid,
+        designcraft_doc::Shape::Rectangle,
+        designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 100.0, 60.0)),
+    );
+    it.wrap.mode = WrapMode::BoundingBox;
+    let position = designcraft_doc::AnchorPosition::Custom {
+        x_relative: R::Anchor,
+        y_relative: R::TextFrame,
+        x_offset: 300.0,
+        y_offset: 100.0,
+        object_point: 0,
+        ref_point: 0,
+        keep_within_column: false,
+        spine_relative: false,
+    };
+    d.story_mut(a).unwrap().insert_object(0, designcraft_doc::AnchoredObject::new(it, position));
+    let cache = Cache::new();
+    let before = cache.get(&d, b, None);
+    assert_eq!(line_layout(&before), line_layout(&compose_story(&d, b, &ComposeOptions::default())));
+    // Only C changes: A's label goes from "2. " to "1000001. ".
+    d.story_mut(c).unwrap().paras[0].para.start_at = Some(Some(1_000_000));
+    assert_eq!(list_labels(&compose_story(&d, a, &ComposeOptions::default()), "0123456789. "), ["1000001. "]);
+    let after = cache.get(&d, b, None);
+    assert_eq!(line_layout(&after), line_layout(&compose_story(&d, b, &ComposeOptions::default())));
+    assert_ne!(line_layout(&after), line_layout(&before));
+}
+
 /// An anchored object's wrap is built as a page item's: a contour on both sides of an oval sets
 /// text left and right of it, closer in where the oval narrows.
 #[test]
