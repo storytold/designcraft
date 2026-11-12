@@ -4,7 +4,14 @@ use super::{CHAR_BUILTINS, DOM_VERSION, Document, El, Ex, HashSet, PARA_BUILTINS
 impl<'a> Ex<'a> {
     // ---------- designmap ----------
 
-    pub(super) fn designmap(&mut self, masters: &[(String, Vec<u8>)], spreads: &[(String, Vec<u8>)], stories: &[(String, Vec<u8>)]) -> Vec<u8> {
+    pub(super) fn designmap(
+        &mut self,
+        masters: &[(String, Vec<u8>)],
+        spreads: &[(String, Vec<u8>)],
+        stories: &[(String, Vec<u8>)],
+        tags: bool,
+        backing_story: bool,
+    ) -> Vec<u8> {
         let d = self.d;
         let story_list: Vec<String> = d.stories.keys().map(|k| uid(k.0)).collect();
         let mut root = El::new("Document")
@@ -94,6 +101,10 @@ impl<'a> Ex<'a> {
         for v in &d.text_variables {
             root.push(text_variable_el(v));
         }
+        // The XML tags before the layers, the backing story (XML root) before the stories, as InDesign has them.
+        if tags {
+            root.push(El::new("idPkg:Tags").attr("src", "XML/Tags.xml"));
+        }
         // IDML lists layers back to front.
         for l in d.layers.iter().rev() {
             root.push(layer_el(l));
@@ -152,6 +163,9 @@ impl<'a> Ex<'a> {
         // Formats before the stories whose sources apply them.
         for (i, f) in d.xref_formats.iter().enumerate() {
             root.push(xref_format_el(i, f));
+        }
+        if backing_story {
+            root.push(El::new("idPkg:BackingStory").attr("src", "XML/BackingStory.xml"));
         }
         for (name, _) in stories {
             root.push(El::new("idPkg:Story").attr("src", name));

@@ -283,12 +283,69 @@ pub struct XmlSettings {
     /// The loaded Document Type Definition (its text), for validation.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub dtd: String,
+    /// The document's XML structure as InDesign keeps it (Structure pane): elements by id. The
+    /// elements of a story, table or cell are found through their [`XmlContent`]; inline elements
+    /// are the text whose [`CharAttrs::xml_element`](crate::CharAttrs) is theirs.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub elements: BTreeMap<u64, XmlElement>,
+    /// The root element's children, in order.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub root_children: Vec<u64>,
 }
 
 impl XmlSettings {
     pub fn is_empty(&self) -> bool {
-        self.tags.is_empty() && self.style_map.is_empty() && self.root.is_empty() && self.dtd.is_empty()
+        self.tags.is_empty() && self.style_map.is_empty() && self.root.is_empty() && self.dtd.is_empty() && self.elements.is_empty()
     }
+}
+
+/// One element of the document's XML structure.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct XmlElement {
+    pub tag: String,
+    /// Attributes in the order the file gave them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attrs: Vec<(String, String)>,
+    /// The enclosing element (0: the root).
+    #[serde(default)]
+    pub parent: u64,
+    pub content: XmlContent,
+    /// Children that aren't found through the content: those of an element with none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub children: Vec<u64>,
+}
+
+impl XmlElement {
+    /// The value of attribute `name`.
+    pub fn attr(&self, name: &str) -> Option<&str> {
+        self.attrs.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str())
+    }
+}
+
+/// What an XML element marks up.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum XmlContent {
+    /// Nothing of its own: only its `children`.
+    #[default]
+    None,
+    /// A story, all of it.
+    Story { story: StoryId },
+    /// A table, by its id (unique in the document).
+    Table {
+        table: u64,
+        /// The paragraph breaks before and after the table's anchor paragraph that the import
+        /// added (a table has a paragraph of its own here, not in InDesign): left out on export.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        added_break_before: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        added_break_after: bool,
+    },
+    /// A table cell: its table and its index in the table's row-major cells.
+    Cell { table: u64, cell: usize },
+    /// Text inside a story or cell: the runs tagged with this element.
+    Text,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

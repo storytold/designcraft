@@ -56,6 +56,7 @@ impl<'a> Ex<'a> {
                 match it.content {
                     Content::Text(_) => "TextType",
                     Content::Graphic(_) => "GraphicType",
+                    _ if it.graphic_frame => "GraphicType",
                     _ => "Unassigned",
                 },
             );
