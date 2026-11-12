@@ -610,7 +610,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Text Frame Options…",
             ["Object"],
             Some("Cmd+B"),
-            "{columns?, gutter?, inset?: number|[t,l,b,r] (null keeps that side), verticalJustification?: top|center|bottom|justify, paragraphSpacingLimit? (pt: Justify adds at most this between paragraphs, the rest between lines), columnsKind?: fixedNumber|fixedWidth, columnWidth? (pt, Fixed Width), firstBaseline?: ascent|capHeight|leading|xHeight|emboxHeight|fixed, firstBaselineMin? (pt), autoSize?: off|heightOnly|widthOnly|heightAndWidth|heightAndWidthProportionally, autoSizeReference?: topLeft|topCenter|topRight|leftCenter|center|rightCenter|bottomLeft|bottomCenter|bottomRight (the point that stays put), useMinimumHeight?: bool, minimumHeight? (pt), useMinimumWidth?: bool, minimumWidth? (pt), noLineBreaks?: bool, ignoreWrap?, balanceColumns?, columnRule?: bool, columnRuleWeight? (pt), columnRuleColor? (swatch name), columnRuleTint? (0..1), columnRuleOffset? (pt, horizontal), columnRuleTopInset? (pt), columnRuleBottomInset? (pt), baselineGrid?: {start? (pt), increment? (pt), relativeTo?: page|margin|frame|inset} (the frame's custom baseline grid; fields not given keep the frame's, or come from the document grid; null turns it off), vertical?: bool (sets the story direction of the frames' stories, as Type ▸ Story Direction), ids?}",
+            "{columns? (1..40), gutter? (pt, 0..15552), inset?: number|[t,l,b,r] (pt, each 0..15552; a list has four sides, null keeps that side), verticalJustification?: top|center|bottom|justify, paragraphSpacingLimit? (pt: Justify adds at most this between paragraphs, the rest between lines), columnsKind?: fixedNumber|fixedWidth|flexibleWidth, columnWidth? (pt, Fixed Width), firstBaseline?: ascent|capHeight|leading|xHeight|emboxHeight|fixed, firstBaselineMin? (pt), autoSize?: off|heightOnly|widthOnly|heightAndWidth|heightAndWidthProportionally, autoSizeReference?: topLeft|topCenter|topRight|leftCenter|center|rightCenter|bottomLeft|bottomCenter|bottomRight (the point that stays put), useMinimumHeight?: bool, minimumHeight? (pt), useMinimumWidth?: bool, minimumWidth? (pt), noLineBreaks?: bool, ignoreWrap?, balanceColumns?, columnRule?: bool, columnRuleWeight? (pt), columnRuleColor? (swatch name), columnRuleTint? (0..1), columnRuleOffset? (pt, horizontal), columnRuleTopInset? (pt), columnRuleBottomInset? (pt), baselineGrid?: {start? (pt), increment? (pt), relativeTo?: page|margin|frame|inset} (the frame's custom baseline grid; fields not given keep the frame's, or come from the document grid; null turns it off), vertical?: bool (sets the story direction of the frames' stories, as Type ▸ Story Direction), ids?}",
             has_selection,
             text_frame_options
         ),
@@ -2569,6 +2569,9 @@ fn content_type(s: &mut Session, p: &Value) -> Result<Value> {
     })
 }
 
+/// The most columns a text frame takes.
+const MAX_FRAME_COLUMNS: u64 = 40;
+
 fn text_frame_options(s: &mut Session, p: &Value) -> Result<Value> {
     const ID: &str = "object.textFrameOptions";
     let st = s.doc()?;
@@ -2595,6 +2598,27 @@ fn text_frame_options(s: &mut Session, p: &Value) -> Result<Value> {
     let column_width = ranged("columnWidth", 0.0, 15552.0, "a number of points")?;
     let first_baseline_min = ranged("firstBaselineMin", 0.0, 15552.0, "a number of points")?;
     let spacing_limit = ranged("paragraphSpacingLimit", 0.0, 15552.0, "a number of points")?;
+    let gutter = ranged("gutter", 0.0, 15552.0, "a number of points")?;
+    let columns = match p.get("columns") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(
+            v.as_u64()
+                .filter(|n| (1..=MAX_FRAME_COLUMNS).contains(n))
+                .ok_or_else(|| bad(ID, format!("columns must be a whole number from 1 to {MAX_FRAME_COLUMNS}, not {v}")))? as u32,
+        ),
+    };
+    let flag = |key: &str| match p.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Bool(b)) => Ok(Some(*b)),
+        Some(v) => Err(bad(ID, format!("{key} must be true or false, not {v}"))),
+    };
+    let use_min_height = flag("useMinimumHeight")?;
+    let use_min_width = flag("useMinimumWidth")?;
+    let no_line_breaks = flag("noLineBreaks")?;
+    let ignore_wrap = flag("ignoreWrap")?;
+    let balance_columns = flag("balanceColumns")?;
+    let column_rule = flag("columnRule")?;
+    let vertical = flag("vertical")?;
     let inset = frame_inset_param(p)?;
     let vertical_justification: Option<designcraft_doc::VerticalJustification> =
         frame_choice_param(p, "verticalJustification", "top|center|bottom|justify")?;
@@ -2657,11 +2681,11 @@ fn text_frame_options(s: &mut Session, p: &Value) -> Result<Value> {
         for id in &ids {
             let Some(tf) = d.item_mut(*id).and_then(Item::text_frame_mut) else { continue };
             let o = &mut tf.options;
-            if let Some(v) = p.get("columns").and_then(Value::as_u64) {
-                o.columns = v.clamp(1, 40) as u32;
+            if let Some(v) = columns {
+                o.columns = v;
             }
-            if let Some(v) = p.get("gutter").and_then(Value::as_f64) {
-                o.gutter = v.max(0.0);
+            if let Some(v) = gutter {
+                o.gutter = v;
             }
             for (side, v) in o.inset.iter_mut().zip(inset.unwrap_or_default()) {
                 if let Some(v) = v {
@@ -2684,22 +2708,22 @@ fn text_frame_options(s: &mut Session, p: &Value) -> Result<Value> {
                 o.auto_size_ref = v;
             }
             o.vj_paragraph_spacing_limit = spacing_limit.unwrap_or(o.vj_paragraph_spacing_limit);
-            if let Some(v) = p.get("useMinimumHeight").and_then(Value::as_bool) {
+            if let Some(v) = use_min_height {
                 o.auto_size_use_min_height = v;
             }
             if let Some(v) = min_height {
                 o.auto_size_min_height = v;
             }
-            if let Some(v) = p.get("useMinimumWidth").and_then(Value::as_bool) {
+            if let Some(v) = use_min_width {
                 o.auto_size_use_min_width = v;
             }
             if let Some(v) = min_width {
                 o.auto_size_min_width = v;
             }
-            if let Some(v) = p.get("noLineBreaks").and_then(Value::as_bool) {
+            if let Some(v) = no_line_breaks {
                 o.auto_size_no_line_breaks = v;
             }
-            if let Some(v) = p.get("ignoreWrap").and_then(Value::as_bool) {
+            if let Some(v) = ignore_wrap {
                 o.ignore_wrap = v;
             }
             if let Some(v) = column_width {
@@ -2708,10 +2732,10 @@ fn text_frame_options(s: &mut Session, p: &Value) -> Result<Value> {
             if let Some(v) = first_baseline_min {
                 o.first_baseline_min = v;
             }
-            if let Some(v) = p.get("balanceColumns").and_then(Value::as_bool) {
+            if let Some(v) = balance_columns {
                 o.balance_columns = v;
             }
-            if let Some(v) = p.get("columnRule").and_then(Value::as_bool) {
+            if let Some(v) = column_rule {
                 o.column_rule = v;
             }
             if let Some(w) = rule_weight {
@@ -2746,7 +2770,7 @@ fn text_frame_options(s: &mut Session, p: &Value) -> Result<Value> {
             }
         }
         // Story direction belongs to the story: every frame of the thread turns.
-        if let Some(v) = p.get("vertical").and_then(Value::as_bool) {
+        if let Some(v) = vertical {
             let stories: Vec<StoryId> = ids.iter().filter_map(|id| d.item(*id).and_then(Item::text_frame).map(|t| t.story)).collect();
             super::text::set_story_direction(d, &stories, v);
         }
@@ -4925,18 +4949,23 @@ mod column_rule_tests {
         assert_eq!(opts(&s), before);
     }
 
-    /// A column count past `u32::MAX` was cast to `u32` before the clamp, so
-    /// 2^32 + 1 wrapped to 1 column instead of clamping to the maximum, 40.
+    /// A column count outside 1 to 40 is refused, past `u32::MAX` too (2^32 + 1 must not
+    /// wrap to 1 column), and the frame keeps its columns.
     #[test]
-    fn huge_column_count_clamps_to_the_maximum() {
+    fn column_count_outside_one_to_forty_is_refused() {
         let mut s = Session::new();
         s.execute("file.new", &json!({})).unwrap();
         let r = s.execute("frame.create", &json!({"rect": [36, 36, 300, 300], "content": "text"})).unwrap();
         let id = ItemId(r["id"].as_u64().unwrap());
         let columns = |s: &Session| s.doc().unwrap().doc.item(id).unwrap().text_frame().unwrap().options.columns;
-        for (given, want) in [(4_294_967_297_u64, 40), (u64::MAX, 40), (0, 1)] {
+        for given in [4_294_967_297_u64, u64::MAX, 41, 0] {
+            let e = s.execute("object.textFrameOptions", &json!({"ids": [id.0], "columns": given})).expect_err("refused").to_string();
+            assert!(e.contains("columns must be a whole number from 1 to 40"), "columns {given}: {e}");
+            assert_eq!(columns(&s), 1, "columns {given}");
+        }
+        for given in [40, 1] {
             s.execute("object.textFrameOptions", &json!({"ids": [id.0], "columns": given})).unwrap();
-            assert_eq!(columns(&s), want, "columns {given}");
+            assert_eq!(columns(&s), given as u32, "columns {given}");
         }
     }
 }
@@ -6042,9 +6071,10 @@ mod frame_baseline_grid_tests {
         assert_eq!(grid(&s), None);
     }
 
-    /// A negative or huge inset, an inset list that isn't four sides, and a vertical
-    /// justification or first baseline that isn't one of the names were applied or skipped
-    /// without a word. They are refused and the frame keeps its options.
+    /// A negative or huge inset or gutter, an inset list that isn't four sides, a column count
+    /// outside 1 to 40, a switch that isn't true or false, and a vertical justification or first
+    /// baseline that isn't one of the names were applied, clamped or skipped without a word. They
+    /// are refused and the frame keeps its options.
     #[test]
     fn text_frame_options_refuse_insets_and_names_outside_their_ranges() {
         let mut s = Session::new();
@@ -6066,6 +6096,19 @@ mod frame_baseline_grid_tests {
             (json!({"columnsKind": "flexible"}), "columnsKind must be one of"),
             (json!({"paragraphSpacingLimit": -1}), "paragraphSpacingLimit must be a number of points from 0 to 15552"),
             (json!({"firstBaselineMin": 20000}), "firstBaselineMin must be a number of points from 0 to 15552"),
+            (json!({"gutter": -5}), "gutter must be a number of points from 0 to 15552"),
+            (json!({"gutter": 1e300}), "gutter must be a number of points from 0 to 15552"),
+            (json!({"gutter": "12pt"}), "gutter must be a number of points from 0 to 15552"),
+            (json!({"columns": 99}), "columns must be a whole number from 1 to 40"),
+            (json!({"columns": "two"}), "columns must be a whole number from 1 to 40"),
+            (json!({"columns": 2.5}), "columns must be a whole number from 1 to 40"),
+            (json!({"balanceColumns": "yes"}), "balanceColumns must be true or false"),
+            (json!({"ignoreWrap": 1}), "ignoreWrap must be true or false"),
+            (json!({"columnRule": "on"}), "columnRule must be true or false"),
+            (json!({"noLineBreaks": 0}), "noLineBreaks must be true or false"),
+            (json!({"useMinimumHeight": "true"}), "useMinimumHeight must be true or false"),
+            (json!({"useMinimumWidth": []}), "useMinimumWidth must be true or false"),
+            (json!({"vertical": "yes"}), "vertical must be true or false"),
         ] {
             let mut p = params.clone();
             p["ids"] = json!([id.0]);
@@ -6082,6 +6125,13 @@ mod frame_baseline_grid_tests {
         let o = options(&s);
         assert_eq!(o.inset, [6.0; 4]);
         assert_eq!(o.first_baseline, designcraft_doc::FirstBaseline::CapHeight);
+        s.execute("object.textFrameOptions", &json!({"ids": [id.0], "columns": 3, "gutter": 15552, "balanceColumns": true, "ignoreWrap": true}))
+            .unwrap();
+        let o = options(&s);
+        assert_eq!((o.columns, o.gutter, o.balance_columns, o.ignore_wrap), (3, 15552.0, true, true));
+        s.execute("object.textFrameOptions", &json!({"ids": [id.0], "gutter": 0, "balanceColumns": false})).unwrap();
+        let o = options(&s);
+        assert_eq!((o.gutter, o.balance_columns), (0.0, false));
     }
 }
 

@@ -146,8 +146,9 @@ pub(crate) const MIN_TYPE_SIZE: f64 = 0.1;
 
 pub(crate) const MAX_TYPE_SIZE: f64 = 1296.0;
 
-/// Space Before, Space After and Space Between Paragraphs Using Same Style: 0 to 15552 pt, the
-/// limit `object.textFrameOptions` applies to its Paragraph Spacing Limit.
+/// Left and right indents, Space Before, Space After and Space Between Paragraphs Using Same
+/// Style: 0 to 15552 pt, the limit `object.textFrameOptions` applies to its Paragraph Spacing
+/// Limit. First and last line indents may be negative, down to -15552 pt.
 pub(crate) const MAX_PARA_SPACE: f64 = 15552.0;
 
 /// The justification rows as fractions (1.0 = 100%): key stem, label, range.
@@ -163,20 +164,28 @@ fn percent(v: f64) -> String {
     format!("{p}")
 }
 
-/// Checks the paragraph spacing and justification values `attrs` sets: Space Before, Space After
-/// and same-style spacing 0 to [`MAX_PARA_SPACE`] pt; word spacing 0% to 1000%, letter spacing
+/// Checks the paragraph spacing and justification values `attrs` sets: left and right indents,
+/// Space Before, Space After and same-style spacing 0 to [`MAX_PARA_SPACE`] pt, first and last
+/// line indents -[`MAX_PARA_SPACE`] to [`MAX_PARA_SPACE`] pt; word spacing 0% to 1000%, letter spacing
 /// -100% to 500% and glyph scaling 50% to 200%; Auto Leading 0% to 500%; Single Word
 /// Justification left, center, right or fullyJustified. [`validate_justification_order`] checks
 /// the order of each row once the values are applied.
 pub(crate) fn validate_para_values(attrs: &ParaAttrs, command_id: &str) -> Result<()> {
     use designcraft_doc::Align;
-    let spaces =
-        [("spaceBefore", attrs.space_before), ("spaceAfter", attrs.space_after), ("sameParaStyleSpacing", attrs.same_para_style_spacing.flatten())];
-    for (key, v) in spaces {
+    let spaces = [
+        ("leftIndent", attrs.left_indent, 0.0),
+        ("rightIndent", attrs.right_indent, 0.0),
+        ("firstLineIndent", attrs.first_line_indent, -MAX_PARA_SPACE),
+        ("lastLineIndent", attrs.last_line_indent, -MAX_PARA_SPACE),
+        ("spaceBefore", attrs.space_before, 0.0),
+        ("spaceAfter", attrs.space_after, 0.0),
+        ("sameParaStyleSpacing", attrs.same_para_style_spacing.flatten(), 0.0),
+    ];
+    for (key, v, lo) in spaces {
         if let Some(v) = v
-            && !(0.0..=MAX_PARA_SPACE).contains(&v)
+            && !(lo..=MAX_PARA_SPACE).contains(&v)
         {
-            return Err(bad(command_id, format!("{key} {v}: 0 to {MAX_PARA_SPACE} pt")));
+            return Err(bad(command_id, format!("{key} {v}: {lo} to {MAX_PARA_SPACE} pt")));
         }
     }
     let rows = [
@@ -225,13 +234,24 @@ pub(crate) fn validate_justification_order(resolved: &designcraft_doc::ParaProps
     justification_order_error(resolved, rows).map_or(Ok(()), |m| Err(bad(command_id, m)))
 }
 
-/// What [`validate_justification_order`] refuses, as a message.
-pub(crate) fn justification_order_error(resolved: &designcraft_doc::ParaProps, rows: [bool; 3]) -> Option<String> {
-    let values = [
+/// The justification rows of resolved paragraph attributes: Minimum, Desired, Maximum.
+fn justification_values(resolved: &designcraft_doc::ParaProps) -> [[f64; 3]; 3] {
+    [
         [resolved.word_space_min, resolved.word_space_desired, resolved.word_space_max],
         [resolved.letter_space_min, resolved.letter_space_desired, resolved.letter_space_max],
         [resolved.glyph_scale_min, resolved.glyph_scale_desired, resolved.glyph_scale_max],
-    ];
+    ]
+}
+
+/// The justification rows whose values differ between `before` and `after`.
+pub(crate) fn justification_rows_changed(before: &designcraft_doc::ParaProps, after: &designcraft_doc::ParaProps) -> [bool; 3] {
+    let (b, a) = (justification_values(before), justification_values(after));
+    [b[0] != a[0], b[1] != a[1], b[2] != a[2]]
+}
+
+/// What [`validate_justification_order`] refuses, as a message.
+pub(crate) fn justification_order_error(resolved: &designcraft_doc::ParaProps, rows: [bool; 3]) -> Option<String> {
+    let values = justification_values(resolved);
     JUSTIFICATION_ROWS.into_iter().zip(values).zip(rows).find_map(|(((_, label, ..), [min, desired, max]), checked)| {
         (checked && (min > desired || desired > max))
             .then(|| format!("{label} needs Minimum ≤ Desired ≤ Maximum, not {}%, {}%, {}%", percent(min), percent(desired), percent(max)))
@@ -1213,8 +1233,8 @@ mod size_bounds_tests {
         }
     }
 
-    /// `type.para` set any number for paragraph spacing and justification: a negative Space
-    /// Before, word spacing of 5000% and a Minimum above Maximum all went into the paragraph,
+    /// `type.para` set any number for paragraph indents, spacing and justification: a negative
+    /// left indent or Space Before, word spacing of 5000% and a Minimum above Maximum all went into the paragraph,
     /// and Single Word Justification took any alignment. Values outside the ranges are refused,
     /// nothing changes, and the ends of each range still apply.
     #[test]
@@ -1232,6 +1252,11 @@ mod size_bounds_tests {
             (json!({"spaceBefore": -1}), "spaceBefore -1: 0 to 15552 pt"),
             (json!({"spaceAfter": 15553}), "spaceAfter 15553: 0 to 15552 pt"),
             (json!({"sameParaStyleSpacing": -2}), "sameParaStyleSpacing -2: 0 to 15552 pt"),
+            (json!({"leftIndent": -50}), "leftIndent -50: 0 to 15552 pt"),
+            (json!({"rightIndent": -20}), "rightIndent -20: 0 to 15552 pt"),
+            (json!({"rightIndent": 1e300}), "rightIndent 1"),
+            (json!({"firstLineIndent": -15553}), "firstLineIndent -15553: -15552 to 15552 pt"),
+            (json!({"lastLineIndent": 15553}), "lastLineIndent 15553: -15552 to 15552 pt"),
             (json!({"wordSpaceMax": 10.5}), "wordSpaceMax 1050%: word spacing is 0% to 1000%"),
             (json!({"wordSpaceMin": -0.1}), "wordSpaceMin -10%: word spacing is 0% to 1000%"),
             (json!({"letterSpaceMin": -1.5}), "letterSpaceMin -150%: letter spacing is -100% to 500%"),
@@ -1256,6 +1281,8 @@ mod size_bounds_tests {
         // The ends of each range apply and read back.
         for attrs in [
             json!({"spaceBefore": 0, "spaceAfter": 15552, "sameParaStyleSpacing": 15552}),
+            json!({"leftIndent": 0, "rightIndent": 15552, "firstLineIndent": -15552, "lastLineIndent": 15552}),
+            json!({"leftIndent": 18, "rightIndent": 0, "firstLineIndent": -18, "lastLineIndent": 0}),
             json!({"wordSpaceMin": 0, "wordSpaceDesired": 0, "wordSpaceMax": 10}),
             json!({"letterSpaceMin": -1, "letterSpaceDesired": 0, "letterSpaceMax": 5}),
             json!({"glyphScaleMin": 0.5, "glyphScaleDesired": 1, "glyphScaleMax": 2}),
@@ -1340,6 +1367,76 @@ mod size_bounds_tests {
             "{e}"
         );
         assert_eq!(s.doc().unwrap().doc.styles.para("Parent").unwrap().para.letter_space_desired, None);
+    }
+
+    /// Applying or redefining a paragraph style could leave a paragraph's own override and the
+    /// style's values out of order: a Maximum of 10% kept over a style's Desired of 20%. Both are
+    /// refused and nothing changes; Clear Overrides still applies the style.
+    #[test]
+    fn applying_or_redefining_a_style_keeps_justification_in_order() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 1})).unwrap();
+        let f = s.execute("frame.create", &json!({"rect": [20, 20, 400, 300], "content": "text", "text": "Hello world\nSecond"})).unwrap();
+        let sid = designcraft_doc::StoryId(f["story"].as_u64().unwrap());
+        let select = |s: &mut Session, anchor: u64, focus: u64| {
+            s.execute("text.select", &json!({"story": f["story"].clone(), "anchor": anchor, "focus": focus})).unwrap();
+        };
+        let styles = |s: &Session| s.doc().unwrap().doc.story(sid).unwrap().paras.iter().map(|p| p.style.clone()).collect::<Vec<_>>();
+        let letter = |s: &mut Session| {
+            let p = s.execute("type.selectionAttrs", &json!({})).unwrap()["para"].clone();
+            [p["letterSpaceMin"].as_f64(), p["letterSpaceDesired"].as_f64(), p["letterSpaceMax"].as_f64()]
+        };
+        s.execute("style.paragraph.create", &json!({"name": "Wide", "para": {"letterSpaceDesired": 0.2, "letterSpaceMax": 0.5}})).unwrap();
+        select(&mut s, 0, 18);
+        s.execute("type.para", &json!({"attrs": {"letterSpaceMax": 0.1}})).unwrap();
+        let before = styles(&s);
+        select(&mut s, 0, 18);
+        let e = s.execute("style.paragraph.apply", &json!({"name": "Wide"})).expect_err("refused").to_string();
+        assert!(e.contains("style.paragraph.apply") && e.contains("letter spacing needs Minimum ≤ Desired ≤ Maximum, not 0%, 20%, 10%"), "{e}");
+        assert_eq!(styles(&s), before);
+        select(&mut s, 0, 18);
+        assert_eq!(letter(&mut s), [Some(0.0), Some(0.0), Some(0.1)]);
+        // A style that changes no justification row applies over the same override.
+        s.execute("style.paragraph.create", &json!({"name": "Airy", "para": {"spaceAfter": 6}})).unwrap();
+        select(&mut s, 0, 18);
+        s.execute("style.paragraph.apply", &json!({"name": "Airy"})).unwrap();
+        select(&mut s, 0, 18);
+        s.execute("style.paragraph.apply", &json!({"name": "Wide", "clearOverrides": true})).unwrap();
+        assert_eq!(styles(&s), ["Wide", "Wide"]);
+        select(&mut s, 0, 18);
+        assert_eq!(letter(&mut s), [Some(0.0), Some(0.2), Some(0.5)]);
+
+        // Redefine Style from a paragraph whose Desired is 30% while the second paragraph keeps a
+        // Maximum of 25%.
+        select(&mut s, 12, 18);
+        s.execute("type.para", &json!({"attrs": {"letterSpaceMax": 0.25}})).unwrap();
+        select(&mut s, 0, 5);
+        s.execute("type.para", &json!({"attrs": {"letterSpaceDesired": 0.3}})).unwrap();
+        select(&mut s, 0, 5);
+        let e = s.execute("style.paragraph.redefine", &json!({})).expect_err("refused").to_string();
+        assert!(
+            e.contains("style.paragraph.redefine")
+                && e.contains(&format!("a paragraph of story {}: letter spacing needs Minimum ≤ Desired ≤ Maximum, not 0%, 30%, 25%", sid.0)),
+            "{e}"
+        );
+        assert_eq!(s.doc().unwrap().doc.styles.para("Wide").unwrap().para.letter_space_desired, Some(0.2));
+
+        // A new style from a selection whose paragraph holds a value no command sets (as an
+        // import could leave) is refused the same way as a given value.
+        s.edit(|d, _| {
+            for pf in &mut d.story_mut(sid).unwrap().paras {
+                pf.para.left_indent = Some(-30.0);
+            }
+            Ok(())
+        })
+        .unwrap();
+        select(&mut s, 0, 5);
+        let e = s.execute("style.paragraph.create", &json!({"name": "Captured", "fromSelection": true})).expect_err("refused").to_string();
+        assert!(e.contains("leftIndent -30: 0 to 15552 pt"), "{e}");
+        assert!(s.doc().unwrap().doc.styles.para("Captured").is_none());
+        select(&mut s, 0, 5);
+        s.execute("style.paragraph.create", &json!({"name": "Captured", "fromSelection": true, "para": {"leftIndent": 0}})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.styles.para("Captured").unwrap().para.left_indent, Some(0.0));
     }
 }
 
