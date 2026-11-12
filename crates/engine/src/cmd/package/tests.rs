@@ -1,5 +1,100 @@
 use super::*;
 
+#[cfg(not(target_arch = "wasm32"))]
+fn soft_effect_link_rects(bytes: &[u8]) -> Vec<Vec<f32>> {
+    use hayro_syntax::object::{Array, Name};
+    let pdf = hayro_syntax::Pdf::new(bytes.to_vec()).unwrap();
+    pdf.objects()
+        .into_iter()
+        .filter_map(|o| o.into_dict())
+        .filter(|d| d.get::<Name<'_>>(b"Subtype").is_some_and(|n| n.as_ref() == b"Link"))
+        .map(|d| d.get::<Array<'_>>(b"Rect").unwrap().iter::<f32>().collect())
+        .collect()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn check_soft_effect_links(packaged: bool) {
+    for (text, grouped) in [(false, false), (true, false), (false, true), (true, true)] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"title": "LinkedEffects", "width": 144, "height": 144})).unwrap();
+        let frame = s.execute("frame.create", &json!({"rect": [20, 20, 100, 60], "content": "text", "text": "Visit us", "caret": false})).unwrap();
+        if text {
+            s.execute("text.select", &json!({"story": frame["story"], "anchor": 0, "focus": 5})).unwrap();
+            s.execute("hyperlink.create", &json!({"url": "https://example.com"})).unwrap();
+        } else {
+            s.execute("hyperlink.create", &json!({"url": "https://example.com", "ids": [frame["id"]]})).unwrap();
+        }
+        let effect = if grouped {
+            let other = s.execute("frame.create", &json!({"rect": [100, 80, 110, 90]})).unwrap();
+            let group = s.execute("object.group", &json!({"ids": [frame["id"], other["id"]]})).unwrap()["id"].clone();
+            s.execute("transform.move", &json!({"ids": [group], "dx": 3, "dy": 4})).unwrap();
+            group
+        } else {
+            frame["id"].clone()
+        };
+        let before = s.execute("file.exportPdf", &json!({})).unwrap();
+        let before = soft_effect_link_rects(&super::super::base64_decode(before["base64"].as_str().unwrap()));
+        assert_eq!(before.len(), 1);
+        if !text {
+            assert_eq!(before[0], if grouped { vec![23.0, 80.0, 103.0, 120.0] } else { vec![20.0, 84.0, 100.0, 124.0] });
+        }
+        s.execute("object.dropShadow", &json!({"on": true, "size": 6, "distance": 5, "ids": [effect]})).unwrap();
+        let bytes = if packaged {
+            s.execute("file.package", &json!({"dir": dir.path(), "pdf": true, "idml": false})).unwrap();
+            std::fs::read(dir.path().join("LinkedEffects.pdf")).unwrap()
+        } else {
+            let result = s.execute("file.exportPdf", &json!({})).unwrap();
+            super::super::base64_decode(result["base64"].as_str().unwrap())
+        };
+        assert_eq!(soft_effect_link_rects(&bytes), before, "text={text}, grouped={grouped}");
+        assert_eq!(String::from_utf8_lossy(&bytes).matches("/Subtype/Image").count(), 2, "one image and its soft mask");
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn export_pdf_preserves_soft_effect_link_bounds() {
+    check_soft_effect_links(false);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn package_pdf_preserves_soft_effect_link_bounds() {
+    check_soft_effect_links(true);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn package_pdf_preserves_soft_effects_and_reports_warnings() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = Session::new();
+    s.execute("file.new", &json!({"title": "SoftEffects", "width": 144, "height": 144})).unwrap();
+    let shadow = s.execute("frame.create", &json!({"rect": [20, 20, 60, 60]})).unwrap()["id"].clone();
+    s.execute("object.fill", &json!({"swatch": "[Black]", "ids": [shadow]})).unwrap();
+    s.execute("object.dropShadow", &json!({"on": true, "size": 6, "distance": 5, "ids": [shadow]})).unwrap();
+    let feather = s.execute("frame.create", &json!({"rect": [80, 80, 120, 120], "shape": "ellipse"})).unwrap()["id"].clone();
+    s.execute("object.fill", &json!({"swatch": "[Black]", "ids": [feather]})).unwrap();
+    s.execute("object.feather", &json!({"width": 6, "ids": [feather]})).unwrap();
+    let exported = s.execute("file.exportPdf", &json!({})).unwrap();
+    let expected = super::super::base64_decode(exported["base64"].as_str().unwrap());
+
+    let packaged = s.execute("file.package", &json!({"dir": dir.path(), "pdf": true, "idml": false})).unwrap();
+
+    let actual = std::fs::read(dir.path().join("SoftEffects.pdf")).unwrap();
+    let images = |bytes: &[u8]| String::from_utf8_lossy(bytes).matches("/Subtype/Image").count();
+    assert_eq!(images(&expected), 4, "two images and their soft masks");
+    assert_eq!(images(&actual), images(&expected), "package must rasterise the same objects as export");
+    assert_eq!(packaged["warnings"], exported["warnings"]);
+    let warnings = packaged["warnings"].as_array().unwrap();
+    assert!(warnings.iter().any(|w| w.as_str().unwrap().contains("2 object(s) with soft effects")));
+    let report = std::fs::read_to_string(dir.path().join("Instructions.txt")).unwrap();
+    assert_eq!(packaged["report"], report);
+    for warning in warnings {
+        assert!(report.contains(warning.as_str().unwrap()), "{report}");
+    }
+}
+
 #[test]
 fn relocated_packages_rebind_embedded_image_links_on_open() {
     let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
@@ -22,6 +117,58 @@ fn relocated_packages_rebind_embedded_image_links_on_open() {
         let links = opened.execute("links.list", &json!({})).unwrap();
         assert_eq!(links[0]["status"], "ok", "{extension}");
     }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// `pdf` takes file.exportPdf's options (a PDF preset's): a PDF/X-4 package PDF; `true` is the
+/// default PDF, and bad options are refused.
+#[test]
+fn package_pdf_takes_export_options() {
+    let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+    let dir = std::env::temp_dir().join(format!("dc-package-pdf-options-{}-{nonce}", std::process::id()));
+    let mut s = Session::new();
+    s.execute("file.new", &json!({"title": "Options", "width": 72, "height": 72})).unwrap();
+    let x4 = dir.join("x4");
+    s.execute("file.package", &json!({"dir": x4.to_string_lossy(), "idml": false, "pdf": {"standard": "x4"}})).unwrap();
+    let has = |path: &std::path::Path, what: &[u8]| std::fs::read(path).unwrap().windows(what.len()).any(|w| w == what);
+    assert!(has(&x4.join("Options.pdf"), b"GTS_PDFX"));
+    let plain = dir.join("plain");
+    s.execute("file.package", &json!({"dir": plain.to_string_lossy(), "idml": false, "pdf": true})).unwrap();
+    assert!(!has(&plain.join("Options.pdf"), b"GTS_PDFX"));
+    // Refused before anything is written: bad options, a bad flattener or view option, and a
+    // `pdf` that is neither a switch nor options.
+    for bad in [
+        json!({"standard": "nope"}),
+        json!({"flatten": "extreme"}),
+        json!({"pageLayout": "spiral"}),
+        json!({"view": "zoomed"}),
+        json!("print"),
+        json!(3),
+    ] {
+        let out = dir.join("bad");
+        assert!(s.execute("file.package", &json!({"dir": out.to_string_lossy(), "pdf": bad})).is_err(), "{bad}");
+        assert!(!out.exists(), "{bad}: bad options write nothing");
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// A preset that flattens transparency (Screen and Email's `flatten: low`) gives the packaged
+/// PDF the flattening `file.exportPdf` does.
+#[test]
+fn the_packaged_pdf_is_flattened_as_export_flattens_it() {
+    let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+    let dir = std::env::temp_dir().join(format!("dc-package-pdf-flatten-{}-{nonce}", std::process::id()));
+    let mut s = Session::new();
+    s.execute("file.new", &json!({"title": "Flat", "width": 144, "height": 144})).unwrap();
+    let id = s.execute("frame.create", &json!({"rect": [10, 10, 100, 100], "content": "unassigned"})).unwrap()["id"].clone();
+    s.execute("object.fill", &json!({"ids": [id], "swatch": "[Black]"})).unwrap();
+    s.execute("object.opacity", &json!({"ids": [id], "opacity": 0.5})).unwrap();
+    let exported = super::super::base64_decode(s.execute("file.exportPdf", &json!({"flatten": "low"})).unwrap()["base64"].as_str().unwrap());
+    s.execute("file.package", &json!({"dir": dir.to_string_lossy(), "idml": false, "pdf": {"flatten": "low"}})).unwrap();
+    let packaged = std::fs::read(dir.join("Flat.pdf")).unwrap();
+    let images = |pdf: &[u8]| pdf.windows(b"/Subtype/Image".len()).filter(|w| *w == b"/Subtype/Image").count();
+    assert!(images(&exported) > 0, "the export rasterises the transparent object");
+    assert_eq!(images(&packaged), images(&exported), "so does the package");
     std::fs::remove_dir_all(dir).unwrap();
 }
 
@@ -156,9 +303,14 @@ fn package_writes_document_links_and_report() {
     std::fs::create_dir_all(&dir).unwrap();
     let svg = dir.join("logo.svg");
     std::fs::write(&svg, r##"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40"><rect width="40" height="40"/></svg>"##).unwrap();
+    // An older file than the copies made of it below.
+    let earlier = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+    std::fs::File::options().write(true).open(&svg).unwrap().set_modified(earlier).unwrap();
+    let fingerprint = |path: &std::path::Path| crate::cmd::datamerge::fingerprint_of(path);
     let mut s = Session::new();
     s.execute("file.new", &json!({})).unwrap();
     s.execute("file.place", &json!({"path": svg.to_string_lossy(), "x": 100, "y": 100})).unwrap();
+    assert_eq!(s.doc().unwrap().doc.assets.values().next().unwrap().link_fingerprint, fingerprint(&svg));
     s.execute("frame.create", &json!({"rect": [72, 300, 400, 400], "content": "text", "text": "Hello"})).unwrap();
     let out = dir.join("Pkg");
     let r = s.execute("file.package", &json!({"dir": out.to_string_lossy(), "pdf": true, "instructions": "Print on matte."})).unwrap();
@@ -169,16 +321,23 @@ fn package_writes_document_links_and_report() {
     assert!(out.join("Links").join("logo.svg").exists());
     let report = std::fs::read_to_string(out.join("Instructions.txt")).unwrap();
     assert!(report.contains("Print on matte.") && report.contains("logo.svg"), "{report}");
+    assert!(report.find("Print on matte.") < report.find("Package report:"), "the instructions come first: {report}");
     assert!(report.contains("Preflight:"), "{report}");
     // The packaged document links to its Links folder.
     let doc_file = files.iter().find(|f| f.ends_with(".designcraft")).unwrap();
     let packed = super::super::from_bytes(&std::fs::read(doc_file).unwrap()).unwrap();
     let link = packed.assets.values().next().unwrap().link.clone().unwrap();
     assert!(link.contains("Links"), "{link}");
+    // The link is the copy now: the original file's size and time don't go with it (the copy's
+    // own are too recent to vouch for it; the first check compares the bytes and keeps them).
+    assert!(fingerprint(&out.join("Links").join("logo.svg")).is_some());
+    assert_eq!(packed.assets.values().next().unwrap().link_fingerprint, None);
     // Copy Links To relinks the open document.
     let r = s.execute("links.copyTo", &json!({"dir": dir.join("Copies").to_string_lossy()})).unwrap();
     assert_eq!(r["copied"], 1);
-    assert!(s.doc().unwrap().doc.assets.values().next().unwrap().link.as_deref().unwrap().contains("Copies"));
+    let relinked = s.doc().unwrap().doc.assets.values().next().unwrap().clone();
+    assert!(relinked.link.as_deref().unwrap().contains("Copies"));
+    assert_eq!(relinked.link_fingerprint, None);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -291,6 +450,57 @@ fn package_copies_the_fallback_fonts_that_draw_text() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The package holds the font as the document loaded it: a link put at its path since (to a
+/// private file, say) isn't followed, and its permissions are the file's.
+#[cfg(unix)]
+#[test]
+fn packaged_fonts_are_the_loaded_bytes_not_what_is_at_the_path_now() {
+    use designcraft_fonts::DOCUMENT_FONTS_FOLDER;
+    use designcraft_fonts::testing::{font_with, installed_face};
+    let dir = std::env::temp_dir().join(format!("dc-package-font-swapped-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let from = dir.join("loaded.ttf");
+    let bytes = font_with("DocFont Package Swapped", &['S']).unwrap();
+    std::fs::write(&from, &bytes).unwrap();
+    let face = installed_face(bytes.clone(), from.clone()).unwrap();
+    std::fs::remove_file(&from).unwrap();
+    std::fs::write(dir.join("secret"), b"private").unwrap();
+    std::os::unix::fs::symlink(dir.join("secret"), &from).unwrap();
+    let root = OutputRoot::new(dir.clone()).unwrap();
+    let fonts = dir.join("Pkg").join(DOCUMENT_FONTS_FOLDER);
+    std::fs::create_dir_all(&fonts).unwrap();
+    let (mut copied, mut taken, mut files) = (Vec::new(), Taken::default(), Vec::new());
+    assert_eq!(copy_font(&root, &face, &fonts, &mut copied, &mut taken, &mut files), "");
+    assert_eq!(std::fs::read(fonts.join("loaded.ttf")).unwrap(), bytes);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn packaging_into_a_fonts_own_folder_neither_overwrites_nor_packages_a_changed_font() {
+    use designcraft_fonts::testing::{font_with, installed_face};
+    let dir = std::env::temp_dir().join(format!("dc-package-font-same-file-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let from = dir.join("loaded.ttf");
+    let bytes = font_with("DocFont Package Same File", &['S']).unwrap();
+    std::fs::write(&from, &bytes).unwrap();
+    let face = installed_face(bytes.clone(), from.clone()).unwrap();
+    let root = OutputRoot::new(dir.clone()).unwrap();
+    let copy = |taken: &mut Taken| copy_font(&root, &face, &dir, &mut Vec::new(), taken, &mut Vec::new());
+    // Unchanged since it loaded: already where it is wanted.
+    assert_eq!(copy(&mut Taken::default()), "");
+    assert_eq!(std::fs::read(&from).unwrap(), bytes);
+    // Changed on disk since: the package can't hold the loaded font there, and the new file is kept.
+    let newer = font_with("DocFont Package Same File", &['S', 'T']).unwrap();
+    std::fs::write(&from, &newer).unwrap();
+    let note = copy(&mut Taken::default());
+    assert!(note.contains("not copied") && note.contains("changed on disk"), "{note}");
+    assert_eq!(std::fs::read(&from).unwrap(), newer);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn packaged_fonts_keep_a_font_extension() {
     use designcraft_fonts::DOCUMENT_FONTS_FOLDER;
@@ -307,7 +517,7 @@ fn packaged_fonts_keep_a_font_extension() {
     let root = OutputRoot::new(dir.clone()).unwrap();
     let fonts = dir.join("Pkg").join(DOCUMENT_FONTS_FOLDER);
     std::fs::create_dir_all(&fonts).unwrap();
-    let (mut copied, mut taken, mut files) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut copied, mut taken, mut files) = (Vec::new(), Taken::default(), Vec::new());
     assert_eq!(copy_font(&root, &face, &fonts, &mut copied, &mut taken, &mut files), "");
     assert_eq!(files, [fonts.join("12345.ttf")]);
     let db = designcraft_fonts::FontDb::global();
@@ -335,13 +545,20 @@ fn package_uses_portable_names_inside_the_selected_directory() {
     for name in ["COM¹", "COM²", "COM³", "LPT¹", "LPT²", "LPT³"] {
         assert!(is_reserved_windows_name(name), "{name}");
     }
-    let mut taken = Vec::new();
+    let mut taken = Taken::default();
     assert_eq!(unique_name("Logo.svg".into(), &mut taken), "Logo.svg");
     assert_eq!(unique_name("logo.svg".into(), &mut taken), "logo 2.svg");
     assert_eq!(unique_name("Résumé.pdf".into(), &mut taken), "Résumé.pdf");
     assert_eq!(unique_name("Re\u{301}sume\u{301}.pdf".into(), &mut taken), "Re\u{301}sume\u{301} 2.pdf");
     assert_eq!(unique_name("ΟΣ.txt".into(), &mut taken), "ΟΣ.txt");
     assert_eq!(unique_name("ος.txt".into(), &mut taken), "ος 2.txt");
+    // Many files of one name are numbered in order, each without trying every earlier number.
+    let mut taken = Taken::default();
+    for k in 1..=2000 {
+        let expected = if k == 1 { "logo.png".to_string() } else { format!("logo {k}.png") };
+        assert_eq!(unique_name("logo.png".into(), &mut taken), expected);
+    }
+    assert_eq!(unique_name("logo 7.png".into(), &mut taken), "logo 7 2.png", "a name already given out is still numbered");
 
     let dir = std::env::temp_dir().join(format!("dc-package-safe-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);

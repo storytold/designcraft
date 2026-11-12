@@ -1,11 +1,10 @@
 //! File › Package and Links › Copy Links To: gather a document with the files it uses.
 
+use std::collections::HashMap;
 use std::fs::Metadata;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-#[cfg(not(target_arch = "wasm32"))]
-use std::fs::File;
 #[cfg(not(target_arch = "wasm32"))]
 use std::io::Write;
 
@@ -172,28 +171,56 @@ impl OutputRoot {
         }
     }
 
-    fn copy(&self, from: &Path, to: &Path) -> Result<()> {
+    /// Write `bytes`, the contents of the file `from` as they were loaded, to `to` with the
+    /// permissions of `from`. The file isn't opened again: what is at its path now may be
+    /// something else (a link put there since), and the package must hold what the document used.
+    fn copy(&self, from: &Path, bytes: &[u8], to: &Path) -> Result<()> {
         if self.validate_file_entry(to)?
             && std::fs::canonicalize(to).is_ok_and(|target| std::fs::canonicalize(from).is_ok_and(|source| source == target))
         {
-            return Ok(());
+            // The destination is the font's own file: nothing to write while it still holds what
+            // was loaded. Overwriting it with the loaded bytes would undo a change made since, and
+            // leaving it would package that change instead of the font the document used.
+            if same_contents(to, bytes) {
+                return Ok(());
+            }
+            return Err(path_error(to, "the font file changed on disk after it was loaded, and this is that file; package to another folder"));
         }
         #[cfg(target_arch = "wasm32")]
         {
-            let _ = from;
+            let _ = bytes;
             return Err(EngineError::Other("package files are unavailable on the web".into()));
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let mut source = File::open(from).map_err(|e| path_error(from, e))?;
-            let permissions = Some(source.metadata().map_err(|e| path_error(from, e))?.permissions());
+            let permissions = Some(std::fs::metadata(from).map_err(|e| path_error(from, e))?.permissions());
             let mut target = self.temporary_file(to, permissions)?;
-            std::io::copy(&mut source, &mut target).map_err(|e| path_error(to, e))?;
+            target.write_all(bytes).map_err(|e| path_error(to, e))?;
             self.validate_file_entry(to)?;
             target.persist(to).map_err(|e| path_error(to, e.error))?;
             Ok(())
         }
     }
+}
+
+/// Whether the file at `path` holds exactly `bytes` (read only as far as they go).
+fn same_contents(path: &Path, bytes: &[u8]) -> bool {
+    use std::io::Read;
+    let Ok(mut file) = std::fs::File::open(path) else { return false };
+    if file.metadata().map_or(true, |m| m.len() != bytes.len() as u64) {
+        return false;
+    }
+    // Fixed-size chunks: no second font-sized buffer.
+    let mut chunk = [0u8; 64 * 1024];
+    for expected in bytes.chunks(chunk.len()) {
+        let got = &mut chunk[..expected.len()];
+        if file.read_exact(got).is_err() || got != expected {
+            return false;
+        }
+    }
+    // A file that grew since the length check is not the same.
+    let mut extra = [0u8; 1];
+    matches!(file.read(&mut extra), Ok(0))
 }
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -203,7 +230,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Package…",
             ["File"],
             None,
-            "{dir: folder to create, idml?: true, pdf?: false, instructions?: text} — the document (its placed files relinked to Links/), Links/, the font files that draw its text in Document Fonts/ (fallback fonts included; unless their licence restricts it), an IDML copy (linking the files in Links/, nothing embedded), an optional PDF and a report → {dir, files, report}",
+            "{dir: folder to create, idml?: true, pdf?: false|true|{…options of file.exportPdf}, instructions?: text} — the document (its placed files relinked to Links/), Links/, the font files that draw its text in Document Fonts/ (fallback fonts included; unless their licence restricts it), an IDML copy (linking the files in Links/, nothing embedded), an optional PDF and a report → {dir, files, report, warnings: PDF export warnings}",
             has_doc,
             package
         ),
@@ -263,25 +290,34 @@ fn package_output_path(dir: &Path, title: &str, extension: &str) -> Result<PathB
 }
 
 /// A file name for asset `a` in a Links folder, unique among `taken`.
-fn link_name(name: &str, id: AssetId, taken: &mut Vec<String>) -> String {
+fn link_name(name: &str, id: AssetId, taken: &mut Taken) -> String {
     let fallback = format!("asset-{}", id.0);
     unique_name(safe_component(name, &fallback), taken)
 }
 
+/// The names given out so far, and the next number to try for each base name (so a thousand
+/// `logo.png` don't try `logo 2.png` a thousand times each).
+#[derive(Default)]
+struct Taken {
+    names: Vec<String>,
+    next: HashMap<String, usize>,
+}
+
 /// `base`, or `base` numbered ("logo 2.png"), unique under portable Unicode normalization and
 /// case-insensitive comparison.
-fn unique_name(base: String, taken: &mut Vec<String>) -> String {
+fn unique_name(base: String, taken: &mut Taken) -> String {
     let (stem, ext) = match base.rsplit_once('.') {
         Some((s, e)) => (s.to_string(), format!(".{e}")),
         None => (base.clone(), String::new()),
     };
-    let mut n = base;
-    let mut k = 2;
-    while taken.iter().any(|t| portable_names_equal(t, &n)) {
+    let mut n = base.clone();
+    let mut k = taken.next.get(&base).copied().unwrap_or(2);
+    while taken.names.iter().any(|t| portable_names_equal(t, &n)) {
         n = format!("{stem} {k}{ext}");
         k += 1;
     }
-    taken.push(n.clone());
+    taken.next.insert(base, k);
+    taken.names.push(n.clone());
     n
 }
 
@@ -292,7 +328,7 @@ fn unique_name(base: String, taken: &mut Vec<String>) -> String {
 fn write_links(d: &Document, root: &OutputRoot, dir: &Path, only: Option<&[AssetId]>, relative_to: Option<&str>) -> Result<(Document, Vec<PathBuf>)> {
     root.validate_directory(dir)?;
     let mut out = d.clone();
-    let mut taken = Vec::new();
+    let mut taken = Taken::default();
     let mut written = Vec::new();
     // Only files something places; the saved document leaves the others out.
     let ids = d.used_assets();
@@ -310,10 +346,14 @@ fn write_links(d: &Document, root: &OutputRoot, dir: &Path, only: Option<&[Asset
         let path = dir.join(&name);
         root.write(&path, a.data.as_slice())?;
         let mut na = (**a).clone();
-        na.link = Some(match relative_to {
+        let link = match relative_to {
             Some(folder) => format!("{folder}/{name}"),
             None => path.to_string_lossy().to_string(),
-        });
+        };
+        // The copy is the linked file now, and the original's size and time say nothing of it.
+        // Its own are too recent to vouch for it yet: the first check compares the bytes and
+        // keeps them (`remember_link_files`).
+        na.set_link(Some(link), None);
         out.assets.insert(id, Arc::new(na));
         written.push(path);
     }
@@ -323,7 +363,7 @@ fn write_links(d: &Document, root: &OutputRoot, dir: &Path, only: Option<&[Asset
 /// Copy the font file of `face` into `dir` (created when first needed) unless its licence
 /// restricts it or it is already there (`copied`: the source files copied) → what the package
 /// report adds after the font's name (nothing when copied).
-fn copy_font(root: &OutputRoot, face: &FontFace, dir: &Path, copied: &mut Vec<PathBuf>, taken: &mut Vec<String>, files: &mut Vec<PathBuf>) -> String {
+fn copy_font(root: &OutputRoot, face: &FontFace, dir: &Path, copied: &mut Vec<PathBuf>, taken: &mut Taken, files: &mut Vec<PathBuf>) -> String {
     let from = match &face.source {
         FontSource::Bundled => return " — included with DesignCraft".into(),
         FontSource::Memory => return " — not copied: no font file".into(),
@@ -335,9 +375,16 @@ fn copy_font(root: &OutputRoot, face: &FontFace, dir: &Path, copied: &mut Vec<Pa
     if copied.contains(from) {
         return String::new();
     }
+    // A document's font file is read under the automation roots in force now; installed fonts
+    // are the system's, outside any root.
+    if matches!(face.source, FontSource::Document(_))
+        && let Err(e) = crate::file_access::check_read(from)
+    {
+        return format!(" — not copied: {e}");
+    }
     let name = safe_component(&from.file_name().map(|n| n.to_string_lossy()).unwrap_or_default(), "font");
     let to = dir.join(unique_name(font_file_name(name, face.data()), taken));
-    match root.validate_directory(dir).and_then(|_| root.copy(from, &to)) {
+    match root.validate_directory(dir).and_then(|_| root.copy(from, face.data(), &to)) {
         Ok(()) => {
             copied.push(from.clone());
             files.push(to);
@@ -390,6 +437,17 @@ fn drawn_faces(cs: &ComposedStory, depth: usize, out: &mut Vec<FaceRef>) {
 fn package(s: &mut Session, p: &Value) -> Result<Value> {
     let dir = PathBuf::from(str_param(p, "dir").ok_or_else(|| bad("file.package", "missing `dir`"))?);
     let st = s.doc()?;
+    // The PDF: with the default settings, or with the options of a PDF preset, made as
+    // file.exportPdf makes it. Read first, so that bad options write nothing.
+    let pdf = match p.get("pdf") {
+        None | Some(Value::Null) | Some(Value::Bool(false)) => None,
+        Some(Value::Bool(true)) => Some(json!({})),
+        Some(o @ Value::Object(_)) => {
+            super::export::check_pdf_options(o, st.doc.page_count())?;
+            Some(o.clone())
+        }
+        Some(v) => return Err(bad("file.package", format!("`pdf` is true, false or PDF export options, not {v}"))),
+    };
     let root = OutputRoot::new(dir.clone())?;
     let display_title = st.doc.title.clone();
     let title = safe_component(&display_title, "Untitled");
@@ -405,7 +463,7 @@ fn package(s: &mut Session, p: &Value) -> Result<Value> {
     // The font files, and what the report says about each font.
     let db = designcraft_fonts::FontDb::global().scoped(d.font_scope);
     let fonts_dir = root.child(designcraft_fonts::DOCUMENT_FONTS_FOLDER)?;
-    let (mut copied, mut taken) = (Vec::new(), Vec::new());
+    let (mut copied, mut taken) = (Vec::new(), Taken::default());
     let (mut font_lines, mut named) = (Vec::new(), Vec::new());
     for f in fonts.as_array().into_iter().flatten() {
         let (family, style) = (f["family"].as_str().unwrap_or(""), f["style"].as_str().unwrap_or(""));
@@ -441,18 +499,21 @@ fn package(s: &mut Session, p: &Value) -> Result<Value> {
             idml_layer_note = "\nPlaced PDF layers\nThe IDML copy links the placed PDFs, so it shows their file defaults. The DesignCraft document keeps each placement's Object Layer Options choice.\n";
         }
     }
-    if p.get("pdf").and_then(Value::as_bool).unwrap_or(false) {
+    let mut warnings = Vec::new();
+    if let Some(params) = pdf {
         let path = package_output_path(&dir, &title, "pdf")?;
-        let bytes = designcraft_pdf::export_pdf(&super::interchange::with_pdf_boxes(&packed), &s.cache, &Default::default())
-            .map_err(|e| EngineError::Other(e.to_string()))?;
-        root.write(&path, &bytes)?;
+        let pdf = super::export::pdf_report(&packed, &s.cache, &params)?;
+        root.write(&path, &pdf.bytes)?;
+        warnings = pdf.warnings;
         files.push(path);
     }
-    // The report: fonts (missing first), links, preflight, the user's instructions.
-    let mut r = format!("Package report: {display_title}\n\n");
+    // The printing instructions first, as the form gave them; then the report: fonts (missing
+    // first), links, preflight.
+    let mut r = String::new();
     if let Some(t) = str_param(p, "instructions").filter(|t| !t.trim().is_empty()) {
         r += &format!("Instructions\n{t}\n\n");
     }
+    r += &format!("Package report: {display_title}\n\n");
     r += "Fonts\n";
     r += &font_lines.concat();
     if !fallback_lines.is_empty() {
@@ -470,10 +531,18 @@ fn package(s: &mut Session, p: &Value) -> Result<Value> {
             r += &format!("  {}\n", i.get("message").and_then(Value::as_str).unwrap_or(""));
         }
     }
+    if !warnings.is_empty() {
+        r += "\nPDF export warnings\n";
+        for warning in &warnings {
+            r += &format!("  {warning}\n");
+        }
+    }
     let report = dir.join("Instructions.txt");
     root.write(&report, r.as_bytes())?;
     files.push(report);
-    Ok(json!({"dir": dir.to_string_lossy(), "files": files.iter().map(|f| f.to_string_lossy().to_string()).collect::<Vec<_>>(), "report": r}))
+    Ok(
+        json!({"dir": dir.to_string_lossy(), "files": files.iter().map(|f| f.to_string_lossy().to_string()).collect::<Vec<_>>(), "report": r, "warnings": warnings}),
+    )
 }
 
 fn copy_links(s: &mut Session, p: &Value) -> Result<Value> {

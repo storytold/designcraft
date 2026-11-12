@@ -177,49 +177,97 @@ pub fn load(bytes: &[u8]) -> Result<Document, FormatError> {
 
 /// Most entries a `.designcraft` archive may hold.
 const MAX_ENTRIES: usize = 100_000;
-/// Most bytes `meta.json` or `document.json` may expand to.
-const MAX_JSON_BYTES: u64 = 256 << 20;
-/// Most bytes one embedded asset may expand to.
-const MAX_ASSET_BYTES: u64 = 1 << 30;
-/// Most bytes all the entries read from one archive may expand to together.
-const MAX_TOTAL_BYTES: u64 = 4 << 30;
 
-/// Read entry `name` of `z`, or `None` when it is missing or unreadable. Refuses an entry that
-/// expands past `limit` bytes or past what is `left` of the archive's budget, without
-/// decompressing more than that: the sizes the archive claims are not trusted.
-fn read_entry(z: &mut zip::ZipArchive<Cursor<&[u8]>>, name: &str, limit: u64, left: &mut u64) -> Result<Option<Vec<u8>>, FormatError> {
-    let too_big = || FormatError::Io(format!("{name} is larger than the {limit}-byte limit (or the archive is larger than {MAX_TOTAL_BYTES} bytes)"));
+/// How much a `.designcraft` archive may expand to when read. The sizes an archive claims are
+/// not trusted, so deflated entries are capped; a *stored* entry can't expand (its size is its
+/// bytes in the archive, which is already in memory, and all stored entries read together are
+/// held to the archive's own size), so a placed image — stored as is by [`save`] — opens whatever
+/// its size and doesn't count against the budget. Saving has no cap, and this keeps every saved
+/// document openable (#2166).
+#[derive(Clone, Copy, Debug)]
+struct Limits {
+    /// Most bytes `meta.json` or `document.json` may expand to.
+    json: u64,
+    /// Most bytes one deflated asset may expand to.
+    asset: u64,
+    /// Most bytes all the deflated entries read from one archive may expand to together.
+    total: u64,
+}
+
+impl Limits {
+    const DEFAULT: Limits = Limits { json: 256 << 20, asset: 1 << 30, total: 4 << 30 };
+}
+
+/// Read entry `name` of `z`, or `None` when it is missing or unreadable. Refuses a deflated entry
+/// that expands past `limit` bytes or past what is `left` of the archive's budget, without
+/// decompressing more than that: the sizes the archive claims are not trusted. A stored entry
+/// is read at its size in the archive and charged to `stored_left`, the archive's own size; only a
+/// stored asset is free of `limit`.
+fn read_entry(
+    z: &mut zip::ZipArchive<Cursor<&[u8]>>,
+    name: &str,
+    limit: u64,
+    left: &mut u64,
+    stored_left: &mut u64,
+) -> Result<Option<Vec<u8>>, FormatError> {
     let Ok(f) = z.by_name(name) else { return Ok(None) };
-    let limit = limit.min(*left);
+    let stored = f.compression() == zip::CompressionMethod::Stored;
+    let limit = if !stored {
+        limit.min(*left)
+    } else if name.starts_with("assets/") {
+        f.compressed_size().min(*stored_left)
+    } else {
+        f.compressed_size().min(*stored_left).min(limit)
+    };
+    let too_big = || FormatError::Io(format!("{name} is larger than the {limit}-byte limit (or the archive expands past its {}-byte budget)", *left));
     if f.size() > limit {
         return Err(too_big());
     }
     let mut v = Vec::new();
-    if f.take(limit.saturating_add(1)).read_to_end(&mut v).is_err() {
+    let read = f.take(limit.saturating_add(1)).read_to_end(&mut v);
+    let n = v.len() as u64;
+    // What a failed read produced was inflated all the same: it counts against the archive's budget.
+    if read.is_err() {
+        if stored {
+            *stored_left = stored_left.saturating_sub(n);
+        } else {
+            *left = left.saturating_sub(n);
+        }
         return Ok(None);
     }
-    let n = v.len() as u64;
     if n > limit {
         return Err(too_big());
     }
-    *left = left.saturating_sub(n);
+    if stored {
+        *stored_left = stored_left.saturating_sub(n);
+    } else {
+        *left = left.saturating_sub(n);
+    }
     Ok(Some(v))
 }
 
 fn load_zip(bytes: &[u8]) -> Result<Document, FormatError> {
+    load_zip_within(bytes, Limits::DEFAULT)
+}
+
+fn load_zip_within(bytes: &[u8], limits: Limits) -> Result<Document, FormatError> {
     let mut z = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|e| FormatError::NotOurs(e.to_string()))?;
     if z.len() > MAX_ENTRIES {
         return Err(FormatError::NotOurs(format!("{} entries (at most {MAX_ENTRIES})", z.len())));
     }
-    let mut left = MAX_TOTAL_BYTES;
-    let version = read_entry(&mut z, "meta.json", MAX_JSON_BYTES, &mut left)?
+    let mut left = limits.total;
+    // Stored entries can't expand, but a crafted zip can point several at the same bytes: together
+    // they get the archive's own size.
+    let mut stored_left = bytes.len() as u64;
+    let version = read_entry(&mut z, "meta.json", limits.json, &mut left, &mut stored_left)?
         .and_then(|meta| serde_json::from_slice::<Value>(&meta).ok())
         .and_then(|m| m.get("version").and_then(Value::as_u64))
         .unwrap_or(1);
     if version > u64::from(VERSION) {
         return Err(FormatError::TooNew(version));
     }
-    let json = read_entry(&mut z, "document.json", MAX_JSON_BYTES, &mut left)?.ok_or_else(|| FormatError::NotOurs("missing document.json".into()))?;
+    let json = read_entry(&mut z, "document.json", limits.json, &mut left, &mut stored_left)?
+        .ok_or_else(|| FormatError::NotOurs("missing document.json".into()))?;
     let mut v: Value = serde_json::from_slice(&json).map_err(|e| FormatError::NotOurs(e.to_string()))?;
     upgrade_json(&mut v);
     let mut doc: Document = serde_json::from_value(v).map_err(|e| FormatError::NotOurs(e.to_string()))?;
@@ -235,7 +283,7 @@ fn load_zip(bytes: &[u8]) -> Result<Document, FormatError> {
         if !doc.assets.contains_key(&AssetId(id)) {
             continue;
         }
-        if let (Some(data), Some(a)) = (read_entry(&mut z, &name, MAX_ASSET_BYTES, &mut left)?, doc.assets.get_mut(&AssetId(id))) {
+        if let (Some(data), Some(a)) = (read_entry(&mut z, &name, limits.asset, &mut left, &mut stored_left)?, doc.assets.get_mut(&AssetId(id))) {
             let same = loaded.entry(fingerprint.hash_one(data.as_slice())).or_default();
             let data = match same.iter().find(|d| ***d == data) {
                 Some(d) => d.clone(),
@@ -251,6 +299,7 @@ fn load_zip(bytes: &[u8]) -> Result<Document, FormatError> {
     upgrade(&mut doc, u32::try_from(version).unwrap_or(u32::MAX));
     doc.merge_duplicate_assets();
     doc.mark_differing_margins_local();
+    doc.renumber_duplicate_items();
     doc.check().map_err(|e| FormatError::NotOurs(e.to_string()))?;
     Ok(doc)
 }
@@ -270,12 +319,14 @@ fn upgrade(doc: &mut Document, from: u32) {
 /// is missing.
 fn pin_para_default<T: Clone>(doc: &mut Document, field: fn(&mut ParaAttrs) -> &mut Option<T>, old: T) {
     let unset = |a: &ParaAttrs| field(&mut a.clone()).is_none();
+    // Every style is looked up by name: through one index, not a search of all styles each time.
+    let index = doc.styles.para_index();
     let roots: std::collections::HashSet<String> = doc
         .styles
         .paragraph
         .iter()
         .filter_map(|s| {
-            let chain = doc.styles.para_chain(&s.name);
+            let chain = designcraft_doc::Styles::para_chain_by(&s.name, |n| index.get(n).copied());
             if chain.iter().all(|c| unset(&c.para)) { chain.first().map(|c| c.name.clone()) } else { None }
         })
         .collect();
@@ -284,9 +335,10 @@ fn pin_para_default<T: Clone>(doc: &mut Document, field: fn(&mut ParaAttrs) -> &
             *field(&mut s.para) = Some(old.clone());
         }
     }
-    let styles = doc.styles.clone();
+    // Borrowed names: one entry per style already in memory, so no copy and no extra bound needed.
+    let names: std::collections::HashSet<&str> = doc.styles.paragraph.iter().map(|s| s.name.as_str()).collect();
     let mut pin = |st: &mut Story| {
-        for p in st.paras.iter_mut().filter(|p| styles.para(&p.style).is_none()) {
+        for p in st.paras.iter_mut().filter(|p| !names.contains(p.style.as_str())) {
             let v = field(&mut p.para);
             if v.is_none() {
                 *v = Some(old.clone());
@@ -318,6 +370,7 @@ fn load_legacy_json(bytes: &[u8]) -> Result<Document, FormatError> {
     upgrade(&mut doc, 1);
     doc.merge_duplicate_assets();
     doc.mark_differing_margins_local();
+    doc.renumber_duplicate_items();
     doc.check().map_err(|e| FormatError::NotOurs(e.to_string()))?;
     Ok(doc)
 }

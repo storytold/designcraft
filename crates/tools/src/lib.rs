@@ -16,7 +16,7 @@ mod frame;
 mod gradient;
 pub mod layout;
 mod nav;
-pub use nav::{LOCK_OFFSET_PX, PIN_OFFSET_PX};
+pub use nav::{LOCK_OFFSET_PX, PIN_OFFSET_PX, PLACE_DRAG_MIN};
 mod pen;
 mod pencil;
 pub mod select;
@@ -232,6 +232,8 @@ pub struct ToolContext<'a> {
     pub unit: Unit,
     /// The toolbox's Stroke box is in front: sampled colours go to strokes (the Eyedropper).
     pub stroke_in_front: bool,
+    /// Natural size, in points, of the graphic loaded in the place cursor.
+    pub loaded: Option<(f64, f64)>,
 }
 
 impl ToolContext<'_> {
@@ -275,12 +277,13 @@ impl ToolContext<'_> {
         // What the renderer draws on this page, in its order: by layer, then the parent's bases
         // before the parent. The last hit is the topmost.
         let mut shown = Vec::new();
+        let overridden = self.doc.overridden_parent_items(SpreadRef::Doc(si), pi);
         for (ppi, ppg) in self.doc.shown_parent_pages(SpreadRef::Doc(si), pi) {
             let Some(parent) = self.doc.parents.get(ppi) else { continue };
             let Some(parent_page) = parent.pages.get(ppg) else { continue };
             let off = designcraft_geom::Vec2::new(pg.x - parent_page.x, 0.0);
             for it in &parent.items {
-                if pg.overridden.contains(&it.id) || parent.pages.len() > 1 && parent.page_at_x(it.bounds().center().x) != Some(ppg) {
+                if overridden.contains(&it.id) || parent.pages.len() > 1 && parent.page_at_x(it.bounds().center().x) != Some(ppg) {
                     continue;
                 }
                 shown.push((it, off));
@@ -298,8 +301,7 @@ impl ToolContext<'_> {
     }
 
     fn hit_parent(&self, sr: SpreadRef, sp: Point) -> Option<(SpreadRef, ItemId)> {
-        let s = self.doc.spread(sr)?;
-        s.items.iter().rev().find(|it| !it.locked && designcraft_doc::edit_hit(it, sp, self.tol(4.0))).map(|it| (sr, it.id))
+        self.doc.hit_parent_item(sr, sp, self.tol(4.0)).map(|id| (sr, id))
     }
 
     /// Spread-space → canvas transform of the spread holding item `id`.
@@ -312,11 +314,54 @@ impl ToolContext<'_> {
         self.doc.item(id)
     }
 
+    /// The selected items with the transform from their own space to the canvas, found in one walk
+    /// of the document (a search per item made a big selection quadratic). Same first match per
+    /// id as `Document::find`, in selection order.
+    fn selected_with_canvas_xf(&self) -> Vec<(&Item, Affine)> {
+        let mut want: std::collections::HashSet<ItemId> = self.selection.items.iter().copied().collect();
+        let mut found: std::collections::HashMap<ItemId, (&Item, Affine)> = std::collections::HashMap::new();
+        // Pre-order with an explicit stack: a deep group tree must not exhaust the call stack.
+        fn walk<'a>(
+            items: &'a [std::sync::Arc<Item>],
+            want: &mut std::collections::HashSet<ItemId>,
+            found: &mut std::collections::HashMap<ItemId, (&'a Item, Affine)>,
+        ) {
+            let mut stack = vec![(items.iter(), Affine::IDENTITY)];
+            while let Some((kids, xf)) = stack.last_mut() {
+                if want.is_empty() {
+                    return;
+                }
+                let Some(it) = kids.next() else {
+                    stack.pop();
+                    continue;
+                };
+                let xf = *xf;
+                if want.remove(&it.id) {
+                    found.insert(it.id, (it, xf));
+                }
+                stack.push((it.children().iter(), xf * it.xf));
+            }
+        }
+        for r in self.doc.spread_refs() {
+            if want.is_empty() {
+                break;
+            }
+            if let Some(sp) = self.doc.spread(r) {
+                let mut here = std::collections::HashMap::new();
+                walk(&sp.items, &mut want, &mut here);
+                if !here.is_empty() {
+                    let canvas = self.layout.xf(r);
+                    found.extend(here.into_iter().map(|(id, (it, xf))| (id, (it, canvas * xf))));
+                }
+            }
+        }
+        self.selection.items.iter().filter_map(|id| found.get(id).copied()).collect()
+    }
+
     /// Canvas bounds of the selected items' paths. Handles and resize use this geometric box.
     pub fn selection_bounds(&self) -> Option<Rect> {
         let mut r: Option<Rect> = None;
-        for id in &self.selection.items {
-            let (Some(it), Some(xf)) = (self.doc.item(*id), self.item_canvas_xf(*id)) else { continue };
+        for (it, xf) in self.selected_with_canvas_xf() {
             let b = xf.transform_rect_bbox(it.bounds());
             r = Some(r.map_or(b, |r| r.union(b)));
         }
@@ -326,8 +371,7 @@ impl ToolContext<'_> {
     /// Canvas union of the selection's visible bounds. A group uses the alignment box.
     pub fn selection_visible_bounds(&self) -> Option<Rect> {
         let mut acc: Option<Rect> = None;
-        for id in &self.selection.items {
-            let (Some(it), Some(xf)) = (self.doc.item(*id), self.item_canvas_xf(*id)) else { continue };
+        for (it, xf) in self.selected_with_canvas_xf() {
             let Some(local) = crate::snap::moving_bounds(it) else { continue };
             let b = xf.transform_rect_bbox(local);
             if !(b.x0.is_finite() && b.y0.is_finite() && b.x1.is_finite() && b.y1.is_finite()) {

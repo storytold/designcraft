@@ -519,6 +519,69 @@ fn typed_fields_keep_style_and_unknown_markers() {
     assert_eq!(story.format_after(at).over.size, Some(21.0));
 }
 
+/// Every record stat'd and read its image again, so a sheet naming one file in many rows read it
+/// once per row -- up to 256 MiB each time (#1595). A merge reads a file once and the records
+/// share the bytes.
+#[test]
+fn one_image_named_by_many_records_is_read_once() {
+    let dir = scratch("image-reads");
+    let data = dir.join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    let shared = dir.join("shared.png");
+    write_png(&shared);
+    // 25 records, all naming the same file.
+    let rows: String = (0..25).map(|_| format!("{}\n", shared.display())).collect();
+    write(&data.join("many.csv"), &format!("@Photo\n{rows}"));
+
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    exec(&mut s, "data.source.select", json!({"path": data.join("many.csv")}));
+    let frame = exec(&mut s, "frame.create", json!({"rect": [36.0, 36.0, 80.0, 80.0], "content": "graphic"}));
+    exec(&mut s, "data.placeholder.add", json!({"field": "Photo", "item": frame["id"]}));
+    let r = exec(&mut s, "data.merge", json!({}));
+    assert_eq!(r["records"], 25);
+    assert_eq!(r["missingImages"].as_array().map(Vec::len).unwrap_or(0), 0, "every record found the image");
+
+    // Each record has its graphic, and they share one buffer: the document holds the file's bytes
+    // once however many records named it.
+    let doc = &s.documents()[s.active_index().unwrap()].doc;
+    let graphics: Vec<_> = doc
+        .spreads
+        .iter()
+        .flat_map(|sp| &sp.items)
+        .filter_map(|it| match &it.content {
+            Content::Graphic(g) => Some(g.asset),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(graphics.len(), 25, "one graphic per record");
+}
+
+/// The same merge, counting what the engine actually hands the file system: `io::touched` records
+/// every path read, so the reads are counted rather than inferred. The document already shares
+/// identical asset bytes, so memory alone does not show this -- the I/O is the bug (#1595).
+#[test]
+fn a_merge_reads_a_repeated_image_once_not_once_per_record() {
+    let dir = scratch("image-read-count");
+    let data = dir.join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    let shared = dir.join("shared.png");
+    write_png(&shared);
+    let rows: String = (0..25).map(|_| format!("{}\n", shared.display())).collect();
+    write(&data.join("many.csv"), &format!("@Photo\n{rows}"));
+
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    exec(&mut s, "data.source.select", json!({"path": data.join("many.csv")}));
+    let frame = exec(&mut s, "frame.create", json!({"rect": [36.0, 36.0, 80.0, 80.0], "content": "graphic"}));
+    exec(&mut s, "data.placeholder.add", json!({"field": "Photo", "item": frame["id"]}));
+
+    let (r, seen) = crate::io::touched(|| exec(&mut s, "data.merge", json!({})));
+    assert_eq!(r["records"], 25);
+    let reads = seen.iter().filter(|p| p.ends_with("shared.png")).count();
+    assert!(reads <= 2, "the image is read once for the merge, not once per record: {reads} reads for 25 records");
+}
+
 #[test]
 fn images_resolve_in_order_and_roles_win() {
     let dir = scratch("images");
@@ -679,6 +742,7 @@ fn role_overrides_column_kind_qr_and_hyperlink() {
             HyperlinkDest::Email(v) => format!("email:{v}"),
             HyperlinkDest::Url(v) => format!("url:{v}"),
             HyperlinkDest::Page(n) => format!("page:{n}"),
+            HyperlinkDest::Anchor(a) => format!("anchor:{a}"),
         });
     }
     kinds.sort();
@@ -788,6 +852,30 @@ fn tiling_rows_first_bottom_inset_and_refusals() {
     let msg = err(&mut s, "data.merge", json!({}));
     assert!(msg.contains("one page"), "{msg}");
     assert_eq!(s.documents().len(), before);
+}
+
+/// A two-page template merged for three records: six pages made in one insertion, each record's
+/// frame on its own pages, in record order.
+#[test]
+fn a_two_page_template_merges_onto_consecutive_pages() {
+    let mut s = Session::new();
+    new_doc(&mut s, 2);
+    text_frame(&mut s, [72.0, 72.0, 172.0, 172.0], "<<Name>>", None);
+    select_csv(&mut s, "Name\nA\nB\nC\n");
+    let r = exec(&mut s, "data.merge", json!({}));
+    assert_eq!(r["pages"], 6);
+    let d = &s.documents()[s.active_index().unwrap()].doc;
+    assert_eq!(d.page_count(), 6);
+    let mut at: Vec<(usize, String)> = Vec::new();
+    for st in d.stories.values() {
+        let f = d.item(*st.frames.first().unwrap()).unwrap();
+        let sp = d.spreads.iter().position(|sp| sp.items.iter().any(|i| i.id == f.id)).unwrap();
+        let page = d.first_page_of_spread(sp) + d.spreads[sp].page_at_x(f.bounds().center().x).unwrap_or(0);
+        at.push((page, st.text.clone()));
+    }
+    at.sort();
+    assert_eq!(at, vec![(0, "A".to_string()), (2, "B".to_string()), (4, "C".to_string())]);
+    d.check().unwrap();
 }
 
 /// An IME delete-surrounding while a record is previewed edits the template, not the filled
@@ -1117,6 +1205,14 @@ fn select_records_dedupes_large_ranges_in_first_seen_order() {
 }
 
 #[test]
+fn select_records_rejects_signed_record_numbers() {
+    for (tok, bad) in [("+2", "+2"), ("1-+3", "+3"), ("+1,+4", "+1")] {
+        let err = parse::select_records(5, "range", 1, tok, None).unwrap_err();
+        assert!(err.contains(&format!("bad record \"{bad}\"")), "{tok}: {err}");
+    }
+}
+
+#[test]
 fn oversized_data_file_is_refused_before_reading() {
     let dir = scratch("oversized");
     let path = dir.join("big.csv");
@@ -1197,4 +1293,195 @@ fn facing_pages_merge_tiles_short_blocks_without_stacking() {
     assert_eq!(origins.len(), 3, "one text frame per record");
     let unique: std::collections::BTreeSet<_> = origins.iter().collect();
     assert_eq!(unique.len(), 3, "no two records may share a page and coordinates: {origins:?}");
+}
+
+// #1522: each record's copy of an anchored object needs its own id, or the merged file won't reopen.
+#[test]
+fn merged_records_give_anchored_objects_their_own_ids() {
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    select_csv(&mut s, "Name\nAda\nGrace\n");
+    let made = text_frame(&mut s, [36.0, 36.0, 400.0, 80.0], "<<Name>> here", None);
+    let b = exec(&mut s, "frame.create", json!({"rect": [450, 450, 474, 490]}));
+    exec(&mut s, "anchored.insert", json!({"ids": [b["id"]], "story": made["story"], "pos": 2}));
+    assert_eq!(exec(&mut s, "data.merge", json!({}))["records"], 2);
+    let doc = &s.documents()[s.active_index().unwrap()].doc;
+    assert_eq!(doc.anchored_items().len(), 2);
+    doc.check().unwrap();
+    designcraft_format::load(&designcraft_format::save(doc).unwrap()).unwrap();
+}
+
+/// The cell texts of the first table in the active document's first story that has one.
+fn cell_texts(s: &Session) -> Vec<String> {
+    let doc = &s.documents()[s.active_index().unwrap()].doc;
+    let t = doc.stories.values().find_map(|st| st.tables.values().next().cloned()).expect("a table");
+    t.cells.iter().map(|c| c.text.text.clone()).collect()
+}
+
+/// A field inserted with the insertion point in a table cell goes into that cell, and the
+/// preview and the merge fill it. The cell's offsets used to put the marker in the table's own
+/// story, outside the table, and the merge never read a cell's text (#2315).
+#[test]
+fn a_field_inserted_in_a_table_cell_goes_there_and_is_filled() {
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    select_csv(&mut s, "Name,City\nAda,London\nGrace,Arlington\n");
+    let made = text_frame(&mut s, [36.0, 36.0, 400.0, 200.0], "Who\tWhere", None);
+    exec(&mut s, "text.select", json!({"story": made["story"], "anchor": 0, "focus": 9}));
+    exec(&mut s, "table.convertFromText", json!({"columnSeparator": "tab"}));
+    let story_text = |s: &Session| s.documents()[s.active_index().unwrap()].doc.stories.values().next().unwrap().text.clone();
+    let before = story_text(&s);
+    exec(&mut s, "table.select", json!({"story": made["story"], "rows": [0, 0], "cols": [1, 1]}));
+    let r = exec(&mut s, "data.placeholder.add", json!({"field": "City"}));
+    assert_eq!(r["marker"], "<<City>>", "{r}");
+    assert_eq!(cell_texts(&s), ["Who", "<<City>>Where"], "the marker is in the cell with the caret");
+    assert_eq!(story_text(&s), before, "and not in the table's story");
+
+    exec(&mut s, "data.preview", json!({"record": 2}));
+    assert_eq!(cell_texts(&s), ["Who", "ArlingtonWhere"], "the preview fills the cell");
+    exec(&mut s, "data.preview.stop", json!({}));
+    assert_eq!(cell_texts(&s), ["Who", "<<City>>Where"], "stopping it puts the marker back");
+    exec(&mut s, "data.merge", json!({}));
+    let merged = &s.documents()[s.active_index().unwrap()].doc;
+    let mut cities: Vec<String> =
+        merged.stories.values().flat_map(|st| st.tables.values().map(|t| t.cells[1].text.text.clone()).collect::<Vec<_>>()).collect();
+    cities.sort();
+    assert_eq!(cities, ["ArlingtonWhere", "LondonWhere"], "one table per record, filled");
+}
+
+/// A field typed (or inserted) in text that is then converted to a table is filled in its cell.
+#[test]
+fn a_field_converted_into_a_table_is_filled_in_its_cell() {
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    select_csv(&mut s, "Name,City\nAda,London\n");
+    let made = text_frame(&mut s, [36.0, 36.0, 400.0, 200.0], "Name\t<<Name>>", None);
+    exec(&mut s, "text.select", json!({"story": made["story"], "anchor": 0, "focus": 13}));
+    exec(&mut s, "table.convertFromText", json!({"columnSeparator": "tab"}));
+    assert_eq!(cell_texts(&s), ["Name", "<<Name>>"]);
+    exec(&mut s, "data.preview", json!({"record": 1}));
+    assert_eq!(cell_texts(&s), ["Name", "Ada"], "the field is filled in its cell");
+}
+
+/// A table `Who⇥Where` with the caret in its second cell, and a source with `Name` and `City`.
+fn table_with_caret_in_cell(s: &mut Session, csv: &str) -> Value {
+    new_doc(s, 1);
+    select_csv(s, csv);
+    let made = text_frame(s, [36.0, 36.0, 400.0, 200.0], "Who\tWhere", None);
+    exec(s, "text.select", json!({"story": made["story"], "anchor": 0, "focus": 9}));
+    exec(s, "table.convertFromText", json!({"columnSeparator": "tab"}));
+    exec(s, "table.select", json!({"story": made["story"], "rows": [0, 0], "cols": [1, 1]}));
+    made
+}
+
+/// After a field goes into a cell the caret is after it, in that cell, and the cell selection is
+/// gone: typing goes on after the field instead of replacing the cell, field and all.
+#[test]
+fn typing_after_a_field_inserted_in_a_cell_goes_on_after_it() {
+    let mut s = Session::new();
+    table_with_caret_in_cell(&mut s, "Name,City\nAda,London\n");
+    exec(&mut s, "data.placeholder.add", json!({"field": "City"}));
+    let sel = &s.documents()[s.active_index().unwrap()].selection;
+    assert!(sel.cells.is_none(), "no cell selection left");
+    exec(&mut s, "text.insert", json!({"text": ", "}));
+    assert_eq!(cell_texts(&s), ["Who", "<<City>>, Where"]);
+}
+
+/// A position that a merged cell covers is the merged cell's: the field goes into the merged cell,
+/// where it shows, not into the hidden one under it.
+#[test]
+fn a_field_inserted_in_a_merged_cell_goes_where_it_shows() {
+    let mut s = Session::new();
+    let made = table_with_caret_in_cell(&mut s, "Name,City\nAda,London\n");
+    exec(&mut s, "table.merge", json!({"story": made["story"], "rows": [0, 0], "cols": [0, 1]}));
+    exec(&mut s, "table.select", json!({"story": made["story"], "rows": [0, 0], "cols": [1, 1]}));
+    exec(&mut s, "data.placeholder.add", json!({"field": "City"}));
+    let cells = cell_texts(&s);
+    assert!(cells[0].contains("<<City>>"), "in the merged cell: {cells:?}");
+    assert!(!cells[1].contains("<<City>>"), "not in the covered one: {cells:?}");
+    exec(&mut s, "data.preview", json!({"record": 1}));
+    assert!(cell_texts(&s)[0].contains("London"), "and filled: {:?}", cell_texts(&s));
+}
+
+/// A field whose name a marker can't hold (it has `<` or `>`) can't be filled from a cell, so it
+/// isn't inserted there; in body text it still becomes an anchored placeholder.
+#[test]
+fn a_field_named_with_angle_brackets_is_refused_in_a_cell() {
+    let mut s = Session::new();
+    let made = table_with_caret_in_cell(&mut s, "Customer <ID>,City\n7,London\n");
+    let e = s.execute("data.placeholder.add", &json!({"field": "Customer <ID>"})).expect_err("refused").to_string();
+    assert!(e.contains("can't be inserted in a table cell"), "{e}");
+    assert_eq!(cell_texts(&s), ["Who", "Where"], "nothing inserted");
+    let other = text_frame(&mut s, [36.0, 300.0, 400.0, 400.0], "No. ", None);
+    exec(&mut s, "text.select", json!({"story": other["story"], "anchor": 4, "focus": 4}));
+    assert!(exec(&mut s, "data.placeholder.add", json!({"field": "Customer <ID>"}))["id"].is_u64(), "body text still takes it");
+    let _ = made;
+}
+
+/// Endnote text is filled too: it is a text inside its story, like a footnote's.
+#[test]
+fn a_field_in_an_endnote_is_filled() {
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    select_csv(&mut s, "Name,City\nAda,London\n");
+    let made = text_frame(&mut s, [36.0, 36.0, 400.0, 200.0], "See the note", None);
+    exec(&mut s, "text.select", json!({"story": made["story"], "anchor": 12, "focus": 12}));
+    exec(&mut s, "endnote.insert", json!({"text": "From <<City>>"}));
+    let endnotes = |s: &Session| -> Vec<String> {
+        s.documents()[s.active_index().unwrap()].doc.stories.values().flat_map(|st| st.endnotes.iter().map(|e| e.text.text.clone())).collect()
+    };
+    assert_eq!(endnotes(&s), ["From <<City>>"]);
+    exec(&mut s, "data.preview", json!({"record": 1}));
+    assert_eq!(endnotes(&s), ["From London"]);
+}
+
+/// Tables nested in cells far deeper than any document goes are filled down to the merge's depth
+/// limit, and the preview returns instead of exhausting the stack.
+#[test]
+fn deeply_nested_tables_are_filled_down_to_the_limit_without_overflowing() {
+    use designcraft_doc::{Cell, ParaFormat, Table};
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    select_csv(&mut s, "Name,City\nAda,London\n");
+    let made = text_frame(&mut s, [36.0, 36.0, 400.0, 200.0], "x", None);
+    let sid = StoryId(made["story"].as_u64().unwrap());
+    // `depth` tables, each in the one cell of the next, each cell's own text `<<Name>>`.
+    let nest = |depth: usize| {
+        let mut inner: Option<Table> = None;
+        for i in 0..depth {
+            let mut t = Table::new(1000 + i as u64, 1, 1, 0, 0, 100.0);
+            t.cells[0] = Cell::with_text("<<Name>>", ParaFormat::default());
+            if let Some(child) = inner.take() {
+                t.cells[0].text.insert_table(0, child);
+            }
+            inner = Some(t);
+        }
+        inner.unwrap()
+    };
+    s.edit(|d, _| {
+        d.story_mut(sid).unwrap().insert_table(0, nest(500));
+        Ok(())
+    })
+    .unwrap();
+    exec(&mut s, "data.preview", json!({"record": 1}));
+    let doc = &s.documents()[s.active_index().unwrap()].doc;
+    let mut t = doc.story(sid).unwrap().tables.values().next().unwrap().clone();
+    let mut filled = Vec::new();
+    for _ in 0..40 {
+        filled.push(t.cells[0].text.text.contains("Ada"));
+        let Some(next) = t.cells[0].text.tables.values().next().cloned() else { break };
+        t = next;
+    }
+    assert!(filled[..super::fill::MAX_NESTED_DEPTH].iter().all(|f| *f), "filled down to the limit: {filled:?}");
+    assert!(!filled[super::fill::MAX_NESTED_DEPTH], "and not past it");
+}
+
+#[test]
+fn select_records_stops_expanding_once_the_limit_is_met_but_still_checks_every_range() {
+    // 4 billion records in a range would not finish if it were expanded; the limit stops it.
+    let idx = parse::select_records(u32::MAX as usize, "range", 1, "1-3,1-4294967295,2-4294967295", Some(5)).unwrap();
+    assert_eq!(idx, vec![0, 1, 2, 3, 4]);
+    // A later token that is out of range is still an error.
+    assert!(parse::select_records(10, "range", 1, "1-10,5-11", Some(2)).is_err());
+    assert!(parse::select_records(10, "range", 1, "1-2,0", Some(2)).is_err());
 }
