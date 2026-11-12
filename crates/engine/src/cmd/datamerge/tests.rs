@@ -742,6 +742,7 @@ fn role_overrides_column_kind_qr_and_hyperlink() {
             HyperlinkDest::Email(v) => format!("email:{v}"),
             HyperlinkDest::Url(v) => format!("url:{v}"),
             HyperlinkDest::Page(n) => format!("page:{n}"),
+            HyperlinkDest::Anchor(a) => format!("anchor:{a}"),
         });
     }
     kinds.sort();
@@ -851,6 +852,30 @@ fn tiling_rows_first_bottom_inset_and_refusals() {
     let msg = err(&mut s, "data.merge", json!({}));
     assert!(msg.contains("one page"), "{msg}");
     assert_eq!(s.documents().len(), before);
+}
+
+/// A two-page template merged for three records: six pages made in one insertion, each record's
+/// frame on its own pages, in record order.
+#[test]
+fn a_two_page_template_merges_onto_consecutive_pages() {
+    let mut s = Session::new();
+    new_doc(&mut s, 2);
+    text_frame(&mut s, [72.0, 72.0, 172.0, 172.0], "<<Name>>", None);
+    select_csv(&mut s, "Name\nA\nB\nC\n");
+    let r = exec(&mut s, "data.merge", json!({}));
+    assert_eq!(r["pages"], 6);
+    let d = &s.documents()[s.active_index().unwrap()].doc;
+    assert_eq!(d.page_count(), 6);
+    let mut at: Vec<(usize, String)> = Vec::new();
+    for st in d.stories.values() {
+        let f = d.item(*st.frames.first().unwrap()).unwrap();
+        let sp = d.spreads.iter().position(|sp| sp.items.iter().any(|i| i.id == f.id)).unwrap();
+        let page = d.first_page_of_spread(sp) + d.spreads[sp].page_at_x(f.bounds().center().x).unwrap_or(0);
+        at.push((page, st.text.clone()));
+    }
+    at.sort();
+    assert_eq!(at, vec![(0, "A".to_string()), (2, "B".to_string()), (4, "C".to_string())]);
+    d.check().unwrap();
 }
 
 /// An IME delete-surrounding while a record is previewed edits the template, not the filled
@@ -1449,4 +1474,14 @@ fn deeply_nested_tables_are_filled_down_to_the_limit_without_overflowing() {
     }
     assert!(filled[..super::fill::MAX_NESTED_DEPTH].iter().all(|f| *f), "filled down to the limit: {filled:?}");
     assert!(!filled[super::fill::MAX_NESTED_DEPTH], "and not past it");
+}
+
+#[test]
+fn select_records_stops_expanding_once_the_limit_is_met_but_still_checks_every_range() {
+    // 4 billion records in a range would not finish if it were expanded; the limit stops it.
+    let idx = parse::select_records(u32::MAX as usize, "range", 1, "1-3,1-4294967295,2-4294967295", Some(5)).unwrap();
+    assert_eq!(idx, vec![0, 1, 2, 3, 4]);
+    // A later token that is out of range is still an error.
+    assert!(parse::select_records(10, "range", 1, "1-10,5-11", Some(2)).is_err());
+    assert!(parse::select_records(10, "range", 1, "1-2,0", Some(2)).is_err());
 }

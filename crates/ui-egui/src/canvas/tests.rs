@@ -71,6 +71,102 @@ fn a_press_after_a_drag_is_not_a_double_click() {
     assert_eq!(press(Some(up), 0.0, 1.0), 1);
 }
 
+/// The shapes the canvas paints for a new document, after two frames (the first lays out).
+fn canvas_shapes(app: &mut DesignApp) -> Vec<egui::epaint::ClippedShape> {
+    let ctx = egui::Context::default();
+    let mut shapes = Vec::new();
+    for _ in 0..2 {
+        let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 900.0))), ..Default::default() };
+        let mut out = ctx.run_ui(raw, |ui| show(app, ui));
+        out.textures_delta.clear();
+        shapes = out.shapes;
+    }
+    shapes
+}
+
+/// The spine-coloured vertical hairlines at screen x `x` that run the full height of `page`
+/// (the spine of one spread shares its x with the pages of the spreads above and below it).
+fn vertical_lines_at(shapes: &[egui::epaint::ClippedShape], x: f32, page: Rect) -> usize {
+    let spine = page_decor::PAGE_EDGE;
+    shapes
+        .iter()
+        .filter(|c| match &c.shape {
+            egui::Shape::LineSegment { points: [a, b], stroke } => {
+                stroke.color == spine
+                    && (a.x - x).abs() < 0.01
+                    && (b.x - x).abs() < 0.01
+                    && a.y.min(b.y) <= page.min.y + 0.01
+                    && a.y.max(b.y) >= page.max.y - 0.01
+            }
+            _ => false,
+        })
+        .count()
+}
+
+#[test]
+fn a_spread_shows_a_spine_line_between_its_pages() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", serde_json::json!({"pages": 3, "facingPages": true})).unwrap();
+    let shapes = canvas_shapes(&mut app);
+    let st = app.session.active().unwrap();
+    let layout = CanvasLayout::new(&st.doc, false);
+    let xf = Xf::new(app.canvas_rect.unwrap(), app.view().unwrap());
+    // One spine at each edge two pages of a spread share, the full page height, and none
+    // at the outer edges of a spread or around a page on a spread of its own.
+    let mut pairs = 0;
+    for (si, sp) in st.doc.spreads.iter().enumerate() {
+        let first = st.doc.first_page_of_spread(si);
+        let rects: Vec<Rect> = (0..sp.pages.len()).map(|pi| xf.rect(layout.page_rect(&st.doc, first + pi).unwrap())).collect();
+        for w in rects.windows(2) {
+            assert!((w[0].max.x - w[1].min.x).abs() < 0.01, "pages of a spread meet");
+            assert_eq!(vertical_lines_at(&shapes, w[0].max.x, w[0]), 1, "spine in spread {si}");
+            pairs += 1;
+        }
+        let (left, right) = (rects[0], rects[rects.len() - 1]);
+        assert_eq!(vertical_lines_at(&shapes, left.min.x, left), 0, "outer left edge of spread {si}");
+        assert_eq!(vertical_lines_at(&shapes, right.max.x, right), 0, "outer right edge of spread {si}");
+    }
+    assert!(pairs > 0, "the document has a spread with two pages");
+}
+
+#[test]
+fn the_spine_sits_where_the_pages_of_a_right_to_left_spread_meet() {
+    // Bound right to left, the spread lists its right page first. With pages of different
+    // sizes, the line must be at their shared edge, not halfway between the outer ones, and
+    // run the height of the taller page, not stop at the shorter one listed first.
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", serde_json::json!({"pages": 3, "facingPages": true})).unwrap();
+    app.run("layout.documentSetup", serde_json::json!({"binding": "rightToLeft"})).unwrap();
+    let settings = &app.session.active().unwrap().doc.settings;
+    let (w, h) = (settings.page_width, settings.page_height);
+    app.run("layout.pageSize", serde_json::json!({"pages": [2], "width": w * 0.6, "height": h * 0.6})).unwrap();
+    let shapes = canvas_shapes(&mut app);
+    let st = app.session.active().unwrap();
+    let layout = CanvasLayout::new(&st.doc, false);
+    let xf = Xf::new(app.canvas_rect.unwrap(), app.view().unwrap());
+    let (right, left) = (xf.rect(layout.page_rect(&st.doc, 1).unwrap()), xf.rect(layout.page_rect(&st.doc, 2).unwrap()));
+    assert!((left.max.x - right.min.x).abs() < 0.01, "page 3 is the left page, page 2 the right");
+    assert!((left.width() - right.width()).abs() > 1.0, "the pages differ in width");
+    assert!(left.height() - right.height() > 1.0, "page 3 is the taller page");
+    assert_eq!(vertical_lines_at(&shapes, left.max.x, left), 1);
+}
+
+#[test]
+fn the_spine_line_hides_with_the_other_guides() {
+    for (guides, mode) in [(false, ScreenMode::Normal), (true, ScreenMode::Preview), (true, ScreenMode::Presentation)] {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", serde_json::json!({"pages": 3, "facingPages": true})).unwrap();
+        app.ui.guides = guides;
+        app.ui.screen_mode = mode;
+        let shapes = canvas_shapes(&mut app);
+        let st = app.session.active().unwrap();
+        let layout = CanvasLayout::new(&st.doc, false);
+        let xf = Xf::new(app.canvas_rect.unwrap(), app.view().unwrap());
+        let left = xf.rect(layout.page_rect(&st.doc, 1).unwrap());
+        assert_eq!(vertical_lines_at(&shapes, left.max.x, left), 0, "guides={guides} mode={mode:?}");
+    }
+}
+
 /// While a page's render is on its way the page shows paper, not the black of its shadow.
 #[test]
 fn pages_show_paper_under_their_render() {
@@ -195,6 +291,58 @@ fn an_empty_frames_x_follows_its_corners() {
     assert_eq!(it.shape, designcraft_doc::Shape::Path);
     let lines: Vec<_> = frame_x(&it).to_vec();
     assert!(lines.iter().all(|(a, b)| (a.x - b.x).abs() > 1e-6 && (a.y - b.y).abs() > 1e-6), "an edited diamond: {lines:?}");
+}
+
+/// A graphic pasted into a smaller Pen-drawn shape (Edit › Paste Into) is clipped to it, and so
+/// are the frame edges: the shape shows its own edge, not the whole graphic's past it (#2345).
+#[test]
+fn a_frame_with_pasted_in_content_shows_its_own_edge_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let png = dir.path().join("photo.png");
+    std::fs::write(&png, designcraft_render::Rendered { width: 300, height: 300, pixels: vec![90; 300 * 300 * 4] }.to_png()).unwrap();
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let big = app.run("frame.create", json!({"rect": [60, 60, 360, 360]})).unwrap()["id"].as_u64().unwrap();
+    app.run("file.place", json!({"path": png.to_string_lossy(), "frame": big})).unwrap();
+    let pts: Vec<Value> = [[160, 160], [260, 170], [240, 260], [170, 250]].iter().map(|p| json!({"p": p})).collect();
+    let shape = app.run("path.create", json!({"anchors": pts, "closed": true})).unwrap()["id"].as_u64().unwrap();
+    app.run("selection.set", json!({"ids": [big]})).unwrap();
+    app.run("edit.cut", json!({})).unwrap();
+    app.run("selection.set", json!({"ids": [shape]})).unwrap();
+    app.run("edit.pasteInto", json!({})).unwrap();
+    app.run("edit.deselectAll", json!({})).unwrap();
+    assert!(app.ui.frame_edges);
+    let ctx = egui::Context::default();
+    let mut shapes = Vec::new();
+    for _ in 0..2 {
+        let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 900.0))), ..Default::default() };
+        let mut out = ctx.run_ui(raw, |ui| show(&mut app, ui));
+        out.textures_delta.clear();
+        shapes = out.shapes;
+    }
+    let st = app.session.active().unwrap();
+    let doc = &st.doc;
+    let it = doc.item(designcraft_doc::ItemId(shape)).unwrap();
+    assert!(it.has_nested_items(), "the graphic is inside the shape");
+    let layout = CanvasLayout::new(doc, false);
+    let xf = Xf::new(app.canvas_rect.unwrap(), app.view().unwrap());
+    let (a, _) = item_canvas_xf(doc, &layout, it.id).unwrap();
+    let frame = xf.rect(a.transform_rect_bbox(it.bounds()));
+    let edge = frames::layer_color(doc, it).gamma_multiply(0.75);
+    let edges: Vec<Rect> = shapes
+        .iter()
+        .filter_map(|c| match &c.shape {
+            egui::Shape::Path(p) if p.stroke.color == egui::epaint::ColorMode::Solid(edge) => Some(Rect::from_points(&p.points)),
+            _ => None,
+        })
+        .collect();
+    for r in &edges {
+        assert!(frame.expand(0.5).contains_rect(*r), "an edge line at {r:?} runs outside the frame at {frame:?}");
+    }
+    assert!(
+        edges.iter().any(|r| (r.min - frame.min).length() < 0.5 && (r.max - frame.max).length() < 0.5),
+        "the frame's own edge is drawn: {edges:?} vs {frame:?}"
+    );
 }
 
 /// Each preview mode's shown area: Preview stops at the trim, Bleed reaches the bleed box and

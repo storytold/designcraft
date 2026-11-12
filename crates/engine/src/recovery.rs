@@ -441,6 +441,49 @@ fn files(dir: &Path, uid: u64) -> (PathBuf, PathBuf) {
     (dir.join(format!("{uid}.designcraft")), dir.join(format!("{uid}.json")))
 }
 
+/// The bytes of the recovery entry file at `path`, which must be a regular file: the folder was
+/// checked, and a link planted among its entries would lead the read anywhere.
+fn read_entry_file(path: &Path) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let refuse = || std::io::Error::other(format!("{}: a recovery entry must be a regular file", path.display()));
+    let before = std::fs::symlink_metadata(path)?;
+    #[cfg(not(target_arch = "wasm32"))]
+    if is_link_like(&before) {
+        return Err(refuse());
+    }
+    if !before.file_type().is_file() {
+        return Err(refuse());
+    }
+    #[cfg(windows)]
+    let mut file = {
+        use std::os::windows::fs::OpenOptionsExt;
+        // A reparse point swapped in after the check is opened as itself, not followed.
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        std::fs::OpenOptions::new().read(true).custom_flags(FILE_FLAG_OPEN_REPARSE_POINT).open(path)?
+    };
+    #[cfg(not(windows))]
+    let mut file = std::fs::File::open(path)?;
+    let opened = file.metadata()?;
+    #[cfg(windows)]
+    if is_link_like(&opened) {
+        return Err(refuse());
+    }
+    if !opened.file_type().is_file() {
+        return Err(refuse());
+    }
+    // The name was checked, then opened: make sure what was opened is what was checked.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if opened.dev() != before.dev() || opened.ino() != before.ino() {
+            return Err(refuse());
+        }
+    }
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
 /// Remove a document's recovery entry (it was saved or closed). In a folder that is not this
 /// run's own, only an entry this run wrote or recovered is removed.
 pub fn discard(dir: &Path, uid: u64) {
@@ -761,9 +804,9 @@ pub fn list(dir: &Path) -> Vec<(u64, Value)> {
         }
         let Some(uid) = p.file_stem().and_then(std::ffi::OsStr::to_str).and_then(|s| s.parse::<u64>().ok()) else { continue };
         // Metadata is a file on disk: anything but an object (corrupt, hand-edited) counts as none.
-        let meta = std::fs::read_to_string(p.with_extension("json"))
+        let meta = read_entry_file(&p.with_extension("json"))
             .ok()
-            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+            .and_then(|t| serde_json::from_slice::<Value>(&t).ok())
             .filter(Value::is_object)
             .unwrap_or(json!({}));
         out.push((uid, meta));
@@ -810,7 +853,7 @@ fn open_with_publisher(s: &mut Session, dir: &Path, mut publish: impl FnMut(&Pat
         #[cfg(not(target_arch = "wasm32"))]
         validate_recovery_dir(dir)?;
         let (doc, _) = files(dir, uid);
-        let Ok(bytes) = std::fs::read(&doc) else { continue };
+        let Ok(bytes) = read_entry_file(&doc) else { continue };
         let mut d = match crate::cmd::from_bytes(&bytes) {
             Ok(d) => d,
             Err(_) => continue,

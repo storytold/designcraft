@@ -3,6 +3,25 @@ use designcraft_doc::build::NewDocument;
 use designcraft_doc::geom::Rect;
 use designcraft_doc::{Asset, ParaFormat, SpreadRef};
 
+/// An entry that fails after inflating (a bad checksum) still uses up the archive's byte budget.
+#[test]
+fn a_failed_read_is_charged_to_the_budget() {
+    let mut z = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    let stored = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    z.start_file("a", stored).unwrap();
+    z.write_all(&[7u8; 1000]).unwrap();
+    let mut bytes = z.finish().unwrap().into_inner();
+    // Flip a data byte: the entry reads in full, then fails its checksum.
+    // The payload is the only run of 1,000 consecutive 7s in the archive.
+    let start = bytes.windows(1000).position(|w| w.iter().all(|b| *b == 7)).expect("payload");
+    bytes[start] = 8;
+    let mut archive = zip::ZipArchive::new(Cursor::new(bytes.as_slice())).unwrap();
+    let (mut left, mut stored_left) = (5000, 5000);
+    assert_eq!(read_entry(&mut archive, "a", 4000, &mut left, &mut stored_left).unwrap(), None);
+    // A failed stored read is charged to the stored budget only.
+    assert_eq!((left, stored_left), (5000, 4000));
+}
+
 fn png_asset(d: &mut Document, data: &[u8]) -> AssetId {
     let aid = AssetId(d.alloc());
     let a =
@@ -353,6 +372,23 @@ fn format_1_keep_lines_without_mode_stays_all_lines() {
     let p = &now.story(sid).unwrap().paras[0];
     assert!(!now.styles.resolve_para(p).0.keep_all_lines);
     assert!(!designcraft_doc::ParaProps::default().keep_all_lines);
+}
+
+/// A format-1 file with many styles upgrades in time linear in them (each style's chain was
+/// found by searching every style, twice over).
+#[test]
+fn format_1_upgrade_of_many_styles_is_linear() {
+    let mut d = Document::new(&NewDocument::default());
+    let st = d.styles_mut();
+    for i in 0..20_000 {
+        st.paragraph.push(para_style(&format!("S{i}"), (i % 2 == 1).then(|| format!("S{}", i - 1)).as_deref(), None));
+    }
+    let bytes = save_v1(&d);
+    let t = std::time::Instant::now();
+    let back = load(&bytes).unwrap();
+    assert!(t.elapsed() < std::time::Duration::from_secs(10), "{:?}", t.elapsed());
+    assert_eq!(back.styles.para("S0").unwrap().para.keep_all_lines, Some(true));
+    assert_eq!(back.styles.para("S1").unwrap().para.keep_all_lines, None, "based on S0, which is pinned");
 }
 
 /// Format 1 wrote paragraph rules, text frame options and numbered lists in full, so their
