@@ -265,10 +265,11 @@ fn inside(path: &Path, root: &Path) -> bool {
     root.components().all(|r| path.next() == Some(r))
 }
 
-/// A Windows device name (`CON`, `NUL`, `COM1`… also with an extension), which names no file.
+/// A Windows device name (`CON`, `NUL`, `COM1`, `COM¹`… also with an extension or a colon), which names no file.
 pub(crate) fn is_device_name(component: &str) -> bool {
-    let stem = component.split('.').next().unwrap_or(component).trim_end_matches(' ').to_ascii_uppercase();
-    let numbered = |prefix: &str| stem.strip_prefix(prefix).is_some_and(|n| matches!(n, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"));
+    let stem = component.split(['.', ':']).next().unwrap_or(component).trim_end_matches(' ').to_ascii_uppercase();
+    let numbered =
+        |prefix: &str| stem.strip_prefix(prefix).is_some_and(|n| matches!(n, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"));
     matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CLOCK$" | "CONIN$" | "CONOUT$") || numbered("COM") || numbered("LPT")
 }
 
@@ -526,6 +527,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(base);
     }
 
+    /// On Windows an existing file spelled in another case is still inside its root, and `NUL`,
+    /// `COM1` and `COM¹` are refused.
     #[cfg(windows)]
     #[test]
     fn windows_ignores_case_and_refuses_devices() {
@@ -536,6 +539,8 @@ mod tests {
         let e = roots.check(s(base.join("out/NUL")), Access::Write).unwrap_err();
         assert!(e.contains("reserved device names"), "{e}");
         assert!(roots.check(s(base.join("out/com1.txt")), Access::Write).is_err());
+        let e = roots.check(s(base.join("out/COM¹.txt")), Access::Write).unwrap_err();
+        assert!(e.contains("reserved device names"), "{e}");
         assert_eq!(roots.check(s(base.join("out/console.txt")), Access::Write), Ok(()));
         let _ = std::fs::remove_dir_all(base);
     }
@@ -561,6 +566,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(base);
     }
 
+    /// `COM¹` to `LPT³`, and a device name before a colon, are reserved. `COM⁴`, `com¹0`, `lpt¹x`
+    /// and `console:x` are file names.
     #[test]
     fn inside_compares_components_exactly() {
         assert!(inside(Path::new("/work/in/a"), Path::new("/work/in")));
@@ -571,10 +578,10 @@ mod tests {
 
     #[test]
     fn device_names() {
-        for d in ["CON", "nul", "Com1", "LPT9.txt", "aux.designcraft", "NUL "] {
+        for d in ["CON", "nul", "Com1", "LPT9.txt", "aux.designcraft", "NUL ", "COM¹", "Lpt²", "lpt³.txt", "COM1:", "nul:x", "COM¹:"] {
             assert!(is_device_name(d), "{d}");
         }
-        for f in ["console", "com10", "COM0", "lpt", "a.designcraft", "nul-x"] {
+        for f in ["console", "com10", "COM0", "lpt", "a.designcraft", "nul-x", "COM⁴", "com¹0", "lpt¹x", "console:x"] {
             assert!(!is_device_name(f), "{f}");
         }
     }

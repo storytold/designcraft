@@ -152,6 +152,44 @@ fn stored_assets_open_at_any_size_while_deflated_ones_stay_capped() {
     assert!(!doc.assets.is_empty() && doc.assets.values().all(|x| x.data.len() == 50_000), "every saved image is back");
 }
 
+fn tiff_asset(d: &mut Document, data: Vec<u8>) -> AssetId {
+    let aid = AssetId(d.alloc());
+    let a = Asset { id: aid, name: "x.tif".into(), mime: "image/tiff".into(), data: Arc::new(data), pixels: Some((1, 1)), ..Default::default() };
+    d.assets.insert(aid, Arc::new(a));
+    place(d, aid, 0.0);
+    aid
+}
+
+fn is_deflated(bytes: &[u8], aid: AssetId) -> bool {
+    let mut z = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+    z.by_name(&format!("assets/{}.tif", aid.0)).unwrap().compression() == zip::CompressionMethod::Deflated
+}
+
+/// #2283: `save` deflates a TIFF, BMP or PSD, and opening caps what a deflated asset (and all of
+/// them together) may expand to. One past either cap is stored as is, so the document opens again.
+#[test]
+fn assets_too_big_to_inflate_are_stored_so_the_document_reopens() {
+    let mut d = Document::new(&NewDocument::default());
+    let big = tiff_asset(&mut d, noise(5_000));
+    let b = tiff_asset(&mut d, noise(3_000));
+    let c = tiff_asset(&mut d, noise(3_000).into_iter().rev().collect());
+    let small = tiff_asset(&mut d, vec![0; 500]);
+    // Room for the JSON, the small asset and one 3 000-byte asset, not two.
+    let json_len = serde_json::to_vec_pretty(&d).unwrap().len() as u64;
+    let tight = Limits { json: 256 << 20, asset: 4_000, total: json_len + 500 + 500 + 4_000 };
+
+    let saved = save_within(&d, None, LARGE_ENTRY, tight).unwrap();
+    let back = load_zip_within(&saved, tight).expect("a saved document opens under the limits it was saved for");
+    for aid in [big, b, c, small] {
+        assert_eq!(back.assets[&aid].data, d.assets[&aid].data, "asset {} round-trips", aid.0);
+    }
+    assert!(!is_deflated(&saved, big), "an asset over the per-asset cap is stored");
+    assert!(!(is_deflated(&saved, b) && is_deflated(&saved, c)), "the two together would pass the total budget");
+    // Within the limits nothing changes: everything still deflates under the defaults.
+    let normal = save(&d).unwrap();
+    assert!([big, b, c, small].iter().all(|a| is_deflated(&normal, *a)));
+}
+
 #[test]
 fn explicit_all_on_pdf_layers_require_a_capable_reader_only_when_needed() {
     let mut d = Document::new(&NewDocument::default());

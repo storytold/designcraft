@@ -556,6 +556,26 @@ mod tests {
         }
     }
 
+    /// The preflight cache reads an unchanged composition through its base, while edits
+    /// composed in the reader keep their own incremental trace and never replace the base.
+    #[test]
+    fn a_read_through_cache_keeps_incremental_edits_local() {
+        use std::sync::Arc;
+        let (mut d, sid, _) = threaded(60, 15);
+        let original = d.clone();
+        let base = Arc::new(Cache::new());
+        let first = base.get(&original, sid, None);
+        let reader = Cache::over(Arc::clone(&base));
+        assert!(Arc::ptr_eq(&reader.get(&d, sid, None), &first));
+        d.story_mut(sid).unwrap().insert(10, "x");
+        check(&reader, &d, sid, "first edit in reader");
+        d.story_mut(sid).unwrap().insert(11, "y");
+        let n = check(&reader, &d, sid, "second edit in reader");
+        assert!(n <= 3, "reader shaped {n} paragraphs instead of reusing its trace");
+        assert!(Arc::ptr_eq(&base.get(&original, sid, None), &first));
+        assert!(base.composed_for(&d, sid).is_none());
+    }
+
     #[test]
     fn characters_typed_one_after_another_each_compose_the_paragraphs_around_them() {
         let (mut d, sid, _) = threaded(80, 20);
