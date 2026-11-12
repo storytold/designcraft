@@ -129,7 +129,18 @@ pub(super) fn duplicate_layer(s: &mut Session, p: &Value) -> Result<Value> {
             }
             st.frames = src.story(*old).map(|o| o.frames.iter().filter_map(|f| ids.get(f).copied()).collect()).unwrap_or_default();
             for (k, a) in (1..).zip(st.anchors.iter_mut()) {
-                let id = (new.0 << 24) + k;
+                // `story id << 24 | n`, as anchors are made, or a new id when another anchor has that one or the story id
+                // does not fit.
+                let made = new.0.checked_mul(1 << 24).and_then(|base| base.checked_add(k)).filter(|id| !used.contains(id));
+                let id = match made {
+                    Some(id) => id,
+                    None => loop {
+                        let id = d.alloc();
+                        if !used.contains(&id) {
+                            break id;
+                        }
+                    },
+                };
                 anchors.insert(a.id, id);
                 used.insert(id);
                 Arc::make_mut(a).id = id;
@@ -798,6 +809,35 @@ mod layer_tests {
         assert_eq!(st.anchors[0].name, orig.anchors[0].name);
         assert_eq!(st.xrefs[0].target, st.anchors[0].id, "the copied cross-reference points at the copied paragraph");
         assert_eq!(d.find_anchor(st.anchors[0].id).map(|a| a.0), Some(copied));
+    }
+
+    #[test]
+    fn duplicate_layer_gives_copied_text_anchors_ids_no_other_anchor_has() {
+        use std::sync::Arc;
+
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let base = s.doc().unwrap().doc.layers[0].id.0;
+        let f = s.execute("frame.create", &json!({"rect": [72, 72, 400, 400], "content": "text", "text": "Head"})).unwrap()["id"].as_u64().unwrap();
+        let sid = s.doc().unwrap().doc.item(designcraft_doc::ItemId(f)).unwrap().text_frame().unwrap().story;
+        s.execute("layer.new", &json!({"name": "Art"})).unwrap();
+        let g = s.execute("frame.create", &json!({"rect": [72, 450, 400, 600], "content": "text", "text": "Other"})).unwrap()["id"].as_u64().unwrap();
+        let other = s.doc().unwrap().doc.item(designcraft_doc::ItemId(g)).unwrap().text_frame().unwrap().story;
+        let d = Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+        d.story_mut(sid).unwrap().insert_anchor(0, "Heading");
+        // A story on another layer holds the ids the copy's first anchor would take, as anchors loaded from a file can.
+        let next = d.next_id;
+        let st = d.story_mut(other).unwrap();
+        for k in 1..=64 {
+            st.insert_anchor(0, "Taken");
+            Arc::make_mut(&mut st.anchors[0]).id = ((next + k) << 24) + 1;
+        }
+        s.execute("layer.duplicate", &json!({"id": base})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        let all: Vec<u64> = d.stories.values().flat_map(|st| st.anchors.iter().map(|a| a.id)).collect();
+        assert_eq!(all.len(), 66);
+        let unique: std::collections::HashSet<_> = all.iter().collect();
+        assert_eq!(unique.len(), all.len(), "the copied anchor has an id no other anchor has");
     }
 
     #[test]
