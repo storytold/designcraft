@@ -619,28 +619,67 @@ fn mask_offscreen(reach: Rect, spread: f64, width: u16, height: u16) -> Option<O
     Some(Offscreen { x0, y0, scale, width: side(w) as u16, height: side(h) as u16 })
 }
 
-/// `pm`'s coverage shrunk by `r` pixels: each pixel takes the smallest alpha among itself and the
-/// points on circles of `r` and `r / 2` around it, as white premultiplied by that alpha. Pixels
-/// outside `pm` count as transparent.
+/// `pm`'s coverage shrunk by `r` pixels: each pixel takes the smallest alpha within an octagon of
+/// radius `r` around it, as white premultiplied by that alpha. Pixels outside `pm` count as
+/// transparent.
 fn erode(pm: &vello_cpu::Pixmap, r: f64) -> vello_cpu::Pixmap {
-    let (w, h) = (i64::from(pm.width()), i64::from(pm.height()));
-    let src = pm.data();
-    let mut taps = vec![(0_i64, 0_i64)];
-    for k in 0..16_u8 {
-        let d = if k % 2 == 0 { r } else { r / 2.0 };
-        let a = f64::from(k) * std::f64::consts::PI / 8.0;
-        taps.push(((a.cos() * d).round() as i64, (a.sin() * d).round() as i64));
+    let (w, h) = (pm.width() as usize, pm.height() as usize);
+    let radius = r.max(0.0).round().min(f64::from(u16::MAX)) as usize;
+    // The octagon is a square of half-width `side` widened by `diag` diagonal steps each way along
+    // both diagonals, so it reaches `radius` along the axes and about `radius` diagonally.
+    let diag = (radius as f64 * (1.0 - std::f64::consts::FRAC_1_SQRT_2)).round() as usize;
+    let side = radius.saturating_sub(2 * diag);
+    let mut alpha: Vec<u8> = pm.data().iter().map(|p| p.a).collect();
+    for (step, k) in [((1, 0), side), ((0, 1), side), ((1, 1), diag), ((1, -1), diag)] {
+        alpha = erode_lines(&alpha, w, h, step, k);
     }
-    taps.dedup();
-    let alpha = |x: i64, y: i64| if x < 0 || y < 0 || x >= w || y >= h { 0 } else { src[(y * w + x) as usize].a };
-    let mut data = Vec::with_capacity(src.len());
-    for y in 0..h {
-        for x in 0..w {
-            let a = taps.iter().map(|&(dx, dy)| alpha(x.saturating_add(dx), y.saturating_add(dy))).min().unwrap_or(0);
-            data.push(vello_cpu::color::PremulRgba8 { r: a, g: a, b: a, a });
+    let data = alpha.into_iter().map(|a| vello_cpu::color::PremulRgba8 { r: a, g: a, b: a, a }).collect();
+    vello_cpu::Pixmap::from_parts(data, pm.width(), pm.height())
+}
+
+/// `src` (`w` × `h`, row by row) with each value replaced by the smallest within `k` steps of it
+/// along the lines that `step` walks. Steps past the edge count as 0.
+fn erode_lines(src: &[u8], w: usize, h: usize, step: (isize, isize), k: usize) -> Vec<u8> {
+    if k == 0 {
+        return src.to_vec();
+    }
+    let inside = |x: isize, y: isize| x >= 0 && y >= 0 && (x as usize) < w && (y as usize) < h;
+    let mut out = vec![0; src.len()];
+    let mut line = Vec::new();
+    let mut window = std::collections::VecDeque::new();
+    for y in 0..h as isize {
+        for x in 0..w as isize {
+            // Each line starts at the pixel whose step back leaves the image.
+            if inside(x - step.0, y - step.1) {
+                continue;
+            }
+            line.clear();
+            let (mut cx, mut cy) = (x, y);
+            while inside(cx, cy) {
+                line.push(cy as usize * w + cx as usize);
+                (cx, cy) = (cx + step.0, cy + step.1);
+            }
+            // A running minimum over each pixel's window, with the values still in it in rising order.
+            window.clear();
+            let mut next = 0;
+            for i in 0..line.len() {
+                while next < line.len() && next <= i + k {
+                    let v = src[line[next]];
+                    while window.back().is_some_and(|&(_, b)| b >= v) {
+                        window.pop_back();
+                    }
+                    window.push_back((next, v));
+                    next += 1;
+                }
+                while window.front().is_some_and(|&(j, _)| j + k < i) {
+                    window.pop_front();
+                }
+                let whole = i >= k && i + k < line.len();
+                out[line[i]] = if whole { window.front().map_or(0, |&(_, v)| v) } else { 0 };
+            }
         }
     }
-    vello_cpu::Pixmap::from_parts(data, pm.width(), pm.height())
+    out
 }
 
 /// The satin coverage of `pm`'s two copies moved by `shift` and `-shift` pixels: at each pixel,
@@ -833,6 +872,22 @@ mod tests {
         assert_eq!(out.sample(2, 20).a, 0);
         assert_eq!(out.sample(20, 37).a, 0);
         assert_eq!(out.sample(6, 20).a, 128);
+    }
+
+    /// Eroding clears every pixel within the radius of a one-pixel hole, along the axes and the
+    /// diagonals, and keeps the pixels beyond it.
+    #[test]
+    fn erosion_clears_around_a_small_hole() {
+        let opaque = vello_cpu::color::PremulRgba8 { r: 255, g: 255, b: 255, a: 255 };
+        let mut data = vec![opaque; 40 * 40];
+        data[20 * 40 + 20] = vello_cpu::color::PremulRgba8 { r: 0, g: 0, b: 0, a: 0 };
+        let out = erode(&vello_cpu::Pixmap::from_parts(data, 40, 40), 5.0);
+        for (x, y) in [(20, 20), (24, 20), (16, 20), (20, 24), (20, 16), (23, 23), (17, 17), (23, 17), (17, 23)] {
+            assert_eq!(out.sample(x, y).a, 0, "({x}, {y}) is within 5 pixels of the hole");
+        }
+        for (x, y) in [(27, 20), (20, 13), (25, 25), (14, 14)] {
+            assert_eq!(out.sample(x, y).a, 255, "({x}, {y}) is more than 5 pixels from the hole");
+        }
     }
 
     /// A 200 pt frame at (100, 100) holding a 20 × 20 image with a transparent left half and an
