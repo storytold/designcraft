@@ -165,6 +165,9 @@ impl<'r> Importer<'r> {
                 designcraft_doc::resolve_cell_style(&self.styles.cell, &cell_style).apply_to(&mut cell);
             }
             cell.style = if cell_style == designcraft_doc::NO_CELL_STYLE { String::new() } else { cell_style };
+            if let Some(me) = ce.get("Self") {
+                cell.source_id = me.to_string();
+            }
             let default_para = cell.text.paras.first().cloned().unwrap_or_default();
             cell.text = self.story_with_para(StoryId(0), ce, default_para);
             self.read_cell_attrs(&mut cell, ce, border_unset);
