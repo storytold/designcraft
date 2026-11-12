@@ -333,8 +333,10 @@ Tests that use a corpus skip cleanly when it is absent.
     if !listing.status.success() || listing.stdout.iter().filter(|b| **b == b'\n').count() > PNGSUITE_MAX_ENTRIES {
         return refuse(format!("the PngSuite download isn't a tar.gz of at most {PNGSUITE_MAX_ENTRIES} entries"));
     }
-    if !expands_within(&tgz, PNGSUITE_MAX_EXTRACTED)? {
-        return refuse(format!("the PngSuite archive expands to more than {PNGSUITE_MAX_EXTRACTED} bytes; nothing was extracted"));
+    match expands_within(&tgz, PNGSUITE_MAX_EXTRACTED) {
+        Ok(true) => {}
+        Ok(false) => return refuse(format!("the PngSuite archive expands to more than {PNGSUITE_MAX_EXTRACTED} bytes; nothing was extracted")),
+        Err(e) => return refuse(e),
     }
     let mut tar = Command::new("tar");
     tar.arg("-xzf").arg(&tgz).arg("-C").arg(&dest);
