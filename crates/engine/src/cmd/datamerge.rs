@@ -58,7 +58,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Insert Field",
             [],
             None,
-            "{field, role?: text|image|qr|hyperlink, story?, at?, end?, item?} → {id}; an image field at a text insertion point merges as an inline image; with the insertion point in a table cell or a note → {cell: true, marker} (a typed marker, not an anchored placeholder)",
+            "{field, role?: text|image|qr|hyperlink, story?, at?, end?, item?} → {id}; an image field at a text insertion point merges as an inline image; with the insertion point in a table cell or a note → {cell: true, marker} (a typed marker, not an anchored placeholder; an image field there is an error unless role is text)",
             has_doc,
             placeholder_add
         ),
@@ -535,6 +535,14 @@ fn add_placeholder(d: &mut Document, sel: &mut Selection, p: &Value, name: &str)
             && let Some(t) = sel.text
             && let Some(pressed) = t.cell
         {
+            // The merge fills such a text with the record's value as text, so an image there
+            // would merge as its path.
+            if role == PlaceholderRole::Image {
+                return Err(bad(
+                    "data.placeholder.add",
+                    "an image field can't go in a table cell or a note; bind it to a frame, or insert it with role text to merge its path",
+                ));
+            }
             if role != PlaceholderRole::Text {
                 return Err(bad("data.placeholder.add", "a hyperlink field can't go in a table cell or a note; insert it as text"));
             }

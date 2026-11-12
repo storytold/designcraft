@@ -1605,6 +1605,25 @@ fn a_field_named_with_angle_brackets_is_refused_in_a_cell() {
     let _ = made;
 }
 
+/// An image field with the insertion point in a table cell is refused with a message about image
+/// fields, and nothing is inserted; with role text its marker goes into the cell.
+#[test]
+fn an_image_field_in_a_cell_is_refused_unless_its_role_is_text() {
+    let mut s = Session::new();
+    table_with_caret_in_cell(&mut s, "Name,@Photo\nAda,pics/a.png\n");
+    for params in [json!({"field": "Photo"}), json!({"field": "Photo", "role": "image"})] {
+        let e = s.execute("data.placeholder.add", &params).expect_err("refused").to_string();
+        assert!(e.contains("an image field can't go in a table cell or a note"), "{e}");
+        assert!(!e.contains("hyperlink"), "{e}");
+        assert_eq!(cell_texts(&s), ["Who", "Where"], "nothing inserted");
+    }
+    let r = exec(&mut s, "data.placeholder.add", json!({"field": "Photo", "role": "text"}));
+    assert_eq!(r["marker"], "<<Photo>>", "{r}");
+    assert_eq!(cell_texts(&s), ["Who", "<<Photo>>Where"]);
+    exec(&mut s, "data.preview", json!({"record": 1}));
+    assert_eq!(cell_texts(&s), ["Who", "pics/a.pngWhere"], "the text role merges the path");
+}
+
 /// Endnote text is filled too: it is a text inside its story, like a footnote's.
 #[test]
 fn a_field_in_an_endnote_is_filled() {
