@@ -1108,6 +1108,10 @@ fn edit_paste_from_the_menu_places_the_clipboard_image() {
     copy_elsewhere(&clip, Some("https://example.com/cat.png"), Some((8, 6)));
     crate::menus::activate(&mut app, "edit.paste", &Value::Null);
     assert_eq!(pasted_image(&app).map(|(px, _)| px), Some((8, 6)));
+    // Empty text beside the image counts as no text.
+    copy_elsewhere(&clip, Some(""), Some((12, 9)));
+    crate::menus::activate(&mut app, "edit.paste", &Value::Null);
+    assert_eq!(pasted_image(&app).map(|(px, _)| px), Some((12, 9)));
     // Other text wins over a picture of it.
     copy_elsewhere(&clip, Some("Some words"), Some((8, 6)));
     crate::menus::activate(&mut app, "edit.paste", &Value::Null);
@@ -1148,6 +1152,30 @@ fn objects_copied_here_still_paste_as_objects_until_another_image_is_copied() {
     copy_elsewhere(&clip, Some(url), Some((5, 5)));
     crate::menus::activate(&mut app, "edit.paste", &Value::Null);
     assert_eq!(pasted_image(&app).map(|(px, _)| px), Some((5, 5)), "the image copied again with the same address");
+}
+
+#[test]
+fn a_paste_image_event_after_an_object_copy_does_not_paste_the_older_image() {
+    // A native menu: Copy leaves the older image on the system clipboard.
+    let (clip, services) = fake_clipboard(None, Some((40, 30)));
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), services);
+    app.native_menu = true;
+    app.run("file.new", json!({})).unwrap();
+    let id = app.run("frame.create", json!({"rect": [100, 100, 200, 200], "content": "text"})).unwrap()["id"].clone();
+    app.run("selection.set", json!({"ids": [id]})).unwrap();
+    crate::menus::activate(&mut app, "edit.copy", &Value::Null);
+    app.run("selection.set", json!({"ids": []})).unwrap();
+    let mut h = harness(app);
+    let image = |w, h| egui::Event::PasteImage(std::sync::Arc::new(egui::ColorImage::filled([w, h], egui::Color32::RED)));
+    let items = h.state().session.doc().unwrap().doc.spreads[0].items.len();
+    h.input_mut().events.push(image(40, 30));
+    h.run_steps(2);
+    assert_eq!(h.state().session.doc().unwrap().doc.spreads[0].items.len(), items, "the older image is not pasted");
+    // An image copied since then pastes.
+    copy_elsewhere(&clip, None, Some((20, 10)));
+    h.input_mut().events.push(image(20, 10));
+    h.run_steps(2);
+    assert_eq!(pasted_image(h.state()).map(|(px, _)| px), Some((20, 10)));
 }
 
 #[test]

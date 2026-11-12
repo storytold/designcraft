@@ -31,18 +31,14 @@ impl DesignApp {
         if !matches!(id, "edit.paste" | "edit.pasteWithoutFormatting") || !(typing || id == "edit.paste") {
             return Pasted::Params(params);
         }
+        // Empty text counts as no text, so an image beside it still pastes.
         if params.get("text").is_none()
-            && let Some(text) = self.services.clipboard_text.as_mut().and_then(|f| f())
+            && let Some(text) = self.services.clipboard_text.as_mut().and_then(|f| f()).filter(|t| !t.is_empty())
             && let Some(o) = params.as_object_mut()
         {
             o.insert("text".into(), Value::String(text));
         }
-        // Nothing was copied to the clipboard since objects were copied here (native menu, where
-        // the system raises a change count with every copy).
-        let unchanged = match self.object_clip_change {
-            Some(at_copy) => self.services.clipboard_change.as_mut().and_then(|f| f()) == Some(at_copy),
-            None => true,
-        };
+        let unchanged = self.clipboard_unchanged_since_object_copy();
         // Still what an object copy put there: paste those objects, not the placeholder text.
         let norm = |t: &str| t.replace("\r\n", "\n");
         let ours = unchanged
@@ -76,9 +72,24 @@ impl DesignApp {
         Pasted::Params(params)
     }
 
+    /// Nothing was copied to the clipboard since objects were copied here (native menu, where
+    /// the system raises a change count with every copy).
+    fn clipboard_unchanged_since_object_copy(&mut self) -> bool {
+        match self.object_clip_change {
+            Some(at_copy) => self.services.clipboard_change.as_mut().and_then(|f| f()) == Some(at_copy),
+            None => true,
+        }
+    }
+
     /// Paste an image from the system clipboard as a placed image (`edit.pasteImage`), centered
-    /// in the view or in the selected empty frame. Text being edited takes no image.
+    /// in the view or in the selected empty frame. Text being edited takes no image. An image the
+    /// clipboard held before objects were copied here (native menu) is not pasted: the menu's
+    /// Paste pastes those objects.
     pub(crate) fn paste_clipboard_image(&mut self, image: ClipboardImage) -> Result<Value, String> {
+        let user = !self.in_control && !self.control_input_frame.load(std::sync::atomic::Ordering::Relaxed);
+        if user && self.session.clipboard.is_some() && self.object_clip_change.is_some() && self.clipboard_unchanged_since_object_copy() {
+            return Ok(Value::Null);
+        }
         let typing = self.session.active().is_some_and(|d| d.selection.text.is_some());
         let file = if typing {
             Err("To paste the image, stop editing the text first (Esc).".to_string())

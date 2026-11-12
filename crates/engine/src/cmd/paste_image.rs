@@ -96,6 +96,11 @@ fn paste_image(s: &mut Session, p: &Value) -> Result<Value> {
     let bytes = super::base64_decode(b64);
     let (pw, ph) = raster_size(&bytes).ok_or_else(|| bad(ID, "the clipboard doesn't hold an image DesignCraft can read"))?;
     check_pasted_size(pw, ph).map_err(|e| bad(ID, e))?;
+    // The header can be whole while the pixels after it are cut off: decode the whole raster so
+    // a damaged image is refused instead of stored.
+    if designcraft_images::decode_rgba(&bytes).is_none() {
+        return Err(bad(ID, "the image on the clipboard is damaged and can't be read"));
+    }
     let sr = spread_param(p, ID)?;
     let at = match p.get("at") {
         None | Some(Value::Null) => None,
@@ -116,7 +121,7 @@ fn paste_image(s: &mut Session, p: &Value) -> Result<Value> {
         _ => None,
     };
     if let Some(frame) = empty_frame {
-        return s.execute("file.place", &json!({"base64": b64, "name": name, "frame": frame}));
+        return place(s, &json!({"base64": b64, "name": name, "frame": frame}));
     }
     let d = &s.doc()?.doc;
     let sp = d.spread(sr).ok_or_else(|| bad(ID, "no such spread"))?;
@@ -130,7 +135,16 @@ fn paste_image(s: &mut Session, p: &Value) -> Result<Value> {
     let w = nw.min(d.settings.page_width * 0.6);
     let h = nh * w / nw;
     let spread = p.get("spread").cloned().unwrap_or(Value::Null);
-    s.execute("file.place", &json!({"base64": b64, "name": name, "spread": spread, "x": center.x - w / 2.0, "y": center.y - h / 2.0}))
+    place(s, &json!({"base64": b64, "name": name, "spread": spread, "x": center.x - w / 2.0, "y": center.y - h / 2.0}))
+}
+
+/// Runs `file.place` inside this command. Only `edit.pasteImage` stays in the journal, so a
+/// replay of the journal places the image once.
+fn place(s: &mut Session, params: &Value) -> Result<Value> {
+    let journal = s.journal.len();
+    let r = s.execute("file.place", params);
+    s.journal.truncate(journal);
+    r
 }
 
 #[cfg(test)]
@@ -237,6 +251,40 @@ mod tests {
             assert!(e.contains(want), "{p}: {e}");
         }
         assert_eq!(s.doc().unwrap().history.undo.len(), undo, "nothing changed");
+    }
+
+    #[test]
+    fn a_damaged_image_with_a_whole_header_is_refused() {
+        let mut s = doc();
+        let whole = png(40, 30);
+        let cut = &whole[..whole.len() / 2];
+        assert_eq!(raster_size(cut), Some((40, 30)), "the header still reads");
+        let (undo, assets) = (s.doc().unwrap().history.undo.len(), s.doc().unwrap().doc.assets.len());
+        let e = s.execute(ID, &json!({"base64": base64_encode(cut)})).unwrap_err().to_string();
+        assert!(e.contains("damaged"), "{e}");
+        let st = s.doc().unwrap();
+        assert_eq!((st.history.undo.len(), st.doc.assets.len()), (undo, assets), "nothing stored");
+    }
+
+    #[test]
+    fn each_paste_is_one_journal_entry_and_replays_once() {
+        let mut s = doc();
+        let frame = s.execute("frame.create", &json!({"rect": [100, 100, 200, 300]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("selection.set", &json!({"ids": [frame]})).unwrap();
+        let start = s.journal.len();
+        let b64 = base64_encode(&png(10, 10));
+        s.execute(ID, &json!({"base64": b64, "at": [500, 500]})).unwrap();
+        s.execute(ID, &json!({"base64": b64, "at": [500, 500]})).unwrap();
+        let entries = s.journal[start..].to_vec();
+        assert_eq!(entries.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), [ID, ID], "the frame and the new-frame paths");
+        let items = |s: &Session| s.doc().unwrap().doc.spreads[0].items.len();
+        let mut t = doc();
+        t.execute("frame.create", &json!({"rect": [100, 100, 200, 300]})).unwrap();
+        t.execute("selection.set", &json!({"ids": [frame]})).unwrap();
+        for (id, p) in &entries {
+            t.execute(id, p).unwrap();
+        }
+        assert_eq!(items(&t), items(&s), "the replay places each image once");
     }
 
     #[test]
