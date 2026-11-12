@@ -1486,6 +1486,34 @@ fn text_frame_options_set_one_inset_for_a_non_rectangular_frame() {
     assert_eq!(d.s("inset"), "0p6");
 }
 
+/// A selection that mixes a non-rectangular frame with a rectangle shows the four sides, even with
+/// the oval first, and a changed side leaves the rectangle's other sides as they were.
+#[test]
+fn text_frame_options_show_four_sides_for_a_mixed_selection() {
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let oval = app.run("frame.create", json!({"rect": [36, 36, 336, 236], "shape": "ellipse", "content": "text", "text": "Hello"})).unwrap();
+    let oval = designcraft_doc::ItemId(oval["id"].as_u64().unwrap());
+    let rect = app.run("frame.create", json!({"rect": [36, 300, 336, 500], "content": "text", "text": "Hello"})).unwrap();
+    let rect = designcraft_doc::ItemId(rect["id"].as_u64().unwrap());
+    app.run("object.textFrameOptions", json!({"ids": [oval.0, rect.0], "inset": [6, 2, 3, 4]})).unwrap();
+    let opts = |app: &DesignApp, id| app.session.doc().unwrap().doc.item(id).unwrap().text_frame().unwrap().options.clone();
+    app.run("selection.set", json!({"ids": [oval.0, rect.0]})).unwrap();
+    let mut d = Dialog::new("textFrameOptions", json!({}));
+    seed_text_frame_options(&app, &mut d);
+    assert!(!d.b("_shaped") && !d.fields.contains_key("inset"), "a mixed selection shows the four sides");
+    d.fields.insert("insetTop".into(), json!("1p0"));
+    app.ui.dialog = Some(d);
+    confirm(&mut app).unwrap();
+    assert_eq!(opts(&app, rect).inset, [12.0, 2.0, 3.0, 4.0]);
+    assert_eq!(opts(&app, oval).inset, [12.0, 2.0, 3.0, 4.0]);
+    // Two non-rectangular frames still show the one Inset.
+    app.run("object.cornerOptions", json!({"ids": [rect.0], "shape": "rounded", "size": 12})).unwrap();
+    let mut d = Dialog::new("textFrameOptions", json!({}));
+    seed_text_frame_options(&app, &mut d);
+    assert!(d.b("_shaped"));
+}
+
 /// The dialog dims Top, Left, Bottom, Right and the link for a non-rectangular frame and adds an
 /// Inset field; for a rectangle it shows no Inset field and the sides stay editable.
 #[test]
