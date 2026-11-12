@@ -49,6 +49,7 @@ pub(crate) fn sync(doc: &mut Document) {
     let assets = &doc.assets;
     doc.alpha_outlines.retain(|o| wanted.contains(&(o.asset, o.threshold)) && assets.get(&o.asset).is_some_and(|a| o.traced_from(&a.data)));
     let traced: BTreeSet<(AssetId, u8)> = doc.alpha_outlines.iter().map(|o| (o.asset, o.threshold)).collect();
+    let kept = doc.alpha_outlines.len();
     for (asset, threshold) in wanted {
         if traced.contains(&(asset, threshold)) {
             continue;
@@ -58,6 +59,10 @@ pub(crate) fn sync(doc: &mut Document) {
         // one, so later edits don't decode it again; the contour is then the frame's.
         let o = trace(&a.data, asset, threshold).unwrap_or_else(|| no_outline(&a.data, asset, threshold));
         doc.alpha_outlines.push(Arc::new(o));
+    }
+    // `Document::alpha_outline` finds an outline by binary search.
+    if doc.alpha_outlines.len() > kept {
+        doc.alpha_outlines.sort_by_key(|o| (o.asset, o.threshold));
     }
 }
 
@@ -441,6 +446,31 @@ mod tests {
         assert!(o.traced_from(&narrower));
         let b = o.outer.bounds().unwrap();
         assert_eq!((b.x0, b.x1), (24.0, 40.0), "the new image's outline");
+    }
+
+    /// An outline traced after others is still found: a threshold lower than a kept outline's
+    /// is traced later and must not hide either outline from the lookup.
+    #[test]
+    fn outlines_traced_later_are_found_by_image_and_threshold() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let data = png(|x, _| (16..48).contains(&x));
+        let image = s
+            .execute("file.place", &json!({"base64": crate::cmd::file::base64_encode(&data), "name": "cut.png", "x": 100, "y": 100, "width": 128}))
+            .unwrap()["id"]
+            .as_u64()
+            .unwrap();
+        s.execute("object.textWrap", &json!({"ids": [image], "content": true, "mode": "contour", "contour": "alphaChannel", "threshold": 200}))
+            .unwrap();
+        s.execute("object.textWrap", &json!({"ids": [image], "mode": "contour", "contour": "alphaChannel"})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        assert_eq!(d.alpha_outlines.len(), 2, "one outline for each threshold");
+        let Some(g) = d.item(designcraft_doc::ItemId(image)).and_then(|it| it.graphic()) else { panic!("a graphic") };
+        for threshold in [designcraft_doc::DEFAULT_ALPHA_THRESHOLD, 200] {
+            let o = d.alpha_outline(g.asset, threshold);
+            assert!(o.is_some_and(|o| o.threshold == threshold), "the outline at {threshold} is found");
+        }
+        assert!(d.alpha_outline(g.asset, 100).is_none(), "no outline at a threshold nothing uses");
     }
 
     /// A wrap with the default threshold saves as it did before thresholds were stored; another

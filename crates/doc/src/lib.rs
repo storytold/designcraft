@@ -803,7 +803,8 @@ pub struct Document {
     pub sections: Vec<Section>,
     #[serde(default)]
     pub assets: BTreeMap<AssetId, Arc<Asset>>,
-    /// Alpha Channel contour outlines of placed images (see [`AlphaOutline`]). Not saved.
+    /// Alpha Channel contour outlines of placed images (see [`AlphaOutline`]), sorted by asset
+    /// and then threshold, at most one for each pair. Not saved.
     #[serde(skip)]
     pub alpha_outlines: Vec<Arc<AlphaOutline>>,
     /// Hyperlinks (Window → Interactive → Hyperlinks).
@@ -1118,7 +1119,8 @@ impl Document {
 
     /// The Alpha Channel outline of `asset` at `threshold`, once the engine has traced it.
     pub fn alpha_outline(&self, asset: AssetId, threshold: u8) -> Option<&AlphaOutline> {
-        self.alpha_outlines.iter().map(|o| &**o).find(|o| o.asset == asset && o.threshold == threshold)
+        let i = self.alpha_outlines.binary_search_by_key(&(asset, threshold), |o| (o.asset, o.threshold)).ok()?;
+        self.alpha_outlines.get(i).map(|o| &**o)
     }
 
     pub fn layer(&self, id: LayerId) -> Option<&Layer> {

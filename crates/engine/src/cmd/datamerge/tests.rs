@@ -1339,10 +1339,22 @@ fn a_previewed_image_gets_its_alpha_channel_outline() {
 }
 
 /// The overset count data merge reports is composed with the merged images' Alpha Channel
-/// outlines: a caption over the image's transparent part is set, not counted as overset.
+/// outlines: a caption over the image's transparent part is set, not counted as overset. With a
+/// bounding box wrap the same caption is overset, so the count depends on the outline.
 #[test]
 fn a_merge_counts_overset_text_with_the_merged_images_outlines() {
-    let dir = scratch("alpha-merge");
+    let (r, outlines) = merge_with_wrap("alpha-merge", json!({"mode": "contour", "contour": "alphaChannel", "offset": 0}));
+    assert_eq!(r["oversetStories"], 0, "the caption sits beside the image's visible pixels: {r}");
+    assert_eq!(outlines, 1, "the merged document has the image's outline");
+    let (r, _) = merge_with_wrap("alpha-merge-box", json!({"mode": "boundingBox", "offset": 0}));
+    assert_eq!(r["oversetStories"], 1, "the image's frame covers the caption: {r}");
+}
+
+/// Merges one record whose image is visible only in its left quarter into a graphic placeholder
+/// with the text wrap `wrap`, beside a caption over the image's transparent part. Returns the
+/// merge's answer and the number of nonempty Alpha Channel outlines in the merged document.
+fn merge_with_wrap(name: &str, wrap: Value) -> (Value, usize) {
+    let dir = scratch(name);
     // Visible only in the left quarter.
     let mut pixels = vec![0u8; 64 * 64 * 4];
     for y in 0..64 {
@@ -1358,11 +1370,15 @@ fn a_merge_counts_overset_text_with_the_merged_images_outlines() {
     let frame = exec(&mut s, "frame.create", json!({"rect": [100.0, 100.0, 300.0, 300.0], "content": "graphic"}));
     exec(&mut s, "data.placeholder.add", json!({"field": "Photo", "role": "image", "item": frame["id"]}));
     exec(&mut s, "data.options", json!({"fitting": "fitContentToFrame"}));
-    exec(&mut s, "object.textWrap", json!({"ids": [frame["id"]], "mode": "contour", "contour": "alphaChannel", "offset": 0}));
+    let mut params = wrap;
+    params["ids"] = json!([frame["id"]]);
+    exec(&mut s, "object.textWrap", params);
     text_frame(&mut s, [220.0, 180.0, 290.0, 220.0], "Hi", None);
     let r = exec(&mut s, "data.merge", json!({}));
-    assert_eq!(r["oversetStories"], 0, "the caption sits beside the image's visible pixels: {r}");
+    let doc = &s.documents()[s.active_index().unwrap()].doc;
+    let outlines = doc.alpha_outlines.iter().filter(|o| o.width > 0 && !o.outer.subpaths.is_empty()).count();
     let _ = std::fs::remove_dir_all(&dir);
+    (r, outlines)
 }
 
 /// The cell texts of the first table in the active document's first story that has one.
