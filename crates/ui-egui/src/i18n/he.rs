@@ -14,7 +14,6 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Dialog", "תיבת דו־שיח"),
     ("General", "כללי"),
     ("Justification", "יישור לשני הצדדים"),
-
     // GrokBot code-context review, independently checked against active native UI callsites.
     ("Desired", "רצוי"),
     ("forcedLineBreak", "מעבר שורה כפוי"),
