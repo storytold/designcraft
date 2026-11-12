@@ -1128,6 +1128,13 @@ mod delete_tests {
         }
     }
 
+    /// What the Running Header variable `name` shows on the first page.
+    fn header_text(s: &Session, name: &str) -> String {
+        let d = s.doc().unwrap().doc.clone();
+        let values = designcraft_compose::vars::values(&d, Some(0), Some(&s.cache.running_index(&d)));
+        values[d.variable(name).unwrap()].clone()
+    }
+
     /// A document whose character style `Emphasis` is used everywhere one can be: as a based-on
     /// parent, on text, in a paragraph style's and a paragraph's nested, nested line, GREP, drop
     /// cap, bullet and number styles, as the footnote reference style, the default character
@@ -1193,10 +1200,18 @@ mod delete_tests {
         assert_eq!(s.doc().unwrap().doc.styles.para("Lead").unwrap().para.bullet_char_style.as_deref(), Some("Emphasis"));
     }
 
+    /// Deleting with no replacement points every use at `[None]`, a character Running Header too,
+    /// as InDesign does. Such a header then picks up text with no character style, as one defined
+    /// with `[None]` does in InDesign: a Last on Page header that showed the styled `Hi` now shows
+    /// the unstyled `there` after it.
     #[test]
     fn deleting_a_character_style_for_none_unsets_based_on() {
         let (mut s, _) = char_doc();
+        let last = json!({"name": "Last", "type": "runningHeader", "style": "Emphasis", "character": true, "use": "lastOnPage"});
+        s.execute("variables.define", &last).unwrap();
+        assert_eq!((header_text(&s, "Term"), header_text(&s, "Last")), ("Hi".into(), "Hi".into()));
         s.execute("style.character.delete", &json!({"name": "Emphasis"})).unwrap();
+        assert_eq!(header_text(&s, "Last"), "there", "the header shows the last unstyled text on the page");
         assert!(!named(&s, "Emphasis"), "no dangling reference");
         let d = s.doc().unwrap().doc.clone();
         assert_eq!(d.styles.char_style("Child").unwrap().based_on, None);
