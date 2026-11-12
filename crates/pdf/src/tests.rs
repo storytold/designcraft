@@ -1009,6 +1009,38 @@ fn a_swatch_colours_a_greyscale_image() {
     assert!(!s.contains("PANTONE#20Test"), "a colour image keeps its colours");
 }
 
+/// Regression: hungarian hyphenation pdf keeps original text.
+#[test]
+#[ignore = "requires the verified hu Language pack; see docs/hungarian-language-support.md"]
+fn hungarian_hyphenation_pdf_keeps_original_text() {
+    assert!(
+        option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")),
+        "select the verified hu Language pack before explicitly running this test"
+    );
+    let mut exercised = false;
+    for width in (20..90).step_by(2) {
+        let text = "asszony";
+        let mut d = Document::new(&NewDocument::default());
+        let layer = d.default_layer();
+        let (_, sid) =
+            d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 36.0 + width as f64, 300.0), layer, text, ParaFormat::default()).unwrap();
+        d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| {
+            f.over.language = Some("Hungarian".into());
+            f.over.size = Some(20.0);
+        });
+        let cs = designcraft_compose::compose_story(&d, sid, &Default::default());
+        if !cs.frames.iter().flat_map(|f| &f.lines).any(|l| l.hyphenated && l.glyphs.iter().any(|g| g.rendered_char == 'z' && g.len == 0)) {
+            continue;
+        }
+        let bytes = export_pdf(&d, &Cache::new(), &PdfOptions::default()).unwrap();
+        let extracted = extract_text(&bytes).join("");
+        assert_eq!(extracted.trim(), text, "PDF should copy the original word, not generated display letters");
+        exercised = true;
+        break;
+    }
+    assert!(exercised, "no Hungarian break exercised");
+}
+
 /// An inline object is painted under its frame's text, as InDesign draws it: a picture whose
 /// frame reaches down into the next line (a negative Y offset) doesn't hide that line.
 #[test]

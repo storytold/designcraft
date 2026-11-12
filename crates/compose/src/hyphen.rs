@@ -23,6 +23,8 @@
 //!    set, trained from the same list by [`patgen`] (`examples/hyphgen.rs` regenerates both files);
 //! 3. a small syllable **heuristic** for words outside the pattern alphabet.
 //!
+//! Hungarian uses extended Huhyphn patterns with display-letter insertions at selected breaks.
+//!
 //! Then the paragraph's limits ([`Limits`]) are applied.
 
 pub mod dict;
@@ -80,6 +82,7 @@ impl Default for Limits {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Lang {
     English,
+    Hungarian,
     Patterns(hypher::Lang),
 }
 
@@ -100,12 +103,35 @@ impl Lang {
         if sub == "en" {
             return Some(Lang::English);
         }
+        if sub == "hu" {
+            return Some(Lang::Hungarian);
+        }
         let b = sub.as_bytes();
         if b.len() != 2 {
             return None;
         }
         hypher::Lang::from_iso([b[0], b[1]]).map(Lang::Patterns)
     }
+}
+
+/// A source-character boundary and letters added only when this break is selected.
+pub(crate) use craft_proof::hyphen::Opportunity;
+
+/// Return source-indexed breaks and display-only insertions for the selected language.
+pub(crate) fn opportunities_in(word: &str, lim: &Limits, lang: Lang) -> Vec<Opportunity> {
+    if lang == Lang::Hungarian {
+        return craft_proof::hyphen::hyphen_opportunities_including_all_caps(word, &proof_limits(lim), hu_language());
+    }
+    hyphen_points_in(word, lim, lang).into_iter().map(|at| Opportunity { at, suffix: "".into() }).collect()
+}
+
+/// Select the Hungarian Language pack in the shared proofing library.
+fn hu_language() -> craft_proof::ProofLang {
+    craft_proof::ProofLang::from_tag(Some("hu"))
+}
+/// Translate paragraph limits to the shared hyphenation contract.
+fn proof_limits(lim: &Limits) -> craft_proof::hyphen::Limits {
+    craft_proof::hyphen::Limits { min_word: lim.min_word, after_first: lim.after_first, before_last: lim.before_last, capitalized: lim.capitalized }
 }
 
 /// Accept explicit reform names and unqualified German locales (our modern default), but never
@@ -139,6 +165,14 @@ fn core_breaks(core: &[char], lang: Lang) -> (Vec<usize>, Source) {
     let n = core.len();
     if n < 2 {
         return (vec![], Source::None);
+    }
+    if lang == Lang::Hungarian {
+        let s: String = core.iter().collect();
+        let lim = Limits { min_word: 2, after_first: 1, before_last: 1, capitalized: true };
+        return (
+            craft_proof::hyphen::hyphen_opportunities_including_all_caps(&s, &proof_limits(&lim), hu_language()).into_iter().map(|p| p.at).collect(),
+            Source::Patterns,
+        );
     }
     if let Lang::Patterns(l) = lang {
         if let Some(ap) = core.iter().rposition(|&c| c == '\'') {
@@ -232,6 +266,9 @@ pub fn hyphen_points(word: &str, lim: &Limits) -> Vec<usize> {
 
 /// [`hyphen_points`] for a language.
 pub fn hyphen_points_in(word: &str, lim: &Limits, lang: Lang) -> Vec<usize> {
+    if lang == Lang::Hungarian {
+        return opportunities_in(word, lim, lang).into_iter().map(|p| p.at).collect();
+    }
     let chars: Vec<char> = word.chars().collect();
     let (pts, _) = word_breaks_in(word, lang);
     if pts.is_empty() {
@@ -504,6 +541,96 @@ mod tests {
         let lim = Limits { capitalized: false, ..Limits::default() };
         assert!(hyphen_points_in("Silbentrennung", &lim, de).is_empty());
         assert!(!hyphen_points_in("silbentrennung", &lim, de).is_empty());
+    }
+
+    /// Regression: hungarian size limit is per word in long input.
+    #[test]
+    #[ignore = "requires the verified hu Language pack; see docs/hungarian-language-support.md"]
+    fn hungarian_size_limit_is_per_word_in_long_input() {
+        assert!(
+            option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")),
+            "select the verified hu Language pack before explicitly running this test"
+        );
+        let lim = Limits::default();
+        let text = "asszony — ".repeat(160);
+        assert!(text.len() > 1024);
+        let expected: Vec<_> = (0..160).map(|i| i * "asszony — ".chars().count() + 2).collect();
+        assert_eq!(hyphen_points_in(&text, &lim, Lang::Hungarian), expected);
+        let ops = opportunities_in(&text, &lim, Lang::Hungarian);
+        assert_eq!(ops.iter().map(|p| p.at).collect::<Vec<_>>(), expected);
+        assert!(ops.iter().all(|p| &*p.suffix == "z"));
+        let oversized = "á".repeat(600);
+        let fallback = craft_proof::hyphen::hyphen_points_in(&oversized, &proof_limits(&lim), hu_language());
+        assert!(!fallback.is_empty(), "over-limit words keep the safe point-based fallback");
+        assert_eq!(hyphen_points_in(&oversized, &lim, Lang::Hungarian), fallback);
+        let oversized_ops = opportunities_in(&oversized, &lim, Lang::Hungarian);
+        assert!(oversized_ops.iter().all(|p| p.suffix.is_empty()));
+        let mixed = format!("asszony {oversized} könnyen");
+        let expected: Vec<_> = std::iter::once(2).chain(fallback.iter().map(|at| at + 8)).chain(std::iter::once(8 + 600 + 1 + 3)).collect();
+        assert_eq!(hyphen_points_in(&mixed, &lim, Lang::Hungarian), expected);
+        assert!(hyphen_points_in(&text, &Limits { min_word: 8, ..lim }, Lang::Hungarian).is_empty());
+    }
+
+    /// Regression: huge hungarian runs are bounded without losing neighbour breaks.
+    #[test]
+    #[ignore = "requires the verified hu Language pack; see docs/hungarian-language-support.md"]
+    fn huge_hungarian_runs_are_bounded_without_losing_neighbour_breaks() {
+        assert!(
+            option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")),
+            "select the verified hu Language pack before explicitly running this test"
+        );
+        let giant = "á".repeat(craft_proof::hyphen::MAX_HYPHENATION_RUN_BYTES);
+        let text = format!("asszony {giant} könnyen");
+        let lim = Limits::default();
+        assert!(opportunities_in(&giant, &lim, Lang::Hungarian).is_empty());
+        assert_eq!(hyphen_points_in(&text, &lim, Lang::Hungarian), vec![2, 8 + giant.chars().count() + 1 + 3]);
+    }
+    /// Regression: hungarian limits apply to each separator separated run.
+    #[test]
+    #[ignore = "requires the verified hu Language pack; see docs/hungarian-language-support.md"]
+    fn hungarian_limits_apply_to_each_separator_separated_run() {
+        assert!(
+            option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")),
+            "select the verified hu Language pack before explicitly running this test"
+        );
+        for separator in [" ", "-", "—", "/", "123"] {
+            let word = format!("asszony{separator}asszony");
+            assert_eq!(hyphen_points_in(&word, &Limits::default(), Lang::Hungarian), vec![2, 9 + separator.chars().count()]);
+            for lim in [
+                Limits { min_word: 8, ..Limits::default() },
+                Limits { after_first: 3, ..Limits::default() },
+                Limits { before_last: 6, ..Limits::default() },
+            ] {
+                assert!(hyphen_points_in(&word, &lim, Lang::Hungarian).is_empty(), "{word}: {lim:?}");
+                assert!(opportunities_in(&word, &lim, Lang::Hungarian).is_empty(), "{word}: {lim:?}");
+            }
+        }
+        let lim = Limits { capitalized: false, ..Limits::default() };
+        assert_eq!(hyphen_points_in("asszony-ASSZONY", &lim, Lang::Hungarian), vec![2]);
+        assert_eq!(hyphen_points_in("ASSZONY-asszony", &lim, Lang::Hungarian), vec![10]);
+    }
+
+    /// Regression: hungarian run offsets preserve insertions and combining marks.
+    #[test]
+    #[ignore = "requires the verified hu Language pack; see docs/hungarian-language-support.md"]
+    fn hungarian_run_offsets_preserve_insertions_and_combining_marks() {
+        assert!(
+            option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")),
+            "select the verified hu Language pack before explicitly running this test"
+        );
+        let lim = Limits::default();
+        for separator in [" ", "-", "—", "/", "123"] {
+            let first = "ko\u{308}nnyen";
+            let word = format!("({first}){separator}asszony!");
+            let second = 1 + first.chars().count() + 1 + separator.chars().count();
+            let expected = vec![(5, "y"), (second + 2, "z")];
+            let ops = opportunities_in(&word, &lim, Lang::Hungarian);
+            assert_eq!(ops.iter().map(|p| (p.at, p.suffix.as_ref())).collect::<Vec<_>>(), expected, "{word}");
+            assert_eq!(hyphen_points_in(&word, &lim, Lang::Hungarian), vec![5, second + 2], "{word}");
+        }
+        assert_eq!(hyphen_points_in("'asszony'", &lim, Lang::Hungarian), vec![3]);
+        assert!(hyphen_points_in("'ASSZONY'", &Limits { capitalized: false, ..lim }, Lang::Hungarian).is_empty());
+        assert!(hyphen_points_in("as\u{ad}szony", &lim, Lang::Hungarian).is_empty());
     }
 
     #[test]

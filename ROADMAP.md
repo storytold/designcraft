@@ -387,6 +387,7 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 ## Progress log
 
+- **2026-11-08** · HU2: Hungarian spelling and nonstandard hyphenation use the shared proofing reader and verified optional language pack. Inserted letters share shaped suffixes and precomputed advances; English suggestions bound token size. Explicit pack tests cover inserted glyphs, source text, PDF and replacement links. No readiness percentage change.
 - **2026-11-04** · Striped strokes retain out-and-back cubic segments whose second control point is away from the coincident endpoints and first control point. A geometry regression checks the offset extent and both stripe bands. No readiness percentage change.
 - **2026-11-04** · Esperanto is a text language (Character › Language, `type.char {language: "Esperanto"}`, IDML `$ID/Esperanto`): tag `eo`, English-style quotes; not hyphenated yet (#1201). No readiness percentage change.
 

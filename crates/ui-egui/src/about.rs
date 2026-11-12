@@ -108,6 +108,7 @@ fn link(ui: &mut egui::Ui, text: &str, url: &str, color: Color32) -> bool {
     resp.clicked()
 }
 
+/// Show application information and the licences of language data used by proofing.
 pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
     if !app.ui.about {
         return;
@@ -237,6 +238,15 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                 ui,
                 egui::RichText::new(crate::i18n::tr(&app.ui.language, "Open source. No telemetry.")).size(11.0).color(t.text_dim),
             ));
+            egui::CollapsingHeader::new(crate::i18n::tr(&app.ui.language, "Language data licences")).show(ui, |ui| {
+                egui::ScrollArea::vertical().id_salt("language-data-licences").max_height(180.0).show(ui, |ui| {
+                    for (title, text) in designcraft_engine::cmd::spelling::language_data_licences() {
+                        ui.collapsing(title, |ui| {
+                            ui.add(egui::Label::new(text).selectable(true).wrap());
+                        });
+                    }
+                });
+            });
             ui.add_space(8.0);
             if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "  Close  "))).clicked() {
                 app.ui.about = false;

@@ -391,9 +391,7 @@ fn missing_translations_report() {
         .map(|(lang, table)| (*lang, table.iter().map(|(key, _)| *key).collect()))
         .chain([("shared", TABLE.iter().map(|(key, _)| *key).collect())])
         .collect();
-    let mut keys: Vec<&str> = interface.iter().copied().chain(catalogs.iter().flat_map(|(_, keys)| keys.iter().copied())).collect();
-    keys.sort_unstable();
-    keys.dedup();
+    let keys = translation_report_keys(interface.iter().copied().chain(catalogs.iter().flat_map(|(_, keys)| keys.iter().copied())));
     // `tr` hands back the string it was given when it has no translation.
     let missing = |lang: &str| -> Vec<&str> {
         keys.iter()
@@ -485,7 +483,7 @@ fn interface_strings() -> HashSet<&'static str> {
     keys.extend(crate::panel_docking::DOCK_LABELS.iter().map(|(_, english)| *english));
     // File › New's Units list passes each unit's name to `tr`.
     keys.extend(crate::new_document::NEW_DOCUMENT_UNITS.map(|unit| unit.label()));
-    // UI labels passed to `tr` that no other catalog has yet.
+    // UI-only and spelling-dialog labels passed directly to `tr`.
     keys.extend([
         "Auto-Sizing",
         "Color Theme",
@@ -495,6 +493,12 @@ fn interface_strings() -> HashSet<&'static str> {
         "No Line Breaks",
         "Reference Point",
         "This document uses unavailable fonts. Choose replacements, or select Done to continue with fallback fonts.",
+        "Checking spelling…",
+        "Only text set to English or Hungarian is checked.",
+        "Skip",
+        "Spelling check complete.",
+        "The document has changed. Reopen the spelling checker.",
+        "The text language is set in the Character panel.",
         "180°",
         "Create Links When Placing Text Files",
         "Delete Character Style…",
@@ -603,4 +607,27 @@ fn czech_counts_use_the_plural_form_for_the_number() {
     }
     // A noun without plural forms keeps the plain translation.
     assert_eq!(count_label("cs", "a new noun", 3), "3 a new noun");
+}
+
+/// Native locale names are displayed directly, even when a catalog contributes them.
+fn translation_report_keys(keys: impl IntoIterator<Item = &'static str>) -> Vec<&'static str> {
+    let mut keys: Vec<_> = keys.into_iter().filter(|key| !LANGUAGES.iter().any(|(_, native)| native == key)).collect();
+    keys.sort_unstable();
+    keys.dedup();
+    keys
+}
+
+/// Regression: translation report excludes native names from interface and catalog keys.
+#[test]
+fn translation_report_excludes_native_names_from_interface_and_catalog_keys() {
+    let interface = interface_strings();
+    assert!(!interface.contains("Magyar"));
+    let keys = translation_report_keys(
+        interface.into_iter().chain(hu::TABLE.iter().map(|(key, _)| *key)).chain(LANGUAGES.iter().map(|(_, native)| *native)),
+    );
+    for (_, native) in LANGUAGES {
+        assert!(!keys.contains(native), "{native}");
+    }
+    assert!(keys.contains(&"Checking spelling…"));
+    assert!(keys.contains(&"Check Spelling…"));
 }

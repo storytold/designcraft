@@ -5009,6 +5009,31 @@ fn frame_size_dialog_keeps_its_units_while_open() {
     assert!((b.width() - 144.0).abs() < 0.01 && (b.height() - 216.0).abs() < 0.01, "{b:?}");
 }
 
+/// Regression: find scope spelling replacement releases bounds.
+#[test]
+fn find_scope_spelling_replacement_releases_bounds() {
+    for through_menu in [false, true] {
+        let (mut app, ctx, screen, sid) = scope_dialog();
+        scope_click(&mut app, &ctx, screen, "Count");
+        assert_eq!(app.ui.dialog.as_ref().unwrap().s("status"), "2 match(es)");
+        scope_click(&mut app, &ctx, screen, "Find Next");
+        scope_selected(&app, sid, 0, 3);
+        let before = app.session.doc().unwrap().clone();
+        if through_menu {
+            crate::menus::activate(&mut app, "spelling.check", &Value::Null);
+        } else {
+            crate::menus::run_ui(&mut app, "spelling.check", &Value::Null).unwrap().unwrap();
+        }
+        assert_eq!(app.ui.dialog.as_ref().unwrap().id, "spelling");
+        scope_state_unchanged(&app, &before);
+        // The next selection-scoped search must use the current selection,
+        // not the wider selection retained by the replaced Find/Change dialog.
+        let matches =
+            scope_control(&mut app, &ctx, "engine.execute", json!({"command": "find.find", "params": {"find": "red", "scope": "selection"}}));
+        assert_eq!(matches, json!([{"story": sid.0, "start": 0, "end": 3, "text": "red"}]));
+    }
+}
+
 #[test]
 fn parent_resize_exact_dialog_keeps_its_target_and_rejects_invalid_input() {
     use designcraft_tools::{PointerEvent, PointerKind};
