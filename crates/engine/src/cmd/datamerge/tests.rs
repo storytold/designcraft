@@ -914,6 +914,28 @@ fn an_image_path_with_a_leading_separator_is_found_beside_the_data_file() {
     assert_eq!(r["missingImages"].as_array().map(Vec::len), Some(0), "{r}");
 }
 
+/// A file at an earlier candidate that is not an image does not hide a valid image at a later
+/// one: the search goes on past it.
+#[test]
+fn a_non_image_file_beside_the_data_does_not_hide_the_image_beside_the_document() {
+    let dir = scratch("undecodable-image");
+    let (data, docs) = (dir.join("data"), dir.join("docs"));
+    write(&data.join("pics").join("a.png"), "not an image");
+    write_png_sized(&docs.join("pics").join("a.png"), 12, 12);
+    write(&data.join("cards.csv"), "@Photo\npics/a.png\n");
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    exec(&mut s, "data.source.select", json!({"path": data.join("cards.csv")}));
+    exec(&mut s, "file.save", json!({"path": docs.join("layout.designcraft")}));
+    let frame = exec(&mut s, "frame.create", json!({"rect": [36.0, 36.0, 80.0, 80.0], "content": "graphic"}));
+    exec(&mut s, "data.placeholder.add", json!({"field": "Photo", "item": frame["id"]}));
+    exec(&mut s, "data.options", json!({"linkImages": true}));
+    let r = exec(&mut s, "data.merge", json!({}));
+    assert_eq!(r["missingImages"].as_array().map(Vec::len), Some(0), "{r}");
+    let link = graphic_link(&s).unwrap_or_default();
+    assert!(link.contains("docs"), "{link}");
+}
+
 #[test]
 fn single_record_merge_copies_pages_and_leaves_the_template() {
     let mut s = Session::new();

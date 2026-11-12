@@ -464,7 +464,7 @@ struct LoadedImage {
 fn load_image(cell: &str, sources: &Sources) -> Option<LoadedImage> {
     let Sources { data_dir, doc_dir, images, .. } = *sources;
     let cands = image_candidates(cell, data_dir, doc_dir);
-    let (path, bytes) = cands.iter().find_map(|p| {
+    cands.iter().find_map(|p| {
         // Read once per merge: many records naming one file is the normal case, and reading it
         // per record is the amplification (#1595).
         let bytes = images.get_or_read(p, || {
@@ -475,10 +475,11 @@ fn load_image(cell: &str, sources: &Sources) -> Option<LoadedImage> {
             }
             crate::io::read_file(p).ok().filter(|b| !b.is_empty())
         })?;
-        Some((p.clone(), bytes))
-    })?;
-    let (pixels, natural) = designcraft_render::image_size(&bytes).zip(designcraft_render::natural_size(&bytes, 0))?;
-    Some(LoadedImage { path, bytes, pixels, natural })
+        // A file that does not decode leaves the search going, so a valid image at a later
+        // candidate is still found.
+        let (pixels, natural) = designcraft_render::image_size(&bytes).zip(designcraft_render::natural_size(&bytes, 0))?;
+        Some(LoadedImage { path: p.clone(), bytes, pixels, natural })
+    })
 }
 
 fn report_missing(report: &mut FillReport, record: u32, field: &str, cell: &str) {
