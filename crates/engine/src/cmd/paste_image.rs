@@ -47,6 +47,19 @@ pub fn check_pasted_size(width: u32, height: u32) -> std::result::Result<(), Str
     Ok(())
 }
 
+/// Whether an image file given as base64 is small enough to paste, checked before it is
+/// decoded; the error says why not.
+pub fn check_pasted_base64(b64: &str) -> std::result::Result<(), String> {
+    check_pasted_base64_len(b64.len())
+}
+
+fn check_pasted_base64_len(len: usize) -> std::result::Result<(), String> {
+    if len / 4 * 3 > MAX_PASTED_BYTES {
+        return Err(format!("the image is larger than {} MB", MAX_PASTED_BYTES >> 20));
+    }
+    Ok(())
+}
+
 /// Unpremultiplied RGBA pixels from the clipboard, rows top to bottom, as a PNG file for
 /// [`edit.pasteImage`](specs).
 pub fn pasted_png(width: u32, height: u32, rgba: Vec<u8>) -> std::result::Result<Vec<u8>, String> {
@@ -80,9 +93,7 @@ fn paste_image(s: &mut Session, p: &Value) -> Result<Value> {
         Some(_) => return Err(bad(ID, "`base64` must be a non-empty string")),
         None => return Err(bad(ID, "missing base64")),
     };
-    if b64.len() / 4 * 3 > MAX_PASTED_BYTES {
-        return Err(bad(ID, format!("the image is larger than {} MB", MAX_PASTED_BYTES >> 20)));
-    }
+    check_pasted_base64(b64).map_err(|e| bad(ID, e))?;
     let name = match p.get("name") {
         None | Some(Value::Null) => PASTED_IMAGE_NAME,
         Some(Value::String(n)) if !n.trim().is_empty() => n.as_str(),
@@ -251,6 +262,14 @@ mod tests {
             assert!(e.contains(want), "{p}: {e}");
         }
         assert_eq!(s.doc().unwrap().history.undo.len(), undo, "nothing changed");
+    }
+
+    #[test]
+    fn base64_past_the_file_limit_is_refused_by_its_length() {
+        let limit = MAX_PASTED_BYTES / 3 * 4;
+        assert!(check_pasted_base64_len(limit).is_ok());
+        let e = check_pasted_base64_len(limit + 4).unwrap_err();
+        assert!(e.contains("larger than 256 MB"), "{e}");
     }
 
     #[test]

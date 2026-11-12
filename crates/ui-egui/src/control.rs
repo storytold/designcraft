@@ -279,6 +279,9 @@ fn handle_request(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest
             let event = match (s("text"), s("image")) {
                 (Some(text), None) => egui::Event::Paste(text.to_string()),
                 (None, Some(image)) => {
+                    if let Err(e) = designcraft_engine::cmd::check_pasted_base64(image) {
+                        return err(format!("`image`: {e}"));
+                    }
                     let bytes = designcraft_engine::cmd::base64_decode(image);
                     let Some((w, h, rgba)) = designcraft_engine::cmd::pasted_pixels(&bytes) else {
                         return err("`image` is not an image file that can be pasted");
