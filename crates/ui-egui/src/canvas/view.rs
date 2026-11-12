@@ -249,6 +249,27 @@ fn centre_page(app: &mut DesignApp, abs: usize) {
     }
 }
 
+/// Scroll so `r`, a rectangle on spread `spread` as the canvas lays it out now, is in the middle of
+/// the view from top to bottom, and from side to side when no part of it is in view across (keeps
+/// zoom). A jump Go Back can return from.
+pub fn go_to_spread_rect(app: &mut DesignApp, spread: SpreadRef, r: DRect) {
+    note_jump(app, false);
+    centre_spread_rect(app, spread, r);
+    note_jump(app, true);
+}
+
+fn centre_spread_rect(app: &mut DesignApp, spread: SpreadRef, r: DRect) {
+    let Some(st) = app.session.active() else { return };
+    let layout = CanvasLayout::new(&st.doc, st.editing_parents);
+    let Some(b) = layout.slot(spread).map(|s| s.xf.transform_rect_bbox(r)) else { return };
+    let Some(rect) = app.canvas_rect else { return };
+    if let Some(v) = app.view_mut() {
+        let (w, h) = (rect.width() as f64 / v.zoom, rect.height() as f64 / v.zoom);
+        let x = if b.x1 > v.origin.x && b.x0 < v.origin.x + w { v.origin.x } else { b.center().x - w / 2.0 };
+        v.origin = Point::new(x, b.center().y - h / 2.0);
+    }
+}
+
 /// The document's pages by id, in page order.
 fn page_ids(doc: &Document) -> Vec<designcraft_doc::ids::PageId> {
     doc.spreads.iter().flat_map(|s| s.pages.iter().map(|p| p.id)).collect()

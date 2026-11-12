@@ -104,7 +104,7 @@ impl Dialog {
             None => String::new(),
         }
     }
-    fn m(&self, k: &str) -> Option<f64> {
+    pub(crate) fn m(&self, k: &str) -> Option<f64> {
         self.m_in(k, self.unit)
     }
     /// A measure where a bare number is in `unit`.
@@ -556,6 +556,125 @@ mod color_theme_tests {
         assert_eq!(opts(&app).columns, 1, "one undo step");
     }
 
+    /// Opened with the caret on the last line of a frame, Text Frame Options keep acting on that
+    /// frame while a preview pushes the caret's line into the next frame of the thread.
+    #[test]
+    fn text_frame_options_keep_their_frame_while_the_preview_reflows_the_caret() {
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let text = (0..40).map(|i| format!("Line {i} of the threaded story.")).collect::<Vec<_>>().join(" ");
+        let a = app.run("frame.create", json!({"rect": [36, 36, 300, 120], "content": "text", "text": text})).unwrap();
+        let b = app.run("frame.create", json!({"rect": [36, 200, 300, 700], "content": "text", "text": "", "caret": false})).unwrap();
+        let (a, b, sid) =
+            (designcraft_doc::ItemId(a["id"].as_u64().unwrap()), designcraft_doc::ItemId(b["id"].as_u64().unwrap()), a["story"].as_u64().unwrap());
+        app.run("text.thread", json!({"from": a.0, "to": b.0})).unwrap();
+        let shown = |app: &DesignApp, f| {
+            let cs = designcraft_compose::compose_story(&app.session.doc().unwrap().doc, designcraft_doc::StoryId(sid), &Default::default());
+            cs.frame(f).unwrap().range.clone()
+        };
+        let caret = shown(&app, a).end - 1;
+        app.run("text.select", json!({"story": sid, "anchor": caret})).unwrap();
+        let inset = |app: &DesignApp, f| app.session.doc().unwrap().doc.item(f).unwrap().text_frame().unwrap().options.inset[0];
+        let mut d = Dialog::new("textFrameOptions", json!({}));
+        seed_text_frame_options(&app, &mut d);
+        d.fields.insert("inset".into(), json!("2p0"));
+        d.fields.insert("preview".into(), json!(true));
+        text_frame_preview(&mut app, &mut d);
+        assert!(shown(&app, b).contains(&caret), "the preview moved the caret's line into the next frame");
+        d.fields.insert("columns".into(), json!("2"));
+        text_frame_preview(&mut app, &mut d);
+        assert_eq!((inset(&app, a), inset(&app, b)), (24.0, 0.0), "the preview stays on the first frame");
+        app.ui.dialog = Some(d);
+        confirm(&mut app).unwrap();
+        assert_eq!((inset(&app, a), inset(&app, b)), (24.0, 0.0));
+    }
+
+    /// With the caret in the oval second frame of a thread whose first frame has uneven insets, the
+    /// dialog shows the one Inset of the oval and keeps the link on: both follow the frame it changes.
+    #[test]
+    fn text_frame_options_from_the_type_tool_show_the_inset_of_the_caret_frame() {
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let text = (0..40).map(|i| format!("Line {i} of the threaded story.")).collect::<Vec<_>>().join(" ");
+        let a = app.run("frame.create", json!({"rect": [36, 36, 300, 120], "content": "text", "text": text})).unwrap();
+        let b =
+            app.run("frame.create", json!({"rect": [36, 200, 300, 700], "shape": "ellipse", "content": "text", "text": "", "caret": false})).unwrap();
+        let (a, b, sid) =
+            (designcraft_doc::ItemId(a["id"].as_u64().unwrap()), designcraft_doc::ItemId(b["id"].as_u64().unwrap()), a["story"].as_u64().unwrap());
+        app.run("text.thread", json!({"from": a.0, "to": b.0})).unwrap();
+        app.run("object.textFrameOptions", json!({"ids": [a.0], "inset": [1, 2, 3, 4]})).unwrap();
+        let cs = designcraft_compose::compose_story(&app.session.doc().unwrap().doc, designcraft_doc::StoryId(sid), &Default::default());
+        let caret = cs.frame(b).unwrap().range.start + 2;
+        app.run("text.select", json!({"story": sid, "anchor": caret})).unwrap();
+        let mut d = Dialog::new("textFrameOptions", json!({}));
+        seed_text_frame_options(&app, &mut d);
+        assert_eq!(d.fields.get("_targets"), Some(&json!([b.0])));
+        assert!(d.b("_shaped"), "the oval shows one Inset");
+        assert!(d.b("insetLinked"), "the first frame's uneven sides do not turn the link off");
+    }
+
+    /// A preview shown in one document goes when OK is refused, or Cancel is chosen, after another
+    /// document became active.
+    #[test]
+    fn text_frame_options_preview_goes_from_its_document_after_another_becomes_active() {
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        let make = |app: &mut crate::DesignApp| {
+            app.run("file.new", json!({})).unwrap();
+            let r = app.run("frame.create", json!({"rect": [36, 36, 300, 300], "content": "text", "text": "Hello"})).unwrap();
+            app.run("text.select", json!({"story": r["story"], "anchor": 2})).unwrap();
+            designcraft_doc::ItemId(r["id"].as_u64().unwrap())
+        };
+        let a = make(&mut app);
+        let first = |app: &DesignApp| {
+            let st = &app.session.documents()[0];
+            (st.doc.item(a).unwrap().text_frame().unwrap().options.columns, st.interaction.is_some())
+        };
+        let preview = |app: &mut DesignApp| {
+            let mut d = Dialog::new("textFrameOptions", json!({}));
+            seed_text_frame_options(app, &mut d);
+            d.fields.insert("columns".into(), json!("3"));
+            d.fields.insert("preview".into(), json!(true));
+            text_frame_preview(app, &mut d);
+            assert_eq!(first(app), (3, true), "previewed in the first document");
+            d
+        };
+        let d = preview(&mut app);
+        make(&mut app);
+        app.ui.dialog = Some(d);
+        let err = confirm(&mut app).unwrap_err().to_string();
+        assert!(err.contains("no longer the active one"), "{err}");
+        assert_eq!(first(&app), (1, false), "OK refused: the first document is as it was");
+        app.ui.dialog = None;
+        app.session.set_active(0);
+        let d = preview(&mut app);
+        app.session.set_active(1);
+        app.ui.dialog = Some(d);
+        cancel(&mut app);
+        assert_eq!(first(&app), (1, false), "Cancel: the first document is as it was");
+    }
+
+    /// Undo puts back the document's id counter, so a frame made after Undo can take the id of a
+    /// frame the dialog stored; OK is refused instead of changing the new frame.
+    #[test]
+    fn text_frame_options_from_the_type_tool_are_refused_after_undo_reuses_the_frame_id() {
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let a = app.run("frame.create", json!({"rect": [36, 36, 300, 120], "content": "text", "text": "First"})).unwrap();
+        app.run("text.select", json!({"story": a["story"], "anchor": 1})).unwrap();
+        let mut d = Dialog::new("textFrameOptions", json!({}));
+        seed_text_frame_options(&app, &mut d);
+        d.fields.insert("columns".into(), json!("3"));
+        app.run("edit.undo", json!({})).unwrap();
+        let b = app.run("frame.create", json!({"rect": [36, 200, 300, 300], "content": "text", "text": "Second"})).unwrap();
+        assert_eq!(a["id"], b["id"], "the new frame takes the undone frame's id");
+        app.run("text.select", json!({"story": b["story"], "anchor": 1})).unwrap();
+        app.ui.dialog = Some(d);
+        let err = confirm(&mut app).unwrap_err().to_string();
+        assert!(err.contains("changed after the dialog opened"), "{err}");
+        let b = designcraft_doc::ItemId(b["id"].as_u64().unwrap());
+        assert_eq!(app.session.doc().unwrap().doc.item(b).unwrap().text_frame().unwrap().options.columns, 1, "the new frame is unchanged");
+    }
+
     #[test]
     fn toc_right_indent_separator_survives_the_dialog_and_update() {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
@@ -991,18 +1110,51 @@ fn pdf_export(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     }
 }
 
+/// The first frame Text Frame Options changes: the first selected item, the frame that shows the
+/// caret, or the first frame holding selected text.
+fn options_frame(app: &DesignApp) -> Option<designcraft_doc::ItemId> {
+    designcraft_engine::cmd::text_frame_options_frames(&app.session).first().copied()
+}
+
 /// The selected text frame's width (its own, before rotation).
 fn selected_frame_width(app: &DesignApp) -> Option<f64> {
     let st = app.session.active()?;
-    let fid = st.selection.items.first().copied().or_else(|| st.selection.text.and_then(|t| t.frame))?;
-    Some(st.doc.item(fid)?.inner_bounds().width())
+    Some(st.doc.item(options_frame(app)?)?.inner_bounds().width())
 }
 
-/// The options of the selected text frame (the first selected item, or the frame of the caret).
+/// The options of the frame Text Frame Options shows.
 fn selected_frame_options(app: &DesignApp) -> Option<designcraft_doc::TextFrameOptions> {
     let st = app.session.active()?;
-    let fid = st.selection.items.first().copied().or_else(|| st.selection.text.and_then(|t| t.frame))?;
-    st.doc.item(fid)?.text_frame().map(|t| t.options.clone())
+    st.doc.item(options_frame(app)?)?.text_frame().map(|t| t.options.clone())
+}
+
+/// True when every text frame the dialog changes has the same inset on all four sides: the
+/// selected items, else the frame that shows the caret or every frame holding selected text.
+fn selected_frames_have_even_insets(app: &DesignApp) -> bool {
+    let Some(st) = app.session.active() else {
+        return true;
+    };
+    let ids = designcraft_engine::cmd::text_frame_options_frames(&app.session);
+    ids.iter().filter_map(|id| st.doc.item(*id)?.text_frame()).all(|t| t.options.inset.iter().all(|v| (v - t.options.inset[0]).abs() < 1e-9))
+}
+
+/// Whether every text frame the dialog changes (the selected items, else the frame that shows the
+/// caret or every frame holding selected text) has an outline that is not its own axis-aligned rectangle: an oval, a polygon, rounded or other corner
+/// options. Its text keeps one inset from the outline, as compose sets it; type on a path doesn't.
+/// A selection that mixes them with rectangular frames shows the four sides, so each frame keeps
+/// the sides left as shown.
+fn selected_frame_is_shaped(app: &DesignApp) -> bool {
+    let Some(st) = app.session.active() else { return false };
+    let shaped = |fid: designcraft_doc::ItemId| -> Option<bool> {
+        let item = st.doc.item(fid)?;
+        if item.text_frame()?.options.path.is_some() {
+            return Some(false);
+        }
+        let bp = if item.corners.is_none() { item.path.to_bezpath() } else { designcraft_geom::corners::apply(&item.path, &item.corners) };
+        Some(designcraft_compose::FrameOutline::new(&bp, 0.0).is_some())
+    };
+    let ids = designcraft_engine::cmd::text_frame_options_frames(&app.session);
+    !ids.is_empty() && ids.iter().all(|&fid| shaped(fid).unwrap_or(false))
 }
 
 /// Object › Text Frame Options shows the selected frame's options. `_shown` keeps what it showed,
@@ -1014,9 +1166,60 @@ fn seed_text_frame_options(app: &DesignApp, d: &mut Dialog) {
     }
     let o = selected_frame_options(app).unwrap_or_default();
     let units = app.session.active().map(|s| s.doc.settings.horizontal_units).unwrap_or(Unit::Picas);
+    let mut shown = text_frame_fields(&o, units, selected_frame_width(app), &document_grid(app));
+    // A non-rectangular frame shows one Inset (its top inset, the one kept from the outline).
+    let shaped = selected_frame_is_shaped(app);
+    if shaped && let Value::Object(m) = &mut shown {
+        m.insert("inset".into(), json!(format_measure(o.inset[0], units)));
+    }
+    d.fields.insert("_shaped".into(), json!(shaped));
+    if let Some(targets) = typing_frame_ids(app) {
+        d.fields.entry("_targets").or_insert(targets);
+        if let Some(epoch) = app.session.active().map(|doc| doc.identity_epoch) {
+            d.fields.entry("_targetsDoc").or_insert(json!(epoch));
+        }
+    }
+    if let Value::Object(m) = &shown {
+        for (k, v) in m {
+            d.fields.entry(k.clone()).or_insert_with(|| v.clone());
+        }
+    }
+    // Linked only when no selected frame has uneven sides, so a typed side cannot overwrite them.
+    d.fields.entry("insetLinked".to_string()).or_insert_with(|| json!(selected_frames_have_even_insets(app)));
+    // The frame's width: Fixed Number shows each column's width from it as the fields change.
+    if let Some(w) = selected_frame_width(app) {
+        d.fields.insert("_frameWidth".into(), json!(w));
+    }
+    // Typing in a frame: the frames taken when the dialog opens, so a preview that reflows the
+    // text into another frame does not change which frames the options apply to.
+    if let Some(ids) = typing_frame_ids(app) {
+        d.fields.insert("_targets".into(), ids);
+        // The document state those frames are in: another document, or the document after
+        // Revert, can reuse their ids.
+        d.fields.insert("_targetsDoc".into(), json!(app.session.active().map(|doc| doc.identity_epoch)));
+        // Undo puts back the document's id counter, so a frame made after it can take a stored id.
+        d.fields.insert("_targetsRevision".into(), json!(app.session.active().map(base_revision)));
+    }
+    d.fields.insert("_shown".into(), shown);
+}
+
+/// The active document's baseline grid (the default one without a document).
+pub(crate) fn document_grid(app: &DesignApp) -> designcraft_doc::BaselineGrid {
+    app.session.active().map(|s| s.doc.settings.baseline_grid.clone()).unwrap_or_default()
+}
+
+/// Text frame options `o` as the Text Frame Options dialog's fields, measures in `units`; with the
+/// frame's width, a Fixed Number column shows the width it gets. Without a custom baseline grid of
+/// its own, the frame shows `doc_grid`'s start and increment.
+pub(crate) fn text_frame_fields(
+    o: &designcraft_doc::TextFrameOptions,
+    units: Unit,
+    frame_width: Option<f64>,
+    doc_grid: &designcraft_doc::BaselineGrid,
+) -> Value {
     let fm = |v: f64| json!(format_measure(v, units));
     // Fixed Number: the width each column gets in the frame (shown, as in InDesign).
-    let inner = selected_frame_width(app).map(|w| w - o.inset[1] - o.inset[3]).unwrap_or(0.0);
+    let inner = frame_width.map(|w| w - o.inset[1] - o.inset[3]).unwrap_or(0.0);
     let n = o.columns.max(1) as f64;
     let width = match o.columns_kind {
         designcraft_doc::ColumnsKind::FixedWidth if o.column_width > 0.0 => o.column_width,
@@ -1025,14 +1228,14 @@ fn seed_text_frame_options(app: &DesignApp, d: &mut Dialog) {
     let kind = |v: Value| v.as_str().unwrap_or_default().to_string();
     // A frame without a custom baseline grid shows the document grid's start and increment.
     let grid = o.baseline_grid.unwrap_or_else(|| {
-        let g = app.session.active().map(|s| s.doc.settings.baseline_grid.clone()).unwrap_or_default();
+        let g = doc_grid;
         let relative_to = match g.relative_to {
             designcraft_doc::GridRelative::TopOfPage => designcraft_doc::FrameGridRelative::TopOfPage,
             designcraft_doc::GridRelative::TopMargin => designcraft_doc::FrameGridRelative::TopMargin,
         };
         designcraft_doc::FrameBaselineGrid { start: g.start, increment: g.increment, relative_to }
     });
-    let shown = json!({
+    json!({
         "columns": o.columns, "gutter": fm(o.gutter),
         "columnsKind": kind(serde_json::to_value(o.columns_kind).unwrap_or_default()), "columnWidth": fm(width),
         "balanceColumns": o.balance_columns, "ignoreWrap": o.ignore_wrap,
@@ -1050,18 +1253,23 @@ fn seed_text_frame_options(app: &DesignApp, d: &mut Dialog) {
         "noLineBreaks": o.auto_size_no_line_breaks,
         "customGrid": o.baseline_grid.is_some(), "gridStart": fm(grid.start), "gridIncrement": fm(grid.increment),
         "gridRelativeTo": grid.relative_to.name(),
-    });
-    if let Value::Object(m) = &shown {
-        for (k, v) in m {
-            d.fields.entry(k.clone()).or_insert_with(|| v.clone());
-        }
+    })
+}
+
+/// The document's revision without a preview on top: the one the open gesture began at.
+fn base_revision(st: &designcraft_engine::DocState) -> u64 {
+    st.interaction.as_ref().map_or(st.revision, |it| it.revision)
+}
+
+/// With the Type tool and no frame selected: the frame that shows the caret, or every frame that
+/// holds part of the selected text.
+fn typing_frame_ids(app: &DesignApp) -> Option<Value> {
+    let st = app.session.active()?;
+    if !st.selection.items.is_empty() || st.selection.text.is_none() {
+        return None;
     }
-    d.fields.entry("insetLinked".to_string()).or_insert_with(|| json!(o.inset.iter().all(|v| (v - o.inset[0]).abs() < 1e-9)));
-    // The frame's width: Fixed Number shows each column's width from it as the fields change.
-    if let Some(w) = selected_frame_width(app) {
-        d.fields.insert("_frameWidth".into(), json!(w));
-    }
-    d.fields.insert("_shown".into(), shown);
+    let ids: Vec<u64> = designcraft_engine::cmd::text_frame_options_frames(&app.session).iter().map(|f| f.0).collect();
+    Some(json!(ids))
 }
 
 /// A 0..1 tint as a percentage ("40", "12.5").
@@ -1078,9 +1286,11 @@ fn text_frame_options_dialog(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog)
     }
     ui.set_min_width(560.0);
     ui.horizontal_top(|ui| {
-        // A fixed height: the separator would otherwise stretch the dialog to the window.
-        ui.set_min_height(330.0);
-        ui.set_max_height(330.0);
+        // A fixed height: the separator would otherwise stretch the dialog to the window. A
+        // non-rectangular frame's Inset row needs one more row.
+        let height = if d.b("_shaped") { 360.0 } else { 330.0 };
+        ui.set_min_height(height);
+        ui.set_max_height(height);
         section_list(
             &lang,
             ui,
@@ -1175,8 +1385,7 @@ fn text_frame_preview(app: &mut DesignApp, d: &mut Dialog) {
     let shown = d.fields.get(PREVIEWED).cloned();
     if !d.b("preview") {
         if shown.is_some() {
-            app.session.cancel_interaction();
-            d.fields.remove(PREVIEWED);
+            end_text_frame_preview(app, d);
             d.fields.remove("status");
         }
         return;
@@ -1186,8 +1395,7 @@ fn text_frame_preview(app: &mut DesignApp, d: &mut Dialog) {
         Err(e) => {
             // Values OK would refuse don't stay on the page: it goes back to how it was.
             if shown.is_some() {
-                app.session.cancel_interaction();
-                d.fields.remove(PREVIEWED);
+                end_text_frame_preview(app, d);
             }
             d.fields.insert("status".into(), json!(e));
             return;
@@ -1199,16 +1407,16 @@ fn text_frame_preview(app: &mut DesignApp, d: &mut Dialog) {
     // Nothing edited (yet, or any more): the page as it was.
     if params.as_object().is_some_and(|m| m.keys().all(|k| k == "ids")) {
         if shown.is_some() {
-            app.session.cancel_interaction();
-            d.fields.remove(PREVIEWED);
+            end_text_frame_preview(app, d);
         }
         return;
     }
-    if shown.is_none()
-        && let Err(e) = app.session.begin_interaction("Text Frame Options")
-    {
-        d.fields.insert("status".into(), json!(e.to_string()));
-        return;
+    if shown.is_none() {
+        if let Err(e) = app.session.begin_interaction("Text Frame Options") {
+            d.fields.insert("status".into(), json!(e.to_string()));
+            return;
+        }
+        d.fields.insert(PREVIEW_DOC.into(), json!(app.session.active().map(|doc| doc.uid)));
     }
     match app.session.preview("object.textFrameOptions", params.clone()) {
         Ok(()) => d.fields.remove("status"),
@@ -1217,10 +1425,20 @@ fn text_frame_preview(app: &mut DesignApp, d: &mut Dialog) {
     d.fields.insert(PREVIEWED.into(), params);
 }
 
+/// The preview goes from the document it was shown in, also when another document is active now.
+fn end_text_frame_preview(app: &mut DesignApp, d: &mut Dialog) {
+    d.fields.remove(PREVIEWED);
+    match d.fields.remove(PREVIEW_DOC).as_ref().and_then(Value::as_u64) {
+        Some(uid) => app.session.cancel_interaction_of(uid),
+        None => app.session.cancel_interaction(),
+    }
+}
+
 /// Text Frame Options › General, as InDesign's: Columns (kind, number and width, gutter and
-/// maximum, Balance Columns), Inset Spacing (top and bottom, the link, left and right), Vertical
-/// Justification (align, paragraph spacing limit) and Ignore Text Wrap.
-fn general(lang: &str, ui: &mut egui::Ui, d: &mut Dialog) {
+/// maximum, Balance Columns), Inset Spacing (top and bottom, the link, left and right; one Inset
+/// for a non-rectangular frame), Vertical Justification (align, paragraph spacing limit) and
+/// Ignore Text Wrap.
+pub(crate) fn general(lang: &str, ui: &mut egui::Ui, d: &mut Dialog) {
     let tr = |s: &'static str| crate::i18n::tr(lang, s);
     let (cap, field, cap2) = (64.0, 110.0, 70.0);
     framed(ui, None, |ui| {
@@ -1243,8 +1461,10 @@ fn general(lang: &str, ui: &mut egui::Ui, d: &mut Dialog) {
                 // Fixed Number: each column's width, from the frame, the insets and the gutter.
                 let frame = d.fields.get("_frameWidth").and_then(Value::as_f64);
                 let n = d.n("columns").unwrap_or(1.0).max(1.0);
+                // A non-rectangular frame keeps its sides until its one Inset is changed.
+                let (left, right) = if d.b("_shaped") && edited(d, "inset") { ("inset", "inset") } else { ("insetLeft", "insetRight") };
                 let width = frame.map(|w| {
-                    let inner = w - d.m("insetLeft").unwrap_or(0.0) - d.m("insetRight").unwrap_or(0.0);
+                    let inner = w - d.m(left).unwrap_or(0.0) - d.m(right).unwrap_or(0.0);
                     ((inner - d.m("gutter").unwrap_or(0.0) * (n - 1.0)) / n).max(0.0)
                 });
                 let _ = crate::widgets::NumField::measure("tfo_auto_width", width, d.unit).width(field).spinner().enabled(false).show(ui);
@@ -1262,6 +1482,9 @@ fn general(lang: &str, ui: &mut egui::Ui, d: &mut Dialog) {
         check(ui, d, "balanceColumns", tr("Balance Columns"));
     });
     framed(ui, Some(tr("Inset Spacing")), |ui| {
+        // A non-rectangular frame: the four sides are dimmed and one Inset sets the distance kept
+        // from the outline.
+        let shaped = d.b("_shaped");
         // While linked, a side typed in sets all four ("Make all settings the same").
         let sides = ["insetTop", "insetLeft", "insetBottom", "insetRight"];
         let before: Vec<String> = sides.iter().map(|k| d.s(k)).collect();
@@ -1270,24 +1493,32 @@ fn general(lang: &str, ui: &mut egui::Ui, d: &mut Dialog) {
         {
             ui.horizontal(|ui| {
                 caption_at(ui, tr(l1), cap);
-                spin_measure(ui, d, k1, field, true);
+                spin_measure(ui, d, k1, field, !shaped);
                 ui.add_space(8.0);
                 if r == 0 {
                     let linked = d.b("insetLinked");
                     let tip = tr("Make all settings the same");
-                    if crate::widgets::icon_toggle_sized(ui, if linked { "link" } else { "link-broken" }, linked, tip, egui::vec2(22.0, 21.0))
-                        .clicked()
-                    {
+                    let toggle = ui.add_enabled_ui(!shaped, |ui| {
+                        crate::widgets::icon_toggle_sized(ui, if linked { "link" } else { "link-broken" }, linked, tip, egui::vec2(22.0, 21.0))
+                    });
+                    if toggle.inner.clicked() {
                         d.fields.insert("insetLinked".into(), json!(!linked));
                     }
                 } else {
                     ui.add_space(22.0 + ui.spacing().item_spacing.x);
                 }
                 caption_at(ui, tr(l2), cap2 - 30.0);
-                spin_measure(ui, d, k2, field, true);
+                spin_measure(ui, d, k2, field, !shaped);
             });
         }
-        if d.b("insetLinked")
+        if shaped {
+            ui.horizontal(|ui| {
+                caption_at(ui, tr("Inset:"), cap);
+                spin_measure(ui, d, "inset", field, true);
+            });
+        }
+        if !shaped
+            && d.b("insetLinked")
             && let Some(k) = sides.iter().zip(&before).find(|(k, b)| d.s(k) != **b).map(|(k, _)| *k)
         {
             let v = d.fields.get(k).cloned().unwrap_or_default();
@@ -1449,8 +1680,8 @@ fn text_frame_baseline_grid(d: &Dialog, bad: &dyn Fn(&str) -> String) -> Result<
 fn confirm_text_frame_options(app: &mut DesignApp, d: &mut Dialog) -> Result<Value, String> {
     seed_text_frame_options(app, d);
     // The preview goes; the options are set once, as one undo step.
-    if d.fields.remove(PREVIEWED).is_some() {
-        app.session.cancel_interaction();
+    if d.fields.contains_key(PREVIEWED) {
+        end_text_frame_preview(app, d);
     }
     let p = text_frame_params(app, d)?;
     if p.keys().all(|k| k == "ids") {
@@ -1552,20 +1783,86 @@ fn text_frame_params(app: &DesignApp, d: &Dialog) -> Result<Map<String, Value>, 
             json!(d.m("paragraphSpacingLimit").filter(|v| *v >= 0.0).ok_or_else(|| bad("the paragraph spacing limit is not a measure"))?),
         );
     }
-    // Typing in a frame: the options apply to that frame.
-    if let Some(st) = app.session.active()
-        && st.selection.items.is_empty()
-        && let Some(f) = st.selection.text.and_then(|t| t.frame)
-    {
-        p.insert("ids".into(), json!([f.0]));
+    if let Some(ids) = text_frame_targets(app, d).map_err(bad)? {
+        p.insert("ids".into(), ids);
     }
     Ok(p)
+}
+
+/// Typing in a frame: the frame that showed the caret, or every frame that held part of the
+/// selected text, when the dialog opened. Those ids are refused once another document is active,
+/// once Revert has replaced the document, or once the document has changed (Undo can give a new
+/// frame a stored id).
+fn text_frame_targets(app: &DesignApp, d: &Dialog) -> Result<Option<Value>, &'static str> {
+    let Some(ids) = d.fields.get("_targets").cloned() else { return Ok(typing_frame_ids(app)) };
+    let active = app.session.active().map(|doc| doc.identity_epoch);
+    if d.fields.get("_targetsDoc").and_then(Value::as_u64) != active {
+        return Err("the document the dialog opened on is no longer the active one");
+    }
+    if d.fields.get("_targetsRevision").and_then(Value::as_u64) != app.session.active().map(base_revision) {
+        return Err("the document changed after the dialog opened");
+    }
+    Ok(Some(ids))
 }
 
 /// File › Document Setup, filled from the document.
 /// The active document's ruler unit (picas without a document).
 fn doc_unit(app: &DesignApp) -> Unit {
     app.session.active().map(|s| s.doc.settings.horizontal_units).unwrap_or(Unit::Picas)
+}
+
+/// Table › Go to Row…: opens on the target table's first selected row, numbered within its header,
+/// body or footer rows.
+pub fn open_go_to_row(app: &mut DesignApp) {
+    let Ok(t) = app.run("table.get", json!({"cells": false})) else { return };
+    let (h, f, r) = (count_at(&t, "headerRows"), count_at(&t, "footerRows"), count_at(&t["range"], "r0"));
+    let nr = t["rows"].as_array().map_or(0, Vec::len);
+    let (section, n) = if r < h {
+        ("header", r + 1)
+    } else if r >= nr.saturating_sub(f) {
+        ("footer", r + 1 - nr.saturating_sub(f))
+    } else {
+        ("body", r + 1 - h)
+    };
+    app.ui.dialog = Some(Dialog::new(
+        "goToRow",
+        json!({
+            "uid": app.session.active().map(|doc| doc.uid),
+            "story": t["story"],
+            "table": t["table"],
+            "section": section,
+            "row": n.to_string(),
+            "hasHeader": h > 0,
+            "hasFooter": f > 0
+        }),
+    ));
+}
+
+fn count_at(v: &Value, k: &str) -> usize {
+    v[k].as_u64().and_then(|n| usize::try_from(n).ok()).unwrap_or(0)
+}
+
+/// The Go to Row dialog: the section menu shows when the table has header or footer rows.
+fn go_to_row_dialog(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
+    let tr = |s: &'static str| crate::i18n::tr(&app.ui.language, s);
+    ui.horizontal(|ui| {
+        if d.b("hasHeader") || d.b("hasFooter") {
+            let mut opts = Vec::new();
+            if d.b("hasHeader") {
+                opts.push(("header", tr("Header Rows")));
+            }
+            opts.push(("body", tr("Body Rows")));
+            if d.b("hasFooter") {
+                opts.push(("footer", tr("Footer Rows")));
+            }
+            combo(ui, d, "section", &opts);
+        }
+        crate::rtl::label(ui, tr("Row"));
+        text_field_named(ui, d, "row", 60.0, tr("Row"));
+    });
+    if let Some(st) = d.fields.get("status").and_then(Value::as_str) {
+        ui.label(egui::RichText::new(st).color(crate::theme::Tokens::get(ui.ctx()).text_dim));
+    }
 }
 
 /// The document's vertical ruler unit: what a bare number means in a height field.
@@ -2936,6 +3233,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         "ruby" => crate::i18n::tr(&app.ui.language, "Ruby"),
         "newDocument" => crate::i18n::tr(&app.ui.language, "New Document"),
         "frameSize" => crate::i18n::tr(&app.ui.language, "Rectangle"),
+        "goToRow" => crate::i18n::tr(&app.ui.language, "Go to Row"),
         "goToPage" => crate::i18n::tr(&app.ui.language, "Go to Page"),
         "insertPages" => crate::i18n::tr(&app.ui.language, "Insert Pages"),
         "insertTable" => crate::i18n::tr(&app.ui.language, "Insert Table…").trim_end_matches('…').trim_end(),
@@ -3004,6 +3302,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         crate::export_batch_dialog::ID => crate::i18n::tr(&app.ui.language, "Export Layouts and Versions"),
         crate::package_dialog::ID => crate::i18n::tr(&app.ui.language, "Package"),
         crate::package_dialog::INSTRUCTIONS => crate::i18n::tr(&app.ui.language, "Printing Instructions"),
+        crate::object_style_dialog::ID => crate::i18n::tr(&app.ui.language, crate::object_style_dialog::title(&d)),
         id => match id.strip_prefix("cmd:").and_then(designcraft_engine::find_command) {
             Some(c) => crate::i18n::tr(&app.ui.language, c.label.trim_end_matches('…')),
             None => crate::i18n::tr(&app.ui.language, "Dialog"),
@@ -3029,6 +3328,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
             "colorPicker" => 580.0,
             crate::package_dialog::ID => 720.0,
             crate::package_dialog::INSTRUCTIONS => 520.0,
+            crate::object_style_dialog::ID => 760.0,
             _ => 640.0,
         };
         let width = preferred_width.min(available.x);
@@ -3375,6 +3675,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                     crate::export_batch_dialog::ID => crate::export_batch_dialog::show(app, ui, &mut d),
                     crate::package_dialog::ID => crate::package_dialog::show(app, ui, &mut d),
                     crate::package_dialog::INSTRUCTIONS => crate::package_dialog::show_instructions(app, ui, &mut d),
+                    crate::object_style_dialog::ID => crate::object_style_dialog::show(app, ui, &mut d),
                     "preferences" => preferences(app, ui, &mut d, body_height),
                     "print" => print_dialog(app, ui, &mut d),
                     "pdfImport" => {
@@ -3809,6 +4110,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                             text_field(ui, &mut d, "page", 80.0);
                         });
                     }
+                    "goToRow" => go_to_row_dialog(app, ui, &mut d),
                     "ruby" => style_cjk::ruby_dialog(app, ui, &mut d),
                     "insertTable" => insert_table_dialog(app, ui, &mut d),
                     "convertTextToTable" | "convertTableToText" => convert_table_dialog(app, ui, &mut d),
@@ -4075,7 +4377,11 @@ pub fn cancel(app: &mut DesignApp) {
     }
     crate::new_document::end_preview(app);
     if d.as_ref().is_some_and(|d| d.fields.contains_key(PREVIEWED)) {
-        app.session.cancel_interaction();
+        // Text Frame Options names the document its preview is in.
+        match d.as_ref().and_then(|d| d.fields.get(PREVIEW_DOC)).and_then(Value::as_u64) {
+            Some(uid) => app.session.cancel_interaction_of(uid),
+            None => app.session.cancel_interaction(),
+        }
     }
     app.cancel_pdf_import();
     if let Some(d) = d
@@ -4397,6 +4703,39 @@ fn confirm_part1(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
             )
         }
         "ruby" => app.run("type.ruby", style_cjk::ruby_params(&d)),
+        "goToRow" => {
+            // The story and table belong to the document the dialog was opened for: that document
+            // becomes active first, and when it has closed, nothing is selected.
+            let uid = d.fields.get("uid").and_then(Value::as_u64);
+            if uid.is_some() && uid != app.session.active().map(|doc| doc.uid) {
+                let Some(i) = app.session.documents().iter().position(|doc| Some(doc.uid) == uid) else { return Ok(Value::Null) };
+                app.run("file.activate", json!({"index": i}))?;
+            }
+            // Anything but a whole number goes as typed, and the command's message names the fault.
+            let typed = d.s("row").trim().to_string();
+            let row = typed.parse::<u64>().map_or_else(|_| json!(typed), |n| json!(n));
+            let p = json!({"story": d.fields.get("story"), "table": d.fields.get("table"), "section": d.s("section"), "row": row});
+            let r = app.run("table.goToRow", p);
+            match &r {
+                Ok(v) => {
+                    // The view scrolls the row to its middle, at the same zoom, on the row's page or another.
+                    let spread = serde_json::from_value::<designcraft_doc::SpreadRef>(v["spread"].clone()).ok();
+                    let bounds = v["rowBounds"].as_array().and_then(|a| {
+                        let n: Vec<f64> = a.iter().filter_map(Value::as_f64).collect();
+                        (n.len() == 4).then(|| designcraft_geom::Rect::new(n[0], n[1], n[2], n[3]))
+                    });
+                    if let (Some(spread), Some(b)) = (spread, bounds) {
+                        crate::canvas::go_to_spread_rect(app, spread, b);
+                    }
+                }
+                Err(e) => {
+                    let mut d = d.clone();
+                    d.fields.insert("status".into(), json!(e));
+                    app.ui.dialog = Some(d);
+                }
+            }
+            r
+        }
         "insertPages" => {
             let n = app.session.active().map_or(1, |st| st.doc.page_count());
             // The page the menu shows: a page past the end is the last.
@@ -5121,6 +5460,16 @@ fn confirm_part6(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
                 && app.ui.dialog.is_none()
             {
                 app.status(e.clone());
+                app.ui.dialog = Some(d);
+            }
+            r
+        }
+        crate::object_style_dialog::ID => {
+            let r = crate::object_style_dialog::confirm(app, &d);
+            if let Err(e) = &r {
+                // Keep the dialog and its edits open with the reason (an empty or taken name).
+                let mut d = d.clone();
+                d.fields.insert("status".into(), json!(e));
                 app.ui.dialog = Some(d);
             }
             r
@@ -7689,7 +8038,7 @@ fn shown_rule(d: &Dialog, prefix: &str, which: &str, current: &Value) -> Value {
 }
 
 /// The paragraph attributes of the Justification controls.
-pub const JUSTIFY_ATTRS: [&str; 12] = [
+pub const JUSTIFY_ATTRS: [&str; 14] = [
     "wordSpaceMin",
     "wordSpaceDesired",
     "wordSpaceMax",
@@ -7699,6 +8048,8 @@ pub const JUSTIFY_ATTRS: [&str; 12] = [
     "glyphScaleMin",
     "glyphScaleDesired",
     "glyphScaleMax",
+    "autoLeading",
+    "singleWordJustify",
     "composer",
     "kashidas",
     "koreanCharBreaks",
@@ -7711,9 +8062,35 @@ const JUSTIFY_ROWS: [(&str, &str, (f64, f64)); 3] = [
     ("Glyph Scaling", "glyphScale", (50.0, 200.0)),
 ];
 
+/// The allowed Auto Leading, in percent of the type size.
+const AUTO_LEADING_RANGE: (f64, f64) = (0.0, 500.0);
+
+/// The Auto Leading stored for a percent typed into its field: the whole percent the field shows.
+fn auto_leading_typed(pct: f64) -> f64 {
+    // Adding 0.0 turns a rounded -0 into 0.
+    (pct.round() + 0.0) / 100.0
+}
+
+/// The Single Word Justification choices: (attribute value, label).
+const SINGLE_WORD_CHOICES: [(&str, &str); 4] =
+    [("left", "Align Left"), ("center", "Align Center"), ("right", "Align Right"), ("fullyJustified", "Full Justify")];
+
 /// Checks the edited spacing values: each within its range, and minimum ≤ desired ≤ maximum
-/// (values left mixed are not compared).
+/// (values left mixed are not compared); an edited Auto Leading within its range, and an edited
+/// Single Word Justification one of its choices.
 fn check_justification(d: &Dialog, prefix: &str, current: &Value) -> Result<(), String> {
+    if let Some(v) = d.fields.get(&format!("{prefix}autoLeading")) {
+        let (lo, hi) = AUTO_LEADING_RANGE;
+        let pct = v.as_f64().map(|x| x * 100.0).filter(|x| x.is_finite()).ok_or("Justification: Auto Leading is not a number")?;
+        if !(lo..=hi).contains(&pct) {
+            return Err(format!("Justification: Auto Leading must be between {lo}% and {hi}%"));
+        }
+    }
+    if let Some(v) = d.fields.get(&format!("{prefix}singleWordJustify"))
+        && !SINGLE_WORD_CHOICES.iter().any(|(k, _)| v.as_str() == Some(k))
+    {
+        return Err(format!("Justification: Single Word Justification cannot be {v}"));
+    }
     for (label, stem, (lo, hi)) in JUSTIFY_ROWS {
         let mut edited = false;
         let mut known = Vec::new();
@@ -7916,6 +8293,35 @@ fn justification(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, prefix: &str, cu
             }
             ui.end_row();
         }
+        crate::rtl::label(ui, crate::i18n::tr(lang, "Auto Leading:"));
+        let auto = cur(d, "autoLeading").as_f64().map(|x| x * 100.0);
+        if let Some(n) = ui.scope(|ui| crate::widgets::number(ui, &format!("ps{prefix}autoLeading"), auto, "%", 60.0, 0)).inner {
+            d.fields.insert(format!("{prefix}autoLeading"), json!(auto_leading_typed(n)));
+        }
+        ui.end_row();
+        let single_label = crate::rtl::label(ui, crate::i18n::tr(lang, "Single Word Justification:"));
+        let single = cur(d, "singleWordJustify");
+        // Mixed (null) shows blank until a choice is made.
+        let shown = SINGLE_WORD_CHOICES.iter().find(|(k, _)| single.as_str() == Some(k)).map_or("", |(_, label)| label);
+        craft_ui::ComboBox::from_id_salt(("singleWordJustify", prefix))
+            .selected_text(crate::rtl::widget(ui, crate::i18n::tr(lang, shown)))
+            .width(130.0)
+            .show_ui(ui, |ui| {
+                for (v, label) in SINGLE_WORD_CHOICES {
+                    if ui.selectable_label(single.as_str() == Some(v), crate::rtl::widget(ui, crate::i18n::tr(lang, label))).clicked() {
+                        // The paragraphs' own choice is no edit, so OK adds no undo step for it.
+                        let key = format!("{prefix}singleWordJustify");
+                        if current["singleWordJustify"].as_str() == Some(v) {
+                            d.fields.remove(&key);
+                        } else {
+                            d.fields.insert(key, json!(v));
+                        }
+                    }
+                }
+            })
+            .response
+            .labelled_by(single_label.id);
+        ui.end_row();
         crate::rtl::label(ui, crate::i18n::tr(lang, "Composer:"));
         let composer = cur(d, "composer");
         // Mixed (null) selects neither; a Japanese composer keeps its kind.
@@ -8705,6 +9111,8 @@ fn toc_dialog(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
 }
 /// The params a previewing dialog shows on the page (its interaction is open while it is set).
 const PREVIEWED: &str = "_previewed";
+/// The uid of the document a Text Frame Options preview is shown in.
+const PREVIEW_DOC: &str = "_previewDoc";
 
 /// Edit › Step and Repeat, as in InDesign: Repeat (Count, or Rows and Columns with Create as a
 /// grid), Offset (Vertical, Horizontal, in the document's ruler units) and Preview, which shows
