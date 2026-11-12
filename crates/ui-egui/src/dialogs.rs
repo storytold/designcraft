@@ -1005,6 +1005,46 @@ fn selected_frame_options(app: &DesignApp) -> Option<designcraft_doc::TextFrameO
     st.doc.item(fid)?.text_frame().map(|t| t.options.clone())
 }
 
+/// True when every text frame the dialog changes has the same inset on all four sides: the
+/// selected items, else the caret's frame, else every frame of the caret's story.
+fn selected_frames_have_even_insets(app: &DesignApp) -> bool {
+    let Some(st) = app.session.active() else {
+        return true;
+    };
+    let mut ids = st.selection.items.clone();
+    if ids.is_empty()
+        && let Some(t) = st.selection.text
+    {
+        ids = match t.frame {
+            Some(f) => vec![f],
+            None => st.doc.story(t.story).map(|s| s.frames.clone()).unwrap_or_default(),
+        };
+    }
+    ids.iter().filter_map(|id| st.doc.item(*id)?.text_frame()).all(|t| t.options.inset.iter().all(|v| (v - t.options.inset[0]).abs() < 1e-9))
+}
+
+/// Whether every selected text frame (the selected items, or the frame of the caret) has an
+/// outline that is not its own axis-aligned rectangle: an oval, a polygon, rounded or other corner
+/// options. Its text keeps one inset from the outline, as compose sets it; type on a path doesn't.
+/// A selection that mixes them with rectangular frames shows the four sides, so each frame keeps
+/// the sides left as shown.
+fn selected_frame_is_shaped(app: &DesignApp) -> bool {
+    let Some(st) = app.session.active() else { return false };
+    let shaped = |fid: designcraft_doc::ItemId| -> Option<bool> {
+        let item = st.doc.item(fid)?;
+        if item.text_frame()?.options.path.is_some() {
+            return Some(false);
+        }
+        let bp = if item.corners.is_none() { item.path.to_bezpath() } else { designcraft_geom::corners::apply(&item.path, &item.corners) };
+        Some(designcraft_compose::FrameOutline::new(&bp, 0.0).is_some())
+    };
+    if st.selection.items.is_empty() {
+        let Some(fid) = st.selection.text.and_then(|t| t.frame) else { return false };
+        return shaped(fid).unwrap_or(false);
+    }
+    st.selection.items.iter().all(|&fid| shaped(fid).unwrap_or(false))
+}
+
 /// Object › Text Frame Options shows the selected frame's options. `_shown` keeps what it showed,
 /// so OK sends only the fields the user changed. Fields given when the dialog opened count as
 /// changed.
@@ -1014,13 +1054,20 @@ fn seed_text_frame_options(app: &DesignApp, d: &mut Dialog) {
     }
     let o = selected_frame_options(app).unwrap_or_default();
     let units = app.session.active().map(|s| s.doc.settings.horizontal_units).unwrap_or(Unit::Picas);
-    let shown = text_frame_fields(&o, units, selected_frame_width(app), &document_grid(app));
+    let mut shown = text_frame_fields(&o, units, selected_frame_width(app), &document_grid(app));
+    // A non-rectangular frame shows one Inset (its top inset, the one kept from the outline).
+    let shaped = selected_frame_is_shaped(app);
+    if shaped && let Value::Object(m) = &mut shown {
+        m.insert("inset".into(), json!(format_measure(o.inset[0], units)));
+    }
+    d.fields.insert("_shaped".into(), json!(shaped));
     if let Value::Object(m) = &shown {
         for (k, v) in m {
             d.fields.entry(k.clone()).or_insert_with(|| v.clone());
         }
     }
-    d.fields.entry("insetLinked".to_string()).or_insert_with(|| json!(o.inset.iter().all(|v| (v - o.inset[0]).abs() < 1e-9)));
+    // Linked only when no selected frame has uneven sides, so a typed side cannot overwrite them.
+    d.fields.entry("insetLinked".to_string()).or_insert_with(|| json!(selected_frames_have_even_insets(app)));
     // The frame's width: Fixed Number shows each column's width from it as the fields change.
     if let Some(w) = selected_frame_width(app) {
         d.fields.insert("_frameWidth".into(), json!(w));
@@ -1095,9 +1142,11 @@ fn text_frame_options_dialog(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog)
     }
     ui.set_min_width(560.0);
     ui.horizontal_top(|ui| {
-        // A fixed height: the separator would otherwise stretch the dialog to the window.
-        ui.set_min_height(330.0);
-        ui.set_max_height(330.0);
+        // A fixed height: the separator would otherwise stretch the dialog to the window. A
+        // non-rectangular frame's Inset row needs one more row.
+        let height = if d.b("_shaped") { 360.0 } else { 330.0 };
+        ui.set_min_height(height);
+        ui.set_max_height(height);
         section_list(
             &lang,
             ui,
@@ -1235,8 +1284,9 @@ fn text_frame_preview(app: &mut DesignApp, d: &mut Dialog) {
 }
 
 /// Text Frame Options › General, as InDesign's: Columns (kind, number and width, gutter and
-/// maximum, Balance Columns), Inset Spacing (top and bottom, the link, left and right), Vertical
-/// Justification (align, paragraph spacing limit) and Ignore Text Wrap.
+/// maximum, Balance Columns), Inset Spacing (top and bottom, the link, left and right; one Inset
+/// for a non-rectangular frame), Vertical Justification (align, paragraph spacing limit) and
+/// Ignore Text Wrap.
 pub(crate) fn general(lang: &str, ui: &mut egui::Ui, d: &mut Dialog) {
     let tr = |s: &'static str| crate::i18n::tr(lang, s);
     let (cap, field, cap2) = (64.0, 110.0, 70.0);
@@ -1260,8 +1310,10 @@ pub(crate) fn general(lang: &str, ui: &mut egui::Ui, d: &mut Dialog) {
                 // Fixed Number: each column's width, from the frame, the insets and the gutter.
                 let frame = d.fields.get("_frameWidth").and_then(Value::as_f64);
                 let n = d.n("columns").unwrap_or(1.0).max(1.0);
+                // A non-rectangular frame keeps its sides until its one Inset is changed.
+                let (left, right) = if d.b("_shaped") && edited(d, "inset") { ("inset", "inset") } else { ("insetLeft", "insetRight") };
                 let width = frame.map(|w| {
-                    let inner = w - d.m("insetLeft").unwrap_or(0.0) - d.m("insetRight").unwrap_or(0.0);
+                    let inner = w - d.m(left).unwrap_or(0.0) - d.m(right).unwrap_or(0.0);
                     ((inner - d.m("gutter").unwrap_or(0.0) * (n - 1.0)) / n).max(0.0)
                 });
                 let _ = crate::widgets::NumField::measure("tfo_auto_width", width, d.unit).width(field).spinner().enabled(false).show(ui);
@@ -1279,6 +1331,9 @@ pub(crate) fn general(lang: &str, ui: &mut egui::Ui, d: &mut Dialog) {
         check(ui, d, "balanceColumns", tr("Balance Columns"));
     });
     framed(ui, Some(tr("Inset Spacing")), |ui| {
+        // A non-rectangular frame: the four sides are dimmed and one Inset sets the distance kept
+        // from the outline.
+        let shaped = d.b("_shaped");
         // While linked, a side typed in sets all four ("Make all settings the same").
         let sides = ["insetTop", "insetLeft", "insetBottom", "insetRight"];
         let before: Vec<String> = sides.iter().map(|k| d.s(k)).collect();
@@ -1287,24 +1342,32 @@ pub(crate) fn general(lang: &str, ui: &mut egui::Ui, d: &mut Dialog) {
         {
             ui.horizontal(|ui| {
                 caption_at(ui, tr(l1), cap);
-                spin_measure(ui, d, k1, field, true);
+                spin_measure(ui, d, k1, field, !shaped);
                 ui.add_space(8.0);
                 if r == 0 {
                     let linked = d.b("insetLinked");
                     let tip = tr("Make all settings the same");
-                    if crate::widgets::icon_toggle_sized(ui, if linked { "link" } else { "link-broken" }, linked, tip, egui::vec2(22.0, 21.0))
-                        .clicked()
-                    {
+                    let toggle = ui.add_enabled_ui(!shaped, |ui| {
+                        crate::widgets::icon_toggle_sized(ui, if linked { "link" } else { "link-broken" }, linked, tip, egui::vec2(22.0, 21.0))
+                    });
+                    if toggle.inner.clicked() {
                         d.fields.insert("insetLinked".into(), json!(!linked));
                     }
                 } else {
                     ui.add_space(22.0 + ui.spacing().item_spacing.x);
                 }
                 caption_at(ui, tr(l2), cap2 - 30.0);
-                spin_measure(ui, d, k2, field, true);
+                spin_measure(ui, d, k2, field, !shaped);
             });
         }
-        if d.b("insetLinked")
+        if shaped {
+            ui.horizontal(|ui| {
+                caption_at(ui, tr("Inset:"), cap);
+                spin_measure(ui, d, "inset", field, true);
+            });
+        }
+        if !shaped
+            && d.b("insetLinked")
             && let Some(k) = sides.iter().zip(&before).find(|(k, b)| d.s(k) != **b).map(|(k, _)| *k)
         {
             let v = d.fields.get(k).cloned().unwrap_or_default();
@@ -1583,6 +1646,60 @@ fn text_frame_params(app: &DesignApp, d: &Dialog) -> Result<Map<String, Value>, 
 /// The active document's ruler unit (picas without a document).
 fn doc_unit(app: &DesignApp) -> Unit {
     app.session.active().map(|s| s.doc.settings.horizontal_units).unwrap_or(Unit::Picas)
+}
+
+/// Table › Go to Row…: opens on the target table's first selected row, numbered within its header,
+/// body or footer rows.
+pub fn open_go_to_row(app: &mut DesignApp) {
+    let Ok(t) = app.run("table.get", json!({"cells": false})) else { return };
+    let (h, f, r) = (count_at(&t, "headerRows"), count_at(&t, "footerRows"), count_at(&t["range"], "r0"));
+    let nr = t["rows"].as_array().map_or(0, Vec::len);
+    let (section, n) = if r < h {
+        ("header", r + 1)
+    } else if r >= nr.saturating_sub(f) {
+        ("footer", r + 1 - nr.saturating_sub(f))
+    } else {
+        ("body", r + 1 - h)
+    };
+    app.ui.dialog = Some(Dialog::new(
+        "goToRow",
+        json!({
+            "uid": app.session.active().map(|doc| doc.uid),
+            "story": t["story"],
+            "table": t["table"],
+            "section": section,
+            "row": n.to_string(),
+            "hasHeader": h > 0,
+            "hasFooter": f > 0
+        }),
+    ));
+}
+
+fn count_at(v: &Value, k: &str) -> usize {
+    v[k].as_u64().and_then(|n| usize::try_from(n).ok()).unwrap_or(0)
+}
+
+/// The Go to Row dialog: the section menu shows when the table has header or footer rows.
+fn go_to_row_dialog(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
+    let tr = |s: &'static str| crate::i18n::tr(&app.ui.language, s);
+    ui.horizontal(|ui| {
+        if d.b("hasHeader") || d.b("hasFooter") {
+            let mut opts = Vec::new();
+            if d.b("hasHeader") {
+                opts.push(("header", tr("Header Rows")));
+            }
+            opts.push(("body", tr("Body Rows")));
+            if d.b("hasFooter") {
+                opts.push(("footer", tr("Footer Rows")));
+            }
+            combo(ui, d, "section", &opts);
+        }
+        crate::rtl::label(ui, tr("Row"));
+        text_field_named(ui, d, "row", 60.0, tr("Row"));
+    });
+    if let Some(st) = d.fields.get("status").and_then(Value::as_str) {
+        ui.label(egui::RichText::new(st).color(crate::theme::Tokens::get(ui.ctx()).text_dim));
+    }
 }
 
 /// The document's vertical ruler unit: what a bare number means in a height field.
@@ -2953,6 +3070,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         "ruby" => crate::i18n::tr(&app.ui.language, "Ruby"),
         "newDocument" => crate::i18n::tr(&app.ui.language, "New Document"),
         "frameSize" => crate::i18n::tr(&app.ui.language, "Rectangle"),
+        "goToRow" => crate::i18n::tr(&app.ui.language, "Go to Row"),
         "goToPage" => crate::i18n::tr(&app.ui.language, "Go to Page"),
         "insertPages" => crate::i18n::tr(&app.ui.language, "Insert Pages"),
         "insertTable" => crate::i18n::tr(&app.ui.language, "Insert Table…").trim_end_matches('…').trim_end(),
@@ -3829,6 +3947,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                             text_field(ui, &mut d, "page", 80.0);
                         });
                     }
+                    "goToRow" => go_to_row_dialog(app, ui, &mut d),
                     "ruby" => style_cjk::ruby_dialog(app, ui, &mut d),
                     "insertTable" => insert_table_dialog(app, ui, &mut d),
                     "convertTextToTable" | "convertTableToText" => convert_table_dialog(app, ui, &mut d),
@@ -4417,6 +4536,39 @@ fn confirm_part1(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
             )
         }
         "ruby" => app.run("type.ruby", style_cjk::ruby_params(&d)),
+        "goToRow" => {
+            // The story and table belong to the document the dialog was opened for: that document
+            // becomes active first, and when it has closed, nothing is selected.
+            let uid = d.fields.get("uid").and_then(Value::as_u64);
+            if uid.is_some() && uid != app.session.active().map(|doc| doc.uid) {
+                let Some(i) = app.session.documents().iter().position(|doc| Some(doc.uid) == uid) else { return Ok(Value::Null) };
+                app.run("file.activate", json!({"index": i}))?;
+            }
+            // Anything but a whole number goes as typed, and the command's message names the fault.
+            let typed = d.s("row").trim().to_string();
+            let row = typed.parse::<u64>().map_or_else(|_| json!(typed), |n| json!(n));
+            let p = json!({"story": d.fields.get("story"), "table": d.fields.get("table"), "section": d.s("section"), "row": row});
+            let r = app.run("table.goToRow", p);
+            match &r {
+                Ok(v) => {
+                    // The view scrolls the row to its middle, at the same zoom, on the row's page or another.
+                    let spread = serde_json::from_value::<designcraft_doc::SpreadRef>(v["spread"].clone()).ok();
+                    let bounds = v["rowBounds"].as_array().and_then(|a| {
+                        let n: Vec<f64> = a.iter().filter_map(Value::as_f64).collect();
+                        (n.len() == 4).then(|| designcraft_geom::Rect::new(n[0], n[1], n[2], n[3]))
+                    });
+                    if let (Some(spread), Some(b)) = (spread, bounds) {
+                        crate::canvas::go_to_spread_rect(app, spread, b);
+                    }
+                }
+                Err(e) => {
+                    let mut d = d.clone();
+                    d.fields.insert("status".into(), json!(e));
+                    app.ui.dialog = Some(d);
+                }
+            }
+            r
+        }
         "insertPages" => {
             let n = app.session.active().map_or(1, |st| st.doc.page_count());
             // The page the menu shows: a page past the end is the last.
@@ -7719,7 +7871,7 @@ fn shown_rule(d: &Dialog, prefix: &str, which: &str, current: &Value) -> Value {
 }
 
 /// The paragraph attributes of the Justification controls.
-pub const JUSTIFY_ATTRS: [&str; 12] = [
+pub const JUSTIFY_ATTRS: [&str; 14] = [
     "wordSpaceMin",
     "wordSpaceDesired",
     "wordSpaceMax",
@@ -7729,6 +7881,8 @@ pub const JUSTIFY_ATTRS: [&str; 12] = [
     "glyphScaleMin",
     "glyphScaleDesired",
     "glyphScaleMax",
+    "autoLeading",
+    "singleWordJustify",
     "composer",
     "kashidas",
     "koreanCharBreaks",
@@ -7741,9 +7895,35 @@ const JUSTIFY_ROWS: [(&str, &str, (f64, f64)); 3] = [
     ("Glyph Scaling", "glyphScale", (50.0, 200.0)),
 ];
 
+/// The allowed Auto Leading, in percent of the type size.
+const AUTO_LEADING_RANGE: (f64, f64) = (0.0, 500.0);
+
+/// The Auto Leading stored for a percent typed into its field: the whole percent the field shows.
+fn auto_leading_typed(pct: f64) -> f64 {
+    // Adding 0.0 turns a rounded -0 into 0.
+    (pct.round() + 0.0) / 100.0
+}
+
+/// The Single Word Justification choices: (attribute value, label).
+const SINGLE_WORD_CHOICES: [(&str, &str); 4] =
+    [("left", "Align Left"), ("center", "Align Center"), ("right", "Align Right"), ("fullyJustified", "Full Justify")];
+
 /// Checks the edited spacing values: each within its range, and minimum ≤ desired ≤ maximum
-/// (values left mixed are not compared).
+/// (values left mixed are not compared); an edited Auto Leading within its range, and an edited
+/// Single Word Justification one of its choices.
 fn check_justification(d: &Dialog, prefix: &str, current: &Value) -> Result<(), String> {
+    if let Some(v) = d.fields.get(&format!("{prefix}autoLeading")) {
+        let (lo, hi) = AUTO_LEADING_RANGE;
+        let pct = v.as_f64().map(|x| x * 100.0).filter(|x| x.is_finite()).ok_or("Justification: Auto Leading is not a number")?;
+        if !(lo..=hi).contains(&pct) {
+            return Err(format!("Justification: Auto Leading must be between {lo}% and {hi}%"));
+        }
+    }
+    if let Some(v) = d.fields.get(&format!("{prefix}singleWordJustify"))
+        && !SINGLE_WORD_CHOICES.iter().any(|(k, _)| v.as_str() == Some(k))
+    {
+        return Err(format!("Justification: Single Word Justification cannot be {v}"));
+    }
     for (label, stem, (lo, hi)) in JUSTIFY_ROWS {
         let mut edited = false;
         let mut known = Vec::new();
@@ -7946,6 +8126,35 @@ fn justification(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, prefix: &str, cu
             }
             ui.end_row();
         }
+        crate::rtl::label(ui, crate::i18n::tr(lang, "Auto Leading:"));
+        let auto = cur(d, "autoLeading").as_f64().map(|x| x * 100.0);
+        if let Some(n) = ui.scope(|ui| crate::widgets::number(ui, &format!("ps{prefix}autoLeading"), auto, "%", 60.0, 0)).inner {
+            d.fields.insert(format!("{prefix}autoLeading"), json!(auto_leading_typed(n)));
+        }
+        ui.end_row();
+        let single_label = crate::rtl::label(ui, crate::i18n::tr(lang, "Single Word Justification:"));
+        let single = cur(d, "singleWordJustify");
+        // Mixed (null) shows blank until a choice is made.
+        let shown = SINGLE_WORD_CHOICES.iter().find(|(k, _)| single.as_str() == Some(k)).map_or("", |(_, label)| label);
+        craft_ui::ComboBox::from_id_salt(("singleWordJustify", prefix))
+            .selected_text(crate::rtl::widget(ui, crate::i18n::tr(lang, shown)))
+            .width(130.0)
+            .show_ui(ui, |ui| {
+                for (v, label) in SINGLE_WORD_CHOICES {
+                    if ui.selectable_label(single.as_str() == Some(v), crate::rtl::widget(ui, crate::i18n::tr(lang, label))).clicked() {
+                        // The paragraphs' own choice is no edit, so OK adds no undo step for it.
+                        let key = format!("{prefix}singleWordJustify");
+                        if current["singleWordJustify"].as_str() == Some(v) {
+                            d.fields.remove(&key);
+                        } else {
+                            d.fields.insert(key, json!(v));
+                        }
+                    }
+                }
+            })
+            .response
+            .labelled_by(single_label.id);
+        ui.end_row();
         crate::rtl::label(ui, crate::i18n::tr(lang, "Composer:"));
         let composer = cur(d, "composer");
         // Mixed (null) selects neither; a Japanese composer keeps its kind.

@@ -143,7 +143,7 @@ config works across the suite) keep the agent to the folders you give it:
   folder that doesn't exist is refused, as is a link that leads nowhere (writing through it would
   create its target). The result is compared with each root by whole folder names: `/work2/x` is not
   inside `/work`. On Windows case is ignored, UNC paths (`\\server\share\...`) are resolved like
-  drive-letter ones, and device names (`CON`, `NUL`, `COM1`...) are refused.
+  drive-letter ones, and device names (`CON`, `NUL`, `COM1`, `COM¹`, including before a colon) are refused.
 - A refused path is an ordinary tool error the agent can read and correct, for example
   `automation path rejected: outside the write root /work/project/out: /etc/x.designcraft` (with
   several, `outside the write roots /work/project/out, /tmp/scratch: ...`) or
@@ -184,6 +184,12 @@ files it was given rather than guarding against other software on the computer.
 In connected mode every tool maps to a control-channel method (`engine.execute`, `ui.render`, `ui.pointer`, …), so
 what the agent does shows up live in the window. A failed request is not resent: the operation may have completed,
 so inspect the document before retrying. The next request re-establishes the connection.
+
+## Table targets
+
+Table IDs can repeat across stories. For `execute` commands that target an existing table, supply `story` with `table`
+when an ID repeats. An ambiguous table-only request returns an error. Supplied `story` and `table` values must be
+nonnegative integers; `null` and values of other types return an error.
 
 ## Coordinates
 
