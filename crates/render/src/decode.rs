@@ -18,7 +18,17 @@ pub fn decode_pixmap_page(bytes: &[u8], page: u32) -> Option<Pixmap> {
         let (px, w, h) = designcraft_images::render_svg(bytes, 3000)?;
         return Some(Pixmap::from_parts(premul_pixels(px), w.min(u16::MAX as u32) as u16, h.min(u16::MAX as u32) as u16));
     }
-    let img = designcraft_images::decode_rgba(bytes)?;
+    premultiplied(designcraft_images::decode_rgba(bytes)?)
+}
+
+/// [`decode_pixmap`] of a JPEG at 1/2^`shrink` of its size, `shrink` 1 to
+/// [`designcraft_images::MAX_REDUCED_SHRINK`], without a full-size decode. `None` where only a
+/// full decode applies (other formats, CMYK JPEGs).
+pub(crate) fn decode_pixmap_reduced(bytes: &[u8], shrink: u8) -> Option<Pixmap> {
+    premultiplied(designcraft_images::decode_rgba_reduced(bytes, shrink)?)
+}
+
+fn premultiplied(img: image::RgbaImage) -> Option<Pixmap> {
     let (w, h) = img.dimensions();
     if w == 0 || h == 0 || w > u16::MAX as u32 || h > u16::MAX as u32 {
         return None;
