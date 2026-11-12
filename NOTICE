@@ -130,6 +130,10 @@ list (author, source, license) is in ASSETS.md.
   AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
   DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+- Finnish hyphenation patterns, embedded through the hypher crate (feature "finnish"):
+  hyph-fi.tex 2.2 from hyph-utf8, https://github.com/hyphenation/tex-hyphen.
+  Copyright (C) 1986, 1988, 1989 Kauko Saarinen (Computing Centre, University of Jyväskylä).
+  Licence: "Patterns may be freely distributed".
 - German hyphenation patterns, embedded through the hypher crate (feature "german"):
   hyph-de-1996.tex 2024-02-28, German reformed orthography (2006), from hyph-utf8,
   https://github.com/typst/hypher/blob/d81cc506416bffef2a75ee2dc969d4b41bc36613/patterns/hyph-de-1996.tex.
