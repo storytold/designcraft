@@ -62,6 +62,14 @@ impl ScopedFonts<'_> {
             return false;
         }
         let face = self.face(family, style);
+        // The face found must be one `family` names. `face` takes a face's legacy family name
+        // (`Source Serif 4 Semibold`, name ID 1) to its typographic family and looks the style up
+        // there, so `Source Serif 4 Semibold` `Regular` finds Source Serif 4 Regular: another
+        // face, which Find Font and preflight called exact (#2618).
+        let names = |f: &str| f.eq_ignore_ascii_case(&face.family) || face.family_aliases.iter().any(|alias| alias.eq_ignore_ascii_case(f));
+        if !std::iter::once(family).chain(alternate_names(family)).any(names) {
+            return face.wws.as_ref().is_some_and(|w| w.0.eq_ignore_ascii_case(family) && norm(&w.1) == norm(style));
+        }
         norm(&face.style) == norm(style)
             || (face.coords.is_empty() && face.style_aliases.iter().any(|alias| norm(alias) == norm(style)))
             // An optical-size face asked for by its WWS names.
