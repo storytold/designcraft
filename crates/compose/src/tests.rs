@@ -2878,37 +2878,49 @@ fn vertical_justification_with_an_extreme_grid_increment_stays_finite() {
     }
 }
 
-/// In a shaped frame that narrows and widens again, Bottom with Align to Baseline Grid takes the
-/// lowest grid step at which the line's slot fits the outline, even when the grid steps next to
-/// the lowest room all fall in the narrow part.
+/// In a shaped frame that narrows and widens again, Align to Baseline Grid takes the grid step
+/// nearest the place Bottom or Center would choose at which the line's slot fits the outline:
+/// Bottom goes up past steps in the narrow part, and Center goes down a step when the step nearest
+/// the middle is in the narrow part and the next one fits.
 #[test]
 fn vertical_justification_on_the_grid_skips_steps_that_leave_a_shaped_frame() {
     use designcraft_doc::GridAlign;
-    use designcraft_doc::VerticalJustification::Bottom;
+    use designcraft_doc::VerticalJustification::{self, Bottom, Center, Top};
     use designcraft_geom::{Anchor, PathData, Point, SubPath};
     // Full width down to 100 pt, a waist at 150 pt, full width again from 200 to 230 pt, then a
     // point at 300 pt.
     let pts = [(0.0, 0.0), (300.0, 0.0), (300.0, 100.0), (200.0, 150.0), (300.0, 200.0), (300.0, 230.0), (150.0, 300.0)];
     let pts: Vec<(f64, f64)> = pts.iter().copied().chain([(0.0, 230.0), (0.0, 200.0), (100.0, 150.0), (0.0, 100.0)]).collect();
-    let para = ParaAttrs { grid_align: Some(GridAlign::AllLines), ..Default::default() };
-    let (mut d, sid, fid) = doc_with("Typography", Rect::new(0.0, 0.0, 300.0, 300.0), para);
-    let it = d.item_mut(fid).unwrap();
-    it.path = PathData::single(SubPath { anchors: pts.iter().map(|&(x, y)| Anchor::corner(Point::new(x, y))).collect(), closed: true });
-    let o = &mut it.text_frame_mut().unwrap().options;
-    o.inset = [0.0; 4];
-    o.baseline_grid = Some(designcraft_doc::FrameBaselineGrid::new(0.0, 40.0));
-    let grid = frame_specs(&d, sid)[0].grid.unwrap();
-    let top = all_lines(&compose_story(&d, sid, &ComposeOptions::default()))[0].baseline;
+    let compose_with = |mode: VerticalJustification, inc: f64| {
+        let para = ParaAttrs { grid_align: Some(GridAlign::AllLines), ..Default::default() };
+        let (mut d, sid, fid) = doc_with("Typography", Rect::new(0.0, 0.0, 300.0, 300.0), para);
+        let it = d.item_mut(fid).unwrap();
+        it.path = PathData::single(SubPath { anchors: pts.iter().map(|&(x, y)| Anchor::corner(Point::new(x, y))).collect(), closed: true });
+        let o = &mut it.text_frame_mut().unwrap().options;
+        o.inset = [0.0; 4];
+        o.baseline_grid = Some(designcraft_doc::FrameBaselineGrid::new(0.0, inc));
+        o.vertical_justification = mode;
+        let grid = frame_specs(&d, sid)[0].grid.unwrap();
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let l = all_lines(&cs)[0];
+        (grid, l.baseline, l.baseline - l.ascent)
+    };
+    let lower = |b: f64, band_top: f64| band_top >= 200.0 - 1e-6 && b <= 230.0 + 1e-6;
+
+    // A 40 pt grid: the lowest room ends between 160 and 200 pt, and the steps above it down to
+    // 120 pt put the line in the waist.
+    let (grid, top, _) = compose_with(Top, 40.0);
     assert!(on_grid(top, grid), "Top: baseline {top} on the grid {grid:?}");
-    d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.vertical_justification = Bottom;
-    let cs = compose_story(&d, sid, &ComposeOptions::default());
-    let l = all_lines(&cs)[0];
-    let (b, band_top) = (l.baseline, l.baseline - l.ascent);
+    let (_, b, band_top) = compose_with(Bottom, 40.0);
     assert!(on_grid(b, grid), "Bottom: baseline {b} on the grid {grid:?}");
-    let upper = b <= 100.0 + 1e-6;
-    let lower = band_top >= 200.0 - 1e-6 && b <= 230.0 + 1e-6;
-    assert!(upper || lower, "Bottom: the line's band {band_top}..{b} reaches into the narrow part");
+    assert!(b <= 100.0 + 1e-6 || lower(b, band_top), "Bottom: the line's band {band_top}..{b} reaches into the narrow part");
     assert!(b > top, "Bottom moves the line down a grid step that fits: {b}, Top at {top}");
+
+    // A 45 pt grid: the step nearest the middle puts the baseline at 180 pt, in the waist; the
+    // step below it fits in the lower full-width part.
+    let (grid, b, band_top) = compose_with(Center, 45.0);
+    assert!(on_grid(b, grid), "Center: baseline {b} on the grid {grid:?}");
+    assert!(lower(b, band_top), "Center: the line's band {band_top}..{b} is not in the lower full-width part");
 }
 
 /// A corner radius leaves a Cap Height first line where it sits in a rectangular frame, with Top

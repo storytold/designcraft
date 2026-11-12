@@ -6157,15 +6157,26 @@ fn vertical_justify(
                 // The last baseline stays above the bottom of the text, and the rows above it fit.
                 let most = (space / inc + 1e-9).floor().min((room / unit + 1e-9).floor()).max(0.0);
                 // Bottom and Justify take the lowest grid line, Center the one nearest the middle.
-                let mut steps = if center { (space / 2.0 / inc).round().min(most) } else { most };
-                // A shaped frame can narrow and widen again, so a lower step may not fit either: take
-                // the nearest step that fits, and leave the lines in place when none of the next
-                // `MAX_GRID_TRIES` does.
+                let target = if center { (space / 2.0 / inc).round().min(most) } else { most };
+                // A shaped frame can narrow and widen again, so the target step may not fit: take
+                // the fitting step nearest it, up to `most` (the lower one on a tie, and no step
+                // when that is as near), and leave the lines in place when none within
+                // `MAX_GRID_TRIES` steps of it fits.
                 const MAX_GRID_TRIES: usize = 512;
-                let mut tries = 0;
-                while steps > 0.0 && !fits(&shifts(steps * unit)) {
-                    tries += 1;
-                    steps = if tries < MAX_GRID_TRIES { steps - 1.0 } else { 0.0 };
+                let mut steps = 0.0;
+                for d in 0..MAX_GRID_TRIES {
+                    let (below, above) = (target - d as f64, target + d as f64);
+                    if below <= 0.0 {
+                        break;
+                    }
+                    if fits(&shifts(below * unit)) {
+                        steps = below;
+                        break;
+                    }
+                    if d > 0 && above <= most && fits(&shifts(above * unit)) {
+                        steps = above;
+                        break;
+                    }
                 }
                 // With no step taken the lines stay put, even when Center's doubled step overflows.
                 shifts(if steps > 0.0 { steps * unit } else { 0.0 })
