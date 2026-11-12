@@ -679,6 +679,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Go To Source", "Přejít na zdroj"),
     ("Go to Footnote Reference", "Přejít na odkaz poznámky pod čarou"),
     ("Go to Page…", "Přejít na stránku…"),
+    ("Go to Row…", "Přejít na řádek…"),
+    ("Go to Row", "Přejít na řádek"),
     ("Gradient Feather", "Přechodové zjemnění okraje"),
     ("Gridify", "Rozmístit do mřížky"),
     ("Group Transparency", "Průhlednost skupiny"),

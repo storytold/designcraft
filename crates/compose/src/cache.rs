@@ -5,7 +5,8 @@
 //! wrapping item on the frames' spreads, and the same for every story whose anchored objects wrap
 //! its text ([`crate::wrap::neighbours`]). An anchored frame's entry also records where its host
 //! story's composition places it. Entries hold clones of those `Arc`s, so the pointers
-//! can't be reused by other allocations while the entry lives.
+//! can't be reused by other allocations while the entry lives. The document's Alpha Channel
+//! outlines count by serial number, which no other outline shares.
 //!
 //! When only the story itself differs from an entry's (an edit of its text or formatting), the
 //! new composition starts from the entry's and composes the paragraphs the edit can change
@@ -115,6 +116,18 @@ fn doc_signature(doc: &Document) -> u64 {
     // The compositions the indexes are built from also depend on these (see `signature`).
     let g = &doc.settings.baseline_grid;
     (doc.font_scope, g.relative_to == designcraft_doc::GridRelative::TopMargin, g.start.to_bits(), g.increment.to_bits()).hash(&mut h);
+    outlines_hash(doc).hash(&mut h);
+    h.finish()
+}
+
+/// The Alpha Channel outlines text wraps around: a relink traces a new one while the items and
+/// stories stay the same.
+fn outlines_hash(doc: &Document) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for o in &doc.alpha_outlines {
+        o.serial.hash(&mut h);
+    }
     h.finish()
 }
 
@@ -168,6 +181,14 @@ impl Cache {
         let c = self.get_with(doc, sid, ShownOn::Own, cross, depth, resolved);
         resolved.insert((sid, cross, depth), c.clone());
         c
+    }
+
+    /// Where the host story places anchored text frame `fid`, one of story `sid`'s frames; `None` for
+    /// a frame on a spread.
+    pub fn placement(&self, doc: &Document, sid: StoryId, fid: designcraft_doc::ItemId) -> Option<crate::Placement> {
+        let mut resolved = Resolved::new();
+        let placed = crate::placed::placements(doc, sid, &mut |host| self.resolve(doc, host, true, 1, &mut resolved));
+        placed.into_iter().find_map(|(id, p)| (id == fid).then_some(p))
     }
 
     /// [`Cache::get_on`], wrapped by other stories' anchored objects only when `cross` is set, for
@@ -472,6 +493,7 @@ fn signature(doc: &Document, story: &Arc<Story>) -> (Vec<usize>, Vec<Arc<Item>>)
         sections_hash(doc) as usize,
         doc.font_scope as usize,
         usize::from(g.relative_to == designcraft_doc::GridRelative::TopMargin),
+        outlines_hash(doc) as usize,
     ];
     sig.extend([g.start, g.increment].into_iter().flat_map(bits));
     let mut keep = Vec::new();

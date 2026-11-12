@@ -390,6 +390,11 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ("Add CMYK Swatch", ["CMYK-Farbfeld hinzufügen", "Ajouter une nuance CMJN", "Añadir muestra CMYK", "CMYK スウォッチを追加", "添加 CMYK 色板"]),
     ("Added swatch", ["Farbfeld hinzugefügt", "Nuance ajoutée", "Muestra añadida", "スウォッチを追加しました", "已添加色板"]),
     (
+        "Include Inside Edges",
+        ["Innenkanten einschließen", "Inclure les bords intérieurs", "Incluir bordes interiores", "内側エッジを含める", "包含内边缘"],
+    ),
+    ("Alpha Channel", ["Alphakanal", "Couche alpha", "Canal alfa", "アルファチャンネル", "Alpha 通道"]),
+    (
         "Bulleted & Numbered Lists",
         [
             "Aufzählungszeichen und nummerierte Listen",
@@ -1254,6 +1259,7 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ("Generate QR Code", ["Generate QR Code", "Générer un code QR", "Generate QR Code", "Generate QR Code", "生成二维码"]),
     ("Go To", ["Go To", "Atteindre", "Go To", "Go To", "转到"]),
     ("Go to Page", ["Go to Page", "Atteindre la page", "Go to Page", "Go to Page", "转到页面"]),
+    ("Go to Row", ["Go to Row", "Atteindre la ligne", "Go to Row", "Go to Row", "转到行"]),
     ("Gutter", ["Gutter", "Gouttière", "Gutter", "Gutter", "栏间距"]),
     ("Header Rows", ["Header Rows", "Lignes d'en-tête", "Header Rows", "Header Rows", "表头行"]),
     ("Height", ["Height", "Hauteur", "Height", "Height", "高度"]),
@@ -2255,6 +2261,7 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
         ],
     ),
     ("Go to Page…", ["Go to Page…", "Atteindre la page…", "Go to Page…", "Go to Page…", "转到页面…"]),
+    ("Go to Row…", ["Go to Row…", "Atteindre la ligne…", "Go to Row…", "Go to Row…", "转到行…"]),
     ("Gradient Feather", ["Gradient Feather", "Contour progressif dégradé", "Gradient Feather", "Gradient Feather", "渐变羽化"]),
     ("Gridify", ["Gridify", "Mettre en grille", "Gridify", "Gridify", "网格化"]),
     ("Group Transparency", ["Group Transparency", "Transparence du groupe", "Group Transparency", "Group Transparency", "编组透明度"]),
