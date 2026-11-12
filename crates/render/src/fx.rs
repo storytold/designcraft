@@ -52,18 +52,21 @@ fn split(size: f64, pct: f64) -> (f64, f64) {
     (size * (1.0 - p) / 2.0, size * p)
 }
 
+/// Largest blur standard deviation handed to the filter planner, in points: far wider than any
+/// page, so a larger one looks the same. Its planner squares the value in f32, so an unbounded
+/// finite size would overflow to infinity there and never finish.
+const MAX_SIGMA: f64 = 1.0e6;
+
+fn std_dev(sigma: f64) -> f32 {
+    if sigma.is_nan() { 0.0 } else { sigma.clamp(0.0, MAX_SIGMA) as f32 }
+}
+
 fn blur(sigma: f64) -> Filter {
-    Filter::from_primitive(FilterPrimitive::GaussianBlur { std_deviation: sigma.max(0.0) as f32, edge_mode: EdgeMode::None })
+    Filter::from_primitive(FilterPrimitive::GaussianBlur { std_deviation: std_dev(sigma), edge_mode: EdgeMode::None })
 }
 
 fn shadow(sigma: f64, color: peniko::Color) -> Filter {
-    Filter::from_primitive(FilterPrimitive::DropShadowOnly {
-        dx: 0.0,
-        dy: 0.0,
-        std_deviation: sigma.max(0.0) as f32,
-        color,
-        edge_mode: EdgeMode::None,
-    })
+    Filter::from_primitive(FilterPrimitive::DropShadowOnly { dx: 0.0, dy: 0.0, std_deviation: std_dev(sigma), color, edge_mode: EdgeMode::None })
 }
 
 /// Keep what was drawn in the current layer as much as `it`'s gradient feather says. Cover the
@@ -498,6 +501,19 @@ fn offscreen(reach: Rect, spread: f64, width: u16, height: u16) -> Option<Offscr
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_huge_blur_size_reaches_the_planner_finite_and_squarable() {
+        use super::{MAX_SIGMA, std_dev};
+        for s in [1.0e300, f64::MAX, f64::INFINITY] {
+            let d = std_dev(s);
+            assert_eq!(f64::from(d), MAX_SIGMA);
+            assert!((d * d).is_finite());
+        }
+        assert_eq!(std_dev(-3.0), 0.0);
+        assert_eq!(std_dev(f64::NAN), 0.0);
+        assert_eq!(std_dev(12.5), 12.5);
+    }
+
     use super::*;
 
     #[test]
