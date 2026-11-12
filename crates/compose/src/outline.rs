@@ -59,6 +59,13 @@ impl FrameOutline {
         Some(FrameOutline { edges, inset })
     }
 
+    /// The outline of `item`'s path with its corner options applied, or None when that is the
+    /// item's own rectangle. The composer and the Properties panel's one Inset field both use it.
+    pub fn of_item(item: &designcraft_doc::Item, inset: f64) -> Option<FrameOutline> {
+        let bp = if item.corners.is_none() { item.path.to_bezpath() } else { designcraft_geom::corners::apply(&item.path, &item.corners) };
+        FrameOutline::new(&bp, inset)
+    }
+
     /// The outline mapped by `xf` (into a vertical frame's turned box).
     pub fn transformed(&self, xf: Affine) -> FrameOutline {
         FrameOutline { edges: self.edges.iter().map(|&(a, b)| (xf * a, xf * b)).collect(), inset: self.inset }

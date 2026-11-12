@@ -1173,6 +1173,12 @@ fn seed_text_frame_options(app: &DesignApp, d: &mut Dialog) {
         m.insert("inset".into(), json!(format_measure(o.inset[0], units)));
     }
     d.fields.insert("_shaped".into(), json!(shaped));
+    if let Some(targets) = typing_frame_ids(app) {
+        d.fields.entry("_targets").or_insert(targets);
+        if let Some(epoch) = app.session.active().map(|doc| doc.identity_epoch) {
+            d.fields.entry("_targetsDoc").or_insert(json!(epoch));
+        }
+    }
     if let Value::Object(m) = &shown {
         for (k, v) in m {
             d.fields.entry(k.clone()).or_insert_with(|| v.clone());

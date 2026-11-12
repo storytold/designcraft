@@ -2732,7 +2732,6 @@ fn content_type(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// The most columns a text frame takes.
 const MAX_FRAME_COLUMNS: u64 = 40;
-
 /// The frames `object.textFrameOptions` changes when the call names none: the selected objects,
 /// or with the Type tool the frame that shows the caret or every frame holding part of the
 /// selected text.

@@ -1690,6 +1690,47 @@ fn text_frame_options_show_four_sides_for_a_mixed_selection() {
     assert!(d.b("_shaped"));
 }
 
+/// With the Type tool, text selected through an oval and a threaded rectangle shows the four
+/// sides even when the caret's frame is the oval, and a changed side leaves the rectangle's other
+/// sides as they were.
+#[test]
+fn text_frame_options_show_four_sides_for_text_through_an_oval_and_a_rectangle() {
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let text = (0..40).map(|i| format!("Line {i} of the threaded story.")).collect::<Vec<_>>().join(" ");
+    let oval = app.run("frame.create", json!({"rect": [36, 36, 236, 136], "shape": "ellipse", "content": "text", "text": text})).unwrap();
+    let sid = oval["story"].as_u64().unwrap();
+    let oval = designcraft_doc::ItemId(oval["id"].as_u64().unwrap());
+    let rect = app.run("frame.create", json!({"rect": [36, 200, 336, 700], "content": "text", "text": "", "caret": false})).unwrap();
+    let rect = designcraft_doc::ItemId(rect["id"].as_u64().unwrap());
+    app.run("text.thread", json!({"from": oval.0, "to": rect.0})).unwrap();
+    app.run("object.textFrameOptions", json!({"ids": [oval.0, rect.0], "inset": [6, 2, 3, 4]})).unwrap();
+    let opts = |app: &DesignApp, id| app.session.doc().unwrap().doc.item(id).unwrap().text_frame().unwrap().options.clone();
+    let select_through_both = |app: &mut DesignApp| {
+        app.run("text.select", json!({"story": sid, "anchor": 0, "focus": text.len()})).unwrap();
+        // The caret's stored frame is the oval.
+        if let Some(t) = app.session.active_mut().unwrap().selection.text.as_mut() {
+            t.frame = Some(oval);
+        }
+        assert_eq!(designcraft_engine::cmd::text_frame_options_frames(&app.session), vec![oval, rect], "the selected text runs through both frames");
+    };
+    select_through_both(&mut app);
+    let mut d = Dialog::new("textFrameOptions", json!({}));
+    seed_text_frame_options(&app, &mut d);
+    assert!(!d.b("_shaped") && !d.fields.contains_key("inset"), "text through a rectangle shows the four sides");
+    d.fields.insert("insetTop".into(), json!("1p0"));
+    app.ui.dialog = Some(d);
+    confirm(&mut app).unwrap();
+    assert_eq!(opts(&app, rect).inset, [12.0, 2.0, 3.0, 4.0]);
+    assert_eq!(opts(&app, oval).inset, [12.0, 2.0, 3.0, 4.0]);
+    // An even oval does not link the sides while the rectangle's sides are uneven.
+    app.run("object.textFrameOptions", json!({"ids": [oval.0], "inset": [5, 5, 5, 5]})).unwrap();
+    select_through_both(&mut app);
+    let mut d = Dialog::new("textFrameOptions", json!({}));
+    seed_text_frame_options(&app, &mut d);
+    assert!(!d.b("insetLinked"), "a frame with uneven sides among the targets leaves the link off");
+}
+
 /// The dialog dims Top, Left, Bottom, Right and the link for a non-rectangular frame and adds an
 /// Inset field; for a rectangle it shows no Inset field and the sides stay editable.
 #[test]
@@ -4350,12 +4391,20 @@ fn retype_beside(h: &mut egui_kittest::Harness<'static, crate::test_window::Wind
     h.run_steps(3);
 }
 
+/// The dialog's "Make all settings the same" links, in reading order: the Properties panel's
+/// own links (its Text Frame insets, with a caret in a frame) are to the right of its Quick
+/// Actions heading's left edge and are left out.
+fn dialog_links(h: &egui_kittest::Harness<'static, crate::test_window::Window>) -> Vec<egui::Rect> {
+    use egui_kittest::kittest::Queryable;
+    let panel_left = h.query_by_label("Quick Actions").map_or(f32::INFINITY, |n| n.rect().left());
+    h.get_all_by_label("Make all settings the same").map(|n| n.rect()).filter(|r| r.center().x < panel_left).collect()
+}
+
 /// The course's chapter 40: Paragraph Border's four weights are linked as InDesign's, so a
 /// side typed in sets all four; with the link off ("Make all settings the same") a side is set
 /// alone, as the lesson gives the border only a thick left side. The corners link the same way.
 #[test]
 fn paragraph_border_sides_and_corners_link_as_indesigns() {
-    use egui_kittest::kittest::Queryable;
     let (app, _) = ruled_paragraph();
     let mut h = crate::test_window::open(app, egui::vec2(1400.0, 900.0));
     h.state_mut().app.ui.dialog = Some(Dialog::new("paragraphStyleOptions", json!({"name": "Ruled Child", "section": "border", "p.borderOn": true})));
@@ -4370,7 +4419,7 @@ fn paragraph_border_sides_and_corners_link_as_indesigns() {
     // The link of the weights (0), corners (1) or offsets (2), where it is now: the dialog
     // scrolls as fields take focus.
     let link = |h: &egui_kittest::Harness<'static, crate::test_window::Window>, n: usize| {
-        let links: Vec<egui::Rect> = h.get_all_by_label("Make all settings the same").map(|n| n.rect()).collect();
+        let links = dialog_links(h);
         assert_eq!(links.len(), 3, "weights, corners and offsets each have a link");
         links[n].center()
     };
@@ -4427,7 +4476,7 @@ fn paragraph_shading_page_is_laid_out_as_indesigns() {
     assert_eq!(field(&h, "shadingOverprint"), json!(true));
     // The corners' link (0) and the offsets' (1).
     let link = |h: &egui_kittest::Harness<'static, crate::test_window::Window>, n: usize| {
-        let links: Vec<egui::Rect> = h.get_all_by_label("Make all settings the same").map(|n| n.rect()).collect();
+        let links = dialog_links(h);
         assert_eq!(links.len(), 2, "corners and offsets each have a link");
         links[n].center()
     };
