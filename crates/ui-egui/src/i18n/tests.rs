@@ -611,7 +611,7 @@ fn czech_counts_use_the_plural_form_for_the_number() {
 #[test]
 fn hebrew_catalog_is_selectable_rtl_and_preserves_english_keys() {
     let mut seen = HashSet::new();
-    assert_eq!(he::TABLE.len(), 496, "initial Hebrew source-linked table changed");
+    assert_eq!(he::TABLE.len(), 702, "initial Hebrew source-linked table changed");
     for (source, translated) in he::TABLE {
         assert!(seen.insert(*source), "duplicate Hebrew source key: {source}");
         assert!(!translated.trim().is_empty(), "empty Hebrew: {source}");
@@ -645,5 +645,12 @@ fn hebrew_catalog_is_selectable_rtl_and_preserves_english_keys() {
     assert_eq!(tr("he", "Primary Text Frame"), "מסגרת טקסט ראשית");
     assert_eq!(tr("he", "No document open"), "אין מסמך פתוח");
     assert_eq!(tr("he", "Merge Cells"), "מיזוג תאים");
+    assert_eq!(tr("he", "Export IDML…"), "ייצוא כ־IDML…");
+    assert_eq!(tr("he", "Preflight"), "בדיקה לפני הפקה");
+    assert_eq!(tr("he", "Missing Glyphs"), "גליפים חסרים");
+    assert_eq!(tr("he", "Save Recovery Data"), "שמירת נתוני שחזור");
+    assert_eq!(tr("he", "Apply Table Style"), "החלת סגנון טבלה");
+    assert_eq!(tr("he", "Tagged PDF"), "PDF מתויג");
+    assert_eq!(tr("he", "Page (1–{count}):"), "עמוד (1–{count}):");
     assert_eq!(tr("he", "A user-defined untranslated label"), "A user-defined untranslated label");
 }
