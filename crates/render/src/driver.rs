@@ -21,6 +21,8 @@ impl Renderer {
             cmyk_pass_pixels: 0,
             #[cfg(test)]
             cmyk_pass_items: 0,
+            #[cfg(test)]
+            cmyk_convert_bands: 0,
             threads: default_threads(),
             stats: FrameStats::default(),
         }
