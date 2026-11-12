@@ -1075,6 +1075,37 @@ mod pick_up_format_tests {
 }
 
 #[cfg(test)]
+mod align_param_tests {
+    use serde_json::json;
+
+    use crate::Session;
+
+    /// `type.align` with no `align` applied Align Left, so a script that misspelled the key
+    /// (`{"alignment": "center"}`) changed the paragraph to the opposite of what it asked for.
+    #[test]
+    fn type_align_without_a_value_is_refused_and_changes_nothing() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 1})).unwrap();
+        let f = s.execute("frame.create", &json!({"rect": [20, 20, 400, 300], "content": "text", "text": "Hello world"})).unwrap();
+        s.execute("text.select", &json!({"story": f["story"].clone(), "anchor": 0, "focus": 5})).unwrap();
+        s.execute("type.align", &json!({"align": "right"})).unwrap();
+        let align = |s: &mut Session| s.execute("type.selectionAttrs", &json!({})).unwrap()["para"]["align"].clone();
+        assert_eq!(align(&mut s), json!("right"));
+        let steps = s.doc().unwrap().history.undo.len();
+        for params in [json!({}), json!({"alignment": "center"}), json!("center"), json!({"align": "middle"})] {
+            assert!(s.execute("type.align", &params).is_err(), "{params}");
+            assert_eq!(align(&mut s), json!("right"), "{params}");
+            assert_eq!(s.doc().unwrap().history.undo.len(), steps, "{params}: no undo step");
+        }
+        // A named value still applies, and null removes the override.
+        s.execute("type.align", &json!({"align": "center"})).unwrap();
+        assert_eq!(align(&mut s), json!("center"));
+        s.execute("type.align", &json!({"align": null})).unwrap();
+        assert_eq!(align(&mut s), json!("left"));
+    }
+}
+
+#[cfg(test)]
 mod size_bounds_tests {
     use serde_json::json;
 
