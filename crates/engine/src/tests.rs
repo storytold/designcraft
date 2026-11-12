@@ -882,6 +882,78 @@ fn object_styles_carry_a_paragraph_style_and_text_frame_options() {
     assert_eq!((styles_of(&s, a), options(&s, a).columns), (vec!["Box Body Text".to_string(); 3], 2));
 }
 
+/// An object style's Text Frame General Options set the columns, insets, vertical justification
+/// and Ignore Text Wrap only: a frame keeps its auto-size and column rule, follows an edit of the
+/// style while its General options are the style's, and keeps the settings through save and open.
+/// Applying a style that changes nothing records no undo step, threaded frames share one Next
+/// Style chain, and keys outside the General options are refused.
+#[test]
+fn object_style_text_frame_general_options_leave_the_other_frame_settings() {
+    use designcraft_doc::{AutoSize, ItemId, VerticalJustification};
+    let mut s = session();
+    s.execute("style.paragraph.create", &json!({"name": "Body"})).unwrap();
+    s.execute("style.paragraph.create", &json!({"name": "Lead", "nextStyle": "Body"})).unwrap();
+    let name = "Callout";
+    s.execute(
+        "style.object.create",
+        &json!({"name": name, "fromSelection": false, "paragraphStyle": "Lead", "applyNextStyle": true,
+                "textFrame": {"inset": 6, "verticalJustification": "center"}}),
+    )
+    .unwrap();
+    let r = s.execute("frame.create", &json!({"rect": [36, 36, 156, 200], "content": "text", "text": "One\nTwo", "caret": false})).unwrap();
+    let a = r["id"].as_u64().unwrap();
+    let b = s.execute("frame.create", &json!({"rect": [200, 36, 320, 200], "content": "unassigned"})).unwrap()["id"].as_u64().unwrap();
+    s.execute("object.textFrameOptions", &json!({"ids": [a], "autoSize": "heightOnly", "columnRule": true})).unwrap();
+    s.execute("style.object.apply", &json!({"name": name, "ids": [a]})).unwrap();
+    let options = |s: &Session, id: u64| s.doc().unwrap().doc.item(ItemId(id)).unwrap().text_frame().unwrap().options.clone();
+    let o = options(&s, a);
+    assert_eq!((o.inset, o.vertical_justification), ([6.0; 4], VerticalJustification::Center));
+    assert_eq!((o.auto_size, o.column_rule), (AutoSize::HeightOnly, true), "the frame's own auto-size and column rule stay");
+
+    // Applying it again changes nothing and records no undo step.
+    let undo = |s: &Session| s.doc().unwrap().history.undo.len();
+    let before = undo(&s);
+    s.execute("style.object.apply", &json!({"name": name, "ids": [a]})).unwrap();
+    assert_eq!(undo(&s), before, "no undo step when nothing changes");
+
+    // The frame differs from the style's options only in auto-size, so it follows the edit.
+    let r = s.execute("style.object.edit", &json!({"name": name, "textFrame": {"inset": [1, 2, 3, 4], "ignoreWrap": true}})).unwrap();
+    assert_eq!(r["updated"], 1);
+    let o = options(&s, a);
+    assert_eq!((o.inset, o.ignore_wrap, o.auto_size), ([1.0, 2.0, 3.0, 4.0], true, AutoSize::HeightOnly));
+
+    // Threaded frames: the story's paragraphs take one Next Style chain across both frames.
+    s.execute("text.thread", &json!({"from": a, "to": b})).unwrap();
+    s.execute("style.object.apply", &json!({"name": name, "ids": [a, b]})).unwrap();
+    let d = &s.doc().unwrap().doc;
+    let sid = d.item(ItemId(a)).unwrap().text_frame().unwrap().story;
+    assert_eq!(d.item(ItemId(b)).unwrap().text_frame().unwrap().story, sid);
+    assert_eq!(d.story(sid).unwrap().paras.iter().map(|p| p.style.as_str()).collect::<Vec<_>>(), ["Lead", "Body"]);
+
+    // Save and open keep the style's General options and Apply Next Style.
+    let bytes = s.execute("file.serialize", &json!({})).unwrap();
+    let mut back = Session::new();
+    back.execute("file.openBytes", &json!({"name": "copy", "base64": bytes["base64"]})).unwrap();
+    let os = back.doc().unwrap().doc.styles.object_style(name).cloned().unwrap();
+    assert!(os.apply_next_style);
+    assert_eq!(os.text_frame.map(|t| (t.inset, t.ignore_wrap)), Some(([1.0, 2.0, 3.0, 4.0], true)));
+
+    // Keys outside the General options, a misspelled key and a word for the inset are refused.
+    for bad in [json!({"autoSize": "heightOnly"}), json!({"insets": 4}), json!({"inset": "wide"}), json!({"verticalJustification": "middle"})] {
+        let p = json!({"name": name, "textFrame": bad});
+        assert!(s.execute("style.object.edit", &p).is_err(), "{bad}");
+    }
+    // A style that already holds 60 columns (as a file can give it) takes other edits, and 60
+    // given again is refused.
+    {
+        let d = std::sync::Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+        let st = d.styles_mut().object.iter_mut().find(|o| o.name == name).unwrap();
+        st.text_frame.as_mut().unwrap().columns = 60;
+    }
+    s.execute("style.object.edit", &json!({"name": name, "textFrame": {"inset": 2}})).unwrap();
+    assert!(s.execute("style.object.edit", &json!({"name": name, "textFrame": {"columns": 60}})).is_err());
+}
+
 #[test]
 fn object_style_effects_reach_grouped_and_anchored_items() {
     use designcraft_doc::ItemId;

@@ -153,8 +153,20 @@ fn frame_options(d: &Dialog) -> Result<Option<designcraft_doc::TextFrameOptions>
         *side = measure(key).ok_or_else(|| bad("an inset is not a measure"))?;
     }
     o.vertical_justification = serde_json::from_value(json!(d.s("verticalJustification"))).unwrap_or(o.vertical_justification);
+    if o.vertical_justification == designcraft_doc::VerticalJustification::Justify {
+        o.vj_paragraph_spacing_limit = measure("paragraphSpacingLimit").ok_or_else(|| bad("the paragraph spacing limit is not a measure"))?;
+    }
     o.ignore_wrap = d.b("ignoreWrap");
     Ok(Some(o))
+}
+
+/// The General options of `o` as the `textFrame` parameter of `style.object.create` and `edit`.
+fn general_json(o: &designcraft_doc::TextFrameOptions) -> Value {
+    let mut v = serde_json::to_value(o).unwrap_or_default();
+    if let Value::Object(m) = &mut v {
+        m.retain(|k, _| designcraft_doc::TextFrameOptions::GENERAL_KEYS.contains(&k.as_str()));
+    }
+    v
 }
 
 /// OK: the new style (applied to the selection when asked), or the edited one.
@@ -164,7 +176,7 @@ pub fn confirm(app: &mut DesignApp, d: &Dialog) -> Result<Value, String> {
         return Err(crate::i18n::tr(&app.ui.language, "Enter a style name.").to_string());
     }
     let mut p = attrs(d);
-    p.insert("textFrame".into(), frame_options(d)?.map_or(Value::Null, |o| serde_json::to_value(o).unwrap_or_default()));
+    p.insert("textFrame".into(), frame_options(d)?.map_or(Value::Null, |o| general_json(&o)));
     if d.b("new") {
         p.insert("name".into(), json!(name));
         p.insert("fromSelection".into(), json!(false));
@@ -692,6 +704,31 @@ mod tests {
         }
         let os = doc(&app).styles.object_style("Text Box Drop Cap").cloned().unwrap();
         assert_eq!(os.text_frame.map(|t| t.columns), Some(2), "2.5 columns changed nothing");
+    }
+
+    /// Text Frame General Options › Vertical Justification: Justify with a Paragraph Spacing Limit
+    /// sets both on the style and its frame, and the frame keeps its auto-size setting.
+    #[test]
+    fn the_general_options_page_sets_the_paragraph_spacing_limit() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let r = app.run("frame.create", json!({"rect": [36, 36, 336, 336], "content": "text", "caret": false})).unwrap();
+        let id = r["id"].as_u64().unwrap();
+        app.run("object.textFrameOptions", json!({"ids": [id], "autoSize": "heightOnly"})).unwrap();
+        app.run("selection.set", json!({"ids": [id]})).unwrap();
+        open_new(&mut app);
+        if let Some(d) = app.ui.dialog.as_mut() {
+            d.fields.insert("name".into(), json!("Justified"));
+            d.fields.insert("verticalJustification".into(), json!("justify"));
+            d.fields.insert("paragraphSpacingLimit".into(), json!("6 pt"));
+        }
+        crate::dialogs::confirm(&mut app).unwrap();
+        let doc = app.session.active().unwrap().doc.clone();
+        let tf = doc.styles.object_style("Justified").and_then(|s| s.text_frame.clone()).unwrap();
+        assert_eq!((tf.vertical_justification, tf.vj_paragraph_spacing_limit), (designcraft_doc::VerticalJustification::Justify, 6.0));
+        app.run("style.object.apply", json!({"name": "Justified", "ids": [id]})).unwrap();
+        let o = app.session.active().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap().text_frame().unwrap().options.clone();
+        assert_eq!((o.vj_paragraph_spacing_limit, o.auto_size), (6.0, designcraft_doc::AutoSize::HeightOnly));
     }
 
     /// `objectStyle.dialog` with a style the document lacks, or `[None]`, is an error and opens

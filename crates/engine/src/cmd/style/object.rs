@@ -4,6 +4,18 @@ pub(super) fn apply_object(s: &mut Session, p: &Value) -> Result<Value> {
     let name = str_param(p, "name").ok_or_else(|| bad("style.object.apply", "missing name"))?.to_string();
     let os = s.doc()?.doc.styles.object_style(&name).cloned().ok_or_else(|| bad("style.object.apply", format!("no object style `{name}`")))?;
     let ids = crate::cmd::targets(s, p)?;
+    // Nothing to record when every target already has the style and its attributes, and its text
+    // the style's paragraph styles.
+    let d = &s.doc()?.doc;
+    let unchanged = ids.iter().filter_map(|id| d.item(*id)).all(|it| {
+        let mut next = it.clone();
+        next.object_style = name.clone();
+        os.apply_to(&mut next);
+        next == *it && it.text_frame().and_then(|tf| d.story(tf.story)).is_none_or(|st| os.story_follows(&d.styles, st))
+    });
+    if unchanged {
+        return Ok(Value::Null);
+    }
     s.edit(|d, _| {
         let mut stories = Vec::new();
         for id in &ids {
@@ -170,19 +182,33 @@ fn paragraph_style_param(cmd: &str, s: &Session, p: &Value) -> Result<Option<Opt
     }
 }
 
-/// `textFrame` (a text frame's options, as `document.inspect` shows them) merged over `base`, or
-/// null; refused when the columns aren't 1–40 or a gutter, width or inset isn't 0–15552 pt.
+/// `textFrame` (a text frame's General options, as `document.inspect` shows them) merged over
+/// `base`, or null; refused when it names another key, the columns aren't 1–40 or a gutter, width
+/// or inset isn't 0–15552 pt. `inset` is `[top, left, bottom, right]` or one number for all four.
 fn text_frame_param(
     cmd: &str,
     p: &Value,
     base: Option<&designcraft_doc::TextFrameOptions>,
 ) -> Result<Option<Option<designcraft_doc::TextFrameOptions>>> {
-    let tf = group_param(cmd, p, "textFrame", base.unwrap_or(&designcraft_doc::TextFrameOptions::default()))?;
+    let general = designcraft_doc::TextFrameOptions::GENERAL_KEYS;
+    let mut p = p.clone();
+    if let Some(Value::Object(o)) = p.get_mut("textFrame") {
+        if let Some(k) = o.keys().find(|k| !general.contains(&k.as_str())) {
+            return Err(bad(cmd, format!("textFrame.{k} is not a General option ({})", general.join(", "))));
+        }
+        if let Some(n) = o.get("inset").filter(|v| v.is_number()).cloned() {
+            o.insert("inset".into(), json!([n, n, n, n]));
+        }
+    }
+    let tf = group_param(cmd, &p, "textFrame", base.unwrap_or(&designcraft_doc::TextFrameOptions::default()))?;
     if let Some(Some(o)) = &tf {
-        if !(1..=40).contains(&o.columns) {
+        // Only the values given in this call are checked.
+        let given = |k: &str| p.get("textFrame").is_some_and(|t| t.get(k).is_some());
+        if given("columns") && !(1..=40).contains(&o.columns) {
             return Err(bad(cmd, "text frame columns must be 1–40"));
         }
-        let mut lengths = [o.gutter, o.column_width, o.vj_paragraph_spacing_limit, o.first_baseline_min].into_iter().chain(o.inset);
+        let lengths = [("gutter", o.gutter), ("columnWidth", o.column_width), ("vjParagraphSpacingLimit", o.vj_paragraph_spacing_limit)];
+        let mut lengths = lengths.into_iter().filter(|(k, _)| given(k)).map(|(_, v)| v).chain(o.inset.into_iter().filter(|_| given("inset")));
         if !lengths.all(|v| v.is_finite() && (0.0..=15552.0).contains(&v)) {
             return Err(bad(cmd, "a text frame's gutter, widths and insets must be 0–15552 pt"));
         }
@@ -360,7 +386,7 @@ pub(super) fn edit_object(s: &mut Session, p: &Value) -> Result<Value> {
                 || fill.as_ref().is_some_and(|(o, _)| it.fill == *o)
                 || stroke.as_ref().is_some_and(|(o, _)| it.stroke == *o)
                 || corners.as_ref().is_some_and(|(o, _)| it.corners == o.named_to_path(&it.path))
-                || frame.as_ref().is_some_and(|(o, _)| it.text_frame().is_some_and(|t| t.options == *o))
+                || frame.as_ref().is_some_and(|(o, _)| it.text_frame().is_some_and(|t| t.options.general_eq(o)))
         };
         let updated = d.update_items(
             |it| it.object_style == new.name && follows(it),
@@ -387,9 +413,9 @@ pub(super) fn edit_object(s: &mut Session, p: &Value) -> Result<Value> {
                 }
                 if let Some((o, n)) = &frame
                     && let Some(tf) = it.text_frame_mut()
-                    && tf.options == *o
+                    && tf.options.general_eq(o)
                 {
-                    tf.options = n.clone();
+                    tf.options.set_general(n);
                 }
             },
         );

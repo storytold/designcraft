@@ -72,7 +72,8 @@ pub struct ObjectStyle {
 }
 
 impl ObjectStyle {
-    /// Gives `it` the fill, stroke, corners, effects and text frame options this style sets.
+    /// Gives `it` the fill, stroke, corners, effects and text frame General options this style
+    /// sets. A text frame keeps its baseline, auto-size, column rule and Type on a Path settings.
     pub fn apply_to(&self, it: &mut Item) {
         if let Some(c) = self.corners {
             it.corners = c.named_to_path(&it.path);
@@ -87,7 +88,7 @@ impl ObjectStyle {
             it.effects = e.clone();
         }
         if let (Some(tf), Some(o)) = (it.text_frame_mut(), &self.text_frame) {
-            tf.options = o.clone();
+            tf.options.set_general(o);
         }
     }
 

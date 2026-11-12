@@ -2968,6 +2968,18 @@ pub(super) const TABLE: &[(&str, &str)] = &[
         "Links and Images: {found} linked, {modified} changed, {missing} not found",
         "Länkar och bilder: {found} länkade, {modified} ändrade, {missing} hittades inte",
     ),
+    ("Apply Next Style", "Använd nästa stil"),
+    ("Text Frame General Options", "Allmänna alternativ för textram"),
+    ("New Object Style", "Ny objektstil"),
+    ("Object Style Options", "Alternativ för objektstil"),
+    ("Basic Attributes", "Grundläggande attribut"),
+    ("Stroke & Corner Options", "Kontur- och hörnalternativ"),
+    ("Effects for:", "Effekter för:"),
+    ("Create New Style", "Skapa ny stil"),
+    ("Clear Overrides", "Rensa lokala ändringar"),
+    ("Shape:", "Form:"),
+    ("(no attributes)", "(inga attribut)"),
+    ("Enter a style name.", "Ange ett stilnamn."),
 ];
 
 pub(super) const CONTEXT: &[(&str, &str, &str)] = &[

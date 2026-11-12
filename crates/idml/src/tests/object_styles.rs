@@ -177,6 +177,43 @@ fn object_style_apply_next_style_round_trips() {
     }
 }
 
+/// A style's Text Frame General Options take each setting its own `TextFramePreference` leaves out
+/// from the style it is based on (named by its id or bare name, and only when that style doesn't
+/// turn the category off), and export and import keep the merged options.
+#[test]
+fn object_style_text_frame_options_inherit_from_the_based_on_style() {
+    let styles = r#"<ObjectStyle Self="ObjectStyle/Box" Name="Box" EnableTextFrameGeneralOptions="true">
+      <Properties><BasedOn type="string">$ID/[None]</BasedOn></Properties>
+      <TextFramePreference TextColumnCount="2" VerticalJustification="CenterAlign"/>
+    </ObjectStyle>
+    <ObjectStyle Self="ObjectStyle/Inset" Name="Inset" EnableTextFrameGeneralOptions="true">
+      <Properties><BasedOn type="object">ObjectStyle/Box</BasedOn></Properties>
+      <TextFramePreference InsetSpacing="9"/>
+    </ObjectStyle>
+    <ObjectStyle Self="ObjectStyle/Bare" Name="Bare" EnableTextFrameGeneralOptions="true">
+      <Properties><BasedOn type="string">Box</BasedOn></Properties>
+      <TextFramePreference InsetSpacing="3"/>
+    </ObjectStyle>
+    <ObjectStyle Self="ObjectStyle/Off" Name="Off" EnableTextFrameGeneralOptions="false">
+      <Properties><BasedOn type="string">$ID/[None]</BasedOn></Properties>
+      <TextFramePreference TextColumnCount="5"/>
+    </ObjectStyle>
+    <ObjectStyle Self="ObjectStyle/OnOff" Name="OnOff" EnableTextFrameGeneralOptions="true">
+      <Properties><BasedOn type="object">ObjectStyle/Off</BasedOn></Properties>
+      <TextFramePreference InsetSpacing="1"/>
+    </ObjectStyle>"#;
+    let d = fixture(styles, &[]);
+    let tf = d.styles.object_style("Inset").and_then(|s| s.text_frame.clone()).expect("Inset sets text frame options");
+    assert_eq!((tf.inset, tf.columns, tf.vertical_justification), ([9.0; 4], 2, designcraft_doc::VerticalJustification::Center));
+    let bare = d.styles.object_style("Bare").and_then(|s| s.text_frame.clone()).expect("Bare sets text frame options");
+    assert_eq!((bare.inset, bare.columns), ([3.0; 4], 2), "a BasedOn given as a bare name");
+    let on_off = d.styles.object_style("OnOff").and_then(|s| s.text_frame.clone()).expect("OnOff sets text frame options");
+    assert_eq!((on_off.inset, on_off.columns), ([1.0; 4], 1), "a based-on style with the category off gives nothing");
+    let back = import_idml(&export_idml(&d)).unwrap();
+    let again = back.styles.object_style("Inset").and_then(|s| s.text_frame.clone()).expect("after a round trip");
+    assert!(again.general_eq(&tf), "{again:?}");
+}
+
 #[test]
 fn exported_frames_keep_their_own_values_over_their_object_style() {
     let mut d = small_doc();

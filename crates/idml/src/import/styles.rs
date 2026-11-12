@@ -197,8 +197,16 @@ impl<'r> Importer<'r> {
             let paragraph_style = enabled("EnableParagraphStyle", "AppliedParagraphStyle")
                 .then(|| e.get("AppliedParagraphStyle").map(|r| self.para_style_ref(r)))
                 .flatten();
+            let levels = based_on_levels(e, &objects_by_self);
+            // Text Frame General Options: each attribute from the nearest style whose
+            // `TextFramePreference` sets it, among the styles that don't turn the category off.
             let text_frame = if e.get("EnableTextFrameGeneralOptions") == Some("true") {
-                e.find("TextFramePreference").map(|t| self.frame_options(&[t]))
+                let prefs: Vec<&El> = levels
+                    .iter()
+                    .filter(|l| l.get("EnableTextFrameGeneralOptions") != Some("false"))
+                    .filter_map(|l| l.find("TextFramePreference"))
+                    .collect();
+                (!prefs.is_empty()).then(|| self.frame_options(&prefs))
             } else {
                 None
             };
@@ -207,19 +215,7 @@ impl<'r> Importer<'r> {
             // that sets some corners takes the others from the styles it is based on, as the style
             // holds all four.
             let corners = (e.get("EnableStrokeAndCornerOptions") != Some("false") && corners(e, "").is_some())
-                .then(|| {
-                    let mut levels = vec![e];
-                    let mut next = e.prop("BasedOn");
-                    while let Some(b) = next.take()
-                        && levels.len() < 16
-                        && let Some(s) = objects_by_self.get(b.trim()).copied()
-                        && !levels.iter().any(|l| std::ptr::eq(*l, s))
-                    {
-                        levels.push(s);
-                        next = s.prop("BasedOn");
-                    }
-                    corners_in(&levels, "")
-                })
+                .then(|| corners_in(&levels, ""))
                 .flatten()
                 .map(|c| CornerOptions { corners: c });
             let apply_next_style = paragraph_style.is_some() && e.get("ApplyNextParagraphStyle") == Some("true");
@@ -420,4 +416,24 @@ impl<'r> Importer<'r> {
             skip_last: el.num(&format!("SkipLastAlternatingStroke{kind}s")).map(|v| v.max(0.0) as u32),
         }
     }
+}
+
+/// Object style `e`, then the styles it is based on, nearest first (cycle-safe, at most 16). A
+/// `BasedOn` may name a style by its `Self` id or by its bare name.
+fn based_on_levels<'e>(e: &'e El, objects_by_self: &HashMap<&str, &'e El>) -> Vec<&'e El> {
+    let id = |b: String| {
+        let b = b.trim();
+        if b.starts_with("ObjectStyle/") { b.to_string() } else { format!("ObjectStyle/{}", names::escape_id(b)) }
+    };
+    let mut levels = vec![e];
+    let mut next = e.prop("BasedOn").map(id);
+    while let Some(b) = next.take()
+        && levels.len() < 16
+        && let Some(s) = objects_by_self.get(b.as_str()).copied()
+        && !levels.iter().any(|l| std::ptr::eq(*l, s))
+    {
+        levels.push(s);
+        next = s.prop("BasedOn").map(id);
+    }
+    levels
 }
