@@ -75,14 +75,27 @@ The release packages ship `designcraft-cli` alongside the desktop app, so no bui
 |---|---|
 | Windows (MSI) | `%LOCALAPPDATA%\Programs\ArtCraft\DesignCraft\designcraft-cli.exe` by default (`C:\Program Files\ArtCraft\DesignCraft\designcraft-cli.exe` for an all-users install, under `Program Files (x86)` instead for the 32-bit build, or wherever you installed it otherwise), not on `PATH` |
 | Linux (deb, rpm) | `/usr/bin/designcraft-cli` |
-| macOS | the separate `designcraft-cli-<version>-macos-<arch>.zip` release asset (the `.app` holds only the desktop app) |
+| macOS (DMG) | `/Applications/DesignCraft.app/Contents/MacOS/designcraft-cli` after installing the app; the separate CLI ZIP is also available |
 
 ```sh
 # Windows (PowerShell), default install folder
 claude mcp add designcraft -- "$env:LOCALAPPDATA\Programs\ArtCraft\DesignCraft\designcraft-cli.exe" mcp
-# Linux, or macOS with the CLI unzipped onto PATH
+# macOS, app installed in Applications
+claude mcp add designcraft -- "/Applications/DesignCraft.app/Contents/MacOS/designcraft-cli" mcp
+# Linux, or the separate CLI unzipped onto PATH
 claude mcp add designcraft -- designcraft-cli mcp
 ```
+
+The bundled macOS CLI can also run headless jobs directly, without an MCP client or a window:
+
+```sh
+"/Applications/DesignCraft.app/Contents/MacOS/designcraft-cli" --version
+"/Applications/DesignCraft.app/Contents/MacOS/designcraft-cli" commands frame.create
+```
+
+If the app lives elsewhere, use its actual path. Updating the app updates its bundled CLI; moving
+it requires updating any saved command or MCP configuration path. Removing the app removes this
+CLI too. An independently installed CLI is unaffected, and the DMG adds nothing to `PATH`.
 
 ## Confining file access
 
@@ -130,7 +143,7 @@ config works across the suite) keep the agent to the folders you give it:
   folder that doesn't exist is refused, as is a link that leads nowhere (writing through it would
   create its target). The result is compared with each root by whole folder names: `/work2/x` is not
   inside `/work`. On Windows case is ignored, UNC paths (`\\server\share\...`) are resolved like
-  drive-letter ones, and device names (`CON`, `NUL`, `COM1`...) are refused.
+  drive-letter ones, and device names (`CON`, `NUL`, `COM1`, `COM¹`, including before a colon) are refused.
 - A refused path is an ordinary tool error the agent can read and correct, for example
   `automation path rejected: outside the write root /work/project/out: /etc/x.designcraft` (with
   several, `outside the write roots /work/project/out, /tmp/scratch: ...`) or
@@ -193,6 +206,14 @@ is an error that gives the story length in bytes, and the story is left unchange
 that has a `cell` (`{table, row, col}`) is in that table cell's text, and its `start` / `end` count from the start of
 the cell.
 
+## Tables without a selection
+
+A table command acts on the selected cells or on the table that holds the insertion point. A command whose params list
+`story?` and `table?` also runs when nothing in a table is selected, or the selection is one it can't act on, if the
+call passes `table` (the id that `table.insert` and `table.get` return) and, optionally, `story`. A `table` that is not
+in the document, or not in the given `story`, is an error, and so is a `story` that is not a non-negative integer. The
+Table menu items stay disabled while nothing in a table is selected.
+
 ## Text and image fitting
 
 Hyphenation is on by default for new text (`hyphenate: true`). To turn it off, select the text or a text frame,
@@ -241,6 +262,19 @@ Use `execute` with `object.fit` to fit a selected graphic frame (or pass `ids`):
 
 Tool failures come back as results with `isError: true` and a message the model can act on; protocol errors use
 JSON-RPC error codes. Resources: `designcraft://document` (document.inspect) and `designcraft://commands`.
+
+Every input schema is closed (`additionalProperties: false`), and the server checks keys at every level it lists
+them: a misspelt key in a `batch` step, a `pointer` event or `mods` is a `-32602` error naming its path, e.g.
+``unknown argument `commands[0].parms` for `batch` ``. Command `params` are checked against the command's own
+description, as above. A `script` step written as JSON takes only `command` and `params`.
+
+Every tool carries all four MCP hints. The read-only tools (`list_commands`, `inspect_document`, `get_story`,
+`menu_list`, `ui_inspect`) are idempotent and not destructive. `new_document`, `open_document`, `select_tool`,
+`ui_set` and `dialog_cancel` change state without destroying any; the other tools that edit or write may.
+`set_story_text`, `save_document`, `export_png`, `render_page`, `screenshot`, `select_tool`, `ui_set`,
+`dialog_set` and `dialog_cancel` are idempotent. A panic that escapes outside a command (rendering, inspection,
+the connection to the app) is reported as a tool error and the server keeps running. Exports complete
+synchronously, so there is no progress or cancellation to report.
 
 ## Example
 

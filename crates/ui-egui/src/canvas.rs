@@ -31,14 +31,14 @@ mod view;
 use column_guides::{COLUMN_DRAG, ColumnDrag, column_guide_at, spread_x_across};
 use frames::{draw_frames, draw_selection};
 #[cfg(test)]
-use frames::{item_canvas_xf, overset_frames, overset_marks, ported_frames, text_frames_in};
+use frames::{frame_x, item_canvas_xf, overset_frames, overset_marks, ported_frames, text_frames_in};
 use guides::{GUIDE_DRAG, GUIDE_PRESS, GuideDrag, GuidePress, guide_readout, guide_spot, moving_guides, readout_at};
 #[cfg(test)]
 use guides::{guide_at, guide_drag_delta, guide_measure};
 use ime::ime_canvas_pass;
 pub(crate) use ime::{CanvasIme, ime_observe};
 pub(crate) use input::forwarded_keys;
-pub use input::{begin_frame, context_menu_open};
+pub use input::{begin_frame, context_menu_open, drop_frame};
 use input::{context_menu, draw_cursor_badge, handle_input, pointer_elsewhere};
 #[cfg(test)]
 use input::{press_count, release_clicks};
@@ -273,7 +273,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     crate::separations::paint(app, ui.ctx(), &painter, &xf, &layout, screen);
     let hair = 1.0 / ui.ctx().pixels_per_point();
     for slot in &layout.slots {
-        painter.rect_stroke(xf.rect(slot.bounds), 0.0, Stroke::new(hair, Color32::from_rgb(0x4a, 0x4a, 0x4a)), StrokeKind::Outside);
+        painter.rect_stroke(xf.rect(slot.bounds), 0.0, Stroke::new(hair, page_decor::PAGE_EDGE), StrokeKind::Outside);
     }
     if !preview {
         let drag = ui.data(|d| d.get_temp::<GuideDrag>(egui::Id::unique(GUIDE_DRAG)));

@@ -175,17 +175,22 @@ pub fn specs() -> Vec<CommandSpec> {
                 };
                 let text = super::text_param(p, "text");
                 s.edit(|d, sel| {
-                    let st = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
-                    let n = st.len();
-                    if a > b || b > n || !st.text.is_char_boundary(a) || !st.text.is_char_boundary(b) {
-                        let msg = format!("range {a}..{b} must be UTF-8 byte offsets on character boundaries, start <= end; the story is {n} bytes");
-                        return Err(bad("story.replaceRange", msg));
-                    }
-                    st.replace(a..b, &text);
-                    let len = st.len();
+                    let len = {
+                        let st = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
+                        let n = st.len();
+                        if a > b || b > n || !st.text.is_char_boundary(a) || !st.text.is_char_boundary(b) {
+                            let msg =
+                                format!("range {a}..{b} must be UTF-8 byte offsets on character boundaries, start <= end; the story is {n} bytes");
+                            return Err(bad("story.replaceRange", msg));
+                        }
+                        st.replace(a..b, &text);
+                        st.len()
+                    };
+                    d.adjust_text_ranges(sid, a..b, text.len());
                     if let Some(t) = sel.text.as_mut().filter(|t| t.story == sid) {
-                        t.anchor = floor_char_boundary(&st.text, t.anchor);
-                        t.focus = floor_char_boundary(&st.text, t.focus);
+                        let st_text = d.story(sid).map(|st| st.text.as_str()).unwrap_or("");
+                        t.anchor = floor_char_boundary(st_text, t.anchor);
+                        t.focus = floor_char_boundary(st_text, t.focus);
                     }
                     Ok(json!({"length": len}))
                 })
@@ -211,7 +216,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Character Formatting",
             [],
             None,
-            "{attrs: {fontFamily?, fontStyle?, size?, leading?: {kind:auto}|{kind:points,value}, tracking?, kerning?, hScale?, vScale?, baselineShift?, fill?, capitalization?, underline?, …}} → null, or {warnings} naming a fontFamily or fontStyle that isn't available (still applied; a substitute draws the text)",
+            "{attrs: {fontFamily?, fontStyle?, size?, leading?: {kind:auto}|{kind:points,value}, tracking?, kerning?, hScale?, vScale?, baselineShift?, fill?, capitalization?, underline?, …}} → null, or, after a fontFamily or fontStyle change, {warnings} naming each font the text now resolves to that isn't available (still applied; a substitute draws the text)",
             has_text_or_frames,
             |s, p| format_chars(s, p.get("attrs").unwrap_or(p))
         ),
@@ -233,8 +238,9 @@ pub fn specs() -> Vec<CommandSpec> {
             has_text_or_frames,
             |s, p| format_paras(s, p.get("attrs").unwrap_or(p))
         ),
-        cmd!("type.align", "Align", [], None, "{align: left|center|right|leftJustified|…}", has_text_or_frames, |s, p| {
-            format_paras(s, &json!({"align": p.get("align").cloned().unwrap_or(json!("left"))}))
+        cmd!("type.align", "Align", [], None, "{align: left|center|right|leftJustified|…|null} (required)", has_text_or_frames, |s, p| {
+            let align = p.get("align").cloned().ok_or_else(|| bad("type.align", "`align` required"))?;
+            format_paras(s, &json!({ "align": align }))
         }),
         cmd!("type.alignLeft", "Align Left", [], Some("Cmd+Shift+L"), "{}", has_text_or_frames, |s, _| format_paras(s, &json!({"align": "left"}))),
         cmd!("type.alignCenter", "Align Center", [], Some("Cmd+Shift+C"), "{}", has_text_or_frames, |s, _| format_paras(
