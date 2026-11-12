@@ -117,6 +117,7 @@ fn paste_text(s: &mut Session, text: Option<String>, formatted: bool) -> Result<
                         Ok(i)
                     })
                     .collect::<std::result::Result<_, _>>()?;
+                super::object::retarget_copied_xrefs(d, &items, &stories);
                 let end = super::anchored::anchor_items(d, t.story, r.start, fresh, &Default::default())?;
                 sel.text = Some(designcraft_doc::TextSel { anchor: end, focus: end, ..t });
                 Ok(json!({"pos": end, "anchored": list.len()}))

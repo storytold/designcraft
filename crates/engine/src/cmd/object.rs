@@ -1095,6 +1095,7 @@ pub fn duplicate_from(dst: &mut Document, src: &Document, ids: &[ItemId], to: Sp
         dst.insert_item(to, copy, None)?;
         out.push(nid);
     }
+    retarget_copied_xrefs(dst, src, &story_map);
     Ok(out)
 }
 
@@ -1109,9 +1110,10 @@ fn adopt_or_dangle(dst: &mut Document, src: &Document, id: AssetId) -> AssetId {
 }
 
 /// Give `it` (an item of `src`) fresh ids from `dst`, with copies of its stories and the assets it uses. `stories` maps
-/// the stories of `src` copied so far to their copies. False when its groups, or the tables and notes in the table cells
-/// of its stories, nest deeper than [`MAX_COPY_DEPTH`]: the items and tables below that keep their ids, and the copy
-/// must not be used.
+/// the stories of `src` copied so far to their copies. After the last call with the same `stories`,
+/// [`retarget_copied_xrefs`] points the copies' cross-references at the copied anchors. False when its groups, or the
+/// tables and notes in the table cells of its stories, nest deeper than [`MAX_COPY_DEPTH`]: the items and tables below
+/// that keep their ids, and the copy must not be used.
 #[must_use = "false means the copy is incomplete and must not be inserted"]
 pub(crate) fn renumber(dst: &mut Document, src: &Document, it: &mut Item, stories: &mut HashMap<StoryId, StoryId>) -> bool {
     renumber_in(dst, src, it, stories, 0, true)
@@ -1138,7 +1140,7 @@ fn renumber_in(dst: &mut Document, src: &Document, it: &mut Item, stories: &mut 
                     let n = StoryId(dst.alloc());
                     let mut st = src.story(tf.story).cloned().unwrap_or_else(|| Story::new(n));
                     st.id = n;
-                    let marked = renumber_marks(dst, src, stories, &mut st);
+                    let marked = renumber_marks(dst, &mut st);
                     let mut assets = HashMap::new();
                     for a in designcraft_doc::story_asset_refs(&st) {
                         let na = adopt_or_dangle(dst, src, a);
@@ -1150,14 +1152,8 @@ fn renumber_in(dst: &mut Document, src: &Document, it: &mut Item, stories: &mut 
                     st.frames.clear();
                     // Mapped first: the map is the seen-set that stops story recursion.
                     stories.insert(tf.story, n);
-                    let copied = stories.len();
                     complete = renumber_anchored(dst, src, &mut st, stories, depth + 1) && marked;
                     dst.stories.insert(n, Arc::new(st));
-                    // The stories anchored in this one were copied while it was not yet in `dst`.
-                    if stories.len() > copied {
-                        let anchors = copied_anchors(dst, src, stories);
-                        retarget_copies(dst, src, stories, &anchors);
-                    }
                     n
                 }
             };
@@ -1187,39 +1183,26 @@ fn renumber_in(dst: &mut Document, src: &Document, it: &mut Item, stories: &mut 
     true
 }
 
-/// Give the text anchors and tables of `st`, a new copy of a story of `src`, ids of their own (anchors from the story's
-/// id, tables from `dst`), as do the tables in the stories of its table cells and notes down to [`MAX_COPY_DEPTH`]
-/// levels. Cross-references in `st` and in the copies `stories` already lists point at the copies of their
-/// destinations where those are copied, and the copy's paragraphs follow its tables. False when tables or notes in
-/// table cells nest deeper than [`MAX_COPY_DEPTH`]: the tables below that keep their ids, and the copy must not be used.
+/// Give the text anchors and tables of `st`, a new copy of a story, ids of their own (anchors from the story's id,
+/// tables from `dst`), as do the tables in the stories of its table cells and notes down to [`MAX_COPY_DEPTH`] levels.
+/// The copy's paragraphs follow its tables. False when tables or notes in table cells nest deeper than
+/// [`MAX_COPY_DEPTH`]: the tables below that keep their ids, and the copy must not be used.
 #[must_use = "false means the copy is incomplete and must not be inserted"]
-fn renumber_marks(dst: &mut Document, src: &Document, stories: &HashMap<StoryId, StoryId>, st: &mut Story) -> bool {
+fn renumber_marks(dst: &mut Document, st: &mut Story) -> bool {
     let base = st.id.0 << 24;
-    let mut anchors = HashMap::new();
     for (k, a) in (1..).zip(st.anchors.iter_mut()) {
-        anchors.insert(a.id, base + k);
         Arc::make_mut(a).id = base + k;
-    }
-    // Earlier copies change only when this story brings anchors, and this story only when it holds cross-references.
-    let own = !anchors.is_empty();
-    if own || has_xrefs(st, 0) {
-        anchors.extend(copied_anchors(dst, src, stories));
-        if own {
-            retarget_copies(dst, src, stories, &anchors);
-        }
-        remap_xrefs(st, &anchors, 0);
     }
     renumber_tables(dst, st, 0)
 }
 
-/// Whether `st`, or a story of its table cells and notes down to [`MAX_COPY_DEPTH`] levels, holds a cross-reference.
-fn has_xrefs(st: &Story, depth: usize) -> bool {
-    if !st.xrefs.is_empty() {
-        return true;
+/// Point the cross-references in the story copies in `dst` that `stories` maps at the copies of their destinations
+/// where [`renumber`] copied those, in one pass after the last copy. Other cross-references keep their destination.
+pub(crate) fn retarget_copied_xrefs(dst: &mut Document, src: &Document, stories: &HashMap<StoryId, StoryId>) {
+    let anchors = copied_anchors(dst, src, stories);
+    if !anchors.is_empty() {
+        retarget_copies(dst, src, stories, &anchors);
     }
-    depth < MAX_COPY_DEPTH
-        && (st.tables.values().any(|t| t.cells.iter().any(|c| has_xrefs(&c.text, depth + 1)))
-            || st.notes.iter().chain(&st.endnotes).any(|n| has_xrefs(&n.text, depth + 1)))
 }
 
 /// The anchor ids of the stories of `src` that `stories` maps, each to the id of its copy's anchor in `dst`.
@@ -1273,30 +1256,6 @@ fn renumber_tables(dst: &mut Document, st: &mut Story, depth: usize) -> bool {
         complete &= renumber_tables(dst, &mut Arc::make_mut(n).text, depth + 1);
     }
     complete
-}
-
-/// Point the cross-references in `st`, and in the stories of its table cells and notes down to [`MAX_COPY_DEPTH`]
-/// levels, at the anchors `map` gives for their targets.
-fn remap_xrefs(st: &mut Story, map: &HashMap<u64, u64>, depth: usize) {
-    if map.is_empty() {
-        return;
-    }
-    for x in &mut st.xrefs {
-        if let Some(n) = map.get(&x.target) {
-            Arc::make_mut(x).target = *n;
-        }
-    }
-    if depth >= MAX_COPY_DEPTH {
-        return;
-    }
-    for t in st.tables.values_mut() {
-        for c in &mut Arc::make_mut(t).cells {
-            remap_xrefs(&mut c.text, map, depth + 1);
-        }
-    }
-    for n in st.notes.iter_mut().chain(st.endnotes.iter_mut()) {
-        remap_xrefs(&mut Arc::make_mut(n).text, map, depth + 1);
-    }
 }
 
 /// Point the cross-references in `copy`, a copy of `orig`, and in the stories of its table cells and notes down to
