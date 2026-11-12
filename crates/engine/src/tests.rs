@@ -1002,6 +1002,31 @@ fn a_stroke_added_to_an_object_style_reaches_default_strokes() {
     assert_eq!(weight(&s, stroked_text), 1.0, "a text frame's own 1 pt stroke stays");
 }
 
+/// A text frame anchored in a story (as IDML import places one) takes a new paragraph style of
+/// its object style like a frame on the page.
+#[test]
+fn an_object_style_edit_restyles_an_anchored_text_frame() {
+    use designcraft_doc::ItemId;
+    let mut s = session();
+    s.execute("style.paragraph.create", &json!({"name": "Body"})).unwrap();
+    s.execute("style.paragraph.create", &json!({"name": "Lead"})).unwrap();
+    s.execute("style.object.create", &json!({"name": "Sidebar", "fromSelection": false, "paragraphStyle": "Body"})).unwrap();
+    let r = s.execute("frame.create", &json!({"rect": [36, 36, 136, 86], "content": "text", "text": "Inner", "caret": false})).unwrap();
+    let (inner, inner_story) = (ItemId(r["id"].as_u64().unwrap()), designcraft_doc::StoryId(r["story"].as_u64().unwrap()));
+    s.execute("style.object.apply", &json!({"name": "Sidebar", "ids": [inner.0]})).unwrap();
+    let r = s.execute("frame.create", &json!({"rect": [36, 200, 400, 400], "content": "text", "text": "Before after.", "caret": false})).unwrap();
+    let host = designcraft_doc::StoryId(r["story"].as_u64().unwrap());
+    {
+        let d = std::sync::Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+        let it = d.item(inner).unwrap().clone();
+        std::sync::Arc::make_mut(&mut d.spreads[0]).items.retain(|i| i.id != inner);
+        d.story_mut(host).unwrap().insert_object(7, designcraft_doc::AnchoredObject::new(it, Default::default()));
+    }
+    let r = s.execute("style.object.edit", &json!({"name": "Sidebar", "paragraphStyle": "Lead"})).unwrap();
+    assert_eq!(r["restyled"], 1, "{r}");
+    assert_eq!(s.doc().unwrap().doc.story(inner_story).unwrap().paras[0].style, "Lead");
+}
+
 #[test]
 fn object_style_effects_reach_grouped_and_anchored_items() {
     use designcraft_doc::ItemId;

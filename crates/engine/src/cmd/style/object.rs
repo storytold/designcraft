@@ -422,7 +422,7 @@ pub(super) fn edit_object(s: &mut Session, p: &Value) -> Result<Value> {
                 || corners.as_ref().is_some_and(|(o, _)| it.corners == o.named_to_path(&it.path))
                 || frame.as_ref().is_some_and(|(o, n)| it.text_frame().is_some_and(|t| t.options.clone().follow_general(o, n)))
         };
-        let updated = d.update_items(
+        let updated = d.update_placed_items(
             |it| it.object_style == new.name && follows(it),
             |it| {
                 if let Some((o, n)) = &effects
@@ -458,18 +458,10 @@ pub(super) fn edit_object(s: &mut Session, p: &Value) -> Result<Value> {
         // is in the old one's; when the style set none before, all of it does.
         let mut restyled = 0;
         if new.paragraph_style.is_some() && (new.paragraph_style != old.paragraph_style || new.apply_next_style != old.apply_next_style) {
-            let mut stories = Vec::new();
-            for sp in d.spreads.iter().chain(d.parents.iter()) {
-                for it in &sp.items {
-                    it.walk(&mut |i| {
-                        if i.object_style == new.name
-                            && let Some(tf) = i.text_frame()
-                        {
-                            stories.push(tf.story);
-                        }
-                    });
-                }
-            }
+            // Frames on spreads and parents, in groups, and anchored in stories, table cells and
+            // notes (as IDML import places them).
+            let mut stories: Vec<_> =
+                d.placed_items().into_iter().filter(|i| i.object_style == new.name).filter_map(|i| i.text_frame().map(|tf| tf.story)).collect();
             stories.sort_unstable();
             stories.dedup();
             let styles = d.styles.clone();
