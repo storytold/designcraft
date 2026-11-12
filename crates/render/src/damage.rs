@@ -158,36 +158,52 @@ fn shows_other_text(d: &Document, s: &Story) -> bool {
 fn item_area(it: &Item) -> Option<Rect> {
     let mut ok = true;
     it.walk(&mut |i| {
-        // Effects spill outside; text wrap reflows other frames.
-        if i.effects.any() || i.has_wrap() {
+        // Text wrap reflows other frames. A nested item's effects are drawn through its parents'
+        // transforms, which can scale how far they reach.
+        if i.has_wrap() || !std::ptr::eq(i, it) && i.effects.any() {
             ok = false;
         }
     });
     if !ok {
         return None;
     }
-    let pad = it.stroke.extent().max(0.0) + 2.0 + if it.is_text_frame() { 24.0 } else { 0.0 };
-    Some(painted_bounds(it).inflate(pad, pad))
+    // The stroke is drawn through the item's transform. The item's own drop shadow and outer glow
+    // reach `fx::outset` past what it paints; its inner effects and feathers stay inside the shape.
+    let stroke = it.stroke.extent().max(0.0) * max_scale(it.xf)?;
+    let pad = stroke + 2.0 + if it.is_text_frame() { 24.0 } else { 0.0 } + crate::fx::outset(it);
+    Some(painted_bounds(it)?.inflate(pad, pad))
+}
+
+/// The largest factor `m` stretches a length by (its linear part's largest singular value), or
+/// None when that is not finite.
+fn max_scale(m: designcraft_geom::Affine) -> Option<f64> {
+    let [a, b, c, d, _, _] = m.as_coeffs();
+    let s = a * a + b * b + c * c + d * d;
+    let det = a * d - b * c;
+    let v = ((s + (s * s - 4.0 * det * det).max(0.0).sqrt()) / 2.0).sqrt();
+    v.is_finite().then_some(v)
 }
 
 /// An item's bounds, grown to its text: text is composed in the box around the frame's path in
 /// the frame's own coordinates, which a sheared then rotated frame turns past its path's bounds.
-fn painted_bounds(it: &Item) -> Rect {
+/// Its children's bounds include their strokes. None when a child's transform is not finite.
+fn painted_bounds(it: &Item) -> Option<Rect> {
     let mut b = it.bounds();
     if it.is_text_frame() {
         b = b.union(it.xf.transform_rect_bbox(it.inner_bounds()));
     }
     for c in it.children() {
-        b = b.union(it.xf.transform_rect_bbox(painted_bounds(c)));
+        let stroke = c.stroke.extent().max(0.0) * max_scale(c.xf)?;
+        b = b.union(it.xf.transform_rect_bbox(painted_bounds(c)?.inflate(stroke, stroke)));
     }
-    b
+    Some(b)
 }
 
 /// A text frame's area: its spread and bounds with room for glyph overhang.
 fn frame_area(d: &Document, f: ItemId) -> Option<(SpreadRef, Rect)> {
     let loc = d.find(f)?;
     let it = d.item_at(&loc)?;
-    let b = d.parent_xf(&loc).transform_rect_bbox(painted_bounds(it));
+    let b = d.parent_xf(&loc).transform_rect_bbox(painted_bounds(it)?);
     // Overhang of italics, swashes and big initials, and anchored objects pinned to lines.
     Some((loc.spread, b.inflate(24.0 + 0.1 * b.width().max(b.height()), 24.0)))
 }
@@ -383,5 +399,108 @@ mod tests {
         let dmg = damage_with(&old, &d, Some(&cache)).unwrap();
         let spreads: Vec<SpreadRef> = dmg.iter().map(|(r, _)| *r).collect();
         assert!(spreads.contains(&SpreadRef::Doc(1)), "{dmg:?}");
+    }
+
+    /// Moving an object with a drop shadow or an outer glow damages where its effect was and is,
+    /// and every pixel the move changes lies in that damage: the canvas repaints those regions,
+    /// not the whole view.
+    #[test]
+    fn moving_an_object_with_a_shadow_or_glow_damages_its_effect_area() {
+        for glow in [false, true] {
+            let mut d = Document::new(&NewDocument { pages: 1, ..Default::default() });
+            let lid = d.default_layer();
+            let id = ItemId(d.alloc());
+            let mut it =
+                Item::new(id, lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(100.0, 100.0, 250.0, 200.0)));
+            it.fill = designcraft_doc::Fill::swatch(designcraft_color::swatch::BLACK);
+            if glow {
+                let g = &mut it.effects.outer_glow;
+                (g.on, g.color, g.opacity, g.size, g.spread) = (true, designcraft_color::swatch::BLACK.into(), 1.0, 30.0, 20.0);
+            } else {
+                let s = &mut it.effects.drop_shadow;
+                (s.on, s.color, s.opacity, s.size, s.distance, s.spread) = (true, designcraft_color::swatch::BLACK.into(), 1.0, 20.0, 25.0, 30.0);
+            }
+            d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+            let old = d.clone();
+            let it = d.item_mut(id).unwrap();
+            it.path.transform(designcraft_geom::Affine::translate((60.0, 40.0)));
+            let changed = changed_pixels_in_damage(&old, &d);
+            assert!(changed.iter().any(|p| !Rect::new(98.0, 98.0, 312.0, 242.0).contains(*p)), "glow {glow}: the effect paints outside the object");
+        }
+        // An effect on an object inside a group is drawn through the group's transform: unbounded.
+        let mut d = Document::new(&NewDocument { pages: 1, ..Default::default() });
+        let lid = d.default_layer();
+        let mut child =
+            Item::new(ItemId(d.alloc()), lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 9.0, 9.0)));
+        child.effects.drop_shadow.on = true;
+        let gid = ItemId(d.alloc());
+        let mut group = Item::new(gid, lid, designcraft_doc::Shape::Group, Default::default());
+        group.content = designcraft_doc::Content::Group { items: vec![Arc::new(child)] };
+        d.insert_item(SpreadRef::Doc(0), group, None).unwrap();
+        let old = d.clone();
+        d.item_mut(gid).unwrap().xf = designcraft_geom::Affine::scale(4.0);
+        assert!(damage(&old, &d).is_none());
+    }
+
+    /// A stroke is drawn through its item's transform: a frame scaled up paints its stroke that
+    /// much wider, and moving it damages all of it.
+    #[test]
+    fn moving_a_scaled_frame_damages_its_whole_stroke() {
+        let mut d = Document::new(&NewDocument { pages: 1, ..Default::default() });
+        let lid = d.default_layer();
+        let id = ItemId(d.alloc());
+        let mut it = Item::new(id, lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(50.0, 50.0, 125.0, 100.0)));
+        it.xf = designcraft_geom::Affine::scale(2.0);
+        it.stroke.swatch = designcraft_color::swatch::BLACK.into();
+        it.stroke.weight = 20.0;
+        it.stroke.align = designcraft_doc::StrokeAlign::Outside;
+        it.effects.outer_glow.on = true;
+        it.effects.outer_glow.size = 0.0;
+        d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+        let old = d.clone();
+        let it = d.item_mut(id).unwrap();
+        it.xf = designcraft_geom::Affine::translate((60.0, 40.0)) * it.xf;
+        // The stroke reaches 40 pt past the frame's 100..250 × 100..200 outline on the spread.
+        let changed = changed_pixels_in_damage(&old, &d);
+        assert!(changed.iter().any(|p| p.x < 70.0), "the stroke paints its scaled width");
+        // The same frame inside a group with a gradient feather: the child's stroke counts too.
+        let mut d = Document::new(&NewDocument { pages: 1, ..Default::default() });
+        let mut child = old.spreads[0].items[0].as_ref().clone();
+        child.effects = Default::default();
+        child.id = ItemId(d.alloc());
+        let gid = ItemId(d.alloc());
+        let outline = designcraft_geom::shapes::rectangle(Rect::new(100.0, 100.0, 250.0, 200.0));
+        let mut group = Item::new(gid, d.default_layer(), designcraft_doc::Shape::Group, outline);
+        group.content = designcraft_doc::Content::Group { items: vec![Arc::new(child)] };
+        let gf = &mut group.effects.gradient_feather;
+        (gf.on, gf.start, gf.end) = (true, 1.0, 0.5);
+        d.insert_item(SpreadRef::Doc(0), group, None).unwrap();
+        let old = d.clone();
+        d.item_mut(gid).unwrap().xf = designcraft_geom::Affine::translate((60.0, 40.0));
+        let changed = changed_pixels_in_damage(&old, &d);
+        assert!(changed.iter().any(|p| p.x < 70.0), "the child's stroke paints its scaled width");
+    }
+
+    /// The pixels a page render changes from `old` to `new`, each checked to lie in the damage.
+    fn changed_pixels_in_damage(old: &Document, new: &Document) -> Vec<designcraft_geom::Point> {
+        let dmg = damage(old, new).expect("bounded damage");
+        let cache = designcraft_compose::Cache::new();
+        let mut r = crate::Renderer::new();
+        r.threads = 0;
+        let opts = crate::RenderOptions::default();
+        let before = r.render_page(old, &cache, 0, 1.0, false, &opts).unwrap();
+        let after = r.render_page(new, &cache, 0, 1.0, false, &opts).unwrap();
+        let mut changed = Vec::new();
+        for y in 0..before.height {
+            for x in 0..before.width {
+                if before.pixel(x, y) == after.pixel(x, y) {
+                    continue;
+                }
+                let p = designcraft_geom::Point::new(f64::from(x) + 0.5, f64::from(y) + 0.5);
+                assert!(dmg.iter().any(|(_, r)| r.inflate(1.0, 1.0).contains(p)), "changed pixel {p:?} outside {dmg:?}");
+                changed.push(p);
+            }
+        }
+        changed
     }
 }
