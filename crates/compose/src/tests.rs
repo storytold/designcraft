@@ -3019,13 +3019,13 @@ fn vertical_justification_keeps_lines_inside_a_shaped_frame() {
         assert!(lines.len() >= 2, "{mode:?}: {lines:?}");
         (spec.area, lines)
     };
-    // Narrowing downward: |x - 150| <= (300 - y) / 2 over each slot's band, the last line's
-    // descenders left out.
+    // Narrowing downward: |x - 150| <= (300 - y) / 2 over each slot's band, from the line's top to
+    // its baseline.
     let down = [Point::new(0.0, 0.0), Point::new(300.0, 0.0), Point::new(150.0, 300.0)];
     for mode in [Center, Bottom, Justify] {
         let (area, lines) = compose_with(down, mode);
         for (k, l) in lines.iter().enumerate() {
-            let bottom = if k + 1 == lines.len() { l.baseline } else { l.baseline + l.descent };
+            let bottom = l.baseline;
             let top = (l.baseline - l.ascent).max(area.y0);
             for (x, y) in [(l.x0, top), (l.x1, top), (l.x0, bottom), (l.x1, bottom)] {
                 assert!((x - 150.0).abs() <= (300.0 - y) / 2.0 + 1e-3, "{mode:?}: line {k} corner ({x}, {y}) outside the triangle: {lines:?}");
@@ -3053,6 +3053,33 @@ fn vertical_justification_keeps_lines_inside_a_shaped_frame() {
     let (first, last) = (lines[0], lines[lines.len() - 1]);
     assert!(first.baseline - first.ascent >= 200.0 - 1e-6, "Bottom: first line top at {}", first.baseline - first.ascent);
     assert!((last.baseline - 260.0).abs() < 1e-3, "Bottom: last baseline at {}", last.baseline);
+}
+
+/// In a shaped frame, Center and Bottom move every line until its slot reaches the outline at its
+/// baseline: an earlier line's descenders may cross the outline, as the last line's do. A frame
+/// full width down to 20 pt and half width below it holds the first line's baseline at 20 pt.
+#[test]
+fn vertical_justification_lets_earlier_descenders_cross_a_shaped_frame() {
+    use designcraft_doc::VerticalJustification::{Bottom, Center};
+    use designcraft_geom::{Anchor, PathData, Point, SubPath};
+    let pts = [(0.0, 0.0), (300.0, 0.0), (300.0, 20.0), (150.0, 20.0), (150.0, 300.0), (0.0, 300.0)];
+    for mode in [Center, Bottom] {
+        let (mut d, sid, fid) = doc_with("Typography\ngypsy", Rect::new(0.0, 0.0, 300.0, 300.0), ParaAttrs::default());
+        let it = d.item_mut(fid).unwrap();
+        it.path = PathData::single(SubPath { anchors: pts.iter().map(|&(x, y)| Anchor::corner(Point::new(x, y))).collect(), closed: true });
+        let o = &mut it.text_frame_mut().unwrap().options;
+        o.vertical_justification = mode;
+        o.inset = [0.0; 4];
+        assert!(frame_specs(&d, sid)[0].outline.is_some());
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let lines = all_lines(&cs);
+        assert_eq!(lines.len(), 2, "{mode:?}: {lines:?}");
+        let (first, last) = (lines[0], lines[1]);
+        assert!((first.x1 - 300.0).abs() < 1e-6 && (last.x1 - 150.0).abs() < 1e-6, "{mode:?}: slots {lines:?}");
+        assert!(first.descent > 1.0, "{mode:?}: {first:?}");
+        assert!((first.baseline - 20.0).abs() < 1e-3, "{mode:?}: first baseline at {}, step at 20", first.baseline);
+        assert!(last.baseline <= 300.0 + 1e-6, "{mode:?}: last baseline at {}", last.baseline);
+    }
 }
 
 /// In a shaped frame with a text wrap under the text, Center, Bottom and Justify keep the lines

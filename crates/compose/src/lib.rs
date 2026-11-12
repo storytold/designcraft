@@ -6066,12 +6066,14 @@ fn vertical_justify(
         };
         // Only the last row's descenders hang below the bottom of the text: an earlier line whose
         // ink reaches below the last baseline (tight leading) isn't moved past the text area.
-        // In a shaped frame each moved line's slot stays inside the outline over its new band, as
-        // when the line was fitted: a frame that narrows towards the bottom holds the text higher.
-        let in_outline = |l: &Line, last: bool, dy: f64| match &f.outline {
+        // In a shaped frame each moved line's slot stays inside the outline from its top down to
+        // its baseline: a frame that narrows towards the bottom holds the text higher. Every moved
+        // line's descenders may cross the outline, as the last line's do below the bottom of the
+        // text; above footnotes, and in vertical frames, they stay inside.
+        let in_outline = |l: &Line, dy: f64| match &f.outline {
             Some(o) => {
                 let b = l.baseline + dy;
-                let desc = if last && !inside { 0.0 } else { l.descent.max(0.0) };
+                let desc = if inside { l.descent.max(0.0) } else { 0.0 };
                 let tol = 1e-6;
                 o.intervals(l.x0, l.x1, (b - l.ascent).max(f.area.y0).min(b), b + desc).iter().any(|&(a, z)| a <= l.x0 + tol && z >= l.x1 - tol)
             }
@@ -6095,7 +6097,7 @@ fn vertical_justify(
         let fits = |shift: &[f64]| {
             idx.iter().zip(&rows).rev().all(|(&i, &k)| {
                 let l = &ft.lines[i];
-                shift[k] <= 0.0 || ((k == n || l.baseline + l.descent + shift[k] <= limit + 1e-9) && in_outline(l, k == n, shift[k]))
+                shift[k] <= 0.0 || ((k == n || l.baseline + l.descent + shift[k] <= limit + 1e-9) && in_outline(l, shift[k]))
             }) && clear(shift)
         };
         // In a rectangular frame fit decreases monotonically as the shift grows. A shaped
