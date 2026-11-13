@@ -1,7 +1,6 @@
 //! IDML package → Document.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::io::Read;
 use std::sync::Arc;
 
 use designcraft_color::cms::lab;
@@ -17,8 +16,8 @@ use designcraft_geom::corners::{Corner, CornerOptions};
 use designcraft_geom::{Affine, Anchor, PathData, Point, Rect, SubPath};
 
 use crate::names::{self, CHAR_BUILTINS, OBJECT_BUILTINS, PARA_BUILTINS, unescape_id};
-use crate::xml::{El, Node, parse};
-use crate::{IdmlError, MIMETYPE, Result, base64_decode, sniff_image};
+use crate::xml::{El, Node};
+use crate::{IdmlError, Result, base64_decode, sniff_image};
 
 mod document;
 mod frame;
@@ -79,35 +78,12 @@ pub fn import_idml_report_with_previews(
     previews: &HashMap<String, Arc<Vec<u8>>>,
 ) -> Result<Imported> {
     let mut pkg = Package::open(bytes)?;
-    if let Some(m) = pkg.part("mimetype")?
-        && String::from_utf8_lossy(&m).trim() != MIMETYPE
-    {
-        return Err(IdmlError::NotIdml(format!("unexpected mimetype `{}`", String::from_utf8_lossy(&m).trim())));
-    }
-    let dm = pkg.part("designmap.xml")?.ok_or_else(|| IdmlError::NotIdml("missing designmap.xml".into()))?;
-    let root = parse(&dm).map_err(|msg| IdmlError::Part { part: "designmap.xml".into(), msg })?;
-    if root.local() != "Document" {
-        return Err(IdmlError::NotIdml(format!("designmap root is <{}>", root.name)));
-    }
-    // Flatten includes: every `idPkg:*` child is replaced by the children of its part's root.
-    let mut top: Vec<El> = Vec::new();
-    let mut warnings = Vec::new();
-    for c in root.elements() {
-        if c.name.starts_with("idPkg:") {
-            let Some(src) = c.get("src") else { continue };
-            let Some(data) = pkg.part(src)? else {
-                warnings.push(format!("{src}: listed in designmap.xml but missing from the package; its contents were not imported"));
-                continue;
-            };
-            let el = parse(&data).map_err(|msg| IdmlError::Part { part: src.into(), msg })?;
-            top.extend(el.elements().cloned());
-        } else {
-            top.push(c.clone());
-        }
-    }
+    let package = pkg.document()?;
+    let root = crate::xml::from_craft(package.root);
+    let top: Vec<El> = package.top.into_iter().map(crate::xml::from_craft).collect();
+    let mut warnings = package.warnings;
     let mut im = Importer::new(read_link, previews);
-    if let Some(m) = pkg.part("META-INF/metadata.xml")? {
-        let m = String::from_utf8_lossy(&m);
+    if let Some(m) = package.metadata {
         im.created = xmp_date(&m, "xmp:CreateDate");
         im.modified = xmp_date(&m, "xmp:ModifyDate");
     }

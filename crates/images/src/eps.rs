@@ -3,12 +3,6 @@
 //! rectangles of a simple one drawn here (InDesign's QR codes), else a placeholder the size of its
 //! bounding box.
 
-/// An EPS file (plain, or DOS EPS with a binary header)?
-pub fn is_eps(bytes: &[u8]) -> bool {
-    bytes.starts_with(&[0xC5, 0xD0, 0xD3, 0xC6])
-        || (bytes.starts_with(b"%!PS-Adobe") && String::from_utf8_lossy(&bytes[..bytes.len().min(64)]).contains("EPSF"))
-}
-
 fn u32le(b: &[u8], at: usize) -> Option<usize> {
     Some(u32::from_le_bytes(b.get(at..at + 4)?.try_into().ok()?) as usize)
 }
@@ -397,7 +391,7 @@ mod tests {
     #[test]
     fn eps_bounding_box_and_proxies() {
         let eps = b"%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 100 50\n%%HiResBoundingBox: 0 0 100.5 50.25\nnewpath\n%%EOF\n";
-        assert!(is_eps(eps));
+        assert!(craft_eps::is_eps(eps));
         assert_eq!(bounding_box(eps), Some([0.0, 0.0, 100.5, 50.25]));
         let (png, size) = eps_proxy(eps).unwrap();
         assert_eq!(size, (100.5, 50.25));
@@ -416,11 +410,11 @@ mod tests {
         dos.extend([0xFF, 0xFF]);
         dos.extend_from_slice(eps);
         dos.extend_from_slice(&tiff);
-        assert!(is_eps(&dos));
+        assert!(craft_eps::is_eps(&dos));
         let (p, size) = eps_proxy(&dos).unwrap();
         assert_eq!(size, (100.5, 50.25));
         assert_eq!(crate::pixel_size(&p), Some((10, 5)));
-        assert!(!is_eps(b"%!PS-Adobe-3.0\nnot encapsulated"));
+        assert!(!craft_eps::is_eps(b"%!PS-Adobe-3.0\nnot encapsulated"));
     }
 
     #[test]

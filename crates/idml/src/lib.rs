@@ -61,7 +61,7 @@ pub use export::{ExportOptions, export_idml, export_idml_with};
 pub use import::{Imported, import_idml, import_idml_report, import_idml_report_with_previews, import_idml_with};
 
 /// The IDML package mimetype (content of the first, stored `mimetype` entry).
-pub const MIMETYPE: &str = "application/vnd.adobe.indesign-idml-package";
+pub const MIMETYPE: &str = craft_idml::MIMETYPE;
 /// The DOM version written to every part.
 pub const DOM_VERSION: &str = "16.0";
 

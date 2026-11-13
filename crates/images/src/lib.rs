@@ -13,7 +13,8 @@ mod eps;
 mod jpeg;
 mod psd;
 mod tone;
-pub use eps::{bounding_box as eps_bounding_box, eps_pixel_size, eps_png, eps_proxy, eps_size, is_eps};
+pub use craft_eps::is_eps;
+pub use eps::{bounding_box as eps_bounding_box, eps_pixel_size, eps_png, eps_proxy, eps_size};
 pub use tone::{Tone, tone};
 
 /// CSS pixels (SVG user units) → points.
@@ -29,10 +30,7 @@ pub fn is_psd(bytes: &[u8]) -> bool {
 
 /// An SVG document (optionally after an XML declaration, comments or a doctype).
 pub fn is_svg(bytes: &[u8]) -> bool {
-    let head = &bytes[..bytes.len().min(4096)];
-    let s = String::from_utf8_lossy(head);
-    let t = s.trim_start_matches('\u{feff}').trim_start();
-    t.starts_with('<') && t.contains("<svg")
+    craft_svg::sniff::is_svg(bytes)
 }
 
 /// MIME type of a placed graphic.
@@ -86,10 +84,9 @@ fn svg_options() -> &'static usvg::Options<'static> {
                     Ok(image::ImageFormat::Png | image::ImageFormat::Jpeg | image::ImageFormat::Gif | image::ImageFormat::WebP)
                 );
                 if mime == "image/svg+xml" || (mime == "text/plain" && !raster) {
-                    let xml = svg_data(&data, MAX_NESTED_SVG_BYTES.saturating_sub(NESTED_SVG_BYTES.get()).min(MAX_SVG_BYTES))?;
+                    let xml = svg_text(&data, MAX_NESTED_SVG_BYTES.saturating_sub(NESTED_SVG_BYTES.get()).min(MAX_SVG_BYTES))?;
                     charge_nested_svg(xml.len())?;
-                    svg_preflight(&xml)?;
-                    default_data(mime, Arc::new(xml.into_owned()), options)
+                    default_data(mime, Arc::new(xml.into_owned().into_bytes()), options)
                 } else {
                     default_data(mime, data, options)
                 }
@@ -297,65 +294,24 @@ fn charge_nested_svg(n: usize) -> Option<()> {
     Some(())
 }
 
-/// Enforce the encoded-size cap, gunzip SVGZ data to at most `limit` bytes, and return the decoded content as an owned or borrowed `Cow`.
-fn svg_data(bytes: &[u8], limit: usize) -> Option<std::borrow::Cow<'_, [u8]>> {
-    use std::io::Read;
-
-    if bytes.len() > MAX_SVG_BYTES {
-        return None;
-    }
-    if bytes.starts_with(&[0x1f, 0x8b]) {
-        let mut xml = Vec::new();
-        flate2::read::GzDecoder::new(bytes).take(limit as u64 + 1).read_to_end(&mut xml).ok()?;
-        (xml.len() <= limit).then_some(std::borrow::Cow::Owned(xml))
-    } else {
-        Some(std::borrow::Cow::Borrowed(bytes))
-    }
-}
-
-/// Require UTF-8, bounded XML events, balanced tags and depth at most 64; reject internal DTD subsets while accepting ordinary external doctypes.
-fn svg_preflight(bytes: &[u8]) -> Option<()> {
-    use quick_xml::events::Event;
-
-    let text = std::str::from_utf8(bytes).ok()?;
-    let mut reader = quick_xml::Reader::from_str(text);
-    let mut depth = 0usize;
-    for _ in 0..MAX_SVG_EVENTS {
-        match reader.read_event().ok()? {
-            Event::Start(_) => {
-                depth += 1;
-                if depth > MAX_SVG_DEPTH {
-                    return None;
-                }
-            }
-            Event::Empty(_) if depth >= MAX_SVG_DEPTH => return None,
-            Event::End(_) => depth = depth.checked_sub(1)?,
-            Event::DocType(doctype) => {
-                // A '[' inside a quoted external identifier is not an internal subset.
-                let mut quote = None;
-                for &byte in doctype.as_ref() {
-                    match (quote, byte) {
-                        (Some(q), b) if b == q => quote = None,
-                        (None, b'\'' | b'"') => quote = Some(byte),
-                        (None, b'[') => return None,
-                        _ => {}
-                    }
-                }
-            }
-            Event::Eof => return (depth == 0).then_some(()),
-            _ => {}
-        }
-    }
-    None
+/// Decode and structurally check SVG/SVGZ through the shared bounded parser.
+fn svg_text(bytes: &[u8], limit: usize) -> Option<std::borrow::Cow<'_, str>> {
+    let limits = craft_svg::preflight::Limits {
+        bytes: limit.min(MAX_SVG_BYTES),
+        depth: MAX_SVG_DEPTH,
+        xml_nodes: u32::try_from(MAX_SVG_EVENTS).ok()?,
+        refuse_entity_markup: true,
+        ..Default::default()
+    };
+    craft_svg::preflight::text(bytes, &limits).ok()
 }
 
 /// Parse an SVG with at most 16 MiB encoded/decoded data, 100,000 XML events and
 /// 64 nested elements. Reject internal DTD subsets before recursive conversion.
 pub fn svg_tree(bytes: &[u8]) -> Option<usvg::Tree> {
-    let xml = svg_data(bytes, MAX_SVG_BYTES)?;
-    svg_preflight(&xml)?;
+    let xml = svg_text(bytes, MAX_SVG_BYTES)?;
     NESTED_SVG_BYTES.set(0);
-    usvg::Tree::from_data(&xml, svg_options()).ok()
+    usvg::Tree::from_data(xml.as_bytes(), svg_options()).ok()
 }
 
 /// Natural size of a placed graphic in points: rasters at 72 ppi (one pixel per point), PSDs

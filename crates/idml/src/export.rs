@@ -1,7 +1,6 @@
 //! Document → IDML package.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::io::Write;
 
 use designcraft_color::{Color, ColorType, GradientKind, SwatchValue, swatch};
 use designcraft_doc::{
@@ -12,7 +11,7 @@ use designcraft_geom::{Affine, PathData};
 
 use crate::names::{self, CHAR_BUILTINS, OBJECT_BUILTINS, PARA_BUILTINS, escape_id, num, pt};
 use crate::xml::{El, Node, document, document_with_pi};
-use crate::{DOM_VERSION, MIMETYPE, base64_encode};
+use crate::{DOM_VERSION, base64_encode};
 
 mod common;
 mod designmap;
@@ -71,22 +70,7 @@ pub fn export_idml_with(doc: &Document, opts: &ExportOptions) -> Vec<u8> {
 }
 
 fn zip_parts(parts: &[(String, Vec<u8>)]) -> Vec<u8> {
-    use zip::write::SimpleFileOptions;
-    let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
-    let stored = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
-    let deflated = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
-    let mut write = || -> zip::result::ZipResult<()> {
-        w.start_file("mimetype", stored)?;
-        w.write_all(MIMETYPE.as_bytes())?;
-        for (name, data) in parts {
-            w.start_file(name.as_str(), deflated)?;
-            w.write_all(data)?;
-        }
-        Ok(())
-    };
-    // Writing into memory cannot fail except on internal errors; return what we have then.
-    let _ = write();
-    w.finish().map(|c| c.into_inner()).unwrap_or_default()
+    craft_idml::write_package(parts).unwrap_or_default()
 }
 
 struct Ex<'a> {

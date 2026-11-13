@@ -9,14 +9,14 @@ description = "DesignCraft placed-graphic decoding: raster formats (PNG, JPEG, G
 workspace = true
 
 [dependencies]
+craft-eps = { workspace = true }
+craft-svg = { workspace = true }
 designcraft-color = { workspace = true }
 designcraft-fonts = { workspace = true }
 image = { workspace = true }
 tiff = { workspace = true }
 resvg = { workspace = true }
 skrifa = { workspace = true }
-quick-xml = { workspace = true }
-flate2 = "1"
 log = { workspace = true }
 craft-cms = { workspace = true }
 zune-core = { version = "0.5", default-features = false }
@@ -24,3 +24,4 @@ zune-jpeg = "0.5"
 
 [dev-dependencies]
 designcraft-fonts = { workspace = true, features = ["testing"] }
+flate2 = "1"

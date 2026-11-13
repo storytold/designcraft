@@ -10,35 +10,22 @@ use super::{
 /// The viewBox size of an SVG whose root has a viewBox but no width/height (percentages count as
 /// none): InDesign places such a file at one viewBox unit to the point.
 fn svg_viewbox_size(data: &[u8]) -> Option<(f64, f64)> {
-    use quick_xml::events::Event;
     if data.iter().find(|b| !b.is_ascii_whitespace()) != Some(&b'<') {
         return None;
     }
-    let mut r = quick_xml::Reader::from_reader(data);
-    let mut buf = Vec::new();
-    let root = loop {
-        match r.read_event_into(&mut buf).ok()? {
-            Event::Start(e) | Event::Empty(e) => break e.into_owned(),
-            Event::Eof => return None,
-            _ => buf.clear(),
-        }
-    };
-    if root.local_name().as_ref() != b"svg" {
+    let mut options = craft_xml::Options::default();
+    options.limits.max_input = 16 << 20;
+    let root = options.parse(data).ok()?;
+    if root.local() != "svg" {
         return None;
     }
-    let attr = |name: &[u8]| {
-        root.attributes()
-            .with_checks(false)
-            .flatten()
-            .find(|a| a.key.as_ref() == name)
-            .and_then(|a| a.normalized_value(quick_xml::XmlVersion::Implicit1_0).ok().map(|v| v.to_string()))
-    };
-    let absolute = |name: &[u8]| attr(name).is_some_and(|v| !v.trim().ends_with('%'));
-    if absolute(b"width") || absolute(b"height") {
+    let attr = |name: &str| root.attr(name).map(ToString::to_string);
+    let absolute = |name: &str| attr(name).is_some_and(|v| !v.trim().ends_with('%'));
+    if absolute("width") || absolute("height") {
         return None;
     }
     let vb: Vec<f64> =
-        attr(b"viewBox")?.split(|c: char| c.is_whitespace() || c == ',').filter(|v| !v.is_empty()).filter_map(|v| v.parse().ok()).collect();
+        attr("viewBox")?.split(|c: char| c.is_whitespace() || c == ',').filter(|v| !v.is_empty()).filter_map(|v| v.parse().ok()).collect();
     match vb[..] {
         [_, _, w, h] if w.is_finite() && h.is_finite() && w > 0.0 && h > 0.0 => Some((w, h)),
         _ => None,
