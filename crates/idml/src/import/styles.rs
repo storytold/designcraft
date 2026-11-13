@@ -59,7 +59,8 @@ impl<'r> Importer<'r> {
             self.char_names.insert(id.clone(), n);
         }
         for (id, e) in &objects {
-            let n = names::style_name_in(OBJECT_BUILTINS, e.get("Name").unwrap_or(""));
+            let values = craft_idml::model::ObjectStyleValues::from_el(&crate::xml::to_craft(e));
+            let n = names::style_name_in(OBJECT_BUILTINS, values.name.as_deref().unwrap_or(""));
             self.object_names.insert(id.clone(), n);
             self.object_els.insert(id.clone(), e.clone());
         }
@@ -168,28 +169,23 @@ impl<'r> Importer<'r> {
             }
         }
         for (_, e) in &objects {
-            let name = names::style_name_in(OBJECT_BUILTINS, e.get("Name").unwrap_or(""));
-            let based_on = e.prop("BasedOn").map(|b| {
+            let values = craft_idml::model::ObjectStyleValues::from_el(&crate::xml::to_craft(e));
+            let name = names::style_name_in(OBJECT_BUILTINS, values.name.as_deref().unwrap_or(""));
+            let based_on = values.based_on.map(|b| {
                 self.object_names
                     .get(&b)
                     .cloned()
                     .unwrap_or_else(|| names::style_name_in(OBJECT_BUILTINS, &unescape_id(b.trim_start_matches("ObjectStyle/"))))
             });
             let based_on = based_on.filter(|b| *b != designcraft_doc::NO_OBJECT_STYLE && *b != name);
-            let enabled = |k: &str, attr: &str| match e.get(k) {
-                Some(v) => v == "true",
-                None => e.get(attr).is_some(),
-            };
-            let fill = enabled("EnableFill", "FillColor").then(|| {
-                let sw = e.get("FillColor").map(|r| self.swatch_ref(r)).unwrap_or_else(|| swatch::NONE.into());
-                Fill { swatch: sw, tint: tint(e.num("FillTint")).unwrap_or(1.0), ..Fill::none() }
+            let fill = values.fill_enabled.then(|| {
+                let sw = values.fill_color.as_deref().map(|r| self.swatch_ref(r)).unwrap_or_else(|| swatch::NONE.into());
+                Fill { swatch: sw, tint: tint(values.fill_tint).unwrap_or(1.0), ..Fill::none() }
             });
-            let stroke = enabled("EnableStroke", "StrokeColor").then(|| self.stroke_from(e, None));
-            let paragraph_style = enabled("EnableParagraphStyle", "AppliedParagraphStyle")
-                .then(|| e.get("AppliedParagraphStyle").map(|r| self.para_style_ref(r)))
-                .flatten();
-            let text_frame = if e.get("EnableTextFrameGeneralOptions") == Some("true") {
-                e.find("TextFramePreference").map(|t| self.frame_options(&[t]))
+            let stroke = values.stroke_enabled.then(|| self.stroke_from(e, None));
+            let paragraph_style = values.paragraph_style_enabled.then(|| values.paragraph_style.as_deref().map(|r| self.para_style_ref(r))).flatten();
+            let text_frame = if values.text_frame_general_options {
+                values.text_frame_preference.map(crate::xml::from_craft).map(|preference| self.frame_options(&[&preference]))
             } else {
                 None
             };
