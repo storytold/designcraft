@@ -83,12 +83,12 @@ impl<'r> Importer<'r> {
         // at each level a per-corner attribute wins over the legacy all-corners one.
         if tag != "Group" {
             let levels: Vec<&El> = std::iter::once(e).chain(self.object_style_chain(e)).collect();
-            let corner =
-                |n: &str, what: &str| levels.iter().find_map(|s| s.get(&format!("{n}Corner{what}")).or_else(|| s.get(&format!("Corner{what}"))));
+            let corner_option = |n: &str| levels.iter().find_map(|s| craft_idml::model::Values::of(&crate::xml::to_craft(s)).corner_values(n).option);
+            let corner_radius = |n: &str| levels.iter().find_map(|s| craft_idml::model::Values::of(&crate::xml::to_craft(s)).corner_values(n).radius);
             let mut corners = CornerOptions::default();
             for (i, n) in crate::export::corner_names(&it.path).iter().enumerate() {
-                let shape = corner(n, "Option").map(names::corner_in).unwrap_or_default();
-                let size = corner(n, "Radius").and_then(|v| v.trim().parse::<f64>().ok()).filter(|v| v.is_finite()).unwrap_or(INDESIGN_CORNER_SIZE);
+                let shape = corner_option(n).as_deref().map(names::corner_in).unwrap_or_default();
+                let size = corner_radius(n).unwrap_or(INDESIGN_CORNER_SIZE);
                 corners.corners[i] = Corner { shape, size };
             }
             if !corners.is_none() {
