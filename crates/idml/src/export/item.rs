@@ -1,4 +1,4 @@
-use super::common::{affine_s, bool_s, p, pct, uid, with_props};
+use super::common::{affine_s, bool_s, pct, uid, with_props};
 use super::{
     Affine, ColumnsKind, Content, El, Ex, HashSet, Item, Node, OBJECT_BUILTINS, PathData, Shape, TextFrameOptions, base64_encode, names, num, pt,
 };
@@ -347,40 +347,36 @@ fn text_wrap_pref(w: &designcraft_doc::TextWrap) -> El {
 }
 
 pub(super) fn text_frame_pref(o: &TextFrameOptions, rule_color: &str) -> El {
-    let mut inset = El::new("InsetSpacing").attr("type", "list");
-    for v in o.inset {
-        inset.push(p("ListItem", "unit", num(v)));
-    }
-    let el = El::new("TextFramePreference")
-        .attr("TextColumnCount", o.columns.max(1))
-        .attr("TextColumnGutter", num(o.gutter))
-        .attr("UseFixedColumnWidth", bool_s(o.columns_kind == ColumnsKind::FixedWidth))
-        .attr("UseFlexibleColumnWidth", bool_s(o.columns_kind == ColumnsKind::FlexibleWidth))
-        .attr("VerticalBalanceColumns", bool_s(o.balance_columns))
-        .attr("FirstBaselineOffset", names::first_baseline_out(o.first_baseline))
-        .attr("MinimumFirstBaselineOffset", num(o.first_baseline_min))
-        .attr("VerticalJustification", names::vj_out(o.vertical_justification))
-        .attr("VerticalThreshold", num(o.vj_paragraph_spacing_limit))
-        .attr("IgnoreWrap", bool_s(o.ignore_wrap))
-        .attr("AutoSizingType", names::auto_size_out(o.auto_size))
-        .attr("AutoSizingReferencePoint", names::REF_POINTS[(o.auto_size_ref as usize).min(8)])
-        .attr("UseMinimumHeightForAutoSizing", bool_s(o.auto_size_use_min_height))
-        .attr("MinimumHeightForAutoSizing", num(o.auto_size_min_height))
-        .attr("UseMinimumWidthForAutoSizing", bool_s(o.auto_size_use_min_width))
-        .attr("MinimumWidthForAutoSizing", num(o.auto_size_min_width))
-        .attr("UseNoLineBreaksForAutoSizing", bool_s(o.auto_size_no_line_breaks));
-    let el = if o.column_width > 0.0 { el.attr("TextColumnFixedWidth", num(o.column_width)) } else { el };
-    // Written on every frame: on import a frame takes any value it lacks from its object style.
-    let el = el
-        .attr("ColumnRuleOverride", bool_s(o.column_rule))
-        .attr("ColumnRuleStrokeWidth", num(o.column_rule_weight))
-        .attr("ColumnRuleStrokeColor", rule_color)
-        .attr("ColumnRuleStrokeTint", num(f64::from(o.column_rule_tint) * 100.0))
-        .attr("ColumnRuleOffset", num(o.column_rule_offset))
-        .attr("ColumnRuleTopInset", num(o.column_rule_top_inset))
-        .attr("ColumnRuleBottomInset", num(o.column_rule_bottom_inset))
-        .attr("ColumnRuleInsetChainOverride", bool_s(o.column_rule_top_inset == o.column_rule_bottom_inset));
-    with_props(el, vec![inset])
+    crate::xml::from_craft(
+        craft_idml::model::TextFramePreferences {
+            column_count: Some(f64::from(o.columns.max(1))),
+            column_gutter: Some(o.gutter),
+            fixed_column_width: (o.column_width > 0.0).then_some(o.column_width),
+            fixed_width: o.columns_kind == ColumnsKind::FixedWidth,
+            flexible_width: o.columns_kind == ColumnsKind::FlexibleWidth,
+            balance_columns: o.balance_columns,
+            inset: Some(o.inset),
+            vertical_justification: Some(names::vj_out(o.vertical_justification).into()),
+            vertical_threshold: Some(o.vj_paragraph_spacing_limit),
+            first_baseline: Some(names::first_baseline_out(o.first_baseline).into()),
+            minimum_first_baseline: Some(o.first_baseline_min),
+            ignore_wrap: o.ignore_wrap,
+            auto_sizing_type: Some(names::auto_size_out(o.auto_size).into()),
+            auto_sizing_reference: Some(names::REF_POINTS[(o.auto_size_ref as usize).min(8)].into()),
+            use_minimum_height: o.auto_size_use_min_height,
+            minimum_height: Some(o.auto_size_min_height),
+            use_minimum_width: o.auto_size_use_min_width,
+            minimum_width: Some(o.auto_size_min_width),
+            no_line_breaks: o.auto_size_no_line_breaks,
+            column_rule_override: o.column_rule,
+            column_rule_width: Some(o.column_rule_weight),
+            column_rule_tint: Some(f64::from(o.column_rule_tint) * 100.0),
+            column_rule_offset: Some(o.column_rule_offset),
+            column_rule_top_inset: Some(o.column_rule_top_inset),
+            column_rule_bottom_inset: Some(o.column_rule_bottom_inset),
+        }
+        .to_el(rule_color),
+    )
 }
 
 /// `<ClippingPathSettings>` with the outline (graphic space is the image's inner space, whose
