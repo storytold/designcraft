@@ -181,6 +181,19 @@ impl<'r> Importer<'r> {
             }
         }
         self.read_content(e, tag, id, &mut it);
+        // A text frame drawn as a slightly slanted rectangle carries the slant in its transform:
+        // its text is set in the rectangle and slants with the frame, instead of being cut by
+        // the sloped edges as in a shaped frame (#2615).
+        if tag == "TextFrame"
+            && let Some((rect, slant)) = unslant_text_frame_path(&it.path)
+        {
+            let back = slant.inverse();
+            it.path = rect;
+            it.xf *= slant;
+            if let Some(p) = &mut it.wrap.path {
+                p.transform(back);
+            }
+        }
         Some(it)
     }
 
@@ -417,6 +430,51 @@ fn clipping_path(g: &El, to_graphic: Affine) -> Option<Arc<designcraft_doc::Clip
     c.source_name = cs.get("AppliedPathName").filter(|n| *n != "$ID/").unwrap_or("").to_string();
     c.source_index = cs.num("Index").filter(|v| v.is_finite()).map_or(-1, |v| v.clamp(-1.0, i32::MAX as f64) as i32);
     Some(Arc::new(c))
+}
+
+/// Largest slope (1 in 20, about 3°) of a slanted rectangle's edges that [`unslant_text_frame_path`]
+/// moves into the transform; a frame slanted more stays a shaped frame.
+const MAX_FRAME_SLANT: f64 = 0.05;
+
+/// For a text frame path that is one closed parallelogram of four corner points, each edge within
+/// [`MAX_FRAME_SLANT`] of horizontal or vertical but not all axis-aligned: the axis-aligned
+/// rectangle with the same centre, width and height (anchors in the same order), and the slant
+/// that maps it onto the path. None for any other path.
+fn unslant_text_frame_path(path: &PathData) -> Option<(PathData, Affine)> {
+    let [sp] = path.subpaths.as_slice() else { return None };
+    let [p0, p1, p2, p3] = sp.anchors.as_slice() else { return None };
+    let pts = [p0, p1, p2, p3];
+    if !sp.closed || pts.iter().any(|a| a.h_in != a.p || a.h_out != a.p || !(a.p.x.is_finite() && a.p.y.is_finite())) {
+        return None;
+    }
+    let (e1, e2) = (p1.p - p0.p, p3.p - p0.p);
+    // A parallelogram: the fourth corner is where the two edges from the first one lead.
+    let size = e1.hypot().max(e2.hypot());
+    if !size.is_finite() || ((p0.p + e1 + e2) - p2.p).hypot() > size * 1e-9 {
+        return None;
+    }
+    let (h, v) = if e1.x.abs() >= e1.y.abs() { (e1, e2) } else { (e2, e1) };
+    // Edge directions with positive width and height.
+    let h = if h.x < 0.0 { -h } else { h };
+    let v = if v.y < 0.0 { -v } else { v };
+    let (w, ht) = (h.x, v.y);
+    let (sy, sx) = (h.y / w, v.x / ht);
+    if !(w > 0.0 && ht > 0.0 && sy.abs() <= MAX_FRAME_SLANT && sx.abs() <= MAX_FRAME_SLANT) || (sy == 0.0 && sx == 0.0) {
+        return None;
+    }
+    let c = p0.p.midpoint(p2.p).to_vec2();
+    let slant = Affine::translate(c) * Affine::new([1.0, sy, sx, 1.0, 0.0, 0.0]) * Affine::translate(-c);
+    // Unslanted corners, snapped to the rectangle's edges so it is exactly axis-aligned.
+    let mut rect = path.transformed(slant.inverse());
+    for sp in &mut rect.subpaths {
+        for a in &mut sp.anchors {
+            let x = if a.p.x < c.x { c.x - w / 2.0 } else { c.x + w / 2.0 };
+            let y = if a.p.y < c.y { c.y - ht / 2.0 } else { c.y + ht / 2.0 };
+            a.p = Point::new(x, y);
+            (a.h_in, a.h_out) = (a.p, a.p);
+        }
+    }
+    Some((rect, slant))
 }
 
 fn path_of(pg: &El) -> PathData {

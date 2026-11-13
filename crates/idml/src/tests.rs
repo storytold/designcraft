@@ -660,6 +660,43 @@ fn absent_item_and_document_attributes_take_indesign_defaults() {
     }
 }
 
+/// #2615: a text frame whose path is a slightly slanted rectangle (here its top and bottom drop
+/// 2.09 pt across 207.75 pt) is imported as a rectangle with the slant in its transform. Its text
+/// starts at the column edge and a heading that fits stays on one line, instead of the sloped top
+/// edge cutting the first lines as in a shaped frame.
+#[test]
+fn slightly_slanted_text_frame_sets_its_text_in_the_rectangle() {
+    let corners = [(-136.5, -74.69600535168195), (-136.5, 93.6875), (71.24999999999999, 91.6022553516819), (71.24999999999999, -76.78125000000001)];
+    let pts: String =
+        corners.iter().map(|(x, y)| format!(r#"<PathPointType Anchor="{x} {y}" LeftDirection="{x} {y}" RightDirection="{x} {y}"/>"#)).collect();
+    let body = "Body text follows the heading and fills a few more lines of the frame so that the story has more than one paragraph.";
+    let designmap = format!(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Document xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging" DOMVersion="16.0" Self="d">
+<Story Self="s1"><ParagraphStyleRange><CharacterStyleRange><Content>Results at a glance</Content><Br/><Content>{body}</Content></CharacterStyleRange></ParagraphStyleRange></Story>
+<Spread Self="sp1"><Page Self="p1"/>
+<TextFrame Self="tf" ParentStory="s1" ItemTransform="1 0 0 1 300 300"><Properties><PathGeometry><GeometryPathType PathOpen="false"><PathPointArray>{pts}</PathPointArray></GeometryPathType></PathGeometry></Properties></TextFrame>
+</Spread>
+</Document>"#
+    );
+    let d = import_idml_with(&zip_files(&[("designmap.xml", &designmap)]), &|_| None).unwrap();
+    let it = &d.spreads[0].items[0];
+    // The frame is where InDesign drew it: its corners on the spread are unchanged.
+    let anchors = &it.path.subpaths[0].anchors;
+    for (a, &(x, y)) in anchors.iter().zip(&corners) {
+        let p = it.xf * a.p;
+        assert!((p.x - (x + 300.0)).abs() < 1e-9 && (p.y - (y + 300.0)).abs() < 1e-9, "{p:?} vs {x} {y}");
+    }
+    let sid = it.text_frame().unwrap().story;
+    let cs = designcraft_compose::compose_story(&d, sid, &Default::default());
+    let lines: Vec<_> = cs.frames[0].lines.iter().collect();
+    assert!(lines.len() >= 3, "{} lines", lines.len());
+    let area = it.text_area();
+    assert!((lines[0].x0 - area.x0).abs() < 1e-9 && (lines[0].x1 - area.x1).abs() < 1e-9, "first line {}..{} in {area:?}", lines[0].x0, lines[0].x1);
+    assert_eq!(lines.iter().filter(|l| l.para == 0).count(), 1, "the heading fits on one line");
+    assert!(lines.iter().all(|l| (l.x0 - area.x0).abs() < 1e-9), "every line starts at the column edge");
+}
+
 /// InDesign: a break character ends its paragraph (`<Br/>` with a ParagraphBreakType closes the
 /// range); the text after it is a paragraph with its own style, set on the next page of the
 /// break's parity.
