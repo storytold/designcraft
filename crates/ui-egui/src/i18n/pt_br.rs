@@ -1111,7 +1111,6 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Export PDF", "Exportar PDF"),
     ("Standard", "Padrão"),
     ("Standard:", "Padrão:"),
-    ("Compress images", "Compactar imagens"),
     ("Flattener preset", "Predefinição de achatamento"),
     ("Include document bleed", "Incluir sangria do documento"),
     ("Crop Marks", "Marcas de corte"),

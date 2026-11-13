@@ -25,6 +25,7 @@ use krilla::paint::{Fill, FillRule, LinearGradient, RadialGradient, SpreadMethod
 use krilla::surface::Surface;
 use krilla::tagging::{Artifact, ArtifactType, ContentTag, Identifier, Tag, TagGroup, TagTree};
 
+use crate::color_out::ColorOut;
 use crate::{ExportReport, PdfError, PdfOptions, Result, Standard};
 
 mod booklet;
@@ -71,6 +72,8 @@ pub(crate) struct Exporter<'a> {
     pub warnings: Vec<String>,
     drawing_items: Vec<designcraft_doc::ItemId>,
     images: HashMap<AssetId, Option<Image>>,
+    /// Each raster asset's narrowest placed width in points (see [`images::placed_widths`]).
+    placed_widths: HashMap<AssetId, f64>,
     // Immutable export options (including rgb_only) make bytes the complete conversion key.
     // PDF-page/SVG/media routing precedes this path. Failures remain per AssetId.
     images_by_content: ImageContentCache,
@@ -93,6 +96,8 @@ pub(crate) struct Exporter<'a> {
     pub reverse_cmaps: HashMap<u32, Arc<HashMap<u32, char>>>,
     /// Convert CMYK to RGB (PDF/A: krilla needs a CMYK output profile we don't ship yet).
     pub rgb_only: bool,
+    /// Output: colours and images go into this destination CMYK.
+    pub(crate) to_cmyk: Option<Arc<crate::color_out::CmykConverter>>,
     /// Tagged PDF: the structure in reading order (stories gather their frames' content).
     tags: Vec<TagEntry>,
     story_tags: HashMap<designcraft_doc::StoryId, Vec<Identifier>>,

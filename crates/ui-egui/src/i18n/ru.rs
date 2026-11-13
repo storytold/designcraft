@@ -1675,7 +1675,6 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Standard", "Стандарт"),
     ("Standard:", "Стандарт:"),
     ("Tagged PDF", "PDF с тегами"),
-    ("Compress images", "Сжимать изображения"),
     ("Compression", "Сжатие"),
     ("Column Rules", "Линии между колонками"),
     ("Insert Column Rule", "Вставить линию между колонками"),

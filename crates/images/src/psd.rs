@@ -79,8 +79,6 @@ impl Mode {
     }
 }
 
-/// The merged composite as straight RGBA8, `None` when the file is damaged or unsupported (32-bit,
-/// Multichannel, ZIP-compressed composite).
 /// Whether the header's depth, channel count and size are all within what the decoder supports.
 fn header_in_range(mode: Mode, depth: u16, channels: usize, (w, h): (u32, u32), max_side: u32) -> bool {
     let depth_ok = match mode {
@@ -91,7 +89,37 @@ fn header_in_range(mode: Mode, depth: u16, channels: usize, (w, h): (u32, u32), 
     (1..=56).contains(&channels) && channels >= mode.colour_channels() && (1..=max_side).contains(&w) && (1..=max_side).contains(&h) && depth_ok
 }
 
+/// The merged composite as straight RGBA8, `None` when the file is damaged or unsupported (32-bit,
+/// Multichannel, ZIP-compressed composite).
 pub(crate) fn decode(bytes: &[u8]) -> Option<image::RgbaImage> {
+    match composite(bytes, false)? {
+        Composite::Display(img) => Some(img),
+        Composite::Inks(_) => None,
+    }
+}
+
+/// A CMYK document's composite as its ink values (0 = no ink) with straight alpha, as [`decode`]
+/// would convert them for display; `None` for other modes or a damaged file.
+pub(crate) fn decode_cmyk(bytes: &[u8]) -> Option<CmykRaster> {
+    match composite(bytes, true)? {
+        Composite::Inks(r) => Some(r),
+        Composite::Display(_) => None,
+    }
+}
+
+/// Whether the file is a Photoshop document (or PSB) in CMYK mode, read from its header.
+pub(crate) fn is_cmyk(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"8BPS") && bytes.get(24..26) == Some(&[0, 4])
+}
+
+enum Composite {
+    Display(image::RgbaImage),
+    Inks(CmykRaster),
+}
+
+/// The composite for display, or with `inks` a CMYK document's ink values (`None` for any other
+/// mode then).
+fn composite(bytes: &[u8], inks: bool) -> Option<Composite> {
     let mut r = Reader { b: bytes };
     if r.take(4)? != b"8BPS" {
         return None;
@@ -106,6 +134,9 @@ pub(crate) fn decode(bytes: &[u8]) -> Option<image::RgbaImage> {
     let (h, w) = (r.u32()?, r.u32()?);
     let depth = r.u16()?;
     let mode = Mode::parse(r.u16()?)?;
+    if inks && mode != Mode::Cmyk {
+        return None;
+    }
     let max_side = if psb { 300_000 } else { 30_000 };
     let colours = mode.colour_channels();
     if !header_in_range(mode, depth, channels, (w, h), max_side) {
@@ -184,7 +215,10 @@ pub(crate) fn decode(bytes: &[u8]) -> Option<image::RgbaImage> {
     if mode == Mode::Cmyk {
         let alpha = transparency.then_some(alpha);
         let raster = CmykRaster { width: w, height: h, cmyk: rgba, alpha };
-        return to_display_rgba(Pixels::Cmyk(raster), icc, &DisplayColour::active());
+        if inks {
+            return Some(Composite::Inks(raster));
+        }
+        return to_display_rgba(Pixels::Cmyk(raster), icc, &DisplayColour::active()).map(Composite::Display);
     }
     let img = image::RgbaImage::from_raw(w, h, rgba)?;
     match icc {
@@ -192,6 +226,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Option<image::RgbaImage> {
         Some(icc) => to_display_rgba(Pixels::Rgb(img), Some(icc), &DisplayColour::active()),
         None => Some(img),
     }
+    .map(Composite::Display)
 }
 
 /// The ICC profile in the image resources section (resource 1039), if any.

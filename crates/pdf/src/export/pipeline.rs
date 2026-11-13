@@ -145,10 +145,14 @@ pub(crate) fn mark_start(opts: &PdfOptions, bleed: [f64; 4]) -> f64 {
 }
 
 /// Whether an export is CMYK print output: transparency blends in CMYK, in the document's CMYK
-/// working space (which PDF/X also carries as its output intent). True when the document blends
-/// in CMYK, and always in PDF/X; PDF/A exports are RGB.
+/// working space or the Output destination when converting (which PDF/X also carries as its
+/// output intent). True when the document blends in CMYK, in PDF/X, and with an Output colour
+/// conversion; PDF/A exports are RGB.
 pub fn print_color(doc: &Document, opts: &PdfOptions) -> bool {
-    opts.standard != Standard::PdfA2b && (doc.settings.blend_space == designcraft_doc::BlendSpace::Cmyk || opts.standard.is_pdfx())
+    opts.standard != Standard::PdfA2b
+        && (doc.settings.blend_space == designcraft_doc::BlendSpace::Cmyk
+            || opts.standard.is_pdfx()
+            || opts.output.conversion != crate::ColorConversion::None)
 }
 
 /// Like [`export_pdf`], also returning warnings about approximated or dropped features.
@@ -186,9 +190,22 @@ fn export_pdf_with_report_inner(doc: &Document, cache: &Cache, opts: &PdfOptions
     };
     let configuration = write::configuration(version, archival)?;
     let mut warnings = Vec::new();
+    // Output: colour conversion to a CMYK destination; PDF/A stays RGB.
+    let to_cmyk = match opts.standard {
+        Standard::PdfA2b if opts.output.conversion != crate::ColorConversion::None => {
+            warnings.push("PDF/A: Output colour conversion was left out (PDF/A exports are RGB)".to_string());
+            None
+        }
+        Standard::PdfA2b => None,
+        _ => crate::color_out::CmykConverter::for_output(&opts.output)?,
+    };
     let base = if print_color(doc, opts) {
-        // An output intent only for PDF/X, as in InDesign.
-        let (settings, warning) = crate::pdfx::print_settings(opts.standard.is_pdfx())?;
+        // An output intent only for PDF/X, as in InDesign; a converting export blends in, and
+        // names as its output intent, the destination.
+        let (settings, warning) = match &to_cmyk {
+            Some(conv) => crate::pdfx::print_settings_with(conv.destination(), opts.standard.is_pdfx())?,
+            None => crate::pdfx::print_settings(opts.standard.is_pdfx())?,
+        };
         warnings.extend(warning);
         let pdfx_version = (opts.standard == Standard::PdfX4).then(|| "PDF/X-4".to_string());
         krilla::SerializeSettings { pdfx_version, ..settings }
@@ -213,6 +230,7 @@ fn export_pdf_with_report_inner(doc: &Document, cache: &Cache, opts: &PdfOptions
         warnings,
         images: HashMap::new(),
         images_by_content: ImageContentCache::default(),
+        placed_widths: super::images::placed_widths(doc, &opts.images),
         #[cfg(test)]
         image_conversions: 0,
         pdfs: HashMap::new(),
@@ -227,6 +245,7 @@ fn export_pdf_with_report_inner(doc: &Document, cache: &Cache, opts: &PdfOptions
         fonts: HashMap::new(),
         reverse_cmaps: HashMap::new(),
         rgb_only: archival.is_some(),
+        to_cmyk,
         tags: Vec::new(),
         story_tags: HashMap::new(),
         tag_story: None,

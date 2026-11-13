@@ -20,6 +20,10 @@ pub(super) struct ConvertedImage {
 pub(super) const CMYK_FALLBACK_WARNING: &str =
     "converted to RGB (a CMYK TIFF that is planar, has premultiplied alpha, uses other inks or is over 256 MiB)";
 
+/// An image Output colour conversion couldn't decode (or one past the decoding budget) goes in
+/// as it is.
+pub(super) const UNCONVERTED_WARNING: &str = "not converted to the Output destination (it couldn't be decoded for it), so it keeps its own colours";
+
 #[cfg(not(test))]
 pub(super) type ImageContentCache = HashMap<Arc<Vec<u8>>, ConvertedImage>;
 
@@ -156,41 +160,162 @@ pub(super) struct GreyImage {
 #[derive(Clone, Hash)]
 pub(super) struct CmykImage(pub(super) Arc<designcraft_images::CmykRaster>);
 
-/// A CMYK TIFF as a DeviceCMYK image. `None` when it can't be read as CMYK.
-pub(super) fn cmyk_tiff(data: &[u8], mode: RasterMode) -> Option<Image> {
-    let r = designcraft_images::decode_cmyk_tiff(data)?;
+/// A CMYK TIFF as a DeviceCMYK image (see [`cmyk_inks`]). `None` when it can't be read as CMYK.
+pub(super) fn cmyk_tiff(data: &[u8], mode: RasterMode, c: &Compression) -> Option<Image> {
+    cmyk_inks(designcraft_images::decode_cmyk_tiff(data)?, mode, c)
+}
+
+/// A CMYK Photoshop file as a DeviceCMYK image of its composite's inks (see [`cmyk_inks`]).
+/// `None` when it can't be read as CMYK.
+pub(super) fn cmyk_psd(data: &[u8], mode: RasterMode, c: &Compression) -> Option<Image> {
+    cmyk_inks(designcraft_images::decode_cmyk_psd(data)?, mode, c)
+}
+
+/// A placed raster's inks as a DeviceCMYK image: downsampled when the colour class asks for it,
+/// into the Output destination when it converts CMYK, then a CMYK JPEG at the class's own
+/// quality or lossless. The legacy `compress_images` switch never makes these JPEG: it kept
+/// their inks exact, and callers rely on that.
+fn cmyk_inks(r: designcraft_images::CmykRaster, mode: RasterMode, c: &Compression) -> Option<Image> {
+    let plan = c.plan(c.classes.color, true, (r.width, r.height));
+    let quality = plan.quality.filter(|_| c.classes.color.quality.is_some());
+    let conv = c.to_cmyk.as_deref().filter(|v| v.converts_cmyk());
+    cmyk_image(r, plan.size, quality, conv, mode)
+}
+
+/// A CMYK JPEG: passed through (its inks as they are) unless it is downsampled or converted into
+/// another CMYK destination; then decoded and written again, at the colour class's quality or
+/// lossless.
+fn cmyk_jpeg(data: &Arc<Vec<u8>>, mode: RasterMode, c: &Compression) -> Option<Image> {
+    let pass = || jpeg(data.clone().into(), || embedded_icc(data), mode);
+    let Some(px) = designcraft_images::pixel_size(data) else { return pass() };
+    let size = c.plan(c.classes.color, true, px).size;
+    let conv = c.to_cmyk.as_deref().filter(|v| v.converts_cmyk());
+    if size.is_none() && conv.is_none() {
+        return pass();
+    }
+    let decoded = if designcraft_images::too_large_to_decode(data) { None } else { designcraft_images::decode_cmyk_jpeg(data) };
+    let Some(r) = decoded else {
+        c.unconverted.set(conv.is_some());
+        return pass();
+    };
+    cmyk_image(r, size, c.classes.color.quality, conv, mode)
+}
+
+/// Ink values (working CMYK) as a DeviceCMYK image: resized to `size`, through `conv`, then a
+/// CMYK JPEG at `quality` when opaque, else lossless with its alpha. `None` when the channels
+/// don't match the size.
+fn cmyk_image(
+    mut r: designcraft_images::CmykRaster,
+    size: Option<(u32, u32)>,
+    quality: Option<u8>,
+    conv: Option<&crate::color_out::CmykConverter>,
+    mode: RasterMode,
+) -> Option<Image> {
     // krilla panics when the channel lengths don't match the size.
     let pixels = usize::try_from(r.width).ok()?.checked_mul(usize::try_from(r.height).ok()?)?;
     if r.cmyk.len() != pixels.checked_mul(4)? || r.alpha.as_ref().is_some_and(|a| a.len() != pixels) {
         return None;
     }
+    if let Some((w, h)) = size {
+        // Four 8-bit inks resample like RGBA; alpha like a grey image.
+        let cmyk = image::ImageBuffer::<image::Rgba<u8>, Vec<u8>>::from_raw(r.width, r.height, std::mem::take(&mut r.cmyk))?;
+        let alpha = match r.alpha.take() {
+            Some(a) => {
+                let a = image::ImageBuffer::<image::Luma<u8>, Vec<u8>>::from_raw(r.width, r.height, a)?;
+                Some(image::imageops::resize(&a, w, h, DOWNSAMPLE).into_raw())
+            }
+            None => None,
+        };
+        r = designcraft_images::CmykRaster { width: w, height: h, cmyk: image::imageops::resize(&cmyk, w, h, DOWNSAMPLE).into_raw(), alpha };
+    }
+    if let Some(conv) = conv {
+        r = conv.cmyk_raster(r);
+    }
+    if let Some(q) = quality
+        && r.alpha.is_none()
+        && let Some(buf) = encode_cmyk_jpeg(&r, q)
+        && let Some(img) = jpeg(buf.into(), || None, mode)
+    {
+        return Some(img);
+    }
     Image::from_custom(CmykImage(Arc::new(r)), mode.interpolate).ok()
+}
+
+/// Inks as a CMYK JPEG at `quality`. The encoder writes Adobe-inverted samples with Adobe's
+/// marker, so the PDF's Decode array turns them back. `None` past JPEG's 65 535-pixel sides, or
+/// when the inks don't fill the size.
+fn encode_cmyk_jpeg(r: &designcraft_images::CmykRaster, quality: u8) -> Option<Vec<u8>> {
+    let (w, h) = (u16::try_from(r.width).ok().filter(|w| *w > 0)?, u16::try_from(r.height).ok().filter(|h| *h > 0)?);
+    if r.cmyk.len() != usize::from(w).checked_mul(usize::from(h))?.checked_mul(4)? {
+        return None;
+    }
+    let mut buf = Vec::new();
+    jpeg_encoder::Encoder::new(&mut buf, quality.clamp(1, 100)).encode(&r.cmyk, w, h, jpeg_encoder::ColorType::Cmyk).ok()?;
+    Some(buf)
 }
 
 #[cfg(test)]
 thread_local! {
-    /// Rasters `recompress` has decoded on this thread.
-    static RECOMPRESS_DECODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Rasters `raster` has decoded on this thread.
+    static RASTER_DECODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// Opaque raster → JPEG (quality 90). `None` when the image has transparency, is too large or
-/// can't be decoded. With `tag_rgb`, the JPEG keeps the source's RGB profile, or gets sRGB.
-pub(super) fn recompress(data: &[u8], mode: RasterMode) -> Option<Image> {
-    if designcraft_images::too_large_to_decode(data) {
-        return None;
+/// The reference app's "Bicubic Downsampling".
+const DOWNSAMPLE: image::imageops::FilterType = image::imageops::FilterType::CatmullRom;
+
+/// Export PDF › Compression as it applies to one image.
+pub(super) struct Compression {
+    pub(super) classes: crate::ImageCompression,
+    /// `PdfOptions::compress_images`: JPEG quality 90 for classes without a quality of their own.
+    pub(super) legacy_jpeg: bool,
+    /// The image's narrowest placed width in points (`None`: not placed, so never downsampled).
+    pub(super) placed: Option<f64>,
+    /// Output: colour images go into this destination CMYK.
+    pub(super) to_cmyk: Option<Arc<crate::color_out::CmykConverter>>,
+    /// PDF/A: no CMYK raster goes in, a CMYK JPEG included.
+    pub(super) rgb_only: bool,
+    /// Set when an image to convert into `to_cmyk` went in unconverted (it couldn't be decoded,
+    /// or is past the decoding budget), for the export's warning.
+    pub(super) unconverted: std::cell::Cell<bool>,
+}
+
+/// How a raster goes into the PDF: resized to `size` when downsampling applies, and as JPEG at
+/// `quality` (`None` = lossless).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct RasterPlan {
+    pub(super) size: Option<(u32, u32)>,
+    pub(super) quality: Option<u8>,
+}
+
+impl Compression {
+    /// The plan for a raster of `px` pixels in `class`; `lossy` allows JPEG (not for monochrome).
+    pub(super) fn plan(&self, class: crate::ImageClass, lossy: bool, px: (u32, u32)) -> RasterPlan {
+        let quality = if lossy { class.quality.or(self.legacy_jpeg.then_some(90)).map(|q| q.clamp(1, 100)) } else { None };
+        let size = (|| {
+            let to = class.downsample_to.filter(|_| class.downsamples())?;
+            let placed = self.placed.filter(|w| w.is_finite() && *w > 1e-6)?;
+            let ppi = f64::from(px.0) / (placed / 72.0);
+            if !ppi.is_finite() || ppi <= class.above.max(to) {
+                return None;
+            }
+            let k = to / ppi;
+            let side = |n: u32| (f64::from(n) * k).round().clamp(1.0, f64::from(n)) as u32;
+            let (w, h) = (side(px.0), side(px.1));
+            (w < px.0 || h < px.1).then_some((w, h))
+        })();
+        RasterPlan { size, quality }
     }
-    #[cfg(test)]
-    {
-        RECOMPRESS_DECODES.with(|n| n.set(n.get() + 1));
-    }
-    let img = image::load_from_memory(data).ok()?;
-    if img.color().has_alpha() && img.to_rgba8().pixels().any(|p| p[3] < 255) {
-        return None;
-    }
+}
+
+/// Whether every pixel is black or white: a monochrome image (decoded to grey).
+fn is_mono(img: &image::DynamicImage) -> bool {
+    !img.color().has_alpha() && img.to_luma8().pixels().all(|p| p[0] == 0 || p[0] == 255)
+}
+
+/// `img` as JPEG at `quality`: grey stays grey.
+fn encode_jpeg(img: &image::DynamicImage, grey: bool, quality: u8) -> Option<Vec<u8>> {
     let mut buf = Vec::new();
-    let enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 90);
-    // A grey image stays a grey JPEG (#1426).
-    let grey = !img.color().has_color();
+    let enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, quality);
     if grey {
         let l = img.to_luma8();
         image::ImageEncoder::write_image(enc, l.as_raw(), l.width(), l.height(), image::ExtendedColorType::L8).ok()?;
@@ -198,7 +323,214 @@ pub(super) fn recompress(data: &[u8], mode: RasterMode) -> Option<Image> {
         let rgb = img.to_rgb8();
         image::ImageEncoder::write_image(enc, rgb.as_raw(), rgb.width(), rgb.height(), image::ExtendedColorType::Rgb8).ok()?;
     }
-    jpeg(buf.into(), || embedded_icc(data).filter(|p| if grey { is_grey_icc(p) } else { is_rgb_icc(p) }), mode)
+    Some(buf)
+}
+
+/// `img` as PNG with `icc`: a downsampled image kept lossless goes in through [`lossless`] as a
+/// PNG of the source's channels would.
+fn encode_png(img: &image::DynamicImage, grey: bool, icc: Option<Vec<u8>>) -> Option<Vec<u8>> {
+    use image::ImageEncoder;
+    let mut buf = Vec::new();
+    let mut enc = image::codecs::png::PngEncoder::new(&mut buf);
+    if let Some(icc) = icc {
+        // A profile the encoder can't take: no PNG, so the pixels aren't left untagged.
+        enc.set_icc_profile(icc).ok()?;
+    }
+    if grey {
+        let la = img.to_luma_alpha8();
+        enc.write_image(la.as_raw(), la.width(), la.height(), image::ExtendedColorType::La8).ok()?;
+    } else {
+        let rgba = img.to_rgba8();
+        enc.write_image(rgba.as_raw(), rgba.width(), rgba.height(), image::ExtendedColorType::Rgba8).ok()?;
+    }
+    Some(buf)
+}
+
+/// A raster other than a CMYK TIFF per Compression and Output: downsampled when its class asks
+/// for it, converted into the Output destination (colour images), then JPEG at the class's quality
+/// (opaque colour and grey images; CMYK JPEG when converted) or lossless. A JPEG is passed through
+/// unless it is downsampled or converted; a CMYK JPEG keeps its inks (see `cmyk_jpeg`), except in
+/// PDF/A, which takes it as RGB. `None` when the image can't be decoded at all.
+pub(super) fn raster(data: &Arc<Vec<u8>>, fmt: Option<image::ImageFormat>, mode: RasterMode, c: &Compression) -> Option<Image> {
+    use image::ImageDecoder;
+    // PDF/A takes no CMYK: a CMYK JPEG is decoded to display sRGB and written again as RGB.
+    let cmyk_to_rgb = fmt == Some(image::ImageFormat::Jpeg) && designcraft_images::is_cmyk_jpeg(data);
+    if cmyk_to_rgb && !c.rgb_only {
+        return cmyk_jpeg(data, mode, c);
+    }
+    let conv = c.to_cmyk.as_deref();
+    // Formats `image` reads are probed from their header. A PSD, which only `designcraft_images`
+    // reads, counts as colour that may be transparent.
+    let probe = image::ImageReader::new(std::io::Cursor::new(&data[..])).with_guessed_format().ok().and_then(|r| r.into_decoder().ok()).map(|d| {
+        let ct = d.color_type();
+        let grey = matches!(ct, image::ColorType::L8 | image::ColorType::La8 | image::ColorType::L16 | image::ColorType::La16);
+        (d.dimensions(), grey, ct.has_alpha())
+    });
+    let readable = probe.is_some();
+    let Some((px, grey, typed_alpha)) = probe.or_else(|| designcraft_images::pixel_size(data).map(|px| (px, false, true))) else {
+        return lossless(data, fmt, mode);
+    };
+    let classes = &c.classes;
+    let plan = c.plan(if grey { classes.gray } else { classes.color }, true, px);
+    // Monochrome is told from the pixels, so a grey image starts in the grey class; it may
+    // downsample as monochrome when the grey class doesn't.
+    let mono_may_shrink = grey && c.plan(classes.mono, false, px).size.is_some();
+    // Output conversion: a colour image goes into the destination CMYK; grey stays grey.
+    let converting = conv.is_some() && !grey;
+    if plan.size.is_none() && !mono_may_shrink && !converting && !cmyk_to_rgb {
+        // A JPEG is never re-encoded (a second lossy generation) unless it is downsampled or
+        // converted.
+        if fmt == Some(image::ImageFormat::Jpeg) {
+            return jpeg(data.clone().into(), || embedded_icc(data), mode);
+        }
+        if plan.quality.is_none() {
+            return lossless(data, fmt, mode);
+        }
+    }
+    // Past the RGBA budget nothing is decoded here; `lossless` refuses it too (#1586).
+    if designcraft_images::too_large_to_decode(data) {
+        c.unconverted.set(converting);
+        return lossless(data, fmt, mode);
+    }
+    #[cfg(test)]
+    {
+        RASTER_DECODES.with(|n| n.set(n.get() + 1));
+    }
+    // Files `image` reads keep their own samples (their profile goes along); the others, and an
+    // image to convert, are decoded to display sRGB (a converted image starts from display sRGB,
+    // its own profile applied).
+    let decoded = if readable && !converting && !cmyk_to_rgb {
+        image::load_from_memory(data).ok()
+    } else {
+        designcraft_images::decode_rgba(data).map(image::DynamicImage::ImageRgba8)
+    };
+    // What can't be decoded here goes in as it is, as it would without Compression.
+    let Some(img) = decoded else {
+        c.unconverted.set(converting);
+        return lossless(data, fmt, mode);
+    };
+    let plan = if grey && is_mono(&img) { c.plan(classes.mono, false, px) } else { plan };
+    if plan.size.is_none() && !converting && !cmyk_to_rgb {
+        // Decoded only because it might have been monochrome: a JPEG still isn't re-encoded.
+        if fmt == Some(image::ImageFormat::Jpeg) {
+            return jpeg(data.clone().into(), || embedded_icc(data), mode);
+        }
+        if plan.quality.is_none() {
+            return lossless(data, fmt, mode);
+        }
+    }
+    let img = match plan.size {
+        Some((w, h)) => img.resize_exact(w, h, DOWNSAMPLE),
+        None => img,
+    };
+    if let Some(conv) = conv.filter(|_| converting) {
+        // A converted raster is CMYK JPEG only at its class's own Image Quality: the legacy
+        // `compressImages` alone never makes a CMYK raster JPEG.
+        let quality = plan.quality.filter(|_| classes.color.quality.is_some());
+        return cmyk_image(conv.rgb_raster(&img.to_rgba8()), None, quality, None, mode);
+    }
+    let icc = || if readable { embedded_icc(data).filter(|p| if grey { is_grey_icc(p) } else { is_rgb_icc(p) }) } else { None };
+    let transparent = typed_alpha && has_transparency(&img);
+    if let Some(q) = plan.quality.filter(|_| !transparent)
+        && let Some(buf) = encode_jpeg(&img, grey, q)
+    {
+        return jpeg(buf.into(), icc, mode);
+    }
+    // Not downsampled (transparent, or lossless by choice): the file goes in as it is, unless it
+    // is a CMYK JPEG on its way to RGB.
+    if plan.size.is_none() && !cmyk_to_rgb {
+        return lossless(data, fmt, mode);
+    }
+    match encode_png(&img, grey, icc()) {
+        Some(png) => lossless(&Arc::new(png), Some(image::ImageFormat::Png), mode),
+        // A profile the encoder refuses: the file as it is rather than untagged pixels.
+        None => lossless(data, fmt, mode),
+    }
+}
+
+/// Whether a pixel of `img` is less than opaque, read from its own alpha channel (no copy for
+/// the 8-bit layouts).
+fn has_transparency(img: &image::DynamicImage) -> bool {
+    use image::DynamicImage as D;
+    match img {
+        D::ImageRgba8(b) => b.pixels().any(|p| p[3] < 255),
+        D::ImageLumaA8(b) => b.pixels().any(|p| p[1] < 255),
+        i if i.color().has_alpha() => i.to_rgba16().pixels().any(|p| p[3] < u16::MAX),
+        _ => false,
+    }
+}
+
+/// The narrowest placed width (points) of each raster asset, over spreads, parent pages and
+/// objects anchored in text, parent transforms included: with its pixel width it gives the
+/// effective resolution Compression compares. The width is the length of the image's transformed
+/// x axis, so a graphic scaled unevenly counts its horizontal scale. Assets holding the same file
+/// share the narrowest of their widths, as they share one embedded image. Empty, without walking
+/// the document, when no class of `images` downsamples.
+pub(super) fn placed_widths(doc: &designcraft_doc::Document, images: &crate::ImageCompression) -> HashMap<designcraft_doc::AssetId, f64> {
+    use designcraft_doc::{Content, Item};
+    use designcraft_geom::Affine;
+    const MAX_DEPTH: usize = 64;
+    fn visit(it: &Item, xf: Affine, out: &mut HashMap<designcraft_doc::AssetId, f64>, depth: usize) {
+        if depth > MAX_DEPTH {
+            return;
+        }
+        let m = xf * it.xf;
+        match &it.content {
+            Content::Graphic(g) => {
+                let [a, b, ..] = (m * g.xf).as_coeffs();
+                let w = g.size.0 * a.hypot(b);
+                if w.is_finite() && w > 0.0 {
+                    out.entry(g.asset).and_modify(|v| *v = v.min(w)).or_insert(w);
+                }
+            }
+            Content::Group { items } => {
+                for child in items {
+                    visit(child, m, out, depth + 1);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = HashMap::new();
+    if !images.downsamples() {
+        return out;
+    }
+    for it in doc.spreads.iter().chain(doc.parents.iter()).flat_map(|sp| &sp.items) {
+        visit(it, Affine::IDENTITY, &mut out, 0);
+    }
+    // Anchored objects: their own transform carries their scale.
+    let mut stories: Vec<&designcraft_doc::Story> = doc.stories.values().map(AsRef::as_ref).collect();
+    while let Some(story) = stories.pop() {
+        stories.extend(story.notes.iter().chain(&story.endnotes).map(|n| &n.text));
+        stories.extend(story.tables.values().flat_map(|t| t.cells.iter().map(|c| &c.text)));
+        for o in &story.objects {
+            visit(&o.item, Affine::IDENTITY, &mut out, 0);
+        }
+    }
+    // One file, one embedded image: the narrowest placement of any asset holding it. Only assets
+    // of the same length can hold the same file, so only those are compared.
+    let mut by_len: HashMap<usize, Vec<designcraft_doc::AssetId>> = HashMap::new();
+    for id in out.keys() {
+        if let Some(a) = doc.assets.get(id) {
+            by_len.entry(a.data.len()).or_default().push(*id);
+        }
+    }
+    for ids in by_len.into_values().filter(|ids| ids.len() > 1) {
+        let mut by_content: HashMap<&[u8], f64> = HashMap::new();
+        for id in &ids {
+            if let (Some(a), Some(w)) = (doc.assets.get(id), out.get(id)) {
+                by_content.entry(a.data.as_slice()).and_modify(|v| *v = v.min(*w)).or_insert(*w);
+            }
+        }
+        for id in &ids {
+            if let (Some(a), Some(w)) = (doc.assets.get(id), out.get_mut(id))
+                && let Some(narrowest) = by_content.get(a.data.as_slice())
+            {
+                *w = *narrowest;
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -229,6 +561,7 @@ mod image_content_cache_tests {
             warnings: Vec::new(),
             images: HashMap::new(),
             images_by_content: ImageContentCache::default(),
+            placed_widths: placed_widths(doc, &opts.images),
             image_conversions: 0,
             pdfs: HashMap::new(),
             variants: HashMap::new(),
@@ -241,6 +574,7 @@ mod image_content_cache_tests {
             fonts: HashMap::new(),
             reverse_cmaps: HashMap::new(),
             rgb_only: false,
+            to_cmyk: None,
             tags: Vec::new(),
             story_tags: HashMap::new(),
             tag_story: None,
@@ -560,15 +894,43 @@ mod eps_tests {
 mod recompress_tests {
     use super::*;
 
-    /// A raster past the RGBA budget is refused before `recompress` decodes it (#1586).
+    /// The CMYK JPEG encoder's samples read back as the same inks (Adobe's convention, which the
+    /// PDF's Decode array follows).
+    #[test]
+    fn cmyk_jpeg_round_trips_its_inks() {
+        let inks = [255u8, 0, 0, 0, 0, 0, 0, 255, 0, 128, 255, 0, 40, 40, 40, 40];
+        let cmyk: Vec<u8> = (0..64).flat_map(|i| inks.chunks(4).nth(i / 16).map(<[u8]>::to_vec).unwrap_or_default()).collect();
+        let r = designcraft_images::CmykRaster { width: 8, height: 8, cmyk: cmyk.clone(), alpha: None };
+        let jpeg = encode_cmyk_jpeg(&r, 100).unwrap();
+        assert!(designcraft_images::is_cmyk_jpeg(&jpeg));
+        let back = designcraft_images::decode_cmyk_jpeg(&jpeg).unwrap();
+        assert_eq!((back.width, back.height), (8, 8));
+        for (a, b) in back.cmyk.iter().zip(&cmyk) {
+            assert!(a.abs_diff(*b) <= 3, "{:?} vs {:?}", &back.cmyk[..16], &cmyk[..16]);
+        }
+        // Past JPEG's size limit: no JPEG (the caller keeps it lossless).
+        let wide = designcraft_images::CmykRaster { width: 70_000, height: 1, cmyk: Vec::new(), alpha: None };
+        assert!(encode_cmyk_jpeg(&wide, 80).is_none());
+    }
+
+    /// A raster past the RGBA budget is refused before `raster` decodes it to recompress (#1586).
     #[test]
     fn a_raster_past_the_budget_is_not_decoded() {
         let mode = RasterMode { interpolate: false, tag_rgb: false };
-        let decodes = || RECOMPRESS_DECODES.with(std::cell::Cell::get);
+        let jpeg = Compression {
+            classes: crate::ImageCompression::NONE,
+            legacy_jpeg: true,
+            placed: None,
+            to_cmyk: None,
+            rgb_only: false,
+            unconverted: Default::default(),
+        };
+        let decodes = || RASTER_DECODES.with(std::cell::Cell::get);
         let start = decodes();
-        assert!(recompress(&crate::tests::blank_png(16_385), mode).is_none());
+        let fmt = Some(image::ImageFormat::Png);
+        assert!(raster(&Arc::new(crate::tests::blank_png(16_385)), fmt, mode, &jpeg).is_none());
         assert_eq!(decodes(), start);
-        assert!(recompress(&crate::tests::blank_png(9), mode).is_some());
+        assert!(raster(&Arc::new(crate::tests::blank_png(9)), fmt, mode, &jpeg).is_some());
         assert_eq!(decodes(), start + 1);
     }
 }

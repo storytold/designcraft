@@ -1,5 +1,5 @@
 use super::common::{device, tf, to_path};
-use super::images::{CMYK_FALLBACK_WARNING, ConvertedImage, RasterMode, cmyk_tiff, embedded_icc, jpeg, lossless, recompress};
+use super::images::{CMYK_FALLBACK_WARNING, Compression, ConvertedImage, RasterMode, UNCONVERTED_WARNING, cmyk_psd, cmyk_tiff, lossless, raster};
 use super::pipeline::{relabel_catalog_version, relabel_pdf_header};
 use super::*;
 
@@ -91,21 +91,38 @@ impl Exporter<'_> {
         }
         let mut warning = None;
         let mode = RasterMode::for_standard(self.opts.standard);
+        let compression = Compression {
+            classes: self.opts.images,
+            legacy_jpeg: self.opts.compress_images,
+            placed: self.placed_widths.get(&id).copied(),
+            to_cmyk: if self.rgb_only { None } else { self.to_cmyk.clone() },
+            rgb_only: self.rgb_only,
+            unconverted: Default::default(),
+        };
         let img = match fmt {
-            Some(image::ImageFormat::Jpeg) => jpeg(data.clone().into(), || embedded_icc(&data), mode),
             // A CMYK TIFF keeps its ink values (`image` decodes it to RGB, and 100% K would print
             // as four-colour black). PDF/A exports are RGB only.
-            Some(image::ImageFormat::Tiff) if !self.rgb_only && designcraft_images::is_cmyk_tiff(&data) => match cmyk_tiff(&data, mode) {
-                Some(img) => Some(img),
-                None => {
-                    warning = Some(CMYK_FALLBACK_WARNING);
-                    self.warn(format!("{}: {CMYK_FALLBACK_WARNING}", asset.name));
-                    lossless(&data, fmt, mode)
+            Some(image::ImageFormat::Tiff) if !self.rgb_only && designcraft_images::is_cmyk_tiff(&data) => {
+                match cmyk_tiff(&data, mode, &compression) {
+                    Some(img) => Some(img),
+                    None => {
+                        warning = Some(CMYK_FALLBACK_WARNING);
+                        self.warn(format!("{}: {CMYK_FALLBACK_WARNING}", asset.name));
+                        // Output conversion takes the RGB on to the destination.
+                        if compression.to_cmyk.is_some() { raster(&data, fmt, mode, &compression) } else { lossless(&data, fmt, mode) }
+                    }
                 }
-            },
-            _ if self.opts.compress_images => recompress(&data, mode).or_else(|| lossless(&data, fmt, mode)),
-            _ => lossless(&data, fmt, mode),
+            }
+            // A CMYK Photoshop file keeps its inks as a CMYK TIFF does.
+            None if !self.rgb_only && designcraft_images::is_cmyk_psd(&data) => {
+                cmyk_psd(&data, mode, &compression).or_else(|| raster(&data, fmt, mode, &compression))
+            }
+            _ => raster(&data, fmt, mode, &compression),
         };
+        if img.is_some() && compression.unconverted.get() {
+            warning = Some(UNCONVERTED_WARNING);
+            self.warn(format!("{}: {UNCONVERTED_WARNING}", asset.name));
+        }
         if img.is_none() {
             if data.is_empty() {
                 // A linked file that wasn't found when the document was opened: nothing to decode.
@@ -294,8 +311,9 @@ impl Exporter<'_> {
         let (Some(size), Some(rect)) = (size, to_path(&Rect::new(0.0, 0.0, g.size.0, g.size.1).to_path(0.1))) else { return false };
         s.push_transform(&tf(g.xf));
         if tone == designcraft_images::Tone::Gray {
-            let blank =
-                self.swatch_color(designcraft_color::swatch::PAPER, 1.0).unwrap_or_else(|| device(&Color::cmyk(0.0, 0.0, 0.0, 0.0), self.rgb_only));
+            let blank = self
+                .swatch_color(designcraft_color::swatch::PAPER, 1.0)
+                .unwrap_or_else(|| device(&Color::cmyk(0.0, 0.0, 0.0, 0.0), ColorOut { to_cmyk: None, ..self.color_out() }));
             s.set_fill(Some(Fill { paint: blank.into(), ..Default::default() }));
             s.draw_path(&rect);
         }

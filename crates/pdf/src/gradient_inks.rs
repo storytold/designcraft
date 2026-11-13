@@ -46,6 +46,9 @@ impl Exporter<'_> {
     /// The inks a stop prints with, following tints and the Ink Manager as solid fills do.
     /// `None` when they can't go into an ink shading (RGB, `[Registration]`).
     fn stop_ink(&self, stop: &designcraft_color::GradientStop) -> Option<Ink> {
+        // Output conversion: an RGB stop prints as the destination's process inks.
+        let out = self.color_out();
+        let process_inks = |c: Color| process_inks(out.resolve(&c));
         let Some(mut n) = stop.swatch.as_deref() else { return process_inks(stop.color).map(Ink::Process) };
         let mut t = 1.0f32;
         for _ in 0..8 {
@@ -122,7 +125,7 @@ impl Exporter<'_> {
             }
             ([], _) => None,
             ([(name, alternate)], true) => {
-                Some(Space::Separation(SeparationSpace::new(SeparationColorant::Custom(name.clone()), regular(alternate, self.rgb_only))))
+                Some(Space::Separation(SeparationSpace::new(SeparationColorant::Custom(name.clone()), regular(alternate, self.color_out()))))
             }
             _ => {
                 if self.rgb_only {
@@ -130,7 +133,7 @@ impl Exporter<'_> {
                 }
                 let mut colorants: Vec<Colorant> = process.iter().filter_map(|j| Process::ALL.get(*j).copied().map(Colorant::Process)).collect();
                 for (name, alternate) in &spots {
-                    let Color::Cmyk { c, m, y, k } = *alternate else {
+                    let Color::Cmyk { c, m, y, k } = self.color_out().resolve(alternate) else {
                         return self.unshaded(swatch, &format!("'{name}' has no CMYK values"), true);
                     };
                     colorants.push(Colorant::Spot { name: name.clone(), alternate: krilla::color::cmyk::Color::new(q(c), q(m), q(y), q(k)) });

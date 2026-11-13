@@ -32,9 +32,12 @@ pub(crate) fn q(v: f32) -> u8 {
     (v.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
-pub(crate) fn regular(c: &Color, rgb_only: bool) -> krilla::color::RegularColor {
+/// A process colour as this export writes it: into the Output destination when it converts,
+/// CMYK as RGB for PDF/A.
+pub(crate) fn regular(c: &Color, out: ColorOut<'_>) -> krilla::color::RegularColor {
     use krilla::color::RegularColor as R;
-    if rgb_only && matches!(c, Color::Cmyk { .. }) {
+    let c = &out.resolve(c);
+    if out.rgb_only && matches!(c, Color::Cmyk { .. }) {
         let [r, g, b] = c.to_rgb();
         return R::Rgb(rgb::Color::new(q(r), q(g), q(b)));
     }
@@ -47,9 +50,10 @@ pub(crate) fn regular(c: &Color, rgb_only: bool) -> krilla::color::RegularColor 
 }
 
 /// A process colour in its own device space (CMYK → DeviceCMYK, RGB → DeviceRGB, Gray → DeviceGray).
-/// `rgb_only` converts CMYK to RGB (PDF/A without a CMYK output profile).
-pub(crate) fn device(c: &Color, rgb_only: bool) -> krilla::color::Color {
-    match regular(c, rgb_only) {
+/// `out` converts RGB to the Output destination's CMYK, or CMYK to RGB (PDF/A without a CMYK
+/// output profile).
+pub(crate) fn device(c: &Color, out: ColorOut<'_>) -> krilla::color::Color {
+    match regular(c, out) {
         krilla::color::RegularColor::Rgb(v) => v.into(),
         krilla::color::RegularColor::Cmyk(v) => v.into(),
         krilla::color::RegularColor::Luma(v) => v.into(),
@@ -57,9 +61,10 @@ pub(crate) fn device(c: &Color, rgb_only: bool) -> krilla::color::Color {
 }
 
 /// `[Registration]` prints on every plate: `/Separation /All`.
-pub(crate) fn registration(tint: f32, rgb_only: bool) -> krilla::color::Color {
+pub(crate) fn registration(tint: f32, out: ColorOut<'_>) -> krilla::color::Color {
     use krilla::color::separation::{Color as SepColor, SeparationColorant, SeparationSpace};
-    let alt = regular(&Color::cmyk(1.0, 1.0, 1.0, 1.0), rgb_only);
+    // All four inks at 100 % whatever the destination: no conversion.
+    let alt = regular(&Color::cmyk(1.0, 1.0, 1.0, 1.0), ColorOut { to_cmyk: None, ..out });
     SepColor::new(q(tint), SeparationSpace::new(SeparationColorant::AllColorants, alt)).into()
 }
 
@@ -94,6 +99,11 @@ pub(crate) fn solid_fill(c: krilla::color::Color, opacity: f32) -> Fill {
 }
 
 impl Exporter<'_> {
+    /// How this export writes colours (Output conversion, PDF/A's RGB).
+    pub(crate) fn color_out(&self) -> ColorOut<'_> {
+        ColorOut { rgb_only: self.rgb_only, to_cmyk: self.to_cmyk.as_deref() }
+    }
+
     /// A print document, or a PDF/X file (whose output intent is CMYK).
     pub(crate) fn for_print(&self) -> bool {
         self.doc.settings.intent == designcraft_doc::Intent::Print || self.opts.standard.is_pdfx()
@@ -140,12 +150,14 @@ impl Exporter<'_> {
                 // [Paper] prints no ink (it knocks out what lies below); its colour is only what
                 // the screen shows. Written as RGB white (`1 1 1 rg`) it would put DeviceRGB in a
                 // CMYK print file.
-                SwatchValue::Paper { .. } if self.for_print() => return Some(device(&Color::cmyk(0.0, 0.0, 0.0, 0.0), self.rgb_only)),
+                SwatchValue::Paper { .. } if self.for_print() => {
+                    return Some(device(&Color::cmyk(0.0, 0.0, 0.0, 0.0), ColorOut { to_cmyk: None, ..self.color_out() }));
+                }
                 SwatchValue::Tint { base, tint: bt } => {
                     t *= bt;
                     n = base;
                 }
-                SwatchValue::Registration => return Some(registration(t, self.rgb_only)),
+                SwatchValue::Registration => return Some(registration(t, self.color_out())),
                 SwatchValue::Color { color: _, color_type: ColorType::Spot } => {
                     // Ink Manager: an alias prints on another ink; converted inks go to process.
                     let (ink, process) = crate::inks::spot_output(self.doc, &self.inks, &sw.name);
@@ -153,14 +165,14 @@ impl Exporter<'_> {
                         self.doc.swatch(ink).filter(|w| matches!(w.value, SwatchValue::Color { color_type: ColorType::Spot, .. })).unwrap_or(sw);
                     let SwatchValue::Color { color, .. } = &target.value else { break };
                     if process {
-                        return Some(device(&designcraft_color::swatch::apply_tint(*color, t), self.rgb_only));
+                        return Some(device(&designcraft_color::swatch::apply_tint(*color, t), self.color_out()));
                     }
-                    let space = SeparationSpace::new(SeparationColorant::Custom(target.name.clone()), regular(color, self.rgb_only));
+                    let space = SeparationSpace::new(SeparationColorant::Custom(target.name.clone()), regular(color, self.color_out()));
                     return Some(SepColor::new(q(t), space).into());
                 }
                 _ => break,
             }
         }
-        self.doc.resolve_color(name, tint).map(|c| device(&c, self.rgb_only))
+        self.doc.resolve_color(name, tint).map(|c| device(&c, self.color_out()))
     }
 }

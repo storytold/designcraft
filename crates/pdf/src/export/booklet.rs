@@ -104,6 +104,7 @@ fn export_booklet_inner(doc: &Document, cache: &Cache, opts: &BookletOptions) ->
         warnings,
         images: HashMap::new(),
         images_by_content: ImageContentCache::default(),
+        placed_widths: images::placed_widths(doc, &pdf_opts.images),
         #[cfg(test)]
         image_conversions: 0,
         pdfs: HashMap::new(),
@@ -119,6 +120,7 @@ fn export_booklet_inner(doc: &Document, cache: &Cache, opts: &BookletOptions) ->
         fonts: HashMap::new(),
         reverse_cmaps: HashMap::new(),
         rgb_only: false,
+        to_cmyk: None,
         tags: Vec::new(),
         story_tags: HashMap::new(),
         tag_story: None,

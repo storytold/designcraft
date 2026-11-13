@@ -656,6 +656,29 @@ fn with_photometric(bytes: &[u8], value: u16) -> Option<Vec<u8>> {
     None
 }
 
+/// A Photoshop document in CMYK mode: [`decode_cmyk_psd`] keeps its inks, which [`decode_rgba`]
+/// converts to RGB.
+pub fn is_cmyk_psd(bytes: &[u8]) -> bool {
+    psd::is_cmyk(bytes)
+}
+
+/// The ink values (0 = no ink) of a CMYK Photoshop document's composite, with straight alpha;
+/// `None` for other modes or a damaged file.
+pub fn decode_cmyk_psd(bytes: &[u8]) -> Option<CmykRaster> {
+    psd::decode_cmyk(bytes)
+}
+
+/// The ink values (0 = no ink) of a CMYK or YCCK JPEG; `None` for other JPEGs and anything that
+/// doesn't decode.
+pub fn decode_cmyk_jpeg(bytes: &[u8]) -> Option<CmykRaster> {
+    jpeg::decode_cmyk(bytes).map(|(raster, _)| raster)
+}
+
+/// A JPEG whose pixels are CMYK (or YCCK): four inks, which the `image` crate turns into RGB.
+pub fn is_cmyk_jpeg(bytes: &[u8]) -> bool {
+    jpeg::is_cmyk(bytes)
+}
+
 /// A TIFF whose pixels are CMYK (PhotometricInterpretation Separated, four inks).
 pub fn is_cmyk_tiff(bytes: &[u8]) -> bool {
     tiff_decoder(bytes).and_then(|mut d| d.colortype().ok()).is_some_and(|c| matches!(c, tiff::ColorType::CMYK(_) | tiff::ColorType::CMYKA(_)))
