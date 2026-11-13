@@ -16,7 +16,8 @@ DesignCraft aims at full Adobe InDesign parity — and to be better: faster, ope
   Row-group fitting reserves their height, and repeated headers and footers place each note
   once. Page-dependent notes recompose after row movement; header notes follow the first body
   group, and non-repeating footer notes reserve space only for the final group. Cell notes use
-  the story's numbering sequence (#2612). Page/spread/section restarts use the table's
+  the story's numbering sequence in logical reading order, including RTL and nested tables
+  (#2612). Page/spread/section restarts use the table's
   pre-pagination page. Spanning notes do not rewind earlier columns; clipped fixed-height
   cells still print their notes. Editing cell-note text with the canvas caret is not supported.
   No readiness percentage change.
@@ -413,7 +414,6 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 - **2026-11-12** · The status bar's preflight count and the Preflight panel take their issues from a check on a background worker, which checks the newest state of the document and shows the issues last found meanwhile. Moving or resizing a frame and typing no longer wait for a check of the whole document on every drag step and keystroke. No readiness percentage change.
 
 - **2026-11-12** · Object › Text Frame Options… (Cmd+B) opens with the Type tool in a frame, so inset spacing and vertical justification can be changed while typing; it changes the frame that shows the insertion point, or every frame that holds part of the selected text (#2396). No readiness percentage change.
-- **2026-11-12** · Table-cell footnotes continue the host story's sequence in logical reading order, including RTL and nested tables (#2612). Cell notes share the column-foot stack with body notes (#2611). Page/spread/section restarts use the table's pre-pagination page. Spanning notes do not rewind earlier columns, clipped fixed-height cells still print notes, and editing cell-note text with the canvas caret is not supported. No readiness percentage change.
 - **2026-11-04** · Striped strokes retain out-and-back cubic segments whose second control point is away from the coincident endpoints and first control point. A geometry regression checks the offset extent and both stripe bands. No readiness percentage change.
 - **2026-11-04** · Esperanto is a text language (Character › Language, `type.char {language: "Esperanto"}`, IDML `$ID/Esperanto`): tag `eo`, English-style quotes; not hyphenated yet (#1201). No readiness percentage change.
 
