@@ -70,7 +70,7 @@ external PDF/X certification.
 | PDF / AI (PDF-compatible) | `.pdf`, `.ai` | ✓ page boxes, layers, pages | ✓ rendered with hayro, embedded as vector in PDF export, crop to page boxes | layer visibility depth; editable vectors not offered (#227) | 3% |
 | JPEG, PNG, GIF, BMP, WebP | | ✓ | ✓ embedded ICC profiles applied on screen; CMYK JPEGs (incl. YCCK) through their own profile or the working CMYK space | CMYK JPEG/TIFF keep inks in PDF (#35) | 2% |
 | TIFF | `.tif` | ✓ incl. CMYK, alpha, indexed colour, paths | ✓ incl. CMYK, embedded ICC profiles on screen | clipping paths from 8BIM resources unverified | 1% |
-| PSD | `.psd` | ✓ layers, comps, alpha, paths | ~ composite + Object Layer Options; embedded ICC profile and managed CMYK on screen | layer comps partial | 1% |
+| PSD | `.psd` | ✓ layers, comps, alpha, paths | ~ composite + Object Layer Options; embedded ICC profile and managed CMYK on screen; placed at its own resolution | layer comps partial | 1% |
 | EPS | `.eps` | ✓ (PostScript) | ~ preview only (no interpreter) | | <1% |
 | SVG | `.svg` | ✓ | ✓ (usvg) | | <1% |
 | HEIC | `.heic` | ✓ | ✗ | | <1% |
