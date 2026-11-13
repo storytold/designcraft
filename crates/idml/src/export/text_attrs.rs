@@ -1,19 +1,6 @@
 use super::common::{bool_s, p, pct};
 use super::{CHAR_BUILTINS, CharAttrs, El, Ex, ListType, ParaAttrs, SpanColumns, escape_id, names, num, st};
 
-// Optional paragraph values are omitted when inherited from the style.
-macro_rules! n {
-    ($a:expr, $el:expr, $f:ident, $k:literal) => {
-        if let Some(v) = $a.$f {
-            $el.set($k, num(v as f64));
-        }
-    };
-    ($a:expr, $el:expr, $f:ident, $k:literal, pct) => {
-        if let Some(v) = $a.$f {
-            $el.set($k, pct(v as f64));
-        }
-    };
-}
 impl<'a> Ex<'a> {
     pub(super) fn char_attrs(&mut self, el: &mut El, props: &mut Vec<El>, a: &CharAttrs) {
         if let Some(v) = a.leading_aki {
@@ -381,21 +368,26 @@ impl<'a> Ex<'a> {
     }
 
     fn para_columns_and_list_attrs(&mut self, el: &mut El, props: &mut Vec<El>, a: &ParaAttrs) {
-        if let Some(sc) = a.span_columns {
-            match sc {
-                SpanColumns::Single => el.set("SpanColumnType", "SingleColumn"),
-                SpanColumns::Span(n) | SpanColumns::Split(n) => {
-                    el.set("SpanColumnType", if matches!(sc, SpanColumns::Span(_)) { "SpanColumns" } else { "SplitColumns" });
-                    props.push(if n == 0 {
-                        p("SpanSplitColumnCount", "enumeration", "All")
-                    } else {
-                        p("SpanSplitColumnCount", "long", n.to_string())
-                    });
-                }
-            }
+        let span = craft_idml::model::ParagraphSpanValues {
+            kind: a.span_columns.map(|span| match span {
+                SpanColumns::Single => "SingleColumn".into(),
+                SpanColumns::Span(_) => "SpanColumns".into(),
+                SpanColumns::Split(_) => "SplitColumns".into(),
+            }),
+            split_column_count: a.span_columns.and_then(|span| match span {
+                SpanColumns::Single => None,
+                SpanColumns::Span(count) | SpanColumns::Split(count) => Some(count),
+            }),
+            inside_gutter: a.split_inside_gutter,
+            outside_gutter: a.split_outside_gutter,
+            space_before: a.span_space_before,
+            space_after: a.span_space_after,
+        };
+        let (span_attrs, span_properties) = span.to_parts();
+        for (key, value) in span_attrs {
+            el.set(&key, value);
         }
-        n!(a, el, split_inside_gutter, "SplitColumnInsideGutter");
-        n!(a, el, split_outside_gutter, "SplitColumnOutsideGutter");
+        props.extend(span_properties.into_iter().map(crate::xml::from_craft));
         if let Some(r) = &a.rule_above {
             self.rule(el, props, "RuleAbove", r);
         }
@@ -414,10 +406,8 @@ impl<'a> Ex<'a> {
                 .collect();
             props.push(crate::xml::from_craft(craft_idml::model::TabStopValues::to_list(&values)));
         }
-        n!(a, el, span_space_before, "SpanColumnMinSpaceBefore");
-        n!(a, el, span_space_after, "SpanColumnMinSpaceAfter");
         let list = craft_idml::model::ParagraphListValues {
-            applied_list: None,
+            applied_list: a.list_name.as_deref().map(craft_idml::model::ParagraphListValues::numbering_list_reference),
             list_type: a.list_type.map(|list| {
                 match list {
                     ListType::None => "NoList",
@@ -440,8 +430,8 @@ impl<'a> Ex<'a> {
             restart_numbers: a.restart_numbers,
             restart_after_level: a.restart_after_level,
             restart_after_specific_level: a.restart_after_level.is_some_and(|level| level != 0),
-            numbering_continue: None,
-            numbering_start_at: None,
+            numbering_continue: a.start_at.map(|start_at| start_at.is_none()),
+            numbering_start_at: a.start_at.flatten().map(f64::from),
             bullet_font: a.bullet_font.clone(),
             bullet_font_style: a.bullet_font_style.clone(),
         };
@@ -528,21 +518,6 @@ impl<'a> Ex<'a> {
                 if k.name.is_empty() { "enumeration" } else { "object" },
                 if k.name.is_empty() { "Nothing".into() } else { format!("KinsokuTable/{}", escape_id(&k.name)) },
             ));
-        }
-        if let Some(n) = &a.list_name {
-            el.set(
-                "AppliedNumberingList",
-                if n.is_empty() { "NumberingList/$ID/[Default]".to_string() } else { format!("NumberingList/{}", escape_id(n)) },
-            );
-        }
-        if let Some(v) = a.start_at {
-            match v {
-                Some(n) => {
-                    el.set("NumberingContinue", "false");
-                    el.set("NumberingStartAt", n);
-                }
-                None => el.set("NumberingContinue", "true"),
-            }
         }
         self.para_nested_styles(props, a, parent);
         self.para_alignment_attrs(el, a, parent);
