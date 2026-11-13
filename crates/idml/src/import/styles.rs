@@ -123,7 +123,7 @@ impl<'r> Importer<'r> {
             cs.vj = values.vertical_justification.as_deref().map(names::vj_in);
             cs.first_baseline = values.first_baseline.as_deref().map(names::first_baseline_in);
             cs.first_baseline_min = values.first_baseline_min;
-            cs.strokes = ["TopEdge", "LeftEdge", "BottomEdge", "RightEdge"].map(|side| self.cell_stroke_attrs(e, side));
+            cs.strokes = values.edge_strokes.map(|stroke| self.map_stroke_values(stroke));
             if let Some(stroke) = uniform_cell_stroke(&cs.strokes) {
                 cs.stroke = Some(stroke);
                 cs.strokes = Default::default();
@@ -152,15 +152,15 @@ impl<'r> Importer<'r> {
             ts.footer_same_as_body = values.footer_same_as_body;
             ts.left_column_same_as_body = values.left_column_same_as_body;
             ts.right_column_same_as_body = values.right_column_same_as_body;
-            ts.borders = ["TopBorder", "LeftBorder", "BottomBorder", "RightBorder"].map(|side| self.cell_stroke_attrs(e, side));
+            ts.borders = values.border_strokes.map(|stroke| self.map_stroke_values(stroke));
             if let Some(border) = uniform_cell_stroke(&ts.borders) {
                 ts.border = Some(border);
                 ts.borders = Default::default();
             }
-            ts.row_fills = self.alt_fill_attrs(e, "Row");
-            ts.column_fills = self.alt_fill_attrs(e, "Column");
-            ts.row_strokes = self.alt_stroke_attrs(e, "Row");
-            ts.column_strokes = self.alt_stroke_attrs(e, "Column");
+            ts.row_fills = self.map_alt_fill_values(values.row_fills);
+            ts.column_fills = self.map_alt_fill_values(values.column_fills);
+            ts.row_strokes = self.map_alt_stroke_values(values.row_strokes);
+            ts.column_strokes = self.map_alt_stroke_values(values.column_strokes);
             ts.space_before = values.space_before;
             ts.space_after = values.space_after;
             match self.styles.table.iter_mut().find(|c| c.name == name) {
@@ -343,11 +343,6 @@ impl<'r> Importer<'r> {
             .unwrap_or_else(|| names::style_name_in(names::TABLE_BUILTINS, &unescape_id(reference.trim_start_matches("TableStyle/"))))
     }
 
-    pub(super) fn cell_stroke_attrs(&mut self, el: &El, prefix: &str) -> designcraft_doc::CellStrokeAttrs {
-        let values = craft_idml::model::Values::of(&crate::xml::to_craft(el)).stroke_values(prefix);
-        self.map_stroke_values(values)
-    }
-
     pub(super) fn map_stroke_values(&mut self, values: craft_idml::model::StrokeValues) -> designcraft_doc::CellStrokeAttrs {
         designcraft_doc::CellStrokeAttrs {
             weight: values.weight,
@@ -361,6 +356,10 @@ impl<'r> Importer<'r> {
 
     pub(super) fn alt_fill_attrs(&mut self, el: &El, kind: &str) -> designcraft_doc::AltFillsAttrs {
         let values = craft_idml::model::Values::of(&crate::xml::to_craft(el)).alternating_fill_values(kind);
+        self.map_alt_fill_values(values)
+    }
+
+    fn map_alt_fill_values(&mut self, values: craft_idml::model::AlternatingFillValues) -> designcraft_doc::AltFillsAttrs {
         designcraft_doc::AltFillsAttrs {
             first: values.first_count.map(|v| v as u32),
             first_color: values.first_color.map(|v| self.swatch_ref(&v)),
@@ -375,6 +374,10 @@ impl<'r> Importer<'r> {
 
     pub(super) fn alt_stroke_attrs(&mut self, el: &El, kind: &str) -> designcraft_doc::AltStrokesAttrs {
         let values = craft_idml::model::Values::of(&crate::xml::to_craft(el)).alternating_stroke_values(kind);
+        self.map_alt_stroke_values(values)
+    }
+
+    fn map_alt_stroke_values(&mut self, values: craft_idml::model::AlternatingStrokeValues) -> designcraft_doc::AltStrokesAttrs {
         let first_stroke = self.map_stroke_values(values.first);
         let next_stroke = self.map_stroke_values(values.next);
         designcraft_doc::AltStrokesAttrs {
