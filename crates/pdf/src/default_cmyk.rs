@@ -25,6 +25,9 @@ const MAX_DEPTH: usize = 32;
 /// Maximum object-number probes beyond trailer `/Size` before treating the xref as damaged.
 const MAX_ID_PROBES: usize = 65_536;
 
+/// Maximum `scan_stream` invocations across a document before aborting `CmykScan`.
+const MAX_SCAN_STREAMS: usize = 65_536;
+
 fn damaged() -> PdfError {
     PdfError::Write("the exported PDF could not be updated with a DefaultCMYK profile cleanly".into())
 }
@@ -35,6 +38,10 @@ fn encrypted() -> PdfError {
 
 fn depth_limit() -> PdfError {
     PdfError::Write("the exported PDF exceeds the DefaultCMYK nesting depth limit".into())
+}
+
+fn scan_limit() -> PdfError {
+    PdfError::Write("the exported PDF exceeds the DefaultCMYK stream scan budget".into())
 }
 
 /// Ensures every page and nested resource scope in `bytes` carries `/DefaultCMYK` mapped to an
@@ -428,6 +435,7 @@ struct CmykScan<'a> {
     active_fonts: HashSet<ObjectIdentifier>,
     completed_false_streams: HashSet<StreamKey<'a>>,
     completed_false_fonts: HashSet<StreamKey<'a>>,
+    scan_calls: usize,
 }
 
 impl<'a> CmykScan<'a> {
@@ -574,6 +582,10 @@ impl<'a> CmykScan<'a> {
     }
 
     fn scan_stream(&mut self, stream: &Stream<'a>, res: Resources<'a>, depth: usize, hit_cycle: &mut bool, check_group: bool) -> Result<bool> {
+        if self.scan_calls >= MAX_SCAN_STREAMS {
+            return Err(scan_limit());
+        }
+        self.scan_calls += 1;
         let id = stream.obj_id();
         if self.active_streams.contains(&id) {
             *hit_cycle = true;
@@ -979,5 +991,39 @@ mod tests {
             uses_device_cmyk(&two_page_shared_form("/DeviceCMYK")).unwrap(),
             "Page 1 negative cache for resource-less Form must not hide Page 2 DeviceCMYK resolution"
         );
+    }
+
+    #[test]
+    fn branching_self_referencing_form_chain_hits_scan_budget() {
+        let make_chain = |levels: usize| {
+            let xobj_entries: String = (0..levels).map(|i| format!("/F{i} {} 0 R", i + 5)).collect();
+            let mut objects = vec![
+                b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+                b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+                format!("<</Type/Page/Parent 2 0 R/MediaBox[0 0 100 100]/Contents 4 0 R/Resources<</XObject<<{xobj_entries}>>>>>>").into_bytes(),
+                b"<</Length 6>>\nstream\n/F0 Do\nendstream".to_vec(),
+            ];
+            for i in 0..levels {
+                // Omit `/Resources` on each Form so it inherits the page scope rather than holding a
+                // self-reference inside its own indirect object context.
+                let ops = if i + 1 < levels {
+                    let next = i + 1;
+                    format!("/F{i} Do /F{next} Do /F{next} Do")
+                } else {
+                    format!("/F{i} Do")
+                };
+                objects.push(format!("<</Type/XObject/Subtype/Form/BBox[0 0 1 1]/Length {}>>\nstream\n{ops}\nendstream", ops.len()).into_bytes());
+            }
+            build_pdf(&objects, "")
+        };
+
+        let small = make_chain(4);
+        assert!(!uses_device_cmyk(&small).unwrap());
+
+        let deep_branching = make_chain(20);
+        let err = uses_device_cmyk(&deep_branching).unwrap_err();
+        assert_eq!(err.to_string(), scan_limit().to_string());
+        let attach_err = attach(deep_branching, None, crate::Standard::None, &mut Vec::new()).unwrap_err();
+        assert_eq!(attach_err.to_string(), scan_limit().to_string());
     }
 }
