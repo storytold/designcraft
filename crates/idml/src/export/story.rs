@@ -58,41 +58,33 @@ impl<'a> Ex<'a> {
         } else {
             names::style_self("CharacterStyle", CHAR_BUILTINS, &o.ref_char_style)
         };
-        let enumv = |name: &str, v: &str| {
-            let mut e = El::new(name).attr("type", "enumeration");
-            e.children.push(Node::Text(v.into()));
-            e
-        };
-        let mut color = El::new("RuleColor").attr("type", "object");
-        color.children.push(Node::Text(self.sw(&o.rule.color)));
-        let mut el = El::new("FootnoteOption")
-            .attr("StartAt", o.start_at)
-            .attr("Prefix", &o.prefix)
-            .attr("Suffix", &o.suffix)
-            .attr("FootnoteTextStyle", names::style_self("ParagraphStyle", PARA_BUILTINS, &o.para_style))
-            .attr("FootnoteMarkerStyle", marker)
-            .attr("SeparatorText", &o.separator)
-            .attr("SpaceBetween", num(o.space_between))
-            .attr("Spacer", num(o.space_before))
-            .attr("FootnoteFirstBaselineOffset", names::first_baseline_out(o.first_baseline))
-            .attr("FootnoteMinimumFirstBaselineOffset", num(o.first_baseline_min))
-            .attr("EnableStraddling", bool_s(o.span_columns))
-            .attr("RuleOn", bool_s(o.rule.on))
-            .attr("RuleLineWeight", num(o.rule.weight))
-            .attr("RuleTint", num(o.rule.tint as f64 * 100.0))
-            .attr("RuleLeftIndent", num(o.rule.left_indent))
-            .attr("RuleWidth", num(o.rule.width))
-            .attr("RuleOffset", num(o.rule.offset));
         let restart = names::NOTE_RESTART.iter().find(|r| r.0 == o.restart).map_or("DontRestart", |r| r.1);
         let affix = names::NOTE_AFFIX.iter().find(|r| r.0 == o.affix_in).map_or("NoPrefixSuffix", |r| r.1);
-        let mut props = El::new("Properties");
-        props.push(enumv("FootnoteNumberingStyle", names::number_style_out(o.style)));
-        props.push(enumv("RestartNumbering", restart));
-        props.push(enumv("ShowPrefixSuffix", affix));
-        props.push(enumv("MarkerPositioning", names::note_marker_out(o.ref_position)));
-        props.push(color);
-        el.push(props);
-        el
+        let values = craft_idml::model::FootnotePreferences {
+            start_at: Some(f64::from(o.start_at)),
+            prefix: Some(o.prefix.clone()),
+            suffix: Some(o.suffix.clone()),
+            paragraph_style: Some(names::style_self("ParagraphStyle", PARA_BUILTINS, &o.para_style)),
+            marker_style: Some(marker),
+            separator: Some(o.separator.clone()),
+            space_between: Some(o.space_between),
+            space_before: Some(o.space_before),
+            first_baseline: Some(names::first_baseline_out(o.first_baseline).into()),
+            first_baseline_minimum: Some(o.first_baseline_min),
+            span_columns: Some(o.span_columns),
+            rule_on: Some(o.rule.on),
+            rule_weight: Some(o.rule.weight),
+            rule_tint: Some(f64::from(o.rule.tint) * 100.0),
+            rule_left_indent: Some(o.rule.left_indent),
+            rule_width: Some(o.rule.width),
+            rule_offset: Some(o.rule.offset),
+            rule_color: Some(self.sw(&o.rule.color)),
+            numbering_style: Some(names::number_style_out(o.style).into()),
+            restart_numbering: Some(restart.into()),
+            show_prefix_suffix: Some(affix.into()),
+            marker_positioning: Some(names::note_marker_out(o.ref_position).into()),
+        };
+        crate::xml::from_craft(values.to_el())
     }
 
     /// `<Footnote>`: the footnote's paragraphs, the first starting with the footnote number marker
