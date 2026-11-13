@@ -1,6 +1,6 @@
 # Localization parity
 
-> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-11-07 · **Change:** minor (Spanish interface complete; Esperanto text language; Hungarian interface catalog, bundled-font coverage and flyout regression checks; Swedish interface) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-11-04 · **Change:** minor (pt-BR catalog filled; Russian listed; Esperanto text language; Hungarian interface catalog, bundled-font coverage and flyout regression checks; Swedish interface) · **Target:** Adobe InDesign 2026 (21.6)
 
 Per-language status of the DesignCraft interface and of document typesetting in each script.
 Script-specific typesetting detail: [cjk.md](cjk.md), [cjk-typography.md](cjk-typography.md),
@@ -11,7 +11,7 @@ Script-specific typesetting detail: [cjk.md](cjk.md), [cjk-typography.md](cjk-ty
 ## How it was measured
 
 Interface strings live in `crates/ui-egui/src/i18n/table.rs` (a shared table with German, French,
-Spanish, Japanese and Simplified Chinese columns) and `crates/ui-egui/src/i18n/{ar,cs,de,es,fr,hu,it,ja,ka,pl,pt_br,ru,sv,uk}.rs`.
+Spanish, Japanese and Simplified Chinese columns) and `crates/ui-egui/src/i18n/{ar,cs,de,fr,hu,it,ja,ka,pl,pt_br,ru,sv,uk}.rs`.
 Untranslated strings fall back to English. A script (2026-10-10) built the set of English
 interface strings as the union of every catalog's keys, every engine command label and every
 literal passed to `tr`/`t` in the UI crate: **1,724 strings**. A further ~145 capitalized literals
@@ -35,11 +35,11 @@ come as Middle East editions with an English or French interface and right-to-le
 |---|---|---|---|---|---|---|---|---|
 | English | en | ✓ | 1,724 / 1,724 (100%) | all / all / none | Latin ✓ | yes | full | 0 |
 | Simplified Chinese (Mandarin) | zh | ✓ (zh_CN) | 1,438 (83%) | menus, panels, most dialogs; tooltips partly; no help | CJK typesetting ✓ (cjk.md); canvas IME ✓, not checked by hand with a system IME (#322); CJK UI font not embedded in release builds, so boxes on Linux (#332) | no | partial | 25–40 |
-| Spanish | es | ✓ | 2,956 / 2,956 by the missing-translations report (the 1,724-string baseline plus the catalog keys it never saw) | menus, panels, dialogs, messages and command labels; no help | Latin ✓; Spanish hyphenation ✓ (#222) | no | partial (catalog complete, nothing rendered on screen) | 0 |
+| Spanish | es | ✓ | 1,438 (83%) | menus, panels, most dialogs; no help | Latin ✓; Spanish hyphenation ✓ (#222) | no | partial | 5–8 |
 | Hindi | hi | ✗ | 0 (0%) | none | Devanagari shaped by harfrust in documents but untested; no Hindi hyphenation or spelling | no | none | 20–30 |
 | Arabic | ar | Middle East edition (English/French UI) | 1,459 (85%) | menus, panels, most dialogs; no help | RTL UI text (`rtl.rs`: bidi + shaping); Arabic composition, kashida, digits, RTL stories and tables ✓ (arabic-typography.md); list bullets and multi-column RTL open (#100) | no | partial | 15–25 |
 | French | fr | ✓ | 1,438 (83%) | menus, panels, most dialogs; no help | Latin ✓; French hyphenation ✓ (hyph-fr) | no | partial | 6–10 |
-| Portuguese (Brazil) | pt-br | ✓ (pt) | 1,057 (61%) | menus, panels, some dialogs; no help | Latin ✓; Portuguese hyphenation ✓ | no | partial | 8–12 |
+| Portuguese (Brazil) | pt-br | ✓ (pt) | 2,936 of 2,939 (~100%, 2026-11-04 missing-translations report) | whole interface but the Control panel's `IT`, `VA` and `Y:` captions; no help | Latin ✓; Portuguese hyphenation ✓ | no | partial | 1–2 |
 | Indonesian | id | ✗ | 0 (0%) | none | Latin ✓ | no | none | 12–18 |
 | Japanese | ja | ✓ | 1,644 (95%) | whole interface (#272), vertical-type commands; no help | vertical text, kinsoku, aki, ruby, warichu ✓ (partial depth, cjk.md); canvas IME ✓, not checked by hand (#322); Japanese UI and Mincho fonts from craft-fonts | no | partial | 6–10 (+ IME checks, shared with zh) |
 | German | de | ✓ | 1,438 (83%) | menus, panels, most dialogs; no help | Latin ✓; German 2006 hyphenation ✓ (hyph-de-1996, MIT) | no | partial | 6–10 |
@@ -53,10 +53,6 @@ Japanese follow-up (2026-10-11): print ranges, imported style handling, the buil
 caption, table row/column movement and row-height distribution now use the existing translation
 catalog. Print, import options and an active table were rendered in Japanese and English with
 craft-fonts. The language totals above retain their dated measurement; this is a targeted fix.
-
-Spanish interface (2026-11-07): the missing-translations report counts **2,956** strings — the 1,724-string
-baseline plus the catalog keys that measurement never saw — and `es` misses none of them. It stays
-`partial` by the rule above: no screen was rendered in Spanish, so clipping in narrow widgets is unchecked.
 
 Hungarian interface (2026-11-01): `hu.rs` contains **1,906 entries and four context-specific
 captions**, including all 37 tool names. The initial catalog was prepared with AI assistance
@@ -79,11 +75,20 @@ right-click flyouts in both Tools-panel layouts. Narrow-window coverage exercise
 scrolling, complete label/shortcut accessibility and selecting a scrolled row at 180 and
 240 points; the existing wide-window checks keep their assertions.
 
+Brazilian Portuguese (2026-11-04): `cargo xtask i18n-report` on main `ef6c3686` with this catalog
+counts 2,939 interface strings; pt-BR translates 2,936 of them (up from 1,933). Like every other
+language it leaves the Control panel's `IT`, `VA` and `Y:` captions in English. Tools are named "Ferramenta …", parent pages "página principal", stories "artigo" and
+paths "demarcador" ("traçado" is Stroke; Pathfinder keeps its name). The 996 new strings were AI-drafted and approved by
+the contributor; they are not yet checked in the running app, and a native-speaker review is
+pending. Older rows still use "página-pai" and "página mestra" for parent pages and "Matéria"
+for a story.
+
 ## Other shipped languages
 
 | Language | Code | UI strings translated | Status |
 |---|---|---|---|
 | Hungarian | hu | 1,906 entries + 4 context captions (2026-11-01); initial catalog native-reviewed | partial |
+| Russian | ru | 1,855 of 2,939 (63%, 2026-11-04 missing-translations report), count captions category-first | partial |
 | Czech | cs | 1,722 (99%), plural categories handled | partial |
 | Italian | it | 1,464 (85%) | partial |
 | Ukrainian | uk | 1,432 (83%), plural categories handled | partial |
@@ -91,7 +96,7 @@ scrolling, complete label/shortcut accessibility and selecting a scrolled row at
 | Georgian | ka | 1,724 (~100%: every catalog key plus the command labels the others lack), count captions as `noun: n` | partial (reviewed by a native speaker) |
 | Swedish | sv | 2,857 of 2,891 (99%, 2026-11-01 missing-translations report): menus, panels, dialogs and messages; singular for a count of one; AI-drafted with Claude Code from the English source, spot-checked by a native speaker (not every string) | partial |
 
-DesignCraft ships **6** interface languages beyond the twelve; InDesign ships 17 beyond its
+DesignCraft ships **8** interface languages beyond the twelve; InDesign ships 17 beyond its
 eight of the twelve (cs, da, el, en_GB, fi, hu, it, nb, nl, pl, ro, ru, sq, sv, tr, uk, zh_TW).
 
 ## Document languages
@@ -110,7 +115,7 @@ German variants have no automatic hyphenation; their German shaping and quotes a
 | Work | Opus 5.5 h |
 |---|---|
 | Fill the 83–85% catalogs (de, fr, es, zh, ar, it, uk; ~290 strings each) | 25–40 |
-| pt-BR to full | 8–12 |
+| pt-BR to full: check it in the running app; one term each for parent page and story | 1–2 |
 | New: Hindi, Indonesian, Korean, Vietnamese (1,724 strings, plural rules, tests) | 50–75 |
 | Canvas IME (zh, ja, ko): checks by hand with system IMEs, and fixes | 10–20 |
 | CJK UI font in every release build; Devanagari and Vietnamese rendering tests | 10–15 |
@@ -122,6 +127,7 @@ German variants have no automatic hyphenation; their German shaping and quotes a
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-04 | minor | pt-BR catalog filled (996 strings and the unit names; path is "demarcador"): 2,936 of 2,939 strings by `i18n-report`, pt-BR to full 8–12 → 1–2 h; Russian (1,855) listed, eight languages beyond the twelve |
 | 2026-11-01 | minor | Initial Hungarian interface: 1,906 entries, four context captions, native review, bundled-font glyph coverage and wide/narrow flyout regressions |
 | 2026-10-11 | minor | Localized Japanese print, import and table controls; checked Japanese and English renders |
 | 2026-10-15 | minor | Swedish (`sv`) interface added |
