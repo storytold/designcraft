@@ -75,16 +75,15 @@ impl<'r> Importer<'r> {
                 it.fill.tint = tint(Some(t)).unwrap_or(1.0);
             }
             it.fill.overprint = self.attr_or_style(e, "OverprintFill").as_deref() == Some("true");
-            if let Some(a) = e.num("GradientFillAngle")
+            if let Some(a) = model_item.gradient_fill_angle()
                 && a != 0.0
             {
                 it.fill.gradient_angle = Some(a);
             }
-            let start: Option<Vec<f64>> = e.prop("GradientFillStart").map(|s| nums(&s));
-            if let (Some([x, y]), Some(len)) = (start.as_deref().and_then(|v| <[f64; 2]>::try_from(v).ok()), e.num("GradientFillLength"))
+            if let (Some([x, y]), Some(len)) = (model_item.gradient_fill_start(), model_item.gradient_fill_length())
                 && len > 0.0
             {
-                let a = e.num("GradientFillAngle").unwrap_or(0.0).to_radians();
+                let a = model_item.gradient_fill_angle().unwrap_or(0.0).to_radians();
                 it.fill.gradient_vector = Some([x, y, x + len * a.cos(), y - len * a.sin()]);
             }
             it.stroke = self.stroke_from(e, Some(e));
@@ -93,16 +92,15 @@ impl<'r> Importer<'r> {
                 it.stroke.weight = 1.0;
             }
             // A gradient on the stroke: its angle, or the Gradient Swatch tool's vector.
-            if let Some(a) = e.num("GradientStrokeAngle")
+            if let Some(a) = model_item.gradient_stroke_angle()
                 && a != 0.0
             {
                 it.stroke.gradient_angle = Some(a);
             }
-            let start: Option<Vec<f64>> = e.prop("GradientStrokeStart").map(|s| nums(&s));
-            if let (Some([x, y]), Some(len)) = (start.as_deref().and_then(|v| <[f64; 2]>::try_from(v).ok()), e.num("GradientStrokeLength"))
+            if let (Some([x, y]), Some(len)) = (model_item.gradient_stroke_start(), model_item.gradient_stroke_length())
                 && len > 0.0
             {
-                let a = e.num("GradientStrokeAngle").unwrap_or(0.0).to_radians();
+                let a = model_item.gradient_stroke_angle().unwrap_or(0.0).to_radians();
                 it.stroke.gradient_vector = Some([x, y, x + len * a.cos(), y - len * a.sin()]);
             }
         }
@@ -140,27 +138,27 @@ impl<'r> Importer<'r> {
             if let Some(pg) = w.prop_el("PathGeometry") {
                 match wrap_path_of(pg) {
                     Ok(p) => tw.path = Some(p),
-                    Err(why) => log::warn!("IDML: custom text wrap boundary of {} dropped: {why}", e.get("Self").unwrap_or("an item")),
+                    Err(why) => log::warn!("IDML: custom text wrap boundary of {} dropped: {why}", model_item.self_id().unwrap_or("an item")),
                 }
             }
             it.wrap = tw;
         }
         // Type on a path.
-        if tag != "TextFrame"
-            && let Some(tp) = e.find("TextPath")
+        if !matches!(&model_item.kind, craft_idml::model::ItemKind::TextFrame)
+            && let Some(tp) = model_item.text_path()
         {
-            let story_self = tp.get("ParentStory").unwrap_or("n").to_string();
+            let story_self = tp.parent_story().unwrap_or("n").to_string();
             if let Some(story) = self.story_ids.get(&story_self).copied() {
                 let options = TextFrameOptions {
                     path: Some(designcraft_doc::PathType {
-                        start: tp.num("StartBracket").unwrap_or(0.0).max(0.0),
+                        start: tp.start_bracket().unwrap_or(0.0).max(0.0),
                         // At (or past) the path's length it is the path's end: no end bracket.
                         end: tp
-                            .num("EndBracket")
+                            .end_bracket()
                             .filter(|e| e.is_finite() && *e >= 0.0)
                             .filter(|e| *e < designcraft_geom::warp::PathWarp::new(&it.path.to_bezpath(), false).length() - 0.01),
-                        flip: tp.get("FlipPathEffect") == Some("Flipped"),
-                        align: names::path_align_in(tp.get("TextAlignment").unwrap_or("")),
+                        flip: tp.flipped(),
+                        align: names::path_align_in(tp.alignment().unwrap_or("")),
                     }),
                     ..Default::default()
                 };
@@ -168,14 +166,14 @@ impl<'r> Importer<'r> {
                 self.ctx.threads.push((id, story_self, "n".into(), "n".into()));
             }
         }
-        self.read_content(e, tag, id, &mut it);
+        self.read_content(e, &model_item, tag, id, &mut it);
         Some(it)
     }
 
-    fn read_content(&mut self, e: &El, tag: &str, id: ItemId, item: &mut Item) {
+    fn read_content(&mut self, e: &El, model_item: &craft_idml::model::PageItem, tag: &str, id: ItemId, item: &mut Item) {
         match tag {
             "TextFrame" => {
-                let story_self = e.get("ParentStory").unwrap_or("n").to_string();
+                let story_self = model_item.parent_story().unwrap_or("n").to_string();
                 let story = match self.story_ids.get(&story_self) {
                     Some(s) => *s,
                     None => {
@@ -205,8 +203,8 @@ impl<'r> Importer<'r> {
                 self.ctx.threads.push((
                     id,
                     story_self,
-                    e.get("PreviousTextFrame").unwrap_or("n").to_string(),
-                    e.get("NextTextFrame").unwrap_or("n").to_string(),
+                    model_item.previous_text_frame().unwrap_or("n").to_string(),
+                    model_item.next_text_frame().unwrap_or("n").to_string(),
                 ));
             }
             "Group" => {
