@@ -262,23 +262,27 @@ impl<'r> Importer<'r> {
         a.rule_above = self.rule(e, "RuleAbove");
         a.rule_below = self.rule(e, "RuleBelow");
         a.tabs = self.read_tabs(e);
-        a.list_type = e.prop("BulletsAndNumberingListType").map(|v| match v.trim() {
+        let list = craft_idml::model::ParagraphListValues::from_el(&crate::xml::to_craft(e));
+        a.list_type = list.list_type.map(|value| match value.trim() {
             "BulletList" => ListType::Bullets,
             "NumberedList" => ListType::Numbers,
             _ => ListType::None,
         });
         // A format with no counterpart (CJK, Arabic, Hebrew numbering) is left unset: decimal.
-        a.number_style = e.prop("NumberingFormat").and_then(|v| names::numbering_format_in(&v));
-        a.number_expression = e.prop("NumberingExpression");
-        a.list_separator = e.prop("BulletsTextAfter");
-        if let Some(b) = e.prop_el("BulletChar") {
-            // A glyph of a named font (`GlyphWithFont`) has no character to map to.
-            let unicode = matches!(b.get("BulletCharacterType"), Some("UnicodeOnly" | "UnicodeWithFont"));
-            if let Some(c) = b.get("BulletCharacterValue").and_then(|v| v.trim().parse::<u32>().ok()).and_then(char::from_u32).filter(|_| unicode) {
-                a.bullet_char = Some(c.to_string());
-            }
+        a.number_style = list.numbering_format.as_deref().and_then(names::numbering_format_in);
+        a.number_expression = list.expression;
+        a.list_separator = list.separator;
+        // A glyph of a named font (`GlyphWithFont`) has no character to map to.
+        let unicode = matches!(list.bullet_type.as_deref(), Some("UnicodeOnly" | "UnicodeWithFont"));
+        if unicode {
+            a.bullet_char = list
+                .bullet_value
+                .as_deref()
+                .and_then(|value| value.trim().parse::<u32>().ok())
+                .and_then(char::from_u32)
+                .map(|value| value.to_string());
         }
-        a.balance_ragged = e.prop("BalanceRaggedLines").map(|v| v.trim() != "NoBalancing" && v.trim() != "false");
+        a.balance_ragged = list.balance_ragged.map(|value| value.trim() != "NoBalancing" && value.trim() != "false");
         a.shading_on = e.boolean("ParagraphShadingOn");
         if let Some(c) = e.prop("ParagraphShadingColor") {
             a.shading_color = Some(self.swatch_ref(c.trim()));
@@ -320,28 +324,28 @@ impl<'r> Importer<'r> {
         a.shading_nonprinting = e.boolean("ParagraphShadingSuppressPrinting");
         a.span_space_before = e.num("SpanColumnMinSpaceBefore").filter(|v| v.is_finite());
         a.span_space_after = e.num("SpanColumnMinSpaceAfter").filter(|v| v.is_finite());
-        a.list_level = e.num("NumberingLevel").filter(|v| v.is_finite()).map(|v| v.round().clamp(1.0, designcraft_doc::LIST_LEVELS as f64) as u32);
-        if let Some(c) = e.prop("BulletsCharacterStyle") {
-            a.bullet_char_style = Some(self.char_style_ref(c.trim()));
+        a.list_level = list.level.map(|value| value.round().clamp(1.0, designcraft_doc::LIST_LEVELS as f64) as u32);
+        if let Some(style) = list.bullet_character_style {
+            a.bullet_char_style = Some(self.char_style_ref(style.trim()));
         }
-        if let Some(c) = e.prop("NumberingCharacterStyle") {
-            a.number_char_style = Some(self.char_style_ref(c.trim()));
+        if let Some(style) = list.numbering_character_style {
+            a.number_char_style = Some(self.char_style_ref(style.trim()));
         }
-        a.bullet_align = e.prop("BulletsAlignment").map(|v| names::list_align_in(v.trim()));
-        a.number_align = e.prop("NumberingAlignment").map(|v| names::list_align_in(v.trim()));
-        a.restart_numbers = e.boolean("NumberingApplyRestartPolicy");
-        if let Some(r) = e.prop_el("NumberingRestartPolicies") {
+        a.bullet_align = list.bullet_alignment.as_deref().map(|value| names::list_align_in(value.trim()));
+        a.number_align = list.numbering_alignment.as_deref().map(|value| names::list_align_in(value.trim()));
+        a.restart_numbers = list.restart_numbers;
+        if let Some(level) = list.restart_after_level {
             // A specific level restarts after that level; any other policy after any higher one.
-            let level = r.get("LowerLevel").and_then(|v| v.trim().parse::<u32>().ok()).unwrap_or(0);
-            a.restart_after_level = Some(if r.get("RestartPolicy").map(str::trim) == Some("SpecificPreviousLevel") { level } else { 0 });
+            a.restart_after_level = Some(if list.restart_after_specific_level { level } else { 0 });
         }
-        if let Some(f) = e.prop("BulletsFont") {
-            let f = f.trim();
-            a.bullet_font = Some(if f == "$ID/" { String::new() } else { f.split('\t').next().unwrap_or(f).to_string() });
+        if let Some(font) = list.bullet_font {
+            let font = font.trim();
+            a.bullet_font = Some(if font == "$ID/" { String::new() } else { font.split('\t').next().unwrap_or(font).to_string() });
         }
-        if let Some(f) = e.prop("BulletsFontStyle") {
-            let f = f.trim();
-            a.bullet_font_style = Some(if f == "Nothing" || f == "$ID/" { String::new() } else { f.trim_start_matches("$ID/").to_string() });
+        if let Some(style) = list.bullet_font_style {
+            let style = style.trim();
+            a.bullet_font_style =
+                Some(if style == "Nothing" || style == "$ID/" { String::new() } else { style.trim_start_matches("$ID/").to_string() });
         }
         a
     }
