@@ -1,7 +1,6 @@
-use super::common::{anchor_self, bool_s, change_type, topic_self, uid, with_props, xref_format_self};
+use super::common::{anchor_self, bool_s, change_type, uid, with_props, xref_format_self};
 use super::{
-    BTreeMap, CHAR_BUILTINS, CharFormat, El, Ex, ListType, NO_CHAR_ID, Node, PARA_BUILTINS, ParaAttrs, ParaFormat, Story, TOC_STYLE_ID, names, num,
-    st,
+    CHAR_BUILTINS, CharFormat, El, Ex, ListType, NO_CHAR_ID, Node, PARA_BUILTINS, ParaAttrs, ParaFormat, Story, TOC_STYLE_ID, names, num, st,
 };
 
 impl<'a> Ex<'a> {
@@ -18,37 +17,19 @@ impl<'a> Ex<'a> {
 
     /// `<Index>`: nested topics with their See / See also cross-references.
     pub(super) fn index_el(&mut self) -> El {
-        let mut topics = self.index_topics.clone();
-        for (_, _, target) in &self.index_xrefs {
-            topics.entry(vec![target.clone()]).or_default();
-        }
-        fn build(ex: &mut Ex, topics: &BTreeMap<Vec<String>, String>, prefix: &[String]) -> Vec<El> {
-            let mut out = Vec::new();
-            for (t, sort) in topics.iter().filter(|(t, _)| t.len() == prefix.len() + 1 && t.starts_with(prefix)) {
-                let mut el = El::new("Topic").attr("Self", topic_self(t)).attr("SortOrder", sort).attr("Name", t.last().map_or("", String::as_str));
-                for (from, kind, target) in ex.index_xrefs.clone() {
-                    if from == *t {
-                        el.push(
-                            El::new("CrossReference")
-                                .attr("Self", ex.fresh())
-                                .attr("ReferencedTopic", topic_self(std::slice::from_ref(&target)))
-                                .attr("CrossReferenceType", kind)
-                                .attr("CustomTypeString", ""),
-                        );
-                    }
-                }
-                for c in build(ex, topics, t) {
-                    el.push(c);
-                }
-                out.push(el);
-            }
-            out
-        }
-        let mut el = El::new("Index").attr("Self", "ix");
-        for t in build(self, &topics, &[]) {
-            el.push(t);
-        }
-        el
+        let model = craft_idml::model::IndexValues {
+            topics: self.index_topics.clone(),
+            cross_references: self
+                .index_xrefs
+                .iter()
+                .map(|(from, reference_type, target)| craft_idml::model::IndexCrossReferenceValues {
+                    from: from.clone(),
+                    reference_type: (*reference_type).into(),
+                    target: target.clone(),
+                })
+                .collect(),
+        };
+        crate::xml::from_craft(model.to_el(|| self.fresh()))
     }
 
     pub(super) fn footnote_option_el(&self) -> El {
@@ -165,7 +146,13 @@ impl<'a> Ex<'a> {
                 }
             };
             if let Some(kind) = kind {
-                let model = craft_idml::model::PageReference::to_el(&self.fresh(), kind, &topic_self(&r.topics), k + 1, limit);
+                let model = craft_idml::model::PageReference::to_el(
+                    &self.fresh(),
+                    kind,
+                    &craft_idml::model::IndexValues::topic_self(&r.topics),
+                    k + 1,
+                    limit,
+                );
                 return Some(crate::xml::from_craft(model));
             }
         }
