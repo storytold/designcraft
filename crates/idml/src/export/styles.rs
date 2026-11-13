@@ -164,14 +164,8 @@ impl<'a> Ex<'a> {
 
     /// A style's Export Tagging as its EPUB export tag map.
     fn export_tag_map(&mut self, t: &designcraft_doc::ExportTag) -> El {
-        El::new("StyleExportTagMap")
-            .attr("Self", self.fresh())
-            .attr("ExportType", "EPUB")
-            .attr("ExportTag", &t.tag)
-            .attr("ExportClass", &t.class)
-            .attr("ExportAttributes", "")
-            .attr("SplitDocument", bool_s(t.split))
-            .attr("EmitCss", "true")
+        let model = craft_idml::model::EpubExportTagMap { tag: t.tag.clone(), class: t.class.clone(), split_document: t.split };
+        crate::xml::from_craft(model.to_el(&self.fresh()))
     }
 
     fn append_cell_styles(&mut self, root: &mut El, styles: &designcraft_doc::Styles) {

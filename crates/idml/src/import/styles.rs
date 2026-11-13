@@ -86,8 +86,7 @@ impl<'r> Importer<'r> {
             // Split Document (EPUB only): on the style, and on its EPUB export tag map. Files write
             // `false` on every style, so either place saying `true` turns it on.
             let split = e.get("SplitDocument") == Some("true")
-                || e.elements()
-                    .any(|m| m.local() == "StyleExportTagMap" && m.get("ExportType") == Some("EPUB") && m.get("SplitDocument") == Some("true"));
+                || e.elements().filter_map(|m| craft_idml::model::EpubExportTagMap::from_el(&crate::xml::to_craft(m))).any(|tag| tag.split_document);
             self.export_tag(e, &format!("p:{name}"));
             if split {
                 self.styles.export_tags.entry(format!("p:{name}")).or_default().split = true;
@@ -209,15 +208,13 @@ impl<'r> Importer<'r> {
 
     /// Export Tagging (tag and class) of style `e` from its EPUB export tag map, under `key`.
     fn export_tag(&mut self, e: &El, key: &str) {
-        let Some(m) = e.elements().find(|m| m.local() == "StyleExportTagMap" && m.get("ExportType") == Some("EPUB")) else { return };
-        let tag = m.get("ExportTag").unwrap_or("").to_string();
-        let class = m.get("ExportClass").unwrap_or("").to_string();
-        if tag.is_empty() && class.is_empty() {
+        let Some(tag) = e.elements().find_map(|m| craft_idml::model::EpubExportTagMap::from_el(&crate::xml::to_craft(m))) else { return };
+        if tag.tag.is_empty() && tag.class.is_empty() {
             return;
         }
         let t = self.styles.export_tags.entry(key.to_string()).or_default();
-        t.tag = tag;
-        t.class = class;
+        t.tag = tag.tag;
+        t.class = tag.class;
     }
 
     fn based_on(&self, e: &El, para: bool) -> Option<String> {
