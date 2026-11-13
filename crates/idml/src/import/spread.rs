@@ -30,11 +30,11 @@ impl<'r> Importer<'r> {
     /// Ruler guides of a `<Page>` (its `<Guide>` children), `page` its rectangle in our spread
     /// coordinates. A guide's Location is measured from the ruler origin: the spread's top left, the
     /// page's, or the spine. Fit to Page off: the guide crosses the spread.
-    fn guides_of(&self, p: &El, page: Rect, spine: f64) -> Vec<Guide> {
-        p.find_all("Guide")
+    fn guides_of(&self, p: &craft_idml::model::Page, page: Rect, spine: f64) -> Vec<Guide> {
+        p.guides()
             .filter_map(|g| {
-                let at = g.num("Location").filter(|v| v.is_finite() && v.abs() < 1e7)?;
-                let orientation = if g.get("Orientation") == Some("Horizontal") { Orientation::Horizontal } else { Orientation::Vertical };
+                let at = g.location().filter(|v| v.is_finite() && v.abs() < 1e7)?;
+                let orientation = if g.horizontal() { Orientation::Horizontal } else { Orientation::Vertical };
                 let position = match (orientation, self.settings.ruler_origin) {
                     (Orientation::Horizontal, designcraft_doc::RulerOrigin::Page) => page.y0 + at,
                     (Orientation::Horizontal, _) => at,
@@ -45,10 +45,10 @@ impl<'r> Importer<'r> {
                 Some(Guide {
                     orientation,
                     position,
-                    spread: g.get("FitToPage") == Some("false"),
-                    locked: g.get("Locked") == Some("true"),
-                    layer: g.get("ItemLayer").and_then(|l| self.layer_ids.get(l)).copied(),
-                    liquid: g.get("GuideType") == Some("Liquid"),
+                    spread: !g.fit_to_page(),
+                    locked: g.locked(),
+                    layer: g.item_layer().and_then(|l| self.layer_ids.get(l)).copied(),
+                    liquid: g.liquid(),
                 })
             })
             .collect()
@@ -138,7 +138,11 @@ impl<'r> Importer<'r> {
                 parent,
                 side,
                 overridden: vec![],
-                guides: self.guides_of(p, Rect::new(r.x0 - min_x, r.y0 - min_y, r.x1 - min_x, r.y1 - min_y), spine),
+                guides: self.guides_of(
+                    &craft_idml::model::Page::from_el(&crate::xml::to_craft(p)),
+                    Rect::new(r.x0 - min_x, r.y0 - min_y, r.x1 - min_x, r.y1 - min_y),
+                    spine,
+                ),
                 show_parent_items: show,
                 liquid: names::liquid_rule_in(p.get("LayoutRule").unwrap_or("Off")),
                 transition: None,
