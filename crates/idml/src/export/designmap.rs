@@ -1,5 +1,5 @@
 use super::common::{anchor_self, bool_s, p, uid, with_props, xref_format_self};
-use super::{CHAR_BUILTINS, DOM_VERSION, Document, El, Ex, HashSet, PARA_BUILTINS, escape_id, names, num};
+use super::{CHAR_BUILTINS, Document, El, Ex, HashSet, PARA_BUILTINS, escape_id, names, num};
 
 impl<'a> Ex<'a> {
     // ---------- designmap ----------
@@ -7,17 +7,14 @@ impl<'a> Ex<'a> {
     pub(super) fn designmap(&mut self, masters: &[(String, Vec<u8>)], spreads: &[(String, Vec<u8>)], stories: &[(String, Vec<u8>)]) -> Vec<u8> {
         let d = self.d;
         let story_list: Vec<String> = d.stories.keys().map(|k| uid(k.0)).collect();
-        let mut root = El::new("Document")
-            .attr("xmlns:idPkg", craft_idml::PACKAGING_NS)
-            .attr("DOMVersion", DOM_VERSION)
-            .attr("Self", "d")
-            .attr("StoryList", story_list.join(" "))
-            .attr("Name", format!("{}.indd", d.title))
-            .attr("ZeroPoint", {
-                let [x, y] = d.zero_point();
-                format!("{} {}", num(x), num(y))
-            })
-            .attr("ActiveLayer", d.layers.first().map(|l| uid(l.id.0)).unwrap_or_else(|| "n".into()));
+        let [x, y] = d.zero_point();
+        let mut root = crate::xml::from_craft(craft_idml::designmap_root(
+            "d",
+            &story_list.join(" "),
+            &format!("{}.indd", d.title),
+            &format!("{} {}", num(x), num(y)),
+            &d.layers.first().map(|l| uid(l.id.0)).unwrap_or_else(|| "n".into()),
+        ));
         root.push(
             El::new("Language")
                 .attr("Self", "Language/$ID/[No Language]")
@@ -64,9 +61,9 @@ impl<'a> Ex<'a> {
         for t in &d.styles.mojikumi_tables {
             root.push(mojikumi_table_el(t));
         }
-        root.push(El::new("idPkg:Graphic").attr("src", "Resources/Graphic.xml"));
-        root.push(El::new("idPkg:Fonts").attr("src", "Resources/Fonts.xml"));
-        root.push(El::new("idPkg:Styles").attr("src", "Resources/Styles.xml"));
+        root.push(crate::xml::from_craft(craft_idml::designmap_include("Graphic", "Resources/Graphic.xml")));
+        root.push(crate::xml::from_craft(craft_idml::designmap_include("Fonts", "Resources/Fonts.xml")));
+        root.push(crate::xml::from_craft(craft_idml::designmap_include("Styles", "Resources/Styles.xml")));
         root.push(
             El::new("NumberingList")
                 .attr("Self", "NumberingList/$ID/[Default]")
@@ -74,7 +71,7 @@ impl<'a> Ex<'a> {
                 .attr("ContinueNumbersAcrossStories", "false")
                 .attr("ContinueNumbersAcrossDocuments", "false"),
         );
-        root.push(El::new("idPkg:Preferences").attr("src", "Resources/Preferences.xml"));
+        root.push(crate::xml::from_craft(craft_idml::designmap_include("Preferences", "Resources/Preferences.xml")));
         for c in &d.conditions {
             root.push(
                 El::new("Condition")
@@ -99,10 +96,10 @@ impl<'a> Ex<'a> {
             root.push(layer_el(l));
         }
         for (name, _) in masters {
-            root.push(El::new("idPkg:MasterSpread").attr("src", name));
+            root.push(crate::xml::from_craft(craft_idml::designmap_include("MasterSpread", name)));
         }
         for (name, _) in spreads {
-            root.push(El::new("idPkg:Spread").attr("src", name));
+            root.push(crate::xml::from_craft(craft_idml::designmap_include("Spread", name)));
         }
         // Sections.
         let mut secs = d.sections.clone();
@@ -154,7 +151,7 @@ impl<'a> Ex<'a> {
             root.push(xref_format_el(i, f));
         }
         for (name, _) in stories {
-            root.push(El::new("idPkg:Story").attr("src", name));
+            root.push(crate::xml::from_craft(craft_idml::designmap_include("Story", name)));
         }
         // The document's own hyperlinks (#1446): a destination element, a source element for a
         // page item (a text source is already in its story) and a `Hyperlink` joining them.
