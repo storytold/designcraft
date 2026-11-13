@@ -1,4 +1,4 @@
-use super::{Affine, Color, El, lab};
+use super::{Affine, Color, lab};
 
 /// An XMP date property, written as an element or an attribute.
 pub(super) fn xmp_date(xmp: &str, key: &str) -> Option<i64> {
@@ -35,11 +35,6 @@ pub(super) fn parse_affine(s: Option<&str>) -> Affine {
 /// IDML tint (percent; `-1` = the colour's own tint, 100 %) → 0..1.
 pub(super) fn tint(v: Option<f64>) -> Option<f32> {
     v.map(|t| if t < 0.0 || t.is_nan() { 1.0 } else { (t / 100.0).min(1.0) as f32 })
-}
-
-/// A cell span count; an infinite span is kept so it clamps to the table edge.
-pub(super) fn span(e: &El, k: &str) -> f64 {
-    e.prop(k).and_then(|v| v.trim().parse::<f64>().ok()).unwrap_or(1.0)
 }
 
 pub(super) fn finite(v: Option<f64>) -> Option<f64> {

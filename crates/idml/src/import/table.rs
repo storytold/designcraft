@@ -1,4 +1,4 @@
-use super::values::{span, tint};
+use super::values::tint;
 use super::{CellRange, El, Importer, RowHeightMode, StoryId, Table, names, swatch};
 
 /// Cells every table in one import may hold between them. A `Cell` carries a whole story, so
@@ -149,16 +149,16 @@ impl<'r> Importer<'r> {
         column_strokes.apply_to(&mut t.options.column_strokes);
         let mut regions = Vec::new();
         for ce in e.find_all("Cell") {
-            let Some((c, r)) =
-                ce.get("Name").and_then(|n| n.split_once(':')).and_then(|(a, b)| Some((a.parse::<usize>().ok()?, b.parse::<usize>().ok()?)))
-            else {
+            let model_cell = craft_idml::model::Cell::from_el(&crate::xml::to_craft(ce));
+            let Some((c, r)) = model_cell.position().map(|(c, r)| (c as usize, r as usize)) else {
                 continue;
             };
             if r >= nr || c >= nc {
                 continue;
             }
-            let rs = (span(ce, "RowSpan").max(1.0) as usize).min(nr - r);
-            let cs = (span(ce, "ColumnSpan").max(1.0) as usize).min(nc - c);
+            let (cs, rs) = model_cell.span();
+            let rs = (rs as usize).min(nr - r);
+            let cs = (cs as usize).min(nc - c);
             let mut cell = t.cell(r, c).cloned().unwrap_or_default();
             let cell_style = ce.get("AppliedCellStyle").map(|r| self.cell_style_ref(r)).unwrap_or_else(|| designcraft_doc::NO_CELL_STYLE.into());
             if cell_style != designcraft_doc::NO_CELL_STYLE {
