@@ -418,6 +418,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("New shortcut: {chord}", "Nuevo atajo: {chord}"),
     ("Next Page Number", "Número de página siguiente"),
     ("No contributor data was built into this copy.", "Esta copia no incluye datos de colaboradores."),
+    ("No style named {name}", "Ningún estilo llamado {name}"),
     ("No matches", "Sin coincidencias"),
     ("No model credits were built into this copy.", "Esta copia no incluye créditos de modelos."),
     ("Nonbreaking Hyphen", "Guion de no separación"),

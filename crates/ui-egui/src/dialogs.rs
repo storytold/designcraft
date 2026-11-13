@@ -5439,7 +5439,7 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
         },
         Some(s) => s.clone(),
         None => {
-            ui.label(format!("No style named {name}"));
+            ui.label(crate::i18n::tr(&app.ui.language, "No style named {name}").replace("{name}", &name));
             return;
         }
     };
@@ -7150,7 +7150,7 @@ fn character_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
         _ if new => designcraft_doc::CharacterStyle { name: String::new(), based_on: None, chars: Default::default(), shortcut: String::new() },
         Some(s) if name != designcraft_doc::NO_CHAR_STYLE => s.clone(),
         _ => {
-            crate::rtl::label(ui, format!("No style named {name}"));
+            crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "No style named {name}").replace("{name}", &name));
             return;
         }
     };
