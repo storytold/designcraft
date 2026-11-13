@@ -33,7 +33,6 @@ mod table;
 mod text_attrs;
 mod values;
 
-use document::IndexTopic;
 use frame::margins_of_el;
 use package::Package;
 #[cfg(test)]
@@ -233,7 +232,7 @@ struct Importer<'r> {
     xref_format_names: HashMap<String, String>,
     xref_formats: Vec<designcraft_doc::XrefFormat>,
     /// Index topic Self → topic path and per-level sort keys; topic cross-references.
-    index_topics: HashMap<String, IndexTopic>,
+    index_topics: HashMap<String, craft_idml::model::IndexTopicPath>,
     index_xrefs: Vec<designcraft_doc::IndexRef>,
     /// The file's text variables (`None`: it defines none) and their Self → index.
     text_vars: Option<Vec<designcraft_doc::vars::TextVariable>>,
@@ -516,7 +515,22 @@ impl<'r> Importer<'r> {
         }
         self.read_hyperlinks(top);
         if let Some(ix) = top_els_of(top, TopKind::Index).next() {
-            self.index_topics_of(&ix, &IndexTopic::default());
+            let index = craft_idml::model::IndexDocument::from_el(&crate::xml::to_craft(&ix));
+            self.index_topics = index.topics;
+            for reference in index.cross_references {
+                let target = reference
+                    .referenced_topic
+                    .as_deref()
+                    .and_then(|id| self.index_topics.get(id))
+                    .map(|topic| topic.path.join(": "))
+                    .unwrap_or_default();
+                use designcraft_doc::index::IndexRange as R;
+                let range = match reference.reference_type.as_deref() {
+                    Some("SeeAlso") | Some("SeeAlsoHerein") => R::SeeAlso(target),
+                    _ => R::See(target),
+                };
+                self.index_xrefs.push(designcraft_doc::IndexRef { topics: reference.from.path, sort: reference.from.sort, range });
+            }
         }
         for e in top_els_of(top, TopKind::TextVariable) {
             self.text_variable(&e);

@@ -1,27 +1,6 @@
 use super::values::tint;
 use super::{BaselineGrid, El, GridRelative, Importer, PARA_BUILTINS, TopKind, TopLevelNode, names};
 
-/// IDML stores a sort key on each topic, rather than on its page references.
-#[derive(Clone, Default)]
-pub(super) struct IndexTopic {
-    pub(super) path: Vec<String>,
-    pub(super) sort: Vec<String>,
-}
-
-impl IndexTopic {
-    fn child(&self, topic: &El) -> Self {
-        let mut path = self.path.clone();
-        path.push(topic.get("Name").unwrap_or("").to_string());
-        let mut sort = self.sort.clone();
-        if let Some(key) = topic.get("SortOrder").filter(|key| !key.is_empty()) {
-            // Keep empty positions before a child's key, but omit trailing defaults.
-            sort.resize(self.path.len(), String::new());
-            sort.push(key.to_string());
-        }
-        Self { path, sort }
-    }
-}
-
 impl<'r> Importer<'r> {
     pub(super) fn doc_prefs(&mut self, e: &El) {
         let s = &mut self.settings;
@@ -93,36 +72,6 @@ impl<'r> Importer<'r> {
         }
         if let Some(v) = values.grids_in_back {
             s.grid.in_back = v;
-        }
-    }
-
-    /// Index topics (recursively); at the root, their See / See also cross-references too.
-    pub(super) fn index_topics_of(&mut self, e: &El, prefix: &IndexTopic) {
-        for t in e.find_all("Topic") {
-            let topic = prefix.child(t);
-            if let Some(me) = t.get("Self") {
-                self.index_topics.insert(me.to_string(), topic.clone());
-            }
-            self.index_topics_of(t, &topic);
-        }
-        if !prefix.path.is_empty() {
-            return;
-        }
-        let mut stack = vec![(e, IndexTopic::default())];
-        while let Some((el, prefix)) = stack.pop() {
-            for t in el.find_all("Topic") {
-                let topic = prefix.child(t);
-                for x in t.find_all("CrossReference") {
-                    let target = x.get("ReferencedTopic").and_then(|r| self.index_topics.get(r)).map(|t| t.path.join(": ")).unwrap_or_default();
-                    use designcraft_doc::index::IndexRange as R;
-                    let range = match x.get("CrossReferenceType") {
-                        Some("SeeAlso") | Some("SeeAlsoHerein") => R::SeeAlso(target),
-                        _ => R::See(target),
-                    };
-                    self.index_xrefs.push(designcraft_doc::IndexRef { topics: topic.path.clone(), sort: topic.sort.clone(), range });
-                }
-                stack.push((t, topic));
-            }
         }
     }
 
