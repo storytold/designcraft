@@ -3519,3 +3519,91 @@ fn zoom_commands_zoom_around_the_pointer_when_it_is_over_the_canvas() {
     let kept = under(&app, rect.center());
     assert!((kept.x - centre.x).abs() < 1e-3 && (kept.y - centre.y).abs() < 1e-3);
 }
+
+#[test]
+fn window_menu_commands_restore_hidden_panels() {
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.session.execute("file.new", &json!({})).unwrap();
+    let ctx = egui::Context::default();
+    let frame = |app: &mut crate::DesignApp| {
+        for _ in 0..2 {
+            let input =
+                egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))), ..Default::default() };
+            let mut out = ctx.run_ui(input, |ui| {
+                app.logic(&ui.ctx().clone());
+                app.ui(ui);
+            });
+            out.textures_delta.clear();
+        }
+    };
+    let props_tab = crate::panel_docking::tab_id("properties");
+    frame(&mut app);
+    assert!(ctx.read_response(props_tab).is_some(), "properties panel starts visible");
+
+    // Window › Properties unhides panels hidden by Tab.
+    run_ui(&mut app, "window.hidePanels", &json!({})).unwrap().unwrap();
+    assert_eq!(app.ui.hidden_panels, 1);
+    frame(&mut app);
+    assert!(ctx.read_response(props_tab).is_none());
+    run_ui(&mut app, "window.panel", &json!({"panel": "properties"})).unwrap().unwrap();
+    assert_eq!(app.ui.hidden_panels, 0);
+    frame(&mut app);
+    assert!(ctx.read_response(props_tab).is_some(), "Window > Properties restores hidden panels");
+
+    // Shift+Tab + Type/Window panel commands unhide and reveal the requested panel.
+    run_ui(&mut app, "window.hidePanelsExceptTools", &json!({})).unwrap().unwrap();
+    assert_eq!(app.ui.hidden_panels, 2);
+    run_ui(&mut app, "app.characterPanel", &json!({})).unwrap().unwrap();
+    assert_eq!(app.ui.hidden_panels, 0);
+    assert!(crate::panel_docking::showing(&app, "character"));
+
+    run_ui(&mut app, "window.hidePanels", &json!({})).unwrap().unwrap();
+    run_ui(&mut app, "app.paragraphStylesPanel", &json!({})).unwrap().unwrap();
+    assert_eq!(app.ui.hidden_panels, 0);
+    assert!(crate::panel_docking::showing(&app, "paragraphStyles"));
+
+    // Float-only Tabs: opening when hidden reveals it; choosing it while already open but hidden
+    // reveals it instead of closing it invisibly.
+    run_ui(&mut app, "window.hidePanels", &json!({})).unwrap().unwrap();
+    run_ui(&mut app, "window.panel", &json!({"panel": "tabs"})).unwrap().unwrap();
+    assert_eq!(app.ui.hidden_panels, 0);
+    assert!(app.ui.floating.iter().any(|(p, _)| p == "tabs"));
+
+    run_ui(&mut app, "window.hidePanels", &json!({})).unwrap().unwrap();
+    run_ui(&mut app, "window.panel", &json!({"panel": "tabs"})).unwrap().unwrap();
+    assert_eq!(app.ui.hidden_panels, 0);
+    assert!(app.ui.floating.iter().any(|(p, _)| p == "tabs"), "Tabs stays open when unhidden");
+
+    // Table toggle activates instead of closing while hidden.
+    run_ui(&mut app, "window.panel", &json!({"panel": "table"})).unwrap().unwrap();
+    assert!(crate::panel_docking::showing(&app, "table"));
+    run_ui(&mut app, "window.hidePanels", &json!({})).unwrap().unwrap();
+    run_ui(&mut app, "app.tablePanel", &json!({})).unwrap().unwrap();
+    assert_eq!(app.ui.hidden_panels, 0);
+    assert!(crate::panel_docking::showing(&app, "table"));
+
+    // An open flyout in an iconic column isn't closed by Window › <panel> while hidden.
+    run_ui(&mut app, "window.workspace", &json!({"name": "Typography"})).unwrap().unwrap();
+    run_ui(&mut app, "window.panel", &json!({"panel": "character"})).unwrap().unwrap();
+    assert_eq!(app.ui.docking_flyout.as_deref(), Some("character"));
+    run_ui(&mut app, "window.hidePanels", &json!({})).unwrap().unwrap();
+    run_ui(&mut app, "window.panel", &json!({"panel": "character"})).unwrap().unwrap();
+    assert_eq!(app.ui.hidden_panels, 0);
+    assert!(crate::panel_docking::showing(&app, "character"));
+
+    // Window › Workspace › Reset and Control restore hidden panels.
+    run_ui(&mut app, "window.workspace", &json!({"name": "Essentials"})).unwrap().unwrap();
+    run_ui(&mut app, "window.hidePanels", &json!({})).unwrap().unwrap();
+    run_ui(&mut app, "window.resetWorkspace", &json!({})).unwrap().unwrap();
+    assert_eq!(app.ui.hidden_panels, 0);
+    frame(&mut app);
+    assert!(ctx.read_response(props_tab).is_some(), "Reset Workspace restores hidden panels");
+
+    app.ui.control_bar = true;
+    run_ui(&mut app, "window.hidePanels", &json!({})).unwrap().unwrap();
+    assert_eq!(checked(&app, "window.controlBar", &Value::Null), Some(false));
+    run_ui(&mut app, "window.controlBar", &json!({})).unwrap().unwrap();
+    assert_eq!(app.ui.hidden_panels, 0);
+    assert!(app.ui.control_bar);
+    assert_eq!(checked(&app, "window.controlBar", &Value::Null), Some(true));
+}
