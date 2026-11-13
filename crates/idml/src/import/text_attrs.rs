@@ -69,41 +69,41 @@ impl<'r> Importer<'r> {
         a.v_scale = values.vertical_scale.map(|v| v / 100.0);
         a.baseline_shift = values.baseline_shift;
         a.skew = values.skew;
-        if let Some(r) = e.prop("FillColor") {
+        let appearance = craft_idml::model::CharacterAppearanceValues::from_el(&crate::xml::to_craft(e));
+        if let Some(r) = appearance.fill_color {
             a.fill = Some(self.swatch_ref(r.trim()));
         }
-        a.fill_tint = tint(e.num("FillTint"));
-        if let Some(r) = e.prop("StrokeColor") {
+        a.fill_tint = tint(appearance.fill_tint);
+        if let Some(r) = appearance.stroke_color {
             a.stroke = Some(self.swatch_ref(r.trim()));
         }
-        a.stroke_tint = tint(e.num("StrokeTint"));
-        a.stroke_weight = e.num("StrokeWeight");
+        a.stroke_tint = tint(appearance.stroke_tint);
+        a.stroke_weight = appearance.stroke_weight;
         // Text strokes are centred on the outline or lie outside it, behind the fill.
-        a.stroke_behind_fill = e.prop("StrokeAlignment").and_then(|v| match v.trim() {
+        a.stroke_behind_fill = appearance.stroke_alignment.as_deref().and_then(|v| match v.trim() {
             "OutsideAlignment" => Some(true),
             "CenterAlignment" => Some(false),
             _ => None,
         });
         a.capitalization = e.prop("Capitalization").and_then(|v| names::caps_in(v.trim()));
         a.position = e.prop("Position").and_then(|v| names::position_in(v.trim()));
-        a.underline = e.boolean("Underline");
-        a.strikethrough = e.boolean("StrikeThru");
-        a.ligatures = e.boolean("Ligatures");
+        a.underline = appearance.underline;
+        a.strikethrough = appearance.strikethrough;
+        a.ligatures = appearance.ligatures;
         // Underline / strikethrough options (-9999 = automatic).
-        for k in ["Underline", "StrikeThru"] {
-            let num = |n: &str| e.num(&format!("{k}{n}")).filter(|v| *v > -9000.0);
+        for (underline, values) in [(true, appearance.underline_options), (false, appearance.strikethrough_options)] {
             // An explicit Text Color resets an inherited swatch; absence still inherits.
             // Resolve the sentinel before swatch_ref, which maps unknown names to [None].
-            let color = e.prop(&format!("{k}Color")).map(|r| if r.trim() == "Text Color" { String::new() } else { self.swatch_ref(r.trim()) });
-            let tint = tint(e.num(&format!("{k}Tint")));
-            if k == "Underline" {
-                a.underline_weight = num("Weight").map(Some);
-                a.underline_offset = num("Offset").map(Some);
+            let color = values.color.map(|r| if r.trim() == "Text Color" { String::new() } else { self.swatch_ref(r.trim()) });
+            let tint = tint(values.tint);
+            if underline {
+                a.underline_weight = values.weight.map(Some);
+                a.underline_offset = values.offset.map(Some);
                 a.underline_color = color;
                 a.underline_tint = tint;
             } else {
-                a.strikethrough_weight = num("Weight").map(Some);
-                a.strikethrough_offset = num("Offset").map(Some);
+                a.strikethrough_weight = values.weight.map(Some);
+                a.strikethrough_offset = values.offset.map(Some);
                 a.strikethrough_color = color;
                 a.strikethrough_tint = tint;
             }
