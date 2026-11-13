@@ -128,8 +128,25 @@ pub struct PdfExportSettings {
     pub preset: String,
     /// PDF standard (`none`, `x1a`, `x4`, `a2b`).
     pub standard: String,
-    /// Compression › Compress images (JPEG).
+    /// `file.exportPdf`'s legacy `compressImages` (JPEG quality 90): the dialog's Compression per
+    /// image class replaces it, so the dialog clears it (settings that had it on now get the
+    /// classes' Image Quality, maximum JPEG by default).
     pub compress_images: bool,
+    /// Compression › Color Images: Bicubic Downsampling to `color_ppi` for images above
+    /// `color_above`; Image Quality `maximum`, `high`, `medium`, `low`, `minimum` or `lossless`.
+    pub color_downsample: bool,
+    pub color_ppi: String,
+    pub color_above: String,
+    pub color_quality: String,
+    /// Compression › Grayscale Images.
+    pub gray_downsample: bool,
+    pub gray_ppi: String,
+    pub gray_above: String,
+    pub gray_quality: String,
+    /// Compression › Monochrome Images (always lossless).
+    pub mono_downsample: bool,
+    pub mono_ppi: String,
+    pub mono_above: String,
     /// Transparency flattener preset (`""` = none, `high`, `medium`, `low`).
     pub flatten: String,
     pub spreads: bool,
@@ -149,6 +166,19 @@ impl Default for PdfExportSettings {
             preset: "Desktop Printing".into(),
             standard: "none".into(),
             compress_images: false,
+            // As the Desktop Printing preset: colour and grey to 300 ppi above 450 at maximum
+            // JPEG quality, monochrome to 1200 ppi above 1800.
+            color_downsample: true,
+            color_ppi: "300".into(),
+            color_above: "450".into(),
+            color_quality: "maximum".into(),
+            gray_downsample: true,
+            gray_ppi: "300".into(),
+            gray_above: "450".into(),
+            gray_quality: "maximum".into(),
+            mono_downsample: true,
+            mono_ppi: "1200".into(),
+            mono_above: "1800".into(),
             flatten: "".into(),
             spreads: false,
             bleed: true,

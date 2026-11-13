@@ -3403,13 +3403,23 @@ fn pdf_export_defaults() {
     // serde_json::Map keeps keys sorted.
     let expected = [
         "bleed",
-        "compressImages",
+        "colorAbove",
+        "colorDownsample",
+        "colorPpi",
+        "colorQuality",
         "flatten",
+        "grayAbove",
+        "grayDownsample",
+        "grayPpi",
+        "grayQuality",
         "marksBleed",
         "marksCrop",
         "marksOffset",
         "marksPageInfo",
         "marksWeight",
+        "monoAbove",
+        "monoDownsample",
+        "monoPpi",
         "preset",
         "spreads",
         "standard",
@@ -3418,7 +3428,12 @@ fn pdf_export_defaults() {
     assert_eq!(keys, expected);
     assert_eq!(d.fields["preset"].as_str(), Some("Desktop Printing"));
     assert_eq!(d.fields["standard"].as_str(), Some("none"));
-    assert_eq!(d.fields["compressImages"].as_bool(), Some(false));
+    // The defaults are the Desktop Printing preset's.
+    let mut preset = d.clone();
+    apply_pdf_preset(&mut preset, "Desktop Printing");
+    assert_eq!(preset.fields, d.fields);
+    assert_eq!(d.fields["colorPpi"].as_str(), Some("300"));
+    assert_eq!(d.fields["monoAbove"].as_str(), Some("1800"));
     assert_eq!(d.fields["flatten"].as_str(), Some(""));
     assert_eq!(d.fields["spreads"].as_bool(), Some(false));
     assert_eq!(d.fields["bleed"].as_bool(), Some(true));
@@ -3428,6 +3443,51 @@ fn pdf_export_defaults() {
     assert_eq!(d.fields["marksWeight"].as_str(), Some("0.25"));
     assert_eq!(d.fields["marksOffset"].as_str(), Some("6"));
     assert_eq!(d.fields["tagged"].as_bool(), Some(true));
+}
+
+/// The `images` option: a class without downsampling sends no ppi, ZIP sends no quality,
+/// monochrome never has one, an empty threshold is left to the command's default.
+#[test]
+fn pdf_export_images_param() {
+    let mut d = Dialog::new("pdfExport", json!({}));
+    assert_eq!(
+        pdf_export_params(&d)["images"],
+        json!({
+            "color": {"downsample": 300.0, "above": 450.0, "quality": "maximum"},
+            "gray": {"downsample": 300.0, "above": 450.0, "quality": "maximum"},
+            "mono": {"downsample": 1200.0, "above": 1800.0}
+        })
+    );
+    assert!(pdf_export_params(&d).get("compressImages").is_none(), "Compression per class replaces it");
+    d.fields.insert("grayDownsample".into(), json!(false));
+    d.fields.insert("grayQuality".into(), json!("lossless"));
+    d.fields.insert("colorQuality".into(), json!("medium"));
+    d.fields.insert("colorAbove".into(), json!(""));
+    d.fields.insert("monoPpi".into(), json!("x"));
+    assert_eq!(pdf_images_param(&d), json!({"color": {"downsample": 300.0, "quality": "medium"}, "gray": {}, "mono": {}}));
+}
+
+/// A class that downsamples without a resolution that reads keeps the dialog open with the
+/// reason, instead of exporting without downsampling; off, its resolutions don't matter.
+#[test]
+fn pdf_export_unreadable_resolution_keeps_the_dialog_open() {
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.session.execute("file.new", &json!({})).unwrap();
+    open_pdf_export(&mut app);
+    app.ui.dialog.as_mut().unwrap().fields.insert("grayPpi".into(), json!("x"));
+    let e = confirm(&mut app).unwrap_err();
+    assert!(e.starts_with("Grayscale Images"), "{e}");
+    let d = app.ui.dialog.as_ref().expect("still open");
+    assert_eq!(d.s("status"), e);
+    let mut d = d.clone();
+    d.fields.insert("grayAbove".into(), json!("0"));
+    d.fields.insert("grayDownsample".into(), json!(false));
+    assert!(pdf_images_error(&d).is_none(), "off, its resolutions don't count");
+    d.fields.insert("grayDownsample".into(), json!(true));
+    d.fields.insert("grayPpi".into(), json!("300"));
+    assert!(pdf_images_error(&d).is_some(), "a threshold of 0 is refused");
+    d.fields.insert("grayAbove".into(), json!(""));
+    assert!(pdf_images_error(&d).is_none(), "an empty threshold is 1.5 × the resolution");
 }
 
 #[test]
@@ -3444,7 +3504,9 @@ fn pdf_export_preset_high_quality_print_keeps_flatten() {
     d.fields.insert("flatten".into(), json!("medium"));
     apply_pdf_preset(&mut d, "Desktop Printing");
     assert_eq!(d.s("standard"), "none");
-    assert!(!d.b("compressImages"));
+    assert!(d.b("colorDownsample") && d.s("colorPpi") == "300" && d.s("colorAbove") == "450");
+    assert_eq!((d.s("colorQuality"), d.s("grayQuality")), ("maximum".to_string(), "maximum".to_string()));
+    assert!(d.s("monoPpi") == "1200" && d.s("monoAbove") == "1800" && d.s("monoQuality").is_empty());
     assert!(!d.b("marksCrop"));
     assert!(!d.b("marksBleed"));
     assert!(!d.b("marksPageInfo"));
@@ -3457,7 +3519,7 @@ fn pdf_export_preset_press_quality_keeps_flatten() {
     d.fields.insert("flatten".into(), json!("high"));
     apply_pdf_preset(&mut d, "Commercial Printing");
     assert_eq!(d.s("standard"), "none");
-    assert!(d.b("compressImages"));
+    assert!(d.s("colorPpi") == "300" && d.s("colorQuality") == "maximum");
     assert!(d.b("marksCrop"));
     assert!(d.b("marksBleed"));
     assert!(!d.b("marksPageInfo"));
@@ -3469,7 +3531,8 @@ fn pdf_export_preset_smallest_file_size_sets_flatten_low() {
     let mut d = Dialog::new("pdfExport", json!({}));
     apply_pdf_preset(&mut d, "Screen and Email");
     assert_eq!(d.s("standard"), "none");
-    assert!(d.b("compressImages"));
+    assert!(d.s("colorPpi") == "100" && d.s("colorAbove") == "150" && d.s("colorQuality") == "low");
+    assert!(d.s("grayPpi") == "100" && d.s("grayQuality") == "low" && d.s("monoPpi") == "300" && d.s("monoAbove") == "450");
     assert!(!d.b("marksCrop"));
     assert!(!d.b("marksBleed"));
     assert!(!d.b("marksPageInfo"));
@@ -3493,7 +3556,7 @@ fn pdf_export_preset_pdf_x4_keeps_flatten() {
     d.fields.insert("flatten".into(), json!("medium"));
     apply_pdf_preset(&mut d, "PDF/X-4");
     assert_eq!(d.s("standard"), "x4");
-    assert!(!d.b("compressImages"));
+    assert!(d.s("colorPpi") == "300" && d.s("colorQuality") == "maximum");
     assert!(d.b("marksCrop"));
     assert!(d.b("marksBleed"));
     assert!(!d.b("marksPageInfo"));
@@ -3506,7 +3569,7 @@ fn pdf_export_preset_pdf_a2b_keeps_flatten() {
     d.fields.insert("flatten".into(), json!("low"));
     apply_pdf_preset(&mut d, "PDF/A-2b");
     assert_eq!(d.s("standard"), "a2b");
-    assert!(!d.b("compressImages"));
+    assert!(d.s("colorPpi") == "300" && d.s("colorQuality") == "maximum");
     assert!(!d.b("marksCrop"));
     assert!(!d.b("marksBleed"));
     assert!(!d.b("marksPageInfo"));
@@ -3529,6 +3592,14 @@ fn open_pdf_export_seeds_fields_from_settings() {
     assert!(d.b("marksCrop"));
     assert_eq!(d.s("pages"), "all");
     assert_eq!(d.s("flatten"), "medium", "empty flatten falls back to the global flattener");
+    // Compression comes back as it was last used.
+    app.ui.pdf_export.color_ppi = "200".into();
+    app.ui.pdf_export.color_quality = "low".into();
+    app.ui.pdf_export.mono_downsample = false;
+    open_pdf_export(&mut app);
+    let d = app.ui.dialog.as_ref().unwrap();
+    assert_eq!((d.s("colorPpi"), d.s("colorQuality")), ("200".to_string(), "low".to_string()));
+    assert!(!d.b("monoDownsample"));
     assert_eq!(d.s("title"), "", "no document → empty title");
 
     // A non-empty persisted flatten is used verbatim, not the global fallback.
@@ -3543,7 +3614,7 @@ fn open_pdf_export_seeds_fields_from_settings() {
 fn pdf_export_preset_custom_changes_nothing() {
     let mut d = Dialog::new("pdfExport", json!({}));
     d.fields.insert("standard".into(), json!("x4"));
-    d.fields.insert("compressImages".into(), json!(true));
+    d.fields.insert("colorQuality".into(), json!("low"));
     d.fields.insert("marksCrop".into(), json!(true));
     d.fields.insert("marksBleed".into(), json!(true));
     d.fields.insert("marksPageInfo".into(), json!(true));

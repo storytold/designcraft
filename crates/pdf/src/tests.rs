@@ -312,6 +312,11 @@ pub(crate) fn blank_png(side: u32) -> Vec<u8> {
 }
 
 fn place(d: &mut Document, data: Vec<u8>, px: (u32, u32)) {
+    place_at(d, data, px, designcraft_geom::Affine::translate((72.0, 72.0)) * designcraft_geom::Affine::scale(50.0));
+}
+
+/// `place` with the graphic's transform in its frame.
+fn place_at(d: &mut Document, data: Vec<u8>, px: (u32, u32), xf: designcraft_geom::Affine) {
     let asset = designcraft_doc::AssetId(d.alloc());
     let mime = designcraft_images::mime(&data).into();
     d.assets.insert(
@@ -332,7 +337,7 @@ fn place(d: &mut Document, data: Vec<u8>, px: (u32, u32)) {
         layer_options: None,
         asset,
         size: (px.0 as f64, px.1 as f64),
-        xf: designcraft_geom::Affine::translate((72.0, 72.0)) * designcraft_geom::Affine::scale(50.0),
+        xf,
         clip: None,
         auto_fit: designcraft_doc::Fitting::FillProportionally,
         fit_align: 4,
@@ -1117,4 +1122,181 @@ fn an_item_a_parent_overrode_and_deleted_is_not_exported() {
     assert!(has_box(&d), "the page exports parent A's box through parent B");
     std::sync::Arc::make_mut(&mut d.parents[1]).pages[0].overridden.push(box_id);
     assert!(!has_box(&d), "removed on B, so the page using B exports no box");
+}
+
+/// Width, height and filter of each image XObject (soft masks aside).
+fn image_dicts(bytes: &[u8]) -> Vec<(i32, i32, String)> {
+    use hayro_syntax::object::Name;
+    let pdf = hayro_syntax::Pdf::new(bytes.to_vec()).expect("parse");
+    let mut out: Vec<(i32, i32, String)> = pdf
+        .objects()
+        .into_iter()
+        .filter_map(|o| o.into_stream())
+        .filter(|s| s.dict().get::<Name>("Subtype").is_some_and(|n| n.as_str() == "Image") && s.dict().get::<Name>("SMask").is_none())
+        .map(|s| {
+            let d = s.dict();
+            (
+                d.get::<i32>("Width").unwrap_or(-1),
+                d.get::<i32>("Height").unwrap_or(-1),
+                d.get::<Name>("Filter").map_or("none".into(), |n| n.as_str().to_string()),
+            )
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+fn compressed(d: &Document, images: ImageCompression) -> Vec<(i32, i32, String)> {
+    image_dicts(&export_pdf(d, &Cache::new(), &PdfOptions { images, ..Default::default() }).unwrap())
+}
+
+fn colour(c: ImageClass) -> ImageCompression {
+    ImageCompression { color: c, ..ImageCompression::NONE }
+}
+
+fn class(to: f64, above: f64, quality: Option<u8>) -> ImageClass {
+    ImageClass { downsample_to: Some(to), above, quality }
+}
+
+fn grey_png(f: impl Fn(u32) -> u8) -> Vec<u8> {
+    let img = image::GrayImage::from_fn(8, 8, |x, _| image::Luma([f(x)]));
+    let mut b = Vec::new();
+    img.write_to(&mut std::io::Cursor::new(&mut b), image::ImageFormat::Png).unwrap();
+    b
+}
+
+/// Compression: an image above its class's threshold is bicubic-downsampled to the class's
+/// resolution; a JPEG quality makes DCT streams; a JPEG that isn't downsampled is passed through.
+#[test]
+fn compression_downsamples_per_class_and_sets_jpeg_quality() {
+    // `place` scales 50×: 8 px over 400 pt = 1.44 ppi.
+    let mut d = doc_with_text("x");
+    place(&mut d, raster(image::ImageFormat::Png, false), (8, 8));
+    // Above 1.2 ppi → down to 0.72 ppi = 4×4, lossless.
+    assert_eq!(compressed(&d, colour(class(0.72, 1.2, None))), [(4, 4, "FlateDecode".into())]);
+    // Under the threshold every pixel stays.
+    assert_eq!(compressed(&d, colour(class(0.72, 2.0, None))), [(8, 8, "FlateDecode".into())]);
+    // A quality makes a JPEG, downsampled or not.
+    assert_eq!(compressed(&d, colour(class(0.72, 1.2, Some(60)))), [(4, 4, "DCTDecode".into())]);
+    assert_eq!(compressed(&d, colour(ImageClass { quality: Some(60), ..ImageClass::LOSSLESS })), [(8, 8, "DCTDecode".into())]);
+    assert_eq!(compressed(&d, ImageCompression::NONE), [(8, 8, "FlateDecode".into())]);
+
+    // A placed JPEG is passed through unless downsampled.
+    let mut j = doc_with_text("x");
+    let bytes = raster(image::ImageFormat::Jpeg, false);
+    place(&mut j, bytes.clone(), (8, 8));
+    let pdf =
+        export_pdf(&j, &Cache::new(), &PdfOptions { images: colour(ImageClass { quality: Some(20), ..ImageClass::LOSSLESS }), ..Default::default() })
+            .unwrap();
+    assert!(pdf.windows(bytes.len()).any(|w| w == bytes.as_slice()), "the JPEG's own bytes");
+    assert_eq!(compressed(&j, colour(class(0.72, 1.2, Some(60)))), [(4, 4, "DCTDecode".into())]);
+
+    // A CMYK TIFF is downsampled too, lossless and still CMYK.
+    let (tif, _) = cmyk_tiff();
+    let mut c = doc_with_text("x");
+    place(&mut c, tif, (4, 2));
+    let pdf = export_pdf(&c, &Cache::new(), &PdfOptions { images: colour(class(0.72, 1.2, Some(60))), ..Default::default() }).unwrap();
+    assert_eq!(image_dicts(&pdf), [(2, 1, "FlateDecode".into())]);
+    assert_eq!(image_xobjects(&pdf)[0].0, "DeviceCMYK");
+
+    // A CMYK JPEG keeps its inks: passed through even when its class would downsample it.
+    let cmyk = crate::image_fixtures::cmyk_jpeg([0, 255, 255, 255], Some(0));
+    let mut k = doc_with_text("x");
+    place(&mut k, cmyk.clone(), (8, 8));
+    let pdf = export_pdf(&k, &Cache::new(), &PdfOptions { images: colour(class(0.72, 1.2, Some(60))), ..Default::default() }).unwrap();
+    assert!(pdf.windows(cmyk.len()).any(|w| w == cmyk.as_slice()), "the CMYK JPEG's own bytes");
+}
+
+/// The grey class governs grey images; monochrome ones take the monochrome class and are never
+/// JPEG.
+#[test]
+fn compression_grey_and_monochrome_classes() {
+    let mut g = doc_with_text("x");
+    place(&mut g, grey_png(|x| if x < 4 { 40 } else { 200 }), (8, 8));
+    let images = ImageCompression { gray: class(0.72, 1.2, Some(60)), ..ImageCompression::NONE };
+    assert_eq!(compressed(&g, images), [(4, 4, "DCTDecode".into())]);
+    // The colour class leaves it alone.
+    assert_eq!(compressed(&g, colour(class(0.72, 1.2, Some(60)))), [(8, 8, "FlateDecode".into())]);
+
+    let mut m = doc_with_text("x");
+    place(&mut m, grey_png(|x| if x < 4 { 0 } else { 255 }), (8, 8));
+    let images = ImageCompression { gray: class(0.72, 1.2, Some(60)), mono: class(0.36, 1.2, Some(60)), ..ImageCompression::NONE };
+    assert_eq!(compressed(&m, images), [(2, 2, "FlateDecode".into())]);
+    // Monochrome follows its own class even when the grey one would downsample it.
+    let images = ImageCompression { gray: class(0.72, 1.2, Some(60)), mono: ImageClass::LOSSLESS, ..ImageCompression::NONE };
+    assert_eq!(compressed(&m, images), [(8, 8, "FlateDecode".into())]);
+
+    // A grey JPEG the grey class doesn't downsample is decoded only to tell whether it is
+    // monochrome (the monochrome class would downsample it); it is not, so it goes in as it is,
+    // never a second lossy generation.
+    let img = image::GrayImage::from_fn(8, 8, |x, y| image::Luma([(x * 30 + y * 3) as u8]));
+    let mut jpg = Vec::new();
+    img.write_to(&mut std::io::Cursor::new(&mut jpg), image::ImageFormat::Jpeg).unwrap();
+    let mut j = doc_with_text("x");
+    place(&mut j, jpg.clone(), (8, 8));
+    let images =
+        ImageCompression { gray: ImageClass { quality: Some(20), ..ImageClass::LOSSLESS }, mono: class(0.36, 1.2, None), ..ImageCompression::NONE };
+    let pdf = export_pdf(&j, &Cache::new(), &PdfOptions { images, ..Default::default() }).unwrap();
+    assert!(pdf.windows(jpg.len()).any(|w| w == jpg.as_slice()), "the grey JPEG's own bytes");
+}
+
+/// The effective resolution follows the placed width: a graphic squeezed vertically only is not
+/// downsampled more than its width says (the geometric mean of the scales would).
+#[test]
+fn compression_effective_resolution_follows_the_placed_width() {
+    let mut d = doc_with_text("x");
+    // 50× wide (1.44 ppi), 5× high: the mean scale (~15.8×) would make it 4.6 ppi.
+    let xf = designcraft_geom::Affine::translate((72.0, 72.0)) * designcraft_geom::Affine::scale_non_uniform(50.0, 5.0);
+    place_at(&mut d, raster(image::ImageFormat::Png, false), (8, 8), xf);
+    assert_eq!(compressed(&d, colour(class(0.72, 2.0, None))), [(8, 8, "FlateDecode".into())]);
+    assert_eq!(compressed(&d, colour(class(0.72, 1.2, None))), [(4, 4, "FlateDecode".into())]);
+}
+
+/// Two placements of one file share one embedded image, downsampled for the narrower one.
+#[test]
+fn compression_shared_file_uses_its_narrowest_placement() {
+    let bytes = raster(image::ImageFormat::Png, false);
+    for wide_first in [true, false] {
+        let mut d = doc_with_text("x");
+        // One of them 4× wider (0.36 ppi, never downsampled on its own).
+        let wide = designcraft_geom::Affine::translate((72.0, 72.0)) * designcraft_geom::Affine::scale(200.0);
+        let narrow = designcraft_geom::Affine::translate((72.0, 72.0)) * designcraft_geom::Affine::scale(50.0);
+        let order = if wide_first { [wide, narrow] } else { [narrow, wide] };
+        for xf in order {
+            place_at(&mut d, bytes.clone(), (8, 8), xf);
+        }
+        assert_eq!(compressed(&d, colour(class(0.72, 1.2, None))), [(4, 4, "FlateDecode".into())], "wide first: {wide_first}");
+    }
+}
+
+/// A placed PSD (read by `designcraft_images`, not by `image`) exports under Compression: as it
+/// is, as JPEG, or downsampled, without warnings.
+#[test]
+fn psd_exports_through_compression() {
+    let psd = {
+        let mut b = Vec::new();
+        b.extend(b"8BPS");
+        b.extend(1u16.to_be_bytes());
+        b.extend([0u8; 6]);
+        b.extend(3u16.to_be_bytes()); // channels
+        b.extend(1u32.to_be_bytes()); // height
+        b.extend(2u32.to_be_bytes()); // width
+        b.extend(8u16.to_be_bytes());
+        b.extend(3u16.to_be_bytes()); // RGB
+        b.extend([0u8; 12]); // colour mode data, image resources, layers
+        b.extend(0u16.to_be_bytes()); // raw
+        b.extend([255, 0, 0, 255, 0, 0]);
+        b
+    };
+    let mut d = doc_with_text("x");
+    place(&mut d, psd, (2, 1));
+    let export = |color: ImageClass| {
+        let r = export_pdf_with_report(&d, &Cache::new(), &PdfOptions { images: colour(color), ..Default::default() }).unwrap();
+        assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+        image_dicts(&r.bytes)
+    };
+    assert_eq!(export(ImageClass::LOSSLESS), [(2, 1, "FlateDecode".into())]);
+    assert_eq!(export(ImageClass { quality: Some(60), ..ImageClass::LOSSLESS }), [(2, 1, "DCTDecode".into())]);
+    // 2 px over 100 pt = 1.44 ppi; above 1.2 → down to 0.72 ppi = 1×1.
+    assert_eq!(export(class(0.72, 1.2, None)), [(1, 1, "FlateDecode".into())]);
 }

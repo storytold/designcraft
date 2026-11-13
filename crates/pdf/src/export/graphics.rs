@@ -1,5 +1,5 @@
 use super::common::{device, tf, to_path};
-use super::images::{CMYK_FALLBACK_WARNING, ConvertedImage, RasterMode, cmyk_tiff, embedded_icc, jpeg, lossless, recompress};
+use super::images::{CMYK_FALLBACK_WARNING, Compression, ConvertedImage, RasterMode, cmyk_tiff, lossless, raster};
 use super::pipeline::{relabel_catalog_version, relabel_pdf_header};
 use super::*;
 
@@ -91,20 +91,22 @@ impl Exporter<'_> {
         }
         let mut warning = None;
         let mode = RasterMode::for_standard(self.opts.standard);
+        let compression =
+            Compression { classes: self.opts.images, legacy_jpeg: self.opts.compress_images, placed: self.placed_widths.get(&id).copied() };
         let img = match fmt {
-            Some(image::ImageFormat::Jpeg) => jpeg(data.clone().into(), || embedded_icc(&data), mode),
             // A CMYK TIFF keeps its ink values (`image` decodes it to RGB, and 100% K would print
             // as four-colour black). PDF/A exports are RGB only.
-            Some(image::ImageFormat::Tiff) if !self.rgb_only && designcraft_images::is_cmyk_tiff(&data) => match cmyk_tiff(&data, mode) {
-                Some(img) => Some(img),
-                None => {
-                    warning = Some(CMYK_FALLBACK_WARNING);
-                    self.warn(format!("{}: {CMYK_FALLBACK_WARNING}", asset.name));
-                    lossless(&data, fmt, mode)
+            Some(image::ImageFormat::Tiff) if !self.rgb_only && designcraft_images::is_cmyk_tiff(&data) => {
+                match cmyk_tiff(&data, mode, &compression) {
+                    Some(img) => Some(img),
+                    None => {
+                        warning = Some(CMYK_FALLBACK_WARNING);
+                        self.warn(format!("{}: {CMYK_FALLBACK_WARNING}", asset.name));
+                        lossless(&data, fmt, mode)
+                    }
                 }
-            },
-            _ if self.opts.compress_images => recompress(&data, mode).or_else(|| lossless(&data, fmt, mode)),
-            _ => lossless(&data, fmt, mode),
+            }
+            _ => raster(&data, fmt, mode, &compression),
         };
         if img.is_none() {
             if data.is_empty() {
