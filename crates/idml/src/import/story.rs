@@ -309,54 +309,43 @@ impl<'r> Importer<'r> {
                             // then from the IDML defaults.
                             let style_chain = self.object_style_chain(&c);
                             let levels: Vec<&El> = std::iter::once(&c).chain(style_chain.iter()).collect();
-                            let s = |k: &str| {
-                                let set = levels.iter().filter_map(|l| l.find("AnchoredObjectSetting")).find_map(|x| x.get(k));
-                                set.unwrap_or(match k {
-                                    "AnchoredPosition" => "InlinePosition",
-                                    "AnchorPoint" => "BottomRightAnchor",
-                                    "HorizontalAlignment" => "LeftAlign",
-                                    "HorizontalReferencePoint" => "TextFrame",
-                                    "VerticalAlignment" => "BottomAlign",
-                                    "VerticalReferencePoint" => "LineBaseline",
-                                    "PinPosition" => "true",
-                                    _ => "",
-                                })
-                            };
-                            let get = |k: &str| s(k).trim().parse::<f64>().ok().filter(|v| v.is_finite()).unwrap_or(0.0);
-                            let position = match s("AnchoredPosition") {
+                            let model_levels: Vec<_> = levels.iter().map(|level| crate::xml::to_craft(level)).collect();
+                            let model_refs: Vec<_> = model_levels.iter().collect();
+                            let anchored = craft_idml::model::AnchoredObjectValues::from_elements(&model_refs);
+                            let position = match anchored.position.as_str() {
                                 "AboveLine" => designcraft_doc::AnchorPosition::AboveLine {
-                                    align: match s("HorizontalAlignment") {
+                                    align: match anchored.horizontal_alignment.as_str() {
                                         "CenterAlign" => A::Center,
                                         "RightAlign" => A::Right,
                                         _ => A::Left,
                                     },
-                                    space_before: get("AnchorSpaceAbove"),
-                                    space_after: get("AnchorYoffset"),
+                                    space_before: anchored.space_above,
+                                    space_after: anchored.y_offset,
                                 },
                                 "Anchored" => {
-                                    let col = match s("HorizontalAlignment") {
+                                    let col = match anchored.horizontal_alignment.as_str() {
                                         "CenterAlign" => 1,
                                         "RightAlign" => 2,
                                         _ => 0,
                                     };
-                                    let row = match s("VerticalAlignment") {
+                                    let row = match anchored.vertical_alignment.as_str() {
                                         "CenterAlign" => 1,
                                         "BottomAlign" => 2,
                                         _ => 0,
                                     };
                                     designcraft_doc::AnchorPosition::Custom {
-                                        x_relative: names::anchor_rel_in(s("HorizontalReferencePoint")),
-                                        y_relative: names::anchor_rel_in(s("VerticalReferencePoint")),
+                                        x_relative: names::anchor_rel_in(&anchored.horizontal_reference),
+                                        y_relative: names::anchor_rel_in(&anchored.vertical_reference),
                                         // IDML measures a left-aligned object's X offset leftwards.
-                                        x_offset: if col == 0 { 0.0 - get("AnchorXoffset") } else { get("AnchorXoffset") },
-                                        y_offset: get("AnchorYoffset"),
-                                        object_point: names::anchor_in(s("AnchorPoint")),
+                                        x_offset: if col == 0 { 0.0 - anchored.x_offset } else { anchored.x_offset },
+                                        y_offset: anchored.y_offset,
+                                        object_point: names::anchor_in(&anchored.anchor_point),
                                         ref_point: row * 3 + col,
-                                        keep_within_column: s("PinPosition") == "true",
-                                        spine_relative: s("SpineRelative") == "true",
+                                        keep_within_column: anchored.pin_position,
+                                        spine_relative: anchored.spine_relative,
                                     }
                                 }
-                                _ => designcraft_doc::AnchorPosition::Inline { y_offset: get("AnchorYoffset") },
+                                _ => designcraft_doc::AnchorPosition::Inline { y_offset: anchored.y_offset },
                             };
                             b.objects.push(designcraft_doc::AnchoredObject::new(item, position));
                             b.push(&designcraft_doc::OBJECT_MARK.to_string(), cf);
