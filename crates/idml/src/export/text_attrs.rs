@@ -417,6 +417,7 @@ impl<'a> Ex<'a> {
         n!(a, el, span_space_before, "SpanColumnMinSpaceBefore");
         n!(a, el, span_space_after, "SpanColumnMinSpaceAfter");
         let list = craft_idml::model::ParagraphListValues {
+            applied_list: None,
             list_type: a.list_type.map(|list| {
                 match list {
                     ListType::None => "NoList",
@@ -439,6 +440,8 @@ impl<'a> Ex<'a> {
             restart_numbers: a.restart_numbers,
             restart_after_level: a.restart_after_level,
             restart_after_specific_level: a.restart_after_level.is_some_and(|level| level != 0),
+            numbering_continue: None,
+            numbering_start_at: None,
             bullet_font: a.bullet_font.clone(),
             bullet_font_style: a.bullet_font_style.clone(),
         };

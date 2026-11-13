@@ -156,6 +156,8 @@ impl<'r> Importer<'r> {
         let alignment = craft_idml::model::ParagraphAlignmentValues::from_el(&crate::xml::to_craft(e));
         let flow = craft_idml::model::ParagraphFlowValues::from_el(&crate::xml::to_craft(e));
         let cjk = craft_idml::model::CjkParagraphValues::from_el(&crate::xml::to_craft(e));
+        let span = craft_idml::model::ParagraphSpanValues::from_el(&crate::xml::to_craft(e));
+        let list = craft_idml::model::ParagraphListValues::from_el(&crate::xml::to_craft(e));
         a.align = alignment.justification.as_deref().and_then(|v| names::align_in(v.trim()));
         a.kinsoku_hang = cjk.kinsoku_hang.as_deref().and_then(|v| match v {
             "None" => Some(designcraft_doc::cjk::KinsokuHang::None),
@@ -194,13 +196,13 @@ impl<'r> Importer<'r> {
         a.first_line_indent = alignment.first_line_indent;
         a.last_line_indent = alignment.last_line_indent;
         a.space_before = alignment.space_before;
-        if let Some(r) = e.prop("AppliedNumberingList") {
+        if let Some(r) = list.applied_list.as_deref() {
             let r = r.trim().trim_start_matches("NumberingList/");
             a.list_name = Some(if r.starts_with("$ID/") { String::new() } else { unescape_id(r) });
         }
-        match e.prop("NumberingContinue").as_deref().map(str::trim) {
-            Some("false") => a.start_at = Some(e.num("NumberingStartAt").map(|n| n.max(1.0) as u32)),
-            Some("true") => a.start_at = Some(None),
+        match list.numbering_continue {
+            Some(false) => a.start_at = Some(list.numbering_start_at.map(|value| value.max(1.0) as u32)),
+            Some(true) => a.start_at = Some(None),
             _ => {}
         }
         self.read_nested_styles(e, &mut a);
@@ -255,16 +257,16 @@ impl<'r> Importer<'r> {
         a.keep_first = flow.keep_first_lines.map(|v| v.max(0.0) as u32);
         a.keep_last = flow.keep_last_lines.map(|v| v.max(0.0) as u32);
         a.start_paragraph = flow.start_paragraph.as_deref().and_then(|v| names::start_para_in(v.trim()));
-        if let Some(t) = e.prop("SpanColumnType") {
-            let n = e.prop("SpanSplitColumnCount").and_then(|v| v.trim().parse::<u32>().ok()).unwrap_or(0);
+        if let Some(t) = span.kind {
+            let n = span.split_column_count.unwrap_or(0);
             a.span_columns = Some(match t.trim() {
                 "SpanColumns" => SpanColumns::Span(n),
                 "SplitColumns" => SpanColumns::Split(n.max(2)),
                 _ => SpanColumns::Single,
             });
         }
-        a.split_inside_gutter = e.num("SplitColumnInsideGutter").filter(|v| v.is_finite());
-        a.split_outside_gutter = e.num("SplitColumnOutsideGutter").filter(|v| v.is_finite());
+        a.split_inside_gutter = span.inside_gutter;
+        a.split_outside_gutter = span.outside_gutter;
         a.rule_above = self.rule(e, "RuleAbove");
         a.rule_below = self.rule(e, "RuleBelow");
         a.tabs = self.read_tabs(e);
@@ -322,8 +324,8 @@ impl<'r> Importer<'r> {
         a.shading_bottom = boxes.shading_bottom.as_deref().map(|value| names::box_bottom_in(value.trim()));
         a.shading_clip = boxes.shading_clip;
         a.shading_nonprinting = boxes.shading_nonprinting;
-        a.span_space_before = e.num("SpanColumnMinSpaceBefore").filter(|v| v.is_finite());
-        a.span_space_after = e.num("SpanColumnMinSpaceAfter").filter(|v| v.is_finite());
+        a.span_space_before = span.space_before;
+        a.span_space_after = span.space_after;
         a.list_level = list.level.map(|value| value.round().clamp(1.0, designcraft_doc::LIST_LEVELS as f64) as u32);
         if let Some(style) = list.bullet_character_style {
             a.bullet_char_style = Some(self.char_style_ref(style.trim()));
