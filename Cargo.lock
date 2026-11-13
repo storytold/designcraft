@@ -1052,6 +1052,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-drawingml"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=3afade51630fcdb02662c761e0805bc6147bb0ac#3afade51630fcdb02662c761e0805bc6147bb0ac"
+dependencies = [
+ "craft-xml",
+ "kurbo",
+ "log",
+ "serde",
+]
+
+[[package]]
 name = "craft-eps"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=3afade51630fcdb02662c761e0805bc6147bb0ac#3afade51630fcdb02662c761e0805bc6147bb0ac"
@@ -1117,6 +1128,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-opc"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=3afade51630fcdb02662c761e0805bc6147bb0ac#3afade51630fcdb02662c761e0805bc6147bb0ac"
+dependencies = [
+ "craft-xml",
+ "craft-zip",
+ "log",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "craft-pdf"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=92d392cff132eaf53e13afff77f38b5c11b73aa0#92d392cff132eaf53e13afff77f38b5c11b73aa0"
@@ -1163,6 +1185,11 @@ dependencies = [
  "craft-codepage",
  "encoding_rs",
 ]
+
+[[package]]
+name = "craft-sheet"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=3afade51630fcdb02662c761e0805bc6147bb0ac#3afade51630fcdb02662c761e0805bc6147bb0ac"
 
 [[package]]
 name = "craft-svg"
@@ -1241,6 +1268,18 @@ version = "0.1.0"
 source = "git+https://github.com/storytold/winprint.rs?rev=417ac3c4d14d3da5485a99c7d5ce8f05664ec312#417ac3c4d14d3da5485a99c7d5ce8f05664ec312"
 dependencies = [
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "craft-xlsx"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=3afade51630fcdb02662c761e0805bc6147bb0ac#3afade51630fcdb02662c761e0805bc6147bb0ac"
+dependencies = [
+ "craft-drawingml",
+ "craft-opc",
+ "craft-sheet",
+ "craft-xml",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -1678,6 +1717,7 @@ name = "designcraft-textimport"
 version = "0.20.1"
 dependencies = [
  "craft-rtf",
+ "craft-xlsx",
  "designcraft-doc",
  "quick-xml 0.41.0",
  "zip 3.0.0",

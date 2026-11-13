@@ -11,5 +11,6 @@ workspace = true
 [dependencies]
 designcraft-doc = { workspace = true }
 craft-rtf = { workspace = true }
+craft-xlsx = { workspace = true }
 quick-xml = { workspace = true }
 zip = { workspace = true }
