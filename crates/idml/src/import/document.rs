@@ -131,68 +131,49 @@ impl<'r> Importer<'r> {
     /// the result of their first instance.
     pub(super) fn text_variable(&mut self, e: &El) {
         use designcraft_doc::vars::{TextVariable, Use, VAR_MAX, VarKind};
-        let ty = e.get("VariableType").unwrap_or("");
+        let values = craft_idml::model::TextVariableValues::from_el(&crate::xml::to_craft(e));
         // Cross-reference internals; export writes its own. Their page numbers are recognised
         // inside cross-reference text.
-        if ty == "XrefPageNumberType"
-            && let Some(id) = e.get("Self")
-        {
-            self.xref_page_vars.insert(id.to_string());
-        }
-        if ty.is_empty() || ty.starts_with("Xref") {
+        if let craft_idml::model::TextVariableKind::CrossReference { page_number } = &values.kind {
+            if *page_number && let Some(id) = values.self_id.as_ref() {
+                self.xref_page_vars.insert(id.clone());
+            }
             return;
         }
+        let kind = match values.kind {
+            craft_idml::model::TextVariableKind::CustomText { text } => VarKind::Custom { text },
+            craft_idml::model::TextVariableKind::LastPageNumber { section } => VarKind::LastPageNumber { section },
+            craft_idml::model::TextVariableKind::ChapterNumber => VarKind::ChapterNumber,
+            craft_idml::model::TextVariableKind::FileName { extension } => VarKind::FileName { extension },
+            craft_idml::model::TextVariableKind::Date { kind, format } => match kind {
+                craft_idml::model::TextDateKind::Creation => VarKind::CreationDate { format },
+                craft_idml::model::TextDateKind::Modification => VarKind::ModificationDate { format },
+                craft_idml::model::TextDateKind::Output => VarKind::OutputDate { format },
+            },
+            craft_idml::model::TextVariableKind::RunningHeader { style, character, last_on_page } => VarKind::RunningHeader {
+                style: if character { self.char_style_ref(&style) } else { self.para_style_ref(&style) },
+                use_: if last_on_page { Use::LastOnPage } else { Use::FirstOnPage },
+                character,
+            },
+            craft_idml::model::TextVariableKind::Imported { variable_type, settings_element, settings } => {
+                if variable_type.is_empty() {
+                    return;
+                }
+                VarKind::Imported { variable_type, result: String::new(), settings_element, settings }
+            }
+            craft_idml::model::TextVariableKind::CrossReference { .. } => return,
+        };
         let vars = self.text_vars.get_or_insert_with(Vec::new);
         if vars.len() >= VAR_MAX {
             return;
         }
-        let pref = e.elements().find(|c| c.local().ends_with("Preference"));
-        let attr = |k: &str| pref.and_then(|p| p.get(k)).unwrap_or("");
-        let date = || Some(attr("Format")).filter(|f| !f.is_empty()).unwrap_or("MM/dd/yy").to_string();
-        let kind = match ty {
-            "CustomTextType" => Some(VarKind::Custom { text: attr("Contents").into() }),
-            "LastPageNumberType" => Some(VarKind::LastPageNumber { section: attr("Scope") == "SectionScope" }),
-            "ChapterNumberType" => Some(VarKind::ChapterNumber),
-            "FileNameType" if attr("IncludePath") != "true" => Some(VarKind::FileName { extension: attr("IncludeExtension") == "true" }),
-            "CreationDateType" => Some(VarKind::CreationDate { format: date() }),
-            "ModificationDateType" => Some(VarKind::ModificationDate { format: date() }),
-            "OutputDateType" => Some(VarKind::OutputDate { format: date() }),
-            "MatchParagraphStyleType" | "MatchCharacterStyleType" => {
-                let character = ty == "MatchCharacterStyleType";
-                let r = attr(if character { "AppliedCharacterStyle" } else { "AppliedParagraphStyle" });
-                let use_ = if attr("SearchStrategy") == "LastOnPage" { Use::LastOnPage } else { Use::FirstOnPage };
-                // Change Case and Delete End Punctuation aren't modelled: the header shows the text as set.
-                (!r.is_empty()).then(|| VarKind::RunningHeader {
-                    style: if character { self.char_style_ref(r) } else { self.para_style_ref(r) },
-                    use_,
-                    character,
-                })
-            }
-            _ => None,
-        };
-        let name = e.get("Name").unwrap_or("").to_string();
-        let v = match kind {
-            Some(kind) => {
-                let mut v = TextVariable::new(&name, kind);
-                v.before = attr("TextBefore").into();
-                v.after = attr("TextAfter").into();
-                v
-            }
-            None => TextVariable::new(
-                &name,
-                VarKind::Imported {
-                    variable_type: ty.into(),
-                    result: String::new(),
-                    settings_element: pref.map(|p| p.name.clone()).unwrap_or_default(),
-                    settings: pref.map(|p| p.attrs.clone()).unwrap_or_default(),
-                },
-            ),
-        };
-        let vars = self.text_vars.get_or_insert_with(Vec::new);
-        if let Some(s) = e.get("Self") {
-            self.text_var_ids.insert(s.to_string(), vars.len());
+        let mut variable = TextVariable::new(&values.name, kind);
+        variable.before = values.before;
+        variable.after = values.after;
+        if let Some(id) = values.self_id {
+            self.text_var_ids.insert(id, vars.len());
         }
-        vars.push(v);
+        vars.push(variable);
     }
 
     /// A `TextVariableInstance`: the variable's character, or its recorded text when the file
