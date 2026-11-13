@@ -263,47 +263,48 @@ impl<'r> Importer<'r> {
 
     /// Preferences › `FootnoteOption` (after styles: it names the footnote text and marker styles).
     pub(super) fn footnote_option(&mut self, e: &El) {
+        let values = craft_idml::model::FootnotePreferences::from_el(&crate::xml::to_craft(e));
         let mut o = designcraft_doc::FootnoteOptions::default();
-        if let Some(v) = e.num("StartAt") {
+        if let Some(v) = values.start_at {
             o.start_at = v.max(0.0) as u32;
         }
-        o.prefix = e.get("Prefix").unwrap_or("").into();
-        o.suffix = e.get("Suffix").unwrap_or("").into();
-        if let Some(r) = e.get("FootnoteTextStyle") {
+        o.prefix = values.prefix.unwrap_or_default();
+        o.suffix = values.suffix.unwrap_or_default();
+        if let Some(r) = values.paragraph_style.as_deref() {
             o.para_style = self.para_style_ref(r);
         }
-        if let Some(r) = e.get("FootnoteMarkerStyle") {
+        if let Some(r) = values.marker_style.as_deref() {
             o.ref_char_style = self.char_style_ref(r);
         }
-        if let Some(v) = e.get("SeparatorText") {
-            o.separator = v.into();
+        if let Some(v) = values.separator {
+            o.separator = v;
         }
-        o.space_between = e.num("SpaceBetween").unwrap_or(0.0);
-        o.space_before = e.num("Spacer").unwrap_or(0.0);
-        if let Some(v) = e.prop("FootnoteFirstBaselineOffset") {
+        o.space_between = values.space_between.unwrap_or(0.0);
+        o.space_before = values.space_before.unwrap_or(0.0);
+        if let Some(v) = values.first_baseline.as_deref() {
             o.first_baseline = names::first_baseline_in(v.trim());
         }
-        o.first_baseline_min = e.num("FootnoteMinimumFirstBaselineOffset").unwrap_or(0.0);
-        o.span_columns = e.boolean("EnableStraddling").unwrap_or(false);
-        o.rule.on = e.boolean("RuleOn").unwrap_or(true);
-        o.rule.weight = e.num("RuleLineWeight").unwrap_or(1.0);
-        o.rule.tint = tint(e.num("RuleTint")).unwrap_or(1.0);
-        o.rule.left_indent = e.num("RuleLeftIndent").unwrap_or(0.0);
-        o.rule.width = e.num("RuleWidth").unwrap_or(72.0);
-        o.rule.offset = e.num("RuleOffset").unwrap_or(0.0);
-        if let Some(c) = e.prop("RuleColor") {
+        o.first_baseline_min = values.first_baseline_minimum.unwrap_or(0.0);
+        o.span_columns = values.span_columns.unwrap_or(false);
+        o.rule.on = values.rule_on.unwrap_or(true);
+        o.rule.weight = values.rule_weight.unwrap_or(1.0);
+        o.rule.tint = tint(values.rule_tint).unwrap_or(1.0);
+        o.rule.left_indent = values.rule_left_indent.unwrap_or(0.0);
+        o.rule.width = values.rule_width.unwrap_or(72.0);
+        o.rule.offset = values.rule_offset.unwrap_or(0.0);
+        if let Some(c) = values.rule_color.as_deref() {
             o.rule.color = self.swatch_ref(c.trim());
         }
-        if let Some(v) = e.prop("FootnoteNumberingStyle") {
+        if let Some(v) = values.numbering_style.as_deref() {
             o.style = names::note_style_in(v.trim());
         }
-        if let Some(v) = e.prop("RestartNumbering") {
+        if let Some(v) = values.restart_numbering.as_deref() {
             o.restart = names::NOTE_RESTART.iter().find(|r| r.1 == v.trim()).map_or(Default::default(), |r| r.0);
         }
-        if let Some(v) = e.prop("ShowPrefixSuffix") {
+        if let Some(v) = values.show_prefix_suffix.as_deref() {
             o.affix_in = names::NOTE_AFFIX.iter().find(|r| r.1 == v.trim()).map_or(Default::default(), |r| r.0);
         }
-        if let Some(v) = e.prop("MarkerPositioning") {
+        if let Some(v) = values.marker_positioning.as_deref() {
             o.ref_position = names::note_marker_in(v.trim());
         }
         self.footnote_options = o;
