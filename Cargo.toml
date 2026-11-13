@@ -22,10 +22,10 @@ craft-svg = { git = "https://github.com/storytold/craft-libs", rev = "cc23ffd4d2
 craft-xml = { git = "https://github.com/storytold/craft-libs", rev = "1ad5f35bf", version = "=0.1.0" }
 craft-xml-dtd = { package = "craft-xml", git = "https://github.com/storytold/craft-libs", rev = "f23b0f33f0d00b157476533a43cbbcfd901aa1f1", version = "=0.1.0" }
 craft-rtf = { git = "https://github.com/storytold/craft-libs", rev = "ba24fe2435adb3c81ad6057faf36365fbba736cf", version = "=0.1.0" }
-craft-xlsx = { git = "https://github.com/storytold/craft-libs", rev = "ba24fe2435adb3c81ad6057faf36365fbba736cf", version = "=0.1.0" }
+craft-xlsx = { git = "https://github.com/storytold/craft-libs", rev = "2b9a325f57624804ed423aded16695eddb815119", version = "=0.1.0" }
 craft-docx = { git = "https://github.com/storytold/craft-libs", rev = "ba24fe2435adb3c81ad6057faf36365fbba736cf", version = "=0.1.0" }
 craft-wordmodel = { git = "https://github.com/storytold/craft-libs", rev = "ba24fe2435adb3c81ad6057faf36365fbba736cf", version = "=0.1.0" }
-craft-csv = { git = "https://github.com/storytold/craft-libs", rev = "acfcaa1b0e812b1485d6cccef14564f245fd1c54", version = "=0.1.0" }
+craft-csv = { git = "https://github.com/storytold/craft-libs", rev = "69e457a8eb0fcdc824434ae12d67ab7d68a240ae", version = "=0.1.0" }
 craft-image-codecs = { git = "https://github.com/dylanmtaylor/craft-libs", rev = "2e670cf9377b523112f3fe4b409399772c745895", version = "=0.1.0" }
 craft-psd = { git = "https://github.com/dylanmtaylor/craft-libs", rev = "2e670cf9377b523112f3fe4b409399772c745895", version = "=0.1.0" }
 craft-file-formats = { git = "https://github.com/storytold/craft-libs", rev = "eed3c28cf016723d004d6f2c79c61424c15d4558", version = "=0.1.0" }

@@ -353,8 +353,8 @@ pub fn status_of(path: &Path, previous: Option<Fingerprint>) -> SourceStatus {
     }
 }
 
-fn decode_utf8(bytes: &[u8], _name: &str) -> Result<String, String> {
-    Ok(craft_csv::decode_text(bytes))
+fn decode_utf8(bytes: &[u8], name: &str) -> Result<String, String> {
+    craft_csv::decode_utf8(bytes).map_err(|_| format!("{name} is not UTF-8"))
 }
 
 fn sniff(name: &str, text: &str) -> Delimiter {
