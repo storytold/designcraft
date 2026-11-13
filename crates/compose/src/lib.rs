@@ -271,6 +271,8 @@ pub struct Deco {
     pub nonprinting: bool,
     /// Set to overprint (paragraph shading or border); PDF export doesn't overprint yet.
     pub overprint: bool,
+    /// The rule above a footnote area (a table cell's composition drops it with its notes).
+    pub footnote_rule: bool,
 }
 
 #[derive(Clone, Debug, Default)]

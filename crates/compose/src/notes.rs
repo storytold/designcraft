@@ -331,6 +331,7 @@ impl Notes {
                     rect: Rect::new(x0, y, (x0 + o.rule.width).min(col.x1), y + o.rule.weight),
                     color: o.rule.color.clone(),
                     tint: o.rule.tint,
+                    footnote_rule: true,
                     ..Deco::default()
                 });
             }

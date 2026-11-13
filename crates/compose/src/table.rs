@@ -166,6 +166,7 @@ fn compose_cell(doc: &Document, cell: &Cell, w: f64, opts: &ComposeOptions, (lef
         .unwrap_or_default();
     for f in &mut cs.frames {
         f.notes.clear();
+        f.decos.retain(|d| !d.footnote_rule);
     }
     let line_heights: Vec<f64> = cs
         .frames

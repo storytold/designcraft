@@ -3364,6 +3364,8 @@ fn table_cell_footnotes_share_the_column_foot_in_reading_order() {
         assert!(table.cells.iter().all(|c| c.rect.y1 <= n.rect.y0));
     }
     assert!(table.cells.iter().all(|c| c.text.frames.iter().all(|f| f.notes.is_empty())));
+    assert!(table.cells.iter().all(|c| c.text.frames.iter().all(|f| f.decos.iter().all(|d| !d.footnote_rule))));
+    assert!(table.cells.iter().all(|c| c.text.frames.iter().all(|f| f.decos.is_empty())));
     // Removing the notes must leave row heights unchanged.
     let st = d.story_mut(sid).unwrap();
     for cell in &mut st.table_mut(77).unwrap().cells {
