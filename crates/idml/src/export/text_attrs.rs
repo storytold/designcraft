@@ -14,14 +14,6 @@ macro_rules! n {
         }
     };
 }
-macro_rules! b {
-    ($a:expr, $el:expr, $f:ident, $k:literal) => {
-        if let Some(v) = $a.$f {
-            $el.set($k, bool_s(v));
-        }
-    };
-}
-
 impl<'a> Ex<'a> {
     pub(super) fn char_attrs(&mut self, el: &mut El, props: &mut Vec<El>, a: &CharAttrs) {
         if let Some(v) = a.leading_aki {
@@ -358,39 +350,33 @@ impl<'a> Ex<'a> {
     }
 
     fn para_flow_attrs(&self, el: &mut El, a: &ParaAttrs) {
-        b!(a, el, hyphenate, "Hyphenation");
-        n!(a, el, hyph_min_word, "HyphenateWordsLongerThan");
-        n!(a, el, hyph_after_first, "HyphenateAfterFirst");
-        n!(a, el, hyph_before_last, "HyphenateBeforeLast");
-        n!(a, el, hyph_limit, "HyphenateLadderLimit");
-        n!(a, el, hyph_zone, "HyphenationZone");
-        b!(a, el, hyph_capitalized, "HyphenateCapitalizedWords");
-        b!(a, el, hyph_last_word, "HyphenateLastWord");
-        b!(a, el, hyph_across_column, "HyphenateAcrossColumns");
-        if let Some(v) = a.hyph_weight {
-            el.set("HyphenWeight", num((v * 10.0).round()));
-        }
-        n!(a, el, word_space_min, "MinimumWordSpacing", pct);
-        n!(a, el, word_space_desired, "DesiredWordSpacing", pct);
-        n!(a, el, word_space_max, "MaximumWordSpacing", pct);
-        n!(a, el, letter_space_min, "MinimumLetterSpacing", pct);
-        n!(a, el, letter_space_desired, "DesiredLetterSpacing", pct);
-        n!(a, el, letter_space_max, "MaximumLetterSpacing", pct);
-        n!(a, el, glyph_scale_min, "MinimumGlyphScaling", pct);
-        n!(a, el, glyph_scale_desired, "DesiredGlyphScaling", pct);
-        n!(a, el, glyph_scale_max, "MaximumGlyphScaling", pct);
-        n!(a, el, auto_leading, "AutoLeading", pct);
-        if let Some(v) = a.single_word_justify {
-            el.set("SingleWordJustification", names::align_out(v));
-        }
-        n!(a, el, keep_with_next, "KeepWithNext");
-        b!(a, el, keep_lines_together, "KeepLinesTogether");
-        b!(a, el, ignore_optical_margin, "IgnoreEdgeAlignment");
-        b!(a, el, keep_all_lines, "KeepAllLinesTogether");
-        n!(a, el, keep_first, "KeepFirstLines");
-        n!(a, el, keep_last, "KeepLastLines");
-        if let Some(v) = a.start_paragraph {
-            el.set("StartParagraph", names::start_para_out(v));
+        let percent = |value: Option<f64>| value.map(|value| value * 100.0);
+        let values = craft_idml::model::ParagraphFlowValues {
+            hyphenate: a.hyphenate,
+            hyphenate_min_word: a.hyph_min_word.map(f64::from),
+            hyphenate_after_first: a.hyph_after_first.map(f64::from),
+            hyphenate_before_last: a.hyph_before_last.map(f64::from),
+            hyphenate_ladder_limit: a.hyph_limit.map(f64::from),
+            hyphenation_zone: a.hyph_zone,
+            hyphenate_capitalized: a.hyph_capitalized,
+            hyphenate_last_word: a.hyph_last_word,
+            hyphenate_across_columns: a.hyph_across_column,
+            hyphen_weight: a.hyph_weight.map(|value| (value * 10.0).round()),
+            word_spacing: [percent(a.word_space_min), percent(a.word_space_desired), percent(a.word_space_max)],
+            letter_spacing: [percent(a.letter_space_min), percent(a.letter_space_desired), percent(a.letter_space_max)],
+            glyph_scaling: [percent(a.glyph_scale_min), percent(a.glyph_scale_desired), percent(a.glyph_scale_max)],
+            auto_leading: percent(a.auto_leading),
+            single_word_justification: a.single_word_justify.map(|value| names::align_out(value).into()),
+            keep_with_next: a.keep_with_next.map(f64::from),
+            keep_lines_together: a.keep_lines_together,
+            ignore_edge_alignment: a.ignore_optical_margin,
+            keep_all_lines_together: a.keep_all_lines,
+            keep_first_lines: a.keep_first.map(f64::from),
+            keep_last_lines: a.keep_last.map(f64::from),
+            start_paragraph: a.start_paragraph.map(|value| names::start_para_out(value).into()),
+        };
+        for (key, value) in values.to_attrs() {
+            el.set(&key, value);
         }
     }
 
