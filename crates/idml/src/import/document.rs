@@ -211,10 +211,9 @@ impl<'r> Importer<'r> {
                 Block::BookmarkName => def.push_str("<txtAnchrName />"),
                 Block::ChapterNumber => def.push_str("<chapNum />"),
                 Block::FileName => def.push_str("<fileName />"),
-                Block::PartialParagraph { delimiter, include_delimiter } => def.push_str(&format!(
-                    "<partialPara delim=\"{}\" includeDelim=\"{}\" />",
-                    delimiter, include_delimiter
-                )),
+                Block::PartialParagraph { delimiter, include_delimiter } => {
+                    def.push_str(&format!("<partialPara delim=\"{}\" includeDelim=\"{}\" />", delimiter, include_delimiter))
+                }
             }
         }
         if let Some(me) = values.self_id {
