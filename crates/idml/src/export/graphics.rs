@@ -233,17 +233,18 @@ const STROKE_STYLES: &[&str] = &[
 /// A `Color` element. `flags` is (editable, removable, visible).
 fn color_el(self_id: &str, name: &str, model: &str, c: &Color, over: &str, (editable, removable, visible): (bool, bool, bool)) -> El {
     let (space, val) = color_value(c);
-    El::new("Color")
-        .attr("Self", self_id)
-        .attr("Model", model)
-        .attr("Space", space)
-        .attr("ColorValue", val)
-        .attr("ColorOverride", over)
-        .attr("AlternateSpace", "NoAlternateColor")
-        .attr("AlternateColorValue", "")
-        .attr("Name", name)
-        .attr("ColorEditable", bool_s(editable))
-        .attr("ColorRemovable", bool_s(removable))
-        .attr("Visible", bool_s(visible))
-        .attr("SwatchCreatorID", "7937")
+    crate::xml::from_craft(
+        craft_idml::model::ColorDefinition {
+            self_id: self_id.to_string(),
+            name: name.to_string(),
+            model: model.to_string(),
+            space: space.to_string(),
+            value: val,
+            override_kind: over.to_string(),
+            editable,
+            removable,
+            visible,
+        }
+        .to_el(),
+    )
 }
