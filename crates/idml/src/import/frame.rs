@@ -4,15 +4,16 @@ use super::{Columns, ColumnsKind, El, Margins, TextFrameOptions, TextWrap, names
 /// Drop-shadow angle (degrees) from IDML offsets (inverse of export's mapping).
 /// A `TextWrapPreference` element (of a page item or a placed graphic).
 pub(super) fn text_wrap(w: &El) -> TextWrap {
+    let model = craft_idml::model::TextWrapPreference::from_el(&crate::xml::to_craft(w));
     let mut tw = TextWrap {
-        mode: names::wrap_mode_in(w.get("TextWrapMode").unwrap_or("None")),
-        invert: w.get("Inverse") == Some("true"),
-        side: names::wrap_side_in(w.get("TextWrapSide").unwrap_or("BothSides")),
-        contour: names::contour_type_in(w.find("ContourOption").and_then(|c| c.get("ContourType")).unwrap_or("SameAsClipping")),
+        mode: names::wrap_mode_in(model.mode().unwrap_or("None")),
+        invert: model.inverse(),
+        side: names::wrap_side_in(model.side().unwrap_or("BothSides")),
+        contour: names::contour_type_in(model.contour_type().unwrap_or("SameAsClipping")),
         ..TextWrap::default()
     };
-    if let Some(o) = w.prop_el("TextWrapOffset") {
-        tw.offsets = [o.num("Top").unwrap_or(0.0), o.num("Left").unwrap_or(0.0), o.num("Bottom").unwrap_or(0.0), o.num("Right").unwrap_or(0.0)];
+    if let Some(offsets) = model.offsets() {
+        tw.offsets = offsets;
     }
     tw
 }
