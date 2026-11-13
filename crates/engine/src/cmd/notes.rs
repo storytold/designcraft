@@ -467,6 +467,62 @@ mod tests {
         assert_eq!(cell.text.notes[0].text.text, "A cell note.");
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn inserted_cell_note_identity_lists_edits_undoes_saves_and_deletes() {
+        let (mut s, sid, tid) = session_with_table();
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": 0})).unwrap();
+        let body = s.execute("footnote.insert", &json!({"text": "Body note."})).unwrap();
+        let body_text = s.doc().unwrap().doc.story(sid).unwrap().text.clone();
+        s.execute("table.select", &json!({"story": sid.0, "table": tid, "rows": [0, 0], "cols": [0, 0]})).unwrap();
+        s.execute("text.move", &json!({"dir": "storyEnd"})).unwrap();
+        let identity = s.execute("footnote.insert", &json!({"text": "Cell note."})).unwrap();
+        assert_eq!(identity["id"], body["id"], "note ids are local to each story");
+        assert_eq!(identity, json!({"story": sid.0, "id": body["id"], "table": tid, "row": 0, "col": 0}));
+        let listed = s.execute("footnote.list", &json!({})).unwrap();
+        assert!(
+            listed.as_array().unwrap().iter().any(|note| { ["story", "id", "table", "row", "col"].iter().all(|key| note[*key] == identity[*key]) })
+        );
+        let check = |s: &Session, cell_text: Option<&str>| {
+            let doc = &s.doc().unwrap().doc;
+            let st = doc.story(sid).unwrap();
+            assert_eq!(st.text, body_text);
+            assert_eq!(st.text.matches(designcraft_doc::FOOTNOTE_REF).count(), 1);
+            assert_eq!(st.notes.len(), 1);
+            assert_eq!(st.notes[0].id, body["id"].as_u64().unwrap());
+            assert_eq!(st.notes[0].text.text, "Body note.");
+            let cell = st.tables.get(&tid).unwrap().cell(0, 0).unwrap();
+            if let Some(text) = cell_text {
+                assert_eq!(cell.text.notes.len(), 1);
+                assert_eq!(cell.text.notes[0].id, identity["id"].as_u64().unwrap());
+                assert_eq!(cell.text.notes[0].text.text, text);
+                assert_eq!(cell.text.text, format!("Left{}", designcraft_doc::FOOTNOTE_REF));
+            } else {
+                assert!(cell.text.notes.is_empty());
+                assert_eq!(cell.text.text, "Left");
+            }
+            doc.check().unwrap();
+        };
+        check(&s, Some("Cell note."));
+        let mut edit = identity.clone();
+        edit["text"] = json!("Changed cell note.");
+        s.execute("footnote.setText", &edit).unwrap();
+        check(&s, Some("Changed cell note."));
+        s.execute("edit.undo", &json!({})).unwrap();
+        check(&s, Some("Cell note."));
+        s.execute("edit.redo", &json!({})).unwrap();
+        check(&s, Some("Changed cell note."));
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cell-note-identity.designcraft");
+        s.execute("file.saveAs", &json!({"path": path.to_string_lossy()})).unwrap();
+        let mut back = Session::new();
+        back.execute("file.open", &json!({"path": path.to_string_lossy()})).unwrap();
+        check(&back, Some("Changed cell note."));
+        back.execute("footnote.delete", &identity).unwrap();
+        check(&back, None);
+    }
+
     /// A text frame whose 2×2 table has "Left" in its first cell and a caret in it.
     fn session_with_table() -> (Session, StoryId, u64) {
         let mut s = Session::new();
