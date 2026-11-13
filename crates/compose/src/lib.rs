@@ -6066,12 +6066,17 @@ fn vertical_justify(
         let last_baseline = idx.iter().map(|&i| ft.lines[i].baseline).fold(tables, f64::max);
         let ink_bottom = idx.iter().map(|&i| ft.lines[i].baseline + ft.lines[i].descent).fold(tables, f64::max);
         // The bottom of the text is the last baseline, as the top is the first baseline: the
-        // descenders of the last line hang below it, into the bottom inset and past it, in shaped
-        // frames as in rectangular ones. Above footnotes, and in vertical frames, the descenders
-        // stay inside the text area, as when the lines are fitted.
+        // descenders of the last line hang below it, into the bottom inset. With Bottom and
+        // Justify they stay inside the frame: above its bottom edge and, in a shaped frame, inside
+        // its outline, so the last baseline stays above the inset when the inset is smaller than
+        // the descent. Above footnotes, and in vertical frames, the descenders stay inside the
+        // text area, as when the lines are fitted.
         // `space`: the room under the bottom of the text.
         let inside = f.vertical || note_top <= f.area.y1;
         let space = if inside { limit - ink_bottom } else { limit - last_baseline };
+        let last_inside = !inside && f.opts.vertical_justification != VerticalJustification::Center;
+        let frame_bottom = f.area.y1 + if f.opts.inset[2].is_finite() { f.opts.inset[2] } else { 0.0 };
+        let bare = f.outline.as_ref().filter(|_| last_inside).map(|o| o.without_inset());
         // Center and Bottom move the lines together: the nearest text wrap under them is the
         // bottom of the room they move down into, so the room is the least any line has before a
         // wrap stops it. Justify checks each row's room below.
@@ -6125,15 +6130,21 @@ fn vertical_justify(
         // Only the last row's descenders hang below the bottom of the text: an earlier line whose
         // ink reaches below the last baseline (tight leading) isn't moved past the text area.
         // In a shaped frame each moved line's slot stays inside the outline from its top down to
-        // its baseline: a frame that narrows towards the bottom holds the text higher. Every moved
-        // line's descenders may cross the outline, as the last line's do below the bottom of the
-        // text; above footnotes, and in vertical frames, they stay inside.
-        let in_outline = |l: &Line, dy: f64| match &f.outline {
+        // its baseline: a frame that narrows towards the bottom holds the text higher. An earlier
+        // moved line's descenders may cross the outline; with Bottom and Justify the last row's
+        // descenders stay inside it (they may reach into its inset), and above footnotes, and in
+        // vertical frames, every line's do.
+        let in_outline = |l: &Line, dy: f64, last: bool| match &f.outline {
             Some(o) => {
                 let b = l.baseline + dy;
                 let desc = if inside { l.descent.max(0.0) } else { 0.0 };
                 let tol = 1e-6;
-                o.intervals(l.x0, l.x1, (b - l.ascent).max(f.area.y0).min(b), b + desc).iter().any(|&(a, z)| a <= l.x0 + tol && z >= l.x1 - tol)
+                let covers = |s: Vec<(f64, f64)>| s.iter().any(|&(a, z)| a <= l.x0 + tol && z >= l.x1 - tol);
+                covers(o.intervals(l.x0, l.x1, (b - l.ascent).max(f.area.y0).min(b), b + desc))
+                    && match bare.as_ref().filter(|_| last) {
+                        Some(bare) => covers(bare.intervals(l.x0, l.x1, b, b + l.descent.max(0.0))),
+                        None => true,
+                    }
             }
             None => true,
         };
@@ -6156,13 +6167,15 @@ fn vertical_justify(
         let fits = |shift: &[f64]| {
             idx.iter().zip(&rows).rev().all(|(&i, &k)| {
                 let l = &ft.lines[i];
-                shift[k] <= 0.0 || ((k == n || l.baseline + l.descent + shift[k] <= limit + 1e-9) && in_outline(l, shift[k]))
+                let ink = l.baseline + l.descent + shift[k];
+                let below = if k == n { !last_inside || ink <= frame_bottom + 1e-9 } else { ink <= limit + 1e-9 };
+                shift[k] <= 0.0 || (below && in_outline(l, shift[k], k == n))
             }) && clear(shift)
         };
         // The room in 0..=`top` at which a moved line's band (from its top down to its baseline, or
-        // to its descent where `inside`), widened by the outline's inset, reaches one of the
-        // outline's corner heights: between two of these each line's fit changes only along the
-        // outline's straight edges. Empty when there are more than `MAX_BAND_BREAKS`.
+        // to its descent where `inside`), widened by the outline's inset, or the last row's
+        // descenders reach one of the outline's corner heights: between two of these each line's
+        // fit changes only along the outline's straight edges. Empty when there are more than `MAX_BAND_BREAKS`.
         const MAX_BAND_BREAKS: usize = 256;
         let band_breaks = |o: &FrameOutline, top: f64| -> Vec<f64> {
             let corners = o.corner_heights();
@@ -6179,8 +6192,10 @@ fn vertical_justify(
             for (&i, &k) in idx.iter().zip(&rows) {
                 let l = &ft.lines[i];
                 let desc = if inside { l.descent.max(0.0) } else { 0.0 };
+                // The last row's descenders, tested against the outline itself.
+                let ink = (bare.is_some() && k == n).then(|| l.baseline + l.descent.max(0.0));
                 for &y in &corners {
-                    for v in [y + d - (l.baseline - l.ascent), y - d - (l.baseline + desc)] {
+                    for v in [y + d - (l.baseline - l.ascent), y - d - (l.baseline + desc)].into_iter().chain(ink.map(|e| y - e)) {
                         for (c, s) in knots.windows(2).zip(at.windows(2)) {
                             let (s0, s1) = (s[0][k], s[1][k]);
                             if s1 > s0 && v > s0 && v < s1 {

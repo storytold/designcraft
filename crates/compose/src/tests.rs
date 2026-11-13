@@ -633,19 +633,20 @@ fn vertical_justification_stops_at_a_wrap_under_the_text() {
     }
 }
 
-/// Without a wrap, or beside one, Bottom still moves the text down to the text area's bottom.
+/// Without a wrap, or beside one, Bottom still moves the text down to the frame's bottom (no
+/// inset here, so the descenders end on the text area's bottom).
 #[test]
 fn vertical_justification_passes_wraps_that_do_not_stop_the_text() {
     use designcraft_doc::VerticalJustification::Bottom;
     // Wrap off: the number goes down over the bar.
     let (lines, area, wrap_top) = bar_chart_lines("42", Bottom, WrapMode::None, WrapSide::BothSides, Rect::new(0.0, 150.0, 60.0, 300.0));
     assert!(wrap_top.is_none());
-    assert!((lines[0].0 - area.y1).abs() < 1e-6, "{lines:?}, bottom {}", area.y1);
+    assert!((lines[0].0 + lines[0].1 - area.y1).abs() < 1e-6, "{lines:?}, bottom {}", area.y1);
     // A bar on the right half from the frame's top: the number is set beside it and goes down
     // beside it.
     let (lines, area, wrap_top) = bar_chart_lines("42", Bottom, WrapMode::BoundingBox, WrapSide::BothSides, Rect::new(30.0, 0.0, 60.0, 300.0));
     assert!(wrap_top.is_some());
-    assert!((lines[0].0 - area.y1).abs() < 1e-6, "{lines:?}, bottom {}", area.y1);
+    assert!((lines[0].0 + lines[0].1 - area.y1).abs() < 1e-6, "{lines:?}, bottom {}", area.y1);
 }
 
 /// A one-sided wrap in the second column leaves the first column's lines free to go down, as it
@@ -669,7 +670,7 @@ fn vertical_justification_passes_a_one_sided_wrap_in_another_column() {
     let cs = compose_story(&d, sid, &ComposeOptions::default());
     let l = all_lines(&cs)[0];
     assert_eq!(l.column, 0);
-    assert!((l.baseline - 200.0).abs() < 1e-6, "baseline {}", l.baseline);
+    assert!((l.baseline + l.descent - 200.0).abs() < 1e-6, "baseline {}, descent {}", l.baseline, l.descent);
 }
 
 /// Beside a contour that widens further down, Bottom moves a line only as far as its band stays
@@ -782,7 +783,7 @@ fn vertical_justification_passes_an_anchored_object_that_moves_with_the_text() {
 }
 
 /// Justify keeps the first line in place, so a wrap between it and the next line does not stop
-/// the later lines from spreading down to the text area's bottom.
+/// the later lines from spreading down to the frame's bottom.
 #[test]
 fn vertical_justify_passes_a_wrap_under_the_first_line() {
     let (mut d, sid, fid) = doc_with("One\nTwo\nSix", Rect::new(0.0, 0.0, 300.0, 400.0), ParaAttrs::default());
@@ -805,7 +806,7 @@ fn vertical_justify_passes_a_wrap_under_the_first_line() {
         lines.iter().map(|l| l.baseline).collect::<Vec<_>>()
     );
     let last = lines[2];
-    assert!((last.baseline - 400.0).abs() < 1e-6, "{:?}", lines.iter().map(|l| l.baseline).collect::<Vec<_>>());
+    assert!((last.baseline + last.descent - 400.0).abs() < 1e-6, "{:?}", lines.iter().map(|l| l.baseline).collect::<Vec<_>>());
 }
 
 /// Justify moves each row by its own share of the space, so a wrap between the second and third
@@ -2794,7 +2795,8 @@ fn vertical_justification_counts_table_fragment_bottoms() {
 }
 
 /// Center, Bottom and Justify place the text between its first baseline (where Top sets it) and
-/// its last baseline: Bottom and Justify put the last baseline on the bottom inset, and Center
+/// its last baseline: Bottom and Justify put the last baseline on the bottom inset, or higher when
+/// the inset is smaller than the descent so the descenders stay inside the frame, and Center
 /// leaves as much room under the last baseline as above the first line (#1999).
 #[test]
 fn vertical_justification_measures_to_the_last_baseline() {
@@ -2831,15 +2833,21 @@ fn vertical_justification_measures_to_the_last_baseline() {
         assert!((center[1].0 - top[1].0 - shift).abs() < 1e-6, "{first:?}: Center moves every line alike");
         assert!((area.y1 - last(&center).0 - shift).abs() < 1e-6, "{first:?}: Center leaves equal room above and below: {center:?}");
 
-        // A bottom inset smaller than the descent: the last baseline still sits on the inset, and
-        // the descenders reach past the frame's edge.
+        // A bottom inset smaller than the descent: the last baseline stays above the inset, so the
+        // descenders end on the frame's bottom edge (300 pt).
         for inset in [0.0, 1.0] {
             for mode in [Bottom, Justify] {
                 let (area, lines) = compose_inset(mode, first, inset);
                 let (b, desc) = last(&lines);
                 assert!(desc > inset + 0.5);
-                assert!((b - area.y1).abs() < 1e-6, "{first:?} {mode:?} inset {inset}: last baseline at {b}, inset at {}", area.y1);
+                assert!(b < area.y1 - 0.5, "{first:?} {mode:?} inset {inset}: last baseline at {b}, inset at {}", area.y1);
+                assert!((b + desc - 300.0).abs() < 1e-6, "{first:?} {mode:?} inset {inset}: descenders end at {}, frame at 300", b + desc);
             }
+            // Center still leaves as much room under the last baseline as above the first line.
+            let (area, top) = compose_inset(Top, first, inset);
+            let (_, center) = compose_inset(Center, first, inset);
+            let shift = center[0].0 - top[0].0;
+            assert!((area.y1 - last(&center).0 - shift).abs() < 1e-6, "{first:?} Center inset {inset}: {center:?}");
         }
     }
 }
@@ -2879,7 +2887,7 @@ fn vertical_justification_keeps_earlier_descenders_inside() {
 
 /// With Align to Baseline Grid, Center and Bottom move the lines by whole grid steps, so every
 /// line stays on the grid: Bottom puts the last baseline on the lowest grid line above the bottom
-/// inset, and Center on the grid line nearest the centered place. Justify keeps the first and last
+/// inset that keeps its descenders inside the frame, and Center on the grid line nearest the centered place. Justify keeps the first and last
 /// lines on the grid and spreads the lines between them.
 #[test]
 fn vertical_justification_keeps_grid_aligned_lines_on_the_grid() {
@@ -2899,11 +2907,19 @@ fn vertical_justification_keeps_grid_aligned_lines_on_the_grid() {
     assert_eq!(top.len(), 3);
     assert!(top.iter().all(|&b| on_grid(b, grid)), "Top: {top:?}");
     assert!(!on_grid(area.y1, grid), "the bottom inset is between grid lines: {area:?}");
+    // The frame has no bottom inset, so the last line's descenders end above the text area's
+    // bottom.
+    let desc = grid_doc("Three", ParaAttrs::default(), |_, _| {}).0[0].descent;
+    assert!(desc > 1.0 && !on_grid(area.y1 - desc, grid), "descent {desc}");
 
     let (_, bottom, _) = compose_with(Bottom, GridAlign::AllLines);
     assert!(bottom.iter().all(|&b| on_grid(b, grid)), "Bottom keeps every line on the grid: {bottom:?}");
     let last = bottom[2];
-    assert!(last <= area.y1 + 1e-6 && last > area.y1 - inc, "Bottom: last baseline {last} on the lowest grid line above {}", area.y1);
+    assert!(
+        last + desc <= area.y1 + 1e-6 && last + desc > area.y1 - inc,
+        "Bottom: last baseline {last} on the lowest grid line that keeps the descenders above {}",
+        area.y1
+    );
     assert!((bottom[1] - bottom[0] - (top[1] - top[0])).abs() < 1e-6, "Bottom keeps the leading");
 
     let (_, center, _) = compose_with(Center, GridAlign::AllLines);
@@ -2916,7 +2932,7 @@ fn vertical_justification_keeps_grid_aligned_lines_on_the_grid() {
     let (_, justify, _) = compose_with(Justify, GridAlign::AllLines);
     assert!((justify[0] - top[0]).abs() < 1e-6, "Justify keeps the first baseline: {justify:?}");
     assert!(on_grid(justify[2], grid), "Justify keeps the last line on the grid: {justify:?}");
-    assert!(justify[2] <= area.y1 + 1e-6 && justify[2] > area.y1 - inc, "Justify: last baseline {} near {}", justify[2], area.y1);
+    assert!(justify[2] + desc <= area.y1 + 1e-6 && justify[2] + desc > area.y1 - inc, "Justify: last baseline {} near {}", justify[2], area.y1);
     assert!((justify[1] - justify[0] - (justify[2] - justify[1])).abs() < 1e-6, "Justify spreads the lines evenly: {justify:?}");
 
     // First lines only: each paragraph here is one line, so Bottom keeps every line on the grid.
@@ -2924,7 +2940,8 @@ fn vertical_justification_keeps_grid_aligned_lines_on_the_grid() {
     assert!(first_only.iter().all(|&b| on_grid(b, grid)), "Bottom, first lines only: {first_only:?}");
 
     // Justify with a paragraph that wraps: with all lines aligned the last line lands on the grid;
-    // with first lines only it is not a first line, so it goes down to the bottom inset.
+    // with first lines only it is not a first line, so its descenders go down to the frame's
+    // bottom.
     let wrapped = "The first line of this paragraph sits on the baseline grid, and the lines after it keep the leading they have.";
     let justify_wrapped = |align: GridAlign| {
         let (lines, _) = grid_doc(wrapped, ParaAttrs { grid_align: Some(align), ..Default::default() }, |d, sid| {
@@ -2936,15 +2953,19 @@ fn vertical_justification_keeps_grid_aligned_lines_on_the_grid() {
     let all = justify_wrapped(GridAlign::AllLines);
     assert!(all.len() >= 2, "the paragraph wraps: {all:?}");
     let last = all[all.len() - 1];
-    assert!(on_grid(last, grid) && last <= area.y1 + 1e-6 && last > area.y1 - inc, "Justify, all lines: last baseline {last}");
+    assert!(on_grid(last, grid) && last + desc <= area.y1 + 1e-6 && last + desc > area.y1 - inc, "Justify, all lines: last baseline {last}");
     let first_lines = justify_wrapped(GridAlign::FirstLineOnly);
     assert!(first_lines.len() >= 2, "the paragraph wraps: {first_lines:?}");
     let last = first_lines[first_lines.len() - 1];
-    assert!((last - area.y1).abs() < 1e-6 && !on_grid(last, grid), "Justify, first lines only: last baseline {last}, inset at {}", area.y1);
+    assert!(
+        (last + desc - area.y1).abs() < 1e-6 && !on_grid(last, grid),
+        "Justify, first lines only: last baseline {last}, frame bottom at {}",
+        area.y1
+    );
 
-    // Without grid alignment the last baseline goes down to the bottom inset.
+    // Without grid alignment the last line's descenders go down to the frame's bottom.
     let (_, free, _) = compose_with(Bottom, GridAlign::None);
-    assert!((free[2] - area.y1).abs() < 1e-6, "Bottom without the grid: {free:?}");
+    assert!((free[2] + desc - area.y1).abs() < 1e-6, "Bottom without the grid: {free:?}");
 }
 
 /// A grid increment too small for the room to be counted in steps, or too large to double, leaves
@@ -2955,6 +2976,7 @@ fn vertical_justification_with_an_extreme_grid_increment_stays_finite() {
     use designcraft_doc::VerticalJustification::{self, Bottom, Center, Justify, Top};
     // The grid starts at the line's natural baseline, so the line sits on it before it moves.
     let (natural, grid) = grid_doc("One", ParaAttrs { grid_align: Some(GridAlign::None), ..Default::default() }, |_, _| {});
+    let desc = natural[0].descent;
     let natural = natural[0].baseline;
     let start = natural - grid.0;
     let compose_with = |mode: VerticalJustification, inc: f64| {
@@ -2976,9 +2998,10 @@ fn vertical_justification_with_an_extreme_grid_increment_stays_finite() {
             assert!(b.is_finite() && b >= top - 1e-6 && b <= area.y1 + 1e-6, "{mode:?} with increment {inc:e}: baseline {b}, text area {area:?}");
         }
     }
-    // A step far smaller than the room: Bottom takes the room as it does without a grid.
+    // A step far smaller than the room: Bottom takes the room as it does without a grid, down to
+    // where the descenders meet the frame's bottom (no inset here).
     let (area, b) = compose_with(Bottom, 1e-310);
-    assert!((b - area.y1).abs() < 1e-6, "Bottom with a tiny increment: baseline {b}, text area {area:?}");
+    assert!((b + desc - area.y1).abs() < 1e-6, "Bottom with a tiny increment: baseline {b}, text area {area:?}");
     // A step far larger than the room: the line does not move.
     let (_, b) = compose_with(Center, 1e308);
     assert!((b - natural).abs() < 1e-6, "Center with a huge increment: baseline {b}, natural {natural}");
@@ -3123,7 +3146,8 @@ fn a_corner_radius_keeps_a_cap_height_line_in_place() {
 
 /// In a shaped frame, Center, Bottom and Justify keep each moved line's slot inside the outline:
 /// a triangle that narrows downward holds the lines where their slots still fit, and one that
-/// widens downward lets Bottom put the last baseline on the frame's bottom.
+/// widens downward lets Bottom and Justify put the last line's descenders on the frame's bottom.
+/// The last line's descenders stay inside the outline where it narrows below them.
 #[test]
 fn vertical_justification_keeps_lines_inside_a_shaped_frame() {
     use designcraft_doc::VerticalJustification::{self, Bottom, Center, Justify};
@@ -3156,11 +3180,16 @@ fn vertical_justification_keeps_lines_inside_a_shaped_frame() {
             }
         }
     }
-    // Widening downward: moving down keeps every slot inside, so Bottom goes all the way.
+    // Widening downward: moving down keeps every slot inside, so Bottom and Justify go down until
+    // the last line's descenders reach the frame's bottom.
     let up = [Point::new(150.0, 0.0), Point::new(300.0, 300.0), Point::new(0.0, 300.0)];
-    let (area, lines) = compose_with(up, Bottom);
-    let last = lines[lines.len() - 1].baseline;
-    assert!((last - area.y1).abs() < 1e-6, "Bottom: last baseline at {last}, frame bottom at {}: {lines:?}", area.y1);
+    for mode in [Bottom, Justify] {
+        let (area, lines) = compose_with(up, mode);
+        let last = &lines[lines.len() - 1];
+        assert!(last.descent > 1.0 && last.baseline < area.y1 - 1.0, "{mode:?}: {lines:?}");
+        let ink = last.baseline + last.descent;
+        assert!(ink <= area.y1 + 1e-6 && ink > area.y1 - 1e-3, "{mode:?}: descenders end at {ink}, frame bottom at {}: {lines:?}", area.y1);
+    }
 
     // Narrowing at a waist, full width again from 200 to 260 pt, then a point: Bottom sets the
     // lines in the lower full-width part, past the waist.
@@ -3176,7 +3205,9 @@ fn vertical_justification_keeps_lines_inside_a_shaped_frame() {
     let lines = all_lines(&cs);
     let (first, last) = (lines[0], lines[lines.len() - 1]);
     assert!(first.baseline - first.ascent >= 200.0 - 1e-6, "Bottom: first line top at {}", first.baseline - first.ascent);
-    assert!((last.baseline - 260.0).abs() < 1e-3, "Bottom: last baseline at {}", last.baseline);
+    // The outline narrows below 260 pt, so the last line's descenders end there.
+    let ink = last.baseline + last.descent;
+    assert!(ink <= 260.0 + 1e-6 && ink > 260.0 - 1e-3, "Bottom: last baseline at {}, descenders end at {ink}", last.baseline);
 }
 
 /// In a shaped frame, Center and Bottom move every line until its slot reaches the outline at its
@@ -3208,7 +3239,8 @@ fn vertical_justification_lets_earlier_descenders_cross_a_shaped_frame() {
 
 /// In a tall shaped frame, Bottom finds a band that the line fits in over less room than one step
 /// of an even scan: in a frame that is half width from 40 pt down, apart from a full-width band
-/// only 0.25 pt taller than the line at 1,800 pt, the line moves into that band.
+/// only 0.25 pt taller than the line with its descenders at 1,800 pt, the line moves into that
+/// band.
 #[test]
 fn vertical_justification_finds_a_narrow_band_in_a_tall_shaped_frame() {
     use designcraft_doc::VerticalJustification::{self, Bottom, Top};
@@ -3227,16 +3259,16 @@ fn vertical_justification_finds_a_narrow_band_in_a_tall_shaped_frame() {
         assert!(!cs.is_overset(), "{mode:?}");
         all_lines(&cs).into_iter().cloned().collect()
     };
-    let ascent = compose_with(&[], Top)[0].ascent;
-    assert!(ascent > 1.0, "ascent {ascent}");
-    let (y0, y1) = (1800.0, 1800.0 + ascent + 0.25);
+    let (ascent, descent) = compose_with(&[], Top).first().map(|l| (l.ascent, l.descent)).unwrap();
+    assert!(ascent > 1.0 && descent > 1.0, "ascent {ascent}, descent {descent}");
+    let (y0, y1) = (1800.0, 1800.0 + ascent + descent + 0.25);
     let pts =
         [(0.0, 0.0), (300.0, 0.0), (300.0, 40.0), (150.0, 40.0), (150.0, y0), (300.0, y0), (300.0, y1), (150.0, y1), (150.0, 2000.0), (0.0, 2000.0)];
     let lines = compose_with(&pts, Bottom);
     assert_eq!(lines.len(), 1, "{lines:?}");
     let l = &lines[0];
     assert!((l.x1 - 300.0).abs() < 1e-6, "slot {l:?}");
-    assert!(l.baseline - l.ascent >= y0 - 1e-6 && l.baseline <= y1 + 1e-6, "baseline at {}, band {y0}..{y1}", l.baseline);
+    assert!(l.baseline - l.ascent >= y0 - 1e-6 && l.baseline + l.descent <= y1 + 1e-6, "baseline at {}, band {y0}..{y1}", l.baseline);
 }
 
 /// In a shaped frame with a text wrap under the text, Center, Bottom and Justify keep the lines
@@ -3279,7 +3311,7 @@ fn vertical_justification_keeps_a_shaped_frame_and_a_wrap_under_the_text_togethe
         let last = lines[lines.len() - 1].baseline;
         assert!((last - 250.0).abs() < 1e-3, "{mode:?}: last baseline at {last}, wrap top at 250: {lines:?}");
         for (k, l) in lines.iter().enumerate() {
-            let bottom = if k + 1 == lines.len() { l.baseline } else { l.baseline + l.descent };
+            let bottom = l.baseline + l.descent;
             let top = l.baseline - l.ascent;
             for (x, y) in [(l.x0, top), (l.x1, top), (l.x0, bottom), (l.x1, bottom)] {
                 assert!((x - 150.0).abs() <= y / 2.0 + 1e-3, "{mode:?}: line {k} corner ({x}, {y}) outside the triangle: {lines:?}");
