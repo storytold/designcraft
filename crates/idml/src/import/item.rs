@@ -45,20 +45,20 @@ impl<'r> Importer<'r> {
             _ => return None,
         };
         let id = ItemId(self.alloc());
-        if let Some(s) = e.get("Self") {
+        if let Some(s) = model_item.self_id() {
             self.item_ids.insert(s.to_string(), id);
         }
-        let layer = e.get("ItemLayer").and_then(|l| self.layer_ids.get(l)).copied().unwrap_or_else(|| self.layers[0].id);
+        let layer = model_item.item_layer().and_then(|l| self.layer_ids.get(l)).copied().unwrap_or_else(|| self.layers[0].id);
         let path = path_from_model(model_item.geometry());
         let mut it = Item::new(id, layer, shape, path);
-        it.xf = parent * parse_affine(e.get("ItemTransform"));
-        it.name = e.get("Name").filter(|n| *n != "$ID/").unwrap_or("").to_string();
-        it.locked = e.get("Locked") == Some("true");
-        it.hidden = e.get("Visible") == Some("false");
-        it.overrides = e.get("OverriddenPageItem").and_then(|s| self.item_ids.get(s)).copied().filter(|i| self.is_parent_item(*i));
-        it.nonprinting = e.get("Nonprinting") == Some("true");
-        it.object_style = e
-            .get("AppliedObjectStyle")
+        it.xf = parent * Affine::new(model_item.item_transform());
+        it.name = model_item.name().filter(|n| *n != "$ID/").unwrap_or("").to_string();
+        it.locked = model_item.locked();
+        it.hidden = model_item.hidden();
+        it.overrides = model_item.overridden_page_item().and_then(|s| self.item_ids.get(s)).copied().filter(|i| self.is_parent_item(*i));
+        it.nonprinting = model_item.nonprinting();
+        it.object_style = model_item
+            .applied_object_style()
             .map(|r| {
                 self.object_names
                     .get(r)
