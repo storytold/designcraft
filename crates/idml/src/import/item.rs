@@ -1,11 +1,13 @@
 use super::frame::{Prefs, frame_grid_relative, text_frame_options, text_wrap};
-use super::object_style::INDESIGN_CORNER_SIZE;
 use super::package::uri_to_path;
 use super::values::{nums, parse_affine, tint};
 use super::{
     Affine, Anchor, Arc, Asset, AssetId, Content, Corner, CornerOptions, El, Fill, Importer, Item, ItemId, OBJECT_BUILTINS, PathData, Point, Shape,
     Story, StoryId, Stroke, SubPath, TextFrame, TextFrameOptions, names, sniff_image, swatch, unescape_id,
 };
+
+/// InDesign's corner size when a corner shape is set without an explicit radius.
+const INDESIGN_CORNER_SIZE: f64 = 12.0;
 
 impl<'r> Importer<'r> {
     pub(super) fn item(&mut self, e: &El, parent: Affine) -> Option<Item> {

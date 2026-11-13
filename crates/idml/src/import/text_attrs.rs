@@ -1,4 +1,3 @@
-use super::object_style::corners;
 use super::story::MAX_STORY_NESTING;
 use super::values::tint;
 use super::{
@@ -284,45 +283,39 @@ impl<'r> Importer<'r> {
                 .map(|value| value.to_string());
         }
         a.balance_ragged = list.balance_ragged.map(|value| value.trim() != "NoBalancing" && value.trim() != "false");
-        a.shading_on = e.boolean("ParagraphShadingOn");
-        if let Some(c) = e.prop("ParagraphShadingColor") {
-            a.shading_color = Some(self.swatch_ref(c.trim()));
-        }
-        a.shading_tint = tint(e.num("ParagraphShadingTint"));
-        a.shading_overprint = e.boolean("ParagraphShadingOverprint");
-        let sides = |f: &dyn Fn(&str) -> String| -> Option<[f64; 4]> {
-            let v = ["Top", "Left", "Bottom", "Right"].map(|s| e.num(&f(s)));
-            v.iter().any(Option::is_some).then(|| v.map(|x| x.unwrap_or(0.0)))
+        let boxes = craft_idml::model::ParagraphBoxValues::from_el(&crate::xml::to_craft(e));
+        a.shading_on = boxes.shading_on;
+        a.shading_color = boxes.shading_color.map(|color| self.swatch_ref(color.trim()));
+        a.shading_tint = tint(boxes.shading_tint);
+        a.shading_overprint = boxes.shading_overprint;
+        a.shading_offsets = boxes.shading_offsets;
+        a.border_on = boxes.border_on;
+        a.border_color = boxes.border_color.map(|color| self.swatch_ref(color.trim()));
+        a.border_tint = tint(boxes.border_tint);
+        a.border_overprint = boxes.border_overprint;
+        a.border_weights = boxes.border_weights;
+        a.border_offsets = boxes.border_offsets;
+        a.border_type = boxes.border_type.as_deref().map(|value| names::stroke_type_in(value.trim()));
+        a.border_cap = boxes.border_cap.as_deref().map(|value| names::cap_in(value.trim()));
+        a.border_join = boxes.border_join.as_deref().map(|value| names::join_in(value.trim()));
+        let map_corners = |values: Option<[(String, f64); 4]>| {
+            values.map(|values| values.map(|(shape, size)| designcraft_geom::corners::Corner { shape: names::corner_in(shape.trim()), size }))
         };
-        a.shading_offsets = sides(&|s| format!("ParagraphShading{s}Offset"));
-        a.border_on = e.boolean("ParagraphBorderOn");
-        if let Some(c) = e.prop("ParagraphBorderColor") {
-            a.border_color = Some(self.swatch_ref(c.trim()));
-        }
-        a.border_tint = tint(e.num("ParagraphBorderTint"));
-        a.border_overprint = e.boolean("ParagraphBorderOverprint");
-        a.border_weights = sides(&|s| format!("ParagraphBorder{s}LineWeight"));
-        a.border_offsets = sides(&|s| format!("ParagraphBorder{s}Offset"));
-        a.border_type = e.prop("ParagraphBorderType").map(|v| names::stroke_type_in(v.trim()));
-        a.border_cap = e.prop("ParagraphBorderStrokeEndCap").map(|v| names::cap_in(v.trim()));
-        a.border_join = e.prop("ParagraphBorderStrokeEndJoin").map(|v| names::join_in(v.trim()));
-        a.border_corners = corners(e, "ParagraphBorder");
-        a.border_width = e.prop("ParagraphBorderWidth").map(|v| names::box_width_in(v.trim()));
-        a.border_top = e.prop("ParagraphBorderTopOrigin").map(|v| names::box_top_in(v.trim()));
-        a.border_bottom = e.prop("ParagraphBorderBottomOrigin").map(|v| names::box_bottom_in(v.trim()));
-        a.border_display_if_splits = e.boolean("ParagraphBorderDisplayIfSplits");
-        a.border_merge = e.boolean("MergeConsecutiveParaBorders");
-        if let Some(c) = e.prop("ParagraphBorderGapColor") {
-            a.border_gap_color = Some(self.swatch_ref(c.trim()));
-        }
-        a.border_gap_tint = tint(e.num("ParagraphBorderGapTint"));
-        a.border_gap_overprint = e.boolean("ParagraphBorderGapOverprint");
-        a.shading_corners = corners(e, "ParagraphShading");
-        a.shading_width = e.prop("ParagraphShadingWidth").map(|v| names::box_width_in(v.trim()));
-        a.shading_top = e.prop("ParagraphShadingTopOrigin").map(|v| names::box_top_in(v.trim()));
-        a.shading_bottom = e.prop("ParagraphShadingBottomOrigin").map(|v| names::box_bottom_in(v.trim()));
-        a.shading_clip = e.boolean("ParagraphShadingClipToFrame");
-        a.shading_nonprinting = e.boolean("ParagraphShadingSuppressPrinting");
+        a.border_corners = map_corners(boxes.border_corners);
+        a.border_width = boxes.border_width.as_deref().map(|value| names::box_width_in(value.trim()));
+        a.border_top = boxes.border_top.as_deref().map(|value| names::box_top_in(value.trim()));
+        a.border_bottom = boxes.border_bottom.as_deref().map(|value| names::box_bottom_in(value.trim()));
+        a.border_display_if_splits = boxes.border_display_if_splits;
+        a.border_merge = boxes.border_merge;
+        a.border_gap_color = boxes.border_gap_color.map(|color| self.swatch_ref(color.trim()));
+        a.border_gap_tint = tint(boxes.border_gap_tint);
+        a.border_gap_overprint = boxes.border_gap_overprint;
+        a.shading_corners = map_corners(boxes.shading_corners);
+        a.shading_width = boxes.shading_width.as_deref().map(|value| names::box_width_in(value.trim()));
+        a.shading_top = boxes.shading_top.as_deref().map(|value| names::box_top_in(value.trim()));
+        a.shading_bottom = boxes.shading_bottom.as_deref().map(|value| names::box_bottom_in(value.trim()));
+        a.shading_clip = boxes.shading_clip;
+        a.shading_nonprinting = boxes.shading_nonprinting;
         a.span_space_before = e.num("SpanColumnMinSpaceBefore").filter(|v| v.is_finite());
         a.span_space_after = e.num("SpanColumnMinSpaceAfter").filter(|v| v.is_finite());
         a.list_level = list.level.map(|value| value.round().clamp(1.0, designcraft_doc::LIST_LEVELS as f64) as u32);

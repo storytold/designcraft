@@ -1,25 +1,5 @@
 use super::values::{finite, tint};
-use super::{Corner, DirectionalFeather, DropShadow, Effects, El, GradientFeather, HashMap, Importer, Node, Stroke, names};
-
-/// InDesign's corner size where a file gives a corner shape without one.
-pub(super) const INDESIGN_CORNER_SIZE: f64 = 12.0;
-
-/// The four corners of a paragraph border or shading (`prefix` `ParagraphBorder` /
-/// `ParagraphShading`): top left, top right, bottom right, bottom left. Unset when none is given.
-pub(super) fn corners(e: &El, prefix: &str) -> Option<[Corner; 4]> {
-    let keys = ["TopLeft", "TopRight", "BottomRight", "BottomLeft"];
-    let shapes = keys.map(|n| e.prop(&format!("{prefix}{n}CornerOption")));
-    let sizes = keys.map(|n| e.num(&format!("{prefix}{n}CornerRadius")));
-    if shapes.iter().all(Option::is_none) && sizes.iter().all(Option::is_none) {
-        return None;
-    }
-    let mut out = [Corner::default(); 4];
-    for (c, (shape, size)) in out.iter_mut().zip(shapes.iter().zip(sizes)) {
-        c.shape = shape.as_deref().map_or(designcraft_geom::corners::CornerShape::None, |s| names::corner_in(s.trim()));
-        c.size = size.filter(|v| v.is_finite()).map_or(12.0, |v| v.max(0.0));
-    }
-    Some(out)
-}
+use super::{DirectionalFeather, DropShadow, Effects, El, GradientFeather, HashMap, Importer, Node, Stroke, names};
 
 impl<'r> Importer<'r> {
     /// An item's object style chain: its applied style, the styles that one is based on, then
