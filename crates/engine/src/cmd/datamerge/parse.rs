@@ -358,9 +358,9 @@ fn decode_utf8(bytes: &[u8], _name: &str) -> Result<String, String> {
 }
 
 fn sniff(name: &str, text: &str) -> Delimiter {
-    match extension(name).as_str() {
-        "tsv" | "tab" => return Delimiter::Tab,
-        "csv" => return Delimiter::Comma,
+    match craft_file_formats::detect(name, &[]) {
+        Some(craft_file_formats::Format::Tsv) => return Delimiter::Tab,
+        Some(craft_file_formats::Format::Csv) => return Delimiter::Comma,
         _ => {}
     }
     match craft_csv::sniff_delimiter(text, '"') {
