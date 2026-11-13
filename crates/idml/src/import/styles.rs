@@ -35,24 +35,18 @@ impl<'r> Importer<'r> {
 
     pub(super) fn styles(&mut self, top: &[TopLevelNode]) {
         for e in top.iter().filter(|node| node.kind == TopKind::Condition).map(top_el) {
-            let (Some(id), Some(name)) = (e.get("Self"), e.get("Name")) else { continue };
-            // Indicator colours: "r g b" (0–255) or a UI colour name (kept as the default blue).
-            let nums: Vec<u8> = e
-                .get("IndicatorColor")
-                .unwrap_or("")
-                .split_whitespace()
-                .filter_map(|x| x.parse::<f64>().ok())
-                .map(|x| x.clamp(0.0, 255.0) as u8)
-                .collect();
-            let color = if nums.len() == 3 { [nums[0], nums[1], nums[2]] } else { [79, 153, 255] };
-            self.condition_names.insert(id.to_string(), name.to_string());
-            self.conditions.push(designcraft_doc::Condition { name: name.to_string(), color, visible: e.get("Visible") != Some("false") });
+            let values = craft_idml::model::ConditionValues::from_el(&crate::xml::to_craft(&e));
+            let (Some(id), Some(name)) = (values.self_id, values.name) else { continue };
+            // Keep the app's UI default for unrecognized/named IDML indicator colors.
+            let color = values.indicator_rgb.unwrap_or([79, 153, 255]);
+            self.condition_names.insert(id, name.clone());
+            self.conditions.push(designcraft_doc::Condition { name, color, visible: values.visible });
         }
         for e in top.iter().filter(|node| node.kind == TopKind::NumberingList).map(top_el) {
-            let name = e.get("Name").unwrap_or("").to_string();
+            let values = craft_idml::model::NumberingListValues::from_el(&crate::xml::to_craft(&e));
+            let name = values.name;
             if !name.is_empty() && !name.starts_with("$ID/") && !self.lists.iter().any(|l| l.name == name) {
-                self.lists
-                    .push(designcraft_doc::NumberedList { name, continue_across_stories: e.get("ContinueNumbersAcrossStories") == Some("true") });
+                self.lists.push(designcraft_doc::NumberedList { name, continue_across_stories: values.continue_across_stories });
             }
         }
         let (paras, chars, objects, cell_styles, table_styles) = style_elements(top);
