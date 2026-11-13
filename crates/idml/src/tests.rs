@@ -4506,6 +4506,28 @@ fn style_names_ending_in_a_space_and_partial_rule_overrides_import() {
     assert_ne!(black.color, white.color, "only the colour is overridden");
 }
 
+/// A paragraph style whose `BasedOn` sits on lines of its own (an indented file) takes the
+/// rule settings it doesn't set from the style it is based on.
+#[test]
+fn a_rule_inherits_through_a_based_on_on_lines_of_its_own() {
+    let styles = STYLES.replace(
+        r#"  </RootParagraphStyleGroup>"#,
+        "    <ParagraphStyle Self=\"ParagraphStyle/Base\" Name=\"Base\" RuleAbove=\"true\" RuleAboveLineWeight=\"16\" RuleAboveOffset=\"-3\">
+      <Properties><BasedOn type=\"string\">$ID/[No paragraph style]</BasedOn></Properties>
+    </ParagraphStyle>
+    <ParagraphStyle Self=\"ParagraphStyle/Derived\" Name=\"Derived\">
+      <Properties><BasedOn type=\"object\">
+        ParagraphStyle/Base
+      </BasedOn><RuleAboveColor type=\"object\">Color/Black</RuleAboveColor></Properties>
+    </ParagraphStyle>
+  </RootParagraphStyleGroup>",
+    );
+    let d = import_idml(&fixture_with_table_styles(&styles, STORY)).unwrap();
+    let rule = d.styles.paragraph.iter().find(|s| s.name == "Derived").unwrap().para.rule_above.clone().unwrap();
+    assert!(rule.on, "the rule stays on");
+    assert_eq!((rule.weight, rule.offset), (16.0, -3.0), "weight and offset come from the base style");
+}
+
 #[test]
 fn a_style_setting_only_a_rules_type_gap_or_keep_in_frame_overrides_it() {
     let styles = STYLES.replace(
