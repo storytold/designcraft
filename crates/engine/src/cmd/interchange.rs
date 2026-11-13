@@ -17,7 +17,7 @@ use crate::{DocState, EngineError, Result, Session};
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(query "file.exportIdml", "Export IDML…", [], None,
-            "{path?, embedImages?: true} — writes an IDML package to `path`, or returns {base64} without a path",
+            "{path?, embedImages?: true} — writes an IDML package to `path`, or returns {base64} without a path; `warnings` names each image written as a link because the embedded-image limit was reached",
             has_doc, export_idml),
         cmd!(noundo "file.openIdml", "Open IDML", [], None,
             "{path | base64, name?} — opens an IDML package, or an InDesign document or template (.indd, .indt: converted to IDML first; its conversion warnings join `warnings`), as a new document (linked images are read next to the file or from its Links/ folder; the fonts in a `Document Fonts` folder beside it load first) → {index, documentFonts, warnings: conversion warnings, package parts missing, font files skipped, GREP styles whose pattern can't compile}",
@@ -29,15 +29,19 @@ fn export_idml(s: &mut Session, p: &Value) -> Result<Value> {
     let st = s.doc()?;
     let opts = designcraft_idml::ExportOptions { embed_images: p.get("embedImages").and_then(Value::as_bool).unwrap_or(true) };
     let layer_doc = with_pdf_layer_variants(&st.doc, opts.embed_images)?;
-    let bytes = designcraft_idml::export_idml_with(layer_doc.as_ref().unwrap_or(&st.doc), &opts);
-    match str_param(p, "path") {
+    let (bytes, warnings) = designcraft_idml::export_idml_report(layer_doc.as_ref().unwrap_or(&st.doc), &opts);
+    let mut out = match str_param(p, "path") {
         Some(path) => {
             #[cfg(not(target_arch = "wasm32"))]
             crate::io::write_file(path, &bytes).map_err(EngineError::Other)?;
-            Ok(json!({"path": path, "bytes": bytes.len()}))
+            json!({"path": path, "bytes": bytes.len()})
         }
-        None => Ok(json!({"base64": base64_encode(&bytes), "bytes": bytes.len()})),
+        None => json!({"base64": base64_encode(&bytes), "bytes": bytes.len()}),
+    };
+    if !warnings.is_empty() {
+        out["warnings"] = json!(warnings);
     }
+    Ok(out)
 }
 
 /// Whether a placement holds an Object Layer Options choice an export can still apply: a graphic
@@ -90,7 +94,7 @@ fn with_pdf_layer_variants(doc: &Document, embed: bool) -> Result<Option<Documen
         let mut variant = (**asset).clone();
         variant.id = designcraft_doc::AssetId(out.alloc());
         variant.data = std::sync::Arc::new(bytes);
-        variant.link = None;
+        variant.set_link(None, None);
         let aid = variant.id;
         out.assets.insert(aid, std::sync::Arc::new(variant));
         variants.insert(id, aid);
@@ -140,7 +144,7 @@ pub(crate) fn import_idml_confined(bytes: &[u8], package: Option<&std::path::Pat
     let read = |link: &str| -> Option<Vec<u8>> {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            read_packaged_link(link, package).map(|(_, data)| data)
+            read_packaged_link(link, package).map(|(_, data, _)| data)
         }
         #[cfg(target_arch = "wasm32")]
         {
@@ -174,8 +178,8 @@ fn import_report_with_previews(
     let read = |link: &str| -> Option<Vec<u8>> {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let (path, data) = read_packaged_link(link, package)?;
-            resolved.borrow_mut().insert(link.to_string(), path);
+            let (path, data, fingerprint) = read_packaged_link(link, package)?;
+            resolved.borrow_mut().insert(link.to_string(), (path, fingerprint));
             Some(data)
         }
         #[cfg(target_arch = "wasm32")]
@@ -191,9 +195,9 @@ fn import_report_with_previews(
     let document = {
         let mut document = document;
         for asset in document.assets.values_mut() {
-            if let Some(path) = asset.link.as_ref().and_then(|link| resolved.borrow().get(link).cloned()) {
+            if let Some((path, fingerprint)) = asset.link.as_ref().and_then(|link| resolved.borrow().get(link).cloned()) {
                 // Relocated packages must also use the new path for preflight and link updates.
-                std::sync::Arc::make_mut(asset).link = Some(path);
+                std::sync::Arc::make_mut(asset).set_link(Some(path), fingerprint);
             }
         }
         resolve_packaged_links(&mut document, package);
@@ -357,29 +361,41 @@ pub(crate) fn resolve_packaged_links(document: &mut Document, package: Option<&s
             // A link relative to the document (what File › Package writes, `Links/logo.png`) is
             // held as the file it names, as every other link is, so preflight and updates find it.
             if std::path::Path::new(link).is_relative() {
-                std::sync::Arc::make_mut(asset).link = Some(path.to_string_lossy().into_owned());
+                // The same file under its full name: what is kept of it stays.
+                let loaded = asset.link_fingerprint;
+                std::sync::Arc::make_mut(asset).set_link(Some(path.to_string_lossy().into_owned()), loaded);
             }
             continue;
         }
         let Some(path) = packaged_link_candidates(link, Some(package)).into_iter().find(|p| crate::io::is_file(p)) else { continue };
-        std::sync::Arc::make_mut(asset).link = Some(path.to_string_lossy().into_owned());
+        // Another file than the link named, found again by name: the bytes weren't read from it.
+        std::sync::Arc::make_mut(asset).set_link(Some(path.to_string_lossy().into_owned()), None);
     }
 }
 
 /// The first candidate for `link` ([`packaged_link_candidates`]) that is a regular file no larger
-/// than [`MAX_LINKED_FILE_BYTES`] holding an image or a graphic, with its path.
+/// than [`MAX_LINKED_FILE_BYTES`] holding an image or a graphic, with its path and the size and
+/// time to keep with its bytes ([`super::links::loaded_fingerprint`]).
 #[cfg(not(target_arch = "wasm32"))]
-fn read_packaged_link(link: &str, package: Option<&std::path::Path>) -> Option<(String, Vec<u8>)> {
+fn read_packaged_link(link: &str, package: Option<&std::path::Path>) -> Option<(String, Vec<u8>, Option<designcraft_doc::Fingerprint>)> {
     for path in packaged_link_candidates(link, package) {
-        if !crate::io::is_file(&path) || !crate::io::metadata(&path).is_ok_and(|m| m.len() <= MAX_LINKED_FILE_BYTES) {
+        if !crate::io::is_file(&path) {
             continue;
         }
+        // The version about to be read: one that replaces it during the read (a syncing or
+        // network file) has other metadata, and the next Links check compares the bytes.
+        let Ok(metadata) = crate::io::metadata(&path) else { continue };
+        if metadata.len() > MAX_LINKED_FILE_BYTES {
+            continue;
+        }
+        let before = super::datamerge::fingerprint_from(&metadata);
         // At most one byte over the limit, in case the file grew since.
         let Ok(bytes) = crate::io::read_capped(&path, MAX_LINKED_FILE_BYTES) else { continue };
         if bytes.len() as u64 > MAX_LINKED_FILE_BYTES || !is_graphic(&bytes) {
             continue;
         }
-        return Some((path.to_string_lossy().into_owned(), bytes));
+        let loaded = super::links::loaded_fingerprint(Some(before), &bytes);
+        return Some((path.to_string_lossy().into_owned(), bytes, loaded));
     }
     None
 }
@@ -520,6 +536,9 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let (idml, png) = linked_idml("C:\\original-computer\\project\\Links\\illustrations\\logo.png", false).unwrap();
         std::fs::write(&path, &png).unwrap();
+        // Not written just now: its size and time can vouch for the imported bytes.
+        let earlier = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        std::fs::File::options().write(true).open(&path).unwrap().set_modified(earlier).unwrap();
         std::fs::write(dir.join("logo.png"), b"a different file with the same basename").unwrap();
 
         let doc = import(&idml, Some(&dir.join("x.idml"))).unwrap();
@@ -527,6 +546,8 @@ mod tests {
         assert_eq!(*asset.data, png, "the packaged graphic must render even when its author-machine path no longer exists");
         let resolved = std::path::absolute(&path).unwrap();
         assert_eq!(asset.link.as_deref(), resolved.to_str(), "remember the resolved link so update and preflight use the packaged file");
+        let expected = super::super::datamerge::fingerprint_from(&std::fs::metadata(&path).unwrap());
+        assert_eq!(asset.link_fingerprint, Some(expected), "remember the same version of the file whose bytes were imported");
         assert_eq!(super::super::links::status_cached(asset, None, &mut Default::default()), "ok");
         std::fs::remove_dir_all(dir).unwrap();
     }

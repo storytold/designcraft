@@ -121,6 +121,13 @@ impl<'a> Ex<'a> {
             el.set("EnableStroke", bool_s(os.stroke.is_some()));
             el.set("EnableParagraphStyle", bool_s(os.paragraph_style.is_some()));
             el.set("EnableTextFrameGeneralOptions", bool_s(os.text_frame.is_some()));
+            el.set("EnableStrokeAndCornerOptions", bool_s(os.corners.is_some()));
+            if let Some(c) = &os.corners {
+                for (n, c) in ["TopLeft", "TopRight", "BottomRight", "BottomLeft"].iter().zip(c.corners) {
+                    el.set(&format!("{n}CornerOption"), names::corner_out(c.shape));
+                    el.set(&format!("{n}CornerRadius"), num(c.size));
+                }
+            }
             if let Some(f) = &os.fill {
                 el.set("FillColor", self.sw(&f.swatch));
                 el.set("FillTint", pct(f.tint as f64));
@@ -130,6 +137,7 @@ impl<'a> Ex<'a> {
             }
             if let Some(ps) = &os.paragraph_style {
                 el.set("AppliedParagraphStyle", names::style_self("ParagraphStyle", PARA_BUILTINS, ps));
+                el.set("ApplyNextParagraphStyle", bool_s(os.apply_next_style));
             }
             let mut el = with_props(el, props);
             if let Some(e) = &os.effects {
@@ -194,14 +202,18 @@ impl<'a> Ex<'a> {
             if let Some(t) = cs.fill_tint {
                 el.set("FillTint", pct(t as f64));
             }
+            let inset_names =
+                [("TextTopInset", "TopInset"), ("TextLeftInset", "LeftInset"), ("TextBottomInset", "BottomInset"), ("TextRightInset", "RightInset")];
             if let Some(i) = cs.insets {
-                for (k, v) in ["TopInset", "LeftInset", "BottomInset", "RightInset"].iter().zip(i) {
-                    el.set(k, num(v));
+                for ((text, old), v) in inset_names.iter().zip(i) {
+                    el.set(text, num(v));
+                    el.set(old, num(v));
                 }
             }
-            for (key, value) in ["TopInset", "LeftInset", "BottomInset", "RightInset"].iter().zip(cs.inset_overrides) {
+            for ((text, old), value) in inset_names.iter().zip(cs.inset_overrides) {
                 if let Some(value) = value {
-                    el.set(key, num(value));
+                    el.set(text, num(value));
+                    el.set(old, num(value));
                 }
             }
             if let Some(vj) = cs.vj {

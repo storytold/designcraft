@@ -1,3 +1,8 @@
+use std::collections::HashMap;
+
+use designcraft_geom::corners::CornerOptions;
+
+use super::object_style::{corners, corners_in};
 use super::table::uniform_cell_stroke;
 use super::values::tint;
 use super::{
@@ -127,7 +132,9 @@ impl<'r> Importer<'r> {
                 e.prop("BasedOn").map(|r| self.cell_style_ref(&r)).or_else(|| Some(designcraft_doc::NO_CELL_STYLE.into())).filter(|n| *n != name);
             cs.fill = e.prop("FillColor").map(|c| self.swatch_ref(&c));
             cs.fill_tint = tint(e.num("FillTint"));
-            cs.inset_overrides = ["TopInset", "LeftInset", "BottomInset", "RightInset"].map(|k| e.num(k).map(|v| v.max(0.0)));
+            let inset_names =
+                [("TextTopInset", "TopInset"), ("TextLeftInset", "LeftInset"), ("TextBottomInset", "BottomInset"), ("TextRightInset", "RightInset")];
+            cs.inset_overrides = inset_names.map(|(text, old)| e.num(text).or_else(|| e.num(old)).map(|v| v.max(0.0)));
             if let [Some(top), Some(left), Some(bottom), Some(right)] = cs.inset_overrides {
                 cs.insets = Some([top, left, bottom, right]);
                 cs.inset_overrides = [None; 4];
@@ -178,6 +185,7 @@ impl<'r> Importer<'r> {
                 None => self.styles.table.push(ts),
             }
         }
+        let objects_by_self: HashMap<&str, &El> = objects.iter().filter_map(|(_, e)| Some((e.get("Self")?, e))).collect();
         for (_, e) in &objects {
             let name = names::style_name_in(OBJECT_BUILTINS, e.get("Name").unwrap_or(""));
             let based_on = e.prop("BasedOn").map(|b| {
@@ -199,13 +207,24 @@ impl<'r> Importer<'r> {
             let paragraph_style = enabled("EnableParagraphStyle", "AppliedParagraphStyle")
                 .then(|| e.get("AppliedParagraphStyle").map(|r| self.para_style_ref(r)))
                 .flatten();
-            let text_frame = if e.get("EnableTextFrameGeneralOptions") == Some("true") {
-                e.find("TextFramePreference").map(|t| self.frame_options(&[t]))
+            let levels = based_on_levels(e, &objects_by_self);
+            // Text Frame General Options: each attribute from the nearest style whose
+            // `TextFramePreference` sets it, among the styles that don't turn the category off. A
+            // style without the category flag takes it from the style it is based on.
+            let text_frame = if category_on(&levels, "EnableTextFrameGeneralOptions", |_| false) {
+                let prefs: Vec<&El> = levels
+                    .iter()
+                    .filter(|l| l.get("EnableTextFrameGeneralOptions") != Some("false"))
+                    .filter_map(|l| l.find("TextFramePreference"))
+                    .collect();
+                (!prefs.is_empty()).then(|| self.frame_options(&prefs))
             } else {
                 None
             };
             let effects = self.style_effects(e);
-            let s = ObjectStyle { name: name.clone(), based_on, fill, stroke, paragraph_style, text_frame, effects };
+            let corners = style_corners(&levels);
+            let apply_next_style = paragraph_style.is_some() && e.get("ApplyNextParagraphStyle") == Some("true");
+            let s = ObjectStyle { name: name.clone(), based_on, fill, stroke, paragraph_style, apply_next_style, text_frame, effects, corners };
             match self.styles.object.iter_mut().find(|o| o.name == name) {
                 Some(slot) => *slot = s,
                 None => self.styles.object.push(s),
@@ -402,4 +421,52 @@ impl<'r> Importer<'r> {
             skip_last: el.num(&format!("SkipLastAlternatingStroke{kind}s")).map(|v| v.max(0.0) as u32),
         }
     }
+}
+
+/// The corner options (Stroke & Corner Options) of the object style that starts `levels` (the
+/// style, then the styles it is based on), by name, when it sets them. A style that sets some
+/// corners, or turns the category on (itself or through the style it is based on), takes the
+/// others from the styles in `levels` that don't turn the category off.
+fn style_corners(levels: &[&El]) -> Option<CornerOptions> {
+    if !category_on(levels, "EnableStrokeAndCornerOptions", |l| corners(l, "").is_some()) {
+        return None;
+    }
+    let on: Vec<&El> = levels.iter().copied().filter(|l| l.get("EnableStrokeAndCornerOptions") != Some("false")).collect();
+    corners_in(&on, "").map(|c| CornerOptions { corners: c })
+}
+
+/// Whether the style chain `levels` (a style, then the styles it is based on) turns the category
+/// whose flag is `flag` on. The nearest style that gives the flag decides; a style without it
+/// turns the category on when `own` finds settings of its own. A `[None]` after the first style
+/// ends the chain, as a `BasedOn` of `[None]` names no style.
+fn category_on(levels: &[&El], flag: &str, own: impl Fn(&El) -> bool) -> bool {
+    let none = |l: &&El| l.get("Self") == Some("ObjectStyle/$ID/[None]");
+    for l in levels.iter().take(1).chain(levels.iter().skip(1).take_while(|l| !none(l))) {
+        match l.get(flag) {
+            Some(v) => return v == "true",
+            None if own(l) => return true,
+            None => {}
+        }
+    }
+    false
+}
+
+/// Object style `e`, then the styles it is based on, nearest first (cycle-safe, at most 16). A
+/// `BasedOn` may name a style by its `Self` id or by its bare name.
+fn based_on_levels<'e>(e: &'e El, objects_by_self: &HashMap<&str, &'e El>) -> Vec<&'e El> {
+    let id = |b: String| {
+        let b = b.trim();
+        if b.starts_with("ObjectStyle/") { b.to_string() } else { format!("ObjectStyle/{}", names::escape_id(b)) }
+    };
+    let mut levels = vec![e];
+    let mut next = e.prop("BasedOn").map(id);
+    while let Some(b) = next.take()
+        && levels.len() < 16
+        && let Some(s) = objects_by_self.get(b.as_str()).copied()
+        && !levels.iter().any(|l| std::ptr::eq(*l, s))
+    {
+        levels.push(s);
+        next = s.prop("BasedOn").map(id);
+    }
+    levels
 }

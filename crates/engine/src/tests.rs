@@ -752,6 +752,331 @@ fn object_style_effects_follow_the_style_until_overridden() {
     assert_eq!(s.doc().unwrap().revision, rev);
 }
 
+/// `style.object.create` and `edit` refuse an unknown swatch, a misspelled setting (a stroke type's
+/// included), a word or null for a switch, a rename that isn't a name, a corner size outside
+/// 0–10000 pt and a stroke gap tint outside 0–1.
+#[test]
+fn object_style_parameters_are_checked() {
+    let mut s = session();
+    s.execute("style.object.create", &json!({"name": "Framed", "fromSelection": false})).unwrap();
+    for bad in [
+        json!({"fill": "Nope"}),
+        json!({"fill": {"swatch": "Nope"}}),
+        json!({"stroke": {"swatch": "Nope"}}),
+        json!({"stroke": {"wieght": 5}}),
+        json!({"fill": {"tnt": 0.5}}),
+        json!({"corners": {"shpae": "rounded"}}),
+        json!({"corners": {"size": -1}}),
+        json!({"corners": {"size": 10_001}}),
+        json!({"applyNextStyle": null}),
+        json!({"stroke": {"gapTint": -1}}),
+        json!({"stroke": {"gapTint": 1.5}}),
+        json!({"stroke": {"type": {"kind": "dashed", "pattern": [2, 2], "patern": [4, 4]}}}),
+        json!({"stroke": {"type": {"kind": "solid", "pattern": [2, 2]}}}),
+        json!({"stroke": {"type": {"bands": [[0, 0.5]]}}}),
+    ] {
+        let mut p = bad.clone();
+        p["name"] = json!("Framed");
+        assert!(s.execute("style.object.edit", &p).is_err(), "{bad}");
+        p["name"] = json!("Other");
+        assert!(s.execute("style.object.create", &p).is_err(), "{bad}");
+    }
+    let c = json!({"shape": "rounded", "size": -1});
+    assert!(s.execute("style.object.create", &json!({"name": "Odd", "corners": {"corners": [c, c, c, c]}})).is_err());
+    for from in [json!("yes"), json!(null)] {
+        assert!(s.execute("style.object.create", &json!({"name": "Other", "fromSelection": from})).is_err(), "{from}");
+    }
+    for rename in [json!(3), json!(null), json!(true)] {
+        assert!(s.execute("style.object.edit", &json!({"name": "Framed", "rename": rename})).is_err(), "{rename}");
+    }
+    let names: Vec<_> = s.doc().unwrap().doc.styles.object.iter().map(|o| o.name.clone()).collect();
+    assert!(!names.iter().any(|n| n == "Other" || n == "Odd"), "{names:?}");
+}
+
+/// An edit that leaves the style as it is answers with the same fields as one that changes it.
+#[test]
+fn an_object_style_edit_that_changes_nothing_reports_no_restyled_frames() {
+    let mut s = session();
+    s.execute("style.object.create", &json!({"name": "Framed", "fromSelection": false})).unwrap();
+    let r = s.execute("style.object.edit", &json!({"name": "Framed"})).unwrap();
+    assert_eq!((r["name"].as_str(), r["updated"].as_u64(), r["restyled"].as_u64()), (Some("Framed"), Some(0), Some(0)), "{r}");
+}
+
+/// The course's "Rounded Corner Image, White Stroke" style: made from a frame with rounded corners
+/// and a paper stroke, applied to another frame, then edited (a thicker stroke, bigger corners):
+/// the frames that follow the style change, one with its own stroke keeps it; a rename follows.
+#[test]
+fn object_styles_carry_corners_and_their_stroke_and_corners_can_be_edited() {
+    use designcraft_doc::ItemId;
+    use designcraft_geom::corners::CornerShape;
+    let mut s = session();
+    let frame = |s: &mut Session, x: f64| {
+        s.execute("frame.create", &json!({"rect": [x, 36, x + 100.0, 136], "content": "graphic"})).unwrap()["id"].as_u64().unwrap()
+    };
+    let item = |s: &Session, id: u64| s.doc().unwrap().doc.item(ItemId(id)).unwrap().clone();
+    let a = frame(&mut s, 36.0);
+    s.execute("object.cornerOptions", &json!({"shape": "rounded", "size": 18, "ids": [a]})).unwrap();
+    s.execute("object.stroke", &json!({"swatch": "[Paper]", "weight": 2.5, "ids": [a]})).unwrap();
+    s.execute("selection.set", &json!({"ids": [a]})).unwrap();
+    let name =
+        s.execute("style.object.create", &json!({"name": "Rounded Corner Image, White Stroke"})).unwrap()["name"].as_str().unwrap().to_string();
+    let os = s.doc().unwrap().doc.styles.object_style(&name).cloned().unwrap();
+    assert_eq!(os.corners.unwrap().corners[0].shape, CornerShape::Rounded);
+    let (b, c) = (frame(&mut s, 200.0), frame(&mut s, 360.0));
+    s.execute("style.object.apply", &json!({"name": name, "ids": [a, b, c]})).unwrap();
+    assert_eq!((item(&s, b).corners, item(&s, b).stroke.weight, item(&s, b).stroke.swatch.as_str()), (item(&s, a).corners, 2.5, "[Paper]"));
+    s.execute("object.stroke", &json!({"weight": 1, "ids": [c]})).unwrap();
+
+    let r = s.execute("style.object.edit", &json!({"name": name, "stroke": {"weight": 6}, "corners": {"size": 30}})).unwrap();
+    assert_eq!(r["updated"], 3);
+    assert_eq!((item(&s, a).stroke.weight, item(&s, b).stroke.weight, item(&s, c).stroke.weight), (6.0, 6.0, 1.0));
+    assert_eq!(item(&s, b).stroke.swatch, "[Paper]");
+    assert!(item(&s, c).corners.corners.iter().all(|k| k.shape == CornerShape::Rounded && k.size == 30.0), "corners follow apart from the stroke");
+    s.execute("style.object.edit", &json!({"name": name, "fill": "[Black]"})).unwrap();
+    assert_eq!(item(&s, b).fill.swatch, "[Black]");
+
+    // Renamed, the items keep the style; a name in use or a built-in one is refused.
+    s.execute("style.object.edit", &json!({"name": name, "rename": "Framed"})).unwrap();
+    assert_eq!(item(&s, a).object_style, "Framed");
+    assert!(s.doc().unwrap().doc.styles.object_style(&name).is_none());
+    assert!(s.execute("style.object.edit", &json!({"name": "Framed", "rename": "[Basic Text Frame]"})).is_err());
+    assert!(s.execute("style.object.edit", &json!({"name": "[Basic Graphics Frame]", "rename": "Mine"})).is_err());
+    assert!(s.execute("style.object.edit", &json!({"name": "Framed", "corners": {"size": "big"}})).is_err());
+    // A negative stroke weight is refused when creating a style as when editing one.
+    let styles = s.doc().unwrap().doc.styles.object.len();
+    for cmd in ["style.object.create", "style.object.edit"] {
+        let e = s.execute(cmd, &json!({"name": "Framed", "stroke": {"weight": -3}})).unwrap_err();
+        assert!(e.to_string().contains("stroke weight"), "{cmd}: {e}");
+        for tint in [-1.0, 1.5] {
+            let e = s.execute(cmd, &json!({"name": "Framed", "stroke": {"tint": tint}})).unwrap_err();
+            assert!(e.to_string().contains("stroke tint"), "{cmd}: {e}");
+        }
+    }
+    assert_eq!(s.doc().unwrap().doc.styles.object.len(), styles);
+    // null: the style stops setting corners, the items keep theirs.
+    s.execute("style.object.edit", &json!({"name": "Framed", "corners": null})).unwrap();
+    assert!(s.doc().unwrap().doc.styles.object_style("Framed").unwrap().corners.is_none());
+    assert_eq!(item(&s, a).corners.corners[0].size, 30.0);
+    s.execute("edit.undo", &json!({})).unwrap();
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(item(&s, a).object_style, name);
+}
+
+/// The course's chapter 39 (nested object styles): an object style carries a paragraph style,
+/// with Apply Next Style a chain of them, and text frame options. Applying it styles the frame's
+/// text; editing it moves the frames that still follow it, not one whose text took another style,
+/// which Clear Overrides puts back.
+#[test]
+fn object_styles_carry_a_paragraph_style_and_text_frame_options() {
+    use designcraft_doc::ItemId;
+    let mut s = session();
+    s.execute("style.paragraph.create", &json!({"name": "Body Text"})).unwrap();
+    s.execute(
+        "style.paragraph.create",
+        &json!({"name": "Drop Cap First Paragraph", "nextStyle": "Body Text", "para": {"dropCapLines": 3, "dropCapChars": 1}}),
+    )
+    .unwrap();
+    let name = "Text Box Drop Cap";
+    s.execute(
+        "style.object.create",
+        &json!({"name": name, "fromSelection": false, "paragraphStyle": "Drop Cap First Paragraph", "applyNextStyle": true, "textFrame": {"inset": [4, 4, 4, 4]}}),
+    )
+    .unwrap();
+    let frame = |s: &mut Session, x: f64, text: &str| {
+        let r = s.execute("frame.create", &json!({"rect": [x, 36, x + 200.0, 300], "content": "text", "text": text, "caret": false})).unwrap();
+        (r["id"].as_u64().unwrap(), r["story"].clone())
+    };
+    let ((a, _), (b, b_story)) = (frame(&mut s, 36.0, "One\nTwo\nThree"), frame(&mut s, 300.0, "Alone"));
+    s.execute("style.object.apply", &json!({"name": name, "ids": [a, b]})).unwrap();
+    let styles_of = |s: &Session, id: u64| {
+        let d = &s.doc().unwrap().doc;
+        let sid = d.item(ItemId(id)).unwrap().text_frame().unwrap().story;
+        d.story(sid).unwrap().paras.iter().map(|p| p.style.clone()).collect::<Vec<_>>()
+    };
+    let options = |s: &Session, id: u64| s.doc().unwrap().doc.item(ItemId(id)).unwrap().text_frame().unwrap().options.clone();
+    assert_eq!(styles_of(&s, a), ["Drop Cap First Paragraph", "Body Text", "Body Text"], "Apply Next Style");
+    assert_eq!(styles_of(&s, b), ["Drop Cap First Paragraph"]);
+    assert_eq!(options(&s, a).inset, [4.0; 4]);
+
+    // b's text takes another paragraph style: its own, kept when the object style changes.
+    s.execute("text.select", &json!({"story": b_story, "anchor": 0, "focus": 5})).unwrap();
+    s.execute("style.paragraph.apply", &json!({"name": "Body Text"})).unwrap();
+    s.execute("style.paragraph.create", &json!({"name": "Box Body Text"})).unwrap();
+    let r = s
+        .execute("style.object.edit", &json!({"name": name, "paragraphStyle": "Box Body Text", "applyNextStyle": false, "textFrame": {"columns": 2}}))
+        .unwrap();
+    assert_eq!((r["updated"].as_u64(), r["restyled"].as_u64()), (Some(2), Some(1)));
+    assert_eq!(styles_of(&s, a), ["Box Body Text"; 3]);
+    assert_eq!(styles_of(&s, b), ["Body Text"], "its own style stays");
+    assert_eq!((options(&s, a).columns, options(&s, a).inset, options(&s, b).columns), (2, [4.0; 4], 2));
+    s.execute("style.object.clearOverrides", &json!({"ids": [b]})).unwrap();
+    assert_eq!(styles_of(&s, b), ["Box Body Text"]);
+
+    // Refused: an unknown paragraph style, no columns, a negative inset, a word for a switch.
+    for bad in [
+        json!({"paragraphStyle": "Nope"}),
+        json!({"paragraphStyle": 3}),
+        json!({"textFrame": {"columns": 0}}),
+        json!({"textFrame": {"inset": [-1, 0, 0, 0]}}),
+        json!({"applyNextStyle": "yes"}),
+    ] {
+        let mut p = bad.clone();
+        p["name"] = json!(name);
+        assert!(s.execute("style.object.edit", &p).is_err(), "{bad}");
+        assert!(s.execute("style.object.create", &p).is_err(), "{bad}");
+    }
+    // null: the style no longer sets a paragraph style or frame options; the frames keep theirs.
+    s.execute("style.object.edit", &json!({"name": name, "paragraphStyle": null, "textFrame": null})).unwrap();
+    let os = s.doc().unwrap().doc.styles.object_style(name).cloned().unwrap();
+    assert!(os.paragraph_style.is_none() && os.text_frame.is_none());
+    assert_eq!((styles_of(&s, a), options(&s, a).columns), (vec!["Box Body Text".to_string(); 3], 2));
+}
+
+/// An object style's Text Frame General Options set the columns, insets, vertical justification
+/// and Ignore Text Wrap only: a frame keeps its auto-size and column rule, follows an edit of the
+/// style while its General options are the style's, and keeps the settings through save and open.
+/// Applying a style that changes nothing records no undo step, threaded frames share one Next
+/// Style chain, and keys outside the General options are refused.
+#[test]
+fn object_style_text_frame_general_options_leave_the_other_frame_settings() {
+    use designcraft_doc::{AutoSize, ItemId, VerticalJustification};
+    let mut s = session();
+    s.execute("style.paragraph.create", &json!({"name": "Body"})).unwrap();
+    s.execute("style.paragraph.create", &json!({"name": "Lead", "nextStyle": "Body"})).unwrap();
+    let name = "Callout";
+    s.execute(
+        "style.object.create",
+        &json!({"name": name, "fromSelection": false, "paragraphStyle": "Lead", "applyNextStyle": true,
+                "textFrame": {"inset": 6, "verticalJustification": "center"}}),
+    )
+    .unwrap();
+    let r = s.execute("frame.create", &json!({"rect": [36, 36, 156, 200], "content": "text", "text": "One\nTwo", "caret": false})).unwrap();
+    let a = r["id"].as_u64().unwrap();
+    let b = s.execute("frame.create", &json!({"rect": [200, 36, 320, 200], "content": "unassigned"})).unwrap()["id"].as_u64().unwrap();
+    s.execute("object.textFrameOptions", &json!({"ids": [a], "autoSize": "heightOnly", "columnRule": true})).unwrap();
+    s.execute("style.object.apply", &json!({"name": name, "ids": [a]})).unwrap();
+    let options = |s: &Session, id: u64| s.doc().unwrap().doc.item(ItemId(id)).unwrap().text_frame().unwrap().options.clone();
+    let o = options(&s, a);
+    assert_eq!((o.inset, o.vertical_justification), ([6.0; 4], VerticalJustification::Center));
+    assert_eq!((o.auto_size, o.column_rule), (AutoSize::HeightOnly, true), "the frame's own auto-size and column rule stay");
+
+    // Applying it again changes nothing and records no undo step.
+    let undo = |s: &Session| s.doc().unwrap().history.undo.len();
+    let before = undo(&s);
+    s.execute("style.object.apply", &json!({"name": name, "ids": [a]})).unwrap();
+    assert_eq!(undo(&s), before, "no undo step when nothing changes");
+
+    // The frame differs from the style's options only in auto-size, so it follows the edit.
+    let r = s.execute("style.object.edit", &json!({"name": name, "textFrame": {"inset": [1, 2, 3, 4], "ignoreWrap": true}})).unwrap();
+    assert_eq!(r["updated"], 1);
+    let o = options(&s, a);
+    assert_eq!((o.inset, o.ignore_wrap, o.auto_size), ([1.0, 2.0, 3.0, 4.0], true, AutoSize::HeightOnly));
+    // Each option follows on its own: the frame's own inset stays and the new column count arrives.
+    s.execute("object.textFrameOptions", &json!({"ids": [a], "inset": 9})).unwrap();
+    s.execute("style.object.edit", &json!({"name": name, "textFrame": {"columns": 3}})).unwrap();
+    let o = options(&s, a);
+    assert_eq!((o.columns, o.inset), (3, [9.0; 4]));
+
+    // Threaded frames: the story's paragraphs take one Next Style chain across both frames.
+    s.execute("text.thread", &json!({"from": a, "to": b})).unwrap();
+    s.execute("style.object.apply", &json!({"name": name, "ids": [a, b]})).unwrap();
+    let d = &s.doc().unwrap().doc;
+    let sid = d.item(ItemId(a)).unwrap().text_frame().unwrap().story;
+    assert_eq!(d.item(ItemId(b)).unwrap().text_frame().unwrap().story, sid);
+    assert_eq!(d.story(sid).unwrap().paras.iter().map(|p| p.style.as_str()).collect::<Vec<_>>(), ["Lead", "Body"]);
+
+    // Save and open keep the style's General options and Apply Next Style.
+    let bytes = s.execute("file.serialize", &json!({})).unwrap();
+    let mut back = Session::new();
+    back.execute("file.openBytes", &json!({"name": "copy", "base64": bytes["base64"]})).unwrap();
+    let os = back.doc().unwrap().doc.styles.object_style(name).cloned().unwrap();
+    assert!(os.apply_next_style);
+    assert_eq!(os.text_frame.map(|t| (t.inset, t.ignore_wrap)), Some(([1.0, 2.0, 3.0, 4.0], true)));
+
+    // Keys outside the General options, a misspelled key and a word for the inset are refused.
+    for bad in [json!({"autoSize": "heightOnly"}), json!({"insets": 4}), json!({"inset": "wide"}), json!({"verticalJustification": "middle"})] {
+        let p = json!({"name": name, "textFrame": bad});
+        assert!(s.execute("style.object.edit", &p).is_err(), "{bad}");
+    }
+    // A style that already holds 60 columns (as a file can give it) takes other edits, and 60
+    // given again is refused.
+    {
+        let d = std::sync::Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+        let st = d.styles_mut().object.iter_mut().find(|o| o.name == name).unwrap();
+        st.text_frame.as_mut().unwrap().columns = 60;
+    }
+    s.execute("style.object.edit", &json!({"name": name, "textFrame": {"inset": 2}})).unwrap();
+    assert!(s.execute("style.object.edit", &json!({"name": name, "textFrame": {"columns": 60}})).is_err());
+}
+
+/// A stroke added to a style that set none reaches a drawn shape still carrying its default 1 pt
+/// stroke and a frame with none, and leaves a shape or text frame with its own stroke.
+#[test]
+fn a_stroke_added_to_an_object_style_reaches_default_strokes() {
+    use designcraft_doc::ItemId;
+    let mut s = session();
+    s.execute("style.object.create", &json!({"name": "Boxed", "fromSelection": false})).unwrap();
+    let frame = |s: &mut Session, x: f64, content: &str| {
+        s.execute("frame.create", &json!({"rect": [x, 36, x + 50.0, 86], "content": content, "caret": false})).unwrap()["id"].as_u64().unwrap()
+    };
+    let (shape, text, own) = (frame(&mut s, 36.0, "unassigned"), frame(&mut s, 100.0, "text"), frame(&mut s, 200.0, "unassigned"));
+    let stroked_text = frame(&mut s, 300.0, "text");
+    s.execute("object.stroke", &json!({"ids": [own], "weight": 9})).unwrap();
+    s.execute("object.stroke", &json!({"ids": [stroked_text], "weight": 1})).unwrap();
+    s.execute("style.object.apply", &json!({"name": "Boxed", "ids": [shape, text, own, stroked_text]})).unwrap();
+    let r = s.execute("style.object.edit", &json!({"name": "Boxed", "stroke": {"weight": 4}})).unwrap();
+    assert_eq!(r["updated"], 2, "{r}");
+    let weight = |s: &Session, id: u64| s.doc().unwrap().doc.item(ItemId(id)).unwrap().stroke.weight;
+    assert_eq!((weight(&s, shape), weight(&s, text), weight(&s, own)), (4.0, 4.0, 9.0));
+    assert_eq!(weight(&s, stroked_text), 1.0, "a text frame's own 1 pt stroke stays");
+}
+
+/// A paragraph-style edit of an object style reaches each paragraph still in the old style, and a
+/// paragraph given another style keeps it.
+#[test]
+fn an_object_style_edit_restyles_paragraph_by_paragraph() {
+    use designcraft_doc::ItemId;
+    let mut s = session();
+    for n in ["Body", "Lead", "Own"] {
+        s.execute("style.paragraph.create", &json!({"name": n})).unwrap();
+    }
+    s.execute("style.object.create", &json!({"name": "Boxed", "fromSelection": false, "paragraphStyle": "Body"})).unwrap();
+    let r = s.execute("frame.create", &json!({"rect": [36, 36, 336, 336], "content": "text", "text": "One\nTwo\nThree", "caret": false})).unwrap();
+    let (id, story) = (r["id"].as_u64().unwrap(), r["story"].clone());
+    s.execute("style.object.apply", &json!({"name": "Boxed", "ids": [id]})).unwrap();
+    s.execute("text.select", &json!({"story": story, "anchor": 4, "focus": 7})).unwrap();
+    s.execute("style.paragraph.apply", &json!({"name": "Own"})).unwrap();
+    s.execute("style.object.edit", &json!({"name": "Boxed", "paragraphStyle": "Lead"})).unwrap();
+    let d = &s.doc().unwrap().doc;
+    let sid = d.item(ItemId(id)).unwrap().text_frame().unwrap().story;
+    assert_eq!(d.story(sid).unwrap().paras.iter().map(|p| p.style.as_str()).collect::<Vec<_>>(), ["Lead", "Own", "Lead"]);
+}
+
+/// A text frame anchored in a story (as IDML import places one) takes a new paragraph style of
+/// its object style like a frame on the page.
+#[test]
+fn an_object_style_edit_restyles_an_anchored_text_frame() {
+    use designcraft_doc::ItemId;
+    let mut s = session();
+    s.execute("style.paragraph.create", &json!({"name": "Body"})).unwrap();
+    s.execute("style.paragraph.create", &json!({"name": "Lead"})).unwrap();
+    s.execute("style.object.create", &json!({"name": "Sidebar", "fromSelection": false, "paragraphStyle": "Body"})).unwrap();
+    let r = s.execute("frame.create", &json!({"rect": [36, 36, 136, 86], "content": "text", "text": "Inner", "caret": false})).unwrap();
+    let (inner, inner_story) = (ItemId(r["id"].as_u64().unwrap()), designcraft_doc::StoryId(r["story"].as_u64().unwrap()));
+    s.execute("style.object.apply", &json!({"name": "Sidebar", "ids": [inner.0]})).unwrap();
+    let r = s.execute("frame.create", &json!({"rect": [36, 200, 400, 400], "content": "text", "text": "Before after.", "caret": false})).unwrap();
+    let host = designcraft_doc::StoryId(r["story"].as_u64().unwrap());
+    {
+        let d = std::sync::Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+        let it = d.item(inner).unwrap().clone();
+        std::sync::Arc::make_mut(&mut d.spreads[0]).items.retain(|i| i.id != inner);
+        d.story_mut(host).unwrap().insert_object(7, designcraft_doc::AnchoredObject::new(it, Default::default()));
+    }
+    let r = s.execute("style.object.edit", &json!({"name": "Sidebar", "paragraphStyle": "Lead"})).unwrap();
+    assert_eq!(r["restyled"], 1, "{r}");
+    assert_eq!(s.doc().unwrap().doc.story(inner_story).unwrap().paras[0].style, "Lead");
+}
+
 #[test]
 fn object_style_effects_reach_grouped_and_anchored_items() {
     use designcraft_doc::ItemId;
@@ -1721,6 +2046,35 @@ fn a_line_fits_when_its_baseline_does() {
     assert!(overset(&mut s, 50.0), "a baseline below the frame still oversets the line");
 }
 
+/// Clear Overrides puts a text frame's story back in its object style's paragraph style, as
+/// applying the style does; and a style's feather choke is kept to 0–100 %, as IDML reads it.
+#[test]
+fn object_style_clear_overrides_restores_the_paragraph_style_and_choke_is_clamped() {
+    let mut s = session();
+    s.execute("style.paragraph.create", &json!({"name": "Caption"})).unwrap();
+    s.execute("style.object.create", &json!({"name": "Captioned", "fromSelection": false, "paragraphStyle": "Caption"})).unwrap();
+    let f = s.execute("frame.create", &json!({"rect": [36, 36, 300, 200], "content": "text", "text": "One\nTwo"})).unwrap();
+    let (id, sid) = (f["id"].as_u64().unwrap(), designcraft_doc::StoryId(f["story"].as_u64().unwrap()));
+    s.execute("style.object.apply", &json!({"name": "Captioned", "ids": [id]})).unwrap();
+    let styles = |s: &Session| s.doc().unwrap().doc.story(sid).unwrap().paras.iter().map(|p| p.style.clone()).collect::<Vec<_>>();
+    assert_eq!(styles(&s), ["Caption", "Caption"]);
+    {
+        let doc = std::sync::Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+        let st = std::sync::Arc::make_mut(doc.stories.get_mut(&sid).unwrap());
+        st.paras[1].style = designcraft_doc::BASIC_PARAGRAPH.into();
+    }
+    let r = s.execute("style.object.clearOverrides", &json!({"ids": [id]})).unwrap();
+    assert_eq!(r["changed"], 1);
+    assert_eq!(styles(&s), ["Caption", "Caption"]);
+    let r = s.execute("style.object.clearOverrides", &json!({"ids": [id]})).unwrap();
+    assert_eq!(r["changed"], 0, "nothing left to clear");
+
+    s.execute("style.object.create", &json!({"name": "Soft", "fromSelection": false, "effects": {"feather": 4, "featherOptions": {"choke": 150}}}))
+        .unwrap();
+    let fx = s.doc().unwrap().doc.styles.object_style("Soft").unwrap().effects.clone().unwrap();
+    assert_eq!(fx.feather_options.choke, 100.0);
+}
+
 #[test]
 fn parent_resize_tool_previews_cancels_commits_and_undoes_on_the_selected_spread() {
     use designcraft_tools::{Mods, Overlay, PointerEvent, PointerKind};
@@ -2008,6 +2362,30 @@ fn direct_selection_on_a_selected_frame_deletes_only_its_image() {
     s.pointer(&PointerEvent::new(PointerKind::Up, 340.0, 140.0), v).unwrap();
     let st = s.doc().unwrap();
     assert!(st.selection.content && st.selection.items == [designcraft_doc::ItemId(holder)], "the pasted-in items are selected: {:?}", st.selection);
+}
+
+/// Beside an object with text on both sides, every line stays within its segment, however many
+/// lines the paragraph needs (the breaker's segment estimate can run out on narrow segments; a
+/// line it set for the whole column ran across the object).
+#[test]
+fn every_line_beside_a_wrap_stays_within_its_segment() {
+    let mut s = Session::new();
+    s.execute("file.new", &json!({"facingPages": false})).unwrap();
+    // Placeholder text: paragraphs of a few sentences, some of them starting beside the object.
+    let t = s.execute("frame.create", &json!({"rect": [36, 36, 576, 756], "content": "text", "text": ""})).unwrap();
+    s.execute("type.fillWithPlaceholder", &json!({})).unwrap();
+    s.execute("selection.set", &json!({"ids": []})).unwrap();
+    s.execute("frame.create", &json!({"rect": [196, 160, 416, 490]})).unwrap();
+    s.execute("object.textWrap", &json!({"mode": "boundingBox", "offset": 6})).unwrap();
+    let d = &s.doc().unwrap().doc;
+    let c = s.cache.get(d, designcraft_doc::StoryId(t["story"].as_u64().unwrap()), None);
+    let mut beside = 0;
+    for l in c.frames.iter().flat_map(|f| &f.lines) {
+        let end = l.glyphs.iter().filter(|g| g.visible).map(|g| g.x + g.adv).fold(l.x0, f64::max);
+        assert!(end <= l.x1 + 0.5, "line at {} runs to {end}, past its segment {}..{}", l.baseline, l.x0, l.x1);
+        beside += usize::from(l.x1 < 400.0 || l.x0 > 400.0);
+    }
+    assert!(beside > 20, "lines on both sides of the object: {beside}");
 }
 
 /// Issue #1637: with several objects selected, a click on one of them (no drag) makes it the key

@@ -1138,7 +1138,7 @@ dependencies = [
 [[package]]
 name = "craft-update"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=c5a1cbfb5f9049f9270955caffb5bee5997aebf7#c5a1cbfb5f9049f9270955caffb5bee5997aebf7"
+source = "git+https://github.com/storytold/craft-libs?rev=6e03f65bf45181db77ba6229716e6624db9eb25b#6e03f65bf45181db77ba6229716e6624db9eb25b"
 dependencies = [
  "chrono",
  "dunce",
@@ -1148,6 +1148,7 @@ dependencies = [
  "image",
  "log",
  "plist",
+ "rustix 1.1.5",
  "semver",
  "serde",
  "serde_json",
@@ -1306,7 +1307,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft"
-version = "0.17.0"
+version = "0.20.1"
 dependencies = [
  "arboard",
  "craft-update",
@@ -1331,7 +1332,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-cli"
-version = "0.17.0"
+version = "0.20.1"
 dependencies = [
  "designcraft-color",
  "designcraft-compose",
@@ -1348,7 +1349,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-color"
-version = "0.17.0"
+version = "0.20.1"
 dependencies = [
  "craft-cms",
  "kurbo",
@@ -1360,7 +1361,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-compose"
-version = "0.17.0"
+version = "0.20.1"
 dependencies = [
  "designcraft-color",
  "designcraft-doc",
@@ -1380,7 +1381,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-doc"
-version = "0.17.0"
+version = "0.20.1"
 dependencies = [
  "chrono",
  "designcraft-color",
@@ -1393,7 +1394,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-engine"
-version = "0.17.0"
+version = "0.20.1"
 dependencies = [
  "caseless",
  "craft-atomic",
@@ -1433,7 +1434,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-epub"
-version = "0.17.0"
+version = "0.20.1"
 dependencies = [
  "chrono",
  "designcraft-color",
@@ -1443,7 +1444,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-fonts"
-version = "0.17.0"
+version = "0.20.1"
 dependencies = [
  "core-text",
  "harfrust 0.13.3",
@@ -1456,7 +1457,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-format"
-version = "0.17.0"
+version = "0.20.1"
 dependencies = [
  "designcraft-doc",
  "designcraft-images",
@@ -1468,7 +1469,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-geom"
-version = "0.17.0"
+version = "0.20.1"
 dependencies = [
  "flo_curves",
  "kurbo",
@@ -1481,7 +1482,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-idml"
-version = "0.17.0"
+version = "0.20.1"
 dependencies = [
  "designcraft-color",
  "designcraft-compose",
@@ -1496,13 +1497,14 @@ dependencies = [
 
 [[package]]
 name = "designcraft-images"
-version = "0.17.0"
+version = "0.20.1"
 dependencies = [
  "craft-cms",
  "designcraft-color",
  "designcraft-fonts",
  "flate2",
  "image",
+ "jpeg-decoder",
  "log",
  "quick-xml 0.41.0",
  "resvg",
@@ -1514,7 +1516,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-mcp"
-version = "0.17.0"
+version = "0.20.1"
 dependencies = [
  "designcraft-engine",
  "designcraft-geom",
@@ -1527,7 +1529,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-pdf"
-version = "0.17.0"
+version = "0.20.1"
 dependencies = [
  "chrono",
  "craft-cms",
@@ -1553,7 +1555,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-pptx"
-version = "0.17.0"
+version = "0.20.1"
 dependencies = [
  "chrono",
  "designcraft-color",
@@ -1571,8 +1573,9 @@ dependencies = [
 
 [[package]]
 name = "designcraft-render"
-version = "0.17.0"
+version = "0.20.1"
 dependencies = [
+ "bytemuck",
  "craft-pdf",
  "designcraft-color",
  "designcraft-compose",
@@ -1590,7 +1593,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-textimport"
-version = "0.17.0"
+version = "0.20.1"
 dependencies = [
  "designcraft-doc",
  "quick-xml 0.41.0",
@@ -1599,7 +1602,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-tools"
-version = "0.17.0"
+version = "0.20.1"
 dependencies = [
  "designcraft-color",
  "designcraft-compose",
@@ -1611,7 +1614,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-ui-egui"
-version = "0.17.0"
+version = "0.20.1"
 dependencies = [
  "craft-dialogs",
  "craft-keymap",
@@ -1630,6 +1633,7 @@ dependencies = [
  "designcraft-textimport",
  "designcraft-tools",
  "egui",
+ "egui_extras",
  "egui_kittest",
  "log",
  "raw-window-handle",
@@ -1644,7 +1648,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-web"
-version = "0.17.0"
+version = "0.20.1"
 dependencies = [
  "designcraft-engine",
  "designcraft-format",
@@ -1858,6 +1862,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "egui_extras"
+version = "0.37.0"
+source = "git+https://github.com/storytold/egui.git?rev=6d518fc799681571963842f95b55a6b68431b15a#6d518fc799681571963842f95b55a6b68431b15a"
+dependencies = [
+ "ahash",
+ "egui",
+ "enum-map",
+ "itertools 0.15.0",
+ "log",
+ "profiling",
+]
+
+[[package]]
 name = "egui_glow"
 version = "0.37.0"
 source = "git+https://github.com/storytold/egui.git?rev=6d518fc799681571963842f95b55a6b68431b15a#6d518fc799681571963842f95b55a6b68431b15a"
@@ -1923,6 +1940,26 @@ name = "endi"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "66b7e2430c6dff6a955451e2cfc438f09cea1965a9d6f87f7e3b90decc014099"
+
+[[package]]
+name = "enum-map"
+version = "3.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d4532960034c15ba2f55e9eee631040ecc473c32e6c4b200828c759840f13a06"
+dependencies = [
+ "enum-map-derive",
+]
+
+[[package]]
+name = "enum-map-derive"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7127272f64b3e098f7d81f350d672081b879bff896d219c42370dc858b1af9ff"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.9",
+]
 
 [[package]]
 name = "enumflags2"
@@ -3269,6 +3306,12 @@ dependencies = [
  "getrandom 0.4.3",
  "libc",
 ]
+
+[[package]]
+name = "jpeg-decoder"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "00810f1d8b74be64b13dbf3db89ac67740615d6c891f0e7b6179326533011a07"
 
 [[package]]
 name = "js-sys"
@@ -7645,7 +7688,7 @@ checksum = "9440ea3e5aeabb0ac63af70daf835274065238cdd0cec83418f417eae38bacee"
 
 [[package]]
 name = "xtask"
-version = "0.17.0"
+version = "0.20.1"
 dependencies = [
  "serde_json",
 ]
@@ -7911,7 +7954,6 @@ dependencies = [
  "nix",
  "typed-path",
  "windows-sys 0.61.2",
- "zopfli",
 ]
 
 [[package]]
@@ -7996,11 +8038,6 @@ dependencies = [
 
 [[patch.unused]]
 name = "egui_demo_lib"
-version = "0.37.0"
-source = "git+https://github.com/storytold/egui.git?rev=6d518fc799681571963842f95b55a6b68431b15a#6d518fc799681571963842f95b55a6b68431b15a"
-
-[[patch.unused]]
-name = "egui_extras"
 version = "0.37.0"
 source = "git+https://github.com/storytold/egui.git?rev=6d518fc799681571963842f95b55a6b68431b15a#6d518fc799681571963842f95b55a6b68431b15a"
 

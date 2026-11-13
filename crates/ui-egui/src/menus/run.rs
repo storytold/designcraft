@@ -285,6 +285,13 @@ fn run_ui_part1(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             crate::effects_dialog::open(app, p.get("page").and_then(Value::as_str).unwrap_or("transparency"));
             Ok(Value::Null)
         }
+        "objectStyle.dialog" => match p.get("name").and_then(Value::as_str) {
+            Some(n) => crate::object_style_dialog::open_edit(app, n).map(|()| Value::Null),
+            None => {
+                crate::object_style_dialog::open_new(app);
+                Ok(Value::Null)
+            }
+        },
         "app.loadSwatches" => {
             if let Some(path) = p.get("path").and_then(Value::as_str) {
                 return Some(app.run("swatch.load", json!({"path": path})));
@@ -298,6 +305,33 @@ fn run_ui_part1(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
         }
         _ => return None,
     })
+}
+
+/// File › Export Layouts and Versions…: the dialog, on `layouts` when given.
+fn open_export_batch(app: &mut DesignApp, p: &Value) -> Result<Value, String> {
+    if app.session.active().is_none() {
+        return Err("no document open".into());
+    }
+    let layouts = p.get("layouts").and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok());
+    crate::export_batch_dialog::open(app, layouts);
+    Ok(Value::Null)
+}
+
+/// Layout › Parent Options… (the parent selected in the Pages panel or shown, else the first) and
+/// Layout › Alternate Layout Options… (the layout of the page in view).
+fn open_layout_options(app: &mut DesignApp, id: &str) -> Result<Value, String> {
+    let Some(st) = app.session.active() else { return Err("no document open".into()) };
+    let doc = st.doc.clone();
+    if id == "app.parentOptions" {
+        let target = crate::panels::pages::target_parent(app, &doc).or_else(|| doc.parents.first().map(|p| p.id));
+        let Some(target) = target else { return Err("the document has no parents".into()) };
+        crate::panels::pages::open_parent_options(app, &doc, target);
+    } else {
+        let layouts = doc.layouts();
+        let k = crate::panels::pages::layout_index(&layouts, crate::canvas::current_page(app).unwrap_or(0));
+        crate::panels::pages::open_layout_options(app, &doc, &layouts, k);
+    }
+    Ok(Value::Null)
 }
 
 /// One slice of the UI commands: `None` if `id` isn't one of them.
@@ -475,6 +509,8 @@ fn run_ui_part2(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             };
             return Some(r);
         }
+        "app.exportBatch" => return Some(open_export_batch(app, p)),
+        "app.parentOptions" | "app.alternateLayoutOptions" => return Some(open_layout_options(app, id)),
         "app.tabsPanel" => {
             toggle_tabs_panel(app);
             Ok(Value::Null)
@@ -815,6 +851,13 @@ fn run_ui_part4(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             run_ui(app, "window.panel", &json!({"panel": panel})).unwrap_or(Ok(Value::Null))
         }
         "app.insertCurrentPageNumber" => app.run("text.insert", json!({"text": "\u{e000}", "raw": true})),
+        "app.insertEmSpace" | "app.insertEnSpace" => {
+            if !menu_enabled(app, id) {
+                return Some(Err("place the insertion point in text to insert a space".into()));
+            }
+            let space = if id == "app.insertEmSpace" { "\u{2003}" } else { "\u{2002}" };
+            app.run("text.insert", json!({"text": space, "raw": true}))
+        }
         // `panel_docking::command` takes the dock panels (and the Window › Styles group) first.
         "window.panel" => {
             let panel = p.get("panel").and_then(Value::as_str).unwrap_or("properties");
