@@ -1,7 +1,6 @@
 use super::common::{affine_s, bool_s, p, pct, uid, with_props};
 use super::{
-    Affine, ColumnsKind, Content, El, Ex, HashSet, Item, Node, OBJECT_BUILTINS, PathData, Shape, TextFrameOptions, base64_encode, escape_id, names,
-    num, pt,
+    Affine, ColumnsKind, Content, El, Ex, HashSet, Item, Node, OBJECT_BUILTINS, PathData, Shape, TextFrameOptions, base64_encode, names, num, pt,
 };
 
 impl<'a> Ex<'a> {
@@ -324,49 +323,6 @@ impl<'a> Ex<'a> {
     }
 }
 
-/// Most nested style folders one style name can create.
-const MAX_STYLE_GROUP_DEPTH: usize = 32;
-
-/// Style folder tree (names `A/B/C` → groups A, B).
-#[derive(Default)]
-pub(super) struct Group {
-    styles: Vec<El>,
-    groups: Vec<(String, Group)>,
-}
-
-impl Group {
-    pub(super) fn insert(&mut self, name: &str, el: El) {
-        let builtin = name.starts_with('[');
-        let mut segs: Vec<&str> = if builtin { vec![name] } else { name.split('/').collect() };
-        let _leaf = segs.pop();
-        let mut g = self;
-        // Deeper folders than this are not made (the style lands in the deepest one), so the recursive `emit` is bounded.
-        for s in segs.into_iter().take(MAX_STYLE_GROUP_DEPTH) {
-            let i = match g.groups.iter().position(|(n, _)| n == s) {
-                Some(i) => i,
-                None => {
-                    g.groups.push((s.to_string(), Group::default()));
-                    g.groups.len() - 1
-                }
-            };
-            g = &mut g.groups[i].1;
-        }
-        g.styles.push(el);
-    }
-
-    pub(super) fn emit(self, parent: &mut El, kind: &str, path: &str) {
-        for s in self.styles {
-            parent.push(s);
-        }
-        for (name, g) in self.groups {
-            let full = if path.is_empty() { name.clone() } else { format!("{path}:{name}") };
-            let mut ge = El::new(kind).attr("Self", format!("{kind}/{}", escape_id(&full))).attr("Name", &name);
-            g.emit(&mut ge, kind, &full);
-            parent.push(ge);
-        }
-    }
-}
-
 /// `rule_color` is the IDML reference of the column rule's swatch.
 /// `TextWrapPreference` of a page item or a placed graphic.
 fn text_wrap_pref(w: &designcraft_doc::TextWrap) -> El {
@@ -522,20 +478,20 @@ pub(crate) fn path_to_uri(path: &str) -> String {
 
 #[cfg(test)]
 mod group_depth_tests {
-    use super::*;
+    use craft_idml::model::{StyleGroupWriter, StyleKind};
 
     #[test]
     fn a_style_name_with_many_separators_makes_bounded_folders() {
-        let mut g = Group::default();
-        g.insert(&"a/".repeat(10_000), El::new("S"));
-        let (mut depth, mut cur) = (0, &g);
-        while let Some((_, next)) = cur.groups.first() {
+        let mut group = StyleGroupWriter::new(StyleKind::Character, "root");
+        let style = craft_idml::El::new("CharacterStyle");
+        group.insert(&"a/".repeat(10_000), style);
+        let root = group.to_el();
+        let mut depth = 0;
+        let mut current = root.elements().next();
+        while let Some(el) = current.filter(|el| el.local() == "CharacterStyleGroup") {
             depth += 1;
-            cur = next;
+            current = el.elements().next();
         }
-        assert_eq!(depth, MAX_STYLE_GROUP_DEPTH);
-        assert_eq!(cur.styles.len(), 1);
-        let mut root = El::new("Root");
-        g.emit(&mut root, "K", "");
+        assert_eq!(depth, 32);
     }
 }
