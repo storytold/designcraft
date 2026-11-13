@@ -1091,6 +1091,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-designcraft-format"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=19692b6190465671e41967c75d0cd4c439d0c84c#19692b6190465671e41967c75d0cd4c439d0c84c"
+dependencies = [
+ "craft-document-bundle",
+ "craft-eps 0.1.0 (git+https://github.com/storytold/craft-libs?rev=19692b6190465671e41967c75d0cd4c439d0c84c)",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "craft-dialogs"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=1a11a4897865f7410c40d25ca6e452ce399a1a2c#1a11a4897865f7410c40d25ca6e452ce399a1a2c"
@@ -1111,9 +1123,9 @@ source = "git+https://github.com/storytold/craft-libs?rev=92d392cff132eaf53e13af
 [[package]]
 name = "craft-document-bundle"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=ba24fe2435adb3c81ad6057faf36365fbba736cf#ba24fe2435adb3c81ad6057faf36365fbba736cf"
+source = "git+https://github.com/storytold/craft-libs?rev=19692b6190465671e41967c75d0cd4c439d0c84c#19692b6190465671e41967c75d0cd4c439d0c84c"
 dependencies = [
- "craft-zip 0.1.0 (git+https://github.com/storytold/craft-libs?rev=ba24fe2435adb3c81ad6057faf36365fbba736cf)",
+ "craft-zip 0.1.0 (git+https://github.com/storytold/craft-libs?rev=19692b6190465671e41967c75d0cd4c439d0c84c)",
  "serde_json",
  "thiserror 2.0.21",
  "zip 9.1.1",
@@ -1160,6 +1172,11 @@ dependencies = [
  "log",
  "serde",
 ]
+
+[[package]]
+name = "craft-eps"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=19692b6190465671e41967c75d0cd4c439d0c84c#19692b6190465671e41967c75d0cd4c439d0c84c"
 
 [[package]]
 name = "craft-eps"
@@ -1663,6 +1680,16 @@ dependencies = [
 [[package]]
 name = "craft-zip"
 version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=19692b6190465671e41967c75d0cd4c439d0c84c#19692b6190465671e41967c75d0cd4c439d0c84c"
+dependencies = [
+ "flate2",
+ "thiserror 2.0.21",
+ "zip 9.1.1",
+]
+
+[[package]]
+name = "craft-zip"
+version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=8abfa9d0f14bafbfc3449fc552ffeafb9ca6a551#8abfa9d0f14bafbfc3449fc552ffeafb9ca6a551"
 dependencies = [
  "flate2",
@@ -2002,12 +2029,9 @@ dependencies = [
 name = "designcraft-format"
 version = "0.20.1"
 dependencies = [
- "craft-document-bundle",
- "craft-eps 0.1.0 (git+https://github.com/storytold/craft-libs?rev=ba24fe2435adb3c81ad6057faf36365fbba736cf)",
+ "craft-designcraft-format",
  "designcraft-doc",
- "serde",
  "serde_json",
- "thiserror 2.0.21",
  "zip 3.0.0",
 ]
 
