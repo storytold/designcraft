@@ -11,7 +11,8 @@ impl DesignApp {
     pub(crate) fn handle_quit(&mut self, ctx: &egui::Context) {
         let close_requested = ctx.input(|i| i.viewport().close_requested());
         let provider_block = crate::file_provider_app::application_block(self);
-        if self.host_order_pending() || provider_block.is_some() {
+        let host_pending = self.host_order_pending();
+        if host_pending || provider_block.is_some() {
             if (close_requested || self.quit_requested)
                 && let Some(reason) = provider_block
             {
@@ -21,7 +22,9 @@ impl DesignApp {
                 self.close_requested_pending = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             }
-            ctx.request_repaint();
+            if host_pending || crate::file_provider_app::provider_operations_pending(self) {
+                ctx.request_repaint();
+            }
             return;
         }
         let replay_close = std::mem::take(&mut self.close_requested_pending);

@@ -62,10 +62,14 @@ pub(crate) struct PendingAfter {
     callback: After,
 }
 
+pub(crate) fn provider_operations_pending(app: &DesignApp) -> bool {
+    app.file_providers.busy() || !app.provider_after.is_empty()
+}
+
 pub(crate) fn application_block(app: &DesignApp) -> Option<&'static str> {
     if app.egui_ctx.as_ref().is_some_and(drafts::any_pending) {
         Some(FINISH_DRAFT)
-    } else if app.file_providers.busy() || !app.provider_after.is_empty() {
+    } else if provider_operations_pending(app) {
         Some("Finish or cancel pending provider operations first")
     } else {
         None

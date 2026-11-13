@@ -212,6 +212,41 @@ mod tests {
     }
 
     #[test]
+    fn parked_numeric_draft_blocks_quit_without_repainting_at_idle() {
+        let ctx = egui::Context::default();
+        let mut session = designcraft_engine::Session::new();
+        session.execute("file.new", &serde_json::json!({})).unwrap();
+        let doc = session.active().unwrap();
+        let owner = (doc.uid, doc.identity_epoch);
+        let mut app = crate::DesignApp::new(session, crate::Services::default());
+        app.egui_ctx = Some(ctx.clone());
+        scope(&ctx, Some(owner), true, &[owner]);
+        let mut drafts = state(&ctx);
+        let key = egui::Id::unique("parked-width");
+        drafts.fields.insert(key, Field { owner, viewport: ctx.viewport_id(), dirty: true });
+        ctx.data_mut(|data| {
+            data.insert_temp(key, "123".to_owned());
+            data.insert_temp(state_id(), drafts);
+        });
+
+        for _ in 0..3 {
+            ctx.run_ui(egui::RawInput::default(), |ui| app.handle_quit(ui.ctx())).textures_delta.clear();
+        }
+        assert!(!ctx.has_requested_repaint());
+        let mut close = egui::RawInput::default();
+        close.viewports.entry(egui::ViewportId::ROOT).or_default().events.push(egui::ViewportEvent::Close);
+        let mut out = ctx.run_ui(close, |ui| app.handle_quit(ui.ctx()));
+        out.textures_delta.clear();
+        assert!(out.viewport_output[&egui::ViewportId::ROOT].commands.contains(&egui::ViewportCommand::CancelClose));
+        assert_eq!(ctx.data(|data| data.get_temp::<String>(key)).as_deref(), Some("123"));
+
+        assert_eq!(discard(&ctx, owner), 1);
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| app.handle_quit(ui.ctx()));
+        out.textures_delta.clear();
+        assert!(out.viewport_output[&egui::ViewportId::ROOT].commands.contains(&egui::ViewportCommand::Close));
+    }
+
+    #[test]
     fn the_admission_limit_does_not_change_local_fields_before_the_first_opt_in() {
         let mut drafts = Drafts::default();
         let owner = (11, 21);
