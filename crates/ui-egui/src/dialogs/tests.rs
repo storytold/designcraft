@@ -1095,6 +1095,71 @@ fn justification_dialog_applies_to_a_local_paragraph_and_cancel_changes_nothing(
     assert!(app.run("app.justificationDialog", json!({})).is_err());
 }
 
+/// A new document selects Paragraph Composer in Justification; World-Ready selects neither until
+/// clicked, and clicking an ordinary composer disables World-Ready in one undo step.
+#[test]
+fn composer_dialog_selects_an_ordinary_composer() {
+    use egui_kittest::{
+        Harness,
+        kittest::{NodeT, Queryable},
+    };
+
+    let (mut default_app, story) = two_paragraphs();
+    default_app.run("text.select", json!({"story": story, "anchor": 0, "focus": 0})).unwrap();
+    default_app.run("app.justificationDialog", json!({})).unwrap();
+    let mut dh = Harness::builder().with_size(egui::vec2(1000.0, 800.0)).build_ui_state(
+        |ui, app: &mut DesignApp| {
+            let key = egui::Id::unique("composer_dialog_default_fonts");
+            if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
+                crate::theme::install_fonts(ui.ctx(), "");
+                ui.data_mut(|d| d.insert_temp(key, true));
+                return;
+            }
+            show(app, ui.ctx());
+        },
+        default_app,
+    );
+    dh.run_steps(3);
+    assert_eq!(dh.get_by_label("Paragraph Composer").accesskit_node().toggled(), Some(egui::accesskit::Toggled::True));
+    assert_ne!(dh.get_by_label("Single-line Composer").accesskit_node().toggled(), Some(egui::accesskit::Toggled::True));
+
+    let (mut app, story) = two_paragraphs();
+    app.run("type.para", json!({"attrs": {"composer": "paragraph", "worldReady": true}})).unwrap();
+    app.run("text.select", json!({"story": story, "anchor": 0, "focus": 7})).unwrap();
+    app.run("app.justificationDialog", json!({})).unwrap();
+    let before = app.session.doc().unwrap().doc.clone();
+    let steps = undo_steps(&app);
+    let mut h = Harness::builder().with_size(egui::vec2(1000.0, 800.0)).build_ui_state(
+        |ui, app: &mut DesignApp| {
+            let key = egui::Id::unique("composer_dialog_fonts");
+            if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
+                crate::theme::install_fonts(ui.ctx(), "");
+                ui.data_mut(|d| d.insert_temp(key, true));
+                return;
+            }
+            show(app, ui.ctx());
+        },
+        app,
+    );
+    h.run_steps(3);
+    assert_ne!(h.get_by_label("Paragraph Composer").accesskit_node().toggled(), Some(egui::accesskit::Toggled::True));
+    assert_ne!(h.get_by_label("Single-line Composer").accesskit_node().toggled(), Some(egui::accesskit::Toggled::True));
+    h.get_by_label("Single-line Composer").click();
+    h.run_steps(3);
+    let app = h.state_mut();
+    app.ui.dialog.as_mut().unwrap().fields.insert("wordSpaceDesired".into(), json!(1.1));
+    confirm(app).unwrap();
+    assert_eq!(undo_steps(app), steps + 1);
+    assert_eq!(para_attr(app, &story, 0, "composer"), "singleLine");
+    assert_eq!(para_attr(app, &story, 4, "composer"), "singleLine");
+    assert_eq!(para_attr(app, &story, 0, "worldReady"), false);
+    assert_eq!(para_attr(app, &story, 4, "worldReady"), false);
+    assert_eq!(para_attr(app, &story, 0, "wordSpaceDesired"), 1.1);
+    assert_eq!(para_attr(app, &story, 4, "wordSpaceDesired"), 1.1);
+    app.run("edit.undo", json!({})).unwrap();
+    assert_eq!(app.session.doc().unwrap().doc, before);
+}
+
 #[test]
 fn justification_dialog_leaves_mixed_fields_alone_and_refuses_bad_values() {
     let (mut app, story) = two_paragraphs();

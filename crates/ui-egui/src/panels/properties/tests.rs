@@ -358,6 +358,53 @@ fn paragraph_panel_menu_toggles_ignore_optical_margin() {
     assert_eq!(text_attrs(h.state_mut()).unwrap()["para"]["ignoreOpticalMargin"], false);
 }
 
+/// A new document checks Paragraph Composer; World-Ready checks neither ordinary choice until clicked.
+#[test]
+fn composer_menu_selects_an_ordinary_composer() {
+    let mut default_h = panel_harness(text_app(), paragraph_panel);
+    default_h.run_steps(3);
+    default_h.get_by_label("☰").click();
+    default_h.run_steps(3);
+    let _ = default_h.get_by_label("✓ Paragraph Composer");
+    let _ = default_h.get_by_label("   Single-line Composer");
+
+    let wr_app = || {
+        let mut app = text_app();
+        app.run("text.insert", json!({"text": "World\nPlain\nJapan"})).unwrap();
+        let sid = text_attrs(&mut app).unwrap()["story"].as_u64().unwrap();
+        for (at, composer) in [(0, "paragraph"), (12, "japanese")] {
+            app.run("text.select", json!({"story": sid, "anchor": at, "focus": at})).unwrap();
+            app.run("type.para", json!({"attrs": {"composer": composer, "worldReady": true}})).unwrap();
+        }
+        (app, sid)
+    };
+    let (mut wr_state, sid) = wr_app();
+    wr_state.run("text.select", json!({"story": sid, "anchor": 0, "focus": 0})).unwrap();
+    let mut wr_h = panel_harness(wr_state, paragraph_panel);
+    wr_h.run_steps(3);
+    wr_h.get_by_label("☰").click();
+    wr_h.run_steps(3);
+    let _ = wr_h.get_by_label("   Paragraph Composer");
+    let _ = wr_h.get_by_label("   Single-line Composer");
+
+    let (mut app, sid) = wr_app();
+    app.run("edit.selectAll", json!({})).unwrap();
+    let mut h = panel_harness(app, paragraph_panel);
+    h.run_steps(3);
+    for (label, expected) in [("   Single-line Composer", ["singleLine"; 3]), ("   Paragraph Composer", ["paragraph"; 3])] {
+        h.get_by_label("☰").click();
+        h.run_steps(3);
+        h.get_by_label(label).click();
+        h.run_steps(3);
+        let app = h.state_mut();
+        let document = &app.session.doc().unwrap().doc;
+        let story = document.story(designcraft_doc::StoryId(sid)).unwrap();
+        let actual: Vec<Value> = story.paras.iter().map(|p| json!(document.styles.resolve_para(p).0.composer)).collect();
+        assert_eq!(actual, expected.map(|value| json!(value)));
+        assert!(story.paras.iter().all(|p| !document.styles.resolve_para(p).0.world_ready));
+    }
+}
+
 #[test]
 fn paragraph_panel_menu_define_lists_opens_its_dialog() {
     let mut h = panel_harness(text_app(), paragraph_panel);

@@ -72,6 +72,20 @@ positive JSON integer when supplied; invalid or over-budget requests return `ok:
 input unchanged. Oversized gestures are rejected rather than truncated. Wait for queued input
 to finish before retrying a request that would exceed the pending-event limit.
 
+## Paragraph composer attributes
+
+`type.para` and paragraph-style commands accept `composer: "paragraph" | "singleLine" |
+"japanese" | "japaneseSingleLine"` and the independent `worldReady: true | false` attribute.
+The resolved World-Ready default is `false`; an absent sparse attribute inherits, and `null`
+in a `type.para` edit clears that override. The flag is retained for interchange; its shaping
+behavior is separate work (#1152). World-Ready is not an additional composer enum value.
+
+`type.para {"attrs":{"composerMode":"singleLine"}}` (or `"paragraph"`) changes each
+paragraph's breaking mode while preserving its Japanese family and World-Ready choice.
+`composerMode` cannot be combined with `composer`. To explicitly select the ordinary
+composer, use `{"attrs":{"composer":"singleLine","worldReady":false}}` or its
+`"paragraph"` counterpart, as the Paragraph panel and Justification controls do.
+
 ## Shared panel docking
 
 Panel arrangements support tab grouping and reordering, horizontal and vertical splits,

@@ -8038,7 +8038,7 @@ fn shown_rule(d: &Dialog, prefix: &str, which: &str, current: &Value) -> Value {
 }
 
 /// The paragraph attributes of the Justification controls.
-pub const JUSTIFY_ATTRS: [&str; 14] = [
+pub const JUSTIFY_ATTRS: [&str; 15] = [
     "wordSpaceMin",
     "wordSpaceDesired",
     "wordSpaceMax",
@@ -8051,6 +8051,7 @@ pub const JUSTIFY_ATTRS: [&str; 14] = [
     "autoLeading",
     "singleWordJustify",
     "composer",
+    "worldReady",
     "kashidas",
     "koreanCharBreaks",
 ];
@@ -8324,14 +8325,17 @@ fn justification(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, prefix: &str, cu
         ui.end_row();
         crate::rtl::label(ui, crate::i18n::tr(lang, "Composer:"));
         let composer = cur(d, "composer");
-        // Mixed (null) selects neither; a Japanese composer keeps its kind.
-        let (single, [paragraph, single_line]) = crate::panels::properties::composer_choice(composer.as_str());
-        let known = !composer.is_null();
+        // These are explicit ordinary-composer choices, as in the reference app. An imported
+        // World-Ready/Japanese value checks neither; leaving the controls alone preserves it.
+        let single = composer == "singleLine";
+        let known = cur(d, "worldReady") == false && matches!(composer.as_str(), Some("paragraph" | "singleLine"));
         if ui.selectable_label(known && !single, crate::rtl::widget(ui, crate::i18n::tr(lang, "Paragraph Composer"))).clicked() {
-            d.fields.insert(format!("{prefix}composer"), json!(paragraph));
+            d.fields.insert(format!("{prefix}composer"), json!("paragraph"));
+            d.fields.insert(format!("{prefix}worldReady"), json!(false));
         }
         if ui.selectable_label(known && single, crate::rtl::widget(ui, crate::i18n::tr(lang, "Single-line Composer"))).clicked() {
-            d.fields.insert(format!("{prefix}composer"), json!(single_line));
+            d.fields.insert(format!("{prefix}composer"), json!("singleLine"));
+            d.fields.insert(format!("{prefix}worldReady"), json!(false));
         }
         ui.end_row();
         for (label, key, text, default) in [

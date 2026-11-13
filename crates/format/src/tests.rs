@@ -3,6 +3,145 @@ use designcraft_doc::build::NewDocument;
 use designcraft_doc::geom::Rect;
 use designcraft_doc::{Asset, ParaFormat, SpreadRef};
 
+/// Native saves retain a World-Ready style and a distinct local single-line override.
+#[test]
+fn world_ready_composers_survive_native_save_and_reopen() {
+    use designcraft_doc::{Composer, ParagraphStyle, Story, StoryId};
+
+    let mut doc = Document::new(&NewDocument::default());
+    let paragraph = Composer::Paragraph;
+    let single = Composer::SingleLine;
+    doc.styles_mut().paragraph.push(ParagraphStyle {
+        name: "Tamil".into(),
+        based_on: Some(designcraft_doc::NO_PARA_STYLE.into()),
+        next_style: None,
+        para: ParaAttrs { composer: Some(paragraph), world_ready: Some(true), ..Default::default() },
+        chars: Default::default(),
+        shortcut: String::new(),
+    });
+    let id = StoryId(doc.alloc());
+    let mut story = Story::with_text(id, "தமிழ்\nதமிழ்", ParaFormat::default());
+    for para in &mut story.paras {
+        para.style = "Tamil".into();
+    }
+    story.paras[1].para.composer = Some(single);
+    doc.stories.insert(id, Arc::new(story));
+
+    let reopened = load(&save(&doc).unwrap()).unwrap();
+    assert_eq!(reopened.styles.para("Tamil").unwrap().para.composer, Some(paragraph));
+    let story = reopened.story(id).unwrap();
+    assert_eq!(story.paras[0].para.composer, None);
+    assert_eq!(story.paras[1].para.composer, Some(single));
+    assert_eq!(reopened.styles.resolve_para(&story.paras[0]).0.composer, paragraph);
+    assert_eq!(reopened.styles.resolve_para(&story.paras[1]).0.composer, single);
+    assert!(reopened.styles.resolve_para(&story.paras[0]).0.world_ready);
+    assert!(reopened.styles.resolve_para(&story.paras[1]).0.world_ready);
+}
+
+/// Explicit `worldReady: true` requires reader 5 wherever serialized. Omitted or `false` flags
+/// without any `true` ancestor resolve the same in older readers and keep version 2.
+#[test]
+fn world_ready_content_requires_new_reader() {
+    use designcraft_doc::{Composer, StoryId, Table};
+
+    #[derive(Clone, Copy, Debug)]
+    enum Scope {
+        Style,
+        Story,
+        Cell,
+        Footnote,
+        Endnote,
+    }
+
+    for composer in [Composer::Paragraph, Composer::SingleLine, Composer::Japanese, Composer::JapaneseSingleLine] {
+        for world_ready in [None, Some(false), Some(true)] {
+            let expected = if world_ready == Some(true) { 5 } else { 2 };
+            for scope in [Scope::Style, Scope::Story, Scope::Cell, Scope::Footnote, Scope::Endnote] {
+                let mut doc = Document::new(&NewDocument::default());
+                let id = StoryId(doc.alloc());
+                let mut story = Story::with_text(id, "Root", ParaFormat::default());
+                let para = ParaFormat { para: ParaAttrs { composer: Some(composer), world_ready, ..Default::default() }, ..Default::default() };
+                match scope {
+                    Scope::Style => doc.styles_mut().paragraph[0].para = para.para,
+                    Scope::Story => story.paras[0] = para,
+                    Scope::Cell => {
+                        let mut table = Table::new(1, 1, 1, 0, 0, 100.0);
+                        table.cells[0].text.paras[0] = para;
+                        story.insert_table(0, table);
+                    }
+                    Scope::Footnote => {
+                        story.insert_note(0, "Note", para).unwrap();
+                    }
+                    Scope::Endnote => {
+                        story.insert_endnote(0, "Note", para).unwrap();
+                    }
+                }
+                doc.stories.insert(id, Arc::new(story));
+                let bytes = save(&doc).unwrap();
+                let mut zip = zip::ZipArchive::new(Cursor::new(&bytes)).unwrap();
+                let mut meta = String::new();
+                zip.by_name("meta.json").unwrap().read_to_string(&mut meta).unwrap();
+                assert_eq!(serde_json::from_str::<Value>(&meta).unwrap()["version"], expected, "{composer:?} in {scope:?}");
+                let reopened = load(&bytes).unwrap();
+                assert_eq!(required_version(&reopened), expected as u32);
+                assert_eq!(reopened.styles, doc.styles);
+                assert_eq!(reopened.stories, doc.stories);
+            }
+        }
+    }
+}
+
+/// Older documents with explicit ordinary composers keep version 2 on resave, while a
+/// World-Ready style paired with an explicit `worldReady: false` override preserves both at version 5.
+#[test]
+fn ordinary_composers_keep_old_version_and_mixed_world_ready_saves_version_5() {
+    use designcraft_doc::{Composer, ParagraphStyle, Story, StoryId};
+
+    for composer in [Composer::Paragraph, Composer::SingleLine] {
+        let mut doc = Document::new(&NewDocument::default());
+        let (_, sid) =
+            doc.add_text_frame(SpreadRef::Doc(0), Rect::new(10.0, 10.0, 200.0, 200.0), doc.default_layer(), "Plain", ParaFormat::default()).unwrap();
+        doc.styles_mut().paragraph[0].para.composer = Some(composer);
+        doc.story_mut(sid).unwrap().paras[0].para.composer = Some(composer);
+        for version in [2u32, 4] {
+            let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+            zip.start_file("meta.json", zip::write::SimpleFileOptions::default()).unwrap();
+            zip.write_all(json!({"version": version}).to_string().as_bytes()).unwrap();
+            zip.start_file("document.json", zip::write::SimpleFileOptions::default()).unwrap();
+            zip.write_all(&serde_json::to_vec(&doc).unwrap()).unwrap();
+            let reopened = load(&zip.finish().unwrap().into_inner()).unwrap();
+            assert_eq!(required_version(&reopened), 2);
+            let saved = save(&reopened).unwrap();
+            let mut archive = zip::ZipArchive::new(Cursor::new(saved)).unwrap();
+            let mut meta = String::new();
+            archive.by_name("meta.json").unwrap().read_to_string(&mut meta).unwrap();
+            assert_eq!(serde_json::from_str::<Value>(&meta).unwrap()["version"], 2);
+        }
+    }
+
+    let mut doc = Document::new(&NewDocument::default());
+    doc.styles_mut().paragraph.push(ParagraphStyle {
+        name: "WorldReady".into(),
+        based_on: Some(designcraft_doc::NO_PARA_STYLE.into()),
+        next_style: None,
+        para: ParaAttrs { composer: Some(Composer::Paragraph), world_ready: Some(true), ..Default::default() },
+        chars: Default::default(),
+        shortcut: String::new(),
+    });
+    let id = StoryId(doc.alloc());
+    let mut story = Story::with_text(id, "World\nOrdinary", ParaFormat::default());
+    for para in &mut story.paras {
+        para.style = "WorldReady".into();
+    }
+    story.paras[1].para.world_ready = Some(false);
+    doc.stories.insert(id, Arc::new(story));
+
+    assert_eq!(required_version(&doc), 5);
+    let reopened = load(&save(&doc).unwrap()).unwrap();
+    assert!(reopened.styles.resolve_para(&reopened.story(id).unwrap().paras[0]).0.world_ready);
+    assert!(!reopened.styles.resolve_para(&reopened.story(id).unwrap().paras[1]).0.world_ready);
+}
+
 /// An entry that fails after inflating (a bad checksum) still uses up the archive's byte budget.
 #[test]
 fn a_failed_read_is_charged_to_the_budget() {

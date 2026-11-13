@@ -1,6 +1,6 @@
 # File format parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-02 · **Change:** minor (package PDF soft effects, hyperlinks and export warnings; PDF/X-4 visible unembedded font detection, #909; IDML liquid guide types, #872; .indd and .indt open through indd-utils; XLSX cached values preserve numeric precision and text; shared print spooler; Windows CI passes; content-indexed asset deduplication, #727) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-05 · **Change:** minor (World-Ready composer preservation, #2032; package PDF soft effects, hyperlinks and export warnings; PDF/X-4 visible unembedded font detection, #909; IDML liquid guide types, #872; .indd and .indt open through indd-utils; XLSX cached values preserve numeric precision and text; shared print spooler; Windows CI passes; content-indexed asset deduplication, #727) · **Target:** Adobe InDesign 2026 (21.6)
 
 Every format InDesign 2026 reads or writes, with DesignCraft's support, fidelity and tests. The
 InDesign list comes from its bundle's `Info.plist` (`CFBundleDocumentTypes`,
@@ -36,6 +36,27 @@ guides on document and parent pages. Guide positions, orientation, Fit to Page, 
 layer survive interchange; literal XML and round-trip tests are in
 `crates/idml/src/tests/liquid_guides.rs`. Object liquid pins and resize constraints remain unmapped
 (#872); this is not full liquid-layout interchange support.
+
+IDML retains Adobe World-Ready paragraph and single-line composer identities in paragraph styles
+and local overrides (#2032), including inherited styles, `$ID/` names and XML property elements.
+Native saves retain those identities too. `composer` stores `paragraph`, `singleLine`,
+`japanese` or `japaneseSingleLine`; the independent `worldReady` boolean uses the same field
+name as #1152 and defaults to `false` (ordinary Paragraph Composer, matching the UI and keeping
+composer-only styles/paragraphs exporting as `HL Composer` / `HL Single`). Missing sparse
+attributes inherit. IDML's combined composer name resolves an omitted mode or flag from the actual
+parent style. The `composerMode` command changes only breaking mode; the UI's explicit
+ordinary-composer choices set `worldReady: false`, matching the observed InDesign 2025 Paragraph
+panel. Leaving those controls untouched preserves an imported World-Ready choice. Synthetic
+regressions inspect exported XML as well as reimporting it. DesignCraft continues to use its
+own shaping and line breaking; the boolean's shaping behavior remains work for #1152.
+
+Native files that enable `worldReady: true` require reader 5 so older readers cannot silently
+drop the World-Ready flag. Ordinary documents—including explicit `paragraph` / `singleLine`
+composers and `worldReady: false` without any `true` ancestor—retain their version 2–4
+requirements. The scan covers every serialized paragraph style (even unused) and body, cell,
+footnote and endnote paragraph override. Document settings have no `ParaAttrs`; object/cell/table
+styles refer to paragraph styles by name. Snippets use the same native archive writer and
+capability check, and Load Styles reads through the native reader.
 
 ## Output
 
@@ -122,6 +143,7 @@ up to 30 points.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-30 | minor | Preserve World-Ready composer identities through IDML, native saves and paragraph/single-line switching; shaping-engine parity remains unmeasured (#2032) |
 | 2026-10-19 | minor | PDF/X-4 export and `validate-pdf` report visible unembedded fonts by name and page, including placed forms; invisible text is exempt, operation- or depth-limited checks report incompleteness, and automatic font repair remains missing (#909) |
 | 2026-10-15 | minor | IDML retains liquid versus ruler guide types on document and parent pages, with literal XML and mixed-guide round-trip coverage; object liquid constraints remain unsupported (#872) |
 | 2026-10-13 | minor | Asset loading and compaction use content fingerprints with exact equality checks; tests cover equal-sized distinct buffers, shared copies, independent links and missing data (#727) |

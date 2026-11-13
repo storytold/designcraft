@@ -1,5 +1,25 @@
 use super::*;
 
+/// The shared World-Ready boolean and the four breaking modes serialize independently.
+#[test]
+fn world_ready_flag_is_independent_of_composer_mode() {
+    for (name, single) in [("paragraph", false), ("singleLine", true), ("japanese", false), ("japaneseSingleLine", true)] {
+        for world_ready in [false, true] {
+            let mut attrs = ParaAttrs::default();
+            attrs.set_json("composer", &serde_json::json!(name)).unwrap();
+            attrs.set_json("worldReady", &serde_json::json!(world_ready)).unwrap();
+            let composer = attrs.composer.unwrap();
+            assert_eq!(composer.single_line(), single);
+            let json = serde_json::to_value(&attrs).unwrap();
+            assert_eq!(json["composer"], name);
+            assert_eq!(json["worldReady"], world_ready);
+            assert_eq!(serde_json::from_value::<ParaAttrs>(json).unwrap(), attrs);
+        }
+    }
+    assert!(!ParaProps::default().world_ready);
+    assert_eq!(ParaAttrs::default().world_ready, None);
+}
+
 /// #777: an unknown attribute names the nearest one, or lists them all.
 #[test]
 fn unknown_attributes_suggest_the_right_name() {

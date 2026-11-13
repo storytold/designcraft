@@ -349,12 +349,12 @@ fn paragraph_panel_menu(app: &mut DesignApp, ui: &mut Ui, p: &Value) {
     };
     let mut attrs = None;
     let mut command = None;
-    let (single, [paragraph, single_line]) = composer_choice(p["composer"].as_str());
-    if item(ui, "Paragraph Composer", Some(!single), true) {
-        attrs = Some(json!({"composer": paragraph}));
+    let ordinary = p["worldReady"] == false;
+    if item(ui, "Paragraph Composer", Some(ordinary && p["composer"] == "paragraph"), true) {
+        attrs = Some(json!({"composer": "paragraph", "worldReady": false}));
     }
-    if item(ui, "Single-line Composer", Some(single), true) {
-        attrs = Some(json!({"composer": single_line}));
+    if item(ui, "Single-line Composer", Some(ordinary && p["composer"] == "singleLine"), true) {
+        attrs = Some(json!({"composer": "singleLine", "worldReady": false}));
     }
     ui.separator();
     let grid = p["gridAlign"].as_str().unwrap_or("none");
@@ -545,14 +545,6 @@ fn caption_cell(ui: &mut Ui, text: &str, width: f32) {
     let t = Tokens::get(ui.ctx());
     let (r, _) = ui.allocate_exact_size(vec2(width, crate::widgets::FIELD_H), Sense::hover());
     crate::rtl::paint(ui.painter(), pos2(r.min.x, r.center().y), egui::Align2::LEFT_CENTER, text, caption_font(), t.text);
-}
-
-/// Whether `composer` (a paragraph's `composer` attribute) is a single-line composer, and the
-/// paragraph and single-line composers of its kind (Japanese or not), for the composer choice.
-pub(crate) fn composer_choice(composer: Option<&str>) -> (bool, [&'static str; 2]) {
-    let single = matches!(composer, Some("singleLine" | "japaneseSingleLine"));
-    let kind = if composer.is_some_and(|c| c.starts_with("japanese")) { ["japanese", "japaneseSingleLine"] } else { ["paragraph", "singleLine"] };
-    (single, kind)
 }
 
 /// The Digits choices: (value, caption, sample of 0–3). The values are the file format's:

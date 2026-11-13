@@ -37,6 +37,10 @@ attr_set! {
         nested_line_styles: Vec<NestedLineStyle> = Vec::new(),
         grid_align: GridAlign = GridAlign::None,
         composer: Composer = Composer::Paragraph,
+        /// World-Ready identity, independent of the paragraph/single-line breaking mode.
+        /// Defaults to `false` (ordinary Paragraph Composer, matching the UI and pre-change IDML
+        /// export); retained for interchange while shaping behavior remains separate work (#1152).
+        world_ready: bool = false,
         // Hyphenation
         hyphenate: bool = true,
         hyph_min_word: u32 = 5,
