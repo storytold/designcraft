@@ -1763,12 +1763,16 @@ fn text_frame_options_dims_the_sides_for_a_non_rectangular_frame() {
         for name in ["Columns:", "Align:"] {
             let _ = h.get_by_role_and_label(egui::accesskit::Role::ComboBox, name);
         }
-        for side in ["insetTop", "insetLeft", "insetBottom", "insetRight"] {
-            let label = format!("Increase tfo_{side}");
+        // The numeric fields and their spinners are named from the captions beside them.
+        for name in ["Number", "Width", "Gutter", "Maximum", "Paragraph Spacing Limit"] {
+            let _ = h.get_by_label(&format!("Increase {name}"));
+        }
+        for side in ["Top", "Left", "Bottom", "Right"] {
+            let label = format!("Increase {side}");
             assert_eq!(h.get_by_label(&label).accesskit_node().is_disabled(), shaped, "{shape}: {side}");
         }
         assert_eq!(h.query_by_label("Inset:").is_some(), shaped, "{shape}: the Inset caption");
-        assert_eq!(h.query_by_label("Increase tfo_inset").is_some(), shaped, "{shape}: the Inset field");
+        assert_eq!(h.query_by_label("Increase Inset").is_some(), shaped, "{shape}: the Inset field");
         // The General tab fits in the dialog's fixed height: the buttons stay put on another tab.
         let (wrap, cancel) = (h.get_by_label("Ignore Text Wrap").rect().bottom(), h.get_by_label("Cancel").rect().top());
         assert!(wrap < cancel, "{shape}: Ignore Text Wrap ends at {wrap}, below the top of Cancel at {cancel}");

@@ -1352,10 +1352,12 @@ fn text_frame_options_dialog(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog)
     }
 }
 
-/// A measure field of the dialog with InDesign's spinner (stored as text in the document's unit).
-fn spin_measure(ui: &mut egui::Ui, d: &mut Dialog, key: &str, w: f32, enabled: bool) {
+/// A measure field of the dialog with InDesign's spinner (stored as text in the document's unit),
+/// named from its `caption`.
+fn spin_measure(ui: &mut egui::Ui, d: &mut Dialog, key: &str, caption: &str, w: f32, enabled: bool) {
     let id = format!("tfo_{key}");
-    if let Some(v) = crate::widgets::NumField::measure(&id, d.m(key), d.unit).width(w).spinner().range(0.0, 15552.0).enabled(enabled).show(ui) {
+    let field = crate::widgets::NumField::measure(&id, d.m(key), d.unit).name(caption.trim_end_matches(':'));
+    if let Some(v) = field.width(w).spinner().range(0.0, 15552.0).enabled(enabled).show(ui) {
         d.fields.insert(key.into(), json!(format_measure(v, d.unit)));
     }
 }
@@ -1451,15 +1453,17 @@ pub(crate) fn general(lang: &str, ui: &mut egui::Ui, d: &mut Dialog) {
         });
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            caption_at(ui, crate::i18n::tr_context(lang, "Number:", "count"), cap);
+            let number = crate::i18n::tr_context(lang, "Number:", "count");
+            caption_at(ui, number, cap);
             let n = d.n("columns");
-            if let Some(v) = crate::widgets::NumField::number("tfo_columns", n, "", 0).width(field).spinner().range(1.0, 40.0).show(ui) {
+            let columns = crate::widgets::NumField::number("tfo_columns", n, "", 0).name(number.trim_end_matches(':'));
+            if let Some(v) = columns.width(field).spinner().range(1.0, 40.0).show(ui) {
                 d.fields.insert("columns".into(), json!(v.round().to_string()));
             }
             // Fixed Number: the width follows from the frame; Fixed Width: it's set here.
             caption_at(ui, tr("Width:"), cap2);
             if d.s("columnsKind") == "fixedWidth" {
-                spin_measure(ui, d, "columnWidth", field, true);
+                spin_measure(ui, d, "columnWidth", tr("Width:"), field, true);
             } else {
                 // Fixed Number: each column's width, from the frame, the insets and the gutter.
                 let frame = d.fields.get("_frameWidth").and_then(Value::as_f64);
@@ -1470,16 +1474,18 @@ pub(crate) fn general(lang: &str, ui: &mut egui::Ui, d: &mut Dialog) {
                     let inner = w - d.m(left).unwrap_or(0.0) - d.m(right).unwrap_or(0.0);
                     ((inner - d.m("gutter").unwrap_or(0.0) * (n - 1.0)) / n).max(0.0)
                 });
-                let _ = crate::widgets::NumField::measure("tfo_auto_width", width, d.unit).width(field).spinner().enabled(false).show(ui);
+                let auto = crate::widgets::NumField::measure("tfo_auto_width", width, d.unit).name(tr("Width:").trim_end_matches(':'));
+                let _ = auto.width(field).spinner().enabled(false).show(ui);
             }
         });
         ui.horizontal(|ui| {
             caption_at(ui, tr("Gutter:"), cap);
-            spin_measure(ui, d, "gutter", field, true);
+            spin_measure(ui, d, "gutter", tr("Gutter:"), field, true);
             // Maximum is for Flexible Width columns, which aren't in the document model yet.
             caption_at(ui, tr("Maximum:"), cap2);
             ui.add_enabled_ui(false, |ui| {
-                let _ = crate::widgets::NumField::number("tfo_max", None, "", 0).width(field).spinner().enabled(false).show(ui);
+                let max = crate::widgets::NumField::number("tfo_max", None, "", 0).name(tr("Maximum:").trim_end_matches(':'));
+                let _ = max.width(field).spinner().enabled(false).show(ui);
             });
         });
         check(ui, d, "balanceColumns", tr("Balance Columns"));
@@ -1496,7 +1502,7 @@ pub(crate) fn general(lang: &str, ui: &mut egui::Ui, d: &mut Dialog) {
         {
             ui.horizontal(|ui| {
                 caption_at(ui, tr(l1), cap);
-                spin_measure(ui, d, k1, field, !shaped);
+                spin_measure(ui, d, k1, tr(l1), field, !shaped);
                 ui.add_space(8.0);
                 if r == 0 {
                     let linked = d.b("insetLinked");
@@ -1511,13 +1517,13 @@ pub(crate) fn general(lang: &str, ui: &mut egui::Ui, d: &mut Dialog) {
                     ui.add_space(22.0 + ui.spacing().item_spacing.x);
                 }
                 caption_at(ui, tr(l2), cap2 - 30.0);
-                spin_measure(ui, d, k2, field, !shaped);
+                spin_measure(ui, d, k2, tr(l2), field, !shaped);
             });
         }
         if shaped {
             ui.horizontal(|ui| {
                 caption_at(ui, tr("Inset:"), cap);
-                spin_measure(ui, d, "inset", field, true);
+                spin_measure(ui, d, "inset", tr("Inset:"), field, true);
             });
         }
         if !shaped
@@ -1545,7 +1551,7 @@ pub(crate) fn general(lang: &str, ui: &mut egui::Ui, d: &mut Dialog) {
         ui.horizontal(|ui| {
             caption_at(ui, tr("Paragraph Spacing Limit:"), 170.0);
             let justify = d.s("verticalJustification") == "justify";
-            spin_measure(ui, d, "paragraphSpacingLimit", field, justify);
+            spin_measure(ui, d, "paragraphSpacingLimit", tr("Paragraph Spacing Limit:"), field, justify);
         });
     });
     ui.add_space(4.0);
