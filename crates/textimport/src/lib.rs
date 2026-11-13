@@ -9,7 +9,6 @@
 #![forbid(unsafe_code)]
 
 mod docx;
-mod docx_numbering;
 pub mod export;
 mod rtf;
 pub mod tagged;
@@ -28,44 +27,6 @@ pub fn xlsx_records(bytes: &[u8], sheet: Option<&str>) -> Result<Vec<Vec<String>
 }
 
 use designcraft_doc::{CharAttrs, ParaAttrs, Story};
-
-/// Characters kept of a style name read from a file: each paragraph that uses a style carries a
-/// copy of its name, so a long one would be multiplied by the paragraph count.
-pub(crate) const MAX_NAME_CHARS: usize = 256;
-
-pub(crate) fn capped_name(mut name: String) -> String {
-    if let Some((at, _)) = name.char_indices().nth(MAX_NAME_CHARS) {
-        name.truncate(at);
-    }
-    name
-}
-
-/// Joins UTF-16 code units that arrive one at a time (RTF `\uN`, Tagged Text `<0xNNNN>`) into
-/// characters. A character past U+FFFF comes as two units, a surrogate pair: the first half
-/// waits for the second.
-#[derive(Default)]
-pub(crate) struct Utf16Units {
-    high: Option<u32>,
-}
-
-impl Utf16Units {
-    /// The character that `unit` is or completes. Half a pair without its partner is no character.
-    pub(crate) fn push(&mut self, unit: u32) -> Option<char> {
-        match (self.high.take(), unit) {
-            (Some(high), 0xDC00..=0xDFFF) => char::from_u32(0x10000 + ((high - 0xD800) << 10) + (unit - 0xDC00)),
-            (_, 0xD800..=0xDBFF) => {
-                self.high = Some(unit);
-                None
-            }
-            _ => char::from_u32(unit),
-        }
-    }
-
-    /// Other text came in between: a waiting first half has no partner.
-    pub(crate) fn reset(&mut self) {
-        self.high = None;
-    }
-}
 
 /// A paragraph or character style found in the source.
 #[derive(Clone, Debug, Default, PartialEq)]

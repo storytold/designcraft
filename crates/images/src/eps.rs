@@ -48,9 +48,7 @@ pub fn eps_png(bytes: &[u8]) -> Option<Vec<u8>> {
         return Some(proxy);
     }
     let rgba = crate::decode_rgba(&proxy)?;
-    let mut png = Vec::new();
-    image::DynamicImage::ImageRgba8(rgba).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).ok()?;
-    Some(png)
+    encode_png(rgba)
 }
 
 /// The proxy for a placed EPS: (image bytes, its size in points). The TIFF preview when present,
@@ -84,9 +82,13 @@ pub fn eps_proxy(bytes: &[u8]) -> Option<(Vec<u8>, (f64, f64))> {
         img.put_pixel(0, y, image::Rgba([150, 150, 150, 255]));
         img.put_pixel(pw - 1, y, image::Rgba([150, 150, 150, 255]));
     }
-    let mut out = Vec::new();
-    image::DynamicImage::ImageRgba8(img).write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png).ok()?;
-    Some((out, (w, h)))
+    Some((encode_png(img)?, (w, h)))
+}
+
+fn encode_png(img: image::RgbaImage) -> Option<Vec<u8>> {
+    let (width, height) = img.dimensions();
+    let image = craft_image_codecs::Image::from_u8(width, height, craft_image_codecs::ChannelLayout::Rgba, img.into_raw()).ok()?;
+    craft_image_codecs::encode(&image, craft_image_codecs::Format::Png, &Default::default()).ok()
 }
 
 /// Pixels per point for rendered EPS (a QR code's modules stay crisp when scaled up on screen).
@@ -124,9 +126,7 @@ fn render_rectangles(ps: &[u8], bb: [f64; 4]) -> Option<Vec<u8>> {
             }
         }
     }
-    let mut out = Vec::new();
-    image::DynamicImage::ImageRgba8(img).write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png).ok()?;
-    Some(out)
+    encode_png(img)
 }
 
 #[cfg(test)]

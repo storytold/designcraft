@@ -10,7 +10,6 @@ pub use resvg::usvg;
 
 pub mod colour;
 mod eps;
-mod jpeg;
 mod psd;
 mod tone;
 pub use craft_eps::is_eps;
@@ -25,7 +24,7 @@ pub fn is_pdf(bytes: &[u8]) -> bool {
 }
 
 pub fn is_psd(bytes: &[u8]) -> bool {
-    bytes.starts_with(b"8BPS")
+    craft_psd::head::sniff(bytes)
 }
 
 /// An SVG document (optionally after an XML declaration, comments or a doctype).
@@ -47,13 +46,13 @@ pub fn mime(bytes: &[u8]) -> &'static str {
     if is_svg(bytes) {
         return "image/svg+xml";
     }
-    match image::guess_format(bytes) {
-        Ok(image::ImageFormat::Png) => "image/png",
-        Ok(image::ImageFormat::Jpeg) => "image/jpeg",
-        Ok(image::ImageFormat::Gif) => "image/gif",
-        Ok(image::ImageFormat::WebP) => "image/webp",
-        Ok(image::ImageFormat::Tiff) => "image/tiff",
-        Ok(image::ImageFormat::Bmp) => "image/bmp",
+    match craft_image_codecs::detect(bytes) {
+        Some(craft_image_codecs::Format::Png) => "image/png",
+        Some(craft_image_codecs::Format::Jpeg) => "image/jpeg",
+        Some(craft_image_codecs::Format::Gif) => "image/gif",
+        Some(craft_image_codecs::Format::WebP) => "image/webp",
+        Some(craft_image_codecs::Format::Tiff) => "image/tiff",
+        Some(craft_image_codecs::Format::Bmp) => "image/bmp",
         _ => "application/octet-stream",
     }
 }
@@ -80,8 +79,13 @@ fn svg_options() -> &'static usvg::Options<'static> {
         let image_href_resolver = usvg::ImageHrefResolver {
             resolve_data: Box::new(move |mime, data, options| {
                 let raster = matches!(
-                    image::guess_format(&data),
-                    Ok(image::ImageFormat::Png | image::ImageFormat::Jpeg | image::ImageFormat::Gif | image::ImageFormat::WebP)
+                    craft_image_codecs::detect(&data),
+                    Some(
+                        craft_image_codecs::Format::Png
+                            | craft_image_codecs::Format::Jpeg
+                            | craft_image_codecs::Format::Gif
+                            | craft_image_codecs::Format::WebP
+                    )
                 );
                 if mime == "image/svg+xml" || (mime == "text/plain" && !raster) {
                     let xml = svg_text(&data, MAX_NESTED_SVG_BYTES.saturating_sub(NESTED_SVG_BYTES.get()).min(MAX_SVG_BYTES))?;
@@ -331,21 +335,19 @@ pub fn natural_size(bytes: &[u8]) -> Option<(f64, f64)> {
 
 /// Pixel dimensions of a raster.
 pub fn pixel_size(bytes: &[u8]) -> Option<(u32, u32)> {
-    if let Some(p) = palette_tiff(bytes) {
-        return Some((p.width, p.height));
+    if is_psd(bytes) {
+        let header = craft_psd::header::Header::from_bytes(bytes).ok()?;
+        return Some((header.width, header.height));
     }
-    if is_psd(bytes) && bytes.len() >= 26 {
-        // Header: signature, version, 6 reserved, channels, height, width (big-endian).
-        let be = |i: usize| u32::from_be_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
-        return Some((be(18), be(14)));
-    }
-    image::ImageReader::new(std::io::Cursor::new(bytes))
-        .with_guessed_format()
-        .ok()?
-        .into_dimensions()
+    craft_image_codecs::inspect_raster(bytes)
         .ok()
-        // `image` doesn't read five-sample CMYK with alpha.
-        .or_else(|| tiff_decoder(bytes)?.dimensions().ok())
+        .flatten()
+        .map(|image| (image.width, image.height))
+        .or_else(|| craft_image_codecs::probe_size(bytes).ok())
+        .or_else(|| {
+            let image = craft_image_codecs::decode_with(bytes, &decode_options()).ok()?;
+            Some(image.dimensions())
+        })
 }
 
 /// The largest decoded raster, in RGBA bytes: 256 Mpx, a 300 ppi scan of an A0 sheet fits.
@@ -367,71 +369,42 @@ pub fn decode_rgba(bytes: &[u8]) -> Option<image::RgbaImage> {
     if is_psd(bytes) {
         return psd::decode(bytes);
     }
-    // `image` rejects indexed-colour TIFFs (an old GIF logo saved from Photoshop).
-    if let Some(img) = decode_palette_tiff(bytes) {
-        return Some(img);
-    }
     // An EPS is drawn as its proxy (preview, simple PostScript or placeholder); the document
     // keeps the EPS itself.
     if is_eps(bytes) {
         return decode_rgba(&eps_proxy(bytes)?.0);
     }
-    if let Some((raster, icc)) = jpeg::decode_cmyk(bytes) {
-        return to_display_rgba(Pixels::Cmyk(raster), icc.as_deref(), &DisplayColour::active());
+    let decoded = craft_image_codecs::decode_with(bytes, &decode_options()).ok()?;
+    if decoded.layout().is_cmyk() {
+        let raster = cmyk_raster(&decoded)?;
+        return to_display_rgba(Pixels::Cmyk(raster), decoded.icc.as_deref(), &DisplayColour::active());
     }
-    if let Some(raster) = decode_cmyk_tiff(bytes) {
-        return to_display_rgba(Pixels::Cmyk(raster), embedded_icc(bytes).as_deref(), &DisplayColour::active());
+    let rgba = image::RgbaImage::from_raw(decoded.width(), decoded.height(), decoded.to_rgba8())?;
+    let Some(icc) = decoded.icc.as_deref() else { return Some(rgba) };
+    let px = if decoded.layout().is_gray() { Pixels::Gray(rgba) } else { Pixels::Rgb(rgba) };
+    to_display_rgba(px, Some(icc), &DisplayColour::active())
+}
+
+fn decode_options() -> craft_image_codecs::DecodeOptions {
+    craft_image_codecs::DecodeOptions { limits: craft_image_codecs::Limits { max_alloc: MAX_RGBA_BYTES, ..Default::default() }, ..Default::default() }
+}
+
+fn cmyk_raster(image: &craft_image_codecs::Image) -> Option<CmykRaster> {
+    let converted = image.convert(craft_image_codecs::ChannelLayout::CmykA, craft_image_codecs::SampleType::U8);
+    let pixels = usize::try_from(converted.width()).ok()?.checked_mul(usize::try_from(converted.height()).ok()?)?;
+    let data = converted.as_u8()?;
+    if data.len() != pixels.checked_mul(5)? {
+        return None;
     }
-    let img = image::load_from_memory(bytes).ok()?;
-    let rgba = decode_to_rgba8(&img);
-    let Some(icc) = embedded_icc(bytes) else { return Some(rgba) };
-    let px = if img.color().has_color() { Pixels::Rgb(rgba) } else { Pixels::Gray(rgba) };
-    to_display_rgba(px, Some(&icc), &DisplayColour::active())
-}
-
-/// The ICC profile embedded in a PNG, JPEG, TIFF or WebP.
-fn embedded_icc(bytes: &[u8]) -> Option<Vec<u8>> {
-    use image::ImageDecoder;
-    let mut d = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?.into_decoder().ok()?;
-    d.icc_profile().ok().flatten()
-}
-
-/// Fresh raster decodes are sRGB in the pinned image decoder. Expanding an L8 value to
-/// [gray, gray, gray, 255] is exact and avoids its generic floating-point conversion.
-fn decode_to_rgba8(img: &image::DynamicImage) -> image::RgbaImage {
-    let prepared = match img {
-        image::DynamicImage::ImageLuma8(gray) => prepare_luma8_rgba(gray),
-        _ => None,
-    };
-    rgba_or_original(img, prepared)
-}
-
-// Keep preparation failure on the existing conversion/error path. This small boundary also
-// lets tests force failure deterministically without exhausting memory or changing an allocator.
-fn rgba_or_original(img: &image::DynamicImage, prepared: Option<image::RgbaImage>) -> image::RgbaImage {
-    prepared.unwrap_or_else(|| img.to_rgba8())
-}
-
-fn prepare_luma8_rgba(gray: &image::GrayImage) -> Option<image::RgbaImage> {
-    let (width, height) = gray.dimensions();
-    let pixels = usize::try_from(width).ok()?.checked_mul(usize::try_from(height).ok()?)?;
-    let length = pixels.checked_mul(4)?;
-    let mut bytes = Vec::new();
-    // Unlike the generic ConvertBuffer API's infallible allocation, preserve a route back to
-    // the original to_rgba8 behavior when the requested buffer cannot be reserved.
-    bytes.try_reserve_exact(length).ok()?;
-    bytes.resize(length, 0);
-    for (output, input) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(gray.pixels()) {
-        let value = input.0[0];
-        output.copy_from_slice(&[value, value, value, 255]);
+    let mut cmyk = Vec::with_capacity(pixels.checked_mul(4)?);
+    let mut alpha = Vec::with_capacity(pixels);
+    for &[c, m, y, k, a] in data.as_chunks::<5>().0 {
+        cmyk.extend([c, m, y, k]);
+        alpha.push(a);
     }
-    let mut rgba = image::RgbaImage::from_raw(width, height, bytes)?;
-    rgba.set_color_space(gray.color_space()).ok()?;
-    Some(rgba)
+    let alpha = alpha.iter().any(|&a| a < 255).then_some(alpha);
+    Some(CmykRaster { width: converted.width(), height: converted.height(), cmyk, alpha })
 }
-
-#[cfg(test)]
-mod luma8_tests;
 
 /// A CMYK raster's ink values, 8 bits per ink (0 = no ink, 255 = solid), as PDF's DeviceCMYK
 /// reads them.
@@ -445,109 +418,12 @@ pub struct CmykRaster {
     pub alpha: Option<Vec<u8>>,
 }
 
-fn tiff_decoder(bytes: &[u8]) -> Option<tiff::decoder::Decoder<std::io::Cursor<&[u8]>>> {
-    let tiff = [b"II*\0", b"MM\0*", b"II+\0", b"MM\0+"].iter().any(|m| bytes.starts_with(*m));
-    if !tiff {
-        return None;
-    }
-    tiff::decoder::Decoder::new(std::io::Cursor::new(bytes)).ok()
-}
-
-/// An indexed-colour TIFF (PhotometricInterpretation 3): its size, bits per index and ColorMap
-/// in 8 bits per channel.
-struct PaletteTiff {
-    width: u32,
-    height: u32,
-    bits: u8,
-    colours: Vec<[u8; 3]>,
-}
-
-/// The header of a palette TIFF with 1-, 2-, 4- or 8-bit indices and a full ColorMap, which
-/// neither `image` nor `tiff` decodes. `None` for anything else.
-fn palette_tiff(bytes: &[u8]) -> Option<PaletteTiff> {
-    use tiff::tags::Tag;
-    let mut d = tiff_decoder(bytes)?;
-    if d.find_tag_unsigned::<u16>(Tag::PhotometricInterpretation).ok()?? != 3 {
-        return None;
-    }
-    if d.find_tag_unsigned::<u16>(Tag::SamplesPerPixel).ok()?.unwrap_or(1) != 1 {
-        return None;
-    }
-    let bits = d.find_tag_unsigned::<u8>(Tag::BitsPerSample).ok()?.unwrap_or(1);
-    if !matches!(bits, 1 | 2 | 4 | 8) {
-        return None;
-    }
-    // 2^bits reds, then greens, then blues; 16-bit entries whose high byte is the 8-bit value.
-    let map = d.find_tag_unsigned_vec::<u16>(Tag::ColorMap).ok()??;
-    let n = 1usize << bits;
-    let (r, gb) = map.split_at_checked(n)?;
-    let (g, b) = gb.split_at_checked(n)?;
-    if b.len() != n {
-        return None;
-    }
-    let colours = r.iter().zip(g).zip(b).map(|((&r, &g), &b)| [r, g, b].map(|v| (v >> 8) as u8)).collect();
-    let (width, height) = d.dimensions().ok()?;
-    Some(PaletteTiff { width, height, bits, colours })
-}
-
-/// A palette TIFF as RGBA, each index looked up in the ColorMap.
-fn decode_palette_tiff(bytes: &[u8]) -> Option<image::RgbaImage> {
-    let p = palette_tiff(bytes)?;
-    // Read as gray, `tiff` hands back the indices themselves, whatever the compression or layout.
-    let gray = with_photometric(bytes, 1)?;
-    let tiff::decoder::DecodingResult::U8(px) = tiff_decoder(&gray)?.read_image().ok()? else { return None };
-    let (w, h) = (usize::try_from(p.width).ok()?, usize::try_from(p.height).ok()?);
-    let bits = usize::from(p.bits);
-    // Indices below 8 bits are packed high bits first, each row starting on a byte.
-    let row = w.checked_mul(bits)?.div_ceil(8);
-    if row == 0 || px.len() < row.checked_mul(h)? {
-        return None;
-    }
-    let per_byte = 8 / bits;
-    let mask = ((1u16 << bits) - 1) as u8;
-    let mut out = Vec::new();
-    out.try_reserve_exact(w.checked_mul(h)?.checked_mul(4)?).ok()?;
-    for line in px.chunks_exact(row).take(h) {
-        for x in 0..w {
-            let shift = 8 - bits * (x % per_byte + 1);
-            let i = (line.get(x / per_byte)? >> shift) & mask;
-            let [r, g, b] = *p.colours.get(usize::from(i))?;
-            out.extend([r, g, b, 255]);
-        }
-    }
-    image::RgbaImage::from_raw(p.width, p.height, out)
-}
-
-/// A copy of a TIFF with its first image's PhotometricInterpretation (tag 262, one SHORT) set
-/// to `value`. Classic and BigTIFF, either byte order.
-fn with_photometric(bytes: &[u8], value: u16) -> Option<Vec<u8>> {
-    let le = bytes.starts_with(b"II");
-    let int = |at: usize, len: usize| -> Option<usize> {
-        let b = bytes.get(at..at.checked_add(len)?)?;
-        let v = |acc: u64, &x: &u8| acc << 8 | u64::from(x);
-        usize::try_from(if le { b.iter().rev().fold(0, v) } else { b.iter().fold(0, v) }).ok()
-    };
-    // Classic: 4-byte offsets and value counts, 2-byte entry count, 12-byte entries. BigTIFF:
-    // 8, 8, 8 and 20.
-    let (ifd, word, count_len, entry_len) = if int(2, 2)? == 43 { (int(8, 8)?, 8, 8, 20) } else { (int(4, 4)?, 4, 2, 12) };
-    let count = int(ifd, count_len)?;
-    for k in 0..count {
-        let at = ifd.checked_add(count_len)?.checked_add(k.checked_mul(entry_len)?)?;
-        // Tag, type (3 = SHORT), value count, then the value itself.
-        if int(at, 2)? == 262 && int(at + 2, 2)? == 3 && int(at + 4, word)? == 1 {
-            let mut out = bytes.to_vec();
-            let v = if le { value.to_le_bytes() } else { value.to_be_bytes() };
-            let value_at = at + 4 + word;
-            out.get_mut(value_at..value_at + 2)?.copy_from_slice(&v);
-            return Some(out);
-        }
-    }
-    None
-}
-
 /// A TIFF whose pixels are CMYK (PhotometricInterpretation Separated, four inks).
 pub fn is_cmyk_tiff(bytes: &[u8]) -> bool {
-    tiff_decoder(bytes).and_then(|mut d| d.colortype().ok()).is_some_and(|c| matches!(c, tiff::ColorType::CMYK(_) | tiff::ColorType::CMYKA(_)))
+    craft_image_codecs::tiff_info(bytes)
+        .ok()
+        .and_then(|info| info.default_page().and_then(|i| info.pages.get(i).map(|page| (page.photometric, page.samples_per_pixel))))
+        .is_some_and(|(photometric, samples)| photometric == Some(5) && matches!(samples, 4 | 5))
 }
 
 /// The ink values of a CMYK TIFF, which [`decode_rgba`] converts to RGB. 8- or 16-bit CMYK,
@@ -555,48 +431,11 @@ pub fn is_cmyk_tiff(bytes: &[u8]) -> bool {
 /// format, another ink set (InkSet 2), planar storage or premultiplied alpha — and for files
 /// over the decoder's 256 MiB limit; [`is_cmyk_tiff`] tells those apart from RGB files.
 pub fn decode_cmyk_tiff(bytes: &[u8]) -> Option<CmykRaster> {
-    use tiff::tags::Tag;
     if too_large_to_decode(bytes) {
         return None;
     }
-    let mut d = tiff_decoder(bytes)?;
-    let has_alpha = match d.colortype().ok()? {
-        tiff::ColorType::CMYK(8 | 16) => false,
-        tiff::ColorType::CMYKA(8 | 16) => true,
-        _ => return None,
-    };
-    // InkSet (tag 332): 1 or absent = CMYK; 2 = other inks, named in InkNames.
-    if d.find_tag_unsigned::<u16>(Tag::Unknown(332)).ok()?.is_some_and(|s| s != 1) {
-        return None;
-    }
-    // ExtraSamples 2 = unassociated alpha. Premultiplied CMYK has no meaning as ink values.
-    if has_alpha && d.find_tag_unsigned_vec::<u16>(Tag::ExtraSamples).ok()?.and_then(|v| v.first().copied()) != Some(2) {
-        return None;
-    }
-    let (w, h) = d.dimensions().ok()?;
-    let pixels = usize::try_from(w).ok()?.checked_mul(usize::try_from(h).ok()?)?;
-    let samples = if has_alpha { 5 } else { 4 };
-    let px = match d.read_image().ok()? {
-        tiff::decoder::DecodingResult::U8(v) => v,
-        tiff::decoder::DecodingResult::U16(v) => v.iter().map(|&s| ((u32::from(s) * 255 + 32_767) / 65_535) as u8).collect(),
-        _ => return None,
-    };
-    // A planar file reads back as its first plane only, and extra non-alpha samples make the
-    // pixels wider: either way the length is not `pixels * samples`.
-    if px.len() != pixels.checked_mul(samples)? {
-        return None;
-    }
-    if !has_alpha {
-        return Some(CmykRaster { width: w, height: h, cmyk: px, alpha: None });
-    }
-    let mut cmyk = Vec::with_capacity(pixels.checked_mul(4)?);
-    let mut alpha = Vec::with_capacity(pixels);
-    for &[c, m, y, k, a] in px.as_chunks::<5>().0 {
-        cmyk.extend([c, m, y, k]);
-        alpha.push(a);
-    }
-    let alpha = alpha.iter().any(|&a| a < 255).then_some(alpha);
-    Some(CmykRaster { width: w, height: h, cmyk, alpha })
+    let image = craft_image_codecs::decode_with(bytes, &decode_options()).ok()?;
+    image.layout().is_cmyk().then(|| cmyk_raster(&image)).flatten()
 }
 
 /// An SVG rasterised so its longer side is `max_side` pixels: premultiplied RGBA8.

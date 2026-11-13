@@ -2,23 +2,6 @@ use super::*;
 use std::io::Write;
 
 #[test]
-fn cdata_text() {
-    let el = parse("<a><t><![CDATA[x < y]]></t></a>").unwrap();
-    assert_eq!(el.child("t").unwrap().text(), "x < y");
-}
-
-/// Issue #712: nesting past the budget is an error from the parser, not a stack overflow later.
-#[test]
-fn nesting_past_the_budget_is_refused() {
-    let nested = |n: usize| format!("{}{}", "<w:p>".repeat(n), "</w:p>".repeat(n));
-    let ok = parse(&nested(MAX_DEPTH)).expect("the budget itself parses");
-    assert_eq!(ok.name, "p");
-    let err = parse(&nested(MAX_DEPTH + 1)).expect_err("one level more is refused");
-    assert!(err.to_string().contains("nested deeper"), "{err}");
-    assert!(parse(&nested(100_000)).is_err());
-}
-
-#[test]
 fn table_adds_no_empty_paragraph() {
     let document = format!(
         r#"<w:document {W}><w:body>
@@ -54,17 +37,6 @@ fn docx_parts(parts: &[(&str, &str)]) -> Vec<u8> {
 }
 
 const W: &str = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main""#;
-
-#[test]
-fn oversized_part_is_an_error_not_a_huge_read() {
-    // A highly compressible part: 64 KiB of spaces inflates past a 4 KiB cap.
-    let big = docx(&" ".repeat(64 * 1024), "", "");
-    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(big.as_slice())).unwrap();
-    assert!(matches!(part_capped(&mut zip, "word/document.xml", 4096), Err(ImportError::Corrupt(_))));
-    // At or under the cap reads fine; a missing part is `None`.
-    assert_eq!(part_capped(&mut zip, "word/document.xml", 64 * 1024).unwrap().map(|s| s.len()), Some(64 * 1024));
-    assert_eq!(part_capped(&mut zip, "word/missing.xml", 4096).unwrap(), None);
-}
 
 /// A DOCX can hold any number where a measure belongs: `1e300` twips became a 5e298 pt
 /// indent, and `w:sz` of `1e300` a 5e299 pt type size. Measures are clamped to the widest
@@ -139,7 +111,7 @@ fn a_footnote_table_counts_toward_the_note_budget() {
     assert_eq!(i.story.notes.len(), 18, "all 18 references are kept");
     // What was retained is the budget plus at most the one note that was already being built
     // when it ran out -- not all 10.8 MB.
-    let held: usize = i.story.notes.iter().map(|n| note_bytes(&n.text, MAX_NOTE_DEPTH)).sum();
+    let held: usize = i.story.notes.iter().map(|n| n.text.text.len()).sum();
     assert!(held <= (8 << 20) + big.len() + 1024, "the cell text is inside the budget: {held} bytes");
     assert!(held > big.len(), "and the notes that fit were imported in full: {held} bytes");
     assert!(i.warnings.iter().any(|w| w.contains("longer than 8 MB")), "the budget warning is reported: {:?}", i.warnings);
@@ -565,20 +537,6 @@ fn hostile_numbering_falls_back_to_plain_paragraphs() {
 }
 
 #[test]
-fn an_element_with_many_attributes_parses_in_linear_time() {
-    // RUSTSEC-2026-0194: before quick-xml 0.41 the duplicate-attribute check compared each name with every
-    // earlier one on the element, so a crafted .docx/.xlsx with one huge tag hung the import (O(N²)).
-    let attrs: String = (0..100_000).map(|i| format!(" w:a{i}=\"{i}\"")).collect();
-    let xml = format!("<w:document><w:body><w:p{attrs}/></w:body></w:document>");
-    let started = std::time::Instant::now();
-    let doc = parse(&xml).unwrap();
-    assert!(started.elapsed() < std::time::Duration::from_secs(5), "parse took {:?}", started.elapsed());
-    let p = doc.child("body").and_then(|b| b.child("p")).unwrap();
-    assert_eq!(p.attr("a0"), Some("0"));
-    assert_eq!(p.attr("a99999"), Some("99999"));
-}
-
-#[test]
 fn table_cells_read_text_like_body_paragraphs() {
     // Regression (#721): cells took every text node, so deleted text, move sources and field
     // instructions showed up in the table.
@@ -637,12 +595,4 @@ fn off_valued_toggles_stay_off() {
     assert_eq!(plain.capitalization, None, "no all-caps");
     let on = st.format_after(st.text.find("bold").unwrap()).clone().over;
     assert_eq!(on.font_style.as_deref(), Some("Bold"), "`on` is still on");
-}
-
-#[test]
-fn signed_numeric_character_references_are_dropped() {
-    let el = parse("<a>&#+65;&#x+42;&#-65;&#x-42;&#;&#x;</a>").unwrap();
-    assert_eq!(el.text(), "");
-    let ok = parse("<a>&#65;&#x42;</a>").unwrap();
-    assert_eq!(ok.text(), "AB");
 }
