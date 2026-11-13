@@ -2,7 +2,7 @@
 //! fonts and glyphs, missing or low-resolution graphics, RGB content in print documents, empty
 //! text frames, white or [Paper] set to overprint.
 
-use designcraft_compose::ComposedStory;
+use designcraft_compose::{Cache, ComposedStory};
 use designcraft_doc::{Content, Document, Intent, Item, SpreadRef};
 use designcraft_fonts::FaceRef;
 use designcraft_geom::Affine;
@@ -99,8 +99,7 @@ fn missing_glyphs(
 /// its centre is on, and every page it reaches (see [`pages_of`]).
 type Located = (designcraft_doc::ItemId, Option<usize>, Vec<usize>);
 
-fn overset_location(s: &Session, target: designcraft_doc::ItemId) -> Option<Located> {
-    let d = &s.active()?.doc;
+fn overset_location(d: &Document, cache: &Cache, target: designcraft_doc::ItemId) -> Option<Located> {
     let at = |id: designcraft_doc::ItemId, loc: &designcraft_doc::ItemLoc| {
         let it = d.item(id);
         let xf = d.parent_xf(loc);
@@ -131,7 +130,7 @@ fn overset_location(s: &Session, target: designcraft_doc::ItemId) -> Option<Loca
     let embedded = d.anchored_items();
     while seen.insert(current) {
         let owner = embedded.iter().find_map(|(owner, it)| (it.id == current).then_some(*owner))?;
-        let cs = s.cache.get(d, owner, None);
+        let cs = cache.get(d, owner, None);
         // Search each host frame separately, including objects in its notes and cells.
         let frame = cs.frames.iter().find(|f| contains(f, current))?;
         current = frame.frame;
@@ -227,7 +226,7 @@ pub fn overset_warnings(s: &Session, pages: Option<&[usize]>) -> Vec<String> {
             out.push(format!("a story with no text frame: {n} character(s) of it are not in the export"));
             continue;
         }
-        let location = last.and_then(|f| overset_location(s, f));
+        let location = last.and_then(|f| overset_location(d, &s.cache, f));
         let centre = location.as_ref().and_then(|(_, page, _)| *page);
         let touched: &[usize] = location.as_ref().map(|(_, _, ps)| ps.as_slice()).unwrap_or_default();
         // A sheet draws its spread's items without asking which page they are on, so a frame
@@ -263,8 +262,12 @@ pub fn overset_warnings(s: &Session, pages: Option<&[usize]>) -> Vec<String> {
 
 pub fn check(s: &Session, min_ppi: f64) -> Vec<Issue> {
     let Some(st) = s.active() else { return vec![] };
-    let d = &st.doc;
-    let document = st.path.as_deref().map(std::path::Path::new);
+    check_document(&st.doc, &s.cache, st.path.as_deref().map(std::path::Path::new), min_ppi)
+}
+
+/// [`check`] of document `d` saved at `document` (relative links resolve against it), with the
+/// compositions in `cache`. It needs no session, so it can run on another thread.
+pub fn check_document(d: &Document, cache: &Cache, document: Option<&std::path::Path>, min_ppi: f64) -> Vec<Issue> {
     let mut out = Vec::new();
     // Stories: overset and fonts.
     let mut missing_fonts: Vec<String> = Vec::new();
@@ -274,11 +277,11 @@ pub fn check(s: &Session, min_ppi: f64) -> Vec<Issue> {
     // a cell's or an unplaced story, which has no frame of its own).
     let mut white_text: std::collections::BTreeMap<Option<designcraft_doc::ItemId>, Vec<&'static str>> = std::collections::BTreeMap::new();
     for story in d.stories.values() {
-        let cs = s.cache.get(d, story.id, None);
+        let cs = cache.get(d, story.id, None);
         missing_glyphs(&cs, None, 0, &mut missing);
         if cs.is_overset() {
             let last = story.frames.last().copied();
-            let location = last.and_then(|f| overset_location(s, f));
+            let location = last.and_then(|f| overset_location(d, cache, f));
             let n = story.text.get(cs.overset_at.unwrap_or(0)..).unwrap_or("").chars().count();
             let unplaced = story.frames.is_empty();
             out.push(Issue {
@@ -336,7 +339,7 @@ pub fn check(s: &Session, min_ppi: f64) -> Vec<Issue> {
                 let props = d.styles.resolve_char(&base, f);
                 let white = white_overprint::adornments(d, &props);
                 if !white.is_empty() {
-                    let shown = shown.get_or_insert_with(|| white_overprint::frame_ranges(s, d, story));
+                    let shown = shown.get_or_insert_with(|| white_overprint::frame_ranges(cache, d, story));
                     for frame in white_overprint::frames_showing(story, shown, run.start.max(range.start)..run.end.min(range.end)) {
                         let parts = white_text.entry(frame).or_default();
                         for part in &white {
@@ -386,7 +389,7 @@ pub fn check(s: &Session, min_ppi: f64) -> Vec<Issue> {
     for message in unsupported_typography {
         out.push(Issue { severity: "warning", kind: "unsupportedTypography", message, item: None, page: None });
     }
-    let (white_items, printed_frames) = white_overprint::printed(s, d);
+    let (white_items, printed_frames) = white_overprint::printed(cache, d);
     for (item, parts) in white_text {
         // A frame PDF export leaves out (hidden, nonprinting, on a hidden or nonprintable layer,
         // on a parent page no page shows) prints none of its text.

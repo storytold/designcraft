@@ -3,7 +3,7 @@ use super::render::c32;
 use super::rulers::hair;
 use super::{
     CanvasLayout, Color32, DRect, DesignApp, Document, GuideSel, Item, Point, Pos2, Rect, ScreenMode, SpreadRef, SpreadSlot, Stroke, StrokeKind,
-    Tokens, Xf,
+    Tokens, Xf, in_view,
 };
 
 pub(super) fn dashed(painter: &egui::Painter, a: Pos2, b: Pos2, stroke: Stroke, dash: f32, gap: f32) {
@@ -52,11 +52,16 @@ pub(super) fn draw_guides(
 ) {
     let selection: std::collections::HashSet<GuideSel> =
         app.session.active().map(|st| st.selection.guides.iter().copied().collect()).unwrap_or_default();
+    // Only what reaches into the view is painted: a spread or a page out of view adds no shapes.
+    let clip = painter.clip_rect();
     for slot in &layout.slots {
         let Some(sp) = doc.spread(slot.spread) else { continue };
+        let shows = |r: DRect| in_view(xf, clip, slot.xf.transform_rect_bbox(r), GUIDE_MARGIN);
         if app.ui.guides {
-            draw_bleed_and_slug(painter, xf, doc, slot, sp);
-            draw_spine(painter, xf, slot, sp);
+            draw_bleed_and_slug(painter, xf, doc, slot, sp, clip);
+            if shows(sp.bounds()) {
+                draw_spine(painter, xf, slot, sp);
+            }
         }
         let pasteboard = slot.xf.inverse().transform_rect_bbox(layout.pasteboard);
         for (pi, p) in sp.pages.iter().enumerate() {
@@ -65,22 +70,28 @@ pub(super) fn draw_guides(
             if !app.ui.guides {
                 continue;
             }
-            draw_page_grids(painter, xf, doc, slot, p, pr, app.ui.baseline_grid);
-            let cx = GuideCtx { painter, xf, doc, slot, sp, pasteboard };
+            if shows(pr.union(p.margin_rect())) {
+                draw_page_grids(painter, xf, doc, slot, p, pr, app.ui.baseline_grid);
+            }
+            let cx = GuideCtx { painter, xf, doc, slot, sp, pasteboard, clip };
             draw_page_guides(&cx, (pi, p, pr), moving, &selection);
         }
     }
     let _ = t;
 }
 
+/// How far, in screen points, a guide, margin or outline paints past its own rectangle: half of
+/// a selected guide's 2 pt line, rounded up.
+const GUIDE_MARGIN: f32 = 2.0;
+
 /// The bleed and slug outlines of a spread, in their own colours.
-fn draw_bleed_and_slug(painter: &egui::Painter, xf: &Xf, doc: &Document, slot: &SpreadSlot, sp: &designcraft_doc::Spread) {
+fn draw_bleed_and_slug(painter: &egui::Painter, xf: &Xf, doc: &Document, slot: &SpreadSlot, sp: &designcraft_doc::Spread, clip: Rect) {
     let s = &doc.settings;
     let rect = |r: DRect| xf.rect(slot.xf.transform_rect_bbox(r));
     // Bleed, then slug: one rectangle each around the spread (the inside offset only applies
     // at the spread's outer edges).
     for (r, color) in [(sp.bleed_rect(s.bleed), s.bleed_color), (sp.slug_rect(s.slug), s.slug_color)] {
-        if let Some(r) = r {
+        if let Some(r) = r.filter(|r| in_view(xf, clip, slot.xf.transform_rect_bbox(*r), GUIDE_MARGIN)) {
             painter.rect_stroke(rect(r), 0.0, Stroke::new(hair(painter), c32(color)), StrokeKind::Middle);
         }
     }
@@ -105,6 +116,9 @@ fn draw_parent_overlay(painter: &egui::Painter, xf: &Xf, doc: &Document, slot: &
         && let Some(pp) = doc.parents.get(ppi).and_then(|ps| ps.pages.get(ppg))
     {
         let r = rect(DRect::new(pr.x0, pr.y0, pr.x0 + pp.width, pr.y0 + pp.height));
+        if r.is_finite() && !r.expand(GUIDE_MARGIN).intersects(painter.clip_rect()) {
+            return;
+        }
         painter.rect_filled(r, 0.0, Color32::from_rgba_unmultiplied(110, 110, 230, 28));
         painter.rect_stroke(r, 0.0, Stroke::new(1.0, Color32::from_rgb(110, 110, 230)), StrokeKind::Middle);
     }
@@ -150,6 +164,8 @@ struct GuideCtx<'a> {
     slot: &'a SpreadSlot,
     sp: &'a designcraft_doc::Spread,
     pasteboard: DRect,
+    /// The painter's clip rectangle: a guide outside it is not painted.
+    clip: Rect,
 }
 
 /// The page's own guides, then those it shows from its parent page. `moving` draws dragged
@@ -182,7 +198,7 @@ fn draw_page_guides(
 
 /// One guide as a line: across the pasteboard for a spread guide, across its page otherwise.
 fn draw_guide(cx: &GuideCtx, pr: DRect, g: &designcraft_doc::Guide, selected: bool) {
-    let GuideCtx { painter, xf, doc, slot, sp, pasteboard } = *cx;
+    let GuideCtx { painter, xf, doc, slot, sp, pasteboard, clip } = *cx;
     let pt = |q: Point| xf.to_screen(slot.xf * q);
     // Spread guides cross the pasteboard; page guides their page.
     let span = if g.spread { pasteboard } else { pr };
@@ -193,6 +209,9 @@ fn draw_guide(cx: &GuideCtx, pr: DRect, g: &designcraft_doc::Guide, selected: bo
             (Point::new(g.position, span.y0), Point::new(g.position, span.y1))
         }
     };
+    if !in_view(xf, clip, slot.xf.transform_rect_bbox(DRect::from_points(a, bb)), GUIDE_MARGIN) {
+        return;
+    }
     let stroke = if selected {
         let color = g.layer.and_then(|l| doc.layer(l)).map_or(Color32::from_rgb(79, 153, 255), |l| c32(l.color));
         Stroke::new(2.0, color)
@@ -218,7 +237,10 @@ pub(super) fn draw_flattener_preview(painter: &egui::Painter, xf: &Xf, doc: &Doc
         let Some(sp) = doc.spread(slot.spread) else { continue };
         for it in sp.items.iter().filter(|it| !it.hidden && transparent(it)) {
             let r = it.bounds().inflate(designcraft_render::effect_outset(it), designcraft_render::effect_outset(it));
-            painter.rect_filled(xf.rect(slot.xf.transform_rect_bbox(r)), 0.0, red);
+            let r = slot.xf.transform_rect_bbox(r);
+            if in_view(xf, painter.clip_rect(), r, 0.0) {
+                painter.rect_filled(xf.rect(r), 0.0, red);
+            }
         }
     }
 }

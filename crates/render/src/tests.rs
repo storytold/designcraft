@@ -31,6 +31,36 @@ fn eps_source_decodes_like_its_preview() {
 }
 
 #[test]
+fn decoded_images_are_premultiplied_for_every_alpha() {
+    // Column x holds colour value x, row y holds alpha y.
+    let img = image::RgbaImage::from_fn(256, 256, |x, y| image::Rgba([x as u8, 255 - x as u8, (x / 2) as u8, y as u8]));
+    let mut png = Vec::new();
+    image::DynamicImage::ImageRgba8(img.clone()).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
+    let pm = decode_pixmap(&png).unwrap();
+    assert_eq!((pm.width(), pm.height()), (256, 256));
+    for (p, q) in img.pixels().zip(pm.data()) {
+        let m = |c: u8| ((c as u16 * p[3] as u16 + 127) / 255) as u8;
+        assert_eq!([q.r, q.g, q.b, q.a], [m(p[0]), m(p[1]), m(p[2]), p[3]], "{p:?}");
+    }
+}
+
+#[test]
+fn premultiplied_pixels_reuse_the_decoded_buffer() {
+    use vello_cpu::color::PremulRgba8;
+    let expected =
+        [PremulRgba8 { r: 10, g: 20, b: 30, a: 255 }, PremulRgba8 { r: 100, g: 50, b: 25, a: 128 }, PremulRgba8 { r: 0, g: 0, b: 0, a: 0 }];
+    let px = vec![10, 20, 30, 255, 200, 100, 50, 128, 1, 2, 3, 0];
+    let ptr = px.as_ptr() as usize;
+    let out = decode::premultiply(px);
+    assert_eq!(out.as_ptr() as usize, ptr);
+    assert_eq!(out, expected);
+    // A capacity that is not a whole number of pixels is copied.
+    let mut px = Vec::with_capacity(13);
+    px.extend([10, 20, 30, 255, 200, 100, 50, 128, 1, 2, 3, 0]);
+    assert_eq!(decode::premultiply(px), expected);
+}
+
+#[test]
 fn footnote_vector_objects_are_painted() {
     use designcraft_doc::{AnchorPosition, AnchoredObject, ItemId, Shape, SpreadRef};
     let mut d = Document::new(&NewDocument::default());
@@ -529,9 +559,9 @@ fn degenerate_dash_patterns_draw_solid_and_fill_types_close_table_corners() {
     let (fid, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 336.0, 400.0), lid, "", ParaFormat::default()).unwrap();
     d.item_mut(fid).unwrap().stroke = designcraft_doc::Stroke { weight: 2.0, kind: fine.clone(), ..Default::default() };
     let mut t = designcraft_doc::Table::new(1, 2, 2, 0, 0, 200.0);
-    for r in 0..2 {
-        t.rows[r].height = 60.0;
-        t.rows[r].mode = designcraft_doc::RowHeightMode::Exactly;
+    for row in t.rows.iter_mut().take(2) {
+        row.height = 60.0;
+        row.mode = designcraft_doc::RowHeightMode::Exactly;
     }
     let stroke = |kind| designcraft_doc::CellStroke { weight: 8.0, kind, gap_color: "C=100 M=0 Y=0 K=0".into(), ..Default::default() };
     for cell in &mut t.cells {
