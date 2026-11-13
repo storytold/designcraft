@@ -75,11 +75,11 @@ impl<'r> Importer<'r> {
             let saved = !x.text.is_empty();
             xref_list.push(Arc::new(designcraft_doc::CrossRef { target: 0, format, text: saved.then_some(x.text), page: x.page.filter(|_| saved) }));
         }
-        let pref = e.find("StoryPreference");
+        let source = craft_idml::model::Story::from_el(&crate::xml::to_craft(e));
         let optical_margin = designcraft_doc::OpticalMargin {
-            on: pref.and_then(|p| p.boolean("OpticalMarginAlignment")).unwrap_or(false),
-            size: pref
-                .and_then(|p| p.num("OpticalMarginSize"))
+            on: source.optical_margin_enabled(),
+            size: source
+                .optical_margin_size()
                 .and_then(designcraft_doc::OpticalMargin::clamp_size)
                 .unwrap_or(designcraft_doc::OpticalMargin::DEFAULT_SIZE),
         };
@@ -89,12 +89,8 @@ impl<'r> Importer<'r> {
             paras,
             chars,
             frames: vec![],
-            direction: if e.find("StoryPreference").and_then(|p| p.get("StoryDirection")) == Some("RightToLeftDirection") {
-                designcraft_doc::TextDirection::RightToLeft
-            } else {
-                designcraft_doc::TextDirection::LeftToRight
-            },
-            vertical: e.find("StoryPreference").and_then(|p| p.get("StoryOrientation")) == Some("Vertical"),
+            direction: if source.right_to_left() { designcraft_doc::TextDirection::RightToLeft } else { designcraft_doc::TextDirection::LeftToRight },
+            vertical: source.vertical(),
             optical_margin,
             rev: 0,
             tables,
