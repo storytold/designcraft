@@ -80,6 +80,16 @@ pub enum PptxError {
 
 pub type Result<T> = std::result::Result<T, PptxError>;
 
+fn apply_native_shapes(shapes: &mut [craft_pptx::Shape], native: &[craft_pptx::Shape]) {
+    for shape in shapes {
+        if let Some(mapped) = native.iter().find(|mapped| mapped.id.0 == shape.id.0) {
+            *shape = mapped.clone();
+        } else if let craft_pptx::ShapeKind::Group { children, .. } = &mut shape.kind {
+            apply_native_shapes(children, native);
+        }
+    }
+}
+
 /// Export `doc` as a PowerPoint presentation.
 pub fn export_pptx(doc: &Document, cache: &Cache, opts: &PptxOptions) -> Result<ExportReport> {
     let count = doc.page_count();
@@ -130,7 +140,11 @@ pub fn export_pptx(doc: &Document, cache: &Cache, opts: &PptxOptions) -> Result<
         author: opts.author.as_deref().unwrap_or(""),
         created: opts.created,
     })?;
-    let presentation = craft_pptx::import(&mapped, &craft_pptx::Plain).map_err(|e| PptxError::Write(e.to_string()))?;
+    let mut presentation = craft_pptx::import(&mapped, &craft_pptx::Plain).map_err(|e| PptxError::Write(e.to_string()))?;
+    for (source, slide) in slides.iter().zip(&mut presentation.slides) {
+        let slide = std::sync::Arc::make_mut(slide);
+        apply_native_shapes(&mut slide.shapes, &source.native_shapes);
+    }
     let bytes = craft_pptx::export(&presentation, &craft_pptx::Plain).map_err(|e| PptxError::Write(e.to_string()))?;
     Ok(ExportReport { bytes, slides: slides.len(), warnings: ex.warnings })
 }

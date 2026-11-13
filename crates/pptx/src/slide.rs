@@ -105,6 +105,7 @@ pub fn box_of(inner: Rect, m: Affine) -> Option<(XfrmBox, Decomposed)> {
 pub struct Geometry {
     pub xfrm: XfrmBox,
     pub xml: String,
+    pub model: craft_pptx::Geom,
 }
 
 fn custom_geometry(bp: &BezPath, w: f64, h: f64, filled: bool) -> String {
@@ -171,23 +172,31 @@ pub fn geometry(it: &Item, m: Affine) -> Geometry {
     let inner = bp.bounding_box();
     if let Some((xfrm, dm)) = box_of(inner, m) {
         if it.corners.is_none() && is_rect(&bp, inner) {
-            return Geometry { xfrm, xml: preset("rect") };
+            return Geometry { xfrm, xml: preset("rect"), model: craft_pptx::Geom::preset("rect") };
         }
         if it.shape == Shape::Oval && it.corners.is_none() && closed {
-            return Geometry { xfrm, xml: preset("ellipse") };
+            return Geometry { xfrm, xml: preset("ellipse"), model: craft_pptx::Geom::preset("ellipse") };
         }
         // The path in the box's own space: scaled (not flipped: the box flips), from its corner.
         let (kx, ky) = (dm.sx.abs(), dm.sy.abs());
         let mut local = bp.clone();
         local.apply_affine(Affine::scale_non_uniform(kx, ky) * Affine::translate(-inner.origin().to_vec2()));
-        return Geometry { xfrm, xml: custom_geometry(&local, xfrm.rect.width(), xfrm.rect.height(), closed) };
+        return Geometry {
+            xfrm,
+            xml: custom_geometry(&local, xfrm.rect.width(), xfrm.rect.height(), closed),
+            model: craft_pptx::Geom::Custom { paths: vec![craft_pptx::CustomPath::from_bez(&local, xfrm.rect.width(), xfrm.rect.height(), closed)] },
+        };
     }
     // Sheared: the transformed path in slide space.
     let mut pb = bp;
     pb.apply_affine(m);
     let b = pb.bounding_box();
     pb.apply_affine(Affine::translate(-b.origin().to_vec2()));
-    Geometry { xfrm: XfrmBox::plain(b), xml: custom_geometry(&pb, b.width(), b.height(), closed) }
+    Geometry {
+        xfrm: XfrmBox::plain(b),
+        xml: custom_geometry(&pb, b.width(), b.height(), closed),
+        model: craft_pptx::Geom::Custom { paths: vec![craft_pptx::CustomPath::from_bez(&pb, b.width(), b.height(), closed)] },
+    }
 }
 
 pub struct Exporter<'a> {
@@ -196,6 +205,8 @@ pub struct Exporter<'a> {
     pub opts: &'a PptxOptions,
     pub warnings: Vec<String>,
     pub media: Vec<Media>,
+    /// Native PresentationML mappings for model elements the exporter can express directly.
+    pub native_shapes: Vec<craft_pptx::Shape>,
     /// Asset → (picture media name, SVG media name).
     media_of: HashMap<AssetId, Option<(String, Option<String>)>>,
     pub fonts: Fonts,
@@ -220,6 +231,7 @@ impl<'a> Exporter<'a> {
             opts,
             warnings: Vec::new(),
             media: Vec::new(),
+            native_shapes: Vec::new(),
             media_of: HashMap::new(),
             fonts: Fonts::default(),
             out: String::new(),
@@ -252,6 +264,7 @@ impl<'a> Exporter<'a> {
         let page = sp.pages.get(pi).ok_or(PptxError::BadPage(abs + 1))?;
         let bounds = page.bounds();
         self.out.clear();
+        self.native_shapes.clear();
         self.next_id = 2;
         self.rels.clear();
         self.rel_of.clear();
@@ -295,6 +308,7 @@ impl<'a> Exporter<'a> {
             shapes: std::mem::take(&mut self.out),
             rels: std::mem::take(&mut self.rels),
             name: page_name,
+            native_shapes: std::mem::take(&mut self.native_shapes),
         })
     }
 
@@ -390,6 +404,11 @@ impl<'a> Exporter<'a> {
             return;
         }
         let id = self.id();
+        if text.is_none()
+            && let Some(shape) = self.native_shape(it, &g, id, opacity)
+        {
+            self.native_shapes.push(shape);
+        }
         let txbox = if text.is_some() && it.fill.is_none() && it.stroke.is_none() { " txBox=\"1\"" } else { "" };
         let _ = write!(
             self.out,
@@ -400,6 +419,103 @@ impl<'a> Exporter<'a> {
             g.xml,
             text.unwrap_or("")
         );
+    }
+
+    /// A shape whose complete appearance fits the shared PresentationML model.
+    fn native_shape(&self, it: &Item, geometry: &Geometry, id: u32, opacity: f32) -> Option<craft_pptx::Shape> {
+        if it.effects != designcraft_doc::Effects::default() || it.fill.overprint || it.stroke.overprint || it.stroke.gap_overprint {
+            return None;
+        }
+        let fill = if it.fill.is_none() || !it.path.is_closed() {
+            craft_pptx::Fill::None
+        } else {
+            if resolve_gradient(&self.doc.swatches, &it.fill.swatch).is_some() {
+                return None;
+            }
+            match self.doc.resolve_color(&it.fill.swatch, it.fill.tint) {
+                Some(color) => {
+                    let [r, g, b, a] = color.to_rgba8(opacity);
+                    craft_pptx::Fill::solid(craft_pptx::ColorRef::rgb(craft_pptx::Rgba::rgba(r, g, b, a)))
+                }
+                None => craft_pptx::Fill::None,
+            }
+        };
+        let line = if it.stroke.is_none() {
+            craft_pptx::Line::none()
+        } else {
+            let stroke = &it.stroke;
+            let supported_dash = matches!(&stroke.kind, StrokeType::Solid | StrokeType::Dotted | StrokeType::Dashed { .. });
+            if stroke.start != Arrowhead::None
+                || stroke.end != Arrowhead::None
+                || stroke.gradient_angle.is_some()
+                || stroke.gradient_vector.is_some()
+                || !supported_dash
+            {
+                return None;
+            }
+            if resolve_gradient(&self.doc.swatches, &stroke.swatch).is_some() {
+                return None;
+            }
+            let color = self.doc.resolve_color(&stroke.swatch, stroke.tint)?;
+            let [r, g, b, a] = color.to_rgba8(opacity);
+            let mut line = craft_pptx::Line::solid(craft_pptx::ColorRef::rgb(craft_pptx::Rgba::rgba(r, g, b, a)), stroke.weight);
+            line.cap = Some(match stroke.cap {
+                Cap::Butt => craft_pptx::style::LineCap::Flat,
+                Cap::Round => craft_pptx::style::LineCap::Round,
+                Cap::Projecting => craft_pptx::style::LineCap::Square,
+            });
+            line.join = Some(match stroke.join {
+                Join::Miter => craft_pptx::style::LineJoin::Miter,
+                Join::Round => craft_pptx::style::LineJoin::Round,
+                Join::Bevel => craft_pptx::style::LineJoin::Bevel,
+            });
+            line.align = Some(match stroke.align {
+                StrokeAlign::Inside => craft_pptx::style::LineAlign::Inside,
+                StrokeAlign::Center | StrokeAlign::Outside => craft_pptx::style::LineAlign::Center,
+            });
+            if stroke.join == Join::Miter && (stroke.miter_limit - 4.0).abs() > 0.001 {
+                return None;
+            }
+            match &stroke.kind {
+                StrokeType::Solid => {}
+                StrokeType::Dotted => line.dash = Some(craft_pptx::style::Dash::Preset { name: "sysDot".into() }),
+                StrokeType::Dashed { pattern } => {
+                    if pattern.iter().any(|length| *length > 0.0) {
+                        let mut pattern = pattern.clone();
+                        if pattern.len() % 2 == 1 {
+                            pattern.extend(pattern.clone());
+                        }
+                        let pairs = pattern
+                            .chunks(2)
+                            .filter_map(|pair| pair.first().zip(pair.get(1)))
+                            .map(|(dash, gap)| (*dash / stroke.weight, *gap / stroke.weight))
+                            .collect();
+                        line.dash = Some(craft_pptx::style::Dash::Custom { pattern: pairs });
+                    }
+                }
+                _ => return None,
+            }
+            line
+        };
+        let xfrm = craft_pptx::Xfrm {
+            x: geometry.xfrm.rect.x0,
+            y: geometry.xfrm.rect.y0,
+            w: geometry.xfrm.rect.width(),
+            h: geometry.xfrm.rect.height(),
+            rot: geometry.xfrm.rot,
+            flip_h: geometry.xfrm.flip_h,
+            flip_v: geometry.xfrm.flip_v,
+        };
+        Some(craft_pptx::Shape {
+            id: craft_pptx::ShapeId(id),
+            name: name_of(it, id),
+            xfrm: Some(xfrm),
+            geom: geometry.model.clone(),
+            fill: Some(fill),
+            line: Some(line),
+            descr: it.alt_text.clone(),
+            ..Default::default()
+        })
     }
 
     /// An sRGB colour element for a swatch and tint, `None` for [None] and unknown swatches.
@@ -652,7 +768,7 @@ impl<'a> Exporter<'a> {
             let gi = Rect::new(0.0, 0.0, g.size.0, g.size.1);
             let gm = m * g.xf;
             let xfrm = box_of(gi, gm).map(|(x, _)| x).unwrap_or_else(|| XfrmBox::plain(gm.transform_rect_bbox(gi)));
-            (Geometry { xfrm, xml: preset("rect") }, String::new())
+            (Geometry { xfrm, xml: preset("rect"), model: craft_pptx::Geom::preset("rect") }, String::new())
         };
         let rid = self.rel(format!("../media/{name}"));
         let svg_ext = match svg {
