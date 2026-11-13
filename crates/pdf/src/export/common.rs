@@ -43,6 +43,12 @@ pub(crate) fn regular(c: &Color, rgb_only: bool) -> krilla::color::RegularColor 
         Color::Cmyk { c, m, y, k } => R::Cmyk(cmyk::Color::new(q(c), q(m), q(y), q(k))),
         // DesignCraft grey is ink coverage (0 = white); PDF DeviceGray is lightness.
         Color::Gray { k } => R::Luma(luma::Color::new(q(1.0 - k))),
+        // The PDF writer has no Lab space for a device colour or a `/Separation` alternate: Lab is
+        // converted here, at export, and stays Lab in the document.
+        Color::Lab { .. } => {
+            let [r, g, b] = c.to_rgb();
+            R::Rgb(rgb::Color::new(q(r), q(g), q(b)))
+        }
     }
 }
 

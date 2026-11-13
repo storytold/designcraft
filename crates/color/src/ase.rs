@@ -2,8 +2,8 @@
 //! documents and applications. Big-endian: a signature, version 1.0, a block count, then blocks —
 //! group start/end and colour entries (UTF-16 name, colour model, f32 values, colour type).
 
+use crate::Color;
 use crate::swatch::{ColorType, Swatch, SwatchValue};
-use crate::{Color, cms};
 
 #[derive(Debug, thiserror::Error, PartialEq)]
 pub enum AseError {
@@ -103,13 +103,11 @@ pub fn read(bytes: &[u8]) -> Result<Vec<Swatch>, AseError> {
             }
             b"RGB " => Color::Rgb { r: b.f32()?.clamp(0.0, 1.0), g: b.f32()?.clamp(0.0, 1.0), b: b.f32()?.clamp(0.0, 1.0) },
             b"Gray" => Color::Gray { k: (1.0 - b.f32()?).clamp(0.0, 1.0) },
+            // L is stored as 0..1, a and b as they are. The swatch stays Lab, so a spot from a
+            // colour book keeps its definition.
             b"LAB " => {
                 let (l, a, bb) = (b.f32()?, b.f32()?, b.f32()?);
-                let [r, g, bl] = cms::lab::lab_to_srgb(cms::Lab { l: l * 100.0, a, b: bb });
-                if ![r, g, bl].iter().all(|v| v.is_finite()) {
-                    continue;
-                }
-                Color::Rgb { r: r.clamp(0.0, 1.0), g: g.clamp(0.0, 1.0), b: bl.clamp(0.0, 1.0) }
+                Color::lab(l * 100.0, a, bb)
             }
             _ => continue,
         };
@@ -143,6 +141,7 @@ pub fn write(swatches: &[Swatch]) -> Vec<u8> {
             Color::Cmyk { c, m, y, k } => (b"CMYK", vec![c, m, y, k]),
             Color::Rgb { r, g, b } => (b"RGB ", vec![r, g, b]),
             Color::Gray { k } => (b"Gray", vec![1.0 - k]),
+            Color::Lab { l, a, b } => (b"LAB ", vec![l / 100.0, a, b]),
         };
         b.extend(model);
         for v in vals {
@@ -222,7 +221,23 @@ mod tests {
         assert_eq!(w.len(), 1);
         assert_eq!(w[0].name, "W");
         let SwatchValue::Color { color, .. } = &w[0].value else { panic!() };
+        assert_eq!(*color, Color::Lab { l: 100.0, a: 0.0, b: 0.0 }, "Lab stays Lab");
         assert!(color.to_rgb().iter().all(|v| *v > 0.98), "Lab white: {color:?}");
+    }
+
+    /// A Lab spot keeps its values and its colour type through write and read (#2761).
+    #[test]
+    fn lab_spot_round_trips_as_lab() {
+        let sw = vec![Swatch {
+            name: "TEST SPOT LAB".into(),
+            value: SwatchValue::Color { color: Color::Lab { l: 50.0, a: 20.0, b: -40.0 }, color_type: ColorType::Spot },
+            locked: false,
+            named: true,
+            hidden: false,
+        }];
+        let back = read(&write(&sw)).unwrap();
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0].value, sw[0].value);
     }
 
     #[test]

@@ -5222,6 +5222,34 @@ fn exports_graphic_in_table_cell() {
     assert!(cell.contains("ClipContentToCell=\"true\""), "{story}");
 }
 
+/// A spot defined in Lab stays a Lab spot through import and export (#2761): it was converted to
+/// RGB on import, so the exported swatch read `Space="RGB"`.
+#[test]
+fn lab_spot_keeps_its_lab_definition() {
+    let graphic = GRAPHIC.replace(
+        r#"<Color Self="Color/Brand" Model="Spot" Space="RGB" ColorValue="255 0 0" Name="Brand" Visible="true"/>"#,
+        r#"<Color Self="Color/Brand" Model="Spot" Space="LAB" ColorValue="50 20 -40" Name="Brand" Visible="true"/>"#,
+    );
+    assert!(graphic.contains(r#"Space="LAB""#), "the fixture has the Lab spot");
+    let bytes = zip_files(&[
+        ("designmap.xml", DESIGNMAP),
+        ("Resources/Graphic.xml", &graphic),
+        ("Resources/Styles.xml", STYLES),
+        ("Resources/Preferences.xml", PREFS),
+        ("MasterSpreads/MasterSpread_m1.xml", MASTER),
+        ("Spreads/Spread_sp1.xml", SPREAD),
+        ("Stories/Story_s1.xml", STORY),
+    ]);
+    let doc = import_idml(&bytes).unwrap();
+    let lab = SwatchValue::Color { color: Color::Lab { l: 50.0, a: 20.0, b: -40.0 }, color_type: designcraft_color::ColorType::Spot };
+    assert_eq!(doc.swatch("Brand").unwrap().value, lab);
+    let out = zip_text(&export_idml(&doc), "Resources/Graphic");
+    let el = out.split("<Color ").find(|e| e.contains(r#"Name="Brand""#)).unwrap_or_default();
+    assert!(el.contains(r#"Model="Spot""#) && el.contains(r#"Space="LAB""#) && el.contains(r#"ColorValue="50 20 -40""#), "{el}");
+    // And back again.
+    assert_eq!(import_idml(&export_idml(&doc)).unwrap().swatch("Brand").unwrap().value, lab);
+}
+
 /// Non-finite numbers in colour values, page bounds and item transforms (NaN, infinities and
 /// values like 1e300 that overflow `f32`) never reach the model: JSON would write them as null.
 #[test]
@@ -5246,6 +5274,7 @@ fn non_finite_number_lists_never_reach_the_model() {
                 Color::Rgb { r, g, b } => vec![r, g, b],
                 Color::Cmyk { c, m, y, k } => vec![c, m, y, k],
                 Color::Gray { k } => vec![k],
+                Color::Lab { l, a, b } => vec![l, a, b],
             };
             assert!(parts.iter().all(|v| v.is_finite()), "swatch {} is not finite: {color:?}", s.name);
         }

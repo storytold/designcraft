@@ -183,6 +183,23 @@ fn percent_components_at_most_one_stay_percent() {
     assert!((r - 1.0 / 255.0).abs() < 1e-6 && (g - 128.0 / 255.0).abs() < 1e-6 && (b - 1.0).abs() < 1e-6);
 }
 
+/// #2761: `{model: lab, l, a, b}` is a Lab colour in its own ranges, and a spot made from it stays Lab.
+#[test]
+fn lab_model_colors_stay_lab() {
+    use designcraft_color::{Color, ColorType, SwatchValue};
+    assert_eq!(parse_color(&json!({"model": "lab", "l": 50, "a": 20, "b": -40})), Some(Color::Lab { l: 50.0, a: 20.0, b: -40.0 }));
+    assert_eq!(parse_color(&json!({"model": "lab", "l": 101, "a": 0, "b": 0})), None, "L is 0..100");
+    assert_eq!(parse_color(&json!({"model": "lab", "l": 50, "a": 200, "b": 0})), None, "a is -128..127");
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    s.execute("swatch.create", &json!({"name": "Lab Spot", "color": {"model": "lab", "l": 50, "a": 20, "b": -40}, "spot": true})).unwrap();
+    let d = &s.doc().unwrap().doc;
+    assert_eq!(
+        d.swatch("Lab Spot").unwrap().value,
+        SwatchValue::Color { color: Color::Lab { l: 50.0, a: 20.0, b: -40.0 }, color_type: ColorType::Spot }
+    );
+}
+
 /// #910: `{c: 1, m: 0, y: 0, k: 0}` is a 1 % cyan tint, not solid cyan, though every component is within 0..1.
 #[test]
 fn cmyk_percentages_of_one_or_less_stay_percent() {

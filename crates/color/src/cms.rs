@@ -414,6 +414,7 @@ impl Cms {
             Color::Rgb { r, g, b } => self.rgb_to_srgb([r, g, b]),
             Color::Cmyk { c, m, y, k } => self.cmyk_to_srgb([c, m, y, k], false),
             Color::Gray { k } => [1.0 - k.clamp(0.0, 1.0); 3],
+            Color::Lab { l, a, b } => lab::lab_to_srgb(Lab::new(l, a, b)),
         }
     }
 
@@ -421,6 +422,7 @@ impl Cms {
     pub fn lab(&self, c: &Color) -> Lab {
         match *c {
             Color::Cmyk { c, m, y, k } => self.cmyk_to_lab([c, m, y, k]),
+            Color::Lab { l, a, b } => Lab::new(l, a, b),
             _ => lab::srgb_to_lab(self.display_rgb(c)),
         }
     }
@@ -431,6 +433,7 @@ impl Cms {
             Color::Cmyk { c, m, y, k } => [c, m, y, k],
             Color::Gray { k } => [0.0, 0.0, 0.0, k],
             Color::Rgb { .. } => self.srgb_to_cmyk(self.display_rgb(c), intent),
+            Color::Lab { l, a, b } => self.lab_to_cmyk(Lab::new(l, a, b), intent),
         }
     }
 
@@ -464,9 +467,10 @@ impl Cms {
     /// How far (ΔE2000) the best CMYK reproduction of `c` is from `c` (0 for CMYK/grey colours).
     pub fn gamut_error(&self, c: &Color) -> f32 {
         match c {
-            Color::Rgb { .. } => {
+            Color::Rgb { .. } | Color::Lab { .. } => {
                 let srgb = self.display_rgb(c);
-                let src = lab::srgb_to_lab(srgb);
+                // A Lab colour is measured from its own values, not from its clipped screen colour.
+                let src = self.lab(c);
                 match &self.cmyk {
                     CmykSpace::Generic(g) => g.gamut_error(src),
                     CmykSpace::Device => 0.0,

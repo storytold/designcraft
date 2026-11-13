@@ -1,5 +1,5 @@
 use super::frame::{Prefs, text_frame_options};
-use super::values::{lab_to_color, nums};
+use super::values::nums;
 use super::{
     Color, ColorType, El, Gradient, GradientKind, GradientStop, HashMap, HashSet, Importer, Styles, Swatch, SwatchValue, TextFrameOptions, names,
     swatch,
@@ -13,7 +13,8 @@ impl<'r> Importer<'r> {
         let space = e.get("Space").unwrap_or("CMYK");
         let c = match space {
             "RGB" if v.len() >= 3 => Color::rgb((v[0] / 255.0) as f32, (v[1] / 255.0) as f32, (v[2] / 255.0) as f32),
-            "LAB" if v.len() >= 3 => lab_to_color(v[0] as f32, v[1] as f32, v[2] as f32),
+            // Lab stays Lab: a spot from a colour book keeps its definition.
+            "LAB" if v.len() >= 3 => Color::lab(v[0] as f32, v[1] as f32, v[2] as f32),
             _ if v.len() >= 4 => Color::cmyk((v[0] / 100.0) as f32, (v[1] / 100.0) as f32, (v[2] / 100.0) as f32, (v[3] / 100.0) as f32),
             _ => return None,
         };
@@ -22,6 +23,7 @@ impl<'r> Importer<'r> {
             Color::Rgb { r, g, b } => [r, g, b, 0.0],
             Color::Cmyk { c, m, y, k } => [c, m, y, k],
             Color::Gray { k } => [k, 0.0, 0.0, 0.0],
+            Color::Lab { l, a, b } => [l, a, b, 0.0],
         };
         if !parts.iter().all(|v| v.is_finite()) {
             return None;
@@ -239,6 +241,7 @@ impl<'r> Importer<'r> {
                 Color::Cmyk { c, m, y, k } => designcraft_color::swatch::cmyk_name(c, m, y, k),
                 Color::Rgb { r, g, b } => format!("R={} G={} B={}", (r * 255.0).round(), (g * 255.0).round(), (b * 255.0).round()),
                 Color::Gray { k } => format!("K={}", (k * 100.0).round()),
+                Color::Lab { .. } => swatch::value_name(c),
             };
             if !self.swatches.iter().any(|s| s.name == name) {
                 self.swatches.push(Swatch {

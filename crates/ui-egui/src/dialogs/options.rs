@@ -42,12 +42,16 @@ pub fn open_swatch_options(app: &mut DesignApp, name: &str) -> Result<(), String
     Ok(())
 }
 
+/// The dialog's Lab fields: L, a and b (`b` alone is RGB's blue).
+const LAB_FIELDS: [&str; 3] = ["labL", "labA", "labB"];
+
 /// Write `c`'s channels in `mode` (default: the colour's own model).
 fn set_color(f: &mut Map<String, Value>, c: Color, mode: Option<&str>) {
     let mode = mode.unwrap_or(match c {
         Color::Cmyk { .. } => "cmyk",
         Color::Rgb { .. } => "rgb",
         Color::Gray { .. } => "gray",
+        Color::Lab { .. } => "lab",
     });
     f.insert("mode".into(), json!(mode));
     match mode {
@@ -63,6 +67,12 @@ fn set_color(f: &mut Map<String, Value>, c: Color, mode: Option<&str>) {
             };
             f.insert("gray".into(), json!((f64::from(k) * 1000.0).round() / 10.0));
         }
+        "lab" => {
+            let lab = c.to_lab();
+            for (k, v) in LAB_FIELDS.iter().zip([lab.l, lab.a, lab.b]) {
+                f.insert((*k).into(), json!((f64::from(v) * 10.0).round() / 10.0));
+            }
+        }
         _ => {
             for (k, v) in ["c", "m", "y", "k"].iter().zip(c.to_cmyk()) {
                 f.insert((*k).into(), json!((f64::from(v) * 1000.0).round() / 10.0));
@@ -77,6 +87,10 @@ fn dialog_color(f: &Map<String, Value>) -> Option<Color> {
     match f.get("mode").and_then(Value::as_str)? {
         "rgb" => Some(Color::rgb(n("r", 255.0)?, n("g", 255.0)?, n("b", 255.0)?)),
         "gray" => Some(Color::gray(n("gray", 100.0)?)),
+        "lab" => {
+            let v = |k: &str| f.get(k).and_then(Value::as_f64).map(|v| v as f32);
+            Some(Color::lab(v("labL")?, v("labA")?, v("labB")?))
+        }
         _ => Some(Color::cmyk(n("c", 100.0)?, n("m", 100.0)?, n("y", 100.0)?, n("k", 100.0)?)),
     }
 }
@@ -87,6 +101,7 @@ fn color_json(c: Color) -> Value {
         Color::Cmyk { c, m, y, k } => json!({"model": "cmyk", "c": c, "m": m, "y": y, "k": k}),
         Color::Rgb { r, g, b } => json!([r, g, b]),
         Color::Gray { k } => json!({"gray": k}),
+        Color::Lab { l, a, b } => json!({"model": "lab", "l": l, "a": a, "b": b}),
     }
 }
 
@@ -96,9 +111,14 @@ fn caption(ui: &mut egui::Ui, lang: &str, s: &str) {
 
 /// Render a labelled, bounded colour-channel spinner, name it for accessibility and write changed values to dialog fields.
 fn channel(ui: &mut egui::Ui, d: &mut Dialog, key: &str, label: &str, max: f64, suffix: &str) {
+    channel_in(ui, d, key, label, 0.0..=max, suffix);
+}
+
+/// [`channel`] with a lower bound of its own (Lab's a and b run from -128 to 127).
+fn channel_in(ui: &mut egui::Ui, d: &mut Dialog, key: &str, label: &str, range: std::ops::RangeInclusive<f64>, suffix: &str) {
     ui.label(egui::RichText::new(label).monospace());
     let mut v = d.n(key).unwrap_or(0.0);
-    let resp = ui.add(egui::DragValue::new(&mut v).range(0.0..=max).speed(0.5).max_decimals(1).suffix(suffix));
+    let resp = ui.add(egui::DragValue::new(&mut v).range(range).speed(0.5).max_decimals(1).suffix(suffix));
     let changed = resp.changed();
     // The channel name is a painted label beside a bare spinner: name the spinner too.
     let _ = resp.accessible_name(label.to_owned());
@@ -147,12 +167,13 @@ pub fn swatch_options(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
                 let label = |m: &str| match m {
                     "rgb" => "RGB",
                     "gray" => "Gray",
+                    "lab" => "Lab",
                     _ => "CMYK",
                 };
                 let combo = craft_ui::ComboBox::from_id_salt("swatch_color_mode")
                     .selected_text(crate::rtl::widget(ui, tr(lang, label(&cur))))
                     .show_ui(ui, |ui| {
-                        for m in ["cmyk", "rgb", "gray"] {
+                        for m in ["cmyk", "rgb", "gray", "lab"] {
                             if ui.selectable_label(cur == m, crate::rtl::widget(ui, tr(lang, label(m)))).clicked()
                                 && cur != m
                                 && let Some(c) = dialog_color(&d.fields)
@@ -170,6 +191,11 @@ pub fn swatch_options(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
                         }
                     }
                     "gray" => channel(ui, d, "gray", "K", 100.0, "%"),
+                    "lab" => {
+                        channel(ui, d, "labL", "L", 100.0, "");
+                        channel_in(ui, d, "labA", "a", -128.0..=127.0, "");
+                        channel_in(ui, d, "labB", "b", -128.0..=127.0, "");
+                    }
                     _ => {
                         for k in ["c", "m", "y", "k"] {
                             channel(ui, d, k, &k.to_uppercase(), 100.0, "%");

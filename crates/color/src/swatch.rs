@@ -90,10 +90,16 @@ pub fn cmyk_name(c: f32, m: f32, y: f32, k: f32) -> String {
     format!("C={} M={} Y={} K={}", p(c), p(m), p(y), p(k))
 }
 
-/// The name Name with Color Value gives a colour: `C=100 M=0 Y=0 K=0`, or `R=16 G=128 B=128`.
+/// The name Name with Color Value gives a colour: `C=100 M=0 Y=0 K=0`, `L=50 a=20 b=-40`, or
+/// `R=16 G=128 B=128`.
 pub fn value_name(c: Color) -> String {
     match c {
         Color::Cmyk { c, m, y, k } => cmyk_name(c, m, y, k),
+        Color::Lab { l, a, b } => {
+            // `+ 0.0` turns -0.0 into 0.0 so it prints as "0", not "-0".
+            let p = |v: f32| v.round() + 0.0;
+            format!("L={} a={} b={}", p(l), p(a), p(b))
+        }
         other => {
             let [r, g, b] = other.to_rgb();
             // `+ 0.0` turns -0.0 into 0.0 so it prints as "0", not "-0".
@@ -132,7 +138,7 @@ pub fn resolve_gradient<'a>(swatches: &'a [Swatch], name: &str) -> Option<&'a Gr
     }
 }
 
-/// Tint = ink percentage: CMYK/Gray components scale; RGB mixes towards white.
+/// Tint = ink percentage: CMYK/Gray components scale; RGB and Lab mix towards white.
 pub fn apply_tint(c: Color, tint: f32) -> Color {
     let t = tint.clamp(0.0, 1.0);
     if (t - 1.0).abs() < f32::EPSILON {
@@ -142,6 +148,7 @@ pub fn apply_tint(c: Color, tint: f32) -> Color {
         Color::Cmyk { c, m, y, k } => Color::cmyk(c * t, m * t, y * t, k * t),
         Color::Gray { k } => Color::gray(k * t),
         Color::Rgb { r, g, b } => Color::rgb(1.0 - (1.0 - r) * t, 1.0 - (1.0 - g) * t, 1.0 - (1.0 - b) * t),
+        Color::Lab { l, a, b } => Color::Lab { l: 100.0 - (100.0 - l) * t, a: a * t, b: b * t },
     }
 }
 

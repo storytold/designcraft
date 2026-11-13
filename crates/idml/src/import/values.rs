@@ -1,4 +1,4 @@
-use super::{Affine, Color, El, Point, lab};
+use super::{Affine, El, Point};
 
 /// An XMP date property, written as an element or an attribute.
 pub(super) fn xmp_date(xmp: &str, key: &str) -> Option<i64> {
@@ -11,11 +11,6 @@ pub(super) fn xmp_date(xmp: &str, key: &str) -> Option<i64> {
         rest.get(..rest.find('"')?)?
     };
     designcraft_doc::vars::parse_iso_date(value)
-}
-
-pub(super) fn lab_to_color(l: f32, a: f32, b: f32) -> Color {
-    let rgb = lab::xyz_to_srgb(lab::lab_to_xyz(lab::Lab::new(l, a, b)));
-    Color::rgb(rgb[0], rgb[1], rgb[2])
 }
 
 /// The numbers in a whitespace-separated list; empty when any number is NaN or infinite (JSON
