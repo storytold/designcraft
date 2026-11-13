@@ -130,27 +130,35 @@ const GLOBAL_LIGHT: &str = "globalLight";
 /// Apply: the preview goes and the settings are made once, as one undo step.
 pub fn confirm(app: &mut DesignApp, d: &Dialog) -> Result<Value, String> {
     if d.fields.contains_key(PREVIEWED) {
-        app.session.cancel_interaction();
+        // The preview goes from the document it is shown in.
+        crate::dialogs::end_dialog_preview(app, &mut d.clone());
     }
     app.run("object.effects", params(d))
 }
 
-/// Preview on: the effects show on the page (redone when a value changes); off: they go.
+/// Preview on: the effects show on the page (redone when a value changes); off: they go. The
+/// dialog records the document and interaction its preview is in, so Undo and Redo end it first.
 fn preview(app: &mut DesignApp, d: &mut Dialog) {
     let shown = d.fields.get(PREVIEWED).cloned();
     if !d.fields.get("preview").and_then(Value::as_bool).unwrap_or(false) {
-        if shown.is_some() {
-            app.session.cancel_interaction();
-            d.fields.remove(PREVIEWED);
+        if shown.is_some() || d.fields.contains_key(crate::dialogs::PREVIEW_DOC) {
+            crate::dialogs::end_dialog_preview(app, d);
+            d.fields.remove("status");
         }
+        return;
+    }
+    if crate::dialogs::preview_in_other_document(app, d) {
         return;
     }
     let p = params(d);
     if shown.as_ref() == Some(&p) {
         return;
     }
-    if shown.is_none() && app.session.begin_interaction("Effects").is_err() {
-        return;
+    if shown.is_none() {
+        if app.session.begin_interaction("Effects").is_err() {
+            return;
+        }
+        crate::dialogs::record_preview_owner(app, d);
     }
     match app.session.preview("object.effects", p.clone()) {
         Ok(()) => d.fields.remove("status"),
@@ -863,6 +871,64 @@ mod tests {
         assert!((app.session.doc().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap().opacity - 0.8).abs() < 1e-6);
         app.run("edit.undo", json!({})).unwrap();
         assert!(!fx(&app).inner_shadow.on);
+    }
+
+    /// Undo while the preview is shown acts on the document without the preview, and a later
+    /// Cancel leaves the undone document as it is: the preview shows again on it, then goes.
+    #[test]
+    fn undo_ends_the_effects_preview_and_cancel_keeps_the_undo() {
+        let (mut app, id) = app_with_frame();
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx, "en");
+        let item = |app: &DesignApp| app.session.doc().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap().clone();
+        let filled = item(&app).fill.clone();
+        crate::menus::activate(&mut app, "object.innerShadow", &Value::Null);
+        frame(&mut app, &ctx);
+        assert!(item(&app).effects.inner_shadow.on, "previewed");
+        // Undo takes back the fill, not the preview.
+        app.run("edit.undo", json!({})).unwrap();
+        assert_ne!(item(&app).fill, filled, "the fill is undone");
+        frame(&mut app, &ctx);
+        assert!(item(&app).effects.inner_shadow.on, "the preview shows again on the undone document");
+        crate::dialogs::cancel(&mut app);
+        let st = app.session.active().unwrap();
+        assert!(st.interaction.is_none());
+        let it = item(&app);
+        assert!(!it.effects.inner_shadow.on, "Cancel takes the preview away");
+        assert_ne!(it.fill, filled, "Cancel keeps the Undo");
+        // Redo brings the fill back once, with no preview in it.
+        app.run("edit.redo", json!({})).unwrap();
+        let it = item(&app);
+        assert_eq!(it.fill, filled);
+        assert!(!it.effects.inner_shadow.on, "the redone document holds no preview");
+    }
+
+    /// A gesture that replaced the preview stays open: the preview is not written into it, OK
+    /// waits for it with the reason on the status line, and Cancel leaves it open.
+    #[test]
+    fn a_gesture_that_replaced_the_effects_preview_stays() {
+        let (mut app, id) = app_with_frame();
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx, "en");
+        let size = |app: &DesignApp| app.session.doc().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap().effects.inner_shadow.size;
+        crate::menus::activate(&mut app, "object.innerShadow", &Value::Null);
+        frame(&mut app, &ctx);
+        assert!(app.session.active().unwrap().interaction.is_some(), "previewed");
+        let previewed = size(&app);
+        assert_ne!(previewed, 9.0);
+        app.session.begin_interaction("Move").unwrap();
+        let moving = app.session.active().unwrap().interaction.as_ref().unwrap().id;
+        if let Some(d) = app.ui.dialog.as_mut() {
+            set(d, &["innerShadow", "size"], json!(9.0));
+        }
+        frame(&mut app, &ctx);
+        assert_eq!(app.session.active().unwrap().interaction.as_ref().map(|it| it.id), Some(moving), "the gesture stays open");
+        assert_eq!(size(&app), previewed, "the new size is not written into the gesture");
+        assert!(crate::dialogs::confirm(&mut app).is_err(), "OK waits for the gesture");
+        assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some(ID), "the dialog stays open");
+        assert_eq!(app.session.active().unwrap().interaction.as_ref().map(|it| it.id), Some(moving));
+        crate::dialogs::cancel(&mut app);
+        assert_eq!(app.session.active().unwrap().interaction.as_ref().map(|it| it.id), Some(moving), "Cancel leaves the gesture open");
     }
 
     /// The angle dial points where the pointer is, as InDesign's: right is 0°, up 90°, left 180°,

@@ -1918,7 +1918,7 @@ fn text_frame_preview(app: &mut DesignApp, d: &mut Dialog) {
 /// A dialog's preview goes from the document it was shown in, also when another document is
 /// active now. An interaction begun there since the preview, which replaced the preview's own,
 /// stays open.
-fn end_dialog_preview(app: &mut DesignApp, d: &mut Dialog) {
+pub(crate) fn end_dialog_preview(app: &mut DesignApp, d: &mut Dialog) {
     let uid = d.fields.get(PREVIEW_DOC).and_then(Value::as_u64).or_else(|| app.session.active().map(|st| st.uid));
     // After Undo or Redo ended the preview, the document is still named but its interaction (if
     // any) is not the preview's.
@@ -1933,7 +1933,7 @@ fn end_dialog_preview(app: &mut DesignApp, d: &mut Dialog) {
 }
 
 /// Records the document and the interaction a dialog's preview was just begun in.
-fn record_preview_owner(app: &DesignApp, d: &mut Dialog) {
+pub(crate) fn record_preview_owner(app: &DesignApp, d: &mut Dialog) {
     let st = app.session.active();
     d.fields.insert(PREVIEW_DOC.into(), json!(st.map(|st| st.uid)));
     match st.and_then(|st| st.interaction.as_ref()) {
@@ -1967,7 +1967,7 @@ const PREVIEW_ENDED: &str = "The preview ended with the action in progress. Turn
 /// a new preview would replace it), with the reason on the status line. Once that document is
 /// active again, the reason goes. Once the gesture ends, Preview is turned off with the reason on
 /// the status line.
-fn preview_in_other_document(app: &DesignApp, d: &mut Dialog) -> bool {
+pub(crate) fn preview_in_other_document(app: &DesignApp, d: &mut Dialog) -> bool {
     let active = app.session.active().map(|st| st.uid);
     // A closed document takes the preview with it: this update is skipped, and the next one starts
     // the preview in the active document.
@@ -5277,6 +5277,7 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
             | "characterStyleOptions"
             | CORNER_OPTIONS
             | STEP_AND_REPEAT
+            | crate::effects_dialog::ID
     ) {
         d = refuse_ok_during_interaction(app, d)?;
     }
@@ -9744,8 +9745,8 @@ fn toc_dialog(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
 /// The params a previewing dialog shows on the page (its interaction is open while it is set).
 const PREVIEWED: &str = "_previewed";
 /// The uid of the document a previewing dialog's preview is shown in.
-const PREVIEW_DOC: &str = "_previewDoc";
-/// The label and starting revision of the interaction a previewing dialog's preview was begun in.
+pub(crate) const PREVIEW_DOC: &str = "_previewDoc";
+/// The id of the interaction a previewing dialog's preview was begun in.
 const PREVIEW_INTERACTION: &str = "_previewInteraction";
 
 /// Edit › Step and Repeat, as in InDesign: Repeat (Count, or Rows and Columns with Create as a
