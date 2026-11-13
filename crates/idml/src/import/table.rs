@@ -55,8 +55,9 @@ pub(super) fn uniform_cell_stroke(edges: &[designcraft_doc::CellStrokeAttrs; 4])
 impl<'r> Importer<'r> {
     /// `<Table>`: rows, columns and cells (cell `Name` is `column:row`).
     pub(super) fn table(&mut self, e: &El) -> Option<Table> {
-        let table_options = craft_idml::model::Values::of(&crate::xml::to_craft(e)).table_options();
-        let layout = craft_idml::model::TableLayout::from_el(&crate::xml::to_craft(e));
+        let model_table = craft_idml::model::Table::from_el(&crate::xml::to_craft(e));
+        let table_options = model_table.values.table_options();
+        let layout = craft_idml::model::TableLayout::from_table(&model_table);
         // A file's row and column counts are its claim, and a table of them is allocated whole: a
         // story holding one `<Table>` with 5,000 of each asked for 25M cells, around 34 GB, which
         // aborts the process instead of failing (#1583). What is read is clamped, and the rest of
@@ -151,8 +152,7 @@ impl<'r> Importer<'r> {
         column_strokes.merge(&self.alt_stroke_attrs(e, "Column"));
         column_strokes.apply_to(&mut t.options.column_strokes);
         let mut regions = Vec::new();
-        for ce in e.find_all("Cell") {
-            let model_cell = craft_idml::model::Cell::from_el(&crate::xml::to_craft(ce));
+        for model_cell in model_table.cells() {
             let options = model_cell.options();
             let Some((c, r)) = model_cell.position().map(|(c, r)| (c as usize, r as usize)) else {
                 continue;
@@ -164,14 +164,16 @@ impl<'r> Importer<'r> {
             let rs = (rs as usize).min(nr - r);
             let cs = (cs as usize).min(nc - c);
             let mut cell = t.cell(r, c).cloned().unwrap_or_default();
-            let cell_style = ce.get("AppliedCellStyle").map(|r| self.cell_style_ref(r)).unwrap_or_else(|| designcraft_doc::NO_CELL_STYLE.into());
+            let cell_el = crate::xml::from_craft(model_cell.to_el());
+            let cell_style =
+                model_cell.values.get("AppliedCellStyle").map(|r| self.cell_style_ref(r)).unwrap_or_else(|| designcraft_doc::NO_CELL_STYLE.into());
             if cell_style != designcraft_doc::NO_CELL_STYLE {
                 designcraft_doc::resolve_cell_style(&self.styles.cell, &cell_style).apply_to(&mut cell);
             }
             cell.style = if cell_style == designcraft_doc::NO_CELL_STYLE { String::new() } else { cell_style };
             let default_para = cell.text.paras.first().cloned().unwrap_or_default();
-            cell.text = self.story_with_para(StoryId(0), ce, default_para);
-            self.read_cell_attrs(&mut cell, ce, &options, border_unset);
+            cell.text = self.story_with_para(StoryId(0), &cell_el, default_para);
+            self.read_cell_attrs(&mut cell, &options, border_unset);
             if let Some(slot) = t.cell_mut(r, c) {
                 *slot = cell;
             }
@@ -186,7 +188,7 @@ impl<'r> Importer<'r> {
     }
 
     /// A cell's local fill, insets, alignment, rotation and edge strokes.
-    fn read_cell_attrs(&mut self, cell: &mut designcraft_doc::Cell, ce: &El, options: &craft_idml::model::CellOptions, border_unset: bool) {
+    fn read_cell_attrs(&mut self, cell: &mut designcraft_doc::Cell, options: &craft_idml::model::CellOptions, border_unset: bool) {
         if let Some(fc) = options.fill_color.as_deref() {
             cell.fill = self.swatch_ref(fc);
         }
@@ -211,8 +213,8 @@ impl<'r> Importer<'r> {
         if cell.rotation != 0.0 {
             self.rotated_cells += 1;
         }
-        for (i, side) in ["TopEdge", "LeftEdge", "BottomEdge", "RightEdge"].iter().enumerate() {
-            let attrs = self.cell_stroke_attrs(ce, side);
+        for (i, values) in options.edge_strokes.iter().cloned().enumerate() {
+            let attrs = self.map_stroke_values(values);
             attrs.apply_to(&mut cell.strokes[i]);
             cell.stroke_defined[i] |= !attrs.is_empty();
             let priority = options.edge_stroke_priorities[i];
