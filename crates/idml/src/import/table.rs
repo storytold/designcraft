@@ -55,6 +55,7 @@ pub(super) fn uniform_cell_stroke(edges: &[designcraft_doc::CellStrokeAttrs; 4])
 impl<'r> Importer<'r> {
     /// `<Table>`: rows, columns and cells (cell `Name` is `column:row`).
     pub(super) fn table(&mut self, e: &El) -> Option<Table> {
+        let table_options = craft_idml::model::Values::of(&crate::xml::to_craft(e)).table_options();
         let rows: Vec<&El> = e.find_all("Row").collect();
         let cols: Vec<&El> = e.find_all("Column").collect();
         // A file's row and column counts are its claim, and a table of them is allocated whole: a
@@ -93,7 +94,7 @@ impl<'r> Importer<'r> {
         let rows = &rows[..nr.min(rows.len())];
         let cols = &cols[..nc.min(cols.len())];
         let mut t = Table::new(id, nr, nc, 0, 0, 0.0);
-        t.options.direction = if e.get("TableDirection") == Some("RightToLeftDirection") {
+        t.options.direction = if table_options.direction.as_deref() == Some("RightToLeftDirection") {
             designcraft_doc::TextDirection::RightToLeft
         } else {
             designcraft_doc::TextDirection::LeftToRight
@@ -106,12 +107,13 @@ impl<'r> Importer<'r> {
         for (c, ce) in cols.iter().enumerate() {
             t.columns[c].width = ce.num("SingleColumnWidth").unwrap_or(72.0).max(3.0);
         }
-        let h = e.num("HeaderRowCount").unwrap_or(0.0) as usize;
-        let f = e.num("FooterRowCount").unwrap_or(0.0) as usize;
+        let h = table_options.header_rows.unwrap_or(0.0) as usize;
+        let f = table_options.footer_rows.unwrap_or(0.0) as usize;
         if h.saturating_add(f) < nr {
             t.set_header_footer(h, f);
         }
-        let style_name = e.get("AppliedTableStyle").map(|r| self.table_style_ref(r)).unwrap_or_else(|| designcraft_doc::BASIC_TABLE.into());
+        let style_name =
+            table_options.applied_style.as_deref().map(|r| self.table_style_ref(r)).unwrap_or_else(|| designcraft_doc::BASIC_TABLE.into());
         let style = self.styles.resolve_table_style(&style_name);
         style.apply_to(&mut t, &self.styles.cell);
         // IDML distinguishes an explicit AppliedCellStyle from the effective region style.
@@ -122,17 +124,17 @@ impl<'r> Importer<'r> {
         // materialized independently, so their edges retain their higher precedence.
         let mut border_unset = style.border.is_none() && style.borders.iter().all(|b| b.is_empty());
         let mut borders = std::array::from_fn::<_, 4, _>(|i| t.options.border_for(i).clone());
-        for (side, border) in ["TopBorder", "LeftBorder", "BottomBorder", "RightBorder"].iter().zip(&mut borders) {
-            let attrs = self.cell_stroke_attrs(e, side);
+        for (attrs, border) in table_options.borders.into_iter().zip(&mut borders) {
+            let attrs = self.map_stroke_values(attrs);
             border_unset &= attrs.is_empty();
             attrs.apply_to(border);
         }
         t.options.border = borders[0].clone();
         t.options.borders = borders.map(Some);
-        t.options.space_before = e.num("SpaceBefore").unwrap_or(t.options.space_before);
-        t.options.space_after = e.num("SpaceAfter").unwrap_or(t.options.space_after);
-        t.options.repeat_header = e.get("HeaderBehavior") != Some("RepeatOnce");
-        t.options.repeat_footer = e.get("FooterBehavior") != Some("RepeatOnce");
+        t.options.space_before = table_options.space_before.unwrap_or(t.options.space_before);
+        t.options.space_after = table_options.space_after.unwrap_or(t.options.space_after);
+        t.options.repeat_header = table_options.repeat_header;
+        t.options.repeat_footer = table_options.repeat_footer;
         // A local count may enable a pattern disabled by its parent style. Merge before
         // materialization so the parent's colors/tints are still available in that case.
         let mut row_fills = style.row_fills.clone();

@@ -358,7 +358,7 @@ impl<'r> Importer<'r> {
         self.map_stroke_values(values)
     }
 
-    fn map_stroke_values(&mut self, values: craft_idml::model::StrokeValues) -> designcraft_doc::CellStrokeAttrs {
+    pub(super) fn map_stroke_values(&mut self, values: craft_idml::model::StrokeValues) -> designcraft_doc::CellStrokeAttrs {
         designcraft_doc::CellStrokeAttrs {
             weight: values.weight,
             color: values.color.map(|v| self.swatch_ref(&v)),
