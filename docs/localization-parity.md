@@ -63,7 +63,7 @@ fall back to English. Preferences lists `Magyar`; interface selection does not e
 separate spelling and hyphenation work in #1484.
 
 Hungarian release follow-up (2026-11-03) adds **23 entries**. The catalog now has
-**1,951 entries and four contexts**. It covers recent files, application and dock menus,
+**1,968 entries and four contexts**. It covers recent files, application and dock menus,
 ruler origin and kerning/tracking increments, and the separations panel. The start-screen
 project link now uses the catalog. macOS built-in Services/Hide/Show All items use translated
 titles when available and keep their default titles when a translation is missing; Hide Others stays untranslated because its catalog key belongs to the layers panel.

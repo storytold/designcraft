@@ -806,6 +806,7 @@ impl<'r> Importer<'r> {
             modified: self.modified.unwrap_or(0),
             next_id: self.next_id,
             font_scope: 0,
+            alpha_outlines: Vec::new(),
         };
         // A link from a frame anchored in text is kept -- it is in the document and goes back out
         // to IDML -- but PDF export finds a link's frame among the spreads' items, where an
