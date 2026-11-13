@@ -300,18 +300,29 @@ pub fn info_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
 
 pub fn preflight_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
-    let issues = designcraft_engine::cmd::preflight::check(&app.session, 150.0);
+    let found = crate::preflight_worker::issues(app, ui.ctx());
+    // The active document's first check hasn't ended.
+    let checking = found.is_none() && app.session.active().is_some();
+    let issues = found.unwrap_or_default();
     let errors = issues.iter().filter(|i| i.severity == "error").count();
     ui.horizontal(|ui| {
         let (r, _) = ui.allocate_exact_size(vec2(10.0, 10.0), egui::Sense::hover());
         ui.painter().circle_filled(
             r.center(),
             4.5,
-            if errors == 0 { egui::Color32::from_rgb(60, 200, 90) } else { egui::Color32::from_rgb(235, 50, 50) },
+            if checking {
+                t.text_dim
+            } else if errors == 0 {
+                egui::Color32::from_rgb(60, 200, 90)
+            } else {
+                egui::Color32::from_rgb(235, 50, 50)
+            },
         );
         crate::rtl::label(
             ui,
-            if issues.is_empty() {
+            if checking {
+                crate::i18n::tr(&app.ui.language, "Checking").to_string()
+            } else if issues.is_empty() {
                 crate::i18n::tr(&app.ui.language, "No errors").to_string()
             } else {
                 format!(
@@ -323,7 +334,7 @@ pub fn preflight_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         );
     });
     divider(ui);
-    for i in issues {
+    for i in issues.iter() {
         let page = i.page.filter(|_| app.session.active().is_some()).map(|p| app.session.page_label(p));
         let text = format!("{}  {}", if i.severity == "error" { "⛔" } else { "⚠" }, i.message);
         let resp = ui.add(egui::Button::new(egui::RichText::new(text).size(11.0)).frame(false));

@@ -86,6 +86,29 @@ fn required_version(doc: &Document) -> u32 {
 }
 
 fn save_with_large_entries_from(doc: &Document, preview: Option<&[u8]>, large_entry: usize) -> Result<Vec<u8>, FormatError> {
+    save_within(doc, preview, large_entry, Limits::DEFAULT)
+}
+
+/// [`save_with_large_entries_from`], deflating only what a reader with `limits` inflates.
+fn save_within(doc: &Document, preview: Option<&[u8]>, large_entry: usize, limits: Limits) -> Result<Vec<u8>, FormatError> {
+    let mut buf = Cursor::new(Vec::new());
+    write_with_large_entries_from(&mut buf, doc, preview, large_entry, limits)?;
+    Ok(buf.into_inner())
+}
+
+/// Write the package to `out` instead of returning it in memory: a document with gigabytes of
+/// placed files needs no second copy in RAM (recovery snapshots, large saves).
+pub fn write<W: Write + std::io::Seek>(out: &mut W, doc: &Document, preview: Option<&[u8]>) -> Result<(), FormatError> {
+    write_with_large_entries_from(out, doc, preview, LARGE_ENTRY, Limits::DEFAULT)
+}
+
+fn write_with_large_entries_from<W: Write + std::io::Seek>(
+    out: &mut W,
+    doc: &Document,
+    preview: Option<&[u8]>,
+    large_entry: usize,
+    limits: Limits,
+) -> Result<(), FormatError> {
     // JSON writes infinity and NaN as null, which no load accepts: the file would not open.
     if let Some(id) = doc.non_finite_item() {
         return Err(FormatError::Unsaveable(format!("object {} has a position or size that is not a finite number", id.0)));
@@ -94,17 +117,16 @@ fn save_with_large_entries_from(doc: &Document, preview: Option<&[u8]>, large_en
     compact.compact_assets();
     let doc = &compact;
     let io = |e: zip::result::ZipError| FormatError::Io(e.to_string());
-    let mut buf = Cursor::new(Vec::new());
     {
-        let mut z = zip::ZipWriter::new(&mut buf);
+        let mut z = zip::ZipWriter::new(out);
         let stored = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
         let deflate = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
         z.start_file("mimetype", stored).map_err(io)?;
         z.write_all(MIME.as_bytes()).map_err(|e| FormatError::Io(e.to_string()))?;
         z.start_file("meta.json", deflate).map_err(io)?;
         let version = required_version(doc);
-        let meta = json!({"format": "designcraft", "version": version, "generator": concat!("DesignCraft ", env!("CARGO_PKG_VERSION"))});
-        z.write_all(meta.to_string().as_bytes()).map_err(|e| FormatError::Io(e.to_string()))?;
+        let meta = json!({"format": "designcraft", "version": version, "generator": concat!("DesignCraft ", env!("CARGO_PKG_VERSION"))}).to_string();
+        z.write_all(meta.as_bytes()).map_err(|e| FormatError::Io(e.to_string()))?;
         if let Some(png) = preview {
             z.start_file(PREVIEW, stored).map_err(io)?;
             z.write_all(png).map_err(|e| FormatError::Io(e.to_string()))?;
@@ -112,19 +134,30 @@ fn save_with_large_entries_from(doc: &Document, preview: Option<&[u8]>, large_en
         z.start_file("document.json", deflate).map_err(io)?;
         let json = serde_json::to_vec_pretty(doc).map_err(|e| FormatError::Io(e.to_string()))?;
         z.write_all(&json).map_err(|e| FormatError::Io(e.to_string()))?;
+        // Opening caps what deflated entries expand to, one asset and all of them together, while a
+        // stored entry opens at any size. An asset deflated past those caps would save but never
+        // open again (#2283), so it is stored as is instead.
+        let mut deflate_left = limits.total.saturating_sub(meta.len() as u64).saturating_sub(json.len() as u64);
         for (id, a) in &doc.assets {
             if a.data.is_empty() {
                 continue;
             }
+            let len = a.data.len() as u64;
             // Already-compressed images are stored as-is.
-            let opts = if matches!(a.mime.as_str(), "image/png" | "image/jpeg" | "image/gif" | "image/webp") { stored } else { deflate };
+            let compressed = matches!(a.mime.as_str(), "image/png" | "image/jpeg" | "image/gif" | "image/webp");
+            let opts = if compressed || len > limits.asset || len > deflate_left {
+                stored
+            } else {
+                deflate_left = deflate_left.saturating_sub(len);
+                deflate
+            };
             let opts = opts.large_file(a.data.len() >= large_entry);
             z.start_file(format!("assets/{}.{}", id.0, ext_for(&a.mime)), opts).map_err(io)?;
             z.write_all(&a.data).map_err(|e| FormatError::Io(e.to_string()))?;
         }
         z.finish().map_err(io)?;
     }
-    Ok(buf.into_inner())
+    Ok(())
 }
 
 /// The file name extension of a DesignCraft document.
@@ -183,7 +216,8 @@ const MAX_ENTRIES: usize = 100_000;
 /// bytes in the archive, which is already in memory, and all stored entries read together are
 /// held to the archive's own size), so a placed image — stored as is by [`save`] — opens whatever
 /// its size and doesn't count against the budget. Saving has no cap, and this keeps every saved
-/// document openable (#2166).
+/// document openable (#2166): [`save`] deflates an asset only while it stays within these limits,
+/// and stores the rest as is (#2283).
 #[derive(Clone, Copy, Debug)]
 struct Limits {
     /// Most bytes `meta.json` or `document.json` may expand to.

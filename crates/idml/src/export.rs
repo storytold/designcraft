@@ -122,6 +122,8 @@ struct Ex<'a> {
     embed_limit: usize,
     /// Images written as links because the embed limit was reached (one line per placement).
     warnings: Vec<String>,
+    /// Object style name → whether its chain or `[None]` sets corners, found once per style.
+    style_corners: HashMap<String, bool>,
 }
 
 /// Image bytes one export embeds, counting each placement (IDML holds a copy per placement): past
@@ -145,6 +147,7 @@ impl<'a> Ex<'a> {
             embedded: 0,
             embed_limit: MAX_EMBEDDED_BYTES,
             warnings: Vec::new(),
+            style_corners: HashMap::new(),
         };
         ex.assign_swatch_ids();
         for s in d.stories.values() {

@@ -83,14 +83,28 @@ impl DesignApp {
     /// uses the monotonic clock, so a wall-clock/NTP jump cannot postpone or advance it.
     pub(super) fn ui_frame_end(&mut self, ctx: &egui::Context) {
         let now = now_ms() / 1000.0;
-        // Crash recovery: unsaved documents are written to the recovery folder every 30 s.
+        // Crash recovery: unsaved documents are written to the recovery folder every 30 s, on a
+        // background thread — writing a catalogue with gigabytes of placed files took minutes, and
+        // on the interface thread the window stopped answering for all of it.
         #[cfg(not(target_arch = "wasm32"))]
-        if self.session.recovery_dir.is_some() && now - self.last_recovery > (self.session.prefs.recovery_minutes * 60.0).max(5.0) {
-            self.last_recovery = now;
-            if self.session.documents().iter().any(|d| d.is_dirty())
-                && let Err(e) = self.session.execute("file.recovery.save", &json!({}))
-            {
-                self.status(crate::i18n::tr(&self.ui.language, "Couldn't write recovery data: {error}").replace("{error}", &e.to_string()));
+        {
+            if self.session.recovery_dir.is_some() && now - self.last_recovery > (self.session.prefs.recovery_minutes * 60.0).max(5.0) {
+                self.last_recovery = now;
+                if self.session.documents().iter().any(|d| d.is_dirty()) {
+                    match self.session.execute("file.recovery.save", &json!({"background": true})) {
+                        Ok(v) if v["queued"].as_u64().unwrap_or(0) > 0 => self.recovery_writing = true,
+                        Ok(_) => {}
+                        Err(e) => self
+                            .status(crate::i18n::tr(&self.ui.language, "Couldn't write recovery data: {error}").replace("{error}", &e.to_string())),
+                    }
+                }
+            }
+            if self.recovery_writing {
+                self.poll_recovery();
+                // Keep the frames coming while the writer works; it has no interface to ask.
+                if self.recovery_writing {
+                    ctx.request_repaint_after(std::time::Duration::from_millis(150));
+                }
             }
         }
         let dt = now - self.last_time;
@@ -99,6 +113,18 @@ impl DesignApp {
         }
         self.last_time = now;
         self.issue_screenshots(ctx);
+    }
+
+    /// Take what the background recovery writer finished: its checkpoints, and what failed.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn poll_recovery(&mut self) {
+        let Ok(v) = self.session.execute("file.recovery.progress", &json!({})) else { return };
+        self.recovery_writing = v["busy"].as_bool().unwrap_or(false);
+        let errors: Vec<String> = v["errors"].as_array().into_iter().flatten().filter_map(|e| e.as_str().map(str::to_string)).collect();
+        for e in errors {
+            let message = crate::i18n::tr(&self.ui.language, "Couldn't write recovery data: {error}").replace("{error}", &e);
+            self.status(message);
+        }
     }
 
     /// The document area: the start screen, or the document tabs over one or two canvas panes.

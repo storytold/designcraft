@@ -92,8 +92,8 @@ fn orient_holes_within(path: &mut PathData, command: &str, max_tests: usize) -> 
     let boxes: Vec<_> = beziers.iter().map(BezPath::bounding_box).collect();
     let n = path.subpaths.len();
     let mut tests = 0usize;
-    for i in 0..n {
-        let Some(p) = path.subpaths[i].anchors.first().map(|a| a.p) else { continue };
+    for (i, sp) in path.subpaths.iter_mut().enumerate() {
+        let Some(p) = sp.anchors.first().map(|a| a.p) else { continue };
         let mut depth = 0;
         for j in (0..n).filter(|&j| j != i && boxes[j].inflate(1e-6, 1e-6).contains(p)) {
             tests += 1;
@@ -102,7 +102,6 @@ fn orient_holes_within(path: &mut PathData, command: &str, max_tests: usize) -> 
             }
             depth += usize::from(designcraft_geom::hit::fill_contains(&beziers[j], designcraft_geom::FillRule::NonZero, p));
         }
-        let sp = &mut path.subpaths[i];
         let cw = sp.area() > 0.0;
         if cw == (depth % 2 == 1) {
             sp.reverse();

@@ -8,6 +8,10 @@ description = "DesignCraft engine: session, documents, history, selection, comma
 [lints]
 workspace = true
 
+[features]
+# Recovery-writer handshakes for other crates' tests (`designcraft_engine::recovery::testing`).
+testing = []
+
 [dependencies]
 craft-print = { workspace = true }
 craft-docpath = { workspace = true }

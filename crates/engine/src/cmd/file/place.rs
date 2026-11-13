@@ -589,6 +589,96 @@ pub(super) mod image_place_tests {
         }
     }
 
+    /// A `width` x `height` PNG with a pHYs chunk of `ppm` pixels per meter on both axes, or none.
+    fn png_with_density(width: u32, height: u32, ppm: Option<u32>) -> std::io::Result<tempfile::NamedTempFile> {
+        fn crc32(data: &[u8]) -> u32 {
+            let mut crc = 0xFFFF_FFFFu32;
+            for &b in data {
+                crc ^= b as u32;
+                for _ in 0..8 {
+                    crc = if crc & 1 == 1 { (crc >> 1) ^ 0xEDB8_8320 } else { crc >> 1 };
+                }
+            }
+            !crc
+        }
+        let pixels = [30, 90, 180, 255].repeat((width * height) as usize);
+        let png = designcraft_render::Rendered { width, height, pixels }.to_png();
+        assert_eq!(&png[12..16], b"IHDR");
+        let mut bytes = png[..33].to_vec();
+        if let Some(ppm) = ppm {
+            let mut phys = Vec::new();
+            phys.extend_from_slice(&ppm.to_be_bytes());
+            phys.extend_from_slice(&ppm.to_be_bytes());
+            phys.push(1);
+            bytes.extend_from_slice(&(phys.len() as u32).to_be_bytes());
+            bytes.extend_from_slice(b"pHYs");
+            bytes.extend_from_slice(&phys);
+            let mut c = b"pHYs".to_vec();
+            c.extend_from_slice(&phys);
+            bytes.extend_from_slice(&crc32(&c).to_be_bytes());
+        }
+        bytes.extend_from_slice(&png[33..]);
+        let file = tempfile::Builder::new().suffix(".png").tempfile()?;
+        std::fs::write(file.path(), bytes)?;
+        Ok(file)
+    }
+
+    #[test]
+    fn placed_photo_honors_its_embedded_resolution() {
+        // #1991: a placed graphic's embedded density sets its size (600 dpi: 40 px place
+        // 4.8 pt wide), instead of a pixel always becoming a point.
+        let file = png_with_density(40, 20, Some(23622)).unwrap();
+        let mut session = Session::new();
+        session.execute("file.new", &json!({})).unwrap();
+        let placed = session.execute("file.place", &json!({"path": file.path(), "x": 10.0, "y": 20.0})).unwrap();
+        let document = &session.doc().unwrap().doc;
+        let item = document.item(ItemId(placed["id"].as_u64().unwrap())).unwrap();
+        let b = item.bounds();
+        assert!((b.x0 - 10.0).abs() < 1e-9 && (b.y0 - 20.0).abs() < 1e-9, "{b:?}");
+        assert!((b.width() - 4.8).abs() < 0.01 && (b.height() - 2.4).abs() < 0.01, "{b:?}");
+    }
+
+    /// File › Place, then a click: an 11 x 17 in image (330 x 510 px at 30 ppi) comes in at
+    /// 792 x 1224 pt, keeps that size through a save and reopen, and an image with no stored
+    /// resolution comes in at 72 ppi (330 x 510 pt).
+    #[test]
+    fn a_clicked_image_keeps_its_print_size_through_save_and_reopen() {
+        // 1181 pixels per meter is 29.9974 ppi.
+        let (w, h) = (330.0 * 72.0 / (1181.0 * 0.0254), 510.0 * 72.0 / (1181.0 * 0.0254));
+        for (ppm, (ew, eh)) in [(Some(1181), (w, h)), (None, (330.0, 510.0))] {
+            let image = png_with_density(330, 510, ppm).unwrap();
+            let mut session = Session::new();
+            session.execute("file.new", &json!({})).unwrap();
+            session.execute("file.place", &json!({"path": image.path(), "loadCursor": true})).unwrap();
+            session.execute("place.drop", &json!({"x": 0, "y": 0})).unwrap();
+            // The bounds and natural size of the document's one placed graphic.
+            let shown = |session: &Session| {
+                let doc = &session.doc().unwrap().doc;
+                let graphics: Vec<_> = doc
+                    .all_items()
+                    .into_iter()
+                    .filter_map(|id| doc.item(id))
+                    .filter_map(|item| match &item.content {
+                        Content::Graphic(g) => Some((item.bounds(), g.size)),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(graphics.len(), 1, "{graphics:?}");
+                graphics[0]
+            };
+            let (b, size) = shown(&session);
+            assert!((b.width() - ew).abs() < 1e-6 && (b.height() - eh).abs() < 1e-6, "{ppm:?}: {b:?}");
+            assert!((size.0 - ew).abs() < 1e-6 && (size.1 - eh).abs() < 1e-6, "{ppm:?}: {size:?}");
+
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("placed.designcraft");
+            session.execute("file.save", &json!({"path": path.to_string_lossy()})).unwrap();
+            let mut reopened = Session::new();
+            reopened.execute("file.open", &json!({"path": path.to_string_lossy()})).unwrap();
+            assert_eq!(shown(&reopened), (b, size), "{ppm:?}");
+        }
+    }
+
     #[test]
     fn explicit_frame_wins_over_placement_and_selection() {
         let image = image_file().unwrap();

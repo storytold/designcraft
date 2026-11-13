@@ -703,6 +703,50 @@ impl PdfCrop {
     }
 }
 
+/// The outline of a raster image's visible pixels (Text Wrap › Contour › Alpha Channel), in the
+/// image's pixel space (0..width, 0..height). Derived from the image, so not saved: the engine
+/// traces it again when a document opens.
+#[derive(Clone, Debug)]
+pub struct AlphaOutline {
+    pub asset: AssetId,
+    pub threshold: u8,
+    pub width: u32,
+    pub height: u32,
+    /// The outer boundaries of the visible areas.
+    pub outer: designcraft_geom::PathData,
+    /// The boundaries of transparent holes those areas enclose (wound the other way).
+    pub holes: designcraft_geom::PathData,
+    /// The image data it was traced from: a relink or link update replaces the asset's data
+    /// under the same id, and the outline is traced again. (Weak, so it doesn't keep old image
+    /// data alive, and its address can't be reused by new data while it's held.)
+    pub source: std::sync::Weak<Vec<u8>>,
+    /// A number no other outline traced in this process has ([`AlphaOutline::next_serial`]):
+    /// composition caches compare it to tell a new outline from the one they used.
+    pub serial: u64,
+}
+
+impl AlphaOutline {
+    /// A serial number for a new outline, unique within the process.
+    pub fn next_serial() -> u64 {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Traced from `data`, the asset's current image data.
+    pub fn traced_from(&self, data: &Arc<Vec<u8>>) -> bool {
+        std::ptr::eq(self.source.as_ptr(), Arc::as_ptr(data))
+    }
+}
+
+impl PartialEq for AlphaOutline {
+    fn eq(&self, other: &Self) -> bool {
+        (self.asset, self.threshold, self.width, self.height) == (other.asset, other.threshold, other.width, other.height)
+            && self.outer == other.outer
+            && self.holes == other.holes
+            && self.source.ptr_eq(&other.source)
+    }
+}
+
 impl Asset {
     /// A raster image (PNG, JPEG, GIF, WebP, TIFF, BMP, PSD), as opposed to a PDF, EPS or SVG.
     pub fn is_raster(&self) -> bool {
@@ -759,6 +803,10 @@ pub struct Document {
     pub sections: Vec<Section>,
     #[serde(default)]
     pub assets: BTreeMap<AssetId, Arc<Asset>>,
+    /// Alpha Channel contour outlines of placed images (see [`AlphaOutline`]), sorted by asset
+    /// and then threshold, at most one for each pair. Not saved.
+    #[serde(skip)]
+    pub alpha_outlines: Vec<Arc<AlphaOutline>>,
     /// Hyperlinks (Window → Interactive → Hyperlinks).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hyperlinks: Vec<Hyperlink>,
@@ -1067,6 +1115,12 @@ impl Document {
         let Some(sec) = self.section_of(abs) else { return (abs + 1).to_string() };
         let num = sec.style.format(self.page_number(abs));
         if sec.include_prefix { format!("{}{}", sec.prefix, num) } else { num }
+    }
+
+    /// The Alpha Channel outline of `asset` at `threshold`, once the engine has traced it.
+    pub fn alpha_outline(&self, asset: AssetId, threshold: u8) -> Option<&AlphaOutline> {
+        let i = self.alpha_outlines.binary_search_by_key(&(asset, threshold), |o| (o.asset, o.threshold)).ok()?;
+        self.alpha_outlines.get(i).map(|o| &**o)
     }
 
     pub fn layer(&self, id: LayerId) -> Option<&Layer> {

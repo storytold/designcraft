@@ -64,6 +64,8 @@ skrifa = "0.47"
 harfrust = "0.13"
 vello_cpu = "0.2"
 vello_common = { version = "0.2", default-features = false }
+# Decoded image buffers become pixmap pixels without a copy; the version vello_common uses.
+bytemuck = { version = "1.25", features = ["extern_crate_alloc"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "tiff", "bmp"] }
 # CMYK TIFF samples for PDF export (`image` decodes them to RGB); the version `image` uses.
 tiff = "0.11"

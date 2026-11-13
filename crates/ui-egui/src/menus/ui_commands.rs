@@ -36,6 +36,12 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
         "{page?: transparency|dropShadow|innerShadow|outerGlow|innerGlow|bevel|satin|feather|directionalFeather|gradientFeather} — the Effects dialog for the selected objects",
     ),
     (
+        "objectStyle.dialog",
+        "Object Style…",
+        None,
+        "{name?: style} — Object Style Options for the style `name`, or (without it) New Object Style from the selected object",
+    ),
+    (
         "app.packageDialog",
         "Package…",
         Some("Cmd+Alt+Shift+P"),
@@ -139,7 +145,7 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     (
         "app.paragraphRulesDialog",
         "Paragraph Rules…",
-        None,
+        Some("Cmd+Alt+J"),
         "{rule?: ruleAbove|ruleBelow} — Rule Above / Rule Below of the selected paragraphs (type.para)",
     ),
     (
@@ -190,6 +196,8 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ("app.characterStylesPanel", "Character Styles", Some("Cmd+Shift+F11"), "{} — the Character Styles panel"),
     ("app.paragraphStylesPanel", "Paragraph Styles", Some("Cmd+F11"), "{} — the Paragraph Styles panel"),
     ("app.insertCurrentPageNumber", "Current Page Number", Some("Cmd+Alt+Shift+N"), "{} — the Current Page Number marker at the insertion point"),
+    ("app.insertEmSpace", "Em Space", Some("Cmd+Shift+M"), "{} — an em space at the insertion point"),
+    ("app.insertEnSpace", "En Space", Some("Cmd+Shift+N"), "{} — an en space at the insertion point"),
     ("app.storyEditor", "Edit in Story Editor", Some("Cmd+Y"), "{story?}"),
     ("view.zoomIn", "Zoom In", Some("Cmd+="), "{at?: [x, y] window pixels, kept in place when over the canvas}"),
     ("view.zoomOut", "Zoom Out", Some("Cmd+-"), "{at?: [x, y] window pixels, kept in place when over the canvas}"),

@@ -8,10 +8,12 @@ use super::{
 pub(super) fn in_table(s: &Session) -> std::result::Result<(), String> {
     has_doc(s)?;
     let st = s.active().ok_or("no document open")?;
-    if st.selection.cells.is_some() || st.selection.text.is_some_and(|t| t.cell.is_some()) {
+    // Footnote text is addressed as a cell too, but isn't in a table.
+    if st.selection.cells.is_some() || st.selection.text.is_some_and(|t| t.cell.is_some_and(|c| c.footnote_id().is_none())) {
         return Ok(());
     }
     if let Some(t) = st.selection.text
+        && t.cell.is_none()
         && st.doc.story(t.story).is_some_and(|x| x.table_at(t.focus).is_some())
     {
         return Ok(());
@@ -41,8 +43,20 @@ pub(super) struct Tgt {
     pub(super) range: CellRange,
 }
 
-fn find_table(doc: &Document, id: u64) -> Option<StoryId> {
-    doc.stories.iter().find(|(_, s)| s.tables.contains_key(&id)).map(|(k, _)| *k)
+fn find_table(doc: &Document, id: u64, cmd: &str) -> Result<StoryId> {
+    let mut stories = doc.stories.iter().filter(|(_, story)| story.tables.contains_key(&id)).map(|(sid, _)| *sid);
+    let first = stories.next().ok_or_else(|| bad(cmd, format!("no table {id}")))?;
+    if stories.next().is_some() {
+        return Err(bad(cmd, format!("table {id} exists in multiple stories; specify `story`")));
+    }
+    Ok(first)
+}
+
+fn id_param(p: &Value, key: &str, cmd: &str) -> Result<Option<u64>> {
+    match p.get(key) {
+        None => Ok(None),
+        Some(value) => value.as_u64().map(Some).ok_or_else(|| bad(cmd, format!("`{key}` must be a nonnegative integer"))),
+    }
 }
 
 fn pair(p: &Value, many: &str, one: &str) -> Option<(usize, usize)> {
@@ -57,15 +71,19 @@ fn pair(p: &Value, many: &str, one: &str) -> Option<(usize, usize)> {
 pub(super) fn target(s: &Session, p: &Value, cmd: &str) -> Result<Tgt> {
     let st = s.doc()?;
     let doc = &st.doc;
-    let explicit_table = p.get("table").and_then(Value::as_u64);
+    let explicit_table = id_param(p, "table", cmd)?;
+    let explicit_story = table_story(p, cmd)?.map(StoryId);
     let (story, table, range) = if let Some(tid) = explicit_table {
-        let explicit_story = table_story(p, cmd)?.map(StoryId);
-        let sid = explicit_story.or_else(|| find_table(doc, tid)).ok_or_else(|| bad(cmd, format!("no table {tid}")))?;
+        let sid = match explicit_story {
+            Some(sid) => sid,
+            None => find_table(doc, tid, cmd)?,
+        };
         (sid, tid, None)
     } else if let Some(c) = st.selection.cells {
         (c.story, c.table, Some(c.range))
     } else if let Some(t) = st.selection.text {
         match t.cell {
+            Some(c) if c.footnote_id().is_some() => return Err(bad(cmd, "place the insertion point in a table")),
             Some(c) => (t.story, c.table, Some(CellRange::cell(c.row, c.col))),
             None => {
                 let tid = doc.story(t.story).and_then(|x| x.table_at(t.focus)).ok_or_else(|| bad(cmd, "the insertion point is not in a table"))?;

@@ -285,6 +285,13 @@ fn run_ui_part1(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             crate::effects_dialog::open(app, p.get("page").and_then(Value::as_str).unwrap_or("transparency"));
             Ok(Value::Null)
         }
+        "objectStyle.dialog" => match p.get("name").and_then(Value::as_str) {
+            Some(n) => crate::object_style_dialog::open_edit(app, n).map(|()| Value::Null),
+            None => {
+                crate::object_style_dialog::open_new(app);
+                Ok(Value::Null)
+            }
+        },
         "app.loadSwatches" => {
             if let Some(path) = p.get("path").and_then(Value::as_str) {
                 return Some(app.run("swatch.load", json!({"path": path})));
@@ -844,6 +851,13 @@ fn run_ui_part4(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             run_ui(app, "window.panel", &json!({"panel": panel})).unwrap_or(Ok(Value::Null))
         }
         "app.insertCurrentPageNumber" => app.run("text.insert", json!({"text": "\u{e000}", "raw": true})),
+        "app.insertEmSpace" | "app.insertEnSpace" => {
+            if !menu_enabled(app, id) {
+                return Some(Err("place the insertion point in text to insert a space".into()));
+            }
+            let space = if id == "app.insertEmSpace" { "\u{2003}" } else { "\u{2002}" };
+            app.run("text.insert", json!({"text": space, "raw": true}))
+        }
         // `panel_docking::command` takes the dock panels (and the Window › Styles group) first.
         "window.panel" => {
             let panel = p.get("panel").and_then(Value::as_str).unwrap_or("properties");
