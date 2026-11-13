@@ -1303,16 +1303,17 @@ fn text_frame_options_dialog(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog)
             "baseline" => {
                 crate::rtl::label(ui, egui::RichText::new(tr("First Baseline")).font(semibold(12.0)));
                 egui::Grid::new("tfo_fb").num_columns(4).spacing([8.0, 6.0]).show(ui, |ui| {
-                    crate::rtl::label(ui, tr("Offset:"));
+                    let name = crate::rtl::label(ui, tr("Offset:"));
                     translated_combo(
                         &lang,
                         ui,
                         d,
                         "firstBaseline",
                         &[("ascent", "Ascent"), ("capHeight", "Cap Height"), ("leading", "Leading"), ("xHeight", "x Height"), ("fixed", "Fixed")],
-                    );
+                    )
+                    .labelled_by(name.id);
                     crate::rtl::label(ui, tr("Min:"));
-                    text_field(ui, d, "firstBaselineMin", 70.0);
+                    text_field_named(ui, d, "firstBaselineMin", 70.0, tr("Min:"));
                     ui.end_row();
                 });
                 ui.add_space(8.0);
@@ -1321,19 +1322,20 @@ fn text_frame_options_dialog(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog)
                 ui.add_enabled_ui(d.b("customGrid"), |ui| {
                     egui::Grid::new("tfo_grid").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
                         crate::rtl::label(ui, tr("Start:"));
-                        text_field(ui, d, "gridStart", 70.0);
+                        text_field_named(ui, d, "gridStart", 70.0, tr("Start:"));
                         ui.end_row();
-                        crate::rtl::label(ui, tr("Relative To:"));
+                        let name = crate::rtl::label(ui, tr("Relative To:"));
                         translated_combo(
                             &lang,
                             ui,
                             d,
                             "gridRelativeTo",
                             &[("page", "Top of Page"), ("margin", "Top Margin"), ("frame", "Top of Frame"), ("inset", "Top Inset")],
-                        );
+                        )
+                        .labelled_by(name.id);
                         ui.end_row();
                         crate::rtl::label(ui, tr("Increment Every:"));
-                        text_field(ui, d, "gridIncrement", 70.0);
+                        text_field_named(ui, d, "gridIncrement", 70.0, tr("Increment Every:"));
                         ui.end_row();
                     });
                 });
@@ -1444,7 +1446,8 @@ pub(crate) fn general(lang: &str, ui: &mut egui::Ui, d: &mut Dialog) {
     framed(ui, None, |ui| {
         ui.horizontal(|ui| {
             caption_at(ui, tr("Columns:"), cap);
-            translated_combo(lang, ui, d, "columnsKind", &[("fixedNumber", "Fixed Number"), ("fixedWidth", "Fixed Width")]);
+            translated_combo(lang, ui, d, "columnsKind", &[("fixedNumber", "Fixed Number"), ("fixedWidth", "Fixed Width")])
+                .accessible_name(tr("Columns:").to_owned());
         });
         ui.add_space(4.0);
         ui.horizontal(|ui| {
@@ -1536,7 +1539,8 @@ pub(crate) fn general(lang: &str, ui: &mut egui::Ui, d: &mut Dialog) {
                 d,
                 "verticalJustification",
                 &[("top", "Top"), ("center", "Center"), ("bottom", "Bottom"), ("justify", "Justify")],
-            );
+            )
+            .accessible_name(tr("Align:").to_owned());
         });
         ui.horizontal(|ui| {
             caption_at(ui, tr("Paragraph Spacing Limit:"), 170.0);
@@ -1567,10 +1571,10 @@ fn column_rules(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     let opts: Vec<(&str, &str)> = swatches.iter().map(|n| (n.as_str(), n.as_str())).collect();
     egui::Grid::new("tfo_rule").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
         crate::rtl::label(ui, tr("Weight"));
-        text_field(ui, d, "columnRuleWeight", 70.0);
+        text_field_named(ui, d, "columnRuleWeight", 70.0, tr("Weight"));
         ui.end_row();
-        crate::rtl::label(ui, tr("Color"));
-        combo(ui, d, "columnRuleColor", &opts);
+        let name = crate::rtl::label(ui, tr("Color"));
+        combo(ui, d, "columnRuleColor", &opts).labelled_by(name.id);
         ui.end_row();
         for (label, key) in [
             ("Tint %", "columnRuleTint"),
@@ -1579,7 +1583,7 @@ fn column_rules(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
             ("Horizontal Offset", "columnRuleOffset"),
         ] {
             crate::rtl::label(ui, tr(label));
-            text_field(ui, d, key, 70.0);
+            text_field_named(ui, d, key, 70.0, tr(label));
             ui.end_row();
         }
     });
@@ -1590,7 +1594,7 @@ fn auto_size(lang: &str, ui: &mut egui::Ui, d: &mut Dialog) {
     let tr = |s: &'static str| crate::i18n::tr(lang, s);
     crate::rtl::label(ui, egui::RichText::new(tr("Auto-Size")).font(semibold(12.0)));
     egui::Grid::new("tfo_autosize").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
-        crate::rtl::label(ui, tr("Auto-Sizing"));
+        let name = crate::rtl::label(ui, tr("Auto-Sizing"));
         translated_combo(
             lang,
             ui,
@@ -1603,16 +1607,17 @@ fn auto_size(lang: &str, ui: &mut egui::Ui, d: &mut Dialog) {
                 ("heightAndWidth", "Height and Width"),
                 ("heightAndWidthProportionally", "Height and Width (Keep Proportions)"),
             ],
-        );
+        )
+        .labelled_by(name.id);
         ui.end_row();
         crate::rtl::label(ui, tr("Reference Point"));
         reference_point(ui, d, "autoSizeReference");
         ui.end_row();
         check(ui, d, "useMinimumHeight", tr("Minimum Height"));
-        text_field(ui, d, "minimumHeight", 70.0);
+        text_field_named(ui, d, "minimumHeight", 70.0, tr("Minimum Height"));
         ui.end_row();
         check(ui, d, "useMinimumWidth", tr("Minimum Width"));
-        text_field(ui, d, "minimumWidth", 70.0);
+        text_field_named(ui, d, "minimumWidth", 70.0, tr("Minimum Width"));
         ui.end_row();
     });
     check(ui, d, "noLineBreaks", tr("No Line Breaks"));
