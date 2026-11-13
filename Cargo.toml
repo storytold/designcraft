@@ -24,6 +24,7 @@ craft-rtf = { git = "https://github.com/storytold/craft-libs", rev = "ba24fe2435
 craft-xlsx = { git = "https://github.com/storytold/craft-libs", rev = "ba24fe2435adb3c81ad6057faf36365fbba736cf", version = "=0.1.0" }
 craft-docx = { git = "https://github.com/storytold/craft-libs", rev = "ba24fe2435adb3c81ad6057faf36365fbba736cf", version = "=0.1.0" }
 craft-wordmodel = { git = "https://github.com/storytold/craft-libs", rev = "ba24fe2435adb3c81ad6057faf36365fbba736cf", version = "=0.1.0" }
+craft-csv = { git = "https://github.com/storytold/craft-libs", rev = "47bf5650b0d503b97bfb5e841746c4957897d11f", version = "=0.1.0" }
 craft-image-codecs = { git = "https://github.com/storytold/craft-libs", rev = "a47b78256c6acf3d7fdc4bc7cfbc25c373eac522", version = "=0.1.0" }
 craft-psd = { git = "https://github.com/storytold/craft-libs", rev = "a47b78256c6acf3d7fdc4bc7cfbc25c373eac522", version = "=0.1.0" }
 craft-file-formats = { git = "https://github.com/storytold/craft-libs", rev = "fccc0082711b8ae4e19824dd20339a8473d47309", version = "=0.1.0" }

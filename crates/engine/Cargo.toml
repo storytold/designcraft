@@ -27,6 +27,7 @@ craft-prepress = { workspace = true }
 designcraft-tools = { workspace = true }
 designcraft-idml = { workspace = true }
 craft-file-formats = { workspace = true }
+craft-csv = { workspace = true }
 craft-indd = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
