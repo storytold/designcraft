@@ -1040,6 +1040,35 @@ mod color_theme_tests {
         assert_eq!(gesture(&app).as_deref(), Some("Move"), "Cancel leaves the gesture open");
     }
 
+    /// A preview begun by a command after the dialog's preview was canceled is not the dialog's,
+    /// also with the dialog's label at the revision the dialog's began at: a field change is not
+    /// written into it, OK waits, and Cancel leaves it open.
+    #[test]
+    fn a_preview_with_the_dialogs_label_is_not_the_dialogs() {
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        let fields = json!({"rows": "2", "columns": "2", "rowGutter": "0", "columnGutter": "0", "fitTo": "page", "preview": true});
+        app.run("file.new", json!({})).unwrap();
+        let mut d = Dialog::new("createGuides", fields.clone());
+        layout_dialog_preview(&mut app, &mut d, "layout.createGuides", "Create Guides");
+        let began = app.session.active().unwrap().interaction.as_ref().unwrap().revision;
+        app.run("edit.cancelPreview", json!({})).unwrap();
+        let params = layout_dialog_params(&d).unwrap();
+        app.run("edit.preview", json!({"label": "Create Guides", "command": "layout.createGuides", "params": params})).unwrap();
+        let it = app.session.active().unwrap().interaction.as_ref().unwrap();
+        assert_eq!((it.label.as_str(), it.revision), ("Create Guides", began), "the same label and revision");
+        let other = app.session.active().unwrap().doc.clone();
+        d.fields.insert("rows".into(), json!("3"));
+        layout_dialog_preview(&mut app, &mut d, "layout.createGuides", "Create Guides");
+        assert_eq!(app.session.active().unwrap().doc, other, "nothing is written into the other preview");
+        assert_eq!(d.fields.get("status"), Some(&json!(PREVIEW_REPLACED)));
+        app.ui.dialog = Some(d);
+        assert_eq!(confirm(&mut app).unwrap_err(), FINISH_OPEN_INTERACTION);
+        cancel(&mut app);
+        assert!(app.ui.dialog.is_none());
+        assert_eq!(app.session.active().unwrap().doc, other, "Cancel leaves the other preview");
+        assert!(app.session.active().unwrap().interaction.is_some());
+    }
+
     /// A field changed while a gesture begun in the preview's document has replaced the preview
     /// is not written into that gesture; the status line says why. Once the gesture ends, Preview
     /// is off and no other preview is written on the document the gesture left until it is on
@@ -1873,7 +1902,7 @@ fn record_preview_owner(app: &DesignApp, d: &mut Dialog) {
     let st = app.session.active();
     d.fields.insert(PREVIEW_DOC.into(), json!(st.map(|st| st.uid)));
     match st.and_then(|st| st.interaction.as_ref()) {
-        Some(it) => d.fields.insert(PREVIEW_INTERACTION.into(), json!({"label": it.label, "revision": it.revision})),
+        Some(it) => d.fields.insert(PREVIEW_INTERACTION.into(), json!(it.id)),
         None => d.fields.remove(PREVIEW_INTERACTION),
     };
 }
@@ -1882,7 +1911,7 @@ fn record_preview_owner(app: &DesignApp, d: &mut Dialog) {
 /// replaced it. A dialog that records no interaction counts any open interaction as its own.
 fn is_preview_interaction(st: &designcraft_engine::DocState, d: &Dialog) -> bool {
     let Some(it) = st.interaction.as_ref() else { return false };
-    d.fields.get(PREVIEW_INTERACTION).is_none_or(|rec| rec == &json!({"label": it.label, "revision": it.revision}))
+    d.fields.get(PREVIEW_INTERACTION).is_none_or(|rec| rec.as_u64() == Some(it.id))
 }
 
 /// The status line while a dialog's preview is shown in a document that is not the active one.

@@ -83,6 +83,9 @@ pub struct Interaction {
     pub preview: Option<(String, Value)>,
     /// The document's revision when the gesture began: a cancel puts it back.
     pub revision: u64,
+    /// A number no other interaction has had, also one begun later with the same label at the
+    /// same revision.
+    pub id: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -142,6 +145,12 @@ static NEXT_REVISION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU6
 
 fn next_revision() -> u64 {
     NEXT_REVISION.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+static NEXT_INTERACTION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+pub(crate) fn next_interaction() -> u64 {
+    NEXT_INTERACTION.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 impl DocState {

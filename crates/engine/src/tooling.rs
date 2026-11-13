@@ -280,8 +280,14 @@ impl Session {
 
     pub fn begin_interaction(&mut self, label: &str) -> Result<()> {
         let st = self.doc_mut()?;
-        st.interaction =
-            Some(Interaction { label: label.into(), doc: st.doc.clone(), selection: st.selection.clone(), preview: None, revision: st.revision });
+        st.interaction = Some(Interaction {
+            label: label.into(),
+            doc: st.doc.clone(),
+            selection: st.selection.clone(),
+            preview: None,
+            revision: st.revision,
+            id: crate::next_interaction(),
+        });
         Ok(())
     }
 
