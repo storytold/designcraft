@@ -1,5 +1,9 @@
-use super::common::{bool_s, color_value, pct, pkg_root};
-use super::{Color, ColorType, El, Ex, GradientKind, SwatchValue, document, escape_id, num, swatch};
+use super::common::{color_value, pct};
+use super::{Color, ColorType, Ex, GradientKind, SwatchValue, escape_id, num, swatch};
+use craft_idml::model::{
+    ColorDefinition, ColorGroupDefinition, ColorGroupMember, GradientDefinition, GradientStopDefinition, GraphicPart, InkDefinition,
+    StrokeDefinition, TintDefinition,
+};
 
 // Retained IDML attributes have unprefixed ASCII names. Native JSON can be
 // edited independently: never let its map keys become XML syntax or Self IDs.
@@ -16,18 +20,11 @@ impl<'a> Ex<'a> {
         &mut self,
         s: &designcraft_color::Swatch,
         gradient: &designcraft_color::Gradient,
-        colors: &mut Vec<El>,
+        colors: &mut Vec<ColorDefinition>,
         by_value: &mut Vec<(Color, String)>,
-    ) -> El {
+    ) -> GradientDefinition {
         let id = self.sw(&s.name);
-        let mut g = El::new("Gradient")
-            .attr("Self", &id)
-            .attr("Type", if gradient.kind == GradientKind::Radial { "Radial" } else { "Linear" })
-            .attr("Name", &s.name)
-            .attr("ColorEditable", "true")
-            .attr("ColorRemovable", "true")
-            .attr("Visible", "true")
-            .attr("SwatchCreatorID", "7937");
+        let mut stops = Vec::new();
         let d = self.d;
         for (i, stop) in gradient.stops.iter().enumerate() {
             // A stop on a swatch names it; a plain color names an equal color swatch or
@@ -44,36 +41,30 @@ impl<'a> Ex<'a> {
                     cid
                 }
             };
-            let mut e = El::new("GradientStop")
-                .attr("Self", format!("{}GradientStop{i}", id.replace(['/', ' '], "_")))
-                .attr("StopColor", cid)
-                .attr("Location", pct(stop.offset as f64));
-            if i > 0 {
-                e.set("Midpoint", pct(gradient.stops[i - 1].midpoint as f64));
-            }
-            g.push(e);
+            stops.push(GradientStopDefinition {
+                self_id: format!("{}GradientStop{i}", id.replace(['/', ' '], "_")),
+                color_id: cid,
+                location: pct(stop.offset as f64),
+                midpoint: (i > 0).then(|| pct(gradient.stops[i - 1].midpoint as f64)),
+            });
         }
-        g
+        GradientDefinition { self_id: id, name: s.name.clone(), radial: gradient.kind == GradientKind::Radial, stops }
     }
 
     // ---------- Graphic.xml ----------
 
     pub(super) fn graphic_part(&mut self) -> Vec<u8> {
         let d = self.d;
-        let mut root = pkg_root("Graphic");
-        let mut colors: Vec<El> = Vec::new();
-        let mut tints: Vec<El> = Vec::new();
-        let mut gradients: Vec<El> = Vec::new();
-        let mut inks: Vec<El> = Vec::new();
+        let mut graphic = GraphicPart::default();
         // Specials (always present).
-        colors.push(color_el("Color/Black", "Black", "Process", &Color::cmyk(0.0, 0.0, 0.0, 1.0), "Specialblack", (false, false, true)));
+        graphic.colors.push(color_el("Color/Black", "Black", "Process", &Color::cmyk(0.0, 0.0, 0.0, 1.0), "Specialblack", (false, false, true)));
         let paper = match d.swatch(swatch::PAPER).map(|s| &s.value) {
             Some(SwatchValue::Paper { color }) => *color,
             _ => Color::cmyk(0.0, 0.0, 0.0, 0.0),
         };
         let paper = if paper == Color::WHITE { Color::cmyk(0.0, 0.0, 0.0, 0.0) } else { paper };
-        colors.push(color_el("Color/Paper", "Paper", "Process", &paper, "Specialpaper", (true, false, true)));
-        colors.push(color_el(
+        graphic.colors.push(color_el("Color/Paper", "Paper", "Process", &paper, "Specialpaper", (true, false, true)));
+        graphic.colors.push(color_el(
             "Color/Registration",
             "Registration",
             "Registration",
@@ -84,18 +75,17 @@ impl<'a> Ex<'a> {
         for (i, ink) in
             [("Process Cyan", 75, 0.61), ("Process Magenta", 15, 0.76), ("Process Yellow", 0, 0.16), ("Process Black", 45, 1.7)].iter().enumerate()
         {
-            inks.push(
-                El::new("Ink")
-                    .attr("Self", format!("Ink/$ID/{}", ink.0))
-                    .attr("Name", format!("$ID/{}", ink.0))
-                    .attr("Angle", ink.1)
-                    .attr("ConvertToProcess", "false")
-                    .attr("Frequency", "70")
-                    .attr("NeutralDensity", num(ink.2))
-                    .attr("PrintInk", "true")
-                    .attr("TrapOrder", i + 1)
-                    .attr("InkType", "Normal"),
-            );
+            graphic.inks.push(InkDefinition {
+                self_id: format!("Ink/$ID/{}", ink.0),
+                name: format!("$ID/{}", ink.0),
+                alias: None,
+                angle: ink.1.to_string(),
+                convert_to_process: false,
+                frequency: "70".to_string(),
+                neutral_density: num(ink.2),
+                trap_order: i + 1,
+                ink_type: "Normal".to_string(),
+            });
         }
         // Colour swatches, by value, for gradient stop lookup.
         let mut by_value: Vec<(Color, String)> = Vec::new();
@@ -107,82 +97,42 @@ impl<'a> Ex<'a> {
             match &s.value {
                 SwatchValue::Color { color, color_type } => {
                     let model = if *color_type == ColorType::Spot { "Spot" } else { "Process" };
-                    colors.push(color_el(&id, &s.name, model, color, "Normal", (true, true, true)));
+                    graphic.colors.push(color_el(&id, &s.name, model, color, "Normal", (true, true, true)));
                     by_value.push((*color, id.clone()));
                     if *color_type == ColorType::Spot {
-                        let mut ink = El::new("Ink");
-                        if let Some((_, to)) = d.inks.aliases.iter().find(|(a, _)| *a == s.name) {
-                            ink.set("AliasInkName", to);
-                        }
+                        let alias = d.inks.aliases.iter().find(|(a, _)| *a == s.name).map(|(_, to)| to.clone());
                         let convert = d.inks.all_to_process || d.inks.to_process.contains(&s.name);
-                        inks.push(
-                            ink.attr("Self", format!("Ink/{}", escape_id(&s.name)))
-                                .attr("Name", &s.name)
-                                .attr("Angle", "45")
-                                .attr("ConvertToProcess", bool_s(convert))
-                                .attr("Frequency", "70")
-                                .attr("NeutralDensity", "0.5")
-                                .attr("PrintInk", "true")
-                                .attr("TrapOrder", inks.len() + 1)
-                                .attr("InkType", "Normal"),
-                        );
+                        graphic.inks.push(InkDefinition {
+                            self_id: format!("Ink/{}", escape_id(&s.name)),
+                            name: s.name.clone(),
+                            alias,
+                            angle: "45".to_string(),
+                            convert_to_process: convert,
+                            frequency: "70".to_string(),
+                            neutral_density: "0.5".to_string(),
+                            trap_order: graphic.inks.len() + 1,
+                            ink_type: "Normal".to_string(),
+                        });
                     }
                 }
                 SwatchValue::Tint { base, tint } => {
-                    tints.push(
-                        El::new("Tint")
-                            .attr("Self", &id)
-                            .attr("TintValue", pct(*tint as f64))
-                            .attr("BaseColor", self.sw(base))
-                            .attr("Name", &s.name)
-                            .attr("ColorOverride", "Normal")
-                            .attr("AlternateSpace", "NoAlternateColor")
-                            .attr("AlternateColorValue", "")
-                            .attr("ColorEditable", "true")
-                            .attr("ColorRemovable", "true")
-                            .attr("Visible", "true")
-                            .attr("SwatchCreatorID", "7937"),
-                    );
+                    graphic.tints.push(TintDefinition { self_id: id, value: pct(*tint as f64), base_color: self.sw(base), name: s.name.clone() });
                 }
                 _ => {}
             }
         }
         for s in &d.swatches {
             let SwatchValue::Gradient { gradient } = &s.value else { continue };
-            gradients.push(self.gradient_el(s, gradient, &mut colors, &mut by_value));
-        }
-        for c in colors {
-            root.push(c);
-        }
-        for i in inks {
-            root.push(i);
-        }
-        for t in tints {
-            root.push(t);
-        }
-        root.push(
-            El::new("Swatch")
-                .attr("Self", "Swatch/None")
-                .attr("Name", "None")
-                .attr("ColorEditable", "false")
-                .attr("ColorRemovable", "false")
-                .attr("Visible", "true")
-                .attr("SwatchCreatorID", "7937"),
-        );
-        for g in gradients {
-            root.push(g);
+            graphic.gradients.push(self.gradient_el(s, gradient, &mut graphic.colors, &mut by_value));
         }
         for (gi, g) in d.color_groups.iter().enumerate() {
-            let mut el = El::new("ColorGroup")
-                .attr("Self", format!("ColorGroup/{}", escape_id(&g.name)))
-                .attr("Name", &g.name)
-                .attr("IsRootColorGroup", "false");
+            let mut members = Vec::new();
             for (k, n) in g.swatches.iter().enumerate() {
                 if let Some(id) = self.swatch_ids.get(n) {
-                    el.push(El::new("ColorGroupSwatch").attr("Self", format!("u{gi}ColorGroupSwatch{k}")).attr("SwatchItemRef", id));
+                    members.push(ColorGroupMember { self_id: format!("u{gi}ColorGroupSwatch{k}"), swatch_id: id.clone() });
                 }
             }
-            root.push(el);
+            graphic.color_groups.push(ColorGroupDefinition { self_id: format!("ColorGroup/{}", escape_id(&g.name)), name: g.name.clone(), members });
         }
         for st in &d.stroke_styles {
             let id = format!("CustomStrokeStyle/{}", st.name);
@@ -190,22 +140,26 @@ impl<'a> Ex<'a> {
             let el = match &st.kind {
                 designcraft_doc::StrokeType::Stripes { bands } => {
                     let flat: Vec<f64> = bands.iter().flat_map(|(a, w)| [*a, a + w]).collect();
-                    Some(El::new("StripedStrokeStyle").attr("StripeArray", pcts(&flat)))
+                    Some(StrokeDefinition::Striped { self_id: id.clone(), name: st.name.clone(), array: pcts(&flat) })
                 }
-                designcraft_doc::StrokeType::Dashed { pattern } => {
-                    Some(El::new("DashedStrokeStyle").attr("DashArray", pattern.iter().map(|x| num(*x)).collect::<Vec<_>>().join(" ")))
+                designcraft_doc::StrokeType::Dashed { pattern } => Some(StrokeDefinition::Dashed {
+                    self_id: id.clone(),
+                    name: st.name.clone(),
+                    array: pattern.iter().map(|x| num(*x)).collect::<Vec<_>>().join(" "),
+                }),
+                designcraft_doc::StrokeType::Dotted => {
+                    Some(StrokeDefinition::Dotted { self_id: id.clone(), name: st.name.clone(), array: "0 200".to_string() })
                 }
-                designcraft_doc::StrokeType::Dotted => Some(El::new("DottedStrokeStyle").attr("DotArray", "0 200")),
                 _ => None,
             };
-            if let Some(el) = el {
-                root.push(el.attr("Self", id).attr("Name", &st.name));
+            if let Some(style) = el {
+                graphic.stroke_styles.push(style);
             }
         }
         for s in STROKE_STYLES {
-            root.push(El::new("StrokeStyle").attr("Self", format!("StrokeStyle/$ID/{s}")).attr("Name", format!("$ID/{s}")));
+            graphic.stroke_styles.push(StrokeDefinition::Named { self_id: format!("StrokeStyle/$ID/{s}"), name: format!("$ID/{s}") });
         }
-        document(&root)
+        craft_idml::part_xml(&graphic.to_el())
     }
 }
 
@@ -231,20 +185,17 @@ const STROKE_STYLES: &[&str] = &[
 ];
 
 /// A `Color` element. `flags` is (editable, removable, visible).
-fn color_el(self_id: &str, name: &str, model: &str, c: &Color, over: &str, (editable, removable, visible): (bool, bool, bool)) -> El {
+fn color_el(self_id: &str, name: &str, model: &str, c: &Color, over: &str, (editable, removable, visible): (bool, bool, bool)) -> ColorDefinition {
     let (space, val) = color_value(c);
-    crate::xml::from_craft(
-        craft_idml::model::ColorDefinition {
-            self_id: self_id.to_string(),
-            name: name.to_string(),
-            model: model.to_string(),
-            space: space.to_string(),
-            value: val,
-            override_kind: over.to_string(),
-            editable,
-            removable,
-            visible,
-        }
-        .to_el(),
-    )
+    ColorDefinition {
+        self_id: self_id.to_string(),
+        name: name.to_string(),
+        model: model.to_string(),
+        space: space.to_string(),
+        value: val,
+        override_kind: over.to_string(),
+        editable,
+        removable,
+        visible,
+    }
 }
