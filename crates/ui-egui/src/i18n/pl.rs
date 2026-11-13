@@ -377,7 +377,6 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Hyphenate", "Dziel wyrazy"),
     ("Import Options", "Opcje importu"),
     ("Import XML…", "Importuj XML…"),
-    ("Include document bleed", "Uwzględnij spad dokumentu"),
     ("Increment Every:", "Przyrost co:"),
     ("Ink Manager", "Menedżer farb"),
     ("Insert Column", "Wstaw kolumnę"),

@@ -766,7 +766,6 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("In justified Arabic text", "Sorkizárt arab szövegben"),
     ("Include Bleed", "Kifutóval együtt"),
     ("Include Stroke Weight", "Körvonalvastagsággal együtt"),
-    ("Include document bleed", "Dokumentum kifutójának felvétele"),
     ("Include when exporting", "Felvétel exportáláskor"),
     ("Increase Point Size", "Betűméret növelése"),
     ("Increment Every:", "Lépésköz:"),

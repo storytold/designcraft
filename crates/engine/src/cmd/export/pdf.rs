@@ -36,12 +36,38 @@ pub(super) fn pages_param(id: &str, p: &Value, page_count: usize) -> Result<Opti
     })
 }
 
+/// The largest own bleed on a side, in points: 18 in, the bound a document's bleed and slug have.
+const MAX_BLEED: f64 = 1296.0;
+
+/// The `bleed` parameter: the document's (`true`), none (`false`), or the export's own amounts in
+/// points (0 to 1296, 18 in), one for every side or `[top, bottom, inside, outside]`.
+fn bleed_param(id: &str, p: &Value) -> Result<(bool, Option<[f64; 4]>)> {
+    let amount = |v: &Value| v.as_f64().filter(|v| (0.0..=MAX_BLEED).contains(v));
+    match p.get("bleed") {
+        None | Some(Value::Null) => Ok((false, None)),
+        Some(Value::Bool(b)) => Ok((*b, None)),
+        Some(n @ Value::Number(_)) => {
+            let v = amount(n).ok_or_else(|| bad(id, format!("bad `bleed` {n}: a number of points from 0 to {MAX_BLEED}")))?;
+            Ok((true, Some([v; 4])))
+        }
+        Some(Value::Array(a)) => {
+            let sides: Option<Vec<f64>> = a.iter().map(amount).collect();
+            match sides.as_deref() {
+                Some(&[t, b, i, o]) => Ok((true, Some([t, b, i, o]))),
+                _ => Err(bad(id, format!("`bleed` as a list needs four numbers of points from 0 to {MAX_BLEED}: [top, bottom, inside, outside]"))),
+            }
+        }
+        Some(v) => Err(bad(id, format!("bad `bleed`: {v} (true, false, a number or [top, bottom, inside, outside])"))),
+    }
+}
+
 pub(crate) fn options(p: &Value, page_count: usize) -> Result<PdfOptions> {
     const ID: &str = "file.exportPdf";
 
     let pages = pages_param(ID, p, page_count)?;
     let spreads = p.get("spreads").and_then(Value::as_bool).unwrap_or(false);
-    let bleed = p.get("bleed").and_then(Value::as_bool).unwrap_or(false);
+    let (bleed, bleed_override) = bleed_param(ID, p)?;
+    let slug = p.get("slug").and_then(Value::as_bool).unwrap_or(false);
     let marks = match p.get("marks") {
         Some(Value::Bool(true)) => Marks::ALL,
         Some(Value::Object(m)) => {
@@ -68,6 +94,8 @@ pub(crate) fn options(p: &Value, page_count: usize) -> Result<PdfOptions> {
         pages,
         spreads,
         bleed,
+        bleed_override,
+        slug,
         marks,
         standard,
         compress_images: p.get("compressImages").and_then(Value::as_bool).unwrap_or(false),
@@ -711,5 +739,31 @@ mod overset_tests {
         // And a page on another spread entirely is still not reported.
         let r = s.execute("file.exportPdf", &json!({"pages": [1], "spreads": true})).unwrap();
         assert!(about(&r).is_empty(), "the cover's spread holds no overset frame: {r}");
+    }
+}
+
+#[cfg(test)]
+mod bleed_slug_tests {
+    use serde_json::json;
+
+    use super::options;
+
+    /// `bleed` as a flag, one amount or four; `slug`; bad amounts are errors, not a silent 0.
+    #[test]
+    fn bleed_and_slug_parameters() {
+        let o = options(&json!({"bleed": true}), 1).unwrap();
+        assert!(o.bleed && o.bleed_override.is_none() && !o.slug);
+        let o = options(&json!({}), 1).unwrap();
+        assert!(!o.bleed && o.bleed_override.is_none());
+        let o = options(&json!({"bleed": 9, "slug": true}), 1).unwrap();
+        assert_eq!((o.bleed, o.bleed_override, o.slug), (true, Some([9.0; 4]), true));
+        let o = options(&json!({"bleed": [1, 2, 3, 4.5]}), 1).unwrap();
+        assert_eq!(o.bleed_override, Some([1.0, 2.0, 3.0, 4.5]));
+        assert_eq!(options(&json!({"bleed": 1296}), 1).unwrap().bleed_override, Some([1296.0; 4]));
+        for bad in
+            [json!([1, 2]), json!([1, 2, 3, -4]), json!([1, 2, 3, "4"]), json!(-1), json!("yes"), json!({}), json!(1297), json!([0, 0, 0, 1e12])]
+        {
+            assert!(options(&json!({"bleed": bad}), 1).is_err(), "{bad}");
+        }
     }
 }

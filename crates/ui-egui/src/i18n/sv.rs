@@ -895,7 +895,6 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Standard:", "Standard:"),
     ("Compress images", "Komprimera bilder"),
     ("Flattener preset", "Förinställning för tillplattning"),
-    ("Include document bleed", "Inkludera dokumentets utfall"),
     ("Crop Marks", "Skärmärken"),
     ("Bleed Marks", "Utfallsmärken"),
     ("Page Information", "Sidinformation"),

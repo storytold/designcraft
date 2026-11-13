@@ -1110,7 +1110,6 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Standard:", "المعيار:"),
     ("Compress images", "ضغط الصور"),
     ("Flattener preset", "إعداد تسوية الشفافية المسبق"),
-    ("Include document bleed", "تضمين نزف المستند"),
     ("Crop Marks", "علامات القص"),
     ("Bleed Marks", "علامات النزف"),
     ("Page Information", "معلومات الصفحة"),

@@ -399,7 +399,6 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Hyphenate", "სიტყვების გადატანა"),
     ("Import Options", "იმპორტის პარამეტრები"),
     ("Import XML…", "XML იმპორტი…"),
-    ("Include document bleed", "დოკუმენტის ჭრისპირა არის ჩართვა"),
     ("Increment Every:", "ბიჯი ყოველ:"),
     ("Ink Manager", "საღებავების მართვა"),
     ("Insert Column", "სვეტის ჩასმა"),

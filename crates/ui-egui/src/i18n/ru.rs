@@ -1662,7 +1662,6 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Export PDF", "Экспорт в PDF"),
     ("Flattener preset", "Набор параметров сведения"),
     ("Desktop Printing", "Настольная печать"),
-    ("Include document bleed", "Включить выпуск под обрез документа"),
     ("Marks and Bleeds", "Метки и выпуск под обрез"),
     ("Page Information", "Информация о странице"),
     ("Page Range", "Диапазон страниц"),

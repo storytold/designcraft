@@ -166,6 +166,61 @@ fn boxes_bleed_and_marks() {
     assert!(t[0].contains("Page 2"), "{t:?}");
 }
 
+/// Marks and Bleeds › Use Document Bleed Settings off: the export's own top, bottom, inside and
+/// outside bleed, inside and outside following the page side.
+#[test]
+fn own_bleed_amounts_follow_the_page_side() {
+    let mut d = Document::new(&NewDocument { pages: 2, facing_pages: true, ..NewDocument::default() });
+    d.settings.bleed = [9.0; 4];
+    let own = |page| PdfOptions { bleed: true, bleed_override: Some([1.0, 2.0, 3.0, 4.0]), pages: Some(vec![page]), ..Default::default() };
+    // Page 1 is a right page: inside on the left.
+    let s = uncompressed(&d, own(0));
+    assert!(s.contains("/MediaBox[0 0 619 795]"), "{}", &s[..s.len().min(3000)]);
+    assert!(s.contains("/TrimBox[3 2 615 794]"));
+    // Page 2 is a left page: outside on the left.
+    let s = uncompressed(&d, own(1));
+    assert!(s.contains("/TrimBox[4 2 616 794]"));
+    // Without `bleed` the amounts are not used.
+    let s = uncompressed(&d, PdfOptions { bleed_override: Some([1.0, 2.0, 3.0, 4.0]), pages: Some(vec![0]), ..Default::default() });
+    assert!(s.contains("/MediaBox[0 0 612 792]"));
+    // Hostile amounts count as no bleed.
+    let s = uncompressed(
+        &d,
+        PdfOptions { bleed: true, bleed_override: Some([f64::NAN, -5.0, f64::INFINITY, 0.0]), pages: Some(vec![0]), ..Default::default() },
+    );
+    assert!(s.contains("/MediaBox[0 0 612 792]"));
+}
+
+/// Include Slug Area: the media box takes in the slug and what lies in it prints; the bleed box
+/// stays the bleed.
+#[test]
+fn slug_area_widens_the_media_box_and_prints() {
+    let mut d = doc_with_text("x");
+    d.settings.bleed = [9.0; 4];
+    d.settings.slug = [20.0, 30.0, 20.0, 20.0];
+    d.swatches.push(Swatch {
+        name: "Slug Ink".into(),
+        value: SwatchValue::Color { color: Color::cmyk(0.0, 0.5, 1.0, 0.0), color_type: ColorType::Spot },
+        locked: false,
+        named: true,
+        hidden: false,
+    });
+    // A job note in the slug, outside the bleed.
+    add_box(&mut d, Rect::new(-19.0, 805.0, 100.0, 815.0), "Slug Ink");
+    let with_slug = PdfOptions { bleed: true, slug: true, pages: Some(vec![0]), ..Default::default() };
+    let s = uncompressed(&d, with_slug.clone());
+    assert!(s.contains("/MediaBox[0 0 652 842]"), "{}", &s[..s.len().min(3000)]);
+    assert!(s.contains("/TrimBox[20 30 632 822]"));
+    assert!(s.contains("/BleedBox[11 21 641 831]"));
+    assert!(s.contains("/Slug#20Ink"), "the slug's content prints");
+    let s = uncompressed(&d, PdfOptions { slug: false, ..with_slug.clone() });
+    assert!(s.contains("/MediaBox[0 0 630 810]"));
+    assert!(!s.contains("/Slug#20Ink"), "without the slug area it is cut off");
+    // With printer's marks further out the slug only adds what the marks don't already cover.
+    let s = uncompressed(&d, PdfOptions { marks: Marks::ALL, ..with_slug });
+    assert!(s.contains("/MediaBox[0 0 678 858]"), "marks (33 pt) reach past this slug");
+}
+
 #[test]
 fn spreads_and_ranges() {
     let mut d = Document::new(&NewDocument { pages: 4, facing_pages: true, ..NewDocument::default() });

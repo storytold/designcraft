@@ -133,7 +133,17 @@ pub struct PdfExportSettings {
     /// Transparency flattener preset (`""` = none, `high`, `medium`, `low`).
     pub flatten: String,
     pub spreads: bool,
+    /// Marks and Bleeds › Use Document Bleed Settings; off, the export takes `bleed_top`… as its
+    /// own bleed.
     pub bleed: bool,
+    /// The export's own bleed (top, bottom, inside, outside) with its unit, as the dialog last
+    /// used it; empty shows the document's.
+    pub bleed_top: String,
+    pub bleed_bottom: String,
+    pub bleed_inside: String,
+    pub bleed_outside: String,
+    /// Marks and Bleeds › Include Slug Area.
+    pub slug: bool,
     pub marks_crop: bool,
     pub marks_bleed: bool,
     pub marks_page_info: bool,
@@ -152,6 +162,11 @@ impl Default for PdfExportSettings {
             flatten: "".into(),
             spreads: false,
             bleed: true,
+            bleed_top: String::new(),
+            bleed_bottom: String::new(),
+            bleed_inside: String::new(),
+            bleed_outside: String::new(),
+            slug: false,
             marks_crop: false,
             marks_bleed: false,
             marks_page_info: false,
