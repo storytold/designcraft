@@ -91,34 +91,12 @@ pub fn eps_proxy(bytes: &[u8]) -> Option<(Vec<u8>, (f64, f64))> {
 
 /// Pixels per point for rendered EPS (a QR code's modules stay crisp when scaled up on screen).
 const RENDER_SCALE: f64 = 8.0;
-/// The most rectangles and operators read from an EPS before giving up on drawing it.
-const MAX_RECTS: usize = 200_000;
-const MAX_TOKENS: usize = 2_000_000;
 /// The most pixels painted, in multiples of the image's area (overlapping rectangles repaint).
 const MAX_PAINT_AREAS: u64 = 4;
-/// The deepest `gsave`/`save` nesting read.
-const MAX_SAVE_DEPTH: usize = 64;
 
-/// PostScript tokens without comments, `{` and `}` as tokens of their own. Lazy and borrowed, so
-/// a huge input costs no memory beyond itself; lines may end in `\n`, `\r\n` or `\r`.
-fn ps_tokens(text: &str) -> impl Iterator<Item = &str> {
-    text.split(['\n', '\r']).flat_map(|line| {
-        line.split('%').next().unwrap_or("").split_whitespace().flat_map(|w| w.split_inclusive(['{', '}'])).flat_map(|piece| {
-            let (body, brace) = match piece.char_indices().last() {
-                Some((at, '{' | '}')) => (piece.get(..at).unwrap_or(""), piece.get(at..)),
-                _ => (piece, None),
-            };
-            [Some(body).filter(|b| !b.is_empty()), brace].into_iter().flatten()
-        })
-    })
-}
-
-/// PostScript that only fills rectangles in solid colours (`setcmykcolor`, `setrgbcolor`,
-/// `setgray`, `rectfill`, and procedures that stand for one of them, such as InDesign's
-/// `/rf { rectfill } bind def`), drawn as a PNG of the bounding box `bb`. None for anything else
-/// (paths, text, images, transforms), which keeps its placeholder, or when nothing is drawn.
+/// Rasterize rectangles read by craft-eps; unsupported PostScript keeps the placeholder.
 fn render_rectangles(ps: &[u8], bb: [f64; 4]) -> Option<Vec<u8>> {
-    let text = std::str::from_utf8(ps).ok()?;
+    let rectangles = craft_eps::simple_rectangles(ps)?;
     let (w, h) = (bb[2] - bb[0], bb[3] - bb[1]);
     if !(w > 0.0 && h > 0.0) {
         return None;
@@ -126,110 +104,25 @@ fn render_rectangles(ps: &[u8], bb: [f64; 4]) -> Option<Vec<u8>> {
     let scale = RENDER_SCALE.min(4000.0 / w.max(h));
     let (pw, ph) = ((w * scale).round().max(1.0) as u32, (h * scale).round().max(1.0) as u32);
     let mut img = image::RgbaImage::from_pixel(pw, ph, image::Rgba([0, 0, 0, 0]));
-    let mut aliases: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    let mut stack: Vec<f64> = Vec::new();
-    let mut color = [0u8, 0, 0, 255];
-    let mut drawn = 0usize;
     let mut painted = 0u64;
     let paint_budget = u64::from(pw) * u64::from(ph) * MAX_PAINT_AREAS;
-    let mut saved: Vec<[u8; 4]> = Vec::new();
-    let mut tokens = ps_tokens(text);
-    let mut read = 0usize;
-    let mut next = || {
-        read += 1;
-        if read > MAX_TOKENS { None } else { Some(tokens.next()) }
-    };
-    let unit = |v: f64| v.clamp(0.0, 1.0);
-    // `None` from `next`: over the token limit; `Some(None)`: the end.
-    while let Some(tok) = next()? {
-        if let Ok(v) = tok.parse::<f64>() {
-            if !v.is_finite() {
-                return None;
-            }
-            stack.push(v);
-            continue;
+    for rect in rectangles {
+        let (x0, x1) = ((rect.x - bb[0]) * scale, (rect.x + rect.width - bb[0]) * scale);
+        let (y0, y1) = ((bb[3] - (rect.y + rect.height)) * scale, (bb[3] - rect.y) * scale);
+        let px = |a: f64, b: f64, max: u32| {
+            let (lo, hi) = (a.min(b).round().max(0.0), a.max(b).round().min(max as f64));
+            (lo as u32, hi.max(lo) as u32)
+        };
+        let ((xa, xb), (ya, yb)) = (px(x0, x1, pw), px(y0, y1, ph));
+        painted = painted.saturating_add(u64::from(xb - xa) * u64::from(yb - ya));
+        if painted > paint_budget {
+            return None;
         }
-        // `/name { op } bind def`: name stands for op.
-        if let Some(name) = tok.strip_prefix('/') {
-            // At most `{ op } bind`: anything longer isn't an alias this reader knows.
-            let mut body: Vec<&str> = Vec::new();
-            while body.len() < 5 {
-                match next()? {
-                    Some("def") | None => break,
-                    Some(t) => body.push(t),
-                }
+        for y in ya..yb {
+            for x in xa..xb {
+                img.put_pixel(x, y, image::Rgba(rect.color));
             }
-            let op = match body.as_slice() {
-                ["{", op, "}"] | ["{", op, "}", _] => (*op).to_string(),
-                _ => return None,
-            };
-            aliases.insert(name.to_string(), op);
-            continue;
         }
-        let op = aliases.get(tok).map_or(tok, String::as_str);
-        let mut pop = |n: usize| -> Option<Vec<f64>> { (stack.len() >= n).then(|| stack.split_off(stack.len() - n)) };
-        match op {
-            "setcmykcolor" => {
-                let v = pop(4)?;
-                let k = unit(v[3]);
-                let ch = |c: f64| ((1.0 - unit(c)) * (1.0 - k) * 255.0).round() as u8;
-                color = [ch(v[0]), ch(v[1]), ch(v[2]), 255];
-            }
-            "setrgbcolor" => {
-                let v = pop(3)?;
-                let ch = |c: f64| (unit(c) * 255.0).round() as u8;
-                color = [ch(v[0]), ch(v[1]), ch(v[2]), 255];
-            }
-            "setgray" => {
-                let v = pop(1)?;
-                let g = (unit(v[0]) * 255.0).round() as u8;
-                color = [g, g, g, 255];
-            }
-            "rectfill" => {
-                let v = pop(4)?;
-                drawn += 1;
-                if drawn > MAX_RECTS {
-                    return None;
-                }
-                // PostScript y runs up; the image's down. Edges round to whole pixels, so
-                // touching rectangles (QR code modules) meet without gaps.
-                let (x0, x1) = ((v[0] - bb[0]) * scale, (v[0] + v[2] - bb[0]) * scale);
-                let (y0, y1) = ((bb[3] - (v[1] + v[3])) * scale, (bb[3] - v[1]) * scale);
-                let px = |a: f64, b: f64, max: u32| {
-                    let (lo, hi) = (a.min(b).round().max(0.0), a.max(b).round().min(max as f64));
-                    (lo as u32, hi.max(lo) as u32)
-                };
-                let ((xa, xb), (ya, yb)) = (px(x0, x1, pw), px(y0, y1, ph));
-                painted = painted.saturating_add(u64::from(xb - xa) * u64::from(yb - ya));
-                if painted > paint_budget {
-                    return None;
-                }
-                for y in ya..yb {
-                    for x in xa..xb {
-                        img.put_pixel(x, y, image::Rgba(color));
-                    }
-                }
-            }
-            "gsave" | "save" => {
-                if saved.len() >= MAX_SAVE_DEPTH {
-                    return None;
-                }
-                saved.push(color);
-            }
-            "grestore" | "restore" => {
-                if let Some(c) = saved.pop() {
-                    color = c;
-                }
-            }
-            "pop" => {
-                pop(1)?;
-            }
-            "bind" | "newpath" | "showpage" | "end" | "begin" => {}
-            _ => return None,
-        }
-    }
-    if drawn == 0 {
-        return None;
     }
     let mut out = Vec::new();
     image::DynamicImage::ImageRgba8(img).write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png).ok()?;
@@ -305,14 +198,14 @@ mod tests {
         assert_eq!(drawn(eps, 28, 28), [0, 0, 0, 255], "bottom right: the colour from before gsave");
         assert_eq!(drawn(eps, 28, 4)[3], 0, "top right: nothing (pop removed the extra operand)");
         // Unbounded nesting isn't drawn.
-        let deep = format!("{} 0 0 2 2 rectfill", "gsave ".repeat(MAX_SAVE_DEPTH + 1));
+        let deep = format!("{} 0 0 2 2 rectfill", "gsave ".repeat(craft_eps::MAX_SIMPLE_RECTANGLE_SAVE_DEPTH + 1));
         assert_eq!(render_rectangles(deep.as_bytes(), [0.0, 0.0, 4.0, 4.0]), None);
     }
 
     #[test]
     fn a_huge_token_stream_on_one_line_is_refused() {
         // One line of more operands than the token limit, then a rectangle.
-        let ps = format!("{}\n0 0 2 2 rectfill\n", "0 ".repeat(MAX_TOKENS));
+        let ps = format!("{}\n0 0 2 2 rectfill\n", "0 ".repeat(craft_eps::MAX_SIMPLE_RECTANGLE_TOKENS));
         assert_eq!(render_rectangles(ps.as_bytes(), [0.0, 0.0, 4.0, 4.0]), None);
         let ps = format!("{}\n0 0 2 2 rectfill\n", "0 ".repeat(1000));
         assert!(render_rectangles(ps.as_bytes(), [0.0, 0.0, 4.0, 4.0]).is_some(), "under the limit it is drawn");
