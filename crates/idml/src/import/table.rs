@@ -150,6 +150,7 @@ impl<'r> Importer<'r> {
         let mut regions = Vec::new();
         for ce in e.find_all("Cell") {
             let model_cell = craft_idml::model::Cell::from_el(&crate::xml::to_craft(ce));
+            let options = model_cell.options();
             let Some((c, r)) = model_cell.position().map(|(c, r)| (c as usize, r as usize)) else {
                 continue;
             };
@@ -167,7 +168,7 @@ impl<'r> Importer<'r> {
             cell.style = if cell_style == designcraft_doc::NO_CELL_STYLE { String::new() } else { cell_style };
             let default_para = cell.text.paras.first().cloned().unwrap_or_default();
             cell.text = self.story_with_para(StoryId(0), ce, default_para);
-            self.read_cell_attrs(&mut cell, ce, border_unset);
+            self.read_cell_attrs(&mut cell, ce, &options, border_unset);
             if let Some(slot) = t.cell_mut(r, c) {
                 *slot = cell;
             }
@@ -182,31 +183,28 @@ impl<'r> Importer<'r> {
     }
 
     /// A cell's local fill, insets, alignment, rotation and edge strokes.
-    fn read_cell_attrs(&mut self, cell: &mut designcraft_doc::Cell, ce: &El, border_unset: bool) {
-        if let Some(fc) = ce.get("FillColor") {
+    fn read_cell_attrs(&mut self, cell: &mut designcraft_doc::Cell, ce: &El, options: &craft_idml::model::CellOptions, border_unset: bool) {
+        if let Some(fc) = options.fill_color.as_deref() {
             cell.fill = self.swatch_ref(fc);
         }
-        if let Some(tint) = tint(ce.num("FillTint")) {
+        if let Some(tint) = tint(options.fill_tint) {
             cell.fill_tint = tint;
         }
-        // Current InDesign writes `TextTopInset` and so on; the older `TopInset` names are the fallback.
-        let inset_names =
-            [("TextTopInset", "TopInset"), ("TextLeftInset", "LeftInset"), ("TextBottomInset", "BottomInset"), ("TextRightInset", "RightInset")];
-        for (i, (text, old)) in inset_names.iter().enumerate() {
-            if let Some(v) = ce.num(text).or_else(|| ce.num(old)) {
+        for (i, inset) in options.insets.iter().enumerate() {
+            if let Some(v) = inset {
                 cell.insets[i] = v.max(0.0);
             }
         }
-        if let Some(vj) = ce.get("VerticalJustification") {
+        if let Some(vj) = options.vertical_justification.as_deref() {
             cell.vj = names::vj_in(vj);
         }
-        if let Some(fb) = ce.get("FirstBaselineOffset") {
+        if let Some(fb) = options.first_baseline_offset.as_deref() {
             cell.first_baseline = names::first_baseline_in(fb);
         }
-        if let Some(min) = ce.num("MinimumFirstBaselineOffset").filter(|v| v.is_finite()) {
+        if let Some(min) = options.minimum_first_baseline_offset {
             cell.first_baseline_min = min.clamp(0.0, 8640.0);
         }
-        cell.rotation = ce.num("RotationAngle").unwrap_or(cell.rotation);
+        cell.rotation = options.rotation_angle.unwrap_or(cell.rotation);
         if cell.rotation != 0.0 {
             self.rotated_cells += 1;
         }
@@ -214,7 +212,7 @@ impl<'r> Importer<'r> {
             let attrs = self.cell_stroke_attrs(ce, side);
             attrs.apply_to(&mut cell.strokes[i]);
             cell.stroke_defined[i] |= !attrs.is_empty();
-            let priority = ce.prop(&format!("{side}StrokePriority")).and_then(|v| v.trim().parse::<i32>().ok()).unwrap_or(0);
+            let priority = options.edge_stroke_priorities[i];
             cell.stroke_priorities[i] = priority;
             // Preserve style-defined edges and #102's positive-priority local overrides.
             cell.border_overrides[i] |= priority > 0;
