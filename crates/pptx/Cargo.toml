@@ -18,9 +18,10 @@ designcraft-images = { workspace = true }
 skrifa = { workspace = true }
 image = { workspace = true }
 thiserror = { workspace = true }
-zip = { workspace = true }
+craft-opc = { workspace = true }
 chrono = { workspace = true }
 
 [dev-dependencies]
+zip = { workspace = true }
 designcraft-fonts = { workspace = true, features = ["testing"] }
 quick-xml = { workspace = true }

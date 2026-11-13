@@ -1,11 +1,9 @@
 //! The PresentationML package: one blank master and layout, a theme, the slides and their media.
 
-use std::fmt::Write as _;
-use std::io::Write as _;
-
 use crate::fonts::EmbeddedFont;
 use crate::xml::{emu_len, esc};
 use crate::{PptxError, Result};
+use std::fmt::Write as _;
 
 pub const NS: &str = r#"xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main""#;
 const DECL: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n";
@@ -241,26 +239,10 @@ pub fn write(p: &Package) -> Result<Vec<u8>> {
         ),
     );
 
-    let mut zw = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
-    let deflate = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
-    let stored = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
-    let zerr = |e: zip::result::ZipError| PptxError::Write(e.to_string());
-    let ioerr = |e: std::io::Error| PptxError::Write(e.to_string());
-    for (name, bytes) in &parts {
-        zw.start_file(name.as_str(), deflate).map_err(zerr)?;
-        zw.write_all(bytes).map_err(ioerr)?;
-    }
-    for (name, bytes) in &font_parts {
-        zw.start_file(name.as_str(), deflate).map_err(zerr)?;
-        zw.write_all(bytes).map_err(ioerr)?;
-    }
-    for m in p.media {
-        // Compressed formats gain nothing from deflate.
-        let opts = if m.name.ends_with(".svg") { deflate } else { stored };
-        zw.start_file(format!("ppt/media/{}", m.name), opts).map_err(zerr)?;
-        zw.write_all(&m.bytes).map_err(ioerr)?;
-    }
-    Ok(zw.finish().map_err(zerr)?.into_inner())
+    let mut entries = parts;
+    entries.extend(font_parts.into_iter().map(|(name, bytes)| (name, bytes.to_vec())));
+    entries.extend(p.media.iter().map(|m| (format!("ppt/media/{}", m.name), m.bytes.clone())));
+    craft_opc::zip_entries(&entries).map_err(|e| PptxError::Write(e.to_string()))
 }
 
 fn rel_kind(k: &str) -> &'static str {
