@@ -79,44 +79,37 @@ pub enum IdmlError {
 
 pub type Result<T> = std::result::Result<T, IdmlError>;
 
-/// Sniff an image's MIME type and pixel size (PNG, JPEG, GIF, WebP, TIFF, PDF, EPS).
+/// MIME and size metadata for a placed image, delegated to the shared format registry and image
+/// boundary. The application keeps only its EPS proxy pixel-size policy.
 pub(crate) fn sniff_image(b: &[u8]) -> (Option<&'static str>, Option<(u32, u32)>) {
-    if designcraft_images::is_eps(b) {
-        return (Some("application/postscript"), designcraft_images::eps_pixel_size(b));
-    }
-    let be32 = |i: usize| b.get(i..i + 4).map(|s| u32::from_be_bytes([s[0], s[1], s[2], s[3]]));
-    if b.starts_with(b"\x89PNG\r\n\x1a\n") {
-        return (Some("image/png"), be32(16).zip(be32(20)));
-    }
-    if b.starts_with(&[0xFF, 0xD8]) {
-        let mut i = 2;
-        while i + 9 < b.len() {
-            if b[i] != 0xFF {
-                i += 1;
-                continue;
-            }
-            let m = b[i + 1];
-            let len = u16::from_be_bytes([b[i + 2], b[i + 3]]) as usize;
-            if matches!(m, 0xC0..=0xC3 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF) {
-                let h = u16::from_be_bytes([b[i + 5], b[i + 6]]) as u32;
-                let w = u16::from_be_bytes([b[i + 7], b[i + 8]]) as u32;
-                return (Some("image/jpeg"), Some((w, h)));
-            }
-            i += 2 + len;
-        }
-        return (Some("image/jpeg"), None);
-    }
-    if b.starts_with(b"GIF8") && b.len() >= 10 {
-        return (Some("image/gif"), Some((u16::from_le_bytes([b[6], b[7]]) as u32, u16::from_le_bytes([b[8], b[9]]) as u32)));
-    }
-    if b.starts_with(b"RIFF") && b.get(8..12) == Some(b"WEBP") {
-        return (Some("image/webp"), None);
-    }
-    if b.starts_with(b"II*\0") || b.starts_with(b"MM\0*") {
-        return (Some("image/tiff"), None);
-    }
-    if b.starts_with(b"%PDF") {
-        return (Some("application/pdf"), None);
-    }
-    (None, None)
+    let Some(format) = craft_file_formats::detect("", b) else { return (None, None) };
+    let mime = format.mime_type();
+    let pixels = match format {
+        craft_file_formats::Format::Eps => designcraft_images::eps_pixel_size(b),
+        craft_file_formats::Format::Png
+        | craft_file_formats::Format::Jpeg
+        | craft_file_formats::Format::Bmp
+        | craft_file_formats::Format::Gif
+        | craft_file_formats::Format::Tiff
+        | craft_file_formats::Format::WebP
+        | craft_file_formats::Format::Tga
+        | craft_file_formats::Format::Ico
+        | craft_file_formats::Format::Pnm
+        | craft_file_formats::Format::Pcx
+        | craft_file_formats::Format::Xpm
+        | craft_file_formats::Format::Dds
+        | craft_file_formats::Format::Qoi
+        | craft_file_formats::Format::OpenExr
+        | craft_file_formats::Format::Hdr
+        | craft_file_formats::Format::Avif
+        | craft_file_formats::Format::Fits
+        | craft_file_formats::Format::Dpx
+        | craft_file_formats::Format::Jxl
+        | craft_file_formats::Format::Cineon
+        | craft_file_formats::Format::Dicom
+        | craft_file_formats::Format::Iff
+        | craft_file_formats::Format::Psd => designcraft_images::pixel_size(b),
+        _ => None,
+    };
+    (mime, pixels)
 }

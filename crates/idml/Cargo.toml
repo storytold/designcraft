@@ -16,6 +16,7 @@ designcraft-images = { workspace = true }
 craft-idml = { workspace = true }
 craft-xml = { workspace = true }
 craft-svg = { workspace = true }
+craft-file-formats = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }
 
