@@ -250,7 +250,8 @@ fn style_options_reach_notes_and_table_cells() {
 #[test]
 fn style_options_reach_anchored_frame_stories() {
     let styled = r#"<ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/Lead"><CharacterStyleRange AppliedCharacterStyle="CharacterStyle/Mark"><Content>Boxed</Content></CharacterStyleRange></ParagraphStyleRange>"#;
-    let icml = ANCHORED_FRAME.replace("<ParagraphStyleRange><CharacterStyleRange><Content>Boxed</Content></CharacterStyleRange></ParagraphStyleRange>", styled);
+    let icml = ANCHORED_FRAME
+        .replace("<ParagraphStyleRange><CharacterStyleRange><Content>Boxed</Content></CharacterStyleRange></ParagraphStyleRange>", styled);
     assert!(icml.contains(styled));
     check_style_options(&icml, |d, sid| {
         let story = d.story(sid).unwrap();

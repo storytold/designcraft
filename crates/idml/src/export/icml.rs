@@ -105,3 +105,21 @@ impl Ex<'_> {
         Ok(document_with_pi(&root, &icml_pi()))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::part_children;
+    use crate::IdmlError;
+
+    /// A part the export wrote that doesn't read back (here XML nested past the parser's depth
+    /// limit) is an error naming the part, not an empty list that would leave what it holds out
+    /// of the file without notice.
+    #[test]
+    fn a_part_that_does_not_read_back_is_an_error() {
+        let n = crate::xml::MAX_DEPTH + 1;
+        let deep = format!("{}{}", "<a>".repeat(n), "</a>".repeat(n));
+        let err = part_children("Resources/Styles.xml", deep.as_bytes()).unwrap_err();
+        assert!(matches!(&err, IdmlError::Part { part, .. } if part == "Resources/Styles.xml"), "{err:?}");
+        assert_eq!(part_children("Resources/Styles.xml", b"<Styles><A/><B/></Styles>").unwrap().len(), 2);
+    }
+}

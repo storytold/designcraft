@@ -332,20 +332,3 @@ fn an_exported_story_reads_back() {
     assert_eq!(inner.frames, vec![back.objects[1].item.id]);
     i.document.check().unwrap();
 }
-
-/// A part the IDML export writes but can't read back (style groups nested past the parser's
-/// depth limit) makes the export fail, rather than leave the styles out of the file.
-#[test]
-fn an_export_that_does_not_read_back_is_an_error() {
-    let (mut d, sid) = rich_document();
-    let deep = vec!["G"; crate::xml::MAX_DEPTH + 8].join("/") + "/Deep";
-    d.styles_mut().paragraph.push(ParagraphStyle {
-        name: deep,
-        based_on: None,
-        next_style: None,
-        para: ParaAttrs::default(),
-        chars: CharAttrs::default(),
-        shortcut: String::new(),
-    });
-    assert!(matches!(export_icml(&d, sid), Err(IdmlError::Part { part, .. }) if part == "Resources/Styles.xml"));
-}
