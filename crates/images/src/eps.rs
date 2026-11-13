@@ -3,85 +3,15 @@
 //! rectangles of a simple one drawn here (InDesign's QR codes), else a placeholder the size of its
 //! bounding box.
 
-fn u32le(b: &[u8], at: usize) -> Option<usize> {
-    Some(u32::from_le_bytes(b.get(at..at + 4)?.try_into().ok()?) as usize)
-}
-
-/// The PostScript section and the TIFF preview (DOS EPS).
+/// The PostScript section and the TIFF preview (DOS EPS), read by craft-eps.
 fn sections(bytes: &[u8]) -> (&[u8], Option<&[u8]>) {
-    if bytes.starts_with(&[0xC5, 0xD0, 0xD3, 0xC6]) {
-        let ps = u32le(bytes, 4).zip(u32le(bytes, 8)).and_then(|(o, l)| bytes.get(o..o.checked_add(l)?)).unwrap_or(&[]);
-        let tiff = u32le(bytes, 20).zip(u32le(bytes, 24)).filter(|(o, l)| *o > 0 && *l > 0).and_then(|(o, l)| bytes.get(o..o.checked_add(l)?));
-        return (ps, tiff);
-    }
-    (bytes, None)
+    craft_eps::sections(bytes).map_or((&[][..], None), |parts| (parts.postscript, parts.tiff))
 }
 
 /// The bounding box in points: (x0, y0, x1, y1), the high-resolution one when given.
 pub fn bounding_box(bytes: &[u8]) -> Option<[f64; 4]> {
-    let (ps, _) = sections(bytes);
-    let head = String::from_utf8_lossy(&ps[..ps.len().min(64 * 1024)]);
-    // DSC allows (atend): scan a bounded trailer as well, without reading the whole program.
-    let tail = String::from_utf8_lossy(&ps[ps.len().saturating_sub(64 * 1024)..]);
-    let header_value = |key: &str| {
-        // Lines may end in `\r` alone (classic Mac files).
-        head.split(['\n', '\r'])
-            .take_while(|l| {
-                (l.starts_with('%') || l.trim().is_empty())
-                    && ![
-                        "%%EndComments",
-                        "%%BeginDocument",
-                        "%%BeginProlog",
-                        "%%BeginSetup",
-                        "%%BeginData",
-                        "%%BeginBinary",
-                        "%%BeginResource",
-                        "%%Page:",
-                    ]
-                    .iter()
-                    .any(|k| l.starts_with(k))
-            })
-            .find_map(|l| l.strip_prefix(key))
-    };
-    let hires = header_value("%%HiResBoundingBox:");
-    let bbox = header_value("%%BoundingBox:");
-    let at_end = |v: Option<&str>| v.is_some_and(|v| v.trim() == "(atend)");
-    // An outer header box must not be replaced by a nested document's trailer comments.
-    // Inspect the trailer only when the outer header delegates its bounds there.
-    hires
-        .and_then(parse_box)
-        .or_else(|| (at_end(hires) || at_end(bbox)).then(|| trailer_box(&tail, "%%HiResBoundingBox:")).flatten())
-        .or_else(|| bbox.and_then(parse_box))
-        .or_else(|| at_end(bbox).then(|| trailer_box(&tail, "%%BoundingBox:")).flatten())
-}
-
-fn parse_box(value: &str) -> Option<[f64; 4]> {
-    let mut words = value.split_whitespace();
-    let mut bb = [0.0f64; 4];
-    for n in &mut bb {
-        *n = words.next()?.parse().ok()?;
-    }
-    // Finite corners and a finite size (subtracting extreme corners can overflow to infinity).
-    let finite = [bb[0], bb[1], bb[2], bb[3], bb[2] - bb[0], bb[3] - bb[1]].iter().all(|n| n.is_finite());
-    (words.next().is_none() && finite && bb[2] > bb[0] && bb[3] > bb[1]).then_some(bb)
-}
-
-fn trailer_box(tail: &str, key: &str) -> Option<[f64; 4]> {
-    // Work backwards from the outer EOF so nesting remains known even when the bounded
-    // window begins inside a child document. Opaque DSC data/resource blocks are skipped too.
-    let mut nested = 0usize;
-    for line in tail.split(['\n', '\r']).rev() {
-        if ["%%EndDocument", "%%EndData", "%%EndBinary", "%%EndResource"].iter().any(|k| line.starts_with(k)) {
-            nested = nested.checked_add(1)?;
-        } else if ["%%BeginDocument", "%%BeginData", "%%BeginBinary", "%%BeginResource"].iter().any(|k| line.starts_with(k)) {
-            nested = nested.checked_sub(1)?;
-        } else if nested == 0
-            && let Some(bb) = line.strip_prefix(key).and_then(parse_box)
-        {
-            return Some(bb);
-        }
-    }
-    None
+    let parts = craft_eps::sections(bytes).ok()?;
+    craft_eps::Comments::read(parts.postscript).page_box()
 }
 
 /// Natural EPS dimensions in points. Bound sizes before fitting or allocating a proxy:
