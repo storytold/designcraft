@@ -1,19 +1,20 @@
 use super::table::uniform_cell_stroke;
 use super::values::tint;
 use super::{
-    CHAR_BUILTINS, CharacterStyle, El, Fill, Importer, OBJECT_BUILTINS, ObjectStyle, PARA_BUILTINS, ParagraphStyle, Rule, names, st, swatch,
-    unescape_id,
+    CHAR_BUILTINS, CharacterStyle, El, Fill, Importer, OBJECT_BUILTINS, ObjectStyle, PARA_BUILTINS, ParagraphStyle, Rule, TopKind, TopLevelNode,
+    names, st, swatch, top_el, unescape_id,
 };
 
 type StyleElements = (Vec<(String, El)>, Vec<(String, El)>, Vec<(String, El)>, Vec<(String, El)>, Vec<(String, El)>);
 
-fn style_elements(top: &[El]) -> StyleElements {
+fn style_elements(top: &[TopLevelNode]) -> StyleElements {
     let mut paras = Vec::new();
     let mut chars = Vec::new();
     let mut objects = Vec::new();
     let mut cell_styles = Vec::new();
     let mut table_styles = Vec::new();
-    for group in top.iter().filter_map(|el| craft_idml::model::StyleGroup::from_el(&crate::xml::to_craft(el))) {
+    let model_top: Vec<_> = top.iter().map(TopLevelNode::to_el).collect();
+    for group in model_top.iter().filter_map(craft_idml::model::StyleGroup::from_el) {
         for (_, style) in group.styles() {
             let id = style.values.self_id().unwrap_or("").to_string();
             let el = crate::xml::from_craft(style.to_el());
@@ -32,8 +33,8 @@ fn style_elements(top: &[El]) -> StyleElements {
 impl<'r> Importer<'r> {
     // ---------- styles ----------
 
-    pub(super) fn styles(&mut self, top: &[El]) {
-        for e in top.iter().filter(|e| e.local() == "Condition") {
+    pub(super) fn styles(&mut self, top: &[TopLevelNode]) {
+        for e in top.iter().filter(|node| node.kind == TopKind::Condition).map(top_el) {
             let (Some(id), Some(name)) = (e.get("Self"), e.get("Name")) else { continue };
             // Indicator colours: "r g b" (0–255) or a UI colour name (kept as the default blue).
             let nums: Vec<u8> = e
@@ -47,7 +48,7 @@ impl<'r> Importer<'r> {
             self.condition_names.insert(id.to_string(), name.to_string());
             self.conditions.push(designcraft_doc::Condition { name: name.to_string(), color, visible: e.get("Visible") != Some("false") });
         }
-        for e in top.iter().filter(|e| e.local() == "NumberingList") {
+        for e in top.iter().filter(|node| node.kind == TopKind::NumberingList).map(top_el) {
             let name = e.get("Name").unwrap_or("").to_string();
             if !name.is_empty() && !name.starts_with("$ID/") && !self.lists.iter().any(|l| l.name == name) {
                 self.lists

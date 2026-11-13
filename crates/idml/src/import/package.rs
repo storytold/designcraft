@@ -11,8 +11,8 @@ impl<'a> Package<'a> {
     }
 
     /// Reads the designmap, XML parts, included resources and metadata with the shared parser.
-    pub(super) fn document(&mut self) -> Result<craft_idml::Document> {
-        self.inner.document().map_err(|e| match e {
+    pub(super) fn document(&mut self) -> Result<craft_idml::model::ModelDocument> {
+        self.inner.document().map(craft_idml::model::ModelDocument::from_package).map_err(|e| match e {
             craft_idml::Error::TooLarge { part, limit } => IdmlError::Part { part, msg: format!("larger than the {limit}-byte package read limit") },
             craft_idml::Error::Part { part, msg } => IdmlError::Part { part, msg },
             other => IdmlError::NotIdml(other.to_string()),

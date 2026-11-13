@@ -1,5 +1,5 @@
 use super::values::tint;
-use super::{BaselineGrid, El, GridRelative, Importer, PARA_BUILTINS, names};
+use super::{BaselineGrid, El, GridRelative, Importer, PARA_BUILTINS, TopKind, TopLevelNode, names};
 
 /// IDML stores a sort key on each topic, rather than on its page references.
 #[derive(Clone, Default)]
@@ -312,12 +312,13 @@ impl<'r> Importer<'r> {
 
     /// The table of contents: the TOC style a story is generated from (`AppliedTOCStyle`), with
     /// its entries. Styles the document doesn't have fall back to the generated TOC styles.
-    pub(super) fn toc_of(&self, top: &[El]) -> Option<designcraft_doc::Toc> {
+    pub(super) fn toc_of(&self, top: &[TopLevelNode]) -> Option<designcraft_doc::Toc> {
         use designcraft_doc::{TocEntry, TocPageNumber};
-        let (ts, story) = top.iter().filter(|e| e.local() == "TOCStyle").find_map(|ts| {
+        let (ts, story) = top.iter().filter(|node| node.kind == TopKind::TocStyle).find_map(|node| {
+            let ts = crate::xml::from_craft(node.to_el());
             let id = ts.get("Self")?;
-            let story = top.iter().find(|e| e.local() == "Story" && e.get("AppliedTOCStyle") == Some(id))?;
-            Some((ts, *self.story_ids.get(story.get("Self")?)?))
+            let story = top.iter().find(|node| node.kind == TopKind::Story && node.values().get("AppliedTOCStyle") == Some(id))?;
+            Some((ts, *self.story_ids.get(story.values().self_id()?)?))
         })?;
         // Property children are element text: formatting whitespace around a reference is dropped
         // unless the reference as written names a style.

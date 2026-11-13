@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
+use craft_idml::model::{TopLevelKind as TopKind, TopLevelNode};
 use designcraft_color::cms::lab;
 use designcraft_color::{Color, ColorType, Gradient, GradientKind, GradientStop, Swatch, SwatchValue, swatch};
 use designcraft_doc::{
@@ -39,6 +40,14 @@ use package::Package;
 pub(crate) use package::{percent_decode, uri_to_path};
 use text_attrs::mojikumi_row;
 use values::{nums, xmp_date};
+
+fn top_el(node: &TopLevelNode) -> El {
+    crate::xml::from_craft(node.to_el())
+}
+
+fn top_els_of(top: &[TopLevelNode], kind: TopKind) -> impl Iterator<Item = El> + '_ {
+    top.iter().filter(move |node| node.kind == kind).map(top_el)
+}
 
 /// Import an IDML package without reading its linked images from disk: this crate never touches
 /// the file system, so a caller that wants the links brings its own reader
@@ -79,8 +88,8 @@ pub fn import_idml_report_with_previews(
 ) -> Result<Imported> {
     let mut pkg = Package::open(bytes)?;
     let package = pkg.document()?;
-    let root = crate::xml::from_craft(package.root);
-    let top: Vec<El> = package.top.into_iter().map(crate::xml::from_craft).collect();
+    let root = package.root;
+    let top = package.top;
     let mut warnings = package.warnings;
     let mut im = Importer::new(read_link, previews);
     if let Some(m) = package.metadata {
@@ -325,17 +334,18 @@ impl<'r> Importer<'r> {
         self.next_id
     }
 
-    fn read_preferences(&mut self, top: &[El]) {
+    fn read_preferences(&mut self, top: &[TopLevelNode]) {
         // Preferences first (page size, facing pages).
-        for e in top {
-            match e.local() {
-                "DocumentPreference" => self.doc_prefs(e),
-                "TransparencyPreference" => {
+        for node in top {
+            let e = top_el(node);
+            match node.kind {
+                TopKind::DocumentPreference => self.doc_prefs(&e),
+                TopKind::TransparencyPreference => {
                     if let Some(v) = e.get("BlendingSpace") {
                         self.settings.blend_space = if v == "RGB" { designcraft_doc::BlendSpace::Rgb } else { designcraft_doc::BlendSpace::Cmyk };
                     }
                 }
-                "TextPreference" => {
+                TopKind::TextPreference => {
                     let a = &mut self.settings.advanced_type;
                     for (k, v) in [
                         ("SuperscriptSize", &mut a.superscript_size),
@@ -348,11 +358,11 @@ impl<'r> Importer<'r> {
                         }
                     }
                 }
-                "MarginPreference" => {
-                    let (m, c) = margins_of_el(e);
+                TopKind::MarginPreference => {
+                    let (m, c) = margins_of_el(&e);
                     self.default_margins = Some((m, c));
                 }
-                "ViewPreference" => {
+                TopKind::ViewPreference => {
                     for (attr, ruler) in [("HorizontalMeasurementUnits", "horizontal"), ("VerticalMeasurementUnits", "vertical")] {
                         let Some(u) = e.get(attr) else { continue };
                         let unit = names::unit_in(u).unwrap_or_else(|| {
@@ -375,8 +385,8 @@ impl<'r> Importer<'r> {
                         _ => {}
                     }
                 }
-                "GridPreference" => self.grid_prefs(e),
-                "PasteboardPreference" => {
+                TopKind::GridPreference => self.grid_prefs(&e),
+                TopKind::PasteboardPreference => {
                     if let Some(v) = e.get("PasteboardMargins").map(nums)
                         && v.len() == 2
                         && v[0] >= 0.0
@@ -390,8 +400,8 @@ impl<'r> Importer<'r> {
         }
     }
 
-    fn read_composite_fonts(&mut self, top: &[El]) {
-        for e in top.iter().filter(|e| e.local() == "CompositeFont") {
+    fn read_composite_fonts(&mut self, top: &[TopLevelNode]) {
+        for e in top_els_of(top, TopKind::CompositeFont) {
             let name =
                 e.get("Name").map(str::to_string).unwrap_or_else(|| unescape_id(e.get("Self").unwrap_or("").trim_start_matches("CompositeFont/")));
             if let Some(id) = e.get("Self") {
@@ -417,8 +427,8 @@ impl<'r> Importer<'r> {
         }
     }
 
-    fn read_cjk_tables(&mut self, top: &[El]) -> Result<()> {
-        for e in top.iter().filter(|e| e.local() == "KinsokuTable") {
+    fn read_cjk_tables(&mut self, top: &[TopLevelNode]) -> Result<()> {
+        for e in top_els_of(top, TopKind::KinsokuTable) {
             if e.get("CantBeginLineChars").is_some() || e.get("CantEndLineChars").is_some() {
                 self.kinsoku.insert(
                     e.get("Self").unwrap_or("").into(),
@@ -432,7 +442,7 @@ impl<'r> Importer<'r> {
                 );
             }
         }
-        for e in top.iter().filter(|e| e.local() == "MojikumiTable") {
+        for e in top_els_of(top, TopKind::MojikumiTable) {
             if let (Some(id), Some(name)) = (e.get("Self"), e.get("Name")) {
                 self.mojikumi_names.insert(id.into(), format!("MojikumiTable/{}", unescape_id(name)));
             }
@@ -450,19 +460,19 @@ impl<'r> Importer<'r> {
         Ok(())
     }
 
-    fn run(&mut self, _root: &El, top: &[El]) -> Result<()> {
+    fn run(&mut self, _root: &craft_idml::model::Values, top: &[TopLevelNode]) -> Result<()> {
         self.read_preferences(top);
         self.read_composite_fonts(top);
         self.read_cjk_tables(top)?;
         self.graphics(top);
         self.styles(top);
-        if let Some(e) = top.iter().find(|e| e.local() == "FootnoteOption") {
-            self.footnote_option(e);
+        if let Some(e) = top_els_of(top, TopKind::FootnoteOption).next() {
+            self.footnote_option(&e);
         }
-        if let Some(e) = top.iter().find(|e| e.local() == "EPubExportPreference") {
-            self.epub_split(e);
+        if let Some(e) = top_els_of(top, TopKind::EpubExportPreference).next() {
+            self.epub_split(&e);
         }
-        for e in top.iter().filter(|e| e.local() == "Layer") {
+        for e in top_els_of(top, TopKind::Layer) {
             let id = LayerId(self.alloc());
             let color = match e.prop_el("LayerColor") {
                 Some(c) if c.get("type") == Some("list") => {
@@ -501,33 +511,34 @@ impl<'r> Importer<'r> {
                 suppress_wrap_when_hidden: false,
             });
         }
-        for e in top.iter().filter(|e| e.local() == "CrossReferenceFormat") {
-            self.xref_format(e);
+        for e in top_els_of(top, TopKind::CrossReferenceFormat) {
+            self.xref_format(&e);
         }
         self.read_hyperlinks(top);
-        if let Some(ix) = top.iter().find(|e| e.local() == "Index") {
-            self.index_topics_of(ix, &IndexTopic::default());
+        if let Some(ix) = top_els_of(top, TopKind::Index).next() {
+            self.index_topics_of(&ix, &IndexTopic::default());
         }
-        for e in top.iter().filter(|e| e.local() == "TextVariable") {
-            self.text_variable(e);
+        for e in top_els_of(top, TopKind::TextVariable) {
+            self.text_variable(&e);
         }
         // Stories (ids first so frames can reference them).
         let mut pending_stories = Vec::new();
-        for e in top.iter().filter(|e| e.local() == "Story") {
+        for node in top.iter().filter(|node| node.kind == TopKind::Story) {
+            let Some(source) = node.story() else { continue };
             let id = StoryId(self.alloc());
-            if let Some(s) = e.get("Self") {
+            if let Some(s) = source.values.self_id() {
                 self.story_ids.insert(s.to_string(), id);
             }
-            pending_stories.push((id, e));
+            pending_stories.push((id, source.clone()));
         }
-        for (id, e) in pending_stories {
-            let story = self.story(id, e);
+        for (id, source) in pending_stories {
+            let story = self.story_from_model(id, source, ParaFormat::default());
             self.stories.insert(id, story);
         }
         self.toc = self.toc_of(top);
         self.place_index_xrefs();
         // Cross-references point at their hyperlink's destination.
-        for h in top.iter().filter(|e| e.local() == "Hyperlink") {
+        for h in top_els_of(top, TopKind::Hyperlink) {
             let (Some(src), Some(dest)) = (h.get("Source"), h.prop("Destination")) else { continue };
             let (Some(&(sid, k)), Some(&target)) = (self.xref_srcs.get(src), self.anchor_ids.get(dest.trim())) else { continue };
             if let Some(x) = self.stories.get_mut(&sid).and_then(|st| st.xrefs.get_mut(k)) {
@@ -535,27 +546,28 @@ impl<'r> Importer<'r> {
             }
         }
         // Parent spreads: ids first (pages reference other parents).
-        let masters: Vec<&El> = top.iter().filter(|e| e.local() == "MasterSpread").collect();
+        let masters: Vec<craft_idml::model::Spread> =
+            top.iter().filter(|node| node.kind == TopKind::MasterSpread).filter_map(|node| node.spread().cloned()).collect();
         let mut master_ids = Vec::new();
         for m in &masters {
             let id = SpreadId(self.alloc());
-            if let Some(s) = m.get("Self") {
+            if let Some(s) = m.values.self_id() {
                 self.parent_ids.insert(s.to_string(), id);
             }
             master_ids.push(id);
         }
         for (m, id) in masters.iter().zip(master_ids) {
-            let sp = self.spread(m, id, true);
+            let sp = self.spread_from_model(m, id, true);
             self.parents.push(sp);
         }
-        for e in top.iter().filter(|e| e.local() == "Spread") {
+        for model_spread in top.iter().filter(|node| node.kind == TopKind::Spread).filter_map(TopLevelNode::spread) {
             let id = SpreadId(self.alloc());
-            let sp = self.spread(e, id, false);
+            let sp = self.spread_from_model(model_spread, id, false);
             self.spreads.push(sp);
         }
         // Sections. A section whose AlternateLayout differs from the one before starts that layout.
         let mut last_layout: Option<String> = None;
-        for e in top.iter().filter(|e| e.local() == "Section") {
+        for e in top_els_of(top, TopKind::Section) {
             let Some(start) = e.get("PageStart").and_then(|p| self.page_index.get(p)).copied() else { continue };
             let layout = e.get("AlternateLayout").map(str::trim).filter(|l| !l.is_empty()).map(str::to_string);
             let starts_layout = layout.clone().filter(|l| last_layout.as_ref() != Some(l));
@@ -601,35 +613,36 @@ impl<'r> Importer<'r> {
     /// Hyperlink sources, destinations and the `Hyperlink` elements that join them (#1446), by
     /// name: the pages, page items and anchors they name are read later, so `finish` puts the two
     /// ends together.
-    fn read_hyperlinks(&mut self, top: &[El]) {
-        for e in top {
+    fn read_hyperlinks(&mut self, top: &[TopLevelNode]) {
+        for node in top {
+            let e = top_el(node);
             let me = || e.get("Self").unwrap_or("").trim().to_string();
-            match e.local() {
-                "HyperlinkURLDestination" => {
-                    if let Some(u) = attr_or_prop(e, "DestinationURL") {
+            match node.kind {
+                TopKind::HyperlinkUrlDestination => {
+                    if let Some(u) = attr_or_prop(&e, "DestinationURL") {
                         self.link_dests.insert(me(), PendingDest::Url(u));
                     }
                 }
-                "HyperlinkPageDestination" => {
-                    if let Some(pg) = attr_or_prop(e, "DestinationPage") {
+                TopKind::HyperlinkPageDestination => {
+                    if let Some(pg) = attr_or_prop(&e, "DestinationPage") {
                         self.link_dests.insert(me(), PendingDest::Page(pg));
                     }
                 }
-                "HyperlinkPageItemSource" => {
-                    if let Some(it) = attr_or_prop(e, "SourcePageItem") {
+                TopKind::HyperlinkPageItemSource => {
+                    if let Some(it) = attr_or_prop(&e, "SourcePageItem") {
                         self.link_item_srcs.insert(me(), it);
                     }
                 }
-                "Hyperlink" => {
-                    if let (Some(src), Some(dest)) = (attr_or_prop(e, "Source"), attr_or_prop(e, "Destination")) {
+                TopKind::Hyperlink => {
+                    if let (Some(src), Some(dest)) = (attr_or_prop(&e, "Source"), attr_or_prop(&e, "Destination")) {
                         let name = e.get("Name").unwrap_or("").trim().to_string();
                         self.links.push((name, src, dest));
                     }
                 }
                 // A destination kind this importer does not read (an external page, say): kept
                 // by name so a link dropped for it can say what it led to.
-                other if other.starts_with("Hyperlink") && other.ends_with("Destination") => {
-                    self.other_dests.insert(me(), other.to_string());
+                TopKind::HyperlinkOtherDestination => {
+                    self.other_dests.insert(me(), e.local().to_string());
                 }
                 _ => {}
             }
@@ -740,7 +753,7 @@ impl<'r> Importer<'r> {
     }
 
     /// The finished document, and the warnings raised while finishing it.
-    fn finish(mut self, root: &El) -> Result<(Document, Vec<String>)> {
+    fn finish(mut self, root: &craft_idml::model::Values) -> Result<(Document, Vec<String>)> {
         let title = root.get("Name").map(|n| n.trim_end_matches(".indd").to_string()).filter(|n| !n.is_empty()).unwrap_or_else(|| "Untitled".into());
         if self.spreads.is_empty() {
             return Err(IdmlError::Invalid("document has no spreads".into()));

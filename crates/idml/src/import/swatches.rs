@@ -1,8 +1,8 @@
 use super::frame::{Prefs, text_frame_options};
 use super::values::lab_to_color;
 use super::{
-    Color, ColorType, El, Gradient, GradientKind, GradientStop, HashMap, HashSet, Importer, Styles, Swatch, SwatchValue, TextFrameOptions, names,
-    swatch,
+    Color, ColorType, El, Gradient, GradientKind, GradientStop, HashMap, HashSet, Importer, Styles, Swatch, SwatchValue, TextFrameOptions,
+    TopLevelNode, names, swatch,
 };
 
 impl<'r> Importer<'r> {
@@ -30,8 +30,8 @@ impl<'r> Importer<'r> {
     }
 
     /// Custom stroke styles.
-    fn read_stroke_styles(&mut self, top: &[El]) {
-        let top: Vec<_> = top.iter().map(crate::xml::to_craft).collect();
+    fn read_stroke_styles(&mut self, top: &[TopLevelNode]) {
+        let top: Vec<_> = top.iter().map(TopLevelNode::to_el).collect();
         for e in craft_idml::model::stroke_styles(&top) {
             let (Some(id), Some(name)) = (e.values.self_id(), e.values.name()) else { continue };
             let kind = match e.kind {
@@ -47,8 +47,8 @@ impl<'r> Importer<'r> {
     }
 
     /// Ink Manager settings: inks converted to process and ink aliases.
-    fn read_inks(&mut self, top: &[El]) {
-        let model_top: Vec<_> = top.iter().map(crate::xml::to_craft).collect();
+    fn read_inks(&mut self, top: &[TopLevelNode]) {
+        let model_top: Vec<_> = top.iter().map(TopLevelNode::to_el).collect();
         for e in craft_idml::model::inks(&model_top) {
             let Some(name) =
                 e.name().filter(|n| !n.starts_with("$ID/") && !["Process Cyan", "Process Magenta", "Process Yellow", "Process Black"].contains(n))
@@ -64,8 +64,8 @@ impl<'r> Importer<'r> {
         }
     }
 
-    pub(super) fn graphics(&mut self, top: &[El]) {
-        let model_top: Vec<_> = top.iter().map(crate::xml::to_craft).collect();
+    pub(super) fn graphics(&mut self, top: &[TopLevelNode]) {
+        let model_top: Vec<_> = top.iter().map(TopLevelNode::to_el).collect();
         let swatches = craft_idml::model::swatches(&model_top);
         let mut order: Vec<(String, Swatch)> = Vec::new();
         // Colours.

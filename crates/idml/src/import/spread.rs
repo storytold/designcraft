@@ -1,6 +1,6 @@
 use super::frame::{fit_columns, margins_of};
 use super::{
-    Affine, Arc, Columns, El, Guide, Importer, ItemId, Margins, Orientation, Page, PageId, PageSide, ParentInfo, Point, Rect, Spread, SpreadId, names,
+    Affine, Arc, Columns, Guide, Importer, ItemId, Margins, Orientation, Page, PageId, PageSide, ParentInfo, Point, Rect, Spread, SpreadId, names,
 };
 
 impl<'r> Importer<'r> {
@@ -82,11 +82,10 @@ impl<'r> Importer<'r> {
         (margins, columns, local_margins)
     }
 
-    pub(super) fn spread(&mut self, e: &El, id: SpreadId, master: bool) -> Spread {
-        let model_spread = craft_idml::model::Spread::from_el(&crate::xml::to_craft(e));
+    pub(super) fn spread_from_model(&mut self, model_spread: &craft_idml::model::Spread, id: SpreadId, master: bool) -> Spread {
         let facing = self.settings.facing_pages;
         // Page rectangles in IDML spread coordinates.
-        let pages = self.page_rects(&model_spread);
+        let pages = self.page_rects(model_spread);
         let min_x = pages.iter().map(|(r, _)| r.x0).fold(f64::INFINITY, f64::min);
         let min_y = pages.iter().map(|(r, _)| r.y0).fold(f64::INFINITY, f64::min);
         let (min_x, min_y) = if min_x.is_finite() { (min_x, min_y) } else { (0.0, 0.0) };
@@ -135,8 +134,9 @@ impl<'r> Importer<'r> {
         }
         let overrides: Vec<Vec<String>> = pages.iter().map(|(_, p)| p.override_list().into_iter().map(str::to_string).collect()).collect();
         let mut items = Vec::new();
-        for c in e.elements() {
-            if let Some(it) = self.item(c, shift) {
+        for item in model_spread.items() {
+            let item_el = crate::xml::from_craft(item.to_el());
+            if let Some(it) = self.item(&item_el, shift) {
                 items.push(Arc::new(it));
             }
         }

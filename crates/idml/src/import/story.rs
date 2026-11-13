@@ -11,6 +11,10 @@ impl<'r> Importer<'r> {
 
     pub(super) fn story_with_para(&mut self, id: StoryId, e: &El, default_para: ParaFormat) -> Story {
         let source = craft_idml::model::Story::from_el(&crate::xml::to_craft(e));
+        self.story_from_model(id, source, default_para)
+    }
+
+    pub(super) fn story_from_model(&mut self, id: StoryId, source: craft_idml::model::Story, default_para: ParaFormat) -> Story {
         let mut b = StoryBuilder {
             text: String::new(),
             paras: vec![default_para.clone()],
