@@ -671,7 +671,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Step and Repeat…",
             ["Edit"],
             Some("Cmd+Alt+U"),
-            "{count?: 1..1000, dx?, dy?, rows?, columns?, ids?} — copies of the selection (or ids) offset by (dx, dy); a selected ruler guide is copied by `dx` when vertical and by `dy` when horizontal (the other offset is ignored, copies stay within 1000000 pt of the spread origin) → {created, guides: [{page, index}]}; with rows/columns, a grid of at most 1000 cells, and at most 1000 item copies including group contents → {created, ids: the copies}",
+            "{count?: 1..1000, dx?, dy?, rows?, columns?, ids?} — copies of the selection (or ids) offset by (dx, dy); a selected ruler guide is copied by `dx` when vertical and by `dy` when horizontal (the other offset is ignored, each distance once so a grid never stacks two copies on one spot, copies stay within 1000000 pt of the spread origin) → {created, guides: [{page, index}]}; with rows/columns, a grid of at most 1000 cells, and at most 1000 item copies including group contents → {created, ids: the copies}",
             has_selection_or_guides,
             step_and_repeat
         ),
@@ -3672,8 +3672,9 @@ fn checked_step_offset(dx: f64, dy: f64, x: u64, y: u64) -> Result<Vec2> {
 }
 
 /// Copies the selected ruler guides by `offsets`, moving a vertical guide by the offsets' x and a
-/// horizontal one by their y, ignoring the other. `None` when nothing is selected but objects, so
-/// the object path reports it.
+/// horizontal one by their y, ignoring the other. A shift already made for a guide is not made again,
+/// so grid cells never stack copies. `None` when nothing is selected but objects, so the object path
+/// reports it.
 fn step_and_repeat_guides(s: &mut Session, offsets: &[Vec2]) -> Result<Option<Value>> {
     let picked = s.doc()?.selection.guides.clone();
     if picked.is_empty() {
@@ -3696,14 +3697,16 @@ fn step_and_repeat_guides(s: &mut Session, offsets: &[Vec2]) -> Result<Option<Va
         for (at, guide) in &plan {
             let sp = d.spread_mut(at.spread).ok_or_else(|| bad("edit.stepAndRepeat", "no such spread"))?;
             let pg = sp.pages.get_mut(at.page).ok_or_else(|| bad("edit.stepAndRepeat", "no such page"))?;
+            let mut shifts: Vec<f64> = Vec::new();
             for off in offsets {
                 let shift = match guide.orientation {
                     Orientation::Horizontal => off.y,
                     Orientation::Vertical => off.x,
                 };
-                if shift == 0.0 {
+                if shift == 0.0 || shifts.contains(&shift) {
                     continue;
                 }
+                shifts.push(shift);
                 let index = pg.guides.len();
                 let position = super::guides::guide_position(guide.position + shift, "edit.stepAndRepeat")?;
                 pg.guides.push(Guide { position, ..guide.clone() });
@@ -4082,8 +4085,8 @@ mod step_repeat_tests {
 
         s.execute("guide.add", &json!({"orientation": "horizontal", "position": 50.0})).unwrap();
         let r = s.execute("edit.stepAndRepeat", &json!({"rows": 2, "columns": 2, "dx": 99.0, "dy": 25.0})).unwrap();
-        assert_eq!(r["created"], 2, "the cell that only moves across the guide is skipped");
-        assert_eq!(positions(&s, Orientation::Horizontal), vec![50.0, 75.0, 75.0], "a horizontal guide takes `dy`");
+        assert_eq!(r["created"], 1, "cells that only move across the guide, or repeat a shift already made, are skipped");
+        assert_eq!(positions(&s, Orientation::Horizontal), vec![50.0, 75.0], "a horizontal guide takes `dy`, each distance once");
 
         // An offset that does not move the guide at all is refused rather than stacking a copy on it.
         s.execute("guide.add", &json!({"orientation": "vertical", "position": 7.0})).unwrap();
