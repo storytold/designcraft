@@ -207,7 +207,7 @@ pub struct Exporter<'a> {
     pub media: Vec<Media>,
     /// Native PresentationML mappings for model elements the exporter can express directly.
     pub native_shapes: Vec<craft_pptx::Shape>,
-    pub native_media: Vec<(u32, String)>,
+    pub native_media: Vec<(u32, String, Option<String>)>,
     /// Asset → (picture media name, SVG media name).
     media_of: HashMap<AssetId, Option<(String, Option<String>)>>,
     pub fonts: Fonts,
@@ -308,11 +308,9 @@ impl<'a> Exporter<'a> {
         }
         Ok(Slide {
             size: (bounds.width(), bounds.height()),
-            shapes: std::mem::take(&mut self.out),
-            rels: std::mem::take(&mut self.rels),
             name: page_name,
-            native_shapes: std::mem::take(&mut self.native_shapes),
-            native_media: std::mem::take(&mut self.native_media),
+            shapes: std::mem::take(&mut self.native_shapes),
+            media: std::mem::take(&mut self.native_media),
         })
     }
 
@@ -375,12 +373,14 @@ impl<'a> Exporter<'a> {
 
     fn group(&mut self, it: &Item, xf: Affine, opacity: f32) {
         let mut body = std::mem::take(&mut self.out);
+        let native_start = self.native_shapes.len();
         let id = self.id();
         for c in it.shown_children() {
             self.item(c, xf, opacity);
         }
         let inner = std::mem::take(&mut self.out);
-        if inner.is_empty() {
+        let children: Vec<_> = self.native_shapes.drain(native_start..).collect();
+        if inner.is_empty() || children.is_empty() {
             self.out = body;
             return;
         }
@@ -388,6 +388,14 @@ impl<'a> Exporter<'a> {
         let inner_bounds = it.shown_children().map(|c| c.bounds()).reduce(|a, b| a.union(b)).unwrap_or(Rect::ZERO);
         let b = (self.to_slide * xf).transform_rect_bbox(inner_bounds);
         let (x, y, w, h) = (emu(b.x0), emu(b.y0), emu_len(b.width()), emu_len(b.height()));
+        self.native_shapes.push(craft_pptx::Shape {
+            id: craft_pptx::ShapeId(id),
+            name: name_of(it, id),
+            xfrm: Some(craft_pptx::Xfrm::new(b.x0, b.y0, b.width(), b.height())),
+            kind: craft_pptx::ShapeKind::Group { children, child: craft_pptx::Xfrm::new(b.x0, b.y0, b.width(), b.height()) },
+            descr: it.alt_text.clone(),
+            ..Default::default()
+        });
         let _ = write!(
             body,
             "<p:grpSp><p:nvGrpSpPr><p:cNvPr id=\"{id}\" name=\"{}\"{}/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x=\"{x}\" y=\"{y}\"/><a:ext cx=\"{w}\" cy=\"{h}\"/><a:chOff x=\"{x}\" y=\"{y}\"/><a:chExt cx=\"{w}\" cy=\"{h}\"/></a:xfrm></p:grpSpPr>{inner}</p:grpSp>",
@@ -438,9 +446,6 @@ impl<'a> Exporter<'a> {
 
     /// A shape whose complete appearance fits the shared PresentationML model.
     fn native_shape(&self, it: &Item, geometry: &Geometry, id: u32, opacity: f32) -> Option<craft_pptx::Shape> {
-        if it.fill.overprint || it.stroke.overprint || it.stroke.gap_overprint {
-            return None;
-        }
         let fill = self.model_fill(&it.fill, it.path.is_closed(), opacity);
         let line = self.model_line(&it.stroke, opacity)?;
         let effects = self.model_effects(it, opacity);
@@ -526,9 +531,6 @@ impl<'a> Exporter<'a> {
         if stroke.is_none() || stroke.weight <= 0.0 {
             return Some(craft_pptx::Line::none());
         }
-        if stroke.join == Join::Miter && (stroke.miter_limit - 4.0).abs() > 0.001 {
-            return None;
-        }
         let mut line = craft_pptx::Line {
             fill: Some(self.model_fill(&stroke.as_fill(), true, opacity)),
             width: Some(stroke.weight),
@@ -542,6 +544,7 @@ impl<'a> Exporter<'a> {
                 Join::Round => craft_pptx::style::LineJoin::Round,
                 Join::Bevel => craft_pptx::style::LineJoin::Bevel,
             }),
+            miter_limit: (stroke.join == Join::Miter).then_some(pct(stroke.miter_limit.max(1.0)).max(1) as u32),
             align: Some(match stroke.align {
                 StrokeAlign::Inside => craft_pptx::style::LineAlign::Inside,
                 StrokeAlign::Center | StrokeAlign::Outside => craft_pptx::style::LineAlign::Center,
@@ -909,32 +912,33 @@ impl<'a> Exporter<'a> {
         let line = if axis { self.line(&it.stroke, opacity) } else { "<a:ln><a:noFill/></a:ln>".into() };
         let fx = self.effects(it, opacity);
         let id = self.id();
-        if axis && svg.is_none() && it.effects == designcraft_doc::Effects::default() && it.fill.is_none() && it.stroke.is_none() {
-            let mut fill = craft_pptx::style::PictureFill { media: craft_pptx::MediaId(0), crop: crop_values, ..Default::default() };
-            if opacity < 0.999 {
-                fill.alpha = Some(f64::from(opacity));
-            }
-            self.native_shapes.push(craft_pptx::Shape {
-                id: craft_pptx::ShapeId(id),
-                name: name_of(it, id),
-                xfrm: Some(craft_pptx::Xfrm {
-                    x: geo.xfrm.rect.x0,
-                    y: geo.xfrm.rect.y0,
-                    w: geo.xfrm.rect.width(),
-                    h: geo.xfrm.rect.height(),
-                    rot: geo.xfrm.rot,
-                    flip_h: geo.xfrm.flip_h,
-                    flip_v: geo.xfrm.flip_v,
-                }),
-                kind: craft_pptx::ShapeKind::Picture { fill },
-                geom: geo.model.clone(),
-                fill: Some(craft_pptx::Fill::None),
-                line: Some(craft_pptx::Line::none()),
-                descr: it.alt_text.clone(),
-                ..Default::default()
-            });
-            self.native_media.push((id, name.clone()));
+        let mut picture_fill = craft_pptx::style::PictureFill { media: craft_pptx::MediaId(0), crop: crop_values, ..Default::default() };
+        if opacity < 0.999 {
+            picture_fill.alpha = Some(f64::from(opacity));
         }
+        let model_line = if axis { self.model_line(&it.stroke, opacity).unwrap_or_else(craft_pptx::Line::none) } else { craft_pptx::Line::none() };
+        let effects = self.model_effects(it, opacity);
+        self.native_shapes.push(craft_pptx::Shape {
+            id: craft_pptx::ShapeId(id),
+            name: name_of(it, id),
+            xfrm: Some(craft_pptx::Xfrm {
+                x: geo.xfrm.rect.x0,
+                y: geo.xfrm.rect.y0,
+                w: geo.xfrm.rect.width(),
+                h: geo.xfrm.rect.height(),
+                rot: geo.xfrm.rot,
+                flip_h: geo.xfrm.flip_h,
+                flip_v: geo.xfrm.flip_v,
+            }),
+            kind: craft_pptx::ShapeKind::Picture { fill: picture_fill },
+            geom: geo.model.clone(),
+            fill: Some(if axis { self.model_fill(&it.fill, it.path.is_closed(), opacity) } else { craft_pptx::Fill::None }),
+            line: Some(model_line),
+            effects: (effects != craft_pptx::Effects::default()).then_some(effects),
+            descr: it.alt_text.clone(),
+            ..Default::default()
+        });
+        self.native_media.push((id, name.clone(), svg));
         let _ = write!(
             self.out,
             "<p:pic><p:nvPicPr><p:cNvPr id=\"{id}\" name=\"{}\"{}/><p:cNvPicPr><a:picLocks noChangeAspect=\"1\"/></p:cNvPicPr><p:nvPr/></p:nvPicPr>\
@@ -948,14 +952,32 @@ impl<'a> Exporter<'a> {
     }
 
     /// Paragraph shading and rules, table cell fills: a plain filled rectangle in slide space.
-    pub fn rect_shape(&mut self, xfrm: XfrmBox, fill: &str, name: &str) {
+    pub fn rect_shape(&mut self, xfrm: XfrmBox, fill_xml: &str, fill: craft_pptx::Fill, name: &str) {
         let id = self.id();
+        self.native_shapes.push(craft_pptx::Shape {
+            id: craft_pptx::ShapeId(id),
+            name: name.into(),
+            xfrm: Some(craft_pptx::Xfrm {
+                x: xfrm.rect.x0,
+                y: xfrm.rect.y0,
+                w: xfrm.rect.width(),
+                h: xfrm.rect.height(),
+                rot: xfrm.rot,
+                flip_h: xfrm.flip_h,
+                flip_v: xfrm.flip_v,
+            }),
+            geom: craft_pptx::Geom::preset("rect"),
+            fill: Some(fill),
+            line: Some(craft_pptx::Line::none()),
+            ..Default::default()
+        });
         let _ = write!(
             self.out,
-            "<p:sp><p:nvSpPr><p:cNvPr id=\"{id}\" name=\"{}\"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr>{}{}{fill}<a:ln><a:noFill/></a:ln></p:spPr></p:sp>",
+            "<p:sp><p:nvSpPr><p:cNvPr id=\"{id}\" name=\"{}\"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr>{}{}{}<a:ln><a:noFill/></a:ln></p:spPr></p:sp>",
             esc(name),
             xfrm.xml(),
-            preset("rect")
+            preset("rect"),
+            fill_xml
         );
     }
 }

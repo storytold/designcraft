@@ -166,7 +166,8 @@ fn decos(ex: &mut Exporter, ft: &FrameText, m: Affine, opacity: f32) {
     for d in &ft.decos {
         let Some(c) = ex.color(&d.color, d.tint, opacity) else { continue };
         if let Some((xfrm, _)) = box_of(d.rect, m) {
-            ex.rect_shape(xfrm, &format!("<a:solidFill>{c}</a:solidFill>"), "Paragraph Shading");
+            let model_fill = ex.model_color(&d.color, d.tint, opacity).map_or(craft_pptx::Fill::None, craft_pptx::Fill::solid);
+            ex.rect_shape(xfrm, &format!("<a:solidFill>{c}</a:solidFill>"), model_fill, "Paragraph Shading");
         }
     }
 }
@@ -696,6 +697,7 @@ fn reflow(ex: &mut Exporter, it: &Item, tfr: &TextFrame, ft: &FrameText, cs: &Co
     let o = &tfr.options;
     let m = ex.to_slide * xf;
     let k = box_of(it.inner_bounds(), m).map_or(1.0, |(_, d)| (d.sx * d.sy).abs().sqrt());
+    let mut model = reflow_model(ex, it, tfr, ft, cs, story, k, opacity, vertical);
     let [t, l, b, r] = o.inset.map(|v| emu_len(v * k));
     let cols = ft.columns.len().max(1);
     let mut s = format!("<p:txBody><a:bodyPr wrap=\"square\" lIns=\"{l}\" tIns=\"{t}\" rIns=\"{r}\" bIns=\"{b}\" rtlCol=\"0\"");
@@ -803,5 +805,84 @@ fn reflow(ex: &mut Exporter, it: &Item, tfr: &TextFrame, ft: &FrameText, cs: &Co
         first = false;
     }
     s.push_str("</p:txBody>");
-    ex.shape(it, xf, opacity, Some(&s));
+    ex.shape_with_text_model(it, xf, opacity, &s, std::mem::take(&mut model));
+}
+
+/// Reflow text in the shared text model. PowerPoint is free to break each paragraph again, but
+/// the words, run formatting, paragraph alignment, columns and frame options stay editable.
+#[allow(clippy::too_many_arguments)]
+fn reflow_model(
+    ex: &mut Exporter,
+    it: &Item,
+    tfr: &TextFrame,
+    ft: &FrameText,
+    cs: &ComposedStory,
+    story: &str,
+    k: f64,
+    opacity: f32,
+    vertical: bool,
+) -> craft_pptx::TextBody {
+    let mut lines: Vec<OutLine> = Vec::new();
+    let mut by_para: std::collections::BTreeMap<usize, Vec<&Line>> = std::collections::BTreeMap::new();
+    for line in &ft.lines {
+        by_para.entry(line.para).or_default().push(line);
+    }
+    for (para, source) in by_para {
+        let mut merged: Option<OutLine> = None;
+        for line in source {
+            let mut out = out_line(ex, cs, line, story);
+            out.para = para;
+            out.last_in_para = true;
+            if line.hyphenated
+                && let Some(run) = out.runs.last_mut()
+                && run.text.ends_with(['-', '\u{2010}'])
+            {
+                run.text.pop();
+            }
+            if out.trailing_space
+                && let Some(run) = out.runs.last_mut()
+                && !run.text.ends_with(char::is_whitespace)
+            {
+                run.text.push(' ');
+            }
+            match &mut merged {
+                Some(previous) => {
+                    previous.end = out.end;
+                    previous.size = previous.size.max(out.size);
+                    previous.leading = out.leading;
+                    previous.runs.extend(out.runs);
+                    previous.tabs.extend(out.tabs);
+                    previous.trailing_space = out.trailing_space;
+                }
+                None => merged = Some(out),
+            }
+        }
+        if let Some(mut line) = merged {
+            for run in &mut line.runs {
+                run.spc = 0.0;
+            }
+            lines.push(line);
+        }
+    }
+    let inner = it.inner_bounds();
+    let mut segment = Segment { lines, x0: inner.x0 + tfr.options.inset[1], x1: inner.x1 - tfr.options.inset[3] };
+    let insets = [tfr.options.inset[1], tfr.options.inset[0], tfr.options.inset[3], tfr.options.inset[2]];
+    let mut body = model_body(ex, &segment, k, opacity, insets);
+    segment.lines.clear();
+    body.body.wrap = Some(true);
+    body.body.columns = Some(u32::try_from(ft.columns.len().max(1)).unwrap_or(u32::MAX));
+    body.body.col_spacing = Some(tfr.options.gutter * k);
+    body.body.vert = vertical.then_some(craft_pptx::text::TextDir::EaVertical);
+    body.body.anchor = Some(match tfr.options.vertical_justification {
+        designcraft_doc::VerticalJustification::Top => craft_pptx::text::Anchor::Top,
+        designcraft_doc::VerticalJustification::Center => craft_pptx::text::Anchor::Middle,
+        designcraft_doc::VerticalJustification::Bottom => craft_pptx::text::Anchor::Bottom,
+        designcraft_doc::VerticalJustification::Justify => craft_pptx::text::Anchor::Justified,
+    });
+    for paragraph in &mut body.paragraphs {
+        for run in &mut paragraph.runs {
+            run.props.spacing = Some(0.0);
+        }
+    }
+    body
 }
