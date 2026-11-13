@@ -130,8 +130,8 @@ impl<'r> Importer<'r> {
         for n in &e.children {
             match n {
                 Node::El(c) => match craft_idml::model::TextNode::from_el(&crate::xml::to_craft(c)) {
-                    craft_idml::model::TextNode::Paragraph(_) => {
-                        let style = c.get("AppliedParagraphStyle").map(|r| self.para_style_ref(r)).unwrap_or_else(|| pf.style.clone());
+                    craft_idml::model::TextNode::Paragraph(range) => {
+                        let style = range.paragraph_style().map(|r| self.para_style_ref(r)).unwrap_or_else(|| pf.style.clone());
                         let para = self.para_attrs(c);
                         let mut chars = self.char_attrs(c);
                         // A paragraph range inside a tracked change is part of that change.
@@ -147,9 +147,9 @@ impl<'r> Importer<'r> {
                         let pcf = CharFormat { style: st::NO_CHAR_STYLE.into(), over: chars.clone() };
                         self.walk_story(c, b, &npf, &chars, &pcf, None);
                     }
-                    craft_idml::model::TextNode::Character(_) => {
+                    craft_idml::model::TextNode::Character(range) => {
                         let ncf = self.range_format(c, pchars, cf);
-                        let bt = c.get("ParagraphBreakType").filter(|t| *t != "Anywhere");
+                        let bt = range.paragraph_break_type();
                         b.last = ncf.clone();
                         self.walk_story(c, b, pf, pchars, &ncf, bt);
                     }
