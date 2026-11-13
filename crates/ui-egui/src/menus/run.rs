@@ -142,8 +142,7 @@ fn run_ui_part1(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
         "app.placeWithOptions" => {
             // Word/RTF Import Options: style mapping and conflicts before the text lands.
             let Some(path) = p.get("path").and_then(Value::as_str) else { return Some(rerun_with_path(app, "place", id, p, "path")) };
-            let l = path.to_lowercase();
-            if !(l.ends_with(".docx") || l.ends_with(".rtf")) {
+            if !matches!(craft_file_formats::detect(path, &[]), Some(craft_file_formats::Format::Docx | craft_file_formats::Format::Rtf)) {
                 return Some(app.place_file(json!({"path": path})));
             }
             let info = match app.run("place.styles", json!({"path": path})) {

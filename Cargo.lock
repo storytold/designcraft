@@ -1144,7 +1144,7 @@ dependencies = [
 [[package]]
 name = "craft-eps"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=6ba1ca33ca21c33de55ef155141db08ca6048e8d#6ba1ca33ca21c33de55ef155141db08ca6048e8d"
+source = "git+https://github.com/storytold/craft-libs?rev=b4ada28f1#b4ada28f19067d4693e902e0e5f32eb292241e3a"
 
 [[package]]
 name = "craft-eps"
@@ -1164,10 +1164,10 @@ dependencies = [
 [[package]]
 name = "craft-file-formats"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=6ba1ca33ca21c33de55ef155141db08ca6048e8d#6ba1ca33ca21c33de55ef155141db08ca6048e8d"
+source = "git+https://github.com/storytold/craft-libs?rev=b4ada28f1#b4ada28f19067d4693e902e0e5f32eb292241e3a"
 dependencies = [
- "craft-eps 0.1.0 (git+https://github.com/storytold/craft-libs?rev=6ba1ca33ca21c33de55ef155141db08ca6048e8d)",
- "craft-svg 0.1.0 (git+https://github.com/storytold/craft-libs?rev=6ba1ca33ca21c33de55ef155141db08ca6048e8d)",
+ "craft-eps 0.1.0 (git+https://github.com/storytold/craft-libs?rev=b4ada28f1)",
+ "craft-svg 0.1.0 (git+https://github.com/storytold/craft-libs?rev=b4ada28f1)",
 ]
 
 [[package]]
@@ -1362,9 +1362,9 @@ source = "git+https://github.com/storytold/craft-libs?rev=ba24fe2435adb3c81ad605
 [[package]]
 name = "craft-svg"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=6ba1ca33ca21c33de55ef155141db08ca6048e8d#6ba1ca33ca21c33de55ef155141db08ca6048e8d"
+source = "git+https://github.com/storytold/craft-libs?rev=b4ada28f1#b4ada28f19067d4693e902e0e5f32eb292241e3a"
 dependencies = [
- "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=6ba1ca33ca21c33de55ef155141db08ca6048e8d)",
+ "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=b4ada28f1)",
  "flate2",
  "kurbo",
  "roxmltree 0.21.2",
@@ -1479,7 +1479,7 @@ dependencies = [
 [[package]]
 name = "craft-xml"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=6ba1ca33ca21c33de55ef155141db08ca6048e8d#6ba1ca33ca21c33de55ef155141db08ca6048e8d"
+source = "git+https://github.com/storytold/craft-libs?rev=b4ada28f1#b4ada28f19067d4693e902e0e5f32eb292241e3a"
 dependencies = [
  "quick-xml 0.41.0",
  "thiserror 2.0.21",
@@ -1967,6 +1967,7 @@ name = "designcraft-ui-egui"
 version = "0.20.1"
 dependencies = [
  "craft-dialogs",
+ "craft-file-formats",
  "craft-keymap",
  "craft-prepress",
  "craft-ui",

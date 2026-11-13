@@ -24,7 +24,7 @@ impl DesignApp {
     /// Open (`open`) or place (`place`) the file at `path`, chosen in a dialog or passed by a script.
     pub(crate) fn open_picked(&mut self, purpose: &str, path: String) -> Result<Value, String> {
         // Image Import Options: a multi-page PDF asks which page.
-        if purpose == "place" && path.to_ascii_lowercase().ends_with(".pdf") {
+        if purpose == "place" && craft_file_formats::detect(&path, &[]) == Some(craft_file_formats::Format::Pdf) {
             let target = self.session.active().map(|d| d.uid);
             let pages = self.services.read.as_mut().and_then(|r| r(&path).ok()).and_then(|b| designcraft_render::pdf_page_count(&b)).unwrap_or(1);
             if pages > 1 {
@@ -126,7 +126,7 @@ impl DesignApp {
     }
 
     fn import_file(&mut self, file: ImportedFile) -> Result<Value, String> {
-        let lower = file.name.to_ascii_lowercase();
+        let format = craft_file_formats::detect(&file.name, &file.bytes);
         if let Some(kind) = file.request.purpose.strip_prefix("styles") {
             self.activate_import_target(&file.request)?;
             let mut params = json!({"name": file.name, "base64": designcraft_engine::cmd::base64_encode(&file.bytes)});
@@ -140,11 +140,11 @@ impl DesignApp {
         let layout = opens_as_document(&file.name)
             || (std::path::Path::new(&file.name).extension().is_none() && designcraft_engine::cmd::is_document(&file.bytes));
         let place =
-            file.request.purpose == "place" || (matches!(file.request.purpose.as_str(), "drop" | "open") && !layout && !lower.ends_with(".ase"));
-        if place || lower.ends_with(".ase") || file.request.purpose == "swatches" {
+            file.request.purpose == "place" || (matches!(file.request.purpose.as_str(), "drop" | "open") && !layout && format != Some(craft_file_formats::Format::Ase));
+        if place || format == Some(craft_file_formats::Format::Ase) || file.request.purpose == "swatches" {
             self.activate_import_target(&file.request)?;
         }
-        if place && lower.ends_with(".pdf") {
+        if place && craft_file_formats::detect(&file.name, &file.bytes) == Some(craft_file_formats::Format::Pdf) {
             let pages = designcraft_render::pdf_page_count(&file.bytes).unwrap_or(1);
             if pages > 1 {
                 self.ui.dialog =
@@ -154,7 +154,7 @@ impl DesignApp {
             }
         }
         let b64 = designcraft_engine::cmd::base64_encode(&file.bytes);
-        if lower.ends_with(".ase") || file.request.purpose == "swatches" {
+        if format == Some(craft_file_formats::Format::Ase) || file.request.purpose == "swatches" {
             self.run("swatch.load", json!({"base64": b64}))
         } else if file.request.purpose == "place" {
             self.place_file(json!({"name": file.name, "base64": b64}))
@@ -198,7 +198,7 @@ impl DesignApp {
     /// the pointer when there is none, and clears the flag, so the files after it land at the
     /// pointer instead of replacing that graphic.
     pub(crate) fn place_dropped(&mut self, path: &str, pointer: Option<egui::Pos2>, frame_free: &mut bool) -> Result<Value, String> {
-        if path.to_ascii_lowercase().ends_with(".ase") {
+        if craft_file_formats::detect(path, &[]) == Some(craft_file_formats::Format::Ase) {
             return self.run("swatch.load", json!({"path": path}));
         }
         let document = opens_as_document(path)
@@ -318,8 +318,10 @@ impl DesignApp {
 /// Files that open as documents (when dropped or picked) rather than being placed: DesignCraft,
 /// IDML, and InDesign documents and templates (converted to IDML on open).
 pub fn opens_as_document(name: &str) -> bool {
-    let n = name.to_ascii_lowercase();
-    [".designcraft", ".idml", ".indd", ".indt"].iter().any(|ext| n.ends_with(ext))
+    matches!(
+        craft_file_formats::detect(name, &[]),
+        Some(craft_file_formats::Format::DesignCraft | craft_file_formats::Format::Idml | craft_file_formats::Format::Indd)
+    )
 }
 
 #[cfg(test)]

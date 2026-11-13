@@ -21,7 +21,7 @@ fn save_bytes(d: &Document, preview: Option<&[u8]>) -> Result<Vec<u8>> {
 pub fn with_document_extension(path: &str) -> String {
     let p = std::path::Path::new(path);
     let ext = p.extension().and_then(std::ffi::OsStr::to_str);
-    if p.file_name().is_none() || ext.is_some_and(|e| e.eq_ignore_ascii_case(designcraft_format::EXTENSION)) {
+    if p.file_name().is_none() || ext.is_some_and(|e| craft_file_formats::from_extension(e) == Some(craft_file_formats::Format::DesignCraft)) {
         return path.to_string();
     }
     format!("{path}.{}", designcraft_format::EXTENSION)
@@ -32,7 +32,7 @@ pub fn with_document_extension(path: &str) -> String {
 /// that kept it would name the file `Brochure.designcraft.designcraft`. A bare `.designcraft` stays.
 pub(super) fn without_native_extension(name: &str) -> &str {
     match name.rsplit_once('.') {
-        Some((stem, ext)) if !stem.is_empty() && ext.eq_ignore_ascii_case(designcraft_format::EXTENSION) => stem,
+        Some((stem, ext)) if !stem.is_empty() && craft_file_formats::from_extension(ext) == Some(craft_file_formats::Format::DesignCraft) => stem,
         _ => name,
     }
 }
