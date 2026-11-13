@@ -438,80 +438,12 @@ impl<'a> Exporter<'a> {
 
     /// A shape whose complete appearance fits the shared PresentationML model.
     fn native_shape(&self, it: &Item, geometry: &Geometry, id: u32, opacity: f32) -> Option<craft_pptx::Shape> {
-        if it.effects != designcraft_doc::Effects::default() || it.fill.overprint || it.stroke.overprint || it.stroke.gap_overprint {
+        if it.fill.overprint || it.stroke.overprint || it.stroke.gap_overprint {
             return None;
         }
-        let fill = if it.fill.is_none() || !it.path.is_closed() {
-            craft_pptx::Fill::None
-        } else {
-            if resolve_gradient(&self.doc.swatches, &it.fill.swatch).is_some() {
-                return None;
-            }
-            match self.doc.resolve_color(&it.fill.swatch, it.fill.tint) {
-                Some(color) => {
-                    let [r, g, b, a] = color.to_rgba8(opacity);
-                    craft_pptx::Fill::solid(craft_pptx::ColorRef::rgb(craft_pptx::Rgba::rgba(r, g, b, a)))
-                }
-                None => craft_pptx::Fill::None,
-            }
-        };
-        let line = if it.stroke.is_none() {
-            craft_pptx::Line::none()
-        } else {
-            let stroke = &it.stroke;
-            let supported_dash = matches!(&stroke.kind, StrokeType::Solid | StrokeType::Dotted | StrokeType::Dashed { .. });
-            if stroke.start != Arrowhead::None
-                || stroke.end != Arrowhead::None
-                || stroke.gradient_angle.is_some()
-                || stroke.gradient_vector.is_some()
-                || !supported_dash
-            {
-                return None;
-            }
-            if resolve_gradient(&self.doc.swatches, &stroke.swatch).is_some() {
-                return None;
-            }
-            let color = self.doc.resolve_color(&stroke.swatch, stroke.tint)?;
-            let [r, g, b, a] = color.to_rgba8(opacity);
-            let mut line = craft_pptx::Line::solid(craft_pptx::ColorRef::rgb(craft_pptx::Rgba::rgba(r, g, b, a)), stroke.weight);
-            line.cap = Some(match stroke.cap {
-                Cap::Butt => craft_pptx::style::LineCap::Flat,
-                Cap::Round => craft_pptx::style::LineCap::Round,
-                Cap::Projecting => craft_pptx::style::LineCap::Square,
-            });
-            line.join = Some(match stroke.join {
-                Join::Miter => craft_pptx::style::LineJoin::Miter,
-                Join::Round => craft_pptx::style::LineJoin::Round,
-                Join::Bevel => craft_pptx::style::LineJoin::Bevel,
-            });
-            line.align = Some(match stroke.align {
-                StrokeAlign::Inside => craft_pptx::style::LineAlign::Inside,
-                StrokeAlign::Center | StrokeAlign::Outside => craft_pptx::style::LineAlign::Center,
-            });
-            if stroke.join == Join::Miter && (stroke.miter_limit - 4.0).abs() > 0.001 {
-                return None;
-            }
-            match &stroke.kind {
-                StrokeType::Solid => {}
-                StrokeType::Dotted => line.dash = Some(craft_pptx::style::Dash::Preset { name: "sysDot".into() }),
-                StrokeType::Dashed { pattern } => {
-                    if pattern.iter().any(|length| *length > 0.0) {
-                        let mut pattern = pattern.clone();
-                        if pattern.len() % 2 == 1 {
-                            pattern.extend(pattern.clone());
-                        }
-                        let pairs = pattern
-                            .chunks(2)
-                            .filter_map(|pair| pair.first().zip(pair.get(1)))
-                            .map(|(dash, gap)| (*dash / stroke.weight, *gap / stroke.weight))
-                            .collect();
-                        line.dash = Some(craft_pptx::style::Dash::Custom { pattern: pairs });
-                    }
-                }
-                _ => return None,
-            }
-            line
-        };
+        let fill = self.model_fill(&it.fill, it.path.is_closed(), opacity);
+        let line = self.model_line(&it.stroke, opacity)?;
+        let effects = self.model_effects(it, opacity);
         let xfrm = craft_pptx::Xfrm {
             x: geometry.xfrm.rect.x0,
             y: geometry.xfrm.rect.y0,
@@ -528,6 +460,7 @@ impl<'a> Exporter<'a> {
             geom: geometry.model.clone(),
             fill: Some(fill),
             line: Some(line),
+            effects: (effects != craft_pptx::Effects::default()).then_some(effects),
             descr: it.alt_text.clone(),
             ..Default::default()
         })
@@ -553,6 +486,165 @@ impl<'a> Exporter<'a> {
         }
         let [r, g, b, a] = self.doc.resolve_color(swatch, tint)?.to_rgba8(alpha);
         Some(craft_pptx::ColorRef::rgb(craft_pptx::Rgba::rgba(r, g, b, a)))
+    }
+
+    fn model_fill(&self, fill: &designcraft_doc::Fill, closed: bool, opacity: f32) -> craft_pptx::Fill {
+        if fill.is_none() || !closed {
+            return craft_pptx::Fill::None;
+        }
+        if let Some(gradient) = resolve_gradient(&self.doc.swatches, &fill.swatch) {
+            let stops = gradient
+                .expanded_stops()
+                .into_iter()
+                .map(|(offset, color, alpha)| {
+                    let [r, g, b, a] = color.to_rgba8(alpha * opacity);
+                    craft_pptx::style::GradientStop { pos: f64::from(offset), color: craft_pptx::ColorRef::rgb(craft_pptx::Rgba::rgba(r, g, b, a)) }
+                })
+                .collect();
+            let shape = match gradient.kind {
+                GradientKind::Radial => craft_pptx::style::GradientShape::Path { path: "circle".into(), focus: [0.5; 4] },
+                GradientKind::Linear | GradientKind::Freeform => {
+                    let angle = match fill.gradient_vector {
+                        Some([x0, y0, x1, y1]) => (y1 - y0).atan2(x1 - x0).to_degrees(),
+                        None => -fill.gradient_angle.unwrap_or(0.0),
+                    };
+                    craft_pptx::style::GradientShape::Linear { angle, scaled: false }
+                }
+            };
+            return craft_pptx::Fill::Gradient(craft_pptx::style::Gradient {
+                stops,
+                shape: Some(shape),
+                rotate_with_shape: Some(true),
+                flip: None,
+                tile: [0.0; 4],
+            });
+        }
+        self.model_color(&fill.swatch, fill.tint, opacity).map_or(craft_pptx::Fill::None, craft_pptx::Fill::solid)
+    }
+
+    fn model_line(&self, stroke: &Stroke, opacity: f32) -> Option<craft_pptx::Line> {
+        if stroke.is_none() || stroke.weight <= 0.0 {
+            return Some(craft_pptx::Line::none());
+        }
+        if stroke.join == Join::Miter && (stroke.miter_limit - 4.0).abs() > 0.001 {
+            return None;
+        }
+        let mut line = craft_pptx::Line {
+            fill: Some(self.model_fill(&stroke.as_fill(), true, opacity)),
+            width: Some(stroke.weight),
+            cap: Some(match stroke.cap {
+                Cap::Butt => craft_pptx::style::LineCap::Flat,
+                Cap::Round => craft_pptx::style::LineCap::Round,
+                Cap::Projecting => craft_pptx::style::LineCap::Square,
+            }),
+            join: Some(match stroke.join {
+                Join::Miter => craft_pptx::style::LineJoin::Miter,
+                Join::Round => craft_pptx::style::LineJoin::Round,
+                Join::Bevel => craft_pptx::style::LineJoin::Bevel,
+            }),
+            align: Some(match stroke.align {
+                StrokeAlign::Inside => craft_pptx::style::LineAlign::Inside,
+                StrokeAlign::Center | StrokeAlign::Outside => craft_pptx::style::LineAlign::Center,
+            }),
+            compound: Some(match stroke.kind {
+                StrokeType::ThickThin => craft_pptx::style::Compound::ThickThin,
+                StrokeType::ThinThick => craft_pptx::style::Compound::ThinThick,
+                StrokeType::ThinThin | StrokeType::ThickThick => craft_pptx::style::Compound::Double,
+                StrokeType::ThinThickThin | StrokeType::ThickThinThick => craft_pptx::style::Compound::Triple,
+                _ => craft_pptx::style::Compound::Single,
+            }),
+            ..Default::default()
+        };
+        match &stroke.kind {
+            StrokeType::Dashed { pattern } if pattern.iter().any(|length| *length > 0.0) => {
+                let mut pattern = pattern.iter().map(|length| length.max(0.0)).collect::<Vec<_>>();
+                if pattern.len() % 2 == 1 {
+                    pattern.extend(pattern.clone());
+                }
+                let pairs = pattern
+                    .chunks(2)
+                    .filter_map(|pair| pair.first().zip(pair.get(1)))
+                    .map(|(dash, gap)| (*dash / stroke.weight, *gap / stroke.weight))
+                    .collect();
+                line.dash = Some(craft_pptx::style::Dash::Custom { pattern: pairs });
+            }
+            StrokeType::Dotted => line.dash = Some(craft_pptx::style::Dash::Preset { name: "sysDot".into() }),
+            _ => {}
+        }
+        let end = |arrow: Arrowhead| {
+            match arrow {
+                Arrowhead::None | Arrowhead::Bar => None,
+                Arrowhead::Simple | Arrowhead::SimpleWide => Some("arrow"),
+                Arrowhead::Triangle | Arrowhead::TriangleWide | Arrowhead::Curved => Some("triangle"),
+                Arrowhead::Barbed => Some("stealth"),
+                Arrowhead::Circle | Arrowhead::CircleSolid => Some("oval"),
+                Arrowhead::Square | Arrowhead::SquareSolid => Some("diamond"),
+            }
+            .map(|kind| craft_pptx::style::LineEnd { kind: kind.into(), w: "lg".into(), len: "lg".into() })
+        };
+        line.head = end(stroke.start);
+        line.tail = end(stroke.end);
+        Some(line)
+    }
+
+    fn model_effects(&self, it: &Item, opacity: f32) -> craft_pptx::Effects {
+        let fx = &it.effects;
+        let shadow = |color: &str, alpha: f32, angle: f64, global: bool, distance: f64, blur: f64, inner: bool| {
+            self.model_color(color, 1.0, alpha * opacity).map(|color| {
+                let light = self.doc.light_angle(angle, global).to_radians();
+                let offset = Vec2::new(-light.cos(), light.sin());
+                craft_pptx::style::Shadow {
+                    color,
+                    blur,
+                    dist: distance.abs(),
+                    dir: offset.y.atan2(offset.x).to_degrees(),
+                    inner,
+                    sx: 1.0,
+                    sy: 1.0,
+                    kx: 0.0,
+                    ky: 0.0,
+                    align: String::new(),
+                    rotate_with_shape: true,
+                }
+            })
+        };
+        let outer_shadow = fx
+            .drop_shadow
+            .on
+            .then(|| {
+                shadow(
+                    &fx.drop_shadow.color,
+                    fx.drop_shadow.opacity,
+                    fx.drop_shadow.angle,
+                    fx.drop_shadow.global_light,
+                    fx.drop_shadow.distance,
+                    fx.drop_shadow.size,
+                    false,
+                )
+            })
+            .flatten();
+        let inner_shadow = fx
+            .inner_shadow
+            .on
+            .then(|| {
+                shadow(
+                    &fx.inner_shadow.color,
+                    fx.inner_shadow.opacity,
+                    fx.inner_shadow.angle,
+                    fx.inner_shadow.global_light,
+                    fx.inner_shadow.distance,
+                    fx.inner_shadow.size,
+                    true,
+                )
+            })
+            .flatten();
+        let glow = if fx.outer_glow.on {
+            self.model_color(&fx.outer_glow.color, 1.0, fx.outer_glow.opacity * opacity)
+                .map(|color| craft_pptx::style::Glow { color, radius: fx.outer_glow.size })
+        } else {
+            None
+        };
+        craft_pptx::Effects { outer_shadow, inner_shadow, glow, soft_edge: (fx.feather > 0.0).then_some(fx.feather), ..Default::default() }
     }
 
     pub fn fill(&mut self, f: &designcraft_doc::Fill, closed: bool, opacity: f32) -> String {
