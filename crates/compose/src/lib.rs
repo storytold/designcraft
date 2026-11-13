@@ -6159,21 +6159,72 @@ fn vertical_justify(
                 shift[k] <= 0.0 || ((k == n || l.baseline + l.descent + shift[k] <= limit + 1e-9) && in_outline(l, shift[k]))
             }) && clear(shift)
         };
+        // The room in 0..=`top` at which a moved line's band (from its top down to its baseline, or
+        // to its descent where `inside`), widened by the outline's inset, reaches one of the
+        // outline's corner heights: between two of these each line's fit changes only along the
+        // outline's straight edges. Empty when there are more than `MAX_BAND_BREAKS`.
+        const MAX_BAND_BREAKS: usize = 256;
+        let band_breaks = |o: &FrameOutline, top: f64| -> Vec<f64> {
+            let corners = o.corner_heights();
+            let d = o.inset();
+            // Each row's shift is linear in the room, apart from Justify's turn where the space
+            // between paragraphs reaches the Paragraph Spacing Limit.
+            let mut knots = vec![0.0, top];
+            let turn = gaps as f64 * para_limit;
+            if f.opts.vertical_justification == VerticalJustification::Justify && turn > 0.0 && turn < top {
+                knots.insert(1, turn);
+            }
+            let at: Vec<Vec<f64>> = knots.iter().map(|&c| shifts(c)).collect();
+            let mut out = Vec::new();
+            for (&i, &k) in idx.iter().zip(&rows) {
+                let l = &ft.lines[i];
+                let desc = if inside { l.descent.max(0.0) } else { 0.0 };
+                for &y in &corners {
+                    for v in [y + d - (l.baseline - l.ascent), y - d - (l.baseline + desc)] {
+                        for (c, s) in knots.windows(2).zip(at.windows(2)) {
+                            let (s0, s1) = (s[0][k], s[1][k]);
+                            if s1 > s0 && v > s0 && v < s1 {
+                                out.push(c[0] + (v - s0) * (c[1] - c[0]) / (s1 - s0));
+                            }
+                        }
+                    }
+                    if out.len() > MAX_BAND_BREAKS {
+                        return Vec::new();
+                    }
+                }
+            }
+            out
+        };
         // In a rectangular frame fit decreases monotonically as the shift grows. A shaped
         // frame can narrow and widen again, so scan from the largest shift before refining the
-        // first fitting interval. This also bounds the room used for baseline-grid quantization
-        // and preserves clearance from fixed and anchor-following wraps.
+        // first fitting interval. The scan takes even steps, the band breaks and a room on each
+        // side of every band break, so a band that fits over less room than one step is found
+        // too. This also bounds the room used for baseline-grid quantization and preserves
+        // clearance from fixed and anchor-following wraps.
         let most_room = |top: f64| -> f64 {
             if fits(&shifts(top)) {
                 return top;
             }
-            let (mut lo, mut hi) = if f.outline.is_some() {
+            let (mut lo, mut hi) = if let Some(o) = &f.outline {
                 let steps = top.ceil().clamp(64.0, 512.0) as usize;
+                // Each try is marked when it is a band break; only the gaps next to a break get a
+                // try in their middle.
+                let mut marked: Vec<(f64, bool)> = (0..steps).map(|j| (top * j as f64 / steps as f64, false)).collect();
+                marked.extend(band_breaks(o, top).into_iter().map(|c| (c, true)));
+                marked.push((top, false));
+                marked.sort_by(|a, b| a.0.total_cmp(&b.0));
+                marked.dedup_by(|a, b| {
+                    let same = (a.0 - b.0).abs() < 1e-9;
+                    b.1 |= same && a.1;
+                    same
+                });
+                let mut tries: Vec<f64> = marked.windows(2).filter(|w| w[0].1 || w[1].1).map(|w| (w[0].0 + w[1].0) / 2.0).collect();
+                tries.extend(marked.iter().map(|m| m.0));
+                tries.sort_by(f64::total_cmp);
                 let mut found = (0.0, top);
-                for j in 1..=steps {
-                    let candidate = top * (steps - j) as f64 / steps as f64;
-                    if fits(&shifts(candidate)) {
-                        found = (candidate, top * (steps - j + 1) as f64 / steps as f64);
+                for w in tries.windows(2).rev() {
+                    if fits(&shifts(w[0])) {
+                        found = (w[0], w[1]);
                         break;
                     }
                 }

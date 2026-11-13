@@ -3206,6 +3206,39 @@ fn vertical_justification_lets_earlier_descenders_cross_a_shaped_frame() {
     }
 }
 
+/// In a tall shaped frame, Bottom finds a band that the line fits in over less room than one step
+/// of an even scan: in a frame that is half width from 40 pt down, apart from a full-width band
+/// only 0.25 pt taller than the line at 1,800 pt, the line moves into that band.
+#[test]
+fn vertical_justification_finds_a_narrow_band_in_a_tall_shaped_frame() {
+    use designcraft_doc::VerticalJustification::{self, Bottom, Top};
+    use designcraft_geom::{Anchor, PathData, Point, SubPath};
+    let compose_with = |pts: &[(f64, f64)], mode: VerticalJustification| -> Vec<Line> {
+        let (mut d, sid, fid) = doc_with("Typography", Rect::new(0.0, 0.0, 300.0, 2000.0), ParaAttrs::default());
+        let it = d.item_mut(fid).unwrap();
+        if !pts.is_empty() {
+            it.path = PathData::single(SubPath { anchors: pts.iter().map(|&(x, y)| Anchor::corner(Point::new(x, y))).collect(), closed: true });
+        }
+        let o = &mut it.text_frame_mut().unwrap().options;
+        o.vertical_justification = mode;
+        o.inset = [0.0; 4];
+        assert_eq!(frame_specs(&d, sid)[0].outline.is_some(), !pts.is_empty());
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        assert!(!cs.is_overset(), "{mode:?}");
+        all_lines(&cs).into_iter().cloned().collect()
+    };
+    let ascent = compose_with(&[], Top)[0].ascent;
+    assert!(ascent > 1.0, "ascent {ascent}");
+    let (y0, y1) = (1800.0, 1800.0 + ascent + 0.25);
+    let pts =
+        [(0.0, 0.0), (300.0, 0.0), (300.0, 40.0), (150.0, 40.0), (150.0, y0), (300.0, y0), (300.0, y1), (150.0, y1), (150.0, 2000.0), (0.0, 2000.0)];
+    let lines = compose_with(&pts, Bottom);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    let l = &lines[0];
+    assert!((l.x1 - 300.0).abs() < 1e-6, "slot {l:?}");
+    assert!(l.baseline - l.ascent >= y0 - 1e-6 && l.baseline <= y1 + 1e-6, "baseline at {}, band {y0}..{y1}", l.baseline);
+}
+
 /// In a shaped frame with a text wrap under the text, Center, Bottom and Justify keep the lines
 /// inside the outline and out of the wrap together: in a triangle that widens downward, Bottom and
 /// Justify put the last baseline on the wrap's top and Center moves half as far; in one that
