@@ -121,11 +121,11 @@ impl<'r> Importer<'r> {
         a.warichu_alignment = e.prop("WarichuAlignment").as_deref().and_then(crate::cjk::warichu_align_in);
         a.warichu_chars_before_break = e.num("WarichuCharsBeforeBreak").map(|v| v.max(0.0) as u32);
         a.warichu_chars_after_break = e.num("WarichuCharsAfterBreak").map(|v| v.max(0.0) as u32);
-        // InDesign writes the flag as a number (1); older writers wrote a boolean.
-        if let Some(on) = e.boolean("RubyFlag").or_else(|| e.num("RubyFlag").map(|v| v != 0.0)) {
-            a.ruby = Some(if on { e.prop("RubyString").unwrap_or_default() } else { String::new() });
+        let ruby_values = craft_idml::model::RubyValues::from_el(&crate::xml::to_craft(e));
+        if let Some(on) = ruby_values.flag {
+            a.ruby = Some(if on { ruby_values.text.clone().unwrap_or_default() } else { String::new() });
         }
-        crate::ruby::read(e, &mut a, |r| self.swatch_ref(r));
+        crate::ruby::read_values(&ruby_values, &mut a, |r| self.swatch_ref(r));
         if let Some(k) = e.get("KentenKind") {
             a.kenten = Some(k != "None");
             a.kenten_character = crate::cjk::kenten_character(k).map(str::to_string);
