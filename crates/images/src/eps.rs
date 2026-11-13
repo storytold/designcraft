@@ -430,7 +430,7 @@ mod tests {
         dos.extend([0xFF, 0xFF]);
         dos.extend_from_slice(eps);
         dos.extend_from_slice(wmf);
-        assert!(is_eps(&dos));
+        assert!(craft_eps::is_eps(&dos));
         // The WMF bytes are not a TIFF preview.
         assert!(sections(&dos).1.is_none());
         // The PostScript section still parses, and the proxy is the no-preview placeholder.

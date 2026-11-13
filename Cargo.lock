@@ -1097,10 +1097,8 @@ dependencies = [
  "craft-xml",
  "craft-zip",
  "thiserror 2.0.21",
- "zip 9.1.1",
 ]
 
-[[package]]
 [[package]]
 name = "craft-keymap"
 version = "0.1.0"
@@ -1159,12 +1157,11 @@ source = "git+https://github.com/storytold/craft-libs?rev=3afade51630fcdb02662c7
 dependencies = [
  "craft-xml",
  "flate2",
- "kurbo 0.13.1",
+ "kurbo",
  "roxmltree 0.21.2",
  "thiserror 2.0.21",
 ]
 
-[[package]]
 [[package]]
 name = "craft-ui"
 version = "0.1.0"
@@ -1571,9 +1568,9 @@ dependencies = [
 name = "designcraft-images"
 version = "0.20.1"
 dependencies = [
+ "craft-cms",
  "craft-eps",
  "craft-svg",
- "craft-cms",
  "designcraft-color",
  "designcraft-fonts",
  "flate2",
