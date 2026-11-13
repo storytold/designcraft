@@ -1,7 +1,5 @@
-use super::common::{anchor_self, bool_s, change_type, uid, with_props, xref_format_self};
-use super::{
-    CHAR_BUILTINS, CharFormat, El, Ex, ListType, NO_CHAR_ID, Node, PARA_BUILTINS, ParaAttrs, ParaFormat, Story, TOC_STYLE_ID, names, num, st,
-};
+use super::common::{anchor_self, change_type, uid, with_props, xref_format_self};
+use super::{CHAR_BUILTINS, CharFormat, El, Ex, ListType, NO_CHAR_ID, Node, PARA_BUILTINS, ParaAttrs, ParaFormat, Story, TOC_STYLE_ID, names, st};
 
 impl<'a> Ex<'a> {
     /// `<GraphicLayerOption>` of a placed graphic: its layer attributes and nested layer tree.
@@ -164,21 +162,19 @@ impl<'a> Ex<'a> {
             let mut e = self.item_el(&o.item, o.item.xf);
             use designcraft_doc::anchored::AnchorAlign as A;
             let setting = match &o.position {
-                designcraft_doc::AnchorPosition::Inline { y_offset } => {
-                    El::new("AnchoredObjectSetting").attr("AnchoredPosition", "InlinePosition").attr("AnchorYoffset", num(*y_offset))
-                }
-                designcraft_doc::AnchorPosition::AboveLine { align, space_before, space_after } => El::new("AnchoredObjectSetting")
-                    .attr("AnchoredPosition", "AboveLine")
-                    .attr(
-                        "HorizontalAlignment",
+                designcraft_doc::AnchorPosition::Inline { y_offset } => craft_idml::model::AnchoredObjectSetting::inline_position(*y_offset).to_el(),
+                designcraft_doc::AnchorPosition::AboveLine { align, space_before, space_after } => {
+                    craft_idml::model::AnchoredObjectSetting::above_line(
                         match align {
                             A::Left => "LeftAlign",
                             A::Center => "CenterAlign",
                             A::Right => "RightAlign",
                         },
+                        *space_before,
+                        *space_after,
                     )
-                    .attr("AnchorSpaceAbove", num(*space_before))
-                    .attr("AnchorYoffset", num(*space_after)),
+                    .to_el()
+                }
                 designcraft_doc::AnchorPosition::Custom {
                     x_relative,
                     y_relative,
@@ -188,20 +184,21 @@ impl<'a> Ex<'a> {
                     ref_point,
                     keep_within_column,
                     spine_relative,
-                } => El::new("AnchoredObjectSetting")
-                    .attr("AnchoredPosition", "Anchored")
-                    .attr("AnchorPoint", names::anchor_out(*object_point))
-                    .attr("HorizontalReferencePoint", names::anchor_rel_out(*x_relative, false))
-                    .attr("VerticalReferencePoint", names::anchor_rel_out(*y_relative, true))
-                    .attr("HorizontalAlignment", ["LeftAlign", "CenterAlign", "RightAlign"][(*ref_point % 3) as usize])
-                    .attr("VerticalAlignment", ["TopAlign", "CenterAlign", "BottomAlign"][(*ref_point / 3).min(2) as usize])
+                } => craft_idml::model::AnchoredObjectSetting::anchored(
+                    names::anchor_out(*object_point),
+                    names::anchor_rel_out(*x_relative, false),
+                    names::anchor_rel_out(*y_relative, true),
+                    ["LeftAlign", "CenterAlign", "RightAlign"][(*ref_point % 3) as usize],
+                    ["TopAlign", "CenterAlign", "BottomAlign"][(*ref_point / 3).min(2) as usize],
                     // IDML measures a left-aligned object's X offset leftwards.
-                    .attr("AnchorXoffset", num(if *ref_point % 3 == 0 { 0.0 - *x_offset } else { *x_offset }))
-                    .attr("AnchorYoffset", num(*y_offset))
-                    .attr("PinPosition", bool_s(*keep_within_column))
-                    .attr("SpineRelative", bool_s(*spine_relative)),
+                    if *ref_point % 3 == 0 { 0.0 - *x_offset } else { *x_offset },
+                    *y_offset,
+                    *keep_within_column,
+                    *spine_relative,
+                )
+                .to_el(),
             };
-            e.push(setting);
+            e.push(crate::xml::from_craft(setting));
             return Some(e);
         }
         None
