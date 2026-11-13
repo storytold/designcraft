@@ -1018,6 +1018,11 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-codepage"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=3afade51630fcdb02662c761e0805bc6147bb0ac#3afade51630fcdb02662c761e0805bc6147bb0ac"
+
+[[package]]
 name = "craft-dialogs"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=1a11a4897865f7410c40d25ca6e452ce399a1a2c#1a11a4897865f7410c40d25ca6e452ce399a1a2c"
@@ -1148,6 +1153,15 @@ dependencies = [
  "tempfile",
  "winprint",
  "winsafe",
+]
+
+[[package]]
+name = "craft-rtf"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=3afade51630fcdb02662c761e0805bc6147bb0ac#3afade51630fcdb02662c761e0805bc6147bb0ac"
+dependencies = [
+ "craft-codepage",
+ "encoding_rs",
 ]
 
 [[package]]
@@ -1663,6 +1677,7 @@ dependencies = [
 name = "designcraft-textimport"
 version = "0.20.1"
 dependencies = [
+ "craft-rtf",
  "designcraft-doc",
  "quick-xml 0.41.0",
  "zip 3.0.0",

@@ -5,8 +5,6 @@
 //! become `#`. RTF also keeps fonts, size, bold/italic, underline, strikethrough,
 //! superscript/subscript, alignment, indents and paragraph spacing.
 
-use std::fmt::Write;
-
 use designcraft_doc::story::{FORCED_LINE_BREAK, NEXT_PAGE_NUMBER, PAGE_NUMBER, PREV_PAGE_NUMBER, TABLE_ANCHOR};
 use designcraft_doc::{Align, Document, Position, Story};
 
@@ -59,50 +57,32 @@ pub fn plain_text(story: &Story) -> String {
     out
 }
 
-fn rtf_escape(out: &mut String, c: char) {
-    match c {
-        '\\' | '{' | '}' => {
-            out.push('\\');
-            out.push(c);
-        }
-        '\t' => out.push_str("\\tab "),
-        FORCED_LINE_BREAK => out.push_str("\\line "),
-        c if (c as u32) < 0x80 => out.push(c),
-        c => {
-            // \uN with a `?` fallback; N is a signed 16-bit value, astral characters as surrogates.
-            let mut buf = [0u16; 2];
-            for u in c.encode_utf16(&mut buf) {
-                let _ = write!(out, "\\u{}?", *u as i16);
-            }
-        }
-    }
-}
-
-fn twips(pt: f64) -> i64 {
-    (pt * 20.0).round() as i64
+fn twips(pt: f64) -> i32 {
+    (pt * 20.0).round().clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32
 }
 
 /// Rich Text Format, with the story's resolved formatting.
 pub fn rtf(doc: &Document, story: &Story) -> String {
     let styles = &doc.styles;
-    // Resolve every run first so the font table can be written up front.
-    let ranges = story.para_ranges();
-    // The story's runs once; each paragraph takes those reaching it by binary search.
     let all_runs: Vec<_> = story.runs().collect();
-    let mut paras = Vec::with_capacity(ranges.len());
-    let mut fonts: Vec<String> = Vec::new();
-    // Each font's number in the table (`fonts` keeps the table's order).
-    let mut font_index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    let mut add_font = |fonts: &mut Vec<String>, name: &str| {
-        if !font_index.contains_key(name) {
-            font_index.insert(name.to_string(), fonts.len());
-            fonts.push(name.to_string());
-        }
-    };
-    for (i, r) in ranges.iter().enumerate() {
+    let mut neutral = craft_rtf::Document::default();
+    for (i, r) in story.para_ranges().into_iter().enumerate() {
         let pf = story.paras.get(i).cloned().unwrap_or_default();
         let (pp, base) = styles.resolve_para(&pf);
-        let mut runs = Vec::new();
+        let mut para = craft_rtf::Para {
+            left_indent: twips(pp.left_indent),
+            right_indent: twips(pp.right_indent),
+            first_line_indent: twips(pp.first_line_indent),
+            space_before: twips(pp.space_before),
+            space_after: twips(pp.space_after),
+            align: Some(match pp.align {
+                Align::Center => craft_rtf::Align::Center,
+                Align::Right => craft_rtf::Align::Right,
+                Align::Left => craft_rtf::Align::Left,
+                _ => craft_rtf::Align::Justified,
+            }),
+            ..Default::default()
+        };
         let first = all_runs.partition_point(|(rr, _)| rr.end <= r.start);
         for (rr, f) in all_runs.iter().skip(first).take_while(|(rr, _)| rr.start < r.end) {
             let (a, b) = (rr.start.max(r.start), rr.end.min(r.end));
@@ -110,90 +90,55 @@ pub fn rtf(doc: &Document, story: &Story) -> String {
                 continue;
             }
             let cp = styles.resolve_char(&base, f);
-            // Hidden conditional text isn't exported.
             if doc.conditions_hide(&cp.conditions) || cp.change == designcraft_doc::ChangeMark::Deleted {
                 continue;
             }
-            add_font(&mut fonts, &cp.font_family);
-            runs.push((a..b, cp));
-        }
-        if runs.is_empty() {
-            add_font(&mut fonts, &base.font_family);
-        }
-        paras.push((pp, base, pf.table, runs));
-    }
-    let mut out = String::from("{\\rtf1\\ansi\\ansicpg1252\\uc1\\deff0\n{\\fonttbl");
-    for (i, f) in fonts.iter().enumerate() {
-        let _ = write!(out, "{{\\f{i}\\fnil ");
-        for c in f.chars() {
-            rtf_escape(&mut out, c);
-        }
-        out.push_str(";}");
-    }
-    out.push_str("}\n");
-    let font_index: std::collections::HashMap<&str, usize> = fonts.iter().enumerate().map(|(i, f)| (f.as_str(), i)).collect();
-    for (pp, base, table, runs) in &paras {
-        let q = match pp.align {
-            Align::Center => "\\qc",
-            Align::Right => "\\qr",
-            Align::Left => "\\ql",
-            _ => "\\qj",
-        };
-        let _ = write!(
-            out,
-            "\\pard{q}\\li{}\\ri{}\\fi{}\\sb{}\\sa{}",
-            twips(pp.left_indent),
-            twips(pp.right_indent),
-            twips(pp.first_line_indent),
-            twips(pp.space_before),
-            twips(pp.space_after)
-        );
-        if runs.is_empty() {
-            let f = font_index.get(base.font_family.as_str()).copied().unwrap_or(0);
-            let _ = write!(out, "\\plain\\f{f}\\fs{} ", (base.size * 2.0).round() as i64);
-        }
-        for (r, cp) in runs {
-            let f = font_index.get(cp.font_family.as_str()).copied().unwrap_or(0);
-            let st = cp.font_style.to_ascii_lowercase();
-            let _ = write!(out, "{{\\plain\\f{f}\\fs{}", (cp.size * 2.0).round() as i64);
-            if st.contains("bold") || st.contains("black") || st.contains("heavy") || st.contains("semibold") {
-                out.push_str("\\b");
-            }
-            if st.contains("italic") || st.contains("oblique") {
-                out.push_str("\\i");
-            }
-            if cp.underline {
-                out.push_str("\\ul");
-            }
-            if cp.strikethrough {
-                out.push_str("\\strike");
-            }
-            match cp.position {
-                Position::Superscript | Position::OtSuperscript => out.push_str("\\super"),
-                Position::Subscript | Position::OtSubscript => out.push_str("\\sub"),
-                _ => {}
-            }
-            out.push(' ');
-            for c in story.text[r.clone()].chars() {
+            let style = cp.font_style.to_ascii_lowercase();
+            let half_points = (cp.size * 2.0).round();
+            let fmt = craft_rtf::CharFmt {
+                bold: style.contains("bold") || style.contains("black") || style.contains("heavy") || style.contains("semibold"),
+                italic: style.contains("italic") || style.contains("oblique"),
+                underline: cp.underline,
+                strike: cp.strikethrough,
+                vert_align: match cp.position {
+                    Position::Superscript | Position::OtSuperscript => craft_rtf::VertAlign::Superscript,
+                    Position::Subscript | Position::OtSubscript => craft_rtf::VertAlign::Subscript,
+                    _ => craft_rtf::VertAlign::Baseline,
+                },
+                half_points: (half_points.is_finite() && (1.0..=25_000.0).contains(&half_points)).then_some(half_points as u32),
+                color: None,
+                font: Some(cp.font_family.clone()),
+            };
+            let mut text = String::new();
+            for c in story.text[a..b].chars() {
                 match c {
                     TABLE_ANCHOR => {
-                        if let Some(id) = table {
-                            for ch in table_text(story, *id, "\u{2028}").chars() {
-                                rtf_escape(&mut out, ch);
-                            }
+                        if let Some(id) = pf.table {
+                            text.push_str(&table_text(story, id, " "));
                         }
                     }
-                    PAGE_NUMBER | NEXT_PAGE_NUMBER | PREV_PAGE_NUMBER => out.push('#'),
-                    '\u{E000}'..='\u{E1FF}' => {}
-                    c => rtf_escape(&mut out, c),
+                    PAGE_NUMBER | NEXT_PAGE_NUMBER | PREV_PAGE_NUMBER => text.push('#'),
+                    ''..='' => {}
+                    c => text.push(c),
                 }
             }
-            out.push('}');
+            if !text.is_empty() {
+                para.runs.push(craft_rtf::Run { text, fmt });
+            }
         }
-        out.push_str("\\par\n");
+        if para.runs.is_empty() {
+            para.runs.push(craft_rtf::Run {
+                text: String::new(),
+                fmt: craft_rtf::CharFmt {
+                    half_points: Some((base.size * 2.0).round().clamp(1.0, 25_000.0) as u32),
+                    font: Some(base.font_family),
+                    ..Default::default()
+                },
+            });
+        }
+        neutral.blocks.push(craft_rtf::Block::Para(para));
     }
-    out.push('}');
-    out
+    craft_rtf::write(&neutral, "Source Serif 4")
 }
 
 #[cfg(test)]
