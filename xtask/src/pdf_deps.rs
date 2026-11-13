@@ -5,7 +5,8 @@ use std::process::Command;
 use serde_json::Value;
 
 const REPO: &str = "https://github.com/storytold/craft-libs";
-const REV: &str = "92d392cff132eaf53e13afff77f38b5c11b73aa0";
+const REV: &str = "b267a3a66";
+const COMMIT: &str = "b267a3a663a490778ae5c50a05ef75f3eb57e076";
 const PACKAGES: &[(&str, &str)] = &[
     ("craft-pdf", "0.1.0"),
     ("krilla", "0.8.2"),
@@ -34,7 +35,7 @@ pub fn run(root: &Path) -> Result<(), String> {
 
 fn validate(metadata: &Value) -> Result<(), String> {
     let packages = metadata.get("packages").and_then(Value::as_array).ok_or("cargo metadata has no packages")?;
-    let source = format!("git+{REPO}?rev={REV}#{REV}");
+    let source = format!("git+{REPO}?rev={REV}#{COMMIT}");
     for (name, version) in PACKAGES {
         let matching: Vec<_> = packages.iter().filter(|p| p.get("name").and_then(Value::as_str) == Some(name)).collect();
         let [package] = matching.as_slice() else {
