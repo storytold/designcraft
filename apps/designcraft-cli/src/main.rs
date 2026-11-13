@@ -597,8 +597,8 @@ fn export(s: &mut Session, out: &str, page: usize, scale: f64) -> Result<(), Str
     let img = r
         .render_page(&st.doc, &s.cache, page, scale, true, &designcraft_render::RenderOptions { printing_only: true, ..Default::default() })
         .ok_or("no such page")?;
-    let lower = out.to_lowercase();
-    let bytes = if lower.ends_with(".jpg") || lower.ends_with(".jpeg") { img.to_jpeg(90) } else { img.to_png() };
+    let jpeg = craft_file_formats::detect(out, &[]) == Some(craft_file_formats::Format::Jpeg);
+    let bytes = if jpeg { img.to_jpeg(90) } else { img.to_png() };
     designcraft_engine::atomic::write_atomic(std::path::Path::new(out), &bytes).map_err(|e| format!("{out}: {e}"))?;
     eprintln!("wrote {out} ({}×{}, {:.1} ms, {} glyphs)", img.width, img.height, t.elapsed().as_secs_f64() * 1000.0, r.stats.glyphs);
     Ok(())
@@ -645,7 +645,7 @@ fn script(args: &[String]) -> Result<(), String> {
         match a.as_str() {
             "--in" => {
                 let p = val()?;
-                let cmd = if p.to_lowercase().ends_with(".idml") { "file.openIdml" } else { "file.open" };
+                let cmd = if craft_file_formats::detect(&p, &[]) == Some(craft_file_formats::Format::Idml) { "file.openIdml" } else { "file.open" };
                 setup.push((cmd.into(), json!({"path": p})));
             }
             "--sample" => setup.push(("file.newSample".into(), json!({}))),

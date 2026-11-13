@@ -1675,6 +1675,7 @@ dependencies = [
 name = "designcraft-cli"
 version = "0.20.1"
 dependencies = [
+ "craft-file-formats",
  "designcraft-color",
  "designcraft-compose",
  "designcraft-doc",
@@ -1863,6 +1864,7 @@ dependencies = [
 name = "designcraft-mcp"
 version = "0.20.1"
 dependencies = [
+ "craft-file-formats",
  "designcraft-engine",
  "designcraft-geom",
  "designcraft-render",
