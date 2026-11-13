@@ -165,15 +165,8 @@ impl<'a> Ex<'a> {
                 }
             };
             if let Some(kind) = kind {
-                let mut el = El::new("PageReference")
-                    .attr("Self", self.fresh())
-                    .attr("PageReferenceType", kind)
-                    .attr("ReferencedTopic", topic_self(&r.topics))
-                    .attr("Id", k + 1);
-                if let Some(n) = limit {
-                    el.set("PageReferenceLimit", n);
-                }
-                return Some(el);
+                let model = craft_idml::model::PageReference::to_el(&self.fresh(), kind, &topic_self(&r.topics), k + 1, limit);
+                return Some(crate::xml::from_craft(model));
             }
         }
         None
