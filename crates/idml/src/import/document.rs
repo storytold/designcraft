@@ -25,45 +25,43 @@ impl IndexTopic {
 impl<'r> Importer<'r> {
     pub(super) fn doc_prefs(&mut self, e: &El) {
         let s = &mut self.settings;
-        if let Some(v) = e.get("OverprintBlack") {
-            s.overprint_black = v != "false";
+        let values = craft_idml::model::DocumentPreferences::from_el(&crate::xml::to_craft(e));
+        if let Some(v) = values.overprint_black {
+            s.overprint_black = v;
         }
-        if let Some(v) = e.num("PageWidth") {
+        if let Some(v) = values.page_width {
             s.page_width = v;
         }
-        if let Some(v) = e.num("PageHeight") {
+        if let Some(v) = values.page_height {
             s.page_height = v;
         }
-        if let Some(v) = e.boolean("FacingPages") {
+        if let Some(v) = values.facing_pages {
             s.facing_pages = v;
         }
-        if let Some(v) = e.get("PageBinding") {
+        if let Some(v) = values.page_binding.as_deref() {
             s.right_to_left_binding = v == "RightToLeft";
         }
-        for (i, k) in ["DocumentBleedTopOffset", "DocumentBleedBottomOffset", "DocumentBleedInsideOrLeftOffset", "DocumentBleedOutsideOrRightOffset"]
-            .iter()
-            .enumerate()
-        {
-            if let Some(v) = e.num(k) {
+        for (i, value) in values.bleed.into_iter().enumerate() {
+            if let Some(v) = value {
                 s.bleed[i] = v;
             }
         }
-        for (i, k) in ["SlugTopOffset", "SlugBottomOffset", "SlugInsideOrLeftOffset", "SlugRightOrOutsideOffset"].iter().enumerate() {
-            if let Some(v) = e.num(k) {
+        for (i, value) in values.slug.into_iter().enumerate() {
+            if let Some(v) = value {
                 s.slug[i] = v;
             }
         }
-        if let Some(i) = e.get("Intent") {
+        if let Some(i) = values.intent.as_deref() {
             s.intent = match i {
                 "WebIntent" => designcraft_doc::Intent::Web,
                 "MobileIntent" => designcraft_doc::Intent::Mobile,
                 _ => designcraft_doc::Intent::Print,
             };
         }
-        if let Some(v) = e.boolean("CreatePrimaryTextFrame") {
+        if let Some(v) = values.primary_text_frame {
             s.primary_text_frame = v;
         }
-        if let Some(v) = e.boolean("ColumnGuideLocked") {
+        if let Some(v) = values.column_guides_locked {
             s.column_guides_locked = v;
         }
     }
@@ -71,28 +69,29 @@ impl<'r> Importer<'r> {
     pub(super) fn grid_prefs(&mut self, e: &El) {
         let s = &mut self.settings;
         let bg: &mut BaselineGrid = &mut s.baseline_grid;
-        if let Some(v) = e.num("BaselineStart") {
+        let values = craft_idml::model::GridPreferences::from_el(&crate::xml::to_craft(e));
+        if let Some(v) = values.baseline_start {
             bg.start = v;
         }
-        if let Some(v) = e.num("BaselineDivision") {
+        if let Some(v) = values.baseline_division {
             bg.increment = v;
         }
-        if let Some(v) = e.num("BaselineViewThreshold") {
+        if let Some(v) = values.baseline_view_threshold {
             bg.view_threshold = v / 100.0;
         }
-        if let Some(v) = e.get("BaselineGridRelativeOption") {
+        if let Some(v) = values.baseline_relative_option.as_deref() {
             bg.relative_to = if v.contains("Margin") { GridRelative::TopMargin } else { GridRelative::TopOfPage };
         }
-        if let Some(v) = e.num("HorizontalGridlineDivision") {
+        if let Some(v) = values.horizontal_division {
             s.grid.horizontal = v;
         }
-        if let Some(v) = e.num("VerticalGridlineDivision") {
+        if let Some(v) = values.vertical_division {
             s.grid.vertical = v;
         }
-        if let Some(v) = e.num("HorizontalGridSubdivision") {
+        if let Some(v) = values.horizontal_subdivision {
             s.grid.subdivisions = v.max(1.0) as u32;
         }
-        if let Some(v) = e.boolean("GridsInBack") {
+        if let Some(v) = values.grids_in_back {
             s.grid.in_back = v;
         }
     }
