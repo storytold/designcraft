@@ -486,66 +486,35 @@ impl<'a> Ex<'a> {
     /// Write paragraph attributes `a`, set over the resolved paragraph style `parent` (`None` for the
     /// root style).
     pub(super) fn para_attrs(&mut self, el: &mut El, props: &mut Vec<El>, a: &ParaAttrs, parent: Option<&str>) {
-        if let Some(v) = &a.mojikumi {
-            props.push(p("Mojikumi", if v.starts_with("MojikumiTable/") { "object" } else { "enumeration" }, v));
+        let cjk = craft_idml::model::CjkParagraphValues {
+            kinsoku_hang: a.kinsoku_hang.map(|value| match value {
+                designcraft_doc::cjk::KinsokuHang::None => "None".into(),
+                designcraft_doc::cjk::KinsokuHang::Regular => "KinsokuHangRegular".into(),
+                designcraft_doc::cjk::KinsokuHang::Force => "KinsokuHangForce".into(),
+            }),
+            mojikumi: a.mojikumi.clone(),
+            kinsoku_type: a.kinsoku_type.clone(),
+            bunri_kinshi: a.bunri_kinshi,
+            rensuuji: a.rensuuji,
+            treat_ideographic_space_as_space: a.treat_ideographic_space_as_space,
+            kinsoku_set: a.kinsoku.as_ref().and_then(Option::as_ref).map(|set| craft_idml::model::CjkParagraphValues::kinsoku_reference(&set.name)),
+            auto_tcy: a.auto_tcy.map(f64::from),
+            auto_tcy_include_roman: a.auto_tcy_include_roman,
+            rotate_single_byte_characters: a.rotate_roman,
+            allow_arbitrary_hyphenation: a.roman_word_break,
+            grid_gyoudori: a.grid_gyoudori.map(f64::from),
+            paragraph_gyoudori: a.paragraph_gyoudori,
+        };
+        let (attributes, properties) = cjk.to_parts();
+        for (key, value) in attributes {
+            el.set(&key, value);
         }
-        if let Some(v) = &a.kinsoku_type {
-            el.set("KinsokuType", v);
-        }
-        if let Some(v) = a.kinsoku_hang {
-            el.set(
-                "KinsokuHangType",
-                match v {
-                    designcraft_doc::cjk::KinsokuHang::None => "None",
-                    designcraft_doc::cjk::KinsokuHang::Regular => "KinsokuHangRegular",
-                    designcraft_doc::cjk::KinsokuHang::Force => "KinsokuHangForce",
-                },
-            );
-        }
-        if let Some(v) = a.bunri_kinshi {
-            el.set("BunriKinshi", bool_s(v));
-        }
-        if let Some(v) = a.rensuuji {
-            el.set("Rensuuji", bool_s(v));
-        }
-        if let Some(v) = a.treat_ideographic_space_as_space {
-            el.set("TreatIdeographicSpaceAsSpace", bool_s(v));
-        }
-        cjk_settings_para(el, a);
-        if let Some(Some(k)) = &a.kinsoku {
-            props.push(p(
-                "KinsokuSet",
-                if k.name.is_empty() { "enumeration" } else { "object" },
-                if k.name.is_empty() { "Nothing".into() } else { format!("KinsokuTable/{}", escape_id(&k.name)) },
-            ));
-        }
+        props.extend(properties.into_iter().map(crate::xml::from_craft));
         self.para_nested_styles(props, a, parent);
         self.para_alignment_attrs(el, a, parent);
         self.para_flow_attrs(el, a);
         self.para_columns_and_list_attrs(el, props, a);
         self.para_box_attrs(el, props, a);
-    }
-}
-
-/// Auto tate-chu-yoko, Japanese composition and grid settings of a paragraph range or style.
-fn cjk_settings_para(el: &mut El, a: &ParaAttrs) {
-    if let Some(v) = a.auto_tcy {
-        el.set("AutoTcy", v);
-    }
-    if let Some(v) = a.auto_tcy_include_roman {
-        el.set("AutoTcyIncludeRoman", bool_s(v));
-    }
-    if let Some(v) = a.rotate_roman {
-        el.set("RotateSingleByteCharacters", bool_s(v));
-    }
-    if let Some(v) = a.roman_word_break {
-        el.set("AllowArbitraryHyphenation", bool_s(v));
-    }
-    if let Some(v) = a.grid_gyoudori {
-        el.set("GridGyoudori", v);
-    }
-    if let Some(v) = a.paragraph_gyoudori {
-        el.set("ParagraphGyoudori", bool_s(v));
     }
 }
 
