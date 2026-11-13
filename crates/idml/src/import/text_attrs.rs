@@ -155,20 +155,26 @@ impl<'r> Importer<'r> {
         let mut a = ParaAttrs::default();
         let alignment = craft_idml::model::ParagraphAlignmentValues::from_el(&crate::xml::to_craft(e));
         let flow = craft_idml::model::ParagraphFlowValues::from_el(&crate::xml::to_craft(e));
+        let cjk = craft_idml::model::CjkParagraphValues::from_el(&crate::xml::to_craft(e));
         a.align = alignment.justification.as_deref().and_then(|v| names::align_in(v.trim()));
-        a.kinsoku_hang = e.prop("KinsokuHangType").and_then(|v| match v.as_str() {
+        a.kinsoku_hang = cjk.kinsoku_hang.as_deref().and_then(|v| match v {
             "None" => Some(designcraft_doc::cjk::KinsokuHang::None),
             "KinsokuHangRegular" => Some(designcraft_doc::cjk::KinsokuHang::Regular),
             "KinsokuHangForce" => Some(designcraft_doc::cjk::KinsokuHang::Force),
             _ => None,
         });
-        a.mojikumi = e.prop("Mojikumi").map(|name| self.mojikumi_names.get(&name).cloned().unwrap_or_else(|| unescape_id(&name)));
-        a.kinsoku_type = e.prop("KinsokuType");
-        a.bunri_kinshi = e.boolean("BunriKinshi");
-        a.rensuuji = e.boolean("Rensuuji");
-        a.treat_ideographic_space_as_space = e.boolean("TreatIdeographicSpaceAsSpace");
-        cjk_settings_para(e, &mut a);
-        if let Some(k) = e.prop("KinsokuSet") {
+        a.mojikumi = cjk.mojikumi.map(|name| self.mojikumi_names.get(&name).cloned().unwrap_or_else(|| unescape_id(&name)));
+        a.kinsoku_type = cjk.kinsoku_type;
+        a.bunri_kinshi = cjk.bunri_kinshi;
+        a.rensuuji = cjk.rensuuji;
+        a.treat_ideographic_space_as_space = cjk.treat_ideographic_space_as_space;
+        a.auto_tcy = cjk.auto_tcy.map(|value| value as u32);
+        a.auto_tcy_include_roman = cjk.auto_tcy_include_roman;
+        a.rotate_roman = cjk.rotate_single_byte_characters;
+        a.roman_word_break = cjk.allow_arbitrary_hyphenation;
+        a.grid_gyoudori = cjk.grid_gyoudori.map(|value| value as u32);
+        a.paragraph_gyoudori = cjk.paragraph_gyoudori;
+        if let Some(k) = cjk.kinsoku_set {
             if k == "Nothing" || k == "None" {
                 a.kinsoku = Some(Some(Default::default()));
             } else if let Some(set) = self.kinsoku.get(&k) {
@@ -460,18 +466,6 @@ pub(super) fn inherits_drop_cap_style<'a>(styles: &'a Styles, mut name: Option<&
         name = s.based_on.as_deref();
     }
     false
-}
-
-/// Auto tate-chu-yoko, Japanese composition and grid settings of a paragraph range or style.
-fn cjk_settings_para(e: &El, a: &mut ParaAttrs) {
-    let count = |k: &str| e.num(k).filter(|v| v.is_finite()).map(|v| v.clamp(0.0, 1000.0) as u32);
-    a.auto_tcy = count("AutoTcy");
-    a.auto_tcy_include_roman = e.boolean("AutoTcyIncludeRoman");
-    a.rotate_roman = e.boolean("RotateSingleByteCharacters");
-    // 欧文泣き別れ: the name is inferred (it follows TreatIdeographicSpaceAsSpace).
-    a.roman_word_break = e.boolean("AllowArbitraryHyphenation");
-    a.grid_gyoudori = count("GridGyoudori");
-    a.paragraph_gyoudori = e.boolean("ParagraphGyoudori");
 }
 
 impl Importer<'_> {
