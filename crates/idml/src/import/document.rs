@@ -314,11 +314,11 @@ impl<'r> Importer<'r> {
     /// its entries. Styles the document doesn't have fall back to the generated TOC styles.
     pub(super) fn toc_of(&self, top: &[TopLevelNode]) -> Option<designcraft_doc::Toc> {
         use designcraft_doc::{TocEntry, TocPageNumber};
-        let (ts, story) = top.iter().filter(|node| node.kind == TopKind::TocStyle).find_map(|node| {
-            let ts = crate::xml::from_craft(node.to_el());
-            let id = ts.get("Self")?;
+        let (toc, story) = top.iter().filter(|node| node.kind == TopKind::TocStyle).find_map(|node| {
+            let toc = craft_idml::model::TocStyleValues::from_el(&node.to_el());
+            let id = toc.self_id.as_deref()?;
             let story = top.iter().find(|node| node.kind == TopKind::Story && node.values().get("AppliedTOCStyle") == Some(id))?;
-            Some((ts, *self.story_ids.get(story.values().self_id()?)?))
+            Some((toc, *self.story_ids.get(story.values().self_id()?)?))
         })?;
         // Property children are element text: formatting whitespace around a reference is dropped
         // unless the reference as written names a style.
@@ -327,36 +327,35 @@ impl<'r> Importer<'r> {
         let known_chars = |r: Option<&str>| {
             r.map(|r| self.listed_char_style_ref(r)).filter(|n| n != designcraft_doc::NO_CHAR_STYLE && self.styles.char_style(n).is_some())
         };
-        let entries: Vec<TocEntry> = ts
-            .elements()
-            .filter(|e| e.local() == "TOCStyleEntry")
-            .filter_map(|e| {
-                let style = names::style_name_in(PARA_BUILTINS, e.get("Name")?);
+        let entries: Vec<TocEntry> = toc
+            .entries
+            .iter()
+            .filter_map(|entry| {
+                let style = names::style_name_in(PARA_BUILTINS, entry.style.as_deref()?);
                 if style.is_empty() || style.chars().count() > 256 {
                     return None;
                 }
-                let level = e.get("Level").and_then(|l| l.trim().parse::<u8>().ok()).unwrap_or(1).clamp(1, 9);
-                let page_number = match e.get("PageNumberPosition") {
+                let level = entry.level.unwrap_or(1).clamp(1, 9);
+                let page_number = match entry.page_number_position.as_deref() {
                     Some("BeforeEntry") => TocPageNumber::Before,
                     Some("NoPageNumber") => TocPageNumber::None,
                     _ => TocPageNumber::After,
                 };
-                let separator = e.get("Separator").map(crate::names::toc_separator_in).filter(|s| s != "\t" && s.chars().count() <= 64);
-                // InDesign writes these as `Properties` children; attributes are read too.
-                let entry_style = known(e.prop("FormatStyle").as_deref()).filter(|n| *n != format!("TOC Level {level}"));
-                let page_number_style = known_chars(e.prop("PageNumberStyle").as_deref());
-                let separator_style = known_chars(e.prop("SeparatorStyle").as_deref());
-                let sort = e.get("Sort").is_some_and(|v| v.trim() == "true");
+                let separator = entry.separator.as_deref().map(crate::names::toc_separator_in).filter(|s| s != "\t" && s.chars().count() <= 64);
+                // InDesign writes these as `Properties` children; the shared parser accepts both spellings.
+                let entry_style = known(entry.entry_style.as_deref()).filter(|n| *n != format!("TOC Level {level}"));
+                let page_number_style = known_chars(entry.page_number_style.as_deref());
+                let separator_style = known_chars(entry.separator_style.as_deref());
+                let sort = entry.sort == Some(true);
                 Some(TocEntry { style, level, entry_style, page_number, separator, page_number_style, separator_style, sort })
             })
-            .take(64)
             .collect();
         if entries.is_empty() {
             return None;
         }
-        let title: String = ts.get("Title").unwrap_or("").chars().filter(|c| !matches!(c, '\n' | '\r' | '\u{2029}')).take(1024).collect();
-        let title_style = known(ts.get("TitleStyle")).filter(|n| n != "TOC Title");
-        let create_bookmarks = ts.get("CreateBookmarks").or_else(|| ts.get("CreatePdfBookmarks")) == Some("true");
+        let title: String = toc.title.as_deref().unwrap_or("").chars().filter(|c| !matches!(c, '\n' | '\r' | '\u{2029}')).take(1024).collect();
+        let title_style = known(toc.title_style.as_deref()).filter(|n| n != "TOC Title");
+        let create_bookmarks = toc.create_bookmarks == Some(true);
         Some(designcraft_doc::Toc { story, title, entries, page_numbers: true, title_style, create_bookmarks })
     }
 }
