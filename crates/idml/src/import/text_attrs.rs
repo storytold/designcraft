@@ -412,12 +412,12 @@ impl<'r> Importer<'r> {
 }
 
 pub(super) fn ace_char(v: &str) -> Option<char> {
-    match v.trim() {
-        "18" => Some(st::PAGE_NUMBER),
-        "19" => Some(st::SECTION_MARKER),
-        "7" => Some(st::INDENT_HERE),
-        "8" => Some(st::RIGHT_INDENT_TAB),
-        _ => None,
+    match craft_idml::model::Ace::from_decimal(v)? {
+        craft_idml::model::Ace::PageNumber => Some(st::PAGE_NUMBER),
+        craft_idml::model::Ace::SectionMarker => Some(st::SECTION_MARKER),
+        craft_idml::model::Ace::IndentToHere => Some(st::INDENT_HERE),
+        craft_idml::model::Ace::RightIndentTab => Some(st::RIGHT_INDENT_TAB),
+        craft_idml::model::Ace::FootnoteNumber | craft_idml::model::Ace::Other(_) => None,
     }
 }
 
