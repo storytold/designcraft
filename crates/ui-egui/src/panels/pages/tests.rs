@@ -61,11 +61,11 @@ fn double_clicking_a_parent_shows_that_parent() {
     for name in names {
         assert_eq!(h.get_by_label(name).accesskit_node().toggled() == Some(egui::accesskit::Toggled::True), name == "C-Parent", "{name}");
     }
-    // Parent rows show a rendered thumbnail.
+    // Parent rows show a rendered thumbnail (of the revision before the double click until the
+    // document has been unchanged for THUMB_QUIET_SECS).
     let id = st.doc.parents[2].id;
-    let rev = (st.uid, st.revision);
-    let thumbs = super::THUMBS.lock().unwrap();
-    assert!(thumbs.as_ref().unwrap().keys().any(|k| (k.0, k.1) == rev && k.2 == super::ThumbOf::Parent(id)));
+    let thumbs = super::THUMBS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    assert!(thumbs.as_ref().unwrap().keys().any(|k| k.0 == st.uid && k.1 == super::ThumbOf::Parent(id)));
 }
 
 fn harness(app: DesignApp) -> Harness<'static, DesignApp> {
@@ -321,10 +321,84 @@ fn parent_thumbnails_follow_panel_options() {
         let id = st.doc.parents[0].id;
         let thumbs = super::THUMBS.lock().unwrap();
         let keys = thumbs.as_ref().map(|m| m.keys().copied().collect::<Vec<_>>()).unwrap_or_default();
-        keys.into_iter().filter(|k| k.0 == st.uid && k.2 == super::ThumbOf::Parent(id)).map(|k| k.3).collect::<Vec<_>>()
+        keys.into_iter().filter(|k| k.0 == st.uid && k.1 == super::ThumbOf::Parent(id)).map(|k| k.2).collect::<Vec<_>>()
     };
     assert_eq!(parent_thumb_heights(true), vec![IconSize::Large.row_h() as u32 - 5]);
     assert_eq!(parent_thumb_heights(false), Vec::<u32>::new());
+}
+
+/// Page thumbnails are rendered only for rows in view. After an edit the previous thumbnails stay
+/// until the document has been unchanged for `THUMB_QUIET_SECS`, and then one is drawn again per
+/// frame. Thumbnails of deleted pages are dropped.
+#[test]
+fn an_edit_redraws_only_thumbnails_in_view_one_per_frame() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"pages": 60, "facingPages": false})).unwrap();
+    let ctx = egui::Context::default();
+    let frame = |app: &mut DesignApp, time: f64| {
+        let before = THUMB_RENDERS.with(std::cell::Cell::get);
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(280.0, 520.0))),
+            time: Some(time),
+            ..Default::default()
+        };
+        ctx.run_ui(raw, |ui| show(app, ui)).textures_delta.clear();
+        THUMB_RENDERS.with(std::cell::Cell::get) - before
+    };
+    let shown: usize = (0..3).map(|_| frame(&mut app, 0.0)).sum();
+    assert!(shown > 0 && shown < 60, "only the rows in view are rendered: {shown}");
+    assert_eq!(frame(&mut app, 0.0), 0, "an unchanged document renders nothing");
+
+    app.run("frame.create", json!({"rect": [36, 36, 200, 200]})).unwrap();
+    assert_eq!(frame(&mut app, 1.0), 0, "the edit's frame keeps the previous thumbnails");
+    assert_eq!(frame(&mut app, 1.0 + THUMB_QUIET_SECS / 2.0), 0, "still editing");
+    let quiet = 1.0 + THUMB_QUIET_SECS + 0.01;
+    let mut redrawn = 0;
+    for _ in 0..shown {
+        let n = frame(&mut app, quiet);
+        assert_eq!(n, THUMB_REFRESHES_PER_FRAME, "one thumbnail per frame");
+        redrawn += n;
+    }
+    assert_eq!(redrawn, shown);
+    assert_eq!(frame(&mut app, quiet), 0, "every thumbnail in view is current");
+
+    // Deleted pages lose their thumbnails.
+    let uid = app.session.active().unwrap().uid;
+    let cached = |abs: usize| {
+        THUMBS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().unwrap().keys().any(|k| k.0 == uid && k.1 == ThumbOf::Page(abs))
+    };
+    assert!(cached(2));
+    app.run("layout.pages.delete", json!({"pages": (2..60).collect::<Vec<_>>()})).unwrap();
+    frame(&mut app, quiet + 1.0);
+    assert!((2..60).all(|abs| !cached(abs)), "no thumbnail of a deleted page is kept");
+}
+
+/// Switching to a document whose thumbnails are all current stores that document in the clock,
+/// so the next frames do not scan the whole cache again.
+#[test]
+fn switching_to_a_cached_document_stores_it_in_the_clock() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    let ctx = egui::Context::default();
+    let frame = |app: &mut DesignApp| {
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(280.0, 520.0))),
+            time: Some(0.0),
+            ..Default::default()
+        };
+        ctx.run_ui(raw, |ui| show(app, ui)).textures_delta.clear();
+    };
+    for _ in 0..2 {
+        app.run("file.new", json!({"pages": 2, "facingPages": false})).unwrap();
+        frame(&mut app);
+    }
+    app.session.set_active(0);
+    let st = app.session.active().unwrap();
+    let first = (st.uid, st.revision);
+    let before = THUMB_RENDERS.with(std::cell::Cell::get);
+    frame(&mut app);
+    assert_eq!(THUMB_RENDERS.with(std::cell::Cell::get), before, "the first document's thumbnails are current");
+    let clock = ctx.data(|d| d.get_temp::<ThumbClock>(egui::Id::unique("pages_thumb_clock"))).unwrap();
+    assert_eq!(clock.doc, first);
 }
 
 #[test]

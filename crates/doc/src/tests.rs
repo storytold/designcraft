@@ -413,6 +413,47 @@ fn the_hit_stack_is_the_drawn_order_of_pickable_items() {
     }
 }
 
+/// Checking a document looks each frame up once: 20,000 text frames check in well under a
+/// second (each lookup searched every item before).
+#[test]
+fn check_is_linear_in_the_frames() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    for i in 0..20_000 {
+        let y = f64::from(i % 100);
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, y, 10.0, y + 1.0), lid, "x", ParaFormat::default()).unwrap();
+    }
+    let t = std::time::Instant::now();
+    d.check().unwrap();
+    assert!(t.elapsed() < std::time::Duration::from_secs(10), "{:?}", t.elapsed());
+    // A frame its story names but the document doesn't have is still refused.
+    let sid = *d.stories.keys().next().unwrap();
+    Arc::make_mut(d.stories.get_mut(&sid).unwrap()).frames.push(ItemId(u64::MAX));
+    assert!(matches!(d.check(), Err(DocError::NoItem(ItemId(u64::MAX)))));
+}
+
+#[test]
+fn page_numbers_in_one_pass_match_page_number() {
+    let mut d = crate::Document::new(&crate::build::NewDocument { pages: 12, facing_pages: false, ..Default::default() });
+    let sec = |start, start_number| crate::Section {
+        start,
+        start_number,
+        style: Default::default(),
+        prefix: String::new(),
+        marker: String::new(),
+        include_prefix: false,
+        layout: None,
+    };
+    // Out of order, a repeated start, continuing sections and one with its own number.
+    d.sections = vec![sec(7, None), sec(2, Some(10)), sec(4, None), sec(7, Some(3)), sec(9, None), sec(11, Some(u32::MAX)), sec(12, None)];
+    assert_eq!(d.page_numbers(14), (0..14).map(|i| d.page_number(i)).collect::<Vec<_>>());
+    d.sections = vec![sec(3, None)];
+    assert_eq!(d.page_numbers(6), (0..6).map(|i| d.page_number(i)).collect::<Vec<_>>());
+    // Many continuing sections: one pass, not one walk per page.
+    d.sections = (1..5000).map(|i| sec(i, None)).collect();
+    assert_eq!(d.page_numbers(5000)[4999], 5000);
+}
+
 #[test]
 fn adjust_text_ranges_tracks_and_prunes_hyperlinks_and_placeholders() {
     let mut d = doc();
@@ -590,6 +631,35 @@ fn set_story_text_prunes_story_hyperlinks_and_placeholders() {
     assert_eq!(d.hyperlinks[0].id, 2);
     assert_eq!(d.data_merge.placeholders.len(), 1);
     assert_eq!(d.data_merge.placeholders[0].id, 20);
+}
+
+/// Many note references put in at once each get a note with an id of its own, in one pass.
+#[test]
+fn many_note_references_get_their_notes_at_once() {
+    let n = 20_000;
+    let mut st = Story::new(StoryId(1));
+    let refs = format!("{}{}", FOOTNOTE_REF.to_string().repeat(n), crate::ENDNOTE_REF.to_string().repeat(n));
+    st.insert(0, &refs);
+    assert_eq!((st.notes.len(), st.endnotes.len()), (n, n));
+    let ids: std::collections::HashSet<u64> = st.notes.iter().map(|x| x.id).collect();
+    assert_eq!(ids.len(), n);
+    let ids: std::collections::HashSet<u64> = st.endnotes.iter().map(|x| x.id).collect();
+    assert_eq!(ids.len(), n);
+}
+
+/// An existing note whose id is `u64::MAX` can't be counted past: the next note still gets an id
+/// of its own.
+#[test]
+fn note_ids_survive_a_maximal_existing_id() {
+    let mut st = Story::new(StoryId(1));
+    st.insert(0, &FOOTNOTE_REF.to_string());
+    st.insert(0, &crate::ENDNOTE_REF.to_string());
+    Arc::make_mut(&mut st.notes[0]).id = u64::MAX;
+    Arc::make_mut(&mut st.endnotes[0]).id = u64::MAX;
+    st.insert(0, &FOOTNOTE_REF.to_string());
+    st.insert(0, &crate::ENDNOTE_REF.to_string());
+    assert_ne!(st.notes[0].id, st.notes[1].id);
+    assert_ne!(st.endnotes[0].id, st.endnotes[1].id);
 }
 
 /// Exceptions are read in one pass: breaks are char positions of the lowercased word, a break

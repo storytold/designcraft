@@ -159,7 +159,11 @@ pub fn select_records(count: usize, records: &str, one: u32, range: &str, limit:
             let i = record_index(one, count)?;
             idx.push(i);
         }
-        "range" => select_range(range, count, &mut idx, &mut seen)?,
+        "range" => {
+            // Past this many records nothing more can be kept, so later ranges are only validated.
+            let keep = limit.filter(|l| *l > 0).map_or(count, |l| count.min(l as usize));
+            select_range(range, count, keep, &mut idx, &mut seen)?
+        }
         other => return Err(format!("unknown records value \"{other}\"")),
     }
     if let Some(limit) = limit {
@@ -175,7 +179,9 @@ pub fn select_records(count: usize, records: &str, one: u32, range: &str, limit:
 }
 
 /// Expand a comma-separated list of record numbers and `a-b` ranges into `idx`, skipping repeats.
-fn select_range(range: &str, count: usize, idx: &mut Vec<usize>, seen: &mut std::collections::HashSet<usize>) -> Result<(), String> {
+/// Every token is still checked, but once `idx` holds `keep` records no more are expanded, so
+/// repeated or overlapping ranges cost nothing past that point.
+fn select_range(range: &str, count: usize, keep: usize, idx: &mut Vec<usize>, seen: &mut std::collections::HashSet<usize>) -> Result<(), String> {
     if range.trim().is_empty() {
         return Err("no records".into());
     }
@@ -194,8 +200,11 @@ fn select_range(range: &str, count: usize, idx: &mut Vec<usize>, seen: &mut std:
         if a > b {
             return Err(format!("range {a}-{b} is reversed"));
         }
+        // Both ends in range means every record between them is.
+        record_index(a, count)?;
+        record_index(b, count)?;
         let mut n = a;
-        while n <= b {
+        while n <= b && idx.len() < keep {
             let i = record_index(n, count)?;
             if seen.insert(i) {
                 idx.push(i);
@@ -288,15 +297,18 @@ fn next_slot(col: i32, row: i32, rows_first: bool, fits_col: &impl Fn(i32) -> bo
 /// Files to try for an image cell: an absolute path as it is, a relative one beside the data
 /// file, then beside the document. Relative paths are not resolved against the process working
 /// directory, and paths that may not be followed ([`crate::io::document_path`]: URLs, other
-/// computers, devices) are not candidates.
+/// computers, devices) are not candidates. A path that starts with one separator (`\Photos\x.jpg`)
+/// is tried as it is first, then beside the data file and the document with that separator dropped.
 pub fn image_candidates(cell: &str, data_dir: Option<&Path>, doc_dir: Option<&Path>) -> Vec<PathBuf> {
     let cell = cell.trim();
     if cell.is_empty() {
         return Vec::new();
     }
+    let below = cell.strip_prefix(['\\', '/']).filter(|rest| !rest.is_empty() && !rest.starts_with(['\\', '/']));
     let found = std::iter::once(crate::io::document_path(cell, None))
         .chain(data_dir.map(|dir| crate::io::folder_path(cell, dir)))
-        .chain(doc_dir.map(|dir| crate::io::folder_path(cell, dir)));
+        .chain(doc_dir.map(|dir| crate::io::folder_path(cell, dir)))
+        .chain(below.into_iter().flat_map(|rest| [data_dir, doc_dir].into_iter().flatten().map(move |dir| crate::io::folder_path(rest, dir))));
     let mut out: Vec<PathBuf> = Vec::new();
     for p in found.flatten() {
         if !out.contains(&p) {
