@@ -1165,7 +1165,10 @@ fn seed_text_frame_options(app: &DesignApp, d: &mut Dialog) {
         return;
     }
     let o = selected_frame_options(app).unwrap_or_default();
-    let units = app.session.active().map(|s| s.doc.settings.horizontal_units).unwrap_or(Unit::Picas);
+    let units = doc_unit(app);
+    // The spinner fields show their measures in it and a bare number typed is in it (#2739):
+    // kept from when the dialog opened, as the Rectangle dialog keeps its units.
+    d.unit = units;
     let mut shown = text_frame_fields(&o, units, selected_frame_width(app), &document_grid(app));
     // A non-rectangular frame shows one Inset (its top inset, the one kept from the outline).
     let shaped = selected_frame_is_shaped(app);

@@ -1796,6 +1796,62 @@ fn text_frame_options_dims_the_sides_for_a_non_rectangular_frame() {
     }
 }
 
+/// Text Frame Options shows the insets (or a non-rectangular frame's one Inset), the gutter and
+/// the other measures in the document's ruler unit, not always in picas, and reads a bare number
+/// typed there in that unit (#2739).
+#[test]
+fn text_frame_options_follow_the_ruler_units() {
+    use egui::accesskit::Role;
+    use egui_kittest::{Harness, kittest::Queryable};
+    let mm = |pt: f64| format_measure(pt, Unit::Millimeters);
+    for shape in ["rectangle", "ellipse"] {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        app.run("document.preferences", json!({"horizontalUnits": "millimeters", "verticalUnits": "millimeters"})).unwrap();
+        let r = app.run("frame.create", json!({"rect": [36, 36, 336, 236], "shape": shape, "content": "text", "text": "Hello"})).unwrap();
+        let id = designcraft_doc::ItemId(r["id"].as_u64().unwrap());
+        app.run("object.textFrameOptions", json!({"ids": [id.0], "columns": 2, "gutter": 18, "inset": [9, 9, 9, 9]})).unwrap();
+        app.run("selection.set", json!({"ids": [id.0]})).unwrap();
+        app.ui.dialog = Some(Dialog::new("textFrameOptions", json!({})));
+        let mut h = Harness::builder().with_size(egui::vec2(1000.0, 800.0)).build_ui_state(
+            |ui, app: &mut DesignApp| {
+                let key = egui::Id::unique("text_frame_units_test_fonts");
+                if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
+                    crate::theme::install_fonts(ui.ctx(), "");
+                    ui.data_mut(|d| d.insert_temp(key, true));
+                    return;
+                }
+                show(app, ui.ctx());
+            },
+            app,
+        );
+        h.run_steps(3);
+        let value = |h: &Harness<'_, DesignApp>, name: &str| h.get_by_role_and_label(Role::TextInput, name).value().unwrap_or_default();
+        let sides: &[&str] = if shape == "ellipse" { &["Inset"] } else { &["Top", "Left", "Bottom", "Right"] };
+        for side in sides {
+            assert_eq!(value(&h, side), mm(9.0), "{shape}: {side}");
+        }
+        assert_eq!(value(&h, "Gutter"), mm(18.0), "{shape}: the gutter");
+        assert_eq!(value(&h, "Paragraph Spacing Limit"), mm(0.0), "{shape}: the paragraph spacing limit");
+        let width = value(&h, "Width");
+        assert!(width.ends_with(" mm"), "{shape}: the column width {width:?} in millimetres");
+        // Bare numbers typed in the fields are millimetres.
+        let mut app = h.into_state();
+        let d = app.ui.dialog.as_mut().expect("the dialog stays open");
+        assert_eq!(d.unit, Unit::Millimeters, "{shape}");
+        let inset_key = if shape == "ellipse" { "inset" } else { "insetTop" };
+        for (k, v) in [(inset_key, "5"), ("gutter", "4"), ("firstBaselineMin", "2")] {
+            d.fields.insert(k.into(), json!(v));
+        }
+        confirm(&mut app).unwrap();
+        let o = app.session.doc().unwrap().doc.item(id).unwrap().text_frame().unwrap().options.clone();
+        let pt = |n: f64| Unit::Millimeters.to_pt(n);
+        assert!((o.inset[0] - pt(5.0)).abs() < 1e-6, "{shape}: the inset {:?}", o.inset);
+        assert!((o.gutter - pt(4.0)).abs() < 1e-6, "{shape}: the gutter {}", o.gutter);
+        assert!((o.first_baseline_min - pt(2.0)).abs() < 1e-6, "{shape}: the first baseline minimum {}", o.first_baseline_min);
+    }
+}
+
 #[test]
 fn text_frame_options_change_only_what_was_edited() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
