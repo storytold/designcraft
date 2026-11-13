@@ -347,18 +347,15 @@ impl<'r> Importer<'r> {
     }
 
     fn read_nested_styles(&self, e: &El, attrs: &mut ParaAttrs) {
-        if let Some(list) = e.prop_el("AllNestedStyles") {
-            let styles: Vec<designcraft_doc::NestedStyle> = list
-                .find_all("ListItem")
-                .map(|item| {
-                    let text = |key: &str| item.find(key).map(|element| element.text_content()).unwrap_or_default();
-                    let delimiter = item.find("Delimiter");
-                    designcraft_doc::NestedStyle {
-                        style: self.listed_char_style_ref(&text("AppliedCharacterStyle")),
-                        through: text("Inclusive").trim() != "false",
-                        count: text("Repetition").trim().parse().unwrap_or(1),
-                        until: names::nested_until_in(delimiter.and_then(|element| element.get("type")).unwrap_or("enumeration"), &text("Delimiter")),
-                    }
+        let lists = craft_idml::model::NestedStyleValues::from_el(&crate::xml::to_craft(e));
+        if let Some(values) = lists.nested {
+            let styles: Vec<designcraft_doc::NestedStyle> = values
+                .into_iter()
+                .map(|value| designcraft_doc::NestedStyle {
+                    style: self.listed_char_style_ref(&value.character_style),
+                    through: value.inclusive,
+                    count: value.repetition,
+                    until: names::nested_until_in(&value.delimiter_type, &value.delimiter),
                 })
                 .collect();
             // IDML has no drop cap style attribute: the drop cap's character style is the list's
@@ -366,28 +363,24 @@ impl<'r> Importer<'r> {
             attrs.drop_cap_style = styles.first().filter(|style| style.is_drop_cap()).map(|style| style.style.clone());
             attrs.nested_styles = Some(styles);
         }
-        if let Some(list) = e.prop_el("AllNestedLineStyles") {
-            let styles = list
-                .find_all("ListItem")
-                .map(|item| {
-                    let text = |key: &str| item.find(key).map(|element| element.text_content()).unwrap_or_default();
-                    designcraft_doc::NestedLineStyle {
-                        style: self.listed_char_style_ref(&text("AppliedCharacterStyle")),
-                        lines: text("LineCount").trim().parse().unwrap_or(1),
-                    }
-                })
-                .collect();
-            attrs.nested_line_styles = Some(styles);
+        if let Some(values) = lists.lines {
+            attrs.nested_line_styles = Some(
+                values
+                    .into_iter()
+                    .map(|value| designcraft_doc::NestedLineStyle {
+                        style: self.listed_char_style_ref(&value.character_style),
+                        lines: value.line_count,
+                    })
+                    .collect(),
+            );
         }
-        if let Some(list) = e.prop_el("AllGREPStyles") {
-            let styles = list
-                .find_all("ListItem")
-                .map(|item| {
-                    let text = |key: &str| item.find(key).map(|element| element.text_content()).unwrap_or_default();
-                    designcraft_doc::GrepStyle { style: self.listed_char_style_ref(&text("AppliedCharacterStyle")), pattern: text("GrepExpression") }
-                })
-                .collect();
-            attrs.grep_styles = Some(styles);
+        if let Some(values) = lists.grep {
+            attrs.grep_styles = Some(
+                values
+                    .into_iter()
+                    .map(|value| designcraft_doc::GrepStyle { style: self.listed_char_style_ref(&value.character_style), pattern: value.expression })
+                    .collect(),
+            );
         }
     }
 
