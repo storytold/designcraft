@@ -11,7 +11,7 @@
 //! **Script text** ([`parse`]): a JSON array of steps, JSON lines (`{"command": …, "params": …}`),
 //! or compact lines `command.id {json}` / `command.id={json}` / `command.id`; blank lines and
 //! lines starting with `#` or `//` are ignored. A leading byte order mark and CRLF line endings are
-//! accepted.
+//! accepted. A JSON step takes only `command` and `params`; any other key is an error.
 
 use serde_json::{Value, json};
 
@@ -26,7 +26,8 @@ pub struct Step {
 pub fn parse(text: &str) -> Result<Vec<Step>, String> {
     // Windows tools save "UTF-8 with BOM"; `trim` keeps U+FEFF, which then became part of the
     // first command id.
-    let t = text.trim_start_matches('\u{feff}').trim();
+    let body = text.trim_start_matches('\u{feff}');
+    let t = body.trim();
     if t.starts_with('[') {
         let v: Value = serde_json::from_str(t).map_err(|e| format!("script: {e}"))?;
         return v
@@ -38,7 +39,8 @@ pub fn parse(text: &str) -> Result<Vec<Step>, String> {
             .collect();
     }
     let mut out = Vec::new();
-    for (n, line) in t.lines().enumerate() {
+    // Number lines from the untrimmed text so leading blank lines still count.
+    for (n, line) in body.lines().enumerate() {
         let l = line.trim();
         if l.is_empty() || l.starts_with('#') || l.starts_with("//") {
             continue;
@@ -51,7 +53,9 @@ pub fn parse(text: &str) -> Result<Vec<Step>, String> {
             let (id, rest) = l.split_at(split);
             let rest = rest.trim_start_matches(['=', ' ', '\t']).trim();
             let params = if rest.is_empty() { Ok(json!({})) } else { serde_json::from_str(rest).map_err(|e| e.to_string()) };
-            params.map(|params| Step { command: id.to_string(), params })
+            params.map(|p: Value| if p.is_null() { json!({}) } else { p }).and_then(|params: Value| {
+                if params.is_object() { Ok(Step { command: id.to_string(), params }) } else { Err("`params` must be an object".to_string()) }
+            })
         };
         out.push(step.map_err(|e| format!("line {}: {e}", n + 1))?);
     }
@@ -59,6 +63,10 @@ pub fn parse(text: &str) -> Result<Vec<Step>, String> {
 }
 
 fn step_of(v: &Value) -> Result<Step, String> {
+    // A misspelt key (`parms`) would otherwise run the command with its defaults.
+    if let Some(key) = v.as_object().and_then(|o| o.keys().find(|k| !matches!(k.as_str(), "command" | "params"))) {
+        return Err(format!("unknown key `{key}` (a step takes `command` and `params`)"));
+    }
     let command = v.get("command").and_then(Value::as_str).filter(|s| !s.is_empty()).ok_or("missing `command`")?.to_string();
     let params = v.get("params").cloned().filter(|p| !p.is_null()).unwrap_or(json!({}));
     if !params.is_object() {
@@ -67,8 +75,8 @@ fn step_of(v: &Value) -> Result<Step, String> {
     Ok(Step { command, params })
 }
 
-/// The value a reference (`N.path`, `last.path`) points at.
-fn lookup(r: &str, results: &[Value]) -> Result<Value, String> {
+/// The value a reference (`N.path`, `last.path`) points at, borrowed from `results`.
+fn lookup<'a>(r: &str, results: &'a [Value]) -> Result<&'a Value, String> {
     let mut parts = r.split('.');
     let head = parts.next().unwrap_or("");
     let idx = if head == "last" {
@@ -76,14 +84,14 @@ fn lookup(r: &str, results: &[Value]) -> Result<Value, String> {
     } else {
         head.parse::<usize>().map_err(|_| format!("bad reference `${r}`"))?
     };
-    let mut v = results.get(idx).ok_or_else(|| format!("`${r}`: step {idx} hasn't run (only {} have)", results.len()))?.clone();
+    let mut v = results.get(idx).ok_or_else(|| format!("`${r}`: step {idx} hasn't run (only {} have)", results.len()))?;
     for p in parts {
-        v = match (&v, p.parse::<usize>()) {
-            (Value::Array(a), Ok(i)) => a.get(i).cloned(),
-            (Value::Object(o), _) => o.get(p).cloned(),
+        v = match (v, p.parse::<usize>()) {
+            (Value::Array(a), Ok(i)) => a.get(i),
+            (Value::Object(o), _) => o.get(p),
             _ => None,
         }
-        .ok_or_else(|| format!("`${r}`: no `{p}` in {}", short(&v)))?;
+        .ok_or_else(|| format!("`${r}`: no `{p}` in {}", short(v)))?;
     }
     Ok(v)
 }
@@ -102,14 +110,59 @@ fn is_reference(r: &str) -> bool {
     head_ok && parts.all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'))
 }
 
+/// Longest string a `${…}` interpolation may build: a step that pastes an earlier result into a
+/// story, then interpolates that story into the next, could otherwise double its size each step.
+pub const MAX_INTERPOLATED_BYTES: usize = 16 << 20;
+
+fn too_long(s: &str) -> String {
+    // Cut at a char boundary: a preview of a long Unicode input mustn't copy all of it.
+    let preview = &s[..s.floor_char_boundary(40)];
+    format!("the interpolated text of {preview} is longer than {MAX_INTERPOLATED_BYTES} bytes").replace('\n', " ")
+}
+
+/// Longest string a whole reference (`$last.text`) may copy in. A story is far smaller; the cap
+/// stops a loop of "read the story, paste it back" from doubling it until memory runs out.
+pub const MAX_REFERENCED_BYTES: usize = 64 << 20;
+
+/// Most bytes of strings one step's parameters may hold once its references are resolved: the
+/// limits above apply to each string, this one to a whole parameter tree (an array of 256
+/// references to a large string would pass each of them).
+pub const MAX_STEP_PARAM_BYTES: usize = 256 << 20;
+
+/// Roughly how many bytes cloning `v` allocates (its strings, plus a word per node).
+fn weight(v: &Value) -> usize {
+    match v {
+        Value::String(s) => s.len(),
+        Value::Array(a) => a.iter().fold(8, |n, x| n.saturating_add(weight(x))),
+        Value::Object(o) => o.iter().fold(8, |n, (k, x)| n.saturating_add(k.len()).saturating_add(weight(x))),
+        _ => 8,
+    }
+}
+
+fn charge(budget: &mut usize, bytes: usize) -> Result<(), String> {
+    *budget =
+        budget.checked_sub(bytes).ok_or_else(|| format!("the parameters of a step are longer than {MAX_STEP_PARAM_BYTES} bytes once resolved"))?;
+    Ok(())
+}
+
 /// Replace references in `params` with values from earlier `results`.
 pub fn resolve(params: &Value, results: &[Value]) -> Result<Value, String> {
+    resolve_in(params, results, MAX_REFERENCED_BYTES, &mut { MAX_STEP_PARAM_BYTES })
+}
+
+fn resolve_in(params: &Value, results: &[Value], max_ref: usize, budget: &mut usize) -> Result<Value, String> {
     Ok(match params {
         Value::String(s) => {
             if let Some(r) = s.strip_prefix('$').filter(|r| is_reference(r)) {
-                return lookup(r, results);
+                let v = lookup(r, results)?;
+                if matches!(v, Value::String(t) if t.len() > max_ref) {
+                    return Err(format!("`${r}` is longer than {max_ref} bytes"));
+                }
+                charge(budget, weight(v))?;
+                return Ok(v.clone());
             }
             if !s.contains("${") && !s.contains("$$") {
+                charge(budget, s.len())?;
                 return Ok(params.clone());
             }
             let mut out = String::new();
@@ -122,21 +175,32 @@ pub fn resolve(params: &Value, results: &[Value]) -> Result<Value, String> {
                     rest = tail;
                 } else if let Some(inner) = after.strip_prefix('{') {
                     let end = inner.find('}').ok_or_else(|| format!("unclosed `${{` in {s:?}"))?;
-                    match lookup(&inner[..end], results)? {
-                        Value::String(t) => out.push_str(&t),
-                        other => out.push_str(&other.to_string()),
+                    // The length is checked before the value is copied in.
+                    let piece = match lookup(&inner[..end], results)? {
+                        Value::String(t) => std::borrow::Cow::Borrowed(t.as_str()),
+                        other => std::borrow::Cow::Owned(other.to_string()),
+                    };
+                    if out.len().saturating_add(piece.len()) > MAX_INTERPOLATED_BYTES {
+                        return Err(too_long(s));
                     }
+                    out.push_str(&piece);
                     rest = &inner[end + 1..];
                 } else {
                     out.push('$');
                     rest = after;
                 }
             }
+            if out.len().saturating_add(rest.len()) > MAX_INTERPOLATED_BYTES {
+                return Err(too_long(s));
+            }
             out.push_str(rest);
+            charge(budget, out.len())?;
             Value::String(out)
         }
-        Value::Array(a) => Value::Array(a.iter().map(|v| resolve(v, results)).collect::<Result<_, _>>()?),
-        Value::Object(o) => Value::Object(o.iter().map(|(k, v)| Ok((k.clone(), resolve(v, results)?))).collect::<Result<_, String>>()?),
+        Value::Array(a) => Value::Array(a.iter().map(|v| resolve_in(v, results, max_ref, budget)).collect::<Result<_, _>>()?),
+        Value::Object(o) => {
+            Value::Object(o.iter().map(|(k, v)| Ok((k.clone(), resolve_in(v, results, max_ref, budget)?))).collect::<Result<_, String>>()?)
+        }
         v => v.clone(),
     })
 }
@@ -174,16 +238,63 @@ pub fn run(steps: &[Step], mut exec: impl FnMut(&str, Value) -> Result<Value, St
     Report { results, failed: None }
 }
 
+/// How deep scripts may run scripts (`script.run` is a command a step may run).
+pub const MAX_SCRIPT_DEPTH: usize = 8;
+/// Steps one outermost script may run, the scripts it runs included: a script that runs itself
+/// (its text read back from a story, say) ends here rather than never.
+pub const MAX_SCRIPT_STEPS: usize = 100_000;
+
 impl crate::Session {
     /// Run a script on this session (see [`crate::script`]).
     pub fn run_script(&mut self, steps: &[Step]) -> Report {
-        run(steps, |c, p| self.execute(c, &p).map_err(|e| e.to_string()))
+        if self.script_depth >= MAX_SCRIPT_DEPTH {
+            let command = steps.first().map(|s| s.command.clone()).unwrap_or_default();
+            return Report {
+                results: vec![],
+                failed: Some((0, command, format!("scripts nest deeper than {MAX_SCRIPT_DEPTH} (a script running a script…)"))),
+            };
+        }
+        if self.script_depth == 0 {
+            self.script_steps = MAX_SCRIPT_STEPS;
+        }
+        self.script_depth += 1;
+        let report = run(steps, |c, p| {
+            self.script_steps =
+                self.script_steps.checked_sub(1).ok_or_else(|| format!("the script and the scripts it runs exceed {MAX_SCRIPT_STEPS} steps"))?;
+            self.execute(c, &p).map_err(|e| e.to_string())
+        });
+        self.script_depth -= 1;
+        report
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_limit_error_previews_a_multibyte_input_in_bounds() {
+        let e = super::too_long(&"€".repeat(1000));
+        assert!(e.len() < 150, "{e}");
+    }
+
     use super::*;
+
+    /// A whole reference to a long string is refused, and the strings of one step's parameters
+    /// share a budget (small limits here: the real ones would mean allocating them).
+    #[test]
+    fn whole_references_and_the_parameter_tree_are_bounded() {
+        let results = vec![json!({"text": "x".repeat(100)})];
+        assert!(resolve_in(&json!("$0.text"), &results, 100, &mut 1000).is_ok());
+        assert!(resolve_in(&json!("$0.text"), &results, 99, &mut 1000).unwrap_err().contains("longer than 99"));
+        let many = json!(["$0.text", "$0.text", "${0.text}"]);
+        assert!(resolve_in(&many, &results, 100, &mut 300).is_ok());
+        assert!(resolve_in(&many, &results, 100, &mut 299).unwrap_err().contains("once resolved"));
+    }
+
+    #[test]
+    fn leading_blank_lines_keep_line_numbers() {
+        let e = parse("\n\n# c\nfile.new\nframe.create {bad").unwrap_err();
+        assert!(e.contains("line 5"), "{e}");
+    }
 
     #[test]
     fn parses_all_forms() {
@@ -193,6 +304,25 @@ mod tests {
         assert_eq!(a, b);
         assert_eq!(a, c);
         assert!(parse("frame.create {bad").unwrap_err().contains("line 1"));
+    }
+
+    /// A misspelt step key ran the command with its defaults.
+    #[test]
+    fn a_step_with_an_unknown_key_is_refused() {
+        for text in [r#"[{"command": "file.new", "parms": {"width": 300}}]"#, r#"{"command": "file.new", "parms": {"width": 300}}"#] {
+            let e = parse(text).unwrap_err();
+            assert!(e.contains("unknown key `parms`"), "{e}");
+        }
+        assert!(parse(r#"[{"command": "file.new", "params": {"width": 300}}]"#).is_ok());
+    }
+
+    #[test]
+    fn compact_lines_require_object_params() {
+        for bad in ["a.b 5", "a.b [1]", "a.b \"x\"", "a.b=true"] {
+            assert_eq!(parse(bad), Err("line 1: `params` must be an object".to_string()), "{bad}");
+        }
+        assert_eq!(parse("\na.b={\"x\":1}").unwrap()[0].params, json!({"x": 1}));
+        assert_eq!(parse("a.b null").unwrap()[0].params, json!({}));
     }
 
     /// Windows editors and PowerShell 5.1 save "UTF-8 with BOM" with CRLF line endings; the BOM
@@ -240,6 +370,35 @@ mod tests {
         assert!(r.failed.is_none(), "{r:?}");
         assert_eq!(r.results[2]["count"], 2);
         assert_eq!(r.results[3]["text"], "a\u{a0}v\u{a0}Praze");
+    }
+
+    /// A script that runs scripts stops at the depth limit, and the steps of all of them count
+    /// against one budget; the session goes on afterwards.
+    #[test]
+    fn nested_scripts_are_bounded() {
+        let mut s = crate::Session::new();
+        let steps = parse("file.new\ndocument.inspect\ndocument.inspect").unwrap();
+        s.script_depth = MAX_SCRIPT_DEPTH;
+        let e = s.run_script(&steps).failed.expect("must fail").2;
+        assert!(e.contains("nest deeper"), "{e}");
+        s.script_depth = 1;
+        s.script_steps = 2;
+        let r = s.run_script(&steps);
+        assert_eq!(r.results.len(), 2);
+        assert!(r.failed.as_ref().is_some_and(|f| f.2.contains("exceed")), "{r:?}");
+        s.script_depth = 0;
+        let r = s.run_script(&steps);
+        assert!(r.failed.is_none(), "{r:?}");
+        assert_eq!(s.script_depth, 0);
+    }
+
+    #[test]
+    fn interpolation_is_capped() {
+        let big = "x".repeat(MAX_INTERPOLATED_BYTES / 2 + 1);
+        let results = vec![json!({"text": big})];
+        assert!(resolve(&json!("${0.text}"), &results).is_ok());
+        let e = resolve(&json!("${0.text}${0.text}"), &results).unwrap_err();
+        assert!(e.contains("longer than"), "{e}");
     }
 
     #[test]

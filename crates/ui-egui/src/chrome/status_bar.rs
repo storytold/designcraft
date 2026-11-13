@@ -114,22 +114,46 @@ pub fn status_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
                 if icons::button(ui, "prev", 14.0, false, crate::i18n::tr(&app.ui.language, "Previous Spread")).clicked() {
                     crate::canvas::go_to_page(app, cur.saturating_sub(1));
                 }
-                let name = app.session.page_label(cur);
+                // The page box, as InDesign's: the page in view, or the parent while one is shown
+                // ("A-Parent"); its menu lists the pages, then the parents.
+                let pb = crate::canvas::page_box(app);
+                let name = pb.as_ref().map_or_else(String::new, |b| b.current_name().to_string());
                 let (fr, fresp) = ui.allocate_exact_size(vec2(80.0, 14.0), Sense::click());
                 ui.painter().rect(fr, 0.0, t.input, Stroke::new(1.0, t.field_border), egui::StrokeKind::Inside);
-                ui.painter().text(fr.left_center() + vec2(5.0, 0.0), egui::Align2::LEFT_CENTER, &name, small.clone(), t.text);
+                // A long parent name is cut at the arrow.
+                ui.painter().with_clip_rect(egui::Rect::from_min_max(fr.min, egui::pos2(fr.max.x - 14.0, fr.max.y))).text(
+                    fr.left_center() + vec2(5.0, 0.0),
+                    egui::Align2::LEFT_CENTER,
+                    &name,
+                    small.clone(),
+                    t.text,
+                );
                 ui.painter().text(fr.right_center() - vec2(5.0, 0.0), egui::Align2::RIGHT_CENTER, "▾", small.clone(), t.text);
-                egui::Popup::menu(&fresp).show(|ui| {
-                    let names: Vec<String> = (0..n).map(|i| app.session.page_label(i)).collect();
-                    egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
-                        for (i, nm) in names.iter().enumerate() {
-                            if ui.button(nm).clicked() {
-                                crate::canvas::go_to_page(app, i);
-                                ui.close();
-                            }
-                        }
-                    });
+                let label = crate::i18n::tr(&app.ui.language, "Page");
+                fresp.widget_info(|| {
+                    let mut info = egui::WidgetInfo::labeled(egui::Role::ComboBox, true, label);
+                    info.current_text_value = Some(name.clone());
+                    info
                 });
+                let mut picked = None;
+                if let Some(b) = &pb {
+                    egui::Popup::menu(&fresp).show(|ui| {
+                        egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
+                            for (i, nm) in b.names.iter().enumerate() {
+                                if i == b.pages && i > 0 {
+                                    ui.separator();
+                                }
+                                if ui.selectable_label(i == b.current, nm).clicked() {
+                                    picked = Some(i);
+                                    ui.close();
+                                }
+                            }
+                        });
+                    });
+                }
+                if let (Some(b), Some(i)) = (&pb, picked) {
+                    crate::canvas::page_box_go(app, b, i);
+                }
                 if icons::button(ui, "next", 14.0, false, crate::i18n::tr(&app.ui.language, "Next Spread")).clicked() {
                     crate::canvas::go_to_page(app, (cur + 1).min(n - 1));
                 }
@@ -140,24 +164,29 @@ pub fn status_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
                 crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "[Basic] (working) ▾")).font(small.clone()));
                 ui.add_space(8.0);
                 // Preflight: overset text is an error.
-                let errors = panels::preflight_errors(app);
+                let errors = panels::preflight_errors(app, ui.ctx());
                 let (r, dot) = ui.allocate_exact_size(vec2(9.0, 9.0), Sense::click());
                 ui.painter().circle_filled(
                     r.center(),
                     4.0,
-                    if errors == 0 { Color32::from_rgb(60, 200, 90) } else { Color32::from_rgb(235, 50, 50) },
+                    match errors {
+                        None => t.text_dim,
+                        Some(0) => Color32::from_rgb(60, 200, 90),
+                        Some(_) => Color32::from_rgb(235, 50, 50),
+                    },
                 );
-                let count = if errors == 0 {
-                    format!("{} ▾", crate::i18n::tr(&app.ui.language, "No errors"))
-                } else {
-                    format!(
+                let count = match errors {
+                    // The active document's first check hasn't ended.
+                    None => format!("{} ▾", crate::i18n::tr(&app.ui.language, "Checking")),
+                    Some(0) => format!("{} ▾", crate::i18n::tr(&app.ui.language, "No errors")),
+                    Some(errors) => format!(
                         "{} ▾",
                         crate::i18n::count_label(
                             &app.ui.language,
                             if errors == 1 && !crate::i18n::category_first(&app.ui.language) { "error" } else { "errors" },
                             errors
                         )
-                    )
+                    ),
                 };
                 // As in InDesign, the count opens a menu that leads to the Preflight panel.
                 let menu = crate::menus::menu_button(ui, egui::RichText::new(count).font(small.clone()), |ui| {

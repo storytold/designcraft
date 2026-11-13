@@ -91,6 +91,9 @@ pub(crate) struct GlyphCache {
     map: HashMap<(usize, ItemId), Entry>,
     elements: usize,
     clock: u64,
+    /// The clock at which eviction last found nothing it may drop (everything is in use by the
+    /// render then going on): until the next render, looking again would find the same.
+    spent: Option<u64>,
 }
 
 /// Roughly 56 bytes per element: ~110 MB of cached outlines.
@@ -111,7 +114,7 @@ impl GlyphCache {
         let g = Arc::new(build(cs, ft));
         self.elements += g.elements;
         self.map.insert(key, Entry { _story: Arc::downgrade(cs), glyphs: g.clone(), stamp });
-        if self.elements > MAX_ELEMENTS {
+        if self.elements > MAX_ELEMENTS && self.spent != Some(self.clock) {
             self.evict();
         }
         g
@@ -123,11 +126,19 @@ impl GlyphCache {
         let mut stamps: Vec<(u64, usize, (usize, ItemId))> = self.map.iter().map(|(k, e)| (e.stamp, e.glyphs.elements, *k)).collect();
         stamps.sort_unstable_by_key(|s| s.0);
         for (stamp, n, k) in stamps {
-            if self.elements <= MAX_ELEMENTS / 2 || stamp >= self.clock {
-                break;
+            if self.elements <= MAX_ELEMENTS / 2 {
+                return;
+            }
+            if stamp >= self.clock {
+                // The rest belong to this render: nothing more to drop until the next one.
+                self.spent = Some(self.clock);
+                return;
             }
             self.map.remove(&k);
             self.elements -= n;
+        }
+        if self.elements > MAX_ELEMENTS / 2 {
+            self.spent = Some(self.clock);
         }
     }
 
@@ -174,6 +185,8 @@ fn push_bar(bars: &mut Vec<(String, f32, Rect)>, color: &str, tint: f32, r: Rect
 
 fn build_line(db: &FontDb, cs: &ComposedStory, l: &Line, vertical: bool) -> LineGlyphs {
     let mut runs: Vec<(u32, BezPath)> = Vec::new();
+    // Where each style's run is in `runs` (a line can hold many styles).
+    let mut run_of: HashMap<u32, usize> = HashMap::new();
     let mut underlines: Vec<(String, f32, Rect)> = Vec::new();
     let mut strikes: Vec<(String, f32, Rect)> = Vec::new();
     let mut glyphs = 0;
@@ -207,13 +220,10 @@ fn build_line(db: &FontDb, cs: &ComposedStory, l: &Line, vertical: bool) -> Line
             // Upright in vertical text.
             a = turn * a;
         }
-        let k = match runs.iter().position(|r| r.0 == g.style) {
-            Some(k) => k,
-            None => {
-                runs.push((g.style, BezPath::new()));
-                runs.len() - 1
-            }
-        };
+        let k = *run_of.entry(g.style).or_insert_with(|| {
+            runs.push((g.style, BezPath::new()));
+            runs.len() - 1
+        });
         let bp = &mut runs[k].1;
         for el in outline.elements() {
             bp.push(transform_el(a, *el));
@@ -387,6 +397,11 @@ impl Renderer {
         if !ft.tables.is_empty() {
             self.draw_tables(ctx, f, ft, xf);
         }
+        // Anchored objects ride on their lines, under the frame's text (as InDesign draws them):
+        // a picture whose frame reaches into the next line doesn't hide that line.
+        for o in &ft.objects {
+            self.draw_item(ctx, f, &o.object.item, xf * Affine::translate(o.origin.to_vec2()), ShownOn::Own);
+        }
         draw_text_indicators(ctx, f, cs, ft, m);
         let scale = m.determinant().abs().sqrt();
         let greek_px = f.opts.greek_below_px;
@@ -460,10 +475,6 @@ impl Renderer {
             if let Some(nft) = n.text.frames.first() {
                 self.draw_text(ctx, f, &n.text, nft, xf * Affine::translate(n.origin.to_vec2()));
             }
-        }
-        // Anchored objects ride on their lines.
-        for o in &ft.objects {
-            self.draw_item(ctx, f, &o.object.item, xf * Affine::translate(o.origin.to_vec2()), ShownOn::Own);
         }
     }
 }
@@ -612,9 +623,7 @@ pub(crate) fn cell_stroke(kind: &designcraft_doc::StrokeType, weight: f64, lengt
         StrokeType::Dashed { pattern } if StrokeType::expandable_dashes(pattern, length) => {
             st.with_caps(kurbo::Cap::Butt).with_dashes(0.0, pattern.iter().copied())
         }
-        StrokeType::Dotted if StrokeType::expandable_dashes(&[0.0, weight * 2.0], length) => {
-            st.with_dashes(0.0, [0.0, weight * 2.0]).with_caps(kurbo::Cap::Round)
-        }
+        StrokeType::Dotted if StrokeType::expandable_dashes(&[0.0, weight * 2.0], length) => super::stroke::dotted(st, weight),
         _ => st,
     }
 }

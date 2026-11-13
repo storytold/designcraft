@@ -14,7 +14,7 @@ use designcraft_doc::{
 };
 use serde_json::{Value, json};
 
-use super::{CommandSpec, bad, cmd, f64_or, has_doc, has_text, ok, str_param};
+use super::{CommandSpec, bad, cmd, f64_or, has_doc, has_text, ok, str_param, table_story};
 use crate::{Result, Session};
 
 mod cell;
@@ -28,4 +28,5 @@ mod styles;
 mod target;
 
 pub use registry::specs;
-pub(crate) use selection::step_cell;
+pub(crate) use selection::{one_selected_cell_to_text, step_cell};
+pub use structure::{MAX_BODY_ROWS, MAX_COLUMNS, MAX_CONVERTED_CELLS, MAX_HEADER_FOOTER_ROWS};

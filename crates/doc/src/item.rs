@@ -29,8 +29,8 @@ pub use paint::{
     path_length_bound,
 };
 pub use text_frame::{
-    AutoSize, ColumnsKind, ContourType, FirstBaseline, FrameBaselineGrid, FrameGridRelative, PathAlign, PathType, TextFrame, TextFrameOptions,
-    TextWrap, VerticalJustification, WrapMode, WrapSide, vertical_text_xf,
+    AutoSize, ColumnsKind, ContourType, DEFAULT_ALPHA_THRESHOLD, FirstBaseline, FrameBaselineGrid, FrameGridRelative, PathAlign, PathType, TextFrame,
+    TextFrameOptions, TextWrap, VerticalJustification, WrapMode, WrapSide, vertical_text_xf,
 };
 
 fn is_zero_usize(v: &usize) -> bool {
@@ -282,6 +282,16 @@ impl Item {
         self.shape != Shape::Group && matches!(&self.content, Content::Group { items } if !items.is_empty())
     }
 
+    /// A frame a placed or dropped graphic fills: an empty one, one holding a graphic, or one
+    /// holding only graphics pasted into it (as a document from InDesign keeps a frame's image).
+    pub fn takes_graphic(&self) -> bool {
+        match &self.content {
+            Content::Unassigned | Content::Graphic(_) => true,
+            Content::Group { items } => self.has_nested_items() && items.iter().all(|c| matches!(c.content, Content::Graphic(_))),
+            _ => false,
+        }
+    }
+
     pub fn bounds(&self) -> Rect {
         self.bounds_under(Affine::IDENTITY).unwrap_or(Rect::ZERO)
     }
@@ -384,6 +394,23 @@ impl Item {
 mod tests {
     use super::*;
     use designcraft_geom::shapes;
+
+    /// Shadows and glows saved before they had a blend mode read Normal, as they were drawn;
+    /// new ones start as InDesign's: Multiply for shadows, Screen for the outer glow.
+    #[test]
+    fn effect_blend_modes_default_as_indesign_and_keep_old_documents() {
+        let old: DropShadow =
+            serde_json::from_str(r#"{"on": true, "color": "[Black]", "opacity": 0.75, "angle": 120, "distance": 7, "size": 5, "spread": 0}"#)
+                .unwrap();
+        assert_eq!(old.mode, BlendMode::Normal);
+        let old: OuterGlow = serde_json::from_str(r#"{"on": true, "color": "[Black]", "opacity": 0.75, "size": 7, "spread": 0}"#).unwrap();
+        assert_eq!(old.mode, BlendMode::Normal);
+        assert_eq!(DropShadow::default().mode, BlendMode::Multiply);
+        assert_eq!(InnerShadow::default().mode, BlendMode::Multiply);
+        assert_eq!(OuterGlow::default().mode, BlendMode::Screen);
+        let saved = serde_json::to_value(DropShadow { mode: BlendMode::Screen, ..Default::default() }).unwrap();
+        assert_eq!(serde_json::from_value::<DropShadow>(saved).unwrap().mode, BlendMode::Screen, "round trip");
+    }
 
     #[test]
     fn graphics_without_a_clipping_path_load_and_save_as_before() {

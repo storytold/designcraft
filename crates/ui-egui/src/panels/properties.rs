@@ -30,13 +30,16 @@ pub use flex::flex_panel;
 use flex::flex_section;
 pub(crate) use links::run_update_links;
 pub use links::{info_panel, links_panel, preflight_panel, update_links};
+#[cfg(test)]
+use object::align_to_icon;
 use object::{align_row, appearance_section, guide_section, quick_actions_object, transform_section, wrap_section};
-pub(crate) use object::{corner_type_dropdown, ref_point_proxy, stroke_type_dropdown};
-use object_panels::pathfinder_row;
+pub(crate) use object::{corner_shape_button, corner_type_dropdown, paint_corner_shape, preview_row, ref_point_proxy, stroke_type_dropdown};
 pub use object_panels::{align_panel, attributes_panel, effects_panel, pathfinder_panel, stroke_panel, wrap_panel};
+use object_panels::{anchor_point_sections, pathfinder_row};
 pub(crate) use text::{LANGUAGES, kerning_control, language_menu};
 use text::{
-    bullets_section, character_section, paragraph_section, quick_actions_text, text_appearance_section, text_frame_section, text_style_section,
+    bullets_section, character_section, paragraph_section, quick_actions_text, text_appearance_section, text_frame_section, text_frame_target,
+    text_style_section,
 };
 pub use typography::{DIGIT_OPTIONS, character_panel, digit_label, paragraph_panel, show_typography_panel};
 #[cfg(test)]
@@ -86,6 +89,9 @@ fn selection_title(app: &DesignApp, info: &Option<SelInfo>) -> String {
     if st.selection.text.is_some() {
         return crate::i18n::tr(&app.ui.language, "Characters").into();
     }
+    if !st.selection.anchors.is_empty() {
+        return crate::i18n::tr(&app.ui.language, "Anchor Point(s)").into();
+    }
     if info.is_none() && !st.selection.guides.is_empty() {
         return crate::i18n::tr(&app.ui.language, "Ruler Guide").into();
     }
@@ -132,6 +138,12 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         section(ui, crate::i18n::tr(&app.ui.language, "Bullets and Numbering"), true);
         bullets_section(app, ui);
         divider(ui);
+        // The frame that shows the caret, as with the frame selected.
+        if text_frame_target(app).is_some() {
+            section(ui, crate::i18n::tr(&app.ui.language, "Text Frame"), true);
+            text_frame_section(app, ui);
+            divider(ui);
+        }
         section(ui, crate::i18n::tr(&app.ui.language, "Quick Actions"), true);
         quick_actions_text(app, ui);
         return;
@@ -142,17 +154,20 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         return;
     }
     // The Page tool with no objects selected: the page's own settings, as InDesign's.
-    if info.is_none() && app.session.tool_id() == "page" {
-        let page = app.session.active().and_then(|st| st.selection.page).or_else(|| crate::canvas::current_page(app));
-        if let Some(page) = page {
-            page_sections(app, ui, page);
-            return;
+    if info.is_none() && (app.session.tool_id() == "page" || app.session.active().is_some_and(|st| st.editing_parents)) {
+        if let Some((spread, page)) = crate::canvas::page_target(app) {
+            page_sections(app, ui, spread, page);
         }
+        return;
     }
     let Some(i) = info else {
         document_sections(app, ui);
         return;
     };
+    if app.session.active().is_some_and(|st| !st.selection.anchors.is_empty()) {
+        anchor_point_sections(app, ui, &i);
+        return;
+    }
     section(ui, crate::i18n::tr(&app.ui.language, "Transform"), true);
     transform_section(app, ui, &i);
     divider(ui);
@@ -202,7 +217,21 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                         let _ = app.run("object.fit", json!({"mode": mode}));
                     }
                 }
+                // Frame Fitting Options…, as InDesign's Options button beside the fitting buttons.
+                if outline_button(ui, crate::i18n::tr(&app.ui.language, "Options"), 64.0).clicked() {
+                    crate::menus::activate(app, "app.fittingOptions", &Value::Null);
+                }
             });
+            // Auto-Fit: the graphic is refitted whenever its frame is resized.
+            let mut auto = app
+                .session
+                .active()
+                .and_then(|st| st.selection.items.first().and_then(|id| st.doc.item(*id)))
+                .and_then(|it| it.graphic())
+                .is_some_and(|g| g.auto_fit != designcraft_doc::Fitting::None);
+            if widgets::checkbox(ui, &mut auto, crate::i18n::tr(&app.ui.language, "Auto-Fit")).changed() {
+                let _ = app.run("object.fittingOptions", json!({"autoFit": auto}));
+            }
             divider(ui);
         }
         section(ui, crate::i18n::tr(&app.ui.language, "Text Wrap"), true);

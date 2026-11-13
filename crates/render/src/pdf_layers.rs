@@ -19,9 +19,15 @@ fn ocgs(pdf: &Pdf) -> Vec<(ObjRef, String, bool)> {
         cfg.as_ref().and_then(|c| c.get::<Array<'_>>(key)).map(|a| a.raw_iter().filter_map(|o| o.as_obj_ref()).collect()).unwrap_or_default()
     };
     let base_off = cfg.as_ref().and_then(|c| c.get::<Name<'_>>(b"BaseState")).is_some_and(|n| n.as_ref() == b"OFF");
-    let (on, off) = (ids_in(b"ON"), ids_in(b"OFF"));
+    let (on, off): (std::collections::HashSet<ObjRef>, std::collections::HashSet<ObjRef>) =
+        (ids_in(b"ON").into_iter().collect(), ids_in(b"OFF").into_iter().collect());
     list.raw_iter()
         .filter_map(|o| o.as_obj_ref())
+        // A layer listed again is one layer: it gets one name, not one per entry.
+        .filter({
+            let mut seen = std::collections::HashSet::new();
+            move |r| seen.insert(*r)
+        })
         .filter_map(|r| {
             let d = xref.get::<Dict<'_>>(ObjectIdentifier::from(r))?;
             let name = d

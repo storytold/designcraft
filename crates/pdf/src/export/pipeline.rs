@@ -1,6 +1,6 @@
 use super::common::{tf, to_path};
 use super::images::ImageContentCache;
-use super::metadata::{date_time, file_info_metadata, now_unix};
+use super::metadata::{date_time, export_time, file_info_metadata};
 use super::*;
 
 /// Export `doc` as PDF bytes.
@@ -21,13 +21,48 @@ pub(crate) struct Sheet {
 pub(crate) const MARK_LEN: f64 = 18.0;
 
 /// Whether a layer's items go into the PDF.
-pub(crate) fn layer_exported(layer: &designcraft_doc::Layer) -> bool {
+pub fn layer_exported(layer: &designcraft_doc::Layer) -> bool {
     layer.visible && layer.printable
 }
 
 /// Whether an item and everything inside it go into the PDF, its layer aside.
-pub(crate) fn item_exported(it: &Item) -> bool {
+pub fn item_exported(it: &Item) -> bool {
     !it.hidden && !it.nonprinting
+}
+
+/// The items PDF export draws inside `it`: every item pasted into a frame (a frame keeps the
+/// states of a multi-state group converted to it, and draws them all), or a group's shown
+/// children (only the active state of a multi-state object).
+pub fn drawn_children(it: &Item) -> impl Iterator<Item = &Arc<Item>> {
+    let nested = it.has_nested_items();
+    it.children().iter().filter(move |_| nested).chain(it.shown_children().filter(move |_| !nested))
+}
+
+/// The parent pages' items that page `pi` of spread `si` shows, on exported layers, each with the
+/// offset that moves it onto the page: the parent's bases first, then the parent. None when the
+/// page hides parent items; the items the page overrides are left out (their overrides are the
+/// spread's own items).
+pub fn shown_parent_items(doc: &Document, si: usize, pi: usize) -> Vec<(Affine, &Arc<Item>)> {
+    let Some(page) = doc.spreads.get(si).and_then(|sp| sp.pages.get(pi)).filter(|page| page.show_parent_items) else { return Vec::new() };
+    // What the canvas hides: this page's overrides and those of the parent pages behind it.
+    let overridden = doc.overridden_parent_items(SpreadRef::Doc(si), pi);
+    let mut out = Vec::new();
+    for (ppi, ppage) in doc.shown_parent_pages(SpreadRef::Doc(si), pi) {
+        let Some(parent) = doc.parents.get(ppi) else { continue };
+        let Some(ppg) = parent.pages.get(ppage) else { continue };
+        let dx = page.x - ppg.x;
+        for it in &parent.items {
+            if overridden.contains(&it.id) || !doc.layer(it.layer).is_some_and(layer_exported) {
+                continue;
+            }
+            // Parent items belong to the parent page they sit on.
+            if parent.page_at_x(it.bounds().center().x) != Some(ppage) && parent.pages.len() > 1 {
+                continue;
+            }
+            out.push((Affine::translate((dx, 0.0)), it));
+        }
+    }
+    out
 }
 
 /// Every item of spread `si` that goes into the PDF, with its parent's transform: the items on
@@ -162,7 +197,7 @@ fn export_pdf_with_report_inner(doc: &Document, cache: &Cache, opts: &PdfOptions
     };
     let settings = krilla::SerializeSettings { compress_content_streams: opts.compress, configuration, ..base };
     let title = opts.title.clone().unwrap_or_else(|| doc.title.clone());
-    let created = opts.created.or_else(now_unix);
+    let created = opts.created.or_else(export_time);
     let metadata = Metadata { created: created.map(date_time), ..file_info_metadata(doc, opts.title.as_deref(), opts.author.as_deref()) };
     let mut writer = Writer::new(settings, metadata);
     let pdf = writer.document_mut();

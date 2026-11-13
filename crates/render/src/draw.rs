@@ -90,12 +90,15 @@ impl Renderer {
                 if !page.show_parent_items {
                     continue;
                 }
-                for (ppi, ppage) in doc.shown_parent_pages(sr, pi) {
+                let chain = doc.shown_parent_pages(sr, pi);
+                // This page's overrides and those of every parent page behind it (#1469).
+                let overridden = doc.overridden_parent_items(sr, pi);
+                for (ppi, ppage) in chain {
                     let Some(parent) = doc.parents.get(ppi) else { continue };
                     let Some(ppg) = parent.pages.get(ppage) else { continue };
                     let dx = page.x - ppg.x;
                     for it in &parent.items {
-                        if it.layer != layer.id || page.overridden.contains(&it.id) {
+                        if it.layer != layer.id || overridden.contains(&it.id) {
                             continue;
                         }
                         // Parent items belong to the parent page they sit on.
@@ -176,7 +179,10 @@ impl Renderer {
             return;
         }
         let xf = parent * it.xf;
-        let vb = xf.transform_rect_bbox(it.inner_bounds()).inflate(it.stroke.extent() + 2.0, it.stroke.extent() + 2.0);
+        // The stroke and the effects' growth are drawn through `xf`, which stretches them.
+        let scale = fx::max_scale(xf).unwrap_or(1.0);
+        let stroke = it.stroke.extent() * scale;
+        let vb = xf.transform_rect_bbox(it.inner_bounds()).inflate(stroke + 2.0, stroke + 2.0);
         // A frame with items pasted into it draws like any other object (draw_body: fill, the items
         // clipped to the frame, stroke), so its effects apply to all of it.
         if !it.children().is_empty() && !it.has_nested_items() {
@@ -190,7 +196,7 @@ impl Renderer {
             _ => 0.0,
         };
         let effects = it.effects.any() && f.opts.quality != DisplayQuality::Fast;
-        let fx_outset = if effects { fx::outset(it) } else { 0.0 };
+        let fx_outset = if effects { fx::outset_scaled(it, scale) } else { 0.0 };
         if !rect_overlaps(vb.inflate(margin + fx_outset, margin + fx_outset), f.visible) {
             return;
         }

@@ -1,6 +1,8 @@
 //! Books (File › New / Open Book): an ordered list of documents with continuous page numbers,
 //! styles synchronised from a style source, and one PDF for the whole book. Saved as `.dcbook`.
 
+use std::collections::{HashMap, HashSet};
+
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -177,6 +179,15 @@ fn paginate(s: &Session) -> Result<Value> {
     Ok(json!({"pages": next - 1, "chapters": chapters}))
 }
 
+/// `list` with only the last entry of each name, in the order of those last entries.
+#[cfg(not(target_arch = "wasm32"))]
+fn keep_last<T>(list: &[T], name: impl Fn(&T) -> &str) -> Vec<&T> {
+    let mut seen = HashSet::new();
+    let mut out: Vec<&T> = list.iter().rev().filter(|x| seen.insert(name(x))).collect();
+    out.reverse();
+    out
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn sync_styles(s: &Session) -> Result<Value> {
     let b = s.book.as_ref().ok_or_else(no_book)?;
@@ -187,6 +198,11 @@ fn sync_styles(s: &Session) -> Result<Value> {
     let styles = src.styles.clone();
     let swatches = src.swatches.clone();
     drop(src);
+    // A name the source defines twice keeps its last definition, at its last position.
+    let paragraph = keep_last(&styles.paragraph, |x| x.name.as_str());
+    let character = keep_last(&styles.character, |x| x.name.as_str());
+    let (paragraph_names, character_names): (HashSet<&str>, HashSet<&str>) =
+        (paragraph.iter().map(|x| x.name.as_str()).collect(), character.iter().map(|x| x.name.as_str()).collect());
     let mut n = 0;
     for (i, path) in paths.iter().enumerate() {
         if i == b.style_source {
@@ -195,21 +211,27 @@ fn sync_styles(s: &Session) -> Result<Value> {
         writable_chapter(s, path, "book.syncStyles")?;
         let mut d = load(path)?;
         {
+            // The source's styles replace the chapter's of the same names and go last, in the
+            // source's order (one pass over each list, not one per style).
             let st = d.styles_mut();
-            for ps in &styles.paragraph {
-                st.paragraph.retain(|x| x.name != ps.name);
-                st.paragraph.push(ps.clone());
-            }
-            for cs in &styles.character {
-                st.character.retain(|x| x.name != cs.name);
-                st.character.push(cs.clone());
-            }
+            st.paragraph.retain(|x| !paragraph_names.contains(x.name.as_str()));
+            st.paragraph.extend(paragraph.iter().map(|x| (*x).clone()));
+            st.character.retain(|x| !character_names.contains(x.name.as_str()));
+            st.character.extend(character.iter().map(|x| (*x).clone()));
+        }
+        // First index per name, as Document::swatch resolves colours.
+        let mut at: HashMap<String, usize> = HashMap::new();
+        for (i, w) in d.swatches.iter().enumerate() {
+            at.entry(w.name.clone()).or_insert(i);
         }
         for sw in &swatches {
-            match d.swatches.iter_mut().find(|w| w.name == sw.name) {
+            match at.get(&sw.name).and_then(|i| d.swatches.get_mut(*i)) {
                 Some(w) if !w.locked => *w = sw.clone(),
                 Some(_) => {}
-                None => d.swatches.push(sw.clone()),
+                None => {
+                    at.insert(sw.name.clone(), d.swatches.len());
+                    d.swatches.push(sw.clone());
+                }
             }
         }
         batch.stage(path, &d)?;
@@ -246,6 +268,7 @@ fn start_at(d: &mut designcraft_doc::Document, n: u32) {
                 prefix: String::new(),
                 marker: String::new(),
                 include_prefix: false,
+                layout: None,
             },
         );
     }
@@ -340,8 +363,9 @@ pub fn specs() -> Vec<CommandSpec> {
                 let _fonts = super::file::load_document_fonts(&mut d, path).0;
                 let cache = designcraft_compose::Cache::new();
                 let r = designcraft_pdf::export_pdf_with_report(&super::interchange::with_pdf_boxes(&d), &cache, &designcraft_pdf::PdfOptions::default()).map_err(|e| EngineError::Other(e.to_string()))?;
-                let n = designcraft_render::pdf_page_count(&r.bytes).unwrap_or(0);
-                let sizes: Vec<(f32, f32)> = (0..n).filter_map(|i| designcraft_render::pdf_page_size(&r.bytes, i)).map(|(w, h)| (w as f32, h as f32)).collect();
+                // Every page's size from one opening of the chapter's PDF (not one per page).
+                let sizes: Vec<(f32, f32)> =
+                    designcraft_render::pdf_page_sizes(&r.bytes).unwrap_or_default().into_iter().map(|(w, h)| (w as f32, h as f32)).collect();
                 parts.push((r.bytes, sizes));
             }
             let pages: usize = parts.iter().map(|p| p.1.len()).sum();
@@ -428,5 +452,14 @@ mod tests {
         let mut t = Session::new();
         assert_eq!(t.execute("book.open", &json!({"path": p("book.dcbook")})).unwrap()["documents"], 2);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_source_style_defined_twice_keeps_its_last_definition() {
+        let list = [("a", 1), ("b", 2), ("a", 3), ("c", 4)];
+        let kept: Vec<_> = super::keep_last(&list, |x| x.0).into_iter().copied().collect();
+        // As the one-style-at-a-time loop left them: each name once, at its last position.
+        assert_eq!(kept, [("b", 2), ("a", 3), ("c", 4)]);
     }
 }

@@ -3,14 +3,17 @@ use super::render::c32;
 use super::rulers::hair;
 use super::text_overlay::draw_text_selection;
 use super::{
-    Affine, CanvasLayout, Color32, Content, DRect, DesignApp, Document, Item, Point, Pos2, Rect, Selection, Stroke, StrokeKind, Xf, compose, pos2,
-    vec2,
+    Affine, CanvasLayout, Color32, Content, DRect, DesignApp, Document, Item, Point, Pos2, Rect, Selection, Stroke, StrokeKind, Xf, compose, in_view,
+    pos2, vec2,
 };
 
 /// Spread-space → canvas transform for an item at `loc`.
 pub(super) fn item_canvas_xf(doc: &Document, layout: &CanvasLayout, id: designcraft_doc::ItemId) -> Option<(Affine, &'static str)> {
     let loc = doc.find(id)?;
-    Some((layout.xf(loc.spread) * doc.parent_xf(&loc), ""))
+    // Items on spreads that aren't laid out (document pages while parents are being edited, or
+    // the reverse) have no place on the canvas.
+    let slot = layout.slot(loc.spread)?;
+    Some((slot.xf * doc.parent_xf(&loc), ""))
 }
 
 pub(super) fn path_screen(it: &Item, xf: &Xf, a: Affine) -> Vec<Vec<Pos2>> {
@@ -48,21 +51,31 @@ pub(super) fn draw_frames(app: &DesignApp, painter: &egui::Painter, xf: &Xf, doc
         return;
     }
     let ported = ported_frames(app, doc);
+    // Only the objects that reach into the view are drawn, and only their stories are looked up:
+    // an object out of view adds no shapes and no work on its story.
+    let clip = painter.clip_rect();
+    let parent_items = doc.parents.iter().any(|p| !p.items.is_empty());
     for slot in &layout.slots {
         let Some(sp) = doc.spread(slot.spread) else { continue };
         let a = slot.xf;
         // Parent items on document pages, and base parents' items on a parent spread: dotted edges.
-        for (pi, page) in sp.pages.iter().enumerate() {
+        for (pi, page) in sp.pages.iter().enumerate().filter(|_| parent_items) {
+            let mut overridden = None;
             for (ppi, ppg) in doc.shown_parent_pages(slot.spread, pi) {
                 let Some(parent) = doc.parents.get(ppi) else { continue };
                 let Some(ppage) = parent.pages.get(ppg) else { continue };
                 let dx = page.x - ppage.x;
+                let shifted = a * Affine::translate((dx, 0.0));
                 for it in &parent.items {
-                    if (parent.pages.len() > 1 && parent.page_at_x(it.bounds().center().x) != Some(ppg)) || page.overridden.contains(&it.id) {
+                    let bounds = it.bounds();
+                    if (parent.pages.len() > 1 && parent.page_at_x(bounds.center().x) != Some(ppg))
+                        || !in_view(xf, clip, shifted.transform_rect_bbox(bounds), EDGE_MARGIN)
+                        || overridden.get_or_insert_with(|| doc.overridden_parent_items(slot.spread, pi)).contains(&it.id)
+                    {
                         continue;
                     }
                     let col = doc.layer(it.layer).map(|l| c32(l.color)).unwrap_or(Color32::LIGHT_BLUE);
-                    for poly in path_screen(it, xf, a * Affine::translate((dx, 0.0))) {
+                    for poly in path_screen(it, xf, shifted) {
                         for w in poly.windows(2) {
                             dashed(painter, w[0], w[1], Stroke::new(hair(painter), col.gamma_multiply(0.8)), 2.0, 2.0);
                         }
@@ -70,13 +83,15 @@ pub(super) fn draw_frames(app: &DesignApp, painter: &egui::Painter, xf: &Xf, doc
                 }
             }
         }
-        for it in &sp.items {
+        let seen: Vec<&std::sync::Arc<Item>> =
+            sp.items.iter().filter(|it| reach(it, 0).is_none_or(|r| in_view(xf, clip, a.transform_rect_bbox(r), EDGE_MARGIN))).collect();
+        for it in &seen {
             draw_item_edges(painter, xf, doc, it, a);
         }
         // Every overset frame, selected or not and inside groups too, shows its red mark at the
         // out port (InDesign shows it only on the selected frame; a report in Preflight is easy
         // to miss while laying out).
-        for (it, c) in overset_marks(app, doc, layout, &sp.items, xf.zoom, &ported) {
+        for (it, c) in seen.iter().flat_map(|it| overset_marks(app, doc, layout, std::slice::from_ref(*it), xf.zoom, &ported)) {
             let c = xf.to_screen(c);
             let s = designcraft_tools::thread::PORT_SIZE_PX as f32;
             painter.rect_filled(Rect::from_center_size(c, vec2(s, s)), 0.0, Color32::WHITE);
@@ -89,7 +104,7 @@ pub(super) fn draw_frames(app: &DesignApp, painter: &egui::Painter, xf: &Xf, doc
         if app.ui.tagged_frames {
             for top in &sp.items {
                 top.walk(&mut |it: &Item| {
-                    if it.xml_tag.is_empty() {
+                    if it.xml_tag.is_empty() || !in_view(xf, clip, (a * it.xf).transform_rect_bbox(it.inner_bounds()), EDGE_MARGIN) {
                         return;
                     }
                     let Some(t) = doc.xml.tags.iter().find(|t| t.name == it.xml_tag) else { return };
@@ -105,19 +120,46 @@ pub(super) fn draw_frames(app: &DesignApp, painter: &egui::Painter, xf: &Xf, doc
     }
 }
 
+/// How far, in screen points, an object's edges and port marks paint past its bounds: the 8.5 pt
+/// port square is centred on the frame's edge.
+const EDGE_MARGIN: f32 = 8.0;
+
+/// A rectangle around `it` and everything nested in it, in its parent's space: every anchor and
+/// handle of its path, and those of the objects grouped or pasted into it, which can lie outside
+/// its own outline. None when the nesting is deeper than [`PORT_GROUP_DEPTH`].
+fn reach(it: &Item, depth: usize) -> Option<DRect> {
+    if depth > PORT_GROUP_DEPTH {
+        return None;
+    }
+    let mut all: Option<DRect> = None;
+    let mut add = |r: DRect| all = Some(all.map_or(r, |a| a.union(r)));
+    for p in it.path.subpaths.iter().flat_map(|sp| &sp.anchors).flat_map(|a| [a.p, a.h_in, a.h_out]) {
+        add(DRect::from_points(p, p));
+    }
+    for c in it.children() {
+        add(reach(c, depth + 1)?);
+    }
+    Some(it.xf.transform_rect_bbox(all.unwrap_or(DRect::ZERO)))
+}
+
 fn draw_item_edges(painter: &egui::Painter, xf: &Xf, doc: &Document, it: &Item, a: Affine) {
     if it.hidden || doc.layer(it.layer).is_some_and(|l| !l.visible) {
         return;
     }
     let col = doc.layer(it.layer).map(|l| c32(l.color)).unwrap_or(Color32::LIGHT_BLUE);
-    if let Content::Group { items } = &it.content {
+    // A group shows its children's edges. A frame with items pasted into it shows only its own:
+    // they are clipped to it, and their edges would run out past it (#2345).
+    if let Content::Group { items } = &it.content
+        && it.is_group()
+    {
         for c in items {
             draw_item_edges(painter, xf, doc, c, a * it.xf);
         }
         return;
     }
-    // Frames without a stroke show their edge; shapes with strokes are visible already.
-    let show = it.stroke.is_none() || matches!(it.content, Content::Text(_) | Content::Graphic(_));
+    // Frames without a stroke show their edge, as do frames holding content; other shapes with
+    // strokes are visible already.
+    let show = it.stroke.is_none() || it.has_nested_items() || matches!(it.content, Content::Text(_) | Content::Graphic(_));
     if show {
         for poly in path_screen(it, xf, a) {
             painter.add(egui::Shape::line(poly, Stroke::new(hair(painter), col.gamma_multiply(0.75))));
@@ -125,12 +167,36 @@ fn draw_item_edges(painter: &egui::Painter, xf: &Xf, doc: &Document, it: &Item, 
     }
     // Empty graphic frame: the X.
     if it.object_style == designcraft_doc::BASIC_GRAPHICS_FRAME && matches!(it.content, Content::Unassigned) {
-        let r = it.inner_bounds();
         let m = a * it.xf;
-        let p = |x: f64, y: f64| xf.to_screen(m * Point::new(x, y));
-        painter.line_segment([p(r.x0, r.y0), p(r.x1, r.y1)], Stroke::new(hair(painter), col.gamma_multiply(0.75)));
-        painter.line_segment([p(r.x1, r.y0), p(r.x0, r.y1)], Stroke::new(hair(painter), col.gamma_multiply(0.75)));
+        for (p0, p1) in frame_x(it) {
+            painter.line_segment([xf.to_screen(m * p0), xf.to_screen(m * p1)], Stroke::new(hair(painter), col.gamma_multiply(0.75)));
+        }
     }
+}
+
+/// The X of an empty graphic frame, in its own space: a four-cornered frame joins its opposite
+/// corners, so a frame slanted with Direct Selection keeps its X corner to corner, as InDesign
+/// draws it; other shapes span their bounds.
+pub(super) fn frame_x(it: &Item) -> [(Point, Point); 2] {
+    // A rectangle (slanted or not: four corner points, no handles). Ellipses, polygons (a
+    // four-sided one is a diamond) and curved paths keep the X across their bounds. Edited points
+    // make any of them a path: a four-cornered one whose corners would cross as a plus (a diamond,
+    // edited) keeps the bounds too.
+    let crosses = |a: Point, b: Point| {
+        let d = b - a;
+        d.x.abs() > 0.18 * d.hypot() && d.y.abs() > 0.18 * d.hypot()
+    };
+    if matches!(it.shape, designcraft_doc::Shape::Rectangle | designcraft_doc::Shape::Path)
+        && let [sp] = it.path.subpaths.as_slice()
+        && sp.closed
+        && let [c0, c1, c2, c3] = sp.anchors.as_slice()
+        && sp.anchors.iter().all(|a| a.h_in == a.p && a.h_out == a.p)
+        && (it.shape == designcraft_doc::Shape::Rectangle || (crosses(c0.p, c2.p) && crosses(c1.p, c3.p)))
+    {
+        return [(c0.p, c2.p), (c1.p, c3.p)];
+    }
+    let r = it.inner_bounds();
+    [(Point::new(r.x0, r.y0), Point::new(r.x1, r.y1)), (Point::new(r.x1, r.y0), Point::new(r.x0, r.y1))]
 }
 
 /// Layer colour of the first selected item: live-corner marks are outlined in it.
@@ -164,14 +230,16 @@ pub(super) fn draw_selection(app: &DesignApp, painter: &egui::Painter, xf: &Xf, 
     }
     let mut union: Option<Rect> = None;
     let mut color = Color32::from_rgb(79, 153, 255);
+    let direct = matches!(app.session.tool_id(), "directSelection" | "pen" | "addAnchor" | "deleteAnchor" | "convertDirection");
     for id in &sel.items {
         let (Some(it), Some((a, _))) = (doc.item(*id), item_canvas_xf(doc, layout, *id)) else { continue };
         color = layer_color(doc, it);
         for poly in path_screen(it, xf, a) {
             painter.add(egui::Shape::line(poly, Stroke::new(1.0, color)));
         }
-        if sel.items.len() == 1 && sel.text.is_none() {
-            // InDesign draws a 1 pt bounding box around the selection.
+        // InDesign draws a 1 pt bounding box around the selection; with the Direct Selection and
+        // pen tools, only the path and its points.
+        if sel.items.len() == 1 && sel.text.is_none() && !direct {
             painter.rect_stroke(xf.rect(a.transform_rect_bbox(it.bounds())), 0.0, Stroke::new(1.0, color), StrokeKind::Middle);
         } else if sel.key == Some(*id) {
             // The key object for Align: a thicker bounding box, as in InDesign.
@@ -202,16 +270,26 @@ pub(super) fn draw_selection(app: &DesignApp, painter: &egui::Painter, xf: &Xf, 
             }
         }
     }
-    let direct = matches!(app.session.tool_id(), "directSelection" | "pen" | "addAnchor" | "deleteAnchor" | "convertDirection");
+    // Direct Selection shows only the handles around the selected anchors, as InDesign; the pen
+    // and the anchor tools show every handle they work on.
+    let some_handles = app.session.tool_id() == "directSelection";
     if direct {
+        // Looked up once per anchor drawn: a large marquee selection stays linear.
+        let chosen_set: std::collections::HashSet<(designcraft_doc::ItemId, usize, usize)> = sel.anchors.iter().copied().collect();
         for id in &sel.items {
             let (Some(it), Some((a, _))) = (doc.item(*id), item_canvas_xf(doc, layout, *id)) else { continue };
             let m = a * it.xf;
             let col = layer_color(doc, it);
-            for sp in &it.path.subpaths {
-                for an in &sp.anchors {
+            for (si, sp) in it.path.subpaths.iter().enumerate() {
+                for (ai, an) in sp.anchors.iter().enumerate() {
                     let p = xf.to_screen(m * an.p);
-                    for (h, has) in [(an.h_in, an.has_in()), (an.h_out, an.has_out())] {
+                    // A selected anchor point is solid, the others hollow (InDesign).
+                    let chosen = chosen_set.contains(&(*id, si, ai));
+                    let shown = |out: bool| {
+                        !some_handles
+                            || designcraft_tools::select::handle_shown(sp.anchors.len(), sp.closed, ai, out, |a| chosen_set.contains(&(*id, si, a)))
+                    };
+                    for (h, has) in [(an.h_in, an.has_in() && shown(false)), (an.h_out, an.has_out() && shown(true))] {
                         if has {
                             let hp = xf.to_screen(m * h);
                             painter.line_segment([p, hp], Stroke::new(1.0, col));
@@ -219,7 +297,7 @@ pub(super) fn draw_selection(app: &DesignApp, painter: &egui::Painter, xf: &Xf, 
                         }
                     }
                     let r = Rect::from_center_size(p, vec2(5.0, 5.0));
-                    painter.rect_filled(r, 0.0, Color32::WHITE);
+                    painter.rect_filled(r, 0.0, if chosen { col } else { Color32::WHITE });
                     painter.rect_stroke(r, 0.0, Stroke::new(1.0, col), StrokeKind::Inside);
                 }
             }

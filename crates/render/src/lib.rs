@@ -50,7 +50,7 @@ pub use decode::{decode_pixmap, decode_pixmap_page, image_mime, image_size, natu
 use pdf_raster::PDF_RENDERS;
 pub use pdf_raster::{
     PdfRasterError, check_pdf_input_size, crop_pixmap, is_pdf, pdf_crop_box, pdf_page_box, pdf_page_count, pdf_page_png, pdf_page_png_checked,
-    pdf_page_png_options_checked, pdf_page_size, render_pdf_page, shown_box,
+    pdf_page_png_options_checked, pdf_page_size, pdf_page_sizes, render_pdf_page, shown_box,
 };
 pub(crate) use types::Frame;
 pub use types::{DisplayQuality, FrameStats, MAX_PAGE_PIXELS, MAX_SIDE, Placed, RenderOptions, Rendered, default_threads, effect_outset};
@@ -155,6 +155,8 @@ pub struct Renderer {
     cmyk_view: Option<blendspace::CachedView>,
     /// Whether the last render ran the CMYK ink passes (only then is its view worth keeping).
     cmyk_ran: bool,
+    /// Drop shadow and outer glow images kept between renders.
+    kept: fx::KeptEffects,
     #[cfg(test)]
     cmyk_passes: usize,
     /// Pixels the last ink pass covered (tests).
@@ -163,6 +165,9 @@ pub struct Renderer {
     /// Items the last ink pass drew (tests).
     #[cfg(test)]
     cmyk_pass_items: usize,
+    /// Bands of rows the last ink passes' colours were converted in (tests).
+    #[cfg(test)]
+    cmyk_convert_bands: usize,
     pub threads: u16,
     pub stats: FrameStats,
 }

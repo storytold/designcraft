@@ -1,3 +1,8 @@
+use std::collections::HashMap;
+
+use designcraft_geom::corners::CornerOptions;
+
+use super::object_style::{corners, corners_in};
 use super::table::uniform_cell_stroke;
 use super::values::tint;
 use super::{
@@ -86,6 +91,7 @@ impl<'r> Importer<'r> {
             let split = e.get("SplitDocument") == Some("true")
                 || e.elements()
                     .any(|m| m.local() == "StyleExportTagMap" && m.get("ExportType") == Some("EPUB") && m.get("SplitDocument") == Some("true"));
+            self.export_tag(e, &format!("p:{name}"));
             if split {
                 self.styles.export_tags.entry(format!("p:{name}")).or_default().split = true;
             }
@@ -99,6 +105,7 @@ impl<'r> Importer<'r> {
                 Some(slot) => *slot = s,
                 None => self.styles.character.push(s),
             }
+            self.export_tag(e, &format!("c:{name}"));
         }
         // Keep built-ins as well: [Basic Table] is editable, and [No table style]
         // supplies the defaults used by named styles in ordinary IDML files.
@@ -115,7 +122,9 @@ impl<'r> Importer<'r> {
                 e.prop("BasedOn").map(|r| self.cell_style_ref(&r)).or_else(|| Some(designcraft_doc::NO_CELL_STYLE.into())).filter(|n| *n != name);
             cs.fill = e.prop("FillColor").map(|c| self.swatch_ref(&c));
             cs.fill_tint = tint(e.num("FillTint"));
-            cs.inset_overrides = ["TopInset", "LeftInset", "BottomInset", "RightInset"].map(|k| e.num(k).map(|v| v.max(0.0)));
+            let inset_names =
+                [("TextTopInset", "TopInset"), ("TextLeftInset", "LeftInset"), ("TextBottomInset", "BottomInset"), ("TextRightInset", "RightInset")];
+            cs.inset_overrides = inset_names.map(|(text, old)| e.num(text).or_else(|| e.num(old)).map(|v| v.max(0.0)));
             if let [Some(top), Some(left), Some(bottom), Some(right)] = cs.inset_overrides {
                 cs.insets = Some([top, left, bottom, right]);
                 cs.inset_overrides = [None; 4];
@@ -166,6 +175,7 @@ impl<'r> Importer<'r> {
                 None => self.styles.table.push(ts),
             }
         }
+        let objects_by_self: HashMap<&str, &El> = objects.iter().filter_map(|(_, e)| Some((e.get("Self")?, e))).collect();
         for (_, e) in &objects {
             let name = names::style_name_in(OBJECT_BUILTINS, e.get("Name").unwrap_or(""));
             let based_on = e.prop("BasedOn").map(|b| {
@@ -187,18 +197,42 @@ impl<'r> Importer<'r> {
             let paragraph_style = enabled("EnableParagraphStyle", "AppliedParagraphStyle")
                 .then(|| e.get("AppliedParagraphStyle").map(|r| self.para_style_ref(r)))
                 .flatten();
-            let text_frame = if e.get("EnableTextFrameGeneralOptions") == Some("true") {
-                e.find("TextFramePreference").map(|t| self.frame_options(&[t]))
+            let levels = based_on_levels(e, &objects_by_self);
+            // Text Frame General Options: each attribute from the nearest style whose
+            // `TextFramePreference` sets it, among the styles that don't turn the category off. A
+            // style without the category flag takes it from the style it is based on.
+            let text_frame = if category_on(&levels, "EnableTextFrameGeneralOptions", |_| false) {
+                let prefs: Vec<&El> = levels
+                    .iter()
+                    .filter(|l| l.get("EnableTextFrameGeneralOptions") != Some("false"))
+                    .filter_map(|l| l.find("TextFramePreference"))
+                    .collect();
+                (!prefs.is_empty()).then(|| self.frame_options(&prefs))
             } else {
                 None
             };
             let effects = self.style_effects(e);
-            let s = ObjectStyle { name: name.clone(), based_on, fill, stroke, paragraph_style, text_frame, effects };
+            let corners = style_corners(&levels);
+            let apply_next_style = paragraph_style.is_some() && e.get("ApplyNextParagraphStyle") == Some("true");
+            let s = ObjectStyle { name: name.clone(), based_on, fill, stroke, paragraph_style, apply_next_style, text_frame, effects, corners };
             match self.styles.object.iter_mut().find(|o| o.name == name) {
                 Some(slot) => *slot = s,
                 None => self.styles.object.push(s),
             }
         }
+    }
+
+    /// Export Tagging (tag and class) of style `e` from its EPUB export tag map, under `key`.
+    fn export_tag(&mut self, e: &El, key: &str) {
+        let Some(m) = e.elements().find(|m| m.local() == "StyleExportTagMap" && m.get("ExportType") == Some("EPUB")) else { return };
+        let tag = m.get("ExportTag").unwrap_or("").to_string();
+        let class = m.get("ExportClass").unwrap_or("").to_string();
+        if tag.is_empty() && class.is_empty() {
+            return;
+        }
+        let t = self.styles.export_tags.entry(key.to_string()).or_default();
+        t.tag = tag;
+        t.class = class;
     }
 
     fn based_on(&self, e: &El, para: bool) -> Option<String> {
@@ -227,6 +261,11 @@ impl<'r> Importer<'r> {
         self.para_names.get(r).cloned().unwrap_or_else(|| names::style_name_in(PARA_BUILTINS, &unescape_id(r.trim_start_matches("ParagraphStyle/"))))
     }
 
+    /// A paragraph style reference written as an element's text: as written when it names a
+    /// style, otherwise without surrounding whitespace (see [`Self::listed_char_style_ref`]).
+    pub(super) fn listed_para_style_ref(&self, r: &str) -> String {
+        if self.para_names.contains_key(r) { self.para_style_ref(r) } else { self.para_style_ref(r.trim()) }
+    }
     /// A character style reference written as an element's text (nested, line and GREP styles).
     /// A style name may end in a space, so the reference is used as written when it names a
     /// style; only otherwise is surrounding whitespace dropped.
@@ -242,7 +281,12 @@ impl<'r> Importer<'r> {
         // A style or range can set some of a rule's settings (such as only its colour); the others
         // come from its paragraph style chain, so the rule is whole.
         let fields = ["", "LineWeight", "Color", "Tint", "Width", "Offset", "LeftIndent", "RightIndent"];
-        if !fields.iter().any(|f| e.prop(&format!("{k}{f}")).is_some()) {
+        // Any of them, or of the type, gap and Keep In Frame settings, makes it an override (the
+        // rest then come from the style chain, or the defaults: off, 1 pt).
+        let more = ["Type", "GapColor", "GapTint"];
+        let own = fields.iter().chain(&more).any(|f| e.prop(&format!("{k}{f}")).is_some())
+            || (k == "RuleAbove" && e.prop("KeepRuleAboveInFrame").is_some());
+        if !own {
             return None;
         }
         let v: Vec<Option<String>> = fields.iter().map(|f| self.para_setting(e, &format!("{k}{f}"))).collect();
@@ -250,7 +294,6 @@ impl<'r> Importer<'r> {
         let num = |i: usize| get(i).and_then(|v| v.trim().parse::<f64>().ok()).filter(|v| v.is_finite());
         let on = get(0).map(|v| v.trim() == "true");
         let weight = num(1);
-        on.or(weight.map(|_| false))?;
         let mut r = Rule { on: on.unwrap_or(false), ..Rule::default() };
         if let Some(w) = weight {
             r.weight = w;
@@ -262,15 +305,36 @@ impl<'r> Importer<'r> {
         r.offset = num(5).unwrap_or(0.0);
         r.left_indent = num(6).unwrap_or(0.0);
         r.right_indent = num(7).unwrap_or(0.0);
-        if let Some(c) = get(2) {
-            let c = c.trim();
-            if c == designcraft_doc::TEXT_COLOR {
-                r.color = c.to_string();
-            } else if c.contains('/') {
-                r.color = self.swatch_ref(c);
-            }
+        // Type, gap colour and tint, Keep In Frame (rule above).
+        if let Some(t) = self.para_setting(e, &format!("{k}Type")) {
+            r.kind = names::stroke_type_in(t.trim());
+        }
+        if let Some(c) = self.para_setting(e, &format!("{k}GapColor"))
+            && let Some(c) = self.rule_color_ref(&c)
+        {
+            r.gap_color = c;
+        }
+        if let Some(t) = tint(self.para_setting(e, &format!("{k}GapTint")).and_then(|v| v.trim().parse::<f64>().ok()).filter(|v| v.is_finite())) {
+            r.gap_tint = t;
+        }
+        if k == "RuleAbove" {
+            r.keep_in_frame = self.para_setting(e, "KeepRuleAboveInFrame").is_some_and(|v| v.trim() == "true");
+        }
+        if let Some(c) = get(2).and_then(|c| self.rule_color_ref(&c)) {
+            r.color = c;
         }
         Some(r)
+    }
+
+    /// A rule's colour or gap colour: Text Color (written `Text Color` or `$ID/Text Color`), or
+    /// a swatch reference; anything else leaves the default.
+    fn rule_color_ref(&mut self, c: &str) -> Option<String> {
+        let c = c.trim();
+        if c == designcraft_doc::TEXT_COLOR || c.strip_prefix("$ID/") == Some(designcraft_doc::TEXT_COLOR) {
+            Some(designcraft_doc::TEXT_COLOR.to_string())
+        } else {
+            c.contains('/').then(|| self.swatch_ref(c))
+        }
     }
 
     /// Paragraph setting `k` of `e` (a paragraph style or a range): its own, else from its
@@ -363,4 +427,52 @@ fn unindented(r: &str) -> &str {
         Some(i) => r.get(..text + i).unwrap_or(r),
         None => r,
     }
+}
+
+/// The corner options (Stroke & Corner Options) of the object style that starts `levels` (the
+/// style, then the styles it is based on), by name, when it sets them. A style that sets some
+/// corners, or turns the category on (itself or through the style it is based on), takes the
+/// others from the styles in `levels` that don't turn the category off.
+fn style_corners(levels: &[&El]) -> Option<CornerOptions> {
+    if !category_on(levels, "EnableStrokeAndCornerOptions", |l| corners(l, "").is_some()) {
+        return None;
+    }
+    let on: Vec<&El> = levels.iter().copied().filter(|l| l.get("EnableStrokeAndCornerOptions") != Some("false")).collect();
+    corners_in(&on, "").map(|c| CornerOptions { corners: c })
+}
+
+/// Whether the style chain `levels` (a style, then the styles it is based on) turns the category
+/// whose flag is `flag` on. The nearest style that gives the flag decides; a style without it
+/// turns the category on when `own` finds settings of its own. A `[None]` after the first style
+/// ends the chain, as a `BasedOn` of `[None]` names no style.
+fn category_on(levels: &[&El], flag: &str, own: impl Fn(&El) -> bool) -> bool {
+    let none = |l: &&El| l.get("Self") == Some("ObjectStyle/$ID/[None]");
+    for l in levels.iter().take(1).chain(levels.iter().skip(1).take_while(|l| !none(l))) {
+        match l.get(flag) {
+            Some(v) => return v == "true",
+            None if own(l) => return true,
+            None => {}
+        }
+    }
+    false
+}
+
+/// Object style `e`, then the styles it is based on, nearest first (cycle-safe, at most 16). A
+/// `BasedOn` may name a style by its `Self` id or by its bare name.
+fn based_on_levels<'e>(e: &'e El, objects_by_self: &HashMap<&str, &'e El>) -> Vec<&'e El> {
+    let id = |b: String| {
+        let b = b.trim();
+        if b.starts_with("ObjectStyle/") { b.to_string() } else { format!("ObjectStyle/{}", names::escape_id(b)) }
+    };
+    let mut levels = vec![e];
+    let mut next = e.prop("BasedOn").map(id);
+    while let Some(b) = next.take()
+        && levels.len() < 16
+        && let Some(s) = objects_by_self.get(b.as_str()).copied()
+        && !levels.iter().any(|l| std::ptr::eq(*l, s))
+    {
+        levels.push(s);
+        next = s.prop("BasedOn").map(id);
+    }
+    levels
 }
