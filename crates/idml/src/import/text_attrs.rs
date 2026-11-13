@@ -20,37 +20,17 @@ fn tab_list_repaired(read: &[TabStop], sanitized: &[TabStop]) -> bool {
 }
 
 pub(super) fn mojikumi_row(e: &El) -> Result<designcraft_doc::cjk::MojikumiAki> {
-    let number = |key: &str| -> Result<f64> {
-        let Some(raw) = e.prop(key) else {
-            return Ok(0.0);
-        };
-        raw.trim().parse::<f64>().ok().filter(|v| v.is_finite()).ok_or_else(|| IdmlError::Invalid(format!("Mojikumi row has invalid {key}")))
-    };
-    let integer = |key: &str| -> Result<i16> {
-        let v = number(key)?;
-        if v.fract() != 0.0 || v < f64::from(i16::MIN) || v > f64::from(i16::MAX) {
-            return Err(IdmlError::Invalid(format!("Mojikumi {key} must be an in-range integer")));
-        }
-        Ok(v as i16)
-    };
-    let boolean = |key: &str| -> Result<bool> {
-        match e.prop(key).as_deref().map(str::trim) {
-            None | Some("false") => Ok(false),
-            Some("true") => Ok(true),
-            _ => Err(IdmlError::Invalid(format!("Mojikumi row has invalid {key}"))),
-        }
-    };
-    let row = designcraft_doc::cjk::MojikumiAki {
-        target_class: integer("TargetMojikumiClass")?,
-        side_class: integer("SideMojikumiClass")?,
-        after: boolean("SideIsAfterTarget")?,
-        minimum: number("Minimum")?,
-        desired: number("Desired")?,
-        maximum: number("Maximum")?,
-        priority: integer("CompressionPriority")?,
-        does_not_float: boolean("AkiDoesNotFloat")?,
-    };
-    Ok(row)
+    let model = craft_idml::model::MojikumiRow::from_el(&crate::xml::to_craft(e)).map_err(IdmlError::Invalid)?;
+    Ok(designcraft_doc::cjk::MojikumiAki {
+        target_class: model.target_class,
+        side_class: model.side_class,
+        after: model.after,
+        minimum: model.minimum,
+        desired: model.desired,
+        maximum: model.maximum,
+        priority: model.priority,
+        does_not_float: model.does_not_float,
+    })
 }
 
 impl<'r> Importer<'r> {
