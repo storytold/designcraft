@@ -1,4 +1,4 @@
-use super::common::{anchor_self, change_type, uid, with_props, xref_format_self};
+use super::common::{change_type, uid, with_props, xref_format_self};
 use super::{CHAR_BUILTINS, CharFormat, El, Ex, ListType, NO_CHAR_ID, Node, PARA_BUILTINS, ParaAttrs, ParaFormat, Story, TOC_STYLE_ID, names, st};
 
 impl<'a> Ex<'a> {
@@ -342,13 +342,7 @@ impl<'a> Ex<'a> {
                     flush_content(&mut pending, &mut out);
                     let k = s.text[..seg_start + ci].matches(designcraft_doc::ANCHOR_MARK).count();
                     if let Some(a) = s.anchors.get(k) {
-                        out.push(Node::El(
-                            El::new("HyperlinkTextDestination")
-                                .attr("Self", anchor_self(a.id))
-                                .attr("Name", &a.name)
-                                .attr("Hidden", "false")
-                                .attr("DestinationUniqueKey", a.id & 0xFFFF_FFFF),
-                        ));
+                        out.push(Node::El(crate::xml::from_craft(craft_idml::model::StoryAnchor::destination_el(a.id, &a.name))));
                     }
                 } else if ch == designcraft_doc::OBJECT_MARK {
                     // An anchored object: the item inside the range with its anchoring settings.

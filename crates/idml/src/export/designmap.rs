@@ -1,4 +1,4 @@
-use super::common::{anchor_self, bool_s, p, uid, with_props, xref_format_self};
+use super::common::{bool_s, p, uid, with_props, xref_format_self};
 use super::{CHAR_BUILTINS, Document, El, Ex, HashSet, PARA_BUILTINS, escape_id, names, num};
 
 impl<'a> Ex<'a> {
@@ -165,7 +165,7 @@ impl<'a> Ex<'a> {
                 // deleted names no element, so the file would hold a `Hyperlink` whose
                 // `Destination` points at nothing -- import only warns and InDesign may refuse
                 // the file (noted in review).
-                De::Anchor(a) => d.find_anchor(*a).map(|_| anchor_self(*a)),
+                De::Anchor(a) => d.find_anchor(*a).map(|_| craft_idml::model::StoryAnchor::destination_self(*a)),
                 De::Url(u) => Some(self.url_dest_el(&mut root, u, &h.name)),
                 De::Email(e) => Some(self.url_dest_el(&mut root, &format!("mailto:{e}"), &h.name)),
                 De::Page(p) => d.page(*p).map(|pg| {
@@ -237,7 +237,7 @@ impl<'a> Ex<'a> {
                 .attr("Hidden", "false")
                 .attr("DestinationUniqueKey", target & 0xFFFF_FFFF);
             let mut props = El::new("Properties");
-            props.push(p("Destination", "object", anchor_self(target)));
+            props.push(p("Destination", "object", craft_idml::model::StoryAnchor::destination_self(target)));
             h.push(props);
             root.push(h);
         }

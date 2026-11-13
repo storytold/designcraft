@@ -38,10 +38,6 @@ pub(super) fn affine_s(a: Affine) -> String {
     a.as_coeffs().iter().map(|v| num(*v)).collect::<Vec<_>>().join(" ")
 }
 
-pub(super) fn anchor_self(id: u64) -> String {
-    format!("HyperlinkTextDestination/a{id}")
-}
-
 pub(super) fn xref_format_self(i: usize) -> String {
     format!("CrossReferenceFormat/f{i}")
 }
