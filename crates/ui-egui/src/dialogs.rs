@@ -8334,19 +8334,23 @@ fn justification(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, prefix: &str, cu
             .response
             .labelled_by(single_label.id);
         ui.end_row();
-        crate::rtl::label(ui, crate::i18n::tr(lang, "Composer:"));
+        let composer_label = crate::rtl::label(ui, crate::i18n::tr(lang, "Composer:"));
         // InDesign's Composer list: the Paragraph and Single-line Composers and their World-Ready
         // forms, each setting `composer` and `worldReady`. Mixed (null) selects none.
         let entries = crate::panels::properties::composer_entries(&cur(d, "composer"), &cur(d, "worldReady"));
         let shown = entries.iter().find(|e| e.1).map_or("", |e| crate::i18n::tr(lang, e.0));
         let mut chosen = None;
-        craft_ui::ComboBox::from_id_salt(format!("{prefix}composerChoice")).selected_text(crate::rtl::widget(ui, shown)).show_ui(ui, |ui| {
-            for (label, selected, set) in &entries {
-                if ui.selectable_label(*selected, crate::rtl::widget(ui, crate::i18n::tr(lang, label))).clicked() {
-                    chosen = Some(set.clone());
+        craft_ui::ComboBox::from_id_salt(format!("{prefix}composerChoice"))
+            .selected_text(crate::rtl::widget(ui, shown))
+            .show_ui(ui, |ui| {
+                for (label, selected, set) in &entries {
+                    if ui.selectable_label(*selected, crate::rtl::widget(ui, crate::i18n::tr(lang, label))).clicked() {
+                        chosen = Some(set.clone());
+                    }
                 }
-            }
-        });
+            })
+            .response
+            .labelled_by(composer_label.id);
         if let Some(serde_json::Value::Object(set)) = chosen {
             for (k, v) in set {
                 d.fields.insert(format!("{prefix}{k}"), v);
