@@ -161,19 +161,15 @@ fn list(s: &mut Session, p: &Value) -> Result<Value> {
     let only = p.get("story").and_then(Value::as_u64).map(StoryId);
     let mut out = Vec::new();
     for st in d.stories.values().filter(|st| only.is_none_or(|o| o == st.id)) {
-        collect_notes(st, st.id, &mut Vec::new(), &mut out);
+        collect_notes(st, st.id, None, &mut out);
     }
     Ok(Value::Array(out))
 }
 
-/// Nested tables an imported file may hold are followed this far; the app's own commands cannot
-/// nest them. A deeper note is not listed rather than risking an unbounded walk.
-const MAX_NOTE_TABLE_DEPTH: usize = 32;
-
-/// Append `st`'s notes, and those of the tables anchored in it, in reading order. `path` is the
-/// cell path to `st` (empty for a story's own text), and `root` is the document story the notes
+/// Append `st`'s notes, and those of the tables anchored in it, in reading order. `cell` is the
+/// table cell `st` is (`None` for a story's own text), and `root` is the document story the notes
 /// belong to, so a cell's note names the story a command must open.
-fn collect_notes(st: &Story, root: StoryId, path: &mut Vec<(u64, usize, usize)>, out: &mut Vec<Value>) {
+fn collect_notes(st: &Story, root: StoryId, cell: Option<(u64, usize, usize)>, out: &mut Vec<Value>) {
     let mut k = 0;
     for (at, ch) in st.text.char_indices() {
         if ch == designcraft_doc::FOOTNOTE_REF {
@@ -184,7 +180,7 @@ fn collect_notes(st: &Story, root: StoryId, path: &mut Vec<(u64, usize, usize)>,
                 o.insert("index".into(), json!(k));
                 o.insert("anchor".into(), json!(at));
                 o.insert("text".into(), json!(n.text.text));
-                if let Some(&(table, row, col)) = path.last() {
+                if let Some((table, row, col)) = cell {
                     o.insert("table".into(), json!(table));
                     o.insert("row".into(), json!(row));
                     o.insert("col".into(), json!(col));
@@ -192,13 +188,13 @@ fn collect_notes(st: &Story, root: StoryId, path: &mut Vec<(u64, usize, usize)>,
                 out.push(Value::Object(o));
             }
             k += 1;
-        } else if ch == TABLE_ANCHOR && path.len() < MAX_NOTE_TABLE_DEPTH {
+        } else if ch == TABLE_ANCHOR && cell.is_none() {
+            // ponytail: a table nested in a cell (only imports make one) is skipped: the commands
+            // resolve `table` in the story's own tables, so its notes need a full cell path first.
             let Some(t) = st.table_at(at).and_then(|id| st.tables.get(&id)) else { continue };
             for (row, col) in cell_reading_order(t) {
-                if let Some(cell) = t.cell(row, col) {
-                    path.push((t.id, row, col));
-                    collect_notes(&cell.text, root, path, out);
-                    path.pop();
+                if let Some(c) = t.cell(row, col) {
+                    collect_notes(&c.text, root, Some((t.id, row, col)), out);
                 }
             }
         }
@@ -481,6 +477,25 @@ mod tests {
         assert_eq!(at(&notes[2]), (Some(sid.0), Some(tid), Some(0), Some(1)));
         assert_eq!(at(&notes[3]), (Some(sid.0), Some(tid), Some(1), Some(1)));
         assert_eq!(notes[1]["anchor"], 6, "the reference offset within the cell's text");
+    }
+
+    #[test]
+    fn list_leaves_out_notes_in_nested_tables() {
+        // An imported cell can hold a nested table whose id matches the outer one; the footnote
+        // commands resolve a listed cell in the story's own tables, so listing it would point there.
+        let (mut s, sid, tid) = session_with_cell_notes();
+        {
+            let doc = std::sync::Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+            let mut nested = Table::new(tid, 1, 1, 0, 0, 100.0);
+            nested.cell_mut(0, 0).unwrap().text.insert_note(0, "Nested note.", ParaFormat::default());
+            let outer = doc.text_story_mut(sid, Some(CellAddr { table: tid, row: 0, col: 0 })).unwrap();
+            let end = outer.len();
+            outer.insert_table(end, nested);
+        }
+        let l = s.execute("footnote.list", &json!({})).unwrap();
+        let texts: Vec<&str> = l.as_array().unwrap().iter().filter_map(|n| n["text"].as_str()).collect();
+        assert!(!texts.contains(&"Nested note."), "{texts:?}");
+        assert!(texts.contains(&"Note A (left cell, row 1)."), "{texts:?}");
     }
 
     #[test]
