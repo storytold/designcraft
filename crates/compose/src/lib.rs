@@ -17,6 +17,8 @@ pub mod grep;
 mod grid;
 pub mod hyphen;
 pub mod kenten;
+mod khmer;
+pub use khmer::word_count;
 mod mojikumi;
 mod notes;
 pub mod optical;
@@ -1694,6 +1696,7 @@ fn apply_nested_line_styles(input: NestedLineStyleInput<'_, '_, '_>) {
                 };
                 (col.width() - pp.left_indent - pp.right_indent - ind).max(1.0)
             };
+            khmer::apply(&mut gl, &story.text, prange.clone());
             apply_desired_spacing(&mut gl, pp);
             mojikumi::apply(&mut gl, &doc.styles, &pp.mojikumi);
             let mut hy = hyphenation_points(&story.text, &gl, pp, hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), base_chars));
@@ -2929,6 +2932,7 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
             Some(if pp.direction == designcraft_doc::TextDirection::RightToLeft { unicode_bidi::Level::rtl() } else { unicode_bidi::Level::ltr() }),
         ),
     );
+    khmer::apply(&mut glyphs, &story.text, prange.clone());
     apply_desired_spacing(&mut glyphs, pp);
     mojikumi::apply(&mut glyphs, &doc.styles, &pp.mojikumi);
     let mut hyph_after = hyphenation_points(&story.text, &glyphs, pp, hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), base_chars));
@@ -4013,7 +4017,11 @@ fn apply_desired_spacing(glyphs: &mut [Glyph], pp: &ParaProps) {
         if g.locked_advance {
             continue;
         }
-        if g.is_word_space() {
+        if khmer::character(g.ch) {
+            g.adv *= gs;
+            g.sx *= gs;
+            g.dx *= gs;
+        } else if g.is_word_space() {
             g.adv += g.space * (ws - 1.0);
         } else if !g.is_space() && g.adv > 0.0 {
             g.adv = g.adv * gs + ls * g.space;
@@ -5206,6 +5214,11 @@ fn layout_line(
     let seg_justifies = last_tab.is_none_or(|(_, left)| left);
     // Spaces inside a jidori run keep the run's fitted width, as in the breaker.
     let spaces: Vec<usize> = line.iter().enumerate().skip(seg).filter(|(_, g)| g.is_justify_space() && !g.locked_advance).map(|(i, _)| i).collect();
+    // A Khmer line stretches only with a real word space to take the length: its word boundaries
+    // have no width. Without one it keeps its natural width (the author adds a space where it
+    // belongs), though it still shrinks to fit, as far as glyph scaling allows.
+    let khmer_line = line.get(seg..).is_some_and(|text| text.iter().any(|g| khmer::character(g.ch)));
+    let khmer_natural = khmer_line && extra >= 0.0 && !spaces.iter().any(|&i| line[i].is_word_space());
     let align = page_alignment(pp.align, left_page);
     let justify_this = align.is_justified() && (!last || align == Align::FullyJustified || forced_mid) && seg_justifies;
     // A justified paragraph's last line may have been composed with shrunk spaces: shrink it too.
@@ -5222,19 +5235,21 @@ fn layout_line(
     if (justify_this || squeeze_last) && (extra >= 0.0 || sp.kinsoku_priority != 3) {
         extra = mojikumi::distribute(line.get_mut(seg..).unwrap_or_default(), extra, add.get_mut(seg..).unwrap_or_default());
     }
-    if (justify_this || squeeze_last) && !spaces.is_empty() {
+    if (justify_this || squeeze_last) && !spaces.is_empty() && !khmer_natural {
         let rebased: Vec<usize> = spaces.iter().map(|&i| i - seg).collect();
         let (seg_line, seg_add, seg_scale) =
             (line.get(seg..).unwrap_or(&[]), add.get_mut(seg..).unwrap_or(&mut []), scale.get_mut(seg..).unwrap_or(&mut []));
         distribute(seg_line, &rebased, extra, sp, seg_add, seg_scale);
-    } else if justify_this && spaces.is_empty() && line.len() > seg + 1 && !last && extra < 0.0 {
+    } else if ((justify_this && !last) || (khmer_line && (justify_this || squeeze_last))) && spaces.is_empty() && line.len() > seg + 1 && extra < 0.0
+    {
         // An overfull single word shrinks only as far as the minimum letter spacing and glyph scaling allow.
         let (seg_line, seg_add, seg_scale) =
             (line.get(seg..).unwrap_or(&[]), add.get_mut(seg..).unwrap_or(&mut []), scale.get_mut(seg..).unwrap_or(&mut []));
         distribute(seg_line, &[], extra, sp, seg_add, seg_scale);
-    } else if justify_this && spaces.is_empty() && line.len() > seg + 1 && !last {
+    } else if justify_this && (spaces.is_empty() || khmer_natural) && line.len() > seg + 1 && !last {
         // Single word: Single Word Justification.
         match pp.single_word_justify {
+            Align::FullyJustified if khmer_line => {}
             Align::FullyJustified => {
                 let gaps: Vec<_> = line
                     .iter()
@@ -5464,7 +5479,9 @@ fn distribute(line: &[Glyph], spaces: &[usize], extra: f64, sp: &Spacing, add: &
         .collect();
     // Letter gaps: between visible glyphs (not after the line's last glyph).
     let last_box = line.iter().rposition(|g| !g.is_justify_space() && g.adv > 0.0).unwrap_or(0);
-    let is_box = |i: usize, g: &Glyph| i < last_box && !g.is_justify_space() && g.adv > 0.0 && (!g.locked_advance || g.break_after != Some(false));
+    let is_box = |i: usize, g: &Glyph| {
+        i < last_box && !g.is_justify_space() && g.adv > 0.0 && (!g.locked_advance || g.break_after != Some(false)) && khmer::letter_gap(line, i)
+    };
     let letter: Vec<f64> = line
         .iter()
         .enumerate()
@@ -5532,6 +5549,14 @@ fn distribute(line: &[Glyph], spaces: &[usize], extra: f64, sp: &Spacing, add: &
                 scale[i] = (w + sign * tg * gcap / yg) / w;
             }
         }
+        // The attached (zero-advance) glyphs of a Khmer cluster scale with their base.
+        if let Some(factor) = scale.iter().copied().find(|s| *s != 1.0) {
+            for (i, g) in line.iter().enumerate() {
+                if g.adv <= 0.0 && !g.locked_advance && khmer::character(g.ch) {
+                    scale[i] = factor;
+                }
+            }
+        }
     }
 }
 
@@ -5570,6 +5595,7 @@ fn place(g: &Glyph, x: f64) -> PlacedGlyph {
         || g.ch == story::INDENT_HERE
         || g.ch == story::RIGHT_INDENT_TAB
         || g.ch == story::TABLE_ANCHOR
+        || g.ch == '\u{200b}'
         || g.ch == shape::SOFT_HYPHEN
         || g.ch == shape::HIDDEN);
     PlacedGlyph {

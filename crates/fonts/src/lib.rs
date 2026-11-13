@@ -199,16 +199,20 @@ pub fn shape_with_context(
 
 /// `features` as a run in `script` takes them. Contextual alternates are part of how Arabic joins
 /// (connecting strokes, tatweel and letter variants): InDesign keeps them in Arabic text with
-/// Contextual Alternates off, so `calt` off is dropped there.
+/// Contextual Alternates off, so `calt` off is dropped there. Khmer needs `clig` for
+/// correct conjunct forms; legacy AAT fonts also put essential subscript substitutions
+/// behind `liga`. A document's optional-ligature/tracking settings must not disable these.
 fn script_features(features: &[Feature], script: unicode_script::Script) -> std::borrow::Cow<'_, [Feature]> {
     use unicode_script::Script;
-    let calt = Tag::new(b"calt");
-    let off = |f: &Feature| f.tag == calt && f.value == 0;
-    if script == Script::Arabic && features.iter().any(off) {
-        features.iter().filter(|f| !off(f)).copied().collect::<Vec<_>>().into()
-    } else {
-        features.into()
-    }
+    let off = |f: &Feature| {
+        f.value == 0
+            && match script {
+                Script::Arabic => f.tag == Tag::new(b"calt"),
+                Script::Khmer => f.tag == Tag::new(b"liga") || f.tag == Tag::new(b"clig"),
+                _ => false,
+            }
+    };
+    if features.iter().any(off) { features.iter().filter(|f| !off(f)).copied().collect::<Vec<_>>().into() } else { features.into() }
 }
 
 fn shape_dir(
@@ -351,13 +355,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn arabic_keeps_contextual_alternates() {
+    fn complex_scripts_keep_required_shaping_features() {
         use unicode_script::Script;
         let off = feature("-calt").unwrap();
         let liga = feature("-liga").unwrap();
-        let tags = |s: Script| script_features(&[off, liga], s).iter().map(|f| (f.tag, f.value)).collect::<Vec<_>>();
-        assert_eq!(tags(Script::Arabic), vec![(liga.tag, 0)]);
-        assert_eq!(tags(Script::Latin), vec![(off.tag, 0), (liga.tag, 0)]);
+        let clig = feature("-clig").unwrap();
+        let stylistic = feature("dlig").unwrap();
+        let tags = |s: Script| script_features(&[off, liga, clig, stylistic], s).iter().map(|f| (f.tag, f.value)).collect::<Vec<_>>();
+        assert_eq!(tags(Script::Arabic), vec![(liga.tag, 0), (clig.tag, 0), (stylistic.tag, 1)]);
+        assert_eq!(tags(Script::Khmer), vec![(off.tag, 0), (stylistic.tag, 1)]);
+        assert_eq!(tags(Script::Latin), vec![(off.tag, 0), (liga.tag, 0), (clig.tag, 0), (stylistic.tag, 1)]);
     }
 
     #[test]
