@@ -110,7 +110,7 @@ pub fn checked(app: &DesignApp, id: &str, params: &Value) -> Option<bool> {
         "list.bullets" | "list.numbers" => {
             app.session.selection_has_list(if id == "list.bullets" { designcraft_doc::ListType::Bullets } else { designcraft_doc::ListType::Numbers })
         }
-        "window.controlBar" => app.ui.control_bar,
+        "window.controlBar" => app.ui.control_bar && app.ui.hidden_panels == 0,
         "window.split" => app.split,
         "window.newWindow" => app.second_window,
         "view.proofColors" => app.ui.proof_colors,
