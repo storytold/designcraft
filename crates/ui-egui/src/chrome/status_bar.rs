@@ -243,24 +243,29 @@ pub fn status_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
                 crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "[Basic] (working) ▾")).font(small.clone()));
                 ui.add_space(8.0);
                 // Preflight: overset text is an error.
-                let errors = panels::preflight_errors(app);
+                let errors = panels::preflight_errors(app, ui.ctx());
                 let (r, dot) = ui.allocate_exact_size(vec2(9.0, 9.0), Sense::click());
                 ui.painter().circle_filled(
                     r.center(),
                     4.0,
-                    if errors == 0 { Color32::from_rgb(60, 200, 90) } else { Color32::from_rgb(235, 50, 50) },
+                    match errors {
+                        None => t.text_dim,
+                        Some(0) => Color32::from_rgb(60, 200, 90),
+                        Some(_) => Color32::from_rgb(235, 50, 50),
+                    },
                 );
-                let count = if errors == 0 {
-                    format!("{} ▾", crate::i18n::tr(&app.ui.language, "No errors"))
-                } else {
-                    format!(
+                let count = match errors {
+                    // The active document's first check hasn't ended.
+                    None => format!("{} ▾", crate::i18n::tr(&app.ui.language, "Checking")),
+                    Some(0) => format!("{} ▾", crate::i18n::tr(&app.ui.language, "No errors")),
+                    Some(errors) => format!(
                         "{} ▾",
                         crate::i18n::count_label(
                             &app.ui.language,
                             if errors == 1 && !crate::i18n::category_first(&app.ui.language) { "error" } else { "errors" },
                             errors
                         )
-                    )
+                    ),
                 };
                 // As in InDesign, the count opens a menu that leads to the Preflight panel.
                 let menu = crate::menus::menu_button(ui, egui::RichText::new(count).font(small.clone()), |ui| {

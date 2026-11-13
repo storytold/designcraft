@@ -40,8 +40,10 @@ pub fn specs() -> Vec<CommandSpec> {
                     .nth(k)
                     .map(|(i, _)| i)
                     .ok_or_else(|| bad("endnote.delete", format!("endnote {id} has no reference in the text")))?;
-                super::notes::follow_delete(sel, sid, at..at + designcraft_doc::ENDNOTE_REF.len_utf8());
-                st.delete(at..at + designcraft_doc::ENDNOTE_REF.len_utf8());
+                let len = designcraft_doc::ENDNOTE_REF.len_utf8();
+                super::notes::follow_delete(sel, sid, at..at + len);
+                st.delete(at..at + len);
+                d.adjust_text_ranges(sid, at..at + len, 0);
                 ok()
             })
         }),
@@ -125,6 +127,7 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
         let id = story
             .insert_endnote(at, &text, ParaFormat { style, ..Default::default() })
             .ok_or_else(|| bad(ID, "the story's endnotes don't match its references"))?;
+        d.adjust_text_ranges(ts.story, at..at, designcraft_doc::ENDNOTE_REF.len_utf8());
         let caret = at + designcraft_doc::ENDNOTE_REF.len_utf8();
         if let Some(t) = &mut sel.text {
             (t.anchor, t.focus) = (caret, caret);

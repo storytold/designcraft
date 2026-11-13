@@ -241,3 +241,25 @@ fn unusable_profiles_leave_the_pixels_alone() {
     let png = png_with_icc(1, 1, &px, Some(vec![0xAB; 300]));
     assert_eq!(decode_rgba(&png).unwrap().as_raw(), &px);
 }
+
+#[test]
+fn reduced_jpegs_get_the_colour_handling_of_full_decodes() {
+    // An Adobe RGB JPEG: the reduced decode applies the profile as the full decode does.
+    let img = image::RgbImage::from_pixel(64, 48, image::Rgb([64, 192, 64]));
+    let mut jpeg = Vec::new();
+    let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 95);
+    enc.set_icc_profile(adobe_rgb_icc()).unwrap();
+    enc.write_image(img.as_raw(), 64, 48, image::ExtendedColorType::Rgb8).unwrap();
+    let full = decode_rgba(&jpeg).unwrap().get_pixel(3, 3).0;
+    let reduced = crate::decode_rgba_reduced(&jpeg, 3).unwrap();
+    assert_eq!(reduced.dimensions(), (8, 6));
+    let p = reduced.get_pixel(1, 1).0;
+    for c in 0..4 {
+        assert!(p[c].abs_diff(full[c]) <= 2, "{p:?} vs {full:?}");
+    }
+    let want = adobe_to_srgb([64, 192, 64]);
+    assert!((f32::from(p[0]) - want[0]).abs() <= 3.0, "{p:?} vs {want:?}");
+    // CMYK and YCCK JPEGs stay with the full decode, which converts their inks.
+    assert!(crate::decode_rgba_reduced(&solid_jpeg([0, 255, 255, 255], Some(0)), 1).is_none());
+    assert!(crate::decode_rgba_reduced(&solid_jpeg([76, 85, 255, 255], Some(2)), 1).is_none());
+}
