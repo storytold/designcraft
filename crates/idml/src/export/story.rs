@@ -172,20 +172,16 @@ impl<'a> Ex<'a> {
             .attr("AppliedTOCStyle", if toc { TOC_STYLE_ID } else { "n" })
             .attr("TrackChanges", "false")
             .attr("StoryTitle", "$ID/");
-        el.push(
-            El::new("StoryPreference")
-                .attr("OpticalMarginAlignment", bool_s(s.optical_margin.on))
-                .attr(
-                    "OpticalMarginSize",
-                    num(designcraft_doc::OpticalMargin::clamp_size(s.optical_margin.size).unwrap_or(designcraft_doc::OpticalMargin::DEFAULT_SIZE)),
-                )
-                .attr("FrameType", "TextFrameType")
-                .attr("StoryOrientation", if s.vertical { "Vertical" } else { "Horizontal" })
-                .attr(
-                    "StoryDirection",
-                    if s.direction == designcraft_doc::TextDirection::RightToLeft { "RightToLeftDirection" } else { "LeftToRightDirection" },
-                ),
-        );
+        el.push(crate::xml::from_craft(
+            craft_idml::model::StoryPreference {
+                optical_margin_alignment: s.optical_margin.on,
+                optical_margin_size: designcraft_doc::OpticalMargin::clamp_size(s.optical_margin.size)
+                    .unwrap_or(designcraft_doc::OpticalMargin::DEFAULT_SIZE),
+                vertical: s.vertical,
+                right_to_left: s.direction == designcraft_doc::TextDirection::RightToLeft,
+            }
+            .to_el(),
+        ));
         for psr in self.story_paras(s) {
             el.push(psr);
         }
