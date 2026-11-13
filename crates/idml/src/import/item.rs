@@ -1,4 +1,4 @@
-use super::frame::{Prefs, frame_grid_relative, text_frame_options, text_wrap};
+use super::frame::{Prefs, text_frame_options, text_wrap};
 use super::package::uri_to_path;
 use super::values::{nums, parse_affine, tint};
 use super::{
@@ -172,14 +172,20 @@ impl<'r> Importer<'r> {
                 if let Some(r) = Prefs(&prefs).prop("ColumnRuleStrokeColor") {
                     options.column_rule_color = self.swatch_ref(&r);
                 }
-                if let Some(g) = self.with_style(e, "BaselineFrameGridOption")
-                    && g.get("UseCustomBaselineFrameGrid") == Some("true")
-                {
-                    options.baseline_grid = Some(designcraft_doc::FrameBaselineGrid {
-                        start: g.num("StartingOffsetForBaselineFrameGrid").unwrap_or(0.0),
-                        increment: g.num("BaselineFrameGridIncrement").unwrap_or(12.0),
-                        relative_to: g.get("BaselineFrameGridRelativeOption").map(frame_grid_relative).unwrap_or_default(),
-                    });
+                if let Some(g) = self.with_style(e, "BaselineFrameGridOption") {
+                    let grid = craft_idml::model::BaselineFrameGridOption::from_el(&crate::xml::to_craft(&g));
+                    if grid.use_custom {
+                        options.baseline_grid = Some(designcraft_doc::FrameBaselineGrid {
+                            start: grid.start,
+                            increment: grid.increment,
+                            relative_to: match grid.relative_to {
+                                craft_idml::model::BaselineFrameGridRelative::TopMargin => designcraft_doc::FrameGridRelative::TopMargin,
+                                craft_idml::model::BaselineFrameGridRelative::TopOfFrame => designcraft_doc::FrameGridRelative::TopOfFrame,
+                                craft_idml::model::BaselineFrameGridRelative::TopInset => designcraft_doc::FrameGridRelative::TopInset,
+                                craft_idml::model::BaselineFrameGridRelative::TopOfPage => designcraft_doc::FrameGridRelative::TopOfPage,
+                            },
+                        });
+                    }
                 }
                 item.content = Content::Text(TextFrame { story, options });
                 self.ctx.threads.push((
@@ -210,10 +216,12 @@ impl<'r> Importer<'r> {
                         gr.fill = fill;
                     }
                     if let (Some(ff), Content::Graphic(gr)) = (self.with_style(e, "FrameFittingOption"), &mut item.content) {
-                        gr.crop = [ff.num("TopCrop"), ff.num("LeftCrop"), ff.num("BottomCrop"), ff.num("RightCrop")].map(|v| v.unwrap_or(0.0));
-                        gr.fit_align = ff.get("FittingAlignment").map_or(4, names::anchor_in);
-                        if ff.get("AutoFit") == Some("true") {
-                            gr.auto_fit = ff.get("FittingOnEmptyFrame").map_or(designcraft_doc::Fitting::FillProportionally, names::fitting_in);
+                        let fitting = craft_idml::model::FrameFittingOption::from_el(&crate::xml::to_craft(&ff));
+                        gr.crop = fitting.crop.map(|v| v.unwrap_or(0.0));
+                        gr.fit_align = fitting.alignment.as_deref().map_or(4, names::anchor_in);
+                        if fitting.auto_fit {
+                            gr.auto_fit =
+                                fitting.fitting_on_empty_frame.as_deref().map_or(designcraft_doc::Fitting::FillProportionally, names::fitting_in);
                             if gr.auto_fit == designcraft_doc::Fitting::None {
                                 gr.auto_fit = designcraft_doc::Fitting::FillProportionally;
                             }

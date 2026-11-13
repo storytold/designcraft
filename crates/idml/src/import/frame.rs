@@ -61,19 +61,6 @@ pub(super) fn fit_columns(mut columns: Columns, margins: &Margins, page_width: f
     columns
 }
 
-/// A `BaselineFrameGridRelativeOption` value (`TopOfInsetOfBaselineFrameGridRelativeOption`, or a
-/// short form such as `TopOfInset`); unknown values measure from the top of the page.
-pub(super) fn frame_grid_relative(v: &str) -> designcraft_doc::FrameGridRelative {
-    use designcraft_doc::FrameGridRelative as R;
-    let v = v.strip_suffix("OfBaselineFrameGridRelativeOption").unwrap_or(v);
-    match v {
-        "TopOfMargin" | "TopMargin" => R::TopMargin,
-        "TopOfFrame" => R::TopOfFrame,
-        "TopOfInset" | "TopInset" => R::TopInset,
-        _ => R::TopOfPage,
-    }
-}
-
 /// Text Frame Options from `TextFramePreference` elements: each attribute from the first that sets it.
 pub(super) fn text_frame_options(prefs: &[&El]) -> TextFrameOptions {
     let elements: Vec<_> = prefs.iter().map(|pref| crate::xml::to_craft(pref)).collect();
