@@ -437,18 +437,16 @@ impl<'a> Ex<'a> {
             self.rule(el, props, "RuleBelow", r);
         }
         if let Some(tabs) = &a.tabs {
-            let mut tl = El::new("TabList").attr("type", "list");
-            for t in tabs {
-                tl.push(
-                    El::new("ListItem")
-                        .attr("type", "record")
-                        .child(p("Alignment", "enumeration", names::tab_align_out(t.align)))
-                        .child(p("AlignmentCharacter", "string", if t.align_on.is_empty() { ".".to_string() } else { t.align_on.clone() }))
-                        .child(p("Leader", "string", t.leader.clone()))
-                        .child(p("Position", "unit", num(t.position))),
-                );
-            }
-            props.push(tl);
+            let values: Vec<_> = tabs
+                .iter()
+                .map(|t| craft_idml::model::TabStopValues {
+                    position: t.position,
+                    alignment: names::tab_align_out(t.align).into(),
+                    leader: t.leader.clone(),
+                    alignment_character: if t.align_on.is_empty() { ".".into() } else { t.align_on.clone() },
+                })
+                .collect();
+            props.push(crate::xml::from_craft(craft_idml::model::TabStopValues::to_list(&values)));
         }
         if let Some(l) = a.list_type {
             el.set(
