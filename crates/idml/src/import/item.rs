@@ -243,22 +243,10 @@ impl<'r> Importer<'r> {
     }
 
     fn graphic(&mut self, g: &El, model: &craft_idml::model::Graphic) -> Content {
-        let layer_options = g.find("GraphicLayerOption").map(|options| {
-            let attrs = |e: &El| e.attrs.iter().filter(|(key, _)| key != "Self").cloned().collect();
-            let mut out = designcraft_doc::GraphicLayerOptions { attributes: attrs(options), ..Default::default() };
-            let mut pending: Vec<_> = options.find_all("GraphicLayer").map(|e| (e, None)).collect();
-            pending.reverse();
-            while let Some((layer, parent)) = pending.pop() {
-                let index = out.layers.len();
-                out.layers.push(attrs(layer));
-                out.parents.push(parent);
-                let children: Vec<_> = layer.find_all("GraphicLayer").collect();
-                pending.extend(children.into_iter().rev().map(|e| (e, Some(index))));
-            }
-            if out.parents.iter().all(Option::is_none) {
-                out.parents.clear();
-            }
-            out
+        let layer_options = model.layer_options().map(|options| designcraft_doc::GraphicLayerOptions {
+            attributes: options.attributes.into_iter().collect(),
+            layers: options.layers.into_iter().map(IntoIterator::into_iter).map(Iterator::collect).collect(),
+            parents: options.parents,
         });
         if layer_options.as_ref().is_some_and(designcraft_doc::GraphicLayerOptions::has_visibility_overrides) {
             self.warnings.push(format!("graphic {}: {}", g.get("Self").unwrap_or("(unnamed)"), designcraft_doc::GRAPHIC_LAYER_RENDERING_WARNING));
@@ -294,9 +282,11 @@ impl<'r> Importer<'r> {
             })
         };
         let mut data = model.contents().unwrap_or_default();
-        let page = pdf_page_in(g);
+        let pdf_attribute = model.pdf_attribute();
+        let page = pdf_attribute.as_ref().map(craft_idml::model::PdfAttribute::page_index).unwrap_or(0);
         // Where the box sits on the page needs the PDF parsed: the engine finds it after import.
-        let pdf_crop = pdf_attribute(g).and_then(|a| a.get("PDFCrop")).map_or(designcraft_doc::PdfCrop::Crop, names::pdf_crop_in);
+        let pdf_crop =
+            pdf_attribute.as_ref().and_then(craft_idml::model::PdfAttribute::crop).map_or(designcraft_doc::PdfCrop::Crop, names::pdf_crop_in);
         let mut read_from = None;
         if data.is_empty()
             && let Some(p) = &uri
@@ -402,21 +392,6 @@ fn path_from_model(geometry: craft_idml::model::PathGeometry) -> PathData {
         })
         .collect();
     PathData::new(subpaths)
-}
-
-/// A placed PDF's `PDFAttribute` (Image Import Options), as a child or a property.
-fn pdf_attribute(g: &El) -> Option<&El> {
-    g.find("PDFAttribute").or_else(|| g.prop_el("PDFAttribute"))
-}
-
-/// The page a placed PDF shows (0-based), from `PDFAttribute/@PageNumber` (1-based). A missing or
-/// malformed value means page 1; a page the PDF lacks draws nothing and is left out of PDF export.
-fn pdf_page_in(g: &El) -> u32 {
-    pdf_attribute(g)
-        .and_then(|a| a.get("PageNumber"))
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .and_then(|n| u32::try_from(n.saturating_sub(1)).ok())
-        .unwrap_or(0)
 }
 
 /// Anchors a custom text wrap boundary may have.

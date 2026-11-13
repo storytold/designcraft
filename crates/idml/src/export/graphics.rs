@@ -5,15 +5,6 @@ use craft_idml::model::{
     StrokeDefinition, TintDefinition,
 };
 
-// Retained IDML attributes have unprefixed ASCII names. Native JSON can be
-// edited independently: never let its map keys become XML syntax or Self IDs.
-pub(super) fn graphic_layer_attribute_name(key: &str) -> bool {
-    !key.is_empty()
-        && key != "Self"
-        && key != "xmlns"
-        && key.bytes().enumerate().all(|(i, b)| b.is_ascii_alphabetic() || b == b'_' || (i > 0 && (b.is_ascii_digit() || matches!(b, b'.' | b'-'))))
-}
-
 impl<'a> Ex<'a> {
     /// A `Gradient` element; stop colours missing from the swatches become anonymous colours.
     fn gradient_el(

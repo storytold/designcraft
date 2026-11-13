@@ -1,58 +1,19 @@
 use super::common::{anchor_self, bool_s, change_type, topic_self, uid, with_props, xref_format_self};
-use super::graphics::graphic_layer_attribute_name;
 use super::{
     BTreeMap, CHAR_BUILTINS, CharFormat, El, Ex, ListType, NO_CHAR_ID, Node, PARA_BUILTINS, ParaAttrs, ParaFormat, Story, TOC_STYLE_ID, names, num,
     st,
 };
 
 impl<'a> Ex<'a> {
-    /// `<GraphicLayerOption>` of a placed graphic: its layer attributes and the nested layer tree.
+    /// `<GraphicLayerOption>` of a placed graphic: its layer attributes and nested layer tree.
     pub(super) fn layer_option_el(&mut self, options: &designcraft_doc::GraphicLayerOptions) -> El {
-        let mut option = El::new("GraphicLayerOption");
-        for (key, value) in &options.attributes {
-            if graphic_layer_attribute_name(key) {
-                option.set(key, value);
-            }
-        }
-        // Only an ancestor whose subtree is still open can parent the next layer.
-        // Reopening a closed subtree would reorder native-edited lists on roundtrip.
-        let mut open = Vec::new();
-        let mut parents = Vec::with_capacity(options.layers.len());
-        for i in 0..options.layers.len() {
-            let parent = options.parents.get(i).copied().flatten();
-            if let Some(at) = parent.and_then(|p| open.iter().position(|id| *id == p)).filter(|at| *at < 239) {
-                open.truncate(at + 1);
-                parents.push(parent);
-            } else {
-                open.clear();
-                parents.push(None);
-            }
-            open.push(i);
-        }
-        let mut children: Vec<Vec<El>> = vec![Vec::new(); options.layers.len()];
-        let mut roots = Vec::new();
-        for (i, attributes) in options.layers.iter().enumerate().rev() {
-            let mut layer = El::new("GraphicLayer").attr("Self", self.fresh());
-            for (key, value) in attributes {
-                if graphic_layer_attribute_name(key) {
-                    layer.set(key, value);
-                }
-            }
-            if let Some(nested) = children.get_mut(i) {
-                for child in std::mem::take(nested).into_iter().rev() {
-                    layer.push(child);
-                }
-            }
-            if let Some(nested) = parents.get(i).copied().flatten().and_then(|parent| children.get_mut(parent)) {
-                nested.push(layer);
-            } else {
-                roots.push(layer);
-            }
-        }
-        for layer in roots.into_iter().rev() {
-            option.push(layer);
-        }
-        option
+        let model = craft_idml::model::GraphicLayerOptions {
+            attributes: options.attributes.iter().map(|(key, value)| (key.clone(), value.clone())).collect(),
+            layers: options.layers.iter().map(|layer| layer.iter().map(|(key, value)| (key.clone(), value.clone())).collect()).collect(),
+            parents: options.parents.clone(),
+        };
+        let self_id = self.fresh();
+        crate::xml::from_craft(model.to_el(&self_id, || self.fresh()))
     }
 
     /// `<Index>`: nested topics with their See / See also cross-references.
