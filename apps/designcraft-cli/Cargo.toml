@@ -23,5 +23,6 @@ designcraft-format = { workspace = true }
 designcraft-pdf = { workspace = true }
 designcraft-mcp = { workspace = true }
 craft-file-formats = { workspace = true }
+craft-image-codecs = { workspace = true }
 image = { workspace = true }
 serde_json = { workspace = true }

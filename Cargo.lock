@@ -1719,6 +1719,7 @@ name = "designcraft-cli"
 version = "0.20.1"
 dependencies = [
  "craft-file-formats",
+ "craft-image-codecs",
  "designcraft-color",
  "designcraft-compose",
  "designcraft-doc",
