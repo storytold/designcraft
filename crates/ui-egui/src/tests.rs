@@ -140,6 +140,47 @@ fn app_with_unsaved_document() -> DesignApp {
     app
 }
 
+/// The recovery timer wrote the whole document on the interface thread: on a catalogue with
+/// gigabytes of linked files the window stopped answering for minutes after every edit.
+#[test]
+fn the_recovery_timer_writes_off_the_interface_thread() {
+    let ctx = egui::Context::default();
+    let mut app = app_with_unsaved_document();
+    let dir = tempfile::tempdir().unwrap();
+    app.session.recovery_dir = Some(dir.path().to_path_buf());
+    app.last_recovery = -1.0e9;
+    let uid = app.session.documents()[0].uid;
+    let entry = dir.path().join(format!("{uid}.designcraft"));
+    // The writer stops at the start of the write until the test lets it go on, so a frame that
+    // waited for the write would never return.
+    let held = designcraft_engine::recovery::testing::hold_next_write(dir.path());
+    // egui discards a pass that needs another layout; the timer runs in the first pass it keeps.
+    for _ in 0..10 {
+        shot_frame(&mut app, &ctx, egui::vec2(1400.0, 900.0));
+        if app.last_recovery > 0.0 {
+            break;
+        }
+    }
+    assert!(app.last_recovery > 0.0, "the timer fired and restarted its interval");
+    assert!(!held.ran_here(), "the timer wrote the recovery data on the interface thread");
+    assert!(app.recovery_writing, "the timer queued the write");
+    held.wait_until_held();
+    // While the write is held, the interface keeps drawing frames and taking edits.
+    app.run("frame.create", json!({"rect": [20, 20, 80, 80]})).unwrap();
+    shot_frame(&mut app, &ctx, egui::vec2(1400.0, 900.0));
+    assert!(app.recovery_writing, "the write is still held");
+    assert!(!entry.exists(), "nothing is published while the write is held");
+    held.release();
+    designcraft_engine::recovery::testing::wait_until_idle();
+    shot_frame(&mut app, &ctx, egui::vec2(1400.0, 900.0));
+    assert!(!app.recovery_writing, "the frame after the write took its result");
+    assert!(entry.exists(), "the timer's background write published the document");
+    // The checkpoint is the document's: saving it removes the recovery entry.
+    let saved = dir.path().join("saved.designcraft");
+    app.run("file.saveAs", json!({"path": saved.to_string_lossy()})).unwrap();
+    assert!(!dir.path().join(format!("{uid}.designcraft")).exists());
+}
+
 /// File ▸ Close (and its shortcut) closed a document with unsaved changes without asking, and
 /// closing discards the document's recovery data too.
 #[test]
@@ -856,9 +897,15 @@ fn dropping_an_ase_file_loads_its_swatches() {
 /// A document with one empty frame at (36, 36)-(136, 136): the app, the frame's id and a screen point inside it
 /// and one outside it.
 fn app_with_drop_frame() -> (DesignApp, u64, egui::Pos2, egui::Pos2) {
+    app_with_drop_item("frame.create", json!({"rect": [36, 36, 136, 136]}))
+}
+
+/// A document with the one object `command` creates from `params`: the app, the object's id, the
+/// screen point of page point (80, 80) and that of (300, 300), off the object.
+fn app_with_drop_item(command: &str, params: serde_json::Value) -> (DesignApp, u64, egui::Pos2, egui::Pos2) {
     let mut app = DesignApp::new(Session::new(), Services::default());
     app.run("file.new", json!({})).unwrap();
-    let frame = app.run("frame.create", json!({"rect": [36, 36, 136, 136]})).unwrap()["id"].as_u64().unwrap();
+    let frame = app.run(command, params).unwrap()["id"].as_u64().unwrap();
     app.canvas_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0)));
     let _ = app.view_mut();
     let (view, rect) = (app.view().unwrap(), app.canvas_rect.unwrap());
@@ -956,6 +1003,35 @@ fn a_file_dropped_without_pointer_events_fills_the_frame_under_the_system_pointe
             panic!("the frame under the pointer is filled at {zoom}")
         };
         assert!(d.assets[&g.asset].name.contains("drop-system-pointer"));
+    }
+}
+
+/// A line encloses no area, so a graphic dropped on it gets a frame of its own at the drop point
+/// and the line stays a line, as with the place cursor (#2290). A second graphic of the same drop
+/// gets a frame of its own too, instead of replacing the first in the frame the first one got.
+#[test]
+fn graphics_dropped_on_a_line_leave_the_line_alone() {
+    let (mut app, line, on_line, _) = app_with_drop_item("line.create", json!({"a": [36, 80], "b": [136, 80]}));
+    let id = designcraft_doc::ItemId(line);
+    let before = serde_json::to_value(app.session.doc().unwrap().doc.item(id).unwrap()).unwrap();
+    assert!(canvas::drop_frame(&app, Some(on_line)).is_none(), "a line is no frame");
+    let (first, second) = (dropped_png("drop-on-line-first"), dropped_png("drop-on-line-second"));
+    let mut frame_free = true;
+    let a = app.place_dropped(&first.to_string_lossy(), Some(on_line), &mut frame_free);
+    assert!(!frame_free, "the first graphic is under the pointer now");
+    let b = app.place_dropped(&second.to_string_lossy(), Some(on_line), &mut frame_free);
+    let _ = (std::fs::remove_file(&first), std::fs::remove_file(&second));
+    let a = designcraft_doc::ItemId(a.unwrap()["id"].as_u64().unwrap());
+    let b = designcraft_doc::ItemId(b.unwrap()["id"].as_u64().unwrap());
+    assert!(a != id && b != id && a != b, "each graphic has a new frame: {a:?} {b:?}");
+    let d = &app.session.doc().unwrap().doc;
+    assert_eq!(d.spreads[0].items.len(), 3);
+    assert_eq!(serde_json::to_value(d.item(id).unwrap()).unwrap(), before, "the line is unchanged");
+    for (placed, name) in [(a, "drop-on-line-first"), (b, "drop-on-line-second")] {
+        let it = d.item(placed).unwrap();
+        let designcraft_doc::Content::Graphic(g) = &it.content else { panic!("{name} is in its frame") };
+        assert!(d.assets[&g.asset].name.contains(name), "{name}");
+        assert!(it.path.encloses_area() && it.bounds().height() > 1.0, "a real frame, not a zero-height one: {:?}", it.bounds());
     }
 }
 

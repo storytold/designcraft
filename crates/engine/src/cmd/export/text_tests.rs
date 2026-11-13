@@ -92,6 +92,25 @@ fn epub_cover_and_fixed_layout() {
     assert!(p1.contains("width=612, height=792") && p1.contains("Page one words"), "{p1}");
 }
 
+/// Fixed-layout page text leaves out frames in a multi-state object's inactive states.
+#[test]
+fn fixed_epub_text_skips_inactive_states() {
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    let a = s.execute("frame.create", &json!({"rect": [72, 72, 200, 100], "content": "text", "text": "Active words", "caret": false})).unwrap()["id"]
+        .as_u64()
+        .unwrap();
+    let b =
+        s.execute("frame.create", &json!({"rect": [72, 300, 200, 100], "content": "text", "text": "Inactive words", "caret": false})).unwrap()["id"]
+            .as_u64()
+            .unwrap();
+    s.execute("states.create", &json!({"ids": [a, b]})).unwrap();
+    let r = s.execute("file.exportFixedEpub", &json!({})).unwrap();
+    let mut z = unzip(r["base64"].as_str().unwrap());
+    let p1 = read(&mut z, "OEBPS/page1.xhtml");
+    assert!(p1.contains("Active words") && !p1.contains("Inactive words"), "{p1}");
+}
+
 /// #775: the fallback follows the font's class, and embedFonts packages the stylesheet's fonts
 /// (and reports those it can't).
 #[test]

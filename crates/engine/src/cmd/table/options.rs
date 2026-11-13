@@ -70,19 +70,23 @@ pub(super) fn get(s: &mut Session, p: &Value) -> Result<Value> {
     let g = target(s, p, "table.get")?;
     let st = s.doc()?;
     let t = st.doc.story(g.story).and_then(|x| x.tables.get(&g.table)).ok_or_else(|| bad("table.get", "no table"))?;
-    let owners = t.owners();
-    let cells: Vec<Value> = (0..t.nrows())
-        .flat_map(|r| (0..t.ncols()).map(move |c| (r, c)))
-        .filter(|&(r, c)| owners[r * t.ncols() + c] == (r, c))
-        .filter_map(|(r, c)| {
-            let cell = t.cell(r, c)?;
-            Some(json!({"row": r, "col": c, "rowSpan": cell.row_span, "colSpan": cell.col_span, "text": cell.text.text, "fill": cell.fill,
-                "insets": cell.insets, "vj": cell.vj, "firstBaseline": cell.first_baseline, "firstBaselineMin": cell.first_baseline_min, "rotation": cell.rotation, "style": cell.style}))
-        })
-        .collect();
-    Ok(json!({
+    let mut out = json!({
         "story": g.story.0, "table": g.table, "anchor": st.doc.story(g.story).and_then(|x| x.table_anchor(g.table)),
         "rows": t.rows, "columns": t.columns, "headerRows": t.header_rows(), "footerRows": t.footer_rows(),
-        "cells": cells, "options": t.options, "range": g.range, "style": t.style,
-    }))
+        "options": t.options, "range": g.range, "style": t.style,
+    });
+    if p.get("cells").and_then(Value::as_bool) != Some(false) {
+        let owners = t.owners();
+        let cells: Vec<Value> = (0..t.nrows())
+            .flat_map(|r| (0..t.ncols()).map(move |c| (r, c)))
+            .filter(|&(r, c)| owners[r * t.ncols() + c] == (r, c))
+            .filter_map(|(r, c)| {
+                let cell = t.cell(r, c)?;
+                Some(json!({"row": r, "col": c, "rowSpan": cell.row_span, "colSpan": cell.col_span, "text": cell.text.text, "fill": cell.fill,
+                    "insets": cell.insets, "vj": cell.vj, "firstBaseline": cell.first_baseline, "firstBaselineMin": cell.first_baseline_min, "rotation": cell.rotation, "style": cell.style}))
+            })
+            .collect();
+        out["cells"] = json!(cells);
+    }
+    Ok(out)
 }
