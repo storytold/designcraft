@@ -1040,6 +1040,41 @@ mod color_theme_tests {
         assert_eq!(gesture(&app).as_deref(), Some("Move"), "Cancel leaves the gesture open");
     }
 
+    /// A preview does not start while a gesture is open in its document, before it is first shown
+    /// or after Undo ended it: the gesture stays, and the reason is on the status line until the
+    /// gesture ends.
+    #[test]
+    fn a_preview_does_not_replace_an_open_gesture() {
+        let fields = json!({"rows": "2", "columns": "2", "rowGutter": "0", "columnGutter": "0", "fitTo": "page", "preview": true});
+        for after_undo in [false, true] {
+            let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+            let write = |app: &mut DesignApp| {
+                let mut d = app.ui.dialog.take().expect("the dialog is open");
+                layout_dialog_preview(app, &mut d, "layout.createGuides", "Create Guides");
+                app.ui.dialog = Some(d);
+            };
+            let status = |app: &DesignApp| app.ui.dialog.as_ref().and_then(|d| d.fields.get("status").cloned());
+            app.run("file.new", json!({})).unwrap();
+            app.run("frame.create", json!({"rect": [36, 36, 300, 300]})).unwrap();
+            app.ui.dialog = Some(Dialog::new("createGuides", fields.clone()));
+            if after_undo {
+                write(&mut app);
+                app.run("edit.undo", json!({})).unwrap();
+            }
+            app.session.begin_interaction("Move").unwrap();
+            let moving = app.session.active().unwrap().doc.clone();
+            write(&mut app);
+            let st = app.session.active().unwrap();
+            assert_eq!(st.interaction.as_ref().map(|it| it.label.as_str()), Some("Move"), "after Undo {after_undo}: the gesture stays");
+            assert_eq!(st.doc, moving, "after Undo {after_undo}");
+            assert_eq!(status(&app), Some(json!(PREVIEW_REPLACED)), "after Undo {after_undo}");
+            app.session.cancel_interaction();
+            write(&mut app);
+            assert_eq!(status(&app), None, "after Undo {after_undo}");
+            assert_eq!(app.session.active().unwrap().interaction.as_ref().map(|it| it.label.as_str()), Some("Create Guides"));
+        }
+    }
+
     /// A preview begun by a command after the dialog's preview was canceled is not the dialog's,
     /// also with the dialog's label at the revision the dialog's began at: a field change is not
     /// written into it, OK waits, and Cancel leaves it open.
@@ -1920,17 +1955,18 @@ const PREVIEW_IN_OTHER_DOCUMENT: &str = "The preview is shown in another documen
 /// The status line when OK would make its change inside the active document's own interaction.
 const FINISH_OPEN_INTERACTION: &str = "Finish the action in progress in the active document before you click OK.";
 
-/// The status line while a gesture begun in the preview's document has replaced the preview.
+/// The status line while a gesture other than the preview's is open in the preview's document.
 const PREVIEW_REPLACED: &str = "Finish the action in progress in this document to update the preview.";
 
 /// The status line once a gesture that replaced the preview has ended.
 const PREVIEW_ENDED: &str = "The preview ended with the action in progress. Turn on Preview to show it again.";
 
 /// Refuses a preview update while the dialog's preview is shown in a document other than the
-/// active one (the update would be written into the active document), or while a gesture begun
-/// in its document has replaced the preview (the update would be written into that gesture), with
-/// the reason on the status line. Once that document is active again, the reason goes. Once the
-/// gesture ends, Preview is turned off with the reason on the status line.
+/// active one (the update would be written into the active document), or while a gesture other
+/// than the preview's is open in its document (the update would be written into that gesture, or
+/// a new preview would replace it), with the reason on the status line. Once that document is
+/// active again, the reason goes. Once the gesture ends, Preview is turned off with the reason on
+/// the status line.
 fn preview_in_other_document(app: &DesignApp, d: &mut Dialog) -> bool {
     let active = app.session.active().map(|st| st.uid);
     // A closed document takes the preview with it: this update is skipped, and the next one starts
@@ -1945,14 +1981,22 @@ fn preview_in_other_document(app: &DesignApp, d: &mut Dialog) -> bool {
         return true;
     }
     if d.fields.get(PREVIEW_DOC).and_then(Value::as_u64).is_none_or(|uid| Some(uid) == active) {
+        // A gesture open in the document, and not the preview's own: the update would be written
+        // into it, or a new preview would replace it.
+        let ours = |st: &designcraft_engine::DocState| {
+            (d.fields.contains_key(PREVIEWED) || d.fields.contains_key(PREVIEW_INTERACTION)) && is_preview_interaction(st, d)
+        };
+        if let Some(st) = app.session.active()
+            && st.interaction.is_some()
+            && !ours(st)
+        {
+            d.fields.insert("status".into(), json!(PREVIEW_REPLACED));
+            return true;
+        }
         if let Some(st) = app.session.active()
             && d.fields.contains_key(PREVIEWED)
-            && !is_preview_interaction(st, d)
+            && st.interaction.is_none()
         {
-            if st.interaction.is_some() {
-                d.fields.insert("status".into(), json!(PREVIEW_REPLACED));
-                return true;
-            }
             // The gesture that replaced the preview has ended, and the preview with it. The
             // dialog does not start another preview on the document that gesture left.
             for key in [PREVIEWED, PREVIEW_DOC, PREVIEW_INTERACTION] {
