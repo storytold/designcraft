@@ -13,7 +13,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Insert Footnote",
             ["Type"],
             None,
-            "{text?} — a footnote reference at the insertion point; the caret moves into the new footnote's text (in a table cell it stays in the cell, after its reference)",
+            "{text?} → {story, id, table?, row?, col?} (table, row and col are returned for a cell note) — a footnote reference at the insertion point; the caret moves into the new footnote's text (in a table cell it stays in the cell, after its reference)",
             in_story_text,
             insert
         ),
@@ -110,7 +110,10 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
                 TextSel { story: t.story, anchor: at, focus: at, frame: t.frame, cell: Some(c) }
             }
         });
-        Ok(json!({"story": t.story.0, "id": id}))
+        Ok(match t.cell {
+            Some(c) => json!({"story": t.story.0, "id": id, "table": c.table, "row": c.row, "col": c.col}),
+            None => json!({"story": t.story.0, "id": id}),
+        })
     })?;
     s.typing_format = None;
     Ok(r)
@@ -331,6 +334,7 @@ mod tests {
         s.execute("text.select", &json!({"story": sid.0, "anchor": 16, "focus": 16})).unwrap();
         let r = s.execute("footnote.insert", &json!({})).unwrap();
         let id = r["id"].as_u64().unwrap();
+        assert_eq!(r, json!({"story": sid.0, "id": id}));
         // Typing goes into the footnote.
         s.execute("text.insert", &json!({"text": "A source."})).unwrap();
         let st = s.doc().unwrap().doc.story(sid).unwrap().clone();
@@ -408,6 +412,10 @@ mod tests {
         let (mut s, sid, tid) = session_with_table();
         let r = s.execute("footnote.insert", &json!({"text": "A cell note."})).unwrap();
         let id = r["id"].as_u64().unwrap();
+        assert_eq!(r["story"], sid.0);
+        assert_eq!(r["table"], tid);
+        assert_eq!(r["row"], 0);
+        assert_eq!(r["col"], 0);
         let st = s.doc().unwrap().doc.story(sid).unwrap().clone();
         let cell = st.tables.get(&tid).unwrap().cell(0, 0).unwrap().clone();
         assert_eq!(cell.text.text, format!("Left{}", designcraft_doc::FOOTNOTE_REF));
@@ -443,6 +451,7 @@ mod tests {
     }
 
     /// A cell footnote survives Save and Open.
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn a_cell_footnote_survives_save_and_open() {
         let dir = tempfile::tempdir().unwrap();
