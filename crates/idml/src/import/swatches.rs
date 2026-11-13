@@ -48,17 +48,17 @@ impl<'r> Importer<'r> {
 
     /// Ink Manager settings: inks converted to process and ink aliases.
     fn read_inks(&mut self, top: &[El]) {
-        for e in top.iter().filter(|e| e.local() == "Ink") {
-            let Some(name) = e
-                .get("Name")
-                .filter(|n| !n.starts_with("$ID/") && !["Process Cyan", "Process Magenta", "Process Yellow", "Process Black"].contains(n))
+        let model_top: Vec<_> = top.iter().map(crate::xml::to_craft).collect();
+        for e in craft_idml::model::inks(&model_top) {
+            let Some(name) =
+                e.name().filter(|n| !n.starts_with("$ID/") && !["Process Cyan", "Process Magenta", "Process Yellow", "Process Black"].contains(n))
             else {
                 continue;
             };
-            if e.get("ConvertToProcess") == Some("true") {
+            if e.convert_to_process() {
                 self.inks.to_process.push(name.to_string());
             }
-            if let Some(a) = e.get("AliasInkName").filter(|a| !a.is_empty() && *a != name && !a.starts_with("$ID/")) {
+            if let Some(a) = e.alias().filter(|a| !a.is_empty() && *a != name && !a.starts_with("$ID/")) {
                 self.inks.aliases.push((name.to_string(), a.to_string()));
             }
         }
