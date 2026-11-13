@@ -36,38 +36,39 @@ pub(super) fn mojikumi_row(e: &El) -> Result<designcraft_doc::cjk::MojikumiAki> 
 impl<'r> Importer<'r> {
     pub(super) fn char_attrs(&mut self, e: &El) -> CharAttrs {
         let mut a = CharAttrs::default();
-        if let Some(f) = e.prop("AppliedFont") {
+        let values = craft_idml::model::CharacterTypographyValues::from_el(&crate::xml::to_craft(e));
+        if let Some(f) = values.applied_font {
             // Some writers append the style after a tab. Spaces are part of a family's name
             // ("Minion Pro " is another font than "Minion Pro"); line breaks around it aren't.
             let fam = f.split('\t').next().unwrap_or(&f).trim_matches(['\n', '\r']);
             a.font_family = self.composite_names.get(fam.trim()).cloned().or_else(|| names::font_family_in(fam));
         }
         // "Nothing" leaves the style unset: it comes from the paragraph style.
-        a.font_style = e.prop("FontStyle").filter(|s| !matches!(s.trim(), "Nothing" | "$ID/Nothing"));
-        a.size = e.num("PointSize");
-        a.leading = e.prop("Leading").and_then(|l| names::leading_in(l.trim()));
+        a.font_style = values.font_style.filter(|s| !matches!(s.trim(), "Nothing" | "$ID/Nothing"));
+        a.size = values.point_size;
+        a.leading = values.leading.as_deref().and_then(|leading| names::leading_in(leading.trim()));
         // Automatic kerning may carry an inactive numeric value (including the
         // 1e11 IDML sentinel). It must not become a multi-million-em advance.
-        a.kerning = e.prop("KerningMethod").and_then(|k| match k.trim().trim_start_matches("$ID/") {
+        a.kerning = values.kerning_method.as_deref().and_then(|k| match k.trim().trim_start_matches("$ID/") {
             "Optical" => Some(Kerning::Optical),
             "Metrics" | "Metrics - Roman Only" => Some(Kerning::Metrics),
             "None" => Some(Kerning::None),
             _ => None,
         });
         if a.kerning.is_none() {
-            a.kerning = e.num("KerningValue").filter(|v| v.is_finite() && v.abs() < 1e10).map(Kerning::Manual);
+            a.kerning = values.kerning_value.filter(|v| v.is_finite() && v.abs() < 1e10).map(Kerning::Manual);
         }
-        a.tracking = e.num("Tracking");
-        a.leading_aki = e.num("LeadingAki").map(|v| (v >= 0.0).then_some(v));
-        a.trailing_aki = e.num("TrailingAki").map(|v| (v >= 0.0).then_some(v));
-        a.tsume = e.num("Tsume").map(|v| (v / 100.0).clamp(0.0, 1.0));
-        a.jidori = e.num("Jidori").map(|v| v.clamp(0.0, 10000.0) as u32);
-        a.leading_model = e.prop("LeadingModel").and_then(|v| crate::cjk::leading_in(&v));
-        a.character_alignment = e.prop("CharacterAlignment").and_then(|v| crate::cjk::alignment_in(&v));
-        a.h_scale = e.num("HorizontalScale").map(|v| v / 100.0);
-        a.v_scale = e.num("VerticalScale").map(|v| v / 100.0);
-        a.baseline_shift = e.num("BaselineShift");
-        a.skew = e.num("Skew");
+        a.tracking = values.tracking;
+        a.leading_aki = values.leading_aki.map(|v| (v >= 0.0).then_some(v));
+        a.trailing_aki = values.trailing_aki.map(|v| (v >= 0.0).then_some(v));
+        a.tsume = values.tsume.map(|v| (v / 100.0).clamp(0.0, 1.0));
+        a.jidori = values.jidori.map(|v| v.clamp(0.0, 10000.0) as u32);
+        a.leading_model = values.leading_model.as_deref().and_then(crate::cjk::leading_in);
+        a.character_alignment = values.character_alignment.as_deref().and_then(crate::cjk::alignment_in);
+        a.h_scale = values.horizontal_scale.map(|v| v / 100.0);
+        a.v_scale = values.vertical_scale.map(|v| v / 100.0);
+        a.baseline_shift = values.baseline_shift;
+        a.skew = values.skew;
         if let Some(r) = e.prop("FillColor") {
             a.fill = Some(self.swatch_ref(r.trim()));
         }
