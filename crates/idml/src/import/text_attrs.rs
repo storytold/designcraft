@@ -153,9 +153,9 @@ impl<'r> Importer<'r> {
 
     pub(super) fn para_attrs(&mut self, e: &El) -> ParaAttrs {
         let mut a = ParaAttrs::default();
-        let u = |k: &str| e.num(k).map(|v| v.max(0.0) as u32);
-        let frac = |k: &str| e.num(k).map(|v| v / 100.0);
-        a.align = e.prop("Justification").and_then(|v| names::align_in(v.trim()));
+        let alignment = craft_idml::model::ParagraphAlignmentValues::from_el(&crate::xml::to_craft(e));
+        let flow = craft_idml::model::ParagraphFlowValues::from_el(&crate::xml::to_craft(e));
+        a.align = alignment.justification.as_deref().and_then(|v| names::align_in(v.trim()));
         a.kinsoku_hang = e.prop("KinsokuHangType").and_then(|v| match v.as_str() {
             "None" => Some(designcraft_doc::cjk::KinsokuHang::None),
             "KinsokuHangRegular" => Some(designcraft_doc::cjk::KinsokuHang::Regular),
@@ -177,17 +177,17 @@ impl<'r> Importer<'r> {
                 a.kinsoku = Some(Some(set));
             }
         }
-        a.direction = e.prop("ParagraphDirection").map(|v| {
+        a.direction = alignment.direction.map(|v| {
             if v.trim() == "RightToLeftDirection" { designcraft_doc::TextDirection::RightToLeft } else { designcraft_doc::TextDirection::LeftToRight }
         });
-        a.kashidas = e.prop("Kashidas").and_then(|s| crate::arabic::kashidas_in(&s));
-        a.arabic_justification = e.prop("ParagraphJustification");
-        a.paragraph_kashida_width = e.num("ParagraphKashidaWidth").filter(|v| v.is_finite()).map(Some);
-        a.left_indent = e.num("LeftIndent");
-        a.right_indent = e.num("RightIndent");
-        a.first_line_indent = e.num("FirstLineIndent");
-        a.last_line_indent = e.num("LastLineIndent");
-        a.space_before = e.num("SpaceBefore");
+        a.kashidas = alignment.kashidas.as_deref().and_then(crate::arabic::kashidas_in);
+        a.arabic_justification = alignment.paragraph_justification;
+        a.paragraph_kashida_width = alignment.paragraph_kashida_width.map(Some);
+        a.left_indent = alignment.left_indent;
+        a.right_indent = alignment.right_indent;
+        a.first_line_indent = alignment.first_line_indent;
+        a.last_line_indent = alignment.last_line_indent;
+        a.space_before = alignment.space_before;
         if let Some(r) = e.prop("AppliedNumberingList") {
             let r = r.trim().trim_start_matches("NumberingList/");
             a.list_name = Some(if r.starts_with("$ID/") { String::new() } else { unescape_id(r) });
@@ -198,21 +198,20 @@ impl<'r> Importer<'r> {
             _ => {}
         }
         self.read_nested_styles(e, &mut a);
-        a.space_after = e.num("SpaceAfter");
+        a.space_after = alignment.space_after;
         // A number, or an enumeration (Ignore) that turns it off even over a based-on style's value.
-        a.same_para_style_spacing = e.prop("SameParaStyleSpacing").map(|v| v.trim().parse::<f64>().ok().filter(|v| v.is_finite()));
-        a.drop_cap_lines = u("DropCapLines");
-        a.drop_cap_chars = u("DropCapCharacters");
+        a.same_para_style_spacing = alignment.same_para_style_spacing;
+        a.drop_cap_lines = alignment.drop_cap_lines.map(|v| v.max(0.0) as u32);
+        a.drop_cap_chars = alignment.drop_cap_chars.map(|v| v.max(0.0) as u32);
         // DropcapDetail bits: 1 = Align Left Edge, 2 = Scale for Descenders.
-        if let Some(v) = e.num("DropcapDetail").filter(|v| v.is_finite() && *v >= 0.0) {
-            let bits = v as u32;
+        if let Some(bits) = alignment.dropcap_detail {
             a.drop_cap_align_left = Some(bits & 1 != 0);
             a.drop_cap_scale_descenders = Some(bits & 2 != 0);
         }
-        if let Some(g) = e.prop("GridAlignment") {
+        if let Some(g) = alignment.grid_alignment {
             a.grid_align = Some(if g.trim() == "None" {
                 GridAlign::None
-            } else if e.boolean("GridAlignFirstLineOnly") == Some(true) {
+            } else if alignment.grid_align_first_line_only == Some(true) {
                 GridAlign::FirstLineOnly
             } else {
                 GridAlign::AllLines
@@ -221,35 +220,35 @@ impl<'r> Importer<'r> {
                 a.grid_reference = Some(crate::cjk::grid_reference_in(&g));
             }
         }
-        a.composer = e.prop("Composer").map(|c| composer_in(&c));
-        a.hyphenate = e.boolean("Hyphenation");
-        a.hyph_min_word = u("HyphenateWordsLongerThan");
-        a.hyph_after_first = u("HyphenateAfterFirst");
-        a.hyph_before_last = u("HyphenateBeforeLast");
-        a.hyph_limit = u("HyphenateLadderLimit");
-        a.hyph_zone = e.num("HyphenationZone");
-        a.hyph_capitalized = e.boolean("HyphenateCapitalizedWords");
-        a.hyph_last_word = e.boolean("HyphenateLastWord");
-        a.hyph_across_column = e.boolean("HyphenateAcrossColumns");
-        a.hyph_weight = e.num("HyphenWeight").map(|v| v / 10.0);
-        a.word_space_min = frac("MinimumWordSpacing");
-        a.word_space_desired = frac("DesiredWordSpacing");
-        a.word_space_max = frac("MaximumWordSpacing");
-        a.letter_space_min = frac("MinimumLetterSpacing");
-        a.letter_space_desired = frac("DesiredLetterSpacing");
-        a.letter_space_max = frac("MaximumLetterSpacing");
-        a.glyph_scale_min = frac("MinimumGlyphScaling");
-        a.glyph_scale_desired = frac("DesiredGlyphScaling");
-        a.glyph_scale_max = frac("MaximumGlyphScaling");
-        a.auto_leading = frac("AutoLeading");
-        a.single_word_justify = e.prop("SingleWordJustification").and_then(|v| names::align_in(v.trim()));
-        a.keep_with_next = u("KeepWithNext");
-        a.keep_lines_together = e.boolean("KeepLinesTogether");
-        a.ignore_optical_margin = e.boolean("IgnoreEdgeAlignment");
-        a.keep_all_lines = e.boolean("KeepAllLinesTogether");
-        a.keep_first = u("KeepFirstLines");
-        a.keep_last = u("KeepLastLines");
-        a.start_paragraph = e.prop("StartParagraph").and_then(|v| names::start_para_in(v.trim()));
+        a.composer = alignment.composer.map(|c| composer_in(&c));
+        a.hyphenate = flow.hyphenate;
+        a.hyph_min_word = flow.hyphenate_min_word.map(|v| v.max(0.0) as u32);
+        a.hyph_after_first = flow.hyphenate_after_first.map(|v| v.max(0.0) as u32);
+        a.hyph_before_last = flow.hyphenate_before_last.map(|v| v.max(0.0) as u32);
+        a.hyph_limit = flow.hyphenate_ladder_limit.map(|v| v.max(0.0) as u32);
+        a.hyph_zone = flow.hyphenation_zone;
+        a.hyph_capitalized = flow.hyphenate_capitalized;
+        a.hyph_last_word = flow.hyphenate_last_word;
+        a.hyph_across_column = flow.hyphenate_across_columns;
+        a.hyph_weight = flow.hyphen_weight.map(|v| v / 10.0);
+        a.word_space_min = flow.word_spacing[0].map(|v| v / 100.0);
+        a.word_space_desired = flow.word_spacing[1].map(|v| v / 100.0);
+        a.word_space_max = flow.word_spacing[2].map(|v| v / 100.0);
+        a.letter_space_min = flow.letter_spacing[0].map(|v| v / 100.0);
+        a.letter_space_desired = flow.letter_spacing[1].map(|v| v / 100.0);
+        a.letter_space_max = flow.letter_spacing[2].map(|v| v / 100.0);
+        a.glyph_scale_min = flow.glyph_scaling[0].map(|v| v / 100.0);
+        a.glyph_scale_desired = flow.glyph_scaling[1].map(|v| v / 100.0);
+        a.glyph_scale_max = flow.glyph_scaling[2].map(|v| v / 100.0);
+        a.auto_leading = flow.auto_leading.map(|v| v / 100.0);
+        a.single_word_justify = flow.single_word_justification.as_deref().and_then(|v| names::align_in(v.trim()));
+        a.keep_with_next = flow.keep_with_next.map(|v| v.max(0.0) as u32);
+        a.keep_lines_together = flow.keep_lines_together;
+        a.ignore_optical_margin = flow.ignore_edge_alignment;
+        a.keep_all_lines = flow.keep_all_lines_together;
+        a.keep_first = flow.keep_first_lines.map(|v| v.max(0.0) as u32);
+        a.keep_last = flow.keep_last_lines.map(|v| v.max(0.0) as u32);
+        a.start_paragraph = flow.start_paragraph.as_deref().and_then(|v| names::start_para_in(v.trim()));
         if let Some(t) = e.prop("SpanColumnType") {
             let n = e.prop("SpanSplitColumnCount").and_then(|v| v.trim().parse::<u32>().ok()).unwrap_or(0);
             a.span_columns = Some(match t.trim() {
