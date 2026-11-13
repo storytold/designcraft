@@ -30,19 +30,14 @@ impl<'a> Ex<'a> {
         {
             // Type on a path: a TextPath child holds the story.
             let len = designcraft_geom::warp::PathWarp::new(&it.path.to_bezpath(), false).length();
-            el.push(
-                El::new("TextPath")
-                    .attr("Self", format!("{}tp", uid(it.id.0)))
-                    .attr("ParentStory", uid(t.story.0))
-                    .attr("PreviousTextFrame", "n")
-                    .attr("NextTextFrame", "n")
-                    .attr("PathEffect", "RainbowPathEffect")
-                    .attr("PathAlignment", "CenterPathAlignment")
-                    .attr("TextAlignment", names::path_align_out(pt.align))
-                    .attr("FlipPathEffect", if pt.flip { "Flipped" } else { "NotFlipped" })
-                    .attr("StartBracket", num(pt.start))
-                    .attr("EndBracket", num(pt.end.map_or(len, |e| e.min(len)))),
-            );
+            el.push(crate::xml::from_craft(craft_idml::model::TextPath::to_el(
+                &uid(it.id.0),
+                &uid(t.story.0),
+                names::path_align_out(pt.align),
+                pt.flip,
+                pt.start,
+                pt.end.map_or(len, |end| end.min(len)),
+            )));
         } else if let Content::Text(t) = &it.content {
             let (prev, next) = self.threads.get(&it.id.0).copied().unwrap_or((None, None));
             el.set("ParentStory", uid(t.story.0));
