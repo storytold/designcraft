@@ -1,7 +1,7 @@
 use super::frame::{Prefs, frame_grid_relative, text_frame_options, text_wrap};
 use super::object_style::INDESIGN_CORNER_SIZE;
 use super::package::uri_to_path;
-use super::values::{nums, parse_affine, parse_point, tint};
+use super::values::{nums, parse_affine, tint};
 use super::{
     Affine, Anchor, Arc, Asset, AssetId, Content, Corner, CornerOptions, El, Fill, Importer, Item, ItemId, OBJECT_BUILTINS, PathData, Point, Shape,
     Story, StoryId, Stroke, SubPath, TextFrame, TextFrameOptions, base64_decode, names, sniff_image, swatch, unescape_id,
@@ -412,30 +412,30 @@ fn path_of(pg: &El) -> PathData {
 
 /// The path of a `…Geometry` element, keeping at most `max` anchors.
 fn path_capped(pg: &El, max: usize) -> PathData {
-    let mut subs = Vec::new();
-    let mut left = max;
-    for g in pg.find_all("GeometryPathType") {
-        let closed = g.get("PathOpen") != Some("true");
-        let mut anchors = Vec::new();
-        if let Some(arr) = g.find("PathPointArray") {
-            // A NaN or infinite point drops its subpath (JSON can't store it).
-            let non_finite = |s: Option<&str>| s.is_some_and(|s| s.split_whitespace().any(|v| v.parse::<f64>().is_ok_and(|x| !x.is_finite())));
-            if arr.find_all("PathPointType").take(left).any(|p| ["Anchor", "LeftDirection", "RightDirection"].iter().any(|k| non_finite(p.get(k)))) {
-                continue;
-            }
-            for p in arr.find_all("PathPointType").take(left) {
-                let Some(a) = parse_point(p.get("Anchor")) else { continue };
-                let hin = parse_point(p.get("LeftDirection")).unwrap_or(a);
-                let hout = parse_point(p.get("RightDirection")).unwrap_or(a);
-                anchors.push(Anchor::with_handles(a, hin, hout));
-            }
-        }
-        left = left.saturating_sub(anchors.len());
-        if !anchors.is_empty() {
-            subs.push(SubPath::new(anchors, closed));
-        }
-    }
-    PathData::new(subs)
+    let geometry = craft_idml::model::PathGeometry::from_el_capped(&crate::xml::to_craft(pg), max);
+    path_from_model(geometry)
+}
+
+fn path_from_model(geometry: craft_idml::model::PathGeometry) -> PathData {
+    let subpaths = geometry
+        .paths
+        .into_iter()
+        .filter_map(|path| {
+            let anchors: Vec<_> = path
+                .points
+                .into_iter()
+                .map(|point| {
+                    Anchor::with_handles(
+                        Point::new(point.anchor[0], point.anchor[1]),
+                        Point::new(point.left[0], point.left[1]),
+                        Point::new(point.right[0], point.right[1]),
+                    )
+                })
+                .collect();
+            (!anchors.is_empty()).then(|| SubPath::new(anchors, !path.open))
+        })
+        .collect();
+    PathData::new(subpaths)
 }
 
 /// A placed PDF's `PDFAttribute` (Image Import Options), as a child or a property.
@@ -460,35 +460,16 @@ const MAX_WRAP_PATH_ANCHORS: usize = 4096;
 /// space like its own path. Hostile input is an error: too many anchors, a malformed or non-finite
 /// point, or no points at all.
 fn wrap_path_of(pg: &El) -> std::result::Result<PathData, &'static str> {
-    let finite = |s: Option<&str>| -> std::result::Result<Option<Point>, &'static str> {
-        let Some(s) = s else { return Ok(None) };
-        let v = nums(s);
-        match (v.first(), v.get(1)) {
-            (Some(&x), Some(&y)) if v.len() == 2 && x.is_finite() && y.is_finite() => Ok(Some(Point::new(x, y))),
-            _ => Err("malformed or non-finite point"),
-        }
-    };
-    let mut subs = Vec::new();
-    let mut n = 0usize;
-    for g in pg.find_all("GeometryPathType") {
-        let closed = g.get("PathOpen") != Some("true");
-        let mut anchors = Vec::new();
-        for p in g.find("PathPointArray").into_iter().flat_map(|arr| arr.find_all("PathPointType")) {
-            n = n.saturating_add(1);
-            if n > MAX_WRAP_PATH_ANCHORS {
-                return Err("too many points");
-            }
-            let a = finite(p.get("Anchor"))?.ok_or("point without an anchor")?;
-            let hin = finite(p.get("LeftDirection"))?.unwrap_or(a);
-            let hout = finite(p.get("RightDirection"))?.unwrap_or(a);
-            anchors.push(Anchor::with_handles(a, hin, hout));
-        }
-        if !anchors.is_empty() {
-            subs.push(SubPath::new(anchors, closed));
-        }
-    }
-    if subs.is_empty() {
+    let geometry =
+        craft_idml::model::PathGeometry::try_from_el_capped(&crate::xml::to_craft(pg), MAX_WRAP_PATH_ANCHORS).map_err(|error| match error {
+            craft_idml::model::PathGeometryError::TooManyPoints => "too many points",
+            craft_idml::model::PathGeometryError::MissingAnchor => "point without an anchor",
+            craft_idml::model::PathGeometryError::MalformedPoint => "malformed or non-finite point",
+            craft_idml::model::PathGeometryError::NonFinitePoint => "malformed or non-finite point",
+        })?;
+    let path = path_from_model(geometry);
+    if path.subpaths.is_empty() {
         return Err("no points");
     }
-    Ok(PathData::new(subs))
+    Ok(path)
 }

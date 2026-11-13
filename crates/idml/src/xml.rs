@@ -182,7 +182,7 @@ pub fn escape_into(out: &mut String, s: &str, attr: bool) {
 /// Serialize a part: XML declaration + root element.
 pub fn document(root: &El) -> Vec<u8> {
     let mut s = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n");
-    s.push_str(&to_xml(root).to_xml_pretty("\t"));
+    s.push_str(&to_craft(root).to_xml_pretty("\t"));
     s.into_bytes()
 }
 
@@ -191,11 +191,11 @@ pub fn document_with_pi(root: &El, pi: &str) -> Vec<u8> {
     let mut s = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n");
     s.push_str(pi);
     s.push('\n');
-    s.push_str(&to_xml(root).to_xml_pretty("\t"));
+    s.push_str(&to_craft(root).to_xml_pretty("\t"));
     s.into_bytes()
 }
 
-fn to_xml(el: &El) -> craft_xml::El {
+pub(crate) fn to_craft(el: &El) -> craft_xml::El {
     craft_xml::El {
         name: el.name.clone(),
         attrs: el.attrs.clone(),
@@ -203,7 +203,7 @@ fn to_xml(el: &El) -> craft_xml::El {
             .children
             .iter()
             .map(|node| match node {
-                Node::El(child) => craft_xml::Node::El(to_xml(child)),
+                Node::El(child) => craft_xml::Node::El(to_craft(child)),
                 Node::Text(text) => craft_xml::Node::Text(text.clone()),
                 Node::CData(text) => craft_xml::Node::CData(text.clone()),
                 Node::Pi(target, data) => craft_xml::Node::Pi { target: target.clone(), data: data.clone() },

@@ -447,20 +447,21 @@ fn clipping_settings(c: &designcraft_doc::ClippingPath) -> El {
 }
 
 fn path_geometry(path: &PathData) -> El {
-    let mut pg = El::new("PathGeometry");
-    for sp in &path.subpaths {
-        let mut arr = El::new("PathPointArray");
-        for a in &sp.anchors {
-            arr.push(
-                El::new("PathPointType")
-                    .attr("Anchor", pt(a.p.x, a.p.y))
-                    .attr("LeftDirection", pt(a.h_in.x, a.h_in.y))
-                    .attr("RightDirection", pt(a.h_out.x, a.h_out.y)),
-            );
-        }
-        pg.push(El::new("GeometryPathType").attr("PathOpen", bool_s(!sp.closed)).child(arr));
-    }
-    pg
+    let geometry = craft_idml::model::PathGeometry {
+        paths: path
+            .subpaths
+            .iter()
+            .map(|sp| craft_idml::model::SubPath {
+                open: !sp.closed,
+                points: sp
+                    .anchors
+                    .iter()
+                    .map(|a| craft_idml::model::PathPoint { anchor: [a.p.x, a.p.y], left: [a.h_in.x, a.h_in.y], right: [a.h_out.x, a.h_out.y] })
+                    .collect(),
+            })
+            .collect(),
+    };
+    crate::xml::from_craft(geometry.to_el())
 }
 
 /// IDML corner names for anchors 0..4 of a path (by position on its bounding box).

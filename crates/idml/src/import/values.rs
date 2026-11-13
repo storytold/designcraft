@@ -1,4 +1,4 @@
-use super::{Affine, Color, El, Point, lab};
+use super::{Affine, Color, El, lab};
 
 /// An XMP date property, written as an element or an attribute.
 pub(super) fn xmp_date(xmp: &str, key: &str) -> Option<i64> {
@@ -30,11 +30,6 @@ pub(super) fn parse_affine(s: Option<&str>) -> Affine {
         Some(v) if v.len() == 6 => Affine::new([v[0], v[1], v[2], v[3], v[4], v[5]]),
         _ => Affine::IDENTITY,
     }
-}
-
-pub(super) fn parse_point(s: Option<&str>) -> Option<Point> {
-    let v = nums(s?);
-    (v.len() >= 2).then(|| Point::new(v[0], v[1]))
 }
 
 /// IDML tint (percent; `-1` = the colour's own tint, 100 %) → 0..1.
