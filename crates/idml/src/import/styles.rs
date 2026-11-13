@@ -355,6 +355,10 @@ impl<'r> Importer<'r> {
 
     pub(super) fn cell_stroke_attrs(&mut self, el: &El, prefix: &str) -> designcraft_doc::CellStrokeAttrs {
         let values = craft_idml::model::Values::of(&crate::xml::to_craft(el)).stroke_values(prefix);
+        self.map_stroke_values(values)
+    }
+
+    fn map_stroke_values(&mut self, values: craft_idml::model::StrokeValues) -> designcraft_doc::CellStrokeAttrs {
         designcraft_doc::CellStrokeAttrs {
             weight: values.weight,
             color: values.color.map(|v| self.swatch_ref(&v)),
@@ -366,34 +370,30 @@ impl<'r> Importer<'r> {
     }
 
     pub(super) fn alt_fill_attrs(&mut self, el: &El, kind: &str) -> designcraft_doc::AltFillsAttrs {
+        let values = craft_idml::model::Values::of(&crate::xml::to_craft(el)).alternating_fill_values(kind);
         designcraft_doc::AltFillsAttrs {
-            first: el.num(&format!("Start{kind}FillCount")).map(|v| v.max(0.0) as u32),
-            first_color: el.prop(&format!("Start{kind}FillColor")).map(|v| self.swatch_ref(&v)),
-            first_tint: tint(el.num(&format!("Start{kind}FillTint"))),
-            next: el.num(&format!("End{kind}FillCount")).map(|v| v.max(0.0) as u32),
-            next_color: el.prop(&format!("End{kind}FillColor")).map(|v| self.swatch_ref(&v)),
-            next_tint: tint(el.num(&format!("End{kind}FillTint"))),
-            skip_first: el.num(&format!("SkipFirstAlternatingFill{kind}s")).map(|v| v.max(0.0) as u32),
-            skip_last: el.num(&format!("SkipLastAlternatingFill{kind}s")).map(|v| v.max(0.0) as u32),
+            first: values.first_count.map(|v| v as u32),
+            first_color: values.first_color.map(|v| self.swatch_ref(&v)),
+            first_tint: tint(values.first_tint),
+            next: values.next_count.map(|v| v as u32),
+            next_color: values.next_color.map(|v| self.swatch_ref(&v)),
+            next_tint: tint(values.next_tint),
+            skip_first: values.skip_first.map(|v| v as u32),
+            skip_last: values.skip_last.map(|v| v as u32),
         }
     }
 
     pub(super) fn alt_stroke_attrs(&mut self, el: &El, kind: &str) -> designcraft_doc::AltStrokesAttrs {
-        let first_stroke = self.cell_stroke_attrs(el, &format!("Start{kind}"));
-        let mut next_stroke = self.cell_stroke_attrs(el, &format!("End{kind}"));
-        // IDML uses LineStyle for this one attribute (rather than StrokeType).
-        if kind == "Column"
-            && let Some(value) = el.prop("EndColumnLineStyle")
-        {
-            next_stroke.kind = Some(names::stroke_type_in(&value));
-        }
+        let values = craft_idml::model::Values::of(&crate::xml::to_craft(el)).alternating_stroke_values(kind);
+        let first_stroke = self.map_stroke_values(values.first);
+        let next_stroke = self.map_stroke_values(values.next);
         designcraft_doc::AltStrokesAttrs {
-            first: el.num(&format!("Start{kind}StrokeCount")).map(|v| v.max(0.0) as u32),
-            next: el.num(&format!("End{kind}StrokeCount")).map(|v| v.max(0.0) as u32),
+            first: values.first_count.map(|v| v as u32),
+            next: values.next_count.map(|v| v as u32),
             first_stroke,
             next_stroke,
-            skip_first: el.num(&format!("SkipFirstAlternatingStroke{kind}s")).map(|v| v.max(0.0) as u32),
-            skip_last: el.num(&format!("SkipLastAlternatingStroke{kind}s")).map(|v| v.max(0.0) as u32),
+            skip_first: values.skip_first.map(|v| v as u32),
+            skip_last: values.skip_last.map(|v| v as u32),
         }
     }
 }
