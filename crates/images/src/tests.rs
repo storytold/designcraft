@@ -343,6 +343,7 @@ fn psd_natural_size_follows_its_resolution() {
     assert_eq!(pixel_size(&b), Some((2, 1)));
     assert!(decode_rgba(&b).is_some(), "the resource does not disturb decoding");
     assert_eq!(natural_size(&tiny_psd_at(0)), Some((2.0, 1.0)));
+    assert_eq!(natural_size(&tiny_psd_at(20_000)), Some((2.0, 1.0)));
     // ResolutionInfo is 16 bytes; a shorter one holding both resolutions is still not trusted.
     assert!(psd::resolution(&tiny_psd_with_resolution(300, 16)).is_some());
     assert_eq!(natural_size(&tiny_psd_with_resolution(300, 12)), Some((2.0, 1.0)));

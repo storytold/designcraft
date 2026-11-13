@@ -195,8 +195,8 @@ pub(crate) fn decode(bytes: &[u8]) -> Option<image::RgbaImage> {
 }
 
 /// Resolution (horizontal, vertical pixels per inch) from the ResolutionInfo image resource
-/// (1005, 16.16 fixed point); `None` without one, when it isn't positive, or for a damaged file
-/// (the resource is 16 bytes, so a shorter one is damaged too).
+/// (1005, 16.16 fixed point); `None` without one, when either value is outside 1–10 000 ppi, or
+/// for a damaged file (the resource is 16 bytes, so a shorter one is damaged too).
 pub(crate) fn resolution(bytes: &[u8]) -> Option<(f64, f64)> {
     let mut r = Reader { b: bytes };
     if r.take(4)? != b"8BPS" {
@@ -208,7 +208,7 @@ pub(crate) fn resolution(bytes: &[u8]) -> Option<(f64, f64)> {
     let info = image_resource(r.block(false)?, 1005).filter(|info| info.len() >= 16)?;
     let fixed = |at: usize| Some(f64::from(u32::from_be_bytes(info.get(at..at + 4)?.try_into().ok()?)) / 65536.0);
     let (h, v) = (fixed(0)?, fixed(8)?);
-    (h > 0.0 && v > 0.0).then_some((h, v))
+    ((1.0..=10_000.0).contains(&h) && (1.0..=10_000.0).contains(&v)).then_some((h, v))
 }
 
 /// The data of image resource `id` in the image resources section (1039 is the ICC profile,
