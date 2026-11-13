@@ -139,8 +139,8 @@ impl DesignApp {
         }
         let layout = opens_as_document(&file.name)
             || (std::path::Path::new(&file.name).extension().is_none() && designcraft_engine::cmd::is_document(&file.bytes));
-        let place =
-            file.request.purpose == "place" || (matches!(file.request.purpose.as_str(), "drop" | "open") && !layout && format != Some(craft_file_formats::Format::Ase));
+        let place = file.request.purpose == "place"
+            || (matches!(file.request.purpose.as_str(), "drop" | "open") && !layout && format != Some(craft_file_formats::Format::Ase));
         if place || format == Some(craft_file_formats::Format::Ase) || file.request.purpose == "swatches" {
             self.activate_import_target(&file.request)?;
         }

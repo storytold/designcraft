@@ -130,7 +130,11 @@ impl ChapterBatch {
 fn writable_chapter(s: &Session, path: &str, command: &'static str) -> Result<()> {
     use std::path::Path;
 
-    if Path::new(path).extension().and_then(std::ffi::OsStr::to_str).is_some_and(|ext| craft_file_formats::from_extension(ext) == Some(craft_file_formats::Format::Idml)) {
+    if Path::new(path)
+        .extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(|ext| craft_file_formats::from_extension(ext) == Some(craft_file_formats::Format::Idml))
+    {
         return Err(bad(command, format!("cannot change imported IDML chapter {path}; convert it to a native DesignCraft document first")));
     }
     let target = crate::io::canonicalize(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
