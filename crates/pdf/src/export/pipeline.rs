@@ -186,14 +186,14 @@ fn export_pdf_with_report_inner(doc: &Document, cache: &Cache, opts: &PdfOptions
     };
     let configuration = write::configuration(version, archival)?;
     let mut warnings = Vec::new();
-    let base = if print_color(doc, opts) {
+    let (base, cmyk_icc) = if print_color(doc, opts) {
         // An output intent only for PDF/X, as in InDesign.
-        let (settings, warning) = crate::pdfx::print_settings(opts.standard.is_pdfx())?;
+        let (settings, icc, warning) = crate::pdfx::print_settings_and_profile(opts.standard.is_pdfx())?;
         warnings.extend(warning);
         let pdfx_version = (opts.standard == Standard::PdfX4).then(|| "PDF/X-4".to_string());
-        krilla::SerializeSettings { pdfx_version, ..settings }
+        (krilla::SerializeSettings { pdfx_version, ..settings }, Some(icc))
     } else {
-        krilla::SerializeSettings::default()
+        (krilla::SerializeSettings::default(), None)
     };
     let settings = krilla::SerializeSettings { compress_content_streams: opts.compress, configuration, ..base };
     let title = opts.title.clone().unwrap_or_else(|| doc.title.clone());
@@ -289,11 +289,14 @@ fn export_pdf_with_report_inner(doc: &Document, cache: &Cache, opts: &PdfOptions
     }
     add_form_fields(&mut bytes, &mut warnings, doc, &sheets, opts);
     if opts.standard == Standard::PdfX4 {
-        // The XMP dates krilla doesn't write, then check the result.
+        // The XMP dates krilla doesn't write, then check the result after DefaultCMYK is attached.
         match crate::pdfx::make_pdfx4(&bytes, created) {
             Some(b) => bytes = b,
             None => warnings.push("PDF/X-4: the XMP metadata date couldn't be added".into()),
         }
+    }
+    bytes = crate::default_cmyk::attach(bytes, cmyk_icc.as_deref(), opts.standard, &mut warnings)?;
+    if opts.standard == Standard::PdfX4 {
         for issue in crate::pdfx::check_pdfx4(&bytes) {
             warnings.push(format!("PDF/X-4: {issue}"));
         }

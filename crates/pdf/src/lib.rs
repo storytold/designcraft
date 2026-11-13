@@ -43,6 +43,7 @@ mod links;
 mod marks;
 mod text;
 
+mod default_cmyk;
 mod forms;
 mod optional_content;
 mod pdfx;

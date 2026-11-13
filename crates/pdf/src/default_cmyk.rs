@@ -1,0 +1,749 @@
+//! Default CMYK colour profile attachment for PDF export.
+//!
+//! Writes `/DefaultCMYK [/ICCBased <icc> <gen> R]` into every resource scope that does not already
+//! define one (Pages, inherited `/Pages` ancestors, Form XObjects, SMask forms, TilingPatterns,
+//! and Type3 fonts). PDF/X-4 reuses the catalog output intent's `/DestOutputProfile` stream; plain
+//! print exports embed one shared Flate-compressed ICC profile stream.
+
+use std::collections::{BTreeMap, HashSet};
+use std::io::Write;
+
+use flate2::Compression;
+use flate2::write::ZlibEncoder;
+use hayro_syntax::Pdf;
+use hayro_syntax::content::UntypedIter;
+use hayro_syntax::object::{Dict, Name, Object, ObjectIdentifier, Stream};
+use hayro_syntax::page::{Page, Resources};
+
+use crate::optional_content::{append_with, edited_with, has_entry, trailer_size};
+use crate::pdfx::pdfx_intents;
+use crate::{PdfError, Result};
+
+/// Maximum nesting depth when walking `/Parent`, Form XObjects, patterns, and soft masks.
+const MAX_DEPTH: usize = 32;
+
+/// Maximum object-number probes beyond trailer `/Size` before treating the xref as damaged.
+const MAX_ID_PROBES: usize = 65_536;
+
+fn damaged() -> PdfError {
+    PdfError::Write("the exported PDF could not be updated with a DefaultCMYK profile cleanly".into())
+}
+
+fn encrypted() -> PdfError {
+    PdfError::Write("an encrypted PDF cannot be updated with a DefaultCMYK profile".into())
+}
+
+/// Ensures every page and nested resource scope in `bytes` carries `/DefaultCMYK` mapped to an
+/// `/ICCBased` 4-channel ICC profile stream, unless that scope already defines `/DefaultCMYK`.
+///
+/// When `reuse_output_intent` is true and the PDF has a 4-channel `GTS_PDFX` `/DestOutputProfile`,
+/// `/DefaultCMYK` references that stream directly without embedding a duplicate profile.
+pub(crate) fn apply(bytes: &[u8], icc: &[u8], reuse_output_intent: bool) -> Result<Vec<u8>> {
+    let old_size = trailer_size(bytes, damaged, encrypted)?;
+    let pdf = Pdf::new(bytes.to_vec()).map_err(|_| damaged())?;
+    if pdf.pages().is_empty() {
+        return Ok(bytes.to_vec());
+    }
+
+    let existing_icc = if reuse_output_intent { output_intent_profile(&pdf) } else { None };
+    let (icc_id, new_icc_body) = match existing_icc {
+        Some(id) => (id, None),
+        None => {
+            if icc.is_empty() {
+                return Err(damaged());
+            }
+            (next_object_id(&pdf, old_size)?, Some(encode_icc_stream(icc)?))
+        }
+    };
+
+    let mut updater = Updater::new(&pdf, icc_id);
+    for page in pdf.pages().iter() {
+        updater.visit_page(page)?;
+    }
+
+    if updater.changes.is_empty() {
+        return Ok(bytes.to_vec());
+    }
+    if let Some(body) = new_icc_body {
+        updater.changes.insert(icc_id, body);
+    }
+    let ordered: Vec<(ObjectIdentifier, Vec<u8>)> = updater.changes.into_iter().collect();
+    append_with(bytes, &ordered, None, damaged, encrypted)
+}
+
+/// Attaches `/DefaultCMYK` to an exported PDF when appropriate for `standard`: plain (`None`) and
+/// `PdfX4` exports attach the profile whenever `cmyk_icc` was prepared for CMYK print output or
+/// the PDF actually draws in `DeviceCMYK`.
+pub(crate) fn attach(bytes: Vec<u8>, cmyk_icc: Option<&[u8]>, standard: crate::Standard, warnings: &mut Vec<String>) -> Result<Vec<u8>> {
+    if !matches!(standard, crate::Standard::None | crate::Standard::PdfX4) {
+        return Ok(bytes);
+    }
+    let fallback;
+    let icc = match cmyk_icc {
+        Some(icc) => icc,
+        None if uses_device_cmyk(&bytes) => {
+            let (_, profile, warning) = crate::pdfx::print_settings_and_profile(false)?;
+            warnings.extend(warning);
+            fallback = profile;
+            &fallback
+        }
+        None => return Ok(bytes),
+    };
+    apply(&bytes, icc, standard == crate::Standard::PdfX4)
+}
+
+/// Returns whether any page or nested graphic in `bytes` uses `DeviceCMYK` (directly, as a
+/// transparency group, image, shading, tiling pattern, or Type3 font glyph).
+pub(crate) fn uses_device_cmyk(bytes: &[u8]) -> bool {
+    let Ok(pdf) = Pdf::new(bytes.to_vec()) else {
+        return false;
+    };
+    let mut scan = CmykScan::default();
+    for page in pdf.pages().iter() {
+        if scan.page(page) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Returns the first 4-channel `/DestOutputProfile` stream ID from `/OutputIntents`.
+fn output_intent_profile(pdf: &Pdf) -> Option<ObjectIdentifier> {
+    pdfx_intents(pdf).into_iter().find_map(|oi| {
+        let profile = oi.get::<Stream<'_>>(b"DestOutputProfile")?;
+        (profile.dict().get::<i32>(b"N") == Some(4)).then(|| profile.obj_id())
+    })
+}
+
+/// Returns the first object number `>= start` not already present in the cross-reference table.
+fn next_object_id(pdf: &Pdf, start: i32) -> Result<ObjectIdentifier> {
+    let mut id = start.max(1);
+    for _ in 0..MAX_ID_PROBES {
+        let candidate = ObjectIdentifier::new(id, 0);
+        if pdf.xref().get::<Object<'_>>(candidate).is_none() {
+            return Ok(candidate);
+        }
+        id = id.checked_add(1).ok_or_else(damaged)?;
+    }
+    Err(damaged())
+}
+
+fn encode_icc_stream(icc: &[u8]) -> Result<Vec<u8>> {
+    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(icc).map_err(|_| damaged())?;
+    let compressed = encoder.finish().map_err(|_| damaged())?;
+    let mut out = format!("<</N 4/Filter/FlateDecode/Length {}>>\nstream\n", compressed.len()).into_bytes();
+    out.extend_from_slice(&compressed);
+    out.extend_from_slice(b"\nendstream");
+    Ok(out)
+}
+
+/// Target object to update when a scope's `/Resources` dict is inline (or omitted on a page).
+#[derive(Clone)]
+enum ScopeOwner<'a> {
+    Dict(ObjectIdentifier, Dict<'a>),
+    Stream(Stream<'a>),
+}
+
+struct Updater<'a> {
+    pdf: &'a Pdf,
+    default_cmyk: String,
+    changes: BTreeMap<ObjectIdentifier, Vec<u8>>,
+    seen_res: HashSet<ObjectIdentifier>,
+    seen_cs: HashSet<ObjectIdentifier>,
+    seen_owners: HashSet<ObjectIdentifier>,
+    seen_streams: HashSet<ObjectIdentifier>,
+    seen_fonts: HashSet<ObjectIdentifier>,
+}
+
+impl<'a> Updater<'a> {
+    fn new(pdf: &'a Pdf, icc_id: ObjectIdentifier) -> Self {
+        Self {
+            pdf,
+            default_cmyk: format!("[/ICCBased {} {} R]", icc_id.obj_number, icc_id.gen_number),
+            changes: BTreeMap::new(),
+            seen_res: HashSet::new(),
+            seen_cs: HashSet::new(),
+            seen_owners: HashSet::new(),
+            seen_streams: HashSet::new(),
+            seen_fonts: HashSet::new(),
+        }
+    }
+
+    fn visit_page(&mut self, page: &'a Page<'a>) -> Result<()> {
+        let raw = page.raw();
+        if has_entry(raw, b"Resources") {
+            let page_id = raw.obj_id().ok_or_else(damaged)?;
+            let owner = ScopeOwner::Dict(page_id, raw.clone());
+            return self.visit_resource_owner(raw, Some(owner), 0);
+        }
+
+        // Pages inherit `/Resources` from their nearest `/Parent` ancestor that defines one.
+        let mut parent_ref = raw.get_ref(b"Parent");
+        let mut seen_parents = HashSet::new();
+        for _ in 0..MAX_DEPTH {
+            let Some(r) = parent_ref else { break };
+            let parent_id: ObjectIdentifier = r.into();
+            if !seen_parents.insert(parent_id) {
+                return Err(damaged());
+            }
+            let parent = self.pdf.xref().get::<Dict<'_>>(parent_id).ok_or_else(damaged)?;
+            if has_entry(&parent, b"Resources") {
+                let owner = ScopeOwner::Dict(parent_id, parent.clone());
+                return self.visit_resource_owner(&parent, Some(owner), 0);
+            }
+            parent_ref = parent.get_ref(b"Parent");
+        }
+        if parent_ref.is_some() {
+            return Err(damaged());
+        }
+
+        // Neither the page nor any ancestor had `/Resources`: attach one directly to the page.
+        let page_id = raw.obj_id().ok_or_else(damaged)?;
+        if !self.seen_owners.insert(page_id) {
+            return Ok(());
+        }
+        let res_bytes = format!("<</ColorSpace<</DefaultCMYK {}>>>>", self.default_cmyk);
+        let updated = edited_with(raw, &[(b"Resources", res_bytes.as_bytes())], damaged)?;
+        self.changes.insert(page_id, updated);
+        Ok(())
+    }
+
+    fn visit_resource_owner(&mut self, owner_dict: &Dict<'a>, owner: Option<ScopeOwner<'a>>, depth: usize) -> Result<()> {
+        if depth >= MAX_DEPTH || !has_entry(owner_dict, b"Resources") {
+            return Ok(());
+        }
+        let res_ref = owner_dict.get_ref(b"Resources").map(ObjectIdentifier::from);
+        if let Some(id) = res_ref
+            && !self.seen_res.insert(id)
+        {
+            return Ok(());
+        }
+        let res_dict = owner_dict.get::<Dict<'a>>(b"Resources").ok_or_else(damaged)?;
+        self.ensure_default_cmyk(&res_dict, res_ref, owner)?;
+        self.walk_children(&res_dict, depth)
+    }
+
+    fn ensure_default_cmyk(&mut self, res_dict: &Dict<'a>, res_ref: Option<ObjectIdentifier>, owner: Option<ScopeOwner<'a>>) -> Result<()> {
+        let cs_opt = if has_entry(res_dict, b"ColorSpace") { Some(res_dict.get::<Dict<'a>>(b"ColorSpace").ok_or_else(damaged)?) } else { None };
+        if cs_opt.as_ref().is_some_and(|cs| has_entry(cs, b"DefaultCMYK")) {
+            return Ok(());
+        }
+
+        if let Some(cs_ref) = res_dict.get_ref(b"ColorSpace").map(ObjectIdentifier::from) {
+            if !self.seen_cs.insert(cs_ref) {
+                return Ok(());
+            }
+            let cs_dict = cs_opt.as_ref().ok_or_else(damaged)?;
+            let updated_cs = edited_with(cs_dict, &[(b"DefaultCMYK", self.default_cmyk.as_bytes())], damaged)?;
+            self.changes.insert(cs_ref, updated_cs);
+            return Ok(());
+        }
+
+        let new_cs = match cs_opt.as_ref() {
+            Some(cs_dict) => edited_with(cs_dict, &[(b"DefaultCMYK", self.default_cmyk.as_bytes())], damaged)?,
+            None => format!("<</DefaultCMYK {}>>", self.default_cmyk).into_bytes(),
+        };
+
+        if let Some(res_id) = res_ref {
+            let updated_res = edited_with(res_dict, &[(b"ColorSpace", new_cs.as_slice())], damaged)?;
+            self.changes.insert(res_id, updated_res);
+            return Ok(());
+        }
+
+        if let Some(owner) = owner {
+            let new_res = edited_with(res_dict, &[(b"ColorSpace", new_cs.as_slice())], damaged)?;
+            self.write_inline_resources(owner, &new_res)?;
+        }
+        Ok(())
+    }
+
+    fn write_inline_resources(&mut self, owner: ScopeOwner<'a>, new_res: &[u8]) -> Result<()> {
+        match owner {
+            ScopeOwner::Dict(id, dict) => {
+                if !self.seen_owners.insert(id) {
+                    return Ok(());
+                }
+                let updated = edited_with(&dict, &[(b"Resources", new_res)], damaged)?;
+                self.changes.insert(id, updated);
+            }
+            ScopeOwner::Stream(stream) => {
+                let id = stream.obj_id();
+                if !self.seen_owners.insert(id) {
+                    return Ok(());
+                }
+                let raw = stream.raw_data();
+                let len_str = raw.len().to_string();
+                let dict = edited_with(stream.dict(), &[(b"Resources", new_res), (b"Length", len_str.as_bytes())], damaged)?;
+                let mut body = dict;
+                body.extend_from_slice(b"\nstream\n");
+                body.extend_from_slice(&raw);
+                body.extend_from_slice(b"\nendstream");
+                self.changes.insert(id, body);
+            }
+        }
+        Ok(())
+    }
+
+    fn walk_children(&mut self, res: &Dict<'a>, depth: usize) -> Result<()> {
+        let next = depth + 1;
+        if next >= MAX_DEPTH {
+            return Ok(());
+        }
+
+        if let Some(xobjects) = res.get::<Dict<'a>>(b"XObject") {
+            for key in xobjects.keys() {
+                if let Some(stream) = xobjects.get::<Stream<'a>>(key.as_ref())
+                    && stream.dict().get::<Name<'_>>(b"Subtype").as_deref() == Some(b"Form")
+                {
+                    self.visit_stream(&stream, next)?;
+                }
+            }
+        }
+
+        if let Some(extgstate) = res.get::<Dict<'a>>(b"ExtGState") {
+            for key in extgstate.keys() {
+                if let Some(gs) = extgstate.get::<Dict<'a>>(key.as_ref())
+                    && let Some(smask) = gs.get::<Dict<'a>>(b"SMask")
+                    && let Some(form) = smask.get::<Stream<'a>>(b"G")
+                {
+                    self.visit_stream(&form, next)?;
+                }
+            }
+        }
+
+        if let Some(patterns) = res.get::<Dict<'a>>(b"Pattern") {
+            for key in patterns.keys() {
+                if let Some(stream) = patterns.get::<Stream<'a>>(key.as_ref()) {
+                    self.visit_stream(&stream, next)?;
+                }
+            }
+        }
+
+        if let Some(fonts) = res.get::<Dict<'a>>(b"Font") {
+            for key in fonts.keys() {
+                if let Some(font) = fonts.get::<Dict<'a>>(key.as_ref())
+                    && font.get::<Name<'_>>(b"Subtype").as_deref() == Some(b"Type3")
+                {
+                    let font_id = fonts.get_ref(key.as_ref()).map(ObjectIdentifier::from).or_else(|| font.obj_id());
+                    if let Some(id) = font_id
+                        && !self.seen_fonts.insert(id)
+                    {
+                        continue;
+                    }
+                    let owner = font_id.map(|id| ScopeOwner::Dict(id, font.clone()));
+                    self.visit_resource_owner(&font, owner, next)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn visit_stream(&mut self, stream: &Stream<'a>, depth: usize) -> Result<()> {
+        if depth >= MAX_DEPTH || !self.seen_streams.insert(stream.obj_id()) {
+            return Ok(());
+        }
+        let owner = ScopeOwner::Stream(stream.clone());
+        self.visit_resource_owner(stream.dict(), Some(owner), depth)
+    }
+}
+
+fn is_device_cmyk(cs: &Object<'_>) -> bool {
+    match cs {
+        Object::Name(n) => matches!(n.as_ref(), b"DeviceCMYK" | b"CMYK"),
+        Object::Array(a) => {
+            let mut items = a.iter::<Object<'_>>();
+            match items.next() {
+                Some(Object::Name(n)) if matches!(n.as_ref(), b"Indexed" | b"I") => {
+                    matches!(items.next(), Some(Object::Name(b)) if matches!(b.as_ref(), b"DeviceCMYK" | b"CMYK"))
+                }
+                _ => false,
+            }
+        }
+        _ => false,
+    }
+}
+
+#[derive(Default)]
+struct CmykScan {
+    seen_streams: HashSet<ObjectIdentifier>,
+    seen_fonts: HashSet<ObjectIdentifier>,
+}
+
+impl CmykScan {
+    fn page(&mut self, page: &Page<'_>) -> bool {
+        let res = page.resources();
+        if page.raw().get::<Dict<'_>>(b"Group").is_some_and(|g| Self::group(&g)) {
+            return true;
+        }
+        page.page_stream().is_some_and(|data| self.content(data, res, 0))
+    }
+
+    fn group(group: &Dict<'_>) -> bool {
+        group.get::<Object<'_>>(b"CS").is_some_and(|cs| is_device_cmyk(&cs))
+    }
+
+    fn content(&mut self, data: &[u8], res: &Resources<'_>, depth: usize) -> bool {
+        if depth >= MAX_DEPTH {
+            return false;
+        }
+        let mut ops = UntypedIter::new(data);
+        while let Some(op) = ops.next() {
+            let operator: &[u8] = op.operator;
+            let last = op.operands().last().cloned();
+            let name = || last.clone().and_then(Object::into_name);
+            match operator {
+                b"k" | b"K" => return true,
+                b"cs" | b"CS" => {
+                    if name().is_some_and(|n| n.as_ref() == b"DeviceCMYK" || res.get_color_space(&n).is_some_and(|cs| is_device_cmyk(&cs))) {
+                        return true;
+                    }
+                }
+                b"sh" => {
+                    if name().and_then(|n| res.get_shading(&n)).is_some_and(|sh| Self::shading(sh)) {
+                        return true;
+                    }
+                }
+                b"scn" | b"SCN" => {
+                    if let Some(p) = name().and_then(|n| res.get_pattern(&n))
+                        && self.pattern(p, res, depth)
+                    {
+                        return true;
+                    }
+                }
+                b"gs" => {
+                    let form = name()
+                        .and_then(|n| res.get_ext_g_state(&n))
+                        .and_then(|gs| gs.get::<Dict<'_>>(b"SMask"))
+                        .and_then(|m| m.get::<Stream<'_>>(b"G"));
+                    if let Some(form) = form
+                        && self.form(&form, res, depth)
+                    {
+                        return true;
+                    }
+                }
+                b"Do" => {
+                    if let Some(xo) = name().and_then(|n| res.get_x_object(&n)) {
+                        let hit = match xo.dict().get::<Name<'_>>(b"Subtype").as_deref() {
+                            Some(b"Image") => Self::image(&xo),
+                            Some(b"Form") => self.form(&xo, res, depth),
+                            _ => false,
+                        };
+                        if hit {
+                            return true;
+                        }
+                    }
+                }
+                b"BI" | b"EI" => {
+                    if let Some(Object::Stream(img)) = last
+                        && Self::inline_image(&img, res)
+                    {
+                        return true;
+                    }
+                }
+                b"Tf" => {
+                    if let Some(font_name) = op.operands().next().cloned().and_then(Object::into_name)
+                        && let Some(font) = res.get_font(&font_name)
+                        && font.get::<Name<'_>>(b"Subtype").as_deref() == Some(b"Type3")
+                        && self.type3(&font, res, depth)
+                    {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
+    fn image(img: &Stream<'_>) -> bool {
+        if img.dict().get::<bool>(b"ImageMask") == Some(true) {
+            return false;
+        }
+        img.dict().get::<Object<'_>>(b"ColorSpace").is_some_and(|cs| is_device_cmyk(&cs))
+    }
+
+    fn inline_image(img: &Stream<'_>, res: &Resources<'_>) -> bool {
+        if img.dict().get::<bool>(b"IM") == Some(true) || img.dict().get::<bool>(b"ImageMask") == Some(true) {
+            return false;
+        }
+        let cs = img.dict().get::<Object<'_>>(b"CS").or_else(|| img.dict().get::<Object<'_>>(b"ColorSpace"));
+        let cs = match cs {
+            Some(Object::Name(n)) if !matches!(n.as_ref(), b"DeviceRGB" | b"RGB" | b"G" | b"DeviceGray" | b"CMYK" | b"DeviceCMYK") => {
+                res.get_color_space(&n)
+            }
+            cs => cs,
+        };
+        cs.is_some_and(|cs| is_device_cmyk(&cs))
+    }
+
+    fn shading(sh: Object<'_>) -> bool {
+        let dict = match sh {
+            Object::Dict(d) => d,
+            Object::Stream(s) => s.dict().clone(),
+            _ => return false,
+        };
+        dict.get::<Object<'_>>(b"ColorSpace").is_some_and(|cs| is_device_cmyk(&cs))
+    }
+
+    fn pattern(&mut self, pat: Object<'_>, res: &Resources<'_>, depth: usize) -> bool {
+        match pat {
+            Object::Dict(d) => d.get::<Object<'_>>(b"Shading").is_some_and(Self::shading),
+            Object::Stream(s) => self.form(&s, res, depth),
+            _ => false,
+        }
+    }
+
+    fn form(&mut self, form: &Stream<'_>, parent: &Resources<'_>, depth: usize) -> bool {
+        if depth >= MAX_DEPTH || !self.seen_streams.insert(form.obj_id()) {
+            return false;
+        }
+        let res = Resources::from_parent(form.dict().get::<Dict<'_>>(b"Resources").unwrap_or_default(), parent.clone());
+        if form.dict().get::<Dict<'_>>(b"Group").is_some_and(|g| Self::group(&g)) {
+            return true;
+        }
+        form.decoded().is_ok_and(|data| self.content(&data, &res, depth + 1))
+    }
+
+    fn type3(&mut self, font: &Dict<'_>, parent: &Resources<'_>, depth: usize) -> bool {
+        if depth >= MAX_DEPTH {
+            return false;
+        }
+        if let Some(id) = font.obj_id()
+            && !self.seen_fonts.insert(id)
+        {
+            return false;
+        }
+        let res = match font.get::<Dict<'_>>(b"Resources") {
+            Some(own) => Resources::from_parent(own, parent.clone()),
+            None => parent.clone(),
+        };
+        let Some(procs) = font.get::<Dict<'_>>(b"CharProcs") else {
+            return false;
+        };
+        for key in procs.keys() {
+            if let Some(glyph) = procs.get::<Stream<'_>>(key.as_ref())
+                && self.seen_streams.insert(glyph.obj_id())
+                && glyph.decoded().is_ok_and(|data| self.content(&data, &res, depth + 1))
+            {
+                return true;
+            }
+        }
+        false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use craft_cms::builtin::COATED_FOGRA39_ICC;
+
+    fn build_pdf(objects: &[Vec<u8>], trailer_extra: &str) -> Vec<u8> {
+        let mut out = b"%PDF-1.4\n".to_vec();
+        let mut offsets = vec![0usize];
+        for (idx, body) in objects.iter().enumerate() {
+            offsets.push(out.len());
+            out.extend_from_slice(format!("{} 0 obj\n", idx + 1).as_bytes());
+            out.extend_from_slice(body);
+            out.extend_from_slice(b"\nendobj\n");
+        }
+        let xref = out.len();
+        let size = objects.len() + 1;
+        out.extend_from_slice(format!("xref\n0 {size}\n0000000000 65535 f\r\n").as_bytes());
+        for offset in offsets.iter().skip(1) {
+            out.extend_from_slice(format!("{offset:010} 00000 n\r\n").as_bytes());
+        }
+        out.extend_from_slice(format!("trailer\n<</Size {size}/Root 1 0 R{trailer_extra}>>\nstartxref\n{xref}\n%%EOF\n").as_bytes());
+        out
+    }
+
+    fn read_default_cmyk<'a>(res: &'a Resources<'a>) -> Option<(i32, Vec<u8>)> {
+        let cs = res.get_color_space(&Name::new_unescaped(b"DefaultCMYK"))?.into_array()?;
+        let mut items = cs.iter::<Object<'_>>();
+        let tag = items.next()?.into_name()?;
+        assert_eq!(tag.as_ref(), b"ICCBased");
+        let stream = items.next()?.into_stream()?;
+        assert_eq!(stream.dict().get::<i32>(b"N"), Some(4));
+        Some((stream.obj_id().obj_number, stream.decoded().ok()?.into_owned()))
+    }
+
+    #[test]
+    fn inline_resources_inherited_pages_preserved_existing_and_cyclic_forms() {
+        let generic = designcraft_color::cms::Cms::new(&designcraft_color::cms::ColorSettings {
+            cmyk: designcraft_color::cms::GENERIC_CMYK.into(),
+            ..Default::default()
+        })
+        .unwrap();
+        let custom_icc = generic.output_intent().unwrap().icc.into_owned();
+        assert_ne!(custom_icc, COATED_FOGRA39_ICC);
+        // 1: Catalog
+        // 2: Pages (carries inherited /Resources with existing /ColorSpace << /CS0 ... >>)
+        // 3: Page 1 (inherits /Resources from Pages 2)
+        // 4: Page 2 (inline /Resources with inline Form XObject 6, preserves content)
+        // 5: Page 3 (already defines /DefaultCMYK pointing to 7)
+        // 6: Cyclic Form XObject (inline /Resources with XObject /Self -> 6)
+        // 7: Pre-existing custom ICC stream (tagged /N 4)
+        let form =
+            b"<</Type/XObject/Subtype/Form/BBox[0 0 10 10]/Resources<</XObject<</Self 6 0 R>>>>/Length 8>>\nstream\n0 0 0 1 k\nendstream".to_vec();
+        let existing_icc = b"<</N 4/Length 4>>\nstream\ntest\nendstream".to_vec();
+        let pdf_bytes = build_pdf(
+            &[
+                b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+                b"<</Type/Pages/Kids[3 0 R 4 0 R 5 0 R]/Count 3/Resources<</ColorSpace<</CS0/DeviceGray>>>>>>".to_vec(),
+                b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 100 100]>>".to_vec(),
+                b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 100 100]/Resources<</XObject<</Fm0 6 0 R>>>>>>".to_vec(),
+                b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 100 100]/Resources<</ColorSpace<</DefaultCMYK[/ICCBased 7 0 R]>>>>>>".to_vec(),
+                form,
+                existing_icc,
+            ],
+            "",
+        );
+
+        let updated = apply(&pdf_bytes, &custom_icc, false).unwrap();
+        let parsed = Pdf::new(updated.clone()).unwrap();
+
+        // Inherited `/Pages` dict got DefaultCMYK while keeping CS0.
+        let (p1_id, p1_prof) = read_default_cmyk(parsed.pages()[0].resources()).expect("page 1 inherits DefaultCMYK");
+        assert_eq!(p1_prof, custom_icc);
+        assert!(parsed.pages()[0].resources().get_color_space(&Name::new_unescaped(b"CS0")).is_some());
+
+        // Page 2 inline Resources + Form 6 inline Resources share the exact same embedded ICC stream id.
+        let (p2_id, _) = read_default_cmyk(parsed.pages()[1].resources()).expect("page 2 DefaultCMYK");
+        assert_eq!(p1_id, p2_id);
+        let form_obj = parsed.pages()[1].resources().get_x_object(&Name::new_unescaped(b"Fm0")).unwrap();
+        let form_res = Resources::from_parent(form_obj.dict().get::<Dict<'_>>(b"Resources").unwrap(), parsed.pages()[1].resources().clone());
+        let (f_id, f_prof) = read_default_cmyk(&form_res).expect("cyclic form DefaultCMYK");
+        assert_eq!(f_id, p1_id);
+        assert_eq!(f_prof, custom_icc);
+
+        // Page 3's pre-existing /DefaultCMYK was preserved (kept pointing to 7).
+        let (p3_id, p3_prof) = read_default_cmyk(parsed.pages()[2].resources()).expect("page 3 kept existing DefaultCMYK");
+        assert_eq!(p3_id, 7);
+        assert_eq!(p3_prof, b"test");
+
+        // Idempotent when applied again after all scopes already have /DefaultCMYK.
+        let second = apply(&updated, &custom_icc, false).unwrap();
+        assert_eq!(second, updated);
+    }
+
+    #[test]
+    fn excessive_form_nesting_is_bounded_and_never_overflows() {
+        let mut objects = vec![
+            b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+            b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+            b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 100 100]/Resources<</XObject<</F0 4 0 R>>>>>>".to_vec(),
+        ];
+        for i in 0..40 {
+            let next_obj = objects.len() + 2;
+            let body = if i < 39 {
+                format!("<</Type/XObject/Subtype/Form/BBox[0 0 1 1]/Resources<</XObject<</F {next_obj} 0 R>>>>/Length 0>>\nstream\n\nendstream")
+            } else {
+                "<</Type/XObject/Subtype/Form/BBox[0 0 1 1]/Resources<<>>/Length 0>>\nstream\n\nendstream".to_string()
+            };
+            objects.push(body.into_bytes());
+        }
+        let pdf_bytes = build_pdf(&objects, "");
+        let updated = apply(&pdf_bytes, COATED_FOGRA39_ICC, false).unwrap();
+        let parsed = Pdf::new(updated).unwrap();
+        assert!(read_default_cmyk(parsed.pages()[0].resources()).is_some());
+    }
+
+    #[test]
+    fn encrypted_and_damaged_pdfs_fail_gracefully() {
+        let enc = build_pdf(
+            &[
+                b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+                b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+                b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 10 10]>>".to_vec(),
+            ],
+            "/Encrypt 99 0 R",
+        );
+        assert!(apply(&enc, COATED_FOGRA39_ICC, false).is_err());
+        assert!(apply(b"not a pdf", COATED_FOGRA39_ICC, false).is_err());
+        assert!(
+            apply(
+                &build_pdf(
+                    &[
+                        b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+                        b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+                        b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 10 10]>>".to_vec()
+                    ],
+                    ""
+                ),
+                &[],
+                false
+            )
+            .is_err()
+        );
+        assert!(!uses_device_cmyk(b"not a pdf"));
+    }
+
+    #[test]
+    fn uses_device_cmyk_distinguishes_pure_rgb_from_cmyk() {
+        let make = |content: &[u8]| {
+            build_pdf(
+                &[
+                    b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+                    b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+                    b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 100 100]/Contents 4 0 R/Resources<<>>>>".to_vec(),
+                    format!("<</Length {}>>\nstream\n{}\nendstream", content.len(), String::from_utf8_lossy(content)).into_bytes(),
+                ],
+                "",
+            )
+        };
+        assert!(!uses_device_cmyk(&make(b"1 0 0 rg 0 0 10 10 re f")));
+        assert!(uses_device_cmyk(&make(b"0 0 0 1 k 0 0 10 10 re f")));
+        assert!(uses_device_cmyk(&make(b"/DeviceCMYK cs 1 0 0 0 scn 0 0 10 10 re f")));
+    }
+
+    #[test]
+    fn smask_tiling_pattern_type3_and_indirect_colorspace_receive_default_cmyk() {
+        // 1: Catalog, 2: Pages, 3: Page (Resources -> 4)
+        // 4: Page Resources (indirect ColorSpace -> 5, ExtGState /GS with SMask /G -> 6, Pattern /P1 -> 7, Font /F3 -> 8)
+        // 5: Indirect ColorSpace (preserves /Sep while adding /DefaultCMYK)
+        // 6: SMask Form (indirect Resources -> 9)
+        // 7: TilingPattern (inline Resources with /ColorSpace <<>>)
+        // 8: Type3 Font (inline Resources with /ColorSpace <<>>, CharProcs /a -> 11)
+        // 9: SMask Resources
+        // 10: Page content stream drawing Type3 glyph `(a)`
+        // 11: Type3 CharProc stream drawing in DeviceCMYK (`0 0 0 1 k`)
+        let pdf_bytes = build_pdf(
+            &[
+                b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+                b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+                b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 100 100]/Contents 10 0 R/Resources 4 0 R>>".to_vec(),
+                b"<</ColorSpace 5 0 R/ExtGState<</GS<</SMask<</S/Luminosity/G 6 0 R>>>>>>/Pattern<</P1 7 0 R>>/Font<</F3 8 0 R>>>>".to_vec(),
+                b"<</Sep/DeviceGray>>".to_vec(),
+                b"<</Type/XObject/Subtype/Form/BBox[0 0 10 10]/Resources 9 0 R/Length 0>>\nstream\n\nendstream".to_vec(),
+                b"<</Type/Pattern/PatternType 1/PaintType 1/TilingType 1/BBox[0 0 5 5]/XStep 5/YStep 5/Resources<</ColorSpace<<>>>>/Length 0>>\nstream\n\nendstream".to_vec(),
+                b"<</Type/Font/Subtype/Type3/FontBBox[0 0 10 10]/FontMatrix[0.1 0 0 0.1 0 0]/CharProcs<</a 11 0 R>>/Encoding<</Differences[97/a]>>/FirstChar 97/LastChar 97/Widths[10]/Resources<</ColorSpace<<>>>>>>".to_vec(),
+                b"<</ColorSpace<<>>>>".to_vec(),
+                b"<</Length 15>>\nstream\n/F3 10 Tf (a) Tj\nendstream".to_vec(),
+                b"<</Length 19>>\nstream\n0 0 0 1 k 0 0 5 5 re f\nendstream".to_vec(),
+            ],
+            "",
+        );
+        assert!(uses_device_cmyk(&pdf_bytes), "Type3 glyph CMYK usage should be detected");
+        let updated = apply(&pdf_bytes, COATED_FOGRA39_ICC, false).unwrap();
+        let parsed = Pdf::new(updated).unwrap();
+        let page_res = parsed.pages()[0].resources();
+        let (p_id, _) = read_default_cmyk(page_res).expect("page indirect ColorSpace DefaultCMYK");
+        assert!(page_res.get_color_space(&Name::new_unescaped(b"Sep")).is_some(), "existing indirect ColorSpace entry kept");
+
+        let smask =
+            page_res.get_ext_g_state(&Name::new_unescaped(b"GS")).unwrap().get::<Dict<'_>>(b"SMask").unwrap().get::<Stream<'_>>(b"G").unwrap();
+        let smask_res = Resources::from_parent(smask.dict().get::<Dict<'_>>(b"Resources").unwrap(), page_res.clone());
+        assert_eq!(read_default_cmyk(&smask_res).expect("SMask form DefaultCMYK").0, p_id);
+
+        let pat = match page_res.get_pattern(&Name::new_unescaped(b"P1")).unwrap() {
+            Object::Stream(s) => s,
+            other => panic!("expected pattern stream, got {other:?}"),
+        };
+        let pat_res = Resources::from_parent(pat.dict().get::<Dict<'_>>(b"Resources").unwrap(), page_res.clone());
+        assert_eq!(read_default_cmyk(&pat_res).expect("TilingPattern DefaultCMYK").0, p_id);
+
+        let font = page_res.get_font(&Name::new_unescaped(b"F3")).unwrap();
+        let font_res = Resources::from_parent(font.get::<Dict<'_>>(b"Resources").unwrap(), page_res.clone());
+        assert_eq!(read_default_cmyk(&font_res).expect("Type3 font DefaultCMYK").0, p_id);
+    }
+}
