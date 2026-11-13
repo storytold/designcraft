@@ -14,6 +14,13 @@ use crate::theme::semibold;
 pub const ID: &str = "effects";
 /// The params a previewing dialog shows on the page (its interaction is open while it is set).
 const PREVIEWED: &str = "_previewed";
+/// The uid of the document the dialog opened on: its `ids` are that document's objects.
+const DOC: &str = "_doc";
+/// The status line while a document other than the dialog's is active.
+const OTHER_DOCUMENT: &str =
+    "The objects the dialog opened on are in another document. Switch back to that document to preview or apply the effects.";
+/// The status line once the dialog's document is closed.
+const DOCUMENT_CLOSED: &str = "The document the dialog opened on is closed.";
 
 /// The dialog's pages: (key in `Effects` JSON, label). Transparency is the object's own.
 pub const PAGES: [(&str, &str); 10] = [
@@ -57,6 +64,7 @@ pub fn open(app: &mut DesignApp, page: &str) {
     let mut fx = effects_json(&it.effects);
     let fields = json!({"ids": ids, "fx": Value::Null, "opacity": it.opacity, "blend": it.blend.label(), "preview": true, "page": "transparency"});
     let mut d = Dialog::new(ID, fields);
+    d.fields.insert(DOC.into(), json!(st.uid));
     let page = PAGES.iter().find(|p| p.0 == page).map_or("transparency", |p| p.0);
     turn_on(&mut fx, page);
     d.fields.insert("fx".into(), fx);
@@ -127,8 +135,26 @@ pub fn params(d: &Dialog) -> Value {
 /// The global light angle as changed in the dialog (an Angle field with Use Global Light on).
 const GLOBAL_LIGHT: &str = "globalLight";
 
-/// Apply: the preview goes and the settings are made once, as one undo step.
+/// Why the dialog's objects cannot be reached: another document is active, or the dialog's
+/// document is closed. None while the dialog's document is active.
+fn other_document(app: &DesignApp, d: &Dialog) -> Option<&'static str> {
+    let uid = d.fields.get(DOC).and_then(Value::as_u64)?;
+    if app.session.active().is_some_and(|st| st.uid == uid) {
+        return None;
+    }
+    Some(if app.session.documents().iter().any(|st| st.uid == uid) { OTHER_DOCUMENT } else { DOCUMENT_CLOSED })
+}
+
+/// Apply: the preview goes and the settings are made once, as one undo step. While another
+/// document is active, or the dialog's document is closed, the dialog stays open with the reason
+/// on the status line and nothing changes.
 pub fn confirm(app: &mut DesignApp, d: &Dialog) -> Result<Value, String> {
+    if let Some(e) = other_document(app, d) {
+        let mut d = d.clone();
+        d.fields.insert("status".into(), json!(e));
+        app.ui.dialog = Some(d);
+        return Err(e.into());
+    }
     if d.fields.contains_key(PREVIEWED) {
         // The preview goes from the document it is shown in.
         crate::dialogs::end_dialog_preview(app, &mut d.clone());
@@ -138,16 +164,30 @@ pub fn confirm(app: &mut DesignApp, d: &Dialog) -> Result<Value, String> {
 
 /// Preview on: the effects show on the page (redone when a value changes); off: they go. The
 /// dialog records the document and interaction its preview is in, so Undo and Redo end it first.
+/// While a document other than the dialog's is active, nothing is previewed and the status line
+/// says why.
 fn preview(app: &mut DesignApp, d: &mut Dialog) {
+    let elsewhere = other_document(app, d);
+    if elsewhere.is_none() && matches!(d.fields.get("status").and_then(Value::as_str), Some(OTHER_DOCUMENT)) {
+        d.fields.remove("status");
+    }
     let shown = d.fields.get(PREVIEWED).cloned();
     if !d.fields.get("preview").and_then(Value::as_bool).unwrap_or(false) {
         if shown.is_some() || d.fields.contains_key(crate::dialogs::PREVIEW_DOC) {
             crate::dialogs::end_dialog_preview(app, d);
             d.fields.remove("status");
         }
+        if let Some(e) = elsewhere {
+            d.fields.insert("status".into(), json!(e));
+        }
         return;
     }
     if crate::dialogs::preview_in_other_document(app, d) {
+        return;
+    }
+    // The ids are the dialog's document's: the preview is not shown in another one.
+    if let Some(e) = elsewhere {
+        d.fields.insert("status".into(), json!(e));
         return;
     }
     let p = params(d);
@@ -929,6 +969,88 @@ mod tests {
         assert_eq!(app.session.active().unwrap().interaction.as_ref().map(|it| it.id), Some(moving));
         crate::dialogs::cancel(&mut app);
         assert_eq!(app.session.active().unwrap().interaction.as_ref().map(|it| it.id), Some(moving), "Cancel leaves the gesture open");
+    }
+
+    /// A second document with a frame of the same id as the first document's frame.
+    fn second_document(app: &mut DesignApp, id: u64) {
+        app.run("file.new", json!({})).unwrap();
+        let other = app.run("frame.create", json!({"rect": [100, 100, 300, 300]})).unwrap()["id"].as_u64().unwrap();
+        assert_eq!(other, id, "the second document's frame has the same id");
+    }
+
+    /// OK while another document is active applies nothing there (the dialog's ids are its own
+    /// document's objects): the dialog stays open with the reason, and Preview turned on there
+    /// shows nothing. Back in its document, OK applies the effects as one undo step.
+    #[test]
+    fn ok_in_another_document_does_not_apply_the_effects_there() {
+        let (mut app, id) = app_with_frame();
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx, "en");
+        let shadow = |app: &DesignApp, doc: usize| app.session.documents()[doc].doc.item(designcraft_doc::ItemId(id)).unwrap().effects.drop_shadow.on;
+        crate::menus::activate(&mut app, "object.dropShadow", &Value::Null);
+        if let Some(d) = app.ui.dialog.as_mut() {
+            d.fields.insert("preview".into(), json!(false));
+        }
+        frame(&mut app, &ctx);
+        second_document(&mut app, id);
+        let second = app.session.active().unwrap().doc.clone();
+        frame(&mut app, &ctx);
+        assert_eq!(app.ui.dialog.as_ref().and_then(|d| d.fields.get("status")), Some(&json!(OTHER_DOCUMENT)), "the reason shows with Preview off");
+        // Preview on with the second document active.
+        if let Some(d) = app.ui.dialog.as_mut() {
+            d.fields.insert("preview".into(), json!(true));
+        }
+        frame(&mut app, &ctx);
+        assert!(app.session.active().unwrap().interaction.is_none(), "no preview in the second document");
+        assert_eq!(app.session.active().unwrap().doc, second);
+        assert_eq!(app.ui.dialog.as_ref().and_then(|d| d.fields.get("status")), Some(&json!(OTHER_DOCUMENT)));
+        assert_eq!(crate::dialogs::confirm(&mut app), Err(OTHER_DOCUMENT.to_string()));
+        assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some(ID), "the dialog stays open");
+        assert_eq!(app.session.active().unwrap().doc, second, "nothing changes in the second document");
+        assert!(!shadow(&app, 0));
+        // Back in the first document: the preview shows, the reason goes, and OK applies there.
+        app.session.set_active(0);
+        frame(&mut app, &ctx);
+        assert!(shadow(&app, 0), "previewed");
+        assert_eq!(app.ui.dialog.as_ref().and_then(|d| d.fields.get("status")), None);
+        let undo = app.session.active().unwrap().history.undo.len();
+        crate::dialogs::confirm(&mut app).unwrap();
+        assert!(shadow(&app, 0));
+        assert_eq!(app.session.active().unwrap().history.undo.len(), undo + 1, "one undo step");
+        assert!(!shadow(&app, 1));
+        assert_eq!(app.session.documents()[1].doc, second);
+    }
+
+    /// With the preview shown in its document, OK in another document applies nothing there and
+    /// leaves the preview; once the dialog's document is closed, OK and Preview do nothing.
+    #[test]
+    fn the_effects_preview_and_ok_stay_with_the_dialogs_document() {
+        let (mut app, id) = app_with_frame();
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx, "en");
+        crate::menus::activate(&mut app, "object.dropShadow", &Value::Null);
+        frame(&mut app, &ctx);
+        let previewed = app.session.active().unwrap().doc.clone();
+        second_document(&mut app, id);
+        let second = app.session.active().unwrap().doc.clone();
+        if let Some(d) = app.ui.dialog.as_mut() {
+            set(d, &["dropShadow", "size"], json!(9.0));
+        }
+        frame(&mut app, &ctx);
+        assert!(crate::dialogs::confirm(&mut app).is_err());
+        assert_eq!(app.session.active().unwrap().doc, second, "nothing changes in the second document");
+        assert!(app.session.active().unwrap().interaction.is_none());
+        assert_eq!(app.session.documents()[0].doc, previewed, "the preview stays in its document");
+        // The dialog's document closes: nothing is previewed or applied in the open one.
+        app.session.close_document(0);
+        frame(&mut app, &ctx);
+        frame(&mut app, &ctx);
+        assert!(app.session.active().unwrap().interaction.is_none(), "no preview in the open document");
+        assert_eq!(crate::dialogs::confirm(&mut app), Err(DOCUMENT_CLOSED.to_string()));
+        assert_eq!(app.session.active().unwrap().doc, second);
+        crate::dialogs::cancel(&mut app);
+        assert!(app.ui.dialog.is_none());
+        assert_eq!(app.session.active().unwrap().doc, second);
     }
 
     /// The angle dial points where the pointer is, as InDesign's: right is 0°, up 90°, left 180°,
