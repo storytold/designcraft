@@ -413,16 +413,14 @@ impl<'r> Importer<'r> {
 
     fn read_tabs(&mut self, e: &El) -> Option<Vec<TabStop>> {
         let list = e.prop_el("TabList")?;
-        let tabs: Vec<_> = list
-            .find_all("ListItem")
-            .map(|item| {
-                let get = |key: &str| item.find(key).map(|element| element.text_content());
-                TabStop {
-                    position: get("Position").and_then(|value| value.trim().parse::<f64>().ok()).filter(|value| value.is_finite()).unwrap_or(0.0),
-                    align: names::tab_align_in(get("Alignment").unwrap_or_default().trim()),
-                    leader: get("Leader").unwrap_or_default(),
-                    align_on: get("AlignmentCharacter").filter(|character| character != ".").unwrap_or_default(),
-                }
+        let model_list = crate::xml::to_craft(list);
+        let tabs: Vec<_> = craft_idml::model::TabStopValues::from_list(&model_list)
+            .into_iter()
+            .map(|tab| TabStop {
+                position: tab.position,
+                align: names::tab_align_in(tab.alignment.trim()),
+                leader: tab.leader,
+                align_on: if tab.alignment_character == "." { String::new() } else { tab.alignment_character },
             })
             .collect();
         let sanitized = TabStop::sanitized_list(tabs.clone());
