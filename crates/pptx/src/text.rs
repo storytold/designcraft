@@ -412,7 +412,7 @@ fn body(ex: &mut Exporter, seg: &Segment, r: Rect, k: f64, opacity: f32, insets:
 }
 
 /// The model equivalent of the composed text represented by `body`.
-fn model_body(ex: &mut Exporter, seg: &Segment, k: f64, opacity: f32, insets: [f64; 4]) -> craft_pptx::TextBody {
+pub(crate) fn model_body(ex: &mut Exporter, seg: &Segment, k: f64, opacity: f32, insets: [f64; 4]) -> craft_pptx::TextBody {
     fn color(ex: &Exporter, swatch: &str, tint: f32, opacity: f32) -> Option<craft_pptx::ColorRef> {
         let color = if let Some(gradient) = resolve_gradient(&ex.doc.swatches, swatch) {
             let (_, color, alpha) = gradient.expanded_stops().into_iter().next()?;

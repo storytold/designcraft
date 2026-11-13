@@ -80,12 +80,31 @@ pub enum PptxError {
 
 pub type Result<T> = std::result::Result<T, PptxError>;
 
-fn apply_native_shapes(shapes: &mut [craft_pptx::Shape], native: &[craft_pptx::Shape]) {
+fn apply_native_shapes(
+    shapes: &mut [craft_pptx::Shape],
+    native: &[craft_pptx::Shape],
+    native_media: &[(u32, String)],
+    media: &[craft_pptx::MediaItem],
+) {
     for shape in shapes {
         if let Some(mapped) = native.iter().find(|mapped| mapped.id.0 == shape.id.0) {
-            *shape = mapped.clone();
+            let mut mapped = mapped.clone();
+            let media_name = native_media.iter().find(|(id, _)| *id == mapped.id.0).map(|(_, name)| name);
+            let has_media = if let (Some(name), craft_pptx::ShapeKind::Picture { fill }) = (media_name, &mut mapped.kind) {
+                if let Some(item) = media.iter().find(|item| item.name == *name) {
+                    fill.media = item.id;
+                    true
+                } else {
+                    false
+                }
+            } else {
+                true
+            };
+            if has_media {
+                *shape = mapped;
+            }
         } else if let craft_pptx::ShapeKind::Group { children, .. } = &mut shape.kind {
-            apply_native_shapes(children, native);
+            apply_native_shapes(children, native, native_media, media);
         }
     }
 }
@@ -143,7 +162,7 @@ pub fn export_pptx(doc: &Document, cache: &Cache, opts: &PptxOptions) -> Result<
     let mut presentation = craft_pptx::import(&mapped, &craft_pptx::Plain).map_err(|e| PptxError::Write(e.to_string()))?;
     for (source, slide) in slides.iter().zip(&mut presentation.slides) {
         let slide = std::sync::Arc::make_mut(slide);
-        apply_native_shapes(&mut slide.shapes, &source.native_shapes);
+        apply_native_shapes(&mut slide.shapes, &source.native_shapes, &source.native_media, &presentation.media);
     }
     let bytes = craft_pptx::export(&presentation, &craft_pptx::Plain).map_err(|e| PptxError::Write(e.to_string()))?;
     Ok(ExportReport { bytes, slides: slides.len(), warnings: ex.warnings })

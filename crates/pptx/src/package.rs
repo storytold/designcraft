@@ -29,6 +29,8 @@ pub struct Slide {
     pub name: String,
     /// Shapes that have a direct DesignCraft-to-Presentation model mapping.
     pub native_shapes: Vec<craft_pptx::Shape>,
+    /// Media part names keyed by the id of a native picture shape.
+    pub native_media: Vec<(u32, String)>,
 }
 
 /// A media part (`ppt/media/<name>`).

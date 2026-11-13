@@ -207,6 +207,7 @@ pub struct Exporter<'a> {
     pub media: Vec<Media>,
     /// Native PresentationML mappings for model elements the exporter can express directly.
     pub native_shapes: Vec<craft_pptx::Shape>,
+    pub native_media: Vec<(u32, String)>,
     /// Asset → (picture media name, SVG media name).
     media_of: HashMap<AssetId, Option<(String, Option<String>)>>,
     pub fonts: Fonts,
@@ -232,6 +233,7 @@ impl<'a> Exporter<'a> {
             warnings: Vec::new(),
             media: Vec::new(),
             native_shapes: Vec::new(),
+            native_media: Vec::new(),
             media_of: HashMap::new(),
             fonts: Fonts::default(),
             out: String::new(),
@@ -265,6 +267,7 @@ impl<'a> Exporter<'a> {
         let bounds = page.bounds();
         self.out.clear();
         self.native_shapes.clear();
+        self.native_media.clear();
         self.next_id = 2;
         self.rels.clear();
         self.rel_of.clear();
@@ -309,6 +312,7 @@ impl<'a> Exporter<'a> {
             rels: std::mem::take(&mut self.rels),
             name: page_name,
             native_shapes: std::mem::take(&mut self.native_shapes),
+            native_media: std::mem::take(&mut self.native_media),
         })
     }
 
@@ -540,6 +544,17 @@ impl<'a> Exporter<'a> {
         Some(srgb(c.to_rgb(), alpha))
     }
 
+    /// An sRGB color in the shared PresentationML model, with DesignCraft tint and opacity applied.
+    pub(crate) fn model_color(&self, swatch: &str, tint: f32, alpha: f32) -> Option<craft_pptx::ColorRef> {
+        if let Some(gradient) = resolve_gradient(&self.doc.swatches, swatch) {
+            let (_, color, gradient_alpha) = gradient.expanded_stops().into_iter().next()?;
+            let [r, g, b, a] = color.to_rgba8(gradient_alpha * alpha);
+            return Some(craft_pptx::ColorRef::rgb(craft_pptx::Rgba::rgba(r, g, b, a)));
+        }
+        let [r, g, b, a] = self.doc.resolve_color(swatch, tint)?.to_rgba8(alpha);
+        Some(craft_pptx::ColorRef::rgb(craft_pptx::Rgba::rgba(r, g, b, a)))
+    }
+
     pub fn fill(&mut self, f: &designcraft_doc::Fill, closed: bool, opacity: f32) -> String {
         if f.is_none() || !closed {
             return "<a:noFill/>".into();
@@ -761,16 +776,22 @@ impl<'a> Exporter<'a> {
         let frame = it.inner_bounds();
         let img = g.xf.transform_rect_bbox(Rect::new(0.0, 0.0, g.size.0, g.size.1));
         let axis = b.abs() < 1e-9 && c.abs() < 1e-9 && a > 0.0 && d > 0.0;
-        let (geo, crop) = if axis && img.width() > 0.0 && img.height() > 0.0 {
+        let (geo, crop, crop_values) = if axis && img.width() > 0.0 && img.height() > 0.0 {
             // The frame's geometry with the image cropped (or padded) to the frame's box.
+            let crop_values = [
+                (frame.x0 - img.x0) / img.width(),
+                (frame.y0 - img.y0) / img.height(),
+                (img.x1 - frame.x1) / img.width(),
+                (img.y1 - frame.y1) / img.height(),
+            ];
             let crop = format!(
                 "<a:srcRect l=\"{}\" t=\"{}\" r=\"{}\" b=\"{}\"/>",
-                pct((frame.x0 - img.x0) / img.width()),
-                pct((frame.y0 - img.y0) / img.height()),
-                pct((img.x1 - frame.x1) / img.width()),
-                pct((img.y1 - frame.y1) / img.height())
+                pct(crop_values[0]),
+                pct(crop_values[1]),
+                pct(crop_values[2]),
+                pct(crop_values[3])
             );
-            (geometry(it, m), crop)
+            (geometry(it, m), crop, crop_values)
         } else {
             // Rotated, skewed or flipped inside its frame: the image's own box, uncropped, and
             // the frame drawn on its own.
@@ -779,10 +800,10 @@ impl<'a> Exporter<'a> {
             let gi = Rect::new(0.0, 0.0, g.size.0, g.size.1);
             let gm = m * g.xf;
             let xfrm = box_of(gi, gm).map(|(x, _)| x).unwrap_or_else(|| XfrmBox::plain(gm.transform_rect_bbox(gi)));
-            (Geometry { xfrm, xml: preset("rect"), model: craft_pptx::Geom::preset("rect") }, String::new())
+            (Geometry { xfrm, xml: preset("rect"), model: craft_pptx::Geom::preset("rect") }, String::new(), [0.0; 4])
         };
         let rid = self.rel(format!("../media/{name}"));
-        let svg_ext = match svg {
+        let svg_ext = match svg.as_ref() {
             Some(s) => {
                 let sid = self.rel(format!("../media/{s}"));
                 format!(
@@ -796,6 +817,32 @@ impl<'a> Exporter<'a> {
         let line = if axis { self.line(&it.stroke, opacity) } else { "<a:ln><a:noFill/></a:ln>".into() };
         let fx = self.effects(it, opacity);
         let id = self.id();
+        if axis && svg.is_none() && it.effects == designcraft_doc::Effects::default() && it.fill.is_none() && it.stroke.is_none() {
+            let mut fill = craft_pptx::style::PictureFill { media: craft_pptx::MediaId(0), crop: crop_values, ..Default::default() };
+            if opacity < 0.999 {
+                fill.alpha = Some(f64::from(opacity));
+            }
+            self.native_shapes.push(craft_pptx::Shape {
+                id: craft_pptx::ShapeId(id),
+                name: name_of(it, id),
+                xfrm: Some(craft_pptx::Xfrm {
+                    x: geo.xfrm.rect.x0,
+                    y: geo.xfrm.rect.y0,
+                    w: geo.xfrm.rect.width(),
+                    h: geo.xfrm.rect.height(),
+                    rot: geo.xfrm.rot,
+                    flip_h: geo.xfrm.flip_h,
+                    flip_v: geo.xfrm.flip_v,
+                }),
+                kind: craft_pptx::ShapeKind::Picture { fill },
+                geom: geo.model.clone(),
+                fill: Some(craft_pptx::Fill::None),
+                line: Some(craft_pptx::Line::none()),
+                descr: it.alt_text.clone(),
+                ..Default::default()
+            });
+            self.native_media.push((id, name.clone()));
+        }
         let _ = write!(
             self.out,
             "<p:pic><p:nvPicPr><p:cNvPr id=\"{id}\" name=\"{}\"{}/><p:cNvPicPr><a:picLocks noChangeAspect=\"1\"/></p:cNvPicPr><p:nvPr/></p:nvPicPr>\
