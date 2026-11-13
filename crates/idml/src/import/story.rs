@@ -196,6 +196,46 @@ impl<'r> Importer<'r> {
                             b.push_table(t, pf, cf);
                         }
                     }
+                    craft_idml::model::TextNode::Container(container) => {
+                        let container_el = crate::xml::from_craft(container.to_el());
+                        match container.kind() {
+                            craft_idml::model::ContainerKind::HyperlinkTextSource => {
+                                let start = b.text.len();
+                                self.walk_story(&container_el, b, pf, pchars, cf, brk);
+                                if b.text.len() > start {
+                                    b.link_srcs.push((container.self_id().unwrap_or("").to_string(), start, b.text.len()));
+                                }
+                            }
+                            craft_idml::model::ContainerKind::Footnote => {
+                                let mut note = self.story(StoryId(0), &container_el);
+                                let sep = self.footnote_options.separator.clone();
+                                if !sep.is_empty() && note.text.starts_with(&sep) {
+                                    note.delete(0..sep.len());
+                                }
+                                b.notes.push(note);
+                                let mut rcf = cf.clone();
+                                rcf.over.position = None;
+                                b.push(&designcraft_doc::FOOTNOTE_REF.to_string(), &rcf);
+                            }
+                            craft_idml::model::ContainerKind::Change => {
+                                let mut ncf = cf.clone();
+                                match container.change_kind() {
+                                    Some(craft_idml::model::TrackedChangeKind::Deleted) => {
+                                        ncf.over.change = Some(designcraft_doc::ChangeMark::Deleted)
+                                    }
+                                    Some(craft_idml::model::TrackedChangeKind::Inserted) => {
+                                        ncf.over.change = Some(designcraft_doc::ChangeMark::Inserted)
+                                    }
+                                    _ => {}
+                                }
+                                self.walk_story(&container_el, b, pf, pchars, &ncf, brk);
+                            }
+                            craft_idml::model::ContainerKind::XMLElement => self.walk_story(&container_el, b, pf, pchars, cf, brk),
+                            craft_idml::model::ContainerKind::CrossReferenceSource
+                            | craft_idml::model::ContainerKind::Note
+                            | craft_idml::model::ContainerKind::EndnoteRange => {}
+                        }
+                    }
                     craft_idml::model::TextNode::Anchor(anchor) => {
                         b.anchors.push((anchor.self_id().unwrap_or("").to_string(), anchor.label().unwrap_or("Anchor").to_string()));
                         b.push(&designcraft_doc::ANCHOR_MARK.to_string(), cf);
@@ -217,15 +257,6 @@ impl<'r> Importer<'r> {
                         b.push(&text, cf);
                     }
                     _ => match c.local() {
-                        // The source wraps the text the link covers: its children are ordinary ranges
-                        // and content, so the range is where the text stood before and after (#1446).
-                        "HyperlinkTextSource" => {
-                            let start = b.text.len();
-                            self.walk_story(c, b, pf, pchars, cf, brk);
-                            if b.text.len() > start {
-                                b.link_srcs.push((c.get("Self").unwrap_or("").to_string(), start, b.text.len()));
-                            }
-                        }
                         "CrossReferenceSource" => {
                             // The generated text is regenerated from the format.
                             let (mut text, mut page) = (String::new(), None);
@@ -240,19 +271,6 @@ impl<'r> Importer<'r> {
                             // text directly and takes that range's format.
                             let f = c.find("CharacterStyleRange").map_or_else(|| cf.clone(), |r| self.range_format(r, pchars, cf));
                             b.push(&designcraft_doc::XREF_MARK.to_string(), &f);
-                        }
-                        "Footnote" => {
-                            // The text starts with the number marker (ACE 4, dropped) and the separator.
-                            let mut note = self.story(StoryId(0), c);
-                            let sep = self.footnote_options.separator.clone();
-                            if !sep.is_empty() && note.text.starts_with(&sep) {
-                                note.delete(0..sep.len());
-                            }
-                            b.notes.push(note);
-                            // The reference's position comes from the footnote options.
-                            let mut rcf = cf.clone();
-                            rcf.over.position = None;
-                            b.push(&designcraft_doc::FOOTNOTE_REF.to_string(), &rcf);
                         }
                         // Anchored page items, including groups containing text frames.
                         "Rectangle" | "Oval" | "Polygon" | "GraphicLine" | "Group" | "TextFrame" => {
@@ -313,17 +331,6 @@ impl<'r> Importer<'r> {
                                 b.objects.push(designcraft_doc::AnchoredObject::new(item, position));
                                 b.push(&designcraft_doc::OBJECT_MARK.to_string(), cf);
                             }
-                        }
-                        "Change" => {
-                            // Tracked changes: deleted text stays in the story, marked, and takes no
-                            // room in the layout.
-                            let mut ncf = cf.clone();
-                            match c.get("ChangeType") {
-                                Some("DeletedText") => ncf.over.change = Some(designcraft_doc::ChangeMark::Deleted),
-                                Some("InsertedText" | "MovedText") => ncf.over.change = Some(designcraft_doc::ChangeMark::Inserted),
-                                _ => {}
-                            }
-                            self.walk_story(c, b, pf, pchars, &ncf, brk);
                         }
                         "Properties" | "Note" | "StoryPreference" | "InCopyExportOption" => {}
                         _ => self.walk_story(c, b, pf, pchars, cf, brk),
