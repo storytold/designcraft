@@ -7,7 +7,7 @@ use super::{
 /// Match the Character panel's logical label/field ordering to the UI reading direction.
 /// The command IDs and stored values are deliberately unaffected.
 fn character_row_layout(language: &str) -> egui::Layout {
-    if crate::i18n::is_rtl(language) { egui::Layout::right_to_left(Align::Center) } else { egui::Layout::left_to_right(Align::Center) }
+    if crate::i18n::is_rtl(language) { egui::Layout::right_to_left(egui::Align::Center) } else { egui::Layout::left_to_right(egui::Align::Center) }
 }
 
 #[cfg(test)]
