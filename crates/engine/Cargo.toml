@@ -35,6 +35,7 @@ thiserror = { workspace = true }
 log = { workspace = true }
 craft-xml = { workspace = true }
 craft-xml-dtd = { workspace = true }
+craft-svg = { workspace = true }
 caseless = { workspace = true }
 unicode-segmentation = { workspace = true }
 

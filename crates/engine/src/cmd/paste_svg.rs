@@ -3,9 +3,9 @@
 //! clipboard as SVG markup; each path becomes a DesignCraft path with its fill and stroke, groups
 //! stay groups, and text comes in as outlines.
 
+use craft_svg::tree::document::{Document as SvgDocument, LineCap, LineJoin, Node as SvgNode, Paint as SvgPaint, Segment};
 use designcraft_doc::{Content, Fill, Item, ItemId, Selection, Shape, Stroke, StrokeType};
 use designcraft_geom::{Affine, BezPath, PathData, Point, Rect};
-use designcraft_images::usvg;
 use serde_json::{Value, json};
 
 use super::{CommandSpec, Result, Session, bad, cmd, has_doc, spread_param, str_param};
@@ -27,7 +27,7 @@ pub fn is_svg_markup(text: &str) -> bool {
     designcraft_images::is_svg(text.as_bytes())
 }
 
-/// Cap conversion nesting too; the shared image parser bounds XML before usvg runs.
+/// Cap conversion nesting too; the shared SVG scene builder enforces this limit.
 const MAX_DEPTH: usize = 64;
 
 /// A converted SVG node, in points.
@@ -68,20 +68,15 @@ struct Notes {
     too_deep: bool,
 }
 
-fn paint(p: &usvg::Paint, opacity: f32, notes: &mut Notes) -> Option<Paint> {
-    let rgb = match p {
-        usvg::Paint::Color(c) => [c.red, c.green, c.blue],
-        // Gradients and patterns come in as their first colour (InDesign keeps Illustrator
-        // gradients; DesignCraft's swatch gradients can't be made from SVG stops yet).
-        usvg::Paint::LinearGradient(g) => {
+fn paint(p: &SvgPaint, notes: &mut Notes) -> Option<Paint> {
+    let (rgb, opacity) = match p {
+        SvgPaint::Color { rgb, opacity } => (*rgb, *opacity),
+        // Gradients and patterns are retained as their first color where available.
+        SvgPaint::Gradient { first_rgb, opacity } => {
             notes.gradients += 1;
-            g.stops().first().map(|s| [s.color().red, s.color().green, s.color().blue])?
+            (*first_rgb.as_ref()?, *opacity)
         }
-        usvg::Paint::RadialGradient(g) => {
-            notes.gradients += 1;
-            g.stops().first().map(|s| [s.color().red, s.color().green, s.color().blue])?
-        }
-        usvg::Paint::Pattern(_) => {
+        SvgPaint::Pattern => {
             notes.gradients += 1;
             return None;
         }
@@ -94,56 +89,43 @@ fn round(v: f64) -> f64 {
     (v * 10_000.0).round() / 10_000.0
 }
 
-/// `t` (SVG px space) then px → pt.
-fn to_affine(t: usvg::Transform) -> Affine {
-    let pt = designcraft_images::PT_PER_PX;
-    Affine::scale(pt) * Affine::new([f64::from(t.sx), f64::from(t.ky), f64::from(t.kx), f64::from(t.sy), f64::from(t.tx), f64::from(t.ty)])
-}
-
-fn bezpath(data: &usvg::tiny_skia_path::Path, xf: Affine) -> BezPath {
-    use usvg::tiny_skia_path::PathSegment as S;
-    let p = |q: usvg::tiny_skia_path::Point| xf * Point::new(f64::from(q.x), f64::from(q.y));
+fn bezpath(segments: &[Segment]) -> BezPath {
+    let p = |q: [f64; 2]| Point::new(q[0] * designcraft_images::PT_PER_PX, q[1] * designcraft_images::PT_PER_PX);
     let mut bp = BezPath::new();
-    for seg in data.segments() {
+    for seg in segments {
         match seg {
-            S::MoveTo(a) => bp.move_to(p(a)),
-            S::LineTo(a) => bp.line_to(p(a)),
-            S::QuadTo(a, b) => bp.quad_to(p(a), p(b)),
-            S::CubicTo(a, b, c) => bp.curve_to(p(a), p(b), p(c)),
-            S::Close => bp.close_path(),
+            Segment::MoveTo(a) => bp.move_to(p(*a)),
+            Segment::LineTo(a) => bp.line_to(p(*a)),
+            Segment::QuadTo(a, b) => bp.quad_to(p(*a), p(*b)),
+            Segment::CubicTo(a, b, c) => bp.curve_to(p(*a), p(*b), p(*c)),
+            Segment::Close => bp.close_path(),
         }
     }
     bp
 }
 
-fn convert(g: &usvg::Group, depth: usize, notes: &mut Notes, out: &mut Vec<Art>) {
-    for node in g.children() {
+fn convert(nodes: &[SvgNode], notes: &mut Notes, out: &mut Vec<Art>) {
+    for node in nodes {
         match node {
-            usvg::Node::Path(path) => {
-                if !path.is_visible() || path.data().is_empty() {
-                    continue;
-                }
-                let xf = to_affine(path.abs_transform());
-                let fill = path.fill().and_then(|f| paint(f.paint(), f.opacity().get(), notes));
-                let stroke = path.stroke().and_then(|s| {
-                    let c = paint(s.paint(), s.opacity().get(), notes)?;
-                    // A stroke scales with the art: its width in points.
-                    let scale = xf.determinant().abs().sqrt();
-                    let width = round(f64::from(s.width().get()) * scale);
-                    let dashes = s.dasharray().map(|d| d.iter().map(|v| round(f64::from(*v) * scale)).collect::<Vec<_>>());
+            SvgNode::Path(path) => {
+                let fill = path.fill.as_ref().and_then(|p| paint(p, notes));
+                let stroke = path.stroke.as_ref().and_then(|s| {
+                    let c = paint(&s.paint, notes)?;
+                    let width = round(s.width * designcraft_images::PT_PER_PX);
+                    let dashes = s.dash_array.as_ref().map(|d| d.iter().map(|v| round(v * designcraft_images::PT_PER_PX)).collect::<Vec<_>>());
                     let style = StrokeStyle {
                         width,
-                        cap: match s.linecap() {
-                            usvg::LineCap::Butt => designcraft_doc::Cap::Butt,
-                            usvg::LineCap::Round => designcraft_doc::Cap::Round,
-                            usvg::LineCap::Square => designcraft_doc::Cap::Projecting,
+                        cap: match s.cap {
+                            LineCap::Butt => designcraft_doc::Cap::Butt,
+                            LineCap::Round => designcraft_doc::Cap::Round,
+                            LineCap::Square => designcraft_doc::Cap::Projecting,
                         },
-                        join: match s.linejoin() {
-                            usvg::LineJoin::Round => designcraft_doc::Join::Round,
-                            usvg::LineJoin::Bevel => designcraft_doc::Join::Bevel,
+                        join: match s.join {
+                            LineJoin::Round => designcraft_doc::Join::Round,
+                            LineJoin::Bevel => designcraft_doc::Join::Bevel,
                             _ => designcraft_doc::Join::Miter,
                         },
-                        miter: f64::from(s.miterlimit().get()),
+                        miter: s.miter_limit,
                         dashes,
                     };
                     Some((c, style))
@@ -156,38 +138,22 @@ fn convert(g: &usvg::Group, depth: usize, notes: &mut Notes, out: &mut Vec<Art>)
                 {
                     notes.mixed_opacity += 1;
                 }
-                out.push(Art::Path { path: bezpath(path.data(), xf), fill, stroke, opacity: 1.0 });
+                out.push(Art::Path { path: bezpath(&path.segments), fill, stroke, opacity: 1.0 });
             }
-            usvg::Node::Group(child) => {
-                if depth >= MAX_DEPTH {
-                    notes.too_deep = true;
-                    continue;
-                }
+            SvgNode::Group { children, opacity } => {
                 let mut items = Vec::new();
-                convert(child, depth + 1, notes, &mut items);
+                convert(children, notes, &mut items);
                 // usvg wraps nodes in groups for transforms and opacity; only a group of several
                 // objects stays a group. Its opacity goes to what it holds.
-                let opacity = child.opacity().get();
                 if items.len() > 1 {
-                    out.push(Art::Group(items, opacity));
+                    out.push(Art::Group(items, *opacity));
                 } else {
                     for mut a in items {
-                        a.fade(opacity);
+                        a.fade(*opacity);
                         out.push(a);
                     }
                 }
             }
-            // Text arrives as outlines, as Illustrator's Create Outlines would give it.
-            usvg::Node::Text(text) => {
-                let mut items = Vec::new();
-                convert(text.flattened(), depth + 1, notes, &mut items);
-                if items.len() > 1 {
-                    out.push(Art::Group(items, 1.0));
-                } else {
-                    out.extend(items);
-                }
-            }
-            usvg::Node::Image(_) => notes.images += 1,
         }
     }
 }
@@ -280,9 +246,10 @@ fn paste_svg(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad(ID, "the clipboard doesn't hold SVG markup"));
     }
     let tree = designcraft_images::svg_tree(svg.as_bytes()).ok_or_else(|| bad(ID, "the SVG on the clipboard can't be read"))?;
-    let mut notes = Notes::default();
+    let scene = SvgDocument::from_tree(&tree, MAX_DEPTH);
+    let mut notes = Notes { images: scene.images, too_deep: scene.too_deep, ..Default::default() };
     let mut art = Vec::new();
-    convert(tree.root(), 0, &mut notes, &mut art);
+    convert(&scene.nodes, &mut notes, &mut art);
     let b = bounds(&art).ok_or_else(|| bad(ID, "the SVG on the clipboard has no paths to paste"))?;
     let sr = spread_param(p, ID)?;
     let layer = s.doc()?.active_layer;
