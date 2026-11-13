@@ -470,9 +470,7 @@ fn warning_item(
 /// the bytes are neither a recognized DesignCraft document nor IDML. The converter explains
 /// unrecognized data with an InDesign extension.
 pub(crate) fn is_indd(name: &str, bytes: &[u8]) -> bool {
-    craft_file_formats::detect(name, bytes) == Some(craft_file_formats::Format::Indd)
-        && !super::file::is_document(bytes)
-        && !bytes.trim_ascii_start().starts_with(b"{")
+    craft_file_formats::detect(name, bytes) == Some(craft_file_formats::Format::Indd) && !super::file::is_document(bytes)
 }
 
 /// `name` without a trailing .idml, .indd or .indt (any case).

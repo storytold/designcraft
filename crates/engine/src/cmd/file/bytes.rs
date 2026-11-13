@@ -41,7 +41,10 @@ pub(super) fn without_native_extension(name: &str) -> &str {
 /// The first [`DOCUMENT_SNIFF_BYTES`] of a file are enough for packages that start with their
 /// `mimetype` entry, as both formats write them.
 pub fn is_document(bytes: &[u8]) -> bool {
-    designcraft_idml::is_idml(bytes) || designcraft_format::starts_designcraft(bytes) || designcraft_format::is_designcraft(bytes)
+    matches!(
+        craft_file_formats::detect("", bytes),
+        Some(craft_file_formats::Format::DesignCraft | craft_file_formats::Format::DesignCraftJson | craft_file_formats::Format::Idml)
+    )
 }
 
 /// How much of a file [`is_document`] needs to recognise a package by its `mimetype` entry.

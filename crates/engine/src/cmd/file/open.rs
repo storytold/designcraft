@@ -85,13 +85,8 @@ fn open_path(s: &mut Session, p: &Value) -> Result<Value> {
         // The content decides first: a file's extension may be missing or wrong. The extension
         // then routes files whose content isn't recognised to the reader that explains why.
         let format = craft_file_formats::detect(path, &bytes);
-        let native = format == Some(craft_file_formats::Format::DesignCraft)
-            || designcraft_format::is_designcraft(&bytes)
-            || bytes.trim_ascii_start().starts_with(b"{");
-        if format == Some(craft_file_formats::Format::Idml)
-            || designcraft_idml::is_idml(&bytes)
-            || (!native && format == Some(craft_file_formats::Format::Indd))
-        {
+        let native = matches!(format, Some(craft_file_formats::Format::DesignCraft | craft_file_formats::Format::DesignCraftJson));
+        if format == Some(craft_file_formats::Format::Idml) || (!native && format == Some(craft_file_formats::Format::Indd)) {
             return crate::cmd::interchange::open_idml(s, p);
         }
         if !native {
@@ -163,11 +158,8 @@ pub(super) fn file_open_bytes(s: &mut Session, p: &Value) -> Result<Value> {
     // signature (or their name).
     let name = str_param(p, "name").unwrap_or_default();
     let format = craft_file_formats::detect(name, &b);
-    let native = designcraft_format::is_designcraft(&b) || b.trim_ascii_start().starts_with(b"{");
-    if format == Some(craft_file_formats::Format::Idml)
-        || designcraft_idml::is_idml(&b)
-        || (!native && format == Some(craft_file_formats::Format::Indd))
-    {
+    let native = matches!(format, Some(craft_file_formats::Format::DesignCraft | craft_file_formats::Format::DesignCraftJson));
+    if format == Some(craft_file_formats::Format::Idml) || (!native && format == Some(craft_file_formats::Format::Indd)) {
         return crate::cmd::interchange::open_idml(s, p);
     }
     let (mut d, warnings) = load_bytes(&b)?;

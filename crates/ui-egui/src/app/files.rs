@@ -138,7 +138,10 @@ impl DesignApp {
             return self.run("style.load", params);
         }
         let layout = opens_as_document(&file.name)
-            || (std::path::Path::new(&file.name).extension().is_none() && designcraft_engine::cmd::is_document(&file.bytes));
+            || matches!(
+                format,
+                Some(craft_file_formats::Format::DesignCraft | craft_file_formats::Format::DesignCraftJson | craft_file_formats::Format::Idml)
+            );
         let place = file.request.purpose == "place"
             || (matches!(file.request.purpose.as_str(), "drop" | "open") && !layout && format != Some(craft_file_formats::Format::Ase));
         if place || format == Some(craft_file_formats::Format::Ase) || file.request.purpose == "swatches" {

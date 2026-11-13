@@ -26,7 +26,7 @@ craft-docx = { git = "https://github.com/storytold/craft-libs", rev = "ba24fe243
 craft-wordmodel = { git = "https://github.com/storytold/craft-libs", rev = "ba24fe2435adb3c81ad6057faf36365fbba736cf", version = "=0.1.0" }
 craft-image-codecs = { git = "https://github.com/storytold/craft-libs", rev = "a47b78256c6acf3d7fdc4bc7cfbc25c373eac522", version = "=0.1.0" }
 craft-psd = { git = "https://github.com/storytold/craft-libs", rev = "a47b78256c6acf3d7fdc4bc7cfbc25c373eac522", version = "=0.1.0" }
-craft-file-formats = { git = "https://github.com/storytold/craft-libs", rev = "b4ada28f1", version = "=0.1.0" }
+craft-file-formats = { git = "https://github.com/storytold/craft-libs", rev = "fccc0082711b8ae4e19824dd20339a8473d47309", version = "=0.1.0" }
 # Shared keyboard bindings: chords, overrides, conflicts, egui dispatch, the Keyboard Shortcuts dialog.
 craft-keymap = { git = "https://github.com/storytold/craft-libs", rev = "92d392cff132eaf53e13afff77f38b5c11b73aa0", version = "=0.1.0", features = ["egui", "ui"] }
 # Separations, ink coverage and the ink manager; same revision as craft-pdf and the krilla patch.
