@@ -156,46 +156,58 @@ impl<'a> Ex<'a> {
         let ds = &it.effects.drop_shadow;
         let (gf, df) = (&it.effects.gradient_feather, &it.effects.directional_feather);
         if it.opacity < 1.0 || it.blend != designcraft_color::BlendMode::Normal || ds.on || it.effects.feather > 0.0 || gf.on || df.on || styled {
-            let mut t = El::new("TransparencySetting");
-            t.push(El::new("BlendingSetting").attr("BlendMode", names::blend_out(it.blend)).attr("Opacity", pct(it.opacity as f64)));
-            for c in self.effect_els(&it.effects, styled) {
-                t.push(c);
-            }
-            if df.on {
-                let [top, left, bottom, right] = df.widths;
-                t.push(
-                    El::new("DirectionalFeatherSetting")
-                        .attr("Applied", "true")
-                        .attr("LeftWidth", num(left))
-                        .attr("RightWidth", num(right))
-                        .attr("TopWidth", num(top))
-                        .attr("BottomWidth", num(bottom)),
-                );
-            }
-            if gf.on {
-                let mut g = El::new("GradientFeatherSetting").attr("Applied", "true").attr("Type", if gf.radial { "Radial" } else { "Linear" });
-                if let Some([x0, y0, x1, y1]) = gf.vector {
-                    // Gradient Feather tool vector: start, length and angle in the item's space.
-                    g.set("Angle", num((-(y1 - y0)).atan2(x1 - x0).to_degrees()));
-                    g.set("Length", num((x1 - x0).hypot(y1 - y0)));
-                    g.set("GradientStart", format!("{} {}", num(x0), num(y0)));
-                } else {
-                    g.set("Angle", num(gf.angle));
-                }
-                let id = uid(it.id.0);
-                for (i, (opacity, location)) in [(gf.start, 0.0), (gf.end, 100.0)].into_iter().enumerate() {
-                    let mut s = El::new("OpacityGradientStop")
-                        .attr("Self", format!("{id}TransparencySetting1GradientFeatherSetting1OpacityGradientStop{i}"))
-                        .attr("Opacity", pct(opacity as f64))
-                        .attr("Location", num(location));
-                    if i > 0 {
-                        s.set("Midpoint", "50");
+            let gradient_feather = if gf.on {
+                let (angle, length, start) = gf.vector.map_or((Some(gf.angle), None, None), |[x0, y0, x1, y1]| {
+                    (Some((-(y1 - y0)).atan2(x1 - x0).to_degrees()), Some((x1 - x0).hypot(y1 - y0)), Some([x0, y0]))
+                });
+                Some(craft_idml::model::GradientFeatherValues {
+                    applied: true,
+                    radial: gf.radial,
+                    angle,
+                    length,
+                    start,
+                    stops: vec![
+                        craft_idml::model::OpacityStopValues { location: Some(0.0), opacity: Some(f64::from(gf.start) * 100.0) },
+                        craft_idml::model::OpacityStopValues { location: Some(100.0), opacity: Some(f64::from(gf.end) * 100.0) },
+                    ],
+                })
+            } else {
+                None
+            };
+            let directional_feather = df.on.then(|| craft_idml::model::DirectionalFeatherValues { applied: true, widths: df.widths.map(Some) });
+            let transparency = craft_idml::model::TransparencySetting {
+                blend_mode: Some(names::blend_out(it.blend).into()),
+                opacity: Some(f64::from(it.opacity) * 100.0),
+                drop_shadow: (ds.on || styled).then(|| {
+                    let a = self.d.light_angle(ds.angle, ds.global_light).to_radians();
+                    craft_idml::model::DropShadowValues {
+                        mode: Some(if ds.on { "Drop" } else { "None" }.into()),
+                        x_offset: Some(-ds.distance * a.cos()),
+                        y_offset: Some(ds.distance * a.sin()),
+                        color: Some(self.sw(&ds.color)),
+                        opacity: Some(f64::from(ds.opacity) * 100.0),
+                        size: Some(ds.size),
+                        spread: Some(ds.spread),
+                        blend_mode: Some(names::blend_out(ds.mode).into()),
                     }
-                    g.push(s);
-                }
-                t.push(g);
-            }
-            el.push(t);
+                }),
+                feather: (it.effects.feather > 0.0 || styled).then(|| {
+                    let corners = match it.effects.feather_options.corners {
+                        designcraft_doc::FeatherCorners::Sharp => "Sharp",
+                        designcraft_doc::FeatherCorners::Rounded => "Rounded",
+                        designcraft_doc::FeatherCorners::Diffused => "Diffusion",
+                    };
+                    craft_idml::model::FeatherValues {
+                        mode: Some(if it.effects.feather > 0.0 { "Standard" } else { "None" }.into()),
+                        width: Some(it.effects.feather),
+                        choke_amount: Some(it.effects.feather_options.choke),
+                        corner_type: Some(corners.into()),
+                    }
+                }),
+                gradient_feather,
+                directional_feather,
+            };
+            el.push(crate::xml::from_craft(transparency.to_el(&uid(it.id.0))));
         }
     }
 
