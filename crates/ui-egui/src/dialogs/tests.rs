@@ -1765,13 +1765,16 @@ fn text_frame_options_dims_the_sides_for_a_non_rectangular_frame() {
         }
         // The numeric fields and their spinners are named from the captions beside them.
         for name in ["Number", "Width", "Gutter", "Maximum", "Paragraph Spacing Limit"] {
+            let _ = h.get_by_role_and_label(egui::accesskit::Role::TextInput, name);
             let _ = h.get_by_label(&format!("Increase {name}"));
         }
         for side in ["Top", "Left", "Bottom", "Right"] {
+            let _ = h.get_by_role_and_label(egui::accesskit::Role::TextInput, side);
             let label = format!("Increase {side}");
             assert_eq!(h.get_by_label(&label).accesskit_node().is_disabled(), shaped, "{shape}: {side}");
         }
         assert_eq!(h.query_by_label("Inset:").is_some(), shaped, "{shape}: the Inset caption");
+        assert_eq!(h.query_by_role_and_label(egui::accesskit::Role::TextInput, "Inset").is_some(), shaped, "{shape}: the Inset editor");
         assert_eq!(h.query_by_label("Increase Inset").is_some(), shaped, "{shape}: the Inset field");
         // The General tab fits in the dialog's fixed height: the buttons stay put on another tab.
         let (wrap, cancel) = (h.get_by_label("Ignore Text Wrap").rect().bottom(), h.get_by_label("Cancel").rect().top());
