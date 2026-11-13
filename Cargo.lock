@@ -1197,7 +1197,7 @@ dependencies = [
 [[package]]
 name = "craft-image-codecs"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=85145d8dfd52966eacd045683a86a3737883aeea#85145d8dfd52966eacd045683a86a3737883aeea"
+source = "git+https://github.com/storytold/craft-libs?rev=a47b78256c6acf3d7fdc4bc7cfbc25c373eac522#a47b78256c6acf3d7fdc4bc7cfbc25c373eac522"
 dependencies = [
  "craft-jpeg",
  "exr",
@@ -1219,7 +1219,7 @@ dependencies = [
 [[package]]
 name = "craft-jpeg"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=85145d8dfd52966eacd045683a86a3737883aeea#85145d8dfd52966eacd045683a86a3737883aeea"
+source = "git+https://github.com/storytold/craft-libs?rev=a47b78256c6acf3d7fdc4bc7cfbc25c373eac522#a47b78256c6acf3d7fdc4bc7cfbc25c373eac522"
 dependencies = [
  "thiserror 2.0.21",
 ]
@@ -1315,7 +1315,7 @@ dependencies = [
 [[package]]
 name = "craft-psd"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=85145d8dfd52966eacd045683a86a3737883aeea#85145d8dfd52966eacd045683a86a3737883aeea"
+source = "git+https://github.com/storytold/craft-libs?rev=a47b78256c6acf3d7fdc4bc7cfbc25c373eac522#a47b78256c6acf3d7fdc4bc7cfbc25c373eac522"
 dependencies = [
  "encoding_rs",
  "flate2",
@@ -1833,6 +1833,7 @@ version = "0.20.1"
 dependencies = [
  "chrono",
  "craft-cms",
+ "craft-image-codecs",
  "craft-pdf",
  "craft-prepress",
  "designcraft-color",
@@ -1844,7 +1845,6 @@ dependencies = [
  "flate2",
  "hayro-cmap",
  "hayro-interpret",
- "hayro-syntax",
  "image",
  "krilla-svg",
  "kurbo",

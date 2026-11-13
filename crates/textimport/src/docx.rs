@@ -26,40 +26,43 @@ fn style_names(styles: &StyleSheet) -> HashMap<String, String> {
 }
 
 fn char_attrs(p: &WordCharProps) -> CharAttrs {
-    let mut out = CharAttrs::default();
-    out.font_family = p.font.as_ref().map(|s| capped_name(s));
-    out.font_style = match (p.bold, p.italic) {
-        (Some(true), Some(true)) => Some("Bold Italic".into()),
-        (Some(true), _) => Some("Bold".into()),
-        (_, Some(true)) => Some("Italic".into()),
-        (Some(false), Some(false)) => Some("Regular".into()),
-        _ => None,
-    };
-    out.size = p.size.map(f64::from).and_then(designcraft_doc::attrs::imported_type_size);
-    out.underline = p.underline.map(|u| u != Underline::None);
-    out.strikethrough = p.strike.or(p.double_strike);
-    out.capitalization = p.caps.filter(|&on| on).map(|_| designcraft_doc::Capitalization::AllCaps);
-    out.position = p.vert_align.map(|v| match v {
-        VertAlign::Superscript => designcraft_doc::Position::Superscript,
-        VertAlign::Subscript => designcraft_doc::Position::Subscript,
-        VertAlign::Baseline => designcraft_doc::Position::Normal,
-    });
-    out
+    CharAttrs {
+        font_family: p.font.as_ref().map(|s| capped_name(s)),
+        font_style: match (p.bold, p.italic) {
+            (Some(true), Some(true)) => Some("Bold Italic".into()),
+            (Some(true), _) => Some("Bold".into()),
+            (_, Some(true)) => Some("Italic".into()),
+            (Some(false), Some(false)) => Some("Regular".into()),
+            _ => None,
+        },
+        size: p.size.map(f64::from).and_then(designcraft_doc::attrs::imported_type_size),
+        underline: p.underline.map(|u| u != Underline::None),
+        strikethrough: p.strike.or(p.double_strike),
+        capitalization: p.caps.filter(|&on| on).map(|_| designcraft_doc::Capitalization::AllCaps),
+        position: p.vert_align.map(|v| match v {
+            VertAlign::Superscript => designcraft_doc::Position::Superscript,
+            VertAlign::Subscript => designcraft_doc::Position::Subscript,
+            VertAlign::Baseline => designcraft_doc::Position::Normal,
+        }),
+        ..Default::default()
+    }
 }
 
 fn para_attrs(p: &WordParaProps, doc: &craft_wordmodel::Document) -> ParaAttrs {
-    let mut out = ParaAttrs::default();
-    out.align = p.align.map(|a| match a {
-        WordAlign::Center => designcraft_doc::Align::Center,
-        WordAlign::Right => designcraft_doc::Align::Right,
-        WordAlign::Justify | WordAlign::Distribute => designcraft_doc::Align::LeftJustified,
-        WordAlign::Left => designcraft_doc::Align::Left,
-    });
-    out.left_indent = p.indent_left.map(f64::from).and_then(designcraft_doc::attrs::imported_measure);
-    out.right_indent = p.indent_right.map(f64::from).and_then(designcraft_doc::attrs::imported_measure);
-    out.first_line_indent = p.indent_first.map(f64::from).and_then(designcraft_doc::attrs::imported_measure);
-    out.space_before = p.space_before.map(f64::from).and_then(designcraft_doc::attrs::imported_measure);
-    out.space_after = p.space_after.map(f64::from).and_then(designcraft_doc::attrs::imported_measure);
+    let mut out = ParaAttrs {
+        align: p.align.map(|a| match a {
+            WordAlign::Center => designcraft_doc::Align::Center,
+            WordAlign::Right => designcraft_doc::Align::Right,
+            WordAlign::Justify | WordAlign::Distribute => designcraft_doc::Align::LeftJustified,
+            WordAlign::Left => designcraft_doc::Align::Left,
+        }),
+        left_indent: p.indent_left.map(f64::from).and_then(designcraft_doc::attrs::imported_measure),
+        right_indent: p.indent_right.map(f64::from).and_then(designcraft_doc::attrs::imported_measure),
+        first_line_indent: p.indent_first.map(f64::from).and_then(designcraft_doc::attrs::imported_measure),
+        space_before: p.space_before.map(f64::from).and_then(designcraft_doc::attrs::imported_measure),
+        space_after: p.space_after.map(f64::from).and_then(designcraft_doc::attrs::imported_measure),
+        ..Default::default()
+    };
     if let Some(numbering) = p.numbering.filter(|n| n.num != 0) {
         let definition = doc.numbering.nums.iter().find(|n| n.id == numbering.num).and_then(|n| {
             n.level_overrides.iter().find(|(level, _)| *level == numbering.level).map(|(_, def)| def).or_else(|| {
@@ -165,19 +168,19 @@ fn word_text(c: char) -> char {
     }
 }
 
-fn append_paragraph(
-    doc: &craft_wordmodel::Document,
-    p: &Paragraph,
-    st: &mut Story,
-    names: &HashMap<String, String>,
-    warned_objects: &mut bool,
-    notes_done: &mut HashSet<u32>,
-    note_bytes: &mut usize,
-    warnings: &mut Vec<String>,
-) {
+struct ImportContext<'a> {
+    doc: &'a craft_wordmodel::Document,
+    names: &'a HashMap<String, String>,
+    warned_objects: bool,
+    notes_done: HashSet<u32>,
+    note_bytes: usize,
+    warnings: Vec<String>,
+}
+
+fn append_paragraph(ctx: &mut ImportContext<'_>, p: &Paragraph, st: &mut Story) {
     let para_at = st.len();
-    let style = p.props.style.as_ref().and_then(|id| names.get(id)).cloned().unwrap_or_else(|| BASIC_PARAGRAPH.into());
-    st.format_paras(para_at..para_at, |fmt| *fmt = ParaFormat { style: style.clone(), para: para_attrs(&p.props, doc), ..Default::default() });
+    let style = p.props.style.as_ref().and_then(|id| ctx.names.get(id)).cloned().unwrap_or_else(|| BASIC_PARAGRAPH.into());
+    st.format_paras(para_at..para_at, |fmt| *fmt = ParaFormat { style: style.clone(), para: para_attrs(&p.props, ctx.doc), ..Default::default() });
 
     let mut object_i = 0usize;
     let mut last_format: Option<CharFormat> = None;
@@ -199,7 +202,7 @@ fn append_paragraph(
             })
             .find(|(range, _)| range.contains(&at))
             .map(|(_, r)| r);
-        let fmt = run.map(|r| char_format(&r.props, names)).unwrap_or_default();
+        let fmt = run.map(|r| char_format(&r.props, ctx.names)).unwrap_or_default();
         if last_format.as_ref().is_some_and(|prev| prev != &fmt) {
             flush(st, &mut last_format, &mut chunk);
         }
@@ -209,40 +212,40 @@ fn append_paragraph(
             if let Some(object) = p.objects.get(object_i) {
                 match object {
                     InlineObject::NoteRef { kind: NoteKind::Footnote, id, .. } => {
-                        let mut text = doc.parts.get(id).map(|part| plain_blocks(&part.blocks)).unwrap_or_default();
-                        if notes_done.contains(id) {
+                        let mut text = ctx.doc.parts.get(id).map(|part| plain_blocks(&part.blocks)).unwrap_or_default();
+                        if ctx.notes_done.contains(id) {
                             text.clear();
                             add_warning(
-                                warnings,
+                                &mut ctx.warnings,
                                 format!("Footnote {id} is referenced more than once in the Word file: the text is kept at its first reference."),
                             );
-                        } else if note_bytes.saturating_add(text.len()) > MAX_NOTE_BYTES {
+                        } else if ctx.note_bytes.saturating_add(text.len()) > MAX_NOTE_BYTES {
                             text.clear();
                             add_warning(
-                                warnings,
+                                &mut ctx.warnings,
                                 format!("The Word file's footnotes are longer than {} MB: the rest were imported empty.", MAX_NOTE_BYTES / (1 << 20)),
                             );
                         } else {
-                            notes_done.insert(*id);
-                            *note_bytes = note_bytes.saturating_add(text.len());
+                            ctx.notes_done.insert(*id);
+                            ctx.note_bytes = ctx.note_bytes.saturating_add(text.len());
                         }
                         let _ = st.insert_note(st.len(), &text, ParaFormat::default());
                     }
                     InlineObject::NoteRef { .. } => {
-                        *warned_objects = true;
+                        ctx.warned_objects = true;
                         let _ = st.insert_note(st.len(), "", ParaFormat::default());
                     }
                     other => {
                         let text = other.plain_text();
                         if text.is_empty() {
-                            *warned_objects = true;
+                            ctx.warned_objects = true;
                         } else {
                             st.insert_with(st.len(), text, last_format.clone().unwrap_or_default());
                         }
                     }
                 }
             } else {
-                *warned_objects = true;
+                ctx.warned_objects = true;
             }
             object_i = object_i.saturating_add(1);
         } else {
@@ -252,16 +255,7 @@ fn append_paragraph(
     flush(st, &mut last_format, &mut chunk);
 }
 
-fn append_blocks(
-    doc: &craft_wordmodel::Document,
-    blocks: &[std::sync::Arc<Block>],
-    st: &mut Story,
-    names: &HashMap<String, String>,
-    warned_objects: &mut bool,
-    notes_done: &mut HashSet<u32>,
-    note_bytes: &mut usize,
-    warnings: &mut Vec<String>,
-) {
+fn append_blocks(ctx: &mut ImportContext<'_>, blocks: &[std::sync::Arc<Block>], st: &mut Story) {
     let mut first = st.is_empty();
     for block in blocks {
         match block.as_ref() {
@@ -270,7 +264,7 @@ fn append_blocks(
                     st.insert(st.len(), "\n");
                 }
                 first = false;
-                append_paragraph(doc, p, st, names, warned_objects, notes_done, note_bytes, warnings);
+                append_paragraph(ctx, p, st);
             }
             Block::Table(table) => {
                 let rows: Vec<Vec<String>> = table.rows.iter().map(|r| r.cells.iter().map(|c| plain_blocks(&c.blocks)).collect()).collect();
@@ -289,14 +283,11 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
     let doc = craft_docx::read(bytes).map_err(|e| ImportError::Corrupt(e.to_string()))?;
     let (mut para_styles, mut char_styles, names) = style_records(&doc.styles, &doc);
     let mut story = Story::new(StoryId(0));
-    let mut warned_objects = false;
-    let mut notes_done = HashSet::new();
-    let mut note_bytes = 0usize;
-    let mut warnings = Vec::new();
-    append_blocks(&doc, &doc.body, &mut story, &names, &mut warned_objects, &mut notes_done, &mut note_bytes, &mut warnings);
+    let mut ctx = ImportContext { doc: &doc, names: &names, warned_objects: false, notes_done: HashSet::new(), note_bytes: 0, warnings: Vec::new() };
+    append_blocks(&mut ctx, &doc.body, &mut story);
     story.end_paragraphs_at_breaks();
-    if warned_objects {
-        add_warning(&mut warnings, "Images, drawings and endnotes in the Word file were not imported (place them separately).".into());
+    if ctx.warned_objects {
+        add_warning(&mut ctx.warnings, "Images, drawings and endnotes in the Word file were not imported (place them separately).".into());
     }
     let used_p: HashSet<String> = story.paras.iter().map(|p| p.style.clone()).collect();
     let used_c: HashSet<String> = story.runs().map(|(_, f)| f.style.clone()).collect();
@@ -314,7 +305,7 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
     };
     keep(&mut para_styles, &used_p);
     keep(&mut char_styles, &used_c);
-    Ok(Imported { story, para_styles, char_styles, warnings })
+    Ok(Imported { story, para_styles, char_styles, warnings: ctx.warnings })
 }
 
 fn add_warning(warnings: &mut Vec<String>, message: String) {

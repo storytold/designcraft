@@ -77,7 +77,7 @@ pub(crate) struct Exporter<'a> {
     #[cfg(test)]
     image_conversions: usize,
     /// Placed PDFs (embedded as vector pages) and their page counts.
-    pdfs: HashMap<(AssetId, Vec<hayro_syntax::object::ObjectIdentifier>), Option<(krilla::pdf::PdfDocument, usize)>>,
+    pdfs: HashMap<(AssetId, Vec<craft_pdf::syntax::object::ObjectIdentifier>), Option<(krilla::pdf::PdfDocument, usize)>>,
     variants: HashMap<(AssetId, Option<Vec<String>>), crate::optional_content::Variant>,
     has_optional_content: bool,
     #[cfg(test)]
@@ -192,16 +192,20 @@ impl GreyImage {
         if !is_grey(data) {
             return None;
         }
-        let img = image::load_from_memory(data).ok()?.to_luma_alpha8();
-        let size = img.dimensions();
+        let img = craft_image_codecs::decode(data).ok()?;
+        if !img.layout().is_gray() {
+            return None;
+        }
+        let img = img.convert(craft_image_codecs::ChannelLayout::GrayA, craft_image_codecs::SampleType::U8);
+        let size = (img.width(), img.height());
         let pixels = usize::try_from(size.0).ok()?.checked_mul(usize::try_from(size.1).ok()?)?;
         if pixels == 0 {
             return None;
         }
         let (mut grey, mut alpha) = (Vec::with_capacity(pixels), Vec::with_capacity(pixels));
-        for p in img.pixels() {
-            grey.push(p.0[0]);
-            alpha.push(p.0[1]);
+        for p in img.data().chunks_exact(2) {
+            grey.push(p[0]);
+            alpha.push(p[1]);
         }
         let alpha = alpha.iter().any(|a| *a < 255).then(|| Arc::new(alpha));
         let icc = embedded_icc(data).filter(|p| is_grey_icc(p)).map(Arc::new);
@@ -296,7 +300,7 @@ mod unwind_tests {
             FAIL_NEXT_SURFACE.set(true);
             assert!(matches!(export(), Err(PdfError::Write(message)) if message.contains("synthetic export drawing failure")), "{entry}");
             let fresh = export().unwrap();
-            assert!(!hayro_syntax::Pdf::new(Arc::new(fresh)).unwrap().pages().is_empty(), "fresh {entry} export must still work");
+            assert!(!craft_pdf::syntax::Pdf::new(Arc::new(fresh)).unwrap().pages().is_empty(), "fresh {entry} export must still work");
         }
         println!("all three export entry points recovered");
     }

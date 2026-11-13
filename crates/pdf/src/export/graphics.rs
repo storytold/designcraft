@@ -12,7 +12,7 @@ impl Exporter<'_> {
     /// file is left out and the export fails naming it ([`Exporter::check_placed_versions`]).
     /// Returns the document with its page count.
     fn placed_pdf(&mut self, asset: &designcraft_doc::Asset, data: Arc<Vec<u8>>) -> Option<(krilla::pdf::PdfDocument, usize)> {
-        use hayro_syntax::PdfVersion as V;
+        use craft_pdf::syntax::PdfVersion as V;
         let Ok(pdf) = krilla::pdf::Pdf::new(data.clone()) else {
             self.warn(format!("{}: can't read the placed PDF", asset.name));
             return None;
@@ -84,7 +84,7 @@ impl Exporter<'_> {
             self.images.insert(id, Some(converted.image.clone()));
             return Some(converted.image);
         }
-        let fmt = image::guess_format(&data).ok();
+        let fmt = craft_image_codecs::detect(&data);
         #[cfg(test)]
         {
             self.image_conversions += 1;
@@ -92,10 +92,10 @@ impl Exporter<'_> {
         let mut warning = None;
         let mode = RasterMode::for_standard(self.opts.standard);
         let img = match fmt {
-            Some(image::ImageFormat::Jpeg) => jpeg(data.clone().into(), || embedded_icc(&data), mode),
+            Some(craft_image_codecs::Format::Jpeg) => jpeg(data.clone().into(), || embedded_icc(&data), mode),
             // A CMYK TIFF keeps its ink values (`image` decodes it to RGB, and 100% K would print
             // as four-colour black). PDF/A exports are RGB only.
-            Some(image::ImageFormat::Tiff) if !self.rgb_only && designcraft_images::is_cmyk_tiff(&data) => match cmyk_tiff(&data, mode) {
+            Some(craft_image_codecs::Format::Tiff) if !self.rgb_only && designcraft_images::is_cmyk_tiff(&data) => match cmyk_tiff(&data, mode) {
                 Some(img) => Some(img),
                 None => {
                     warning = Some(CMYK_FALLBACK_WARNING);

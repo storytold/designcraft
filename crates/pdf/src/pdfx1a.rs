@@ -5,12 +5,12 @@
 
 use std::collections::{HashMap, HashSet};
 
+use craft_pdf::syntax::content::UntypedIter;
+use craft_pdf::syntax::object::{Array, Dict, Name, Object, ObjectIdentifier, Stream};
+use craft_pdf::syntax::page::Resources;
 use craft_pdf::write::backend::configure::PdfVersion;
 use craft_prepress::flatten::pdf::ReadOptions;
 use craft_prepress::flatten::{FlattenDocumentOptions, FlattenOptions, FlattenTotals, flatten_document};
-use hayro_syntax::content::UntypedIter;
-use hayro_syntax::object::{Array, Dict, Name, Object, ObjectIdentifier, Stream};
-use hayro_syntax::page::Resources;
 
 use crate::PdfError;
 use crate::pdfx::MAX_DEPTH;
@@ -116,7 +116,7 @@ pub fn check_pdfx1a(pdf: &[u8]) -> Vec<String> {
 fn checks(pdf: &[u8]) -> (Vec<String>, Vec<String>) {
     let mut issues = Vec::new();
     let text = String::from_utf8_lossy(pdf);
-    let file = hayro_syntax::Pdf::new(pdf.to_vec()).ok();
+    let file = craft_pdf::syntax::Pdf::new(pdf.to_vec()).ok();
     if !pdf.starts_with(b"%PDF-1.") || pdf.get(7).is_none_or(|v| *v > b'4') {
         issues.push("the PDF version must be 1.4 or lower".into());
     }
@@ -151,7 +151,7 @@ fn checks(pdf: &[u8]) -> (Vec<String>, Vec<String>) {
 
 /// Transparency and color spaces, then the output intent and fonts, walked through every page's
 /// content and what it uses.
-fn content(file: Option<&hayro_syntax::Pdf>) -> (Vec<String>, Vec<String>) {
+fn content(file: Option<&craft_pdf::syntax::Pdf>) -> (Vec<String>, Vec<String>) {
     let Some(file) = file else {
         return (vec!["the file couldn't be read to check its transparency and color spaces".into()], Vec::new());
     };
@@ -215,13 +215,13 @@ impl Intent {
 }
 
 /// The catalog's `GTS_PDFX` output intents.
-fn pdfx_intents(file: &hayro_syntax::Pdf) -> Vec<Intent> {
+fn pdfx_intents(file: &craft_pdf::syntax::Pdf) -> Vec<Intent> {
     let number = |n: i32| usize::try_from(n).ok();
     crate::pdfx::pdfx_intents(file)
         .into_iter()
         .map(|oi| {
             let text = |key: &[u8]| {
-                oi.get::<hayro_syntax::object::String<'_>>(key)
+                oi.get::<craft_pdf::syntax::object::String<'_>>(key)
                     .map(|s| String::from_utf8_lossy(s.as_bytes()).trim().to_string())
                     .filter(|s| !s.is_empty())
             };
@@ -243,7 +243,7 @@ fn pdfx_intents(file: &hayro_syntax::Pdf) -> Vec<Intent> {
 
 /// What PDF/X-1a finds wrong with the file's output intent: a CMYK profile, ICC v2 (PDF 1.4
 /// allows no later version), or none for a registered printing condition.
-fn intent_issues(file: &hayro_syntax::Pdf) -> Vec<String> {
+fn intent_issues(file: &craft_pdf::syntax::Pdf) -> Vec<String> {
     let Some(oi) = pdfx_intents(file).into_iter().next() else { return Vec::new() };
     let mut issues = Vec::new();
     if oi.has_profile {
@@ -267,7 +267,7 @@ fn intent_issues(file: &hayro_syntax::Pdf) -> Vec<String> {
 pub(crate) fn finish(pdf: &[u8]) -> Result<Vec<u8>, String> {
     let unreadable = || "the flattened file couldn't be read to add the PDF/X-1a identification".to_string();
     let layout = Layout::read(pdf).ok_or_else(unreadable)?;
-    let file = hayro_syntax::Pdf::new(pdf.to_vec()).map_err(|_| unreadable())?;
+    let file = craft_pdf::syntax::Pdf::new(pdf.to_vec()).map_err(|_| unreadable())?;
     let mut bodies: HashMap<usize, Vec<u8>> = HashMap::new();
     let info = int_after(&layout.trailer, "/Info").ok_or_else(unreadable)?;
     let body = layout.body(pdf, info).ok_or_else(unreadable)?;
