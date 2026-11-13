@@ -120,8 +120,8 @@ impl<'r> Importer<'r> {
 
     /// The format of the text in a `CharacterStyleRange`: its style, and its local attributes over
     /// the enclosing paragraph range's, inside a tracked change if `outer` (the enclosing format) is.
-    fn range_format(&mut self, c: &El, pchars: &CharAttrs, outer: &CharFormat) -> CharFormat {
-        let style = c.get("AppliedCharacterStyle").map(|r| self.char_style_ref(r)).unwrap_or_else(|| st::NO_CHAR_STYLE.into());
+    fn range_format(&mut self, style_ref: Option<&str>, c: &El, pchars: &CharAttrs, outer: &CharFormat) -> CharFormat {
+        let style = style_ref.map(|r| self.char_style_ref(r)).unwrap_or_else(|| st::NO_CHAR_STYLE.into());
         let mut over = pchars.clone();
         over.merge(&self.char_attrs(c));
         over.change = over.change.or(outer.over.change);
@@ -166,7 +166,7 @@ impl<'r> Importer<'r> {
                     self.walk_story_nodes(&range.children, b, &npf, &chars, &pcf, None);
                 }
                 craft_idml::model::TextNode::Character(range) => {
-                    let ncf = self.range_format(&c, pchars, cf);
+                    let ncf = self.range_format(range.character_style(), &c, pchars, cf);
                     let bt = range.paragraph_break_type();
                     b.last = ncf.clone();
                     self.walk_story_nodes(&range.children, b, pf, pchars, &ncf, bt);
@@ -270,8 +270,9 @@ impl<'r> Importer<'r> {
                             let f = saved.character_range.map_or_else(
                                 || cf.clone(),
                                 |range| {
+                                    let style = range.character_style().map(str::to_owned);
                                     let el = crate::xml::from_craft(craft_idml::model::TextNode::Character(range).to_el());
-                                    self.range_format(&el, pchars, cf)
+                                    self.range_format(style.as_deref(), &el, pchars, cf)
                                 },
                             );
                             b.push(&designcraft_doc::XREF_MARK.to_string(), &f);
