@@ -1,4 +1,4 @@
-use super::{Affine, Color, El, escape_id, num};
+use super::{Affine, Color, El, num};
 
 pub(crate) fn uid(n: u64) -> String {
     format!("u{n:x}")
@@ -44,15 +44,6 @@ pub(super) fn anchor_self(id: u64) -> String {
 
 pub(super) fn xref_format_self(i: usize) -> String {
     format!("CrossReferenceFormat/f{i}")
-}
-
-pub(super) fn topic_self(path: &[String]) -> String {
-    let mut s = String::from("ix");
-    for n in path {
-        s.push_str("Topicn");
-        s.push_str(&escape_id(n));
-    }
-    s
 }
 
 /// The IDML `ChangeType` of a tracked change.
