@@ -969,14 +969,10 @@ mod height_tests {
         cell
     }
 
-    // Check the reference's exported text and the generated label in the note body against
-    // the placed note label, so a metadata-only numbering change cannot pass.
+    // Check the generated note-body label as well as the placed note metadata.
     fn note_labels(cs: &ComposedStory) -> Vec<String> {
-        let markers: Vec<String> =
-            cs.frames.iter().flat_map(|f| &f.lines).flat_map(|l| &l.glyphs).filter_map(|g| g.generated_text.as_deref().map(str::to_owned)).collect();
         let notes: Vec<_> = cs.frames.iter().flat_map(|f| &f.notes).collect();
         let labels: Vec<_> = notes.iter().map(|n| n.label.clone()).collect();
-        assert_eq!(markers, labels, "reference labels must match note labels");
         for note in notes {
             let generated: String =
                 note.text.frames.iter().flat_map(|f| &f.lines).flat_map(|l| &l.glyphs).filter_map(|g| g.generated_text.as_deref()).collect();
@@ -985,11 +981,16 @@ mod height_tests {
         labels
     }
 
-    fn story_with_note_table(direction: designcraft_doc::TextDirection) -> ComposedStory {
+    fn reference_labels(cs: &ComposedStory) -> Vec<String> {
+        assert!(cs.frames.iter().all(|f| f.notes.is_empty()), "notes must leave cell frames");
+        cs.frames.iter().flat_map(|f| &f.lines).flat_map(|l| &l.glyphs).filter_map(|g| g.generated_text.as_deref().map(str::to_owned)).collect()
+    }
+
+    fn story_with_note_table(direction: designcraft_doc::TextDirection, with_notes: bool) -> ComposedStory {
         let mut table = Table::new(77, 2, 2, 0, 0, 180.0);
         table.options.direction = direction;
         for i in [0, 1, 3] {
-            table.cells[i] = note_cell();
+            table.cells[i] = if with_notes { note_cell() } else { text_cell("Cell", 8.5) };
         }
         let mut doc = Document::new(&NewDocument::default());
         let (_, sid) = doc
@@ -1004,23 +1005,50 @@ mod height_tests {
 
     #[test]
     fn cell_footnotes_continue_the_host_story_sequence() {
-        let cs = story_with_note_table(designcraft_doc::TextDirection::LeftToRight);
+        let cs = story_with_note_table(designcraft_doc::TextDirection::LeftToRight, true);
         assert!(!cs.is_overset());
-        assert_eq!(note_labels(&cs), ["1", "5"]);
+        assert_eq!(note_labels(&cs), ["1", "2", "3", "4", "5"]);
         let table = &cs.frames[0].tables[0];
         for (r, c, label) in [(0, 0, "2"), (0, 1, "3"), (1, 1, "4")] {
-            assert_eq!(note_labels(&table.cell(r, c).unwrap().text), [label]);
+            assert_eq!(reference_labels(&table.cell(r, c).unwrap().text), [label]);
+        }
+    }
+
+    #[test]
+    fn body_and_2x2_cell_notes_share_numbered_column_foot_without_growing_rows() {
+        let cs = story_with_note_table(designcraft_doc::TextDirection::LeftToRight, true);
+        let plain = story_with_note_table(designcraft_doc::TextDirection::LeftToRight, false);
+        assert!(!cs.is_overset());
+        assert_eq!(cs.frames.len(), 1);
+        let frame = &cs.frames[0];
+        let table = &frame.tables[0];
+        assert_eq!(note_labels(&cs), ["1", "2", "3", "4", "5"]);
+        let sources: Vec<_> = frame.notes.iter().map(|n| n.source.as_ref()).collect();
+        assert_eq!(sources, ["Before note.", "Cell note.", "Cell note.", "Cell note.", "After note."]);
+        for note in &frame.notes {
+            assert!(note.rect.y0 >= table.rect.y1);
+            assert!(note.rect.x0 >= 0.0 && note.rect.x1 <= 200.0);
+            assert!(note.rect.y1 <= 700.0);
+        }
+        assert!(frame.notes.windows(2).all(|pair| pair[0].rect.y1 <= pair[1].rect.y0));
+        for cell in &table.cells {
+            assert!(cell.text.frames.iter().all(|f| f.notes.is_empty()));
+            let plain_cell = plain.frames[0].tables[0].cell(cell.row, cell.col).unwrap();
+            assert!((cell.rect.height() - plain_cell.rect.height()).abs() < 1e-6);
+        }
+        for (r, c, label) in [(0, 0, "2"), (0, 1, "3"), (1, 1, "4")] {
+            assert_eq!(reference_labels(&table.cell(r, c).unwrap().text), [label]);
         }
     }
 
     #[test]
     fn rtl_cell_footnotes_follow_logical_columns() {
-        let cs = story_with_note_table(designcraft_doc::TextDirection::RightToLeft);
-        assert_eq!(note_labels(&cs), ["1", "5"]);
+        let cs = story_with_note_table(designcraft_doc::TextDirection::RightToLeft, true);
+        assert_eq!(note_labels(&cs), ["1", "2", "3", "4", "5"]);
         let table = &cs.frames[0].tables[0];
         assert!(table.cell(0, 0).unwrap().rect.x0 > table.cell(0, 1).unwrap().rect.x0);
         for (r, c, label) in [(0, 0, "2"), (0, 1, "3"), (1, 1, "4")] {
-            assert_eq!(note_labels(&table.cell(r, c).unwrap().text), [label]);
+            assert_eq!(reference_labels(&table.cell(r, c).unwrap().text), [label]);
         }
     }
 
@@ -1035,8 +1063,10 @@ mod height_tests {
         let table = &cs.frames[0].tables[0];
         let first = &table.cell(0, 0).unwrap().text;
         let nested = &first.frames[0].tables[0].cell(0, 0).unwrap().text;
-        assert_eq!(note_labels(nested), ["1"]);
-        assert_eq!(note_labels(&table.cell(0, 1).unwrap().text), ["2"]);
+        assert_eq!(note_labels(&cs), ["1", "2"]);
+        assert!(first.frames.iter().all(|f| f.notes.is_empty()));
+        assert_eq!(reference_labels(nested), ["1"]);
+        assert_eq!(reference_labels(&table.cell(0, 1).unwrap().text), ["2"]);
     }
 
     #[test]
@@ -1052,7 +1082,8 @@ mod height_tests {
         doc.story_mut(later).unwrap().insert_table(0, single_table(note_cell()));
         let cs = crate::compose_story(&doc, later, &ComposeOptions::default());
         assert!(!cs.is_overset());
-        assert_eq!(note_labels(&cs.frames[0].tables[0].cell(0, 0).unwrap().text), ["2"]);
+        assert_eq!(note_labels(&cs), ["2"]);
+        assert_eq!(reference_labels(&cs.frames[0].tables[0].cell(0, 0).unwrap().text), ["2"]);
     }
 
     #[test]
@@ -1069,12 +1100,14 @@ mod height_tests {
         let cache = crate::Cache::new();
         let before = cache.get(&doc, later, None);
         assert!(!before.is_overset());
-        assert_eq!(note_labels(&before.frames[0].tables[0].cell(0, 0).unwrap().text), ["2"]);
+        assert_eq!(note_labels(&before), ["2"]);
+        assert_eq!(reference_labels(&before.frames[0].tables[0].cell(0, 0).unwrap().text), ["2"]);
         let story = doc.story_mut(earlier).unwrap();
         story.insert_note(story.len(), "Another earlier note.", ParaFormat::default()).unwrap();
         let after = cache.get(&doc, later, None);
         assert!(!after.is_overset());
-        assert_eq!(note_labels(&after.frames[0].tables[0].cell(0, 0).unwrap().text), ["3"]);
+        assert_eq!(note_labels(&after), ["3"]);
+        assert_eq!(reference_labels(&after.frames[0].tables[0].cell(0, 0).unwrap().text), ["3"]);
     }
 
     #[test]
@@ -1088,7 +1121,8 @@ mod height_tests {
         // A continuation from an earlier page must reset when this table starts on page 0.
         let opts = ComposeOptions { notes_start: Some(NoteNumber { num: 42, key: Some(99) }), ..Default::default() };
         let cs = crate::compose_story(&doc, sid, &opts);
-        assert_eq!(note_labels(&cs.frames[0].tables[0].cell(0, 0).unwrap().text), ["7"]);
+        assert_eq!(note_labels(&cs), ["7"]);
+        assert_eq!(reference_labels(&cs.frames[0].tables[0].cell(0, 0).unwrap().text), ["7"]);
     }
 
     fn single_table(cell: Cell) -> Table {
