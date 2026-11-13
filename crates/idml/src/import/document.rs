@@ -197,28 +197,27 @@ impl<'r> Importer<'r> {
     }
 
     pub(super) fn xref_format(&mut self, e: &El) {
-        let name = e.get("Name").unwrap_or("Format").to_string();
+        let values = craft_idml::model::CrossReferenceFormatValues::from_el(&crate::xml::to_craft(e));
+        let name = values.name;
         let mut def = String::new();
-        for b in e.find_all("BuildingBlock") {
-            let text = |k: &str| b.get(k).filter(|v| *v != "$ID/").unwrap_or("").to_string();
-            match b.get("BlockType").unwrap_or("") {
-                "CustomStringBuildingBlock" => def.push_str(&text("CustomText")),
-                "FullParagraphBuildingBlock" => def.push_str("<fullPara />"),
-                "ParagraphTextBuildingBlock" => def.push_str("<paraText />"),
-                "ParagraphNumberBuildingBlock" => def.push_str("<paraNum />"),
-                "PageNumberBuildingBlock" => def.push_str("<pageNum />"),
-                "BookmarkNameBuildingBlock" => def.push_str("<txtAnchrName />"),
-                "ChapterNumberBuildingBlock" => def.push_str("<chapNum />"),
-                "FileNameBuildingBlock" => def.push_str("<fileName />"),
-                "PartialParagraphBuildingBlock" => def.push_str(&format!(
+        for block in values.blocks {
+            use craft_idml::model::CrossReferenceBuildingBlock as Block;
+            match block {
+                Block::CustomText(text) => def.push_str(&text),
+                Block::FullParagraph => def.push_str("<fullPara />"),
+                Block::ParagraphText => def.push_str("<paraText />"),
+                Block::ParagraphNumber => def.push_str("<paraNum />"),
+                Block::PageNumber => def.push_str("<pageNum />"),
+                Block::BookmarkName => def.push_str("<txtAnchrName />"),
+                Block::ChapterNumber => def.push_str("<chapNum />"),
+                Block::FileName => def.push_str("<fileName />"),
+                Block::PartialParagraph { delimiter, include_delimiter } => def.push_str(&format!(
                     "<partialPara delim=\"{}\" includeDelim=\"{}\" />",
-                    text("AppliedDelimiter"),
-                    b.get("IncludeDelimiter") == Some("true")
+                    delimiter, include_delimiter
                 )),
-                _ => {}
             }
         }
-        if let Some(me) = e.get("Self") {
+        if let Some(me) = values.self_id {
             self.xref_format_names.insert(me.to_string(), name.clone());
         }
         match self.xref_formats.iter_mut().find(|f| f.name == name) {
@@ -230,10 +229,11 @@ impl<'r> Importer<'r> {
     /// Preferences › `EPubExportPreference`: Split Document (after styles: it can name one). An
     /// empty style name splits on the styles' export tags; a style the file lacks splits nothing.
     pub(super) fn epub_split(&mut self, e: &El) {
-        if e.boolean("BreakDocument") != Some(true) {
+        let values = craft_idml::model::EpubSplitValues::from_el(&crate::xml::to_craft(e));
+        if !values.break_document {
             return;
         }
-        let name = e.get("ParagraphStyleName").unwrap_or("$ID/NormalParagraphStyle");
+        let name = values.paragraph_style.as_deref().unwrap_or("$ID/NormalParagraphStyle");
         self.settings.epub_split = if name.trim().is_empty() {
             designcraft_doc::EpubSplit::ExportTags
         } else {
