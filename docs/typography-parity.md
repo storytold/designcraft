@@ -35,8 +35,8 @@ Fidelity: **unmeasured** unless stated.
 | Paragraph Composer | Adobe's multi-line composer | Knuth–Plass total fit, fitness classes, hyphen penalties | ~ | same family of algorithm, Adobe's weights unknown; breaks will differ on some paragraphs |
 | Single-line Composer | greedy | greedy with the same ranges | ✓ | |
 | World-Ready composers | Paragraph / Single-line World-Ready | RTL, Arabic and bidi in the main composer | ~ | Indic scripts (Devanagari etc.) shape through harfrust but are untested |
-| Justification | word/letter spacing, glyph scaling min/desired/max, single-word, last line | all of these | ✓ | a justified line with a tab justifies after the tab (#284); set per paragraph in Type › Justification… and the Paragraph panel menu (#531) |
-| Hyphenation | per-language dictionaries (~40), zone, limits, capitalized, last word, across columns | Liang patterns: English (trained from the public-domain Moby list), Spanish (Bezos), Portuguese (hyph-pt), Norwegian (hyph-no), Greek (hyph-el-monoton) and German 2006 (hyph-de-1996); zone, limits, exceptions in the user dictionary; Hyphenate Across Column off keeps automatic hyphens off the last line of a column or frame; discretionary U+00AD breaks with both composers regardless of automatic hyphenation and replaces pattern points within its word (#1955) | ~ | other languages don't hyphenate (#87 reported "doesn't work") |
+| Justification | word/letter spacing, glyph scaling min/desired/max, single-word, last line | all of these | ✓ | a justified line with a tab justifies after the tab (#284); set per paragraph in Type › Justification… and the Paragraph panel menu (#531); Auto Leading (0% to 500%) and Single Word Justification are set there and in Paragraph Style Options › Justification |
+| Hyphenation | per-language dictionaries (~40), zone, limits, capitalized, last word, across columns | Liang patterns: English (trained from the public-domain Moby list), Spanish (Bezos), Portuguese (hyph-pt), Norwegian (hyph-no), Danish (hyph-da), Greek (hyph-el-monoton), German 2006 (hyph-de-1996), French (hyph-fr), Italian (hyph-it) and Dutch (Tutelaers); zone, limits, exceptions in the user dictionary; Hyphenate Across Column off keeps automatic hyphens off the last line of a column or frame; discretionary U+00AD breaks with both composers regardless of automatic hyphenation and replaces pattern points within its word (#1955) | ~ | other languages don't hyphenate (#87 reported "doesn't work") |
 | Spelling | per-language dictionaries | English (Moby) + document/user dictionary | ~ | |
 | Kerning | Metrics, Optical, manual, none | Metrics, Optical (outline-based: pairs pulled towards the font's stem gap, `crates/compose/src/optical.rs`), manual, none | ~ | Optical is an approximation of Adobe's algorithm (#181), not a match: imported display text can still break differently |
 | Tracking, scale, skew, baseline shift | ✓ | ✓ | ✓ | |
@@ -47,7 +47,7 @@ Fidelity: **unmeasured** unless stated.
 | First baseline | ascent, cap height, x-height, leading, fixed, min | ✓ | ✓ | |
 | Frame fit / overset | baseline of the last line must fit | descenders must fit | ~ | **differs** (#180): frames go overset where InDesign fits |
 | Baseline grid | document grid relative to the top of the page or each page's top margin; frame grids relative to the top of the page, top margin, top of frame or top inset | ✓ | ✓ | |
-| Vertical justification | top, centre, bottom, justify, paragraph spacing limit | ✓ | ✓ | |
+| Vertical justification | top, centre, bottom, justify, paragraph spacing limit | ✓ | ✓ | with Center and Bottom, lines aligned to the baseline grid move by whole grid steps; with Justify only the first and last lines stay on the grid |
 | Text in shaped frames | lines follow oval, polygon and freeform frame outlines, one inset from the outline | ✓ | ~ | concave shapes set one slot per line (the widest); vertical justification and paragraph shading use the frame's rectangle (#646) |
 | Columns, span / split columns | ✓ | ✓ | ✓ | split columns within a column (#295); text after a span flows below it (#276) |
 | Column rules | ✓ | ✓ (screen, PDF, IDML) | ~ | no stroke types or overprint (#274) |
@@ -59,7 +59,7 @@ Fidelity: **unmeasured** unless stated.
 | Paragraph rules, borders, shading | ✓ | ✓ | ✓ | |
 | Balance ragged lines | ✓ | ✓ | ✓ | |
 | Optical margin alignment | per story with a size, Ignore Optical Margin per paragraph and style | ✓ (hang table of our own, scaled by the story's size; Story panel; IDML `StoryPreference`, `IgnoreEdgeAlignment`) | ~ | hang amounts are ours, InDesign's unknown (#947) |
-| Text wrap | bounding box, shape, jump object/column, wrap sides (text on both sides of an object), contour options, on page items and anchored objects | ✓ | ~ | Detect Edges, Alpha Channel and Photoshop Path contours follow the frame's path (composition doesn't read the image) |
+| Text wrap | bounding box, shape, jump object/column, wrap sides (text on both sides of an object), contour options, on page items and anchored objects | ✓ | ~ | Alpha Channel contours follow the outline of the image's visible pixels (an image over 40 megapixels, or one that can't be decoded, follows the frame's path); Detect Edges and Photoshop Path contours follow the frame's path |
 | Anchored objects | inline, above line, custom | ✓ | ~ | anchored objects in table cells not drawn (#163) |
 | Footnotes, endnotes | ✓ | ✓ | ~ | footnotes don't split across columns yet |
 | Type on a path | ✓ | ✓ | ✓ | |

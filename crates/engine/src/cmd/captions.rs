@@ -131,6 +131,7 @@ pub(crate) fn refresh_live(d: &mut Document) -> bool {
             let len = st.len();
             st.replace(0..len, &text);
         }
+        d.prune_story_text_ranges(sid);
     }
     changed
 }

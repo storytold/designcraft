@@ -164,9 +164,23 @@ fn item_at(app: &DesignApp, p: Point, zoom: f64) -> Option<(designcraft_doc::Ite
     let tol = 4.0 / zoom.max(1e-6);
     let id = match sr {
         SpreadRef::Doc(si) => st.doc.hit_item(si, sp, tol)?,
-        _ => st.doc.spread(sr)?.items.iter().rev().find(|it| !it.locked && designcraft_doc::edit_hit(it, sp, tol))?.id,
+        SpreadRef::Parent(_) => st.doc.hit_parent_item(sr, sp, tol)?,
     };
     Some((id, sp))
+}
+
+/// The frame under a pointer over the canvas that takes a graphic (empty, holding a graphic, or
+/// holding only graphics pasted into it): a graphic dropped there fills it instead of becoming a
+/// new object. `None` when the pointer isn't over the canvas or over such a frame, for a locked
+/// frame, which a drop never replaces, and for a line or any path that encloses no area, which
+/// would become a zero-height image frame (#2290), as the place cursor skips them.
+pub fn drop_frame(app: &DesignApp, screen: Option<Pos2>) -> Option<designcraft_doc::ItemId> {
+    let rect = app.canvas_rect?;
+    let pos = screen.filter(|p| rect.contains(*p))?;
+    let v = app.view()?;
+    let (id, _) = item_at(app, Xf::new(rect, v).to_canvas(pos), v.zoom)?;
+    let it = app.session.active()?.doc.item(id)?;
+    (!it.locked && it.path.encloses_area() && it.takes_graphic()).then_some(id)
 }
 
 /// Wheel, pinch and Alt/Ctrl/Cmd + wheel over the canvas: zoom at the pointer, else scroll.
@@ -337,9 +351,12 @@ pub(super) fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::
         events.push(PointerEvent { kind: PointerKind::Down, pos: pos(o), mods: m, clicks: n });
         down = true;
     }
+    // The place cursor draws a frame from 3 points (its own threshold), before egui starts a
+    // drag (at `max_click_dist`): follow the pointer from there, so a release between the two
+    // places the frame that was previewed.
+    let place_drag = app.session.tool_id() == "placeGun" && origin.zip(latest).is_some_and(|(o, p)| (o - p).length() >= 3.0);
     if down
-        && resp.dragged()
-        && resp.drag_delta() != egui::Vec2::ZERO
+        && ((resp.dragged() && resp.drag_delta() != egui::Vec2::ZERO) || place_drag)
         && let Some(p) = latest
     {
         events.push(PointerEvent { kind: PointerKind::Drag, pos: pos(p), mods: m, clicks: 1 });
@@ -418,13 +435,23 @@ pub(super) fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::
                 let _ = app.run("text.insert", json!({"text": t}));
             }
             // The IME owns the keyboard until it commits: no typing, clipboard or editing keys.
-            egui::Event::Text(_) | egui::Event::Paste(_) | egui::Event::Copy | egui::Event::Cut | egui::Event::Key { .. } if composing => {}
+            egui::Event::Text(_)
+            | egui::Event::Paste(_)
+            | egui::Event::PasteImage(_)
+            | egui::Event::Copy
+            | egui::Event::Cut
+            | egui::Event::Key { .. }
+                if composing => {}
             egui::Event::Paste(t) if wants_text => {
                 // Formatted when the system clipboard still holds what was copied here;
                 // Shift (⇧⌘V) pastes without formatting.
                 let plain = ui.input(|i| i.modifiers.shift);
                 let id = if plain { "edit.pasteWithoutFormatting" } else { "edit.paste" };
                 let _ = app.run(id, json!({"text": t}));
+            }
+            // A clipboard image with no text (a screenshot, an image copied in a browser).
+            egui::Event::PasteImage(image) => {
+                let _ = app.paste_clipboard_image(crate::ClipboardImage::from_color_image(&image));
             }
             egui::Event::Copy | egui::Event::Cut if wants_text => {
                 // `run` puts the copied text on the system clipboard.
@@ -508,6 +535,10 @@ pub(crate) fn forwarded_keys(app: &mut DesignApp, events: Vec<egui::Event>, modi
             (egui::Event::Copy, _) if !app.native_menu => ("edit.copy", serde_json::Value::Null),
             (egui::Event::Cut, _) if !app.native_menu => ("edit.cut", serde_json::Value::Null),
             (egui::Event::Paste(t), _) if !app.native_menu => ("edit.paste", json!({"text": t})),
+            (egui::Event::PasteImage(image), _) => {
+                let _ = app.paste_clipboard_image(crate::ClipboardImage::from_color_image(&image));
+                continue;
+            }
             (egui::Event::Key { key, pressed: true, modifiers, .. }, _) => {
                 tool_key(app, key, modifiers, vi);
                 continue;

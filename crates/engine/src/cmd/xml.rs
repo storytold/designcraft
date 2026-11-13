@@ -60,10 +60,13 @@ fn plain(t: &str) -> String {
 }
 
 /// A paragraph's text with inline-tagged runs as elements.
-fn para_xml(st: &designcraft_doc::Story, r: std::ops::Range<usize>) -> String {
+/// `runs` are the story's runs in order (collected once per story): only those reaching the
+/// paragraph are visited, found by binary search.
+fn para_xml(st: &designcraft_doc::Story, runs: &[(std::ops::Range<usize>, &designcraft_doc::CharFormat)], r: std::ops::Range<usize>) -> String {
     let mut out = String::new();
     let mut open: Option<String> = None;
-    for (rr, f) in st.runs() {
+    let first = runs.partition_point(|(rr, _)| rr.end <= r.start);
+    for (rr, f) in runs.iter().skip(first).take_while(|(rr, _)| rr.start < r.end) {
         let (a, b) = (rr.start.max(r.start), rr.end.min(r.end));
         if a >= b {
             continue;
@@ -97,8 +100,10 @@ pub fn export_xml(d: &Document) -> String {
                 let Some(st) = d.story(tf.story) else { continue };
                 let mapped = |style: &str| d.xml.style_map.iter().find(|(s, _)| s == style).map(|(_, t)| t.clone());
                 // Paragraph text with inline tags already escaped.
-                let paras: Vec<(Option<String>, String)> =
-                    st.para_ranges().into_iter().enumerate().map(|(i, r)| (mapped(&st.paras[i].style), para_xml(st, r))).collect();
+                let paras: Vec<(Option<String>, String)> = {
+                    let runs: Vec<_> = st.runs().collect();
+                    st.para_ranges().into_iter().enumerate().map(|(i, r)| (mapped(&st.paras[i].style), para_xml(st, &runs, r))).collect()
+                };
                 if paras.iter().any(|(m, _)| m.is_some()) {
                     out.push_str(&format!("  <{tag}>\n"));
                     for (m, text) in paras {
@@ -168,7 +173,7 @@ fn parse(xml: &str) -> std::result::Result<Vec<Element>, String> {
                     _ => String::new(),
                 };
                 match (depth, child.as_mut(), out.last_mut()) {
-                    (3, Some(c), _) => c.1.push_str(&s),
+                    (3.., Some(c), _) => c.1.push_str(&s),
                     (2, _, Some(el)) => el.text.push_str(&s),
                     _ => {}
                 }
@@ -341,8 +346,10 @@ pub fn specs() -> Vec<CommandSpec> {
                 let dtd = crate::dtd::parse(&text).map_err(|e| bad("xml.loadDtd", e))?;
                 let names: Vec<String> = dtd.element_names().map(str::to_string).collect();
                 s.edit(|d, _| {
+                    // The tags there are, then those added: one set, not a search per element.
+                    let mut known: std::collections::HashSet<String> = d.xml.tags.iter().map(|t| t.name.clone()).collect();
                     for n in &names {
-                        if valid_name(n) && !d.xml.tags.iter().any(|t| t.name == *n) {
+                        if valid_name(n) && known.insert(n.clone()) {
                             let color = COLORS[d.xml.tags.len() % COLORS.len()];
                             d.xml.tags.push(XmlTag { name: n.clone(), color });
                         }
@@ -516,6 +523,34 @@ mod tests {
         assert!(d.xml.tags.iter().all(|t| t.name != "a b><x"));
         s.execute("xml.mapStyle", &json!({"style": "Head", "tag": "title"})).unwrap();
         assert_eq!(s.doc().unwrap().doc.xml.style_map.len(), 1);
+    }
+
+    #[test]
+    fn import_xml_keeps_text_of_inline_tags_in_mapped_paragraphs() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("style.paragraph.create", &json!({"name": "Head"})).unwrap();
+        let a = s
+            .execute("frame.create", &json!({"rect": [72, 72, 400, 150], "content": "text", "text": "See the glossary entry", "caret": false}))
+            .unwrap();
+        s.execute("text.select", &json!({"story": a["story"], "anchor": 0, "focus": 0})).unwrap();
+        s.execute("style.paragraph.apply", &json!({"name": "Head"})).unwrap();
+        s.execute("xml.tag", &json!({"tag": "story", "ids": [a["id"]]})).unwrap();
+        s.execute("xml.mapStyle", &json!({"style": "Head", "tag": "title"})).unwrap();
+        s.execute("text.select", &json!({"story": a["story"], "anchor": 8, "focus": 16})).unwrap();
+        s.execute("xml.tagText", &json!({"tag": "term"})).unwrap();
+        let x = s.execute("file.exportXml", &json!({})).unwrap()["text"].as_str().unwrap().to_string();
+        assert!(x.contains("<title>See the <term>glossary</term> entry</title>"), "{x}");
+        s.execute("file.importXml", &json!({"text": x})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        assert_eq!(d.stories[&designcraft_doc::StoryId(a["story"].as_u64().unwrap())].text, "See the glossary entry");
+    }
+
+    #[test]
+    fn parse_keeps_text_nested_below_a_child_element() {
+        let els = super::parse("<root><story><note>See the <term>x</term> y</note></story></root>").unwrap();
+        assert_eq!(els.len(), 1);
+        assert_eq!(els[0].children, vec![("note".to_string(), "See the x y".to_string())]);
     }
 
     #[test]

@@ -678,7 +678,12 @@ fn restart_without<'a>(graphics_failed: bool, frames: u64, picked: Option<&'a st
 /// ended it.
 pub fn finish(outcome: Result<eframe::Result, String>, startup: &Startup) -> Result<(), String> {
     let (why, graphics_failed) = match outcome {
-        Ok(Ok(())) => return Ok(()),
+        // The window closed normally, perhaps before its first frame or before the app was
+        // created (so `on_exit` never ran): no driver fault took this start down (#2116).
+        Ok(Ok(())) => {
+            startup.presented();
+            return Ok(());
+        }
         Ok(Err(e @ eframe::Error::Wgpu(_))) => (e.to_string(), true),
         Ok(Err(e)) => (e.to_string(), false),
         Err(panic) => (panic, GRAPHICS_PANIC.load(Ordering::Relaxed)),

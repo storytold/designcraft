@@ -25,6 +25,12 @@ pub(super) fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
         s.ui_requests.push(crate::UiRequest::Pick { purpose: "place".into(), params: json!({}) });
         return ok();
     };
+    // A frame named outright is not replaced while it is locked (the selected frame is the user's own choice).
+    if let Some(fid) = crate::cmd::id_param(p, "frame")
+        && s.doc()?.doc.item(fid).is_some_and(|it| it.locked)
+    {
+        return Err(bad("file.place", "the frame is locked"));
+    }
     // A page of another layout (IDML or DesignCraft): its objects, as one group.
     let lname = name.to_lowercase();
     if lname.ends_with(".idml") || lname.ends_with(".designcraft") {
@@ -84,7 +90,17 @@ pub(super) fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
         _ => PdfCrop::Crop,
     };
     let mime = designcraft_render::image_mime(&bytes).to_string();
-    let mut asset = Asset { page: pdf_page, name, mime, link, data: Arc::new(bytes), pixels: Some((pw, ph)), pdf_crop, ..Default::default() };
+    let mut asset = Asset {
+        page: pdf_page,
+        name,
+        mime,
+        link,
+        link_fingerprint: crate::cmd::links::loaded_fingerprint(before, &bytes),
+        data: Arc::new(bytes),
+        pixels: Some((pw, ph)),
+        pdf_crop,
+        ..Default::default()
+    };
     // The graphic's natural size: the box in points (the whole page when the box can't be found,
     // and then the document says so).
     let (bw, bh) = match crop_pdf(&mut asset) {
@@ -99,7 +115,7 @@ pub(super) fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
             return None;
         }
         let st = s.active()?;
-        st.selection.items.iter().copied().find(|i| st.doc.item(*i).is_some_and(|it| matches!(it.content, Content::Unassigned | Content::Graphic(_))))
+        st.selection.items.iter().copied().find(|i| st.doc.item(*i).is_some_and(|it| it.path.encloses_area() && it.takes_graphic()))
     });
     // `"spread": null` counts as omitted, like the other placement parameters.
     let spread = match p.get("spread") {
@@ -192,16 +208,25 @@ pub(crate) fn crop_pdf(a: &mut Asset) -> Option<(f64, f64)> {
 }
 
 pub(crate) fn read_source(p: &Value) -> Result<(Vec<u8>, String, Option<String>)> {
+    read_linked_source(p).map(|(bytes, name, link, _)| (bytes, name, link))
+}
+
+/// [`read_source`], with the size and time to keep with a linked file's bytes
+/// ([`crate::cmd::links::loaded_fingerprint`]): the file's from before it is read, not those of a
+/// later version that replaces it while a network or syncing source is being loaded.
+fn read_linked_source(p: &Value) -> Result<(Vec<u8>, String, Option<String>, Option<designcraft_doc::Fingerprint>)> {
     if let Some(b) = str_param(p, "base64") {
-        return Ok((base64_decode(b), str_param(p, "name").unwrap_or("image").to_string(), None));
+        return Ok((base64_decode(b), str_param(p, "name").unwrap_or("image").to_string(), None, None));
     }
     let path = str_param(p, "path").ok_or_else(|| bad("place", "missing `path` or `base64`"))?;
+    let before = crate::cmd::datamerge::fingerprint_from_path(path);
     #[cfg(not(target_arch = "wasm32"))]
     let b = crate::io::read_file(path).map_err(EngineError::Other)?;
     #[cfg(target_arch = "wasm32")]
     let b: Vec<u8> = vec![];
     let name = std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.into());
-    Ok((b, name, Some(path.to_string())))
+    let loaded = crate::cmd::links::loaded_fingerprint(before, &b);
+    Ok((b, name, Some(path.to_string()), loaded))
 }
 
 fn eps_size(bytes: &[u8], command: &str) -> Result<Option<(f64, f64)>> {
@@ -230,11 +255,11 @@ pub(crate) fn validate_placement(size: (f64, f64), frame: Rect, xf: Affine, comm
 }
 
 pub(super) fn place_load(s: &mut Session, p: &Value) -> Result<Value> {
-    let (bytes, name, link) = read_source(p)?;
+    let (bytes, name, link, link_fingerprint) = read_linked_source(p)?;
     let (pw, ph) = designcraft_render::image_size(&bytes).ok_or_else(|| bad("place.load", "unsupported or corrupt image"))?;
     let natural = eps_size(&bytes, "place.load")?.or_else(|| designcraft_render::natural_size(&bytes, 0)).unwrap_or((pw as f64, ph as f64));
     let mime = designcraft_render::image_mime(&bytes).to_string();
-    let asset = Asset { name, mime, link, data: Arc::new(bytes), pixels: Some((pw, ph)), ..Default::default() };
+    let asset = Asset { name, mime, link, link_fingerprint, data: Arc::new(bytes), pixels: Some((pw, ph)), ..Default::default() };
     load_cursor(s, asset, natural)
 }
 
@@ -276,7 +301,7 @@ pub(super) fn place_drop(s: &mut Session, p: &Value) -> Result<Value> {
         }
         // Drag: fit proportionally; click: actual size at the point.
         let (r, k) = match rect {
-            Some(r) if r.width() > 2.0 && r.height() > 2.0 => {
+            Some(r) if r.width() > designcraft_tools::PLACE_DRAG_MIN && r.height() > designcraft_tools::PLACE_DRAG_MIN => {
                 let k = (r.width() / nw).min(r.height() / nh);
                 (Rect::new(r.x0, r.y0, r.x0 + nw * k, r.y0 + nh * k), k)
             }
@@ -372,7 +397,7 @@ fn place_layout_page(s: &mut Session, p: &Value, name: &str, bytes: &[u8]) -> Re
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 pub(super) mod image_place_tests {
-    use designcraft_doc::{Content, ItemId};
+    use designcraft_doc::{AssetId, Content, ItemId};
     use designcraft_geom::Rect;
     use serde_json::{Value, json};
 
@@ -429,6 +454,44 @@ pub(super) mod image_place_tests {
     }
 
     #[test]
+    fn a_locked_frame_named_outright_is_not_replaced() {
+        let image = image_file_with_color(30).unwrap();
+        let mut session = Session::new();
+        session.execute("file.new", &json!({})).unwrap();
+        let frame = session.execute("frame.create", &json!({"rect": [36, 36, 136, 136]})).unwrap()["id"].as_u64().unwrap();
+        session.execute("object.lock", &json!({"ids": [frame]})).unwrap();
+        assert!(session.execute("file.place", &json!({"path": image.path(), "frame": frame})).is_err());
+        let document = &session.doc().unwrap().doc;
+        assert!(matches!(document.item(ItemId(frame)).unwrap().content, Content::Unassigned), "the locked frame stays empty");
+        session.execute("object.unlockAll", &json!({})).unwrap();
+        session.execute("file.place", &json!({"path": image.path(), "frame": frame})).unwrap();
+        assert!(matches!(session.doc().unwrap().doc.item(ItemId(frame)).unwrap().content, Content::Graphic(_)));
+    }
+
+    #[test]
+    fn place_load_remembers_the_fingerprint_captured_for_its_link() {
+        let image = image_file().unwrap();
+        let mut session = Session::new();
+        session.execute("file.new", &json!({})).unwrap();
+        let load = |session: &mut Session| {
+            let loaded = session.execute("place.load", &json!({"path": image.path()})).unwrap();
+            session.doc().unwrap().doc.assets[&AssetId(loaded["asset"].as_u64().unwrap())].clone()
+        };
+
+        // Written just now: another write in the same second would keep its time, so the time
+        // can't vouch for the bytes later and isn't kept.
+        let asset = load(&mut session);
+        assert_eq!(asset.link_fingerprint, None);
+        assert_eq!(asset.link.as_deref(), image.path().to_str());
+
+        // A file that has been as it is for a while is remembered by its size and time.
+        image.as_file().set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(60)).unwrap();
+        let expected = crate::cmd::datamerge::fingerprint_from(&std::fs::metadata(image.path()).unwrap());
+        session.execute("file.new", &json!({})).unwrap();
+        assert_eq!(load(&mut session).link_fingerprint, Some(expected));
+    }
+
+    #[test]
     fn individual_placement_parameters_bypass_selected_frames() {
         let image = image_file().unwrap();
         for graphic in [false, true] {
@@ -466,6 +529,153 @@ pub(super) mod image_place_tests {
                 let [scale_x, _, _, scale_y, _, _] = content.xf.as_coeffs();
                 assert!(scale_x > 0.0 && scale_y > 0.0);
             }
+        }
+    }
+
+    fn assert_implicit_placement_preserves_geometry(command: &str, params: Value) -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let image = image_file()?;
+        let mut session = Session::new();
+        session.execute("file.new", &json!({}))?;
+        let selected = session.execute(command, &params)?;
+        session.execute("object.stroke", &json!({"weight": 6}))?;
+        let id = ItemId(selected["id"].as_u64().ok_or("missing selected item id")?);
+        let original = serde_json::to_value(session.doc()?.doc.item(id).ok_or(designcraft_doc::DocError::NoItem(id))?)?;
+
+        let placed = session.execute("file.place", &json!({"path": image.path()}))?;
+
+        assert_ne!(placed["id"], selected["id"], "{command}");
+        let document = &session.doc()?.doc;
+        assert_eq!(serde_json::to_value(document.item(id).ok_or(designcraft_doc::DocError::NoItem(id))?)?, original, "{command}");
+        let placed_id = ItemId(placed["id"].as_u64().ok_or("missing placed item id")?);
+        let item = document.item(placed_id).ok_or(designcraft_doc::DocError::NoItem(placed_id))?;
+        assert_eq!(item.bounds(), Rect::new(36.0, 36.0, 76.0, 56.0));
+        assert!(matches!(item.content, Content::Graphic(_)));
+        assert_eq!(document.spreads[0].items.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn implicit_placement_preserves_selected_line() {
+        assert_implicit_placement_preserves_geometry("line.create", json!({"a": [18, 600], "b": [594, 600]})).unwrap();
+    }
+
+    #[test]
+    fn implicit_placement_preserves_selected_straight_open_path() {
+        assert_implicit_placement_preserves_geometry(
+            "path.create",
+            json!({"anchors": [{"p": [20, 30]}, {"p": [80, 90]}, {"p": [140, 150]}], "closed": false}),
+        )
+        .unwrap();
+    }
+
+    /// Paths with an area take the image: a closed empty frame, and an open V as before.
+    #[test]
+    fn implicit_placement_fills_selected_frames_and_open_paths_with_an_area() {
+        let image = image_file().unwrap();
+        for (command, params) in [
+            ("frame.create", json!({"rect": [100, 120, 200, 220]})),
+            ("path.create", json!({"anchors": [{"p": [20, 30]}, {"p": [80, 90]}, {"p": [140, 30]}], "closed": false})),
+        ] {
+            let mut session = Session::new();
+            session.execute("file.new", &json!({})).unwrap();
+            let selected = session.execute(command, &params).unwrap();
+
+            let placed = session.execute("file.place", &json!({"path": image.path()})).unwrap();
+
+            assert_eq!(placed["id"], selected["id"], "{command}");
+            let document = &session.doc().unwrap().doc;
+            assert!(matches!(document.item(ItemId(selected["id"].as_u64().unwrap())).unwrap().content, Content::Graphic(_)), "{command}");
+            assert_eq!(document.spreads[0].items.len(), 1, "{command}");
+        }
+    }
+
+    /// A `width` x `height` PNG with a pHYs chunk of `ppm` pixels per meter on both axes, or none.
+    fn png_with_density(width: u32, height: u32, ppm: Option<u32>) -> std::io::Result<tempfile::NamedTempFile> {
+        fn crc32(data: &[u8]) -> u32 {
+            let mut crc = 0xFFFF_FFFFu32;
+            for &b in data {
+                crc ^= b as u32;
+                for _ in 0..8 {
+                    crc = if crc & 1 == 1 { (crc >> 1) ^ 0xEDB8_8320 } else { crc >> 1 };
+                }
+            }
+            !crc
+        }
+        let pixels = [30, 90, 180, 255].repeat((width * height) as usize);
+        let png = designcraft_render::Rendered { width, height, pixels }.to_png();
+        assert_eq!(&png[12..16], b"IHDR");
+        let mut bytes = png[..33].to_vec();
+        if let Some(ppm) = ppm {
+            let mut phys = Vec::new();
+            phys.extend_from_slice(&ppm.to_be_bytes());
+            phys.extend_from_slice(&ppm.to_be_bytes());
+            phys.push(1);
+            bytes.extend_from_slice(&(phys.len() as u32).to_be_bytes());
+            bytes.extend_from_slice(b"pHYs");
+            bytes.extend_from_slice(&phys);
+            let mut c = b"pHYs".to_vec();
+            c.extend_from_slice(&phys);
+            bytes.extend_from_slice(&crc32(&c).to_be_bytes());
+        }
+        bytes.extend_from_slice(&png[33..]);
+        let file = tempfile::Builder::new().suffix(".png").tempfile()?;
+        std::fs::write(file.path(), bytes)?;
+        Ok(file)
+    }
+
+    #[test]
+    fn placed_photo_honors_its_embedded_resolution() {
+        // #1991: a placed graphic's embedded density sets its size (600 dpi: 40 px place
+        // 4.8 pt wide), instead of a pixel always becoming a point.
+        let file = png_with_density(40, 20, Some(23622)).unwrap();
+        let mut session = Session::new();
+        session.execute("file.new", &json!({})).unwrap();
+        let placed = session.execute("file.place", &json!({"path": file.path(), "x": 10.0, "y": 20.0})).unwrap();
+        let document = &session.doc().unwrap().doc;
+        let item = document.item(ItemId(placed["id"].as_u64().unwrap())).unwrap();
+        let b = item.bounds();
+        assert!((b.x0 - 10.0).abs() < 1e-9 && (b.y0 - 20.0).abs() < 1e-9, "{b:?}");
+        assert!((b.width() - 4.8).abs() < 0.01 && (b.height() - 2.4).abs() < 0.01, "{b:?}");
+    }
+
+    /// File › Place, then a click: an 11 x 17 in image (330 x 510 px at 30 ppi) comes in at
+    /// 792 x 1224 pt, keeps that size through a save and reopen, and an image with no stored
+    /// resolution comes in at 72 ppi (330 x 510 pt).
+    #[test]
+    fn a_clicked_image_keeps_its_print_size_through_save_and_reopen() {
+        // 1181 pixels per meter is 29.9974 ppi.
+        let (w, h) = (330.0 * 72.0 / (1181.0 * 0.0254), 510.0 * 72.0 / (1181.0 * 0.0254));
+        for (ppm, (ew, eh)) in [(Some(1181), (w, h)), (None, (330.0, 510.0))] {
+            let image = png_with_density(330, 510, ppm).unwrap();
+            let mut session = Session::new();
+            session.execute("file.new", &json!({})).unwrap();
+            session.execute("file.place", &json!({"path": image.path(), "loadCursor": true})).unwrap();
+            session.execute("place.drop", &json!({"x": 0, "y": 0})).unwrap();
+            // The bounds and natural size of the document's one placed graphic.
+            let shown = |session: &Session| {
+                let doc = &session.doc().unwrap().doc;
+                let graphics: Vec<_> = doc
+                    .all_items()
+                    .into_iter()
+                    .filter_map(|id| doc.item(id))
+                    .filter_map(|item| match &item.content {
+                        Content::Graphic(g) => Some((item.bounds(), g.size)),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(graphics.len(), 1, "{graphics:?}");
+                graphics[0]
+            };
+            let (b, size) = shown(&session);
+            assert!((b.width() - ew).abs() < 1e-6 && (b.height() - eh).abs() < 1e-6, "{ppm:?}: {b:?}");
+            assert!((size.0 - ew).abs() < 1e-6 && (size.1 - eh).abs() < 1e-6, "{ppm:?}: {size:?}");
+
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("placed.designcraft");
+            session.execute("file.save", &json!({"path": path.to_string_lossy()})).unwrap();
+            let mut reopened = Session::new();
+            reopened.execute("file.open", &json!({"path": path.to_string_lossy()})).unwrap();
+            assert_eq!(shown(&reopened), (b, size), "{ppm:?}");
         }
     }
 
@@ -754,5 +964,52 @@ mod layout_place_tests {
         assert!((bb.x0 - 100.0).abs() < 1e-6 && (bb.y0 - 100.0).abs() < 1e-6, "page top-left at 0,0: {bb:?}");
         assert!(d.stories.values().any(|st| st.text == "From page one"), "stories come along");
         assert!(b.execute("file.place", &json!({"base64": b64, "name": "src.idml", "layoutPage": 2})).is_err(), "page 2 is empty");
+    }
+}
+
+#[cfg(test)]
+mod nested_frame_tests {
+    use std::sync::Arc;
+
+    use designcraft_doc::{Content, Item, ItemId, Shape, SpreadRef};
+    use designcraft_geom::{Affine, Rect, shapes};
+    use serde_json::json;
+
+    use crate::Session;
+
+    fn png(red: u8) -> String {
+        let png = designcraft_render::Rendered { width: 40, height: 20, pixels: [red, 90, 30, 255].repeat(800) }.to_png();
+        super::super::base64_encode(&png)
+    }
+
+    /// A graphic placed into a frame holding an image pasted into it (how a document from InDesign
+    /// keeps a photo) replaces the image and fills the frame, which keeps its size.
+    #[test]
+    fn placing_into_a_frame_with_a_nested_image_replaces_it() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let first = s.execute("file.place", &json!({"base64": png(200), "name": "old.png", "x": 0, "y": 0})).unwrap();
+        let old = ItemId(first["id"].as_u64().unwrap());
+        let frame = s
+            .edit(|d, _| {
+                let mut image = (*d.item(old).unwrap()).clone();
+                d.remove_item(old)?;
+                image.xf = Affine::translate((-20.0, -20.0));
+                let id = ItemId(d.alloc());
+                let mut frame = Item::new(id, image.layer, Shape::Rectangle, shapes::rectangle(Rect::new(0.0, 0.0, 60.0, 90.0)));
+                frame.xf = Affine::translate((100.0, 100.0));
+                frame.content = Content::Group { items: vec![Arc::new(image)] };
+                d.insert_item(SpreadRef::Doc(0), frame, None)?;
+                Ok(id)
+            })
+            .unwrap();
+        s.execute("selection.set", &json!({"ids": [frame.0]})).unwrap();
+        s.execute("file.place", &json!({"base64": png(20), "name": "new.png"})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        let it = d.item(frame).unwrap();
+        let Content::Graphic(g) = &it.content else { panic!("the frame holds the new graphic: {:?}", it.content) };
+        assert_eq!(d.assets[&g.asset].name, "new.png");
+        assert_eq!(it.inner_bounds(), Rect::new(0.0, 0.0, 60.0, 90.0), "the frame keeps its size");
+        assert_eq!(d.spreads[0].items.len(), 1, "no new object");
     }
 }

@@ -63,7 +63,13 @@ impl SectionEdit {
         let start = self.start;
         // Page 1 always starts a section.
         if self.remove && start != 0 {
-            d.sections.retain(|x| x.start != start);
+            // A section that starts an alternate layout stays (the layout needs it); it just
+            // continues the previous section's numbers.
+            if let Some(sec) = d.sections.iter_mut().find(|x| x.start == start && x.layout.is_some()) {
+                sec.start_number = None;
+            } else {
+                d.sections.retain(|x| x.start != start);
+            }
             // The pages after it follow the previous section's numbers again.
             d.repaginate();
             return;
@@ -74,6 +80,7 @@ impl SectionEdit {
             style: Default::default(),
             prefix: String::new(),
             marker: String::new(),
+            layout: None,
             include_prefix: false,
         });
         if let Some(n) = self.start_number {

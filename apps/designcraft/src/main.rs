@@ -15,13 +15,17 @@
 
 #[cfg(target_os = "macos")]
 mod apple_events;
+mod clipboard_image;
 mod control_server;
 mod gpu;
 mod gpu_limits;
 mod logging;
 #[cfg(target_os = "macos")]
 mod native_menu;
+#[cfg(target_os = "macos")]
+mod pointer;
 mod profile;
+mod window_frame;
 
 use designcraft_engine::Session;
 use designcraft_ui_egui::{DesignApp, Services};
@@ -224,6 +228,11 @@ fn services() -> Services {
         read: Some(Box::new(|p: &str| std::fs::read(p).map_err(|e| e.to_string()))),
         write: Some(Box::new(|p: &str, b: &[u8]| designcraft_engine::atomic::write_atomic(std::path::Path::new(p), b).map_err(|e| e.to_string()))),
         clipboard_text: Some(Box::new(|| arboard::Clipboard::new().and_then(|mut c| c.get_text()).ok())),
+        clipboard_image: Some(Box::new(clipboard_image::read)),
+        #[cfg(target_os = "macos")]
+        clipboard_change: Some(Box::new(clipboard_image::change_count)),
+        #[cfg(target_os = "macos")]
+        pointer: Some(Box::new(pointer::screen_position)),
         ..Default::default()
     }
 }
@@ -314,9 +323,9 @@ fn main() -> std::process::ExitCode {
     if let Some(icon) = app_icon() {
         options.viewport = options.viewport.with_icon(icon);
     }
-    // The adapter's largest texture side instead of eframe's 8192, so a window across several
-    // monitors keeps its surface (see `gpu_limits`).
-    gpu_limits::request_adapter_texture_size(&mut options);
+    // The adapter's largest texture side and buffer instead of eframe's 8192 and wgpu's 256 MiB, so a
+    // window across several monitors keeps its surface and a large frame its vertex buffer (see `gpu_limits`).
+    gpu_limits::request_adapter_sizes(&mut options);
     // The graphics backend, decided before the window exists: a driver that faults takes the
     // process down before any Rust code can catch it (see `gpu::backend`).
     let fallback = gpu::backend::Fallback::begin(
@@ -395,6 +404,12 @@ fn main() -> std::process::ExitCode {
                         info.driver,
                         info.driver_info
                     );
+                    let limits = rs.device.limits();
+                    log::info!(
+                        "graphics: largest texture side {}, largest buffer {} MiB",
+                        limits.max_texture_dimension_2d,
+                        limits.max_buffer_size >> 20
+                    );
                     created.started_with(info.backend);
                     created.created(&cc.egui_ctx);
                     if !skip.is_empty() {
@@ -428,6 +443,9 @@ fn main() -> std::process::ExitCode {
                 }
                 app.integrated_titlebar = cfg!(target_os = "macos");
                 app.custom_titlebar = cfg!(target_os = "windows");
+                // The custom title bar's undecorated window must stay borderless, or its caption
+                // and border offset the content and the pointer on some Windows systems (#1295).
+                app.services.window_frame = window_frame::service(cc, app.custom_titlebar);
                 if let Some(port) = control_port {
                     let rx = control_server::start(port, cc.egui_ctx.clone());
                     app = app.with_control(rx);

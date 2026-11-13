@@ -3,6 +3,7 @@ use egui_kittest::{
     kittest::{NodeT, Queryable},
 };
 
+use super::object::transform_anchors;
 use super::*;
 
 /// A link to a panel whose flyout is open leaves the flyout open.
@@ -80,7 +81,22 @@ fn links_harness(app: DesignApp, width: f32) -> Harness<'static, DesignApp> {
     );
     h.input_mut().max_texture_side = Some(8192);
     h.run_steps(3);
+    settle_links(&mut h);
     h
+}
+
+/// The link statuses come from a background check: step until it has finished and its rows are
+/// drawn.
+fn settle_links(h: &mut Harness<'static, DesignApp>) {
+    for _ in 0..500 {
+        h.run_steps(1);
+        if !h.state().links_worker.checking() {
+            h.run_steps(1);
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    panic!("the background link check did not finish");
 }
 
 /// With the caret in text, the Stroke panel offers the text's stroke options, not an empty panel.
@@ -164,6 +180,7 @@ fn links_panel_distinguishes_same_named_sources_and_keeps_link_actions() {
     assert_eq!(h.state().session.active().unwrap().selection.items, vec![items[1]]);
     h.get_by_label("Embed").click();
     h.run_steps(3);
+    settle_links(&mut h);
     assert!(h.state().session.active().unwrap().doc.assets[&assets[1]].link.is_none());
     assert_eq!(h.state().session.active().unwrap().doc.assets[&assets[0]].link.as_deref(), Some(first));
     assert!(h.query_by_label(second).is_none(), "an embedded graphic no longer shows a source path");
@@ -219,6 +236,39 @@ fn properties_character_section_sets_the_language() {
     h.get_by_label("French").click();
     h.run_steps(2);
     assert_eq!(language(h.state_mut()), "French");
+}
+
+/// Drop shadow Distance and Size in the Effects panel read and show the document's unit, as
+/// the Effects dialog does (#1523): in picas a typed `7` is 7 picas in both.
+#[test]
+fn effects_panel_shadow_fields_use_the_document_unit() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), Default::default());
+    app.run("file.new", json!({})).unwrap();
+    let id = app.run("frame.create", json!({"rect": [72, 72, 144, 144]})).unwrap()["id"].clone();
+    app.run("selection.set", json!({"ids": [id]})).unwrap();
+    app.run("object.dropShadow", json!({"on": true, "distance": 7.0, "size": 5.0})).unwrap();
+    let shadow = |app: &DesignApp| {
+        let d = app.session.doc().unwrap().doc.item(designcraft_doc::ItemId(id.as_u64().unwrap())).unwrap().effects.drop_shadow.clone();
+        (d.distance, d.size)
+    };
+    let mut h = panel_harness(app, effects_panel);
+    h.run_steps(3);
+    let values =
+        |h: &Harness<'static, DesignApp>| -> Vec<String> { h.get_all_by_role(egui::accesskit::Role::TextInput).filter_map(|n| n.value()).collect() };
+    let shown = values(&h);
+    assert!(shown.contains(&"0p7".to_string()) && shown.contains(&"0p5".to_string()), "{shown:?}");
+    for (old, typed, want) in [("0p7", "7", (84.0, 5.0)), ("0p5", "3mm", (84.0, 3.0 * designcraft_geom::units::PT_PER_MM))] {
+        let field = h.get_all_by_role(egui::accesskit::Role::TextInput).find(|n| n.value().as_deref() == Some(old)).unwrap();
+        field.focus();
+        h.run_steps(1);
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        h.get_all_by_role(egui::accesskit::Role::TextInput).find(|n| n.is_focused()).unwrap().type_text(typed);
+        h.run_steps(1);
+        h.key_press(egui::Key::Enter);
+        h.run_steps(3);
+        let got = shadow(h.state_mut());
+        assert!((got.0 - want.0).abs() < 1e-3 && (got.1 - want.1).abs() < 1e-3, "{typed}: {got:?}, want {want:?}");
+    }
 }
 
 /// Properties › Character and Paragraph •••, as in InDesign: the sections expand in place,
@@ -626,6 +676,30 @@ fn character_panel_has_kerning_and_takes_a_typed_manual_value() {
     assert_eq!(kerning(h.state_mut()), json!({"kind": "manual", "value": -40.0}));
 }
 
+/// The size field reads the unit typed, as InDesign's does: 13Q is 9.213 pt (it used to keep
+/// the digits only and set 13 pt). A bare number is still points.
+#[test]
+fn character_size_field_reads_the_unit_typed() {
+    let mut h = panel_harness(text_app(), character_panel);
+    h.run_steps(3);
+    let size = |app: &mut DesignApp| text_attrs(app).unwrap()["chars"]["size"].as_f64().unwrap();
+    for (typed, pt) in [("13Q", 13.0 * designcraft_geom::units::PT_PER_Q), ("5mm", 5.0 * designcraft_geom::units::PT_PER_MM), ("14", 14.0)] {
+        let field = h
+            .get_all_by_role(egui::accesskit::Role::TextInput)
+            .find(|n| n.value().is_some_and(|v| v.ends_with(" pt") && !v.starts_with('(') && v != "0 pt"))
+            .unwrap();
+        field.focus();
+        h.run_steps(1);
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        h.get_all_by_role(egui::accesskit::Role::TextInput).find(|n| n.is_focused()).unwrap().type_text(typed);
+        h.run_steps(1);
+        h.key_press(egui::Key::Enter);
+        h.run_steps(3);
+        let got = size(h.state_mut());
+        assert!((got - pt).abs() < 1e-6, "{typed}: {got} pt, want {pt}");
+    }
+}
+
 #[test]
 fn a_manual_kerning_value_at_a_caret_kerns_the_pair() {
     let mut app = text_app();
@@ -685,6 +759,66 @@ fn clicking_a_swatch_chip_in_the_appearance_fill_menu_applies_it() {
     assert_eq!(after, name, "clicking the swatch chip applies it");
 }
 
+/// The course's chapter 23: a double-click on Properties › Appearance › Fill opens the Color
+/// Picker with the fill's colour, as InDesign's (a click opens the swatches). For selected
+/// text, the text's Fill chip opens it for the text.
+#[test]
+fn double_clicking_a_fill_chip_opens_the_color_picker() {
+    let double_click = |h: &mut Harness<'_, DesignApp>, label: &str| {
+        let at = h.get_by_label(label).rect().center();
+        h.hover_at(at);
+        h.step();
+        for pressed in [true, false, true, false] {
+            h.event(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE });
+            h.step();
+        }
+        h.run_steps(3);
+    };
+    // Frames 1 ms apart, so two clicks make a double-click.
+    let panel = |app: DesignApp| {
+        let mut h = Harness::builder().with_size(vec2(320.0, 1400.0)).with_step_dt(0.001).build_ui_state(
+            |ui, app: &mut DesignApp| {
+                let id = egui::Id::unique("test_fonts");
+                if ui.data(|d| d.get_temp::<bool>(id)).is_none() {
+                    crate::theme::install_fonts(ui.ctx(), "");
+                    ui.data_mut(|d| d.insert_temp(id, true));
+                    return;
+                }
+                show(app, ui);
+            },
+            app,
+        );
+        h.run_steps(3);
+        h
+    };
+    let frame = || {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let id = app.run("frame.create", json!({"rect": [72, 72, 300, 200], "content": "unassigned"})).unwrap()["id"].as_u64().unwrap();
+        app.run("selection.set", json!({"ids": [id]})).unwrap();
+        app.run("object.fill", json!({"swatch": "C=0 M=0 Y=100 K=0"})).unwrap();
+        app
+    };
+    let mut h = panel(frame());
+    double_click(&mut h, "Fill swatch");
+    assert!(h.query_by_label("Tint:").is_none(), "the swatches popup isn't left open too");
+    let d = h.state().ui.dialog.clone().expect("the Color Picker");
+    assert_eq!((d.id.as_str(), d.s("target"), d.s("model"), d.b("text")), ("colorPicker", "fill".into(), "cmyk".into(), false));
+    assert_eq!(d.fields["cmyk"], json!([0.0, 0.0, 100.0, 0.0]));
+    let mut h = panel(frame());
+    double_click(&mut h, "Stroke swatch");
+    assert_eq!(h.state().ui.dialog.as_ref().map(|d| d.s("target")), Some("stroke".into()));
+    // Selected text: its own Fill chip.
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let f = app.run("frame.create", json!({"rect": [72, 72, 300, 200], "content": "text", "text": "Lemon"})).unwrap();
+    app.run("text.select", json!({"story": f["story"], "anchor": 0, "focus": 5})).unwrap();
+    let mut h = panel(app);
+    double_click(&mut h, "Text fill swatch");
+    let d = h.state().ui.dialog.clone().expect("the Color Picker");
+    assert_eq!((d.id.as_str(), d.s("target"), d.b("text")), ("colorPicker", "fill".into(), true));
+}
+
 fn panel(app: DesignApp) -> Harness<'static, DesignApp> {
     let mut h = Harness::builder().with_size(vec2(320.0, 1400.0)).build_ui_state(
         |ui, app: &mut DesignApp| {
@@ -700,6 +834,24 @@ fn panel(app: DesignApp) -> Harness<'static, DesignApp> {
     );
     h.run_steps(3);
     h
+}
+
+/// The course's chapter 21: Properties › Bullets and Numbering › Options opens the Bullets
+/// and Numbering dialog, as InDesign's, not the Paragraph panel.
+#[test]
+fn bullets_options_open_the_bullets_and_numbering_dialog() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let f = app.run("frame.create", json!({"rect": [72, 72, 300, 200], "content": "text", "text": "4 eggs"})).unwrap();
+    app.run("text.select", json!({"story": f["story"], "anchor": 0, "focus": 6})).unwrap();
+    let mut h = panel(app);
+    // Bullets and Numbering's Options, above Text Frame's.
+    let bullets = h.get_all_by_label("Options").min_by(|a, b| a.rect().top().total_cmp(&b.rect().top())).unwrap();
+    bullets.click();
+    h.run_steps(3);
+    let d = h.state().ui.dialog.clone().expect("a dialog");
+    assert_eq!((d.id.as_str(), d.s("section").as_str()), ("paragraphLocal", "bullets"));
+    assert_ne!(h.state().ui.open_panel.as_deref(), Some("paragraph"));
 }
 
 /// The course's chapter 21: Properties' Bulleted List button gives the selected paragraphs
@@ -755,6 +907,205 @@ fn several_shapes_show_pathfinder_and_intersect_combines_them() {
     assert_eq!(items.len(), 1, "one shape left");
     let r = items[0].bounds();
     assert!((r.x0 - 200.0).abs() < 0.5 && (r.y1 - 200.0).abs() < 0.5 && (r.x1 - 300.0).abs() < 0.5, "{r:?}");
+}
+
+/// The arrow beside Opacity opens a slider, as in InDesign: a drag shows the opacity live and
+/// is one undo step; the Opacity link still opens the Effects panel.
+#[test]
+fn the_opacity_arrow_opens_a_slider_and_a_drag_is_one_undo_step() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let id = app.run("frame.create", json!({"rect": [72, 72, 300, 200], "shape": "rectangle"})).unwrap()["id"].as_u64().unwrap();
+    app.run("selection.set", json!({"ids": [id]})).unwrap();
+    let opacity = |app: &DesignApp| app.session.active().unwrap().doc.item(designcraft_doc::ids::ItemId(id)).unwrap().opacity;
+    let steps = undo_steps(&app);
+    let mut h = Harness::builder().with_size(vec2(320.0, 1400.0)).build_ui_state(
+        |ui, app: &mut DesignApp| {
+            let id = egui::Id::unique("test_fonts");
+            if ui.data(|d| d.get_temp::<bool>(id)).is_none() {
+                crate::theme::install_fonts(ui.ctx(), "");
+                ui.data_mut(|d| d.insert_temp(id, true));
+                return;
+            }
+            app.settle_live_preview();
+            show(app, ui);
+        },
+        app,
+    );
+    h.run_steps(3);
+    assert!(h.query_by_role(egui::accesskit::Role::Slider).is_none());
+    h.get_by(|n| n.role() == egui::accesskit::Role::Button && n.label().as_deref() == Some("Opacity")).click();
+    h.run_steps(3);
+    assert!(
+        h.query_by(|n| n.role() == egui::accesskit::Role::Slider && n.label().as_deref() == Some("Opacity")).is_some(),
+        "assistive technology names the slider"
+    );
+    let track = h.get_by_role(egui::accesskit::Role::Slider).rect();
+    let y = track.center().y;
+    h.hover_at(egui::pos2(track.right() - 1.0, y));
+    h.run_steps(1);
+    h.drag_at(egui::pos2(track.right() - 1.0, y));
+    h.run_steps(1);
+    for k in 1..=5 {
+        h.hover_at(egui::pos2(track.right() - track.width() * 0.05 * k as f32, y));
+        h.run_steps(1);
+        assert_eq!(undo_steps(h.state()), steps, "no undo step while dragging");
+    }
+    let previewed = opacity(h.state());
+    assert!(previewed < 0.9 && previewed > 0.5, "the drag shows the opacity live: {previewed}");
+    // Let go further along than the last move: the release frame changes the value too.
+    h.drop_at(egui::pos2(track.right() - track.width() * 0.3, y));
+    h.run_steps(3);
+    assert_eq!(undo_steps(h.state()), steps + 1, "the whole drag is one undo step");
+    assert!(opacity(h.state()) < previewed, "the release position is applied: {previewed} → {}", opacity(h.state()));
+    assert_ne!(h.state().ui.open_panel.as_deref(), Some("effects"), "the arrow doesn't open Effects");
+    h.state_mut().run("edit.undo", json!({})).unwrap();
+    assert_eq!(opacity(h.state()), 1.0);
+}
+
+/// Properties › Frame Fitting has Auto-Fit and an Options button, as InDesign's: ticking
+/// Auto-Fit makes the picture refit when its frame is resized.
+#[test]
+fn properties_frame_fitting_sets_auto_fit_and_opens_its_options() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let id = app.run("frame.create", json!({"rect": [72, 72, 272, 172]})).unwrap()["id"].as_u64().unwrap();
+    let png = designcraft_render::Rendered { width: 40, height: 20, pixels: vec![200; 40 * 20 * 4] }.to_png();
+    app.run("file.place", json!({"base64": designcraft_engine::cmd::base64_encode(&png), "name": "p.png", "frame": id})).unwrap();
+    app.run("selection.set", json!({"ids": [id]})).unwrap();
+    let graphic = |app: &DesignApp| app.session.active().unwrap().doc.item(designcraft_doc::ids::ItemId(id)).unwrap().graphic().unwrap().clone();
+    assert_eq!(graphic(&app).auto_fit, designcraft_doc::Fitting::None);
+    let mut h = panel(app);
+    // A checkbox its section disables says so: Invert, with no text wrap.
+    use egui_kittest::kittest::NodeT;
+    assert!(h.get_by_label("Invert").accesskit_node().is_disabled());
+    assert!(!h.get_by_label("Auto-Fit").accesskit_node().is_disabled());
+    h.get_by_label("Auto-Fit").click();
+    h.run_steps(3);
+    assert_ne!(graphic(h.state()).auto_fit, designcraft_doc::Fitting::None, "Auto-Fit is on");
+    // The frame resized: the picture follows it.
+    h.state_mut().run("transform.resize", json!({"from": [72, 72, 272, 172], "to": [72, 72, 372, 272]})).unwrap();
+    let g = graphic(h.state());
+    let r = g.xf.transform_rect_bbox(designcraft_geom::Rect::new(0.0, 0.0, g.size.0, g.size.1));
+    assert!(r.width() > 250.0, "refitted to the larger frame: {r:?}");
+    h.get_by_label("Options").click();
+    h.run_steps(3);
+    assert!(h.state().ui.dialog.is_some(), "Frame Fitting Options opens");
+}
+
+/// Properties › Text Wrap shows the four offsets under the wrap buttons, as InDesign's
+/// Properties panel does: linked at first, so one value sets all four; unlinked, one side.
+#[test]
+fn properties_text_wrap_shows_and_sets_the_offsets() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let id = app.run("frame.create", json!({"rect": [72, 72, 300, 200], "shape": "rectangle"})).unwrap()["id"].as_u64().unwrap();
+    app.run("selection.set", json!({"ids": [id]})).unwrap();
+    app.run("object.textWrap", json!({"mode": "boundingBox", "offset": 0})).unwrap();
+    let offsets = |app: &DesignApp| app.session.active().unwrap().doc.item(designcraft_doc::ids::ItemId(id)).unwrap().wrap.offsets;
+    let mut h = panel(app);
+    // The fields between the Text Wrap heading and Quick Actions: Top, Left, Bottom, Right.
+    let fields = |h: &Harness<'_, DesignApp>| {
+        let (top, bottom) = (h.get_by_label("Text Wrap").rect().bottom(), h.get_by_label("Quick Actions").rect().top());
+        let mut v: Vec<egui::Rect> =
+            h.get_all_by_role(egui::accesskit::Role::TextInput).map(|n| n.rect()).filter(|r| r.center().y > top && r.center().y < bottom).collect();
+        v.sort_by(|a, b| (a.top(), a.left()).partial_cmp(&(b.top(), b.left())).unwrap());
+        v
+    };
+    let f = fields(&h);
+    assert_eq!(f.len(), 4, "four offsets: {f:?}");
+    let type_in = |h: &mut Harness<'_, DesignApp>, at: egui::Rect, text: &str| {
+        h.hover_at(at.center());
+        h.drag_at(at.center());
+        h.drop_at(at.center());
+        h.run_steps(2);
+        h.event(egui::Event::Key { key: egui::Key::A, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND });
+        h.event(egui::Event::Text(text.into()));
+        h.key_press(egui::Key::Enter);
+        h.run_steps(3);
+    };
+    // Linked: the top offset sets all four.
+    type_in(&mut h, f[0], "12pt");
+    assert_eq!(offsets(h.state()), [12.0; 4]);
+    // Unlinked: the bottom one alone.
+    let (top, bottom) = (h.get_by_label("Text Wrap").rect().bottom(), h.get_by_label("Quick Actions").rect().top());
+    h.get_all_by_label("Make all settings the same").find(|n| n.rect().center().y > top && n.rect().center().y < bottom).unwrap().click();
+    h.run_steps(2);
+    let f = fields(&h);
+    type_in(&mut h, f[2], "6pt");
+    assert_eq!(offsets(h.state()), [12.0, 12.0, 6.0, 12.0], "[top, left, bottom, right]");
+    // Two objects with different offsets: a side typed in changes that side on each, and
+    // each keeps its other three.
+    let other = h.state_mut().run("frame.create", json!({"rect": [72, 300, 300, 400], "shape": "rectangle"})).unwrap()["id"].as_u64().unwrap();
+    h.state_mut().run("object.textWrap", json!({"mode": "contour", "offset": [3, 4, 5, 6], "ids": [other]})).unwrap();
+    let of =
+        |h: &Harness<'_, DesignApp>, id: u64| h.state().session.active().unwrap().doc.item(designcraft_doc::ids::ItemId(id)).unwrap().wrap.offsets;
+    h.state_mut().run("selection.set", json!({"ids": [id, other]})).unwrap();
+    h.run_steps(3);
+    let f = fields(&h);
+    type_in(&mut h, f[0], "9pt");
+    assert_eq!((of(&h, id), of(&h, other)), ([9.0, 12.0, 6.0, 12.0], [9.0, 4.0, 5.0, 6.0]), "the top alone, on each");
+    let mode =
+        |h: &Harness<'_, DesignApp>, id: u64| h.state().session.active().unwrap().doc.item(designcraft_doc::ids::ItemId(id)).unwrap().wrap.mode;
+    assert_eq!((mode(&h, id), mode(&h, other)), (designcraft_doc::WrapMode::BoundingBox, designcraft_doc::WrapMode::Contour), "each keeps its mode");
+    // An object whose offsets are the same starts linked, though the link was off before.
+    let third = h.state_mut().run("frame.create", json!({"rect": [320, 72, 500, 200], "shape": "rectangle"})).unwrap()["id"].as_u64().unwrap();
+    h.state_mut().run("object.textWrap", json!({"mode": "boundingBox", "offset": 4, "ids": [third]})).unwrap();
+    h.state_mut().run("selection.set", json!({"ids": [third]})).unwrap();
+    h.run_steps(3);
+    let f = fields(&h);
+    type_in(&mut h, f[2], "8pt");
+    assert_eq!(of(&h, third), [8.0; 4], "linked again for this selection");
+}
+
+/// A row is as wide as its translated name needs: a long one isn't cut at a fixed width.
+#[test]
+fn preview_rows_fit_long_translated_names() {
+    let ctx = egui::Context::default();
+    let long = "Скругленный прямоугольник с обратным углом";
+    let mut widths = (0.0, 0.0);
+    let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+        egui::Area::new(egui::Id::unique("rows")).show(ui.ctx(), |ui| {
+            ui.set_max_width(10.0);
+            let r = preview_row(ui, false, long, 40.0, |_, _, _| {});
+            let text = ui.fonts_mut(|f| f.layout_no_wrap(long.to_string(), egui::FontId::proportional(12.0), egui::Color32::WHITE).size().x);
+            widths = (r.rect.width(), 40.0 + 12.0 + text);
+        });
+    });
+    out.textures_delta.clear();
+    assert!(widths.0 >= widths.1, "{widths:?}");
+}
+
+/// The corner shape list shows each shape's glyph beside its name, as InDesign's; a row picks
+/// the shape and the current one is marked.
+#[test]
+fn the_corner_shape_list_has_glyph_rows_and_picks_a_shape() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let id = app.run("frame.create", json!({"rect": [72, 72, 300, 200], "shape": "rectangle"})).unwrap()["id"].as_u64().unwrap();
+    app.run("selection.set", json!({"ids": [id]})).unwrap();
+    let mut h = panel(app);
+    h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Corner Shape").click();
+    h.run_steps(3);
+    let rows = ["None", "Fancy", "Bevel", "Inset", "Inverse Rounded", "Rounded"];
+    for r in rows {
+        let _ = h.get_by_role_and_label(egui::accesskit::Role::Button, r);
+    }
+    h.get_by_role_and_label(egui::accesskit::Role::Button, "Bevel").click();
+    h.run_steps(3);
+    let it = h.state().session.active().unwrap().doc.item(designcraft_doc::ids::ItemId(id)).unwrap().clone();
+    assert!(it.corners.corners.iter().all(|c| c.shape == designcraft_geom::corners::CornerShape::Bevel), "{:?}", it.corners);
+    h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Corner Shape").click();
+    h.run_steps(3);
+    use egui_kittest::kittest::NodeT;
+    let n = h.get_by_role_and_label(egui::accesskit::Role::Button, "Bevel");
+    assert_eq!(n.accesskit_node().toggled(), Some(egui::accesskit::Toggled::True), "the current shape is marked");
+    // The stroke type list has the same rows, by name.
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+    h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Stroke Type").click();
+    h.run_steps(3);
+    let _ = h.get_by_role_and_label(egui::accesskit::Role::Button, "Thick - Thin");
 }
 
 const CYAN: &str = "C=100 M=0 Y=0 K=0";
@@ -833,6 +1184,121 @@ fn apply_to_text_colours_a_text_frames_text_not_the_frame() {
     assert_eq!(doc.item(designcraft_doc::ids::ItemId(id)).unwrap().fill.swatch, "[None]", "the frame isn't");
 }
 
+/// The Align To button shows the target picked in its menu.
+#[test]
+fn the_align_to_button_shows_its_target() {
+    assert_eq!(align_to_icon("selection"), "align-to");
+    assert_eq!(align_to_icon("keyObject"), "align-to-key");
+    assert_eq!(align_to_icon("margins"), "align-to-margins");
+    assert_eq!(align_to_icon("page"), "align-to-page");
+    assert_eq!(align_to_icon("spread"), "align-to-spread");
+}
+
+#[test]
+fn apply_to_text_colours_the_text_of_several_text_frames() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let mut ids = vec![];
+    let mut stories = vec![];
+    for x in [72, 250, 430] {
+        let r = app.run("frame.create", json!({"rect": [x, 72, x + 150, 140], "content": "text", "text": "75%"})).unwrap();
+        ids.push(r["id"].as_u64().unwrap());
+        stories.push(designcraft_doc::StoryId(r["story"].as_u64().unwrap()));
+    }
+    app.run("selection.set", json!({"ids": ids})).unwrap();
+    let mut h = panel(app);
+    h.get_by_label("Fill swatch").click();
+    h.run_steps(3);
+    // Three text frames, as one: Apply To is offered.
+    assert!(h.query_by_label("Apply To:").is_some());
+    h.get_by_label("Text").click();
+    h.run_steps(3);
+    h.get_by_label(CYAN).click();
+    h.run_steps(3);
+    let doc = &h.state().session.active().unwrap().doc;
+    for (id, story) in ids.iter().zip(&stories) {
+        assert_eq!(doc.story(*story).unwrap().char_format_at(0).over.fill.as_deref(), Some(CYAN), "every frame's text is cyan");
+        assert_eq!(doc.item(designcraft_doc::ids::ItemId(*id)).unwrap().fill.swatch, "[None]", "the frames aren't");
+    }
+}
+
+/// Points selected with Direct Selection: InDesign's "Anchor Point(s)" panel, with Convert
+/// Points and the Delete Point(s) quick action, as in the Zero2Graphic tutorial (1:25).
+#[test]
+fn selected_points_show_convert_points_and_delete_points() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let a = app.run("frame.create", json!({"rect": [72, 72, 172, 172]})).unwrap()["id"].as_u64().unwrap();
+    let b = app.run("frame.create", json!({"rect": [200, 72, 300, 172]})).unwrap()["id"].as_u64().unwrap();
+    app.run("selection.set", json!({"anchors": [[a, 0, 0], [b, 0, 0]]})).unwrap();
+    assert_eq!(selection_title(&app, &super::super::sel_info(&app)), "Anchor Point(s)");
+    let mut h = panel(app);
+    // The four point types (Appearance has a Corner row too).
+    for tip in ["Plain", "Corner", "Smooth", "Symmetrical"] {
+        assert!(h.get_all_by_label(tip).next().is_some(), "{tip}");
+    }
+    assert!(h.query_by_label("Align").is_none(), "only the sections InDesign shows for points");
+    h.get_by_label("Delete Point(s)").click();
+    h.run_steps(3);
+    let d = &h.state().session.active().unwrap().doc;
+    for id in [a, b] {
+        assert_eq!(d.item(designcraft_doc::ids::ItemId(id)).unwrap().path.subpaths[0].anchors.len(), 3, "one point gone from each");
+    }
+}
+
+/// With points selected, Transform measures and moves the points: one corner of a frame shows
+/// that corner, not the frame, and X moves the corner alone; W spreads two points apart.
+#[test]
+fn transform_measures_and_moves_the_selected_points() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let a = app.run("frame.create", json!({"rect": [72, 72, 172, 172]})).unwrap()["id"].as_u64().unwrap();
+    let corner = |app: &DesignApp, i: usize| {
+        let d = &app.session.active().unwrap().doc;
+        let it = d.item(designcraft_doc::ids::ItemId(a)).unwrap();
+        it.xf * it.path.subpaths[0].anchors[i].p
+    };
+    let first = corner(&app, 0);
+    app.run("selection.set", json!({"anchors": [[a, 0, 0]]})).unwrap();
+    let i = super::super::sel_info(&app).unwrap();
+    assert_eq!((i.page_rect.width(), i.page_rect.height()), (0.0, 0.0), "a point, not the frame");
+    app.ui.ref_point = 0;
+    transform_anchors(&mut app, &json!({"x": i.page_rect.x0 + 10.0})).unwrap();
+    assert_eq!(corner(&app, 0), first + designcraft_geom::Vec2::new(10.0, 0.0), "the corner moved");
+    assert_eq!(corner(&app, 2), designcraft_geom::Point::new(172.0, 172.0), "the opposite corner stayed");
+    // Two points 100 pt apart, W 200 from the left: the right one goes 100 further.
+    app.run("selection.set", json!({"anchors": [[a, 0, 2], [a, 0, 3]]})).unwrap();
+    let (p2, p3) = (corner(&app, 2), corner(&app, 3));
+    let w = super::super::sel_info(&app).unwrap().page_rect.width();
+    transform_anchors(&mut app, &json!({"width": w * 2.0})).unwrap();
+    let (left, right) = if p2.x < p3.x { (2, 3) } else { (3, 2) };
+    let (pl, pr) = if left == 2 { (p2, p3) } else { (p3, p2) };
+    assert_eq!(corner(&app, left), pl, "the reference side stays");
+    assert!((corner(&app, right).x - (pr.x + w)).abs() < 1e-9, "spread to twice the width");
+}
+
+/// One point has no size: W and H show its frame's, greyed out, as InDesign; two points
+/// measure (and set) their own.
+#[test]
+fn one_selected_point_shows_its_frames_size_greyed() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let a = app.run("frame.create", json!({"rect": [72, 72, 172, 222]})).unwrap()["id"].as_u64().unwrap();
+    app.run("selection.set", json!({"anchors": [[a, 0, 0]]})).unwrap();
+    assert_eq!(super::super::sel_info(&app).unwrap().object_size, (100.0, 150.0));
+    let mut h = panel(app);
+    h.run_steps(2);
+    let greyed = |h: &Harness<'_, DesignApp>| {
+        h.query_all_by(|n| n.role() == egui::accesskit::Role::TextInput && n.is_disabled()).filter_map(|n| n.value()).collect::<Vec<_>>()
+    };
+    let u = units(h.state());
+    let f = |v| designcraft_geom::units::format_measure(v, u);
+    assert_eq!(greyed(&h), [f(100.0), f(150.0)], "the frame's W and H, greyed");
+    h.state_mut().run("selection.set", json!({"anchors": [[a, 0, 0], [a, 0, 2]]})).unwrap();
+    h.run_steps(2);
+    assert!(greyed(&h).is_empty(), "two points have a size of their own");
+}
+
 #[test]
 fn transform_flips_and_rotates_from_properties() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
@@ -859,4 +1325,287 @@ fn transform_flips_and_rotates_from_properties() {
     assert!((info["rotation"].as_f64().unwrap() - 90.0).abs() < 1e-6, "{info}");
     // The angle and scale fields are there.
     assert!(h.query_by(|n| n.role() == egui::accesskit::Role::TextInput && n.value().as_deref() == Some("90°")).is_some());
+}
+
+/// The vertical extent of Properties › Text Frame: from its heading (the last "Text Frame" label;
+/// the selection band above may say "Text Frame" too) to the Quick Actions heading.
+fn text_frame_band(h: &Harness<'_, DesignApp>) -> (f32, f32) {
+    let top = h.get_all_by_label("Text Frame").map(|n| n.rect().bottom()).fold(f32::MIN, f32::max);
+    (top, h.get_by_label("Quick Actions").rect().top())
+}
+
+/// The text fields of Properties › Text Frame, in reading order.
+fn text_frame_fields(h: &Harness<'_, DesignApp>) -> Vec<egui::Rect> {
+    let (top, bottom) = text_frame_band(h);
+    let mut v: Vec<egui::Rect> =
+        h.get_all_by_role(egui::accesskit::Role::TextInput).map(|n| n.rect()).filter(|r| r.center().y > top && r.center().y < bottom).collect();
+    v.sort_by(|a, b| (a.top(), a.left()).partial_cmp(&(b.top(), b.left())).unwrap());
+    v
+}
+
+/// Clicks the control labeled `label` inside Properties › Text Frame.
+fn click_in_text_frame(h: &mut Harness<'_, DesignApp>, label: &str) {
+    let (top, bottom) = text_frame_band(h);
+    h.get_all_by_label(label).find(|n| n.rect().center().y > top && n.rect().center().y < bottom).unwrap().click();
+    h.run_steps(3);
+}
+
+fn type_in_field(h: &mut Harness<'_, DesignApp>, at: egui::Rect, text: &str) {
+    h.hover_at(at.center());
+    h.drag_at(at.center());
+    h.drop_at(at.center());
+    h.run_steps(2);
+    h.event(egui::Event::Key { key: egui::Key::A, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND });
+    h.event(egui::Event::Text(text.into()));
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+}
+
+fn frame_options(app: &DesignApp, id: u64) -> designcraft_doc::TextFrameOptions {
+    app.session.active().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap().text_frame().unwrap().options.clone()
+}
+
+/// Properties › Text Frame shows the frame's inset spacing under the columns, linked while the
+/// four insets are the same, and the four vertical justification buttons. Each change is one
+/// undo step; the button that is already on adds none.
+#[test]
+fn properties_text_frame_sets_inset_spacing_and_vertical_justification() {
+    use designcraft_doc::VerticalJustification;
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let id = app.run("frame.create", json!({"rect": [72, 72, 300, 300], "content": "text", "text": "Hello"})).unwrap()["id"].as_u64().unwrap();
+    app.run("selection.set", json!({"ids": [id]})).unwrap();
+    let mut h = panel(app);
+    // Columns and gutter, then Top and Left, then Bottom and Right.
+    let f = text_frame_fields(&h);
+    assert_eq!(f.len(), 6, "columns, gutter and four insets: {f:?}");
+    let steps = undo_steps(h.state());
+    // Linked: the top inset sets all four.
+    type_in_field(&mut h, f[2], "12pt");
+    assert_eq!(frame_options(h.state(), id).inset, [12.0; 4]);
+    assert_eq!(undo_steps(h.state()), steps + 1);
+    // Unlinked: the bottom one alone.
+    click_in_text_frame(&mut h, "Make all settings the same");
+    let f = text_frame_fields(&h);
+    type_in_field(&mut h, f[4], "6pt");
+    assert_eq!(frame_options(h.state(), id).inset, [12.0, 12.0, 6.0, 12.0], "[top, left, bottom, right]");
+    // Vertical justification.
+    assert_eq!(frame_options(h.state(), id).vertical_justification, VerticalJustification::Top);
+    for (label, vj) in
+        [("Bottom", VerticalJustification::Bottom), ("Center", VerticalJustification::Center), ("Justify", VerticalJustification::Justify)]
+    {
+        click_in_text_frame(&mut h, label);
+        assert_eq!(frame_options(h.state(), id).vertical_justification, vj, "{label}");
+    }
+    let steps = undo_steps(h.state());
+    click_in_text_frame(&mut h, "Justify");
+    assert_eq!(undo_steps(h.state()), steps, "the button already on adds no undo step");
+    h.state_mut().run("edit.undo", json!({})).unwrap();
+    assert_eq!(frame_options(h.state(), id).vertical_justification, VerticalJustification::Center);
+}
+
+/// Insets unlinked before Revert start linked again in the reverted document, whose frame has the
+/// same id and four equal insets.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn properties_text_frame_inset_link_starts_linked_after_revert() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let id = app.run("frame.create", json!({"rect": [72, 72, 300, 300], "content": "text", "text": "Hello"})).unwrap()["id"].as_u64().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    app.run("file.saveAs", json!({"path": dir.path().join("revert.designcraft")})).unwrap();
+    app.run("selection.set", json!({"ids": [id]})).unwrap();
+    let mut h = panel(app);
+    click_in_text_frame(&mut h, "Make all settings the same");
+    h.state_mut().run("frame.create", json!({"rect": [320, 72, 400, 150], "content": "text", "text": "unsaved"})).unwrap();
+    h.state_mut().run("file.revert", json!({})).unwrap();
+    h.state_mut().run("selection.set", json!({"ids": [id]})).unwrap();
+    h.run_steps(3);
+    let f = text_frame_fields(&h);
+    type_in_field(&mut h, f[4], "6pt");
+    assert_eq!(frame_options(h.state(), id).inset, [6.0; 4], "linked: the bottom inset sets all four");
+}
+
+/// With the Type tool in the second frame of a thread, Properties shows the Text Frame section,
+/// and its insets and vertical justification change that frame and not the first.
+#[test]
+fn properties_text_frame_shows_while_typing_and_changes_the_caret_frame() {
+    use designcraft_doc::VerticalJustification;
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let text = (0..40).map(|i| format!("Line {i} of the threaded story.")).collect::<Vec<_>>().join(" ");
+    let a = app.run("frame.create", json!({"rect": [36, 36, 300, 120], "content": "text", "text": text})).unwrap();
+    let b = app.run("frame.create", json!({"rect": [36, 200, 300, 700], "content": "text", "text": "", "caret": false})).unwrap();
+    let (a, b, sid) = (a["id"].as_u64().unwrap(), b["id"].as_u64().unwrap(), a["story"].as_u64().unwrap());
+    app.run("text.thread", json!({"from": a, "to": b})).unwrap();
+    // The end of the story is in the second frame.
+    app.run("text.select", json!({"story": sid, "anchor": text.len()})).unwrap();
+    let mut h = panel(app);
+    let f = text_frame_fields(&h);
+    assert_eq!(f.len(), 6, "columns, gutter and four insets while typing: {f:?}");
+    type_in_field(&mut h, f[2], "9pt");
+    click_in_text_frame(&mut h, "Bottom");
+    let (oa, ob) = (frame_options(h.state(), a), frame_options(h.state(), b));
+    assert_eq!((oa.inset, ob.inset), ([0.0; 4], [9.0; 4]));
+    assert_eq!((oa.vertical_justification, ob.vertical_justification), (VerticalJustification::Top, VerticalJustification::Bottom));
+    assert!(h.state().session.active().unwrap().selection.text.is_some(), "the caret stays in the text");
+}
+
+/// A non-rectangular text frame shows one Inset, which sets the distance its text keeps from
+/// the outline. The composer also bounds its text by all four insets, so the field sets all four.
+#[test]
+fn properties_text_frame_shows_one_inset_for_an_oval() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let id = app.run("frame.create", json!({"rect": [72, 72, 300, 300], "shape": "ellipse", "content": "text", "text": "Hello"})).unwrap()["id"]
+        .as_u64()
+        .unwrap();
+    app.run("selection.set", json!({"ids": [id]})).unwrap();
+    let mut h = panel(app);
+    let f = text_frame_fields(&h);
+    assert_eq!(f.len(), 3, "columns, gutter and one inset: {f:?}");
+    h.state_mut().run("object.textFrameOptions", json!({"ids": [id], "inset": [1, 2, 3, 4]})).unwrap();
+    h.run_steps(2);
+    type_in_field(&mut h, f[2], "8pt");
+    assert_eq!(frame_options(h.state(), id).inset, [8.0; 4]);
+}
+
+/// Lowering an oval's uniform inset with the one Inset field lowers every side, so no hidden
+/// side keeps the old inset and the text area that goes with it.
+#[test]
+fn properties_text_frame_one_inset_lowers_a_uniform_inset_on_every_side() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let id = app.run("frame.create", json!({"rect": [72, 72, 300, 300], "shape": "ellipse", "content": "text", "text": "Hello"})).unwrap()["id"]
+        .as_u64()
+        .unwrap();
+    app.run("object.textFrameOptions", json!({"ids": [id], "inset": 96})).unwrap();
+    app.run("selection.set", json!({"ids": [id]})).unwrap();
+    let mut h = panel(app);
+    let f = text_frame_fields(&h);
+    assert_eq!(f.len(), 3, "columns, gutter and one inset: {f:?}");
+    type_in_field(&mut h, f[2], "0pt");
+    assert_eq!(frame_options(h.state(), id).inset, [0.0; 4]);
+}
+
+/// With selected text that runs from an oval into a rectangular frame, the one Inset field
+/// changes the top inset of both, and each frame keeps its other sides.
+#[test]
+fn properties_text_frame_one_inset_keeps_the_sides_of_a_rectangle_in_the_selection() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let text = (0..40).map(|i| format!("Line {i} of the threaded story.")).collect::<Vec<_>>().join(" ");
+    let a = app.run("frame.create", json!({"rect": [72, 72, 300, 300], "shape": "ellipse", "content": "text", "text": text})).unwrap();
+    let b = app.run("frame.create", json!({"rect": [72, 400, 300, 760], "content": "text", "text": "", "caret": false})).unwrap();
+    let (oval, rect, sid) = (a["id"].as_u64().unwrap(), b["id"].as_u64().unwrap(), a["story"].as_u64().unwrap());
+    app.run("text.thread", json!({"from": oval, "to": rect})).unwrap();
+    app.run("object.textFrameOptions", json!({"ids": [oval, rect], "inset": [1, 2, 3, 4]})).unwrap();
+    app.run("text.select", json!({"story": sid, "anchor": 0, "focus": text.len()})).unwrap();
+    assert_eq!(
+        designcraft_engine::cmd::text_frame_options_frames(&app.session),
+        [designcraft_doc::ItemId(oval), designcraft_doc::ItemId(rect)],
+        "the selected text runs through both frames"
+    );
+    let mut h = panel(app);
+    let f = text_frame_fields(&h);
+    assert_eq!(f.len(), 3, "columns, gutter and one inset for the first frame, an oval: {f:?}");
+    type_in_field(&mut h, f[2], "8pt");
+    assert_eq!(frame_options(h.state(), oval).inset, [8.0, 2.0, 3.0, 4.0]);
+    assert_eq!(frame_options(h.state(), rect).inset, [8.0, 2.0, 3.0, 4.0]);
+}
+
+/// With selected text that runs through two rectangular frames, the inset link starts off when
+/// one of them has uneven sides, even while the frame the section shows has four equal insets, so
+/// a changed Top leaves the other sides of each frame as they were.
+#[test]
+fn properties_text_frame_inset_link_starts_off_when_another_frame_has_uneven_sides() {
+    for even_first in [true, false] {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let text = (0..40).map(|i| format!("Line {i} of the threaded story.")).collect::<Vec<_>>().join(" ");
+        let a = app.run("frame.create", json!({"rect": [36, 36, 300, 120], "content": "text", "text": text})).unwrap();
+        let b = app.run("frame.create", json!({"rect": [36, 200, 300, 700], "content": "text", "text": "", "caret": false})).unwrap();
+        let (a, b, sid) = (a["id"].as_u64().unwrap(), b["id"].as_u64().unwrap(), a["story"].as_u64().unwrap());
+        app.run("text.thread", json!({"from": a, "to": b})).unwrap();
+        let (even, uneven) = if even_first { (a, b) } else { (b, a) };
+        app.run("object.textFrameOptions", json!({"ids": [even], "inset": 5})).unwrap();
+        app.run("object.textFrameOptions", json!({"ids": [uneven], "inset": [1, 2, 3, 4]})).unwrap();
+        app.run("text.select", json!({"story": sid, "anchor": 0, "focus": text.len()})).unwrap();
+        assert_eq!(
+            designcraft_engine::cmd::text_frame_options_frames(&app.session),
+            [designcraft_doc::ItemId(a), designcraft_doc::ItemId(b)],
+            "the selected text runs through both frames"
+        );
+        let mut h = panel(app);
+        let f = text_frame_fields(&h);
+        assert_eq!(f.len(), 6, "columns, gutter and four insets: {f:?}");
+        type_in_field(&mut h, f[2], "8pt");
+        assert_eq!(frame_options(h.state(), even).inset, [8.0, 5.0, 5.0, 5.0], "even frame first: {even_first}");
+        assert_eq!(frame_options(h.state(), uneven).inset, [8.0, 2.0, 3.0, 4.0], "even frame first: {even_first}");
+    }
+}
+
+/// A link turned on for one frame does not carry over to selected text that runs from that frame
+/// into a frame with uneven sides: the link starts off there, and a changed Top leaves the other
+/// sides as they were.
+#[test]
+fn properties_text_frame_inset_link_of_one_frame_does_not_carry_to_a_text_selection() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let text = (0..40).map(|i| format!("Line {i} of the threaded story.")).collect::<Vec<_>>().join(" ");
+    let a = app.run("frame.create", json!({"rect": [36, 36, 300, 120], "content": "text", "text": text})).unwrap();
+    let b = app.run("frame.create", json!({"rect": [36, 200, 300, 700], "content": "text", "text": "", "caret": false})).unwrap();
+    let (a, b, sid) = (a["id"].as_u64().unwrap(), b["id"].as_u64().unwrap(), a["story"].as_u64().unwrap());
+    app.run("text.thread", json!({"from": a, "to": b})).unwrap();
+    app.run("object.textFrameOptions", json!({"ids": [a], "inset": 5})).unwrap();
+    app.run("object.textFrameOptions", json!({"ids": [b], "inset": [1, 2, 3, 4]})).unwrap();
+    app.run("selection.set", json!({"ids": [a]})).unwrap();
+    let mut h = panel(app);
+    // Off, then on again: the link of the first frame alone is now turned on by hand.
+    click_in_text_frame(&mut h, "Make all settings the same");
+    click_in_text_frame(&mut h, "Make all settings the same");
+    // The caret at the start of the story is in the first frame; the selection runs into the second.
+    h.state_mut().run("text.select", json!({"story": sid, "anchor": text.len(), "focus": 0})).unwrap();
+    h.run_steps(3);
+    let f = text_frame_fields(&h);
+    assert_eq!(f.len(), 6, "columns, gutter and four insets: {f:?}");
+    type_in_field(&mut h, f[2], "8pt");
+    assert_eq!(frame_options(h.state(), a).inset, [8.0, 5.0, 5.0, 5.0]);
+    assert_eq!(frame_options(h.state(), b).inset, [8.0, 2.0, 3.0, 4.0]);
+}
+
+/// Type on a path sets one line along the path: Properties › Text Frame shows no insets and no
+/// vertical justification buttons for it.
+#[test]
+fn properties_text_frame_shows_no_insets_for_type_on_a_path() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let id = app.run("frame.create", json!({"rect": [72, 72, 300, 200], "shape": "ellipse"})).unwrap()["id"].as_u64().unwrap();
+    app.run("type.onPath", json!({"id": id, "text": "Around"})).unwrap();
+    app.run("selection.set", json!({"ids": [id]})).unwrap();
+    assert!(frame_options(&app, id).path.is_some());
+    let h = panel(app);
+    assert_eq!(text_frame_fields(&h).len(), 2, "columns and gutter only");
+    let (top, bottom) = text_frame_band(&h);
+    assert!(h.query_all_by_label("Justify").all(|n| n.rect().center().y < top || n.rect().center().y > bottom));
+}
+
+/// With the Type tool, the Text Frame section shows the frame Text Frame Options change: the frame
+/// the caret is drawn in, not the caret's stored frame.
+#[test]
+fn text_frame_section_shows_the_frame_that_shows_the_caret() {
+    use designcraft_doc::{ItemId, Selection, StoryId, TextSel};
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let text = (0..40).map(|i| format!("Line {i} of the threaded story.")).collect::<Vec<_>>().join(" ");
+    let a = app.run("frame.create", json!({"rect": [36, 36, 300, 120], "content": "text", "text": text})).unwrap();
+    let b = app.run("frame.create", json!({"rect": [36, 200, 300, 700], "content": "text", "text": "", "caret": false})).unwrap();
+    let (a, b, sid) = (a["id"].as_u64().unwrap(), b["id"].as_u64().unwrap(), a["story"].as_u64().unwrap());
+    app.run("text.thread", json!({"from": a, "to": b})).unwrap();
+    app.run("object.textFrameOptions", json!({"ids": [b], "columns": 3})).unwrap();
+    // The end of the story is drawn in the second frame; the caret's stored frame is the first.
+    app.session.doc_mut().unwrap().selection =
+        Selection::text(TextSel { story: StoryId(sid), anchor: text.len(), focus: text.len(), frame: Some(ItemId(a)), cell: None });
+    let shown = super::text::text_frame_target(&app).map(|(id, o, _)| (id, o.columns));
+    assert_eq!(shown, Some((ItemId(b), 3)));
 }

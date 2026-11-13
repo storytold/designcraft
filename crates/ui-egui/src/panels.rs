@@ -36,6 +36,9 @@ use crate::theme::Tokens;
 pub struct SelInfo {
     /// Bounds measured from the rulers' zero point (as the X/Y fields show them).
     pub page_rect: Rect,
+    /// Width and height of the selected objects themselves (with points selected, `page_rect`
+    /// measures the points).
+    pub object_size: (f64, f64),
     pub count: usize,
     pub fill: String,
     pub stroke: String,
@@ -53,11 +56,12 @@ pub struct SelInfo {
     /// Uniform corner (shape, size) — the first corner.
     pub corner: (designcraft_geom::corners::CornerShape, f64),
     pub wrap_invert: bool,
-    /// Text wrap side and contour type ids (`bothSides`, `sameAsClipping`, …).
-    pub wrap_side: String,
-    pub wrap_contour: String,
     /// Text wrap offsets: top, left, bottom, right.
     pub wrap_offsets: [f64; 4],
+    pub wrap_side: String,
+    pub wrap_contour: String,
+    /// Contour Options › Include Inside Edges (an Alpha Channel contour).
+    pub wrap_inside_edges: bool,
     pub locked: bool,
 }
 
@@ -80,6 +84,19 @@ pub fn color_target(app: &mut DesignApp) -> Option<(String, f32, String, f32)> {
     }
     let i = sel_info(app)?;
     Some((i.fill, sel_tint(app, false), i.stroke, sel_tint(app, true)))
+}
+
+/// [`color_target`], or with nothing selected the colours new shapes get (the Color and Swatches
+/// panels then edit those, as InDesign's do).
+pub fn color_target_or_defaults(app: &mut DesignApp) -> Option<(String, f32, String, f32)> {
+    color_target(app).or_else(|| {
+        let state = app.session.active()?;
+        if !state.selection.items.is_empty() || state.selection.text.is_some() || state.selection.cells.is_some() {
+            return None;
+        }
+        let colors = &state.doc.settings.new_object;
+        Some((colors.fill.clone(), colors.fill_tint, colors.stroke.clone(), colors.stroke_tint))
+    })
 }
 
 /// Apply a swatch (and tint) to the fill or stroke of what colour edits apply to.
@@ -162,6 +179,22 @@ pub fn guide_field(app: &DesignApp) -> Option<GuideField> {
     value.is_finite().then_some(GuideField { guide: *g, orientation: guide.orientation, value, origin, unit })
 }
 
+/// The anchor points selected with Direct Selection, each with where it is in its spread.
+pub fn selected_anchor_points(app: &DesignApp) -> Vec<((designcraft_doc::ItemId, usize, usize), designcraft_geom::Point)> {
+    let Some(st) = app.session.active() else { return vec![] };
+    let d = &st.doc;
+    st.selection
+        .anchors
+        .iter()
+        .filter_map(|&(id, si, ai)| {
+            let loc = d.find(id)?;
+            let it = d.item(id)?;
+            let a = it.path.subpaths.get(si)?.anchors.get(ai)?;
+            Some(((id, si, ai), (d.parent_xf(&loc) * it.xf) * a.p))
+        })
+        .collect()
+}
+
 pub fn sel_info(app: &DesignApp) -> Option<SelInfo> {
     let st = app.session.active()?;
     if st.selection.items.is_empty() {
@@ -183,7 +216,13 @@ pub fn sel_info(app: &DesignApp) -> Option<SelInfo> {
         };
         b = Some(b.map_or(ib, |r| r.union(ib)));
     }
-    let b = b?;
+    let object_size = b.map_or((0.0, 0.0), |r| (r.width(), r.height()));
+    // Points selected with Direct Selection: Transform measures the points, not their paths.
+    let points = selected_anchor_points(app);
+    let b = match points.split_first() {
+        Some(((_, p0), rest)) => rest.iter().fold(Rect::from_points(*p0, *p0), |r, (_, p)| r.union_pt(*p)),
+        None => b?,
+    };
     let first = d.item(st.selection.items[0])?;
     let loc = d.find(first.id)?;
     let o = d.ruler_origin(loc.spread, b.center().x)?;
@@ -201,6 +240,7 @@ pub fn sel_info(app: &DesignApp) -> Option<SelInfo> {
     };
     Some(SelInfo {
         page_rect: Rect::new(b.x0 - o.x, b.y0 - o.y, b.x1 - o.x, b.y1 - o.y),
+        object_size,
         count: st.selection.items.len(),
         fill: first.fill.swatch.clone(),
         stroke: first.stroke.swatch.clone(),
@@ -222,6 +262,7 @@ pub fn sel_info(app: &DesignApp) -> Option<SelInfo> {
         wrap_side: serde_json::to_value(tw.side).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(),
         wrap_contour: serde_json::to_value(tw.contour).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(),
         wrap_offsets: tw.offsets,
+        wrap_inside_edges: tw.inside_edges,
         locked: first.locked,
     })
 }
@@ -260,21 +301,13 @@ pub fn text_attrs(app: &mut DesignApp) -> Option<Value> {
     if v.is_null() { None } else { Some(serde_json::to_value(v).ok()?) }
 }
 
-/// Count preflight errors: overset stories (more checks land with the Preflight panel).
-pub fn preflight_errors(app: &DesignApp) -> usize {
-    // Memoized per document snapshot (the status bar asks every frame).
-    static MEMO: std::sync::Mutex<Option<(usize, usize)>> = std::sync::Mutex::new(None);
-    let Some(st) = app.session.active() else { return 0 };
-    let key = std::sync::Arc::as_ptr(&st.doc) as usize;
-    let mut g = MEMO.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some((k, n)) = *g
-        && k == key
-    {
-        return n;
+/// Count the preflight errors last found for the active document: `None` until its first check
+/// ends, and 0 with no document open.
+pub fn preflight_errors(app: &mut DesignApp, ctx: &egui::Context) -> Option<usize> {
+    match crate::preflight_worker::issues(app, ctx) {
+        Some(issues) => Some(issues.iter().filter(|i| i.severity == "error").count()),
+        None => app.session.active().is_none().then_some(0),
     }
-    let n = designcraft_engine::cmd::preflight::check(&app.session, 150.0).iter().filter(|i| i.severity == "error").count();
-    *g = Some((key, n));
-    n
 }
 
 /// Height of one swatch-menu row.

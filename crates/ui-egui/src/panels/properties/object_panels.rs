@@ -1,6 +1,7 @@
+use super::object::{anchor_transform_section, appearance_section};
 use super::{
-    Arrowhead, Cap, DesignApp, Join, Sense, Stroke, StrokeAlign, StrokeType, Tokens, Ui, Value, caption, divider, icon_toggle, icons, json, measure,
-    number, pos2, sel_info, text_attrs, units, vec2, widgets,
+    Arrowhead, Cap, DesignApp, Join, SelInfo, Sense, Stroke, StrokeAlign, StrokeType, Tokens, Ui, Value, caption, divider, full_width, icon_toggle,
+    icons, json, measure, number, outline_button, pos2, rule, section, section_row, sel_info, text_attrs, units, vec2, widgets,
 };
 
 /// Stroke panel: weight, cap, miter limit, join, alignment, type, arrowheads, gap colour.
@@ -285,11 +286,22 @@ pub fn wrap_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     ];
     wrap_combo(app, ui, "wrap_side", "Wrap To", &sides, &[], &i.wrap_side, "side");
     if i.wrap == "contour" && i.is_graphic {
-        // Detected edges, alpha channels and image paths aren't offered: composition doesn't read
-        // the image. An imported one shows by name and wraps around the frame.
-        let types = [("boundingBox", "Bounding Box"), ("graphicFrame", "Graphic Frame"), ("sameAsClipping", "Same as Clipping")];
-        let shown_only = [("detectEdges", "Detect Edges"), ("alphaChannel", "Alpha Channel"), ("photoshopPath", "Photoshop Path")];
+        // Detected edges and image paths aren't offered: they need the image's own analysis or
+        // paths. An imported one shows by name and wraps around the frame.
+        let types = [
+            ("boundingBox", "Bounding Box"),
+            ("alphaChannel", "Alpha Channel"),
+            ("graphicFrame", "Graphic Frame"),
+            ("sameAsClipping", "Same as Clipping"),
+        ];
+        let shown_only = [("detectEdges", "Detect Edges"), ("photoshopPath", "Photoshop Path")];
         wrap_combo(app, ui, "wrap_contour", "Contour Type", &types, &shown_only, &i.wrap_contour, "contour");
+        if i.wrap_contour == "alphaChannel" {
+            let mut inside = i.wrap_inside_edges;
+            if widgets::checkbox(ui, &mut inside, crate::i18n::tr(&app.ui.language, "Include Inside Edges")).changed() {
+                let _ = app.run("object.textWrap", json!({"insideEdges": inside}));
+            }
+        }
     }
 }
 
@@ -363,6 +375,37 @@ const CONVERT_SHAPE: [(&str, &str, &str); 9] = [
     ("shape-line", "line", "Line"),
     ("shape-orthogonal", "orthogonalLine", "Orthogonal Line"),
 ];
+
+/// Points selected with Direct Selection, as InDesign's Properties shows them: Transform,
+/// Appearance, Convert Points (the point type of the selected points) and Delete Point(s).
+pub(super) fn anchor_point_sections(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
+    section(ui, crate::i18n::tr(&app.ui.language, "Transform"), true);
+    anchor_transform_section(app, ui, i);
+    divider(ui);
+    section(ui, crate::i18n::tr(&app.ui.language, "Appearance"), true);
+    appearance_section(app, ui, i);
+    divider(ui);
+    let mut kind = None;
+    let lang = app.ui.language.clone();
+    section_row(ui, crate::i18n::tr(&lang, "Convert Points"), |ui| {
+        ui.spacing_mut().item_spacing.x = 14.0;
+        // Laid out from the right: last first, so the row reads Plain … Symmetrical.
+        for (icon, k, tip) in CONVERT_POINT.iter().rev() {
+            if icon_toggle(ui, icon, false, crate::i18n::tr(&lang, tip)).clicked() {
+                kind = Some(k);
+            }
+        }
+    });
+    if let Some(k) = kind {
+        let _ = app.run("path.convertPoints", json!({"kind": k}));
+    }
+    rule(ui);
+    section(ui, crate::i18n::tr(&app.ui.language, "Quick Actions"), true);
+    let fw = full_width(ui);
+    if outline_button(ui, crate::i18n::tr(&app.ui.language, "Delete Point(s)"), fw).clicked() {
+        let _ = app.run("path.deletePoints", json!({}));
+    }
+}
 
 /// Pathfinder panel › Convert Point: (icon, kind, tooltip).
 const CONVERT_POINT: [(&str, &str, &str); 4] = [
@@ -501,9 +544,12 @@ pub fn effects_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         let _ = app.run("object.dropShadow", json!({"on": on}));
     }
     if ds.on {
+        // Distance and Size in the document's unit, as in the Effects dialog: a bare `7` means the
+        // same in both.
+        let u = units(app);
         egui::Grid::new("dsg").num_columns(4).spacing(vec2(6.0, 4.0)).show(ui, |ui| {
             caption(ui, crate::i18n::tr(&app.ui.language, "Distance"));
-            if let Some(v) = number(ui, "dsd", Some(ds.distance), " pt", 56.0, 1) {
+            if let Some(v) = measure(ui, "dsd", Some(ds.distance), u, 56.0) {
                 let _ = app.run("object.dropShadow", json!({"on": true, "distance": v}));
             }
             caption(ui, crate::i18n::tr(&app.ui.language, "Angle"));
@@ -530,7 +576,7 @@ pub fn effects_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
                 let _ = app.run("object.dropShadow", json!({"on": true, "opacity": v / 100.0}));
             }
             caption(ui, crate::i18n::tr(&app.ui.language, "Size"));
-            if let Some(v) = number(ui, "dss", Some(ds.size), " pt", 50.0, 1) {
+            if let Some(v) = measure(ui, "dss", Some(ds.size), u, 56.0) {
                 let _ = app.run("object.dropShadow", json!({"on": true, "size": v}));
             }
             ui.end_row();
