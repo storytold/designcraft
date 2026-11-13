@@ -1,5 +1,6 @@
-//! Interchange formats: IDML (InDesign Markup Language) import and export, and INDD/INDT
-//! import (converted to IDML in memory by indd-utils).
+//! Interchange formats: IDML (InDesign Markup Language) import and export, INDD/INDT import
+//! (converted to IDML in memory by indd-utils), and the reading of InCopy stories (ICML) placed
+//! as text.
 //!
 //! A package's linked files are read from where the link points on this computer, then from the
 //! link's trailing names beside the package (where a package moved from its author's computer
@@ -173,6 +174,27 @@ fn import_report_with_previews(
     package: Option<&std::path::Path>,
     previews: &std::collections::HashMap<String, std::sync::Arc<Vec<u8>>>,
 ) -> Result<(Document, Vec<String>, std::collections::HashMap<String, designcraft_doc::StoryId>)> {
+    let designcraft_idml::Imported { document, warnings, story_ids } =
+        import_with_links(package, |read| designcraft_idml::import_idml_report_with_previews(bytes, read, previews), |r| &mut r.document)
+            .map_err(|e| EngineError::Other(e.to_string()))?;
+    Ok((document, warnings, story_ids))
+}
+
+/// [`designcraft_idml::import_icml`] with the graphics the story links to read from beside `file`
+/// (the ICML file, if it has one), as an IDML package's are.
+pub(crate) fn import_icml_confined(bytes: &[u8], file: Option<&std::path::Path>) -> designcraft_idml::Result<designcraft_idml::ImportedStory> {
+    import_with_links(file, |read| designcraft_idml::import_icml(bytes, read), |r| &mut r.document)
+}
+
+/// Run `import` with a reader of the files links name, found through [`read_packaged_link`]
+/// beside `package`. Then, in the document `doc` picks from the result, a link read from
+/// elsewhere than it says names the file read (so preflight and link updates find it), links
+/// relative to the package are resolved and placed PDFs' crops found.
+fn import_with_links<T>(
+    package: Option<&std::path::Path>,
+    import: impl FnOnce(&dyn Fn(&str) -> Option<Vec<u8>>) -> designcraft_idml::Result<T>,
+    doc: impl FnOnce(&mut T) -> &mut Document,
+) -> designcraft_idml::Result<T> {
     #[cfg(not(target_arch = "wasm32"))]
     let resolved = std::cell::RefCell::new(std::collections::HashMap::new());
     let read = |link: &str| -> Option<Vec<u8>> {
@@ -188,22 +210,20 @@ fn import_report_with_previews(
             None
         }
     };
-    let designcraft_idml::Imported { mut document, warnings, story_ids } =
-        designcraft_idml::import_idml_report_with_previews(bytes, &read, previews).map_err(|e| EngineError::Other(e.to_string()))?;
-    resolve_pdf_crops(&mut document);
+    let mut out = import(&read)?;
+    let document = doc(&mut out);
+    resolve_pdf_crops(document);
     #[cfg(not(target_arch = "wasm32"))]
-    let document = {
-        let mut document = document;
+    {
         for asset in document.assets.values_mut() {
             if let Some((path, fingerprint)) = asset.link.as_ref().and_then(|link| resolved.borrow().get(link).cloned()) {
                 // Relocated packages must also use the new path for preflight and link updates.
                 std::sync::Arc::make_mut(asset).set_link(Some(path), fingerprint);
             }
         }
-        resolve_packaged_links(&mut document, package);
-        document
-    };
-    Ok((document, warnings, story_ids))
+        resolve_packaged_links(document, package);
+    }
+    Ok(out)
 }
 
 /// Placed PDFs read from IDML name their crop (`PDFCrop`): find where each box sits on its page,

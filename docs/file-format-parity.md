@@ -1,6 +1,6 @@
 # File format parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-02 · **Change:** minor (package PDF soft effects, hyperlinks and export warnings; PDF/X-4 visible unembedded font detection, #909; IDML liquid guide types, #872; .indd and .indt open through indd-utils; XLSX cached values preserve numeric precision and text; shared print spooler; Windows CI passes; content-indexed asset deduplication, #727) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-09 · **Change:** minor (InCopy stories: `.icml` placed as text and written by Export Text; package PDF soft effects, hyperlinks and export warnings; PDF/X-4 visible unembedded font detection, #909; IDML liquid guide types, #872; .indd and .indt open through indd-utils; XLSX cached values preserve numeric precision and text; shared print spooler; Windows CI passes; content-indexed asset deduplication, #727) · **Target:** Adobe InDesign 2026 (21.6)
 
 Every format InDesign 2026 reads or writes, with DesignCraft's support, fidelity and tests. The
 InDesign list comes from its bundle's `Info.plist` (`CFBundleDocumentTypes`,
@@ -26,7 +26,8 @@ score below).
 | InDesign book | `.indb` | read/write | ✗ (own `.dcbook`) | ✗ | Books are shallow (see gaps.md) | 2% |
 | InDesign library | `.indl`, `.inlx` | read/write | ✗ (own `.dclib`) | ✗ | | 1% |
 | Snippet | `.idms` | read/write | ✗ (own snippets) | ✗ | | 1% |
-| InCopy story / assignment | `.icml`, `.icma`, `.incx`, `.inca` | read/write | ✗ | ✗ | InCopy workflow out of scope; ICML story import would still help | 1% |
+| InCopy story | `.icml` | read/write | ✓ (File › Place, as text: styles, swatches, footnotes, tables, cross-references, anchored images and text frames; Links panel updates) | ✓ (`file.exportText` icml: the story with what it uses, images embedded) | Read by the IDML importer, so it supports what IDML import does: hyperlinks keep their text, not their destinations. Synthetic tests (InDesign and Pandoc shapes, export → place round trips) in `crates/idml/src/import/icml/tests.rs` and `crates/engine/src/cmd/place_text/icml/tests.rs`; not yet opened in InDesign or InCopy | 1% |
+| InCopy assignment | `.icma`, `.incx`, `.inca` | read/write | ✗ | ✗ | InCopy assignment workflow out of scope | <1% |
 | InDesign Interchange (legacy) | `.inx` | read | ✗ | — | | <1% |
 | PageMaker | `.pmd`, `.p65`, `.t65`, `.pmt` | read | ✗ | — | | <1% |
 | QuarkXPress | `.qxd`, `.qxt` | read (old versions) | ✗ (#73) | — | | <1% |
@@ -113,15 +114,16 @@ up to 30 points.
 | IDML real-file corpus, metric, fixes (#193, #338, #339, #340) | 60–100 |
 | PDF/X-3, PDF presets and `.joboptions`, external validator | 30–60 |
 | Print fidelity, PostScript level 3 output and print presets | 25–45 |
-| ICML story import, IDMS snippets | 15–25 |
+| IDMS snippets | 8–15 |
 | HTML / fixed-layout EPUB with live text | 20–35 |
 | JPEG export dialog, SVG export, EPS export | 10–20 |
-| **Total** | **180–325** (150–250 excluding INDD and PostScript output) |
+| **Total** | **173–315** (143–240 excluding INDD and PostScript output) |
 
 ## Revision history
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-03 | minor | InCopy stories: File › Place reads `.icml` through the IDML importer (styles, swatches, lists, graphics and anchored frames come along; linked graphics beside the file; Links panel updates) and `file.exportText {format: "icml"}` writes a story with what it uses; assignments stay out of scope. Scores unchanged (1% weight row, untested in InDesign) |
 | 2026-10-19 | minor | PDF/X-4 export and `validate-pdf` report visible unembedded fonts by name and page, including placed forms; invisible text is exempt, operation- or depth-limited checks report incompleteness, and automatic font repair remains missing (#909) |
 | 2026-10-15 | minor | IDML retains liquid versus ruler guide types on document and parent pages, with literal XML and mixed-guide round-trip coverage; object liquid constraints remain unsupported (#872) |
 | 2026-10-13 | minor | Asset loading and compaction use content fingerprints with exact equality checks; tests cover equal-sized distinct buffers, shared copies, independent links and missing data (#727) |

@@ -22,6 +22,7 @@ use crate::{IdmlError, MIMETYPE, Result, base64_decode, sniff_image};
 
 mod document;
 mod frame;
+mod icml;
 mod item;
 mod object_style;
 mod package;
@@ -35,6 +36,7 @@ mod values;
 
 use document::IndexTopic;
 use frame::margins_of;
+pub use icml::{ImportedStory, MAX_ICML_BYTES, import_icml, is_icml};
 use package::Package;
 #[cfg(test)]
 pub(crate) use package::{percent_decode, uri_to_path};

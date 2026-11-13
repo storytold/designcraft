@@ -8,6 +8,9 @@ use super::{
     str_param,
 };
 
+/// File › Place (`file.place`): places a file given by `path` or `base64` (asking for one when
+/// neither is given). Layout pages, media, text files (plain, Word, RTF, InCopy) and graphics each
+/// go their own way; a frame named outright must not be locked.
 pub(super) fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
     // The file's size and time before it is read (a linked text file remembers them).
     let mut before = None;
@@ -42,8 +45,8 @@ pub(super) fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
     if let Some(mime) = designcraft_doc::media_mime(&name) {
         return crate::cmd::media::place_media(s, p, name, mime, bytes, link);
     }
-    // Text files (plain, Word, RTF) flow into frames.
-    if designcraft_textimport::is_text_file(&name) {
+    // Text files (plain, Word, RTF, InCopy stories) flow into frames.
+    if designcraft_textimport::is_text_file(&name) || crate::cmd::place_text::icml::is_icml_name(&name) {
         return crate::cmd::place_text::place_text(s, p, &name, &bytes, link, before);
     }
     let want_w = p

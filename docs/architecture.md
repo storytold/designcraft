@@ -1,6 +1,6 @@
 # DesignCraft architecture
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-27 · **Change:** minor (recovery writes on a background thread, streamed to disk) · **Target:** Adobe InDesign 2026
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-09 · **Change:** minor (InCopy stories (ICML) in the `idml` crate; earlier: recovery writes on a background thread, streamed to disk) · **Target:** Adobe InDesign 2026
 
 How DesignCraft is built today. The design notes behind it are in `plan/architecture.md`
 (local, gitignored); this file describes what the code on `main` does. Agents: AGENTS.md has the
@@ -22,7 +22,7 @@ lines of Rust, 1,122 tests (2026-10-10). Pure Rust, no C dependencies by default
 | L2 | `images` | decoding placed graphics (PNG, JPEG, GIF, WebP, TIFF incl. CMYK, BMP, PSD composite, EPS preview) | 1.6k |
 | L3 | `render` | document to pixels with vello_cpu (SIMD, multithreaded): items, composed text, images with mips, gradients, effects, damage regions, placed PDF via hayro | 3.5k |
 | L3 | `pdf` | PDF export through craft-pdf with Krilla: real text with subset fonts, CMYK and spot, bleed and marks, tagged PDF, links, forms, transitions, PDF/X-4 and PDF/A-2b | 5.0k |
-| L3 | `idml` | IDML import and export (designmap, spreads, parents, stories, styles, graphics, preferences; CJK and Arabic attributes) | 8.0k |
+| L3 | `idml` | IDML import and export (designmap, spreads, parents, stories, styles, graphics, preferences; CJK and Arabic attributes); InCopy stories (ICML) in and out | 8.0k |
 | L3 | `epub` | EPUB 3 reflowable and fixed-layout export | 0.9k |
 | L3 | `textimport` | Word (.docx), RTF, Excel (.xlsx), Tagged Text import; text export | 1.8k |
 | L3 | `format` | the native `.designcraft` zip (`document.json`, `assets/`, `meta.json`, optional `preview.png`), versioned | 0.3k |

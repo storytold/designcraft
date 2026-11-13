@@ -126,6 +126,10 @@ pub(super) fn has_story_target(s: &Session) -> std::result::Result<(), String> {
     crate::cmd::text::story_of(s, &Value::Null).map(|_| ()).ok_or_else(|| "edit text or select a text frame".into())
 }
 
+/// File › Export Text (`file.exportText`): writes the story being edited, or the selected frame's
+/// story, as plain text, RTF, tagged text or ICML. `format` wins; without it the path's
+/// extension decides (`.rtf`, `.icml`), and anything else is plain text. Without a path the text
+/// comes back in the result.
 pub(super) fn export_text(s: &mut Session, p: &Value) -> Result<Value> {
     const ID: &str = "file.exportText";
     let sid = crate::cmd::text::story_of(s, p).ok_or_else(|| bad(ID, "edit text or select a text frame"))?;
@@ -133,15 +137,21 @@ pub(super) fn export_text(s: &mut Session, p: &Value) -> Result<Value> {
     let story = doc.stories.get(&sid).ok_or_else(|| bad(ID, format!("no story {}", sid.0)))?;
     let path = str_param(p, "path");
     let format = match str_param(p, "format") {
-        Some(f @ ("rtf" | "tagged")) => f,
+        Some(f @ ("rtf" | "tagged" | "icml")) => f,
         Some("txt") | Some("text") => "txt",
-        Some(f) => return Err(bad(ID, format!("unknown format `{f}` (txt, rtf, tagged)"))),
+        Some(f) => return Err(bad(ID, format!("unknown format `{f}` (txt, rtf, tagged, icml)"))),
         None if path.is_some_and(|x| x.to_ascii_lowercase().ends_with(".rtf")) => "rtf",
+        None if path.is_some_and(|x| x.to_ascii_lowercase().ends_with(".icml")) => "icml",
         None => "txt",
     };
     let text = match format {
         "rtf" => designcraft_textimport::export::rtf(doc, story),
         "tagged" => designcraft_textimport::tagged::tagged_text(doc, story),
+        // InCopy Document: the story with the styles, swatches and graphics it uses.
+        "icml" => {
+            let bytes = designcraft_idml::export_icml(doc, sid).map_err(|e| bad(ID, e.to_string()))?;
+            String::from_utf8(bytes).map_err(|e| bad(ID, e.to_string()))?
+        }
         _ => designcraft_textimport::export::plain_text(doc, story),
     };
     match path {

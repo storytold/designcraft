@@ -79,6 +79,9 @@ pub(crate) fn export_epub(app: &mut DesignApp, p: &Value) -> Result<Value, Strin
     export_bytes(app, &q, "epub", "file.exportEpub")
 }
 
+/// Runs the export command `cmd` and writes its output to `path` (asking for a path, named after
+/// the document with `ext`, when there is none). For Export Text the path's extension picks the
+/// format: `.txt`, `.icml`, otherwise RTF.
 pub(super) fn export_bytes(app: &mut DesignApp, p: &Value, ext: &str, cmd: &str) -> Result<Value, String> {
     let st = app.session.active().ok_or("no document")?;
     let Some(path) = p.get("path").and_then(Value::as_str).map(str::to_string) else {
@@ -92,8 +95,14 @@ pub(super) fn export_bytes(app: &mut DesignApp, p: &Value, ext: &str, cmd: &str)
         _ => json!({}),
     };
     if cmd == "file.exportText" {
-        let txt = path.to_ascii_lowercase().ends_with(".txt");
-        params["format"] = json!(if txt { "txt" } else { "rtf" });
+        let lower = path.to_ascii_lowercase();
+        params["format"] = json!(if lower.ends_with(".txt") {
+            "txt"
+        } else if lower.ends_with(".icml") {
+            "icml"
+        } else {
+            "rtf"
+        });
     }
     let r = app.run(cmd, params)?;
     let bytes = match r["text"].as_str() {
