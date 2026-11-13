@@ -3722,7 +3722,7 @@ fn step_and_repeat_guides(s: &mut Session, offsets: &[Vec2]) -> Result<Option<Va
         let mut all = picked.clone();
         all.extend(made.iter().copied());
         *sel = Selection { guides: all, ..Default::default() };
-        let out: Vec<Value> = made.iter().map(|g| json!({"page": g.page, "index": g.index})).collect();
+        let out: Vec<Value> = made.iter().map(|g| json!({"spread": g.spread, "page": g.page, "index": g.index})).collect();
         Ok(json!({"created": out.len(), "guides": out}))
     })
     .map(Some)
