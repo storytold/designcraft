@@ -154,19 +154,20 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
 
 ### 12. Tables in depth (F)
 - **Have:** cell footnotes share the column-foot area with body notes; row groups reserve their
-  notes before fitting, and repeated headers/footers do not duplicate notes (#2611).
-- **Still missing:** cell-footnote numbering in the enclosing story (#2612), insertion (#2613),
+  notes before fitting, and repeated headers/footers do not duplicate notes (#2611). Cell notes
+  are numbered in the story's sequence (#2612).
+- **Still missing:** cell-footnote insertion (#2613),
   listing (#2614), and editing existing cell notes on the canvas. The caret currently resolves
   footnote ids only in the host story, not in its table cells. With Span Footnotes Across
   Columns in a multi-column frame, a cell note first placed in a later column does not rewind
   earlier columns overlapping its enlarged area; this needs the story-level relayout path.
-  Notes whose references are clipped by fixed-height rows also remain a follow-up.
+  Clipped fixed-height cells still print notes; filtering clipped references remains open.
 - **Missing:** anchored objects in cells not drawn (#163); Table ▸ Table Options and Cell Options
   submenus as InDesign lays them out, Diagonal Lines, Edit Header/Footer; general reliability
   (#20).
 - **Have:** table-cell footnotes continue the host story's numbering in logical reading order,
-  including RTL and nested tables (#2612). Notes still sit inside their cells (#2611 is separate).
-- **Limit:** page/spread/section restarts use the table's starting page for every cell when a
+  including RTL and nested tables (#2612), and print at the column foot with body notes (#2611).
+- **Limit:** page/spread/section restarts use the table's pre-pagination page for every cell when a
   table breaks across pages; numbering per placed row fragment remains open.
 - **Estimate:** 25–40 h.
 
@@ -300,7 +301,7 @@ Cue. These are excluded from every percentage.
 
 | Date | Change | Summary |
 |---|---|---|
-| 2026-11-13 | minor | Gap 12: table-cell notes share the column foot; cell-note editing remains open (#2611) |
+| 2026-11-13 | minor | Gap 12: table-cell notes share the column foot and the story's numbering sequence; cell-note editing remains open (#2611, #2612) |
 | 2026-11-04 | trivial | Gap 21 shrunk: pt-BR translates 2,936 of 2,939 strings, all but three Control panel captions (61% before) |
 | 2026-10-22 | minor | Gap 26 shrunk: autoflow threads a frame per column on the pages that follow the story's last frame, then adds pages at the end of the document |
 | 2026-10-19 | minor | Gap 28 added for remaining placed-PDF font embedding, substitution or outlining; visible unembedded font detection now ships in PDF/X-4 export and `validate-pdf`, with invisible text exempt and operation- or depth-limited checks reported incomplete (#909) |
