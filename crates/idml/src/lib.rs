@@ -84,32 +84,12 @@ pub type Result<T> = std::result::Result<T, IdmlError>;
 pub(crate) fn sniff_image(b: &[u8]) -> (Option<&'static str>, Option<(u32, u32)>) {
     let Some(format) = craft_file_formats::detect("", b) else { return (None, None) };
     let mime = format.mime_type();
-    let pixels = match format {
-        craft_file_formats::Format::Eps => designcraft_images::eps_pixel_size(b),
-        craft_file_formats::Format::Png
-        | craft_file_formats::Format::Jpeg
-        | craft_file_formats::Format::Bmp
-        | craft_file_formats::Format::Gif
-        | craft_file_formats::Format::Tiff
-        | craft_file_formats::Format::WebP
-        | craft_file_formats::Format::Tga
-        | craft_file_formats::Format::Ico
-        | craft_file_formats::Format::Pnm
-        | craft_file_formats::Format::Pcx
-        | craft_file_formats::Format::Xpm
-        | craft_file_formats::Format::Dds
-        | craft_file_formats::Format::Qoi
-        | craft_file_formats::Format::OpenExr
-        | craft_file_formats::Format::Hdr
-        | craft_file_formats::Format::Avif
-        | craft_file_formats::Format::Fits
-        | craft_file_formats::Format::Dpx
-        | craft_file_formats::Format::Jxl
-        | craft_file_formats::Format::Cineon
-        | craft_file_formats::Format::Dicom
-        | craft_file_formats::Format::Iff
-        | craft_file_formats::Format::Psd => designcraft_images::pixel_size(b),
-        _ => None,
+    let pixels = if format == craft_file_formats::Format::Eps {
+        designcraft_images::eps_pixel_size(b)
+    } else if mime.is_some_and(|mime| mime.starts_with("image/")) {
+        designcraft_images::pixel_size(b)
+    } else {
+        None
     };
     (mime, pixels)
 }
