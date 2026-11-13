@@ -1,6 +1,6 @@
 //! Hand (H) and Zoom (Z) tools.
 
-use designcraft_geom::Point;
+use designcraft_geom::{Point, Rect};
 use serde_json::json;
 
 use crate::{Action, Cursor, Mods, Overlay, PointerEvent, PointerKind, Tool, ToolContext};
@@ -573,13 +573,52 @@ impl Tool for PathTypeTool {
     }
 }
 
+struct GapDrag {
+    vertical: bool,
+    a: f64,
+    z: f64,
+    cross_lo: f64,
+    cross_hi: f64,
+    x_edges: [bool; 3],
+    y_edges: [bool; 3],
+    exclude: Vec<designcraft_doc::ItemId>,
+}
+
+impl GapDrag {
+    fn from_doc(doc: &designcraft_doc::Document, sr: designcraft_doc::SpreadRef, p: Point) -> Option<Self> {
+        let g = doc.find_gap(sr, p)?;
+        let mut exclude = Vec::with_capacity(g.before.len() + g.after.len());
+        exclude.extend_from_slice(&g.before);
+        exclude.extend_from_slice(&g.after);
+        let (mut cross_lo, mut cross_hi) = (f64::INFINITY, f64::NEG_INFINITY);
+        for id in &exclude {
+            if let Some(it) = doc.item(*id) {
+                let b = it.bounds();
+                let (lo, hi) = if g.vertical { (b.y0, b.y1) } else { (b.x0, b.x1) };
+                cross_lo = cross_lo.min(lo);
+                cross_hi = cross_hi.max(hi);
+            }
+        }
+        if !cross_lo.is_finite() || !cross_hi.is_finite() {
+            let c = if g.vertical { p.y } else { p.x };
+            cross_lo = c;
+            cross_hi = c;
+        }
+        let flags = [!g.before.is_empty(), !g.before.is_empty() && !g.after.is_empty(), !g.after.is_empty()];
+        let (x_edges, y_edges) = if g.vertical { (flags, [false; 3]) } else { ([false; 3], flags) };
+        Some(Self { vertical: g.vertical, a: g.a, z: g.z, cross_lo, cross_hi, x_edges, y_edges, exclude })
+    }
+}
+
 /// Gap tool (U): drag the space between objects (or between an object and the page edge); the
 /// objects on both sides resize so the gap moves.
 #[derive(Default)]
 pub struct GapTool {
     /// Spread, its spread → canvas transform and the press point in spread coordinates.
     start: Option<(designcraft_doc::SpreadRef, designcraft_geom::Affine, Point)>,
+    gap: Option<GapDrag>,
     active: bool,
+    guides: Vec<Overlay>,
 }
 
 impl Tool for GapTool {
@@ -590,15 +629,18 @@ impl Tool for GapTool {
     fn pointer(&mut self, cx: &ToolContext, ev: &PointerEvent) -> Vec<Action> {
         match ev.kind {
             PointerKind::Down => {
+                self.guides.clear();
+                self.gap = None;
                 if let Some((sr, p)) = cx.layout.spread_at(ev.pos) {
                     self.start = Some((sr, cx.layout.xf(sr), p));
+                    self.gap = GapDrag::from_doc(cx.doc, sr, p);
                 }
                 self.active = false;
                 vec![]
             }
             PointerKind::Drag => {
                 let Some((sr, xf, p)) = self.start else { return vec![] };
-                let d = (xf.inverse() * ev.pos) - p;
+                let mut d = (xf.inverse() * ev.pos) - p;
                 let mut out = vec![];
                 if !self.active {
                     if d.hypot() < cx.tol(2.0) {
@@ -606,6 +648,42 @@ impl Tool for GapTool {
                     }
                     self.active = true;
                     out.push(Action::Begin("Move Gap".into()));
+                }
+                self.guides.clear();
+                if !ev.mods.cmd
+                    && cx.snap.any()
+                    && let Some(gap) = &self.gap
+                {
+                    let proposed = if gap.vertical {
+                        Rect::new(gap.a + d.x, gap.cross_lo, gap.z + d.x, gap.cross_hi)
+                    } else {
+                        Rect::new(gap.cross_lo, gap.a + d.y, gap.cross_hi, gap.z + d.y)
+                    };
+                    let hit = crate::snap::snap(
+                        cx,
+                        crate::SnapRequest {
+                            spread: sr,
+                            gesture: crate::Gesture::Resize,
+                            rect: proposed,
+                            x_edges: gap.x_edges,
+                            y_edges: gap.y_edges,
+                            exclude: &gap.exclude,
+                            exclude_guides: &[],
+                            copying: false,
+                            lengths: [None, None],
+                            angle: None,
+                            radius: 0.0,
+                            pointer: p + d,
+                        },
+                    );
+                    if gap.vertical {
+                        if hit.delta.x.is_finite() {
+                            d.x += hit.delta.x;
+                        }
+                    } else if hit.delta.y.is_finite() {
+                        d.y += hit.delta.y;
+                    }
+                    self.guides = hit.guides;
                 }
                 out.push(Action::Preview(
                     "gap.move".into(),
@@ -615,10 +693,16 @@ impl Tool for GapTool {
             }
             PointerKind::Up => {
                 self.start = None;
+                self.gap = None;
+                self.guides.clear();
                 if std::mem::take(&mut self.active) { vec![Action::Commit] } else { vec![] }
             }
             _ => vec![],
         }
+    }
+
+    fn overlays(&self, _cx: &ToolContext) -> Vec<Overlay> {
+        self.guides.clone()
     }
 
     fn cursor(&self, _cx: &ToolContext, _p: Point, _m: Mods) -> Cursor {

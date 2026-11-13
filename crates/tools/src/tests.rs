@@ -2416,3 +2416,60 @@ fn direct_selection_marquee_selects_points_of_several_frames_and_drags_them_toge
     assert!(want.x.abs() < 1e-9 && (want.y.abs() - inc).abs() < 1e-9, "a quarter turn: {want:?}");
     assert!(moves(p).iter().all(|&(x, y)| (x - want.x).abs() < 1e-9 && (y - want.y).abs() < 1e-9), "{p}");
 }
+
+#[test]
+fn gap_tool_follows_snapping_settings() {
+    let mut d = Document::new(&NewDocument::default());
+    add_rect(&mut d, Rect::new(100.0, 100.0, 180.0, 200.0));
+    add_rect(&mut d, Rect::new(200.0, 100.0, 300.0, 200.0));
+    add_rect(&mut d, Rect::new(250.0, 250.0, 320.0, 350.0));
+    Arc::make_mut(&mut d.spreads[0]).pages[0].guides.push(Guide {
+        orientation: Orientation::Vertical,
+        position: 225.0,
+        spread: false,
+        locked: false,
+        layer: None,
+        liquid: false,
+    });
+    let sel = Selection::default();
+    let c = Cache::new();
+    let l = CanvasLayout::new(&d, false);
+    let p0 = spread_pt(&l, 190.0, 150.0);
+
+    let drag_dx = |snap: SnapView, mods: Mods, raw_dx: f64| -> (f64, Vec<Overlay>) {
+        let mut t = create("gap");
+        let cx = ToolContext { snap, ..ctx(&d, &sel, &c, &l) };
+        t.pointer(&cx, &PointerEvent::new(PointerKind::Down, p0.x, p0.y));
+        let drag = t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, p0.x + raw_dx, p0.y).with_mods(mods));
+        let Some(Action::Preview(cmd, p)) = drag.last() else { panic!("{drag:?}") };
+        assert_eq!(cmd, "gap.move");
+        let overlays = t.overlays(&cx);
+        t.pointer(&cx, &PointerEvent::new(PointerKind::Up, p0.x + raw_dx, p0.y).with_mods(mods));
+        (p["dx"].as_f64().unwrap(), overlays)
+    };
+
+    // Ruler guide at x = 225: gap right edge is 200 + 23 = 223, snaps +2 pt to 225.
+    let (dx, _) = drag_dx(SnapView::FACTORY, Mods::default(), 23.0);
+    assert!((dx - 25.0).abs() < 1e-6, "expected snap to guide (dx=25), got {dx}");
+
+    // Snapping off: stays at raw 23.0.
+    let (dx, overlays) = drag_dx(SnapView::OFF, Mods::default(), 23.0);
+    assert!((dx - 23.0).abs() < 1e-6, "expected unsnapped dx=23, got {dx}");
+    assert!(overlays.is_empty(), "expected no overlays when snap is off: {overlays:?}");
+
+    // Cmd suspends snapping: stays at raw 23.0.
+    let (dx, overlays) = drag_dx(SnapView::FACTORY, Mods { cmd: true, ..Default::default() }, 23.0);
+    assert!((dx - 23.0).abs() < 1e-6, "expected unsnapped dx=23 with Cmd, got {dx}");
+    assert!(overlays.is_empty(), "expected no overlays with Cmd: {overlays:?}");
+
+    // Smart guide alignment to third item's left edge (x = 250): gap left edge 180 + 68 = 248, snaps to 250 (dx = 70).
+    let (dx, overlays) = drag_dx(SnapView::FACTORY, Mods::default(), 68.0);
+    assert!((dx - 70.0).abs() < 1e-6, "expected smart-guide snap (dx=70), got {dx}");
+    assert!(overlays.iter().any(|o| matches!(o, Overlay::Guide { .. })), "expected alignment guide overlay: {overlays:?}");
+
+    // Smart guides disabled: no snap to third item.
+    let no_smart = SnapView { smart_guides: false, ..SnapView::FACTORY };
+    let (dx, overlays) = drag_dx(no_smart, Mods::default(), 68.0);
+    assert!((dx - 68.0).abs() < 1e-6, "expected no smart-guide snap when disabled, got {dx}");
+    assert!(overlays.is_empty(), "expected no guide overlay when smart_guides=false: {overlays:?}");
+}
