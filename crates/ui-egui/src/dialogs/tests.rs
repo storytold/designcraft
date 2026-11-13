@@ -1746,8 +1746,7 @@ fn text_frame_options_dims_the_sides_for_a_non_rectangular_frame() {
         let r = app.run("frame.create", json!({"rect": [36, 36, 336, 236], "shape": shape, "content": "text", "text": "Hello"})).unwrap();
         app.run("selection.set", json!({"ids": [r["id"]]})).unwrap();
         app.ui.dialog = Some(Dialog::new("textFrameOptions", json!({})));
-        // The General tab's Columns and Align dropdowns have no accessible name yet.
-        let mut h = Harness::builder().with_size(egui::vec2(1000.0, 800.0)).with_accessibility_check(false).build_ui_state(
+        let mut h = Harness::builder().with_size(egui::vec2(1000.0, 800.0)).build_ui_state(
             |ui, app: &mut DesignApp| {
                 let key = egui::Id::unique("text_frame_inset_test_fonts");
                 if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
@@ -1760,17 +1759,31 @@ fn text_frame_options_dims_the_sides_for_a_non_rectangular_frame() {
             app,
         );
         h.run_steps(3);
-        for side in ["insetTop", "insetLeft", "insetBottom", "insetRight"] {
-            let label = format!("Increase tfo_{side}");
+        // The Columns and Align dropdowns carry their captions as accessible names.
+        for name in ["Columns:", "Align:"] {
+            let _ = h.get_by_role_and_label(egui::accesskit::Role::ComboBox, name);
+        }
+        // The numeric fields and their spinners are named from the captions beside them.
+        for name in ["Number", "Width", "Gutter", "Maximum", "Paragraph Spacing Limit"] {
+            let _ = h.get_by_role_and_label(egui::accesskit::Role::TextInput, name);
+            let _ = h.get_by_label(&format!("Increase {name}"));
+        }
+        for side in ["Top", "Left", "Bottom", "Right"] {
+            let _ = h.get_by_role_and_label(egui::accesskit::Role::TextInput, side);
+            let label = format!("Increase {side}");
             assert_eq!(h.get_by_label(&label).accesskit_node().is_disabled(), shaped, "{shape}: {side}");
         }
         assert_eq!(h.query_by_label("Inset:").is_some(), shaped, "{shape}: the Inset caption");
-        assert_eq!(h.query_by_label("Increase tfo_inset").is_some(), shaped, "{shape}: the Inset field");
+        assert_eq!(h.query_by_role_and_label(egui::accesskit::Role::TextInput, "Inset").is_some(), shaped, "{shape}: the Inset editor");
+        assert_eq!(h.query_by_label("Increase Inset").is_some(), shaped, "{shape}: the Inset field");
         // The General tab fits in the dialog's fixed height: the buttons stay put on another tab.
         let (wrap, cancel) = (h.get_by_label("Ignore Text Wrap").rect().bottom(), h.get_by_label("Cancel").rect().top());
         assert!(wrap < cancel, "{shape}: Ignore Text Wrap ends at {wrap}, below the top of Cancel at {cancel}");
-        h.get_by_label("Auto-Size").click();
-        h.run_steps(3);
+        // Every tab names its inputs (the harness checks after each settled run).
+        for tab in ["Column Rules", "Baseline Options", "Auto-Size"] {
+            h.get_by_label(tab).click();
+            h.run();
+        }
         assert_eq!(h.get_by_label("Cancel").rect().top(), cancel, "{shape}: the buttons stay put on another tab");
         h.get_by_label("General").click();
         h.run_steps(3);
