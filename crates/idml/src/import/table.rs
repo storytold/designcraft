@@ -56,8 +56,7 @@ impl<'r> Importer<'r> {
     /// `<Table>`: rows, columns and cells (cell `Name` is `column:row`).
     pub(super) fn table(&mut self, e: &El) -> Option<Table> {
         let table_options = craft_idml::model::Values::of(&crate::xml::to_craft(e)).table_options();
-        let rows: Vec<&El> = e.find_all("Row").collect();
-        let cols: Vec<&El> = e.find_all("Column").collect();
+        let layout = craft_idml::model::TableLayout::from_el(&crate::xml::to_craft(e));
         // A file's row and column counts are its claim, and a table of them is allocated whole: a
         // story holding one `<Table>` with 5,000 of each asked for 25M cells, around 34 GB, which
         // aborts the process instead of failing (#1583). What is read is clamped, and the rest of
@@ -66,7 +65,7 @@ impl<'r> Importer<'r> {
         //
         // Reserved before `Table::new`, so a cell's own story cannot spend the budget this table
         // is counting on.
-        let Some((nr, nc, over_budget)) = budgeted_size(rows.len().max(1), cols.len().max(1), self.table_cells) else {
+        let Some((nr, nc, over_budget)) = budgeted_size(layout.rows.len().max(1), layout.columns.len().max(1), self.table_cells) else {
             // Said once: the file that reaches this is the one with millions of tables in it.
             if !self.table_budget_spent {
                 self.table_budget_spent = true;
@@ -77,13 +76,15 @@ impl<'r> Importer<'r> {
             return None;
         };
         self.table_cells = self.table_cells.saturating_add(nr.saturating_mul(nc));
-        if nr < rows.len() || nc < cols.len() {
+        if nr < layout.rows.len() || nc < layout.columns.len() {
             let why = if over_budget { "more than the tables in one file can hold between them" } else { "more than a table can hold" };
             self.table_warnings += 1;
             match self.table_warnings.cmp(&MAX_TABLE_WARNINGS) {
-                std::cmp::Ordering::Less => {
-                    self.warnings.push(format!("a table of {} rows and {} columns was read as {nr} x {nc}: {why}", rows.len(), cols.len()))
-                }
+                std::cmp::Ordering::Less => self.warnings.push(format!(
+                    "a table of {} rows and {} columns was read as {nr} x {nc}: {why}",
+                    layout.rows.len(),
+                    layout.columns.len()
+                )),
                 std::cmp::Ordering::Equal => {
                     self.warnings.push(format!("more than {MAX_TABLE_WARNINGS} tables were read smaller than this file claims"))
                 }
@@ -91,8 +92,8 @@ impl<'r> Importer<'r> {
             }
         }
         let id = self.alloc();
-        let rows = &rows[..nr.min(rows.len())];
-        let cols = &cols[..nc.min(cols.len())];
+        let rows = &layout.rows[..nr.min(layout.rows.len())];
+        let cols = &layout.columns[..nc.min(layout.columns.len())];
         let mut t = Table::new(id, nr, nc, 0, 0, 0.0);
         t.options.direction = if table_options.direction.as_deref() == Some("RightToLeftDirection") {
             designcraft_doc::TextDirection::RightToLeft
@@ -100,12 +101,12 @@ impl<'r> Importer<'r> {
             designcraft_doc::TextDirection::LeftToRight
         };
         for (r, re) in rows.iter().enumerate() {
-            let auto = re.boolean("AutoGrow").unwrap_or(true);
+            let auto = re.auto_grow().unwrap_or(true);
             t.rows[r].mode = if auto { RowHeightMode::AtLeast } else { RowHeightMode::Exactly };
-            t.rows[r].height = if auto { re.num("MinimumHeight").unwrap_or(3.0) } else { re.num("SingleRowHeight").unwrap_or(12.0) };
+            t.rows[r].height = if auto { re.minimum_height().unwrap_or(3.0) } else { re.single_row_height().unwrap_or(12.0) };
         }
         for (c, ce) in cols.iter().enumerate() {
-            t.columns[c].width = ce.num("SingleColumnWidth").unwrap_or(72.0).max(3.0);
+            t.columns[c].width = ce.single_column_width().unwrap_or(72.0).max(3.0);
         }
         let h = table_options.header_rows.unwrap_or(0.0) as usize;
         let f = table_options.footer_rows.unwrap_or(0.0) as usize;
