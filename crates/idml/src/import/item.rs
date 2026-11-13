@@ -1,6 +1,6 @@
 use super::frame::{Prefs, text_frame_options, text_wrap};
 use super::package::uri_to_path;
-use super::values::{nums, parse_affine, tint};
+use super::values::tint;
 use super::{
     Affine, Anchor, Arc, Asset, AssetId, Content, Corner, CornerOptions, El, Fill, Importer, Item, ItemId, OBJECT_BUILTINS, PathData, Point, Shape,
     Story, StoryId, Stroke, SubPath, TextFrame, TextFrameOptions, names, sniff_image, swatch, unescape_id,
@@ -211,7 +211,7 @@ impl<'r> Importer<'r> {
                 if let Some(graphic) = model_item.graphics().next() {
                     let graphic_xml = crate::xml::from_craft(graphic.to_el());
                     item.content = self.graphic(&graphic_xml, graphic);
-                    let fill = self.image_fill(&graphic_xml);
+                    let fill = self.image_fill(graphic);
                     if let Content::Graphic(gr) = &mut item.content {
                         gr.fill = fill;
                     }
@@ -245,10 +245,10 @@ impl<'r> Importer<'r> {
 
     /// The swatch applied to a placed image (`FillColor`, `FillTint`): it colours a greyscale or
     /// bitmap image. Black at 100% is how InDesign writes an image nobody coloured: no swatch.
-    fn image_fill(&mut self, g: &El) -> Fill {
-        let Some(r) = g.get("FillColor") else { return Fill::none() };
+    fn image_fill(&mut self, graphic: &craft_idml::model::Graphic) -> Fill {
+        let Some(r) = graphic.fill_color() else { return Fill::none() };
         let swatch = self.swatch_ref(r);
-        let tint = tint(g.num("FillTint")).unwrap_or(1.0);
+        let tint = tint(graphic.fill_tint()).unwrap_or(1.0);
         if swatch == swatch::BLACK && tint >= 1.0 {
             return Fill::none();
         }
@@ -262,22 +262,16 @@ impl<'r> Importer<'r> {
             parents: options.parents,
         });
         if layer_options.as_ref().is_some_and(designcraft_doc::GraphicLayerOptions::has_visibility_overrides) {
-            self.warnings.push(format!("graphic {}: {}", g.get("Self").unwrap_or("(unnamed)"), designcraft_doc::GRAPHIC_LAYER_RENDERING_WARNING));
+            self.warnings.push(format!("graphic {}: {}", model.self_id().unwrap_or("(unnamed)"), designcraft_doc::GRAPHIC_LAYER_RENDERING_WARNING));
         }
-        let gxf = parse_affine(g.get("ItemTransform"));
-        let (l, t, r, b) = match g.prop_el("GraphicBounds") {
-            Some(gb) => {
-                (gb.num("Left").unwrap_or(0.0), gb.num("Top").unwrap_or(0.0), gb.num("Right").unwrap_or(0.0), gb.num("Bottom").unwrap_or(0.0))
-            }
-            None => (0.0, 0.0, 0.0, 0.0),
-        };
+        let gxf = Affine::new(model.item_transform());
+        let [l, t, r, b] = model.bounds();
         let size = ((r - l).abs(), (b - t).abs());
         let wrap =
-            if g.get("AppliedObjectStyle").is_some() { self.with_style(g, "TextWrapPreference") } else { g.find("TextWrapPreference").cloned() };
+            if model.applied_object_style().is_some() { self.with_style(g, "TextWrapPreference") } else { g.find("TextWrapPreference").cloned() };
         let wrap = wrap.map(|w| text_wrap(&w)).unwrap_or_default();
         let clip = clipping_path(g, Affine::translate((-l, -t)));
-        let link = g.find("Link");
-        let uri = link.and_then(|k| k.get("LinkResourceURI")).map(uri_to_path);
+        let uri = model.link().and_then(|link| link.uri()).map(uri_to_path);
         let graphic = |asset, size| {
             Content::Graphic(designcraft_doc::Graphic {
                 layer_options: layer_options.clone(),
@@ -318,12 +312,12 @@ impl<'r> Importer<'r> {
         }
         // A linked file that can't be read shows the document's preview of it, if it has one. The
         // preview only stands in for the file: format and pixel size still describe the link.
-        let preview = data.is_empty().then(|| g.get("Self").and_then(|s| self.previews.get(s))).flatten();
+        let preview = data.is_empty().then(|| model.self_id().and_then(|s| self.previews.get(s))).flatten();
         // InDesign draws a viewBox-only SVG at one unit to the point: its GraphicBounds are the
         // art's bounds, which can overhang the viewBox, so they must not size the viewBox.
         let size = craft_svg::sniff::viewbox_size(&data).unwrap_or(size);
         let (mime, px) = if preview.is_some() { (None, None) } else { sniff_image(&data) };
-        let mime = mime.map(str::to_string).unwrap_or_else(|| match link.and_then(|k| k.get("LinkResourceFormat")).unwrap_or("") {
+        let mime = mime.map(str::to_string).unwrap_or_else(|| match model.link().and_then(|link| link.format()).unwrap_or("") {
             f if f.contains("EPS") || g.local() == "EPS" => "application/postscript".into(),
             f if f.contains("JPEG") => "image/jpeg".into(),
             f if f.contains("TIFF") => "image/tiff".into(),
@@ -332,8 +326,8 @@ impl<'r> Importer<'r> {
             _ => "image/png".into(),
         });
         let pixels = px.or_else(|| {
-            let ppi = nums(g.get("ActualPpi").unwrap_or(""));
-            (ppi.len() == 2 && size.0 > 0.0).then(|| ((size.0 * ppi[0] / 72.0).round() as u32, (size.1 * ppi[1] / 72.0).round() as u32))
+            let ppi = model.actual_ppi()?;
+            (size.0 > 0.0).then(|| ((size.0 * ppi[0] / 72.0).round() as u32, (size.1 * ppi[1] / 72.0).round() as u32))
         });
         let name =
             uri.as_deref().and_then(|p| p.rsplit(['/', '\\']).next()).filter(|n| !n.is_empty()).map(str::to_string).unwrap_or_else(|| "image".into());
