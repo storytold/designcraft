@@ -4078,7 +4078,11 @@ mod step_repeat_tests {
         assert_eq!(s.doc().unwrap().selection.guides.len(), 1, "a new guide is selected, as in InDesign");
         let r = s.execute("edit.stepAndRepeat", &json!({"count": 2, "dx": 30.0, "dy": 999.0})).unwrap();
         assert_eq!(r["created"], 2);
-        assert_eq!(r["guides"][0], json!({"spread": {"kind": "doc", "index": 0}, "page": 0, "index": 1}), "a copy says which spread, page and index it went into");
+        assert_eq!(
+            r["guides"][0],
+            json!({"spread": {"kind": "doc", "index": 0}, "page": 0, "index": 1}),
+            "a copy says which spread, page and index it went into"
+        );
         assert_eq!(positions(&s, Orientation::Vertical), vec![100.0, 130.0, 160.0], "a vertical guide takes `dx` and ignores `dy`");
         assert_eq!(s.doc().unwrap().selection.guides.len(), 3, "the guide and its copies stay selected");
         s.execute("edit.undo", &json!({})).unwrap();
