@@ -33,7 +33,7 @@ mod text_attrs;
 mod values;
 
 use document::IndexTopic;
-use frame::margins_of;
+use frame::margins_of_el;
 use package::Package;
 #[cfg(test)]
 pub(crate) use package::{percent_decode, uri_to_path};
@@ -349,7 +349,7 @@ impl<'r> Importer<'r> {
                     }
                 }
                 "MarginPreference" => {
-                    let (m, c) = margins_of(e);
+                    let (m, c) = margins_of_el(e);
                     self.default_margins = Some((m, c));
                 }
                 "ViewPreference" => {

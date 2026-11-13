@@ -66,7 +66,7 @@ impl<'r> Importer<'r> {
                 .and_then(|sp| sp.pages.get(sp.parent_page_at(side, index)?))
                 .map(|q| (q.margins, q.columns.clone()))
         };
-        let preference = p.margin_preference().map(|v| crate::xml::from_craft(v.element("MarginPreference")));
+        let preference = p.margin_settings();
         let (margins, columns) = match (preference.as_ref(), &from_parent) {
             (Some(m), _) => {
                 let (margins, columns) = margins_of(m);

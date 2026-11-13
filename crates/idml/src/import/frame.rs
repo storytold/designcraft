@@ -17,13 +17,21 @@ pub(super) fn text_wrap(w: &El) -> TextWrap {
     tw
 }
 
-pub(super) fn margins_of(m: &El) -> (Margins, Columns) {
-    let g = |k: &str, d: f64| m.num(k).filter(|v| v.is_finite()).unwrap_or(d);
-    let margins = Margins { top: g("Top", 36.0), bottom: g("Bottom", 36.0), inside: g("Left", 36.0), outside: g("Right", 36.0) };
-    let count = g("ColumnCount", 1.0).clamp(1.0, f64::from(designcraft_doc::MAX_COLUMNS)) as u32;
-    let gutter = g("ColumnGutter", 12.0);
-    let positions = m.get("ColumnsPositions").and_then(|s| custom_columns(s, count, gutter));
+pub(super) fn margins_of(m: &craft_idml::model::MarginPreference) -> (Margins, Columns) {
+    let margins = Margins {
+        top: m.top().unwrap_or(36.0),
+        bottom: m.bottom().unwrap_or(36.0),
+        inside: m.left().unwrap_or(36.0),
+        outside: m.right().unwrap_or(36.0),
+    };
+    let count = m.column_count().unwrap_or(1.0).clamp(1.0, f64::from(designcraft_doc::MAX_COLUMNS)) as u32;
+    let gutter = m.column_gutter().unwrap_or(12.0);
+    let positions = m.column_positions(2 * count as usize + 1).and_then(|pos| custom_columns(&pos, count, gutter));
     (margins, Columns { count, gutter, positions })
+}
+
+pub(super) fn margins_of_el(m: &El) -> (Margins, Columns) {
+    margins_of(&craft_idml::model::MarginPreference::from_el(&crate::xml::to_craft(m)))
 }
 
 /// `ColumnsPositions` when the column guides have been dragged off the even split: `2 × count`
@@ -32,16 +40,14 @@ pub(super) fn margins_of(m: &El) -> (Margins, Columns) {
 /// an even set is dropped: `positions` means "custom", and keeping an even copy would freeze the
 /// columns against a later change of count or gutter. Anything malformed is the even split; at
 /// most one number past `2 × count` is parsed, so a long list costs nothing.
-fn custom_columns(s: &str, count: u32, gutter: f64) -> Option<Vec<f64>> {
-    let want = 2 * count as usize;
-    let pos = s.split_whitespace().take(want + 1).map(|v| v.parse::<f64>().ok()).collect::<Option<Vec<f64>>>()?;
+fn custom_columns(pos: &[f64], count: u32, gutter: f64) -> Option<Vec<f64>> {
     let width = *pos.last()?;
-    if !designcraft_doc::valid_column_positions(&pos, count, width) {
+    if !designcraft_doc::valid_column_positions(pos, count, width) {
         return None;
     }
     let even = Columns { count, gutter, positions: None }.edges(width);
     // The tolerance only absorbs float noise in InDesign's arithmetic; a dragged guide moves far more.
-    pos.iter().zip(&even).any(|(a, b)| (a - b).abs() > 1e-4).then_some(pos)
+    pos.iter().zip(&even).any(|(a, b)| (a - b).abs() > 1e-4).then(|| pos.to_vec())
 }
 
 /// `columns` with custom positions only when they fit the margin box of a `page_width`-wide page
@@ -351,7 +357,7 @@ mod page_column_import_safety_tests {
                 .attr("Bottom", "-inf")
                 .attr("Left", "NaN")
                 .attr("Right", "1e309");
-            let (margins, columns) = margins_of(&m);
+            let (margins, columns) = margins_of_el(&m);
             assert_eq!(columns.count, expected);
             assert_eq!(columns.gutter, 12.);
             assert_eq!(margins, Margins::uniform(36.));
@@ -364,7 +370,7 @@ mod page_column_import_safety_tests {
     fn hostile_column_positions_fall_back_to_the_even_split() {
         let positions = |count: &str, raw: &str| {
             let m = El::new("MarginPreference").attr("ColumnCount", count).attr("ColumnGutter", "20").attr("ColumnsPositions", raw);
-            margins_of(&m).1.positions
+            margins_of_el(&m).1.positions
         };
         assert_eq!(positions("2", "0 150 170 450"), Some(vec![0., 150., 170., 450.]));
         let huge = (0..10_000).map(|i| i.to_string()).collect::<Vec<_>>().join(" ");
@@ -391,7 +397,7 @@ mod page_column_import_safety_tests {
         // makes them custom.
         let gapless = |raw: &str| {
             let m = El::new("MarginPreference").attr("ColumnCount", "216").attr("ColumnGutter", "0").attr("ColumnsPositions", raw);
-            margins_of(&m).1.positions
+            margins_of_el(&m).1.positions
         };
         let edges = |first_right: &str| {
             (0..432).map(|i| if i == 1 { first_right.to_string() } else { ((i + 1) / 2).to_string() }).collect::<Vec<_>>().join(" ")
