@@ -1,5 +1,5 @@
 use super::common::{anchor_self, bool_s, p, uid, with_props, xref_format_self};
-use super::{CHAR_BUILTINS, DOM_VERSION, Document, El, Ex, HashSet, PARA_BUILTINS, PKG_NS, escape_id, names, num};
+use super::{CHAR_BUILTINS, DOM_VERSION, Document, El, Ex, HashSet, PARA_BUILTINS, escape_id, names, num};
 
 impl<'a> Ex<'a> {
     // ---------- designmap ----------
@@ -8,7 +8,7 @@ impl<'a> Ex<'a> {
         let d = self.d;
         let story_list: Vec<String> = d.stories.keys().map(|k| uid(k.0)).collect();
         let mut root = El::new("Document")
-            .attr("xmlns:idPkg", PKG_NS)
+            .attr("xmlns:idPkg", craft_idml::PACKAGING_NS)
             .attr("DOMVersion", DOM_VERSION)
             .attr("Self", "d")
             .attr("StoryList", story_list.join(" "))
@@ -261,7 +261,7 @@ impl<'a> Ex<'a> {
     }
 }
 
-pub(super) const CONTAINER: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<container version=\"1.0\" xmlns=\"urn:oasis:names:tc:opendocument:xmlns:container\">\n\t<rootfiles>\n\t\t<rootfile full-path=\"designmap.xml\" media-type=\"text/xml\"/>\n\t</rootfiles>\n</container>\n";
+pub(super) const CONTAINER: &str = craft_idml::CONTAINER_XML;
 
 /// A cross-reference format as InDesign building blocks.
 fn xref_format_el(i: usize, f: &designcraft_doc::XrefFormat) -> El {

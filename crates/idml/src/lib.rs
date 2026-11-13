@@ -65,7 +65,7 @@ pub use import::{Imported, import_idml, import_idml_report, import_idml_report_w
 /// The IDML package mimetype (content of the first, stored `mimetype` entry).
 pub const MIMETYPE: &str = craft_idml::MIMETYPE;
 /// The DOM version written to every part.
-pub const DOM_VERSION: &str = "16.0";
+pub const DOM_VERSION: &str = craft_idml::DOM_VERSION;
 
 #[derive(Debug, thiserror::Error)]
 pub enum IdmlError {

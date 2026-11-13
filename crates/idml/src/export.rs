@@ -31,7 +31,6 @@ pub(crate) use item::corner_names;
 #[cfg(test)]
 pub(crate) use item::path_to_uri;
 
-const PKG_NS: &str = "http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging";
 const NO_PARA_ID: &str = "ParagraphStyle/$ID/[No paragraph style]";
 const TOC_STYLE_ID: &str = "TOCStyle/Table of Contents";
 const TOC_STYLE_NAME: &str = "Table of Contents";
