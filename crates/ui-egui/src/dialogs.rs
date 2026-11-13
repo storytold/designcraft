@@ -1040,6 +1040,70 @@ mod color_theme_tests {
         assert_eq!(gesture(&app).as_deref(), Some("Move"), "Cancel leaves the gesture open");
     }
 
+    /// A field changed while a gesture begun in the preview's document has replaced the preview
+    /// is not written into that gesture; the status line says why. Once the gesture ends, Preview
+    /// is off and no other preview is written on the document the gesture left until it is on
+    /// again.
+    #[test]
+    fn a_preview_is_not_written_into_a_gesture_that_replaced_it() {
+        type Writer = fn(&mut DesignApp, &mut Dialog);
+        let guides: Writer = |app, d| layout_dialog_preview(app, d, "layout.createGuides", "Create Guides");
+        let cases: [(&str, Value, &str, Value, Writer); 4] = [
+            (
+                "createGuides",
+                json!({"rows": "2", "columns": "2", "rowGutter": "0", "columnGutter": "0", "fitTo": "page", "preview": true}),
+                "rows",
+                json!("3"),
+                guides,
+            ),
+            (STEP_AND_REPEAT, json!({"count": "2", "preview": true}), "count", json!("3"), step_and_repeat_preview),
+            ("textFrameOptions", json!({"columns": "2", "preview": true}), "columns", json!("3"), text_frame_preview),
+            ("hyphenation", json!({"hyphMinWord": 6, "preview": true}), "hyphMinWord", json!(8), hyphenation_preview),
+        ];
+        for (id, fields, key, value, write) in cases {
+            let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+            app.run("file.new", json!({})).unwrap();
+            let f = app.run("frame.create", json!({"rect": [36, 36, 300, 120], "content": "text", "text": "Text", "caret": false})).unwrap();
+            app.run("selection.set", json!({"ids": [f["id"]]})).unwrap();
+            let mut d = Dialog::new(id, json!({}));
+            if id == "textFrameOptions" {
+                seed_text_frame_options(&app, &mut d);
+            }
+            for (k, v) in fields.as_object().unwrap() {
+                d.fields.insert(k.clone(), v.clone());
+            }
+            write(&mut app, &mut d);
+            assert!(app.session.active().unwrap().interaction.is_some(), "{id}: previewed {:?}", d.fields.get("status"));
+            app.session.begin_interaction("Move").unwrap();
+            let moving = app.session.active().unwrap().doc.clone();
+            d.fields.insert(key.into(), value.clone());
+            write(&mut app, &mut d);
+            let st = app.session.active().unwrap();
+            assert_eq!(st.doc, moving, "{id}: nothing is written into the gesture");
+            assert_eq!(st.interaction.as_ref().map(|it| it.label.as_str()), Some("Move"), "{id}: the gesture stays");
+            assert!(st.interaction.as_ref().is_some_and(|it| it.preview.is_none()), "{id}: the gesture has no dialog preview");
+            assert_eq!(d.fields.get("status"), Some(&json!(PREVIEW_REPLACED)), "{id}");
+            // Once the gesture ends, Preview is off and no other preview starts on what it left.
+            app.session.cancel_interaction();
+            let ended = app.session.active().unwrap().doc.clone();
+            for _ in 0..2 {
+                write(&mut app, &mut d);
+                assert_eq!(d.fields.get("status"), Some(&json!(PREVIEW_ENDED)), "{id}");
+                assert_eq!(d.fields.get("preview"), Some(&json!(false)), "{id}");
+                let st = app.session.active().unwrap();
+                assert_eq!(st.doc, ended, "{id}: no other preview");
+                assert!(st.interaction.is_none(), "{id}");
+            }
+            end_dialog_preview(&mut app, &mut d);
+            assert_eq!(app.session.active().unwrap().doc, ended, "{id}: Cancel leaves the document as the gesture left it");
+            // Preview on again shows the preview on the document as it is now, and the reason goes.
+            d.fields.insert("preview".into(), json!(true));
+            write(&mut app, &mut d);
+            assert!(!d.fields.contains_key("status"), "{id}: {:?}", d.fields.get("status"));
+            assert!(app.session.active().unwrap().interaction.is_some(), "{id}: previewed again");
+        }
+    }
+
     #[test]
     fn toc_right_indent_separator_survives_the_dialog_and_update() {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
@@ -1827,9 +1891,17 @@ const PREVIEW_IN_OTHER_DOCUMENT: &str = "The preview is shown in another documen
 /// The status line when OK would make its change inside the active document's own interaction.
 const FINISH_OPEN_INTERACTION: &str = "Finish the action in progress in the active document before you click OK.";
 
+/// The status line while a gesture begun in the preview's document has replaced the preview.
+const PREVIEW_REPLACED: &str = "Finish the action in progress in this document to update the preview.";
+
+/// The status line once a gesture that replaced the preview has ended.
+const PREVIEW_ENDED: &str = "The preview ended with the action in progress. Turn on Preview to show it again.";
+
 /// Refuses a preview update while the dialog's preview is shown in a document other than the
-/// active one (the update would be written into the active document), with the reason on the
-/// status line. Once that document is active again, the reason goes.
+/// active one (the update would be written into the active document), or while a gesture begun
+/// in its document has replaced the preview (the update would be written into that gesture), with
+/// the reason on the status line. Once that document is active again, the reason goes. Once the
+/// gesture ends, Preview is turned off with the reason on the status line.
 fn preview_in_other_document(app: &DesignApp, d: &mut Dialog) -> bool {
     let active = app.session.active().map(|st| st.uid);
     // A closed document takes the preview with it: this update is skipped, and the next one starts
@@ -1844,7 +1916,24 @@ fn preview_in_other_document(app: &DesignApp, d: &mut Dialog) -> bool {
         return true;
     }
     if d.fields.get(PREVIEW_DOC).and_then(Value::as_u64).is_none_or(|uid| Some(uid) == active) {
-        if d.fields.get("status").and_then(Value::as_str) == Some(PREVIEW_IN_OTHER_DOCUMENT) {
+        if let Some(st) = app.session.active()
+            && d.fields.contains_key(PREVIEWED)
+            && !is_preview_interaction(st, d)
+        {
+            if st.interaction.is_some() {
+                d.fields.insert("status".into(), json!(PREVIEW_REPLACED));
+                return true;
+            }
+            // The gesture that replaced the preview has ended, and the preview with it. The
+            // dialog does not start another preview on the document that gesture left.
+            for key in [PREVIEWED, PREVIEW_DOC, PREVIEW_INTERACTION] {
+                d.fields.remove(key);
+            }
+            d.fields.insert("preview".into(), json!(false));
+            d.fields.insert("status".into(), json!(PREVIEW_ENDED));
+            return true;
+        }
+        if matches!(d.fields.get("status").and_then(Value::as_str), Some(PREVIEW_IN_OTHER_DOCUMENT | PREVIEW_REPLACED | PREVIEW_ENDED)) {
             d.fields.remove("status");
         }
         return false;
