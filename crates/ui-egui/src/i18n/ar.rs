@@ -1108,7 +1108,6 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Export PDF", "تصدير PDF"),
     ("Standard", "معيار"),
     ("Standard:", "المعيار:"),
-    ("Compress images", "ضغط الصور"),
     ("Flattener preset", "إعداد تسوية الشفافية المسبق"),
     ("Include document bleed", "تضمين نزف المستند"),
     ("Crop Marks", "علامات القص"),

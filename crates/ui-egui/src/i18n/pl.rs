@@ -613,7 +613,6 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Collect", "Zbierz"),
     ("Color Settings…", "Ustawienia kolorów…"),
     ("Community & Project Links", "Linki społeczności i projektu"),
-    ("Compress images", "Kompresuj obrazy"),
     ("Compression", "Kompresja"),
     ("Conditions", "Warunki"),
     ("Container", "Kontener"),

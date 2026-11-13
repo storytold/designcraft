@@ -104,6 +104,7 @@ fn export_booklet_inner(doc: &Document, cache: &Cache, opts: &BookletOptions) ->
         warnings,
         images: HashMap::new(),
         images_by_content: ImageContentCache::default(),
+        placed_widths: images::placed_widths(doc, &pdf_opts.images),
         #[cfg(test)]
         image_conversions: 0,
         pdfs: HashMap::new(),

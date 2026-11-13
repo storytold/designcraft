@@ -71,6 +71,8 @@ pub(crate) struct Exporter<'a> {
     pub warnings: Vec<String>,
     drawing_items: Vec<designcraft_doc::ItemId>,
     images: HashMap<AssetId, Option<Image>>,
+    /// Each raster asset's narrowest placed width in points (see [`images::placed_widths`]).
+    placed_widths: HashMap<AssetId, f64>,
     // Immutable export options (including rgb_only) make bytes the complete conversion key.
     // PDF-page/SVG/media routing precedes this path. Failures remain per AssetId.
     images_by_content: ImageContentCache,

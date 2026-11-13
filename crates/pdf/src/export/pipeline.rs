@@ -213,6 +213,7 @@ fn export_pdf_with_report_inner(doc: &Document, cache: &Cache, opts: &PdfOptions
         warnings,
         images: HashMap::new(),
         images_by_content: ImageContentCache::default(),
+        placed_widths: super::images::placed_widths(doc, &opts.images),
         #[cfg(test)]
         image_conversions: 0,
         pdfs: HashMap::new(),

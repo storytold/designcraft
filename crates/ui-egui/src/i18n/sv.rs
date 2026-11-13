@@ -893,7 +893,6 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Export PDF", "Exportera PDF"),
     ("Standard", "Standard"),
     ("Standard:", "Standard:"),
-    ("Compress images", "Komprimera bilder"),
     ("Flattener preset", "Förinställning för tillplattning"),
     ("Include document bleed", "Inkludera dokumentets utfall"),
     ("Crop Marks", "Skärmärken"),

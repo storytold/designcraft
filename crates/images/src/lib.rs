@@ -656,6 +656,11 @@ fn with_photometric(bytes: &[u8], value: u16) -> Option<Vec<u8>> {
     None
 }
 
+/// A JPEG whose pixels are CMYK (or YCCK): four inks, which the `image` crate turns into RGB.
+pub fn is_cmyk_jpeg(bytes: &[u8]) -> bool {
+    jpeg::is_cmyk(bytes)
+}
+
 /// A TIFF whose pixels are CMYK (PhotometricInterpretation Separated, four inks).
 pub fn is_cmyk_tiff(bytes: &[u8]) -> bool {
     tiff_decoder(bytes).and_then(|mut d| d.colortype().ok()).is_some_and(|c| matches!(c, tiff::ColorType::CMYK(_) | tiff::ColorType::CMYKA(_)))
