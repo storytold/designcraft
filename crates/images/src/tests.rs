@@ -105,15 +105,18 @@ fn nested_svg_data_images_cannot_bypass_the_depth_limit() {
     }
 }
 
-/// The nested SVG data of one parse adds up against one budget; the next parse starts again.
+/// Each SVG parse gets a fresh shared nested-image budget.
 #[test]
-fn nested_svg_data_shares_one_budget() {
-    NESTED_SVG_BYTES.set(0);
-    assert!(charge_nested_svg(MAX_NESTED_SVG_BYTES / 2).is_some());
-    assert!(charge_nested_svg(MAX_NESTED_SVG_BYTES / 2).is_some());
-    assert!(charge_nested_svg(1).is_none());
-    assert!(svg_tree(SVG.as_bytes()).is_some());
-    assert!(charge_nested_svg(MAX_NESTED_SVG_BYTES).is_some());
+fn nested_svg_data_budget_is_fresh_per_parse() {
+    let nested = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><circle r="1"/></svg>"#;
+    let encoded = nested.bytes().map(|b| format!("%{b:02X}")).collect::<String>();
+    let svg = format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2"><image width="1" height="1" href="data:image/svg+xml,{encoded}"/></svg>"#
+    );
+    for _ in 0..2 {
+        let tree = svg_tree(svg.as_bytes()).unwrap();
+        assert_eq!(tree.root().children().len(), 1);
+    }
 }
 
 #[test]
@@ -164,8 +167,8 @@ fn svg_images_come_only_from_data_urls() {
 }
 
 /// The family of the font that sets each text glyph of `svg`, and the glyph's id.
-fn glyph_families(svg: &str) -> Vec<(String, u16)> {
-    fn walk(g: &usvg::Group, tree: &usvg::Tree, out: &mut Vec<(String, u16)>) {
+fn glyph_families(svg: &str) -> Vec<(String, u32)> {
+    fn walk(g: &usvg::Group, tree: &usvg::Tree, out: &mut Vec<(String, u32)>) {
         for n in g.children() {
             match n {
                 usvg::Node::Group(g) => walk(g, tree, out),

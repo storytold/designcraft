@@ -18,15 +18,15 @@ craft-eps = { git = "https://github.com/storytold/craft-libs", rev = "ba24fe2435
 craft-epub = { git = "https://github.com/storytold/craft-libs", rev = "ba24fe2435adb3c81ad6057faf36365fbba736cf", version = "=0.1.0" }
 craft-idml = { git = "https://github.com/storytold/craft-libs", rev = "ba24fe2435adb3c81ad6057faf36365fbba736cf", version = "=0.1.0" }
 craft-indd = { git = "https://github.com/storytold/craft-libs", rev = "47bf5650b0d503b97bfb5e841746c4957897d11f", version = "=0.1.0" }
-craft-svg = { git = "https://github.com/storytold/craft-libs", rev = "40525913633942f84b06d4837a8d90534a55d63f", version = "=0.1.0", features = ["tree-text"] }
+craft-svg = { git = "https://github.com/dylanmtaylor/craft-libs", rev = "0d1854f1c8a5df0301604098c898bee16349151f", version = "=0.1.0", features = ["tree-render", "tree-text"] }
 craft-xml = { git = "https://github.com/storytold/craft-libs", rev = "ba24fe2435adb3c81ad6057faf36365fbba736cf", version = "=0.1.0" }
 craft-rtf = { git = "https://github.com/storytold/craft-libs", rev = "ba24fe2435adb3c81ad6057faf36365fbba736cf", version = "=0.1.0" }
 craft-xlsx = { git = "https://github.com/storytold/craft-libs", rev = "ba24fe2435adb3c81ad6057faf36365fbba736cf", version = "=0.1.0" }
 craft-docx = { git = "https://github.com/storytold/craft-libs", rev = "ba24fe2435adb3c81ad6057faf36365fbba736cf", version = "=0.1.0" }
 craft-wordmodel = { git = "https://github.com/storytold/craft-libs", rev = "ba24fe2435adb3c81ad6057faf36365fbba736cf", version = "=0.1.0" }
 craft-csv = { git = "https://github.com/dylanmtaylor/craft-libs", rev = "44d7ac8d942dbd87048f82b3efc3e0d14483cc8d", version = "=0.1.0" }
-craft-image-codecs = { git = "https://github.com/storytold/craft-libs", rev = "a47b78256c6acf3d7fdc4bc7cfbc25c373eac522", version = "=0.1.0" }
-craft-psd = { git = "https://github.com/storytold/craft-libs", rev = "a47b78256c6acf3d7fdc4bc7cfbc25c373eac522", version = "=0.1.0" }
+craft-image-codecs = { git = "https://github.com/dylanmtaylor/craft-libs", rev = "0d1854f1c8a5df0301604098c898bee16349151f", version = "=0.1.0" }
+craft-psd = { git = "https://github.com/dylanmtaylor/craft-libs", rev = "0d1854f1c8a5df0301604098c898bee16349151f", version = "=0.1.0" }
 craft-file-formats = { git = "https://github.com/storytold/craft-libs", rev = "8abfa9d0f14bafbfc3449fc552ffeafb9ca6a551", version = "=0.1.0" }
 craft-opc = { git = "https://github.com/storytold/craft-libs", rev = "8abfa9d0f14bafbfc3449fc552ffeafb9ca6a551", version = "=0.1.0" }
 craft-pptx = { git = "https://github.com/storytold/craft-libs", rev = "f6cab1980", version = "=0.1.0" }
@@ -84,8 +84,6 @@ vello_common = { version = "0.2", default-features = false }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "tiff", "bmp"] }
 # CMYK TIFF samples for PDF export (`image` decodes them to RGB); the version `image` uses.
 tiff = "0.11"
-# SVG preview until the bounded craft-svg tree renderer is pinned into this workspace.
-resvg = { version = "0.47", default-features = false, features = ["text"] }
 # Boolean operations on Bézier paths (Pathfinder).
 flo_curves = "0.8"
 # QR codes (Object › Generate QR Code); MIT.

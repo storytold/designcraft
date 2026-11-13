@@ -13,6 +13,7 @@ designcraft-geom = { workspace = true }
 designcraft-color = { workspace = true }
 designcraft-doc = { workspace = true }
 designcraft-fonts = { workspace = true }
+skrifa = { workspace = true }
 designcraft-compose = { workspace = true }
 craft-pdf = { workspace = true, features = ["read", "write-pdf", "write-svg"] }
 craft-image-codecs = { workspace = true }

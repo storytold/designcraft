@@ -1,12 +1,11 @@
-//! Placed graphics: format sniffing, sizes and decoding for the renderer and PDF export.
-//! Rasters go through `image` (PNG, JPEG, GIF, WebP, TIFF, BMP) or [`psd`] (Photoshop's merged
-//! composite); SVG is parsed with usvg (text set in the bundled fonts, then the shared ones) and
-//! rasterised with resvg for the screen — PDF export draws the same tree as vectors.
+//! Placed graphics: format-agnostic pixel operations and shared file-format delegation.
+//! Raster formats are decoded by `craft-image-codecs`; SVG parsing and bounded screen rendering
+//! are provided by `craft-svg`.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 use std::sync::{Arc, OnceLock};
 
-pub use resvg::usvg;
+pub use craft_svg::tree::usvg;
 
 pub mod colour;
 mod eps;
@@ -18,6 +17,10 @@ pub use tone::{Tone, tone};
 
 /// CSS pixels (SVG user units) → points.
 pub const PT_PER_PX: f64 = 0.75;
+
+const MAX_SVG_BYTES: usize = 16 * 1024 * 1024;
+const MAX_SVG_EVENTS: usize = 100_000;
+const MAX_SVG_DEPTH: usize = 64;
 
 pub fn is_pdf(bytes: &[u8]) -> bool {
     file_format(bytes) == Some(craft_file_formats::Format::Pdf)
@@ -74,48 +77,14 @@ fn svg_fontdb() -> Arc<usvg::fontdb::Database> {
     .clone()
 }
 
-/// SVG options with DesignCraft's font database and family/PostScript fallback policy.
-/// The PDF adapter uses these same font choices while owning its separate parser.
-pub fn svg_options_for_pdf() -> usvg::Options<'static> {
+/// usvg options with DesignCraft's font database and family/PostScript fallback policy.
+fn svg_options() -> usvg::Options<'static> {
     usvg::Options {
         fontdb: svg_fontdb(),
         font_family: "Source Sans 3".into(),
         font_resolver: usvg::FontResolver { select_font: select_font(), select_fallback: select_fallback() },
         ..Default::default()
     }
-}
-
-/// Initialize the process-wide usvg options with preflighted data URLs; file-backed image URLs are never read.
-fn svg_options() -> &'static usvg::Options<'static> {
-    static OPTS: OnceLock<usvg::Options<'static>> = OnceLock::new();
-    OPTS.get_or_init(|| {
-        let mut options = svg_options_for_pdf();
-        // Images inside an SVG come only from `data:` URLs: an `href` naming a file is not read
-        // (it is left out, as usvg leaves out an image it can't load).
-        let default_data = usvg::ImageHrefResolver::default_data_resolver();
-        options.image_href_resolver = usvg::ImageHrefResolver {
-            resolve_data: Box::new(move |mime, data, options| {
-                let raster = matches!(
-                    craft_image_codecs::detect(&data),
-                    Some(
-                        craft_image_codecs::Format::Png
-                            | craft_image_codecs::Format::Jpeg
-                            | craft_image_codecs::Format::Gif
-                            | craft_image_codecs::Format::WebP
-                    )
-                );
-                if mime == "image/svg+xml" || (mime == "text/plain" && !raster) {
-                    let xml = svg_text(&data, MAX_NESTED_SVG_BYTES.saturating_sub(NESTED_SVG_BYTES.get()).min(MAX_SVG_BYTES))?;
-                    charge_nested_svg(xml.len())?;
-                    default_data(mime, Arc::new(xml.into_owned().into_bytes()), options)
-                } else {
-                    default_data(mime, data, options)
-                }
-            }),
-            resolve_string: Box::new(|_, _| None),
-        };
-        options
-    })
 }
 
 /// A family the SVG names that isn't bundled comes from the shared fonts (installed ones too),
@@ -292,47 +261,20 @@ fn add_face(db: &mut Arc<usvg::fontdb::Database>, face: Arc<designcraft_fonts::F
     ids.into_iter().find(|id| db.face(*id).is_some_and(|f| f.index == index))
 }
 
-/// Limits apply before usvg's recursive XML/SVG parsing, including SVGZ output.
-/// Ordinary SVG doctypes are accepted; internal DTD subsets are not, since entity
-/// expansion could introduce markup that the streaming depth check never sees.
-const MAX_SVG_BYTES: usize = 16 * 1024 * 1024;
-const MAX_SVG_EVENTS: usize = 100_000;
-const MAX_SVG_DEPTH: usize = 64;
-
-/// SVG bytes the data images of one document may add up to, all levels together: each nested
-/// document gets the per-document limits, so without this one outer file could hold many of them.
-const MAX_NESTED_SVG_BYTES: usize = 32 * 1024 * 1024;
-
-thread_local! {
-    /// Nested SVG bytes taken so far by the parse running on this thread (see [`svg_tree`]).
-    static NESTED_SVG_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
-/// Take `n` bytes of the running parse's nested-SVG budget; `None` when they don't fit.
-fn charge_nested_svg(n: usize) -> Option<()> {
-    let used = NESTED_SVG_BYTES.get().checked_add(n).filter(|u| *u <= MAX_NESTED_SVG_BYTES)?;
-    NESTED_SVG_BYTES.set(used);
-    Some(())
-}
-
-/// Decode and structurally check SVG/SVGZ through the shared bounded parser.
-fn svg_text(bytes: &[u8], limit: usize) -> Option<std::borrow::Cow<'_, str>> {
+/// Parse SVG/SVGZ through craft-svg's bounded parser and data-only nested-image resolver.
+pub fn svg_tree(bytes: &[u8]) -> Option<usvg::Tree> {
     let limits = craft_svg::tree::Limits {
-        bytes: limit.min(MAX_SVG_BYTES),
+        bytes: MAX_SVG_BYTES,
         depth: MAX_SVG_DEPTH,
-        xml_nodes: u32::try_from(MAX_SVG_EVENTS).ok()?,
         refuse_entity_markup: true,
+        xml_nodes: MAX_SVG_EVENTS as u32,
+        embedded_bytes: 32 * 1024 * 1024,
+        embedded_depth: 4,
         ..Default::default()
     };
-    craft_svg::tree::text(bytes, &limits).ok()
-}
-
-/// Parse an SVG with at most 16 MiB encoded/decoded data, 100,000 XML events and
-/// 64 nested elements. Reject internal DTD subsets before recursive conversion.
-pub fn svg_tree(bytes: &[u8]) -> Option<usvg::Tree> {
-    let xml = svg_text(bytes, MAX_SVG_BYTES)?;
-    NESTED_SVG_BYTES.set(0);
-    usvg::Tree::from_data(xml.as_bytes(), svg_options()).ok()
+    let mut options = svg_options();
+    options.image_href_resolver = craft_svg::tree::image_resolver(limits);
+    craft_svg::tree::parse(bytes, &limits, &options).ok()
 }
 
 /// Natural size of a placed graphic in points: rasters at 72 ppi (one pixel per point), PSDs
@@ -461,8 +403,7 @@ pub fn render_svg(bytes: &[u8], max_side: u32) -> Option<(Vec<u8>, u32, u32)> {
     let s = tree.size();
     let k = max_side as f32 / s.width().max(s.height()).max(1e-3);
     let (w, h) = ((s.width() * k).round().max(1.0) as u32, (s.height() * k).round().max(1.0) as u32);
-    let mut pm = resvg::tiny_skia::Pixmap::new(w, h)?;
-    resvg::render(&tree, resvg::tiny_skia::Transform::from_scale(k, k), &mut pm.as_mut());
+    let pm = craft_svg::tree::draw::render(&tree, craft_svg::tree::draw::tiny_skia::Transform::from_scale(k, k), w, h, 0, MAX_RGBA_BYTES).ok()?;
     Some((pm.take(), w, h))
 }
 

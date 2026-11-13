@@ -14,7 +14,6 @@ craft-svg = { workspace = true }
 designcraft-color = { workspace = true }
 designcraft-fonts = { workspace = true }
 image = { workspace = true }
-resvg = { workspace = true }
 skrifa = { workspace = true }
 log = { workspace = true }
 craft-cms = { workspace = true }

@@ -1245,7 +1245,7 @@ dependencies = [
 [[package]]
 name = "craft-image-codecs"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=a47b78256c6acf3d7fdc4bc7cfbc25c373eac522#a47b78256c6acf3d7fdc4bc7cfbc25c373eac522"
+source = "git+https://github.com/dylanmtaylor/craft-libs?rev=0d1854f1c8a5df0301604098c898bee16349151f#0d1854f1c8a5df0301604098c898bee16349151f"
 dependencies = [
  "craft-jpeg",
  "exr",
@@ -1275,7 +1275,7 @@ dependencies = [
 [[package]]
 name = "craft-jpeg"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=a47b78256c6acf3d7fdc4bc7cfbc25c373eac522#a47b78256c6acf3d7fdc4bc7cfbc25c373eac522"
+source = "git+https://github.com/dylanmtaylor/craft-libs?rev=0d1854f1c8a5df0301604098c898bee16349151f#0d1854f1c8a5df0301604098c898bee16349151f"
 dependencies = [
  "thiserror 2.0.21",
 ]
@@ -1411,7 +1411,7 @@ dependencies = [
 [[package]]
 name = "craft-psd"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=a47b78256c6acf3d7fdc4bc7cfbc25c373eac522#a47b78256c6acf3d7fdc4bc7cfbc25c373eac522"
+source = "git+https://github.com/dylanmtaylor/craft-libs?rev=0d1854f1c8a5df0301604098c898bee16349151f#0d1854f1c8a5df0301604098c898bee16349151f"
 dependencies = [
  "encoding_rs",
  "flate2",
@@ -1432,6 +1432,21 @@ dependencies = [
 name = "craft-sheet"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=ba24fe2435adb3c81ad6057faf36365fbba736cf#ba24fe2435adb3c81ad6057faf36365fbba736cf"
+
+[[package]]
+name = "craft-svg"
+version = "0.1.0"
+source = "git+https://github.com/dylanmtaylor/craft-libs?rev=0d1854f1c8a5df0301604098c898bee16349151f#0d1854f1c8a5df0301604098c898bee16349151f"
+dependencies = [
+ "craft-image-codecs",
+ "craft-xml 0.1.0 (git+https://github.com/dylanmtaylor/craft-libs?rev=0d1854f1c8a5df0301604098c898bee16349151f)",
+ "flate2",
+ "kurbo",
+ "resvg 0.48.1",
+ "roxmltree 0.21.2",
+ "thiserror 2.0.21",
+ "usvg 0.48.1",
+]
 
 [[package]]
 name = "craft-svg"
@@ -1548,6 +1563,15 @@ dependencies = [
  "craft-opc 0.1.0 (git+https://github.com/storytold/craft-libs?rev=ba24fe2435adb3c81ad6057faf36365fbba736cf)",
  "craft-sheet",
  "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=ba24fe2435adb3c81ad6057faf36365fbba736cf)",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-xml"
+version = "0.1.0"
+source = "git+https://github.com/dylanmtaylor/craft-libs?rev=0d1854f1c8a5df0301604098c898bee16349151f#0d1854f1c8a5df0301604098c898bee16349151f"
+dependencies = [
+ "quick-xml 0.41.0",
  "thiserror 2.0.21",
 ]
 
@@ -1965,13 +1989,12 @@ dependencies = [
  "craft-file-formats",
  "craft-image-codecs",
  "craft-psd",
- "craft-svg 0.1.0 (git+https://github.com/storytold/craft-libs?rev=40525913633942f84b06d4837a8d90534a55d63f)",
+ "craft-svg 0.1.0 (git+https://github.com/dylanmtaylor/craft-libs?rev=0d1854f1c8a5df0301604098c898bee16349151f)",
  "designcraft-color",
  "designcraft-fonts",
  "flate2",
  "image",
  "log",
- "resvg",
  "skrifa 0.47.0",
  "tiff",
 ]
@@ -2011,6 +2034,7 @@ dependencies = [
  "image",
  "kurbo",
  "log",
+ "skrifa 0.47.0",
  "thiserror 2.0.21",
  "tiff",
 ]
@@ -3943,7 +3967,7 @@ dependencies = [
  "flate2",
  "fontdb 0.23.0",
  "krilla",
- "resvg",
+ "resvg 0.47.0",
  "skrifa 0.42.1",
  "smallvec",
  "tiny-skia 0.12.0",
@@ -5572,6 +5596,24 @@ dependencies = [
  "svgtypes",
  "tiny-skia 0.12.0",
  "usvg 0.47.0",
+ "zune-jpeg",
+]
+
+[[package]]
+name = "resvg"
+version = "0.48.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "67e3803f97b999e80cbf7c6ecdd07a8102204d92e1633cf48783720c521196bd"
+dependencies = [
+ "bytemuck",
+ "gif",
+ "image-webp",
+ "log",
+ "pico-args",
+ "rgb",
+ "svgtypes",
+ "tiny-skia 0.12.0",
+ "usvg 0.48.1",
  "zune-jpeg",
 ]
 

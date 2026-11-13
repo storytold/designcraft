@@ -268,7 +268,7 @@ impl Exporter<'_> {
                 craft_pdf::write::svg::Document::parse(
                     &asset.data,
                     craft_pdf::write::svg::Limits::default(),
-                    designcraft_images::svg_options_for_pdf(),
+                    crate::svg_options::svg_options_for_pdf(),
                 )
                 .ok()
                 .map(Arc::new)
