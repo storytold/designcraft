@@ -739,6 +739,53 @@ mod color_theme_tests {
         assert!(st.interaction.is_none());
     }
 
+    /// Undo run by a script during a Create Guides preview is kept when the dialog is canceled.
+    #[test]
+    fn undo_in_a_script_during_a_preview_is_kept() {
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let before = app.session.active().unwrap().doc.clone();
+        app.run("frame.create", json!({"rect": [36, 36, 300, 300]})).unwrap();
+        let mut d = Dialog::new(
+            "createGuides",
+            json!({"rows": "2", "columns": "2", "rowGutter": "0", "columnGutter": "0", "fitTo": "page", "preview": true}),
+        );
+        layout_dialog_preview(&mut app, &mut d, "layout.createGuides", "Create Guides");
+        app.ui.dialog = Some(d);
+        app.run("script.run", json!({"text": "edit.undo"})).unwrap();
+        cancel(&mut app);
+        let st = app.session.active().unwrap();
+        assert_eq!(st.doc, before, "the frame stays undone and the guides go");
+        assert!(st.interaction.is_none());
+    }
+
+    /// A script that fails before its Undo leaves the document as it was: the preview is shown
+    /// again on the next update, and Cancel puts back the document from before the preview.
+    #[test]
+    fn a_script_that_fails_before_its_undo_keeps_the_document() {
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        app.run("frame.create", json!({"rect": [36, 36, 300, 300]})).unwrap();
+        let before = app.session.active().unwrap().doc.clone();
+        let mut d = Dialog::new(
+            "createGuides",
+            json!({"rows": "2", "columns": "2", "rowGutter": "0", "columnGutter": "0", "fitTo": "page", "preview": true}),
+        );
+        layout_dialog_preview(&mut app, &mut d, "layout.createGuides", "Create Guides");
+        let previewed = app.session.active().unwrap().doc.clone();
+        app.ui.dialog = Some(d);
+        assert!(app.run("script.run", json!({"text": "nope.command\nedit.undo"})).is_err());
+        assert_eq!(app.session.active().unwrap().doc, before, "nothing was undone");
+        let mut d = app.ui.dialog.take().expect("the dialog is open");
+        layout_dialog_preview(&mut app, &mut d, "layout.createGuides", "Create Guides");
+        app.ui.dialog = Some(d);
+        assert_eq!(app.session.active().unwrap().doc, previewed, "the preview is shown again");
+        cancel(&mut app);
+        let st = app.session.active().unwrap();
+        assert_eq!(st.doc, before, "Cancel keeps the frame and takes the guides away");
+        assert!(st.interaction.is_none());
+    }
+
     /// Undo in another document leaves a dialog's preview alone, and that document's own
     /// interaction too: Cancel in the preview's document still puts that document back.
     #[test]
@@ -2031,6 +2078,21 @@ fn refuse_ok_during_interaction(app: &mut DesignApp, mut d: Dialog) -> Result<Di
     d.fields.insert("status".into(), json!(FINISH_OPEN_INTERACTION));
     app.ui.dialog = Some(d);
     Err(FINISH_OPEN_INTERACTION.into())
+}
+
+/// Whether command `id` runs Undo or Redo: `edit.undo`, `edit.redo`, or a script with one of them
+/// among its steps. A script that runs another script counts, since that script's text may come
+/// from an earlier step's result.
+pub(crate) fn runs_history(id: &str, params: &Value) -> bool {
+    match id {
+        "edit.undo" | "edit.redo" => true,
+        "script.run" => params
+            .get("text")
+            .and_then(Value::as_str)
+            .and_then(|t| designcraft_engine::script::parse(t).ok())
+            .is_some_and(|steps| steps.iter().any(|s| matches!(s.command.as_str(), "edit.undo" | "edit.redo" | "script.run"))),
+        _ => false,
+    }
 }
 
 /// Ends the open dialog's preview before Undo or Redo runs in the document it is shown in, so they
