@@ -60,8 +60,8 @@ DesignCraft aims at full Adobe InDesign parity — and to be better: faster, ope
 
 - **2026-11-13** · `footnote.insert` accepts a caret in a table cell and keeps the reference
   and note in the cell's story (#2613). The caret stays in the cell after the reference;
-  moving into cell-footnote text needs a follow-up. Cell-note placement (#2611) and numbering
-  (#2612) remain separate. Native save/open, undo/redo and document consistency are covered.
+  moving into cell-footnote text needs a follow-up. Cell notes print at the column foot (#2611) and are
+  numbered in the story's sequence (#2612) once those PRs land. Native save/open, undo/redo and document consistency are covered.
 
 ## Status (2026-10-21)
 
