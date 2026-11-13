@@ -196,6 +196,26 @@ impl<'r> Importer<'r> {
                             b.push_table(t, pf, cf);
                         }
                     }
+                    craft_idml::model::TextNode::Anchor(anchor) => {
+                        b.anchors.push((anchor.self_id().unwrap_or("").to_string(), anchor.label().unwrap_or("Anchor").to_string()));
+                        b.push(&designcraft_doc::ANCHOR_MARK.to_string(), cf);
+                    }
+                    craft_idml::model::TextNode::PageReference(reference) => {
+                        use designcraft_doc::index::IndexRange as R;
+                        let topic = reference.referenced_topic().and_then(|r| self.index_topics.get(r)).cloned().unwrap_or_default();
+                        let range = match reference.reference_type() {
+                            Some("ToEndOfStory" | "ToEndOfDocument" | "ToEndOfSection") => R::ToEndOfStory,
+                            Some("ForNextNParagraphs") => R::NextParagraphs(reference.limit().unwrap_or(1.0).max(1.0) as u32),
+                            Some("SuppressPageNumbers") => R::SuppressPageRange,
+                            _ => R::CurrentPage,
+                        };
+                        b.index_refs.push(designcraft_doc::IndexRef { topics: topic.path, sort: topic.sort, range });
+                        b.push(&designcraft_doc::INDEX_MARK.to_string(), cf);
+                    }
+                    craft_idml::model::TextNode::TextVariable(values) => {
+                        let text = self.text_variable_instance(&values);
+                        b.push(&text, cf);
+                    }
                     _ => match c.local() {
                         // The source wraps the text the link covers: its children are ordinary ranges
                         // and content, so the range is where the text stood before and after (#1446).
@@ -205,22 +225,6 @@ impl<'r> Importer<'r> {
                             if b.text.len() > start {
                                 b.link_srcs.push((c.get("Self").unwrap_or("").to_string(), start, b.text.len()));
                             }
-                        }
-                        "HyperlinkTextDestination" | "ParagraphDestination" => {
-                            b.anchors.push((c.get("Self").unwrap_or("").to_string(), c.get("Name").unwrap_or("Anchor").to_string()));
-                            b.push(&designcraft_doc::ANCHOR_MARK.to_string(), cf);
-                        }
-                        "PageReference" => {
-                            use designcraft_doc::index::IndexRange as R;
-                            let topic = c.get("ReferencedTopic").and_then(|r| self.index_topics.get(r)).cloned().unwrap_or_default();
-                            let range = match c.get("PageReferenceType") {
-                                Some("ToEndOfStory") | Some("ToEndOfDocument") | Some("ToEndOfSection") => R::ToEndOfStory,
-                                Some("ForNextNParagraphs") => R::NextParagraphs(c.num("PageReferenceLimit").unwrap_or(1.0).max(1.0) as u32),
-                                Some("SuppressPageNumbers") => R::SuppressPageRange,
-                                _ => R::CurrentPage,
-                            };
-                            b.index_refs.push(designcraft_doc::IndexRef { topics: topic.path, sort: topic.sort, range });
-                            b.push(&designcraft_doc::INDEX_MARK.to_string(), cf);
                         }
                         "CrossReferenceSource" => {
                             // The generated text is regenerated from the format.
@@ -309,10 +313,6 @@ impl<'r> Importer<'r> {
                                 b.objects.push(designcraft_doc::AnchoredObject::new(item, position));
                                 b.push(&designcraft_doc::OBJECT_MARK.to_string(), cf);
                             }
-                        }
-                        "TextVariableInstance" => {
-                            let t = self.text_variable_instance(c);
-                            b.push(&t, cf);
                         }
                         "Change" => {
                             // Tracked changes: deleted text stays in the story, marked, and takes no

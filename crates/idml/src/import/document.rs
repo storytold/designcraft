@@ -198,10 +198,10 @@ impl<'r> Importer<'r> {
 
     /// A `TextVariableInstance`: the variable's character, or its recorded text when the file
     /// doesn't define the variable.
-    pub(super) fn text_variable_instance(&mut self, e: &El) -> String {
+    pub(super) fn text_variable_instance(&mut self, values: &craft_idml::model::Values) -> String {
         use designcraft_doc::vars::{VarKind, var_char};
-        let result = e.get("ResultText").unwrap_or("");
-        let found = e.get("AssociatedTextVariable").and_then(|r| self.text_var_ids.get(r)).copied();
+        let result = values.get("ResultText").unwrap_or("");
+        let found = values.get("AssociatedTextVariable").and_then(|r| self.text_var_ids.get(r)).copied();
         let var = found.and_then(|i| Some((i, self.text_vars.as_mut()?.get_mut(i)?)));
         match var.and_then(|(i, v)| Some((var_char(i)?, v))) {
             Some((c, v)) => {
