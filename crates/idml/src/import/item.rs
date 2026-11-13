@@ -184,8 +184,9 @@ impl<'r> Importer<'r> {
             }
             "Group" => {
                 let mut kids = Vec::new();
-                for c in e.elements() {
-                    if let Some(k) = self.item(c, Affine::IDENTITY) {
+                for child in model_item.items() {
+                    let child = crate::xml::from_craft(child.to_el());
+                    if let Some(k) = self.item(&child, Affine::IDENTITY) {
                         kids.push(Arc::new(k));
                     }
                 }
@@ -194,9 +195,10 @@ impl<'r> Importer<'r> {
                 item.stroke = Stroke::none();
             }
             _ => {
-                if let Some(g) = e.elements().find(|c| matches!(c.local(), "Image" | "PDF" | "EPS" | "ImportedPage" | "WMF" | "PICT" | "SVG")) {
-                    item.content = self.graphic(g);
-                    let fill = self.image_fill(g);
+                if let Some(graphic) = model_item.graphics().next() {
+                    let graphic_xml = crate::xml::from_craft(graphic.to_el());
+                    item.content = self.graphic(&graphic_xml);
+                    let fill = self.image_fill(&graphic_xml);
                     if let Content::Graphic(gr) = &mut item.content {
                         gr.fill = fill;
                     }
