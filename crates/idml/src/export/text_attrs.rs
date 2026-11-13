@@ -303,70 +303,57 @@ impl<'a> Ex<'a> {
     }
 
     fn para_alignment_attrs(&self, el: &mut El, a: &ParaAttrs, parent: Option<&str>) {
-        if let Some(v) = a.align {
-            el.set("Justification", names::align_out(v));
-        }
-        if let Some(v) = a.direction {
-            el.set(
-                "ParagraphDirection",
-                if v == designcraft_doc::TextDirection::RightToLeft { "RightToLeftDirection" } else { "LeftToRightDirection" },
-            );
-        }
-        if let Some(v) = a.kashidas {
-            el.set("Kashidas", if v { "DefaultKashidas" } else { "KashidasOff" });
-        }
-        if let Some(v) = &a.arabic_justification {
-            el.set("ParagraphJustification", v);
-        }
-        if let Some(Some(v)) = a.paragraph_kashida_width {
-            el.set("ParagraphKashidaWidth", num(v));
-        }
-        n!(a, el, left_indent, "LeftIndent");
-        n!(a, el, right_indent, "RightIndent");
-        n!(a, el, first_line_indent, "FirstLineIndent");
-        n!(a, el, last_line_indent, "LastLineIndent");
-        n!(a, el, space_before, "SpaceBefore");
-        n!(a, el, space_after, "SpaceAfter");
-        match a.same_para_style_spacing {
-            Some(Some(v)) => el.set("SameParaStyleSpacing", num(v)),
-            // Explicit Ignore: must be written so it still overrides a based-on style's value.
-            Some(None) => el.set("SameParaStyleSpacing", "Nothing"),
-            None => {}
-        }
-        n!(a, el, drop_cap_lines, "DropCapLines");
-        n!(a, el, drop_cap_chars, "DropCapCharacters");
-        if a.drop_cap_align_left.is_some() || a.drop_cap_scale_descenders.is_some() {
-            let d = parent.map(|name| self.d.styles.resolve_para_style(name).0).unwrap_or_default();
-            let bits = u32::from(a.drop_cap_align_left.unwrap_or(d.drop_cap_align_left))
-                | u32::from(a.drop_cap_scale_descenders.unwrap_or(d.drop_cap_scale_descenders)) << 1;
-            el.set("DropcapDetail", bits);
-        }
-        if let Some(g) = a.grid_align {
-            // IDML has one attribute for on/off and the reference: a reference set without
-            // `grid_align` isn't written.
-            let reference = crate::cjk::grid_reference_out(a.grid_reference.unwrap_or_default());
-            match g {
-                designcraft_doc::GridAlign::None => el.set("GridAlignment", "None"),
-                designcraft_doc::GridAlign::AllLines => {
-                    el.set("GridAlignment", reference);
-                    el.set("GridAlignFirstLineOnly", "false");
-                }
-                designcraft_doc::GridAlign::FirstLineOnly => {
-                    el.set("GridAlignment", reference);
-                    el.set("GridAlignFirstLineOnly", "true");
-                }
+        let detail = if a.drop_cap_align_left.is_some() || a.drop_cap_scale_descenders.is_some() {
+            let defaults = parent.map(|name| self.d.styles.resolve_para_style(name).0).unwrap_or_default();
+            Some(
+                u32::from(a.drop_cap_align_left.unwrap_or(defaults.drop_cap_align_left))
+                    | u32::from(a.drop_cap_scale_descenders.unwrap_or(defaults.drop_cap_scale_descenders)) << 1,
+            )
+        } else {
+            None
+        };
+        let (grid_alignment, grid_align_first_line_only) = match a.grid_align {
+            Some(designcraft_doc::GridAlign::None) => (Some("None".to_string()), None),
+            Some(designcraft_doc::GridAlign::AllLines) => {
+                (Some(crate::cjk::grid_reference_out(a.grid_reference.unwrap_or_default()).into()), Some(false))
             }
-        }
-        if let Some(c) = a.composer {
-            el.set(
-                "Composer",
-                match c {
+            Some(designcraft_doc::GridAlign::FirstLineOnly) => {
+                (Some(crate::cjk::grid_reference_out(a.grid_reference.unwrap_or_default()).into()), Some(true))
+            }
+            None => (None, None),
+        };
+        let values = craft_idml::model::ParagraphAlignmentValues {
+            justification: a.align.map(|value| names::align_out(value).into()),
+            direction: a.direction.map(|value| {
+                if value == designcraft_doc::TextDirection::RightToLeft { "RightToLeftDirection" } else { "LeftToRightDirection" }.into()
+            }),
+            kashidas: a.kashidas.map(|value| if value { "DefaultKashidas" } else { "KashidasOff" }.into()),
+            paragraph_justification: a.arabic_justification.clone(),
+            paragraph_kashida_width: a.paragraph_kashida_width.flatten(),
+            left_indent: a.left_indent,
+            right_indent: a.right_indent,
+            first_line_indent: a.first_line_indent,
+            last_line_indent: a.last_line_indent,
+            space_before: a.space_before,
+            space_after: a.space_after,
+            same_para_style_spacing: a.same_para_style_spacing,
+            drop_cap_lines: a.drop_cap_lines.map(f64::from),
+            drop_cap_chars: a.drop_cap_chars.map(f64::from),
+            dropcap_detail: detail,
+            grid_alignment,
+            grid_align_first_line_only,
+            composer: a.composer.map(|value| {
+                match value {
                     designcraft_doc::Composer::Paragraph => "HL Composer",
                     designcraft_doc::Composer::SingleLine => "HL Single",
                     designcraft_doc::Composer::Japanese => "HL Composer J",
                     designcraft_doc::Composer::JapaneseSingleLine => "HL Single J",
-                },
-            );
+                }
+                .into()
+            }),
+        };
+        for (key, value) in values.to_attrs() {
+            el.set(&key, value);
         }
     }
 
