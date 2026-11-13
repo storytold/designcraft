@@ -486,8 +486,8 @@ fn cjk_settings_para(e: &El, a: &mut ParaAttrs) {
 impl Importer<'_> {
     /// Kenten Settings, Kenten Color and Shatai of a character range or style.
     fn cjk_settings_chars(&mut self, e: &El, a: &mut CharAttrs) {
-        let finite = |k: &str| e.num(k).filter(|v| v.is_finite());
-        if let Some(kind) = e.get("KentenKind").and_then(crate::cjk::kenten_kind_in) {
+        let values = craft_idml::model::CjkCharacterValues::from_el(&crate::xml::to_craft(e));
+        if let Some(kind) = values.kenten_kind.as_deref().and_then(crate::cjk::kenten_kind_in) {
             a.kenten_kind = Some(kind);
             if a.kenten_character.as_deref().is_none_or(str::is_empty)
                 && let Some(mark) = kind.mark()
@@ -495,38 +495,38 @@ impl Importer<'_> {
                 a.kenten_character = Some(mark.to_string());
             }
         }
-        if let Some(f) = e.prop("KentenFont") {
-            let f = f.trim();
-            a.kenten_font = Some(if f == "$ID/" { String::new() } else { f.to_string() });
+        if let Some(font) = values.kenten_font {
+            let font = font.trim();
+            a.kenten_font = Some(if font == "$ID/" { String::new() } else { font.to_string() });
         }
-        if let Some(st) = e.prop("KentenFontStyle") {
-            let st = st.trim();
-            a.kenten_font_style = Some(if st == "Nothing" { String::new() } else { st.to_string() });
+        if let Some(style) = values.kenten_font_style {
+            let style = style.trim();
+            a.kenten_font_style = Some(if style == "Nothing" { String::new() } else { style.to_string() });
         }
-        a.kenten_size = finite("KentenFontSize").map(|v| (v > 0.0).then_some(v));
-        a.kenten_x_scale = finite("KentenXScale").map(|v| v / 100.0);
-        a.kenten_y_scale = finite("KentenYScale").map(|v| v / 100.0);
-        a.kenten_distance = finite("KentenPlacement");
-        a.kenten_position = e.prop("KentenPosition").and_then(|v| crate::cjk::kenten_position_in(&v));
-        a.kenten_alignment = e.prop("KentenAlignment").and_then(|v| crate::cjk::kenten_alignment_in(&v));
-        a.kenten_character_set = e.prop("KentenCharacterSet");
+        a.kenten_size = values.kenten_size.map(|v| (v > 0.0).then_some(v));
+        a.kenten_x_scale = values.kenten_x_scale.map(|v| v / 100.0);
+        a.kenten_y_scale = values.kenten_y_scale.map(|v| v / 100.0);
+        a.kenten_distance = values.kenten_distance;
+        a.kenten_position = values.kenten_position.as_deref().and_then(crate::cjk::kenten_position_in);
+        a.kenten_alignment = values.kenten_alignment.as_deref().and_then(crate::cjk::kenten_alignment_in);
+        a.kenten_character_set = values.kenten_character_set;
         // "Text Color" is the text's own colour; it resets an inherited swatch.
-        if let Some(r) = e.prop("KentenFillColor") {
-            a.kenten_fill = Some(if r.trim() == "Text Color" { String::new() } else { self.swatch_ref(r.trim()) });
+        if let Some(color) = values.kenten_fill_color {
+            a.kenten_fill = Some(if color.trim() == "Text Color" { String::new() } else { self.swatch_ref(color.trim()) });
         }
-        if let Some(r) = e.prop("KentenStrokeColor") {
-            a.kenten_stroke = Some(if r.trim() == "Text Color" { String::new() } else { self.swatch_ref(r.trim()) });
+        if let Some(color) = values.kenten_stroke_color {
+            a.kenten_stroke = Some(if color.trim() == "Text Color" { String::new() } else { self.swatch_ref(color.trim()) });
         }
         // Tints and weight: -1 is the text's.
-        a.kenten_fill_tint = finite("KentenTint").map(|v| (v >= 0.0).then(|| (v.min(100.0) / 100.0) as f32));
-        a.kenten_stroke_tint = finite("KentenStrokeTint").map(|v| (v >= 0.0).then(|| (v.min(100.0) / 100.0) as f32));
-        a.kenten_stroke_weight = finite("KentenWeight").map(|v| (v >= 0.0).then_some(v));
-        a.kenten_overprint_fill = e.prop("KentenOverprintFill").and_then(|v| crate::cjk::overprint_in(&v));
-        a.kenten_overprint_stroke = e.prop("KentenOverprintStroke").and_then(|v| crate::cjk::overprint_in(&v));
-        a.shatai_magnification = finite("ShataiMagnification");
-        a.shatai_angle = finite("ShataiDegreeAngle").map(|v| v / crate::cjk::SHATAI_ANGLE_UNITS);
-        a.shatai_adjust_rotation = e.boolean("ShataiAdjustRotation");
-        a.shatai_adjust_tsume = e.boolean("ShataiAdjustTsume");
+        a.kenten_fill_tint = values.kenten_fill_tint.map(|v| (v >= 0.0).then(|| (v.min(100.0) / 100.0) as f32));
+        a.kenten_stroke_tint = values.kenten_stroke_tint.map(|v| (v >= 0.0).then(|| (v.min(100.0) / 100.0) as f32));
+        a.kenten_stroke_weight = values.kenten_stroke_weight.map(|v| (v >= 0.0).then_some(v));
+        a.kenten_overprint_fill = values.kenten_overprint_fill.as_deref().and_then(crate::cjk::overprint_in);
+        a.kenten_overprint_stroke = values.kenten_overprint_stroke.as_deref().and_then(crate::cjk::overprint_in);
+        a.shatai_magnification = values.shatai_magnification;
+        a.shatai_angle = values.shatai_angle.map(|v| v / crate::cjk::SHATAI_ANGLE_UNITS);
+        a.shatai_adjust_rotation = values.shatai_adjust_rotation;
+        a.shatai_adjust_tsume = values.shatai_adjust_tsume;
     }
 }
 
