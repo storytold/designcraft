@@ -1245,7 +1245,7 @@ dependencies = [
 [[package]]
 name = "craft-image-codecs"
 version = "0.1.0"
-source = "git+https://github.com/dylanmtaylor/craft-libs?rev=0d1854f1c8a5df0301604098c898bee16349151f#0d1854f1c8a5df0301604098c898bee16349151f"
+source = "git+https://github.com/dylanmtaylor/craft-libs?rev=f7d76eec548a77a79fd2e056e7846a8655ee3f43#f7d76eec548a77a79fd2e056e7846a8655ee3f43"
 dependencies = [
  "craft-jpeg",
  "exr",
@@ -1275,7 +1275,7 @@ dependencies = [
 [[package]]
 name = "craft-jpeg"
 version = "0.1.0"
-source = "git+https://github.com/dylanmtaylor/craft-libs?rev=0d1854f1c8a5df0301604098c898bee16349151f#0d1854f1c8a5df0301604098c898bee16349151f"
+source = "git+https://github.com/dylanmtaylor/craft-libs?rev=f7d76eec548a77a79fd2e056e7846a8655ee3f43#f7d76eec548a77a79fd2e056e7846a8655ee3f43"
 dependencies = [
  "thiserror 2.0.21",
 ]
@@ -1411,7 +1411,7 @@ dependencies = [
 [[package]]
 name = "craft-psd"
 version = "0.1.0"
-source = "git+https://github.com/dylanmtaylor/craft-libs?rev=0d1854f1c8a5df0301604098c898bee16349151f#0d1854f1c8a5df0301604098c898bee16349151f"
+source = "git+https://github.com/dylanmtaylor/craft-libs?rev=f7d76eec548a77a79fd2e056e7846a8655ee3f43#f7d76eec548a77a79fd2e056e7846a8655ee3f43"
 dependencies = [
  "encoding_rs",
  "flate2",
@@ -1436,21 +1436,6 @@ source = "git+https://github.com/storytold/craft-libs?rev=ba24fe2435adb3c81ad605
 [[package]]
 name = "craft-svg"
 version = "0.1.0"
-source = "git+https://github.com/dylanmtaylor/craft-libs?rev=0d1854f1c8a5df0301604098c898bee16349151f#0d1854f1c8a5df0301604098c898bee16349151f"
-dependencies = [
- "craft-image-codecs",
- "craft-xml 0.1.0 (git+https://github.com/dylanmtaylor/craft-libs?rev=0d1854f1c8a5df0301604098c898bee16349151f)",
- "flate2",
- "kurbo",
- "resvg 0.48.1",
- "roxmltree 0.21.2",
- "thiserror 2.0.21",
- "usvg 0.48.1",
-]
-
-[[package]]
-name = "craft-svg"
-version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=40525913633942f84b06d4837a8d90534a55d63f#40525913633942f84b06d4837a8d90534a55d63f"
 dependencies = [
  "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=40525913633942f84b06d4837a8d90534a55d63f)",
@@ -1471,6 +1456,21 @@ dependencies = [
  "kurbo",
  "roxmltree 0.21.2",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-svg"
+version = "0.1.0"
+source = "git+https://github.com/dylanmtaylor/craft-libs?rev=f7d76eec548a77a79fd2e056e7846a8655ee3f43#f7d76eec548a77a79fd2e056e7846a8655ee3f43"
+dependencies = [
+ "craft-image-codecs",
+ "craft-xml 0.1.0 (git+https://github.com/dylanmtaylor/craft-libs?rev=f7d76eec548a77a79fd2e056e7846a8655ee3f43)",
+ "flate2",
+ "kurbo",
+ "resvg 0.48.1",
+ "roxmltree 0.21.2",
+ "thiserror 2.0.21",
+ "usvg 0.48.1",
 ]
 
 [[package]]
@@ -1569,15 +1569,6 @@ dependencies = [
 [[package]]
 name = "craft-xml"
 version = "0.1.0"
-source = "git+https://github.com/dylanmtaylor/craft-libs?rev=0d1854f1c8a5df0301604098c898bee16349151f#0d1854f1c8a5df0301604098c898bee16349151f"
-dependencies = [
- "quick-xml 0.41.0",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "craft-xml"
-version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=40525913633942f84b06d4837a8d90534a55d63f#40525913633942f84b06d4837a8d90534a55d63f"
 dependencies = [
  "quick-xml 0.41.0",
@@ -1605,7 +1596,26 @@ dependencies = [
 [[package]]
 name = "craft-xml"
 version = "0.1.0"
+source = "git+https://github.com/dylanmtaylor/craft-libs?rev=f23b0f33f0d00b157476533a43cbbcfd901aa1f1#f23b0f33f0d00b157476533a43cbbcfd901aa1f1"
+dependencies = [
+ "quick-xml 0.41.0",
+ "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-xml"
+version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=f6cab1980#f6cab1980bbe422cc00c4b19d9f0f9ba337e1316"
+dependencies = [
+ "quick-xml 0.41.0",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-xml"
+version = "0.1.0"
+source = "git+https://github.com/dylanmtaylor/craft-libs?rev=f7d76eec548a77a79fd2e056e7846a8655ee3f43#f7d76eec548a77a79fd2e056e7846a8655ee3f43"
 dependencies = [
  "quick-xml 0.41.0",
  "thiserror 2.0.21",
@@ -1885,6 +1895,7 @@ dependencies = [
  "craft-prepress",
  "craft-print",
  "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=ba24fe2435adb3c81ad6057faf36365fbba736cf)",
+ "craft-xml 0.1.0 (git+https://github.com/dylanmtaylor/craft-libs?rev=f23b0f33f0d00b157476533a43cbbcfd901aa1f1)",
  "designcraft-color",
  "designcraft-compose",
  "designcraft-doc",
@@ -1904,7 +1915,6 @@ dependencies = [
  "hayro-syntax",
  "kurbo",
  "log",
- "quick-xml 0.41.0",
  "same-file",
  "serde",
  "serde_json",
@@ -1989,7 +1999,7 @@ dependencies = [
  "craft-file-formats",
  "craft-image-codecs",
  "craft-psd",
- "craft-svg 0.1.0 (git+https://github.com/dylanmtaylor/craft-libs?rev=0d1854f1c8a5df0301604098c898bee16349151f)",
+ "craft-svg 0.1.0 (git+https://github.com/dylanmtaylor/craft-libs?rev=f7d76eec548a77a79fd2e056e7846a8655ee3f43)",
  "designcraft-color",
  "designcraft-fonts",
  "flate2",
@@ -2044,6 +2054,7 @@ name = "designcraft-pptx"
 version = "0.20.1"
 dependencies = [
  "chrono",
+ "craft-image-codecs",
  "craft-opc 0.1.0 (git+https://github.com/storytold/craft-libs?rev=8abfa9d0f14bafbfc3449fc552ffeafb9ca6a551)",
  "craft-pptx",
  "designcraft-color",

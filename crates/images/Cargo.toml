@@ -22,6 +22,7 @@ craft-psd = { workspace = true }
 craft-file-formats = { workspace = true }
 
 [dev-dependencies]
+image = { workspace = true, features = ["png", "jpeg", "webp", "gif", "tiff", "bmp"] }
 designcraft-fonts = { workspace = true, features = ["testing"] }
 flate2 = "1"
 tiff = { workspace = true }

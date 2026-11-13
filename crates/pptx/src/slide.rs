@@ -713,8 +713,6 @@ fn unpremultiply(mut px: Vec<u8>) -> Vec<u8> {
 }
 
 fn encode_png(rgba: Vec<u8>, w: u32, h: u32) -> Option<Vec<u8>> {
-    let img = image::RgbaImage::from_raw(w, h, rgba)?;
-    let mut out = std::io::Cursor::new(Vec::new());
-    img.write_to(&mut out, image::ImageFormat::Png).ok()?;
-    Some(out.into_inner())
+    let image = craft_image_codecs::Image::from_u8(w, h, craft_image_codecs::ChannelLayout::Rgba, rgba).ok()?;
+    craft_image_codecs::encode(&image, craft_image_codecs::Format::Png, &Default::default()).ok()
 }

@@ -18,4 +18,4 @@ serde_json = { workspace = true }
 log = { workspace = true }
 
 [dev-dependencies]
-image = { workspace = true }
+image = { workspace = true, features = ["png"] }
