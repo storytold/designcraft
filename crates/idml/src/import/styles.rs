@@ -5,6 +5,30 @@ use super::{
     unescape_id,
 };
 
+type StyleElements = (Vec<(String, El)>, Vec<(String, El)>, Vec<(String, El)>, Vec<(String, El)>, Vec<(String, El)>);
+
+fn style_elements(top: &[El]) -> StyleElements {
+    let mut paras = Vec::new();
+    let mut chars = Vec::new();
+    let mut objects = Vec::new();
+    let mut cell_styles = Vec::new();
+    let mut table_styles = Vec::new();
+    for group in top.iter().filter_map(|el| craft_idml::model::StyleGroup::from_el(&crate::xml::to_craft(el))) {
+        for (_, style) in group.styles() {
+            let id = style.values.self_id().unwrap_or("").to_string();
+            let el = crate::xml::from_craft(style.to_el());
+            match style.kind {
+                craft_idml::model::StyleKind::Paragraph => paras.push((id, el)),
+                craft_idml::model::StyleKind::Character => chars.push((id, el)),
+                craft_idml::model::StyleKind::Object => objects.push((id, el)),
+                craft_idml::model::StyleKind::Cell => cell_styles.push((id, el)),
+                craft_idml::model::StyleKind::Table => table_styles.push((id, el)),
+            }
+        }
+    }
+    (paras, chars, objects, cell_styles, table_styles)
+}
+
 impl<'r> Importer<'r> {
     // ---------- styles ----------
 
@@ -30,30 +54,7 @@ impl<'r> Importer<'r> {
                     .push(designcraft_doc::NumberedList { name, continue_across_stories: e.get("ContinueNumbersAcrossStories") == Some("true") });
             }
         }
-        let mut paras: Vec<(String, El)> = Vec::new();
-        let mut chars: Vec<(String, El)> = Vec::new();
-        let mut objects: Vec<(String, El)> = Vec::new();
-        let mut cell_styles: Vec<(String, El)> = Vec::new();
-        let mut table_styles: Vec<(String, El)> = Vec::new();
-        fn walk(e: &El, style: &str, group: &str, out: &mut Vec<(String, El)>) {
-            for c in e.elements() {
-                if c.local() == style {
-                    out.push((c.get("Self").unwrap_or("").to_string(), c.clone()));
-                } else if c.local() == group {
-                    walk(c, style, group, out);
-                }
-            }
-        }
-        for e in top {
-            match e.local() {
-                "RootParagraphStyleGroup" => walk(e, "ParagraphStyle", "ParagraphStyleGroup", &mut paras),
-                "RootCharacterStyleGroup" => walk(e, "CharacterStyle", "CharacterStyleGroup", &mut chars),
-                "RootObjectStyleGroup" => walk(e, "ObjectStyle", "ObjectStyleGroup", &mut objects),
-                "RootCellStyleGroup" => walk(e, "CellStyle", "CellStyleGroup", &mut cell_styles),
-                "RootTableStyleGroup" => walk(e, "TableStyle", "TableStyleGroup", &mut table_styles),
-                _ => {}
-            }
-        }
+        let (paras, chars, objects, cell_styles, table_styles) = style_elements(top);
         for (id, e) in &paras {
             let n = names::style_name_in(PARA_BUILTINS, e.get("Name").unwrap_or(""));
             self.para_names.insert(id.clone(), n);
