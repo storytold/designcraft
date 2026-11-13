@@ -328,7 +328,7 @@ impl ScopedFonts<'_> {
     /// `Style {wght:650,wdth:90}`: the named style's font at those axis values, made on first use.
     fn instance(&self, family: &str, style: &str) -> Option<Arc<FontFace>> {
         let open = style.find('{')?;
-        let base = self.find(family, style[..open].trim())?;
+        let base = self.find_or_load(family, style[..open].trim())?;
         if base.skrifa().is_none_or(|f| f.axes().is_empty()) {
             return Some(base);
         }
@@ -374,13 +374,18 @@ impl ScopedFonts<'_> {
         // The document's fonts first: they stand in for other fonts of the same name and style,
         // and add to the other styles of their family (#2619).
         let named = |f: &&Arc<FontFace>| f.family.eq_ignore_ascii_case(family);
-        let mut cands: Vec<&Arc<FontFace>> = self.own().iter().filter(named).chain(faces.iter().filter(named)).collect();
+        let own: Vec<&Arc<FontFace>> = self.own().iter().filter(named).collect();
+        // An installed face of a style the document has is replaced by it, so it isn't a candidate either.
+        let kept = |f: &&Arc<FontFace>| !own.iter().any(|o| norm(&o.style) == norm(&f.style));
+        let mut cands: Vec<&Arc<FontFace>> = own.iter().copied().chain(faces.iter().filter(named).filter(kept)).collect();
         // No face of that typographic family: the family may be a WWS name, whose faces carry
         // their WWS style names.
         let by_wws = cands.is_empty();
         if by_wws {
             let aliased = |f: &&Arc<FontFace>| has_wws_family(f, family);
-            cands = self.own().iter().filter(aliased).chain(faces.iter().filter(aliased)).collect();
+            let own: Vec<&Arc<FontFace>> = self.own().iter().filter(aliased).collect();
+            let kept = |f: &&Arc<FontFace>| !own.iter().any(|o| norm(&o.style) == norm(&f.style));
+            cands = own.iter().copied().chain(faces.iter().filter(aliased).filter(kept)).collect();
         }
         if cands.is_empty() {
             return None;
