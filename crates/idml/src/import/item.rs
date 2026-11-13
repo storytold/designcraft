@@ -34,13 +34,14 @@ fn svg_viewbox_size(data: &[u8]) -> Option<(f64, f64)> {
 
 impl<'r> Importer<'r> {
     pub(super) fn item(&mut self, e: &El, parent: Affine) -> Option<Item> {
-        let tag = e.local();
-        let shape = match tag {
-            "Rectangle" | "TextFrame" => Shape::Rectangle,
-            "Oval" => Shape::Oval,
-            "Polygon" => Shape::Polygon,
-            "GraphicLine" => Shape::GraphicLine,
-            "Group" => Shape::Group,
+        let model_item = craft_idml::model::PageItem::from_el(&crate::xml::to_craft(e))?;
+        let tag = model_item.kind.name();
+        let shape = match &model_item.kind {
+            craft_idml::model::ItemKind::Rectangle | craft_idml::model::ItemKind::TextFrame => Shape::Rectangle,
+            craft_idml::model::ItemKind::Oval => Shape::Oval,
+            craft_idml::model::ItemKind::Polygon => Shape::Polygon,
+            craft_idml::model::ItemKind::GraphicLine => Shape::GraphicLine,
+            craft_idml::model::ItemKind::Group => Shape::Group,
             _ => return None,
         };
         let id = ItemId(self.alloc());
@@ -48,7 +49,7 @@ impl<'r> Importer<'r> {
             self.item_ids.insert(s.to_string(), id);
         }
         let layer = e.get("ItemLayer").and_then(|l| self.layer_ids.get(l)).copied().unwrap_or_else(|| self.layers[0].id);
-        let path = e.prop_el("PathGeometry").map(path_of).unwrap_or_default();
+        let path = path_from_model(model_item.geometry());
         let mut it = Item::new(id, layer, shape, path);
         it.xf = parent * parse_affine(e.get("ItemTransform"));
         it.name = e.get("Name").filter(|n| *n != "$ID/").unwrap_or("").to_string();
@@ -404,10 +405,6 @@ fn clipping_path(g: &El, to_graphic: Affine) -> Option<Arc<designcraft_doc::Clip
     c.source_name = cs.get("AppliedPathName").filter(|n| *n != "$ID/").unwrap_or("").to_string();
     c.source_index = cs.num("Index").filter(|v| v.is_finite()).map_or(-1, |v| v.clamp(-1.0, i32::MAX as f64) as i32);
     Some(Arc::new(c))
-}
-
-fn path_of(pg: &El) -> PathData {
-    path_capped(pg, usize::MAX)
 }
 
 /// The path of a `…Geometry` element, keeping at most `max` anchors.
