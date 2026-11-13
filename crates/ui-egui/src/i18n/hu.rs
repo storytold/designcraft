@@ -291,7 +291,6 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Composer", "Tördelő"),
     ("Composer:", "Tördelő:"),
     ("Composition", "Tördelés"),
-    ("Compress images", "Képek tömörítése"),
     ("Compression", "Tömörítés"),
     ("Condition Options…", "Feltétel beállításai…"),
     ("Conditional Text", "Feltételes szöveg"),

@@ -16,6 +16,15 @@ fn decoder(bytes: &[u8], out: ColorSpace) -> JpegDecoder<ZCursor<&[u8]>> {
     JpegDecoder::new_with_options(ZCursor::new(bytes), options)
 }
 
+/// Whether a JPEG holds four channels (CMYK or YCCK), read from its header.
+pub(crate) fn is_cmyk(bytes: &[u8]) -> bool {
+    if !bytes.starts_with(&[0xFF, 0xD8]) {
+        return false;
+    }
+    let mut d = decoder(bytes, ColorSpace::RGB);
+    d.decode_headers().is_ok() && matches!(d.input_colorspace(), Some(ColorSpace::CMYK | ColorSpace::YCCK))
+}
+
 /// A four-channel JPEG's inks (0 = no ink) and its embedded ICC profile. `None` for other JPEGs
 /// and for anything that doesn't decode.
 pub(crate) fn decode_cmyk(bytes: &[u8]) -> Option<(CmykRaster, Option<Vec<u8>>)> {

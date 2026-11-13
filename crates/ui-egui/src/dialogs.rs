@@ -49,7 +49,19 @@ impl Dialog {
                 json!({
                     "preset": "Desktop Printing",
                     "standard": "none",
-                    "compressImages": false,
+                    "colorDownsample": true,
+                    "colorPpi": "300",
+                    "colorAbove": "450",
+                    "colorQuality": "maximum",
+                    "grayDownsample": true,
+                    "grayPpi": "300",
+                    "grayAbove": "450",
+                    "grayQuality": "maximum",
+                    "monoDownsample": true,
+                    "monoPpi": "1200",
+                    "monoAbove": "1800",
+                    "colorConversion": "none",
+                    "destination": "",
                     "flatten": "",
                     "spreads": false,
                     "bleed": true,
@@ -793,6 +805,15 @@ pub fn open_pdf_export(app: &mut DesignApp) {
         if app.ui.pdf_export.flatten.is_empty() {
             m.insert("flatten".into(), json!(app.ui.flattener));
         }
+        // A remembered destination that is no longer loaded (its file gone, or a profile loaded
+        // in an earlier session) falls back to the working CMYK rather than failing the export;
+        // so does the working CMYK named, which the menu lists once, as the working CMYK.
+        let destination = app.ui.pdf_export.destination.trim();
+        let loaded =
+            || designcraft_color::cms::profiles().iter().any(|p| p.kind == designcraft_color::cms::ProfileKind::Cmyk && p.name == destination);
+        if !destination.is_empty() && (destination == designcraft_color::cms::active_settings().cmyk || !loaded()) {
+            m.insert("destination".into(), json!(""));
+        }
     }
     app.ui.dialog = Some(Dialog::new("pdfExport", fields));
 }
@@ -958,11 +979,76 @@ fn print_dialog(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
 const PDF_EXPORT_PRESETS: &[&str] =
     &["Desktop Printing", "Commercial Printing", "Screen and Email", "PDF/X-1a:2003", "PDF/X-4", "PDF/A-2b", "Custom"];
 
+/// The image classes of Export PDF › Compression: field prefix and caption.
+const PDF_IMAGE_CLASSES: [(&str, &str); 3] = [("color", "Color Images"), ("gray", "Grayscale Images"), ("mono", "Monochrome Images")];
+
+/// Export PDF › Compression › Image Quality: JPEG qualities, and `lossless` (ZIP).
+const PDF_IMAGE_QUALITIES: [(&str, &str); 6] =
+    [("maximum", "Maximum"), ("high", "High"), ("medium", "Medium"), ("low", "Low"), ("minimum", "Minimum"), ("lossless", "ZIP (lossless)")];
+
+/// The `images` option from the Compression fields: a class without downsampling sends no ppi,
+/// ZIP sends no quality, and monochrome never has one.
+fn pdf_images_param(d: &Dialog) -> Value {
+    let mut images = Map::new();
+    for (class, _) in PDF_IMAGE_CLASSES {
+        let mut c = Map::new();
+        if d.b(&format!("{class}Downsample"))
+            && let Some(ppi) = d.n(&format!("{class}Ppi")).filter(|v| v.is_finite() && *v > 0.0)
+        {
+            c.insert("downsample".into(), json!(ppi));
+            if let Some(above) = d.n(&format!("{class}Above")).filter(|v| v.is_finite() && *v > 0.0) {
+                c.insert("above".into(), json!(above));
+            }
+        }
+        let quality = d.s(&format!("{class}Quality"));
+        if class != "mono" && PDF_IMAGE_QUALITIES.iter().any(|(q, _)| *q == quality && *q != "lossless") {
+            c.insert("quality".into(), json!(quality));
+        }
+        images.insert(class.into(), Value::Object(c));
+    }
+    Value::Object(images)
+}
+
+/// Why the Compression fields can't be exported as they are: a class downsampling without a
+/// positive resolution, or with a threshold that isn't one (empty is 1.5 × the resolution).
+fn pdf_images_error(d: &Dialog) -> Option<String> {
+    let positive = |k: &str| d.n(k).is_some_and(|v| v.is_finite() && v > 0.0);
+    PDF_IMAGE_CLASSES.iter().find_map(|(class, caption)| {
+        if !d.b(&format!("{class}Downsample")) {
+            return None;
+        }
+        let above = format!("{class}Above");
+        if !positive(&format!("{class}Ppi")) || !(d.s(&above).trim().is_empty() || positive(&above)) {
+            return Some(format!("{caption}: Bicubic Downsampling needs resolutions in ppi greater than 0"));
+        }
+        None
+    })
+}
+
+/// Export PDF › Output › Color Conversion: the command's value and the caption.
+const PDF_COLOR_CONVERSIONS: [(&str, &str); 3] =
+    [("none", "No Color Conversion"), ("destination", "Convert to Destination"), ("preserveNumbers", "Convert to Destination (Preserve Numbers)")];
+
+/// The `output` option: nothing without a conversion; the destination left out for the working
+/// CMYK.
+fn pdf_output_param(d: &Dialog) -> Option<Value> {
+    let conversion = d.s("colorConversion");
+    if !PDF_COLOR_CONVERSIONS.iter().any(|(v, _)| *v == conversion && *v != "none") {
+        return None;
+    }
+    let destination = d.s("destination");
+    Some(if destination.trim().is_empty() {
+        json!({"colorConversion": conversion})
+    } else {
+        json!({"colorConversion": conversion, "destination": destination})
+    })
+}
+
 /// The `file.exportPdf` options the Export PDF dialog's fields stand for (pages and title aside).
 fn pdf_export_params(d: &Dialog) -> Value {
     let mut params = json!({
         "standard": d.s("standard"),
-        "compressImages": d.b("compressImages"),
+        "images": pdf_images_param(d),
         "spreads": d.b("spreads"),
         "bleed": d.b("bleed"),
         "tagged": d.b("tagged"),
@@ -977,6 +1063,9 @@ fn pdf_export_params(d: &Dialog) -> Value {
     let flatten = d.s("flatten");
     if !flatten.is_empty() {
         params["flatten"] = json!(flatten);
+    }
+    if let Some(output) = pdf_output_param(d) {
+        params["output"] = output;
     }
     params
 }
@@ -995,24 +1084,102 @@ pub(crate) fn pdf_preset_params(preset: &str) -> Value {
 
 /// Apply a preset's dependent fields. Flatten is only touched by "Screen and Email" and
 /// "PDF/X-1a:2003" (High Resolution); "Custom" (and any unknown value) changes nothing.
+/// Compression as the reference app's presets have it: the print presets downsample colour and
+/// grey images to 300 ppi above 450 at maximum JPEG quality and monochrome to 1200 ppi above
+/// 1800; Screen and Email to 100 ppi above 150 at low quality, monochrome to 300 above 450.
 fn apply_pdf_preset(d: &mut Dialog, preset: &str) {
-    let (standard, compress, crop, bleed, page_info, flatten) = match preset {
-        "Desktop Printing" => ("none", false, false, false, false, None),
-        "Commercial Printing" => ("none", true, true, true, false, None),
-        "Screen and Email" => ("none", true, false, false, false, Some("low")),
-        "PDF/X-1a:2003" => ("x1a", false, true, true, false, Some("high")),
-        "PDF/X-4" => ("x4", false, true, true, false, None),
-        "PDF/A-2b" => ("a2b", false, false, false, false, None),
+    let (standard, crop, bleed, page_info, flatten, ppi, mono_ppi, quality) = match preset {
+        "Desktop Printing" => ("none", false, false, false, None, 300, 1200, "maximum"),
+        "Commercial Printing" => ("none", true, true, false, None, 300, 1200, "maximum"),
+        "Screen and Email" => ("none", false, false, false, Some("low"), 100, 300, "low"),
+        "PDF/X-1a:2003" => ("x1a", true, true, false, Some("high"), 300, 1200, "maximum"),
+        "PDF/X-4" => ("x4", true, true, false, None, 300, 1200, "maximum"),
+        "PDF/A-2b" => ("a2b", false, false, false, None, 300, 1200, "maximum"),
         _ => return,
     };
+    for (class, _) in PDF_IMAGE_CLASSES {
+        let target: u32 = if class == "mono" { mono_ppi } else { ppi };
+        d.fields.insert(format!("{class}Downsample"), json!(true));
+        d.fields.insert(format!("{class}Ppi"), json!(target.to_string()));
+        d.fields.insert(format!("{class}Above"), json!((target * 3 / 2).to_string()));
+        if class != "mono" {
+            d.fields.insert(format!("{class}Quality"), json!(quality));
+        }
+    }
     d.fields.insert("standard".into(), json!(standard));
-    d.fields.insert("compressImages".into(), json!(compress));
     d.fields.insert("marksCrop".into(), json!(crop));
     d.fields.insert("marksBleed".into(), json!(bleed));
     d.fields.insert("marksPageInfo".into(), json!(page_info));
     if let Some(f) = flatten {
         d.fields.insert("flatten".into(), json!(f));
     }
+}
+
+/// Output › Destination: the working CMYK, the CMYK profiles the colour settings know, then the
+/// ones installed on this machine. Those are listed from a scan made once per session, only when
+/// the menu first opens; picking one asks the caller to load it (`_loadPath`).
+fn pdf_destination_combo(lang: &str, ui: &mut egui::Ui, d: &mut Dialog) {
+    use designcraft_color::cms::{ProfileKind, active_settings, profiles};
+    let cur = d.s("destination");
+    let working_cmyk = active_settings().cmyk;
+    let working = format!("{} ({working_cmyk})", crate::i18n::tr(lang, "Working CMYK"));
+    let shown = if cur.trim().is_empty() { working.clone() } else { cur.clone() };
+    craft_ui::ComboBox::from_id_salt("pdf_destination").selected_text(crate::rtl::widget(ui, &shown)).width(240.0).show_ui(ui, |ui| {
+        if ui.selectable_label(cur.trim().is_empty(), crate::rtl::widget(ui, &working)).clicked() {
+            d.fields.insert("destination".into(), json!(""));
+        }
+        let known: Vec<String> = profiles().into_iter().map(|p| p.name).collect();
+        // The working CMYK is listed once, above.
+        for p in profiles().into_iter().filter(|p| p.kind == ProfileKind::Cmyk && p.name != working_cmyk) {
+            if ui.selectable_label(cur == p.name, crate::rtl::widget(ui, &p.name)).clicked() {
+                d.fields.insert("destination".into(), json!(p.name));
+            }
+        }
+        let installed = designcraft_engine::cmd::installed_profiles(false);
+        let more: Vec<_> = installed.iter().filter(|p| p.kind == ProfileKind::Cmyk && !known.contains(&p.name)).collect();
+        if !more.is_empty() {
+            ui.separator();
+            crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(lang, "Installed")).size(10.5));
+            for p in more {
+                if ui.selectable_label(false, crate::rtl::widget(ui, &p.name)).clicked() {
+                    d.fields.insert("_loadPath".into(), json!(p.path.to_string_lossy()));
+                }
+            }
+        }
+    });
+}
+
+/// Export PDF › Output › Load Profile…: the chosen file becomes the destination of the dialog if
+/// it is still open.
+fn load_pdf_destination(app: &mut DesignApp, path: String) -> Result<Value, String> {
+    if let Some(name) = load_cmyk_profile(app, path)
+        && let Some(d) = app.ui.dialog.as_mut().filter(|d| d.id == "pdfExport")
+    {
+        // The working CMYK by name is the menu's Working CMYK entry.
+        let name = if name == designcraft_color::cms::active_settings().cmyk { String::new() } else { name };
+        d.fields.insert("destination".into(), json!(name));
+    }
+    Ok(Value::Null)
+}
+
+/// Load the profile at `path` as Color Settings › Load Profile… does (it comes back at the next
+/// start) and return its name when it is a CMYK profile; anything else is reported.
+fn load_cmyk_profile(app: &mut DesignApp, path: String) -> Option<String> {
+    let info = match app.session.execute("color.loadProfile", &json!({"path": path})) {
+        Ok(info) => info,
+        Err(e) => {
+            app.status_error("Export PDF", e);
+            return None;
+        }
+    };
+    app.ui.color_profiles.retain(|p| p != &path);
+    app.ui.color_profiles.push(path);
+    let name = info["name"].as_str().unwrap_or_default().to_string();
+    if info["kind"] != "cmyk" {
+        app.status_error("Export PDF", format!("{name} is not a CMYK profile"));
+        return None;
+    }
+    Some(name)
 }
 
 /// File › Export PDF: the "Export PDF" options (General / Compression / Marks and Bleeds /
@@ -1069,7 +1236,26 @@ fn pdf_export(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     check(ui, d, "spreads", crate::i18n::tr(lang, "Spreads"));
 
     head(ui, "Compression");
-    check(ui, d, "compressImages", crate::i18n::tr(lang, "Compress images"));
+    for (class, caption) in PDF_IMAGE_CLASSES {
+        crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(lang, caption)).font(semibold(11.0)));
+        ui.horizontal(|ui| {
+            check(ui, d, &format!("{class}Downsample"), crate::i18n::tr(lang, "Bicubic Downsampling to"));
+            // The resolutions only count while downsampling is on.
+            let on = d.b(&format!("{class}Downsample"));
+            ui.add_enabled_ui(on, |ui| {
+                text_field(ui, d, &format!("{class}Ppi"), 50.0);
+                crate::rtl::label(ui, crate::i18n::tr(lang, "ppi for images above"));
+                text_field(ui, d, &format!("{class}Above"), 50.0);
+                crate::rtl::label(ui, crate::i18n::tr(lang, "ppi"));
+            });
+        });
+        if class != "mono" {
+            ui.horizontal(|ui| {
+                crate::rtl::label(ui, crate::i18n::tr(lang, "Image Quality:"));
+                translated_combo(lang, ui, d, &format!("{class}Quality"), &PDF_IMAGE_QUALITIES);
+            });
+        }
+    }
 
     head(ui, "Marks and Bleeds");
     check(ui, d, "bleed", crate::i18n::tr(lang, "Include document bleed"));
@@ -1082,6 +1268,24 @@ fn pdf_export(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
         ui.add_space(8.0);
         crate::rtl::label(ui, crate::i18n::tr(lang, "Offset:"));
         text_field(ui, d, "marksOffset", 60.0);
+    });
+
+    head(ui, "Output");
+    ui.horizontal(|ui| {
+        crate::rtl::label(ui, crate::i18n::tr(lang, "Color Conversion:"));
+        translated_combo(lang, ui, d, "colorConversion", &PDF_COLOR_CONVERSIONS);
+    });
+    // The destination is greyed out without a conversion.
+    let converting = d.s("colorConversion") != "none" && !d.s("colorConversion").is_empty();
+    ui.add_enabled_ui(converting, |ui| {
+        ui.horizontal(|ui| {
+            crate::rtl::label(ui, crate::i18n::tr(lang, "Destination:"));
+            pdf_destination_combo(lang, ui, d);
+            // Picked here, loaded by the caller (it can open a file dialog).
+            if ui.button(crate::rtl::widget(ui, crate::i18n::tr(lang, "Load Profile…"))).clicked() {
+                d.fields.insert("_loadProfile".into(), json!(true));
+            }
+        });
     });
 
     head(ui, "Advanced");
@@ -1103,6 +1307,9 @@ fn pdf_export(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
         );
     });
     check(ui, d, "tagged", crate::i18n::tr(lang, "Tagged PDF"));
+    if let Some(st) = d.fields.get("status").and_then(Value::as_str) {
+        crate::rtl::label(ui, egui::RichText::new(st).color(ui.visuals().error_fg_color));
+    }
 
     // Any edit other than picking a preset means the settings are no longer that preset.
     if !preset_clicked && d.fields != before {
@@ -4132,7 +4339,20 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                     }
                     "fileInfo" => file_info_dialog(app, ui, &mut d),
                     "numberingSection" => crate::section_options::body(app, ui, &mut d),
-                    "pdfExport" => pdf_export(app, ui, &mut d),
+                    "pdfExport" => {
+                        pdf_export(app, ui, &mut d);
+                        // Output › Destination: an installed profile picked, or Load Profile….
+                        if let Some(path) = d.fields.remove("_loadPath").and_then(|v| v.as_str().map(str::to_string))
+                            && let Some(name) = load_cmyk_profile(app, path)
+                        {
+                            d.fields.insert("destination".into(), json!(name));
+                        }
+                        if d.fields.remove("_loadProfile").is_some()
+                            && let Err(e) = app.ask_open("icc", Bound::App, load_pdf_destination)
+                        {
+                            app.status_error("Export PDF", e);
+                        }
+                    }
                     "epubExport" => epub_export(app, ui, &mut d),
                     "alert" => {
                         let file = d.s("file");
@@ -5102,10 +5322,32 @@ fn confirm_part3(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
             crate::menus::export_epub(app, &params)
         }
         "pdfExport" => {
+            // Resolutions that don't read keep the dialog open to be fixed, rather than silently
+            // not downsampling.
+            if let Some(e) = pdf_images_error(&d) {
+                let mut d = d;
+                d.fields.insert("status".into(), json!(e));
+                app.ui.dialog = Some(d);
+                return Err(e);
+            }
             // Remember the last-used options; `pages` and `title` are per-job and not persisted.
             app.ui.pdf_export.preset = d.s("preset");
             app.ui.pdf_export.standard = d.s("standard");
-            app.ui.pdf_export.compress_images = d.b("compressImages");
+            let pe = &mut app.ui.pdf_export;
+            pe.compress_images = false;
+            pe.color_downsample = d.b("colorDownsample");
+            pe.color_ppi = d.s("colorPpi");
+            pe.color_above = d.s("colorAbove");
+            pe.color_quality = d.s("colorQuality");
+            pe.gray_downsample = d.b("grayDownsample");
+            pe.gray_ppi = d.s("grayPpi");
+            pe.gray_above = d.s("grayAbove");
+            pe.gray_quality = d.s("grayQuality");
+            pe.mono_downsample = d.b("monoDownsample");
+            pe.mono_ppi = d.s("monoPpi");
+            pe.mono_above = d.s("monoAbove");
+            pe.color_conversion = d.s("colorConversion");
+            pe.destination = d.s("destination");
             app.ui.pdf_export.flatten = d.s("flatten");
             app.ui.pdf_export.spreads = d.b("spreads");
             app.ui.pdf_export.bleed = d.b("bleed");

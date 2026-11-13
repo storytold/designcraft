@@ -21,6 +21,7 @@ pub mod export_batch;
 mod file;
 mod file_info;
 pub(crate) mod find;
+pub use colorsettings::{InstalledProfile, installed_profiles};
 pub use edit::copied_objects_text;
 pub use find::same_find_domain;
 pub(crate) mod flex;

@@ -1,6 +1,7 @@
 use super::flatten::{flatten, rasterize_effects, rasterize_layered, shadow_masks, transparent};
 use super::formats::write_file;
 use super::{EngineError, Marks, PdfOptions, Result, Session, Standard, Value, bad, json, str_param};
+use designcraft_pdf::{ColorConversion, ImageClass, ImageCompression, Output};
 
 /// The `pages` parameter: a range string ("1-3,5"), a list or a number of 1-based positions.
 pub(super) fn pages_param(id: &str, p: &Value, page_count: usize) -> Result<Option<Vec<usize>>> {
@@ -34,6 +35,87 @@ pub(super) fn pages_param(id: &str, p: &Value, page_count: usize) -> Result<Opti
         }
         Some(v) => return Err(bad(id, format!("bad `pages`: {v}"))),
     })
+}
+
+/// The `images` parameter (Compression): `{color?, gray?, mono?: {downsample?, above?, quality?}}`.
+/// A class left out keeps every pixel, lossless; monochrome is never JPEG.
+fn images_param(id: &str, p: &Value) -> Result<ImageCompression> {
+    let m = match p.get("images") {
+        None | Some(Value::Null) => return Ok(ImageCompression::NONE),
+        Some(Value::Object(m)) => m,
+        Some(v) => return Err(bad(id, format!("bad `images`: {v} (an object with color, gray and mono classes)"))),
+    };
+    let class = |key: &str, lossy: bool| -> Result<ImageClass> {
+        let c = match m.get(key) {
+            None | Some(Value::Null) => return Ok(ImageClass::LOSSLESS),
+            Some(Value::Object(c)) => c,
+            Some(_) => return Err(bad(id, format!("`images.{key}` must be an object"))),
+        };
+        let ppi = |k: &str| -> Result<Option<f64>> {
+            match c.get(k) {
+                None | Some(Value::Null) => Ok(None),
+                Some(v) => v
+                    .as_f64()
+                    .filter(|v| v.is_finite() && *v > 0.0)
+                    .map(Some)
+                    .ok_or_else(|| bad(id, format!("`images.{key}.{k}` must be a positive number of ppi"))),
+            }
+        };
+        let downsample_to = ppi("downsample")?;
+        // Without a threshold: 1.5 × the target, as the reference app's presets have it.
+        let above = ppi("above")?.unwrap_or_else(|| downsample_to.map_or(0.0, |t| t * 1.5));
+        let quality =
+            match c.get("quality") {
+                None | Some(Value::Null) => None,
+                Some(Value::String(q)) if ["lossless", "zip"].iter().any(|n| q.trim().eq_ignore_ascii_case(n)) => None,
+                Some(Value::String(q)) => Some(ImageClass::quality_named(q).ok_or_else(|| {
+                    bad(id, format!("unknown `images.{key}.quality` `{q}` (maximum, high, medium, low, minimum, lossless or 1–100)"))
+                })?),
+                Some(Value::Number(n)) => Some(
+                    n.as_u64()
+                        .filter(|q| (1..=100).contains(q))
+                        .and_then(|q| u8::try_from(q).ok())
+                        .ok_or_else(|| bad(id, format!("`images.{key}.quality` must be 1–100")))?,
+                ),
+                Some(v) => return Err(bad(id, format!("bad `images.{key}.quality`: {v}"))),
+            };
+        Ok(ImageClass { downsample_to, above, quality: quality.filter(|_| lossy) })
+    };
+    Ok(ImageCompression { color: class("color", true)?, gray: class("gray", true)?, mono: class("mono", false)? })
+}
+
+/// The `output` parameter (Output › Color Conversion and Destination). The destination is a CMYK
+/// profile the colour settings already know (built in, or loaded with `color.loadProfile`):
+/// reading the options loads nothing.
+fn output_param(id: &str, p: &Value) -> Result<Output> {
+    let m = match p.get("output") {
+        None | Some(Value::Null) => return Ok(Output::default()),
+        Some(Value::Object(m)) => m,
+        Some(v) => return Err(bad(id, format!("bad `output`: {v} (an object with colorConversion and destination)"))),
+    };
+    let conversion = match m.get("colorConversion") {
+        None | Some(Value::Null) => ColorConversion::None,
+        Some(Value::String(s)) => ColorConversion::parse(s)
+            .ok_or_else(|| bad(id, format!("unknown `output.colorConversion` `{s}` (none, destination, preserveNumbers, or the dialog's names)")))?,
+        Some(v) => return Err(bad(id, format!("bad `output.colorConversion`: {v}"))),
+    };
+    let destination = match m.get("destination") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(s)) if s.trim().is_empty() => None,
+        Some(Value::String(s)) => {
+            let s = s.trim();
+            let known = designcraft_color::cms::profiles().into_iter().any(|i| i.kind == designcraft_color::cms::ProfileKind::Cmyk && i.name == s);
+            if !known {
+                return Err(bad(
+                    id,
+                    format!("`output.destination` `{s}` is not a CMYK profile the colour settings know (load it with color.loadProfile first)"),
+                ));
+            }
+            Some(s.to_string())
+        }
+        Some(v) => return Err(bad(id, format!("bad `output.destination`: {v}"))),
+    };
+    Ok(Output { conversion, destination })
 }
 
 pub(crate) fn options(p: &Value, page_count: usize) -> Result<PdfOptions> {
@@ -71,6 +153,8 @@ pub(crate) fn options(p: &Value, page_count: usize) -> Result<PdfOptions> {
         marks,
         standard,
         compress_images: p.get("compressImages").and_then(Value::as_bool).unwrap_or(false),
+        images: images_param(ID, p)?,
+        output: output_param(ID, p)?,
         title: str_param(p, "title").map(str::to_string),
         author: str_param(p, "author").map(str::to_string),
         tagged: p.get("tagged").and_then(Value::as_bool).unwrap_or(false),
@@ -711,5 +795,82 @@ mod overset_tests {
         // And a page on another spread entirely is still not reported.
         let r = s.execute("file.exportPdf", &json!({"pages": [1], "spreads": true})).unwrap();
         assert!(about(&r).is_empty(), "the cover's spread holds no overset frame: {r}");
+    }
+}
+
+#[cfg(test)]
+mod compression_option_tests {
+    use designcraft_pdf::{ImageClass, ImageCompression};
+    use serde_json::json;
+
+    use super::options;
+
+    /// `images` per class, with a named or numeric quality; monochrome always lossless; bad values
+    /// are errors.
+    #[test]
+    fn images_parameter() {
+        let o = options(&json!({}), 1).unwrap();
+        assert_eq!(o.images, ImageCompression::NONE);
+        let o = options(
+            &json!({"images": {
+                "color": {"downsample": 300, "above": 450, "quality": "high"},
+                "gray": {"downsample": 150, "quality": 55},
+                "mono": {"downsample": 1200, "above": 1800, "quality": "high"}
+            }}),
+            1,
+        )
+        .unwrap();
+        assert_eq!(o.images.color, ImageClass { downsample_to: Some(300.0), above: 450.0, quality: Some(80) });
+        assert_eq!(o.images.gray, ImageClass { downsample_to: Some(150.0), above: 225.0, quality: Some(55) });
+        assert_eq!(o.images.mono, ImageClass { downsample_to: Some(1200.0), above: 1800.0, quality: None });
+        let o = options(&json!({"images": {"color": {"quality": "lossless"}}}), 1).unwrap();
+        assert_eq!((o.images.color, o.images.gray), (ImageClass::LOSSLESS, ImageClass::LOSSLESS));
+        // Names are read in any case, as the dialog's menu shows them; ZIP is lossless.
+        let o = options(&json!({"images": {"color": {"quality": "High"}, "gray": {"quality": "ZIP"}}}), 1).unwrap();
+        assert_eq!((o.images.color.quality, o.images.gray.quality), (Some(80), None));
+        for bad in [
+            json!({"color": {"quality": "best"}}),
+            json!({"color": {"quality": 0}}),
+            json!({"color": {"quality": 101}}),
+            json!({"color": {"downsample": -300}}),
+            json!({"color": {"above": "450"}}),
+            json!({"color": 300}),
+            json!([]),
+        ] {
+            assert!(options(&json!({"images": bad}), 1).is_err(), "{bad}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod output_option_tests {
+    use designcraft_pdf::{ColorConversion, Output};
+    use serde_json::json;
+
+    use super::options;
+
+    /// `output`: the conversion by name and a destination the colour settings know; an unknown
+    /// destination is an error and nothing is loaded.
+    #[test]
+    fn output_parameter() {
+        assert_eq!(options(&json!({}), 1).unwrap().output, Output::default());
+        let generic = designcraft_color::cms::GENERIC_CMYK;
+        let o = options(&json!({"output": {"colorConversion": "preserveNumbers", "destination": generic}}), 1).unwrap();
+        assert_eq!(o.output, Output { conversion: ColorConversion::PreserveNumbers, destination: Some(generic.into()) });
+        let o = options(&json!({"output": {"colorConversion": "Convert to Destination"}}), 1).unwrap();
+        assert_eq!(o.output, Output { conversion: ColorConversion::ToDestination, destination: None });
+        // Spaces around a name are not part of it.
+        let o = options(&json!({"output": {"colorConversion": "destination", "destination": format!(" {generic} ")}}), 1).unwrap();
+        assert_eq!(o.output.destination.as_deref(), Some(generic));
+        for bad in [
+            json!({"destination": "Some CMYK profile that isn't loaded"}),
+            json!({"colorConversion": "rgb"}),
+            json!({"colorConversion": 1}),
+            json!({"destination": "/tmp/some.icc"}),
+            json!({"destination": designcraft_color::cms::SRGB}),
+            json!("destination"),
+        ] {
+            assert!(options(&json!({"output": bad}), 1).is_err(), "{bad}");
+        }
     }
 }
