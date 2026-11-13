@@ -33,6 +33,10 @@ fn encrypted() -> PdfError {
     PdfError::Write("an encrypted PDF cannot be updated with a DefaultCMYK profile".into())
 }
 
+fn depth_limit() -> PdfError {
+    PdfError::Write("the exported PDF exceeds the DefaultCMYK nesting depth limit".into())
+}
+
 /// Ensures every page and nested resource scope in `bytes` carries `/DefaultCMYK` mapped to an
 /// `/ICCBased` 4-channel ICC profile stream, unless that scope already defines `/DefaultCMYK`.
 ///
@@ -81,7 +85,7 @@ pub(crate) fn attach(bytes: Vec<u8>, cmyk_icc: Option<&[u8]>, standard: crate::S
     let fallback;
     let icc = match cmyk_icc {
         Some(icc) => icc,
-        None if uses_device_cmyk(&bytes) => {
+        None if uses_device_cmyk(&bytes)? => {
             let (_, profile, warning) = crate::pdfx::print_settings_and_profile(false)?;
             warnings.extend(warning);
             fallback = profile;
@@ -93,18 +97,17 @@ pub(crate) fn attach(bytes: Vec<u8>, cmyk_icc: Option<&[u8]>, standard: crate::S
 }
 
 /// Returns whether any page or nested graphic in `bytes` uses `DeviceCMYK` (directly, as a
-/// transparency group, image, shading, tiling pattern, or Type3 font glyph).
-pub(crate) fn uses_device_cmyk(bytes: &[u8]) -> bool {
-    let Ok(pdf) = Pdf::new(bytes.to_vec()) else {
-        return false;
-    };
+/// transparency group, image, shading, tiling pattern, special color space alternate/base, or
+/// Type3 font glyph).
+pub(crate) fn uses_device_cmyk(bytes: &[u8]) -> Result<bool> {
+    let pdf = Pdf::new(bytes.to_vec()).map_err(|_| damaged())?;
     let mut scan = CmykScan::default();
     for page in pdf.pages().iter() {
-        if scan.page(page) {
-            return true;
+        if scan.page(page)? {
+            return Ok(true);
         }
     }
-    false
+    Ok(false)
 }
 
 /// Returns the first 4-channel `/DestOutputProfile` stream ID from `/OutputIntents`.
@@ -210,7 +213,10 @@ impl<'a> Updater<'a> {
     }
 
     fn visit_resource_owner(&mut self, owner_dict: &Dict<'a>, owner: Option<ScopeOwner<'a>>, depth: usize) -> Result<()> {
-        if depth >= MAX_DEPTH || !has_entry(owner_dict, b"Resources") {
+        if depth >= MAX_DEPTH {
+            return Err(depth_limit());
+        }
+        if !has_entry(owner_dict, b"Resources") {
             return Ok(());
         }
         let res_ref = owner_dict.get_ref(b"Resources").map(ObjectIdentifier::from);
@@ -287,9 +293,6 @@ impl<'a> Updater<'a> {
 
     fn walk_children(&mut self, res: &Dict<'a>, depth: usize) -> Result<()> {
         let next = depth + 1;
-        if next >= MAX_DEPTH {
-            return Ok(());
-        }
 
         if let Some(xobjects) = res.get::<Dict<'a>>(b"XObject") {
             for key in xobjects.keys() {
@@ -325,11 +328,15 @@ impl<'a> Updater<'a> {
                 if let Some(font) = fonts.get::<Dict<'a>>(key.as_ref())
                     && font.get::<Name<'_>>(b"Subtype").as_deref() == Some(b"Type3")
                 {
-                    let font_id = fonts.get_ref(key.as_ref()).map(ObjectIdentifier::from).or_else(|| font.obj_id());
+                    // Never fall back to `font.obj_id()` for inline Type3 dicts: it returns the enclosing object.
+                    let font_id = fonts.get_ref(key.as_ref()).map(ObjectIdentifier::from);
                     if let Some(id) = font_id
                         && !self.seen_fonts.insert(id)
                     {
                         continue;
+                    }
+                    if next >= MAX_DEPTH {
+                        return Err(depth_limit());
                     }
                     let owner = font_id.map(|id| ScopeOwner::Dict(id, font.clone()));
                     self.visit_resource_owner(&font, owner, next)?;
@@ -340,52 +347,114 @@ impl<'a> Updater<'a> {
     }
 
     fn visit_stream(&mut self, stream: &Stream<'a>, depth: usize) -> Result<()> {
-        if depth >= MAX_DEPTH || !self.seen_streams.insert(stream.obj_id()) {
+        if !self.seen_streams.insert(stream.obj_id()) {
             return Ok(());
+        }
+        if depth >= MAX_DEPTH {
+            return Err(depth_limit());
         }
         let owner = ScopeOwner::Stream(stream.clone());
         self.visit_resource_owner(stream.dict(), Some(owner), depth)
     }
 }
 
-fn is_device_cmyk(cs: &Object<'_>) -> bool {
+fn is_device_cmyk(cs: &Object<'_>, res: &Resources<'_>, depth: usize) -> Result<bool> {
+    if depth >= MAX_DEPTH {
+        return Err(depth_limit());
+    }
     match cs {
-        Object::Name(n) => matches!(n.as_ref(), b"DeviceCMYK" | b"CMYK"),
+        Object::Name(n) => match n.as_ref() {
+            b"DeviceCMYK" | b"CMYK" => Ok(true),
+            b"DeviceRGB" | b"RGB" | b"DeviceGray" | b"G" | b"CalGray" | b"CalRGB" | b"Lab" | b"Pattern" | b"DefaultCMYK" => Ok(false),
+            other => match res.get_color_space(&Name::new_unescaped(other)) {
+                Some(named) if !matches!(named, Object::Name(ref m) if m.as_ref() == other) => is_device_cmyk(&named, res, depth + 1),
+                _ => Ok(false),
+            },
+        },
         Object::Array(a) => {
             let mut items = a.iter::<Object<'_>>();
-            match items.next() {
-                Some(Object::Name(n)) if matches!(n.as_ref(), b"Indexed" | b"I") => {
-                    matches!(items.next(), Some(Object::Name(b)) if matches!(b.as_ref(), b"DeviceCMYK" | b"CMYK"))
+            let Some(Object::Name(family)) = items.next() else {
+                return Ok(false);
+            };
+            match family.as_ref() {
+                b"DeviceCMYK" | b"CMYK" => Ok(true),
+                b"Indexed" | b"I" | b"Pattern" => items.next().map_or(Ok(false), |base| is_device_cmyk(&base, res, depth + 1)),
+                b"Separation" | b"DeviceN" => {
+                    let _names = items.next();
+                    items.next().map_or(Ok(false), |alt| is_device_cmyk(&alt, res, depth + 1))
                 }
-                _ => false,
+                _ => Ok(false),
             }
         }
-        _ => false,
+        _ => Ok(false),
     }
+}
+
+type ResourceLayer<'a> = [&'a [u8]; 6];
+
+#[derive(Hash, PartialEq, Eq)]
+struct StreamKey<'a> {
+    id: ObjectIdentifier,
+    resources: Vec<ResourceLayer<'a>>,
+}
+
+impl<'a> StreamKey<'a> {
+    fn new(id: ObjectIdentifier, res: &Resources<'a>) -> Self {
+        let mut resources = Vec::new();
+        let mut cur = Some(res);
+        while let Some(r) = cur {
+            resources.push([r.color_spaces.data(), r.shadings.data(), r.patterns.data(), r.ext_g_states.data(), r.x_objects.data(), r.fonts.data()]);
+            cur = r.parent();
+        }
+        Self { id, resources }
+    }
+}
+
+fn find_font_with_id<'a>(res: &Resources<'a>, name: &Name<'_>) -> Option<(Dict<'a>, Option<ObjectIdentifier>)> {
+    let mut cur = Some(res);
+    while let Some(r) = cur {
+        if let Some(font) = r.fonts.get::<Dict<'a>>(name.as_ref()) {
+            let id = r.fonts.get_ref(name.as_ref()).map(ObjectIdentifier::from);
+            return Some((font, id));
+        }
+        cur = r.parent();
+    }
+    None
 }
 
 #[derive(Default)]
-struct CmykScan {
-    seen_streams: HashSet<ObjectIdentifier>,
-    seen_fonts: HashSet<ObjectIdentifier>,
+struct CmykScan<'a> {
+    active_streams: HashSet<ObjectIdentifier>,
+    active_fonts: HashSet<ObjectIdentifier>,
+    completed_false_streams: HashSet<StreamKey<'a>>,
+    completed_false_fonts: HashSet<StreamKey<'a>>,
 }
 
-impl CmykScan {
-    fn page(&mut self, page: &Page<'_>) -> bool {
+impl<'a> CmykScan<'a> {
+    fn page(&mut self, page: &'a Page<'a>) -> Result<bool> {
         let res = page.resources();
-        if page.raw().get::<Dict<'_>>(b"Group").is_some_and(|g| Self::group(&g)) {
-            return true;
+        if let Some(g) = page.raw().get::<Dict<'_>>(b"Group")
+            && Self::group(&g, res)?
+        {
+            return Ok(true);
         }
-        page.page_stream().is_some_and(|data| self.content(data, res, 0))
+        let Some(data) = page.page_stream() else {
+            return Ok(false);
+        };
+        let mut hit_cycle = false;
+        self.content(data, res, 0, &mut hit_cycle)
     }
 
-    fn group(group: &Dict<'_>) -> bool {
-        group.get::<Object<'_>>(b"CS").is_some_and(|cs| is_device_cmyk(&cs))
+    fn group(group: &Dict<'_>, res: &Resources<'_>) -> Result<bool> {
+        match group.get::<Object<'_>>(b"CS") {
+            Some(cs) => is_device_cmyk(&cs, res, 0),
+            None => Ok(false),
+        }
     }
 
-    fn content(&mut self, data: &[u8], res: &Resources<'_>, depth: usize) -> bool {
+    fn content(&mut self, data: &[u8], res: &Resources<'a>, depth: usize, hit_cycle: &mut bool) -> Result<bool> {
         if depth >= MAX_DEPTH {
-            return false;
+            return Err(depth_limit());
         }
         let mut ops = UntypedIter::new(data);
         while let Some(op) = ops.next() {
@@ -393,143 +462,217 @@ impl CmykScan {
             let last = op.operands().last().cloned();
             let name = || last.clone().and_then(Object::into_name);
             match operator {
-                b"k" | b"K" => return true,
+                b"k" | b"K" => return Ok(true),
                 b"cs" | b"CS" => {
-                    if name().is_some_and(|n| n.as_ref() == b"DeviceCMYK" || res.get_color_space(&n).is_some_and(|cs| is_device_cmyk(&cs))) {
-                        return true;
+                    if let Some(n) = name()
+                        && is_device_cmyk(&Object::Name(n), res, 0)?
+                    {
+                        return Ok(true);
                     }
                 }
                 b"sh" => {
-                    if name().and_then(|n| res.get_shading(&n)).is_some_and(|sh| Self::shading(sh)) {
-                        return true;
+                    if let Some(sh) = name().and_then(|n| res.get_shading(&n))
+                        && Self::shading(sh, res)?
+                    {
+                        return Ok(true);
                     }
                 }
                 b"scn" | b"SCN" => {
                     if let Some(p) = name().and_then(|n| res.get_pattern(&n))
-                        && self.pattern(p, res, depth)
+                        && self.pattern(p, res, depth, hit_cycle)?
                     {
-                        return true;
+                        return Ok(true);
                     }
                 }
                 b"gs" => {
                     let form = name()
                         .and_then(|n| res.get_ext_g_state(&n))
                         .and_then(|gs| gs.get::<Dict<'_>>(b"SMask"))
-                        .and_then(|m| m.get::<Stream<'_>>(b"G"));
+                        .and_then(|m| m.get::<Stream<'a>>(b"G"));
                     if let Some(form) = form
-                        && self.form(&form, res, depth)
+                        && self.form(&form, res, depth, hit_cycle)?
                     {
-                        return true;
+                        return Ok(true);
                     }
                 }
                 b"Do" => {
                     if let Some(xo) = name().and_then(|n| res.get_x_object(&n)) {
                         let hit = match xo.dict().get::<Name<'_>>(b"Subtype").as_deref() {
-                            Some(b"Image") => Self::image(&xo),
-                            Some(b"Form") => self.form(&xo, res, depth),
+                            Some(b"Image") => Self::image(&xo, res)?,
+                            Some(b"Form") => self.form(&xo, res, depth, hit_cycle)?,
                             _ => false,
                         };
                         if hit {
-                            return true;
+                            return Ok(true);
                         }
                     }
                 }
                 b"BI" | b"EI" => {
                     if let Some(Object::Stream(img)) = last
-                        && Self::inline_image(&img, res)
+                        && Self::inline_image(&img, res)?
                     {
-                        return true;
+                        return Ok(true);
                     }
                 }
                 b"Tf" => {
                     if let Some(font_name) = op.operands().next().cloned().and_then(Object::into_name)
-                        && let Some(font) = res.get_font(&font_name)
+                        && let Some((font, font_id)) = find_font_with_id(res, &font_name)
                         && font.get::<Name<'_>>(b"Subtype").as_deref() == Some(b"Type3")
-                        && self.type3(&font, res, depth)
+                        && self.type3(&font, font_id, res, depth, hit_cycle)?
                     {
-                        return true;
+                        return Ok(true);
                     }
                 }
                 _ => {}
             }
         }
-        false
+        Ok(false)
     }
 
-    fn image(img: &Stream<'_>) -> bool {
+    fn image(img: &Stream<'_>, res: &Resources<'_>) -> Result<bool> {
         if img.dict().get::<bool>(b"ImageMask") == Some(true) {
-            return false;
+            return Ok(false);
         }
-        img.dict().get::<Object<'_>>(b"ColorSpace").is_some_and(|cs| is_device_cmyk(&cs))
+        match img.dict().get::<Object<'_>>(b"ColorSpace") {
+            Some(cs) => is_device_cmyk(&cs, res, 0),
+            None => Ok(false),
+        }
     }
 
-    fn inline_image(img: &Stream<'_>, res: &Resources<'_>) -> bool {
+    fn inline_image(img: &Stream<'_>, res: &Resources<'_>) -> Result<bool> {
         if img.dict().get::<bool>(b"IM") == Some(true) || img.dict().get::<bool>(b"ImageMask") == Some(true) {
-            return false;
+            return Ok(false);
         }
         let cs = img.dict().get::<Object<'_>>(b"CS").or_else(|| img.dict().get::<Object<'_>>(b"ColorSpace"));
-        let cs = match cs {
-            Some(Object::Name(n)) if !matches!(n.as_ref(), b"DeviceRGB" | b"RGB" | b"G" | b"DeviceGray" | b"CMYK" | b"DeviceCMYK") => {
-                res.get_color_space(&n)
-            }
-            cs => cs,
-        };
-        cs.is_some_and(|cs| is_device_cmyk(&cs))
+        match cs {
+            Some(cs) => is_device_cmyk(&cs, res, 0),
+            None => Ok(false),
+        }
     }
 
-    fn shading(sh: Object<'_>) -> bool {
+    fn shading(sh: Object<'_>, res: &Resources<'_>) -> Result<bool> {
         let dict = match sh {
             Object::Dict(d) => d,
             Object::Stream(s) => s.dict().clone(),
-            _ => return false,
+            _ => return Ok(false),
         };
-        dict.get::<Object<'_>>(b"ColorSpace").is_some_and(|cs| is_device_cmyk(&cs))
+        match dict.get::<Object<'_>>(b"ColorSpace") {
+            Some(cs) => is_device_cmyk(&cs, res, 0),
+            None => Ok(false),
+        }
     }
 
-    fn pattern(&mut self, pat: Object<'_>, res: &Resources<'_>, depth: usize) -> bool {
+    fn pattern(&mut self, pat: Object<'a>, res: &Resources<'a>, depth: usize, hit_cycle: &mut bool) -> Result<bool> {
         match pat {
-            Object::Dict(d) => d.get::<Object<'_>>(b"Shading").is_some_and(Self::shading),
-            Object::Stream(s) => self.form(&s, res, depth),
-            _ => false,
+            Object::Dict(d) => match d.get::<Object<'_>>(b"Shading") {
+                Some(sh) => Self::shading(sh, res),
+                None => Ok(false),
+            },
+            Object::Stream(s) => self.form(&s, res, depth, hit_cycle),
+            _ => Ok(false),
         }
     }
 
-    fn form(&mut self, form: &Stream<'_>, parent: &Resources<'_>, depth: usize) -> bool {
-        if depth >= MAX_DEPTH || !self.seen_streams.insert(form.obj_id()) {
-            return false;
+    fn scan_stream(&mut self, stream: &Stream<'a>, res: Resources<'a>, depth: usize, hit_cycle: &mut bool, check_group: bool) -> Result<bool> {
+        let id = stream.obj_id();
+        if self.active_streams.contains(&id) {
+            *hit_cycle = true;
+            return Ok(false);
         }
-        let res = Resources::from_parent(form.dict().get::<Dict<'_>>(b"Resources").unwrap_or_default(), parent.clone());
-        if form.dict().get::<Dict<'_>>(b"Group").is_some_and(|g| Self::group(&g)) {
-            return true;
-        }
-        form.decoded().is_ok_and(|data| self.content(&data, &res, depth + 1))
-    }
-
-    fn type3(&mut self, font: &Dict<'_>, parent: &Resources<'_>, depth: usize) -> bool {
         if depth >= MAX_DEPTH {
-            return false;
+            return Err(depth_limit());
         }
-        if let Some(id) = font.obj_id()
-            && !self.seen_fonts.insert(id)
+        let key = StreamKey::new(id, &res);
+        if self.completed_false_streams.contains(&key) {
+            return Ok(false);
+        }
+        if check_group
+            && let Some(g) = stream.dict().get::<Dict<'_>>(b"Group")
+            && Self::group(&g, &res)?
         {
-            return false;
+            return Ok(true);
         }
-        let res = match font.get::<Dict<'_>>(b"Resources") {
-            Some(own) => Resources::from_parent(own, parent.clone()),
-            None => parent.clone(),
+        let data = stream.decoded().map_err(|_| damaged())?;
+        self.active_streams.insert(id);
+        let mut inner_cycle = false;
+        let res_found = self.content(&data, &res, depth, &mut inner_cycle);
+        self.active_streams.remove(&id);
+        if inner_cycle {
+            *hit_cycle = true;
+        }
+        let found = res_found?;
+        if !found && !inner_cycle {
+            self.completed_false_streams.insert(key);
+        }
+        Ok(found)
+    }
+
+    fn form(&mut self, form: &Stream<'a>, parent: &Resources<'a>, depth: usize, hit_cycle: &mut bool) -> Result<bool> {
+        let res = Resources::from_scope(form.dict().get::<Dict<'a>>(b"Resources"), parent.clone());
+        self.scan_stream(form, res, depth + 1, hit_cycle, true)
+    }
+
+    fn type3(
+        &mut self,
+        font: &Dict<'a>,
+        font_id: Option<ObjectIdentifier>,
+        parent: &Resources<'a>,
+        depth: usize,
+        hit_cycle: &mut bool,
+    ) -> Result<bool> {
+        if let Some(id) = font_id
+            && self.active_fonts.contains(&id)
+        {
+            *hit_cycle = true;
+            return Ok(false);
+        }
+        if depth + 1 >= MAX_DEPTH {
+            return Err(depth_limit());
+        }
+        let res = Resources::from_scope(font.get::<Dict<'a>>(b"Resources"), parent.clone());
+        let key = font_id.map(|id| StreamKey::new(id, &res));
+        if let Some(ref k) = key
+            && self.completed_false_fonts.contains(k)
+        {
+            return Ok(false);
+        }
+        let Some(procs) = font.get::<Dict<'a>>(b"CharProcs") else {
+            return Ok(false);
         };
-        let Some(procs) = font.get::<Dict<'_>>(b"CharProcs") else {
-            return false;
-        };
-        for key in procs.keys() {
-            if let Some(glyph) = procs.get::<Stream<'_>>(key.as_ref())
-                && self.seen_streams.insert(glyph.obj_id())
-                && glyph.decoded().is_ok_and(|data| self.content(&data, &res, depth + 1))
-            {
-                return true;
+        if let Some(id) = font_id {
+            self.active_fonts.insert(id);
+        }
+        let mut inner_cycle = false;
+        let mut found = Ok(false);
+        for proc_key in procs.keys() {
+            if let Some(glyph) = procs.get::<Stream<'a>>(proc_key.as_ref()) {
+                match self.scan_stream(&glyph, res.clone(), depth + 1, &mut inner_cycle, false) {
+                    Ok(true) => {
+                        found = Ok(true);
+                        break;
+                    }
+                    Ok(false) => {}
+                    Err(e) => {
+                        found = Err(e);
+                        break;
+                    }
+                }
             }
         }
-        false
+        if let Some(id) = font_id {
+            self.active_fonts.remove(&id);
+        }
+        if inner_cycle {
+            *hit_cycle = true;
+        }
+        let hit = found?;
+        if !hit
+            && !inner_cycle
+            && let Some(k) = key
+        {
+            self.completed_false_fonts.insert(k);
+        }
+        Ok(hit)
     }
 }
 
@@ -628,24 +771,38 @@ mod tests {
 
     #[test]
     fn excessive_form_nesting_is_bounded_and_never_overflows() {
-        let mut objects = vec![
-            b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
-            b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
-            b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 100 100]/Resources<</XObject<</F0 4 0 R>>>>>>".to_vec(),
-        ];
-        for i in 0..40 {
-            let next_obj = objects.len() + 2;
-            let body = if i < 39 {
-                format!("<</Type/XObject/Subtype/Form/BBox[0 0 1 1]/Resources<</XObject<</F {next_obj} 0 R>>>>/Length 0>>\nstream\n\nendstream")
-            } else {
-                "<</Type/XObject/Subtype/Form/BBox[0 0 1 1]/Resources<<>>/Length 0>>\nstream\n\nendstream".to_string()
-            };
-            objects.push(body.into_bytes());
-        }
-        let pdf_bytes = build_pdf(&objects, "");
-        let updated = apply(&pdf_bytes, COATED_FOGRA39_ICC, false).unwrap();
+        let make_nested = |levels: usize| {
+            let mut objects = vec![
+                b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+                b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+                b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 100 100]/Contents 4 0 R/Resources<</XObject<</F0 5 0 R>>>>>>".to_vec(),
+                b"<</Length 6>>\nstream\n/F0 Do\nendstream".to_vec(),
+            ];
+            for i in 0..levels {
+                let next_obj = objects.len() + 2;
+                let body = if i + 1 < levels {
+                    format!(
+                        "<</Type/XObject/Subtype/Form/BBox[0 0 1 1]/Resources<</XObject<</F {next_obj} 0 R>>>>/Length 5>>\nstream\n/F Do\nendstream"
+                    )
+                } else {
+                    "<</Type/XObject/Subtype/Form/BBox[0 0 1 1]/Resources<<>>/Length 0>>\nstream\n\nendstream".to_string()
+                };
+                objects.push(body.into_bytes());
+            }
+            build_pdf(&objects, "")
+        };
+
+        // Just inside MAX_DEPTH (31 Form levels beneath Page at depth 0) succeeds.
+        let valid_bytes = make_nested(MAX_DEPTH - 1);
+        let updated = apply(&valid_bytes, COATED_FOGRA39_ICC, false).unwrap();
         let parsed = Pdf::new(updated).unwrap();
         assert!(read_default_cmyk(parsed.pages()[0].resources()).is_some());
+        assert!(!uses_device_cmyk(&valid_bytes).unwrap());
+
+        // Past MAX_DEPTH (40 non-cyclic Form levels) fails explicitly instead of silently truncating.
+        let deep_bytes = make_nested(40);
+        assert!(apply(&deep_bytes, COATED_FOGRA39_ICC, false).is_err());
+        assert!(uses_device_cmyk(&deep_bytes).is_err());
     }
 
     #[test]
@@ -675,25 +832,35 @@ mod tests {
             )
             .is_err()
         );
-        assert!(!uses_device_cmyk(b"not a pdf"));
+        assert!(uses_device_cmyk(b"not a pdf").is_err());
     }
 
     #[test]
     fn uses_device_cmyk_distinguishes_pure_rgb_from_cmyk() {
-        let make = |content: &[u8]| {
+        let make = |cs_dict: &str, content: &[u8]| {
             build_pdf(
                 &[
                     b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
                     b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
-                    b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 100 100]/Contents 4 0 R/Resources<<>>>>".to_vec(),
+                    format!("<</Type/Page/Parent 2 0 R/MediaBox[0 0 100 100]/Contents 4 0 R/Resources<</ColorSpace<<{cs_dict}>>>>>>").into_bytes(),
                     format!("<</Length {}>>\nstream\n{}\nendstream", content.len(), String::from_utf8_lossy(content)).into_bytes(),
                 ],
                 "",
             )
         };
-        assert!(!uses_device_cmyk(&make(b"1 0 0 rg 0 0 10 10 re f")));
-        assert!(uses_device_cmyk(&make(b"0 0 0 1 k 0 0 10 10 re f")));
-        assert!(uses_device_cmyk(&make(b"/DeviceCMYK cs 1 0 0 0 scn 0 0 10 10 re f")));
+        assert!(!uses_device_cmyk(&make("", b"1 0 0 rg 0 0 10 10 re f")).unwrap());
+        assert!(uses_device_cmyk(&make("", b"0 0 0 1 k 0 0 10 10 re f")).unwrap());
+        assert!(uses_device_cmyk(&make("", b"/DeviceCMYK cs 1 0 0 0 scn 0 0 10 10 re f")).unwrap());
+
+        let sep_rgb = "/CS0[/Separation/Gold/DeviceRGB<</FunctionType 2/Domain[0 1]/C0[0 0 0]/C1[0 0 1]/N 1>>]";
+        let sep_cmyk = "/CS0[/Separation/Gold/DeviceCMYK<</FunctionType 2/Domain[0 1]/C0[0 0 0 0]/C1[0 0.3 1 0]/N 1>>]";
+        let devn_cmyk = "/CS0[/DeviceN[/Gold]/DeviceCMYK<</FunctionType 2/Domain[0 1]/C0[0 0 0 0]/C1[0 0.3 1 0]/N 1>>]";
+        let idx_sep_cmyk = "/CS0[/Indexed[/Separation/Gold/DeviceCMYK<</FunctionType 2/Domain[0 1]/C0[0 0 0 0]/C1[0 0.3 1 0]/N 1>>]1 <00FF>]";
+        assert!(!uses_device_cmyk(&make(sep_rgb, b"/CS0 cs 1 scn 0 0 10 10 re f")).unwrap());
+        assert!(uses_device_cmyk(&make(sep_cmyk, b"/CS0 cs 1 scn 0 0 10 10 re f")).unwrap());
+        assert!(uses_device_cmyk(&make(devn_cmyk, b"/CS0 cs 1 scn 0 0 10 10 re f")).unwrap());
+        assert!(uses_device_cmyk(&make(idx_sep_cmyk, b"/CS0 cs 1 scn 0 0 10 10 re f")).unwrap());
+        assert!(uses_device_cmyk(&make("/CS0[/Pattern/DeviceCMYK]", b"/CS0 cs 0 0 10 10 re f")).unwrap());
     }
 
     #[test]
@@ -723,7 +890,7 @@ mod tests {
             ],
             "",
         );
-        assert!(uses_device_cmyk(&pdf_bytes), "Type3 glyph CMYK usage should be detected");
+        assert!(uses_device_cmyk(&pdf_bytes).unwrap(), "Type3 glyph CMYK usage should be detected");
         let updated = apply(&pdf_bytes, COATED_FOGRA39_ICC, false).unwrap();
         let parsed = Pdf::new(updated).unwrap();
         let page_res = parsed.pages()[0].resources();
@@ -745,5 +912,72 @@ mod tests {
         let font = page_res.get_font(&Name::new_unescaped(b"F3")).unwrap();
         let font_res = Resources::from_parent(font.get::<Dict<'_>>(b"Resources").unwrap(), page_res.clone());
         assert_eq!(read_default_cmyk(&font_res).expect("Type3 font DefaultCMYK").0, p_id);
+    }
+
+    #[test]
+    fn inline_type3_font_does_not_overwrite_container_resources() {
+        // Object 4 is an indirect /Resources dictionary containing two inline Type3 fonts:
+        // /F3 with inline /Resources (must not corrupt object 4) and /F4 with indirect /Resources 5 0 R.
+        let type3 = |extra: &str| {
+            format!(
+                "<</Type/Font/Subtype/Type3/FontBBox[0 0 10 10]/FontMatrix[0.1 0 0 0.1 0 0]/CharProcs<</a 8 0 R>>/Encoding<</Differences[97/a]>>/FirstChar 97/LastChar 97/Widths[10]/Resources {extra}>>"
+            )
+        };
+        let res4 = format!("<</Font<</F3 {}/F4 {}>>/XObject<</Fm 6 0 R>>>>", type3("<</ColorSpace<<>>>>"), type3("5 0 R"));
+        let pdf_bytes = build_pdf(
+            &[
+                b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+                b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+                b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 100 100]/Contents 7 0 R/Resources 4 0 R>>".to_vec(),
+                res4.into_bytes(),
+                b"<</ColorSpace<<>>>>".to_vec(),
+                b"<</Type/XObject/Subtype/Form/BBox[0 0 10 10]/Resources<</ColorSpace<<>>>>/Length 0>>\nstream\n\nendstream".to_vec(),
+                b"<</Length 15>>\nstream\n/F3 10 Tf (a) Tj\nendstream".to_vec(),
+                b"<</Length 19>>\nstream\n0 0 0 1 k 0 0 5 5 re f\nendstream".to_vec(),
+            ],
+            "",
+        );
+        assert!(uses_device_cmyk(&pdf_bytes).unwrap());
+        let updated = apply(&pdf_bytes, COATED_FOGRA39_ICC, false).unwrap();
+        let parsed = Pdf::new(updated).unwrap();
+        let page_res = parsed.pages()[0].resources();
+        let (p_id, _) = read_default_cmyk(page_res).expect("page resources retain ColorSpace and get DefaultCMYK");
+        assert!(page_res.get_font(&Name::new_unescaped(b"F3")).is_some(), "container /Font /F3 preserved");
+        assert!(page_res.get_x_object(&Name::new_unescaped(b"Fm")).is_some(), "container /XObject preserved");
+        let f4 = page_res.get_font(&Name::new_unescaped(b"F4")).expect("container /Font /F4 preserved");
+        let f4_res = Resources::from_scope(f4.get::<Dict<'_>>(b"Resources"), page_res.clone());
+        assert_eq!(read_default_cmyk(&f4_res).expect("inline Type3 indirect Resources DefaultCMYK").0, p_id);
+    }
+
+    #[test]
+    fn shared_form_without_resources_uses_each_pages_resources() {
+        let two_page_shared_form = |page2_cs: &str| {
+            // 1: Catalog, 2: Pages (2 kids), 3: Page 1 (CS0 = DeviceRGB, invokes Form 7),
+            // 4: Page 2 (CS0 = `page2_cs`, invokes Form 7), 5: Page 1 content, 6: Page 2 content,
+            // 7: Shared Form without /Resources using `/CS0 cs`.
+            let page_stream = "/Fm Do";
+            let form_stream = "/CS0 cs 1 0 0 0 scn 0 0 1 1 re f";
+            build_pdf(
+                &[
+                    b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+                    b"<</Type/Pages/Kids[3 0 R 4 0 R]/Count 2>>".to_vec(),
+                    b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 100 100]/Contents 5 0 R/Resources<</ColorSpace<</CS0/DeviceRGB>>/XObject<</Fm 7 0 R>>>>>>".to_vec(),
+                    format!(
+                        "<</Type/Page/Parent 2 0 R/MediaBox[0 0 100 100]/Contents 6 0 R/Resources<</ColorSpace<</CS0{page2_cs}>>/XObject<</Fm 7 0 R>>>>>>"
+                    )
+                    .into_bytes(),
+                    format!("<</Length {}>>\nstream\n{page_stream}\nendstream", page_stream.len()).into_bytes(),
+                    format!("<</Length {}>>\nstream\n{page_stream}\nendstream", page_stream.len()).into_bytes(),
+                    format!("<</Type/XObject/Subtype/Form/BBox[0 0 10 10]/Length {}>>\nstream\n{form_stream}\nendstream", form_stream.len())
+                        .into_bytes(),
+                ],
+                "",
+            )
+        };
+        assert!(!uses_device_cmyk(&two_page_shared_form("/DeviceRGB")).unwrap());
+        assert!(
+            uses_device_cmyk(&two_page_shared_form("/DeviceCMYK")).unwrap(),
+            "Page 1 negative cache for resource-less Form must not hide Page 2 DeviceCMYK resolution"
+        );
     }
 }

@@ -477,3 +477,27 @@ fn rgb_blend_document_attaches_default_cmyk_only_when_cmyk_is_present() {
     assert_eq!(n, 4);
     assert_eq!(prof, craft_cms::builtin::COATED_FOGRA39_ICC);
 }
+
+/// An RGB-blend document whose only graphic is a CMYK-backed spot swatch writes a `/Separation`
+/// color space with a `/DeviceCMYK` alternate, so `/DefaultCMYK` must still be attached.
+#[test]
+fn rgb_blend_spot_only_document_with_cmyk_alternate_attaches_default_cmyk() {
+    use designcraft_color::swatch::{ColorType, SwatchValue};
+    use designcraft_color::{Color, Swatch};
+
+    let mut d = Document::new(&NewDocument::default());
+    d.settings.blend_space = BlendSpace::Rgb;
+    d.swatches.push(Swatch {
+        name: "Spot Gold".into(),
+        value: SwatchValue::Color { color: Color::cmyk(0.0, 0.3, 1.0, 0.0), color_type: ColorType::Spot },
+        locked: false,
+        named: true,
+        hidden: false,
+    });
+    add_box(&mut d, Rect::new(10.0, 10.0, 100.0, 100.0), "Spot Gold", |_| {});
+    let pdf_bytes = export_pdf(&d, &Cache::new(), &PdfOptions::default()).unwrap();
+    let pdf = Pdf::new(pdf_bytes).unwrap();
+    let (_, n, prof) = default_cmyk_profile(pdf.pages()[0].resources()).expect("RGB doc with CMYK-alternate spot color needs /DefaultCMYK");
+    assert_eq!(n, 4);
+    assert_eq!(prof, craft_cms::builtin::COATED_FOGRA39_ICC);
+}
