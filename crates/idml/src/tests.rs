@@ -4520,12 +4520,20 @@ fn a_rule_inherits_through_a_based_on_on_lines_of_its_own() {
         ParagraphStyle/Base
       </BasedOn><RuleAboveColor type=\"object\">Color/Black</RuleAboveColor></Properties>
     </ParagraphStyle>
+    <ParagraphStyle Self=\"ParagraphStyle/Spaced\" Name=\"Spaced\">
+      <Properties><BasedOn type=\"object\">
+        ParagraphStyle/Base 
+      </BasedOn><RuleAboveColor type=\"object\">Color/Black</RuleAboveColor></Properties>
+    </ParagraphStyle>
   </RootParagraphStyleGroup>",
     );
     let d = import_idml(&fixture_with_table_styles(&styles, STORY)).unwrap();
-    let rule = d.styles.paragraph.iter().find(|s| s.name == "Derived").unwrap().para.rule_above.clone().unwrap();
-    assert!(rule.on, "the rule stays on");
-    assert_eq!((rule.weight, rule.offset), (16.0, -3.0), "weight and offset come from the base style");
+    // "Spaced" has a space before the line break, and no style is named with that space.
+    for name in ["Derived", "Spaced"] {
+        let rule = d.styles.paragraph.iter().find(|s| s.name == name).unwrap().para.rule_above.clone().unwrap();
+        assert!(rule.on, "{name}: the rule stays on");
+        assert_eq!((rule.weight, rule.offset), (16.0, -3.0), "{name}: weight and offset come from the base style");
+    }
 }
 
 #[test]

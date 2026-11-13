@@ -343,12 +343,11 @@ impl<'r> Importer<'r> {
         if let Some(v) = e.prop(k) {
             return Some(v);
         }
-        // An indented file puts line breaks and indentation around a `BasedOn` written on lines
-        // of its own; a name's own trailing spaces stay.
-        let style_ref = |r: String| {
-            let r = unindented(&r);
-            if r.starts_with("ParagraphStyle/") { r.to_string() } else { format!("ParagraphStyle/{}", names::escape_id(r)) }
-        };
+        // As `based_on` reads it: the reference as written, or without the line breaks and
+        // indentation an indented file puts around it, when that names a style; else trimmed.
+        let id = |r: &str| if r.starts_with("ParagraphStyle/") { r.to_string() } else { format!("ParagraphStyle/{}", names::escape_id(r)) };
+        let style_ref =
+            |r: String| [r.as_str(), unindented(&r)].into_iter().map(id).find(|i| self.para_els.contains_key(i)).unwrap_or_else(|| id(r.trim()));
         let mut next =
             if e.local() == "ParagraphStyle" { e.prop("BasedOn") } else { e.get("AppliedParagraphStyle").map(str::to_string) }.map(style_ref);
         for _ in 0..16 {
