@@ -169,47 +169,52 @@ impl<'r> Importer<'r> {
     }
 
     pub(super) fn stroke_from(&mut self, e: &El, item: Option<&El>) -> Stroke {
-        let g = |s: &Self, k: &str| -> Option<String> { if item.is_some() { s.attr_or_style(e, k) } else { e.get(k).map(str::to_string) } };
-        let color = g(self, "StrokeColor");
+        let model_elements = if item.is_some() {
+            std::iter::once(e).chain(self.object_style_chain(e)).map(crate::xml::to_craft).collect::<Vec<_>>()
+        } else {
+            vec![crate::xml::to_craft(e)]
+        };
+        let model_refs: Vec<_> = model_elements.iter().collect();
+        let model = craft_idml::model::StrokeValues::from_elements(&model_refs);
         let mut s = Stroke::none();
-        if let Some(c) = color {
-            s.swatch = self.swatch_ref(&c);
+        if let Some(c) = model.color.as_deref() {
+            s.swatch = self.swatch_ref(c);
         }
-        if let Some(w) = g(self, "StrokeWeight").and_then(|v| v.parse::<f64>().ok()).filter(|v| v.is_finite()) {
+        if let Some(w) = model.weight {
             s.weight = w;
         }
-        if let Some(t) = g(self, "StrokeTint").and_then(|v| v.parse().ok()) {
+        if let Some(t) = model.tint {
             s.tint = tint(Some(t)).unwrap_or(1.0);
         }
-        if let Some(t) = g(self, "StrokeType") {
-            s.kind = names::stroke_type_in(&t);
+        if let Some(t) = model.kind.as_deref() {
+            s.kind = names::stroke_type_in(t);
         }
-        if let Some(v) = g(self, "StrokeAlignment") {
-            s.align = names::stroke_align_in(&v);
+        if let Some(v) = model.alignment.as_deref() {
+            s.align = names::stroke_align_in(v);
         }
-        if let Some(v) = g(self, "EndCap") {
-            s.cap = names::cap_in(&v);
+        if let Some(v) = model.cap.as_deref() {
+            s.cap = names::cap_in(v);
         }
-        if let Some(v) = g(self, "EndJoin") {
-            s.join = names::join_in(&v);
+        if let Some(v) = model.join.as_deref() {
+            s.join = names::join_in(v);
         }
-        if let Some(v) = g(self, "MiterLimit").and_then(|v| v.parse::<f64>().ok()).filter(|v| v.is_finite()) {
+        if let Some(v) = model.miter_limit {
             s.miter_limit = v;
         }
-        if let Some(v) = g(self, "LeftLineEnd") {
-            s.start = names::arrow_in(&v);
+        if let Some(v) = model.start.as_deref() {
+            s.start = names::arrow_in(v);
         }
-        if let Some(v) = g(self, "RightLineEnd") {
-            s.end = names::arrow_in(&v);
+        if let Some(v) = model.end.as_deref() {
+            s.end = names::arrow_in(v);
         }
-        if let Some(v) = g(self, "GapColor") {
-            s.gap_swatch = self.swatch_ref(&v);
+        if let Some(v) = model.gap_color.as_deref() {
+            s.gap_swatch = self.swatch_ref(v);
         }
-        if let Some(t) = g(self, "GapTint").and_then(|v| v.parse().ok()) {
+        if let Some(t) = model.gap_tint {
             s.gap_tint = tint(Some(t)).unwrap_or(1.0);
         }
-        s.overprint = g(self, "OverprintStroke").as_deref() == Some("true");
-        s.gap_overprint = g(self, "OverprintGap").as_deref() == Some("true");
+        s.overprint = model.overprint == Some(true);
+        s.gap_overprint = model.gap_overprint == Some(true);
         s
     }
 }
