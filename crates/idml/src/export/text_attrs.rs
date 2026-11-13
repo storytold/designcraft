@@ -448,31 +448,38 @@ impl<'a> Ex<'a> {
                 .collect();
             props.push(crate::xml::from_craft(craft_idml::model::TabStopValues::to_list(&values)));
         }
-        if let Some(l) = a.list_type {
-            el.set(
-                "BulletsAndNumberingListType",
-                match l {
+        n!(a, el, span_space_before, "SpanColumnMinSpaceBefore");
+        n!(a, el, span_space_after, "SpanColumnMinSpaceAfter");
+        let list = craft_idml::model::ParagraphListValues {
+            list_type: a.list_type.map(|list| {
+                match list {
                     ListType::None => "NoList",
                     ListType::Bullets => "BulletList",
                     ListType::Numbers => "NumberedList",
-                },
-            );
+                }
+                .into()
+            }),
+            numbering_format: a.number_style.map(|style| names::numbering_format_out(style).into()),
+            expression: a.number_expression.as_ref().map(|text| names::list_text_out(text)),
+            separator: a.list_separator.as_ref().map(|text| names::list_text_out(text)),
+            bullet_type: a.bullet_char.as_deref().and_then(|text| text.chars().next()).map(|_| "UnicodeOnly".into()),
+            bullet_value: a.bullet_char.as_deref().and_then(|text| text.chars().next()).map(|character| u32::from(character).to_string()),
+            balance_ragged: a.balance_ragged.map(|balanced| if balanced { "FullyBalanced" } else { "NoBalancing" }.into()),
+            level: a.list_level.map(f64::from),
+            bullet_character_style: a.bullet_char_style.as_ref().map(|style| names::style_self("CharacterStyle", CHAR_BUILTINS, style)),
+            numbering_character_style: a.number_char_style.as_ref().map(|style| names::style_self("CharacterStyle", CHAR_BUILTINS, style)),
+            bullet_alignment: a.bullet_align.map(|alignment| names::list_align_out(alignment).into()),
+            numbering_alignment: a.number_align.map(|alignment| names::list_align_out(alignment).into()),
+            restart_numbers: a.restart_numbers,
+            restart_after_level: a.restart_after_level,
+            restart_after_specific_level: a.restart_after_level.is_some_and(|level| level != 0),
+            bullet_font: a.bullet_font.clone(),
+            bullet_font_style: a.bullet_font_style.clone(),
+        };
+        for (key, value) in list.to_attrs() {
+            el.set(&key, value);
         }
-        if let Some(n) = a.number_style {
-            props.push(p("NumberingFormat", "string", names::numbering_format_out(n)));
-        }
-        if let Some(x) = &a.number_expression {
-            el.set("NumberingExpression", names::list_text_out(x));
-        }
-        if let Some(x) = &a.list_separator {
-            el.set("BulletsTextAfter", names::list_text_out(x));
-        }
-        if let Some(c) = a.bullet_char.as_deref().and_then(|s| s.chars().next()) {
-            props.push(El::new("BulletChar").attr("BulletCharacterType", "UnicodeOnly").attr("BulletCharacterValue", u32::from(c).to_string()));
-        }
-        if let Some(b) = a.balance_ragged {
-            props.push(p("BalanceRaggedLines", "enumeration", if b { "FullyBalanced" } else { "NoBalancing" }));
-        }
+        props.extend(list.to_els().into_iter().map(crate::xml::from_craft));
     }
 
     fn para_box_corners(el: &mut El, a: &ParaAttrs) {
@@ -553,39 +560,6 @@ impl<'a> Ex<'a> {
         b!(a, el, shading_nonprinting, "ParagraphShadingSuppressPrinting");
     }
 
-    fn para_list_attrs(&self, el: &mut El, props: &mut Vec<El>, a: &ParaAttrs) {
-        n!(a, el, span_space_before, "SpanColumnMinSpaceBefore");
-        n!(a, el, span_space_after, "SpanColumnMinSpaceAfter");
-        n!(a, el, list_level, "NumberingLevel");
-        for (k, style) in [("BulletsCharacterStyle", &a.bullet_char_style), ("NumberingCharacterStyle", &a.number_char_style)] {
-            if let Some(st) = style {
-                props.push(p(k, "object", names::style_self("CharacterStyle", CHAR_BUILTINS, st)));
-            }
-        }
-        if let Some(v) = a.bullet_align {
-            el.set("BulletsAlignment", names::list_align_out(v));
-        }
-        if let Some(v) = a.number_align {
-            el.set("NumberingAlignment", names::list_align_out(v));
-        }
-        b!(a, el, restart_numbers, "NumberingApplyRestartPolicy");
-        if let Some(level) = a.restart_after_level {
-            let (policy, level) = if level == 0 { ("AnyPreviousLevel", 0) } else { ("SpecificPreviousLevel", level) };
-            props.push(
-                El::new("NumberingRestartPolicies")
-                    .attr("RestartPolicy", policy)
-                    .attr("LowerLevel", level.to_string())
-                    .attr("UpperLevel", level.to_string()),
-            );
-        }
-        if let Some(f) = &a.bullet_font {
-            props.push(p("BulletsFont", "string", if f.is_empty() { "$ID/".to_string() } else { f.clone() }));
-        }
-        if let Some(f) = a.bullet_font_style.as_ref().filter(|f| !f.is_empty()) {
-            props.push(p("BulletsFontStyle", "string", f.clone()));
-        }
-    }
-
     /// Write paragraph attributes `a`, set over the resolved paragraph style `parent` (`None` for the
     /// root style).
     pub(super) fn para_attrs(&mut self, el: &mut El, props: &mut Vec<El>, a: &ParaAttrs, parent: Option<&str>) {
@@ -642,7 +616,6 @@ impl<'a> Ex<'a> {
         self.para_flow_attrs(el, a);
         self.para_columns_and_list_attrs(el, props, a);
         self.para_box_attrs(el, props, a);
-        self.para_list_attrs(el, props, a);
     }
 }
 
