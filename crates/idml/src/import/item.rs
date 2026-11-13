@@ -97,15 +97,14 @@ impl<'r> Importer<'r> {
         }
         // Transparency.
         if let Some(t) = self.with_style(e, "TransparencySetting") {
-            if let Some(bs) = t.find("BlendingSetting") {
-                if let Some(o) = bs.num("Opacity") {
-                    it.opacity = (o / 100.0).clamp(0.0, 1.0) as f32;
-                }
-                if let Some(m) = bs.get("BlendMode") {
-                    it.blend = names::blend_in(m);
-                }
+            let settings = craft_idml::model::TransparencySetting::from_el(&crate::xml::to_craft(&t));
+            if let Some(o) = settings.opacity {
+                it.opacity = (o / 100.0).clamp(0.0, 1.0) as f32;
             }
-            self.effects_in(&t, &mut it.effects);
+            if let Some(m) = settings.blend_mode.as_deref() {
+                it.blend = names::blend_in(m);
+            }
+            self.effects_from_model(&settings, &mut it.effects);
         }
         // Text wrap.
         if let Some(w) = self.with_style(e, "TextWrapPreference") {

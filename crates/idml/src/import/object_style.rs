@@ -96,47 +96,44 @@ impl<'r> Importer<'r> {
     /// Reads the drop shadow, feather, gradient feather and directional feather of a
     /// `TransparencySetting` into `fx`.
     pub(super) fn effects_in(&mut self, t: &El, fx: &mut Effects) {
-        if let Some(ds) = t.find("DropShadowSetting")
-            && ds.get("Mode") == Some("Drop")
-        {
-            let x = ds.num("XOffset").unwrap_or(4.95);
-            let y = ds.num("YOffset").unwrap_or(4.95);
+        let settings = craft_idml::model::TransparencySetting::from_el(&crate::xml::to_craft(t));
+        self.effects_from_model(&settings, fx);
+    }
+
+    pub(super) fn effects_from_model(&mut self, settings: &craft_idml::model::TransparencySetting, fx: &mut Effects) {
+        if let Some(ds) = settings.drop_shadow.as_ref().filter(|ds| ds.mode.as_deref() == Some("Drop")) {
+            let x = ds.x_offset.unwrap_or(4.95);
+            let y = ds.y_offset.unwrap_or(4.95);
             let def = DropShadow::default();
             fx.drop_shadow = DropShadow {
                 on: true,
-                color: ds.get("EffectColor").map(|c| self.swatch_ref(c)).unwrap_or(def.color),
-                opacity: ds.num("Opacity").map(|o| (o / 100.0) as f32).unwrap_or(def.opacity),
+                color: ds.color.as_deref().map(|c| self.swatch_ref(c)).unwrap_or(def.color),
+                opacity: ds.opacity.map(|o| (o / 100.0) as f32).unwrap_or(def.opacity),
                 angle: names_angle(x, y),
                 distance: x.hypot(y),
-                size: ds.num("Size").unwrap_or(def.size),
-                spread: ds.num("Spread").unwrap_or(def.spread),
+                size: ds.size.unwrap_or(def.size),
+                spread: ds.spread.unwrap_or(def.spread),
                 global_light: false,
                 // Without the attribute (earlier DesignCraft exports) the shadow stays Normal, as it
                 // rendered then; a new shadow's default is Multiply.
-                mode: ds.get("BlendMode").map_or(designcraft_color::BlendMode::Normal, names::blend_in),
+                mode: ds.blend_mode.as_deref().map_or(designcraft_color::BlendMode::Normal, names::blend_in),
             };
         }
-        if let Some(f) = t.find("FeatherSetting")
-            && f.get("Mode").is_some_and(|m| m != "None")
-        {
-            fx.feather = f.num("Width").unwrap_or(9.0);
-            fx.feather_options.choke = finite(f.num("ChokeAmount")).unwrap_or(0.0).clamp(0.0, 100.0);
-            fx.feather_options.corners = match f.get("CornerType") {
+        if let Some(f) = settings.feather.as_ref().filter(|f| f.mode.as_deref().is_some_and(|m| m != "None")) {
+            fx.feather = f.width.unwrap_or(9.0);
+            fx.feather_options.choke = finite(f.choke_amount).unwrap_or(0.0).clamp(0.0, 100.0);
+            fx.feather_options.corners = match f.corner_type.as_deref() {
                 Some("Sharp") => designcraft_doc::FeatherCorners::Sharp,
                 Some("Rounded") => designcraft_doc::FeatherCorners::Rounded,
                 _ => designcraft_doc::FeatherCorners::Diffused,
             };
         }
-        if let Some(g) = t.find("GradientFeatherSetting")
-            && g.boolean("Applied") == Some(true)
-        {
+        if let Some(g) = settings.gradient_feather.as_ref().filter(|g| g.applied) {
             fx.gradient_feather = gradient_feather_in(g);
         }
-        if let Some(df) = t.find("DirectionalFeatherSetting")
-            && df.boolean("Applied") == Some(true)
-        {
-            let w = |k: &str| finite(df.num(k)).unwrap_or(0.0).max(0.0);
-            fx.directional_feather = DirectionalFeather { on: true, widths: [w("TopWidth"), w("LeftWidth"), w("BottomWidth"), w("RightWidth")] };
+        if let Some(df) = settings.directional_feather.as_ref().filter(|df| df.applied) {
+            let w = |value| finite(value).unwrap_or(0.0).max(0.0);
+            fx.directional_feather = DirectionalFeather { on: true, widths: df.widths.map(w) };
         }
     }
 
@@ -286,33 +283,26 @@ fn overlay(base: &mut El, top: &El, depth: usize) {
 /// A `GradientFeatherSetting`. The model holds two opacity stops at the ends of the gradient: the
 /// first and last `OpacityGradientStop` give them; with a linear vector, their `Location`s move its
 /// ends.
-fn gradient_feather_in(g: &El) -> GradientFeather {
+fn gradient_feather_in(g: &craft_idml::model::GradientFeatherValues) -> GradientFeather {
     let def = GradientFeather::default();
-    let angle = finite(g.num("Angle")).unwrap_or(0.0);
-    let mut stops: Vec<(f64, f64)> = g
-        .find_all("OpacityGradientStop")
-        .filter_map(|s| Some((finite(s.num("Location"))?.clamp(0.0, 100.0) / 100.0, finite(s.num("Opacity"))?.clamp(0.0, 100.0) / 100.0)))
-        .collect();
+    let angle = finite(g.angle).unwrap_or(0.0);
+    let mut stops: Vec<(f64, f64)> =
+        g.stops.iter().filter_map(|s| Some((finite(s.location)?.clamp(0.0, 100.0) / 100.0, finite(s.opacity)?.clamp(0.0, 100.0) / 100.0))).collect();
     stops.sort_by(|a, b| a.0.total_cmp(&b.0));
     let (first, last) = match (stops.first(), stops.last()) {
         (Some(&a), Some(&b)) => (a, b),
         _ => ((0.0, def.start as f64), (1.0, def.end as f64)),
     };
-    let start: Option<[f64; 2]> = g
-        .prop("GradientStart")
-        .and_then(|s| s.split_whitespace().map(|v| v.parse().ok().filter(|v: &f64| v.is_finite())).collect::<Option<Vec<f64>>>())
-        .and_then(|v| v.try_into().ok());
-    let radial = g.get("Type") == Some("Radial");
-    let vector = match (start, finite(g.num("Length"))) {
+    let vector = match (g.start, finite(g.length)) {
         (Some([x, y]), Some(len)) if len > 0.0 => {
             let a = angle.to_radians();
             let (dx, dy) = (len * a.cos(), -len * a.sin());
-            let (l0, l1) = if !radial && last.0 > first.0 { (first.0, last.0) } else { (0.0, 1.0) };
+            let (l0, l1) = if !g.radial && last.0 > first.0 { (first.0, last.0) } else { (0.0, 1.0) };
             Some([x + dx * l0, y + dy * l0, x + dx * l1, y + dy * l1])
         }
         _ => None,
     };
-    GradientFeather { on: true, radial, angle, start: first.1 as f32, end: last.1 as f32, vector }
+    GradientFeather { on: true, radial: g.radial, angle, start: first.1 as f32, end: last.1 as f32, vector }
 }
 
 fn names_angle(x: f64, y: f64) -> f64 {
