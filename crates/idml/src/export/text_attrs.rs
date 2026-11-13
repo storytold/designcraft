@@ -274,45 +274,39 @@ impl<'a> Ex<'a> {
                 _ => {}
             }
         }
-        if let Some(list) = &list {
-            let mut l = El::new("AllNestedStyles").attr("type", "list");
-            for ns in list {
-                let (ty, delim) = names::nested_until_out(&ns.until);
-                l = l.child(
-                    El::new("ListItem")
-                        .attr("type", "record")
-                        .child(p("AppliedCharacterStyle", "object", names::style_self("CharacterStyle", CHAR_BUILTINS, &ns.style)))
-                        .child(p("Delimiter", ty, delim))
-                        .child(p("Repetition", "long", ns.count.to_string()))
-                        .child(p("Inclusive", "boolean", bool_s(ns.through))),
-                );
-            }
-            props.push(l);
-        }
-        if let Some(list) = &a.nested_line_styles {
-            let mut l = El::new("AllNestedLineStyles").attr("type", "list");
-            for ns in list {
-                l = l.child(
-                    El::new("ListItem")
-                        .attr("type", "record")
-                        .child(p("AppliedCharacterStyle", "object", names::style_self("CharacterStyle", CHAR_BUILTINS, &ns.style)))
-                        .child(p("LineCount", "long", ns.lines.to_string())),
-                );
-            }
-            props.push(l);
-        }
-        if let Some(list) = &a.grep_styles {
-            let mut l = El::new("AllGREPStyles").attr("type", "list");
-            for g in list {
-                l = l.child(
-                    El::new("ListItem")
-                        .attr("type", "record")
-                        .child(p("AppliedCharacterStyle", "object", names::style_self("CharacterStyle", CHAR_BUILTINS, &g.style)))
-                        .child(p("GrepExpression", "string", g.pattern.clone())),
-                );
-            }
-            props.push(l);
-        }
+        let values = craft_idml::model::NestedStyleValues {
+            nested: list.map(|list| {
+                list.iter()
+                    .map(|style| {
+                        let (delimiter_type, delimiter) = names::nested_until_out(&style.until);
+                        craft_idml::model::NestedStyleValue {
+                            character_style: names::style_self("CharacterStyle", CHAR_BUILTINS, &style.style),
+                            inclusive: style.through,
+                            repetition: style.count,
+                            delimiter_type: delimiter_type.into(),
+                            delimiter,
+                        }
+                    })
+                    .collect()
+            }),
+            lines: a.nested_line_styles.as_ref().map(|list| {
+                list.iter()
+                    .map(|style| craft_idml::model::NestedLineStyleValue {
+                        character_style: names::style_self("CharacterStyle", CHAR_BUILTINS, &style.style),
+                        line_count: style.lines,
+                    })
+                    .collect()
+            }),
+            grep: a.grep_styles.as_ref().map(|list| {
+                list.iter()
+                    .map(|style| craft_idml::model::GrepStyleValue {
+                        character_style: names::style_self("CharacterStyle", CHAR_BUILTINS, &style.style),
+                        expression: style.pattern.clone(),
+                    })
+                    .collect()
+            }),
+        };
+        props.extend(values.to_els().into_iter().map(crate::xml::from_craft));
     }
 
     fn para_alignment_attrs(&self, el: &mut El, a: &ParaAttrs, parent: Option<&str>) {
