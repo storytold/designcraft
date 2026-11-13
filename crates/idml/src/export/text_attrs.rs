@@ -22,13 +22,6 @@ macro_rules! b {
     };
 }
 
-/// The Overprint switches of a paragraph's shading, border and border gap.
-fn para_box_overprints(el: &mut El, a: &ParaAttrs) {
-    b!(a, el, shading_overprint, "ParagraphShadingOverprint");
-    b!(a, el, border_overprint, "ParagraphBorderOverprint");
-    b!(a, el, border_gap_overprint, "ParagraphBorderGapOverprint");
-}
-
 impl<'a> Ex<'a> {
     pub(super) fn char_attrs(&mut self, el: &mut El, props: &mut Vec<El>, a: &CharAttrs) {
         if let Some(v) = a.leading_aki {
@@ -482,82 +475,46 @@ impl<'a> Ex<'a> {
         props.extend(list.to_els().into_iter().map(crate::xml::from_craft));
     }
 
-    fn para_box_corners(el: &mut El, a: &ParaAttrs) {
-        const CORNERS: [&str; 4] = ["TopLeft", "TopRight", "BottomRight", "BottomLeft"];
-        for (prefix, corners) in [("ParagraphBorder", a.border_corners), ("ParagraphShading", a.shading_corners)] {
-            if let Some(cs) = corners {
-                for (c, k) in cs.iter().zip(CORNERS) {
-                    el.set(&format!("{prefix}{k}CornerOption"), names::corner_out(c.shape));
-                    el.set(&format!("{prefix}{k}CornerRadius"), num(c.size));
-                }
-            }
-        }
-    }
-
     fn para_box_attrs(&self, el: &mut El, props: &mut Vec<El>, a: &ParaAttrs) {
-        b!(a, el, shading_on, "ParagraphShadingOn");
-        if let Some(c) = &a.shading_color {
-            props.push(p("ParagraphShadingColor", "object", self.sw(c)));
+        let corners = |values: Option<[designcraft_geom::corners::Corner; 4]>| {
+            values.map(|corners| corners.map(|corner| (names::corner_out(corner.shape).to_string(), corner.size)))
+        };
+        let values = craft_idml::model::ParagraphBoxValues {
+            shading_on: a.shading_on,
+            shading_color: a.shading_color.as_ref().map(|color| self.sw(color)),
+            shading_tint: a.shading_tint.map(|tint| f64::from(tint) * 100.0),
+            shading_offsets: a.shading_offsets,
+            shading_overprint: a.shading_overprint,
+            border_on: a.border_on,
+            border_color: a.border_color.as_ref().map(|color| self.sw(color)),
+            border_tint: a.border_tint.map(|tint| f64::from(tint) * 100.0),
+            border_weights: a.border_weights,
+            border_offsets: a.border_offsets,
+            border_type: a.border_type.as_ref().map(names::stroke_type_out),
+            border_cap: a.border_cap.map(|cap| names::cap_out(cap).to_string()),
+            border_join: a.border_join.map(|join| names::join_out(join).to_string()),
+            border_corners: corners(a.border_corners),
+            border_width: a.border_width.map(|width| names::box_width_out(width).to_string()),
+            border_top: a.border_top.map(|origin| names::box_top_out(origin).to_string()),
+            border_bottom: a.border_bottom.map(|origin| names::box_bottom_out(origin).to_string()),
+            border_display_if_splits: a.border_display_if_splits,
+            border_merge: a.border_merge,
+            border_gap_color: a.border_gap_color.as_ref().map(|color| self.sw(color)),
+            border_gap_tint: a.border_gap_tint.map(|tint| f64::from(tint) * 100.0),
+            border_overprint: a.border_overprint,
+            border_gap_overprint: a.border_gap_overprint,
+            shading_width: a.shading_width.map(|width| names::box_width_out(width).to_string()),
+            shading_top: a.shading_top.map(|origin| names::box_top_out(origin).to_string()),
+            shading_bottom: a.shading_bottom.map(|origin| names::box_bottom_out(origin).to_string()),
+            shading_clip: a.shading_clip,
+            shading_nonprinting: a.shading_nonprinting,
+            shading_corners: corners(a.shading_corners),
+        };
+        let (attributes, properties) = values.to_parts();
+        for (key, value) in attributes {
+            el.set(&key, value);
         }
-        n!(a, el, shading_tint, "ParagraphShadingTint", pct);
-        para_box_overprints(el, a);
-        const SIDES: [&str; 4] = ["Top", "Left", "Bottom", "Right"];
-        if let Some(o) = a.shading_offsets {
-            for (i, side) in SIDES.iter().enumerate() {
-                el.set(&format!("ParagraphShading{side}Offset"), num(o[i]));
-            }
-        }
-        b!(a, el, border_on, "ParagraphBorderOn");
-        if let Some(c) = &a.border_color {
-            props.push(p("ParagraphBorderColor", "object", self.sw(c)));
-        }
-        n!(a, el, border_tint, "ParagraphBorderTint", pct);
-        if let Some(w) = a.border_weights {
-            for (i, side) in SIDES.iter().enumerate() {
-                el.set(&format!("ParagraphBorder{side}LineWeight"), num(w[i]));
-            }
-        }
-        if let Some(o) = a.border_offsets {
-            for (i, side) in SIDES.iter().enumerate() {
-                el.set(&format!("ParagraphBorder{side}Offset"), num(o[i]));
-            }
-        }
-        if let Some(t) = &a.border_type {
-            props.push(p("ParagraphBorderType", "object", names::stroke_type_out(t)));
-        }
-        if let Some(c) = a.border_cap {
-            el.set("ParagraphBorderStrokeEndCap", names::cap_out(c));
-        }
-        if let Some(j) = a.border_join {
-            el.set("ParagraphBorderStrokeEndJoin", names::join_out(j));
-        }
-        Self::para_box_corners(el, a);
-        if let Some(w) = a.border_width {
-            el.set("ParagraphBorderWidth", names::box_width_out(w));
-        }
-        if let Some(t) = a.border_top {
-            el.set("ParagraphBorderTopOrigin", names::box_top_out(t));
-        }
-        if let Some(b) = a.border_bottom {
-            el.set("ParagraphBorderBottomOrigin", names::box_bottom_out(b));
-        }
-        b!(a, el, border_display_if_splits, "ParagraphBorderDisplayIfSplits");
-        b!(a, el, border_merge, "MergeConsecutiveParaBorders");
-        if let Some(c) = &a.border_gap_color {
-            props.push(p("ParagraphBorderGapColor", "object", self.sw(c)));
-        }
-        n!(a, el, border_gap_tint, "ParagraphBorderGapTint", pct);
-        if let Some(w) = a.shading_width {
-            el.set("ParagraphShadingWidth", names::box_width_out(w));
-        }
-        if let Some(t) = a.shading_top {
-            el.set("ParagraphShadingTopOrigin", names::box_top_out(t));
-        }
-        if let Some(b) = a.shading_bottom {
-            el.set("ParagraphShadingBottomOrigin", names::box_bottom_out(b));
-        }
-        b!(a, el, shading_clip, "ParagraphShadingClipToFrame");
-        b!(a, el, shading_nonprinting, "ParagraphShadingSuppressPrinting");
+        props.extend(properties.into_iter().map(crate::xml::from_craft));
     }
 
     /// Write paragraph attributes `a`, set over the resolved paragraph style `parent` (`None` for the
