@@ -1152,7 +1152,7 @@ dependencies = [
 [[package]]
 name = "craft-eps"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=71337f6772b57a61e0f171c941f695822eea19a5#71337f6772b57a61e0f171c941f695822eea19a5"
+source = "git+https://github.com/storytold/craft-libs?rev=8abfa9d0f14bafbfc3449fc552ffeafb9ca6a551#8abfa9d0f14bafbfc3449fc552ffeafb9ca6a551"
 
 [[package]]
 name = "craft-eps"
@@ -1172,12 +1172,12 @@ dependencies = [
 [[package]]
 name = "craft-file-formats"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=71337f6772b57a61e0f171c941f695822eea19a5#71337f6772b57a61e0f171c941f695822eea19a5"
+source = "git+https://github.com/storytold/craft-libs?rev=8abfa9d0f14bafbfc3449fc552ffeafb9ca6a551#8abfa9d0f14bafbfc3449fc552ffeafb9ca6a551"
 dependencies = [
- "craft-eps 0.1.0 (git+https://github.com/storytold/craft-libs?rev=71337f6772b57a61e0f171c941f695822eea19a5)",
- "craft-idml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=71337f6772b57a61e0f171c941f695822eea19a5)",
- "craft-svg 0.1.0 (git+https://github.com/storytold/craft-libs?rev=71337f6772b57a61e0f171c941f695822eea19a5)",
- "craft-zip 0.1.0 (git+https://github.com/storytold/craft-libs?rev=71337f6772b57a61e0f171c941f695822eea19a5)",
+ "craft-eps 0.1.0 (git+https://github.com/storytold/craft-libs?rev=8abfa9d0f14bafbfc3449fc552ffeafb9ca6a551)",
+ "craft-idml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=8abfa9d0f14bafbfc3449fc552ffeafb9ca6a551)",
+ "craft-svg 0.1.0 (git+https://github.com/storytold/craft-libs?rev=8abfa9d0f14bafbfc3449fc552ffeafb9ca6a551)",
+ "craft-zip 0.1.0 (git+https://github.com/storytold/craft-libs?rev=8abfa9d0f14bafbfc3449fc552ffeafb9ca6a551)",
  "serde",
  "serde_json",
 ]
@@ -1213,10 +1213,10 @@ dependencies = [
 [[package]]
 name = "craft-idml"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=71337f6772b57a61e0f171c941f695822eea19a5#71337f6772b57a61e0f171c941f695822eea19a5"
+source = "git+https://github.com/storytold/craft-libs?rev=8abfa9d0f14bafbfc3449fc552ffeafb9ca6a551#8abfa9d0f14bafbfc3449fc552ffeafb9ca6a551"
 dependencies = [
- "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=71337f6772b57a61e0f171c941f695822eea19a5)",
- "craft-zip 0.1.0 (git+https://github.com/storytold/craft-libs?rev=71337f6772b57a61e0f171c941f695822eea19a5)",
+ "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=8abfa9d0f14bafbfc3449fc552ffeafb9ca6a551)",
+ "craft-zip 0.1.0 (git+https://github.com/storytold/craft-libs?rev=8abfa9d0f14bafbfc3449fc552ffeafb9ca6a551)",
  "thiserror 2.0.21",
 ]
 
@@ -1384,9 +1384,9 @@ source = "git+https://github.com/storytold/craft-libs?rev=ba24fe2435adb3c81ad605
 [[package]]
 name = "craft-svg"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=71337f6772b57a61e0f171c941f695822eea19a5#71337f6772b57a61e0f171c941f695822eea19a5"
+source = "git+https://github.com/storytold/craft-libs?rev=8abfa9d0f14bafbfc3449fc552ffeafb9ca6a551#8abfa9d0f14bafbfc3449fc552ffeafb9ca6a551"
 dependencies = [
- "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=71337f6772b57a61e0f171c941f695822eea19a5)",
+ "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=8abfa9d0f14bafbfc3449fc552ffeafb9ca6a551)",
  "flate2",
  "kurbo",
  "roxmltree 0.21.2",
@@ -1501,7 +1501,7 @@ dependencies = [
 [[package]]
 name = "craft-xml"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=71337f6772b57a61e0f171c941f695822eea19a5#71337f6772b57a61e0f171c941f695822eea19a5"
+source = "git+https://github.com/storytold/craft-libs?rev=8abfa9d0f14bafbfc3449fc552ffeafb9ca6a551#8abfa9d0f14bafbfc3449fc552ffeafb9ca6a551"
 dependencies = [
  "quick-xml 0.41.0",
  "thiserror 2.0.21",
@@ -1519,7 +1519,7 @@ dependencies = [
 [[package]]
 name = "craft-zip"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=71337f6772b57a61e0f171c941f695822eea19a5#71337f6772b57a61e0f171c941f695822eea19a5"
+source = "git+https://github.com/storytold/craft-libs?rev=8abfa9d0f14bafbfc3449fc552ffeafb9ca6a551#8abfa9d0f14bafbfc3449fc552ffeafb9ca6a551"
 dependencies = [
  "flate2",
  "thiserror 2.0.21",

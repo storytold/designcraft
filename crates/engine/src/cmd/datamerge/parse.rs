@@ -370,10 +370,6 @@ fn sniff(name: &str, text: &str) -> Delimiter {
     }
 }
 
-pub fn extension(name: &str) -> String {
-    Path::new(name).extension().and_then(std::ffi::OsStr::to_str).unwrap_or("").to_ascii_lowercase()
-}
-
 /// Header cell: trim, drop one leading apostrophe, then `@` is image and `#` is qr.
 fn classify_header(raw: &str) -> Result<(String, DataFieldKind), String> {
     let trimmed = raw.trim();
