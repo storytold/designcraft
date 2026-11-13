@@ -134,21 +134,23 @@ impl<'r> Importer<'r> {
             }
         }
         for (_, e) in &table_styles {
-            let name = names::style_name_in(names::TABLE_BUILTINS, e.get("Name").unwrap_or(""));
+            let values = craft_idml::model::TableStyleValues::from_el(&crate::xml::to_craft(e));
+            let name = names::style_name_in(names::TABLE_BUILTINS, values.name.as_deref().unwrap_or(""));
             let mut ts = designcraft_doc::TableStyle { name: name.clone(), ..Default::default() };
             ts.based_on =
-                e.prop("BasedOn").map(|r| self.table_style_ref(&r)).or_else(|| Some(designcraft_doc::NO_TABLE_STYLE.into())).filter(|n| *n != name);
-            ts.header = e.get("HeaderRegionCellStyle").map(|r| if r == "n" { designcraft_doc::NO_CELL_STYLE.into() } else { self.cell_style_ref(r) });
-            ts.body = e.get("BodyRegionCellStyle").map(|r| if r == "n" { designcraft_doc::NO_CELL_STYLE.into() } else { self.cell_style_ref(r) });
-            ts.footer = e.get("FooterRegionCellStyle").map(|r| if r == "n" { designcraft_doc::NO_CELL_STYLE.into() } else { self.cell_style_ref(r) });
-            ts.left_column =
-                e.get("LeftColumnRegionCellStyle").map(|r| if r == "n" { designcraft_doc::NO_CELL_STYLE.into() } else { self.cell_style_ref(r) });
-            ts.right_column =
-                e.get("RightColumnRegionCellStyle").map(|r| if r == "n" { designcraft_doc::NO_CELL_STYLE.into() } else { self.cell_style_ref(r) });
-            ts.header_same_as_body = e.boolean("HeaderRegionSameAsBodyRegion");
-            ts.footer_same_as_body = e.boolean("FooterRegionSameAsBodyRegion");
-            ts.left_column_same_as_body = e.boolean("LeftColumnRegionSameAsBodyRegion");
-            ts.right_column_same_as_body = e.boolean("RightColumnRegionSameAsBodyRegion");
+                values.based_on.map(|r| self.table_style_ref(&r)).or_else(|| Some(designcraft_doc::NO_TABLE_STYLE.into())).filter(|n| *n != name);
+            let cell_ref = |r: Option<String>, importer: &Self| {
+                r.map(|r| if r == "n" { designcraft_doc::NO_CELL_STYLE.into() } else { importer.cell_style_ref(&r) })
+            };
+            ts.header = cell_ref(values.header_cell_style, self);
+            ts.body = cell_ref(values.body_cell_style, self);
+            ts.footer = cell_ref(values.footer_cell_style, self);
+            ts.left_column = cell_ref(values.left_column_cell_style, self);
+            ts.right_column = cell_ref(values.right_column_cell_style, self);
+            ts.header_same_as_body = values.header_same_as_body;
+            ts.footer_same_as_body = values.footer_same_as_body;
+            ts.left_column_same_as_body = values.left_column_same_as_body;
+            ts.right_column_same_as_body = values.right_column_same_as_body;
             ts.borders = ["TopBorder", "LeftBorder", "BottomBorder", "RightBorder"].map(|side| self.cell_stroke_attrs(e, side));
             if let Some(border) = uniform_cell_stroke(&ts.borders) {
                 ts.border = Some(border);
@@ -158,8 +160,8 @@ impl<'r> Importer<'r> {
             ts.column_fills = self.alt_fill_attrs(e, "Column");
             ts.row_strokes = self.alt_stroke_attrs(e, "Row");
             ts.column_strokes = self.alt_stroke_attrs(e, "Column");
-            ts.space_before = e.num("SpaceBefore");
-            ts.space_after = e.num("SpaceAfter");
+            ts.space_before = values.space_before;
+            ts.space_after = values.space_after;
             match self.styles.table.iter_mut().find(|c| c.name == name) {
                 Some(slot) => *slot = ts,
                 None => self.styles.table.push(ts),
