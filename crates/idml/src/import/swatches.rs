@@ -154,10 +154,15 @@ impl<'r> Importer<'r> {
         }
         let mut names: HashSet<String> = self.swatches.iter().map(|s| s.name.clone()).collect();
         let first_new = self.swatches.len();
+        let mut next_suffix: HashMap<String, usize> = HashMap::new();
         for (id, mut s) in order {
             if names.contains(&s.name) {
                 let base = s.name.clone();
-                s.name = Styles::unique_name(|n| names.contains(n), &base);
+                // Resume after the last suffix given to this base, so N duplicates cost O(N), not O(N^2).
+                let from = next_suffix.get(&base).copied().unwrap_or(2);
+                let (i, name) = (from..).map(|i| (i, format!("{base} {i}"))).find(|(_, n)| !names.contains(n)).unwrap_or((from, base.clone()));
+                next_suffix.insert(base, i.saturating_add(1));
+                s.name = name;
                 self.swatch_names.insert(id, s.name.clone());
             }
             names.insert(s.name.clone());

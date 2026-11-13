@@ -47,6 +47,9 @@ pub(super) struct RasterMode {
 /// The ICC profile embedded in an image file, if it has one.
 pub(super) fn embedded_icc(data: &[u8]) -> Option<Vec<u8>> {
     use image::ImageDecoder;
+    if !designcraft_images::webp_icc_is_sane(data) {
+        return None;
+    }
     let mut dec = image::ImageReader::new(std::io::Cursor::new(data)).with_guessed_format().ok()?.into_decoder().ok()?;
     dec.icc_profile().ok().flatten()
 }
@@ -89,6 +92,9 @@ pub(super) fn jpeg(data: krilla::Data, icc: impl FnOnce() -> Option<Vec<u8>>, mo
 /// its own.
 fn untagged_rgb(data: &[u8]) -> bool {
     use image::ImageDecoder;
+    if !designcraft_images::webp_icc_is_sane(data) {
+        return false;
+    }
     let Some(mut dec) = image::ImageReader::new(std::io::Cursor::new(data)).with_guessed_format().ok().and_then(|r| r.into_decoder().ok()) else {
         return false;
     };
