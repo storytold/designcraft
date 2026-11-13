@@ -361,33 +361,25 @@ impl<'r> Importer<'r> {
 /// `to_graphic`. `None` for type None, an unknown type, or no geometry (the outline is never
 /// traced here).
 fn clipping_path(g: &El, to_graphic: Affine) -> Option<Arc<designcraft_doc::ClippingPath>> {
-    let cs = g.find("ClippingPathSettings")?;
-    let kind = names::clipping_kind_in(cs.get("ClippingType").unwrap_or("None"))?;
-    let geometry = cs.prop_el("ClippingPathGeometry").or_else(|| cs.find("ClippingPathGeometry")).or_else(|| g.prop_el("ClippingPathGeometry"))?;
-    let mut path = path_capped(geometry, designcraft_doc::MAX_CLIP_ANCHORS);
+    let settings = craft_idml::model::ClippingPathValues::from_graphic(&crate::xml::to_craft(g), designcraft_doc::MAX_CLIP_ANCHORS)?;
+    let kind = names::clipping_kind_in(settings.clipping_type.as_deref().unwrap_or("None"))?;
+    let mut path = path_from_model(settings.geometry);
     path.subpaths.retain(|sp| sp.anchors.len() > 1 && sp.anchors.iter().all(|a| a.p.is_finite() && a.h_in.is_finite() && a.h_out.is_finite()));
     if path.is_empty() {
         return None;
     }
     path.transform(to_graphic);
-    let finite = |v: Option<f64>, def: f64| v.filter(|v| v.is_finite()).unwrap_or(def);
     let mut c = designcraft_doc::ClippingPath::new(kind, path);
-    c.invert = cs.boolean("InvertPath").unwrap_or(false);
-    c.include_inside_edges = cs.boolean("IncludeInsideEdges").unwrap_or(false);
-    c.restrict_to_frame = cs.boolean("RestrictToFrame").unwrap_or(false);
-    c.use_high_resolution = cs.boolean("UseHighResolutionImage").unwrap_or(true);
-    c.threshold = finite(cs.num("Threshold"), c.threshold).clamp(0.0, 255.0);
-    c.tolerance = finite(cs.num("Tolerance"), c.tolerance).clamp(0.0, 10.0);
-    c.inset = finite(cs.num("InsetFrame"), 0.0);
-    c.source_name = cs.get("AppliedPathName").filter(|n| *n != "$ID/").unwrap_or("").to_string();
-    c.source_index = cs.num("Index").filter(|v| v.is_finite()).map_or(-1, |v| v.clamp(-1.0, i32::MAX as f64) as i32);
+    c.invert = settings.invert.unwrap_or(false);
+    c.include_inside_edges = settings.include_inside_edges.unwrap_or(false);
+    c.restrict_to_frame = settings.restrict_to_frame.unwrap_or(false);
+    c.use_high_resolution = settings.use_high_resolution.unwrap_or(true);
+    c.threshold = settings.threshold.unwrap_or(c.threshold).clamp(0.0, 255.0);
+    c.tolerance = settings.tolerance.unwrap_or(c.tolerance).clamp(0.0, 10.0);
+    c.inset = settings.inset.unwrap_or(0.0);
+    c.source_name = settings.source_name.filter(|name| name != "$ID/").unwrap_or_default();
+    c.source_index = settings.index.map_or(-1, |value| value.clamp(-1.0, i32::MAX as f64) as i32);
     Some(Arc::new(c))
-}
-
-/// The path of a `…Geometry` element, keeping at most `max` anchors.
-fn path_capped(pg: &El, max: usize) -> PathData {
-    let geometry = craft_idml::model::PathGeometry::from_el_capped(&crate::xml::to_craft(pg), max);
-    path_from_model(geometry)
 }
 
 fn path_from_model(geometry: craft_idml::model::PathGeometry) -> PathData {
