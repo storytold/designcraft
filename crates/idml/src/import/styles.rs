@@ -354,13 +354,14 @@ impl<'r> Importer<'r> {
     }
 
     pub(super) fn cell_stroke_attrs(&mut self, el: &El, prefix: &str) -> designcraft_doc::CellStrokeAttrs {
+        let values = craft_idml::model::Values::of(&crate::xml::to_craft(el)).stroke_values(prefix);
         designcraft_doc::CellStrokeAttrs {
-            weight: el.num(&format!("{prefix}StrokeWeight")).map(|v| v.max(0.0)),
-            color: el.prop(&format!("{prefix}StrokeColor")).map(|v| self.swatch_ref(&v)),
-            tint: tint(el.num(&format!("{prefix}StrokeTint"))),
-            kind: el.prop(&format!("{prefix}StrokeType")).map(|v| names::stroke_type_in(&v)),
-            gap_color: el.prop(&format!("{prefix}StrokeGapColor")).map(|v| self.swatch_ref(&v)),
-            gap_tint: tint(el.num(&format!("{prefix}StrokeGapTint"))),
+            weight: values.weight,
+            color: values.color.map(|v| self.swatch_ref(&v)),
+            tint: tint(values.tint),
+            kind: values.kind.map(|v| names::stroke_type_in(&v)),
+            gap_color: values.gap_color.map(|v| self.swatch_ref(&v)),
+            gap_tint: tint(values.gap_tint),
         }
     }
 
