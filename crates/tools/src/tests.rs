@@ -2433,7 +2433,7 @@ fn gap_tool_follows_snapping_settings() {
     });
     Arc::make_mut(&mut d.spreads[0]).pages[0].guides.push(Guide {
         orientation: Orientation::Vertical,
-        position: 301.0,
+        position: 310.0,
         spread: false,
         locked: false,
         layer: None,
@@ -2482,8 +2482,26 @@ fn gap_tool_follows_snapping_settings() {
     assert!(overlays.is_empty(), "expected no guide overlay when smart_guides=false: {overlays:?}");
 
     // Ruler guide beyond gap_move's minimum-width clamp (right item [200..300] clamps at x=299, max_delta=99):
-    // clamped edge x=299 is within 2 pt of guide x=301 (dx=101), which must be rejected as unreachable.
+    // dragging 108 pt reaches x=308 near guide x=310 (dx=110), which must be rejected as unreachable.
     let (dx, overlays) = drag_dx(no_smart, Mods::default(), 108.0);
     assert!((dx - 108.0).abs() < 1e-6, "expected unreachable snap target to be rejected, got {dx}");
     assert!(overlays.is_empty(), "expected no guide overlay for unreachable snap target: {overlays:?}");
+
+    // With two left neighbours of different widths ([100..180] and [140..180]), dragging left by 60 pt
+    // without a snap match preserves the raw delta (-60) instead of clamping it to the narrower item (-39).
+    let mut d2 = Document::new(&NewDocument::default());
+    add_rect(&mut d2, Rect::new(100.0, 100.0, 180.0, 150.0));
+    add_rect(&mut d2, Rect::new(140.0, 150.0, 180.0, 200.0));
+    add_rect(&mut d2, Rect::new(200.0, 100.0, 300.0, 200.0));
+    let l2 = CanvasLayout::new(&d2, false);
+    let q0 = spread_pt(&l2, 190.0, 150.0);
+    let mut t2 = create("gap");
+    let cx2 = ToolContext { snap: SnapView::FACTORY, ..ctx(&d2, &sel, &c, &l2) };
+    t2.pointer(&cx2, &PointerEvent::new(PointerKind::Down, q0.x, q0.y));
+    let drag2 = t2.pointer(&cx2, &PointerEvent::new(PointerKind::Drag, q0.x - 60.0, q0.y));
+    let Some(Action::Preview(cmd2, p2)) = drag2.last() else { panic!("{drag2:?}") };
+    assert_eq!(cmd2, "gap.move");
+    assert!((p2["dx"].as_f64().unwrap() - (-60.0)).abs() < 1e-6, "expected raw dx=-60 preserved, got {p2}");
+    assert!(t2.overlays(&cx2).is_empty(), "expected no guide overlay without snap match");
+    t2.pointer(&cx2, &PointerEvent::new(PointerKind::Up, q0.x - 60.0, q0.y));
 }

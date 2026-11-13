@@ -672,12 +672,11 @@ impl Tool for GapTool {
                     && cx.snap.any()
                     && let Some(gap) = &self.gap
                 {
-                    let (clamped, proposed, pointer) = if gap.vertical {
-                        let c = d.x.max(gap.min_delta).min(gap.max_delta);
-                        (c, Rect::new(gap.a + c, gap.cross_lo, gap.z + c, gap.cross_hi), Point::new(p.x + c, p.y + d.y))
+                    let raw = if gap.vertical { d.x } else { d.y };
+                    let proposed = if gap.vertical {
+                        Rect::new(gap.a + raw, gap.cross_lo, gap.z + raw, gap.cross_hi)
                     } else {
-                        let c = d.y.max(gap.min_delta).min(gap.max_delta);
-                        (c, Rect::new(gap.cross_lo, gap.a + c, gap.cross_hi, gap.z + c), Point::new(p.x + d.x, p.y + c))
+                        Rect::new(gap.cross_lo, gap.a + raw, gap.cross_hi, gap.z + raw)
                     };
                     let hit = crate::snap::snap(
                         cx,
@@ -693,11 +692,11 @@ impl Tool for GapTool {
                             lengths: [None, None],
                             angle: None,
                             radius: 0.0,
-                            pointer,
+                            pointer: p + d,
                         },
                     );
                     let snap_delta = if gap.vertical { hit.delta.x } else { hit.delta.y };
-                    let snapped = clamped + snap_delta;
+                    let snapped = raw + snap_delta;
                     if snap_delta.is_finite() && snapped >= gap.min_delta - 1e-6 && snapped <= gap.max_delta + 1e-6 {
                         if gap.vertical {
                             d.x = snapped;
