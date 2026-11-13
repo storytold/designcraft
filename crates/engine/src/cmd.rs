@@ -234,6 +234,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(index::specs());
         v.extend(anchored::specs());
         v.extend(guides::specs());
+        v.extend(guides::options::specs());
         v.extend(rulers::specs());
         v.extend(links::specs());
         v.extend(fonts::specs());

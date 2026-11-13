@@ -12,7 +12,7 @@ use crate::theme::semibold;
 
 mod options;
 mod style_cjk;
-pub use options::{open_color_group_options, open_layer_options, open_swatch_options};
+pub use options::{RULER_GUIDES, open_color_group_options, open_layer_options, open_ruler_guides, open_swatch_options};
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Dialog {
@@ -3298,6 +3298,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         "swatchOptions" => crate::i18n::tr(&app.ui.language, "Swatch Options"),
         "colorGroupOptions" => crate::i18n::tr(&app.ui.language, "Color Group Options"),
         "layerSettings" => crate::i18n::tr(&app.ui.language, "Layer Options"),
+        RULER_GUIDES => crate::i18n::tr(&app.ui.language, "Ruler Guides"),
         crate::effects_dialog::ID => crate::i18n::tr(&app.ui.language, "Effects"),
         crate::export_batch_dialog::ID => crate::i18n::tr(&app.ui.language, "Export Layouts and Versions"),
         crate::package_dialog::ID => crate::i18n::tr(&app.ui.language, "Package"),
@@ -3671,6 +3672,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                     "swatchOptions" => options::swatch_options(app, ui, &mut d),
                     "colorGroupOptions" => options::color_group_options(app, ui, &mut d),
                     "layerSettings" => options::layer_options(app, ui, &mut d),
+                    RULER_GUIDES => options::ruler_guides(app, ui, &mut d),
                     crate::effects_dialog::ID => crate::effects_dialog::show(app, ui, &mut d),
                     crate::export_batch_dialog::ID => crate::export_batch_dialog::show(app, ui, &mut d),
                     crate::package_dialog::ID => crate::package_dialog::show(app, ui, &mut d),
@@ -4973,10 +4975,11 @@ fn confirm_part2(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
                 json!({"name": name, "replaceWith": if replace.is_empty() { json!(designcraft_doc::NO_CHAR_STYLE) } else { json!(replace) }}),
             )
         }
-        "swatchOptions" | "colorGroupOptions" | "layerSettings" => {
+        "swatchOptions" | "colorGroupOptions" | "layerSettings" | RULER_GUIDES => {
             let r = match d.id.as_str() {
                 "swatchOptions" => options::confirm_swatch_options(app, &d),
                 "colorGroupOptions" => options::confirm_color_group_options(app, &d),
+                RULER_GUIDES => options::confirm_ruler_guides(app, &d),
                 _ => options::confirm_layer_options(app, &d),
             };
             if let Err(e) = &r {

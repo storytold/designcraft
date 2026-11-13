@@ -146,6 +146,66 @@ pub struct Guide {
     /// Liquid guide: objects it crosses stretch when a guide-based page changes size.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub liquid: bool,
+    /// Layout › Ruler Guides: its colour and view threshold.
+    #[serde(default, skip_serializing_if = "RulerGuideOptions::is_default")]
+    pub options: RulerGuideOptions,
+}
+
+/// Layout › Ruler Guides: how a ruler guide is shown. A guide carries its own; the document's
+/// ([`DocSettings::ruler_guides`](crate::DocSettings::ruler_guides)) are what new guides get.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct RulerGuideOptions {
+    /// The guide's colour; `None` is Cyan, InDesign's default ruler guide colour (IDML
+    /// `GuideColor` Cyan), drawn in the canvas's guide cyan.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<[u8; 3]>,
+    /// The guide is hidden below this zoom (1.0 = 100%).
+    pub view_threshold: f64,
+}
+
+impl RulerGuideOptions {
+    /// The lowest view threshold InDesign's Ruler Guides dialog takes: 5%, its lowest zoom.
+    pub const MIN_VIEW_THRESHOLD: f64 = 0.05;
+    /// The highest: 4000%, the highest zoom.
+    pub const MAX_VIEW_THRESHOLD: f64 = 40.0;
+
+    /// Cyan in the layer and guide colour list ([`LAYER_COLORS`](crate::LAYER_COLORS)): the
+    /// colour `color: None` stands for.
+    pub const CYAN: [u8; 3] = [0, 255, 255];
+
+    /// Cyan from 5%: a guide with these is saved without them.
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// The guide colour as RGB: Cyan for the default.
+    pub fn rgb(&self) -> [u8; 3] {
+        self.color.unwrap_or(Self::CYAN)
+    }
+
+    /// Sets the colour; Cyan is stored as the default, so it reads and saves as one.
+    pub fn set_rgb(&mut self, c: [u8; 3]) {
+        self.color = (c != Self::CYAN).then_some(c);
+    }
+
+    /// `percent` as a view threshold, within the range of zooms (5%–4000%).
+    pub fn threshold_of_percent(percent: f64) -> Option<f64> {
+        let t = percent / 100.0;
+        (Self::MIN_VIEW_THRESHOLD..=Self::MAX_VIEW_THRESHOLD).contains(&t).then_some(t)
+    }
+
+    /// Drawn at `zoom` (1.0 = 100%): at or above its view threshold.
+    pub fn shown_at(&self, zoom: f64) -> bool {
+        zoom >= self.view_threshold
+    }
+}
+
+impl Default for RulerGuideOptions {
+    /// Cyan, shown from 5%: InDesign's ruler guide defaults.
+    fn default() -> Self {
+        RulerGuideOptions { color: None, view_threshold: Self::MIN_VIEW_THRESHOLD }
+    }
 }
 
 impl Guide {

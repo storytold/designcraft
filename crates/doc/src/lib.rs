@@ -490,6 +490,10 @@ pub struct DocSettings {
     /// EPUB Export Options › Split Document.
     #[serde(skip_serializing_if = "EpubSplit::is_off")]
     pub epub_split: EpubSplit,
+    /// Layout › Ruler Guides with no guide selected: the colour and view threshold of new ruler
+    /// guides (IDML `GuidePreference` `RulerGuidesColor`, `RulerGuidesViewThreshold`).
+    #[serde(skip_serializing_if = "RulerGuideOptions::is_default")]
+    pub ruler_guides: RulerGuideOptions,
 }
 
 fn is_true(b: &bool) -> bool {
@@ -556,6 +560,7 @@ impl Default for DocSettings {
             column_guides_locked: true,
             new_object: NewObjectColors::default(),
             epub_split: EpubSplit::Off,
+            ruler_guides: RulerGuideOptions::default(),
         }
     }
 }
@@ -583,7 +588,9 @@ fn yes() -> bool {
     true
 }
 
-/// InDesign's layer colour sequence (names are the conventional colour names).
+/// InDesign's UI colour list, in its menu order: the colours of layers (new layers take them in
+/// turn) and of ruler guides. The names are InDesign's (IDML `UIColors` without the spaces); the
+/// RGB values are DesignCraft's own.
 pub const LAYER_COLORS: &[(&str, [u8; 3])] = &[
     ("Light Blue", [43, 155, 255]),
     ("Red", [255, 0, 0]),
@@ -601,7 +608,38 @@ pub const LAYER_COLORS: &[(&str, [u8; 3])] = &[
     ("Brown", [153, 51, 0]),
     ("Violet", [153, 51, 255]),
     ("Gold", [255, 153, 0]),
+    ("Dark Blue", [0, 0, 135]),
+    ("Pink", [255, 153, 204]),
+    ("Lavender", [153, 153, 255]),
+    ("Brick Red", [153, 0, 0]),
+    ("Olive Green", [102, 102, 0]),
+    ("Peach", [255, 153, 102]),
+    ("Burgundy", [153, 0, 51]),
+    ("Grass Green", [153, 204, 0]),
+    ("Ochre", [153, 102, 0]),
+    ("Purple", [102, 0, 102]),
+    ("Light Gray", [186, 186, 186]),
+    ("Charcoal", [51, 51, 51]),
+    ("Grid Blue", [122, 186, 218]),
+    ("Grid Orange", [255, 182, 94]),
+    ("Fiesta", [247, 89, 107]),
+    ("Light Olive", [140, 166, 107]),
+    ("Lipstick", [206, 132, 149]),
+    ("Cute Teal", [130, 207, 194]),
+    ("Sulphur", [206, 206, 0]),
+    ("Grid Green", [156, 222, 156]),
+    ("White", [255, 255, 255]),
 ];
+
+/// The colour a layer gets when none is chosen for it: the UI colours in turn, by the number of
+/// layers before it. White is left out of the turn, since a layer's selection outlines are drawn
+/// in its colour and would not show on a white page; it stays in the list to be chosen.
+pub fn auto_layer_color(layers_before: usize) -> [u8; 3] {
+    const WHITE: [u8; 3] = [255, 255, 255];
+    let in_turn = || LAYER_COLORS.iter().map(|(_, c)| *c).filter(|c| *c != WHITE);
+    let count = in_turn().count().max(1);
+    in_turn().nth(layers_before % count).unwrap_or_default()
+}
 
 /// An embedded file (placed image / PDF). Bytes are stored next to the JSON in the native format.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

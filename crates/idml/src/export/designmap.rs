@@ -1,4 +1,4 @@
-use super::common::{anchor_self, bool_s, p, uid, with_props, xref_format_self};
+use super::common::{anchor_self, bool_s, p, ui_color_el, uid, with_props, xref_format_self};
 use super::{CHAR_BUILTINS, DOM_VERSION, Document, El, Ex, HashSet, PARA_BUILTINS, PKG_NS, document_with_pi, escape_id, names, num};
 
 impl<'a> Ex<'a> {
@@ -350,16 +350,7 @@ fn mojikumi_table_el(t: &designcraft_doc::cjk::MojikumiTable) -> El {
 
 /// A `Layer` element with its colour property.
 fn layer_el(l: &designcraft_doc::Layer) -> El {
-    let color = match names::layer_color_out(l.color) {
-        Some(n) => p("LayerColor", "enumeration", n),
-        None => {
-            let mut e = El::new("LayerColor").attr("type", "list");
-            for c in l.color {
-                e.push(p("ListItem", "double", num(c as f64)));
-            }
-            e
-        }
-    };
+    let color = ui_color_el("LayerColor", l.color);
     let el = El::new("Layer")
         .attr("Self", uid(l.id.0))
         .attr("Name", &l.name)

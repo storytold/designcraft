@@ -10,8 +10,8 @@ use designcraft_doc::{
     Asset, AssetId, BaselineGrid, CellRange, CharAttrs, CharFormat, CharRun, CharacterStyle, Columns, ColumnsKind, Content, DirectionalFeather,
     DocSettings, Document, DropShadow, Effects, Fill, GradientFeather, GridAlign, GridRelative, Guide, Item, ItemId, Kerning, LAYER_COLORS, Layer,
     LayerId, ListType, Margins, ObjectStyle, Orientation, Page, PageId, PageSide, ParaAttrs, ParaFormat, ParagraphStyle, ParentInfo, RowHeightMode,
-    Rule, Section, Shape, SpanColumns, Spread, SpreadId, Story, StoryId, Stroke, Styles, TabStop, Table, TextFrame, TextFrameOptions, TextWrap,
-    story as st,
+    Rule, RulerGuideOptions, Section, Shape, SpanColumns, Spread, SpreadId, Story, StoryId, Stroke, Styles, TabStop, Table, TextFrame,
+    TextFrameOptions, TextWrap, story as st,
 };
 use designcraft_geom::corners::{Corner, CornerOptions};
 use designcraft_geom::{Affine, Anchor, PathData, Point, Rect, SubPath};
@@ -349,6 +349,8 @@ impl<'r> Importer<'r> {
         self.next_id
     }
 
+    /// Reads the preference elements of Preferences.xml into the document settings, among them the
+    /// colour and view threshold new ruler guides get (`GuidePreference`).
     fn read_preferences(&mut self, top: &[El]) {
         // Preferences first (page size, facing pages).
         for e in top {
@@ -400,6 +402,9 @@ impl<'r> Importer<'r> {
                     }
                 }
                 "GridPreference" => self.grid_prefs(e),
+                "GuidePreference" => {
+                    self.settings.ruler_guides = spread::ruler_guide_options(e, "RulerGuidesViewThreshold", "RulerGuidesColor");
+                }
                 "PasteboardPreference" => {
                     if let Some(v) = e.get("PasteboardMargins").map(nums)
                         && v.len() == 2
@@ -474,6 +479,8 @@ impl<'r> Importer<'r> {
         Ok(())
     }
 
+    /// Imports the document: preferences, fonts, graphics and styles first, then the layers (a layer
+    /// without a colour of its own takes the automatic UI colour turn) and the rest.
     fn run(&mut self, _root: &El, top: &[El]) -> Result<()> {
         self.read_preferences(top);
         self.read_composite_fonts(top);
@@ -493,8 +500,8 @@ impl<'r> Importer<'r> {
                     let v: Vec<f64> = c.find_all("ListItem").filter_map(|i| i.text_content().trim().parse().ok()).collect();
                     if v.len() == 3 { [v[0] as u8, v[1] as u8, v[2] as u8] } else { LAYER_COLORS[0].1 }
                 }
-                Some(c) => names::layer_color_in(c.text_content().trim()).unwrap_or(LAYER_COLORS[self.layers.len() % LAYER_COLORS.len()].1),
-                None => LAYER_COLORS[self.layers.len() % LAYER_COLORS.len()].1,
+                Some(c) => names::layer_color_in(c.text_content().trim()).unwrap_or(designcraft_doc::auto_layer_color(self.layers.len())),
+                None => designcraft_doc::auto_layer_color(self.layers.len()),
             };
             self.layers.push(Layer {
                 id,

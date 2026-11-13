@@ -1,4 +1,4 @@
-use super::common::{bool_s, p, pct, pkg_root};
+use super::common::{bool_s, p, pct, pkg_root, ui_color_el, with_props};
 use super::spread::margin_el;
 use super::{El, Ex, PARA_BUILTINS, document, escape_id, names, num, pt, st};
 
@@ -65,6 +65,8 @@ impl<'a> Ex<'a> {
 
     // ---------- Preferences.xml ----------
 
+    /// Preferences.xml: the document's preferences, among them the
+    /// colour and view threshold new ruler guides get (`GuidePreference`).
     pub(super) fn prefs_part(&mut self) -> Vec<u8> {
         let d = self.d;
         let s = &d.settings;
@@ -143,6 +145,11 @@ impl<'a> Ex<'a> {
                     },
                 ),
         );
+        let rg = &s.ruler_guides;
+        root.push(with_props(
+            El::new("GuidePreference").attr("RulerGuidesViewThreshold", pct(rg.view_threshold)),
+            vec![ui_color_el("RulerGuidesColor", rg.rgb())],
+        ));
         root.push(El::new("PasteboardPreference").attr("PasteboardMargins", pt(s.pasteboard.0, s.pasteboard.1)));
         root.push(self.footnote_option_el());
         root.push(El::new("TransparencyPreference").attr(

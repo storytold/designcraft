@@ -148,6 +148,17 @@ fn a_marquee_selects_guides_only_when_it_touches_no_object() {
     assert_eq!(h.state().session.doc().unwrap().selection.items, [designcraft_doc::ItemId(id)]);
 }
 
+/// Layout › Ruler Guides › View Threshold: a guide hidden below it is left out of a marquee.
+#[test]
+fn a_marquee_skips_a_guide_hidden_below_its_view_threshold() {
+    let mut h = with_guides();
+    h.state_mut().run("guide.options", json!({"guides": [{"page": 0, "index": 0}], "viewThreshold": 4000})).unwrap();
+    h.state_mut().run("guide.deselect", json!({})).unwrap();
+    let (a, b) = (screen_of(&h, 150.0, 500.0), screen_of(&h, 350.0, 550.0));
+    drag(&mut h, a, b);
+    assert_eq!(selected(&h), [1]);
+}
+
 #[test]
 fn keys_nudge_and_delete_selected_guides() {
     let mut h = with_guides();

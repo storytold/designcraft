@@ -5,7 +5,7 @@ use super::parents::{
     parent_label_taken, parent_name_param, parent_options, parent_page_size, parent_page_target, parent_prefix_param, parent_ref, parent_spread_index,
 };
 use super::sections::{ChapterEdit, SectionEdit, chapter_numbering, start_number};
-use super::{CommandSpec, LAYER_COLORS, Layer, LayerId, Margins, Result, SpreadId, Value, bad, cmd, has_doc, json, ok, str_param};
+use super::{CommandSpec, Layer, LayerId, Margins, Result, SpreadId, Value, bad, cmd, has_doc, json, ok, str_param};
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
@@ -700,7 +700,7 @@ pub fn specs() -> Vec<CommandSpec> {
                     Layer {
                         id,
                         name,
-                        color: LAYER_COLORS[n % LAYER_COLORS.len()].1,
+                        color: designcraft_doc::auto_layer_color(n),
                         visible: true,
                         locked: false,
                         printable: true,

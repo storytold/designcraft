@@ -1021,8 +1021,9 @@ fn push_parent_lengths(out: &mut Vec<f64>, cx: &ToolContext, req: &SnapRequest<'
 ///
 /// A page guide attracts when the moving rect overlaps that page on the other axis. A spread
 /// guide uses the spread bounds. Locked guides are included, and so are the guides a page shows
-/// from its parent page. A guide is a target only when `Guide::visible_in` accepts it, and not
-/// when the request excludes it (the guides being dragged).
+/// from its parent page. A guide is a target only when `Guide::visible_in` accepts it and it is
+/// shown at the zoom (Layout › Ruler Guides › View Threshold), and not when the request excludes
+/// it (the guides being dragged).
 fn pass_guides(cx: &ToolContext, req: &SnapRequest<'_>, axis: Axis, tol: f64) -> Option<AxisHit> {
     if !cx.snap.snap_to_guides || !cx.snap.show_guides {
         return None;
@@ -1041,7 +1042,11 @@ fn pass_guides(cx: &ToolContext, req: &SnapRequest<'_>, axis: Axis, tol: f64) ->
             .enumerate()
             .filter(|&(gi, _)| !req.exclude_guides.contains(&designcraft_doc::GuideSel { spread: req.spread, page: pi, index: gi }));
         for guide in own.map(|(_, g)| g.clone()).chain(cx.doc.parent_guides(page)) {
-            if !guide.visible_in(cx.doc) || !guide.position.is_finite() || guide.orientation != axis_orientation(axis) {
+            if !guide.visible_in(cx.doc)
+                || !guide.options.shown_at(cx.zoom)
+                || !guide.position.is_finite()
+                || guide.orientation != axis_orientation(axis)
+            {
                 continue;
             }
             let range = if guide.spread { spread_bounds } else { page_bounds };
