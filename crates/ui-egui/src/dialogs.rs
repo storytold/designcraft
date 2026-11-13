@@ -53,6 +53,11 @@ impl Dialog {
                     "flatten": "",
                     "spreads": false,
                     "bleed": true,
+                    "bleedTop": "0",
+                    "bleedBottom": "0",
+                    "bleedInside": "0",
+                    "bleedOutside": "0",
+                    "slug": false,
                     "marksCrop": false,
                     "marksBleed": false,
                     "marksPageInfo": false,
@@ -793,8 +798,26 @@ pub fn open_pdf_export(app: &mut DesignApp) {
         if app.ui.pdf_export.flatten.is_empty() {
             m.insert("flatten".into(), json!(app.ui.flattener));
         }
+        // The export's own bleed shows in the document's units: a remembered amount (stored with
+        // its unit) keeps its size, and without one it starts as the document's bleed. Settings
+        // from before the own bleed, with the document's bleed off and no amounts, meant no
+        // bleed, and still do.
+        let s = &app.ui.pdf_export;
+        let no_bleed = !s.bleed && [&s.bleed_top, &s.bleed_bottom, &s.bleed_inside, &s.bleed_outside].iter().all(|v| v.trim().is_empty());
+        if let Some(st) = app.session.active() {
+            let units = st.doc.settings.horizontal_units;
+            for (key, amount) in PDF_BLEED_FIELDS.iter().zip(st.doc.settings.bleed) {
+                let remembered = m.get(*key).and_then(Value::as_str).and_then(|v| parse_measure(v, Unit::Points).ok());
+                let amount = remembered.filter(|v| v.is_finite() && *v >= 0.0).unwrap_or(if no_bleed { 0.0 } else { amount });
+                m.insert((*key).into(), json!(format_measure(amount, units)));
+            }
+        }
     }
-    app.ui.dialog = Some(Dialog::new("pdfExport", fields));
+    let mut d = Dialog::new("pdfExport", fields);
+    if let Some(st) = app.session.active() {
+        d.unit = st.doc.settings.horizontal_units;
+    }
+    app.ui.dialog = Some(d);
 }
 
 /// File › Export EPUB…: the EPUB Export Options dialog, seeded from the document's Split
@@ -958,13 +981,27 @@ fn print_dialog(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
 const PDF_EXPORT_PRESETS: &[&str] =
     &["Desktop Printing", "Commercial Printing", "Screen and Email", "PDF/X-1a:2003", "PDF/X-4", "PDF/A-2b", "Custom"];
 
+/// The Export PDF dialog's own bleed fields: top, bottom, inside, outside.
+const PDF_BLEED_FIELDS: [&str; 4] = ["bleedTop", "bleedBottom", "bleedInside", "bleedOutside"];
+
+/// The `bleed` option: the document's (`true`), or the dialog's four amounts (a bare number in the
+/// document's units) as points. An empty, unreadable or negative amount is no bleed on that side,
+/// and one past 18 in is 18 in, the most a document's bleed can be.
+fn pdf_bleed_param(d: &Dialog) -> Value {
+    if d.b("bleed") {
+        return json!(true);
+    }
+    json!(PDF_BLEED_FIELDS.map(|k| d.m(k).filter(|v| v.is_finite() && *v >= 0.0).map_or(0.0, |v| v.min(1296.0))))
+}
+
 /// The `file.exportPdf` options the Export PDF dialog's fields stand for (pages and title aside).
 fn pdf_export_params(d: &Dialog) -> Value {
     let mut params = json!({
         "standard": d.s("standard"),
         "compressImages": d.b("compressImages"),
         "spreads": d.b("spreads"),
-        "bleed": d.b("bleed"),
+        "bleed": pdf_bleed_param(d),
+        "slug": d.b("slug"),
         "tagged": d.b("tagged"),
         "marks": {
             "crop": d.b("marksCrop"),
@@ -1072,7 +1109,21 @@ fn pdf_export(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     check(ui, d, "compressImages", crate::i18n::tr(lang, "Compress images"));
 
     head(ui, "Marks and Bleeds");
-    check(ui, d, "bleed", crate::i18n::tr(lang, "Include document bleed"));
+    check(ui, d, "bleed", crate::i18n::tr(lang, "Use Document Bleed Settings"));
+    // The export's own bleed, greyed out while the document's is used. Without facing pages the
+    // inside and outside are the left and right, as in Document Setup.
+    let own = !d.b("bleed");
+    let facing = app.session.active().is_none_or(|st| st.doc.settings.facing_pages);
+    let (inside, outside) = if facing { ("Inside:", "Outside:") } else { ("Left:", "Right:") };
+    ui.add_enabled_ui(own, |ui| {
+        ui.horizontal(|ui| {
+            for (key, label) in PDF_BLEED_FIELDS.into_iter().zip(["Top:", "Bottom:", inside, outside]) {
+                crate::rtl::label(ui, crate::i18n::tr(lang, label));
+                text_field(ui, d, key, 56.0);
+            }
+        });
+    });
+    check(ui, d, "slug", crate::i18n::tr(lang, "Include Slug Area"));
     check(ui, d, "marksCrop", crate::i18n::tr(lang, "Crop Marks"));
     check(ui, d, "marksBleed", crate::i18n::tr(lang, "Bleed Marks"));
     check(ui, d, "marksPageInfo", crate::i18n::tr(lang, "Page Information"));
@@ -5109,6 +5160,21 @@ fn confirm_part3(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
             app.ui.pdf_export.flatten = d.s("flatten");
             app.ui.pdf_export.spreads = d.b("spreads");
             app.ui.pdf_export.bleed = d.b("bleed");
+            // The own bleed is remembered only when it was used, with its unit, so a document in
+            // other units reads the same amount; otherwise the next export starts from its
+            // document's bleed.
+            let own = |k: &str| {
+                if d.b("bleed") {
+                    String::new()
+                } else {
+                    d.m(k).filter(|v| v.is_finite() && *v >= 0.0).map(|v| format_measure(v, d.unit)).unwrap_or_default()
+                }
+            };
+            app.ui.pdf_export.bleed_top = own("bleedTop");
+            app.ui.pdf_export.bleed_bottom = own("bleedBottom");
+            app.ui.pdf_export.bleed_inside = own("bleedInside");
+            app.ui.pdf_export.bleed_outside = own("bleedOutside");
+            app.ui.pdf_export.slug = d.b("slug");
             app.ui.pdf_export.marks_crop = d.b("marksCrop");
             app.ui.pdf_export.marks_bleed = d.b("marksBleed");
             app.ui.pdf_export.marks_page_info = d.b("marksPageInfo");

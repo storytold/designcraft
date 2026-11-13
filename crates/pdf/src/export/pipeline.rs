@@ -13,6 +13,8 @@ pub(crate) struct Sheet {
     pub spread: usize,
     pub trim: Rect,
     pub bleed: Rect,
+    /// The area page content is drawn in: the bleed, and the slug area when it is included.
+    pub shown: Rect,
     pub media: Rect,
     /// Page name(s) for the page-information mark.
     pub label: String,
@@ -104,13 +106,16 @@ fn sheets(doc: &Document, opts: &PdfOptions) -> Result<Vec<Sheet>> {
     if let Some(bad) = pages.iter().find(|p| **p >= count) {
         return Err(PdfError::BadPage(bad.saturating_add(1)));
     }
-    let b = doc.settings.bleed.map(|v| if opts.bleed { v.max(0.0) } else { 0.0 });
+    let b = opts.bleed_amounts(doc);
+    let slug = opts.slug_amounts(doc);
     let mut out: Vec<Sheet> = Vec::new();
     let mut seen_spreads: Vec<usize> = Vec::new();
     for abs in pages {
         let (si, pi) = doc.page_loc(abs).ok_or(PdfError::BadPage(abs.saturating_add(1)))?;
         let sp: &Spread = &doc.spreads[si];
-        let (trim, l, r, label) = if opts.spreads {
+        // The trim and the sides of the pages at its left and right edges: inside and outside
+        // amounts follow them.
+        let (trim, left_side, right_side, label) = if opts.spreads {
             if seen_spreads.contains(&si) {
                 continue;
             }
@@ -118,23 +123,31 @@ fn sheets(doc: &Document, opts: &PdfOptions) -> Result<Vec<Sheet>> {
             let first = doc.first_page_of_spread(si);
             // The outer edges by position: a right-to-left spread lists its right page first.
             let outer = sp.outer_page_indices();
-            let (l, _) = outer.and_then(|(l, _)| sp.pages.get(l)).map(|p| bleed_lr(p.side, b)).unwrap_or((b[2], b[3]));
-            let (_, r) = outer.and_then(|(_, r)| sp.pages.get(r)).map(|p| bleed_lr(p.side, b)).unwrap_or((b[2], b[3]));
+            let left = outer.and_then(|(l, _)| sp.pages.get(l)).map_or(PageSide::Single, |p| p.side);
+            let right = outer.and_then(|(_, r)| sp.pages.get(r)).map_or(PageSide::Single, |p| p.side);
             let names: Vec<String> = (0..sp.pages.len()).map(|i| doc.page_name(first + i)).collect();
-            (sp.bounds(), l, r, names.join("–"))
+            (sp.bounds(), left, right, names.join("–"))
         } else {
             let p = &sp.pages[pi];
-            let (l, r) = bleed_lr(p.side, b);
-            (p.bounds(), l, r, doc.page_name(abs))
+            (p.bounds(), p.side, p.side, doc.page_name(abs))
         };
-        let bleed = Rect::new(trim.x0 - l, trim.y0 - b[0], trim.x1 + r, trim.y1 + b[1]);
+        let around = |amounts: [f64; 4]| {
+            let (l, _) = bleed_lr(left_side, amounts);
+            let (_, r) = bleed_lr(right_side, amounts);
+            Rect::new(trim.x0 - l, trim.y0 - amounts[0], trim.x1 + r, trim.y1 + amounts[1])
+        };
+        let bleed = around(b);
         let media = if opts.marks.any() {
             let m = mark_start(opts, b) + MARK_LEN + 6.0;
             trim.inflate(m, m)
         } else {
             bleed
         };
-        out.push(Sheet { spread: si, trim, bleed, media, label });
+        // Include Slug Area: the slug's content prints, and the media box takes it in (the marks
+        // may already reach that far).
+        let shown = if opts.slug { bleed.union(around(slug)) } else { bleed };
+        let media = media.union(shown);
+        out.push(Sheet { spread: si, trim, bleed, shown, media, label });
     }
     Ok(out)
 }
@@ -255,8 +268,8 @@ fn export_pdf_with_report_inner(doc: &Document, cache: &Cache, opts: &PdfOptions
         #[cfg(all(test, not(target_arch = "wasm32")))]
         unwind_tests::inject(&mut s);
         s.push_transform(&tf(Affine::translate(-sh.media.origin().to_vec2())));
-        ex.clip = sh.bleed;
-        if let Some(clip) = to_path(&sh.bleed.to_path(0.1)) {
+        ex.clip = sh.shown;
+        if let Some(clip) = to_path(&sh.shown.to_path(0.1)) {
             s.push_clip_path(&clip, &FillRule::NonZero);
             ex.spread(&mut s, sh.spread);
             s.pop();

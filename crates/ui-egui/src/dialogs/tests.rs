@@ -3403,6 +3403,10 @@ fn pdf_export_defaults() {
     // serde_json::Map keeps keys sorted.
     let expected = [
         "bleed",
+        "bleedBottom",
+        "bleedInside",
+        "bleedOutside",
+        "bleedTop",
         "compressImages",
         "flatten",
         "marksBleed",
@@ -3411,6 +3415,7 @@ fn pdf_export_defaults() {
         "marksPageInfo",
         "marksWeight",
         "preset",
+        "slug",
         "spreads",
         "standard",
         "tagged",
@@ -3428,6 +3433,79 @@ fn pdf_export_defaults() {
     assert_eq!(d.fields["marksWeight"].as_str(), Some("0.25"));
     assert_eq!(d.fields["marksOffset"].as_str(), Some("6"));
     assert_eq!(d.fields["tagged"].as_bool(), Some(true));
+}
+
+/// Use Document Bleed Settings sends `bleed: true`; off, the four amounts (a bare number in the
+/// document's units) go as points, an unreadable or negative one as 0, one past 18 in as 18 in.
+/// Include Slug Area sends `slug`.
+#[test]
+fn pdf_export_own_bleed_and_slug_params() {
+    let mut d = Dialog::new("pdfExport", json!({}));
+    d.unit = Unit::Points;
+    let p = pdf_export_params(&d);
+    assert_eq!((p["bleed"].clone(), p["slug"].clone()), (json!(true), json!(false)));
+    for (k, v) in [("bleed", json!(false)), ("slug", json!(true))] {
+        d.fields.insert(k.into(), v);
+    }
+    for (k, v) in [("bleedTop", "9"), ("bleedBottom", "0p6"), ("bleedInside", "x"), ("bleedOutside", "-3")] {
+        d.fields.insert(k.into(), json!(v));
+    }
+    let p = pdf_export_params(&d);
+    assert_eq!(p["bleed"], json!([9.0, 6.0, 0.0, 0.0]));
+    assert_eq!(p["slug"], json!(true));
+    d.fields.insert("bleedTop".into(), json!("20in"));
+    assert_eq!(pdf_export_params(&d)["bleed"][0], json!(1296.0), "at most 18 in, as a document's bleed");
+}
+
+/// The own bleed fields open with the document's bleed in its units; an own bleed that was used
+/// is remembered with its unit (a document in other units shows the same amount), one that
+/// wasn't is not, so the next document shows its own.
+#[test]
+fn pdf_export_own_bleed_starts_from_the_document_and_is_remembered_when_used() {
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.session.execute("file.new", &json!({"bleed": 9, "units": "points"})).unwrap();
+    let units = app.session.active().unwrap().doc.settings.horizontal_units;
+    let bleed = app.session.active().unwrap().doc.settings.bleed;
+    crate::dialogs::open_pdf_export(&mut app);
+    let d = app.ui.dialog.as_ref().unwrap();
+    assert_eq!(d.s("bleedTop"), format_measure(bleed[0], units));
+    assert_eq!(d.s("bleedOutside"), format_measure(bleed[3], units));
+    assert!(d.b("bleed"));
+
+    app.services.write = Some(Box::new(|_: &str, _: &[u8]| Ok(())));
+    app.answer_dialogs(crate::app::file_dialogs::testing::answer_with(Some("/tmp/designcraft-own-bleed.pdf".into())));
+    confirm(&mut app).unwrap();
+    app.settle_dialogs();
+    assert!(app.ui.pdf_export.bleed_top.is_empty(), "the document's bleed is not remembered as an own one");
+
+    app.answer_dialogs(crate::app::file_dialogs::testing::answer_with(Some("/tmp/designcraft-own-bleed.pdf".into())));
+    crate::dialogs::open_pdf_export(&mut app);
+    let d = app.ui.dialog.as_mut().unwrap();
+    d.fields.insert("bleed".into(), json!(false));
+    d.fields.insert("bleedTop".into(), json!("4"));
+    d.fields.insert("slug".into(), json!(true));
+    confirm(&mut app).unwrap();
+    app.settle_dialogs();
+    assert!(!app.ui.pdf_export.bleed && app.ui.pdf_export.slug);
+    assert_eq!(app.ui.pdf_export.bleed_top, format_measure(4.0, units), "remembered with its unit");
+    crate::dialogs::open_pdf_export(&mut app);
+    assert_eq!(app.ui.dialog.as_ref().unwrap().s("bleedTop"), format_measure(4.0, units));
+
+    // A document in other units shows the same amount in its units, not 4 of them.
+    app.session.execute("file.new", &json!({"bleed": 9, "units": "millimeters"})).unwrap();
+    let mm = app.session.active().unwrap().doc.settings.horizontal_units;
+    assert_ne!(mm, units);
+    crate::dialogs::open_pdf_export(&mut app);
+    let d = app.ui.dialog.as_ref().unwrap();
+    assert_eq!(d.s("bleedTop"), format_measure(4.0, mm));
+    assert!((d.m("bleedTop").unwrap() - 4.0).abs() < 1e-3, "{}", d.s("bleedTop"));
+
+    // Settings saved before the own bleed, with the document's bleed off, keep meaning no bleed.
+    app.ui.pdf_export = serde_json::from_value(json!({"bleed": false})).unwrap();
+    crate::dialogs::open_pdf_export(&mut app);
+    let d = app.ui.dialog.as_ref().unwrap();
+    assert!(!d.b("bleed"));
+    assert_eq!(pdf_export_params(d)["bleed"], json!([0.0, 0.0, 0.0, 0.0]));
 }
 
 #[test]

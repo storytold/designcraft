@@ -1113,7 +1113,6 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Standard:", "Padrão:"),
     ("Compress images", "Compactar imagens"),
     ("Flattener preset", "Predefinição de achatamento"),
-    ("Include document bleed", "Incluir sangria do documento"),
     ("Crop Marks", "Marcas de corte"),
     ("Bleed Marks", "Marcas de sangria"),
     ("Page Information", "Informações da página"),

@@ -15,7 +15,7 @@ impl Exporter<'_> {
         if !m.any() {
             return;
         }
-        let bleed = if self.opts.bleed { self.doc.settings.bleed.map(|v| v.max(0.0)) } else { [0.0; 4] };
+        let bleed = self.opts.bleed_amounts(self.doc);
         let start = mark_start(self.opts, bleed);
         let t = sh.trim;
         let mut bp = BezPath::new();

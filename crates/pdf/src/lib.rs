@@ -125,8 +125,14 @@ pub struct PdfOptions {
     pub pages: Option<Vec<usize>>,
     /// One PDF page per spread (spreads containing any chosen page) instead of per page.
     pub spreads: bool,
-    /// Include the document bleed (`DocSettings::bleed`) around each page.
+    /// Include the bleed around each page: the document bleed (`DocSettings::bleed`), or
+    /// `bleed_override`.
     pub bleed: bool,
+    /// Bleed amounts (top, bottom, inside, outside) in points used instead of the document's
+    /// (Marks and Bleeds › Use Document Bleed Settings off). Only with `bleed`.
+    pub bleed_override: Option<[f64; 4]>,
+    /// Include the slug area (`DocSettings::slug`) in each page's media box.
+    pub slug: bool,
     pub marks: Marks,
     pub standard: Standard,
     /// Re-encode non-JPEG raster images as JPEG (quality 90) when they have no transparency.
@@ -163,12 +169,38 @@ pub struct ShadowMask {
     pub coverage: std::sync::Arc<Vec<u8>>,
 }
 
+impl PdfOptions {
+    /// The bleed around each page (top, bottom, inside, outside): `bleed_override`, else the
+    /// document's; none without `bleed`. Negative or non-finite amounts count as 0.
+    pub fn bleed_amounts(&self, doc: &designcraft_doc::Document) -> [f64; 4] {
+        if !self.bleed {
+            return [0.0; 4];
+        }
+        self.bleed_override.unwrap_or(doc.settings.bleed).map(non_negative)
+    }
+
+    /// The slug area (top, bottom, inside, outside) the media box takes in; none without `slug`.
+    pub fn slug_amounts(&self, doc: &designcraft_doc::Document) -> [f64; 4] {
+        if !self.slug {
+            return [0.0; 4];
+        }
+        doc.settings.slug.map(non_negative)
+    }
+}
+
+/// An amount in points as a box edge can take it: negative or non-finite is 0.
+fn non_negative(v: f64) -> f64 {
+    if v.is_finite() { v.max(0.0) } else { 0.0 }
+}
+
 impl Default for PdfOptions {
     fn default() -> Self {
         Self {
             pages: None,
             spreads: false,
             bleed: false,
+            bleed_override: None,
+            slug: false,
             marks: Marks::NONE,
             standard: Standard::None,
             compress_images: false,
