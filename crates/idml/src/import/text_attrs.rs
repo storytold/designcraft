@@ -69,6 +69,7 @@ impl<'r> Importer<'r> {
         a.v_scale = values.vertical_scale.map(|v| v / 100.0);
         a.baseline_shift = values.baseline_shift;
         a.skew = values.skew;
+        let special = craft_idml::model::CharacterSpecialValues::from_el(&crate::xml::to_craft(e));
         let appearance = craft_idml::model::CharacterAppearanceValues::from_el(&crate::xml::to_craft(e));
         if let Some(r) = appearance.fill_color {
             a.fill = Some(self.swatch_ref(r.trim()));
@@ -85,8 +86,8 @@ impl<'r> Importer<'r> {
             "CenterAlignment" => Some(false),
             _ => None,
         });
-        a.capitalization = e.prop("Capitalization").and_then(|v| names::caps_in(v.trim()));
-        a.position = e.prop("Position").and_then(|v| names::position_in(v.trim()));
+        a.capitalization = special.capitalization.as_deref().and_then(|v| names::caps_in(v.trim()));
+        a.position = special.position.as_deref().and_then(|v| names::position_in(v.trim()));
         a.underline = appearance.underline;
         a.strikethrough = appearance.strikethrough;
         a.ligatures = appearance.ligatures;
@@ -109,18 +110,18 @@ impl<'r> Importer<'r> {
             }
         }
         read_otf_features(e, &mut a);
-        a.glyph_form = e.prop("GlyphForm");
-        a.no_break = e.boolean("NoBreak");
-        a.tate_chu_yoko = e.boolean("Tatechuyoko");
-        a.tate_chu_yoko_x_offset = e.num("TatechuyokoXOffset");
-        a.tate_chu_yoko_y_offset = e.num("TatechuyokoYOffset");
-        a.warichu = e.boolean("Warichu");
-        a.warichu_lines = e.num("WarichuLines").map(|v| v.max(2.0) as u32);
-        a.warichu_size = e.num("WarichuSize");
-        a.warichu_line_spacing = e.num("WarichuLineSpacing");
-        a.warichu_alignment = e.prop("WarichuAlignment").as_deref().and_then(crate::cjk::warichu_align_in);
-        a.warichu_chars_before_break = e.num("WarichuCharsBeforeBreak").map(|v| v.max(0.0) as u32);
-        a.warichu_chars_after_break = e.num("WarichuCharsAfterBreak").map(|v| v.max(0.0) as u32);
+        a.glyph_form = special.glyph_form;
+        a.no_break = special.no_break;
+        a.tate_chu_yoko = special.tate_chu_yoko;
+        a.tate_chu_yoko_x_offset = special.tate_chu_yoko_x_offset;
+        a.tate_chu_yoko_y_offset = special.tate_chu_yoko_y_offset;
+        a.warichu = special.warichu;
+        a.warichu_lines = special.warichu_lines.map(|v| v.max(2.0) as u32);
+        a.warichu_size = special.warichu_size;
+        a.warichu_line_spacing = special.warichu_line_spacing;
+        a.warichu_alignment = special.warichu_alignment.as_deref().and_then(crate::cjk::warichu_align_in);
+        a.warichu_chars_before_break = special.warichu_chars_before_break.map(|v| v.max(0.0) as u32);
+        a.warichu_chars_after_break = special.warichu_chars_after_break.map(|v| v.max(0.0) as u32);
         let ruby_values = craft_idml::model::RubyValues::from_el(&crate::xml::to_craft(e));
         if let Some(on) = ruby_values.flag {
             a.ruby = Some(if on { ruby_values.text.clone().unwrap_or_default() } else { String::new() });
@@ -133,21 +134,21 @@ impl<'r> Importer<'r> {
                 a.kenten_character = e.prop("KentenCustomCharacter");
             }
         }
-        a.digits = e.prop("DigitsType").and_then(|s| names::digits_in(s.trim()));
-        a.character_direction = e.prop("CharacterDirection").and_then(|s| crate::arabic::direction_in(&s));
-        a.allow_kashidas = e.prop("Kashidas").and_then(|s| crate::arabic::kashidas_in(&s));
-        a.diacritic_position = e.prop("DiacriticPosition").and_then(|s| crate::arabic::diacritic_in(&s));
-        a.diacritic_x_offset = e.num("XOffsetDiacritic").filter(|v| v.is_finite());
-        a.diacritic_y_offset = e.num("YOffsetDiacritic").filter(|v| v.is_finite());
-        a.positional_form = e.prop("PositionalForm");
+        a.digits = special.digits.as_deref().and_then(|s| names::digits_in(s.trim()));
+        a.character_direction = special.character_direction.as_deref().and_then(crate::arabic::direction_in);
+        a.allow_kashidas = special.allow_kashidas.as_deref().and_then(crate::arabic::kashidas_in);
+        a.diacritic_position = special.diacritic_position.as_deref().and_then(crate::arabic::diacritic_in);
+        a.diacritic_x_offset = special.diacritic_x_offset;
+        a.diacritic_y_offset = special.diacritic_y_offset;
+        a.positional_form = special.positional_form;
         self.cjk_settings_chars(e, &mut a);
-        if let Some(v) = e.get("AppliedConditions").filter(|v| !v.trim().is_empty()) {
+        if let Some(v) = special.applied_conditions.as_deref().filter(|v| !v.trim().is_empty()) {
             let names: Vec<String> = v.split_whitespace().filter_map(|r| self.condition_names.get(r).cloned()).collect();
             if !names.is_empty() {
                 a.conditions = Some(names);
             }
         }
-        a.language = e.prop("AppliedLanguage").map(|l| l.trim().trim_start_matches("$ID/").to_string());
+        a.language = special.applied_language.map(|l| l.trim().trim_start_matches("$ID/").to_string());
         a
     }
 
