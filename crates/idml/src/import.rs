@@ -17,7 +17,7 @@ use designcraft_geom::{Affine, Anchor, PathData, Point, Rect, SubPath};
 
 use crate::names::{self, CHAR_BUILTINS, OBJECT_BUILTINS, PARA_BUILTINS, unescape_id};
 use crate::xml::{El, Node};
-use crate::{IdmlError, Result, base64_decode, sniff_image};
+use crate::{IdmlError, Result, sniff_image};
 
 mod document;
 mod frame;

@@ -4,7 +4,7 @@ use super::package::uri_to_path;
 use super::values::{nums, parse_affine, tint};
 use super::{
     Affine, Anchor, Arc, Asset, AssetId, Content, Corner, CornerOptions, El, Fill, Importer, Item, ItemId, OBJECT_BUILTINS, PathData, Point, Shape,
-    Story, StoryId, Stroke, SubPath, TextFrame, TextFrameOptions, base64_decode, names, sniff_image, swatch, unescape_id,
+    Story, StoryId, Stroke, SubPath, TextFrame, TextFrameOptions, names, sniff_image, swatch, unescape_id,
 };
 
 impl<'r> Importer<'r> {
@@ -197,7 +197,7 @@ impl<'r> Importer<'r> {
             _ => {
                 if let Some(graphic) = model_item.graphics().next() {
                     let graphic_xml = crate::xml::from_craft(graphic.to_el());
-                    item.content = self.graphic(&graphic_xml);
+                    item.content = self.graphic(&graphic_xml, graphic);
                     let fill = self.image_fill(&graphic_xml);
                     if let Content::Graphic(gr) = &mut item.content {
                         gr.fill = fill;
@@ -240,7 +240,7 @@ impl<'r> Importer<'r> {
         Fill { swatch, tint, ..Fill::none() }
     }
 
-    fn graphic(&mut self, g: &El) -> Content {
+    fn graphic(&mut self, g: &El, model: &craft_idml::model::Graphic) -> Content {
         let layer_options = g.find("GraphicLayerOption").map(|options| {
             let attrs = |e: &El| e.attrs.iter().filter(|(key, _)| key != "Self").cloned().collect();
             let mut out = designcraft_doc::GraphicLayerOptions { attributes: attrs(options), ..Default::default() };
@@ -291,7 +291,7 @@ impl<'r> Importer<'r> {
                 fill: Default::default(),
             })
         };
-        let mut data = g.prop_el("Contents").map(|c| base64_decode(&c.text_content())).unwrap_or_default();
+        let mut data = model.contents().unwrap_or_default();
         let page = pdf_page_in(g);
         // Where the box sits on the page needs the PDF parsed: the engine finds it after import.
         let pdf_crop = pdf_attribute(g).and_then(|a| a.get("PDFCrop")).map_or(designcraft_doc::PdfCrop::Crop, names::pdf_crop_in);
