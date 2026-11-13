@@ -317,14 +317,7 @@ impl<'r> Importer<'r> {
         // art's bounds, which can overhang the viewBox, so they must not size the viewBox.
         let size = craft_svg::sniff::viewbox_size(&data).unwrap_or(size);
         let (mime, px) = if preview.is_some() { (None, None) } else { sniff_image(&data) };
-        let mime = mime.map(str::to_string).unwrap_or_else(|| match model.link().and_then(|link| link.format()).unwrap_or("") {
-            f if f.contains("EPS") || g.local() == "EPS" => "application/postscript".into(),
-            f if f.contains("JPEG") => "image/jpeg".into(),
-            f if f.contains("TIFF") => "image/tiff".into(),
-            f if f.contains("PDF") || g.local() == "PDF" => "application/pdf".into(),
-            f if f.contains("GIF") => "image/gif".into(),
-            _ => "image/png".into(),
-        });
+        let mime = mime.map(str::to_string).unwrap_or_else(|| model.fallback_mime().to_owned());
         let pixels = px.or_else(|| {
             let ppi = model.actual_ppi()?;
             (size.0 > 0.0).then(|| ((size.0 * ppi[0] / 72.0).round() as u32, (size.1 * ppi[1] / 72.0).round() as u32))
