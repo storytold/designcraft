@@ -3440,3 +3440,107 @@ fn leaving_parent_editing_for_the_left_page_of_a_spread_keeps_that_page_selected
     h.run_steps(3);
     assert_eq!(current_page(h.state()), Some(1));
 }
+
+/// A review of a book goes to words on other pages.
+#[test]
+fn a_review_brings_its_word_into_view() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("frame.create", json!({"rect": [36, 36, 400, 200], "content": "text", "text": "The jumpd fox."})).unwrap();
+    let mut h = Harness::builder().with_size(vec2(1400.0, 900.0)).with_step_dt(1.0 / 60.0).build_ui_state(
+        |ui, app: &mut DesignApp| {
+            let ctx = ui.ctx().clone();
+            app.logic(&ctx);
+            app.ui(ui);
+        },
+        app,
+    );
+    h.run_steps(4);
+    let app = h.state_mut();
+    let v = app.view_mut().unwrap();
+    v.origin = Point::new(-9000.0, -9000.0);
+    v.zoom = 3.0;
+    let far = app.view().unwrap().origin;
+    crate::panels::spelling::open(app).unwrap();
+    let revealed = app.view().unwrap().origin;
+    assert_ne!(revealed, far);
+    h.run_steps(2);
+    let app = h.state_mut();
+    let rect = app.canvas_rect.unwrap();
+    let view = app.view().unwrap();
+    assert_eq!((view.origin, view.zoom), (revealed, 3.0), "later frames keep the word in view, at the same zoom");
+    let st = app.session.doc().unwrap();
+    let selection = st.selection.text.unwrap();
+    let layout = CanvasLayout::new(&st.doc, st.editing_parents);
+    let cs = app.session.cache.get(&st.doc, selection.story, None);
+    let (a, _) = item_canvas_xf(&st.doc, &layout, cs.frames[0].frame).unwrap();
+    let frame = Xf::new(rect, view).rect(a.transform_rect_bbox(st.doc.item(cs.frames[0].frame).unwrap().bounds()));
+    assert!(rect.intersects(frame), "{frame:?} in {rect:?}");
+    let at = view.origin;
+    crate::panels::spelling::action(app, "check", None).unwrap();
+    assert_eq!(app.view().unwrap().origin, at, "a word in view leaves the view alone");
+}
+
+/// Red squiggles the canvas draws, drawn above the selection a review makes of its word.
+#[test]
+fn a_review_underlines_its_issues_on_the_canvas() {
+    use crate::panels::spelling::SPELLING_MARK;
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("frame.create", json!({"rect": [36, 36, 400, 200], "content": "text", "text": "The jumpd fox. A jumpd dog."})).unwrap();
+    let squiggles = |app: &DesignApp| {
+        let st = app.session.doc().unwrap();
+        let layout = CanvasLayout::new(&st.doc, st.editing_parents);
+        let xf = Xf { min: pos2(0.0, 0.0), origin: Point::new(0.0, 0.0), zoom: 1.0, rot: 0, pivot: pos2(0.0, 0.0) };
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            draw_spelling_marks(app, ui.ctx(), ui.painter(), &xf, &st.doc, &layout);
+        });
+        output.textures_delta.clear();
+        output
+            .shapes
+            .into_iter()
+            .filter(|s| matches!(&s.shape, egui::Shape::Path(p) if p.stroke.color == egui::epaint::ColorMode::Solid(SPELLING_MARK)))
+            .count()
+    };
+    assert_eq!(squiggles(&app), 0, "nothing without a review or Dynamic Spelling");
+    crate::panels::spelling::open(&mut app).unwrap();
+    assert!(!app.ui.dynamic_spelling);
+    assert_eq!(squiggles(&app), 2);
+    crate::panels::spelling::action(&mut app, "ignoreAll", None).unwrap();
+    assert_eq!(squiggles(&app), 0, "an ignored word loses its underline");
+    app.ui.dynamic_spelling = true;
+    assert_eq!(squiggles(&app), 0, "the review speaks for a story it has checked");
+    app.run("window.panel", json!({"panel": "pages"})).unwrap();
+    assert_eq!(squiggles(&app), 2, "Dynamic Spelling once the panel is away");
+}
+
+/// Typing in one story must not re-proof the others; a language or dictionary change must.
+#[test]
+fn dynamic_spelling_reproofs_only_after_a_relevant_change() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let ctx = egui::Context::default();
+    let mut doc = (*app.session.active().unwrap().doc).clone();
+    let layer = doc.default_layer();
+    let rect = designcraft_geom::Rect::new(0.0, 0.0, 200.0, 100.0);
+    let add = |doc: &mut designcraft_doc::Document, text: &str| {
+        doc.add_text_frame(designcraft_doc::SpreadRef::Doc(0), rect, layer, text, Default::default()).unwrap().1
+    };
+    let (edited, other) = (add(&mut doc, "jumpd"), add(&mut doc, "lazzy"));
+    let marks = |doc: &designcraft_doc::Document, id| dynamic_misspellings(&ctx, doc, doc.stories.get(&id).unwrap());
+    let (first, unrelated) = (marks(&doc, edited), marks(&doc, other));
+    assert_eq!(first.len(), 1);
+    assert!(std::sync::Arc::ptr_eq(&first, &marks(&doc, edited)), "unchanged: cached");
+    doc.story_mut(edited).unwrap().replace(0..0, "wrng ");
+    assert_eq!(marks(&doc, edited).len(), 2, "the edited story is checked again");
+    assert!(std::sync::Arc::ptr_eq(&unrelated, &marks(&doc, other)), "the other story stays cached");
+    doc.user_words.push("lazzy".into());
+    assert!(marks(&doc, other).is_empty(), "the user dictionary counts at once");
+    doc.user_words.clear();
+    assert_eq!(marks(&doc, other).len(), 1);
+    for style in &mut std::sync::Arc::make_mut(&mut doc.styles).paragraph {
+        style.chars.language = Some("[No Language]".into());
+    }
+    assert!(marks(&doc, other).is_empty(), "a style's language counts at once");
+}

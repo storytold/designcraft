@@ -12,6 +12,13 @@ pub fn shown(app: &DesignApp, id: &str) -> bool {
 
 /// UI commands: (id, label, shortcut, params).
 pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
+    ("app.checkSpelling", "Check Spelling…", None, "{} — opens the Spelling panel and checks the document; → {issue, remaining, to, message}"),
+    (
+        "app.spelling",
+        "Spelling Review",
+        None,
+        "{action: change|ignoreOnce|ignoreAll|add|check, to?} — the Spelling panel's actions, after app.checkSpelling",
+    ),
     ("app.newDocumentDialog", "New Document…", Some("Cmd+N"), "{}"),
     ("app.openDialog", "Open…", Some("Cmd+O"), "{path?} — without a path, choose the file in a dialog"),
     ("app.openRecent", "Open Recent File", None, "{index} — file.openRecent, with an alert when the file can't be opened"),

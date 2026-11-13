@@ -140,6 +140,10 @@ fn context_target(app: &mut DesignApp, p: Point, zoom: f64) -> crate::menus::Con
             if app.run("text.placeCaret", json!({"frame": id.0, "point": [sp.x, sp.y]})).is_ok_and(|r| r["dragging"] == json!(true)) {
                 let _ = app.run("text.release", json!({"frame": id.0, "point": [sp.x, sp.y], "moved": true}));
             }
+            crate::panels::spelling::prepare_context(app);
+        } else {
+            // Not on text: the caret may be anywhere, off screen too.
+            app.spelling_context = None;
         }
         return ContextMenu::Text;
     }

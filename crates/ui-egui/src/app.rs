@@ -72,6 +72,8 @@ impl DesignApp {
             control_input_frame: Default::default(),
             clipboard_guard_installed: false,
             story_editor: None,
+            spelling: Default::default(),
+            spelling_context: None,
             control_rx: None,
             pending_shots: vec![],
             queued_shots: vec![],

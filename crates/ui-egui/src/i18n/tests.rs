@@ -605,6 +605,9 @@ fn interface_strings() -> HashSet<&'static str> {
     ]);
     // The Keyboard Shortcuts dialog's strings (craft-keymap) reach `tr` too.
     keys.extend(crate::shortcuts_dialog::strings());
+    // The Spelling panel's strings (craft-proof-ui) too.
+    keys.extend(craft_proof_ui::STRINGS.iter().copied());
+    keys.extend(crate::panels::spelling::STRINGS.iter().copied());
     keys
 }
 
