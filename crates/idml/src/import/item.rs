@@ -7,31 +7,6 @@ use super::{
     Story, StoryId, Stroke, SubPath, TextFrame, TextFrameOptions, base64_decode, names, sniff_image, swatch, unescape_id,
 };
 
-/// The viewBox size of an SVG whose root has a viewBox but no width/height (percentages count as
-/// none): InDesign places such a file at one viewBox unit to the point.
-fn svg_viewbox_size(data: &[u8]) -> Option<(f64, f64)> {
-    if data.iter().find(|b| !b.is_ascii_whitespace()) != Some(&b'<') {
-        return None;
-    }
-    let mut options = craft_xml::Options::default();
-    options.limits.max_input = 16 << 20;
-    let root = options.parse(data).ok()?;
-    if root.local() != "svg" {
-        return None;
-    }
-    let attr = |name: &str| root.attr(name).map(ToString::to_string);
-    let absolute = |name: &str| attr(name).is_some_and(|v| !v.trim().ends_with('%'));
-    if absolute("width") || absolute("height") {
-        return None;
-    }
-    let vb: Vec<f64> =
-        attr("viewBox")?.split(|c: char| c.is_whitespace() || c == ',').filter(|v| !v.is_empty()).filter_map(|v| v.parse().ok()).collect();
-    match vb[..] {
-        [_, _, w, h] if w.is_finite() && h.is_finite() && w > 0.0 && h > 0.0 => Some((w, h)),
-        _ => None,
-    }
-}
-
 impl<'r> Importer<'r> {
     pub(super) fn item(&mut self, e: &El, parent: Affine) -> Option<Item> {
         let model_item = craft_idml::model::PageItem::from_el(&crate::xml::to_craft(e))?;
@@ -326,7 +301,7 @@ impl<'r> Importer<'r> {
             // file once.
             let key = (p.clone(), page, pdf_crop);
             if let Some(id) = self.linked_assets.get(&key) {
-                let size = self.assets.get(id).and_then(|a| svg_viewbox_size(&a.data)).unwrap_or(size);
+                let size = self.assets.get(id).and_then(|a| craft_svg::sniff::viewbox_size(&a.data)).unwrap_or(size);
                 return graphic(*id, size);
             }
             if let Some(d) = (self.read_link)(p) {
@@ -339,7 +314,7 @@ impl<'r> Importer<'r> {
         let preview = data.is_empty().then(|| g.get("Self").and_then(|s| self.previews.get(s))).flatten();
         // InDesign draws a viewBox-only SVG at one unit to the point: its GraphicBounds are the
         // art's bounds, which can overhang the viewBox, so they must not size the viewBox.
-        let size = svg_viewbox_size(&data).unwrap_or(size);
+        let size = craft_svg::sniff::viewbox_size(&data).unwrap_or(size);
         let (mime, px) = if preview.is_some() { (None, None) } else { sniff_image(&data) };
         let mime = mime.map(str::to_string).unwrap_or_else(|| match link.and_then(|k| k.get("LinkResourceFormat")).unwrap_or("") {
             f if f.contains("EPS") || g.local() == "EPS" => "application/postscript".into(),
