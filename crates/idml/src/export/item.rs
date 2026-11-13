@@ -206,17 +206,19 @@ impl<'a> Ex<'a> {
         let ds = &e.drop_shadow;
         if ds.on || all {
             let a = self.d.light_angle(ds.angle, ds.global_light).to_radians();
-            out.push(
-                El::new("DropShadowSetting")
-                    .attr("Mode", if ds.on { "Drop" } else { "None" })
-                    .attr("XOffset", num(-ds.distance * a.cos()))
-                    .attr("YOffset", num(ds.distance * a.sin()))
-                    .attr("Size", num(ds.size))
-                    .attr("Spread", num(ds.spread))
-                    .attr("Opacity", pct(ds.opacity as f64))
-                    .attr("BlendMode", names::blend_out(ds.mode))
-                    .attr("EffectColor", self.sw(&ds.color)),
-            );
+            out.push(crate::xml::from_craft(
+                craft_idml::model::DropShadowValues {
+                    mode: Some(if ds.on { "Drop" } else { "None" }.into()),
+                    x_offset: Some(-ds.distance * a.cos()),
+                    y_offset: Some(ds.distance * a.sin()),
+                    color: Some(self.sw(&ds.color)),
+                    opacity: Some(f64::from(ds.opacity) * 100.0),
+                    size: Some(ds.size),
+                    spread: Some(ds.spread),
+                    blend_mode: Some(names::blend_out(ds.mode).into()),
+                }
+                .to_el(),
+            ));
         }
         if e.feather > 0.0 || all {
             let corners = match e.feather_options.corners {
@@ -224,13 +226,15 @@ impl<'a> Ex<'a> {
                 designcraft_doc::FeatherCorners::Rounded => "Rounded",
                 designcraft_doc::FeatherCorners::Diffused => "Diffusion",
             };
-            out.push(
-                El::new("FeatherSetting")
-                    .attr("Mode", if e.feather > 0.0 { "Standard" } else { "None" })
-                    .attr("Width", num(e.feather))
-                    .attr("ChokeAmount", num(e.feather_options.choke))
-                    .attr("CornerType", corners),
-            );
+            out.push(crate::xml::from_craft(
+                craft_idml::model::FeatherValues {
+                    mode: Some(if e.feather > 0.0 { "Standard" } else { "None" }.into()),
+                    width: Some(e.feather),
+                    choke_amount: Some(e.feather_options.choke),
+                    corner_type: Some(corners.into()),
+                }
+                .to_el(),
+            ));
         }
         out
     }
