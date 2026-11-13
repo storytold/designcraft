@@ -1,8 +1,8 @@
 //! Live preflight (the Preflight panel and the status-bar indicator): overset text, missing
 //! fonts and glyphs, missing or low-resolution graphics, RGB content in print documents, empty
-//! text frames.
+//! text frames, white or [Paper] set to overprint.
 
-use designcraft_compose::ComposedStory;
+use designcraft_compose::{Cache, ComposedStory};
 use designcraft_doc::{Content, Document, Intent, Item, SpreadRef};
 use designcraft_fonts::FaceRef;
 use designcraft_geom::Affine;
@@ -11,6 +11,8 @@ use serde_json::{Value, json};
 
 use super::{CommandSpec, cmd, has_doc};
 use crate::{Result, Session};
+
+mod white_overprint;
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -36,6 +38,25 @@ fn page_of(d: &Document, sr: SpreadRef, it: &Item, parent: Affine) -> Option<usi
     // Item bounds include its own transform; ancestors bring the frame into spread space.
     let bounds = parent.transform_rect_bbox(it.bounds());
     Some(d.first_page_of_spread(si) + sp.page_at_x(bounds.center().x).unwrap_or(0))
+}
+
+/// Every page of the spread the frame reaches, not just the one its centre is on.
+///
+/// A sheet draws the items of its spread without testing which page they sit on, so a frame that
+/// straddles two pages is drawn, in part, on both. Choosing by the centre alone dropped the
+/// warning for a frame whose centre is on a page the export leaves out while the part on an
+/// exported page went into the file (noted in review). Empty when the frame is on no document
+/// spread, which is the same answer `page_of` gives.
+fn pages_of(d: &Document, sr: SpreadRef, it: &Item, parent: Affine) -> Vec<usize> {
+    let SpreadRef::Doc(si) = sr else { return vec![] };
+    let Some(sp) = d.spreads.get(si) else { return vec![] };
+    let bounds = parent.transform_rect_bbox(it.bounds());
+    let first = d.first_page_of_spread(si);
+    let touched: Vec<usize> =
+        sp.pages.iter().enumerate().filter(|(_, pg)| bounds.x1 > pg.x && bounds.x0 < pg.x + pg.width).map(|(i, _)| first + i).collect();
+    // A frame wholly on the pasteboard touches no page's span; it still belongs to the page
+    // `page_at_x` nominates, so the two functions agree about where it is.
+    if touched.is_empty() { page_of(d, sr, it, parent).into_iter().collect() } else { touched }
 }
 
 /// Characters a missing-glyph report names before "and N more".
@@ -74,11 +95,18 @@ fn missing_glyphs(
     }
 }
 
-/// Locate an embedded frame at the outer page frame that actually renders it.
-fn overset_location(s: &Session, target: designcraft_doc::ItemId) -> Option<(designcraft_doc::ItemId, Option<usize>)> {
-    let d = &s.active()?.doc;
+/// Locate an embedded frame at the outer page frame that actually renders it: the frame, the page
+/// its centre is on, and every page it reaches (see [`pages_of`]).
+type Located = (designcraft_doc::ItemId, Option<usize>, Vec<usize>);
+
+fn overset_location(d: &Document, cache: &Cache, target: designcraft_doc::ItemId) -> Option<Located> {
+    let at = |id: designcraft_doc::ItemId, loc: &designcraft_doc::ItemLoc| {
+        let it = d.item(id);
+        let xf = d.parent_xf(loc);
+        (id, it.and_then(|it| page_of(d, loc.spread, it, xf)), it.map(|it| pages_of(d, loc.spread, it, xf)).unwrap_or_default())
+    };
     if let Some(loc) = d.find(target) {
-        return Some((target, d.item(target).and_then(|it| page_of(d, loc.spread, it, d.parent_xf(&loc)))));
+        return Some(at(target, &loc));
     }
     fn contains(root: &designcraft_compose::FrameText, target: designcraft_doc::ItemId) -> bool {
         let mut frames = vec![root];
@@ -102,32 +130,158 @@ fn overset_location(s: &Session, target: designcraft_doc::ItemId) -> Option<(des
     let embedded = d.anchored_items();
     while seen.insert(current) {
         let owner = embedded.iter().find_map(|(owner, it)| (it.id == current).then_some(*owner))?;
-        let cs = s.cache.get(d, owner, None);
+        let cs = cache.get(d, owner, None);
         // Search each host frame separately, including objects in its notes and cells.
         let frame = cs.frames.iter().find(|f| contains(f, current))?;
         current = frame.frame;
         if let Some(loc) = d.find(current) {
-            return Some((current, d.item(current).and_then(|it| page_of(d, loc.spread, it, d.parent_xf(&loc)))));
+            return Some(at(current, &loc));
         }
     }
     None
 }
 
-pub fn check(s: &Session, min_ppi: f64) -> Vec<Issue> {
+/// Text that is in the document but not in a page-based export (PDF, PowerPoint): the overset
+/// part of a story, and a story with no frame at all. The export used to write the file and
+/// report nothing, so whole sentences left an imported document without a hint anywhere (#1465).
+///
+/// One line per story, naming the page and the frame as the preflight issue does. `pages` are the
+/// 0-based pages being exported; a story whose overset is on a page that is not being exported is
+/// not reported, and one with no page of its own always is. A reflowable export (EPUB, HTML) or a
+/// text export carries the whole story, so neither calls this.
+/// Pages a single warning names before "and N more".
+const MAX_WARNED_PAGES: usize = 10;
+
+/// How the pages one warning covers are named: "page 3", "pages 3, 4", "pages 3, 4 and 6 more".
+fn page_list(pages: &[usize]) -> String {
+    let shown: Vec<String> = pages.iter().take(MAX_WARNED_PAGES).map(|p| (p + 1).to_string()).collect();
+    let rest = pages.len() - shown.len();
+    let list = shown.join(", ");
+    match (pages.len(), rest) {
+        (1, _) => format!("page {list}"),
+        (_, 0) => format!("pages {list}"),
+        _ => format!("pages {list} and {rest} more"),
+    }
+}
+
+/// The parent spread and the page of it a frame sits on, or `None` for a frame on a document page.
+fn parent_page_of(d: &Document, target: designcraft_doc::ItemId) -> Option<(usize, usize)> {
+    let loc = d.find(target)?;
+    let SpreadRef::Parent(pi) = loc.spread else { return None };
+    let bounds = d.parent_xf(&loc).transform_rect_bbox(d.item(target)?.bounds());
+    Some((pi, d.spread(loc.spread)?.page_at_x(bounds.center().x).unwrap_or(0)))
+}
+
+/// Document pages that draw parent page `pp` of parent spread `pi`, in document order.
+fn pages_showing(d: &Document, (pi, pp): (usize, usize)) -> Vec<usize> {
+    (0..d.page_count())
+        .filter(|p| d.page_loc(*p).is_some_and(|(si, pgi)| d.shown_parent_pages(SpreadRef::Doc(si), pgi).contains(&(pi, pp))))
+        .collect()
+}
+
+/// Characters of `story` that `cs` had no room for.
+fn overset_chars(story: &designcraft_doc::Story, cs: &ComposedStory) -> usize {
+    story.text.get(cs.overset_at.unwrap_or(0)..).unwrap_or("").chars().count()
+}
+
+pub fn overset_warnings(s: &Session, pages: Option<&[usize]>) -> Vec<String> {
     let Some(st) = s.active() else { return vec![] };
     let d = &st.doc;
-    let document = st.path.as_deref().map(std::path::Path::new);
+    let mut out = Vec::new();
+    for story in d.stories.values() {
+        let last = story.frames.last().copied();
+        // A story on a parent page is composed once per page that shows it: its page number
+        // markers and variables are that page's, so the same frame can fit on one page and
+        // overset on another, and a parent page no exported page uses puts nothing in the file
+        // to be missing. Composing it once with no page reported neither (noted in review).
+        if let Some(parent) = last.and_then(|f| parent_page_of(d, f)) {
+            let mut by_count: std::collections::BTreeMap<usize, Vec<usize>> = std::collections::BTreeMap::new();
+            for page in pages_showing(d, parent) {
+                if pages.is_some_and(|sel| !sel.contains(&page)) {
+                    continue;
+                }
+                let cs = s.cache.get(d, story.id, Some(page));
+                let n = overset_chars(story, &cs);
+                if cs.is_overset() && n > 0 {
+                    by_count.entry(n).or_default().push(page);
+                }
+            }
+            let item = last.map_or(0, |f| f.0);
+            out.extend(
+                by_count.into_iter().map(|(n, ps)| {
+                    format!("{}: {n} character(s) of the story in frame {item} do not fit it and are not in the export", page_list(&ps))
+                }),
+            );
+            continue;
+        }
+        let cs = s.cache.get(d, story.id, None);
+        if !cs.is_overset() {
+            continue;
+        }
+        let n = overset_chars(story, &cs);
+        if n == 0 {
+            continue;
+        }
+        if story.frames.is_empty() {
+            out.push(format!("a story with no text frame: {n} character(s) of it are not in the export"));
+            continue;
+        }
+        let location = last.and_then(|f| overset_location(d, &s.cache, f));
+        let centre = location.as_ref().and_then(|(_, page, _)| *page);
+        let touched: &[usize] = location.as_ref().map(|(_, _, ps)| ps.as_slice()).unwrap_or_default();
+        // A sheet draws its spread's items without asking which page they are on, so a frame
+        // straddling two pages is drawn in part on both. Testing the centre page alone dropped
+        // the warning for a frame centred on a page the export leaves out while the part on an
+        // exported page went into the file (noted in review).
+        //
+        // The page named is one the export has: the centre page when that is exported, so an
+        // ordinary frame reads as before, otherwise the first exported page the frame reaches.
+        let page = match pages {
+            None => centre,
+            Some(sel) => {
+                let exported: Vec<usize> = touched.iter().copied().filter(|p| sel.contains(p)).collect();
+                match centre.filter(|p| sel.contains(p)).or_else(|| exported.first().copied()) {
+                    Some(p) => Some(p),
+                    // Nothing of this frame is on an exported page.
+                    None if centre.is_some() || !touched.is_empty() => continue,
+                    None => None,
+                }
+            }
+        };
+        let item = location.as_ref().map(|(item, _, _)| *item).or(last);
+        out.push(match (page, item) {
+            (Some(page), Some(item)) => {
+                format!("page {}: {n} character(s) of the story in frame {} do not fit it and are not in the export", page + 1, item.0)
+            }
+            (None, Some(item)) => format!("the story in frame {}: {n} character(s) do not fit and are not in the export", item.0),
+            _ => format!("{n} character(s) of a story do not fit their frame and are not in the export"),
+        });
+    }
+    out
+}
+
+pub fn check(s: &Session, min_ppi: f64) -> Vec<Issue> {
+    let Some(st) = s.active() else { return vec![] };
+    check_document(&st.doc, &s.cache, st.path.as_deref().map(std::path::Path::new), min_ppi)
+}
+
+/// [`check`] of document `d` saved at `document` (relative links resolve against it), with the
+/// compositions in `cache`. It needs no session, so it can run on another thread.
+pub fn check_document(d: &Document, cache: &Cache, document: Option<&std::path::Path>, min_ppi: f64) -> Vec<Issue> {
     let mut out = Vec::new();
     // Stories: overset and fonts.
     let mut missing_fonts: Vec<String> = Vec::new();
     let mut unsupported_typography = std::collections::BTreeSet::new();
     let mut missing: Vec<(FaceRef, Vec<char>, designcraft_doc::ItemId)> = Vec::new();
+    // Ruby and kenten set to overprint in white, by the frame that shows them (`None`: a note's,
+    // a cell's or an unplaced story, which has no frame of its own).
+    let mut white_text: std::collections::BTreeMap<Option<designcraft_doc::ItemId>, Vec<&'static str>> = std::collections::BTreeMap::new();
     for story in d.stories.values() {
-        let cs = s.cache.get(d, story.id, None);
+        let cs = cache.get(d, story.id, None);
         missing_glyphs(&cs, None, 0, &mut missing);
         if cs.is_overset() {
             let last = story.frames.last().copied();
-            let location = last.and_then(|f| overset_location(s, f));
+            let location = last.and_then(|f| overset_location(d, cache, f));
             let n = story.text.get(cs.overset_at.unwrap_or(0)..).unwrap_or("").chars().count();
             let unplaced = story.frames.is_empty();
             out.push(Issue {
@@ -138,14 +292,16 @@ pub fn check(s: &Session, min_ppi: f64) -> Vec<Issue> {
                 } else {
                     format!("Overset text: {n} characters")
                 },
-                item: location.map(|(item, _)| item.0).or(last.map(|i| i.0)),
-                page: location.and_then(|(_, page)| page),
+                item: location.as_ref().map(|(item, _, _)| item.0).or(last.map(|i| i.0)),
+                page: location.as_ref().and_then(|(_, page, _)| *page),
             });
         }
     }
     // Nested note and cell text uses paragraph rules too.
     super::fonts::for_each_story(d, &mut |story| {
         let ranges = story.para_ranges();
+        // The byte ranges its frames show, asked for at the first white ruby or kenten.
+        let mut shown = None;
         for (pi, pf) in story.paras.iter().enumerate() {
             let (para, base) = d.styles.resolve_para(pf);
             let Some(range) = ranges.get(pi) else { continue };
@@ -181,13 +337,16 @@ pub fn check(s: &Session, min_ppi: f64) -> Vec<Issue> {
             }
             for (run, f) in story.runs().filter(|(run, _)| run.start < range.end && run.end > range.start) {
                 let props = d.styles.resolve_char(&base, f);
-                {
-                    use designcraft_doc::cjk_settings::AdornmentOverprint as O;
-                    let kenten = props.kenten && (props.kenten_overprint_fill == O::On || props.kenten_overprint_stroke == O::On);
-                    let ruby = !props.ruby.is_empty() && (props.ruby_overprint_fill == O::On || props.ruby_overprint_stroke == O::On);
-                    if kenten || ruby {
-                        unsupported_typography
-                            .insert("Ruby and kenten overprint show in Overprint Preview, but PDF export doesn't write overprint".to_string());
+                let white = white_overprint::adornments(d, &props);
+                if !white.is_empty() {
+                    let shown = shown.get_or_insert_with(|| white_overprint::frame_ranges(cache, d, story));
+                    for frame in white_overprint::frames_showing(story, shown, run.start.max(range.start)..run.end.min(range.end)) {
+                        let parts = white_text.entry(frame).or_default();
+                        for part in &white {
+                            if !parts.contains(part) {
+                                parts.push(part);
+                            }
+                        }
                     }
                 }
                 if has_rtl
@@ -230,6 +389,20 @@ pub fn check(s: &Session, min_ppi: f64) -> Vec<Issue> {
     for message in unsupported_typography {
         out.push(Issue { severity: "warning", kind: "unsupportedTypography", message, item: None, page: None });
     }
+    let (white_items, printed_frames) = white_overprint::printed(cache, d);
+    for (item, parts) in white_text {
+        // A frame PDF export leaves out (hidden, nonprinting, on a hidden or nonprintable layer,
+        // on a parent page no page shows) prints none of its text.
+        let page = match item {
+            Some(id) => match printed_frames.get(&id) {
+                Some(page) => *page,
+                None => continue,
+            },
+            None => None,
+        };
+        out.extend(white_overprint::issue(&parts, item.map(|i| i.0), page));
+    }
+    out.extend(white_items);
     for (face, chars, item) in missing {
         let listed: Vec<String> = chars.iter().take(MISSING_GLYPHS_LISTED).map(char::to_string).collect();
         let more = chars.len().saturating_sub(MISSING_GLYPHS_LISTED);

@@ -638,3 +638,11 @@ fn off_valued_toggles_stay_off() {
     let on = st.format_after(st.text.find("bold").unwrap()).clone().over;
     assert_eq!(on.font_style.as_deref(), Some("Bold"), "`on` is still on");
 }
+
+#[test]
+fn signed_numeric_character_references_are_dropped() {
+    let el = parse("<a>&#+65;&#x+42;&#-65;&#x-42;&#;&#x;</a>").unwrap();
+    assert_eq!(el.text(), "");
+    let ok = parse("<a>&#65;&#x42;</a>").unwrap();
+    assert_eq!(ok.text(), "AB");
+}

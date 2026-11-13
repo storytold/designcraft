@@ -2,7 +2,7 @@
 
 use designcraft_compose as compose;
 use designcraft_doc::story::floor_char_boundary;
-use designcraft_doc::{CellAddr, CharAttrs, Content, ItemId, ParaAttrs, Selection, StoryId, TextSel};
+use designcraft_doc::{Align, CellAddr, CharAttrs, Content, ItemId, ParaAttrs, Selection, StoryId, TextSel};
 use designcraft_geom::Point;
 use serde_json::{Value, json};
 
@@ -25,7 +25,8 @@ pub use edit::{PLACEHOLDER, quote_marks};
 use edit::{change_case, delete, delete_surrounding, fill_placeholder, insert};
 pub(crate) use format::{
     Target, TypingFormat, apply_char_attrs, effective_char_format, format_chars, format_paras, format_targets, format_targets_pub,
-    rename_typing_swatch, validate_char_fill,
+    justification_order_error, justification_rows_changed, justification_rows_named, rename_typing_swatch, validate_char_fill,
+    validate_justification_order, validate_para_values,
 };
 use format::{break_link, kern_pair, kern_step, link_style, para_toggle, pick_up_format, step_size, swap_fill_stroke};
 use opentype::{open_type, open_type_features, set_features};
@@ -175,28 +176,38 @@ pub fn specs() -> Vec<CommandSpec> {
                 };
                 let text = super::text_param(p, "text");
                 s.edit(|d, sel| {
-                    let st = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
-                    let n = st.len();
-                    if a > b || b > n || !st.text.is_char_boundary(a) || !st.text.is_char_boundary(b) {
-                        let msg = format!("range {a}..{b} must be UTF-8 byte offsets on character boundaries, start <= end; the story is {n} bytes");
-                        return Err(bad("story.replaceRange", msg));
-                    }
-                    st.replace(a..b, &text);
-                    let len = st.len();
+                    let len = {
+                        let st = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
+                        let n = st.len();
+                        if a > b || b > n || !st.text.is_char_boundary(a) || !st.text.is_char_boundary(b) {
+                            let msg =
+                                format!("range {a}..{b} must be UTF-8 byte offsets on character boundaries, start <= end; the story is {n} bytes");
+                            return Err(bad("story.replaceRange", msg));
+                        }
+                        st.replace(a..b, &text);
+                        st.len()
+                    };
+                    d.adjust_text_ranges(sid, a..b, text.len());
                     if let Some(t) = sel.text.as_mut().filter(|t| t.story == sid) {
-                        t.anchor = floor_char_boundary(&st.text, t.anchor);
-                        t.focus = floor_char_boundary(&st.text, t.focus);
+                        let st_text = d.story(sid).map(|st| st.text.as_str()).unwrap_or("");
+                        t.anchor = floor_char_boundary(st_text, t.anchor);
+                        t.focus = floor_char_boundary(st_text, t.focus);
                     }
                     Ok(json!({"length": len}))
                 })
             }
         ),
-        cmd!(query "story.get", "Get Story", [], None, "{story? | frame?} → text, frames, paragraphs, vertical, overset", has_doc, |s, p| {
+        cmd!(query "story.get", "Get Story", [], None, "{story? | frame?} → text, frames, paragraphs, vertical, lines, overset (the UTF-8 byte offset into `text` where it stops fitting its frames, not a character index, null when it all fits) and oversetChars (how many characters that leaves, as preflight reports them)", has_doc, |s, p| {
             let st = s.doc()?;
             let sid = story_of(s, p).ok_or_else(|| bad("story.get", "no story"))?;
             let mut v = st.doc.story_summary(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
             let cs = s.cache.get(&st.doc, sid, None);
+            // `overset` is where the text stops fitting, not how much is left over: the two were
+            // read as the same number and disagreed with preflight's count (#1465).
             v["overset"] = json!(cs.overset_at);
+            v["oversetChars"] = json!(cs
+                .overset_at
+                .map(|at| st.doc.stories.get(&sid).and_then(|story| story.text.get(at..)).unwrap_or("").chars().count()));
             v["lines"] = json!(cs.line_count());
             Ok(v)
         }),
@@ -206,7 +217,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Character Formatting",
             [],
             None,
-            "{attrs: {fontFamily?, fontStyle?, size?, leading?: {kind:auto}|{kind:points,value}, tracking?, kerning?, hScale?, vScale?, baselineShift?, fill?, capitalization?, underline?, …}}",
+            "{attrs: {fontFamily?, fontStyle?, size?, leading?: {kind:auto}|{kind:points,value}, tracking?, kerning?, hScale?, vScale?, baselineShift?, fill?, capitalization?, underline?, …}} → null, or, after a fontFamily or fontStyle change, {warnings} naming each font the text now resolves to that isn't available (still applied; a substitute draws the text)",
             has_text_or_frames,
             |s, p| format_chars(s, p.get("attrs").unwrap_or(p))
         ),
@@ -224,22 +235,25 @@ pub fn specs() -> Vec<CommandSpec> {
             "Paragraph Formatting",
             [],
             None,
-            "{attrs: {align?, leftIndent?, firstLineIndent?, spaceBefore?, spaceAfter?, dropCapLines?, dropCapChars?, dropCapStyle?, dropCapAlignLeft?, dropCapScaleDescenders?, hyphenate?: bool (default true), composer?, opticalMargin?: bool (hang at each character's own size; a story with story.options opticalMargin overrides it), ignoreOpticalMargin?: bool (no hang in the paragraph), tabs?, ruleAbove?/ruleBelow?: {on?, weight?, color?, tint?, columnWidth?, offset?, leftIndent?, rightIndent?} (only the named rule fields change), …}}",
+            "{attrs: {align?, leftIndent?, rightIndent?, spaceBefore?, spaceAfter?, sameParaStyleSpacing? (pt, each 0..15552), firstLineIndent?, lastLineIndent? (pt, each -15552..15552), wordSpaceMin?/wordSpaceDesired?/wordSpaceMax? (0..10, 1 = 100%), letterSpaceMin?/…Desired?/…Max? (-1..5), glyphScaleMin?/…Desired?/…Max? (0.5..2) (each row Minimum ≤ Desired ≤ Maximum), autoLeading? (0..5 of the type size), singleWordJustify?: left|center|right|fullyJustified, dropCapLines?, dropCapChars?, dropCapStyle?, dropCapAlignLeft?, dropCapScaleDescenders?, hyphenate?: bool (default true), composer?, opticalMargin?: bool (hang at each character's own size; a story with story.options opticalMargin overrides it), ignoreOpticalMargin?: bool (no hang in the paragraph), tabs?, ruleAbove?/ruleBelow?: {on?, weight?, color?, tint?, columnWidth?, offset?, leftIndent?, rightIndent?} (only the named rule fields change), …}}",
             has_text_or_frames,
             |s, p| format_paras(s, p.get("attrs").unwrap_or(p))
         ),
-        cmd!("type.align", "Align", [], None, "{align: left|center|right|leftJustified|…}", has_text_or_frames, |s, p| {
-            format_paras(s, &json!({"align": p.get("align").cloned().unwrap_or(json!("left"))}))
+        cmd!("type.align", "Align", [], None, "{align: left|center|right|leftJustified|…|null} (required)", has_text_or_frames, |s, p| {
+            let align = p.get("align").cloned().ok_or_else(|| bad("type.align", "`align` required"))?;
+            // A value that isn't an alignment goes to `format_paras`, which names the error.
+            match serde_json::from_value::<Option<Align>>(align.clone()) {
+                Ok(a) => align_paras(s, a),
+                Err(_) => format_paras(s, &json!({ "align": align })),
+            }
         }),
-        cmd!("type.alignLeft", "Align Left", [], Some("Cmd+Shift+L"), "{}", has_text_or_frames, |s, _| format_paras(s, &json!({"align": "left"}))),
-        cmd!("type.alignCenter", "Align Center", [], Some("Cmd+Shift+C"), "{}", has_text_or_frames, |s, _| format_paras(
+        cmd!("type.alignLeft", "Align Left", [], Some("Cmd+Shift+L"), "{}", has_text_or_frames, |s, _| align_paras(s, Some(Align::Left))),
+        cmd!("type.alignCenter", "Align Center", [], Some("Cmd+Shift+C"), "{}", has_text_or_frames, |s, _| align_paras(s, Some(Align::Center))),
+        cmd!("type.alignRight", "Align Right", [], Some("Cmd+Shift+R"), "{}", has_text_or_frames, |s, _| align_paras(s, Some(Align::Right))),
+        cmd!("type.justify", "Justify Left", [], Some("Cmd+Shift+J"), "{}", has_text_or_frames, |s, _| align_paras(s, Some(Align::LeftJustified))),
+        cmd!("type.justifyAll", "Justify all lines", [], Some("Cmd+Shift+F"), "{}", has_text_or_frames, |s, _| align_paras(
             s,
-            &json!({"align": "center"})
-        )),
-        cmd!("type.alignRight", "Align Right", [], Some("Cmd+Shift+R"), "{}", has_text_or_frames, |s, _| format_paras(s, &json!({"align": "right"}))),
-        cmd!("type.justify", "Justify Left", [], Some("Cmd+Shift+J"), "{}", has_text_or_frames, |s, _| format_paras(
-            s,
-            &json!({"align": "leftJustified"})
+            Some(Align::FullyJustified)
         )),
         cmd!(
             "type.bold",
@@ -431,4 +445,166 @@ pub fn specs() -> Vec<CommandSpec> {
             set_features
         ),
     ]
+}
+
+/// Sets the alignment of the paragraphs a formatting command targets (`None` removes the
+/// override, back to the style's value). When each of them already carries that value as its
+/// own, or there is no paragraph to change, the document is left as it is and no undo step is
+/// recorded.
+fn align_paras(s: &mut Session, align: Option<Align>) -> Result<Value> {
+    let targets = format_targets(s);
+    let doc = &s.doc()?.doc;
+    let unchanged = targets.iter().all(|t| {
+        doc.text_story(t.story, t.cell).is_none_or(|st| {
+            let (a, b) = (st.para_at(t.range.start), st.para_at(t.range.end.max(t.range.start)));
+            st.paras.get(a..=b).is_none_or(|paras| paras.iter().all(|p| p.para.align == align))
+        })
+    });
+    if unchanged {
+        return ok();
+    }
+    format_paras(s, &json!({ "align": align }))
+}
+
+#[cfg(test)]
+mod alignment_shortcut_tests {
+    use designcraft_doc::{Align, Document};
+    use serde_json::{Value, json};
+
+    use crate::Session;
+
+    fn undo_steps(s: &Session) -> usize {
+        s.doc().unwrap().history.undo.len()
+    }
+
+    fn selection_align(s: &mut Session) -> Value {
+        s.execute("type.selectionAttrs", &json!({})).unwrap()["para"]["align"].clone()
+    }
+
+    /// The resolved alignment of every paragraph of the story whose text starts with `start`.
+    fn story_aligns(d: &Document, start: &str) -> Vec<Align> {
+        let st = d.stories.values().find(|st| st.text.starts_with(start)).unwrap();
+        st.paras.iter().map(|p| d.styles.resolve_para(p).0.align).collect()
+    }
+
+    /// Justify All Lines is ⇧⌘F (Shift+Ctrl+F), next to Justify Left ⇧⌘J.
+    #[test]
+    fn justify_all_lines_has_its_shortcut_and_justifies_the_last_line_too() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [36, 36, 300, 200], "content": "text", "text": "Spring issue"})).unwrap();
+        s.execute("text.select", &json!({"story": r["story"], "anchor": 3, "focus": 3})).unwrap();
+        // From Justify Left, so the result is not a default or a neighboring justification.
+        s.execute("type.justify", &json!({})).unwrap();
+        assert_eq!(s.execute("type.selectionAttrs", &json!({})).unwrap()["para"]["align"], "leftJustified");
+        s.execute("type.justifyAll", &json!({})).unwrap();
+        assert_eq!(s.execute("type.selectionAttrs", &json!({})).unwrap()["para"]["align"], "fullyJustified");
+        assert_eq!(crate::find_command("type.justifyAll").and_then(|c| c.shortcut), Some("Cmd+Shift+F"));
+    }
+
+    /// A second press of an alignment shortcut, or `type.align` with the value the paragraphs
+    /// already have, leaves the document and the undo list alone.
+    #[test]
+    fn an_alignment_the_paragraphs_already_have_records_no_undo_step() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [36, 36, 300, 200], "content": "text", "text": "One\nTwo"})).unwrap();
+        s.execute("text.select", &json!({"story": r["story"], "anchor": 0, "focus": 5})).unwrap();
+        for (id, params, align) in [
+            ("type.justifyAll", json!({}), "fullyJustified"),
+            ("type.align", json!({"align": "center"}), "center"),
+            ("type.alignLeft", json!({}), "left"),
+            ("type.alignCenter", json!({}), "center"),
+            ("type.alignRight", json!({}), "right"),
+            ("type.justify", json!({}), "leftJustified"),
+        ] {
+            let before = undo_steps(&s);
+            s.execute(id, &params).unwrap();
+            assert_eq!(selection_align(&mut s), align, "{id}");
+            assert_eq!(undo_steps(&s), before + 1, "{id}: one step");
+            let rev = s.doc().unwrap().doc.clone();
+            s.execute(id, &params).unwrap();
+            assert_eq!(undo_steps(&s), before + 1, "{id} again: no step");
+            assert!(std::sync::Arc::ptr_eq(&rev, &s.doc().unwrap().doc), "{id} again: the document is unchanged");
+        }
+        // Removing the override: once it is gone, a second removal does nothing.
+        s.execute("type.align", &json!({"align": null})).unwrap();
+        let before = undo_steps(&s);
+        s.execute("type.align", &json!({"align": null})).unwrap();
+        assert_eq!(undo_steps(&s), before);
+        // One paragraph that differs is enough to apply it, to both.
+        s.execute("text.select", &json!({"story": r["story"], "anchor": 0, "focus": 0})).unwrap();
+        s.execute("type.justifyAll", &json!({})).unwrap();
+        s.execute("text.select", &json!({"story": r["story"], "anchor": 0, "focus": 5})).unwrap();
+        let before = undo_steps(&s);
+        s.execute("type.justifyAll", &json!({})).unwrap();
+        assert_eq!(undo_steps(&s), before + 1);
+        assert_eq!(story_aligns(&s.doc().unwrap().doc, "One"), [Align::FullyJustified; 2]);
+    }
+
+    /// The shortcut commands take no parameters: a misspelled call is refused and changes nothing.
+    #[test]
+    fn justify_all_lines_refuses_parameters() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [36, 36, 300, 200], "content": "text", "text": "Spring"})).unwrap();
+        s.execute("text.select", &json!({"story": r["story"], "anchor": 1, "focus": 1})).unwrap();
+        let before = undo_steps(&s);
+        assert!(s.execute("type.justifyAll", &json!({"align": "left"})).is_err());
+        assert_eq!(selection_align(&mut s), "left");
+        assert_eq!(undo_steps(&s), before);
+    }
+
+    /// With text frames selected, every paragraph of their stories, across threaded frames;
+    /// other selected frames are skipped, and a selection with no text frame is refused.
+    #[test]
+    fn justify_all_lines_on_frames_reaches_threaded_text_and_skips_other_frames() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let a = s.execute("frame.create", &json!({"rect": [36, 36, 300, 60], "content": "text", "text": "Alpha\nBeta\nGamma\nDelta"})).unwrap();
+        let b = s.execute("frame.create", &json!({"rect": [36, 300, 300, 500], "content": "text"})).unwrap();
+        s.execute("text.thread", &json!({"from": a["id"], "to": b["id"]})).unwrap();
+        let rect = s.execute("frame.create", &json!({"rect": [400, 36, 500, 136]})).unwrap();
+        s.execute("selection.set", &json!({"ids": [rect["id"]]})).unwrap();
+        let before = undo_steps(&s);
+        assert!(s.execute("type.justifyAll", &json!({})).is_err(), "no text frame selected");
+        assert_eq!(undo_steps(&s), before);
+        // The second frame of the thread and the rectangle.
+        s.execute("selection.set", &json!({"ids": [b["id"], rect["id"]]})).unwrap();
+        s.execute("type.justifyAll", &json!({})).unwrap();
+        assert_eq!(undo_steps(&s), before + 1);
+        assert_eq!(story_aligns(&s.doc().unwrap().doc, "Alpha"), [Align::FullyJustified; 4]);
+    }
+
+    /// Over a paragraph style's alignment, Justify All Lines is a local override: the style keeps
+    /// its value, and removing the override goes back to it.
+    #[test]
+    fn justify_all_lines_overrides_the_paragraph_style() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [36, 36, 300, 200], "content": "text", "text": "Spring issue"})).unwrap();
+        s.execute("text.select", &json!({"story": r["story"], "anchor": 2, "focus": 2})).unwrap();
+        s.execute("style.paragraph.create", &json!({"name": "Caption", "para": {"align": "right"}})).unwrap();
+        s.execute("style.paragraph.apply", &json!({"name": "Caption"})).unwrap();
+        assert_eq!(selection_align(&mut s), "right");
+        s.execute("type.justifyAll", &json!({})).unwrap();
+        assert_eq!(selection_align(&mut s), "fullyJustified");
+        let d = &s.doc().unwrap().doc;
+        assert_eq!(d.styles.resolve_para_style("Caption").0.align, Align::Right);
+        s.execute("type.align", &json!({"align": null})).unwrap();
+        assert_eq!(selection_align(&mut s), "right");
+    }
+
+    /// IDML writes the paragraph's Justification as FullyJustified and reads it back.
+    #[test]
+    fn justify_all_lines_survives_idml_export_and_import() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [36, 36, 300, 200], "content": "text", "text": "Spring\nissue"})).unwrap();
+        s.execute("text.select", &json!({"story": r["story"], "anchor": 0, "focus": 0})).unwrap();
+        s.execute("type.justifyAll", &json!({})).unwrap();
+        let bytes = designcraft_idml::export_idml(&s.doc().unwrap().doc);
+        s.execute("file.openIdml", &json!({"base64": crate::cmd::base64_encode(&bytes), "name": "in.idml"})).unwrap();
+        assert_eq!(story_aligns(&s.doc().unwrap().doc, "Spring"), [Align::FullyJustified, Align::Left]);
+    }
 }

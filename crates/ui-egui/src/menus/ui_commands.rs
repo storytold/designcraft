@@ -36,6 +36,12 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
         "{page?: transparency|dropShadow|innerShadow|outerGlow|innerGlow|bevel|satin|feather|directionalFeather|gradientFeather} — the Effects dialog for the selected objects",
     ),
     (
+        "objectStyle.dialog",
+        "Object Style…",
+        None,
+        "{name?: style} — Object Style Options for the style `name`, or (without it) New Object Style from the selected object",
+    ),
+    (
         "app.packageDialog",
         "Package…",
         Some("Cmd+Alt+Shift+P"),
@@ -84,6 +90,12 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ("app.placeWithOptions", "Place with Import Options…", Some("Cmd+Shift+D"), "{path?} — Word/RTF style mapping before placing"),
     ("app.exportText", "Export Text…", None, "{path?} — the story being edited, as Text Only (.txt) or Rich Text Format (.rtf)"),
     ("app.exportPdf", "Export PDF…", None, "{path?, …file.exportPdf options} — asks for a path when none is given"),
+    (
+        "app.exportBatch",
+        "Export Layouts and Versions…",
+        None,
+        "{layouts?: [names]} — the Export Layouts and Versions dialog (several formats and layouts at once, presets)",
+    ),
     ("app.palette", "Quick Apply…", Some("Cmd+Return"), "{} — search styles and commands"),
     ("app.preferences", "Preferences…", Some("Cmd+K"), "{}"),
     ("window.uiScale", "UI Scaling", None, "{scale: 0.5–3 (1 = 100%)} — the size of the whole interface"),
@@ -133,7 +145,7 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     (
         "app.paragraphRulesDialog",
         "Paragraph Rules…",
-        None,
+        Some("Cmd+Alt+J"),
         "{rule?: ruleAbove|ruleBelow} — Rule Above / Rule Below of the selected paragraphs (type.para)",
     ),
     (
@@ -169,6 +181,13 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ("app.deleteAllGuides", "Delete All Guides on Spread", None, "{} — the spread in view"),
     ("app.deletePage", "Delete Page", None, "{} — deletes the page in view"),
     ("app.duplicateSpread", "Duplicate Spread", None, "{} — duplicates the spread in view (pages and items)"),
+    (
+        "app.parentOptions",
+        "Parent Options…",
+        None,
+        "{} — the Parent Options dialog for the parent selected in the Pages panel (or shown), else the first",
+    ),
+    ("app.alternateLayoutOptions", "Alternate Layout Options…", None, "{} — the Alternate Layout Options dialog for the layout of the page in view"),
     ("app.tablePanel", "Table Panel", Some("Shift+F9"), "{}"),
     ("app.tabsPanel", "Tabs", Some("Cmd+Shift+T"), "{} — show or hide the Tabs panel (it opens above the selected text frame)"),
     ("app.characterPanel", "Character", Some("Cmd+T"), "{} — the Character panel"),
@@ -177,6 +196,8 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ("app.characterStylesPanel", "Character Styles", Some("Cmd+Shift+F11"), "{} — the Character Styles panel"),
     ("app.paragraphStylesPanel", "Paragraph Styles", Some("Cmd+F11"), "{} — the Paragraph Styles panel"),
     ("app.insertCurrentPageNumber", "Current Page Number", Some("Cmd+Alt+Shift+N"), "{} — the Current Page Number marker at the insertion point"),
+    ("app.insertEmSpace", "Em Space", Some("Cmd+Shift+M"), "{} — an em space at the insertion point"),
+    ("app.insertEnSpace", "En Space", Some("Cmd+Shift+N"), "{} — an en space at the insertion point"),
     ("app.storyEditor", "Edit in Story Editor", Some("Cmd+Y"), "{story?}"),
     ("view.zoomIn", "Zoom In", Some("Cmd+="), "{at?: [x, y] window pixels, kept in place when over the canvas}"),
     ("view.zoomOut", "Zoom Out", Some("Cmd+-"), "{at?: [x, y] window pixels, kept in place when over the canvas}"),

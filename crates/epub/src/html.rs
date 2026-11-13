@@ -14,11 +14,22 @@ pub enum Block {
 pub fn reading_order(doc: &Document) -> Vec<Block> {
     // Articles, when there are any to export, decide the order (and what's included).
     if doc.articles.iter().any(|a| a.export) {
+        let hidden_layers: Vec<_> = doc.layers.iter().filter(|l| !l.visible).map(|l| l.id).collect();
         let mut out = Vec::new();
         let mut seen = Vec::new();
         for a in doc.articles.iter().filter(|a| a.export) {
             for id in &a.items {
                 let Some(top) = doc.item(*id) else { continue };
+                // A hidden item or group hides everything in it. The layer that counts is the
+                // top-level item's: pages draw a group's members on the group's layer.
+                if doc.find(*id).is_some_and(|loc| {
+                    (1..=loc.path.len()).any(|n| {
+                        doc.item_at(&designcraft_doc::ItemLoc { spread: loc.spread, path: loc.path[..n].to_vec() })
+                            .is_some_and(|g| g.hidden || n == 1 && hidden_layers.contains(&g.layer))
+                    })
+                }) {
+                    continue;
+                }
                 let mut push = |it: &Item| match &it.content {
                     Content::Text(tf) if !seen.contains(&tf.story) => {
                         seen.push(tf.story);
@@ -27,11 +38,21 @@ pub fn reading_order(doc: &Document) -> Vec<Block> {
                     Content::Graphic(_) => out.push(Block::Image(it.id)),
                     _ => {}
                 };
-                top.walk(&mut |i| push(i));
+                // Hidden items (with everything in them) aren't on the page.
+                let mut stack = vec![top];
+                while let Some(it) = stack.pop() {
+                    if it.hidden {
+                        continue;
+                    }
+                    push(it);
+                    stack.extend(it.children().iter().rev().map(|c| &**c));
+                }
             }
         }
         return out;
     }
+    let hidden_layers: Vec<_> = doc.layers.iter().filter(|l| !l.visible).map(|l| l.id).collect();
+    let shown = shown_items(doc, &hidden_layers);
     let mut keyed: Vec<((usize, i64, i64), Block)> = Vec::new();
     let mut seen_stories = Vec::new();
     for (si, sp) in doc.spreads.iter().enumerate() {
@@ -45,7 +66,8 @@ pub fn reading_order(doc: &Document) -> Vec<Block> {
                 continue;
             };
             let xf = *parent * it.xf;
-            if it.hidden {
+            // Hidden items, and top-level items on hidden layers (with everything in them), aren't on the page.
+            if it.hidden || stack.len() == 1 && hidden_layers.contains(&it.layer) {
                 continue;
             }
             let children = it.children();
@@ -55,8 +77,13 @@ pub fn reading_order(doc: &Document) -> Vec<Block> {
             let block = match &it.content {
                 Content::Text(tf) => {
                     let Some(story) = doc.story(tf.story) else { continue };
-                    // A story is placed where its first frame is.
-                    if story.frames.first() != Some(&it.id) || seen_stories.contains(&tf.story) || story.text.trim().is_empty() {
+                    // A story is placed where its first frame on the page is: a story is left out
+                    // only when every frame of it is hidden, and a hidden first frame does not hide
+                    // the rest of the thread.
+                    if story.frames.iter().find(|f| shown.contains(f)) != Some(&it.id)
+                        || seen_stories.contains(&tf.story)
+                        || story.text.trim().is_empty()
+                    {
                         continue;
                     }
                     seen_stories.push(tf.story);
@@ -76,6 +103,22 @@ pub fn reading_order(doc: &Document) -> Vec<Block> {
     let _ = SpreadRef::Doc(0);
     keyed.sort_by_key(|(k, _)| *k);
     keyed.into_iter().map(|(_, b)| b).collect()
+}
+
+/// The items the page shows: not hidden themselves, in a hidden group, or (top level) on a hidden layer.
+fn shown_items(doc: &Document, hidden_layers: &[designcraft_doc::LayerId]) -> std::collections::HashSet<ItemId> {
+    let mut shown = std::collections::HashSet::new();
+    for sp in &doc.spreads {
+        let mut stack: Vec<(&Item, bool)> = sp.items.iter().map(|i| (&**i, true)).collect();
+        while let Some((it, top)) = stack.pop() {
+            if it.hidden || top && hidden_layers.contains(&it.layer) {
+                continue;
+            }
+            shown.insert(it.id);
+            stack.extend(it.children().iter().map(|c| (&**c, false)));
+        }
+    }
+    shown
 }
 
 /// Package path of an asset: `{dir}/{name}-{id}.{ext}`, the name from its original file name
@@ -129,6 +172,17 @@ pub(crate) fn body_html<'a>(doc: &'a Document, epub: bool, split: Option<&EpubSp
     }
     let mut body = String::new();
     let mut toc = toc_entries(doc, &order);
+    // `Document::item` searches every spread: one pre-order index for all the placed graphics.
+    let mut items: std::collections::HashMap<ItemId, &Item> = std::collections::HashMap::new();
+    if order.iter().any(|b| matches!(b, Block::Image(_))) {
+        for sp in doc.spreads.iter().map(|s| &**s).chain(doc.parents.iter().map(|s| &**s)) {
+            for it in &sp.items {
+                it.walk(&mut |i| {
+                    items.entry(i.id).or_insert(i);
+                });
+            }
+        }
+    }
     for (k, b) in order.iter().enumerate() {
         match b {
             // The endnote frame's text is generated from the endnotes, which end the body as a
@@ -139,7 +193,7 @@ pub(crate) fn body_html<'a>(doc: &'a Document, epub: bool, split: Option<&EpubSp
                 let _ = write!(body, "<section id=\"{anchor}\">\n{}</section>\n", writer.story(*sid, epub.then_some(anchor.as_str())));
             }
             Block::Image(iid) => {
-                let Some(it) = doc.item(*iid) else { continue };
+                let Some(&it) = items.get(iid) else { continue };
                 let Some((markup, media)) = writer.graphic(it) else { continue };
                 if media {
                     let _ = writeln!(body, "<figure>{markup}</figure>");
@@ -185,13 +239,26 @@ pub struct HtmlOptions {
     pub generic_families: BTreeMap<String, String>,
 }
 
+/// Bytes of data URIs one HTML export may write (a document can place one large asset many times).
+const MAX_DATA_URI_BYTES: usize = 512 * 1024 * 1024;
+
 /// File › Export › HTML: one self-contained page (styles inline, images as data URIs) with the
 /// document's stories and graphics in reading order.
 pub fn export_html(doc: &Document, opts: &HtmlOptions) -> String {
     let title = opts.title.clone().unwrap_or_else(|| doc.metadata_title().to_string());
     let language = opts.language.as_deref().unwrap_or("en");
     let lang = language_tag(language);
-    let body = body_html(doc, false, None, &|_, mime, data| format!("data:{mime};base64,{}", base64(data))).html;
+    // Each placement embeds its own copy of the asset; past the budget a placement gets no source.
+    let spent = std::cell::Cell::new(0usize);
+    let body = body_html(doc, false, None, &|_, mime, data| {
+        let n = data.len().div_ceil(3).saturating_mul(4).saturating_add(mime.len() + 13);
+        if n > MAX_DATA_URI_BYTES - spent.get() {
+            return String::new();
+        }
+        spent.set(spent.get() + n);
+        format!("data:{mime};base64,{}", base64(data))
+    })
+    .html;
     format!(
         "<!DOCTYPE html>\n<html lang=\"{lang}\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<meta name=\"generator\" content=\"DesignCraft\">\n<title>{}</title>\n<style>\nbody {{ max-width: 40em; margin: 2em auto; padding: 0 1em; }}\nfigure {{ margin: 1em 0; }} figure img {{ max-width: 100%; height: auto; }}\n{}</style>\n</head>\n<body>\n{body}</body>\n</html>\n",
         xml_text(&title),

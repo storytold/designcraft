@@ -12,6 +12,7 @@ pub mod colour;
 mod eps;
 mod jpeg;
 mod psd;
+mod resolution;
 mod tone;
 pub use eps::{bounding_box as eps_bounding_box, eps_pixel_size, eps_png, eps_proxy, eps_size, is_eps};
 pub use tone::{Tone, tone};
@@ -86,7 +87,8 @@ fn svg_options() -> &'static usvg::Options<'static> {
                     Ok(image::ImageFormat::Png | image::ImageFormat::Jpeg | image::ImageFormat::Gif | image::ImageFormat::WebP)
                 );
                 if mime == "image/svg+xml" || (mime == "text/plain" && !raster) {
-                    let xml = svg_data(&data)?;
+                    let xml = svg_data(&data, MAX_NESTED_SVG_BYTES.saturating_sub(NESTED_SVG_BYTES.get()).min(MAX_SVG_BYTES))?;
+                    charge_nested_svg(xml.len())?;
                     svg_preflight(&xml)?;
                     default_data(mime, Arc::new(xml.into_owned()), options)
                 } else {
@@ -280,8 +282,24 @@ const MAX_SVG_BYTES: usize = 16 * 1024 * 1024;
 const MAX_SVG_EVENTS: usize = 100_000;
 const MAX_SVG_DEPTH: usize = 64;
 
-/// Enforce the encoded-size cap, gunzip SVGZ data with that bound, and return the decoded content within the cap as an owned or borrowed `Cow`.
-fn svg_data(bytes: &[u8]) -> Option<std::borrow::Cow<'_, [u8]>> {
+/// SVG bytes the data images of one document may add up to, all levels together: each nested
+/// document gets the per-document limits, so without this one outer file could hold many of them.
+const MAX_NESTED_SVG_BYTES: usize = 32 * 1024 * 1024;
+
+thread_local! {
+    /// Nested SVG bytes taken so far by the parse running on this thread (see [`svg_tree`]).
+    static NESTED_SVG_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Take `n` bytes of the running parse's nested-SVG budget; `None` when they don't fit.
+fn charge_nested_svg(n: usize) -> Option<()> {
+    let used = NESTED_SVG_BYTES.get().checked_add(n).filter(|u| *u <= MAX_NESTED_SVG_BYTES)?;
+    NESTED_SVG_BYTES.set(used);
+    Some(())
+}
+
+/// Enforce the encoded-size cap, gunzip SVGZ data to at most `limit` bytes, and return the decoded content as an owned or borrowed `Cow`.
+fn svg_data(bytes: &[u8], limit: usize) -> Option<std::borrow::Cow<'_, [u8]>> {
     use std::io::Read;
 
     if bytes.len() > MAX_SVG_BYTES {
@@ -289,8 +307,8 @@ fn svg_data(bytes: &[u8]) -> Option<std::borrow::Cow<'_, [u8]>> {
     }
     if bytes.starts_with(&[0x1f, 0x8b]) {
         let mut xml = Vec::new();
-        flate2::read::GzDecoder::new(bytes).take(MAX_SVG_BYTES as u64 + 1).read_to_end(&mut xml).ok()?;
-        (xml.len() <= MAX_SVG_BYTES).then_some(std::borrow::Cow::Owned(xml))
+        flate2::read::GzDecoder::new(bytes).take(limit as u64 + 1).read_to_end(&mut xml).ok()?;
+        (xml.len() <= limit).then_some(std::borrow::Cow::Owned(xml))
     } else {
         Some(std::borrow::Cow::Borrowed(bytes))
     }
@@ -335,13 +353,17 @@ fn svg_preflight(bytes: &[u8]) -> Option<()> {
 /// Parse an SVG with at most 16 MiB encoded/decoded data, 100,000 XML events and
 /// 64 nested elements. Reject internal DTD subsets before recursive conversion.
 pub fn svg_tree(bytes: &[u8]) -> Option<usvg::Tree> {
-    let xml = svg_data(bytes)?;
+    let xml = svg_data(bytes, MAX_SVG_BYTES)?;
     svg_preflight(&xml)?;
+    NESTED_SVG_BYTES.set(0);
     usvg::Tree::from_data(&xml, svg_options()).ok()
 }
 
-/// Natural size of a placed graphic in points: rasters at 72 ppi (one pixel per point), PSDs
-/// likewise, SVGs from their width/height (CSS pixels), PDFs are the caller's.
+pub use resolution::raster_resolution;
+
+/// Natural size of a placed graphic in points: rasters at their embedded resolution when sane
+/// (one pixel per point, 72 ppi, without usable metadata), PSDs likewise, SVGs from their
+/// width/height (CSS pixels), PDFs are the caller's.
 pub fn natural_size(bytes: &[u8]) -> Option<(f64, f64)> {
     if is_svg(bytes) {
         let s = svg_tree(bytes)?.size();
@@ -352,7 +374,21 @@ pub fn natural_size(bytes: &[u8]) -> Option<(f64, f64)> {
         return Some((bb[2] - bb[0], bb[3] - bb[1])).filter(|(w, h)| w.is_finite() && h.is_finite() && *w > 0.0 && *h > 0.0);
     }
     let (w, h) = pixel_size(bytes)?;
-    Some((w as f64, h as f64))
+    // Honor the file's density (#1991): a 600 px photo saved at 600 dpi places one inch wide.
+    // Absurd metadata falls back to a pixel per point.
+    match raster_resolution(bytes) {
+        Some(dpi) if resolution::sane_resolution(dpi) => Some((w as f64 * 72.0 / dpi.0, h as f64 * 72.0 / dpi.1)),
+        _ => Some((w as f64, h as f64)),
+    }
+}
+
+/// Unpremultiplied RGBA pixels, rows top to bottom, as a PNG file with no resolution stored.
+/// `None` when `rgba` doesn't hold exactly `width × height` pixels.
+pub fn png_from_rgba(width: u32, height: u32, rgba: Vec<u8>) -> Option<Vec<u8>> {
+    let img = image::RgbaImage::from_raw(width, height, rgba)?;
+    let mut png = Vec::new();
+    image::DynamicImage::ImageRgba8(img).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).ok()?;
+    Some(png)
 }
 
 /// Pixel dimensions of a raster.
@@ -380,7 +416,12 @@ const MAX_RGBA_BYTES: u64 = 1 << 30;
 /// Whether a raster's header gives it more pixels than [`decode_rgba`] decodes.
 pub fn too_large_to_decode(bytes: &[u8]) -> bool {
     // `image` limits only its own output, which can be a quarter of the RGBA copy or less.
-    pixel_size(bytes).is_some_and(|(w, h)| u64::from(w).saturating_mul(u64::from(h)).saturating_mul(4) > MAX_RGBA_BYTES)
+    pixel_size(bytes).is_some_and(|(w, h)| over_rgba_budget(w, h))
+}
+
+/// Whether a `w` × `h` raster takes more than [`MAX_RGBA_BYTES`] as RGBA.
+fn over_rgba_budget(w: u32, h: u32) -> bool {
+    u64::from(w).saturating_mul(u64::from(h)).saturating_mul(4) > MAX_RGBA_BYTES
 }
 
 /// Straight (non-premultiplied) RGBA8 of a raster in display sRGB: an embedded ICC profile is
@@ -415,9 +456,53 @@ pub fn decode_rgba(bytes: &[u8]) -> Option<image::RgbaImage> {
     to_display_rgba(px, Some(&icc), &DisplayColour::active())
 }
 
+/// The largest `shrink` [`decode_rgba_reduced`] takes: 3, an eighth of each side.
+pub const MAX_REDUCED_SHRINK: u8 = jpeg::MAX_SHRINK;
+
+/// [`decode_rgba`] of a JPEG at 1/2^`shrink` of its size (`shrink` 1 to [`MAX_REDUCED_SHRINK`], each
+/// side rounded up), read from its compressed blocks without a full-size decode. The embedded ICC
+/// profile is applied as [`decode_rgba`] applies it. `None` where only a full decode applies: other
+/// formats, CMYK, 12-bit and lossless JPEGs, files whose size [`pixel_size`] cannot read, and files
+/// [`decode_rgba`] refuses as too large.
+pub fn decode_rgba_reduced(bytes: &[u8], shrink: u8) -> Option<image::RgbaImage> {
+    use colour::{DisplayColour, Pixels, to_display_rgba};
+    // The size check must have a size to check: a header only the JPEG decoder reads is refused.
+    pixel_size(bytes)?;
+    if too_large_to_decode(bytes) {
+        return None;
+    }
+    let (rgba, has_colour) = jpeg::decode_reduced(bytes, shrink)?;
+    let Some(icc) = embedded_icc(bytes) else { return Some(rgba) };
+    let px = if has_colour { Pixels::Rgb(rgba) } else { Pixels::Gray(rgba) };
+    to_display_rgba(px, Some(&icc), &DisplayColour::active())
+}
+
+/// False when `bytes` is a WebP whose `ICCP` chunk declares more bytes than the file holds or than
+/// [`colour::MAX_ICC_BYTES`]. The decoder sizes its buffer from the declared length before it reads
+/// anything, so such a file must not reach `icc_profile()`; its pixels decode without it.
+pub fn webp_icc_is_sane(bytes: &[u8]) -> bool {
+    if bytes.get(0..4) != Some(b"RIFF") || bytes.get(8..12) != Some(b"WEBP") {
+        return true;
+    }
+    let mut pos = 12usize;
+    while let Some(head) = bytes.get(pos..pos.saturating_add(8)) {
+        let size = u32::from_le_bytes([head[4], head[5], head[6], head[7]]) as usize;
+        let body = pos + 8;
+        if &head[..4] == b"ICCP" {
+            return size <= colour::MAX_ICC_BYTES && body.saturating_add(size) <= bytes.len();
+        }
+        // Chunks are padded to an even size.
+        pos = body.saturating_add(size).saturating_add(size & 1);
+    }
+    true
+}
+
 /// The ICC profile embedded in a PNG, JPEG, TIFF or WebP.
 fn embedded_icc(bytes: &[u8]) -> Option<Vec<u8>> {
     use image::ImageDecoder;
+    if !webp_icc_is_sane(bytes) {
+        return None;
+    }
     let mut d = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?.into_decoder().ok()?;
     d.icc_profile().ok().flatten()
 }
