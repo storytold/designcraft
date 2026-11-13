@@ -1,71 +1,28 @@
 use super::values::{finite, tint};
-use super::{DirectionalFeather, DropShadow, Effects, El, GradientFeather, HashMap, Importer, Node, Stroke, names};
+use super::{DirectionalFeather, DropShadow, Effects, El, GradientFeather, Importer, Stroke, names};
 
 impl<'r> Importer<'r> {
     /// An item's object style chain: its applied style, the styles that one is based on, then
     /// `[None]` (cycle-safe).
-    pub(super) fn object_style_chain(&self, e: &El) -> Vec<&El> {
-        let mut chain = self.object_style_bases(e.get("AppliedObjectStyle").map(str::to_string));
-        if let Some(none) = self.object_els.get("ObjectStyle/$ID/[None]")
-            && !chain.iter().any(|c| std::ptr::eq(*c, none))
-        {
-            chain.push(none);
-        }
-        chain
+    pub(super) fn object_style_chain(&self, e: &El) -> Vec<El> {
+        let model = crate::xml::to_craft(e);
+        let styles: Vec<_> = self.object_els.values().map(crate::xml::to_craft).collect();
+        let values = craft_idml::model::Values::of(&model);
+        let reference = values.get("AppliedObjectStyle");
+        craft_idml::model::ObjectStyleStack::from_styles(&styles, reference, true).styles().iter().cloned().map(crate::xml::from_craft).collect()
     }
 
     /// Object style `id` and the styles it is based on, nearest first (cycle-safe, at most 16).
-    fn object_style_bases(&self, id: Option<String>) -> Vec<&El> {
-        let mut chain: Vec<&El> = Vec::new();
-        let mut os = id;
-        while let Some(id) = os {
-            let Some(s) = self.object_els.get(&id) else { break };
-            if chain.len() >= 16 || chain.iter().any(|c| std::ptr::eq(*c, s)) {
-                break;
-            }
-            chain.push(s);
-            os = s.prop("BasedOn").map(|b| {
-                let b = b.trim();
-                if b.starts_with("ObjectStyle/") { b.to_string() } else { format!("ObjectStyle/{}", names::escape_id(b)) }
-            });
-        }
-        chain
-    }
-
     /// The item's child element `name` laid over the same element of each style in its object style
     /// chain: attributes and nested elements merge one by one, nearer levels winning. IDML writes on an
     /// item only the values that differ from its style. Effects whose category the applied style turns
     /// off (`ObjectStyle*EffectsCategorySettings`) come from the item alone.
     pub(super) fn with_style(&self, e: &El, name: &str) -> Option<El> {
-        let chain = self.object_style_chain(e);
-        let category = match name {
-            "TransparencySetting" => Some("ObjectStyleObjectEffectsCategorySettings"),
-            "StrokeTransparencySetting" => Some("ObjectStyleStrokeEffectsCategorySettings"),
-            "FillTransparencySetting" => Some("ObjectStyleFillEffectsCategorySettings"),
-            "ContentTransparencySetting" => Some("ObjectStyleContentEffectsCategorySettings"),
-            _ => None,
-        };
-        let enabled = |effect: &str| {
-            let Some(flag) = category.and_then(|_| effect_flag(effect)) else { return true };
-            chain.iter().find_map(|s| category.and_then(|c| s.find(c)).and_then(|c| c.get(flag))) != Some("false")
-        };
-        let mut out: Option<El> = None;
-        for s in chain.iter().rev() {
-            let Some(c) = s.find(name) else { continue };
-            let mut c = c.clone();
-            c.children.retain(|n| !matches!(n, Node::El(x) if !enabled(x.local())));
-            match &mut out {
-                Some(o) => overlay(o, &c, 0),
-                None => out = Some(c),
-            }
-        }
-        if let Some(c) = e.find(name) {
-            match &mut out {
-                Some(o) => overlay(o, c, 0),
-                None => out = Some(c.clone()),
-            }
-        }
-        out
+        let model = crate::xml::to_craft(e);
+        let styles: Vec<_> = self.object_els.values().map(crate::xml::to_craft).collect();
+        let values = craft_idml::model::Values::of(&model);
+        let reference = values.get("AppliedObjectStyle");
+        craft_idml::model::ObjectStyleStack::from_styles(&styles, reference, true).merged_child(&model, name).map(crate::xml::from_craft)
     }
 
     /// Reads the drop shadow, feather, gradient feather and directional feather of a
@@ -116,28 +73,14 @@ impl<'r> Importer<'r> {
     /// on (without category settings: when its setting is on), from the nearest style in the
     /// BasedOn chain that has the setting. `None` when the style sets neither.
     pub(super) fn style_effects(&mut self, e: &El) -> Option<Effects> {
-        let mut chain = self.object_style_bases(e.get("Self").map(str::to_string));
-        if chain.is_empty() {
-            chain.push(e);
+        let model = crate::xml::to_craft(e);
+        let mut styles: Vec<_> = self.object_els.values().map(crate::xml::to_craft).collect();
+        let reference = craft_idml::model::Values::of(&model).self_id().map(str::to_owned);
+        if !styles.iter().any(|style| craft_idml::model::Values::of(style).self_id() == reference.as_deref()) {
+            styles.push(model.clone());
         }
-        let category = chain.iter().find_map(|s| s.find("ObjectStyleObjectEffectsCategorySettings")).cloned();
-        let setting = |name: &str| chain.iter().find_map(|s| s.find("TransparencySetting")?.find(name)).cloned();
-        let mut t = El::new("TransparencySetting");
-        let mut any = false;
-        for (name, flag) in [("DropShadowSetting", "EnableDropShadow"), ("FeatherSetting", "EnableFeather")] {
-            let el = setting(name);
-            let on = match &category {
-                Some(c) => c.get(flag) == Some("true"),
-                None => el.as_ref().and_then(|x| x.get("Mode")).is_some_and(|m| m != "None"),
-            };
-            any |= on;
-            if let (true, Some(el)) = (on, el) {
-                t.push(el);
-            }
-        }
-        if !any {
-            return None;
-        }
+        let t = craft_idml::model::ObjectStyleStack::from_styles(&styles, reference.as_deref(), false).enabled_shadow_feather()?;
+        let t = crate::xml::from_craft(t);
         let mut fx = Effects::default();
         self.effects_in(&t, &mut fx);
         Some(fx)
@@ -145,7 +88,7 @@ impl<'r> Importer<'r> {
 
     pub(super) fn stroke_from(&mut self, e: &El, item: Option<&El>) -> Stroke {
         let model_elements = if item.is_some() {
-            std::iter::once(e).chain(self.object_style_chain(e)).map(crate::xml::to_craft).collect::<Vec<_>>()
+            std::iter::once(e).chain(self.object_style_chain(e).iter()).map(crate::xml::to_craft).collect::<Vec<_>>()
         } else {
             vec![crate::xml::to_craft(e)]
         };
@@ -191,72 +134,6 @@ impl<'r> Importer<'r> {
         s.overprint = model.overprint == Some(true);
         s.gap_overprint = model.gap_overprint == Some(true);
         s
-    }
-}
-
-/// The object style category flag that turns an effect element on or off.
-fn effect_flag(effect: &str) -> Option<&'static str> {
-    Some(match effect {
-        "BlendingSetting" => "EnableTransparency",
-        "DropShadowSetting" => "EnableDropShadow",
-        "FeatherSetting" => "EnableFeather",
-        "InnerShadowSetting" => "EnableInnerShadow",
-        "OuterGlowSetting" => "EnableOuterGlow",
-        "InnerGlowSetting" => "EnableInnerGlow",
-        "BevelAndEmbossSetting" => "EnableBevelEmboss",
-        "SatinSetting" => "EnableSatin",
-        "DirectionalFeatherSetting" => "EnableDirectionalFeather",
-        "GradientFeatherSetting" => "EnableGradientFeather",
-        _ => return None,
-    })
-}
-
-/// Lays `top` over `base`: attributes one by one, child elements matched by name and merged the same
-/// way, text replaced. A property given in one form (attribute or `Properties` child) replaces the
-/// other form in `base`.
-fn overlay(base: &mut El, top: &El, depth: usize) {
-    if depth > 32 {
-        *base = top.clone();
-        return;
-    }
-    for (k, v) in &top.attrs {
-        base.set(k, v);
-        if let Some(Node::El(p)) = base.children.iter_mut().find(|n| matches!(n, Node::El(p) if p.local() == "Properties")) {
-            p.children.retain(|n| !matches!(n, Node::El(x) if x.local() == k));
-        }
-    }
-    if let Some(p) = top.find("Properties") {
-        let names: Vec<&str> = p.elements().map(El::local).collect();
-        base.attrs.retain(|(k, _)| !names.contains(&k.as_str()));
-    }
-    let has_text = top.children.iter().any(|n| matches!(n, Node::Text(t) | Node::CData(t) if !t.trim().is_empty()));
-    if has_text {
-        base.children.retain(|n| !matches!(n, Node::Text(_) | Node::CData(_)));
-    }
-    // The k-th child of a name merges with the k-th child of that name in `base` (repeated elements
-    // such as gradient stops pair up in order).
-    let mut seen: HashMap<&str, usize> = HashMap::new();
-    for n in &top.children {
-        match n {
-            Node::El(c) => {
-                let k = seen.entry(c.local()).or_insert(0);
-                let slot = base
-                    .children
-                    .iter_mut()
-                    .filter_map(|b| match b {
-                        Node::El(b) if b.local() == c.local() => Some(b),
-                        _ => None,
-                    })
-                    .nth(*k);
-                *k += 1;
-                match slot {
-                    Some(b) => overlay(b, c, depth + 1),
-                    None => base.children.push(n.clone()),
-                }
-            }
-            Node::Text(_) | Node::CData(_) if has_text => base.children.push(n.clone()),
-            _ => {}
-        }
     }
 }
 

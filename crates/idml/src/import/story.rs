@@ -307,7 +307,8 @@ impl<'r> Importer<'r> {
                             use designcraft_doc::anchored::AnchorAlign as A;
                             // Each setting the item leaves unset comes from its object style chain,
                             // then from the IDML defaults.
-                            let levels: Vec<&El> = std::iter::once(&c).chain(self.object_style_chain(&c)).collect();
+                            let style_chain = self.object_style_chain(&c);
+                            let levels: Vec<&El> = std::iter::once(&c).chain(style_chain.iter()).collect();
                             let s = |k: &str| {
                                 let set = levels.iter().filter_map(|l| l.find("AnchoredObjectSetting")).find_map(|x| x.get(k));
                                 set.unwrap_or(match k {

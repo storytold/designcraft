@@ -45,7 +45,8 @@ impl<'r> Importer<'r> {
             .unwrap_or_else(|| designcraft_doc::NO_OBJECT_STYLE.into());
         // Fill and stroke.
         if tag != "Group" {
-            let fill_elements = std::iter::once(e).chain(self.object_style_chain(e)).map(crate::xml::to_craft).collect::<Vec<_>>();
+            let style_chain = self.object_style_chain(e);
+            let fill_elements = std::iter::once(e).chain(style_chain.iter()).map(crate::xml::to_craft).collect::<Vec<_>>();
             let fill_refs: Vec<_> = fill_elements.iter().collect();
             let fill_values = craft_idml::model::FillValues::from_elements(&fill_refs);
             if let Some(f) = fill_values.color.as_deref() {
@@ -87,7 +88,8 @@ impl<'r> Importer<'r> {
         // Corners: each corner's shape and radius come from the item, then its object style chain;
         // at each level a per-corner attribute wins over the legacy all-corners one.
         if tag != "Group" {
-            let levels: Vec<&El> = std::iter::once(e).chain(self.object_style_chain(e)).collect();
+            let style_chain = self.object_style_chain(e);
+            let levels: Vec<&El> = std::iter::once(e).chain(style_chain.iter()).collect();
             let corner_option = |n: &str| levels.iter().find_map(|s| craft_idml::model::Values::of(&crate::xml::to_craft(s)).corner_values(n).option);
             let corner_radius = |n: &str| levels.iter().find_map(|s| craft_idml::model::Values::of(&crate::xml::to_craft(s)).corner_values(n).radius);
             let mut corners = CornerOptions::default();
@@ -163,7 +165,8 @@ impl<'r> Importer<'r> {
                     }
                 };
                 // Options the frame doesn't set come from its object style chain.
-                let prefs: Vec<&El> = std::iter::once(e).chain(self.object_style_chain(e)).filter_map(|s| s.find("TextFramePreference")).collect();
+                let style_chain = self.object_style_chain(e);
+                let prefs: Vec<&El> = std::iter::once(e).chain(style_chain.iter()).filter_map(|s| s.find("TextFramePreference")).collect();
                 let mut options = text_frame_options(&prefs);
                 // `prefs` borrows the object styles, so the rule colour's swatch is resolved after it.
                 if let Some(r) = Prefs(&prefs).prop("ColumnRuleStrokeColor") {

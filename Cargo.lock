@@ -1242,10 +1242,10 @@ dependencies = [
 [[package]]
 name = "craft-idml"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=7aca8fe26#7aca8fe26798806266fa09187908e50a614ff303"
+source = "git+https://github.com/storytold/craft-libs?rev=4f6ae3aa2#4f6ae3aa2d2c89361c09b735de55ed9c976527c3"
 dependencies = [
- "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=7aca8fe26)",
- "craft-zip 0.1.0 (git+https://github.com/storytold/craft-libs?rev=7aca8fe26)",
+ "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=4f6ae3aa2)",
+ "craft-zip 0.1.0 (git+https://github.com/storytold/craft-libs?rev=4f6ae3aa2)",
  "thiserror 2.0.21",
 ]
 
@@ -1656,7 +1656,7 @@ dependencies = [
 [[package]]
 name = "craft-xml"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=7aca8fe26#7aca8fe26798806266fa09187908e50a614ff303"
+source = "git+https://github.com/storytold/craft-libs?rev=4f6ae3aa2#4f6ae3aa2d2c89361c09b735de55ed9c976527c3"
 dependencies = [
  "quick-xml 0.41.0",
  "thiserror 2.0.21",
@@ -1720,7 +1720,7 @@ dependencies = [
 [[package]]
 name = "craft-zip"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=7aca8fe26#7aca8fe26798806266fa09187908e50a614ff303"
+source = "git+https://github.com/storytold/craft-libs?rev=4f6ae3aa2#4f6ae3aa2d2c89361c09b735de55ed9c976527c3"
 dependencies = [
  "flate2",
  "thiserror 2.0.21",
@@ -2021,7 +2021,7 @@ dependencies = [
  "craft-prepress",
  "craft-print",
  "craft-svg 0.1.0 (git+https://github.com/storytold/craft-libs?rev=cc23ffd4d26f3074808e2187d332564817624f8f)",
- "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=7aca8fe26)",
+ "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=4f6ae3aa2)",
  "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=f23b0f33f0d00b157476533a43cbbcfd901aa1f1)",
  "designcraft-color",
  "designcraft-compose",
@@ -2103,9 +2103,9 @@ name = "designcraft-idml"
 version = "0.20.1"
 dependencies = [
  "craft-file-formats",
- "craft-idml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=7aca8fe26)",
+ "craft-idml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=4f6ae3aa2)",
  "craft-svg 0.1.0 (git+https://github.com/storytold/craft-libs?rev=cc23ffd4d26f3074808e2187d332564817624f8f)",
- "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=7aca8fe26)",
+ "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=4f6ae3aa2)",
  "designcraft-color",
  "designcraft-compose",
  "designcraft-doc",
@@ -2222,7 +2222,7 @@ version = "0.20.1"
 dependencies = [
  "craft-docx",
  "craft-file-formats",
- "craft-idml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=7aca8fe26)",
+ "craft-idml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=4f6ae3aa2)",
  "craft-rtf",
  "craft-wordmodel",
  "craft-xlsx",
