@@ -848,6 +848,7 @@ mod color_theme_tests {
             d.fields.insert(key.into(), value.clone());
             write(&mut app, &mut d);
             assert_eq!(app.session.active().unwrap().doc, second, "{id}: the second document is not changed");
+            assert_eq!(app.session.active().unwrap().interaction.as_ref().map(|it| it.label.as_str()), Some("Move"), "{id}: its interaction stays");
             assert_eq!(d.fields.get("status"), Some(&json!(PREVIEW_IN_OTHER_DOCUMENT)), "{id}");
             assert_eq!(app.session.documents()[0].doc, first, "{id}: the first document keeps its preview");
             // The field goes back to the value shown before the first document is active again:
@@ -932,6 +933,111 @@ mod color_theme_tests {
         let first = &app.session.documents()[0];
         assert_eq!(first.doc, before, "the preview goes from the first document");
         assert!(first.interaction.is_none());
+    }
+
+    /// Undo in the preview's document keeps that document as the preview's: the preview does not
+    /// start in another document made active before it is shown again, and starts again once its
+    /// own document is active. Preview off in the other document then lets the dialog go.
+    #[test]
+    fn undo_keeps_a_dialogs_preview_in_its_document() {
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        let write = |app: &mut DesignApp| {
+            let mut d = app.ui.dialog.take().expect("the dialog is open");
+            layout_dialog_preview(app, &mut d, "layout.createGuides", "Create Guides");
+            app.ui.dialog = Some(d);
+        };
+        let status = |app: &DesignApp| app.ui.dialog.as_ref().and_then(|d| d.fields.get("status").cloned());
+        app.run("file.new", json!({})).unwrap();
+        app.run("frame.create", json!({"rect": [36, 36, 300, 300]})).unwrap();
+        app.run("frame.create", json!({"rect": [36, 320, 300, 500]})).unwrap();
+        app.ui.dialog = Some(Dialog::new(
+            "createGuides",
+            json!({"rows": "2", "columns": "2", "rowGutter": "0", "columnGutter": "0", "fitTo": "page", "preview": true}),
+        ));
+        write(&mut app);
+        assert!(app.session.active().unwrap().interaction.is_some(), "previewed");
+        app.run("edit.undo", json!({})).unwrap();
+        let undone = app.session.active().unwrap().doc.clone();
+        app.run("file.new", json!({})).unwrap();
+        let second = app.session.active().unwrap().doc.clone();
+        write(&mut app);
+        assert_eq!(app.session.active().unwrap().doc, second, "no preview in the second document");
+        assert!(app.session.active().unwrap().interaction.is_none());
+        assert_eq!(status(&app), Some(json!(PREVIEW_IN_OTHER_DOCUMENT)));
+        assert_eq!(app.session.documents()[0].doc, undone);
+        // Back in the first document the preview is shown again.
+        app.session.set_active(0);
+        write(&mut app);
+        assert_eq!(status(&app), None);
+        assert!(app.session.active().unwrap().interaction.is_some(), "the preview starts again");
+        assert_ne!(app.session.active().unwrap().doc, undone);
+        // A second Undo there, then Preview off in the second document.
+        app.run("edit.undo", json!({})).unwrap();
+        let undone = app.session.active().unwrap().doc.clone();
+        app.session.set_active(1);
+        write(&mut app);
+        assert_eq!(status(&app), Some(json!(PREVIEW_IN_OTHER_DOCUMENT)));
+        if let Some(d) = app.ui.dialog.as_mut() {
+            d.fields.insert("preview".into(), json!(false));
+        }
+        write(&mut app);
+        assert_eq!(status(&app), None);
+        assert!(!app.ui.dialog.as_ref().unwrap().fields.contains_key(PREVIEW_DOC));
+        assert_eq!(app.session.documents()[0].doc, undone);
+        assert!(app.session.documents().iter().all(|st| st.interaction.is_none()));
+    }
+
+    /// When the preview's document is closed, the next update starts the preview in the active
+    /// document instead of waiting for a document that is gone.
+    #[test]
+    fn a_preview_starts_again_after_its_document_closes() {
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        let write = |app: &mut DesignApp| {
+            let mut d = app.ui.dialog.take().expect("the dialog is open");
+            layout_dialog_preview(app, &mut d, "layout.createGuides", "Create Guides");
+            app.ui.dialog = Some(d);
+        };
+        app.run("file.new", json!({})).unwrap();
+        app.run("frame.create", json!({"rect": [36, 36, 300, 300]})).unwrap();
+        app.ui.dialog = Some(Dialog::new(
+            "createGuides",
+            json!({"rows": "2", "columns": "2", "rowGutter": "0", "columnGutter": "0", "fitTo": "page", "preview": true}),
+        ));
+        write(&mut app);
+        app.run("edit.undo", json!({})).unwrap();
+        app.run("file.new", json!({})).unwrap();
+        let second = app.session.active().unwrap().doc.clone();
+        app.session.close_document(0);
+        assert_eq!(app.session.documents().len(), 1);
+        write(&mut app);
+        write(&mut app);
+        let d = app.ui.dialog.as_ref().unwrap();
+        assert_eq!(d.fields.get("status"), None);
+        assert!(app.session.active().unwrap().interaction.is_some(), "the preview starts in the open document");
+        assert_ne!(app.session.active().unwrap().doc, second);
+    }
+
+    /// OK waits while a gesture begun in the preview's document has replaced the preview's
+    /// interaction, and Cancel leaves that gesture open.
+    #[test]
+    fn ok_waits_for_a_gesture_that_replaced_a_dialogs_preview() {
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        let gesture = |app: &DesignApp| app.session.active().unwrap().interaction.as_ref().map(|it| it.label.clone());
+        app.run("file.new", json!({})).unwrap();
+        let mut d = Dialog::new(
+            "createGuides",
+            json!({"rows": "2", "columns": "2", "rowGutter": "0", "columnGutter": "0", "fitTo": "page", "preview": true}),
+        );
+        layout_dialog_preview(&mut app, &mut d, "layout.createGuides", "Create Guides");
+        app.ui.dialog = Some(d);
+        app.session.begin_interaction("Move").unwrap();
+        assert_eq!(confirm(&mut app).unwrap_err(), FINISH_OPEN_INTERACTION);
+        let d = app.ui.dialog.as_ref().expect("the dialog stays open");
+        assert_eq!(d.fields.get("status"), Some(&json!(FINISH_OPEN_INTERACTION)));
+        assert_eq!(gesture(&app).as_deref(), Some("Move"), "OK leaves the gesture open");
+        cancel(&mut app);
+        assert!(app.ui.dialog.is_none());
+        assert_eq!(gesture(&app).as_deref(), Some("Move"), "Cancel leaves the gesture open");
     }
 
     #[test]
@@ -1637,7 +1743,7 @@ fn caption_at(ui: &mut egui::Ui, text: &str, w: f32) {
 fn text_frame_preview(app: &mut DesignApp, d: &mut Dialog) {
     let shown = d.fields.get(PREVIEWED).cloned();
     if !d.b("preview") {
-        if shown.is_some() {
+        if shown.is_some() || d.fields.contains_key(PREVIEW_DOC) {
             end_dialog_preview(app, d);
             d.fields.remove("status");
         }
@@ -1672,7 +1778,7 @@ fn text_frame_preview(app: &mut DesignApp, d: &mut Dialog) {
             d.fields.insert("status".into(), json!(e.to_string()));
             return;
         }
-        d.fields.insert(PREVIEW_DOC.into(), json!(app.session.active().map(|doc| doc.uid)));
+        record_preview_owner(app, d);
     }
     match app.session.preview("object.textFrameOptions", params.clone()) {
         Ok(()) => d.fields.remove("status"),
@@ -1682,13 +1788,37 @@ fn text_frame_preview(app: &mut DesignApp, d: &mut Dialog) {
 }
 
 /// A dialog's preview goes from the document it was shown in, also when another document is
-/// active now.
+/// active now. An interaction begun there since the preview, which replaced the preview's own,
+/// stays open.
 fn end_dialog_preview(app: &mut DesignApp, d: &mut Dialog) {
-    d.fields.remove(PREVIEWED);
-    match d.fields.remove(PREVIEW_DOC).as_ref().and_then(Value::as_u64) {
-        Some(uid) => app.session.cancel_interaction_of(uid),
-        None => app.session.cancel_interaction(),
+    let uid = d.fields.get(PREVIEW_DOC).and_then(Value::as_u64).or_else(|| app.session.active().map(|st| st.uid));
+    // After Undo or Redo ended the preview, the document is still named but its interaction (if
+    // any) is not the preview's.
+    let ours = (d.fields.contains_key(PREVIEWED) || d.fields.contains_key(PREVIEW_INTERACTION))
+        && uid.is_some_and(|uid| app.session.documents().iter().any(|st| st.uid == uid && is_preview_interaction(st, d)));
+    for key in [PREVIEWED, PREVIEW_DOC, PREVIEW_INTERACTION] {
+        d.fields.remove(key);
     }
+    if ours && let Some(uid) = uid {
+        app.session.cancel_interaction_of(uid);
+    }
+}
+
+/// Records the document and the interaction a dialog's preview was just begun in.
+fn record_preview_owner(app: &DesignApp, d: &mut Dialog) {
+    let st = app.session.active();
+    d.fields.insert(PREVIEW_DOC.into(), json!(st.map(|st| st.uid)));
+    match st.and_then(|st| st.interaction.as_ref()) {
+        Some(it) => d.fields.insert(PREVIEW_INTERACTION.into(), json!({"label": it.label, "revision": it.revision})),
+        None => d.fields.remove(PREVIEW_INTERACTION),
+    };
+}
+
+/// Whether `st`'s open interaction is the one the dialog's preview was begun in, and not one that
+/// replaced it. A dialog that records no interaction counts any open interaction as its own.
+fn is_preview_interaction(st: &designcraft_engine::DocState, d: &Dialog) -> bool {
+    let Some(it) = st.interaction.as_ref() else { return false };
+    d.fields.get(PREVIEW_INTERACTION).is_none_or(|rec| rec == &json!({"label": it.label, "revision": it.revision}))
 }
 
 /// The status line while a dialog's preview is shown in a document that is not the active one.
@@ -1702,6 +1832,17 @@ const FINISH_OPEN_INTERACTION: &str = "Finish the action in progress in the acti
 /// status line. Once that document is active again, the reason goes.
 fn preview_in_other_document(app: &DesignApp, d: &mut Dialog) -> bool {
     let active = app.session.active().map(|st| st.uid);
+    // A closed document takes the preview with it: this update is skipped, and the next one starts
+    // the preview in the active document.
+    if d.fields.get(PREVIEW_DOC).and_then(Value::as_u64).is_some_and(|uid| app.session.documents().iter().all(|st| st.uid != uid)) {
+        for key in [PREVIEWED, PREVIEW_DOC, PREVIEW_INTERACTION] {
+            d.fields.remove(key);
+        }
+        if d.fields.get("status").and_then(Value::as_str) == Some(PREVIEW_IN_OTHER_DOCUMENT) {
+            d.fields.remove("status");
+        }
+        return true;
+    }
     if d.fields.get(PREVIEW_DOC).and_then(Value::as_u64).is_none_or(|uid| Some(uid) == active) {
         if d.fields.get("status").and_then(Value::as_str) == Some(PREVIEW_IN_OTHER_DOCUMENT) {
             d.fields.remove("status");
@@ -1713,11 +1854,14 @@ fn preview_in_other_document(app: &DesignApp, d: &mut Dialog) -> bool {
 }
 
 /// Refuses OK in a previewing dialog while the active document has an interaction of its own
-/// (not the dialog's preview), which the change would be made inside; the dialog stays open with
-/// the reason on the status line, and its preview stays.
+/// (not the dialog's preview, also when it replaced the preview's), which the change would be
+/// made inside; the dialog stays open with the reason on the status line, and its preview stays.
 fn refuse_ok_during_interaction(app: &mut DesignApp, mut d: Dialog) -> Result<Dialog, String> {
     let busy = app.session.active().is_some_and(|st| {
-        st.interaction.is_some() && !(d.fields.contains_key(PREVIEWED) && d.fields.get(PREVIEW_DOC).and_then(Value::as_u64) == Some(st.uid))
+        st.interaction.is_some()
+            && !(d.fields.contains_key(PREVIEWED)
+                && d.fields.get(PREVIEW_DOC).and_then(Value::as_u64) == Some(st.uid)
+                && is_preview_interaction(st, &d))
     });
     if !busy {
         return Ok(d);
@@ -1729,15 +1873,16 @@ fn refuse_ok_during_interaction(app: &mut DesignApp, mut d: Dialog) -> Result<Di
 
 /// Ends the open dialog's preview before Undo or Redo runs in the document it is shown in, so they
 /// act on the document without it and a later OK or Cancel does not put back the document from
-/// before them. The dialog shows its preview again on the document they leave.
+/// before them. The dialog keeps that document as its preview's, and shows its preview again on
+/// the document they leave once that document is active.
 pub(crate) fn end_preview_before_history(app: &mut DesignApp) {
-    let active = app.session.active().map(|st| st.uid);
+    let Some(st) = app.session.active() else { return };
     let Some(d) = app.ui.dialog.as_mut() else { return };
-    if !d.fields.contains_key(PREVIEWED) || d.fields.get(PREVIEW_DOC).and_then(Value::as_u64).is_none_or(|uid| Some(uid) != active) {
+    if !d.fields.contains_key(PREVIEWED) || d.fields.get(PREVIEW_DOC).and_then(Value::as_u64) != Some(st.uid) || !is_preview_interaction(st, d) {
         return;
     }
     d.fields.remove(PREVIEWED);
-    d.fields.remove(PREVIEW_DOC);
+    d.fields.remove(PREVIEW_INTERACTION);
     app.session.cancel_interaction();
 }
 
@@ -2489,7 +2634,7 @@ fn layout_dialog_params(d: &Dialog) -> Result<Value, String> {
 fn layout_dialog_preview(app: &mut DesignApp, d: &mut Dialog, cmd: &str, label: &str) {
     let shown = d.fields.get(PREVIEWED).cloned();
     if !d.b("preview") {
-        if shown.is_some() {
+        if shown.is_some() || d.fields.contains_key(PREVIEW_DOC) {
             end_dialog_preview(app, d);
             d.fields.remove("status");
         }
@@ -2512,7 +2657,7 @@ fn layout_dialog_preview(app: &mut DesignApp, d: &mut Dialog, cmd: &str, label: 
         return;
     }
     if shown.is_none() {
-        d.fields.insert(PREVIEW_DOC.into(), json!(app.session.active().map(|doc| doc.uid)));
+        record_preview_owner(app, d);
     }
     match app.session.preview(cmd, params.clone()) {
         Ok(()) => d.fields.remove("status"),
@@ -4680,17 +4825,16 @@ pub fn cancel(app: &mut DesignApp) {
     if app.ui.dialog.as_ref().is_some_and(|d| d.id == "findChange") {
         app.session.reset_find_scope();
     }
-    let d = app.ui.dialog.take();
+    let mut d = app.ui.dialog.take();
     if d.as_ref().is_some_and(|d| d.id == crate::shortcuts_dialog::DIALOG_ID) {
         let _ = crate::shortcuts_dialog::close(app, false);
     }
     crate::new_document::end_preview(app);
-    if d.as_ref().is_some_and(|d| d.fields.contains_key(PREVIEWED)) {
+    if let Some(d) = d.as_mut()
+        && d.fields.contains_key(PREVIEWED)
+    {
         // A previewing dialog names the document its preview is in.
-        match d.as_ref().and_then(|d| d.fields.get(PREVIEW_DOC)).and_then(Value::as_u64) {
-            Some(uid) => app.session.cancel_interaction_of(uid),
-            None => app.session.cancel_interaction(),
-        }
+        end_dialog_preview(app, d);
     }
     app.cancel_pdf_import();
     if let Some(d) = d
@@ -6039,7 +6183,7 @@ fn fill_style_preview_fields(params: &mut Value, d: &Dialog, paragraph: bool) {
 fn style_options_preview(app: &mut DesignApp, d: &mut Dialog) {
     let shown = d.fields.get(PREVIEWED).cloned();
     if !d.b("preview") || d.b("new") {
-        if shown.is_some() {
+        if shown.is_some() || d.fields.contains_key(PREVIEW_DOC) {
             end_dialog_preview(app, d);
             d.fields.remove("status");
         }
@@ -6083,7 +6227,7 @@ fn style_options_preview(app: &mut DesignApp, d: &mut Dialog) {
         return;
     }
     if shown.is_none() {
-        d.fields.insert(PREVIEW_DOC.into(), json!(app.session.active().map(|doc| doc.uid)));
+        record_preview_owner(app, d);
     }
     let command = if paragraph { "style.paragraph.edit" } else { "style.character.edit" };
     match app.session.preview(command, params.clone()) {
@@ -8557,7 +8701,7 @@ fn hyphenation_edits(d: &Dialog) -> Map<String, Value> {
 fn hyphenation_preview(app: &mut DesignApp, d: &mut Dialog) {
     let shown = d.fields.get(PREVIEWED).cloned();
     if !d.b("preview") {
-        if shown.is_some() {
+        if shown.is_some() || d.fields.contains_key(PREVIEW_DOC) {
             end_dialog_preview(app, d);
             if d.fields.get("status").and_then(Value::as_str) == Some(PREVIEW_IN_OTHER_DOCUMENT) {
                 d.fields.remove("status");
@@ -8576,7 +8720,7 @@ fn hyphenation_preview(app: &mut DesignApp, d: &mut Dialog) {
         return;
     }
     if shown.is_none() {
-        d.fields.insert(PREVIEW_DOC.into(), json!(app.session.active().map(|doc| doc.uid)));
+        record_preview_owner(app, d);
     }
     match app.session.preview("type.para", params.clone()) {
         Ok(_) => {
@@ -9439,6 +9583,8 @@ fn toc_dialog(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
 const PREVIEWED: &str = "_previewed";
 /// The uid of the document a previewing dialog's preview is shown in.
 const PREVIEW_DOC: &str = "_previewDoc";
+/// The label and starting revision of the interaction a previewing dialog's preview was begun in.
+const PREVIEW_INTERACTION: &str = "_previewInteraction";
 
 /// Edit › Step and Repeat, as in InDesign: Repeat (Count, or Rows and Columns with Create as a
 /// grid), Offset (Vertical, Horizontal, in the document's ruler units) and Preview, which shows
@@ -9521,7 +9667,7 @@ fn step_and_repeat_params(app: &DesignApp, d: &Dialog) -> Result<Value, String> 
 fn step_and_repeat_preview(app: &mut DesignApp, d: &mut Dialog) {
     let shown = d.fields.get(PREVIEWED).cloned();
     if !d.b("preview") {
-        if shown.is_some() {
+        if shown.is_some() || d.fields.contains_key(PREVIEW_DOC) {
             end_dialog_preview(app, d);
             d.fields.remove("status");
         }
@@ -9547,7 +9693,7 @@ fn step_and_repeat_preview(app: &mut DesignApp, d: &mut Dialog) {
         return;
     }
     if shown.is_none() {
-        d.fields.insert(PREVIEW_DOC.into(), json!(app.session.active().map(|doc| doc.uid)));
+        record_preview_owner(app, d);
     }
     match app.session.preview("edit.stepAndRepeat", params.clone()) {
         Ok(()) => d.fields.remove("status"),
@@ -9726,7 +9872,7 @@ fn corner_options_dialog(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog)
 fn corner_options_preview(app: &mut DesignApp, d: &mut Dialog) {
     let shown = d.fields.get(PREVIEWED).cloned();
     if !d.b("preview") {
-        if shown.is_some() {
+        if shown.is_some() || d.fields.contains_key(PREVIEW_DOC) {
             end_dialog_preview(app, d);
             d.fields.remove("status");
         }
@@ -9749,7 +9895,7 @@ fn corner_options_preview(app: &mut DesignApp, d: &mut Dialog) {
         return;
     }
     if shown.is_none() {
-        d.fields.insert(PREVIEW_DOC.into(), json!(app.session.active().map(|doc| doc.uid)));
+        record_preview_owner(app, d);
     }
     match app.session.preview("object.cornerOptions", params.clone()) {
         Ok(()) => d.fields.remove("status"),
