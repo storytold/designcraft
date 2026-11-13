@@ -154,22 +154,24 @@ impl<'r> Importer<'r> {
                         self.walk_story(c, b, pf, pchars, &ncf, bt);
                     }
                     "Content" => {
-                        for t in &c.children {
-                            match t {
-                                Node::Text(s) | Node::CData(s) => {
-                                    let s: String = s
-                                        .chars()
-                                        .filter(|c| *c != '\u{FEFF}')
-                                        .map(|c| if c == '\n' || c == '\r' || c == '\u{2029}' { st::FORCED_LINE_BREAK } else { c })
-                                        .collect();
-                                    b.push(&s, cf);
-                                }
-                                Node::Pi(t, v) if t == "ACE" => {
-                                    if let Some(ch) = ace_char(v) {
-                                        b.push(&ch.to_string(), cf);
+                        if let craft_idml::model::TextNode::Content(parts) = craft_idml::model::TextNode::from_el(&crate::xml::to_craft(c)) {
+                            for part in parts {
+                                match part {
+                                    craft_idml::model::ContentPart::Text(text) => {
+                                        let text: String = text
+                                            .chars()
+                                            .filter(|c| *c != '\u{FEFF}')
+                                            .map(|c| if c == '\n' || c == '\r' || c == '\u{2029}' { st::FORCED_LINE_BREAK } else { c })
+                                            .collect();
+                                        b.push(&text, cf);
                                     }
+                                    craft_idml::model::ContentPart::Ace(ace) => {
+                                        if let Some(ch) = ace_char(&ace.code().to_string()) {
+                                            b.push(&ch.to_string(), cf);
+                                        }
+                                    }
+                                    craft_idml::model::ContentPart::Pi { .. } => {}
                                 }
-                                _ => {}
                             }
                         }
                     }
