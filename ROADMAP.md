@@ -12,10 +12,11 @@
 
 DesignCraft aims at full Adobe InDesign parity — and to be better: faster, open (documented JSON format + IDML), scriptable by agents (MCP), and available on the web.
 
-- **2026-11-05** · World-Ready storage uses the same independent boolean as #1152;
-  native reader 6 preserves explicit on/off choices and migrates earlier test-build files.
-  Ordinary composer choices follow the observed reference panel; the mode-only API keeps
-  World-Ready and Japanese identity. Shaping parity remains separate (#2032).
+- **2026-11-05** · World-Ready storage uses the independent `worldReady` boolean (default
+  `false`, matching the reference UI and ordinary IDML export); native reader 5 preserves
+  `worldReady: true` without bumping ordinary documents. Ordinary composer choices follow
+  the observed reference panel; the mode-only API keeps World-Ready and Japanese identity.
+  Shaping parity remains separate (#2032).
 
 - **2026-10-30** · IDML retains World-Ready paragraph and single-line composers in styles and
   overrides, through native saves and composer-mode switching (#2032). Exported XML has synthetic

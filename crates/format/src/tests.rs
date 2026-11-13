@@ -38,8 +38,8 @@ fn world_ready_composers_survive_native_save_and_reopen() {
     assert!(reopened.styles.resolve_para(&story.paras[1]).0.world_ready);
 }
 
-/// Explicit flags and mode-only ordinary edits require reader 6 wherever serialized. Japanese
-/// modes without a flag keep older requirements. Other style kinds/settings have no ParaAttrs.
+/// Explicit `worldReady: true` requires reader 5 wherever serialized. Omitted or `false` flags
+/// without any `true` ancestor resolve the same in older readers and keep version 2.
 #[test]
 fn world_ready_content_requires_new_reader() {
     use designcraft_doc::{Composer, StoryId, Table};
@@ -55,7 +55,7 @@ fn world_ready_content_requires_new_reader() {
 
     for composer in [Composer::Paragraph, Composer::SingleLine, Composer::Japanese, Composer::JapaneseSingleLine] {
         for world_ready in [None, Some(false), Some(true)] {
-            let expected = if world_ready.is_some() || !composer.japanese() { 6 } else { 2 };
+            let expected = if world_ready == Some(true) { 5 } else { 2 };
             for scope in [Scope::Style, Scope::Story, Scope::Cell, Scope::Footnote, Scope::Endnote] {
                 let mut doc = Document::new(&NewDocument::default());
                 let id = StoryId(doc.alloc());
@@ -91,72 +91,55 @@ fn world_ready_content_requires_new_reader() {
     }
 }
 
-/// Earlier test builds stored the World-Ready identity in the composer enum, before reader 6.
-/// Preserve those files, including nested text, and write only the shared boolean afterward.
+/// Older documents with explicit ordinary composers keep version 2 on resave, while a
+/// World-Ready style paired with an explicit `worldReady: false` override preserves both at version 5.
 #[test]
-fn world_ready_test_build_files_migrate_without_loss() {
-    for (old, mode, world_ready) in [
-        ("worldReady", "paragraph", true),
-        ("worldReadySingleLine", "singleLine", true),
-        ("paragraph", "paragraph", false),
-        ("singleLine", "singleLine", false),
-    ] {
+fn ordinary_composers_keep_old_version_and_mixed_world_ready_saves_version_5() {
+    use designcraft_doc::{Composer, ParagraphStyle, Story, StoryId};
+
+    for composer in [Composer::Paragraph, Composer::SingleLine] {
         let mut doc = Document::new(&NewDocument::default());
         let (_, sid) =
-            doc.add_text_frame(SpreadRef::Doc(0), Rect::new(10.0, 10.0, 200.0, 200.0), doc.default_layer(), "Tamil", ParaFormat::default()).unwrap();
-        let composer = serde_json::from_value(json!(mode)).unwrap();
-        let attrs = ParaAttrs { composer: Some(composer), world_ready: Some(world_ready), ..Default::default() };
-        doc.styles_mut().paragraph[0].para = attrs.clone();
-        let story = doc.story_mut(sid).unwrap();
-        story.paras[0].para = attrs.clone();
-        let mut table = designcraft_doc::Table::new(1, 1, 1, 0, 0, 100.0);
-        table.cells[0].text.paras[0].para = attrs.clone();
-        story.insert_table(0, table);
-        let para = ParaFormat { para: attrs, ..Default::default() };
-        story.insert_note(0, "Footnote", para.clone()).unwrap();
-        story.insert_endnote(0, "Endnote", para).unwrap();
-        let json = serde_json::to_string(&doc).unwrap().replace(&format!(r#""composer":"{mode}""#), &format!(r#""composer":"{old}""#));
-        let mut value: Value = serde_json::from_str(&json).unwrap();
-        fn remove_flag(v: &mut Value) {
-            match v {
-                Value::Object(m) => {
-                    m.remove("worldReady");
-                    for child in m.values_mut() {
-                        remove_flag(child);
-                    }
-                }
-                Value::Array(a) => {
-                    for child in a {
-                        remove_flag(child);
-                    }
-                }
-                _ => {}
-            }
-        }
-        remove_flag(&mut value);
-        for version in [2, 5] {
+            doc.add_text_frame(SpreadRef::Doc(0), Rect::new(10.0, 10.0, 200.0, 200.0), doc.default_layer(), "Plain", ParaFormat::default()).unwrap();
+        doc.styles_mut().paragraph[0].para.composer = Some(composer);
+        doc.story_mut(sid).unwrap().paras[0].para.composer = Some(composer);
+        for version in [2u32, 4] {
             let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
             zip.start_file("meta.json", zip::write::SimpleFileOptions::default()).unwrap();
             zip.write_all(json!({"version": version}).to_string().as_bytes()).unwrap();
             zip.start_file("document.json", zip::write::SimpleFileOptions::default()).unwrap();
-            zip.write_all(&serde_json::to_vec(&value).unwrap()).unwrap();
+            zip.write_all(&serde_json::to_vec(&doc).unwrap()).unwrap();
             let reopened = load(&zip.finish().unwrap().into_inner()).unwrap();
-            assert_eq!(reopened.styles, doc.styles);
-            assert_eq!(reopened.stories, doc.stories);
-            assert_eq!(required_version(&reopened), 6);
+            assert_eq!(required_version(&reopened), 2);
             let saved = save(&reopened).unwrap();
-            let mut zip = zip::ZipArchive::new(Cursor::new(saved)).unwrap();
-            let mut text = String::new();
-            zip.by_name("document.json").unwrap().read_to_string(&mut text).unwrap();
-            if world_ready {
-                assert!(!text.contains(&format!(r#""composer": "{old}""#)));
-            }
-        }
-        if world_ready {
-            value["styles"]["paragraph"][0]["para"]["worldReady"] = json!(false);
-            assert!(load(&serde_json::to_vec(&value).unwrap()).is_err(), "conflicting old/new values must not lose data");
+            let mut archive = zip::ZipArchive::new(Cursor::new(saved)).unwrap();
+            let mut meta = String::new();
+            archive.by_name("meta.json").unwrap().read_to_string(&mut meta).unwrap();
+            assert_eq!(serde_json::from_str::<Value>(&meta).unwrap()["version"], 2);
         }
     }
+
+    let mut doc = Document::new(&NewDocument::default());
+    doc.styles_mut().paragraph.push(ParagraphStyle {
+        name: "WorldReady".into(),
+        based_on: Some(designcraft_doc::NO_PARA_STYLE.into()),
+        next_style: None,
+        para: ParaAttrs { composer: Some(Composer::Paragraph), world_ready: Some(true), ..Default::default() },
+        chars: Default::default(),
+        shortcut: String::new(),
+    });
+    let id = StoryId(doc.alloc());
+    let mut story = Story::with_text(id, "World\nOrdinary", ParaFormat::default());
+    for para in &mut story.paras {
+        para.style = "WorldReady".into();
+    }
+    story.paras[1].para.world_ready = Some(false);
+    doc.stories.insert(id, Arc::new(story));
+
+    assert_eq!(required_version(&doc), 5);
+    let reopened = load(&save(&doc).unwrap()).unwrap();
+    assert!(reopened.styles.resolve_para(&reopened.story(id).unwrap().paras[0]).0.world_ready);
+    assert!(!reopened.styles.resolve_para(&reopened.story(id).unwrap().paras[1]).0.world_ready);
 }
 
 fn png_asset(d: &mut Document, data: &[u8]) -> AssetId {

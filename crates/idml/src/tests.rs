@@ -1637,6 +1637,7 @@ fn cjk_character_attributes_import_from_independent_xml_and_round_trip() {
     assert_eq!(a.leading_model, b.leading_model);
 }
 
+/// All ordinary, World-Ready and Japanese IDML composer names import and round-trip intact.
 #[test]
 fn composers_import_by_kind_and_round_trip() {
     use designcraft_doc::Composer as C;

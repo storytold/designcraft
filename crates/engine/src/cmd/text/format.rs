@@ -594,6 +594,7 @@ mod composer_mode_tests {
 
     use crate::Session;
 
+    /// Resolved `composer` attribute for every paragraph in `sid`.
     fn composers(s: &Session, sid: StoryId) -> Vec<Composer> {
         let document = &s.doc().unwrap().doc;
         let story = document.story(sid).unwrap();
@@ -632,7 +633,7 @@ mod composer_mode_tests {
         assert_eq!(composers(&s, sid), [Composer::Paragraph, Composer::Paragraph, Composer::Japanese]);
         let document = &s.doc().unwrap().doc;
         let world_ready: Vec<_> = document.story(sid).unwrap().paras.iter().map(|p| document.styles.resolve_para(p).0.world_ready).collect();
-        assert_eq!(world_ready, [true, false, true]);
+        assert_eq!(world_ready, [true, false, false]);
 
         let before = s.doc().unwrap().doc.clone();
         let steps = s.doc().unwrap().history.undo.len();

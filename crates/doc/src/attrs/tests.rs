@@ -16,7 +16,7 @@ fn world_ready_flag_is_independent_of_composer_mode() {
             assert_eq!(serde_json::from_value::<ParaAttrs>(json).unwrap(), attrs);
         }
     }
-    assert!(ParaProps::default().world_ready);
+    assert!(!ParaProps::default().world_ready);
     assert_eq!(ParaAttrs::default().world_ready, None);
 }
 

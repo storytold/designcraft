@@ -308,6 +308,7 @@ impl<'a> Ex<'a> {
         }
     }
 
+    /// Write paragraph alignment, direction, indentation, spacing, drop cap, grid and composer IDML attributes.
     fn para_alignment_attrs(&self, el: &mut El, a: &ParaAttrs, parent: Option<&str>) {
         if let Some(v) = a.align {
             el.set("Justification", names::align_out(v));

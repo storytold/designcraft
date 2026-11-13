@@ -76,7 +76,7 @@ to finish before retrying a request that would exceed the pending-event limit.
 
 `type.para` and paragraph-style commands accept `composer: "paragraph" | "singleLine" |
 "japanese" | "japaneseSingleLine"` and the independent `worldReady: true | false` attribute.
-The resolved World-Ready default is `true`; an absent sparse attribute inherits, and `null`
+The resolved World-Ready default is `false`; an absent sparse attribute inherits, and `null`
 in a `type.para` edit clears that override. The flag is retained for interchange; its shaping
 behavior is separate work (#1152). World-Ready is not an additional composer enum value.
 

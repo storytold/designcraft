@@ -40,27 +40,23 @@ layer survive interchange; literal XML and round-trip tests are in
 IDML retains Adobe World-Ready paragraph and single-line composer identities in paragraph styles
 and local overrides (#2032), including inherited styles, `$ID/` names and XML property elements.
 Native saves retain those identities too. `composer` stores `paragraph`, `singleLine`,
-`japanese` or `japaneseSingleLine`; the independent `worldReady` boolean uses the same name,
-values and default (`true`) as the shaping work in #1152. Missing sparse attributes inherit.
-IDML's combined composer name resolves an omitted mode or flag from the actual parent style.
-The `composerMode` command changes only breaking mode; the UI's explicit ordinary-composer
-choices set `worldReady: false`, matching the observed InDesign 2025 Paragraph panel.
-Leaving those controls untouched preserves an imported World-Ready choice. Synthetic
+`japanese` or `japaneseSingleLine`; the independent `worldReady` boolean uses the same field
+name as #1152 and defaults to `false` (ordinary Paragraph Composer, matching the UI and keeping
+composer-only styles/paragraphs exporting as `HL Composer` / `HL Single`). Missing sparse
+attributes inherit. IDML's combined composer name resolves an omitted mode or flag from the actual
+parent style. The `composerMode` command changes only breaking mode; the UI's explicit
+ordinary-composer choices set `worldReady: false`, matching the observed InDesign 2025 Paragraph
+panel. Leaving those controls untouched preserves an imported World-Ready choice. Synthetic
 regressions inspect exported XML as well as reimporting it. DesignCraft continues to use its
 own shaping and line breaking; the boolean's shaping behavior remains work for #1152.
 
-Native files with either an explicit on or off `worldReady` choice require reader 6. This
-prevents older readers, including the earlier version-5 test build, from silently dropping
-the boolean. Mode-only ordinary overrides also require reader 6, distinguishing their new
-independent inheritance from the older enum identity. Files with neither choice retain
-their version 2–4 requirements. The reader
-migrates the earlier test build's `composer: worldReady` / `worldReadySingleLine` values to the
-shared boolean and mode, including files written before the version-5 guard. Earlier explicit
-ordinary enum choices migrate to `worldReady: false`; contradictory
-old/new values are errors. The scan covers every serialized paragraph style (even unused)
-and body, cell, footnote and endnote paragraph override. Document settings have no `ParaAttrs`;
-object/cell/table styles refer to paragraph styles by name. Snippets use the same native
-archive writer and capability check, and Load Styles reads through the native reader.
+Native files that enable `worldReady: true` require reader 5 so older readers cannot silently
+drop the World-Ready flag. Ordinary documents—including explicit `paragraph` / `singleLine`
+composers and `worldReady: false` without any `true` ancestor—retain their version 2–4
+requirements. The scan covers every serialized paragraph style (even unused) and body, cell,
+footnote and endnote paragraph override. Document settings have no `ParaAttrs`; object/cell/table
+styles refer to paragraph styles by name. Snippets use the same native archive writer and
+capability check, and Load Styles reads through the native reader.
 
 ## Output
 

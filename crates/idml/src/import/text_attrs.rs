@@ -170,6 +170,7 @@ impl<'r> Importer<'r> {
         a
     }
 
+    /// Import paragraph attributes from an IDML `ParagraphStyle` or `ParagraphStyleRange` element.
     pub(super) fn para_attrs(&mut self, e: &El) -> ParaAttrs {
         let mut a = ParaAttrs::default();
         let u = |k: &str| e.num(k).map(|v| v.max(0.0) as u32);

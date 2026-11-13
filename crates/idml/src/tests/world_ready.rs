@@ -120,3 +120,35 @@ fn world_ready_partial_overrides_resolve_the_other_half_from_the_style() {
         }
     }
 }
+
+/// A native style or paragraph setting only `composer` defaults `worldReady` to `false` and
+/// exports `HL Composer` / `HL Single`, and an IDML `[No paragraph style]` without `Composer`
+/// imports with `worldReady` resolved to `false`.
+#[test]
+fn native_composer_only_exports_ordinary_idml_name_and_no_style_defaults_off() {
+    use designcraft_doc::build::NewDocument;
+    use designcraft_doc::geom::Rect;
+    use designcraft_doc::{Composer, Document, ParaAttrs, ParaFormat, SpreadRef};
+
+    let imported = import_idml(&fixture("HL Composer Optyca", "HL Composer Optyca", false)).unwrap();
+    let root = imported.styles.para(designcraft_doc::NO_PARA_STYLE).unwrap();
+    assert_eq!(root.para.world_ready, None);
+    assert!(!imported.styles.resolve_para_style(designcraft_doc::NO_PARA_STYLE).0.world_ready);
+
+    let mut doc = Document::new(&NewDocument::default());
+    let (_, sid) =
+        doc.add_text_frame(SpreadRef::Doc(0), Rect::new(10.0, 10.0, 200.0, 200.0), doc.default_layer(), "One\nTwo", ParaFormat::default()).unwrap();
+    doc.styles_mut().para_mut(designcraft_doc::BASIC_PARAGRAPH).unwrap().para.composer = Some(Composer::Paragraph);
+    let story = doc.story_mut(sid).unwrap();
+    story.paras[0].para = ParaAttrs { composer: Some(Composer::Paragraph), ..Default::default() };
+    story.paras[1].para = ParaAttrs { composer: Some(Composer::SingleLine), ..Default::default() };
+
+    let bytes = export_idml(&doc);
+    let styles = zip_text(&bytes, "Resources/Styles.xml");
+    assert!(styles.contains(r#"Composer="HL Composer""#), "{styles}");
+    assert!(!styles.contains("Optyca"), "{styles}");
+    let story_xml = zip_text(&bytes, "Stories/");
+    assert!(story_xml.contains(r#"Composer="HL Composer""#), "{story_xml}");
+    assert!(story_xml.contains(r#"Composer="HL Single""#), "{story_xml}");
+    assert!(!story_xml.contains("Optyca"), "{story_xml}");
+}
