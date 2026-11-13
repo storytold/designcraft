@@ -79,11 +79,13 @@ fn spread_xf(d: &Document, id: ItemId) -> Option<(SpreadRef, Affine)> {
 /// non-zero rule they become holes.
 fn orient_holes(path: &mut PathData) {
     let beziers: Vec<BezPath> = path.subpaths.iter().map(|s| PathData::single(s.clone()).to_bezpath()).collect();
-    let n = path.subpaths.len();
-    for i in 0..n {
-        let Some(p) = path.subpaths[i].anchors.first().map(|a| a.p) else { continue };
-        let depth = (0..n).filter(|&j| j != i && designcraft_geom::hit::fill_contains(&beziers[j], designcraft_geom::FillRule::NonZero, p)).count();
-        let sp = &mut path.subpaths[i];
+    for (i, sp) in path.subpaths.iter_mut().enumerate() {
+        let Some(p) = sp.anchors.first().map(|a| a.p) else { continue };
+        let depth = beziers
+            .iter()
+            .enumerate()
+            .filter(|(j, bezier)| *j != i && designcraft_geom::hit::fill_contains(bezier, designcraft_geom::FillRule::NonZero, p))
+            .count();
         let cw = sp.area() > 0.0;
         if cw == (depth % 2 == 1) {
             sp.reverse();
