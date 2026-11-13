@@ -2431,6 +2431,14 @@ fn gap_tool_follows_snapping_settings() {
         layer: None,
         liquid: false,
     });
+    Arc::make_mut(&mut d.spreads[0]).pages[0].guides.push(Guide {
+        orientation: Orientation::Vertical,
+        position: 301.0,
+        spread: false,
+        locked: false,
+        layer: None,
+        liquid: false,
+    });
     let sel = Selection::default();
     let c = Cache::new();
     let l = CanvasLayout::new(&d, false);
@@ -2472,4 +2480,10 @@ fn gap_tool_follows_snapping_settings() {
     let (dx, overlays) = drag_dx(no_smart, Mods::default(), 68.0);
     assert!((dx - 68.0).abs() < 1e-6, "expected no smart-guide snap when disabled, got {dx}");
     assert!(overlays.is_empty(), "expected no guide overlay when smart_guides=false: {overlays:?}");
+
+    // Ruler guide beyond gap_move's minimum-width clamp (right item [200..300] clamps at x=299, max_delta=99):
+    // clamped edge x=299 is within 2 pt of guide x=301 (dx=101), which must be rejected as unreachable.
+    let (dx, overlays) = drag_dx(no_smart, Mods::default(), 108.0);
+    assert!((dx - 108.0).abs() < 1e-6, "expected unreachable snap target to be rejected, got {dx}");
+    assert!(overlays.is_empty(), "expected no guide overlay for unreachable snap target: {overlays:?}");
 }

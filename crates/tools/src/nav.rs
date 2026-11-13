@@ -579,6 +579,8 @@ struct GapDrag {
     z: f64,
     cross_lo: f64,
     cross_hi: f64,
+    min_delta: f64,
+    max_delta: f64,
     x_edges: [bool; 3],
     y_edges: [bool; 3],
     exclude: Vec<designcraft_doc::ItemId>,
@@ -604,9 +606,25 @@ impl GapDrag {
             cross_lo = c;
             cross_hi = c;
         }
+        let mut min_delta = f64::NEG_INFINITY;
+        for id in &g.before {
+            if let Some(it) = doc.item(*id) {
+                let b = it.bounds();
+                let limit = if g.vertical { b.x0 + 1.0 - b.x1 } else { b.y0 + 1.0 - b.y1 };
+                min_delta = min_delta.max(limit);
+            }
+        }
+        let mut max_delta = f64::INFINITY;
+        for id in &g.after {
+            if let Some(it) = doc.item(*id) {
+                let b = it.bounds();
+                let limit = if g.vertical { b.x1 - 1.0 - b.x0 } else { b.y1 - 1.0 - b.y0 };
+                max_delta = max_delta.min(limit);
+            }
+        }
         let flags = [!g.before.is_empty(), !g.before.is_empty() && !g.after.is_empty(), !g.after.is_empty()];
         let (x_edges, y_edges) = if g.vertical { (flags, [false; 3]) } else { ([false; 3], flags) };
-        Some(Self { vertical: g.vertical, a: g.a, z: g.z, cross_lo, cross_hi, x_edges, y_edges, exclude })
+        Some(Self { vertical: g.vertical, a: g.a, z: g.z, cross_lo, cross_hi, min_delta, max_delta, x_edges, y_edges, exclude })
     }
 }
 
@@ -654,10 +672,12 @@ impl Tool for GapTool {
                     && cx.snap.any()
                     && let Some(gap) = &self.gap
                 {
-                    let proposed = if gap.vertical {
-                        Rect::new(gap.a + d.x, gap.cross_lo, gap.z + d.x, gap.cross_hi)
+                    let (clamped, proposed, pointer) = if gap.vertical {
+                        let c = d.x.max(gap.min_delta).min(gap.max_delta);
+                        (c, Rect::new(gap.a + c, gap.cross_lo, gap.z + c, gap.cross_hi), Point::new(p.x + c, p.y + d.y))
                     } else {
-                        Rect::new(gap.cross_lo, gap.a + d.y, gap.cross_hi, gap.z + d.y)
+                        let c = d.y.max(gap.min_delta).min(gap.max_delta);
+                        (c, Rect::new(gap.cross_lo, gap.a + c, gap.cross_hi, gap.z + c), Point::new(p.x + d.x, p.y + c))
                     };
                     let hit = crate::snap::snap(
                         cx,
@@ -673,17 +693,19 @@ impl Tool for GapTool {
                             lengths: [None, None],
                             angle: None,
                             radius: 0.0,
-                            pointer: p + d,
+                            pointer,
                         },
                     );
-                    if gap.vertical {
-                        if hit.delta.x.is_finite() {
-                            d.x += hit.delta.x;
+                    let snap_delta = if gap.vertical { hit.delta.x } else { hit.delta.y };
+                    let snapped = clamped + snap_delta;
+                    if snap_delta.is_finite() && snapped >= gap.min_delta - 1e-6 && snapped <= gap.max_delta + 1e-6 {
+                        if gap.vertical {
+                            d.x = snapped;
+                        } else {
+                            d.y = snapped;
                         }
-                    } else if hit.delta.y.is_finite() {
-                        d.y += hit.delta.y;
+                        self.guides = hit.guides;
                     }
-                    self.guides = hit.guides;
                 }
                 out.push(Action::Preview(
                     "gap.move".into(),
