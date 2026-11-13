@@ -14,18 +14,6 @@ pub(super) fn dashed(painter: &egui::Painter, a: Pos2, b: Pos2, stroke: Stroke, 
 /// paper colour and in either theme, so the binding edge reads like the spread's own edge.
 pub(super) const PAGE_EDGE: Color32 = Color32::from_rgb(0x4a, 0x4a, 0x4a);
 
-/// The most baseline grid lines drawn on a page: one per point of the tallest page (216 in).
-pub(super) const MAX_BASELINES: usize = 216 * 72;
-
-/// Baseline grid lines inside a page, measured from its top: `start + n * increment` for n >= 0 (the bottom
-/// edge is not a line), `start` from [`BaselineGrid::origin`](designcraft_doc::BaselineGrid::origin). Lines
-/// above the page are skipped without walking them, however far up the start is.
-pub(super) fn baseline_grid_lines(start: f64, increment: f64, height: f64) -> impl Iterator<Item = f64> {
-    let step = increment.max(1.0);
-    let first = if start < 0.0 { start.rem_euclid(step) } else { start };
-    (0..MAX_BASELINES).map(move |n| first + n as f64 * step).take_while(move |y| *y < height)
-}
-
 /// What a screen mode shows of a spread, in screen coordinates: the trim, or out to the bleed or
 /// the slug box. Slug shows every printing element, so the bleed as well — and a slug narrower
 /// than the bleed does not pull the edge back in.
@@ -71,9 +59,9 @@ pub(super) fn draw_guides(
                 continue;
             }
             if shows(pr.union(p.margin_rect())) {
-                // The baseline grid is not drawn here: it belongs to the content pass, so that
-                // "Grids in Back" can put it behind what the page holds.
-                draw_page_grids(painter, xf, doc, slot, p, pr, false);
+                // The baseline grid is not drawn here: `draw_page_grids` leaves it to the content
+                // pass, so that Grids in Back can put it behind what the page holds.
+                draw_page_grids(painter, xf, doc, slot, p);
             }
             let cx = GuideCtx { painter, xf, doc, slot, sp, pasteboard, clip };
             draw_page_guides(&cx, (pi, p, pr), moving, &selection);
