@@ -100,34 +100,34 @@ impl<'r> Importer<'r> {
         // Keep built-ins as well: [Basic Table] is editable, and [No table style]
         // supplies the defaults used by named styles in ordinary IDML files.
         for (id, e) in &cell_styles {
-            self.cell_names.insert(id.clone(), names::style_name_in(names::CELL_BUILTINS, e.get("Name").unwrap_or("")));
+            let values = craft_idml::model::CellStyleValues::from_el(&crate::xml::to_craft(e));
+            self.cell_names.insert(id.clone(), names::style_name_in(names::CELL_BUILTINS, values.name.as_deref().unwrap_or("")));
         }
         for (id, e) in &table_styles {
             self.table_names.insert(id.clone(), names::style_name_in(names::TABLE_BUILTINS, e.get("Name").unwrap_or("")));
         }
         for (_, e) in &cell_styles {
-            let name = names::style_name_in(names::CELL_BUILTINS, e.get("Name").unwrap_or(""));
+            let values = craft_idml::model::CellStyleValues::from_el(&crate::xml::to_craft(e));
+            let name = names::style_name_in(names::CELL_BUILTINS, values.name.as_deref().unwrap_or(""));
             let mut cs = designcraft_doc::CellStyle { name: name.clone(), ..Default::default() };
             cs.based_on =
-                e.prop("BasedOn").map(|r| self.cell_style_ref(&r)).or_else(|| Some(designcraft_doc::NO_CELL_STYLE.into())).filter(|n| *n != name);
-            cs.fill = e.prop("FillColor").map(|c| self.swatch_ref(&c));
-            cs.fill_tint = tint(e.num("FillTint"));
-            let inset_names =
-                [("TextTopInset", "TopInset"), ("TextLeftInset", "LeftInset"), ("TextBottomInset", "BottomInset"), ("TextRightInset", "RightInset")];
-            cs.inset_overrides = inset_names.map(|(text, old)| e.num(text).or_else(|| e.num(old)).map(|v| v.max(0.0)));
+                values.based_on.map(|r| self.cell_style_ref(&r)).or_else(|| Some(designcraft_doc::NO_CELL_STYLE.into())).filter(|n| *n != name);
+            cs.fill = values.fill.as_deref().map(|c| self.swatch_ref(c));
+            cs.fill_tint = tint(values.fill_tint);
+            cs.inset_overrides = values.insets;
             if let [Some(top), Some(left), Some(bottom), Some(right)] = cs.inset_overrides {
                 cs.insets = Some([top, left, bottom, right]);
                 cs.inset_overrides = [None; 4];
             }
-            cs.vj = e.get("VerticalJustification").map(names::vj_in);
-            cs.first_baseline = e.get("FirstBaselineOffset").map(names::first_baseline_in);
-            cs.first_baseline_min = e.num("MinimumFirstBaselineOffset").filter(|v| v.is_finite()).map(|v| v.clamp(0.0, 8640.0));
+            cs.vj = values.vertical_justification.as_deref().map(names::vj_in);
+            cs.first_baseline = values.first_baseline.as_deref().map(names::first_baseline_in);
+            cs.first_baseline_min = values.first_baseline_min;
             cs.strokes = ["TopEdge", "LeftEdge", "BottomEdge", "RightEdge"].map(|side| self.cell_stroke_attrs(e, side));
             if let Some(stroke) = uniform_cell_stroke(&cs.strokes) {
                 cs.stroke = Some(stroke);
                 cs.strokes = Default::default();
             }
-            cs.paragraph_style = e.get("AppliedParagraphStyle").map(|r| self.para_style_ref(r)).filter(|n| n != designcraft_doc::NO_PARA_STYLE);
+            cs.paragraph_style = values.paragraph_style.as_deref().map(|r| self.para_style_ref(r)).filter(|n| n != designcraft_doc::NO_PARA_STYLE);
             match self.styles.cell.iter_mut().find(|c| c.name == name) {
                 Some(slot) => *slot = cs,
                 None => self.styles.cell.push(cs),
