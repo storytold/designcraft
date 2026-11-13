@@ -231,9 +231,32 @@ impl<'r> Importer<'r> {
                                 self.walk_story(&container_el, b, pf, pchars, &ncf, brk);
                             }
                             craft_idml::model::ContainerKind::XMLElement => self.walk_story(&container_el, b, pf, pchars, cf, brk),
-                            craft_idml::model::ContainerKind::CrossReferenceSource
-                            | craft_idml::model::ContainerKind::Note
-                            | craft_idml::model::ContainerKind::EndnoteRange => {}
+                            craft_idml::model::ContainerKind::CrossReferenceSource => {
+                                let page_variables: Vec<_> = self.xref_page_vars.iter().cloned().collect();
+                                let saved = craft_idml::model::SavedCrossReference::from_el(&crate::xml::to_craft(&container_el), &page_variables);
+                                let mut text = String::new();
+                                let mut page = None;
+                                for part in saved.parts {
+                                    match part {
+                                        craft_idml::model::SavedCrossReferencePart::Text(value) => text.push_str(&value),
+                                        craft_idml::model::SavedCrossReferencePart::PageNumber { result_text } => {
+                                            text.push_str(designcraft_doc::xref::PAGE_NUM_BLOCK);
+                                            if page.is_none() {
+                                                page = result_text;
+                                            }
+                                        }
+                                    }
+                                }
+                                b.xrefs.push(XrefSource {
+                                    me: saved.self_id.unwrap_or_default(),
+                                    format: saved.applied_format.unwrap_or_default(),
+                                    text,
+                                    page,
+                                });
+                                let f = container_el.find("CharacterStyleRange").map_or_else(|| cf.clone(), |r| self.range_format(r, pchars, cf));
+                                b.push(&designcraft_doc::XREF_MARK.to_string(), &f);
+                            }
+                            craft_idml::model::ContainerKind::Note | craft_idml::model::ContainerKind::EndnoteRange => {}
                         }
                     }
                     craft_idml::model::TextNode::Anchor(anchor) => {
@@ -257,21 +280,6 @@ impl<'r> Importer<'r> {
                         b.push(&text, cf);
                     }
                     _ => match c.local() {
-                        "CrossReferenceSource" => {
-                            // The generated text is regenerated from the format.
-                            let (mut text, mut page) = (String::new(), None);
-                            xref_saved_text(c, &self.xref_page_vars, &mut text, &mut page, 0);
-                            b.xrefs.push(XrefSource {
-                                me: c.get("Self").unwrap_or("").to_string(),
-                                format: c.get("AppliedFormat").unwrap_or("").to_string(),
-                                text,
-                                page,
-                            });
-                            // A source at paragraph level wraps a range; inside a range it holds the
-                            // text directly and takes that range's format.
-                            let f = c.find("CharacterStyleRange").map_or_else(|| cf.clone(), |r| self.range_format(r, pchars, cf));
-                            b.push(&designcraft_doc::XREF_MARK.to_string(), &f);
-                        }
                         // Anchored page items, including groups containing text frames.
                         "Rectangle" | "Oval" | "Polygon" | "GraphicLine" | "Group" | "TextFrame" => {
                             if let Some(item) = self.item(c, designcraft_geom::Affine::IDENTITY) {
@@ -459,37 +467,6 @@ struct XrefSource {
     format: String,
     text: String,
     page: Option<String>,
-}
-
-/// Whether a `TextVariableInstance` shows a cross-reference page number: its
-/// `AssociatedTextVariable` is a variable of that type (`page_vars`), or, in a file that doesn't
-/// define it, has the name InDesign gives that variable.
-fn is_xref_page_number(e: &El, page_vars: &HashSet<String>) -> bool {
-    e.get("AssociatedTextVariable").is_some_and(|v| page_vars.contains(v) || (page_vars.is_empty() && v.ends_with("TV XRefPageNumber")))
-}
-
-/// The text a `CrossReferenceSource` holds as shown, with its live page numbers (InDesign's
-/// cross-reference page number variable, `page_vars`) as `<pageNum />`. Tracked insertions count;
-/// tracked deletions don't. Returns the text and the page shown.
-fn xref_saved_text(e: &El, page_vars: &HashSet<String>, text: &mut String, page: &mut Option<String>, depth: usize) {
-    if depth > 16 {
-        return;
-    }
-    for c in e.elements() {
-        match c.local() {
-            "Content" => text.push_str(&c.text_content()),
-            "TextVariableInstance" if is_xref_page_number(c, page_vars) => {
-                text.push_str(designcraft_doc::xref::PAGE_NUM_BLOCK);
-                if page.is_none() {
-                    *page = c.get("ResultText").map(str::to_string);
-                }
-            }
-            "TextVariableInstance" => text.push_str(c.get("ResultText").unwrap_or("")),
-            "Change" if c.get("ChangeType") == Some("DeletedText") => {}
-            "CharacterStyleRange" | "Change" => xref_saved_text(c, page_vars, text, page, depth + 1),
-            _ => {}
-        }
-    }
 }
 
 impl StoryBuilder {
