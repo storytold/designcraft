@@ -15,6 +15,7 @@ craft-xlsx = { workspace = true }
 craft-docx = { workspace = true }
 craft-wordmodel = { workspace = true }
 craft-idml = { workspace = true }
+craft-file-formats = { workspace = true }
 
 [dev-dependencies]
 zip = { workspace = true }

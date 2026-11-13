@@ -57,7 +57,7 @@ fn load(path: &str) -> Result<designcraft_doc::Document> {
         let _ = path;
         vec![]
     };
-    if path.to_lowercase().ends_with(".idml") {
+    if craft_file_formats::detect(path, &bytes) == Some(craft_file_formats::Format::Idml) {
         return super::interchange::import_idml_confined(&bytes, Some(std::path::Path::new(path)))
             .map_err(|e| EngineError::Other(format!("{path}: {e}")));
     }

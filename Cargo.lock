@@ -1122,7 +1122,7 @@ dependencies = [
  "craft-offcrypto",
  "craft-opc",
  "craft-wordmodel",
- "craft-xml",
+ "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=ba24fe2435adb3c81ad6057faf36365fbba736cf)",
  "log",
  "quick-xml 0.41.0",
  "thiserror 2.0.21",
@@ -1135,11 +1135,16 @@ name = "craft-drawingml"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=ba24fe2435adb3c81ad6057faf36365fbba736cf#ba24fe2435adb3c81ad6057faf36365fbba736cf"
 dependencies = [
- "craft-xml",
+ "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=ba24fe2435adb3c81ad6057faf36365fbba736cf)",
  "kurbo",
  "log",
  "serde",
 ]
+
+[[package]]
+name = "craft-eps"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=6ba1ca33ca21c33de55ef155141db08ca6048e8d#6ba1ca33ca21c33de55ef155141db08ca6048e8d"
 
 [[package]]
 name = "craft-eps"
@@ -1151,9 +1156,18 @@ name = "craft-epub"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=ba24fe2435adb3c81ad6057faf36365fbba736cf#ba24fe2435adb3c81ad6057faf36365fbba736cf"
 dependencies = [
- "craft-xml",
+ "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=ba24fe2435adb3c81ad6057faf36365fbba736cf)",
  "craft-zip",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-file-formats"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=6ba1ca33ca21c33de55ef155141db08ca6048e8d#6ba1ca33ca21c33de55ef155141db08ca6048e8d"
+dependencies = [
+ "craft-eps 0.1.0 (git+https://github.com/storytold/craft-libs?rev=6ba1ca33ca21c33de55ef155141db08ca6048e8d)",
+ "craft-svg 0.1.0 (git+https://github.com/storytold/craft-libs?rev=6ba1ca33ca21c33de55ef155141db08ca6048e8d)",
 ]
 
 [[package]]
@@ -1189,7 +1203,7 @@ name = "craft-idml"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=ba24fe2435adb3c81ad6057faf36365fbba736cf#ba24fe2435adb3c81ad6057faf36365fbba736cf"
 dependencies = [
- "craft-xml",
+ "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=ba24fe2435adb3c81ad6057faf36365fbba736cf)",
  "craft-zip",
  "thiserror 2.0.21",
 ]
@@ -1217,6 +1231,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-indd"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=47bf5650b0d503b97bfb5e841746c4957897d11f#47bf5650b0d503b97bfb5e841746c4957897d11f"
+dependencies = [
+ "indd",
+]
+
+[[package]]
 name = "craft-jpeg"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=a47b78256c6acf3d7fdc4bc7cfbc25c373eac522#a47b78256c6acf3d7fdc4bc7cfbc25c373eac522"
@@ -1241,7 +1263,7 @@ name = "craft-math"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=ba24fe2435adb3c81ad6057faf36365fbba736cf#ba24fe2435adb3c81ad6057faf36365fbba736cf"
 dependencies = [
- "craft-xml",
+ "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=ba24fe2435adb3c81ad6057faf36365fbba736cf)",
  "serde",
 ]
 
@@ -1253,7 +1275,7 @@ dependencies = [
  "aes",
  "base64 0.23.1",
  "craft-cfb",
- "craft-xml",
+ "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=ba24fe2435adb3c81ad6057faf36365fbba736cf)",
  "getrandom 0.3.4",
  "hmac",
  "sha1 0.11.0",
@@ -1267,7 +1289,7 @@ name = "craft-opc"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=ba24fe2435adb3c81ad6057faf36365fbba736cf#ba24fe2435adb3c81ad6057faf36365fbba736cf"
 dependencies = [
- "craft-xml",
+ "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=ba24fe2435adb3c81ad6057faf36365fbba736cf)",
  "craft-zip",
  "log",
  "thiserror 2.0.21",
@@ -1340,9 +1362,21 @@ source = "git+https://github.com/storytold/craft-libs?rev=ba24fe2435adb3c81ad605
 [[package]]
 name = "craft-svg"
 version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=6ba1ca33ca21c33de55ef155141db08ca6048e8d#6ba1ca33ca21c33de55ef155141db08ca6048e8d"
+dependencies = [
+ "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=6ba1ca33ca21c33de55ef155141db08ca6048e8d)",
+ "flate2",
+ "kurbo",
+ "roxmltree 0.21.2",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-svg"
+version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=ba24fe2435adb3c81ad6057faf36365fbba736cf#ba24fe2435adb3c81ad6057faf36365fbba736cf"
 dependencies = [
- "craft-xml",
+ "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=ba24fe2435adb3c81ad6057faf36365fbba736cf)",
  "flate2",
  "kurbo",
  "roxmltree 0.21.2",
@@ -1438,7 +1472,16 @@ dependencies = [
  "craft-drawingml",
  "craft-opc",
  "craft-sheet",
- "craft-xml",
+ "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=ba24fe2435adb3c81ad6057faf36365fbba736cf)",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-xml"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=6ba1ca33ca21c33de55ef155141db08ca6048e8d#6ba1ca33ca21c33de55ef155141db08ca6048e8d"
+dependencies = [
+ "quick-xml 0.41.0",
  "thiserror 2.0.21",
 ]
 
@@ -1697,6 +1740,8 @@ dependencies = [
  "caseless",
  "craft-atomic",
  "craft-docpath",
+ "craft-file-formats",
+ "craft-indd",
  "craft-prepress",
  "craft-print",
  "designcraft-color",
@@ -1716,7 +1761,6 @@ dependencies = [
  "hayro-cmap",
  "hayro-interpret",
  "hayro-syntax",
- "indd",
  "kurbo",
  "log",
  "quick-xml 0.41.0",
@@ -1758,7 +1802,7 @@ name = "designcraft-format"
 version = "0.20.1"
 dependencies = [
  "craft-document-bundle",
- "craft-eps",
+ "craft-eps 0.1.0 (git+https://github.com/storytold/craft-libs?rev=ba24fe2435adb3c81ad6057faf36365fbba736cf)",
  "designcraft-doc",
  "serde",
  "serde_json",
@@ -1784,7 +1828,7 @@ name = "designcraft-idml"
 version = "0.20.1"
 dependencies = [
  "craft-idml",
- "craft-xml",
+ "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=ba24fe2435adb3c81ad6057faf36365fbba736cf)",
  "designcraft-color",
  "designcraft-compose",
  "designcraft-doc",
@@ -1800,10 +1844,11 @@ name = "designcraft-images"
 version = "0.20.1"
 dependencies = [
  "craft-cms",
- "craft-eps",
+ "craft-eps 0.1.0 (git+https://github.com/storytold/craft-libs?rev=ba24fe2435adb3c81ad6057faf36365fbba736cf)",
+ "craft-file-formats",
  "craft-image-codecs",
  "craft-psd",
- "craft-svg",
+ "craft-svg 0.1.0 (git+https://github.com/storytold/craft-libs?rev=ba24fe2435adb3c81ad6057faf36365fbba736cf)",
  "designcraft-color",
  "designcraft-fonts",
  "flate2",
@@ -1896,6 +1941,7 @@ name = "designcraft-textimport"
 version = "0.20.1"
 dependencies = [
  "craft-docx",
+ "craft-file-formats",
  "craft-idml",
  "craft-rtf",
  "craft-wordmodel",

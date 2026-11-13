@@ -84,12 +84,17 @@ fn open_path(s: &mut Session, p: &Value) -> Result<Value> {
         let bytes = crate::io::read_file(path).map_err(EngineError::Other)?;
         // The content decides first: a file's extension may be missing or wrong. The extension
         // then routes files whose content isn't recognised to the reader that explains why.
-        let ext = std::path::Path::new(path).extension().and_then(std::ffi::OsStr::to_str).unwrap_or_default().to_ascii_lowercase();
-        let native = designcraft_format::is_designcraft(&bytes) || bytes.trim_ascii_start().starts_with(b"{");
-        if designcraft_idml::is_idml(&bytes) || (!native && (crate::cmd::interchange::is_indd(path, &bytes) || ext == "idml")) {
+        let format = craft_file_formats::detect(path, &bytes);
+        let native = format == Some(craft_file_formats::Format::DesignCraft)
+            || designcraft_format::is_designcraft(&bytes)
+            || bytes.trim_ascii_start().starts_with(b"{");
+        if format == Some(craft_file_formats::Format::Idml)
+            || designcraft_idml::is_idml(&bytes)
+            || (!native && format == Some(craft_file_formats::Format::Indd))
+        {
             return crate::cmd::interchange::open_idml(s, p);
         }
-        if !native && ext != designcraft_format::EXTENSION {
+        if !native {
             return Err(bad("file.open", format!("{path}: not a DesignCraft or IDML file")));
         }
         let (mut d, mut warnings) = load_bytes(&bytes)?;
@@ -156,7 +161,13 @@ pub(super) fn file_open_bytes(s: &mut Session, p: &Value) -> Result<Value> {
     let b = base64_decode(str_param(p, "base64").unwrap_or(""));
     // IDML packages are recognised by their stored `mimetype` first entry, INDD files by their
     // signature (or their name).
-    if designcraft_idml::is_idml(&b) || crate::cmd::interchange::is_indd(str_param(p, "name").unwrap_or_default(), &b) {
+    let name = str_param(p, "name").unwrap_or_default();
+    let format = craft_file_formats::detect(name, &b);
+    let native = designcraft_format::is_designcraft(&b) || b.trim_ascii_start().starts_with(b"{");
+    if format == Some(craft_file_formats::Format::Idml)
+        || designcraft_idml::is_idml(&b)
+        || (!native && format == Some(craft_file_formats::Format::Indd))
+    {
         return crate::cmd::interchange::open_idml(s, p);
     }
     let (mut d, warnings) = load_bytes(&b)?;

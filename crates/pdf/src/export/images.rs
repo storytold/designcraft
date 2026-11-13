@@ -180,7 +180,7 @@ pub(super) fn recompress(data: &[u8], mode: RasterMode) -> Option<Image> {
     }
     let img = craft_image_codecs::decode(data).ok()?;
     let rgba = img.to_rgba8();
-    if img.layout().has_alpha() && rgba.chunks_exact(4).any(|p| p[3] < 255) {
+    if img.layout().has_alpha() && rgba.as_chunks::<4>().0.iter().any(|p| p[3] < 255) {
         return None;
     }
     // A grey image stays a grey JPEG (#1426).

@@ -20,39 +20,37 @@ pub use tone::{Tone, tone};
 pub const PT_PER_PX: f64 = 0.75;
 
 pub fn is_pdf(bytes: &[u8]) -> bool {
-    bytes.starts_with(b"%PDF")
+    file_format(bytes) == Some(craft_file_formats::Format::Pdf)
 }
 
 pub fn is_psd(bytes: &[u8]) -> bool {
-    craft_psd::head::sniff(bytes)
+    file_format(bytes) == Some(craft_file_formats::Format::Psd)
 }
 
 /// An SVG document (optionally after an XML declaration, comments or a doctype).
 pub fn is_svg(bytes: &[u8]) -> bool {
-    craft_svg::sniff::is_svg(bytes)
+    file_format(bytes) == Some(craft_file_formats::Format::Svg)
+}
+
+pub fn file_format(bytes: &[u8]) -> Option<craft_file_formats::Format> {
+    craft_file_formats::detect("", bytes)
 }
 
 /// MIME type of a placed graphic.
 pub fn mime(bytes: &[u8]) -> &'static str {
-    if is_eps(bytes) {
-        return "application/postscript";
-    }
-    if is_pdf(bytes) {
-        return "application/pdf";
-    }
-    if is_psd(bytes) {
-        return "image/vnd.adobe.photoshop";
-    }
-    if is_svg(bytes) {
-        return "image/svg+xml";
-    }
-    match craft_image_codecs::detect(bytes) {
-        Some(craft_image_codecs::Format::Png) => "image/png",
-        Some(craft_image_codecs::Format::Jpeg) => "image/jpeg",
-        Some(craft_image_codecs::Format::Gif) => "image/gif",
-        Some(craft_image_codecs::Format::WebP) => "image/webp",
-        Some(craft_image_codecs::Format::Tiff) => "image/tiff",
-        Some(craft_image_codecs::Format::Bmp) => "image/bmp",
+    match file_format(bytes) {
+        Some(craft_file_formats::Format::Eps | craft_file_formats::Format::PostScript | craft_file_formats::Format::Illustrator) => {
+            "application/postscript"
+        }
+        Some(craft_file_formats::Format::Pdf) => "application/pdf",
+        Some(craft_file_formats::Format::Psd) => "image/vnd.adobe.photoshop",
+        Some(craft_file_formats::Format::Svg) => "image/svg+xml",
+        Some(craft_file_formats::Format::Png) => "image/png",
+        Some(craft_file_formats::Format::Jpeg) => "image/jpeg",
+        Some(craft_file_formats::Format::Gif) => "image/gif",
+        Some(craft_file_formats::Format::WebP) => "image/webp",
+        Some(craft_file_formats::Format::Tiff) => "image/tiff",
+        Some(craft_file_formats::Format::Bmp) => "image/bmp",
         _ => "application/octet-stream",
     }
 }

@@ -17,6 +17,7 @@ craft-document-bundle = { git = "https://github.com/storytold/craft-libs", rev =
 craft-eps = { git = "https://github.com/storytold/craft-libs", rev = "ba24fe2435adb3c81ad6057faf36365fbba736cf", version = "=0.1.0" }
 craft-epub = { git = "https://github.com/storytold/craft-libs", rev = "ba24fe2435adb3c81ad6057faf36365fbba736cf", version = "=0.1.0" }
 craft-idml = { git = "https://github.com/storytold/craft-libs", rev = "ba24fe2435adb3c81ad6057faf36365fbba736cf", version = "=0.1.0" }
+craft-indd = { git = "https://github.com/storytold/craft-libs", rev = "47bf5650b0d503b97bfb5e841746c4957897d11f", version = "=0.1.0" }
 craft-svg = { git = "https://github.com/storytold/craft-libs", rev = "ba24fe2435adb3c81ad6057faf36365fbba736cf", version = "=0.1.0" }
 craft-xml = { git = "https://github.com/storytold/craft-libs", rev = "ba24fe2435adb3c81ad6057faf36365fbba736cf", version = "=0.1.0" }
 craft-rtf = { git = "https://github.com/storytold/craft-libs", rev = "ba24fe2435adb3c81ad6057faf36365fbba736cf", version = "=0.1.0" }
@@ -25,6 +26,7 @@ craft-docx = { git = "https://github.com/storytold/craft-libs", rev = "ba24fe243
 craft-wordmodel = { git = "https://github.com/storytold/craft-libs", rev = "ba24fe2435adb3c81ad6057faf36365fbba736cf", version = "=0.1.0" }
 craft-image-codecs = { git = "https://github.com/storytold/craft-libs", rev = "a47b78256c6acf3d7fdc4bc7cfbc25c373eac522", version = "=0.1.0" }
 craft-psd = { git = "https://github.com/storytold/craft-libs", rev = "a47b78256c6acf3d7fdc4bc7cfbc25c373eac522", version = "=0.1.0" }
+craft-file-formats = { git = "https://github.com/storytold/craft-libs", rev = "6ba1ca33ca21c33de55ef155141db08ca6048e8d", version = "=0.1.0" }
 # Shared keyboard bindings: chords, overrides, conflicts, egui dispatch, the Keyboard Shortcuts dialog.
 craft-keymap = { git = "https://github.com/storytold/craft-libs", rev = "92d392cff132eaf53e13afff77f38b5c11b73aa0", version = "=0.1.0", features = ["egui", "ui"] }
 # Separations, ink coverage and the ink manager; same revision as craft-pdf and the krilla patch.
@@ -88,13 +90,6 @@ flo_curves = "0.8"
 qrcodegen = "1.8"
 quick-xml = "0.41"
 zip = { version = "3", default-features = false, features = ["deflate"] }
-# INDD/INDT → IDML conversion for File › Open: storytold/indd-utils, pinned by rev as every other
-# git dependency here is. It parses untrusted INDD files, and `branch = "main"` meant any
-# `cargo update` -- Dependabot runs them -- pulled whatever was on that branch into the parser
-# without review (#1599).
-# (MIT OR Apache-2.0, no dependencies, builds for wasm).
-indd = { git = "https://github.com/storytold/indd-utils", rev = "7f3060e5bce78d21ea70e0d5eacb96edce15dfbe" }
-
 # Which paths stored in documents may be followed (craft-libs).
 craft-docpath = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "92d392cff132eaf53e13afff77f38b5c11b73aa0" }
 # Atomic file replacement for saves and exports (craft-libs).
