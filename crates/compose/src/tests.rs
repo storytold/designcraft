@@ -3377,6 +3377,29 @@ fn table_cell_footnotes_share_the_column_foot_in_reading_order() {
 }
 
 #[test]
+fn nested_table_footnotes_stay_distinct_from_their_outer_cell_notes() {
+    // The outer cell and the nested table's cell each hold a footnote at index 0 of their own story.
+    let (mut d, sid, fid) = doc_with("Before.", Rect::new(0.0, 0.0, 240.0, 400.0), ParaAttrs::default());
+    let mut nested = designcraft_doc::Table::new(78, 1, 1, 0, 0, 180.0);
+    nested.cells[0].text.insert(0, "Inner.");
+    nested.cells[0].text.insert_note(5, "Inner note.", ParaFormat::default());
+    let mut table = designcraft_doc::Table::new(77, 1, 1, 0, 0, 220.0);
+    let outer = &mut table.cells[0].text;
+    outer.insert(0, "Outer.");
+    outer.insert_note(5, "Outer note.", ParaFormat::default());
+    let end = outer.len();
+    outer.insert_table(end, nested);
+    let st = d.story_mut(sid).unwrap();
+    st.insert_table(st.len(), table);
+
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let ft = cs.frame(fid).unwrap();
+    let mut texts: Vec<&str> = ft.notes.iter().map(|n| n.source.as_ref()).collect();
+    texts.sort_unstable();
+    assert_eq!(texts, ["Inner note.", "Outer note."]);
+}
+
+#[test]
 fn table_cell_footnotes_move_with_the_row_group() {
     let (mut d, sid, fid) = doc_with("Before.", Rect::new(0.0, 0.0, 420.0, 200.0), ParaAttrs::default());
     d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = 2;

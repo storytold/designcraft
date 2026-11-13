@@ -30,9 +30,10 @@ use crate::{ComposeOptions, ComposedStory, Deco, FrameSpec, PlacedNote};
 pub(crate) enum NoteSource {
     /// Index in the composed story's own [`Story::notes`].
     Story(usize),
-    /// A table cell's footnote: its table, the owner cell, and the note's position in the cell's
-    /// own footnote flow.
-    Cell { table: u64, row: usize, col: usize, k: usize },
+    /// A table cell's footnote: its table, the owner cell, its place among the notes the cell's
+    /// composition shows (`slot`, which tells a nested table's note from the cell's own), and its
+    /// index in the story that owns it (`k`).
+    Cell { table: u64, row: usize, col: usize, slot: usize, k: usize },
 }
 
 /// A footnote referenced inside a table cell, placed at the foot of the column that takes its

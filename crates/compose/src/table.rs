@@ -343,9 +343,9 @@ pub(crate) fn place_table(
                     continue;
                 }
                 let Some(lay) = layouts.get(r * nc + c).and_then(Option::as_ref) else { continue };
-                for slot in &lay.notes {
+                for (i, slot) in lay.notes.iter().enumerate() {
                     v.push(crate::notes::CellNote {
-                        source: crate::notes::NoteSource::Cell { table: table.id, row: r, col: c, k: slot.ordinal },
+                        source: crate::notes::NoteSource::Cell { table: table.id, row: r, col: c, slot: i, k: slot.ordinal },
                         label: slot.label.clone(),
                         note: Arc::clone(&slot.note),
                     });
