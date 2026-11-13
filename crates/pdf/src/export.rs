@@ -203,7 +203,7 @@ impl GreyImage {
             return None;
         }
         let (mut grey, mut alpha) = (Vec::with_capacity(pixels), Vec::with_capacity(pixels));
-        for p in img.data().chunks_exact(2) {
+        for p in img.data().as_chunks::<2>().0 {
             grey.push(p[0]);
             alpha.push(p[1]);
         }
