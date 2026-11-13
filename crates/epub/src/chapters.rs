@@ -1,5 +1,6 @@
 use super::css::{export_mapping, para_classes};
 use super::html::Block;
+#[cfg(test)]
 use super::markup::xml_text;
 use super::*;
 
@@ -118,6 +119,7 @@ pub(crate) fn toc_entries(doc: &Document, order: &[Block]) -> Vec<(String, Strin
 
 /// The table of contents as nested `li`/`ol` items (the content of the navigation's outer
 /// `ol`): a deeper level goes into the previous item, skipped levels count as one.
+#[cfg(test)]
 pub(crate) fn nav_list(entries: &[(String, String, u8)], files: &BTreeMap<String, String>) -> String {
     let mut out = String::new();
     let mut open: Vec<u8> = Vec::new();

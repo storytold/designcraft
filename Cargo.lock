@@ -1036,6 +1036,32 @@ version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=92d392cff132eaf53e13afff77f38b5c11b73aa0#92d392cff132eaf53e13afff77f38b5c11b73aa0"
 
 [[package]]
+name = "craft-document-bundle"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=dc20b58f0f6059bd408d6f14ab130f343#dc20b58f0f6059bd408d6f14ab130f343"
+dependencies = [
+ "craft-zip",
+ "serde_json",
+ "thiserror 2.0.21",
+ "zip 9.1.1",
+]
+
+[[package]]
+name = "craft-eps"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=dc20b58f0f6059bd408d6f14ab130f343#dc20b58f0f6059bd408d6f14ab130f343"
+
+[[package]]
+name = "craft-epub"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=dc20b58f0f6059bd408d6f14ab130f343#dc20b58f0f6059bd408d6f14ab130f343"
+dependencies = [
+ "craft-xml",
+ "craft-zip",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "craft-fonts-build"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=92d392cff132eaf53e13afff77f38b5c11b73aa0#92d392cff132eaf53e13afff77f38b5c11b73aa0"
@@ -1179,6 +1205,25 @@ version = "0.1.0"
 source = "git+https://github.com/storytold/winprint.rs?rev=417ac3c4d14d3da5485a99c7d5ce8f05664ec312#417ac3c4d14d3da5485a99c7d5ce8f05664ec312"
 dependencies = [
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "craft-xml"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=dc20b58f0f6059bd408d6f14ab130f343#dc20b58f0f6059bd408d6f14ab130f343"
+dependencies = [
+ "quick-xml 0.41.0",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-zip"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=dc20b58f0f6059bd408d6f14ab130f343#dc20b58f0f6059bd408d6f14ab130f343"
+dependencies = [
+ "flate2",
+ "thiserror 2.0.21",
+ "zip 9.1.1",
 ]
 
 [[package]]
@@ -1436,7 +1481,7 @@ dependencies = [
 name = "designcraft-epub"
 version = "0.20.1"
 dependencies = [
- "chrono",
+ "craft-epub",
  "designcraft-color",
  "designcraft-doc",
  "zip 3.0.0",
@@ -1459,8 +1504,9 @@ dependencies = [
 name = "designcraft-format"
 version = "0.20.1"
 dependencies = [
+ "craft-document-bundle",
+ "craft-eps",
  "designcraft-doc",
- "designcraft-images",
  "serde",
  "serde_json",
  "thiserror 2.0.21",

@@ -122,26 +122,6 @@ fn anchored_objects_are_exported_in_place() {
     assert!(!story_html(&d, sid).contains("<img"));
 }
 
-#[test]
-fn iso8601_timestamps() {
-    for (t, want) in [
-        (0, "1970-01-01T00:00:00Z"),
-        (951_782_400, "2000-02-29T00:00:00Z"),
-        (1_791_891_000, "2026-10-13T11:30:00Z"),
-        (-86_400, "1969-12-31T00:00:00Z"),
-        // Years past 9999 keep the plain zero-padded year (no `+`).
-        (253_402_300_800, "10000-01-01T00:00:00Z"),
-        // Beyond chrono's range the old `civil_from_days` still converted; pin that output
-        // (never the epoch) in both directions and at the `i64` extremes.
-        (10_000_000_000_000, "318857-05-20T17:46:40Z"),
-        (-10_000_000_000_000, "-314918-08-13T06:13:20Z"),
-        (i64::MAX, "292277026596-12-04T15:30:07Z"),
-        (i64::MIN, "-292277022657-01-27T08:29:52Z"),
-    ] {
-        assert_eq!(iso8601(t), want);
-    }
-}
-
 /// #771, #773: dcterms:modified is a real time, the default identifier is a stable urn:uuid
 /// that differs between documents with the same title, and a JPEG cover keeps its type.
 #[test]
