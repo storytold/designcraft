@@ -261,13 +261,24 @@ impl Exporter<'_> {
     fn graphic_placed_svg(&mut self, s: &mut Surface, g: &designcraft_doc::Graphic) -> bool {
         let Some(asset) = self.doc.assets.get(&g.asset).filter(|asset| designcraft_images::is_svg(&asset.data)) else { return false };
         let Some(size) = Size::from_wh(g.size.0.max(1e-3) as f32, g.size.1.max(1e-3) as f32) else { return true };
-        let tree = self.svgs.entry(g.asset).or_insert_with(|| designcraft_images::svg_tree(&asset.data).map(Arc::new)).clone();
+        let tree = self
+            .svgs
+            .entry(g.asset)
+            .or_insert_with(|| {
+                craft_pdf::write::svg::Document::parse(
+                    &asset.data,
+                    craft_pdf::write::svg::Limits::default(),
+                    designcraft_images::svg_options_for_pdf(),
+                )
+                .ok()
+                .map(Arc::new)
+            })
+            .clone();
         match tree {
             Some(tree) => {
-                use krilla_svg::SurfaceExt;
                 s.push_transform(&tf(g.xf));
-                if s.draw_svg(&tree, size, krilla_svg::SvgSettings::default()).is_none() {
-                    self.warn(format!("{}: parts of the placed SVG could not be drawn", asset.name));
+                if let Err(error) = tree.draw(s, size, craft_pdf::write::svg::SvgSettings::default()) {
+                    self.warn(format!("{}: the placed SVG could not be drawn: {error}", asset.name));
                 }
                 s.pop();
             }

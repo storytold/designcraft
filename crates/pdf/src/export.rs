@@ -88,7 +88,7 @@ pub(crate) struct Exporter<'a> {
     /// Placed PDFs too new to embed in this version ("name is PDF 2.0"): the export fails.
     too_new: Vec<String>,
     /// Parsed placed SVGs.
-    svgs: HashMap<AssetId, Option<Arc<designcraft_images::usvg::Tree>>>,
+    svgs: HashMap<AssetId, Option<Arc<craft_pdf::write::svg::Document>>>,
     pub fonts: HashMap<u32, Option<krilla::text::Font>>,
     pub reverse_cmaps: HashMap<u32, Arc<HashMap<u32, char>>>,
     /// Convert CMYK to RGB (PDF/A: krilla needs a CMYK output profile we don't ship yet).

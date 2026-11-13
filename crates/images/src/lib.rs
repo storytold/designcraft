@@ -55,10 +55,9 @@ pub fn mime(bytes: &[u8]) -> &'static str {
     }
 }
 
-/// Initialize the process-wide usvg database from the bundled and Japanese fonts, with case-aware family/PostScript resolution, fallback selection and preflighted SVG data URLs; file-backed image URLs are never read.
-fn svg_options() -> &'static usvg::Options<'static> {
-    static OPTS: OnceLock<usvg::Options<'static>> = OnceLock::new();
-    OPTS.get_or_init(|| {
+fn svg_fontdb() -> Arc<usvg::fontdb::Database> {
+    static DB: OnceLock<Arc<usvg::fontdb::Database>> = OnceLock::new();
+    DB.get_or_init(|| {
         let mut db = usvg::fontdb::Database::new();
         for f in designcraft_fonts::bundled() {
             db.load_font_data(f.to_vec());
@@ -70,11 +69,31 @@ fn svg_options() -> &'static usvg::Options<'static> {
         db.set_serif_family("Source Serif 4");
         db.set_sans_serif_family("Source Sans 3");
         db.set_monospace_family("JetBrains Mono");
-        let font_resolver = usvg::FontResolver { select_font: select_font(), select_fallback: select_fallback() };
+        Arc::new(db)
+    })
+    .clone()
+}
+
+/// SVG options with DesignCraft's font database and family/PostScript fallback policy.
+/// The PDF adapter uses these same font choices while owning its separate parser.
+pub fn svg_options_for_pdf() -> usvg::Options<'static> {
+    usvg::Options {
+        fontdb: svg_fontdb(),
+        font_family: "Source Sans 3".into(),
+        font_resolver: usvg::FontResolver { select_font: select_font(), select_fallback: select_fallback() },
+        ..Default::default()
+    }
+}
+
+/// Initialize the process-wide usvg options with preflighted data URLs; file-backed image URLs are never read.
+fn svg_options() -> &'static usvg::Options<'static> {
+    static OPTS: OnceLock<usvg::Options<'static>> = OnceLock::new();
+    OPTS.get_or_init(|| {
+        let mut options = svg_options_for_pdf();
         // Images inside an SVG come only from `data:` URLs: an `href` naming a file is not read
         // (it is left out, as usvg leaves out an image it can't load).
         let default_data = usvg::ImageHrefResolver::default_data_resolver();
-        let image_href_resolver = usvg::ImageHrefResolver {
+        options.image_href_resolver = usvg::ImageHrefResolver {
             resolve_data: Box::new(move |mime, data, options| {
                 let raster = matches!(
                     craft_image_codecs::detect(&data),
@@ -95,7 +114,7 @@ fn svg_options() -> &'static usvg::Options<'static> {
             }),
             resolve_string: Box::new(|_, _| None),
         };
-        usvg::Options { fontdb: Arc::new(db), font_family: "Source Sans 3".into(), font_resolver, image_href_resolver, ..Default::default() }
+        options
     })
 }
 
@@ -298,14 +317,14 @@ fn charge_nested_svg(n: usize) -> Option<()> {
 
 /// Decode and structurally check SVG/SVGZ through the shared bounded parser.
 fn svg_text(bytes: &[u8], limit: usize) -> Option<std::borrow::Cow<'_, str>> {
-    let limits = craft_svg::preflight::Limits {
+    let limits = craft_svg::tree::Limits {
         bytes: limit.min(MAX_SVG_BYTES),
         depth: MAX_SVG_DEPTH,
         xml_nodes: u32::try_from(MAX_SVG_EVENTS).ok()?,
         refuse_entity_markup: true,
         ..Default::default()
     };
-    craft_svg::preflight::text(bytes, &limits).ok()
+    craft_svg::tree::text(bytes, &limits).ok()
 }
 
 /// Parse an SVG with at most 16 MiB encoded/decoded data, 100,000 XML events and

@@ -14,11 +14,10 @@ designcraft-color = { workspace = true }
 designcraft-doc = { workspace = true }
 designcraft-fonts = { workspace = true }
 designcraft-compose = { workspace = true }
-craft-pdf = { workspace = true, features = ["read", "write-pdf"] }
+craft-pdf = { workspace = true, features = ["read", "write-pdf", "write-svg"] }
 craft-image-codecs = { workspace = true }
 craft-prepress = { workspace = true }
 craft-cms = { workspace = true }
-krilla-svg = { workspace = true }
 designcraft-images = { workspace = true }
 image = { workspace = true }
 thiserror = { workspace = true }

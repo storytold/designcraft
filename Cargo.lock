@@ -1071,7 +1071,7 @@ source = "git+https://github.com/storytold/craft-libs?rev=ba24fe2435adb3c81ad605
 [[package]]
 name = "craft-cms"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=b267a3a66#b267a3a663a490778ae5c50a05ef75f3eb57e076"
+source = "git+https://github.com/storytold/craft-libs?rev=40525913633942f84b06d4837a8d90534a55d63f#40525913633942f84b06d4837a8d90534a55d63f"
 dependencies = [
  "md-5",
  "rayon",
@@ -1085,7 +1085,7 @@ source = "git+https://github.com/storytold/craft-libs?rev=ba24fe2435adb3c81ad605
 [[package]]
 name = "craft-csv"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=47bf5650b0d503b97bfb5e841746c4957897d11f#47bf5650b0d503b97bfb5e841746c4957897d11f"
+source = "git+https://github.com/dylanmtaylor/craft-libs?rev=44d7ac8d942dbd87048f82b3efc3e0d14483cc8d#44d7ac8d942dbd87048f82b3efc3e0d14483cc8d"
 dependencies = [
  "thiserror 2.0.21",
 ]
@@ -1354,14 +1354,17 @@ dependencies = [
 [[package]]
 name = "craft-pdf"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=b267a3a66#b267a3a663a490778ae5c50a05ef75f3eb57e076"
+source = "git+https://github.com/storytold/craft-libs?rev=40525913633942f84b06d4837a8d90534a55d63f#40525913633942f84b06d4837a8d90534a55d63f"
 dependencies = [
  "bytemuck",
+ "craft-svg 0.1.0 (git+https://github.com/storytold/craft-libs?rev=40525913633942f84b06d4837a8d90534a55d63f)",
  "hayro",
  "hayro-interpret",
  "hayro-syntax",
  "krilla",
+ "krilla-svg",
  "thiserror 2.0.21",
+ "usvg 0.47.0",
 ]
 
 [[package]]
@@ -1382,7 +1385,7 @@ dependencies = [
 [[package]]
 name = "craft-prepress"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=b267a3a66#b267a3a663a490778ae5c50a05ef75f3eb57e076"
+source = "git+https://github.com/storytold/craft-libs?rev=40525913633942f84b06d4837a8d90534a55d63f#40525913633942f84b06d4837a8d90534a55d63f"
 dependencies = [
  "craft-cms",
  "craft-pdf",
@@ -1433,21 +1436,22 @@ source = "git+https://github.com/storytold/craft-libs?rev=ba24fe2435adb3c81ad605
 [[package]]
 name = "craft-svg"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=8abfa9d0f14bafbfc3449fc552ffeafb9ca6a551#8abfa9d0f14bafbfc3449fc552ffeafb9ca6a551"
+source = "git+https://github.com/storytold/craft-libs?rev=40525913633942f84b06d4837a8d90534a55d63f#40525913633942f84b06d4837a8d90534a55d63f"
 dependencies = [
- "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=8abfa9d0f14bafbfc3449fc552ffeafb9ca6a551)",
+ "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=40525913633942f84b06d4837a8d90534a55d63f)",
  "flate2",
  "kurbo",
  "roxmltree 0.21.2",
  "thiserror 2.0.21",
+ "usvg 0.48.1",
 ]
 
 [[package]]
 name = "craft-svg"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=ba24fe2435adb3c81ad6057faf36365fbba736cf#ba24fe2435adb3c81ad6057faf36365fbba736cf"
+source = "git+https://github.com/storytold/craft-libs?rev=8abfa9d0f14bafbfc3449fc552ffeafb9ca6a551#8abfa9d0f14bafbfc3449fc552ffeafb9ca6a551"
 dependencies = [
- "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=ba24fe2435adb3c81ad6057faf36365fbba736cf)",
+ "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=8abfa9d0f14bafbfc3449fc552ffeafb9ca6a551)",
  "flate2",
  "kurbo",
  "roxmltree 0.21.2",
@@ -1544,6 +1548,15 @@ dependencies = [
  "craft-opc 0.1.0 (git+https://github.com/storytold/craft-libs?rev=ba24fe2435adb3c81ad6057faf36365fbba736cf)",
  "craft-sheet",
  "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=ba24fe2435adb3c81ad6057faf36365fbba736cf)",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-xml"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=40525913633942f84b06d4837a8d90534a55d63f#40525913633942f84b06d4837a8d90534a55d63f"
+dependencies = [
+ "quick-xml 0.41.0",
  "thiserror 2.0.21",
 ]
 
@@ -1952,7 +1965,7 @@ dependencies = [
  "craft-file-formats",
  "craft-image-codecs",
  "craft-psd",
- "craft-svg 0.1.0 (git+https://github.com/storytold/craft-libs?rev=ba24fe2435adb3c81ad6057faf36365fbba736cf)",
+ "craft-svg 0.1.0 (git+https://github.com/storytold/craft-libs?rev=40525913633942f84b06d4837a8d90534a55d63f)",
  "designcraft-color",
  "designcraft-fonts",
  "flate2",
@@ -1996,7 +2009,6 @@ dependencies = [
  "hayro-cmap",
  "hayro-interpret",
  "image",
- "krilla-svg",
  "kurbo",
  "log",
  "thiserror 2.0.21",
@@ -2752,6 +2764,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "fontdb"
+version = "0.24.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2660c5e9157bf76d2db1294e4a9feba604ef610819a3b591088d0d8392a3290f"
+dependencies = [
+ "log",
+ "slotmap",
+ "tinyvec",
+]
+
+[[package]]
 name = "foreign-types"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3181,7 +3204,7 @@ dependencies = [
 [[package]]
 name = "hayro"
 version = "0.7.1"
-source = "git+https://github.com/storytold/craft-libs?rev=b267a3a66#b267a3a663a490778ae5c50a05ef75f3eb57e076"
+source = "git+https://github.com/storytold/craft-libs?rev=40525913633942f84b06d4837a8d90534a55d63f#40525913633942f84b06d4837a8d90534a55d63f"
 dependencies = [
  "bytemuck",
  "hayro-interpret",
@@ -3201,7 +3224,7 @@ checksum = "9f4d0e94ddd48749f06bbe4e5389fb9799a0c45bcaf00495042076ef05e3241a"
 [[package]]
 name = "hayro-cmap"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=b267a3a66#b267a3a663a490778ae5c50a05ef75f3eb57e076"
+source = "git+https://github.com/storytold/craft-libs?rev=40525913633942f84b06d4837a8d90534a55d63f#40525913633942f84b06d4837a8d90534a55d63f"
 dependencies = [
  "brotli",
  "hayro-postscript",
@@ -3210,7 +3233,7 @@ dependencies = [
 [[package]]
 name = "hayro-interpret"
 version = "0.7.0"
-source = "git+https://github.com/storytold/craft-libs?rev=b267a3a66#b267a3a663a490778ae5c50a05ef75f3eb57e076"
+source = "git+https://github.com/storytold/craft-libs?rev=40525913633942f84b06d4837a8d90534a55d63f#40525913633942f84b06d4837a8d90534a55d63f"
 dependencies = [
  "bitflags 2.13.2",
  "hayro-cmap",
@@ -3228,7 +3251,7 @@ dependencies = [
 [[package]]
 name = "hayro-jbig2"
 version = "0.3.0"
-source = "git+https://github.com/storytold/craft-libs?rev=b267a3a66#b267a3a663a490778ae5c50a05ef75f3eb57e076"
+source = "git+https://github.com/storytold/craft-libs?rev=40525913633942f84b06d4837a8d90534a55d63f#40525913633942f84b06d4837a8d90534a55d63f"
 dependencies = [
  "fearless_simd",
  "hayro-ccitt",
@@ -3246,12 +3269,12 @@ dependencies = [
 [[package]]
 name = "hayro-postscript"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=b267a3a66#b267a3a663a490778ae5c50a05ef75f3eb57e076"
+source = "git+https://github.com/storytold/craft-libs?rev=40525913633942f84b06d4837a8d90534a55d63f#40525913633942f84b06d4837a8d90534a55d63f"
 
 [[package]]
 name = "hayro-syntax"
 version = "0.7.2"
-source = "git+https://github.com/storytold/craft-libs?rev=b267a3a66#b267a3a663a490778ae5c50a05ef75f3eb57e076"
+source = "git+https://github.com/storytold/craft-libs?rev=40525913633942f84b06d4837a8d90534a55d63f#40525913633942f84b06d4837a8d90534a55d63f"
 dependencies = [
  "flate2",
  "hayro-ccitt",
@@ -3683,6 +3706,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "09e54e57b4c48b40f7aec75635392b12b3421fa26fe8b4332e63138ed278459c"
 
 [[package]]
+name = "imagesize"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "65b27460c2c92b037f3f94c538ed9a3342f3fdf923606781629ccb35f82d042a"
+
+[[package]]
 name = "indd"
 version = "0.1.0"
 source = "git+https://github.com/storytold/indd-utils?rev=7f3060e5bce78d21ea70e0d5eacb96edce15dfbe#7f3060e5bce78d21ea70e0d5eacb96edce15dfbe"
@@ -3880,7 +3909,7 @@ dependencies = [
 [[package]]
 name = "krilla"
 version = "0.8.2"
-source = "git+https://github.com/storytold/craft-libs?rev=b267a3a66#b267a3a663a490778ae5c50a05ef75f3eb57e076"
+source = "git+https://github.com/storytold/craft-libs?rev=40525913633942f84b06d4837a8d90534a55d63f#40525913633942f84b06d4837a8d90534a55d63f"
 dependencies = [
  "base64 0.22.1",
  "bumpalo",
@@ -3889,7 +3918,7 @@ dependencies = [
  "gif",
  "hayro-write",
  "image-webp",
- "imagesize",
+ "imagesize 0.14.0",
  "indexmap",
  "pdf-writer",
  "png",
@@ -3912,13 +3941,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1237d7c37b16ca9fbc2e72dde13a10d321f9a44aceee35c062bc0a43bfc7ce16"
 dependencies = [
  "flate2",
- "fontdb",
+ "fontdb 0.23.0",
  "krilla",
  "resvg",
  "skrifa 0.42.1",
  "smallvec",
  "tiny-skia 0.12.0",
- "usvg",
+ "usvg 0.47.0",
 ]
 
 [[package]]
@@ -5542,7 +5571,7 @@ dependencies = [
  "rgb",
  "svgtypes",
  "tiny-skia 0.12.0",
- "usvg",
+ "usvg 0.47.0",
  "zune-jpeg",
 ]
 
@@ -7130,8 +7159,8 @@ dependencies = [
  "base64 0.22.1",
  "data-url",
  "flate2",
- "fontdb",
- "imagesize",
+ "fontdb 0.23.0",
+ "imagesize 0.14.0",
  "kurbo",
  "log",
  "pico-args",
@@ -7143,6 +7172,33 @@ dependencies = [
  "svgtypes",
  "tiny-skia-path 0.12.0",
  "ttf-parser",
+ "unicode-bidi",
+ "unicode-script",
+ "unicode-vo",
+ "xmlwriter",
+]
+
+[[package]]
+name = "usvg"
+version = "0.48.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "977d0a4abdef933f424a99fe09f95576e089b90aebc6f016a3bc813762493e91"
+dependencies = [
+ "base64 0.23.1",
+ "data-url",
+ "fontdb 0.24.0",
+ "harfrust 0.12.0",
+ "imagesize 0.15.0",
+ "kurbo",
+ "log",
+ "pico-args",
+ "roxmltree 0.21.2",
+ "simplecss",
+ "siphasher",
+ "skrifa 0.44.0",
+ "strict-num",
+ "svgtypes",
+ "tiny-skia-path 0.12.0",
  "unicode-bidi",
  "unicode-script",
  "unicode-vo",
