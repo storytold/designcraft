@@ -668,6 +668,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Composer:", "منضّد النص:"),
     ("Paragraph Composer", "منضّد الفقرات"),
     ("Single-line Composer", "منضّد السطر الواحد"),
+    ("World-Ready Paragraph Composer", "منضّد الفقرات العالمي"),
+    ("World-Ready Single-line Composer", "منضّد السطر الواحد العالمي"),
     ("Style Name:", "اسم النمط:"),
     ("Based On:", "مبني على:"),
     ("for", "لعدد"),

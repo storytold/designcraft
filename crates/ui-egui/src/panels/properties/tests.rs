@@ -1280,6 +1280,29 @@ fn transform_flips_and_rotates_from_properties() {
     assert!(h.query_by(|n| n.role() == egui::accesskit::Role::TextInput && n.value().as_deref() == Some("90°")).is_some());
 }
 
+/// The composer choices are InDesign's: the Paragraph and Single-line Composers and their
+/// World-Ready forms, each setting both `composer` and `worldReady`. Under a Japanese composer,
+/// which is always World-Ready, there is no choice that turns World-Ready off.
+#[test]
+fn composer_choices_set_the_composer_and_world_ready_together() {
+    use serde_json::json;
+    let entries = composer_entries(&json!("singleLine"), &json!(false));
+    let labels: Vec<_> = entries.iter().map(|e| e.0).collect();
+    assert_eq!(labels, ["Paragraph Composer", "Single-line Composer", "World-Ready Paragraph Composer", "World-Ready Single-line Composer"]);
+    let selected: Vec<_> = entries.iter().filter(|e| e.1).map(|e| e.0).collect();
+    assert_eq!(selected, ["Single-line Composer"]);
+    assert_eq!(entries[2].2, json!({"composer": "paragraph", "worldReady": true}));
+    assert_eq!(entries[1].2, json!({"composer": "singleLine", "worldReady": false}));
+    // Mixed selects none.
+    assert!(composer_entries(&Value::Null, &json!(true)).iter().all(|e| !e.1));
+    assert!(composer_entries(&json!("paragraph"), &Value::Null).iter().all(|e| !e.1));
+    // A Japanese composer: its kind's two, none touching World-Ready.
+    let japanese = composer_entries(&json!("japaneseSingleLine"), &json!(false));
+    assert_eq!(japanese.len(), 2);
+    assert!(japanese.iter().all(|e| e.2.get("worldReady").is_none()));
+    assert!(japanese[1].1 && japanese[1].2 == json!({"composer": "japaneseSingleLine"}));
+}
+
 /// The vertical extent of Properties › Text Frame: from its heading (the last "Text Frame" label;
 /// the selection band above may say "Text Frame" too) to the Quick Actions heading.
 fn text_frame_band(h: &Harness<'_, DesignApp>) -> (f32, f32) {

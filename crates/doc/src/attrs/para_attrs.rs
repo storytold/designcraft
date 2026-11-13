@@ -37,6 +37,11 @@ attr_set! {
         nested_line_styles: Vec<NestedLineStyle> = Vec::new(),
         grid_align: GridAlign = GridAlign::None,
         composer: Composer = Composer::Paragraph,
+        /// World-Ready (InDesign's World-Ready Paragraph and Single-line Composers): lines are
+        /// ordered by direction (bidi) and joining scripts such as Arabic are shaped. Off, as with
+        /// InDesign's Paragraph and Single-line Composers, a line runs left to right in text order
+        /// and Arabic letters stand unjoined (marks still sit on their letters).
+        world_ready: bool = true,
         // Hyphenation
         hyphenate: bool = true,
         hyph_min_word: u32 = 5,
@@ -243,6 +248,13 @@ impl ParaAttrs {
 }
 
 impl ParaProps {
+    /// Whether lines are set World-Ready ([`ParaProps::world_ready`]). The Japanese composers
+    /// always are: InDesign has no Japanese composer that isn't (IDML names one composer for both,
+    /// `HL Composer J`), so `world_ready` off under one is ignored and round-trips as it sets.
+    pub fn is_world_ready(&self) -> bool {
+        self.world_ready || self.composer.japanese()
+    }
+
     /// The label of a numbered paragraph with number `n`.
     pub fn number_label(&self, n: u32) -> String {
         expand_list_text(&self.number_expression, &self.number_style.format(n))
