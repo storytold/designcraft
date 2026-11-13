@@ -1,5 +1,5 @@
 use super::frame::{Prefs, text_frame_options};
-use super::values::{lab_to_color, nums};
+use super::values::lab_to_color;
 use super::{
     Color, ColorType, El, Gradient, GradientKind, GradientStop, HashMap, HashSet, Importer, Styles, Swatch, SwatchValue, TextFrameOptions, names,
     swatch,
@@ -8,12 +8,11 @@ use super::{
 impl<'r> Importer<'r> {
     // ---------- swatches ----------
 
-    fn color_of(e: &El) -> Option<(Color, ColorType)> {
-        let v = nums(e.get("ColorValue").unwrap_or(""));
-        let space = e.get("Space").unwrap_or("CMYK");
-        let c = match space {
-            "RGB" if v.len() >= 3 => Color::rgb((v[0] / 255.0) as f32, (v[1] / 255.0) as f32, (v[2] / 255.0) as f32),
-            "LAB" if v.len() >= 3 => lab_to_color(v[0] as f32, v[1] as f32, v[2] as f32),
+    fn color_of(e: &craft_idml::model::Swatch) -> Option<(Color, ColorType)> {
+        let v = e.color_value();
+        let c = match e.space() {
+            craft_idml::model::ColorSpace::Rgb if v.len() >= 3 => Color::rgb((v[0] / 255.0) as f32, (v[1] / 255.0) as f32, (v[2] / 255.0) as f32),
+            craft_idml::model::ColorSpace::Lab if v.len() >= 3 => lab_to_color(v[0] as f32, v[1] as f32, v[2] as f32),
             _ if v.len() >= 4 => Color::cmyk((v[0] / 100.0) as f32, (v[1] / 100.0) as f32, (v[2] / 100.0) as f32, (v[3] / 100.0) as f32),
             _ => return None,
         };
@@ -26,25 +25,21 @@ impl<'r> Importer<'r> {
         if !parts.iter().all(|v| v.is_finite()) {
             return None;
         }
-        let ty = if e.get("Model") == Some("Spot") { ColorType::Spot } else { ColorType::Process };
+        let ty = if e.spot() { ColorType::Spot } else { ColorType::Process };
         Some((c, ty))
     }
 
     /// Custom stroke styles.
     fn read_stroke_styles(&mut self, top: &[El]) {
-        for e in top.iter().filter(|e| matches!(e.local(), "StripedStrokeStyle" | "DashedStrokeStyle" | "DottedStrokeStyle")) {
-            let (Some(id), Some(name)) = (e.get("Self"), e.get("Name")) else { continue };
-            let kind = match e.local() {
-                "StripedStrokeStyle" => designcraft_doc::StrokeType::Stripes {
-                    bands: nums(e.get("StripeArray").unwrap_or(""))
-                        .as_chunks::<2>()
-                        .0
-                        .iter()
-                        .map(|c| (c[0] / 100.0, (c[1] - c[0]) / 100.0))
-                        .collect(),
+        let top: Vec<_> = top.iter().map(crate::xml::to_craft).collect();
+        for e in craft_idml::model::stroke_styles(&top) {
+            let (Some(id), Some(name)) = (e.values.self_id(), e.values.name()) else { continue };
+            let kind = match e.kind {
+                craft_idml::model::StrokeStyleKind::Striped => designcraft_doc::StrokeType::Stripes {
+                    bands: e.stripe_array().as_chunks::<2>().0.iter().map(|c| (c[0] / 100.0, (c[1] - c[0]) / 100.0)).collect(),
                 },
-                "DashedStrokeStyle" => designcraft_doc::StrokeType::Dashed { pattern: nums(e.get("DashArray").unwrap_or("")) },
-                _ => designcraft_doc::StrokeType::Dotted,
+                craft_idml::model::StrokeStyleKind::Dashed => designcraft_doc::StrokeType::Dashed { pattern: e.dash_array() },
+                craft_idml::model::StrokeStyleKind::Dotted => designcraft_doc::StrokeType::Dotted,
             };
             let _ = id;
             self.stroke_styles.push(designcraft_doc::StrokeStyleDef { name: name.to_string(), kind });
@@ -70,10 +65,12 @@ impl<'r> Importer<'r> {
     }
 
     pub(super) fn graphics(&mut self, top: &[El]) {
+        let model_top: Vec<_> = top.iter().map(crate::xml::to_craft).collect();
+        let swatches = craft_idml::model::swatches(&model_top);
         let mut order: Vec<(String, Swatch)> = Vec::new();
         // Colours.
-        for e in top.iter().filter(|e| e.local() == "Color") {
-            let Some(id) = e.get("Self") else { continue };
+        for e in swatches.iter().filter(|e| e.kind == craft_idml::model::SwatchKind::Color) {
+            let Some(id) = e.values.self_id() else { continue };
             let Some((c, ty)) = Self::color_of(e) else { continue };
             match id {
                 "Color/Paper" => {
@@ -85,8 +82,8 @@ impl<'r> Importer<'r> {
                 "Color/Black" | "Color/Registration" => continue,
                 _ => {}
             }
-            let name = e.get("Name").unwrap_or("");
-            if e.get("Visible") == Some("false") || name.is_empty() || name == "$ID/" || e.get("Model") == Some("Registration") {
+            let name = e.values.name().unwrap_or("");
+            if !e.values.visible() || name.is_empty() || name == "$ID/" || e.values.get("Model") == Some("Registration") {
                 self.hidden_colors.insert(id.to_string(), c);
                 continue;
             }
@@ -98,11 +95,11 @@ impl<'r> Importer<'r> {
             ));
         }
         // Tints (after colours: they reference them).
-        for e in top.iter().filter(|e| e.local() == "Tint") {
-            let Some(id) = e.get("Self") else { continue };
-            let base = e.get("BaseColor").map(|b| self.swatch_ref(b)).unwrap_or_else(|| swatch::BLACK.to_string());
-            let t = e.num("TintValue").unwrap_or(100.0);
-            let name = match e.get("Name") {
+        for e in swatches.iter().filter(|e| e.kind == craft_idml::model::SwatchKind::Tint) {
+            let Some(id) = e.values.self_id() else { continue };
+            let base = e.base_color().map(|b| self.swatch_ref(b)).unwrap_or_else(|| swatch::BLACK.to_string());
+            let t = e.tint_value().unwrap_or(100.0);
+            let name = match e.values.name() {
                 Some(n) if !n.is_empty() && n != "$ID/" => n.to_string(),
                 _ => format!("{base} {}%", names::num(t)),
             };
@@ -114,25 +111,25 @@ impl<'r> Importer<'r> {
         }
         self.read_stroke_styles(top);
         self.read_inks(top);
-        for e in top.iter().filter(|e| e.local() == "Gradient") {
-            let Some(id) = e.get("Self") else { continue };
+        for e in swatches.iter().filter(|e| e.kind == craft_idml::model::SwatchKind::Gradient) {
+            let Some(id) = e.values.self_id() else { continue };
             let mut stops: Vec<GradientStop> = Vec::new();
-            for s in e.find_all("GradientStop") {
-                let r = s.get("StopColor");
+            for s in e.stops_in_order() {
+                let r = s.color.as_deref();
                 let c = r.map(|r| self.color_for_ref(r, &order)).unwrap_or(Color::BLACK);
                 // A stop on a named swatch (a spot, a tint, [Paper]) keeps it for its inks;
                 // unnamed colors stay plain. The id becomes the swatch's name below, once
                 // repeated names are numbered.
                 let swatch = r.filter(|r| self.swatch_names.get(*r).is_some_and(|n| n != swatch::NONE)).map(str::to_string);
-                let loc = s.num("Location").unwrap_or(0.0) / 100.0;
-                if let (Some(prev), Some(m)) = (stops.last_mut(), s.num("Midpoint")) {
+                let loc = s.location.unwrap_or(0.0) / 100.0;
+                if let (Some(prev), Some(m)) = (stops.last_mut(), s.midpoint) {
                     prev.midpoint = (m / 100.0) as f32;
                 }
                 stops.push(GradientStop { swatch, ..GradientStop::new(loc as f32, c) });
             }
-            let kind = if e.get("Type") == Some("Radial") { GradientKind::Radial } else { GradientKind::Linear };
-            let unnamed = e.get("Visible") == Some("false") || e.get("Name").is_none_or(|n| n.is_empty() || n == "$ID/");
-            let name = if unnamed { "Gradient".to_string() } else { e.get("Name").unwrap_or_default().to_string() };
+            let kind = if e.radial() { GradientKind::Radial } else { GradientKind::Linear };
+            let unnamed = !e.values.visible() || e.values.name().is_none_or(|n| n.is_empty() || n == "$ID/");
+            let name = if unnamed { "Gradient".to_string() } else { e.values.name().unwrap_or_default().to_string() };
             let sw =
                 Swatch { name, value: SwatchValue::Gradient { gradient: Gradient { kind, stops } }, locked: false, named: !unnamed, hidden: false };
             if unnamed {
@@ -144,11 +141,8 @@ impl<'r> Importer<'r> {
             }
         }
         // Panel order from the root colour group.
-        let group_order: Vec<String> = top
-            .iter()
-            .filter(|e| e.local() == "ColorGroup")
-            .flat_map(|g| g.find_all("ColorGroupSwatch").filter_map(|s| s.get("SwatchItemRef").map(str::to_string)).collect::<Vec<_>>())
-            .collect();
+        let groups = craft_idml::model::color_groups(&model_top);
+        let group_order: Vec<String> = groups.iter().filter(|g| g.is_root()).flat_map(|g| g.members().into_iter().map(str::to_string)).collect();
         if !group_order.is_empty() {
             order.sort_by_key(|(id, _)| group_order.iter().position(|g| g == id).unwrap_or(usize::MAX));
         }
@@ -179,10 +173,9 @@ impl<'r> Importer<'r> {
             }
         }
         // Colour groups other than the root one become Swatches panel folders.
-        for g in top.iter().filter(|e| e.local() == "ColorGroup" && e.get("IsRootColorGroup") != Some("true")) {
-            let swatches: Vec<String> =
-                g.find_all("ColorGroupSwatch").filter_map(|s| s.get("SwatchItemRef")).filter_map(|r| self.swatch_names.get(r).cloned()).collect();
-            self.color_groups.push(designcraft_doc::ColorGroup { name: g.get("Name").unwrap_or("Color Group").to_string(), swatches });
+        for g in groups.iter().filter(|g| !g.is_root()) {
+            let swatches = g.members().into_iter().filter_map(|r| self.swatch_names.get(r).cloned()).collect();
+            self.color_groups.push(designcraft_doc::ColorGroup { name: g.values.name().unwrap_or("Color Group").to_string(), swatches });
         }
     }
 
