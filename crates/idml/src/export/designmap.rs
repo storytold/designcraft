@@ -263,47 +263,8 @@ pub(super) const CONTAINER: &str = craft_idml::CONTAINER_XML;
 /// A cross-reference format as InDesign building blocks.
 fn xref_format_el(i: usize, f: &designcraft_doc::XrefFormat) -> El {
     let me = xref_format_self(i);
-    let mut el = El::new("CrossReferenceFormat").attr("Self", &me).attr("Name", &f.name).attr("AppliedCharacterStyle", "n");
-    let mut k = 0;
-    let mut block = |el: &mut El, kind: &str, text: &str, delim: &str, include: bool| {
-        el.push(
-            El::new("BuildingBlock")
-                .attr("Self", format!("{me}BuildingBlock{k}"))
-                .attr("BlockType", kind)
-                .attr("AppliedCharacterStyle", "n")
-                .attr("CustomText", if text.is_empty() { "$ID/" } else { text })
-                .attr("AppliedDelimiter", if delim.is_empty() { "$ID/" } else { delim })
-                .attr("IncludeDelimiter", bool_s(include)),
-        );
-        k += 1;
-    };
-    let mut rest = f.definition.as_str();
-    while let Some(a) = rest.find('<') {
-        let Some(b) = rest[a..].find('>') else { break };
-        if a > 0 {
-            block(&mut el, "CustomStringBuildingBlock", &rest[..a], "", false);
-        }
-        let tag = rest[a + 1..a + b].trim().trim_end_matches('/').trim();
-        let attr = |k: &str| tag.find(&format!("{k}=\"")).and_then(|i| tag[i + k.len() + 2..].split('"').next()).unwrap_or("").to_string();
-        match tag.split_whitespace().next().unwrap_or("") {
-            "fullPara" => block(&mut el, "FullParagraphBuildingBlock", "", "", false),
-            "paraText" => block(&mut el, "ParagraphTextBuildingBlock", "", "", false),
-            "paraNum" => block(&mut el, "ParagraphNumberBuildingBlock", "", "", false),
-            "pageNum" => block(&mut el, "PageNumberBuildingBlock", "", "", false),
-            "txtAnchrName" => block(&mut el, "BookmarkNameBuildingBlock", "", "", false),
-            "chapNum" => block(&mut el, "ChapterNumberBuildingBlock", "", "", false),
-            "fileName" => block(&mut el, "FileNameBuildingBlock", "", "", false),
-            "partialPara" => block(&mut el, "PartialParagraphBuildingBlock", "", &attr("delim"), attr("includeDelim") == "true"),
-            _ => block(&mut el, "CustomStringBuildingBlock", &rest[a..a + b + 1], "", false),
-        }
-        rest = &rest[a + b + 1..];
-    }
-    if !rest.is_empty() {
-        block(&mut el, "CustomStringBuildingBlock", rest, "", false);
-    }
-    el
+    crate::xml::from_craft(craft_idml::model::CrossReferenceFormatValues::to_el(&me, &f.name, &f.definition))
 }
-
 /// Package metadata: the creation and modification times that date variables show.
 pub(super) fn metadata_xmp(d: &Document) -> String {
     use designcraft_doc::vars::format_date;
