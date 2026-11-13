@@ -57,6 +57,8 @@ mod xml;
 #[cfg(test)]
 mod tests;
 
+pub use craft_idml::is_idml;
+pub use craft_idml::value::{base64_decode, base64_encode};
 pub use export::{ExportOptions, export_idml, export_idml_with};
 pub use import::{Imported, import_idml, import_idml_report, import_idml_report_with_previews, import_idml_with};
 
@@ -76,56 +78,6 @@ pub enum IdmlError {
 }
 
 pub type Result<T> = std::result::Result<T, IdmlError>;
-
-/// Does `bytes` look like an IDML package (a ZIP whose first, stored entry is the IDML `mimetype`)?
-pub fn is_idml(bytes: &[u8]) -> bool {
-    bytes.starts_with(b"PK\x03\x04") && bytes.get(30..38) == Some(b"mimetype") && {
-        let extra = bytes.get(28..30).map_or(0, |e| u16::from_le_bytes([e[0], e[1]]) as usize);
-        bytes.get(38 + extra..).is_some_and(|rest| rest.starts_with(MIMETYPE.as_bytes()))
-    }
-}
-
-const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-/// Base64 with line breaks every 76 characters (as embedded image `Contents` are written).
-pub(crate) fn base64_encode(data: &[u8]) -> String {
-    let mut out = String::with_capacity(data.len().div_ceil(3) * 4 + data.len() / 57);
-    for (i, c) in data.chunks(3).enumerate() {
-        if i > 0 && i % 19 == 0 {
-            out.push('\n');
-        }
-        let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
-        out.push(B64[(n >> 18) as usize & 63] as char);
-        out.push(B64[(n >> 12) as usize & 63] as char);
-        out.push(if c.len() > 1 { B64[(n >> 6) as usize & 63] as char } else { '=' });
-        out.push(if c.len() > 2 { B64[n as usize & 63] as char } else { '=' });
-    }
-    out
-}
-
-/// Lenient base64 decoding (whitespace and unknown characters are skipped).
-pub(crate) fn base64_decode(s: &str) -> Vec<u8> {
-    let mut out = Vec::with_capacity(s.len() * 3 / 4);
-    let mut buf = 0u32;
-    let mut bits = 0;
-    for b in s.bytes() {
-        let v = match b {
-            b'A'..=b'Z' => b - b'A',
-            b'a'..=b'z' => b - b'a' + 26,
-            b'0'..=b'9' => b - b'0' + 52,
-            b'+' | b'-' => 62,
-            b'/' | b'_' => 63,
-            _ => continue,
-        } as u32;
-        buf = buf << 6 | v;
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            out.push((buf >> bits) as u8);
-        }
-    }
-    out
-}
 
 /// Sniff an image's MIME type and pixel size (PNG, JPEG, GIF, WebP, TIFF, PDF, EPS).
 pub(crate) fn sniff_image(b: &[u8]) -> (Option<&'static str>, Option<(u32, u32)>) {
