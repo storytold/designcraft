@@ -117,7 +117,11 @@ pub fn export_pptx(doc: &Document, cache: &Cache, opts: &PptxOptions) -> Result<
         Vec::new()
     };
     let title = opts.title.clone().unwrap_or_else(|| doc.title.clone());
-    let bytes = package::write(&package::Package {
+    // Build a compatibility package from DesignCraft's composed-page mapping, then hand the
+    // document model and final OOXML serialization to the shared PresentationML implementation.
+    // This keeps the existing geometry, text, table and media mapping intact while the mapping
+    // moves from DrawingML fragments to craft_pptx model values.
+    let mapped = package::write(&package::Package {
         size,
         slides: &slides,
         media: &ex.media,
@@ -126,5 +130,7 @@ pub fn export_pptx(doc: &Document, cache: &Cache, opts: &PptxOptions) -> Result<
         author: opts.author.as_deref().unwrap_or(""),
         created: opts.created,
     })?;
+    let presentation = craft_pptx::import(&mapped, &craft_pptx::Plain).map_err(|e| PptxError::Write(e.to_string()))?;
+    let bytes = craft_pptx::export(&presentation, &craft_pptx::Plain).map_err(|e| PptxError::Write(e.to_string()))?;
     Ok(ExportReport { bytes, slides: slides.len(), warnings: ex.warnings })
 }

@@ -131,61 +131,38 @@ struct Element {
 }
 
 fn parse(xml: &str) -> std::result::Result<Vec<Element>, String> {
-    use quick_xml::events::Event;
-    let mut r = quick_xml::Reader::from_str(xml);
-    let mut depth = 0usize;
-    let mut out: Vec<Element> = Vec::new();
-    let mut child: Option<(String, String)> = None;
-    loop {
-        match r.read_event().map_err(|e| e.to_string())? {
-            Event::Start(e) => {
-                depth += 1;
-                let name = String::from_utf8_lossy(e.local_name().as_ref()).to_string();
-                match depth {
-                    2 => out.push(Element { name, text: String::new(), children: vec![] }),
-                    3 => child = Some((name, String::new())),
-                    _ => {}
-                }
+    fn descendant_text(element: &craft_xml::El, into: &mut String) {
+        for node in &element.children {
+            match node {
+                craft_xml::Node::Text(text) | craft_xml::Node::CData(text) => into.push_str(text),
+                craft_xml::Node::El(child) => descendant_text(child, into),
+                craft_xml::Node::Pi { .. } | craft_xml::Node::Comment(_) => {}
             }
-            Event::Empty(e) if depth == 1 => {
-                out.push(Element { name: String::from_utf8_lossy(e.local_name().as_ref()).to_string(), text: String::new(), children: vec![] });
-            }
-            ev @ (Event::Text(_) | Event::GeneralRef(_) | Event::CData(_)) => {
-                let s = match ev {
-                    Event::Text(t) => t.decode().map_err(|e| e.to_string())?.to_string(),
-                    Event::CData(t) => String::from_utf8_lossy(&t).to_string(),
-                    Event::GeneralRef(g) => match g.resolve_char_ref().map_err(|e| e.to_string())? {
-                        Some(c) => c.to_string(),
-                        None => match g.decode().map_err(|e| e.to_string())?.as_ref() {
-                            "amp" => "&".into(),
-                            "lt" => "<".into(),
-                            "gt" => ">".into(),
-                            "quot" => "\"".into(),
-                            "apos" => "'".into(),
-                            _ => String::new(),
-                        },
-                    },
-                    _ => String::new(),
-                };
-                match (depth, child.as_mut(), out.last_mut()) {
-                    (3.., Some(c), _) => c.1.push_str(&s),
-                    (2, _, Some(el)) => el.text.push_str(&s),
-                    _ => {}
-                }
-            }
-            Event::End(_) => {
-                if depth == 3
-                    && let (Some(c), Some(el)) = (child.take(), out.last_mut())
-                {
-                    el.children.push(c);
-                }
-                depth = depth.saturating_sub(1);
-            }
-            Event::Eof => break,
-            _ => {}
         }
     }
-    Ok(out)
+
+    let mut options = craft_xml::Options::local();
+    options.strict = true;
+    let root = options.parse(xml.as_bytes()).map_err(|e| e.to_string())?;
+    root.elements()
+        .map(|element| {
+            let mut children = Vec::new();
+            for child in element.elements() {
+                let mut text = String::new();
+                descendant_text(child, &mut text);
+                children.push((child.name.clone(), text));
+            }
+            let mut text = String::new();
+            for node in &element.children {
+                match node {
+                    craft_xml::Node::Text(value) | craft_xml::Node::CData(value) => text.push_str(value),
+                    craft_xml::Node::Pi { .. } | craft_xml::Node::Comment(_) => {}
+                    craft_xml::Node::El(_) => {}
+                }
+            }
+            Ok(Element { name: element.name.clone(), text, children })
+        })
+        .collect()
 }
 
 pub fn specs() -> Vec<CommandSpec> {

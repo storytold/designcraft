@@ -19,6 +19,7 @@ skrifa = { workspace = true }
 image = { workspace = true }
 thiserror = { workspace = true }
 craft-opc = { workspace = true }
+craft-pptx = { workspace = true }
 chrono = { workspace = true }
 
 [dev-dependencies]

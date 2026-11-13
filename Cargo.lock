@@ -1125,7 +1125,7 @@ source = "git+https://github.com/storytold/craft-libs?rev=ba24fe2435adb3c81ad605
 dependencies = [
  "base64 0.23.1",
  "chrono",
- "craft-drawingml",
+ "craft-drawingml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=ba24fe2435adb3c81ad6057faf36365fbba736cf)",
  "craft-math",
  "craft-offcrypto",
  "craft-opc 0.1.0 (git+https://github.com/storytold/craft-libs?rev=ba24fe2435adb3c81ad6057faf36365fbba736cf)",
@@ -1136,6 +1136,17 @@ dependencies = [
  "thiserror 2.0.21",
  "unicode-bidi",
  "zeroize",
+]
+
+[[package]]
+name = "craft-drawingml"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=8abfa9d0f14bafbfc3449fc552ffeafb9ca6a551#8abfa9d0f14bafbfc3449fc552ffeafb9ca6a551"
+dependencies = [
+ "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=8abfa9d0f14bafbfc3449fc552ffeafb9ca6a551)",
+ "kurbo",
+ "log",
+ "serde",
 ]
 
 [[package]]
@@ -1342,6 +1353,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-pptx"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=8abfa9d0f14bafbfc3449fc552ffeafb9ca6a551#8abfa9d0f14bafbfc3449fc552ffeafb9ca6a551"
+dependencies = [
+ "craft-drawingml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=8abfa9d0f14bafbfc3449fc552ffeafb9ca6a551)",
+ "craft-opc 0.1.0 (git+https://github.com/storytold/craft-libs?rev=8abfa9d0f14bafbfc3449fc552ffeafb9ca6a551)",
+ "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=8abfa9d0f14bafbfc3449fc552ffeafb9ca6a551)",
+ "kurbo",
+ "log",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "craft-prepress"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=92d392cff132eaf53e13afff77f38b5c11b73aa0#92d392cff132eaf53e13afff77f38b5c11b73aa0"
@@ -1502,7 +1528,7 @@ name = "craft-xlsx"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=ba24fe2435adb3c81ad6057faf36365fbba736cf#ba24fe2435adb3c81ad6057faf36365fbba736cf"
 dependencies = [
- "craft-drawingml",
+ "craft-drawingml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=ba24fe2435adb3c81ad6057faf36365fbba736cf)",
  "craft-opc 0.1.0 (git+https://github.com/storytold/craft-libs?rev=ba24fe2435adb3c81ad6057faf36365fbba736cf)",
  "craft-sheet",
  "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=ba24fe2435adb3c81ad6057faf36365fbba736cf)",
@@ -1790,6 +1816,7 @@ dependencies = [
  "craft-indd",
  "craft-prepress",
  "craft-print",
+ "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=ba24fe2435adb3c81ad6057faf36365fbba736cf)",
  "designcraft-color",
  "designcraft-compose",
  "designcraft-doc",
@@ -1951,6 +1978,7 @@ version = "0.20.1"
 dependencies = [
  "chrono",
  "craft-opc 0.1.0 (git+https://github.com/storytold/craft-libs?rev=8abfa9d0f14bafbfc3449fc552ffeafb9ca6a551)",
+ "craft-pptx",
  "designcraft-color",
  "designcraft-compose",
  "designcraft-doc",
