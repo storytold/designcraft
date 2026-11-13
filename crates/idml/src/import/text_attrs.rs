@@ -35,6 +35,7 @@ pub(super) fn mojikumi_row(e: &El) -> Result<designcraft_doc::cjk::MojikumiAki> 
 impl<'r> Importer<'r> {
     pub(super) fn char_attrs(&mut self, e: &El) -> CharAttrs {
         let mut a = CharAttrs::default();
+        let cjk = craft_idml::model::CjkCharacterValues::from_el(&crate::xml::to_craft(e));
         let values = craft_idml::model::CharacterTypographyValues::from_el(&crate::xml::to_craft(e));
         if let Some(f) = values.applied_font {
             // Some writers append the style after a tab. Spaces are part of a family's name
@@ -126,11 +127,11 @@ impl<'r> Importer<'r> {
             a.ruby = Some(if on { ruby_values.text.clone().unwrap_or_default() } else { String::new() });
         }
         crate::ruby::read_values(&ruby_values, &mut a, |r| self.swatch_ref(r));
-        if let Some(k) = e.get("KentenKind") {
+        if let Some(k) = cjk.kenten_kind.as_deref() {
             a.kenten = Some(k != "None");
             a.kenten_character = crate::cjk::kenten_character(k).map(str::to_string);
             if k == "Custom" {
-                a.kenten_character = e.prop("KentenCustomCharacter");
+                a.kenten_character = cjk.kenten_custom_character.clone();
             }
         }
         a.digits = special.digits.as_deref().and_then(|s| names::digits_in(s.trim()));
@@ -140,7 +141,7 @@ impl<'r> Importer<'r> {
         a.diacritic_x_offset = special.diacritic_x_offset;
         a.diacritic_y_offset = special.diacritic_y_offset;
         a.positional_form = special.positional_form;
-        self.cjk_settings_chars(e, &mut a);
+        self.cjk_settings_chars(&cjk, &mut a);
         if let Some(v) = special.applied_conditions.as_deref().filter(|v| !v.trim().is_empty()) {
             let names: Vec<String> = v.split_whitespace().filter_map(|r| self.condition_names.get(r).cloned()).collect();
             if !names.is_empty() {
@@ -472,8 +473,7 @@ pub(super) fn inherits_drop_cap_style<'a>(styles: &'a Styles, mut name: Option<&
 
 impl Importer<'_> {
     /// Kenten Settings, Kenten Color and Shatai of a character range or style.
-    fn cjk_settings_chars(&mut self, e: &El, a: &mut CharAttrs) {
-        let values = craft_idml::model::CjkCharacterValues::from_el(&crate::xml::to_craft(e));
+    fn cjk_settings_chars(&mut self, values: &craft_idml::model::CjkCharacterValues, a: &mut CharAttrs) {
         if let Some(kind) = values.kenten_kind.as_deref().and_then(crate::cjk::kenten_kind_in) {
             a.kenten_kind = Some(kind);
             if a.kenten_character.as_deref().is_none_or(str::is_empty)
@@ -482,11 +482,11 @@ impl Importer<'_> {
                 a.kenten_character = Some(mark.to_string());
             }
         }
-        if let Some(font) = values.kenten_font {
+        if let Some(font) = values.kenten_font.as_deref() {
             let font = font.trim();
             a.kenten_font = Some(if font == "$ID/" { String::new() } else { font.to_string() });
         }
-        if let Some(style) = values.kenten_font_style {
+        if let Some(style) = values.kenten_font_style.as_deref() {
             let style = style.trim();
             a.kenten_font_style = Some(if style == "Nothing" { String::new() } else { style.to_string() });
         }
@@ -496,12 +496,12 @@ impl Importer<'_> {
         a.kenten_distance = values.kenten_distance;
         a.kenten_position = values.kenten_position.as_deref().and_then(crate::cjk::kenten_position_in);
         a.kenten_alignment = values.kenten_alignment.as_deref().and_then(crate::cjk::kenten_alignment_in);
-        a.kenten_character_set = values.kenten_character_set;
+        a.kenten_character_set = values.kenten_character_set.clone();
         // "Text Color" is the text's own colour; it resets an inherited swatch.
-        if let Some(color) = values.kenten_fill_color {
+        if let Some(color) = values.kenten_fill_color.as_deref() {
             a.kenten_fill = Some(if color.trim() == "Text Color" { String::new() } else { self.swatch_ref(color.trim()) });
         }
-        if let Some(color) = values.kenten_stroke_color {
+        if let Some(color) = values.kenten_stroke_color.as_deref() {
             a.kenten_stroke = Some(if color.trim() == "Text Color" { String::new() } else { self.swatch_ref(color.trim()) });
         }
         // Tints and weight: -1 is the text's.
