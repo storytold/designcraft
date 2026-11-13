@@ -395,6 +395,15 @@ impl<'a> Exporter<'a> {
 
     /// A shape with the item's geometry, fill, stroke and effects; `text` is a `<p:txBody>`.
     pub fn shape(&mut self, it: &Item, xf: Affine, opacity: f32, text: Option<&str>) {
+        self.shape_inner(it, xf, opacity, text, None);
+    }
+
+    /// A text-bearing shape with both its compatibility fragment and shared model representation.
+    pub fn shape_with_text_model(&mut self, it: &Item, xf: Affine, opacity: f32, text: &str, model: craft_pptx::TextBody) {
+        self.shape_inner(it, xf, opacity, Some(text), Some(model));
+    }
+
+    fn shape_inner(&mut self, it: &Item, xf: Affine, opacity: f32, text: Option<&str>, model_text: Option<craft_pptx::TextBody>) {
         let m = self.to_slide * xf;
         let g = geometry(it, m);
         let fill = self.fill(&it.fill, it.path.is_closed(), opacity);
@@ -404,9 +413,11 @@ impl<'a> Exporter<'a> {
             return;
         }
         let id = self.id();
-        if text.is_none()
+        if (text.is_none() || model_text.is_some())
             && let Some(shape) = self.native_shape(it, &g, id, opacity)
         {
+            let mut shape = shape;
+            shape.text = model_text;
             self.native_shapes.push(shape);
         }
         let txbox = if text.is_some() && it.fill.is_none() && it.stroke.is_none() { " txBox=\"1\"" } else { "" };

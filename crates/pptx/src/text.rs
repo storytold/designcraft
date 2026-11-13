@@ -11,6 +11,7 @@
 
 use std::fmt::Write as _;
 
+use designcraft_color::swatch::resolve_gradient;
 use designcraft_compose::{ComposedStory, FrameText, Line, PlacedGlyph, RunStyle};
 use designcraft_doc::{Align, Item, TextFrame};
 use designcraft_geom::{Affine, Rect};
@@ -127,7 +128,8 @@ pub fn frame(ex: &mut Exporter, it: &Item, tfr: &TextFrame, xf: Affine, opacity:
         let insets = [r.x0 - inner.x0, r.y0 - inner.y0, inner.x1 - r.x1, inner.y1 - r.y1];
         if insets.iter().all(|v| *v >= -0.01) {
             let body = body(ex, seg, r, k, opacity, insets);
-            ex.shape(it, xf, opacity, Some(&body));
+            let model = model_body(ex, seg, k, opacity, insets);
+            ex.shape_with_text_model(it, xf, opacity, &body, model);
             return;
         }
     }
@@ -212,11 +214,31 @@ fn text_box(ex: &mut Exporter, seg: &Segment, m: Affine, k: f64, opacity: f32, n
     let r = seg_rect(seg);
     let Some((xfrm, _)) = box_of(r, m) else { return };
     let body = body(ex, seg, r, k, opacity, [0.0; 4]);
-    write_box(ex, xfrm, &body, name);
+    let model = model_body(ex, seg, k, opacity, [0.0; 4]);
+    write_box(ex, xfrm, &body, model, name);
 }
 
-fn write_box(ex: &mut Exporter, xfrm: XfrmBox, body: &str, name: &str) {
+fn write_box(ex: &mut Exporter, xfrm: XfrmBox, body: &str, model: craft_pptx::TextBody, name: &str) {
     let id = ex.id();
+    ex.native_shapes.push(craft_pptx::Shape {
+        id: craft_pptx::ShapeId(id),
+        name: format!("{name} {id}"),
+        xfrm: Some(craft_pptx::Xfrm {
+            x: xfrm.rect.x0,
+            y: xfrm.rect.y0,
+            w: xfrm.rect.width(),
+            h: xfrm.rect.height(),
+            rot: xfrm.rot,
+            flip_h: xfrm.flip_h,
+            flip_v: xfrm.flip_v,
+        }),
+        geom: craft_pptx::Geom::preset("rect"),
+        fill: Some(craft_pptx::Fill::None),
+        line: Some(craft_pptx::Line::none()),
+        text_box: true,
+        text: Some(model),
+        ..Default::default()
+    });
     let _ = write!(
         ex.out,
         "<p:sp><p:nvSpPr><p:cNvPr id=\"{id}\" name=\"{name} {id}\"/><p:cNvSpPr txBox=\"1\"/><p:nvPr/></p:nvSpPr><p:spPr>{}<a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom><a:noFill/></p:spPr>{body}</p:sp>",
@@ -387,6 +409,149 @@ fn body(ex: &mut Exporter, seg: &Segment, r: Rect, k: f64, opacity: f32, insets:
         "<p:txBody><a:bodyPr wrap=\"none\" lIns=\"{li}\" tIns=\"{ti}\" rIns=\"{ri}\" bIns=\"{bi}\" rtlCol=\"0\" anchor=\"t\"><a:noAutofit/></a:bodyPr><a:lstStyle/>{}</p:txBody>",
         paragraphs(ex, seg, r, k, opacity)
     )
+}
+
+/// The model equivalent of the composed text represented by `body`.
+fn model_body(ex: &mut Exporter, seg: &Segment, k: f64, opacity: f32, insets: [f64; 4]) -> craft_pptx::TextBody {
+    fn color(ex: &Exporter, swatch: &str, tint: f32, opacity: f32) -> Option<craft_pptx::ColorRef> {
+        let color = if let Some(gradient) = resolve_gradient(&ex.doc.swatches, swatch) {
+            let (_, color, alpha) = gradient.expanded_stops().into_iter().next()?;
+            let [r, g, b, a] = color.to_rgba8(alpha * opacity);
+            craft_pptx::Rgba::rgba(r, g, b, a)
+        } else {
+            let [r, g, b, a] = ex.doc.resolve_color(swatch, tint)?.to_rgba8(opacity);
+            craft_pptx::Rgba::rgba(r, g, b, a)
+        };
+        Some(craft_pptx::ColorRef::rgb(color))
+    }
+
+    fn run_props(ex: &mut Exporter, run: Option<&Run>, size: f64, k: f64, opacity: f32) -> craft_pptx::text::RunProps {
+        let shifted = run.is_some_and(|r| r.y.abs() > 0.01 && r.size > 0.0);
+        let actual_size = if shifted { size * 1.5 } else { size };
+        let mut props = craft_pptx::text::RunProps { size: Some(actual_size * k), lang: Some("en-US".into()), ..Default::default() };
+        let Some(run) = run else { return props };
+        let font = ex.fonts.use_face(run.face);
+        props.font = Some(font.family.clone());
+        props.font_ea = Some(font.family.clone());
+        props.font_cs = Some(font.family.clone());
+        props.bold = Some(font.bold);
+        props.italic = Some(font.italic || run.rs.as_ref().is_some_and(|style| style.skew.abs() > 0.01));
+        props.spacing = Some(run.spc * k);
+        props.kern = Some(4000.0);
+        if shifted {
+            props.baseline = Some(-run.y / actual_size);
+        }
+        if let Some(style) = run.rs.as_ref() {
+            if style.underline {
+                props.underline = Some("sng".into());
+            }
+            if style.strikethrough {
+                props.strike = Some(craft_pptx::text::Strike::Single);
+            }
+            props.fill = Some(color(ex, &style.fill, style.fill_tint, opacity).map_or(craft_pptx::Fill::None, craft_pptx::Fill::solid));
+            if style.stroke != designcraft_color::swatch::NONE
+                && style.stroke_weight > 0.0
+                && let Some(color) = color(ex, &style.stroke, style.stroke_tint, opacity)
+            {
+                props.outline = Some(craft_pptx::Line::solid(color, style.stroke_weight * k));
+            }
+        }
+        props
+    }
+
+    let [left, top, right, bottom] = insets;
+    let mut model = craft_pptx::TextBody {
+        body: craft_pptx::text::BodyProps {
+            inset_l: Some(left * k),
+            inset_t: Some(top * k),
+            inset_r: Some(right * k),
+            inset_b: Some(bottom * k),
+            anchor: Some(craft_pptx::text::Anchor::Top),
+            wrap: Some(false),
+            autofit: Some(craft_pptx::text::AutoFit::None),
+            rtl_col: Some(false),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let steps = para_steps(seg);
+    let mut previous: Option<(f64, f64)> = None;
+    for lines in seg.lines.chunk_by(|a, b| a.para == b.para && !a.last_in_para) {
+        let (Some(first), Some(last)) = (lines.first(), lines.last()) else { continue };
+        let mut height = steps.get(&first.para).copied().flatten().unwrap_or(if first.leading > 0.0 { first.leading } else { first.size * SINGLE });
+        if let Some((previous_baseline, previous_height)) = previous
+            && lines.len() == 1
+        {
+            let natural = (1.0 - BASELINE_IN_LINE) * previous_height + BASELINE_IN_LINE * height;
+            let gap = first.baseline - previous_baseline;
+            if gap < natural {
+                height = ((gap - (1.0 - BASELINE_IN_LINE) * previous_height) / BASELINE_IN_LINE).max(first.size * 0.2);
+            }
+        }
+        let align = match align_of(seg, lines) {
+            "ctr" => craft_pptx::text::Align::Center,
+            "r" => craft_pptx::text::Align::Right,
+            _ => craft_pptx::text::Align::Left,
+        };
+        let mut paragraph = craft_pptx::text::Paragraph {
+            props: craft_pptx::text::ParaProps {
+                align: Some(align),
+                line_spacing: Some(craft_pptx::text::Spacing::Pct(height / (first.size * SINGLE))),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        if align == craft_pptx::text::Align::Left {
+            let rest = lines.get(1).map_or(first.start, |line| line.start) - seg.x0;
+            let indent = first.start - seg.x0 - rest;
+            if rest.abs() > 0.005 {
+                paragraph.props.margin_left = Some(rest * k);
+            }
+            if indent.abs() > 0.005 {
+                paragraph.props.indent = Some(indent * k);
+            }
+        }
+        if let Some((previous_baseline, previous_height)) = previous {
+            let natural = (1.0 - BASELINE_IN_LINE) * previous_height + BASELINE_IN_LINE * height;
+            let before = first.baseline - previous_baseline - natural;
+            if before > 0.005 {
+                paragraph.props.space_before = Some(craft_pptx::text::Spacing::Pts(before * k));
+            }
+        }
+        let mut tabs: Vec<f64> = lines.iter().flat_map(|line| line.tabs.iter().copied()).collect();
+        tabs.sort_by(f64::total_cmp);
+        tabs.dedup_by(|a, b| (*a - *b).abs() < 0.01);
+        if !tabs.is_empty() {
+            paragraph.props.tabs =
+                Some(tabs.into_iter().map(|position| craft_pptx::text::TabStop { pos: (position - seg.x0) * k, align: "l".into() }).collect());
+        }
+        for (line_index, line) in lines.iter().enumerate() {
+            if line_index > 0 {
+                paragraph.runs.push(craft_pptx::text::Run {
+                    text: String::new(),
+                    props: run_props(ex, line.runs.first(), line.size, k, opacity),
+                    kind: craft_pptx::text::RunKind::Break,
+                });
+            }
+            let n_runs = line.runs.len();
+            for (run_index, run) in line.runs.iter().enumerate() {
+                let tail = if run_index + 1 == n_runs
+                    && line.trailing_space
+                    && align == craft_pptx::text::Align::Left
+                    && !run.text.ends_with(char::is_whitespace)
+                {
+                    " "
+                } else {
+                    ""
+                };
+                paragraph.runs.push(craft_pptx::text::Run::with(format!("{}{tail}", run.text), run_props(ex, Some(run), run.size, k, opacity)));
+            }
+        }
+        paragraph.end_props = run_props(ex, last.runs.last(), last.size, k, opacity);
+        model.paragraphs.push(paragraph);
+        previous = Some((last.baseline, height));
+    }
+    model
 }
 
 /// The `<a:p>` elements of a segment whose box is `r` (text space).
