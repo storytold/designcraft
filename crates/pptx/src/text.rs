@@ -9,16 +9,13 @@
 //! [`LineBreaks::Reflow`]: one box per frame, native columns, paragraph attributes from the
 //! styles.
 
-use std::fmt::Write as _;
-
 use designcraft_color::swatch::resolve_gradient;
 use designcraft_compose::{ComposedStory, FrameText, Line, PlacedGlyph, RunStyle};
-use designcraft_doc::{Align, Item, TextFrame};
+use designcraft_doc::{Item, TextFrame};
 use designcraft_geom::{Affine, Rect};
 
 use crate::LineBreaks;
 use crate::slide::{Exporter, XfrmBox, box_of};
-use crate::xml::{emu, emu_len, esc, pct};
 
 /// PowerPoint's single line is 1.2 em for every font; percentage spacing scales it.
 const SINGLE: f64 = 1.2;
@@ -95,7 +92,7 @@ pub fn frame(ex: &mut Exporter, it: &Item, tfr: &TextFrame, xf: Affine, opacity:
     let doc = ex.doc;
     let cs = ex.cache.get(doc, tfr.story, ex.page);
     let Some(ft) = cs.frame(it.id) else {
-        ex.shape(it, xf, opacity, None);
+        ex.shape(it, xf, opacity);
         return;
     };
     let story_text = doc.story(tfr.story).map(|s| s.text.clone()).unwrap_or_default();
@@ -127,13 +124,12 @@ pub fn frame(ex: &mut Exporter, it: &Item, tfr: &TextFrame, xf: Affine, opacity:
         let r = seg_rect(seg);
         let insets = [r.x0 - inner.x0, r.y0 - inner.y0, inner.x1 - r.x1, inner.y1 - r.y1];
         if insets.iter().all(|v| *v >= -0.01) {
-            let body = body(ex, seg, r, k, opacity, insets);
             let model = model_body(ex, seg, k, opacity, insets);
-            ex.shape_with_text_model(it, xf, opacity, &body, model);
+            ex.shape_with_text_model(it, xf, opacity, model);
             return;
         }
     }
-    ex.shape(it, xf, opacity, None);
+    ex.shape(it, xf, opacity);
     decos(ex, ft, m, opacity);
     for seg in &segs {
         text_box(ex, seg, m, k, opacity, "Text");
@@ -164,10 +160,9 @@ fn anchored(ex: &mut Exporter, tfr: &TextFrame, ft: &FrameText, xf: Affine, opac
 /// Paragraph shading and rules.
 fn decos(ex: &mut Exporter, ft: &FrameText, m: Affine, opacity: f32) {
     for d in &ft.decos {
-        let Some(c) = ex.color(&d.color, d.tint, opacity) else { continue };
+        let Some(color) = ex.model_color(&d.color, d.tint, opacity) else { continue };
         if let Some((xfrm, _)) = box_of(d.rect, m) {
-            let model_fill = ex.model_color(&d.color, d.tint, opacity).map_or(craft_pptx::Fill::None, craft_pptx::Fill::solid);
-            ex.rect_shape(xfrm, &format!("<a:solidFill>{c}</a:solidFill>"), model_fill, "Paragraph Shading");
+            ex.rect_shape(xfrm, craft_pptx::Fill::solid(color), "Paragraph Shading");
         }
     }
 }
@@ -214,12 +209,11 @@ fn para_steps(seg: &Segment) -> std::collections::HashMap<usize, Option<f64>> {
 fn text_box(ex: &mut Exporter, seg: &Segment, m: Affine, k: f64, opacity: f32, name: &str) {
     let r = seg_rect(seg);
     let Some((xfrm, _)) = box_of(r, m) else { return };
-    let body = body(ex, seg, r, k, opacity, [0.0; 4]);
     let model = model_body(ex, seg, k, opacity, [0.0; 4]);
-    write_box(ex, xfrm, &body, model, name);
+    write_box(ex, xfrm, model, name);
 }
 
-fn write_box(ex: &mut Exporter, xfrm: XfrmBox, body: &str, model: craft_pptx::TextBody, name: &str) {
+fn write_box(ex: &mut Exporter, xfrm: XfrmBox, model: craft_pptx::TextBody, name: &str) {
     let id = ex.id();
     ex.native_shapes.push(craft_pptx::Shape {
         id: craft_pptx::ShapeId(id),
@@ -240,11 +234,6 @@ fn write_box(ex: &mut Exporter, xfrm: XfrmBox, body: &str, model: craft_pptx::Te
         text: Some(model),
         ..Default::default()
     });
-    let _ = write!(
-        ex.out,
-        "<p:sp><p:nvSpPr><p:cNvPr id=\"{id}\" name=\"{name} {id}\"/><p:cNvSpPr txBox=\"1\"/><p:nvPr/></p:nvSpPr><p:spPr>{}<a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom><a:noFill/></p:spPr>{body}</p:sp>",
-        xfrm.xml()
-    );
 }
 
 /// Cut a frame's lines into segments and lay out their runs.
@@ -402,16 +391,7 @@ fn align_of(seg: &Segment, lines: &[OutLine]) -> &'static str {
     "l"
 }
 
-/// `<p:txBody>` for a segment whose box is `r` (text space); `insets` place the text inside a
-/// larger shape (left, top, right, bottom).
-fn body(ex: &mut Exporter, seg: &Segment, r: Rect, k: f64, opacity: f32, insets: [f64; 4]) -> String {
-    let [li, ti, ri, bi] = insets.map(|v| emu_len(v * k));
-    format!(
-        "<p:txBody><a:bodyPr wrap=\"none\" lIns=\"{li}\" tIns=\"{ti}\" rIns=\"{ri}\" bIns=\"{bi}\" rtlCol=\"0\" anchor=\"t\"><a:noAutofit/></a:bodyPr><a:lstStyle/>{}</p:txBody>",
-        paragraphs(ex, seg, r, k, opacity)
-    )
-}
-
+/// The composed lines represented in the shared text model.
 /// The model equivalent of the composed text represented by `body`.
 pub(crate) fn model_body(ex: &mut Exporter, seg: &Segment, k: f64, opacity: f32, insets: [f64; 4]) -> craft_pptx::TextBody {
     fn color(ex: &Exporter, swatch: &str, tint: f32, opacity: f32) -> Option<craft_pptx::ColorRef> {
@@ -555,257 +535,17 @@ pub(crate) fn model_body(ex: &mut Exporter, seg: &Segment, k: f64, opacity: f32,
     model
 }
 
-/// The `<a:p>` elements of a segment whose box is `r` (text space).
-pub(crate) fn paragraphs(ex: &mut Exporter, seg: &Segment, r: Rect, k: f64, opacity: f32) -> String {
-    let mut s = String::new();
-    let mut prev_end: Option<(f64, f64)> = None;
-    // The segment's lines, a paragraph at a time.
-    let steps = para_steps(seg);
-    for lines in seg.lines.chunk_by(|a, b| a.para == b.para && !a.last_in_para) {
-        let (Some(first), Some(last)) = (lines.first(), lines.last()) else { continue };
-        let mut h = steps.get(&first.para).copied().flatten().unwrap_or(if first.leading > 0.0 { first.leading } else { first.size * SINGLE });
-        let r_in = BASELINE_IN_LINE;
-        if let Some((prev_base, prev_h)) = prev_end
-            && lines.len() == 1
-        {
-            // A one-line paragraph closer to the line before than its own line box allows (tight
-            // display type): a smaller box puts it there.
-            let natural = (1.0 - r_in) * prev_h + r_in * h;
-            let gap = first.baseline - prev_base;
-            if gap < natural {
-                h = ((gap - (1.0 - r_in) * prev_h) / r_in).max(first.size * 0.2);
-            }
-        }
-        let algn = align_of(seg, lines);
-        let mut ppr = format!("<a:pPr algn=\"{algn}\"");
-        if algn == "l" {
-            let rest = lines.get(1).map_or(first.start, |l| l.start) - r.x0;
-            let ind = first.start - r.x0 - rest;
-            if rest.abs() > 0.005 {
-                let _ = write!(ppr, " marL=\"{}\"", emu(rest * k));
-            }
-            if ind.abs() > 0.005 {
-                let _ = write!(ppr, " indent=\"{}\"", emu(ind * k));
-            }
-        }
-        ppr.push('>');
-        let _ = write!(ppr, "<a:lnSpc><a:spcPct val=\"{}\"/></a:lnSpc>", pct(h / (first.size * SINGLE)));
-        if let Some((prev_base, prev_h)) = prev_end {
-            // PowerPoint puts the next line one line box down: the rest of the previous line's box
-            // and the top part of this one. Space Before makes up the difference.
-            let natural = (1.0 - r_in) * prev_h + r_in * h;
-            let before = first.baseline - prev_base - natural;
-            if before > 0.005 {
-                let _ = write!(ppr, "<a:spcBef><a:spcPts val=\"{}\"/></a:spcBef>", (before * k * 100.0).round() as i64);
-            }
-        }
-        let tabs: Vec<f64> = lines.iter().flat_map(|l| l.tabs.iter().copied()).collect();
-        if !tabs.is_empty() {
-            ppr.push_str("<a:tabLst>");
-            let mut sorted = tabs.clone();
-            sorted.sort_by(f64::total_cmp);
-            sorted.dedup_by(|a, b| (*a - *b).abs() < 0.01);
-            for t in sorted {
-                let _ = write!(ppr, "<a:tab pos=\"{}\" algn=\"l\"/>", emu((t - r.x0) * k));
-            }
-            ppr.push_str("</a:tabLst>");
-        }
-        ppr.push_str("</a:pPr>");
-        s.push_str("<a:p>");
-        s.push_str(&ppr);
-        for (n, l) in lines.iter().enumerate() {
-            if n > 0 {
-                let _ = write!(s, "<a:br>{}</a:br>", rpr(ex, l.runs.first(), l.size, k, opacity, "a:rPr"));
-            }
-            let n_runs = l.runs.len();
-            for (ri, run) in l.runs.iter().enumerate() {
-                // The undrawn space at a left-aligned line's end goes back in (invisible there),
-                // so removing the break doesn't join words.
-                let tail = if ri + 1 == n_runs && l.trailing_space && algn == "l" && !run.text.ends_with(char::is_whitespace) { " " } else { "" };
-                let _ = write!(s, "<a:r>{}<a:t>{}{tail}</a:t></a:r>", rpr(ex, Some(run), run.size, k, opacity, "a:rPr"), esc(&run.text));
-            }
-        }
-        s.push_str(&rpr(ex, last.runs.last(), last.size, k, opacity, "a:endParaRPr"));
-        s.push_str("</a:p>");
-        prev_end = Some((last.baseline, h));
-    }
-    s
-}
-
-/// Run properties (`a:rPr`, or `a:endParaRPr` for the paragraph mark).
-fn rpr(ex: &mut Exporter, run: Option<&Run>, size: f64, k: f64, opacity: f32, tag: &str) -> String {
-    // PowerPoint draws raised and lowered text at 2/3 of its size: state it larger.
-    let shifted = run.is_some_and(|r| r.y.abs() > 0.01 && r.size > 0.0);
-    let size = if shifted { size * 1.5 } else { size };
-    let sz = ((size * k * 100.0).round() as i64).clamp(100, 400_000);
-    let Some(run) = run else { return format!("<{tag} lang=\"en-US\" sz=\"{sz}\" dirty=\"0\"/>") };
-    let cs = run.rs.as_ref();
-    let font = ex.fonts.use_face(run.face);
-    let mut a = format!("<{tag} lang=\"en-US\" sz=\"{sz}\"");
-    let italic = font.italic || cs.is_some_and(|c| c.skew.abs() > 0.01);
-    if font.bold {
-        a.push_str(" b=\"1\"");
-    }
-    if italic {
-        a.push_str(" i=\"1\"");
-    }
-    if let Some(st) = cs {
-        if st.underline {
-            a.push_str(" u=\"sng\"");
-        }
-        if st.strikethrough {
-            a.push_str(" strike=\"sngStrike\"");
-        }
-    }
-    // Kerning off: the composer's kerning is in the character spacing already.
-    a.push_str(" kern=\"400000\"");
-    let spc = (run.spc * k * 100.0).round() as i64;
-    if spc != 0 && tag == "a:rPr" {
-        let _ = write!(a, " spc=\"{spc}\"");
-    }
-    if shifted {
-        let _ = write!(a, " baseline=\"{}\"", pct(-run.y / size));
-    }
-    a.push_str(" dirty=\"0\">");
-    if let Some(st) = cs {
-        if st.stroke != designcraft_color::swatch::NONE
-            && st.stroke_weight > 0.0
-            && let Some(c) = ex.color(&st.stroke, st.stroke_tint, opacity)
-        {
-            let _ = write!(a, "<a:ln w=\"{}\"><a:solidFill>{c}</a:solidFill></a:ln>", emu_len(st.stroke_weight * k));
-        }
-        match ex.color(&st.fill, st.fill_tint, opacity) {
-            Some(c) => {
-                let _ = write!(a, "<a:solidFill>{c}</a:solidFill>");
-            }
-            None => a.push_str("<a:noFill/>"),
-        }
-    }
-    let fam = esc(&font.family);
-    let _ = write!(a, "<a:latin typeface=\"{fam}\"/><a:ea typeface=\"{fam}\"/><a:cs typeface=\"{fam}\"/></{tag}>");
-    a
-}
-
-/// Reflow: the frame as one shape whose text PowerPoint sets, in the frame's columns.
+/// Build shared paragraph and run model values for a composed text segment.
 #[allow(clippy::too_many_arguments)]
 fn reflow(ex: &mut Exporter, it: &Item, tfr: &TextFrame, ft: &FrameText, cs: &ComposedStory, story: &str, xf: Affine, opacity: f32, vertical: bool) {
-    let doc = ex.doc;
-    let Some(st) = doc.story(tfr.story) else {
-        ex.shape(it, xf, opacity, None);
+    if ex.doc.story(tfr.story).is_none() {
+        ex.shape(it, xf, opacity);
         return;
-    };
-    let o = &tfr.options;
+    }
     let m = ex.to_slide * xf;
     let k = box_of(it.inner_bounds(), m).map_or(1.0, |(_, d)| (d.sx * d.sy).abs().sqrt());
-    let mut model = reflow_model(ex, it, tfr, ft, cs, story, k, opacity, vertical);
-    let [t, l, b, r] = o.inset.map(|v| emu_len(v * k));
-    let cols = ft.columns.len().max(1);
-    let mut s = format!("<p:txBody><a:bodyPr wrap=\"square\" lIns=\"{l}\" tIns=\"{t}\" rIns=\"{r}\" bIns=\"{b}\" rtlCol=\"0\"");
-    if cols > 1 {
-        let _ = write!(s, " numCol=\"{cols}\" spcCol=\"{}\"", emu_len(o.gutter * k));
-    }
-    if vertical {
-        s.push_str(" vert=\"eaVert\"");
-    }
-    let anchor = match o.vertical_justification {
-        designcraft_doc::VerticalJustification::Center => "ctr",
-        designcraft_doc::VerticalJustification::Bottom => "b",
-        designcraft_doc::VerticalJustification::Justify => "just",
-        designcraft_doc::VerticalJustification::Top => "t",
-    };
-    let _ = write!(s, " anchor=\"{anchor}\"><a:noAutofit/></a:bodyPr><a:lstStyle/>");
-    // The paragraphs this frame shows, with the runs of their composed glyphs.
-    let ranges = st.para_ranges();
-    // The frame's lines by paragraph, once (a filter per paragraph made many paragraphs quadratic).
-    let mut by_para: std::collections::HashMap<usize, Vec<&Line>> = std::collections::HashMap::new();
-    for l in &ft.lines {
-        by_para.entry(l.para).or_default().push(l);
-    }
-    let mut first = true;
-    for (pi, range) in ranges.iter().enumerate() {
-        if range.end < ft.range.start || range.start >= ft.range.end.max(ft.range.start + 1) {
-            continue;
-        }
-        let lines: Vec<&Line> = by_para.get(&pi).cloned().unwrap_or_default();
-        let Some(pf) = st.paras.get(pi) else { continue };
-        let (pp, chars) = doc.styles.resolve_para(pf);
-        let algn = match pp.align {
-            Align::Center => "ctr",
-            Align::Right => "r",
-            Align::LeftJustified | Align::CenterJustified | Align::RightJustified => "just",
-            Align::FullyJustified => "dist",
-            _ => "l",
-        };
-        let mut ppr = format!("<a:pPr algn=\"{algn}\"");
-        if pp.left_indent.abs() > 0.005 {
-            let _ = write!(ppr, " marL=\"{}\"", emu(pp.left_indent * k));
-        }
-        if pp.right_indent.abs() > 0.005 {
-            let _ = write!(ppr, " marR=\"{}\"", emu(pp.right_indent * k));
-        }
-        if pp.first_line_indent.abs() > 0.005 {
-            let _ = write!(ppr, " indent=\"{}\"", emu(pp.first_line_indent * k));
-        }
-        ppr.push('>');
-        let size = chars.size.max(1.0);
-        let lead = match lines.windows(2).map(|w| w[1].baseline - w[0].baseline).find(|d| *d > 0.0) {
-            Some(d) => d,
-            None => lines.first().map_or(size * pp.auto_leading, |l| l.leading.max(1.0)),
-        };
-        let _ = write!(ppr, "<a:lnSpc><a:spcPct val=\"{}\"/></a:lnSpc>", pct(lead / (size * SINGLE)));
-        if !first && pp.space_before > 0.0 {
-            let _ = write!(ppr, "<a:spcBef><a:spcPts val=\"{}\"/></a:spcBef>", (pp.space_before * k * 100.0).round() as i64);
-        }
-        if pp.space_after > 0.0 {
-            let _ = write!(ppr, "<a:spcAft><a:spcPts val=\"{}\"/></a:spcAft>", (pp.space_after * k * 100.0).round() as i64);
-        }
-        ppr.push_str("</a:pPr>");
-        s.push_str("<a:p>");
-        s.push_str(&ppr);
-        let mut last_size = size;
-        for l in &lines {
-            let ol = out_line(ex, cs, l, story);
-            let mut runs: Vec<Run> = Vec::new();
-            for mut r in ol.runs {
-                // PowerPoint sets the spacing; only tracking-sized adjustments would survive, and
-                // they vary line to line, so none is kept.
-                r.spc = 0.0;
-                match runs.last_mut() {
-                    Some(p)
-                        if p.style == r.style
-                            && p.face.get().id() == r.face.get().id()
-                            && (p.size - r.size).abs() < 0.005
-                            && (p.y - r.y).abs() < 0.01 =>
-                    {
-                        p.text.push_str(&r.text)
-                    }
-                    _ => runs.push(r),
-                }
-            }
-            // Composer hyphens at line ends go: PowerPoint breaks the lines itself.
-            if l.hyphenated
-                && let Some(r) = runs.last_mut()
-                && r.text.ends_with(['-', '\u{2010}'])
-            {
-                r.text.pop();
-            }
-            if ol.trailing_space
-                && let Some(r) = runs.last_mut()
-                && !r.text.ends_with(char::is_whitespace)
-            {
-                r.text.push(' ');
-            }
-            for run in &runs {
-                let _ = write!(s, "<a:r>{}<a:t>{}</a:t></a:r>", rpr(ex, Some(run), run.size, k, opacity, "a:rPr"), esc(&run.text));
-                last_size = run.size;
-            }
-        }
-        s.push_str(&rpr(ex, None, last_size, k, opacity, "a:endParaRPr"));
-        s.push_str("</a:p>");
-        first = false;
-    }
-    s.push_str("</p:txBody>");
-    ex.shape_with_text_model(it, xf, opacity, &s, std::mem::take(&mut model));
+    let model = reflow_model(ex, it, tfr, ft, cs, story, k, opacity, vertical);
+    ex.shape_with_text_model(it, xf, opacity, model);
 }
 
 /// Reflow text in the shared text model. PowerPoint is free to break each paragraph again, but

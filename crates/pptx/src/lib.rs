@@ -20,11 +20,10 @@
 #![forbid(unsafe_code)]
 
 mod fonts;
-mod package;
+mod model;
 mod slide;
 mod table;
 mod text;
-mod xml;
 
 #[cfg(test)]
 mod tests;

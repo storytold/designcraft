@@ -1,18 +1,16 @@
 //! A page as a slide: items in stacking order as shapes, pictures, groups and text boxes.
 
 use std::collections::HashMap;
-use std::fmt::Write as _;
 
 use designcraft_color::swatch::resolve_gradient;
 use designcraft_color::{BlendMode, GradientKind};
 use designcraft_compose::Cache;
 use designcraft_doc::{Arrowhead, AssetId, Cap, Content, Document, Graphic, Item, Join, Shape, Stroke, StrokeAlign, StrokeType};
 use designcraft_geom::kurbo::{PathEl, Shape as _};
-use designcraft_geom::{Affine, BezPath, Point, Rect, Vec2, corners};
+use designcraft_geom::{Affine, BezPath, Rect, Vec2, corners};
 
 use crate::fonts::Fonts;
-use crate::package::{Media, REL_IMAGE, Rel, Slide};
-use crate::xml::{angle, emu, emu_len, esc, hex, pct};
+use crate::model::{Media, Slide};
 use crate::{PptxError, PptxOptions, Result};
 
 /// Objects PowerPoint can't show as editable objects, which a caller should rasterise before
@@ -31,7 +29,7 @@ pub fn needs_raster(doc: &Document, it: &Item) -> bool {
     effects || on_path || it.graphic().is_some_and(placed) || it.children().iter().any(|c| needs_raster(doc, c))
 }
 
-/// A DrawingML transform box (slide space, points).
+/// A transform box in slide coordinates, expressed in points.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct XfrmBox {
     pub rect: Rect,
@@ -43,27 +41,6 @@ pub struct XfrmBox {
 impl XfrmBox {
     pub fn plain(rect: Rect) -> Self {
         XfrmBox { rect, rot: 0.0, flip_h: false, flip_v: false }
-    }
-
-    pub fn xml(&self) -> String {
-        let mut a = String::new();
-        let r = angle(self.rot);
-        if r != 0 {
-            let _ = write!(a, " rot=\"{r}\"");
-        }
-        if self.flip_h {
-            a.push_str(" flipH=\"1\"");
-        }
-        if self.flip_v {
-            a.push_str(" flipV=\"1\"");
-        }
-        format!(
-            "<a:xfrm{a}><a:off x=\"{}\" y=\"{}\"/><a:ext cx=\"{}\" cy=\"{}\"/></a:xfrm>",
-            emu(self.rect.x0),
-            emu(self.rect.y0),
-            emu_len(self.rect.width()),
-            emu_len(self.rect.height())
-        )
     }
 }
 
@@ -104,48 +81,7 @@ pub fn box_of(inner: Rect, m: Affine) -> Option<(XfrmBox, Decomposed)> {
 /// Shape geometry: a preset, or a custom path in the box's own (unrotated) space.
 pub struct Geometry {
     pub xfrm: XfrmBox,
-    pub xml: String,
     pub model: craft_pptx::Geom,
-}
-
-fn custom_geometry(bp: &BezPath, w: f64, h: f64, filled: bool) -> String {
-    let (we, he) = (emu_len(w).max(1), emu_len(h).max(1));
-    let mut p = format!(
-        "<a:custGeom><a:avLst/><a:gdLst/><a:ahLst/><a:cxnLst/><a:rect l=\"0\" t=\"0\" r=\"r\" b=\"b\"/><a:pathLst><a:path w=\"{we}\" h=\"{he}\"{}>",
-        if filled { "" } else { " fill=\"none\"" }
-    );
-    let pt = |q: Point| format!("<a:pt x=\"{}\" y=\"{}\"/>", emu(q.x), emu(q.y));
-    let mut last = Point::ZERO;
-    for el in bp.elements() {
-        match *el {
-            PathEl::MoveTo(a) => {
-                let _ = write!(p, "<a:moveTo>{}</a:moveTo>", pt(a));
-                last = a;
-            }
-            PathEl::LineTo(a) => {
-                let _ = write!(p, "<a:lnTo>{}</a:lnTo>", pt(a));
-                last = a;
-            }
-            PathEl::QuadTo(a, b) => {
-                // As a cubic: PowerPoint's quadratic support is patchy.
-                let c1 = last + (a - last) * (2.0 / 3.0);
-                let c2 = b + (a - b) * (2.0 / 3.0);
-                let _ = write!(p, "<a:cubicBezTo>{}{}{}</a:cubicBezTo>", pt(c1), pt(c2), pt(b));
-                last = b;
-            }
-            PathEl::CurveTo(a, b, c) => {
-                let _ = write!(p, "<a:cubicBezTo>{}{}{}</a:cubicBezTo>", pt(a), pt(b), pt(c));
-                last = c;
-            }
-            PathEl::ClosePath => p.push_str("<a:close/>"),
-        }
-    }
-    p.push_str("</a:path></a:pathLst></a:custGeom>");
-    p
-}
-
-fn preset(name: &str) -> String {
-    format!("<a:prstGeom prst=\"{name}\"><a:avLst/></a:prstGeom>")
 }
 
 /// Is `bp` exactly the rectangle `r` (any start corner and direction)?
@@ -172,10 +108,10 @@ pub fn geometry(it: &Item, m: Affine) -> Geometry {
     let inner = bp.bounding_box();
     if let Some((xfrm, dm)) = box_of(inner, m) {
         if it.corners.is_none() && is_rect(&bp, inner) {
-            return Geometry { xfrm, xml: preset("rect"), model: craft_pptx::Geom::preset("rect") };
+            return Geometry { xfrm, model: craft_pptx::Geom::preset("rect") };
         }
         if it.shape == Shape::Oval && it.corners.is_none() && closed {
-            return Geometry { xfrm, xml: preset("ellipse"), model: craft_pptx::Geom::preset("ellipse") };
+            return Geometry { xfrm, model: craft_pptx::Geom::preset("ellipse") };
         }
         // The path in the box's own space: scaled (not flipped: the box flips), from its corner.
         let (kx, ky) = (dm.sx.abs(), dm.sy.abs());
@@ -183,7 +119,6 @@ pub fn geometry(it: &Item, m: Affine) -> Geometry {
         local.apply_affine(Affine::scale_non_uniform(kx, ky) * Affine::translate(-inner.origin().to_vec2()));
         return Geometry {
             xfrm,
-            xml: custom_geometry(&local, xfrm.rect.width(), xfrm.rect.height(), closed),
             model: craft_pptx::Geom::Custom { paths: vec![craft_pptx::CustomPath::from_bez(&local, xfrm.rect.width(), xfrm.rect.height(), closed)] },
         };
     }
@@ -194,7 +129,6 @@ pub fn geometry(it: &Item, m: Affine) -> Geometry {
     pb.apply_affine(Affine::translate(-b.origin().to_vec2()));
     Geometry {
         xfrm: XfrmBox::plain(b),
-        xml: custom_geometry(&pb, b.width(), b.height(), closed),
         model: craft_pptx::Geom::Custom { paths: vec![craft_pptx::CustomPath::from_bez(&pb, b.width(), b.height(), closed)] },
     }
 }
@@ -205,17 +139,13 @@ pub struct Exporter<'a> {
     pub opts: &'a PptxOptions,
     pub warnings: Vec<String>,
     pub media: Vec<Media>,
-    /// Native PresentationML mappings for model elements the exporter can express directly.
+    /// Model shapes in stacking order.
     pub native_shapes: Vec<craft_pptx::Shape>,
     pub native_media: Vec<(u32, String, Option<String>)>,
     /// Asset → (picture media name, SVG media name).
     media_of: HashMap<AssetId, Option<(String, Option<String>)>>,
     pub fonts: Fonts,
-    // Per slide.
-    pub out: String,
     next_id: u32,
-    rels: Vec<Rel>,
-    rel_of: HashMap<String, String>,
     /// Spread space → slide space.
     pub to_slide: Affine,
     /// The page's bleed area in spread space (items outside it are left out).
@@ -236,10 +166,7 @@ impl<'a> Exporter<'a> {
             native_media: Vec::new(),
             media_of: HashMap::new(),
             fonts: Fonts::default(),
-            out: String::new(),
             next_id: 2,
-            rels: Vec::new(),
-            rel_of: HashMap::new(),
             to_slide: Affine::IDENTITY,
             clip: Rect::ZERO,
             page: None,
@@ -265,12 +192,9 @@ impl<'a> Exporter<'a> {
         let sp = doc.spreads.get(si).ok_or(PptxError::BadPage(abs + 1))?;
         let page = sp.pages.get(pi).ok_or(PptxError::BadPage(abs + 1))?;
         let bounds = page.bounds();
-        self.out.clear();
         self.native_shapes.clear();
         self.native_media.clear();
         self.next_id = 2;
-        self.rels.clear();
-        self.rel_of.clear();
         self.to_slide = Affine::translate(-bounds.origin().to_vec2());
         let b = doc.settings.bleed;
         self.clip = Rect::new(bounds.x0 - b[2].max(b[3]), bounds.y0 - b[0], bounds.x1 + b[2].max(b[3]), bounds.y1 + b[1]);
@@ -314,16 +238,6 @@ impl<'a> Exporter<'a> {
         })
     }
 
-    fn rel(&mut self, target: String) -> String {
-        if let Some(r) = self.rel_of.get(&target) {
-            return r.clone();
-        }
-        let id = format!("rId{}", self.rels.len() + 2);
-        self.rels.push(Rel { id: id.clone(), kind: REL_IMAGE, target: target.clone() });
-        self.rel_of.insert(target, id.clone());
-        id
-    }
-
     /// One item under `parent` (inner-of-parent → spread), with an inherited opacity.
     pub fn item(&mut self, it: &Item, parent: Affine, opacity: f32) {
         if it.hidden || it.nonprinting {
@@ -346,7 +260,7 @@ impl<'a> Exporter<'a> {
         let opacity = opacity * it.opacity.clamp(0.0, 1.0);
         if it.has_nested_items() {
             // Paste Into: the frame, then its contents (PowerPoint can't clip a group to a shape).
-            self.shape(it, xf, opacity, None);
+            self.shape(it, xf, opacity);
             let fb = xf.transform_rect_bbox(it.inner_bounds());
             for c in it.children() {
                 let cb = xf.transform_rect_bbox(c.bounds());
@@ -367,27 +281,23 @@ impl<'a> Exporter<'a> {
                 let t = t.clone();
                 crate::text::frame(self, it, &t, xf, opacity);
             }
-            _ => self.shape(it, xf, opacity, None),
+            _ => self.shape(it, xf, opacity),
         }
     }
 
     fn group(&mut self, it: &Item, xf: Affine, opacity: f32) {
-        let mut body = std::mem::take(&mut self.out);
         let native_start = self.native_shapes.len();
         let id = self.id();
         for c in it.shown_children() {
             self.item(c, xf, opacity);
         }
-        let inner = std::mem::take(&mut self.out);
         let children: Vec<_> = self.native_shapes.drain(native_start..).collect();
-        if inner.is_empty() || children.is_empty() {
-            self.out = body;
+        if children.is_empty() {
             return;
         }
         // Children are in slide space: the group's child space is the slide's.
         let inner_bounds = it.shown_children().map(|c| c.bounds()).reduce(|a, b| a.union(b)).unwrap_or(Rect::ZERO);
         let b = (self.to_slide * xf).transform_rect_bbox(inner_bounds);
-        let (x, y, w, h) = (emu(b.x0), emu(b.y0), emu_len(b.width()), emu_len(b.height()));
         self.native_shapes.push(craft_pptx::Shape {
             id: craft_pptx::ShapeId(id),
             name: name_of(it, id),
@@ -396,58 +306,35 @@ impl<'a> Exporter<'a> {
             descr: it.alt_text.clone(),
             ..Default::default()
         });
-        let _ = write!(
-            body,
-            "<p:grpSp><p:nvGrpSpPr><p:cNvPr id=\"{id}\" name=\"{}\"{}/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x=\"{x}\" y=\"{y}\"/><a:ext cx=\"{w}\" cy=\"{h}\"/><a:chOff x=\"{x}\" y=\"{y}\"/><a:chExt cx=\"{w}\" cy=\"{h}\"/></a:xfrm></p:grpSpPr>{inner}</p:grpSp>",
-            esc(&name_of(it, id)),
-            descr(it)
-        );
-        self.out = body;
     }
 
-    /// A shape with the item's geometry, fill, stroke and effects; `text` is a `<p:txBody>`.
-    pub fn shape(&mut self, it: &Item, xf: Affine, opacity: f32, text: Option<&str>) {
-        self.shape_inner(it, xf, opacity, text, None);
+    /// Add the item's geometry, fill, stroke and effects to the shared presentation model.
+    pub fn shape(&mut self, it: &Item, xf: Affine, opacity: f32) {
+        self.shape_inner(it, xf, opacity, None);
     }
 
-    /// A text-bearing shape with both its compatibility fragment and shared model representation.
-    pub fn shape_with_text_model(&mut self, it: &Item, xf: Affine, opacity: f32, text: &str, model: craft_pptx::TextBody) {
-        self.shape_inner(it, xf, opacity, Some(text), Some(model));
+    /// Add a text-bearing shape to the shared presentation model.
+    pub fn shape_with_text_model(&mut self, it: &Item, xf: Affine, opacity: f32, model: craft_pptx::TextBody) {
+        self.shape_inner(it, xf, opacity, Some(model));
     }
 
-    fn shape_inner(&mut self, it: &Item, xf: Affine, opacity: f32, text: Option<&str>, model_text: Option<craft_pptx::TextBody>) {
+    fn shape_inner(&mut self, it: &Item, xf: Affine, opacity: f32, model_text: Option<craft_pptx::TextBody>) {
         let m = self.to_slide * xf;
         let g = geometry(it, m);
-        let fill = self.fill(&it.fill, it.path.is_closed(), opacity);
-        let line = self.line(&it.stroke, opacity);
-        let fx = self.effects(it, opacity);
-        if text.is_none() && fill == "<a:noFill/>" && line.contains("<a:noFill/>") && fx.is_empty() {
+        if model_text.is_none() && it.fill.is_none() && it.stroke.is_none() && it.effects == designcraft_doc::Effects::default() {
             return;
         }
         let id = self.id();
-        if (text.is_none() || model_text.is_some())
-            && let Some(shape) = self.native_shape(it, &g, id, opacity)
-        {
-            let mut shape = shape;
-            shape.text = model_text;
-            self.native_shapes.push(shape);
-        }
-        let txbox = if text.is_some() && it.fill.is_none() && it.stroke.is_none() { " txBox=\"1\"" } else { "" };
-        let _ = write!(
-            self.out,
-            "<p:sp><p:nvSpPr><p:cNvPr id=\"{id}\" name=\"{}\"{}/><p:cNvSpPr{txbox}/><p:nvPr/></p:nvSpPr><p:spPr>{}{}{fill}{line}{fx}</p:spPr>{}</p:sp>",
-            esc(&name_of(it, id)),
-            descr(it),
-            g.xfrm.xml(),
-            g.xml,
-            text.unwrap_or("")
-        );
+        let Some(mut shape) = self.native_shape(it, &g, id, opacity) else { return };
+        shape.text_box = it.fill.is_none() && it.stroke.is_none();
+        shape.text = model_text;
+        self.native_shapes.push(shape);
     }
 
-    /// A shape whose complete appearance fits the shared PresentationML model.
-    fn native_shape(&self, it: &Item, geometry: &Geometry, id: u32, opacity: f32) -> Option<craft_pptx::Shape> {
+    /// A shape mapped into the shared presentation model.
+    fn native_shape(&mut self, it: &Item, geometry: &Geometry, id: u32, opacity: f32) -> Option<craft_pptx::Shape> {
         let fill = self.model_fill(&it.fill, it.path.is_closed(), opacity);
-        let line = self.model_line(&it.stroke, opacity)?;
+        let line = self.model_line(&it.stroke, opacity);
         let effects = self.model_effects(it, opacity);
         let xfrm = craft_pptx::Xfrm {
             x: geometry.xfrm.rect.x0,
@@ -471,17 +358,6 @@ impl<'a> Exporter<'a> {
         })
     }
 
-    /// An sRGB colour element for a swatch and tint, `None` for [None] and unknown swatches.
-    pub fn color(&self, swatch: &str, tint: f32, alpha: f32) -> Option<String> {
-        if let Some(g) = resolve_gradient(&self.doc.swatches, swatch) {
-            // A gradient used where only a colour fits (text): its first stop.
-            let (_, c, a) = g.expanded_stops().into_iter().next()?;
-            return Some(srgb(c.to_rgb(), a * alpha));
-        }
-        let c = self.doc.resolve_color(swatch, tint)?;
-        Some(srgb(c.to_rgb(), alpha))
-    }
-
     /// An sRGB color in the shared PresentationML model, with DesignCraft tint and opacity applied.
     pub(crate) fn model_color(&self, swatch: &str, tint: f32, alpha: f32) -> Option<craft_pptx::ColorRef> {
         if let Some(gradient) = resolve_gradient(&self.doc.swatches, swatch) {
@@ -493,11 +369,14 @@ impl<'a> Exporter<'a> {
         Some(craft_pptx::ColorRef::rgb(craft_pptx::Rgba::rgba(r, g, b, a)))
     }
 
-    fn model_fill(&self, fill: &designcraft_doc::Fill, closed: bool, opacity: f32) -> craft_pptx::Fill {
+    fn model_fill(&mut self, fill: &designcraft_doc::Fill, closed: bool, opacity: f32) -> craft_pptx::Fill {
         if fill.is_none() || !closed {
             return craft_pptx::Fill::None;
         }
         if let Some(gradient) = resolve_gradient(&self.doc.swatches, &fill.swatch) {
+            if fill.gradient_vector.is_some() {
+                self.warn("gradients set with the Gradient tool use their angle only; PowerPoint stretches them over the whole shape");
+            }
             let stops = gradient
                 .expanded_stops()
                 .into_iter()
@@ -527,9 +406,18 @@ impl<'a> Exporter<'a> {
         self.model_color(&fill.swatch, fill.tint, opacity).map_or(craft_pptx::Fill::None, craft_pptx::Fill::solid)
     }
 
-    fn model_line(&self, stroke: &Stroke, opacity: f32) -> Option<craft_pptx::Line> {
+    fn model_line(&mut self, stroke: &Stroke, opacity: f32) -> craft_pptx::Line {
         if stroke.is_none() || stroke.weight <= 0.0 {
-            return Some(craft_pptx::Line::none());
+            return craft_pptx::Line::none();
+        }
+        if matches!(stroke.kind, StrokeType::Wavy | StrokeType::Hashed | StrokeType::Stripes { .. } | StrokeType::Style { .. }) {
+            self.warn("wavy, hashed, striped and custom stroke styles are exported as solid lines");
+        }
+        if stroke.align == StrokeAlign::Outside {
+            self.warn("strokes aligned outside are centred on the path (PowerPoint has centre and inside only)");
+        }
+        if stroke.start == Arrowhead::Bar || stroke.end == Arrowhead::Bar {
+            self.warn("bar arrowheads have no PowerPoint equivalent and are left out");
         }
         let mut line = craft_pptx::Line {
             fill: Some(self.model_fill(&stroke.as_fill(), true, opacity)),
@@ -544,7 +432,7 @@ impl<'a> Exporter<'a> {
                 Join::Round => craft_pptx::style::LineJoin::Round,
                 Join::Bevel => craft_pptx::style::LineJoin::Bevel,
             }),
-            miter_limit: (stroke.join == Join::Miter).then_some(pct(stroke.miter_limit.max(1.0)).max(1) as u32),
+            miter_limit: (stroke.join == Join::Miter).then_some((stroke.miter_limit.max(1.0) * 100_000.0).round() as u32),
             align: Some(match stroke.align {
                 StrokeAlign::Inside => craft_pptx::style::LineAlign::Inside,
                 StrokeAlign::Center | StrokeAlign::Outside => craft_pptx::style::LineAlign::Center,
@@ -587,7 +475,7 @@ impl<'a> Exporter<'a> {
         };
         line.head = end(stroke.start);
         line.tail = end(stroke.end);
-        Some(line)
+        line
     }
 
     fn model_effects(&self, it: &Item, opacity: f32) -> craft_pptx::Effects {
@@ -648,155 +536,6 @@ impl<'a> Exporter<'a> {
             None
         };
         craft_pptx::Effects { outer_shadow, inner_shadow, glow, soft_edge: (fx.feather > 0.0).then_some(fx.feather), ..Default::default() }
-    }
-
-    pub fn fill(&mut self, f: &designcraft_doc::Fill, closed: bool, opacity: f32) -> String {
-        if f.is_none() || !closed {
-            return "<a:noFill/>".into();
-        }
-        if let Some(g) = resolve_gradient(&self.doc.swatches, &f.swatch) {
-            let mut gs = String::new();
-            for (o, c, a) in g.expanded_stops() {
-                let _ = write!(gs, "<a:gs pos=\"{}\">{}</a:gs>", pct(o.clamp(0.0, 1.0) as f64), srgb(c.to_rgb(), a * opacity));
-            }
-            if gs.is_empty() {
-                return "<a:noFill/>".into();
-            }
-            if f.gradient_vector.is_some() {
-                self.warn("gradients set with the Gradient tool use their angle only; PowerPoint stretches them over the whole shape");
-            }
-            let shade = match g.kind {
-                GradientKind::Radial => {
-                    "<a:path path=\"circle\"><a:fillToRect l=\"50000\" t=\"50000\" r=\"50000\" b=\"50000\"/></a:path>".to_string()
-                }
-                _ => {
-                    let deg = match f.gradient_vector {
-                        Some([x0, y0, x1, y1]) => (y1 - y0).atan2(x1 - x0).to_degrees(),
-                        None => -f.gradient_angle.unwrap_or(0.0),
-                    };
-                    format!("<a:lin ang=\"{}\" scaled=\"0\"/>", angle(deg))
-                }
-            };
-            return format!("<a:gradFill rotWithShape=\"1\"><a:gsLst>{gs}</a:gsLst>{shade}</a:gradFill>");
-        }
-        match self.color(&f.swatch, f.tint, opacity) {
-            Some(c) => format!("<a:solidFill>{c}</a:solidFill>"),
-            None => "<a:noFill/>".into(),
-        }
-    }
-
-    pub fn line(&mut self, s: &Stroke, opacity: f32) -> String {
-        if s.is_none() || s.weight <= 0.0 {
-            return "<a:ln><a:noFill/></a:ln>".into();
-        }
-        let Some(color) = self.color(&s.swatch, s.tint, opacity) else { return "<a:ln><a:noFill/></a:ln>".into() };
-        let cap = match s.cap {
-            Cap::Butt => "flat",
-            Cap::Round => "rnd",
-            Cap::Projecting => "sq",
-        };
-        let cmpd = match s.kind {
-            StrokeType::ThickThin => "thickThin",
-            StrokeType::ThinThick => "thinThick",
-            StrokeType::ThinThin | StrokeType::ThickThick => "dbl",
-            StrokeType::ThinThickThin | StrokeType::ThickThinThick => "tri",
-            _ => "sng",
-        };
-        if matches!(s.kind, StrokeType::Wavy | StrokeType::Hashed | StrokeType::Stripes { .. } | StrokeType::Style { .. }) {
-            self.warn("wavy, hashed, striped and custom stroke styles are exported as solid lines");
-        }
-        let algn = match s.align {
-            StrokeAlign::Inside => " algn=\"in\"",
-            StrokeAlign::Outside => {
-                self.warn("strokes aligned outside are centred on the path (PowerPoint has centre and inside only)");
-                ""
-            }
-            StrokeAlign::Center => "",
-        };
-        let w = s.weight;
-        let dash = match &s.kind {
-            StrokeType::Dashed { pattern } if pattern.iter().any(|v| *v > 0.0) => {
-                let mut v: Vec<f64> = pattern.iter().map(|x| x.max(0.0)).collect();
-                if v.len() % 2 == 1 {
-                    v.extend(v.clone());
-                }
-                let mut d = String::from("<a:custDash>");
-                for pair in v.chunks(2) {
-                    if let [a, b] = pair {
-                        let _ = write!(d, "<a:ds d=\"{}\" sp=\"{}\"/>", pct(a / w), pct(b / w));
-                    }
-                }
-                d.push_str("</a:custDash>");
-                d
-            }
-            StrokeType::Dotted => "<a:prstDash val=\"sysDot\"/>".into(),
-            _ => "<a:prstDash val=\"solid\"/>".into(),
-        };
-        let join = match s.join {
-            Join::Miter => format!("<a:miter lim=\"{}\"/>", pct(s.miter_limit.max(1.0))),
-            Join::Round => "<a:round/>".into(),
-            Join::Bevel => "<a:bevel/>".into(),
-        };
-        let ends = |tag: &str, a: Arrowhead, me: &mut Self| -> String {
-            let kind = match a {
-                Arrowhead::None => return String::new(),
-                Arrowhead::Simple | Arrowhead::SimpleWide => "arrow",
-                Arrowhead::Triangle | Arrowhead::TriangleWide | Arrowhead::Curved => "triangle",
-                Arrowhead::Barbed => "stealth",
-                Arrowhead::Circle | Arrowhead::CircleSolid => "oval",
-                Arrowhead::Square | Arrowhead::SquareSolid => "diamond",
-                Arrowhead::Bar => {
-                    me.warn("bar arrowheads have no PowerPoint equivalent and are left out");
-                    return String::new();
-                }
-            };
-            // PowerPoint's large heads come closest to DesignCraft's at the same weight.
-            format!("<a:{tag} type=\"{kind}\" w=\"lg\" len=\"lg\"/>")
-        };
-        let head = ends("headEnd", s.start, self);
-        let tail = ends("tailEnd", s.end, self);
-        format!("<a:ln w=\"{}\" cap=\"{cap}\" cmpd=\"{cmpd}\"{algn}><a:solidFill>{color}</a:solidFill>{dash}{join}{head}{tail}</a:ln>", emu_len(w))
-    }
-
-    /// The item's effects that DrawingML has (in schema order).
-    pub fn effects(&mut self, it: &Item, opacity: f32) -> String {
-        let fx = &it.effects;
-        let mut s = String::new();
-        if fx.outer_glow.on
-            && let Some(c) = self.color(&fx.outer_glow.color, 1.0, fx.outer_glow.opacity * opacity)
-        {
-            let _ = write!(s, "<a:glow rad=\"{}\">{c}</a:glow>", emu_len(fx.outer_glow.size));
-        }
-        if fx.inner_shadow.on {
-            let sh = &fx.inner_shadow;
-            if let Some(c) = self.color(&sh.color, 1.0, sh.opacity * opacity) {
-                let a = self.doc.light_angle(sh.angle, sh.global_light);
-                let _ = write!(
-                    s,
-                    "<a:innerShdw blurRad=\"{}\" dist=\"{}\" dir=\"{}\">{c}</a:innerShdw>",
-                    emu_len(sh.size),
-                    emu_len(sh.distance.abs()),
-                    shadow_dir(a)
-                );
-            }
-        }
-        if fx.drop_shadow.on {
-            let sh = &fx.drop_shadow;
-            if let Some(c) = self.color(&sh.color, 1.0, sh.opacity * opacity) {
-                let a = self.doc.light_angle(sh.angle, sh.global_light);
-                let _ = write!(
-                    s,
-                    "<a:outerShdw blurRad=\"{}\" dist=\"{}\" dir=\"{}\" algn=\"ctr\" rotWithShape=\"0\">{c}</a:outerShdw>",
-                    emu_len(sh.size),
-                    emu_len(sh.distance.abs()),
-                    shadow_dir(a)
-                );
-            }
-        }
-        if fx.feather > 0.0 {
-            let _ = write!(s, "<a:softEdge rad=\"{}\"/>", emu_len(fx.feather));
-        }
-        if s.is_empty() { s } else { format!("<a:effectLst>{s}</a:effectLst>") }
     }
 
     /// The media for a placed graphic: PNG, JPEG and GIF as they are, SVG with a PNG fallback,
@@ -863,7 +602,7 @@ impl<'a> Exporter<'a> {
     fn picture(&mut self, it: &Item, g: &Graphic, xf: Affine, opacity: f32) {
         let g = if it.media.is_some() { it.drawn_graphic(&self.doc.assets).unwrap_or_else(|| g.clone()) } else { g.clone() };
         let Some((name, svg)) = self.media_for(g.asset) else {
-            self.shape(it, xf, opacity, None);
+            self.shape(it, xf, opacity);
             return;
         };
         let m = self.to_slide * xf;
@@ -871,7 +610,7 @@ impl<'a> Exporter<'a> {
         let frame = it.inner_bounds();
         let img = g.xf.transform_rect_bbox(Rect::new(0.0, 0.0, g.size.0, g.size.1));
         let axis = b.abs() < 1e-9 && c.abs() < 1e-9 && a > 0.0 && d > 0.0;
-        let (geo, crop, crop_values) = if axis && img.width() > 0.0 && img.height() > 0.0 {
+        let (geo, crop_values) = if axis && img.width() > 0.0 && img.height() > 0.0 {
             // The frame's geometry with the image cropped (or padded) to the frame's box.
             let crop_values = [
                 (frame.x0 - img.x0) / img.width(),
@@ -879,44 +618,24 @@ impl<'a> Exporter<'a> {
                 (img.x1 - frame.x1) / img.width(),
                 (img.y1 - frame.y1) / img.height(),
             ];
-            let crop = format!(
-                "<a:srcRect l=\"{}\" t=\"{}\" r=\"{}\" b=\"{}\"/>",
-                pct(crop_values[0]),
-                pct(crop_values[1]),
-                pct(crop_values[2]),
-                pct(crop_values[3])
-            );
-            (geometry(it, m), crop, crop_values)
+            (geometry(it, m), crop_values)
         } else {
             // Rotated, skewed or flipped inside its frame: the image's own box, uncropped, and
             // the frame drawn on its own.
             self.warn("images rotated, skewed or flipped inside their frames are not cropped to the frame");
-            self.shape(it, xf, opacity, None);
+            self.shape(it, xf, opacity);
             let gi = Rect::new(0.0, 0.0, g.size.0, g.size.1);
             let gm = m * g.xf;
             let xfrm = box_of(gi, gm).map(|(x, _)| x).unwrap_or_else(|| XfrmBox::plain(gm.transform_rect_bbox(gi)));
-            (Geometry { xfrm, xml: preset("rect"), model: craft_pptx::Geom::preset("rect") }, String::new(), [0.0; 4])
+            (Geometry { xfrm, model: craft_pptx::Geom::preset("rect") }, [0.0; 4])
         };
-        let rid = self.rel(format!("../media/{name}"));
-        let svg_ext = match svg.as_ref() {
-            Some(s) => {
-                let sid = self.rel(format!("../media/{s}"));
-                format!(
-                    "<a:extLst><a:ext uri=\"{{96DAC541-7B7A-43D3-8B79-37D633B846F1}}\"><asvg:svgBlip xmlns:asvg=\"http://schemas.microsoft.com/office/drawing/2016/SVG/main\" r:embed=\"{sid}\"/></a:ext></a:extLst>"
-                )
-            }
-            None => String::new(),
-        };
-        let alpha = if opacity < 0.999 { format!("<a:alphaModFix amt=\"{}\"/>", pct(opacity as f64)) } else { String::new() };
-        let fill = self.fill(&it.fill, it.path.is_closed(), opacity);
-        let line = if axis { self.line(&it.stroke, opacity) } else { "<a:ln><a:noFill/></a:ln>".into() };
-        let fx = self.effects(it, opacity);
         let id = self.id();
         let mut picture_fill = craft_pptx::style::PictureFill { media: craft_pptx::MediaId(0), crop: crop_values, ..Default::default() };
         if opacity < 0.999 {
             picture_fill.alpha = Some(f64::from(opacity));
         }
-        let model_line = if axis { self.model_line(&it.stroke, opacity).unwrap_or_else(craft_pptx::Line::none) } else { craft_pptx::Line::none() };
+        let model_line = if axis { self.model_line(&it.stroke, opacity) } else { craft_pptx::Line::none() };
+        let model_fill = if axis { self.model_fill(&it.fill, it.path.is_closed(), opacity) } else { craft_pptx::Fill::None };
         let effects = self.model_effects(it, opacity);
         self.native_shapes.push(craft_pptx::Shape {
             id: craft_pptx::ShapeId(id),
@@ -932,27 +651,17 @@ impl<'a> Exporter<'a> {
             }),
             kind: craft_pptx::ShapeKind::Picture { fill: picture_fill },
             geom: geo.model.clone(),
-            fill: Some(if axis { self.model_fill(&it.fill, it.path.is_closed(), opacity) } else { craft_pptx::Fill::None }),
+            fill: Some(model_fill),
             line: Some(model_line),
             effects: (effects != craft_pptx::Effects::default()).then_some(effects),
             descr: it.alt_text.clone(),
             ..Default::default()
         });
         self.native_media.push((id, name.clone(), svg));
-        let _ = write!(
-            self.out,
-            "<p:pic><p:nvPicPr><p:cNvPr id=\"{id}\" name=\"{}\"{}/><p:cNvPicPr><a:picLocks noChangeAspect=\"1\"/></p:cNvPicPr><p:nvPr/></p:nvPicPr>\
-<p:blipFill><a:blip r:embed=\"{rid}\">{alpha}{svg_ext}</a:blip>{crop}<a:stretch><a:fillRect/></a:stretch></p:blipFill>\
-<p:spPr>{}{}{fill}{line}{fx}</p:spPr></p:pic>",
-            esc(&name_of(it, id)),
-            descr(it),
-            geo.xfrm.xml(),
-            geo.xml
-        );
     }
 
     /// Paragraph shading and rules, table cell fills: a plain filled rectangle in slide space.
-    pub fn rect_shape(&mut self, xfrm: XfrmBox, fill_xml: &str, fill: craft_pptx::Fill, name: &str) {
+    pub fn rect_shape(&mut self, xfrm: XfrmBox, fill: craft_pptx::Fill, name: &str) {
         let id = self.id();
         self.native_shapes.push(craft_pptx::Shape {
             id: craft_pptx::ShapeId(id),
@@ -971,31 +680,6 @@ impl<'a> Exporter<'a> {
             line: Some(craft_pptx::Line::none()),
             ..Default::default()
         });
-        let _ = write!(
-            self.out,
-            "<p:sp><p:nvSpPr><p:cNvPr id=\"{id}\" name=\"{}\"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr>{}{}{}<a:ln><a:noFill/></a:ln></p:spPr></p:sp>",
-            esc(name),
-            xfrm.xml(),
-            preset("rect"),
-            fill_xml
-        );
-    }
-}
-
-/// DrawingML shadow direction (clockwise from +x, y down) for a light angle (degrees,
-/// counter-clockwise; the shadow falls away from the light).
-fn shadow_dir(light: f64) -> i64 {
-    let a = light.to_radians();
-    let off = Vec2::new(-a.cos(), a.sin());
-    angle(off.y.atan2(off.x).to_degrees())
-}
-
-pub fn srgb(rgb: [f32; 3], alpha: f32) -> String {
-    let a = alpha.clamp(0.0, 1.0);
-    if a >= 0.999 {
-        format!("<a:srgbClr val=\"{}\"/>", hex(rgb))
-    } else {
-        format!("<a:srgbClr val=\"{}\"><a:alpha val=\"{}\"/></a:srgbClr>", hex(rgb), pct(a as f64))
     }
 }
 
@@ -1014,10 +698,6 @@ fn name_of(it: &Item, id: u32) -> String {
         _ => "Rectangle",
     };
     format!("{kind} {id}")
-}
-
-fn descr(it: &Item) -> String {
-    if it.alt_text.is_empty() { String::new() } else { format!(" descr=\"{}\"", esc(&it.alt_text)) }
 }
 
 fn unpremultiply(mut px: Vec<u8>) -> Vec<u8> {
