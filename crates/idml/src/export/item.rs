@@ -326,24 +326,15 @@ impl<'a> Ex<'a> {
 /// `rule_color` is the IDML reference of the column rule's swatch.
 /// `TextWrapPreference` of a page item or a placed graphic.
 fn text_wrap_pref(w: &designcraft_doc::TextWrap) -> El {
-    with_props(
-        El::new("TextWrapPreference")
-            .attr("Inverse", bool_s(w.invert))
-            .attr("ApplyToMasterPageOnly", "false")
-            .attr("TextWrapSide", names::wrap_side_out(w.side))
-            .attr("TextWrapMode", names::wrap_mode_out(w.mode)),
-        w.path
-            .iter()
-            .filter(|p| !p.is_empty())
-            .map(path_geometry)
-            .chain([El::new("TextWrapOffset")
-                .attr("Top", num(w.offsets[0]))
-                .attr("Left", num(w.offsets[1]))
-                .attr("Bottom", num(w.offsets[2]))
-                .attr("Right", num(w.offsets[3]))])
-            .collect(),
-    )
-    .child(El::new("ContourOption").attr("ContourType", names::contour_type_out(w.contour)).attr("IncludeInsideEdges", "false"))
+    let paths: Vec<_> = w.path.iter().filter(|p| !p.is_empty()).map(path_geometry_value).collect();
+    crate::xml::from_craft(craft_idml::model::TextWrapPreference::to_el(
+        names::wrap_mode_out(w.mode),
+        w.invert,
+        names::wrap_side_out(w.side),
+        names::contour_type_out(w.contour),
+        w.offsets,
+        &paths,
+    ))
 }
 
 pub(super) fn text_frame_pref(o: &TextFrameOptions, rule_color: &str) -> El {
@@ -399,7 +390,11 @@ fn clipping_settings(c: &designcraft_doc::ClippingPath) -> El {
 }
 
 fn path_geometry(path: &PathData) -> El {
-    let geometry = craft_idml::model::PathGeometry {
+    crate::xml::from_craft(path_geometry_value(path).to_el())
+}
+
+fn path_geometry_value(path: &PathData) -> craft_idml::model::PathGeometry {
+    craft_idml::model::PathGeometry {
         paths: path
             .subpaths
             .iter()
@@ -412,8 +407,7 @@ fn path_geometry(path: &PathData) -> El {
                     .collect(),
             })
             .collect(),
-    };
-    crate::xml::from_craft(geometry.to_el())
+    }
 }
 
 /// IDML corner names for anchors 0..4 of a path (by position on its bounding box).
