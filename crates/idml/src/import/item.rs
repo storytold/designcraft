@@ -43,13 +43,16 @@ impl<'r> Importer<'r> {
             .unwrap_or_else(|| designcraft_doc::NO_OBJECT_STYLE.into());
         // Fill and stroke.
         if tag != "Group" {
-            if let Some(f) = self.attr_or_style(e, "FillColor") {
-                it.fill.swatch = self.swatch_ref(&f);
+            let fill_elements = std::iter::once(e).chain(self.object_style_chain(e)).map(crate::xml::to_craft).collect::<Vec<_>>();
+            let fill_refs: Vec<_> = fill_elements.iter().collect();
+            let fill_values = craft_idml::model::FillValues::from_elements(&fill_refs);
+            if let Some(f) = fill_values.color.as_deref() {
+                it.fill.swatch = self.swatch_ref(f);
             }
-            if let Some(t) = self.attr_or_style(e, "FillTint").and_then(|v| v.parse().ok()) {
+            if let Some(t) = fill_values.tint {
                 it.fill.tint = tint(Some(t)).unwrap_or(1.0);
             }
-            it.fill.overprint = self.attr_or_style(e, "OverprintFill").as_deref() == Some("true");
+            it.fill.overprint = fill_values.overprint == Some(true);
             if let Some(a) = model_item.gradient_fill_angle()
                 && a != 0.0
             {

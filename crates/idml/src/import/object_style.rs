@@ -52,11 +52,6 @@ impl<'r> Importer<'r> {
         chain
     }
 
-    /// Resolve an item attribute, falling back to its object style chain.
-    pub(super) fn attr_or_style(&self, e: &El, k: &str) -> Option<String> {
-        e.get(k).or_else(|| self.object_style_chain(e).into_iter().find_map(|s| s.get(k))).map(str::to_string)
-    }
-
     /// The item's child element `name` laid over the same element of each style in its object style
     /// chain: attributes and nested elements merge one by one, nearer levels winning. IDML writes on an
     /// item only the values that differ from its style. Effects whose category the applied style turns
