@@ -10,7 +10,7 @@ use designcraft_doc::{
 use designcraft_geom::{Affine, PathData};
 
 use crate::names::{self, CHAR_BUILTINS, OBJECT_BUILTINS, PARA_BUILTINS, escape_id, num, pt};
-use crate::xml::{El, Node, document, document_with_pi};
+use crate::xml::{El, Node, document};
 use crate::{DOM_VERSION, base64_encode};
 
 mod common;

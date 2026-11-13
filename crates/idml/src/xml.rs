@@ -181,18 +181,7 @@ pub fn escape_into(out: &mut String, s: &str, attr: bool) {
 
 /// Serialize a part: XML declaration + root element.
 pub fn document(root: &El) -> Vec<u8> {
-    let mut s = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n");
-    s.push_str(&to_craft(root).to_xml_pretty("\t"));
-    s.into_bytes()
-}
-
-/// Serialize with extra processing instructions after the declaration (designmap's `<?aid …?>`).
-pub fn document_with_pi(root: &El, pi: &str) -> Vec<u8> {
-    let mut s = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n");
-    s.push_str(pi);
-    s.push('\n');
-    s.push_str(&to_craft(root).to_xml_pretty("\t"));
-    s.into_bytes()
+    craft_idml::part_xml(&to_craft(root))
 }
 
 pub(crate) fn to_craft(el: &El) -> craft_xml::El {

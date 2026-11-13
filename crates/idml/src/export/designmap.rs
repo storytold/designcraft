@@ -1,5 +1,5 @@
 use super::common::{anchor_self, bool_s, p, uid, with_props, xref_format_self};
-use super::{CHAR_BUILTINS, DOM_VERSION, Document, El, Ex, HashSet, PARA_BUILTINS, PKG_NS, document_with_pi, escape_id, names, num};
+use super::{CHAR_BUILTINS, DOM_VERSION, Document, El, Ex, HashSet, PARA_BUILTINS, PKG_NS, escape_id, names, num};
 
 impl<'a> Ex<'a> {
     // ---------- designmap ----------
@@ -257,10 +257,7 @@ impl<'a> Ex<'a> {
         }
         self.next += 1;
         root.push(cg);
-        document_with_pi(
-            &root,
-            &format!("<?aid style=\"50\" type=\"document\" readerVersion=\"6.0\" featureSet=\"257\" product=\"{DOM_VERSION}(1)\" ?>"),
-        )
+        craft_idml::designmap_xml(&crate::xml::to_craft(&root))
     }
 }
 

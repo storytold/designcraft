@@ -1,25 +1,20 @@
-use super::{Affine, Color, DOM_VERSION, El, Node, PKG_NS, escape_id, num};
+use super::{Affine, Color, El, escape_id, num};
 
 pub(crate) fn uid(n: u64) -> String {
     format!("u{n:x}")
 }
 
 pub(super) fn p(name: &str, ty: &str, val: impl Into<String>) -> El {
-    El::new(name).attr("type", ty).text(val)
+    crate::xml::from_craft(craft_idml::prop(name, ty, val))
 }
 
 /// Insert a `<Properties>` element as the first child when there are any.
-pub(super) fn with_props(mut el: El, props: Vec<El>) -> El {
-    if !props.is_empty() {
-        let mut pe = El::new("Properties");
-        pe.children = props.into_iter().map(Node::El).collect();
-        el.children.insert(0, Node::El(pe));
-    }
-    el
+pub(super) fn with_props(el: El, props: Vec<El>) -> El {
+    crate::xml::from_craft(craft_idml::with_props(crate::xml::to_craft(&el), props.into_iter().map(|p| crate::xml::to_craft(&p)).collect()))
 }
 
 pub(super) fn pkg_root(kind: &str) -> El {
-    El::new(&format!("idPkg:{kind}")).attr("xmlns:idPkg", PKG_NS).attr("DOMVersion", DOM_VERSION)
+    crate::xml::from_craft(craft_idml::part_root(kind))
 }
 
 pub(super) fn bool_s(b: bool) -> &'static str {
