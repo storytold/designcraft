@@ -238,6 +238,7 @@ fn begin_guide_drag(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Respons
         }
     } else if rect.contains(o)
         && matches!(app.session.tool_id(), "selection" | "directSelection")
+        && !over_handle(app, xf, o)
         && let Some((r, pi, gi, orientation)) = guide_at(app, xf, o)
     {
         let shift = ui.input(|i| i.modifiers.shift);
@@ -254,8 +255,8 @@ fn begin_guide_drag(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Respons
 
 /// Ruler guides: drag one out of a ruler, drag an existing one (Selection tools) to move it, drop
 /// it back on a ruler to delete it. A press near an unlocked guide takes it even over an object:
-/// the guide is selected and the object is not. Returns true from the press to the release, so
-/// the tools never see that press.
+/// the guide is selected and the object is not, but a handle of the selection takes the press
+/// first. Returns true from the press to the release, so the tools never see that press.
 pub(super) fn guide_drag(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, rect: Rect, xf: &Xf) -> bool {
     let id = egui::Id::unique(GUIDE_DRAG);
     let (pressed, released, origin, latest) =
@@ -411,4 +412,24 @@ pub(super) fn over_item(app: &DesignApp, xf: &Xf, p: Pos2) -> bool {
         loaded: None,
     };
     cx.hit(xf.to_canvas(p)).is_some()
+}
+
+/// A handle of the selection is under screen point `p`: it takes the press before the guides
+/// behind it.
+pub(super) fn over_handle(app: &DesignApp, xf: &Xf, p: Pos2) -> bool {
+    let Some(st) = app.session.active() else { return false };
+    let layout = CanvasLayout::new(&st.doc, st.editing_parents);
+    let cx = designcraft_tools::ToolContext {
+        doc: &st.doc,
+        selection: &st.selection,
+        cache: &app.session.cache,
+        layout: &layout,
+        zoom: xf.zoom.max(1e-6),
+        layer: st.active_layer,
+        snap: app.ui.snap_view(),
+        unit: app.ui.units,
+        stroke_in_front: false,
+        loaded: None,
+    };
+    designcraft_tools::select::handle_under(&cx, xf.to_canvas(p), app.session.tool_id() == "directSelection")
 }
