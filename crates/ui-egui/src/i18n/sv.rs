@@ -1458,6 +1458,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Show/Hide Frame Edges", "Visa/dölj ramkanter"),
     ("Show/Hide Guides", "Visa/dölj stödlinjer"),
     ("Show/Hide Hidden Characters", "Visa/dölj dolda tecken"),
+    ("Show/Hide Link Badge", "Visa/dölj länksymbol"),
     ("Show/Hide Panels", "Visa/dölj paneler"),
     ("Show/Hide Panels Except Tools", "Visa/dölj paneler utom verktyg"),
     ("Show/Hide Rulers", "Visa/dölj linjaler"),
