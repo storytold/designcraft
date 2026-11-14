@@ -232,8 +232,8 @@ fn migration_links_confirmed_images_and_drops_the_copy_only_after_confirmation()
     assert_eq!((kept.storage, kept.link_hash.as_deref(), kept.data.embedded_bytes().is_some()), (Storage::Embedded, None, true));
     assert!(!s.doc().unwrap().is_dirty());
     let r = s.execute("links.progress", &json!({})).unwrap();
-    assert_eq!(r, json!({"checking": false, "notice": "1 image will be saved as a link to its file (Links ▸ Embed keeps a copy)"}));
-    assert_eq!(s.execute("links.progress", &json!({})).unwrap(), json!({"checking": false}), "told once");
+    assert_eq!(r, json!({"checking": false, "remaining": 0, "notice": "1 image will be saved as a link to its file (Links ▸ Embed keeps a copy)"}));
+    assert_eq!(s.execute("links.progress", &json!({})).unwrap(), json!({"checking": false, "remaining": 0}), "told once");
 
     let key = left.data.key();
     s.execute("file.save", &json!({})).unwrap();

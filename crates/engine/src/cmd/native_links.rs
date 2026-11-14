@@ -29,11 +29,11 @@ use crate::{DocState, Result, Session};
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![cmd!(noundo "links.progress", "Link Checks", [], None,
-    "{} — apply what the background checks of opened documents' linked files found (the UI calls this while `checking`) → {checking: the active document's files are still being checked, notice?: a message for the status line, given once}",
+    "{} — apply what the background checks of opened documents' linked files found (the UI calls this while `checking`) → {checking: the active document's files are still being checked, remaining: how many of them, notice?: a message for the status line, given once}",
     always, |s, _| {
         s.poll_link_checks();
-        let Ok(st) = s.doc_mut() else { return Ok(json!({"checking": false})) };
-        let mut out = json!({"checking": st.links.checking()});
+        let Ok(st) = s.doc_mut() else { return Ok(json!({"checking": false, "remaining": 0})) };
+        let mut out = json!({"checking": st.links.checking(), "remaining": st.links.remaining()});
         if let Some(notice) = st.links.take_notice() {
             out["notice"] = Value::String(notice);
         }
@@ -95,6 +95,14 @@ impl OpenLinks {
     /// Whether files are still being checked in the background.
     pub fn checking(&self) -> bool {
         self.job.is_some()
+    }
+
+    /// How many files the background check has still to look at, the one it is on included.
+    pub fn remaining(&self) -> usize {
+        self.job.as_ref().map_or(0, |handle| {
+            let state = lock(&handle.0);
+            state.work.len().saturating_add(usize::from(state.busy))
+        })
     }
 
     /// The status-line message about images that will be saved as links, once.
@@ -180,6 +188,8 @@ struct JobState {
     work: Vec<Work>,
     results: Vec<Outcome>,
     done: bool,
+    /// A piece of work taken from `work` is being done.
+    busy: bool,
 }
 
 impl Job {
@@ -383,6 +393,7 @@ fn run_all(job: &Job, roots: Option<&Arc<crate::file_access::AutomationRoots>>) 
                 let mut state = lock(job);
                 let next = state.work.pop();
                 state.done |= next.is_none();
+                state.busy = next.is_some();
                 next
             };
             let Some(work) = next else { break };
@@ -396,7 +407,11 @@ fn run_all(job: &Job, roots: Option<&Arc<crate::file_access::AutomationRoots>>) 
             job.changed.notify_all();
         }
     });
-    lock(job).done = true;
+    {
+        let mut state = lock(job);
+        state.done = true;
+        state.busy = false;
+    }
     job.changed.notify_all();
 }
 

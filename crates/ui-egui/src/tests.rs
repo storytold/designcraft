@@ -2523,3 +2523,48 @@ fn the_eyedropper_samples_an_image_still_decoding() {
     let ctx = egui::Context::default();
     assert_eq!(canvas::color_at(&mut app, &ctx, at), Some([255, 0, 0]));
 }
+
+/// A save asked for while the open-time checks of linked files run waits for them (the status
+/// line counts them), then writes; Esc writes at once.
+#[test]
+fn a_save_waits_for_the_checks_of_linked_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let image = dir.path().join("art.png");
+    std::fs::write(&image, designcraft_render::Rendered { width: 10, height: 10, pixels: vec![200; 400] }.to_png()).unwrap();
+    let doc = dir.path().join("doc.designcraft");
+    let mut first = DesignApp::new(Session::new(), Services::default());
+    first.run("file.new", json!({})).unwrap();
+    first.run("file.place", json!({"path": image.to_string_lossy()})).unwrap();
+    first.run("file.saveAs", json!({"path": doc.to_string_lossy()})).unwrap();
+
+    let reopened = |dir: &std::path::Path| {
+        let mut app = DesignApp::new(Session::new(), Services::default());
+        app.run("file.open", json!({"path": dir.join("doc.designcraft").to_string_lossy()})).unwrap();
+        assert!(app.session.active().unwrap().links.checking(), "the open checks its linked file in the background");
+        app.run("frame.create", json!({"rect": [36, 36, 136, 136]})).unwrap();
+        app
+    };
+    let mut app = reopened(dir.path());
+    let before = std::fs::read(&doc).unwrap();
+    assert_eq!(app.run("app.save", json!({})).unwrap()["waiting"], true);
+    assert_eq!(std::fs::read(&doc).unwrap(), before, "nothing is written while the check runs");
+    assert!(app.ui.status.contains("Checking 1 linked image"), "{}", app.ui.status);
+    let ctx = egui::Context::default();
+    for _ in 0..1000 {
+        if app.waiting_save.is_none() {
+            break;
+        }
+        app.poll_link_checks(&ctx);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(app.waiting_save.is_none(), "the save ran once the check was done");
+    assert!(!app.session.active().unwrap().is_dirty());
+    assert_ne!(std::fs::read(&doc).unwrap(), before);
+
+    let mut app = reopened(dir.path());
+    let before = std::fs::read(&doc).unwrap();
+    app.run("app.save", json!({})).unwrap();
+    app.run_waiting_save(true);
+    assert!(app.waiting_save.is_none() && !app.session.active().unwrap().is_dirty(), "Esc saves without waiting");
+    assert_ne!(std::fs::read(&doc).unwrap(), before);
+}

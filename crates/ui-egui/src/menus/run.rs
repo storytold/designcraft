@@ -36,9 +36,24 @@ fn rerun_with_path(app: &mut DesignApp, purpose: &str, id: &str, p: &Value, key:
 fn save_as_dialog(app: &mut DesignApp, after: impl FnOnce(&mut DesignApp) -> Result<Value, String> + 'static) -> Result<Value, String> {
     let name = app.session.active().map(|d| format!("{}.designcraft", d.doc.title)).unwrap_or_default();
     app.ask_save(&name, Bound::Document, move |app, path| {
-        app.run("file.saveAs", json!({"path": path}))?;
-        after(app)
+        save_when_checked(app, move |app| {
+            app.run("file.saveAs", json!({"path": path}))?;
+            after(app)
+        })
     })
+}
+
+/// Run `save` (a save of the active document) now, or, while the open-time checks of its linked
+/// files run, once they are done ([`DesignApp::run_waiting_save`]): a document saved before
+/// linked storage then writes the links the checks confirm in its first save, not a copy of every
+/// image. The status line counts the files left; Esc saves at once. A later save replaces one
+/// still waiting.
+pub(crate) fn save_when_checked(app: &mut DesignApp, save: impl FnOnce(&mut DesignApp) -> Result<Value, String> + 'static) -> Result<Value, String> {
+    let Some(st) = app.session.active().filter(|st| st.links.checking()) else { return save(app) };
+    let (uid, remaining) = (st.uid, st.links.remaining());
+    app.waiting_save = Some(crate::WaitingSave { uid, save: Box::new(save) });
+    app.show_save_wait(remaining);
+    Ok(json!({"waiting": true}))
 }
 
 /// Save the active document (a download in a browser; Save As for one never saved), then run
@@ -50,8 +65,10 @@ pub(crate) fn save_then(app: &mut DesignApp, after: impl FnOnce(&mut DesignApp) 
         return after(app);
     }
     if app.session.active().is_some_and(|d| d.path.is_some()) {
-        app.run("file.save", json!({}))?;
-        return after(app);
+        return save_when_checked(app, |app| {
+            app.run("file.save", json!({}))?;
+            after(app)
+        });
     }
     save_as_dialog(app, after)
 }
@@ -177,12 +194,15 @@ fn run_ui_part1(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
         "app.save" | "app.saveDialog" if app.services.download.is_some() => download_document(app),
         "app.save" => {
             if app.session.active().is_some_and(|d| d.path.is_some()) {
-                return Some(app.run("file.save", json!({})));
+                return Some(save_when_checked(app, |app| app.run("file.save", json!({}))));
             }
             return run_ui(app, "app.saveDialog", p);
         }
         "app.saveDialog" => match p.get("path").and_then(Value::as_str) {
-            Some(path) => app.run("file.saveAs", json!({"path": path})),
+            Some(path) => {
+                let path = path.to_owned();
+                save_when_checked(app, move |app| app.run("file.saveAs", json!({"path": path})))
+            }
             None => save_as_dialog(app, |_| Ok(Value::Null)),
         },
         "app.quit" => {
@@ -190,10 +210,13 @@ fn run_ui_part1(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             Ok(Value::Null)
         }
         "app.saveCopyDialog" => match p.get("path").and_then(Value::as_str) {
-            Some(path) => app.run("file.saveACopy", json!({"path": path})),
+            Some(path) => {
+                let path = path.to_owned();
+                save_when_checked(app, move |app| app.run("file.saveACopy", json!({"path": path})))
+            }
             None => {
                 let name = app.session.active().map(|d| format!("{} copy.designcraft", d.doc.title)).unwrap_or_default();
-                app.ask_save(&name, Bound::Document, |app, path| app.run("file.saveACopy", json!({"path": path})))
+                app.ask_save(&name, Bound::Document, |app, path| save_when_checked(app, move |app| app.run("file.saveACopy", json!({"path": path}))))
             }
         },
         "app.exportPng" => export_png(app, p),
