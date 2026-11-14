@@ -122,26 +122,6 @@ fn anchored_objects_are_exported_in_place() {
     assert!(!story_html(&d, sid).contains("<img"));
 }
 
-#[test]
-fn iso8601_timestamps() {
-    for (t, want) in [
-        (0, "1970-01-01T00:00:00Z"),
-        (951_782_400, "2000-02-29T00:00:00Z"),
-        (1_791_891_000, "2026-10-13T11:30:00Z"),
-        (-86_400, "1969-12-31T00:00:00Z"),
-        // Years past 9999 keep the plain zero-padded year (no `+`).
-        (253_402_300_800, "10000-01-01T00:00:00Z"),
-        // Beyond chrono's range the old `civil_from_days` still converted; pin that output
-        // (never the epoch) in both directions and at the `i64` extremes.
-        (10_000_000_000_000, "318857-05-20T17:46:40Z"),
-        (-10_000_000_000_000, "-314918-08-13T06:13:20Z"),
-        (i64::MAX, "292277026596-12-04T15:30:07Z"),
-        (i64::MIN, "-292277022657-01-27T08:29:52Z"),
-    ] {
-        assert_eq!(iso8601(t), want);
-    }
-}
-
 /// #771, #773: dcterms:modified is a real time, the default identifier is a stable urn:uuid
 /// that differs between documents with the same title, and a JPEG cover keeps its type.
 #[test]
@@ -1024,4 +1004,73 @@ fn grouped_text(hidden: bool) -> Document {
 fn hidden_group_children_are_not_exported() {
     assert!(html::reading_order(&grouped_text(true)).is_empty());
     assert_eq!(html::reading_order(&grouped_text(false)).len(), 1);
+}
+
+/// Text hidden by a condition the paragraph style carries, and text marked deleted, are off the
+/// page: neither the HTML body nor the navigation labels show them. A frame on a hidden layer
+/// isn't exported at all.
+#[test]
+fn text_hidden_by_inherited_conditions_or_deletion_is_not_exported() {
+    use designcraft_doc::{ChangeMark, CharAttrs, Condition, ParagraphStyle};
+    let mut d = Document::new(&NewDocument::default());
+    d.conditions.push(Condition { name: "Secret".into(), color: [0, 0, 0], visible: false });
+    d.styles_mut().paragraph.push(ParagraphStyle {
+        name: "Classified".into(),
+        based_on: None,
+        next_style: None,
+        para: Default::default(),
+        chars: CharAttrs { conditions: Some(vec!["Secret".into()]), ..Default::default() },
+        shortcut: String::new(),
+    });
+    let lid = d.default_layer();
+    let (_, sid) = d
+        .add_text_frame(
+            SpreadRef::Doc(0),
+            Rect::new(36.0, 36.0, 300.0, 100.0),
+            lid,
+            "Public heading\nclassified line\nkept dropped",
+            ParaFormat::default(),
+        )
+        .unwrap();
+    let st = d.story_mut(sid).unwrap();
+    let c = st.text.find("classified").unwrap();
+    st.format_paras(c..c + 1, |p| p.style = "Classified".into());
+    let g = st.text.find(" dropped").unwrap();
+    st.format_chars(g..g + 8, |f| f.over = CharAttrs { change: Some(ChangeMark::Deleted), ..Default::default() });
+    let hidden_layer = designcraft_doc::LayerId(d.alloc());
+    d.layers.push(designcraft_doc::Layer {
+        id: hidden_layer,
+        name: "Hidden".into(),
+        color: [0, 0, 0],
+        visible: false,
+        locked: false,
+        printable: true,
+        show_guides: true,
+        suppress_wrap_when_hidden: false,
+    });
+    d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 200.0, 300.0, 300.0), hidden_layer, "On a hidden layer", ParaFormat::default()).unwrap();
+    let html = html::export_html(&d, &html::HtmlOptions::default());
+    assert!(html.contains("Public heading") && html.contains("kept"), "{html}");
+    for gone in ["classified line", "dropped", "On a hidden layer"] {
+        assert!(!html.contains(gone), "{gone} must not be exported: {html}");
+    }
+    let labels: Vec<String> = chapters::toc_entries(&d, &html::reading_order(&d)).into_iter().map(|(_, label, _)| label).collect();
+    assert_eq!(labels, ["Public heading"]);
+}
+
+/// A threaded story is left out only when every one of its frames is hidden: a hidden first
+/// frame does not hide the frames after it.
+#[test]
+fn a_threaded_story_is_skipped_only_when_every_frame_is_hidden() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (a, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 300.0, 100.0), lid, "first", ParaFormat::default()).unwrap();
+    let (b, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 200.0, 300.0, 300.0), lid, "second", ParaFormat::default()).unwrap();
+    d.thread(a, b).unwrap();
+    let story = |d: &Document| html::reading_order(d).iter().filter(|x| **x == html::Block::Story(sid)).count();
+    assert_eq!(story(&d), 1);
+    d.item_mut(a).unwrap().hidden = true;
+    assert_eq!(story(&d), 1, "the visible second frame keeps the story");
+    d.item_mut(b).unwrap().hidden = true;
+    assert_eq!(story(&d), 0);
 }
