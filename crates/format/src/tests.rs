@@ -53,7 +53,7 @@ fn place(d: &mut Document, asset: AssetId, crop: f64) -> designcraft_doc::ItemId
 
 fn asset_entries(bytes: &[u8]) -> usize {
     let z = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
-    z.file_names().filter(|n| n.starts_with("assets/")).count()
+    z.file_names().map(Result::unwrap).filter(|n| n.starts_with("assets/")).count()
 }
 
 /// Zip `d` the way files were saved with one asset per placement (nothing merged or pruned).
@@ -888,9 +888,9 @@ fn claim_size(bytes: &mut [u8], name: &str, size: u32) {
     assert_eq!(patched, 2, "{name} not found in both headers");
 }
 
-/// A small archive whose `document.json` expands past the 256 MiB limit while claiming to
-/// hold one byte is refused once the limit is reached, with an error that says so, instead of
-/// being read whole into memory.
+/// A small archive whose `document.json` expands past the size it claims (one byte) toward the
+/// 256 MiB limit is refused without being read whole into memory, with an error that names
+/// `document.json`.
 #[test]
 fn oversized_document_json_is_refused() {
     let mut z = zip::ZipWriter::new(Cursor::new(Vec::new()));
@@ -900,7 +900,9 @@ fn oversized_document_json_is_refused() {
     assert!(bytes.len() < 4 << 20, "{}", bytes.len());
     claim_size(&mut bytes, "document.json", 1);
     let Err(err) = load(&bytes) else { panic!("an oversized document.json loaded") };
-    assert!(err.to_string().contains("limit"), "{err}");
+    // zip 9 refuses an entry that inflates past its declared size before the limit is reached, and
+    // an unreadable document.json reads as missing, as a corrupt one already did.
+    assert!(err.to_string().contains("document.json"), "{err}");
 }
 
 /// An embedded file that expands past the 1 GiB limit (and says so) is refused too.

@@ -77,7 +77,7 @@ flo_curves = "0.8"
 # QR codes (Object › Generate QR Code); MIT.
 qrcodegen = "1.8"
 quick-xml = "0.41"
-zip = { version = "3", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 # INDD/INDT → IDML conversion for File › Open: storytold/indd-utils, pinned by rev as every other
 # git dependency here is. It parses untrusted INDD files, and `branch = "main"` meant any
 # `cargo update` -- Dependabot runs them -- pulled whatever was on that branch into the parser

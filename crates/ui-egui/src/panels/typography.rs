@@ -352,7 +352,7 @@ mod tests {
         let mut stories = String::new();
         for i in 0..z.len() {
             let mut f = z.by_index(i).unwrap();
-            if f.name().starts_with("Stories/") {
+            if f.name().unwrap().starts_with("Stories/") {
                 f.read_to_string(&mut stories).unwrap();
             }
         }
