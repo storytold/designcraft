@@ -5421,6 +5421,7 @@ fn confirm_part5(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
 }
 
 /// One slice of the dialogs' Apply; later slices take the ids this one doesn't.
+/// Apply the remaining dialog-specific validation before dispatching generic command forms.
 fn confirm_part6(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
     match d.id.as_str() {
         "insertXref" => {
@@ -5519,6 +5520,15 @@ fn confirm_part6(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
             if let Err(e) = &r {
                 let mut d = d.clone();
                 d.fields.remove(PREVIEWED);
+                d.fields.insert("status".into(), json!(e));
+                app.ui.dialog = Some(d);
+            }
+            r
+        }
+        MOVE_PAGES => {
+            let r = move_pages_params(app, &d).and_then(|p| app.run("layout.pages.move", p));
+            if let Err(e) = &r {
+                let mut d = d.clone();
                 d.fields.insert("status".into(), json!(e));
                 app.ui.dialog = Some(d);
             }
@@ -8783,7 +8793,8 @@ fn command_form(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
                 combo(ui, d, &f.key, &opts);
             } else {
                 let mut s = d.s(&f.key);
-                let hint = if f.hint.is_empty() { String::new() } else { f.hint.clone() };
+                let hint =
+                    if d.id == MOVE_PAGES { page_range_hint(app, app.session.active().map_or(0, |s| s.doc.page_count())) } else { f.hint.clone() };
                 if ui.add(egui::TextEdit::singleline(&mut s).hint_text(egui::RichText::new(hint).color(dim)).desired_width(240.0)).changed() {
                     d.fields.insert(f.key.clone(), Value::String(s));
                 }
@@ -8811,6 +8822,34 @@ fn drop_unchanged_size(d: &Dialog, p: &mut Map<String, Value>) {
             p.remove(key);
         }
     }
+}
+
+const MOVE_PAGES: &str = "cmd:layout.pages.move";
+
+/// Describe the absolute, one-based positions accepted by the Move Pages dialog.
+fn page_range_hint(app: &DesignApp, count: usize) -> String {
+    crate::i18n::tr(&app.ui.language, "Page (1–{count}):").replace("{count}", &count.to_string())
+}
+
+/// The dialog uses one-based absolute positions; the command's indices stay zero-based.
+fn move_pages_params(app: &DesignApp, d: &Dialog) -> Result<Value, String> {
+    let count = app.session.doc().map_err(|e| e.to_string())?.doc.page_count();
+    let index = |key: &str| {
+        let position = match d.fields.get(key) {
+            Some(Value::Number(n)) => n.as_u64(),
+            Some(Value::String(s)) => s.trim().parse::<u64>().ok(),
+            _ => None,
+        };
+        position.and_then(|v| v.checked_sub(1)).filter(|v| *v < count as u64).ok_or_else(|| {
+            format!(
+                "{}: {}. {}",
+                crate::i18n::tr(&app.ui.language, "Invalid value"),
+                crate::i18n::tr(&app.ui.language, &humanize(key)),
+                page_range_hint(app, count)
+            )
+        })
+    };
+    Ok(json!({"from": index("from")?, "to": index("to")?}))
 }
 
 const STEP_AND_REPEAT: &str = "cmd:edit.stepAndRepeat";

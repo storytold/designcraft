@@ -641,6 +641,12 @@ impl Document {
         if from == to {
             return Ok(());
         }
+        // Repagination keeps fixed multi-page spreads together, so absolute page indices
+        // would not be spread indices below. Refuse before changing the document rather
+        // than moving a whole spread or panicking on a valid page position.
+        if self.spreads.iter().any(|sp| !sp.allow_shuffle && sp.pages.len() > 1) {
+            return Err(DocError::Invalid("moving pages with non-shuffling multi-page spreads is not supported".into()));
+        }
         // Flatten to single-page spreads, reorder, repaginate.
         let facing = self.settings.facing_pages;
         self.settings.facing_pages = false;
@@ -1124,6 +1130,20 @@ mod tests {
         let b = d.item(id).unwrap().bounds();
         assert!((b.x0 - 100.0).abs() < 1e-9, "{b:?}");
         d.check().unwrap();
+    }
+
+    /// Absolute page indices must never index a list that still contains fixed multi-page spreads.
+    #[test]
+    fn moving_pages_with_an_unshuffled_spread_returns_an_error_without_changing_the_document() {
+        for (from, to) in [(4, 0), (1, 2), (0, 4)] {
+            let mut d = Document::new(&NewDocument { pages: 5, ..Default::default() });
+            Arc::make_mut(&mut d.spreads[1]).allow_shuffle = false;
+            let before = serde_json::to_value(&d).unwrap();
+            let error = d.move_page(from, to).unwrap_err();
+            assert!(error.to_string().contains("non-shuffling"));
+            assert_eq!(serde_json::to_value(&d).unwrap(), before);
+            d.check().unwrap();
+        }
     }
 
     #[test]

@@ -7,6 +7,7 @@ use super::parents::{
 use super::sections::{ChapterEdit, SectionEdit, chapter_numbering, start_number};
 use super::{CommandSpec, LAYER_COLORS, Layer, LayerId, Margins, Result, SpreadId, Value, bad, cmd, has_doc, json, ok, str_param};
 
+/// Register Layout commands; page-index parameters exposed to automation are zero-based.
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(
@@ -100,14 +101,22 @@ pub fn specs() -> Vec<CommandSpec> {
                 })
             }
         ),
-        cmd!("layout.pages.move", "Move Pages…", ["Layout", "Pages"], None, "{from, to}", has_doc, |s, p| {
-            let from = p.get("from").and_then(Value::as_u64).ok_or_else(|| bad("layout.pages.move", "missing from"))? as usize;
-            let to = p.get("to").and_then(Value::as_u64).ok_or_else(|| bad("layout.pages.move", "missing to"))? as usize;
-            s.edit(|d, _| {
-                d.move_page(from, to)?;
-                ok()
-            })
-        }),
+        cmd!(
+            "layout.pages.move",
+            "Move Pages…",
+            ["Layout", "Pages"],
+            None,
+            "{from: page index (0-based), to: page index (0-based)}",
+            has_doc,
+            |s, p| {
+                let from = p.get("from").and_then(Value::as_u64).ok_or_else(|| bad("layout.pages.move", "missing from"))? as usize;
+                let to = p.get("to").and_then(Value::as_u64).ok_or_else(|| bad("layout.pages.move", "missing to"))? as usize;
+                s.edit(|d, _| {
+                    d.move_page(from, to)?;
+                    ok()
+                })
+            }
+        ),
         cmd!(
             "layout.pages.duplicateSpread",
             "Duplicate Spread",
@@ -125,13 +134,34 @@ pub fn specs() -> Vec<CommandSpec> {
                     if to.is_some_and(|t| t > d.page_count()) {
                         return Err(bad("layout.pages.duplicateSpread", "no such page"));
                     }
+                    // Arbitrary moves cannot flatten fixed spreads. Place copies directly at an
+                    // outside boundary instead, preserving unrelated fixed spreads and their items.
+                    let direct = to.filter(|_| d.spreads.iter().any(|sp| !sp.allow_shuffle && sp.pages.len() > 1));
+                    if let Some(at) = direct
+                        && let Some((si, pi)) = d.page_loc(at)
+                        && pi > 0
+                        && d.spreads.get(si).is_some_and(|sp| !sp.allow_shuffle && sp.pages.len() > 1)
+                    {
+                        return Err(bad("layout.pages.duplicateSpread", "inserting inside a non-shuffling multi-page spread is not supported"));
+                    }
+                    // Inserting before the source can change its spread coordinates. Retain the
+                    // original source so each item's page-relative placement is copied exactly.
+                    let original = direct.map(|_| d.clone());
                     let after = if at_end { d.page_count() - 1 } else { d.first_page_of_spread(si) + sp.pages.len() - 1 };
+                    let first = direct.unwrap_or(after.saturating_add(1));
                     let parent = sp.pages.first().and_then(|p| p.parent);
-                    d.insert_pages(Some(after), sp.pages.len(), parent)?;
+                    d.insert_pages(first.checked_sub(1), sp.pages.len(), parent)?;
                     // The copies are the pages they copy: size, margins, columns, guides, liquid rule.
                     for (k, src) in sp.pages.iter().enumerate() {
-                        let Some((nsi, npi)) = d.page_loc(after + 1 + k) else { continue };
+                        let Some((nsi, npi)) = d.page_loc(first.saturating_add(k)) else { continue };
                         let nsp = std::sync::Arc::make_mut(&mut d.spreads[nsi]);
+                        // Copies can differ from the insertion template's width. Keep existing
+                        // items at their page-local positions while the copied page is resized.
+                        let positions = direct.map(|_| {
+                            let old_x: Vec<_> = nsp.pages.iter().map(|page| page.x).collect();
+                            let item_pages: Vec<_> = nsp.items.iter().map(|item| nsp.page_at_x(item.bounds().center().x).unwrap_or(0)).collect();
+                            (old_x, item_pages)
+                        });
                         let pg = &mut nsp.pages[npi];
                         let dx = pg.x - src.x;
                         // A copy on the other side of the spine has its dragged columns mirrored.
@@ -142,13 +172,45 @@ pub fn specs() -> Vec<CommandSpec> {
                             g.position += dx;
                         }
                         nsp.relayout();
+                        if let Some((old_x, item_pages)) = positions {
+                            for (item, pi) in nsp.items.iter_mut().zip(item_pages) {
+                                if let (Some(before), Some(page)) = (old_x.get(pi), nsp.pages.get(pi)) {
+                                    let dx = page.x - before;
+                                    if dx != 0.0 {
+                                        let item = std::sync::Arc::make_mut(item);
+                                        item.xf = designcraft_geom::Affine::translate((dx, 0.0)) * item.xf;
+                                    }
+                                }
+                            }
+                        }
                     }
                     // Copy items onto the new spread(s) at the same positions.
-                    let src = d.clone();
+                    let src = original.unwrap_or_else(|| d.clone());
                     let ids: Vec<_> = sp.items.iter().map(|i| i.id).collect();
-                    let (nsi, _) = d.page_loc(after + 1).ok_or_else(|| bad("layout.pages.duplicateSpread", "insert failed"))?;
+                    if direct.is_some() {
+                        // Facing-page copies can land on separate spreads. Share story remapping
+                        // across their destinations so threaded frames remain one copied story.
+                        let placements = sp
+                            .items
+                            .iter()
+                            .map(|item| {
+                                let k = sp.page_at_x(item.bounds().center().x).unwrap_or(0);
+                                let source_page = sp.pages.get(k).ok_or_else(|| bad("layout.pages.duplicateSpread", "source page missing"))?;
+                                let (si, pi) =
+                                    d.page_loc(first.saturating_add(k)).ok_or_else(|| bad("layout.pages.duplicateSpread", "insert failed"))?;
+                                let page = d
+                                    .spreads
+                                    .get(si)
+                                    .and_then(|sp| sp.pages.get(pi))
+                                    .ok_or_else(|| bad("layout.pages.duplicateSpread", "insert failed"))?;
+                                Ok((item.id, designcraft_doc::SpreadRef::Doc(si), designcraft_geom::Vec2::new(page.x - source_page.x, 0.0)))
+                            })
+                            .collect::<super::Result<Vec<_>>>()?;
+                        crate::cmd::object::duplicate_from_placements(d, &src, placements)?;
+                        return Ok(json!({"page": first}));
+                    }
+                    let (nsi, _) = d.page_loc(first).ok_or_else(|| bad("layout.pages.duplicateSpread", "insert failed"))?;
                     crate::cmd::object::duplicate_from(d, &src, &ids, designcraft_doc::SpreadRef::Doc(nsi), designcraft_geom::Vec2::ZERO)?;
-                    let first = after + 1;
                     let Some(to) = to else { return Ok(json!({"page": first})) };
                     // Moving a page shifts the ones between; order the moves so each copy keeps
                     // its place among the others.

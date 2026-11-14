@@ -2537,3 +2537,99 @@ fn deleting_the_active_layer_moves_to_a_usable_layer() {
     s.execute("layer.delete", &json!({"id": bottom.0})).unwrap();
     assert_eq!(s.doc().unwrap().active_layer, artwork);
 }
+
+/// Duplicate placement outside a fixed spread must preserve that spread and remain one undo step.
+#[test]
+fn duplicate_placement_outside_an_unrelated_fixed_spread_preserves_pages_and_items() {
+    for (source, to, linked) in [(0, 0, false), (0, 3, false), (0, 5, false), (1, 0, false), (1, 5, false), (1, 0, true), (1, 5, true)] {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 5,"facingPages":true})).unwrap();
+        for (i, width) in [300, 400, 500, 600, 700].into_iter().enumerate() {
+            s.execute("layout.pageSize", &json!({"pages":[i+1],"width":width,"height":600})).unwrap();
+        }
+        s.execute("layout.spreadShuffle", &json!({"spread": 2,"allow": false})).unwrap();
+        let pages = s.doc().unwrap().doc.spreads[source].pages.clone();
+        for absolute in 0..5 {
+            let doc = &s.doc().unwrap().doc;
+            let (si, pi) = doc.page_loc(absolute).unwrap();
+            let x = doc.spreads[si].pages[pi].x;
+            s.execute(
+                "frame.create",
+                &json!({"spread": si,"rect": [x+36.0,36.0,x+136.0,136.0],"content":"text","text":format!("Original page {absolute}"),"caret":false}),
+            )
+            .unwrap();
+        }
+        let frames: Vec<_> = s.doc().unwrap().doc.spreads[source].items.iter().map(|item| item.id.0).collect();
+        if linked {
+            s.execute("text.thread", &json!({"from":frames[0],"to":frames[1]})).unwrap();
+        }
+        let doc = &s.doc().unwrap().doc;
+        let story_ids: std::collections::HashSet<_> =
+            doc.spreads[source].items.iter().filter_map(|item| item.text_frame().map(|frame| frame.story)).collect();
+        let story_texts: Vec<_> = story_ids.iter().map(|id| doc.story(*id).unwrap().text.clone()).collect();
+        let fixed = doc.spreads[2].clone();
+        assert_eq!(fixed.pages.len(), 2);
+        assert!(!fixed.allow_shuffle, "the unrelated two-page spread must be fixed");
+        assert!(s.execute("layout.pages.move", &json!({"from":0,"to":1})).is_err(), "the submitted Move Pages guard applies to this fixture");
+        let doc = &s.doc().unwrap().doc;
+        let fixed_json = serde_json::to_value(&fixed).unwrap();
+        let original_ids: Vec<_> = (0..doc.page_count()).map(|i| doc.page(i).unwrap().id).collect();
+        let original_items: Vec<_> = doc
+            .spreads
+            .iter()
+            .flat_map(|sp| &sp.items)
+            .map(|item| {
+                let page = doc.page(doc.page_of_item(item.id).unwrap()).unwrap();
+                (item.id, page.id, item.bounds().x0 - page.x, item.bounds().y0)
+            })
+            .collect();
+        let before = serde_json::to_value(doc).unwrap();
+        let undo = s.doc().unwrap().history.undo.len();
+        let result = s.execute("layout.pages.duplicateSpread", &json!({"spread": source,"to": to})).unwrap();
+        assert_eq!(result["page"], to);
+        let doc = &s.doc().unwrap().doc;
+        assert_eq!(doc.page_count(), 5 + pages.len());
+        let copied_ids: Vec<_> = (to..to + pages.len()).map(|i| doc.page(i).unwrap().id).collect();
+        assert!(copied_ids.iter().all(|id| !original_ids.contains(id)));
+        let mut expected_ids = original_ids.clone();
+        expected_ids.splice(to..to, copied_ids);
+        assert_eq!((0..doc.page_count()).map(|i| doc.page(i).unwrap().id).collect::<Vec<_>>(), expected_ids);
+        let retained = doc.spreads.iter().find(|sp| sp.id == fixed.id).unwrap();
+        assert_eq!(serde_json::to_value(retained).unwrap(), fixed_json, "the fixed spread is byte-for-byte unchanged as document data");
+        for (id, page_id, x, y) in original_items {
+            let item = doc.item(id).unwrap();
+            let page = doc.page(doc.page_of_item(id).unwrap()).unwrap();
+            assert_eq!(page.id, page_id, "unrelated original items keep their own page");
+            assert!((item.bounds().x0 - page.x - x).abs() < 1e-6 && (item.bounds().y0 - y).abs() < 1e-6, "original item position changed");
+        }
+        let mut copied_stories = std::collections::HashSet::new();
+        for (k, page) in pages.iter().enumerate() {
+            let copy = doc.page(to + k).unwrap();
+            assert_eq!((copy.width, copy.height), (page.width, page.height));
+            let items: Vec<_> = doc.spreads.iter().flat_map(|sp| &sp.items).filter(|it| doc.page_of_item(it.id) == Some(to + k)).collect();
+            assert_eq!(items.len(), 1);
+            assert!((items[0].bounds().x0 - copy.x - 36.0).abs() < 1e-6);
+            copied_stories.insert(items[0].text_frame().unwrap().story);
+        }
+        for text in story_texts {
+            assert_eq!(doc.stories.values().filter(|story| story.text == text).count(), 2);
+        }
+        if linked {
+            assert_eq!(copied_stories.len(), 1, "copied linked frames share one new story across spreads");
+        }
+        doc.check().unwrap();
+        let after = serde_json::to_value(doc).unwrap();
+        assert_eq!(s.doc().unwrap().history.undo.len(), undo + 1);
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(serde_json::to_value(&s.doc().unwrap().doc).unwrap(), before);
+        s.execute("edit.redo", &json!({})).unwrap();
+        assert_eq!(serde_json::to_value(&s.doc().unwrap().doc).unwrap(), after);
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert!(
+            s.execute("layout.pages.duplicateSpread", &json!({"spread": source,"to": 4})).is_err(),
+            "inserting inside the fixed spread remains unsupported"
+        );
+        assert_eq!(serde_json::to_value(&s.doc().unwrap().doc).unwrap(), before);
+        assert_eq!(s.doc().unwrap().history.undo.len(), undo);
+    }
+}

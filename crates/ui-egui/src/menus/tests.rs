@@ -1168,6 +1168,12 @@ fn middle_drag_pans_with_any_tool() {
     assert_eq!(items(&app), items0, "the tool saw nothing");
 }
 
+/// Match native Command on macOS and Control on other platforms.
+fn command_modifier() -> egui::Modifiers {
+    if cfg!(target_os = "macos") { egui::Modifiers::MAC_CMD | egui::Modifiers::COMMAND } else { egui::Modifiers::CTRL | egui::Modifiers::COMMAND }
+}
+
+/// Page and spread shortcuts follow the platform command modifier and retain their navigation bounds.
 #[test]
 fn layout_menu_goes_through_pages_and_spreads_with_their_shortcuts() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
@@ -1208,7 +1214,7 @@ fn layout_menu_goes_through_pages_and_spreads_with_their_shortcuts() {
     assert!(at("view.nextSpread") < at("view.previousSpread"));
     assert!(at("view.previousSpread") < at("view.goToPage"));
     let shift = egui::Modifiers::SHIFT;
-    let cmd_shift = egui::Modifiers { shift: true, command: true, ctrl: true, ..Default::default() };
+    let cmd_shift = command_modifier() | egui::Modifiers::SHIFT;
     let alt = egui::Modifiers::ALT;
     // Pages 1 | 2-3 | 4-5 | 6-7.
     frame(&mut app, key(egui::Key::PageDown, shift));
@@ -1244,6 +1250,7 @@ fn layout_menu_goes_through_pages_and_spreads_with_their_shortcuts() {
     assert_eq!(v.zoom, zoom);
 }
 
+/// Command-modified history shortcuts retrace the same pages on every native platform.
 #[test]
 fn go_back_and_go_forward_retrace_the_pages_viewed() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
@@ -1277,7 +1284,7 @@ fn go_back_and_go_forward_retrace_the_pages_viewed() {
     assert_eq!(at("view.goBack"), at("view.goToPage") + 1);
     assert_eq!(at("view.goForward"), at("view.goBack") + 1);
     assert_eq!(can(&app), (false, false), "one page viewed: nowhere to go");
-    let cmd = egui::Modifiers { command: true, ctrl: true, ..Default::default() };
+    let cmd = command_modifier();
     let cmd_shift = egui::Modifiers { shift: true, ..cmd };
     let shift = egui::Modifiers::SHIFT;
     // Pages viewed: 1, 5, 7.
@@ -1339,6 +1346,7 @@ fn go_back_waits_for_the_view_to_be_fitted() {
     assert!(menu_enabled(&app, "view.goBack"), "the unfitted Go Back used no history entry");
 }
 
+/// A terminal spread navigation does not add an extra jump to view history.
 #[test]
 fn next_spread_at_the_last_spread_is_no_jump() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
@@ -1363,7 +1371,7 @@ fn next_spread_at_the_last_spread_is_no_jump() {
         ]
     };
     let page = |app: &crate::DesignApp| crate::canvas::current_page(app).unwrap();
-    let cmd = egui::Modifiers { command: true, ctrl: true, ..Default::default() };
+    let cmd = command_modifier();
     let alt = egui::Modifiers::ALT;
     frame(&mut app, vec![]);
     frame(&mut app, vec![]);
@@ -1380,6 +1388,7 @@ fn next_spread_at_the_last_spread_is_no_jump() {
     assert!(!menu_enabled(&app, "view.goBack"));
 }
 
+/// History restores the exact view while ordinary scrolling adds no entry.
 #[test]
 fn go_back_returns_to_the_view_a_jump_left_and_scrolling_adds_no_entry() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
@@ -1407,7 +1416,7 @@ fn go_back_returns_to_the_view_a_jump_left_and_scrolling_adds_no_entry() {
         let st = app.session.active().unwrap();
         crate::canvas::current_slot(app, &designcraft_tools::layout::CanvasLayout::new(&st.doc, false)).unwrap()
     };
-    let cmd = egui::Modifiers { command: true, ctrl: true, ..Default::default() };
+    let cmd = command_modifier();
     let alt = egui::Modifiers::ALT;
     frame(&mut app, vec![]);
     frame(&mut app, vec![]);
@@ -1452,6 +1461,7 @@ fn go_back_returns_to_the_view_a_jump_left_and_scrolling_adds_no_entry() {
     assert_eq!(spread(&app), 2);
 }
 
+/// Leaving presentation preserves the view that history should restore.
 #[test]
 fn go_back_after_presentation_returns_to_the_last_spread_presented() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
@@ -1479,7 +1489,7 @@ fn go_back_after_presentation_returns_to_the_last_spread_presented() {
         let st = app.session.active().unwrap();
         crate::canvas::current_slot(app, &designcraft_tools::layout::CanvasLayout::new(&st.doc, false)).unwrap()
     };
-    let cmd = egui::Modifiers { command: true, ctrl: true, ..Default::default() };
+    let cmd = command_modifier();
     frame(&mut app, vec![]);
     frame(&mut app, vec![]);
     // Scrolled off the page's centre, so the place Go Back returns to is not just the page.

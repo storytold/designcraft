@@ -5620,3 +5620,104 @@ fn parent_resize_exact_dialog_keeps_its_target_and_rejects_invalid_input() {
     assert!(app.ui.dialog.is_some());
     assert!(std::sync::Arc::ptr_eq(&saved, &app.session.doc().unwrap().doc));
 }
+
+/// A dialog move is one edit whose page identities and content survive reopening and Undo.
+#[test]
+fn move_pages_dialog_moves_the_displayed_last_page_and_undo_restores_it() {
+    for (from, to, source, destination) in
+        [(json!(" 19 "), json!("1"), 18, 0), (json!(19), json!(1), 18, 0), (json!("1"), json!("19"), 0, 18), (json!(1), json!(19), 0, 18)]
+    {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"pages": 19})).unwrap();
+        let doc = &app.session.doc().unwrap().doc;
+        let pages: Vec<_> = doc.spreads.iter().flat_map(|sp| sp.pages.iter().map(|p| p.id)).collect();
+        let (si, pi) = doc.page_loc(source).unwrap();
+        let x = doc.spreads[si].pages[pi].x;
+        let frame = app
+            .run(
+                "frame.create",
+                json!({"spread": si, "rect": [x + 36.0, 36.0, x + 236.0, 136.0], "content": "text", "text": "Last page", "caret": false}),
+            )
+            .unwrap();
+        let id = designcraft_doc::ItemId(frame["id"].as_u64().unwrap());
+        let story = designcraft_doc::StoryId(frame["story"].as_u64().unwrap());
+        let before = undo_steps(&app);
+        app.ui.dialog = Some(Dialog::new("cmd:layout.pages.move", json!({"from": from, "to": to})));
+        confirm(&mut app).unwrap();
+        let doc = &app.session.doc().unwrap().doc;
+        assert_eq!(doc.page_count(), 19);
+        let mut expected = pages.clone();
+        let moved = expected.remove(source);
+        expected.insert(destination, moved);
+        assert_eq!(doc.spreads.iter().flat_map(|sp| sp.pages.iter().map(|p| p.id)).collect::<Vec<_>>(), expected);
+        assert_eq!(doc.page_of_item(id), Some(destination));
+        assert_eq!(doc.story(story).unwrap().text, "Last page");
+        let (si, pi) = doc.page_loc(destination).unwrap();
+        assert!((doc.item(id).unwrap().bounds().x0 - doc.spreads[si].pages[pi].x - 36.0).abs() < 1e-9);
+        assert_eq!(undo_steps(&app), before + 1);
+        assert!(app.ui.dialog.is_none());
+        let serialized = app.run("file.serialize", json!({})).unwrap();
+        let mut reopened = designcraft_engine::Session::new();
+        reopened.execute("file.openBytes", &json!({"name": "moved.designcraft", "base64": serialized["base64"]})).unwrap();
+        let doc = &reopened.doc().unwrap().doc;
+        assert_eq!(doc.spreads.iter().flat_map(|sp| sp.pages.iter().map(|p| p.id)).collect::<Vec<_>>(), expected);
+        assert_eq!(doc.page_of_item(id), Some(destination));
+        assert_eq!(doc.story(story).unwrap().text, "Last page");
+        app.run("edit.undo", json!({})).unwrap();
+        let doc = &app.session.doc().unwrap().doc;
+        assert_eq!(doc.spreads.iter().flat_map(|sp| sp.pages.iter().map(|p| p.id)).collect::<Vec<_>>(), pages);
+        assert_eq!(doc.page_of_item(id), Some(source));
+        assert_eq!(doc.story(story).unwrap().text, "Last page");
+        // Direct engine/control callers keep their existing zero-based API.
+        app.run("layout.pages.move", json!({"from": source, "to": destination})).unwrap();
+        assert_eq!(app.session.doc().unwrap().doc.page_of_item(id), Some(destination));
+    }
+}
+
+/// Keyboard entry must apply the same one-based conversion as direct dialog confirmation.
+#[test]
+fn move_pages_dialog_shows_the_page_range_and_moves_after_keyboard_entry() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"pages": 19})).unwrap();
+    let last = app.session.doc().unwrap().doc.page(18).unwrap().id;
+    crate::menus::activate(&mut app, "layout.pages.move", &Value::Null);
+    let ctx = dialog_context("en");
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+    for _ in 0..3 {
+        dialog_frame(&mut app, &ctx, screen, vec![]);
+    }
+    let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+    let hints: Vec<_> = labels.iter().filter(|(s, _, _)| s == "Page (1–19):").map(|(_, r, _)| *r).collect();
+    assert_eq!(hints.len(), 2, "both fields show the one-based page range: {labels:?}");
+    for ((field, text), rect) in [("from", "19"), ("to", "1")].into_iter().zip(hints) {
+        click_dialog(&mut app, &ctx, screen, rect.center());
+        dialog_frame(&mut app, &ctx, screen, vec![egui::Event::Text(text.into())]);
+        assert_eq!(app.ui.dialog.as_ref().unwrap().s(field), text);
+    }
+    let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+    click_dialog(&mut app, &ctx, screen, visible_label(&labels, screen, "OK").center());
+    assert!(app.ui.dialog.is_none());
+    assert_eq!(app.session.doc().unwrap().doc.page(0).unwrap().id, last);
+}
+
+/// Invalid positions preserve the document, history and pending input for correction.
+#[test]
+fn move_pages_dialog_rejects_invalid_positions_without_changing_the_document() {
+    for invalid in [json!(0), json!(20), json!(-1), json!(1.5), json!(true), Value::Null, json!(""), json!("abc"), json!("18446744073709551616")] {
+        for field in ["from", "to"] {
+            let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+            app.run("file.new", json!({"pages": 19})).unwrap();
+            let before = serde_json::to_value(&app.session.doc().unwrap().doc).unwrap();
+            let undo = undo_steps(&app);
+            let mut fields = json!({"from": 19, "to": 1});
+            fields[field] = invalid.clone();
+            app.ui.dialog = Some(Dialog::new("cmd:layout.pages.move", fields.clone()));
+            assert!(confirm(&mut app).is_err(), "{field}: {invalid}");
+            assert_eq!(serde_json::to_value(&app.session.doc().unwrap().doc).unwrap(), before, "{field}: {invalid}");
+            assert_eq!(undo_steps(&app), undo);
+            let dialog = app.ui.dialog.as_ref().unwrap();
+            assert_eq!(dialog.fields[field], fields[field]);
+            assert!(!dialog.fields["status"].as_str().unwrap().is_empty());
+        }
+    }
+}

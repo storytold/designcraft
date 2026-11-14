@@ -1001,6 +1001,7 @@ fn pasting_svg_from_another_app_places_editable_paths_in_the_middle_of_the_view(
     assert!((it.bounds().center() - centre).hypot() < 0.01, "{:?} vs {centre:?}", it.bounds());
 }
 
+/// Use the native command modifier while preserving Paste in Place and plain Paste assertions.
 #[test]
 fn the_paste_in_place_shortcut_pastes_in_place_and_plain_paste_offsets() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
@@ -1011,7 +1012,7 @@ fn the_paste_in_place_shortcut_pastes_in_place_and_plain_paste_offsets() {
     let clip = app.object_clip_text.clone().expect("the copy's placeholder text");
     let mut h = harness(app);
     let paste = |h: &mut Harness<'static, DesignApp>, modifiers: egui::Modifiers| {
-        // As egui-winit delivers ⌃⌥⇧V: the chord's paste and the V release, no V press; here the
+        // As egui-winit delivers Cmd+Alt+Shift+V: the chord's paste and the V release, no V press; here the
         // modifiers are released within the same frame.
         let release = egui::Event::Key { key: egui::Key::V, physical_key: None, pressed: false, repeat: false, modifiers };
         let none = egui::Event::ModifiersChanged(egui::Modifiers::NONE);
@@ -1022,12 +1023,17 @@ fn the_paste_in_place_shortcut_pastes_in_place_and_plain_paste_offsets() {
         assert_ne!(pasted.0, id);
         st.doc.item(pasted).unwrap().bounds()
     };
-    let linux = egui::Modifiers { alt: true, ctrl: true, shift: true, mac_cmd: false, command: true };
-    assert_eq!(paste(&mut h, linux), original, "Paste in Place");
-    let moved = paste(&mut h, egui::Modifiers::COMMAND);
+    let command = if cfg!(target_os = "macos") {
+        egui::Modifiers::MAC_CMD | egui::Modifiers::COMMAND
+    } else {
+        egui::Modifiers::CTRL | egui::Modifiers::COMMAND
+    };
+    let in_place = command | egui::Modifiers::ALT | egui::Modifiers::SHIFT;
+    assert_eq!(paste(&mut h, in_place), original, "Paste in Place");
+    let moved = paste(&mut h, command);
     assert!((moved.x0 - original.x0 - 12.0).abs() < 1e-9 && (moved.y0 - original.y0 - 12.0).abs() < 1e-9, "{moved:?}");
     // The modifiers went down in an earlier frame than the paste.
-    h.event_modifiers(egui::Event::Paste(clip.clone()), linux);
+    h.event_modifiers(egui::Event::Paste(clip.clone()), in_place);
     h.run_steps(2);
     let st = h.state().session.doc().unwrap();
     let pasted = *st.selection.items.first().expect("the copy is selected");
