@@ -230,7 +230,7 @@ fn successful_fallback_warns_for_both_names_and_preserves_rgb_samples() {
     for (name, x) in [("other-inks-a.tif", 36.0), ("other-inks-b.tif", 66.0)] {
         place_named(&mut d, bytes.clone(), x, name, "image/tiff", 0);
     }
-    let reason = "converted to RGB (a CMYK TIFF that is planar, has premultiplied alpha, uses other inks or is over 256 MiB)";
+    let reason = "converted to RGB (a CMYK TIFF that uses other inks or is over 256 MiB)";
     let expected_warnings = [format!("other-inks-a.tif: {reason}"), format!("other-inks-b.tif: {reason}")];
     for compress_images in [false, true] {
         let report = export_pdf_with_report(&d, &Cache::new(), &PdfOptions { compress_images, ..Default::default() }).unwrap();
@@ -272,19 +272,20 @@ fn pdfa_rgb_conversion_does_not_poison_later_cmyk_exports() {
 }
 
 #[test]
-fn unsupported_associated_alpha_keeps_each_asset_failure_warning() {
+fn associated_alpha_exports_straight_inks_once() {
+    // The fixture stores the inks multiplied by alpha; the export carries them made straight.
     let bytes = fixtures::cmyk_tiff(Some(1), false);
     let mut d = Document::new(&Default::default());
     for (name, x) in [("alpha-a.tif", 36.0), ("alpha-b.tif", 66.0)] {
         place_named(&mut d, bytes.clone(), x, name, "image/tiff", 0);
     }
     let report = export_pdf_with_report(&d, &Cache::new(), &PdfOptions::default()).unwrap();
-    assert!(image_objects(&report.bytes).is_empty());
-    assert_eq!(report.warnings.len(), 4);
-    for name in ["alpha-a.tif", "alpha-b.tif"] {
-        assert!(report.warnings.iter().any(|w| w.starts_with(&format!("{name}: converted to RGB"))));
-        assert!(report.warnings.contains(&format!("image `{name}` could not be decoded and was skipped")));
-    }
+    assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+    let images = image_objects(&report.bytes);
+    let cmyk: Vec<_> = images.iter().filter(|i| i.space == "DeviceCMYK").collect();
+    assert_eq!(cmyk.len(), 1, "{images:?}");
+    assert_eq!(cmyk[0].samples, fixtures::INKS);
+    assert_eq!(cmyk[0].alpha.as_deref(), Some(&fixtures::ALPHA[..]));
 }
 
 fn two_page_pdf() -> Vec<u8> {

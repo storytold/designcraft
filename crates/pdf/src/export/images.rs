@@ -17,8 +17,7 @@ pub(super) struct ConvertedImage {
     pub(super) warning: Option<&'static str>,
 }
 
-pub(super) const CMYK_FALLBACK_WARNING: &str =
-    "converted to RGB (a CMYK TIFF that is planar, has premultiplied alpha, uses other inks or is over 256 MiB)";
+pub(super) const CMYK_FALLBACK_WARNING: &str = "converted to RGB (a CMYK TIFF that uses other inks or is over 256 MiB)";
 
 #[cfg(not(test))]
 pub(super) type ImageContentCache = HashMap<Arc<Vec<u8>>, ConvertedImage>;
@@ -389,28 +388,18 @@ mod image_content_cache_tests {
                 let opts = PdfOptions { standard, ..Default::default() };
                 let mut ex = exporter(&d, &cache, &opts);
                 ex.rgb_only = standard == Standard::PdfA2b;
-                // Unassociated alpha (2) decodes as inks, and as RGB for RGB-only exports.
-                // Associated alpha is rejected by both paths: retain both failure names.
-                let succeeds = alpha.is_none() || alpha == Some(2);
-                let first = ex.load_image(a);
-                assert_eq!(first.is_some(), succeeds, "{alpha:?} {standard:?}");
-                if alpha.is_none() {
-                    let (space, samples) = image_color_samples(first.unwrap());
-                    assert_eq!(space, if ex.rgb_only { "DeviceRGB" } else { "DeviceCMYK" });
-                    assert_eq!(samples, if ex.rgb_only { screen_rgb.clone() } else { crate::image_fixtures::INKS.to_vec() });
-                }
-                assert_eq!(ex.load_image(b).is_some(), succeeds, "{alpha:?} {standard:?}");
-                assert_eq!(ex.load_image(a).is_some(), succeeds);
-                assert_eq!(ex.image_conversions, if succeeds { 1 } else { 2 });
-                assert_eq!(ex.images_by_content.len(), usize::from(succeeds));
-                if succeeds {
-                    assert!(ex.warnings.is_empty());
-                } else {
-                    for name in ["a.tif", "b.tif"] {
-                        assert!(ex.warnings.contains(&format!("image `{name}` could not be decoded and was skipped")));
-                        assert_eq!(ex.warnings.contains(&format!("{name}: {CMYK_FALLBACK_WARNING}")), !ex.rgb_only);
-                    }
-                }
+                // Every alpha kind decodes as inks, and as RGB for RGB-only exports; associated
+                // alpha (1) is made straight, so it gives the same inks as unassociated (2).
+                let first = ex.load_image(a).unwrap();
+                let (space, samples) = image_color_samples(first);
+                assert_eq!(space, if ex.rgb_only { "DeviceRGB" } else { "DeviceCMYK" }, "{alpha:?} {standard:?}");
+                let want = if ex.rgb_only { screen_rgb.clone() } else { crate::image_fixtures::INKS.to_vec() };
+                assert_eq!(samples, want, "{alpha:?} {standard:?}");
+                assert!(ex.load_image(b).is_some(), "{alpha:?} {standard:?}");
+                assert!(ex.load_image(a).is_some());
+                assert_eq!(ex.image_conversions, 1);
+                assert_eq!(ex.images_by_content.len(), 1);
+                assert!(ex.warnings.is_empty());
             }
         }
     }
