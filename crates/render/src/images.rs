@@ -217,28 +217,31 @@ fn reduced_estimates(wants: &[Want]) -> Option<(usize, usize)> {
     Some((cached, peak))
 }
 
+/// Whether `k` is cached at level 0 or at every reduced JPEG level in `targets` it is drawn at.
+/// Smaller levels alone don't make an asset cached.
+fn is_cached(c: &Cache, k: &(usize, u32), targets: &HashMap<(usize, u32), Vec<u8>>) -> bool {
+    c.map.contains_key(&(k.0, k.1, 0)) || targets.get(k).is_some_and(|ls| ls.iter().all(|l| c.map.contains_key(&(k.0, k.1, *l))))
+}
+
 /// The bytes each asset in `index` holds in the cache, when it is cached or failed, and the bytes
 /// of everything else cached. An asset with only some of the levels it is drawn at cached is not
 /// held: it is decoded again, and the levels its decode estimate covers are not counted with
-/// everything else either. The levels of the assets in `index` become the most recently used, so
-/// later stores evict other images first.
+/// everything else either. `reduced` holds the assets counted at their reduced JPEG estimate; the
+/// others are counted at a full decode. The levels of the assets in `index` become the most
+/// recently used, so later stores evict other images first.
 fn held_in_view(
     c: &mut Cache,
     index: &HashMap<(usize, u32), usize>,
     targets: &HashMap<(usize, u32), Vec<u8>>,
+    reduced: &HashSet<(usize, u32)>,
 ) -> (HashMap<(usize, u32), usize>, usize) {
-    // Smaller levels alone don't make an asset cached, unless they are the reduced JPEG levels
-    // every drawing of it takes.
-    let cached: HashSet<(usize, u32)> = index
-        .keys()
-        .filter(|k| c.map.contains_key(&(k.0, k.1, 0)) || targets.get(k).is_some_and(|ls| ls.iter().all(|l| c.map.contains_key(&(k.0, k.1, *l)))))
-        .copied()
-        .collect();
+    let cached: HashSet<(usize, u32)> = index.keys().filter(|k| is_cached(c, k, targets)).copied().collect();
     // The levels the decode estimate of an asset that is not cached covers: every level for a full
     // decode, and for reduced JPEG levels those from the level read from the blocks to the level
     // drawn, as [`reduced_estimates`] counts them.
-    let covered = |k: &(usize, u32), level: u8| {
-        targets.get(k).is_none_or(|ls| ls.iter().any(|l| (*l).min(designcraft_images::MAX_REDUCED_SHRINK) <= level && level <= *l))
+    let covered = |k: &(usize, u32), level: u8| match targets.get(k) {
+        Some(ls) if reduced.contains(k) => ls.iter().any(|l| (*l).min(designcraft_images::MAX_REDUCED_SHRINK) <= level && level <= *l),
+        _ => true,
     };
     c.clock += 1;
     let clock = c.clock;
@@ -343,8 +346,23 @@ pub(crate) fn warm(wants: Vec<Want>) -> usize {
             Some((*key, levels))
         })
         .collect();
-    let (held, others) = with(|c| held_in_view(c, &index, &targets));
+    // The assets that are neither cached nor failed.
+    let to_decode: HashSet<(usize, u32)> = with(|c| index.keys().filter(|k| !c.bad.contains_key(k) && !is_cached(c, k, &targets)).copied().collect());
     // One image to decode gains nothing from threads (and is not worth sizing).
+    if to_decode.len() < 2 {
+        return 0;
+    }
+    // The reduced JPEG estimate of each of them that has one. A JPEG only a full decode reads
+    // (CMYK) has none and is counted at its full decode.
+    let estimates: HashMap<(usize, u32), (usize, usize)> = assets
+        .iter()
+        .filter(|(key, _)| to_decode.contains(key) && targets.contains_key(key))
+        .filter_map(|(key, wanted)| Some((*key, reduced_estimates(wanted)?)))
+        .collect();
+    let reduced: HashSet<(usize, u32)> = estimates.keys().copied().collect();
+    // Another render may have stored or evicted levels since; an asset evicted in between has no
+    // reduced estimate and is counted at its full decode.
+    let (held, others) = with(|c| held_in_view(c, &index, &targets, &reduced));
     if assets.iter().filter(|(key, _)| !held.contains_key(key)).count() < 2 {
         return 0;
     }
@@ -354,8 +372,7 @@ pub(crate) fn warm(wants: Vec<Want>) -> usize {
         if held.contains_key(&key) {
             continue;
         }
-        let full = wanted.first().map_or((0, 0), |w| decode_sizes(&w.bytes, w.page));
-        let (size, decoding) = reduced_estimates(&wanted).unwrap_or(full);
+        let (size, decoding) = estimates.get(&key).copied().unwrap_or_else(|| wanted.first().map_or((0, 0), |w| decode_sizes(&w.bytes, w.page)));
         // A store past the budget evicts down to three quarters of it: the images in view must
         // fit in that, unless they and the rest fit in the budget.
         let total = pixels.saturating_add(size);
@@ -686,19 +703,27 @@ mod tests {
         }
         let index = HashMap::from([((id, 0), 0)]);
         let targets = HashMap::from([((id, 0), vec![3, 4])]);
-        let (held, others) = held_in_view(&mut c, &index, &targets);
+        let reduced = HashSet::from([(id, 0)]);
+        let (held, others) = held_in_view(&mut c, &index, &targets, &reduced);
         assert!(held.is_empty(), "level 4 is missing, so the JPEG is decoded");
         // Its decode estimate counts level 3, not level 5, which stays cached beside it.
         assert_eq!(others, 8 * 8 * 4 + 4 * 4 * 4, "level 3 is not counted as another image, level 5 is");
+        // A JPEG without a reduced estimate (CMYK) is counted at its full decode, which covers
+        // level 5 too.
+        let (held, others) = held_in_view(&mut c, &index, &targets, &HashSet::new());
+        assert!(held.is_empty() && others == 8 * 8 * 4, "{others}");
         // With every level it is drawn at cached, it is held with all three levels.
         let pm = Arc::new(Pixmap::new(8, 8));
         c.bytes += size_of(&pm);
         c.map.insert((id, 0, 4), Entry { _bytes: jpeg.clone(), pm, stamp: 0 });
-        let (held, others) = held_in_view(&mut c, &index, &targets);
+        let (held, others) = held_in_view(&mut c, &index, &targets, &reduced);
         assert_eq!((held.get(&(id, 0)).copied(), others), (Some(16 * 16 * 4 + 8 * 8 * 4 + 4 * 4 * 4), 8 * 8 * 4));
+        // Without a reduced estimate, every level it is drawn at cached is still a cache hit.
+        let (held, _) = held_in_view(&mut c, &index, &targets, &HashSet::new());
+        assert_eq!(held.get(&(id, 0)).copied(), Some(16 * 16 * 4 + 8 * 8 * 4 + 4 * 4 * 4));
         // A full decode's estimate counts every level, so an image drawn without reduced levels,
         // with only smaller levels cached, adds nothing to the other images.
-        let (held, others) = held_in_view(&mut c, &HashMap::from([((id, 0), 0)]), &HashMap::new());
+        let (held, others) = held_in_view(&mut c, &HashMap::from([((id, 0), 0)]), &HashMap::new(), &HashSet::new());
         assert!(held.is_empty() && others == 8 * 8 * 4, "{others}");
     }
 
