@@ -72,19 +72,20 @@ impl Rendered {
     }
     /// PNG bytes (empty, with the error logged, if the image can't be encoded).
     pub fn to_png(&self) -> Vec<u8> {
-        let mut buf = Vec::new();
         let mut px = self.to_straight();
         // `pixels` is public: a mismatched buffer is padded or cut to the stated size.
         px.resize(self.width as usize * self.height as usize * 4, 0);
-        let Some(img) = image::RgbaImage::from_raw(self.width, self.height, px) else {
+        let Ok(img) = craft_image_codecs::Image::from_u8(self.width, self.height, craft_image_codecs::ChannelLayout::Rgba, px) else {
             log::error!("PNG encode: {}×{} image is too large", self.width, self.height);
             return Vec::new();
         };
-        if let Err(e) = img.write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png) {
-            log::error!("PNG encode: {e}");
-            return Vec::new();
+        match craft_image_codecs::encode(&img, craft_image_codecs::Format::Png, &Default::default()) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                log::error!("PNG encode: {e}");
+                Vec::new()
+            }
         }
-        buf
     }
     pub fn to_jpeg(&self, quality: u8) -> Vec<u8> {
         let rgba = self.to_straight();
@@ -98,10 +99,18 @@ impl Rendered {
                 [mix(p[0]), mix(p[1]), mix(p[2])]
             })
             .collect();
-        let mut buf = Vec::new();
-        let enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, quality.clamp(1, 100));
-        let _ = image::ImageEncoder::write_image(enc, &rgb, self.width, self.height, image::ExtendedColorType::Rgb8);
-        buf
+        let Ok(img) = craft_image_codecs::Image::from_u8(self.width, self.height, craft_image_codecs::ChannelLayout::Rgb, rgb) else {
+            log::error!("JPEG encode: {}×{} image is too large", self.width, self.height);
+            return Vec::new();
+        };
+        let options = craft_image_codecs::EncodeOptions { jpeg_quality: quality.clamp(1, 100), ..Default::default() };
+        match craft_image_codecs::encode(&img, craft_image_codecs::Format::Jpeg, &options) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                log::error!("JPEG encode: {e}");
+                Vec::new()
+            }
+        }
     }
     /// Straight-alpha RGBA at (x, y).
     pub fn pixel(&self, x: u32, y: u32) -> [u8; 4] {

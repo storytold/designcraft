@@ -136,7 +136,7 @@ pub(super) fn export_text(s: &mut Session, p: &Value) -> Result<Value> {
         Some(f @ ("rtf" | "tagged")) => f,
         Some("txt") | Some("text") => "txt",
         Some(f) => return Err(bad(ID, format!("unknown format `{f}` (txt, rtf, tagged)"))),
-        None if path.is_some_and(|x| x.to_ascii_lowercase().ends_with(".rtf")) => "rtf",
+        None if path.is_some_and(|x| craft_file_formats::detect(x, &[]) == Some(craft_file_formats::Format::Rtf)) => "rtf",
         None => "txt",
     };
     let text = match format {

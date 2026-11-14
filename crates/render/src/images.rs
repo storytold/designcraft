@@ -1105,6 +1105,11 @@ mod tests {
     fn psd(side: u32) -> Arc<Vec<u8>> {
         let mut psd = b"8BPS".to_vec();
         psd.resize(26, 0);
+        // Version 1, three channels, 8 bits, RGB.
+        psd[4..6].copy_from_slice(&1u16.to_be_bytes());
+        psd[12..14].copy_from_slice(&3u16.to_be_bytes());
+        psd[22..24].copy_from_slice(&8u16.to_be_bytes());
+        psd[24..26].copy_from_slice(&3u16.to_be_bytes());
         psd[14..18].copy_from_slice(&side.to_be_bytes());
         psd[18..22].copy_from_slice(&side.to_be_bytes());
         Arc::new(psd)
@@ -1188,11 +1193,11 @@ mod tests {
         let reserved = decoding * 3 / 2;
         assert!(2 * decoded_bytes(&f, 0) <= BUDGET / 2 && !admits(reserved, decode_peak_bytes(&g, 0) * 3 / 2));
         assert_eq!(warm(vec![want(&f), want(&g)]), reserved, "one decode at a time");
-        // 16-bit RGBA decodes at 8 bytes a pixel before its RGBA copy.
+        // 16-bit RGBA decodes at 8 bytes a pixel, held twice while it is turned upright.
         let mut deep = Vec::new();
         let img = image::ImageBuffer::<image::Rgba<u16>, Vec<u16>>::from_pixel(4, 4, image::Rgba([9, 0, 0, 65535]));
         img.write_to(&mut std::io::Cursor::new(&mut deep), image::ImageFormat::Png).unwrap();
-        assert_eq!(decode_peak_bytes(&deep, 0), 16 * 12);
+        assert_eq!(decode_peak_bytes(&deep, 0), 16 * 16);
         assert_eq!(decode_peak_bytes(&png(8, 1), 0), 64 * 8);
     }
 
