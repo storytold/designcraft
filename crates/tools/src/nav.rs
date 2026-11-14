@@ -171,7 +171,7 @@ impl Tool for PlaceGun {
     fn busy(&self) -> bool {
         self.start.is_some()
     }
-    fn key(&mut self, _cx: &ToolContext, key: crate::ToolKey, _mods: Mods) -> Vec<Action> {
+    fn key(&mut self, cx: &ToolContext, key: crate::ToolKey, _mods: Mods) -> Vec<Action> {
         use crate::ToolKey;
         // Escape drops the current image and loads the next; `place.cancel` clears them all.
         if key == ToolKey::Escape {
@@ -190,7 +190,16 @@ impl Tool for PlaceGun {
             }
             return vec![Action::Handled];
         }
-        vec![]
+        // Between drags the arrows cycle the loaded images, and don't nudge the selection.
+        let dir = match key {
+            ToolKey::Right | ToolKey::Down => 1,
+            ToolKey::Left | ToolKey::Up => -1,
+            _ => return vec![],
+        };
+        if cx.loaded.is_none() {
+            return vec![];
+        }
+        vec![Action::Exec("place.cycle".into(), json!({"dir": dir}))]
     }
     fn overlays(&self, cx: &ToolContext) -> Vec<crate::Overlay> {
         let Some(a) = self.start else { return vec![] };

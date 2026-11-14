@@ -432,6 +432,24 @@ pub(super) fn place_skip(s: &mut Session, _p: &Value) -> Result<Value> {
     Ok(json!({"remaining": loaded_count(s)}))
 }
 
+/// Rotate the loaded images: `dir` 1 makes the next one current (the current one goes to the back),
+/// -1 the previous one (the last goes to the front).
+pub(super) fn place_cycle(s: &mut Session, p: &Value) -> Result<Value> {
+    const ID: &str = "place.cycle";
+    let dir = p.get("dir").and_then(Value::as_i64).filter(|d| matches!(d, 1 | -1)).ok_or_else(|| bad(ID, "dir must be 1 or -1"))?;
+    validate_place_cursor(s, ID)?;
+    if let Some(current) = s.loaded {
+        if dir == 1 {
+            s.loaded_queue.push_back(current);
+            s.loaded = s.loaded_queue.pop_front();
+        } else if let Some(last) = s.loaded_queue.pop_back() {
+            s.loaded_queue.push_front(current);
+            s.loaded = Some(last);
+        }
+    }
+    Ok(json!({"remaining": loaded_count(s)}))
+}
+
 /// Validate bounded grid dimensions and a finite nonnegative gutter.
 fn grid_dimensions(p: &Value, command: &str, default_columns: usize, default_rows: usize) -> Result<(usize, usize, f64)> {
     let dimension = |key, default| -> Result<usize> {
@@ -682,6 +700,21 @@ pub(super) mod image_place_tests {
         assert!(s.loaded.is_none());
         assert_eq!(s.tool_id(), "selection");
         assert!(s.execute("place.skip", &json!({})).is_err());
+    }
+
+    #[test]
+    fn cycle_rotates_the_loaded_images_both_ways() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let files: Vec<_> = (0..3).map(|i| json!({"base64": test_png(i as u8), "name": format!("{i}.png")})).collect();
+        s.execute("place.load", &json!({"files": files})).unwrap();
+        s.execute("place.cycle", &json!({"dir": 1})).unwrap();
+        assert_eq!(loaded_names(&s), ["1.png", "2.png", "0.png"]);
+        s.execute("place.cycle", &json!({"dir": -1})).unwrap();
+        s.execute("place.cycle", &json!({"dir": -1})).unwrap();
+        assert_eq!(loaded_names(&s), ["2.png", "0.png", "1.png"]);
+        assert!(s.execute("place.cycle", &json!({"dir": 2})).is_err());
+        assert!(s.execute("place.cycle", &json!({})).is_err());
     }
 
     #[test]

@@ -3,7 +3,7 @@ use super::EngineError;
 use super::bytes::{base64_encode, to_bytes, to_bytes_with_preview, with_document_extension};
 use super::new::{file_new, file_sample, save_preset};
 use super::open::{file_open, file_open_bytes, file_open_recent, has_recent, recent_entry};
-use super::place::{file_place, place_contact_sheet, place_drop, place_grid, place_load, place_skip, read_source};
+use super::place::{file_place, place_contact_sheet, place_cycle, place_drop, place_grid, place_load, place_skip, read_source};
 use super::save::{FolderAccess, can_revert, file_revert, file_save, recovery_dir};
 use super::snippets::{snippet_export, snippet_place};
 use super::{CommandSpec, PRESETS, Value, always, bad, cmd, has_doc, json, ok, str_param};
@@ -161,6 +161,7 @@ pub fn specs() -> Vec<CommandSpec> {
             place_contact_sheet
         ),
         cmd!(noundo "place.skip", "Skip Loaded Image", [], None, "{} — drops the current loaded image without placing it and loads the next; the last one ends placing", has_doc, place_skip),
+        cmd!(noundo "place.cycle", "Cycle Loaded Images", [], None, "{dir: 1|-1} — makes the next (1) or previous (-1) loaded image the current one", has_doc, place_cycle),
         cmd!(noundo "place.cancel", "Cancel Image Placement", [], None, "{} — clears every loaded image", has_doc, |s, _| {
             s.loaded = None;
             s.loaded_queue.clear();
