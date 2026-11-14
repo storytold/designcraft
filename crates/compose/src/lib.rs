@@ -5335,13 +5335,45 @@ fn joins_prev(c: char) -> bool {
             | 0x06C0 | 0x06C3..=0x06CB | 0x06CD | 0x06CF | 0x06D2 | 0x06D3)
 }
 
-/// Where kashidas go on a line: one join per word, after a seen or sad when there is one, else the
-/// word's last join (indices of the glyph before the join).
+/// Arabic combining marks, which sit on a letter and never take part in a join.
+fn is_arabic_mark(c: char) -> bool {
+    matches!(c as u32, 0x064B..=0x065F | 0x0670)
+}
+
+/// Letters whose initial and medial forms are a tooth (ب ت ث ن ي ئ).
+fn is_tooth(c: char) -> bool {
+    matches!(c as u32, 0x0626 | 0x0628 | 0x062A | 0x062B | 0x0646 | 0x064A)
+}
+
+/// How well Arabic typography takes a kashida at the join of `g` and `n`, from 0 (best) to 4, or
+/// `None` where one must not go. `prev` is the letter before `g` and `next` the one after `n`.
+fn kashida_rank(prev: Option<char>, g: char, n: char, next: Option<char>) -> Option<u8> {
+    let medial = prev.is_some_and(joins_next);
+    let last = !(joins_next(n) && next.is_some_and(joins_prev));
+    let forbidden = n == '\u{0648}'
+        || (last && matches!(n as u32, 0x0649 | 0x064A | 0x0646))
+        || (is_tooth(g) && matches!(n as u32, 0x0631 | 0x0632 | 0x0635 | 0x0636 | 0x0639 | 0x063A | 0x0641 | 0x0642))
+        || g == '\u{0643}'
+        || (g == '\u{0644}' && (!medial || matches!(n as u32, 0x0644 | 0x062F)));
+    if forbidden {
+        return None;
+    }
+    Some(match n as u32 {
+        0x0629 | 0x0647 if last => 0,
+        0x0627 if last => 1,
+        0x0631 | 0x0632 => 2,
+        _ if !last && is_tooth(g) && is_tooth(n) => 3,
+        _ => 4,
+    })
+}
+
+/// Where kashidas go on a line: one join per word, the best by [`kashida_rank`] and the later in
+/// the word among equals (indices of the glyph before the join).
 fn kashida_points(line: &[Glyph]) -> Vec<usize> {
     let mut out = Vec::new();
-    let mut best: Option<(bool, usize)> = None;
+    let mut best: Option<(u8, usize)> = None;
     for (i, g) in line.iter().enumerate() {
-        if g.is_space() {
+        if g.is_space() || g.ch == '\t' || g.ch == story::RIGHT_INDENT_TAB {
             if let Some((_, k)) = best.take() {
                 out.push(k);
             }
@@ -5359,9 +5391,12 @@ fn kashida_points(line: &[Glyph]) -> Vec<usize> {
         if !joins_next(g.ch) || !joins_prev(n.ch) || (g.ch == '\u{0644}' && matches!(n.ch, '\u{0622}' | '\u{0623}' | '\u{0625}' | '\u{0627}')) {
             continue;
         }
-        let seen = matches!(g.ch as u32, 0x0633..=0x0636);
-        if best.is_none_or(|(s, _)| !s || seen) {
-            best = Some((seen, i));
+        let letter = |p: &&Glyph, cluster: &Glyph| p.byte != cluster.byte && !is_arabic_mark(p.ch);
+        let prev = line.get(..i).and_then(|l| l.iter().rev().find(|p| letter(p, g))).map(|p| p.ch);
+        let next = line.get(i + 2..).and_then(|l| l.iter().find(|p| letter(p, n))).map(|p| p.ch);
+        let Some(rank) = kashida_rank(prev, g.ch, n.ch, next) else { continue };
+        if best.is_none_or(|(r, _)| rank <= r) {
+            best = Some((rank, i));
         }
     }
     out.extend(best.map(|b| b.1));
