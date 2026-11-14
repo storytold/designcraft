@@ -4331,6 +4331,33 @@ fn inline_objects_still_clear_the_bottom_edge() {
     assert_eq!(cs.line_count(), 0);
 }
 
+/// An inline object is bidi-neutral, as U+FFFC is: in a right-to-left paragraph it keeps its place
+/// in the reading order between Latin text and the Arabic after it. Its private-use mark is a
+/// strong left-to-right character, which joined it to the Latin run before it, so it was drawn on
+/// the far side of that run.
+#[test]
+fn an_inline_object_keeps_its_place_in_right_to_left_text() {
+    let text = "ab  \u{0628}";
+    let para = ParaAttrs { direction: Some(designcraft_doc::TextDirection::RightToLeft), ..Default::default() };
+    let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 300.0, 100.0), para);
+    d.settings.glyph_fallback = true;
+    let it = designcraft_doc::Item::new(
+        ItemId(d.alloc()),
+        d.default_layer(),
+        designcraft_doc::Shape::Rectangle,
+        designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 6.0, 6.0)),
+    );
+    let at = 3;
+    d.story_mut(sid).unwrap().insert_object(at, designcraft_doc::AnchoredObject::new(it, designcraft_doc::AnchorPosition::Inline { y_offset: 0.0 }));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let line = &cs.frames[0].lines[0];
+    let x = |byte: usize| line.glyphs.iter().find(|g| g.byte == byte).map(|g| g.x).unwrap();
+    let beh = text.find('\u{0628}').unwrap() + designcraft_doc::OBJECT_MARK.len_utf8();
+    let (latin, object, arabic) = (x(0), x(at), x(beh));
+    // Read right to left: the Latin text, the object, then the Arabic letter.
+    assert!(arabic < object && object < latin, "arabic {arabic}, object {object}, latin {latin}");
+}
+
 #[test]
 fn custom_anchors_do_not_change_bottom_baseline_fitting() {
     let (mut d, sid, _) = baseline_fit_doc("Text", 10.0);
