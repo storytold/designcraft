@@ -5923,7 +5923,7 @@ mod stroke_type_tests {
     /// was; a stroke style that draws is still accepted.
     #[test]
     fn stroke_styles_that_cannot_draw_are_refused() {
-        use designcraft_doc::{StrokeStyleDef, StrokeType};
+        use designcraft_doc::{ItemId, StrokeStyleDef, StrokeType};
         let mut s = crate::Session::new();
         s.execute("file.new", &json!({})).unwrap();
         let id = s.execute("frame.create", &json!({"rect": [0, 0, 100, 100]})).unwrap()["id"].clone();
@@ -5948,6 +5948,21 @@ mod stroke_type_tests {
         let rails = json!({"kind": "style", "name": "Rails"});
         s.execute("object.stroke", &json!({"ids": [id], "type": rails})).unwrap();
         s.execute("style.object.create", &json!({"name": "SRails", "stroke": {"type": rails}})).unwrap();
+        // A type given to `style.object.create` is checked even when the selected object already has it.
+        let item: ItemId = serde_json::from_value(id.clone()).unwrap();
+        s.edit(|d, sel| {
+            if let Some(it) = d.item_mut(item) {
+                it.stroke.kind = StrokeType::Stripes { bands: vec![] };
+            }
+            sel.items = vec![item];
+            Ok(())
+        })
+        .unwrap();
+        let before = s.doc().unwrap().doc.clone();
+        let empty = json!({"kind": "stripes", "bands": []});
+        let error = s.execute("style.object.create", &json!({"name": "SEmpty", "stroke": {"type": empty}})).unwrap_err();
+        assert!(matches!(error, crate::EngineError::BadParams { .. }), "{error}");
+        assert!(std::sync::Arc::ptr_eq(&before, &s.doc().unwrap().doc), "nothing changed");
     }
 
     #[test]
