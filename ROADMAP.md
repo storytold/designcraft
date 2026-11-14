@@ -58,6 +58,11 @@ DesignCraft aims at full Adobe InDesign parity — and to be better: faster, ope
   default layer queries find a placed PDF anywhere in mixed selections. Regression tests cover
   IDML export after rejection and both selection orders.
 
+- **2026-11-13** · `footnote.insert` accepts a caret in a table cell and keeps the reference
+  and note in the cell's story (#2613). The caret stays in the cell after the reference;
+  moving into cell-footnote text needs a follow-up. Cell notes print at the column foot (#2611) and are
+  numbered in the story's sequence (#2612) once those PRs land. Native save/open, undo/redo and document consistency are covered.
+
 ## Status (2026-10-21)
 
 **Working today**
@@ -407,6 +412,7 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 - **2026-11-12** · The status bar's preflight count and the Preflight panel take their issues from a check on a background worker, which checks the newest state of the document and shows the issues last found meanwhile. Moving or resizing a frame and typing no longer wait for a check of the whole document on every drag step and keystroke. No readiness percentage change.
 
 - **2026-11-12** · Object › Text Frame Options… (Cmd+B) opens with the Type tool in a frame, so inset spacing and vertical justification can be changed while typing; it changes the frame that shows the insertion point, or every frame that holds part of the selected text (#2396). No readiness percentage change.
+- **2026-11-11** · `footnote.list` includes notes anchored in table cells, in reading order and with the table and cell (row, column) that hold each; `footnote.setText` and `footnote.delete` take that cell to edit or delete one (#2614). No readiness percentage change.
 - **2026-11-04** · Striped strokes retain out-and-back cubic segments whose second control point is away from the coincident endpoints and first control point. A geometry regression checks the offset extent and both stripe bands. No readiness percentage change.
 - **2026-11-04** · Esperanto is a text language (Character › Language, `type.char {language: "Esperanto"}`, IDML `$ID/Esperanto`): tag `eo`, English-style quotes; not hyphenated yet (#1201). No readiness percentage change.
 
