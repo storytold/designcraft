@@ -160,9 +160,12 @@ impl<'r> Importer<'r> {
             if r >= nr || c >= nc {
                 continue;
             }
-            let (cs, rs) = model_cell.span();
-            let rs = (rs as usize).min(nr - r);
-            let cs = (cs as usize).min(nc - c);
+            // Preserve the earlier import behavior for malformed positive spans such as `inf`:
+            // saturate the float-to-integer conversion, then clamp to the remaining grid before
+            // arithmetic. The neutral model reports unusable non-finite spans as the default 1.
+            let span = |key| model_cell.values.prop(key).and_then(|v| v.trim().parse::<f64>().ok()).unwrap_or(1.0).max(1.0) as usize;
+            let rs = span("RowSpan").min(nr - r);
+            let cs = span("ColumnSpan").min(nc - c);
             let mut cell = t.cell(r, c).cloned().unwrap_or_default();
             let cell_el = crate::xml::from_craft(model_cell.to_el());
             let cell_style =
