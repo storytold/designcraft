@@ -107,18 +107,13 @@ fn paste_text(s: &mut Session, text: Option<String>, formatted: bool) -> Result<
                 let doomed = st.anchored_text_frames_in(r.clone());
                 st.delete(r.clone());
                 // Fresh ids, story and asset copies for every paste, as on the page.
-                let mut stories = std::collections::HashMap::new();
-                let fresh: Vec<designcraft_doc::Item> = list
-                    .iter()
-                    .map(|i| {
-                        let mut i = i.clone();
-                        super::object::renumber(d, &items, &mut i, &mut stories);
-                        if d.layer(i.layer).is_none() {
-                            i.layer = d.default_layer();
-                        }
-                        i
-                    })
-                    .collect();
+                let mut fresh = list.clone();
+                super::object::renumber_items(d, &items, &mut fresh);
+                for item in &mut fresh {
+                    if d.layer(item.layer).is_none() {
+                        item.layer = d.default_layer();
+                    }
+                }
                 let end = super::anchored::anchor_items(d, t.story, r.start, fresh, &Default::default())?;
                 d.unthread_anchored_text_frames(&doomed);
                 sel.text = Some(designcraft_doc::TextSel { anchor: end, focus: end, ..t });

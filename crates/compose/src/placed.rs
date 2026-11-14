@@ -27,9 +27,21 @@ pub struct Placement {
 /// The placements of `sid`'s anchored frames, from their host stories composed by `host`. Each
 /// host is asked for once, however many of the frames it holds.
 pub(crate) fn placements(doc: &Document, sid: StoryId, host: &mut dyn FnMut(StoryId) -> Arc<ComposedStory>) -> Vec<(ItemId, Placement)> {
+    placements_at(doc, sid, host, &mut HashMap::new(), 0)
+}
+
+fn placements_at(
+    doc: &Document,
+    sid: StoryId,
+    host: &mut dyn FnMut(StoryId) -> Arc<ComposedStory>,
+    hosts: &mut HashMap<StoryId, Arc<ComposedStory>>,
+    depth: usize,
+) -> Vec<(ItemId, Placement)> {
+    if depth >= MAX_DEPTH {
+        return Vec::new();
+    }
     let Some(st) = doc.story(sid) else { return Vec::new() };
     let mut anchored = None;
-    let mut hosts: HashMap<StoryId, Arc<ComposedStory>> = HashMap::new();
     let mut out = Vec::new();
     for &fid in &st.frames {
         if doc.find(fid).is_some() {
@@ -38,8 +50,8 @@ pub(crate) fn placements(doc: &Document, sid: StoryId, host: &mut dyn FnMut(Stor
         let items = anchored.get_or_insert_with(|| doc.anchored_items());
         // A frame anchored in its own story would need its own composition to place it.
         let Some(owner) = items.iter().find_map(|(owner, it)| (it.id == fid).then_some(*owner)).filter(|o| *o != sid) else { continue };
-        let composed = hosts.entry(owner).or_insert_with(|| host(owner));
-        if let Some(p) = locate(doc, composed, fid) {
+        let composed = hosts.entry(owner).or_insert_with(|| host(owner)).clone();
+        if let Some(p) = locate(doc, owner, &composed, fid, host, hosts, depth + 1) {
             out.push((fid, p));
         }
     }
@@ -48,12 +60,24 @@ pub(crate) fn placements(doc: &Document, sid: StoryId, host: &mut dyn FnMut(Stor
 
 /// Where `cs` (a host story's composition) places item `fid`: in its frames' anchored objects,
 /// footnotes and table cells.
-fn locate(doc: &Document, cs: &ComposedStory, fid: ItemId) -> Option<Placement> {
+fn locate(
+    doc: &Document,
+    sid: StoryId,
+    cs: &ComposedStory,
+    fid: ItemId,
+    host: &mut dyn FnMut(StoryId) -> Arc<ComposedStory>,
+    hosts: &mut HashMap<StoryId, Arc<ComposedStory>>,
+    depth: usize,
+) -> Option<Placement> {
     cs.frames.iter().find_map(|ft| {
-        let loc = doc.find(ft.frame)?;
-        let frame = doc.item_at(&loc)?;
-        let xf = in_frame(ft, doc.parent_xf(&loc) * doc.text_xf(frame), fid, 0)?;
-        Some(Placement { spread: loc.spread, xf })
+        let frame = doc.item(ft.frame).or_else(|| doc.anchored_item(ft.frame))?;
+        let placement = if let Some(loc) = doc.find(ft.frame) {
+            Placement { spread: loc.spread, xf: doc.parent_xf(&loc) }
+        } else {
+            placements_at(doc, sid, host, hosts, depth).into_iter().find_map(|(id, p)| (id == ft.frame).then_some(p))?
+        };
+        let xf = in_frame(ft, placement.xf * doc.text_xf(frame), fid, 0)?;
+        Some(Placement { spread: placement.spread, xf })
     })
 }
 

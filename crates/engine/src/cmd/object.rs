@@ -1106,12 +1106,15 @@ fn adopt_or_dangle(dst: &mut Document, src: &Document, id: AssetId) -> AssetId {
     dst.adopt_asset(src, id).unwrap_or_else(|| AssetId(dst.alloc()))
 }
 
-/// Give `it` (an item of `src`) fresh ids from `dst`, with copies of its stories and the assets it uses.
-pub(crate) fn renumber(dst: &mut Document, src: &Document, it: &mut Item, stories: &mut HashMap<StoryId, StoryId>) {
+/// Give copied items fresh ids, stories and assets while preserving thread order.
+pub(crate) fn renumber_items(dst: &mut Document, src: &Document, items: &mut [Item]) {
+    let mut stories = HashMap::new();
     let mut ids = HashMap::new();
     let mut copied = Vec::new();
-    renumber_in(dst, src, it, stories, true, &mut ids, &mut copied);
-    reorder_copied_threads(dst, src, stories, &ids, &copied);
+    for item in items {
+        renumber_in(dst, src, item, &mut stories, true, &mut ids, &mut copied);
+    }
+    reorder_copied_threads(dst, src, &stories, &ids, &copied);
 }
 
 /// Rebuild each story copied by [`renumber_in`] in its source thread order, not in the order the
@@ -6153,6 +6156,25 @@ mod anchored_copy_tests {
         assert_eq!(d.story(copied).unwrap().frames, [first_copy.id, second_copy.id], "source thread order");
         assert_eq!(d.story(story).unwrap().frames, [first_id, second_id]);
         assert_reopens(d);
+    }
+
+    #[test]
+    fn pasting_reversed_threaded_objects_into_text_preserves_order() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let host = s.execute("frame.create", &json!({"rect": [72, 72, 400, 400], "content": "text", "text": "Host"})).unwrap();
+        let first = s.execute("frame.create", &json!({"rect": [0, 0, 60, 40], "content": "text", "text": "One"})).unwrap();
+        let second = s.execute("frame.create", &json!({"rect": [120, 0, 220, 100], "content": "unassigned"})).unwrap();
+        s.execute("text.thread", &json!({"from": first["id"], "to": second["id"]})).unwrap();
+        s.execute("selection.set", &json!({"ids": [second["id"], first["id"]]})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+        s.execute("text.select", &json!({"story": host["story"], "anchor": 0, "focus": 0})).unwrap();
+        s.execute("edit.paste", &json!({})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        let objects = &d.story(designcraft_doc::StoryId(host["story"].as_u64().unwrap())).unwrap().objects;
+        let story = objects[0].item.text_frame().unwrap().story;
+        assert_eq!(d.story(story).unwrap().frames, [objects[1].item.id, objects[0].item.id]);
+        d.check().unwrap();
     }
 
     #[test]

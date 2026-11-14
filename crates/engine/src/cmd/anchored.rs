@@ -226,9 +226,15 @@ fn release(s: &mut Session, p: &Value) -> Result<Value> {
     let placed = cs.frames.iter().find_map(|ft| ft.objects.iter().find(|o| o.index == k).map(|o| (ft.frame, o.origin)));
     let (spread, xf) = match placed {
         Some((fid, origin)) => {
-            let loc = d0.find(fid).ok_or_else(|| bad("anchored.release", "frame not found"))?;
-            let fxf = d0.parent_xf(&loc) * d0.item(fid).map_or(Affine::IDENTITY, |i| d0.text_xf(i));
-            (loc.spread, fxf * Affine::translate(origin.to_vec2()))
+            let frame = d0.item(fid).or_else(|| d0.anchored_item(fid)).ok_or_else(|| bad("anchored.release", "frame not found"))?;
+            let (spread, parent) = if let Some(loc) = d0.find(fid) {
+                (loc.spread, d0.parent_xf(&loc))
+            } else {
+                let placement = designcraft_compose::frame_placement_with(&d0, sid, fid, &mut |host| s.cache.get(&d0, host, None))
+                    .ok_or_else(|| bad("anchored.release", "frame not found"))?;
+                (placement.spread, placement.xf)
+            };
+            (spread, parent * d0.text_xf(frame) * Affine::translate(origin.to_vec2()))
         }
         None => (SpreadRef::Doc(0), Affine::IDENTITY),
     };
@@ -638,6 +644,32 @@ mod anchored_text_frame_tests {
         assert!(d.story(outer_sid).is_none());
         assert!(d.story(inner_sid).is_none(), "an emptied story's own anchored frame is unthreaded too");
         d.check().unwrap();
+    }
+
+    #[test]
+    fn nested_anchor_release_and_pdf_link() {
+        let (mut s, _, host) = setup("Before after and more words.");
+        let (outer, outer_sid) = add_note(&mut s, "Outer");
+        let (inner, inner_sid) = add_note(&mut s, "Inner link");
+        s.execute("text.select", &json!({"story": inner_sid.0, "anchor": 0, "focus": 10})).unwrap();
+        s.execute("hyperlink.create", &json!({"url": "https://example.com/nested"})).unwrap();
+        anchor(&mut s, outer, host, 7, json!({"position": "inline"}));
+        anchor(&mut s, inner, outer_sid, 0, json!({"position": "inline"}));
+        let d = s.doc().unwrap().doc.clone();
+        let placement = designcraft_compose::frame_placement(&d, inner_sid, inner).unwrap();
+        let expected_xf = placement.xf * d.anchored_item(inner).unwrap().xf;
+        let pdf = s.execute("file.exportPdf", &json!({})).unwrap();
+        let bytes = crate::cmd::base64_decode(pdf["base64"].as_str().unwrap());
+        assert!(String::from_utf8_lossy(&bytes).contains("https://example.com/nested"));
+        let released = s.execute("anchored.release", &json!({"story": outer_sid.0, "index": 0})).unwrap();
+        let id = ItemId(released["id"].as_u64().unwrap());
+        assert_eq!(s.doc().unwrap().doc.story(inner_sid).unwrap().frames, [id]);
+        assert_eq!(s.doc().unwrap().doc.item(id).unwrap().xf, expected_xf);
+        s.doc().unwrap().doc.check().unwrap();
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert!(s.doc().unwrap().doc.anchored_item(inner).is_some());
+        s.execute("edit.redo", &json!({})).unwrap();
+        assert!(s.doc().unwrap().doc.item(id).is_some());
     }
 
     #[test]

@@ -55,7 +55,9 @@ fn invalid_panel_requests_are_atomic_and_do_not_enter_a_custom_workspace() {
 
 fn harness(app: DesignApp, size: egui::Vec2) -> Harness<'static, DesignApp> {
     let mut ready = false;
-    let mut harness = Harness::builder().with_size(size).with_step_dt(1.0 / 60.0).build_ui_state(
+    let builder = Harness::builder().with_size(size).with_step_dt(1.0 / 60.0);
+    let builder = if app.ui.language == "ar" { builder.allow_missing_glyphs() } else { builder };
+    let mut harness = builder.build_ui_state(
         move |ui, app: &mut DesignApp| {
             if !ready {
                 crate::theme::install_fonts(ui.ctx(), &app.ui.language);
