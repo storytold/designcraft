@@ -9,27 +9,47 @@ pub(super) fn margin_boxes(d: &designcraft_doc::Document) -> Vec<(designcraft_do
         .collect()
 }
 
+/// Options controlling Layout Adjustment (`layout.adjust`).
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct AdjustOptions {
+    pub adjust_font_size: bool,
+    pub font_limits: Option<(f64, f64)>,
+    pub adjust_locked_content: bool,
+}
+
 /// Layout Adjustment: objects on each page move and resize from its old margin box to its new
 /// one (content keeps its size; frames that auto-fit refit).
 pub(super) fn adjust_layout(
     d: &mut designcraft_doc::Document,
     before: &[(designcraft_doc::SpreadRef, designcraft_doc::PageId, designcraft_geom::Rect)],
 ) {
+    adjust_layout_with(d, before, AdjustOptions::default());
+}
+
+/// Layout Adjustment with explicit options for font scaling and locked content.
+pub(super) fn adjust_layout_with(
+    d: &mut designcraft_doc::Document,
+    before: &[(designcraft_doc::SpreadRef, designcraft_doc::PageId, designcraft_geom::Rect)],
+    opts: AdjustOptions,
+) {
     use designcraft_geom::Affine;
     let after = margin_boxes(d);
+    let mut story_scales: std::collections::BTreeMap<designcraft_doc::StoryId, f64> = std::collections::BTreeMap::new();
     for (r, pid, old) in before {
         let Some((_, _, new)) = after.iter().find(|(r2, p2, _)| r2 == r && p2 == pid) else { continue };
         if old == new || old.width() < 1e-6 || old.height() < 1e-6 {
             continue;
         }
-        let m = Affine::translate((new.x0, new.y0))
-            * Affine::scale_non_uniform(new.width() / old.width(), new.height() / old.height())
-            * Affine::translate((-old.x0, -old.y0));
+        let sx = new.width() / old.width();
+        let sy = new.height() / old.height();
+        let font_scale = (sx * sy).sqrt();
+        let m = Affine::translate((new.x0, new.y0)) * Affine::scale_non_uniform(sx, sy) * Affine::translate((-old.x0, -old.y0));
         let Some(sp) = d.spread(*r) else { continue };
         // The page's objects (by centre, measured against the old boxes).
         let ids: Vec<designcraft_doc::ItemId> = sp
             .items
             .iter()
+            .filter(|it| opts.adjust_locked_content || (!it.locked && !d.layer(it.layer).is_some_and(|l| l.locked)))
             .filter(|it| {
                 let c = it.bounds().center();
                 // Pages share a spread side by side: the margin box's page is the one under the centre's x.
@@ -61,7 +81,89 @@ pub(super) fn adjust_layout(
                     }
                 }
             }
+            if opts.adjust_font_size {
+                let mut sids = Vec::new();
+                collect_item_stories(it, 0, &mut sids);
+                for sid in sids {
+                    story_scales.entry(sid).or_insert(font_scale);
+                }
+            }
         }
+    }
+    if opts.adjust_font_size && !story_scales.is_empty() {
+        let styles = d.styles.clone();
+        for (sid, scale) in story_scales {
+            if let Some(story) = d.story_mut(sid) {
+                scale_story_fonts(story, &styles, scale, opts.font_limits, 0);
+            }
+        }
+    }
+}
+
+/// Collects story IDs from a text frame or nested group up to a bounded depth.
+fn collect_item_stories(it: &designcraft_doc::Item, depth: usize, out: &mut Vec<designcraft_doc::StoryId>) {
+    if depth >= 32 {
+        return;
+    }
+    match &it.content {
+        designcraft_doc::Content::Text(tf) => out.push(tf.story),
+        designcraft_doc::Content::Group { items } => {
+            for child in items {
+                collect_item_stories(child, depth + 1, out);
+            }
+        }
+        designcraft_doc::Content::Unassigned | designcraft_doc::Content::Graphic(_) => {}
+    }
+}
+
+/// Scales resolved character font sizes (and explicit point leading) across a story,
+/// including anchored tables, footnotes, and endnotes.
+fn scale_story_fonts(story: &mut designcraft_doc::Story, styles: &designcraft_doc::Styles, scale: f64, limits: Option<(f64, f64)>, depth: usize) {
+    if depth >= 32 || !scale.is_finite() || scale <= 0.0 || (scale - 1.0).abs() < 1e-6 {
+        return;
+    }
+    let scale_char = |para_chars: &designcraft_doc::CharProps, fmt: &mut designcraft_doc::CharFormat| {
+        let cp = styles.resolve_char(para_chars, fmt);
+        let cur = cp.size;
+        if !cur.is_finite() || cur <= 0.0 {
+            return;
+        }
+        let mut next = cur * scale;
+        if let Some((min, max)) = limits {
+            next = next.clamp(min, max);
+        }
+        next = next.clamp(designcraft_doc::MIN_TYPE_SIZE, designcraft_doc::MAX_TYPE_SIZE);
+        fmt.over.size = Some(next);
+        if let designcraft_doc::Leading::Points(lead) = cp.leading {
+            let ratio = next / cur;
+            if ratio.is_finite() && ratio > 0.0 {
+                fmt.over.leading = Some(designcraft_doc::Leading::Points((lead * ratio).clamp(0.0, designcraft_doc::MAX_MEASURE)));
+            }
+        }
+    };
+    if story.text.is_empty() {
+        let (_, para_chars) = styles.resolve_para(story.paras.first().unwrap_or(&designcraft_doc::ParaFormat::default()));
+        if let Some(run) = story.chars.first_mut() {
+            scale_char(&para_chars, &mut run.format);
+            story.rev = story.rev.wrapping_add(1);
+        }
+    } else {
+        let ranges = story.para_ranges();
+        for (pi, r) in ranges.into_iter().enumerate() {
+            let (_, para_chars) = styles.resolve_para(story.paras.get(pi).unwrap_or(&designcraft_doc::ParaFormat::default()));
+            let end = (r.end + 1).min(story.text.len());
+            story.format_chars(r.start..end, |fmt| scale_char(&para_chars, fmt));
+        }
+    }
+    for t in story.tables.values_mut() {
+        let table = std::sync::Arc::make_mut(t);
+        for cell in &mut table.cells {
+            scale_story_fonts(&mut cell.text, styles, scale, limits, depth + 1);
+        }
+    }
+    for n in story.notes.iter_mut().chain(story.endnotes.iter_mut()) {
+        let note = std::sync::Arc::make_mut(n);
+        scale_story_fonts(&mut note.text, styles, scale, limits, depth + 1);
     }
 }
 
@@ -110,7 +212,7 @@ pub(super) fn set_margins_columns(pg: &mut designcraft_doc::Page, p: &Value) {
 /// Dragged column positions are measured across the margin box. When the box was
 /// `width_before` wide and now has another width, they scale with it, as InDesign's do; a set
 /// that doesn't scale into a valid one goes back to the even split rather than stay hidden.
-fn scale_columns(pg: &mut designcraft_doc::Page, width_before: f64) {
+pub(super) fn scale_columns(pg: &mut designcraft_doc::Page, width_before: f64) {
     let width = pg.margin_rect().width();
     if (width - width_before).abs() <= GUTTER_TOLERANCE {
         return;
@@ -419,5 +521,61 @@ mod adjust_tests {
         drag(&mut s);
         s.execute("layout.marginsAndColumns", &on_parent(36.0, 2, 24.0)).unwrap();
         assert_eq!(positions(&s), (None, None));
+    }
+
+    #[test]
+    fn adjust_layout_command_scales_margins_fonts_and_respects_limits_and_locks() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 1, "facingPages": false, "width": 612, "height": 792, "margins": 36})).unwrap();
+        let tf = s.execute("frame.create", &json!({"rect": [36, 36, 576, 756], "content": "text", "text": "Heading\nBody"})).unwrap();
+        let tf_id = designcraft_doc::ItemId(tf["id"].as_u64().unwrap());
+        let sid = designcraft_doc::StoryId(tf["story"].as_u64().unwrap());
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": 7})).unwrap();
+        s.execute("type.char", &json!({"attrs": {"size": 24.0, "leading": {"kind": "points", "value": 30.0}}})).unwrap();
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 8, "focus": 12})).unwrap();
+        s.execute("type.char", &json!({"attrs": {"size": 12.0}})).unwrap();
+
+        let locked = s.execute("frame.create", &json!({"rect": [100, 100, 200, 200]})).unwrap();
+        let locked_id = designcraft_doc::ItemId(locked["id"].as_u64().unwrap());
+        s.execute("object.lock", &json!({"ids": [locked_id.0]})).unwrap();
+
+        s.execute(
+            "layout.adjust",
+            &json!({
+                "width": 1224,
+                "height": 1584,
+                "autoAdjustMargins": true,
+                "adjustFontSize": true,
+                "fontSizeLimits": true,
+                "minFontSize": 10,
+                "maxFontSize": 36,
+                "adjustLockedContent": false
+            }),
+        )
+        .unwrap();
+
+        let d = &s.doc().unwrap().doc;
+        let pg = d.page(0).unwrap();
+        assert_eq!(pg.margins, Margins::uniform(72.0));
+        let tb = d.item(tf_id).unwrap().bounds();
+        assert!(
+            (tb.x0 - 72.0).abs() < 1e-6 && (tb.y0 - 72.0).abs() < 1e-6 && (tb.x1 - 1152.0).abs() < 1e-6 && (tb.y1 - 1512.0).abs() < 1e-6,
+            "{tb:?}"
+        );
+        let st = d.story(sid).unwrap();
+        let head = st.char_format_of(0);
+        let body = st.char_format_of(8);
+        assert_eq!(head.over.size, Some(36.0), "24 * 2 clamped to maxFontSize 36");
+        assert_eq!(head.over.leading, Some(designcraft_doc::Leading::Points(45.0)), "30 * (36 / 24)");
+        assert_eq!(body.over.size, Some(24.0), "12 * 2 within 10..=36");
+        let lb = d.item(locked_id).unwrap().bounds();
+        assert!((lb.x0 - 100.0).abs() < 1e-6 && (lb.x1 - 200.0).abs() < 1e-6, "locked frame stays put: {lb:?}");
+
+        s.execute("layout.adjust", &json!({"width": 2448, "height": 3168, "autoAdjustMargins": true, "adjustLockedContent": true})).unwrap();
+        let lb2 = s.doc().unwrap().doc.item(locked_id).unwrap().bounds();
+        assert!((lb2.x0 - 200.0).abs() < 1e-6 && (lb2.y0 - 200.0).abs() < 1e-6 && (lb2.x1 - 400.0).abs() < 1e-6, "{lb2:?}");
+
+        assert!(s.execute("layout.adjust", &json!({"minFontSize": 24, "maxFontSize": 12})).is_err());
+        assert!(s.execute("layout.adjust", &json!({"width": 0})).is_err());
     }
 }

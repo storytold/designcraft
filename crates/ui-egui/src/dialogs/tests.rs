@@ -387,6 +387,48 @@ fn document_setup_links_edges_and_adjust_layout_applies() {
 }
 
 #[test]
+fn adjust_layout_dialog_opens_from_menu_and_applies_options() {
+    let file_entries = crate::menus::MENUS.iter().find(|(name, _)| *name == "File").unwrap().1;
+    let edit_entries = crate::menus::MENUS.iter().find(|(name, _)| *name == "Edit").unwrap().1;
+    assert!(file_entries.contains(&"cmd:layout.adjust"), "File menu includes Adjust Layout");
+    assert!(!edit_entries.contains(&"cmd:layout.adjust"), "Edit menu does not duplicate Adjust Layout");
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"pages": 1, "facingPages": false, "width": 612.0, "height": 792.0, "margins": 36.0})).unwrap();
+    let tf = app.run("frame.create", json!({"rect": [36, 36, 576, 756], "content": "text", "text": "Heading"})).unwrap();
+    let sid = designcraft_doc::StoryId(tf["story"].as_u64().unwrap());
+    app.run("text.select", json!({"story": sid.0, "anchor": 0, "focus": 7})).unwrap();
+    app.run("type.char", json!({"attrs": {"size": 24.0}})).unwrap();
+
+    crate::menus::activate(&mut app, "layout.adjust", &Value::Null);
+    assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some("adjustLayout"));
+    let ctx = dialog_context("en");
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 900.0));
+    dialog_frame(&mut app, &ctx, screen, vec![]);
+
+    setup_fields(
+        &mut app,
+        json!({
+            "width": "306 pt",
+            "height": "396 pt",
+            "autoAdjustMargins": true,
+            "adjustFontSize": true,
+            "fontSizeLimits": true,
+            "minFontSize": 14.0,
+            "maxFontSize": 100.0,
+        }),
+    );
+    confirm(&mut app).unwrap();
+    assert!(app.ui.dialog.is_none());
+
+    let doc = &app.session.active().unwrap().doc;
+    let pg = doc.page(0).unwrap();
+    assert!((pg.width - 306.0).abs() < 1e-6 && (pg.height - 396.0).abs() < 1e-6);
+    assert!((pg.margins.top - 18.0).abs() < 1e-6 && (pg.margins.inside - 18.0).abs() < 1e-6, "{:?}", pg.margins);
+    let size = doc.story(sid).unwrap().char_format_of(0).over.size;
+    assert_eq!(size, Some(14.0), "24 * 0.5 clamped to minFontSize 14.0");
+}
+
+#[test]
 fn cell_options_dialog_draws_and_applies_only_changed_values_to_the_chosen_edges() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.run("file.new", json!({})).unwrap();

@@ -2990,6 +2990,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Shape:", "Form:"),
     ("(no attributes)", "(inga attribut)"),
     ("Enter a style name.", "Ange ett stilnamn."),
+    ("Adjust Layout…", "Anpassa layout…"),
 ];
 
 pub(super) const CONTEXT: &[(&str, &str, &str)] = &[

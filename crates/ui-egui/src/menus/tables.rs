@@ -37,6 +37,7 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "<",
             "-",
             "cmd:layout.documentSetup",
+            "cmd:layout.adjust",
             "cmd:file.info",
             "-",
             "ui:app.quit",

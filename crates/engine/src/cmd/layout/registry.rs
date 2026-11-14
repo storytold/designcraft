@@ -1,5 +1,8 @@
 use super::layers::{duplicate_layer, set_layer};
-use super::margins::{adjust_layout, column_guides_unlocked, margin_boxes, move_column_guide, set_margins_columns, set_page_width};
+use super::margins::{
+    AdjustOptions, adjust_layout, adjust_layout_with, column_guides_unlocked, margin_boxes, move_column_guide, scale_columns, set_margins_columns,
+    set_page_width,
+};
 use super::pages::{document_setup, page_options, page_size};
 use super::parents::{
     parent_label_taken, parent_name_param, parent_options, parent_page_size, parent_page_target, parent_prefix_param, parent_ref, parent_spread_index,
@@ -375,38 +378,16 @@ pub fn specs() -> Vec<CommandSpec> {
             "{width?, height?, pages?: count, startPage?: n, facingPages?, binding?: leftToRight|rightToLeft, intent?: print|web|mobile, margins?: n | {top, bottom, inside, outside} (every page and parent page), bleed?, slug?: n | [top, bottom, inside, outside], adjustLayout?: bool (objects follow the new page size and margins)} → the document setup (margins: the first page's)",
             has_doc,
             |s, p| {
+                const ID: &str = "layout.documentSetup";
                 let p = p.clone();
                 if p.as_object().is_none_or(|o| o.is_empty()) {
                     return Ok(document_setup(&s.doc()?.doc));
                 }
-                let edges = |k: &str| -> Option<[f64; 4]> {
-                    match p.get(k)? {
-                        Value::Array(a) if a.len() == 4 => {
-                            let v: Vec<f64> = a.iter().filter_map(Value::as_f64).map(|v| v.max(0.0)).collect();
-                            (v.len() == 4).then(|| [v[0], v[1], v[2], v[3]])
-                        }
-                        v => v.as_f64().map(|b| [b.max(0.0); 4]),
-                    }
-                };
-                let (bleed, slug) = (edges("bleed"), edges("slug"));
-                for k in ["width", "height"] {
-                    if let Some(v) = p.get(k)
-                        && !v.as_f64().is_some_and(|x| x > 0.0 && x <= 15552.0)
-                    {
-                        return Err(bad("layout.documentSetup", format!("{k}: page size out of range (0 < size ≤ 216 in)")));
-                    }
-                }
-                let margins: Option<Margins> = match p.get("margins") {
-                    None => None,
-                    Some(Value::Number(n)) => n.as_f64().map(Margins::uniform),
-                    Some(v) => serde_json::from_value(v.clone()).ok(),
-                };
-                if margins.is_some_and(|m| ![m.top, m.bottom, m.inside, m.outside].iter().all(|v| v.is_finite() && (0.0..=15552.0).contains(v))) {
-                    return Err(bad("layout.documentSetup", "margins: 0 to 216 in"));
-                }
-                if p.get("margins").is_some() && margins.is_none() {
-                    return Err(bad("layout.documentSetup", "margins: a number or {top, bottom, inside, outside}"));
-                }
+                let bleed = parse_edges_param(ID, &p, "bleed")?;
+                let slug = parse_edges_param(ID, &p, "slug")?;
+                let w = parse_page_dim(ID, &p, "width")?;
+                let h = parse_page_dim(ID, &p, "height")?;
+                let margins = parse_margins_param(ID, &p)?;
                 let intent: Option<designcraft_doc::Intent> = p.get("intent").and_then(|v| serde_json::from_value(v.clone()).ok());
                 let pages = p.get("pages").and_then(Value::as_u64).map(|n| n.clamp(1, 9999) as usize);
                 let adjust = p.get("adjustLayout").and_then(Value::as_bool).unwrap_or(false);
@@ -428,7 +409,7 @@ pub fn specs() -> Vec<CommandSpec> {
                     if let Some(i) = intent {
                         d.settings.intent = i;
                     }
-                    if let Some(n) = p.get("startPage").map(|v| start_number("layout.documentSetup", "startPage", v)).transpose()? {
+                    if let Some(n) = p.get("startPage").map(|v| start_number(ID, "startPage", v)).transpose()? {
                         if !d.sections.iter().any(|x| x.start == 0) {
                             d.sections.insert(
                                 0,
@@ -457,8 +438,6 @@ pub fn specs() -> Vec<CommandSpec> {
                             d.delete_pages(&(n..have).collect::<Vec<_>>())?;
                         }
                     }
-                    let w = p.get("width").and_then(Value::as_f64);
-                    let h = p.get("height").and_then(Value::as_f64);
                     // Pages with a liquid rule re-flow their objects (Adjust Layout aside).
                     let liquid_before: Vec<(usize, usize, designcraft_geom::Rect)> = if adjust {
                         vec![]
@@ -501,6 +480,90 @@ pub fn specs() -> Vec<CommandSpec> {
                     for (si, pi, old) in liquid_before {
                         crate::cmd::liquid::apply(d, designcraft_doc::SpreadRef::Doc(si), pi, old);
                     }
+                    Ok(document_setup(d))
+                })
+            }
+        ),
+        cmd!(
+            "layout.adjust",
+            "Adjust Layout…",
+            ["File"],
+            Some("Alt+Shift+P"),
+            "{width?: pt, height?: pt, autoAdjustMargins?: bool, margins?: n | {top, bottom, inside, outside}, bleed?: n | [top, bottom, inside, outside], adjustFontSize?: bool, fontSizeLimits?: bool, minFontSize?: pt, maxFontSize?: pt, adjustLockedContent?: bool} → the document setup",
+            has_doc,
+            |s, p| {
+                const ID: &str = "layout.adjust";
+                let p = p.clone();
+                if p.as_object().is_none_or(|o| o.is_empty()) {
+                    return Ok(document_setup(&s.doc()?.doc));
+                }
+                let w = parse_page_dim(ID, &p, "width")?;
+                let h = parse_page_dim(ID, &p, "height")?;
+                let bleed = parse_edges_param(ID, &p, "bleed")?;
+                let margins = parse_margins_param(ID, &p)?;
+                let auto_margins = p.get("autoAdjustMargins").and_then(Value::as_bool).unwrap_or(false);
+                let adjust_font_size = p.get("adjustFontSize").and_then(Value::as_bool).unwrap_or(false);
+                let adjust_locked_content = p.get("adjustLockedContent").and_then(Value::as_bool).unwrap_or(false);
+                let min_font = parse_font_limit(ID, &p, "minFontSize", 6.0)?;
+                let max_font = parse_font_limit(ID, &p, "maxFontSize", 324.0)?;
+                let font_limits = p
+                    .get("fontSizeLimits")
+                    .and_then(Value::as_bool)
+                    .unwrap_or_else(|| p.get("minFontSize").is_some() || p.get("maxFontSize").is_some());
+                if font_limits && min_font > max_font {
+                    return Err(bad(ID, "minFontSize must not exceed maxFontSize"));
+                }
+                s.edit(|d, _| {
+                    let before = margin_boxes(d);
+                    let (old_w, old_h) = (d.settings.page_width, d.settings.page_height);
+                    let new_w = w.unwrap_or(old_w);
+                    let new_h = h.unwrap_or(old_h);
+                    if let Some(b) = bleed {
+                        d.settings.bleed = b;
+                    }
+                    let size_changed = new_w != old_w || new_h != old_h;
+                    let scale_margins = auto_margins && margins.is_none() && old_w > 1e-6 && old_h > 1e-6;
+                    let (sx, sy) = if scale_margins { (new_w / old_w, new_h / old_h) } else { (1.0, 1.0) };
+                    if size_changed {
+                        d.settings.page_width = new_w;
+                        d.settings.page_height = new_h;
+                    }
+                    if size_changed || scale_margins || margins.is_some() {
+                        for sp in d.spreads.iter_mut().chain(d.parents.iter_mut()) {
+                            let sp = std::sync::Arc::make_mut(sp);
+                            for pg in &mut sp.pages {
+                                let width_before = pg.margin_rect().width();
+                                if let Some(m) = margins {
+                                    pg.margins = m;
+                                } else if scale_margins {
+                                    pg.margins.top = (pg.margins.top * sy).clamp(0.0, new_h / 2.0);
+                                    pg.margins.bottom = (pg.margins.bottom * sy).clamp(0.0, new_h / 2.0);
+                                    pg.margins.inside = (pg.margins.inside * sx).clamp(0.0, new_w / 2.0);
+                                    pg.margins.outside = (pg.margins.outside * sx).clamp(0.0, new_w / 2.0);
+                                }
+                                if size_changed {
+                                    pg.width = new_w;
+                                    pg.height = new_h;
+                                }
+                                scale_columns(pg, width_before);
+                            }
+                            if size_changed {
+                                sp.relayout();
+                            }
+                        }
+                    }
+                    if margins.is_some() {
+                        d.unmark_matching_local_margins();
+                        d.sync_parent_margins();
+                    } else if scale_margins {
+                        d.sync_parent_margins();
+                    }
+                    d.repaginate();
+                    adjust_layout_with(
+                        d,
+                        &before,
+                        AdjustOptions { adjust_font_size, font_limits: font_limits.then_some((min_font, max_font)), adjust_locked_content },
+                    );
                     Ok(document_setup(d))
                 })
             }
@@ -870,6 +933,53 @@ fn distinct_pages(pages: &[usize]) -> usize {
     v.sort_unstable();
     v.dedup();
     v.len()
+}
+
+/// Parses a 4-edge parameter (`bleed` or `slug`) as a uniform number or `[top, bottom, inside, outside]`.
+fn parse_edges_param(id: &str, p: &Value, key: &str) -> Result<Option<[f64; 4]>> {
+    match p.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Array(a)) if a.len() == 4 => {
+            let v: Vec<f64> = a.iter().filter_map(Value::as_f64).filter(|v| v.is_finite()).map(|v| v.max(0.0)).collect();
+            if v.len() == 4 { Ok(Some([v[0], v[1], v[2], v[3]])) } else { Err(bad(id, format!("{key}: expected four finite numbers"))) }
+        }
+        Some(v) => v
+            .as_f64()
+            .filter(|b| b.is_finite())
+            .map(|b| Some([b.max(0.0); 4]))
+            .ok_or_else(|| bad(id, format!("{key}: a number or [top, bottom, inside, outside]"))),
+    }
+}
+
+/// Parses and validates a document `width` or `height` parameter in points.
+fn parse_page_dim(id: &str, p: &Value, key: &str) -> Result<Option<f64>> {
+    let Some(v) = p.get(key) else { return Ok(None) };
+    let x = v.as_f64().filter(|x| *x > 0.0 && *x <= 15552.0).ok_or_else(|| bad(id, format!("{key}: page size out of range (0 < size ≤ 216 in)")))?;
+    Ok(Some(x))
+}
+
+/// Parses and validates a `margins` parameter (uniform number or `{top, bottom, inside, outside}`).
+fn parse_margins_param(id: &str, p: &Value) -> Result<Option<Margins>> {
+    let margins: Option<Margins> = match p.get("margins") {
+        None => None,
+        Some(Value::Number(n)) => n.as_f64().map(Margins::uniform),
+        Some(v) => serde_json::from_value(v.clone()).ok(),
+    };
+    if margins.is_some_and(|m| ![m.top, m.bottom, m.inside, m.outside].iter().all(|v| v.is_finite() && (0.0..=15552.0).contains(v))) {
+        return Err(bad(id, "margins: 0 to 216 in"));
+    }
+    if p.get("margins").is_some() && margins.is_none() {
+        return Err(bad(id, "margins: a number or {top, bottom, inside, outside}"));
+    }
+    Ok(margins)
+}
+
+/// Parses and validates a font-size limit parameter in points.
+fn parse_font_limit(id: &str, p: &Value, key: &str, default: f64) -> Result<f64> {
+    let Some(v) = p.get(key) else { return Ok(default) };
+    v.as_f64()
+        .filter(|x| x.is_finite() && (designcraft_doc::MIN_TYPE_SIZE..=designcraft_doc::MAX_TYPE_SIZE).contains(x))
+        .ok_or_else(|| bad(id, format!("{key}: font size out of range ({}..={})", designcraft_doc::MIN_TYPE_SIZE, designcraft_doc::MAX_TYPE_SIZE)))
 }
 
 #[cfg(test)]
