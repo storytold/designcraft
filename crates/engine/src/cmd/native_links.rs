@@ -250,7 +250,7 @@ fn adopt_path(a: &mut Asset, path: &Path, document: Option<&Path>) {
 }
 
 /// `target` relative to the folder of the document file `document`, as link records store it.
-fn relative_to(document: &Path, target: &Path) -> Option<String> {
+pub(super) fn relative_to(document: &Path, target: &Path) -> Option<String> {
     let document = std::path::absolute(document).ok()?;
     let dir = document.parent()?;
     let relative = super::datamerge::relative_between(dir, target);

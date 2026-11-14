@@ -193,6 +193,13 @@ impl Store {
         self.lock().touch(key)
     }
 
+    /// Keep `bytes` under `key` when they fit the budget.
+    pub(super) fn insert(&self, key: SourceKey, bytes: Arc<Vec<u8>>) {
+        if bytes.len() as u64 <= self.budget {
+            self.lock().keep(key, bytes, self.budget);
+        }
+    }
+
     pub(super) fn evict(&self, key: SourceKey) {
         let mut g = self.lock();
         if let Some(old) = g.kept.remove(&key) {

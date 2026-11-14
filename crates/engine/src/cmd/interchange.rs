@@ -182,7 +182,7 @@ fn import_report_with_previews(
         #[cfg(not(target_arch = "wasm32"))]
         {
             let (path, data, fingerprint) = read_packaged_link(link, package)?;
-            resolved.borrow_mut().insert(link.to_string(), (path, fingerprint));
+            resolved.borrow_mut().insert(link.to_string(), (path, fingerprint, data.len() as u64));
             Some(data)
         }
         #[cfg(target_arch = "wasm32")]
@@ -198,15 +198,50 @@ fn import_report_with_previews(
     let document = {
         let mut document = document;
         for asset in document.assets.values_mut() {
-            if let Some((path, fingerprint)) = asset.link.as_ref().and_then(|link| resolved.borrow().get(link).cloned()) {
+            if let Some((path, fingerprint, len)) = asset.link.as_ref().and_then(|link| resolved.borrow().get(link).cloned()) {
                 // Relocated packages must also use the new path for preflight and link updates.
                 std::sync::Arc::make_mut(asset).set_link(Some(path), fingerprint);
+                // Bytes read from the file stay a link to it; graphics embedded in the IDML (whose
+                // size differs from the file's, or that share no read) stay embedded.
+                if asset.data.embedded_bytes().is_some_and(|b| b.len() as u64 == len) {
+                    link_read_file(std::sync::Arc::make_mut(asset), package);
+                }
             }
         }
         resolve_packaged_links(&mut document, package);
         document
     };
     Ok((document, warnings, story_ids))
+}
+
+/// `asset`, whose embedded bytes were just read from the file its link names, as a linked asset:
+/// the file's record (hash, relative path, fingerprint) and a proxy (the document's preview when
+/// the importer kept one, else made from the bytes). The bytes stay resident for the first draw.
+#[cfg(not(target_arch = "wasm32"))]
+fn link_read_file(asset: &mut designcraft_doc::Asset, package: Option<&std::path::Path>) {
+    let Some(bytes) = asset.data.embedded_bytes().cloned() else { return };
+    let Some(path) = asset.link.clone() else { return };
+    asset.link_hash = Some(crate::asset_io::content_hash(&bytes));
+    asset.link_relative = package.and_then(|d| super::native_links::relative_to(d, std::path::Path::new(&path)));
+    if asset.proxy.is_none() {
+        asset.proxy = designcraft_render::proxy::make_proxy(&bytes, asset.page).map(|p| designcraft_doc::Proxy {
+            mime: p.mime.into(),
+            pixels: p.pixels,
+            data: designcraft_doc::AssetData::embedded(p.data),
+        });
+    }
+    asset.storage = designcraft_doc::Storage::Linked;
+    // A file just written has no settled fingerprint ([`super::links::loaded_fingerprint`]): the
+    // hash tells its bytes.
+    let source = designcraft_doc::LinkedSource {
+        path,
+        relative: asset.link_relative.clone(),
+        document: package.map(std::path::Path::to_path_buf),
+        len: bytes.len() as u64,
+        fingerprint: asset.link_fingerprint,
+        hash: asset.link_hash.clone(),
+    };
+    asset.data = designcraft_doc::AssetData::linked_resident(asset.data.key(), source, bytes);
 }
 
 /// Placed PDFs read from IDML name their crop (`PDFCrop`): find where each box sits on its page,
@@ -548,11 +583,7 @@ mod tests {
 
         let doc = import(&idml, Some(&dir.join("x.idml"))).unwrap();
         let asset = doc.assets.values().next().unwrap();
-        assert_eq!(
-            **asset.data.embedded_bytes().unwrap(),
-            png,
-            "the packaged graphic must render even when its author-machine path no longer exists"
-        );
+        assert_eq!(*asset.data.resident().unwrap(), png, "the packaged graphic must render even when its author-machine path no longer exists");
         let resolved = std::path::absolute(&path).unwrap();
         assert_eq!(asset.link.as_deref(), resolved.to_str(), "remember the resolved link so update and preflight use the packaged file");
         let expected = super::super::datamerge::fingerprint_from(&std::fs::metadata(&path).unwrap());
@@ -572,7 +603,7 @@ mod tests {
 
         let doc = import(&idml, Some(&dir.join("x.idml"))).unwrap();
         let asset = doc.assets.values().next().unwrap();
-        assert_eq!(**asset.data.embedded_bytes().unwrap(), png);
+        assert_eq!(*asset.data.resident().unwrap(), png);
         assert_eq!(asset.link.as_deref(), std::path::absolute(&path).unwrap().to_str());
         assert_eq!(super::super::links::status_cached(asset, None, &mut Default::default()), "ok");
         std::fs::remove_dir_all(dir).unwrap();
@@ -588,9 +619,53 @@ mod tests {
 
         let doc = import(&idml, Some(&dir.join("x.idml"))).unwrap();
         let asset = doc.assets.values().next().unwrap();
-        assert_eq!(**asset.data.embedded_bytes().unwrap(), png);
+        assert_eq!(*asset.data.resident().unwrap(), png);
         assert_eq!(asset.link.as_deref(), std::path::absolute(&path).unwrap().to_str());
         assert_eq!(super::super::links::status_cached(asset, None, &mut Default::default()), "ok");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_link_that_resolves_imports_as_a_linked_asset() {
+        let dir = std::env::temp_dir().join(format!("dc-idml-linked-import-{}", std::process::id()));
+        let path = dir.join("Links").join("logo.png");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let (idml, png) = linked_idml("/original-computer/project/logo.png", false).unwrap();
+        std::fs::write(&path, &png).unwrap();
+
+        let doc = import(&idml, Some(&dir.join("x.idml"))).unwrap();
+        let asset = doc.assets.values().next().unwrap();
+        assert_eq!(asset.storage, designcraft_doc::Storage::Linked);
+        assert!(asset.data.embedded_bytes().is_none(), "no embedded original");
+        assert!(asset.data.is_linked() && asset.data.resident().is_some(), "the bytes read are resident for the first draw");
+        assert_eq!(asset.link_hash.as_deref(), Some(crate::asset_io::content_hash(&png).as_str()));
+        assert_eq!(asset.link_relative.as_deref(), Some("Links/logo.png"));
+        assert!(asset.proxy.is_some(), "a proxy made from the file");
+        assert_eq!(asset.data.load().ok().map(|b| (*b).clone()), Some(png));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_link_that_does_not_resolve_keeps_its_path_for_relink() {
+        let (idml, _) = linked_idml("/original-computer/project/logo.png", false).unwrap();
+        let doc = import(&idml, None).unwrap();
+        let asset = doc.assets.values().next().unwrap();
+        assert_eq!(asset.storage, designcraft_doc::Storage::Embedded);
+        assert_eq!(asset.link.as_deref(), Some("/original-computer/project/logo.png"));
+        assert!(asset.data.embedded_bytes().is_some_and(|b| b.is_empty()) && asset.link_hash.is_none());
+    }
+
+    #[test]
+    fn a_graphic_embedded_in_the_idml_stays_embedded_beside_its_file() {
+        let dir = std::env::temp_dir().join(format!("dc-idml-embedded-stays-{}", std::process::id()));
+        let path = dir.join("logo.png");
+        std::fs::create_dir_all(&dir).unwrap();
+        let (idml, png) = linked_idml(path.to_str().unwrap(), true).unwrap();
+        std::fs::write(&path, &png).unwrap();
+        let doc = import(&idml, Some(&dir.join("x.idml"))).unwrap();
+        let asset = doc.assets.values().next().unwrap();
+        assert_eq!(asset.storage, designcraft_doc::Storage::Embedded);
+        assert_eq!(asset.data.embedded_bytes().map(|b| (**b).clone()), Some(png));
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -683,12 +758,12 @@ mod tests {
         let (idml, _) = linked_idml(away.to_str().unwrap(), false).unwrap();
         let doc = import(&idml, Some(&package)).unwrap();
         let asset = doc.assets.values().next().unwrap();
-        assert_eq!((&**asset.data.embedded_bytes().unwrap(), asset.link.as_deref()), (&png, away.to_str()));
+        assert_eq!((&*asset.data.resident().unwrap(), asset.link.as_deref()), (&png, away.to_str()));
         assert_eq!(super::super::links::status_cached(asset, None, &mut Default::default()), "ok");
         std::fs::write(dir.join("Links").join("logo.png"), &png).unwrap();
         let (idml, _) = linked_idml("Links/logo.png", false).unwrap();
         let doc = import(&idml, Some(&package)).unwrap();
-        assert_eq!(**doc.assets.values().next().unwrap().data.embedded_bytes().unwrap(), png);
+        assert_eq!(*doc.assets.values().next().unwrap().data.resident().unwrap(), png);
         std::fs::remove_dir_all(base).unwrap();
     }
 

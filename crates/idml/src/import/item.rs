@@ -312,7 +312,14 @@ impl<'r> Importer<'r> {
         }
         // A linked file that can't be read shows the document's preview of it, if it has one. The
         // preview only stands in for the file: format and pixel size still describe the link.
-        let preview = data.is_empty().then(|| model.self_id().and_then(|s| self.previews.get(s))).flatten();
+        let stored_preview = model.self_id().and_then(|s| self.previews.get(s));
+        let preview = if data.is_empty() { stored_preview } else { None };
+        // A file that was read keeps the document's preview of it as the proxy drawn while the
+        // file can't be read; the engine makes one from the bytes when there is none.
+        let proxy = read_from.as_ref().and(stored_preview).and_then(|p| {
+            let (mime, px) = sniff_image(p);
+            Some(designcraft_doc::Proxy { mime: mime?.to_string(), pixels: px?, data: designcraft_doc::AssetData::embedded(Arc::clone(p)) })
+        });
         // InDesign draws a viewBox-only SVG at one unit to the point: its GraphicBounds are the
         // art's bounds, which can overhang the viewBox, so they must not size the viewBox.
         let size = craft_svg::sniff::viewbox_size(&data).unwrap_or(size);
@@ -337,6 +344,7 @@ impl<'r> Importer<'r> {
                 data: designcraft_doc::AssetData::embedded(preview.cloned().unwrap_or_else(|| Arc::new(data))),
                 pixels,
                 pdf_crop,
+                proxy,
                 ..Default::default()
             },
         );
