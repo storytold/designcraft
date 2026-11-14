@@ -115,17 +115,28 @@ impl FrameOutline {
         // Midpoints catch spans that close between two sampled heights.
         let mids: Vec<f64> = ys.windows(2).map(|w| (w[0] + w[1]) / 2.0).collect();
         ys.extend(mids);
-        // At the band's bottom the scanline also takes the inside just above it, so a band that ends on a
-        // bottom edge (the frame's or a lobe's) is inside, as one that starts on a top edge is; within the
-        // band each height keeps its own inside.
+        // At a corner's height the inside can differ just above and just below it. The band keeps the
+        // side below at its top, the side above at its bottom (so a band down to a bottom edge, the
+        // frame's or a lobe's, is inside, as one from a top edge is), and both sides in between.
+        let mut ends: Vec<f64> = near.iter().flat_map(|(a, b)| [a.y, b.y]).collect();
+        ends.sort_by(f64::total_cmp);
         let eps = 1e-12 * y0.abs().max(y1.abs()).max(1.0);
         let mut free = vec![(x0, x1)];
         for y in ys {
             let off = y0 - y;
             let off = if off > 0.0 { off } else { (y - y1).max(0.0) };
             let shrink = (d * d - off * off).max(0.0).sqrt();
-            let at_end = y + 1e-9 >= hi;
-            let inside = if at_end { union(&inside_at(&near, y), &inside_at(&near, y - 2.0 * eps)) } else { inside_at(&near, y) };
+            let at_corner = ends.get(ends.partition_point(|&e| e < y - eps)).is_some_and(|&e| e <= y + eps);
+            let inside = if !at_corner {
+                inside_at(&near, y, false)
+            } else {
+                match (y < hi, y > lo) {
+                    (true, true) => intersect(&inside_at(&near, y, false), &inside_at(&near, y, true)),
+                    (true, false) => inside_at(&near, y, false),
+                    (false, true) => inside_at(&near, y, true),
+                    (false, false) => union(&inside_at(&near, y, false), &inside_at(&near, y, true)),
+                }
+            };
             let row: Vec<(f64, f64)> = inside.into_iter().map(|(a, b)| (a + shrink, b - shrink)).filter(|(a, b)| b > a).collect();
             free = intersect(&free, &row);
             if free.is_empty() {
@@ -137,11 +148,12 @@ impl FrameOutline {
 }
 
 /// Inside intervals of the scanline at `y` through `edges` (non-zero winding, as the frame is
-/// filled).
-fn inside_at(edges: &[(Point, Point)], y: f64) -> Vec<(f64, f64)> {
+/// filled). At a corner's height they are the inside just below it, or just above it when `above`.
+fn inside_at(edges: &[(Point, Point)], y: f64, above: bool) -> Vec<(f64, f64)> {
     let mut xs: Vec<(f64, i32)> = Vec::new();
     for &(a, b) in edges {
-        if (a.y <= y) != (b.y <= y) {
+        let crosses = if above { (a.y < y) != (b.y < y) } else { (a.y <= y) != (b.y <= y) };
+        if crosses {
             let t = (y - a.y) / (b.y - a.y);
             let x = a.x + t * (b.x - a.x);
             if x.is_finite() {

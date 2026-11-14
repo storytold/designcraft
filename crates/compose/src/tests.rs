@@ -3143,6 +3143,34 @@ fn a_shaped_frame_holds_a_band_down_to_a_bottom_edge() {
     assert!(o.intervals(0.0, 100.0, 120.0, 150.5).is_empty());
 }
 
+/// At a corner where the outline steps in or out, a band keeps only the inside on its own side of
+/// the corner: the side below it when the band starts there, the side above it when the band ends
+/// there, and both sides when the band crosses it.
+#[test]
+fn a_shaped_frame_band_keeps_the_inside_on_its_side_of_a_corner() {
+    use designcraft_geom::BezPath;
+    let outline = |pts: &[(f64, f64)]| {
+        let mut bp = BezPath::new();
+        bp.move_to((0.0, 0.0));
+        for &p in pts {
+            bp.line_to(p);
+        }
+        bp.close_path();
+        FrameOutline::new(&bp, 0.0).unwrap()
+    };
+    // A 100 pt square with a notch on the right from 50 pt down: 60 pt wide at 50 pt, widening to
+    // 100 pt at the bottom.
+    let notch = outline(&[(100.0, 0.0), (100.0, 50.0), (60.0, 50.0), (100.0, 100.0), (0.0, 100.0)]);
+    assert_eq!(notch.intervals(0.0, 100.0, 50.0, 70.0), vec![(0.0, 60.0)]);
+    assert_eq!(notch.intervals(0.0, 100.0, 40.0, 70.0), vec![(0.0, 60.0)]);
+    assert_eq!(notch.intervals(0.0, 100.0, 20.0, 50.0), vec![(0.0, 100.0)]);
+    // A 100 pt square whose right side narrows to 20 pt at 50 pt and steps back out to 100 pt there.
+    let step = outline(&[(100.0, 0.0), (20.0, 50.0), (100.0, 50.0), (100.0, 100.0), (0.0, 100.0)]);
+    assert_eq!(step.intervals(0.0, 100.0, 0.0, 100.0), vec![(0.0, 20.0)]);
+    assert_eq!(step.intervals(0.0, 100.0, 0.0, 50.0), vec![(0.0, 20.0)]);
+    assert_eq!(step.intervals(0.0, 100.0, 50.0, 100.0), vec![(0.0, 100.0)]);
+}
+
 /// In a shaped frame, Center, Bottom and Justify keep each moved line's slot inside the outline:
 /// a triangle that narrows downward holds the lines where their slots still fit, and one that
 /// widens downward lets Bottom put the last baseline on the frame's bottom.
