@@ -99,13 +99,18 @@ pub fn specs() -> Vec<CommandSpec> {
                             pixels: Some(px),
                             ..Default::default()
                         };
-                        source.give(&mut poster, super::file::document_of(s).as_deref());
-                        Some(Some(poster))
+                        let pending = source.give(&mut poster, super::file::document_of(s).as_deref());
+                        Some(Some((poster, pending)))
                     }
                     Some(Value::Null) => Some(None),
                     _ => None,
                 };
-                s.edit(|d, _| {
+                let (poster, pending) = match poster {
+                    Some(Some((poster, pending))) => (Some(Some(poster)), pending),
+                    Some(None) => (Some(None), None),
+                    None => (None, None),
+                };
+                let r = s.edit(|d, _| {
                     let poster_id = match poster {
                         Some(Some(poster)) => {
                             let fresh = AssetId(d.alloc());
@@ -136,7 +141,9 @@ pub fn specs() -> Vec<CommandSpec> {
                         return Err(bad("media.options", "select a video or sound"));
                     }
                     ok()
-                })
+                })?;
+                super::file::prepare_placed(s, pending);
+                Ok(r)
             }
         ),
         cmd!(query "media.get", "Media", [], None, "{id?} → {kind, name, playOnPageLoad, loop, controls, poster}", has_selection, |s, p| {

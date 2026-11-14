@@ -11,8 +11,11 @@
 //! the bytes. One with the recorded size and another time is hashed on a background thread: the
 //! first whose hash is the recorded one is the file, and its time is kept with the asset; when
 //! none matches the link is Modified and the file's bytes are never used.
+//!
+//! The same thread makes the content hash and proxy of graphics just placed from files
+//! ([`prepare`]), which link to their files once those are in.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
@@ -73,6 +76,8 @@ pub struct OpenLinks {
     /// Embedded images the check found identical to their linked files, so far.
     migrated: usize,
     notice: Option<String>,
+    /// The keys of graphics placed from files whose content hash is still being made ([`prepare`]).
+    pending: BTreeSet<SourceKey>,
 }
 
 impl std::fmt::Debug for OpenLinks {
@@ -97,6 +102,18 @@ impl OpenLinks {
     pub fn take_notice(&mut self) -> Option<String> {
         self.notice.take()
     }
+
+    /// Whether `asset` was just placed from a file and its content hash and proxy are still
+    /// being made ([`prepare`]): embedded with its link record until then.
+    pub fn preparing(&self, asset: &Asset) -> bool {
+        unsettled(asset, &self.pending)
+    }
+
+    /// A graphic placed with the bytes `key` was embedded on purpose (Links › Embed) before the
+    /// background work linked it: it stays embedded.
+    pub(crate) fn keep_embedded(&mut self, key: SourceKey) {
+        self.pending.remove(&key);
+    }
 }
 
 /// One file check for the background thread.
@@ -109,6 +126,9 @@ enum Work {
     /// Compare the file at `source`'s path (the first of its candidates that has the size of the
     /// embedded `bytes`) with the embedded bytes of a document saved before linked storage.
     Migrate { asset: AssetId, key: SourceKey, bytes: Arc<Vec<u8>>, source: LinkedSource, page: u32 },
+    /// Hash the `bytes` of graphics just placed from a file (and make their proxy with `proxy`),
+    /// to link them with `link`.
+    Prepare { key: SourceKey, bytes: Arc<Vec<u8>>, page: u32, proxy: bool, link: bool },
 }
 
 /// What a [`Work`] found. `key` is the asset's bytes' key when the check started: a result for
@@ -133,6 +153,28 @@ enum Outcome {
     },
     /// The file isn't (or can't be shown to be) the embedded bytes: they stay embedded.
     Unconfirmed,
+    /// The content hash and proxy of placed graphics' bytes ([`Work::Prepare`]).
+    Prepared { key: SourceKey, hash: String, proxy: Option<designcraft_render::proxy::ProxyImage>, link: bool },
+}
+
+/// A graphic placed from a file whose content hash and proxy are still to be made
+/// ([`super::links::give_placed`]); [`prepare`] has them made in the background.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub(crate) struct Pending {
+    key: SourceKey,
+    bytes: Arc<Vec<u8>>,
+    page: u32,
+    proxy: bool,
+    link: bool,
+}
+
+impl Pending {
+    /// The work for `a`, embedded with `bytes`, to be linked to its file when `link`. Video and
+    /// sound get no proxy, nor does a graphic that stays embedded.
+    pub(super) fn of(a: &Asset, bytes: Arc<Vec<u8>>, link: bool) -> Self {
+        let media = a.mime.starts_with("video/") || a.mime.starts_with("audio/");
+        Pending { key: a.data.key(), bytes, page: a.page, proxy: link && !media, link }
+    }
 }
 
 #[derive(Default)]
@@ -284,22 +326,102 @@ pub(crate) fn start(st: &mut DocState, opened: Opened) -> usize {
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let job = Arc::new(Job::default());
-        lock(&job).work = opened.work.into_iter().rev().collect();
-        let roots = crate::file_access::current();
-        let worker = Arc::clone(&job);
-        let worker_roots = roots.clone();
-        let spawned = std::thread::Builder::new().name("designcraft-links".into()).spawn(move || run_all(&worker, worker_roots.as_ref()));
-        if let Err(e) = spawned {
-            // No thread: check here rather than leave the links unchecked.
-            log::warn!("checking linked files without a thread: {e}");
-            run_all(&job, roots.as_ref());
-        }
-        st.links.job = Some(Arc::new(JobHandle(job)));
+        st.links.job = Some(spawn(opened.work.into_iter().rev().collect(), Vec::new()));
     }
     #[cfg(target_arch = "wasm32")]
     let _ = opened.work;
     n
+}
+
+/// A background job for `work` (taken from the end), its results starting with `results`.
+#[cfg(not(target_arch = "wasm32"))]
+fn spawn(work: Vec<Work>, results: Vec<Outcome>) -> Arc<JobHandle> {
+    let job = Arc::new(Job::default());
+    {
+        let mut state = lock(&job);
+        state.work = work;
+        state.results = results;
+    }
+    let roots = crate::file_access::current();
+    let worker = Arc::clone(&job);
+    let worker_roots = roots.clone();
+    let spawned = std::thread::Builder::new().name("designcraft-links".into()).spawn(move || run_all(&worker, worker_roots.as_ref()));
+    if let Err(e) = spawned {
+        // No thread: check here rather than leave the links unchecked.
+        log::warn!("checking linked files without a thread: {e}");
+        run_all(&job, roots.as_ref());
+    }
+    Arc::new(JobHandle(job))
+}
+
+/// Have the content hash and proxy of graphics just placed into `st`'s document made in the
+/// background, in the order given; [`Session::poll_link_checks`] links them when they are in.
+pub(crate) fn prepare(st: &mut DocState, pending: Vec<Pending>) {
+    if pending.is_empty() {
+        return;
+    }
+    st.links.pending.extend(pending.iter().map(|p| p.key));
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        // Taken from the end: the first placed is made first, before checks still waiting.
+        let work: Vec<Work> =
+            pending.into_iter().rev().map(|Pending { key, bytes, page, proxy, link }| Work::Prepare { key, bytes, page, proxy, link }).collect();
+        let mut results = Vec::new();
+        if let Some(handle) = &st.links.job {
+            let mut state = lock(&handle.0);
+            if !state.done {
+                state.work.extend(work);
+                return;
+            }
+            // The job has ended: a new one takes over what it found and nobody has applied yet.
+            results = std::mem::take(&mut state.results);
+        }
+        st.links.job = Some(spawn(work, results));
+    }
+}
+
+/// Before a save of `d` (`st`'s document or a copy of it): the content hash of each graphic
+/// placed from a file whose hash isn't made yet ([`prepare`]), from its bytes, which are embedded
+/// until then. It is saved as an embedded copy with a complete link record, never as a link to a
+/// file whose bytes nobody has checked; without the hash a later open would take it for a copy
+/// saved before linked storage. → whether `d` changed.
+fn settle(d: &mut Document, pending: &BTreeSet<SourceKey>) -> bool {
+    let unsettled: Vec<AssetId> = d.assets.values().filter(|a| unsettled(a, pending)).map(|a| a.id).collect();
+    for id in &unsettled {
+        let Some(a) = d.assets.get_mut(id).map(Arc::make_mut) else { continue };
+        if let Some(bytes) = a.data.embedded_bytes() {
+            a.link_hash = Some(crate::asset_io::content_hash(bytes));
+        }
+    }
+    !unsettled.is_empty()
+}
+
+/// Whether `a` was placed from a file ([`prepare`]) and has no content hash yet.
+fn unsettled(a: &Asset, pending: &BTreeSet<SourceKey>) -> bool {
+    a.storage == Storage::Embedded && a.link.is_some() && a.link_hash.is_none() && pending.contains(&a.data.key())
+}
+
+/// [`settle`] for the live document of `st`, before it is saved. A document without unsaved
+/// changes stays so.
+pub(crate) fn settle_pending(st: &mut DocState) {
+    if !st.doc.assets.values().any(|a| unsettled(a, &st.links.pending)) {
+        return;
+    }
+    let clean = !st.is_dirty();
+    let mut doc = (*st.doc).clone();
+    if settle(&mut doc, &st.links.pending) {
+        st.doc = Arc::new(doc);
+        if clean {
+            st.saved_doc = Arc::clone(&st.doc);
+        }
+    }
+}
+
+/// [`settle`] for a copy of `st`'s document, before the copy is written.
+pub(crate) fn settle_copy(st: &DocState, copy: &mut Document) {
+    if !st.links.pending.is_empty() {
+        settle(copy, &st.links.pending);
+    }
 }
 
 fn lock(job: &Job) -> std::sync::MutexGuard<'_, JobState> {
@@ -310,7 +432,14 @@ fn lock(job: &Job) -> std::sync::MutexGuard<'_, JobState> {
 fn run_all(job: &Job, roots: Option<&Arc<crate::file_access::AutomationRoots>>) {
     crate::file_access::confine(roots, || {
         while !job.cancelled() {
-            let Some(work) = lock(job).work.pop() else { break };
+            // Ended in the same step the queue is found empty: work queued later starts a new job.
+            let next = {
+                let mut state = lock(job);
+                let next = state.work.pop();
+                state.done |= next.is_none();
+                next
+            };
+            let Some(work) = next else { break };
             // A file that trips a decoder (the proxy) leaves its asset as it was.
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| check(work, &job.cancel)));
             match outcome {
@@ -374,7 +503,42 @@ fn check(work: Work, cancel: &AtomicBool) -> Option<Outcome> {
             let fingerprint = if super::links::settled(&before) { before } else { Fingerprint { size: len, mtime: super::links::UNVERIFIED_MTIME } };
             Some(Outcome::Confirmed { asset, key, path, fingerprint, hash, proxy })
         }
+        Work::Prepare { key, bytes, page, proxy, link } => {
+            let hash = hash_bytes(&bytes, cancel)?;
+            if cancel.load(Ordering::Relaxed) {
+                return None;
+            }
+            let proxy = if proxy { designcraft_render::proxy::make_proxy(&bytes, page) } else { None };
+            Some(Outcome::Prepared { key, hash, proxy, link })
+        }
     }
+}
+
+/// [`crate::asset_io::content_hash`] of `bytes`, a chunk at a time → `None` when cancelled.
+#[cfg(not(target_arch = "wasm32"))]
+fn hash_bytes(bytes: &[u8], cancel: &AtomicBool) -> Option<String> {
+    use sha2::Digest;
+    let mut hasher = sha2::Sha256::new();
+    for chunk in bytes.chunks(CHUNK) {
+        if cancel.load(Ordering::Relaxed) {
+            return None;
+        }
+        hasher.update(chunk);
+    }
+    Some(hex(hasher))
+}
+
+/// `sha256:` and the hex digits of what `hasher` was given.
+#[cfg(not(target_arch = "wasm32"))]
+fn hex(hasher: sha2::Sha256) -> String {
+    use sha2::Digest;
+    use std::fmt::Write;
+    let mut hex = String::with_capacity(7 + 64);
+    hex.push_str("sha256:");
+    for b in hasher.finalize() {
+        let _ = write!(hex, "{b:02x}");
+    }
+    hex
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -415,13 +579,7 @@ fn read_file(path: &Path, len: u64, cancel: &AtomicBool, mut keep: impl FnMut(us
     if at as u64 != len {
         return Some(None);
     }
-    let mut hex = String::with_capacity(7 + 64);
-    hex.push_str("sha256:");
-    for b in hasher.finalize() {
-        use std::fmt::Write;
-        let _ = write!(hex, "{b:02x}");
-    }
-    Some(Some(hex))
+    Some(Some(hex(hasher)))
 }
 
 impl Session {
@@ -526,6 +684,37 @@ fn apply_one(st: &mut DocState, outcome: Outcome, document: Option<&Path>) -> bo
             true
         }
         Outcome::Unconfirmed => false,
+        Outcome::Prepared { key, hash, proxy, link } => {
+            // Embedded on purpose since (Links › Embed): it stays so.
+            if !st.links.pending.remove(&key) {
+                return false;
+            }
+            let proxy = proxy.map(|p| designcraft_doc::Proxy { mime: p.mime.into(), pixels: p.pixels, data: AssetData::embedded(p.data) });
+            // Each document changed once, its holders sharing the result: a history entry that
+            // was the saved state still is.
+            let mut done: Vec<(Arc<Document>, Arc<Document>)> = Vec::new();
+            let mut prepared = |doc: &mut Arc<Document>| {
+                if let Some((_, after)) = done.iter().find(|(before, _)| Arc::ptr_eq(before, doc)) {
+                    *doc = Arc::clone(after);
+                    return true;
+                }
+                let before = Arc::clone(doc);
+                let changed = link_placed(doc, key, &hash, link, document, proxy.as_ref());
+                if changed {
+                    done.push((before, Arc::clone(doc)));
+                }
+                changed
+            };
+            let changed = prepared(&mut st.doc);
+            // The undo history and the last saved state hold the same bytes: linked there too, so
+            // they don't keep every placed file in memory, and a redo of an undone placement
+            // brings it back linked.
+            for entry in st.history.undo.iter_mut().chain(st.history.redo.iter_mut()) {
+                prepared(&mut entry.doc);
+            }
+            prepared(&mut st.saved_doc);
+            changed
+        }
     }
 }
 
@@ -534,6 +723,30 @@ fn found(st: &mut DocState, id: AssetId, key: SourceKey, status: LinkStatus) {
     if st.doc.assets.get(&id).is_some_and(|a| a.data.key() == key) {
         st.links.status.insert(id, (key, status));
     }
+}
+
+/// The graphics of `doc` placed with the bytes `key` ([`prepare`]) with their content `hash` and
+/// `proxy`, linked to their files when `link` ([`super::links::link_prepared`]) → whether `doc`
+/// has any.
+fn link_placed(
+    doc: &mut Arc<Document>,
+    key: SourceKey,
+    hash: &str,
+    link: bool,
+    document: Option<&Path>,
+    proxy: Option<&designcraft_doc::Proxy>,
+) -> bool {
+    let placed: Vec<AssetId> =
+        doc.assets.values().filter(|a| a.data.key() == key && a.storage == Storage::Embedded && a.link.is_some()).map(|a| a.id).collect();
+    if placed.is_empty() {
+        return false;
+    }
+    let d = Arc::make_mut(doc);
+    for id in placed {
+        let Some(a) = d.assets.get_mut(&id).map(Arc::make_mut) else { continue };
+        super::links::link_prepared(a, hash.to_owned(), link, document, proxy.cloned());
+    }
+    true
 }
 
 /// The status line's message once `n` embedded images were found identical to their files.

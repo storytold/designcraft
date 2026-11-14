@@ -227,6 +227,7 @@ pub(crate) fn give_bytes(a: &mut Asset, bytes: impl Into<Arc<Vec<u8>>>, file: Op
     };
     if embed || cfg!(target_arch = "wasm32") {
         record_file(a, &bytes, file, document);
+        a.link_hash = Some(crate::asset_io::content_hash(&bytes));
         a.storage = Storage::Embedded;
         a.data = AssetData::embedded(bytes);
         return;
@@ -234,32 +235,90 @@ pub(crate) fn give_bytes(a: &mut Asset, bytes: impl Into<Arc<Vec<u8>>>, file: Op
     link_to_file(a, bytes, file, document, None);
 }
 
+/// [`give_bytes`] for a graphic being placed, leaving out the work that grows with the file: its
+/// content hash and its proxy are made in the background ([`super::native_links::prepare`] the
+/// returned work once the asset is in the document). Until then the graphic is embedded with the
+/// file's link record and no hash, and drawn from its bytes; [`link_prepared`] links it when they
+/// are in. A save before that writes it embedded ([`super::native_links::settle_pending`]).
+/// Placing many press-size images would otherwise decode and hash each one before the app
+/// responds again. Without a file, or on the web (no threads), this is [`give_bytes`].
+#[must_use = "the hash and proxy are made only once the returned work is queued"]
+pub(crate) fn give_placed(
+    a: &mut Asset,
+    bytes: impl Into<Arc<Vec<u8>>>,
+    file: Option<FileLink>,
+    embed: bool,
+    document: Option<&Path>,
+) -> Option<super::native_links::Pending> {
+    let bytes: Arc<Vec<u8>> = bytes.into();
+    let file = match file {
+        Some(file) if cfg!(not(target_arch = "wasm32")) => file,
+        file => {
+            give_bytes(a, bytes, file, embed, document);
+            return None;
+        }
+    };
+    a.proxy = None;
+    record_file(a, &bytes, file, document);
+    a.link_hash = None;
+    a.storage = Storage::Embedded;
+    a.data = AssetData::embedded(Arc::clone(&bytes));
+    Some(super::native_links::Pending::of(a, bytes, !embed))
+}
+
 /// Link `a` to `file`, whose bytes (`bytes`) were just read: the file's record (paths, size and
 /// time, content hash) and a proxy to draw while the file can't be read (`preview` when there is
 /// one, else made from the bytes). The bytes stay in memory for the first draw.
 pub(crate) fn link_to_file(a: &mut Asset, bytes: Arc<Vec<u8>>, file: FileLink, document: Option<&Path>, preview: Option<designcraft_doc::Proxy>) {
     record_file(a, &bytes, file, document);
+    a.link_hash = Some(crate::asset_io::content_hash(&bytes));
+    link_recorded(a, bytes, designcraft_doc::SourceKey::fresh(), document, |a, bytes| preview.or_else(|| proxy_of(a, bytes)));
+}
+
+/// A graphic placed with [`give_placed`] (embedded, its link record complete but for the hash)
+/// once its content `hash` and its `proxy` are made: linked to its file under the key its bytes
+/// already have, so nothing drawn from them is decoded again, or with only the hash added when it
+/// was placed embedded (`link` false).
+pub(super) fn link_prepared(a: &mut Asset, hash: String, link: bool, document: Option<&Path>, proxy: Option<designcraft_doc::Proxy>) {
+    a.link_hash = Some(hash);
+    if !link {
+        return;
+    }
+    let Some(bytes) = a.data.embedded_bytes().cloned() else { return };
+    let key = a.data.key();
+    link_recorded(a, bytes, key, document, |_, _| proxy);
+}
+
+/// `a`, whose link record is complete, as a link to its file under `key`: drawn with `proxy`'s
+/// image while the file can't be read, and `bytes` (just read from the file) kept in memory for
+/// the first draw. Embedded under `key` when the record doesn't name a file.
+fn link_recorded(
+    a: &mut Asset,
+    bytes: Arc<Vec<u8>>,
+    key: designcraft_doc::SourceKey,
+    document: Option<&Path>,
+    proxy: impl FnOnce(&Asset, &[u8]) -> Option<designcraft_doc::Proxy>,
+) {
     a.link_fingerprint = Some(a.link_fingerprint.unwrap_or(Fingerprint { size: bytes.len() as u64, mtime: UNVERIFIED_MTIME }));
     let Some(source) = LinkedSource::of(a, document) else {
         a.storage = Storage::Embedded;
         a.proxy = None;
-        a.data = AssetData::embedded(bytes);
+        a.data = AssetData::embedded_under(key, bytes);
         return;
     };
     a.storage = Storage::Linked;
-    a.proxy = preview.or_else(|| proxy_of(a, &bytes));
-    a.data = AssetData::linked(source);
+    a.proxy = proxy(a, &bytes);
+    a.data = AssetData::linked_under(key, source);
     a.data.keep_resident(bytes);
 }
 
 /// Keep with `a` the record of `file`, which `bytes` were read from: its absolute path, its path
-/// relative to the `document` file, the size and time that vouch for the bytes
-/// ([`loaded_fingerprint`]) and their content hash.
+/// relative to the `document` file and the size and time that vouch for the bytes
+/// ([`loaded_fingerprint`]). The caller sets the content hash.
 fn record_file(a: &mut Asset, bytes: &[u8], file: FileLink, document: Option<&Path>) {
     a.link_fingerprint = loaded_fingerprint(file.before, bytes);
     a.link_relative = document.and_then(|d| super::native_links::relative_to(d, Path::new(&file.path)));
     a.link = Some(file.path);
-    a.link_hash = Some(crate::asset_io::content_hash(bytes));
 }
 
 /// Does `bytes` (a file's) hold `a`'s bytes: its recorded hash, or, without one, its bytes?
@@ -821,10 +880,10 @@ fn relinked_asset(a: &designcraft_doc::Asset, read: &Path, document: Option<&Pat
     a.pixels = Some(px);
     a.page = page;
     a.name = file_name(&read.to_string_lossy());
+    // A placed PDF keeps its crop choice; its box is found on the new file.
+    super::file::crop_pdf_from(&mut a, &bytes);
     let file = FileLink::of(read, before);
     give_bytes(&mut a, bytes, Some(file), false, document);
-    // A placed PDF keeps its crop choice; its box is found on the new file.
-    super::file::crop_pdf(&mut a);
     Ok(Arc::new(a))
 }
 
@@ -988,7 +1047,10 @@ fn embed(s: &mut Session, p: &Value) -> Result<Value> {
         a.proxy = None;
         a.link_hash = hash;
         Ok(Value::Null)
-    })
+    })?;
+    // Just placed and not linked yet: the background work leaves it embedded.
+    s.doc_mut()?.links.keep_embedded(key);
+    Ok(Value::Null)
 }
 
 /// The file in `folder` named like the original (or `name` with an extension for `mime`) that
@@ -1179,6 +1241,7 @@ mod relink_folder_tests {
             std::fs::write(&path, r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"/>"#).unwrap();
             s.doc_mut().unwrap().selection = Default::default();
             s.execute("file.place", &json!({"path": path.to_string_lossy()})).unwrap();
+            crate::cmd::native_links::wait(&mut s);
             std::fs::rename(&path, dir.join("new").join(name)).unwrap();
         }
         (s, dir)
@@ -1246,6 +1309,7 @@ mod relink_folder_tests {
         let mut s = Session::new();
         s.execute("file.new", &json!({})).unwrap();
         s.execute("file.place", &json!({"path": orig.to_string_lossy()})).unwrap();
+        crate::cmd::native_links::wait(&mut s);
         // The file moves away: relink from the new folder.
         std::fs::rename(&orig, dir.join("new").join("logo.svg")).unwrap();
         let r = s.execute("links.relinkFolder", &json!({"dir": dir.join("new").to_string_lossy()})).unwrap();
@@ -1309,6 +1373,7 @@ mod shared_asset_tests {
         for (path, x) in [(&a, 72), (&b, 200)] {
             s.execute("edit.deselectAll", &json!({})).unwrap();
             s.execute("file.place", &json!({"path": path.to_string_lossy(), "x": x, "y": 72})).unwrap();
+            crate::cmd::native_links::wait(&mut s);
         }
         assert_eq!(s.doc().unwrap().doc.assets.len(), 2);
         let rows = |s: &mut Session| -> Vec<(String, Value)> {
@@ -1614,6 +1679,7 @@ mod text_link_tests {
         let mut s = Session::new();
         s.execute("file.new", &json!({})).unwrap();
         s.execute("file.place", &json!({"path": path.to_string_lossy(), "link": true})).unwrap();
+        crate::cmd::native_links::wait(&mut s);
         let status = |s: &mut Session| text_rows(s)[0]["status"].as_str().unwrap().to_string();
 
         // Size and time as placed: not read.
@@ -1695,6 +1761,7 @@ mod text_link_tests {
         let sid = fr["story"].as_u64().unwrap();
         s.execute("text.select", &json!({"story": sid, "anchor": 6, "focus": 6})).unwrap();
         let r = s.execute("file.place", &json!({"path": path.to_string_lossy()})).unwrap();
+        crate::cmd::native_links::wait(&mut s);
         assert!(r["warnings"][0].as_str().unwrap().contains("not linked"), "{r}");
         assert!(s.doc().unwrap().doc.story(StoryId(sid)).unwrap().file_link.is_none());
         let _ = std::fs::remove_dir_all(&dir);

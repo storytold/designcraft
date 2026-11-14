@@ -33,6 +33,7 @@ fn unchanged_linked_images_are_not_read_again() {
     let mut s = Session::new();
     s.execute("file.new", &json!({})).unwrap();
     s.execute("file.place", &json!({"path": path.to_string_lossy(), "link": true})).unwrap();
+    crate::cmd::native_links::wait(&mut s);
     let status = |s: &mut Session| {
         let l = s.execute("links.list", &json!({})).unwrap();
         l.as_array().unwrap().iter().find(|r| r.get("asset").is_some()).unwrap()["status"].as_str().unwrap().to_string()
@@ -140,6 +141,7 @@ fn a_graphic_rewritten_with_the_same_bytes_stays_ok() {
     let mut s = Session::new();
     s.execute("file.new", &json!({})).unwrap();
     let aid = AssetId(s.execute("file.place", &json!({"path": path.to_string_lossy()})).unwrap()["asset"].as_u64().unwrap());
+    crate::cmd::native_links::wait(&mut s);
     rewrite(&image, 60);
     let a = s.doc().unwrap().doc.assets[&aid].clone();
     assert!(a.link_fingerprint.is_some());
@@ -181,7 +183,9 @@ fn preview_rows_look_at_no_file() {
     let mut s = Session::new();
     s.execute("file.new", &json!({})).unwrap();
     let place = |s: &mut Session, path: &Path, x: u32| {
-        AssetId(s.execute("file.place", &json!({"path": path.to_string_lossy(), "x": x, "y": 72})).unwrap()["asset"].as_u64().unwrap())
+        let id = AssetId(s.execute("file.place", &json!({"path": path.to_string_lossy(), "x": x, "y": 72})).unwrap()["asset"].as_u64().unwrap());
+        crate::cmd::native_links::wait(s);
+        id
     };
     let ids = [place(&mut s, &linked, 72), place(&mut s, &embedded, 144), place(&mut s, &gone, 216)];
     s.execute("links.embed", &json!({"asset": ids[1].0})).unwrap();
@@ -245,6 +249,7 @@ fn a_file_written_just_now_is_not_vouched_for_by_its_time() {
     let mut s = Session::new();
     s.execute("file.new", &json!({})).unwrap();
     let aid = AssetId(s.execute("file.place", &json!({"path": path.to_string_lossy()})).unwrap()["asset"].as_u64().unwrap());
+    crate::cmd::native_links::wait(&mut s);
     let kept = s.doc().unwrap().doc.assets[&aid].link_fingerprint.unwrap();
     assert_eq!((kept.size, kept.mtime), (image.len() as u64, UNVERIFIED_MTIME), "the time can't vouch for the bytes");
     let mut other = image.clone();
@@ -271,6 +276,7 @@ fn a_stopped_check_looks_at_no_further_file() {
         let path = dir.join(name);
         std::fs::write(&path, png(x, 10)).unwrap();
         s.execute("file.place", &json!({"path": path.to_string_lossy(), "x": x, "y": 72})).unwrap();
+        crate::cmd::native_links::wait(&mut s);
     }
     let st = s.doc().unwrap();
     let mut checks = LinkListChecks::default();
@@ -300,6 +306,7 @@ fn a_file_found_unchanged_by_its_bytes_is_remembered_with_the_document() {
     let mut s = Session::new();
     s.execute("file.new", &json!({})).unwrap();
     let aid = AssetId(s.execute("file.place", &json!({"path": path.to_string_lossy()})).unwrap()["asset"].as_u64().unwrap());
+    crate::cmd::native_links::wait(&mut s);
     s.execute("file.saveAs", &json!({"path": dir.join("doc.designcraft").to_string_lossy()})).unwrap();
     assert!(!s.doc().unwrap().is_dirty());
     set_age(&path, 60);
@@ -461,6 +468,7 @@ fn eps_status_tracks_source_bytes_across_save_update_relink_and_embed() {
     let mut s = Session::new();
     s.execute("file.new", &json!({})).unwrap();
     let aid = AssetId(s.execute("file.place", &json!({"path": path.to_string_lossy()})).unwrap()["asset"].as_u64().unwrap());
+    crate::cmd::native_links::wait(&mut s);
     assert_eq!(s.execute("links.list", &json!({})).unwrap()[0]["status"], "ok");
     let before = s.doc().unwrap().doc.clone();
     assert_eq!(s.execute("links.update", &json!({})).unwrap()["updated"], 0);
@@ -507,6 +515,7 @@ fn eps_legacy_preview_document_is_upgraded_by_update() {
     let mut s = Session::new();
     s.execute("file.new", &json!({})).unwrap();
     let aid = AssetId(s.execute("file.place", &json!({"path": path.to_string_lossy()})).unwrap()["asset"].as_u64().unwrap());
+    crate::cmd::native_links::wait(&mut s);
     let proxy = designcraft_images::eps_proxy(source).unwrap().0;
     // A document saved before linked storage: the preview embedded, a link without a hash.
     s.edit(|d, _| {
@@ -595,6 +604,7 @@ fn eps_relink_update_and_folder_relink_retain_source() {
     let mut s = Session::new();
     s.execute("file.new", &json!({})).unwrap();
     s.execute("file.place", &json!({"path": original.to_string_lossy()})).unwrap();
+    crate::cmd::native_links::wait(&mut s);
     let aid = s.doc().unwrap().doc.assets.keys().next().copied().unwrap();
     std::fs::write(&original, eps(20)).unwrap();
     assert_eq!(s.execute("links.update", &json!({})).unwrap()["updated"], 1);
@@ -623,6 +633,7 @@ fn pdf_relink_and_update_preserve_selected_page_size() {
     let mut s = Session::new();
     s.execute("file.new", &json!({})).unwrap();
     s.execute("file.place", &json!({"path": original.to_string_lossy(), "pdfPage": 2})).unwrap();
+    crate::cmd::native_links::wait(&mut s);
     let aid = s.doc().unwrap().doc.assets.keys().next().copied().unwrap();
     s.execute("links.relink", &json!({"asset": aid.0, "path": replacement.to_string_lossy()})).unwrap();
     let a = &s.doc().unwrap().doc.assets[&aid];
@@ -653,6 +664,7 @@ fn pdf_reload_rejects_missing_page_without_edit() {
         let mut s = Session::new();
         s.execute("file.new", &json!({})).unwrap();
         s.execute("file.place", &json!({"path": original.to_string_lossy(), "pdfPage": 2})).unwrap();
+        crate::cmd::native_links::wait(&mut s);
         let aid = s.doc().unwrap().doc.assets.keys().next().copied().unwrap();
         if command == "links.update" {
             std::fs::write(&original, &short).unwrap();
@@ -690,6 +702,7 @@ fn link_status_relink_update_embed() {
     let mut s = Session::new();
     s.execute("file.new", &json!({})).unwrap();
     s.execute("file.place", &json!({"path": a.to_string_lossy(), "x": 72, "y": 72, "width": 72})).unwrap();
+    crate::cmd::native_links::wait(&mut s);
     let l = s.execute("links.list", &json!({})).unwrap();
     assert_eq!(l[0]["status"], "ok");
     assert_eq!(l[0]["uses"][0]["ppi"], 10.0, "10 px over 1 inch");
@@ -744,8 +757,11 @@ fn same_size_pngs() -> (Vec<u8>, Vec<u8>) {
     (a, b)
 }
 
+/// Place a file and let the background job link it ([`crate::cmd::native_links::prepare`]).
 fn placed(s: &mut Session, params: Value) -> AssetId {
-    AssetId(s.execute("file.place", &params).unwrap()["asset"].as_u64().unwrap())
+    let id = AssetId(s.execute("file.place", &params).unwrap()["asset"].as_u64().unwrap());
+    crate::cmd::native_links::wait(s);
+    id
 }
 
 fn asset_of(s: &Session, id: AssetId) -> Arc<designcraft_doc::Asset> {
@@ -807,6 +823,43 @@ fn a_file_placed_from_a_path_links_to_it_and_embed_true_embeds_it() {
     assert!(a.link.is_some() && a.link_hash.is_some(), "the link record stays for Unembed");
     let r = row(&mut s, e);
     assert_eq!((r["storage"].as_str(), r["status"].as_str()), (Some("embedded"), Some("embedded")));
+}
+
+/// Placing a large image returns before its proxy and hash are made: until the background job
+/// has them it is embedded with its link record and drawn from its bytes, then it links under the
+/// same key. A save in between writes it embedded, with the hash, never a link nobody checked.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn placing_leaves_the_proxy_and_hash_to_the_background() {
+    use designcraft_doc::Storage;
+    let dir = TempDir::new("deferred");
+    let path = dir.0.join("big.png");
+    let bytes = png(1600, 1200);
+    std::fs::write(&path, &bytes).unwrap();
+    set_age(&path, 60);
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    let id = AssetId(s.execute("file.place", &json!({"path": path.to_string_lossy()})).unwrap()["asset"].as_u64().unwrap());
+    let a = asset_of(&s, id);
+    assert!(a.proxy.is_none() && a.link_hash.is_none(), "no proxy or hash is made while placing");
+    assert_eq!((a.storage, a.link.as_deref()), (Storage::Embedded, path.to_str()));
+    assert!(s.doc().unwrap().links.checking(), "the background job is running");
+    let key = a.data.key();
+
+    let early = dir.0.join("early.designcraft");
+    s.execute("file.saveACopy", &json!({"path": early.to_string_lossy()})).unwrap();
+    let copy = super::super::file::from_bytes(&std::fs::read(&early).unwrap()).unwrap();
+    let c = copy.assets.values().next().unwrap();
+    let hash = crate::asset_io::content_hash(&bytes);
+    assert_eq!((c.storage, c.link_hash.as_deref()), (Storage::Embedded, Some(hash.as_str())));
+
+    crate::cmd::native_links::wait(&mut s);
+    let a = asset_of(&s, id);
+    assert_eq!((a.storage, a.link_hash.as_deref()), (Storage::Linked, Some(hash.as_str())));
+    assert_eq!(a.data.key(), key, "linked under the key its decodes are cached by");
+    assert!(a.proxy.as_ref().is_some_and(|p| p.pixels == (1024, 768)), "the proxy is made in the background");
+    assert_eq!(a.data.resident().as_deref(), Some(&bytes));
+    assert!(!s.doc().unwrap().links.checking());
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -902,6 +955,7 @@ fn every_image_the_place_cursor_loads_is_linked() {
     let mut s = Session::new();
     s.execute("file.new", &json!({})).unwrap();
     s.execute("place.load", &json!({"files": files})).unwrap();
+    crate::cmd::native_links::wait(&mut s);
     s.execute("place.contactSheet", &json!({})).unwrap();
     let d = &s.doc().unwrap().doc;
     let used = d.used_assets();

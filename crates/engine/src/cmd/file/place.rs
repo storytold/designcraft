@@ -6,7 +6,8 @@ use super::bytes::{base64_decode, from_bytes};
 use super::{
     Affine, Asset, AssetId, Content, Graphic, Item, ItemId, PdfCrop, Rect, Result, Selection, Session, Shape, Value, bad, json, ok, shapes, str_param,
 };
-use crate::cmd::links::{FileLink, give_bytes};
+use crate::cmd::links::{FileLink, give_placed};
+use crate::cmd::native_links::Pending;
 
 pub(super) fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
     // The file's size and time before it is read (a linked text file remembers them).
@@ -45,8 +46,10 @@ pub(super) fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
     if let Some(mime) = designcraft_doc::media_mime(&name) {
         let file = link.as_deref().map(|l| FileLink::of(std::path::Path::new(l), before));
         let mut asset = Asset { name, mime: mime.to_string(), ..Default::default() };
-        give_bytes(&mut asset, bytes, file, embed, document.as_deref());
-        return crate::cmd::media::place_media(s, p, asset);
+        let pending = give_placed(&mut asset, bytes, file, embed, document.as_deref());
+        let r = crate::cmd::media::place_media(s, p, asset)?;
+        prepare_placed(s, pending);
+        return Ok(r);
     }
     // Text files (plain, Word, RTF) flow into frames.
     if designcraft_textimport::is_text_file(&name) {
@@ -98,10 +101,11 @@ pub(super) fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
     let mime = designcraft_render::image_mime(&bytes).to_string();
     let file = link.as_deref().map(|l| FileLink::of(std::path::Path::new(l), before));
     let mut asset = Asset { page: pdf_page, name, mime, pixels: Some((pw, ph)), pdf_crop, ..Default::default() };
-    give_bytes(&mut asset, bytes, file, embed, document.as_deref());
     // The graphic's natural size: the box in points (the whole page when the box can't be found,
     // and then the document says so).
-    let (bw, bh) = match crop_pdf(&mut asset) {
+    let cropped = crop_pdf_from(&mut asset, &bytes);
+    let pending = give_placed(&mut asset, bytes, file, embed, document.as_deref());
+    let (bw, bh) = match cropped {
         Some(size) => size,
         None => {
             asset.pdf_crop = PdfCrop::Crop;
@@ -127,9 +131,11 @@ pub(super) fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
     let px = p.get("x").and_then(Value::as_f64);
     let py = p.get("y").and_then(Value::as_f64);
     if target_frame.is_none() && px.is_none() && py.is_none() && load_cursor_param {
-        return load_cursor(s, asset, (bw, bh), append);
+        let r = load_cursor(s, asset, (bw, bh), append)?;
+        prepare_placed(s, pending);
+        return Ok(r);
     }
-    s.edit(|d, sel| {
+    let r = s.edit(|d, sel| {
         let fresh = AssetId(d.alloc());
         let aid = d.add_asset(Asset { id: fresh, ..asset });
         // The width the whole page (or image) gets; the height follows the proportions.
@@ -192,21 +198,46 @@ pub(super) fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
         };
         *sel = Selection::items(vec![id]);
         Ok(json!({"id": id.0, "asset": aid.0}))
-    })
+    })?;
+    prepare_placed(s, pending);
+    Ok(r)
+}
+
+/// Have the hash and proxy of graphics just placed into the active document made in the
+/// background ([`crate::cmd::native_links::prepare`]).
+pub(crate) fn prepare_placed(s: &mut Session, pending: impl IntoIterator<Item = Pending>) {
+    if let Ok(st) = s.doc_mut() {
+        crate::cmd::native_links::prepare(st, pending.into_iter().collect());
+    }
 }
 
 /// Sets `a.pdf_box` to where its `pdf_crop` box sits on its page and returns the box's size in
 /// points. The crop box is the whole page and has none; nor has a page that can't be read, which
-/// keeps its crop choice (a missing link relinked later gets its box then).
+/// keeps its crop choice (a missing link relinked later gets its box then). Only a PDF with
+/// another box chosen is read.
 pub(crate) fn crop_pdf(a: &mut Asset) -> Option<(f64, f64)> {
     a.pdf_box = None;
-    let bytes = a.data.load().ok()?;
-    if a.pdf_crop == PdfCrop::Crop || !designcraft_render::is_pdf(&bytes) {
+    if !crops_pdf(a) {
         return None;
     }
-    let (frac, size) = designcraft_render::pdf_crop_box(&bytes, a.page as usize, a.pdf_crop)?;
+    let bytes = a.data.load().ok()?;
+    crop_pdf_from(a, &bytes)
+}
+
+/// [`crop_pdf`] with `a`'s bytes, `bytes`, in hand.
+pub(crate) fn crop_pdf_from(a: &mut Asset, bytes: &[u8]) -> Option<(f64, f64)> {
+    a.pdf_box = None;
+    if !crops_pdf(a) || !designcraft_render::is_pdf(bytes) {
+        return None;
+    }
+    let (frac, size) = designcraft_render::pdf_crop_box(bytes, a.page as usize, a.pdf_crop)?;
     a.pdf_box = Some(frac);
     Some(size)
+}
+
+/// Whether `a` is a PDF placed with a box other than its crop box, which only its bytes locate.
+fn crops_pdf(a: &Asset) -> bool {
+    a.pdf_crop != PdfCrop::Crop && a.mime == "application/pdf"
 }
 
 /// A file to place: its bytes and name, and its link record when it was read from a path.
@@ -219,10 +250,10 @@ pub(crate) struct Source {
 }
 
 impl Source {
-    /// Give `a` these bytes: linked to the file they were read from, else embedded
-    /// ([`give_bytes`]). `a`'s `mime` and `page` are set.
-    pub(crate) fn give(self, a: &mut Asset, document: Option<&std::path::Path>) {
-        give_bytes(a, self.bytes, self.file, self.embed, document);
+    /// Give `a` these bytes: linked to the file they were read from once the returned work is
+    /// done, else embedded ([`give_placed`]). `a`'s `mime` and `page` are set.
+    pub(crate) fn give(self, a: &mut Asset, document: Option<&std::path::Path>) -> Option<Pending> {
+        give_placed(a, self.bytes, self.file, self.embed, document)
     }
 }
 
@@ -291,8 +322,10 @@ pub(super) fn place_load(s: &mut Session, p: &Value) -> Result<Value> {
             pixels: Some((pw, ph)),
             ..Default::default()
         };
-        source.give(&mut asset, document.as_deref());
-        return load_cursor(s, asset, natural, append);
+        let pending = source.give(&mut asset, document.as_deref());
+        let r = load_cursor(s, asset, natural, append)?;
+        prepare_placed(s, pending);
+        return Ok(r);
     }
     let sources = p.get("files").and_then(Value::as_array).ok_or_else(|| bad("place.load", "files must be an array"))?;
     if sources.is_empty() || sources.len() > MAX_LOADED_IMAGES {
@@ -300,6 +333,7 @@ pub(super) fn place_load(s: &mut Session, p: &Value) -> Result<Value> {
     }
     check_cursor_room(s, sources.len(), append, "place.load")?;
     let mut images = Vec::with_capacity(sources.len());
+    let mut pending = Vec::new();
     for source in sources {
         let mut source = read_source(source)?;
         source.embed |= embed;
@@ -314,7 +348,7 @@ pub(super) fn place_load(s: &mut Session, p: &Value) -> Result<Value> {
             pixels: Some((pw, ph)),
             ..Default::default()
         };
-        source.give(&mut asset, document.as_deref());
+        pending.extend(source.give(&mut asset, document.as_deref()));
         images.push((asset, size));
     }
     let queue = s.edit(|d, _| {
@@ -325,6 +359,7 @@ pub(super) fn place_load(s: &mut Session, p: &Value) -> Result<Value> {
         }
         Ok(queue)
     })?;
+    prepare_placed(s, pending);
     if append && s.loaded.is_some() {
         s.loaded_queue.extend(queue);
     } else {

@@ -245,8 +245,10 @@ fn package_leaves_missing_links_missing() {
     let mut s = Session::new();
     s.execute("file.new", &json!({"title": "TwoLinks"})).unwrap();
     s.execute("file.place", &json!({"path": gone.to_string_lossy(), "x": 10, "y": 10})).unwrap();
+    crate::cmd::native_links::wait(&mut s);
     s.execute("edit.deselectAll", &json!({})).unwrap();
     s.execute("file.place", &json!({"path": kept.to_string_lossy(), "x": 10, "y": 200})).unwrap();
+    crate::cmd::native_links::wait(&mut s);
     let idml = dir.join("TwoLinks.idml");
     s.execute("file.exportIdml", &json!({"path": idml.to_string_lossy(), "embedImages": false})).unwrap();
     std::fs::remove_file(&gone).unwrap();
@@ -313,6 +315,7 @@ fn package_writes_document_links_and_report() {
     let mut s = Session::new();
     s.execute("file.new", &json!({})).unwrap();
     s.execute("file.place", &json!({"path": svg.to_string_lossy(), "x": 100, "y": 100})).unwrap();
+    crate::cmd::native_links::wait(&mut s);
     assert_eq!(s.doc().unwrap().doc.assets.values().next().unwrap().link_fingerprint, fingerprint(&svg));
     s.execute("frame.create", &json!({"rect": [72, 300, 400, 400], "content": "text", "text": "Hello"})).unwrap();
     let out = dir.join("Pkg");

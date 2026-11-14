@@ -85,8 +85,8 @@ pub(super) fn place_graphic(s: &mut Session, p: &Value) -> Result<Value> {
         pixels: Some((pw, ph)),
         ..Default::default()
     };
-    source.give(&mut asset, crate::cmd::file::document_of(s).as_deref());
-    s.edit(|d, sel| {
+    let pending = source.give(&mut asset, crate::cmd::file::document_of(s).as_deref());
+    let placed = s.edit(|d, sel| {
         let fresh = designcraft_doc::AssetId(d.alloc());
         let aid = d.add_asset(designcraft_doc::Asset { id: fresh, ..asset });
         let st = d.story_mut(g.story).ok_or_else(|| bad(ID, "no story"))?;
@@ -106,7 +106,9 @@ pub(super) fn place_graphic(s: &mut Session, p: &Value) -> Result<Value> {
         });
         clamp_selection(d, sel);
         Ok(json!({"asset": aid.0, "row": r, "col": c}))
-    })
+    })?;
+    crate::cmd::file::prepare_placed(s, pending);
+    Ok(placed)
 }
 
 pub(super) fn sort_rows(s: &mut Session, p: &Value) -> Result<Value> {

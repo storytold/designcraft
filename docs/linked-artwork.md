@@ -14,6 +14,8 @@ A graphic placed from a file is linked to it. The document stores the link, a sm
 
 Video and audio link as well, but have no image proxy (the poster frame is used when there is one). An SVG that references other files resolves them relative to the SVG's own path.
 
+Placing reads each file once and returns without decoding or hashing it, so placing many large images doesn't stop the app. A background thread then makes each graphic's hash and proxy, in placement order, and links it. Until then the graphic is drawn from the bytes just read, and is embedded with its link record. A save in that time computes the missing hashes and writes those graphics embedded; they link on the next save after the background work finishes.
+
 Linked bytes are read when a render, export or check needs them. They are held in a shared cache of 512 MiB; a file larger than the cache is read for one use and not kept. A linked file larger than 1 GiB is not loaded.
 
 ## Proxies

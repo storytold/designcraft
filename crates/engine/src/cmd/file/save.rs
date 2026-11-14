@@ -18,6 +18,8 @@ pub(super) fn file_save(s: &mut Session, p: &Value) -> Result<Value> {
         .ok_or_else(|| bad("file.save", "missing `path` (document has never been saved)"))?;
     // Before anything about the document changes: a refused save leaves it as it was.
     crate::file_access::check_write(&path).map_err(EngineError::Other)?;
+    // Graphics just placed whose hash the background job hasn't made yet are saved embedded.
+    crate::cmd::native_links::settle_pending(st);
     // Prepare paths for the destination without changing the live document until persistence succeeds.
     let destination = std::path::Path::new(&path);
     let from = st.path.as_deref().map(std::path::Path::new);
@@ -66,6 +68,7 @@ pub(super) fn file_save_a_copy(s: &mut Session, p: &Value) -> Result<Value> {
     let from = st.path.as_deref().map(std::path::Path::new);
     let mut copy = crate::cmd::native_links::for_destination(&st.doc, from, destination).unwrap_or_else(|| (*st.doc).clone());
     crate::cmd::datamerge::refresh_relative_paths(&mut copy, destination);
+    crate::cmd::native_links::settle_copy(st, &mut copy);
     if embed {
         crate::cmd::native_links::embed_linked(&mut copy, "file.saveACopy")?;
     }
