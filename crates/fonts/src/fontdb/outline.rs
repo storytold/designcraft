@@ -68,13 +68,22 @@ pub(super) fn has_serifs(face: &FontFace) -> Option<bool> {
     Some(foot > stem * 1.6)
 }
 
-/// Glyph `gid`'s outline as the font draws it, in font units, y-down (flipped).
+/// Most path elements one glyph's outline may hold: ten times what the largest real glyphs use,
+/// so only a font that repeats a complex base component past all reason reaches it.
+pub(super) const MAX_OUTLINE_ELEMENTS: usize = 1 << 18;
+
+/// Glyph `gid`'s outline as the font draws it, in font units, y-down (flipped). A glyph past
+/// [`MAX_OUTLINE_ELEMENTS`] has no outline (a truncated one would be a wrong glyph).
 pub(super) fn font_outline(face: &FontFace, gid: u32) -> BezPath {
     let mut pen = FlipPen(BezPath::new());
     if let Some(f) = face.skrifa()
         && let Some(g) = f.outline_glyphs().get(GlyphId::new(gid))
     {
         let _ = g.draw(DrawSettings::unhinted(Size::unscaled(), face.location()), &mut pen);
+    }
+    if !pen.has_room() {
+        log::warn!("glyph {gid} has more than {MAX_OUTLINE_ELEMENTS} path elements: drawn empty");
+        return BezPath::new();
     }
     pen.0
 }
