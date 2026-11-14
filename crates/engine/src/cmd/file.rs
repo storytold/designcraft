@@ -24,7 +24,7 @@ pub(crate) use open::load_document_fonts;
 pub use open::{RecentPreview, recent_preview};
 pub use package::is_zipped_package;
 pub(crate) use package::keep_font_scope;
-pub(crate) use place::{crop_pdf, read_source, validate_placement};
+pub(crate) use place::{crop_pdf, crop_pdf_from, document_of, prepare_placed, read_source, validate_placement};
 pub use registry::specs;
 pub(crate) use snippets::{snippet_bytes, snippet_place};
 

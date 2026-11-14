@@ -84,24 +84,33 @@ fn open_path(s: &mut Session, p: &Value) -> Result<Value> {
         let bytes = crate::io::read_file(path).map_err(EngineError::Other)?;
         // The content decides first: a file's extension may be missing or wrong. The extension
         // then routes files whose content isn't recognised to the reader that explains why.
-        let ext = std::path::Path::new(path).extension().and_then(std::ffi::OsStr::to_str).unwrap_or_default().to_ascii_lowercase();
-        let native = designcraft_format::is_designcraft(&bytes) || bytes.trim_ascii_start().starts_with(b"{");
-        if designcraft_idml::is_idml(&bytes) || (!native && (crate::cmd::interchange::is_indd(path, &bytes) || ext == "idml")) {
+        let format = craft_file_formats::detect(path, &bytes);
+        let native = matches!(
+            craft_file_formats::detect("", &bytes),
+            Some(craft_file_formats::Format::DesignCraft | craft_file_formats::Format::DesignCraftJson)
+        );
+        let legacy = (format == Some(craft_file_formats::Format::Indd) && !native).then(|| load_bytes(&bytes).ok()).flatten();
+        if format == Some(craft_file_formats::Format::Idml) || (!native && format == Some(craft_file_formats::Format::Indd) && legacy.is_none()) {
             return crate::cmd::interchange::open_idml(s, p);
         }
-        if !native && ext != designcraft_format::EXTENSION {
+        if !native && legacy.is_none() {
             return Err(bad("file.open", format!("{path}: not a DesignCraft or IDML file")));
         }
-        let (mut d, mut warnings) = load_bytes(&bytes)?;
+        let (mut d, mut warnings) = match legacy {
+            Some(loaded) => loaded,
+            None => load_bytes(&bytes)?,
+        };
         crate::cmd::interchange::resolve_packaged_links(&mut d, Some(std::path::Path::new(path)));
         crate::cmd::datamerge::resolve_sources_on_open(&mut d, Some(std::path::Path::new(path)));
+        let links = crate::cmd::native_links::resolve(&mut d, Some(std::path::Path::new(path)), true);
         let (fonts, faces, font_warnings) = load_document_fonts(&mut d, path);
         warnings.extend(font_warnings);
         warnings.extend(crate::cmd::style::grep_style_warnings(&d));
         let mut st = DocState::new(d, Some(path.to_string()));
         st.fonts = fonts;
+        let checks = crate::cmd::native_links::start(&mut st, links);
         let i = s.add_document(st);
-        Ok(json!({"index": i, "documentFonts": faces, "warnings": warnings}))
+        Ok(json!({"index": i, "documentFonts": faces, "warnings": warnings, "linkChecks": checks}))
     }
     #[cfg(target_arch = "wasm32")]
     {
@@ -154,37 +163,51 @@ fn document_fonts_folder(dir: &std::path::Path) -> std::path::PathBuf {
 
 pub(super) fn file_open_bytes(s: &mut Session, p: &Value) -> Result<Value> {
     let b = base64_decode(str_param(p, "base64").unwrap_or(""));
-    // IDML packages are recognised by their stored `mimetype` first entry, INDD files by their
-    // signature (or their name).
-    if designcraft_idml::is_idml(&b) || crate::cmd::interchange::is_indd(str_param(p, "name").unwrap_or_default(), &b) {
-        return crate::cmd::interchange::open_idml(s, p);
-    }
-    // A zip of a package folder: its document, with the fonts of the Document Fonts folder beside it.
-    if super::package::is_zipped_package(&b) {
-        return super::package::open_zipped_package(s, &b);
-    }
-    open_native_bytes(s, &b, str_param(p, "name"))
+    open_bytes(s, str_param(p, "name"), &b, Some(p), true)
 }
 
 /// Open the document `bytes` (named `name`) taken out of a package. It isn't looked at as a
 /// package again: a package inside a package would open the next, without end.
 pub(super) fn open_document_bytes(s: &mut Session, name: &str, bytes: &[u8]) -> Result<Value> {
-    if designcraft_idml::is_idml(bytes) || crate::cmd::interchange::is_indd(name, bytes) {
-        return crate::cmd::interchange::open_idml(s, &json!({"name": name, "base64": super::bytes::base64_encode(bytes)}));
-    }
-    open_native_bytes(s, bytes, Some(name))
+    open_bytes(s, Some(name), bytes, None, false)
 }
 
-/// Open a DesignCraft document's `b`ytes, titled after `name`.
-fn open_native_bytes(s: &mut Session, b: &[u8], name: Option<&str>) -> Result<Value> {
-    let (mut d, warnings) = load_bytes(b)?;
+/// Open `b`, named `name`: an IDML or InDesign file, a zipped package (only when `packages`), or
+/// a DesignCraft document. `params` are the `file.openBytes` parameters the bytes came in, handed
+/// on to an IDML open as they are (without them, the bytes are encoded for it).
+fn open_bytes(s: &mut Session, title: Option<&str>, b: &[u8], params: Option<&Value>, packages: bool) -> Result<Value> {
+    let name = title.unwrap_or_default();
+    // IDML packages are recognised by their stored `mimetype` first entry, INDD files by their
+    // signature (or their name).
+    let format = craft_file_formats::detect(name, b);
+    let native =
+        matches!(craft_file_formats::detect("", b), Some(craft_file_formats::Format::DesignCraft | craft_file_formats::Format::DesignCraftJson));
+    let legacy = (format == Some(craft_file_formats::Format::Indd) && !native).then(|| load_bytes(b).ok()).flatten();
+    if format == Some(craft_file_formats::Format::Idml) || (!native && format == Some(craft_file_formats::Format::Indd) && legacy.is_none()) {
+        return match params {
+            Some(p) => crate::cmd::interchange::open_idml(s, p),
+            None => crate::cmd::interchange::open_idml(s, &json!({"name": name, "base64": super::bytes::base64_encode(b)})),
+        };
+    }
+    // A zip of a package folder: its document, with the fonts of the Document Fonts folder beside it.
+    if packages && super::package::is_zipped_package(b) {
+        return super::package::open_zipped_package(s, b);
+    }
+    let (mut d, warnings) = match legacy {
+        Some(loaded) => loaded,
+        None => load_bytes(b)?,
+    };
     crate::cmd::datamerge::resolve_sources_on_open(&mut d, None);
-    if let Some(n) = name {
+    // No file to resolve relative links against, and nothing moved to links.
+    let links = crate::cmd::native_links::resolve(&mut d, None, false);
+    if let Some(n) = title {
         // Titled as an IDML file opened from bytes is: without its extension.
         d.title = without_native_extension(n).to_string();
     }
-    let i = s.add_document(DocState::new(d, None));
-    Ok(json!({"index": i, "warnings": warnings}))
+    let mut st = DocState::new(d, None);
+    let checks = crate::cmd::native_links::start(&mut st, links);
+    let i = s.add_document(st);
+    Ok(json!({"index": i, "warnings": warnings, "linkChecks": checks}))
 }
 
 #[cfg(test)]
@@ -525,7 +548,17 @@ mod open_bytes_tests {
         maker.execute("file.new", &json!({})).unwrap();
         let idml = designcraft_idml::export_idml(&maker.doc().unwrap().doc);
         let base64 = super::super::bytes::base64_encode(&idml);
-        let legacy = super::super::bytes::base64_encode(&serde_json::to_vec(&maker.doc().unwrap().doc).unwrap());
+        let legacy_bytes = serde_json::to_vec(&maker.doc().unwrap().doc).unwrap();
+        let legacy = super::super::bytes::base64_encode(&legacy_bytes);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let legacy_path = std::env::temp_dir().join(format!("dc-legacy-indd-{}.indd", std::process::id()));
+            std::fs::write(&legacy_path, &legacy_bytes).unwrap();
+            let mut by_path = Session::new();
+            by_path.execute("file.open", &json!({"path": legacy_path})).unwrap();
+            assert_eq!(by_path.documents().len(), 1, "legacy JSON must win over an InDesign extension");
+            let _ = std::fs::remove_file(&legacy_path);
+        }
         for name in ["Brochure.indd", "Brochure.INDT"] {
             let mut s = Session::new();
             s.execute("file.openBytes", &json!({"name": name, "base64": legacy})).unwrap();

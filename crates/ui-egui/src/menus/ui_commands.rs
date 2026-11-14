@@ -25,7 +25,13 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
         "{} — in a browser: choose a package folder (a document with its Document Fonts folder, as File › Package writes it) and open its document with those fonts (file.openPackage). A zipped package opens with Open…",
     ),
     ("app.openRecent", "Open Recent File", None, "{index} — file.openRecent, with an alert when the file can't be opened"),
-    ("app.placeDialog", "Place…", Some("Cmd+D"), "{path?} — without a path, choose the file in a dialog"),
+    (
+        "app.placeDialog",
+        "Place…",
+        Some("Cmd+D"),
+        "{path?, paths?: [path] (several, loaded into the place cursor in order)} — without either, choose the files in a dialog",
+    ),
+    ("app.contactSheetDialog", "Place Contact Sheet…", None, "{} — place the images loaded in the place cursor on new pages"),
     ("app.saveDialog", "Save As…", Some("Cmd+Shift+S"), "{path?} — without a path, choose where in a dialog"),
     ("app.save", "Save", Some("Cmd+S"), "{}"),
     ("app.quit", "Quit DesignCraft", Some("Cmd+Q"), "{} — close the window; each document with unsaved changes asks first"),
@@ -44,6 +50,12 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
         "Effects…",
         None,
         "{page?: transparency|dropShadow|innerShadow|outerGlow|innerGlow|bevel|satin|feather|directionalFeather|gradientFeather} — the Effects dialog for the selected objects",
+    ),
+    (
+        "objectStyle.dialog",
+        "Object Style…",
+        None,
+        "{name?: style} — Object Style Options for the style `name`, or (without it) New Object Style from the selected object",
     ),
     (
         "app.packageDialog",
@@ -149,7 +161,7 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     (
         "app.paragraphRulesDialog",
         "Paragraph Rules…",
-        None,
+        Some("Cmd+Alt+J"),
         "{rule?: ruleAbove|ruleBelow} — Rule Above / Rule Below of the selected paragraphs (type.para)",
     ),
     (
@@ -200,6 +212,8 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ("app.characterStylesPanel", "Character Styles", Some("Cmd+Shift+F11"), "{} — the Character Styles panel"),
     ("app.paragraphStylesPanel", "Paragraph Styles", Some("Cmd+F11"), "{} — the Paragraph Styles panel"),
     ("app.insertCurrentPageNumber", "Current Page Number", Some("Cmd+Alt+Shift+N"), "{} — the Current Page Number marker at the insertion point"),
+    ("app.insertEmSpace", "Em Space", Some("Cmd+Shift+M"), "{} — an em space at the insertion point"),
+    ("app.insertEnSpace", "En Space", Some("Cmd+Shift+N"), "{} — an en space at the insertion point"),
     ("app.storyEditor", "Edit in Story Editor", Some("Cmd+Y"), "{story?}"),
     ("view.zoomIn", "Zoom In", Some("Cmd+="), "{at?: [x, y] window pixels, kept in place when over the canvas}"),
     ("view.zoomOut", "Zoom Out", Some("Cmd+-"), "{at?: [x, y] window pixels, kept in place when over the canvas}"),

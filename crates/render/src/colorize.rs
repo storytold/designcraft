@@ -7,39 +7,80 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use designcraft_color::swatch::apply_tint;
-use designcraft_doc::{Document, Fill};
+use designcraft_doc::{AssetData, Document, Fill, SourceKey};
 use designcraft_images::Tone;
 use vello_cpu::Pixmap;
 use vello_cpu::color::PremulRgba8;
 
-/// The tone of each image file a swatch was applied to, by the address of its bytes (kept alive
-/// so the address stays theirs). A GIF is decoded to know, so this is not done every frame.
-fn tone_of(bytes: &Arc<Vec<u8>>) -> Option<Tone> {
-    type Tones = HashMap<usize, (Arc<Vec<u8>>, Option<Tone>)>;
-    const MAX: usize = 256;
-    static TONES: Mutex<Option<Tones>> = Mutex::new(None);
-    let key = Arc::as_ptr(bytes) as usize;
-    if let Some((_, t)) = TONES.lock().unwrap_or_else(PoisonError::into_inner).as_ref().and_then(|m| m.get(&key)) {
-        return *t;
-    }
+use crate::prepare::Prepared;
+
+type Tones = HashMap<SourceKey, Option<Tone>>;
+/// Tones remembered; all are forgotten beyond this.
+const MAX_TONES: usize = 256;
+/// The tone of each image file a swatch was applied to. A GIF is decoded to know, so this is
+/// not done every frame.
+static TONES: Mutex<Option<Tones>> = Mutex::new(None);
+
+fn known_tone(key: SourceKey) -> Option<Option<Tone>> {
+    TONES.lock().unwrap_or_else(PoisonError::into_inner).as_ref().and_then(|m| m.get(&key).copied())
+}
+
+/// Find the tone of `bytes` (named by `key`, outside the lock) and remember it.
+fn find_tone(key: SourceKey, bytes: &[u8]) -> Option<Tone> {
     let tone = designcraft_images::tone(bytes);
     let mut guard = TONES.lock().unwrap_or_else(PoisonError::into_inner);
     let map = guard.get_or_insert_with(HashMap::new);
-    if map.len() >= MAX {
+    if map.len() >= MAX_TONES {
         map.clear();
     }
-    map.insert(key, (bytes.clone(), tone));
+    map.insert(key, tone);
     tone
 }
 
-/// `pm` (decoded from `bytes`) coloured by `fill`, cached per image and on-screen colour. `None`
-/// when the image keeps its own colours: no swatch, one that no longer exists, or a colour image.
-pub(crate) fn colorized(doc: &Document, fill: &Fill, bytes: &Arc<Vec<u8>>, pm: &Arc<Pixmap>) -> Option<Arc<Pixmap>> {
-    if fill.is_none() {
-        return None;
+/// The tone of `data`. With `wait` it is found here (reading a linked file); without, in the
+/// background. A linked file that can't be had isn't asked for again until the links change
+/// ([`crate::images::unavailable`]).
+fn tone_of(data: &AssetData, wait: bool) -> Prepared<Option<Tone>> {
+    let key = data.key();
+    if let Some(t) = known_tone(key) {
+        return Prepared::Ready(t);
     }
-    let color = doc.resolve_color(&fill.swatch, fill.tint)?;
-    let tone = tone_of(bytes)?;
+    if crate::images::unavailable(data).is_some() {
+        return Prepared::Failed;
+    }
+    if wait {
+        return crate::images::load_bytes(data, false).map_or(Prepared::Failed, |bytes| Prepared::Ready(find_tone(key, &bytes)));
+    }
+    let source = data.clone();
+    let queued = crate::prepare::later(crate::prepare::job_key(("tone", key)), move || {
+        if let Some(bytes) = crate::images::load_bytes(&source, true) {
+            find_tone(key, &bytes);
+        }
+    });
+    match queued {
+        crate::prepare::Queued::Yes => Prepared::Pending,
+        crate::prepare::Queued::Ran => known_tone(key).map_or(Prepared::Failed, Prepared::Ready),
+    }
+}
+
+/// `pm` (decoded from `data`) coloured by `fill`, cached per image and on-screen colour; `None`
+/// when the image keeps its own colours: no swatch, one that no longer exists, a colour image,
+/// or one whose file can't be had. Without `wait`, an image whose tone isn't known yet is
+/// [`Prepared::Pending`] while it is found in the background.
+pub(crate) fn colorized(doc: &Document, fill: &Fill, data: &AssetData, pm: &Arc<Pixmap>, wait: bool) -> Prepared<Option<Arc<Pixmap>>> {
+    if fill.is_none() {
+        return Prepared::Ready(None);
+    }
+    let Some(color) = doc.resolve_color(&fill.swatch, fill.tint) else { return Prepared::Ready(None) };
+    match tone_of(data, wait) {
+        Prepared::Ready(Some(tone)) => Prepared::Ready(Some(coloured(color, tone, pm))),
+        Prepared::Ready(None) | Prepared::Failed => Prepared::Ready(None),
+        Prepared::Pending => Prepared::Pending,
+    }
+}
+
+/// `pm`, a `tone` image, coloured `color`.
+fn coloured(color: designcraft_color::Color, tone: Tone, pm: &Arc<Pixmap>) -> Arc<Pixmap> {
     // The swatch at each ink coverage as the screen shows it (or the plate being previewed).
     let lut: Vec<[u8; 4]> = (0..=255u8)
         .map(|i| {
@@ -63,7 +104,7 @@ pub(crate) fn colorized(doc: &Document, fill: &Fill, bytes: &Arc<Vec<u8>>, pm: &
         if let Some((previous, map, _)) = guard.as_ref() {
             if *previous == settings {
                 if let Some((_, derived)) = map.get(&key) {
-                    return Some(derived.clone());
+                    return derived.clone();
                 }
             } else {
                 *guard = None;
@@ -105,5 +146,42 @@ pub(crate) fn colorized(doc: &Document, fill: &Fill, bytes: &Arc<Vec<u8>>, pm: &
             *used += bytes;
         }
     }
-    Some(out)
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::images::tests::linked;
+
+    /// A linked image whose file is missing is read once for its tone, not on every frame; a
+    /// frame that doesn't wait finds the tone in the background.
+    #[test]
+    fn a_tone_is_found_off_the_drawing_thread_and_a_missing_file_is_read_once() {
+        let generation = designcraft_doc::asset_data::link_generation();
+        let missing = linked::file("mem:/missing-tone.png", None, 100);
+        for _ in 0..5 {
+            assert!(matches!(tone_of(&missing, true), Prepared::Failed));
+            assert!(matches!(tone_of(&missing, false), Prepared::Failed));
+        }
+        if designcraft_doc::asset_data::link_generation() == generation {
+            assert_eq!(linked::reads("mem:/missing-tone.png"), 1);
+        }
+        let mut grey = Vec::new();
+        image::GrayImage::from_pixel(4, 4, image::Luma([128])).write_to(&mut std::io::Cursor::new(&mut grey), image::ImageFormat::Png).unwrap();
+        let data = linked::file("mem:/grey-tone.png", Some(grey.clone()), grey.len() as u64);
+        let mut tone = None;
+        for _ in 0..500 {
+            match tone_of(&data, false) {
+                Prepared::Ready(t) => {
+                    tone = t;
+                    break;
+                }
+                Prepared::Pending => std::thread::sleep(std::time::Duration::from_millis(10)),
+                Prepared::Failed => break,
+            }
+        }
+        assert_eq!(tone, designcraft_images::tone(&grey));
+        assert!(tone.is_some());
+    }
 }
