@@ -614,8 +614,8 @@ fn inline_image(
     let asset = add_image_asset(doc, image, field, sources.options);
     let mut it = Item::new(ItemId(doc.alloc()), layer, Shape::Rectangle, shapes::rectangle(rect));
     it.object_style = doc.styles.default_graphic_frame.clone();
-    if let Some(e) = doc.styles.object_effects(&it.object_style) {
-        it.effects = e.clone();
+    if let Some(os) = doc.styles.object_style(&it.object_style) {
+        os.apply_to(&mut it);
     }
     it.content = Content::Graphic(Graphic {
         layer_options: None,

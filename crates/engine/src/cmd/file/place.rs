@@ -178,8 +178,8 @@ pub(super) fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
             validate_placement((bw, bh), r, xf, "file.place")?;
             let mut it = Item::new(id, lid, Shape::Rectangle, shapes::rectangle(r));
             it.object_style = d.styles.default_graphic_frame.clone();
-            if let Some(e) = d.styles.object_effects(&it.object_style) {
-                it.effects = e.clone();
+            if let Some(os) = d.styles.object_style(&it.object_style) {
+                os.apply_to(&mut it);
             }
             it.content = Content::Graphic(Graphic {
                 layer_options: None,
@@ -473,8 +473,8 @@ pub(super) fn place_drop(s: &mut Session, p: &Value) -> Result<Value> {
             let id = ItemId(d.alloc());
             let mut it = Item::new(id, lid, Shape::Rectangle, shapes::rectangle(frame_rect));
             it.object_style = d.styles.default_graphic_frame.clone();
-            if let Some(e) = d.styles.object_effects(&it.object_style) {
-                it.effects = e.clone();
+            if let Some(os) = d.styles.object_style(&it.object_style) {
+                os.apply_to(&mut it);
             }
             it.content = graphic;
             d.insert_item(sr, it, None)?;
@@ -1385,6 +1385,33 @@ mod nested_frame_tests {
         assert_eq!(d.assets[&g.asset].name, "new.png");
         assert_eq!(it.inner_bounds(), Rect::new(0.0, 0.0, 60.0, 90.0), "the frame keeps its size");
         assert_eq!(d.spreads[0].items.len(), 1, "no new object");
+    }
+
+    /// An image placed into a new frame, with `file.place` or the loaded place cursor, takes the
+    /// default graphic frame style's fill, stroke, corners and effects.
+    #[test]
+    fn a_placed_image_takes_the_whole_default_graphic_frame_style() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute(
+            "style.object.edit",
+            &json!({"name": designcraft_doc::BASIC_GRAPHICS_FRAME, "fill": "[Paper]", "stroke": {"swatch": "[Black]", "weight": 2}, "corners": {"shape": "rounded", "size": 5}, "feather": 3}),
+        )
+        .unwrap();
+        let placed = s.execute("file.place", &json!({"base64": png(200), "name": "a.png", "x": 36, "y": 36})).unwrap();
+        s.execute("place.load", &json!({"base64": png(20), "name": "b.png"})).unwrap();
+        let dropped = s.execute("place.drop", &json!({"x": 300, "y": 36})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        for r in [placed, dropped] {
+            let it = d.item(ItemId(r["id"].as_u64().unwrap())).unwrap();
+            assert!(matches!(it.content, Content::Graphic(_)));
+            assert_eq!(
+                (it.fill.swatch.as_str(), it.stroke.swatch.as_str(), it.stroke.weight, it.effects.feather),
+                ("[Paper]", "[Black]", 2.0, 3.0),
+                "{r}"
+            );
+            assert!(!it.corners.is_none(), "the style's corners: {r}");
+        }
     }
 }
 

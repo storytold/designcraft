@@ -295,11 +295,11 @@ impl Document {
         self.stories.insert(sid, Arc::new(story));
         let mut item = Item::new(id, layer, Shape::Rectangle, shapes::rectangle(rect));
         item.object_style = self.styles.default_text_frame.clone();
-        // Applied before the content exists, so the frame keeps default text frame options.
+        item.content = Content::Text(TextFrame { story: sid, options: TextFrameOptions::default() });
+        // Applied once the frame holds its text, so the style's Text Frame General Options apply too.
         if let Some(os) = self.styles.object_style(&self.styles.default_text_frame) {
             os.apply_to(&mut item);
         }
-        item.content = Content::Text(TextFrame { story: sid, options: TextFrameOptions::default() });
         self.insert_item(r, item, None)?;
         Ok((id, sid))
     }
@@ -1215,5 +1215,21 @@ mod placed_item_tests {
         assert!(!d.placed_items().iter().any(|i| i.id == nested));
         assert_eq!(d.update_placed_items(|i| i.id == nested, |_| calls += 1), 0);
         assert_eq!(calls, 0);
+    }
+
+    /// A text frame made by any command takes the default text frame style's Text Frame General
+    /// Options, as well as its fill and stroke.
+    #[test]
+    fn a_new_text_frame_takes_the_default_styles_text_frame_options() {
+        let mut d = Document::new(&Default::default());
+        let layer = d.default_layer();
+        let name = d.styles.default_text_frame.clone();
+        let os = d.styles_mut().object.iter_mut().find(|o| o.name == name).unwrap();
+        os.text_frame = Some(crate::TextFrameOptions { columns: 3, inset: [5.0; 4], ..Default::default() });
+        os.fill = Some(crate::Fill { swatch: "[Paper]".into(), ..Default::default() });
+        let (id, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 80.0, 80.0), layer, "Body", Default::default()).unwrap();
+        let it = d.item(id).unwrap();
+        let o = &it.text_frame().unwrap().options;
+        assert_eq!((o.columns, o.inset, it.fill.swatch.as_str()), (3, [5.0; 4], "[Paper]"));
     }
 }
