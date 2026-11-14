@@ -327,50 +327,54 @@ fn parent_thumbnails_follow_panel_options() {
     assert_eq!(parent_thumb_heights(false), Vec::<u32>::new());
 }
 
-/// Page thumbnails are rendered only for rows in view. After an edit the previous thumbnails stay
-/// until the document has been unchanged for `THUMB_QUIET_SECS`, and then one is drawn again per
-/// frame. Thumbnails of deleted pages are dropped.
+/// Visible pages alone request the serial background worker. Editing and deleting pages
+/// invalidate only the affected cached pages, after the real canvas has had priority.
 #[test]
-fn an_edit_redraws_only_thumbnails_in_view_one_per_frame() {
+fn an_edit_refreshes_only_visible_thumbnails_through_the_background_worker() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.run("file.new", json!({"pages": 60, "facingPages": false})).unwrap();
+    app.ui.dock_tab = "pages".into();
     let ctx = egui::Context::default();
     let frame = |app: &mut DesignApp, time: f64| {
-        let before = THUMB_RENDERS.with(std::cell::Cell::get);
         let raw = egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(280.0, 520.0))),
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(1400.0, 900.0))),
             time: Some(time),
             ..Default::default()
         };
-        ctx.run_ui(raw, |ui| show(app, ui)).textures_delta.clear();
-        THUMB_RENDERS.with(std::cell::Cell::get) - before
+        ctx.run_ui(raw, |ui| {
+            app.logic(ui.ctx());
+            app.ui(ui);
+        })
+        .textures_delta
+        .clear();
     };
-    let shown: usize = (0..3).map(|_| frame(&mut app, 0.0)).sum();
-    assert!(shown > 0 && shown < 60, "only the rows in view are rendered: {shown}");
-    assert_eq!(frame(&mut app, 0.0), 0, "an unchanged document renders nothing");
-
-    app.run("frame.create", json!({"rect": [36, 36, 200, 200]})).unwrap();
-    assert_eq!(frame(&mut app, 1.0), 0, "the edit's frame keeps the previous thumbnails");
-    assert_eq!(frame(&mut app, 1.0 + THUMB_QUIET_SECS / 2.0), 0, "still editing");
-    let quiet = 1.0 + THUMB_QUIET_SECS + 0.01;
-    let mut redrawn = 0;
-    for _ in 0..shown {
-        let n = frame(&mut app, quiet);
-        assert_eq!(n, THUMB_REFRESHES_PER_FRAME, "one thumbnail per frame");
-        redrawn += n;
+    let settle = |app: &mut DesignApp, time: f64| {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            frame(app, time);
+            if app.canvas.shown.is_some() && app.canvas.pending.is_none() && app.thumbnails.idle() {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "thumbnail worker did not settle");
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    };
+    // egui settles the scroll area's geometry over its first frames.
+    for _ in 0..3 {
+        settle(&mut app, 0.0);
     }
-    assert_eq!(redrawn, shown);
-    assert_eq!(frame(&mut app, quiet), 0, "every thumbnail in view is current");
-
-    // Deleted pages lose their thumbnails.
-    let uid = app.session.active().unwrap().uid;
-    let cached = |abs: usize| {
-        THUMBS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().unwrap().keys().any(|k| k.0 == uid && k.1 == ThumbOf::Page(abs))
-    };
-    assert!(cached(2));
+    let shown = app.thumbnails.cached_pages();
+    assert!(!shown.is_empty() && shown.len() < 60, "only visible rows are rendered: {shown:?}");
+    let before = app.thumbnails.rendered;
+    frame(&mut app, 0.0);
+    assert_eq!(app.thumbnails.rendered, before, "unchanged pages reuse their thumbnails");
+    app.run("frame.create", json!({"rect": [36, 36, 200, 200]})).unwrap();
+    settle(&mut app, 1.0);
+    assert!(app.thumbnails.rendered > before, "the edited visible page is refreshed");
+    assert!(app.thumbnails.cached_pages().is_subset(&shown));
     app.run("layout.pages.delete", json!({"pages": (2..60).collect::<Vec<_>>()})).unwrap();
-    frame(&mut app, quiet + 1.0);
-    assert!((2..60).all(|abs| !cached(abs)), "no thumbnail of a deleted page is kept");
+    settle(&mut app, 2.0);
+    assert!(app.thumbnails.cached_pages().iter().all(|page| *page < 2), "deleted pages lose their thumbnails");
 }
 
 /// Switching to a document whose thumbnails are all current stores that document in the clock,

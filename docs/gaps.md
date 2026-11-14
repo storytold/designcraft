@@ -231,6 +231,7 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
 - **Estimate:** 30–60 h (PostScript interpreter is a large separate project: +80–150 h).
 
 ### 20. Performance on large documents (P)
+- **Have:** native retained drag layers, background document-page thumbnails and coarse scrolling previews complement upstream linked images; complex interactions use a draft followed by a sharp render. See [display-performance.md](display-performance.md).
 - **Missing:** the 8 ms keystroke budget in long stories: an edit that moves lines into other
   frames composes the story to its end, the lines an edit keeps are copied, and stories with
   footnotes, endnotes, tables, anchored objects, named lists, tracked deletions, balanced

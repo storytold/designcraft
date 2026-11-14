@@ -29,6 +29,7 @@ impl Renderer {
             cmyk_convert_bands: 0,
             threads: default_threads(),
             stats: FrameStats::default(),
+            slice_seen: false,
         }
     }
 
@@ -60,7 +61,9 @@ impl Renderer {
         self.kept.begin(doc);
         // A kept view had every image drawn.
         self.images_pending = false;
-        if let Some(hit) = self.cmyk_view.as_ref().filter(|entry| entry.matches(doc, spreads, width, height, view, opts, self.threads)) {
+        if let Some(hit) =
+            self.cmyk_view.as_ref().filter(|entry| !opts.cancelled() && entry.matches(doc, spreads, width, height, view, opts, self.threads))
+        {
             let image = hit.image();
             self.stats = hit.stats();
             self.stats.micros = now().saturating_sub(start);
@@ -75,14 +78,14 @@ impl Renderer {
         // with images still decoding: the next render must show them.
         let deferred = images::take_deferred();
         self.images_pending = deferred;
-        if self.cmyk_ran && !deferred && image.pixels.len() <= blendspace::CachedView::MAX_BYTES {
+        if self.cmyk_ran && !deferred && !image.pixels.is_empty() && !opts.cancelled() && image.pixels.len() <= blendspace::CachedView::MAX_BYTES {
             self.cmyk_view = Some(blendspace::CachedView::new(doc, spreads, view, opts, &image, self.stats, self.threads));
         }
         self.stats.micros = now().saturating_sub(start);
         image
     }
 
-    fn render_uncached(
+    pub(super) fn render_uncached(
         &mut self,
         doc: &Document,
         cache: &Cache,
@@ -106,6 +109,7 @@ impl Renderer {
         RICH_BLACK.with(|r| r.set(opts.rich_black));
         PLATE.with(|p| p.set(opts.plate));
         self.stats = FrameStats::default();
+        self.slice_seen = false;
         self.stories.clear();
         self.glyphs.tick();
         if let Some(bg) = opts.background {
@@ -135,13 +139,26 @@ impl Renderer {
             images::warm(wanted);
         }
         for (f, sr) in &frames {
+            if opts.cancelled() {
+                break;
+            }
             self.draw_spread(&mut ctx, f, *sr);
+        }
+        if opts.cancelled() {
+            self.cmyk_ran = false;
+            self.ctx = Some(ctx);
+            return Rendered { width: 0, height: 0, pixels: Vec::new() };
         }
         ctx.flush();
         // Render straight into the returned buffer (no extra copy of the frame).
         let mut pixels = vec![0u8; w as usize * h as usize * 4];
         if let Some(pm) = vello_cpu::PixmapMut::new(w, h, &mut pixels) {
             ctx.render(pm, &mut self.resources);
+        }
+        if opts.cancelled() {
+            self.cmyk_ran = false;
+            self.ctx = Some(ctx);
+            return Rendered { width: 0, height: 0, pixels: Vec::new() };
         }
         if opts.blend_space_view && doc.settings.blend_space == designcraft_doc::BlendSpace::Cmyk && opts.plate.is_none() {
             let mut img = Rendered { width: w as u32, height: h as u32, pixels };

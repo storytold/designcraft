@@ -1,6 +1,6 @@
 use super::color::{HIDDEN_LAYERS, blend_mode, color_of, overprints, rect_overlaps, screen_color, set_fill_paint, spread_blends};
 use super::stroke::image_want;
-use super::types::{DisplayQuality, Frame, RenderOptions};
+use super::types::{DisplayQuality, Frame, RenderOptions, SlicePart};
 use super::{
     Affine, Arc, BezPath, BlendMode, Compose, ComposedStory, Content, DcBlend, Document, Item, Mix, RenderContext, Renderer, Shape, ShownOn,
     SpreadRef, StoryId, Vec2, blendspace, corners, fx, grid, images, kurbo, peniko,
@@ -132,7 +132,7 @@ impl Renderer {
         let doc = f.doc;
         let Some(sp) = doc.spread(sr) else { return };
         // Paper.
-        if f.opts.paper {
+        if f.opts.paper && self.slice_includes_surrounding(f.opts) {
             let paper = doc.resolve_color(designcraft_color::swatch::PAPER, 1.0).unwrap_or(designcraft_color::Color::WHITE);
             if f.opts.page_shadow {
                 ctx.set_transform(f.view);
@@ -155,12 +155,12 @@ impl Renderer {
         }
         let grid_area = f.opts.document_grid.iter().find(|(r, _)| *r == sr).map(|(_, a)| *a);
         let grid = &doc.settings.grid;
-        if let Some(area) = grid_area.filter(|_| grid.in_back) {
+        if let Some(area) = grid_area.filter(|_| grid.in_back && self.slice_includes_surrounding(f.opts)) {
             grid::draw(ctx, f, sp, grid, area);
         }
         if blendspace::uses_cmyk(doc, sr, f.opts) {
             self.draw_cmyk_spread(ctx, f, sr);
-            if let Some(area) = grid_area.filter(|_| !grid.in_back) {
+            if let Some(area) = grid_area.filter(|_| !grid.in_back && self.slice_includes_surrounding(f.opts)) {
                 grid::draw(ctx, f, sp, grid, area);
             }
             return;
@@ -172,12 +172,38 @@ impl Renderer {
         if isolate {
             ctx.push_layer(None, None, None, None, None);
         }
-        each_top_item(doc, sr, f.opts, |it, parent, page| self.draw_item(ctx, f, it, parent, page));
+        each_top_item(doc, sr, f.opts, |it, parent, page| self.draw_root(ctx, f, it, parent, page));
         if isolate {
             ctx.pop_layer();
         }
-        if let Some(area) = grid_area.filter(|_| !grid.in_back) {
+        if let Some(area) = grid_area.filter(|_| !grid.in_back && self.slice_includes_surrounding(f.opts)) {
             grid::draw(ctx, f, sp, grid, area);
+        }
+    }
+
+    /// Paper and grids stay in the surrounding slice at their position in paint order.
+    /// They never move with the selected item.
+    fn slice_includes_surrounding(&self, opts: &RenderOptions) -> bool {
+        opts.slice.is_none_or(|slice| match slice.part {
+            SlicePart::Before => !self.slice_seen,
+            SlicePart::Item => false,
+            SlicePart::After => self.slice_seen,
+        })
+    }
+
+    fn draw_root(&mut self, ctx: &mut RenderContext, f: &Frame, it: &Item, parent: Affine, page: ShownOn) {
+        let draw = f.opts.slice.is_none_or(|s| {
+            let hit = s.item == it.id;
+            let was_seen = self.slice_seen;
+            self.slice_seen |= hit;
+            match s.part {
+                SlicePart::Before => !was_seen && !hit,
+                SlicePart::Item => hit,
+                SlicePart::After => was_seen && !hit,
+            }
+        });
+        if draw && !f.opts.cancelled() {
+            self.draw_item(ctx, f, it, parent, page);
         }
     }
 
@@ -233,7 +259,7 @@ impl Renderer {
     }
 
     fn draw_item_inner(&mut self, ctx: &mut RenderContext, f: &Frame, it: &Item, parent: Affine, page: ShownOn) {
-        if it.hidden || f.opts.hidden.contains(&it.id) || f.opts.printing_only && it.nonprinting {
+        if f.opts.cancelled() || it.hidden || f.opts.hidden.contains(&it.id) || f.opts.printing_only && it.nonprinting {
             return;
         }
         let xf = parent * it.xf;

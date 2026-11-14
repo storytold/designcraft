@@ -54,8 +54,14 @@ fn invalid_panel_requests_are_atomic_and_do_not_enter_a_custom_workspace() {
 }
 
 fn harness(app: DesignApp, size: egui::Vec2) -> Harness<'static, DesignApp> {
+    harness_with_font_policy(app, size, false)
+}
+
+fn harness_with_font_policy(app: DesignApp, size: egui::Vec2, optional_fonts: bool) -> Harness<'static, DesignApp> {
     let mut ready = false;
-    let mut harness = Harness::builder().with_size(size).with_step_dt(1.0 / 60.0).build_ui_state(
+    let builder = Harness::builder().with_size(size).with_step_dt(1.0 / 60.0);
+    let builder = if optional_fonts { builder.allow_missing_glyphs() } else { builder };
+    let mut harness = builder.build_ui_state(
         move |ui, app: &mut DesignApp| {
             if !ready {
                 crate::theme::install_fonts(ui.ctx(), &app.ui.language);
@@ -892,7 +898,8 @@ fn the_dock_is_at_the_right_in_english_and_the_left_in_arabic() {
     assert!(tab(&h).left() > 640.0, "{:?}", tab(&h));
     let mut arabic = app();
     arabic.ui.language = "ar".into();
-    let h = harness(arabic, vec2(1280.0, 800.0));
+    // This checks the dock side, independently of the optional Arabic font build input.
+    let h = harness_with_font_policy(arabic, vec2(1280.0, 800.0), true);
     assert!(tab(&h).right() < 640.0, "{:?}", tab(&h));
 }
 

@@ -55,7 +55,10 @@ pub use pdf_raster::{
     pdf_page_png_options_checked, pdf_page_size, pdf_page_sizes, render_pdf_page, shown_box,
 };
 pub(crate) use types::Frame;
-pub use types::{DisplayQuality, FrameStats, MAX_PAGE_PIXELS, MAX_SIDE, Placed, RenderOptions, Rendered, default_threads, effect_outset};
+pub use types::{
+    Cancellation, DisplayQuality, DrawSlice, FrameStats, MAX_PAGE_PIXELS, MAX_SIDE, Placed, RenderOptions, Rendered, SlicePart, default_threads,
+    effect_outset,
+};
 pub mod images;
 mod text;
 
@@ -134,6 +137,8 @@ impl Default for RenderOptions {
             paper: true,
             printing_only: false,
             hidden: vec![],
+            slice: None,
+            cancellation: None,
             greek_below_px: 0.0,
             page_shadow: false,
             highlight_missing_fonts: false,
@@ -184,6 +189,7 @@ pub struct Renderer {
     cmyk_convert_bands: usize,
     pub threads: u16,
     pub stats: FrameStats,
+    slice_seen: bool,
 }
 
 impl Default for Renderer {

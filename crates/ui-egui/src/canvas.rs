@@ -45,10 +45,10 @@ use input::{press_count, release_clicks};
 #[cfg(test)]
 use page_decor::{MAX_BASELINES, baseline_grid_lines};
 use page_decor::{dashed, draw_flattener_preview, draw_guides, shown_area};
-use render::render_texture;
 pub use render::{DisplayKey, color_at};
 #[cfg(test)]
-use render::{c32, invalidate_on_display_change, screen_options};
+use render::{c32, invalidate_on_display_change, patch_texture};
+use render::{paint_page_previews, render_texture, request_page_previews, screen_options};
 pub(crate) use rulers::fmt_tick;
 #[cfg(test)]
 use rulers::ruler_pieces;
@@ -266,23 +266,73 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     // The spreads whose pages, shadow or edge reach into the view: the others paint none of them.
     let clip = painter.clip_rect();
     let in_sight: Vec<&SpreadSlot> = layout.slots.iter().filter(|slot| in_view(&xf, clip, slot.bounds, 2.0)).collect();
-    // Page shadow: a hard 1.5 pt black offset on the right and bottom (InDesign 2026).
-    for slot in &in_sight {
-        let r = xf.rect(slot.bounds);
-        painter.rect_filled(r.translate(vec2(1.5, 1.5)), 0.0, Color32::BLACK);
+    // Paper and tiny previews cover the page shadow beyond the last sharp viewport texture.
+    // Use real page bounds: facing-page gaps and missing first/last pages stay pasteboard.
+    let interacting = st.interaction.is_some();
+    let settings = crate::canvas_preview::Settings {
+        options: screen_options(app, &layout, preview, 1.0),
+        parents: st.editing_parents,
+        colors: app.ui.color_settings.clone(),
+        proof: app.ui.proof_colors.then(|| app.ui.proof_setup.clone()),
+        separations: app.ui.separations.is_some(),
     }
-    // Paper under the rendered content: a page scrolled or jumped to shows its paper colour,
-    // not the shadow's black, until its render arrives.
-    let [r, g, b, _] = doc.resolve_color(designcraft_color::swatch::PAPER, 1.0).unwrap_or(designcraft_color::Color::WHITE).to_rgba8(1.0);
-    let paper = Color32::from_rgb(r, g, b);
-    for slot in &in_sight {
-        for page in doc.spread(slot.spread).map(|sp| sp.pages.as_slice()).unwrap_or_default() {
-            painter.rect_filled(xf.rect(slot.xf.transform_rect_bbox(page.bounds())), 0.0, paper);
+    .coarse();
+    app.canvas.previews.begin(st.uid, st.revision, doc.clone(), settings, ui.ctx());
+    paint_page_previews(&mut app.canvas.previews, &painter, &xf, &doc, &layout, screen);
+    if !interacting {
+        request_page_previews(&mut app.canvas.previews, app.session.cache.clone(), ui.ctx(), &layout, &xf, screen);
+    }
+    // A preview transaction retains the source snapshot; cursor/snapping overlays keep reading
+    // the live geometry, while image pixels can move without repainting the whole page.
+    if app.canvas.drag_active && !interacting {
+        app.canvas.defer_full = true;
+    }
+    app.canvas.drag_active = interacting;
+    let viewport = DRect::new(xf.origin.x, xf.origin.y, xf.origin.x + rect.width() as f64 / xf.zoom, xf.origin.y + rect.height() as f64 / xf.zoom);
+    let opts = screen_options(app, &layout, preview, ui.ctx().pixels_per_point() as f64);
+    let warm =
+        app.canvas.pending.is_none() && app.canvas.shown_doc.as_ref().is_some_and(|d| std::sync::Arc::ptr_eq(d, &st.doc)) && !app.canvas.defer_full;
+    let retained = app.canvas.drag.update(
+        st,
+        ui.ctx(),
+        crate::drag_preview::Update {
+            placed: layout.slots.iter().map(|s| designcraft_render::Placed { spread: s.spread, xf: s.xf }).collect(),
+            viewport,
+            scale: xf.zoom * ui.ctx().pixels_per_point() as f64,
+            opts,
+            cache: app.session.cache.clone(),
+            warm,
+            hold: app.canvas.defer_full,
+            enabled: !app.ui.proof_colors && app.ui.separations.is_none() && !app.ui.document_grid,
+        },
+    );
+    if retained {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(worker) = &app.canvas.worker {
+            worker.cancel();
+        }
+        app.canvas.pending = None;
+        app.canvas.pending_doc = None;
+    }
+    // An immediate click-and-drag may beat background preparation. Keep the image moving
+    // using the draft path until the retained layers are ready, rather than freezing it.
+    if !retained || !app.canvas.drag.ready() {
+        render_texture(app, ui.ctx(), rect, &xf, &layout, preview);
+    }
+    let draw_drag = app.canvas.drag.ready() && (retained || app.canvas.defer_full);
+    if draw_drag {
+        if preview {
+            for slot in &layout.slots {
+                let clip = shown_area(app, &doc, &xf, slot).intersect(screen);
+                app.canvas.drag.paint(&painter.with_clip_rect(clip), &xf);
+            }
+        } else {
+            app.canvas.drag.paint(&painter, &xf);
         }
     }
-    // Rendered content.
-    render_texture(app, ui.ctx(), rect, &xf, &layout, preview);
-    paint_render(app, &painter, &xf, &doc, &layout, screen, preview);
+    if !draw_drag {
+        paint_render(app, &painter, &xf, &doc, &layout, screen, preview);
+    }
     crate::separations::paint(app, ui.ctx(), &painter, &xf, &layout, screen);
     let hair = 1.0 / ui.ctx().pixels_per_point();
     for slot in &in_sight {
@@ -499,3 +549,7 @@ mod guide_selection_tests;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "scroll_preview_tests.rs"]
+mod scroll_preview_tests;

@@ -564,6 +564,11 @@ impl CanvasCache {
             display_key: None,
             patcher: designcraft_render::Renderer::new(),
             patches: 0,
+            drag: Default::default(),
+            previews: Default::default(),
+            drag_active: false,
+            defer_full: false,
+            low_quality: false,
             separations: separations::Preview::default(),
             images: (0, f64::NEG_INFINITY),
         }
@@ -597,6 +602,11 @@ pub struct CanvasCache {
     pub patcher: designcraft_render::Renderer,
     /// Partial repaints / full renders since start (perf readout).
     pub patches: u64,
+    pub(crate) drag: crate::drag_preview::Preview,
+    pub(crate) previews: crate::canvas_preview::Previews,
+    pub(crate) drag_active: bool,
+    pub(crate) defer_full: bool,
+    pub(crate) low_quality: bool,
     /// View › Separations Preview: the visible spreads' plates.
     pub separations: separations::Preview,
     /// The [`designcraft_render::images::generation`] the canvas renders with, and when it took
