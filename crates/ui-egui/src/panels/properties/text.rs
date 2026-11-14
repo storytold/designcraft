@@ -533,13 +533,32 @@ pub(super) fn quick_actions_text(app: &mut DesignApp, ui: &mut Ui) {
     }
 }
 
-/// Text Frame section: columns, gutter, [Options].
+/// The text frame the Text Frame section shows, as Text Frame Options shows it: the first selected
+/// frame, the frame that shows the caret, or the first frame holding selected text. Its id, its
+/// options, and whether its outline is not its own rectangle (an oval, a polygon or corner
+/// options), where the text keeps one inset from the outline. Type on a path is not shaped.
+pub(super) fn text_frame_target(app: &DesignApp) -> Option<(designcraft_doc::ItemId, designcraft_doc::TextFrameOptions, bool)> {
+    let st = app.session.active()?;
+    let fid = designcraft_engine::cmd::text_frame_options_frames(&app.session).first().copied()?;
+    let item = st.doc.item(fid)?;
+    let opts = item.text_frame()?.options.clone();
+    Some((fid, opts, is_shaped(item)))
+}
+
+/// Whether a text frame's outline is not its own rectangle, where its text keeps one inset from
+/// the outline. Type on a path is not shaped.
+fn is_shaped(item: &designcraft_doc::Item) -> bool {
+    item.text_frame().is_some_and(|tf| tf.options.path.is_none()) && designcraft_compose::FrameOutline::of_item(item, 0.0).is_some()
+}
+
+/// Text Frame section: columns, gutter, [Options]; Inset Spacing (Top and Bottom, the link that
+/// makes all four the same, Left and Right; one Inset for a non-rectangular frame); the four
+/// Vertical Justification buttons (neither for type on a path). With the Type tool it changes the
+/// frame that shows the caret, or every frame that holds part of the selected text.
 pub(super) fn text_frame_section(app: &mut DesignApp, ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
     let u = units(app);
-    let Some(st) = app.session.active() else { return };
-    let fid = st.selection.items.first().copied().or_else(|| st.selection.text.and_then(|t| t.frame));
-    let Some(opts) = fid.and_then(|f| st.doc.item(f)).and_then(|i| i.text_frame()).map(|t| t.options.clone()) else { return };
+    let Some((fid, opts, shaped)) = text_frame_target(app) else { return };
     let b = block(ui, FIELD_H);
     icons::paint(ui.painter(), sub(b, 0.0, 1.0, 19.0, 19.0), "text-columns", t.icon);
     if let Some(v) = place(ui, sub(b, 22.0, 0.0, 54.0, FIELD_H), |ui| {
@@ -556,6 +575,113 @@ pub(super) fn text_frame_section(app: &mut DesignApp, ui: &mut Ui) {
     let ow = (b.max.x - 8.0) - (b.min.x + 164.0);
     if place(ui, sub(b, 164.0, 0.5, ow, 20.0), |ui| outline_button(ui, crate::i18n::tr(&app.ui.language, "Options"), ow)).clicked() {
         app.ui.dialog = Some(crate::dialogs::Dialog::new("textFrameOptions", json!({})));
+    }
+    // Type on a path sets one line along the path: insets and vertical justification do not apply.
+    if opts.path.is_some() {
+        return;
+    }
+    text_frame_insets(app, ui, fid, &opts, shaped);
+    ui.add_space(4.0);
+    let cur = opts.vertical_justification;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        for (vj, icon, tip) in [
+            (designcraft_doc::VerticalJustification::Top, "vjust-top", "Top"),
+            (designcraft_doc::VerticalJustification::Center, "vjust-center", "Center"),
+            (designcraft_doc::VerticalJustification::Bottom, "vjust-bottom", "Bottom"),
+            (designcraft_doc::VerticalJustification::Justify, "vjust-justify", "Justify"),
+        ] {
+            if icon_toggle(ui, icon, cur == vj, crate::i18n::tr(&app.ui.language, tip)).clicked() {
+                let _ = app.run("object.textFrameOptions", json!({"verticalJustification": vj}));
+            }
+        }
+    });
+}
+
+/// Inset Spacing under the columns: Top and Bottom, the link that makes all four the same, then
+/// Left and Right, as the wrap offsets are laid out. A non-rectangular frame shows one Inset, the
+/// distance its text keeps from the outline.
+fn text_frame_insets(app: &mut DesignApp, ui: &mut Ui, fid: designcraft_doc::ItemId, opts: &designcraft_doc::TextFrameOptions, shaped: bool) {
+    let t = Tokens::get(ui.ctx());
+    let lang = app.ui.language.clone();
+    let tr = |s: &str| crate::i18n::tr(&lang, s).to_string();
+    let u = units(app);
+    let inset = opts.inset;
+    ui.add_space(4.0);
+    if shaped {
+        let b = block(ui, FIELD_H);
+        let ir = sub(b, 0.0, 2.0, 17.0, 17.0);
+        icons::paint(ui.painter(), ir, "margin-top", t.icon);
+        ui.interact(ir, ui.scope_id().with("prop_tf_inset"), Sense::hover()).on_hover_ui(|ui| {
+            crate::rtl::label(ui, tr("Inset"));
+        });
+        if let Some(v) = place(ui, sub(b, 20.0, 0.0, 76.0, FIELD_H), |ui| {
+            NumField::measure("tfInset", Some(inset[0]), u).width(76.0).spinner().range(0.0, 15552.0).show(ui)
+        }) {
+            // The composer also bounds the text by the frame's rectangle less all four insets, so
+            // when every frame it changes is shaped the one Inset sets all four. With a
+            // rectangular frame among them (part of the same selected text), only the top inset
+            // changes and each frame keeps its other sides.
+            let all_shaped = app.session.active().is_some_and(|st| {
+                designcraft_engine::cmd::text_frame_options_frames(&app.session)
+                    .iter()
+                    .filter_map(|id| st.doc.item(*id))
+                    .filter(|it| it.text_frame().is_some_and(|tf| tf.options.path.is_none()))
+                    .all(is_shaped)
+            });
+            let inset = if all_shaped { json!(v) } else { json!([v, null, null, null]) };
+            let _ = app.run("object.textFrameOptions", json!({"inset": inset}));
+        }
+        return;
+    }
+    let b = block(ui, 2.0 * FIELD_H + 5.0);
+    // The link's state belongs to the frames the field changes in this document state: other
+    // frames, or frames with the same ids in another document or after Revert, start linked when
+    // every one of them has four equal insets, so a frame with uneven sides keeps them when one
+    // side changes.
+    let doc_epoch = app.session.active().map_or(0, |st| st.identity_epoch);
+    let targets = designcraft_engine::cmd::text_frame_options_frames(&app.session);
+    let target_ids: Vec<u64> = targets.iter().map(|id| id.0).collect();
+    let link_id = egui::Id::unique(("prop_tf_inset_linked", doc_epoch, fid.0, target_ids));
+    let even = |i: &[f64; 4]| i.iter().all(|v| (v - i[0]).abs() < 1e-9);
+    let same = even(&inset)
+        && app.session.active().is_none_or(|st| targets.iter().filter_map(|id| st.doc.item(*id)?.text_frame()).all(|tf| even(&tf.options.inset)));
+    let linked = ui.data(|d| d.get_temp::<bool>(link_id)).unwrap_or(same);
+    let mut set = None;
+    // Insets are [top, left, bottom, right].
+    for (k, key, icon, tip, x, y) in [
+        (0, "tfInsetTop", "margin-top", "Top", 0.0, 0.0),
+        (2, "tfInsetBottom", "margin-bottom", "Bottom", 0.0, FIELD_H + 5.0),
+        (1, "tfInsetLeft", "margin-inside", "Left", 140.0, 0.0),
+        (3, "tfInsetRight", "margin-outside", "Right", 140.0, FIELD_H + 5.0),
+    ] {
+        let ir = sub(b, x, y + 2.0, 17.0, 17.0);
+        icons::paint(ui.painter(), ir, icon, t.icon);
+        ui.interact(ir, ui.scope_id().with(("prop_tf_inset", k)), Sense::hover()).on_hover_ui(|ui| {
+            crate::rtl::label(ui, tr(tip));
+        });
+        let nv = place(ui, sub(b, x + 20.0, y, 76.0, FIELD_H), |ui| {
+            NumField::measure(key, Some(inset[k]), u).width(76.0).spinner().range(0.0, 15552.0).show(ui)
+        });
+        if let Some(v) = nv {
+            // Linked, all four; else this side alone.
+            let mut o = [None; 4];
+            if linked {
+                o = [Some(v); 4];
+            } else {
+                o[k] = Some(v);
+            }
+            set = Some(o);
+        }
+    }
+    if place(ui, sub(b, 106.0, (FIELD_H + 5.0) / 2.0, 22.0, FIELD_H), |ui| {
+        widgets::icon_toggle_sized(ui, if linked { "link" } else { "link-broken" }, linked, &tr("Make all settings the same"), vec2(22.0, 21.0))
+            .clicked()
+    }) {
+        ui.data_mut(|d| d.insert_temp(link_id, !linked));
+    }
+    if let Some(o) = set {
+        let _ = app.run("object.textFrameOptions", json!({"inset": o}));
     }
 }
 

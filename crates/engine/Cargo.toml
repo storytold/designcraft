@@ -8,6 +8,10 @@ description = "DesignCraft engine: session, documents, history, selection, comma
 [lints]
 workspace = true
 
+[features]
+# Recovery-writer handshakes for other crates' tests (`designcraft_engine::recovery::testing`).
+testing = []
+
 [dependencies]
 craft-print = { workspace = true }
 craft-docpath = { workspace = true }
@@ -26,12 +30,16 @@ designcraft-pdf = { workspace = true }
 craft-prepress = { workspace = true }
 designcraft-tools = { workspace = true }
 designcraft-idml = { workspace = true }
-indd = { workspace = true }
+craft-file-formats = { workspace = true }
+craft-csv = { workspace = true }
+craft-indd = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }
-quick-xml = { workspace = true }
+craft-xml = { workspace = true }
+craft-xml-dtd = { workspace = true }
+craft-svg = { workspace = true }
 caseless = { workspace = true }
 unicode-segmentation = { workspace = true }
 

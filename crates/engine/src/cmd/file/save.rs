@@ -89,11 +89,11 @@ pub(super) fn file_revert(s: &mut Session, _: &Value) -> Result<Value> {
     let path = s.doc()?.path.clone().ok_or_else(|| bad("file.revert", "the document has never been saved"))?;
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let mut d = if path.to_ascii_lowercase().ends_with(".idml") {
-            let bytes = crate::io::read_file(&path).map_err(EngineError::Other)?;
+        let bytes = crate::io::read_file(&path).map_err(EngineError::Other)?;
+        let mut d = if craft_file_formats::detect(&path, &bytes) == Some(craft_file_formats::Format::Idml) {
             crate::cmd::interchange::import_idml_confined(&bytes, Some(std::path::Path::new(&path))).map_err(|e| EngineError::Other(e.to_string()))?
         } else {
-            from_bytes(&crate::io::read_file(&path).map_err(EngineError::Other)?)?
+            from_bytes(&bytes)?
         };
         // As opened again: the fonts beside it now (unchanged files are shared, not read again).
         let (fonts, _, _) = load_document_fonts(&mut d, &path);

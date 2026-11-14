@@ -1,12 +1,12 @@
 use craft_pdf::write::backend as krilla;
 use std::sync::Arc;
 
+use craft_pdf::syntax::object::{Name, Object};
 use designcraft_color::{Color, Swatch};
 use designcraft_compose::Cache;
 use designcraft_doc::build::NewDocument;
 use designcraft_doc::{Asset, AssetId, Content, Document, Fill, Fitting, Graphic, Item, ItemId, Shape, SpreadRef};
 use designcraft_geom::{Affine, Rect};
-use hayro_syntax::object::{Name, Object};
 use image::{ExtendedColorType, ImageEncoder};
 
 use crate::{ExportReport, PdfOptions, Standard, check_pdfx4, export_pdf_with_report};
@@ -117,7 +117,7 @@ pub(super) fn x4(d: &Document) -> ExportReport {
 
 /// The `/ColorSpace` of every image XObject: a name, or `[` for an array (ICCBased, Indexed…).
 fn image_spaces(bytes: &[u8]) -> Vec<String> {
-    let pdf = hayro_syntax::Pdf::new(bytes.to_vec()).unwrap();
+    let pdf = craft_pdf::syntax::Pdf::new(bytes.to_vec()).unwrap();
     let mut out: Vec<String> = pdf
         .objects()
         .into_iter()
@@ -367,12 +367,12 @@ fn rgb_rasters() -> Vec<(&'static str, Vec<u8>)> {
 
 /// The decoded `/ICCBased` profile of every image XObject that has one.
 fn image_profiles(bytes: &[u8]) -> Vec<Vec<u8>> {
-    let pdf = hayro_syntax::Pdf::new(bytes.to_vec()).unwrap();
+    let pdf = craft_pdf::syntax::Pdf::new(bytes.to_vec()).unwrap();
     pdf.objects()
         .into_iter()
         .filter_map(|o| o.into_stream())
         .filter(|s| s.dict().get::<Name>(b"Subtype").is_some_and(|n| n.as_str() == "Image"))
-        .filter_map(|s| match s.dict().get::<hayro_syntax::object::Array>(b"ColorSpace")?.iter::<Object>().nth(1)? {
+        .filter_map(|s| match s.dict().get::<craft_pdf::syntax::object::Array>(b"ColorSpace")?.iter::<Object>().nth(1)? {
             Object::Stream(p) => Some(p.decoded().ok()?.into_owned()),
             _ => None,
         })
@@ -453,10 +453,10 @@ fn cmyk_tiff() -> Vec<u8> {
 #[test]
 fn xmp_states_trapped() {
     let r = x4(&Document::new(&NewDocument::default()));
-    let pdf = hayro_syntax::Pdf::new(r.bytes.clone()).unwrap();
+    let pdf = craft_pdf::syntax::Pdf::new(r.bytes.clone()).unwrap();
     let xref = pdf.xref();
-    let catalog = xref.get::<hayro_syntax::object::Dict>(xref.root_id()).unwrap();
-    let xmp = catalog.get::<hayro_syntax::object::Stream>(b"Metadata").unwrap().decoded().unwrap().into_owned();
+    let catalog = xref.get::<craft_pdf::syntax::object::Dict>(xref.root_id()).unwrap();
+    let xmp = catalog.get::<craft_pdf::syntax::object::Stream>(b"Metadata").unwrap().decoded().unwrap().into_owned();
     let xmp = String::from_utf8_lossy(&xmp);
     assert!(xmp.contains("xmlns:pdf=\"http://ns.adobe.com/pdf/1.3/\"") && xmp.contains("<pdf:Trapped>False</pdf:Trapped>"), "{xmp}");
     assert!(String::from_utf8_lossy(&r.bytes).contains("/Trapped/False"));

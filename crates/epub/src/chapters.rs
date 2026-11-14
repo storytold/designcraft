@@ -1,5 +1,6 @@
 use super::css::{export_mapping, para_classes};
 use super::html::Block;
+#[cfg(test)]
 use super::markup::xml_text;
 use super::*;
 
@@ -99,7 +100,8 @@ pub(crate) fn toc_entries(doc: &Document, order: &[Block]) -> Vec<(String, Strin
             continue;
         }
         let Some(st) = doc.story(*sid) else { continue };
-        let first = label(st.text.split('\n').next().unwrap_or(""));
+        let spans = doc.visible_spans(st);
+        let first = st.para_ranges().into_iter().map(|r| label(&Document::visible_text(st, &spans, r))).find(|t| !t.is_empty()).unwrap_or_default();
         if !first.is_empty() {
             firsts.push((format!("s{k}"), first, 1));
         }
@@ -107,7 +109,7 @@ pub(crate) fn toc_entries(doc: &Document, order: &[Block]) -> Vec<(String, Strin
             let Some(pf) = st.paras.get(pi) else { continue };
             let (tag, _) = export_mapping(&doc.styles, &pf.style, false, &pc);
             let Some(level) = heading_level(tag).filter(|l| *l <= 3) else { continue };
-            let text = label(st.text.get(r.clone()).unwrap_or(""));
+            let text = label(&Document::visible_text(st, &spans, r.clone()));
             if !text.is_empty() {
                 headings.push((format!("s{k}-p{pi}"), text, level));
             }
@@ -118,6 +120,7 @@ pub(crate) fn toc_entries(doc: &Document, order: &[Block]) -> Vec<(String, Strin
 
 /// The table of contents as nested `li`/`ol` items (the content of the navigation's outer
 /// `ol`): a deeper level goes into the previous item, skipped levels count as one.
+#[cfg(test)]
 pub(crate) fn nav_list(entries: &[(String, String, u8)], files: &BTreeMap<String, String>) -> String {
     let mut out = String::new();
     let mut open: Vec<u8> = Vec::new();

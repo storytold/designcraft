@@ -324,6 +324,17 @@ fn transform_menu_items_open_their_dialogs() {
 }
 
 #[test]
+fn go_to_row_is_enabled_in_a_table() {
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let r = app.run("frame.create", json!({"rect": [72, 72, 500, 700], "content": "text", "text": "Notes"})).unwrap();
+    app.run("text.select", json!({"story": r["story"], "anchor": 0, "focus": 0})).unwrap();
+    assert!(!menu_enabled(&app, "table.goToRow"), "the insertion point is not in a table");
+    app.run("table.insert", json!({"rows": 2, "cols": 2})).unwrap();
+    assert!(menu_enabled(&app, "table.goToRow"));
+}
+
+#[test]
 fn pdf_export_menu_item_opens_the_dialog_or_exports() {
     // No params: the menu item opens the options dialog.
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
@@ -333,6 +344,33 @@ fn pdf_export_menu_item_opens_the_dialog_or_exports() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     activate(&mut app, "app.exportPdf", &json!({"path": "/tmp/x.pdf"}));
     assert!(app.ui.dialog.is_none());
+}
+
+/// With the Type tool in the second frame of a thread, Cmd+B opens Text Frame Options, and OK
+/// changes the frame that shows the caret.
+#[test]
+fn text_frame_options_open_from_the_type_tool() {
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let text = (0..40).map(|i| format!("Line {i} of the threaded story.")).collect::<Vec<_>>().join(" ");
+    let a = app.run("frame.create", json!({"rect": [36, 36, 300, 120], "content": "text", "text": text})).unwrap();
+    let b = app.run("frame.create", json!({"rect": [36, 200, 300, 700], "content": "text", "text": "", "caret": false})).unwrap();
+    let (a, b, sid) = (a["id"].as_u64().unwrap(), b["id"].as_u64().unwrap(), a["story"].as_u64().unwrap());
+    app.run("text.thread", json!({"from": a, "to": b})).unwrap();
+    // The end of the story is in the second frame.
+    app.run("text.select", json!({"story": sid, "anchor": text.len()})).unwrap();
+    assert!(super::state::enabled(&app, "object.textFrameOptions"), "the menu item is enabled while typing");
+    let ctx = egui::Context::default();
+    press_keys(&mut app, &ctx, &[(egui::Key::B, egui::Modifiers::COMMAND)]);
+    assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some("textFrameOptions"), "Cmd+B opens the dialog while typing");
+    if let Some(d) = app.ui.dialog.as_mut() {
+        d.fields.insert("columns".into(), json!(3));
+    }
+    crate::dialogs::confirm(&mut app).unwrap();
+    let columns = |app: &crate::DesignApp, id: u64| {
+        app.session.active().unwrap().doc.item(designcraft_doc::ItemId(id)).and_then(|i| i.text_frame().map(|t| t.options.columns))
+    };
+    assert_eq!((columns(&app, a), columns(&app, b)), (Some(1), Some(3)));
 }
 
 #[test]
@@ -2373,6 +2411,8 @@ fn the_table_menu_follows_indesigns_order() {
         "-",
         "Distribute Rows Evenly",
         "Distribute Columns Evenly",
+        "-",
+        "Go to Row…",
     ];
     assert_eq!(labels, expected);
     // Cmd+Alt+Shift+T opens the dialog, as InDesign's; the engine command has no shortcut of
@@ -2485,6 +2525,127 @@ fn type_panel_items_open_their_panels_and_the_marker_shortcut_inserts_a_page_num
     activate(&mut app, "app.insertCurrentPageNumber", &Value::Null);
     let d = &app.session.doc().unwrap().doc;
     assert_eq!(d.story(designcraft_doc::StoryId(story.as_u64().unwrap())).unwrap().text, "Page \u{e000}");
+}
+
+/// A key press with `modifiers` through the window's shortcut dispatch, one frame.
+fn press(app: &mut crate::DesignApp, ctx: &egui::Context, key: egui::Key, modifiers: egui::Modifiers) {
+    let events = [true, false].map(|pressed| egui::Event::Key { key, physical_key: None, pressed, repeat: false, modifiers }).to_vec();
+    native_frame(app, ctx, events, None);
+}
+
+fn story_text(app: &crate::DesignApp, story: &Value) -> String {
+    let d = &app.session.doc().unwrap().doc;
+    d.story(designcraft_doc::StoryId(story.as_u64().unwrap())).unwrap().text.clone()
+}
+
+#[test]
+fn type_shortcuts_insert_spaces_justify_all_lines_and_open_paragraph_rules() {
+    use egui::{Key, Modifiers};
+    let ctx = egui::Context::default();
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let frame = app.run("frame.create", json!({"rect": [36, 36, 300, 200], "content": "text", "text": "ab"})).unwrap();
+    let story = frame["story"].clone();
+    // A selected frame and no insertion point: the spaces have nowhere to go.
+    app.run("selection.set", json!({"ids": [frame["id"]]})).unwrap();
+    assert!(app.session.doc().unwrap().selection.text.is_none());
+    assert!(!menu_enabled(&app, "app.insertEmSpace") && !menu_enabled(&app, "app.insertEnSpace"));
+    press(&mut app, &ctx, Key::M, Modifiers::COMMAND | Modifiers::SHIFT);
+    assert_eq!(story_text(&app, &story), "ab");
+    // Selected text: the spaces go in at an insertion point only, so the selection stays.
+    app.run("text.select", json!({"story": story, "anchor": 0, "focus": 2})).unwrap();
+    assert!(!menu_enabled(&app, "app.insertEmSpace") && !menu_enabled(&app, "app.insertEnSpace"));
+    press(&mut app, &ctx, Key::M, Modifiers::COMMAND | Modifiers::SHIFT);
+    press(&mut app, &ctx, Key::N, Modifiers::COMMAND | Modifiers::SHIFT);
+    assert_eq!(story_text(&app, &story), "ab", "a selection is not replaced by a space");
+    app.run("text.select", json!({"story": story, "anchor": 1, "focus": 1})).unwrap();
+    assert!(menu_enabled(&app, "app.insertEmSpace") && menu_enabled(&app, "app.insertEnSpace"));
+    press(&mut app, &ctx, Key::M, Modifiers::COMMAND | Modifiers::SHIFT);
+    assert_eq!(story_text(&app, &story), "a\u{2003}b", "⇧⌘M types an em space at the caret");
+    press(&mut app, &ctx, Key::N, Modifiers::COMMAND | Modifiers::SHIFT);
+    assert_eq!(story_text(&app, &story), "a\u{2003}\u{2002}b", "⇧⌘N an en space after it");
+    app.run("type.justify", json!({})).unwrap();
+    press(&mut app, &ctx, Key::F, Modifiers::COMMAND | Modifiers::SHIFT);
+    assert_eq!(app.run("type.selectionAttrs", json!({})).unwrap()["para"]["align"], "fullyJustified", "⇧⌘F justifies all lines");
+    // Guard: ⌥⇧⌘J is another chord (Justification…); the rules want Shift up.
+    press(&mut app, &ctx, Key::J, Modifiers::COMMAND | Modifiers::ALT | Modifiers::SHIFT);
+    assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some("justification"), "⌥⇧⌘J opens Justification");
+    app.ui.dialog = None;
+    press(&mut app, &ctx, Key::J, Modifiers::COMMAND | Modifiers::ALT);
+    assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some("paragraphRules"), "⌥⌘J opens Paragraph Rules");
+    // Each chord belongs to one command only, so the editor shows no conflict and nothing else fires.
+    let all = effective_shortcuts(&app);
+    for (sc, id) in [
+        ("Cmd+Shift+F", "type.justifyAll"),
+        ("Cmd+Shift+M", "app.insertEmSpace"),
+        ("Cmd+Shift+N", "app.insertEnSpace"),
+        ("Cmd+Alt+J", "app.paragraphRulesDialog"),
+    ] {
+        let owners: Vec<&str> = all.iter().filter(|(_, s)| s == sc).map(|(i, _)| i.as_str()).collect();
+        assert_eq!(owners, [id], "{sc}");
+    }
+}
+
+#[test]
+fn insert_white_space_shows_the_em_and_en_space_shortcuts() {
+    let ty = menu_tree().into_iter().find(|(m, _)| *m == "Type").unwrap().1;
+    let white = ty
+        .iter()
+        .find_map(|i| match i {
+            Item::Sub(n, c) if n == "Insert White Space" => Some(c.clone()),
+            _ => None,
+        })
+        .unwrap();
+    // Null params, so the macOS menu bar carries the accelerator too.
+    for (label, sc) in [("Em Space", "Cmd+Shift+M"), ("En Space", "Cmd+Shift+N")] {
+        assert!(
+            white.iter().any(|i| matches!(i, Item::Cmd { label: l, shortcut: Some(s), params, .. } if l == label && *s == sc && params.is_null())),
+            "{label}"
+        );
+    }
+}
+
+#[test]
+fn native_insert_shortcuts_leave_the_document_alone_while_a_field_has_focus() {
+    // On the Mac the menu bar takes ⇧⌘M before the window: with Quick Apply's field focused it
+    // must not type into the story behind it.
+    let ctx = egui::Context::default();
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.session.execute("file.new", &json!({})).unwrap();
+    let story = app.run("frame.create", json!({"rect": [36, 36, 300, 200], "content": "text", "text": "ab"})).unwrap()["story"].clone();
+    app.run("text.select", json!({"story": story, "anchor": 1, "focus": 1})).unwrap();
+    app.ui.palette = Some("x".into());
+    for _ in 0..3 {
+        native_frame(&mut app, &ctx, vec![], None);
+    }
+    assert!(ctx.text_edit_focused());
+    for id in ["app.insertEmSpace", "app.insertEnSpace", "app.insertCurrentPageNumber"] {
+        native_frame(&mut app, &ctx, vec![], Some(id));
+        native_frame(&mut app, &ctx, vec![], None);
+        assert_eq!(story_text(&app, &story), "ab", "{id}");
+    }
+    assert_eq!(app.ui.palette.as_deref(), Some("x"));
+}
+
+#[test]
+fn native_insert_shortcuts_leave_the_document_alone_while_a_dialog_or_quick_apply_is_open() {
+    // The same cases stop the window's shortcuts. In the first frame nothing has keyboard focus
+    // yet, so only the open dialog or Quick Apply keeps the character out of the story.
+    for open in ["", "dialog", "palette"] {
+        let ctx = egui::Context::default();
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.session.execute("file.new", &json!({})).unwrap();
+        let story = app.run("frame.create", json!({"rect": [36, 36, 300, 200], "content": "text", "text": "ab"})).unwrap()["story"].clone();
+        app.run("text.select", json!({"story": story, "anchor": 1, "focus": 1})).unwrap();
+        match open {
+            "dialog" => app.ui.dialog = Some(crate::dialogs::Dialog::new("paragraphRules", json!({}))),
+            "palette" => app.ui.palette = Some(String::new()),
+            _ => {}
+        }
+        native_frame(&mut app, &ctx, vec![], Some("app.insertEmSpace"));
+        let want = if open.is_empty() { "a\u{2003}b" } else { "ab" };
+        assert_eq!(story_text(&app, &story), want, "{open:?}");
+    }
 }
 
 #[test]
@@ -3385,4 +3546,92 @@ fn zoom_commands_zoom_around_the_pointer_when_it_is_over_the_canvas() {
     native_frame(&mut app, &ctx, vec![egui::Event::PointerGone], Some("view.zoomOut"));
     let kept = under(&app, rect.center());
     assert!((kept.x - centre.x).abs() < 1e-3 && (kept.y - centre.y).abs() < 1e-3);
+}
+
+#[test]
+fn window_menu_commands_restore_hidden_panels() {
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.session.execute("file.new", &json!({})).unwrap();
+    let ctx = egui::Context::default();
+    let frame = |app: &mut crate::DesignApp| {
+        for _ in 0..2 {
+            let input =
+                egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))), ..Default::default() };
+            let mut out = ctx.run_ui(input, |ui| {
+                app.logic(&ui.ctx().clone());
+                app.ui(ui);
+            });
+            out.textures_delta.clear();
+        }
+    };
+    let props_tab = crate::panel_docking::tab_id("properties");
+    frame(&mut app);
+    assert!(ctx.read_response(props_tab).is_some(), "properties panel starts visible");
+
+    // Window › Properties unhides panels hidden by Tab.
+    run_ui(&mut app, "window.hidePanels", &json!({})).unwrap().unwrap();
+    assert_eq!(app.ui.hidden_panels, 1);
+    frame(&mut app);
+    assert!(ctx.read_response(props_tab).is_none());
+    run_ui(&mut app, "window.panel", &json!({"panel": "properties"})).unwrap().unwrap();
+    assert_eq!(app.ui.hidden_panels, 0);
+    frame(&mut app);
+    assert!(ctx.read_response(props_tab).is_some(), "Window > Properties restores hidden panels");
+
+    // Shift+Tab + Type/Window panel commands unhide and reveal the requested panel.
+    run_ui(&mut app, "window.hidePanelsExceptTools", &json!({})).unwrap().unwrap();
+    assert_eq!(app.ui.hidden_panels, 2);
+    run_ui(&mut app, "app.characterPanel", &json!({})).unwrap().unwrap();
+    assert_eq!(app.ui.hidden_panels, 0);
+    assert!(crate::panel_docking::showing(&app, "character"));
+
+    run_ui(&mut app, "window.hidePanels", &json!({})).unwrap().unwrap();
+    run_ui(&mut app, "app.paragraphStylesPanel", &json!({})).unwrap().unwrap();
+    assert_eq!(app.ui.hidden_panels, 0);
+    assert!(crate::panel_docking::showing(&app, "paragraphStyles"));
+
+    // Float-only Tabs: opening when hidden reveals it; choosing it while already open but hidden
+    // reveals it instead of closing it invisibly.
+    run_ui(&mut app, "window.hidePanels", &json!({})).unwrap().unwrap();
+    run_ui(&mut app, "window.panel", &json!({"panel": "tabs"})).unwrap().unwrap();
+    assert_eq!(app.ui.hidden_panels, 0);
+    assert!(app.ui.floating.iter().any(|(p, _)| p == "tabs"));
+
+    run_ui(&mut app, "window.hidePanels", &json!({})).unwrap().unwrap();
+    run_ui(&mut app, "window.panel", &json!({"panel": "tabs"})).unwrap().unwrap();
+    assert_eq!(app.ui.hidden_panels, 0);
+    assert!(app.ui.floating.iter().any(|(p, _)| p == "tabs"), "Tabs stays open when unhidden");
+
+    // Table toggle activates instead of closing while hidden.
+    run_ui(&mut app, "window.panel", &json!({"panel": "table"})).unwrap().unwrap();
+    assert!(crate::panel_docking::showing(&app, "table"));
+    run_ui(&mut app, "window.hidePanels", &json!({})).unwrap().unwrap();
+    run_ui(&mut app, "app.tablePanel", &json!({})).unwrap().unwrap();
+    assert_eq!(app.ui.hidden_panels, 0);
+    assert!(crate::panel_docking::showing(&app, "table"));
+
+    // An open flyout in an iconic column isn't closed by Window › <panel> while hidden.
+    run_ui(&mut app, "window.workspace", &json!({"name": "Typography"})).unwrap().unwrap();
+    run_ui(&mut app, "window.panel", &json!({"panel": "character"})).unwrap().unwrap();
+    assert_eq!(app.ui.docking_flyout.as_deref(), Some("character"));
+    run_ui(&mut app, "window.hidePanels", &json!({})).unwrap().unwrap();
+    run_ui(&mut app, "window.panel", &json!({"panel": "character"})).unwrap().unwrap();
+    assert_eq!(app.ui.hidden_panels, 0);
+    assert!(crate::panel_docking::showing(&app, "character"));
+
+    // Window › Workspace › Reset and Control restore hidden panels.
+    run_ui(&mut app, "window.workspace", &json!({"name": "Essentials"})).unwrap().unwrap();
+    run_ui(&mut app, "window.hidePanels", &json!({})).unwrap().unwrap();
+    run_ui(&mut app, "window.resetWorkspace", &json!({})).unwrap().unwrap();
+    assert_eq!(app.ui.hidden_panels, 0);
+    frame(&mut app);
+    assert!(ctx.read_response(props_tab).is_some(), "Reset Workspace restores hidden panels");
+
+    app.ui.control_bar = true;
+    run_ui(&mut app, "window.hidePanels", &json!({})).unwrap().unwrap();
+    assert_eq!(checked(&app, "window.controlBar", &Value::Null), Some(false));
+    run_ui(&mut app, "window.controlBar", &json!({})).unwrap().unwrap();
+    assert_eq!(app.ui.hidden_panels, 0);
+    assert!(app.ui.control_bar);
+    assert_eq!(checked(&app, "window.controlBar", &Value::Null), Some(true));
 }

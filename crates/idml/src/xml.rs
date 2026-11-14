@@ -1,7 +1,4 @@
-//! A tiny XML DOM on top of `quick-xml`: enough for IDML parts (elements, attributes, text,
-//! CDATA and processing instructions such as `<?ACE 18?>`).
-
-use quick_xml::events::Event;
+//! DesignCraft's IDML model adapter, using `craft-xml` for parsing and writing XML.
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Node {
@@ -68,6 +65,12 @@ impl El {
     pub fn find(&self, local: &str) -> Option<&El> {
         self.elements().find(|e| e.local() == local)
     }
+    pub fn find_mut(&mut self, local: &str) -> Option<&mut El> {
+        self.children.iter_mut().find_map(|n| match n {
+            Node::El(e) if e.local() == local => Some(e),
+            _ => None,
+        })
+    }
     pub fn find_all<'a>(&'a self, local: &'a str) -> impl Iterator<Item = &'a El> + 'a {
         self.elements().filter(move |e| e.local() == local)
     }
@@ -107,6 +110,7 @@ impl El {
 
     // ---------- writing ----------
 
+    #[cfg(test)]
     pub fn write(&self, out: &mut String, depth: usize) {
         indent(out, depth);
         out.push('<');
@@ -156,6 +160,7 @@ impl El {
     }
 }
 
+#[cfg(test)]
 fn indent(out: &mut String, depth: usize) {
     for _ in 0..depth {
         out.push('\t');
@@ -164,6 +169,7 @@ fn indent(out: &mut String, depth: usize) {
 
 /// XML-escape text. Control characters that XML 1.0 forbids are dropped; tab/CR/LF in
 /// attributes become character references so they survive attribute-value normalisation.
+#[cfg(test)]
 pub fn escape_into(out: &mut String, s: &str, attr: bool) {
     for c in s.chars() {
         match c {
@@ -181,124 +187,61 @@ pub fn escape_into(out: &mut String, s: &str, attr: bool) {
 
 /// Serialize a part: XML declaration + root element.
 pub fn document(root: &El) -> Vec<u8> {
-    let mut s = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n");
-    root.write(&mut s, 0);
-    s.into_bytes()
+    craft_idml::part_xml(&to_craft(root))
 }
 
-/// Serialize with extra processing instructions after the declaration (designmap's `<?aid …?>`).
-pub fn document_with_pi(root: &El, pi: &str) -> Vec<u8> {
-    let mut s = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n");
-    s.push_str(pi);
-    s.push('\n');
-    root.write(&mut s, 0);
-    s.into_bytes()
+pub(crate) fn to_craft(el: &El) -> craft_xml::El {
+    craft_xml::El {
+        name: el.name.clone(),
+        attrs: el.attrs.clone(),
+        children: el
+            .children
+            .iter()
+            .map(|node| match node {
+                Node::El(child) => craft_xml::Node::El(to_craft(child)),
+                Node::Text(text) => craft_xml::Node::Text(text.clone()),
+                Node::CData(text) => craft_xml::Node::CData(text.clone()),
+                Node::Pi(target, data) => craft_xml::Node::Pi { target: target.clone(), data: data.clone() },
+            })
+            .collect(),
+    }
 }
 
 /// How deep elements may nest. InDesign's packages stay under a few dozen levels; the tree is
 /// walked and dropped recursively afterwards, so unbounded nesting is refused here, not left to
 /// run into the stack (#712).
+#[cfg(test)]
 pub const MAX_DEPTH: usize = 256;
 
 /// Parse a document into its root element.
+#[cfg(test)]
 pub fn parse(bytes: &[u8]) -> Result<El, String> {
-    let mut r = quick_xml::Reader::from_reader(bytes);
-    r.config_mut().trim_text(false);
-    let mut stack: Vec<El> = vec![El::new("#document")];
-    let mut buf = Vec::new();
-    let pos = |r: &quick_xml::Reader<&[u8]>| r.buffer_position();
-    loop {
-        let ev = r.read_event_into(&mut buf).map_err(|e| format!("XML error at {}: {e}", pos(&r)))?;
-        match ev {
-            Event::Start(e) => {
-                if stack.len() > MAX_DEPTH {
-                    return Err(format!("XML elements nested deeper than {MAX_DEPTH} levels at {}", pos(&r)));
-                }
-                let el = start_el(&e)?;
-                stack.push(el);
-            }
-            Event::Empty(e) => {
-                let el = start_el(&e)?;
-                stack.last_mut().ok_or("unbalanced")?.push(el);
-            }
-            Event::End(_) => {
-                let el = stack.pop().ok_or("unbalanced end tag")?;
-                if stack.is_empty() {
-                    return Err("unbalanced end tag".into());
-                }
-                stack.last_mut().ok_or("unbalanced")?.push(el);
-            }
-            Event::Text(t) => {
-                let s = t.decode().map_err(|e| e.to_string())?;
-                push_text(stack.last_mut().ok_or("unbalanced")?, &s);
-            }
-            Event::CData(t) => {
-                let s = String::from_utf8_lossy(&t).to_string();
-                push_text(stack.last_mut().ok_or("unbalanced")?, &s);
-            }
-            Event::GeneralRef(g) => {
-                let s = match g.resolve_char_ref().map_err(|e| e.to_string())? {
-                    Some(c) => c.to_string(),
-                    None => match g.decode().map_err(|e| e.to_string())?.as_ref() {
-                        "amp" => "&".into(),
-                        "lt" => "<".into(),
-                        "gt" => ">".into(),
-                        "quot" => "\"".into(),
-                        "apos" => "'".into(),
-                        _ => String::new(),
-                    },
-                };
-                push_text(stack.last_mut().ok_or("unbalanced")?, &s);
-            }
-            Event::PI(p) => {
-                let target = String::from_utf8_lossy(p.target()).to_string();
-                let content = String::from_utf8_lossy(p.content()).trim().to_string();
-                if let Some(top) = stack.last_mut() {
-                    top.children.push(Node::Pi(target, content));
-                }
-            }
-            Event::Eof => break,
-            _ => {}
-        }
-        buf.clear();
-    }
-    if stack.len() != 1 {
-        return Err("unexpected end of document".into());
-    }
-    let doc = stack.pop().unwrap_or_default();
-    doc.children
-        .into_iter()
-        .find_map(|n| match n {
-            Node::El(e) => Some(e),
-            _ => None,
-        })
-        .ok_or_else(|| "empty document".into())
+    let mut options = craft_xml::Options::default();
+    options.limits.max_input = 512 << 20;
+    options.pis = true;
+    let parsed = options.parse(bytes).map_err(|e| match e {
+        craft_xml::Error::TooDeep(_) => format!("XML elements nested deeper than {MAX_DEPTH} levels"),
+        e => e.to_string(),
+    })?;
+    Ok(from_craft(parsed))
 }
 
-fn push_text(el: &mut El, s: &str) {
-    if s.is_empty() {
-        return;
+pub(crate) fn from_craft(el: craft_xml::El) -> El {
+    El {
+        name: el.name,
+        attrs: el.attrs,
+        children: el
+            .children
+            .into_iter()
+            .filter_map(|n| match n {
+                craft_xml::Node::El(e) => Some(Node::El(from_craft(e))),
+                craft_xml::Node::Text(t) => Some(Node::Text(t)),
+                craft_xml::Node::CData(t) => Some(Node::Text(t)),
+                craft_xml::Node::Pi { target, data } => Some(Node::Pi(target, data.trim().to_string())),
+                craft_xml::Node::Comment(_) => None,
+            })
+            .collect(),
     }
-    if let Some(Node::Text(t)) = el.children.last_mut() {
-        t.push_str(s);
-    } else {
-        el.children.push(Node::Text(s.to_string()));
-    }
-}
-
-fn start_el(e: &quick_xml::events::BytesStart) -> Result<El, String> {
-    let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
-    let mut el = El::new(&name);
-    for a in e.attributes().with_checks(false) {
-        let a = a.map_err(|e| e.to_string())?;
-        let k = String::from_utf8_lossy(a.key.as_ref()).to_string();
-        let v = a
-            .normalized_value(quick_xml::XmlVersion::Implicit1_0)
-            .map(|v| v.to_string())
-            .unwrap_or_else(|_| String::from_utf8_lossy(&a.value).to_string());
-        el.attrs.push((k, v));
-    }
-    Ok(el)
 }
 
 #[cfg(test)]
