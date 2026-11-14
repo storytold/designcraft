@@ -57,7 +57,15 @@ pub(crate) fn sync(doc: &mut Document) {
         let Some(a) = doc.assets.get(&asset).filter(|a| a.is_raster()) else { continue };
         // An image with no outline (unreadable, too large) is remembered as an empty
         // one, so later edits don't decode it again; the contour is then the frame's.
-        let o = trace(&a.data, asset, threshold).unwrap_or_else(|| no_outline(&a.data, asset, threshold));
+        // A linked image's original is not read here (a document opens without reading its
+        // links): its preview is traced, scaled to the original's size; with no preview, the
+        // image has no outline yet and is traced once its bytes are resident.
+        let o = if a.data.is_linked() && a.data.resident().is_none() {
+            let Some(proxy) = a.proxy.as_ref().and_then(|p| Some((p.data.load().ok()?, a.pixels?))) else { continue };
+            trace_bytes(&proxy.0, a.data.key(), Some(proxy.1), asset, threshold).unwrap_or_else(|| no_outline(&a.data, asset, threshold))
+        } else {
+            trace(&a.data, asset, threshold).unwrap_or_else(|| no_outline(&a.data, asset, threshold))
+        };
         doc.alpha_outlines.push(Arc::new(o));
     }
     // `Document::alpha_outline` finds an outline by binary search.
@@ -84,7 +92,12 @@ fn no_outline(data: &AssetData, asset: AssetId, threshold: u8) -> AlphaOutline {
 /// The outline of the pixels of `data` more opaque than `threshold`: an image with no
 /// transparency gives its rectangle. None for an image that can't be read or is too large.
 pub(crate) fn trace(data: &AssetData, asset: AssetId, threshold: u8) -> Option<AlphaOutline> {
-    let bytes = data.load().ok()?;
+    trace_bytes(&data.load().ok()?, data.key(), None, asset, threshold)
+}
+
+/// [`trace`] of encoded `bytes` standing for the data under `source`. With `size`, the outline
+/// is scaled to an image of that size (a preview traced for the original it stands for).
+fn trace_bytes(bytes: &[u8], source: designcraft_doc::SourceKey, size: Option<(u32, u32)>, asset: AssetId, threshold: u8) -> Option<AlphaOutline> {
     let (w, h) = designcraft_images::pixel_size(&bytes)?;
     if w == 0 || h == 0 || u64::from(w) * u64::from(h) > MAX_PIXELS {
         return None;
@@ -108,7 +121,8 @@ pub(crate) fn trace(data: &AssetData, asset: AssetId, threshold: u8) -> Option<A
             outer.iter().chain(holes).map(|r| r.len() + 1).sum::<usize>() <= designcraft_compose::MAX_CONTOUR_POINTS
         };
         if let Some((outer, holes)) = rings(&mask, cols as usize, rows as usize).filter(|(o, h)| fits(o, h)) {
-            let (sx, sy) = (f64::from(w) / f64::from(cols), f64::from(h) / f64::from(rows));
+            let (tw, th) = size.filter(|&(a, b)| a > 0 && b > 0).unwrap_or((w, h));
+            let (sx, sy) = (f64::from(tw) / f64::from(cols), f64::from(th) / f64::from(rows));
             let path = |rings: &[Vec<(i32, i32)>]| {
                 let mut p = BezPath::new();
                 for ring in rings {
@@ -122,9 +136,8 @@ pub(crate) fn trace(data: &AssetData, asset: AssetId, threshold: u8) -> Option<A
                 }
                 PathData::from_bezpath(&p)
             };
-            let source = data.key();
             let serial = AlphaOutline::next_serial();
-            return Some(AlphaOutline { asset, threshold, width: w, height: h, outer: path(&outer), holes: path(&holes), source, serial });
+            return Some(AlphaOutline { asset, threshold, width: tw, height: th, outer: path(&outer), holes: path(&holes), source, serial });
         }
         finer = Some((mask, cols, rows));
         grid /= 2;

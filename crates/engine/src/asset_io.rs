@@ -23,6 +23,25 @@ impl Loader for FileLoader {
     fn load(&self, source: &LinkedSource, trusted: Option<Fingerprint>) -> Result<Loaded, Unavailable> {
         read_linked(source, trusted)
     }
+
+    fn load_current(&self, source: &LinkedSource) -> Result<Vec<u8>, Unavailable> {
+        read_current(source)
+    }
+}
+
+/// The bytes of the first candidate file that exists, whatever they are (no fingerprint or hash
+/// check): what an export uses for a link whose file has changed.
+pub fn read_current(source: &LinkedSource) -> Result<Vec<u8>, Unavailable> {
+    for path in candidates(source) {
+        let Some(meta) = crate::io::file_metadata(&path) else { continue };
+        if meta.len() > MAX_LINKED_BYTES {
+            return Err(Unavailable::TooLarge);
+        }
+        if let Ok(bytes) = crate::io::read_capped(&path, MAX_LINKED_BYTES) {
+            return Ok(bytes);
+        }
+    }
+    Err(Unavailable::Missing)
 }
 
 /// `sha256:` and the hex digits of the SHA-256 of `bytes` ([`designcraft_doc::Asset::link_hash`]).

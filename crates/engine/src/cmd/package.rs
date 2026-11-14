@@ -355,17 +355,22 @@ fn write_links(d: &Document, root: &OutputRoot, dir: &Path, only: Option<&[Asset
         // Its own are too recent to vouch for it yet: the first check compares the bytes and
         // keeps them (`remember_link_files`).
         if na.storage == Storage::Linked {
-            // A linked graphic is told by its hash until then; its paths name the copy.
+            // A linked original stays a link, to its copy, told by its hash until then. Its
+            // bytes are read from the copy (by its full path: the package's document reads its
+            // copies once opened beside them).
+            let hash = crate::asset_io::content_hash(&bytes);
+            let fingerprint = Fingerprint { size: bytes.len() as u64, mtime: super::links::UNVERIFIED_MTIME };
             na.link_relative = relative_to.map(|_| link.clone());
-            na.set_link(Some(link), Some(Fingerprint { size: bytes.len() as u64, mtime: super::links::UNVERIFIED_MTIME }));
-            // Without a folder the link is the copy's full path, which the open document reads
-            // from now on; a package's document reads its copies once opened beside them.
-            if relative_to.is_none()
-                && na.data.is_linked()
-                && let Some(source) = LinkedSource::of(&na, None)
-            {
-                na.data = na.data.with_source(source);
-            }
+            na.link_hash = Some(hash.clone());
+            na.set_link(Some(link), Some(fingerprint));
+            na.data = na.data.with_source(LinkedSource {
+                path: path.to_string_lossy().into_owned(),
+                relative: None,
+                document: None,
+                len: fingerprint.size,
+                fingerprint: Some(fingerprint),
+                hash: Some(hash),
+            });
         } else {
             na.set_link(Some(link), None);
         }

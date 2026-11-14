@@ -60,18 +60,34 @@ impl Exporter<'_> {
         )))
     }
 
+    /// The bytes of asset `id` for this export ([`designcraft_doc::Asset::output_bytes`]), with
+    /// its warning recorded. `None` when there is nothing to export (warned once, by name).
+    pub(super) fn asset_bytes(&mut self, id: AssetId) -> Option<(Arc<Vec<u8>>, String)> {
+        let asset = self.doc.assets.get(&id)?;
+        match asset.output_bytes() {
+            Ok(out) => {
+                let name = asset.name.clone();
+                if let Some(w) = out.warning {
+                    self.warn(w);
+                }
+                Some((out.bytes, name))
+            }
+            Err(e) => {
+                let w = format!("image `{}` was skipped: {e}", asset.name);
+                self.warn(w);
+                None
+            }
+        }
+    }
+
     pub(super) fn load_image(&mut self, id: AssetId) -> Option<Image> {
         if let Some(i) = self.images.get(&id) {
             return i.clone();
         }
         let asset = self.doc.assets.get(&id)?.clone();
-        let source = match asset.data.load() {
-            Ok(bytes) => bytes,
-            Err(e) => {
-                self.warn(format!("image `{}` was skipped: {e}", asset.name));
-                self.images.insert(id, None);
-                return None;
-            }
+        let Some((source, _)) = self.asset_bytes(id) else {
+            self.images.insert(id, None);
+            return None;
         };
         // Use the same EPS preview as the renderer, preserving CMYK TIFF inks below. The
         // content cache is keyed on the bytes actually converted, so equal previews share one.
@@ -198,10 +214,8 @@ impl Exporter<'_> {
     /// A placed PDF goes in as vectors (the page as a form XObject). `false` when `g` is not one.
     fn graphic_placed_pdf(&mut self, s: &mut Surface, g: &designcraft_doc::Graphic, hidden: Option<&[String]>) -> bool {
         let doc = self.doc;
-        let Some((asset, bytes)) = doc.assets.get(&g.asset).and_then(|a| Some((a, a.data.load().ok()?))).filter(|(_, b)| b.starts_with(b"%PDF"))
-        else {
-            return false;
-        };
+        let Some(asset) = doc.assets.get(&g.asset) else { return false };
+        let Some((bytes, _)) = self.asset_bytes(g.asset).filter(|(b, _)| b.starts_with(b"%PDF")) else { return false };
         // Cropped to a box: the whole page, placed so that the box spans graphic space.
         let shown = asset.shown_box();
         let [l, t, r, b] = shown.unwrap_or([0.0, 0.0, 1.0, 1.0]);
@@ -270,11 +284,9 @@ impl Exporter<'_> {
 
     /// A placed SVG goes in as vectors too. `false` when `g` is not one.
     fn graphic_placed_svg(&mut self, s: &mut Surface, g: &designcraft_doc::Graphic) -> bool {
-        let Some((asset, bytes)) =
-            self.doc.assets.get(&g.asset).and_then(|a| Some((a, a.data.load().ok()?))).filter(|(_, b)| designcraft_images::is_svg(b))
-        else {
-            return false;
-        };
+        let doc = self.doc;
+        let Some(asset) = doc.assets.get(&g.asset) else { return false };
+        let Some((bytes, _)) = self.asset_bytes(g.asset).filter(|(b, _)| designcraft_images::is_svg(b)) else { return false };
         let Some(size) = Size::from_wh(g.size.0.max(1e-3) as f32, g.size.1.max(1e-3) as f32) else { return true };
         let tree = self
             .svgs
@@ -306,7 +318,7 @@ impl Exporter<'_> {
         if g.fill.is_none() {
             return false;
         }
-        let Some(bytes) = self.doc.assets.get(&g.asset).and_then(|a| a.data.load().ok()) else { return false };
+        let Some((bytes, _)) = self.asset_bytes(g.asset) else { return false };
         let Some(tone) = designcraft_images::tone(&bytes) else { return false };
         let Some(paint) = self.swatch_color(&g.fill.swatch, g.fill.tint) else { return false };
         let Some(coverage) = designcraft_images::decode_rgba(&bytes).and_then(|img| CoverageImage::new(&img)) else { return false };

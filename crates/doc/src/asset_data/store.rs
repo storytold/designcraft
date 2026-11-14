@@ -28,6 +28,12 @@ pub trait Loader: Send + Sync {
     /// hash is `source.hash`. Other bytes are [`Unavailable::Modified`]; no file is
     /// [`Unavailable::Missing`]; one over [`MAX_LINKED_BYTES`] is [`Unavailable::TooLarge`].
     fn load(&self, source: &LinkedSource, trusted: Option<Fingerprint>) -> Result<Loaded, Unavailable>;
+
+    /// The bytes the file `source` names has now, whatever they are (for output that uses the
+    /// current file of a modified link). Never cached.
+    fn load_current(&self, _source: &LinkedSource) -> Result<Vec<u8>, Unavailable> {
+        Err(Unavailable::NoLoader)
+    }
 }
 
 static LOADER: RwLock<Option<Arc<dyn Loader>>> = RwLock::new(None);

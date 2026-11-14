@@ -176,6 +176,19 @@ impl AssetData {
         }
     }
 
+    /// The bytes for output: [`Self::load`], or for a linked file that has changed the file's
+    /// current bytes, flagged `true`. Never cached.
+    pub fn load_for_output(&self) -> Result<(Arc<Vec<u8>>, bool), Unavailable> {
+        match self.load() {
+            Ok(b) => Ok((b, false)),
+            Err(Unavailable::Modified) => {
+                let (Some(source), Some(loader)) = (self.linked_source(), store::installed()) else { return Err(Unavailable::Modified) };
+                loader.load_current(source).map(|b| (Arc::new(b), true))
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     /// The bytes without reading anything: embedded ones, or linked ones the store holds.
     pub fn resident(&self) -> Option<Arc<Vec<u8>>> {
         match &self.repr {

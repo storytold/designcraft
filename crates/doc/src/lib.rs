@@ -653,7 +653,36 @@ pub struct Asset {
     pub pdf_box: Option<[f64; 4]>,
 }
 
+/// An asset's bytes for output ([`Asset::output_bytes`]) and what to tell the user about them.
+pub struct OutputBytes {
+    pub bytes: std::sync::Arc<Vec<u8>>,
+    /// A warning to report: the file on disk replaced a changed original, or the proxy stands in
+    /// for a missing one.
+    pub warning: Option<String>,
+}
+
 impl Asset {
+    /// The bytes an export uses: the original (a changed linked file's current bytes, with a
+    /// warning), or for a missing or unreadable one its proxy, with a warning. `Err` when
+    /// there is neither.
+    pub fn output_bytes(&self) -> std::result::Result<OutputBytes, Unavailable> {
+        match self.data.load_for_output() {
+            Ok((bytes, false)) => Ok(OutputBytes { bytes, warning: None }),
+            Ok((bytes, true)) => {
+                Ok(OutputBytes { bytes, warning: Some(format!("the linked file `{}` has changed; the file on disk is used", self.name)) })
+            }
+            Err(e) => {
+                let proxy = self.proxy.as_ref().and_then(|p| p.data.load().ok());
+                match proxy {
+                    Some(bytes) => {
+                        Ok(OutputBytes { bytes, warning: Some(format!("the linked file `{}` is unavailable ({e}); its preview is used", self.name)) })
+                    }
+                    None => Err(e),
+                }
+            }
+        }
+    }
+
     /// The part of the page a placed PDF shows, when [`Asset::pdf_box`] holds a usable box.
     pub fn shown_box(&self) -> Option<[f64; 4]> {
         self.shown(self.pdf_box?)

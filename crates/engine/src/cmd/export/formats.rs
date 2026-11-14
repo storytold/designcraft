@@ -48,9 +48,12 @@ fn eps_previews(d: &designcraft_doc::Document) -> (Cow<'_, designcraft_doc::Docu
     let mut out = Cow::Borrowed(d);
     let mut warnings = Vec::new();
     for id in used {
-        let Some((a, bytes)) = d.assets.get(&id).and_then(|a| Some((a, a.data.load().ok()?))).filter(|(_, b)| designcraft_images::is_eps(b)) else {
+        let Some((a, got)) = d.assets.get(&id).and_then(|a| Some((a, a.output_bytes().ok()?))) else { continue };
+        let bytes = got.bytes;
+        if !designcraft_images::is_eps(&bytes) {
             continue;
-        };
+        }
+        warnings.extend(got.warning);
         let png = designcraft_images::eps_png(&bytes);
         if png.is_none() {
             warnings.push(format!("{}: unusable EPS preview; graphic omitted", a.name));

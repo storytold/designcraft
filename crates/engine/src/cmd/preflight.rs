@@ -433,6 +433,21 @@ pub fn check_document(d: &Document, cache: &Cache, document: Option<&std::path::
                     page,
                 });
             }
+            // A linked file that is not the one placed: exports use the file as it is now.
+            if let Content::Graphic(g) = &it.content
+                && let Some(a) = d.assets.get(&g.asset)
+                && a.data.is_linked()
+                && !super::links::link_missing(a, document)
+                && a.data.load().err() == Some(designcraft_doc::Unavailable::Modified)
+            {
+                out.push(Issue {
+                    severity: "warning",
+                    kind: "modifiedLink",
+                    message: format!("Modified link: {} (exports use the file as it is now)", a.link.as_deref().unwrap_or(&a.name)),
+                    item: Some(it.id.0),
+                    page,
+                });
+            }
             match &it.content {
                 Content::Graphic(g) => match d.assets.get(&g.asset) {
                     None => out.push(Issue { severity: "error", kind: "missingLink", message: "Missing graphic".into(), item: Some(it.id.0), page }),
@@ -448,7 +463,7 @@ pub fn check_document(d: &Document, cache: &Cache, document: Option<&std::path::
                     }),
                     Some(a) => {
                         // Placed PDF and SVG pages export as vectors; `pixels` is only the preview's.
-                        let vector = a.data.load().is_ok_and(|b| designcraft_images::is_pdf(&b) || designcraft_images::is_svg(&b));
+                        let vector = a.output_bytes().is_ok_and(|o| designcraft_images::is_pdf(&o.bytes) || designcraft_images::is_svg(&o.bytes));
                         if let Some((pw, ph)) = a.pixels.filter(|_| !vector) {
                             // Measure each image axis in points, not its rotated bounding box or
                             // cropped frame. Either axis can fall below the minimum resolution.
