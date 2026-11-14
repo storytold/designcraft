@@ -1,6 +1,6 @@
 //! Type › Insert Footnote, Document Footnote Options, footnote inspection and editing.
 
-use designcraft_doc::{CellAddr, FootnoteOptions, ParaFormat, StoryId, TextSel};
+use designcraft_doc::{CellAddr, FootnoteOptions, ParaFormat, Story, StoryId, TABLE_ANCHOR, Table, TextSel};
 use serde_json::{Value, json};
 
 use super::{CommandSpec, bad, cmd, has_doc};
@@ -26,9 +26,33 @@ pub fn specs() -> Vec<CommandSpec> {
             has_doc,
             options
         ),
-        cmd!(query "footnote.list", "Footnotes", [], None, "{story?} → [{story, id, index, anchor, text}] in story order", has_doc, list),
-        cmd!("footnote.setText", "Set Footnote Text", [], None, "{story, id, text} — replaces the footnote's text", has_doc, set_text),
-        cmd!("footnote.delete", "Delete Footnote", [], None, "{story, id} — deletes the reference (and so the footnote)", has_doc, delete),
+        cmd!(
+            query "footnote.list",
+            "Footnotes",
+            [],
+            None,
+            "{story?} → [{story, id, index, anchor, text, table?, row?, col?}] in reading order within each story; a table cell's note also names its table and the cell's row and column, and its anchor is in the cell's text",
+            has_doc,
+            list
+        ),
+        cmd!(
+            "footnote.setText",
+            "Set Footnote Text",
+            [],
+            None,
+            "{story, id, text, table?, row?, col?} — replaces the footnote's text (a cell's note names its table and cell)",
+            has_doc,
+            set_text
+        ),
+        cmd!(
+            "footnote.delete",
+            "Delete Footnote",
+            [],
+            None,
+            "{story, id, table?, row?, col?} — deletes the reference (and so the footnote); a cell's note names its table and cell",
+            has_doc,
+            delete
+        ),
         cmd!(
             noundo "footnote.goToReference",
             "Go to Footnote Reference",
@@ -121,7 +145,11 @@ fn note_id(p: &Value, cmd: &str) -> Result<u64> {
 /// Moves a caret or selection in story `sid`'s own text (not a cell or note) back by the length of `range` when it lies
 /// after `range.start`, or to `range.start` when it lies inside `range`.
 pub(super) fn follow_delete(sel: &mut designcraft_doc::Selection, sid: StoryId, range: std::ops::Range<usize>) {
-    if let Some(t) = sel.text.as_mut().filter(|t| t.story == sid && t.cell.is_none()) {
+    follow_delete_in_text(sel, sid, None, range);
+}
+
+fn follow_delete_in_text(sel: &mut designcraft_doc::Selection, sid: StoryId, cell: Option<CellAddr>, range: std::ops::Range<usize>) {
+    if let Some(t) = sel.text.as_mut().filter(|t| t.story == sid && t.cell == cell) {
         let back = |i: usize| if i > range.start { i - (i - range.start).min(range.len()) } else { i };
         t.anchor = back(t.anchor);
         t.focus = back(t.focus);
@@ -133,24 +161,98 @@ fn list(s: &mut Session, p: &Value) -> Result<Value> {
     let only = p.get("story").and_then(Value::as_u64).map(StoryId);
     let mut out = Vec::new();
     for st in d.stories.values().filter(|st| only.is_none_or(|o| o == st.id)) {
-        for (k, n) in st.notes.iter().enumerate() {
-            out.push(json!({"story": st.id.0, "id": n.id, "index": k, "anchor": st.note_anchor(n.id), "text": n.text.text}));
-        }
+        collect_notes(st, st.id, None, &mut out);
     }
     Ok(Value::Array(out))
+}
+
+/// Append `st`'s notes, and those of the tables anchored in it, in reading order. `cell` is the
+/// table cell `st` is (`None` for a story's own text), and `root` is the document story the notes
+/// belong to, so a cell's note names the story a command must open.
+fn collect_notes(st: &Story, root: StoryId, cell: Option<(u64, usize, usize)>, out: &mut Vec<Value>) {
+    let mut k = 0;
+    for (at, ch) in st.text.char_indices() {
+        if ch == designcraft_doc::FOOTNOTE_REF {
+            if let Some(n) = st.notes.get(k) {
+                let mut o = serde_json::Map::new();
+                o.insert("story".into(), json!(root.0));
+                o.insert("id".into(), json!(n.id));
+                o.insert("index".into(), json!(k));
+                o.insert("anchor".into(), json!(at));
+                o.insert("text".into(), json!(n.text.text));
+                if let Some((table, row, col)) = cell {
+                    o.insert("table".into(), json!(table));
+                    o.insert("row".into(), json!(row));
+                    o.insert("col".into(), json!(col));
+                }
+                out.push(Value::Object(o));
+            }
+            k += 1;
+        } else if ch == TABLE_ANCHOR && cell.is_none() {
+            // ponytail: a table nested in a cell (only imports make one) is skipped: the commands
+            // resolve `table` in the story's own tables, so its notes need a full cell path first.
+            let Some(t) = st.table_at(at).and_then(|id| st.tables.get(&id)) else { continue };
+            for (row, col) in cell_reading_order(t) {
+                if let Some(c) = t.cell(row, col) {
+                    collect_notes(&c.text, root, Some((t.id, row, col)), out);
+                }
+            }
+        }
+    }
+}
+
+/// The cells a table is read in: row by row, each from its first column (on the right in a
+/// right-to-left table, which lays its columns out mirrored).
+fn cell_reading_order(t: &Table) -> Vec<(usize, usize)> {
+    let (nr, nc) = (t.nrows(), t.ncols());
+    let owners = t.owners();
+    let mut cells = Vec::new();
+    for r in 0..nr {
+        for c in 0..nc {
+            let Some(at) = r.checked_mul(nc).and_then(|x| x.checked_add(c)) else { continue };
+            if owners.get(at) == Some(&(r, c)) {
+                cells.push((r, c));
+            }
+        }
+    }
+    cells
+}
+
+/// The cell a footnote command names, when `table` is given (`row` and `col` then follow it).
+fn note_cell(p: &Value, cmd: &str) -> Result<Option<CellAddr>> {
+    let Some(table) = p.get("table").filter(|v| !v.is_null()) else {
+        if ["row", "col"].iter().any(|key| p.get(key).is_some_and(|v| !v.is_null())) {
+            return Err(bad(cmd, "a cell needs `table`"));
+        }
+        return Ok(None);
+    };
+    let table = table.as_u64().ok_or_else(|| bad(cmd, "`table` must be a table id"))?;
+    let index = |key: &str| -> Result<usize> {
+        let v = p.get(key).and_then(Value::as_u64).ok_or_else(|| bad(cmd, format!("a cell needs `{key}`")))?;
+        usize::try_from(v).map_err(|_| bad(cmd, format!("`{key}` is too large")))
+    };
+    Ok(Some(CellAddr { table, row: index("row")?, col: index("col")? }))
+}
+
+fn note_story<'a>(d: &'a mut designcraft_doc::Document, sid: StoryId, cell: Option<CellAddr>, cmd: &str) -> Result<&'a mut Story> {
+    d.text_story_mut(sid, cell).ok_or_else(|| match cell {
+        Some(c) => bad(cmd, format!("no table {} cell {}:{} in story {}", c.table, c.row, c.col, sid.0)),
+        None => bad(cmd, format!("no story {}", sid.0)),
+    })
 }
 
 fn set_text(s: &mut Session, p: &Value) -> Result<Value> {
     let sid = story_id(p, "footnote.setText")?;
     let id = note_id(p, "footnote.setText")?;
+    let cell = note_cell(p, "footnote.setText")?;
     let text = super::text_param(p, "text");
     s.edit(|d, sel| {
-        let st = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
+        let st = note_story(d, sid, cell, "footnote.setText")?;
         let n = st.note_mut(id).ok_or_else(|| bad("footnote.setText", format!("no footnote {id}")))?;
         let len = n.text.len();
         n.text.replace(0..len, &text);
         // A caret in the replaced text goes to its end.
-        if let Some(t) = sel.text.as_mut().filter(|t| t.story == sid && t.cell == Some(CellAddr::footnote(id))) {
+        if let Some(t) = sel.text.as_mut().filter(|t| cell.is_none() && t.story == sid && t.cell == Some(CellAddr::footnote(id))) {
             (t.anchor, t.focus) = (n.text.len(), n.text.len());
         }
         Ok(Value::Null)
@@ -160,14 +262,17 @@ fn set_text(s: &mut Session, p: &Value) -> Result<Value> {
 fn delete(s: &mut Session, p: &Value) -> Result<Value> {
     let sid = story_id(p, "footnote.delete")?;
     let id = note_id(p, "footnote.delete")?;
+    let cell = note_cell(p, "footnote.delete")?;
     let moved = s.edit(|d, sel| {
-        let st = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
+        let st = note_story(d, sid, cell, "footnote.delete")?;
         let at = st.note_anchor(id).ok_or_else(|| bad("footnote.delete", format!("no footnote {id}")))?;
         let len = designcraft_doc::FOOTNOTE_REF.len_utf8();
-        follow_delete(sel, sid, at..at + len);
+        follow_delete_in_text(sel, sid, cell, at..at + len);
         st.delete(at..at + len);
-        d.adjust_text_ranges(sid, at..at + len, 0);
-        let moved = sel.text.is_some_and(|t| t.story == sid && t.cell == Some(CellAddr::footnote(id)));
+        if cell.is_none() {
+            d.adjust_text_ranges(sid, at..at + len, 0);
+        }
+        let moved = cell.is_none() && sel.text.is_some_and(|t| t.story == sid && t.cell == Some(CellAddr::footnote(id)));
         if moved {
             sel.text = Some(TextSel::caret(sid, at));
         }
@@ -318,5 +423,162 @@ mod tests {
         assert_eq!((t.anchor, t.focus), (4, 4));
         s.execute("text.delete", &json!({})).unwrap();
         assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().notes[0].text.text, "é");
+    }
+
+    /// A story with a note before a 2 × 2 table, notes in three cells (row 1 left, row 1 right,
+    /// row 2 right) and a note after it — the shape of the shared `cell-footnotes.idml` repro.
+    fn session_with_cell_notes() -> (Session, StoryId, u64) {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 1})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 300, 400], "content": "text", "text": "Before table. After table."})).unwrap();
+        let sid = s.doc().unwrap().doc.item(designcraft_doc::ItemId(r["id"].as_u64().unwrap())).unwrap().text_frame().unwrap().story;
+        let at = "Before table.".len();
+        s.execute("text.select", &json!({"story": sid.0, "anchor": at, "focus": at})).unwrap();
+        s.execute("footnote.insert", &json!({"text": "Note 1 (body)."})).unwrap();
+        let after_ref = at + designcraft_doc::FOOTNOTE_REF.len_utf8();
+        s.execute("text.select", &json!({"story": sid.0, "anchor": after_ref, "focus": after_ref})).unwrap();
+        let tid = s.execute("table.insert", &json!({"rows": 2, "cols": 2})).unwrap()["table"].as_u64().unwrap();
+        {
+            let doc = std::sync::Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+            for (row, col, text, note) in [
+                (0, 0, "Left 1", "Note A (left cell, row 1)."),
+                (0, 1, "Right 1", "Note B (right cell, row 1)."),
+                (1, 1, "Right 2", "Note C (right cell, row 2)."),
+            ] {
+                let st = doc.text_story_mut(sid, Some(CellAddr { table: tid, row, col })).unwrap();
+                st.insert(st.len(), text);
+                st.insert_note(st.len(), note, ParaFormat::default());
+            }
+        }
+        let after = s.doc().unwrap().doc.story(sid).unwrap().text.find("After table").unwrap() + "After table".len();
+        s.execute("text.select", &json!({"story": sid.0, "anchor": after, "focus": after})).unwrap();
+        s.execute("footnote.insert", &json!({"text": "Note 2 (body)."})).unwrap();
+        (s, sid, tid)
+    }
+
+    #[test]
+    fn list_includes_table_cell_notes_in_reading_order() {
+        let (mut s, sid, tid) = session_with_cell_notes();
+        let l = s.execute("footnote.list", &json!({})).unwrap();
+        let notes = l.as_array().unwrap();
+        let texts: Vec<&str> = notes.iter().filter_map(|n| n["text"].as_str()).collect();
+        assert_eq!(
+            texts,
+            ["Note 1 (body).", "Note A (left cell, row 1).", "Note B (right cell, row 1).", "Note C (right cell, row 2).", "Note 2 (body)."]
+        );
+        // Body notes keep the shape they had: no cell fields.
+        assert!(notes[0].get("table").is_none());
+        assert!(notes[0].get("row").is_none());
+        assert_eq!(notes[0]["index"], 0);
+        assert_eq!(notes[4]["index"], 1);
+        // A cell's note names the document story, its table and the cell to open and edit it.
+        let at = |n: &Value| (n["story"].as_u64(), n["table"].as_u64(), n["row"].as_u64(), n["col"].as_u64());
+        assert_eq!(at(&notes[1]), (Some(sid.0), Some(tid), Some(0), Some(0)));
+        assert_eq!(at(&notes[2]), (Some(sid.0), Some(tid), Some(0), Some(1)));
+        assert_eq!(at(&notes[3]), (Some(sid.0), Some(tid), Some(1), Some(1)));
+        assert_eq!(notes[1]["anchor"], 6, "the reference offset within the cell's text");
+    }
+
+    #[test]
+    fn list_leaves_out_notes_in_nested_tables() {
+        // An imported cell can hold a nested table whose id matches the outer one; the footnote
+        // commands resolve a listed cell in the story's own tables, so listing it would point there.
+        let (mut s, sid, tid) = session_with_cell_notes();
+        {
+            let doc = std::sync::Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+            let mut nested = Table::new(tid, 1, 1, 0, 0, 100.0);
+            nested.cell_mut(0, 0).unwrap().text.insert_note(0, "Nested note.", ParaFormat::default());
+            let outer = doc.text_story_mut(sid, Some(CellAddr { table: tid, row: 0, col: 0 })).unwrap();
+            let end = outer.len();
+            outer.insert_table(end, nested);
+        }
+        let l = s.execute("footnote.list", &json!({})).unwrap();
+        let texts: Vec<&str> = l.as_array().unwrap().iter().filter_map(|n| n["text"].as_str()).collect();
+        assert!(!texts.contains(&"Nested note."), "{texts:?}");
+        assert!(texts.contains(&"Note A (left cell, row 1)."), "{texts:?}");
+    }
+
+    #[test]
+    fn table_cells_are_read_from_each_rows_first_column() {
+        let mut t = Table::new(1, 2, 2, 0, 0, 100.0);
+        assert_eq!(cell_reading_order(&t), [(0, 0), (0, 1), (1, 0), (1, 1)]);
+        // A right-to-left table lays column 0 out on the right, so it is still read first.
+        t.options.direction = designcraft_doc::TextDirection::RightToLeft;
+        assert_eq!(cell_reading_order(&t), [(0, 0), (0, 1), (1, 0), (1, 1)]);
+    }
+
+    #[test]
+    fn list_finds_cell_notes_when_the_story_has_no_body_notes() {
+        let (mut s, sid, tid) = session_with_cell_notes();
+        let ids: Vec<u64> = s.doc().unwrap().doc.story(sid).unwrap().notes.iter().map(|n| n.id).collect();
+        for id in ids {
+            s.execute("footnote.delete", &json!({"story": sid.0, "id": id})).unwrap();
+        }
+        let l = s.execute("footnote.list", &json!({})).unwrap();
+        let notes = l.as_array().unwrap();
+        assert_eq!(notes.len(), 3, "the three cell notes remain, with the empty cell contributing none");
+        assert!(notes.iter().all(|n| n["table"] == tid));
+    }
+
+    #[test]
+    fn a_table_cell_footnote_can_be_edited_and_deleted_by_its_listed_cell() {
+        let (mut s, sid, tid) = session_with_cell_notes();
+        let notes = s.execute("footnote.list", &json!({})).unwrap();
+        let id = notes[3]["id"].as_u64().unwrap();
+        let cell = CellAddr { table: tid, row: 1, col: 1 };
+        // A cell note's id is only unique within its story: the cell fields pick it out.
+        assert!(s.execute("footnote.setText", &json!({"story": sid.0, "id": id, "table": tid, "text": "x"})).is_err());
+        s.execute("footnote.setText", &json!({"story": sid.0, "id": id, "table": tid, "row": 1, "col": 1, "text": "Changed."})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.text_story(sid, Some(cell)).unwrap().notes[0].text.text, "Changed.");
+        assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().notes[0].text.text, "Note 1 (body).");
+        s.execute("footnote.delete", &json!({"story": sid.0, "id": id, "table": tid, "row": 1, "col": 1})).unwrap();
+        let d = s.doc().unwrap();
+        let cell_story = d.doc.text_story(sid, Some(cell)).unwrap();
+        assert!(cell_story.notes.is_empty());
+        assert!(!cell_story.text.contains(designcraft_doc::FOOTNOTE_REF));
+        assert_eq!(d.doc.story(sid).unwrap().notes.len(), 2, "the body notes stay");
+        assert_eq!(d.doc.story(sid).unwrap().text.matches(designcraft_doc::FOOTNOTE_REF).count(), 2);
+    }
+
+    #[test]
+    fn cell_note_edits_leave_a_body_note_caret_unchanged() {
+        let (mut s, sid, tid) = session_with_cell_notes();
+        let id = s.doc().unwrap().doc.story(sid).unwrap().notes[0].id;
+        let caret = TextSel { cell: Some(CellAddr::footnote(id)), ..TextSel::caret(sid, 4) };
+        s.doc_mut().unwrap().selection.text = Some(caret);
+        s.execute("footnote.setText", &json!({"story": sid.0, "id": id, "table": tid, "row": 0, "col": 0, "text": "x"})).unwrap();
+        assert_eq!(s.doc().unwrap().selection.text, Some(caret));
+        s.execute("footnote.delete", &json!({"story": sid.0, "id": id, "table": tid, "row": 0, "col": 0})).unwrap();
+        assert_eq!(s.doc().unwrap().selection.text, Some(caret));
+    }
+
+    #[test]
+    fn deleting_a_cell_note_adjusts_only_a_selection_in_that_cell() {
+        for same_cell in [true, false] {
+            let (mut s, sid, tid) = session_with_cell_notes();
+            let cell = CellAddr { table: tid, row: 0, col: 0 };
+            let st = s.doc().unwrap().doc.text_story(sid, Some(cell)).unwrap();
+            let id = st.notes[0].id;
+            let end = st.len();
+            let selected = CellAddr { col: usize::from(!same_cell), ..cell };
+            s.doc_mut().unwrap().selection.text = Some(TextSel { cell: Some(selected), ..TextSel::caret(sid, end) });
+            s.execute("footnote.delete", &json!({"story": sid.0, "id": id, "table": tid, "row": 0, "col": 0})).unwrap();
+            let t = s.doc().unwrap().selection.text.unwrap();
+            let expected = if same_cell { end - designcraft_doc::FOOTNOTE_REF.len_utf8() } else { end };
+            assert_eq!((t.anchor, t.focus, t.cell), (expected, expected, Some(selected)));
+        }
+    }
+
+    #[test]
+    fn partial_cell_addresses_cannot_change_a_body_note() {
+        let (mut s, sid, _) = session_with_cell_notes();
+        let id = s.doc().unwrap().doc.story(sid).unwrap().notes[0].id;
+        for fields in [json!({"row": 0}), json!({"col": 0}), json!({"table": null, "row": 0, "col": 0})] {
+            let mut p = json!({"story": sid.0, "id": id, "text": "changed"});
+            merge(&mut p, &fields);
+            assert!(s.execute("footnote.setText", &p).is_err());
+            assert!(s.execute("footnote.delete", &p).is_err());
+        }
+        assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().notes[0].text.text, "Note 1 (body).");
     }
 }
