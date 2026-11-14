@@ -310,6 +310,9 @@ fn constrain_45(d: Vec2) -> Vec2 {
 
 pub struct SelectionTool {
     direct: bool,
+    /// The Free Transform tool (E): the Selection tool's box, whose handles scale what the
+    /// objects hold too (as Cmd does with the Selection tool); no text or thread clicks.
+    free: bool,
     drag: Drag,
     hover_handle: Option<usize>,
     guides: Vec<Overlay>,
@@ -330,6 +333,7 @@ impl SelectionTool {
     pub fn new(direct: bool) -> Self {
         Self {
             direct,
+            free: false,
             drag: Drag::None,
             hover_handle: None,
             guides: vec![],
@@ -341,10 +345,15 @@ impl SelectionTool {
         }
     }
 
+    /// Move, scale, rotate or shear a selection with its contents.
+    pub fn free_transform() -> Self {
+        Self { free: true, ..Self::new(false) }
+    }
+
     /// [`bracket_at`] for this tool. With Direct Selection an anchor under the pointer wins: the
     /// default brackets sit on the path's end anchors.
     fn bracket_at(&self, cx: &ToolContext, p: Point) -> Option<(ItemId, bool)> {
-        if self.direct && anchor_at(cx, p).is_some() {
+        if self.free || (self.direct && anchor_at(cx, p).is_some()) {
             return None;
         }
         bracket_at(cx, p)
@@ -358,7 +367,7 @@ impl SelectionTool {
 
     /// The frame whose live-corner widget is under `p` (not while editing its corners).
     fn widget_at(&self, cx: &ToolContext, p: Point) -> Option<LiveFrame> {
-        if self.direct || self.live_corners(cx).is_some() {
+        if self.direct || self.free || self.live_corners(cx).is_some() {
             return None;
         }
         corners::live_frame(cx).filter(|f| (f.widget(cx.zoom) - p).hypot() <= cx.tol(corners::HIT_PX))
@@ -366,7 +375,7 @@ impl SelectionTool {
 
     /// The frame and the index of the live-corner diamond under `p`.
     fn diamond_at(&self, cx: &ToolContext, p: Point) -> Option<(LiveFrame, usize)> {
-        if self.direct {
+        if self.direct || self.free {
             return None;
         }
         let f = self.live_corners(cx)?;
@@ -605,6 +614,27 @@ fn resize_edges_rect(from: Rect, handle: usize, p: Point) -> Rect {
         _ => x0 = p.x,
     }
     Rect::new(x0, y0, x1, y1)
+}
+
+/// The `transform.shear` a Free Transform side-handle drag from `start` to `p` makes on `from` (spread
+/// coordinates): the top and bottom handles slide sideways, the left and right ones up and down,
+/// about the opposite edge (or the centre).
+fn free_shear(from: Rect, handle: usize, start: Point, p: Point, centre: bool) -> Option<Value> {
+    let c = from.center();
+    // The edge dragged, the point that stays, and how far the edge has slid.
+    let (horizontal, edge, origin, slide) = match handle {
+        1 => (true, from.y0, Point::new(c.x, if centre { c.y } else { from.y1 }), p.x - start.x),
+        5 => (true, from.y1, Point::new(c.x, if centre { c.y } else { from.y0 }), p.x - start.x),
+        3 => (false, from.x1, Point::new(if centre { c.x } else { from.x0 }, c.y), p.y - start.y),
+        7 => (false, from.x0, Point::new(if centre { c.x } else { from.x1 }, c.y), p.y - start.y),
+        _ => return None,
+    };
+    let span = edge - if horizontal { origin.y } else { origin.x };
+    if span.abs() < 1e-9 || !slide.is_finite() {
+        return None;
+    }
+    let angle = (slide / span).atan().to_degrees().clamp(-85.0, 85.0);
+    Some(json!({"angle": angle, "axis": if horizontal { "horizontal" } else { "vertical" }, "origin": [origin.x, origin.y]}))
 }
 
 fn finish_resize(from: Rect, handle: usize, rect: Rect, m: Mods) -> Rect {
@@ -852,7 +882,8 @@ impl SelectionTool {
         }
         // A selected placed graphic's own handles resize it inside its frame (the
         // frame's anchors, under Direct Selection, come first).
-        if let Some((id, h)) = content_handle_at(cx, p)
+        if !self.free
+            && let Some((id, h)) = content_handle_at(cx, p)
             && let (Some(loc), Some((_, b))) = (cx.doc.find(id), selected_graphic(cx))
         {
             let turns = cx.layout.slot(loc.spread).map_or(0, |s| s.rotation as usize);
@@ -894,6 +925,7 @@ impl SelectionTool {
         }
         // The content grabber: select the frame's content; a drag moves it.
         if !self.direct
+            && !self.free
             && !ev.mods.shift
             && let Some(id) = grabber_at(cx, p)
         {
@@ -934,7 +966,7 @@ impl SelectionTool {
                     // key object, on release so that a drag still moves them all.
                     self.key_release = Some(id.0);
                 }
-                let content = self.direct || on_selected_content(cx, p);
+                let content = !self.free && (self.direct || on_selected_content(cx, p));
                 self.drag = Drag::Pending { start: p, hit: true, content };
                 let _ = sr;
                 out
@@ -1090,8 +1122,17 @@ impl SelectionTool {
             }
             movement @ Drag::Move { .. } => self.pointer_drag_move(cx, ev, movement),
             Drag::Resize { handle, start, from, spread } => {
-                let _ = start;
                 let pointer = cx.layout.to_spread(spread, p);
+                // Free Transform: Cmd during a side handle's drag shears, the opposite edge
+                // staying put (Alt: the centre, so both sides move), as in InDesign.
+                if self.free
+                    && ev.mods.cmd
+                    && handle % 2 == 1
+                    && let Some(shear) = free_shear(from, handle, cx.layout.to_spread(spread, start), pointer, ev.mods.alt)
+                {
+                    self.guides.clear();
+                    return vec![Action::Preview("transform.shear".into(), shear)];
+                }
                 let raw = resize_edges_rect(from, handle, pointer);
                 let mut to = resize_rect(from, handle, pointer, ev.mods);
                 // Space while dragging: Live Distribute (several objects keep their size).
@@ -1134,7 +1175,7 @@ impl SelectionTool {
                 }
                 vec![Action::Preview(
                     "transform.resize".into(),
-                    json!({"from": rect_json(from), "to": rect_json(to), "content": ev.mods.cmd, "distribute": distribute}),
+                    json!({"from": rect_json(from), "to": rect_json(to), "content": ev.mods.cmd || self.free, "distribute": distribute}),
                 )]
             }
             Drag::ContentResize { id, handle, from, spread } => {
@@ -1259,7 +1300,13 @@ impl SelectionTool {
 
 impl Tool for SelectionTool {
     fn id(&self) -> &'static str {
-        if self.direct { "directSelection" } else { "selection" }
+        if self.direct {
+            "directSelection"
+        } else if self.free {
+            "freeTransform"
+        } else {
+            "selection"
+        }
     }
 
     fn pointer(&mut self, cx: &ToolContext, ev: &PointerEvent) -> Vec<Action> {
@@ -1271,6 +1318,7 @@ impl Tool for SelectionTool {
             self.live = None;
         }
         if !self.direct
+            && !self.free
             && let Some(actions) = self.thread_pointer(cx, ev)
         {
             return actions;
@@ -1286,7 +1334,8 @@ impl Tool for SelectionTool {
             return vec![Action::Exec("object.fit".into(), json!({"mode": "fitFrameToContent", "axis": fitting_axis(cx, h)}))];
         }
         // The second press of a double click on a text frame: edit its text.
-        if matches!(ev.kind, PointerKind::Down | PointerKind::DoubleClick)
+        if !self.free
+            && matches!(ev.kind, PointerKind::Down | PointerKind::DoubleClick)
             && ev.click_count() == 2
             && let Some(actions) = edit_text_at(cx, p)
         {
@@ -1294,8 +1343,9 @@ impl Tool for SelectionTool {
             return actions;
         }
         // The second press of a double click on a frame with content: toggle between the frame and
-        // its content.
+        // its content. Free Transform has no content handles, so it stays on the frame.
         if !self.direct
+            && !self.free
             && matches!(ev.kind, PointerKind::Down | PointerKind::DoubleClick)
             && ev.click_count() == 2
             && let Some(id) = cx.hit(p).map(|(_, id)| cx.doc.top_level_of(id).unwrap_or(id))
@@ -1448,11 +1498,11 @@ impl Tool for SelectionTool {
             Drag::Move { .. } | Drag::Resize { .. } | Drag::Rotate { .. } | Drag::Anchor { .. } => self.guides.clone(),
             // The whole graphic shows while it's resized, outside the frame too.
             Drag::ContentResize { id, .. } => vec![Overlay::ContentGhost(*id)],
-            Drag::None | Drag::Bracket { .. } => brackets(cx),
+            Drag::None | Drag::Bracket { .. } if !self.free => brackets(cx),
             _ => vec![],
         };
         // The loaded text cursor places text: the frame's corners aren't edited meanwhile.
-        if !self.direct && self.loaded.and_then(|l| l.resolve(cx.doc)).is_none() {
+        if !self.direct && !self.free && self.loaded.and_then(|l| l.resolve(cx.doc)).is_none() {
             if let Some(f) = self.live_corners(cx) {
                 out.extend(f.diamonds(cx.zoom).into_iter().map(Overlay::LiveCornerDiamond));
             } else if let Some(f) = corners::live_frame(cx) {
