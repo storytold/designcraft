@@ -375,6 +375,49 @@ fn cmyk_tiff_keeps_inks() {
     assert_eq!(decode_cmyk_tiff(&b[..b.len() / 2]), None, "truncated");
 }
 
+/// A decode holds the samples as decoded beside the copies they are converted to.
+#[test]
+fn decode_bytes_per_pixel_counts_the_stored_samples_and_their_copy() {
+    use tiff::encoder::colortype::{CMYK8, CMYK16, CMYKA8, RGB16};
+    // CMYK: the stored samples, the 8-bit CMYKA copy, and the ink and alpha planes split from it.
+    assert_eq!(decode_bytes_per_pixel(&tiff_of::<CMYK8>(1, 1, &[0; 4], false)), 14);
+    assert_eq!(decode_bytes_per_pixel(&tiff_of::<CMYKA8>(1, 1, &[0; 5], true)), 15);
+    assert_eq!(decode_bytes_per_pixel(&tiff_of::<CMYK16>(1, 1, &[0; 4], false)), 18);
+    assert_eq!(decode_bytes_per_pixel(&tiff_of::<Cmyka16>(1, 1, &[0; 5], true)), 20);
+    // Two copies of the 16-bit samples while they are turned upright.
+    assert_eq!(decode_bytes_per_pixel(&tiff_of::<RGB16>(1, 1, &[0; 3], false)), 12);
+    // A progressive JPEG's coefficients beside its 8-bit RGB output.
+    assert_eq!(decode_bytes_per_pixel(&progressive_jpeg(64, 48, 3)), 9);
+    let mut psd = b"8BPS".to_vec();
+    psd.resize(26, 0);
+    assert_eq!(decode_bytes_per_pixel(&psd), 9);
+    assert_eq!(decode_bytes_per_pixel(b"not an image"), 8);
+    // An EPS counts as its TIFF preview, or 8 without one.
+    let ps = b"%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 10 10\nnewpath\n%%EOF\n";
+    assert_eq!(decode_bytes_per_pixel(ps), 8);
+    let preview = tiff_of::<CMYK16>(1, 1, &[0; 4], false);
+    let mut dos = vec![0xC5, 0xD0, 0xD3, 0xC6];
+    for v in [30, ps.len(), 0, 0, 30 + ps.len(), preview.len()] {
+        dos.extend((v as u32).to_le_bytes());
+    }
+    dos.extend([0xFF, 0xFF]);
+    dos.extend_from_slice(ps);
+    dos.extend_from_slice(&preview);
+    assert_eq!(decode_bytes_per_pixel(&dos), 18);
+}
+
+/// 16-bit CMYK with an alpha sample, which the `tiff` encoder has no type for.
+struct Cmyka16;
+impl tiff::encoder::colortype::ColorType for Cmyka16 {
+    type Inner = u16;
+    const TIFF_VALUE: tiff::tags::PhotometricInterpretation = tiff::tags::PhotometricInterpretation::CMYK;
+    const BITS_PER_SAMPLE: &[u16] = &[16; 5];
+    const SAMPLE_FORMAT: &[tiff::tags::SampleFormat] = &[tiff::tags::SampleFormat::Uint; 5];
+    fn horizontal_predict(row: &[u16], result: &mut Vec<u16>) {
+        result.extend_from_slice(row);
+    }
+}
+
 /// Indexed colour (PhotometricInterpretation 3), which the `tiff` encoder has no type for.
 struct Palette<const BITS: u16>;
 impl<const BITS: u16> tiff::encoder::colortype::ColorType for Palette<BITS> {

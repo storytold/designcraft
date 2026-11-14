@@ -25,7 +25,8 @@ pub(super) fn print_booklet(s: &mut Session, p: &Value) -> Result<Value> {
     }
 }
 
-/// HTML and reflowable EPUB embed the EPS preview; keep the session's source bytes intact.
+/// HTML and reflowable EPUB read embedded bytes only: every used linked asset gets its output
+/// bytes embedded, and EPS its preview. The session's own assets stay as they are.
 fn eps_previews(d: &designcraft_doc::Document) -> (Cow<'_, designcraft_doc::Document>, Vec<String>) {
     // Match the exporter's reading order (including Article exclusions), not every asset
     // in the document: unused or hidden graphics must not prevent an export.
@@ -48,17 +49,40 @@ fn eps_previews(d: &designcraft_doc::Document) -> (Cow<'_, designcraft_doc::Docu
     let mut out = Cow::Borrowed(d);
     let mut warnings = Vec::new();
     for id in used {
-        let Some(a) = d.assets.get(&id).filter(|a| designcraft_images::is_eps(&a.data)) else {
-            continue;
+        let Some(a) = d.assets.get(&id) else { continue };
+        let linked = a.data.is_linked();
+        let got = match a.output_bytes() {
+            Ok(got) => got,
+            Err(e) => {
+                if linked {
+                    warnings.push(format!("{}: the linked file is unavailable ({e}); graphic omitted", a.name));
+                }
+                continue;
+            }
         };
-        let png = designcraft_images::eps_png(&a.data);
-        if png.is_none() {
-            warnings.push(format!("{}: unusable EPS preview; graphic omitted", a.name));
+        let bytes = got.bytes;
+        let eps = designcraft_images::is_eps(&bytes);
+        // Embedded bytes the writers read as they are; a linked asset's bytes are read here
+        // (the writers only see embedded data), and EPS is replaced by its preview.
+        if !eps && !linked {
+            continue;
         }
+        warnings.extend(got.warning);
+        let data = if eps {
+            let png = designcraft_images::eps_png(&bytes);
+            if png.is_none() {
+                warnings.push(format!("{}: unusable EPS preview; graphic omitted", a.name));
+            }
+            png.unwrap_or_default()
+        } else {
+            bytes.as_ref().clone()
+        };
         if let Some(a) = out.to_mut().assets.get_mut(&id) {
             let a = Arc::make_mut(a);
-            a.mime = "image/png".into();
-            a.data = Arc::new(png.unwrap_or_default());
+            if eps {
+                a.mime = "image/png".into();
+            }
+            a.data = designcraft_doc::AssetData::embedded(data);
         }
     }
     (out, warnings)

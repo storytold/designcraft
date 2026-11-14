@@ -102,13 +102,15 @@ fn open_path(s: &mut Session, p: &Value) -> Result<Value> {
         };
         crate::cmd::interchange::resolve_packaged_links(&mut d, Some(std::path::Path::new(path)));
         crate::cmd::datamerge::resolve_sources_on_open(&mut d, Some(std::path::Path::new(path)));
+        let links = crate::cmd::native_links::resolve(&mut d, Some(std::path::Path::new(path)), true);
         let (fonts, faces, font_warnings) = load_document_fonts(&mut d, path);
         warnings.extend(font_warnings);
         warnings.extend(crate::cmd::style::grep_style_warnings(&d));
         let mut st = DocState::new(d, Some(path.to_string()));
         st.fonts = fonts;
+        let checks = crate::cmd::native_links::start(&mut st, links);
         let i = s.add_document(st);
-        Ok(json!({"index": i, "documentFonts": faces, "warnings": warnings}))
+        Ok(json!({"index": i, "documentFonts": faces, "warnings": warnings, "linkChecks": checks}))
     }
     #[cfg(target_arch = "wasm32")]
     {
@@ -176,12 +178,16 @@ pub(super) fn file_open_bytes(s: &mut Session, p: &Value) -> Result<Value> {
         None => load_bytes(&b)?,
     };
     crate::cmd::datamerge::resolve_sources_on_open(&mut d, None);
+    // No file to resolve relative links against, and nothing moved to links.
+    let links = crate::cmd::native_links::resolve(&mut d, None, false);
     if let Some(n) = str_param(p, "name") {
         // Titled as an IDML file opened from bytes is: without its extension.
         d.title = without_native_extension(n).to_string();
     }
-    let i = s.add_document(DocState::new(d, None));
-    Ok(json!({"index": i, "warnings": warnings}))
+    let mut st = DocState::new(d, None);
+    let checks = crate::cmd::native_links::start(&mut st, links);
+    let i = s.add_document(st);
+    Ok(json!({"index": i, "warnings": warnings, "linkChecks": checks}))
 }
 
 #[cfg(test)]
