@@ -61,11 +61,11 @@ fn double_clicking_a_parent_shows_that_parent() {
     for name in names {
         assert_eq!(h.get_by_label(name).accesskit_node().toggled() == Some(egui::accesskit::Toggled::True), name == "C-Parent", "{name}");
     }
-    // Parent rows show a rendered thumbnail.
+    // Parent rows show a rendered thumbnail (of the revision before the double click until the
+    // document has been unchanged for THUMB_QUIET_SECS).
     let id = st.doc.parents[2].id;
-    let rev = (st.uid, st.revision);
-    let thumbs = super::THUMBS.lock().unwrap();
-    assert!(thumbs.as_ref().unwrap().keys().any(|k| (k.0, k.1) == rev && k.2 == super::ThumbOf::Parent(id)));
+    let thumbs = super::THUMBS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    assert!(thumbs.as_ref().unwrap().keys().any(|k| k.0 == st.uid && k.1 == super::ThumbOf::Parent(id)));
 }
 
 fn harness(app: DesignApp) -> Harness<'static, DesignApp> {
@@ -321,10 +321,88 @@ fn parent_thumbnails_follow_panel_options() {
         let id = st.doc.parents[0].id;
         let thumbs = super::THUMBS.lock().unwrap();
         let keys = thumbs.as_ref().map(|m| m.keys().copied().collect::<Vec<_>>()).unwrap_or_default();
-        keys.into_iter().filter(|k| k.0 == st.uid && k.2 == super::ThumbOf::Parent(id)).map(|k| k.3).collect::<Vec<_>>()
+        keys.into_iter().filter(|k| k.0 == st.uid && k.1 == super::ThumbOf::Parent(id)).map(|k| k.2).collect::<Vec<_>>()
     };
     assert_eq!(parent_thumb_heights(true), vec![IconSize::Large.row_h() as u32 - 5]);
     assert_eq!(parent_thumb_heights(false), Vec::<u32>::new());
+}
+
+/// Visible pages alone request the serial background worker. Editing and deleting pages
+/// invalidate only the affected cached pages, after the real canvas has had priority.
+#[test]
+fn an_edit_refreshes_only_visible_thumbnails_through_the_background_worker() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"pages": 60, "facingPages": false})).unwrap();
+    app.ui.dock_tab = "pages".into();
+    let ctx = egui::Context::default();
+    let frame = |app: &mut DesignApp, time: f64| {
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(1400.0, 900.0))),
+            time: Some(time),
+            ..Default::default()
+        };
+        ctx.run_ui(raw, |ui| {
+            app.logic(ui.ctx());
+            app.ui(ui);
+        })
+        .textures_delta
+        .clear();
+    };
+    let settle = |app: &mut DesignApp, time: f64| {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            frame(app, time);
+            if app.canvas.shown.is_some() && app.canvas.pending.is_none() && app.thumbnails.idle() {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "thumbnail worker did not settle");
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    };
+    // egui settles the scroll area's geometry over its first frames.
+    for _ in 0..3 {
+        settle(&mut app, 0.0);
+    }
+    let shown = app.thumbnails.cached_pages();
+    assert!(!shown.is_empty() && shown.len() < 60, "only visible rows are rendered: {shown:?}");
+    let before = app.thumbnails.rendered;
+    frame(&mut app, 0.0);
+    assert_eq!(app.thumbnails.rendered, before, "unchanged pages reuse their thumbnails");
+    app.run("frame.create", json!({"rect": [36, 36, 200, 200]})).unwrap();
+    settle(&mut app, 1.0);
+    assert!(app.thumbnails.rendered > before, "the edited visible page is refreshed");
+    assert!(app.thumbnails.cached_pages().is_subset(&shown));
+    app.run("layout.pages.delete", json!({"pages": (2..60).collect::<Vec<_>>()})).unwrap();
+    settle(&mut app, 2.0);
+    assert!(app.thumbnails.cached_pages().iter().all(|page| *page < 2), "deleted pages lose their thumbnails");
+}
+
+/// Switching to a document whose thumbnails are all current stores that document in the clock,
+/// so the next frames do not scan the whole cache again.
+#[test]
+fn switching_to_a_cached_document_stores_it_in_the_clock() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    let ctx = egui::Context::default();
+    let frame = |app: &mut DesignApp| {
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(280.0, 520.0))),
+            time: Some(0.0),
+            ..Default::default()
+        };
+        ctx.run_ui(raw, |ui| show(app, ui)).textures_delta.clear();
+    };
+    for _ in 0..2 {
+        app.run("file.new", json!({"pages": 2, "facingPages": false})).unwrap();
+        frame(&mut app);
+    }
+    app.session.set_active(0);
+    let st = app.session.active().unwrap();
+    let first = (st.uid, st.revision);
+    let before = THUMB_RENDERS.with(std::cell::Cell::get);
+    frame(&mut app);
+    assert_eq!(THUMB_RENDERS.with(std::cell::Cell::get), before, "the first document's thumbnails are current");
+    let clock = ctx.data(|d| d.get_temp::<ThumbClock>(egui::Id::unique("pages_thumb_clock"))).unwrap();
+    assert_eq!(clock.doc, first);
 }
 
 #[test]

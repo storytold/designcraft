@@ -52,7 +52,7 @@ pub use datamerge::{
 };
 pub use designcraft_color as color;
 pub use designcraft_geom as geom;
-pub use edit::{ItemLoc, ItemPath, SpreadRef, hit_descendant, item_hit as edit_hit};
+pub use edit::{Gap, ItemLoc, ItemPath, SpreadRef, hit_descendant, item_hit as edit_hit};
 pub use endnotes::{ENDNOTE_REF, EditorialNote, EndnoteOptions, NOTE_MARK};
 pub use file_info::FileInfo;
 pub use flex::{FlexAlign, FlexDirection, FlexJustify, FlexLayout, FlexSize};
@@ -250,6 +250,52 @@ impl Document {
     /// is visible.)
     pub fn conditions_hide(&self, conds: &[String]) -> bool {
         !conds.is_empty() && conds.iter().all(|c| self.conditions.iter().any(|x| x.name == *c && !x.visible))
+    }
+
+    /// Is text with character format `f`, in a paragraph whose base character attributes are
+    /// `base` (`Styles::resolve_para`), left off the page: hidden by its effective conditions
+    /// (the paragraph's and character style's included) or marked deleted? Exports leave it out
+    /// as composition does.
+    pub fn hides_run(&self, base: &CharProps, f: &CharFormat) -> bool {
+        let props = self.styles.resolve_char(base, f);
+        props.change == ChangeMark::Deleted || self.conditions_hide(&props.conditions)
+    }
+
+    /// The byte ranges of `st` that show, in order: the runs [`Self::hides_run`] hides left out.
+    /// Paragraphs and runs are walked together, once; take it once per story.
+    pub fn visible_spans(&self, st: &Story) -> Vec<std::ops::Range<usize>> {
+        let mut out: Vec<std::ops::Range<usize>> = Vec::new();
+        let runs: Vec<(std::ops::Range<usize>, &CharFormat)> = st.runs().collect();
+        let mut k = 0;
+        for (pi, pr) in st.para_ranges().iter().enumerate() {
+            let base = st.paras.get(pi).map(|pf| self.styles.resolve_para(pf).1).unwrap_or_default();
+            while runs.get(k).is_some_and(|(rr, _)| rr.end <= pr.start) {
+                k += 1;
+            }
+            for (rr, f) in runs.iter().skip(k).take_while(|(rr, _)| rr.start < pr.end) {
+                let (a, b) = (rr.start.max(pr.start), rr.end.min(pr.end));
+                if a >= b || self.hides_run(&base, f) {
+                    continue;
+                }
+                match out.last_mut() {
+                    Some(last) if last.end == a => last.end = b,
+                    _ => out.push(a..b),
+                }
+            }
+        }
+        out
+    }
+
+    /// The text of `st` within `range` that lies in `spans` ([`Self::visible_spans`] of `st`).
+    pub fn visible_text(st: &Story, spans: &[std::ops::Range<usize>], range: std::ops::Range<usize>) -> String {
+        let first = spans.partition_point(|s| s.end <= range.start);
+        let mut out = String::new();
+        for s in spans.iter().skip(first).take_while(|s| s.start < range.end) {
+            if let Some(t) = st.text.get(s.start.max(range.start)..s.end.min(range.end)) {
+                out.push_str(t);
+            }
+        }
+        out
     }
 }
 
@@ -567,6 +613,13 @@ pub struct Asset {
     /// Original location on disk (Links panel), if linked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link: Option<String>,
+    /// The size and modification time the linked file had when `data` was read from it, or when
+    /// it was last found to hold `data`: link status compares these first instead of reading a
+    /// large file from a network share again. They are the file's only together with `link` and
+    /// `data`: a new link goes through [`Asset::set_link`], and whoever replaces `data` sets or
+    /// clears them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link_fingerprint: Option<Fingerprint>,
     #[serde(skip)]
     pub data: Arc<Vec<u8>>,
     /// Pixel size for raster images.
@@ -650,6 +703,50 @@ impl PdfCrop {
     }
 }
 
+/// The outline of a raster image's visible pixels (Text Wrap › Contour › Alpha Channel), in the
+/// image's pixel space (0..width, 0..height). Derived from the image, so not saved: the engine
+/// traces it again when a document opens.
+#[derive(Clone, Debug)]
+pub struct AlphaOutline {
+    pub asset: AssetId,
+    pub threshold: u8,
+    pub width: u32,
+    pub height: u32,
+    /// The outer boundaries of the visible areas.
+    pub outer: designcraft_geom::PathData,
+    /// The boundaries of transparent holes those areas enclose (wound the other way).
+    pub holes: designcraft_geom::PathData,
+    /// The image data it was traced from: a relink or link update replaces the asset's data
+    /// under the same id, and the outline is traced again. (Weak, so it doesn't keep old image
+    /// data alive, and its address can't be reused by new data while it's held.)
+    pub source: std::sync::Weak<Vec<u8>>,
+    /// A number no other outline traced in this process has ([`AlphaOutline::next_serial`]):
+    /// composition caches compare it to tell a new outline from the one they used.
+    pub serial: u64,
+}
+
+impl AlphaOutline {
+    /// A serial number for a new outline, unique within the process.
+    pub fn next_serial() -> u64 {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Traced from `data`, the asset's current image data.
+    pub fn traced_from(&self, data: &Arc<Vec<u8>>) -> bool {
+        std::ptr::eq(self.source.as_ptr(), Arc::as_ptr(data))
+    }
+}
+
+impl PartialEq for AlphaOutline {
+    fn eq(&self, other: &Self) -> bool {
+        (self.asset, self.threshold, self.width, self.height) == (other.asset, other.threshold, other.width, other.height)
+            && self.outer == other.outer
+            && self.holes == other.holes
+            && self.source.ptr_eq(&other.source)
+    }
+}
+
 impl Asset {
     /// A raster image (PNG, JPEG, GIF, WebP, TIFF, BMP, PSD), as opposed to a PDF, EPS or SVG.
     pub fn is_raster(&self) -> bool {
@@ -706,6 +803,10 @@ pub struct Document {
     pub sections: Vec<Section>,
     #[serde(default)]
     pub assets: BTreeMap<AssetId, Arc<Asset>>,
+    /// Alpha Channel contour outlines of placed images (see [`AlphaOutline`]), sorted by asset
+    /// and then threshold, at most one for each pair. Not saved.
+    #[serde(skip)]
+    pub alpha_outlines: Vec<Arc<AlphaOutline>>,
     /// Hyperlinks (Window → Interactive → Hyperlinks).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hyperlinks: Vec<Hyperlink>,
@@ -766,6 +867,21 @@ pub enum HyperlinkDest {
     Email(String),
     /// Absolute page index.
     Page(usize),
+    /// A text anchor ([`TextAnchor::id`]), as a cross-reference targets one. The page is
+    /// whichever page the anchor's text has landed on when the document is exported, so the link
+    /// follows its destination as the text reflows (#1446).
+    Anchor(u64),
+}
+
+impl HyperlinkDest {
+    /// The name a hyperlink is given when none is supplied.
+    pub fn label(&self) -> String {
+        match self {
+            HyperlinkDest::Url(u) | HyperlinkDest::Email(u) => u.clone(),
+            HyperlinkDest::Page(p) => format!("Page {}", p + 1),
+            HyperlinkDest::Anchor(a) => format!("Anchor {a}"),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -961,6 +1077,34 @@ impl Document {
         }
     }
 
+    /// [`Self::page_number`] of pages `0..count` in one pass (a document of continuing sections
+    /// would otherwise walk back through every earlier section for every page).
+    pub fn page_numbers(&self, count: usize) -> Vec<u32> {
+        let mut secs: Vec<&Section> = self.sections.iter().collect();
+        secs.sort_by_key(|s| s.start); // stable: of equal starts the last wins, as in `section_of`
+        let (mut nums, mut next): (Vec<u32>, usize) = (Vec::with_capacity(count.min(1 << 20)), 0);
+        for abs in 0..count {
+            while secs.get(next).is_some_and(|s| s.start <= abs) {
+                next += 1;
+            }
+            let n = match next.checked_sub(1).and_then(|i| secs.get(i)) {
+                None => u32::try_from(abs).unwrap_or(u32::MAX).saturating_add(1),
+                Some(sec) => {
+                    let into = u32::try_from(abs - sec.start).unwrap_or(u32::MAX);
+                    match sec.start_number {
+                        Some(n) => n.saturating_add(into),
+                        None => match sec.start.checked_sub(1).and_then(|p| nums.get(p)) {
+                            Some(prev) => prev.saturating_add(into).saturating_add(1),
+                            None => into.saturating_add(1),
+                        },
+                    }
+                }
+            };
+            nums.push(n);
+        }
+        nums
+    }
+
     /// The displayed page name ("1", "iv", "A-3"…) for an absolute page index, per sections.
     /// The chapter number in its style (`3`, `III`, `c`, `03`).
     pub fn chapter_label(&self) -> String {
@@ -971,6 +1115,12 @@ impl Document {
         let Some(sec) = self.section_of(abs) else { return (abs + 1).to_string() };
         let num = sec.style.format(self.page_number(abs));
         if sec.include_prefix { format!("{}{}", sec.prefix, num) } else { num }
+    }
+
+    /// The Alpha Channel outline of `asset` at `threshold`, once the engine has traced it.
+    pub fn alpha_outline(&self, asset: AssetId, threshold: u8) -> Option<&AlphaOutline> {
+        let i = self.alpha_outlines.binary_search_by_key(&(asset, threshold), |o| (o.asset, o.threshold)).ok()?;
+        self.alpha_outlines.get(i).map(|o| &**o)
     }
 
     pub fn layer(&self, id: LayerId) -> Option<&Layer> {
@@ -1114,6 +1264,11 @@ impl Document {
             }
         }
         let mut ids = std::collections::HashSet::new();
+        // Every item's story (text frames), by id, and every (story, frame) of the threads: built
+        // once, so checking each reference both ways is a lookup, not a search of the document.
+        let mut frame_story: std::collections::HashMap<ItemId, Option<StoryId>> = std::collections::HashMap::new();
+        let threads: std::collections::HashSet<(StoryId, ItemId)> =
+            self.stories.iter().flat_map(|(sid, st)| st.frames.iter().map(move |f| (*sid, *f))).collect();
         for sp in self.spreads.iter().chain(self.parents.iter()) {
             for it in &sp.items {
                 let mut dup = None;
@@ -1121,11 +1276,18 @@ impl Document {
                     if !ids.insert(i.id.0) {
                         dup = Some(i.id);
                     }
+                    frame_story.insert(i.id, i.text_frame().map(|t| t.story));
                 });
                 if let Some(d) = dup {
                     return Err(DocError::Invalid(format!("duplicate item id {d}")));
                 }
             }
+        }
+        let embedded = self.anchored_items();
+        // An anchored item's story, by id (the first of an id, as a search would find it).
+        let mut anchored: std::collections::HashMap<ItemId, Option<StoryId>> = std::collections::HashMap::new();
+        for (_, item) in &embedded {
+            anchored.entry(item.id).or_insert_with(|| item.text_frame().map(|t| t.story));
         }
         for (sid, st) in &self.stories {
             st.check().map_err(DocError::Invalid)?;
@@ -1133,8 +1295,11 @@ impl Document {
                 return Err(DocError::Invalid(format!("story key {sid} != id {}", st.id)));
             }
             for f in &st.frames {
-                let item = self.item(*f).or_else(|| self.anchored_item(*f)).ok_or(DocError::NoItem(*f))?;
-                match item.text_frame().map(|t| t.story) {
+                let story = match frame_story.get(f) {
+                    Some(story) => *story,
+                    None => anchored.get(f).copied().ok_or(DocError::NoItem(*f))?,
+                };
+                match story {
                     Some(s) if s == *sid => {}
                     other => return Err(DocError::Invalid(format!("frame {f} in story {sid} points at {other:?}"))),
                 }
@@ -1146,7 +1311,7 @@ impl Document {
                 let mut bad = None;
                 it.walk(&mut |i| {
                     if let Some(t) = i.text_frame()
-                        && !self.stories.get(&t.story).is_some_and(|s| s.frames.contains(&i.id))
+                        && !threads.contains(&(t.story, i.id))
                     {
                         bad = Some(i.id);
                     }
@@ -1156,14 +1321,13 @@ impl Document {
                 }
             }
         }
-        let embedded = self.anchored_items();
         let mut edges: std::collections::HashMap<StoryId, Vec<StoryId>> = std::collections::HashMap::new();
         for (owner, item) in embedded {
             if !ids.insert(item.id.0) {
                 return Err(DocError::Invalid(format!("duplicate item id {}", item.id)));
             }
             if let Some(tf) = item.text_frame() {
-                if !self.stories.get(&tf.story).is_some_and(|s| s.frames.contains(&item.id)) {
+                if !threads.contains(&(tf.story, item.id)) {
                     return Err(DocError::Invalid(format!("embedded text frame {} not in its story's thread", item.id)));
                 }
                 edges.entry(owner).or_default().push(tf.story);

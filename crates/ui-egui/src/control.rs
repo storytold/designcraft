@@ -273,11 +273,27 @@ fn handle_request(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest
             ctx.request_repaint();
             ok(Value::Null)
         }
-        // What Ctrl/Cmd+V delivers from the system clipboard: text, or SVG markup copied in an
-        // illustration app (pasted as editable paths when no text is being edited).
+        // What Ctrl/Cmd+V delivers from the system clipboard: text, SVG markup copied in an
+        // illustration app (pasted as editable paths when no text is being edited), or an image
+        // (`image`: an image file as base64, pasted as a placed image).
         "ui.paste" => {
-            let Some(text) = s("text") else { return err("missing `text`") };
-            app.control_synthetic.push(egui::Event::Paste(text.to_string()));
+            let event = match (s("text"), s("image")) {
+                (Some(text), None) => egui::Event::Paste(text.to_string()),
+                (None, Some(image)) => {
+                    if let Err(e) = designcraft_engine::cmd::check_pasted_base64(image) {
+                        return err(format!("`image`: {e}"));
+                    }
+                    let bytes = designcraft_engine::cmd::base64_decode(image);
+                    let Some((w, h, rgba)) = designcraft_engine::cmd::pasted_pixels(&bytes) else {
+                        return err("`image` is not an image file that can be pasted");
+                    };
+                    let size = [w, h].map(|n| usize::try_from(n).unwrap_or(0));
+                    egui::Event::PasteImage(std::sync::Arc::new(egui::ColorImage::from_rgba_unmultiplied(size, &rgba)))
+                }
+                (Some(_), Some(_)) => return err("give `text` or `image`, not both"),
+                (None, None) => return err("missing `text` or `image`"),
+            };
+            app.control_synthetic.push(event);
             ctx.request_repaint();
             ok(Value::Null)
         }

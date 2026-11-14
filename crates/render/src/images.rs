@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex, Weak};
 
 use vello_cpu::Pixmap;
 
+use crate::decode::decode_pixmap_reduced;
 use crate::{decode_pixmap_page, halve};
 
 const FULL_BUDGET: usize = 192 << 20;
@@ -260,6 +261,13 @@ pub fn mip(bytes: &Arc<Vec<u8>>, page: u32, width_pt: f64, on_screen: f64) -> Op
             break;
         }
     }
+    if pm.is_none()
+        && lookup((id, page, 0)).is_none()
+        && let Some(found) = reduced(bytes, page, level, size, &colour)
+    {
+        current = level;
+        pm = Some(found);
+    }
     let mut pm = pm.or_else(|| decoded(bytes, page))?;
     while current < level {
         current += 1;
@@ -281,6 +289,63 @@ pub fn mip(bytes: &Arc<Vec<u8>>, page: u32, width_pt: f64, on_screen: f64) -> Op
         disk::store_path(path, &pm);
     }
     Some(pm)
+}
+
+/// [`mip`]'s level for a JPEG, decoded at 1/2, 1/4 or 1/8 of its size straight from its blocks
+/// and halved from there, so a screen-sized level needs no full-size decode. `None` when the
+/// full size is drawn, for other formats and for JPEGs only a full decode reads (CMYK).
+fn reduced(bytes: &Arc<Vec<u8>>, page: u32, level: u8, size: (u32, u32), colour: &Colour) -> Option<Arc<Pixmap>> {
+    if page != 0 || !bytes.starts_with(&[0xFF, 0xD8]) {
+        return None;
+    }
+    let id = Arc::as_ptr(bytes) as usize;
+    if with(|c| c.bad.get(&(id, page)).is_some_and(|entry| entry.1.strong_count() > 0)) {
+        return None;
+    }
+    if level == 0 {
+        return None;
+    }
+    if let Some(pm) = lookup((id, page, level)) {
+        return Some(pm);
+    }
+    let _decode = DECODE.lock().unwrap_or_else(|e| e.into_inner());
+    let shrink = level.min(designcraft_images::MAX_REDUCED_SHRINK);
+    let mut pm = match lookup((id, page, shrink)) {
+        Some(p) => p,
+        None => {
+            // Cut to `halve`'s size (it rounds down, the decoder up), as the level a full
+            // decode makes.
+            let (sw, sh) = ((size.0 >> shrink).max(1), (size.1 >> shrink).max(1));
+            let p = Arc::new(crop(decode_pixmap_reduced(bytes, shrink)?, sw, sh)?);
+            store(bytes, page, shrink, p.clone(), colour);
+            p
+        }
+    };
+    for l in shrink + 1..=level {
+        pm = match lookup((id, page, l)) {
+            Some(p) => p,
+            None => {
+                let half = Arc::new(halve(&pm));
+                store(bytes, page, l, half.clone(), colour);
+                half
+            }
+        };
+    }
+    Some(pm)
+}
+
+/// The top-left `w` × `h` of `pm`; `None` when `pm` is smaller.
+fn crop(pm: Pixmap, w: u32, h: u32) -> Option<Pixmap> {
+    let (pw, ph) = (u32::from(pm.width()), u32::from(pm.height()));
+    if (pw, ph) == (w, h) {
+        return Some(pm);
+    }
+    if w > pw || h > ph || w == 0 || h == 0 {
+        return None;
+    }
+    let (pw, w, h) = (pw as usize, w as usize, h as usize);
+    let data: Vec<_> = pm.data().chunks_exact(pw).take(h).flat_map(|row| &row[..w]).copied().collect();
+    Some(Pixmap::from_parts(data, u16::try_from(w).ok()?, u16::try_from(h).ok()?))
 }
 
 /// Release unreferenced originals after a view has rendered; retain small previews for returns.
@@ -457,5 +522,59 @@ mod tests {
         assert_eq!(Arc::strong_count(first), 1, "evicted buffer must be released");
         let last = &buffers[MAX_BAD + 9];
         assert!(c.bad.contains_key(&(Arc::as_ptr(last) as usize, 0)));
+    }
+
+    fn jpeg(w: u32, h: u32) -> Arc<Vec<u8>> {
+        let img = image::RgbImage::from_fn(w, h, |x, y| image::Rgb([(x * 255 / w) as u8, (y * 255 / h) as u8, 128]));
+        let mut out = Vec::new();
+        img.write_with_encoder(image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 90)).unwrap();
+        Arc::new(out)
+    }
+
+    #[test]
+    fn screen_levels_of_a_jpeg_need_no_full_size_decode() {
+        let bytes = jpeg(1024, 768);
+        let id = Arc::as_ptr(&bytes) as usize;
+        // 1 px per point drawn at 0.1: level 3, an eighth, read straight from the blocks.
+        let pm = mip(&bytes, 0, 1024.0, 0.1).unwrap();
+        assert_eq!((pm.width(), pm.height()), (128, 96));
+        assert!(lookup((id, 0, 0)).is_none(), "no full-size decode is kept");
+        // Close to the full decode halved three times.
+        let mut want = decode_pixmap_page(&bytes, 0).unwrap();
+        for _ in 0..3 {
+            want = halve(&want);
+        }
+        let diff: u64 = pm.data().iter().zip(want.data()).map(|(p, q)| u64::from(p.r.abs_diff(q.r)) + u64::from(p.g.abs_diff(q.g))).sum();
+        assert!(diff / (2 * 128 * 96) <= 3, "mean difference {}", diff / (2 * 128 * 96));
+        // Smaller levels are halved from that eighth, down to 64 px as before.
+        let small = mip(&bytes, 0, 1024.0, 0.02).unwrap();
+        assert_eq!((small.width(), small.height()), (64, 48));
+        assert!(lookup((id, 0, 0)).is_none(), "no full-size decode is kept");
+        // The full size is still a full decode.
+        let full = mip(&bytes, 0, 1024.0, 1.0).unwrap();
+        assert_eq!((full.width(), full.height()), (1024, 768));
+    }
+
+    #[test]
+    fn reduced_levels_of_odd_sized_jpegs_have_the_halved_size() {
+        let bytes = jpeg(1001, 771);
+        let mut want = decode_pixmap_page(&bytes, 0).unwrap();
+        for _ in 0..3 {
+            want = halve(&want);
+        }
+        let pm = mip(&bytes, 0, 1001.0, 0.1).unwrap();
+        assert!(lookup((Arc::as_ptr(&bytes) as usize, 0, 0)).is_none());
+        assert_eq!((pm.width(), pm.height()), (want.width(), want.height()));
+        assert_eq!((pm.width(), pm.height()), (125, 96));
+    }
+
+    #[test]
+    fn a_jpeg_that_does_not_decode_is_remembered_as_failed() {
+        let mut broken = jpeg(256, 256).to_vec();
+        broken.truncate(40);
+        let bytes = Arc::new(broken);
+        assert!(mip(&bytes, 0, 256.0, 0.1).is_none());
+        assert!(with(|c| c.bad.contains_key(&(Arc::as_ptr(&bytes) as usize, 0))));
+        assert!(mip(&bytes, 0, 256.0, 0.1).is_none());
     }
 }

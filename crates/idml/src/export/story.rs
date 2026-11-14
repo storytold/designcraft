@@ -278,7 +278,14 @@ impl<'a> Ex<'a> {
         None
     }
 
-    fn apply_tracked_changes(&mut self, s: &Story, f: &CharFormat, csrs: &mut [El], para_br: bool, para_end: usize) {
+    fn apply_tracked_changes(
+        &mut self,
+        f: &CharFormat,
+        csrs: &mut [El],
+        para_br: bool,
+        runs: &[(std::ops::Range<usize>, &CharFormat)],
+        para_end: usize,
+    ) {
         // Tracked changes wrap the text they mark.
         if let Some(kind) = change_type(f.over.change) {
             for c in csrs.iter_mut().filter(|c| c.name == "CharacterStyleRange" && !c.children.is_empty()) {
@@ -288,7 +295,10 @@ impl<'a> Ex<'a> {
             }
         }
         if para_br && let Some(c) = csrs.last_mut() {
-            let nl = s.runs().find(|(rr, _)| rr.contains(&para_end)).and_then(|(_, nf)| change_type(nf.over.change));
+            let nl = runs
+                .get(runs.partition_point(|(rr, _)| rr.end <= para_end))
+                .filter(|(rr, _)| rr.start <= para_end)
+                .and_then(|(_, nf)| change_type(nf.over.change));
             match nl {
                 None => c.push(El::new("Br")),
                 Some(kind) => match c.children.last_mut() {
@@ -307,17 +317,27 @@ impl<'a> Ex<'a> {
     pub(super) fn story_paras(&mut self, s: &Story) -> Vec<El> {
         let ranges = s.para_ranges();
         let n = ranges.len();
-        ranges.into_iter().enumerate().map(|(pi, r)| self.story_para(s, pi, r, pi + 1 == n)).collect()
+        // The runs and the marker offsets, once: each paragraph (and each marker) searched them from the start.
+        let runs: Vec<(std::ops::Range<usize>, &CharFormat)> = s.runs().collect();
+        let marks = Marks::of(s);
+        ranges.into_iter().enumerate().map(|(pi, r)| self.story_para(s, pi, r, pi + 1 == n, &runs, &marks)).collect()
     }
 
-    fn paragraph_runs(s: &Story, r: &std::ops::Range<usize>) -> Vec<(std::ops::Range<usize>, CharFormat)> {
-        // Character runs intersecting the paragraph.
+    fn paragraph_runs(
+        s: &Story,
+        r: &std::ops::Range<usize>,
+        runs: &[(std::ops::Range<usize>, &CharFormat)],
+    ) -> Vec<(std::ops::Range<usize>, CharFormat)> {
+        // Character runs intersecting the paragraph (they ascend: the first is a search away).
         let mut segs: Vec<(std::ops::Range<usize>, CharFormat)> = Vec::new();
-        for (rr, f) in s.runs() {
+        for (rr, f) in &runs[runs.partition_point(|(rr, _)| rr.end <= r.start)..] {
+            if rr.start >= r.end {
+                break;
+            }
             let a = rr.start.max(r.start);
             let b = rr.end.min(r.end);
             if a < b {
-                segs.push((a..b, f.clone()));
+                segs.push((a..b, (*f).clone()));
             }
         }
         if segs.is_empty() {
@@ -354,12 +374,26 @@ impl<'a> Ex<'a> {
         }
     }
 
-    fn story_para(&mut self, s: &Story, pi: usize, r: std::ops::Range<usize>, last: bool) -> El {
+    fn story_para(
+        &mut self,
+        s: &Story,
+        pi: usize,
+        r: std::ops::Range<usize>,
+        last: bool,
+        runs: &[(std::ops::Range<usize>, &CharFormat)],
+        marks: &Marks,
+    ) -> El {
         let pf = s.paras.get(pi).cloned().unwrap_or_default();
         let mut psr = self.psr_el(&pf);
         let ends_with_break = s.text.get(r.clone()).and_then(|t| t.chars().next_back()).is_some_and(st::is_break_char);
-        let segs = Self::paragraph_runs(s, &r);
+        let segs = Self::paragraph_runs(s, &r, runs);
+        // A hyperlink on a run of text is written as a `HyperlinkTextSource` around the
+        // ranges it covers, so the runs are cut at its edges first (#1446).
+        let (links, segs) = self.cut_runs_at_links(s, &r, segs);
         let nseg = segs.len();
+        // Each segment's ranges, with the link they belong to; wrapped once the paragraph is
+        // built so that consecutive ranges of one link share a single source element.
+        let mut psr_csrs: Vec<(Option<usize>, El)> = Vec::new();
         for (k, (rr, f)) in segs.into_iter().enumerate() {
             let seg_start = rr.start;
             let text = &s.text[rr];
@@ -408,7 +442,7 @@ impl<'a> Ex<'a> {
                 } else if ch == designcraft_doc::ANCHOR_MARK {
                     flush_text(&mut cur, &mut pending);
                     flush_content(&mut pending, &mut out);
-                    let k = s.text[..seg_start + ci].matches(designcraft_doc::ANCHOR_MARK).count();
+                    let k = marks.anchor.partition_point(|&at| at < seg_start + ci);
                     if let Some(a) = s.anchors.get(k) {
                         out.push(Node::El(
                             El::new("HyperlinkTextDestination")
@@ -422,14 +456,14 @@ impl<'a> Ex<'a> {
                     // An anchored object: the item inside the range with its anchoring settings.
                     flush_text(&mut cur, &mut pending);
                     flush_content(&mut pending, &mut out);
-                    let k = s.text[..seg_start + ci].matches(designcraft_doc::OBJECT_MARK).count();
+                    let k = marks.object.partition_point(|&at| at < seg_start + ci);
                     if let Some(el) = self.anchored_object(s, k) {
                         out.push(Node::El(el));
                     }
                 } else if ch == designcraft_doc::INDEX_MARK {
                     flush_text(&mut cur, &mut pending);
                     flush_content(&mut pending, &mut out);
-                    let k = s.text[..seg_start + ci].matches(designcraft_doc::INDEX_MARK).count();
+                    let k = marks.index.partition_point(|&at| at < seg_start + ci);
                     if let Some(el) = self.index_reference(s, k) {
                         out.push(Node::El(el));
                     }
@@ -442,7 +476,7 @@ impl<'a> Ex<'a> {
                         c.children.append(&mut out);
                         csrs.push(c);
                     }
-                    let k = s.text[..seg_start + ci].matches(designcraft_doc::XREF_MARK).count();
+                    let k = marks.xref.partition_point(|&at| at < seg_start + ci);
                     if let Some(x) = s.xrefs.get(k) {
                         let me = self.fresh();
                         let fmt = self.d.xref_formats.iter().position(|ff| ff.name == x.format).map_or("n".to_string(), xref_format_self);
@@ -473,8 +507,24 @@ impl<'a> Ex<'a> {
                 } else if ch == designcraft_doc::NOTE_MARK {
                     // Editorial notes aren't written to IDML yet.
                 } else if ch == designcraft_doc::ENDNOTE_REF {
-                    // Endnotes aren't written to IDML yet: the endnote frame keeps their text
-                    // (numbers included) and the references are left out.
+                    // Endnote structures aren't written to IDML yet: the endnote frame keeps their
+                    // text (numbers included), and the reference keeps its number as superscript
+                    // text, so the endnote's place isn't lost (#2753).
+                    flush_text(&mut cur, &mut pending);
+                    flush_content(&mut pending, &mut out);
+                    if !out.is_empty() {
+                        let mut c = self.csr_el(&f);
+                        c.children.append(&mut out);
+                        csrs.push(c);
+                    }
+                    let k = u32::try_from(s.endnotes_before(seg_start + ci)).unwrap_or(u32::MAX);
+                    let n = self.d.endnote_start(s.id).saturating_add(k);
+                    let mut c = self.csr_el(&f);
+                    c.set("Position", names::position_out(designcraft_doc::Position::Superscript));
+                    let mut content = El::new("Content");
+                    content.children.push(Node::Text(self.d.endnote_options.label(n)));
+                    c.push(content);
+                    csrs.push(c);
                 } else if ch == designcraft_doc::FOOTNOTE_REF {
                     // The reference: its own range carrying the reference position.
                     flush_text(&mut cur, &mut pending);
@@ -519,12 +569,81 @@ impl<'a> Ex<'a> {
                 c.children.extend(out);
                 csrs.push(c);
             }
-            self.apply_tracked_changes(s, &f, &mut csrs, para_br, r.end);
+            self.apply_tracked_changes(&f, &mut csrs, para_br, runs, r.end);
+            let link = links.iter().find(|(_, l)| l.contains(&seg_start) || (l.start == seg_start && l.start == l.end)).map(|(i, _)| *i);
             for c in csrs {
-                psr.push(c);
+                psr_csrs.push((link, c));
             }
         }
+        self.wrap_link_sources(&mut psr, psr_csrs);
         psr
+    }
+
+    /// The hyperlinks on story text that fall in the paragraph `r` (each link's index and its
+    /// range clipped to `r`), and the paragraph's runs `segs` cut at their edges, so a link's
+    /// ranges can be wrapped on their own (#1446).
+    fn cut_runs_at_links(
+        &self,
+        s: &Story,
+        r: &std::ops::Range<usize>,
+        segs: Vec<(std::ops::Range<usize>, CharFormat)>,
+    ) -> (Vec<(usize, std::ops::Range<usize>)>, Vec<(std::ops::Range<usize>, CharFormat)>) {
+        let links: Vec<(usize, std::ops::Range<usize>)> = self
+            .d
+            .hyperlinks
+            .iter()
+            .enumerate()
+            .filter_map(|(i, h)| match &h.source {
+                designcraft_doc::HyperlinkSource::Text { story, start, end } if *story == s.id => {
+                    let (a, b) = ((*start).max(r.start), (*end).min(r.end));
+                    (a < b).then_some((i, a..b))
+                }
+                _ => None,
+            })
+            .collect();
+        let mut cuts: Vec<usize> = links.iter().flat_map(|(_, l)| [l.start, l.end]).collect();
+        cuts.sort_unstable();
+        cuts.dedup();
+        let segs = segs.into_iter().fold(Vec::new(), |mut out: Vec<(std::ops::Range<usize>, CharFormat)>, (rr, f)| {
+            let mut at = rr.start;
+            for c in cuts.iter().copied().filter(|c| rr.start < *c && *c < rr.end) {
+                out.push((at..c, f.clone()));
+                at = c;
+            }
+            out.push((at..rr.end, f));
+            out
+        });
+        (links, segs)
+    }
+
+    /// Push the paragraph's character ranges into `psr`, with each run of consecutive ranges of
+    /// one link inside a single `HyperlinkTextSource` (#1446).
+    fn wrap_link_sources(&mut self, psr: &mut El, psr_csrs: Vec<(Option<usize>, El)>) {
+        let mut groups: Vec<(Option<usize>, Vec<El>)> = Vec::new();
+        for (link, c) in psr_csrs {
+            match groups.last_mut() {
+                Some((l, v)) if *l == link => v.push(c),
+                _ => groups.push((link, vec![c])),
+            }
+        }
+        for (link, cs) in groups {
+            match link.and_then(|i| self.d.hyperlinks.get(i).map(|h| (i, h.name.clone()))) {
+                None => {
+                    for c in cs {
+                        psr.push(c);
+                    }
+                }
+                Some((i, name)) => {
+                    let me = self.fresh();
+                    let mut src = El::new("HyperlinkTextSource").attr("Self", &me).attr("Name", name).attr("Hidden", "false");
+                    for c in cs {
+                        src.push(c);
+                    }
+                    psr.push(src);
+                    self.link_text_sources.push((me, i));
+                }
+            }
+        }
     }
 
     pub(super) fn psr_el(&mut self, pf: &ParaFormat) -> El {
@@ -579,4 +698,24 @@ pub(super) fn with_list_tab(mut a: ParaAttrs, resolved: impl FnOnce() -> (design
     }
     a.tabs = Some(tabs);
     a
+}
+
+/// Byte offsets of a story's anchor, object, index and cross-reference markers, in text order.
+pub(super) struct Marks {
+    anchor: Vec<usize>,
+    object: Vec<usize>,
+    index: Vec<usize>,
+    xref: Vec<usize>,
+}
+
+impl Marks {
+    fn of(s: &Story) -> Self {
+        let at = |c: char| s.text.match_indices(c).map(|(i, _)| i).collect::<Vec<_>>();
+        Marks {
+            anchor: at(designcraft_doc::ANCHOR_MARK),
+            object: at(designcraft_doc::OBJECT_MARK),
+            index: at(designcraft_doc::INDEX_MARK),
+            xref: at(designcraft_doc::XREF_MARK),
+        }
+    }
 }

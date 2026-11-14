@@ -110,6 +110,16 @@ fn affected(old: &Document, new: &Document) -> Option<HashSet<usize>> {
 }
 
 impl Thumbnails {
+    #[cfg(test)]
+    pub fn cached_pages(&self) -> HashSet<usize> {
+        self.textures.keys().map(|key| key.page).collect()
+    }
+
+    #[cfg(test)]
+    pub fn idle(&self) -> bool {
+        !self.pending && self.requested.iter().all(|key| self.textures.contains_key(key) || self.failed.contains(key))
+    }
+
     pub fn document_uid(&self) -> u64 {
         self.uid
     }

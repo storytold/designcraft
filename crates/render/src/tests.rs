@@ -195,6 +195,36 @@ fn eps_source_decodes_like_its_preview() {
 }
 
 #[test]
+fn decoded_images_are_premultiplied_for_every_alpha() {
+    // Column x holds colour value x, row y holds alpha y.
+    let img = image::RgbaImage::from_fn(256, 256, |x, y| image::Rgba([x as u8, 255 - x as u8, (x / 2) as u8, y as u8]));
+    let mut png = Vec::new();
+    image::DynamicImage::ImageRgba8(img.clone()).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
+    let pm = decode_pixmap(&png).unwrap();
+    assert_eq!((pm.width(), pm.height()), (256, 256));
+    for (p, q) in img.pixels().zip(pm.data()) {
+        let m = |c: u8| ((c as u16 * p[3] as u16 + 127) / 255) as u8;
+        assert_eq!([q.r, q.g, q.b, q.a], [m(p[0]), m(p[1]), m(p[2]), p[3]], "{p:?}");
+    }
+}
+
+#[test]
+fn premultiplied_pixels_reuse_the_decoded_buffer() {
+    use vello_cpu::color::PremulRgba8;
+    let expected =
+        [PremulRgba8 { r: 10, g: 20, b: 30, a: 255 }, PremulRgba8 { r: 100, g: 50, b: 25, a: 128 }, PremulRgba8 { r: 0, g: 0, b: 0, a: 0 }];
+    let px = vec![10, 20, 30, 255, 200, 100, 50, 128, 1, 2, 3, 0];
+    let ptr = px.as_ptr() as usize;
+    let out = decode::premultiply(px);
+    assert_eq!(out.as_ptr() as usize, ptr);
+    assert_eq!(out, expected);
+    // A capacity that is not a whole number of pixels is copied.
+    let mut px = Vec::with_capacity(13);
+    px.extend([10, 20, 30, 255, 200, 100, 50, 128, 1, 2, 3, 0]);
+    assert_eq!(decode::premultiply(px), expected);
+}
+
+#[test]
 fn footnote_vector_objects_are_painted() {
     use designcraft_doc::{AnchorPosition, AnchoredObject, ItemId, Shape, SpreadRef};
     let mut d = Document::new(&NewDocument::default());
@@ -693,9 +723,9 @@ fn degenerate_dash_patterns_draw_solid_and_fill_types_close_table_corners() {
     let (fid, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 336.0, 400.0), lid, "", ParaFormat::default()).unwrap();
     d.item_mut(fid).unwrap().stroke = designcraft_doc::Stroke { weight: 2.0, kind: fine.clone(), ..Default::default() };
     let mut t = designcraft_doc::Table::new(1, 2, 2, 0, 0, 200.0);
-    for r in 0..2 {
-        t.rows[r].height = 60.0;
-        t.rows[r].mode = designcraft_doc::RowHeightMode::Exactly;
+    for row in t.rows.iter_mut().take(2) {
+        row.height = 60.0;
+        row.mode = designcraft_doc::RowHeightMode::Exactly;
     }
     let stroke = |kind| designcraft_doc::CellStroke { weight: 8.0, kind, gap_color: "C=100 M=0 Y=0 K=0".into(), ..Default::default() };
     for cell in &mut t.cells {
@@ -846,6 +876,50 @@ fn content_crop_box_is_measured_without_rendering_the_page() {
     let want = [100.0 / 612.0, 200.0 / 792.0, 500.0 / 612.0, 697.0 / 792.0];
     assert!(frac.iter().zip(want).all(|(a, b)| (a - b).abs() < 1e-6), "{frac:?} vs {want:?}");
     assert!((size.0 - 400.0).abs() < 1e-3 && (size.1 - 497.0).abs() < 1e-3, "{size:?}");
+}
+
+/// In InDesign, removing an inherited item from a parent page means overriding it there and
+/// deleting the override: the parent's page keeps the item in its override list with no copy
+/// of its own. The pages that use that parent still drew the base's item — a signature block
+/// from parent B over the notice text of every page using parent E (#1469).
+#[test]
+fn an_item_a_parent_overrode_and_deleted_is_gone_from_the_pages_that_use_it() {
+    let mut d = Document::new(&NewDocument { pages: 1, facing_pages: false, ..Default::default() });
+    let lid = d.default_layer();
+    // Parent A: a black box. Parent B: based on A, nothing of its own.
+    let a = d.parents[0].id;
+    let margins = d.parents[0].pages[0].margins;
+    let b = d.add_parent("B", "Parent", 1, 0.0, margins);
+    let box_id = designcraft_doc::ItemId(d.alloc());
+    let rect = Rect::new(100.0, 100.0, 200.0, 160.0);
+    let mut it = Item::new(box_id, lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(rect));
+    it.fill = designcraft_doc::Fill::swatch(designcraft_color::swatch::BLACK);
+    d.insert_item(SpreadRef::Parent(0), it, None).unwrap();
+    {
+        let bp = std::sync::Arc::make_mut(&mut d.parents[1]);
+        bp.parent.as_mut().unwrap().based_on = Some(a);
+    }
+    std::sync::Arc::make_mut(&mut d.spreads[0]).pages[0].parent = Some(b);
+    let ink = |d: &Document, r: &mut Renderer| {
+        let img = r.render_page(d, &Cache::new(), 0, 1.0, false, &RenderOptions::default()).unwrap();
+        img.pixel(rect.center().x as u32, rect.center().y as u32)[0] < 64
+    };
+    let mut r = Renderer::new();
+    r.threads = 0;
+    assert!(ink(&d, &mut r), "the page shows parent A's box through parent B");
+
+    // B overrides the box and the override is deleted: B's page keeps it in its override list.
+    std::sync::Arc::make_mut(&mut d.parents[1]).pages[0].overridden.push(box_id);
+    let mut r = Renderer::new();
+    r.threads = 0;
+    assert!(!ink(&d, &mut r), "the box is removed on B, so the page using B does not show it");
+
+    // Removing the override on B brings it back, which is how InDesign's Remove All Local
+    // Overrides behaves.
+    std::sync::Arc::make_mut(&mut d.parents[1]).pages[0].overridden.clear();
+    let mut r = Renderer::new();
+    r.threads = 0;
+    assert!(ink(&d, &mut r), "the box shows again");
 }
 
 /// An inline object is painted under its frame's text, as InDesign draws it: a picture

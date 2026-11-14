@@ -543,9 +543,34 @@ mod tests {
     }
 
     #[test]
-    fn complex_drag_uses_a_draft_and_release_restores_full_resolution() {
+    fn bounded_shadow_drag_keeps_upstreams_full_quality_partial_redraw() {
         let (mut doc, id) = fixture().unwrap();
         doc.item_mut(id).unwrap().effects.drop_shadow.on = true;
+        let mut session = designcraft_engine::Session::new();
+        session.add_document(DocState::new(doc, None));
+        session.execute("selection.set", &json!({"ids": [id.0]})).unwrap();
+        let mut app = crate::DesignApp::new(session, crate::Services::default());
+        let ctx = egui::Context::default();
+        frame(&mut app, &ctx);
+        until(&mut app, &ctx, |a| a.canvas.texture.is_some() && a.canvas.pending.is_none());
+        let patches = app.canvas.patches;
+        app.session.begin_interaction("Move shadow").unwrap();
+        app.session.preview("transform.move", json!({"dx": 14.0, "dy": 3.0})).unwrap();
+        frame(&mut app, &ctx);
+        assert!(app.canvas.patches > patches, "a bounded shadow uses the upstream damage region");
+        assert!(!app.canvas.low_quality);
+        assert!(!app.canvas.drag.ready(), "effects still exclude retained-layer approximations");
+        assert!(Arc::ptr_eq(app.canvas.shown_doc.as_ref().unwrap(), &app.session.active().unwrap().doc));
+        app.session.commit_interaction().unwrap();
+        frame(&mut app, &ctx);
+        until(&mut app, &ctx, |a| !a.canvas.defer_full && a.canvas.pending.is_none());
+        assert!(!app.canvas.low_quality);
+    }
+
+    #[test]
+    fn complex_drag_uses_a_draft_and_release_restores_full_resolution() {
+        let (mut doc, id) = fixture().unwrap();
+        doc.item_mut(id).unwrap().wrap.mode = WrapMode::BoundingBox;
         let mut s = designcraft_engine::Session::new();
         s.add_document(DocState::new(doc, None));
         s.execute("selection.set", &json!({"ids":[id.0]})).unwrap();

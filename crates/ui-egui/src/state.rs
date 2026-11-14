@@ -204,6 +204,8 @@ pub struct UiState {
     #[serde(skip)]
     pub flattener_preview: bool,
     /// Tab / Shift+Tab: 1 = every panel hidden, 2 = all but the Tools panel (0 = shown).
+    /// Session-only so panels never stay hidden across restarts.
+    #[serde(skip)]
     pub hidden_panels: u8,
     /// "Don't show again" in the warning before deleting pages that contain objects.
     pub skip_delete_pages_warning: bool,
