@@ -206,6 +206,16 @@ fn append_paragraph(ctx: &mut ImportContext<'_>, p: &Paragraph, st: &mut Story) 
             })
             .find(|(range, _)| range.contains(&at))
             .map(|(_, r)| r);
+        // The neutral DOCX model retains tracked deletions so callers that edit documents can
+        // accept or reject them. Text import has always treated changes as accepted: preserve
+        // insertions and move destinations, but omit deleted runs and move sources. Keep consuming
+        // object indices even for deleted OBJ markers so later inline objects stay aligned.
+        if run.is_some_and(|r| r.props.del.is_some()) {
+            if c == craft_wordmodel::para::OBJ {
+                object_i = object_i.saturating_add(1);
+            }
+            continue;
+        }
         let fmt = run.map(|r| char_format(&r.props, ctx.names)).unwrap_or_default();
         if last_format.as_ref().is_some_and(|prev| prev != &fmt) {
             flush(st, &mut last_format, &mut chunk);
