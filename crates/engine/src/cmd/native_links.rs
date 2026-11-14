@@ -12,10 +12,11 @@
 //! first whose hash is the recorded one is the file, and its time is kept with the asset; when
 //! none matches the link is Modified and the file's bytes are never used.
 //!
-//! The same thread makes the content hash and proxy of graphics just placed from files
-//! ([`prepare`]), which link to their files once those are in.
+//! Graphics placed from files link to them at once. The same thread makes their content hash
+//! and proxy ([`prepare`]), and hashes linked files that an open found by size and time and that
+//! have no hash yet. A save makes the proxies still missing ([`with_proxies`]), never a hash.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
@@ -76,8 +77,6 @@ pub struct OpenLinks {
     /// Embedded images the check found identical to their linked files, so far.
     migrated: usize,
     notice: Option<String>,
-    /// The keys of graphics placed from files whose content hash is still being made ([`prepare`]).
-    pending: BTreeSet<SourceKey>,
 }
 
 impl std::fmt::Debug for OpenLinks {
@@ -102,33 +101,20 @@ impl OpenLinks {
     pub fn take_notice(&mut self) -> Option<String> {
         self.notice.take()
     }
-
-    /// Whether `asset` was just placed from a file and its content hash and proxy are still
-    /// being made ([`prepare`]): embedded with its link record until then.
-    pub fn preparing(&self, asset: &Asset) -> bool {
-        unsettled(asset, &self.pending)
-    }
-
-    /// A graphic placed with the bytes `key` was embedded on purpose (Links › Embed) before the
-    /// background work linked it: it stays embedded.
-    pub(crate) fn keep_embedded(&mut self, key: SourceKey) {
-        self.pending.remove(&key);
-    }
 }
 
 /// One file check for the background thread.
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 enum Work {
     /// Find the file that holds `source`'s bytes: one at its absolute or relative path with the
-    /// recorded size and time, else one of the recorded size whose content hash is the recorded
-    /// one.
+    /// recorded size and time (hashed when the record has no hash), else one of the recorded size
+    /// whose content hash is the recorded one.
     Find { asset: AssetId, key: SourceKey, source: LinkedSource },
     /// Compare the file at `source`'s path (the first of its candidates that has the size of the
     /// embedded `bytes`) with the embedded bytes of a document saved before linked storage.
     Migrate { asset: AssetId, key: SourceKey, bytes: Arc<Vec<u8>>, source: LinkedSource, page: u32 },
-    /// Hash the `bytes` of graphics just placed from a file (and make their proxy with `proxy`),
-    /// to link them with `link`.
-    Prepare { key: SourceKey, bytes: Arc<Vec<u8>>, page: u32, proxy: bool, link: bool },
+    /// Hash the `bytes` of graphics just placed from a file, and make their proxy with `proxy`.
+    Prepare { key: SourceKey, bytes: Arc<Vec<u8>>, page: u32, proxy: bool },
 }
 
 /// What a [`Work`] found. `key` is the asset's bytes' key when the check started: a result for
@@ -136,8 +122,9 @@ enum Work {
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 enum Outcome {
     /// The file at `path` holds the bytes; `fingerprint` is its size and time, when they can
-    /// vouch for the bytes later ([`super::links::settled`]).
-    Holds { asset: AssetId, key: SourceKey, path: PathBuf, fingerprint: Option<Fingerprint> },
+    /// vouch for the bytes later ([`super::links::settled`]), and `hash` the content hash of a
+    /// record that had none.
+    Holds { asset: AssetId, key: SourceKey, path: PathBuf, fingerprint: Option<Fingerprint>, hash: Option<String> },
     /// Files are there; none holds the bytes.
     Differs { asset: AssetId, key: SourceKey },
     /// No file at either path, or one that may not be followed.
@@ -154,7 +141,7 @@ enum Outcome {
     /// The file isn't (or can't be shown to be) the embedded bytes: they stay embedded.
     Unconfirmed,
     /// The content hash and proxy of placed graphics' bytes ([`Work::Prepare`]).
-    Prepared { key: SourceKey, hash: String, proxy: Option<designcraft_render::proxy::ProxyImage>, link: bool },
+    Prepared { key: SourceKey, hash: String, proxy: Option<designcraft_render::proxy::ProxyImage> },
 }
 
 /// A graphic placed from a file whose content hash and proxy are still to be made
@@ -165,16 +152,18 @@ pub(crate) struct Pending {
     bytes: Arc<Vec<u8>>,
     page: u32,
     proxy: bool,
-    link: bool,
 }
 
 impl Pending {
-    /// The work for `a`, embedded with `bytes`, to be linked to its file when `link`. Video and
-    /// sound get no proxy, nor does a graphic that stays embedded.
-    pub(super) fn of(a: &Asset, bytes: Arc<Vec<u8>>, link: bool) -> Self {
-        let media = a.mime.starts_with("video/") || a.mime.starts_with("audio/");
-        Pending { key: a.data.key(), bytes, page: a.page, proxy: link && !media, link }
+    /// The work for `a`, linked with `bytes` just read from its file. Video and sound get no proxy.
+    pub(super) fn of(a: &Asset, bytes: Arc<Vec<u8>>) -> Self {
+        Pending { key: a.data.key(), bytes, page: a.page, proxy: !media(a) }
     }
+}
+
+/// Video and sound, which have no image proxy.
+fn media(a: &Asset) -> bool {
+    a.mime.starts_with("video/") || a.mime.starts_with("audio/")
 }
 
 #[derive(Default)]
@@ -255,7 +244,7 @@ pub(crate) fn resolve(d: &mut Document, document: Option<&Path>, migrate: bool) 
 }
 
 /// `path` (a file found to hold `a`'s bytes) as `a`'s link, with its path relative to the
-/// document and its bytes read from there.
+/// document and its bytes (under their key) read from there.
 fn adopt_path(a: &mut Asset, path: &Path, document: Option<&Path>) {
     let found = path.to_string_lossy().into_owned();
     if a.link.as_deref() == Some(found.as_str()) {
@@ -266,7 +255,7 @@ fn adopt_path(a: &mut Asset, path: &Path, document: Option<&Path>) {
         a.link_relative = Some(relative);
     }
     if let Some(source) = LinkedSource::of(a, document) {
-        a.data = a.data.with_source(source);
+        a.data = AssetData::linked_under(a.data.key(), source);
     }
 }
 
@@ -355,17 +344,16 @@ fn spawn(work: Vec<Work>, results: Vec<Outcome>) -> Arc<JobHandle> {
 }
 
 /// Have the content hash and proxy of graphics just placed into `st`'s document made in the
-/// background, in the order given; [`Session::poll_link_checks`] links them when they are in.
+/// background, in the order given; [`Session::poll_link_checks`] adds them when they are in.
 pub(crate) fn prepare(st: &mut DocState, pending: Vec<Pending>) {
     if pending.is_empty() {
         return;
     }
-    st.links.pending.extend(pending.iter().map(|p| p.key));
     #[cfg(not(target_arch = "wasm32"))]
     {
         // Taken from the end: the first placed is made first, before checks still waiting.
         let work: Vec<Work> =
-            pending.into_iter().rev().map(|Pending { key, bytes, page, proxy, link }| Work::Prepare { key, bytes, page, proxy, link }).collect();
+            pending.into_iter().rev().map(|Pending { key, bytes, page, proxy }| Work::Prepare { key, bytes, page, proxy }).collect();
         let mut results = Vec::new();
         if let Some(handle) = &st.links.job {
             let mut state = lock(&handle.0);
@@ -378,50 +366,8 @@ pub(crate) fn prepare(st: &mut DocState, pending: Vec<Pending>) {
         }
         st.links.job = Some(spawn(work, results));
     }
-}
-
-/// Before a save of `d` (`st`'s document or a copy of it): the content hash of each graphic
-/// placed from a file whose hash isn't made yet ([`prepare`]), from its bytes, which are embedded
-/// until then. It is saved as an embedded copy with a complete link record, never as a link to a
-/// file whose bytes nobody has checked; without the hash a later open would take it for a copy
-/// saved before linked storage. → whether `d` changed.
-fn settle(d: &mut Document, pending: &BTreeSet<SourceKey>) -> bool {
-    let unsettled: Vec<AssetId> = d.assets.values().filter(|a| unsettled(a, pending)).map(|a| a.id).collect();
-    for id in &unsettled {
-        let Some(a) = d.assets.get_mut(id).map(Arc::make_mut) else { continue };
-        if let Some(bytes) = a.data.embedded_bytes() {
-            a.link_hash = Some(crate::asset_io::content_hash(bytes));
-        }
-    }
-    !unsettled.is_empty()
-}
-
-/// Whether `a` was placed from a file ([`prepare`]) and has no content hash yet.
-fn unsettled(a: &Asset, pending: &BTreeSet<SourceKey>) -> bool {
-    a.storage == Storage::Embedded && a.link.is_some() && a.link_hash.is_none() && pending.contains(&a.data.key())
-}
-
-/// [`settle`] for the live document of `st`, before it is saved. A document without unsaved
-/// changes stays so.
-pub(crate) fn settle_pending(st: &mut DocState) {
-    if !st.doc.assets.values().any(|a| unsettled(a, &st.links.pending)) {
-        return;
-    }
-    let clean = !st.is_dirty();
-    let mut doc = (*st.doc).clone();
-    if settle(&mut doc, &st.links.pending) {
-        st.doc = Arc::new(doc);
-        if clean {
-            st.saved_doc = Arc::clone(&st.doc);
-        }
-    }
-}
-
-/// [`settle`] for a copy of `st`'s document, before the copy is written.
-pub(crate) fn settle_copy(st: &DocState, copy: &mut Document) {
-    if !st.links.pending.is_empty() {
-        settle(copy, &st.links.pending);
-    }
+    #[cfg(target_arch = "wasm32")]
+    let _ = st;
 }
 
 fn lock(job: &Job) -> std::sync::MutexGuard<'_, JobState> {
@@ -465,8 +411,13 @@ fn check(work: Work, cancel: &AtomicBool) -> Option<Outcome> {
         Work::Find { asset, key, source } => {
             let found: Vec<(PathBuf, Fingerprint)> =
                 crate::asset_io::candidates(&source).into_iter().filter_map(|p| fingerprint(&p).map(|f| (p, f))).collect();
-            if let Some((path, _)) = found.iter().find(|(_, f)| super::links::settled(f) && Some(*f) == source.fingerprint) {
-                return Some(Outcome::Holds { asset, key, path: path.clone(), fingerprint: None });
+            if let Some((path, at)) = found.iter().find(|(_, f)| super::links::settled(f) && Some(*f) == source.fingerprint) {
+                // A record without a hash gets the file's, read while it keeps that size and time.
+                let hash = match source.hash {
+                    Some(_) => None,
+                    None => read_file(path, source.len, cancel, |_, _| true)?.filter(|_| fingerprint(path) == Some(*at)),
+                };
+                return Some(Outcome::Holds { asset, key, path: path.clone(), fingerprint: None, hash });
             }
             if found.is_empty() {
                 return Some(Outcome::Absent { asset, key });
@@ -476,7 +427,7 @@ fn check(work: Work, cancel: &AtomicBool) -> Option<Outcome> {
                 match read_file(path, source.len, cancel, |_, _| true)? {
                     Some(found) if found == *hash && fingerprint(path) == Some(*before) => {
                         let fingerprint = super::links::settled(before).then_some(*before);
-                        return Some(Outcome::Holds { asset, key, path: path.clone(), fingerprint });
+                        return Some(Outcome::Holds { asset, key, path: path.clone(), fingerprint, hash: None });
                     }
                     _ => {}
                 }
@@ -503,13 +454,13 @@ fn check(work: Work, cancel: &AtomicBool) -> Option<Outcome> {
             let fingerprint = if super::links::settled(&before) { before } else { Fingerprint { size: len, mtime: super::links::UNVERIFIED_MTIME } };
             Some(Outcome::Confirmed { asset, key, path, fingerprint, hash, proxy })
         }
-        Work::Prepare { key, bytes, page, proxy, link } => {
+        Work::Prepare { key, bytes, page, proxy } => {
             let hash = hash_bytes(&bytes, cancel)?;
             if cancel.load(Ordering::Relaxed) {
                 return None;
             }
             let proxy = if proxy { designcraft_render::proxy::make_proxy(&bytes, page) } else { None };
-            Some(Outcome::Prepared { key, hash, proxy, link })
+            Some(Outcome::Prepared { key, hash, proxy })
         }
     }
 }
@@ -638,25 +589,10 @@ fn current(st: &mut DocState, id: AssetId, key: SourceKey) -> Option<&mut Asset>
 
 fn apply_one(st: &mut DocState, outcome: Outcome, document: Option<&Path>) -> bool {
     match outcome {
-        Outcome::Holds { asset, key, path, fingerprint } => {
-            let unchanged = fingerprint.is_none()
-                && st.doc.assets.get(&asset).is_some_and(|a| a.data.key() == key && a.link.as_deref() == Some(path.to_string_lossy().as_ref()));
-            if unchanged {
-                // The file at the recorded path, with the recorded size and time: nothing to change.
-                st.links.status.insert(asset, (key, LinkStatus::Ok));
-                return false;
-            }
-            let Some(a) = current(st, asset, key) else { return false };
-            if let Some(f) = fingerprint {
-                a.link_fingerprint = Some(f);
-            }
-            adopt_path(a, &path, document);
-            if let Some(source) = LinkedSource::of(a, document) {
-                a.data = a.data.with_source(source);
-            }
-            let key = a.data.key();
-            st.links.status.insert(asset, (key, LinkStatus::Ok));
-            true
+        Outcome::Holds { asset, key, path, fingerprint, hash } => {
+            let held = held(st, asset, key, &path, fingerprint, document);
+            let hashed = hash.is_some_and(|hash| add_everywhere(st, key, &hash, None));
+            held || hashed
         }
         Outcome::Differs { asset, key } => {
             found(st, asset, key, LinkStatus::Modified);
@@ -677,44 +613,14 @@ fn apply_one(st: &mut DocState, outcome: Outcome, document: Option<&Path>) -> bo
             }
             a.link_fingerprint = Some(fingerprint);
             a.link_hash = Some(hash);
-            a.proxy = proxy.map(|p| designcraft_doc::Proxy { mime: p.mime.into(), pixels: p.pixels, data: AssetData::embedded(p.data) });
+            a.proxy = proxy.map(doc_proxy);
             a.storage = Storage::Linked;
             st.links.status.insert(asset, (key, LinkStatus::Ok));
             st.links.migrated = st.links.migrated.saturating_add(1);
             true
         }
         Outcome::Unconfirmed => false,
-        Outcome::Prepared { key, hash, proxy, link } => {
-            // Embedded on purpose since (Links › Embed): it stays so.
-            if !st.links.pending.remove(&key) {
-                return false;
-            }
-            let proxy = proxy.map(|p| designcraft_doc::Proxy { mime: p.mime.into(), pixels: p.pixels, data: AssetData::embedded(p.data) });
-            // Each document changed once, its holders sharing the result: a history entry that
-            // was the saved state still is.
-            let mut done: Vec<(Arc<Document>, Arc<Document>)> = Vec::new();
-            let mut prepared = |doc: &mut Arc<Document>| {
-                if let Some((_, after)) = done.iter().find(|(before, _)| Arc::ptr_eq(before, doc)) {
-                    *doc = Arc::clone(after);
-                    return true;
-                }
-                let before = Arc::clone(doc);
-                let changed = link_placed(doc, key, &hash, link, document, proxy.as_ref());
-                if changed {
-                    done.push((before, Arc::clone(doc)));
-                }
-                changed
-            };
-            let changed = prepared(&mut st.doc);
-            // The undo history and the last saved state hold the same bytes: linked there too, so
-            // they don't keep every placed file in memory, and a redo of an undone placement
-            // brings it back linked.
-            for entry in st.history.undo.iter_mut().chain(st.history.redo.iter_mut()) {
-                prepared(&mut entry.doc);
-            }
-            prepared(&mut st.saved_doc);
-            changed
-        }
+        Outcome::Prepared { key, hash, proxy } => add_everywhere(st, key, &hash, proxy.map(doc_proxy).as_ref()),
     }
 }
 
@@ -725,26 +631,74 @@ fn found(st: &mut DocState, id: AssetId, key: SourceKey, status: LinkStatus) {
     }
 }
 
-/// The graphics of `doc` placed with the bytes `key` ([`prepare`]) with their content `hash` and
-/// `proxy`, linked to their files when `link` ([`super::links::link_prepared`]) → whether `doc`
-/// has any.
-fn link_placed(
-    doc: &mut Arc<Document>,
-    key: SourceKey,
-    hash: &str,
-    link: bool,
-    document: Option<&Path>,
-    proxy: Option<&designcraft_doc::Proxy>,
-) -> bool {
-    let placed: Vec<AssetId> =
-        doc.assets.values().filter(|a| a.data.key() == key && a.storage == Storage::Embedded && a.link.is_some()).map(|a| a.id).collect();
-    if placed.is_empty() {
+/// A proxy the background job made, as a document keeps it.
+fn doc_proxy(p: designcraft_render::proxy::ProxyImage) -> designcraft_doc::Proxy {
+    designcraft_doc::Proxy { mime: p.mime.into(), pixels: p.pixels, data: AssetData::embedded(p.data) }
+}
+
+/// The file at `path` holds asset `id`'s bytes (still `key`'s): its link, with `fingerprint`
+/// when the file's time can vouch for them. → whether the document changed.
+fn held(st: &mut DocState, id: AssetId, key: SourceKey, path: &Path, fingerprint: Option<Fingerprint>, document: Option<&Path>) -> bool {
+    let unchanged = fingerprint.is_none()
+        && st.doc.assets.get(&id).is_some_and(|a| a.data.key() == key && a.link.as_deref() == Some(path.to_string_lossy().as_ref()));
+    if unchanged {
+        // The file at the recorded path, with the recorded size and time: nothing to change.
+        st.links.status.insert(id, (key, LinkStatus::Ok));
+        return false;
+    }
+    let Some(a) = current(st, id, key) else { return false };
+    if let Some(f) = fingerprint {
+        a.link_fingerprint = Some(f);
+    }
+    adopt_path(a, path, document);
+    // The file holds the same bytes: the key stays, also for a record with no hash.
+    if let Some(source) = LinkedSource::of(a, document) {
+        a.data = AssetData::linked_under(key, source);
+    }
+    st.links.status.insert(id, (key, LinkStatus::Ok));
+    true
+}
+
+/// Add the content `hash` and `proxy` of the bytes `key` to the graphics that have those bytes
+/// and lack them ([`super::links::add_prepared`]), in the live document, the undo history and the
+/// last saved state alike: a redo of an undone placement, or an undo to before an open-time
+/// check, then has them too. → whether the live document changed.
+fn add_everywhere(st: &mut DocState, key: SourceKey, hash: &str, proxy: Option<&designcraft_doc::Proxy>) -> bool {
+    // Each document changed once, its holders sharing the result: a history entry that was the
+    // saved state still is.
+    let mut done: Vec<(Arc<Document>, Arc<Document>)> = Vec::new();
+    let mut add = |doc: &mut Arc<Document>| {
+        if let Some((_, after)) = done.iter().find(|(before, _)| Arc::ptr_eq(before, doc)) {
+            *doc = Arc::clone(after);
+            return true;
+        }
+        let before = Arc::clone(doc);
+        let changed = add_to(doc, key, hash, proxy);
+        if changed {
+            done.push((before, Arc::clone(doc)));
+        }
+        changed
+    };
+    let changed = add(&mut st.doc);
+    for entry in st.history.undo.iter_mut().chain(st.history.redo.iter_mut()) {
+        add(&mut entry.doc);
+    }
+    add(&mut st.saved_doc);
+    changed
+}
+
+/// [`add_everywhere`] for one version of the document → whether `doc` changed.
+fn add_to(doc: &mut Arc<Document>, key: SourceKey, hash: &str, proxy: Option<&designcraft_doc::Proxy>) -> bool {
+    let wants = |a: &Asset| a.data.key() == key && (a.link_hash.is_none() || (proxy.is_some() && a.storage == Storage::Linked && a.proxy.is_none()));
+    let ids: Vec<AssetId> = doc.assets.values().filter(|a| wants(a)).map(|a| a.id).collect();
+    if ids.is_empty() {
         return false;
     }
     let d = Arc::make_mut(doc);
-    for id in placed {
-        let Some(a) = d.assets.get_mut(&id).map(Arc::make_mut) else { continue };
-        super::links::link_prepared(a, hash.to_owned(), link, document, proxy.cloned());
+    for id in ids {
+        if let Some(a) = d.assets.get_mut(&id).map(Arc::make_mut) {
+            super::links::add_prepared(a, hash, proxy);
+        }
     }
     true
 }
@@ -841,9 +795,10 @@ pub(crate) fn after_save(d: &Document, destination: &Path) -> Option<Document> {
             if a.data.linked_source() == Some(&source) {
                 return None;
             }
-            // Embedded bytes are linked only once their hash was found in the file (`Confirmed`).
-            let data = if a.data.is_linked() { a.data.with_source(source) } else { AssetData::linked_under(a.data.key(), source) };
-            Some((a.id, data))
+            // The record names the same bytes, now resolved against the destination: the key
+            // stays, also for a link with no hash yet. Embedded bytes are linked only once their
+            // hash was found in the file (`Confirmed`).
+            Some((a.id, AssetData::linked_under(a.data.key(), source)))
         })
         .collect();
     if relinked.is_empty() {
@@ -856,6 +811,38 @@ pub(crate) fn after_save(d: &Document, destination: &Path) -> Option<Document> {
         }
     }
     Some(out)
+}
+
+/// `d` as a save writes it, when that changes it: each linked graphic without a proxy (placed
+/// moments ago, its proxy still being made in the background) gets one from its bytes, so a saved
+/// link always has a preview to draw while its file can't be read. Nothing is hashed: a link
+/// without a hash is saved without one. A graphic whose bytes can't be read or don't decode stays
+/// without a proxy. `None` when no graphic needs one, or once `cancelled` says so.
+pub(crate) fn with_proxies(d: &Document, cancelled: impl Fn() -> bool) -> Option<Document> {
+    let wanting: Vec<AssetId> = d.assets.values().filter(|a| a.storage == Storage::Linked && a.proxy.is_none() && !media(a)).map(|a| a.id).collect();
+    if wanting.is_empty() {
+        return None;
+    }
+    let mut out = d.clone();
+    let mut changed = false;
+    for id in wanting {
+        if cancelled() {
+            return None;
+        }
+        let Some(asset) = out.assets.get_mut(&id) else { continue };
+        let Ok(bytes) = asset.data.load() else { continue };
+        // A file that trips a decoder leaves its graphic without a proxy, not the save undone.
+        let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| super::links::proxy_of(asset, &bytes)));
+        match made {
+            Ok(Some(proxy)) => {
+                Arc::make_mut(asset).proxy = Some(proxy);
+                changed = true;
+            }
+            Ok(None) => {}
+            Err(payload) => log::warn!("making the proxy of {}: {}", asset.name, crate::guard::panic_message(payload.as_ref())),
+        }
+    }
+    changed.then_some(out)
 }
 
 /// `d` with every linked file it uses copied in (Save a Copy `{embedLinks: true}`): a document

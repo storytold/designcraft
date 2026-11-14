@@ -825,9 +825,10 @@ fn a_file_placed_from_a_path_links_to_it_and_embed_true_embeds_it() {
     assert_eq!((r["storage"].as_str(), r["status"].as_str()), (Some("embedded"), Some("embedded")));
 }
 
-/// Placing a large image returns before its proxy and hash are made: until the background job
-/// has them it is embedded with its link record and drawn from its bytes, then it links under the
-/// same key. A save in between writes it embedded, with the hash, never a link nobody checked.
+/// Placing a large image links it at once and returns before its proxy and hash are made. A save
+/// in between writes the link without a hash, with a proxy made for it then; the copy reopens as
+/// that link, and its open hashes the file. The background job adds the hash and proxy to the
+/// live document under the key its bytes were drawn with.
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn placing_leaves_the_proxy_and_hash_to_the_background() {
@@ -842,24 +843,57 @@ fn placing_leaves_the_proxy_and_hash_to_the_background() {
     let id = AssetId(s.execute("file.place", &json!({"path": path.to_string_lossy()})).unwrap()["asset"].as_u64().unwrap());
     let a = asset_of(&s, id);
     assert!(a.proxy.is_none() && a.link_hash.is_none(), "no proxy or hash is made while placing");
-    assert_eq!((a.storage, a.link.as_deref()), (Storage::Embedded, path.to_str()));
+    assert_eq!((a.storage, a.link.as_deref()), (Storage::Linked, path.to_str()));
+    assert_eq!(a.data.resident().as_deref(), Some(&bytes), "the bytes read for placing are kept for drawing");
     assert!(s.doc().unwrap().links.checking(), "the background job is running");
     let key = a.data.key();
 
     let early = dir.0.join("early.designcraft");
     s.execute("file.saveACopy", &json!({"path": early.to_string_lossy()})).unwrap();
-    let copy = super::super::file::from_bytes(&std::fs::read(&early).unwrap()).unwrap();
-    let c = copy.assets.values().next().unwrap();
+    let mut t = Session::new();
+    t.execute("file.open", &json!({"path": early.to_string_lossy()})).unwrap();
+    crate::cmd::native_links::wait(&mut t);
+    let c = t.doc().unwrap().doc.assets.values().next().cloned().unwrap();
+    assert_eq!(c.storage, Storage::Linked);
+    assert!(c.proxy.is_some(), "the save made the proxy");
+    assert_eq!(c.data.load().unwrap().as_slice(), bytes.as_slice());
     let hash = crate::asset_io::content_hash(&bytes);
-    assert_eq!((c.storage, c.link_hash.as_deref()), (Storage::Embedded, Some(hash.as_str())));
+    assert_eq!(c.link_hash.as_deref(), Some(hash.as_str()), "the open hashed the file that matched by size and time");
 
     crate::cmd::native_links::wait(&mut s);
     let a = asset_of(&s, id);
     assert_eq!((a.storage, a.link_hash.as_deref()), (Storage::Linked, Some(hash.as_str())));
-    assert_eq!(a.data.key(), key, "linked under the key its decodes are cached by");
+    assert_eq!(a.data.key(), key, "still under the key its decodes are cached by");
     assert!(a.proxy.as_ref().is_some_and(|p| p.pixels == (1024, 768)), "the proxy is made in the background");
-    assert_eq!(a.data.resident().as_deref(), Some(&bytes));
     assert!(!s.doc().unwrap().links.checking());
+}
+
+/// Cmd-S right after placing a large photo writes a link and a proxy, not the photo.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_save_right_after_placing_writes_no_copy_of_the_file() {
+    let dir = TempDir::new("save-at-once");
+    let path = dir.0.join("photo.png");
+    // Opaque noise doesn't compress: the PNG is about as large as its pixels.
+    let mut seed = 0x2545_f491_u32;
+    let pixels = (0..800 * 600 * 4)
+        .map(|i| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            if i % 4 == 3 { 255 } else { (seed >> 24) as u8 }
+        })
+        .collect();
+    let bytes = designcraft_render::Rendered { width: 800, height: 600, pixels }.to_png();
+    std::fs::write(&path, &bytes).unwrap();
+    set_age(&path, 60);
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    s.execute("file.place", &json!({"path": path.to_string_lossy()})).unwrap();
+    let doc = dir.0.join("doc.designcraft");
+    s.execute("file.save", &json!({"path": doc.to_string_lossy()})).unwrap();
+    let saved = std::fs::metadata(&doc).unwrap().len();
+    assert!(saved < bytes.len() as u64, "saved {saved} bytes for a {} byte photo", bytes.len());
 }
 
 #[cfg(not(target_arch = "wasm32"))]

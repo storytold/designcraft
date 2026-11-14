@@ -14,7 +14,7 @@ A graphic placed from a file is linked to it. The document stores the link, a sm
 
 Video and audio link as well, but have no image proxy (the poster frame is used when there is one). An SVG that references other files resolves them relative to the SVG's own path.
 
-Placing reads each file once and returns without decoding or hashing it, so placing many large images doesn't stop the app. A background thread then makes each graphic's hash and proxy, in placement order, and links it. Until then the graphic is drawn from the bytes just read, and is embedded with its link record. A save in that time computes the missing hashes and writes those graphics embedded; they link on the next save after the background work finishes.
+Placing reads each file once and links the graphic to it at once, as InDesign does, with the file's size and modification time as its fingerprint. The bytes just read stay in memory for drawing, so nothing is read again. Placing returns without decoding or hashing the file, so placing many large images doesn't stop the app. A background thread then makes each graphic's content hash and proxy, in placement order. Until the hash is in, the link's status goes by size and time; a time from the last 2 seconds, or none, can't vouch for the bytes, and the hash decides once it is known. A save in that time makes the proxies still missing and writes the links without a hash. When such a document is opened, a file that matches by size and time is hashed in the background, so the next save has the hash.
 
 Linked bytes are read when a render, export or check needs them. They are held in a shared cache of 512 MiB; a file larger than the cache is read for one use and not kept. A linked file larger than 1 GiB is not loaded.
 
@@ -56,7 +56,7 @@ A document with any linked asset is written as format version 5; otherwise the v
 
 - A linked asset is saved as its record (absolute path, path relative to the document, size, modification time, SHA-256 hash) plus `proxies/<id>.jpg` or `.png`. The original is never written into the file.
 - The relative path is recomputed for the save's destination, so a document and its Links folder can move together.
-- Automatic recovery snapshots use the same layout.
+- Automatic recovery snapshots use the same layout. A save or snapshot makes the proxy of a linked graphic that has none yet; recovery snapshots make it on their background thread.
 - **Save a Copy** with `embedLinks: true` copies every linked file in, making a portable document. A linked file that cannot be read stops that save with an error.
 
 ## Opening

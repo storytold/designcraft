@@ -83,6 +83,8 @@ pub fn specs() -> Vec<CommandSpec> {
             let st = s.doc()?;
             // Preview fill is session state. Serialize the unfilled template.
             let doc = st.preview_stash.as_deref().unwrap_or(st.doc.as_ref());
+            let proxied = crate::cmd::native_links::with_proxies(doc, || false);
+            let doc = proxied.as_ref().unwrap_or(doc);
             let bytes = to_bytes(doc)?;
             let warnings = crate::cmd::native_links::web_save_warnings(doc);
             Ok(json!({"base64": base64_encode(&bytes), "bytes": bytes.len(), "warnings": warnings}))

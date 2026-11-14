@@ -202,7 +202,7 @@ impl FileLink {
 
 /// The proxy a linked graphic is drawn with while its file can't be read: none for video and
 /// sound, or a file that doesn't decode.
-fn proxy_of(a: &Asset, bytes: &[u8]) -> Option<designcraft_doc::Proxy> {
+pub(super) fn proxy_of(a: &Asset, bytes: &[u8]) -> Option<designcraft_doc::Proxy> {
     if a.mime.starts_with("video/") || a.mime.starts_with("audio/") {
         return None;
     }
@@ -235,13 +235,14 @@ pub(crate) fn give_bytes(a: &mut Asset, bytes: impl Into<Arc<Vec<u8>>>, file: Op
     link_to_file(a, bytes, file, document, None);
 }
 
-/// [`give_bytes`] for a graphic being placed, leaving out the work that grows with the file: its
-/// content hash and its proxy are made in the background ([`super::native_links::prepare`] the
-/// returned work once the asset is in the document). Until then the graphic is embedded with the
-/// file's link record and no hash, and drawn from its bytes; [`link_prepared`] links it when they
-/// are in. A save before that writes it embedded ([`super::native_links::settle_pending`]).
-/// Placing many press-size images would otherwise decode and hash each one before the app
-/// responds again. Without a file, or on the web (no threads), this is [`give_bytes`].
+/// [`give_bytes`] for a graphic being placed, leaving out the work that grows with the file: the
+/// graphic links to its file at once, with the file's size and time as its fingerprint and the
+/// bytes just read kept in memory for drawing, and its content hash and proxy are made in the
+/// background ([`super::native_links::prepare`] the returned work once the asset is in the
+/// document; [`add_prepared`] adds them). A link without a hash is complete: its status goes by
+/// size and time until the hash is in. Placing many press-size images would otherwise decode and
+/// hash each one before the app responds again. Embedded placements, bytes without a file and
+/// the web (no threads) are [`give_bytes`].
 #[must_use = "the hash and proxy are made only once the returned work is queued"]
 pub(crate) fn give_placed(
     a: &mut Asset,
@@ -252,18 +253,16 @@ pub(crate) fn give_placed(
 ) -> Option<super::native_links::Pending> {
     let bytes: Arc<Vec<u8>> = bytes.into();
     let file = match file {
-        Some(file) if cfg!(not(target_arch = "wasm32")) => file,
+        Some(file) if !embed && cfg!(not(target_arch = "wasm32")) => file,
         file => {
             give_bytes(a, bytes, file, embed, document);
             return None;
         }
     };
-    a.proxy = None;
     record_file(a, &bytes, file, document);
     a.link_hash = None;
-    a.storage = Storage::Embedded;
-    a.data = AssetData::embedded(Arc::clone(&bytes));
-    Some(super::native_links::Pending::of(a, bytes, !embed))
+    link_recorded(a, Arc::clone(&bytes), designcraft_doc::SourceKey::fresh(), document, |_, _| None);
+    Some(super::native_links::Pending::of(a, bytes))
 }
 
 /// Link `a` to `file`, whose bytes (`bytes`) were just read: the file's record (paths, size and
@@ -275,18 +274,29 @@ pub(crate) fn link_to_file(a: &mut Asset, bytes: Arc<Vec<u8>>, file: FileLink, d
     link_recorded(a, bytes, designcraft_doc::SourceKey::fresh(), document, |a, bytes| preview.or_else(|| proxy_of(a, bytes)));
 }
 
-/// A graphic placed with [`give_placed`] (embedded, its link record complete but for the hash)
-/// once its content `hash` and its `proxy` are made: linked to its file under the key its bytes
-/// already have, so nothing drawn from them is decoded again, or with only the hash added when it
-/// was placed embedded (`link` false).
-pub(super) fn link_prepared(a: &mut Asset, hash: String, link: bool, document: Option<&Path>, proxy: Option<designcraft_doc::Proxy>) {
-    a.link_hash = Some(hash);
-    if !link {
-        return;
+/// Add to a graphic placed with [`give_placed`] (or opened with a link that has no hash) its
+/// content `hash` and `proxy`, made from the bytes it has under its current key: the hash when it
+/// has none, the proxy when it is linked and has none. Its storage stays as it is (a graphic
+/// embedded since with Links › Embed stays embedded). → whether `a` changed.
+pub(super) fn add_prepared(a: &mut Asset, hash: &str, proxy: Option<&designcraft_doc::Proxy>) -> bool {
+    let mut changed = false;
+    if a.link_hash.is_none() {
+        a.link_hash = Some(hash.to_owned());
+        // The same bytes: the key stays, so nothing decoded from them is decoded again.
+        if let Some(mut source) = a.data.linked_source().cloned() {
+            source.hash = Some(hash.to_owned());
+            a.data = AssetData::linked_under(a.data.key(), source);
+        }
+        changed = true;
     }
-    let Some(bytes) = a.data.embedded_bytes().cloned() else { return };
-    let key = a.data.key();
-    link_recorded(a, bytes, key, document, |_, _| proxy);
+    if a.storage == Storage::Linked
+        && a.proxy.is_none()
+        && let Some(proxy) = proxy
+    {
+        a.proxy = Some(proxy.clone());
+        changed = true;
+    }
+    changed
 }
 
 /// `a`, whose link record is complete, as a link to its file under `key`: drawn with `proxy`'s
@@ -693,11 +703,12 @@ pub fn remember_link_files(s: &mut Session, doc: &Arc<Document>, files: &[(Asset
         if let Some(a) = d.assets.get_mut(id) {
             let a = Arc::make_mut(a);
             a.link_fingerprint = Some(*f);
-            // Linked bytes are read by that time too (the same bytes: the key stays).
+            // Linked bytes are read by that time too (the same bytes, found in the file: the key
+            // stays, also for a link with no hash yet).
             if a.data.is_linked()
                 && let Some(source) = LinkedSource::of(a, document.as_deref().map(Path::new))
             {
-                a.data = a.data.with_source(source);
+                a.data = AssetData::linked_under(a.data.key(), source);
             }
         }
     }
@@ -1048,8 +1059,6 @@ fn embed(s: &mut Session, p: &Value) -> Result<Value> {
         a.link_hash = hash;
         Ok(Value::Null)
     })?;
-    // Just placed and not linked yet: the background work leaves it embedded.
-    s.doc_mut()?.links.keep_embedded(key);
     Ok(Value::Null)
 }
 

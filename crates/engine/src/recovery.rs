@@ -751,7 +751,8 @@ impl Snapshot {
         let doc = d.preview_stash.clone().unwrap_or_else(|| d.doc.clone());
         // Linked files are recorded as a save to the document's own file records them, never
         // copied in; relative paths are relative to that file, which recovery resolves them against.
-        // Embedded images not yet saved as links keep their bytes.
+        // Graphics placed since stay links to their files. Images of a document saved before
+        // linked storage that are not yet saved as links keep their bytes.
         let doc = match d.path.as_deref().map(Path::new) {
             Some(path) => crate::cmd::native_links::for_recovery(&doc, path).map_or(doc, std::sync::Arc::new),
             None => doc,
@@ -817,15 +818,16 @@ fn write_snapshot(entry: &Snapshot, cancelled: impl Fn() -> bool) -> Written {
     #[cfg(any(test, feature = "testing"))]
     testing::gate(&entry.dir);
     let (doc, meta) = files(&entry.dir, entry.uid);
+    // Linked graphics placed moments ago get their proxies here, off the interface thread.
+    let proxied = crate::cmd::native_links::with_proxies(&entry.doc, &cancelled);
+    let document = proxied.as_ref().unwrap_or(&*entry.doc);
     // Set at the rename: an error after it (syncing the folder) leaves the entry on disk.
     let landed = std::cell::Cell::new(false);
     let published = publish_recovery_written(
         &doc,
         entry.own,
         // A cancel stops the write at its next chunk instead of after the whole package.
-        |out| {
-            designcraft_format::write(&mut StopWhen { out, cancelled: &cancelled }, &entry.doc, None).map_err(|e| EngineError::Other(e.to_string()))
-        },
+        |out| designcraft_format::write(&mut StopWhen { out, cancelled: &cancelled }, document, None).map_err(|e| EngineError::Other(e.to_string())),
         &cancelled,
         // Written: in a folder that is not this run's own, the entry is now this session's to
         // replace and remove (Save and Close must clean up the snapshot they wrote). Recorded with
