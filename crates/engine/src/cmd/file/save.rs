@@ -19,16 +19,28 @@ pub(super) fn file_save(s: &mut Session, p: &Value) -> Result<Value> {
     // Before anything about the document changes: a refused save leaves it as it was.
     crate::file_access::check_write(&path).map_err(EngineError::Other)?;
     // Prepare paths for the destination without changing the live document until persistence succeeds.
-    let mut saved = (*st.doc).clone();
-    crate::cmd::datamerge::refresh_relative_paths(&mut saved, std::path::Path::new(&path));
-    let paths_changed = saved.data_merge != st.doc.data_merge;
-    let saved = if paths_changed { Arc::new(saved) } else { st.doc.clone() };
+    let destination = std::path::Path::new(&path);
+    let from = st.path.as_deref().map(std::path::Path::new);
+    let linked = crate::cmd::native_links::for_destination(&st.doc, from, destination);
+    let links_changed = linked.is_some();
+    let mut saved = linked.unwrap_or_else(|| (*st.doc).clone());
+    crate::cmd::datamerge::refresh_relative_paths(&mut saved, destination);
+    // Proxies the background job hasn't made yet are made here, on this thread: the save is
+    // synchronous. The document keeps them.
+    let proxied = crate::cmd::native_links::with_proxies(&saved, || false);
+    let proxies_made = proxied.is_some();
+    let saved = proxied.unwrap_or(saved);
+    let changed = links_changed || proxies_made || saved.data_merge != st.doc.data_merge;
+    let saved = if changed { Arc::new(saved) } else { st.doc.clone() };
+    let warnings = crate::cmd::native_links::web_save_warnings(&saved);
     let bytes = to_bytes_with_preview(&saved, &s.cache)?;
     #[cfg(not(target_arch = "wasm32"))]
     crate::io::write_file(&path, &bytes).map_err(EngineError::Other)?;
     let st = s.doc_mut()?;
-    if paths_changed {
-        st.doc = saved;
+    // Images saved as links let go of their bytes; linked files resolve against the new file.
+    let doc = crate::cmd::native_links::after_save(&saved, destination).map_or(saved, Arc::new);
+    if !Arc::ptr_eq(&doc, &st.doc) {
+        st.doc = doc;
         st.bump_revision();
     }
     st.path = Some(path.clone());
@@ -41,7 +53,35 @@ pub(super) fn file_save(s: &mut Session, p: &Value) -> Result<Value> {
         crate::recovery::discard_document(s, index, recovery_dir.as_deref());
         s.prefs.note_recent_file(&path);
     }
-    Ok(json!({"path": path, "bytes": bytes.len()}))
+    Ok(json!({"path": path, "bytes": bytes.len(), "warnings": warnings}))
+}
+
+/// `file.saveACopy`: the document written to `path` without changing which file it is or its
+/// unsaved state. With `embedLinks`, every linked file is copied in: a document that opens
+/// anywhere.
+pub(super) fn file_save_a_copy(s: &mut Session, p: &Value) -> Result<Value> {
+    let path = str_param(p, "path").ok_or_else(|| bad("file.saveACopy", "missing `path`"))?;
+    let path = with_document_extension(path);
+    let embed = match p.get("embedLinks") {
+        None | Some(Value::Null) => false,
+        Some(v) => v.as_bool().ok_or_else(|| bad("file.saveACopy", "`embedLinks` must be true or false"))?,
+    };
+    let st = s.doc()?;
+    let destination = std::path::Path::new(&path);
+    let from = st.path.as_deref().map(std::path::Path::new);
+    let mut copy = crate::cmd::native_links::for_destination(&st.doc, from, destination).unwrap_or_else(|| (*st.doc).clone());
+    crate::cmd::datamerge::refresh_relative_paths(&mut copy, destination);
+    if embed {
+        crate::cmd::native_links::embed_linked(&mut copy, "file.saveACopy")?;
+    }
+    if let Some(proxied) = crate::cmd::native_links::with_proxies(&copy, || false) {
+        copy = proxied;
+    }
+    let warnings = crate::cmd::native_links::web_save_warnings(&copy);
+    let bytes = to_bytes_with_preview(&copy, &s.cache)?;
+    #[cfg(not(target_arch = "wasm32"))]
+    crate::io::write_file(&path, &bytes).map_err(EngineError::Other)?;
+    Ok(json!({"path": path, "bytes": bytes.len(), "warnings": warnings}))
 }
 
 /// Which access a recovery command needs to the folder it is given.
@@ -95,14 +135,17 @@ pub(super) fn file_revert(s: &mut Session, _: &Value) -> Result<Value> {
         } else {
             from_bytes(&bytes)?
         };
-        // As opened again: the fonts beside it now (unchanged files are shared, not read again).
+        // As opened again: the fonts beside it now (unchanged files are shared, not read again),
+        // its linked files found again.
         let (fonts, _, _) = load_document_fonts(&mut d, &path);
+        let links = crate::cmd::native_links::resolve(&mut d, Some(std::path::Path::new(&path)), true);
         let uid = s.doc()?.uid;
         let recovery_dir = s.recovery_dir.clone();
         let index = s.active_index().ok_or(EngineError::NoDocument)?;
         let mut fresh = DocState::new(d, Some(path.clone()));
         fresh.fonts = fonts;
         fresh.uid = uid;
+        crate::cmd::native_links::start(&mut fresh, links);
         // A new state has a revision no state had before, so caches don't show the old document.
         crate::recovery::discard_document(s, index, recovery_dir.as_deref());
         *s.doc_mut()? = fresh;

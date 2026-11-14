@@ -202,7 +202,7 @@ fn pictures_are_cropped_to_their_frames() {
             name: "red.png".into(),
             mime: "image/png".into(),
             link: None,
-            data: Arc::new(png(200, 100)),
+            data: designcraft_doc::AssetData::embedded(png(200, 100)),
             pixels: Some((200, 100)),
             ..Default::default()
         }),

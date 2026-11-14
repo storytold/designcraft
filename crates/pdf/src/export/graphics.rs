@@ -60,22 +60,61 @@ impl Exporter<'_> {
         )))
     }
 
+    /// The output of asset `id` ([`designcraft_doc::Asset::output_bytes`]), read once per
+    /// export with its warning recorded. `None` when there is nothing to export (warned once, by
+    /// name).
+    pub(super) fn asset_output(&mut self, id: AssetId) -> Option<Output> {
+        if let Some(o) = self.outputs.get(&id) {
+            return o.clone();
+        }
+        let asset = self.doc.assets.get(&id)?;
+        // Embedded bytes cost nothing to hand out again and aren't kept here: a graphic whose
+        // converted image is shared by content then holds no second copy of them.
+        let keep = asset.data.is_linked();
+        let name = asset.name.clone();
+        let out = match asset.output_bytes() {
+            Ok(out) => {
+                if let Some(w) = out.warning {
+                    self.warn(w);
+                }
+                Some((out.bytes, name, out.proxied))
+            }
+            Err(e) => {
+                self.warn(format!("image `{name}` was skipped: {e}"));
+                None
+            }
+        };
+        if keep {
+            self.outputs.insert(id, out.clone());
+        }
+        out
+    }
+
+    /// The bytes of asset `id` for this export, and its name.
+    pub(super) fn asset_bytes(&mut self, id: AssetId) -> Option<(Arc<Vec<u8>>, String)> {
+        self.asset_output(id).map(|(b, n, _)| (b, n))
+    }
+
     pub(super) fn load_image(&mut self, id: AssetId) -> Option<Image> {
         if let Some(i) = self.images.get(&id) {
             return i.clone();
         }
         let asset = self.doc.assets.get(&id)?.clone();
+        let Some((source, _)) = self.asset_bytes(id) else {
+            self.images.insert(id, None);
+            return None;
+        };
         // Use the same EPS preview as the renderer, preserving CMYK TIFF inks below. The
         // content cache is keyed on the bytes actually converted, so equal previews share one.
-        let data = if designcraft_images::is_eps(&asset.data) {
-            let Some((proxy, _)) = designcraft_images::eps_proxy(&asset.data) else {
+        let data = if designcraft_images::is_eps(&source) {
+            let Some((proxy, _)) = designcraft_images::eps_proxy(&source) else {
                 self.warn(format!("image `{}` could not be decoded and was skipped", asset.name));
                 self.images.insert(id, None);
                 return None;
             };
             Arc::new(proxy)
         } else {
-            asset.data.clone()
+            source
         };
         if let Some(converted) = self.images_by_content.get(&data).cloned() {
             if let Some(warning) = converted.warning {
@@ -190,7 +229,21 @@ impl Exporter<'_> {
     /// A placed PDF goes in as vectors (the page as a form XObject). `false` when `g` is not one.
     fn graphic_placed_pdf(&mut self, s: &mut Surface, g: &designcraft_doc::Graphic, hidden: Option<&[String]>) -> bool {
         let doc = self.doc;
-        let Some(asset) = doc.assets.get(&g.asset).filter(|asset| asset.data.starts_with(b"%PDF")) else { return false };
+        let Some(asset) = doc.assets.get(&g.asset) else { return false };
+        let Some((bytes, _, proxied)) = self.asset_output(g.asset) else { return false };
+        // A PDF by its bytes; a proxy (a raster) by the asset's type.
+        if !(if proxied { asset.mime == "application/pdf" } else { bytes.starts_with(b"%PDF") }) {
+            return false;
+        }
+        if proxied {
+            // The preview shows every layer: with layers hidden or overridden it would show what
+            // the document hides, so nothing is drawn (the canvas fails closed too).
+            if hidden.is_some() {
+                self.warn(format!("{}: the linked PDF is unavailable, so its layer choice can't be applied; the graphic was left out", asset.name));
+                return true;
+            }
+            return false;
+        }
         // Cropped to a box: the whole page, placed so that the box spans graphic space.
         let shown = asset.shown_box();
         let [l, t, r, b] = shown.unwrap_or([0.0, 0.0, 1.0, 1.0]);
@@ -204,7 +257,7 @@ impl Exporter<'_> {
                 {
                     self.pdf_preparations += 1;
                 }
-                match crate::optional_content::prepare(&asset.data, hidden) {
+                match crate::optional_content::prepare(&bytes, hidden) {
                     Ok(variant) => {
                         self.variants.insert(request, variant.clone());
                         variant
@@ -259,19 +312,20 @@ impl Exporter<'_> {
 
     /// A placed SVG goes in as vectors too. `false` when `g` is not one.
     fn graphic_placed_svg(&mut self, s: &mut Surface, g: &designcraft_doc::Graphic) -> bool {
-        let Some(asset) = self.doc.assets.get(&g.asset).filter(|asset| designcraft_images::is_svg(&asset.data)) else { return false };
+        let doc = self.doc;
+        let Some(asset) = doc.assets.get(&g.asset) else { return false };
+        if asset.mime != "image/svg+xml" {
+            return false;
+        }
+        let Some((bytes, _, false)) = self.asset_output(g.asset) else { return false };
         let Some(size) = Size::from_wh(g.size.0.max(1e-3) as f32, g.size.1.max(1e-3) as f32) else { return true };
         let tree = self
             .svgs
             .entry(g.asset)
             .or_insert_with(|| {
-                craft_pdf::write::svg::Document::parse(
-                    &asset.data,
-                    craft_pdf::write::svg::Limits::default(),
-                    crate::svg_options::svg_options_for_pdf(),
-                )
-                .ok()
-                .map(Arc::new)
+                craft_pdf::write::svg::Document::parse(&bytes, craft_pdf::write::svg::Limits::default(), crate::svg_options::svg_options_for_pdf())
+                    .ok()
+                    .map(Arc::new)
             })
             .clone();
         match tree {
@@ -295,10 +349,10 @@ impl Exporter<'_> {
         if g.fill.is_none() {
             return false;
         }
-        let Some(asset) = self.doc.assets.get(&g.asset) else { return false };
-        let Some(tone) = designcraft_images::tone(&asset.data) else { return false };
+        let Some((bytes, _)) = self.asset_bytes(g.asset) else { return false };
+        let Some(tone) = designcraft_images::tone(&bytes) else { return false };
         let Some(paint) = self.swatch_color(&g.fill.swatch, g.fill.tint) else { return false };
-        let Some(coverage) = designcraft_images::decode_rgba(&asset.data).and_then(|img| CoverageImage::new(&img)) else { return false };
+        let Some(coverage) = designcraft_images::decode_rgba(&bytes).and_then(|img| CoverageImage::new(&img)) else { return false };
         let interpolate = RasterMode::for_standard(self.opts.standard).interpolate;
         let Ok(mask) = Image::from_custom(coverage, interpolate) else { return false };
         let size = Size::from_wh(g.size.0.max(1e-3) as f32, g.size.1.max(1e-3) as f32);

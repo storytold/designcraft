@@ -1,13 +1,18 @@
 use super::{
-    Affine, Arc, AssetId, BookletOptions, Cache, Content, Document, Item, PdfOptions, Rect, SpreadRef, Standard, export_booklet, export_pdf,
-    merge_pdfs,
+    Affine, AssetId, BookletOptions, Cache, Content, Document, Item, PdfOptions, Rect, SpreadRef, Standard, export_booklet, export_pdf, merge_pdfs,
 };
 
 fn placed_document(source: Vec<u8>) -> Document {
     use designcraft_doc::{Asset, Graphic, ItemId, Shape};
     let mut doc = Document::new(&Default::default());
     let asset = AssetId(doc.alloc());
-    doc.add_asset(Asset { id: asset, name: "placed.pdf".into(), mime: "application/pdf".into(), data: Arc::new(source), ..Default::default() });
+    doc.add_asset(Asset {
+        id: asset,
+        name: "placed.pdf".into(),
+        mime: "application/pdf".into(),
+        data: designcraft_doc::AssetData::embedded(source),
+        ..Default::default()
+    });
     let mut item =
         Item::new(ItemId(doc.alloc()), doc.default_layer(), Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 100.0, 100.0)));
     item.content = Content::Graphic(Graphic {

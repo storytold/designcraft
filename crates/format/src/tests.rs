@@ -3,13 +3,19 @@ use std::io::{Cursor, Read, Write};
 
 use designcraft_doc::build::NewDocument;
 use designcraft_doc::geom::Rect;
-use designcraft_doc::{Asset, ParaFormat, SpreadRef};
+use designcraft_doc::{Asset, AssetData, ParaFormat, SpreadRef};
 use serde_json::json;
 
 fn png_asset(d: &mut Document, data: &[u8]) -> AssetId {
     let aid = AssetId(d.alloc());
-    let a =
-        Asset { id: aid, name: "x.png".into(), mime: "image/png".into(), data: Arc::new(data.to_vec()), pixels: Some((1, 1)), ..Default::default() };
+    let a = Asset {
+        id: aid,
+        name: "x.png".into(),
+        mime: "image/png".into(),
+        data: AssetData::embedded(data.to_vec()),
+        pixels: Some((1, 1)),
+        ..Default::default()
+    };
     d.assets.insert(aid, Arc::new(a));
     aid
 }
@@ -51,7 +57,7 @@ fn save_uncompacted(d: &Document) -> Vec<u8> {
     z.write_all(&serde_json::to_vec(d).unwrap()).unwrap();
     for (id, a) in &d.assets {
         z.start_file(format!("assets/{}.png", id.0), opts).unwrap();
-        z.write_all(&a.data).unwrap();
+        z.write_all(&a.data.load().unwrap()).unwrap();
     }
     z.finish().unwrap();
     buf.into_inner()
@@ -67,7 +73,7 @@ fn explicit_all_on_pdf_layers_require_a_capable_reader_only_when_needed() {
             id: aid,
             name: "art.pdf".into(),
             mime: "application/pdf".into(),
-            data: Arc::new(b"%PDF-1.7".to_vec()),
+            data: AssetData::embedded(b"%PDF-1.7".to_vec()),
             ..Default::default()
         }),
     );
@@ -98,7 +104,7 @@ fn one_version_4_reader_keeps_both_explicit_all_on_and_graphic_layer_options() {
             id: pdf,
             name: "art.pdf".into(),
             mime: "application/pdf".into(),
-            data: Arc::new(b"%PDF-1.7".to_vec()),
+            data: AssetData::embedded(b"%PDF-1.7".to_vec()),
             ..Default::default()
         }),
     );
@@ -106,7 +112,13 @@ fn one_version_4_reader_keeps_both_explicit_all_on_and_graphic_layer_options() {
     let source = b"%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 20 10\n%%EOF\n".to_vec();
     d.assets.insert(
         eps,
-        Arc::new(Asset { id: eps, name: "logo.eps".into(), mime: "application/postscript".into(), data: Arc::new(source), ..Default::default() }),
+        Arc::new(Asset {
+            id: eps,
+            name: "logo.eps".into(),
+            mime: "application/postscript".into(),
+            data: AssetData::embedded(source),
+            ..Default::default()
+        }),
     );
     let all_on = place(&mut d, pdf, 0.0);
     let layered = place(&mut d, eps, 0.0);
@@ -166,7 +178,7 @@ fn eps_source_requires_new_reader_but_preview_documents_keep_the_older_one() {
             name: "logo.eps".into(),
             mime: "image/png".into(),
             link: None,
-            data: Arc::new(source.clone()),
+            data: AssetData::embedded(source.clone()),
             pixels: Some((40, 20)),
             page: 0,
             ..Default::default()
@@ -174,8 +186,8 @@ fn eps_source_requires_new_reader_but_preview_documents_keep_the_older_one() {
     );
     place(&mut d, aid, 0.0);
     assert_eq!(version(&d), 3, "sniff source even when legacy metadata says PNG");
-    assert_eq!(load(&save(&d).unwrap()).unwrap().assets[&aid].data.as_slice(), source);
-    Arc::make_mut(d.assets.get_mut(&aid).unwrap()).data = Arc::new(b"\x89PNG\r\n\x1a\npreview".to_vec());
+    assert_eq!(load(&save(&d).unwrap()).unwrap().assets[&aid].data.load().unwrap().as_slice(), source);
+    Arc::make_mut(d.assets.get_mut(&aid).unwrap()).data = AssetData::embedded(b"\x89PNG\r\n\x1a\npreview".to_vec());
     assert_eq!(version(&d), 2, "legacy EPS previews stay compatible");
 }
 
@@ -188,7 +200,13 @@ fn one_place_picks_the_oldest_reader_that_keeps_the_document() {
     let eps = b"%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 20 10\n%%EOF\n".to_vec();
     d.assets.insert(
         aid,
-        Arc::new(Asset { id: aid, name: "logo.eps".into(), mime: "application/postscript".into(), data: Arc::new(eps), ..Default::default() }),
+        Arc::new(Asset {
+            id: aid,
+            name: "logo.eps".into(),
+            mime: "application/postscript".into(),
+            data: AssetData::embedded(eps),
+            ..Default::default()
+        }),
     );
     let id = place(&mut d, aid, 0.0);
     assert_eq!(required_version(&d), 3, "EPS sources alone keep the version 3 reader");
@@ -209,7 +227,7 @@ fn roundtrip_with_assets() {
     assert!(bytes.starts_with(b"PK"));
     let back = load(&bytes).unwrap();
     assert_eq!(back.page_count(), 3);
-    assert_eq!(*back.assets[&aid].data, vec![1, 2, 3, 4]);
+    assert_eq!(**back.assets[&aid].data.embedded_bytes().unwrap(), vec![1, 2, 3, 4]);
     assert_eq!(back.stories, d.stories);
 }
 
@@ -407,8 +425,8 @@ fn equal_size_archive_assets_preserve_content_and_share_only_identical_buffers()
     let back = load(&save_uncompacted(&d)).unwrap();
     assert_eq!(back.assets.len(), 256);
     for (n, (a, b)) in pairs.into_iter().enumerate() {
-        assert_eq!(back.assets[&a].data[1016..], (n as u64).to_le_bytes());
-        assert!(Arc::ptr_eq(&back.assets[&a].data, &back.assets[&b].data));
+        assert_eq!(back.assets[&a].data.embedded_bytes().unwrap()[1016..], (n as u64).to_le_bytes());
+        assert!(back.assets[&a].data.key() == back.assets[&b].data.key());
         assert_eq!(back.assets[&a].link, d.assets[&a].link);
         assert_eq!(back.assets[&b].link, d.assets[&b].link);
     }
@@ -868,4 +886,53 @@ fn duplicate_ids_at_the_top_of_the_range_do_not_overflow() {
     d.renumber_duplicate_items();
     assert_eq!(all_item_ids(&d), vec![u64::MAX, u64::MAX]);
     assert!(d.check().is_err());
+}
+
+fn zip_version(bytes: &[u8]) -> u32 {
+    let mut z = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+    let mut s = String::new();
+    z.by_name("meta.json").map(|mut f| f.read_to_string(&mut s)).ok();
+    serde_json::from_str::<Value>(&s).ok().and_then(|v| v.get("version").and_then(Value::as_u64)).unwrap_or(0) as u32
+}
+
+#[test]
+fn linked_asset_roundtrips_as_record_and_proxy_without_original() {
+    let mut d = Document::new(&NewDocument::default());
+    let aid = AssetId(d.alloc());
+    let mut asset = Asset {
+        id: aid,
+        name: "big.tif".into(),
+        mime: "image/tiff".into(),
+        link: Some("/pics/big.tif".into()),
+        link_fingerprint: Some(designcraft_doc::Fingerprint { size: 1 << 30, mtime: 0 }),
+        storage: Storage::Linked,
+        proxy: Some(designcraft_doc::Proxy { mime: "image/png".into(), pixels: (2, 2), data: AssetData::embedded(vec![9, 8, 7]) }),
+        pixels: Some((4000, 3000)),
+        ..Default::default()
+    };
+    asset.data = AssetData::linked(designcraft_doc::LinkedSource::of(&asset, None).unwrap());
+    d.assets.insert(aid, Arc::new(asset));
+    place(&mut d, aid, 0.0);
+    let bytes = save(&d).unwrap();
+    assert_eq!(asset_entries(&bytes), 0, "no original is stored");
+    assert_eq!(required_version(&d), 5);
+    let back = load(&bytes).unwrap();
+    let a = &back.assets[&aid];
+    assert_eq!(a.storage, Storage::Linked);
+    assert_eq!(a.link.as_deref(), Some("/pics/big.tif"));
+    assert!(a.data.is_linked());
+    let proxy = a.proxy.as_ref().unwrap();
+    assert_eq!((proxy.mime.as_str(), proxy.pixels, proxy.data.embedded_bytes().map(|b| b.as_slice())), ("image/png", (2, 2), Some(&[9u8, 8, 7][..])));
+}
+
+#[test]
+fn embedded_documents_keep_their_older_version_and_version_5_loads() {
+    let mut d = Document::new(&NewDocument::default());
+    assert_eq!(zip_version(&save(&d).unwrap()), 2);
+    let aid = png_asset(&mut d, &[1, 2, 3]);
+    place(&mut d, aid, 0.0);
+    assert_eq!(zip_version(&save(&d).unwrap()), 2);
+    assert_eq!(VERSION, 5);
+    let loaded = load(&save(&d).unwrap()).unwrap();
+    assert_eq!(loaded.assets.len(), d.assets.len());
 }
