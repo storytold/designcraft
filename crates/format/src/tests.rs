@@ -17,7 +17,7 @@ fn a_failed_read_is_charged_to_the_budget() {
     bytes[start] = 8;
     let mut archive = zip::ZipArchive::new(Cursor::new(bytes.as_slice())).unwrap();
     let (mut left, mut stored_left) = (5000, 5000);
-    assert_eq!(read_entry(&mut archive, "a", 4000, &mut left, &mut stored_left).unwrap(), None);
+    assert!(matches!(read_entry(&mut archive, "a", 4000, &mut left, &mut stored_left), Err(FormatError::NotOurs(_))));
     // A failed stored read is charged to the stored budget only.
     assert_eq!((left, stored_left), (5000, 4000));
 }
@@ -125,7 +125,7 @@ fn stored_assets_open_at_any_size_while_deflated_ones_stay_capped() {
 
     // Two stored assets, each over the asset cap and together over the total: both open.
     let bytes = archive_with(&d, &[(a, &big, true), (b, &big, true)]);
-    let doc = load_zip_within(&bytes, tight).expect("stored entries open at their own size");
+    let (doc, _) = load_zip_within(&bytes, tight).expect("stored entries open at their own size");
     assert_eq!(doc.assets[&a].data.len(), 50_000);
     // (Identical bytes come back as one asset: `load` merges duplicates.)
     assert_eq!(doc.assets.len(), 1);
@@ -143,11 +143,11 @@ fn stored_assets_open_at_any_size_while_deflated_ones_stay_capped() {
 
     // The default limits read the same stored archive, and what `save` writes round-trips.
     let bytes = archive_with(&d, &[(a, &big, true), (b, &big, true)]);
-    assert_eq!(load_zip(&bytes).unwrap().assets[&a].data.len(), 50_000);
+    assert_eq!(load_zip(&bytes).unwrap().0.assets[&a].data.len(), 50_000);
     Arc::make_mut(d.assets.get_mut(&a).unwrap()).data = Arc::new(big.clone());
     Arc::make_mut(d.assets.get_mut(&b).unwrap()).data = Arc::new(big.clone());
     let saved = save(&d).unwrap();
-    let doc = load_zip_within(&saved, tight).expect("what save writes opens under a cap smaller than its images");
+    let (doc, _) = load_zip_within(&saved, tight).expect("what save writes opens under a cap smaller than its images");
     // (`save` merges the two identical assets into one.)
     assert!(!doc.assets.is_empty() && doc.assets.values().all(|x| x.data.len() == 50_000), "every saved image is back");
 }
@@ -572,6 +572,30 @@ fn older_files_with_one_asset_per_placement_open_with_one() {
     let back = load(&save_uncompacted(&d)).unwrap();
     assert_eq!(back.assets.len(), 1);
     assert_eq!(asset_entries(&save(&back).unwrap()), 1);
+}
+
+#[test]
+fn corrupt_embedded_asset_opens_with_a_warning() {
+    let mut d = Document::new(&NewDocument::default());
+    let payload = b"PAYLOADPAYLOADPAYLOAD";
+    let id = png_asset(&mut d, payload);
+    place(&mut d, id, 0.0);
+    let mut bytes = save(&d).unwrap();
+    // PNG assets are stored uncompressed: flip one payload byte so the CRC check fails.
+    let at = bytes.windows(payload.len()).position(|w| w == payload).unwrap();
+    bytes[at + 3] ^= 0xFF;
+    let (back, warnings) = load_with_warnings(&bytes).unwrap();
+    assert!(back.assets[&id].data.is_empty(), "the damaged asset is marked missing");
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].starts_with(&format!("assets/{}.png", id.0)), "{warnings:?}");
+    assert!(load(&bytes).is_ok());
+    // A link-only asset (no embedded copy) still opens with empty data.
+    let mut d = Document::new(&NewDocument::default());
+    let id = png_asset(&mut d, b"");
+    Arc::make_mut(d.assets.get_mut(&id).unwrap()).link = Some("/p/a.png".into());
+    place(&mut d, id, 0.0);
+    let back = load(&save(&d).unwrap()).unwrap();
+    assert!(back.assets[&id].data.is_empty());
 }
 
 /// The object of the item `id` in a document's JSON.
