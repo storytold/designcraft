@@ -348,6 +348,29 @@ fn document_setup_keeps_each_pages_margins_unless_they_are_edited() {
 }
 
 #[test]
+fn document_setup_keeps_resized_pages_unless_the_size_is_edited() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"pages": 3})).unwrap();
+    app.run("layout.pageSize", json!({"pages": [2], "width": 300, "height": 400})).unwrap();
+    let sizes =
+        |app: &DesignApp| app.session.active().unwrap().doc.spreads.iter().flat_map(|s| &s.pages).map(|p| (p.width, p.height)).collect::<Vec<_>>();
+    let before = sizes(&app);
+    assert_eq!(before[1], (300.0, 400.0));
+    // Bleed only, then margins only: no page changes size.
+    for edit in [json!({"bleedTop": "9 pt", "bleedBottom": "9 pt", "bleedInside": "9 pt", "bleedOutside": "9 pt"}), json!({"marginTop": "1p0"})] {
+        crate::menus::activate(&mut app, "layout.documentSetup", &Value::Null);
+        setup_fields(&mut app, edit.clone());
+        confirm(&mut app).unwrap();
+        assert_eq!(sizes(&app), before, "{edit}");
+    }
+    // An edited width still goes to every page.
+    crate::menus::activate(&mut app, "layout.documentSetup", &Value::Null);
+    setup_fields(&mut app, json!({"width": "500 pt"}));
+    confirm(&mut app).unwrap();
+    assert!(sizes(&app).iter().all(|s| s.0 == 500.0));
+}
+
+#[test]
 fn document_setup_keeps_a_value_it_cannot_read_and_changes_nothing() {
     for (key, value) in [("width", "wide"), ("marginTop", "-"), ("pages", "0"), ("bleedTop", "x")] {
         let mut app = document_setup_app("points");

@@ -2267,6 +2267,9 @@ pub fn open_document_setup(app: &mut DesignApp) {
     }
     // The margins as shown: OK applies them to every page only when they were edited.
     f["marginsShown"] = json!(SETUP_EDGES.map(|e| f[format!("margin{e}")].clone()));
+    // The size as shown: OK sends it only when edited, so resized pages and parents keep theirs.
+    f["widthShown"] = f["width"].clone();
+    f["heightShown"] = f["height"].clone();
     let mut d = Dialog::new("documentSetup", f);
     d.unit = units;
     app.ui.dialog = Some(d);
@@ -2669,17 +2672,26 @@ fn setup_link_follow(d: &mut Dialog, group: &str, changed: Option<String>) {
 
 /// Document Setup's OK: `layout.documentSetup` with what was typed; a value that can't be read is
 /// refused before anything changes. The margins (the first page's, shown) go to every page only
-/// when they were edited, so pages keep their own margins otherwise.
+/// when they were edited, and so does the size, so pages keep their own margins and sizes otherwise.
 fn confirm_document_setup(app: &mut DesignApp, d: &Dialog) -> Result<Value, String> {
     let measure = |key: &str| setup_measure(d, key).ok_or_else(|| format!("{key}: not a measure"));
     let edges = |group: &str| -> Result<Vec<f64>, String> { SETUP_EDGES.iter().map(|e| measure(&format!("{group}{e}"))).collect() };
     let count = |key: &str| d.n(key).filter(|n| n.is_finite() && *n >= 1.0).map(|n| n as u64).ok_or_else(|| format!("{key}: a whole number from 1"));
+    let size = |key: &str| -> Result<Option<f64>, String> {
+        let v = measure(key)?;
+        Ok((d.fields.get(key) != d.fields.get(&format!("{key}Shown"))).then_some(v))
+    };
     let margins = edges("margin")?;
     let shown = d.fields.get("marginsShown").and_then(Value::as_array);
     let edited = SETUP_EDGES.iter().enumerate().any(|(i, e)| shown.and_then(|s| s.get(i)) != d.fields.get(&format!("margin{e}")));
     let mut p = json!({"intent": d.s("intent"), "pages": count("pages")?, "startPage": count("startPage")?, "facingPages": d.b("facingPages"),
-        "binding": d.s("binding"), "width": measure("width")?, "height": measure("height")?,
-        "bleed": edges("bleed")?, "slug": edges("slug")?, "adjustLayout": d.b("adjustLayout")});
+        "binding": d.s("binding"), "bleed": edges("bleed")?, "slug": edges("slug")?, "adjustLayout": d.b("adjustLayout")});
+    if let Some(w) = size("width")? {
+        p["width"] = json!(w);
+    }
+    if let Some(h) = size("height")? {
+        p["height"] = json!(h);
+    }
     if edited {
         p["margins"] = json!({"top": margins[0], "bottom": margins[1], "inside": margins[2], "outside": margins[3]});
     }
