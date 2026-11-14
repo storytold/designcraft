@@ -302,6 +302,9 @@ impl Session {
         let Some(it) = st.interaction.clone() else { return Err(EngineError::Other("no interaction".into())) };
         st.doc = it.doc.clone();
         st.selection = it.selection.clone();
+        // A preview that fails or changes nothing shows the snapshot under the snapshot's
+        // revision, not under the revision of the preview before it.
+        st.revision = it.revision;
         // Not through `execute`: a preview is part of the gesture (an IME composition included),
         // not a command that ends it.
         let r = self.guarded(cmd, |s| s.execute_unguarded(cmd, &params));
