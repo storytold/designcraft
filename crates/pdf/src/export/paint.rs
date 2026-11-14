@@ -164,13 +164,13 @@ impl Exporter<'_> {
         // Viewers expand dashes too: a degenerate pattern draws solid, as on screen.
         let length = designcraft_doc::path_length_bound(bp);
         let dash = match &kind {
-            StrokeType::Dashed { pattern } if StrokeType::expandable_dashes(pattern, length) => {
+            StrokeType::Dashed { .. } => kind.dashes(st.weight).filter(|p| StrokeType::expandable_dashes(p, length)).map(|pattern| {
                 let mut pat: Vec<f32> = pattern.iter().map(|v| v.max(0.0) as f32).collect();
                 if pat.len() % 2 == 1 {
                     pat.extend(pat.clone());
                 }
-                Some(StrokeDash { array: pat, offset: 0.0 })
-            }
+                StrokeDash { array: pat, offset: 0.0 }
+            }),
             StrokeType::Dotted if StrokeType::expandable_dashes(&[0.0, st.weight * 2.0], length) => {
                 cap = krilla::paint::LineCap::Round;
                 Some(StrokeDash { array: vec![0.0, (st.weight * 2.0) as f32], offset: 0.0 })

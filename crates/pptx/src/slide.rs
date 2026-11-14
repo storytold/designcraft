@@ -477,24 +477,7 @@ impl<'a> Exporter<'a> {
             StrokeAlign::Center => "",
         };
         let w = s.weight;
-        let dash = match &s.kind {
-            StrokeType::Dashed { pattern } if pattern.iter().any(|v| *v > 0.0) => {
-                let mut v: Vec<f64> = pattern.iter().map(|x| x.max(0.0)).collect();
-                if v.len() % 2 == 1 {
-                    v.extend(v.clone());
-                }
-                let mut d = String::from("<a:custDash>");
-                for pair in v.chunks(2) {
-                    if let [a, b] = pair {
-                        let _ = write!(d, "<a:ds d=\"{}\" sp=\"{}\"/>", pct(a / w), pct(b / w));
-                    }
-                }
-                d.push_str("</a:custDash>");
-                d
-            }
-            StrokeType::Dotted => "<a:prstDash val=\"sysDot\"/>".into(),
-            _ => "<a:prstDash val=\"solid\"/>".into(),
-        };
+        let dash = line_dash(&s.kind, w);
         let join = match s.join {
             Join::Miter => format!("<a:miter lim=\"{}\"/>", pct(s.miter_limit.max(1.0))),
             Join::Round => "<a:round/>".into(),
@@ -749,4 +732,28 @@ fn encode_png(rgba: Vec<u8>, w: u32, h: u32) -> Option<Vec<u8>> {
     let mut out = std::io::Cursor::new(Vec::new());
     img.write_to(&mut out, image::ImageFormat::Png).ok()?;
     Some(out.into_inner())
+}
+
+/// The dash element of a line `w` points wide: the stroke's own dash pattern (or the one a dashed
+/// stroke with none is drawn with, [`StrokeType::dashes`]) as a `<a:custDash>`, in thousandths of
+/// a percent of the width, or a preset for dotted and solid lines. Item strokes and table edges
+/// both write it, so a dashed table edge keeps the same pattern as a dashed frame.
+pub(crate) fn line_dash(kind: &StrokeType, w: f64) -> String {
+    match kind.dashes(w).filter(|p| w > 0.0 && p.len() <= designcraft_doc::MAX_DASH_ENTRIES) {
+        Some(mut v) => {
+            if v.len() % 2 == 1 {
+                v.extend(v.clone());
+            }
+            let mut d = String::from("<a:custDash>");
+            for pair in v.chunks(2) {
+                if let [a, b] = pair {
+                    let _ = write!(d, "<a:ds d=\"{}\" sp=\"{}\"/>", pct(a / w), pct(b / w));
+                }
+            }
+            d.push_str("</a:custDash>");
+            d
+        }
+        None if matches!(kind, StrokeType::Dotted) => "<a:prstDash val=\"sysDot\"/>".into(),
+        None => "<a:prstDash val=\"solid\"/>".into(),
+    }
 }
