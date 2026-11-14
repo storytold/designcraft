@@ -48,6 +48,16 @@ pub(crate) fn print_settings_with(cms: &designcraft_color::cms::Cms, intent: boo
     }
 }
 
+/// The CMYK profile [`print_settings_with`] writes as the output intent for `cms`: the working
+/// space's, else Coated FOGRA39 (also when `replaced`: its warning said the working space's
+/// profile couldn't be written).
+pub(crate) fn output_profile(cms: &designcraft_color::cms::Cms, replaced: bool) -> std::borrow::Cow<'static, [u8]> {
+    match cms.output_intent() {
+        Ok(space) if !replaced => space.icc,
+        _ => std::borrow::Cow::Borrowed(craft_cms::builtin::COATED_FOGRA39_ICC),
+    }
+}
+
 /// Finish krilla's PDF/X-4 output with the XMP entries PDF/X-4 requires and krilla doesn't write:
 /// `xmp:MetadataDate` and `xmpMM:VersionID`, as an incremental update. `date` (Unix seconds, UTC)
 /// is the metadata date; `None` (no clock, as on wasm) writes the epoch. `None` back when the

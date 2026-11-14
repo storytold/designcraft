@@ -7,6 +7,37 @@ use crate::PdfError;
 
 pub(crate) use craft_prepress::pdfx1a::PageGraphics;
 
+/// RGB process colour into the output intent's CMYK with the colour settings' rendering intent,
+/// for PDF/X-1a. The flattener converts the RGB left in the print file relative colorimetric
+/// only, so this is made only for the other intents: a relative colorimetric export stays the
+/// flattener's. Without black point compensation, as the flattener converts.
+pub(crate) struct ProcessConversion(std::sync::Arc<craft_cms::Transform>);
+
+impl ProcessConversion {
+    /// Into CMYK profile `icc` with `intent`; `None` for relative colorimetric, or when the
+    /// profile isn't a CMYK profile craft-cms converts into (the flattener then converts).
+    pub(crate) fn new(icc: &[u8], intent: designcraft_color::cms::Intent) -> Option<Self> {
+        if matches!(intent, designcraft_color::cms::Intent::RelativeColorimetric) {
+            return None;
+        }
+        let profile = craft_cms::Profile::parse(icc).ok()?;
+        if profile.color_space != craft_cms::ColorSpace::Cmyk {
+            return None;
+        }
+        let opts = craft_cms::TransformOptions { intent: intent.into(), bpc: false, precise_float: false };
+        craft_cms::cached(craft_cms::builtin::srgb(), &profile, opts).ok().map(Self)
+    }
+
+    /// The CMYK of 8-bit sRGB `rgb` (as the flattener reads DeviceRGB); `None` when it can't
+    /// convert.
+    pub(crate) fn cmyk(&self, rgb: [u8; 3]) -> Option<[f32; 4]> {
+        let src = rgb.map(|v| f32::from(v) / 255.0);
+        let mut out = [0.0f32; 4];
+        self.0.convert_f32(&src, 3, &mut out, 4, false).ok()?;
+        Some(out.map(|v| if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.0 }))
+    }
+}
+
 pub(crate) fn flatten_x1a(pdf: &[u8], dpi: f32, pages: &[PageGraphics], warnings: &mut Vec<String>) -> crate::Result<Vec<u8>> {
     let (bytes, findings) = craft_prepress::pdfx1a::flatten_x1a(pdf, dpi, pages).map_err(PdfError::Write)?;
     warnings.extend(findings);

@@ -45,6 +45,8 @@ use images::ConstantImageHasher;
 pub(crate) use images::SRGB_ICC;
 use images::{CmykImage, GreyImage, ImageContentCache, RasterMode, SrgbImage, embedded_icc, is_grey, is_grey_icc};
 pub(crate) use metadata::civil;
+#[cfg(test)]
+pub(crate) use pipeline::export_pdf_with_cms;
 pub(crate) use pipeline::{MARK_LEN, Sheet, exported_items, mark_start};
 pub use pipeline::{
     drawn_children, export_pdf, export_pdf_with_report, item_exported, layer_exported, print_color, sheet_spreads, shown_parent_items,
@@ -93,6 +95,8 @@ pub(crate) struct Exporter<'a> {
     pub reverse_cmaps: HashMap<u32, Arc<HashMap<u32, char>>>,
     /// Convert CMYK to RGB (PDF/A: krilla needs a CMYK output profile we don't ship yet).
     pub rgb_only: bool,
+    /// PDF/X-1a: RGB process colours converted here with the colour settings' rendering intent.
+    pub(crate) x1a_process: Option<crate::pdfx1a::ProcessConversion>,
     /// Tagged PDF: the structure in reading order (stories gather their frames' content).
     tags: Vec<TagEntry>,
     story_tags: HashMap<designcraft_doc::StoryId, Vec<Identifier>>,
