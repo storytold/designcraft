@@ -20,6 +20,9 @@ fn language(app: &mut DesignApp) -> Value {
     text_attrs(app).unwrap()["chars"]["language"].clone()
 }
 
+/// The graphic [`linked_graphics`] places.
+const SVG: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect width="32" height="32" fill="#4488cc"/></svg>"##;
+
 fn linked_graphics(paths: &[Option<&str>]) -> (DesignApp, Vec<designcraft_doc::ItemId>, Vec<designcraft_doc::AssetId>) {
     use designcraft_doc::{Asset, AssetId, Content, Graphic, ItemId};
     use std::sync::Arc;
@@ -39,10 +42,7 @@ fn linked_graphics(paths: &[Option<&str>]) -> (DesignApp, Vec<designcraft_doc::I
                 name: "photo.svg".into(),
                 mime: "image/svg+xml".into(),
                 link: path.map(str::to_owned),
-                data: designcraft_doc::AssetData::embedded(
-                    br##"<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect width="32" height="32" fill="#4488cc"/></svg>"##
-                        .to_vec(),
-                ),
+                data: designcraft_doc::AssetData::embedded(SVG.to_vec()),
                 pixels: Some((32, 32)),
                 ..Default::default()
             }),
@@ -167,8 +167,14 @@ fn edit_page_shows_the_page_and_sets_its_size_alone() {
 
 #[test]
 fn links_panel_distinguishes_same_named_sources_and_keeps_link_actions() {
-    let first = "/project/assets/studio-a/photo.svg";
-    let second = "/project/assets/studio-b/photo.svg";
+    // Files holding the graphics' bytes, so their links are OK and can be embedded.
+    let dir = std::env::temp_dir().join(format!("dc-links-panel-same-name-{}", std::process::id()));
+    let (first, second) = (dir.join("studio-a/photo.svg"), dir.join("studio-b/photo.svg"));
+    for file in [&first, &second] {
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, SVG).unwrap();
+    }
+    let (first, second) = (first.to_str().unwrap(), second.to_str().unwrap());
     let (app, items, assets) = linked_graphics(&[Some(first), Some(second), None]);
     let mut h = links_harness(app, 320.0);
     assert_eq!(h.get_all_by_label("photo.svg").count(), 3);
@@ -184,12 +190,15 @@ fn links_panel_distinguishes_same_named_sources_and_keeps_link_actions() {
     // Embedding keeps the link for Unembed.
     let doc = &h.state().session.active().unwrap().doc;
     assert_eq!(doc.assets[&assets[1]].link.as_deref(), Some(second));
+    assert_eq!(doc.assets[&assets[0]].link.as_deref(), Some(first));
+    assert_eq!(h.get_all_by_label("Embedded").count(), 2);
     assert_eq!(h.get_all_by_label("photo.svg").count(), 3);
     h.get_by_label(first).click();
     h.run_steps(3);
     h.get_by_label("Go To").click();
     h.run_steps(3);
     assert_eq!(h.state().session.active().unwrap().selection.items, vec![items[0]]);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

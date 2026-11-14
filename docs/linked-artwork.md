@@ -27,11 +27,11 @@ The proxy is drawn while the original loads, and in place of the original when t
 | Status | Meaning |
 |---|---|
 | OK | A file at the link's path holds the recorded bytes. |
-| Checking | A file of the recorded size is being hashed in the background. |
+| Checking | Just after the document opens: the file is being looked for in the background, and hashed when it has the recorded size and another time. |
 | Modified | A file exists, but its bytes differ from the recorded ones. |
 | Missing | No file at either path, or a path that is not followed (a path on another computer, a device). |
 
-Status comes from the content hash. A file with the recorded size and modification time is OK without a read. A file with the recorded size and another time is hashed on a background thread: a matching hash is OK and the new time is remembered, a different hash is Modified. Modification time alone is never trusted to decide Modified, because it is unreliable on network shares.
+Status comes from the content hash. A file with the recorded size and modification time is OK without a read. A file with the recorded size and another time is hashed on a background thread: a matching hash is OK and the new time is remembered, a different hash is Modified. Modification time alone is never trusted to decide Modified, because it is unreliable on network shares. A file whose file system reports no modification time is always told by its hash.
 
 A Modified file's bytes are never adopted silently. The proxy stays on screen until you update or relink.
 
@@ -59,7 +59,7 @@ A document with any linked asset is written as format version 5; otherwise the v
 
 ## Opening
 
-Opening reads no original. Each link is looked for at its absolute path, then at its path relative to the document. A match on size and time is OK at once; other candidates are hashed in the background. When both paths exist, the file whose hash matches wins.
+Opening reads no original and asks nothing of the file system: a background check looks for each link at its absolute path, then at its path relative to the document. A match on size and time is OK without a read; other candidates of the recorded size are hashed. When both paths exist, the file whose hash matches wins.
 
 ## Old files with embedded images
 

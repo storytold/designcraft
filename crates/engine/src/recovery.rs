@@ -751,8 +751,9 @@ impl Snapshot {
         let doc = d.preview_stash.clone().unwrap_or_else(|| d.doc.clone());
         // Linked files are recorded as a save to the document's own file records them, never
         // copied in; relative paths are relative to that file, which recovery resolves them against.
+        // Embedded images not yet saved as links keep their bytes.
         let doc = match d.path.as_deref().map(Path::new) {
-            Some(path) => crate::cmd::native_links::for_destination(&doc, Some(path), path).map_or(doc, std::sync::Arc::new),
+            Some(path) => crate::cmd::native_links::for_recovery(&doc, path).map_or(doc, std::sync::Arc::new),
             None => doc,
         };
         Snapshot {

@@ -314,6 +314,13 @@ fn linked_status(a: &Asset, document: Option<&Path>, checks: &mut ImageChecks) -
     }
 }
 
+/// Whether a linked image's files are there and none holds its bytes ([`linked_status`]
+/// "modified"): Preflight's check, which reads a file only as the Links panel does, once per new
+/// size and time (`checks`).
+pub(crate) fn link_modified(a: &Asset, document: Option<&Path>, checks: &mut LinkListChecks) -> bool {
+    a.storage == Storage::Linked && linked_status(a, document, &mut checks.images).0 == "modified"
+}
+
 /// Is the linked file still the one the asset's bytes were loaded from, going by the size and
 /// time kept then ([`designcraft_doc::Asset::link_fingerprint`], [`loaded_fingerprint`])? Nothing
 /// is read when it is, also on the first check after a document is opened, which matters on a
@@ -343,8 +350,10 @@ fn embedded_copy(a: &Asset) -> bool {
 
 /// [`status_cached`], and the file's size and time when a read found the asset's bytes in it
 /// although the fingerprint kept with the asset says nothing or something else: what
-/// [`remember_link_files`] keeps, so the file isn't read again in another session. What the open
-/// of the document found (`open`) answers first, while the asset's bytes are the ones it checked.
+/// [`remember_link_files`] keeps, so the file isn't read again in another session. While the
+/// background check the open of the document started (`open`) still has the asset's file to look
+/// at, it is `checking`; after that the file is looked at as it is now, which may have changed
+/// since.
 fn image_status(
     a: &designcraft_doc::Asset,
     document: Option<&Path>,
@@ -355,8 +364,8 @@ fn image_status(
         return ("embedded", None);
     }
     if a.storage == Storage::Linked {
-        if let Some(status) = open.and_then(|o| o.status(a)) {
-            return (status.as_str(), None);
+        if open.is_some_and(|o| o.checking() && o.status(a) == Some(super::native_links::LinkStatus::Checking)) {
+            return ("checking", None);
         }
         return linked_status(a, document, checks);
     }
@@ -419,9 +428,13 @@ pub(crate) fn checkable_size(len: usize) -> bool {
 /// while the file was changed in the last two: another change in that second keeps the time. A
 /// time in the future (clock skew, a file copied from another machine) counts as settled, or such
 /// a file would be read on every poll; a later save gives it a time unlike the remembered one.
+/// A file without a time ([`crate::asset_io::has_time`]) never is.
 pub(crate) fn settled(f: &Fingerprint) -> bool {
     #[cfg(not(target_arch = "wasm32"))]
     {
+        if !crate::asset_io::has_time(f) {
+            return false;
+        }
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
         f.mtime > now || now.saturating_sub(f.mtime) >= 2
     }

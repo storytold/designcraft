@@ -42,7 +42,8 @@ pub fn specs() -> Vec<CommandSpec> {
 pub enum LinkStatus {
     /// A file holds the recorded bytes.
     Ok,
-    /// A file of the recorded size is being hashed.
+    /// The background check is looking for the file, and hashes one of the recorded size whose
+    /// time is new.
     Checking,
     /// Files are there, none with the recorded bytes.
     Modified,
@@ -101,11 +102,13 @@ impl OpenLinks {
 /// One file check for the background thread.
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 enum Work {
-    /// Hash `candidates` (files of the recorded size) until one holds `hash`.
-    Verify { asset: AssetId, key: SourceKey, hash: String, len: u64, candidates: Vec<PathBuf> },
-    /// Compare the file at `path` with the embedded `bytes` of a document saved before linked
-    /// storage.
-    Migrate { asset: AssetId, key: SourceKey, bytes: Arc<Vec<u8>>, path: PathBuf, page: u32 },
+    /// Find the file that holds `source`'s bytes: one at its absolute or relative path with the
+    /// recorded size and time, else one of the recorded size whose content hash is the recorded
+    /// one.
+    Find { asset: AssetId, key: SourceKey, source: LinkedSource },
+    /// Compare the file at `source`'s path (the first of its candidates that has the size of the
+    /// embedded `bytes`) with the embedded bytes of a document saved before linked storage.
+    Migrate { asset: AssetId, key: SourceKey, bytes: Arc<Vec<u8>>, source: LinkedSource, page: u32 },
 }
 
 /// What a [`Work`] found. `key` is the asset's bytes' key when the check started: a result for
@@ -115,8 +118,10 @@ enum Outcome {
     /// The file at `path` holds the bytes; `fingerprint` is its size and time, when they can
     /// vouch for the bytes later ([`super::links::settled`]).
     Holds { asset: AssetId, key: SourceKey, path: PathBuf, fingerprint: Option<Fingerprint> },
-    /// No candidate holds the bytes.
+    /// Files are there; none holds the bytes.
     Differs { asset: AssetId, key: SourceKey },
+    /// No file at either path, or one that may not be followed.
+    Absent { asset: AssetId, key: SourceKey },
     /// The embedded bytes are the file's.
     Confirmed {
         asset: AssetId,
@@ -170,12 +175,12 @@ pub(crate) struct Opened {
     work: Vec<Work>,
 }
 
-/// Point each linked asset of `d`, opened from the file `document`, at its file, and find which
-/// file holds its bytes without reading any (a background check hashes the ones that need it,
-/// [`start`]). A file found at the relative path becomes the link. With `migrate` (a document
-/// opened from its file, neither from bytes nor recovered), embedded assets of a document saved
-/// before linked storage whose linked file has the embedded bytes' size are queued for a byte
-/// comparison.
+/// Point each linked asset of `d`, opened from the file `document`, at its file, and queue the
+/// look for the file that holds its bytes for the background check ([`start`]): nothing is read
+/// or asked for its size here, so a share that doesn't answer can't stall the open. A file found
+/// at the relative path becomes the link. With `migrate` (a document opened from its file,
+/// neither from bytes nor recovered), embedded assets of a document saved before linked storage
+/// are queued for a byte comparison with their linked files.
 pub(crate) fn resolve(d: &mut Document, document: Option<&Path>, migrate: bool) -> Opened {
     let mut opened = Opened::default();
     let ids: Vec<AssetId> = d.assets.keys().copied().collect();
@@ -188,8 +193,15 @@ pub(crate) fn resolve(d: &mut Document, document: Option<&Path>, migrate: bool) 
             };
             let a = Arc::make_mut(asset);
             a.data = a.data.with_source(source.clone());
-            let status = locate(a, &source, document, &mut opened.work);
-            opened.status.insert(id, (a.data.key(), status));
+            let key = a.data.key();
+            // No files on the web: the link record is kept as it is.
+            let status = if cfg!(target_arch = "wasm32") {
+                LinkStatus::Missing
+            } else {
+                opened.work.push(Work::Find { asset: id, key, source });
+                LinkStatus::Checking
+            };
+            opened.status.insert(id, (key, status));
         } else if migrate
             && let Some(document) = document
             && let Some(work) = migration(asset, document)
@@ -198,39 +210,6 @@ pub(crate) fn resolve(d: &mut Document, document: Option<&Path>, migrate: bool) 
         }
     }
     opened
-}
-
-/// [`resolve`] for one linked asset → its status; work for the background check goes to `work`.
-fn locate(a: &mut Asset, source: &LinkedSource, document: Option<&Path>, work: &mut Vec<Work>) -> LinkStatus {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let found: Vec<(PathBuf, Fingerprint)> = crate::asset_io::candidates(source)
-            .into_iter()
-            .filter_map(|p| {
-                let meta = crate::io::file_metadata(&p)?;
-                Some((p, crate::asset_io::fingerprint_from(&meta)))
-            })
-            .collect();
-        if let Some((path, _)) = found.iter().find(|(_, f)| Some(*f) == source.fingerprint) {
-            adopt_path(a, path, document);
-            return LinkStatus::Ok;
-        }
-        let same_size: Vec<PathBuf> = found.iter().filter(|(_, f)| f.size == source.len).map(|(p, _)| p.clone()).collect();
-        match &source.hash {
-            Some(hash) if !same_size.is_empty() => {
-                work.push(Work::Verify { asset: a.id, key: a.data.key(), hash: hash.clone(), len: source.len, candidates: same_size });
-                LinkStatus::Checking
-            }
-            _ if found.is_empty() => LinkStatus::Missing,
-            _ => LinkStatus::Modified,
-        }
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        // No files on the web: the link record is kept as it is.
-        let _ = (a, source, document, work);
-        LinkStatus::Missing
-    }
 }
 
 /// `path` (a file found to hold `a`'s bytes) as `a`'s link, with its path relative to the
@@ -267,8 +246,7 @@ fn legacy(a: &Asset) -> bool {
     a.storage == Storage::Embedded && a.link.is_some() && a.link_hash.is_none()
 }
 
-/// The byte comparison that would let a [`legacy`] asset be saved as a link: its linked file
-/// exists with the size of the embedded bytes.
+/// The byte comparison that would let a [`legacy`] asset be saved as a link.
 fn migration(a: &Asset, document: &Path) -> Option<Work> {
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -287,8 +265,7 @@ fn migration(a: &Asset, document: &Path) -> Option<Work> {
             fingerprint: None,
             hash: None,
         };
-        let path = crate::asset_io::candidates(&source).into_iter().find(|p| crate::io::file_metadata(p).is_some_and(|m| m.len() == source.len))?;
-        Some(Work::Migrate { asset: a.id, key: a.data.key(), bytes, path, page: a.page })
+        Some(Work::Migrate { asset: a.id, key: a.data.key(), bytes, source, page: a.page })
     }
     #[cfg(target_arch = "wasm32")]
     {
@@ -356,21 +333,34 @@ const CHUNK: usize = 1 << 20;
 #[cfg(not(target_arch = "wasm32"))]
 fn check(work: Work, cancel: &AtomicBool) -> Option<Outcome> {
     match work {
-        Work::Verify { asset, key, hash, len, candidates } => {
-            for path in candidates {
-                let Some(before) = fingerprint(&path) else { continue };
-                match read_file(&path, len, cancel, |_, _| true)? {
-                    Some(found) if found == hash && fingerprint(&path) == Some(before) => {
-                        let fingerprint = super::links::settled(&before).then_some(before);
-                        return Some(Outcome::Holds { asset, key, path, fingerprint });
+        Work::Find { asset, key, source } => {
+            let found: Vec<(PathBuf, Fingerprint)> =
+                crate::asset_io::candidates(&source).into_iter().filter_map(|p| fingerprint(&p).map(|f| (p, f))).collect();
+            if let Some((path, _)) = found.iter().find(|(_, f)| super::links::settled(f) && Some(*f) == source.fingerprint) {
+                return Some(Outcome::Holds { asset, key, path: path.clone(), fingerprint: None });
+            }
+            if found.is_empty() {
+                return Some(Outcome::Absent { asset, key });
+            }
+            let Some(hash) = &source.hash else { return Some(Outcome::Differs { asset, key }) };
+            for (path, before) in found.iter().filter(|(_, f)| f.size == source.len) {
+                match read_file(path, source.len, cancel, |_, _| true)? {
+                    Some(found) if found == *hash && fingerprint(path) == Some(*before) => {
+                        let fingerprint = super::links::settled(before).then_some(*before);
+                        return Some(Outcome::Holds { asset, key, path: path.clone(), fingerprint });
                     }
                     _ => {}
                 }
             }
             Some(Outcome::Differs { asset, key })
         }
-        Work::Migrate { asset, key, bytes, path, page } => {
-            let Some(before) = fingerprint(&path) else { return Some(Outcome::Unconfirmed) };
+        Work::Migrate { asset, key, bytes, source, page } => {
+            let len = bytes.len() as u64;
+            let Some((path, before)) =
+                crate::asset_io::candidates(&source).into_iter().find_map(|p| fingerprint(&p).filter(|f| f.size == len).map(|f| (p, f)))
+            else {
+                return Some(Outcome::Unconfirmed);
+            };
             let same = |at: usize, chunk: &[u8]| at.checked_add(chunk.len()).and_then(|end| bytes.get(at..end)) == Some(chunk);
             let read = read_file(&path, bytes.len() as u64, cancel, same)?;
             // Changed while it was read: not the bytes it had.
@@ -379,7 +369,10 @@ fn check(work: Work, cancel: &AtomicBool) -> Option<Outcome> {
             }
             let hash = crate::asset_io::content_hash(&bytes);
             let proxy = designcraft_render::proxy::make_proxy(&bytes, page);
-            Some(Outcome::Confirmed { asset, key, path, fingerprint: before, hash, proxy })
+            // A time that can't vouch for the bytes (changed in the last seconds, or none) is
+            // kept as one no file has: saves then go by the hash, not by size and time.
+            let fingerprint = if super::links::settled(&before) { before } else { Fingerprint { size: len, mtime: super::links::UNVERIFIED_MTIME } };
+            Some(Outcome::Confirmed { asset, key, path, fingerprint, hash, proxy })
         }
     }
 }
@@ -488,6 +481,13 @@ fn current(st: &mut DocState, id: AssetId, key: SourceKey) -> Option<&mut Asset>
 fn apply_one(st: &mut DocState, outcome: Outcome, document: Option<&Path>) -> bool {
     match outcome {
         Outcome::Holds { asset, key, path, fingerprint } => {
+            let unchanged = fingerprint.is_none()
+                && st.doc.assets.get(&asset).is_some_and(|a| a.data.key() == key && a.link.as_deref() == Some(path.to_string_lossy().as_ref()));
+            if unchanged {
+                // The file at the recorded path, with the recorded size and time: nothing to change.
+                st.links.status.insert(asset, (key, LinkStatus::Ok));
+                return false;
+            }
             let Some(a) = current(st, asset, key) else { return false };
             if let Some(f) = fingerprint {
                 a.link_fingerprint = Some(f);
@@ -501,9 +501,11 @@ fn apply_one(st: &mut DocState, outcome: Outcome, document: Option<&Path>) -> bo
             true
         }
         Outcome::Differs { asset, key } => {
-            if st.doc.assets.get(&asset).is_some_and(|a| a.data.key() == key) {
-                st.links.status.insert(asset, (key, LinkStatus::Modified));
-            }
+            found(st, asset, key, LinkStatus::Modified);
+            false
+        }
+        Outcome::Absent { asset, key } => {
+            found(st, asset, key, LinkStatus::Missing);
             false
         }
         Outcome::Confirmed { asset, key, path, fingerprint, hash, proxy } => {
@@ -527,6 +529,13 @@ fn apply_one(st: &mut DocState, outcome: Outcome, document: Option<&Path>) -> bo
     }
 }
 
+/// Keep `status` for asset `id`, while its bytes are still `key`'s.
+fn found(st: &mut DocState, id: AssetId, key: SourceKey, status: LinkStatus) {
+    if st.doc.assets.get(&id).is_some_and(|a| a.data.key() == key) {
+        st.links.status.insert(id, (key, status));
+    }
+}
+
 /// The status line's message once `n` embedded images were found identical to their files.
 fn notice(n: usize) -> String {
     if n == 1 {
@@ -543,22 +552,33 @@ fn notice(n: usize) -> String {
 /// linked storage, [`resolve`]) whose file has changed since the check is embedded in this save
 /// after all.
 pub(crate) fn for_destination(d: &Document, from: Option<&Path>, destination: &Path) -> Option<Document> {
-    let mut changes: Vec<(AssetId, Option<String>, Option<String>, Storage)> = Vec::new();
+    rewrite(d, from, destination, false)
+}
+
+/// [`for_destination`] for a recovery snapshot of `d`, whose file is `document`. Embedded images
+/// to be saved as links stay as the document's file has them (embedded, to be compared with their
+/// files again), so a recovered document never depends on a file the user hasn't saved a link to.
+pub(crate) fn for_recovery(d: &Document, document: &Path) -> Option<Document> {
+    rewrite(d, Some(document), document, true)
+}
+
+fn rewrite(d: &Document, from: Option<&Path>, destination: &Path, recovery: bool) -> Option<Document> {
+    let mut changes: Vec<(AssetId, Option<String>, Option<String>, bool)> = Vec::new();
     for a in d.assets.values() {
         let Some(link) = a.link.as_deref() else { continue };
         let absolute = crate::io::document_path(link, from).ok();
         let new_link = absolute.as_ref().map(|p| p.to_string_lossy().into_owned()).filter(|p| p != link);
         let relative = absolute.as_deref().and_then(|p| relative_to(destination, p)).filter(|r| a.link_relative.as_ref() != Some(r));
-        let storage = if a.storage == Storage::Linked && !a.data.is_linked() && !still_there(a, from) { Storage::Embedded } else { a.storage };
-        if new_link.is_some() || relative.is_some() || storage != a.storage {
-            changes.push((a.id, new_link, relative, storage));
+        let embed = a.storage == Storage::Linked && !a.data.is_linked() && (recovery || !still_there(a, from));
+        if new_link.is_some() || relative.is_some() || embed {
+            changes.push((a.id, new_link, relative, embed));
         }
     }
     if changes.is_empty() {
         return None;
     }
     let mut saved = d.clone();
-    for (id, link, relative, storage) in changes {
+    for (id, link, relative, embed) in changes {
         let Some(a) = saved.assets.get_mut(&id).map(Arc::make_mut) else { continue };
         if let Some(link) = link {
             a.link = Some(link);
@@ -566,17 +586,27 @@ pub(crate) fn for_destination(d: &Document, from: Option<&Path>, destination: &P
         if let Some(relative) = relative {
             a.link_relative = Some(relative);
         }
-        a.storage = storage;
+        if embed {
+            a.storage = Storage::Embedded;
+            if recovery {
+                // As the document's file has it: the next open from that file compares it again.
+                a.link_hash = None;
+                a.proxy = None;
+            }
+        }
     }
     Some(saved)
 }
 
-/// Whether a file still has the size and time `a`'s link recorded when its bytes were found in it.
+/// Whether a file still has the size and time `a`'s link recorded when its bytes were found in it
+/// (a time that can vouch for them, [`super::links::settled`]).
 fn still_there(a: &Asset, document: Option<&Path>) -> bool {
     #[cfg(not(target_arch = "wasm32"))]
     {
         let Some(source) = LinkedSource::of(a, document) else { return false };
-        crate::asset_io::candidates(&source).iter().any(|p| fingerprint(p) == source.fingerprint)
+        crate::asset_io::candidates(&source)
+            .iter()
+            .any(|p| fingerprint(p).is_some_and(|f| super::links::settled(&f) && Some(f) == source.fingerprint))
     }
     #[cfg(target_arch = "wasm32")]
     {

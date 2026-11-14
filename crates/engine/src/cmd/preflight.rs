@@ -9,7 +9,7 @@ use designcraft_geom::Affine;
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use super::{CommandSpec, cmd, has_doc};
+use super::{CommandSpec, LinkListChecks, cmd, has_doc};
 use crate::{Result, Session};
 
 mod white_overprint;
@@ -260,14 +260,23 @@ pub fn overset_warnings(s: &Session, pages: Option<&[usize]>) -> Vec<String> {
     out
 }
 
-pub fn check(s: &Session, min_ppi: f64) -> Vec<Issue> {
-    let Some(st) = s.active() else { return vec![] };
-    check_document(&st.doc, &s.cache, st.path.as_deref().map(std::path::Path::new), min_ppi)
+/// The active document's issues. Linked files are looked at as `links.list` looks at them, with
+/// what it remembers of them.
+pub fn check(s: &mut Session, min_ppi: f64) -> Vec<Issue> {
+    let mut links = std::mem::take(&mut s.link_checks);
+    let issues = match s.active() {
+        Some(st) => check_document(&st.doc, &s.cache, st.path.as_deref().map(std::path::Path::new), min_ppi, &mut links),
+        None => vec![],
+    };
+    s.link_checks = links;
+    issues
 }
 
 /// [`check`] of document `d` saved at `document` (relative links resolve against it), with the
-/// compositions in `cache`. It needs no session, so it can run on another thread.
-pub fn check_document(d: &Document, cache: &Cache, document: Option<&std::path::Path>, min_ppi: f64) -> Vec<Issue> {
+/// compositions in `cache`. It needs no session, so it can run on another thread. `links` is what
+/// the caller remembers of linked files between checks: a file is read only when its size is the
+/// recorded one and its time is new.
+pub fn check_document(d: &Document, cache: &Cache, document: Option<&std::path::Path>, min_ppi: f64, links: &mut LinkListChecks) -> Vec<Issue> {
     let mut out = Vec::new();
     // Stories: overset and fonts.
     let mut missing_fonts: Vec<String> = Vec::new();
@@ -437,8 +446,7 @@ pub fn check_document(d: &Document, cache: &Cache, document: Option<&std::path::
             if let Content::Graphic(g) = &it.content
                 && let Some(a) = d.assets.get(&g.asset)
                 && a.data.is_linked()
-                && !super::links::link_missing(a, document)
-                && a.data.load().err() == Some(designcraft_doc::Unavailable::Modified)
+                && super::links::link_modified(a, document, links)
             {
                 out.push(Issue {
                     severity: "warning",
@@ -463,7 +471,7 @@ pub fn check_document(d: &Document, cache: &Cache, document: Option<&std::path::
                     }),
                     Some(a) => {
                         // Placed PDF and SVG pages export as vectors; `pixels` is only the preview's.
-                        let vector = a.output_bytes().is_ok_and(|o| designcraft_images::is_pdf(&o.bytes) || designcraft_images::is_svg(&o.bytes));
+                        let vector = a.mime == "application/pdf" || a.mime == "image/svg+xml";
                         if let Some((pw, ph)) = a.pixels.filter(|_| !vector) {
                             // Measure each image axis in points, not its rotated bounding box or
                             // cropped frame. Either axis can fall below the minimum resolution.
@@ -589,10 +597,10 @@ mod arabic_tests {
         let r = s.execute("frame.create", &json!({"rect": [0, 0, 300, 200], "content": "text", "text": text})).unwrap();
         s.execute("text.select", &json!({"story": r["story"], "anchor": 0, "focus": text.len()})).unwrap();
         s.execute("type.char", &json!({"attrs": {"diacriticPosition": "openType", "diacriticXOffset": 150}})).unwrap();
-        assert!(!check(&s, 150.0).iter().any(|i| i.kind == "unsupportedTypography"));
+        assert!(!check(&mut s, 150.0).iter().any(|i| i.kind == "unsupportedTypography"));
         s.execute("type.para", &json!({"attrs": {"arabicJustification": "NaskhJustification", "paragraphKashidaWidth": 2}})).unwrap();
         s.execute("type.char", &json!({"attrs": {"diacriticPosition": "tight"}})).unwrap();
-        let issues = check(&s, 150.0);
+        let issues = check(&mut s, 150.0);
         let typography: Vec<_> = issues.iter().filter(|i| i.kind == "unsupportedTypography").collect();
         assert_eq!(typography.len(), 3, "{typography:?}");
         assert!(typography.iter().all(|i| i.severity == "warning"));
@@ -683,7 +691,7 @@ mod mojikumi_nested_tests {
         pf.para.mojikumi = Some("MojikumiTable/Unrecognized".into());
         cell.insert_note(0, "Note", pf);
         d.story_mut(sid).unwrap().insert_table(0, table);
-        let issues = check(&s, 150.0);
+        let issues = check(&mut s, 150.0);
         assert_eq!(issues.iter().filter(|i| i.kind == "unsupportedTypography" && i.message.contains("Unrecognized")).count(), 1);
     }
 }

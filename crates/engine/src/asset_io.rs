@@ -68,6 +68,12 @@ pub fn fingerprint_from(meta: &crate::io::Metadata) -> Fingerprint {
     Fingerprint { size: meta.len(), mtime }
 }
 
+/// Whether `f` has a modification time to tell the file by: [`fingerprint_from`] gives 0 where
+/// the file system reports none, and two such files of one size would look the same.
+pub fn has_time(f: &Fingerprint) -> bool {
+    f.mtime != 0
+}
+
 /// The files that may hold `source`'s bytes, in the order they are tried: the absolute path,
 /// then the relative one resolved against the document. Paths [`crate::io::document_path`]
 /// refuses are left out.
@@ -127,7 +133,7 @@ fn read_candidate(path: &Path, source: &LinkedSource, trusted: Option<Fingerprin
     if found.size != source.len {
         return Err(Miss::Modified);
     }
-    let known = Some(found) == source.fingerprint || Some(found) == trusted;
+    let known = has_time(&found) && (Some(found) == source.fingerprint || Some(found) == trusted);
     if !known && source.hash.is_none() && source.fingerprint.is_some() {
         // Nothing to tell the bytes by.
         return Err(Miss::Modified);
@@ -244,6 +250,21 @@ mod tests {
         std::fs::write(dir.0.join("gone/links/a.png"), b"other!!!").unwrap();
         age(&dir.0.join("gone/links/a.png"), 1000);
         assert_eq!(read_linked(&source, None).ok().map(|l| l.bytes), Some(b"original".to_vec()));
+    }
+
+    /// A time of 0 is what a file system without times gives: it can't tell two files apart.
+    #[test]
+    fn a_file_without_a_time_is_told_by_its_hash() {
+        let dir = Dir::new("no-time");
+        let path = dir.0.join("a.png");
+        let at_epoch = |p: &Path| std::fs::OpenOptions::new().write(true).open(p).unwrap().set_modified(std::time::UNIX_EPOCH).unwrap();
+        std::fs::write(&path, b"original").unwrap();
+        at_epoch(&path);
+        let source = source_of(&path);
+        assert_eq!(source.fingerprint.map(|f| f.mtime), Some(0));
+        std::fs::write(&path, b"changed!").unwrap();
+        at_epoch(&path);
+        assert_eq!(read_linked(&source, None).err(), Some(Unavailable::Modified));
     }
 
     /// Through the installed loader and the store: a file changed on disk is never adopted.

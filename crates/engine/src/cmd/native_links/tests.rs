@@ -67,9 +67,17 @@ fn saved_linked(dir: &Dir) -> (PathBuf, AssetId) {
     (doc, id)
 }
 
-fn open(path: &Path) -> Session {
+/// Open the file at `path`, with its background check of linked files still to come.
+fn opened(path: &Path) -> Session {
     let mut s = Session::new();
     s.execute("file.open", &json!({"path": path.to_string_lossy()})).unwrap();
+    s
+}
+
+/// Open the file at `path` and wait for its background check of linked files.
+fn open(path: &Path) -> Session {
+    let mut s = opened(path);
+    wait(&mut s);
     s
 }
 
@@ -109,7 +117,7 @@ fn a_linked_save_writes_no_original_and_records_the_relative_path() {
     let s = open(&doc);
     let a = asset(&s, id);
     assert_eq!((a.storage, a.link_relative.as_deref()), (Storage::Linked, Some("links/art.png")));
-    assert!(a.data.is_linked() && a.data.resident().is_none(), "nothing is read on open");
+    assert!(a.data.is_linked() && a.data.resident().is_none(), "nothing is read on open, nor by its check");
     assert_eq!(status(&s, id), Some(LinkStatus::Ok), "the recorded size and time: no check needed");
     assert!(!s.doc().unwrap().links.checking());
     assert_eq!(a.data.load().unwrap().as_slice(), png(30));
@@ -146,7 +154,7 @@ fn the_absolute_file_wins_and_otherwise_the_one_with_the_bytes() {
     // The original changes (same size): the copy holds the bytes, found by its hash.
     flip_a_byte(&dir.0.join("links/art.png"));
     age(&dir.0.join("links/art.png"), 10);
-    let mut s = open(&copy.0.join("doc.designcraft"));
+    let mut s = opened(&copy.0.join("doc.designcraft"));
     assert_eq!(status(&s, id), Some(LinkStatus::Checking));
     wait(&mut s);
     let a = asset(&s, id);
@@ -162,7 +170,7 @@ fn a_touched_file_with_the_same_bytes_is_ok_and_keeps_its_new_time() {
     let (doc, id) = saved_linked(&dir);
     let image = dir.0.join("links/art.png");
     age(&image, 1000);
-    let mut s = open(&doc);
+    let mut s = opened(&doc);
     let key = asset(&s, id).data.key();
     assert_eq!(status(&s, id), Some(LinkStatus::Checking));
     wait(&mut s);
@@ -201,6 +209,7 @@ fn migration_links_confirmed_images_and_drops_the_copy_only_after_confirmation()
     let (same, changed) = (dir.0.join("links/same.png"), dir.0.join("links/changed.png"));
     std::fs::write(&same, png(30)).unwrap();
     std::fs::write(&changed, png(31)).unwrap();
+    age(&same, 100);
     let mut s = Session::new();
     s.execute("file.new", &json!({})).unwrap();
     let (a, b) = (place(&mut s, &png(30)), place(&mut s, &png(31)));
@@ -212,7 +221,7 @@ fn migration_links_confirmed_images_and_drops_the_copy_only_after_confirmation()
     // One file changes since (same size, other bytes).
     flip_a_byte(&changed);
 
-    let mut s = open(&doc);
+    let mut s = opened(&doc);
     assert!(asset(&s, a).data.embedded_bytes().is_some() && asset(&s, a).storage == Storage::Embedded, "nothing changes before the comparison");
     wait(&mut s);
     let (left, kept) = (asset(&s, a), asset(&s, b));
@@ -264,6 +273,7 @@ fn byte_opened_and_recovered_documents_are_not_migrated_and_recovery_holds_no_or
     drop(s);
     let mut r = Session::new();
     r.execute("file.recovery.open", &json!({"dir": recovery.to_string_lossy()})).unwrap();
+    wait(&mut r);
     let a = asset(&r, id);
     assert_eq!((a.storage, a.link_relative.as_deref()), (Storage::Linked, Some("links/art.png")));
     assert_eq!(a.data.linked_source().and_then(|s| s.document.clone()), Some(doc.clone()), "resolved against the document's file");
@@ -292,4 +302,86 @@ fn save_a_copy_with_embedded_links_is_portable() {
     s.execute("file.saveACopy", &json!({"path": copy.to_string_lossy()})).unwrap();
     assert!(stored_assets(&copy).is_empty());
     assert!(s.execute("file.saveACopy", &json!({"path": copy.to_string_lossy(), "embedLinks": 1})).is_err());
+}
+
+#[test]
+fn the_open_looks_for_files_in_the_background() {
+    let dir = Dir::new("background");
+    let (doc, id) = saved_linked(&dir);
+    let mut s = opened(&doc);
+    assert_eq!(status(&s, id), Some(LinkStatus::Checking), "nothing is asked of the file system on open");
+    assert!(s.doc().unwrap().links.checking());
+    wait(&mut s);
+    assert_eq!(status(&s, id), Some(LinkStatus::Ok));
+    assert!(!s.doc().unwrap().is_dirty());
+}
+
+/// The open's statuses don't outlive a change to the file: Update reads a file edited since,
+/// and a file missing at the open counts once it is back.
+#[test]
+fn a_file_changed_or_restored_after_the_open_is_seen() {
+    let dir = Dir::new("after-open");
+    let (doc, id) = saved_linked(&dir);
+    let image = dir.0.join("links/art.png");
+    let mut s = open(&doc);
+    assert_eq!(status(&s, id), Some(LinkStatus::Ok));
+    std::fs::write(&image, png(77)).unwrap();
+    age(&image, 10);
+    let r = s.execute("links.update", &json!({"asset": id.0})).unwrap();
+    assert_eq!(r["updated"], 1, "{r}");
+    assert_eq!(asset(&s, id).data.load().unwrap().as_slice(), png(77));
+
+    let restored = Dir::new("restored");
+    let (doc, id) = saved_linked(&restored);
+    let image = restored.0.join("links/art.png");
+    let original = std::fs::read(&image).unwrap();
+    std::fs::remove_file(&image).unwrap();
+    let mut s = open(&doc);
+    assert_eq!(status(&s, id), Some(LinkStatus::Missing));
+    std::fs::write(&image, &original).unwrap();
+    age(&image, 10);
+    let rows = s.execute("links.list", &json!({})).unwrap();
+    let row = rows.as_array().unwrap().iter().find(|r| r["asset"] == id.0).cloned().unwrap();
+    assert_eq!(row["status"], "ok", "{row}");
+}
+
+#[test]
+fn preflight_reads_no_linked_original() {
+    let dir = Dir::new("preflight");
+    let (doc, id) = saved_linked(&dir);
+    let mut s = open(&doc);
+    let issues = s.execute("preflight.run", &json!({})).unwrap();
+    assert!(!issues.to_string().contains("modifiedLink"), "{issues}");
+    assert!(asset(&s, id).data.resident().is_none(), "the original isn't read");
+    flip_a_byte(&dir.0.join("links/art.png"));
+    age(&dir.0.join("links/art.png"), 10);
+    let issues = s.execute("preflight.run", &json!({})).unwrap();
+    assert!(issues.to_string().contains("modifiedLink"), "{issues}");
+}
+
+#[test]
+fn recovery_keeps_images_not_yet_saved_as_links() {
+    let dir = Dir::new("recover-migrated");
+    let image = dir.0.join("links/art.png");
+    std::fs::write(&image, png(30)).unwrap();
+    age(&image, 100);
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    let id = place(&mut s, &png(30));
+    link_to(&mut s, id, &image, false);
+    let doc = dir.0.join("doc.designcraft");
+    s.execute("file.save", &json!({"path": doc.to_string_lossy()})).unwrap();
+    let mut s = open(&doc);
+    assert_eq!(asset(&s, id).storage, Storage::Linked, "found identical to its file, to be saved as a link");
+    s.execute("frame.create", &json!({"rect": [36, 36, 300, 200]})).unwrap();
+    let recovery = dir.0.join("recovery");
+    s.execute("file.recovery.save", &json!({"dir": recovery.to_string_lossy()})).unwrap();
+    let entry = recovery.join(format!("{}.designcraft", s.doc().unwrap().uid));
+    assert_eq!(stored_assets(&entry), [format!("assets/{}.png", id.0)], "the bytes stay in the snapshot");
+    drop(s);
+    let mut r = Session::new();
+    r.execute("file.recovery.open", &json!({"dir": recovery.to_string_lossy()})).unwrap();
+    wait(&mut r);
+    let a = asset(&r, id);
+    assert_eq!((a.storage, a.data.embedded_bytes().map(|b| b.to_vec())), (Storage::Embedded, Some(png(30))));
 }
