@@ -4515,6 +4515,22 @@ fn first_baseline_in_dir(family: &str, vertical: bool, opts: impl Fn(&mut design
 }
 
 #[test]
+fn legacy_native_frames_keep_the_old_first_baseline_metrics() {
+    use designcraft_doc::FirstBaseline;
+    let db = designcraft_fonts::FontDb::global();
+    db.add_font(typo_test_font("LegacyBase 07", Some(700)));
+    for (kind, offset) in [(FirstBaseline::Ascent, 20.0), (FirstBaseline::CapHeight, 14.4), (FirstBaseline::XHeight, 10.0)] {
+        let baseline = first_baseline_in("LegacyBase 07", |options| {
+            options.legacy_first_baseline = true;
+            options.first_baseline = kind;
+        });
+        assert!((baseline - (40.0 + offset)).abs() < 0.001, "{kind:?}: {baseline}");
+    }
+    let modern = first_baseline_in("LegacyBase 07", |_| {});
+    assert!((modern - 54.0).abs() < 0.001, "new documents keep modern metrics");
+}
+
+#[test]
 fn ascent_first_baseline_uses_the_typographic_ascender() {
     use designcraft_doc::FirstBaseline;
     let db = designcraft_fonts::FontDb::global();
@@ -10110,4 +10126,18 @@ fn cross_reference_text_breaks_at_its_spaces() {
             assert!(words.contains(&w), "a line breaks inside a word: {w:?} in {lines:?}");
         }
     }
+}
+
+#[test]
+fn legacy_vertical_embox_keeps_the_historical_ascent() {
+    use designcraft_doc::FirstBaseline;
+    let db = designcraft_fonts::FontDb::global();
+    db.add_font(typo_test_font("LegacyVert 09", Some(700)));
+    let at = |legacy| {
+        first_baseline_in_dir("LegacyVert 09", true, |o| {
+            o.legacy_first_baseline = legacy;
+            o.first_baseline = FirstBaseline::EmboxHeight;
+        })
+    };
+    assert!((at(true) - at(false)).abs() < 0.001);
 }
