@@ -215,7 +215,7 @@ impl Preview {
 /// The Export PDF settings the preview separates with.
 pub fn print_settings(app: &DesignApp) -> Print {
     let s = &app.ui.pdf_export;
-    let flatten = if s.flatten.is_empty() { app.ui.flattener.as_str() } else { s.flatten.as_str() };
+    let flatten = s.resolved_flatten(&app.ui.flattener);
     Print {
         standard: designcraft_engine::separations::Standard::parse(&s.standard).unwrap_or_default(),
         compress_images: s.compress_images,
@@ -460,5 +460,26 @@ mod tests {
         let again = super::current_sheet(&mut app).unwrap();
         assert!(!std::sync::Arc::ptr_eq(&first, &again), "a sheet of other color settings is separated again");
         assert!(app.canvas.separations.entries.iter().all(|e| e.key.cms == designcraft_color::cms::generation()));
+    }
+
+    #[test]
+    fn print_settings_respects_saved_no_flatten_and_screen_and_email_migration() {
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.ui.flattener = "low".into();
+        // Unset flatten before any dialog choice falls back to global flattener.
+        app.ui.pdf_export.flatten = String::new();
+        app.ui.pdf_export.flatten_chosen = false;
+        assert_eq!(super::print_settings(&app).flatten, Some(72.0));
+        // Explicit No Flattening choice keeps live transparency despite global flattener = "low".
+        app.ui.pdf_export.flatten = String::new();
+        app.ui.pdf_export.flatten_chosen = true;
+        assert_eq!(super::print_settings(&app).flatten, None);
+        // Earlier "Screen and Email" settings with "low" migrate on load to keep live transparency.
+        let saved = serde_json::json!({
+            "flattener": "low",
+            "pdfExport": { "preset": "Screen and Email", "flatten": "low" }
+        });
+        app.ui = crate::UiState::read_preferences(&serde_json::to_vec(&saved).unwrap()).unwrap().ui;
+        assert_eq!(super::print_settings(&app).flatten, None);
     }
 }
