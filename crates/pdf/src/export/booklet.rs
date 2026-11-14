@@ -82,12 +82,12 @@ fn export_booklet_inner(doc: &Document, cache: &Cache, opts: &BookletOptions) ->
     }
     let pdf_opts = PdfOptions { title: opts.title.clone(), ..PdfOptions::default() };
     let mut warnings = Vec::new();
-    let base = if print_color(doc, &pdf_opts) {
-        let (settings, warning) = crate::pdfx::print_settings(false)?;
+    let (base, cmyk_icc) = if print_color(doc, &pdf_opts) {
+        let (settings, icc, warning) = crate::pdfx::print_settings_and_profile(false)?;
         warnings.extend(warning);
-        settings
+        (settings, Some(icc))
     } else {
-        krilla::SerializeSettings::default()
+        (krilla::SerializeSettings::default(), None)
     };
     let settings = krilla::SerializeSettings { compress_content_streams: true, ..base };
     let metadata = file_info_metadata(doc, opts.title.as_deref(), None);
@@ -169,6 +169,7 @@ fn export_booklet_inner(doc: &Document, cache: &Cache, opts: &BookletOptions) ->
         bytes = crate::optional_content::register(&bytes)?;
     }
     let mut warnings = ex.warnings;
+    bytes = crate::default_cmyk::attach(bytes, cmyk_icc.as_deref(), Standard::None, &mut warnings)?;
     warnings.dedup();
     Ok(ExportReport { bytes, pages: pairs.len(), warnings })
 }
