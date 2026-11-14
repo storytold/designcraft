@@ -10,9 +10,9 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use designcraft_ui_egui::ControlRequest;
 use serde_json::{Value, json};
@@ -22,22 +22,43 @@ use serde_json::{Value, json};
 pub const MAX_LINE: usize = 4 * 1024 * 1024;
 /// Connections served at once; further ones get an error line and are closed.
 pub const MAX_CONNECTIONS: usize = 16;
+/// How long a connection has to present the token, in all. Until it does it holds one of the
+/// [`MAX_CONNECTIONS`] slots, so without a limit any local process could open every slot, send
+/// nothing, and lock every client out for as long as it liked (noted in review).
+pub const TOKEN_WAIT: Duration = Duration::from_secs(10);
+/// Longest line accepted before the token. `{"token": "<32 hex>"}` is 45 bytes; a client that
+/// has not shown it may write the token and nothing more.
+const MAX_TOKEN_LINE: usize = 256;
+/// Blank lines a connection may send before its token, so a keep-alive newline is no way to hold
+/// a slot either.
+const MAX_BLANK_BEFORE_TOKEN: usize = 8;
 
-pub fn start(port: u16, ctx: egui::Context) -> Receiver<ControlRequest> {
-    let (tx, rx) = channel::<ControlRequest>();
-    let listener = match TcpListener::bind(("127.0.0.1", port)) {
-        Ok(l) => l,
+/// Reserve `port` for this launch, or `None` when it cannot be had.
+///
+/// Separate from [`serve`] so a launch can hold the port *before* it publishes a token. Binding
+/// after publishing meant a second launch overwrote the token file and only then discovered the
+/// port was taken -- leaving the first server running while every client read a token it would
+/// refuse (noted in review).
+pub fn bind(port: u16) -> Option<TcpListener> {
+    match TcpListener::bind(("127.0.0.1", port)) {
+        Ok(l) => Some(l),
         Err(e) => {
-            eprintln!("designcraft: control server failed to bind 127.0.0.1:{port}: {e}");
-            return rx;
+            log::error!("control server failed to bind 127.0.0.1:{port}: {e}");
+            None
         }
-    };
-    eprintln!("designcraft: control server listening on 127.0.0.1:{port}");
-    std::thread::spawn(move || accept_loop(listener, tx, ctx));
+    }
+}
+
+/// Start serving on a port [`bind`] has already reserved.
+pub fn start(listener: TcpListener, token: String, ctx: egui::Context) -> Receiver<ControlRequest> {
+    let (tx, rx) = channel::<ControlRequest>();
+    let where_ = listener.local_addr().map(|a| a.to_string()).unwrap_or_else(|_| "127.0.0.1".into());
+    log::info!("control server listening on {where_}");
+    std::thread::spawn(move || accept_loop(listener, tx, ctx, token));
     rx
 }
 
-fn accept_loop(listener: TcpListener, tx: Sender<ControlRequest>, ctx: egui::Context) {
+fn accept_loop(listener: TcpListener, tx: Sender<ControlRequest>, ctx: egui::Context, token: String) {
     let open = Arc::new(AtomicUsize::new(0));
     for mut stream in listener.incoming().flatten() {
         if open.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
@@ -48,21 +69,61 @@ fn accept_loop(listener: TcpListener, tx: Sender<ControlRequest>, ctx: egui::Con
         let tx = tx.clone();
         let ctx = ctx.clone();
         let open = Arc::clone(&open);
+        let token = token.clone();
         std::thread::spawn(move || {
-            serve(stream, &tx, &ctx);
+            serve(stream, &tx, &ctx, &token, TOKEN_WAIT);
             open.fetch_sub(1, Ordering::SeqCst);
         });
     }
 }
 
-fn serve(stream: TcpStream, tx: &Sender<ControlRequest>, ctx: &egui::Context) {
+fn serve(stream: TcpStream, tx: &Sender<ControlRequest>, ctx: &egui::Context, token: &str, wait: Duration) {
     let Ok(read) = stream.try_clone() else { return };
-    serve_lines(read, stream, |method, params| {
-        let (req, rrx) = ControlRequest::new(method, params);
-        tx.send(req).ok()?;
-        ctx.request_repaint();
-        Some(rrx.recv_timeout(Duration::from_secs(60)).unwrap_or_else(|_| json!({"ok": false, "error": "timeout"})))
-    });
+    let read = TokenDeadline { stream: read, deadline: Instant::now() + wait, accepted: Arc::new(AtomicBool::new(false)), lifted: false };
+    let accepted = Arc::clone(&read.accepted);
+    serve_lines_with_token(
+        read,
+        stream,
+        token,
+        move || accepted.store(true, Ordering::SeqCst),
+        |method, params| {
+            let (req, rrx) = ControlRequest::new(method, params);
+            tx.send(req).ok()?;
+            ctx.request_repaint();
+            Some(rrx.recv_timeout(Duration::from_secs(60)).unwrap_or_else(|_| json!({"ok": false, "error": "timeout"})))
+        },
+    );
+}
+
+/// The read half of a connection that has until `deadline` to present the token. Each read waits
+/// at most for the time left, so neither silence nor a byte now and then keeps an unauthenticated
+/// connection past it; once the token is accepted the connection may idle like any other.
+struct TokenDeadline {
+    stream: TcpStream,
+    deadline: Instant,
+    accepted: Arc<AtomicBool>,
+    lifted: bool,
+}
+
+impl Read for TokenDeadline {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let late = || std::io::Error::new(std::io::ErrorKind::TimedOut, "no token in time; closing the connection");
+        if self.accepted.load(Ordering::SeqCst) {
+            if !self.lifted {
+                self.stream.set_read_timeout(None)?;
+                self.lifted = true;
+            }
+            return self.stream.read(buf);
+        }
+        let left = self.deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(late());
+        }
+        self.stream.set_read_timeout(Some(left))?;
+        // The socket's timeout reports as `WouldBlock` on some systems and `TimedOut` on others;
+        // either way it is this deadline that passed.
+        self.stream.read(buf).map_err(|e| if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) { late() } else { e })
+    }
 }
 
 /// One parsed line.
@@ -126,6 +187,63 @@ fn read_bounded_line(reader: &mut impl BufRead, buf: &mut Vec<u8>, max: usize) -
     Ok(true)
 }
 
+/// [`serve_lines`] behind the launch's token: the first line of a connection must be the token
+/// and nothing else, so a process that cannot read the token file runs nothing (#1585).
+///
+/// The reply to the token line says only whether it was accepted. A wrong one closes the
+/// connection, as any other line that is not a request does.
+///
+/// Before the token a line is at most [`MAX_TOKEN_LINE`] and at most [`MAX_BLANK_BEFORE_TOKEN`]
+/// blank lines are passed over. `accepted` runs once the token is, before any request is read.
+fn serve_lines_with_token<R: Read, W: Write>(
+    read: R,
+    mut out: W,
+    token: &str,
+    accepted: impl FnOnce(),
+    handle: impl FnMut(String, Value) -> Option<Value>,
+) {
+    let mut reader = BufReader::new(read);
+    let mut buf = Vec::new();
+    let mut blank = 0;
+    loop {
+        match read_bounded_line(&mut reader, &mut buf, MAX_TOKEN_LINE) {
+            Ok(false) => return,
+            Err(e) => {
+                let _ = writeln!(out, "{}", json!({"ok": false, "error": e})).and_then(|()| out.flush());
+                return;
+            }
+            Ok(true) => {}
+        }
+        let text = String::from_utf8_lossy(&buf);
+        let text = text.trim();
+        if text.is_empty() {
+            blank += 1;
+            if blank <= MAX_BLANK_BEFORE_TOKEN {
+                continue;
+            }
+        }
+        // The token may come alone on the line or as `{"token": "..."}`, so a client can send it
+        // as JSON like everything else on this channel.
+        let given = match serde_json::from_str::<Value>(text) {
+            Ok(v) => v.get("token").and_then(Value::as_str).map(str::to_string).unwrap_or_default(),
+            Err(_) => text.to_string(),
+        };
+        if crate::control_token::matches(token, &given) {
+            let _ = writeln!(out, "{}", json!({"ok": true})).and_then(|()| out.flush());
+            accepted();
+            break;
+        }
+        let _ = writeln!(
+            out,
+            "{}",
+            json!({"ok": false, "error": "the control channel needs this launch's token as the first line; closing the connection"})
+        )
+        .and_then(|()| out.flush());
+        return;
+    }
+    serve_lines(reader, out, handle);
+}
+
 /// Serve requests from `read`, answering on `out`, until the peer closes, sends something that is
 /// not a request, or `handle` returns `None` (app gone). `handle` gets `(method, params)` and
 /// returns the reply object (the request's `id` is added here).
@@ -169,6 +287,60 @@ mod tests {
         });
         let replies = String::from_utf8(out).unwrap().lines().map(|l| serde_json::from_str::<Value>(l).unwrap()).collect();
         (replies, calls)
+    }
+
+    /// The channel reaches every command, so a connection runs nothing until it has presented
+    /// this launch's token (#1585).
+    #[test]
+    fn nothing_runs_until_the_token_is_presented() {
+        const TOKEN: &str = "0123456789abcdef0123456789abcdef";
+        let serve = |input: &str| {
+            let mut out = Vec::new();
+            let mut calls: Vec<String> = Vec::new();
+            serve_lines_with_token(
+                input.as_bytes(),
+                &mut out,
+                TOKEN,
+                || {},
+                |m, _p| {
+                    calls.push(m);
+                    Some(json!({"ok": true, "result": null}))
+                },
+            );
+            let replies: Vec<Value> =
+                String::from_utf8(out).unwrap().lines().filter(|l| !l.is_empty()).map(|l| serde_json::from_str(l).unwrap()).collect();
+            (replies, calls)
+        };
+        let request = r#"{"id":1,"method":"engine.execute","params":{}}"#;
+
+        // The token, then a request: the token is acknowledged and the request runs.
+        let (replies, calls) = serve(&format!("{{\"token\":\"{TOKEN}\"}}\n{request}\n"));
+        assert_eq!(calls, ["engine.execute"], "the request ran");
+        assert_eq!(replies[0]["ok"], json!(true), "the token was acknowledged");
+        assert_eq!(replies[1]["id"], json!(1), "and the reply carries the request's id");
+
+        // The bare token on a line works too, for a client that is not sending JSON yet.
+        let (_, calls) = serve(&format!("{TOKEN}\n{request}\n"));
+        assert_eq!(calls, ["engine.execute"]);
+
+        // No token: the request never reaches the engine, and the connection closes.
+        let (replies, calls) = serve(&format!("{request}\n{request}\n"));
+        assert!(calls.is_empty(), "nothing ran without the token");
+        assert_eq!(replies.len(), 1, "one error and the connection is closed");
+        assert_eq!(replies[0]["ok"], json!(false));
+        assert!(replies[0]["error"].as_str().unwrap_or_default().contains("token"), "{:?}", replies[0]);
+
+        // A wrong token, including one that is a prefix of the real one: nothing runs.
+        for wrong in [&TOKEN[..31], "0123456789abcdef0123456789abcdee", "", "{\"token\":null}"] {
+            let (replies, calls) = serve(&format!("{wrong}\n{request}\n"));
+            assert!(calls.is_empty(), "nothing ran for {wrong:?}");
+            assert_eq!(replies[0]["ok"], json!(false), "{wrong:?}");
+        }
+
+        // A browser's cross-origin request still gets one error and no execution.
+        let (replies, calls) = serve("GET / HTTP/1.1\r\n");
+        assert!(calls.is_empty());
+        assert_eq!(replies[0]["ok"], json!(false));
     }
 
     #[test]
@@ -266,7 +438,7 @@ mod tests {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let addr = listener.local_addr().unwrap();
         let (tx, _rx) = channel::<ControlRequest>();
-        std::thread::spawn(move || accept_loop(listener, tx, egui::Context::default()));
+        std::thread::spawn(move || accept_loop(listener, tx, egui::Context::default(), "token-for-the-test".into()));
         // Idle connections are accepted in order and held open.
         let held: Vec<TcpStream> = (0..16).map(|_| TcpStream::connect(addr).unwrap()).collect();
         let mut extra = TcpStream::connect(addr).unwrap();
@@ -275,5 +447,99 @@ mod tests {
         BufReader::new(&mut extra).read_line(&mut line).unwrap();
         assert!(line.contains("too many control connections"), "{line}");
         drop(held);
+    }
+
+    /// Before the token, a connection may pass over a few blank lines and write one short line;
+    /// past either limit it is refused like a wrong token (noted in review).
+    #[test]
+    fn the_line_before_the_token_is_short_and_blank_lines_are_few() {
+        const TOKEN: &str = "0123456789abcdef0123456789abcdef";
+        let ran = |input: String| {
+            let (mut out, mut calls) = (Vec::new(), 0);
+            serve_lines_with_token(
+                input.as_bytes(),
+                &mut out,
+                TOKEN,
+                || {},
+                |_, _| {
+                    calls += 1;
+                    Some(json!({"ok": true}))
+                },
+            );
+            calls
+        };
+        let request = r#"{"id":1,"method":"engine.execute","params":{}}"#;
+        let blank = |n: usize| "\n".repeat(n);
+        assert_eq!(ran(format!("{}{TOKEN}\n{request}\n", blank(MAX_BLANK_BEFORE_TOKEN))), 1, "a few blank lines are passed over");
+        assert_eq!(ran(format!("{}{TOKEN}\n{request}\n", blank(MAX_BLANK_BEFORE_TOKEN + 1))), 0, "one more is refused");
+        let padded = format!("{{\"token\": \"{TOKEN}\"{}}}", " ".repeat(MAX_TOKEN_LINE));
+        assert_eq!(ran(format!("{padded}\n{request}\n")), 0, "a token line past the limit is refused");
+        // Requests after the token may still be long.
+        let long = format!(r#"{{"id":2,"method":"engine.execute","params":{{"pad":"{}"}}}}"#, "x".repeat(MAX_TOKEN_LINE * 4));
+        assert_eq!(ran(format!("{TOKEN}\n{long}\n")), 1, "the token's limit is not the requests'");
+    }
+
+    /// A connection that has not shown the token holds a slot only until [`TOKEN_WAIT`]: silence
+    /// and a byte now and then are cut off alike, and one that has shown it may idle (noted in
+    /// review). Over a real loopback socket, with a short wait.
+    #[test]
+    fn a_connection_without_the_token_is_closed_when_its_time_is_up() {
+        const TOKEN: &str = "0123456789abcdef0123456789abcdef";
+        let wait = Duration::from_millis(300);
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (tx, _rx) = channel::<ControlRequest>();
+            for _ in 0..3 {
+                let (s, _) = listener.accept().unwrap();
+                serve(s, &tx, &egui::Context::default(), TOKEN, wait);
+            }
+        });
+        let client = || {
+            let c = TcpStream::connect(addr).unwrap();
+            c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            c
+        };
+
+        // Silence: closed with an error once the wait is up, and not long after.
+        let started = Instant::now();
+        let mut text = String::new();
+        client().read_to_string(&mut text).unwrap();
+        assert!(text.contains("no token in time"), "{text}");
+        assert!(started.elapsed() < wait * 5, "closed at the deadline, not later: {:?}", started.elapsed());
+
+        // A byte every 100 ms for two seconds, never a whole line: every read is well inside the
+        // wait, but the wait is in all, so the server closes during the drip, not after it.
+        let mut c = client();
+        let mut watch = c.try_clone().unwrap();
+        let started = Instant::now();
+        let closed = std::thread::spawn(move || {
+            let mut text = String::new();
+            let _ = watch.read_to_string(&mut text);
+            (text, started.elapsed())
+        });
+        for b in TOKEN.bytes().take(20) {
+            if c.write_all(&[b]).is_err() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let (text, at) = closed.join().unwrap();
+        assert!(text.contains("no token in time"), "{text}");
+        assert!(at < wait * 3, "closed {at:?} in, while the bytes were still coming");
+
+        // The token, then idle past the wait: still connected. The next line is read and
+        // answered (junk, so the answer is an error), which a closed connection could not do.
+        let mut c = client();
+        c.write_all(format!("{TOKEN}\n").as_bytes()).unwrap();
+        std::thread::sleep(wait * 3);
+        c.write_all(b"hello\n").unwrap();
+        let mut text = String::new();
+        c.read_to_string(&mut text).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 2, "{text}");
+        assert!(lines[0].contains("\"ok\":true"), "the token was accepted: {text}");
+        assert!(lines[1].contains("closing the connection") && !lines[1].contains("no token"), "and the idle connection was still read: {text}");
+        server.join().unwrap();
     }
 }

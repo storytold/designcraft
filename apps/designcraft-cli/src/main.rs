@@ -42,13 +42,15 @@ use designcraft_engine::Session;
 use serde_json::{Value, json};
 
 /// The usage block. Shared by `--help` (stdout, success) and an unknown command (stderr, failure).
-const USAGE: &str = "usage: designcraft-cli run [--in FILE | --sample] [--cmd ID[=JSON]]... [--page N] [--scale S] [--pdf-options JSON] [--export OUT] [--all-pages DIR]\n         (--page, --scale and --pdf-options apply to the exports that follow them)\n       designcraft-cli commands [FILTER]\n       designcraft-cli describe COMMAND\n       designcraft-cli script [FILE|-] [--in FILE | --sample] [--connect PORT] [--save OUT] [--export OUT] [--keep-going]\n       designcraft-cli app [--port PORT] COMMAND [JSON] | --method METHOD [JSON]\n       designcraft-cli mcp [--connect PORT] [--sample] [--automation-read-root DIR]... [--automation-write-root DIR]...\n         the roots confine every file the agent's commands read (open, placed images, data sources, libraries) and\n         write (save, export, package) to those folders, links followed. Each may be given more than once; a kind\n         left out grants none of its access.\n         They run the in-process server, so they conflict with --connect (a running app is not confined by them).\n       designcraft-cli perf [--pages N] [--runs N] [--strict]\n       designcraft-cli bench FILE [--runs N]\n       designcraft-cli validate-pdf FILE.pdf [--standard x4|x1a]  # built-in PDF/X checks (including visible unembedded fonts; the standard defaults to the file's own)\n       designcraft-cli thumbnail FILE.designcraft OUT.png [SIZE]  # the saved first-page preview, at most SIZE px\n       designcraft-cli links\n       designcraft-cli --version";
+const USAGE: &str = "usage: designcraft-cli run [--in FILE | --sample] [--cmd ID[=JSON]]... [--page N] [--scale S] [--pdf-options JSON] [--export OUT] [--all-pages DIR]\n         (--page, --scale and --pdf-options apply to the exports that follow them)\n       designcraft-cli commands [FILTER]\n       designcraft-cli describe COMMAND\n       designcraft-cli script [FILE|-] [--in FILE | --sample] [--connect PORT] [--save OUT] [--export OUT] [--keep-going]\n       designcraft-cli app [--port PORT] COMMAND [JSON] | --method METHOD [JSON]\n       designcraft-cli mcp [--connect PORT] [--sample] [--automation-read-root DIR]... [--automation-write-root DIR]...\n         the roots confine every file the agent's commands read (open, placed images, data sources, libraries) and\n         write (save, export, package) to those folders, links followed. Each may be given more than once; a kind\n         left out grants none of its access.\n         They run the in-process server, so they conflict with --connect (a running app is not confined by them).\n         --connect presents the app's control token: DESIGNCRAFT_CONTROL_TOKEN_FILE (its control-token-PORT file) or DESIGNCRAFT_CONTROL_TOKEN.\n       designcraft-cli perf [--pages N] [--runs N] [--strict]\n       designcraft-cli bench FILE [--runs N]\n       designcraft-cli validate-pdf FILE.pdf [--standard x4|x1a]  # built-in PDF/X checks (including visible unembedded fonts; the standard defaults to the file's own)\n       designcraft-cli thumbnail FILE.designcraft OUT.png [SIZE]  # the saved first-page preview, at most SIZE px\n       designcraft-cli links\n       designcraft-cli --version";
 
 /// `script --help`: the script syntax, otherwise only in `describe script.run` and docs/agents.md.
 const SCRIPT_HELP: &str = r#"usage: designcraft-cli script [FILE|-] [--in FILE | --sample] [--connect PORT] [--save OUT] [--export OUT] [--keep-going]
 
 Runs a command script from FILE (stdin when FILE is `-` or missing), headless or, with
---connect PORT, in the running app (designcraft --control PORT).
+--connect PORT, in the running app (designcraft --control PORT). The app asks for its
+control token: set DESIGNCRAFT_CONTROL_TOKEN_FILE to the control-token-PORT file it writes in its
+profile directory, or DESIGNCRAFT_CONTROL_TOKEN to the token.
 
 Script text, one step per line:
   command.id {"param": 1}     also `command.id={json}`, or `command.id` alone
@@ -233,6 +235,21 @@ fn main() -> ExitCode {
     }
 }
 
+/// The control token a client presents: `DESIGNCRAFT_CONTROL_TOKEN`, else the file the app wrote
+/// in its profile directory, named by `DESIGNCRAFT_CONTROL_TOKEN_FILE`. The app prints where that
+/// file is when it opens the channel (#1585).
+fn control_token() -> Option<String> {
+    if let Ok(t) = std::env::var("DESIGNCRAFT_CONTROL_TOKEN") {
+        let t = t.trim().to_string();
+        if !t.is_empty() {
+            return Some(t);
+        }
+    }
+    let path = std::env::var_os("DESIGNCRAFT_CONTROL_TOKEN_FILE")?;
+    let t = std::fs::read_to_string(path).ok()?.trim().to_string();
+    (!t.is_empty()).then_some(t)
+}
+
 fn report(r: Result<(), String>) -> ExitCode {
     match r {
         Ok(()) => ExitCode::SUCCESS,
@@ -367,7 +384,7 @@ so drop --connect (or use --connect without the roots)"
         Some(c) => {
             let addr = control_addr(&c);
             Box::new(
-                Remote::connect(&addr)
+                Remote::connect_with_token(&addr, control_token())
                     .map_err(|e| format!("cannot connect to the DesignCraft app at {addr}: {e} (start it with `designcraft --control PORT`)"))?,
             )
         }
@@ -678,7 +695,7 @@ fn script(args: &[String]) -> Result<(), String> {
         Some(c) => {
             let addr = control_addr(c);
             Box::new(
-                Remote::connect(&addr)
+                Remote::connect_with_token(&addr, control_token())
                     .map_err(|e| format!("cannot connect to the DesignCraft app at {addr}: {e} (start it with `designcraft --control PORT`)"))?,
             )
         }
@@ -744,7 +761,7 @@ fn app(args: &[String]) -> Result<(), String> {
         }
     }
     let addr = control_addr(&port);
-    let mut r = Remote::connect(&addr)
+    let mut r = Remote::connect_with_token(&addr, control_token())
         .map_err(|e| format!("cannot connect to the DesignCraft app at {addr}: {e} (start it with `designcraft --control {port}`)"))?;
     let json_arg =
         |s: Option<&String>| -> Result<Value, String> { s.map_or(Ok(json!({})), |t| serde_json::from_str(t).map_err(|e| format!("bad JSON: {e}"))) };
