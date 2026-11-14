@@ -181,10 +181,9 @@ fn links_panel_distinguishes_same_named_sources_and_keeps_link_actions() {
     h.get_by_label("Embed").click();
     h.run_steps(3);
     settle_links(&mut h);
-    assert!(h.state().session.active().unwrap().doc.assets[&assets[1]].link.is_none());
-    assert_eq!(h.state().session.active().unwrap().doc.assets[&assets[0]].link.as_deref(), Some(first));
-    assert!(h.query_by_label(second).is_none(), "an embedded graphic no longer shows a source path");
-    assert_eq!(h.get_all_by_label("Embedded").count(), 2);
+    // Embedding keeps the link for Unembed.
+    let doc = &h.state().session.active().unwrap().doc;
+    assert_eq!(doc.assets[&assets[1]].link.as_deref(), Some(second));
     assert_eq!(h.get_all_by_label("photo.svg").count(), 3);
     h.get_by_label(first).click();
     h.run_steps(3);

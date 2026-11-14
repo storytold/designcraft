@@ -487,6 +487,23 @@ impl DesignApp {
         r
     }
 
+    /// Applies what the background checks of linked files found, shows the notice about images
+    /// that will be saved as links once, and repaints at a low rate while checks run so the
+    /// Links panel's statuses fill in.
+    pub(crate) fn poll_link_checks(&mut self, ctx: &egui::Context) {
+        // Running any command ends a text composition in progress: ask only while files are checked.
+        if !self.session.active().is_some_and(|st| st.links.checking()) {
+            return;
+        }
+        let Ok(progress) = self.session.execute("links.progress", &json!({})) else { return };
+        if let Some(notice) = progress["notice"].as_str() {
+            self.status(notice.to_string());
+        }
+        if progress["checking"].as_bool() == Some(true) {
+            ctx.request_repaint_after(std::time::Duration::from_millis(400));
+        }
+    }
+
     /// Deliver window actions to the host without persisting them in UI preferences.
     pub(crate) fn flush_window_commands(&mut self, ctx: &egui::Context) {
         for command in std::mem::take(&mut self.pending_window_commands) {
