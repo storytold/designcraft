@@ -157,7 +157,7 @@ pub(super) fn describe_fonts(d: &Document, used: FontTally) -> Vec<UsedFont> {
             let source = (!missing).then(|| match db.face(&family, &style).source {
                 FontSource::Bundled => "bundled",
                 FontSource::Installed(_) => "installed",
-                FontSource::Document(_) => "document",
+                FontSource::Document(_) | FontSource::DocumentContents(_) => "document",
                 FontSource::Memory => "added",
             });
             UsedFont {

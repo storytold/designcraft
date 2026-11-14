@@ -6,6 +6,10 @@ pub type WriteFn = Box<dyn FnMut(&str, &[u8]) -> Result<(), String>>;
 
 pub type OpenAsyncFn = Box<dyn FnMut(ImportRequest)>;
 
+/// Asks for a folder (a browser's folder picker): its documents and font files arrive later
+/// through [`Services::inbox`], all at once, each named by its path in the folder.
+pub type PickFolderFn = Box<dyn FnMut(ImportRequest)>;
+
 /// Starts a browser download; an error means no file was handed to the user.
 pub type DownloadFn = Box<dyn FnMut(&str, &[u8]) -> Result<(), String>>;
 
@@ -62,6 +66,11 @@ pub struct Services {
     /// Asynchronous open dialog for a purpose (`open`, `place`); the chosen file arrives later
     /// through [`Services::inbox`]. In a browser, which has no native dialogs.
     pub open_async: Option<OpenAsyncFn>,
+    /// Asynchronous folder picker for a purpose: `package` (open the package's document with its
+    /// `Document Fonts`) or `documentFonts` (load a folder's fonts into the requesting document).
+    /// In a browser, which can't look beside a file it opens; the desktop app reads the folder
+    /// beside the file itself.
+    pub pick_folder: Option<PickFolderFn>,
     /// Hand bytes to the user as a named file (browser download). When set, Save uses it
     /// instead of writing to a path, and a file saved under a name goes to the downloads with no
     /// save dialog.

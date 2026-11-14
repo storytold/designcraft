@@ -163,24 +163,44 @@ fn document_fonts_folder(dir: &std::path::Path) -> std::path::PathBuf {
 
 pub(super) fn file_open_bytes(s: &mut Session, p: &Value) -> Result<Value> {
     let b = base64_decode(str_param(p, "base64").unwrap_or(""));
+    open_bytes(s, str_param(p, "name"), &b, Some(p), true)
+}
+
+/// Open the document `bytes` (named `name`) taken out of a package. It isn't looked at as a
+/// package again: a package inside a package would open the next, without end.
+pub(super) fn open_document_bytes(s: &mut Session, name: &str, bytes: &[u8]) -> Result<Value> {
+    open_bytes(s, Some(name), bytes, None, false)
+}
+
+/// Open `b`, named `name`: an IDML or InDesign file, a zipped package (only when `packages`), or
+/// a DesignCraft document. `params` are the `file.openBytes` parameters the bytes came in, handed
+/// on to an IDML open as they are (without them, the bytes are encoded for it).
+fn open_bytes(s: &mut Session, title: Option<&str>, b: &[u8], params: Option<&Value>, packages: bool) -> Result<Value> {
+    let name = title.unwrap_or_default();
     // IDML packages are recognised by their stored `mimetype` first entry, INDD files by their
     // signature (or their name).
-    let name = str_param(p, "name").unwrap_or_default();
-    let format = craft_file_formats::detect(name, &b);
+    let format = craft_file_formats::detect(name, b);
     let native =
-        matches!(craft_file_formats::detect("", &b), Some(craft_file_formats::Format::DesignCraft | craft_file_formats::Format::DesignCraftJson));
-    let legacy = (format == Some(craft_file_formats::Format::Indd) && !native).then(|| load_bytes(&b).ok()).flatten();
+        matches!(craft_file_formats::detect("", b), Some(craft_file_formats::Format::DesignCraft | craft_file_formats::Format::DesignCraftJson));
+    let legacy = (format == Some(craft_file_formats::Format::Indd) && !native).then(|| load_bytes(b).ok()).flatten();
     if format == Some(craft_file_formats::Format::Idml) || (!native && format == Some(craft_file_formats::Format::Indd) && legacy.is_none()) {
-        return crate::cmd::interchange::open_idml(s, p);
+        return match params {
+            Some(p) => crate::cmd::interchange::open_idml(s, p),
+            None => crate::cmd::interchange::open_idml(s, &json!({"name": name, "base64": super::bytes::base64_encode(b)})),
+        };
+    }
+    // A zip of a package folder: its document, with the fonts of the Document Fonts folder beside it.
+    if packages && super::package::is_zipped_package(b) {
+        return super::package::open_zipped_package(s, b);
     }
     let (mut d, warnings) = match legacy {
         Some(loaded) => loaded,
-        None => load_bytes(&b)?,
+        None => load_bytes(b)?,
     };
     crate::cmd::datamerge::resolve_sources_on_open(&mut d, None);
     // No file to resolve relative links against, and nothing moved to links.
     let links = crate::cmd::native_links::resolve(&mut d, None, false);
-    if let Some(n) = str_param(p, "name") {
+    if let Some(n) = title {
         // Titled as an IDML file opened from bytes is: without its extension.
         d.title = without_native_extension(n).to_string();
     }

@@ -5115,7 +5115,7 @@ fn confirm_part3(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
                 return app.confirm_pdf_import(page, if crop.is_empty() { "crop".into() } else { crop }, d.b("append"));
             }
             if let Some(target) = d.fields.get("target").and_then(Value::as_u64) {
-                app.activate_import_target(&crate::ImportRequest { purpose: "place".into(), target: Some(target) })?;
+                app.activate_import_target(&crate::ImportRequest { purpose: "place".into(), target: Some(target), ..Default::default() })?;
             }
             let placed = app.place_file(
                 json!({"path": d.s("path"), "pdfPage": page, "pdfCrop": if crop.is_empty() { "crop".to_string() } else { crop }, "append": d.b("append")}),
@@ -9979,6 +9979,15 @@ fn find_font(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
         crate::rtl::label(ui, d.s("error"));
     }
     let missing = fonts.iter().filter(|f| f["missing"] == true || f["styleMissing"] == true).count();
+    // In a browser, which can't look beside the file: the package folder (or its Document Fonts
+    // folder) brings the document's own fonts, as opening it on the desktop does.
+    if missing > 0
+        && app.services.pick_folder.is_some()
+        && ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Choose the Document's Folder…"))).clicked()
+        && let Err(e) = app.pick_folder("documentFonts")
+    {
+        d.fields.insert("error".into(), json!(e));
+    }
     crate::rtl::label(
         ui,
         crate::i18n::tr(&app.ui.language, "Fonts in Document: {count}    Missing: {missing}")

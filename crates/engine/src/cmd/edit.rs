@@ -281,6 +281,7 @@ pub fn specs() -> Vec<CommandSpec> {
             st.history.redo.push(HistoryEntry { label: e.label.clone(), doc: st.doc.clone(), selection: st.selection.clone() });
             let mut doc = e.doc;
             super::rulers::keep_zero_point(&st.doc, &mut doc);
+            super::file::keep_font_scope(&st.doc, &mut doc);
             st.doc = doc;
             st.selection = e.selection;
             st.bump_revision();
@@ -294,6 +295,7 @@ pub fn specs() -> Vec<CommandSpec> {
             st.history.undo.push(HistoryEntry { label: e.label.clone(), doc: st.doc.clone(), selection: st.selection.clone() });
             let mut doc = e.doc;
             super::rulers::keep_zero_point(&st.doc, &mut doc);
+            super::file::keep_font_scope(&st.doc, &mut doc);
             st.doc = doc;
             st.selection = e.selection;
             st.bump_revision();
