@@ -1293,6 +1293,28 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ),
     ("Find All", ["Find All", "Tout rechercher", "Find All", "Find All", "查找全部"]),
     ("Find Next", ["Find Next", "Rechercher suivant", "Find Next", "Find Next", "查找下一个"]),
+    ("{count} found", ["{count} gefunden", "{count} trouvé(s)", "{count} encontrado(s)", "{count} 件見つかりました", "找到 {count} 个"]),
+    ("{count} changed", ["{count} geändert", "{count} modifié(s)", "{count} cambiado(s)", "{count} 件変更しました", "已更改 {count} 个"]),
+    (
+        "Choose a destination paragraph or text anchor.",
+        [
+            "Wählen Sie einen Zielabsatz oder einen Textanker.",
+            "Choisissez un paragraphe de destination ou un ancrage de texte.",
+            "Elija un párrafo de destino o un ancla de texto.",
+            "参照先の段落またはテキストアンカーを選択してください。",
+            "请选择目标段落或文本锚点。",
+        ],
+    ),
+    (
+        "Enter a single page number; one page is placed at a time",
+        [
+            "Geben Sie eine einzelne Seitenzahl ein; es wird jeweils eine Seite platziert",
+            "Saisissez un seul numéro de page ; une seule page est importée à la fois",
+            "Introduzca un solo número de página; se coloca una página cada vez",
+            "ページ番号を 1 つ入力してください。一度に配置できるのは 1 ページです",
+            "请输入单个页码；每次只置入一页",
+        ],
+    ),
     ("Find what:", ["Find what:", "Rechercher :", "Find what:", "Find what:", "查找内容："]),
     ("Find/Change", ["Find/Change", "Rechercher/Remplacer", "Find/Change", "Find/Change", "查找/更改"]),
     ("Find/Replace Font", ["Find/Replace Font", "Rechercher/Remplacer une police", "Find/Replace Font", "Find/Replace Font", "查找/替换字体"]),

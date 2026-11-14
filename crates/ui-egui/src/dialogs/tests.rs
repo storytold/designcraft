@@ -857,6 +857,60 @@ fn paragraph_style_options_ignore_optical_margin_is_set_on_ok() {
     assert_eq!(app.session.doc().unwrap().doc.styles.para("Flush").unwrap().para.ignore_optical_margin, Some(true));
 }
 
+/// A dialog keeps its status line in English and shows it in the interface language.
+#[test]
+fn dialog_status_lines_are_shown_in_the_interface_language() {
+    use egui_kittest::{Harness, kittest::Queryable};
+    let english = "Choose a destination paragraph or text anchor.";
+    let german = crate::i18n::tr("de", english);
+    assert_ne!(german, english, "the catalog has a German row");
+    for (id, fields) in [
+        ("insertXref", json!({})),
+        ("pdfImport", json!({"path": "sample.pdf", "page": "1-2", "pages": 3})),
+        ("parentOptions", json!({"prefix": "A", "name": "Parent"})),
+        ("goToRow", json!({"row": "1"})),
+        ("colorTheme", json!({"name": "Theme", "colors": []})),
+    ] {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        app.ui.language = "de".into();
+        let mut d = Dialog::new(id, fields);
+        d.fields.insert("status".into(), json!(english));
+        app.ui.dialog = Some(d);
+        // Insert Cross-Reference's and Place PDF's dropdowns have no accessible names yet.
+        let mut h = Harness::builder().with_size(egui::vec2(1000.0, 800.0)).with_accessibility_check(false).build_ui_state(
+            |ui, app: &mut DesignApp| {
+                let key = egui::Id::unique("dialog_status_language_fonts");
+                if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
+                    crate::theme::install_fonts(ui.ctx(), "");
+                    ui.data_mut(|d| d.insert_temp(key, true));
+                    return;
+                }
+                show(app, ui.ctx());
+            },
+            app,
+        );
+        h.run_steps(3);
+        assert_eq!(h.state().ui.dialog.as_ref().map(|d| d.s("status")).as_deref(), Some(english), "{id}: the status stays English");
+        assert!(h.query_by_label(german).is_some(), "{id}: the status line is German");
+        assert!(h.query_by_label(english).is_none(), "{id}: no English status line");
+    }
+}
+
+/// Find/Change keeps its count messages in English and shows them in the interface language.
+#[test]
+fn find_change_counts_are_shown_in_the_interface_language() {
+    assert_eq!(find_change_status("de", "2 found"), "2 gefunden");
+    assert_eq!(find_change_status("cs", "3 match(es)"), "Shod: 3");
+    assert_eq!(find_change_status("sv", "4 replacement(s) made"), "Antal ersättningar: 4");
+    assert_eq!(find_change_status("ru", "5 changed"), "Изменено: 5");
+    assert_eq!(find_change_status("fr", "No matches"), "Aucune correspondance");
+    assert_eq!(find_change_status("", "2 found"), "2 found");
+    // A message that only looks like a count stays as it is.
+    assert_eq!(find_change_status("de", "null replacement(s) made"), "null replacement(s) made");
+    assert_eq!(find_change_status("de", " found"), " found");
+}
+
 #[test]
 fn paragraph_style_options_keep_a_bad_grep_pattern_open_with_the_error() {
     let (mut app, _) = ruled_paragraph();
