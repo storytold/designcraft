@@ -5,13 +5,88 @@ use super::{
     Affine, Anchor, Arc, Asset, AssetId, Content, Corner, CornerOptions, El, Fill, Importer, Item, ItemId, OBJECT_BUILTINS, PathData, Point, Shape,
     Story, StoryId, Stroke, SubPath, TextFrame, TextFrameOptions, names, sniff_image, swatch, unescape_id,
 };
+use super::{CharAttrs, CharFormat, CharRun, Rect};
+use crate::base64_decode;
 
 /// InDesign's corner size when a corner shape is set without an explicit radius.
 const INDESIGN_CORNER_SIZE: f64 = 12.0;
 
 impl<'r> Importer<'r> {
+    /// The live text of a placed EPS (`<EPSText>`, e.g. a phone number set in a logo): its text in a
+    /// text frame that has no inset, puts its first baseline where the EPS did and is tall enough for each forced line break.
+    fn eps_text(&mut self, e: &El, model_item: &craft_idml::model::PageItem, parent: Affine) -> Option<Item> {
+        let data = base64_decode(&e.prop_el("EPSTextData")?.text_content());
+        let t = crate::parse_eps_text(&data)?;
+        let (p, a) = (e.prop_el("PathBoundingBox")?, e.prop_el("EPSTextAttributeBounds")?);
+        let (pl, pb, pw) = (p.num("Left")?, p.num("Bottom")?, p.num("Right")? - p.num("Left")?);
+        let (al, ab, aw) = (a.num("Left")?, a.num("Bottom")?, a.num("Right")? - a.num("Left")?);
+        // The layout scales the EPS: map its coordinates onto the bounds InDesign reports for the art.
+        let s = if aw > 0.0 && pw > 0.0 { pw / aw } else { 1.0 };
+        let (x, base, size) = (pl + (t.x - al) * s, pb + (t.y - ab) * s, t.size * s);
+        // A tiny attribute width makes the scale huge: what it multiplies can overflow to infinity,
+        // and no frame can be built from that.
+        let text: String = t
+            .text
+            .chars()
+            .filter(|c| *c != '\u{FEFF}')
+            .map(|c| if matches!(c, '\n' | '\r' | '\u{2029}') { designcraft_doc::story::FORCED_LINE_BREAK } else { c })
+            .collect();
+        let bottom = base + size * (0.5 + 1.2 * text.chars().filter(|c| *c == designcraft_doc::story::FORCED_LINE_BREAK).count() as f64);
+        let right = x + pw.max(size * text.chars().count() as f64);
+        if text.is_empty() || ![s, x, base, size, right, base - size, bottom].iter().all(|v| v.is_finite()) || size <= 0.0 {
+            return None;
+        }
+        let id = ItemId(self.alloc());
+        if let Some(sf) = e.get("Self") {
+            self.item_ids.insert(sf.to_string(), id);
+        }
+        let layer = e.get("ItemLayer").and_then(|l| self.layer_ids.get(l)).copied().unwrap_or_else(|| self.layers[0].id);
+        let frame = Rect::new(x, base - size, right, bottom);
+        let mut it = Item::new(id, layer, Shape::Rectangle, designcraft_geom::shapes::rectangle(frame));
+        it.xf = parent * Affine::new(model_item.item_transform());
+        // The attributes every page item has, as in `item` below.
+        it.name = e.get("Name").filter(|n| *n != "$ID/").unwrap_or("").to_string();
+        it.locked = e.get("Locked") == Some("true");
+        it.hidden = e.get("Visible") == Some("false");
+        it.overrides = e.get("OverriddenPageItem").and_then(|s| self.item_ids.get(s)).copied().filter(|i| self.is_parent_item(*i));
+        it.nonprinting = e.get("Nonprinting") == Some("true");
+        it.fill = Fill::none();
+        it.stroke = Stroke::none();
+        // PostScript name → family and style: `YuMincho-Regular` is Yu Mincho, Regular.
+        let (family, style) = t.font.split_once('-').unwrap_or((&t.font, "Regular"));
+        let mut spaced = String::new();
+        let mut prev: Option<char> = None;
+        for c in family.chars() {
+            if c.is_ascii_uppercase() && prev.is_some_and(|p| p.is_ascii_lowercase()) {
+                spaced.push(' ');
+            }
+            spaced.push(c);
+            prev = Some(c);
+        }
+        let fill = e.get("FillColor").map(|r| self.swatch_ref(r)).unwrap_or_else(|| swatch::BLACK.into());
+        let over =
+            CharAttrs { font_family: Some(spaced), font_style: Some(style.to_string()), size: Some(size), fill: Some(fill), ..Default::default() };
+        let sid = StoryId(self.alloc());
+        let mut story = Story::new(sid);
+        story.chars = vec![CharRun { len: text.len(), format: CharFormat { over, ..Default::default() } }];
+        story.text = text;
+        story.frames = vec![id];
+        self.stories.insert(sid, story);
+        let options = TextFrameOptions {
+            inset: [0.0; 4],
+            first_baseline: designcraft_doc::FirstBaseline::Fixed,
+            first_baseline_min: size,
+            ..Default::default()
+        };
+        it.content = Content::Text(TextFrame { story: sid, options });
+        Some(it)
+    }
+
     pub(super) fn item(&mut self, e: &El, parent: Affine) -> Option<Item> {
         let model_item = craft_idml::model::PageItem::from_el(&crate::xml::to_craft(e))?;
+        if matches!(model_item.kind, craft_idml::model::ItemKind::EPSText) {
+            return self.eps_text(e, &model_item, parent);
+        }
         let tag = model_item.kind.name();
         let shape = match &model_item.kind {
             craft_idml::model::ItemKind::Rectangle | craft_idml::model::ItemKind::TextFrame => Shape::Rectangle,

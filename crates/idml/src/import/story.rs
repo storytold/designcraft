@@ -302,7 +302,7 @@ impl<'r> Importer<'r> {
                 }
                 craft_idml::model::TextNode::Item(_) | craft_idml::model::TextNode::Other(_) => match c.local() {
                     // Anchored page items, including groups containing text frames.
-                    "Rectangle" | "Oval" | "Polygon" | "GraphicLine" | "Group" | "TextFrame" => {
+                    "Rectangle" | "Oval" | "Polygon" | "GraphicLine" | "Group" | "TextFrame" | "EPSText" => {
                         if let Some(item) = self.item(&c, designcraft_geom::Affine::IDENTITY) {
                             use designcraft_doc::anchored::AnchorAlign as A;
                             // Each setting the item leaves unset comes from its object style chain,
