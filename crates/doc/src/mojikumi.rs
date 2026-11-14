@@ -148,6 +148,12 @@ impl<'a> Rules<'a> {
         if punctuation > 0.0 {
             return Aki { min: 0.0, desired: punctuation, max: punctuation, priority: 1, discrete: false };
         }
+        // Prefix and postfix abbreviation signs (￥ ＄ before a figure, ％ ℃ after one) are set solid
+        // against half-width digits, unlike ideographs, which keep a quarter em from them (checked
+        // against InDesign: "￥96,000" has no space after the yen sign, "漢96" has).
+        if (left == 8 && right == 25) || (left == 25 && right == 9) {
+            return Aki::default();
+        }
         let roman = |c| matches!(c, 18 | 25);
         let ideograph = |c| matches!(c, 3 | 7..=9 | 11 | 12 | 24 | 33);
         if (roman(left) && ideograph(right)) || (ideograph(left) && roman(right)) {
@@ -213,6 +219,11 @@ pub fn class(c: char) -> i16 {
         | 'ー' | '々' | 'ゝ' | 'ゞ' | 'ヽ' | 'ヾ' => 3,
         '\u{3040}'..='\u{309f}' => 11,
         '\u{30a0}'..='\u{30ff}' | '\u{31f0}'..='\u{31ff}' => 33,
+        // Symbols that Japanese text sets full width as ideographs do: no space against kana, a
+        // quarter em against digits and Roman letters. Only these were checked against InDesign
+        // (※ → ○ ★ ① Ⅱ § †); the arrows, operators, numerals, enclosed characters and shapes
+        // around them stay Roman until each is checked.
+        '§' | '†' | '※' | '→' | '○' | '★' | '①' | 'Ⅱ' => 12,
         '０'..='９' => 24,
         '0'..='9' => 25,
         '\u{2e80}'..='\u{a4cf}' | '\u{ac00}'..='\u{d7af}' | '\u{f900}'..='\u{faff}' | '\u{ff01}'..='\u{ff60}' | '\u{20000}'..='\u{323af}' => 12,
@@ -224,6 +235,62 @@ pub fn class(c: char) -> i16 {
 mod tests {
     use super::*;
     use crate::cjk::MojikumiTable;
+
+    #[test]
+    fn abbreviation_signs_are_set_solid_against_half_width_digits() {
+        let styles = Styles::default();
+        let rules = Rules::resolve(&styles, "LineEndAllOneHalfEmEnum").unwrap().unwrap();
+        let (digit, yen, percent, kanji) = (class('6'), class('￥'), class('％'), class('漢'));
+        assert_eq!((digit, yen, percent), (25, 8, 9));
+        assert_eq!(rules.pair(yen, digit).desired, 0.0, "￥96");
+        assert_eq!(rules.pair(digit, percent).desired, 0.0, "96％");
+        assert_eq!(rules.pair(kanji, digit).desired, 0.25, "漢96 keeps its quarter em");
+        // ※ and the other symbols set full width are ideographs, not Roman letters.
+        for c in ['※', '→', '○', '★', '①', 'Ⅱ', '§', '†'] {
+            assert_eq!(class(c), 12, "{c}");
+            assert_eq!(rules.pair(class(c), class('こ')).desired, 0.0, "{c}こ");
+            assert_eq!(rules.pair(class(c), digit).desired, 0.25, "{c}6");
+        }
+        // Their unchecked neighbours are not classified as ideographs: the minus sign, other
+        // arrows, operators, enclosed characters and shapes.
+        for c in ['\u{2212}', '\u{2211}', '\u{2260}', '\u{2191}', '\u{2461}', '\u{25a1}', '\u{2663}', '¶', '‖', '‡'] {
+            assert_ne!(class(c), 12, "{c:?}");
+        }
+        // Full-width digits meet the signs the same way: both are full width, so no space.
+        let wide = class('９');
+        assert_eq!(wide, 24);
+        assert_eq!(rules.pair(yen, wide).desired, 0.0, "￥９");
+        assert_eq!(rules.pair(wide, percent).desired, 0.0, "９％");
+        assert_eq!(rules.pair(class('＄'), digit).desired, 0.0, "＄96");
+        assert_eq!(rules.pair(digit, class('℃')).desired, 0.0, "96℃");
+        // Reverse order is not an abbreviation: the digit before ￥ and the percent before a digit.
+        assert_eq!(rules.pair(digit, yen).desired, 0.25);
+        assert_eq!(rules.pair(percent, digit).desired, 0.25);
+        assert_eq!(rules.pair(digit, kanji).desired, 0.25);
+    }
+
+    #[test]
+    fn a_custom_table_overrides_the_solid_setting_of_abbreviation_signs() {
+        let mut styles = Styles::default();
+        styles.mojikumi_tables.push(MojikumiTable {
+            name: "Yen".into(),
+            based_on: "SimpChineseDefault".into(),
+            overrides: vec![MojikumiAki {
+                target_class: 25,
+                side_class: 8,
+                after: false,
+                minimum: 0.0,
+                desired: 0.125,
+                maximum: 0.25,
+                priority: 2,
+                does_not_float: false,
+            }],
+        });
+        let rule = Rules::resolve(&styles, "MojikumiTable/Yen").unwrap().unwrap();
+        assert_eq!(rule.pair(8, 25).desired, 0.125, "the table's row wins over the built-in rule");
+        // A pair the table does not mention keeps the built-in rule.
+        assert_eq!(rule.pair(25, 9).desired, 0.0);
+    }
 
     #[test]
     fn overrides_are_directional_and_unknown_tables_are_not_silently_applied() {
