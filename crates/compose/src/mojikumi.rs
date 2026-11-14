@@ -122,12 +122,7 @@ pub fn apply(glyphs: &mut [Glyph], styles: &Styles, name: &str) {
             && !glyphs[end - 1].moji.explicit_after
             && !glyphs[next].moji.explicit_before
         {
-            gap = table.pair_with_bodies(
-                class,
-                class_of(&glyphs[next]),
-                glyphs[end - 1].moji.blank_after,
-                glyphs[next].moji.blank_before,
-            );
+            gap = table.pair_with_bodies(class, class_of(&glyphs[next]), glyphs[end - 1].moji.blank_after, glyphs[next].moji.blank_before);
         }
         let width: f64 = glyphs[start..end].iter().map(|g| g.adv).sum();
         let g = &mut glyphs[end - 1];
