@@ -23,8 +23,7 @@ pub(super) fn snippet_export(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 pub(crate) fn snippet_place(s: &mut Session, p: &Value) -> Result<Value> {
-    let (bytes, _, _) = read_source(p)?;
-    let src = from_bytes(&bytes)?;
+    let src = from_bytes(&read_source(p)?.bytes)?;
     let ids: Vec<ItemId> = src.spreads.first().map(|sp| sp.items.iter().map(|i| i.id).collect()).unwrap_or_default();
     if ids.is_empty() {
         return Err(bad("snippet.place", "the snippet is empty"));

@@ -235,17 +235,17 @@ fn a_check_of_an_older_state_keeps_the_current_compositions() {
     let cache = Arc::clone(&app.session.cache);
     let current = cache.get(&doc, sid, None);
     let mut own = None;
-    let found = super::check(&mut own, super::Job { of: older, doc: Arc::clone(&older_doc), cache: Arc::clone(&cache) });
+    let found = super::check(&mut own, &mut Default::default(), super::Job { of: older, doc: Arc::clone(&older_doc), cache: Arc::clone(&cache) });
     assert_eq!(found.issues.iter().filter(|i| i.severity == "error").count(), 1);
     assert!(Arc::ptr_eq(&cache.get(&doc, sid, None), &current), "the current state's composition is kept");
     // The worker keeps its compositions for the next check of the document over the same cache.
     let earlier = own.as_ref().unwrap().1.get(&older_doc, sid, None);
     let (of, doc) = Checked::new(&app).unwrap();
-    super::check(&mut own, super::Job { of, doc, cache: Arc::clone(&cache) });
+    super::check(&mut own, &mut Default::default(), super::Job { of, doc, cache: Arc::clone(&cache) });
     assert!(Arc::ptr_eq(&own.as_ref().unwrap().1.get(&older_doc, sid, None), &earlier), "kept for the next check");
     let reloaded = Arc::new(designcraft_compose::Cache::new());
     let (of, doc) = Checked::new(&app).unwrap();
-    super::check(&mut own, super::Job { of, doc, cache: Arc::clone(&reloaded) });
+    super::check(&mut own, &mut Default::default(), super::Job { of, doc, cache: Arc::clone(&reloaded) });
     assert!(own.as_ref().unwrap().1.base().is_some_and(|b| Arc::ptr_eq(b, &reloaded)), "a new cache after a font reload");
 }
 

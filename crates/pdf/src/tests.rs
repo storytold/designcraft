@@ -758,6 +758,40 @@ fn small_caps_and_small_cap_figures_extract_as_typed() {
     assert!(uncompressed(&d, PdfOptions::default()).contains("/ActualText"));
 }
 
+/// Links and buttons from an imported document still go through the export allowlist.
+#[test]
+fn link_annotation_export_refuses_non_web_schemes() {
+    use designcraft_doc::{ButtonAction, Hyperlink, HyperlinkDest, HyperlinkSource, Shape};
+    use designcraft_geom::shapes::rectangle;
+
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let safe = ItemId(d.alloc());
+    let mut safe_item = Item::new(safe, lid, Shape::Rectangle, rectangle(Rect::new(72.0, 72.0, 200.0, 120.0)));
+    safe_item.button = Some(ButtonAction::GoToUrl { url: "https://example.com/button".into() });
+    d.insert_item(SpreadRef::Doc(0), safe_item, None).unwrap();
+    let unsafe_id = ItemId(d.alloc());
+    let mut unsafe_item = Item::new(unsafe_id, lid, Shape::Rectangle, rectangle(Rect::new(72.0, 200.0, 200.0, 248.0)));
+    unsafe_item.button = Some(ButtonAction::GoToUrl { url: "file:///etc/passwd".into() });
+    d.insert_item(SpreadRef::Doc(0), unsafe_item, None).unwrap();
+    d.hyperlinks.push(Hyperlink {
+        id: 1,
+        name: "bad".into(),
+        source: HyperlinkSource::Item { id: safe },
+        dest: HyperlinkDest::Url("javascript:alert(1)".into()),
+    });
+    d.hyperlinks.push(Hyperlink {
+        id: 2,
+        name: "good".into(),
+        source: HyperlinkSource::Item { id: safe },
+        dest: HyperlinkDest::Url("https://example.com/link".into()),
+    });
+    let s = uncompressed(&d, PdfOptions::default());
+    assert!(s.contains("https://example.com/button") && s.contains("https://example.com/link"), "safe links export: {s}");
+    assert!(!s.contains("file:///etc/passwd"), "a file URL is not exported: {s}");
+    assert!(!s.contains("javascript:"), "a javascript URL is not exported: {s}");
+}
+
 /// A clipping path on a placed image becomes a clip in the page content, inside the frame's.
 #[test]
 fn clipping_path_clips_the_image() {

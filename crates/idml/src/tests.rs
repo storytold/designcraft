@@ -4478,7 +4478,7 @@ fn missing_linked_graphics_show_their_preview_and_keep_their_link() {
     let d = crate::import_idml_report_with_previews(&fixture(), &|_| None, &previews).unwrap().document;
     let img = d.spreads.iter().flat_map(|sp| sp.items.iter()).find(|i| i.graphic().is_some()).unwrap();
     let a = &d.assets[&img.graphic().unwrap().asset];
-    assert_eq!(a.data.as_slice(), png.as_slice(), "the preview shows");
+    assert_eq!(a.data.load().unwrap().as_slice(), png.as_slice(), "the preview shows");
     assert_eq!(a.mime, "image/jpeg", "the link's format, not the preview's");
     assert_eq!(a.link.as_deref(), Some("/definitely/missing dir/photo.jpg"), "relinking still finds the file");
     // Without a preview it stays empty, as before.
@@ -4522,7 +4522,10 @@ fn a_preview_keeps_the_links_format_and_pixel_size_and_is_shared() {
     // 40 × 30 pt at 300 ppi, from the link, not the preview's 4 × 3.
     assert_eq!((photo.mime.as_str(), photo.pixels), ("image/jpeg", Some((167, 125))));
     assert_eq!(logo.mime, "application/pdf", "a placed PDF stays a PDF, for IDML export");
-    assert!(std::sync::Arc::ptr_eq(&photo.data, &png) && std::sync::Arc::ptr_eq(&logo.data, &png), "the preview's bytes are not copied");
+    assert!(
+        std::sync::Arc::ptr_eq(photo.data.embedded_bytes().unwrap(), &png) && std::sync::Arc::ptr_eq(logo.data.embedded_bytes().unwrap(), &png),
+        "the preview's bytes are not copied"
+    );
 }
 
 #[test]
@@ -5229,7 +5232,7 @@ fn exports_graphic_in_table_cell() {
         id: asset,
         name: "tick.png".into(),
         mime: "image/png".into(),
-        data: std::sync::Arc::new(vec![1, 2, 3]),
+        data: designcraft_doc::AssetData::embedded(vec![1, 2, 3]),
         ..Default::default()
     });
     let mut t = designcraft_doc::Table::new(d.alloc(), 2, 2, 0, 0, 200.0);
