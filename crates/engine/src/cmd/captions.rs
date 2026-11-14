@@ -178,4 +178,29 @@ mod tests {
         s.execute("edit.undo", &json!({})).unwrap();
         assert_eq!(text(&s), "Photo: First", "one undo step for both");
     }
+
+    #[test]
+    fn live_caption_update_gives_the_document_a_new_revision() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let a = s.execute("frame.create", &json!({"rect": [72, 72, 272, 172]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("object.altText", &json!({"text": "First", "ids": [a]})).unwrap();
+        let r = s.execute("object.caption", &json!({"ids": [a], "text": "Photo: {altText}", "live": true})).unwrap();
+        let cid = designcraft_doc::ItemId(r["ids"][0].as_u64().unwrap());
+        let text = |s: &Session| {
+            let d = &s.doc().unwrap().doc;
+            d.stories[&d.item(cid).unwrap().text_frame().unwrap().story].text.clone()
+        };
+        // A gesture leaves the caption behind its source until the next command.
+        s.begin_interaction("Alt Text").unwrap();
+        s.preview("object.altText", json!({"text": "Second", "ids": [a]})).unwrap();
+        s.commit_interaction().unwrap();
+        assert_eq!(text(&s), "Photo: First");
+        let revision = s.doc().unwrap().revision;
+        // A command that changes nothing itself keeps the revision; the caption update does not.
+        let r = s.execute("object.clearFittingOptions", &json!({"ids": [a]})).unwrap();
+        assert_eq!(r["changed"], 0);
+        assert_eq!(text(&s), "Photo: Second", "updated with the source");
+        assert_ne!(s.doc().unwrap().revision, revision, "caches keyed by the revision draw the new caption");
+    }
 }

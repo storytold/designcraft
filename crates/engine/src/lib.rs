@@ -675,6 +675,7 @@ impl Session {
             let mut d = (*st.doc).clone();
             if cmd::captions::refresh_live(&mut d) {
                 st.doc = Arc::new(d);
+                st.bump_revision();
             }
         }
         self.autosize_changed(spec, before.as_ref());
