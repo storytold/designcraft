@@ -5620,3 +5620,19 @@ fn parent_resize_exact_dialog_keeps_its_target_and_rejects_invalid_input() {
     assert!(app.ui.dialog.is_some());
     assert!(std::sync::Arc::ptr_eq(&saved, &app.session.doc().unwrap().doc));
 }
+
+/// A measure that does not parse is a message in the interface's language: the sentence used to be
+/// built with `format!`, so no catalogue had it and it stayed English in every one.
+#[test]
+fn a_margin_that_does_not_parse_is_reported_in_the_interface_language() {
+    let d = Dialog::new(
+        "marginsAndColumns",
+        json!({"marginTop": "no", "marginBottom": "12", "marginInside": "12", "marginOutside": "12", "gutter": "12", "columns": 1}),
+    );
+    let e = layout_dialog_params(&d, "es").unwrap_err();
+    assert!(e.contains("margen superior"), "the field is named in Spanish: {e}");
+    assert!(e.contains("no es una medida válida"), "and it says what is wrong: {e}");
+    // The English interface keeps its own sentence.
+    let en = layout_dialog_params(&d, "en").unwrap_err();
+    assert!(en.starts_with("Enter a valid top margin"), "{en}");
+}

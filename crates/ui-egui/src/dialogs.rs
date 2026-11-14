@@ -2154,9 +2154,12 @@ fn caption_right(ui: &mut egui::Ui, text: &str, _w: f32) {
 
 /// The command params of the Margins and Columns or Create Guides dialog. A measure that does
 /// not parse is an error to show, never a silent 0.
-fn layout_dialog_params(d: &Dialog) -> Result<Value, String> {
-    let measure =
-        |key: &str, what: &str| d.m(key).filter(|x| x.is_finite() && *x >= 0.0).ok_or_else(|| format!("Enter a valid {what}, e.g. 12 or 12 mm."));
+fn layout_dialog_params(d: &Dialog, lang: &str) -> Result<Value, String> {
+    let measure = |key: &str, what: &str| {
+        d.m(key)
+            .filter(|x| x.is_finite() && *x >= 0.0)
+            .ok_or_else(|| crate::i18n::tr(lang, "Enter a valid {what}, e.g. 12 or 12 mm.").replace("{what}", crate::i18n::tr(lang, what)))
+    };
     if d.id == "createGuides" {
         let (row_gutter, column_gutter) = (measure("rowGutter", "gutter")?, measure("columnGutter", "gutter")?);
         let mut p = json!({"rows": d.n("rows").unwrap_or(0.0).max(0.0) as u64, "columns": d.n("columns").unwrap_or(0.0).max(0.0) as u64,
@@ -2169,8 +2172,13 @@ fn layout_dialog_params(d: &Dialog) -> Result<Value, String> {
         return Ok(p);
     }
     let mut v = Map::new();
-    for (k, key) in [("top", "marginTop"), ("bottom", "marginBottom"), ("inside", "marginInside"), ("outside", "marginOutside")] {
-        v.insert(k.into(), json!(measure(key, &format!("{k} value"))?));
+    for (k, key, what) in [
+        ("top", "marginTop", "top margin"),
+        ("bottom", "marginBottom", "bottom margin"),
+        ("inside", "marginInside", "inside margin"),
+        ("outside", "marginOutside", "outside margin"),
+    ] {
+        v.insert(k.into(), json!(measure(key, what)?));
     }
     let gutter = measure("gutter", "gutter value")?;
     let mut p =
@@ -2203,7 +2211,7 @@ fn layout_dialog_preview(app: &mut DesignApp, d: &mut Dialog, cmd: &str, label: 
         }
         return;
     }
-    let params = match layout_dialog_params(d) {
+    let params = match layout_dialog_params(d, &app.ui.language) {
         Ok(p) => p,
         Err(e) => {
             d.fields.insert("status".into(), json!(e));
@@ -4694,7 +4702,8 @@ fn confirm_part1(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
                 app.session.cancel_interaction();
             }
             let cmd = if d.id == "createGuides" { "layout.createGuides" } else { "layout.marginsAndColumns" };
-            let r = layout_dialog_params(&d).and_then(|p| app.run(cmd, p));
+            let lang = app.ui.language.clone();
+            let r = layout_dialog_params(&d, &lang).and_then(|p| app.run(cmd, p));
             if let Err(e) = &r {
                 // A value that does not parse, or a refused one, keeps the dialog open to be fixed.
                 let mut d = d.clone();
@@ -5502,7 +5511,8 @@ fn confirm_part6(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
             let mut d = d;
             seed_corner_options(app, &mut d);
             link_corners(&mut d);
-            let r = corner_options_params(&d).and_then(|p| app.run("object.cornerOptions", p));
+            let lang = app.ui.language.clone();
+            let r = corner_options_params(&d, &lang).and_then(|p| app.run("object.cornerOptions", p));
             if let Err(e) = &r {
                 d.fields.remove(PREVIEWED);
                 d.fields.insert("status".into(), json!(e));
@@ -5802,7 +5812,7 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
         },
         Some(s) => s.clone(),
         None => {
-            ui.label(format!("No style named {name}"));
+            ui.label(crate::i18n::tr(&app.ui.language, "No style named {name}").replace("{name}", &name));
             return;
         }
     };
@@ -7513,7 +7523,7 @@ fn character_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
         _ if new => designcraft_doc::CharacterStyle { name: String::new(), based_on: None, chars: Default::default(), shortcut: String::new() },
         Some(s) if name != designcraft_doc::NO_CHAR_STYLE => s.clone(),
         _ => {
-            crate::rtl::label(ui, format!("No style named {name}"));
+            crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "No style named {name}").replace("{name}", &name));
             return;
         }
     };
@@ -9305,17 +9315,20 @@ fn link_corners(d: &mut Dialog) {
 /// `object.cornerOptions`' params from the dialog: the corners edited, the others null (each
 /// selected object keeps its own). A size that does not parse, or a shape the dialog doesn't
 /// offer, is an error to show.
-fn corner_options_params(d: &Dialog) -> Result<Value, String> {
+fn corner_options_params(d: &Dialog, lang: &str) -> Result<Value, String> {
     use designcraft_geom::corners::CornerShape;
     let edited = edited_corners(d);
     let mut corners = Vec::with_capacity(CORNERS.len());
     for ((k, _), edited) in CORNERS.iter().zip(edited) {
         let key = format!("size{k}");
-        let size =
-            d.m(&key).filter(|v| v.is_finite() && *v >= 0.0).ok_or_else(|| format!("Enter a valid corner size, e.g. 12 or 3 mm: {}", d.s(&key)))?;
+        let size = d
+            .m(&key)
+            .filter(|v| v.is_finite() && *v >= 0.0)
+            .ok_or_else(|| crate::i18n::tr(lang, "Enter a valid corner size, e.g. 12 or 3 mm: {value}").replace("{value}", &d.s(&key)))?;
         let shape: CornerShape = match d.fields.get(&format!("shape{k}")) {
             None => CornerShape::default(),
-            Some(v) => serde_json::from_value(v.clone()).map_err(|_| format!("Choose a corner shape: {v} isn't one"))?,
+            Some(v) => serde_json::from_value(v.clone())
+                .map_err(|_| crate::i18n::tr(lang, "Choose a corner shape: {value} isn't one").replace("{value}", &v.to_string()))?,
         };
         corners.push(if edited { json!({"shape": shape, "size": size}) } else { Value::Null });
     }
@@ -9416,7 +9429,7 @@ fn corner_options_preview(app: &mut DesignApp, d: &mut Dialog) {
         }
         return;
     }
-    let params = match corner_options_params(d) {
+    let params = match corner_options_params(d, &app.ui.language) {
         Ok(p) => p,
         Err(e) => {
             d.fields.insert("status".into(), json!(e));

@@ -99,3 +99,86 @@ mod swedish_tests {
         assert!(untranslated.is_empty(), "untranslated Swedish menu labels: {untranslated:?}");
     }
 }
+
+#[cfg(test)]
+mod spanish_tests {
+    use super::*;
+
+    #[test]
+    fn spanish_interface_is_selectable_and_translates_every_menu_label() {
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        run_ui(&mut app, "app.language", &json!({"lang": "es"})).unwrap().unwrap();
+        assert_eq!(app.ui.language, "es");
+        assert_eq!(checked(&app, "app.language", &json!({"lang": "es"})), Some(true));
+        assert_eq!(crate::i18n::tr("es", "File"), "Archivo");
+        // Every menu title, item and submenu has a Spanish entry, in the catalog or in the shared
+        // table's Spanish column (Spanish uses both, as French does).
+        let mut untranslated = Vec::new();
+        for (title, entries) in menu_tree() {
+            let mut labels = vec![title.to_string()];
+            let mut stack: Vec<&Item> = entries.iter().collect();
+            while let Some(entry) = stack.pop() {
+                match entry {
+                    Item::Sub(label, children) => {
+                        labels.push(label.clone());
+                        stack.extend(children.iter());
+                    }
+                    Item::Cmd { label, id, .. } if id != "app.language" => labels.push(label.clone()),
+                    _ => {}
+                }
+            }
+            // Spanish shares words with English ("Layout", "Color"), so look for a catalog entry.
+            let size = |l: &str| l.strip_suffix(" pt").is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()));
+            untranslated.extend(labels.into_iter().filter(|l| l.chars().any(char::is_alphabetic) && !size(l) && !crate::i18n::spanish_has(l)));
+        }
+        assert!(untranslated.is_empty(), "untranslated Spanish menu labels: {untranslated:?}");
+    }
+
+    #[test]
+    fn two_commands_in_the_same_menu_never_read_the_same_in_spanish() {
+        // The Type menu offers `Hair Space` and `Thin Space`, which insert U+200A and U+2009, and the
+        // Symbols menu offers the trademark and the registered trademark. Two options in the same list
+        // reading the same leaves the user unable to say which character a command will insert.
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        run_ui(&mut app, "app.language", &json!({"lang": "es"})).unwrap().unwrap();
+        let norm = |l: &str| l.trim().to_lowercase();
+        let mut clashes = Vec::new();
+        let tree = menu_tree();
+        let mut menus: Vec<Vec<String>> = vec![tree.iter().map(|(t, _)| t.to_string()).collect()];
+        let top: Vec<&Item> = tree.iter().flat_map(|(_, e)| e.iter()).collect();
+        let mut stack: Vec<Vec<&Item>> = vec![top];
+        while let Some(entries) = stack.pop() {
+            let mut labels = Vec::new();
+            for entry in entries {
+                match entry {
+                    Item::Sub(label, children) => {
+                        labels.push(label.clone());
+                        stack.push(children.iter().collect());
+                    }
+                    Item::Cmd { label, .. } => labels.push(label.clone()),
+                    _ => {}
+                }
+            }
+            menus.push(labels);
+        }
+        for labels in menus {
+            let mut seen: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+            for label in labels {
+                let spanish = crate::i18n::tr("es", &label).to_string();
+                if !spanish.chars().any(char::is_alphabetic) {
+                    continue;
+                }
+                match seen.get(&norm(&spanish)) {
+                    Some(other) if norm(other) != norm(&label) => {
+                        clashes.push((spanish.clone(), other.clone(), label.clone()));
+                    }
+                    Some(_) => {}
+                    None => {
+                        seen.insert(norm(&spanish), label.clone());
+                    }
+                }
+            }
+        }
+        assert!(clashes.is_empty(), "two commands in one Spanish menu read the same: {clashes:?}");
+    }
+}

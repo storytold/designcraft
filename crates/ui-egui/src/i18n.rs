@@ -11,6 +11,7 @@ use table::TABLE;
 mod ar;
 mod cs;
 mod de;
+mod es;
 mod fr;
 mod hu;
 mod it;
@@ -95,6 +96,7 @@ fn lookup<'a>(lang: &str, s: &'a str) -> &'a str {
     static RUSSIAN: OnceLock<HashMap<&str, &str>> = OnceLock::new();
     static CZECH: OnceLock<HashMap<&str, &str>> = OnceLock::new();
     static FRENCH: OnceLock<HashMap<&str, &str>> = OnceLock::new();
+    static SPANISH: OnceLock<HashMap<&str, &str>> = OnceLock::new();
     static GEORGIAN: OnceLock<HashMap<&str, &str>> = OnceLock::new();
     static HUNGARIAN: OnceLock<HashMap<&str, &str>> = OnceLock::new();
     if lang == "hu" {
@@ -113,6 +115,13 @@ fn lookup<'a>(lang: &str, s: &'a str) -> &'a str {
     }
     if lang == "ja"
         && let Some(text) = JAPANESE.get_or_init(|| ja::TABLE.iter().copied().collect()).get(s).copied().filter(|text| !text.trim().is_empty())
+    {
+        return text;
+    }
+    // `es::TABLE` holds the strings the shared table has no row for; the shared table's Spanish
+    // column covers the rest, as it does for French.
+    if lang == "es"
+        && let Some(text) = SPANISH.get_or_init(|| es::TABLE.iter().copied().collect()).get(s).copied().filter(|text| !text.trim().is_empty())
     {
         return text;
     }
@@ -190,6 +199,12 @@ pub(crate) fn ukrainian_catalog() -> Vec<&'static str> {
 #[cfg(test)]
 pub(crate) fn russian_catalog() -> Vec<&'static str> {
     ru::TABLE.iter().map(|(_, text)| *text).chain(ru::CONTEXT.iter().map(|(_, _, text)| *text)).collect()
+}
+
+/// Whether Spanish has an entry for `s`: its own catalog, or the shared table's Spanish column.
+#[cfg(test)]
+pub(crate) fn spanish_has(s: &str) -> bool {
+    es::TABLE.iter().any(|(key, _)| *key == s) || TABLE.iter().any(|(key, row)| *key == s && !row[2].trim().is_empty())
 }
 
 /// Whether the Swedish catalog has an entry for `s` (many Swedish labels read like the English ones).

@@ -14,6 +14,7 @@ const LANGUAGE_TABLES: &[(&str, &[(&str, &str)])] = &[
     ("pl", pl::TABLE),
     ("pt-br", pt_br::TABLE),
     ("ru", ru::TABLE),
+    ("es", es::TABLE),
     ("sv", sv::TABLE),
     ("uk", uk::TABLE),
 ];
@@ -618,4 +619,42 @@ fn czech_counts_use_the_plural_form_for_the_number() {
     }
     // A noun without plural forms keeps the plain translation.
     assert_eq!(count_label("cs", "a new noun", 3), "3 a new noun");
+}
+
+/// A message with a name in it is translated before the name goes in, and the translation keeps
+/// the `{name}` marker: a row that dropped it would lose the style's name silently. The two
+/// dialogs that say this were building the sentence with `format!` and never reached the table,
+/// so no completeness count could see them missing.
+#[test]
+fn a_message_with_a_placeholder_keeps_it_when_translated() {
+    let es = crate::i18n::tr("es", "No style named {name}");
+    assert_ne!(es, "No style named {name}", "Spanish has a row for it");
+    assert!(es.contains("{name}"), "the name still goes in: {es}");
+    assert_eq!(es.replace("{name}", "Cuerpo"), "Ningún estilo llamado Cuerpo");
+}
+
+/// Every unit name the ruler menus and Preferences show has its Spanish row, while the symbols
+/// Q and Ha keep their letters so a value copied in one language pastes back in another.
+#[test]
+fn unit_names_are_translated_in_spanish() {
+    for (key, spanish) in [
+        ("Points", "Puntos"),
+        ("Picas", "Picas"),
+        ("Inches", "Pulgadas"),
+        ("Inches Decimal", "Pulgadas decimales"),
+        ("Millimeters", "Milímetros"),
+        ("Centimeters", "Centímetros"),
+        ("Ciceros", "Cíceros"),
+        ("Agates", "Ágatas"),
+        ("Pixels", "Píxeles"),
+    ] {
+        assert_eq!(tr("es", key), spanish, "{key}");
+    }
+    for symbol in ["Q", "Ha"] {
+        assert_eq!(tr("es", symbol), symbol, "{symbol} stays a symbol");
+    }
+    // Nothing the enum can return is left without a row.
+    for unit in designcraft_geom::Unit::ALL {
+        assert!(!tr("es", unit.label()).is_empty(), "{}", unit.label());
+    }
 }
