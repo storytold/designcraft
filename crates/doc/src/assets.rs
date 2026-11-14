@@ -9,7 +9,7 @@ use std::hash::BuildHasher;
 use std::sync::Arc;
 
 use crate::story::Story;
-use crate::{Asset, AssetId, Content, Document, Item};
+use crate::{Asset, AssetId, Content, Document, Fingerprint, Item};
 
 /// Nesting limit for groups, anchored objects, table cells and notes. A document nested deeper
 /// is treated as using every asset, so nothing it references is merged away or pruned.
@@ -82,6 +82,14 @@ impl Document {
 }
 
 impl Asset {
+    /// Link the asset to another file, or to none (embedded). The size and time kept with a link
+    /// ([`Asset::link_fingerprint`]) never outlive it: `loaded` is the new file's when `data` was
+    /// read from it, and `None` when it wasn't (a copy of the bytes, a file found again by name).
+    pub fn set_link(&mut self, link: Option<String>, loaded: Option<Fingerprint>) {
+        self.link_fingerprint = loaded.filter(|_| link.is_some());
+        self.link = link;
+    }
+
     /// Whether `other` holds the same file: the same type, PDF page and crop, link and bytes. Files at
     /// different paths stay apart even with identical bytes, since each can be updated or
     /// relinked on its own. Assets without bytes (a link that couldn't be read) are the same only

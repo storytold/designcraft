@@ -250,6 +250,8 @@ fn install_graphic(asset: &mut designcraft_doc::Asset, bytes: Arc<Vec<u8>>) -> s
         asset.mime = "application/postscript".into();
     }
     asset.data = bytes;
+    // Newly loaded bytes no longer belong to the saved source fingerprint.
+    asset.link_fingerprint = None;
     // The source can change while closed; a stored PDF crop belongs to the previous bytes.
     super::file::crop_pdf(asset);
     Ok(())
@@ -288,6 +290,17 @@ fn read_graphic(path: &Path, mime: &str, bytes_left: u64) -> std::result::Result
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reloaded_external_artwork_clears_the_saved_sources_fingerprint() {
+        let mut doc = linked_document(&["art.png"]).unwrap();
+        let asset = Arc::make_mut(doc.assets.values_mut().next().unwrap());
+        asset.link_fingerprint = Some(designcraft_doc::Fingerprint { size: asset.data.len() as u64, mtime: 123 });
+        let replacement = designcraft_render::Rendered { width: 3, height: 2, pixels: vec![200; 24] }.to_png();
+        install_graphic(asset, Arc::new(replacement)).unwrap();
+        assert_eq!(asset.pixels, Some((3, 2)));
+        assert_eq!(asset.link_fingerprint, None, "new bytes must not inherit the previous file's size and time");
+    }
 
     fn linked_document(links: &[&str]) -> std::result::Result<Document, Box<dyn std::error::Error>> {
         let mut session = Session::new();

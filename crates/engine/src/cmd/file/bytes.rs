@@ -64,7 +64,12 @@ pub(super) fn to_bytes_with_preview(d: &Document, cache: &crate::Cache, destinat
     if FAIL_TO_BYTES.with(std::cell::Cell::get) {
         return Err(EngineError::Other("could not write the document: injected failure".into()));
     }
-    crate::cmd::native_links::save_with_preview(d, destination, png.as_deref())
+    let bytes = crate::cmd::native_links::save_with_preview(d, destination, png.as_deref())?;
+    // `file.open` and `file.revert` refuse a longer file, so don't write one the app can't read back.
+    if bytes.len() as u64 > crate::io::MAX_FILE_BYTES {
+        return Err(EngineError::Other(format!("could not write the document: encoded file is longer than {} bytes", crate::io::MAX_FILE_BYTES)));
+    }
+    Ok(bytes)
 }
 
 pub fn from_bytes(b: &[u8]) -> Result<Document> {

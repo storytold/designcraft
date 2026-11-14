@@ -93,7 +93,17 @@ pub(super) fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
         _ => PdfCrop::Crop,
     };
     let mime = designcraft_render::image_mime(&bytes).to_string();
-    let mut asset = Asset { page: pdf_page, name, mime, link, data: Arc::new(bytes), pixels: Some((pw, ph)), pdf_crop, ..Default::default() };
+    let mut asset = Asset {
+        page: pdf_page,
+        name,
+        mime,
+        link,
+        link_fingerprint: crate::cmd::links::loaded_fingerprint(before, &bytes),
+        data: Arc::new(bytes),
+        pixels: Some((pw, ph)),
+        pdf_crop,
+        ..Default::default()
+    };
     // The graphic's natural size: the box in points (the whole page when the box can't be found,
     // and then the document says so).
     let (bw, bh) = match crop_pdf(&mut asset) {
@@ -201,16 +211,25 @@ pub(crate) fn crop_pdf(a: &mut Asset) -> Option<(f64, f64)> {
 }
 
 pub(crate) fn read_source(p: &Value) -> Result<(Vec<u8>, String, Option<String>)> {
+    read_linked_source(p).map(|(bytes, name, link, _)| (bytes, name, link))
+}
+
+/// [`read_source`], with the size and time to keep with a linked file's bytes
+/// ([`crate::cmd::links::loaded_fingerprint`]): the file's from before it is read, not those of a
+/// later version that replaces it while a network or syncing source is being loaded.
+fn read_linked_source(p: &Value) -> Result<(Vec<u8>, String, Option<String>, Option<designcraft_doc::Fingerprint>)> {
     if let Some(b) = str_param(p, "base64") {
-        return Ok((base64_decode(b), str_param(p, "name").unwrap_or("image").to_string(), None));
+        return Ok((base64_decode(b), str_param(p, "name").unwrap_or("image").to_string(), None, None));
     }
     let path = str_param(p, "path").ok_or_else(|| bad("place", "missing `path` or `base64`"))?;
+    let before = crate::cmd::datamerge::fingerprint_from_path(path);
     #[cfg(not(target_arch = "wasm32"))]
     let b = crate::io::read_file(path).map_err(EngineError::Other)?;
     #[cfg(target_arch = "wasm32")]
     let b: Vec<u8> = vec![];
     let name = std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.into());
-    Ok((b, name, Some(path.to_string())))
+    let loaded = crate::cmd::links::loaded_fingerprint(before, &b);
+    Ok((b, name, Some(path.to_string()), loaded))
 }
 
 fn eps_size(bytes: &[u8], command: &str) -> Result<Option<(f64, f64)>> {
@@ -239,11 +258,11 @@ pub(crate) fn validate_placement(size: (f64, f64), frame: Rect, xf: Affine, comm
 }
 
 pub(super) fn place_load(s: &mut Session, p: &Value) -> Result<Value> {
-    let (bytes, name, link) = read_source(p)?;
+    let (bytes, name, link, link_fingerprint) = read_linked_source(p)?;
     let (pw, ph) = designcraft_render::image_size(&bytes).ok_or_else(|| bad("place.load", "unsupported or corrupt image"))?;
     let natural = eps_size(&bytes, "place.load")?.or_else(|| designcraft_render::natural_size(&bytes, 0)).unwrap_or((pw as f64, ph as f64));
     let mime = designcraft_render::image_mime(&bytes).to_string();
-    let asset = Asset { name, mime, link, data: Arc::new(bytes), pixels: Some((pw, ph)), ..Default::default() };
+    let asset = Asset { name, mime, link, link_fingerprint, data: Arc::new(bytes), pixels: Some((pw, ph)), ..Default::default() };
     load_cursor(s, asset, natural)
 }
 
@@ -385,7 +404,7 @@ fn place_layout_page(s: &mut Session, p: &Value, name: &str, bytes: &[u8]) -> Re
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 pub(super) mod image_place_tests {
-    use designcraft_doc::{Content, ItemId};
+    use designcraft_doc::{AssetId, Content, ItemId};
     use designcraft_geom::Rect;
     use serde_json::{Value, json};
 
@@ -454,6 +473,29 @@ pub(super) mod image_place_tests {
         session.execute("object.unlockAll", &json!({})).unwrap();
         session.execute("file.place", &json!({"path": image.path(), "frame": frame})).unwrap();
         assert!(matches!(session.doc().unwrap().doc.item(ItemId(frame)).unwrap().content, Content::Graphic(_)));
+    }
+
+    #[test]
+    fn place_load_remembers_the_fingerprint_captured_for_its_link() {
+        let image = image_file().unwrap();
+        let mut session = Session::new();
+        session.execute("file.new", &json!({})).unwrap();
+        let load = |session: &mut Session| {
+            let loaded = session.execute("place.load", &json!({"path": image.path()})).unwrap();
+            session.doc().unwrap().doc.assets[&AssetId(loaded["asset"].as_u64().unwrap())].clone()
+        };
+
+        // Written just now: another write in the same second would keep its time, so the time
+        // can't vouch for the bytes later and isn't kept.
+        let asset = load(&mut session);
+        assert_eq!(asset.link_fingerprint, None);
+        assert_eq!(asset.link.as_deref(), image.path().to_str());
+
+        // A file that has been as it is for a while is remembered by its size and time.
+        image.as_file().set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(60)).unwrap();
+        let expected = crate::cmd::datamerge::fingerprint_from(&std::fs::metadata(image.path()).unwrap());
+        session.execute("file.new", &json!({})).unwrap();
+        assert_eq!(load(&mut session).link_fingerprint, Some(expected));
     }
 
     #[test]
@@ -551,6 +593,96 @@ pub(super) mod image_place_tests {
             let document = &session.doc().unwrap().doc;
             assert!(matches!(document.item(ItemId(selected["id"].as_u64().unwrap())).unwrap().content, Content::Graphic(_)), "{command}");
             assert_eq!(document.spreads[0].items.len(), 1, "{command}");
+        }
+    }
+
+    /// A `width` x `height` PNG with a pHYs chunk of `ppm` pixels per meter on both axes, or none.
+    fn png_with_density(width: u32, height: u32, ppm: Option<u32>) -> std::io::Result<tempfile::NamedTempFile> {
+        fn crc32(data: &[u8]) -> u32 {
+            let mut crc = 0xFFFF_FFFFu32;
+            for &b in data {
+                crc ^= b as u32;
+                for _ in 0..8 {
+                    crc = if crc & 1 == 1 { (crc >> 1) ^ 0xEDB8_8320 } else { crc >> 1 };
+                }
+            }
+            !crc
+        }
+        let pixels = [30, 90, 180, 255].repeat((width * height) as usize);
+        let png = designcraft_render::Rendered { width, height, pixels }.to_png();
+        assert_eq!(&png[12..16], b"IHDR");
+        let mut bytes = png[..33].to_vec();
+        if let Some(ppm) = ppm {
+            let mut phys = Vec::new();
+            phys.extend_from_slice(&ppm.to_be_bytes());
+            phys.extend_from_slice(&ppm.to_be_bytes());
+            phys.push(1);
+            bytes.extend_from_slice(&(phys.len() as u32).to_be_bytes());
+            bytes.extend_from_slice(b"pHYs");
+            bytes.extend_from_slice(&phys);
+            let mut c = b"pHYs".to_vec();
+            c.extend_from_slice(&phys);
+            bytes.extend_from_slice(&crc32(&c).to_be_bytes());
+        }
+        bytes.extend_from_slice(&png[33..]);
+        let file = tempfile::Builder::new().suffix(".png").tempfile()?;
+        std::fs::write(file.path(), bytes)?;
+        Ok(file)
+    }
+
+    #[test]
+    fn placed_photo_honors_its_embedded_resolution() {
+        // #1991: a placed graphic's embedded density sets its size (600 dpi: 40 px place
+        // 4.8 pt wide), instead of a pixel always becoming a point.
+        let file = png_with_density(40, 20, Some(23622)).unwrap();
+        let mut session = Session::new();
+        session.execute("file.new", &json!({})).unwrap();
+        let placed = session.execute("file.place", &json!({"path": file.path(), "x": 10.0, "y": 20.0})).unwrap();
+        let document = &session.doc().unwrap().doc;
+        let item = document.item(ItemId(placed["id"].as_u64().unwrap())).unwrap();
+        let b = item.bounds();
+        assert!((b.x0 - 10.0).abs() < 1e-9 && (b.y0 - 20.0).abs() < 1e-9, "{b:?}");
+        assert!((b.width() - 4.8).abs() < 0.01 && (b.height() - 2.4).abs() < 0.01, "{b:?}");
+    }
+
+    /// File › Place, then a click: an 11 x 17 in image (330 x 510 px at 30 ppi) comes in at
+    /// 792 x 1224 pt, keeps that size through a save and reopen, and an image with no stored
+    /// resolution comes in at 72 ppi (330 x 510 pt).
+    #[test]
+    fn a_clicked_image_keeps_its_print_size_through_save_and_reopen() {
+        // 1181 pixels per meter is 29.9974 ppi.
+        let (w, h) = (330.0 * 72.0 / (1181.0 * 0.0254), 510.0 * 72.0 / (1181.0 * 0.0254));
+        for (ppm, (ew, eh)) in [(Some(1181), (w, h)), (None, (330.0, 510.0))] {
+            let image = png_with_density(330, 510, ppm).unwrap();
+            let mut session = Session::new();
+            session.execute("file.new", &json!({})).unwrap();
+            session.execute("file.place", &json!({"path": image.path(), "loadCursor": true})).unwrap();
+            session.execute("place.drop", &json!({"x": 0, "y": 0})).unwrap();
+            // The bounds and natural size of the document's one placed graphic.
+            let shown = |session: &Session| {
+                let doc = &session.doc().unwrap().doc;
+                let graphics: Vec<_> = doc
+                    .all_items()
+                    .into_iter()
+                    .filter_map(|id| doc.item(id))
+                    .filter_map(|item| match &item.content {
+                        Content::Graphic(g) => Some((item.bounds(), g.size)),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(graphics.len(), 1, "{graphics:?}");
+                graphics[0]
+            };
+            let (b, size) = shown(&session);
+            assert!((b.width() - ew).abs() < 1e-6 && (b.height() - eh).abs() < 1e-6, "{ppm:?}: {b:?}");
+            assert!((size.0 - ew).abs() < 1e-6 && (size.1 - eh).abs() < 1e-6, "{ppm:?}: {size:?}");
+
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("placed.designcraft");
+            session.execute("file.save", &json!({"path": path.to_string_lossy()})).unwrap();
+            let mut reopened = Session::new();
+            reopened.execute("file.open", &json!({"path": path.to_string_lossy()})).unwrap();
+            assert_eq!(shown(&reopened), (b, size), "{ppm:?}");
         }
     }
 
