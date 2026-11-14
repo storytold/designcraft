@@ -7,39 +7,39 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use designcraft_color::swatch::apply_tint;
-use designcraft_doc::{Document, Fill};
+use designcraft_doc::{AssetData, Document, Fill, SourceKey};
 use designcraft_images::Tone;
 use vello_cpu::Pixmap;
 use vello_cpu::color::PremulRgba8;
 
-/// The tone of each image file a swatch was applied to, by the address of its bytes (kept alive
-/// so the address stays theirs). A GIF is decoded to know, so this is not done every frame.
-fn tone_of(bytes: &Arc<Vec<u8>>) -> Option<Tone> {
-    type Tones = HashMap<usize, (Arc<Vec<u8>>, Option<Tone>)>;
+/// The tone of each image file a swatch was applied to. A GIF is decoded to know, so this is
+/// not done every frame.
+fn tone_of(data: &AssetData) -> Option<Tone> {
+    type Tones = HashMap<SourceKey, Option<Tone>>;
     const MAX: usize = 256;
     static TONES: Mutex<Option<Tones>> = Mutex::new(None);
-    let key = Arc::as_ptr(bytes) as usize;
-    if let Some((_, t)) = TONES.lock().unwrap_or_else(PoisonError::into_inner).as_ref().and_then(|m| m.get(&key)) {
+    let key = data.key();
+    if let Some(t) = TONES.lock().unwrap_or_else(PoisonError::into_inner).as_ref().and_then(|m| m.get(&key)) {
         return *t;
     }
-    let tone = designcraft_images::tone(bytes);
+    let tone = designcraft_images::tone(&data.load().ok()?);
     let mut guard = TONES.lock().unwrap_or_else(PoisonError::into_inner);
     let map = guard.get_or_insert_with(HashMap::new);
     if map.len() >= MAX {
         map.clear();
     }
-    map.insert(key, (bytes.clone(), tone));
+    map.insert(key, tone);
     tone
 }
 
-/// `pm` (decoded from `bytes`) coloured by `fill`, cached per image and on-screen colour. `None`
+/// `pm` (decoded from `data`) coloured by `fill`, cached per image and on-screen colour. `None`
 /// when the image keeps its own colours: no swatch, one that no longer exists, or a colour image.
-pub(crate) fn colorized(doc: &Document, fill: &Fill, bytes: &Arc<Vec<u8>>, pm: &Arc<Pixmap>) -> Option<Arc<Pixmap>> {
+pub(crate) fn colorized(doc: &Document, fill: &Fill, data: &AssetData, pm: &Arc<Pixmap>) -> Option<Arc<Pixmap>> {
     if fill.is_none() {
         return None;
     }
     let color = doc.resolve_color(&fill.swatch, fill.tint)?;
-    let tone = tone_of(bytes)?;
+    let tone = tone_of(data)?;
     // The swatch at each ink coverage as the screen shows it (or the plate being previewed).
     let lut: Vec<[u8; 4]> = (0..=255u8)
         .map(|i| {

@@ -1,5 +1,5 @@
 use super::types::Rendered;
-use super::{Affine, Arc, HashMap, Pixmap, Rect, pdf_bounds, pdf_hide_layers, pdf_layers, vello_cpu};
+use super::{Affine, HashMap, Pixmap, Rect, pdf_bounds, pdf_hide_layers, pdf_layers, vello_cpu};
 
 /// MIME type guess for encoded image bytes.
 /// Is this a PDF file (placed PDFs are graphics)?
@@ -232,26 +232,26 @@ pub fn shown_box(asset: &designcraft_doc::Asset) -> Option<[f64; 4]> {
     asset.shown(content_box(&asset.data, asset.page, asset.pdf_crop)?)
 }
 
-type ContentBoxes = HashMap<(usize, u32, designcraft_doc::PdfCrop), (std::sync::Weak<Vec<u8>>, Option<[f64; 4]>)>;
+type ContentBoxes = HashMap<(designcraft_doc::SourceKey, u32, designcraft_doc::PdfCrop), Option<[f64; 4]>>;
 
-/// [`pdf_crop_box`]'s box, cached by the file's allocation. The weak reference keeps that address
-/// from naming another file while the entry lives.
-fn content_box(bytes: &Arc<Vec<u8>>, page: u32, crop: designcraft_doc::PdfCrop) -> Option<[f64; 4]> {
+/// [`pdf_crop_box`]'s box, cached by the file's key.
+fn content_box(data: &designcraft_doc::AssetData, page: u32, crop: designcraft_doc::PdfCrop) -> Option<[f64; 4]> {
+    /// Boxes remembered; all are forgotten beyond this (measuring one again costs a render).
+    const MAX: usize = 1024;
     static CACHE: std::sync::Mutex<Option<ContentBoxes>> = std::sync::Mutex::new(None);
-    let key = (Arc::as_ptr(bytes) as usize, page, crop);
-    let cached = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().and_then(|c| c.get(&key)).and_then(|(file, b)| {
-        let same = file.upgrade().is_some_and(|f| Arc::ptr_eq(&f, bytes));
-        same.then_some(*b)
-    });
+    let key = (data.key(), page, crop);
+    let cached = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().and_then(|c| c.get(&key).copied());
     if let Some(b) = cached {
         return b;
     }
     // Render outside the lock: other graphics keep drawing meanwhile.
-    let b = pdf_crop_box(bytes, page as usize, crop).map(|(frac, _)| frac);
+    let b = pdf_crop_box(&data.load().ok()?, page as usize, crop).map(|(frac, _)| frac);
     let mut cache = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let cache = cache.get_or_insert_with(HashMap::new);
-    cache.retain(|_, (file, _)| file.strong_count() > 0);
-    cache.insert(key, (Arc::downgrade(bytes), b));
+    if cache.len() >= MAX {
+        cache.clear();
+    }
+    cache.insert(key, b);
     b
 }
 

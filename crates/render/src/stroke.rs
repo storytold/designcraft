@@ -17,7 +17,7 @@ pub(crate) fn image_want(f: &Frame, asset: &designcraft_doc::Asset, g: &designcr
     let on_screen = (f.view * xf * g.xf).determinant().abs().sqrt();
     let on_screen = if f.opts.quality == DisplayQuality::Typical { on_screen.min(1.0) } else { on_screen };
     let hidden = HIDDEN_LAYERS.with(|h| h.borrow().clone());
-    let data = match hidden.as_deref().filter(|_| is_pdf(&asset.data)) {
+    let data = match hidden.as_deref().filter(|_| asset.data.load().is_ok_and(|b| is_pdf(&b))) {
         // An explicit choice (including all-on) that cannot be rewritten fails closed:
         // stale persisted/relinked choices must not reveal hidden source content.
         Some(hidden) => pdf_layers::layered(&asset.data, hidden)?,

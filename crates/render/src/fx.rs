@@ -1225,7 +1225,7 @@ mod tests {
                 id: aid,
                 name: "half.png".into(),
                 mime: "image/png".into(),
-                data: std::sync::Arc::new(png),
+                data: designcraft_doc::AssetData::embedded(png),
                 pixels: Some((20, 20)),
                 ..Default::default()
             }),
@@ -1280,7 +1280,7 @@ mod tests {
                 id: aid,
                 name: "photo.png".into(),
                 mime: "image/png".into(),
-                data: Arc::new(png),
+                data: designcraft_doc::AssetData::embedded(png),
                 pixels: Some((64, 48)),
                 ..Default::default()
             }),
@@ -1487,7 +1487,7 @@ mod tests {
                         id: aid,
                         name: "green.png".into(),
                         mime: "image/png".into(),
-                        data: std::sync::Arc::new(png),
+                        data: designcraft_doc::AssetData::embedded(png),
                         pixels: Some((20, 20)),
                         ..Default::default()
                     }),

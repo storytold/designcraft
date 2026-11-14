@@ -406,7 +406,7 @@ fn display_performance_fast_draws_grey_boxes() {
             id: aid,
             name: "red.png".into(),
             mime: "image/png".into(),
-            data: Arc::new(png),
+            data: designcraft_doc::AssetData::embedded(png),
             pixels: Some((4, 4)),
             ..Default::default()
         }),
@@ -452,7 +452,7 @@ fn clipping_path_hides_the_image_outside_it() {
             name: "red.png".into(),
             mime: "image/png".into(),
             link: None,
-            data: Arc::new(png),
+            data: designcraft_doc::AssetData::embedded(png),
             pixels: Some((4, 4)),
             ..Default::default()
         }),
@@ -842,7 +842,7 @@ fn images_in_view_are_decoded_together_before_drawing() {
         image::RgbaImage::from_pixel(4, 4, image::Rgba([red, 0, 0, 255]))
             .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
             .unwrap();
-        let data = Arc::new(png);
+        let data = designcraft_doc::AssetData::embedded(png);
         let aid = designcraft_doc::AssetId(d.alloc());
         let asset = designcraft_doc::Asset {
             id: aid,
@@ -881,7 +881,7 @@ fn images_in_view_are_decoded_together_before_drawing() {
     let it = d.item_mut(sid).unwrap();
     it.xf = Affine::translate((320.0, 20.0)) * Affine::scale(4.0);
     it.stroke = designcraft_doc::Stroke { swatch: designcraft_color::swatch::BLACK.into(), weight: 10.0, ..Default::default() };
-    // Decodes logged from here on with these buffers' addresses are theirs (they live on).
+    // Decodes logged from here on with these images' keys are theirs.
     let since = images::DECODED_ON.lock().unwrap().len();
     let cache = Cache::new();
     let mut r = Renderer::new();
@@ -892,8 +892,8 @@ fn images_in_view_are_decoded_together_before_drawing() {
         assert_eq!(img.pixel(60 + 90 * u32::from(i), 60)[..3], [200 + i, 0, 0], "image {i} drawn");
     }
     let me = std::thread::current().id();
-    let decoded_on = |data: &Arc<Vec<u8>>| -> Vec<std::thread::ThreadId> {
-        let id = Arc::as_ptr(data) as usize;
+    let decoded_on = |data: &designcraft_doc::AssetData| -> Vec<std::thread::ThreadId> {
+        let id = data.key();
         images::DECODED_ON.lock().unwrap().iter().skip(since).filter(|(a, _)| *a == id).map(|(_, t)| *t).collect()
     };
     for (i, data) in shown.iter().enumerate() {
