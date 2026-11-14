@@ -619,3 +619,46 @@ fn czech_counts_use_the_plural_form_for_the_number() {
     // A noun without plural forms keeps the plain translation.
     assert_eq!(count_label("cs", "a new noun", 3), "3 a new noun");
 }
+
+/// Released-interface captions must reach the real start screen, preferences and output panel.
+#[test]
+fn hungarian_followup_captions_reach_rendered_surfaces() {
+    use egui_kittest::kittest::Queryable;
+    use serde_json::json;
+
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.ui.language = "hu".into();
+    app.session.prefs.note_recent_file("/nonexistent/hu-followup/próba.designcraft");
+    let mut h = crate::test_window::open(app, egui::vec2(1500.0, 1000.0));
+    h.state_mut().app.session.close_document(0);
+    h.run_steps(4);
+    let save = |h: &mut egui_kittest::Harness<'_, crate::test_window::Window>, name: &str| {
+        if let Some(dir) = std::env::var_os("DESIGNCRAFT_HU_FOLLOWUP_SHOTS") {
+            h.render().unwrap().save(std::path::Path::new(&dir).join(name)).unwrap();
+        }
+    };
+    for label in ["Legutóbbi fájlok", "A DesignCraft weboldala"] {
+        assert!(h.query_by_label(label).is_some(), "{label}");
+    }
+    for label in ["Recent files", "DesignCraft page"] {
+        assert!(h.query_by_label(label).is_none(), "{label}");
+    }
+    save(&mut h, "hu-followup-start.png");
+
+    h.state_mut().app.run("app.preferences", json!({})).unwrap();
+    h.state_mut().app.ui.dialog.as_mut().unwrap().fields.insert("section".into(), json!("units"));
+    h.run_steps(4);
+    for label in ["Nullpont:", "Alávágás/betűköz:"] {
+        assert!(h.query_by_label(label).is_some(), "{label}");
+    }
+    save(&mut h, "hu-followup-preferences.png");
+
+    crate::dialogs::cancel(&mut h.state_mut().app);
+    h.state_mut().app.run("file.new", json!({})).unwrap();
+    h.state_mut().app.run("window.panel.activate", json!({"panel":"separations"})).unwrap();
+    h.run_steps(4);
+    for label in ["Színkivonatok", "Festékterhelési korlát", "Az exportált PDF színkivonatait jeleníti meg."] {
+        assert!(h.query_by_label(label).is_some(), "{label}");
+    }
+    save(&mut h, "hu-followup-separations.png");
+}
