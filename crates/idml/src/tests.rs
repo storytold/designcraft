@@ -5248,6 +5248,19 @@ fn lab_spot_keeps_its_lab_definition() {
     assert!(el.contains(r#"Model="Spot""#) && el.contains(r#"Space="LAB""#) && el.contains(r#"ColorValue="50 20 -40""#), "{el}");
     // And back again.
     assert_eq!(import_idml(&export_idml(&doc)).unwrap().swatch("Brand").unwrap().value, lab);
+    assert!(doc.swatch("Brand").unwrap().named);
+    // A Lab swatch named with its value is not a name of its own, as `C=…` and `R=…` are not.
+    let by_value = graphic.replace(r#"Name="Brand" Visible="true""#, r#"Name="L=50 a=20 b=-40" Visible="true""#);
+    let bytes = zip_files(&[
+        ("designmap.xml", DESIGNMAP),
+        ("Resources/Graphic.xml", &by_value),
+        ("Resources/Styles.xml", STYLES),
+        ("Resources/Preferences.xml", PREFS),
+        ("MasterSpreads/MasterSpread_m1.xml", MASTER),
+        ("Spreads/Spread_sp1.xml", SPREAD),
+        ("Stories/Story_s1.xml", STORY),
+    ]);
+    assert!(!import_idml(&bytes).unwrap().swatch("L=50 a=20 b=-40").unwrap().named);
 }
 
 /// Non-finite numbers in colour values, page bounds and item transforms (NaN, infinities and

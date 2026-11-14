@@ -92,7 +92,7 @@ impl<'r> Importer<'r> {
                 self.hidden_colors.insert(id.to_string(), c);
                 continue;
             }
-            let named = !name.starts_with("C=") && !name.starts_with("R=");
+            let named = !name.starts_with("C=") && !name.starts_with("R=") && !(name.starts_with("L=") && matches!(c, Color::Lab { .. }));
             self.swatch_names.insert(id.to_string(), name.to_string());
             order.push((
                 id.to_string(),

@@ -475,10 +475,17 @@ impl Cms {
                     CmykSpace::Generic(g) => g.gamut_error(src),
                     CmykSpace::Device => 0.0,
                     // The colour sent to the press (relative colorimetric, clipped) and measured back.
-                    CmykSpace::Icc(p) => match p.from_srgb(srgb, Intent::RelativeColorimetric, false).and_then(|cmyk| p.to_lab(&cmyk)) {
-                        Some(back) => delta_e2000(src, back),
-                        None => 0.0,
-                    },
+                    // Lab goes to the press from its own values: its screen colour is clipped to sRGB.
+                    CmykSpace::Icc(p) => {
+                        let cmyk = match c {
+                            Color::Lab { .. } => p.from_lab(src, Intent::RelativeColorimetric, false),
+                            _ => p.from_srgb(srgb, Intent::RelativeColorimetric, false),
+                        };
+                        match cmyk.and_then(|cmyk| p.to_lab(&cmyk)) {
+                            Some(back) => delta_e2000(src, back),
+                            None => 0.0,
+                        }
+                    }
                 }
             }
             _ => 0.0,

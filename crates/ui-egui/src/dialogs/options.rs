@@ -68,9 +68,11 @@ fn set_color(f: &mut Map<String, Value>, c: Color, mode: Option<&str>) {
             f.insert("gray".into(), json!((f64::from(k) * 1000.0).round() / 10.0));
         }
         "lab" => {
+            // Unrounded (the fields show one decimal): a change to one channel leaves the others as
+            // they were.
             let lab = c.to_lab();
             for (k, v) in LAB_FIELDS.iter().zip([lab.l, lab.a, lab.b]) {
-                f.insert((*k).into(), json!((f64::from(v) * 10.0).round() / 10.0));
+                f.insert((*k).into(), json!(f64::from(v)));
             }
         }
         _ => {
@@ -458,5 +460,23 @@ mod tests {
         let doc = &h.state().session.active().unwrap().doc;
         let l = doc.layers.iter().find(|l| l.name == "Artwork").expect("renamed");
         assert!(!l.printable);
+    }
+}
+
+#[cfg(test)]
+mod lab_field_tests {
+    use super::*;
+
+    /// Swatch Options keeps a Lab channel's whole value: a change to one channel leaves the others
+    /// as they were, though the fields show one decimal.
+    #[test]
+    fn lab_fields_keep_the_channels_that_were_not_edited() {
+        let c = Color::Lab { l: 50.123, a: 20.0, b: -40.456 };
+        let mut f = Map::new();
+        set_color(&mut f, c, None);
+        assert_eq!(f.get("mode"), Some(&json!("lab")));
+        assert_eq!(dialog_color(&f), Some(c));
+        f.insert("labA".into(), json!(25));
+        assert_eq!(dialog_color(&f), Some(Color::Lab { l: 50.123, a: 25.0, b: -40.456 }));
     }
 }
