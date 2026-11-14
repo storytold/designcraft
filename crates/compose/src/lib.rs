@@ -4019,6 +4019,7 @@ fn apply_desired_spacing(glyphs: &mut [Glyph], pp: &ParaProps) {
             g.adv = g.adv * gs + ls * g.space;
             g.sx *= gs;
             g.dx *= gs;
+            g.track_hang *= gs;
         }
     }
 }
@@ -5187,14 +5188,18 @@ fn layout_line(
     let hl = first.map_or(0.0, |g| breaker::hang_left(g, sp));
     let optical_right = lastg.map_or(0.0, |g| breaker::hang_right(g, sp));
     let cjk_right = lastg.map_or(0.0, |g| g.cjk_hang);
+    let track_last = lastg.map_or(0.0, |g| g.track_hang);
     let regular_hang = pp.kinsoku_hang == designcraft_doc::cjk::KinsokuHang::Regular;
     let tab_measure = TabMeasure { x0, x1, tab_origin, hl, optical_right, cjk_right, regular_hang };
     let (leaders, last_tab) = layout_tabs(&mut line, pp, tab_measure);
     // The measure grows by the hang of the edge glyphs.
     let (mut x0, mut measure) = (x0, measure);
-    if sp.optical || pp.kinsoku_hang != designcraft_doc::cjk::KinsokuHang::None {
+    // The tracking after the last glyph hangs only as far as the line would otherwise overflow, so
+    // it decides whether the line fits and does not move aligned or justified lines that already do.
+    let track_right = track_last.min((line.iter().map(|g| g.adv).sum::<f64>() - measure).max(0.0));
+    if sp.optical || pp.kinsoku_hang != designcraft_doc::cjk::KinsokuHang::None || track_right > 0.0 {
         let cjk_right = if regular_hang { cjk_right.min((line.iter().map(|g| g.adv).sum::<f64>() - measure).max(0.0)) } else { cjk_right };
-        let hr = optical_right.max(cjk_right);
+        let hr = optical_right.max(cjk_right).max(track_right);
         x0 -= hl;
         measure += hl + hr;
     }
