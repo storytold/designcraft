@@ -6553,6 +6553,23 @@ fn band_quad(x0: f64, x1: f64, top: f64, bot: f64) -> [Point; 4] {
     [Point::new(x0, top), Point::new(x1, top), Point::new(x1, bot), Point::new(x0, bot)]
 }
 
+/// The glyphs of line `l` in the selected range `s..e`, by index. A cluster's other glyphs (subscripts,
+/// marks, and in right-to-left text the base that follows its first mark) carry no length of their
+/// own but belong to it; generated ones (a list label, a line-end hyphen) are never selected.
+fn selected_cluster_glyphs(l: &Line, s: usize, e: usize) -> impl Iterator<Item = usize> {
+    // The byte of the cluster being walked, once its first glyph has been found.
+    let mut cluster = None;
+    l.glyphs.iter().enumerate().filter_map(move |(i, g)| {
+        cluster = if g.len > 0 { Some(g.byte) } else { cluster.filter(|byte| *byte == g.byte) };
+        (g.byte >= s && g.byte < e && cluster == Some(g.byte)).then_some(i)
+    })
+}
+
+/// The glyphs to draw as selected for the source range `s..e`, by index into `l.glyphs`.
+pub fn selected_glyphs(l: &Line, s: usize, e: usize) -> Vec<usize> {
+    selected_cluster_glyphs(l, s, e).filter(|i| l.glyphs.get(*i).is_some_and(|g| g.visible)).collect()
+}
+
 /// Highlight rectangles for bytes `s..e` on `l`. `past_end` extends the line-end caret when the
 /// selection continues onto the next line. Stacked rows (warichu) each get their own band.
 pub fn highlight_quads(l: &Line, s: usize, e: usize, past_end: bool) -> Vec<[Point; 4]> {
@@ -6594,12 +6611,23 @@ pub fn highlight_quads(l: &Line, s: usize, e: usize, past_end: bool) -> Vec<[Poi
     let top = l.baseline - l.ascent;
     let bot = l.baseline + l.descent;
     if l.glyphs.iter().any(|g| g.rtl) {
-        let mut spans: Vec<(f64, f64)> = selected.iter().map(|g| (g.x, g.x + g.adv)).collect();
+        // By every glyph of a cluster: the first may be a mark with no advance of its own. Selected
+        // text is one band unless other text lies between: joined letters needn't touch, and a
+        // selection across a change of direction lands in separate places.
+        let chosen: std::collections::HashSet<usize> = selected_cluster_glyphs(l, s, e).collect();
+        let others: Vec<f64> = l
+            .glyphs
+            .iter()
+            .enumerate()
+            .filter(|(i, g)| !chosen.contains(i) && g.visible && g.adv > 0.0 && g.byte < l.range.end)
+            .map(|(_, g)| g.x + g.adv / 2.0)
+            .collect();
+        let mut spans: Vec<(f64, f64)> = chosen.iter().filter_map(|i| l.glyphs.get(*i)).map(|g| (g.x, g.x + g.adv)).collect();
         spans.sort_by(|a, b| a.0.total_cmp(&b.0));
         let mut merged: Vec<(f64, f64)> = Vec::new();
         for (a, b) in spans {
             match merged.last_mut() {
-                Some(m) if a <= m.1 + 0.5 => m.1 = m.1.max(b),
+                Some(m) if !others.iter().any(|x| *x > m.1 && *x < a) => m.1 = m.1.max(b),
                 _ => merged.push((a, b)),
             }
         }

@@ -10111,3 +10111,84 @@ fn cross_reference_text_breaks_at_its_spaces() {
         }
     }
 }
+
+/// Selected text is redrawn inverted glyph by glyph, so a mark left out vanishes into the highlight.
+#[test]
+fn a_selected_cluster_includes_its_marks_and_nothing_generated() {
+    use designcraft_fonts::testing::font_mapping;
+    const FAMILY: &str = "DC Test Selected Clusters";
+    static ADDED: std::sync::Once = std::sync::Once::new();
+    ADDED.call_once(|| {
+        let glyphs = [('ក', 'a'), ('្', 'b'), ('ត', 'c'), ('ី', 'd'), ('ខ', 'e'), (' ', ' '), ('•', 'f'), ('-', '-'), ('x', 'x')];
+        designcraft_fonts::FontDb::global().add_font(font_mapping(FAMILY, &glyphs).unwrap());
+    });
+    let compose = |text: &str, para: ParaAttrs, width: f64| {
+        let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, width, 400.0), para);
+        d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.font_family = Some(FAMILY.into()));
+        compose_story(&d, sid, &ComposeOptions::default())
+    };
+    // One cluster of several glyphs, then a separate one.
+    let text = "ក្តី ខ";
+    let space = text.find(' ').unwrap();
+    let cs = compose(text, ParaAttrs::default(), 400.0);
+    let line = all_lines(&cs)[0];
+    let cluster: Vec<_> = line.glyphs.iter().enumerate().filter(|(_, g)| g.byte == 0).map(|(i, _)| i).collect();
+    assert!(cluster.len() > 1, "exercise a cluster of several glyphs");
+    assert!(line.glyphs[cluster[1]].len == 0, "its later glyphs carry no length of their own");
+    let word: Vec<_> = line.glyphs.iter().enumerate().filter(|(_, g)| g.byte < space).map(|(i, _)| i).collect();
+    assert_eq!(selected_glyphs(line, 0, space), word, "every glyph of the word");
+    let first_len = line.glyphs[cluster[0]].len;
+    assert_eq!(selected_glyphs(line, 0, first_len), cluster, "the whole cluster, marks included");
+    assert!(selected_glyphs(line, space, text.len()).iter().all(|i| line.glyphs[*i].byte >= space), "another cluster's glyphs stay out");
+    assert!(selected_glyphs(line, space + 1, space + 1).is_empty(), "an empty range selects nothing");
+    assert_eq!(selected_glyphs(line, 0, text.len()).len(), line.glyphs.iter().filter(|g| g.visible).count(), "the whole line");
+    // A list label is generated: it isn't selected with the first letter it sits beside.
+    let bulleted = ParaAttrs { list_type: Some(designcraft_doc::ListType::Bullets), ..Default::default() };
+    let cs = compose("xx", bulleted, 400.0);
+    let line = all_lines(&cs)[0];
+    assert!(line.glyphs.iter().any(|g| g.len == 0), "exercise a generated label");
+    let selected = selected_glyphs(line, 0, 2);
+    assert_eq!(selected.len(), line.glyphs.iter().filter(|g| g.len > 0).count(), "only the text");
+    assert!(selected.iter().all(|i| line.glyphs[*i].len > 0));
+}
+
+/// In right-to-left text a cluster can start with a mark that has no advance: the highlight must
+/// still cover its base, or the selected letters are drawn inverted on the bare page.
+#[test]
+fn the_highlight_covers_every_glyph_of_a_right_to_left_cluster() {
+    use designcraft_fonts::testing::font_mapping;
+    const FAMILY: &str = "DC Test Selected Arabic";
+    static ADDED: std::sync::Once = std::sync::Once::new();
+    ADDED.call_once(|| {
+        let glyphs = [('\u{0628}', 'a'), ('\u{064e}', 'b'), ('\u{0644}', 'c'), (' ', ' '), ('x', 'x'), ('y', 'y')];
+        designcraft_fonts::FontDb::global().add_font(font_mapping(FAMILY, &glyphs).unwrap());
+    });
+    let text = "\u{0628}\u{064e}\u{0644}\u{064e} \u{0628}\u{064e}\u{0644}\u{064e}";
+    let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 600.0, 400.0), ParaAttrs::default());
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.font_family = Some(FAMILY.into()));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let line = all_lines(&cs)[0];
+    assert!(line.glyphs.iter().any(|g| g.rtl), "exercise right-to-left text");
+    assert!(line.glyphs.iter().any(|g| g.len == 0 && g.byte < text.len() && g.adv > 0.0), "a cluster's later glyph has its own width");
+    let quads = highlight_quads(line, 0, text.len(), false);
+    assert_eq!(quads.len(), 1, "one line of one direction is one band: {quads:?}");
+    for g in line.glyphs.iter().filter(|g| g.byte < text.len() && g.adv > 0.0) {
+        let covered = quads.iter().any(|q| {
+            let (x0, x1) = (q[0].x.min(q[1].x), q[0].x.max(q[1].x));
+            x0 <= g.x + 1e-6 && g.x + g.adv <= x1 + 1e-6
+        });
+        assert!(covered, "glyph at byte {} ({:.2}+{:.2}) outside {quads:?}", g.byte, g.x, g.adv);
+    }
+    // A selection across a change of direction lands in two places, and not on what lies between.
+    let text = "xy \u{0628}\u{0644}\u{0628} yx";
+    let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 600.0, 400.0), ParaAttrs::default());
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.font_family = Some(FAMILY.into()));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let line = all_lines(&cs)[0];
+    let first_arabic_end = "xy \u{0628}".len();
+    let quads = highlight_quads(line, 1, first_arabic_end, false);
+    assert_eq!(quads.len(), 2, "{quads:?}");
+    let last = line.glyphs.iter().find(|g| g.byte == "xy \u{0628}\u{0644}".len()).unwrap();
+    let middle = last.x + last.adv / 2.0;
+    assert!(quads.iter().all(|q| middle < q[0].x.min(q[1].x) || middle > q[0].x.max(q[1].x)), "an unselected letter stays out");
+}
