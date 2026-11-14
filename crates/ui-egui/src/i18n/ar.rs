@@ -936,6 +936,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Beveled Rectangle", "مستطيل مشطوف"),
     ("Chinese", "الصينية"),
     ("Constrain proportions for width and height", "تقييد نسب العرض والارتفاع"),
+    ("Croatian", "الكرواتية"),
     ("Custom", "مخصص"),
     ("Czech", "التشيكية"),
     ("Danish", "الدنماركية"),

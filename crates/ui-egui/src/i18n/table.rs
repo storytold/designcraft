@@ -3958,6 +3958,7 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
         ],
     ),
     ("Corner", ["Corner", "Angles", "Corner", "Corner", "角"]),
+    ("Croatian", ["Kroatisch", "Croate", "Croata", "クロアチア語", "克罗地亚语"]),
     ("Custom", ["Custom", "Personnalisé", "Custom", "Custom", "自定义"]),
     ("Czech", ["Czech", "Tchèque", "Czech", "Czech", "捷克语"]),
     ("Danish", ["Danish", "Danois", "Danish", "Danish", "丹麦语"]),
