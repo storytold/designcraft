@@ -22,7 +22,7 @@ pub(crate) fn decoded_bytes(bytes: &[u8], page: u32) -> usize {
 /// [`decoded_bytes`] of `bytes`, and about how many bytes [`decode_pixmap_page`] of it holds at
 /// once while it runs: a raster as decoded and its RGBA copy, or that copy and the premultiplied
 /// pixels, whichever is more ([`designcraft_images::decode_bytes_per_pixel`]: 8 bytes a pixel
-/// for 8-bit color, 12 for 16-bit RGBA, an EPS as its TIFF preview). PDF pages, SVGs and EPS
+/// for 8-bit color, 12 for 16-bit RGBA, 14 for 8-bit CMYK, an EPS as its TIFF preview). PDF pages, SVGs and EPS
 /// files without a preview count 8 bytes a pixel. Both are 0 when the size can't be read.
 pub(crate) fn decode_sizes(bytes: &[u8], page: u32) -> (usize, usize) {
     let Some((w, h)) = drawn_size(bytes, page) else { return (0, 0) };
@@ -68,22 +68,23 @@ pub fn decode_pixmap_page(bytes: &[u8], page: u32) -> Option<Pixmap> {
         let (px, w, h) = designcraft_images::render_svg(bytes, VECTOR_SIDE)?;
         return Some(Pixmap::from_parts(premul_pixels(px), w.min(u16::MAX as u32) as u16, h.min(u16::MAX as u32) as u16));
     }
-    premultiplied(designcraft_images::decode_rgba(bytes)?)
+    let img = designcraft_images::decode_rgba(bytes)?;
+    premultiplied(img.width(), img.height(), img.into_raw())
 }
 
 /// [`decode_pixmap`] of a JPEG at 1/2^`shrink` of its size, `shrink` 1 to
 /// [`designcraft_images::MAX_REDUCED_SHRINK`], without a full-size decode. `None` where only a
 /// full decode applies (other formats, CMYK JPEGs).
 pub(crate) fn decode_pixmap_reduced(bytes: &[u8], shrink: u8) -> Option<Pixmap> {
-    premultiplied(designcraft_images::decode_rgba_reduced(bytes, shrink)?)
+    let img = designcraft_images::decode_rgba_reduced(bytes, shrink)?;
+    premultiplied(img.width(), img.height(), img.into_raw())
 }
 
-fn premultiplied(img: image::RgbaImage) -> Option<Pixmap> {
-    let (w, h) = img.dimensions();
+/// Straight RGBA pixels, `w` × `h`, as a premultiplied pixmap.
+fn premultiplied(w: u32, h: u32, mut px: Vec<u8>) -> Option<Pixmap> {
     if w == 0 || h == 0 || w > u16::MAX as u32 || h > u16::MAX as u32 {
         return None;
     }
-    let mut px = img.into_raw();
     px.truncate(w as usize * h as usize * 4);
     Some(Pixmap::from_parts(premultiply(px), w as u16, h as u16))
 }

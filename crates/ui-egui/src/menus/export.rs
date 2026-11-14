@@ -92,7 +92,7 @@ pub(super) fn export_bytes(app: &mut DesignApp, p: &Value, ext: &str, cmd: &str)
         _ => json!({}),
     };
     if cmd == "file.exportText" {
-        let txt = path.to_ascii_lowercase().ends_with(".txt");
+        let txt = craft_file_formats::detect(&path, &[]) == Some(craft_file_formats::Format::PlainText);
         params["format"] = json!(if txt { "txt" } else { "rtf" });
     }
     let r = app.run(cmd, params)?;

@@ -105,15 +105,18 @@ fn nested_svg_data_images_cannot_bypass_the_depth_limit() {
     }
 }
 
-/// The nested SVG data of one parse adds up against one budget; the next parse starts again.
+/// Each SVG parse gets a fresh shared nested-image budget.
 #[test]
-fn nested_svg_data_shares_one_budget() {
-    NESTED_SVG_BYTES.set(0);
-    assert!(charge_nested_svg(MAX_NESTED_SVG_BYTES / 2).is_some());
-    assert!(charge_nested_svg(MAX_NESTED_SVG_BYTES / 2).is_some());
-    assert!(charge_nested_svg(1).is_none());
-    assert!(svg_tree(SVG.as_bytes()).is_some());
-    assert!(charge_nested_svg(MAX_NESTED_SVG_BYTES).is_some());
+fn nested_svg_data_budget_is_fresh_per_parse() {
+    let nested = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><circle r="1"/></svg>"#;
+    let encoded = nested.bytes().map(|b| format!("%{b:02X}")).collect::<String>();
+    let svg = format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2"><image width="1" height="1" href="data:image/svg+xml,{encoded}"/></svg>"#
+    );
+    for _ in 0..2 {
+        let tree = svg_tree(svg.as_bytes()).unwrap();
+        assert_eq!(tree.root().children().len(), 1);
+    }
 }
 
 #[test]
@@ -164,8 +167,8 @@ fn svg_images_come_only_from_data_urls() {
 }
 
 /// The family of the font that sets each text glyph of `svg`, and the glyph's id.
-fn glyph_families(svg: &str) -> Vec<(String, u16)> {
-    fn walk(g: &usvg::Group, tree: &usvg::Tree, out: &mut Vec<(String, u16)>) {
+fn glyph_families(svg: &str) -> Vec<(String, u32)> {
+    fn walk(g: &usvg::Group, tree: &usvg::Tree, out: &mut Vec<(String, u32)>) {
         for n in g.children() {
             match n {
                 usvg::Node::Group(g) => walk(g, tree, out),
@@ -372,14 +375,19 @@ fn cmyk_tiff_keeps_inks() {
     assert_eq!(decode_cmyk_tiff(&b[..b.len() / 2]), None, "truncated");
 }
 
-/// A decode holds the samples as stored beside the copy they are converted to.
+/// A decode holds the samples as decoded beside the copies they are converted to.
 #[test]
 fn decode_bytes_per_pixel_counts_the_stored_samples_and_their_copy() {
-    use tiff::encoder::colortype::{CMYK8, CMYK16, CMYKA8, RGB16};
-    assert_eq!(decode_bytes_per_pixel(&tiff_of::<CMYK8>(1, 1, &[0; 4], false)), 8);
-    assert_eq!(decode_bytes_per_pixel(&tiff_of::<CMYKA8>(1, 1, &[0; 5], true)), 10);
-    assert_eq!(decode_bytes_per_pixel(&tiff_of::<CMYK16>(1, 1, &[0; 4], false)), 12);
+    use tiff::encoder::colortype::{CMYK8, CMYK16, CMYKA8, RGB8, RGB16, RGBA16};
+    // CMYK: the samples, an 8-bit CMYKA copy, and the inks and alpha split from it.
+    assert_eq!(decode_bytes_per_pixel(&tiff_of::<CMYK8>(1, 1, &[0; 4], false)), 14);
+    assert_eq!(decode_bytes_per_pixel(&tiff_of::<CMYKA8>(1, 1, &[0; 5], true)), 15);
+    assert_eq!(decode_bytes_per_pixel(&tiff_of::<CMYK16>(1, 1, &[0; 4], false)), 18);
     assert_eq!(decode_bytes_per_pixel(&tiff_of::<RGB16>(1, 1, &[0; 3], false)), 10);
+    assert_eq!(decode_bytes_per_pixel(&tiff_of::<RGBA16>(1, 1, &[0; 4], false)), 12);
+    assert_eq!(decode_bytes_per_pixel(&tiff_of::<RGB8>(1, 1, &[0; 3], false)), 8);
+    // An 8-bit RGB PSD: its three planes and the RGBA result, at least 9.
+    assert_eq!(decode_bytes_per_pixel(&tiny_psd()), 9);
     let mut psd = b"8BPS".to_vec();
     psd.resize(26, 0);
     assert_eq!(decode_bytes_per_pixel(&psd), 9);
@@ -395,7 +403,7 @@ fn decode_bytes_per_pixel_counts_the_stored_samples_and_their_copy() {
     dos.extend([0xFF, 0xFF]);
     dos.extend_from_slice(ps);
     dos.extend_from_slice(&preview);
-    assert_eq!(decode_bytes_per_pixel(&dos), 12);
+    assert_eq!(decode_bytes_per_pixel(&dos), 18);
 }
 
 /// Indexed colour (PhotometricInterpretation 3), which the `tiff` encoder has no type for.

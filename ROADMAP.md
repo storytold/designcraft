@@ -394,6 +394,7 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 ## Progress log
 
+- **2026-11-14** · IDML export keeps each endnote reference as its number in superscript text, as the endnote frame lists it, instead of dropping it; the endnotes are still written as plain text, without IDML's endnote elements (#2753). No readiness percentage change.
 - **2026-11-14** · Object › Text Frame Options shows the inset spacing (one Inset for a non-rectangular frame), the column width and gutter and the paragraph spacing limit in the document's ruler units, as the Properties panel does, instead of always in picas, and a bare number typed in any of its measure fields is in those units (#2739). No readiness percentage change.
 - **2026-11-12** · A render decodes the placed images in view that are not cached yet on several threads before it draws, instead of one after another while drawing. Page thumbnails, image exports and the first canvas frame of a page with six 24 MP photos take about 1.2 s instead of 2.8 s. No readiness percentage change.
 - **2026-11-12** · Properties › Text Frame shows the frame's inset spacing (Top, Bottom, Left and Right with a link that makes all four the same; one Inset for a non-rectangular frame) and four Vertical Justification buttons (Top, Center, Bottom, Justify), and the section also shows with the Type tool in a frame, where it changes the frame that shows the insertion point. No readiness percentage change.

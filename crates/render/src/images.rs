@@ -519,10 +519,14 @@ mod tests {
         Want { bytes: bytes.clone(), page: 0, width_pt: 100.0, on_screen: 1.0 }
     }
 
-    /// A PSD header claiming `side` pixels square (its pixels don't decode).
+    /// An 8-bit RGB PSD header claiming `side` pixels square (its pixels don't decode).
     fn psd(side: u32) -> Arc<Vec<u8>> {
         let mut psd = b"8BPS".to_vec();
         psd.resize(26, 0);
+        psd[4..6].copy_from_slice(&1u16.to_be_bytes()); // version
+        psd[12..14].copy_from_slice(&3u16.to_be_bytes()); // channels
+        psd[22..24].copy_from_slice(&8u16.to_be_bytes()); // depth
+        psd[24..26].copy_from_slice(&3u16.to_be_bytes()); // RGB
         psd[14..18].copy_from_slice(&side.to_be_bytes());
         psd[18..22].copy_from_slice(&side.to_be_bytes());
         Arc::new(psd)
