@@ -93,7 +93,11 @@ impl Server {
                 break;
             }
             if buf.len() as u64 > MAX_LINE_BYTES {
-                discard_line(&mut input)?;
+                // The terminator may already be in `buf` (a line exactly at the limit); only a
+                // line cut before its newline leaves a rest to drop.
+                if buf.last() != Some(&b'\n') {
+                    discard_line(&mut input)?;
+                }
                 let reply = error(Value::Null, INVALID_REQUEST, "request line is too long");
                 output.write_all(reply.as_bytes())?;
                 output.write_all(b"\n")?;
