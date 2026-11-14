@@ -165,7 +165,7 @@ fn finite_number(p: &Value, key: &str, command: &str) -> Result<Option<f64>> {
 }
 
 /// `position` as a guide position: finite and within [`MAX_GUIDE_POSITION`] of the origin.
-fn guide_position(position: f64, command: &str) -> Result<f64> {
+pub(crate) fn guide_position(position: f64, command: &str) -> Result<f64> {
     if !position.is_finite() || position.abs() > MAX_GUIDE_POSITION {
         return Err(bad(command, format!("a guide position must be between -{MAX_GUIDE_POSITION} and {MAX_GUIDE_POSITION}")));
     }

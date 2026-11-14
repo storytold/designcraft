@@ -6,13 +6,16 @@ use std::sync::Arc;
 
 use designcraft_color::BlendMode;
 use designcraft_doc::{
-    AssetId, Content, Document, Effects, Fill, Item, ItemId, ItemLoc, ParaFormat, Selection, Shape, SpreadRef, Story, StoryId, Stroke, TextFrame,
-    TextFrameOptions, TextSel,
+    AssetId, Content, Document, Effects, Fill, Guide, GuideSel, Item, ItemId, ItemLoc, Orientation, ParaFormat, Selection, Shape, SpreadRef, Story,
+    StoryId, Stroke, TextFrame, TextFrameOptions, TextSel,
 };
 use designcraft_geom::{Affine, Point, Rect, Vec2, shapes};
 use serde_json::{Value, json};
 
-use super::{CommandSpec, bad, bool_or, cmd, f64_or, has_doc, has_selection, ok, point_param, rect_param, spread_param, str_param, targets};
+use super::{
+    CommandSpec, bad, bool_or, cmd, f64_or, has_doc, has_selection, has_selection_or_guides, ok, point_param, rect_param, spread_param, str_param,
+    targets,
+};
 use crate::{Result, Session};
 
 /// `name` must be a swatch of the document: an unknown name would paint nothing. The error names
@@ -672,8 +675,8 @@ pub fn specs() -> Vec<CommandSpec> {
             "Step and Repeat…",
             ["Edit"],
             Some("Cmd+Alt+U"),
-            "{count?: 1..1000, dx?, dy?, rows?, columns?, ids?} — copies of the selection (or ids) offset by (dx, dy); with rows/columns, a grid of at most 1000 cells, and at most 1000 item copies including group contents → {created, ids: the copies}",
-            has_selection,
+            "{count?: 1..1000, dx?, dy?, rows?, columns?, ids?} — copies of the selection (or ids) offset by (dx, dy); a selected ruler guide is copied by `dx` when vertical and by `dy` when horizontal (the other offset is ignored, each distance once so a grid never stacks two copies on one spot, copies stay within 1000000 pt of the spread origin) → {created, guides: [{spread: {kind, index}, page, index}]}; with rows/columns, a grid of at most 1000 cells, and at most 1000 item copies including group contents → {created, ids: the copies}",
+            has_selection_or_guides,
             step_and_repeat
         ),
         cmd!("path.create", "Create Path", [], None, "{spread?, anchors: [{p:[x,y], in?:[x,y], out?:[x,y]}], closed?: bool}", has_doc, path_create),
@@ -3969,6 +3972,63 @@ fn checked_step_offset(dx: f64, dy: f64, x: u64, y: u64) -> Result<Vec2> {
     Ok(Vec2::new(x, y))
 }
 
+/// Copies the selected ruler guides by `offsets`, moving a vertical guide by the offsets' x and a
+/// horizontal one by their y, ignoring the other. A shift already made for a guide is not made again,
+/// so grid cells never stack copies. `None` when nothing is selected but objects, so the object path
+/// reports it.
+fn step_and_repeat_guides(s: &mut Session, offsets: &[Vec2]) -> Result<Option<Value>> {
+    let picked = s.doc()?.selection.guides.clone();
+    if picked.is_empty() {
+        return Ok(None);
+    }
+    picked
+        .len()
+        .checked_mul(offsets.len())
+        .filter(|work| *work <= MAX_STEP_REPEAT_WORK)
+        .ok_or_else(|| bad("edit.stepAndRepeat", format!("a single command may create at most {MAX_STEP_REPEAT_WORK} guides")))?;
+    let src = s.doc()?.doc.clone();
+    let mut plan = Vec::with_capacity(picked.len());
+    for g in &picked {
+        let page = src.spread(g.spread).and_then(|sp| sp.pages.get(g.page)).ok_or_else(|| bad("edit.stepAndRepeat", "a selected guide is gone"))?;
+        let guide = page.guides.get(g.index).ok_or_else(|| bad("edit.stepAndRepeat", "a selected guide is gone"))?.clone();
+        plan.push((*g, guide));
+    }
+    s.edit(|d, sel| {
+        let mut made = Vec::new();
+        for (at, guide) in &plan {
+            let sp = d.spread_mut(at.spread).ok_or_else(|| bad("edit.stepAndRepeat", "no such spread"))?;
+            let pg = sp.pages.get_mut(at.page).ok_or_else(|| bad("edit.stepAndRepeat", "no such page"))?;
+            let mut shifts: Vec<f64> = Vec::new();
+            for off in offsets {
+                let shift = match guide.orientation {
+                    Orientation::Horizontal => off.y,
+                    Orientation::Vertical => off.x,
+                };
+                if shift == 0.0 || shifts.contains(&shift) {
+                    continue;
+                }
+                shifts.push(shift);
+                let index = pg.guides.len();
+                let position = super::guides::guide_position(guide.position + shift, "edit.stepAndRepeat")?;
+                pg.guides.push(Guide { position, ..guide.clone() });
+                made.push(GuideSel { spread: at.spread, page: at.page, index });
+            }
+        }
+        if made.is_empty() {
+            return Err(bad(
+                "edit.stepAndRepeat",
+                "the offsets do not move the guide along its own axis: a horizontal guide takes `dy`, a vertical one `dx`",
+            ));
+        }
+        let mut all = picked.clone();
+        all.extend(made.iter().copied());
+        *sel = Selection { guides: all, ..Default::default() };
+        let out: Vec<Value> = made.iter().map(|g| json!({"spread": g.spread, "page": g.page, "index": g.index})).collect();
+        Ok(json!({"created": out.len(), "guides": out}))
+    })
+    .map(Some)
+}
+
 fn step_repeat_offsets(p: &Value) -> Result<Vec<Vec2>> {
     let (dx, dy) = (step_repeat_delta(p, "dx", 12.0)?, step_repeat_delta(p, "dy", 12.0)?);
     match (p.get("rows"), p.get("columns")) {
@@ -4045,6 +4105,15 @@ fn checked_step_repeat_targets(d: &Document, ids: &[ItemId], copies: usize, max_
 fn step_and_repeat(s: &mut Session, p: &Value) -> Result<Value> {
     let ids = targets(s, p)?;
     let offsets = step_repeat_offsets(p)?;
+    // No object was named and none is selected: a ruler guide may be, and it repeats across
+    // its own line — a horizontal guide only takes `dy`, a vertical one only `dx`.
+    if ids.is_empty()
+        && p.get("id").is_none()
+        && p.get("ids").is_none()
+        && let Some(out) = step_and_repeat_guides(s, &offsets)?
+    {
+        return Ok(out);
+    }
     let ids = checked_step_repeat_targets(&s.doc()?.doc, &ids, offsets.len(), MAX_STEP_REPEAT_WORK)?;
     s.edit(|d, sel| {
         let src = d.clone();
@@ -4297,6 +4366,55 @@ mod step_repeat_tests {
 
         s.execute("selection.set", &json!({"ids": [locked.0]})).unwrap();
         assert!(s.execute("object.swapFillStroke", &json!({})).is_err(), "nothing unlocked to change");
+    }
+
+    #[test]
+    fn a_selected_guide_repeats_along_its_own_axis() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let positions = |s: &Session, o: Orientation| -> Vec<f64> {
+            s.doc().unwrap().doc.spreads[0].pages[0].guides.iter().filter(|g| g.orientation == o).map(|g| g.position).collect()
+        };
+        s.execute("guide.add", &json!({"orientation": "vertical", "position": 100.0})).unwrap();
+        assert_eq!(s.doc().unwrap().selection.guides.len(), 1, "a new guide is selected, as in InDesign");
+        let r = s.execute("edit.stepAndRepeat", &json!({"count": 2, "dx": 30.0, "dy": 999.0})).unwrap();
+        assert_eq!(r["created"], 2);
+        assert_eq!(
+            r["guides"][0],
+            json!({"spread": {"kind": "doc", "index": 0}, "page": 0, "index": 1}),
+            "a copy says which spread, page and index it went into"
+        );
+        assert_eq!(positions(&s, Orientation::Vertical), vec![100.0, 130.0, 160.0], "a vertical guide takes `dx` and ignores `dy`");
+        assert_eq!(s.doc().unwrap().selection.guides.len(), 3, "the guide and its copies stay selected");
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(positions(&s, Orientation::Vertical), vec![100.0], "one undo step");
+
+        s.execute("guide.add", &json!({"orientation": "horizontal", "position": 50.0})).unwrap();
+        let r = s.execute("edit.stepAndRepeat", &json!({"rows": 2, "columns": 2, "dx": 99.0, "dy": 25.0})).unwrap();
+        assert_eq!(r["created"], 1, "cells that only move across the guide, or repeat a shift already made, are skipped");
+        assert_eq!(positions(&s, Orientation::Horizontal), vec![50.0, 75.0], "a horizontal guide takes `dy`, each distance once");
+
+        // An offset that does not move the guide at all is refused rather than stacking a copy on it.
+        s.execute("guide.add", &json!({"orientation": "vertical", "position": 7.0})).unwrap();
+        assert!(s.execute("edit.stepAndRepeat", &json!({"count": 3, "dx": 0.0, "dy": 10.0})).is_err());
+        assert_eq!(positions(&s, Orientation::Vertical), vec![100.0, 7.0]);
+
+        // A copy of a spread guide stays a spread guide.
+        s.execute("guide.add", &json!({"orientation": "vertical", "position": 5.0, "spreadGuide": true})).unwrap();
+        s.execute("edit.stepAndRepeat", &json!({"count": 1, "dx": 5.0})).unwrap();
+        let copies: Vec<bool> =
+            s.doc().unwrap().doc.spreads[0].pages[0].guides.iter().filter(|g| g.position == 5.0 || g.position == 10.0).map(|g| g.spread).collect();
+        assert_eq!(copies, vec![true, true]);
+
+        // Naming objects keeps the object path: a guide selected beside them is left where it is.
+        let frame = s.execute("frame.create", &json!({"rect": [0, 0, 10, 10]})).unwrap()["id"].as_u64().unwrap();
+        let before = s.doc().unwrap().doc.spreads[0].pages[0].guides.len();
+        assert_eq!(s.execute("edit.stepAndRepeat", &json!({"ids": [frame], "count": 1, "dx": 20.0})).unwrap()["created"], 1);
+        assert_eq!(s.doc().unwrap().doc.spreads[0].pages[0].guides.len(), before, "the selected guide is untouched");
+        s.execute("guide.add", &json!({"orientation": "vertical", "position": 999_990.0})).unwrap();
+        let antes = positions(&s, Orientation::Vertical);
+        assert!(s.execute("edit.stepAndRepeat", &json!({"count": 2, "dx": 10.0})).is_err(), "a copy past the guide range is refused");
+        assert_eq!(positions(&s, Orientation::Vertical), antes, "the first copy fitted and the second did not: neither is left behind");
     }
 
     #[test]
