@@ -42,6 +42,32 @@ pub(crate) fn check_stroke_type_fields(v: &Value, base_kind: Option<&str>, cmd: 
     }
 }
 
+/// A stroke type a command may set: a dash pattern as [`StrokeType::valid_dash_pattern`]
+/// accepts, 1 to [`MAX_DASH_ENTRIES`](designcraft_doc::MAX_DASH_ENTRIES) stripes that each
+/// start at 0 or later, have a width above 0 and end inside the weight, or a stroke style
+/// the document defines.
+pub(crate) fn check_stroke_kind(doc: &Document, kind: &designcraft_doc::StrokeType, cmd: &str) -> Result<()> {
+    use designcraft_doc::StrokeType;
+    match kind {
+        StrokeType::Dashed { pattern } if !StrokeType::valid_dash_pattern(pattern) => {
+            Err(bad(cmd, "type: a dash `pattern` needs 1 to 64 lengths, each 0 or 0.1 to 10000 pt, not all 0"))
+        }
+        StrokeType::Stripes { bands }
+            if bands.is_empty()
+                || bands.len() > designcraft_doc::MAX_DASH_ENTRIES
+                || !bands
+                    .iter()
+                    .all(|(start, width)| start.is_finite() && width.is_finite() && *start >= 0.0 && *width > 0.0 && start + width <= 1.0 + 1e-9) =>
+        {
+            Err(bad(cmd, "type: stripes need 1 to 64 `bands`: [[start, width], …] inside 0–1"))
+        }
+        StrokeType::Style { name } if !doc.stroke_styles.iter().any(|s| s.name == *name) => {
+            Err(bad(cmd, format!("type: no stroke style `{name}`; create one with `strokeStyle.new`")))
+        }
+        _ => Ok(()),
+    }
+}
+
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(
@@ -275,7 +301,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Stroke",
             [],
             None,
-            "{swatch?, tint?, weight?, align?: center|inside|outside, type?: {kind: solid|dashed|dotted|thickThin|thinThick|thinThin|thickThick|thinThickThin|thickThinThick|wavy|hashed|stripes|style, pattern?: [dash, gap, …] (dashed: required, points), bands?: [[start, width], …] (stripes: required, fractions of stroke weight), name?: string (style: required, document stroke style name)} (other kinds take no extra fields; unknown type fields are errors), cap?: butt|round|projecting, join?: miter|round|bevel, miterLimit?, start?, end?: none|simple|simpleWide|triangle|triangleWide|barbed|curved|circle|circleSolid|square|squareSolid|bar, gapSwatch?, gapTint?, gapOverprint?: bool, ids?}",
+            "{swatch?, tint?, weight?, align?: center|inside|outside, type?: {kind: solid|dashed|dotted|thickThin|thinThick|thinThin|thickThick|thinThickThin|thickThinThick|wavy|hashed|stripes|style, pattern?: [dash, gap, …] (dashed: required, 1 to 64 lengths in points, each 0 or 0.1 to 10000, not all 0), bands?: [[start, width], …] (stripes: required, 1 to 64 bands as fractions of stroke weight, width above 0, ending inside 0–1), name?: string (style: required, a stroke style of the document)} (other kinds take no extra fields; unknown type fields are errors), cap?: butt|round|projecting, join?: miter|round|bevel, miterLimit?, start?, end?: none|simple|simpleWide|triangle|triangleWide|barbed|curved|circle|circleSolid|square|squareSolid|bar, gapSwatch?, gapTint?, gapOverprint?: bool, ids?}",
             has_doc,
             |s, p| {
                 let kind: Option<designcraft_doc::StrokeType> = p
@@ -285,6 +311,9 @@ pub fn specs() -> Vec<CommandSpec> {
                         serde_json::from_value(v.clone()).map_err(|e| bad("object.stroke", format!("type: {e}")))
                     })
                     .transpose()?;
+                if let Some(kind) = &kind {
+                    check_stroke_kind(&s.doc()?.doc, kind, "object.stroke")?;
+                }
                 for key in ["swatch", "gapSwatch"] {
                     if let Some(name) = p.get(key).and_then(Value::as_str) {
                         known_swatch(&s.doc()?.doc, name, "object.stroke", key)?;
@@ -5839,10 +5868,44 @@ mod stroke_type_tests {
         }
     }
 
+    /// A dash pattern, stripes or style name that couldn't draw is refused, with or without a
+    /// selection, and the document stays as it was.
+    #[test]
+    fn stroke_types_that_cannot_draw_are_refused() {
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let id = s.execute("frame.create", &json!({"rect": [0, 0, 100, 100]})).unwrap()["id"].clone();
+        for (kind, hint) in [
+            (json!({"kind": "dashed", "pattern": [0, 0]}), "pattern"),
+            (json!({"kind": "dashed", "pattern": []}), "pattern"),
+            (json!({"kind": "dashed", "pattern": [4, -2]}), "pattern"),
+            (json!({"kind": "dashed", "pattern": [4, 0.01]}), "pattern"),
+            (json!({"kind": "dashed", "pattern": [4, 20_000]}), "pattern"),
+            (json!({"kind": "dashed", "pattern": vec![4; 65]}), "pattern"),
+            (json!({"kind": "stripes", "bands": []}), "bands"),
+            (json!({"kind": "stripes", "bands": [[0.5, 0.7]]}), "bands"),
+            (json!({"kind": "stripes", "bands": [[-0.1, 0.5]]}), "bands"),
+            (json!({"kind": "stripes", "bands": [[0.2, 0]]}), "bands"),
+            (json!({"kind": "stripes", "bands": vec![[0.0, 0.01]; 65]}), "bands"),
+            (json!({"kind": "style", "name": "Nope"}), "Nope"),
+        ] {
+            for ids in [json!([id]), json!([])] {
+                let before = s.doc().unwrap().doc.clone();
+                let error = s.execute("object.stroke", &json!({"ids": ids, "swatch": "[Black]", "type": kind})).unwrap_err();
+                assert!(matches!(error, crate::EngineError::BadParams { .. }), "{error}");
+                assert!(error.to_string().contains(hint), "{kind}: {error}");
+                assert!(std::sync::Arc::ptr_eq(&before, &s.doc().unwrap().doc), "{kind}: nothing changed");
+            }
+        }
+        s.execute("object.stroke", &json!({"ids": [id], "type": {"kind": "dashed", "pattern": [0, 4, 0.1, 10_000]}})).unwrap();
+        s.execute("object.stroke", &json!({"ids": [id], "type": {"kind": "stripes", "bands": [[0, 0.5], [0.5, 0.5]]}})).unwrap();
+    }
+
     #[test]
     fn stroke_types_apply_all_supported_variants() {
         let mut s = crate::Session::new();
         s.execute("file.new", &json!({})).unwrap();
+        s.execute("strokeStyle.new", &json!({"name": "Rails", "type": "stripes", "bands": [[0, 0.3], [0.7, 0.3]]})).unwrap();
         let id = s.execute("frame.create", &json!({"rect": [0, 0, 100, 100]})).unwrap()["id"].as_u64().unwrap();
         for kind in [
             json!({"kind": "solid"}),

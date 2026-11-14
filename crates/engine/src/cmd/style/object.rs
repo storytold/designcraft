@@ -146,7 +146,7 @@ pub(super) fn create_object(s: &mut Session, p: &Value) -> Result<Value> {
     if let Some(f) = fill_param(CREATE, p, os.fill.as_ref())? {
         os.fill = f;
     }
-    if let Some(st) = stroke_param(CREATE, p, os.stroke.as_ref())? {
+    if let Some(st) = stroke_param(CREATE, s, p, os.stroke.as_ref())? {
         os.stroke = st;
     }
     if let Some(c) = corners_param(CREATE, p, os.corners.unwrap_or_default())? {
@@ -244,8 +244,9 @@ fn bool_param(cmd: &str, p: &Value, key: &str) -> Result<Option<bool>> {
 }
 
 /// `p.stroke` merged over `base` (as [`group_param`]), refused when the weight isn't a number ≥ 0,
-/// the tint or gap tint isn't 0–1, or the type has a field its kind doesn't take.
-fn stroke_param(cmd: &str, p: &Value, base: Option<&designcraft_doc::Stroke>) -> Result<Option<Option<designcraft_doc::Stroke>>> {
+/// the tint or gap tint isn't 0–1, the type has a field its kind doesn't take, or a changed type
+/// isn't one `object.stroke` accepts.
+fn stroke_param(cmd: &str, s: &Session, p: &Value, base: Option<&designcraft_doc::Stroke>) -> Result<Option<Option<designcraft_doc::Stroke>>> {
     let optional = ["gapOverprint", "gradientAngle", "gradientVector"];
     let base = base.cloned().unwrap_or_default();
     // A type without `kind` keeps the style's kind, so it takes that kind's fields.
@@ -263,6 +264,10 @@ fn stroke_param(cmd: &str, p: &Value, base: Option<&designcraft_doc::Stroke>) ->
         }
         if !(0.0..=1.0).contains(&st.gap_tint) {
             return Err(bad(cmd, "stroke gap tint must be 0..1"));
+        }
+        // A type the style already has passes, even one naming a stroke style deleted since.
+        if st.kind != base.kind {
+            crate::cmd::object::check_stroke_kind(&s.doc()?.doc, &st.kind, cmd)?;
         }
     }
     Ok(st)
@@ -361,7 +366,7 @@ pub(super) fn edit_object(s: &mut Session, p: &Value) -> Result<Value> {
     if let Some(f) = fill_param(CMD, p, old.fill.as_ref())? {
         new.fill = f;
     }
-    if let Some(st) = stroke_param(CMD, p, old.stroke.as_ref())? {
+    if let Some(st) = stroke_param(CMD, s, p, old.stroke.as_ref())? {
         new.stroke = st;
     }
     if let Some(c) = corners_param(CMD, p, old.corners.unwrap_or_default())? {
