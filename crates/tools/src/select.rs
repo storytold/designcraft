@@ -1466,7 +1466,9 @@ impl Tool for SelectionTool {
         if let Drag::Move { content: true, .. } = self.drag {
             return Cursor::HandGrab;
         }
-        if matches!(self.drag, Drag::Bracket { .. }) || (matches!(self.drag, Drag::None) && self.bracket_at(cx, p).is_some()) {
+        if matches!(self.drag, Drag::Bracket { .. })
+            || (matches!(self.drag, Drag::None) && self.bracket_at(cx, p).is_some() && (self.direct || crate::thread::port_at(cx, p).is_none()))
+        {
             return Cursor::PathBracket;
         }
         if let Drag::ContentResize { handle, .. } = self.drag {
@@ -1486,6 +1488,11 @@ impl Tool for SelectionTool {
         }
         if let Some(l) = self.loaded.and_then(|l| l.resolve(cx.doc)) {
             return if crate::thread::port_at(cx, p).is_some() { Cursor::LoadedText } else { l.cursor(cx, p) };
+        }
+        // A press on a port loads the text cursor (see `thread_pointer`), so it shows that, not
+        // the rotate cursor of the frame's corner zone.
+        if matches!(self.drag, Drag::None) && crate::thread::port_at(cx, p).is_some() {
+            return Cursor::LoadedText;
         }
         match self.drag {
             Drag::Move { .. } => return Cursor::Move,
