@@ -4,12 +4,13 @@
 use std::collections::{HashMap, HashSet};
 
 use craft_wordmodel::Block;
+use craft_wordmodel::numbering::{Level, LevelSuffix};
 use craft_wordmodel::para::{InlineObject, NoteKind, Paragraph};
 use craft_wordmodel::props::{Align as WordAlign, CharProps as WordCharProps, ParaProps as WordParaProps, Underline, VertAlign};
 use craft_wordmodel::section::NumFormat;
 use craft_wordmodel::styles::{StyleKind, StyleSheet};
 use designcraft_doc::story::{BASIC_PARAGRAPH, NO_CHAR_STYLE};
-use designcraft_doc::{CharAttrs, CharFormat, ListType, NumberStyle, ParaAttrs, ParaFormat, Story, StoryId, Table};
+use designcraft_doc::{CharAttrs, CharFormat, ListCounter, ListType, NumberStyle, ParaAttrs, ParaFormat, Story, StoryId, Table};
 
 use crate::{ImportError, Imported, ImportedStyle};
 
@@ -17,12 +18,64 @@ const MAX_NAME_CHARS: usize = 256;
 const MAX_NOTE_BYTES: usize = 8 << 20;
 const MAX_WARNINGS: usize = 100;
 
+/// Word counts one abstract list across its instances, except a numbering instance with a
+/// `startOverride`, which owns a separate counter. Keep that document behavior while mapping the
+/// shared neutral definitions to the app's list model.
+#[derive(Default)]
+struct WordListCounter {
+    values: HashMap<String, [Option<u32>; 9]>,
+}
+
+impl WordListCounter {
+    fn next(&mut self, numbering: &craft_wordmodel::numbering::Numbering, num_id: u32, level: u8) -> Option<[u32; 9]> {
+        let num = numbering.num(num_id)?;
+        numbering.abstract_of(num_id)?;
+        let level_index = usize::from(level);
+        if level_index >= 9 || !numbering.level_is_defined(num_id, level) || numbering.level(num_id, level).is_none() {
+            return None;
+        }
+        let own_counter = !num.start_overrides.is_empty();
+        let key = if own_counter { format!("n:{num_id}") } else { format!("a:{}", num.abstract_id) };
+        let start = |i: usize| {
+            (own_counter)
+                .then(|| num.start_overrides.iter().find(|(l, _)| usize::from(*l) == i).map(|(_, n)| *n))
+                .flatten()
+                .or_else(|| numbering.level(num_id, i as u8).map(|l| l.start))
+                .unwrap_or(1)
+        };
+        let counters = self.values.entry(key).or_default();
+        let current = counters[level_index].map_or_else(|| start(level_index), |n| n.saturating_add(1));
+        counters[level_index] = Some(current);
+        for (i, value) in counters.iter_mut().enumerate().skip(level_index + 1) {
+            let restart =
+                numbering.level(num_id, i as u8).is_none_or(|l| l.restart && l.restart_after.is_none_or(|after| level_index < usize::from(after)));
+            if restart {
+                *value = None;
+            }
+        }
+        Some(std::array::from_fn(|i| counters[i].unwrap_or_else(|| start(i))))
+    }
+}
+
 fn capped_name(name: &str) -> String {
     name.chars().take(MAX_NAME_CHARS).collect()
 }
 
+fn display_style_name(style: &craft_wordmodel::styles::Style) -> String {
+    // The shared Word model canonicalizes built-in heading names for document editing. Text
+    // import historically keeps the source's lowercase heading spelling in the app style map.
+    if style.builtin
+        && style.id.strip_prefix("Heading").is_some_and(|n| (1..=9).any(|level| n == level.to_string()))
+        && style.name.starts_with("Heading ")
+    {
+        style.name.to_ascii_lowercase()
+    } else {
+        style.name.clone()
+    }
+}
+
 fn style_names(styles: &StyleSheet) -> HashMap<String, String> {
-    styles.styles.iter().map(|s| (s.id.clone(), capped_name(&s.name))).collect()
+    styles.styles.iter().map(|s| (s.id.clone(), capped_name(&display_style_name(s)))).collect()
 }
 
 fn char_attrs(p: &WordCharProps) -> CharAttrs {
@@ -48,6 +101,136 @@ fn char_attrs(p: &WordCharProps) -> CharAttrs {
     }
 }
 
+fn paragraph_numbering(p: &WordParaProps, doc: &craft_wordmodel::Document) -> Option<craft_wordmodel::props::NumRef> {
+    let numbering = if p.style.is_some() { doc.styles.resolve_para(p).numbering } else { p.numbering }?;
+    (numbering.num != 0).then_some(numbering)
+}
+
+fn paragraph_level(p: &WordParaProps, doc: &craft_wordmodel::Document) -> Option<(craft_wordmodel::props::NumRef, Level)> {
+    let numbering = paragraph_numbering(p, doc)?;
+    if !doc.numbering.level_is_defined(numbering.num, numbering.level) {
+        return None;
+    }
+    let level = doc.numbering.level(numbering.num, numbering.level)?.clone();
+    Some((numbering, level))
+}
+
+fn suffix_text(suffix: LevelSuffix) -> &'static str {
+    match suffix {
+        LevelSuffix::Tab => "\t",
+        LevelSuffix::Space => " ",
+        LevelSuffix::Nothing => "",
+    }
+}
+
+fn bullet_char(level: &Level) -> String {
+    let font = level.chr.font.as_deref().unwrap_or_default();
+    let font_lower = font.to_ascii_lowercase();
+    level
+        .text
+        .chars()
+        .take(64)
+        .map(|c| {
+            if let Some(mapped) = craft_wordmodel::symbol_fonts::symbol_char(font, c) {
+                return mapped;
+            }
+            if font_lower.contains("wingdings") {
+                let low = if ('\u{F000}'..='\u{F0FF}').contains(&c) { u32::from(c) - 0xF000 } else { u32::from(c) };
+                return match low {
+                    0x6C => '●',
+                    0x6E | 0xA7 => '▪',
+                    0x71 => '❑',
+                    0x76 => '❖',
+                    0xD8 => '➢',
+                    0xFC => '✓',
+                    _ => '•',
+                };
+            }
+            match c {
+                'o' | 'O' => '◦',
+                '\u{E000}'..='\u{F8FF}' => '•',
+                c => c,
+            }
+        })
+        .filter(|c| *c != '\n' && *c != '\r')
+        .collect()
+}
+
+fn number_expressions(
+    level: &Level,
+    numbering: &craft_wordmodel::numbering::Numbering,
+    num: u32,
+    own_level: u8,
+    values: &[u32; 9],
+) -> (String, String) {
+    let suffix = match level.suffix {
+        LevelSuffix::Tab => "^t",
+        LevelSuffix::Space => " ",
+        LevelSuffix::Nothing => "",
+    };
+    let mut model = String::new();
+    let mut fixed = String::new();
+    let mut chars = level.text.chars().take(64).peekable();
+    while let Some(c) = chars.next() {
+        if c == '%'
+            && let Some(d) = chars.peek().and_then(|d| d.to_digit(10)).filter(|d| (1..=9).contains(d))
+        {
+            chars.next();
+            let parent = (d - 1) as u8;
+            if parent == own_level {
+                model.push_str("^#");
+                fixed.push_str("^#");
+                continue;
+            }
+            let parent_format = numbering.level(num, parent).map(|p| p.format).unwrap_or(NumFormat::None);
+            let text = if matches!(parent_format, NumFormat::Bullet | NumFormat::None) {
+                String::new()
+            } else {
+                let format = if level.legal { NumFormat::Decimal } else { parent_format };
+                format.format(values.get(usize::from(parent)).copied().unwrap_or(1))
+            };
+            if !level.legal && !matches!(parent_format, NumFormat::Bullet | NumFormat::None) {
+                model.push('^');
+                model.push(char::from_digit(d, 10).unwrap_or('1'));
+            } else {
+                model.push_str(&text);
+            }
+            fixed.push_str(&text);
+        } else if c == '^' {
+            model.push_str("^^");
+            fixed.push_str("^^");
+        } else {
+            model.push(c);
+            fixed.push(c);
+        }
+    }
+    model.push_str(suffix);
+    fixed.push_str(suffix);
+    (model, fixed)
+}
+
+fn render_word_label(level: &Level, numbering: &craft_wordmodel::numbering::Numbering, num: u32, values: &[u32; 9]) -> String {
+    let mut out = String::new();
+    let mut chars = level.text.chars().take(64).peekable();
+    while let Some(c) = chars.next() {
+        if c == '%'
+            && let Some(d) = chars.peek().and_then(|d| d.to_digit(10)).filter(|d| (1..=9).contains(d))
+        {
+            chars.next();
+            let i = (d - 1) as usize;
+            if let Some(parent) = numbering.level(num, i as u8) {
+                let format =
+                    if level.legal && !matches!(parent.format, NumFormat::None | NumFormat::Bullet) { NumFormat::Decimal } else { parent.format };
+                out.push_str(&format.format(values.get(i).copied().unwrap_or(parent.start)));
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out.push_str(suffix_text(level.suffix));
+    out
+}
+
 fn para_attrs(p: &WordParaProps, doc: &craft_wordmodel::Document) -> ParaAttrs {
     let mut out = ParaAttrs {
         align: p.align.map(|a| match a {
@@ -63,38 +246,32 @@ fn para_attrs(p: &WordParaProps, doc: &craft_wordmodel::Document) -> ParaAttrs {
         space_after: p.space_after.map(f64::from).and_then(designcraft_doc::attrs::imported_measure),
         ..Default::default()
     };
-    if let Some(numbering) = p.numbering.filter(|n| n.num != 0) {
-        let definition = doc.numbering.nums.iter().find(|n| n.id == numbering.num).and_then(|n| {
-            n.level_overrides.iter().find(|(level, _)| *level == numbering.level).map(|(_, def)| def).or_else(|| {
-                let abs = doc.numbering.abstracts.iter().find(|a| a.id == n.abstract_id)?;
-                abs.levels.get(usize::from(numbering.level))
-            })
-        });
-        if let Some(level) = definition {
-            if level.format == NumFormat::Bullet {
-                out.list_type = Some(ListType::Bullets);
-                out.bullet_char = Some(level.text.chars().next().unwrap_or('•').to_string());
-            } else if level.format != NumFormat::None {
-                out.list_type = Some(ListType::Numbers);
-                out.number_style = Some(match level.format {
+    if let Some((numbering, level)) = paragraph_level(p, doc) {
+        out.list_level = Some(u32::from(numbering.level) + 1);
+        out.left_indent = Some(f64::from(level.indent));
+        out.first_line_indent = Some(-f64::from(level.hanging));
+        if level.format == NumFormat::Bullet {
+            out.list_type = Some(ListType::Bullets);
+            out.bullet_char = Some(bullet_char(&level));
+            out.list_separator = Some(suffix_text(level.suffix).into());
+        } else if level.format == NumFormat::None {
+            out.list_type = Some(ListType::Bullets);
+            out.bullet_char = Some(level.text.chars().take(64).collect());
+            out.list_separator = Some(suffix_text(level.suffix).into());
+        } else {
+            out.list_type = Some(ListType::Numbers);
+            out.number_style = Some(if level.legal {
+                NumberStyle::Arabic
+            } else {
+                match level.format {
                     NumFormat::UpperRoman => NumberStyle::UpperRoman,
                     NumFormat::LowerRoman => NumberStyle::LowerRoman,
                     NumFormat::UpperLetter => NumberStyle::UpperLetters,
                     NumFormat::LowerLetter => NumberStyle::LowerLetters,
                     NumFormat::DecimalZero => NumberStyle::ArabicLeadingZero,
                     _ => NumberStyle::Arabic,
-                });
-                let mut expression = level.text.clone();
-                for i in (1..=9).rev() {
-                    expression = expression.replace(&format!("%{i}"), &format!("^{i}"));
                 }
-                out.number_expression = Some(expression);
-                if level.start > 1 {
-                    out.start_at = Some(Some(level.start));
-                }
-            }
-            out.left_indent = Some(f64::from(level.indent));
-            out.first_line_indent = Some(-f64::from(level.hanging));
+            });
         }
     }
     out
@@ -202,6 +379,8 @@ struct ImportContext<'a> {
     doc: &'a craft_wordmodel::Document,
     names: &'a HashMap<String, String>,
     default_para_style: Option<String>,
+    word_numbering: WordListCounter,
+    model_numbering: ListCounter,
     warned_objects: bool,
     notes_done: HashSet<u32>,
     note_bytes: usize,
@@ -214,7 +393,27 @@ fn append_paragraph(ctx: &mut ImportContext<'_>, p: &Paragraph, st: &mut Story) 
         Some(id) => ctx.names.get(id).cloned().unwrap_or_else(|| BASIC_PARAGRAPH.into()),
         None => ctx.default_para_style.clone().unwrap_or_else(|| BASIC_PARAGRAPH.into()),
     };
-    st.format_paras(para_at..para_at, |fmt| *fmt = ParaFormat { style: style.clone(), para: para_attrs(&p.props, ctx.doc), ..Default::default() });
+    let mut attrs = para_attrs(&p.props, ctx.doc);
+    let has_numbering_reference = paragraph_numbering(&p.props, ctx.doc).is_some();
+    let list = paragraph_level(&p.props, ctx.doc).and_then(|(num, level)| {
+        let values = ctx.word_numbering.next(&ctx.doc.numbering, num.num, num.level)?;
+        let number = values.get(usize::from(num.level)).copied().unwrap_or(level.start);
+        let label = render_word_label(&level, &ctx.doc.numbering, num.num, &values);
+        Some((num, level, number, values, label))
+    });
+    if has_numbering_reference && list.is_none() {
+        add_warning(&mut ctx.warnings, "Some list information in the Word file could not be read.".into());
+    }
+    let mut fixed_expression = None;
+    if let Some((num, level, _, values, _)) = &list
+        && level.format != NumFormat::Bullet
+        && level.format != NumFormat::None
+    {
+        let (model, fixed) = number_expressions(level, &ctx.doc.numbering, num.num, num.level, values);
+        attrs.number_expression = Some(model);
+        fixed_expression = Some(fixed);
+    }
+    st.format_paras(para_at..para_at, |fmt| *fmt = ParaFormat { style: style.clone(), para: attrs.clone(), ..Default::default() });
 
     let mut object_i = 0usize;
     let mut last_format: Option<CharFormat> = None;
@@ -297,6 +496,33 @@ fn append_paragraph(ctx: &mut ImportContext<'_>, p: &Paragraph, st: &mut Story) 
         }
     }
     flush(st, &mut last_format, &mut chunk);
+    let empty = st.len() == para_at;
+    if let Some((_, level, actual_number, _, word_label)) = list {
+        if level.format != NumFormat::Bullet && level.format != NumFormat::None && !empty {
+            let mut para = designcraft_doc::ParaProps::default();
+            para.apply(&attrs);
+            let mut model = ctx.model_numbering.clone();
+            let calculated = model.advance(&para);
+            if calculated != actual_number.max(1) {
+                let start = actual_number.max(1);
+                attrs.start_at = Some(Some(start));
+                para.start_at = Some(start);
+                model = ctx.model_numbering.clone();
+                model.advance(&para);
+            }
+            if para.number_label_in(&model) != word_label
+                && let Some(expression) = fixed_expression.take()
+            {
+                attrs.number_expression = Some(expression);
+            }
+            ctx.model_numbering = model;
+        }
+    } else {
+        // The app counter restarts after a paragraph outside a Word list. Word's shared counter
+        // remains independent and may resume an earlier list id later in the document.
+        ctx.model_numbering = ListCounter::default();
+    }
+    st.format_paras(para_at..para_at, |fmt| fmt.para = attrs.clone());
 }
 
 fn append_blocks(ctx: &mut ImportContext<'_>, blocks: &[std::sync::Arc<Block>], st: &mut Story) {
@@ -331,13 +557,25 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
         .styles
         .iter()
         .find(|style| style.kind == StyleKind::Paragraph && style.default)
-        .or_else(|| doc.styles.styles.iter().find(|style| style.kind == StyleKind::Paragraph && style.id == "Normal"))
+        .or_else(|| {
+            doc.styles.styles.iter().find(|style| {
+                style.kind == StyleKind::Paragraph
+                    && style.id == "Normal"
+                    && (!style.builtin
+                        || style.priority != Some(0)
+                        || !style.quick
+                        || style.para != WordParaProps::default()
+                        || style.chr != WordCharProps::default())
+            })
+        })
         .and_then(|style| names.get(&style.id).cloned());
     let mut story = Story::new(StoryId(0));
     let mut ctx = ImportContext {
         doc: &doc,
         names: &names,
         default_para_style,
+        word_numbering: WordListCounter::default(),
+        model_numbering: ListCounter::default(),
         warned_objects: false,
         notes_done: HashSet::new(),
         note_bytes: 0,
