@@ -1,7 +1,5 @@
 use super::common::{affine_s, bool_s, pct, uid, with_props};
-use super::{
-    Affine, ColumnsKind, Content, El, Ex, Item, Node, OBJECT_BUILTINS, PathData, Shape, TextFrameOptions, base64_encode, names, num, pt,
-};
+use super::{Affine, ColumnsKind, Content, El, Ex, Item, Node, OBJECT_BUILTINS, PathData, Shape, TextFrameOptions, base64_encode, names, num, pt};
 
 impl<'a> Ex<'a> {
     pub(super) fn item_el(&mut self, it: &Item, xf: Affine) -> El {
@@ -285,7 +283,26 @@ impl<'a> Ex<'a> {
 
     fn image_el(&mut self, asset: &designcraft_doc::Asset, g: &designcraft_doc::Graphic) -> El {
         let is_pdf = asset.mime == "application/pdf";
-        let is_eps = asset.mime == "application/postscript" || designcraft_images::is_eps(&asset.data);
+        // Bytes are read only when they are embedded (an image with no link of its own always
+        // is); a link without embedding stays a link. Bytes that can't be had are written like
+        // a link without data.
+        let embedding = self.opts.embed_images || asset.link.is_none();
+        let data = if embedding {
+            match asset.output_bytes() {
+                Ok(out) => {
+                    if let Some(w) = out.warning
+                        && !self.warnings.contains(&w)
+                    {
+                        self.warnings.push(w);
+                    }
+                    out.bytes
+                }
+                Err(_) => Default::default(),
+            }
+        } else {
+            Default::default()
+        };
+        let is_eps = asset.mime == "application/postscript" || (!data.is_empty() && designcraft_images::is_eps(&data));
         let mut el = El::new(if is_eps {
             "EPS"
         } else if is_pdf {
@@ -310,10 +327,10 @@ impl<'a> Ex<'a> {
             el.set("FillColor", id.clone());
             el.set("FillTint", pct(g.fill.tint as f64));
         }
-        let wanted = !asset.data.is_empty() && (self.opts.embed_images || asset.link.is_none());
+        let wanted = !data.is_empty() && embedding;
         // An image with no link of its own has nowhere else to live, so it is always embedded
         // (dropping its data would lose it); only an image with a real link can fall back to it.
-        let embed = wanted && (asset.link.is_none() || self.embedded.saturating_add(asset.data.len()) <= self.embed_limit);
+        let embed = wanted && (asset.link.is_none() || self.embedded.saturating_add(data.len()) <= self.embed_limit);
         if wanted && !embed {
             self.warnings.push(format!(
                 "image {} is written as a link, not embedded: the package already holds {} bytes of images (limit {})",
@@ -322,9 +339,9 @@ impl<'a> Ex<'a> {
         }
         let mut props = Vec::new();
         if embed {
-            self.embedded = self.embedded.saturating_add(asset.data.len());
+            self.embedded = self.embedded.saturating_add(data.len());
             let mut c = El::new("Contents");
-            c.children.push(Node::CData(base64_encode(&asset.data)));
+            c.children.push(Node::CData(base64_encode(&data)));
             props.push(c);
         }
         props.push(El::new("GraphicBounds").attr("Left", "0").attr("Top", "0").attr("Right", num(g.size.0)).attr("Bottom", num(g.size.1)));
