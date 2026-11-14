@@ -10111,3 +10111,21 @@ fn cross_reference_text_breaks_at_its_spaces() {
         }
     }
 }
+
+#[test]
+fn justified_cjk_lines_with_nothing_to_stretch_are_balanced_not_left_hopeless() {
+    // Justified Japanese with no letter spacing to stretch: the composer rated every such line as
+    // hopeless unless it fitted to the point, and broke the paragraph as "「壁」" / the rest. It now
+    // takes the fuller lines. (Without the change the first line below holds 3 characters.)
+    let text = "「壁」から続く断熱の系譜を、家づくりの現場から考える。住まいの性能とは何か。";
+    let justified = ParaAttrs { align: Some(Align::LeftJustified), hyphenate: Some(false), ..Default::default() };
+    let ragged = ParaAttrs { align: Some(Align::Left), hyphenate: Some(false), ..Default::default() };
+    let (d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 2000.0, 100.0), ragged);
+    let natural: f64 = compose_story(&d, sid, &ComposeOptions::default()).frames[0].lines[0].glyphs.iter().map(|g| g.adv).sum();
+    assert_eq!(all_lines(&compose_story(&d, sid, &ComposeOptions::default())).len(), 1);
+    // A measure of 95% of a third of the text: a full line holds 12 of the 36 characters.
+    let (d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, natural * 0.95 / 3.0, 400.0), justified);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let counts: Vec<usize> = all_lines(&cs).iter().map(|l| l.glyphs.iter().filter(|g| g.visible).count()).collect();
+    assert_eq!(counts, [12, 12, 12, 2], "the lines are full, not a lone bracket first");
+}

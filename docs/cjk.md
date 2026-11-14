@@ -103,6 +103,11 @@ working (tsume removes the side bearings before mojikumi runs).
   Knuth–Plass already takes tiered stretch (`TIER_COST`), so this plugs into `kp_pass`.
 - Justification in `layout_line` distributes by the same tiers; the last line follows the
   paragraph's last-line alignment; CJK lines justify by default (JLREQ).
+- A justified Japanese or Chinese line with no word space, set without a mojikumi table, is rated
+  by the space it leaves, so the Knuth–Plass composer takes the fuller line instead of treating a
+  line with nothing to stretch as hopeless. Lines with a mojikumi table, a word space or Hangul
+  keep the tiered rating: the table limits what the characters take, and layout puts what the
+  mojikumi and letter spacing cannot take into the word spaces.
 - Korean: the Japanese composer with word-based breaking (spaces) by default; per-paragraph
   option for character-based breaking.
 
