@@ -1942,6 +1942,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Bottom:", "Inferiore:"),
     ("Right:", "Destra:"),
     ("Keep with Next:", "Unisci alle successive:"),
+    ("Keep with Previous", "Unisci alla precedente"),
     ("Keep Lines Together", "Mantieni le righe unite"),
     ("All Lines in Paragraph", "Tutte le righe del paragrafo"),
     ("At Start/End of Paragraph", "All'inizio/alla fine del paragrafo"),

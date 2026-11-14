@@ -2104,6 +2104,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Keep Options", "段落分離禁止オプション"),
     ("Span Columns", "段抜きと段分割"),
     ("Keep with Next:", "次の段落と分離禁止:"),
+    ("Keep with Previous", "前の段落と分離禁止"),
     ("Keep Lines Together", "行を分離しない"),
     ("All Lines in Paragraph", "段落のすべての行"),
     ("At Start/End of Paragraph", "段落の始めと終わり"),
