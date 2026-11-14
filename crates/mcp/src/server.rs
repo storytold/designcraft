@@ -98,8 +98,9 @@ impl Server {
                 if buf.last() != Some(&b'\n') {
                     discard_line(&mut input)?;
                 }
-                let reply = error(Value::Null, INVALID_REQUEST, "request line is too long");
-                output.write_all(reply.as_bytes())?;
+                let reply = serde_json::to_vec(&error(Value::Null, INVALID_REQUEST, "request line is too long"))
+                    .map_err(std::io::Error::other)?;
+                output.write_all(&reply)?;
                 output.write_all(b"\n")?;
                 output.flush()?;
                 continue;
