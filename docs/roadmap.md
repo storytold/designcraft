@@ -47,7 +47,7 @@ In order. Each closes a beta blocker from [gaps.md](gaps.md).
 4. **IDML real-file corpus** (gap 3): a pinned corpus, a survival metric, and fixes for #193,
    #338, #339, #340. 60–100 h.
 5. **Composition oracle** (gap 4): synthetic stories set in InDesign 2026 vs DesignCraft;
-   optical kerning; the overset rule. 80–140 h.
+   optical kerning; frame-fit parity. 80–140 h.
 6. **Start on any GPU; find every installed font** (gaps 5, 6). 25–50 h.
 
 ## Milestones
