@@ -425,6 +425,13 @@ fn advance_place_cursor(s: &mut Session) {
     }
 }
 
+/// Drop the current loaded image without placing it and move to the next; the last one ends placing.
+pub(super) fn place_skip(s: &mut Session, _p: &Value) -> Result<Value> {
+    validate_place_cursor(s, "place.skip")?;
+    advance_place_cursor(s);
+    Ok(json!({"remaining": loaded_count(s)}))
+}
+
 /// Validate bounded grid dimensions and a finite nonnegative gutter.
 fn grid_dimensions(p: &Value, command: &str, default_columns: usize, default_rows: usize) -> Result<(usize, usize, f64)> {
     let dimension = |key, default| -> Result<usize> {
@@ -649,6 +656,32 @@ pub(super) mod image_place_tests {
             assert!(e.contains("nothing loaded"), "{cmd}: {e}");
             assert_eq!(s.tool_id(), "rectangleFrame", "{cmd}");
         }
+    }
+
+    fn test_png(shade: u8) -> String {
+        let png = designcraft_render::Rendered { width: 4, height: 4, pixels: vec![shade; 4 * 4 * 4] }.to_png();
+        crate::cmd::base64_encode(&png)
+    }
+
+    fn loaded_names(s: &Session) -> Vec<String> {
+        let d = &s.doc().unwrap().doc;
+        s.loaded.iter().chain(s.loaded_queue.iter()).map(|g| d.assets[&g.asset].name.clone()).collect()
+    }
+
+    #[test]
+    fn skip_drops_the_current_image_and_the_last_one_ends_placing() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let files: Vec<_> = (0..3).map(|i| json!({"base64": test_png(i as u8), "name": format!("{i}.png")})).collect();
+        s.execute("place.load", &json!({"files": files})).unwrap();
+        assert_eq!(s.execute("place.skip", &json!({})).unwrap()["remaining"], 2);
+        assert_eq!(loaded_names(&s), ["1.png", "2.png"]);
+        s.execute("place.skip", &json!({})).unwrap();
+        assert_eq!(s.tool_id(), "placeGun");
+        s.execute("place.skip", &json!({})).unwrap();
+        assert!(s.loaded.is_none());
+        assert_eq!(s.tool_id(), "selection");
+        assert!(s.execute("place.skip", &json!({})).is_err());
     }
 
     #[test]

@@ -2527,6 +2527,16 @@ fn place_gun_grid_arrow_keys_are_handled_during_a_drag() {
     assert!(t.key(&cx, ToolKey::Delete, Mods::default()).is_empty());
 }
 
+/// Escape drops only the current loaded image; `place.cancel` clears them all.
+#[test]
+fn place_gun_escape_skips_the_current_image() {
+    let d = Document::new(&NewDocument::default());
+    let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    let mut t = create("placeGun");
+    assert_eq!(t.key(&cx, ToolKey::Escape, Mods::default()), vec![Action::Exec("place.skip".into(), serde_json::json!({}))]);
+}
+
 /// A place-cursor grid drag too thin for its cells shows and places the single frame an ordinary
 /// drag would; one with room shows its cells and places the grid.
 #[test]

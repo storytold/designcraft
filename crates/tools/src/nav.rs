@@ -173,9 +173,10 @@ impl Tool for PlaceGun {
     }
     fn key(&mut self, _cx: &ToolContext, key: crate::ToolKey, _mods: Mods) -> Vec<Action> {
         use crate::ToolKey;
+        // Escape drops the current image and loads the next; `place.cancel` clears them all.
         if key == ToolKey::Escape {
             self.start = None;
-            return vec![Action::Exec("place.cancel".into(), json!({}))];
+            return vec![Action::Exec("place.skip".into(), json!({}))];
         }
         // During a drag the arrow keys change the grid, and are handled even when it is already
         // at its limit, so they don't go on to nudge the selection.
