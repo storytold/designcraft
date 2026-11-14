@@ -461,7 +461,11 @@ pub(super) fn proxy_texture(
     let (pm, ready) = match mip_now(data, page, width_pt, scale) {
         Mip::Ready(pm) => (pm, true),
         Mip::Pending(Some(pm)) => (pm, false),
-        Mip::Pending(None) | Mip::Failed => return cached.map(|(t, _)| t),
+        Mip::Pending(None) => return cached.map(|(t, _)| t),
+        Mip::Failed => {
+            ctx.data_mut(|d| d.remove::<(egui::TextureHandle, Option<u64>)>(key));
+            return None;
+        }
     };
     let (pw, ph) = (pm.width() as usize, pm.height() as usize);
     if pw == 0 || ph == 0 {
