@@ -13,6 +13,15 @@ use crate::fonts::Fonts;
 use crate::model::{Media, Slide};
 use crate::{PptxError, PptxOptions, Result};
 
+/// Preserve fractional DesignCraft opacity in DrawingML instead of rounding it through 8-bit
+/// alpha and back to PresentationML's 100,000-step alpha value.
+pub(crate) fn color_with_opacity(color: designcraft_color::Color, opacity: f32) -> craft_pptx::ColorRef {
+    let [r, g, b, _] = color.to_rgba8(1.0);
+    let color = craft_pptx::ColorRef::rgb(craft_pptx::Rgba::rgb(r, g, b));
+    let alpha = if opacity.is_finite() { (f64::from(opacity.clamp(0.0, 1.0)) * 100_000.0).round() as i32 } else { 0 };
+    if alpha == 100_000 { color } else { color.with(craft_pptx::ColorTransform::Alpha(alpha)) }
+}
+
 /// Objects PowerPoint can't show as editable objects, which a caller should rasterise before
 /// exporting: placed PDF and EPS graphics, type on a path, and effects without a DrawingML
 /// counterpart.
@@ -362,11 +371,9 @@ impl<'a> Exporter<'a> {
     pub(crate) fn model_color(&self, swatch: &str, tint: f32, alpha: f32) -> Option<craft_pptx::ColorRef> {
         if let Some(gradient) = resolve_gradient(&self.doc.swatches, swatch) {
             let (_, color, gradient_alpha) = gradient.expanded_stops().into_iter().next()?;
-            let [r, g, b, a] = color.to_rgba8(gradient_alpha * alpha);
-            return Some(craft_pptx::ColorRef::rgb(craft_pptx::Rgba::rgba(r, g, b, a)));
+            return Some(color_with_opacity(color, gradient_alpha * alpha));
         }
-        let [r, g, b, a] = self.doc.resolve_color(swatch, tint)?.to_rgba8(alpha);
-        Some(craft_pptx::ColorRef::rgb(craft_pptx::Rgba::rgba(r, g, b, a)))
+        Some(color_with_opacity(self.doc.resolve_color(swatch, tint)?, alpha))
     }
 
     fn model_fill(&mut self, fill: &designcraft_doc::Fill, closed: bool, opacity: f32) -> craft_pptx::Fill {
@@ -380,9 +387,9 @@ impl<'a> Exporter<'a> {
             let stops = gradient
                 .expanded_stops()
                 .into_iter()
-                .map(|(offset, color, alpha)| {
-                    let [r, g, b, a] = color.to_rgba8(alpha * opacity);
-                    craft_pptx::style::GradientStop { pos: f64::from(offset), color: craft_pptx::ColorRef::rgb(craft_pptx::Rgba::rgba(r, g, b, a)) }
+                .map(|(offset, color, alpha)| craft_pptx::style::GradientStop {
+                    pos: f64::from(offset),
+                    color: color_with_opacity(color, alpha * opacity),
                 })
                 .collect();
             let shape = match gradient.kind {
