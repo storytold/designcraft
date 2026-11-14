@@ -346,6 +346,32 @@ fn eps_draws_through_its_proxy_at_its_bounding_box_size() {
     assert_eq!(img.get_pixel(30, 1).0[3], 0, "outside it, transparent");
 }
 
+/// A Separated TIFF with another ink set (InkSet 2) is not CMYK inks: it is a CMYK TIFF by its
+/// layout, but its samples aren't handed out as cyan, magenta, yellow and black.
+#[test]
+fn a_tiff_with_another_ink_set_gives_no_cmyk_inks() {
+    use tiff::encoder::colortype::CMYK8;
+    use tiff::tags::Tag;
+    let px = [0, 0, 0, 255, 0, 255, 255, 0];
+    let with_ink_set = |set: Option<u16>| {
+        let mut bytes = Vec::new();
+        let mut encoder = tiff::encoder::TiffEncoder::new(std::io::Cursor::new(&mut bytes)).unwrap();
+        let mut image = encoder.new_image::<CMYK8>(2, 1).unwrap();
+        if let Some(set) = set {
+            image.encoder().write_tag(Tag::Unknown(332), set).unwrap();
+        }
+        image.write_data(&px).unwrap();
+        bytes
+    };
+    for cmyk in [None, Some(1)] {
+        assert_eq!(decode_cmyk_tiff(&with_ink_set(cmyk)).map(|r| r.cmyk), Some(px.to_vec()), "{cmyk:?}");
+    }
+    let other = with_ink_set(Some(2));
+    assert!(is_cmyk_tiff(&other));
+    assert_eq!(decode_cmyk_tiff(&other), None);
+    assert!(decode_rgba(&other).is_some(), "still drawn on screen");
+}
+
 /// CMYK TIFFs read back as their ink values; RGB ones aren't CMYK.
 #[test]
 fn cmyk_tiff_keeps_inks() {

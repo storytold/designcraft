@@ -521,15 +521,56 @@ pub fn is_cmyk_tiff(bytes: &[u8]) -> bool {
 }
 
 /// The ink values of a CMYK TIFF, which [`decode_rgba`] converts to RGB. 8- or 16-bit CMYK,
-/// pixels interleaved, opaque or with unassociated alpha. `None` for anything else — another
-/// format, another ink set (InkSet 2), planar storage or premultiplied alpha — and for files
-/// over the decoder's 256 MiB limit; [`is_cmyk_tiff`] tells those apart from RGB files.
+/// opaque or with alpha (the decoder un-premultiplies associated alpha). `None` for anything
+/// else — another format, or another ink set (InkSet 2), whose four samples aren't cyan, magenta,
+/// yellow and black — and for files over the decoder's 256 MiB limit; [`is_cmyk_tiff`] tells
+/// those apart from RGB files.
 pub fn decode_cmyk_tiff(bytes: &[u8]) -> Option<CmykRaster> {
-    if too_large_to_decode(bytes) {
+    if too_large_to_decode(bytes) || tiff_ink_set(bytes).is_some_and(|set| set != INK_SET_CMYK) {
         return None;
     }
     let image = craft_image_codecs::decode_with(bytes, &decode_options()).ok()?;
     image.layout().is_cmyk().then(|| cmyk_raster(&image, bytes)).flatten()
+}
+
+/// TIFF `InkSet` 1: the samples of a Separated image are cyan, magenta, yellow and black.
+const INK_SET_CMYK: u16 = 1;
+
+/// The `InkSet` tag (332) of a TIFF's default page, when the file states one. The shared decoder
+/// reads any four-ink Separated image as CMYK, so a file with other inks is told apart here.
+fn tiff_ink_set(bytes: &[u8]) -> Option<u16> {
+    const INK_SET: u16 = 332;
+    const SHORT: u16 = 3;
+    let info = craft_image_codecs::tiff_info(bytes).ok()?;
+    let page = info.pages.get(info.default_page()?)?;
+    let le = info.little_endian;
+    let u16_at = |at: usize| {
+        let b: [u8; 2] = bytes.get(at..at.checked_add(2)?)?.try_into().ok()?;
+        Some(if le { u16::from_le_bytes(b) } else { u16::from_be_bytes(b) })
+    };
+    let u64_at = |at: usize| {
+        let b: [u8; 8] = bytes.get(at..at.checked_add(8)?)?.try_into().ok()?;
+        Some(if le { u64::from_le_bytes(b) } else { u64::from_be_bytes(b) })
+    };
+    let ifd = usize::try_from(page.ifd_offset).ok()?;
+    // Classic TIFF: a 2-byte entry count, 12-byte entries with the value at byte 8. BigTIFF: an
+    // 8-byte count, 20-byte entries with the value at byte 12.
+    let (count, first, size, value) =
+        if info.big_tiff { (u64_at(ifd)?, ifd.checked_add(8)?, 20usize, 12usize) } else { (u64::from(u16_at(ifd)?), ifd.checked_add(2)?, 12, 8) };
+    // A directory holds a few dozen tags; the cap bounds the walk over a hostile count.
+    for i in 0..usize::try_from(count.min(4096)).ok()? {
+        let entry = first.checked_add(i.checked_mul(size)?)?;
+        let tag = u16_at(entry)?;
+        if tag == INK_SET {
+            // One SHORT sits in the entry itself.
+            return (u16_at(entry.checked_add(2)?)? == SHORT).then(|| u16_at(entry.checked_add(value)?)).flatten();
+        }
+        // Entries are sorted by tag.
+        if tag > INK_SET {
+            break;
+        }
+    }
+    None
 }
 
 /// An SVG rasterised so its longer side is `max_side` pixels: premultiplied RGBA8.
