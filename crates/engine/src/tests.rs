@@ -11,6 +11,9 @@ mod params;
 mod roots;
 mod table;
 
+// The shared DOCX reader follows relationships; a styles part alone is not a linked stylesheet.
+pub(crate) const DOCX_STYLES_RELS: &str = r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="styles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>"#;
+
 fn session() -> Session {
     let mut s = Session::new();
     s.execute("file.new", &json!({"pages": 2})).unwrap();

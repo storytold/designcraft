@@ -809,8 +809,10 @@ mod nested_layer_tests {
             }
             let mut xml = String::new();
             entry.read_to_string(&mut xml).unwrap();
-            for cdata in xml.split("<![CDATA[").skip(1) {
-                let data = base64_decode(cdata.split("]]>").next().unwrap());
+            // Character data may use CDATA or escaped text; verify the embedded bytes either way.
+            let root = craft_xml::parse(xml.as_bytes()).unwrap();
+            for contents in root.descendants().filter(|element| element.local() == "Contents") {
+                let data = base64_decode(&contents.deep_text());
                 if designcraft_render::is_pdf(&data) {
                     actual.push(designcraft_render::pdf_layers(&data));
                 }

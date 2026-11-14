@@ -2121,6 +2121,7 @@ name = "designcraft-format"
 version = "0.20.1"
 dependencies = [
  "craft-designcraft-format",
+ "craft-document-bundle",
  "designcraft-doc",
  "serde_json",
  "zip 3.0.0",

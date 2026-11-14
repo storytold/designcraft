@@ -40,6 +40,107 @@ fn asset_entries(bytes: &[u8]) -> usize {
     z.file_names().filter(|n| n.starts_with("assets/")).count()
 }
 
+#[test]
+fn working_files_omit_only_linked_originals_and_portable_files_keep_them() {
+    let mut doc = Document::new(&NewDocument::default());
+    let linked = png_asset(&mut doc, &[7; 4096]);
+    let embedded = png_asset(&mut doc, &[8; 4096]);
+    Arc::make_mut(doc.assets.get_mut(&linked).unwrap()).link = Some("Links/art.png".into());
+    place(&mut doc, linked, 0.0);
+    place(&mut doc, embedded, 1.0);
+    assert_eq!(asset_entries(&save_working(&doc).unwrap()), 2, "existing documents stay embedded");
+    doc.settings.external_links = true;
+    let working = save_working(&doc).unwrap();
+    assert_eq!(asset_entries(&working), 1);
+    let back = load(&working).unwrap();
+    assert!(back.settings.external_links);
+    assert!(back.assets[&linked].data.is_empty(), "the format loader must never read a source path");
+    assert_eq!(back.assets[&embedded].data.as_slice(), &[8; 4096]);
+    let portable = load(&save(&doc).unwrap()).unwrap();
+    assert_eq!(portable.assets[&linked].data.as_slice(), &[7; 4096]);
+    assert_eq!(portable.assets[&embedded].data.as_slice(), &[8; 4096]);
+    assert!(!doc.assets[&linked].data.is_empty(), "saving never discards the live original");
+}
+
+fn archive_version(bytes: &[u8]) -> u64 {
+    let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+    let meta: Value = serde_json::from_reader(zip.by_name("meta.json").unwrap()).unwrap();
+    meta["version"].as_u64().unwrap()
+}
+
+#[test]
+fn portable_and_complete_linked_mode_saves_use_the_older_format() {
+    let mut doc = Document::new(&NewDocument::default());
+    doc.settings.external_links = true;
+    assert_eq!(archive_version(&save_working(&doc).unwrap()), 2, "no linked originals are omitted");
+    let id = png_asset(&mut doc, &[7; 128]);
+    Arc::make_mut(doc.assets.get_mut(&id).unwrap()).link = Some("Links/art.png".into());
+    place(&mut doc, id, 0.0);
+    let portable = save(&doc).unwrap();
+    assert_eq!(archive_version(&portable), 2, "portable files include their original artwork");
+    assert_eq!(asset_entries(&portable), 1);
+    assert_eq!(archive_version(&save_working(&doc).unwrap()), 5);
+    Arc::make_mut(doc.assets.get_mut(&id).unwrap()).link = None;
+    assert_eq!(archive_version(&save_working(&doc).unwrap()), 2);
+}
+
+#[test]
+fn linked_working_saves_combine_layer_choices_and_new_reader_capabilities() {
+    use designcraft_doc::GraphicLayerOptions;
+    let mut doc = Document::new(&NewDocument::default());
+    doc.settings.external_links = true;
+    let aid = png_asset(&mut doc, b"%PDF-1.7");
+    let asset = Arc::make_mut(doc.assets.get_mut(&aid).unwrap());
+    asset.mime = "application/pdf".into();
+    asset.link = Some("Links/art.pdf".into());
+    let id = place(&mut doc, aid, 0.0);
+    let item = doc.item_mut(id).unwrap();
+    item.pdf_layer_override = true;
+    let designcraft_doc::Content::Graphic(graphic) = &mut item.content else { panic!("fixture must be graphic") };
+    graphic.layer_options = Some(GraphicLayerOptions { layers: vec![[("Name".to_string(), "Art".to_string())].into()], ..Default::default() });
+    let portable = save(&doc).unwrap();
+    assert_eq!(archive_version(&portable), 4, "embedded layer choices keep the upstream requirement");
+    let shared = craft_designcraft_format::load::<Document>(&portable).unwrap();
+    assert!(shared.document.item(id).unwrap().pdf_layer_override, "the shared version-4 reader still understands portable layer choices");
+    let working = save_working(&doc).unwrap();
+    assert_eq!(archive_version(&working), 5, "upstream version 4 readers cannot hydrate omitted originals");
+    assert!(matches!(craft_designcraft_format::load::<Document>(&working), Err(FormatError::TooNew(5))));
+    let back = load(&working).unwrap();
+    assert!(back.assets[&aid].data.is_empty());
+    assert!(back.item(id).unwrap().pdf_layer_override);
+    assert_eq!(back.item(id).unwrap().graphic().unwrap().layer_options, doc.item(id).unwrap().graphic().unwrap().layer_options);
+    let (text, _) =
+        doc.add_text_frame(SpreadRef::Doc(0), Rect::new(10.0, 10.0, 200.0, 200.0), doc.default_layer(), "Legacy", ParaFormat::default()).unwrap();
+    doc.item_mut(text).unwrap().text_frame_mut().unwrap().options.legacy_first_baseline = true;
+    let portable = save(&doc).unwrap();
+    assert_eq!(archive_version(&portable), 5);
+    let back = load(&portable).unwrap();
+    assert!(back.item(text).unwrap().text_frame().unwrap().options.legacy_first_baseline);
+    assert!(back.item(id).unwrap().pdf_layer_override);
+}
+
+#[test]
+fn linked_pdf_crop_boxes_survive_working_save_compaction() {
+    let mut doc = Document::new(&NewDocument::default());
+    doc.settings.external_links = true;
+    let boxes = [[0.0, 0.0, 0.5, 1.0], [0.5, 0.0, 1.0, 1.0], [0.0, 0.0, 0.5, 1.0]];
+    for (n, crop) in boxes.into_iter().enumerate() {
+        let id = png_asset(&mut doc, b"%PDF-synthetic");
+        let asset = Arc::make_mut(doc.assets.get_mut(&id).unwrap());
+        asset.mime = "application/pdf".into();
+        asset.link = Some("Links/spread.pdf".into());
+        asset.pdf_box = Some(crop);
+        place(&mut doc, id, n as f64);
+    }
+    let working = save_working(&doc).unwrap();
+    assert_eq!(asset_entries(&working), 0);
+    let reopened = load(&working).unwrap();
+    assert_eq!(reopened.assets.len(), 2, "matching boxes still merge, distinct visible boxes stay separate");
+    for crop in [boxes[0], boxes[1]] {
+        assert!(reopened.assets.values().any(|a| a.pdf_box == Some(crop) && a.data.is_empty()));
+    }
+}
+
 /// Zip `d` the way files were saved with one asset per placement (nothing merged or pruned).
 fn save_uncompacted(d: &Document) -> Vec<u8> {
     let mut buf = Cursor::new(Vec::new());
@@ -221,6 +322,26 @@ fn save_v1(doc: &Document) -> Vec<u8> {
     z.start_file("document.json", zip::write::SimpleFileOptions::default()).unwrap();
     z.write_all(&serde_json::to_vec(doc).unwrap()).unwrap();
     z.finish().unwrap().into_inner()
+}
+
+#[test]
+fn format_1_first_baselines_are_preserved_through_a_new_save() {
+    let mut doc = Document::new(&NewDocument::default());
+    let layer = doc.default_layer();
+    let (id, _) = doc.add_text_frame(SpreadRef::Doc(0), Rect::new(10.0, 10.0, 200.0, 200.0), layer, "Legacy title", ParaFormat::default()).unwrap();
+    assert!(!doc.item(id).unwrap().text_frame().unwrap().options.legacy_first_baseline);
+    let migrated = load(&save_v1(&doc)).unwrap();
+    assert!(migrated.item(id).unwrap().text_frame().unwrap().options.legacy_first_baseline);
+    let bytes = save(&migrated).unwrap();
+    let mut archive = zip::ZipArchive::new(Cursor::new(&bytes)).unwrap();
+    let mut meta_json = String::new();
+    archive.by_name("meta.json").unwrap().read_to_string(&mut meta_json).unwrap();
+    let meta: Value = serde_json::from_str(&meta_json).unwrap();
+    assert_eq!(meta["version"], 5, "older readers must refuse rather than silently move text");
+    let reopened = load(&bytes).unwrap();
+    assert!(reopened.item(id).unwrap().text_frame().unwrap().options.legacy_first_baseline);
+    let modern = load(&save(&doc).unwrap()).unwrap();
+    assert!(!modern.item(id).unwrap().text_frame().unwrap().options.legacy_first_baseline);
 }
 
 fn para_style(name: &str, based_on: Option<&str>, keep_all_lines: Option<bool>) -> designcraft_doc::ParagraphStyle {
@@ -868,4 +989,57 @@ fn duplicate_ids_at_the_top_of_the_range_do_not_overflow() {
     d.renumber_duplicate_items();
     assert_eq!(all_item_ids(&d), vec![u64::MAX, u64::MAX]);
     assert!(d.check().is_err());
+}
+
+#[test]
+fn formats_2_through_4_do_not_guess_legacy_baseline_metrics() {
+    let mut doc = Document::new(&NewDocument::default());
+    let layer = doc.default_layer();
+    let (id, _) = doc.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 200.0, 200.0), layer, "Modern", ParaFormat::default()).unwrap();
+    for version in 2..=4 {
+        let mut z = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        z.start_file("meta.json", zip::write::SimpleFileOptions::default()).unwrap();
+        z.write_all(serde_json::to_string(&json!({"format":"designcraft","version":version})).unwrap().as_bytes()).unwrap();
+        z.start_file("document.json", zip::write::SimpleFileOptions::default()).unwrap();
+        z.write_all(&serde_json::to_vec(&doc).unwrap()).unwrap();
+        let loaded = load(&z.finish().unwrap().into_inner()).unwrap();
+        assert!(
+            !loaded.item(id).unwrap().text_frame().unwrap().options.legacy_first_baseline,
+            "format {version} cannot distinguish pre/post metric-change documents"
+        );
+    }
+}
+
+#[test]
+fn streamed_recovery_embeds_external_originals_while_working_saves_omit_them() {
+    let mut doc = Document::new(&NewDocument::default());
+    let id = png_asset(&mut doc, b"linked original");
+    Arc::make_mut(doc.assets.get_mut(&id).unwrap()).link = Some("artwork.png".into());
+    place(&mut doc, id, 1.0);
+    doc.settings.external_links = true;
+    let mut out = Cursor::new(Vec::new());
+    write(&mut out, &doc, None).unwrap();
+    let portable = load(&out.into_inner()).unwrap();
+    assert_eq!(portable.assets[&id].data.as_slice(), b"linked original");
+    let working = load(&save_working(&doc).unwrap()).unwrap();
+    assert!(working.assets[&id].data.is_empty());
+    assert_eq!(doc.assets[&id].data.as_slice(), b"linked original");
+}
+
+#[test]
+fn writing_to_a_stream_makes_the_same_file_as_saving_in_memory() {
+    // A save that streams needs no copy of the archive in RAM; it must write the same package.
+    let mut d = Document::new(&NewDocument::default());
+    let a = png_asset(&mut d, b"streamed bytes");
+    place(&mut d, a, 0.0);
+    let png = b"\x89PNG streamed".to_vec();
+    let saved = save_with_preview(&d, Some(&png)).unwrap();
+    let mut out = Cursor::new(Vec::new());
+    write(&mut out, &d, Some(&png)).unwrap();
+    let streamed = out.into_inner();
+    assert_eq!(saved.len(), streamed.len());
+    assert_eq!(asset_entries(&streamed), 1);
+    let back = load(&streamed).unwrap();
+    assert_eq!(back.assets.len(), 1);
+    assert_eq!(read_preview(Cursor::new(&streamed)), Some(png));
 }

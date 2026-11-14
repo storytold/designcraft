@@ -13,8 +13,14 @@ use serde_json::Value;
 use std::collections::HashSet;
 
 pub use craft_designcraft_format::{
-    EXTENSION, Error as FormatError, MAX_PREVIEW_BYTES, MIME, PREVIEW, VERSION, is_designcraft, read_preview, starts_designcraft,
+    EXTENSION, Error as FormatError, MAX_PREVIEW_BYTES, MIME, PREVIEW, is_designcraft, read_preview, starts_designcraft,
 };
+
+mod linked_compat;
+mod streaming;
+
+/// Version 5 retains omitted external originals and legacy text baselines.
+pub const VERSION: u32 = 5;
 
 #[cfg(test)]
 mod tests;
@@ -26,20 +32,32 @@ pub fn save(doc: &Document) -> Result<Vec<u8>, FormatError> {
 
 /// [`save`], plus a PNG preview of the first page.
 pub fn save_with_preview(doc: &Document, preview: Option<&[u8]>) -> Result<Vec<u8>, FormatError> {
+    let mut out = std::io::Cursor::new(Vec::new());
+    write(&mut out, doc, preview)?;
+    Ok(out.into_inner())
+}
+
+/// Stream portable originals directly to a seekable writer, including recovery's cancellable writer.
+pub fn write<W: std::io::Write + std::io::Seek>(out: &mut W, doc: &Document, preview: Option<&[u8]>) -> Result<(), FormatError> {
+    let compact = prepared(doc)?;
+    streaming::write(out, &compact, preview, required_version(&compact))
+}
+
+fn prepared(doc: &Document) -> Result<Document, FormatError> {
     if let Some(id) = doc.non_finite_item() {
         return Err(FormatError::Unsaveable(format!("object {} has a position or size that is not a finite number", id.0)));
     }
     let mut compact = doc.clone();
     compact.compact_assets();
-    let owned_assets = compact.assets.values().map(|asset| (asset.id.0.to_string(), asset.mime.clone(), asset.data.clone())).collect::<Vec<_>>();
-    let assets = owned_assets.iter().map(|(id, mime, data)| craft_designcraft_format::Asset { id, mime, data }).collect::<Vec<_>>();
-    craft_designcraft_format::save(&compact, concat!("DesignCraft ", env!("CARGO_PKG_VERSION")), preview, &assets)
+    Ok(compact)
 }
 
 /// Required native format version for a document. Kept for app-side compatibility; inference is
 /// performed by the shared codec over the serialized neutral document schema.
-#[cfg(test)]
 fn required_version(doc: &Document) -> u32 {
+    if linked_compat::legacy_baselines(doc) {
+        return VERSION;
+    }
     let Ok(value) = serde_json::to_value(doc) else { return VERSION };
     let owned_assets = doc.assets.values().map(|asset| (asset.id.0.to_string(), asset.mime.clone(), asset.data.clone())).collect::<Vec<_>>();
     let assets = owned_assets.iter().map(|(id, mime, data)| craft_designcraft_format::Asset { id, mime, data }).collect::<Vec<_>>();
@@ -48,7 +66,7 @@ fn required_version(doc: &Document) -> u32 {
 
 /// Read `.designcraft` bytes (ZIP, or legacy single JSON).
 pub fn load(bytes: &[u8]) -> Result<Document, FormatError> {
-    let loaded = craft_designcraft_format::load::<Document>(bytes)?;
+    let (loaded, version) = linked_compat::load(bytes)?;
     let mut doc = loaded.document;
     let fingerprint = std::collections::hash_map::RandomState::new();
     let mut dedup: HashMap<u64, Vec<Arc<Vec<u8>>>> = HashMap::new();
@@ -67,9 +85,40 @@ pub fn load(bytes: &[u8]) -> Result<Document, FormatError> {
         };
         Arc::make_mut(asset).data = data;
     }
+    if version < 2 {
+        linked_compat::pin_baselines(&mut doc);
+    }
     doc.merge_duplicate_assets();
     doc.mark_differing_margins_local();
     doc.renumber_duplicate_items();
     doc.check().map_err(|error| FormatError::NotOurs(error.to_string()))?;
     Ok(doc)
+}
+
+/// Save the working document while allowing external-linked originals to be omitted.
+pub fn save_working(doc: &Document) -> Result<Vec<u8>, FormatError> {
+    save_working_with_preview(doc, None)
+}
+
+/// A working save with an optional first-page preview; portable writes always retain originals.
+pub fn save_working_with_preview(doc: &Document, preview: Option<&[u8]>) -> Result<Vec<u8>, FormatError> {
+    if !doc.settings.external_links {
+        return save_with_preview(doc, preview);
+    }
+    if let Some(id) = doc.non_finite_item() {
+        return Err(FormatError::Unsaveable(format!("object {} has a position or size that is not a finite number", id.0)));
+    }
+    let mut compact = doc.clone();
+    let empty = Arc::new(Vec::new());
+    for asset in compact.assets.values_mut() {
+        if asset.link.is_some() && asset.is_linkable_graphic() {
+            Arc::make_mut(asset).data = empty.clone();
+        }
+    }
+    compact.compact_assets();
+    let omits_links = compact.assets.values().any(|asset| asset.link.is_some() && asset.is_linkable_graphic());
+    let version = if omits_links { VERSION } else { required_version(&compact) };
+    let mut out = std::io::Cursor::new(Vec::new());
+    streaming::write(&mut out, &compact, preview, version)?;
+    Ok(out.into_inner())
 }

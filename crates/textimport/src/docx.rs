@@ -6,9 +6,7 @@ use std::collections::{HashMap, HashSet};
 use craft_wordmodel::Block;
 use craft_wordmodel::numbering::LevelSuffix;
 use craft_wordmodel::para::{InlineObject, NoteKind, Paragraph};
-use craft_wordmodel::props::{
-    Align as WordAlign, CharProps as WordCharProps, NumRef, ParaProps as WordParaProps, Underline, VertAlign,
-};
+use craft_wordmodel::props::{Align as WordAlign, CharProps as WordCharProps, NumRef, ParaProps as WordParaProps, Underline, VertAlign};
 use craft_wordmodel::section::NumFormat;
 use craft_wordmodel::styles::{StyleKind, StyleSheet};
 use designcraft_doc::story::{BASIC_PARAGRAPH, NO_CHAR_STYLE};

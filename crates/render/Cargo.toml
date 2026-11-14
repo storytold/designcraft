@@ -25,7 +25,7 @@ serde = { workspace = true }
 craft-image-codecs = { workspace = true }
 
 [dev-dependencies]
-image = { workspace = true, features = ["png", "gif", "tiff"] }
+image = { workspace = true, features = ["png", "gif", "jpeg", "tiff"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 vello_cpu = { workspace = true, features = ["multithreading"] }

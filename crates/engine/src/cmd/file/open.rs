@@ -100,7 +100,10 @@ fn open_path(s: &mut Session, p: &Value) -> Result<Value> {
             Some(loaded) => loaded,
             None => load_bytes(&bytes)?,
         };
-        crate::cmd::interchange::resolve_packaged_links(&mut d, Some(std::path::Path::new(path)));
+        warnings.extend(crate::cmd::native_links::resolve(&mut d, Some(std::path::Path::new(path))));
+        if !d.settings.external_links {
+            crate::cmd::interchange::resolve_packaged_links(&mut d, Some(std::path::Path::new(path)));
+        }
         crate::cmd::datamerge::resolve_sources_on_open(&mut d, Some(std::path::Path::new(path)));
         let (fonts, faces, font_warnings) = load_document_fonts(&mut d, path);
         warnings.extend(font_warnings);
@@ -171,10 +174,11 @@ pub(super) fn file_open_bytes(s: &mut Session, p: &Value) -> Result<Value> {
     if format == Some(craft_file_formats::Format::Idml) || (!native && format == Some(craft_file_formats::Format::Indd) && legacy.is_none()) {
         return crate::cmd::interchange::open_idml(s, p);
     }
-    let (mut d, warnings) = match legacy {
+    let (mut d, mut warnings) = match legacy {
         Some(loaded) => loaded,
         None => load_bytes(&b)?,
     };
+    warnings.extend(crate::cmd::native_links::resolve(&mut d, None));
     crate::cmd::datamerge::resolve_sources_on_open(&mut d, None);
     if let Some(n) = str_param(p, "name") {
         // Titled as an IDML file opened from bytes is: without its extension.

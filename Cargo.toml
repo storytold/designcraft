@@ -14,6 +14,7 @@ repository = "https://github.com/storytold/designcraft"
 # Shared reader and writer; publish the immutable revision before this consumer.
 craft-pdf = { git = "https://github.com/storytold/craft-libs", rev = "40525913633942f84b06d4837a8d90534a55d63f", version = "=0.1.0", default-features = false }
 craft-designcraft-format = { git = "https://github.com/storytold/craft-libs", rev = "93d0998383aa150fa50a2ffbf49ef37786e37eca", version = "=0.1.0" }
+craft-document-bundle = { git = "https://github.com/storytold/craft-libs", rev = "93d0998383aa150fa50a2ffbf49ef37786e37eca", version = "=0.1.0" }
 craft-eps = { git = "https://github.com/storytold/craft-libs", rev = "ba24fe2435adb3c81ad6057faf36365fbba736cf", version = "=0.1.0" }
 craft-epub = { git = "https://github.com/storytold/craft-libs", rev = "ba24fe2435adb3c81ad6057faf36365fbba736cf", version = "=0.1.0" }
 craft-idml = { git = "https://github.com/storytold/craft-libs", rev = "1ad5f35bf", version = "=0.1.0" }

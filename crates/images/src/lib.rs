@@ -6,12 +6,14 @@
 use std::sync::{Arc, OnceLock};
 
 pub use craft_svg::tree::usvg;
+pub use image::RgbaImage;
 
 pub mod colour;
 mod eps;
 mod jpeg;
 mod psd;
 mod resolution;
+mod tiff_policy;
 mod tone;
 pub use craft_eps::is_eps;
 pub use eps::{bounding_box as eps_bounding_box, eps_pixel_size, eps_png, eps_proxy, eps_size};
@@ -400,8 +402,13 @@ pub fn decode_rgba(bytes: &[u8]) -> Option<image::RgbaImage> {
     if is_eps(bytes) {
         return decode_rgba(&eps_proxy(bytes)?.0);
     }
+    let tiff_policy =
+        if craft_image_codecs::detect(bytes) == Some(craft_image_codecs::Format::Tiff) { Some(tiff_policy::inspect(bytes)?) } else { None };
+    if tiff_policy == Some(tiff_policy::TiffInkPolicy::Refuse) {
+        return None;
+    }
     let decoded = craft_image_codecs::decode_with(bytes, &decode_options()).ok()?;
-    if decoded.layout().is_cmyk() {
+    if decoded.layout().is_cmyk() && tiff_policy != Some(tiff_policy::TiffInkPolicy::Rgb) {
         let raster = cmyk_raster(&decoded, bytes)?;
         return to_display_rgba(Pixels::Cmyk(raster), decoded.icc.as_deref(), &DisplayColour::active());
     }
@@ -525,7 +532,7 @@ pub fn is_cmyk_tiff(bytes: &[u8]) -> bool {
 /// format, another ink set (InkSet 2), planar storage or premultiplied alpha — and for files
 /// over the decoder's 256 MiB limit; [`is_cmyk_tiff`] tells those apart from RGB files.
 pub fn decode_cmyk_tiff(bytes: &[u8]) -> Option<CmykRaster> {
-    if too_large_to_decode(bytes) {
+    if too_large_to_decode(bytes) || tiff_policy::inspect(bytes)? != tiff_policy::TiffInkPolicy::Preserve {
         return None;
     }
     let image = craft_image_codecs::decode_with(bytes, &decode_options()).ok()?;

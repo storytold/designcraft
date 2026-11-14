@@ -10,8 +10,8 @@ workspace = true
 
 [dependencies]
 craft-designcraft-format = { workspace = true }
+craft-document-bundle = { workspace = true }
 designcraft-doc = { workspace = true }
 
-[dev-dependencies]
 serde_json = { workspace = true }
 zip = { workspace = true }

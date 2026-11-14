@@ -2889,6 +2889,9 @@ fn text_frame_options(s: &mut Session, p: &Value) -> Result<Value> {
                 o.vertical_justification = v;
             }
             if let Some(v) = first_baseline {
+                if v != o.first_baseline {
+                    o.legacy_first_baseline = false;
+                }
                 o.first_baseline = v;
             }
             if let Some(v) = auto_size {

@@ -86,11 +86,14 @@ pub(super) fn jpeg(data: krilla::Data, icc: impl FnOnce() -> Option<Vec<u8>>, mo
 /// Whether krilla would write this PNG, GIF or WebP as untagged RGB: not grey, and no profile of
 /// its own.
 fn untagged_rgb(data: &[u8]) -> bool {
-    let Some(info) = craft_image_codecs::inspect_raster(data).ok().flatten() else { return false };
-    !matches!(
-        info.color_type,
-        craft_image_codecs::RasterColorType::Bitmap | craft_image_codecs::RasterColorType::Gray | craft_image_codecs::RasterColorType::GrayAlpha
-    ) && embedded_icc(data).is_none()
+    // The shared header inspector does not cover WebP. A successfully decoded but unclassified
+    // raster must still get an RGB profile under a CMYK output intent.
+    craft_image_codecs::inspect_raster(data).ok().flatten().is_none_or(|info| {
+        !matches!(
+            info.color_type,
+            craft_image_codecs::RasterColorType::Bitmap | craft_image_codecs::RasterColorType::Gray | craft_image_codecs::RasterColorType::GrayAlpha
+        )
+    }) && embedded_icc(data).is_none()
 }
 
 pub(super) fn lossless(data: &Arc<Vec<u8>>, fmt: Option<craft_image_codecs::Format>, mode: RasterMode) -> Option<Image> {
@@ -171,7 +174,8 @@ thread_local! {
 /// Opaque raster → JPEG (quality 90). `None` when the image has transparency, is too large or
 /// can't be decoded. With `tag_rgb`, the JPEG keeps the source's RGB profile, or gets sRGB.
 pub(super) fn recompress(data: &[u8], mode: RasterMode) -> Option<Image> {
-    if designcraft_images::too_large_to_decode(data) {
+    // CMYK's RGB-only fallback must use the app's eligibility and working-profile conversion.
+    if designcraft_images::too_large_to_decode(data) || designcraft_images::is_cmyk_tiff(data) {
         return None;
     }
     #[cfg(test)]
@@ -388,30 +392,32 @@ mod image_content_cache_tests {
                 designcraft_images::decode_rgba(&bytes).map_or_else(Vec::new, |img| img.pixels().flat_map(|p| [p[0], p[1], p[2]]).collect());
             let a = asset(&mut d, bytes.clone(), "a.tif");
             let b = asset(&mut d, bytes, "b.tif");
-            for standard in [Standard::None, Standard::PdfA2b, Standard::PdfX4, Standard::PdfA2b, Standard::None] {
-                let opts = PdfOptions { standard, ..Default::default() };
-                let mut ex = exporter(&d, &cache, &opts);
-                ex.rgb_only = standard == Standard::PdfA2b;
-                // Unassociated alpha (2) decodes as inks, and as RGB for RGB-only exports.
-                // Associated alpha is rejected by both paths: retain both failure names.
-                let succeeds = alpha.is_none() || alpha == Some(2);
-                let first = ex.load_image(a);
-                assert_eq!(first.is_some(), succeeds, "{alpha:?} {standard:?}");
-                if alpha.is_none() {
-                    let (space, samples) = image_color_samples(first.unwrap());
-                    assert_eq!(space, if ex.rgb_only { "DeviceRGB" } else { "DeviceCMYK" });
-                    assert_eq!(samples, if ex.rgb_only { screen_rgb.clone() } else { crate::image_fixtures::INKS.to_vec() });
-                }
-                assert_eq!(ex.load_image(b).is_some(), succeeds, "{alpha:?} {standard:?}");
-                assert_eq!(ex.load_image(a).is_some(), succeeds);
-                assert_eq!(ex.image_conversions, if succeeds { 1 } else { 2 });
-                assert_eq!(ex.images_by_content.len(), usize::from(succeeds));
-                if succeeds {
-                    assert!(ex.warnings.is_empty());
-                } else {
-                    for name in ["a.tif", "b.tif"] {
-                        assert!(ex.warnings.contains(&format!("image `{name}` could not be decoded and was skipped")));
-                        assert_eq!(ex.warnings.contains(&format!("{name}: {CMYK_FALLBACK_WARNING}")), !ex.rgb_only);
+            for compress_images in [false, true] {
+                for standard in [Standard::None, Standard::PdfA2b, Standard::PdfX4, Standard::PdfA2b, Standard::None] {
+                    let opts = PdfOptions { standard, compress_images, ..Default::default() };
+                    let mut ex = exporter(&d, &cache, &opts);
+                    ex.rgb_only = standard == Standard::PdfA2b;
+                    // Unassociated alpha (2) decodes as inks, and as RGB for RGB-only exports.
+                    // Associated alpha is rejected by both paths: retain both failure names.
+                    let succeeds = alpha.is_none() || alpha == Some(2);
+                    let first = ex.load_image(a);
+                    assert_eq!(first.is_some(), succeeds, "{alpha:?} {standard:?}");
+                    if alpha.is_none() {
+                        let (space, samples) = image_color_samples(first.unwrap());
+                        assert_eq!(space, if ex.rgb_only { "DeviceRGB" } else { "DeviceCMYK" });
+                        assert_eq!(samples, if ex.rgb_only { screen_rgb.clone() } else { crate::image_fixtures::INKS.to_vec() });
+                    }
+                    assert_eq!(ex.load_image(b).is_some(), succeeds, "{alpha:?} {standard:?}");
+                    assert_eq!(ex.load_image(a).is_some(), succeeds);
+                    assert_eq!(ex.image_conversions, if succeeds { 1 } else { 2 });
+                    assert_eq!(ex.images_by_content.len(), usize::from(succeeds));
+                    if succeeds {
+                        assert!(ex.warnings.is_empty());
+                    } else {
+                        for name in ["a.tif", "b.tif"] {
+                            assert!(ex.warnings.contains(&format!("image `{name}` could not be decoded and was skipped")));
+                            assert_eq!(ex.warnings.contains(&format!("{name}: {CMYK_FALLBACK_WARNING}")), !ex.rgb_only);
+                        }
                     }
                 }
             }

@@ -4,6 +4,27 @@ use crate::app::file_dialogs::Bound;
 /// Links: status (missing / modified / embedded), page and effective resolution of every placed
 /// graphic and linked text file; Relink, Go To Link, Update Link, Embed Link for the chosen row.
 pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
+    if let Some(st) = app.session.active() {
+        let mut external = st.doc.settings.external_links;
+        if ui
+            .add_enabled(
+                !cfg!(target_arch = "wasm32"),
+                egui::Checkbox::new(&mut external, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Keep linked artwork external on save"))),
+            )
+            .changed()
+            && let Err(error) = app.run("links.storage", json!({"mode": if external { "linked" } else { "embedded" }}))
+        {
+            app.status(error.to_string());
+        }
+        crate::rtl::label(
+            ui,
+            crate::i18n::tr(
+                &app.ui.language,
+                "Linked-only saves need the original files. Keep them with the document: moving, deleting or changing them can leave artwork missing or changed when reopening. Use Package to collect originals, or Embed for a self-contained file.",
+            ),
+        );
+        ui.separator();
+    }
     // Linked stories (Place and Link).
     let stories = app.session.execute("story.links", &json!({})).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
     if !stories.is_empty() {

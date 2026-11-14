@@ -40,6 +40,7 @@ mod lists;
 mod load_styles;
 mod mathexpr;
 mod media;
+mod native_links;
 mod notes;
 mod object;
 pub use object::text_frame_options_frames;

@@ -2,6 +2,7 @@
 //! Common phrases are adapted from the MIT OR Apache-2.0 ArtCraft sibling catalogs
 //! (VectorCraft, PhotoCraft, WordCraft and DeckCraft); see ASSETS.md for pinned sources.
 pub(super) const TABLE: &[(&str, &str)] = &[
+    ("Keep linked artwork external on save", "Зберігати пов’язану графіку зовні під час збереження"),
     ("Fewer Options", "Менше параметрів"),
     ("Tab Character", "Символ табуляції"),
     ("Right Indent Tab", "Табуляція правого відступу"),
