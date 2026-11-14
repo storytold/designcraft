@@ -35,19 +35,47 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     }
     let Some(st) = app.session.active() else { return };
     let t = Tokens::get(ui.ctx());
-    // The list checks files on disk: refresh it at most twice a second.
-    let key = egui::Id::unique("links_panel");
-    let now = ui.input(|i| i.time);
-    let rev = (st.uid, st.revision);
-    let cached: Option<(f64, (u64, u64), Vec<Value>)> = ui.data(|d| d.get_temp(key));
-    let rows = match cached {
-        Some((at, r, rows)) if r == rev && now - at < 0.5 => rows,
-        _ => {
-            let rows = app.session.execute("links.list", &json!({})).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
-            ui.data_mut(|d| d.insert_temp(key, (now, rev, rows.clone())));
-            rows
+    // Whether a linked file is still there and unchanged is asked of the file system, and a
+    // network path may take an operating-system timeout to answer: native builds list the links
+    // from the document and take their statuses from a check on a background worker.
+    #[cfg(not(target_arch = "wasm32"))]
+    let refresh = {
+        let doc = std::sync::Arc::clone(&st.doc);
+        let snapshot = crate::links_worker::Snapshot {
+            key: crate::links_worker::Key::new(st.uid, &doc, st.path.as_deref()),
+            doc: std::sync::Arc::clone(&doc),
+            cache: std::sync::Arc::clone(&app.session.cache),
+            document: st.path.as_ref().map(std::path::PathBuf::from),
+        };
+        let refresh = app.links_worker.rows(ui.ctx(), snapshot);
+        // A file the check read and found unchanged isn't read again, in this session or the next.
+        if !refresh.verified.is_empty() {
+            designcraft_engine::cmd::remember_link_files(&mut app.session, &doc, &refresh.verified);
+        }
+        refresh
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    let rows = &refresh.values;
+    // Web builds have no filesystem to wait for: the list is refreshed at most twice a second.
+    #[cfg(target_arch = "wasm32")]
+    let rows = {
+        let key = egui::Id::unique("links_panel");
+        let now = ui.input(|i| i.time);
+        let rev = (st.uid, st.revision);
+        let cached: Option<(f64, (u64, u64), Vec<Value>)> = ui.data(|d| d.get_temp(key));
+        match cached {
+            Some((at, r, rows)) if r == rev && now - at < 0.5 => rows,
+            _ => {
+                let rows = app.session.execute("links.list", &json!({})).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
+                ui.data_mut(|d| d.insert_temp(key, (now, rev, rows.clone())));
+                rows
+            }
         }
     };
+    #[cfg(not(target_arch = "wasm32"))]
+    if refresh.unavailable && !rows.is_empty() {
+        crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Link status is unavailable.")).color(t.text_dim).size(11.0));
+    }
     if rows.is_empty() {
         crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "No placed graphics.")).color(t.text_dim));
         return;
@@ -61,7 +89,7 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Status")).color(t.text_dim).size(11.0));
         crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Page · PPI")).color(t.text_dim).size(11.0));
         ui.end_row();
-        for r in &rows {
+        for r in rows.iter() {
             // Asset and story ids come from one counter: a row is chosen by either.
             let aid = r["asset"].as_u64().or_else(|| r["story"].as_u64()).unwrap_or(0);
             let name = r["name"].as_str().unwrap_or("");
@@ -90,6 +118,7 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
                 "missing" => ("\u{26A0} Missing", egui::Color32::from_rgb(0xe5, 0x4b, 0x4b)),
                 "modified" => ("\u{25B2} Modified", egui::Color32::from_rgb(0xe8, 0xb3, 0x2c)),
                 "embedded" => ("Embedded", t.text_dim),
+                "checking" => ("Checking", t.text_dim),
                 "tooLarge" => ("Too large to check", egui::Color32::from_rgb(0xe8, 0xb3, 0x2c)),
                 _ => ("OK", t.text_dim),
             };
@@ -203,14 +232,22 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
 /// first when a linked text story edited in the layout would lose those edits, as InDesign's
 /// Links panel does. The `links.update` command itself doesn't ask (as in InDesign scripting).
 pub fn update_links(app: &mut DesignApp, target: Value) {
-    let rows = app.session.execute("links.list", &json!({})).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
     let one = target.get("story").and_then(Value::as_u64);
     let all = one.is_none() && target.get("asset").is_none();
-    let edited: Vec<&str> = rows
-        .iter()
-        .filter(|r| (all || (one.is_some() && r["story"].as_u64() == one)) && r["edited"] == true && r["status"] == "modified")
-        .filter_map(|r| r["name"].as_str())
-        .collect();
+    let wanted = |r: &Value| (all || (one.is_some() && r["story"].as_u64() == one)) && r["edited"] == true;
+    // Which linked stories were edited in the layout is in the document. Only when one was are
+    // the files asked whether it changed too: `links.list` asks every linked file, on this
+    // thread, and a share that doesn't answer would hold up every other update.
+    let any_edited = app.session.active().is_some_and(|st| {
+        let document = st.path.as_deref().map(std::path::Path::new);
+        designcraft_engine::cmd::preview_document_links(&st.doc, &app.session.cache, document).iter().any(wanted)
+    });
+    let rows = if any_edited {
+        app.session.execute("links.list", &json!({})).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let edited: Vec<&str> = rows.iter().filter(|r| wanted(r) && r["status"] == "modified").filter_map(|r| r["name"].as_str()).collect();
     if edited.is_empty() {
         let _ = run_update_links(app, target);
     } else {
@@ -263,18 +300,29 @@ pub fn info_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
 
 pub fn preflight_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
-    let issues = designcraft_engine::cmd::preflight::check(&app.session, 150.0);
+    let found = crate::preflight_worker::issues(app, ui.ctx());
+    // The active document's first check hasn't ended.
+    let checking = found.is_none() && app.session.active().is_some();
+    let issues = found.unwrap_or_default();
     let errors = issues.iter().filter(|i| i.severity == "error").count();
     ui.horizontal(|ui| {
         let (r, _) = ui.allocate_exact_size(vec2(10.0, 10.0), egui::Sense::hover());
         ui.painter().circle_filled(
             r.center(),
             4.5,
-            if errors == 0 { egui::Color32::from_rgb(60, 200, 90) } else { egui::Color32::from_rgb(235, 50, 50) },
+            if checking {
+                t.text_dim
+            } else if errors == 0 {
+                egui::Color32::from_rgb(60, 200, 90)
+            } else {
+                egui::Color32::from_rgb(235, 50, 50)
+            },
         );
         crate::rtl::label(
             ui,
-            if issues.is_empty() {
+            if checking {
+                crate::i18n::tr(&app.ui.language, "Checking").to_string()
+            } else if issues.is_empty() {
                 crate::i18n::tr(&app.ui.language, "No errors").to_string()
             } else {
                 format!(
@@ -286,7 +334,7 @@ pub fn preflight_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         );
     });
     divider(ui);
-    for i in issues {
+    for i in issues.iter() {
         let page = i.page.filter(|_| app.session.active().is_some()).map(|p| app.session.page_label(p));
         let text = format!("{}  {}", if i.severity == "error" { "⛔" } else { "⚠" }, i.message);
         let resp = ui.add(egui::Button::new(egui::RichText::new(text).size(11.0)).frame(false));

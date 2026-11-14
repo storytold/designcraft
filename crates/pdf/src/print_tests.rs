@@ -1,13 +1,13 @@
 //! CMYK print output, read back from the exported PDF: blending spaces, the output intent,
 //! overprint and knockout groups.
 
+use craft_pdf::syntax::Pdf;
+use craft_pdf::syntax::object::{Array, Dict, Name, Object, Stream};
 use designcraft_color::cms::{self, Cms, ColorSettings};
 use designcraft_compose::Cache;
 use designcraft_doc::build::NewDocument;
 use designcraft_doc::{BlendSpace, Document, Fill, Item, ItemId, SpreadRef};
 use designcraft_geom::Rect;
-use hayro_syntax::Pdf;
-use hayro_syntax::object::{Array, Dict, Name, Object, Stream};
 
 use crate::{PdfOptions, export_pdf};
 
@@ -38,7 +38,7 @@ pub(crate) struct Intent {
 }
 
 fn text(d: &Dict<'_>, key: &[u8]) -> Option<String> {
-    d.get::<hayro_syntax::object::String>(key).map(|s| String::from_utf8_lossy(s.as_bytes()).into_owned())
+    d.get::<craft_pdf::syntax::object::String>(key).map(|s| String::from_utf8_lossy(s.as_bytes()).into_owned())
 }
 
 /// The catalog's `GTS_PDFX` output intent.

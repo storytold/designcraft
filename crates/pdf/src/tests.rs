@@ -29,12 +29,12 @@ fn uncompressed(d: &Document, opts: PdfOptions) -> String {
 
 /// Text of every page through hayro's interpreter (glyph → Unicode via ToUnicode / ActualText).
 pub(crate) fn extract_text(bytes: &[u8]) -> Vec<String> {
+    use craft_pdf::syntax::Pdf;
     use hayro_interpret::font::Glyph;
     use hayro_interpret::{
         BlendMode, ClipPath, Context, Device, GlyphDrawMode, Image, InterpreterCache, InterpreterSettings, Paint, PathDrawMode, SoftMask,
         interpret_page,
     };
-    use hayro_syntax::Pdf;
     struct Ex(String);
     impl Device<'_> for Ex {
         fn set_soft_mask(&mut self, _: Option<SoftMask<'_>>) {}
@@ -72,7 +72,7 @@ fn exports_valid_pdf_with_one_page_per_page() {
     let d = doc_with_text("Hello DesignCraft");
     let bytes = export_pdf(&d, &Cache::new(), &PdfOptions::default()).unwrap();
     assert!(bytes.starts_with(b"%PDF-1.7"));
-    let pdf = hayro_syntax::Pdf::new(bytes.clone()).expect("parse");
+    let pdf = craft_pdf::syntax::Pdf::new(bytes.clone()).expect("parse");
     assert_eq!(pdf.pages().len(), 2);
 }
 
@@ -173,7 +173,7 @@ fn spreads_and_ranges() {
     let n = d.page_count();
     assert_eq!(n, 4);
     let bytes = export_pdf(&d, &Cache::new(), &PdfOptions { spreads: true, ..Default::default() }).unwrap();
-    let pages = hayro_syntax::Pdf::new(bytes).unwrap().pages().len();
+    let pages = craft_pdf::syntax::Pdf::new(bytes).unwrap().pages().len();
     assert_eq!(pages, d.spreads.len());
     assert_eq!(parse_page_range("1-2, 4", 4).unwrap(), vec![0, 1, 3]);
     assert_eq!(parse_page_range("3-", 4).unwrap(), vec![2, 3]);
@@ -187,7 +187,7 @@ fn spreads_and_ranges() {
     assert!(parse_page_range("5", 4).is_err());
     assert!(parse_page_range("x", 4).is_err());
     let bytes = export_pdf(&d, &Cache::new(), &PdfOptions { pages: Some(vec![1, 2]), ..Default::default() }).unwrap();
-    assert_eq!(hayro_syntax::Pdf::new(bytes).unwrap().pages().len(), 2);
+    assert_eq!(craft_pdf::syntax::Pdf::new(bytes).unwrap().pages().len(), 2);
     assert_eq!(export_pdf(&d, &Cache::new(), &PdfOptions { pages: Some(vec![9]), ..Default::default() }), Err(PdfError::BadPage(10)));
 }
 
@@ -221,7 +221,10 @@ fn standards() {
     assert_eq!((intent.identifier.as_str(), intent.condition.as_str()), ("FOGRA39", "Coated FOGRA39 (fitted, craft-cms)"));
     // A plain export fails the checks; both read with the same pages.
     let plain = export_pdf(&d, &Cache::new(), &PdfOptions::default()).unwrap();
-    assert_eq!(hayro_syntax::Pdf::new(r.bytes.clone()).unwrap().pages().len(), hayro_syntax::Pdf::new(plain.clone()).unwrap().pages().len());
+    assert_eq!(
+        craft_pdf::syntax::Pdf::new(r.bytes.clone()).unwrap().pages().len(),
+        craft_pdf::syntax::Pdf::new(plain.clone()).unwrap().pages().len()
+    );
     assert!(crate::check_pdfx4(&plain).len() >= 3);
     assert_eq!(Standard::parse("PDF/X-4"), Some(Standard::PdfX4));
     assert_eq!(Standard::parse("pdfa-2b"), Some(Standard::PdfA2b));
@@ -397,8 +400,8 @@ fn an_image_past_the_decode_budget_is_skipped_with_a_warning() {
 
 /// Every image XObject in a PDF: its /ColorSpace name (`?` when not a name) and decoded samples.
 fn image_xobjects(bytes: &[u8]) -> Vec<(String, Vec<u8>)> {
-    use hayro_syntax::object::Name;
-    let pdf = hayro_syntax::Pdf::new(bytes.to_vec()).expect("parse");
+    use craft_pdf::syntax::object::Name;
+    let pdf = craft_pdf::syntax::Pdf::new(bytes.to_vec()).expect("parse");
     pdf.objects()
         .into_iter()
         .filter_map(|o| o.into_stream())
@@ -462,8 +465,8 @@ fn raster(fmt: image::ImageFormat, alpha: bool) -> Vec<u8> {
 
 /// Each image XObject's /Interpolate value (`None` when absent).
 fn interpolate_flags(bytes: &[u8]) -> Vec<Option<bool>> {
-    use hayro_syntax::object::Name;
-    let pdf = hayro_syntax::Pdf::new(bytes.to_vec()).expect("parse");
+    use craft_pdf::syntax::object::Name;
+    let pdf = craft_pdf::syntax::Pdf::new(bytes.to_vec()).expect("parse");
     pdf.objects()
         .into_iter()
         .filter_map(|o| o.into_stream())
@@ -529,7 +532,7 @@ fn drawn(bytes: &[u8]) -> (Vec<(String, kurbo::Rect)>, Vec<kurbo::Rect>) {
         fn pop_clip_path(&mut self) {}
         fn pop_transparency_group(&mut self) {}
     }
-    let pdf = hayro_syntax::Pdf::new(bytes.to_vec()).expect("parse");
+    let pdf = craft_pdf::syntax::Pdf::new(bytes.to_vec()).expect("parse");
     let cache = InterpreterCache::new();
     let page = &pdf.pages()[0];
     let mut ctx = Context::new(kurbo::Affine::IDENTITY, kurbo::Rect::new(0.0, 0.0, 1.0, 1.0), &cache, pdf.xref(), InterpreterSettings::default());
@@ -584,7 +587,7 @@ fn paint_events(bytes: &[u8], groups: bool) -> Vec<(String, f32)> {
             }
         }
     }
-    let pdf = hayro_syntax::Pdf::new(bytes.to_vec()).expect("parse");
+    let pdf = craft_pdf::syntax::Pdf::new(bytes.to_vec()).expect("parse");
     let cache = InterpreterCache::new();
     let page = &pdf.pages()[0];
     let mut ctx = Context::new(kurbo::Affine::IDENTITY, kurbo::Rect::new(0.0, 0.0, 1.0, 1.0), &cache, pdf.xref(), InterpreterSettings::default());
@@ -934,7 +937,10 @@ fn empty_and_populated_export_metadata_preserve_key_presence() {
 
 #[test]
 fn viewer_title_follows_the_effective_nonblank_metadata_title() {
-    use hayro_syntax::object::{Dict, Stream};
+    use craft_pdf::syntax::{
+        Pdf,
+        object::{Dict, Stream},
+    };
 
     for (document, file_info, override_title, expected) in [
         ("Document title", "", None, Some("Document title")),
@@ -952,7 +958,7 @@ fn viewer_title_follows_the_effective_nonblank_metadata_title() {
             d.file_info.document_title = file_info.into();
             let opts = PdfOptions { tagged, title: override_title.map(str::to_owned), created: Some(1_700_000_000), ..Default::default() };
             let bytes = export_pdf(&d, &Cache::new(), &opts).unwrap();
-            let pdf = hayro_syntax::Pdf::new(bytes.clone()).unwrap();
+            let pdf = Pdf::new(bytes.clone()).unwrap();
             let catalog = pdf.xref().get::<Dict<'_>>(pdf.xref().root_id()).unwrap();
             let display = catalog.get::<Dict<'_>>(b"ViewerPreferences").and_then(|p| p.get::<bool>(b"DisplayDocTitle"));
             assert_eq!(display == Some(true), expected.is_some(), "{document:?}, {file_info:?}, {override_title:?}, tagged={tagged}");
@@ -973,12 +979,15 @@ fn viewer_title_follows_the_effective_nonblank_metadata_title() {
 
 #[test]
 fn displaying_the_title_preserves_existing_viewer_and_catalog_entries() {
-    use hayro_syntax::object::{Dict, Name};
+    use craft_pdf::syntax::{
+        Pdf,
+        object::{Dict, Name},
+    };
 
     let mut d = doc_with_text("Keep the structure tree");
     d.title.clear();
     let bytes = export_pdf(&d, &Cache::new(), &PdfOptions { tagged: true, ..Default::default() }).unwrap();
-    let parsed = hayro_syntax::Pdf::new(bytes.clone()).unwrap();
+    let parsed = Pdf::new(bytes.clone()).unwrap();
     let root = parsed.xref().root_id();
     let catalog = parsed.xref().get::<Dict<'_>>(root).unwrap();
     let catalog = crate::optional_content::edited(
@@ -988,7 +997,7 @@ fn displaying_the_title_preserves_existing_viewer_and_catalog_entries() {
     .unwrap();
     let bytes = crate::optional_content::append(&bytes, &[(root, catalog)], root).unwrap();
     let bytes = crate::transitions::display_document_title(&bytes).unwrap();
-    let pdf = hayro_syntax::Pdf::new(bytes.clone()).unwrap();
+    let pdf = Pdf::new(bytes.clone()).unwrap();
     let catalog = pdf.xref().get::<Dict<'_>>(pdf.xref().root_id()).unwrap();
     let preferences = catalog.get::<Dict<'_>>(b"ViewerPreferences").unwrap();
     assert_eq!(preferences.get::<bool>(b"DisplayDocTitle"), Some(true));
@@ -1003,14 +1012,17 @@ fn displaying_the_title_preserves_existing_viewer_and_catalog_entries() {
 
 #[test]
 fn titled_standard_exports_keep_metadata_and_output_intents() {
-    use hayro_syntax::object::{Array, Dict, Stream};
+    use craft_pdf::syntax::{
+        Pdf,
+        object::{Array, Dict, Stream},
+    };
 
     let mut d = Document::new(&NewDocument::default());
     d.file_info.document_title = "Standard export title".into();
     for standard in [Standard::PdfX4, Standard::PdfX1a, Standard::PdfA2b] {
         let opts = PdfOptions { standard, created: Some(1_700_000_000), ..Default::default() };
         let bytes = export_pdf(&d, &Cache::new(), &opts).unwrap();
-        let pdf = hayro_syntax::Pdf::new(bytes.clone()).unwrap();
+        let pdf = Pdf::new(bytes.clone()).unwrap();
         let catalog = pdf.xref().get::<Dict<'_>>(pdf.xref().root_id()).unwrap();
         assert_eq!(catalog.get::<Dict<'_>>(b"ViewerPreferences").unwrap().get::<bool>(b"DisplayDocTitle"), Some(true), "{standard:?}");
         assert_eq!(crate::pdfx::info_text(&bytes, &pdf, b"Title").as_deref(), Some("Standard export title"), "{standard:?}");

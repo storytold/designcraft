@@ -209,9 +209,12 @@ pub fn add_catalog_entries(pdf: &[u8], entries: &str) -> Option<Vec<u8>> {
 
 /// Ask viewers to show the metadata title, preserving every other viewer preference.
 pub(crate) fn display_document_title(bytes: &[u8]) -> Option<Vec<u8>> {
-    use hayro_syntax::object::{Dict, Object};
+    use craft_pdf::syntax::{
+        Pdf,
+        object::{Dict, Object},
+    };
 
-    let pdf = hayro_syntax::Pdf::new(bytes.to_vec()).ok()?;
+    let pdf = Pdf::new(bytes.to_vec()).ok()?;
     let root = pdf.xref().root_id();
     let catalog = pdf.xref().get::<Dict<'_>>(root)?;
     let preferences = match catalog.get::<Object<'_>>(b"ViewerPreferences") {
