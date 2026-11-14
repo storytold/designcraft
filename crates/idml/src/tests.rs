@@ -3400,6 +3400,13 @@ fn glyph_with_font_bullet_maps_to_its_character_or_falls_back_to_the_text_font()
     assert_eq!(bullet(&r.document, "Arrow2"), text_font);
     let warned: Vec<&String> = r.warnings.iter().filter(|w| w.contains("bullet glyph 23 of Webdings Regular")).collect();
     assert_eq!(warned.len(), 1, "{:?}", r.warnings);
+
+    // Only the derived style's glyph is found: the base style falls back to the text font, but
+    // the derived one is drawn in the font its glyph was found in.
+    let only_second = |_: &str, _: &str, gid: u32| (gid == 24).then_some('5');
+    let r = crate::import_idml_report_with_fonts(&bytes, &|_| None, &std::collections::HashMap::new(), &only_second).unwrap();
+    assert_eq!(bullet(&r.document, "Arrow"), text_font);
+    assert_eq!(bullet(&r.document, "Arrow2"), webdings("5"));
 }
 
 /// InDesign can write `AppliedFont` with its `$ID/` prefix (`$ID/Source Serif 4`). The text is

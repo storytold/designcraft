@@ -358,7 +358,7 @@ impl<'r> Importer<'r> {
     /// that draws it (#2620). When the font can't be read, the default `•` in the text font
     /// stands in: `•` in a symbol font such as Webdings is an empty box. Without a font named
     /// here the font is that of the style this one is based on, and the glyph is still this
-    /// element's own.
+    /// element's own; a glyph found in it keeps that font here.
     fn glyph_bullet(&mut self, e: &El, gid: u32, a: &mut ParaAttrs) {
         let family = match a.bullet_font.clone() {
             Some(f) => f,
@@ -394,12 +394,19 @@ impl<'r> Importer<'r> {
                     self.warnings
                         .push(format!("bullet glyph {gid} of {font}: the font is not available, so the bullet is drawn as • in the text font"));
                 }
-                self.glyph_chars.insert(key, c);
+                self.glyph_chars.insert(key.clone(), c);
                 c
             }
         };
         match c {
-            Some(c) => a.bullet_char = Some(c.to_string()),
+            Some(c) => {
+                a.bullet_char = Some(c.to_string());
+                // The glyph was found in this font, so it is drawn in it even when the style this
+                // one is based on fell back to the text font. `get_or_insert_with` only fills a
+                // value this element does not set; one it does set is already `key`'s.
+                a.bullet_font.get_or_insert_with(|| key.0.clone());
+                a.bullet_font_style.get_or_insert_with(|| key.1.clone());
+            }
             None => {
                 a.bullet_char = Some("\u{2022}".into());
                 a.bullet_font = Some(String::new());
