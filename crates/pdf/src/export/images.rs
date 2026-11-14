@@ -86,6 +86,12 @@ pub(super) fn jpeg(data: krilla::Data, icc: impl FnOnce() -> Option<Vec<u8>>, mo
 /// Whether krilla would write this PNG, GIF or WebP as untagged RGB: not grey, and no profile of
 /// its own.
 fn untagged_rgb(data: &[u8]) -> bool {
+    // WebP has no greyscale pixel model: decoders expose RGB or RGBA even when its YUV planes
+    // contain equal luma values. `inspect_raster` does not inspect WebP headers, so retain the
+    // previous image-decoder behavior here while still respecting an embedded profile.
+    if craft_image_codecs::detect(data) == Some(craft_image_codecs::Format::WebP) {
+        return embedded_icc(data).is_none();
+    }
     let Some(info) = craft_image_codecs::inspect_raster(data).ok().flatten() else { return false };
     !matches!(
         info.color_type,
