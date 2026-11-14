@@ -394,6 +394,90 @@ fn the_swatch_applied_to_an_image_is_kept() {
     assert_eq!(fills(&import_idml_with(&out, &reader).unwrap()), want);
 }
 
+/// InDesign embeds an EPS placement's preview as `EPSImage` + five words + raw top-down RGB.
+fn eps_preview(w: u32, h: u32, rgb: &[u8]) -> Vec<u8> {
+    let mut b = b"EPSImage".to_vec();
+    for v in [w * 3, w, h, 8, 3] {
+        b.extend_from_slice(&v.to_le_bytes());
+    }
+    b.extend_from_slice(rgb);
+    b
+}
+
+#[test]
+fn an_embedded_eps_preview_imports_as_a_raster() {
+    // 2x2: red, green / blue, white.
+    let rgb = [255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255];
+    let frames = vec![frame(1, 0.0, 0.0, &image(1, "file:/art/code.eps", Some(&eps_preview(2, 2, &rgb))))];
+    let d = import_idml_with(&package(&frames), &|_: &str| None).unwrap();
+    let (id, _, _) = placements(&d)[0];
+    let a = d.assets.get(&id).unwrap();
+    assert_eq!(a.mime, "image/bmp");
+    assert_eq!(a.pixels, Some((2, 2)));
+    assert!(a.is_raster());
+    // A 24-bit BMP stores rows bottom-up as BGR, padded to four bytes: blue/white first.
+    let px = &a.data[54..];
+    assert_eq!(px[..6], [255, 0, 0, 255, 255, 255], "bottom row: blue, white");
+    assert_eq!(px[8..14], [0, 0, 255, 0, 255, 0], "top row: red, green");
+
+    // A truncated raster is not decoded as one.
+    let cut = eps_preview(2, 2, &rgb[..9]);
+    assert!(crate::eps_preview_to_bmp(&cut).is_none());
+}
+
+#[test]
+fn an_eps_preview_is_read_as_gray_or_rgb_only() {
+    // One channel is gray, three are RGB. A four-channel raster is left as it is: its channel order
+    // (and whether it is inverted CMYK) was not checked against InDesign.
+    let with_channels = |ch: u32, px: &[u8]| {
+        let mut b = b"EPSImage".to_vec();
+        for v in [2 * ch, 2, 1, 8, ch] {
+            b.extend_from_slice(&v.to_le_bytes());
+        }
+        b.extend_from_slice(px);
+        b
+    };
+    let gray = crate::eps_preview_to_bmp(&with_channels(1, &[10, 200])).unwrap();
+    assert_eq!(gray[54..60], [10, 10, 10, 200, 200, 200]);
+    assert!(crate::eps_preview_to_bmp(&with_channels(3, &[1, 2, 3, 4, 5, 6])).is_some());
+    assert!(crate::eps_preview_to_bmp(&with_channels(4, &[0; 8])).is_none());
+}
+
+#[test]
+fn a_bmp_with_an_os2_header_reports_its_16_bit_size() {
+    // A 12-byte BITMAPCOREHEADER holds 16-bit width and height at 18 and 20.
+    let mut core = b"BM".to_vec();
+    core.resize(14, 0);
+    core.extend(12u32.to_le_bytes());
+    core.extend([3u8, 0, 2, 0, 1, 0, 24, 0]);
+    core.resize(40, 0);
+    assert_eq!(crate::sniff_image(&core), (Some("image/bmp"), Some((3, 2))));
+}
+
+#[test]
+fn a_bmp_asset_is_exported_with_a_bmp_format_name() {
+    // The converted EPS preview is a BMP: its link format is not written as PNG.
+    let rgb = [255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255];
+    let frames = vec![frame(1, 0.0, 0.0, &image(1, "file:/art/code.eps", Some(&eps_preview(2, 2, &rgb))))];
+    let d = import_idml_with(&package(&frames), &|_: &str| None).unwrap();
+    let spreads = zip_text(&export_idml_with(&d, &ExportOptions::default()), "Spreads/");
+    assert!(spreads.contains(r#"LinkResourceFormat="$ID/BMP""#), "{spreads}");
+    assert!(!spreads.contains("Portable Network Graphics"), "{spreads}");
+}
+
+#[test]
+fn an_unreadable_bmp_link_imports_as_a_bmp() {
+    // The exporter names a BMP asset's link format `$ID/BMP`; reading it back must give a BMP again,
+    // not the PNG fallback.
+    let image = r#"<Image Self="im1" ItemTransform="1 0 0 1 1 0">
+        <Properties><GraphicBounds Left="0" Top="0" Right="40" Bottom="30"/></Properties>
+        <Link Self="lk1" LinkResourceURI="file:/art/missing.bmp" LinkResourceFormat="$ID/BMP" StoredState="Normal"/>
+      </Image>"#;
+    let d = import_idml_with(&package(&[frame(1, 0.0, 0.0, image)]), &|_: &str| None).unwrap();
+    let mimes: Vec<_> = d.assets.values().map(|a| a.mime.as_str()).collect();
+    assert_eq!(mimes, ["image/bmp"]);
+}
+
 /// Past the embedded-image limit an export still succeeds: the images that no longer fit are
 /// written as links, and each is named in a warning.
 #[test]

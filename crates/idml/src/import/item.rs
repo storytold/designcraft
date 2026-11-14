@@ -289,6 +289,9 @@ impl<'r> Importer<'r> {
             })
         };
         let mut data = model.contents().unwrap_or_default();
+        // Only data embedded in the document is converted below: a linked file's bytes stay what the
+        // file holds, so the link status and packaging still match the file.
+        let embedded = !data.is_empty();
         let pdf_attribute = model.pdf_attribute();
         let page = pdf_attribute.as_ref().map(craft_idml::model::PdfAttribute::page_index).unwrap_or(0);
         // Where the box sits on the page needs the PDF parsed: the engine finds it after import.
@@ -313,11 +316,18 @@ impl<'r> Importer<'r> {
         // A linked file that can't be read shows the document's preview of it, if it has one. The
         // preview only stands in for the file: format and pixel size still describe the link.
         let preview = data.is_empty().then(|| model.self_id().and_then(|s| self.previews.get(s))).flatten();
+        if embedded && let Some(bmp) = crate::eps_preview_to_bmp(&data) {
+            data = bmp;
+        }
         // InDesign draws a viewBox-only SVG at one unit to the point: its GraphicBounds are the
         // art's bounds, which can overhang the viewBox, so they must not size the viewBox.
         let size = craft_svg::sniff::viewbox_size(&data).unwrap_or(size);
         let (mime, px) = if preview.is_some() { (None, None) } else { sniff_image(&data) };
-        let mime = mime.map(str::to_string).unwrap_or_else(|| model.fallback_mime().to_owned());
+        let mime = mime.map(str::to_string).unwrap_or_else(|| match model.fallback_mime() {
+            // The shared fallback has no entry for a BMP link, which the exporter writes as `$ID/BMP`.
+            "image/png" if model.link().and_then(|l| l.format()).is_some_and(|f| f.contains("BMP")) => "image/bmp".into(),
+            fallback => fallback.to_owned(),
+        });
         let pixels = px.or_else(|| {
             let ppi = model.actual_ppi()?;
             (size.0 > 0.0).then(|| ((size.0 * ppi[0] / 72.0).round() as u32, (size.1 * ppi[1] / 72.0).round() as u32))
