@@ -18,7 +18,7 @@ use crate::{PptxError, PptxOptions, Result};
 pub(crate) fn color_with_opacity(color: designcraft_color::Color, opacity: f32) -> craft_pptx::ColorRef {
     let [r, g, b, _] = color.to_rgba8(1.0);
     let color = craft_pptx::ColorRef::rgb(craft_pptx::Rgba::rgb(r, g, b));
-    let alpha = if opacity.is_finite() { (f64::from(opacity.clamp(0.0, 1.0)) * 100_000.0).round() as i32 } else { 0 };
+    let alpha = (f64::from(opacity.clamp(0.0, 1.0)) * 100_000.0).round() as i32;
     if alpha == 100_000 { color } else { color.with(craft_pptx::ColorTransform::Alpha(alpha)) }
 }
 
