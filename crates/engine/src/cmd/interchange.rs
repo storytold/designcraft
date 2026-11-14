@@ -17,7 +17,7 @@ use crate::{DocState, EngineError, Result, Session};
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(query "file.exportIdml", "Export IDML…", [], None,
-            "{path?, embedImages?: true} — writes an IDML package to `path`, or returns {base64} without a path",
+            "{path?, embedImages?: true} — writes an IDML package to `path`, or returns {base64} without a path; `warnings` names each image written as a link because the embedded-image limit was reached",
             has_doc, export_idml),
         cmd!(noundo "file.openIdml", "Open IDML", [], None,
             "{path | base64, name?} — opens an IDML package, or an InDesign document or template (.indd, .indt: converted to IDML first; its conversion warnings join `warnings`), as a new document (linked images are read next to the file or from its Links/ folder; the fonts in a `Document Fonts` folder beside it load first) → {index, documentFonts, warnings: conversion warnings, package parts missing, font files skipped, GREP styles whose pattern can't compile}",
@@ -31,15 +31,19 @@ fn export_idml(s: &mut Session, p: &Value) -> Result<Value> {
     // A data-merge preview's fill is session state: the unfilled template is exported (as
     // `file.serialize` and the saves write it).
     let doc = st.preview_stash.as_deref().unwrap_or(st.doc.as_ref());
-    let bytes = idml_bytes(doc, &opts)?;
-    match str_param(p, "path") {
+    let (bytes, warnings) = idml_bytes(doc, &opts)?;
+    let mut out = match str_param(p, "path") {
         Some(path) => {
             #[cfg(not(target_arch = "wasm32"))]
             crate::io::write_file(path, &bytes).map_err(EngineError::Other)?;
-            Ok(json!({"path": path, "bytes": bytes.len()}))
+            json!({"path": path, "bytes": bytes.len()})
         }
-        None => Ok(json!({"base64": base64_encode(&bytes), "bytes": bytes.len()})),
+        None => json!({"base64": base64_encode(&bytes), "bytes": bytes.len()}),
+    };
+    if !warnings.is_empty() {
+        out["warnings"] = json!(warnings);
     }
+    Ok(out)
 }
 
 /// Whether a placement holds an Object Layer Options choice an export can still apply: a graphic
@@ -47,7 +51,8 @@ fn export_idml(s: &mut Session, p: &Value) -> Result<Value> {
 /// replaced with another format) is not one, so the package report does not name it.
 pub(crate) fn has_applicable_pdf_layer_overrides(doc: &Document) -> bool {
     doc.placed_items().into_iter().any(|it| {
-        it.has_pdf_layer_override() && it.graphic().and_then(|g| doc.assets.get(&g.asset)).is_some_and(|a| designcraft_render::is_pdf(&a.data))
+        it.has_pdf_layer_override()
+            && it.graphic().and_then(|g| doc.assets.get(&g.asset)).is_some_and(|a| a.data.load().is_ok_and(|b| designcraft_render::is_pdf(&b)))
     })
 }
 
@@ -60,9 +65,9 @@ pub(crate) fn has_applicable_pdf_layer_overrides(doc: &Document) -> bool {
 /// serialized yet (see `docs/pdf-layer-visibility.md`).
 /// `doc` as an IDML package, with its placed PDFs' layer choices (as Export IDML and an IDML save
 /// write it).
-pub(crate) fn idml_bytes(doc: &Document, opts: &designcraft_idml::ExportOptions) -> Result<Vec<u8>> {
+pub(crate) fn idml_bytes(doc: &Document, opts: &designcraft_idml::ExportOptions) -> Result<(Vec<u8>, Vec<String>)> {
     let layer_doc = with_pdf_layer_variants(doc, opts.embed_images)?;
-    Ok(designcraft_idml::export_idml_with(layer_doc.as_ref().unwrap_or(doc), opts))
+    Ok(designcraft_idml::export_idml_report(layer_doc.as_ref().unwrap_or(doc), opts))
 }
 
 fn with_pdf_layer_variants(doc: &Document, embed: bool) -> Result<Option<Document>> {
@@ -71,7 +76,8 @@ fn with_pdf_layer_variants(doc: &Document, embed: bool) -> Result<Option<Documen
         .into_iter()
         .filter(|it| it.has_pdf_layer_override())
         .filter_map(|it| {
-            let asset = it.graphic().and_then(|g| doc.assets.get(&g.asset)).filter(|a| designcraft_render::is_pdf(&a.data))?;
+            let asset =
+                it.graphic().and_then(|g| doc.assets.get(&g.asset)).filter(|a| a.data.load().is_ok_and(|b| designcraft_render::is_pdf(&b)))?;
             Some((it.id, asset, it.pdf_hidden_layers.clone(), it.pdf_layer_override))
         })
         .collect();
@@ -94,12 +100,13 @@ fn with_pdf_layer_variants(doc: &Document, embed: bool) -> Result<Option<Documen
             continue;
         }
         expected.insert(id, signature);
-        let bytes = designcraft_render::pdf_hide_layers(&asset.data, &hidden)
+        let source = asset.data.load().map_err(|e| EngineError::Other(format!("{}: {e}", asset.name)))?;
+        let bytes = designcraft_render::pdf_hide_layers(&source, &hidden)
             .ok_or_else(|| EngineError::Other(format!("{}: PDF layer choices could not be applied", asset.name)))?;
         let mut variant = (**asset).clone();
         variant.id = designcraft_doc::AssetId(out.alloc());
-        variant.data = std::sync::Arc::new(bytes);
-        variant.link = None;
+        variant.data = designcraft_doc::AssetData::embedded(bytes);
+        variant.set_link(None, None);
         let aid = variant.id;
         out.assets.insert(aid, std::sync::Arc::new(variant));
         variants.insert(id, aid);
@@ -149,7 +156,7 @@ pub(crate) fn import_idml_confined(bytes: &[u8], package: Option<&std::path::Pat
     let read = |link: &str| -> Option<Vec<u8>> {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            read_packaged_link(link, package).map(|(_, data)| data)
+            read_packaged_link(link, package).map(|(_, data, _)| data)
         }
         #[cfg(target_arch = "wasm32")]
         {
@@ -183,8 +190,8 @@ fn import_report_with_previews(
     let read = |link: &str| -> Option<Vec<u8>> {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let (path, data) = read_packaged_link(link, package)?;
-            resolved.borrow_mut().insert(link.to_string(), path);
+            let (path, data, fingerprint) = read_packaged_link(link, package)?;
+            resolved.borrow_mut().insert(link.to_string(), (path, fingerprint, data.len() as u64));
             Some(data)
         }
         #[cfg(target_arch = "wasm32")]
@@ -200,15 +207,81 @@ fn import_report_with_previews(
     let document = {
         let mut document = document;
         for asset in document.assets.values_mut() {
-            if let Some(path) = asset.link.as_ref().and_then(|link| resolved.borrow().get(link).cloned()) {
+            if let Some((path, fingerprint, len)) = asset.link.as_ref().and_then(|link| resolved.borrow().get(link).cloned()) {
                 // Relocated packages must also use the new path for preflight and link updates.
-                std::sync::Arc::make_mut(asset).link = Some(path);
+                std::sync::Arc::make_mut(asset).set_link(Some(path), fingerprint);
+                // Bytes read from the file stay a link to it; graphics embedded in the IDML (whose
+                // size differs from the file's, or that share no read) stay embedded.
+                if asset.data.embedded_bytes().is_some_and(|b| b.len() as u64 == len) {
+                    link_read_file(std::sync::Arc::make_mut(asset), package);
+                } else if asset.proxy.is_some() {
+                    // An embedded graphic draws its own bytes.
+                    std::sync::Arc::make_mut(asset).proxy = None;
+                }
             }
         }
         resolve_packaged_links(&mut document, package);
         document
     };
     Ok((document, warnings, story_ids))
+}
+
+/// `asset`, whose embedded bytes were just read from the file its link names, as a linked asset
+/// ([`super::links::link_to_file`]), drawn while the file can't be read with a proxy: the
+/// document's preview of it when that shows the whole image ([`preview_proxy`],
+/// [`shows_whole`]), else one made from the file, else the preview.
+#[cfg(not(target_arch = "wasm32"))]
+fn link_read_file(asset: &mut designcraft_doc::Asset, package: Option<&std::path::Path>) {
+    let Some(bytes) = asset.data.embedded_bytes().cloned() else { return };
+    let Some(path) = asset.link.clone() else { return };
+    let preview = asset.proxy.take().and_then(|p| preview_proxy(&p));
+    let (whole, fallback) = match preview {
+        Some(p) if shows_whole(asset, &bytes, &p) => (Some(p), None),
+        p => (None, p),
+    };
+    // The fingerprint kept by the read (none for a file just written: its hash tells its bytes).
+    let file = super::links::FileLink::of(std::path::Path::new(&path), asset.link_fingerprint);
+    super::links::link_to_file(asset, bytes, file, package, whole);
+    if asset.storage == designcraft_doc::Storage::Linked && asset.proxy.is_none() {
+        asset.proxy = fallback;
+    }
+}
+
+/// A document's stored preview of a linked graphic as a proxy: checked to decode, and made again
+/// within the proxy limits ([`designcraft_render::proxy`]) when it is bigger or in another
+/// format (a larger one wouldn't be kept by the saved document). `None` when it doesn't decode.
+#[cfg(not(target_arch = "wasm32"))]
+fn preview_proxy(preview: &designcraft_doc::Proxy) -> Option<designcraft_doc::Proxy> {
+    use designcraft_render::proxy::{MAX_BYTES, MAX_SIDE_PX, make_proxy};
+    let bytes = preview.data.embedded_bytes()?;
+    let mime = designcraft_render::image_mime(bytes);
+    let fits = bytes.len() <= MAX_BYTES
+        && matches!(mime, "image/jpeg" | "image/png")
+        && designcraft_render::image_size(bytes).is_some_and(|(w, h)| w.max(h) <= MAX_SIDE_PX);
+    if fits && let Some(pm) = designcraft_render::decode_pixmap(bytes) {
+        let pixels = (u32::from(pm.width()), u32::from(pm.height()));
+        return Some(designcraft_doc::Proxy { mime: mime.into(), pixels, data: preview.data.clone() });
+    }
+    let p = make_proxy(bytes, 0)?;
+    Some(designcraft_doc::Proxy { mime: p.mime.into(), pixels: p.pixels, data: designcraft_doc::AssetData::embedded(p.data) })
+}
+
+/// Whether `preview` shows the whole of `asset`'s image (`bytes`, its file's), as a proxy must:
+/// a raster whose preview has the image's proportions. A PDF's preview shows its crop, which may
+/// not be the page the proxy stands for, and other files' proportions aren't known here.
+#[cfg(not(target_arch = "wasm32"))]
+fn shows_whole(asset: &designcraft_doc::Asset, bytes: &[u8], preview: &designcraft_doc::Proxy) -> bool {
+    if designcraft_render::is_pdf(bytes) || asset.mime == "application/pdf" {
+        return false;
+    }
+    let Some((w, h)) = designcraft_render::image_size(bytes) else { return false };
+    let (pw, ph) = preview.pixels;
+    if w == 0 || h == 0 || pw == 0 || ph == 0 {
+        return false;
+    }
+    // Proportions equal but for the preview's rounding to whole pixels.
+    let (ratio, preview_ratio) = (f64::from(w) / f64::from(h), f64::from(pw) / f64::from(ph));
+    (preview_ratio / ratio - 1.0).abs() <= 1.0 / f64::from(pw) + 1.0 / f64::from(ph) + 0.01
 }
 
 /// Placed PDFs read from IDML name their crop (`PDFCrop`): find where each box sits on its page,
@@ -356,6 +429,10 @@ fn is_graphic(bytes: &[u8]) -> bool {
 pub(crate) fn resolve_packaged_links(document: &mut Document, package: Option<&std::path::Path>) {
     let Some(package) = package else { return };
     for asset in document.assets.values_mut() {
+        // Linked storage finds its files itself (`native_links::resolve`).
+        if asset.storage == designcraft_doc::Storage::Linked {
+            continue;
+        }
         let Some(link) = asset.link.as_deref() else { continue };
         if link.len() > MAX_LINK_PATH_BYTES {
             continue;
@@ -366,29 +443,41 @@ pub(crate) fn resolve_packaged_links(document: &mut Document, package: Option<&s
             // A link relative to the document (what File › Package writes, `Links/logo.png`) is
             // held as the file it names, as every other link is, so preflight and updates find it.
             if std::path::Path::new(link).is_relative() {
-                std::sync::Arc::make_mut(asset).link = Some(path.to_string_lossy().into_owned());
+                // The same file under its full name: what is kept of it stays.
+                let loaded = asset.link_fingerprint;
+                std::sync::Arc::make_mut(asset).set_link(Some(path.to_string_lossy().into_owned()), loaded);
             }
             continue;
         }
         let Some(path) = packaged_link_candidates(link, Some(package)).into_iter().find(|p| crate::io::is_file(p)) else { continue };
-        std::sync::Arc::make_mut(asset).link = Some(path.to_string_lossy().into_owned());
+        // Another file than the link named, found again by name: the bytes weren't read from it.
+        std::sync::Arc::make_mut(asset).set_link(Some(path.to_string_lossy().into_owned()), None);
     }
 }
 
 /// The first candidate for `link` ([`packaged_link_candidates`]) that is a regular file no larger
-/// than [`MAX_LINKED_FILE_BYTES`] holding an image or a graphic, with its path.
+/// than [`MAX_LINKED_FILE_BYTES`] holding an image or a graphic, with its path and the size and
+/// time to keep with its bytes ([`super::links::loaded_fingerprint`]).
 #[cfg(not(target_arch = "wasm32"))]
-fn read_packaged_link(link: &str, package: Option<&std::path::Path>) -> Option<(String, Vec<u8>)> {
+fn read_packaged_link(link: &str, package: Option<&std::path::Path>) -> Option<(String, Vec<u8>, Option<designcraft_doc::Fingerprint>)> {
     for path in packaged_link_candidates(link, package) {
-        if !crate::io::is_file(&path) || !crate::io::metadata(&path).is_ok_and(|m| m.len() <= MAX_LINKED_FILE_BYTES) {
+        if !crate::io::is_file(&path) {
             continue;
         }
+        // The version about to be read: one that replaces it during the read (a syncing or
+        // network file) has other metadata, and the next Links check compares the bytes.
+        let Ok(metadata) = crate::io::metadata(&path) else { continue };
+        if metadata.len() > MAX_LINKED_FILE_BYTES {
+            continue;
+        }
+        let before = super::datamerge::fingerprint_from(&metadata);
         // At most one byte over the limit, in case the file grew since.
         let Ok(bytes) = crate::io::read_capped(&path, MAX_LINKED_FILE_BYTES) else { continue };
         if bytes.len() as u64 > MAX_LINKED_FILE_BYTES || !is_graphic(&bytes) {
             continue;
         }
-        return Some((path.to_string_lossy().into_owned(), bytes));
+        let loaded = super::links::loaded_fingerprint(Some(before), &bytes);
+        return Some((path.to_string_lossy().into_owned(), bytes, loaded));
     }
     None
 }
@@ -416,7 +505,7 @@ pub(crate) fn open_idml(s: &mut Session, p: &Value) -> Result<Value> {
     let from_indd = is_indd(&file, &bytes);
     let bytes = if from_indd {
         // What the converter can't read still comes over as IDML (#21).
-        let conversion = indd::convert(&bytes, &file).map_err(|e| {
+        let conversion = craft_indd::convert(&bytes, &file).map_err(|e| {
             EngineError::Other(format!(
                 "can't convert the InDesign file: {e}. In InDesign, choose File ▸ Export… ▸ InDesign Markup (IDML) and open the .idml in DesignCraft."
             ))
@@ -476,19 +565,17 @@ fn warning_item(
 /// the bytes are neither a recognized DesignCraft document nor IDML. The converter explains
 /// unrecognized data with an InDesign extension.
 pub(crate) fn is_indd(name: &str, bytes: &[u8]) -> bool {
-    bytes.starts_with(&indd::header::SIGNATURE)
-        || (has_indd_extension(name) && !super::file::is_document(bytes) && !bytes.trim_ascii_start().starts_with(b"{"))
-}
-
-pub(crate) fn has_indd_extension(name: &str) -> bool {
-    let n = name.to_ascii_lowercase();
-    n.ends_with(".indd") || n.ends_with(".indt")
+    craft_file_formats::detect(name, bytes) == Some(craft_file_formats::Format::Indd) && !super::file::is_document(bytes)
 }
 
 /// `name` without a trailing .idml, .indd or .indt (any case).
 fn without_document_extension(name: &str) -> &str {
     match name.rsplit_once('.') {
-        Some((stem, ext)) if ["idml", "indd", "indt"].iter().any(|e| ext.eq_ignore_ascii_case(e)) => stem,
+        Some((stem, ext))
+            if matches!(craft_file_formats::from_extension(ext), Some(craft_file_formats::Format::Idml | craft_file_formats::Format::Indd)) =>
+        {
+            stem
+        }
         _ => name,
     }
 }
@@ -556,13 +643,18 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let (idml, png) = linked_idml("C:\\original-computer\\project\\Links\\illustrations\\logo.png", false).unwrap();
         std::fs::write(&path, &png).unwrap();
+        // Not written just now: its size and time can vouch for the imported bytes.
+        let earlier = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        std::fs::File::options().write(true).open(&path).unwrap().set_modified(earlier).unwrap();
         std::fs::write(dir.join("logo.png"), b"a different file with the same basename").unwrap();
 
         let doc = import(&idml, Some(&dir.join("x.idml"))).unwrap();
         let asset = doc.assets.values().next().unwrap();
-        assert_eq!(*asset.data, png, "the packaged graphic must render even when its author-machine path no longer exists");
+        assert_eq!(*asset.data.resident().unwrap(), png, "the packaged graphic must render even when its author-machine path no longer exists");
         let resolved = std::path::absolute(&path).unwrap();
         assert_eq!(asset.link.as_deref(), resolved.to_str(), "remember the resolved link so update and preflight use the packaged file");
+        let expected = super::super::datamerge::fingerprint_from(&std::fs::metadata(&path).unwrap());
+        assert_eq!(asset.link_fingerprint, Some(expected), "remember the same version of the file whose bytes were imported");
         assert_eq!(super::super::links::status_cached(asset, None, &mut Default::default()), "ok");
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -578,7 +670,7 @@ mod tests {
 
         let doc = import(&idml, Some(&dir.join("x.idml"))).unwrap();
         let asset = doc.assets.values().next().unwrap();
-        assert_eq!(*asset.data, png);
+        assert_eq!(*asset.data.resident().unwrap(), png);
         assert_eq!(asset.link.as_deref(), std::path::absolute(&path).unwrap().to_str());
         assert_eq!(super::super::links::status_cached(asset, None, &mut Default::default()), "ok");
         std::fs::remove_dir_all(dir).unwrap();
@@ -594,9 +686,92 @@ mod tests {
 
         let doc = import(&idml, Some(&dir.join("x.idml"))).unwrap();
         let asset = doc.assets.values().next().unwrap();
-        assert_eq!(*asset.data, png);
+        assert_eq!(*asset.data.resident().unwrap(), png);
         assert_eq!(asset.link.as_deref(), std::path::absolute(&path).unwrap().to_str());
         assert_eq!(super::super::links::status_cached(asset, None, &mut Default::default()), "ok");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_link_that_resolves_imports_as_a_linked_asset() {
+        let dir = std::env::temp_dir().join(format!("dc-idml-linked-import-{}", std::process::id()));
+        let path = dir.join("Links").join("logo.png");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let (idml, png) = linked_idml("/original-computer/project/logo.png", false).unwrap();
+        std::fs::write(&path, &png).unwrap();
+
+        let doc = import(&idml, Some(&dir.join("x.idml"))).unwrap();
+        let asset = doc.assets.values().next().unwrap();
+        assert_eq!(asset.storage, designcraft_doc::Storage::Linked);
+        assert!(asset.data.embedded_bytes().is_none(), "no embedded original");
+        assert!(asset.data.is_linked() && asset.data.resident().is_some(), "the bytes read are resident for the first draw");
+        assert_eq!(asset.link_hash.as_deref(), Some(crate::asset_io::content_hash(&png).as_str()));
+        assert_eq!(asset.link_relative.as_deref(), Some("Links/logo.png"));
+        assert!(asset.proxy.is_some(), "a proxy made from the file");
+        assert_eq!(asset.data.load().ok().map(|b| (*b).clone()), Some(png));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A document's stored preview stands in for a linked file only when it decodes and shows
+    /// the whole image, within the proxy limits (made again when bigger); otherwise the proxy is
+    /// made from the file.
+    #[test]
+    fn a_stored_preview_is_the_proxy_only_when_it_decodes_and_shows_the_whole_image() {
+        use designcraft_render::proxy::{MAX_BYTES, MAX_SIDE_PX};
+        let dir = std::env::temp_dir().join(format!("dc-idml-previews-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("photo.png");
+        let png = |width: u32, height: u32| designcraft_render::Rendered { width, height, pixels: vec![255; (width * height * 4) as usize] }.to_png();
+        let original = png(400, 200);
+        std::fs::write(&path, &original).unwrap();
+        let linked_with = |preview: Vec<u8>| {
+            let mut a = designcraft_doc::Asset {
+                name: "photo.png".into(),
+                mime: "image/png".into(),
+                link: Some(path.to_str().unwrap().into()),
+                data: designcraft_doc::AssetData::embedded(original.clone()),
+                pixels: Some((400, 200)),
+                proxy: Some(designcraft_doc::Proxy { mime: "image/png".into(), pixels: (1, 1), data: designcraft_doc::AssetData::embedded(preview) }),
+                ..Default::default()
+            };
+            link_read_file(&mut a, None);
+            assert_eq!(a.storage, designcraft_doc::Storage::Linked);
+            let proxy = a.proxy.expect("a proxy");
+            let bytes = proxy.data.embedded_bytes().expect("embedded").clone();
+            let pm = designcraft_render::decode_pixmap(&bytes).expect("the proxy decodes");
+            assert_eq!((u32::from(pm.width()), u32::from(pm.height())), proxy.pixels);
+            assert!(bytes.len() <= MAX_BYTES && proxy.pixels.0.max(proxy.pixels.1) <= MAX_SIDE_PX);
+            (proxy.pixels, bytes)
+        };
+        let small = png(100, 50);
+        assert_eq!(linked_with(small.clone()), ((100, 50), Arc::new(small)), "kept as it is");
+        assert_eq!(linked_with(png(2048, 1024)).0, (1024, 512), "made again within the limits");
+        assert_eq!(linked_with(png(100, 100)).0, (400, 200), "a crop of the image: made from the file");
+        assert_eq!(linked_with(b"not an image".to_vec()).0, (400, 200), "undecodable: made from the file");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_link_that_does_not_resolve_keeps_its_path_for_relink() {
+        let (idml, _) = linked_idml("/original-computer/project/logo.png", false).unwrap();
+        let doc = import(&idml, None).unwrap();
+        let asset = doc.assets.values().next().unwrap();
+        assert_eq!(asset.storage, designcraft_doc::Storage::Embedded);
+        assert_eq!(asset.link.as_deref(), Some("/original-computer/project/logo.png"));
+        assert!(asset.data.embedded_bytes().is_some_and(|b| b.is_empty()) && asset.link_hash.is_none());
+    }
+
+    #[test]
+    fn a_graphic_embedded_in_the_idml_stays_embedded_beside_its_file() {
+        let dir = std::env::temp_dir().join(format!("dc-idml-embedded-stays-{}", std::process::id()));
+        let path = dir.join("logo.png");
+        std::fs::create_dir_all(&dir).unwrap();
+        let (idml, png) = linked_idml(path.to_str().unwrap(), true).unwrap();
+        std::fs::write(&path, &png).unwrap();
+        let doc = import(&idml, Some(&dir.join("x.idml"))).unwrap();
+        let asset = doc.assets.values().next().unwrap();
+        assert_eq!(asset.storage, designcraft_doc::Storage::Embedded);
+        assert_eq!(asset.data.embedded_bytes().map(|b| (**b).clone()), Some(png));
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -615,7 +790,7 @@ mod tests {
         let doc = import(&idml, Some(&package.join("x.idml"))).unwrap();
         let asset = doc.assets.values().next().unwrap();
         assert_eq!(std::path::Path::new(asset.link.as_deref().unwrap()), original.as_path(), "an existing original stays authoritative");
-        assert_eq!(*asset.data, png);
+        assert_eq!(**asset.data.embedded_bytes().unwrap(), png);
         assert_eq!(super::super::links::status_cached(asset, None, &mut Default::default()), "modified");
 
         std::fs::remove_file(&original).unwrap();
@@ -623,7 +798,7 @@ mod tests {
         let doc = import(&idml, Some(&package.join("x.idml"))).unwrap();
         let asset = doc.assets.values().next().unwrap();
         assert_eq!(asset.link.as_deref(), copy.to_str());
-        assert_eq!(*asset.data, png, "rebinding must not replace embedded pixels");
+        assert_eq!(**asset.data.embedded_bytes().unwrap(), png, "rebinding must not replace embedded pixels");
         assert_eq!(super::super::links::status_cached(asset, None, &mut Default::default()), "modified");
 
         std::fs::remove_file(&copy).unwrap();
@@ -632,7 +807,7 @@ mod tests {
             let doc = import(&idml, folder).unwrap();
             let asset = doc.assets.values().next().unwrap();
             assert_eq!(std::path::Path::new(asset.link.as_deref().unwrap()), original.as_path(), "keep a missing link when there is no candidate");
-            assert_eq!(*asset.data, png);
+            assert_eq!(**asset.data.embedded_bytes().unwrap(), png);
             assert_eq!(super::super::links::status_cached(asset, None, &mut Default::default()), "missing");
         }
         let oversized = "a/".repeat(MAX_LINK_PATH_BYTES);
@@ -642,7 +817,7 @@ mod tests {
         resolve_packaged_links(&mut doc, Some(&packaged));
         let asset = doc.assets.values().next().unwrap();
         assert_eq!(asset.link.as_deref(), Some(oversized.as_str()));
-        assert_eq!(*asset.data, png);
+        assert_eq!(**asset.data.embedded_bytes().unwrap(), png);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -689,12 +864,12 @@ mod tests {
         let (idml, _) = linked_idml(away.to_str().unwrap(), false).unwrap();
         let doc = import(&idml, Some(&package)).unwrap();
         let asset = doc.assets.values().next().unwrap();
-        assert_eq!((&*asset.data, asset.link.as_deref()), (&png, away.to_str()));
+        assert_eq!((&*asset.data.resident().unwrap(), asset.link.as_deref()), (&png, away.to_str()));
         assert_eq!(super::super::links::status_cached(asset, None, &mut Default::default()), "ok");
         std::fs::write(dir.join("Links").join("logo.png"), &png).unwrap();
         let (idml, _) = linked_idml("Links/logo.png", false).unwrap();
         let doc = import(&idml, Some(&package)).unwrap();
-        assert_eq!(*doc.assets.values().next().unwrap().data, png);
+        assert_eq!(*doc.assets.values().next().unwrap().data.resident().unwrap(), png);
         std::fs::remove_dir_all(base).unwrap();
     }
 
@@ -702,7 +877,7 @@ mod tests {
     /// name) go to the converter, and what it can't read is an open error that adds no document.
     #[test]
     fn indd_files_go_through_the_converter_and_its_errors_are_open_errors() {
-        let mut signed = indd::header::SIGNATURE.to_vec();
+        let mut signed = craft_indd::SIGNATURE.to_vec();
         signed.resize(4096, 0);
         let cases = [(signed, "Brochure"), (vec![0; 4096], "Brochure.indd"), (b"not an InDesign file".to_vec(), "Template.INDT")];
         let mut s = Session::new();
@@ -794,14 +969,14 @@ mod nested_layer_tests {
         for (id, expected) in ids.into_iter().zip([states(false, true), states(true, true)]) {
             let item = copy.placed_items().into_iter().find(|i| i.id == id).unwrap();
             let asset = &copy.assets[&item.graphic().unwrap().asset];
-            assert_eq!(designcraft_render::pdf_layers(&asset.data), expected, "{location}: placement {id}");
+            assert_eq!(designcraft_render::pdf_layers(&asset.data.load().unwrap()), expected, "{location}: placement {id}");
             assert_ne!(asset.id, original_asset);
             assert!(asset.link.is_none());
             assert!(!item.pdf_layer_override && item.pdf_hidden_layers.is_empty());
         }
         assert_eq!(copy.item(control).unwrap().graphic().unwrap().asset, original_asset);
         assert!(Arc::ptr_eq(&copy.assets[&original_asset], &source.assets[&original_asset]));
-        assert_eq!(designcraft_render::pdf_layers(&source.assets[&original_asset].data), states(true, false));
+        assert_eq!(designcraft_render::pdf_layers(&source.assets[&original_asset].data.load().unwrap()), states(true, false));
         assert!(source.placed_items().into_iter().filter(|i| ids.contains(&i.id)).all(|i| i.has_pdf_layer_override()));
     }
 
@@ -811,8 +986,12 @@ mod nested_layer_tests {
         let result = session.execute("file.exportIdml", &json!({})).unwrap();
         let bytes = base64_decode(result["base64"].as_str().unwrap());
         let imported = designcraft_idml::import_idml(&bytes).unwrap();
-        let mut roundtrip: Vec<_> =
-            imported.assets.values().filter(|a| designcraft_render::is_pdf(&a.data)).map(|a| designcraft_render::pdf_layers(&a.data)).collect();
+        let mut roundtrip: Vec<_> = imported
+            .assets
+            .values()
+            .filter(|a| designcraft_render::is_pdf(&a.data.load().unwrap()))
+            .map(|a| designcraft_render::pdf_layers(&a.data.load().unwrap()))
+            .collect();
         let mut expected = vec![states(true, false), states(false, true), states(true, true)];
         roundtrip.sort();
         expected.sort();
@@ -896,8 +1075,12 @@ mod nested_layer_tests {
         doc.check().unwrap();
         let result = s.execute("file.exportIdml", &json!({})).unwrap();
         let imported = designcraft_idml::import_idml(&base64_decode(result["base64"].as_str().unwrap())).unwrap();
-        let mut layers: Vec<_> =
-            imported.assets.values().filter(|a| designcraft_render::is_pdf(&a.data)).map(|a| designcraft_render::pdf_layers(&a.data)).collect();
+        let mut layers: Vec<_> = imported
+            .assets
+            .values()
+            .filter(|a| designcraft_render::is_pdf(&a.data.load().unwrap()))
+            .map(|a| designcraft_render::pdf_layers(&a.data.load().unwrap()))
+            .collect();
         layers.sort();
         assert_eq!(layers, vec![states(false, true), states(true, false)]);
     }

@@ -21,7 +21,7 @@ fn save_bytes(d: &Document, preview: Option<&[u8]>) -> Result<Vec<u8>> {
 pub fn with_document_extension(path: &str) -> String {
     let p = std::path::Path::new(path);
     let ext = p.extension().and_then(std::ffi::OsStr::to_str);
-    if p.file_name().is_none() || ext.is_some_and(|e| e.eq_ignore_ascii_case(designcraft_format::EXTENSION)) {
+    if p.file_name().is_none() || ext.is_some_and(|e| craft_file_formats::from_extension(e) == Some(craft_file_formats::Format::DesignCraft)) {
         return path.to_string();
     }
     format!("{path}.{}", designcraft_format::EXTENSION)
@@ -32,7 +32,7 @@ pub fn with_document_extension(path: &str) -> String {
 /// that kept it would name the file `Brochure.designcraft.designcraft`. A bare `.designcraft` stays.
 pub(super) fn without_native_extension(name: &str) -> &str {
     match name.rsplit_once('.') {
-        Some((stem, ext)) if !stem.is_empty() && ext.eq_ignore_ascii_case(designcraft_format::EXTENSION) => stem,
+        Some((stem, ext)) if !stem.is_empty() && craft_file_formats::from_extension(ext) == Some(craft_file_formats::Format::DesignCraft) => stem,
         _ => name,
     }
 }
@@ -41,7 +41,10 @@ pub(super) fn without_native_extension(name: &str) -> &str {
 /// The first [`DOCUMENT_SNIFF_BYTES`] of a file are enough for packages that start with their
 /// `mimetype` entry, as both formats write them.
 pub fn is_document(bytes: &[u8]) -> bool {
-    designcraft_idml::is_idml(bytes) || designcraft_format::starts_designcraft(bytes) || designcraft_format::is_designcraft(bytes)
+    matches!(
+        craft_file_formats::detect("", bytes),
+        Some(craft_file_formats::Format::DesignCraft | craft_file_formats::Format::DesignCraftJson | craft_file_formats::Format::Idml)
+    )
 }
 
 /// How much of a file [`is_document`] needs to recognise a package by its `mimetype` entry.
@@ -63,15 +66,21 @@ pub(super) fn to_bytes_with_preview(d: &Document, cache: &crate::Cache) -> Resul
     });
     let png =
         preview.and_then(|scale| designcraft_render::Renderer::new().render_page(d, cache, 0, scale, false, &Default::default())).map(|r| r.to_png());
-    save_bytes(d, png.as_deref())
+    let bytes = save_bytes(d, png.as_deref())?;
+    // `file.open` and `file.revert` refuse a longer file, so don't write one the app can't read back.
+    if bytes.len() as u64 > crate::io::MAX_FILE_BYTES {
+        return Err(EngineError::Other(format!("could not write the document: encoded file is longer than {} bytes", crate::io::MAX_FILE_BYTES)));
+    }
+    Ok(bytes)
 }
 
 /// The bytes a save to `path` writes: an IDML package (images embedded) for a `.idml` name, else
 /// DesignCraft's own format with its first-page picture (Preferences › File Handling › Save
 /// documents as). An IDML save that would lose content IDML can't hold (editorial notes,
 /// endnotes) is refused unless `allow_loss`: the save marks the document saved and drops its
-/// recovery copy, so the loss would be silent and for good.
-pub fn bytes_for_path(d: &Document, path: &str, cache: &crate::Cache, allow_loss: bool) -> Result<Vec<u8>> {
+/// recovery copy, so the loss would be silent and for good. Also → the warnings an IDML export
+/// gives (images written as links past the embedded-image limit).
+pub fn bytes_for_path(d: &Document, path: &str, cache: &crate::Cache, allow_loss: bool) -> Result<(Vec<u8>, Vec<String>)> {
     match crate::SaveFormat::of_path(path) {
         crate::SaveFormat::Idml => {
             let lost = designcraft_idml::unwritten(d);
@@ -83,7 +92,7 @@ pub fn bytes_for_path(d: &Document, path: &str, cache: &crate::Cache, allow_loss
             }
             crate::cmd::interchange::idml_bytes(d, &designcraft_idml::ExportOptions::default())
         }
-        crate::SaveFormat::Designcraft => to_bytes_with_preview(d, cache),
+        crate::SaveFormat::Designcraft => Ok((to_bytes_with_preview(d, cache)?, Vec::new())),
     }
 }
 
