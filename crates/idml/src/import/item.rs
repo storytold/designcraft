@@ -367,6 +367,7 @@ impl<'r> Importer<'r> {
             f if f.contains("TIFF") => "image/tiff".into(),
             f if f.contains("PDF") || g.local() == "PDF" => "application/pdf".into(),
             f if f.contains("GIF") => "image/gif".into(),
+            f if f.contains("BMP") => "image/bmp".into(),
             _ => "image/png".into(),
         });
         let pixels = px.or_else(|| {

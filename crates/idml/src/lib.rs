@@ -131,8 +131,9 @@ pub(crate) fn base64_decode(s: &str) -> Vec<u8> {
 /// little-endian words: row bytes, width, height, bits per channel, channels + top-down 8-bit
 /// pixels) as a 24-bit BMP, which the image decoders read. Gray (1 channel) and RGB (3) only: the
 /// channel order of a 4-channel raster was not checked against InDesign. `None` for anything else,
-/// a truncated raster or one over the pixel budget of the EPS previews (`crates/images/src/eps.rs`),
-/// so that a header cannot ask for a BMP three times the size of its input.
+/// a truncated raster or one over the pixel budget of the EPS previews (`crates/images/src/eps.rs`).
+/// The budget bounds the size of the BMP (a gray raster becomes one three times its input), so a
+/// header cannot ask for an unbounded one.
 pub(crate) fn eps_preview_to_bmp(b: &[u8]) -> Option<Vec<u8>> {
     /// 256 MiB of RGBA, as the EPS previews in `designcraft-images`.
     const MAX_PIXELS: usize = 256 * 1024 * 1024 / 4;

@@ -464,3 +464,16 @@ fn a_bmp_asset_is_exported_with_a_bmp_format_name() {
     assert!(spreads.contains(r#"LinkResourceFormat="$ID/BMP""#), "{spreads}");
     assert!(!spreads.contains("Portable Network Graphics"), "{spreads}");
 }
+
+#[test]
+fn an_unreadable_bmp_link_imports_as_a_bmp() {
+    // The exporter names a BMP asset's link format `$ID/BMP`; reading it back must give a BMP again,
+    // not the PNG fallback.
+    let image = r#"<Image Self="im1" ItemTransform="1 0 0 1 1 0">
+        <Properties><GraphicBounds Left="0" Top="0" Right="40" Bottom="30"/></Properties>
+        <Link Self="lk1" LinkResourceURI="file:/art/missing.bmp" LinkResourceFormat="$ID/BMP" StoredState="Normal"/>
+      </Image>"#;
+    let d = import_idml_with(&package(&[frame(1, 0.0, 0.0, image)]), &|_: &str| None).unwrap();
+    let mimes: Vec<_> = d.assets.values().map(|a| a.mime.as_str()).collect();
+    assert_eq!(mimes, ["image/bmp"]);
+}
