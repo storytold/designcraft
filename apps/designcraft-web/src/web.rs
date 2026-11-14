@@ -76,7 +76,7 @@ pub fn start() {
                     if has_query_flag(&query(), "sample") {
                         let _ = app.run("file.newSample", serde_json::json!({}));
                     }
-                    Ok(Box::new(WebShell { app, inbox, graphics: creator_graphics }))
+                    Ok(Box::new(WebShell { app, inbox, read_errors: Default::default(), graphics: creator_graphics }))
                 }),
             )
             .await;
@@ -344,12 +344,18 @@ fn query() -> String {
 struct WebShell {
     app: DesignApp,
     inbox: Inbox,
+    /// Why a dropped file couldn't be read, for the status bar (the read finishes outside a frame).
+    read_errors: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     graphics: GraphicsState,
 }
 
 impl eframe::App for WebShell {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let graphics = self.graphics.clone();
+        let errors = std::mem::take(&mut *self.read_errors.lock().unwrap_or_else(|e| e.into_inner()));
+        if let Some(error) = errors.into_iter().last() {
+            self.app.status(error);
+        }
         let _ = graphics.run_if_healthy(|| self.app.logic(ctx));
     }
 
@@ -363,6 +369,7 @@ impl eframe::App for WebShell {
             if !dropped.is_empty() {
                 let request = self.app.import_request("drop");
                 let inbox = self.inbox.clone();
+                let read_errors = self.read_errors.clone();
                 let ctx = ctx.clone();
                 wasm_bindgen_futures::spawn_local(async move {
                     let files = crate::browser_policy::read_batch(dropped, |f| {
@@ -379,7 +386,11 @@ impl eframe::App for WebShell {
                             inbox.lock().unwrap_or_else(|e| e.into_inner()).extend(files);
                             ctx.request_repaint();
                         }
-                        Err(error) => log::error!("{error}"),
+                        Err(error) => {
+                            log::error!("{error}");
+                            read_errors.lock().unwrap_or_else(|e| e.into_inner()).push(error);
+                            ctx.request_repaint();
+                        }
                     }
                 });
             }
