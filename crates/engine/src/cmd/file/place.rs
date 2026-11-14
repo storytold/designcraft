@@ -35,9 +35,9 @@ pub(super) fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad("file.place", "the frame is locked"));
     }
     // A page of another layout (IDML or DesignCraft): its objects, as one group.
-    let lname = name.to_lowercase();
-    if lname.ends_with(".idml") || lname.ends_with(".designcraft") {
-        return place_layout_page(s, p, &name, &bytes);
+    let format = craft_file_formats::detect(&name, &bytes);
+    if matches!(format, Some(craft_file_formats::Format::Idml | craft_file_formats::Format::DesignCraft)) {
+        return place_layout_page(s, p, &bytes, format);
     }
     // Keep the EPS source for link comparison; rendering uses its preview at the bounding box size.
     let eps_size = eps_size(&bytes, "file.place")?;
@@ -60,11 +60,11 @@ pub(super) fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
         })
         .transpose()?;
     // Image Import Options: which page of a PDF (1-based).
-    if designcraft_render::is_pdf(&bytes) {
+    if format == Some(craft_file_formats::Format::Pdf) {
         designcraft_render::check_pdf_input_size(bytes.len()).map_err(|e| bad("file.place", e.to_string()))?;
     }
     let pdf_page = match p.get("pdfPage").and_then(Value::as_u64) {
-        Some(n) if designcraft_render::is_pdf(&bytes) => {
+        Some(n) if format == Some(craft_file_formats::Format::Pdf) => {
             let count = designcraft_render::pdf_page_count(&bytes).unwrap_or(1);
             let invalid_page = || bad("file.place", format!("the PDF has {count} page(s)"));
             let one_based = usize::try_from(n).map_err(|_| invalid_page())?;
@@ -86,7 +86,7 @@ pub(super) fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
     // and SVGs keep their exact size: rounding it to whole points would stretch them unevenly.
     let (nw, nh) = eps_size.or_else(|| designcraft_render::natural_size(&bytes, pdf_page as usize)).unwrap_or((pw as f64, ph as f64));
     // Image Import Options › Crop to: the graphic spans that box of the PDF page.
-    let is_pdf = designcraft_render::is_pdf(&bytes);
+    let is_pdf = format == Some(craft_file_formats::Format::Pdf);
     let pdf_crop = match str_param(p, "pdfCrop") {
         Some(k) if is_pdf => PdfCrop::from_name(k)
             .ok_or_else(|| bad("file.place", format!("unknown pdfCrop `{k}` (crop, art, trim, bleed, media, contentVisible, contentAll)")))?,
@@ -350,9 +350,9 @@ pub(super) fn place_drop(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// File › Place of an IDML or DesignCraft document: the objects of one page (`layoutPage`,
 /// 1-based) grouped, top-left at x/y (default: the source position on the first page).
-fn place_layout_page(s: &mut Session, p: &Value, name: &str, bytes: &[u8]) -> Result<Value> {
+fn place_layout_page(s: &mut Session, p: &Value, bytes: &[u8], format: Option<craft_file_formats::Format>) -> Result<Value> {
     const ID: &str = "file.place";
-    let mut src = if name.to_lowercase().ends_with(".idml") {
+    let mut src = if format == Some(craft_file_formats::Format::Idml) {
         crate::cmd::interchange::import_idml_confined(bytes, str_param(p, "path").map(std::path::Path::new)).map_err(|e| bad(ID, e.to_string()))?
     } else {
         from_bytes(bytes)?

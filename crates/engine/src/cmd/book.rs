@@ -59,7 +59,7 @@ fn load(path: &str) -> Result<designcraft_doc::Document> {
         let _ = path;
         vec![]
     };
-    if path.to_lowercase().ends_with(".idml") {
+    if craft_file_formats::detect(path, &bytes) == Some(craft_file_formats::Format::Idml) {
         return super::interchange::import_idml_confined(&bytes, Some(std::path::Path::new(path)))
             .map_err(|e| EngineError::Other(format!("{path}: {e}")));
     }
@@ -136,7 +136,11 @@ impl ChapterBatch {
 fn writable_chapter(s: &Session, path: &str, command: &'static str) -> Result<()> {
     use std::path::Path;
 
-    if Path::new(path).extension().and_then(std::ffi::OsStr::to_str).is_some_and(|ext| ext.eq_ignore_ascii_case("idml")) {
+    if Path::new(path)
+        .extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(|ext| craft_file_formats::from_extension(ext) == Some(craft_file_formats::Format::Idml))
+    {
         return Err(bad(command, format!("cannot change imported IDML chapter {path}; convert it to a native DesignCraft document first")));
     }
     let target = crate::io::canonicalize(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
