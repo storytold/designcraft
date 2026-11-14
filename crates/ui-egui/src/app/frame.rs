@@ -44,11 +44,12 @@ impl DesignApp {
         if self.fonts_ready && !self.host_order_pending() && !self.pdf_export.busy() {
             #[cfg(not(target_arch = "wasm32"))]
             self.handle_file_dialog_answers();
-            // A save-dialog answer can start the export on this very tick.
+            // A save-dialog answer can start export on this tick.
             if !self.pdf_export.busy() {
                 self.drain_inbox();
                 self.open_os_documents();
             }
+            self.poll_link_checks(ctx);
         }
         if self.host_order_pending() {
             ctx.request_repaint();

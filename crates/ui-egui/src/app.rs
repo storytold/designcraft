@@ -44,6 +44,7 @@ impl DesignApp {
         let dialog_wake = std::sync::Arc::new(std::sync::OnceLock::new());
         DesignApp {
             pending_pdf: None,
+            pending_pdf_rest: Vec::new(),
             pdf_export: Default::default(),
             #[cfg(not(target_arch = "wasm32"))]
             file_dialogs: file_dialogs::new_dialogs(dialog_wake.clone()),
@@ -135,6 +136,7 @@ impl DesignApp {
             close_requested_pending: false,
             quit_without_asking: false,
             quitting: None,
+            waiting_save: None,
             cursors: cursors::Images::default(),
             live_preview: LivePreview::default(),
             updates_rt: updates_ui::Runtime::default(),
@@ -218,7 +220,7 @@ impl DesignApp {
         // must not replay shortcuts or dropped files from stale input.
         if ctx.current_pass_index() == 0 {
             #[cfg(not(target_arch = "wasm32"))]
-            self.take_pending_drops(&ctx);
+            self.take_pending_drops();
             menus::shortcuts(self, &ctx);
         }
         let t0 = now_ms();

@@ -89,9 +89,7 @@ fn first_page_ref(pdf: &[u8]) -> Option<usize> {
 
 /// Every page sharing a spread with one of `pages` (0-based), for an export that puts whole
 /// spreads on a sheet. The pages come back in document order.
-fn with_their_spreads(s: &Session, pages: &[usize]) -> Vec<usize> {
-    let Some(st) = s.active() else { return pages.to_vec() };
-    let d = &st.doc;
+fn with_their_spreads(d: &designcraft_doc::Document, pages: &[usize]) -> Vec<usize> {
     let spreads: std::collections::BTreeSet<usize> = pages.iter().filter_map(|p| d.page_loc(*p)).map(|(si, _)| si).collect();
     if spreads.is_empty() {
         return pages.to_vec();
@@ -100,14 +98,7 @@ fn with_their_spreads(s: &Session, pages: &[usize]) -> Vec<usize> {
 }
 
 pub(super) fn export_pdf(s: &mut Session, p: &Value) -> Result<Value> {
-    let mut r = pdf_export(s, p)?;
-    // Text the pages have no room for is not in the file: say so, as preflight does (#1465).
-    // A spread export puts the whole spread on the sheet, so choosing page 2 exports page 3 as
-    // well and page 3's overset is as absent from the file as page 2's would be. The selection
-    // is widened to the spreads it touches before the warnings are collected (noted in review).
-    let opts = options(p, s.doc()?.doc.page_count())?;
-    let warn_pages = opts.pages.as_deref().map(|pages| if opts.spreads { with_their_spreads(s, pages) } else { pages.to_vec() });
-    r.warnings.extend(crate::cmd::preflight::overset_warnings(s, warn_pages.as_deref()));
+    let r = pdf_export(s, p)?;
     match str_param(p, "path") {
         Some(path) => {
             write_file(path, &r.bytes)?;
@@ -204,7 +195,11 @@ pub(crate) fn pdf_export(s: &Session, p: &Value) -> Result<designcraft_pdf::Expo
 /// its fonts lets a worker call this independently of the live session. The caller is
 /// responsible for file-access checks, atomic output writing and cancellation before writing.
 pub fn export_pdf_document(doc: &designcraft_doc::Document, cache: &designcraft_compose::Cache, p: &Value) -> Result<designcraft_pdf::ExportReport> {
-    pdf_report(doc, cache, p)
+    let mut report = pdf_report(doc, cache, p)?;
+    let opts = options(p, doc.page_count())?;
+    let warn_pages = opts.pages.as_deref().map(|pages| if opts.spreads { with_their_spreads(doc, pages) } else { pages.to_vec() });
+    report.warnings.extend(crate::cmd::preflight::overset_warnings_document(doc, cache, warn_pages.as_deref()));
+    Ok(report)
 }
 
 /// The shared report also used when packaging an immutable document copy.
@@ -727,5 +722,38 @@ mod overset_tests {
         // And a page on another spread entirely is still not reported.
         let r = s.execute("file.exportPdf", &json!({"pages": [1], "spreads": true})).unwrap();
         assert!(about(&r).is_empty(), "the cover's spread holds no overset frame: {r}");
+    }
+
+    /// Plain print exports attach `/DefaultCMYK` without `/OutputIntents`, PDF/X-4 keeps both
+    /// cleanly, and PDF/X-1a omits `/DefaultCMYK`.
+    #[test]
+    fn export_pdf_command_attaches_default_cmyk_according_to_standard() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"intent": "print"})).unwrap();
+        s.execute("frame.create", &json!({"rect": [36, 36, 200, 200]})).unwrap();
+        s.execute("swatch.create", &json!({"name": "Slate", "color": {"c": 42.5, "m": 17.5, "y": 16.0, "k": 7.1}})).unwrap();
+        s.execute("object.fill", &json!({"swatch": "Slate"})).unwrap();
+
+        let export = |s: &mut Session, extra: serde_json::Value| {
+            let res = s.execute("file.exportPdf", &extra).unwrap();
+            let raw = crate::cmd::base64_decode(res["base64"].as_str().unwrap());
+            (raw, res["warnings"].clone())
+        };
+
+        let (plain, plain_w) = export(&mut s, json!({"tagged": true}));
+        assert_eq!(plain_w, json!([]), "plain export warnings: {plain_w}");
+        let plain_text = String::from_utf8_lossy(&plain);
+        assert!(plain_text.contains("/DefaultCMYK ["), "plain export must carry /DefaultCMYK");
+        assert!(!plain_text.contains("/OutputIntents"), "plain export must not carry /OutputIntents");
+
+        let (x4, x4_w) = export(&mut s, json!({"standard": "x4"}));
+        assert_eq!(x4_w, json!([]), "PDF/X-4 warnings: {x4_w}");
+        let x4_text = String::from_utf8_lossy(&x4);
+        assert!(x4_text.contains("/DefaultCMYK ["), "PDF/X-4 export must carry /DefaultCMYK");
+        assert!(x4_text.contains("/OutputIntents"), "PDF/X-4 export must keep /OutputIntents");
+
+        let (x1a, _) = export(&mut s, json!({"standard": "x1a"}));
+        let x1a_text = String::from_utf8_lossy(&x1a);
+        assert!(!x1a_text.contains("/DefaultCMYK"), "PDF/X-1a must not carry ICCBased DefaultCMYK");
     }
 }

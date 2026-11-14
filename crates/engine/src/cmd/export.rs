@@ -23,3 +23,6 @@ pub use registry::specs;
 
 #[cfg(test)]
 mod text_tests;
+
+#[cfg(test)]
+mod linked_tests;

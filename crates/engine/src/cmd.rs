@@ -38,6 +38,7 @@ mod layout;
 pub mod library;
 mod linked;
 mod links;
+pub mod native_links;
 pub use links::{LinkListChecks, list_document_links, preview_document_links, remember_link_files};
 mod liquid;
 mod lists;
@@ -205,6 +206,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(library::specs());
         v.extend(lists::specs());
         v.extend(linked::specs());
+        v.extend(native_links::specs());
         v.extend(mathexpr::specs());
         v.extend(media::specs());
         v.extend(pdflayers::specs());
@@ -257,6 +259,11 @@ pub fn find_command(id: &str) -> Option<&'static CommandSpec> {
 
 pub(crate) fn bad(cmd: &str, msg: impl Into<String>) -> EngineError {
     EngineError::BadParams { cmd: cmd.into(), msg: msg.into() }
+}
+
+/// The bytes of `asset`, or why `cmd` can't have them.
+pub(crate) fn asset_bytes(cmd: &str, asset: &designcraft_doc::Asset) -> Result<std::sync::Arc<Vec<u8>>> {
+    asset.data.load().map_err(|e| bad(cmd, format!("{}: {e}", asset.name)))
 }
 /// `p` with `key` set to `v`. Parameters come from callers (control channel, MCP, scripts) and
 /// may not be an object: `p[key] = v` panics on an array or a string, so start from `{}` then.

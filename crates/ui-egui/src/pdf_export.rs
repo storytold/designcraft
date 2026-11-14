@@ -693,7 +693,6 @@ mod tests {
             logic_frame(&mut app, &ctx, false);
             assert_eq!(app.session.documents().len(), 1, "export must defer the floating-window drop");
             assert_eq!(app.pending_drops.len(), 1);
-            assert!(app.pending_drops[0].pointer_sampled);
             assert_eq!(app.pending_drops[0].pointer, None, "floating-window fallback stays captured");
             assert_eq!(samples.load(std::sync::atomic::Ordering::Relaxed), 0);
         }
@@ -727,8 +726,8 @@ mod tests {
             path: path.to_string_lossy().into_owned(),
             pointer,
             generation: app.input_generation(),
-            starts_batch: true,
-            pointer_sampled: true,
+            system: None,
+            batch: 0,
         });
         logic_frame(&mut app, &ctx, false);
         assert_eq!(app.pending_drops.len(), 1);
@@ -800,18 +799,22 @@ mod tests {
                 } else {
                     capture(&files);
                 }
-                app.replay_dropped_files();
+                app.take_pending_drops();
                 assert_eq!(app.pending_drops.len(), 2, "busy export retains both drops");
                 assert_eq!(app.session.doc().unwrap().doc.spreads[0].items.len(), 1);
                 tx.send(Err("synthetic export failure".into())).unwrap();
                 app.logic(&ctx);
-                app.replay_dropped_files();
+                app.take_pending_drops();
                 assert!(app.pending_drops.is_empty());
                 let doc = &app.session.doc().unwrap().doc;
-                assert_eq!(doc.spreads[0].items.len(), if separate_batches { 1 } else { 2 }, "floating={floating}, separate={separate_batches}");
-                assert!(matches!(doc.item(designcraft_doc::ItemId(frame)).unwrap().content, designcraft_doc::Content::Graphic(_)));
-                app.replay_dropped_files();
-                assert_eq!(app.session.doc().unwrap().doc.spreads[0].items.len(), if separate_batches { 1 } else { 2 }, "replayed exactly once");
+                assert_eq!(doc.spreads[0].items.len(), 1, "floating={floating}, separate={separate_batches}");
+                assert_eq!(
+                    matches!(doc.item(designcraft_doc::ItemId(frame)).unwrap().content, designcraft_doc::Content::Graphic(_)),
+                    separate_batches
+                );
+                assert_eq!(app.session.loaded.is_some(), !separate_batches, "one multi-image batch still loads the upstream place cursor");
+                app.take_pending_drops();
+                assert_eq!(app.session.doc().unwrap().doc.spreads[0].items.len(), 1, "replayed exactly once");
             }
         }
     }
@@ -843,13 +846,6 @@ mod tests {
                     br##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10" fill="#ff0000"/></svg>"##,
                 )
                 .unwrap();
-                app.pending_drops.push(crate::PendingDrop {
-                    path: path.to_string_lossy().into_owned(),
-                    pointer: None,
-                    generation: app.input_generation(),
-                    starts_batch: true,
-                    pointer_sampled: false,
-                });
                 let (tx, rx) = mpsc::sync_channel(1);
                 app.pdf_export.pending = Some(rx);
                 let raw = || {
@@ -859,22 +855,25 @@ mod tests {
                     raw.viewports.insert(egui::ViewportId::ROOT, egui::ViewportInfo { inner_rect: Some(rect), ..Default::default() });
                     raw
                 };
-                ctx.run_ui(raw(), |ui| app.take_pending_drops(ui.ctx())).textures_delta.clear();
+                ctx.run_ui(raw(), |_| {}).textures_delta.clear();
+                let mut dropped =
+                    crate::tests::pointerless_drop(&path, egui::Rect::from_min_size(egui::Pos2::ZERO + window, egui::vec2(1400.0, 900.0)));
+                app.raw_input_hook(&ctx, &mut dropped);
+                ctx.run_ui(raw(), |_| app.take_pending_drops()).textures_delta.clear();
                 assert_eq!(app.pending_drops.len(), 1, "busy export retains the drop");
-                assert!(app.pending_drops[0].pointer_sampled);
-                assert_eq!(app.pending_drops[0].pointer, available.then_some(inside));
+                assert_eq!(app.pending_drops[0].system, available.then_some(inside));
                 // Moving the system pointer, or making it available later, cannot retarget the drop.
                 *pointer.lock().unwrap() = Some(egui::pos2(1300.0, 800.0));
-                ctx.run_ui(raw(), |ui| app.take_pending_drops(ui.ctx())).textures_delta.clear();
-                assert_eq!(app.pending_drops[0].pointer, available.then_some(inside));
+                ctx.run_ui(raw(), |_| app.take_pending_drops()).textures_delta.clear();
+                assert_eq!(app.pending_drops[0].system, available.then_some(inside));
                 tx.send(Err("synthetic export failure".into())).unwrap();
                 app.logic(&ctx);
-                ctx.run_ui(raw(), |ui| app.take_pending_drops(ui.ctx())).textures_delta.clear();
+                ctx.run_ui(raw(), |_| app.take_pending_drops()).textures_delta.clear();
                 assert!(app.pending_drops.is_empty());
                 let doc = &app.session.doc().unwrap().doc;
                 assert_eq!(doc.spreads[0].items.len(), if available { 1 } else { 2 });
                 assert_eq!(matches!(doc.item(designcraft_doc::ItemId(frame)).unwrap().content, designcraft_doc::Content::Graphic(_)), available);
-                ctx.run_ui(raw(), |ui| app.take_pending_drops(ui.ctx())).textures_delta.clear();
+                ctx.run_ui(raw(), |_| app.take_pending_drops()).textures_delta.clear();
                 assert_eq!(app.session.doc().unwrap().doc.spreads[0].items.len(), if available { 1 } else { 2 }, "exactly once");
             }
         }
@@ -936,6 +935,59 @@ mod tests {
         assert_eq!(app.pdf_export.last.as_ref().unwrap()["pages"], 2);
         assert!(data.lock().unwrap().starts_with(b"%PDF-"));
     }
+    #[test]
+    fn background_export_uses_linked_originals_and_reports_missing_links() {
+        for missing in [false, true] {
+            let mut session = designcraft_engine::Session::new();
+            session.execute("file.new", &json!({"pages": 1})).unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            let source = dir.path().join("linked.svg");
+            std::fs::write(
+                &source,
+                br##"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20"><rect width="20" height="20" fill="#ff0000"/></svg>"##,
+            )
+            .unwrap();
+            session.execute("file.place", &json!({"path": source, "x": 36, "y": 36, "width": 72})).unwrap();
+            session
+                .edit(|doc, _| {
+                    for asset in doc.assets.values_mut() {
+                        let asset = Arc::make_mut(asset);
+                        assert_eq!(asset.storage, designcraft_doc::Storage::Linked);
+                        asset.data = designcraft_doc::AssetData::linked(designcraft_doc::LinkedSource::of(asset, None).unwrap());
+                        asset.proxy = None;
+                    }
+                    Ok(())
+                })
+                .unwrap();
+            if missing {
+                std::fs::remove_file(&source).unwrap();
+            }
+            let mut app = crate::DesignApp::new(session, crate::Services::default());
+            let ctx = egui::Context::default();
+            let writer: crate::BackgroundWriteFn = Arc::new(|_, bytes| {
+                assert!(bytes.starts_with(b"%PDF"));
+                Ok(())
+            });
+            app.pdf_export
+                .start(app.session.active().unwrap(), app.session.cache.clone(), "linked.pdf".into(), json!({}), ctx.clone(), Some(writer))
+                .unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while app.pdf_export.worker_active() && std::time::Instant::now() < deadline {
+                app.logic(&ctx);
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            assert!(!app.pdf_export.worker_active());
+            let result = app.pdf_export.last.as_ref().unwrap();
+            assert!(result.get("error").is_none(), "{result}");
+            let warnings = result["warnings"].as_array().unwrap();
+            assert_eq!(
+                warnings.iter().any(|w| w.as_str().is_some_and(|s| s.contains("linked.svg") && s.contains("skipped"))),
+                missing,
+                "{warnings:?}"
+            );
+        }
+    }
+
     #[test]
     fn native_writer_runs_off_the_ui_thread_and_does_not_use_the_ui_writer() {
         let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());

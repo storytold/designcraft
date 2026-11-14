@@ -428,7 +428,11 @@ fn handle_request(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest
                 app.session.reset_find_scope();
             }
             let fields = p.get("fields").cloned().unwrap_or(Value::Null);
-            let d = if id == "frameSize" { crate::dialogs::frame_size_dialog(app, fields) } else { crate::dialogs::Dialog::new(id, fields) };
+            let d = match id {
+                "frameSize" => crate::dialogs::frame_size_dialog(app, fields),
+                "contactSheet" => crate::dialogs::contact_sheet_dialog(app, fields),
+                _ => crate::dialogs::Dialog::new(id, fields),
+            };
             let v = serde_json::to_value(&d).unwrap_or_default();
             app.ui.dialog = Some(d);
             ok(v)
@@ -554,6 +558,18 @@ mod automation_contract_tests {
         assert_eq!(app.session.doc().unwrap().history.undo.len(), history);
         app.run("style.paragraph.edit", json!({"name":designcraft_doc::BASIC_PARAGRAPH,"chars":{"size":18}})).unwrap();
         assert_eq!(app.session.doc().unwrap().history.undo.len(), history + 1);
+    }
+    /// `ui.dialog.open` opens Place Contact Sheet as the menu does: bare numbers are in the
+    /// document's ruler unit, so `1` on an inch document is an inch, not a pica.
+    #[test]
+    fn a_contact_sheet_opened_over_the_control_channel_uses_the_document_unit() {
+        let mut app = app();
+        let ctx = egui::Context::default();
+        app.run("document.preferences", json!({"horizontalUnits": "inches"})).unwrap();
+        let response = call(&mut app, &ctx, "ui.dialog.open", json!({"id": "contactSheet", "fields": {"margin": "1"}}));
+        assert_eq!(response["ok"], true, "{response}");
+        let d = app.ui.dialog.as_ref().unwrap();
+        assert_eq!(d.unit, designcraft_geom::Unit::Inches);
     }
     fn app() -> DesignApp {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());

@@ -249,6 +249,28 @@ fn arrangement_accessible_name_is_localized_in_every_interface_language() {
     }
 }
 
+/// File › Place Contact Sheet… and its dialog read in every interface language, including those
+/// whose own catalog is all `tr` looks in.
+#[test]
+fn contact_sheet_strings_are_translated_in_every_interface_language() {
+    let strings = [
+        "Place Contact Sheet…",
+        "Place Contact Sheet",
+        "Place loaded images on new pages, in file order.",
+        "Columns",
+        "Rows",
+        "Gutter",
+        "Page margin",
+    ];
+    for (code, name) in LANGUAGES.iter().filter(|(code, _)| !code.is_empty()) {
+        for s in strings {
+            let text = tr(code, s);
+            assert!(text != s && !text.trim().is_empty(), "{name}: {s:?} is still English");
+        }
+    }
+    assert_eq!(["Columns", "Rows", "Gutter"].map(|s| tr("es", s)), ["Columnas", "Filas", "Medianil"]);
+}
+
 /// The Links panel's captions for a status its background check hasn't found yet, and for when
 /// the check can't run.
 #[test]

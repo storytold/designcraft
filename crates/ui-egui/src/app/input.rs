@@ -59,12 +59,14 @@ impl DesignApp {
                 _ => None,
             });
             let generation = self.input_generation();
-            let mut starts_batch = true;
+            // A drop without pointer events (dragged in from another application) asks the
+            // system now, while the pointer is still where the files were let go.
+            let system = if pointer.is_none() && !raw.dropped_files.is_empty() { self.system_pointer(ctx, raw) } else { None };
+            let batch = self.pending_drops.last().map_or(0, |d| d.batch.wrapping_add(1));
             for file in std::mem::take(&mut raw.dropped_files) {
                 let path = file.path().to_string_lossy().to_string();
                 if !path.is_empty() {
-                    self.pending_drops.push(PendingDrop { path, pointer, generation, starts_batch, pointer_sampled: pointer.is_some() });
-                    starts_batch = false;
+                    self.pending_drops.push(PendingDrop { path, pointer, system, batch, generation });
                 }
             }
         }
@@ -146,36 +148,33 @@ impl DesignApp {
 
     /// Open or place the files dropped since the last UI pass, at the pointer. Files dropped
     /// without pointer events (dragged in from another application) are placed where the system
-    /// says the pointer is, so one dropped on a frame still fills it.
+    /// said the pointer was when they arrived, so one dropped on a frame still fills it.
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn take_pending_drops(&mut self, ctx: &egui::Context) {
-        // Sample once before a busy export defers placement: moving the mouse while the
-        // worker runs must not move the captured drop. An unavailable pointer stays unavailable.
-        if self.pending_drops.iter().any(|drop| !drop.pointer_sampled) {
-            let system = self.system_pointer(ctx);
-            for drop in &mut self.pending_drops {
-                if !drop.pointer_sampled {
-                    drop.pointer = drop.pointer.or(system);
-                    drop.pointer_sampled = true;
-                }
-            }
+    pub(crate) fn take_pending_drops(&mut self) {
+        if self.pdf_export.busy() {
+            return;
         }
-        self.replay_dropped_files();
+        // Sample the generation once for the whole batch: placing the first valid file must not
+        // suppress later files that belong to the same captured batch.
+        let current = self.input_generation();
+        let drops: Vec<_> = std::mem::take(&mut self.pending_drops).into_iter().filter(|d| d.generation == current).collect();
+        // Dropped together, they go together: several images load the place cursor at once. Each
+        // file keeps the pointer it was dropped at, or the system's from when it arrived. Separate
+        // drops stay separate, so a single image still fills the frame it was dropped on.
+        for batch in drops.chunk_by(|a, b| a.batch == b.batch) {
+            self.open_dropped_batch(batch.iter().map(|d| (d.path.clone(), d.pointer.or(d.system))).collect());
+        }
     }
 
     /// Where the pointer is in the window, asked of the system ([`crate::Services::pointer`]),
     /// for files dropped without pointer events: dragged in from another application, they bring
-    /// none. `None` when the system doesn't say or the window's place isn't known.
+    /// none. Converted with the window's place in `raw` (that input's own viewport info, else the
+    /// last pass's). `None` when the system doesn't say or the window's place isn't known.
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn system_pointer(&self, ctx: &egui::Context) -> Option<egui::Pos2> {
+    fn system_pointer(&self, ctx: &egui::Context, raw: &egui::RawInput) -> Option<egui::Pos2> {
         let at = (self.services.pointer.as_ref()?)()?;
-        // The system's points are unscaled; egui's (the window's rect too) are divided by the
-        // UI scale.
-        let zoom = ctx.zoom_factor();
-        let at = if zoom.is_finite() && zoom > 0.0 { at / zoom } else { at };
-        let inner = ctx.input(|i| i.viewport().inner_rect)?;
-        let local = at - inner.min.to_vec2();
-        (local.x.is_finite() && local.y.is_finite()).then_some(local)
+        let inner = raw.viewports.get(&raw.viewport_id).and_then(|v| v.inner_rect).or_else(|| ctx.input(|i| i.viewport().inner_rect))?;
+        screen_to_window(at, ctx.zoom_factor(), inner)
     }
 
     /// The current state an injected batch belongs to.
@@ -224,4 +223,13 @@ impl DesignApp {
         self.injected_private = false;
         self.control_input_frame.store(false, std::sync::atomic::Ordering::Relaxed);
     }
+}
+
+/// A point on the screen in the system's unscaled points, in the window whose content is `inner`
+/// (egui's points, divided by the UI scale `zoom`). `None` when the result isn't finite.
+#[cfg(not(target_arch = "wasm32"))]
+fn screen_to_window(at: egui::Pos2, zoom: f32, inner: egui::Rect) -> Option<egui::Pos2> {
+    let at = if zoom.is_finite() && zoom > 0.0 { at / zoom } else { at };
+    let local = at - inner.min.to_vec2();
+    (local.x.is_finite() && local.y.is_finite()).then_some(local)
 }

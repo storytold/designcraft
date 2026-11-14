@@ -1772,7 +1772,11 @@ fn eyedropper_samples_a_placed_image_and_matches_other_objects() {
             mime: "image/png".into(),
             link: None,
             link_fingerprint: None,
-            data: std::sync::Arc::new(vec![]),
+            link_relative: None,
+            link_hash: None,
+            storage: Default::default(),
+            proxy: None,
+            data: designcraft_doc::AssetData::embedded(vec![]),
             pixels: Some((100, 100)),
             page: 0,
             pdf_crop: Default::default(),
@@ -2151,7 +2155,7 @@ fn eyedropper_ignores_inactive_states_of_a_multi_state_object() {
             name: "photo.png".into(),
             mime: "image/png".into(),
             link: None,
-            data: std::sync::Arc::new(vec![]),
+            data: designcraft_doc::AssetData::embedded(vec![]),
             pixels: Some((100, 100)),
             ..Default::default()
         }),
@@ -2504,4 +2508,111 @@ fn gap_tool_follows_snapping_settings() {
     assert!((p2["dx"].as_f64().unwrap() - (-60.0)).abs() < 1e-6, "expected raw dx=-60 preserved, got {p2}");
     assert!(t2.overlays(&cx2).is_empty(), "expected no guide overlay without snap match");
     t2.pointer(&cx2, &PointerEvent::new(PointerKind::Up, q0.x - 60.0, q0.y));
+}
+
+/// While the place cursor drags out a grid, the arrow keys change it and are handled, even at a
+/// limit, so the session doesn't try them elsewhere; other keys and keys before a drag aren't.
+#[test]
+fn place_gun_grid_arrow_keys_are_handled_during_a_drag() {
+    let d = Document::new(&NewDocument::default());
+    let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    let mut t = create("placeGun");
+    assert!(t.key(&cx, ToolKey::Right, Mods::default()).is_empty(), "no drag yet");
+    let _ = t.pointer(&cx, &PointerEvent::new(PointerKind::Down, 10.0, 10.0));
+    let _ = t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, 110.0, 60.0));
+    for key in [ToolKey::Right, ToolKey::Up, ToolKey::Left, ToolKey::Left, ToolKey::Down, ToolKey::Down] {
+        assert_eq!(t.key(&cx, key, Mods::default()), vec![Action::Handled], "{key:?}");
+    }
+    assert!(t.key(&cx, ToolKey::Delete, Mods::default()).is_empty());
+}
+
+/// Escape drops only the current loaded image; between drags the arrows cycle the loaded images,
+/// and during a drag they keep their grid meaning.
+#[test]
+fn place_gun_escape_skips_and_arrows_cycle_between_drags() {
+    let d = Document::new(&NewDocument::default());
+    let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
+    let mut cx = ctx(&d, &s, &c, &l);
+    cx.loaded = Some((40.0, 20.0));
+    let mut t = create("placeGun");
+    let exec = |cmd: &str, p: serde_json::Value| vec![Action::Exec(cmd.into(), p)];
+    assert_eq!(t.key(&cx, ToolKey::Escape, Mods::default()), exec("place.skip", serde_json::json!({})));
+    for (key, dir) in [(ToolKey::Right, 1), (ToolKey::Down, 1), (ToolKey::Left, -1), (ToolKey::Up, -1)] {
+        assert_eq!(t.key(&cx, key, Mods::default()), exec("place.cycle", serde_json::json!({"dir": dir})), "{key:?}");
+    }
+    let _ = t.pointer(&cx, &PointerEvent::new(PointerKind::Down, 10.0, 10.0));
+    let _ = t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, 110.0, 60.0));
+    assert_eq!(t.key(&cx, ToolKey::Right, Mods::default()), vec![Action::Handled]);
+    // Nothing loaded: Escape leaves the tool instead of asking to skip an image there isn't.
+    cx.loaded = None;
+    assert_eq!(t.key(&cx, ToolKey::Escape, Mods::default()), vec![Action::SwitchTool("selection".into())]);
+}
+
+/// A place-cursor grid drag too thin for its cells shows and places the single frame an ordinary
+/// drag would; one with room shows its cells and places the grid.
+#[test]
+fn place_gun_grid_too_small_for_its_cells_previews_and_places_one_frame() {
+    let d = Document::new(&NewDocument::default());
+    let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
+    let mut cx = ctx(&d, &s, &c, &l);
+    cx.loaded = Some((40.0, 20.0));
+    // Drag from (10, 10) to `to`, pressing ↑ (two rows) when `grid`: the overlay before release,
+    // and the release.
+    let drag = |to: (f64, f64), grid: bool| {
+        let mut t = create("placeGun");
+        let _ = t.pointer(&cx, &PointerEvent::new(PointerKind::Down, 10.0, 10.0));
+        let _ = t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, to.0, to.1));
+        if grid {
+            assert_eq!(t.key(&cx, ToolKey::Up, Mods::default()), vec![Action::Handled]);
+        }
+        let shown = t.overlays(&cx);
+        (shown, t.pointer(&cx, &PointerEvent::new(PointerKind::Up, to.0, to.1)))
+    };
+    // 100 × 8 pt: two rows 6 pt apart leave each a 1 pt cell; 100 × 4 pt leaves none.
+    let (shown, out) = drag((110.0, 18.0), true);
+    assert_eq!(shown.len(), 2, "{shown:?}");
+    assert!(matches!(out.as_slice(), [Action::Exec(cmd, p)] if cmd == "place.grid" && p["rows"] == 2), "{out:?}");
+    let (shown, out) = drag((110.0, 14.0), true);
+    let (single_shown, single_out) = drag((110.0, 14.0), false);
+    assert_eq!(shown, single_shown);
+    assert_eq!(out, single_out);
+    assert!(matches!(out.as_slice(), [Action::Exec(cmd, _)] if cmd == "place.drop"), "{out:?}");
+}
+
+/// On a rotated spread a place-cursor grid previews the cells it places: worked out on the spread,
+/// then shown on the canvas, so two columns on the spread don't preview as two across the canvas.
+#[test]
+fn place_gun_grid_preview_matches_the_release_on_a_rotated_spread() {
+    let mut d = Document::new(&NewDocument::default());
+    std::sync::Arc::make_mut(&mut d.spreads[0]).pages[0].view_rotation = 1;
+    let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    let (start, end) = (Point::new(10.0, 10.0), Point::new(210.0, 110.0));
+    let (spread, a) = l.spread_at(start).unwrap();
+    let b = l.to_spread(spread, end);
+    let mut t = create("placeGun");
+    let _ = t.pointer(&cx, &PointerEvent::new(PointerKind::Down, start.x, start.y));
+    let _ = t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, end.x, end.y));
+    assert_eq!(t.key(&cx, ToolKey::Right, Mods::default()), vec![Action::Handled]);
+    let shown = t.overlays(&cx);
+    let out = t.pointer(&cx, &PointerEvent::new(PointerKind::Up, end.x, end.y));
+    assert!(matches!(out.as_slice(), [Action::Exec(cmd, p)] if cmd == "place.grid" && p["columns"] == 2 && p["gutter"] == 6.0), "{out:?}");
+    // Two columns on the spread, 6 pt apart, each shown where its corners land on the canvas.
+    let r = Rect::from_points(a, b);
+    let w = (r.width() - 6.0) / 2.0;
+    let expected: Vec<Overlay> = [r.x0, r.x0 + w + 6.0]
+        .into_iter()
+        .map(|x| Overlay::Marquee(Rect::from_points(l.to_canvas(spread, Point::new(x, r.y0)), l.to_canvas(spread, Point::new(x + w, r.y1)))))
+        .collect();
+    assert_eq!(shown.len(), 2, "{shown:?}");
+    for (got, want) in shown.iter().zip(&expected) {
+        let (Overlay::Marquee(got), Overlay::Marquee(want)) = (got, want) else { panic!("{got:?}") };
+        for (g, w) in [(got.x0, want.x0), (got.y0, want.y0), (got.x1, want.x1), (got.y1, want.y1)] {
+            assert!((g - w).abs() < 1e-6, "{shown:?} against {expected:?}");
+        }
+    }
+    // A quarter turn: the columns stack down the canvas.
+    let (Overlay::Marquee(first), Overlay::Marquee(second)) = (&shown[0], &shown[1]) else { panic!("{shown:?}") };
+    assert!((first.x0 - second.x0).abs() < 1e-6, "{shown:?}");
 }
