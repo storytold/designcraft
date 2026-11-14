@@ -579,6 +579,15 @@ pub struct Layer {
     pub suppress_wrap_when_hidden: bool,
 }
 
+impl Layer {
+    /// Do the objects on this layer wrap text? Those on a hidden layer too, unless the layer
+    /// suppresses their wrap (Layer Options › Suppress Text Wrap When Layer Is Hidden), as in
+    /// InDesign.
+    pub fn wraps_text(&self) -> bool {
+        self.visible || !self.suppress_wrap_when_hidden
+    }
+}
+
 fn yes() -> bool {
     true
 }

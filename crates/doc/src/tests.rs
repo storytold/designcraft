@@ -636,3 +636,15 @@ fn hyphenation_exceptions_are_read_in_one_pass() {
     assert!(t.elapsed() < std::time::Duration::from_secs(2), "{:?}", t.elapsed());
     assert_eq!(map.values().next().map(Vec::len), Some(199_999));
 }
+
+/// A layer's objects wrap text when it is visible, and when it is hidden unless it suppresses
+/// wrap when hidden.
+#[test]
+fn layer_wraps_text_unless_hidden_and_suppressed() {
+    let d = doc();
+    let mut l = d.layers[0].clone();
+    for (visible, suppress, wraps) in [(true, false, true), (true, true, true), (false, false, true), (false, true, false)] {
+        (l.visible, l.suppress_wrap_when_hidden) = (visible, suppress);
+        assert_eq!(l.wraps_text(), wraps, "visible {visible}, suppress {suppress}");
+    }
+}
