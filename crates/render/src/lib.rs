@@ -31,6 +31,7 @@ pub mod glyphs;
 mod grid;
 mod pdf_bounds;
 mod pdf_layers;
+pub mod proxy;
 pub use pdf_layers::{pdf_hide_layers, pdf_layers};
 
 mod color;
