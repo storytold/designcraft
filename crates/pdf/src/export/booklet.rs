@@ -119,6 +119,7 @@ fn export_booklet_inner(doc: &Document, cache: &Cache, opts: &BookletOptions) ->
         fonts: HashMap::new(),
         reverse_cmaps: HashMap::new(),
         rgb_only: false,
+        x1a_process: None,
         tags: Vec::new(),
         story_tags: HashMap::new(),
         tag_story: None,

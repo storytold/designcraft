@@ -319,6 +319,49 @@ fn x1a_dropped_inks_warning_says_they_wont_print() {
     assert!(warnings.iter().all(|w| !w.contains("converted to process")), "{warnings:?}");
 }
 
+/// The `k` (DeviceCMYK fill) operands of the first page's content, in order.
+fn cmyk_fills(bytes: &[u8]) -> Vec<Vec<f32>> {
+    let pdf = Pdf::new(bytes.to_vec()).unwrap();
+    let pages = pdf.pages();
+    let content = pages.iter().next().unwrap().page_stream().unwrap().to_vec();
+    let text = String::from_utf8_lossy(&content);
+    let tokens: Vec<&str> = text.split_whitespace().collect();
+    tokens
+        .iter()
+        .enumerate()
+        .filter(|(i, t)| **t == "k" && *i >= 4)
+        .map(|(i, _)| tokens[i - 4..i].iter().map(|s| s.parse().unwrap()).collect())
+        .collect()
+}
+
+/// An RGB fill converts into the output intent's CMYK with black point compensation when the
+/// colour settings ask for it (#2570): the issue's blue and a dark grey print with less ink than
+/// without it.
+#[test]
+fn x1a_converts_rgb_fills_with_black_point_compensation() {
+    use designcraft_color::cms::{Cms, ColorSettings};
+    let mut d = Document::new(&NewDocument::default());
+    d.swatches.push(Swatch::color("Blue", Color::rgb(40.0 / 255.0, 60.0 / 255.0, 180.0 / 255.0)));
+    d.swatches.push(Swatch::color("Shadow", Color::rgb(30.0 / 255.0, 30.0 / 255.0, 30.0 / 255.0)));
+    add(&mut d, Rect::new(72.0, 72.0, 172.0, 172.0), "Blue", |_| {});
+    add(&mut d, Rect::new(272.0, 72.0, 372.0, 172.0), "Shadow", |_| {});
+    let opts = PdfOptions { standard: Standard::PdfX1a, ..PdfOptions::default() };
+    let fills = |bpc: bool| {
+        let cms = Cms::new(&ColorSettings { bpc, ..ColorSettings::default() }).unwrap();
+        let r = crate::export::export_pdf_with_cms(&d, &Cache::new(), &opts, &cms).unwrap();
+        assert_eq!(check_pdfx1a(&r.bytes), Vec::<String>::new(), "bpc {bpc}");
+        let fills = cmyk_fills(&r.bytes);
+        assert_eq!(fills.len(), 2, "bpc {bpc}: {fills:?}");
+        fills
+    };
+    let (with, without) = (fills(true), fills(false));
+    for (with, without) in with.iter().zip(&without) {
+        assert_ne!(with, without, "black point compensation changed nothing");
+        let ink = |c: &Vec<f32>| c.iter().sum::<f32>();
+        assert!(ink(with) < ink(without), "with {with:?}, without {without:?}");
+    }
+}
+
 /// The output intent and the identification are read as objects: whitespace between tokens (as
 /// qpdf and Ghostscript write them) doesn't hide them.
 #[test]
