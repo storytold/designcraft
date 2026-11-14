@@ -7,6 +7,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
 
+pub mod asset_io;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod atomic;
 pub mod autosize;
@@ -114,6 +115,8 @@ pub struct DocState {
     pub preview_record: Option<u32>,
     /// The fonts the document brought (`doc.font_scope`), found while it is open.
     pub fonts: Option<Arc<FontScope>>,
+    /// What the open found for its linked files, and their background check.
+    pub links: cmd::native_links::OpenLinks,
 }
 
 /// A document's font scope ([`designcraft_fonts::FontDb::load_document_fonts`]): its fonts are
@@ -146,7 +149,9 @@ fn next_revision() -> u64 {
 
 impl DocState {
     /// Initialize saved/live document identity, revision, epoch, active default layer, empty history with limit 1,000 and the initial path.
-    pub fn new(doc: Document, path: Option<String>) -> Self {
+    pub fn new(mut doc: Document, path: Option<String>) -> Self {
+        // Alpha Channel contour outlines aren't saved: trace them for the document as opened.
+        crate::cmd::alpha_wrap::sync(&mut doc);
         let active_layer = doc.working_layer();
         let doc = Arc::new(doc);
         let revision = next_revision();
@@ -168,6 +173,7 @@ impl DocState {
             preview_stash: None,
             preview_record: None,
             fonts: None,
+            links: Default::default(),
         }
     }
     /// The document changed: it gets a revision no document state had before. A cancelled
@@ -243,6 +249,8 @@ pub struct Prefs {
     pub recovery_minutes: f64,
     /// File › New › Document › Save Document Preset: saved document presets, by name (`title`).
     pub document_presets: Vec<designcraft_doc::build::NewDocument>,
+    /// File › Export Layouts and Versions › Save Preset: saved export jobs, by name.
+    pub export_presets: Vec<cmd::export_batch::ExportPreset>,
     /// Preferences › File Handling › Create Links When Placing Text Files: placed text files are
     /// linked (Links panel) unless `file.place` says otherwise.
     pub link_text_files: bool,
@@ -353,6 +361,7 @@ impl Default for Prefs {
     fn default() -> Self {
         Prefs {
             document_presets: Vec::new(),
+            export_presets: Vec::new(),
             show_hidden_characters: false,
             typographers_quotes: true,
             polygon_sides: 6,
@@ -389,6 +398,10 @@ pub struct Session {
     active: Option<usize>,
     /// An undoable command is running: the commands it runs are part of its undo step.
     in_undo_step: bool,
+    /// Scripts running one inside another, and the steps the outermost may still run
+    /// ([`script::MAX_SCRIPT_DEPTH`], [`script::MAX_SCRIPT_STEPS`]).
+    pub(crate) script_depth: usize,
+    pub(crate) script_steps: usize,
     pub prefs: Prefs,
     pub cache: Arc<Cache>,
     pub(crate) tool: Box<dyn designcraft_tools::Tool>,
@@ -405,15 +418,20 @@ pub struct Session {
     pub clipboard_origin: f64,
     /// Crash-recovery folder (the app sets it; saving or closing a document removes its entry).
     pub recovery_dir: Option<std::path::PathBuf>,
-    /// Copied text with its formatting (a frameless story slice) and its plain text.
-    pub text_clipboard: Option<(Arc<designcraft_doc::Story>, String)>,
-    /// The document the text was copied from: pasted anchored text frames take their stories and
-    /// graphics from it, even into another document.
-    pub text_clipboard_doc: Option<Arc<Document>>,
+    /// This session's number for the background recovery writer, which returns each result to
+    /// the session that queued it.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub(crate) recovery_owner: recovery::Owner,
+    /// Copied text with its formatting (a frameless story slice), its plain text, and what pasting
+    /// it needs from its document: a copy holding only the stories its anchored text frames show
+    /// (and theirs) and the graphics the text and those stories place.
+    pub text_clipboard: Option<(Arc<designcraft_doc::Story>, String, Arc<designcraft_doc::Document>)>,
     /// Requests for the UI (dialogs, view changes) produced by tools/commands.
     pub ui_requests: Vec<UiRequest>,
     /// Graphic loaded in the place cursor.
     pub loaded: Option<LoadedGraphic>,
+    /// Remaining graphics, in source-selection order, after `loaded`.
+    pub loaded_queue: std::collections::VecDeque<LoadedGraphic>,
     pub(crate) untitled: u32,
     /// Transforms applied to the current selection, oldest first (Transform Again / Sequence
     /// Again), with the selection they were applied to and whether the last one came from a
@@ -435,13 +453,10 @@ pub struct Session {
     /// New Document's Preview: the preview document's uid and the uid of the document that was
     /// active before it (see [`Session::preview_new_document`]).
     pub(crate) new_document_preview: Option<(u64, Option<u64>)>,
-    /// Linked text files checked by the Links panel: path → the size and modification time the
-    /// file had and the hash of its contents then, so a file touched but not changed is read once.
-    pub(crate) text_link_checks: std::collections::HashMap<String, (designcraft_doc::Fingerprint, String)>,
-    /// Linked images checked against their files this session (`links.list` polls twice a second):
-    /// a file of the recorded size and time isn't read again.
-    pub(crate) image_link_checks:
-        std::collections::HashMap<(designcraft_doc::AssetId, usize, std::path::PathBuf), (designcraft_doc::Fingerprint, bool)>,
+    /// Linked text files and images checked against their files this session (`links.list` is
+    /// polled): a file of the recorded size and time isn't read again, and one touched but not
+    /// changed is read once.
+    pub(crate) link_checks: cmd::LinkListChecks,
 }
 
 impl Default for Session {
@@ -458,10 +473,13 @@ impl Session {
 
     pub fn new() -> Self {
         guard::install_panic_hook();
+        asset_io::install();
         Session {
             docs: vec![],
             active: None,
             in_undo_step: false,
+            script_depth: 0,
+            script_steps: 0,
             prefs: Prefs::default(),
             cache: Arc::new(Cache::new()),
             tool: designcraft_tools::create("selection"),
@@ -472,12 +490,12 @@ impl Session {
             clipboard: None,
             clipboard_origin: 0.0,
             recovery_dir: None,
+            recovery_owner: recovery::Owner::new(),
             text_clipboard: None,
-            text_clipboard_doc: None,
-            text_link_checks: Default::default(),
-            image_link_checks: Default::default(),
+            link_checks: Default::default(),
             ui_requests: vec![],
             loaded: None,
+            loaded_queue: Default::default(),
             transforms: Default::default(),
             text_drag: false,
             text_unit: None,
@@ -553,15 +571,24 @@ impl Session {
             }
             self.reset_find_scope();
             self.stop_data_preview();
+            self.unload_place_cursor();
             self.active = Some(i);
         }
     }
-    pub fn add_document(&mut self, d: DocState) -> usize {
+    pub fn add_document(&mut self, mut d: DocState) -> usize {
         if let Err(e) = self.end_composition() {
             log::warn!("ending the IME composition: {e}");
         }
         self.reset_find_scope();
+        // A built document (a data merge, say) may hold copies of anchored text frames.
+        if d.doc.has_anchored_items() {
+            let mut doc = (*d.doc).clone();
+            if doc.fix_anchored_text_frames() > 0 {
+                d.doc = Arc::new(doc);
+            }
+        }
         self.stop_data_preview();
+        self.unload_place_cursor();
         self.docs.push(d);
         self.active = Some(self.docs.len() - 1);
         self.docs.len() - 1
@@ -584,6 +611,10 @@ impl Session {
             recovery::discard_document(self, i, recovery_dir.as_deref());
         }
         if i < self.docs.len() {
+            // A background document's closing leaves the active document's place cursor alone.
+            if self.active == Some(i) {
+                self.unload_place_cursor();
+            }
             self.reset_find_scope();
             self.docs.remove(i);
             self.active = if self.docs.is_empty() { None } else { Some(i.min(self.docs.len() - 1)) };
@@ -670,9 +701,22 @@ impl Session {
         Ok(r)
     }
 
-    /// Fails with `Disabled` unless the command is enabled or names objects it can act on.
+    /// Fails with `Disabled` unless the command is enabled or names objects or a table it can act on.
     fn check_enabled(&self, spec: &CommandSpec, id: &str, params: &Value) -> Result<()> {
         if let Err(e) = (spec.enabled)(self) {
+            // A table command that takes `story` and `table` acts on the table the call names, so
+            // the selection doesn't matter: with nothing selected, the caret outside a table, or
+            // selected rows the command can't act on, `{"table": 3}` still runs.
+            if cmd::has_doc(self).is_ok()
+                && let Some(table) = cmd::named_table(spec, params, id)?
+            {
+                let story = cmd::table_story(params, id)?;
+                let st = self.doc()?;
+                if !st.doc.stories.iter().any(|(sid, x)| story.is_none_or(|n| sid.0 == n) && x.tables.contains_key(&table)) {
+                    return Err(EngineError::Disabled(id.into(), format!("no table {table}")));
+                }
+                return Ok(());
+            }
             // A command that takes `ids` acts on the objects the call names, so the selection
             // doesn't matter: with a text caret, nothing selected, or a selection the command
             // can't act on, `{"ids": [5]}` still runs.
@@ -807,7 +851,15 @@ impl Session {
         let r = f(&mut doc, &mut sel)?;
         crate::cmd::sync_placeholders(&mut doc);
         crate::cmd::flex::sync(&mut doc);
+        crate::cmd::alpha_wrap::sync(&mut doc);
+        // The generated endnote story first: it replaces its text, anchored frames pasted into it
+        // included.
         doc.sync_endnote_story();
+        // Text and frames copied or deleted: anchored items keep ids and stories of their own. The
+        // repair copies and removes stories with their endnotes, so the endnotes follow it.
+        if doc.anchored_items_changed_since(&st.doc) && doc.fix_anchored_text_frames() > 0 {
+            doc.sync_endnote_story();
+        }
         st.doc = Arc::new(doc);
         st.selection = sel;
         st.bump_revision();

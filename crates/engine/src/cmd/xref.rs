@@ -67,10 +67,17 @@ fn destination(d: &mut designcraft_doc::Document, p: &Value) -> Result<u64> {
     } else {
         return Err(bad("xref.insert", "give `anchor`, `paragraph` or `story` + `para`"));
     };
-    d.paragraph_anchor(sid, pos).ok_or_else(|| bad("xref.insert", "could not anchor the paragraph"))
+    let before = d.story(sid).map_or(0, |st| st.len());
+    let id = d.paragraph_anchor(sid, pos).ok_or_else(|| bad("xref.insert", "could not anchor the paragraph"))?;
+    let grew = d.story(sid).map_or(0, |st| st.len()).saturating_sub(before);
+    if grew > 0
+        && let Some((asid, apos)) = d.find_anchor(id)
+    {
+        d.adjust_text_ranges(asid, apos..apos, grew);
+    }
+    Ok(id)
 }
 
-/// `xref.insert`: insert or replace with a cross-reference at the text selection.
 fn insert(s: &mut Session, p: &Value) -> Result<Value> {
     let p = p.clone();
     s.edit(|d, sel| {
@@ -91,12 +98,14 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
             t2.anchor += grew;
             t2.focus += grew;
         }
-        let len = d.story(t.story).map_or(0, |st| st.len());
-        let r = t2.range();
-        let r = r.start.min(len)..r.end.min(len);
-        d.delete_text_range(t.story, None, r.clone())?;
         let st = d.story_mut(t.story).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
+        let r = t2.range();
+        let r = r.start.min(st.len())..r.end.min(st.len());
+        st.delete(r.clone());
         st.insert_xref(r.start, CrossRef { target, format, ..Default::default() });
+        if t.cell.is_none() {
+            d.adjust_text_ranges(t.story, r.clone(), designcraft_doc::XREF_MARK.len_utf8());
+        }
         let pos = r.start + designcraft_doc::XREF_MARK.len_utf8();
         sel.text = Some(TextSel { anchor: pos, focus: pos, ..t2 });
         Ok(json!({"target": target, "pos": r.start}))
@@ -118,6 +127,9 @@ fn create_anchor(s: &mut Session, p: &Value) -> Result<Value> {
         let st = d.story_mut(t.story).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
         let at = t.range().start.min(st.len());
         let id = st.insert_anchor(at, &name);
+        if t.cell.is_none() {
+            d.adjust_text_ranges(t.story, at..at, designcraft_doc::ANCHOR_MARK.len_utf8());
+        }
         let pos = t.focus + designcraft_doc::ANCHOR_MARK.len_utf8();
         sel.text = Some(TextSel { anchor: pos, focus: pos, ..t });
         Ok(json!({"id": id}))

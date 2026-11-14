@@ -90,7 +90,14 @@ fn nested_and_item_rotations_are_combined_before_measuring_graphics() {
             name: "Grouped image".into(),
             mime: "image/svg+xml".into(),
             link: None,
-            data: Arc::new(br#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><rect width="1" height="1" fill="red"/></svg>"#.to_vec()),
+            link_fingerprint: None,
+            link_relative: None,
+            link_hash: None,
+            storage: Default::default(),
+            proxy: None,
+            data: designcraft_doc::AssetData::embedded(
+                br#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><rect width="1" height="1" fill="red"/></svg>"#.to_vec(),
+            ),
             pixels: None,
             page: 0,
             pdf_crop: Default::default(),
@@ -144,10 +151,13 @@ fn articles_keep_their_explicit_order_and_exclusions() {
     let (c, _) = text(&mut doc, 0, 36.0, 10.0, "Article third");
     let (omitted, _) = text(&mut doc, 0, 36.0, 5.0, "Excluded story");
     doc.articles.push(Article { name: "Unused".into(), items: vec![omitted], export: false });
-    doc.articles.push(Article { name: "Chosen".into(), items: vec![grouped, c, grouped], export: true });
+    let (hidden, _) = text(&mut doc, 0, 36.0, 1.0, "Hidden in article");
+    doc.item_mut(hidden).unwrap().hidden = true;
+    doc.articles.push(Article { name: "Chosen".into(), items: vec![grouped, c, grouped, hidden], export: true });
     assert_output_order(&doc, &["Article first", "Article second", "Article third"]);
     for output in outputs(&doc) {
         assert!(!output.contains("Excluded story"));
+        assert!(!output.contains("Hidden in article"));
     }
 }
 

@@ -26,7 +26,6 @@ fn table_style_param(s: &Session, p: &Value, cmd: &str) -> Result<Option<(design
     Ok(Some((styles.resolve_table_style(name), styles.cell.clone())))
 }
 
-/// `table.insert`: replace the selection with a table.
 pub(super) fn insert(s: &mut Session, p: &Value) -> Result<Value> {
     let t = s.doc()?.selection.text.ok_or_else(|| bad("table.insert", "no insertion point"))?;
     if t.cell.is_some() {
@@ -56,11 +55,10 @@ pub(super) fn insert(s: &mut Session, p: &Value) -> Result<Value> {
         let id = d.alloc();
         let mut table = Table::new(id, rows, cols, header, footer, width);
         table.options.direction = para_direction(d, t.story, t.range().start);
-        let r = t.range();
-        let (pf, cf) = d.story(t.story).map_or_else(
-            || (designcraft_doc::ParaFormat::default(), designcraft_doc::CharFormat::default()),
-            |st| (st.paras[st.para_at(r.start)].clone(), st.char_format_at(r.start).clone()),
-        );
+        let st = d.story_mut(t.story).ok_or_else(|| bad("table.insert", "no story"))?;
+        // Cells start with the paragraph format at the caret.
+        let pf = st.paras[st.para_at(t.range().start)].clone();
+        let cf = st.char_format_at(t.range().start).clone();
         for c in &mut table.cells {
             c.text.paras[0] = designcraft_doc::ParaFormat { table: None, ..pf.clone() };
             c.text.chars[0].format = cf.clone();
@@ -68,9 +66,12 @@ pub(super) fn insert(s: &mut Session, p: &Value) -> Result<Value> {
         if let Some((ts, cells)) = &style {
             ts.apply_to(&mut table, cells);
         }
-        d.delete_text_range(t.story, None, r.clone())?;
-        let st = d.story_mut(t.story).ok_or_else(|| bad("table.insert", "no story"))?;
+        let r = t.range();
+        let len0 = st.len();
+        st.delete(r.clone());
         st.insert_table(r.start, table);
+        let ins_len = st.len().saturating_sub(len0.saturating_sub(r.len()));
+        d.adjust_text_ranges(t.story, r, ins_len);
         *sel = Selection::text(TextSel { story: t.story, anchor: 0, focus: 0, frame: t.frame, cell: Some(CellAddr { table: id, row: 0, col: 0 }) });
         Ok(json!({"story": t.story.0, "table": id}))
     })
@@ -149,8 +150,11 @@ pub(super) fn convert_from_text(s: &mut Session, p: &Value) -> Result<Value> {
         if let Some((ts, cells)) = &style {
             ts.apply_to(&mut table, cells);
         }
+        let len0 = st.len();
         st.delete(a..b);
         let anchor = st.insert_table(a, table);
+        let ins_len = st.len().saturating_sub(len0.saturating_sub(b - a));
+        d.adjust_text_ranges(t.story, a..b, ins_len);
         *sel = Selection::text(TextSel::caret(t.story, anchor));
         Ok(json!({"table": id, "rows": data.len()}))
     })
@@ -161,35 +165,39 @@ pub(super) fn convert_to_text(s: &mut Session, p: &Value) -> Result<Value> {
     let col_sep = separator(p, "columnSeparator", "\t", "table.convertToText")?;
     let row_sep = separator(p, "rowSeparator", "\n", "table.convertToText")?;
     s.edit(|d, sel| {
-        let st = d.story(g.story).ok_or_else(|| bad("table.convertToText", "no story"))?;
+        let st = d.story_mut(g.story).ok_or_else(|| bad("table.convertToText", "no story"))?;
         let text = st.tables.get(&g.table).map(|t| t.text_with(&col_sep, &row_sep)).unwrap_or_default();
         let a = st.table_anchor(g.table).ok_or_else(|| bad("table.convertToText", "no anchor"))?;
-        d.replace_text_range(g.story, None, a..a + designcraft_doc::TABLE_ANCHOR.len_utf8(), &text)?;
+        let len0 = designcraft_doc::TABLE_ANCHOR.len_utf8();
+        st.replace(a..a + len0, &text);
+        d.adjust_text_ranges(g.story, a..a + len0, text.len());
         *sel = Selection::text(TextSel::caret(g.story, a + text.len()));
         ok()
     })
 }
 
-/// `table.delete`: remove a table and its anchor.
 pub(super) fn delete_table(s: &mut Session, p: &Value) -> Result<Value> {
     let g = target(s, p, "table.delete")?;
     s.edit(|d, sel| {
-        let st = d.story_mut(g.story).ok_or_else(|| bad("table.delete", "no story"))?;
-        let a = st.table_anchor(g.table).ok_or_else(|| bad("table.delete", "no anchor"))?;
-        // Remove the anchor paragraph (with one separator) so no empty paragraph is left behind.
-        let end = a + designcraft_doc::TABLE_ANCHOR.len_utf8();
-        let r = if &st.text[end..] == "\n" && a > 0 && st.text[..a].ends_with('\n') {
-            // Inserted at the end of the story: remove the empty paragraph after it too.
-            a - 1..end + 1
-        } else if st.text[end..].starts_with('\n') {
-            a..end + 1
-        } else if a > 0 && st.text[..a].ends_with('\n') {
-            a - 1..end
-        } else {
-            a..end
+        let (r, len) = {
+            let st = d.story_mut(g.story).ok_or_else(|| bad("table.delete", "no story"))?;
+            let a = st.table_anchor(g.table).ok_or_else(|| bad("table.delete", "no anchor"))?;
+            // Remove the anchor paragraph (with one separator) so no empty paragraph is left behind.
+            let end = a + designcraft_doc::TABLE_ANCHOR.len_utf8();
+            let r = if &st.text[end..] == "\n" && a > 0 && st.text[..a].ends_with('\n') {
+                // Inserted at the end of the story: remove the empty paragraph after it too.
+                a - 1..end + 1
+            } else if st.text[end..].starts_with('\n') {
+                a..end + 1
+            } else if a > 0 && st.text[..a].ends_with('\n') {
+                a - 1..end
+            } else {
+                a..end
+            };
+            st.delete(r.clone());
+            (r, st.len())
         };
-        d.delete_text_range(g.story, None, r.clone())?;
-        let len = d.story(g.story).map_or(0, |st| st.len());
+        d.adjust_text_ranges(g.story, r.clone(), 0);
         *sel = Selection::text(TextSel::caret(g.story, r.start.min(len)));
         ok()
     })

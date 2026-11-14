@@ -25,16 +25,14 @@ pub fn specs() -> Vec<CommandSpec> {
                 let style = d.endnote_options.para_style.clone();
                 let st = d.story_mut(sid).ok_or_else(|| bad("endnote.edit", "no such story"))?;
                 let n = st.endnote_mut(id).ok_or_else(|| bad("endnote.edit", format!("no endnote {id}")))?;
-                let doomed = n.text.anchored_text_frames_in(0..n.text.len());
                 n.text = designcraft_doc::Story::with_text(StoryId(0), &text, ParaFormat { style, ..Default::default() });
-                d.unthread_anchored_text_frames(&doomed);
                 ok()
             })
         }),
         cmd!("endnote.delete", "Delete Endnote", [], None, "{story, id} — removes the reference and its text", has_doc, |s, p| {
             let (sid, id) = target(p)?;
             s.edit(|d, sel| {
-                let st = d.story(sid).ok_or_else(|| bad("endnote.delete", "no such story"))?;
+                let st = d.story_mut(sid).ok_or_else(|| bad("endnote.delete", "no such story"))?;
                 let k = st.endnotes.iter().position(|n| n.id == id).ok_or_else(|| bad("endnote.delete", format!("no endnote {id}")))?;
                 let at = st
                     .text
@@ -42,9 +40,10 @@ pub fn specs() -> Vec<CommandSpec> {
                     .nth(k)
                     .map(|(i, _)| i)
                     .ok_or_else(|| bad("endnote.delete", format!("endnote {id} has no reference in the text")))?;
-                let r = at..at + designcraft_doc::ENDNOTE_REF.len_utf8();
-                super::notes::follow_delete(sel, sid, r.clone());
-                d.delete_text_range(sid, None, r)?;
+                let len = designcraft_doc::ENDNOTE_REF.len_utf8();
+                super::notes::follow_delete(sel, sid, at..at + len);
+                st.delete(at..at + len);
+                d.adjust_text_ranges(sid, at..at + len, 0);
                 ok()
             })
         }),
@@ -128,6 +127,7 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
         let id = story
             .insert_endnote(at, &text, ParaFormat { style, ..Default::default() })
             .ok_or_else(|| bad(ID, "the story's endnotes don't match its references"))?;
+        d.adjust_text_ranges(ts.story, at..at, designcraft_doc::ENDNOTE_REF.len_utf8());
         let caret = at + designcraft_doc::ENDNOTE_REF.len_utf8();
         if let Some(t) = &mut sel.text {
             (t.anchor, t.focus) = (caret, caret);

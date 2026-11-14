@@ -28,6 +28,22 @@ pub struct ItemLoc {
     pub path: ItemPath,
 }
 
+/// A gap between adjacent items (or between an item and the page edge) on a spread.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Gap {
+    /// True for a vertical gap (between left and right neighbours, moving along X);
+    /// false for a horizontal gap (between top and bottom neighbours, moving along Y).
+    pub vertical: bool,
+    /// Leading edge of the gap along its movement axis.
+    pub a: f64,
+    /// Trailing edge of the gap along its movement axis.
+    pub z: f64,
+    /// Items ending at `a` that resize when the gap moves.
+    pub before: Vec<ItemId>,
+    /// Items starting at `z` that resize when the gap moves.
+    pub after: Vec<ItemId>,
+}
+
 impl ItemLoc {
     /// Top-level index in the spread.
     pub fn top(&self) -> usize {
@@ -251,10 +267,19 @@ impl Document {
         let mut frames = Vec::new();
         removed.walk(&mut |i| {
             if let Some(t) = i.text_frame() {
-                frames.push((t.story, i.id));
+                frames.push((i.id, t.story));
             }
         });
-        self.unthread_anchored_text_frames(&frames);
+        for (fid, sid) in frames {
+            let empty = {
+                let st = self.story_mut(sid).ok_or(DocError::NoStory(sid))?;
+                st.frames.retain(|f| *f != fid);
+                st.frames.is_empty()
+            };
+            if empty {
+                self.stories.remove(&sid);
+            }
+        }
         Ok(removed)
     }
 
@@ -643,6 +668,38 @@ impl Document {
             .map(|it| it.id)
     }
 
+    /// The gap at `p` (spread space) on spread `sr`: between left and right neighbours (vertical
+    /// gap moving along X), or above and below (horizontal gap moving along Y).
+    pub fn find_gap(&self, sr: SpreadRef, p: Point) -> Option<Gap> {
+        let sp = self.spread(sr)?;
+        let page = sp.page_at_x(p.x).and_then(|i| sp.pages.get(i)).map(|pg| pg.bounds())?;
+        let items: Vec<(ItemId, Rect)> = sp
+            .items
+            .iter()
+            .filter(|it| !it.hidden && !it.locked && self.layer(it.layer).is_none_or(|l| !l.locked && l.visible))
+            .map(|it| (it.id, it.bounds()))
+            .collect();
+        if items.iter().any(|(_, b)| b.contains(p)) {
+            return None;
+        }
+        // Between left and right neighbours (a vertical gap), or above and below (horizontal).
+        let side = |vertical: bool| {
+            let (pos, lo, hi) = if vertical { (p.x, page.x0, page.x1) } else { (p.y, page.y0, page.y1) };
+            let across = |b: &Rect| if vertical { b.y0 <= p.y && p.y <= b.y1 } else { b.x0 <= p.x && p.x <= b.x1 };
+            let end = |b: &Rect| if vertical { b.x1 } else { b.y1 };
+            let start = |b: &Rect| if vertical { b.x0 } else { b.y0 };
+            let a = items.iter().filter(|(_, b)| across(b) && end(b) <= pos).map(|(_, b)| end(b)).fold(lo, f64::max);
+            let z = items.iter().filter(|(_, b)| across(b) && start(b) >= pos).map(|(_, b)| start(b)).fold(hi, f64::min);
+            let before: Vec<ItemId> = items.iter().filter(|(_, b)| across(b) && (end(b) - a).abs() < 0.5).map(|(i, _)| *i).collect();
+            let after: Vec<ItemId> = items.iter().filter(|(_, b)| across(b) && (start(b) - z).abs() < 0.5).map(|(i, _)| *i).collect();
+            (!before.is_empty() || !after.is_empty()).then_some(Gap { vertical, a, z, before, after })
+        };
+        match (side(true), side(false)) {
+            (Some(v), Some(h)) => Some(if v.z - v.a <= h.z - h.a { v } else { h }),
+            (v, h) => v.or(h),
+        }
+    }
+
     /// The first item on a document or parent spread whose geometry isn't finite
     /// ([`Item::geometry_is_finite`]).
     pub fn non_finite_item(&self) -> Option<ItemId> {
@@ -770,7 +827,6 @@ impl Document {
     /// Replace a story's text and formatting wholesale (agents / import).
     pub fn set_story_text(&mut self, sid: StoryId, text: &str) -> Result<()> {
         let st = self.story_mut(sid).ok_or(DocError::NoStory(sid))?;
-        let doomed = st.anchored_text_frames();
         let para = st.paras.first().cloned().map(|p| ParaFormat { table: None, ..p }).unwrap_or_default();
         let fmt = st.chars.first().map(|r| r.format.clone()).unwrap_or_default();
         let n = text.matches('\n').count() + 1;
@@ -789,8 +845,119 @@ impl Document {
         st.editorial.clear();
         st.fix_marks();
         st.rev = st.rev.wrapping_add(1);
-        self.unthread_anchored_text_frames(&doomed);
+        self.prune_story_text_ranges(sid);
         Ok(())
+    }
+
+    /// Prune text-anchored hyperlinks and placeholders for `story` (e.g. after wholesale story replacement).
+    pub fn prune_story_text_ranges(&mut self, story: StoryId) {
+        self.hyperlinks.retain(|h| match &h.source {
+            crate::HyperlinkSource::Text { story: sid, .. } => *sid != story,
+            _ => true,
+        });
+        self.data_merge.placeholders.retain(|ph| match &ph.anchor {
+            crate::PlaceholderAnchor::Text { story: sid, .. } => *sid != story,
+            _ => true,
+        });
+    }
+
+    /// Remaps text range `s..e` when `del_range` is replaced by `ins_len` bytes.
+    /// Returns `None` if the range is inverted (`s > e`) or emptied by the edit (`s < e && s_new >= e_new`).
+    pub fn remap_range(del_range: std::ops::Range<usize>, ins_len: usize, s: usize, e: usize) -> Option<(usize, usize)> {
+        if s > e {
+            return None;
+        }
+        let (da, db) = (del_range.start, del_range.end);
+        let del_before = db.min(s).saturating_sub(da);
+        let del_inside = db.min(e).saturating_sub(da.max(s));
+        let mut s_new = s.saturating_sub(del_before);
+        let mut e_new = e.saturating_sub(del_before).saturating_sub(del_inside);
+        if da < s || (da == s && db == s) {
+            s_new = s_new.saturating_add(ins_len);
+            e_new = e_new.saturating_add(ins_len);
+        } else if da < e {
+            e_new = e_new.saturating_add(ins_len);
+        }
+        if s < e && s_new >= e_new { None } else { Some((s_new, e_new)) }
+    }
+
+    /// Adjust story-external text references (hyperlinks and data-merge placeholders) after text
+    /// in `story` has `del_range` replaced by `ins_len` bytes.
+    pub fn adjust_text_ranges(&mut self, story: StoryId, del_range: std::ops::Range<usize>, ins_len: usize) {
+        self.hyperlinks.retain_mut(|h| {
+            if let crate::HyperlinkSource::Text { story: sid, start, end } = &mut h.source
+                && *sid == story
+            {
+                if let Some((ns, ne)) = Self::remap_range(del_range.clone(), ins_len, *start, *end) {
+                    *start = ns;
+                    *end = ne;
+                    return true;
+                }
+                return false;
+            }
+            true
+        });
+
+        self.data_merge.placeholders.retain_mut(|ph| {
+            if let crate::PlaceholderAnchor::Text { story: sid, start, end } = &mut ph.anchor
+                && *sid == story
+            {
+                if let Some((ns, ne)) = Self::remap_range(del_range.clone(), ins_len, *start, *end) {
+                    *start = ns;
+                    *end = ne;
+                    return true;
+                }
+                return false;
+            }
+            true
+        });
+    }
+
+    /// Shifts text ranges when a block of text in `story` is moved from `from` to `to` (the insertion offset after deletion).
+    /// Preserves the existing order of items in `hyperlinks` and `placeholders`.
+    pub fn move_text_ranges(&mut self, story: StoryId, from: std::ops::Range<usize>, to: usize) {
+        if from.is_empty() {
+            return;
+        }
+        let (da, db) = (from.start, from.end);
+        let len = db - da;
+
+        let remap_moved = |s: usize, e: usize| -> Option<(usize, usize)> {
+            if s >= da && e <= db {
+                Some((to + (s - da), to + (e - da)))
+            } else {
+                let (s1, e1) = Self::remap_range(da..db, 0, s, e)?;
+                Self::remap_range(to..to, len, s1, e1)
+            }
+        };
+
+        self.hyperlinks.retain_mut(|h| {
+            if let crate::HyperlinkSource::Text { story: sid, start, end } = &mut h.source
+                && *sid == story
+            {
+                if let Some((ns, ne)) = remap_moved(*start, *end) {
+                    *start = ns;
+                    *end = ne;
+                    return true;
+                }
+                return false;
+            }
+            true
+        });
+
+        self.data_merge.placeholders.retain_mut(|ph| {
+            if let crate::PlaceholderAnchor::Text { story: sid, start, end } = &mut ph.anchor
+                && *sid == story
+            {
+                if let Some((ns, ne)) = remap_moved(*start, *end) {
+                    *start = ns;
+                    *end = ne;
+                    return true;
+                }
+                return false;
+            }
+            true
+        });
     }
 }
 

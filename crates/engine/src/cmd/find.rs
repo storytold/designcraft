@@ -316,18 +316,26 @@ impl Search {
     ) -> Result<Vec<(Range<usize>, String)>> {
         let limit = if first_only { 1 } else { usize::MAX };
         match (&self.re, self.spans(d, sid, cell, r)) {
-            (Some(re), None) if grep => re.replacements(text, rep, first_only).map_err(|e| bad("find.change", e)),
-            (Some(re), Some(spans)) if grep => Ok(re
-                .replacements(text, rep, false)
-                .map_err(|e| bad("find.change", e))?
-                .into_iter()
-                .filter(|(m, _)| within(&spans, m))
-                .take(limit)
-                .collect()),
-            _ => Ok(self.find_all(d, sid, cell, r, text, limit)?.into_iter().map(|m| (m, rep.to_string())).collect()),
+            (Some(re), spans) if grep => re
+                .replacements(text, rep, first_only, MAX_CHANGE_BYTES, |m| spans.as_ref().is_none_or(|s| within(s, m)))
+                .map_err(|e| bad("find.change", e)),
+            _ => {
+                let found = self.find_all(d, sid, cell, r, text, limit)?;
+                // Every match gets its own copy of the change: bounded before any is made.
+                if found.len().saturating_mul(rep.len()) > MAX_CHANGE_BYTES {
+                    return Err(bad(
+                        "find.change",
+                        format!("changing {} matches to {} bytes each would put more than {MAX_CHANGE_BYTES} bytes in", found.len(), rep.len()),
+                    ));
+                }
+                Ok(found.into_iter().map(|m| (m, rep.to_string())).collect())
+            }
         }
     }
 }
+
+/// The most text one Change All may put into a story: the matches times the change's length.
+const MAX_CHANGE_BYTES: usize = 64 << 20;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Domain {
@@ -544,7 +552,6 @@ fn scope(s: &Session, p: &Value) -> Result<FindContext> {
 /// Most matches `find.find` returns.
 const MAX_MATCHES: usize = 10_000;
 
-/// `find.find`: find every match in the search scope.
 fn find(s: &mut Session, p: &Value) -> Result<Value> {
     let re = search(p)?;
     re.check(&s.doc()?.doc.styles)?;
@@ -596,7 +603,6 @@ fn char_overrides(attrs: Option<&Value>) -> Result<designcraft_doc::CharAttrs> {
     Ok(over)
 }
 
-/// `find.change`: replace or format every match in the search scope, unthreading deleted anchors.
 fn change(s: &mut Session, p: &Value) -> Result<Value> {
     let re = search(p)?;
     re.check(&s.doc()?.doc.styles)?;
@@ -654,7 +660,6 @@ fn change(s: &mut Session, p: &Value) -> Result<Value> {
         let styles = d.styles.clone();
         let mut count = 0usize;
         let mut changed = None;
-        let mut doomed = Vec::new();
         for (sid, cell, r) in targets {
             if found.as_ref().is_some_and(|(at, in_cell, _)| *at != sid || *in_cell != cell) {
                 continue;
@@ -662,7 +667,7 @@ fn change(s: &mut Session, p: &Value) -> Result<Value> {
             let Some(story) = d.text_story(sid, cell) else { continue };
             // Collect matches first (positions refer to the original text), apply back to front.
             let text = story.text.get(r.clone()).ok_or_else(|| bad("find", "invalid selection bounds or UTF-8 boundary"))?;
-            let edits: Vec<(std::ops::Range<usize>, String)> = match (&found, &found_out) {
+            let mut edits: Vec<(std::ops::Range<usize>, String)> = match (&found, &found_out) {
                 // Change: the found text alone, in the target it lies in.
                 (Some((_, _, range)), Some(out)) => {
                     if r.start <= range.start && range.end <= r.end {
@@ -677,12 +682,12 @@ fn change(s: &mut Session, p: &Value) -> Result<Value> {
                     .map(|(m, out)| (r.start + m.start..r.start + m.end, out))
                     .collect(),
             };
+            edits.sort_by_key(|(range, _)| range.start);
             let Some(st) = d.text_story_mut(sid, cell) else { continue };
             for (range, new) in edits.iter().rev() {
                 let changed = if format_only {
                     range.clone()
                 } else {
-                    doomed.extend(st.anchored_text_frames_in(range.clone()));
                     st.replace(range.clone(), new);
                     range.start..range.start + new.len()
                 };
@@ -709,6 +714,11 @@ fn change(s: &mut Session, p: &Value) -> Result<Value> {
             if let Some(t) = sel.text.as_mut().filter(|t| t.story == sid && t.cell == cell) {
                 repair_selection(t, st);
             }
+            if cell.is_none() && !format_only {
+                for (range, new) in edits.iter().rev() {
+                    d.adjust_text_ranges(sid, range.clone(), new.len());
+                }
+            }
             // Change leaves the changed text selected.
             if let Some((_, _, range)) = &found
                 && let Some((_, new)) = edits.first()
@@ -723,7 +733,6 @@ fn change(s: &mut Session, p: &Value) -> Result<Value> {
                 break;
             }
         }
-        d.unthread_anchored_text_frames(&doomed);
         Ok((count, changed))
     })?;
     // Change: Find Next goes on after the changed text, in the search's domain.

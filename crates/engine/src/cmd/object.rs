@@ -26,6 +26,22 @@ pub(crate) fn known_swatch(doc: &designcraft_doc::Document, name: &str, cmd: &st
     Err(bad(cmd, format!("{key}: no swatch named `{name}`{hint}; create one with `swatch.create` and use its returned name")))
 }
 
+/// The fields of a stroke `type` object must be `kind` and the one its kind takes (`pattern` for
+/// dashed, `bands` for stripes, `name` for style). `kind` is the type's own, else `base_kind`.
+pub(crate) fn check_stroke_type_fields(v: &Value, base_kind: Option<&str>, cmd: &str) -> Result<()> {
+    let Some(fields) = v.as_object() else { return Ok(()) };
+    let field = match v.get("kind").and_then(Value::as_str).or(base_kind) {
+        Some("dashed") => Some("pattern"),
+        Some("stripes") => Some("bands"),
+        Some("style") => Some("name"),
+        _ => None,
+    };
+    match fields.keys().find(|key| *key != "kind" && Some(key.as_str()) != field) {
+        Some(key) => Err(bad(cmd, format!("type: unknown field `{key}`"))),
+        None => Ok(()),
+    }
+}
+
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(
@@ -259,25 +275,13 @@ pub fn specs() -> Vec<CommandSpec> {
             "Stroke",
             [],
             None,
-            "{swatch?, tint?, weight?, align?: center|inside|outside, type?: {kind: solid|dashed|dotted|thickThin|thinThick|thinThin|thickThick|thinThickThin|thickThinThick|wavy|hashed|stripes|style, pattern?: [dash, gap, …] (dashed: required, points), bands?: [[start, width], …] (stripes: required, fractions of stroke weight), name?: string (style: required, document stroke style name)} (other kinds take no extra fields; unknown type fields are errors), cap?: butt|round|projecting, join?: miter|round|bevel, miterLimit?, start?, end?: none|simple|simpleWide|triangle|triangleWide|barbed|curved|circle|circleSolid|square|squareSolid|bar, gapSwatch?, gapTint?, gapOverprint?: bool, ids?}",
+            "{swatch?, tint?: 0–1, weight?: 0–1000 pt, align?: center|inside|outside, type?: {kind: solid|dashed|dotted|thickThin|thinThick|thinThin|thickThick|thinThickThin|thickThinThick|wavy|hashed|stripes|style, pattern?: [dash, gap, …] (dashed: required, points), bands?: [[start, width], …] (stripes: required, fractions of stroke weight), name?: string (style: required, document stroke style name)} (other kinds take no extra fields; unknown type fields are errors), cap?: butt|round|projecting, join?: miter|round|bevel, miterLimit?: 1–500, start?, end?: none|simple|simpleWide|triangle|triangleWide|barbed|curved|circle|circleSolid|square|squareSolid|bar, gapSwatch?, gapTint?: 0–1, gapOverprint?: bool, ids?} (a value out of range or not listed is an error)",
             has_doc,
             |s, p| {
                 let kind: Option<designcraft_doc::StrokeType> = p
                     .get("type")
                     .map(|v| {
-                        if let Some(fields) = v.as_object() {
-                            let field = match v.get("kind").and_then(Value::as_str) {
-                                Some("dashed") => Some("pattern"),
-                                Some("stripes") => Some("bands"),
-                                Some("style") => Some("name"),
-                                _ => None,
-                            };
-                            for key in fields.keys() {
-                                if key != "kind" && Some(key.as_str()) != field {
-                                    return Err(bad("object.stroke", format!("type: unknown field `{key}`")));
-                                }
-                            }
-                        }
+                        check_stroke_type_fields(v, None, "object.stroke")?;
                         serde_json::from_value(v.clone()).map_err(|e| bad("object.stroke", format!("type: {e}")))
                     })
                     .transpose()?;
@@ -286,10 +290,31 @@ pub fn specs() -> Vec<CommandSpec> {
                         known_swatch(&s.doc()?.doc, name, "object.stroke", key)?;
                     }
                 }
+                // A number out of range or a name the stroke doesn't have is an error, not clamped or skipped.
+                let ranged = |key: &str, lo: f64, hi: f64, what: &str| match p.get(key) {
+                    None | Some(Value::Null) => Ok(None),
+                    Some(v) => match v.as_f64() {
+                        Some(x) if x.is_finite() && (lo..=hi).contains(&x) => Ok(Some(x)),
+                        _ => Err(bad("object.stroke", format!("{key} must be {what} from {lo} to {hi}, not {v}"))),
+                    },
+                };
+                let tint = ranged("tint", 0.0, 1.0, "a tint")?.map(|t| t as f32);
+                let weight = ranged("weight", 0.0, 1000.0, "a number of points")?;
+                let miter_limit = ranged("miterLimit", 1.0, 500.0, "a number")?;
+                let gap_tint = ranged("gapTint", 0.0, 1.0, "a tint")?.map(|t| t as f32);
+                let gap_overprint = match p.get("gapOverprint") {
+                    None | Some(Value::Null) => None,
+                    Some(v) => Some(v.as_bool().ok_or_else(|| bad("object.stroke", format!("gapOverprint must be true or false, not {v}")))?),
+                };
+                let align = stroke_choice_param(p, "align", "center, inside or outside")?;
+                let cap = stroke_choice_param(p, "cap", "butt, round or projecting")?;
+                let join = stroke_choice_param(p, "join", "miter, round or bevel")?;
+                let arrowheads = "none, simple, simpleWide, triangle, triangleWide, barbed, curved, circle, circleSolid, square, squareSolid or bar";
+                let start = stroke_choice_param(p, "start", arrowheads)?;
+                let end = stroke_choice_param(p, "end", arrowheads)?;
                 // With nothing selected, the swatch and tint are those of new shapes.
                 if nothing_targeted(s, p)? {
                     let sw = str_param(p, "swatch").map(str::to_string);
-                    let tint = p.get("tint").and_then(Value::as_f64).map(|t| t.clamp(0.0, 1.0) as f32);
                     if sw.is_none() && tint.is_none() {
                         return Err(bad("object.stroke", super::NOTHING_SELECTED));
                     }
@@ -315,38 +340,22 @@ pub fn specs() -> Vec<CommandSpec> {
                         if let Some(v) = p2.get("swatch").and_then(Value::as_str) {
                             st.swatch = v.into();
                         }
-                        if let Some(v) = p2.get("tint").and_then(Value::as_f64) {
-                            st.tint = v.clamp(0.0, 1.0) as f32;
-                        }
-                        if let Some(v) = p2.get("weight").and_then(Value::as_f64) {
-                            st.weight = v.max(0.0);
-                        }
-                        if let Some(v) = p2.get("miterLimit").and_then(Value::as_f64) {
-                            st.miter_limit = v.clamp(1.0, 500.0);
-                        }
+                        st.tint = tint.unwrap_or(st.tint);
+                        st.weight = weight.unwrap_or(st.weight);
+                        st.miter_limit = miter_limit.unwrap_or(st.miter_limit);
                         if let Some(v) = p2.get("gapSwatch").and_then(Value::as_str) {
                             st.gap_swatch = v.into();
                         }
-                        if let Some(v) = p2.get("gapTint").and_then(Value::as_f64) {
-                            st.gap_tint = v.clamp(0.0, 1.0) as f32;
-                        }
-                        if let Some(v) = p2.get("gapOverprint").and_then(Value::as_bool) {
-                            st.gap_overprint = v;
-                        }
+                        st.gap_tint = gap_tint.unwrap_or(st.gap_tint);
+                        st.gap_overprint = gap_overprint.unwrap_or(st.gap_overprint);
                         if let Some(kind) = &kind {
                             st.kind = kind.clone();
                         }
-                        for (k, apply) in [("align", 0), ("cap", 2), ("join", 3), ("start", 4), ("end", 5)] {
-                            if let Some(v) = p2.get(k).cloned() {
-                                let _ = match apply {
-                                    0 => serde_json::from_value(v).map(|x| st.align = x),
-                                    2 => serde_json::from_value(v).map(|x| st.cap = x),
-                                    3 => serde_json::from_value(v).map(|x| st.join = x),
-                                    4 => serde_json::from_value(v).map(|x| st.start = x),
-                                    _ => serde_json::from_value(v).map(|x| st.end = x),
-                                };
-                            }
-                        }
+                        st.align = align.unwrap_or(st.align);
+                        st.cap = cap.unwrap_or(st.cap);
+                        st.join = join.unwrap_or(st.join);
+                        st.start = start.unwrap_or(st.start);
+                        st.end = end.unwrap_or(st.end);
                         i.stroke = st;
                     },
                     false,
@@ -610,8 +619,8 @@ pub fn specs() -> Vec<CommandSpec> {
             "Text Frame Options…",
             ["Object"],
             Some("Cmd+B"),
-            "{columns?, gutter?, inset?: number|[t,l,b,r] (null keeps that side), verticalJustification?: top|center|bottom|justify, paragraphSpacingLimit? (pt: Justify adds at most this between paragraphs, the rest between lines), columnsKind?: fixedNumber|fixedWidth, columnWidth? (pt, Fixed Width), firstBaseline?: ascent|capHeight|leading|xHeight|emboxHeight|fixed, firstBaselineMin? (pt), autoSize?: off|heightOnly|widthOnly|heightAndWidth|heightAndWidthProportionally, autoSizeReference?: topLeft|topCenter|topRight|leftCenter|center|rightCenter|bottomLeft|bottomCenter|bottomRight (the point that stays put), useMinimumHeight?: bool, minimumHeight? (pt), useMinimumWidth?: bool, minimumWidth? (pt), noLineBreaks?: bool, ignoreWrap?, balanceColumns?, columnRule?: bool, columnRuleWeight? (pt), columnRuleColor? (swatch name), columnRuleTint? (0..1), columnRuleOffset? (pt, horizontal), columnRuleTopInset? (pt), columnRuleBottomInset? (pt), baselineGrid?: {start? (pt), increment? (pt), relativeTo?: page|margin|frame|inset} (the frame's custom baseline grid; fields not given keep the frame's, or come from the document grid; null turns it off), vertical?: bool (sets the story direction of the frames' stories, as Type ▸ Story Direction), ids?}",
-            has_selection,
+            "{columns? (1..40), gutter? (pt, 0..15552), inset?: number|[t,l,b,r] (pt, each 0..15552; a list has four sides, null keeps that side), verticalJustification?: top|center|bottom|justify, paragraphSpacingLimit? (pt: Justify adds at most this between paragraphs, the rest between lines), columnsKind?: fixedNumber|fixedWidth|flexibleWidth, columnWidth? (pt, Fixed Width), firstBaseline?: ascent|capHeight|leading|xHeight|emboxHeight|fixed, firstBaselineMin? (pt), autoSize?: off|heightOnly|widthOnly|heightAndWidth|heightAndWidthProportionally, autoSizeReference?: topLeft|topCenter|topRight|leftCenter|center|rightCenter|bottomLeft|bottomCenter|bottomRight (the point that stays put), useMinimumHeight?: bool, minimumHeight? (pt), useMinimumWidth?: bool, minimumWidth? (pt), noLineBreaks?: bool, ignoreWrap?, balanceColumns?, columnRule?: bool, columnRuleWeight? (pt), columnRuleColor? (swatch name), columnRuleTint? (0..1), columnRuleOffset? (pt, horizontal), columnRuleTopInset? (pt), columnRuleBottomInset? (pt), baselineGrid?: {start? (pt), increment? (pt), relativeTo?: page|margin|frame|inset} (the frame's custom baseline grid; fields not given keep the frame's, or come from the document grid; null turns it off), vertical?: bool (sets the story direction of the frames' stories, as Type ▸ Story Direction), ids? (without ids or selected objects: the frame showing the text caret, or every frame holding part of the selected text)}",
+            has_selection_or_text,
             text_frame_options
         ),
         cmd!(
@@ -628,7 +637,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Text Wrap",
             ["Window"],
             Some("Cmd+Alt+W"),
-            "{mode?: none|boundingBox|contour|jumpObject|jumpToNextColumn (boundingBox when absent, unless side or contour is given; null or those: each object's own, unchanged), offset?: number|[t,l,b,r] (a null side keeps each object's own), invert?: bool, side?: bothSides|leftSide|rightSide|towardsSpine|awayFromSpine|largestArea, contour?: boundingBox|graphicFrame|sameAsClipping, content?: bool (the placed graphic instead of its frame; default: whether the selection is the frame's content), ids?}; offset or contour drops an imported custom wrap boundary",
+            "{mode?: none|boundingBox|contour|jumpObject|jumpToNextColumn (boundingBox when absent, unless side, contour, insideEdges or threshold is given; null or those: each object's own, unchanged), offset?: number|[t,l,b,r] (a null side keeps each object's own), invert?: bool, side?: bothSides|leftSide|rightSide|towardsSpine|awayFromSpine|largestArea, contour?: boundingBox|graphicFrame|sameAsClipping|alphaChannel, insideEdges?: bool (alphaChannel: text may enter transparent holes), content?: bool (the placed graphic instead of its frame; default: whether the selection is the frame's content), threshold?: 0..254 (alphaChannel: pixels more opaque count; default 25), ids?}; offset or contour drops an imported custom wrap boundary",
             has_selection,
             text_wrap
         ),
@@ -1082,12 +1091,13 @@ pub fn duplicate_from(dst: &mut Document, src: &Document, ids: &[ItemId], to: Sp
     let mut out = Vec::new();
     let mut story_map: HashMap<StoryId, StoryId> = HashMap::new();
     let mut item_ids = HashMap::new();
-    let mut copied = Vec::new();
     for id in ids {
         let Some(it) = src.item(*id) else { continue };
         let mut copy = it.clone();
         copy.xf = Affine::translate(off) * copy.xf;
-        renumber_in(dst, src, &mut copy, &mut story_map, true, &mut item_ids, &mut copied);
+        if !renumber_in(dst, src, &mut copy, &mut story_map, 0, true, &mut item_ids) {
+            return Err(designcraft_doc::DocError::Invalid(format!("{id} nests groups or tables too deeply to copy")).into());
+        }
         if dst.layer(copy.layer).is_none() {
             copy.layer = dst.default_layer();
         }
@@ -1095,9 +1105,13 @@ pub fn duplicate_from(dst: &mut Document, src: &Document, ids: &[ItemId], to: Sp
         dst.insert_item(to, copy, None)?;
         out.push(nid);
     }
-    reorder_copied_threads(dst, src, &story_map, &item_ids, &copied);
+    reorder_copied_threads(dst, src, &story_map, &item_ids);
+    retarget_copied_xrefs(dst, src, &story_map);
     Ok(out)
 }
+
+/// Groups, and tables and notes in table cells, nesting deeper than this are not copied: [`renumber`] reports them.
+const MAX_COPY_DEPTH: usize = 64;
 
 /// The id to reference in `dst` for asset `id` of `src`. When `src` lacks the asset (a missing graphic), the reference
 /// gets a fresh id from `dst`, so it stays missing: `src`'s id may already name, or later be allocated to, another
@@ -1106,51 +1120,55 @@ fn adopt_or_dangle(dst: &mut Document, src: &Document, id: AssetId) -> AssetId {
     dst.adopt_asset(src, id).unwrap_or_else(|| AssetId(dst.alloc()))
 }
 
-/// Give copied items fresh ids, stories and assets while preserving thread order.
-pub(crate) fn renumber_items(dst: &mut Document, src: &Document, items: &mut [Item]) {
-    let mut stories = HashMap::new();
-    let mut ids = HashMap::new();
-    let mut copied = Vec::new();
-    for item in items {
-        renumber_in(dst, src, item, &mut stories, true, &mut ids, &mut copied);
-    }
-    reorder_copied_threads(dst, src, &stories, &ids, &copied);
+/// Give `it` (an item of `src`) fresh ids from `dst`, with copies of its stories and the assets it uses. `stories` maps
+/// the stories of `src` copied so far to their copies. After the last call with the same `stories`,
+/// [`retarget_copied_xrefs`] points the copies' cross-references at the copied anchors. False when its groups, or the
+/// tables and notes in the table cells of its stories, nest deeper than [`MAX_COPY_DEPTH`]: the items and tables below
+/// that keep their ids, and the copy must not be used.
+#[must_use = "false means the copy is incomplete and must not be inserted"]
+pub(crate) fn renumber(dst: &mut Document, src: &Document, it: &mut Item, stories: &mut HashMap<StoryId, StoryId>) -> bool {
+    renumber_in(dst, src, it, stories, 0, true, &mut HashMap::new())
 }
 
-/// Rebuild each story copied by [`renumber_in`] in its source thread order, not in the order the
-/// copied frames happened to be visited.
-fn reorder_copied_threads(
-    dst: &mut Document,
-    src: &Document,
-    stories: &HashMap<StoryId, StoryId>,
-    ids: &HashMap<ItemId, ItemId>,
-    copied: &[StoryId],
-) {
-    for old_sid in copied {
-        let (Some(source), Some(new_sid)) = (src.story(*old_sid), stories.get(old_sid).copied()) else { continue };
-        let frames: Vec<ItemId> = source.frames.iter().filter_map(|f| ids.get(f).copied()).collect();
-        if !frames.is_empty()
-            && let Some(story) = dst.story_mut(new_sid)
-        {
-            story.frames = frames;
+/// Preserve source thread order after all copied frames have received new ids.
+pub(crate) fn reorder_copied_threads(dst: &mut Document, src: &Document, stories: &HashMap<StoryId, StoryId>, ids: &HashMap<ItemId, ItemId>) {
+    for (old, new) in stories {
+        if let (Some(source), Some(copy)) = (src.story(*old), dst.story_mut(*new)) {
+            let frames: Vec<_> = source.frames.iter().filter_map(|id| ids.get(id).copied()).collect();
+            if !frames.is_empty() {
+                copy.frames = frames;
+            }
         }
     }
 }
 
-/// `adopt` is false inside a story copy, whose asset references the copy has already adopted.
+/// Renumber several copied items together so their source thread order can be restored.
+pub(crate) fn renumber_items(dst: &mut Document, src: &Document, items: &mut [Item], stories: &mut HashMap<StoryId, StoryId>) -> bool {
+    let mut ids = HashMap::new();
+    let mut complete = true;
+    for item in items {
+        complete &= renumber_in(dst, src, item, stories, 0, true, &mut ids);
+    }
+    reorder_copied_threads(dst, src, stories, &ids);
+    complete
+}
+
+/// [`renumber`] for an item `depth` groups deep. `adopt` is false inside a story copy, whose asset references the copy
+/// has already adopted.
+#[must_use = "false means the copy is incomplete and must not be inserted"]
 #[allow(clippy::too_many_arguments)]
 fn renumber_in(
     dst: &mut Document,
     src: &Document,
     it: &mut Item,
     stories: &mut HashMap<StoryId, StoryId>,
+    depth: usize,
     adopt: bool,
     ids: &mut HashMap<ItemId, ItemId>,
-    copied: &mut Vec<StoryId>,
-) {
-    let old_id = it.id;
+) -> bool {
+    let old = it.id;
     it.id = ItemId(dst.alloc());
-    ids.insert(old_id, it.id);
+    ids.insert(old, it.id);
     let my_id = it.id;
     if adopt
         && let Some(m) = it.media.as_mut()
@@ -1160,12 +1178,14 @@ fn renumber_in(
     }
     match &mut it.content {
         Content::Text(tf) => {
+            let mut complete = true;
             let new_sid = match stories.get(&tf.story) {
                 Some(n) => *n,
                 None => {
                     let n = StoryId(dst.alloc());
                     let mut st = src.story(tf.story).cloned().unwrap_or_else(|| Story::new(n));
                     st.id = n;
+                    let marked = renumber_marks(dst, &mut st);
                     let mut assets = HashMap::new();
                     for a in designcraft_doc::story_asset_refs(&st) {
                         let na = adopt_or_dangle(dst, src, a);
@@ -1177,8 +1197,7 @@ fn renumber_in(
                     st.frames.clear();
                     // Mapped first: the map is the seen-set that stops story recursion.
                     stories.insert(tf.story, n);
-                    copied.push(tf.story);
-                    renumber_anchored(dst, src, &mut st, stories, ids, copied);
+                    complete = renumber_anchored(dst, src, &mut st, stories, depth + 1, ids) && marked;
                     dst.stories.insert(n, Arc::new(st));
                     n
                 }
@@ -1187,6 +1206,7 @@ fn renumber_in(
             if let Some(st) = dst.story_mut(new_sid) {
                 st.frames.push(my_id);
             }
+            return complete;
         }
         Content::Graphic(g) => {
             if adopt {
@@ -1194,52 +1214,164 @@ fn renumber_in(
             }
         }
         Content::Group { items } => {
-            for c in items.iter_mut() {
-                renumber_in(dst, src, Arc::make_mut(c), stories, adopt, ids, copied);
+            if depth >= MAX_COPY_DEPTH {
+                return false;
             }
+            let mut complete = true;
+            for c in items.iter_mut() {
+                complete &= renumber_in(dst, src, Arc::make_mut(c), stories, depth + 1, adopt, ids);
+            }
+            return complete;
         }
         Content::Unassigned => {}
     }
+    true
 }
 
-/// Fresh ids for the objects anchored in story copy `st`, its table cells, footnotes and endnotes (#1522).
+/// Give the text anchors and tables of `st`, a new copy of a story, ids of their own (anchors from the story's id,
+/// tables from `dst`), as do the tables in the stories of its table cells and notes down to [`MAX_COPY_DEPTH`] levels.
+/// The copy's paragraphs follow its tables. False when tables or notes in table cells nest deeper than
+/// [`MAX_COPY_DEPTH`]: the tables below that keep their ids, and the copy must not be used.
+#[must_use = "false means the copy is incomplete and must not be inserted"]
+fn renumber_marks(dst: &mut Document, st: &mut Story) -> bool {
+    let base = st.id.0 << 24;
+    for (k, a) in (1..).zip(st.anchors.iter_mut()) {
+        Arc::make_mut(a).id = base + k;
+    }
+    renumber_tables(dst, st, 0)
+}
+
+/// Point the cross-references in the story copies in `dst` that `stories` maps at the copies of their destinations
+/// where [`renumber`] copied those, in one pass after the last copy. Other cross-references keep their destination.
+pub(crate) fn retarget_copied_xrefs(dst: &mut Document, src: &Document, stories: &HashMap<StoryId, StoryId>) {
+    let anchors = copied_anchors(dst, src, stories);
+    if !anchors.is_empty() {
+        retarget_copies(dst, src, stories, &anchors);
+    }
+}
+
+/// The anchor ids of the stories of `src` that `stories` maps, each to the id of its copy's anchor in `dst`.
+fn copied_anchors(dst: &Document, src: &Document, stories: &HashMap<StoryId, StoryId>) -> HashMap<u64, u64> {
+    let mut anchors = HashMap::new();
+    for (old, new) in stories {
+        if let (Some(o), Some(n)) = (src.story(*old), dst.story(*new)) {
+            anchors.extend(o.anchors.iter().zip(&n.anchors).map(|(a, b)| (a.id, b.id)));
+        }
+    }
+    anchors
+}
+
+/// Point the cross-references in the copies in `dst` that `stories` lists at the anchors `anchors` gives for their
+/// targets. Each copy's targets are found again from its original: a new anchor id can be another original's.
+fn retarget_copies(dst: &mut Document, src: &Document, stories: &HashMap<StoryId, StoryId>, anchors: &HashMap<u64, u64>) {
+    for (old, new) in stories {
+        if let (Some(o), Some(copy)) = (src.story(*old), dst.story_mut(*new)) {
+            retarget_xrefs(copy, o, anchors, 0);
+        }
+    }
+}
+
+/// Give the tables of `st`, and those in the stories of their cells and of the notes of `st` down to
+/// [`MAX_COPY_DEPTH`] levels, new ids from `dst`, each story's in the order of their old ids, and point the stories'
+/// paragraphs at them. False when the stories below that depth hold tables or notes.
+#[must_use = "false means the copy is incomplete and must not be inserted"]
+fn renumber_tables(dst: &mut Document, st: &mut Story, depth: usize) -> bool {
+    let mut tables = HashMap::new();
+    for (old, mut table) in std::mem::take(&mut st.tables) {
+        let id = dst.alloc();
+        Arc::make_mut(&mut table).id = id;
+        tables.insert(old, id);
+        st.tables.insert(id, table);
+    }
+    for pf in &mut st.paras {
+        pf.table = pf.table.map(|t| tables.get(&t).copied().unwrap_or(t));
+    }
+    if depth >= MAX_COPY_DEPTH {
+        // The stories below keep the ids of their tables, so the copy is incomplete when they hold tables or notes.
+        let leaf = |s: &Story| s.tables.is_empty() && s.notes.is_empty() && s.endnotes.is_empty();
+        return st.tables.values().all(|t| t.cells.iter().all(|c| leaf(&c.text))) && st.notes.iter().chain(&st.endnotes).all(|n| leaf(&n.text));
+    }
+    let mut complete = true;
+    for t in st.tables.values_mut() {
+        for c in &mut Arc::make_mut(t).cells {
+            complete &= renumber_tables(dst, &mut c.text, depth + 1);
+        }
+    }
+    for n in st.notes.iter_mut().chain(st.endnotes.iter_mut()) {
+        complete &= renumber_tables(dst, &mut Arc::make_mut(n).text, depth + 1);
+    }
+    complete
+}
+
+/// Point the cross-references in `copy`, a copy of `orig`, and in the stories of its table cells and notes down to
+/// [`MAX_COPY_DEPTH`] levels, at the anchors `map` gives for the targets of the matching references in `orig`.
+fn retarget_xrefs(copy: &mut Story, orig: &Story, map: &HashMap<u64, u64>, depth: usize) {
+    for (x, o) in copy.xrefs.iter_mut().zip(&orig.xrefs) {
+        let target = map.get(&o.target).copied().unwrap_or(o.target);
+        if x.target != target {
+            Arc::make_mut(x).target = target;
+        }
+    }
+    if depth >= MAX_COPY_DEPTH {
+        return;
+    }
+    // Copied tables have new ids, given in the order of the old ones, so the two maps list them in the same order.
+    for (t, o) in copy.tables.values_mut().zip(orig.tables.values()) {
+        for (c, oc) in Arc::make_mut(t).cells.iter_mut().zip(&o.cells) {
+            retarget_xrefs(&mut c.text, &oc.text, map, depth + 1);
+        }
+    }
+    for (n, o) in copy.notes.iter_mut().zip(&orig.notes).chain(copy.endnotes.iter_mut().zip(&orig.endnotes)) {
+        retarget_xrefs(&mut Arc::make_mut(n).text, &o.text, map, depth + 1);
+    }
+}
+
+/// Fresh ids for the objects anchored in story copy `st`, its table cells, footnotes and endnotes down to
+/// [`MAX_COPY_DEPTH`] levels (#1522), each `depth` levels deep. False when one of them nests groups deeper than
+/// [`MAX_COPY_DEPTH`], or when the stories below that level hold anchored objects, tables or notes.
+#[must_use = "false means the copy is incomplete and must not be inserted"]
 fn renumber_anchored(
     dst: &mut Document,
     src: &Document,
     st: &mut Story,
     stories: &mut HashMap<StoryId, StoryId>,
+    depth: usize,
     ids: &mut HashMap<ItemId, ItemId>,
-    copied: &mut Vec<StoryId>,
-) {
-    let mut fresh = |t: &mut Story| {
-        for o in &mut t.objects {
-            renumber_in(dst, src, &mut Arc::make_mut(o).item, stories, false, ids, copied);
-        }
-    };
-    st.for_each_text_mut(&mut fresh);
-    for n in &mut st.endnotes {
-        Arc::make_mut(n).text.for_each_text_mut(&mut fresh);
-    }
+) -> bool {
+    renumber_anchored_in(dst, src, st, stories, depth, 0, ids)
 }
 
-/// Fresh ids, stories and assets for the objects anchored in a pasted text slice (#2284),
-/// including its table cells, footnotes, endnotes and anchored text-frame stories. Unlike
-/// [`renumber_anchored`], a slice is not a copy whose assets were already adopted.
-pub(crate) fn renumber_slice(dst: &mut Document, src: &Document, st: &mut Story, stories: &mut HashMap<StoryId, StoryId>) {
-    let mut ids = HashMap::new();
-    let mut copied = Vec::new();
-    {
-        let mut fresh = |t: &mut Story| {
-            for o in &mut t.objects {
-                renumber_in(dst, src, &mut Arc::make_mut(o).item, stories, true, &mut ids, &mut copied);
-            }
-        };
-        st.for_each_text_mut(&mut fresh);
-        for n in &mut st.endnotes {
-            Arc::make_mut(n).text.for_each_text_mut(&mut fresh);
+/// [`renumber_anchored`] for a story `level` table cells and notes below the story copy.
+#[must_use = "false means the copy is incomplete and must not be inserted"]
+#[allow(clippy::too_many_arguments)]
+fn renumber_anchored_in(
+    dst: &mut Document,
+    src: &Document,
+    st: &mut Story,
+    stories: &mut HashMap<StoryId, StoryId>,
+    depth: usize,
+    level: usize,
+    ids: &mut HashMap<ItemId, ItemId>,
+) -> bool {
+    let mut complete = true;
+    for o in &mut st.objects {
+        complete &= renumber_in(dst, src, &mut Arc::make_mut(o).item, stories, depth, false, ids);
+    }
+    if level >= MAX_COPY_DEPTH {
+        let leaf = |s: &Story| s.objects.is_empty() && s.tables.is_empty() && s.notes.is_empty() && s.endnotes.is_empty();
+        return complete
+            && st.tables.values().all(|t| t.cells.iter().all(|c| leaf(&c.text)))
+            && st.notes.iter().chain(&st.endnotes).all(|n| leaf(&n.text));
+    }
+    for t in st.tables.values_mut() {
+        for c in &mut Arc::make_mut(t).cells {
+            complete &= renumber_anchored_in(dst, src, &mut c.text, stories, depth, level + 1, ids);
         }
     }
-    reorder_copied_threads(dst, src, stories, &ids, &copied);
+    for n in st.notes.iter_mut().chain(st.endnotes.iter_mut()) {
+        complete &= renumber_anchored_in(dst, src, &mut Arc::make_mut(n).text, stories, depth, level + 1, ids);
+    }
+    complete
 }
 
 fn transform_move(s: &mut Session, p: &Value) -> Result<Value> {
@@ -1772,6 +1904,13 @@ fn transform_set(s: &mut Session, p: &Value) -> Result<Value> {
                 } else {
                     let inner = it.xf.inverse() * m * it.xf;
                     bake(it, inner);
+                    // A pure move carries the placed graphic along; a resize leaves it at its size.
+                    let c = inner.as_coeffs();
+                    if let Content::Graphic(g) = &mut it.content
+                        && [c[0] - 1.0, c[1], c[2], c[3] - 1.0].iter().all(|v| v.abs() < 1e-9)
+                    {
+                        g.xf = inner * g.xf;
+                    }
                 }
             }
         }
@@ -2213,18 +2352,23 @@ fn text_wrap(s: &mut Session, p: &Value) -> Result<Value> {
         Some(v) => Some(serde_json::from_value(v.clone()).map_err(|_| bad("object.textWrap", "unknown side"))?),
         None => None,
     };
-    // Detected edges, alpha channels and image paths need the image's pixels or paths, which
-    // composition doesn't read; those types aren't offered.
+    // Alpha contours use the document's traced image mask; other unsupported contour types are rejected.
     let contour = match p.get("contour").map(|v| serde_json::from_value::<ContourType>(v.clone())) {
-        Some(Ok(c @ (ContourType::BoundingBox | ContourType::GraphicFrame | ContourType::SameAsClipping))) => Some(c),
+        Some(Ok(c @ (ContourType::BoundingBox | ContourType::GraphicFrame | ContourType::SameAsClipping | ContourType::AlphaChannel))) => Some(c),
         Some(_) => return Err(bad("object.textWrap", "unsupported contour type")),
+        None => None,
+    };
+    let inside_edges =
+        p.get("insideEdges").map(|v| v.as_bool().ok_or_else(|| bad("object.textWrap", "insideEdges must be a boolean"))).transpose()?;
+    let threshold = match p.get("threshold") {
+        Some(v) => Some(v.as_u64().filter(|n| *n <= 254).ok_or_else(|| bad("object.textWrap", "threshold must be 0..254"))? as u8),
         None => None,
     };
     let mode: Option<WrapMode> = match p.get("mode") {
         // Null keeps each object's own mode (an edit of the offsets or Invert alone).
         Some(Value::Null) => None,
         Some(v) => Some(serde_json::from_value(v.clone()).map_err(|_| bad("object.textWrap", "unknown mode"))?),
-        None if side.is_some() || contour.is_some() => None,
+        None if side.is_some() || contour.is_some() || inside_edges.is_some() || threshold.is_some() => None,
         None => Some(WrapMode::BoundingBox),
     };
     // Per side [top, left, bottom, right]; a null side keeps each object's own offset there, so
@@ -2266,6 +2410,12 @@ fn text_wrap(s: &mut Session, p: &Value) -> Result<Value> {
             }
             if let Some(c) = contour {
                 w.contour = c;
+            }
+            if let Some(v) = inside_edges {
+                w.inside_edges = v;
+            }
+            if let Some(v) = threshold {
+                w.alpha_threshold = v;
             }
             // A custom boundary has the offsets built in and replaces the contour, so setting
             // either one rebuilds the wrap from the frame.
@@ -2630,14 +2780,47 @@ fn content_type(s: &mut Session, p: &Value) -> Result<Value> {
     })
 }
 
+/// The most columns a text frame takes.
+const MAX_FRAME_COLUMNS: u64 = 40;
+/// The frames `object.textFrameOptions` changes when the call names none: the selected objects,
+/// or with the Type tool the frame that shows the caret or every frame holding part of the
+/// selected text.
+pub fn text_frame_options_frames(s: &Session) -> Vec<ItemId> {
+    let Ok(st) = s.doc() else { return Vec::new() };
+    if !st.selection.items.is_empty() {
+        return st.selection.items.clone();
+    }
+    st.selection.text.map(|t| text_selection_frames(s, &t)).unwrap_or_default()
+}
+
+/// Text Frame Options act on the selected objects, or with the Type tool on the frames that hold
+/// the caret or the selected text.
+fn has_selection_or_text(s: &Session) -> std::result::Result<(), String> {
+    if s.active().is_some_and(|d| d.selection.text.is_some()) {
+        return Ok(());
+    }
+    has_selection(s)
+}
+
 fn text_frame_options(s: &mut Session, p: &Value) -> Result<Value> {
     const ID: &str = "object.textFrameOptions";
     let st = s.doc()?;
-    let mut ids = targets(s, p)?;
-    if ids.is_empty()
-        && let Some(t) = st.selection.text
-    {
-        ids = st.doc.story(t.story).map(|s| s.frames.clone()).unwrap_or_default();
+    // A call that names its objects acts on those; an empty `ids` names nothing. `ids`, when
+    // given, wins over `id`, and a value that is not an object id is an error.
+    let ids = match (p.get("ids"), p.get("id")) {
+        (Some(v), _) => v
+            .as_array()
+            .and_then(|a| a.iter().map(|x| x.as_u64().map(ItemId)).collect::<Option<Vec<_>>>())
+            .ok_or_else(|| bad(ID, format!("ids must be a list of object ids, not {v}")))?,
+        (None, Some(v)) => vec![v.as_u64().map(ItemId).ok_or_else(|| bad(ID, format!("id must be an object id, not {v}")))?],
+        (None, None) => text_frame_options_frames(s),
+    };
+    // With a text caret the command runs before named objects are checked.
+    if let Some(gone) = ids.iter().find(|i| st.doc.item(**i).is_none()) {
+        return Err(bad(ID, format!("no object with id {}", gone.0)));
+    }
+    if ids.is_empty() {
+        return Err(bad(ID, super::NOTHING_SELECTED));
     }
     let ranged = |key: &str, lo: f64, hi: f64, what: &str| match p.get(key) {
         None | Some(Value::Null) => Ok(None),
@@ -2656,6 +2839,35 @@ fn text_frame_options(s: &mut Session, p: &Value) -> Result<Value> {
     let column_width = ranged("columnWidth", 0.0, 15552.0, "a number of points")?;
     let first_baseline_min = ranged("firstBaselineMin", 0.0, 15552.0, "a number of points")?;
     let spacing_limit = ranged("paragraphSpacingLimit", 0.0, 15552.0, "a number of points")?;
+    let gutter = ranged("gutter", 0.0, 15552.0, "a number of points")?;
+    let columns = match p.get("columns") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(
+            v.as_u64()
+                .filter(|n| (1..=MAX_FRAME_COLUMNS).contains(n))
+                .ok_or_else(|| bad(ID, format!("columns must be a whole number from 1 to {MAX_FRAME_COLUMNS}, not {v}")))? as u32,
+        ),
+    };
+    let flag = |key: &str| match p.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Bool(b)) => Ok(Some(*b)),
+        Some(v) => Err(bad(ID, format!("{key} must be true or false, not {v}"))),
+    };
+    let use_min_height = flag("useMinimumHeight")?;
+    let use_min_width = flag("useMinimumWidth")?;
+    let no_line_breaks = flag("noLineBreaks")?;
+    let ignore_wrap = flag("ignoreWrap")?;
+    let balance_columns = flag("balanceColumns")?;
+    let column_rule = flag("columnRule")?;
+    let vertical = flag("vertical")?;
+    let inset = frame_inset_param(p)?;
+    let vertical_justification: Option<designcraft_doc::VerticalJustification> =
+        frame_choice_param(p, "verticalJustification", "top|center|bottom|justify")?;
+    let first_baseline: Option<designcraft_doc::FirstBaseline> =
+        frame_choice_param(p, "firstBaseline", "ascent|capHeight|leading|xHeight|fixed|emboxHeight")?;
+    let auto_size: Option<designcraft_doc::AutoSize> =
+        frame_choice_param(p, "autoSize", "off|heightOnly|widthOnly|heightAndWidth|heightAndWidthProportionally")?;
+    let columns_kind: Option<designcraft_doc::ColumnsKind> = frame_choice_param(p, "columnsKind", "fixedNumber|fixedWidth|flexibleWidth")?;
     let reference = match p.get("autoSizeReference") {
         None | Some(Value::Null) => None,
         Some(v) => Some(
@@ -2705,60 +2917,56 @@ fn text_frame_options(s: &mut Session, p: &Value) -> Result<Value> {
         Some(Value::String(c)) if st.doc.swatch(c).is_some() => Some(c.clone()),
         Some(v) => return Err(bad(ID, format!("no swatch {v}"))),
     };
+    let (before, revision) = (Arc::clone(&st.doc), st.revision);
+    let find = s.find_context.take();
     let p = p.clone();
-    s.edit(|d, _| {
+    let edited = s.edit(|d, _| {
         for id in &ids {
             let Some(tf) = d.item_mut(*id).and_then(Item::text_frame_mut) else { continue };
             let o = &mut tf.options;
-            if let Some(v) = p.get("columns").and_then(Value::as_u64) {
-                o.columns = v.clamp(1, 40) as u32;
+            if let Some(v) = columns {
+                o.columns = v;
             }
-            if let Some(v) = p.get("gutter").and_then(Value::as_f64) {
-                o.gutter = v.max(0.0);
+            if let Some(v) = gutter {
+                o.gutter = v;
             }
-            match p.get("inset") {
-                Some(Value::Number(n)) => o.inset = [n.as_f64().unwrap_or(0.0); 4],
-                Some(v @ Value::Array(_)) => {
-                    if let Ok(a) = serde_json::from_value::<[Option<f64>; 4]>(v.clone()) {
-                        for (side, v) in o.inset.iter_mut().zip(a) {
-                            if let Some(v) = v {
-                                *side = v;
-                            }
-                        }
-                    }
+            for (side, v) in o.inset.iter_mut().zip(inset.unwrap_or_default()) {
+                if let Some(v) = v {
+                    *side = v;
                 }
-                _ => {}
             }
-            for (k, which) in [("verticalJustification", 0), ("firstBaseline", 1), ("autoSize", 2), ("columnsKind", 3)] {
-                if let Some(v) = p.get(k).cloned() {
-                    let _ = match which {
-                        0 => serde_json::from_value(v).map(|x| o.vertical_justification = x),
-                        1 => serde_json::from_value(v).map(|x| o.first_baseline = x),
-                        2 => serde_json::from_value(v).map(|x| o.auto_size = x),
-                        _ => serde_json::from_value(v).map(|x| o.columns_kind = x),
-                    };
-                }
+            if let Some(v) = vertical_justification {
+                o.vertical_justification = v;
+            }
+            if let Some(v) = first_baseline {
+                o.first_baseline = v;
+            }
+            if let Some(v) = auto_size {
+                o.auto_size = v;
+            }
+            if let Some(v) = columns_kind {
+                o.columns_kind = v;
             }
             if let Some(v) = reference {
                 o.auto_size_ref = v;
             }
             o.vj_paragraph_spacing_limit = spacing_limit.unwrap_or(o.vj_paragraph_spacing_limit);
-            if let Some(v) = p.get("useMinimumHeight").and_then(Value::as_bool) {
+            if let Some(v) = use_min_height {
                 o.auto_size_use_min_height = v;
             }
             if let Some(v) = min_height {
                 o.auto_size_min_height = v;
             }
-            if let Some(v) = p.get("useMinimumWidth").and_then(Value::as_bool) {
+            if let Some(v) = use_min_width {
                 o.auto_size_use_min_width = v;
             }
             if let Some(v) = min_width {
                 o.auto_size_min_width = v;
             }
-            if let Some(v) = p.get("noLineBreaks").and_then(Value::as_bool) {
+            if let Some(v) = no_line_breaks {
                 o.auto_size_no_line_breaks = v;
             }
-            if let Some(v) = p.get("ignoreWrap").and_then(Value::as_bool) {
+            if let Some(v) = ignore_wrap {
                 o.ignore_wrap = v;
             }
             if let Some(v) = column_width {
@@ -2767,10 +2975,10 @@ fn text_frame_options(s: &mut Session, p: &Value) -> Result<Value> {
             if let Some(v) = first_baseline_min {
                 o.first_baseline_min = v;
             }
-            if let Some(v) = p.get("balanceColumns").and_then(Value::as_bool) {
+            if let Some(v) = balance_columns {
                 o.balance_columns = v;
             }
-            if let Some(v) = p.get("columnRule").and_then(Value::as_bool) {
+            if let Some(v) = column_rule {
                 o.column_rule = v;
             }
             if let Some(w) = rule_weight {
@@ -2799,18 +3007,138 @@ fn text_frame_options(s: &mut Session, p: &Value) -> Result<Value> {
             if fixed_width
                 && ["columnsKind", "columnWidth", "columns", "gutter", "inset"].iter().any(|k| p.get(*k).is_some())
                 && let Some(r) = d.item(*id).map(Item::inner_bounds)
+                && ((r.width() - width).abs() >= 1e-9 || !width.is_finite())
             {
                 let r = super::finite_rect("object.textFrameOptions", Rect::new(r.x0, r.y0, r.x0 + width, r.y1))?;
                 crate::autosize::resize(d, *id, r);
             }
         }
         // Story direction belongs to the story: every frame of the thread turns.
-        if let Some(v) = p.get("vertical").and_then(Value::as_bool) {
+        if let Some(v) = vertical {
             let stories: Vec<StoryId> = ids.iter().filter_map(|id| d.item(*id).and_then(Item::text_frame).map(|t| t.story)).collect();
             super::text::set_story_direction(d, &stories, v);
         }
         Ok(json!({"changed": ids.len()}))
-    })
+    });
+    let changed = match edited {
+        Ok(v) => v,
+        Err(e) => {
+            s.find_context = find;
+            return Err(e);
+        }
+    };
+    // Options the frames already have: the document, its revision and the Find Next scope go back
+    // to what they were, which leaves no undo step. Only the frames and their stories are compared.
+    let st = s.doc_mut()?;
+    let same = ids.iter().all(|id| {
+        let (now, was) = (st.doc.item(*id), before.item(*id));
+        now == was && now.and_then(Item::text_frame).is_none_or(|t| st.doc.story(t.story) == before.story(t.story))
+    });
+    if same {
+        st.doc = before;
+        st.revision = revision;
+        s.find_context = find;
+        return Ok(json!({"changed": 0}));
+    }
+    Ok(changed)
+}
+
+/// The frames Text Frame Options acts on from the Type tool: the frame that shows the caret, or
+/// every frame that holds part of the selected text. Text past the last frame counts as the last
+/// frame's.
+fn text_selection_frames(s: &Session, t: &TextSel) -> Vec<ItemId> {
+    let Ok(st) = s.doc() else { return Vec::new() };
+    let Some(story) = st.doc.story(t.story) else { return Vec::new() };
+    let last = story.frames.last().copied();
+    let cs = s.cache.get(&st.doc, t.story, None);
+    // In footnote text or a table cell, `anchor` and `focus` index that text: the frame the caret
+    // is drawn in (the placed footnote, or the cell's first non-repeated occurrence), else the
+    // frame that shows the footnote reference or the table's anchor character.
+    if let Some(c) = t.cell {
+        let (drawn, anchor) = match c.footnote_id() {
+            Some(id) => (designcraft_compose::find_note(&cs, id).map(|(fi, _)| fi), story.note_anchor(id)),
+            None => (designcraft_compose::find_cell(&cs, c.table, c.row, c.col).map(|(fi, ..)| fi), story.table_anchor(c.table)),
+        };
+        return drawn
+            .or_else(|| anchor.and_then(|a| designcraft_compose::caret(&cs, a)).map(|(fi, ..)| fi))
+            .and_then(|fi| cs.frames.get(fi))
+            .map(|f| f.frame)
+            .or_else(|| t.frame.filter(|f| story.frames.contains(f)))
+            .or(last)
+            .into_iter()
+            .collect();
+    }
+    let r = t.range();
+    // The frame the caret at the start is drawn in; the caret's stored frame only when no line
+    // holds it.
+    let caret_frame = || {
+        designcraft_compose::caret(&cs, r.start)
+            .and_then(|(fi, ..)| cs.frames.get(fi))
+            .map(|f| f.frame)
+            .or_else(|| t.frame.filter(|f| story.frames.contains(f) && cs.overset_at.is_none_or(|o| r.start < o)))
+    };
+    // A frame's range stops before the paragraph return that ends its last line; the return
+    // belongs to that frame.
+    let end_of = |f: &designcraft_compose::FrameText| f.range.end + usize::from(story.text.as_bytes().get(f.range.end) == Some(&b'\n'));
+    let mut frames: Vec<ItemId> = if t.is_caret() {
+        caret_frame().into_iter().collect()
+    } else {
+        cs.frames.iter().filter(|f| f.range.start < r.end && r.start < end_of(f)).map(|f| f.frame).collect()
+    };
+    // Selected text no frame holds goes with the line before it.
+    if frames.is_empty() {
+        frames.extend(caret_frame());
+    }
+    let overset = cs.overset_at.is_some_and(|o| r.end > o);
+    if let Some(l) = last
+        && (frames.is_empty() || overset)
+        && !frames.contains(&l)
+    {
+        frames.push(l);
+    }
+    frames
+}
+
+/// `object.textFrameOptions` Inset Spacing: one number for every side, or [top, left, bottom,
+/// right] with null for a side that keeps its value; each side 0 to 15552 pt.
+fn frame_inset_param(p: &Value) -> Result<Option<[Option<f64>; 4]>> {
+    const ID: &str = "object.textFrameOptions";
+    let side = |v: &Value| match v.as_f64() {
+        Some(x) if x.is_finite() && (0.0..=15552.0).contains(&x) => Ok(x),
+        _ => Err(bad(ID, format!("inset must be a number of points from 0 to 15552, not {v}"))),
+    };
+    match p.get("inset") {
+        None | Some(Value::Null) => Ok(None),
+        Some(v @ Value::Number(_)) => Ok(Some([Some(side(v)?); 4])),
+        Some(Value::Array(a)) if a.len() == 4 => {
+            let mut sides = [None; 4];
+            for (s, v) in sides.iter_mut().zip(a) {
+                if !v.is_null() {
+                    *s = Some(side(v)?);
+                }
+            }
+            Ok(Some(sides))
+        }
+        Some(v) => Err(bad(ID, format!("inset must be a number or [top, left, bottom, right], not {v}"))),
+    }
+}
+
+/// An `object.textFrameOptions` choice: absent or null leaves it, a name outside `names` is an error.
+fn frame_choice_param<T: serde::de::DeserializeOwned>(p: &Value, key: &str, names: &str) -> Result<Option<T>> {
+    match p.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => {
+            serde_json::from_value(v.clone()).map(Some).map_err(|_| bad("object.textFrameOptions", format!("{key} must be one of {names}, not {v}")))
+        }
+    }
+}
+
+/// An `object.stroke` choice: absent or null leaves it, a name outside `names` is an error.
+fn stroke_choice_param<T: serde::de::DeserializeOwned>(p: &Value, key: &str, names: &str) -> Result<Option<T>> {
+    match p.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => serde_json::from_value(v.clone()).map(Some).map_err(|_| bad("object.stroke", format!("{key} must be one of {names}, not {v}"))),
+    }
 }
 
 fn apply_custom_frame_grid(
@@ -2831,37 +3159,6 @@ fn apply_custom_frame_grid(
     }
 }
 
-/// The gap at `p` on spread `sr`: (vertical gap?, edge a, edge b, ids ending at a, ids starting at b).
-pub(crate) fn find_gap(d: &Document, sr: designcraft_doc::SpreadRef, p: Point) -> Option<(bool, f64, f64, Vec<ItemId>, Vec<ItemId>)> {
-    let sp = d.spread(sr)?;
-    let page = sp.page_at_x(p.x).and_then(|i| sp.pages.get(i)).map(|pg| pg.bounds())?;
-    let items: Vec<(ItemId, Rect)> = sp
-        .items
-        .iter()
-        .filter(|it| !it.hidden && !it.locked && d.layer(it.layer).is_none_or(|l| !l.locked && l.visible))
-        .map(|it| (it.id, it.bounds()))
-        .collect();
-    if items.iter().any(|(_, b)| b.contains(p)) {
-        return None;
-    }
-    // Between left and right neighbours (a vertical gap), or above and below (horizontal).
-    let side = |vertical: bool| {
-        let (pos, lo, hi) = if vertical { (p.x, page.x0, page.x1) } else { (p.y, page.y0, page.y1) };
-        let across = |b: &Rect| if vertical { b.y0 <= p.y && p.y <= b.y1 } else { b.x0 <= p.x && p.x <= b.x1 };
-        let end = |b: &Rect| if vertical { b.x1 } else { b.y1 };
-        let start = |b: &Rect| if vertical { b.x0 } else { b.y0 };
-        let a = items.iter().filter(|(_, b)| across(b) && end(b) <= pos).map(|(_, b)| end(b)).fold(lo, f64::max);
-        let z = items.iter().filter(|(_, b)| across(b) && start(b) >= pos).map(|(_, b)| start(b)).fold(hi, f64::min);
-        let before: Vec<ItemId> = items.iter().filter(|(_, b)| across(b) && (end(b) - a).abs() < 0.5).map(|(i, _)| *i).collect();
-        let after: Vec<ItemId> = items.iter().filter(|(_, b)| across(b) && (start(b) - z).abs() < 0.5).map(|(i, _)| *i).collect();
-        (!before.is_empty() || !after.is_empty()).then_some((vertical, a, z, before, after))
-    };
-    match (side(true), side(false)) {
-        (Some(v), Some(h)) => Some(if v.2 - v.1 <= h.2 - h.1 { v } else { h }),
-        (v, h) => v.or(h),
-    }
-}
-
 fn gap_move(s: &mut Session, p: &Value) -> Result<Value> {
     const ID: &str = "gap.move";
     let at = p
@@ -2870,19 +3167,20 @@ fn gap_move(s: &mut Session, p: &Value) -> Result<Value> {
         .and_then(|a| Some(Point::new(a.first()?.as_f64()?, a.get(1)?.as_f64()?)))
         .ok_or_else(|| bad(ID, "missing at"))?;
     let sr = spread_param(p, ID)?;
-    let (vertical, a, z, before, after) = find_gap(&s.doc()?.doc, sr, at).ok_or_else(|| bad(ID, "no gap there"))?;
+    let gap = s.doc()?.doc.find_gap(sr, at).ok_or_else(|| bad(ID, "no gap there"))?;
     // `delta` along the gap's axis, or a drag (dx, dy) of which the axis part counts.
-    let delta =
-        p.get("delta").and_then(Value::as_f64).unwrap_or_else(|| p.get(if vertical { "dx" } else { "dy" }).and_then(Value::as_f64).unwrap_or(0.0));
-    let _ = (a, z);
+    let delta = p
+        .get("delta")
+        .and_then(Value::as_f64)
+        .unwrap_or_else(|| p.get(if gap.vertical { "dx" } else { "dy" }).and_then(Value::as_f64).unwrap_or(0.0));
     s.edit(|d, _| {
         let mut n = 0;
-        for (ids, is_before) in [(&before, true), (&after, false)] {
+        for (ids, is_before) in [(&gap.before, true), (&gap.after, false)] {
             for id in ids {
                 let Some(it) = d.item_mut(*id) else { continue };
                 let b = it.bounds();
                 let mut to = b;
-                match (vertical, is_before) {
+                match (gap.vertical, is_before) {
                     (true, true) => to.x1 = (b.x1 + delta).max(b.x0 + 1.0),
                     (true, false) => to.x0 = (b.x0 + delta).min(b.x1 - 1.0),
                     (false, true) => to.y1 = (b.y1 + delta).max(b.y0 + 1.0),
@@ -2900,7 +3198,7 @@ fn gap_move(s: &mut Session, p: &Value) -> Result<Value> {
                 n += 1;
             }
         }
-        Ok(json!({"axis": if vertical { "x" } else { "y" }, "changed": n}))
+        Ok(json!({"axis": if gap.vertical { "x" } else { "y" }, "changed": n}))
     })
 }
 
@@ -2924,7 +3222,7 @@ fn clipping_path(s: &mut Session, p: &Value) -> Result<Value> {
             let Some(it) = d.item(*id) else { continue };
             let Some(g) = it.graphic() else { continue };
             let Some(asset) = d.assets.get(&g.asset) else { continue };
-            let Some(px) = designcraft_render::decode_pixmap_page(&asset.data, asset.page) else { continue };
+            let Some(px) = asset.data.load().ok().and_then(|b| designcraft_render::decode_pixmap_page(&b, asset.page)) else { continue };
             // A placed PDF cropped to a box: trace that box, which graphic space spans.
             let px = match designcraft_render::shown_box(asset) {
                 // A crop too big to trace is skipped, as a graphic that fails to decode is: tracing
@@ -4881,6 +5179,7 @@ mod named_target_tests {
         s.execute("file.new", &json!({})).unwrap();
         let r = s.execute("frame.create", &json!({"rect": [36, 36, 300, 300], "content": "text", "text": "Hello"})).unwrap();
         assert!(s.doc().unwrap().selection.items.is_empty(), "frame.create leaves a text caret");
+        s.execute("edit.deselectAll", &json!({})).unwrap();
         let e = s.execute("object.textFrameOptions", &json!({"columns": 2})).unwrap_err().to_string();
         assert!(e.contains("nothing selected"), "{e}");
         s.execute("object.textFrameOptions", &json!({"ids": [r["id"]], "columns": 2})).unwrap();
@@ -4897,6 +5196,257 @@ mod named_target_tests {
         assert_eq!(columns(&s), Some(2));
         // Commands documented with `ids` honour `id` too.
         assert_eq!(s.execute("conveyor.collect", &json!({"id": r["id"]})).unwrap()["count"], 1);
+    }
+}
+
+#[cfg(test)]
+mod type_tool_frame_options_tests {
+    use super::*;
+    use designcraft_doc::VerticalJustification;
+
+    /// One story threaded through two frames, with text in both: (first frame, second frame, story).
+    fn two_frame_thread(s: &mut Session) -> (ItemId, ItemId, StoryId) {
+        s.execute("file.new", &json!({})).unwrap();
+        let text = (0..40).map(|i| format!("Line {i} of the threaded story.")).collect::<Vec<_>>().join(" ");
+        let a = s.execute("frame.create", &json!({"rect": [36, 36, 300, 120], "content": "text", "text": text})).unwrap();
+        let b = s.execute("frame.create", &json!({"rect": [36, 200, 300, 700], "content": "text", "text": ""})).unwrap();
+        let (a, b) = (ItemId(a["id"].as_u64().unwrap()), ItemId(b["id"].as_u64().unwrap()));
+        s.execute("text.thread", &json!({"from": a.0, "to": b.0})).unwrap();
+        let sid = s.doc().unwrap().doc.item(a).and_then(Item::text_frame).unwrap().story;
+        (a, b, sid)
+    }
+
+    /// The story bytes `frame` shows.
+    fn shown(s: &Session, sid: StoryId, frame: ItemId) -> std::ops::Range<usize> {
+        let cs = designcraft_compose::compose_story(&s.doc().unwrap().doc, sid, &Default::default());
+        cs.frame(frame).unwrap().range.clone()
+    }
+
+    fn options(s: &Session, id: ItemId) -> TextFrameOptions {
+        s.doc().unwrap().doc.item(id).and_then(Item::text_frame).unwrap().options.clone()
+    }
+
+    fn undo_steps(s: &Session) -> usize {
+        s.doc().unwrap().history.undo.len()
+    }
+
+    /// With the Type tool, Text Frame Options change the frame that shows the caret, not every
+    /// frame of the story.
+    #[test]
+    fn a_caret_changes_the_frame_it_is_in() {
+        let mut s = Session::new();
+        let (a, b, sid) = two_frame_thread(&mut s);
+        let (ra, rb) = (shown(&s, sid, a), shown(&s, sid, b));
+        assert!(!ra.is_empty() && !rb.is_empty(), "both frames hold text: {ra:?} {rb:?}");
+        s.execute("text.select", &json!({"story": sid.0, "anchor": rb.start + 2})).unwrap();
+        assert!(s.doc().unwrap().selection.items.is_empty());
+        let steps = undo_steps(&s);
+        s.execute("object.textFrameOptions", &json!({"columns": 3, "verticalJustification": "center", "inset": 6})).unwrap();
+        assert_eq!(
+            (options(&s, b).columns, options(&s, b).vertical_justification, options(&s, b).inset),
+            (3, VerticalJustification::Center, [6.0; 4])
+        );
+        assert_eq!((options(&s, a).columns, options(&s, a).vertical_justification), (1, VerticalJustification::Top), "the first frame is left alone");
+        assert_eq!(undo_steps(&s), steps + 1, "one undo step");
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(options(&s, b).columns, 1);
+        // A caret in the first frame changes the first frame.
+        s.execute("text.select", &json!({"story": sid.0, "anchor": ra.start + 2})).unwrap();
+        s.execute("object.textFrameOptions", &json!({"verticalJustification": "bottom"})).unwrap();
+        assert_eq!(
+            (options(&s, a).vertical_justification, options(&s, b).vertical_justification),
+            (VerticalJustification::Bottom, VerticalJustification::Top)
+        );
+    }
+
+    /// A caret moved to the start of the second frame keeps the first frame as its stored frame;
+    /// the options go to the frame the caret is drawn in.
+    #[test]
+    fn a_caret_at_a_frame_boundary_changes_the_frame_it_is_drawn_in() {
+        let mut s = Session::new();
+        let (a, b, sid) = two_frame_thread(&mut s);
+        let rb = shown(&s, sid, b);
+        let cs = designcraft_compose::compose_story(&s.doc().unwrap().doc, sid, &Default::default());
+        let drawn = designcraft_compose::caret(&cs, rb.start).and_then(|(fi, ..)| cs.frames.get(fi)).map(|f| f.frame);
+        assert_eq!(drawn, Some(b), "the caret at the boundary is drawn in the second frame");
+        s.doc_mut().unwrap().selection = Selection::text(TextSel { story: sid, anchor: rb.start, focus: rb.start, frame: Some(a), cell: None });
+        s.execute("object.textFrameOptions", &json!({"columns": 2})).unwrap();
+        assert_eq!((options(&s, a).columns, options(&s, b).columns), (1, 2));
+    }
+
+    /// Selected text that runs from one frame into the next changes both frames.
+    #[test]
+    fn selected_text_changes_every_frame_it_runs_through() {
+        let mut s = Session::new();
+        let (a, b, sid) = two_frame_thread(&mut s);
+        let (ra, rb) = (shown(&s, sid, a), shown(&s, sid, b));
+        s.execute("text.select", &json!({"story": sid.0, "anchor": ra.end - 3, "focus": rb.start + 3})).unwrap();
+        s.execute("object.textFrameOptions", &json!({"columns": 2})).unwrap();
+        assert_eq!((options(&s, a).columns, options(&s, b).columns), (2, 2));
+        // Text inside one frame changes that frame only.
+        s.execute("text.select", &json!({"story": sid.0, "anchor": rb.start + 1, "focus": rb.start + 6})).unwrap();
+        s.execute("object.textFrameOptions", &json!({"columns": 4})).unwrap();
+        assert_eq!((options(&s, a).columns, options(&s, b).columns), (2, 4));
+    }
+
+    /// A selected paragraph return at the end of the first frame changes the first frame.
+    #[test]
+    fn a_selected_return_at_the_end_of_a_frame_changes_that_frame() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let text = (0..40).map(|i| format!("Paragraph {i}")).collect::<Vec<_>>().join("\n");
+        let a = s.execute("frame.create", &json!({"rect": [36, 36, 300, 120], "content": "text", "text": text})).unwrap();
+        let b = s.execute("frame.create", &json!({"rect": [36, 200, 300, 700], "content": "text", "text": ""})).unwrap();
+        let (a, b) = (ItemId(a["id"].as_u64().unwrap()), ItemId(b["id"].as_u64().unwrap()));
+        s.execute("text.thread", &json!({"from": a.0, "to": b.0})).unwrap();
+        let sid = s.doc().unwrap().doc.item(a).and_then(Item::text_frame).unwrap().story;
+        let (ra, rb) = (shown(&s, sid, a), shown(&s, sid, b));
+        assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().text.as_bytes()[ra.end], b'\n', "the first frame ends before a return");
+        assert_eq!(rb.start, ra.end + 1, "the second frame starts after it");
+        s.execute("text.select", &json!({"story": sid.0, "anchor": ra.end, "focus": ra.end + 1})).unwrap();
+        s.execute("object.textFrameOptions", &json!({"columns": 2})).unwrap();
+        assert_eq!((options(&s, a).columns, options(&s, b).columns), (2, 1));
+        // From that return into the second frame, with the first frame back as it was: both frames.
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!((shown(&s, sid, a), shown(&s, sid, b)), (ra.clone(), rb.clone()));
+        s.execute("text.select", &json!({"story": sid.0, "anchor": ra.end, "focus": rb.start + 3})).unwrap();
+        s.execute("object.textFrameOptions", &json!({"columns": 3})).unwrap();
+        assert_eq!((options(&s, a).columns, options(&s, b).columns), (3, 3));
+    }
+
+    /// An empty `ids` names no frame, so it does not fall back to the caret's frame.
+    #[test]
+    fn empty_ids_with_a_caret_is_an_error() {
+        let mut s = Session::new();
+        let (a, b, sid) = two_frame_thread(&mut s);
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 2})).unwrap();
+        let before = s.doc().unwrap().doc.clone();
+        let e = s.execute("object.textFrameOptions", &json!({"ids": [], "columns": 3})).unwrap_err().to_string();
+        assert!(e.contains("nothing selected"), "{e}");
+        // An id that is not in the document is refused too.
+        let e = s.execute("object.textFrameOptions", &json!({"ids": [99999, b.0], "columns": 3})).unwrap_err().to_string();
+        assert!(e.contains("no object with id 99999"), "{e}");
+        assert!(std::sync::Arc::ptr_eq(&before, &s.doc().unwrap().doc), "nothing changed");
+        assert_eq!((options(&s, a).columns, options(&s, b).columns), (1, 1));
+    }
+
+    /// An `ids` that is not a list of object ids is refused, not read as the selected frame or the
+    /// caret's frame.
+    #[test]
+    fn malformed_ids_are_an_error() {
+        let mut s = Session::new();
+        let (a, b, sid) = two_frame_thread(&mut s);
+        s.execute("selection.set", &json!({"ids": [b.0]})).unwrap();
+        let before = s.doc().unwrap().doc.clone();
+        for p in [json!({"ids": "bad", "columns": 2}), json!({"ids": [b.0, "x"], "columns": 2}), json!({"ids": null, "columns": 2})] {
+            let e = s.execute("object.textFrameOptions", &p).unwrap_err().to_string();
+            assert!(e.contains("ids must be a list of object ids"), "{p}: {e}");
+        }
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 2})).unwrap();
+        let e = s.execute("object.textFrameOptions", &json!({"ids": "bad", "columns": 2})).unwrap_err().to_string();
+        assert!(e.contains("ids must be a list of object ids"), "with a caret: {e}");
+        assert!(std::sync::Arc::ptr_eq(&before, &s.doc().unwrap().doc), "nothing changed");
+        assert_eq!((options(&s, a).columns, options(&s, b).columns), (1, 1));
+    }
+
+    /// Options the frame already has change nothing and add no undo step.
+    #[test]
+    fn unchanged_options_add_no_undo_step() {
+        let mut s = Session::new();
+        let (_, b, sid) = two_frame_thread(&mut s);
+        let rb = shown(&s, sid, b);
+        s.execute("text.select", &json!({"story": sid.0, "anchor": rb.start + 2})).unwrap();
+        let steps = undo_steps(&s);
+        let (before, revision) = (s.doc().unwrap().doc.clone(), s.doc().unwrap().revision);
+        let r = s.execute("object.textFrameOptions", &json!({"columns": 1, "verticalJustification": "top", "inset": 0})).unwrap();
+        assert_eq!(r["changed"], 0);
+        assert!(std::sync::Arc::ptr_eq(&before, &s.doc().unwrap().doc), "nothing changed");
+        assert_eq!(s.doc().unwrap().revision, revision, "the revision stays");
+        assert_eq!(undo_steps(&s), steps);
+        // The same holds for selected frames, Fixed Width columns included.
+        s.execute("selection.set", &json!({"ids": [b.0]})).unwrap();
+        s.execute("object.textFrameOptions", &json!({"gutter": options(&s, b).gutter})).unwrap();
+        assert_eq!(undo_steps(&s), steps);
+        let fixed = json!({"columnsKind": "fixedWidth", "columnWidth": 100.3, "columns": 2, "gutter": 12.1});
+        s.execute("object.textFrameOptions", &fixed).unwrap();
+        assert_eq!(undo_steps(&s), steps + 1);
+        assert_eq!(s.execute("object.textFrameOptions", &fixed).unwrap()["changed"], 0);
+        assert_eq!(undo_steps(&s), steps + 1, "the same Fixed Width options again add no undo step");
+    }
+
+    /// A caret in footnote text changes the frame that shows the footnote, with or without a
+    /// stored frame on the caret.
+    #[test]
+    fn a_caret_in_a_footnote_changes_the_frame_that_shows_it() {
+        for (in_second, stored) in [(false, None), (true, None), (false, Some(true))] {
+            let mut s = Session::new();
+            let (a, b, sid) = two_frame_thread(&mut s);
+            let r = shown(&s, sid, if in_second { b } else { a });
+            s.execute("text.select", &json!({"story": sid.0, "anchor": r.start + 2})).unwrap();
+            s.execute("footnote.insert", &json!({"text": "Note."})).unwrap();
+            let mut t = s.doc().unwrap().selection.text.unwrap();
+            assert!(t.cell.and_then(|c| c.footnote_id()).is_some(), "the caret is in the footnote: {t:?}");
+            if let Some(second) = stored {
+                t.frame = Some(if second { b } else { a });
+                s.doc_mut().unwrap().selection = Selection::text(t);
+            }
+            s.execute("object.textFrameOptions", &json!({"columns": 2})).unwrap();
+            let want = if in_second { (1, 2) } else { (2, 1) };
+            assert_eq!((options(&s, a).columns, options(&s, b).columns), want, "footnote in the second frame: {in_second}, stored frame: {stored:?}");
+        }
+    }
+
+    /// A caret in a table cell changes the frame that shows the cell, with or without a stored
+    /// frame on the caret.
+    #[test]
+    fn a_caret_in_a_table_cell_changes_the_frame_that_shows_it() {
+        for (in_second, stored) in [(false, None), (true, None), (false, Some(true))] {
+            let mut s = Session::new();
+            let (a, b, sid) = two_frame_thread(&mut s);
+            let r = shown(&s, sid, if in_second { b } else { a });
+            s.execute("text.select", &json!({"story": sid.0, "anchor": r.start + 2})).unwrap();
+            s.execute("table.insert", &json!({"rows": 1, "cols": 1})).unwrap();
+            let mut t = s.doc().unwrap().selection.text.unwrap();
+            assert!(t.cell.is_some_and(|c| c.footnote_id().is_none()), "the caret is in the cell: {t:?}");
+            if let Some(second) = stored {
+                t.frame = Some(if second { b } else { a });
+                s.doc_mut().unwrap().selection = Selection::text(t);
+            }
+            s.execute("object.textFrameOptions", &json!({"columns": 2})).unwrap();
+            let want = if in_second { (1, 2) } else { (2, 1) };
+            assert_eq!((options(&s, a).columns, options(&s, b).columns), want, "table in the second frame: {in_second}, stored frame: {stored:?}");
+        }
+    }
+
+    /// A caret in a repeated footer row is drawn in the footer's own occurrence at the end of the
+    /// table: that frame changes, not the earlier frame that shows a repeat of the footer.
+    #[test]
+    fn a_caret_in_a_repeated_footer_changes_the_frame_with_the_footer_itself() {
+        let mut s = Session::new();
+        let (a, b, sid) = two_frame_thread(&mut s);
+        let ra = shown(&s, sid, a);
+        s.execute("text.select", &json!({"story": sid.0, "anchor": ra.start + 2})).unwrap();
+        s.execute("table.insert", &json!({"rows": 15, "cols": 1, "footerRows": 1})).unwrap();
+        s.execute("table.options", &json!({"repeatFooter": true})).unwrap();
+        let t = s.doc().unwrap().selection.text.unwrap();
+        let table = t.cell.unwrap().table;
+        let footer = s.doc().unwrap().doc.story(sid).unwrap().tables.get(&table).unwrap().nrows() - 1;
+        let cs = designcraft_compose::compose_story(&s.doc().unwrap().doc, sid, &Default::default());
+        let placed = |f: ItemId| {
+            cs.frame(f)
+                .unwrap()
+                .tables
+                .iter()
+                .filter(|tf| tf.table == table)
+                .filter_map(|tf| tf.cell(footer, 0))
+                .map(|c| c.repeated)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!((placed(a), placed(b)), (vec![true], vec![false]), "the footer repeats in the first frame and ends the table in the second");
+        s.doc_mut().unwrap().selection =
+            Selection::text(TextSel { cell: Some(designcraft_doc::CellAddr { table, row: footer, col: 0 }), anchor: 0, focus: 0, frame: None, ..t });
+        s.execute("object.textFrameOptions", &json!({"columns": 2})).unwrap();
+        assert_eq!((options(&s, a).columns, options(&s, b).columns), (1, 2));
     }
 }
 
@@ -4950,18 +5500,23 @@ mod column_rule_tests {
         assert_eq!(opts(&s), before);
     }
 
-    /// A column count past `u32::MAX` was cast to `u32` before the clamp, so
-    /// 2^32 + 1 wrapped to 1 column instead of clamping to the maximum, 40.
+    /// A column count outside 1 to 40 is refused, past `u32::MAX` too (2^32 + 1 must not
+    /// wrap to 1 column), and the frame keeps its columns.
     #[test]
-    fn huge_column_count_clamps_to_the_maximum() {
+    fn column_count_outside_one_to_forty_is_refused() {
         let mut s = Session::new();
         s.execute("file.new", &json!({})).unwrap();
         let r = s.execute("frame.create", &json!({"rect": [36, 36, 300, 300], "content": "text"})).unwrap();
         let id = ItemId(r["id"].as_u64().unwrap());
         let columns = |s: &Session| s.doc().unwrap().doc.item(id).unwrap().text_frame().unwrap().options.columns;
-        for (given, want) in [(4_294_967_297_u64, 40), (u64::MAX, 40), (0, 1)] {
+        for given in [4_294_967_297_u64, u64::MAX, 41, 0] {
+            let e = s.execute("object.textFrameOptions", &json!({"ids": [id.0], "columns": given})).expect_err("refused").to_string();
+            assert!(e.contains("columns must be a whole number from 1 to 40"), "columns {given}: {e}");
+            assert_eq!(columns(&s), 1, "columns {given}");
+        }
+        for given in [40, 1] {
             s.execute("object.textFrameOptions", &json!({"ids": [id.0], "columns": given})).unwrap();
-            assert_eq!(columns(&s), want, "columns {given}");
+            assert_eq!(columns(&s), given as u32, "columns {given}");
         }
     }
 }
@@ -5368,6 +5923,52 @@ mod stroke_type_tests {
             assert_eq!(item.stroke.kind, serde_json::from_value::<designcraft_doc::StrokeType>(kind).unwrap());
         }
     }
+
+    /// A tint, weight or miter limit out of range, a gap overprint that isn't true or false, or an
+    /// alignment, cap, join or arrowhead name the stroke doesn't have is refused, with or without a
+    /// selection, and the document stays as it was. Values at the ends of each range are taken.
+    #[test]
+    fn stroke_settings_out_of_range_or_unknown_are_refused() {
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let id = s.execute("frame.create", &json!({"rect": [0, 0, 100, 100]})).unwrap()["id"].as_u64().unwrap();
+        for (key, value) in [
+            ("tint", json!(1.5)),
+            ("tint", json!(-0.1)),
+            ("tint", json!("half")),
+            ("gapTint", json!(2)),
+            ("weight", json!(-1)),
+            ("weight", json!(1001)),
+            ("miterLimit", json!(0.5)),
+            ("miterLimit", json!(501)),
+            ("gapOverprint", json!("yes")),
+            ("align", json!("middle")),
+            ("cap", json!("square")),
+            ("join", json!("sharp")),
+            ("start", json!("arrow")),
+            ("end", json!(3)),
+        ] {
+            for ids in [json!([id]), json!([])] {
+                let before = s.doc().unwrap().doc.clone();
+                let error = s.execute("object.stroke", &json!({"ids": ids, "swatch": "[Black]", key: value})).unwrap_err();
+                assert!(matches!(error, crate::EngineError::BadParams { .. }), "{error}");
+                assert!(error.to_string().contains(key), "{key} {value}: {error}");
+                assert!(std::sync::Arc::ptr_eq(&before, &s.doc().unwrap().doc), "{key} {value}: nothing changed");
+            }
+        }
+        let settings = json!({
+            "ids": [id], "swatch": "[Black]", "tint": 0, "weight": 1000, "miterLimit": 500, "gapTint": 1, "gapOverprint": true,
+            "align": "outside", "cap": "projecting", "join": "bevel", "start": "simpleWide", "end": "bar",
+        });
+        assert_eq!(s.execute("object.stroke", &settings).unwrap()["changed"], 1);
+        let st = s.doc().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap().stroke.clone();
+        assert_eq!((st.tint, st.weight, st.miter_limit, st.gap_tint, st.gap_overprint), (0.0, 1000.0, 500.0, 1.0, true));
+        assert_eq!(
+            (st.align, st.cap, st.join),
+            (designcraft_doc::StrokeAlign::Outside, designcraft_doc::Cap::Projecting, designcraft_doc::Join::Bevel)
+        );
+        assert_eq!((st.start, st.end), (designcraft_doc::Arrowhead::SimpleWide, designcraft_doc::Arrowhead::Bar));
+    }
 }
 
 #[cfg(test)]
@@ -5429,6 +6030,288 @@ mod copy_ids_tests {
         let r = s.execute("edit.stepAndRepeat", &json!({"count": 3, "dx": 0, "dy": 60, "ids": [a]})).unwrap();
         assert_eq!((r["created"].as_u64(), ids(&r).len()), (Some(3), 3), "{r}");
         assert!(ids(&r).iter().all(|i| s.doc().unwrap().doc.item(designcraft_doc::ItemId(*i)).is_some()));
+    }
+
+    /// A selected text frame whose story holds a paragraph anchor, a cross-reference to it and a table.
+    fn marked_frame(s: &mut crate::Session) -> (u64, designcraft_doc::StoryId) {
+        s.execute("file.new", &json!({"pages": 1, "facingPages": false})).unwrap();
+        let text = json!({"rect": [72, 72, 400, 400], "content": "text", "text": "Results\nSee "});
+        let f = s.execute("frame.create", &text).unwrap()["id"].as_u64().unwrap();
+        let sid = s.doc().unwrap().doc.item(designcraft_doc::ItemId(f)).unwrap().text_frame().unwrap().story;
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 12, "focus": 12})).unwrap();
+        s.execute("xref.insert", &json!({"paragraph": "Results"})).unwrap();
+        s.execute("table.insert", &json!({"rows": 1, "cols": 2})).unwrap();
+        s.execute("selection.set", &json!({"ids": [f]})).unwrap();
+        (f, sid)
+    }
+
+    /// The copy of story `orig` made for item `copy` has a text anchor and a table of its own, and its cross-reference
+    /// points at its own anchor. A table command naming the copy's table changes the copy alone.
+    fn assert_own_marks(s: &mut crate::Session, orig: designcraft_doc::StoryId, copy: u64) {
+        let d = s.doc().unwrap().doc.clone();
+        let sid = d.item(designcraft_doc::ItemId(copy)).unwrap().text_frame().unwrap().story;
+        assert_ne!(sid, orig);
+        let (o, c) = (d.story(orig).unwrap(), d.story(sid).unwrap());
+        let (oa, ca) = (o.anchors[0].id, c.anchors[0].id);
+        assert_ne!(oa, ca, "the copy's anchor has an id of its own");
+        assert_eq!(d.find_anchor(ca).map(|(at, _)| at), Some(sid));
+        assert_eq!((o.xrefs[0].target, c.xrefs[0].target), (oa, ca), "each cross-reference points at its own story's anchor");
+        let (ot, ct) = (*o.tables.keys().next().unwrap(), *c.tables.keys().next().unwrap());
+        assert_ne!(ot, ct, "the copy's table has an id of its own");
+        assert_eq!(c.tables[&ct].id, ct);
+        assert_eq!(c.paras.iter().filter_map(|pf| pf.table).collect::<Vec<_>>(), [ct], "the copied paragraph holds the copied table");
+        d.check().unwrap();
+        // The table commands are enabled with the insertion point in a table: here the original's.
+        let cell = designcraft_doc::CellAddr { table: ot, row: 0, col: 0 };
+        s.edit(|_, sel| {
+            sel.text = Some(designcraft_doc::TextSel { story: orig, anchor: 0, focus: 0, frame: None, cell: Some(cell) });
+            Ok(())
+        })
+        .unwrap();
+        s.execute("table.insertRow", &json!({"table": ct})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        assert_eq!(d.story(orig).unwrap().tables[&ot].nrows(), 1, "the original table is unchanged");
+        assert_eq!(d.story(sid).unwrap().tables[&ct].nrows(), 2);
+    }
+
+    #[test]
+    fn duplicated_text_gets_anchors_and_tables_of_its_own() {
+        let mut s = crate::Session::new();
+        let (_, sid) = marked_frame(&mut s);
+        let copy = s.execute("edit.duplicate", &json!({})).unwrap()["ids"][0].as_u64().unwrap();
+        assert_own_marks(&mut s, sid, copy);
+    }
+
+    #[test]
+    fn pasted_text_gets_anchors_and_tables_of_its_own() {
+        let mut s = crate::Session::new();
+        let (_, sid) = marked_frame(&mut s);
+        s.execute("edit.copy", &json!({})).unwrap();
+        let copy = s.execute("edit.paste", &json!({})).unwrap()["ids"][0].as_u64().unwrap();
+        assert_own_marks(&mut s, sid, copy);
+    }
+
+    #[test]
+    fn duplicated_spreads_get_anchors_and_tables_of_their_own() {
+        let mut s = crate::Session::new();
+        let (f, sid) = marked_frame(&mut s);
+        s.execute("layout.pages.duplicateSpread", &json!({"spread": 0})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        let copy = d.spreads[1].items.iter().find(|i| i.text_frame().is_some()).unwrap().id.0;
+        assert_ne!(copy, f);
+        assert_own_marks(&mut s, sid, copy);
+    }
+
+    #[test]
+    fn copied_text_gives_tables_in_its_cells_ids_of_their_own() {
+        use std::sync::Arc;
+
+        fn table_ids(st: &designcraft_doc::Story, out: &mut Vec<u64>) {
+            for (id, t) in &st.tables {
+                out.push(*id);
+                for c in &t.cells {
+                    table_ids(&c.text, out);
+                }
+            }
+        }
+        let cell = |st: &designcraft_doc::Story| st.tables.values().next().unwrap().cells[0].text.clone();
+        let mut s = crate::Session::new();
+        let (f, sid) = marked_frame(&mut s);
+        // The table's first cell holds a table.
+        let d = Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+        let inner = designcraft_doc::Table::new(d.alloc(), 1, 1, 0, 0, 40.0);
+        let st = d.story_mut(sid).unwrap();
+        let text = &mut Arc::make_mut(st.tables.values_mut().next().unwrap()).cells[0].text;
+        text.insert_table(text.len(), inner);
+        for copy_cmd in ["edit.duplicate", "edit.paste"] {
+            if copy_cmd == "edit.paste" {
+                s.execute("selection.set", &json!({"ids": [f]})).unwrap();
+                s.execute("edit.copy", &json!({})).unwrap();
+            }
+            let copy = s.execute(copy_cmd, &json!({})).unwrap()["ids"][0].as_u64().unwrap();
+            let d = &s.doc().unwrap().doc;
+            let csid = d.item(designcraft_doc::ItemId(copy)).unwrap().text_frame().unwrap().story;
+            let (o, c) = (d.story(sid).unwrap(), d.story(csid).unwrap());
+            let (oc, cc) = (cell(o), cell(c));
+            let (oi, ci) = (*oc.tables.keys().next().unwrap(), *cc.tables.keys().next().unwrap());
+            assert_ne!(oi, ci, "{copy_cmd}: the copied cell's table has an id of its own");
+            assert_eq!(cc.tables[&ci].id, ci);
+            assert_eq!(cc.paras.iter().filter_map(|pf| pf.table).collect::<Vec<_>>(), [ci], "the cell's paragraph holds the copied table");
+            let mut ids = Vec::new();
+            for st in d.stories.values() {
+                table_ids(st, &mut ids);
+            }
+            let unique: std::collections::HashSet<_> = ids.iter().collect();
+            assert_eq!(unique.len(), ids.len(), "{copy_cmd}: no two tables share an id: {ids:?}");
+        }
+    }
+
+    #[test]
+    fn groups_nested_too_deeply_are_not_copied() {
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let frame = |s: &mut crate::Session| s.execute("frame.create", &json!({"rect": [0, 0, 50, 50]})).unwrap()["id"].as_u64().unwrap();
+        let mut g = frame(&mut s);
+        for _ in 0..=super::MAX_COPY_DEPTH {
+            let other = frame(&mut s);
+            g = s.execute("object.group", &json!({"ids": [g, other]})).unwrap()["id"].as_u64().unwrap();
+        }
+        let text = s.execute("frame.create", &json!({"rect": [100, 100, 300, 300], "content": "text", "text": "Host"})).unwrap()["id"].as_u64();
+        let sid = s.doc().unwrap().doc.item(designcraft_doc::ItemId(text.unwrap())).unwrap().text_frame().unwrap().story;
+        let before = s.doc().unwrap().doc.clone();
+        assert!(s.execute("transform.move", &json!({"dx": 10, "dy": 0, "copy": true, "ids": [g]})).is_err());
+        assert_eq!(s.doc().unwrap().doc, before, "nothing is copied");
+        // Nor pasted into text as an anchored object.
+        s.execute("selection.set", &json!({"ids": [g]})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 4, "focus": 4})).unwrap();
+        assert!(s.execute("edit.paste", &json!({})).is_err());
+        assert_eq!(s.doc().unwrap().doc, before, "nothing is pasted");
+    }
+
+    #[test]
+    fn tables_nested_too_deeply_in_cells_are_not_copied() {
+        use std::sync::Arc;
+
+        // The first cell of the story's table holds `n` tables, each in the first cell of the one before.
+        fn nested(n: usize) -> crate::Session {
+            let mut s = crate::Session::new();
+            let (f, sid) = marked_frame(&mut s);
+            let d = Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+            let mut chain: Option<designcraft_doc::Table> = None;
+            for _ in 0..n {
+                let mut t = designcraft_doc::Table::new(d.alloc(), 1, 1, 0, 0, 40.0);
+                if let Some(inner) = chain.take() {
+                    t.cells[0].text.insert_table(0, inner);
+                }
+                chain = Some(t);
+            }
+            let st = d.story_mut(sid).unwrap();
+            let text = &mut Arc::make_mut(st.tables.values_mut().next().unwrap()).cells[0].text;
+            text.insert_table(text.len(), chain.unwrap());
+            s.execute("selection.set", &json!({"ids": [f]})).unwrap();
+            s
+        }
+        let mut s = nested(super::MAX_COPY_DEPTH);
+        s.execute("edit.duplicate", &json!({})).unwrap();
+        let mut s = nested(super::MAX_COPY_DEPTH + 1);
+        let before = s.doc().unwrap().doc.clone();
+        let e = s.execute("edit.duplicate", &json!({})).unwrap_err().to_string();
+        assert!(e.contains("too deeply to copy"), "{e}");
+        assert_eq!(s.doc().unwrap().doc, before, "nothing is copied");
+        s.execute("edit.copy", &json!({})).unwrap();
+        assert!(s.execute("edit.paste", &json!({})).is_err());
+        assert_eq!(s.doc().unwrap().doc, before, "nothing is pasted");
+    }
+
+    #[test]
+    fn objects_anchored_in_cells_nested_too_deeply_are_not_copied() {
+        use std::sync::Arc;
+
+        // The first cell of the story's table holds `n` tables, each in the first cell of the one before, and the cell
+        // of the innermost one holds an anchored object.
+        fn nested(n: usize) -> crate::Session {
+            let mut s = crate::Session::new();
+            let (f, sid) = marked_frame(&mut s);
+            let leaf = s.execute("frame.create", &json!({"rect": [0, 0, 10, 10]})).unwrap()["id"].as_u64().unwrap();
+            let d = Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+            let item = d.item(designcraft_doc::ItemId(leaf)).cloned().unwrap();
+            Arc::make_mut(&mut d.spreads[0]).items.retain(|i| i.id.0 != leaf);
+            let mut chain: Option<designcraft_doc::Table> = None;
+            for _ in 0..n {
+                let mut t = designcraft_doc::Table::new(d.alloc(), 1, 1, 0, 0, 40.0);
+                match chain.take() {
+                    Some(inner) => {
+                        t.cells[0].text.insert_table(0, inner);
+                    }
+                    None => {
+                        t.cells[0].text.insert_object(0, designcraft_doc::AnchoredObject::new(item.clone(), Default::default()));
+                    }
+                }
+                chain = Some(t);
+            }
+            let st = d.story_mut(sid).unwrap();
+            let text = &mut Arc::make_mut(st.tables.values_mut().next().unwrap()).cells[0].text;
+            text.insert_table(text.len(), chain.unwrap());
+            s.execute("selection.set", &json!({"ids": [f]})).unwrap();
+            s
+        }
+        let mut s = nested(super::MAX_COPY_DEPTH - 1);
+        s.execute("edit.duplicate", &json!({})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.anchored_items().len(), 2, "the anchored object is copied");
+        let mut s = nested(super::MAX_COPY_DEPTH);
+        let before = s.doc().unwrap().doc.clone();
+        let e = s.execute("edit.duplicate", &json!({})).unwrap_err().to_string();
+        assert!(e.contains("too deeply to copy"), "{e}");
+        assert_eq!(s.doc().unwrap().doc, before, "nothing is copied");
+    }
+
+    #[test]
+    fn pasted_cross_references_follow_the_pasted_anchors_of_other_stories() {
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let frame = |s: &mut crate::Session, rect: [f64; 4], text: &str| {
+            let id = s.execute("frame.create", &json!({"rect": rect, "content": "text", "text": text})).unwrap()["id"].as_u64().unwrap();
+            (id, s.doc().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap().text_frame().unwrap().story)
+        };
+        // Each story refers to the other, so one of the two is pasted before its destination.
+        let (a, first) = frame(&mut s, [72.0, 72.0, 300.0, 200.0], "Methods, see ");
+        let (b, second) = frame(&mut s, [72.0, 300.0, 300.0, 400.0], "Results, see ");
+        s.execute("text.select", &json!({"story": first.0, "anchor": 13, "focus": 13})).unwrap();
+        s.execute("xref.insert", &json!({"paragraph": "Results"})).unwrap();
+        s.execute("text.select", &json!({"story": second.0, "anchor": 13, "focus": 13})).unwrap();
+        s.execute("xref.insert", &json!({"paragraph": "Methods"})).unwrap();
+        s.execute("selection.set", &json!({"ids": [a, b]})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+        // Into another document, which holds no anchor of the original's: its stories get other ids.
+        s.execute("file.new", &json!({})).unwrap();
+        for _ in 0..3 {
+            frame(&mut s, [0.0, 0.0, 50.0, 50.0], "");
+        }
+        s.execute("selection.set", &json!({"ids": []})).unwrap();
+        let ids = s.execute("edit.paste", &json!({})).unwrap()["ids"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap()).collect::<Vec<_>>();
+        let d = &s.doc().unwrap().doc;
+        let story = |id: u64| d.story(d.item(designcraft_doc::ItemId(id)).unwrap().text_frame().unwrap().story).unwrap();
+        for (refers, dest) in [(story(ids[0]), story(ids[1])), (story(ids[1]), story(ids[0]))] {
+            assert_eq!(refers.xrefs[0].target, dest.anchors[0].id, "the cross-reference points at the pasted destination");
+            assert_eq!(d.find_anchor(refers.xrefs[0].target).map(|(at, _)| at), Some(dest.id));
+        }
+    }
+
+    /// The first copy's new anchor id is the second original's anchor id, as can happen between two documents.
+    #[test]
+    fn copied_cross_references_keep_their_destination_when_new_ids_repeat_old_ones() {
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.edit(|d, _| {
+            d.next_id += 1000;
+            Ok(())
+        })
+        .unwrap();
+        let frame = |s: &mut crate::Session, rect: [f64; 4], text: &str| {
+            let id = s.execute("frame.create", &json!({"rect": rect, "content": "text", "text": text})).unwrap()["id"].as_u64().unwrap();
+            (designcraft_doc::ItemId(id), s.doc().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap().text_frame().unwrap().story)
+        };
+        let (a, first) = frame(&mut s, [72.0, 72.0, 300.0, 200.0], "Methods, see ");
+        let (b, second) = frame(&mut s, [72.0, 300.0, 300.0, 400.0], "Results");
+        s.execute("text.select", &json!({"story": first.0, "anchor": 13, "focus": 13})).unwrap();
+        s.execute("xref.insert", &json!({"paragraph": "Methods"})).unwrap();
+        s.execute("text.select", &json!({"story": second.0, "anchor": 0, "focus": 0})).unwrap();
+        s.execute("anchor.create", &json!({"name": "Results"})).unwrap();
+        let src = s.doc().unwrap().doc.as_ref().clone();
+        assert_eq!(src.story(second).unwrap().anchors[0].id, (second.0 << 24) + 1);
+        // The copy of `first` gets story id `second`: one id goes to the frame, the next to its story.
+        let mut t = crate::Session::new();
+        t.execute("file.new", &json!({})).unwrap();
+        let mut dst = t.doc().unwrap().doc.as_ref().clone();
+        assert!(dst.next_id < second.0 - 2);
+        dst.next_id = second.0 - 2;
+        let ids = super::duplicate_from(&mut dst, &src, &[a, b], designcraft_doc::SpreadRef::Doc(0), designcraft_geom::Vec2::ZERO).unwrap();
+        let story = |id: designcraft_doc::ItemId| dst.story(dst.item(id).unwrap().text_frame().unwrap().story).unwrap();
+        let (one, two) = (story(ids[0]), story(ids[1]));
+        assert_eq!(one.id, second);
+        assert_eq!(one.xrefs[0].target, one.anchors[0].id, "the copy still refers to its own paragraph");
+        assert_ne!(two.anchors[0].id, one.anchors[0].id);
     }
 }
 
@@ -6066,64 +6949,89 @@ mod frame_baseline_grid_tests {
         s.execute("object.textFrameOptions", &json!({"ids": [id.0], "baselineGrid": null})).unwrap();
         assert_eq!(grid(&s), None);
     }
+
+    /// A negative or huge inset or gutter, an inset list that isn't four sides, a column count
+    /// outside 1 to 40, a switch that isn't true or false, and a vertical justification or first
+    /// baseline that isn't one of the names were applied, clamped or skipped without a word. They
+    /// are refused and the frame keeps its options.
+    #[test]
+    fn text_frame_options_refuse_insets_and_names_outside_their_ranges() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [36, 36, 300, 300], "content": "text", "text": "Hello"})).unwrap();
+        let id = ItemId(r["id"].as_u64().unwrap());
+        let options = |s: &Session| s.doc().unwrap().doc.item(id).and_then(|i| i.text_frame()).map(|t| t.options.clone()).unwrap();
+        let before = options(&s);
+        for (params, says) in [
+            (json!({"inset": -1}), "inset must be a number of points from 0 to 15552"),
+            (json!({"inset": 15553}), "inset must be a number of points from 0 to 15552"),
+            (json!({"inset": [1, 2, 3]}), "inset must be a number or [top, left, bottom, right]"),
+            (json!({"inset": [1, 2, 3, -4]}), "inset must be a number of points from 0 to 15552"),
+            (json!({"inset": [1, "2", 3, 4]}), "inset must be a number of points from 0 to 15552"),
+            (json!({"inset": "6pt"}), "inset must be a number or [top, left, bottom, right]"),
+            (json!({"verticalJustification": "middle"}), "verticalJustification must be one of top|center|bottom|justify"),
+            (json!({"firstBaseline": "baseline"}), "firstBaseline must be one of"),
+            (json!({"autoSize": "both"}), "autoSize must be one of"),
+            (json!({"columnsKind": "flexible"}), "columnsKind must be one of"),
+            (json!({"paragraphSpacingLimit": -1}), "paragraphSpacingLimit must be a number of points from 0 to 15552"),
+            (json!({"firstBaselineMin": 20000}), "firstBaselineMin must be a number of points from 0 to 15552"),
+            (json!({"gutter": -5}), "gutter must be a number of points from 0 to 15552"),
+            (json!({"gutter": 1e300}), "gutter must be a number of points from 0 to 15552"),
+            (json!({"gutter": "12pt"}), "gutter must be a number of points from 0 to 15552"),
+            (json!({"columns": 99}), "columns must be a whole number from 1 to 40"),
+            (json!({"columns": "two"}), "columns must be a whole number from 1 to 40"),
+            (json!({"columns": 2.5}), "columns must be a whole number from 1 to 40"),
+            (json!({"balanceColumns": "yes"}), "balanceColumns must be true or false"),
+            (json!({"ignoreWrap": 1}), "ignoreWrap must be true or false"),
+            (json!({"columnRule": "on"}), "columnRule must be true or false"),
+            (json!({"noLineBreaks": 0}), "noLineBreaks must be true or false"),
+            (json!({"useMinimumHeight": "true"}), "useMinimumHeight must be true or false"),
+            (json!({"useMinimumWidth": []}), "useMinimumWidth must be true or false"),
+            (json!({"vertical": "yes"}), "vertical must be true or false"),
+        ] {
+            let mut p = params.clone();
+            p["ids"] = json!([id.0]);
+            let e = s.execute("object.textFrameOptions", &p).expect_err("refused").to_string();
+            assert!(e.contains(says), "{params}: {e}");
+            assert_eq!(options(&s), before, "{params}");
+        }
+        // Values in range apply, the ends included, and null keeps a side.
+        s.execute("object.textFrameOptions", &json!({"ids": [id.0], "inset": [0, null, 15552, 4.5], "verticalJustification": "bottom"})).unwrap();
+        let o = options(&s);
+        assert_eq!(o.inset, [0.0, before.inset[1], 15552.0, 4.5]);
+        assert_eq!(o.vertical_justification, designcraft_doc::VerticalJustification::Bottom);
+        s.execute("object.textFrameOptions", &json!({"ids": [id.0], "inset": 6, "firstBaseline": "capHeight"})).unwrap();
+        let o = options(&s);
+        assert_eq!(o.inset, [6.0; 4]);
+        assert_eq!(o.first_baseline, designcraft_doc::FirstBaseline::CapHeight);
+        s.execute("object.textFrameOptions", &json!({"ids": [id.0], "columns": 3, "gutter": 15552, "balanceColumns": true, "ignoreWrap": true}))
+            .unwrap();
+        let o = options(&s);
+        assert_eq!((o.columns, o.gutter, o.balance_columns, o.ignore_wrap), (3, 15552.0, true, true));
+        s.execute("object.textFrameOptions", &json!({"ids": [id.0], "gutter": 0, "balanceColumns": false})).unwrap();
+        let o = options(&s);
+        assert_eq!((o.gutter, o.balance_columns), (0.0, false));
+    }
 }
 
 #[cfg(test)]
 mod anchored_copy_tests {
-    use super::*;
-    use designcraft_doc::AnchoredObject;
-
-    /// A text frame with an inline rectangle; returns the frame and the anchored item's id.
-    fn frame_with_inline_box(s: &mut Session) -> (ItemId, ItemId) {
-        s.execute("file.new", &json!({})).unwrap();
-        let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 400], "content": "text", "text": "Before after."})).unwrap();
-        let frame = ItemId(r["id"].as_u64().unwrap());
-        let sid = s.doc().unwrap().doc.item(frame).unwrap().text_frame().unwrap().story;
-        let b = s.execute("frame.create", &json!({"rect": [450, 450, 474, 490]})).unwrap();
-        s.execute("anchored.insert", &json!({"ids": [b["id"]], "story": sid.0, "pos": 7})).unwrap();
-        (frame, s.doc().unwrap().doc.story(sid).unwrap().objects[0].item.id)
-    }
-
-    fn assert_reopens(doc: &Document) {
-        doc.check().unwrap();
-        designcraft_format::load(&designcraft_format::save(doc).unwrap()).unwrap();
-    }
-
-    // #1522: the copy kept the anchored object's id, and the saved file no longer opened.
     #[test]
-    fn duplicating_a_frame_with_an_anchored_object_saves_a_file_that_reopens() {
+    fn duplicating_reversed_threaded_frames_keeps_the_source_thread_order() {
         let mut s = Session::new();
-        let (frame, anchored) = frame_with_inline_box(&mut s);
-        s.execute("transform.move", &json!({"ids": [frame.0], "dx": 10, "dy": 10, "copy": true})).unwrap();
-        let doc = &s.doc().unwrap().doc;
-        assert_eq!(doc.anchored_items().iter().filter(|(_, i)| i.id == anchored).count(), 1);
-        assert_eq!(doc.anchored_items().len(), 2);
-        assert_reopens(doc);
-    }
-
-    #[test]
-    fn pasting_a_frame_with_an_anchored_object_twice_keeps_ids_unique() {
-        let mut s = Session::new();
-        let (frame, _) = frame_with_inline_box(&mut s);
-        s.execute("selection.set", &json!({"ids": [frame.0]})).unwrap();
-        s.execute("edit.copy", &json!({})).unwrap();
-        s.execute("edit.paste", &json!({})).unwrap();
-        s.execute("edit.paste", &json!({})).unwrap();
-        let doc = &s.doc().unwrap().doc;
-        assert_eq!(doc.anchored_items().len(), 3);
-        assert_reopens(doc);
-    }
-
-    fn frame_with_inline_text_frame(s: &mut Session) -> (ItemId, ItemId, designcraft_doc::StoryId, designcraft_doc::StoryId) {
         s.execute("file.new", &json!({})).unwrap();
-        let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 400], "content": "text", "text": "Before after."})).unwrap();
-        let frame = ItemId(r["id"].as_u64().unwrap());
-        let host = designcraft_doc::StoryId(r["story"].as_u64().unwrap());
-        let r = s.execute("frame.create", &json!({"rect": [0, 0, 60, 40], "content": "text", "text": "Note"})).unwrap();
-        let inner = ItemId(r["id"].as_u64().unwrap());
-        let inner_story = designcraft_doc::StoryId(r["story"].as_u64().unwrap());
-        s.execute("anchored.insert", &json!({"ids": [inner.0], "story": host.0, "pos": 7})).unwrap();
-        (frame, inner, host, inner_story)
+        let first = s.execute("frame.create", &json!({"rect": [0, 0, 100, 100], "content": "text", "text": "One\nTwo\nThree\nFour"})).unwrap();
+        let first_id = ItemId(first["id"].as_u64().unwrap());
+        let second = s.execute("frame.create", &json!({"rect": [120, 0, 220, 100], "content": "unassigned"})).unwrap();
+        let second_id = ItemId(second["id"].as_u64().unwrap());
+        s.execute("text.thread", &json!({"from": first_id.0, "to": second_id.0})).unwrap();
+        let src = s.doc().unwrap().doc.clone();
+        let mut dst = (*src).clone();
+        let copy = duplicate_from(&mut dst, &src, &[second_id, first_id], SpreadRef::Doc(0), Vec2::new(10.0, 10.0)).unwrap();
+        assert_eq!(copy.len(), 2);
+        let story = dst.item(copy[1]).unwrap().text_frame().unwrap().story;
+        assert_eq!(dst.story(story).unwrap().frames, [copy[1], copy[0]], "the copy keeps first → second flow");
+        dst.check().unwrap();
     }
 
     #[test]
@@ -6177,138 +7085,48 @@ mod anchored_copy_tests {
         d.check().unwrap();
     }
 
-    #[test]
-    fn duplicating_reversed_threaded_frames_keeps_the_source_thread_order() {
-        let mut s = Session::new();
+    use super::*;
+    use designcraft_doc::AnchoredObject;
+
+    /// A text frame with an inline rectangle; returns the frame and the anchored item's id.
+    fn frame_with_inline_box(s: &mut Session) -> (ItemId, ItemId) {
         s.execute("file.new", &json!({})).unwrap();
-        let first = s.execute("frame.create", &json!({"rect": [0, 0, 100, 100], "content": "text", "text": "One\nTwo\nThree\nFour"})).unwrap();
-        let first_id = ItemId(first["id"].as_u64().unwrap());
-        let second = s.execute("frame.create", &json!({"rect": [120, 0, 220, 100], "content": "unassigned"})).unwrap();
-        let second_id = ItemId(second["id"].as_u64().unwrap());
-        s.execute("text.thread", &json!({"from": first_id.0, "to": second_id.0})).unwrap();
-        let src = s.doc().unwrap().doc.clone();
-        let mut dst = (*src).clone();
-        let copy = duplicate_from(&mut dst, &src, &[second_id, first_id], SpreadRef::Doc(0), Vec2::new(10.0, 10.0)).unwrap();
-        assert_eq!(copy.len(), 2);
-        let story = dst.item(copy[1]).unwrap().text_frame().unwrap().story;
-        assert_eq!(dst.story(story).unwrap().frames, [copy[1], copy[0]], "the copy keeps first → second flow");
-        dst.check().unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 400], "content": "text", "text": "Before after."})).unwrap();
+        let frame = ItemId(r["id"].as_u64().unwrap());
+        let sid = s.doc().unwrap().doc.item(frame).unwrap().text_frame().unwrap().story;
+        let b = s.execute("frame.create", &json!({"rect": [450, 450, 474, 490]})).unwrap();
+        s.execute("anchored.insert", &json!({"ids": [b["id"]], "story": sid.0, "pos": 7})).unwrap();
+        (frame, s.doc().unwrap().doc.story(sid).unwrap().objects[0].item.id)
+    }
+
+    fn assert_reopens(doc: &Document) {
+        doc.check().unwrap();
+        designcraft_format::load(&designcraft_format::save(doc).unwrap()).unwrap();
+    }
+
+    // #1522: the copy kept the anchored object's id, and the saved file no longer opened.
+    #[test]
+    fn duplicating_a_frame_with_an_anchored_object_saves_a_file_that_reopens() {
+        let mut s = Session::new();
+        let (frame, anchored) = frame_with_inline_box(&mut s);
+        s.execute("transform.move", &json!({"ids": [frame.0], "dx": 10, "dy": 10, "copy": true})).unwrap();
+        let doc = &s.doc().unwrap().doc;
+        assert_eq!(doc.anchored_items().iter().filter(|(_, i)| i.id == anchored).count(), 1);
+        assert_eq!(doc.anchored_items().len(), 2);
+        assert_reopens(doc);
     }
 
     #[test]
-    fn copying_a_host_frame_keeps_the_story_of_the_text_frame_anchored_in_its_text() {
+    fn pasting_a_frame_with_an_anchored_object_twice_keeps_ids_unique() {
         let mut s = Session::new();
-        let (frame, _inner, _host, _inner_story) = frame_with_inline_text_frame(&mut s);
+        let (frame, _) = frame_with_inline_box(&mut s);
         s.execute("selection.set", &json!({"ids": [frame.0]})).unwrap();
         s.execute("edit.copy", &json!({})).unwrap();
         s.execute("edit.paste", &json!({})).unwrap();
-        let d = &s.doc().unwrap().doc;
-        let items: Vec<_> = d.anchored_items().into_iter().filter(|(_, i)| i.text_frame().is_some()).map(|(_, i)| i).collect();
-        assert_eq!(items.len(), 2);
-        for item in items {
-            assert_eq!(d.story(item.text_frame().unwrap().story).unwrap().text, "Note");
-        }
-        assert_reopens(d);
-    }
-
-    #[test]
-    fn duplicating_a_frame_with_an_anchored_text_frame_keeps_ids_and_stories_unique() {
-        let mut s = Session::new();
-        let (frame, _inner, _host, _inner_story) = frame_with_inline_text_frame(&mut s);
-        s.execute("transform.move", &json!({"ids": [frame.0], "dx": 10, "dy": 10, "copy": true})).unwrap();
-        let d = &s.doc().unwrap().doc;
-        let items: Vec<_> = d.anchored_items().into_iter().filter(|(_, i)| i.text_frame().is_some()).map(|(_, i)| i).collect();
-        assert_eq!(items.len(), 2);
-        assert_eq!(items.iter().map(|i| i.id).collect::<std::collections::HashSet<_>>().len(), 2);
-        assert_eq!(items.iter().filter_map(|i| i.text_frame().map(|t| t.story)).collect::<std::collections::HashSet<_>>().len(), 2);
-        for item in items {
-            assert_eq!(d.story(item.text_frame().unwrap().story).unwrap().text, "Note");
-        }
-        assert_reopens(d);
-    }
-
-    // #2284: text pasted twice shared the anchored object's id and story.
-    #[test]
-    fn pasting_copied_text_with_an_anchored_text_frame_twice_keeps_ids_and_stories_unique() {
-        let mut s = Session::new();
-        let (_frame, inner, host, inner_story) = frame_with_inline_text_frame(&mut s);
-        let len = s.doc().unwrap().doc.story(host).unwrap().len();
-        s.execute("text.select", &json!({"story": host.0, "anchor": 0, "focus": len})).unwrap();
-        s.execute("edit.copy", &json!({})).unwrap();
-        s.execute("text.select", &json!({"story": host.0, "anchor": len, "focus": len})).unwrap();
-        assert_eq!(s.execute("edit.paste", &json!({})).unwrap()["formatted"], true);
         s.execute("edit.paste", &json!({})).unwrap();
-        let d = &s.doc().unwrap().doc;
-        let items: Vec<_> = d.anchored_items().into_iter().filter(|(_, i)| i.text_frame().is_some()).map(|(_, i)| i).collect();
-        assert_eq!(items.len(), 3);
-        assert_eq!(items.iter().map(|i| i.id).collect::<std::collections::HashSet<_>>().len(), 3);
-        assert_eq!(
-            items.iter().filter_map(|i| i.text_frame().map(|t| t.story)).collect::<std::collections::HashSet<_>>().len(),
-            3,
-            "each paste has a story of its own"
-        );
-        assert_eq!(d.story(inner_story).unwrap().frames, [inner], "the original stays threaded");
-        for item in items {
-            assert_eq!(d.story(item.text_frame().unwrap().story).unwrap().text, "Note");
-        }
-        assert_reopens(d);
-    }
-
-    #[test]
-    fn pasting_copied_text_with_an_anchored_text_frame_as_a_new_frame_keeps_ids_unique() {
-        let mut s = Session::new();
-        let (_frame, inner, host, inner_story) = frame_with_inline_text_frame(&mut s);
-        let len = s.doc().unwrap().doc.story(host).unwrap().len();
-        s.execute("text.select", &json!({"story": host.0, "anchor": 0, "focus": len})).unwrap();
-        let text = s.execute("edit.copy", &json!({})).unwrap()["text"].as_str().unwrap().to_string();
-        s.execute("edit.deselectAll", &json!({})).unwrap();
-        s.execute("edit.paste", &json!({"text": text})).unwrap();
-        let d = &s.doc().unwrap().doc;
-        let items: Vec<_> = d.anchored_items().into_iter().filter(|(_, i)| i.text_frame().is_some()).map(|(_, i)| i).collect();
-        assert_eq!(items.len(), 2);
-        assert_eq!(items.iter().map(|i| i.id).collect::<std::collections::HashSet<_>>().len(), 2);
-        assert_eq!(items.iter().filter_map(|i| i.text_frame().map(|t| t.story)).collect::<std::collections::HashSet<_>>().len(), 2);
-        assert_eq!(d.story(inner_story).unwrap().frames, [inner]);
-        assert_reopens(d);
-    }
-
-    #[test]
-    fn pasting_over_the_copied_range_keeps_the_anchored_text_frame_valid() {
-        let mut s = Session::new();
-        let (_frame, _inner, host, _inner_story) = frame_with_inline_text_frame(&mut s);
-        let len = s.doc().unwrap().doc.story(host).unwrap().len();
-        s.execute("text.select", &json!({"story": host.0, "anchor": 0, "focus": len})).unwrap();
-        s.execute("edit.copy", &json!({})).unwrap();
-        s.execute("edit.paste", &json!({})).unwrap();
-        let d = &s.doc().unwrap().doc;
-        let items: Vec<_> = d.anchored_items().into_iter().filter(|(_, i)| i.text_frame().is_some()).map(|(_, i)| i).collect();
-        assert_eq!(items.len(), 1);
-        let tf = items[0].text_frame().unwrap();
-        assert_eq!(d.story(tf.story).unwrap().text, "Note");
-        assert_eq!(d.story(tf.story).unwrap().frames, [items[0].id]);
-        assert_reopens(d);
-    }
-
-    #[test]
-    fn copied_text_pasted_into_another_document_keeps_its_anchored_text_frame_story() {
-        let mut s = Session::new();
-        let (_frame, inner, host, inner_story) = frame_with_inline_text_frame(&mut s);
-        let len = s.doc().unwrap().doc.story(host).unwrap().len();
-        s.execute("text.select", &json!({"story": host.0, "anchor": 0, "focus": len})).unwrap();
-        let text = s.execute("edit.copy", &json!({})).unwrap()["text"].as_str().unwrap().to_string();
-        s.execute("file.new", &json!({})).unwrap();
-        s.execute("edit.deselectAll", &json!({})).unwrap();
-        s.execute("edit.paste", &json!({"text": text})).unwrap();
-        let items: Vec<_> = s.doc().unwrap().doc.anchored_items().into_iter().filter(|(_, i)| i.text_frame().is_some()).map(|(_, i)| i).collect();
-        assert_eq!(items.len(), 1);
-        let tf = items[0].text_frame().unwrap();
-        assert_eq!(s.doc().unwrap().doc.story(tf.story).unwrap().text, "Note");
-        assert_eq!(s.doc().unwrap().doc.story(tf.story).unwrap().frames, [items[0].id]);
-        assert_reopens(&s.doc().unwrap().doc);
-        s.set_active(0);
-        let d = &s.doc().unwrap().doc;
-        assert_eq!(d.story(inner_story).unwrap().text, "Note");
-        assert_eq!(d.story(inner_story).unwrap().frames, [inner]);
+        let doc = &s.doc().unwrap().doc;
+        assert_eq!(doc.anchored_items().len(), 3);
+        assert_reopens(doc);
     }
 
     // IDML import can anchor a text frame; its story is copied too, with the copy in its thread.
@@ -6333,6 +7151,41 @@ mod anchored_copy_tests {
         assert_ne!(anchored_sid, inner_sid);
         assert_eq!(d.story(anchored_sid).unwrap().frames, [anchored.id]);
         assert_eq!(d.story(inner_sid).unwrap().frames, [inner]);
+        assert_reopens(&d);
+    }
+
+    // Each story refers to an anchor in the story anchored in it, which is copied after it.
+    #[test]
+    fn cross_references_into_anchored_stories_follow_their_copies() {
+        let mut d = Document::new(&designcraft_doc::build::NewDocument::default());
+        let layer = d.default_layer();
+        let mut frame =
+            |text: &str| d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 50.0, 50.0), layer, text, ParaFormat::default()).unwrap();
+        let (host, host_sid) = frame("Host ");
+        let (inner, inner_sid) = frame("Inner ");
+        let (deep, deep_sid) = frame("Deep");
+        for (into, (id, sid)) in [(inner_sid, (deep, deep_sid)), (host_sid, (inner, inner_sid))] {
+            let target = d.story_mut(sid).unwrap().insert_anchor(0, "Here");
+            let st = d.story_mut(into).unwrap();
+            st.insert_xref(st.len(), designcraft_doc::CrossRef { target, ..Default::default() });
+            let item = d.item(id).unwrap().clone();
+            let story = d.stories.get(&sid).unwrap().clone();
+            d.remove_item(id).unwrap();
+            d.stories.insert(sid, story);
+            d.story_mut(into).unwrap().insert_object(0, AnchoredObject { item, position: Default::default() });
+        }
+        d.check().unwrap();
+        let src = d.clone();
+        let copy = duplicate_from(&mut d, &src, &[host], SpreadRef::Doc(0), Vec2::new(10.0, 10.0)).unwrap();
+        let anchored = |sid: StoryId| d.story(sid).unwrap().objects[0].item.text_frame().unwrap().story;
+        let host_copy = d.item(copy[0]).unwrap().text_frame().unwrap().story;
+        let inner_copy = anchored(host_copy);
+        let deep_copy = anchored(inner_copy);
+        for (refers, dest) in [(host_copy, inner_copy), (inner_copy, deep_copy)] {
+            let target = d.story(refers).unwrap().xrefs[0].target;
+            assert_eq!(target, d.story(dest).unwrap().anchors[0].id, "the copied cross-reference points at the copied anchor");
+            assert_eq!(d.find_anchor(target).map(|(at, _)| at), Some(dest));
+        }
         assert_reopens(&d);
     }
 }

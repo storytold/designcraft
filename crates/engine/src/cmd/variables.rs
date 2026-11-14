@@ -52,7 +52,11 @@ pub fn specs() -> Vec<CommandSpec> {
                             continue;
                         }
                         let st = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
-                        unvar(st, i, n, &value, 0);
+                        let mut replacements = Vec::new();
+                        unvar(st, i, n, &value, 0, &mut |pos, len, ins| replacements.push((pos, len, ins)));
+                        for (pos, tlen, ins) in replacements {
+                            d.adjust_text_ranges(sid, pos..pos + tlen, ins);
+                        }
                     }
                     d.text_variables.remove(i);
                     Ok(Value::Null)
@@ -352,18 +356,30 @@ fn needs_unvar(st: &designcraft_doc::Story, i: usize, depth: usize) -> bool {
 /// `i + 1..n` down by one, including table cells and foot/endnotes nested in the story. Only
 /// touches (and unshares) the parts that hold such instances; a story whose nested text changed
 /// gets a new revision.
-fn unvar(st: &mut designcraft_doc::Story, i: usize, n: usize, value: &str, depth: usize) {
+fn unvar(st: &mut designcraft_doc::Story, i: usize, n: usize, value: &str, depth: usize, on_replace: &mut dyn FnMut(usize, usize, usize)) {
     if depth > MAX_DEPTH {
         return;
     }
     if st.text.chars().any(|c| designcraft_doc::vars::var_index(c).is_some_and(|k| k >= i)) {
+        // The instances as they are now, replaced last first so earlier positions stay valid:
+        // text put in isn't searched again (a value holding the marker would never end).
+        let instances = |text: &str, target: &str| {
+            let mut at: Vec<usize> = text.match_indices(target).map(|(pos, _)| pos).collect();
+            at.reverse();
+            at
+        };
         let target = var_char(i).unwrap_or(' ').to_string();
-        while let Some(pos) = st.text.find(&target) {
-            st.replace(pos..pos + target.len(), value);
+        let at = instances(&st.text, &target);
+        if !at.is_empty() {
+            let value = var_char(i).map_or_else(|| value.to_string(), |c| value.replace(c, ""));
+            for pos in at {
+                st.replace(pos..pos + target.len(), &value);
+                on_replace(pos, target.len(), value.len());
+            }
         }
         for k in i + 1..n {
             let (from, to) = (var_char(k).unwrap_or(' ').to_string(), var_char(k - 1).unwrap_or(' ').to_string());
-            while let Some(pos) = st.text.find(&from) {
+            for pos in instances(&st.text, &from) {
                 st.replace(pos..pos + from.len(), &to);
             }
         }
@@ -375,14 +391,14 @@ fn unvar(st: &mut designcraft_doc::Story, i: usize, n: usize, value: &str, depth
         }
         for c in &mut std::sync::Arc::make_mut(t).cells {
             if needs_unvar(&c.text, i, depth + 1) {
-                unvar(&mut c.text, i, n, value, depth + 1);
+                unvar(&mut c.text, i, n, value, depth + 1, &mut |_, _, _| {});
             }
         }
         nested = true;
     }
     for note in st.notes.iter_mut().chain(st.endnotes.iter_mut()) {
         if needs_unvar(&note.text, i, depth + 1) {
-            unvar(&mut std::sync::Arc::make_mut(note).text, i, n, value, depth + 1);
+            unvar(&mut std::sync::Arc::make_mut(note).text, i, n, value, depth + 1, &mut |_, _, _| {});
             nested = true;
         }
     }
