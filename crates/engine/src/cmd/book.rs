@@ -46,6 +46,83 @@ fn chapter(b: &Book, path: &str) -> Result<String> {
         .map_err(|why| EngineError::Other(format!("{path}: {why}")))
 }
 
+/// Chapters whose file is not under the book's own folder, by the path the book names.
+///
+/// A book names its chapters by path, and `book.paginate` and `book.syncStyles` write numbering
+/// and styles into each of them. A book that arrived from somewhere else can therefore name
+/// `~/Documents/x.designcraft` and have the user's own file rewritten by opening it and running
+/// an update. Which files those are is reported, so the UI can ask before writing (#1597);
+/// refusing them outright would break books whose chapters legitimately live in sibling folders,
+/// which is how InDesign books are usually arranged.
+#[cfg(not(target_arch = "wasm32"))]
+fn outside_book_folder(b: &Book) -> Vec<String> {
+    // The folder comes from the chapters' own resolution, so the two cannot disagree about what
+    // a path means. `book.new` stores the path it was given, so a relative book path left the
+    // folder relative while every chapter resolves absolute: `dir/Guide.dcbook` reported the
+    // chapters beside the book as outside it, and a bare `Guide.dcbook` gave an empty folder that
+    // every absolute path starts with, so nothing was reported at all. `std::path::absolute`
+    // fixed those but keeps `..` where `craft_docpath` folds it, so a book opened as
+    // `sub/../Guide.dcbook` had a folder no chapter beside it could start with (both noted in
+    // review). Resolving a name inside the folder and taking its parent uses one rule for both.
+    let Some(folder) = chapter(b, "-").ok().and_then(|p| std::path::Path::new(&p).parent().map(std::path::Path::to_path_buf)) else {
+        return b.documents.clone();
+    };
+    let folder = real_location(&folder);
+    b.documents
+        .iter()
+        .filter(|named| chapter(b, named).map(|resolved| !real_location(std::path::Path::new(&resolved)).starts_with(&folder)).unwrap_or(true))
+        .cloned()
+        .collect()
+}
+
+/// Where a write to `path` lands, with links resolved: the file's own if it exists, else its
+/// folder's with the name joined, else `path` as written.
+///
+/// Names alone are not where an update writes. A chapter named `chapters/x.designcraft` inside the
+/// book's folder, where `chapters` is a link to `~/Documents`, is the user's own file, and so is
+/// a chapter file that is itself a link out; both read as inside by name (noted in review). The
+/// book's folder is resolved the same way, since it can sit behind a link too (`/tmp` is one on
+/// macOS).
+#[cfg(not(target_arch = "wasm32"))]
+fn real_location(path: &std::path::Path) -> std::path::PathBuf {
+    crate::io::canonicalize(path)
+        .or_else(|_| match (path.parent(), path.file_name()) {
+            (Some(dir), Some(name)) => crate::io::canonicalize(dir).map(|d| d.join(name)),
+            _ => Err(std::io::Error::other("no folder to resolve")),
+        })
+        .unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// The chapters outside the book's folder that `command` writes: every one for Update Numbering,
+/// all but the style source for Synchronize, which only reads that one.
+#[cfg(not(target_arch = "wasm32"))]
+fn written_outside(b: &Book, command: &str) -> Vec<String> {
+    let source = (command == "book.syncStyles").then(|| b.documents.get(b.style_source)).flatten();
+    outside_book_folder(b).into_iter().filter(|named| Some(named) != source).collect()
+}
+
+/// Refuse an update that would rewrite chapters outside the book's folder unless the caller said
+/// it may (`allowOutside`), before anything is written (#1597).
+///
+/// Reporting them afterwards, which is what an update did first, told the caller what had already
+/// been rewritten and left nothing to ask. Refusing by default protects a script or an MCP client
+/// as well as the UI, which asks with `book.outsideFolder` and passes the answer here.
+#[cfg(not(target_arch = "wasm32"))]
+fn allowed_outside(command: &str, outside: &[String], p: &Value) -> Result<()> {
+    if outside.is_empty() || p.get("allowOutside").and_then(Value::as_bool) == Some(true) {
+        return Ok(());
+    }
+    Err(bad(
+        command,
+        format!(
+            "{} outside the book's folder would be rewritten: {}; pass {{\"allowOutside\": true}} to update {}",
+            if outside.len() == 1 { "a chapter" } else { "chapters" },
+            outside.join(", "),
+            if outside.len() == 1 { "it" } else { "them" }
+        ),
+    ))
+}
+
 /// Every chapter's file ([`chapter`]), in order.
 fn chapters(b: &Book) -> Result<Vec<String>> {
     b.documents.iter().map(|path| chapter(b, path)).collect()
@@ -68,6 +145,40 @@ fn load(path: &str) -> Result<designcraft_doc::Document> {
 
 #[cfg(not(target_arch = "wasm32"))]
 const MAX_BATCH_CHAPTERS: usize = 4096;
+
+/// The figure [`MAX_BOOK_CHAPTER_BYTES`] is derived from, not a limit the export is held to.
+///
+/// Nothing enforces this number. What is enforced is the retained-chapter budget below; this is
+/// only the peak that budget is a third of. A chapter is also generated in full before it is
+/// weighed, so a single chapter larger than this is built and only then refused -- the peak is
+/// not bounded before generation (noted in review).
+const MAX_BOOK_PDF_BYTES: usize = 512 << 20;
+
+/// What the retained chapters may add up to: a third of [`MAX_BOOK_PDF_BYTES`], because three
+/// things are live at the end of the export -- the chapters held to be merged, the merged output,
+/// and the copy `merge_pdfs` makes of the chapter it is reading. The first check counted only the
+/// chapters, so the export could reach three times the figure the refusal named (noted in
+/// review).
+///
+/// A third assumes the merged output is no larger than its input. That holds where chapters share
+/// fonts and images, and one measurement put it at 0.97 of the input -- but that was one document,
+/// and chapters that share nothing have no reason to dedupe at all, so the assumption is not
+/// established in general. This is a retained-chapter byte limit, not a guaranteed peak (noted in
+/// review).
+const MAX_BOOK_CHAPTER_BYTES: usize = MAX_BOOK_PDF_BYTES / 3;
+
+/// The two figures have to move together: if the chapters' budget is ever raised without the peak
+/// it is a third of, the export silently goes back to reaching three times what it allows, and
+/// the refusal names a number the check no longer enforces.
+///
+/// Checked here rather than in a test: `assertions_on_constants` refuses these in a test body
+/// (the gate runs clippy with `-D warnings`), and a `const` block evaluates them in every build
+/// instead of only under `cargo test` (noted in review).
+const _: () = {
+    assert!(MAX_BOOK_CHAPTER_BYTES * 3 <= MAX_BOOK_PDF_BYTES, "three times the chapter budget is within the peak");
+    assert!((MAX_BOOK_CHAPTER_BYTES + 1) * 3 > MAX_BOOK_PDF_BYTES, "and it is as much as a third allows, not less");
+    assert!(MAX_BOOK_CHAPTER_BYTES / (1 << 20) == 170, "and the refusal names 170 MB");
+};
 
 /// A batch keeps only bounded path records in memory. Chapter snapshots live in a private
 /// temporary directory; only one document and serialized blob are live while staging.
@@ -155,10 +266,14 @@ fn writable_chapter(s: &Session, path: &str, command: &'static str) -> Result<()
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn paginate(s: &Session) -> Result<Value> {
+fn paginate(s: &Session, p: &Value) -> Result<Value> {
     let b = s.book.as_ref().ok_or_else(no_book)?;
+    let outside = written_outside(b, "book.paginate");
+    allowed_outside("book.paginate", &outside, p)?;
     if b.documents.is_empty() {
-        return Ok(json!({"pages": 0, "chapters": []}));
+        // The same shape as a book with chapters, so a caller reads one field either way
+        // (noted in review).
+        return Ok(json!({"pages": 0, "chapters": [], "outsideFolder": []}));
     }
     let mut batch = ChapterBatch::new(b.documents.len(), "book.paginate")?;
     let mut next = 1u32;
@@ -180,7 +295,7 @@ fn paginate(s: &Session) -> Result<Value> {
         batch.stage(path, &d)?;
     }
     batch.commit()?;
-    Ok(json!({"pages": next - 1, "chapters": chapters}))
+    Ok(json!({"pages": next - 1, "chapters": chapters, "outsideFolder": outside}))
 }
 
 /// `list` with only the last entry of each name, in the order of those last entries.
@@ -193,8 +308,10 @@ fn keep_last<T>(list: &[T], name: impl Fn(&T) -> &str) -> Vec<&T> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn sync_styles(s: &Session) -> Result<Value> {
+fn sync_styles(s: &Session, p: &Value) -> Result<Value> {
     let b = s.book.as_ref().ok_or_else(no_book)?;
+    let outside = written_outside(b, "book.syncStyles");
+    allowed_outside("book.syncStyles", &outside, p)?;
     let mut batch = ChapterBatch::new(b.documents.len(), "book.syncStyles")?;
     let paths = chapters(b)?;
     let src_path = paths.get(b.style_source).ok_or_else(|| bad("book.syncStyles", "the book is empty"))?;
@@ -242,16 +359,16 @@ fn sync_styles(s: &Session) -> Result<Value> {
         n += 1;
     }
     batch.commit()?;
-    Ok(json!({"synced": n}))
+    Ok(json!({"synced": n, "outsideFolder": outside}))
 }
 
 #[cfg(target_arch = "wasm32")]
-fn paginate(_: &Session) -> Result<Value> {
+fn paginate(_: &Session, _: &Value) -> Result<Value> {
     Err(EngineError::Other("books need a file system".into()))
 }
 
 #[cfg(target_arch = "wasm32")]
-fn sync_styles(_: &Session) -> Result<Value> {
+fn sync_styles(_: &Session, _: &Value) -> Result<Value> {
     Err(EngineError::Other("books need a file system".into()))
 }
 
@@ -352,14 +469,34 @@ pub fn specs() -> Vec<CommandSpec> {
             }
             Ok(json!({"path": b.path, "styleSource": b.style_source, "documents": docs}))
         }),
-        cmd!(noundo "book.paginate", "Update Numbering", [], None, "{} — each document starts numbering where the previous one ended, and takes its chapter number (automatic: one more than the previous document's; same as previous; or its own start) (files are saved) → {pages, chapters}", has_book, |s, _| {
-            paginate(s)
+        cmd!(noundo "book.paginate", "Update Numbering", [], None, "{allowOutside?: bool} — each document starts numbering where the previous one ended, and takes its chapter number (automatic: one more than the previous document's; same as previous; or its own start) (files are saved; chapters outside the book's folder only with allowOutside, see book.outsideFolder) → {pages, chapters, outsideFolder}", has_book, |s, p| {
+            paginate(s, p)
         }),
-        cmd!(noundo "book.syncStyles", "Synchronize Book", [], None, "{} — paragraph and character styles and swatches of the style source go into every document (by name)", has_book, |s, _| {
-            sync_styles(s)
+        cmd!(noundo "book.syncStyles", "Synchronize Book", [], None, "{allowOutside?: bool} — paragraph and character styles and swatches of the style source go into every document (by name) (chapters outside the book's folder only with allowOutside, see book.outsideFolder) → {synced, outsideFolder}", has_book, |s, p| {
+            sync_styles(s, p)
+        }),
+        cmd!(noundo "book.outsideFolder", "Chapters Outside the Book's Folder", [], None, "{command?: \"book.paginate\"|\"book.syncStyles\"} — the chapters that update would rewrite outside the book's own folder, links resolved, to ask about first (default book.paginate, which writes them all) → {chapters}", has_book, |s, p| {
+            let b = s.book.as_ref().ok_or_else(no_book)?;
+            let command = p.get("command").and_then(Value::as_str).unwrap_or("book.paginate");
+            if !matches!(command, "book.paginate" | "book.syncStyles") {
+                return Err(bad("book.outsideFolder", format!("`command` is book.paginate or book.syncStyles, not {command}")));
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            let chapters = written_outside(b, command);
+            #[cfg(target_arch = "wasm32")]
+            let chapters: Vec<String> = { let _ = b; Vec::new() };
+            Ok(json!({"chapters": chapters}))
         }),
         cmd!(noundo "book.exportPdf", "Export Book to PDF…", [], None, "{path?} — every document in order as one PDF → {path, bytes, pages} (no path: {base64, …})", has_book, |s, p| {
             let b = s.book.clone().ok_or_else(no_book)?;
+            // The same cap the staged updates use, which this path never applied, plus a budget
+            // for what it holds: every chapter's whole PDF is kept in memory to be merged, so a
+            // long book of heavy chapters was unbounded (#1597).
+            #[cfg(not(target_arch = "wasm32"))]
+            if b.documents.len() > MAX_BATCH_CHAPTERS {
+                return Err(bad("book.exportPdf", format!("a book export supports at most {MAX_BATCH_CHAPTERS} chapters")));
+            }
+            let mut held = 0usize;
             let mut parts = Vec::new();
             for path in &chapters(&b)? {
                 let mut d = load(path)?;
@@ -370,6 +507,16 @@ pub fn specs() -> Vec<CommandSpec> {
                 // Every page's size from one opening of the chapter's PDF (not one per page).
                 let sizes: Vec<(f32, f32)> =
                     designcraft_render::pdf_page_sizes(&r.bytes).unwrap_or_default().into_iter().map(|(w, h)| (w as f32, h as f32)).collect();
+                held = held.saturating_add(r.bytes.len());
+                // Checked as soon as the chapter is exported. A chapter over the budget on its
+                // own is still generated once before it is refused: the exporter answers with one
+                // buffer, so there is no point before this one at which its size is known.
+                if held > MAX_BOOK_CHAPTER_BYTES {
+                    return Err(bad(
+                        "book.exportPdf",
+                        format!("the book's chapters are more than {} MB of PDF: export them in parts", MAX_BOOK_CHAPTER_BYTES / (1 << 20)),
+                    ));
+                }
                 parts.push((r.bytes, sizes));
             }
             let pages: usize = parts.iter().map(|p| p.1.len()).sum();
@@ -391,6 +538,71 @@ mod tests {
     use serde_json::json;
 
     use crate::Session;
+
+    /// A book names its chapters by path, and an update writes numbering and styles into each
+    /// one, so a book from elsewhere can name a file of the user's own. An update now refuses,
+    /// before writing anything, while a chapter lies outside the book's folder, unless the caller
+    /// says it may; `book.outsideFolder` names them so the UI can ask first (#1597). Reporting
+    /// them after the write, which is what this did first, left nothing to ask (noted in review).
+    #[test]
+    fn an_update_asks_before_it_rewrites_a_chapter_outside_the_books_folder() {
+        let root = std::env::temp_dir().join(format!("dc-book-outside-{}", std::process::id()));
+        let (inside, elsewhere) = (root.join("book"), root.join("elsewhere"));
+        std::fs::create_dir_all(&inside).unwrap();
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let mut s = Session::new();
+        s.execute("book.new", &json!({"path": inside.join("Guide.dcbook").to_string_lossy()})).unwrap();
+        for path in [inside.join("ch1.designcraft"), elsewhere.join("mine.designcraft")] {
+            s.execute("file.new", &json!({})).unwrap();
+            s.execute("file.saveAs", &json!({"path": path.to_string_lossy()})).unwrap();
+            s.execute("book.add", &json!({"path": path.to_string_lossy()})).unwrap();
+            s.execute("file.close", &json!({})).unwrap();
+        }
+
+        // What the UI asks about: the one chapter elsewhere.
+        let asked = s.execute("book.outsideFolder", &json!({})).unwrap();
+        let outside = asked["chapters"].as_array().expect("the chapters are listed").clone();
+        assert_eq!(outside.len(), 1, "one chapter is outside the book's folder: {outside:?}");
+        assert!(outside[0].as_str().unwrap_or_default().contains("mine.designcraft"), "{outside:?}");
+
+        // Without consent neither update writes anything, the chapter beside the book included,
+        // and the refusal names the chapter it is about.
+        let mine = elsewhere.join("mine.designcraft");
+        let before = (std::fs::read(inside.join("ch1.designcraft")).unwrap(), std::fs::read(&mine).unwrap());
+        for command in ["book.paginate", "book.syncStyles"] {
+            let e = s.execute(command, &json!({})).unwrap_err().to_string();
+            assert!(e.contains("mine.designcraft") && e.contains("allowOutside"), "{command}: {e}");
+            for no in [json!({"allowOutside": false}), json!({"allowOutside": "yes"})] {
+                assert!(s.execute(command, &no).is_err(), "{command} with {no}: only `true` is consent");
+            }
+        }
+        let after = (std::fs::read(inside.join("ch1.designcraft")).unwrap(), std::fs::read(&mine).unwrap());
+        assert!(before == after, "a refused update rewrote a chapter");
+
+        // With consent both run, and say which chapters elsewhere they wrote.
+        let r = s.execute("book.paginate", &json!({"allowOutside": true})).unwrap();
+        assert_eq!(r["outsideFolder"], json!(outside));
+        assert_ne!(std::fs::read(&mine).unwrap(), before.1, "the consented update wrote the chapter");
+        let r = s.execute("book.syncStyles", &json!({"allowOutside": true})).unwrap();
+        assert_eq!(r["outsideFolder"].as_array().map(Vec::len), Some(1));
+
+        // A book whose chapters are all beside it reports nothing.
+        let mut s = Session::new();
+        s.execute("book.new", &json!({"path": inside.join("Tidy.dcbook").to_string_lossy()})).unwrap();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("file.saveAs", &json!({"path": inside.join("only.designcraft").to_string_lossy()})).unwrap();
+        s.execute("book.add", &json!({"path": inside.join("only.designcraft").to_string_lossy()})).unwrap();
+        s.execute("file.close", &json!({})).unwrap();
+        let r = s.execute("book.paginate", &json!({})).unwrap();
+        assert_eq!(r["outsideFolder"], json!([]), "nothing to ask about");
+
+        // An empty book answers in the same shape, rather than leaving the field out.
+        let mut s = Session::new();
+        s.execute("book.new", &json!({"path": inside.join("Empty.dcbook").to_string_lossy()})).unwrap();
+        let r = s.execute("book.paginate", &json!({})).unwrap();
+        assert_eq!(r["outsideFolder"], json!([]), "an empty book answers in the same shape");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn book_numbering_resolves_chapter_numbers_in_order() {
