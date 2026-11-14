@@ -254,6 +254,32 @@ fn styles_load_from_an_idml_file() {
     assert_eq!(r["paragraph"]["added"], json!(["Body", "Head"]));
 }
 
+/// A bullet glyph of a font this machine lacks comes in as `•`; the result says so.
+#[test]
+fn loading_from_idml_reports_what_the_import_warned_about() {
+    use std::io::{Read, Write};
+    let idml = designcraft_idml::export_idml(&new_doc().doc().unwrap().doc);
+    let style = r#"<ParagraphStyle Self="ParagraphStyle/Arrow" Name="Arrow" BulletsAndNumberingListType="BulletList"><Properties><BulletChar BulletCharacterType="GlyphWithFont" BulletCharacterValue="23"/><BulletsFont type="string">No Such Symbol Font</BulletsFont><BulletsFontStyle type="string">Regular</BulletsFontStyle></Properties></ParagraphStyle></RootParagraphStyleGroup>"#;
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(idml)).unwrap();
+    let mut out = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    for i in 0..zip.len() {
+        let mut f = zip.by_index(i).unwrap();
+        let mut part = String::new();
+        f.read_to_string(&mut part).unwrap();
+        if f.name() == "Resources/Styles.xml" {
+            part = part.replace("</RootParagraphStyleGroup>", style);
+        }
+        out.start_file(f.name(), zip::write::SimpleFileOptions::default()).unwrap();
+        out.write_all(part.as_bytes()).unwrap();
+    }
+    let b64 = super::super::file::base64_encode(&out.finish().unwrap().into_inner());
+    let mut s = new_doc();
+    let r = s.execute("style.load", &json!({"base64": b64, "name": "a.idml", "paragraph": ["Arrow"], "character": []})).unwrap();
+    let warnings = r["warnings"].as_array().unwrap();
+    assert!(warnings.iter().any(|w| w.as_str().is_some_and(|w| w.contains("bullet glyph 23 of No Such Symbol Font Regular"))), "{warnings:?}");
+    assert_eq!(s.doc().unwrap().doc.styles.para("Arrow").unwrap().para.bullet_char.as_deref(), Some("\u{2022}"));
+}
+
 #[test]
 fn styles_load_from_a_path() {
     let path = std::env::temp_dir().join(format!("dc-load-styles-{}.designcraft", std::process::id()));

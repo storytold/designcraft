@@ -281,15 +281,13 @@ impl<'r> Importer<'r> {
         a.number_style = list.numbering_format.as_deref().and_then(names::numbering_format_in);
         a.number_expression = list.expression;
         a.list_separator = list.separator;
-        // A glyph of a named font (`GlyphWithFont`) has no character to map to.
-        let unicode = matches!(list.bullet_type.as_deref(), Some("UnicodeOnly" | "UnicodeWithFont"));
-        if unicode {
-            a.bullet_char = list
-                .bullet_value
-                .as_deref()
-                .and_then(|value| value.trim().parse::<u32>().ok())
-                .and_then(char::from_u32)
-                .map(|value| value.to_string());
+        // A glyph of a named font (`GlyphWithFont`) is mapped once the bullet font is read.
+        let value = list.bullet_value.as_deref().and_then(|value| value.trim().parse::<u32>().ok());
+        let mut bullet_glyph = None;
+        match list.bullet_type.as_deref() {
+            Some("UnicodeOnly" | "UnicodeWithFont") => a.bullet_char = value.and_then(char::from_u32).map(|value| value.to_string()),
+            Some("GlyphWithFont") => bullet_glyph = value,
+            _ => {}
         }
         a.balance_ragged = list.balance_ragged.map(|value| value.trim() != "NoBalancing" && value.trim() != "false");
         let boxes = craft_idml::model::ParagraphBoxValues::from_el(&crate::xml::to_craft(e));
@@ -350,7 +348,71 @@ impl<'r> Importer<'r> {
             a.bullet_font_style =
                 Some(if style == "Nothing" || style == "$ID/" { String::new() } else { style.trim_start_matches("$ID/").to_string() });
         }
+        if let Some(gid) = bullet_glyph {
+            self.glyph_bullet(e, gid, &mut a);
+        }
         a
+    }
+
+    /// A bullet stored as glyph `gid` of the bullet font this element names becomes the character
+    /// that draws it (#2620). When the font can't be read, the default `•` in the text font
+    /// stands in: `•` in a symbol font such as Webdings is an empty box. Without a font named
+    /// here the font is that of the style this one is based on, and the glyph is still this
+    /// element's own; a glyph found in it keeps that font here.
+    fn glyph_bullet(&mut self, e: &El, gid: u32, a: &mut ParaAttrs) {
+        let family = match a.bullet_font.clone() {
+            Some(f) => f,
+            None => self
+                .para_setting(e, "BulletsFont")
+                .map(|f| {
+                    let f = f.trim();
+                    if f == "$ID/" { String::new() } else { f.split('\t').next().unwrap_or(f).to_string() }
+                })
+                .unwrap_or_default(),
+        };
+        if family.is_empty() {
+            return;
+        }
+        let style = match a.bullet_font_style.clone() {
+            Some(s) => s,
+            None => self
+                .para_setting(e, "BulletsFontStyle")
+                .map(|f| {
+                    let f = f.trim();
+                    if f == "Nothing" || f == "$ID/" { String::new() } else { f.trim_start_matches("$ID/").to_string() }
+                })
+                .unwrap_or_default(),
+        };
+        let key = (family, style, gid);
+        let c = match self.glyph_chars.get(&key) {
+            Some(c) => *c,
+            None => {
+                let c = (self.glyph_char)(&key.0, &key.1, gid);
+                if c.is_none() {
+                    let (family, style, _) = &key;
+                    let font = if style.is_empty() { family.clone() } else { format!("{family} {style}") };
+                    self.warnings
+                        .push(format!("bullet glyph {gid} of {font}: the font is not available, so the bullet is drawn as • in the text font"));
+                }
+                self.glyph_chars.insert(key.clone(), c);
+                c
+            }
+        };
+        match c {
+            Some(c) => {
+                a.bullet_char = Some(c.to_string());
+                // The glyph was found in this font, so it is drawn in it even when the style this
+                // one is based on fell back to the text font. `get_or_insert_with` only fills a
+                // value this element does not set; one it does set is already `key`'s.
+                a.bullet_font.get_or_insert_with(|| key.0.clone());
+                a.bullet_font_style.get_or_insert_with(|| key.1.clone());
+            }
+            None => {
+                a.bullet_char = Some("\u{2022}".into());
+                a.bullet_font = Some(String::new());
+                a.bullet_font_style = Some(String::new());
+            }
+        }
     }
 
     fn read_nested_styles(&self, e: &El, attrs: &mut ParaAttrs) {

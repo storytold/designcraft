@@ -279,6 +279,18 @@ impl FontFace {
             .as_deref()
     }
 
+    /// A character that draws glyph `gid` (the lowest the `cmap` maps to it), or None. A symbol
+    /// font maps U+F020–U+F0FF; the byte that also reaches the glyph is returned instead, as
+    /// typed in that font (Webdings `4` rather than U+F034).
+    pub fn char_for_glyph(&self, gid: u32) -> Option<char> {
+        if gid == 0 || self.is_placeholder() {
+            return None;
+        }
+        let c = self.chars().into_iter().find(|&(_, g)| g == gid)?.0;
+        let byte = (c as u32).checked_sub(0xF000).filter(|b| (0x20..=0xFF).contains(b)).and_then(char::from_u32);
+        Some(byte.filter(|b| self.glyph_for(*b) == gid).unwrap_or(c))
+    }
+
     /// Glyph id for `c` (0 = .notdef).
     pub fn glyph_for(&self, c: char) -> u32 {
         self.skrifa().and_then(|f| f.charmap().map(c)).map(|g| g.to_u32()).unwrap_or(0)

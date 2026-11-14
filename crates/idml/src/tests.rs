@@ -3335,6 +3335,80 @@ fn list_numbering_format_expression_and_bullet_import_and_round_trip() {
     check(&import_idml(&export_idml(&d)).unwrap());
 }
 
+/// A bullet InDesign stores as a glyph of a symbol font (`GlyphWithFont`, a Webdings arrow) is
+/// the character that draws that glyph; without the font it is not left as `•` in a font that
+/// has no `•`, an empty box (#2620).
+#[test]
+fn glyph_with_font_bullet_maps_to_its_character_or_falls_back_to_the_text_font() {
+    let styles = STYLES.replace(
+        "    </ParagraphStyleGroup>",
+        r#"      <ParagraphStyle Self="ParagraphStyle/Arrow" Name="Arrow" BulletsAndNumberingListType="BulletList">
+        <Properties>
+          <BulletChar BulletCharacterType="GlyphWithFont" BulletCharacterValue="23"/>
+          <BulletsFont type="string">Webdings</BulletsFont>
+          <BulletsFontStyle type="string">Regular</BulletsFontStyle>
+        </Properties>
+      </ParagraphStyle>
+      <ParagraphStyle Self="ParagraphStyle/Arrow2" Name="Arrow2">
+        <Properties>
+          <BasedOn type="object">ParagraphStyle/Arrow</BasedOn>
+          <BulletChar BulletCharacterType="GlyphWithFont" BulletCharacterValue="24"/>
+        </Properties>
+      </ParagraphStyle>
+    </ParagraphStyleGroup>"#,
+    );
+    let bytes = zip_files(&[
+        ("designmap.xml", DESIGNMAP),
+        ("Resources/Graphic.xml", GRAPHIC),
+        ("Resources/Styles.xml", &styles),
+        ("Resources/Preferences.xml", PREFS),
+        ("MasterSpreads/MasterSpread_m1.xml", MASTER),
+        ("Spreads/Spread_sp1.xml", SPREAD),
+        ("Stories/Story_s1.xml", STORY),
+    ]);
+    let bullet = |d: &Document, name: &str| {
+        let (p, _) = d.styles.resolve_para_style(name);
+        (p.bullet_char, p.bullet_font, p.bullet_font_style)
+    };
+    let webdings = |c: &str| (c.to_string(), "Webdings".to_string(), "Regular".to_string());
+
+    // Webdings available: glyph 23 is drawn by `4`.
+    let asked = std::cell::RefCell::new(Vec::new());
+    let fonts = |family: &str, style: &str, gid: u32| {
+        asked.borrow_mut().push((family.to_string(), style.to_string(), gid));
+        match (family, gid) {
+            ("Webdings", 23) => Some('4'),
+            ("Webdings", 24) => Some('5'),
+            _ => None,
+        }
+    };
+    let r = crate::import_idml_report_with_fonts(&bytes, &|_| None, &std::collections::HashMap::new(), &fonts).unwrap();
+    assert_eq!(bullet(&r.document, "Arrow"), webdings("4"));
+    // A style that names no bullet font inherits the font; its own glyph is drawn in it.
+    assert_eq!(bullet(&r.document, "Arrow2"), webdings("5"));
+    assert_eq!(
+        asked.borrow().as_slice(),
+        [("Webdings".to_string(), "Regular".to_string(), 23), ("Webdings".to_string(), "Regular".to_string(), 24)],
+        "each glyph is asked once"
+    );
+    assert!(!r.warnings.iter().any(|w| w.contains("bullet")), "{:?}", r.warnings);
+
+    // Webdings not available: `•` in the text font, and the report says so once.
+    let r = import_idml_report(&bytes, &|_| None).unwrap();
+    let text_font = ("\u{2022}".to_string(), String::new(), String::new());
+    assert_eq!(bullet(&r.document, "Arrow"), text_font);
+    assert_eq!(bullet(&r.document, "Arrow2"), text_font);
+    let warned: Vec<&String> = r.warnings.iter().filter(|w| w.contains("bullet glyph 23 of Webdings Regular")).collect();
+    assert_eq!(warned.len(), 1, "{:?}", r.warnings);
+
+    // Only the derived style's glyph is found: the base style falls back to the text font, but
+    // the derived one is drawn in the font its glyph was found in.
+    let only_second = |_: &str, _: &str, gid: u32| (gid == 24).then_some('5');
+    let r = crate::import_idml_report_with_fonts(&bytes, &|_| None, &std::collections::HashMap::new(), &only_second).unwrap();
+    assert_eq!(bullet(&r.document, "Arrow"), text_font);
+    assert_eq!(bullet(&r.document, "Arrow2"), webdings("5"));
+}
+
 /// InDesign can write `AppliedFont` with its `$ID/` prefix (`$ID/Source Serif 4`). The text is
 /// set in that family instead of counting as a missing font drawn in the fallback.
 #[test]

@@ -152,9 +152,19 @@ pub(crate) fn import_idml_confined(bytes: &[u8], package: Option<&std::path::Pat
             None
         }
     };
-    let mut d = designcraft_idml::import_idml_with(bytes, &read)?;
+    let mut d = designcraft_idml::import_idml_report_with_fonts(bytes, &read, &std::collections::HashMap::new(), &glyph_char)?.document;
     resolve_pdf_crops(&mut d);
     Ok(d)
+}
+
+/// The character that draws glyph `gid` of an available font `family` `style`, for a bullet IDML
+/// stores as a glyph (#2620). None when the font isn't available: another font's glyph ids differ.
+pub(crate) fn glyph_char(family: &str, style: &str, gid: u32) -> Option<char> {
+    let db = designcraft_fonts::FontDb::global();
+    if !db.has_family(family) {
+        return None;
+    }
+    db.face(family, if style.is_empty() { "Regular" } else { style }).char_for_glyph(gid)
 }
 
 /// Import IDML bytes; `package` is the package's file (its folder is where links are looked for).
@@ -189,7 +199,7 @@ fn import_report_with_previews(
         }
     };
     let designcraft_idml::Imported { mut document, warnings, story_ids } =
-        designcraft_idml::import_idml_report_with_previews(bytes, &read, previews).map_err(|e| EngineError::Other(e.to_string()))?;
+        designcraft_idml::import_idml_report_with_fonts(bytes, &read, previews, &glyph_char).map_err(|e| EngineError::Other(e.to_string()))?;
     resolve_pdf_crops(&mut document);
     #[cfg(not(target_arch = "wasm32"))]
     let document = {
@@ -507,6 +517,38 @@ mod tests {
         })?;
         let bytes = designcraft_idml::export_idml_with(&session.doc()?.doc, &designcraft_idml::ExportOptions { embed_images });
         Ok((bytes, png))
+    }
+
+    /// A bullet InDesign stores as a glyph of a font (`GlyphWithFont`) opens as the character
+    /// that draws that glyph in the font, which a Webdings arrow needs (#2620).
+    #[test]
+    fn a_glyph_bullet_opens_as_the_character_of_that_glyph() {
+        use std::io::{Read, Write};
+        let gid = designcraft_fonts::FontDb::global().face("Source Serif 4", "Regular").glyph_for('§');
+        assert_ne!(gid, 0);
+        let mut session = Session::new();
+        session.execute("file.new", &json!({})).unwrap();
+        let idml = designcraft_idml::export_idml(&session.doc().unwrap().doc);
+        let style = format!(
+            r#"<ParagraphStyle Self="ParagraphStyle/Arrow" Name="Arrow" BulletsAndNumberingListType="BulletList"><Properties><BulletChar BulletCharacterType="GlyphWithFont" BulletCharacterValue="{gid}"/><BulletsFont type="string">Source Serif 4</BulletsFont><BulletsFontStyle type="string">Regular</BulletsFontStyle></Properties></ParagraphStyle></RootParagraphStyleGroup>"#
+        );
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(idml)).unwrap();
+        let mut out = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        for i in 0..zip.len() {
+            let mut f = zip.by_index(i).unwrap();
+            let mut part = String::new();
+            f.read_to_string(&mut part).unwrap();
+            if f.name() == "Resources/Styles.xml" {
+                assert!(part.contains("</RootParagraphStyleGroup>"));
+                part = part.replace("</RootParagraphStyleGroup>", &style);
+            }
+            out.start_file(f.name(), zip::write::SimpleFileOptions::default()).unwrap();
+            out.write_all(part.as_bytes()).unwrap();
+        }
+        let (d, warnings) = import_report(&out.finish().unwrap().into_inner(), None).unwrap();
+        let (p, _) = d.styles.resolve_para_style("Arrow");
+        assert_eq!((p.bullet_char.as_str(), p.bullet_font.as_str()), ("§", "Source Serif 4"));
+        assert!(!warnings.iter().any(|w| w.contains("bullet glyph")), "{warnings:?}");
     }
 
     #[test]
