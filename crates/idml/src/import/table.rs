@@ -1,4 +1,4 @@
-use super::values::{span, tint};
+use super::values::tint;
 use super::{CellRange, El, Importer, RowHeightMode, StoryId, Table, names, swatch};
 
 /// Cells every table in one import may hold between them. A `Cell` carries a whole story, so
@@ -55,8 +55,9 @@ pub(super) fn uniform_cell_stroke(edges: &[designcraft_doc::CellStrokeAttrs; 4])
 impl<'r> Importer<'r> {
     /// `<Table>`: rows, columns and cells (cell `Name` is `column:row`).
     pub(super) fn table(&mut self, e: &El) -> Option<Table> {
-        let rows: Vec<&El> = e.find_all("Row").collect();
-        let cols: Vec<&El> = e.find_all("Column").collect();
+        let model_table = craft_idml::model::Table::from_el(&crate::xml::to_craft(e));
+        let table_options = model_table.values.table_options();
+        let layout = craft_idml::model::TableLayout::from_table(&model_table);
         // A file's row and column counts are its claim, and a table of them is allocated whole: a
         // story holding one `<Table>` with 5,000 of each asked for 25M cells, around 34 GB, which
         // aborts the process instead of failing (#1583). What is read is clamped, and the rest of
@@ -65,7 +66,7 @@ impl<'r> Importer<'r> {
         //
         // Reserved before `Table::new`, so a cell's own story cannot spend the budget this table
         // is counting on.
-        let Some((nr, nc, over_budget)) = budgeted_size(rows.len().max(1), cols.len().max(1), self.table_cells) else {
+        let Some((nr, nc, over_budget)) = budgeted_size(layout.rows.len().max(1), layout.columns.len().max(1), self.table_cells) else {
             // Said once: the file that reaches this is the one with millions of tables in it.
             if !self.table_budget_spent {
                 self.table_budget_spent = true;
@@ -76,13 +77,15 @@ impl<'r> Importer<'r> {
             return None;
         };
         self.table_cells = self.table_cells.saturating_add(nr.saturating_mul(nc));
-        if nr < rows.len() || nc < cols.len() {
+        if nr < layout.rows.len() || nc < layout.columns.len() {
             let why = if over_budget { "more than the tables in one file can hold between them" } else { "more than a table can hold" };
             self.table_warnings += 1;
             match self.table_warnings.cmp(&MAX_TABLE_WARNINGS) {
-                std::cmp::Ordering::Less => {
-                    self.warnings.push(format!("a table of {} rows and {} columns was read as {nr} x {nc}: {why}", rows.len(), cols.len()))
-                }
+                std::cmp::Ordering::Less => self.warnings.push(format!(
+                    "a table of {} rows and {} columns was read as {nr} x {nc}: {why}",
+                    layout.rows.len(),
+                    layout.columns.len()
+                )),
                 std::cmp::Ordering::Equal => {
                     self.warnings.push(format!("more than {MAX_TABLE_WARNINGS} tables were read smaller than this file claims"))
                 }
@@ -90,28 +93,29 @@ impl<'r> Importer<'r> {
             }
         }
         let id = self.alloc();
-        let rows = &rows[..nr.min(rows.len())];
-        let cols = &cols[..nc.min(cols.len())];
+        let rows = &layout.rows[..nr.min(layout.rows.len())];
+        let cols = &layout.columns[..nc.min(layout.columns.len())];
         let mut t = Table::new(id, nr, nc, 0, 0, 0.0);
-        t.options.direction = if e.get("TableDirection") == Some("RightToLeftDirection") {
+        t.options.direction = if table_options.direction.as_deref() == Some("RightToLeftDirection") {
             designcraft_doc::TextDirection::RightToLeft
         } else {
             designcraft_doc::TextDirection::LeftToRight
         };
         for (r, re) in rows.iter().enumerate() {
-            let auto = re.boolean("AutoGrow").unwrap_or(true);
+            let auto = re.auto_grow().unwrap_or(true);
             t.rows[r].mode = if auto { RowHeightMode::AtLeast } else { RowHeightMode::Exactly };
-            t.rows[r].height = if auto { re.num("MinimumHeight").unwrap_or(3.0) } else { re.num("SingleRowHeight").unwrap_or(12.0) };
+            t.rows[r].height = if auto { re.minimum_height().unwrap_or(3.0) } else { re.single_row_height().unwrap_or(12.0) };
         }
         for (c, ce) in cols.iter().enumerate() {
-            t.columns[c].width = ce.num("SingleColumnWidth").unwrap_or(72.0).max(3.0);
+            t.columns[c].width = ce.single_column_width().unwrap_or(72.0).max(3.0);
         }
-        let h = e.num("HeaderRowCount").unwrap_or(0.0) as usize;
-        let f = e.num("FooterRowCount").unwrap_or(0.0) as usize;
+        let h = table_options.header_rows.unwrap_or(0.0) as usize;
+        let f = table_options.footer_rows.unwrap_or(0.0) as usize;
         if h.saturating_add(f) < nr {
             t.set_header_footer(h, f);
         }
-        let style_name = e.get("AppliedTableStyle").map(|r| self.table_style_ref(r)).unwrap_or_else(|| designcraft_doc::BASIC_TABLE.into());
+        let style_name =
+            table_options.applied_style.as_deref().map(|r| self.table_style_ref(r)).unwrap_or_else(|| designcraft_doc::BASIC_TABLE.into());
         let style = self.styles.resolve_table_style(&style_name);
         style.apply_to(&mut t, &self.styles.cell);
         // IDML distinguishes an explicit AppliedCellStyle from the effective region style.
@@ -122,17 +126,17 @@ impl<'r> Importer<'r> {
         // materialized independently, so their edges retain their higher precedence.
         let mut border_unset = style.border.is_none() && style.borders.iter().all(|b| b.is_empty());
         let mut borders = std::array::from_fn::<_, 4, _>(|i| t.options.border_for(i).clone());
-        for (side, border) in ["TopBorder", "LeftBorder", "BottomBorder", "RightBorder"].iter().zip(&mut borders) {
-            let attrs = self.cell_stroke_attrs(e, side);
+        for (attrs, border) in table_options.borders.into_iter().zip(&mut borders) {
+            let attrs = self.map_stroke_values(attrs);
             border_unset &= attrs.is_empty();
             attrs.apply_to(border);
         }
         t.options.border = borders[0].clone();
         t.options.borders = borders.map(Some);
-        t.options.space_before = e.num("SpaceBefore").unwrap_or(t.options.space_before);
-        t.options.space_after = e.num("SpaceAfter").unwrap_or(t.options.space_after);
-        t.options.repeat_header = e.get("HeaderBehavior") != Some("RepeatOnce");
-        t.options.repeat_footer = e.get("FooterBehavior") != Some("RepeatOnce");
+        t.options.space_before = table_options.space_before.unwrap_or(t.options.space_before);
+        t.options.space_after = table_options.space_after.unwrap_or(t.options.space_after);
+        t.options.repeat_header = table_options.repeat_header;
+        t.options.repeat_footer = table_options.repeat_footer;
         // A local count may enable a pattern disabled by its parent style. Merge before
         // materialization so the parent's colors/tints are still available in that case.
         let mut row_fills = style.row_fills.clone();
@@ -148,26 +152,34 @@ impl<'r> Importer<'r> {
         column_strokes.merge(&self.alt_stroke_attrs(e, "Column"));
         column_strokes.apply_to(&mut t.options.column_strokes);
         let mut regions = Vec::new();
-        for ce in e.find_all("Cell") {
-            let Some((c, r)) =
-                ce.get("Name").and_then(|n| n.split_once(':')).and_then(|(a, b)| Some((a.parse::<usize>().ok()?, b.parse::<usize>().ok()?)))
-            else {
+        for model_cell in model_table.cells() {
+            let options = model_cell.options();
+            let Some((c, r)) = model_cell.position().map(|(c, r)| (c as usize, r as usize)) else {
                 continue;
             };
             if r >= nr || c >= nc {
                 continue;
             }
-            let rs = (span(ce, "RowSpan").max(1.0) as usize).min(nr - r);
-            let cs = (span(ce, "ColumnSpan").max(1.0) as usize).min(nc - c);
+            let (mut cs, mut rs) = model_cell.span();
+            if model_cell.values.get("RowSpan").is_some_and(|v| v.eq_ignore_ascii_case("inf") || v.eq_ignore_ascii_case("infinity")) {
+                rs = (nr - r) as u32;
+            }
+            if model_cell.values.get("ColumnSpan").is_some_and(|v| v.eq_ignore_ascii_case("inf") || v.eq_ignore_ascii_case("infinity")) {
+                cs = (nc - c) as u32;
+            }
+            let rs = (rs as usize).min(nr - r);
+            let cs = (cs as usize).min(nc - c);
             let mut cell = t.cell(r, c).cloned().unwrap_or_default();
-            let cell_style = ce.get("AppliedCellStyle").map(|r| self.cell_style_ref(r)).unwrap_or_else(|| designcraft_doc::NO_CELL_STYLE.into());
+            let cell_el = crate::xml::from_craft(model_cell.to_el());
+            let cell_style =
+                model_cell.values.get("AppliedCellStyle").map(|r| self.cell_style_ref(r)).unwrap_or_else(|| designcraft_doc::NO_CELL_STYLE.into());
             if cell_style != designcraft_doc::NO_CELL_STYLE {
                 designcraft_doc::resolve_cell_style(&self.styles.cell, &cell_style).apply_to(&mut cell);
             }
             cell.style = if cell_style == designcraft_doc::NO_CELL_STYLE { String::new() } else { cell_style };
             let default_para = cell.text.paras.first().cloned().unwrap_or_default();
-            cell.text = self.story_with_para(StoryId(0), ce, default_para);
-            self.read_cell_attrs(&mut cell, ce, border_unset);
+            cell.text = self.story_with_para(StoryId(0), &cell_el, default_para);
+            self.read_cell_attrs(&mut cell, &options, border_unset);
             if let Some(slot) = t.cell_mut(r, c) {
                 *slot = cell;
             }
@@ -182,39 +194,36 @@ impl<'r> Importer<'r> {
     }
 
     /// A cell's local fill, insets, alignment, rotation and edge strokes.
-    fn read_cell_attrs(&mut self, cell: &mut designcraft_doc::Cell, ce: &El, border_unset: bool) {
-        if let Some(fc) = ce.get("FillColor") {
+    fn read_cell_attrs(&mut self, cell: &mut designcraft_doc::Cell, options: &craft_idml::model::CellOptions, border_unset: bool) {
+        if let Some(fc) = options.fill_color.as_deref() {
             cell.fill = self.swatch_ref(fc);
         }
-        if let Some(tint) = tint(ce.num("FillTint")) {
+        if let Some(tint) = tint(options.fill_tint) {
             cell.fill_tint = tint;
         }
-        // Current InDesign writes `TextTopInset` and so on; the older `TopInset` names are the fallback.
-        let inset_names =
-            [("TextTopInset", "TopInset"), ("TextLeftInset", "LeftInset"), ("TextBottomInset", "BottomInset"), ("TextRightInset", "RightInset")];
-        for (i, (text, old)) in inset_names.iter().enumerate() {
-            if let Some(v) = ce.num(text).or_else(|| ce.num(old)) {
+        for (i, inset) in options.insets.iter().enumerate() {
+            if let Some(v) = inset {
                 cell.insets[i] = v.max(0.0);
             }
         }
-        if let Some(vj) = ce.get("VerticalJustification") {
+        if let Some(vj) = options.vertical_justification.as_deref() {
             cell.vj = names::vj_in(vj);
         }
-        if let Some(fb) = ce.get("FirstBaselineOffset") {
+        if let Some(fb) = options.first_baseline_offset.as_deref() {
             cell.first_baseline = names::first_baseline_in(fb);
         }
-        if let Some(min) = ce.num("MinimumFirstBaselineOffset").filter(|v| v.is_finite()) {
+        if let Some(min) = options.minimum_first_baseline_offset {
             cell.first_baseline_min = min.clamp(0.0, 8640.0);
         }
-        cell.rotation = ce.num("RotationAngle").unwrap_or(cell.rotation);
+        cell.rotation = options.rotation_angle.unwrap_or(cell.rotation);
         if cell.rotation != 0.0 {
             self.rotated_cells += 1;
         }
-        for (i, side) in ["TopEdge", "LeftEdge", "BottomEdge", "RightEdge"].iter().enumerate() {
-            let attrs = self.cell_stroke_attrs(ce, side);
+        for (i, values) in options.edge_strokes.iter().cloned().enumerate() {
+            let attrs = self.map_stroke_values(values);
             attrs.apply_to(&mut cell.strokes[i]);
             cell.stroke_defined[i] |= !attrs.is_empty();
-            let priority = ce.prop(&format!("{side}StrokePriority")).and_then(|v| v.trim().parse::<i32>().ok()).unwrap_or(0);
+            let priority = options.edge_stroke_priorities[i];
             cell.stroke_priorities[i] = priority;
             // Preserve style-defined edges and #102's positive-priority local overrides.
             cell.border_overrides[i] |= priority > 0;
