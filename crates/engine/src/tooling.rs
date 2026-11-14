@@ -74,6 +74,7 @@ impl Session {
         // Any other tool unloads the place cursor.
         if id != "placeGun" {
             self.loaded = None;
+            self.loaded_queue.clear();
         }
         // Leaving the Type tool keeps the text frame selected.
         if id != "type"
@@ -83,6 +84,16 @@ impl Session {
         {
             st.selection.items = vec![f];
             st.selection.cells = None;
+        }
+    }
+
+    /// Empty the place cursor (its graphic and the ones queued after it). Holding the place
+    /// cursor's tool, go back to the Selection tool: with nothing loaded, a click would only fail.
+    pub(crate) fn unload_place_cursor(&mut self) {
+        self.loaded = None;
+        self.loaded_queue.clear();
+        if self.tool_id() == "placeGun" {
+            self.set_tool("selection");
         }
     }
 

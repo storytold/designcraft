@@ -3177,7 +3177,7 @@ fn clipping_path(s: &mut Session, p: &Value) -> Result<Value> {
             let Some(it) = d.item(*id) else { continue };
             let Some(g) = it.graphic() else { continue };
             let Some(asset) = d.assets.get(&g.asset) else { continue };
-            let Some(px) = designcraft_render::decode_pixmap_page(&asset.data, asset.page) else { continue };
+            let Some(px) = asset.data.load().ok().and_then(|b| designcraft_render::decode_pixmap_page(&b, asset.page)) else { continue };
             // A placed PDF cropped to a box: trace that box, which graphic space spans.
             let px = match designcraft_render::shown_box(asset) {
                 // A crop too big to trace is skipped, as a graphic that fails to decode is: tracing
