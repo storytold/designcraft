@@ -119,6 +119,12 @@ pub struct FontFace {
     kind: std::sync::OnceLock<crate::kind::FaceKind>,
     /// The PostScript name, read on first use.
     postscript: std::sync::OnceLock<Option<String>>,
+    /// Glyph names to glyph ids ([`FontFace::glyph_by_name`]), read on first use: custom glyphs
+    /// look names up on every layout, and scanning every name each time was slow in large fonts.
+    glyph_names: std::sync::OnceLock<std::collections::HashMap<String, u32>>,
+    /// Glyph ids to the lowest character mapped to them ([`FontFace::char_for_glyph`]), read on
+    /// first use for the same reason.
+    glyph_chars: std::sync::OnceLock<std::collections::HashMap<u32, char>>,
 }
 
 /// A cheap `Copy` handle to a face. Faces are never unloaded, so the handle lives for the rest of
@@ -277,6 +283,66 @@ impl FontFace {
         self.postscript
             .get_or_init(|| if self.is_variable() { None } else { self.skrifa().and_then(|f| name(&f, &[StringId::POSTSCRIPT_NAME])) })
             .as_deref()
+    }
+
+    /// The glyph the font names `name` (its `post` or CFF glyph names), or 0 when it has none.
+    pub fn glyph_by_name(&self, name: &str) -> u32 {
+        if name.is_empty() {
+            return 0;
+        }
+        let names = self.glyph_names.get_or_init(|| {
+            let mut names = std::collections::HashMap::new();
+            if let Some(f) = self.skrifa() {
+                for (g, n) in f.glyph_names().iter() {
+                    // The first glyph of a name wins, as the scan this replaces did.
+                    names.entry(n.as_str().to_string()).or_insert(g.to_u32());
+                }
+            }
+            names
+        });
+        names.get(name).copied().unwrap_or(0)
+    }
+
+    /// The characters glyph name `name` stands for: `uni` and one or more groups of four hex
+    /// digits (`uni06440627` is U+0644 U+0627) or `uXXXX[XX]`, else the character the font maps to
+    /// the glyph of that name. Empty when neither says.
+    pub fn chars_for_glyph_name(&self, name: &str) -> Vec<char> {
+        let hex = |h: &str| h.chars().all(|c| c.is_ascii_hexdigit()).then(|| u32::from_str_radix(h, 16).ok().and_then(char::from_u32)).flatten();
+        if let Some(h) = name.strip_prefix("uni").filter(|h| !h.is_empty() && h.len() % 4 == 0 && h.is_ascii()) {
+            let chars: Option<Vec<char>> = (0..h.len()).step_by(4).map(|i| h.get(i..i + 4).and_then(hex)).collect();
+            if let Some(chars) = chars {
+                return chars;
+            }
+        }
+        if let Some(c) = name.strip_prefix('u').filter(|h| (4..=6).contains(&h.len())).and_then(hex) {
+            return vec![c];
+        }
+        self.char_for_glyph(self.glyph_by_name(name)).into_iter().collect()
+    }
+
+    /// The character the font maps to glyph `gid` (the lowest when several are), `None` for
+    /// .notdef or a glyph no character maps to.
+    pub fn char_for_glyph(&self, gid: u32) -> Option<char> {
+        if gid == 0 {
+            return None;
+        }
+        let chars = self.glyph_chars.get_or_init(|| {
+            let mut chars: std::collections::HashMap<u32, char> = std::collections::HashMap::new();
+            if let Some(f) = self.skrifa() {
+                for (cp, g) in f.charmap().mappings() {
+                    let Some(c) = char::from_u32(cp) else { continue };
+                    chars.entry(g.to_u32()).and_modify(|lowest| *lowest = (*lowest).min(c)).or_insert(c);
+                }
+            }
+            chars
+        });
+        chars.get(&gid).copied()
+    }
+
+    /// How many glyphs the font has (glyph ids are below it); 0 when it can't be read.
+    pub fn glyph_count(&self) -> u32 {
+        use skrifa::raw::TableProvider;
+        self.skrifa().and_then(|f| f.maxp().ok()).map_or(0, |m| u32::from(m.num_glyphs()))
     }
 
     /// Glyph id for `c` (0 = .notdef).
@@ -445,6 +511,8 @@ pub(super) fn make_face(
         group: std::sync::OnceLock::new(),
         kind: std::sync::OnceLock::new(),
         postscript: std::sync::OnceLock::new(),
+        glyph_names: std::sync::OnceLock::new(),
+        glyph_chars: std::sync::OnceLock::new(),
     })
 }
 
@@ -544,5 +612,27 @@ mod tests_heights {
             let face = face_of(undeclared(font_mapping("Heights", glyphs).unwrap()));
             assert_eq!((face.cap_height, face.x_height), (face.ascent * 0.72, face.ascent * 0.5), "{glyphs:?}");
         }
+    }
+
+    /// The cached glyph-name and reverse-charmap lookups answer as a scan of the whole font does:
+    /// the first glyph of a name, the lowest character mapped to a glyph, nothing for .notdef.
+    #[test]
+    fn cached_glyph_lookups_match_a_scan() {
+        let face = face_of(BUNDLED[0].to_vec());
+        let f = skrifa::FontRef::new(BUNDLED[0]).unwrap();
+        let mut checked = 0;
+        for (g, n) in f.glyph_names().iter() {
+            let first = f.glyph_names().iter().find(|(_, m)| m.as_str() == n.as_str()).map(|(g, _)| g.to_u32()).unwrap();
+            assert_eq!(face.glyph_by_name(n.as_str()), first, "{}", n.as_str());
+            let lowest = f.charmap().mappings().filter(|(_, h)| *h == g).filter_map(|(cp, _)| char::from_u32(cp)).min();
+            assert_eq!(face.char_for_glyph(g.to_u32()), if g.to_u32() == 0 { None } else { lowest }, "glyph {g:?}");
+            checked += 1;
+        }
+        assert!(checked > 100, "the bundled font names its glyphs");
+        assert_eq!(face.glyph_by_name("A"), face.glyph_for('A'));
+        assert_eq!(face.char_for_glyph(face.glyph_for('A')), Some('A'));
+        assert_eq!(face.glyph_by_name(""), 0);
+        assert_eq!(face.glyph_by_name("no.such.glyph"), 0);
+        assert_eq!(face.char_for_glyph(u32::MAX), None);
     }
 }
