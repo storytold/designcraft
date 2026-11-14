@@ -205,6 +205,9 @@ fn import_report_with_previews(
                 // size differs from the file's, or that share no read) stay embedded.
                 if asset.data.embedded_bytes().is_some_and(|b| b.len() as u64 == len) {
                     link_read_file(std::sync::Arc::make_mut(asset), package);
+                } else if asset.proxy.is_some() {
+                    // An embedded graphic draws its own bytes.
+                    std::sync::Arc::make_mut(asset).proxy = None;
                 }
             }
         }
@@ -215,16 +218,61 @@ fn import_report_with_previews(
 }
 
 /// `asset`, whose embedded bytes were just read from the file its link names, as a linked asset
-/// ([`super::links::link_to_file`]), drawn with the document's preview while the file can't be
-/// read when the importer kept one.
+/// ([`super::links::link_to_file`]), drawn while the file can't be read with a proxy: the
+/// document's preview of it when that shows the whole image ([`preview_proxy`],
+/// [`shows_whole`]), else one made from the file, else the preview.
 #[cfg(not(target_arch = "wasm32"))]
 fn link_read_file(asset: &mut designcraft_doc::Asset, package: Option<&std::path::Path>) {
     let Some(bytes) = asset.data.embedded_bytes().cloned() else { return };
     let Some(path) = asset.link.clone() else { return };
-    let preview = asset.proxy.take();
+    let preview = asset.proxy.take().and_then(|p| preview_proxy(&p));
+    let (whole, fallback) = match preview {
+        Some(p) if shows_whole(asset, &bytes, &p) => (Some(p), None),
+        p => (None, p),
+    };
     // The fingerprint kept by the read (none for a file just written: its hash tells its bytes).
     let file = super::links::FileLink::of(std::path::Path::new(&path), asset.link_fingerprint);
-    super::links::link_to_file(asset, bytes, file, package, preview);
+    super::links::link_to_file(asset, bytes, file, package, whole);
+    if asset.storage == designcraft_doc::Storage::Linked && asset.proxy.is_none() {
+        asset.proxy = fallback;
+    }
+}
+
+/// A document's stored preview of a linked graphic as a proxy: checked to decode, and made again
+/// within the proxy limits ([`designcraft_render::proxy`]) when it is bigger or in another
+/// format (a larger one wouldn't be kept by the saved document). `None` when it doesn't decode.
+#[cfg(not(target_arch = "wasm32"))]
+fn preview_proxy(preview: &designcraft_doc::Proxy) -> Option<designcraft_doc::Proxy> {
+    use designcraft_render::proxy::{MAX_BYTES, MAX_SIDE_PX, make_proxy};
+    let bytes = preview.data.embedded_bytes()?;
+    let mime = designcraft_render::image_mime(bytes);
+    let fits = bytes.len() <= MAX_BYTES
+        && matches!(mime, "image/jpeg" | "image/png")
+        && designcraft_render::image_size(bytes).is_some_and(|(w, h)| w.max(h) <= MAX_SIDE_PX);
+    if fits && let Some(pm) = designcraft_render::decode_pixmap(bytes) {
+        let pixels = (u32::from(pm.width()), u32::from(pm.height()));
+        return Some(designcraft_doc::Proxy { mime: mime.into(), pixels, data: preview.data.clone() });
+    }
+    let p = make_proxy(bytes, 0)?;
+    Some(designcraft_doc::Proxy { mime: p.mime.into(), pixels: p.pixels, data: designcraft_doc::AssetData::embedded(p.data) })
+}
+
+/// Whether `preview` shows the whole of `asset`'s image (`bytes`, its file's), as a proxy must:
+/// a raster whose preview has the image's proportions. A PDF's preview shows its crop, which may
+/// not be the page the proxy stands for, and other files' proportions aren't known here.
+#[cfg(not(target_arch = "wasm32"))]
+fn shows_whole(asset: &designcraft_doc::Asset, bytes: &[u8], preview: &designcraft_doc::Proxy) -> bool {
+    if designcraft_render::is_pdf(bytes) || asset.mime == "application/pdf" {
+        return false;
+    }
+    let Some((w, h)) = designcraft_render::image_size(bytes) else { return false };
+    let (pw, ph) = preview.pixels;
+    if w == 0 || h == 0 || pw == 0 || ph == 0 {
+        return false;
+    }
+    // Proportions equal but for the preview's rounding to whole pixels.
+    let (ratio, preview_ratio) = (f64::from(w) / f64::from(h), f64::from(pw) / f64::from(ph));
+    (preview_ratio / ratio - 1.0).abs() <= 1.0 / f64::from(pw) + 1.0 / f64::from(ph) + 0.01
 }
 
 /// Placed PDFs read from IDML name their crop (`PDFCrop`): find where each box sits on its page,
@@ -625,6 +673,45 @@ mod tests {
         assert_eq!(asset.link_relative.as_deref(), Some("Links/logo.png"));
         assert!(asset.proxy.is_some(), "a proxy made from the file");
         assert_eq!(asset.data.load().ok().map(|b| (*b).clone()), Some(png));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A document's stored preview stands in for a linked file only when it decodes and shows
+    /// the whole image, within the proxy limits (made again when bigger); otherwise the proxy is
+    /// made from the file.
+    #[test]
+    fn a_stored_preview_is_the_proxy_only_when_it_decodes_and_shows_the_whole_image() {
+        use designcraft_render::proxy::{MAX_BYTES, MAX_SIDE_PX};
+        let dir = std::env::temp_dir().join(format!("dc-idml-previews-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("photo.png");
+        let png = |width: u32, height: u32| designcraft_render::Rendered { width, height, pixels: vec![255; (width * height * 4) as usize] }.to_png();
+        let original = png(400, 200);
+        std::fs::write(&path, &original).unwrap();
+        let linked_with = |preview: Vec<u8>| {
+            let mut a = designcraft_doc::Asset {
+                name: "photo.png".into(),
+                mime: "image/png".into(),
+                link: Some(path.to_str().unwrap().into()),
+                data: designcraft_doc::AssetData::embedded(original.clone()),
+                pixels: Some((400, 200)),
+                proxy: Some(designcraft_doc::Proxy { mime: "image/png".into(), pixels: (1, 1), data: designcraft_doc::AssetData::embedded(preview) }),
+                ..Default::default()
+            };
+            link_read_file(&mut a, None);
+            assert_eq!(a.storage, designcraft_doc::Storage::Linked);
+            let proxy = a.proxy.expect("a proxy");
+            let bytes = proxy.data.embedded_bytes().expect("embedded").clone();
+            let pm = designcraft_render::decode_pixmap(&bytes).expect("the proxy decodes");
+            assert_eq!((u32::from(pm.width()), u32::from(pm.height())), proxy.pixels);
+            assert!(bytes.len() <= MAX_BYTES && proxy.pixels.0.max(proxy.pixels.1) <= MAX_SIDE_PX);
+            (proxy.pixels, bytes)
+        };
+        let small = png(100, 50);
+        assert_eq!(linked_with(small.clone()), ((100, 50), Arc::new(small)), "kept as it is");
+        assert_eq!(linked_with(png(2048, 1024)).0, (1024, 512), "made again within the limits");
+        assert_eq!(linked_with(png(100, 100)).0, (400, 200), "a crop of the image: made from the file");
+        assert_eq!(linked_with(b"not an image".to_vec()).0, (400, 200), "undecodable: made from the file");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

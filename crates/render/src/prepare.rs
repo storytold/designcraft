@@ -26,6 +26,7 @@ pub(crate) fn job_key(what: impl Hash) -> u64 {
 /// What [`later`] did with a job.
 pub(crate) enum Queued {
     /// Queued, or already running: the frame counts as waiting for images.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     Yes,
     /// Done: it ran now (no background thread can run it), or it panicked before and isn't run
     /// again. What it made, if anything, is where it records it.
