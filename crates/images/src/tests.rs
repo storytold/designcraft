@@ -383,6 +383,7 @@ fn decode_bytes_per_pixel_counts_the_stored_samples_and_their_copy() {
     assert_eq!(decode_bytes_per_pixel(&tiff_of::<CMYK8>(1, 1, &[0; 4], false)), 14);
     assert_eq!(decode_bytes_per_pixel(&tiff_of::<CMYKA8>(1, 1, &[0; 5], true)), 15);
     assert_eq!(decode_bytes_per_pixel(&tiff_of::<CMYK16>(1, 1, &[0; 4], false)), 18);
+    assert_eq!(decode_bytes_per_pixel(&tiff_of::<Cmyka16>(1, 1, &[0; 5], true)), 20);
     assert_eq!(decode_bytes_per_pixel(&tiff_of::<RGB16>(1, 1, &[0; 3], false)), 10);
     assert_eq!(decode_bytes_per_pixel(&tiff_of::<RGBA16>(1, 1, &[0; 4], false)), 12);
     assert_eq!(decode_bytes_per_pixel(&tiff_of::<RGB8>(1, 1, &[0; 3], false)), 8);
@@ -404,6 +405,18 @@ fn decode_bytes_per_pixel_counts_the_stored_samples_and_their_copy() {
     dos.extend_from_slice(ps);
     dos.extend_from_slice(&preview);
     assert_eq!(decode_bytes_per_pixel(&dos), 18);
+}
+
+/// 16-bit CMYK with an alpha sample, which the `tiff` encoder has no type for.
+struct Cmyka16;
+impl tiff::encoder::colortype::ColorType for Cmyka16 {
+    type Inner = u16;
+    const TIFF_VALUE: tiff::tags::PhotometricInterpretation = tiff::tags::PhotometricInterpretation::CMYK;
+    const BITS_PER_SAMPLE: &[u16] = &[16; 5];
+    const SAMPLE_FORMAT: &[tiff::tags::SampleFormat] = &[tiff::tags::SampleFormat::Uint; 5];
+    fn horizontal_predict(row: &[u16], result: &mut Vec<u16>) {
+        result.extend_from_slice(row);
+    }
 }
 
 /// Indexed colour (PhotometricInterpretation 3), which the `tiff` encoder has no type for.
