@@ -881,6 +881,10 @@ fn images_in_view_are_decoded_together_before_drawing() {
     let it = d.item_mut(sid).unwrap();
     it.xf = Affine::translate((320.0, 20.0)) * Affine::scale(4.0);
     it.stroke = designcraft_doc::Stroke { swatch: designcraft_color::swatch::BLACK.into(), weight: 10.0, ..Default::default() };
+    // A graphic with its own PDF layer choice is left to the render.
+    let layered = place(&mut d, Rect::new(200.0, 150.0, 280.0, 230.0), 40, false);
+    let layered_id = d.spread(SpreadRef::Doc(0)).unwrap().items.last().unwrap().id;
+    d.item_mut(layered_id).unwrap().pdf_layer_override = true;
     // Decodes logged from here on with these buffers' addresses are theirs (they live on).
     let since = images::DECODED_ON.lock().unwrap().len();
     let cache = Cache::new();
@@ -903,6 +907,7 @@ fn images_in_view_are_decoded_together_before_drawing() {
     }
     let on = decoded_on(&stretched);
     assert!(on.len() == 1 && on[0] != me, "a scaled image whose stroke reaches the view is decoded ahead: {on:?}");
+    assert_eq!(decoded_on(&layered), [me], "an image with its own layer choice is decoded by the render");
     assert!(decoded_on(&hidden).is_empty(), "a hidden image is not decoded");
     assert!(decoded_on(&outside).is_empty(), "an image out of view is not decoded");
 }

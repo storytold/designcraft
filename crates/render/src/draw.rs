@@ -110,13 +110,16 @@ fn wanted_in(f: &Frame, it: &Item, parent: Affine, depth: usize, out: &mut Vec<i
     match &it.content {
         Content::Graphic(g) => {
             let g = &if it.media.is_some() { it.drawn_graphic(&f.doc.assets).unwrap_or_else(|| g.clone()) } else { g.clone() };
+            // A PDF with its own layer choice draws a rewritten copy that the layer cache can drop
+            // before drawing asks for it again, so the copy decoded ahead would not be found:
+            // it is left to the render.
+            if it.has_pdf_layer_override() {
+                return;
+            }
             let Some(asset) = f.doc.assets.get(&g.asset) else { return };
-            let hidden = it.has_pdf_layer_override().then(|| it.pdf_hidden_layers.clone());
-            let previous = HIDDEN_LAYERS.with(|h| h.replace(hidden));
             if let Some((want, ..)) = image_want(f, asset, g, xf) {
                 out.push(want);
             }
-            HIDDEN_LAYERS.with(|h| h.replace(previous));
         }
         Content::Group { items } if it.has_nested_items() => {
             for c in items {
