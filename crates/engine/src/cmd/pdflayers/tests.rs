@@ -383,10 +383,10 @@ fn placed_pdf_all_on_is_distinct_from_defaults_and_survives_exports() {
     let idml = s.execute("file.exportIdml", &json!({})).unwrap();
     let bytes = super::super::file::base64_decode(idml["base64"].as_str().unwrap());
     let imported = designcraft_idml::import_idml(&bytes).unwrap();
-    let pdf_asset = imported.assets.values().find(|a| designcraft_render::is_pdf(&a.data)).unwrap();
-    assert!(designcraft_render::pdf_layers(&pdf_asset.data).iter().all(|(_, on)| *on));
+    let pdf_asset = imported.assets.values().find(|a| designcraft_render::is_pdf(&a.data.load().unwrap())).unwrap();
+    assert!(designcraft_render::pdf_layers(&pdf_asset.data.load().unwrap()).iter().all(|(_, on)| *on));
     assert!(s.execute("file.exportIdml", &json!({"embedImages":false})).is_err());
-    assert_eq!(s.doc().unwrap().doc.assets.values().find(|a| a.name == "off.pdf").unwrap().data.as_slice(), pdf);
+    assert_eq!(s.doc().unwrap().doc.assets.values().find(|a| a.name == "off.pdf").unwrap().data.load().unwrap().as_slice(), pdf);
     s.execute("object.layerOptions", &json!({"ids":[id],"hidden":[]})).unwrap();
     assert!(!visible(&mut s), "legacy empty list still resets defaults");
     s.execute("object.layerOptions", &json!({"ids":[id],"hidden":[],"useDefaults":false})).unwrap();
@@ -412,8 +412,8 @@ fn parent_page_choices_reach_idml_variants_and_raster_export() {
     // Embedded IDML: the parent-page placement gets its own variant, like a document one.
     let idml = s.execute("file.exportIdml", &json!({})).unwrap();
     let imported = designcraft_idml::import_idml(&super::super::file::base64_decode(idml["base64"].as_str().unwrap())).unwrap();
-    let asset = imported.assets.values().find(|a| designcraft_render::is_pdf(&a.data)).unwrap();
-    assert!(designcraft_render::pdf_layers(&asset.data).iter().all(|(_, on)| *on), "the embedded copy shows every layer");
+    let asset = imported.assets.values().find(|a| designcraft_render::is_pdf(&a.data.load().unwrap())).unwrap();
+    assert!(designcraft_render::pdf_layers(&asset.data.load().unwrap()).iter().all(|(_, on)| *on), "the embedded copy shows every layer");
     // An external-only copy would keep the original file's defaults: the choice is rejected.
     let err = s.execute("file.exportIdml", &json!({"embedImages": false})).unwrap_err().to_string();
     assert!(err.contains("embedded images"), "{err}");
@@ -437,7 +437,7 @@ fn an_anchored_placement_keeps_its_layer_choice_in_saves_and_exports() {
         id: asset,
         name: "anchored.pdf".into(),
         mime: "application/pdf".into(),
-        data: std::sync::Arc::new(pdf),
+        data: designcraft_doc::AssetData::embedded(pdf),
         ..Default::default()
     });
     let mut item =
@@ -464,10 +464,10 @@ fn an_anchored_placement_keeps_its_layer_choice_in_saves_and_exports() {
     // Embedded IDML carries a variant that shows every layer.
     let idml = s.execute("file.exportIdml", &json!({})).unwrap();
     let imported = designcraft_idml::import_idml(&super::super::file::base64_decode(idml["base64"].as_str().unwrap())).unwrap();
-    let copies: Vec<_> = imported.assets.values().filter(|a| designcraft_render::is_pdf(&a.data)).collect();
+    let copies: Vec<_> = imported.assets.values().filter(|a| designcraft_render::is_pdf(&a.data.load().unwrap())).collect();
     assert!(!copies.is_empty(), "the anchored placement is exported");
     assert!(
-        copies.iter().all(|a| designcraft_render::pdf_layers(&a.data).iter().all(|(_, on)| *on)),
+        copies.iter().all(|a| designcraft_render::pdf_layers(&a.data.load().unwrap()).iter().all(|(_, on)| *on)),
         "the embedded copy must not fall back to the file's defaults"
     );
     // An external-only copy would keep the original file's defaults.

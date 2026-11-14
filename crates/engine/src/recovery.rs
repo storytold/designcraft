@@ -748,10 +748,19 @@ impl Drop for Owner {
 
 impl Snapshot {
     fn of(access: &Access, dir: &Path, d: &DocState) -> Self {
+        let doc = d.preview_stash.clone().unwrap_or_else(|| d.doc.clone());
+        // Linked files are recorded as a save to the document's own file records them, never
+        // copied in; relative paths are relative to that file, which recovery resolves them against.
+        // Graphics placed since stay links to their files. Images of a document saved before
+        // linked storage that are not yet saved as links keep their bytes.
+        let doc = match d.path.as_deref().map(Path::new) {
+            Some(path) => crate::cmd::native_links::for_recovery(&doc, path).map_or(doc, std::sync::Arc::new),
+            None => doc,
+        };
         Snapshot {
             dir: dir.to_path_buf(),
             uid: d.uid,
-            doc: d.preview_stash.clone().unwrap_or_else(|| d.doc.clone()),
+            doc,
             path: d.path.clone(),
             title: d.title(),
             // An entry this run did not write is never replaced, even one made since it checked.
@@ -809,15 +818,16 @@ fn write_snapshot(entry: &Snapshot, cancelled: impl Fn() -> bool) -> Written {
     #[cfg(any(test, feature = "testing"))]
     testing::gate(&entry.dir);
     let (doc, meta) = files(&entry.dir, entry.uid);
+    // Linked graphics placed moments ago get their proxies here, off the interface thread.
+    let proxied = crate::cmd::native_links::with_proxies(&entry.doc, &cancelled);
+    let document = proxied.as_ref().unwrap_or(&*entry.doc);
     // Set at the rename: an error after it (syncing the folder) leaves the entry on disk.
     let landed = std::cell::Cell::new(false);
     let published = publish_recovery_written(
         &doc,
         entry.own,
         // A cancel stops the write at its next chunk instead of after the whole package.
-        |out| {
-            designcraft_format::write(&mut StopWhen { out, cancelled: &cancelled }, &entry.doc, None).map_err(|e| EngineError::Other(e.to_string()))
-        },
+        |out| designcraft_format::write(&mut StopWhen { out, cancelled: &cancelled }, document, None).map_err(|e| EngineError::Other(e.to_string())),
         &cancelled,
         // Written: in a folder that is not this run's own, the entry is now this session's to
         // replace and remove (Save and Close must clean up the snapshot they wrote). Recorded with
@@ -1787,7 +1797,10 @@ fn open_with_publisher(s: &mut Session, dir: &Path, mut publish: impl FnMut(&Pat
         let path = meta.get("path").and_then(Value::as_str).map(str::to_string);
         // Skipped font files are logged; the document opens without them.
         let fonts = path.as_deref().and_then(|p| crate::cmd::load_document_fonts(&mut d, p).0);
+        // Linked files are found as the document's own open finds them; nothing becomes a link.
+        let links = crate::cmd::native_links::resolve(&mut d, path.as_deref().map(Path::new), false);
         let mut st = DocState::new(d, path);
+        crate::cmd::native_links::start(&mut st, links);
         reserve_uid(&mut st, &mut occupied)?;
         st.recovery_entries.push((dir.to_path_buf(), uid));
         // Recovered, the entry is this run's: Save and Close of its document may remove it.
