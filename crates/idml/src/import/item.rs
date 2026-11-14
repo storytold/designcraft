@@ -289,6 +289,9 @@ impl<'r> Importer<'r> {
             })
         };
         let mut data = model.contents().unwrap_or_default();
+        // Only data embedded in the document is converted below: a linked file's bytes stay what the
+        // file holds, so the link status and packaging still match the file.
+        let embedded = !data.is_empty();
         let pdf_attribute = model.pdf_attribute();
         let page = pdf_attribute.as_ref().map(craft_idml::model::PdfAttribute::page_index).unwrap_or(0);
         // Where the box sits on the page needs the PDF parsed: the engine finds it after import.
@@ -313,6 +316,9 @@ impl<'r> Importer<'r> {
         // A linked file that can't be read shows the document's preview of it, if it has one. The
         // preview only stands in for the file: format and pixel size still describe the link.
         let preview = data.is_empty().then(|| model.self_id().and_then(|s| self.previews.get(s))).flatten();
+        if embedded && let Some(bmp) = crate::emf_raster_to_bmp(&data) {
+            data = bmp;
+        }
         // InDesign draws a viewBox-only SVG at one unit to the point: its GraphicBounds are the
         // art's bounds, which can overhang the viewBox, so they must not size the viewBox.
         let size = craft_svg::sniff::viewbox_size(&data).unwrap_or(size);
