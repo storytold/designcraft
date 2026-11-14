@@ -513,6 +513,8 @@ struct Node {
     ty: [f64; 3],
     tz: [f64; 3],
     to: f64,
+    /// What the first box of the line starting here can close up of the gap before it.
+    start_shrink: f64,
     demerits: f64,
     prev: Option<usize>,
     hyphens: u32,
@@ -719,6 +721,7 @@ fn kp_pass(input: PassInput<'_>) -> Option<Vec<Break>> {
         ty: [-first_elastic[0], 0.0, 0.0],
         tz: [-first_elastic[1], 0.0, 0.0],
         to: 0.0,
+        start_shrink: first_elastic[1],
         demerits: 0.0,
         prev: None,
         hyphens: 0,
@@ -758,13 +761,13 @@ fn kp_pass(input: PassInput<'_>) -> Option<Vec<Break>> {
             // A line that overruns its measure by a rounding error fits exactly.
             let d = target - l;
             let d = if d < 0.0 && d > -FIT_EPS { 0.0 } else { d };
-            // All the spacing the mojikumi table allows to be closed up (between characters and at
-            // the line end) is taken first, at no cost: as in InDesign, a line that fits by
-            // squeezing within the table isn't a tight line.
+            // All the spacing the mojikumi table allows to be closed up (between characters, at the
+            // line start and at the line end) is taken first, at no cost: as in InDesign, a line
+            // that fits by squeezing within the table isn't a tight line.
             let (mut d, mut z) = (d, z);
-            if d < 0.0 {
+            if d < 0.0 && sp.kinsoku_priority != 3 {
                 let (from, to) = (item_glyphs[n.pos].min(glyphs.len()), item_glyphs[b].min(glyphs.len()));
-                let cap = (sqp[to] - sqp[from] + it.edge_elastic[1]).clamp(0.0, z[0]);
+                let cap = (sqp[to] - sqp[from] + it.edge_elastic[1] + n.start_shrink).clamp(0.0, z[0]);
                 let free = cap.min(-d);
                 d += free;
                 z[0] -= free;
@@ -814,6 +817,7 @@ fn kp_pass(input: PassInput<'_>) -> Option<Vec<Break>> {
         }
         // Totals after the break: skip glue and penalties up to the next box.
         let (mut tw, mut ty, mut tz, mut to) = (sw[b], sy[b], sz[b], so[b]);
+        let mut start_shrink = 0.0;
         let mut i = b;
         while i < m {
             let x = items[i];
@@ -822,6 +826,7 @@ fn kp_pass(input: PassInput<'_>) -> Option<Vec<Break>> {
                     tw += x.hang;
                     ty[0] -= x.start_elastic[0];
                     tz[0] -= x.start_elastic[1];
+                    start_shrink = x.start_elastic[1];
                     break;
                 }
                 Kind::Glue => {
@@ -852,6 +857,7 @@ fn kp_pass(input: PassInput<'_>) -> Option<Vec<Break>> {
                     ty,
                     tz,
                     to,
+                    start_shrink,
                     demerits: d,
                     prev: Some(a),
                     hyphens: if flagged { prev.hyphens + 1 } else { 0 },

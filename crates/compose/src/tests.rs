@@ -8687,3 +8687,75 @@ fn spacing_the_mojikumi_table_closes_up_costs_nothing_when_a_line_fits_by_squeez
     let cs = compose_story(&d, sid, &ComposeOptions::default());
     assert_eq!(all_lines(&cs).len(), 1, "a line that overruns by a rounding error once squeezed fits");
 }
+
+/// A document of ideographs under a mojikumi table whose only change is one half-em gap
+/// (between `target_class` and `side_class`), with the squeeze free to close it. Returns the story, the
+/// frame, the natural width of the text with the table, and how much of it the table added.
+fn gap_table_doc(target_class: i16, side_class: i16, kinsoku: Option<&str>) -> (Document, StoryId, ItemId, f64, f64) {
+    use designcraft_doc::cjk::{MojikumiAki, MojikumiTable};
+    let (mut d, sid, fid) = doc_with(
+        "漢漢漢漢漢",
+        Rect::new(0.0, 0.0, 600.0, 100.0),
+        ParaAttrs { mojikumi: Some("MojikumiTable/Gaps".into()), kinsoku_type: kinsoku.map(Into::into), ..Default::default() },
+    );
+    Arc::make_mut(&mut d.styles).mojikumi_tables.push(MojikumiTable {
+        name: "Gaps".into(),
+        based_on: "SimpChineseDefault".into(),
+        overrides: vec![MojikumiAki {
+            target_class,
+            side_class,
+            after: true,
+            minimum: 0.0,
+            desired: 0.5,
+            maximum: 0.5,
+            priority: 1,
+            does_not_float: false,
+        }],
+    });
+    let width = |d: &Document| compose_story(d, sid, &ComposeOptions::default()).frames[0].lines[0].glyphs.iter().map(|g| g.adv).sum::<f64>();
+    let natural = width(&d);
+    let para = &mut d.story_mut(sid).unwrap().paras[0].para;
+    let table = para.mojikumi.take();
+    let bare = width(&d);
+    d.story_mut(sid).unwrap().paras[0].para.mojikumi = table;
+    (d, sid, fid, natural, natural - bare)
+}
+
+fn lines_at(d: &mut Document, sid: StoryId, fid: ItemId, measure: f64) -> usize {
+    d.item_mut(fid).unwrap().path = designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, measure, 100.0));
+    all_lines(&compose_story(d, sid, &ComposeOptions::default())).len()
+}
+
+#[test]
+fn the_free_squeeze_includes_the_gap_at_the_start_of_the_line() {
+    // A half-em gap opens the paragraph and may close up. A measure that holds the text only with
+    // that gap closed is one line, not two.
+    let (mut d, sid, fid, natural, gap) = gap_table_doc(23, 12, None);
+    assert!(gap > 1.0, "the start gap is in the advances: {gap}");
+    assert_eq!(lines_at(&mut d, sid, fid, natural - 0.99 * gap), 1);
+}
+
+#[test]
+fn the_free_squeeze_includes_the_gap_at_the_end_of_the_line() {
+    // A half-em gap closes the line, and may close up.
+    let (mut d, sid, fid, natural, gap) = gap_table_doc(12, 22, None);
+    assert!(gap > 1.0, "the end gap is in the advances: {gap}");
+    assert_eq!(lines_at(&mut d, sid, fid, natural - 0.99 * gap), 1);
+}
+
+#[test]
+fn a_line_still_too_wide_after_the_free_squeeze_breaks() {
+    let (mut d, sid, fid, natural, gap) = gap_table_doc(12, 12, None);
+    // A whole character's width beyond what squeezing can give back.
+    let em = (natural - gap) / 5.0;
+    assert!(lines_at(&mut d, sid, fid, natural - gap - em) > 1);
+}
+
+#[test]
+fn push_out_only_gets_no_free_squeeze() {
+    // Under "push out only" the gaps aren't squeezed at all, so the same measure that holds the
+    // text squeezed doesn't hold it here.
+    let (mut d, sid, fid, natural, gap) = gap_table_doc(12, 12, Some("KinsokuPushOutOnly"));
+    assert!(gap > 1.0);
+    assert!(lines_at(&mut d, sid, fid, natural - 0.99 * gap) > 1);
+}
