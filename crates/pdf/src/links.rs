@@ -154,21 +154,6 @@ pub(crate) fn annotations(doc: &Document, cache: &designcraft_compose::Cache, sh
     out
 }
 
-#[cfg(test)]
-mod tests {
-    use super::allowed_link;
-
-    #[test]
-    fn only_web_and_mail_schemes_become_link_annotations() {
-        for ok in ["https://example.com", "HTTP://example.com", "mailto:a@b.example", "ftp://example.com"] {
-            assert_eq!(allowed_link(ok), Some(ok));
-        }
-        for bad in ["javascript:alert(1)", "JavaScript:alert(1)", "data:text/html,x", "file:///etc/passwd", "vbscript:x", "example.com", ""] {
-            assert_eq!(allowed_link(bad), None, "{bad}");
-        }
-    }
-}
-
 /// The document outline from the bookmarks (bookmarks to pages that weren't exported are skipped).
 pub(crate) fn outline(doc: &Document, sheets: &[Sheet]) -> Option<Outline> {
     fn node(doc: &Document, sheets: &[Sheet], b: &Bookmark) -> Option<OutlineNode> {
@@ -191,4 +176,19 @@ pub(crate) fn outline(doc: &Document, sheets: &[Sheet]) -> Option<Outline> {
         }
     }
     Some(o)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::allowed_link;
+
+    #[test]
+    fn only_web_and_mail_schemes_become_link_annotations() {
+        for ok in ["https://example.com", "HTTP://example.com", "mailto:a@b.example", "ftp://example.com"] {
+            assert_eq!(allowed_link(ok), Some(ok));
+        }
+        for bad in ["javascript:alert(1)", "JavaScript:alert(1)", "data:text/html,x", "file:///etc/passwd", "vbscript:x", "example.com", ""] {
+            assert_eq!(allowed_link(bad), None, "{bad}");
+        }
+    }
 }
