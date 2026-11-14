@@ -860,6 +860,8 @@ impl Session {
         if doc.anchored_items_changed_since(&st.doc) && doc.fix_anchored_text_frames() > 0 {
             doc.sync_endnote_story();
         }
+        // Pasted or copied notes keep their ids: repeated ones are renumbered.
+        doc.fix_note_ids();
         st.doc = Arc::new(doc);
         st.selection = sel;
         st.bump_revision();

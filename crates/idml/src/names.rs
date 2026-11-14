@@ -137,6 +137,11 @@ pub fn font_family_in(v: &str) -> Option<String> {
 }
 
 /// Built-in style names: (ours, IDML `Name`).
+/// The document label (a designmap `KeyValuePair`) that keeps nested footnotes whole: InDesign
+/// has no footnotes in footnotes, so its footnotes hold them written out (marks and forced line
+/// breaks), and DesignCraft puts them back from this label.
+pub const NESTED_FOOTNOTES_LABEL: &str = "designcraft.nestedFootnotes";
+
 pub const PARA_BUILTINS: &[(&str, &str)] = &[("[No Paragraph Style]", "$ID/[No paragraph style]"), ("[Basic Paragraph]", "$ID/NormalParagraphStyle")];
 pub const CHAR_BUILTINS: &[(&str, &str)] = &[("[None]", "$ID/[No character style]")];
 pub const CELL_BUILTINS: &[(&str, &str)] = &[("[None]", "$ID/[None]")];
