@@ -325,6 +325,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Character Styles", "Stili di carattere"),
     ("Paragraph Styles", "Stili di paragrafo"),
     ("Create Outlines", "Crea profili"),
+    ("Convert text to outlines", "Converti il testo in profili"),
     ("Show Hidden Characters", "Mostra caratteri nascosti"),
     ("Transform", "Trasforma"),
     ("Arrange", "Disponi"),

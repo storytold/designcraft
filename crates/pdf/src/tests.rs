@@ -498,6 +498,79 @@ fn archival_exports_keep_placed_images_without_interpolation() {
     }
 }
 
+/// What the first page's text and paths cover, in the page's own coordinates.
+fn ink_bounds(bytes: &[u8]) -> kurbo::Rect {
+    use hayro_interpret::font::Glyph;
+    use hayro_interpret::{
+        BlendMode, ClipPath, Context, Device, GlyphDrawMode, Image, InterpreterCache, InterpreterSettings, Paint, PathDrawMode, SoftMask,
+        interpret_page,
+    };
+    use kurbo::Shape as _;
+    #[derive(Default)]
+    struct Rec(Option<kurbo::Rect>);
+    impl Rec {
+        fn add(&mut self, r: kurbo::Rect) {
+            self.0 = Some(self.0.map_or(r, |u| u.union(r)));
+        }
+    }
+    impl Device<'_> for Rec {
+        fn set_soft_mask(&mut self, _: Option<SoftMask<'_>>) {}
+        fn set_blend_mode(&mut self, _: BlendMode) {}
+        fn draw_path(&mut self, p: &kurbo::BezPath, xf: kurbo::Affine, _: &Paint<'_>, _: &PathDrawMode) {
+            self.add((xf * p.clone()).bounding_box());
+        }
+        fn push_clip_path(&mut self, _: &ClipPath) {}
+        fn push_transparency_group(&mut self, _: f32, _: Option<SoftMask<'_>>, _: BlendMode) {}
+        fn draw_glyph(&mut self, g: &Glyph<'_>, xf: kurbo::Affine, glyph_xf: kurbo::Affine, _: &Paint<'_>, _: &GlyphDrawMode) {
+            // A space has no outline, and no bounds.
+            if let Glyph::Outline(o) = g
+                && !o.outline().elements().is_empty()
+            {
+                self.add((xf * glyph_xf * o.outline()).bounding_box());
+            }
+        }
+        fn draw_image(&mut self, _: Image<'_, '_>, _: kurbo::Affine) {}
+        fn pop_clip_path(&mut self) {}
+        fn pop_transparency_group(&mut self) {}
+    }
+    let pdf = hayro_syntax::Pdf::new(bytes.to_vec()).expect("parse");
+    let cache = InterpreterCache::new();
+    let page = &pdf.pages()[0];
+    let mut ctx = Context::new(kurbo::Affine::IDENTITY, kurbo::Rect::new(0.0, 0.0, 1.0, 1.0), &cache, pdf.xref(), InterpreterSettings::default());
+    let mut rec = Rec::default();
+    interpret_page(page, &mut ctx, &mut rec);
+    rec.0.expect("the page draws something")
+}
+
+#[test]
+fn outline_text_draws_paths_where_the_text_was() {
+    let d = doc_with_text("Hello DesignCraft — efficient affine");
+    let outlined = PdfOptions { outline_text: true, ..Default::default() };
+    let s = uncompressed(&d, outlined.clone());
+    assert!(!s.contains("/FontFile2") && !s.contains("/FontFile3"), "no font embedded");
+    assert!(!s.contains(")Tj") && !s.contains("]TJ"), "no text operators");
+    let bytes = export_pdf(&d, &Cache::new(), &outlined).unwrap();
+    let (glyphs, paths) = drawn(&bytes);
+    assert!(glyphs.is_empty(), "{glyphs:?}");
+    assert!(!paths.is_empty());
+    assert!(extract_text(&bytes)[0].trim().is_empty());
+
+    let plain = export_pdf(&d, &Cache::new(), &PdfOptions::default()).unwrap();
+    let (a, b) = (ink_bounds(&plain), ink_bounds(&bytes));
+    for (x, y) in [(a.x0, b.x0), (a.y0, b.y0), (a.x1, b.x1), (a.y1, b.y1)] {
+        assert!((x - y).abs() < 0.1, "the text moved: {a:?} became {b:?}");
+    }
+}
+
+#[test]
+fn outline_text_leaves_no_font_in_the_marks() {
+    let d = doc_with_text("x");
+    let s = uncompressed(&d, PdfOptions { marks: Marks::ALL, ..Default::default() });
+    assert!(s.contains("/FontFile2") || s.contains("/FontFile3"), "the page information is text");
+    let s = uncompressed(&d, PdfOptions { marks: Marks::ALL, outline_text: true, ..Default::default() });
+    assert!(!s.contains("/FontFile2") && !s.contains("/FontFile3"), "no font embedded");
+}
+
 /// What a page draws: each glyph (its text and outline bounds) and each filled path's bounds.
 fn drawn(bytes: &[u8]) -> (Vec<(String, kurbo::Rect)>, Vec<kurbo::Rect>) {
     use hayro_interpret::font::Glyph;

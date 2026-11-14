@@ -1435,6 +1435,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Tabs", "علامات الجدولة"),
     ("Story", "القصة"),
     ("Create Outlines", "إنشاء حدود خارجية"),
+    ("Convert text to outlines", "تحويل النص إلى حدود خارجية"),
     ("Show Hidden Characters", "إظهار الأحرف المخفية"),
     ("Unmerge Cells", "إلغاء دمج الخلايا"),
     ("Snap to Guides", "محاذاة إلى الأدلة"),

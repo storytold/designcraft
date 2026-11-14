@@ -1729,6 +1729,10 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ("Synchronize", ["Synchronize", "Synchroniser", "Synchronize", "Synchronize", "同步"]),
     ("Tag:", ["Tag:", "Balise :", "Tag:", "Tag:", "标签："]),
     ("Tagged PDF", ["Markiertes PDF", "PDF balisé", "PDF etiquetado", "タグ付き PDF", "带标签的 PDF"]),
+    (
+        "Convert text to outlines",
+        ["Text in Pfade umwandeln", "Vectoriser le texte", "Convertir texto en contornos", "テキストをアウトライン化", "将文本转换为轮廓"],
+    ),
     ("Text Frame", ["Text Frame", "Bloc de texte", "Text Frame", "Text Frame", "文本框架"]),
     ("Text Frame Options", ["Text Frame Options", "Options de bloc de texte", "Text Frame Options", "Text Frame Options", "文本框架选项"]),
     ("Text Message", ["Text Message", "SMS", "Text Message", "Text Message", "短信"]),

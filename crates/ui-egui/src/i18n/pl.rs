@@ -214,6 +214,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Character Styles", "Style znakowe"),
     ("Paragraph Styles", "Style akapitowe"),
     ("Create Outlines", "Utwórz kontury"),
+    ("Convert text to outlines", "Zamień tekst na kontury"),
     ("Show Hidden Characters", "Pokaż ukryte znaki"),
     ("Transform", "Przekształć"),
     ("Arrange", "Kolejność"),

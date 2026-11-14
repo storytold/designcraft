@@ -1216,6 +1216,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Tabs", "Tabbstopp"),
     ("Story", "Artikel"),
     ("Create Outlines", "Skapa konturbanor"),
+    ("Convert text to outlines", "Konvertera text till konturbanor"),
     ("Show Hidden Characters", "Visa dolda tecken"),
     ("Unmerge Cells", "Dela celler"),
     ("Snap to Guides", "Fäst mot stödlinjer"),

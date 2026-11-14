@@ -328,6 +328,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Character Styles", "Стилі символів"),
     ("Paragraph Styles", "Стилі абзаців"),
     ("Create Outlines", "Створити контури"),
+    ("Convert text to outlines", "Перетворити текст на контури"),
     ("Show Hidden Characters", "Показати приховані символи"),
     ("Transform", "Перетворення"),
     ("Arrange", "Упорядкувати"),

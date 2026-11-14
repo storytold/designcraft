@@ -1155,6 +1155,20 @@ fn pdf_text(bytes: &[u8]) -> Vec<String> {
 }
 
 #[test]
+fn export_pdf_outlines_the_text_in_every_standard() {
+    let mut s = Session::new();
+    s.execute("file.newSample", &json!({})).unwrap();
+    let embeds = |s: &mut Session, p: Value| {
+        let r = s.execute("file.exportPdf", &p).unwrap();
+        String::from_utf8_lossy(&cmd::base64_decode(r["base64"].as_str().unwrap())).contains("/FontFile")
+    };
+    assert!(embeds(&mut s, json!({"marks": true})), "fonts by default");
+    for standard in ["none", "x4", "x1a", "a2b"] {
+        assert!(!embeds(&mut s, json!({"standard": standard, "marks": true, "outlineText": true})), "{standard}");
+    }
+}
+
+#[test]
 fn export_pdf_of_the_sample() {
     let mut s = Session::new();
     s.execute("file.newSample", &json!({})).unwrap();
