@@ -310,6 +310,17 @@ impl Session {
         let st = self.doc_mut()?;
         let Some(it) = st.interaction.take() else { return Ok(()) };
         if !Arc::ptr_eq(&it.doc, &st.doc) {
+            // Previews skip the live caption refresh, so the committed change brings captions up
+            // to date here, in the same undo step, and auto-sizes the caption frames it changed.
+            if st.doc.spreads.iter().any(|sp| sp.items.iter().any(|i| i.live_caption.is_some())) {
+                let mut d = (*st.doc).clone();
+                if crate::cmd::captions::refresh_live(&mut d) {
+                    let todo = crate::autosize::candidates(&d, Some(&st.doc));
+                    crate::autosize::fit(&mut d, todo);
+                    st.doc = Arc::new(d);
+                    st.bump_revision();
+                }
+            }
             record_undo(st, HistoryEntry { label: it.label, doc: it.doc, selection: it.selection });
         }
         if let Some((c, p)) = it.preview {

@@ -178,4 +178,44 @@ mod tests {
         s.execute("edit.undo", &json!({})).unwrap();
         assert_eq!(text(&s), "Photo: First", "one undo step for both");
     }
+
+    #[test]
+    fn live_caption_follows_a_committed_gesture() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let a = s.execute("frame.create", &json!({"rect": [72, 72, 272, 172]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("object.altText", &json!({"text": "First", "ids": [a]})).unwrap();
+        let r = s.execute("object.caption", &json!({"ids": [a], "text": "Photo: {altText}", "live": true})).unwrap();
+        let cid = designcraft_doc::ItemId(r["ids"][0].as_u64().unwrap());
+        let text = |s: &Session| {
+            let d = &s.doc().unwrap().doc;
+            d.stories[&d.item(cid).unwrap().text_frame().unwrap().story].text.clone()
+        };
+        s.begin_interaction("Alt Text").unwrap();
+        s.preview("object.altText", json!({"text": "Second", "ids": [a]})).unwrap();
+        let revision = s.doc().unwrap().revision;
+        s.commit_interaction().unwrap();
+        assert_eq!(text(&s), "Photo: Second", "updated when the gesture commits");
+        assert_ne!(s.doc().unwrap().revision, revision, "caches keyed by the revision draw the new caption");
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(text(&s), "Photo: First", "one undo step for both");
+    }
+
+    #[test]
+    fn auto_sized_live_caption_fits_a_committed_gesture() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let a = s.execute("frame.create", &json!({"rect": [72, 72, 272, 172]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("object.altText", &json!({"text": "First", "ids": [a]})).unwrap();
+        let r = s.execute("object.caption", &json!({"ids": [a], "text": "Photo: {altText}", "live": true})).unwrap();
+        let cid = r["ids"][0].as_u64().unwrap();
+        s.execute("object.textFrameOptions", &json!({"ids": [cid], "autoSize": "heightOnly"})).unwrap();
+        let height = |s: &Session| s.doc().unwrap().doc.item(designcraft_doc::ItemId(cid)).unwrap().bounds().height();
+        let short = height(&s);
+        let long = "A harbour at dawn, with the fishing boats coming in one after another past the lighthouse and the long stone pier";
+        s.begin_interaction("Alt Text").unwrap();
+        s.preview("object.altText", json!({"text": long, "ids": [a]})).unwrap();
+        s.commit_interaction().unwrap();
+        assert!(height(&s) > short + 5.0, "the caption frame grows with its text: {short} -> {}", height(&s));
+    }
 }
