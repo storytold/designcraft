@@ -323,7 +323,7 @@ impl DesignApp {
     /// Files dropped on the window together, each with the pointer it was dropped at, handled in
     /// the order they came. Each that isn't an image opens or is placed as
     /// [`Self::open_dropped_at`] does at its own pointer. One image is dropped as that does too
-    /// (filling the frame under the pointer, else loading the place cursor); several load the place
+    /// (filling the frame under the pointer, else placed where it lands, or queued when the place cursor holds images); several load the place
     /// cursor, each run of them where it came in the order, after any images it already holds,
     /// whatever is under the pointer: click to place them one by one, drag with the arrow keys for
     /// a grid. The rest of the drop is cancelled once a file opens a dialog (a multi-page PDF's
@@ -357,7 +357,7 @@ impl DesignApp {
     }
 
     /// [`Self::open_dropped`] at the pointer: a graphic dropped on an empty or graphic frame fills
-    /// it; elsewhere an image loads into the place cursor, and another graphic's top left lands
+    /// it; elsewhere an image is placed where it lands (or queued when the place cursor holds images), and another graphic's top left lands
     /// where the file was dropped on the canvas; text goes to a new frame on the document page there.
     pub fn open_dropped_at(&mut self, path: &str, pointer: Option<egui::Pos2>) -> Result<Value, String> {
         self.place_dropped(path, pointer, &mut true)
@@ -389,10 +389,11 @@ impl DesignApp {
             }
             return placed;
         }
-        // An image dropped anywhere else waits in the place cursor, after any it already holds.
-        if is_cursor_image(path) {
-            let append = self.session.loaded.is_some();
-            return self.open_file("place.load", json!({"path": path, "append": append}));
+        // A single image dropped anywhere else is placed where it lands, unless the place cursor
+        // already holds images: it then queues after them. Several images load the cursor in
+        // `open_dropped_batch`.
+        if is_cursor_image(path) && self.session.loaded.is_some() {
+            return self.open_file("place.load", json!({"path": path, "append": true}));
         }
         let mut params = json!({"path": path});
         if let (Some((sr, at)), Some(o)) = (canvas::drop_point(self, pointer), params.as_object_mut()) {

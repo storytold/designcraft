@@ -1059,7 +1059,7 @@ fn a_pointerless_drop_keeps_the_system_pointer_of_its_own_input() {
 }
 
 /// Two drops that arrive before one UI pass stay separate: the first still fills the frame it was
-/// dropped on, and the second, off any frame, loads the place cursor. Merged, they'd both queue.
+/// dropped on, and the second, off any frame, is placed where it lands. Merged, they'd both be placed.
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn separate_drops_before_one_pass_are_not_one_batch() {
@@ -1084,9 +1084,10 @@ fn separate_drops_before_one_pass_are_not_one_batch() {
         panic!("the first drop fills the frame it was dropped on")
     };
     assert!(d.assets[&g.asset].name.contains("separate-drop-a"));
-    let loaded = app.session.loaded.as_ref().expect("the second drop loads the place cursor");
-    assert!(d.assets[&loaded.asset].name.contains("separate-drop-b"));
-    assert!(app.session.loaded_queue.is_empty());
+    assert!(app.session.loaded.is_none(), "nothing waits in the place cursor");
+    let item = d.spreads[0].items.last().unwrap();
+    let designcraft_doc::Content::Graphic(g) = &item.content else { panic!("the second drop is placed") };
+    assert!(d.assets[&g.asset].name.contains("separate-drop-b"));
 }
 
 /// A filled compound path (Object > Compound Paths > Make) is a frame a dropped image fills, as
@@ -1117,7 +1118,7 @@ fn a_graphic_dropped_on_a_compound_path_fills_it() {
 }
 
 /// A line encloses no area, so graphics dropped on it don't fill it (#2290): the line stays a line
-/// and, as on any spot that isn't a frame, the images wait in the place cursor in drop order.
+/// and, as on any spot that isn't a frame, each image is placed where it lands.
 #[test]
 fn graphics_dropped_on_a_line_leave_the_line_alone() {
     let (mut app, line, on_line, _) = app_with_drop_item("line.create", json!({"a": [36, 80], "b": [136, 80]}));
@@ -1130,11 +1131,9 @@ fn graphics_dropped_on_a_line_leave_the_line_alone() {
     app.place_dropped(&second.to_string_lossy(), Some(on_line), &mut frame_free).unwrap();
     let _ = (std::fs::remove_file(&first), std::fs::remove_file(&second));
     let d = &app.session.doc().unwrap().doc;
-    assert_eq!(d.spreads[0].items.len(), 1, "no new object");
+    assert_eq!(d.spreads[0].items.len(), 3, "the line and the two images");
     assert_eq!(serde_json::to_value(d.item(id).unwrap()).unwrap(), before, "the line is unchanged");
-    let loaded = app.session.loaded.as_ref().expect("the first image loads the place cursor");
-    assert!(d.assets[&loaded.asset].name.contains("drop-on-line-first"));
-    assert_eq!(app.session.loaded_queue.len(), 1, "the second waits behind it");
+    assert!(app.session.loaded.is_none(), "nothing waits in the place cursor");
 }
 
 #[test]
@@ -1148,8 +1147,8 @@ fn a_locked_frame_is_not_a_drop_target() {
     r.unwrap();
     let d = &app.session.doc().unwrap().doc;
     assert!(matches!(d.item(designcraft_doc::ItemId(frame)).unwrap().content, designcraft_doc::Content::Unassigned), "the locked frame stays empty");
-    assert_eq!(d.spreads[0].items.len(), 1, "no new object yet");
-    assert!(app.session.loaded.is_some(), "the image waits in the place cursor");
+    assert_eq!(d.spreads[0].items.len(), 2, "the image got a frame of its own");
+    assert!(app.session.loaded.is_none(), "nothing waits in the place cursor");
 }
 
 #[test]
@@ -1163,10 +1162,10 @@ fn only_the_first_graphic_of_a_drop_fills_the_frame() {
     let _ = (std::fs::remove_file(&first), std::fs::remove_file(&second));
     assert_eq!(a.unwrap()["id"].as_u64(), Some(frame));
     assert_ne!(b.unwrap()["id"].as_u64(), Some(frame), "the second graphic doesn't replace the first");
-    // An image dropped off a frame that takes it waits in the place cursor.
-    assert!(app.session.loaded.is_some(), "the second image waits in the place cursor");
+    // An image dropped off a frame that takes it is placed where it lands.
+    assert!(app.session.loaded.is_none(), "nothing waits in the place cursor");
     let d = &app.session.doc().unwrap().doc;
-    assert_eq!(d.spreads[0].items.len(), 1, "no new object");
+    assert_eq!(d.spreads[0].items.len(), 2, "the second image got a frame of its own");
     assert!(matches!(d.item(designcraft_doc::ItemId(frame)).unwrap().content, designcraft_doc::Content::Graphic(_)));
 }
 
@@ -1182,17 +1181,7 @@ fn a_file_dropped_while_a_parent_is_open_lands_on_the_parent() {
     let r = app.open_dropped(&path.to_string_lossy());
     let _ = std::fs::remove_file(&path);
     r.unwrap();
-    // The image waits in the place cursor; a click on the parent spread places it there.
-    assert!(app.session.loaded.is_some());
-    let st = app.session.active().unwrap();
-    let at = designcraft_tools::CanvasLayout::new(&st.doc, st.editing_parents)
-        .slot(designcraft_doc::SpreadRef::Parent(0))
-        .unwrap()
-        .to_canvas(designcraft_geom::Point::new(50.0, 50.0));
-    let v = designcraft_engine::ViewInfo::at_zoom(1.0);
-    for kind in [designcraft_tools::PointerKind::Down, designcraft_tools::PointerKind::Up] {
-        app.session.pointer(&designcraft_tools::PointerEvent::new(kind, at.x, at.y), v).unwrap();
-    }
+    assert!(app.session.loaded.is_none(), "the image is placed at once");
     let d = &app.session.doc().unwrap().doc;
     assert_eq!(d.parents[0].items.len(), 1, "the graphic is on the parent spread");
     assert!(d.spreads.iter().all(|s| s.items.is_empty()), "no document page gets it");
@@ -1204,30 +1193,27 @@ fn loaded_names(app: &DesignApp) -> Vec<String> {
     app.session.loaded.iter().chain(app.session.loaded_queue.iter()).map(|g| doc.assets[&g.asset].name.clone()).collect()
 }
 
-/// One image dropped where no frame can take it loads the place cursor instead of being placed:
-/// the next click places it. A frame selected doesn't take it, and another image dropped
-/// meanwhile queues after it.
+/// One image dropped where no frame can take it is placed at once where it lands; dropped while
+/// the place cursor holds images, it queues after them.
 #[test]
-fn a_single_image_dropped_off_a_frame_loads_the_place_cursor() {
+fn a_single_image_dropped_off_a_frame_is_placed_unless_the_cursor_holds_images() {
     let (mut app, frame, _, outside) = app_with_drop_frame();
     app.run("selection.set", json!({"ids": []})).unwrap();
-    let first = dropped_png("drop-loads-a");
-    let second = dropped_png("drop-loads-b");
-    app.open_dropped_at(&first.to_string_lossy(), Some(outside)).unwrap();
-    assert_eq!(app.session.tool_id(), "placeGun");
-    assert_eq!(loaded_names(&app).len(), 1);
-    assert_eq!(app.session.doc().unwrap().doc.spreads[0].items.len(), 1, "nothing placed yet");
-    app.run("selection.set", json!({"ids": [frame]})).unwrap();
+    let first = dropped_png("drop-places-a");
+    let second = dropped_png("drop-places-b");
+    app.run("place.load", json!({"path": first.to_string_lossy()})).unwrap();
     app.open_dropped_at(&second.to_string_lossy(), Some(outside)).unwrap();
-    let _ = (std::fs::remove_file(&first), std::fs::remove_file(&second));
     let names = loaded_names(&app);
     assert_eq!(names.len(), 2, "{names:?}");
-    assert!(names[0].contains("drop-loads-a") && names[1].contains("drop-loads-b"), "{names:?}");
+    assert!(names[1].contains("drop-places-b"), "{names:?}");
     let d = &app.session.doc().unwrap().doc;
     assert!(matches!(d.item(designcraft_doc::ItemId(frame)).unwrap().content, designcraft_doc::Content::Unassigned));
-    app.run("place.drop", json!({"x": 300, "y": 300})).unwrap();
-    assert_eq!(app.session.doc().unwrap().doc.spreads[0].items.len(), 2, "the click placed the first");
-    assert_eq!(app.session.tool_id(), "placeGun", "the second is still loaded");
+    assert_eq!(d.spreads[0].items.len(), 1, "nothing placed yet");
+    app.run("place.cancel", json!({})).unwrap();
+    app.open_dropped_at(&second.to_string_lossy(), Some(outside)).unwrap();
+    let _ = (std::fs::remove_file(&first), std::fs::remove_file(&second));
+    assert!(app.session.loaded.is_none());
+    assert_eq!(app.session.doc().unwrap().doc.spreads[0].items.len(), 2, "placed at once");
 }
 
 /// Several images dropped together load the place cursor in the order they came, even over a
@@ -1256,11 +1242,15 @@ fn several_dropped_images_load_the_place_cursor_in_order() {
     let d = &app.session.doc().unwrap().doc;
     assert!(matches!(d.item(designcraft_doc::ItemId(frame)).unwrap().content, designcraft_doc::Content::Unassigned), "the frame isn't filled");
     assert_eq!(d.spreads[0].items.len(), 2, "the text got a frame of its own");
-    // Clicks place them one by one; Escape unloads the rest.
+    // Clicks place them one by one; Escape drops the current one, and the last ends placing.
     app.run("place.drop", json!({"x": 300, "y": 300})).unwrap();
     assert_eq!(app.session.loaded_queue.len(), 1);
     let mods = designcraft_tools::Mods::default();
-    app.session.tool_key(designcraft_tools::ToolKey::Escape, mods, designcraft_engine::ViewInfo::at_zoom(1.0)).unwrap();
+    let view = designcraft_engine::ViewInfo::at_zoom(1.0);
+    app.session.tool_key(designcraft_tools::ToolKey::Escape, mods, view).unwrap();
+    assert_eq!(loaded_names(&app).len(), 1);
+    assert_eq!(app.session.tool_id(), "placeGun");
+    app.session.tool_key(designcraft_tools::ToolKey::Escape, mods, view).unwrap();
     assert!(app.session.loaded.is_none() && app.session.loaded_queue.is_empty());
     assert_eq!(app.session.tool_id(), "selection");
 }
