@@ -175,6 +175,54 @@ fn supplied_zero_shared_edge_beats_missing_native_default() {
     assert_eq!(composed.frames[0].tables[0].strokes.len(), 1, "a missing zero cannot suppress the opposite visible default");
 }
 
+/// A spacer row in IDML with `[None]` cell style and only edge priorities (no stroke of its own)
+/// between a row whose style draws a thin rule and a row whose style draws none: at equal priority
+/// the styled edges win, so the 1 pt default draws no lines across the table (price table, 84202).
+#[test]
+fn a_priority_without_a_rule_loses_an_equal_priority_tie_to_a_styled_edge() {
+    let mut table = rule_table(3, 2, 0, 0);
+    for col in 0..2 {
+        set_rule(&mut table, 0, col, 2, 0.5, 34);
+        set_rule(&mut table, 2, col, 0, 0.0, 11);
+        table.cell_mut(2, col).unwrap().border_overrides[0] = true;
+        let spacer = table.cell_mut(1, col).unwrap();
+        spacer.strokes[0] = CellStroke::default();
+        spacer.strokes[2] = CellStroke::default();
+        spacer.stroke_priorities[0] = 34;
+        spacer.stroke_priorities[2] = 11;
+        spacer.border_overrides[0] = true;
+        spacer.border_overrides[2] = true;
+    }
+    let composed = compose_table(table);
+    let fragment = &composed.frames[0].tables[0];
+    let top = fragment.cell(1, 0).unwrap().rect.y0;
+    assert_eq!(fragment.strokes.len(), 2, "{:?}", fragment.strokes);
+    assert!(fragment.strokes.iter().all(|s| s.a.y == top && s.b.y == top && s.stroke.weight == 0.5), "{:?}", fragment.strokes);
+    assert_no_overlapping_rules(fragment);
+}
+
+/// The same spacer under a cell spanning many rows, whose bottom has a lower priority than the
+/// spacer's top: InDesign still shows the spanning cell's rule there (the spacer has none of its own).
+#[test]
+fn a_priority_without_a_rule_loses_even_at_a_higher_priority() {
+    // Rows 0 and 1 merged into one cell, the spacer in row 2.
+    let mut table = rule_table(3, 1, 0, 0);
+    table.merge(CellRange::new(0, 0, 1, 0)).unwrap();
+    set_rule(&mut table, 0, 0, 2, 0.5, 1);
+    let spacer = table.cell_mut(2, 0).unwrap();
+    spacer.strokes[0] = CellStroke::default();
+    spacer.stroke_priorities[0] = 82;
+    spacer.border_overrides[0] = true;
+    let composed = compose_table(table);
+    let fragment = &composed.frames[0].tables[0];
+    let y = fragment.cell(2, 0).unwrap().rect.y0;
+    assert_eq!(fragment.cell(0, 0).unwrap().rect.y1, y, "the merged cell spans the two rows above the spacer");
+    assert_eq!(fragment.strokes.len(), 1, "{:?}", fragment.strokes);
+    let rule = &fragment.strokes[0];
+    assert!(rule.a.y == y && rule.b.y == y && rule.stroke.weight == 0.5, "{rule:?}");
+    assert_eq!(rule.b.x - rule.a.x, 100.0);
+}
+
 #[test]
 fn specified_zero_priority_outer_edges_keep_per_side_table_borders() {
     for direction in [designcraft_doc::TextDirection::LeftToRight, designcraft_doc::TextDirection::RightToLeft] {
