@@ -117,6 +117,7 @@ impl DesignApp {
             object_clip_text: None,
             object_clip_change: None,
             ime_marked: None,
+            input_source: None,
             ime_discard: false,
             canvas_ime: false,
             ime_tracker: egui::ime_context::ImeContextTracker::new(),

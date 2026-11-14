@@ -3440,3 +3440,62 @@ fn leaving_parent_editing_for_the_left_page_of_a_spread_keeps_that_page_selected
     h.run_steps(3);
     assert_eq!(current_page(h.state()), Some(1));
 }
+
+/// macOS input sources whose Space types an ideographic space: a Japanese input method's
+/// hiragana, katakana and full-width modes. Its Roman, half-width and code modes, keyboard
+/// layouts and Chinese and Korean input methods type a plain one.
+#[test]
+fn japanese_input_sources_are_told_by_their_mode() {
+    use super::ime::japanese_input_source;
+    for id in [
+        "com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese",
+        "com.apple.inputmethod.Kotoeri.KanaTyping.Japanese",
+        "com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese.Katakana",
+        "com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese.FullWidthRoman",
+        "jp.monokakido.inputmethod.Kawasemi4.Japanese",
+        "com.google.inputmethod.Japanese.base",
+    ] {
+        assert!(japanese_input_source(id), "{id}");
+    }
+    for id in [
+        "com.apple.inputmethod.Kotoeri.RomajiTyping.Roman",
+        "com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese.HalfWidthKana",
+        "jp.monokakido.inputmethod.Kawasemi4.Japanese.HalfWidthRoman",
+        "jp.monokakido.inputmethod.Kawasemi4.Japanese.Code",
+        "jp.monokakido.inputmethod.Kawasemi4.Roman",
+        "com.google.inputmethod.Japanese.Roman",
+        "com.apple.keylayout.ABC",
+        "com.apple.inputmethod.SCIM.ITABC",
+        "com.apple.inputmethod.TCIM.Zhuyin",
+        "com.apple.inputmethod.Korean.2SetKorean",
+        "",
+    ] {
+        assert!(!japanese_input_source(id), "{id}");
+    }
+}
+
+/// Space in a Japanese input mode is the ideographic space, which the window layer reports as a
+/// plain one; with Shift, in the Roman mode, in a keyboard layout, with a Chinese or Korean input
+/// method or with no source known it stays plain. Shift counts as held at the space, even when it
+/// comes up later in the same frame.
+#[test]
+fn space_follows_the_selected_input_source() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    let ctx = egui::Context::default();
+    let sid = typing_app(&mut app, &ctx, "");
+    let space = egui::Event::Text(" ".into());
+    let source = |app: &mut DesignApp, id: Option<&str>, events: Vec<egui::Event>| {
+        app.set_input_source(id.map(str::to_owned));
+        ime_frame(app, &ctx, events);
+    };
+    let japanese = Some("com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese");
+    source(&mut app, japanese, vec![space.clone()]);
+    let (shift, up) = (egui::Event::ModifiersChanged(egui::Modifiers::SHIFT), egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+    source(&mut app, japanese, vec![shift, space.clone(), up]);
+    source(&mut app, Some("com.apple.inputmethod.Kotoeri.RomajiTyping.Roman"), vec![space.clone()]);
+    source(&mut app, Some("com.apple.keylayout.ABC"), vec![space.clone()]);
+    source(&mut app, Some("com.apple.inputmethod.Korean.2SetKorean"), vec![space.clone()]);
+    source(&mut app, None, vec![space.clone()]);
+    source(&mut app, japanese, vec![egui::Event::Text("a".into()), space]);
+    assert_eq!(story_text(&mut app, &sid), "\u{3000}     a\u{3000}");
+}
