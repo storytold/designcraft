@@ -427,8 +427,24 @@ impl<'a> Ex<'a> {
                 } else if ch == designcraft_doc::NOTE_MARK {
                     // Editorial notes aren't written to IDML yet.
                 } else if ch == designcraft_doc::ENDNOTE_REF {
-                    // Endnotes aren't written to IDML yet: the endnote frame keeps their text
-                    // (numbers included) and the references are left out.
+                    // Endnote structures aren't written to IDML yet: the endnote frame keeps their
+                    // text (numbers included), and the reference keeps its number as superscript
+                    // text, so the endnote's place isn't lost (#2753).
+                    flush_text(&mut cur, &mut pending);
+                    flush_content(&mut pending, &mut out);
+                    if !out.is_empty() {
+                        let mut c = self.csr_el(&f);
+                        c.children.append(&mut out);
+                        csrs.push(c);
+                    }
+                    let k = u32::try_from(s.endnotes_before(seg_start + ci)).unwrap_or(u32::MAX);
+                    let n = self.d.endnote_start(s.id).saturating_add(k);
+                    let mut c = self.csr_el(&f);
+                    c.set("Position", names::position_out(designcraft_doc::Position::Superscript));
+                    let mut content = El::new("Content");
+                    content.children.push(Node::Text(self.d.endnote_options.label(n)));
+                    c.push(content);
+                    csrs.push(c);
                 } else if ch == designcraft_doc::FOOTNOTE_REF {
                     // The reference: its own range carrying the reference position.
                     flush_text(&mut cur, &mut pending);
