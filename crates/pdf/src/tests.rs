@@ -758,6 +758,26 @@ fn small_caps_and_small_cap_figures_extract_as_typed() {
     assert!(uncompressed(&d, PdfOptions::default()).contains("/ActualText"));
 }
 
+/// A non-breaking hyphen the font lacks is drawn as its hyphen-minus, but the PDF's text keeps the
+/// original character, in body text and in a list label (a bullet) alike.
+#[test]
+fn a_substituted_non_breaking_hyphen_keeps_its_text() {
+    use designcraft_doc::ListType;
+    const FAMILY: &str = "DC Test PDF No NB Hyphen";
+    let font = designcraft_fonts::testing::font_mapping(FAMILY, &[('1', '1'), ('K', 'K'), ('-', '-'), (' ', ' ')]).unwrap();
+    designcraft_fonts::FontDb::global().add_font(font);
+    let text = "1\u{2011}K";
+    let mut d = doc_with_text(text);
+    let sid = *d.stories.keys().next().unwrap();
+    d.story_mut(sid).unwrap().format_paras(0..text.len(), |f| {
+        f.chars.font_family = Some(FAMILY.into());
+        f.para.list_type = Some(ListType::Bullets);
+        f.para.bullet_char = Some("\u{2011}".into());
+    });
+    let got = extract_text(&export_pdf(&d, &Cache::new(), &PdfOptions::default()).unwrap()).concat();
+    assert_eq!(got.split_whitespace().collect::<String>(), "\u{2011}1\u{2011}K", "{got:?}");
+}
+
 /// A clipping path on a placed image becomes a clip in the page content, inside the frame's.
 #[test]
 fn clipping_path_clips_the_image() {

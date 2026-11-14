@@ -983,7 +983,7 @@ fn shape_run_raw(
             }
             continue;
         }
-        let covered = c.is_whitespace() || c.is_control() || c == SOFT_HYPHEN || primary.covers(c);
+        let covered = c.is_whitespace() || c.is_control() || c == SOFT_HYPHEN || primary.covers(c) || hyphen_stand_in(&primary, c);
         let face = if covered || is_mark(c) { if is_mark(c) { seg_face.clone() } else { primary.clone() } } else { fallback(c) };
         if face.id() != seg_face.id() {
             flush(seg_start, i, &seg_face, out);
@@ -1151,6 +1151,39 @@ fn control_glyph(face: &Arc<FontFace>, p: &CharProps, auto_leading: TypeEnv, sty
     }
 }
 
+/// A hyphen the face has no glyph of its own for (the non-breaking U+2011, U+2010) that it can draw
+/// as its hyphen-minus, as InDesign does.
+fn hyphen_stand_in(face: &FontFace, c: char) -> bool {
+    matches!(c, '\u{2010}' | '\u{2011}') && !face.covers(c) && face.covers('-')
+}
+
+/// `src` with the hyphens [`hyphen_stand_in`] draws as hyphen-minus replaced by it (one character for
+/// one, so a run keeps its kerning and spaces), and each character's start in `src` and in the result.
+fn with_stand_in_hyphens(face: &FontFace, src: &str) -> Option<(String, Vec<(usize, usize)>)> {
+    if !src.chars().any(|c| hyphen_stand_in(face, c)) {
+        return None;
+    }
+    let mut out = String::with_capacity(src.len());
+    let mut starts = Vec::with_capacity(src.len() + 1);
+    for (at, c) in src.char_indices() {
+        starts.push((at, out.len()));
+        out.push(if hyphen_stand_in(face, c) { '-' } else { c });
+    }
+    starts.push((src.len(), out.len()));
+    Some((out, starts))
+}
+
+/// A character start in `src` as its start in the stand-in text (`to_shaped`), or back.
+pub(crate) fn stand_in_offset(starts: Option<&[(usize, usize)]>, at: usize, to_shaped: bool) -> usize {
+    let Some(starts) = starts else { return at };
+    // Both columns rise strictly (one entry per character), so either can be searched.
+    let found = if to_shaped { starts.binary_search_by_key(&at, |(s, _)| *s) } else { starts.binary_search_by_key(&at, |(_, d)| *d) };
+    found.ok().map_or(at, |i| if to_shaped { starts[i].1 } else { starts[i].0 })
+}
+
+/// Shapes `range` of `text` in `face` into `out`: the story text, or `replacement` drawn in its place
+/// (generated text: a page number, a variable's value, a cross-reference). Hyphens the face lacks are
+/// shaped as its hyphen-minus ([`with_stand_in_hyphens`]); glyphs keep the original text and bytes.
 #[allow(clippy::too_many_arguments)]
 fn shape_segment(
     db: &ScopedFonts<'_>,
@@ -1172,8 +1205,11 @@ fn shape_segment(
         // The same for every character of the label: worked out once, not per character.
         let prefer_sans = designcraft_fonts::sans_by_name(&p.font_family).or_else(|| style_of_substitute(&face.family));
         for (at, c) in label.char_indices() {
-            let selected =
-                if face.covers(c) { face.clone() } else { db.fallback_for_styled(c, face.id(), lang, prefer_sans).unwrap_or_else(|| face.clone()) };
+            let selected = if face.covers(c) || hyphen_stand_in(face, c) {
+                face.clone()
+            } else {
+                db.fallback_for_styled(c, face.id(), lang, prefer_sans).unwrap_or_else(|| face.clone())
+            };
             if let Some((_, end, previous)) = segments.last_mut().filter(|(_, _, previous)| previous.id() == selected.id()) {
                 *end = at + c.len_utf8();
                 let _ = previous;
@@ -1215,14 +1251,20 @@ fn shape_segment(
     // Tate-chu-yoko is set across the line, so it stays horizontal.
     let mut shaped: Vec<ShapedGlyph> = Vec::new();
     let mut upright: Vec<bool> = Vec::new();
+    // Hyphens the face lacks are shaped as its hyphen-minus, in the run (kerning, spaces); orientation,
+    // clusters and so the glyphs' text stay the original characters'.
+    let stand_in = with_stand_in_hyphens(face, src);
+    let starts = stand_in.as_ref().map(|(_, s)| s.as_slice());
+    let shaping = stand_in.as_ref().map_or(src, |(s, _)| s.as_str());
     for (r, up) in upright_runs(src, vertical && !p.tate_chu_yoko, mode.rotate_roman) {
         let around = match replacement {
             None => (text.get(..range.start + r.start).unwrap_or(""), text.get(range.start + r.end..).unwrap_or("")),
             Some(_) => ("", ""),
         };
-        let g = shape_cached(face, &src[r.clone()], if up { &upright_feats } else { &feats }, lang, caps, up, around);
+        let sr = stand_in_offset(starts, r.start, true)..stand_in_offset(starts, r.end, true);
+        let g = shape_cached(face, &shaping[sr.clone()], if up { &upright_feats } else { &feats }, lang, caps, up, around);
         upright.extend(std::iter::repeat_n(up, g.len()));
-        shaped.extend(g.into_iter().map(|g| ShapedGlyph { cluster: g.cluster + r.start, ..g }));
+        shaped.extend(g.into_iter().map(|g| ShapedGlyph { cluster: stand_in_offset(starts, g.cluster + sr.start, false), ..g }));
     }
     // Upright glyphs fill the ideographic em box across the line.
     let (em_top, em_bottom) = face.em_box();
