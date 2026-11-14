@@ -2,8 +2,6 @@ use super::text_attrs::{ace_char, clear_story_drop_cap_styles, inherits_drop_cap
 use super::{
     Arc, BTreeMap, CharAttrs, CharFormat, CharRun, El, HashMap, HashSet, Importer, Item, ItemId, ParaFormat, Story, StoryId, Table, names, st,
 };
-use crate::xml::Node;
-
 impl<'r> Importer<'r> {
     // ---------- stories ----------
 
@@ -12,6 +10,11 @@ impl<'r> Importer<'r> {
     }
 
     pub(super) fn story_with_para(&mut self, id: StoryId, e: &El, default_para: ParaFormat) -> Story {
+        let source = craft_idml::model::Story::from_el(&crate::xml::to_craft(e));
+        self.story_from_model(id, source, default_para)
+    }
+
+    pub(super) fn story_from_model(&mut self, id: StoryId, source: craft_idml::model::Story, default_para: ParaFormat) -> Story {
         let mut b = StoryBuilder {
             text: String::new(),
             paras: vec![default_para.clone()],
@@ -27,7 +30,7 @@ impl<'r> Importer<'r> {
             index_refs: Vec::new(),
             objects: Vec::new(),
         };
-        self.walk_story(e, &mut b, &default_para, &CharAttrs::default(), &CharFormat::default(), None);
+        self.walk_story_nodes(&source.children, &mut b, &default_para, &CharAttrs::default(), &CharFormat::default(), None);
         let StoryBuilder { text, mut paras, runs, last, tables: tbls, notes, anchors, xrefs, index_refs, objects, link_srcs, .. } = b;
         for (me, start, end) in link_srcs {
             // A cell's or a footnote's story is built under the `StoryId(0)` placeholder, so a
@@ -75,11 +78,10 @@ impl<'r> Importer<'r> {
             let saved = !x.text.is_empty();
             xref_list.push(Arc::new(designcraft_doc::CrossRef { target: 0, format, text: saved.then_some(x.text), page: x.page.filter(|_| saved) }));
         }
-        let pref = e.find("StoryPreference");
         let optical_margin = designcraft_doc::OpticalMargin {
-            on: pref.and_then(|p| p.boolean("OpticalMarginAlignment")).unwrap_or(false),
-            size: pref
-                .and_then(|p| p.num("OpticalMarginSize"))
+            on: source.optical_margin_enabled(),
+            size: source
+                .optical_margin_size()
                 .and_then(designcraft_doc::OpticalMargin::clamp_size)
                 .unwrap_or(designcraft_doc::OpticalMargin::DEFAULT_SIZE),
         };
@@ -89,12 +91,8 @@ impl<'r> Importer<'r> {
             paras,
             chars,
             frames: vec![],
-            direction: if e.find("StoryPreference").and_then(|p| p.get("StoryDirection")) == Some("RightToLeftDirection") {
-                designcraft_doc::TextDirection::RightToLeft
-            } else {
-                designcraft_doc::TextDirection::LeftToRight
-            },
-            vertical: e.find("StoryPreference").and_then(|p| p.get("StoryOrientation")) == Some("Vertical"),
+            direction: if source.right_to_left() { designcraft_doc::TextDirection::RightToLeft } else { designcraft_doc::TextDirection::LeftToRight },
+            vertical: source.vertical(),
             optical_margin,
             rev: 0,
             tables,
@@ -122,221 +120,246 @@ impl<'r> Importer<'r> {
 
     /// The format of the text in a `CharacterStyleRange`: its style, and its local attributes over
     /// the enclosing paragraph range's, inside a tracked change if `outer` (the enclosing format) is.
-    fn range_format(&mut self, c: &El, pchars: &CharAttrs, outer: &CharFormat) -> CharFormat {
-        let style = c.get("AppliedCharacterStyle").map(|r| self.char_style_ref(r)).unwrap_or_else(|| st::NO_CHAR_STYLE.into());
+    fn range_format(&mut self, style_ref: Option<&str>, c: &El, pchars: &CharAttrs, outer: &CharFormat) -> CharFormat {
+        let style = style_ref.map(|r| self.char_style_ref(r)).unwrap_or_else(|| st::NO_CHAR_STYLE.into());
         let mut over = pchars.clone();
         over.merge(&self.char_attrs(c));
         over.change = over.change.or(outer.over.change);
         CharFormat { style, over }
     }
 
-    fn walk_story(&mut self, e: &El, b: &mut StoryBuilder, pf: &ParaFormat, pchars: &CharAttrs, cf: &CharFormat, brk: Option<&str>) {
-        for n in &e.children {
-            match n {
-                Node::El(c) => match c.local() {
-                    "ParagraphStyleRange" => {
-                        let style = c.get("AppliedParagraphStyle").map(|r| self.para_style_ref(r)).unwrap_or_else(|| pf.style.clone());
-                        let para = self.para_attrs(c);
-                        let mut chars = self.char_attrs(c);
-                        // A paragraph range inside a tracked change is part of that change.
-                        chars.change = chars.change.or(cf.over.change);
-                        let npf = ParaFormat { style, para, chars: CharAttrs::default(), table: None };
-                        if b.fresh
-                            && let Some(last) = b.paras.last_mut()
-                        {
-                            *last = npf.clone();
+    fn walk_story_nodes(
+        &mut self,
+        nodes: &[craft_idml::model::TextNode],
+        b: &mut StoryBuilder,
+        pf: &ParaFormat,
+        pchars: &CharAttrs,
+        cf: &CharFormat,
+        brk: Option<&str>,
+    ) {
+        for node in nodes {
+            if let craft_idml::model::TextNode::ProcessingInstruction { target, data } = node {
+                if target == "ACE"
+                    && let Some(ch) = ace_char(data)
+                {
+                    b.push(&ch.to_string(), cf);
+                }
+                continue;
+            }
+            let c = crate::xml::from_craft(node.to_el());
+            match node {
+                craft_idml::model::TextNode::Paragraph(range) => {
+                    let style = range.paragraph_style().map(|r| self.para_style_ref(r)).unwrap_or_else(|| pf.style.clone());
+                    let para = self.para_attrs(&c);
+                    let mut chars = self.char_attrs(&c);
+                    // A paragraph range inside a tracked change is part of that change.
+                    chars.change = chars.change.or(cf.over.change);
+                    let npf = ParaFormat { style, para, chars: CharAttrs::default(), table: None };
+                    if b.fresh
+                        && let Some(last) = b.paras.last_mut()
+                    {
+                        *last = npf.clone();
+                    }
+                    // Text and markers outside any character range (a destination or a
+                    // cross-reference source at paragraph level) take the paragraph's format.
+                    let pcf = CharFormat { style: st::NO_CHAR_STYLE.into(), over: chars.clone() };
+                    self.walk_story_nodes(&range.children, b, &npf, &chars, &pcf, None);
+                }
+                craft_idml::model::TextNode::Character(range) => {
+                    let ncf = self.range_format(range.character_style(), &c, pchars, cf);
+                    let bt = range.paragraph_break_type();
+                    b.last = ncf.clone();
+                    self.walk_story_nodes(&range.children, b, pf, pchars, &ncf, bt);
+                }
+                craft_idml::model::TextNode::Content(parts) => {
+                    for part in parts {
+                        match part {
+                            craft_idml::model::ContentPart::Text(text) => {
+                                let text: String = text
+                                    .chars()
+                                    .filter(|c| *c != '\u{FEFF}')
+                                    .map(|c| if c == '\n' || c == '\r' || c == '\u{2029}' { st::FORCED_LINE_BREAK } else { c })
+                                    .collect();
+                                b.push(&text, cf);
+                            }
+                            craft_idml::model::ContentPart::Ace(ace) => {
+                                if let Some(ch) = ace_char(&ace.code().to_string()) {
+                                    b.push(&ch.to_string(), cf);
+                                }
+                            }
+                            craft_idml::model::ContentPart::Pi { .. } => {}
                         }
-                        // Text and markers outside any character range (a destination or a
-                        // cross-reference source at paragraph level) take the paragraph's format.
-                        let pcf = CharFormat { style: st::NO_CHAR_STYLE.into(), over: chars.clone() };
-                        self.walk_story(c, b, &npf, &chars, &pcf, None);
                     }
-                    "CharacterStyleRange" => {
-                        let ncf = self.range_format(c, pchars, cf);
-                        let bt = c.get("ParagraphBreakType").filter(|t| *t != "Anywhere");
-                        b.last = ncf.clone();
-                        self.walk_story(c, b, pf, pchars, &ncf, bt);
+                }
+                craft_idml::model::TextNode::Break => {
+                    // A column, frame or page break ends its paragraph like a return does.
+                    if let Some(t) = brk {
+                        let ch = match t {
+                            "NextColumn" => st::COLUMN_BREAK,
+                            "NextFrame" => st::FRAME_BREAK,
+                            "NextOddPage" => st::ODD_PAGE_BREAK,
+                            "NextEvenPage" => st::EVEN_PAGE_BREAK,
+                            _ => st::PAGE_BREAK,
+                        };
+                        b.push(&ch.to_string(), cf);
                     }
-                    "Content" => {
-                        for t in &c.children {
-                            match t {
-                                Node::Text(s) | Node::CData(s) => {
-                                    let s: String = s
-                                        .chars()
-                                        .filter(|c| *c != '\u{FEFF}')
-                                        .map(|c| if c == '\n' || c == '\r' || c == '\u{2029}' { st::FORCED_LINE_BREAK } else { c })
-                                        .collect();
-                                    b.push(&s, cf);
-                                }
-                                Node::Pi(t, v) if t == "ACE" => {
-                                    if let Some(ch) = ace_char(v) {
-                                        b.push(&ch.to_string(), cf);
-                                    }
-                                }
-                                _ => {}
+                    b.push("\n", cf);
+                    b.paras.push(pf.clone());
+                    b.fresh = true;
+                }
+                craft_idml::model::TextNode::Table(_) => {
+                    // `None` once the file-wide cell budget is spent: the table is not read
+                    // at all rather than kept as a 1 x 1 (noted in review).
+                    if let Some(t) = self.table(&c) {
+                        b.push_table(t, pf, cf);
+                    }
+                }
+                craft_idml::model::TextNode::Container(container) => {
+                    let container_el = crate::xml::from_craft(container.to_el());
+                    match container.kind() {
+                        craft_idml::model::ContainerKind::HyperlinkTextSource => {
+                            let start = b.text.len();
+                            self.walk_story_nodes(&container.children, b, pf, pchars, cf, brk);
+                            if b.text.len() > start {
+                                b.link_srcs.push((container.self_id().unwrap_or("").to_string(), start, b.text.len()));
                             }
                         }
-                    }
-                    "Br" => {
-                        // A column, frame or page break ends its paragraph like a return does.
-                        if let Some(t) = brk {
-                            let ch = match t {
-                                "NextColumn" => st::COLUMN_BREAK,
-                                "NextFrame" => st::FRAME_BREAK,
-                                "NextOddPage" => st::ODD_PAGE_BREAK,
-                                "NextEvenPage" => st::EVEN_PAGE_BREAK,
-                                _ => st::PAGE_BREAK,
-                            };
-                            b.push(&ch.to_string(), cf);
+                        craft_idml::model::ContainerKind::Footnote => {
+                            let mut note = self.story(StoryId(0), &container_el);
+                            let sep = self.footnote_options.separator.clone();
+                            if !sep.is_empty() && note.text.starts_with(&sep) {
+                                note.delete(0..sep.len());
+                            }
+                            b.notes.push(note);
+                            let mut rcf = cf.clone();
+                            rcf.over.position = None;
+                            b.push(&designcraft_doc::FOOTNOTE_REF.to_string(), &rcf);
                         }
-                        b.push("\n", cf);
-                        b.paras.push(pf.clone());
-                        b.fresh = true;
-                    }
-                    "Table" => {
-                        // `None` once the file-wide cell budget is spent: the table is not read
-                        // at all rather than kept as a 1 x 1 (noted in review).
-                        if let Some(t) = self.table(c) {
-                            b.push_table(t, pf, cf);
+                        craft_idml::model::ContainerKind::Change => {
+                            let mut ncf = cf.clone();
+                            match container.change_kind() {
+                                Some(craft_idml::model::TrackedChangeKind::Deleted) => ncf.over.change = Some(designcraft_doc::ChangeMark::Deleted),
+                                Some(craft_idml::model::TrackedChangeKind::Inserted) => ncf.over.change = Some(designcraft_doc::ChangeMark::Inserted),
+                                _ => {}
+                            }
+                            self.walk_story_nodes(&container.children, b, pf, pchars, &ncf, brk);
                         }
-                    }
-                    // The source wraps the text the link covers: its children are ordinary ranges
-                    // and content, so the range is where the text stood before and after (#1446).
-                    "HyperlinkTextSource" => {
-                        let start = b.text.len();
-                        self.walk_story(c, b, pf, pchars, cf, brk);
-                        if b.text.len() > start {
-                            b.link_srcs.push((c.get("Self").unwrap_or("").to_string(), start, b.text.len()));
+                        craft_idml::model::ContainerKind::XMLElement => self.walk_story_nodes(&container.children, b, pf, pchars, cf, brk),
+                        craft_idml::model::ContainerKind::CrossReferenceSource => {
+                            let page_variables: Vec<_> = self.xref_page_vars.iter().cloned().collect();
+                            let saved = craft_idml::model::SavedCrossReference::from_container(container, &page_variables);
+                            let mut text = String::new();
+                            let mut page = None;
+                            for part in saved.parts {
+                                match part {
+                                    craft_idml::model::SavedCrossReferencePart::Text(value) => text.push_str(&value),
+                                    craft_idml::model::SavedCrossReferencePart::PageNumber { result_text } => {
+                                        text.push_str(designcraft_doc::xref::PAGE_NUM_BLOCK);
+                                        if page.is_none() {
+                                            page = result_text;
+                                        }
+                                    }
+                                }
+                            }
+                            b.xrefs.push(XrefSource {
+                                me: saved.self_id.unwrap_or_default(),
+                                format: saved.applied_format.unwrap_or_default(),
+                                text,
+                                page,
+                            });
+                            let f = saved.character_range.map_or_else(
+                                || cf.clone(),
+                                |range| {
+                                    let style = range.character_style().map(str::to_owned);
+                                    let el = crate::xml::from_craft(craft_idml::model::TextNode::Character(range).to_el());
+                                    self.range_format(style.as_deref(), &el, pchars, cf)
+                                },
+                            );
+                            b.push(&designcraft_doc::XREF_MARK.to_string(), &f);
                         }
+                        craft_idml::model::ContainerKind::Note | craft_idml::model::ContainerKind::EndnoteRange => {}
                     }
-                    "HyperlinkTextDestination" | "ParagraphDestination" => {
-                        b.anchors.push((c.get("Self").unwrap_or("").to_string(), c.get("Name").unwrap_or("Anchor").to_string()));
-                        b.push(&designcraft_doc::ANCHOR_MARK.to_string(), cf);
-                    }
-                    "PageReference" => {
-                        use designcraft_doc::index::IndexRange as R;
-                        let topic = c.get("ReferencedTopic").and_then(|r| self.index_topics.get(r)).cloned().unwrap_or_default();
-                        let range = match c.get("PageReferenceType") {
-                            Some("ToEndOfStory") | Some("ToEndOfDocument") | Some("ToEndOfSection") => R::ToEndOfStory,
-                            Some("ForNextNParagraphs") => R::NextParagraphs(c.num("PageReferenceLimit").unwrap_or(1.0).max(1.0) as u32),
-                            Some("SuppressPageNumbers") => R::SuppressPageRange,
-                            _ => R::CurrentPage,
-                        };
-                        b.index_refs.push(designcraft_doc::IndexRef { topics: topic.path, sort: topic.sort, range });
-                        b.push(&designcraft_doc::INDEX_MARK.to_string(), cf);
-                    }
-                    "CrossReferenceSource" => {
-                        // The generated text is regenerated from the format.
-                        let (mut text, mut page) = (String::new(), None);
-                        xref_saved_text(c, &self.xref_page_vars, &mut text, &mut page, 0);
-                        b.xrefs.push(XrefSource {
-                            me: c.get("Self").unwrap_or("").to_string(),
-                            format: c.get("AppliedFormat").unwrap_or("").to_string(),
-                            text,
-                            page,
-                        });
-                        // A source at paragraph level wraps a range; inside a range it holds the
-                        // text directly and takes that range's format.
-                        let f = c.find("CharacterStyleRange").map_or_else(|| cf.clone(), |r| self.range_format(r, pchars, cf));
-                        b.push(&designcraft_doc::XREF_MARK.to_string(), &f);
-                    }
-                    "Footnote" => {
-                        // The text starts with the number marker (ACE 4, dropped) and the separator.
-                        let mut note = self.story(StoryId(0), c);
-                        let sep = self.footnote_options.separator.clone();
-                        if !sep.is_empty() && note.text.starts_with(&sep) {
-                            note.delete(0..sep.len());
-                        }
-                        b.notes.push(note);
-                        // The reference's position comes from the footnote options.
-                        let mut rcf = cf.clone();
-                        rcf.over.position = None;
-                        b.push(&designcraft_doc::FOOTNOTE_REF.to_string(), &rcf);
-                    }
+                }
+                craft_idml::model::TextNode::Anchor(anchor) => {
+                    b.anchors.push((anchor.self_id().unwrap_or("").to_string(), anchor.label().unwrap_or("Anchor").to_string()));
+                    b.push(&designcraft_doc::ANCHOR_MARK.to_string(), cf);
+                }
+                craft_idml::model::TextNode::PageReference(reference) => {
+                    use designcraft_doc::index::IndexRange as R;
+                    let topic = reference.referenced_topic().and_then(|r| self.index_topics.get(r)).cloned().unwrap_or_default();
+                    let range = match reference.reference_type() {
+                        Some("ToEndOfStory" | "ToEndOfDocument" | "ToEndOfSection") => R::ToEndOfStory,
+                        Some("ForNextNParagraphs") => R::NextParagraphs(reference.limit().unwrap_or(1.0).max(1.0) as u32),
+                        Some("SuppressPageNumbers") => R::SuppressPageRange,
+                        _ => R::CurrentPage,
+                    };
+                    b.index_refs.push(designcraft_doc::IndexRef { topics: topic.path, sort: topic.sort, range });
+                    b.push(&designcraft_doc::INDEX_MARK.to_string(), cf);
+                }
+                craft_idml::model::TextNode::TextVariable(values) => {
+                    let text = self.text_variable_instance(values);
+                    b.push(&text, cf);
+                }
+                craft_idml::model::TextNode::Item(_) | craft_idml::model::TextNode::Other(_) => match c.local() {
                     // Anchored page items, including groups containing text frames.
                     "Rectangle" | "Oval" | "Polygon" | "GraphicLine" | "Group" | "TextFrame" | "EPSText" => {
-                        if let Some(item) = self.item(c, designcraft_geom::Affine::IDENTITY) {
+                        if let Some(item) = self.item(&c, designcraft_geom::Affine::IDENTITY) {
                             use designcraft_doc::anchored::AnchorAlign as A;
                             // Each setting the item leaves unset comes from its object style chain,
                             // then from the IDML defaults.
-                            let levels: Vec<&El> = std::iter::once(c).chain(self.object_style_chain(c)).collect();
-                            let s = |k: &str| {
-                                let set = levels.iter().filter_map(|l| l.find("AnchoredObjectSetting")).find_map(|x| x.get(k));
-                                set.unwrap_or(match k {
-                                    "AnchoredPosition" => "InlinePosition",
-                                    "AnchorPoint" => "BottomRightAnchor",
-                                    "HorizontalAlignment" => "LeftAlign",
-                                    "HorizontalReferencePoint" => "TextFrame",
-                                    "VerticalAlignment" => "BottomAlign",
-                                    "VerticalReferencePoint" => "LineBaseline",
-                                    "PinPosition" => "true",
-                                    _ => "",
-                                })
-                            };
-                            let get = |k: &str| s(k).trim().parse::<f64>().ok().filter(|v| v.is_finite()).unwrap_or(0.0);
-                            let position = match s("AnchoredPosition") {
+                            let style_chain = self.object_style_chain(&c);
+                            let levels: Vec<&El> = std::iter::once(&c).chain(style_chain.iter()).collect();
+                            let model_levels: Vec<_> = levels.iter().map(|level| crate::xml::to_craft(level)).collect();
+                            let model_refs: Vec<_> = model_levels.iter().collect();
+                            let anchored = craft_idml::model::AnchoredObjectValues::from_elements(&model_refs);
+                            let position = match anchored.position.as_str() {
                                 "AboveLine" => designcraft_doc::AnchorPosition::AboveLine {
-                                    align: match s("HorizontalAlignment") {
+                                    align: match anchored.horizontal_alignment.as_str() {
                                         "CenterAlign" => A::Center,
                                         "RightAlign" => A::Right,
                                         _ => A::Left,
                                     },
-                                    space_before: get("AnchorSpaceAbove"),
-                                    space_after: get("AnchorYoffset"),
+                                    space_before: anchored.space_above,
+                                    space_after: anchored.y_offset,
                                 },
                                 "Anchored" => {
-                                    let col = match s("HorizontalAlignment") {
+                                    let col = match anchored.horizontal_alignment.as_str() {
                                         "CenterAlign" => 1,
                                         "RightAlign" => 2,
                                         _ => 0,
                                     };
-                                    let row = match s("VerticalAlignment") {
+                                    let row = match anchored.vertical_alignment.as_str() {
                                         "CenterAlign" => 1,
                                         "BottomAlign" => 2,
                                         _ => 0,
                                     };
                                     designcraft_doc::AnchorPosition::Custom {
-                                        x_relative: names::anchor_rel_in(s("HorizontalReferencePoint")),
-                                        y_relative: names::anchor_rel_in(s("VerticalReferencePoint")),
+                                        x_relative: names::anchor_rel_in(&anchored.horizontal_reference),
+                                        y_relative: names::anchor_rel_in(&anchored.vertical_reference),
                                         // IDML measures a left-aligned object's X offset leftwards.
-                                        x_offset: if col == 0 { 0.0 - get("AnchorXoffset") } else { get("AnchorXoffset") },
-                                        y_offset: get("AnchorYoffset"),
-                                        object_point: names::anchor_in(s("AnchorPoint")),
+                                        x_offset: if col == 0 { 0.0 - anchored.x_offset } else { anchored.x_offset },
+                                        y_offset: anchored.y_offset,
+                                        object_point: names::anchor_in(&anchored.anchor_point),
                                         ref_point: row * 3 + col,
-                                        keep_within_column: s("PinPosition") == "true",
-                                        spine_relative: s("SpineRelative") == "true",
+                                        keep_within_column: anchored.pin_position,
+                                        spine_relative: anchored.spine_relative,
                                     }
                                 }
-                                _ => designcraft_doc::AnchorPosition::Inline { y_offset: get("AnchorYoffset") },
+                                _ => designcraft_doc::AnchorPosition::Inline { y_offset: anchored.y_offset },
                             };
                             b.objects.push(designcraft_doc::AnchoredObject::new(item, position));
                             b.push(&designcraft_doc::OBJECT_MARK.to_string(), cf);
                         }
                     }
-                    "TextVariableInstance" => {
-                        let t = self.text_variable_instance(c);
-                        b.push(&t, cf);
-                    }
-                    "Change" => {
-                        // Tracked changes: deleted text stays in the story, marked, and takes no
-                        // room in the layout.
-                        let mut ncf = cf.clone();
-                        match c.get("ChangeType") {
-                            Some("DeletedText") => ncf.over.change = Some(designcraft_doc::ChangeMark::Deleted),
-                            Some("InsertedText" | "MovedText") => ncf.over.change = Some(designcraft_doc::ChangeMark::Inserted),
-                            _ => {}
-                        }
-                        self.walk_story(c, b, pf, pchars, &ncf, brk);
-                    }
                     "Properties" | "Note" | "StoryPreference" | "InCopyExportOption" => {}
-                    _ => self.walk_story(c, b, pf, pchars, cf, brk),
-                },
-                Node::Pi(t, v) if t == "ACE" => {
-                    if let Some(ch) = ace_char(v) {
-                        b.push(&ch.to_string(), cf);
+                    _ => {
+                        if let craft_idml::model::TextNode::Other(other) = node {
+                            let nested = craft_idml::model::Story::from_el(other);
+                            self.walk_story_nodes(&nested.children, b, pf, pchars, cf, brk);
+                        }
                     }
-                }
-                _ => {}
+                },
+                craft_idml::model::TextNode::ProcessingInstruction { .. } => {}
             }
         }
     }
@@ -454,37 +477,6 @@ struct XrefSource {
     format: String,
     text: String,
     page: Option<String>,
-}
-
-/// Whether a `TextVariableInstance` shows a cross-reference page number: its
-/// `AssociatedTextVariable` is a variable of that type (`page_vars`), or, in a file that doesn't
-/// define it, has the name InDesign gives that variable.
-fn is_xref_page_number(e: &El, page_vars: &HashSet<String>) -> bool {
-    e.get("AssociatedTextVariable").is_some_and(|v| page_vars.contains(v) || (page_vars.is_empty() && v.ends_with("TV XRefPageNumber")))
-}
-
-/// The text a `CrossReferenceSource` holds as shown, with its live page numbers (InDesign's
-/// cross-reference page number variable, `page_vars`) as `<pageNum />`. Tracked insertions count;
-/// tracked deletions don't. Returns the text and the page shown.
-fn xref_saved_text(e: &El, page_vars: &HashSet<String>, text: &mut String, page: &mut Option<String>, depth: usize) {
-    if depth > 16 {
-        return;
-    }
-    for c in e.elements() {
-        match c.local() {
-            "Content" => text.push_str(&c.text_content()),
-            "TextVariableInstance" if is_xref_page_number(c, page_vars) => {
-                text.push_str(designcraft_doc::xref::PAGE_NUM_BLOCK);
-                if page.is_none() {
-                    *page = c.get("ResultText").map(str::to_string);
-                }
-            }
-            "TextVariableInstance" => text.push_str(c.get("ResultText").unwrap_or("")),
-            "Change" if c.get("ChangeType") == Some("DeletedText") => {}
-            "CharacterStyleRange" | "Change" => xref_saved_text(c, page_vars, text, page, depth + 1),
-            _ => {}
-        }
-    }
 }
 
 impl StoryBuilder {
