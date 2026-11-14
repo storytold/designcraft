@@ -1107,7 +1107,9 @@ mod text_link_tests {
         );
         let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
         let o = zip::write::SimpleFileOptions::default();
-        for (n, c) in [("word/document.xml", doc), ("word/styles.xml", styles)] {
+        for (n, c) in
+            [("word/document.xml", doc), ("word/styles.xml", styles), ("word/_rels/document.xml.rels", crate::tests::DOCX_STYLES_RELS.into())]
+        {
             w.start_file(n, o).unwrap();
             w.write_all(c.as_bytes()).unwrap();
         }

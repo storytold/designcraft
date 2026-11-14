@@ -12,9 +12,10 @@ workspace = true
 designcraft-engine = { workspace = true }
 designcraft-render = { workspace = true }
 designcraft-tools = { workspace = true }
+craft-file-formats = { workspace = true }
 designcraft-geom = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }
 
 [dev-dependencies]
-image = { workspace = true }
+image = { workspace = true, features = ["png"] }

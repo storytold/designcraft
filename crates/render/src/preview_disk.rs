@@ -63,6 +63,13 @@ fn renderer_tag() -> &'static str {
             include_bytes!("preview_disk.rs").as_slice(),
             include_bytes!("../../../Cargo.lock").as_slice(),
             include_bytes!("../../images/src/lib.rs").as_slice(),
+            include_bytes!("../../images/src/colour.rs").as_slice(),
+            include_bytes!("../../images/src/jpeg.rs").as_slice(),
+            include_bytes!("../../images/src/resolution.rs").as_slice(),
+            include_bytes!("../../images/src/tiff_policy.rs").as_slice(),
+            include_bytes!("../../images/src/tone.rs").as_slice(),
+            include_bytes!("../../images/Cargo.toml").as_slice(),
+            include_bytes!("../Cargo.toml").as_slice(),
             include_bytes!("../../images/src/psd.rs").as_slice(),
             include_bytes!("../../images/src/eps.rs").as_slice(),
         ] {

@@ -3,7 +3,7 @@ name = "designcraft-render"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "DesignCraft renderer: spreads, pages, frames, composed text and images to pixels (vello_cpu)"
+description = "DesignCraft renderer: vello_cpu software rasterizer for canvas and exports"
 
 [lints]
 workspace = true
@@ -17,15 +17,16 @@ designcraft-compose = { workspace = true }
 vello_cpu = { workspace = true }
 vello_common = { workspace = true }
 bytemuck = { workspace = true }
-image = { workspace = true }
 craft-pdf = { workspace = true, features = ["raster"] }
 designcraft-images = { workspace = true }
 log = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
+craft-image-codecs = { workspace = true }
 sha2.workspace = true
 
 [dev-dependencies]
+image = { workspace = true, features = ["png", "gif", "jpeg", "tiff"] }
 tempfile = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
