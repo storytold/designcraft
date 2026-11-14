@@ -8,8 +8,6 @@
 use std::collections::{BTreeMap, HashSet};
 use std::io::Write;
 
-use flate2::Compression;
-use flate2::write::ZlibEncoder;
 use craft_pdf::syntax::Pdf;
 use craft_pdf::syntax::content::UntypedIter;
 use craft_pdf::syntax::object::{Dict, Name, Object, ObjectIdentifier, Stream};
