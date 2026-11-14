@@ -129,16 +129,20 @@ fn renumber_in(dst: &mut designcraft_doc::Document, src: &designcraft_doc::Docum
     }
 }
 
-/// Fresh ids for the objects anchored in story copy `st`, its table cells, footnotes and endnotes (#1522).
+/// Fresh ids for the objects anchored in story copy `st`, its table cells, footnotes and endnotes, and
+/// the cells and notes inside those at any depth (#1522). The texts are walked with a stack, so a deeply
+/// nested file can't exhaust the call stack.
 fn renumber_anchored(dst: &mut designcraft_doc::Document, src: &designcraft_doc::Document, st: &mut Story, maps: &mut Maps) {
-    let mut fresh = |t: &mut Story| {
-        for o in &mut t.objects {
+    let mut texts = vec![st];
+    while let Some(t) = texts.pop() {
+        let Story { objects, tables, notes, endnotes, .. } = t;
+        for o in objects.iter_mut() {
             renumber_in(dst, src, &mut Arc::make_mut(o).item, maps, false);
         }
-    };
-    st.for_each_text_mut(&mut fresh);
-    for n in &mut st.endnotes {
-        Arc::make_mut(n).text.for_each_text_mut(&mut fresh);
+        for table in tables.values_mut() {
+            texts.extend(Arc::make_mut(table).cells.iter_mut().map(|c| &mut c.text));
+        }
+        texts.extend(notes.iter_mut().chain(endnotes.iter_mut()).map(|n| &mut Arc::make_mut(n).text));
     }
 }
 
