@@ -4,6 +4,7 @@ use std::collections::HashSet;
 /// Every per-language table `tr` looks up, by interface language.
 const LANGUAGE_TABLES: &[(&str, &[(&str, &str)])] = &[
     ("ar", ar::TABLE),
+    ("he", he::TABLE),
     ("cs", cs::TABLE),
     ("de", de::TABLE),
     ("fr", fr::TABLE),
@@ -618,4 +619,208 @@ fn czech_counts_use_the_plural_form_for_the_number() {
     }
     // A noun without plural forms keeps the plain translation.
     assert_eq!(count_label("cs", "a new noun", 3), "3 a new noun");
+}
+
+/// Hebrew is an RTL *interface* option, without changing document language or user-defined data.
+/// This also locks the initial catalog to English labels in the application's own source.
+#[test]
+fn hebrew_catalog_is_selectable_rtl_and_preserves_english_keys() {
+    let mut seen = HashSet::new();
+    assert_eq!(he::TABLE.len(), 1325, "Hebrew source-linked table changed");
+    for (source, translated) in he::TABLE {
+        assert!(seen.insert(*source), "duplicate Hebrew source key: {source}");
+        assert!(!translated.trim().is_empty(), "empty Hebrew: {source}");
+        assert!(ar::TABLE.iter().any(|(existing, _)| existing == source), "not an existing source-verified DesignCraft UI key: {source}");
+        let fields = |text: &str| {
+            let mut fields: Vec<String> =
+                text.split('{').skip(1).filter_map(|part| part.split_once('}').map(|(field, _)| field.to_owned())).collect();
+            fields.sort_unstable();
+            fields
+        };
+        assert_eq!(fields(source), fields(translated), "placeholders: {source}");
+        assert_eq!(source.ends_with('…'), translated.ends_with('…'), "ellipsis: {source}");
+        assert_eq!(tr("he", source), *translated, "Hebrew lookup: {source}");
+        assert!(translated.chars().any(|c| ('\u{05d0}'..='\u{05ea}').contains(&c)), "no Hebrew letters in {source}");
+    }
+    assert!(LANGUAGES.iter().any(|(code, native)| *code == "he" && *native == "עברית"));
+    assert!(picker_languages().iter().any(|(code, native)| *code == "he" && *native == "עברית"));
+    assert!(is_rtl("he"), "Hebrew menus and panels must use the existing RTL UI layout");
+    assert!(is_rtl("ar"), "Arabic RTL support must remain unchanged");
+    assert!(!is_rtl("en"), "English UI must remain LTR");
+    assert_eq!(tr("he", "File"), "קובץ");
+    assert_eq!(tr("he", "Save As…"), "שמירה בשם…");
+    assert_eq!(tr("he", "Arrangement"), "סידור");
+    assert_eq!(tr("he", "Font Size"), "גודל גופן");
+    assert_eq!(tr("he", "Hyphenation…"), "חלוקת מילים…");
+    assert_eq!(tr("he", "Panel Options…"), "אפשרויות חלונית…");
+    assert_eq!(tr("he", "Create Flex Layout"), "יצירת פריסת Flex");
+    assert_eq!(tr("he", "Go to Page…"), "מעבר לעמוד…");
+    assert_eq!(tr("he", "Right to Left"), "מימין לשמאל");
+    assert_eq!(tr("he", "Fit Page in Window"), "התאמת עמוד לחלון");
+    assert_eq!(tr("he", "Primary Text Frame"), "מסגרת טקסט ראשית");
+    assert_eq!(tr("he", "No document open"), "אין מסמך פתוח");
+    assert_eq!(tr("he", "Merge Cells"), "מיזוג תאים");
+    assert_eq!(tr("he", "Export IDML…"), "ייצוא כ־IDML…");
+    assert_eq!(tr("he", "Preflight"), "בדיקה לפני הפקה");
+    assert_eq!(tr("he", "Missing Glyphs"), "גליפים חסרים");
+    assert_eq!(tr("he", "Save Recovery Data"), "שמירת נתוני שחזור");
+    assert_eq!(tr("he", "Apply Table Style"), "החלת סגנון טבלה");
+    assert_eq!(tr("he", "Tagged PDF"), "PDF מתויג");
+    assert_eq!(tr("he", "Insert Footnote"), "הוספת הערת שוליים");
+    assert_eq!(tr("he", "No errors"), "לא נמצאו שגיאות");
+    assert_eq!(tr("he", "Hyphenate"), "חלוקת מילים באמצעות מקפים");
+    assert_eq!(tr("he", "Edit/Spelling"), "עריכה/איות");
+    assert_eq!(tr("he", "Object/Clipping Path"), "אובייקט/נתיב חיתוך");
+    assert_eq!(tr("he", "Object/Transform Again"), "אובייקט/חזרה על שינוי הצורה");
+    assert_eq!(tr("he", "Type/Insert Special Character/Symbols"), "טקסט/הוספת תו מיוחד/סמלים");
+    assert_eq!(tr("he", "Type/Hyperlinks & Cross-References"), "טקסט/היפר־קישורים והפניות צולבות");
+    assert_eq!(tr("he", "Type/Track Changes"), "טקסט/מעקב אחר שינויים");
+    assert_eq!(tr("he", "View/Grids & Guides"), "תצוגה/רשתות וקווי עזר");
+    assert_eq!(tr("he", "Window/Type & Tables"), "חלון/טקסט וטבלאות");
+    assert_eq!(tr("he", "Type on a Path"), "טקסט על נתיב");
+    assert_eq!(tr("he", "Document Footnote Options..."), "אפשרויות הערות שוליים במסמך...");
+    assert_eq!(tr("he", "Object States"), "מצבי אובייקט");
+    assert_eq!(tr("he", "Color Blindness – Protanopia"), "עיוורון צבעים – פרוטנופיה");
+    assert_eq!(tr("he", "Smart Text Reflow"), "זרימת טקסט חכמה");
+    assert_eq!(tr("he", "Baseline Grid"), "רשת קווי בסיס");
+    assert_eq!(tr("he", "Frame Fitting"), "התאמת מסגרת");
+    assert_eq!(tr("he", "Smart Guides"), "קווי עזר חכמים");
+    assert_eq!(tr("he", "Apply Parent to Pages…"), "החלת עמוד אב על עמודים…");
+    assert_eq!(tr("he", "Convert Text to Table"), "המרת טקסט לטבלה");
+    assert_eq!(tr("he", "Margins and Columns"), "שוליים ועמודות");
+    assert_eq!(tr("he", "This swatch can't be edited."), "לא ניתן לערוך את דוגמית הצבע הזו.");
+    assert_eq!(tr("he", "Layer Options for \"{name}\"…"), "אפשרויות השכבה ״{name}״…");
+    assert_eq!(tr("he", "No text selected"), "לא נבחר טקסט");
+    assert_eq!(tr("he", "Delete Hyperlink"), "מחיקת היפר־קישור");
+    assert_eq!(tr("he", "New Book…"), "ספר חדש…");
+    assert_eq!(tr("he", "No data source"), "אין מקור נתונים");
+    assert_eq!(tr("he", "Check Spelling"), "בדיקת איות");
+    assert_eq!(tr("he", "Insert Row Below"), "הוספת שורה מתחת");
+    assert_eq!(tr("he", "Paragraph Shading"), "הצללת פסקה");
+    assert_eq!(tr("he", "New Hyperlink…"), "היפר־קישור חדש…");
+    assert_eq!(tr("he", "Table Panel"), "חלונית טבלה");
+    assert_eq!(tr("he", "Delete Row"), "מחיקת שורה");
+    assert_eq!(tr("he", "Insert Column"), "הוספת עמודה");
+    assert_eq!(tr("he", "Show Baseline Grid"), "הצגת רשת קווי הבסיס");
+    assert_eq!(tr("he", "Select Table"), "בחירת טבלה");
+    assert_eq!(tr("he", "Create Alternate Layout…"), "יצירת פריסה חלופית…");
+    assert_eq!(tr("he", "Relink…"), "קישור מחדש…");
+    assert_eq!(tr("he", "Page (1–{count}):"), "עמוד (1–{count}):");
+    assert_eq!(tr("he", "A user-defined untranslated label"), "A user-defined untranslated label");
+}
+
+#[test]
+fn hebrew_parallel_round4_document_translations() {
+    for (source, expected) in [
+        ("Book", "ספר"),
+        ("Recent files", "קבצים אחרונים"),
+        (
+            "Number of Recent Items to Display:",
+            "מספר הפריטים האחרונים להצגה:",
+        ),
+        ("Place", "הצבה"),
+        ("Place and Link", "הצבה וקישור"),
+        ("Place with Import Options…", "הצבה עם אפשרויות ייבוא…"),
+        ("Update Link", "עדכון קישור"),
+        ("Records per page", "רשומות בעמוד"),
+        (
+            "The library is empty. Select objects and Add Selection.",
+            "הספרייה ריקה. בחרו אובייקטים ולחצו על ״הוספת הבחירה״.",
+        ),
+        (
+            "A PNG or JPEG file; left empty, the first page is the cover.",
+            "קובץ PNG או JPEG; אם משאירים ריק, העמוד הראשון ישמש ככריכה.",
+        ),
+    ] {
+        assert_eq!(
+            tr("he", source),
+            expected,
+            "Hebrew localization regression: {source}"
+        );
+    }
+}
+
+#[test]
+fn hebrew_parallel_round4_typography_translations() {
+    for (source, expected) in [
+        ("Apply Superscript", "החלת כתב עילי"),
+        ("Superscript", "כתב עילי"),
+        ("Superscript:", "כתב עילי:"),
+        ("List Type:", "סוג רשימה:"),
+        (
+            "Minimum Space Before First Footnote:",
+            "מרווח מזערי לפני הערת השוליים הראשונה:",
+        ),
+        ("Text After:", "טקסט אחרי:"),
+        ("Underline", "קו תחתון"),
+        ("Underline On", "הפעלת קו תחתון"),
+        ("Underline Options", "אפשרויות קו תחתון"),
+        (
+            "Hyperlink from the selected text or frames",
+            "היפר־קישור מהטקסט או מהמסגרות שנבחרו",
+        ),
+    ] {
+        assert_eq!(
+            tr("he", source),
+            expected,
+            "Hebrew localization regression: {source}"
+        );
+    }
+}
+
+#[test]
+fn hebrew_parallel_round4_appearance_translations() {
+    for (source, expected) in [
+        ("Drop Shadow", "הטלת צל"),
+        ("Effects: Drop Shadow", "אפקטים: הטלת צל"),
+        ("Inner Shadow", "צל פנימי"),
+        ("Alternating Row Fills", "מילוי שורות לסירוגין"),
+        ("Align Left", "יישור לשמאל"),
+        ("Align Center", "יישור למרכז"),
+        ("Align Right", "יישור לימין"),
+        ("Swap Fill and Stroke", "החלפת מילוי וקו מתאר"),
+        ("Toggle Fill and Stroke", "החלפה בין מילוי לקו מתאר"),
+        ("Default Fill and Stroke", "מילוי וקו מתאר כברירת מחדל"),
+    ] {
+        assert_eq!(
+            tr("he", source),
+            expected,
+            "Hebrew localization regression: {source}"
+        );
+    }
+}
+
+#[test]
+fn hebrew_grokbot_context_reviewed_live_ui_labels() {
+    for (source, expected) in [
+        ("Desired", "רצוי"),
+        ("forcedLineBreak", "מעבר שורה כפוי"),
+        ("emSpace", "רווח Em"),
+        ("enSpace", "רווח En"),
+        ("dropcap", "אות פתיח"),
+    ] {
+        assert!(ar::TABLE.iter().any(|(english, _)| english == source), "missing source key: {source}");
+        assert_eq!(tr("he", source), expected, "new Hebrew UI label: {source}");
+    }
+    assert_eq!(tr("en", "Desired"), "Desired", "English UI must remain unchanged");
+}
+
+#[test]
+fn hebrew_core_dialog_controls_are_translated() {
+    for (source, expected) in [
+        ("Direction", "כיוון"),
+        ("Horizontal", "אופקי"),
+        ("Vertical", "אנכי"),
+        ("On", "מופעל"),
+        ("Off", "כבוי"),
+        ("None", "ללא"),
+        ("[None]", "[ללא]"),
+        ("Quick Actions", "פעולות מהירות"),
+        ("More Options", "אפשרויות נוספות"),
+        ("Dialog", "תיבת דו־שיח"),
+        ("General", "כללי"),
+        ("Justification", "יישור לשני הצדדים"),
+    ] {
+        assert_eq!(tr("he", source), expected, "Hebrew native UI control: {source}");
+    }
 }
