@@ -1819,6 +1819,9 @@ fn text_frame_targets(app: &DesignApp, d: &Dialog) -> Result<Option<Value>, &'st
     Ok(Some(ids))
 }
 
+/// In a native batch's `pdfImport` dialog: the paths chosen after its PDF, placed once it is confirmed.
+pub(crate) const PDF_IMPORT_REST: &str = "rest";
+
 /// File › Document Setup, filled from the document.
 /// The active document's ruler unit (picas without a document).
 fn doc_unit(app: &DesignApp) -> Unit {
@@ -5059,12 +5062,23 @@ fn confirm_part3(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
                 },
             };
             if d.b("async") {
-                return app.confirm_pdf_import(page, if crop.is_empty() { "crop".into() } else { crop });
+                return app.confirm_pdf_import(page, if crop.is_empty() { "crop".into() } else { crop }, d.b("append"));
             }
             if let Some(target) = d.fields.get("target").and_then(Value::as_u64) {
                 app.activate_import_target(&crate::ImportRequest { purpose: "place".into(), target: Some(target) })?;
             }
-            app.place_file(json!({"path": d.s("path"), "pdfPage": page, "pdfCrop": if crop.is_empty() { "crop".to_string() } else { crop }}))
+            let placed = app.place_file(
+                json!({"path": d.s("path"), "pdfPage": page, "pdfCrop": if crop.is_empty() { "crop".to_string() } else { crop }, "append": d.b("append")}),
+            )?;
+            // The files chosen after this PDF, which waited for its options.
+            let rest: Vec<String> = d
+                .fields
+                .get(PDF_IMPORT_REST)
+                .and_then(Value::as_array)
+                .map(|paths| paths.iter().filter_map(Value::as_str).map(str::to_string).collect())
+                .unwrap_or_default();
+            app.place_paths(rest)?;
+            Ok(placed)
         }
         "print" => {
             let pages = if d.s("range") == "range" { json!(d.s("pages")) } else { Value::Null };

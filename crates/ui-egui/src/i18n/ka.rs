@@ -25,6 +25,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Save a Copy…", "ასლის შენახვა…"),
     ("Revert", "წინა ვერსიაზე დაბრუნება"),
     ("Place…", "განთავსება…"),
+    ("Image import cancelled while a dialog is open", "გამოსახულებების იმპორტი გაუქმდა, რადგან დიალოგი გახსნილია"),
+    ("Place cancelled while a dialog is open", "განთავსება გაუქმდა, რადგან დიალოგი ღიაა"),
     ("Export PDF…", "PDF ექსპორტი…"),
     ("Print…", "დაბეჭდვა…"),
     ("Document Setup…", "დოკუმენტის პარამეტრები…"),
