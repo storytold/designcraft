@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::hash::BuildHasher;
 use std::sync::Arc;
 
-use designcraft_doc::{AssetData, AssetId, Document};
+use designcraft_doc::{AssetData, AssetId, Document, Storage};
 #[cfg(test)]
 use serde_json::Value;
 #[cfg(test)]
@@ -26,31 +26,35 @@ pub fn save(doc: &Document) -> Result<Vec<u8>, FormatError> {
 
 /// [`save`], plus a PNG preview of the first page.
 pub fn save_with_preview(doc: &Document, preview: Option<&[u8]>) -> Result<Vec<u8>, FormatError> {
+    let mut out = std::io::Cursor::new(Vec::new());
+    write(&mut out, doc, preview)?;
+    Ok(out.into_inner())
+}
+
+/// [`save_with_preview`] into `out`, so a writer that stops on cancellation stops the write at
+/// its next chunk. Linked assets are stored as their record and proxy only.
+pub fn write<W: std::io::Write + std::io::Seek>(out: &mut W, doc: &Document, preview: Option<&[u8]>) -> Result<(), FormatError> {
     if let Some(id) = doc.non_finite_item() {
         return Err(FormatError::Unsaveable(format!("object {} has a position or size that is not a finite number", id.0)));
     }
     let mut compact = doc.clone();
     compact.compact_assets();
-    let owned_assets = compact
-        .assets
-        .values()
-        .map(|asset| {
-            let data = asset.data.load().map_err(|e| FormatError::Unsaveable(format!("image {}: {e}", asset.name)))?;
-            Ok((asset.id.0.to_string(), asset.mime.clone(), data))
-        })
-        .collect::<Result<Vec<_>, FormatError>>()?;
-    let assets = owned_assets.iter().map(|(id, mime, data)| craft_designcraft_format::Asset { id, mime, data }).collect::<Vec<_>>();
-    craft_designcraft_format::save(&compact, concat!("DesignCraft ", env!("CARGO_PKG_VERSION")), preview, &assets)
-}
-
-/// [`save_with_preview`] into `out`, in chunks, so a writer that stops on cancellation stops the
-/// write at its next chunk.
-pub fn write<W: std::io::Write>(out: &mut W, doc: &Document, preview: Option<&[u8]>) -> Result<(), FormatError> {
-    let bytes = save_with_preview(doc, preview)?;
-    for chunk in bytes.chunks(1 << 20) {
-        out.write_all(chunk).map_err(|e| FormatError::Io(e.to_string()))?;
+    let mut owned_assets = Vec::new();
+    let mut owned_proxies = Vec::new();
+    for asset in compact.assets.values() {
+        let id = asset.id.0.to_string();
+        if let Some(proxy) = &asset.proxy {
+            owned_proxies.push((id.clone(), proxy.mime.clone(), proxy.data.clone()));
+        }
+        if asset.storage == Storage::Linked {
+            continue;
+        }
+        let data = asset.data.load().map_err(|e| FormatError::Unsaveable(format!("image {}: {e}", asset.name)))?;
+        owned_assets.push((id, asset.mime.clone(), data));
     }
-    Ok(())
+    let assets = owned_assets.iter().map(|(id, mime, data)| craft_designcraft_format::Asset { id, mime, data }).collect::<Vec<_>>();
+    let proxies = owned_proxies.iter().map(|(id, mime, data)| craft_designcraft_format::Asset { id, mime, data }).collect::<Vec<_>>();
+    craft_designcraft_format::write_to(out, &compact, concat!("DesignCraft ", env!("CARGO_PKG_VERSION")), preview, &assets, &proxies)
 }
 
 /// Required native format version for a document. Kept for app-side compatibility; inference is
@@ -84,6 +88,19 @@ pub fn load(bytes: &[u8]) -> Result<Document, FormatError> {
             }
         };
         Arc::make_mut(asset).data = data;
+    }
+    for (raw_id, bytes) in loaded.proxies {
+        let Ok(id) = raw_id.parse::<u64>() else { continue };
+        let Some(asset) = doc.assets.get_mut(&AssetId(id)) else { continue };
+        if asset.proxy.is_some() {
+            Arc::make_mut(asset).proxy.iter_mut().for_each(|proxy| proxy.data = Arc::new(bytes.clone()));
+        }
+    }
+    for asset in doc.assets.values_mut() {
+        if asset.storage == Storage::Linked {
+            // T3/T7: the loader (and the linked file's length) attach here.
+            Arc::make_mut(asset).data = AssetData::linked(0);
+        }
     }
     doc.merge_duplicate_assets();
     doc.mark_differing_margins_local();

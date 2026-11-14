@@ -887,3 +887,51 @@ fn duplicate_ids_at_the_top_of_the_range_do_not_overflow() {
     assert_eq!(all_item_ids(&d), vec![u64::MAX, u64::MAX]);
     assert!(d.check().is_err());
 }
+
+fn zip_version(bytes: &[u8]) -> u32 {
+    let mut z = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+    let mut s = String::new();
+    z.by_name("meta.json").map(|mut f| f.read_to_string(&mut s)).ok();
+    serde_json::from_str::<Value>(&s).ok().and_then(|v| v.get("version").and_then(Value::as_u64)).unwrap_or(0) as u32
+}
+
+#[test]
+fn linked_asset_roundtrips_as_record_and_proxy_without_original() {
+    let mut d = Document::new(&NewDocument::default());
+    let aid = AssetId(d.alloc());
+    let asset = Asset {
+        id: aid,
+        name: "big.tif".into(),
+        mime: "image/tiff".into(),
+        link: Some("/pics/big.tif".into()),
+        storage: Storage::Linked,
+        proxy: Some(designcraft_doc::Proxy { mime: "image/png".into(), pixels: (2, 2), data: Arc::new(vec![9, 8, 7]) }),
+        data: AssetData::linked(1 << 30),
+        pixels: Some((4000, 3000)),
+        ..Default::default()
+    };
+    d.assets.insert(aid, Arc::new(asset));
+    place(&mut d, aid, 0.0);
+    let bytes = save(&d).unwrap();
+    assert_eq!(asset_entries(&bytes), 0, "no original is stored");
+    assert_eq!(required_version(&d), 5);
+    let back = load(&bytes).unwrap();
+    let a = &back.assets[&aid];
+    assert_eq!(a.storage, Storage::Linked);
+    assert_eq!(a.link.as_deref(), Some("/pics/big.tif"));
+    assert!(a.data.is_linked());
+    let proxy = a.proxy.as_ref().unwrap();
+    assert_eq!((proxy.mime.as_str(), proxy.pixels, proxy.data.as_slice()), ("image/png", (2, 2), &[9u8, 8, 7][..]));
+}
+
+#[test]
+fn embedded_documents_keep_their_older_version_and_version_5_loads() {
+    let mut d = Document::new(&NewDocument::default());
+    assert_eq!(zip_version(&save(&d).unwrap()), 2);
+    let aid = png_asset(&mut d, &[1, 2, 3]);
+    place(&mut d, aid, 0.0);
+    assert_eq!(zip_version(&save(&d).unwrap()), 2);
+    assert_eq!(VERSION, 5);
+    let loaded = load(&save(&d).unwrap()).unwrap();
+    assert_eq!(loaded.assets.len(), d.assets.len());
+}
