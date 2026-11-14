@@ -1,7 +1,7 @@
 //! The native `.designcraft` format: a zip archive holding
 //!
 //! - `mimetype` (stored first, uncompressed): `application/vnd.designcraft+zip`
-//! - `document.json`: the [`Document`] (pretty JSON, documented by the serde model in `designcraft-doc`)
+//! - `document.json`: the [`Document`] (compact JSON, documented by the serde model in `designcraft-doc`)
 //! - `assets/<id>.<ext>`: embedded placed files, byte-for-byte: one per distinct file, and only
 //!   the ones the document references (see [`Document::compact_assets`])
 //! - `meta.json`: format version and generator
@@ -132,7 +132,7 @@ fn write_with_large_entries_from<W: Write + std::io::Seek>(
             z.write_all(png).map_err(|e| FormatError::Io(e.to_string()))?;
         }
         z.start_file("document.json", deflate).map_err(io)?;
-        let json = serde_json::to_vec_pretty(doc).map_err(|e| FormatError::Io(e.to_string()))?;
+        let json = serde_json::to_vec(doc).map_err(|e| FormatError::Io(e.to_string()))?;
         z.write_all(&json).map_err(|e| FormatError::Io(e.to_string()))?;
         // Opening caps what deflated entries expand to, one asset and all of them together, while a
         // stored entry opens at any size. An asset deflated past those caps would save but never

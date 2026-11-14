@@ -175,7 +175,8 @@ fn assets_too_big_to_inflate_are_stored_so_the_document_reopens() {
     let c = tiff_asset(&mut d, noise(3_000).into_iter().rev().collect());
     let small = tiff_asset(&mut d, vec![0; 500]);
     // Room for the JSON, the small asset and one 3 000-byte asset, not two.
-    let json_len = serde_json::to_vec_pretty(&d).unwrap().len() as u64;
+    // `save` writes the JSON compact (#2316): measure it the same way.
+    let json_len = serde_json::to_vec(&d).unwrap().len() as u64;
     let tight = Limits { json: 256 << 20, asset: 4_000, total: json_len + 500 + 500 + 4_000 };
 
     let saved = save_within(&d, None, LARGE_ENTRY, tight).unwrap();
@@ -329,6 +330,22 @@ fn one_place_picks_the_oldest_reader_that_keeps_the_document() {
     g.layer_options = Some(GraphicLayerOptions { layers: vec![[("Name".to_string(), "Art".to_string())].into()], ..Default::default() });
     assert_eq!(required_version(&d), 4, "retained graphic layer options need version 4 even with EPS");
     assert_eq!(required_version(&load(&save(&d).unwrap()).unwrap()), 4);
+}
+
+/// `document.json` is written compact. Indented, a 54-page brand book was 315 MB against 69 MB of
+/// data, past the 256 MiB the reader accepts, so DesignCraft saved a file it could not reopen.
+#[test]
+fn document_json_is_written_compact_and_reads_back() {
+    let mut d = Document::new(&NewDocument { pages: 3, ..Default::default() });
+    let lid = d.default_layer();
+    d.add_text_frame(SpreadRef::Doc(0), Rect::new(10.0, 10.0, 200.0, 200.0), lid, "compact", ParaFormat::default()).unwrap();
+    let bytes = save(&d).unwrap();
+    let mut z = zip::ZipArchive::new(Cursor::new(&bytes[..])).unwrap();
+    let mut json = String::new();
+    std::io::Read::read_to_string(&mut z.by_name("document.json").unwrap(), &mut json).unwrap();
+    assert!(!json.contains('\n'), "no line breaks");
+    assert!(!json.contains("  "), "no indentation");
+    assert_eq!(load(&bytes).unwrap().page_count(), 3);
 }
 
 #[test]
