@@ -1248,6 +1248,20 @@ pub fn compose_story(doc: &Document, sid: StoryId, opts: &ComposeOptions) -> Com
     compose_story_at(doc, sid, opts, 0, &mut HashMap::new())
 }
 
+/// Where the frame `fid` of story `sid` sits, when it is anchored in another story and not on a
+/// spread itself. `None` for a spread item or a frame no host places.
+pub fn frame_placement(doc: &Document, sid: StoryId, fid: ItemId) -> Option<Placement> {
+    frame_placement_with(doc, sid, fid, &mut |host| Arc::new(compose_story(doc, host, &ComposeOptions::default())))
+}
+
+/// [`frame_placement`] with the caller supplying (and caching) the composed host stories.
+pub fn frame_placement_with(doc: &Document, sid: StoryId, fid: ItemId, host: &mut dyn FnMut(StoryId) -> Arc<ComposedStory>) -> Option<Placement> {
+    if doc.find(fid).is_some() {
+        return None;
+    }
+    placed::placements(doc, sid, host).into_iter().find_map(|(id, placement)| (id == fid).then_some(placement))
+}
+
 /// [`compose_story`] for a story `depth` hosts down from the story asked for. `hosts` holds the
 /// hosts already composed (by story and depth) while composing the story asked for, so a host
 /// that many anchored frames lead to is composed once.

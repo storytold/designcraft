@@ -282,7 +282,7 @@ mod tests {
     /// The app's frame as far as shortcuts go: key dispatch, then the open dialog.
     fn harness(app: DesignApp) -> Harness<'static, DesignApp> {
         let mut ready = false;
-        let mut h = Harness::builder().with_size(vec2(1280.0, 860.0)).build_ui_state(
+        let mut h = Harness::builder().allow_missing_glyphs().with_size(vec2(1280.0, 860.0)).build_ui_state(
             move |ui, app: &mut DesignApp| {
                 if !ready {
                     crate::theme::install_fonts(ui.ctx(), &app.ui.language);
