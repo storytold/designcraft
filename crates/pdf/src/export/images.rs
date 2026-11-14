@@ -214,6 +214,7 @@ mod image_content_cache_tests {
             doc,
             cache,
             composed: HashMap::new(),
+            story_text_indices: HashMap::new(),
             opts,
             clip: Rect::ZERO,
             warnings: Vec::new(),
@@ -236,6 +237,9 @@ mod image_content_cache_tests {
             tag_story: None,
             text_area: None,
             para_tags: HashMap::new(),
+            table_context: None,
+            cell_para_tags: HashMap::new(),
+            table_parents: Vec::new(),
         }
     }
     #[test]

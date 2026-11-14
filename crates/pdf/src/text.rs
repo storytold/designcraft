@@ -28,7 +28,19 @@ use krilla::surface::Surface;
 use krilla::tagging::{Artifact, ArtifactType, ContentTag, SpanTag};
 use krilla::text::{Font, GlyphId, KrillaGlyph};
 
-use crate::export::{Exporter, solid_fill, tf, to_path};
+use crate::export::{CellParagraphKey, Exporter, MAX_TAGGED_TABLE_DEPTH, TableContext, solid_fill, tf, to_path};
+
+/// Where a cell text run's tagged paragraph starts: text after a nested table is its own paragraph.
+fn cell_run_start(text: &designcraft_doc::Story, byte: usize) -> usize {
+    let paragraph = text.para_ranges().get(text.para_at(byte)).map_or(0, |range| range.start);
+    text.tables
+        .keys()
+        .filter_map(|&table| text.table_anchor(table))
+        .filter(|anchor| *anchor < byte && *anchor >= paragraph)
+        .map(|anchor| anchor.saturating_add(designcraft_doc::TABLE_ANCHOR.len_utf8()))
+        .max()
+        .unwrap_or(paragraph)
+}
 
 impl Exporter<'_> {
     /// A text run's paint: solid, or a gradient spanning the frame's box (`area`, text space),
@@ -224,11 +236,45 @@ impl Exporter<'_> {
     fn tagged_run(&mut self, s: &mut Surface, cs: &ComposedStory, gs: &[PlacedGlyph], baseline: f64, story: &str) {
         match self.tag_story {
             Some(sid) => {
-                let pi = self.doc.story(sid).map_or(0, |st| st.para_at(gs[0].byte.min(st.len())));
+                let has_table_context = self.table_context.is_some();
+                let text_index = self.story_text_index(sid);
+                let start = if !has_table_context {
+                    text_index.map_or(0, |index| {
+                        let pi = index.paragraph_ranges.partition_point(|range| range.start <= gs[0].byte).saturating_sub(1);
+                        let paragraph = index.paragraph_ranges.get(pi).map_or(0, |range| range.start);
+                        index
+                            .table_anchors
+                            .values()
+                            .copied()
+                            .filter(|anchor| *anchor < gs[0].byte && *anchor >= paragraph)
+                            .map(|anchor| anchor.saturating_add(designcraft_doc::TABLE_ANCHOR.len_utf8()))
+                            .max()
+                            .unwrap_or(paragraph)
+                    })
+                } else {
+                    0
+                };
                 let id = s.start_tagged(ContentTag::Span(SpanTag::empty()));
                 self.run(s, cs, gs, baseline, story);
                 s.end_tagged();
-                self.para_tags.entry((sid, pi)).or_default().push(id);
+                if let Some(context) = self.table_context {
+                    let paragraph = self
+                        .context_table(sid, context)
+                        .and_then(|table| table.cell(context.row, context.col))
+                        .map_or(0, |cell| cell_run_start(&cell.text, gs[0].byte));
+                    let key = CellParagraphKey {
+                        story: sid,
+                        table: context.table,
+                        anchor: context.anchor,
+                        row: context.row,
+                        col: context.col,
+                        parent: context.parent,
+                        paragraph,
+                    };
+                    self.cell_para_tags.entry(key).or_default().push(id);
+                } else {
+                    self.para_tags.entry((sid, start)).or_default().push(id);
+                }
             }
             None => self.run(s, cs, gs, baseline, story),
         }
@@ -286,10 +332,10 @@ impl Exporter<'_> {
                     }
                 }
             }
-            if !ft.tables.is_empty() {
-                me.tables(s, ft);
-            }
         });
+        if !ft.tables.is_empty() {
+            self.tables(s, ft);
+        }
         // Anchored objects under the text (as InDesign draws them): a picture whose frame reaches
         // into the next line doesn't hide that line. Objects keep their page-space transforms.
         let drawn = match objects {
@@ -337,29 +383,63 @@ impl Exporter<'_> {
     /// One table cell's graphic, or its text composed in the cell's own area.
     fn table_cell(&mut self, s: &mut Surface, c: &designcraft_compose::PlacedCell) {
         if let Some(g) = &c.graphic {
-            if let Some(clip) = to_path(&c.clip.to_path(0.1)) {
-                s.push_clip_path(&clip, &krilla::paint::FillRule::NonZero);
-                s.push_transform(&tf(Affine::translate((c.clip.x0, c.clip.y0))));
-                self.graphic(s, g, None);
-                s.pop();
-                s.pop();
-            }
+            self.as_artifact(s, |me, s| {
+                if let Some(clip) = to_path(&c.clip.to_path(0.1)) {
+                    s.push_clip_path(&clip, &krilla::paint::FillRule::NonZero);
+                    s.push_transform(&tf(Affine::translate((c.clip.x0, c.clip.y0))));
+                    me.graphic(s, g, None);
+                    s.pop();
+                    s.pop();
+                }
+            });
         } else if let Some(cft) = c.text.frames.first() {
             s.push_transform(&tf(Affine::translate(c.origin.to_vec2())));
             let area = std::mem::replace(&mut self.text_area, lines_area(cft));
-            self.frame_text(s, &c.text, cft, &c.source, None);
+            let prior = self.table_context;
+            self.table_context = prior.map(|context| TableContext { row: c.row, col: c.col, ..context });
+            if c.repeated {
+                self.as_artifact(s, |me, s| {
+                    me.frame_text(s, &c.text, cft, &c.source, None);
+                });
+            } else {
+                self.frame_text(s, &c.text, cft, &c.source, None);
+            }
+            self.table_context = prior;
             self.text_area = area;
             s.pop();
         }
     }
 
-    /// Table fragments: cell fills, cell text (real text), edges and the border.
+    /// The frame's table fragments.
     fn tables(&mut self, s: &mut Surface, ft: &FrameText) {
+        if self.tag_story.is_some() && self.table_context.is_some_and(|context| self.table_depth(context) + 1 >= MAX_TAGGED_TABLE_DEPTH) {
+            self.as_artifact(s, |me, s| me.tables(s, ft));
+            return;
+        }
         for t in &ft.tables {
+            match self.tag_story {
+                // A table in an anchored frame belongs to another story, which the
+                // structure tree doesn't walk: untaggable, so an artifact.
+                Some(sid) if !self.table_is_reachable(sid, self.table_context, t) => self.as_artifact(s, |me, s| me.table_fragment(s, t)),
+                _ => self.table_fragment(s, t),
+            }
+        }
+    }
+
+    /// One table fragment: cell fills, cell text (real text), edges and the border.
+    fn table_fragment(&mut self, s: &mut Surface, t: &designcraft_compose::TableFrag) {
+        let anchor_story = self.tag_story;
+        let previous = self.table_context;
+        let mut parent = None;
+        if anchor_story.is_some() {
+            parent = previous.map(|context| self.table_parent(context));
+            self.table_context = Some(TableContext { table: t.table, anchor: t.anchor, row: 0, col: 0, parent });
+        }
+        self.as_artifact(s, |me, s| {
             for c in &t.cells {
                 if let Some((sw, tint)) = &c.fill {
                     let fill = designcraft_doc::Fill { swatch: sw.clone(), tint: *tint, ..designcraft_doc::Fill::none() };
-                    if let Some(paint) = self.fill_paint(&fill, t.rect)
+                    if let Some(paint) = me.fill_paint(&fill, t.rect)
                         && let Some(path) = to_path(&c.rect.to_path(0.1))
                     {
                         s.set_stroke(None);
@@ -369,13 +449,19 @@ impl Exporter<'_> {
                     }
                 }
             }
-            for c in &t.cells {
-                self.table_cell(s, c);
+        });
+        for c in &t.cells {
+            if anchor_story.is_some() {
+                self.table_context = Some(TableContext { table: t.table, anchor: t.anchor, row: c.row, col: c.col, parent });
             }
+            self.table_cell(s, c);
+        }
+        self.table_context = previous;
+        self.as_artifact(s, |me, s| {
             for seg in &t.strokes {
                 let st = &seg.stroke;
-                let Some(col) = self.swatch_color(&st.color, st.tint) else { continue };
-                let kind = self.doc.stroke_kind(&st.kind);
+                let Some(col) = me.swatch_color(&st.color, st.tint) else { continue };
+                let kind = me.doc.stroke_kind(&st.kind);
                 let mut bp = BezPath::new();
                 bp.move_to(seg.a);
                 bp.line_to(seg.b);
@@ -389,7 +475,7 @@ impl Exporter<'_> {
                 // Gap colour under dashes, dots and stripes: the whole edge, solid.
                 if !matches!(kind, designcraft_doc::StrokeType::Solid)
                     && st.gap_color != designcraft_color::swatch::NONE
-                    && let Some(gap) = self.swatch_color(&st.gap_color, st.gap_tint)
+                    && let Some(gap) = me.swatch_color(&st.gap_color, st.gap_tint)
                 {
                     s.set_fill(None);
                     s.set_stroke(Some(Stroke {
@@ -433,7 +519,7 @@ impl Exporter<'_> {
                 s.draw_path(&p);
                 s.set_stroke(None);
             }
-        }
+        });
     }
 
     fn fill_rect(&self, s: &mut Surface, r: Rect, c: krilla::color::Color) {
