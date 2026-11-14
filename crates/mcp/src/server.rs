@@ -1,6 +1,6 @@
 //! JSON-RPC 2.0 framing and the MCP lifecycle / tools / resources methods.
 
-use std::io::{BufRead, Write};
+use std::io::{BufRead, Read, Write};
 
 use serde_json::{Value, json};
 
@@ -17,6 +17,30 @@ const METHOD_NOT_FOUND: i64 = -32601;
 const INVALID_PARAMS: i64 = -32602;
 const INTERNAL_ERROR: i64 = -32603;
 const RESOURCE_NOT_FOUND: i64 = -32002;
+
+/// Most bytes one request line may hold. A client that never sends a newline must not grow the
+/// reader's buffer without bound (audit: DesignCraft #3).
+const MAX_LINE_BYTES: u64 = 4 << 20;
+
+/// Drop the rest of an over-long request line without buffering it.
+fn discard_line(input: &mut impl BufRead) -> std::io::Result<()> {
+    loop {
+        let (consume, done) = {
+            let available = input.fill_buf()?;
+            if available.is_empty() {
+                return Ok(());
+            }
+            match available.iter().position(|&b| b == b'\n') {
+                Some(i) => (i + 1, true),
+                None => (available.len(), false),
+            }
+        };
+        input.consume(consume);
+        if done {
+            return Ok(());
+        }
+    }
+}
 
 const INSTRUCTIONS: &str = "DesignCraft is a page-layout app (an InDesign clone). Coordinates are points in spread \
 space (y down; on a single-page spread the page's top-left is (0,0); a default Letter page is 612×792). Every action \
@@ -63,8 +87,18 @@ impl Server {
         let mut buf = Vec::new();
         loop {
             buf.clear();
-            if input.read_until(b'\n', &mut buf)? == 0 {
+            // A client that never sends a newline must not grow this buffer without bound
+            // (audit: DesignCraft #3). Read one byte past the limit, then drop the rest.
+            if (&mut input).take(MAX_LINE_BYTES + 1).read_until(b'\n', &mut buf)? == 0 {
                 break;
+            }
+            if buf.len() as u64 > MAX_LINE_BYTES {
+                discard_line(&mut input)?;
+                let reply = error(Value::Null, INVALID_REQUEST, "request line is too long");
+                output.write_all(reply.as_bytes())?;
+                output.write_all(b"\n")?;
+                output.flush()?;
+                continue;
             }
             // Invalid UTF-8 becomes U+FFFD, so the line gets a parse error instead of ending the stream.
             let line = String::from_utf8_lossy(&buf);
