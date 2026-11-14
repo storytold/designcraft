@@ -684,10 +684,11 @@ impl Session {
         if spec.undoable
             && let Some(st) = self.active_mut()
             && st.interaction.is_none()
-            && st.doc.spreads.iter().any(|sp| sp.items.iter().any(|i| i.live_caption.is_some()))
+            && cmd::captions::has_live(&st.doc)
         {
             let mut d = (*st.doc).clone();
             if cmd::captions::refresh_live(&mut d) {
+                cmd::captions::clamp_text_selection(&d, &mut st.selection);
                 st.doc = Arc::new(d);
             }
         }
