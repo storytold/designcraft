@@ -86,7 +86,10 @@ pub fn color_at(app: &mut DesignApp, ctx: &egui::Context, pos: Pos2) -> Option<[
     let placed: Vec<designcraft_render::Placed> = layout.slots.iter().map(|s| designcraft_render::Placed { spread: s.spread, xf: s.xf }).collect();
     let ppp = ctx.pixels_per_point() as f64;
     let view = Affine::scale(ppp) * Affine::scale(xf.zoom) * Affine::translate((-at.x, -at.y));
-    let opts = screen_options(app, &layout, app.ui.screen_mode != ScreenMode::Normal, ppp);
+    let mut opts = screen_options(app, &layout, app.ui.screen_mode != ScreenMode::Normal, ppp);
+    // The colour picked is applied: an image still decoding is decoded for it here, rather than
+    // sampling the placeholder or a coarser stand-in the canvas shows meanwhile.
+    opts.defer_images = false;
     let mut img = app.canvas.patcher.render(&doc, &app.session.cache, &placed, (1, 1), view, &opts);
     // The colour as the canvas shows it (proofed).
     screen_post(app, &mut img);
@@ -115,6 +118,7 @@ pub(super) fn screen_options(app: &DesignApp, layout: &CanvasLayout, preview: bo
         overprint_preview: app.ui.overprint_preview,
         blend_space_view: !app.ui.proof_colors,
         document_grid: if app.ui.document_grid && !preview { grid_areas(layout) } else { vec![] },
+        defer_images: true,
         ..Default::default()
     }
 }
@@ -182,6 +186,26 @@ pub(super) fn invalidate_on_display_change(app: &mut DesignApp) {
     }
 }
 
+/// How often the canvas renders again for images decoded in the background: a page of photos
+/// decoding one after another renders a few times, not once per photo.
+pub(super) const IMAGE_BATCH_MS: f64 = 250.0;
+
+/// The image generation the canvas renders with, given the `live` one: `seen` (generation, when
+/// taken) moves to `live` at most every [`IMAGE_BATCH_MS`], and not while a render is in
+/// flight (it would be dropped for the newer one and never shown; finishing it repaints). Also
+/// returns how long to wait (ms) before asking again when `live` is newer.
+pub(super) fn image_generation(seen: &mut (u64, f64), live: u64, now: f64, rendering: bool) -> (u64, Option<f64>) {
+    if live == seen.0 || rendering {
+        return (seen.0, None);
+    }
+    let wait = seen.1 + IMAGE_BATCH_MS - now;
+    if wait <= 0.0 {
+        *seen = (live, now);
+        return (live, None);
+    }
+    (seen.0, Some(wait))
+}
+
 /// Keep the canvas texture current. Panning inside the overscanned region just shifts the
 /// texture; zooming shows the old texture scaled until the background render arrives; document
 /// edits render synchronously so editing never lags.
@@ -191,26 +215,6 @@ pub(super) fn render_texture(app: &mut DesignApp, ctx: &egui::Context, rect: Rec
     let ppp = ctx.pixels_per_point() as f64;
     let doc_key = (st.uid, std::sync::Arc::as_ptr(&st.doc) as u64, st.revision, preview);
     let editing_parents = st.editing_parents;
-    // Overscan: 25% of the viewport on every side, within the GPU's maximum texture size.
-    let max_side = ctx.input(|i| i.max_texture_side) as f32 / ppp as f32;
-    let (ow, oh) =
-        ((rect.width() * 0.25).min((max_side - rect.width()) / 2.0).max(0.0), (rect.height() * 0.25).min((max_side - rect.height()) / 2.0).max(0.0));
-    let want = |origin: Point| crate::Shown {
-        doc: doc_key,
-        editing_parents,
-        origin: Point::new(origin.x - ow as f64 / xf.zoom, origin.y - oh as f64 / xf.zoom),
-        zoom: xf.zoom,
-        size: (rect.width() + 2.0 * ow, rect.height() + 2.0 * oh),
-    };
-    let target = want(xf.origin);
-    // Does the current texture cover the viewport at this zoom and document state?
-    let covers = |s: &crate::Shown| {
-        s.doc == doc_key && s.editing_parents == editing_parents && (s.zoom - xf.zoom).abs() < 1e-9 && {
-            let x0 = (xf.origin.x - s.origin.x) * s.zoom;
-            let y0 = (xf.origin.y - s.origin.y) * s.zoom;
-            x0 >= -0.5 && y0 >= -0.5 && x0 + rect.width() as f64 <= s.size.0 as f64 + 0.5 && y0 + rect.height() as f64 <= s.size.1 as f64 + 0.5
-        }
-    };
     // Collect finished background renders.
     #[cfg(not(target_arch = "wasm32"))]
     if let (Some(w), Some((tok, shown))) = (app.canvas.worker.as_ref(), app.canvas.pending)
@@ -225,6 +229,35 @@ pub(super) fn render_texture(app: &mut DesignApp, ctx: &egui::Context, rect: Rec
         app.canvas.low_quality = false;
         app.perf.render_ms = done.ms;
     }
+    let images = {
+        let live = designcraft_render::images::generation();
+        let (images, wait) = image_generation(&mut app.canvas.images, live, crate::now_ms(), app.canvas.pending.is_some());
+        if let Some(after) = wait.and_then(|ms| std::time::Duration::try_from_secs_f64(ms / 1000.0).ok()) {
+            ctx.request_repaint_after(after);
+        }
+        images
+    };
+    // Overscan: 25% of the viewport on every side, within the GPU's maximum texture size.
+    let max_side = ctx.input(|i| i.max_texture_side) as f32 / ppp as f32;
+    let (ow, oh) =
+        ((rect.width() * 0.25).min((max_side - rect.width()) / 2.0).max(0.0), (rect.height() * 0.25).min((max_side - rect.height()) / 2.0).max(0.0));
+    let want = |origin: Point| crate::Shown {
+        doc: doc_key,
+        editing_parents,
+        origin: Point::new(origin.x - ow as f64 / xf.zoom, origin.y - oh as f64 / xf.zoom),
+        zoom: xf.zoom,
+        size: (rect.width() + 2.0 * ow, rect.height() + 2.0 * oh),
+        images,
+    };
+    let target = want(xf.origin);
+    // Does the current texture cover the viewport at this zoom and document state?
+    let covers = |s: &crate::Shown| {
+        s.doc == doc_key && s.editing_parents == editing_parents && s.images == images && (s.zoom - xf.zoom).abs() < 1e-9 && {
+            let x0 = (xf.origin.x - s.origin.x) * s.zoom;
+            let y0 = (xf.origin.y - s.origin.y) * s.zoom;
+            x0 >= -0.5 && y0 >= -0.5 && x0 + rect.width() as f64 <= s.size.0 as f64 + 0.5 && y0 + rect.height() as f64 <= s.size.1 as f64 + 0.5
+        }
+    };
     let expected_resolution = app.canvas.shown.zip(app.canvas.texture.as_ref()).is_some_and(|(sh, tex)| {
         let expected = crate::widgets::fit_texture_size(canvas_pixels(sh, ppp), ctx.input(|i| i.max_texture_side));
         tex.size() == expected
@@ -283,7 +316,6 @@ pub(super) fn render_texture(app: &mut DesignApp, ctx: &egui::Context, rect: Rec
         let t0 = crate::now_ms();
         let Some((doc, placed, w, h, view, opts)) = job(app) else { return };
         let img = app.canvas.renderer.render(&doc, &app.session.cache, &placed, (w, h), view, &opts);
-        designcraft_render::images::trim_originals();
         upload(app, ctx, img);
         app.canvas.shown = Some(target);
         app.canvas.shown_doc = Some(doc);
@@ -298,7 +330,7 @@ pub(super) fn render_texture(app: &mut DesignApp, ctx: &egui::Context, rect: Rec
     {
         // Already rendering this view?
         if app.canvas.pending.is_some_and(|(_, p)| {
-            p.doc == doc_key && p.editing_parents == editing_parents && (p.zoom - xf.zoom).abs() < 1e-9 && {
+            p.doc == doc_key && p.editing_parents == editing_parents && p.images == images && (p.zoom - xf.zoom).abs() < 1e-9 && {
                 let x0 = (xf.origin.x - p.origin.x) * p.zoom;
                 let y0 = (xf.origin.y - p.origin.y) * p.zoom;
                 x0 >= 0.0 && y0 >= 0.0 && x0 + rect.width() as f64 <= p.size.0 as f64 && y0 + rect.height() as f64 <= p.size.1 as f64
@@ -395,6 +427,9 @@ pub(super) fn patch_texture(app: &mut DesignApp, layout: &CanvasLayout, ppp: f64
 
 #[cfg(not(target_arch = "wasm32"))]
 fn render_worker_spawn(ctx: &egui::Context) -> Option<crate::render_worker::Worker> {
+    // Images decoded in the background are drawn by the next render.
+    let wake = ctx.clone();
+    designcraft_render::images::set_waker(move || wake.request_repaint());
     if std::env::var_os("DESIGNCRAFT_SYNC_RENDER").is_some() {
         return None;
     }

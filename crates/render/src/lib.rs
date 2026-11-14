@@ -31,6 +31,7 @@ pub mod glyphs;
 mod grid;
 mod pdf_bounds;
 mod pdf_layers;
+pub mod proxy;
 pub use pdf_layers::{pdf_hide_layers, pdf_layers};
 
 mod color;
@@ -38,6 +39,7 @@ mod decode;
 mod draw;
 mod driver;
 mod pdf_raster;
+mod prepare;
 mod stroke;
 mod types;
 
@@ -48,7 +50,6 @@ use decode::halve;
 pub use decode::{decode_pixmap, decode_pixmap_page, image_mime, image_size, natural_size};
 #[cfg(test)]
 use pdf_raster::PDF_RENDERS;
-pub(crate) use pdf_raster::pdf_raster_size;
 pub use pdf_raster::{
     PdfRasterError, check_pdf_input_size, crop_pixmap, is_pdf, pdf_crop_box, pdf_page_box, pdf_page_count, pdf_page_png, pdf_page_png_checked,
     pdf_page_png_options_checked, pdf_page_size, pdf_page_sizes, render_pdf_page, shown_box,
@@ -154,6 +155,7 @@ impl Default for RenderOptions {
             overprint_preview: false,
             blend_space_view: false,
             document_grid: vec![],
+            defer_images: false,
         }
     }
 }
@@ -170,6 +172,8 @@ pub struct Renderer {
     cmyk_view: Option<blendspace::CachedView>,
     /// Whether the last render ran the CMYK ink passes (only then is its view worth keeping).
     cmyk_ran: bool,
+    /// Whether the last render drew an image still decoding in the background (a stand-in).
+    images_pending: bool,
     /// Drop shadow and outer glow images kept between renders.
     kept: fx::KeptEffects,
     #[cfg(test)]

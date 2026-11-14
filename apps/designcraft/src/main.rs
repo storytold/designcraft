@@ -56,7 +56,6 @@ impl eframe::App for App {
         // Queue/deadline work only. A hidden `run_logic` tick also reports pass index zero, so
         // startup counters and native-menu polling must not live here.
         self.app.logic(ctx);
-        designcraft_render::images::set_preview_enabled(!no_prefs() && self.app.ui.persist_image_previews);
         self.startup.leave();
     }
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
@@ -451,10 +450,6 @@ fn main() -> std::process::ExitCode {
                     app.status(format!("Recovered {n} unsaved document{} from the last session.", if n == 1 { "" } else { "s" }));
                 }
                 load_prefs(&mut app);
-                // Apply the saved opt-out before directory installation, which may prune
-                // old previews. Disabled persistence must not access or delete cache files.
-                designcraft_render::images::set_preview_enabled(!no_prefs() && app.ui.persist_image_previews);
-                designcraft_render::images::set_preview_directory(if no_prefs() { None } else { profile::config_dir().map(|d| d.join("Previews")) });
                 // After `load_prefs`, which replaces the UI state and with it the status line.
                 if let Some(note) = portable_note {
                     app.status(note);

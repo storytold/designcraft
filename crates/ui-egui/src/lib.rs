@@ -122,6 +122,13 @@ struct InputGeneration {
 struct PendingDrop {
     path: String,
     pointer: Option<egui::Pos2>,
+    /// Where the system said the pointer was in the window when this drop's raw input arrived,
+    /// for a drop that brought no pointer events ([`crate::Services::pointer`]). Each drop keeps
+    /// its own, converted with the window's place and the UI scale of that input.
+    system: Option<egui::Pos2>,
+    /// Which drop this file came with: files of one raw input share it, so drops that arrive
+    /// before the same UI pass stay separate.
+    batch: u64,
     generation: InputGeneration,
 }
 
@@ -139,8 +146,16 @@ struct ShotRequest {
     slot: Option<craft_ui::capture::CaptureSlot>,
 }
 
+/// A save that waits for the checks of document `uid`'s linked files ([`DesignApp::waiting_save`]).
+pub(crate) struct WaitingSave {
+    pub(crate) uid: u64,
+    pub(crate) save: Box<dyn FnOnce(&mut DesignApp) -> Result<Value, String>>,
+}
+
 pub struct DesignApp {
     pending_pdf: Option<ImportedFile>,
+    /// The files of the batch after `pending_pdf`, which wait for its Import Options.
+    pending_pdf_rest: Vec<ImportedFile>,
     /// File and message dialogs: asked for during a frame, shown by the host at its end, answered
     /// on a later frame (see `app/file_dialogs.rs`).
     #[cfg(not(target_arch = "wasm32"))]
@@ -294,15 +309,17 @@ pub struct DesignApp {
     /// What the canvas recorded for this pass's IME observation, applied at the end of the pass.
     pub(crate) ime_canvas: Option<canvas::CanvasIme>,
     /// Quit was chosen: close the window on the next frame, as its close button does.
-    quit_requested: bool,
-    /// The root close event passed the unsaved-document checks in the current frame.
     native_close_approved: bool,
+    quit_requested: bool,
     /// An OS close event deferred while a synthetic gesture or native action is pending.
     close_requested_pending: bool,
     /// Close the window without asking about unsaved changes (the control channel's `app.quit`).
     pub(crate) quit_without_asking: bool,
     /// No document is discarded until every unsaved document has an up-to-date approval.
     quitting: Option<QuitState>,
+    /// A save asked for while the open-time checks of the document's linked files run: it runs
+    /// once they are done, so the first save already writes the links they confirm.
+    pub(crate) waiting_save: Option<WaitingSave>,
     /// The tool cursor bitmaps handed to the OS.
     pub cursors: cursors::Images,
     /// A panel's live preview (a slider being dragged), committed when it is let go.

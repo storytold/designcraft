@@ -9,8 +9,6 @@ description = "DesignCraft placed-graphic decoding: raster formats (PNG, JPEG, G
 workspace = true
 
 [dependencies]
-# Metadata-only eligibility checks; shared codecs continue to decode the pixels.
-tiff = { workspace = true }
 craft-eps = { workspace = true }
 craft-svg = { workspace = true }
 designcraft-color = { workspace = true }
@@ -30,3 +28,4 @@ jpeg-decoder = { version = "0.3", default-features = false }
 image = { workspace = true, features = ["png", "jpeg", "webp", "gif", "tiff", "bmp"] }
 designcraft-fonts = { workspace = true, features = ["testing"] }
 flate2 = "1"
+tiff = { workspace = true }

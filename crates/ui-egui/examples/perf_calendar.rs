@@ -22,10 +22,7 @@ fn frame(app: &mut DesignApp, ctx: &egui::Context) -> f64 {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
-    let path = args.next().ok_or("usage: perf_calendar DOCUMENT [CACHE_DIRECTORY]")?;
-    if let Some(path) = args.next() {
-        designcraft_render::images::set_preview_directory(Some(path.into()));
-    }
+    let path = args.next().ok_or("usage: perf_calendar DOCUMENT")?;
     let started = Instant::now();
     let mut session = Session::new();
     session.execute("file.open", &json!({"path": path}))?;

@@ -34,10 +34,7 @@ fn settle(app: &mut DesignApp, ctx: &egui::Context) -> Result<Vec<f64>, Box<dyn 
 }
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
-    let path = args.next().ok_or("usage: perf_drag DOCUMENT [PREVIEW_CACHE]")?;
-    if let Some(dir) = args.next() {
-        designcraft_render::images::set_preview_directory(Some(dir.into()));
-    }
+    let path = args.next().ok_or("usage: perf_drag DOCUMENT")?;
     let mut s = Session::new();
     s.execute("file.open", &json!({"path":path}))?;
     let st = s.active().ok_or("no document")?;

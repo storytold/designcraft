@@ -52,7 +52,6 @@ impl Worker {
                     }
                     let t0 = crate::now_ms();
                     let image = r.render(&job.doc, &job.cache, &job.placed, (job.w, job.h), job.view, &job.opts);
-                    designcraft_render::images::trim_originals();
                     if image.width == 0 || job.opts.cancellation.as_ref().is_some_and(designcraft_render::Cancellation::cancelled) {
                         continue;
                     }

@@ -1,8 +1,10 @@
 use super::color::{PLATE, RICH_BLACK, blend_space_view, rect_overlaps};
 use super::decode::now;
+use super::draw::wanted_images;
 use super::types::{Frame, FrameStats, MAX_PAGE_PIXELS, MAX_SIDE, Placed, RenderOptions, Rendered, default_threads};
 use super::{
-    Affine, Cache, Document, HashMap, PageSide, Rect, RenderContext, Renderer, Resources, SpreadRef, Vec2, blendspace, kurbo, peniko, text, vello_cpu,
+    Affine, Cache, Document, HashMap, PageSide, Rect, RenderContext, Renderer, Resources, SpreadRef, Vec2, blendspace, images, kurbo, peniko, text,
+    vello_cpu,
 };
 
 impl Renderer {
@@ -15,6 +17,7 @@ impl Renderer {
             drawing_items: Vec::new(),
             cmyk_view: None,
             cmyk_ran: false,
+            images_pending: false,
             kept: Default::default(),
             #[cfg(test)]
             cmyk_passes: 0,
@@ -38,6 +41,12 @@ impl Renderer {
         self.kept.clear();
     }
 
+    /// Whether the last render drew an image still decoding in the background in its place
+    /// ([`RenderOptions::defer_images`]): render again when [`images::generation`] advances.
+    pub fn images_pending(&self) -> bool {
+        self.images_pending
+    }
+
     /// Number of text frames whose glyph paths are cached.
     pub fn cached_frames(&self) -> usize {
         self.glyphs.len()
@@ -50,6 +59,8 @@ impl Renderer {
         RICH_BLACK.with(|r| r.set(opts.rich_black));
         PLATE.with(|p| p.set(opts.plate));
         self.kept.begin(doc);
+        // A kept view had every image drawn.
+        self.images_pending = false;
         if let Some(hit) =
             self.cmyk_view.as_ref().filter(|entry| !opts.cancelled() && entry.matches(doc, spreads, width, height, view, opts, self.threads))
         {
@@ -61,9 +72,13 @@ impl Renderer {
         // Release the old snapshot before rendering an edited document or resized viewport.
         self.cmyk_view = None;
         self.cmyk_ran = false;
+        images::take_deferred();
         let image = self.render_uncached(doc, cache, spreads, size, view, opts);
-        // Kept only when the ink passes ran: other views render at their usual cost anyway.
-        if self.cmyk_ran && !image.pixels.is_empty() && !opts.cancelled() && image.pixels.len() <= blendspace::CachedView::MAX_BYTES {
+        // Kept only when the ink passes ran: other views render at their usual cost anyway. Not
+        // with images still decoding: the next render must show them.
+        let deferred = images::take_deferred();
+        self.images_pending = deferred;
+        if self.cmyk_ran && !deferred && !image.pixels.is_empty() && !opts.cancelled() && image.pixels.len() <= blendspace::CachedView::MAX_BYTES {
             self.cmyk_view = Some(blendspace::CachedView::new(doc, spreads, view, opts, &image, self.stats, self.threads));
         }
         self.stats.micros = now().saturating_sub(start);
@@ -104,20 +119,30 @@ impl Renderer {
         }
         let px = 1.0 / view.determinant().abs().sqrt().max(1e-12);
         let canvas_visible = view.inverse().transform_rect_bbox(Rect::new(0.0, 0.0, w as f64, h as f64));
-        for pl in spreads {
+        let frames: Vec<(Frame, SpreadRef)> = spreads
+            .iter()
+            .filter_map(|pl| {
+                let sp = doc.spread(pl.spread)?;
+                let visible = pl.xf.inverse().transform_rect_bbox(canvas_visible);
+                // Cull spreads far outside the viewport (pasteboard items may extend; allow a margin).
+                rect_overlaps(sp.bounds().inflate(2000.0, 2000.0), visible)
+                    .then_some((Frame { doc, cache, view: view * pl.xf, visible, px, opts, mt }, pl.spread))
+            })
+            .collect();
+        // Decode the images in view that aren't cached yet together, before drawing them. The
+        // canvas doesn't wait: it decodes them in the background ([`images::mip_now`]).
+        if images::can_warm() && !opts.defer_images {
+            let mut wanted = Vec::new();
+            for (f, sr) in &frames {
+                wanted_images(f, *sr, &mut wanted);
+            }
+            images::warm(wanted);
+        }
+        for (f, sr) in &frames {
             if opts.cancelled() {
                 break;
             }
-            let Some(sp) = doc.spread(pl.spread) else { continue };
-            let sview = view * pl.xf;
-            let visible = pl.xf.inverse().transform_rect_bbox(canvas_visible);
-            let bounds = sp.bounds();
-            // Cull spreads far outside the viewport (pasteboard items may extend; allow a margin).
-            if !rect_overlaps(bounds.inflate(2000.0, 2000.0), visible) {
-                continue;
-            }
-            let f = Frame { doc, cache, view: sview, visible, px, opts, mt };
-            self.draw_spread(&mut ctx, &f, pl.spread);
+            self.draw_spread(&mut ctx, f, *sr);
         }
         if opts.cancelled() {
             self.cmyk_ran = false;

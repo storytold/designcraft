@@ -23,6 +23,9 @@ pub(crate) struct Settings {
 impl Settings {
     pub fn coarse(mut self) -> Self {
         self.options.greek_below_px = 3.0;
+        // A coarse preview is cached until revision/settings change; its worker must finish
+        // image decoding rather than caching a temporary canvas placeholder indefinitely.
+        self.options.defer_images = false;
         if self.options.quality == designcraft_render::DisplayQuality::High {
             self.options.quality = designcraft_render::DisplayQuality::Typical;
         }
@@ -69,7 +72,6 @@ fn render(job: Job) -> Done {
         }
         Some(image)
     });
-    designcraft_render::images::trim_originals();
     Done { generation: job.generation, spread: job.slot.spread, image }
 }
 
@@ -110,6 +112,7 @@ pub(crate) struct Previews {
     failed: HashSet<SpreadRef>,
     clock: u64,
     pending: bool,
+    colour: u64,
     pub rendered: u64,
     pub reused: u64,
     #[cfg(not(target_arch = "wasm32"))]
@@ -139,16 +142,19 @@ impl Previews {
     }
 
     pub fn begin(&mut self, uid: u64, revision: u64, doc: Arc<Document>, settings: Settings, ctx: &egui::Context) {
+        let colour = designcraft_color::cms::generation();
         if self.uid != uid
             || self.revision != revision
             || self.doc.as_ref().is_none_or(|old| !Arc::ptr_eq(old, &doc))
             || self.settings.as_ref() != Some(&settings)
+            || self.colour != colour
         {
             self.clear();
             self.uid = uid;
             self.revision = revision;
             self.doc = Some(doc);
             self.settings = Some(settings);
+            self.colour = colour;
         }
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(done) = self.worker.as_ref().and_then(|worker| worker.rx.try_recv().ok()) {
@@ -236,6 +242,21 @@ mod tests {
 
     fn done(generation: u64, spread: SpreadRef) -> Done {
         Done { generation, spread, image: Some(Rendered { width: 1, height: 1, pixels: vec![255; 4] }) }
+    }
+
+    #[test]
+    fn a_colour_profile_reload_rejects_cached_previews_and_late_results() {
+        let (app, ctx, settings) = fixture();
+        let mut previews = Previews::default();
+        begin(&mut previews, &app, settings.clone(), &ctx);
+        let old = previews.generation;
+        previews.accept(done(old, SpreadRef::Doc(0)), &ctx);
+        assert!(previews.get(SpreadRef::Doc(0)).is_some());
+        // Model a cached profile generation without changing global settings in parallel tests.
+        previews.colour = designcraft_color::cms::generation() ^ (1 << 63);
+        begin(&mut previews, &app, settings, &ctx);
+        previews.accept(done(old, SpreadRef::Doc(0)), &ctx);
+        assert!(previews.get(SpreadRef::Doc(0)).is_none(), "profile bytes can change while the selected profile name stays the same");
     }
 
     #[test]

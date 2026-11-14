@@ -20,7 +20,15 @@ enum ThumbOf {
 type ThumbKey = (u64, ThumbOf, u32);
 
 /// The newest thumbnail of each page and parent, with the document revision it shows.
-static THUMBS: Mutex<Option<HashMap<ThumbKey, (u64, egui::TextureHandle)>>> = Mutex::new(None);
+static THUMBS: Mutex<Option<HashMap<ThumbKey, Thumb>>> = Mutex::new(None);
+
+/// A rendered thumbnail: the document revision, and, when it drew images still decoding in the
+/// background, the image generation and time (s) it was rendered at.
+type Thumb = (u64, Option<(u64, f64)>, egui::TextureHandle);
+
+/// How soon (s) a thumbnail drawn with images still decoding is rendered again once more have
+/// finished: a page of photos decoding one after another re-renders a few times, not once each.
+const THUMB_IMAGES_SECS: f64 = 0.25;
 
 /// Widest parent thumbnail, in pixels (a spread of many pages stays a small texture).
 const MAX_THUMB_W: f64 = 1024.0;
@@ -78,10 +86,20 @@ fn thumb(app: &mut DesignApp, ctx: &egui::Context, of: ThumbOf, h: f32) -> Optio
                 }
         });
     }
-    if let Some((rev, t)) = map.get(&key) {
+    if let Some((rev, pending, t)) = map.get(&key) {
         if *rev == st.revision {
-            ctx.data_mut(|d| d.insert_temp(clock_id, clock));
-            return Some(t.clone());
+            // Images it drew as decoding have finished since: draw it again, in batches.
+            let stale = pending.and_then(|(images, at)| (images != designcraft_render::images::generation()).then_some(at + THUMB_IMAGES_SECS - now));
+            match stale {
+                Some(wait) if wait <= 0.0 && clock.refreshed < THUMB_REFRESHES_PER_FRAME => {}
+                _ => {
+                    if let Some(after) = stale.and_then(|w| std::time::Duration::try_from_secs_f64(w.max(0.0)).ok()) {
+                        ctx.request_repaint_after(after);
+                    }
+                    ctx.data_mut(|d| d.insert_temp(clock_id, clock));
+                    return Some(t.clone());
+                }
+            }
         }
         let wait = THUMB_QUIET_SECS - (now - clock.changed_at);
         if wait > 0.0 || clock.refreshed >= THUMB_REFRESHES_PER_FRAME {
@@ -97,7 +115,8 @@ fn thumb(app: &mut DesignApp, ctx: &egui::Context, of: ThumbOf, h: f32) -> Optio
     let px = h as f64 * ctx.pixels_per_point() as f64;
     let mut r = designcraft_render::Renderer::new();
     r.threads = 0;
-    let opts = designcraft_render::RenderOptions { printing_only: true, ..Default::default() };
+    let opts = designcraft_render::RenderOptions { printing_only: true, defer_images: true, ..Default::default() };
+    let images = designcraft_render::images::generation();
     let ThumbOf::Parent(id) = of;
     let (img, name) = {
         let i = st.doc.parent_index(id)?;
@@ -114,7 +133,7 @@ fn thumb(app: &mut DesignApp, ctx: &egui::Context, of: ThumbOf, h: f32) -> Optio
     };
     let ci = egui::ColorImage::from_rgba_premultiplied([img.width as usize, img.height as usize], &img.pixels);
     let tex = crate::widgets::load_texture(ctx, format!("{name}_{}", h.round()), ci, egui::TextureOptions::LINEAR);
-    map.insert(key, (st.revision, tex.clone()));
+    map.insert(key, (st.revision, r.images_pending().then_some((images, now)), tex.clone()));
     Some(tex)
 }
 

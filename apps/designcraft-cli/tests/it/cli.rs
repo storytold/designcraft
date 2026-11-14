@@ -363,7 +363,14 @@ fn mcp_session(args: &[&str], calls: &[(&str, serde_json::Value)]) -> (bool, Str
     let mut stdin = child.stdin.take().unwrap();
     let sender = std::thread::spawn(move || stdin.write_all(input.as_bytes()));
     let out = child.wait_with_output().unwrap();
-    sender.join().unwrap().unwrap();
+    let write_error = match sender.join() {
+        Ok(Ok(())) => None,
+        Ok(Err(e)) => Some(format!("MCP input write failed: {e}")),
+        Err(_) => Some("MCP input writer panicked".to_string()),
+    };
+    if let Some(error) = write_error {
+        return (false, format!("{error}; child status: {}; stderr: {}", out.status, String::from_utf8_lossy(&out.stderr)), Vec::new());
+    }
     let stdout = String::from_utf8(out.stdout).unwrap();
     let replies = stdout.lines().skip(1).map(|l| serde_json::from_str(l).unwrap()).collect();
     (out.status.success(), String::from_utf8_lossy(&out.stderr).into_owned(), replies)
@@ -837,3 +844,11 @@ fn subcommand_help_names_the_options_that_subcommand_takes() {
 /// The subcommands the binary's usage text lists. Kept here rather than imported because the
 /// binary is not a library; the assertion above on the count is what notices if it drifts.
 const USAGE_SUBCOMMANDS: &[&str] = &["run", "commands", "describe", "script", "app", "mcp", "perf", "bench", "validate-pdf", "links"];
+
+#[test]
+fn mcp_early_exit_keeps_child_diagnostics_when_input_pipe_closes() {
+    let calls = vec![("document.inspect", serde_json::json!({"padding":"x".repeat(65536)})); 64];
+    let (success, stderr, _) = mcp_session(&["--invalid-mcp-option"], &calls);
+    assert!(!success);
+    assert!(stderr.contains("invalid-mcp-option"), "child diagnostics were lost: {stderr}");
+}

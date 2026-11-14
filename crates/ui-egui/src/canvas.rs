@@ -20,6 +20,7 @@ mod guides;
 mod ime;
 mod input;
 mod page_decor;
+mod place_cursor;
 mod render;
 mod rulers;
 mod scroll;
@@ -476,26 +477,56 @@ fn draw_loaded_thumbnail(app: &DesignApp, painter: &egui::Painter, p: Pos2, t: &
         vec![pos2(inner.min.x, inner.max.y), pos2(inner.min.x + 3.5, inner.min.y + 2.5), pos2(inner.max.x, inner.max.y)],
         ink,
     ));
+    place_cursor::draw_loaded_count(app, painter, badge);
 }
 
 /// The loaded graphic's thumbnail texture, cached per image data.
 fn loaded_thumb_texture(ctx: &egui::Context, doc: &Document, asset: designcraft_doc::AssetId, size: (f64, f64)) -> Option<egui::TextureHandle> {
     let a = doc.assets.get(&asset)?;
-    let key = egui::Id::unique(("loaded_thumb", std::sync::Arc::as_ptr(&a.data) as usize, a.data.len(), a.page));
-    if let Some(t) = ctx.data(|d| d.get_temp::<egui::TextureHandle>(key)) {
-        return Some(t);
-    }
     // Twice the thumbnail's size in pixels, for high-density screens.
     let scale = (2.0 * f64::from(LOADED_THUMB) / size.0.max(size.1)).min(1.0);
-    let pm = designcraft_render::images::mip(&a.data, a.page, size.0, scale)?;
+    proxy_texture(ctx, "loaded_thumb", &a.data, a.page, size.0, scale, 1024)
+}
+
+/// A texture of `data` drawn `width_pt` wide at `scale` device pixels per point for an overlay,
+/// cached per image data, without waiting for a decode: an image still decoding in the
+/// background shows another cached level of it (redrawn as decodes finish), or nothing yet.
+pub(super) fn proxy_texture(
+    ctx: &egui::Context,
+    name: &str,
+    data: &designcraft_doc::AssetData,
+    page: u32,
+    width_pt: f64,
+    scale: f64,
+    max_side: usize,
+) -> Option<egui::TextureHandle> {
+    use designcraft_render::images::{Mip, generation, mip_now};
+    let key = egui::Id::unique((name, data.key(), page));
+    // `None`: the level asked for; else the generation a stand-in was drawn at.
+    let cached = ctx.data(|d| d.get_temp::<(egui::TextureHandle, Option<u64>)>(key));
+    if let Some((t, stand_in)) = &cached
+        && stand_in.is_none_or(|g| g == generation())
+    {
+        return Some(t.clone());
+    }
+    let shown = generation();
+    let (pm, ready) = match mip_now(data, page, width_pt, scale) {
+        Mip::Ready(pm) => (pm, true),
+        Mip::Pending(Some(pm)) => (pm, false),
+        Mip::Pending(None) => return cached.map(|(t, _)| t),
+        Mip::Failed => {
+            ctx.data_mut(|d| d.remove::<(egui::TextureHandle, Option<u64>)>(key));
+            return None;
+        }
+    };
     let (pw, ph) = (pm.width() as usize, pm.height() as usize);
     if pw == 0 || ph == 0 {
         return None;
     }
     let ci = egui::ColorImage::from_rgba_premultiplied([pw, ph], pm.data_as_u8_slice());
-    let max = ctx.input(|i| i.max_texture_side).min(1024);
-    let t = ctx.load_texture("loaded_thumb", crate::widgets::fit_texture(ci, max), egui::TextureOptions::LINEAR);
-    ctx.data_mut(|d| d.insert_temp(key, t.clone()));
+    let max = ctx.input(|i| i.max_texture_side).min(max_side);
+    let t = ctx.load_texture(name, crate::widgets::fit_texture(ci, max), egui::TextureOptions::LINEAR);
+    ctx.data_mut(|d| d.insert_temp(key, (t.clone(), (!ready).then_some(shown))));
     Some(t)
 }
 

@@ -311,7 +311,6 @@ fn autoflow_adds_the_pages_odd_and_even_page_breaks_ask_for() {
 #[test]
 fn autoflow_sizes_no_frame_by_one_a_start_option_ends_early() {
     // Regression (#1209): the title frame a start option ends early isn't a frame's worth of text.
-    use std::io::Write;
     const W: &str = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main""#;
     let para = |style: &str, text: &str| format!(r#"<w:p><w:pPr><w:pStyle w:val="{style}"/></w:pPr><w:r><w:t>{text}</w:t></w:r></w:p>"#);
     let body = [para("Title", "Front"), para("Chapter", "Chapter one"), para("Body", "lorem ipsum dolor sit amet ".repeat(60).trim())].concat();
@@ -319,17 +318,8 @@ fn autoflow_sizes_no_frame_by_one_a_start_option_ends_early() {
         .iter()
         .map(|s| format!(r#"<w:style w:type="paragraph" w:styleId="{s}"><w:name w:val="{s}"/></w:style>"#))
         .collect();
-    let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
-    let o = zip::write::SimpleFileOptions::default();
-    for (n, c) in [
-        ("word/document.xml", format!(r#"<w:document {W}><w:body>{body}</w:body></w:document>"#)),
-        ("word/styles.xml", format!(r#"<w:styles {W}>{styles}</w:styles>"#)),
-        ("word/_rels/document.xml.rels", crate::tests::DOCX_STYLES_RELS.into()),
-    ] {
-        w.start_file(n, o).unwrap();
-        w.write_all(c.as_bytes()).unwrap();
-    }
-    let docx = w.finish().unwrap().into_inner();
+    let docx =
+        super::word_package(&format!(r#"<w:document {W}><w:body>{body}</w:body></w:document>"#), &format!(r#"<w:styles {W}>{styles}</w:styles>"#));
     for (start, pages) in [("nextOddPage", 5), ("nextEvenPage", 4)] {
         let mut s = Session::new();
         s.execute("file.new", &json!({"pages": 3, "facingPages": true})).unwrap();

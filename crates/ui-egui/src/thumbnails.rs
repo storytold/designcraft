@@ -39,7 +39,6 @@ fn render(job: Job) -> Done {
             &designcraft_render::RenderOptions { printing_only: true, ..Default::default() },
         )
     });
-    designcraft_render::images::trim_originals();
     Done { generation: job.generation, key: job.key, image }
 }
 

@@ -125,6 +125,7 @@ fn step(harness: &mut egui_kittest::Harness<'_, DesignApp>) {
                     origin: designcraft_geom::Point::new(-1e8, -1e8),
                     zoom: view.zoom,
                     size: (1e12, 1e12),
+                    images: shown.images,
                 },
             ));
         }

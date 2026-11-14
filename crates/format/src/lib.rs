@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::hash::BuildHasher;
 use std::sync::Arc;
 
-use designcraft_doc::{AssetId, Document};
+use designcraft_doc::{AssetData, AssetId, Document, LinkedSource, Storage};
 #[cfg(test)]
 use serde_json::Value;
 #[cfg(test)]
@@ -15,8 +15,6 @@ use std::collections::HashSet;
 pub use craft_designcraft_format::{
     EXTENSION, Error as FormatError, MAX_PREVIEW_BYTES, MIME, PREVIEW, VERSION, is_designcraft, read_preview, starts_designcraft,
 };
-
-mod streaming;
 
 #[cfg(test)]
 mod tests;
@@ -33,26 +31,41 @@ pub fn save_with_preview(doc: &Document, preview: Option<&[u8]>) -> Result<Vec<u
     Ok(out.into_inner())
 }
 
-/// Stream portable originals directly to a seekable writer, including recovery's cancellable writer.
+/// [`save_with_preview`] into `out`, so a writer that stops on cancellation stops the write at
+/// its next chunk. Linked assets are stored as their record and proxy only.
 pub fn write<W: std::io::Write + std::io::Seek>(out: &mut W, doc: &Document, preview: Option<&[u8]>) -> Result<(), FormatError> {
-    let compact = prepared(doc)?;
-    streaming::write(out, &compact, preview, required_version(&compact))
-}
-
-fn prepared(doc: &Document) -> Result<Document, FormatError> {
     if let Some(id) = doc.non_finite_item() {
         return Err(FormatError::Unsaveable(format!("object {} has a position or size that is not a finite number", id.0)));
     }
     let mut compact = doc.clone();
     compact.compact_assets();
-    Ok(compact)
+    let mut owned_assets = Vec::new();
+    let mut owned_proxies = Vec::new();
+    for asset in compact.assets.values() {
+        let id = asset.id.0.to_string();
+        if let Some(proxy) = &asset.proxy
+            && let Some(bytes) = proxy.data.embedded_bytes()
+        {
+            owned_proxies.push((id.clone(), proxy.mime.clone(), bytes.clone()));
+        }
+        if asset.storage == Storage::Linked {
+            continue;
+        }
+        let data = asset.data.load().map_err(|e| FormatError::Unsaveable(format!("image {}: {e}", asset.name)))?;
+        owned_assets.push((id, asset.mime.clone(), data));
+    }
+    let assets = owned_assets.iter().map(|(id, mime, data)| craft_designcraft_format::Asset { id, mime, data }).collect::<Vec<_>>();
+    let proxies = owned_proxies.iter().map(|(id, mime, data)| craft_designcraft_format::Asset { id, mime, data }).collect::<Vec<_>>();
+    craft_designcraft_format::write_to(out, &compact, concat!("DesignCraft ", env!("CARGO_PKG_VERSION")), preview, &assets, &proxies)
 }
 
 /// Required native format version for a document. Kept for app-side compatibility; inference is
 /// performed by the shared codec over the serialized neutral document schema.
+#[cfg(test)]
 fn required_version(doc: &Document) -> u32 {
     let Ok(value) = serde_json::to_value(doc) else { return VERSION };
-    let owned_assets = doc.assets.values().map(|asset| (asset.id.0.to_string(), asset.mime.clone(), asset.data.clone())).collect::<Vec<_>>();
+    let owned_assets =
+        doc.assets.values().map(|asset| (asset.id.0.to_string(), asset.mime.clone(), asset.data.load().unwrap_or_default())).collect::<Vec<_>>();
     let assets = owned_assets.iter().map(|(id, mime, data)| craft_designcraft_format::Asset { id, mime, data }).collect::<Vec<_>>();
     craft_designcraft_format::required_version(&value, &assets)
 }
@@ -62,21 +75,36 @@ pub fn load(bytes: &[u8]) -> Result<Document, FormatError> {
     let loaded = craft_designcraft_format::load::<Document>(bytes)?;
     let mut doc = loaded.document;
     let fingerprint = std::collections::hash_map::RandomState::new();
-    let mut dedup: HashMap<u64, Vec<Arc<Vec<u8>>>> = HashMap::new();
+    let mut dedup: HashMap<u64, Vec<AssetData>> = HashMap::new();
     for (raw_id, bytes) in loaded.assets {
         let Ok(id) = raw_id.parse::<u64>() else { continue };
         let asset_id = AssetId(id);
         let Some(asset) = doc.assets.get_mut(&asset_id) else { continue };
         let same = dedup.entry(fingerprint.hash_one(bytes.as_slice())).or_default();
-        let data = match same.iter().find(|data| ***data == bytes) {
+        let data = match same.iter().find(|data| data.embedded_bytes().is_some_and(|b| **b == bytes)) {
             Some(data) => data.clone(),
             None => {
-                let data = Arc::new(bytes);
+                let data = AssetData::embedded(bytes);
                 same.push(data.clone());
                 data
             }
         };
         Arc::make_mut(asset).data = data;
+    }
+    for (raw_id, bytes) in loaded.proxies {
+        let Ok(id) = raw_id.parse::<u64>() else { continue };
+        let Some(asset) = doc.assets.get_mut(&AssetId(id)) else { continue };
+        if asset.proxy.is_some() {
+            Arc::make_mut(asset).proxy.iter_mut().for_each(|proxy| proxy.data = AssetData::embedded(bytes.clone()));
+        }
+    }
+    for asset in doc.assets.values_mut() {
+        // The document's own path is unknown here; open re-resolves relative links against it.
+        if asset.storage == Storage::Linked
+            && let Some(source) = LinkedSource::of(asset, None)
+        {
+            Arc::make_mut(asset).data = AssetData::linked(source);
+        }
     }
     doc.merge_duplicate_assets();
     doc.mark_differing_margins_local();

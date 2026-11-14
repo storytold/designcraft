@@ -1,8 +1,9 @@
 use super::color::{HIDDEN_LAYERS, blend_mode, color_of, overprints, rect_overlaps, screen_color, set_fill_paint, spread_blends};
+use super::stroke::image_want;
 use super::types::{DisplayQuality, Frame, RenderOptions, SlicePart};
 use super::{
-    Affine, Arc, BezPath, BlendMode, Compose, ComposedStory, Content, DcBlend, Item, Mix, RenderContext, Renderer, Shape, ShownOn, SpreadRef,
-    StoryId, Vec2, blendspace, corners, fx, grid, kurbo, peniko,
+    Affine, Arc, BezPath, BlendMode, Compose, ComposedStory, Content, DcBlend, Document, Item, Mix, RenderContext, Renderer, Shape, ShownOn,
+    SpreadRef, StoryId, Vec2, blendspace, corners, fx, grid, images, kurbo, peniko,
 };
 
 /// An item's fill under its content; an overprinting fill multiplies into what is beneath.
@@ -22,6 +23,107 @@ fn draw_body_fill(ctx: &mut RenderContext, f: &Frame, it: &Item, bp: &BezPath, x
     ctx.reset_paint_transform();
     if op {
         ctx.pop_layer();
+    }
+}
+
+/// Each item spread `sr` draws at the top level, in drawing order (layers back to front; within
+/// each layer parent items first), with its transform to the spread and where it shows.
+fn each_top_item(doc: &Document, sr: SpreadRef, opts: &RenderOptions, mut visit: impl FnMut(&Item, Affine, ShownOn)) {
+    let Some(sp) = doc.spread(sr) else { return };
+    for layer in doc.layers.iter().rev() {
+        if !layer.visible || opts.printing_only && !layer.printable {
+            continue;
+        }
+        // Document pages show their parent and its bases; a parent spread shows its bases.
+        let first = match sr {
+            SpreadRef::Doc(si) => Some(doc.first_page_of_spread(si)),
+            SpreadRef::Parent(_) => None,
+        };
+        // Base items compose for where they show: the document page, or this parent spread.
+        let shown_on = |pi: usize| match (sr, first) {
+            (SpreadRef::Parent(p), _) => ShownOn::Parent(p),
+            (_, Some(a)) => ShownOn::Page(a + pi),
+            (_, None) => ShownOn::Own,
+        };
+        for (pi, page) in sp.pages.iter().enumerate() {
+            if !page.show_parent_items {
+                continue;
+            }
+            let chain = doc.shown_parent_pages(sr, pi);
+            // This page's overrides and those of every parent page behind it (#1469).
+            let overridden = doc.overridden_parent_items(sr, pi);
+            for (ppi, ppage) in chain {
+                let Some(parent) = doc.parents.get(ppi) else { continue };
+                let Some(ppg) = parent.pages.get(ppage) else { continue };
+                let dx = page.x - ppg.x;
+                for it in &parent.items {
+                    if it.layer != layer.id || overridden.contains(&it.id) {
+                        continue;
+                    }
+                    // Parent items belong to the parent page they sit on.
+                    if parent.page_at_x(it.bounds().center().x) != Some(ppage) && parent.pages.len() > 1 {
+                        continue;
+                    }
+                    visit(it, Affine::translate((dx, 0.0)), shown_on(pi));
+                }
+            }
+        }
+        for it in &sp.items {
+            if it.layer == layer.id {
+                visit(it, Affine::IDENTITY, ShownOn::Own);
+            }
+        }
+    }
+}
+
+/// The placed images drawing spread `sr` in frame `f` takes from the image cache (see
+/// [`images::warm`]), with the culling [`Renderer::draw_item`] applies. Images inside text (inline
+/// and anchored objects) are left to the render.
+pub(crate) fn wanted_images(f: &Frame, sr: SpreadRef, out: &mut Vec<images::Want>) {
+    // Fast display draws grey boxes for images.
+    if f.opts.quality == DisplayQuality::Fast {
+        return;
+    }
+    each_top_item(f.doc, sr, f.opts, |it, parent, _| wanted_in(f, it, parent, 0, out));
+}
+
+fn wanted_in(f: &Frame, it: &Item, parent: Affine, depth: usize, out: &mut Vec<images::Want>) {
+    // As deep as draw_item draws.
+    if depth >= 64 || it.hidden || f.opts.hidden.contains(&it.id) || f.opts.printing_only && it.nonprinting {
+        return;
+    }
+    let xf = parent * it.xf;
+    if !it.children().is_empty() && !it.has_nested_items() {
+        for c in it.shown_children() {
+            wanted_in(f, c, xf, depth + 1, out);
+        }
+        return;
+    }
+    // As draw_item_inner culls: the stroke and the effects' growth stretch with `xf`.
+    let scale = fx::max_scale(xf).unwrap_or(1.0);
+    let stroke = it.stroke.extent() * scale;
+    let vb = xf.transform_rect_bbox(it.inner_bounds()).inflate(stroke + 2.0, stroke + 2.0);
+    let fx_outset = if it.effects.any() && f.opts.quality != DisplayQuality::Fast { fx::outset_scaled(it, scale) } else { 0.0 };
+    if !rect_overlaps(vb.inflate(fx_outset, fx_outset), f.visible) {
+        return;
+    }
+    match &it.content {
+        Content::Graphic(g) => {
+            let g = &if it.media.is_some() { it.drawn_graphic(&f.doc.assets).unwrap_or_else(|| g.clone()) } else { g.clone() };
+            let Some(asset) = f.doc.assets.get(&g.asset) else { return };
+            let hidden = it.has_pdf_layer_override().then(|| it.pdf_hidden_layers.clone());
+            let previous = HIDDEN_LAYERS.with(|h| h.replace(hidden));
+            if let Some((crate::stroke::Source::Want(want), ..)) = image_want(f, asset, g, xf) {
+                out.push(want);
+            }
+            HIDDEN_LAYERS.with(|h| h.replace(previous));
+        }
+        Content::Group { items } if it.has_nested_items() => {
+            for c in items {
+                wanted_in(f, c, xf, depth + 1, out);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -70,51 +172,7 @@ impl Renderer {
         if isolate {
             ctx.push_layer(None, None, None, None, None);
         }
-        // Layers back to front; within each layer parent items first.
-        for layer in doc.layers.iter().rev() {
-            if !layer.visible || f.opts.printing_only && !layer.printable {
-                continue;
-            }
-            // Document pages show their parent and its bases; a parent spread shows its bases.
-            let first = match sr {
-                SpreadRef::Doc(si) => Some(doc.first_page_of_spread(si)),
-                SpreadRef::Parent(_) => None,
-            };
-            // Base items compose for where they show: the document page, or this parent spread.
-            let shown_on = |pi: usize| match (sr, first) {
-                (SpreadRef::Parent(p), _) => ShownOn::Parent(p),
-                (_, Some(a)) => ShownOn::Page(a + pi),
-                (_, None) => ShownOn::Own,
-            };
-            for (pi, page) in sp.pages.iter().enumerate() {
-                if !page.show_parent_items {
-                    continue;
-                }
-                let chain = doc.shown_parent_pages(sr, pi);
-                // This page's overrides and those of every parent page behind it (#1469).
-                let overridden = doc.overridden_parent_items(sr, pi);
-                for (ppi, ppage) in chain {
-                    let Some(parent) = doc.parents.get(ppi) else { continue };
-                    let Some(ppg) = parent.pages.get(ppage) else { continue };
-                    let dx = page.x - ppg.x;
-                    for it in &parent.items {
-                        if it.layer != layer.id || overridden.contains(&it.id) {
-                            continue;
-                        }
-                        // Parent items belong to the parent page they sit on.
-                        if parent.page_at_x(it.bounds().center().x) != Some(ppage) && parent.pages.len() > 1 {
-                            continue;
-                        }
-                        self.draw_root(ctx, f, it, Affine::translate((dx, 0.0)), shown_on(pi));
-                    }
-                }
-            }
-            for it in &sp.items {
-                if it.layer == layer.id {
-                    self.draw_root(ctx, f, it, Affine::IDENTITY, ShownOn::Own);
-                }
-            }
-        }
+        each_top_item(doc, sr, f.opts, |it, parent, page| self.draw_root(ctx, f, it, parent, page));
         if isolate {
             ctx.pop_layer();
         }

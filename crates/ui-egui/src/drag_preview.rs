@@ -17,6 +17,7 @@ struct Key {
     viewport: Rect,
     scale: f64,
     opts: RenderOptions,
+    colour: u64,
 }
 impl Key {
     fn same(&self, other: &Self) -> bool {
@@ -25,6 +26,7 @@ impl Key {
             && self.viewport == other.viewport
             && self.scale == other.scale
             && self.opts == other.opts
+            && self.colour == other.colour
     }
 }
 struct Job {
@@ -127,7 +129,7 @@ impl Preview {
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            if hold && self.ready() {
+            if hold && self.ready() && self.key.as_ref().is_some_and(|key| key.colour == designcraft_color::cms::generation()) {
                 if let Some(key) = &self.key {
                     self.delta = delta(&key.doc, &st.doc, key.id, &placed).unwrap_or(Vec2::ZERO);
                 }
@@ -159,7 +161,7 @@ impl Preview {
                 return false;
             };
             self.delta = delta;
-            let key = Key { doc, id: *id, viewport, scale: scale.min(1.0), opts };
+            let key = Key { doc, id: *id, viewport, scale: scale.min(1.0), opts, colour: designcraft_color::cms::generation() };
             if self.key.as_ref().is_none_or(|old| !old.same(&key)) {
                 if !active && !warm {
                     self.clear();
@@ -294,6 +296,9 @@ impl Worker {
                         let view =
                             Affine::scale_non_uniform(w as f64 / rect.width(), h as f64 / rect.height()) * Affine::translate((-rect.x0, -rect.y0));
                         let mut opts = job.key.opts.clone();
+                        // This worker publishes one retained layer, so wait for its real pixels.
+                        // A deferred placeholder would otherwise remain frozen during the drag.
+                        opts.defer_images = false;
                         opts.slice = Some(DrawSlice { item: job.key.id, part });
                         opts.cancellation = Some(cancellation.clone());
                         if part != SlicePart::Before {
@@ -305,7 +310,6 @@ impl Worker {
                         }
                         images.push((rect, image));
                     }
-                    designcraft_render::images::trim_originals();
                     if images.len() == 3 && !cancellation.cancelled() {
                         if done.send(Done { generation: job.generation, images }).is_err() {
                             break;
@@ -330,7 +334,7 @@ mod tests {
         doc.settings.blend_space = designcraft_doc::BlendSpace::Rgb;
         let aid = AssetId(doc.alloc());
         doc.assets.insert(aid,Arc::new(Asset {id:aid,name:"synthetic drag graphic".into(),mime:"image/svg+xml".into(),link:None,
-            data:Arc::new(br#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><rect width="100" height="100" fill="red" fill-opacity="0.5"/></svg>"#.to_vec()),pixels:Some((100,100)),page:0,..Default::default()}));
+            data:designcraft_doc::AssetData::embedded(br#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><rect width="100" height="100" fill="red" fill-opacity="0.5"/></svg>"#.to_vec()),pixels:Some((100,100)),page:0,..Default::default()}));
         let id = ItemId(doc.alloc());
         let mut it = Item::new(id, doc.default_layer(), Shape::Rectangle, shapes::rectangle(Rect::new(30.0, 30.0, 230.0, 170.0)));
         it.content = Content::Graphic(Graphic {
@@ -370,6 +374,47 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
     }
+    #[test]
+    fn a_finished_drag_never_holds_layers_from_an_older_color_generation() {
+        let (doc, id) = fixture().unwrap();
+        let st = DocState::new(doc, None);
+        let ctx = egui::Context::default();
+        let viewport = Rect::new(0.0, 0.0, 300.0, 200.0);
+        let mut preview = Preview {
+            key: Some(Key {
+                doc: st.doc.clone(),
+                id,
+                viewport,
+                scale: 1.0,
+                opts: RenderOptions::default(),
+                colour: designcraft_color::cms::generation() ^ (1 << 63),
+            }),
+            ..Default::default()
+        };
+        for n in 0..3 {
+            preview.layers.push(Layer {
+                rect: viewport,
+                texture: ctx.load_texture(format!("old-colour-{n}"), egui::ColorImage::filled([1, 1], Color32::RED), Default::default()),
+            });
+        }
+        assert!(preview.ready());
+        preview.update(
+            &st,
+            &ctx,
+            Update {
+                placed: vec![],
+                viewport,
+                scale: 1.0,
+                opts: RenderOptions::default(),
+                cache: Arc::new(designcraft_compose::Cache::new()),
+                warm: false,
+                hold: true,
+                enabled: false,
+            },
+        );
+        assert!(!preview.ready(), "an old-colour layer cannot be held over the new canvas");
+    }
+
     #[test]
     fn retained_drag_accepts_crop_alpha_and_rejects_backdrop_dependent_cases() {
         let (mut doc, id) = fixture().unwrap();

@@ -112,7 +112,8 @@ fn relocated_packages_rebind_embedded_image_links_on_open() {
         let mut opened = Session::new();
         opened.execute(command, &json!({"path": moved.join(format!("OwnedPackage.{extension}")).to_string_lossy()})).unwrap();
         let asset = opened.doc().unwrap().doc.assets.values().next().unwrap();
-        assert_eq!(*asset.data, png, "{extension}: the packaged pixels");
+        // The IDML copy links Links/owned.png, so its graphic opens as a link to that file.
+        assert_eq!(asset.data.load().ok().as_deref(), Some(&png), "{extension}: the packaged pixels");
         assert_eq!(asset.link.as_deref(), expected.to_str(), "{extension}: use the relocated Links file");
         let links = opened.execute("links.list", &json!({})).unwrap();
         assert_eq!(links[0]["status"], "ok", "{extension}");
@@ -244,8 +245,10 @@ fn package_leaves_missing_links_missing() {
     let mut s = Session::new();
     s.execute("file.new", &json!({"title": "TwoLinks"})).unwrap();
     s.execute("file.place", &json!({"path": gone.to_string_lossy(), "x": 10, "y": 10})).unwrap();
+    crate::cmd::native_links::wait(&mut s);
     s.execute("edit.deselectAll", &json!({})).unwrap();
     s.execute("file.place", &json!({"path": kept.to_string_lossy(), "x": 10, "y": 200})).unwrap();
+    crate::cmd::native_links::wait(&mut s);
     let idml = dir.join("TwoLinks.idml");
     s.execute("file.exportIdml", &json!({"path": idml.to_string_lossy(), "embedImages": false})).unwrap();
     std::fs::remove_file(&gone).unwrap();
@@ -267,6 +270,8 @@ fn package_leaves_missing_links_missing() {
     for (command, extension) in [("file.open", "designcraft"), ("file.openIdml", "idml")] {
         let mut opened = Session::new();
         opened.execute(command, &json!({"path": out.join(format!("TwoLinks.{extension}")).to_string_lossy()})).unwrap();
+        // The open checks linked files in the background.
+        super::super::native_links::wait(&mut opened);
         assert_eq!(status(&mut opened, "gone.svg"), Some(json!("missing")), "{extension}");
         assert_eq!(status(&mut opened, "kept.svg"), Some(json!("ok")), "{extension}");
     }
@@ -310,6 +315,7 @@ fn package_writes_document_links_and_report() {
     let mut s = Session::new();
     s.execute("file.new", &json!({})).unwrap();
     s.execute("file.place", &json!({"path": svg.to_string_lossy(), "x": 100, "y": 100})).unwrap();
+    crate::cmd::native_links::wait(&mut s);
     assert_eq!(s.doc().unwrap().doc.assets.values().next().unwrap().link_fingerprint, fingerprint(&svg));
     s.execute("frame.create", &json!({"rect": [72, 300, 400, 400], "content": "text", "text": "Hello"})).unwrap();
     let out = dir.join("Pkg");
@@ -329,15 +335,17 @@ fn package_writes_document_links_and_report() {
     let link = packed.assets.values().next().unwrap().link.clone().unwrap();
     assert!(link.contains("Links"), "{link}");
     // The link is the copy now: the original file's size and time don't go with it (the copy's
-    // own are too recent to vouch for it; the first check compares the bytes and keeps them).
+    // own are too recent to vouch for it; the first check compares the bytes by their hash and
+    // keeps them).
+    let unverified = Some(super::super::links::UNVERIFIED_MTIME);
     assert!(fingerprint(&out.join("Links").join("logo.svg")).is_some());
-    assert_eq!(packed.assets.values().next().unwrap().link_fingerprint, None);
+    assert_eq!(packed.assets.values().next().unwrap().link_fingerprint.map(|f| f.mtime), unverified);
     // Copy Links To relinks the open document.
     let r = s.execute("links.copyTo", &json!({"dir": dir.join("Copies").to_string_lossy()})).unwrap();
     assert_eq!(r["copied"], 1);
     let relinked = s.doc().unwrap().doc.assets.values().next().unwrap().clone();
     assert!(relinked.link.as_deref().unwrap().contains("Copies"));
-    assert_eq!(relinked.link_fingerprint, None);
+    assert_eq!(relinked.link_fingerprint.map(|f| f.mtime), unverified);
     let _ = std::fs::remove_dir_all(&dir);
 }
 

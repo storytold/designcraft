@@ -251,8 +251,6 @@ pub struct UiState {
     pub separations: Option<separations::Separations>,
     /// View › Display Performance.
     pub display_quality: designcraft_render::DisplayQuality,
-    /// Native disposable disk previews; originals and memory previews are unaffected.
-    pub persist_image_previews: bool,
     /// Preferences › Interface › UI scaling (1 = 100%).
     pub ui_scale: f32,
     /// Preferences › Appearance of Black: 100% K on screen as rich black (InDesign's default,
@@ -437,7 +435,6 @@ impl Default for UiState {
             style_preview: false,
             separations: None,
             display_quality: designcraft_render::DisplayQuality::High,
-            persist_image_previews: true,
             ui_scale: 1.0,
             rich_black: true,
             overprint_preview: false,
@@ -543,6 +540,9 @@ pub struct Shown {
     pub origin: Point,
     pub zoom: f64,
     pub size: (f32, f32),
+    /// [`designcraft_render::images::generation`] when rendered: images decoded since are
+    /// drawn by rendering again.
+    pub images: u64,
 }
 
 impl CanvasCache {
@@ -570,6 +570,7 @@ impl CanvasCache {
             defer_full: false,
             low_quality: false,
             separations: separations::Preview::default(),
+            images: (0, f64::NEG_INFINITY),
         }
     }
 }
@@ -608,6 +609,9 @@ pub struct CanvasCache {
     pub(crate) low_quality: bool,
     /// View › Separations Preview: the visible spreads' plates.
     pub separations: separations::Preview,
+    /// The [`designcraft_render::images::generation`] the canvas renders with, and when it took
+    /// it (ms): finished background decodes are taken up in batches, one render for many.
+    pub images: (u64, f64),
 }
 
 #[derive(Default, Clone, Copy, Debug, Serialize)]
