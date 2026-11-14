@@ -1298,29 +1298,6 @@ dependencies = [
 [[package]]
 name = "craft-image-codecs"
 version = "0.1.0"
-source = "git+https://github.com/aiongg/craft-libs?rev=20de0e7c29f5764f0023f32210d6bae23faeef06#20de0e7c29f5764f0023f32210d6bae23faeef06"
-dependencies = [
- "craft-jpeg 0.1.0 (git+https://github.com/aiongg/craft-libs?rev=20de0e7c29f5764f0023f32210d6bae23faeef06)",
- "craft-metadata",
- "exr",
- "flate2",
- "half",
- "image",
- "image-webp",
- "jpeg-encoder",
- "png",
- "rayon",
- "serde_json",
- "thiserror 2.0.21",
- "tiff",
- "zune-core",
- "zune-jpeg",
- "zune-jpegxl",
-]
-
-[[package]]
-name = "craft-image-codecs"
-version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=cc23ffd4d26f3074808e2187d332564817624f8f#cc23ffd4d26f3074808e2187d332564817624f8f"
 dependencies = [
  "craft-jpeg 0.1.0 (git+https://github.com/storytold/craft-libs?rev=cc23ffd4d26f3074808e2187d332564817624f8f)",
@@ -1363,19 +1340,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-image-codecs"
+version = "0.1.0"
+source = "git+https://github.com/aiongg/craft-libs?rev=ff9da4120b351dea988722b2913354d5446da0f2#ff9da4120b351dea988722b2913354d5446da0f2"
+dependencies = [
+ "craft-jpeg 0.1.0 (git+https://github.com/aiongg/craft-libs?rev=ff9da4120b351dea988722b2913354d5446da0f2)",
+ "craft-metadata",
+ "exr",
+ "flate2",
+ "half",
+ "image",
+ "image-webp",
+ "jpeg-encoder",
+ "png",
+ "rayon",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tiff",
+ "zune-core",
+ "zune-jpeg",
+ "zune-jpegxl",
+]
+
+[[package]]
 name = "craft-indd"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=47bf5650b0d503b97bfb5e841746c4957897d11f#47bf5650b0d503b97bfb5e841746c4957897d11f"
 dependencies = [
  "indd",
-]
-
-[[package]]
-name = "craft-jpeg"
-version = "0.1.0"
-source = "git+https://github.com/aiongg/craft-libs?rev=20de0e7c29f5764f0023f32210d6bae23faeef06#20de0e7c29f5764f0023f32210d6bae23faeef06"
-dependencies = [
- "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -1390,6 +1382,14 @@ dependencies = [
 name = "craft-jpeg"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=eed3c28cf016723d004d6f2c79c61424c15d4558#eed3c28cf016723d004d6f2c79c61424c15d4558"
+dependencies = [
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-jpeg"
+version = "0.1.0"
+source = "git+https://github.com/aiongg/craft-libs?rev=ff9da4120b351dea988722b2913354d5446da0f2#ff9da4120b351dea988722b2913354d5446da0f2"
 dependencies = [
  "thiserror 2.0.21",
 ]
@@ -1418,7 +1418,7 @@ dependencies = [
 [[package]]
 name = "craft-metadata"
 version = "0.1.0"
-source = "git+https://github.com/aiongg/craft-libs?rev=20de0e7c29f5764f0023f32210d6bae23faeef06#20de0e7c29f5764f0023f32210d6bae23faeef06"
+source = "git+https://github.com/aiongg/craft-libs?rev=ff9da4120b351dea988722b2913354d5446da0f2#ff9da4120b351dea988722b2913354d5446da0f2"
 dependencies = [
  "brotli-decompressor 6.3.1",
  "chrono",
@@ -1614,7 +1614,7 @@ dependencies = [
 [[package]]
 name = "craft-tiff"
 version = "0.1.0"
-source = "git+https://github.com/aiongg/craft-libs?rev=20de0e7c29f5764f0023f32210d6bae23faeef06#20de0e7c29f5764f0023f32210d6bae23faeef06"
+source = "git+https://github.com/aiongg/craft-libs?rev=ff9da4120b351dea988722b2913354d5446da0f2#ff9da4120b351dea988722b2913354d5446da0f2"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -2037,7 +2037,7 @@ name = "designcraft-cli"
 version = "0.20.1"
 dependencies = [
  "craft-file-formats",
- "craft-image-codecs 0.1.0 (git+https://github.com/aiongg/craft-libs?rev=20de0e7c29f5764f0023f32210d6bae23faeef06)",
+ "craft-image-codecs 0.1.0 (git+https://github.com/aiongg/craft-libs?rev=ff9da4120b351dea988722b2913354d5446da0f2)",
  "designcraft-color",
  "designcraft-compose",
  "designcraft-doc",
@@ -2211,7 +2211,7 @@ dependencies = [
  "craft-cms",
  "craft-eps 0.1.0 (git+https://github.com/storytold/craft-libs?rev=ba24fe2435adb3c81ad6057faf36365fbba736cf)",
  "craft-file-formats",
- "craft-image-codecs 0.1.0 (git+https://github.com/aiongg/craft-libs?rev=20de0e7c29f5764f0023f32210d6bae23faeef06)",
+ "craft-image-codecs 0.1.0 (git+https://github.com/aiongg/craft-libs?rev=ff9da4120b351dea988722b2913354d5446da0f2)",
  "craft-psd",
  "craft-svg 0.1.0 (git+https://github.com/storytold/craft-libs?rev=cc23ffd4d26f3074808e2187d332564817624f8f)",
  "designcraft-color",
@@ -2245,7 +2245,7 @@ version = "0.20.1"
 dependencies = [
  "chrono",
  "craft-cms",
- "craft-image-codecs 0.1.0 (git+https://github.com/aiongg/craft-libs?rev=20de0e7c29f5764f0023f32210d6bae23faeef06)",
+ "craft-image-codecs 0.1.0 (git+https://github.com/aiongg/craft-libs?rev=ff9da4120b351dea988722b2913354d5446da0f2)",
  "craft-pdf",
  "craft-prepress",
  "designcraft-color",
@@ -2270,7 +2270,7 @@ name = "designcraft-pptx"
 version = "0.20.1"
 dependencies = [
  "chrono",
- "craft-image-codecs 0.1.0 (git+https://github.com/aiongg/craft-libs?rev=20de0e7c29f5764f0023f32210d6bae23faeef06)",
+ "craft-image-codecs 0.1.0 (git+https://github.com/aiongg/craft-libs?rev=ff9da4120b351dea988722b2913354d5446da0f2)",
  "craft-opc 0.1.0 (git+https://github.com/storytold/craft-libs?rev=8abfa9d0f14bafbfc3449fc552ffeafb9ca6a551)",
  "craft-pptx",
  "designcraft-color",
@@ -2291,7 +2291,7 @@ name = "designcraft-render"
 version = "0.20.1"
 dependencies = [
  "bytemuck",
- "craft-image-codecs 0.1.0 (git+https://github.com/aiongg/craft-libs?rev=20de0e7c29f5764f0023f32210d6bae23faeef06)",
+ "craft-image-codecs 0.1.0 (git+https://github.com/aiongg/craft-libs?rev=ff9da4120b351dea988722b2913354d5446da0f2)",
  "craft-pdf",
  "designcraft-color",
  "designcraft-compose",

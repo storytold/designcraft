@@ -532,9 +532,9 @@ pub fn decode_cmyk_tiff(bytes: &[u8]) -> Option<CmykRaster> {
     if too_large_to_decode(bytes) {
         return None;
     }
-    // InkSet (tag 332): 1 or absent = CMYK; 2 = other inks, named in InkNames. Their samples
-    // are not C, M, Y and K, so reading them as such would print the wrong colours.
-    if default_tiff_page(bytes).is_some_and(|page| page.ink_set.is_some_and(|set| set != 1)) {
+    // InkSet (tag 332): absent or 1 = CMYK; 2 = the inks named in InkNames; other values are
+    // undefined. Only CMYK samples are C, M, Y and K; reading others as such prints wrong colours.
+    if default_tiff_page(bytes).is_some_and(|page| page.ink_set.is_some_and(|set| set != craft_image_codecs::InkSet::Cmyk)) {
         return None;
     }
     let image = craft_image_codecs::decode_with(bytes, &decode_options()).ok()?;
