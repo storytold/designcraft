@@ -2076,7 +2076,8 @@ fn fit_line(input: LineFitInput<'_>) -> LineFit {
     // A line's text descenders may hang below the frame; an inline object on it may not. Only the
     // part of an inline object below the baseline counts, so an inline graphic as tall as its
     // frame sits on the bottom edge instead of oversetting the whole story (#2369).
-    let objects = line_glyphs.iter().filter_map(|g| sub_objects.get(&g.byte).filter(|o| !o.custom).map(|o| (g, o)));
+    // Generated list-label glyphs share the object's byte offset but have `len == 0`; skip them.
+    let objects = line_glyphs.iter().filter(|g| g.len > 0).filter_map(|g| sub_objects.get(&g.byte).filter(|o| !o.custom).map(|o| (g, o)));
     let object_descent = objects.fold(None, |d: Option<f64>, (g, o)| {
         let below = if o.y_offset.is_some() { g.descent - g.shift.min(0.0) } else { desc };
         Some(d.map_or(below, |d| d.max(below)))

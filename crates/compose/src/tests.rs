@@ -9216,3 +9216,22 @@ fn an_inline_graphic_as_tall_as_its_frame_lets_the_text_descend_below_it() {
     assert!(line.descent > 0.0, "the text's descenders hang below the frame");
     assert_eq!(cs.frames[0].objects.len(), 1, "the graphic is drawn");
 }
+
+#[test]
+fn a_numbered_paragraph_starting_with_a_frame_tall_graphic_still_fits() {
+    // The generated number shares the graphic's byte offset; its descent must not count as the
+    // graphic's own (#2369).
+    let attrs = numbered(designcraft_doc::NumberStyle::Arabic, "^#.^t");
+    let (mut d, sid, _) = doc_with("Hello world", Rect::new(0.0, 0.0, 300.0, 150.0), attrs);
+    let it = designcraft_doc::Item::new(
+        ItemId(d.alloc()),
+        d.default_layer(),
+        designcraft_doc::Shape::Rectangle,
+        designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 200.0, 150.0)),
+    );
+    d.story_mut(sid).unwrap().insert_object(0, designcraft_doc::AnchoredObject::new(it, designcraft_doc::AnchorPosition::Inline { y_offset: 0.0 }));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert_eq!(cs.line_count(), 1, "the numbered line holding the graphic is set");
+    assert!(!cs.is_overset());
+    assert_eq!(cs.frames[0].objects.len(), 1, "the graphic is drawn");
+}
