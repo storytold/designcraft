@@ -275,7 +275,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Stroke",
             [],
             None,
-            "{swatch?, tint?, weight?, align?: center|inside|outside, type?: {kind: solid|dashed|dotted|thickThin|thinThick|thinThin|thickThick|thinThickThin|thickThinThick|wavy|hashed|stripes|style, pattern?: [dash, gap, …] (dashed: required, points), bands?: [[start, width], …] (stripes: required, fractions of stroke weight), name?: string (style: required, document stroke style name)} (other kinds take no extra fields; unknown type fields are errors), cap?: butt|round|projecting, join?: miter|round|bevel, miterLimit?, start?, end?: none|simple|simpleWide|triangle|triangleWide|barbed|curved|circle|circleSolid|square|squareSolid|bar, gapSwatch?, gapTint?, gapOverprint?: bool, ids?}",
+            "{swatch?, tint?: 0–1, weight?: 0–1000 pt, align?: center|inside|outside, type?: {kind: solid|dashed|dotted|thickThin|thinThick|thinThin|thickThick|thinThickThin|thickThinThick|wavy|hashed|stripes|style, pattern?: [dash, gap, …] (dashed: required, points), bands?: [[start, width], …] (stripes: required, fractions of stroke weight), name?: string (style: required, document stroke style name)} (other kinds take no extra fields; unknown type fields are errors), cap?: butt|round|projecting, join?: miter|round|bevel, miterLimit?: 1–500, start?, end?: none|simple|simpleWide|triangle|triangleWide|barbed|curved|circle|circleSolid|square|squareSolid|bar, gapSwatch?, gapTint?: 0–1, gapOverprint?: bool, ids?} (a value out of range or not listed is an error)",
             has_doc,
             |s, p| {
                 let kind: Option<designcraft_doc::StrokeType> = p
@@ -290,10 +290,31 @@ pub fn specs() -> Vec<CommandSpec> {
                         known_swatch(&s.doc()?.doc, name, "object.stroke", key)?;
                     }
                 }
+                // A number out of range or a name the stroke doesn't have is an error, not clamped or skipped.
+                let ranged = |key: &str, lo: f64, hi: f64, what: &str| match p.get(key) {
+                    None | Some(Value::Null) => Ok(None),
+                    Some(v) => match v.as_f64() {
+                        Some(x) if x.is_finite() && (lo..=hi).contains(&x) => Ok(Some(x)),
+                        _ => Err(bad("object.stroke", format!("{key} must be {what} from {lo} to {hi}, not {v}"))),
+                    },
+                };
+                let tint = ranged("tint", 0.0, 1.0, "a tint")?.map(|t| t as f32);
+                let weight = ranged("weight", 0.0, 1000.0, "a number of points")?;
+                let miter_limit = ranged("miterLimit", 1.0, 500.0, "a number")?;
+                let gap_tint = ranged("gapTint", 0.0, 1.0, "a tint")?.map(|t| t as f32);
+                let gap_overprint = match p.get("gapOverprint") {
+                    None | Some(Value::Null) => None,
+                    Some(v) => Some(v.as_bool().ok_or_else(|| bad("object.stroke", format!("gapOverprint must be true or false, not {v}")))?),
+                };
+                let align = stroke_choice_param(p, "align", "center, inside or outside")?;
+                let cap = stroke_choice_param(p, "cap", "butt, round or projecting")?;
+                let join = stroke_choice_param(p, "join", "miter, round or bevel")?;
+                let arrowheads = "none, simple, simpleWide, triangle, triangleWide, barbed, curved, circle, circleSolid, square, squareSolid or bar";
+                let start = stroke_choice_param(p, "start", arrowheads)?;
+                let end = stroke_choice_param(p, "end", arrowheads)?;
                 // With nothing selected, the swatch and tint are those of new shapes.
                 if nothing_targeted(s, p)? {
                     let sw = str_param(p, "swatch").map(str::to_string);
-                    let tint = p.get("tint").and_then(Value::as_f64).map(|t| t.clamp(0.0, 1.0) as f32);
                     if sw.is_none() && tint.is_none() {
                         return Err(bad("object.stroke", super::NOTHING_SELECTED));
                     }
@@ -319,38 +340,22 @@ pub fn specs() -> Vec<CommandSpec> {
                         if let Some(v) = p2.get("swatch").and_then(Value::as_str) {
                             st.swatch = v.into();
                         }
-                        if let Some(v) = p2.get("tint").and_then(Value::as_f64) {
-                            st.tint = v.clamp(0.0, 1.0) as f32;
-                        }
-                        if let Some(v) = p2.get("weight").and_then(Value::as_f64) {
-                            st.weight = v.max(0.0);
-                        }
-                        if let Some(v) = p2.get("miterLimit").and_then(Value::as_f64) {
-                            st.miter_limit = v.clamp(1.0, 500.0);
-                        }
+                        st.tint = tint.unwrap_or(st.tint);
+                        st.weight = weight.unwrap_or(st.weight);
+                        st.miter_limit = miter_limit.unwrap_or(st.miter_limit);
                         if let Some(v) = p2.get("gapSwatch").and_then(Value::as_str) {
                             st.gap_swatch = v.into();
                         }
-                        if let Some(v) = p2.get("gapTint").and_then(Value::as_f64) {
-                            st.gap_tint = v.clamp(0.0, 1.0) as f32;
-                        }
-                        if let Some(v) = p2.get("gapOverprint").and_then(Value::as_bool) {
-                            st.gap_overprint = v;
-                        }
+                        st.gap_tint = gap_tint.unwrap_or(st.gap_tint);
+                        st.gap_overprint = gap_overprint.unwrap_or(st.gap_overprint);
                         if let Some(kind) = &kind {
                             st.kind = kind.clone();
                         }
-                        for (k, apply) in [("align", 0), ("cap", 2), ("join", 3), ("start", 4), ("end", 5)] {
-                            if let Some(v) = p2.get(k).cloned() {
-                                let _ = match apply {
-                                    0 => serde_json::from_value(v).map(|x| st.align = x),
-                                    2 => serde_json::from_value(v).map(|x| st.cap = x),
-                                    3 => serde_json::from_value(v).map(|x| st.join = x),
-                                    4 => serde_json::from_value(v).map(|x| st.start = x),
-                                    _ => serde_json::from_value(v).map(|x| st.end = x),
-                                };
-                            }
-                        }
+                        st.align = align.unwrap_or(st.align);
+                        st.cap = cap.unwrap_or(st.cap);
+                        st.join = join.unwrap_or(st.join);
+                        st.start = start.unwrap_or(st.start);
+                        st.end = end.unwrap_or(st.end);
                         i.stroke = st;
                     },
                     false,
@@ -3080,6 +3085,14 @@ fn frame_choice_param<T: serde::de::DeserializeOwned>(p: &Value, key: &str, name
         Some(v) => {
             serde_json::from_value(v.clone()).map(Some).map_err(|_| bad("object.textFrameOptions", format!("{key} must be one of {names}, not {v}")))
         }
+    }
+}
+
+/// An `object.stroke` choice: absent or null leaves it, a name outside `names` is an error.
+fn stroke_choice_param<T: serde::de::DeserializeOwned>(p: &Value, key: &str, names: &str) -> Result<Option<T>> {
+    match p.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => serde_json::from_value(v.clone()).map(Some).map_err(|_| bad("object.stroke", format!("{key} must be one of {names}, not {v}"))),
     }
 }
 
@@ -5864,6 +5877,52 @@ mod stroke_type_tests {
             let item = s.doc().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap();
             assert_eq!(item.stroke.kind, serde_json::from_value::<designcraft_doc::StrokeType>(kind).unwrap());
         }
+    }
+
+    /// A tint, weight or miter limit out of range, a gap overprint that isn't true or false, or an
+    /// alignment, cap, join or arrowhead name the stroke doesn't have is refused, with or without a
+    /// selection, and the document stays as it was. Values at the ends of each range are taken.
+    #[test]
+    fn stroke_settings_out_of_range_or_unknown_are_refused() {
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let id = s.execute("frame.create", &json!({"rect": [0, 0, 100, 100]})).unwrap()["id"].as_u64().unwrap();
+        for (key, value) in [
+            ("tint", json!(1.5)),
+            ("tint", json!(-0.1)),
+            ("tint", json!("half")),
+            ("gapTint", json!(2)),
+            ("weight", json!(-1)),
+            ("weight", json!(1001)),
+            ("miterLimit", json!(0.5)),
+            ("miterLimit", json!(501)),
+            ("gapOverprint", json!("yes")),
+            ("align", json!("middle")),
+            ("cap", json!("square")),
+            ("join", json!("sharp")),
+            ("start", json!("arrow")),
+            ("end", json!(3)),
+        ] {
+            for ids in [json!([id]), json!([])] {
+                let before = s.doc().unwrap().doc.clone();
+                let error = s.execute("object.stroke", &json!({"ids": ids, "swatch": "[Black]", key: value})).unwrap_err();
+                assert!(matches!(error, crate::EngineError::BadParams { .. }), "{error}");
+                assert!(error.to_string().contains(key), "{key} {value}: {error}");
+                assert!(std::sync::Arc::ptr_eq(&before, &s.doc().unwrap().doc), "{key} {value}: nothing changed");
+            }
+        }
+        let settings = json!({
+            "ids": [id], "swatch": "[Black]", "tint": 0, "weight": 1000, "miterLimit": 500, "gapTint": 1, "gapOverprint": true,
+            "align": "outside", "cap": "projecting", "join": "bevel", "start": "simpleWide", "end": "bar",
+        });
+        assert_eq!(s.execute("object.stroke", &settings).unwrap()["changed"], 1);
+        let st = s.doc().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap().stroke.clone();
+        assert_eq!((st.tint, st.weight, st.miter_limit, st.gap_tint, st.gap_overprint), (0.0, 1000.0, 500.0, 1.0, true));
+        assert_eq!(
+            (st.align, st.cap, st.join),
+            (designcraft_doc::StrokeAlign::Outside, designcraft_doc::Cap::Projecting, designcraft_doc::Join::Bevel)
+        );
+        assert_eq!((st.start, st.end), (designcraft_doc::Arrowhead::SimpleWide, designcraft_doc::Arrowhead::Bar));
     }
 }
 
