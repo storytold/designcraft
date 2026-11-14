@@ -3,6 +3,26 @@ use super::{
     Affine, Arc, Columns, Guide, Importer, ItemId, Margins, Orientation, Page, PageId, PageSide, ParentInfo, Point, Rect, Spread, SpreadId, names,
 };
 
+/// View › Rotate Spread from a `Spread` element's `ItemTransform`: quarter turns clockwise on
+/// screen (IDML y points down, so `0 1 -1 0` is one clockwise turn). The spread's items and
+/// pages stay in unrotated spread coordinates, so only the rotation part is read. Anything other
+/// than an exact quarter turn (identity, scale, other angles, malformed numbers) is no rotation.
+fn spread_view_rotation(s: Option<&str>) -> u8 {
+    let parsed: std::result::Result<Vec<f64>, _> = s.unwrap_or("").split_whitespace().take(7).map(str::parse::<f64>).collect();
+    let Some([a, b, c, d, _, _]) = parsed.ok().and_then(|v| <[f64; 6]>::try_from(v).ok()) else { return 0 };
+    let is = |x: f64, y: f64| (x - y).abs() < 1e-6;
+    let quarter = |m: [f64; 4]| is(a, m[0]) && is(b, m[1]) && is(c, m[2]) && is(d, m[3]);
+    if quarter([0.0, 1.0, -1.0, 0.0]) {
+        1
+    } else if quarter([-1.0, 0.0, 0.0, -1.0]) {
+        2
+    } else if quarter([0.0, -1.0, 1.0, 0.0]) {
+        3
+    } else {
+        0
+    }
+}
+
 impl<'r> Importer<'r> {
     // ---------- spreads and items ----------
 
@@ -95,7 +115,7 @@ impl<'r> Importer<'r> {
         let spine = if spine.is_finite() && facing { spine } else { 0.0 };
         let show = model_spread.show_master_items();
         let first_abs: usize = self.spreads.iter().map(|s| s.pages.len()).sum();
-        let view_rotation = model_spread.view_rotation();
+        let view_rotation = if master { 0 } else { spread_view_rotation(model_spread.values.get("ItemTransform")) };
         let mut out_pages = Vec::new();
         for (i, (r, p)) in pages.iter().enumerate() {
             let pid = PageId(self.alloc());

@@ -160,7 +160,13 @@ impl<'r> Importer<'r> {
             if r >= nr || c >= nc {
                 continue;
             }
-            let (cs, rs) = model_cell.span();
+            let (mut cs, mut rs) = model_cell.span();
+            if model_cell.values.get("RowSpan").is_some_and(|v| v.eq_ignore_ascii_case("inf") || v.eq_ignore_ascii_case("infinity")) {
+                rs = (nr - r) as u32;
+            }
+            if model_cell.values.get("ColumnSpan").is_some_and(|v| v.eq_ignore_ascii_case("inf") || v.eq_ignore_ascii_case("infinity")) {
+                cs = (nc - c) as u32;
+            }
             let rs = (rs as usize).min(nr - r);
             let cs = (cs as usize).min(nc - c);
             let mut cell = t.cell(r, c).cloned().unwrap_or_default();

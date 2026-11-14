@@ -263,8 +263,46 @@ fn add_face(db: &mut Arc<usvg::fontdb::Database>, face: Arc<designcraft_fonts::F
     ids.into_iter().find(|id| db.face(*id).is_some_and(|f| f.index == index))
 }
 
+/// Require UTF-8, bounded XML events, balanced tags and depth at most 64; reject internal DTD subsets while accepting ordinary external doctypes.
+fn svg_preflight(bytes: &[u8]) -> Option<()> {
+    use quick_xml::events::Event;
+
+    let text = std::str::from_utf8(bytes).ok()?;
+    let mut reader = quick_xml::Reader::from_str(text);
+    let mut depth = 0usize;
+    for _ in 0..MAX_SVG_EVENTS {
+        match reader.read_event().ok()? {
+            Event::Start(_) => {
+                depth += 1;
+                if depth > MAX_SVG_DEPTH {
+                    return None;
+                }
+            }
+            Event::Empty(_) if depth >= MAX_SVG_DEPTH => return None,
+            Event::End(_) => depth = depth.checked_sub(1)?,
+            Event::DocType(doctype) => {
+                // A '[' inside a quoted external identifier is not an internal subset.
+                let mut quote = None;
+                for &byte in &doctype[..] {
+                    match (quote, byte) {
+                        (Some(q), b) if b == q => quote = None,
+                        (None, b'\'' | b'"') => quote = Some(byte),
+                        (None, b'[') => return None,
+                        _ => {}
+                    }
+                }
+            }
+            Event::Eof => return (depth == 0).then_some(()),
+            _ => {}
+        }
+    }
+    None
+}
+
 /// Parse SVG/SVGZ through craft-svg's bounded parser and data-only nested-image resolver.
 pub fn svg_tree(bytes: &[u8]) -> Option<usvg::Tree> {
+    let xml = craft_svg::svgz::inflate(bytes, MAX_SVG_BYTES).ok()?;
+    svg_preflight(&xml)?;
     let limits = craft_svg::tree::Limits {
         bytes: MAX_SVG_BYTES,
         depth: MAX_SVG_DEPTH,
@@ -276,7 +314,7 @@ pub fn svg_tree(bytes: &[u8]) -> Option<usvg::Tree> {
     };
     let mut options = svg_options();
     options.image_href_resolver = craft_svg::tree::image_resolver(limits);
-    craft_svg::tree::parse(bytes, &limits, &options).ok()
+    craft_svg::tree::parse(&xml, &limits, &options).ok()
 }
 
 pub use resolution::raster_resolution;
@@ -364,7 +402,7 @@ pub fn decode_rgba(bytes: &[u8]) -> Option<image::RgbaImage> {
     }
     let decoded = craft_image_codecs::decode_with(bytes, &decode_options()).ok()?;
     if decoded.layout().is_cmyk() {
-        let raster = cmyk_raster(&decoded)?;
+        let raster = cmyk_raster(&decoded, bytes)?;
         return to_display_rgba(Pixels::Cmyk(raster), decoded.icc.as_deref(), &DisplayColour::active());
     }
     let rgba = image::RgbaImage::from_raw(decoded.width(), decoded.height(), decoded.to_rgba8())?;
@@ -377,21 +415,68 @@ fn decode_options() -> craft_image_codecs::DecodeOptions {
     craft_image_codecs::DecodeOptions { limits: craft_image_codecs::Limits { max_alloc: MAX_RGBA_BYTES, ..Default::default() }, ..Default::default() }
 }
 
-fn cmyk_raster(image: &craft_image_codecs::Image) -> Option<CmykRaster> {
+/// Whether an APP14 "Adobe" segment comes before the image data.
+fn adobe_marker(bytes: &[u8]) -> bool {
+    let mut i = 2;
+    while let Some(&[0xFF, marker, hi, lo]) = bytes.get(i..i + 4).and_then(|s| <&[u8; 4]>::try_from(s).ok()) {
+        // Start of scan or end of image: no more header segments.
+        if marker == 0xDA || marker == 0xD9 {
+            return false;
+        }
+        let len = usize::from(u16::from_be_bytes([hi, lo]));
+        if marker == 0xEE && bytes.get(i + 4..i + 9) == Some(b"Adobe".as_slice()) {
+            return true;
+        }
+        i += 2 + len;
+    }
+    false
+}
+
+fn cmyk_raster(image: &craft_image_codecs::Image, bytes: &[u8]) -> Option<CmykRaster> {
     let converted = image.convert(craft_image_codecs::ChannelLayout::CmykA, craft_image_codecs::SampleType::U8);
     let pixels = usize::try_from(converted.width()).ok()?.checked_mul(usize::try_from(converted.height()).ok()?)?;
     let data = converted.as_u8()?;
     if data.len() != pixels.checked_mul(5)? {
         return None;
     }
+    let invert = bytes.starts_with(&[0xFF, 0xD8]) && !adobe_marker(bytes);
     let mut cmyk = Vec::with_capacity(pixels.checked_mul(4)?);
     let mut alpha = Vec::with_capacity(pixels);
     for &[c, m, y, k, a] in data.as_chunks::<5>().0 {
-        cmyk.extend([c, m, y, k]);
+        if invert {
+            cmyk.extend([255 - c, 255 - m, 255 - y, 255 - k]);
+        } else {
+            cmyk.extend([c, m, y, k]);
+        }
         alpha.push(a);
     }
     let alpha = alpha.iter().any(|&a| a < 255).then_some(alpha);
     Some(CmykRaster { width: converted.width(), height: converted.height(), cmyk, alpha })
+}
+
+/// False when `bytes` is a WebP whose `ICCP` chunk declares more bytes than the file holds or than
+/// [`colour::MAX_ICC_BYTES`]. The decoder sizes its buffer from the declared length before it reads
+/// anything, so such a file must not reach `icc_profile()`; its pixels decode without it.
+pub fn webp_icc_is_sane(bytes: &[u8]) -> bool {
+    if bytes.get(0..4) != Some(b"RIFF") || bytes.get(8..12) != Some(b"WEBP") {
+        return true;
+    }
+    let mut pos = 12usize;
+    while let Some(head) = bytes.get(pos..pos.saturating_add(8)) {
+        let size = u32::from_le_bytes([head[4], head[5], head[6], head[7]]) as usize;
+        let body = pos + 8;
+        if &head[..4] == b"ICCP" {
+            return size <= colour::MAX_ICC_BYTES && body.saturating_add(size) <= bytes.len();
+        }
+        // Chunks are padded to an even size.
+        pos = body.saturating_add(size).saturating_add(size & 1);
+    }
+    true
+}
+
+/// The ICC profile embedded in a PNG, JPEG, TIFF or WebP.
+pub(crate) fn embedded_icc(bytes: &[u8]) -> Option<Vec<u8>> {
+    craft_image_codecs::embedded_icc(bytes).ok().flatten()
 }
 
 /// The largest `shrink` [`decode_rgba_reduced`] takes: 3, an eighth of each side.
@@ -410,7 +495,7 @@ pub fn decode_rgba_reduced(bytes: &[u8], shrink: u8) -> Option<image::RgbaImage>
         return None;
     }
     let (rgba, has_colour) = jpeg::decode_reduced(bytes, shrink)?;
-    let Some(icc) = craft_image_codecs::embedded_icc(bytes).ok().flatten() else { return Some(rgba) };
+    let Some(icc) = embedded_icc(bytes) else { return Some(rgba) };
     let px = if has_colour { Pixels::Rgb(rgba) } else { Pixels::Gray(rgba) };
     to_display_rgba(px, Some(&icc), &DisplayColour::active())
 }
@@ -444,7 +529,7 @@ pub fn decode_cmyk_tiff(bytes: &[u8]) -> Option<CmykRaster> {
         return None;
     }
     let image = craft_image_codecs::decode_with(bytes, &decode_options()).ok()?;
-    image.layout().is_cmyk().then(|| cmyk_raster(&image)).flatten()
+    image.layout().is_cmyk().then(|| cmyk_raster(&image, bytes)).flatten()
 }
 
 /// An SVG rasterised so its longer side is `max_side` pixels: premultiplied RGBA8.

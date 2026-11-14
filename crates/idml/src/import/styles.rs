@@ -190,13 +190,18 @@ impl<'r> Importer<'r> {
             });
             let stroke = values.stroke_enabled.then(|| self.stroke_from(e, None));
             let paragraph_style = values.paragraph_style_enabled.then(|| values.paragraph_style.as_deref().map(|r| self.para_style_ref(r))).flatten();
-            let text_frame = if values.text_frame_general_options {
-                values.text_frame_preference.map(crate::xml::from_craft).map(|preference| self.frame_options(&[&preference]))
+            let levels = based_on_levels(e, &objects_by_self);
+            let text_frame = if category_on(&levels, "EnableTextFrameGeneralOptions", |_| false) {
+                let prefs: Vec<&El> = levels
+                    .iter()
+                    .filter(|l| l.get("EnableTextFrameGeneralOptions") != Some("false"))
+                    .filter_map(|l| l.find("TextFramePreference"))
+                    .collect();
+                (!prefs.is_empty()).then(|| self.frame_options(&prefs))
             } else {
                 None
             };
             let effects = self.style_effects(e);
-            let levels = based_on_levels(e, &objects_by_self);
             let corners = style_corners(&levels);
             let apply_next_style = paragraph_style.is_some() && e.get("ApplyNextParagraphStyle") == Some("true");
             let s = ObjectStyle { name: name.clone(), based_on, fill, stroke, paragraph_style, apply_next_style, text_frame, effects, corners };

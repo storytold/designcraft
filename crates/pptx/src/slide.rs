@@ -362,11 +362,20 @@ impl<'a> Exporter<'a> {
     pub(crate) fn model_color(&self, swatch: &str, tint: f32, alpha: f32) -> Option<craft_pptx::ColorRef> {
         if let Some(gradient) = resolve_gradient(&self.doc.swatches, swatch) {
             let (_, color, gradient_alpha) = gradient.expanded_stops().into_iter().next()?;
-            let [r, g, b, a] = color.to_rgba8(gradient_alpha * alpha);
-            return Some(craft_pptx::ColorRef::rgb(craft_pptx::Rgba::rgba(r, g, b, a)));
+            let total_alpha = gradient_alpha * alpha;
+            let [r, g, b, _] = color.to_rgba8(1.0);
+            let mut c = craft_pptx::ColorRef::rgb(craft_pptx::Rgba::rgb(r, g, b));
+            if total_alpha < 1.0 {
+                c = c.with(craft_pptx::ColorTransform::Alpha((total_alpha * 100_000.0).round() as i32));
+            }
+            return Some(c);
         }
-        let [r, g, b, a] = self.doc.resolve_color(swatch, tint)?.to_rgba8(alpha);
-        Some(craft_pptx::ColorRef::rgb(craft_pptx::Rgba::rgba(r, g, b, a)))
+        let [r, g, b, _] = self.doc.resolve_color(swatch, tint)?.to_rgba8(1.0);
+        let mut c = craft_pptx::ColorRef::rgb(craft_pptx::Rgba::rgb(r, g, b));
+        if alpha < 1.0 {
+            c = c.with(craft_pptx::ColorTransform::Alpha((alpha * 100_000.0).round() as i32));
+        }
+        Some(c)
     }
 
     fn model_fill(&mut self, fill: &designcraft_doc::Fill, closed: bool, opacity: f32) -> craft_pptx::Fill {

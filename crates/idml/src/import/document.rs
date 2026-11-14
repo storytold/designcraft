@@ -116,9 +116,11 @@ impl<'r> Importer<'r> {
         if vars.len() >= VAR_MAX {
             return;
         }
+        let pref = e.elements().find(|c| c.local().ends_with("Preference"));
+        let attr = |k: &str| pref.and_then(|p| p.get(k)).unwrap_or("");
         let mut variable = TextVariable::new(&values.name, kind);
-        variable.before = values.before;
-        variable.after = values.after;
+        variable.before = if !values.before.is_empty() { values.before } else { attr("TextBefore").to_string() };
+        variable.after = if !values.after.is_empty() { values.after } else { attr("TextAfter").to_string() };
         if let Some(id) = values.self_id {
             self.text_var_ids.insert(id, vars.len());
         }

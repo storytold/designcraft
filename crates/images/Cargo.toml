@@ -17,6 +17,7 @@ image = { workspace = true }
 skrifa = { workspace = true }
 log = { workspace = true }
 craft-cms = { workspace = true }
+quick-xml = { workspace = true }
 craft-image-codecs = { workspace = true }
 craft-psd = { workspace = true }
 craft-file-formats = { workspace = true }
