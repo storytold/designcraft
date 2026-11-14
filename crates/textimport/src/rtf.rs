@@ -1,315 +1,84 @@
-//! RTF → story: text, paragraphs, line breaks, tabs, bold/italic/underline/strikethrough, size,
-//! Unicode (`\uN`) and hex (`\'hh`) characters. Destinations that aren't body text (font and
-//! colour tables, stylesheet, info, pictures, `\*` groups) are skipped.
+//! Adapter from craft-rtf's neutral document model to a DesignCraft story.
 
 use designcraft_doc::{CharAttrs, CharFormat, Story, StoryId};
 
 use crate::{ImportError, Imported};
 
-#[derive(Clone, Default)]
-struct State {
-    bold: bool,
-    italic: bool,
-    underline: bool,
-    strike: bool,
-    size: Option<f64>,
-    /// Inside a destination whose text is ignored.
-    skip: bool,
-    /// Characters to skip after `\uN` (`\ucN`).
-    uc: usize,
+fn char_format(fmt: &craft_rtf::CharFmt) -> CharFormat {
+    let font_style = match (fmt.bold, fmt.italic) {
+        (true, true) => "Bold Italic",
+        (true, false) => "Bold",
+        (false, true) => "Italic",
+        (false, false) => "Regular",
+    };
+    let mut over = CharAttrs {
+        font_style: (font_style != "Regular").then(|| font_style.to_string()),
+        underline: fmt.underline.then_some(true),
+        strikethrough: fmt.strike.then_some(true),
+        size: fmt.half_points.and_then(|size| designcraft_doc::attrs::imported_type_size(f64::from(size) / 2.0)),
+        ..Default::default()
+    };
+    if let Some(font) = &fmt.font {
+        over.font_family = Some(font.clone());
+    }
+    CharFormat { style: designcraft_doc::story::NO_CHAR_STYLE.into(), over }
 }
 
-impl State {
-    fn format(&self) -> CharFormat {
-        let font_style = match (self.bold, self.italic) {
-            (true, true) => Some("Bold Italic".to_string()),
-            (true, false) => Some("Bold".into()),
-            (false, true) => Some("Italic".into()),
-            _ => None,
-        };
-        CharFormat {
-            style: designcraft_doc::story::NO_CHAR_STYLE.into(),
-            over: CharAttrs {
-                font_style,
-                underline: self.underline.then_some(true),
-                strikethrough: self.strike.then_some(true),
-                size: self.size,
-                ..Default::default()
-            },
+fn append_para(story: &mut Story, para: &craft_rtf::Para, separate: bool) {
+    if separate {
+        let at = story.len();
+        story.insert_with(at, "\n", CharFormat::default());
+    }
+    if let Some(attrs) = story.paras.last_mut().map(|format| &mut format.para) {
+        attrs.left_indent = Some(f64::from(para.left_indent) / 20.0);
+        attrs.right_indent = Some(f64::from(para.right_indent) / 20.0);
+        attrs.first_line_indent = Some(f64::from(para.first_line_indent) / 20.0);
+        attrs.space_before = Some(f64::from(para.space_before) / 20.0);
+        attrs.space_after = Some(f64::from(para.space_after) / 20.0);
+        attrs.align = Some(match para.align {
+            Some(craft_rtf::Align::Left) | None => designcraft_doc::attrs::Align::Left,
+            Some(craft_rtf::Align::Center) => designcraft_doc::attrs::Align::Center,
+            Some(craft_rtf::Align::Right) => designcraft_doc::attrs::Align::Right,
+            Some(craft_rtf::Align::Justified) => designcraft_doc::attrs::Align::FullyJustified,
+        });
+    }
+    for run in &para.runs {
+        let mut text = String::with_capacity(run.text.len());
+        for c in run.text.chars() {
+            if c == '\u{FFFD}' || c == '\u{FFFF}' {
+                continue;
+            }
+            text.push(match c {
+                craft_rtf::LINE_BREAK => designcraft_doc::FORCED_LINE_BREAK,
+                craft_rtf::PAGE_BREAK => designcraft_doc::PAGE_BREAK,
+                craft_rtf::COLUMN_BREAK => designcraft_doc::COLUMN_BREAK,
+                other => other,
+            });
+        }
+        if !text.is_empty() {
+            let at = story.len();
+            story.insert_with(at, &text, char_format(&run.fmt));
         }
     }
-}
-
-const SKIP: &[&str] = &[
-    "fonttbl",
-    "colortbl",
-    "stylesheet",
-    "info",
-    "pict",
-    "header",
-    "headerl",
-    "headerr",
-    "headerf",
-    "footer",
-    "footerl",
-    "footerr",
-    "footerf",
-    "footnote",
-    "listtable",
-    "listoverridetable",
-    "rsidtbl",
-    "generator",
-    "themedata",
-    "colorschememapping",
-    "latentstyles",
-    "datastore",
-    "xmlnstbl",
-    "fldinst",
-    "object",
-];
-
-struct ControlWord {
-    word: String,
-    parameter: Option<i64>,
-    next_index: usize,
-}
-
-fn read_control_word(chars: &[char], index: usize) -> ControlWord {
-    let mut word_end = index + 1;
-    while word_end < chars.len() && chars[word_end].is_ascii_alphabetic() {
-        word_end += 1;
-    }
-    let word = chars[index + 1..word_end].iter().collect();
-    let mut next_index = word_end;
-    // A '-' only starts the parameter when a digit follows; otherwise it is text.
-    let negative = chars.get(next_index) == Some(&'-') && chars.get(next_index + 1).is_some_and(char::is_ascii_digit);
-    let has_parameter = negative || chars.get(next_index).is_some_and(char::is_ascii_digit);
-    if has_parameter {
-        next_index += 1;
-        while next_index < chars.len() && chars[next_index].is_ascii_digit() {
-            next_index += 1;
-        }
-    }
-    let parameter = chars[word_end..next_index].iter().collect::<String>().parse().ok();
-    if chars.get(next_index) == Some(&' ') {
-        next_index += 1;
-    }
-    ControlWord { word, parameter, next_index }
 }
 
 pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
-    let src = String::from_utf8_lossy(bytes);
-    if !src.trim_start().starts_with("{\\rtf") {
-        return Err(ImportError::Corrupt("not an RTF file".into()));
-    }
-    let mut st = Story::new(StoryId(0));
-    let mut stack: Vec<State> = vec![State { uc: 1, ..Default::default() }];
-    let mut pending = 0usize; // characters still to skip after \uN
-    let mut units = crate::Utf16Units::default();
-    let mut buf = String::new();
-    let mut fmt = stack[0].format();
-    let mut warnings = Vec::new();
-    let flush = |st: &mut Story, buf: &mut String, fmt: &CharFormat| {
-        if !buf.is_empty() {
-            let len = st.len();
-            st.insert_with(len, buf, fmt.clone());
-            buf.clear();
-        }
-    };
-    let chars: Vec<char> = src.chars().collect();
-    let mut i = 0;
-    // The first `{` opens the document group.
-    let mut first = true;
-    while i < chars.len() {
-        let c = chars[i];
-        match c {
-            '{' => {
-                flush(&mut st, &mut buf, &fmt);
-                let top = stack.last().cloned().unwrap_or_default();
-                if !first {
-                    stack.push(top);
-                }
-                first = false;
-                // A group is not a character: the `\uN` fallback skip ends here too.
-                pending = 0;
-                // `{\*\dest …}`: an ignorable destination.
-                if chars.get(i + 1) == Some(&'\\')
-                    && chars.get(i + 2) == Some(&'*')
-                    && let Some(s) = stack.last_mut()
-                {
-                    s.skip = true;
-                }
-                i += 1;
-            }
-            '}' => {
-                flush(&mut st, &mut buf, &fmt);
-                if stack.len() > 1 {
-                    stack.pop();
-                }
-                // The `\uN` fallback skip ends with the group.
-                pending = 0;
-                fmt = stack.last().map(State::format).unwrap_or_default();
-                i += 1;
-            }
-            '\\' => {
-                let next = chars.get(i + 1).copied().unwrap_or(' ');
-                if next == '\'' {
-                    // \'hh: a Windows-1252 byte.
-                    // Only valid hex digits are consumed; anything else is left for the main loop.
-                    let hex: String = chars.iter().skip(i + 2).take(2).take_while(|c| c.is_ascii_hexdigit()).collect();
-                    i += 2 + hex.len();
-                    if pending > 0 {
-                        pending -= 1;
-                        continue;
-                    }
-                    if hex.len() == 2
-                        && let Ok(b) = u8::from_str_radix(&hex, 16)
-                        && !stack.last().is_some_and(|s| s.skip)
-                    {
-                        units.reset();
-                        buf.push(cp1252(b));
-                    }
-                    continue;
-                }
-                if !next.is_ascii_alphabetic() {
-                    // Control symbols: \\ \{ \} \~ (nbsp) \- (soft hyphen) \_ (nb hyphen).
-                    i += 2;
-                    if pending > 0 {
-                        pending -= 1;
-                        continue;
-                    }
-                    let skip = stack.last().is_some_and(|s| s.skip);
-                    if !skip {
-                        match next {
-                            '\\' | '{' | '}' => buf.push(next),
-                            '~' => buf.push('\u{A0}'),
-                            '-' => buf.push('\u{AD}'),
-                            '_' => buf.push('\u{2011}'),
-                            '\n' | '\r' => {
-                                flush(&mut st, &mut buf, &fmt);
-                                let len = st.len();
-                                st.insert(len, "\n");
-                            }
-                            _ => {}
-                        }
-                    }
-                    continue;
-                }
-                // A control word with an optional numeric parameter and one delimiting space.
-                let ControlWord { word, parameter: param, next_index } = read_control_word(&chars, i);
-                i = next_index;
-                // A control word is one character of the `\uN` fallback (a following `\u` is not).
-                if pending > 0 && word != "u" {
-                    pending -= 1;
-                    continue;
-                }
-                let skip = stack.last().is_some_and(|s| s.skip);
-                if SKIP.contains(&word.as_str()) {
-                    flush(&mut st, &mut buf, &fmt);
-                    if let Some(s) = stack.last_mut() {
-                        s.skip = true;
-                    }
-                    if word == "pict" && !warnings.iter().any(|w: &String| w.starts_with("Pictures")) {
-                        warnings.push("Pictures in the RTF file were not imported.".into());
-                    }
-                    continue;
-                }
-                if skip {
-                    continue;
-                }
-                let on = param != Some(0);
-                let mut restyle = |f: &dyn Fn(&mut State)| {
-                    flush(&mut st, &mut buf, &fmt);
-                    if let Some(s) = stack.last_mut() {
-                        f(s);
-                        fmt = s.format();
-                    }
-                };
-                match word.as_str() {
-                    "par" | "sect" => {
-                        flush(&mut st, &mut buf, &fmt);
-                        let len = st.len();
-                        st.insert_with(len, "\n", fmt.clone());
-                    }
-                    "line" => buf.push(designcraft_doc::FORCED_LINE_BREAK),
-                    "tab" => buf.push('\t'),
-                    "page" => buf.push(designcraft_doc::PAGE_BREAK),
-                    "column" => buf.push(designcraft_doc::COLUMN_BREAK),
-                    "emdash" => buf.push('\u{2014}'),
-                    "endash" => buf.push('\u{2013}'),
-                    "bullet" => buf.push('\u{2022}'),
-                    "lquote" => buf.push('\u{2018}'),
-                    "rquote" => buf.push('\u{2019}'),
-                    "ldblquote" => buf.push('\u{201C}'),
-                    "rdblquote" => buf.push('\u{201D}'),
-                    "b" => restyle(&|s| s.bold = on),
-                    "i" => restyle(&|s| s.italic = on),
-                    "ul" => restyle(&|s| s.underline = on),
-                    "ulnone" => restyle(&|s| s.underline = false),
-                    "strike" => restyle(&|s| s.strike = on),
-                    // Half-points; sizes outside the engine's 0.1–1296 pt range fall back to the default.
-                    "fs" => restyle(&|s| {
-                        s.size = param.map(|p| p as f64 / 2.0).and_then(designcraft_doc::attrs::imported_type_size);
-                    }),
-                    "plain" => restyle(&|s| {
-                        s.bold = false;
-                        s.italic = false;
-                        s.underline = false;
-                        s.strike = false;
-                        s.size = None;
-                    }),
-                    "uc" => {
-                        if let (Some(s), Some(n)) = (stack.last_mut(), param) {
-                            s.uc = n.max(0) as usize;
-                        }
-                    }
-                    "u" => {
-                        if let Some(n) = param {
-                            // RTF allows -32768..=65535; anything else is dropped.
-                            if (-32768..=65535).contains(&n) {
-                                let unit = if n < 0 { (n + 65536) as u32 } else { n as u32 };
-                                if let Some(ch) = units.push(unit) {
-                                    buf.push(ch);
-                                }
-                            }
-                            pending = stack.last().map_or(1, |s| s.uc);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            '\r' | '\n' => i += 1,
-            _ => {
-                i += 1;
-                if pending > 0 {
-                    pending -= 1;
-                    continue;
-                }
-                if !stack.last().is_some_and(|s| s.skip) {
-                    units.reset();
-                    buf.push(c);
-                }
-            }
+    let doc = craft_rtf::read(bytes).map_err(|_| ImportError::Corrupt("not an RTF file".into()))?;
+    let mut story = Story::new(StoryId(0));
+    let mut paragraph_count = 0;
+    for block in &doc.blocks {
+        let paras: Vec<&craft_rtf::Para> = match block {
+            craft_rtf::Block::Para(para) => vec![para],
+            craft_rtf::Block::Table(table) => table.rows.iter().flatten().flat_map(|cell| &cell.paras).collect(),
+        };
+        for para in paras {
+            append_para(&mut story, para, paragraph_count > 0);
+            paragraph_count += 1;
         }
     }
-    flush(&mut st, &mut buf, &fmt);
-    // A trailing \par leaves an empty last paragraph.
-    if st.text.ends_with('\n') {
-        let n = st.len();
-        st.delete(n - 1..n);
-    }
-    // A page or column break ends its paragraph.
-    st.end_paragraphs_at_breaks();
-    Ok(Imported { story: st, para_styles: vec![], char_styles: vec![], warnings })
-}
-
-/// Windows-1252 byte → char.
-fn cp1252(b: u8) -> char {
-    const HI: [u16; 32] = [
-        0x20AC, 0x81, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021, 0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0x8D, 0x017D, 0x8F, 0x90, 0x2018,
-        0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014, 0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0x9D, 0x017E, 0x0178,
-    ];
-    if (0x80..0xA0).contains(&b) { char::from_u32(HI[(b - 0x80) as usize] as u32).unwrap_or('?') } else { b as char }
+    story.end_paragraphs_at_breaks();
+    let warnings = if doc.pictures_left_out > 0 { vec!["Pictures in the RTF file were not imported.".into()] } else { vec![] };
+    Ok(Imported { story, para_styles: vec![], char_styles: vec![], warnings })
 }
 
 #[cfg(test)]

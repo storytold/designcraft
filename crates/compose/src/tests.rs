@@ -1055,7 +1055,7 @@ fn an_alpha_channel_contour_stops_at_the_clipping_path() {
             height: 200,
             outer: rect(75.0, 150.0),
             holes: PathData::default(),
-            source: std::sync::Weak::new(),
+            source: designcraft_doc::SourceKey(0),
             serial: designcraft_doc::AlphaOutline::next_serial(),
         }));
         let cs = compose_story(&d, sid, &ComposeOptions::default());
