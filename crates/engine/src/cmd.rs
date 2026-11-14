@@ -1,5 +1,6 @@
 //! The command registry. Ids follow InDesign's menu structure.
 
+pub(crate) mod alpha_wrap;
 mod anchored;
 pub mod anchors;
 mod articles;
@@ -16,6 +17,7 @@ mod editorial;
 mod endnotes;
 mod export;
 pub(crate) use export::print_pdf;
+pub mod export_batch;
 mod file;
 mod file_info;
 pub(crate) mod find;
@@ -32,6 +34,8 @@ mod layout;
 pub mod library;
 mod linked;
 mod links;
+pub mod native_links;
+pub use links::{LinkListChecks, list_document_links, preview_document_links, remember_link_files};
 mod liquid;
 mod lists;
 mod load_styles;
@@ -39,9 +43,11 @@ mod mathexpr;
 mod media;
 mod notes;
 mod object;
+pub use object::text_frame_options_frames;
 mod overrides;
 mod package;
 pub mod params;
+mod paste_image;
 mod paste_svg;
 mod path_type;
 mod paths;
@@ -175,7 +181,9 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(file_info::specs());
         v.extend(interchange::specs());
         v.extend(export::specs());
+        v.extend(export_batch::specs());
         v.extend(edit::specs());
+        v.extend(paste_image::specs());
         v.extend(paste_svg::specs());
         v.extend(endnotes::specs());
         v.extend(editorial::specs());
@@ -194,6 +202,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(library::specs());
         v.extend(lists::specs());
         v.extend(linked::specs());
+        v.extend(native_links::specs());
         v.extend(mathexpr::specs());
         v.extend(media::specs());
         v.extend(pdflayers::specs());
@@ -246,6 +255,11 @@ pub fn find_command(id: &str) -> Option<&'static CommandSpec> {
 
 pub(crate) fn bad(cmd: &str, msg: impl Into<String>) -> EngineError {
     EngineError::BadParams { cmd: cmd.into(), msg: msg.into() }
+}
+
+/// The bytes of `asset`, or why `cmd` can't have them.
+pub(crate) fn asset_bytes(cmd: &str, asset: &designcraft_doc::Asset) -> Result<std::sync::Arc<Vec<u8>>> {
+    asset.data.load().map_err(|e| bad(cmd, format!("{}: {e}", asset.name)))
 }
 /// `p` with `key` set to `v`. Parameters come from callers (control channel, MCP, scripts) and
 /// may not be an object: `p[key] = v` panics on an array or a string, so start from `{}` then.
@@ -328,6 +342,28 @@ pub(crate) fn named_targets(spec: &CommandSpec, p: &Value) -> Option<Vec<ItemId>
     id_param(p, "id").map(|i| vec![i])
 }
 
+/// The table a call names with `table`, for a command whose params document an optional `table`.
+/// `None` when the call names no table. A `table` that is present but not a non-negative integer,
+/// `null` included, is an error. [`table_story`] reads the `story` that goes with it.
+pub(crate) fn named_table(spec: &CommandSpec, p: &Value, cmd: &str) -> Result<Option<u64>> {
+    if !spec.params.split(|c: char| !c.is_ascii_alphanumeric() && c != '?').any(|w| w == "table?") {
+        return Ok(None);
+    }
+    match p.get("table") {
+        None => Ok(None),
+        Some(v) => v.as_u64().map(Some).ok_or_else(|| bad(cmd, "`table` must be a nonnegative integer")),
+    }
+}
+
+/// The `story` a table command's call names alongside `table`, or `None` when the call has no
+/// `story`. A `story` that is present but not a non-negative integer, `null` included, is an error.
+pub(crate) fn table_story(p: &Value, cmd: &str) -> Result<Option<u64>> {
+    match p.get("story") {
+        None => Ok(None),
+        Some(v) => v.as_u64().map(Some).ok_or_else(|| bad(cmd, "`story` must be a non-negative integer")),
+    }
+}
+
 /// Targets: `ids` / `id` params or the selection.
 pub(crate) fn targets(s: &Session, p: &Value) -> Result<Vec<ItemId>> {
     if let Some(ids) = ids_param(p, "ids") {
@@ -355,5 +391,6 @@ pub use file::{
     DOCUMENT_SNIFF_BYTES, RecentPreview, base64_decode, base64_encode, from_bytes, is_document, recent_preview, to_bytes, with_document_extension,
 };
 pub use layout::chapter_numbering;
+pub use paste_image::{IMAGE_EXTENSIONS, MAX_PASTED_PIXELS, PASTED_IMAGE_NAME, check_pasted_base64, check_pasted_size, pasted_pixels, pasted_png};
 pub use paste_svg::is_svg_markup;
 pub(crate) use place_text::autoflow as place_text_autoflow;

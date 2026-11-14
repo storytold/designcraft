@@ -447,7 +447,7 @@ impl<'p> Importer<'p> {
                 id: aid,
                 name: name.to_string(),
                 mime: mime.to_string(),
-                data: Arc::new(bytes.to_vec()),
+                data: designcraft_doc::AssetData::embedded(bytes.to_vec()),
                 pixels: designcraft_images::pixel_size(bytes),
                 ..Default::default()
             };

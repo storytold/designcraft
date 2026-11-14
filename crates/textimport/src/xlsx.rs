@@ -6,81 +6,66 @@ use std::collections::BTreeMap;
 
 use designcraft_doc::{CharFormat, ParaFormat, Story, StoryId, Table};
 
-use crate::docx::{El, parse, part};
 use crate::{ImportError, Imported};
 
-/// "B12" → (row 11, column 1).
-fn cell_ref(r: &str) -> Option<(usize, usize)> {
-    let letters: String = r.chars().take_while(char::is_ascii_alphabetic).collect();
-    let row: usize = r[letters.len()..].parse().ok()?;
-    let col = letters.chars().try_fold(0usize, |acc, c| {
-        let digit = (c.to_ascii_uppercase() as u8).checked_sub(b'A')? as usize + 1;
-        acc.checked_mul(26)?.checked_add(digit)
-    })?;
-    Some((row.checked_sub(1)?, col.checked_sub(1)?))
-}
-
-/// The worksheet part of the first sheet (workbook order), via the workbook relationships.
-fn first_sheet(zip: &mut zip::ZipArchive<std::io::Cursor<&[u8]>>) -> Result<Option<String>, ImportError> {
-    let Some(wb) = part(zip, "xl/workbook.xml")? else { return Ok(None) };
-    let Some(rels) = part(zip, "xl/_rels/workbook.xml.rels")? else { return Ok(None) };
-    Ok(first_sheet_target(&wb, &rels))
-}
-
-fn first_sheet_target(wb: &str, rels: &str) -> Option<String> {
-    let wb = parse(wb).ok()?;
-    let rid = wb.child("sheets")?.els().find(|e| e.name == "sheet")?.attr("id")?.to_string();
-    let rels = parse(rels).ok()?;
-    let target = rels.els().find(|r| r.attr("Id") == Some(rid.as_str()))?.attr("Target")?.trim_start_matches('/').to_string();
-    Some(if target.starts_with("xl/") { target } else { format!("xl/{target}") })
-}
-
-/// The text of a shared string (`<si>`) or inline string (`<is>`): its own `<t>` and the `<t>` of its
-/// `<r>` runs. Phonetic guides (`<rPh>`, `<phoneticPr>`) are the reading, not the cell text.
-fn string_item(si: &El) -> String {
-    si.els()
-        .map(|e| match e.name.as_str() {
-            "t" => e.text(),
-            "r" => e.els().filter(|t| t.name == "t").map(El::text).collect(),
-            _ => String::new(),
-        })
-        .collect()
-}
-
-fn value(c: &El, shared: &[String]) -> String {
-    let v = || c.child("v").map(El::text).unwrap_or_default();
-    match c.attr("t") {
-        Some("s") => v().trim().parse::<usize>().ok().and_then(|i| shared.get(i).cloned()).unwrap_or_default(),
-        Some("inlineStr") => c.child("is").map(string_item).unwrap_or_default(),
-        // A cached formula string is text even when it looks like a number.
-        Some("str") => v(),
-        Some("b") => {
-            if v().trim() == "1" {
-                "TRUE".into()
-            } else {
-                "FALSE".into()
-            }
-        }
-        _ => {
-            let raw = v();
-            match raw.trim().parse::<f64>() {
-                Ok(f) if f.is_finite() => general(f),
-                _ => raw,
-            }
-        }
+fn display(value: craft_xlsx::Value) -> String {
+    match value {
+        craft_xlsx::Value::Empty => String::new(),
+        craft_xlsx::Value::Number(n) => general(n),
+        craft_xlsx::Value::Text(s) => s.to_string(),
+        craft_xlsx::Value::Bool(b) => if b { "TRUE" } else { "FALSE" }.into(),
+        craft_xlsx::Value::Error(e) => e.to_string(),
     }
 }
 
-/// A number as Excel's General format shows it: at most 15 significant digits (Excel stores
-/// doubles with 17, so `=0.1+0.2` is cached as 0.30000000000000004 and shown as 0.3), whole
-/// numbers without ".0", and an exponent for very large or very small values.
+fn sheet_cells(
+    bytes: &[u8],
+    wanted: Option<&str>,
+    max_cells: usize,
+    max_text_bytes: usize,
+) -> Result<(Vec<(usize, usize, String)>, bool, Vec<String>), ImportError> {
+    let mut package = craft_xlsx::Package::open(bytes, &craft_xlsx::Limits::default()).map_err(|e| ImportError::Corrupt(e.to_string()))?;
+    let workbook = package.workbook().map_err(|e| ImportError::Corrupt(e.to_string()))?;
+    let entry = match wanted {
+        Some(name) => workbook.sheets.iter().find(|sheet| sheet.name == name),
+        None => workbook.sheets.first(),
+    }
+    .ok_or_else(|| ImportError::Corrupt(wanted.map_or("the workbook has no sheets".into(), |name| format!("no worksheet \"{name}\""))))?;
+    let date_1904 = workbook.date_1904;
+    let strings = package.shared_strings().map_err(|e| ImportError::Corrupt(e.to_string()))?;
+    let mut cells = Vec::new();
+    let mut text_bytes = 0usize;
+    let mut cut = false;
+    let result = package.sheet(entry, |row| {
+        for cell in row.cells {
+            let value = match &cell.value {
+                craft_xlsx::CellValue::Invalid(s) => s.clone(),
+                other => display(other.resolve(&strings, date_1904)),
+            };
+            text_bytes = text_bytes.saturating_add(value.len());
+            if cells.len() >= max_cells || text_bytes > max_text_bytes {
+                cut = true;
+                return Err(craft_xlsx::Error::TooLarge("worksheet text or cell limit reached".into()));
+            }
+            cells.push((cell.at.row as usize, cell.at.col as usize, value));
+        }
+        Ok(())
+    });
+    if let Err(error) = result
+        && !cut
+    {
+        return Err(ImportError::Corrupt(error.to_string()));
+    }
+    let warnings = package.warnings().to_vec();
+    Ok((cells, cut, warnings))
+}
+
 fn general(f: f64) -> String {
     let r = format!("{f:.14e}").parse::<f64>().unwrap_or(f);
     let a = r.abs();
     if r == 0.0 {
         "0".into()
     } else if (1e-9..1e15).contains(&a) {
-        // Shortest text that reads back as the rounded value; whole numbers drop the ".0".
         r.to_string()
     } else {
         let s = format!("{r:E}");
@@ -91,7 +76,11 @@ fn general(f: f64) -> String {
     }
 }
 
-/// The first and last column used on the header row, if that row has any cells.
+#[cfg(test)]
+fn cell_ref(reference: &str) -> Option<(usize, usize)> {
+    craft_xlsx::CellRef::parse(reference).map(|cell| (cell.row as usize, cell.col as usize))
+}
+
 fn header_span(cells: &[(usize, usize, String)], header_row: usize) -> Option<(usize, usize)> {
     cells.iter().filter(|(r, _, _)| *r == header_row).fold(None, |span, (_, c, _)| match span {
         None => Some((*c, *c)),
@@ -99,20 +88,13 @@ fn header_span(cells: &[(usize, usize, String)], header_row: usize) -> Option<(u
     })
 }
 
-/// One row's values laid into `width` columns starting at column `min_c`; values outside that
-/// span come back separately (only the non-empty ones), so the caller can warn.
 fn place_row(cols: &[(usize, String)], min_c: usize, width: usize) -> (Vec<String>, Vec<String>) {
     let mut row = vec![String::new(); width];
-    let mut extra: Vec<String> = Vec::new();
-    for (c, v) in cols {
-        let at = c.checked_sub(min_c).filter(|at| *at < width);
-        match at {
-            Some(at) => {
-                if let Some(cell) = row.get_mut(at) {
-                    *cell = v.clone();
-                }
-            }
-            None if !v.is_empty() => extra.push(v.clone()),
+    let mut extra = Vec::new();
+    for (c, value) in cols {
+        match c.checked_sub(min_c).filter(|at| *at < width) {
+            Some(at) => row[at] = value.clone(),
+            None if !value.is_empty() => extra.push(value.clone()),
             None => {}
         }
     }
@@ -123,28 +105,23 @@ fn place_row(cols: &[(usize, String)], min_c: usize, width: usize) -> (Vec<Strin
 /// The first used row is the header. Later rows that are entirely empty are left out.
 /// Cells past the header are kept so the caller can warn. Over 200 columns or 100,000
 /// data rows is an error and the grid is not built.
+/// What [`records`] reads of a sheet at most: the text of its cells and their number (the data
+/// merge limits, rows × columns, with room for cells outside the table).
+const MAX_RECORD_TEXT_BYTES: usize = 256 << 20;
+const MAX_RECORD_CELLS: usize = 2 * crate::DATA_MERGE_MAX_ROWS * crate::DATA_MERGE_MAX_COLS;
+
 pub fn records(bytes: &[u8], sheet: Option<&str>) -> Result<Vec<Vec<String>>, ImportError> {
-    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|e| ImportError::Corrupt(e.to_string()))?;
-    let sheet_part = sheet_target(&mut zip, sheet)?;
-    let sheet_xml = parse(&part(&mut zip, &sheet_part)?.ok_or_else(|| ImportError::Corrupt(format!("no {sheet_part} (not an Excel workbook)")))?)?;
-    let shared: Vec<String> = part(&mut zip, "xl/sharedStrings.xml")?
-        .map(|x| parse(&x))
-        .transpose()?
-        .map(|sst| sst.els().filter(|e| e.name == "si").map(string_item).collect())
-        .unwrap_or_default();
-    let mut cells: Vec<(usize, usize, String)> = Vec::new();
-    if let Some(data) = sheet_xml.child("sheetData") {
-        for (ri, row) in data.els().filter(|e| e.name == "row").enumerate() {
-            for (ci, c) in row.els().filter(|e| e.name == "c").enumerate() {
-                let (r, col) = c.attr("r").and_then(cell_ref).unwrap_or((ri, ci));
-                cells.push((r, col, value(c, &shared)));
-            }
-        }
+    let (cells, cut, _) = sheet_cells(bytes, sheet, MAX_RECORD_CELLS, MAX_RECORD_TEXT_BYTES)?;
+    if cut {
+        return Err(ImportError::Corrupt(format!(
+            "the sheet holds more than {} MB of text or {MAX_RECORD_CELLS} cells; the limit for a data source",
+            MAX_RECORD_TEXT_BYTES >> 20
+        )));
     }
     if cells.is_empty() {
         return Err(ImportError::Corrupt("the worksheet is empty".into()));
     }
-    let header_row = cells.iter().map(|c| c.0).min().unwrap_or(0);
+    let header_row = cells.iter().map(|cell| cell.0).min().unwrap_or(0);
     let Some((min_c, max_c)) = header_span(&cells, header_row) else {
         return Err(ImportError::Corrupt("the worksheet has no header".into()));
     };
@@ -152,21 +129,11 @@ pub fn records(bytes: &[u8], sheet: Option<&str>) -> Result<Vec<Vec<String>>, Im
     if width > crate::DATA_MERGE_MAX_COLS {
         return Err(ImportError::Corrupt(format!("the sheet has {width} columns; the limit is {}", crate::DATA_MERGE_MAX_COLS)));
     }
-    // Group by row. Gaps (empty rows) are not materialised.
     let mut by_row: BTreeMap<usize, Vec<(usize, String)>> = BTreeMap::new();
     for (r, c, v) in cells {
         by_row.entry(r).or_default().push((c, v));
     }
-    let mut data_rows = 0usize;
-    for (r, cols) in &by_row {
-        if *r == header_row {
-            continue;
-        }
-        let any = cols.iter().any(|(_, v)| !v.is_empty());
-        if any {
-            data_rows = data_rows.saturating_add(1);
-        }
-    }
+    let data_rows = by_row.iter().filter(|(r, cols)| **r != header_row && cols.iter().any(|(_, v)| !v.is_empty())).count();
     if data_rows > crate::DATA_MERGE_MAX_ROWS {
         return Err(ImportError::Corrupt(format!("the sheet has {data_rows} data rows; the limit is {}", crate::DATA_MERGE_MAX_ROWS)));
     }
@@ -182,64 +149,10 @@ pub fn records(bytes: &[u8], sheet: Option<&str>) -> Result<Vec<Vec<String>>, Im
     Ok(out)
 }
 
-/// Workbook order, or the sheet named `wanted`.
-fn sheet_target(zip: &mut zip::ZipArchive<std::io::Cursor<&[u8]>>, wanted: Option<&str>) -> Result<String, ImportError> {
-    let wb = parse(&part(zip, "xl/workbook.xml")?.ok_or_else(|| ImportError::Corrupt("no xl/workbook.xml (not an Excel workbook)".into()))?)?;
-    let sheets: Vec<(String, String)> = wb
-        .child("sheets")
-        .map(|s| s.els().filter(|e| e.name == "sheet").filter_map(|e| Some((e.attr("name")?.to_string(), e.attr("id")?.to_string()))).collect())
-        .unwrap_or_default();
-    let (name, rid) = match wanted {
-        None => sheets.first().cloned().ok_or_else(|| ImportError::Corrupt("the workbook has no sheets".into()))?,
-        Some(w) => sheets.into_iter().find(|(n, _)| n == w).ok_or_else(|| ImportError::Corrupt(format!("no worksheet \"{w}\"")))?,
-    };
-    let rels = parse(&part(zip, "xl/_rels/workbook.xml.rels")?.ok_or_else(|| ImportError::Corrupt("no workbook relationships".into()))?)?;
-    let target = rels
-        .els()
-        .find(|r| r.attr("Id") == Some(rid.as_str()))
-        .and_then(|r| r.attr("Target"))
-        .ok_or_else(|| ImportError::Corrupt(format!("worksheet \"{name}\" has no file")))?;
-    let target = target.trim_start_matches('/');
-    Ok(if target.starts_with("xl/") { target.to_string() } else { format!("xl/{target}") })
-}
-
 pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
-    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|e| ImportError::Corrupt(e.to_string()))?;
-    let sheet_part = first_sheet(&mut zip)?.unwrap_or_else(|| "xl/worksheets/sheet1.xml".into());
-    let sheet = parse(&part(&mut zip, &sheet_part)?.ok_or_else(|| ImportError::Corrupt(format!("no {sheet_part} (not an Excel workbook)")))?)?;
-    let shared: Vec<String> = part(&mut zip, "xl/sharedStrings.xml")?
-        .map(|x| parse(&x))
-        .transpose()?
-        .map(|sst| sst.els().filter(|e| e.name == "si").map(string_item).collect())
-        .unwrap_or_default();
-    // A `t="s"` cell holds an index into the shared strings and each one is materialised as its
-    // own `String`, so one large shared string referenced by many cells multiplies: a 1 MB string
-    // and 3M references is terabytes, allocated before the grid cap below ever applies, and an
-    // allocation that large aborts the process rather than failing (#1584). Collection carries a
-    // byte budget and a cell count of its own.
     const MAX_TEXT_BYTES: usize = 64 << 20;
     const MAX_COLLECTED_CELLS: usize = 400_000;
-    let mut cells: Vec<((usize, usize), String)> = Vec::new();
-    let mut text_bytes = 0usize;
-    let mut cut = false;
-    if let Some(data) = sheet.child("sheetData") {
-        'rows: for (ri, row) in data.els().filter(|e| e.name == "row").enumerate() {
-            for (ci, c) in row.els().filter(|e| e.name == "c").enumerate() {
-                let at = c.attr("r").and_then(cell_ref).unwrap_or((ri, ci));
-                let v = value(c, &shared);
-                if v.is_empty() {
-                    continue;
-                }
-                if cells.len() >= MAX_COLLECTED_CELLS || text_bytes.saturating_add(v.len()) > MAX_TEXT_BYTES {
-                    cut = true;
-                    break 'rows;
-                }
-                text_bytes = text_bytes.saturating_add(v.len());
-                cells.push((at, v));
-            }
-        }
-    }
-    let mut warnings = Vec::new();
+    let (cells, cut, mut warnings) = sheet_cells(bytes, None, MAX_COLLECTED_CELLS, MAX_TEXT_BYTES)?;
     if cut {
         warnings.push(format!(
             "the worksheet holds more than {} cells or {} MB of text: the rest was not read",
@@ -250,12 +163,10 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
     if cells.is_empty() {
         warnings.push("the worksheet is empty".into());
     }
-    // The used range, from the first used row/column. Cell references come from the file: the
-    // table is capped before anything is allocated for it.
     const MAX_CELLS: usize = 100_000;
     const MAX_COLS: usize = 1_000;
-    let (r0, c0) = cells.iter().fold((usize::MAX, usize::MAX), |(r, c), ((a, b), _)| (r.min(*a), c.min(*b)));
-    let (r1, c1) = cells.iter().fold((0, 0), |(r, c), ((a, b), _)| (r.max(*a), c.max(*b)));
+    let (r0, c0) = cells.iter().fold((usize::MAX, usize::MAX), |(r, c), (a, b, _)| (r.min(*a), c.min(*b)));
+    let (r1, c1) = cells.iter().fold((0, 0), |(r, c), (a, b, _)| (r.max(*a), c.max(*b)));
     let (nrows, ncols) = if cells.is_empty() { (1, 1) } else { ((r1 - r0).saturating_add(1), (c1 - c0).saturating_add(1)) };
     let ncols_kept = ncols.min(MAX_COLS);
     if ncols_kept < ncols {
@@ -266,15 +177,15 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
         warnings.push(format!("only the first {nrows_kept} rows were placed"));
     }
     let mut rows: Vec<Vec<String>> = vec![vec![String::new(); ncols_kept]; nrows_kept];
-    for ((r, c), v) in cells {
+    for (r, c, v) in cells.into_iter().filter(|(_, _, value)| !value.is_empty()) {
         if let Some(cell) = rows.get_mut(r - r0).and_then(|row| row.get_mut(c - c0)) {
             *cell = v;
         }
     }
     let mut story = Story::new(StoryId(0));
     let width = 72.0 * ncols_kept as f64;
-    let t = Table::from_strings(1, &rows, width, &ParaFormat::default(), &CharFormat::default());
-    story.insert_table(0, t);
+    let table = Table::from_strings(1, &rows, width, &ParaFormat::default(), &CharFormat::default());
+    story.insert_table(0, table);
     Ok(Imported { story, para_styles: vec![], char_styles: vec![], warnings })
 }
 
@@ -313,6 +224,15 @@ mod tests {
             z.finish().unwrap();
         }
         buf.into_inner()
+    }
+
+    #[test]
+    fn cell_ref_rejects_signed_or_malformed_rows() {
+        assert_eq!(cell_ref("B12"), Some((11, 1)));
+        assert_eq!(cell_ref("A+1"), None);
+        assert_eq!(cell_ref("A-1"), None);
+        assert_eq!(cell_ref("A"), None);
+        assert_eq!(cell_ref("A1x"), None);
     }
 
     /// A `t="s"` cell materialises its own copy of the shared string, so one big string with many

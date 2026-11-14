@@ -1,6 +1,7 @@
-use hayro_syntax::Pdf;
-use hayro_syntax::object::{Array, Dict, MaybeRef, Name, Object, ObjectIdentifier, Stream};
-use hayro_syntax::reader::{Reader, ReaderExt};
+use craft_pdf::syntax::Pdf;
+use craft_pdf::syntax::object::{Array, Dict, MaybeRef, Name, Object, ObjectIdentifier, Stream};
+use craft_pdf::syntax::reader::{Reader, ReaderExt};
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::{PdfError, Result};
@@ -25,8 +26,13 @@ fn references(dict: &Dict<'_>, key: &[u8]) -> Result<Vec<ObjectIdentifier>> {
 }
 
 fn edited(dict: &Dict<'_>, replacements: &[(&[u8], &[u8])]) -> Result<Vec<u8>> {
+    edited_with(dict, replacements, invalid)
+}
+
+/// Rewrites `dict`, replacing or inserting entries in `replacements` (an empty value deletes the key).
+pub(crate) fn edited_with(dict: &Dict<'_>, replacements: &[(&[u8], &[u8])], error: fn() -> PdfError) -> Result<Vec<u8>> {
     let data = dict.data();
-    let body = data.strip_prefix(b"<<").and_then(|d| d.strip_suffix(b">>")).ok_or_else(invalid)?;
+    let body = if data.is_empty() { b"".as_slice() } else { data.strip_prefix(b"<<").and_then(|d| d.strip_suffix(b">>")).ok_or_else(error)? };
     let mut reader = Reader::new(body);
     let mut out = b"<<".to_vec();
     loop {
@@ -35,12 +41,12 @@ fn edited(dict: &Dict<'_>, replacements: &[(&[u8], &[u8])]) -> Result<Vec<u8>> {
             break;
         }
         let start = reader.offset();
-        let name = reader.read_without_context::<Name<'_>>().ok_or_else(invalid)?;
+        let name = reader.read_without_context::<Name<'_>>().ok_or_else(error)?;
         reader.skip_white_spaces_and_comments();
-        reader.skip::<MaybeRef<Object<'_>>>(false).ok_or_else(invalid)?;
+        reader.skip::<MaybeRef<Object<'_>>>(false).ok_or_else(error)?;
         if !replacements.iter().any(|(key, _)| *key == name.as_ref()) {
             out.push(b'\n');
-            out.extend_from_slice(body.get(start..reader.offset()).ok_or_else(invalid)?);
+            out.extend_from_slice(body.get(start..reader.offset()).ok_or_else(error)?);
         }
     }
     for (key, value) in replacements {
@@ -99,12 +105,12 @@ pub(crate) fn trailer_at(bytes: &[u8], offset: usize) -> Option<Dict<'_>> {
 
 /// Whether `dict` has `key`: a literal `null` value is the same as no entry. A reference counts,
 /// since a trailer has no context to resolve it in.
-fn has_entry(dict: &Dict<'_>, key: &[u8]) -> bool {
+pub(crate) fn has_entry(dict: &Dict<'_>, key: &[u8]) -> bool {
     dict.contains_key(key) && !matches!(dict.get_raw::<Object<'_>>(key), Some(MaybeRef::NotRef(Object::Null(_))))
 }
 
-fn append(bytes: &[u8], changes: &[(ObjectIdentifier, Vec<u8>)], root: ObjectIdentifier) -> Result<Vec<u8>> {
-    let damaged = || PdfError::Write("the placed PDF's cross-reference table is damaged; layer changes could not be preserved safely".into());
+/// Validates the cross-reference chain, rejects encrypted trailers, and returns `(prev, trailer, size)`.
+fn trailer_and_size<'a>(bytes: &'a [u8], damaged: fn() -> PdfError, encrypted: fn() -> PdfError) -> Result<(usize, Dict<'a>, i32)> {
     let at = crate::transitions::rfind(bytes, b"startxref").ok_or_else(damaged)?;
     let tail = std::str::from_utf8(bytes.get(at..).ok_or_else(damaged)?).map_err(|_| damaged())?;
     let prev = crate::transitions::int_after(tail, "startxref").ok_or_else(damaged)?;
@@ -120,7 +126,7 @@ fn append(bytes: &[u8], changes: &[(ObjectIdentifier, Vec<u8>)], root: ObjectIde
         }
         let section = trailer_at(bytes, at).ok_or_else(damaged)?;
         if has_entry(&section, b"Encrypt") {
-            return Err(invalid());
+            return Err(encrypted());
         }
         offset = section.get::<usize>(b"Prev");
         if offset.is_none() && has_entry(&section, b"Prev") {
@@ -130,42 +136,84 @@ fn append(bytes: &[u8], changes: &[(ObjectIdentifier, Vec<u8>)], root: ObjectIde
     if offset.is_some() {
         return Err(damaged());
     }
-    trailer.get::<i32>(b"Size").filter(|n| *n > 0).ok_or_else(damaged)?;
+    let size = trailer.get::<i32>(b"Size").filter(|n| *n > 0).ok_or_else(damaged)?;
+    Ok((prev, trailer, size))
+}
+
+/// Validates an unencrypted PDF's trailer chain and returns its trailer `/Size`.
+pub(crate) fn trailer_size(bytes: &[u8], damaged: fn() -> PdfError, encrypted: fn() -> PdfError) -> Result<i32> {
+    let (_, _, size) = trailer_and_size(bytes, damaged, encrypted)?;
+    Ok(size)
+}
+
+/// Appends updated or newly allocated objects as a classic incremental update, keeping `/Size`
+/// at least `max_obj + 1` and rejecting encrypted PDFs.
+pub(crate) fn append_with(
+    bytes: &[u8],
+    changes: &[(ObjectIdentifier, Vec<u8>)],
+    root: Option<ObjectIdentifier>,
+    damaged: fn() -> PdfError,
+    encrypted: fn() -> PdfError,
+) -> Result<Vec<u8>> {
+    let (prev, trailer, old_size) = trailer_and_size(bytes, damaged, encrypted)?;
+    if changes.is_empty() {
+        return Ok(bytes.to_vec());
+    }
+    let mut unique = std::collections::BTreeMap::new();
+    for (id, body) in changes {
+        if id.obj_number <= 0 || u16::try_from(id.gen_number).is_err() {
+            return Err(damaged());
+        }
+        unique.insert(*id, body.as_slice());
+    }
+    let max_obj = unique.keys().next_back().map(|id| id.obj_number).unwrap_or(0);
+    let new_size = max_obj.checked_add(1).ok_or_else(damaged)?.max(old_size);
     let mut out = bytes.to_vec();
     out.push(b'\n');
-    let mut offsets = Vec::new();
-    for (id, body) in changes {
-        offsets.push((*id, out.len()));
+    let mut offsets = Vec::with_capacity(unique.len());
+    for (id, body) in unique {
+        offsets.push((id, out.len()));
         out.extend_from_slice(format!("{} {} obj\n", id.obj_number, id.gen_number).as_bytes());
         out.extend_from_slice(body);
         out.extend_from_slice(b"\nendobj\n");
     }
     let xref = out.len();
     out.extend_from_slice(b"xref\n");
-    offsets.sort_by_key(|(id, _)| *id);
     for (id, offset) in offsets {
         out.extend_from_slice(format!("{} 1\n{offset:010} {:05} n\r\n", id.obj_number, id.gen_number).as_bytes());
     }
-    let root = format!("{} {} R", root.obj_number, root.gen_number);
     let prev = prev.to_string();
-    let trailer = edited(
-        &trailer,
-        &[
-            (b"Root", root.as_bytes()),
-            (b"Prev", prev.as_bytes()),
-            (b"XRefStm", b""),
-            (b"Type", b""),
-            (b"W", b""),
-            (b"Index", b""),
-            (b"Length", b""),
-            (b"Filter", b""),
-            (b"DecodeParms", b""),
-        ],
-    )?;
+    let size = new_size.to_string();
+    let root_ref = root.map(|r| format!("{} {} R", r.obj_number, r.gen_number));
+    let mut replacements: Vec<(&[u8], &[u8])> = vec![
+        (b"Size", size.as_bytes()),
+        (b"Prev", prev.as_bytes()),
+        (b"XRefStm", b""),
+        (b"Type", b""),
+        (b"W", b""),
+        (b"Index", b""),
+        (b"Length", b""),
+        (b"Filter", b""),
+        (b"DecodeParms", b""),
+    ];
+    if let Some(root_ref) = root_ref.as_ref() {
+        replacements.push((b"Root", root_ref.as_bytes()));
+    }
+    let trailer = edited_with(&trailer, &replacements, damaged)?;
     out.extend_from_slice(b"trailer\n");
     out.extend_from_slice(&trailer);
     out.extend_from_slice(format!("\nstartxref\n{xref}\n%%EOF\n").as_bytes());
     Ok(out)
+}
+
+fn append(bytes: &[u8], changes: &[(ObjectIdentifier, Vec<u8>)], root: ObjectIdentifier) -> Result<Vec<u8>> {
+    append_with(
+        bytes,
+        changes,
+        Some(root),
+        || PdfError::Write("the placed PDF's cross-reference table is damaged; layer changes could not be preserved safely".into()),
+        invalid,
+    )
 }
 
 #[derive(Clone)]
@@ -218,10 +266,12 @@ pub(crate) fn prepare(bytes: &Arc<Vec<u8>>, choice: Option<&[String]>) -> Result
         }
         Err(error) => return Err(error),
     };
-    if on.iter().any(|id| off.contains(id)) {
+    let off_set: HashSet<_> = off.iter().copied().collect();
+    if on.iter().any(|id| off_set.contains(id)) {
         return Err(invalid());
     }
-    let incomplete = on.iter().chain(&off).any(|id| !groups.contains(id));
+    let group_set: HashSet<_> = groups.iter().copied().collect();
+    let incomplete = on.iter().chain(&off).any(|id| !group_set.contains(id));
     groups.extend(on.iter().chain(&off).copied());
     groups.sort();
     groups.dedup();
@@ -235,7 +285,7 @@ pub(crate) fn prepare(bytes: &Arc<Vec<u8>>, choice: Option<&[String]>) -> Result
         if group.get::<Name<'_>>(b"Type").as_ref().map(AsRef::as_ref) != Some(b"OCG") {
             return Err(invalid());
         }
-        let name = group.get::<hayro_syntax::object::String<'_>>(b"Name");
+        let name = group.get::<craft_pdf::syntax::object::String<'_>>(b"Name");
         let is_hidden = match (choice, name.as_ref()) {
             (None, _) => !fallback && (off.contains(&id) || (base_off && !on.contains(&id))),
             (Some([]), None) => false,
