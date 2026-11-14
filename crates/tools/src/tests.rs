@@ -2243,6 +2243,172 @@ fn loaded_text_cursor_threads_into_a_frame_inside_a_group() {
     assert_eq!(t2.cursor(&cx2, q, Mods::default()), Cursor::NotAllowed);
 }
 
+/// A text frame holding a 24 × 40 inline box after "Before": (document, story, the box's canvas rect).
+fn inline_box_doc() -> (Document, designcraft_doc::StoryId) {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(100.0, 100.0, 400.0, 400.0), lid, "Before after", ParaFormat::default()).unwrap();
+    let item = Item::new(ItemId(d.alloc()), lid, Shape::Rectangle, shapes::rectangle(Rect::new(0.0, 0.0, 24.0, 40.0)));
+    let obj = designcraft_doc::AnchoredObject::new(item, designcraft_doc::AnchorPosition::Inline { y_offset: 0.0 });
+    d.story_mut(sid).unwrap().insert_object(7, obj);
+    (d, sid)
+}
+
+#[test]
+fn selection_tool_selects_an_inline_object_and_resizes_it_by_a_handle() {
+    let (d, sid) = inline_box_doc();
+    let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    let pl = crate::anchored::placed(&d, &c, &l, None);
+    assert_eq!(pl.len(), 1);
+    let r = pl[0].canvas_rect;
+    assert!((r.width() - 24.0).abs() < 1e-6 && (r.height() - 40.0).abs() < 1e-6, "{r:?}");
+    // A click on it selects it (not the text frame), and a drag doesn't move it.
+    let mut t = create("selection");
+    let c0 = r.center();
+    assert_eq!(
+        t.pointer(&cx, &PointerEvent::new(PointerKind::Down, c0.x, c0.y)),
+        vec![Action::Exec("anchored.select".into(), serde_json::json!({"story": sid.0, "index": 0}))]
+    );
+    assert!(t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, c0.x + 30.0, c0.y)).is_empty());
+    assert!(t.pointer(&cx, &PointerEvent::new(PointerKind::Up, c0.x + 30.0, c0.y)).is_empty());
+    // Selected, its left handle drags an outline (the object stays as it is while dragging, as in
+    // InDesign); on release it resizes in its own space and the text places it again.
+    let s = Selection { anchored: Some(designcraft_doc::AnchoredSel { story: sid, index: 0 }), ..Default::default() };
+    let cx = ctx(&d, &s, &c, &l);
+    let mut t = create("selection");
+    let left = Point::new(r.x0, r.center().y);
+    assert_eq!(t.pointer(&cx, &PointerEvent::new(PointerKind::Down, left.x, left.y)), vec![Action::Handled]);
+    assert_eq!(t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, left.x + 6.0, left.y)), vec![Action::Handled]);
+    let ov = t.overlays(&cx);
+    assert!(ov.iter().any(|o| matches!(o, Overlay::Path { path, .. } if (designcraft_geom::Shape::bounding_box(path).x0 - (r.x0 + 6.0)).abs() < 1e-6 && (designcraft_geom::Shape::bounding_box(path).x1 - r.x1).abs() < 1e-6)), "{ov:?}");
+    // A new document measures in picas: 18 pt is 1p6.
+    assert!(ov.iter().any(|o| matches!(o, Overlay::Measure { text, .. } if text.starts_with("W: 1p6"))), "{ov:?}");
+    // The readout is in the document's units (inches here), not the tool's default.
+    let mut din = d.clone();
+    din.settings.horizontal_units = Unit::Inches;
+    din.settings.vertical_units = Unit::Inches;
+    let lin = CanvasLayout::new(&din, false);
+    let cxin = ctx(&din, &s, &c, &lin);
+    let mut t2 = create("selection");
+    t2.pointer(&cxin, &PointerEvent::new(PointerKind::Down, left.x, left.y));
+    t2.pointer(&cxin, &PointerEvent::new(PointerKind::Drag, left.x + 6.0, left.y));
+    let ov = t2.overlays(&cxin);
+    assert!(ov.iter().any(|o| matches!(o, Overlay::Measure { text, .. } if text.contains(" in") && !text.contains("pt"))), "{ov:?}");
+    match t.pointer(&cx, &PointerEvent::new(PointerKind::Up, left.x + 6.0, left.y)).as_slice() {
+        [Action::Exec(cmd, p)] => {
+            assert_eq!(cmd, "anchored.resize");
+            assert_eq!(p["from"], serde_json::json!([0.0, 0.0, 24.0, 40.0]));
+            assert_eq!(p["to"], serde_json::json!([6.0, 0.0, 24.0, 40.0]));
+            assert_eq!(p["content"], false);
+        }
+        other => panic!("{other:?}"),
+    }
+    // A press on a handle without a drag changes nothing.
+    let mut t = create("selection");
+    t.pointer(&cx, &PointerEvent::new(PointerKind::Down, r.x1, r.y1));
+    assert!(t.pointer(&cx, &PointerEvent::new(PointerKind::Up, r.x1, r.y1)).is_empty());
+    // Clicking the text beside it selects the frame as before.
+    let mut t = create("selection");
+    let a = t.pointer(
+        &cx,
+        &PointerEvent::new(PointerKind::Down, 380.0 + l.xf(SpreadRef::Doc(0)).translation().x, 380.0 + l.xf(SpreadRef::Doc(0)).translation().y),
+    );
+    assert!(matches!(a.as_slice(), [Action::Exec(c, _)] if c == "selection.set"), "{a:?}");
+}
+
+/// Review of #1195: an item stacked above an anchored object's text frame keeps a click on it;
+/// the object is only picked where its own frame is the top item.
+#[test]
+fn an_item_above_the_text_frame_keeps_a_click_on_an_anchored_object() {
+    let (mut d, _) = inline_box_doc();
+    let c = Cache::new();
+    let r = crate::anchored::placed(&d, &c, &CanvasLayout::new(&d, false), None)[0].canvas_rect;
+    let (s, l) = (Selection::default(), CanvasLayout::new(&d, false));
+    let p = r.center();
+    let mut t = create("selection");
+    let a = t.pointer(&ctx(&d, &s, &c, &l), &PointerEvent::new(PointerKind::Down, p.x, p.y));
+    assert!(matches!(a.as_slice(), [Action::Exec(c, _)] if c == "anchored.select"), "{a:?}");
+    // A filled rectangle over the object, above the text frame.
+    let lid = d.default_layer();
+    let spread = l.xf(SpreadRef::Doc(0)).inverse() * p;
+    let box_id = ItemId(d.alloc());
+    let mut cover =
+        Item::new(box_id, lid, Shape::Rectangle, shapes::rectangle(Rect::new(spread.x - 30.0, spread.y - 30.0, spread.x + 30.0, spread.y + 30.0)));
+    cover.fill = designcraft_doc::Fill::swatch("Black");
+    d.insert_item(SpreadRef::Doc(0), cover, None).unwrap();
+    let l = CanvasLayout::new(&d, false);
+    let mut t = create("selection");
+    let a = t.pointer(&ctx(&d, &s, &c, &l), &PointerEvent::new(PointerKind::Down, p.x, p.y));
+    assert!(!a.iter().any(|a| matches!(a, Action::Exec(c, _) if c == "anchored.select")), "the item above wins: {a:?}");
+    assert!(a.iter().any(|a| matches!(a, Action::Exec(c, p) if c == "selection.set" && p["ids"] == serde_json::json!([box_id.0]))), "{a:?}");
+}
+
+/// Review of #1195: a selected anchored object takes Delete and Backspace (`edit.clear`) and
+/// Escape (deselect) from the Selection tool; the arrows don't move it (it flows with the text).
+#[test]
+fn keys_act_on_a_selected_anchored_object() {
+    let (d, sid) = inline_box_doc();
+    let (c, l) = (Cache::new(), CanvasLayout::new(&d, false));
+    let s = Selection { anchored: Some(designcraft_doc::AnchoredSel { story: sid, index: 0 }), ..Default::default() };
+    let cx = ctx(&d, &s, &c, &l);
+    let mut t = create("selection");
+    for key in [ToolKey::Delete, ToolKey::Backspace] {
+        assert_eq!(t.key(&cx, key, Mods::default()), vec![Action::Exec("edit.clear".into(), serde_json::json!({}))], "{key:?}");
+    }
+    assert_eq!(t.key(&cx, ToolKey::Escape, Mods::default()), vec![Action::Exec("selection.set".into(), serde_json::json!({"ids": []}))]);
+    assert!(t.key(&cx, ToolKey::Left, Mods::default()).is_empty());
+}
+
+/// Review of #1195: the Selection tool doesn't pick an anchored object it can't select: one in a
+/// locked text frame (`anchored.select` refuses it), or a hidden one (it isn't drawn).
+#[test]
+fn locked_frames_and_hidden_anchored_objects_are_not_picked() {
+    let (d, sid) = inline_box_doc();
+    let c = Cache::new();
+    let r = crate::anchored::placed(&d, &c, &CanvasLayout::new(&d, false), None)[0].canvas_rect;
+    let mut locked = d.clone();
+    let frame = locked.story(sid).unwrap().frames[0];
+    locked.item_mut(frame).unwrap().locked = true;
+    let mut hidden = d.clone();
+    std::sync::Arc::make_mut(&mut hidden.story_mut(sid).unwrap().objects[0]).item.hidden = true;
+    for (what, d) in [("locked frame", &locked), ("hidden object", &hidden)] {
+        let l = CanvasLayout::new(d, false);
+        assert!(crate::anchored::placed(d, &c, &l, None).is_empty(), "{what}");
+        assert!(crate::anchored::at(d, &c, &l, r.center()).is_none(), "{what}");
+    }
+}
+
+/// Review of #1195: Shift on a selected anchored object's handle resizes it proportionally, as
+/// other frames; a Shift-click on an unselected one doesn't select it.
+#[test]
+fn shift_on_an_anchored_handle_resizes_proportionally() {
+    let (d, sid) = inline_box_doc();
+    let (c, l) = (Cache::new(), CanvasLayout::new(&d, false));
+    let r = crate::anchored::placed(&d, &c, &l, None)[0].canvas_rect;
+    let shift = Mods { shift: true, ..Default::default() };
+    let s = Selection { anchored: Some(designcraft_doc::AnchoredSel { story: sid, index: 0 }), ..Default::default() };
+    let cx = ctx(&d, &s, &c, &l);
+    let mut t = create("selection");
+    // The bottom-right corner, dragged 12 to the right with Shift: 24 × 40 becomes 36 × 60.
+    assert_eq!(t.pointer(&cx, &PointerEvent::new(PointerKind::Down, r.x1, r.y1).with_mods(shift)), vec![Action::Handled]);
+    t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, r.x1 + 12.0, r.y1).with_mods(shift));
+    match t.pointer(&cx, &PointerEvent::new(PointerKind::Up, r.x1 + 12.0, r.y1).with_mods(shift)).as_slice() {
+        [Action::Exec(cmd, p)] => {
+            assert_eq!(cmd, "anchored.resize");
+            let to: Vec<f64> = serde_json::from_value(p["to"].clone()).unwrap();
+            assert!(((to[2] - to[0]) / (to[3] - to[1]) - 24.0 / 40.0).abs() < 1e-6, "proportional: {to:?}");
+        }
+        other => panic!("{other:?}"),
+    }
+    // Unselected, a Shift-click on it doesn't select it on its own.
+    let none = Selection::default();
+    let cx = ctx(&d, &none, &c, &l);
+    let mut t = create("selection");
+    let a = t.pointer(&cx, &PointerEvent::new(PointerKind::Down, r.center().x, r.center().y).with_mods(shift));
+    assert!(!a.iter().any(|a| matches!(a, Action::Exec(c, _) if c == "anchored.select")), "{a:?}");
+}
+
 #[test]
 fn parent_resize_page_tool_targets_the_visible_parent() {
     let d = Document::new(&NewDocument { width: 400.0, height: 600.0, pages: 3, facing_pages: true, ..Default::default() });

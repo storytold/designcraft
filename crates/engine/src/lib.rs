@@ -834,7 +834,17 @@ impl Session {
         let st = self.doc_mut()?;
         let mut doc = (*st.doc).clone();
         let mut sel = st.selection.clone();
+        let anchored = sel.anchored;
+        let anchored_id = anchored.and_then(|a| doc.story(a.story)?.objects.get(a.index)).map(|o| o.item.id);
         let r = f(&mut doc, &mut sel)?;
+        // An anchored selection names its object by place in the story: an edit that inserts or
+        // removes objects before it would leave it naming another. Follow the object instead (a
+        // command that chose a new selection keeps its choice).
+        if sel.anchored == anchored
+            && let Some(a) = anchored
+        {
+            sel.anchored = anchored_id.and_then(|id| follow_anchored(&doc, a, id));
+        }
         crate::cmd::sync_placeholders(&mut doc);
         crate::cmd::flex::sync(&mut doc);
         crate::cmd::alpha_wrap::sync(&mut doc);
@@ -852,6 +862,18 @@ impl Session {
         self.reset_find_scope();
         Ok(r)
     }
+}
+
+/// Where the anchored object `a` named before an edit is now: the object of its story with item
+/// `id`, the one nearest its old place when copies share the id (pasted text); `None` when it is
+/// gone.
+fn follow_anchored(doc: &Document, a: designcraft_doc::AnchoredSel, id: designcraft_doc::ItemId) -> Option<designcraft_doc::AnchoredSel> {
+    let objects = &doc.story(a.story)?.objects;
+    if objects.get(a.index).is_some_and(|o| o.item.id == id) {
+        return Some(a);
+    }
+    let index = objects.iter().enumerate().filter(|(_, o)| o.item.id == id).map(|(k, _)| k).min_by_key(|k| k.abs_diff(a.index))?;
+    Some(designcraft_doc::AnchoredSel { index, ..a })
 }
 
 fn push_undo(st: &mut DocState, e: HistoryEntry) {
