@@ -49,7 +49,8 @@ fn export_idml(s: &mut Session, p: &Value) -> Result<Value> {
 /// replaced with another format) is not one, so the package report does not name it.
 pub(crate) fn has_applicable_pdf_layer_overrides(doc: &Document) -> bool {
     doc.placed_items().into_iter().any(|it| {
-        it.has_pdf_layer_override() && it.graphic().and_then(|g| doc.assets.get(&g.asset)).is_some_and(|a| designcraft_render::is_pdf(&a.data))
+        it.has_pdf_layer_override()
+            && it.graphic().and_then(|g| doc.assets.get(&g.asset)).is_some_and(|a| a.data.load().is_ok_and(|b| designcraft_render::is_pdf(&b)))
     })
 }
 
@@ -66,7 +67,8 @@ fn with_pdf_layer_variants(doc: &Document, embed: bool) -> Result<Option<Documen
         .into_iter()
         .filter(|it| it.has_pdf_layer_override())
         .filter_map(|it| {
-            let asset = it.graphic().and_then(|g| doc.assets.get(&g.asset)).filter(|a| designcraft_render::is_pdf(&a.data))?;
+            let asset =
+                it.graphic().and_then(|g| doc.assets.get(&g.asset)).filter(|a| a.data.load().is_ok_and(|b| designcraft_render::is_pdf(&b)))?;
             Some((it.id, asset, it.pdf_hidden_layers.clone(), it.pdf_layer_override))
         })
         .collect();
@@ -89,11 +91,12 @@ fn with_pdf_layer_variants(doc: &Document, embed: bool) -> Result<Option<Documen
             continue;
         }
         expected.insert(id, signature);
-        let bytes = designcraft_render::pdf_hide_layers(&asset.data, &hidden)
+        let source = asset.data.load().map_err(|e| EngineError::Other(format!("{}: {e}", asset.name)))?;
+        let bytes = designcraft_render::pdf_hide_layers(&source, &hidden)
             .ok_or_else(|| EngineError::Other(format!("{}: PDF layer choices could not be applied", asset.name)))?;
         let mut variant = (**asset).clone();
         variant.id = designcraft_doc::AssetId(out.alloc());
-        variant.data = std::sync::Arc::new(bytes);
+        variant.data = designcraft_doc::AssetData::embedded(bytes);
         variant.set_link(None, None);
         let aid = variant.id;
         out.assets.insert(aid, std::sync::Arc::new(variant));
@@ -541,7 +544,11 @@ mod tests {
 
         let doc = import(&idml, Some(&dir.join("x.idml"))).unwrap();
         let asset = doc.assets.values().next().unwrap();
-        assert_eq!(*asset.data, png, "the packaged graphic must render even when its author-machine path no longer exists");
+        assert_eq!(
+            **asset.data.embedded_bytes().unwrap(),
+            png,
+            "the packaged graphic must render even when its author-machine path no longer exists"
+        );
         let resolved = std::path::absolute(&path).unwrap();
         assert_eq!(asset.link.as_deref(), resolved.to_str(), "remember the resolved link so update and preflight use the packaged file");
         let expected = super::super::datamerge::fingerprint_from(&std::fs::metadata(&path).unwrap());
@@ -561,7 +568,7 @@ mod tests {
 
         let doc = import(&idml, Some(&dir.join("x.idml"))).unwrap();
         let asset = doc.assets.values().next().unwrap();
-        assert_eq!(*asset.data, png);
+        assert_eq!(**asset.data.embedded_bytes().unwrap(), png);
         assert_eq!(asset.link.as_deref(), std::path::absolute(&path).unwrap().to_str());
         assert_eq!(super::super::links::status_cached(asset, None, &mut Default::default()), "ok");
         std::fs::remove_dir_all(dir).unwrap();
@@ -577,7 +584,7 @@ mod tests {
 
         let doc = import(&idml, Some(&dir.join("x.idml"))).unwrap();
         let asset = doc.assets.values().next().unwrap();
-        assert_eq!(*asset.data, png);
+        assert_eq!(**asset.data.embedded_bytes().unwrap(), png);
         assert_eq!(asset.link.as_deref(), std::path::absolute(&path).unwrap().to_str());
         assert_eq!(super::super::links::status_cached(asset, None, &mut Default::default()), "ok");
         std::fs::remove_dir_all(dir).unwrap();
@@ -598,7 +605,7 @@ mod tests {
         let doc = import(&idml, Some(&package.join("x.idml"))).unwrap();
         let asset = doc.assets.values().next().unwrap();
         assert_eq!(std::path::Path::new(asset.link.as_deref().unwrap()), original.as_path(), "an existing original stays authoritative");
-        assert_eq!(*asset.data, png);
+        assert_eq!(**asset.data.embedded_bytes().unwrap(), png);
         assert_eq!(super::super::links::status_cached(asset, None, &mut Default::default()), "modified");
 
         std::fs::remove_file(&original).unwrap();
@@ -606,7 +613,7 @@ mod tests {
         let doc = import(&idml, Some(&package.join("x.idml"))).unwrap();
         let asset = doc.assets.values().next().unwrap();
         assert_eq!(asset.link.as_deref(), copy.to_str());
-        assert_eq!(*asset.data, png, "rebinding must not replace embedded pixels");
+        assert_eq!(**asset.data.embedded_bytes().unwrap(), png, "rebinding must not replace embedded pixels");
         assert_eq!(super::super::links::status_cached(asset, None, &mut Default::default()), "modified");
 
         std::fs::remove_file(&copy).unwrap();
@@ -615,7 +622,7 @@ mod tests {
             let doc = import(&idml, folder).unwrap();
             let asset = doc.assets.values().next().unwrap();
             assert_eq!(std::path::Path::new(asset.link.as_deref().unwrap()), original.as_path(), "keep a missing link when there is no candidate");
-            assert_eq!(*asset.data, png);
+            assert_eq!(**asset.data.embedded_bytes().unwrap(), png);
             assert_eq!(super::super::links::status_cached(asset, None, &mut Default::default()), "missing");
         }
         let oversized = "a/".repeat(MAX_LINK_PATH_BYTES);
@@ -625,7 +632,7 @@ mod tests {
         resolve_packaged_links(&mut doc, Some(&packaged));
         let asset = doc.assets.values().next().unwrap();
         assert_eq!(asset.link.as_deref(), Some(oversized.as_str()));
-        assert_eq!(*asset.data, png);
+        assert_eq!(**asset.data.embedded_bytes().unwrap(), png);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -672,12 +679,12 @@ mod tests {
         let (idml, _) = linked_idml(away.to_str().unwrap(), false).unwrap();
         let doc = import(&idml, Some(&package)).unwrap();
         let asset = doc.assets.values().next().unwrap();
-        assert_eq!((&*asset.data, asset.link.as_deref()), (&png, away.to_str()));
+        assert_eq!((&**asset.data.embedded_bytes().unwrap(), asset.link.as_deref()), (&png, away.to_str()));
         assert_eq!(super::super::links::status_cached(asset, None, &mut Default::default()), "ok");
         std::fs::write(dir.join("Links").join("logo.png"), &png).unwrap();
         let (idml, _) = linked_idml("Links/logo.png", false).unwrap();
         let doc = import(&idml, Some(&package)).unwrap();
-        assert_eq!(*doc.assets.values().next().unwrap().data, png);
+        assert_eq!(**doc.assets.values().next().unwrap().data.embedded_bytes().unwrap(), png);
         std::fs::remove_dir_all(base).unwrap();
     }
 
@@ -777,14 +784,14 @@ mod nested_layer_tests {
         for (id, expected) in ids.into_iter().zip([states(false, true), states(true, true)]) {
             let item = copy.placed_items().into_iter().find(|i| i.id == id).unwrap();
             let asset = &copy.assets[&item.graphic().unwrap().asset];
-            assert_eq!(designcraft_render::pdf_layers(&asset.data), expected, "{location}: placement {id}");
+            assert_eq!(designcraft_render::pdf_layers(&asset.data.load().unwrap()), expected, "{location}: placement {id}");
             assert_ne!(asset.id, original_asset);
             assert!(asset.link.is_none());
             assert!(!item.pdf_layer_override && item.pdf_hidden_layers.is_empty());
         }
         assert_eq!(copy.item(control).unwrap().graphic().unwrap().asset, original_asset);
         assert!(Arc::ptr_eq(&copy.assets[&original_asset], &source.assets[&original_asset]));
-        assert_eq!(designcraft_render::pdf_layers(&source.assets[&original_asset].data), states(true, false));
+        assert_eq!(designcraft_render::pdf_layers(&source.assets[&original_asset].data.load().unwrap()), states(true, false));
         assert!(source.placed_items().into_iter().filter(|i| ids.contains(&i.id)).all(|i| i.has_pdf_layer_override()));
     }
 
@@ -794,8 +801,12 @@ mod nested_layer_tests {
         let result = session.execute("file.exportIdml", &json!({})).unwrap();
         let bytes = base64_decode(result["base64"].as_str().unwrap());
         let imported = designcraft_idml::import_idml(&bytes).unwrap();
-        let mut roundtrip: Vec<_> =
-            imported.assets.values().filter(|a| designcraft_render::is_pdf(&a.data)).map(|a| designcraft_render::pdf_layers(&a.data)).collect();
+        let mut roundtrip: Vec<_> = imported
+            .assets
+            .values()
+            .filter(|a| designcraft_render::is_pdf(&a.data.load().unwrap()))
+            .map(|a| designcraft_render::pdf_layers(&a.data.load().unwrap()))
+            .collect();
         let mut expected = vec![states(true, false), states(false, true), states(true, true)];
         roundtrip.sort();
         expected.sort();
@@ -879,8 +890,12 @@ mod nested_layer_tests {
         doc.check().unwrap();
         let result = s.execute("file.exportIdml", &json!({})).unwrap();
         let imported = designcraft_idml::import_idml(&base64_decode(result["base64"].as_str().unwrap())).unwrap();
-        let mut layers: Vec<_> =
-            imported.assets.values().filter(|a| designcraft_render::is_pdf(&a.data)).map(|a| designcraft_render::pdf_layers(&a.data)).collect();
+        let mut layers: Vec<_> = imported
+            .assets
+            .values()
+            .filter(|a| designcraft_render::is_pdf(&a.data.load().unwrap()))
+            .map(|a| designcraft_render::pdf_layers(&a.data.load().unwrap()))
+            .collect();
         layers.sort();
         assert_eq!(layers, vec![states(false, true), states(true, false)]);
     }

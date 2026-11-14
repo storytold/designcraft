@@ -31,7 +31,7 @@ pub(super) fn flatten(d: &designcraft_doc::Document, cache: &designcraft_compose
                     id: aid,
                     name: format!("flattened-{}.png", aid.0),
                     mime: "image/png".into(),
-                    data: std::sync::Arc::new(img.to_png()),
+                    data: designcraft_doc::AssetData::embedded(img.to_png()),
                     pixels: Some((w, h)),
                     ..Default::default()
                 }),
@@ -310,7 +310,7 @@ fn rasterize_where_with_links(
                 id: aid,
                 name: format!("effects-{}.png", id.0),
                 mime: "image/png".into(),
-                data: std::sync::Arc::new(img.to_png()),
+                data: designcraft_doc::AssetData::embedded(img.to_png()),
                 pixels: Some((w, h)),
                 ..Default::default()
             }),
@@ -426,7 +426,7 @@ pub(super) fn rasterize_layered(d: &designcraft_doc::Document) -> Result<(Option
         .filter(|it| it.has_pdf_layer_override())
         .filter_map(|it| {
             let g = it.graphic()?;
-            let a = d.assets.get(&g.asset).filter(|a| designcraft_render::is_pdf(&a.data))?;
+            let a = d.assets.get(&g.asset).filter(|a| a.data.load().is_ok_and(|b| designcraft_render::is_pdf(&b)))?;
             Some((it.id, g.clone(), a.clone(), it.pdf_hidden_layers.clone()))
         })
         .collect();
@@ -442,7 +442,8 @@ pub(super) fn rasterize_layered(d: &designcraft_doc::Document) -> Result<(Option
         let [l, t, r, b] = shown.unwrap_or([0.0, 0.0, 1.0, 1.0]);
         let page_side = (g.size.0 / (r - l)).max(g.size.1 / (b - t));
         let side = (page_side * 300.0 / 72.0).clamp(64.0, 8000.0) as u32;
-        let png = designcraft_render::pdf_page_png_options_checked(&a.data, a.page as usize, side, Some(&hidden), shown)
+        let bytes = a.data.load().map_err(|e| EngineError::Other(format!("{}: {e}", a.name)))?;
+        let png = designcraft_render::pdf_page_png_options_checked(&bytes, a.page as usize, side, Some(&hidden), shown)
             .map_err(|e| EngineError::Other(format!("{}: {e}", a.name)))?;
         let px = designcraft_render::image_size(&png);
         let aid = designcraft_doc::AssetId(out.alloc());
@@ -452,7 +453,7 @@ pub(super) fn rasterize_layered(d: &designcraft_doc::Document) -> Result<(Option
                 id: aid,
                 name: format!("{}.png", a.name),
                 mime: "image/png".into(),
-                data: std::sync::Arc::new(png),
+                data: designcraft_doc::AssetData::embedded(png),
                 pixels: px,
                 ..Default::default()
             }),
@@ -540,7 +541,7 @@ mod placed_layer_tests {
         let aid = d.item(id).unwrap().graphic().unwrap().asset;
         let asset = Arc::make_mut(d.assets.get_mut(&aid).unwrap());
         asset.mime = "image/png".into();
-        asset.data = Arc::new(designcraft_render::Rendered { width: 1, height: 1, pixels: vec![0, 0, 0, 0] }.to_png());
+        asset.data = designcraft_doc::AssetData::embedded(designcraft_render::Rendered { width: 1, height: 1, pixels: vec![0, 0, 0, 0] }.to_png());
         let (copy, count) = super::rasterize_layered(d).unwrap();
         assert_eq!(count, 0);
         assert!(copy.is_none());

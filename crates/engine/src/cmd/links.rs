@@ -157,10 +157,10 @@ pub fn link_missing(a: &designcraft_doc::Asset, document: Option<&Path>) -> bool
 /// Linked images checked this session: (asset, the identity of its bytes, the file its link
 /// resolves to) → (the file's size and time when it was read, whether it matched the bytes). The
 /// resolved file, not the link text, is the key: a relative link names another file once the
-/// document is saved elsewhere. The bytes' identity (their `Arc`'s address, as the render cache
-/// keys them) changes with every relink, update or undo, so a remembered answer can never
-/// describe other bytes.
-pub(crate) type ImageChecks = std::collections::HashMap<(AssetId, usize, std::path::PathBuf), (Fingerprint, bool)>;
+/// document is saved elsewhere. The bytes' [`designcraft_doc::SourceKey`] (as the render cache
+/// keys them) changes with every relink or update and is never reused, so a remembered answer
+/// can never describe other bytes.
+pub(crate) type ImageChecks = std::collections::HashMap<(AssetId, designcraft_doc::SourceKey, std::path::PathBuf), (Fingerprint, bool)>;
 
 /// The size and time to keep with `bytes` just read from a linked file, `before` being the
 /// file's from before the read. Kept only when they can vouch for the bytes later: the size is
@@ -178,7 +178,7 @@ pub(crate) fn loaded_fingerprint(before: Option<Fingerprint>, bytes: &[u8]) -> O
 /// new time or no fingerprint leave it to the byte comparison.
 #[cfg(not(target_arch = "wasm32"))]
 fn loaded_unchanged(a: &designcraft_doc::Asset, now: Fingerprint) -> bool {
-    a.link_fingerprint.is_some_and(|loaded| loaded.size == a.data.len() as u64 && loaded == now && settled(&now))
+    a.link_fingerprint.is_some_and(|loaded| loaded.size == a.data.len() && loaded == now && settled(&now))
 }
 
 /// Link status of a placed graphic (`ok`, `modified`, `missing`, `embedded`), reading the file
@@ -213,17 +213,17 @@ fn image_status(a: &designcraft_doc::Asset, document: Option<&Path>, checks: &mu
         if loaded_unchanged(a, now) {
             return ("ok", None);
         }
-        if now.size != a.data.len() as u64 {
+        if now.size != a.data.len() {
             return ("modified", None);
         }
-        let key = (a.id, Arc::as_ptr(&a.data) as usize, path.clone());
+        let key = (a.id, a.data.key(), path.clone());
         if let Some((at, same)) = checks.get(&key)
             && *at == now
         {
             return if *same { ("ok", Some(now)) } else { ("modified", None) };
         }
-        let same = match crate::io::read_capped(&path, a.data.len() as u64) {
-            Ok(b) => b == *a.data,
+        let same = match crate::io::read_capped(&path, a.data.len()) {
+            Ok(b) => a.data.load().is_ok_and(|d| b == *d),
             Err(_) => return ("missing", None),
         };
         // The time from before the read: a change during it is seen next time.
@@ -443,7 +443,7 @@ pub fn remember_link_files(s: &mut Session, doc: &Arc<Document>, files: &[(Asset
     if !Arc::ptr_eq(&st.doc, doc) || st.interaction.is_some() {
         return 0;
     }
-    let stale = |a: &designcraft_doc::Asset, f: &Fingerprint| a.link.is_some() && a.data.len() as u64 == f.size && a.link_fingerprint != Some(*f);
+    let stale = |a: &designcraft_doc::Asset, f: &Fingerprint| a.link.is_some() && a.data.len() == f.size && a.link_fingerprint != Some(*f);
     let fresh: Vec<(AssetId, Fingerprint)> = files.iter().filter(|(id, f)| st.doc.assets.get(id).is_some_and(|a| stale(a, f))).copied().collect();
     if fresh.is_empty() {
         return 0;
@@ -622,7 +622,7 @@ fn relinked_asset(a: &designcraft_doc::Asset, read: &Path, link: &str) -> Result
     };
     let mut a = a.clone();
     a.mime = designcraft_render::image_mime(&bytes).to_string();
-    a.data = Arc::new(bytes);
+    a.data = designcraft_doc::AssetData::embedded(bytes);
     a.pixels = Some(px);
     a.page = page;
     a.name = Path::new(link).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| link.to_string());
@@ -963,7 +963,7 @@ mod shared_asset_tests {
             id: AssetId(id),
             name: "p.png".into(),
             mime: "image/png".into(),
-            data: Arc::new(data),
+            data: designcraft_doc::AssetData::embedded(data),
             ..Default::default()
         };
         let mut src = Document::new(&NewDocument::default());
@@ -1018,7 +1018,7 @@ mod shared_asset_tests {
                 name: "p.png".into(),
                 mime: "image/png".into(),
                 link: None,
-                data: Arc::new(png(8, 4)),
+                data: designcraft_doc::AssetData::embedded(png(8, 4)),
                 pixels: None,
                 ..Default::default()
             }),

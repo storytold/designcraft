@@ -302,7 +302,7 @@ impl<'r> Importer<'r> {
             // file once.
             let key = (p.clone(), page, pdf_crop);
             if let Some(id) = self.linked_assets.get(&key) {
-                let size = self.assets.get(id).and_then(|a| craft_svg::sniff::viewbox_size(&a.data)).unwrap_or(size);
+                let size = self.assets.get(id).and_then(|a| craft_svg::sniff::viewbox_size(a.data.embedded_bytes()?)).unwrap_or(size);
                 return graphic(*id, size);
             }
             if let Some(d) = (self.read_link)(p) {
@@ -334,7 +334,7 @@ impl<'r> Importer<'r> {
                 name,
                 mime,
                 link: link_path,
-                data: preview.cloned().unwrap_or_else(|| Arc::new(data)),
+                data: designcraft_doc::AssetData::embedded(preview.cloned().unwrap_or_else(|| Arc::new(data))),
                 pixels,
                 pdf_crop,
                 ..Default::default()

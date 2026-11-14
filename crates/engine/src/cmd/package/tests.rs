@@ -112,7 +112,7 @@ fn relocated_packages_rebind_embedded_image_links_on_open() {
         let mut opened = Session::new();
         opened.execute(command, &json!({"path": moved.join(format!("OwnedPackage.{extension}")).to_string_lossy()})).unwrap();
         let asset = opened.doc().unwrap().doc.assets.values().next().unwrap();
-        assert_eq!(*asset.data, png, "{extension}: the packaged pixels");
+        assert_eq!(**asset.data.embedded_bytes().unwrap(), png, "{extension}: the packaged pixels");
         assert_eq!(asset.link.as_deref(), expected.to_str(), "{extension}: use the relocated Links file");
         let links = opened.execute("links.list", &json!({})).unwrap();
         assert_eq!(links[0]["status"], "ok", "{extension}");

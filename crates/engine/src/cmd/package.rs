@@ -339,12 +339,13 @@ fn write_links(d: &Document, root: &OutputRoot, dir: &Path, only: Option<&[Asset
         let Some(a) = d.assets.get(&id) else { continue };
         // A missing link has no bytes: an empty file under its name would read as present, so it
         // keeps its old (missing) path instead.
-        if a.data.is_empty() {
+        // Bytes that can't be had are left like a missing link.
+        let Some(bytes) = a.data.load().ok().filter(|b| !b.is_empty()) else {
             continue;
-        }
+        };
         let name = link_name(a.link.as_deref().unwrap_or(&a.name), id, &mut taken);
         let path = dir.join(&name);
-        root.write(&path, a.data.as_slice())?;
+        root.write(&path, bytes.as_slice())?;
         let mut na = (**a).clone();
         let link = match relative_to {
             Some(folder) => format!("{folder}/{name}"),

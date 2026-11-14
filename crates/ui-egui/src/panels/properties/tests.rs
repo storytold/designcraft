@@ -39,7 +39,7 @@ fn linked_graphics(paths: &[Option<&str>]) -> (DesignApp, Vec<designcraft_doc::I
                 name: "photo.svg".into(),
                 mime: "image/svg+xml".into(),
                 link: path.map(str::to_owned),
-                data: Arc::new(
+                data: designcraft_doc::AssetData::embedded(
                     br##"<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect width="32" height="32" fill="#4488cc"/></svg>"##
                         .to_vec(),
                 ),

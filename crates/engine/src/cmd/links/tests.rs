@@ -101,7 +101,7 @@ fn a_linked_image_at_its_loaded_size_and_time_is_not_read() {
         id: AssetId(1),
         link: Some(path.to_string_lossy().into_owned()),
         link_fingerprint,
-        data: Arc::new(b"data".to_vec()),
+        data: designcraft_doc::AssetData::embedded(b"data".to_vec()),
         ..Default::default()
     };
     let status = |a: &designcraft_doc::Asset| status_cached(a, None, &mut ImageChecks::default());
@@ -111,7 +111,7 @@ fn a_linked_image_at_its_loaded_size_and_time_is_not_read() {
     assert_eq!(status(&asset(None)), "modified");
     assert_eq!(status(&asset(Some(Fingerprint { mtime: loaded.mtime - 60, ..loaded }))), "modified", "a new time alone is compared");
     // Bytes replaced without their fingerprint: it is of another size, so it isn't theirs.
-    let swapped = designcraft_doc::Asset { data: Arc::new(b"other bytes".to_vec()), ..asset(Some(loaded)) };
+    let swapped = designcraft_doc::Asset { data: designcraft_doc::AssetData::embedded(b"other bytes".to_vec()), ..asset(Some(loaded)) };
     assert_eq!(status(&swapped), "modified");
     // A time too recent to trust: another write in the same second would keep it.
     set_age(&path, 0);
@@ -424,7 +424,7 @@ fn eps_web_exports_convert_tiff_and_skip_bad_used_assets() {
     assert!(!opf.contains("image/tiff"));
     assert!(Arc::ptr_eq(&before, &s.doc().unwrap().doc));
     s.edit(|d, _| {
-        Arc::make_mut(d.assets.get_mut(&aid).unwrap()).data = Arc::new(b"%!PS-Adobe-3.0 EPSF-3.0\n%%EOF\n".to_vec());
+        Arc::make_mut(d.assets.get_mut(&aid).unwrap()).data = designcraft_doc::AssetData::embedded(b"%!PS-Adobe-3.0 EPSF-3.0\n%%EOF\n".to_vec());
         Ok(())
     })
     .unwrap();
@@ -464,7 +464,7 @@ fn eps_status_tracks_source_bytes_across_save_update_relink_and_embed() {
     assert!(Arc::ptr_eq(&s.doc().unwrap().doc, &before), "unchanged EPS must not create an edit");
     let saved = designcraft_format::save(&before).unwrap();
     let reopened = designcraft_format::load(&saved).unwrap();
-    assert_eq!(reopened.assets[&aid].data.as_slice(), first);
+    assert_eq!(reopened.assets[&aid].data.load().unwrap().as_slice(), first);
     let mut s = Session::new();
     s.add_document(crate::DocState::new(reopened, None));
     assert_eq!(s.execute("links.list", &json!({})).unwrap()[0]["status"], "ok");
@@ -472,7 +472,7 @@ fn eps_status_tracks_source_bytes_across_save_update_relink_and_embed() {
     assert_eq!(s.execute("links.list", &json!({})).unwrap()[0]["status"], "modified");
     assert_eq!(s.execute("links.update", &json!({})).unwrap()["updated"], 1);
     assert_eq!(s.execute("links.list", &json!({})).unwrap()[0]["status"], "ok");
-    assert_eq!(s.doc().unwrap().doc.assets[&aid].data.as_slice(), changed);
+    assert_eq!(s.doc().unwrap().doc.assets[&aid].data.load().unwrap().as_slice(), changed);
     std::fs::remove_file(&path).unwrap();
     assert_eq!(s.execute("links.list", &json!({})).unwrap()[0]["status"], "missing");
     let replacement = dir.join("replacement.eps");
@@ -489,8 +489,8 @@ fn eps_status_tracks_source_bytes_across_save_update_relink_and_embed() {
     let embedded = designcraft_format::load(&designcraft_format::save(&s.doc().unwrap().doc).unwrap()).unwrap();
     // The asset is embedded, so no link is followed and the document is irrelevant.
     assert_eq!(status_cached(&embedded.assets[&aid], None, &mut Default::default()), "embedded");
-    assert_eq!(embedded.assets[&aid].data.as_slice(), changed);
-    assert!(designcraft_render::decode_pixmap(&embedded.assets[&aid].data).is_some());
+    assert_eq!(embedded.assets[&aid].data.load().unwrap().as_slice(), changed);
+    assert!(designcraft_render::decode_pixmap(&embedded.assets[&aid].data.load().unwrap()).is_some());
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -507,7 +507,7 @@ fn eps_legacy_preview_document_is_upgraded_by_update() {
     let proxy = designcraft_images::eps_proxy(source).unwrap().0;
     s.edit(|d, _| {
         let a = Arc::make_mut(d.assets.get_mut(&aid).unwrap());
-        a.data = Arc::new(proxy);
+        a.data = designcraft_doc::AssetData::embedded(proxy);
         a.mime = "image/png".into();
         Ok(())
     })
@@ -517,9 +517,9 @@ fn eps_legacy_preview_document_is_upgraded_by_update() {
     s.add_document(crate::DocState::new(old, None));
     assert_eq!(s.execute("links.update", &json!({})).unwrap()["updated"], 1);
     assert_eq!(s.execute("links.list", &json!({})).unwrap()[0]["status"], "ok");
-    assert_eq!(s.doc().unwrap().doc.assets[&aid].data.as_slice(), source);
+    assert_eq!(s.doc().unwrap().doc.assets[&aid].data.load().unwrap().as_slice(), source);
     s.execute("edit.undo", &json!({})).unwrap();
-    assert!(designcraft_render::decode_pixmap(&s.doc().unwrap().doc.assets[&aid].data).is_some(), "old preview remains renderable");
+    assert!(designcraft_render::decode_pixmap(&s.doc().unwrap().doc.assets[&aid].data.load().unwrap()).is_some(), "old preview remains renderable");
     s.execute("edit.redo", &json!({})).unwrap();
     assert_eq!(s.execute("links.list", &json!({})).unwrap()[0]["status"], "ok");
     let _ = std::fs::remove_dir_all(dir);
@@ -542,7 +542,7 @@ fn eps_source_exports_preview_to_pdf_html_and_epub_without_editing_document() {
     // A document retaining the original EPS rather than the legacy preview-only asset.
     s.edit(|d, _| {
         let a = Arc::make_mut(d.assets.get_mut(&aid).unwrap());
-        a.data = Arc::new(source.to_vec());
+        a.data = designcraft_doc::AssetData::embedded(source.to_vec());
         a.mime = "application/postscript".into();
         Ok(())
     })
@@ -573,7 +573,7 @@ fn eps_source_exports_preview_to_pdf_html_and_epub_without_editing_document() {
     assert!(opf.contains("media-type=\"image/png\""));
     assert!(!opf.contains("application/postscript"));
     assert!(Arc::ptr_eq(&s.doc().unwrap().doc, &before), "exports must leave the source document intact");
-    assert_eq!(before.assets[&aid].data.as_slice(), source);
+    assert_eq!(before.assets[&aid].data.load().unwrap().as_slice(), source);
 }
 
 #[test]
@@ -596,7 +596,7 @@ fn eps_relink_update_and_folder_relink_retain_source() {
     let a = &s.doc().unwrap().doc.assets[&aid];
     assert_eq!(a.pixels, Some((60, 20)));
     assert_eq!(a.mime, "application/postscript");
-    assert_eq!(a.data.as_slice(), eps(30).as_bytes());
+    assert_eq!(a.data.load().unwrap().as_slice(), eps(30).as_bytes());
     let moved = dir.join("new").join("replacement.eps");
     std::fs::rename(&replacement, &moved).unwrap();
     assert_eq!(s.execute("links.relinkFolder", &json!({"dir": dir.join("new").to_string_lossy()})).unwrap()["relinked"], 1);
@@ -621,7 +621,7 @@ fn pdf_relink_and_update_preserve_selected_page_size() {
     let a = &s.doc().unwrap().doc.assets[&aid];
     assert_eq!(a.page, 1);
     assert_eq!(a.pixels, Some((50, 60)));
-    assert!(designcraft_render::render_pdf_page(&a.data, a.page as usize, 64).is_some());
+    assert!(designcraft_render::render_pdf_page(&a.data.load().unwrap(), a.page as usize, 64).is_some());
     std::fs::write(&replacement, pdf(&[(70, 70), (80, 90)])).unwrap();
     assert_eq!(s.execute("links.update", &json!({})).unwrap()["updated"], 1);
     assert_eq!(s.doc().unwrap().doc.assets[&aid].pixels, Some((80, 90)));
@@ -667,7 +667,7 @@ fn pdf_reload_rejects_missing_page_without_edit() {
         assert_eq!(st.revision, revision);
         assert_eq!(st.history.undo.len(), undo);
         assert_eq!(s.journal.len(), journal);
-        assert!(designcraft_render::render_pdf_page(&st.doc.assets[&aid].data, 1, 64).is_some());
+        assert!(designcraft_render::render_pdf_page(&st.doc.assets[&aid].data.load().unwrap(), 1, 64).is_some());
     }
     let _ = std::fs::remove_dir_all(dir);
 }

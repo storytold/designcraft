@@ -86,7 +86,7 @@ pub(super) fn place_graphic(s: &mut Session, p: &Value) -> Result<Value> {
             name,
             mime,
             link,
-            data: std::sync::Arc::new(bytes),
+            data: designcraft_doc::AssetData::embedded(bytes),
             pixels: Some((pw, ph)),
             ..Default::default()
         });

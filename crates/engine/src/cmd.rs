@@ -254,6 +254,11 @@ pub fn find_command(id: &str) -> Option<&'static CommandSpec> {
 pub(crate) fn bad(cmd: &str, msg: impl Into<String>) -> EngineError {
     EngineError::BadParams { cmd: cmd.into(), msg: msg.into() }
 }
+
+/// The bytes of `asset`, or why `cmd` can't have them.
+pub(crate) fn asset_bytes(cmd: &str, asset: &designcraft_doc::Asset) -> Result<std::sync::Arc<Vec<u8>>> {
+    asset.data.load().map_err(|e| bad(cmd, format!("{}: {e}", asset.name)))
+}
 /// `p` with `key` set to `v`. Parameters come from callers (control channel, MCP, scripts) and
 /// may not be an object: `p[key] = v` panics on an array or a string, so start from `{}` then.
 pub(crate) fn with_param(p: &Value, key: &str, v: Value) -> Value {

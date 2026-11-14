@@ -442,14 +442,14 @@ fn loaded_thumb_texture(ctx: &egui::Context, doc: &Document, asset: designcraft_
 pub(super) fn proxy_texture(
     ctx: &egui::Context,
     name: &str,
-    data: &std::sync::Arc<Vec<u8>>,
+    data: &designcraft_doc::AssetData,
     page: u32,
     width_pt: f64,
     scale: f64,
     max_side: usize,
 ) -> Option<egui::TextureHandle> {
     use designcraft_render::images::{Mip, generation, mip_now};
-    let key = egui::Id::unique((name, std::sync::Arc::as_ptr(data) as usize, data.len(), page));
+    let key = egui::Id::unique((name, data.key(), page));
     // `None`: the level asked for; else the generation a stand-in was drawn at.
     let cached = ctx.data(|d| d.get_temp::<(egui::TextureHandle, Option<u64>)>(key));
     if let Some((t, stand_in)) = &cached

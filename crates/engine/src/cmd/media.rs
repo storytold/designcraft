@@ -1,8 +1,6 @@
 //! Window › Interactive › Media: placed video and sound (shown as a poster or a placeholder,
 //! exported as `<video>` / `<audio>` in EPUB).
 
-use std::sync::Arc;
-
 use designcraft_doc::{Asset, AssetId, Content, Graphic, Item, ItemId, MediaOptions, Shape};
 use designcraft_geom::{Affine, Rect, shapes};
 use serde_json::{Value, json};
@@ -29,7 +27,7 @@ pub(crate) fn place_media(s: &mut Session, p: &Value, name: String, mime: &str, 
     let mime = mime.to_string();
     s.edit(|d, sel| {
         let fresh = AssetId(d.alloc());
-        let aid = d.add_asset(Asset { id: fresh, name, mime, link, data: Arc::new(bytes), ..Default::default() });
+        let aid = d.add_asset(Asset { id: fresh, name, mime, link, data: designcraft_doc::AssetData::embedded(bytes), ..Default::default() });
         let id = match target {
             Some(fid) => {
                 let it = d.item_mut(fid).ok_or(designcraft_doc::DocError::NoItem(fid))?;
@@ -109,7 +107,7 @@ pub fn specs() -> Vec<CommandSpec> {
                                 name,
                                 mime,
                                 link,
-                                data: Arc::new(bytes),
+                                data: designcraft_doc::AssetData::embedded(bytes),
                                 pixels: Some(px),
                                 ..Default::default()
                             })))

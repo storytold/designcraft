@@ -610,7 +610,7 @@ pub(crate) mod browser_import_tests {
         assert_eq!(app.session.active_index(), Some(0));
         let asset = app.session.doc().unwrap().doc.assets.values().next().unwrap();
         assert_eq!(asset.page, 1);
-        assert_eq!(*asset.data, bytes);
+        assert_eq!(**asset.data.embedded_bytes().unwrap(), bytes);
         assert!(app.pending_pdf.is_none());
         assert!(app.session.documents()[1].doc.assets.is_empty());
         app.run("place.drop", json!({"x": 36, "y": 36})).unwrap();

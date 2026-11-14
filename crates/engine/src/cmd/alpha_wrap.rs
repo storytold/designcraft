@@ -6,7 +6,7 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use designcraft_doc::{AlphaOutline, AssetId, ContourType, Document, Item, WrapMode};
+use designcraft_doc::{AlphaOutline, AssetData, AssetId, ContourType, Document, Item, WrapMode};
 use designcraft_geom::{BezPath, PathData, Point};
 
 /// Images larger than this many pixels aren't traced (their contour follows the frame).
@@ -68,7 +68,7 @@ pub(crate) fn sync(doc: &mut Document) {
 
 /// The empty outline standing for an image `trace` found none in: zero-size, which composition
 /// takes as no outline, and dropped like a traced one when the asset's data changes.
-fn no_outline(data: &Arc<Vec<u8>>, asset: AssetId, threshold: u8) -> AlphaOutline {
+fn no_outline(data: &AssetData, asset: AssetId, threshold: u8) -> AlphaOutline {
     AlphaOutline {
         asset,
         threshold,
@@ -76,19 +76,20 @@ fn no_outline(data: &Arc<Vec<u8>>, asset: AssetId, threshold: u8) -> AlphaOutlin
         height: 0,
         outer: Default::default(),
         holes: Default::default(),
-        source: Arc::downgrade(data),
+        source: data.key(),
         serial: AlphaOutline::next_serial(),
     }
 }
 
 /// The outline of the pixels of `data` more opaque than `threshold`: an image with no
 /// transparency gives its rectangle. None for an image that can't be read or is too large.
-pub(crate) fn trace(data: &Arc<Vec<u8>>, asset: AssetId, threshold: u8) -> Option<AlphaOutline> {
-    let (w, h) = designcraft_images::pixel_size(data)?;
+pub(crate) fn trace(data: &AssetData, asset: AssetId, threshold: u8) -> Option<AlphaOutline> {
+    let bytes = data.load().ok()?;
+    let (w, h) = designcraft_images::pixel_size(&bytes)?;
     if w == 0 || h == 0 || u64::from(w) * u64::from(h) > MAX_PIXELS {
         return None;
     }
-    let img = designcraft_images::decode_rgba(data)?;
+    let img = designcraft_images::decode_rgba(&bytes)?;
     if img.width() != w || img.height() != h {
         return None;
     }
@@ -121,7 +122,7 @@ pub(crate) fn trace(data: &Arc<Vec<u8>>, asset: AssetId, threshold: u8) -> Optio
                 }
                 PathData::from_bezpath(&p)
             };
-            let source = Arc::downgrade(data);
+            let source = data.key();
             let serial = AlphaOutline::next_serial();
             return Some(AlphaOutline { asset, threshold, width: w, height: h, outer: path(&outer), holes: path(&holes), source, serial });
         }
@@ -273,7 +274,7 @@ mod tests {
     #[test]
     fn a_fragmented_outline_is_traced_coarser_until_composition_can_follow_it() {
         let dots = png_sized(256, |x, y| x % 4 == 0 && y % 4 == 0);
-        let o = trace(&Arc::new(dots), AssetId(1), 25).unwrap();
+        let o = trace(&AssetData::embedded(dots), AssetId(1), 25).unwrap();
         let elements = o.outer.to_bezpath().elements().len() + o.holes.to_bezpath().elements().len();
         assert!(elements > 0 && elements <= designcraft_compose::MAX_CONTOUR_POINTS, "{elements} path elements");
     }
@@ -296,14 +297,14 @@ mod tests {
     fn traces_outer_boundaries_and_holes_apart() {
         // A ring: a square with a square hole.
         let data = png(|x, y| (8..56).contains(&x) && (8..56).contains(&y) && !((24..40).contains(&x) && (24..40).contains(&y)));
-        let o = trace(&Arc::new(data), AssetId(1), 25).unwrap();
+        let o = trace(&AssetData::embedded(data), AssetId(1), 25).unwrap();
         assert_eq!((o.width, o.height), (64, 64));
         assert_eq!((o.outer.subpaths.len(), o.holes.subpaths.len()), (1, 1));
         let (a, b) = (o.outer.bounds().unwrap(), o.holes.bounds().unwrap());
         assert_eq!((a.x0, a.y0, a.x1, a.y1), (8.0, 8.0, 56.0, 56.0));
         assert_eq!((b.x0, b.y0, b.x1, b.y1), (24.0, 24.0, 40.0, 40.0));
         // An opaque image's outline is its rectangle.
-        let o = trace(&Arc::new(png(|_, _| true)), AssetId(1), 25).unwrap();
+        let o = trace(&AssetData::embedded(png(|_, _| true)), AssetId(1), 25).unwrap();
         let a = o.outer.bounds().unwrap();
         assert_eq!((a.x0, a.y0, a.x1, a.y1, o.holes.subpaths.len()), (0.0, 0.0, 64.0, 64.0, 0));
     }
@@ -432,7 +433,7 @@ mod tests {
         else {
             panic!("a graphic")
         };
-        let narrower = Arc::new(png(|x, _| (24..40).contains(&x)));
+        let narrower = AssetData::embedded(png(|x, _| (24..40).contains(&x)));
         s.edit(|d, _| {
             let a = d.assets.get(&g.asset).unwrap();
             let mut a = (**a).clone();
@@ -496,7 +497,7 @@ mod tests {
         else {
             panic!("a graphic")
         };
-        let right = Arc::new(png(|x, _| x >= 32));
+        let right = AssetData::embedded(png(|x, _| x >= 32));
         s.edit(|d, _| {
             let mut a = (**d.assets.get(&g.asset).unwrap()).clone();
             a.data = right.clone();

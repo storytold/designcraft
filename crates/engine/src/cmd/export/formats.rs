@@ -48,17 +48,17 @@ fn eps_previews(d: &designcraft_doc::Document) -> (Cow<'_, designcraft_doc::Docu
     let mut out = Cow::Borrowed(d);
     let mut warnings = Vec::new();
     for id in used {
-        let Some(a) = d.assets.get(&id).filter(|a| designcraft_images::is_eps(&a.data)) else {
+        let Some((a, bytes)) = d.assets.get(&id).and_then(|a| Some((a, a.data.load().ok()?))).filter(|(_, b)| designcraft_images::is_eps(b)) else {
             continue;
         };
-        let png = designcraft_images::eps_png(&a.data);
+        let png = designcraft_images::eps_png(&bytes);
         if png.is_none() {
             warnings.push(format!("{}: unusable EPS preview; graphic omitted", a.name));
         }
         if let Some(a) = out.to_mut().assets.get_mut(&id) {
             let a = Arc::make_mut(a);
             a.mime = "image/png".into();
-            a.data = Arc::new(png.unwrap_or_default());
+            a.data = designcraft_doc::AssetData::embedded(png.unwrap_or_default());
         }
     }
     (out, warnings)

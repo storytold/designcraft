@@ -560,7 +560,9 @@ impl<'a> Exporter<'a> {
 
     fn convert(&mut self, asset: AssetId) -> Option<(String, Option<String>)> {
         let a = self.doc.assets.get(&asset)?.clone();
-        let data: &[u8] = &a.data;
+        // Bytes that can't be had are left out like a missing file.
+        let bytes = a.data.load().unwrap_or_default();
+        let data: &[u8] = &bytes;
         if data.is_empty() {
             self.warn(format!("`{}` is missing (linked file not found); left out", a.name));
             return None;

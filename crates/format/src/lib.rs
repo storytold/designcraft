@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::hash::BuildHasher;
 use std::sync::Arc;
 
-use designcraft_doc::{AssetId, Document};
+use designcraft_doc::{AssetData, AssetId, Document};
 #[cfg(test)]
 use serde_json::Value;
 #[cfg(test)]
@@ -31,7 +31,14 @@ pub fn save_with_preview(doc: &Document, preview: Option<&[u8]>) -> Result<Vec<u
     }
     let mut compact = doc.clone();
     compact.compact_assets();
-    let owned_assets = compact.assets.values().map(|asset| (asset.id.0.to_string(), asset.mime.clone(), asset.data.clone())).collect::<Vec<_>>();
+    let owned_assets = compact
+        .assets
+        .values()
+        .map(|asset| {
+            let data = asset.data.load().map_err(|e| FormatError::Unsaveable(format!("image {}: {e}", asset.name)))?;
+            Ok((asset.id.0.to_string(), asset.mime.clone(), data))
+        })
+        .collect::<Result<Vec<_>, FormatError>>()?;
     let assets = owned_assets.iter().map(|(id, mime, data)| craft_designcraft_format::Asset { id, mime, data }).collect::<Vec<_>>();
     craft_designcraft_format::save(&compact, concat!("DesignCraft ", env!("CARGO_PKG_VERSION")), preview, &assets)
 }
@@ -51,7 +58,8 @@ pub fn write<W: std::io::Write>(out: &mut W, doc: &Document, preview: Option<&[u
 #[cfg(test)]
 fn required_version(doc: &Document) -> u32 {
     let Ok(value) = serde_json::to_value(doc) else { return VERSION };
-    let owned_assets = doc.assets.values().map(|asset| (asset.id.0.to_string(), asset.mime.clone(), asset.data.clone())).collect::<Vec<_>>();
+    let owned_assets =
+        doc.assets.values().map(|asset| (asset.id.0.to_string(), asset.mime.clone(), asset.data.load().unwrap_or_default())).collect::<Vec<_>>();
     let assets = owned_assets.iter().map(|(id, mime, data)| craft_designcraft_format::Asset { id, mime, data }).collect::<Vec<_>>();
     craft_designcraft_format::required_version(&value, &assets)
 }
@@ -61,16 +69,16 @@ pub fn load(bytes: &[u8]) -> Result<Document, FormatError> {
     let loaded = craft_designcraft_format::load::<Document>(bytes)?;
     let mut doc = loaded.document;
     let fingerprint = std::collections::hash_map::RandomState::new();
-    let mut dedup: HashMap<u64, Vec<Arc<Vec<u8>>>> = HashMap::new();
+    let mut dedup: HashMap<u64, Vec<AssetData>> = HashMap::new();
     for (raw_id, bytes) in loaded.assets {
         let Ok(id) = raw_id.parse::<u64>() else { continue };
         let asset_id = AssetId(id);
         let Some(asset) = doc.assets.get_mut(&asset_id) else { continue };
         let same = dedup.entry(fingerprint.hash_one(bytes.as_slice())).or_default();
-        let data = match same.iter().find(|data| ***data == bytes) {
+        let data = match same.iter().find(|data| data.embedded_bytes().is_some_and(|b| **b == bytes)) {
             Some(data) => data.clone(),
             None => {
-                let data = Arc::new(bytes);
+                let data = AssetData::embedded(bytes);
                 same.push(data.clone());
                 data
             }

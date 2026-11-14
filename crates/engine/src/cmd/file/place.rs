@@ -4,8 +4,7 @@ use super::EngineError;
 use super::bytes::base64_encode;
 use super::bytes::{base64_decode, from_bytes};
 use super::{
-    Affine, Arc, Asset, AssetId, Content, Graphic, Item, ItemId, PdfCrop, Rect, Result, Selection, Session, Shape, Value, bad, json, ok, shapes,
-    str_param,
+    Affine, Asset, AssetId, Content, Graphic, Item, ItemId, PdfCrop, Rect, Result, Selection, Session, Shape, Value, bad, json, ok, shapes, str_param,
 };
 
 pub(super) fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
@@ -96,7 +95,7 @@ pub(super) fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
         mime,
         link,
         link_fingerprint: crate::cmd::links::loaded_fingerprint(before, &bytes),
-        data: Arc::new(bytes),
+        data: designcraft_doc::AssetData::embedded(bytes),
         pixels: Some((pw, ph)),
         pdf_crop,
         ..Default::default()
@@ -199,10 +198,11 @@ pub(super) fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
 /// keeps its crop choice (a missing link relinked later gets its box then).
 pub(crate) fn crop_pdf(a: &mut Asset) -> Option<(f64, f64)> {
     a.pdf_box = None;
-    if a.pdf_crop == PdfCrop::Crop || !designcraft_render::is_pdf(&a.data) {
+    let bytes = a.data.load().ok()?;
+    if a.pdf_crop == PdfCrop::Crop || !designcraft_render::is_pdf(&bytes) {
         return None;
     }
-    let (frac, size) = designcraft_render::pdf_crop_box(&a.data, a.page as usize, a.pdf_crop)?;
+    let (frac, size) = designcraft_render::pdf_crop_box(&bytes, a.page as usize, a.pdf_crop)?;
     a.pdf_box = Some(frac);
     Some(size)
 }
@@ -259,7 +259,8 @@ pub(super) fn place_load(s: &mut Session, p: &Value) -> Result<Value> {
     let (pw, ph) = designcraft_render::image_size(&bytes).ok_or_else(|| bad("place.load", "unsupported or corrupt image"))?;
     let natural = eps_size(&bytes, "place.load")?.or_else(|| designcraft_render::natural_size(&bytes, 0)).unwrap_or((pw as f64, ph as f64));
     let mime = designcraft_render::image_mime(&bytes).to_string();
-    let asset = Asset { name, mime, link, link_fingerprint, data: Arc::new(bytes), pixels: Some((pw, ph)), ..Default::default() };
+    let asset =
+        Asset { name, mime, link, link_fingerprint, data: designcraft_doc::AssetData::embedded(bytes), pixels: Some((pw, ph)), ..Default::default() };
     load_cursor(s, asset, natural)
 }
 
