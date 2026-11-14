@@ -53,7 +53,7 @@ layer survive interchange; literal XML and round-trip tests are in
 | Text Only / RTF / Tagged Text | `.txt`, `.rtf` | ✓ | ✓ (`file.exportText` txt, rtf, tagged) | | 1% |
 | XML | `.xml` | ✓ | ✓ export and import, DTD validate | depth unmeasured | 1% |
 | Print / PostScript | | ✓ printers, PPDs, separations | ~ PDF to CUPS/Windows (craft-print; no PostScript) | | 3% |
-| Package | folder | ✓ fonts, links, IDML, PDF, report | ✓ (#340: IDML inside links to absolute paths) | PDF export warnings appear in the result and report. Frame and text-range hyperlinks keep their source bounds through rasterization, including inside groups. Synthetic shadow/feather/link regression in `crates/engine/src/cmd/package/tests.rs` | 2% |
+| Package | folder | ✓ fonts, links, IDML, PDF, report | ✓ (#340: IDML inside links to absolute paths) | Export and link-copy warnings (including Modified links copied from disk) appear in the result and report. Frame and text-range hyperlinks keep their source bounds through rasterization, including inside groups. Synthetic shadow/feather/link regression in `crates/engine/src/cmd/package/tests.rs` | 2% |
 
 PDF/X-4 export warns about unembedded fonts that draw visible text, including inside placed PDF
 forms; `designcraft-cli validate-pdf FILE.pdf` reports the same issues, with font names and pages
