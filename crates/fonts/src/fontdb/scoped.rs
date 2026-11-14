@@ -384,7 +384,9 @@ impl ScopedFonts<'_> {
         if by_wws {
             let aliased = |f: &&Arc<FontFace>| has_wws_family(f, family);
             let own: Vec<&Arc<FontFace>> = self.own().iter().filter(aliased).collect();
-            let kept = |f: &&Arc<FontFace>| !own.iter().any(|o| norm(&o.style) == norm(&f.style));
+            // These faces are told apart by their WWS style names (see `style_of`), not their typographic ones.
+            let wws_style = |f: &FontFace| norm(f.wws.as_ref().map_or(&f.style, |w| &w.1));
+            let kept = |f: &&Arc<FontFace>| !own.iter().any(|o| wws_style(o) == wws_style(f));
             cands = own.iter().copied().chain(faces.iter().filter(aliased).filter(kept)).collect();
         }
         if cands.is_empty() {
