@@ -135,7 +135,7 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
                     if !storage.is_empty() {
                         storage_icon(ui, storage == "linked", t.text_dim, &app.ui.language);
                     }
-                    badge(ui, &crate::i18n::tr(&app.ui.language, txt).to_string(), col)
+                    badge(ui, crate::i18n::tr(&app.ui.language, txt), col)
                 })
                 .inner;
             // Why a link isn't followed (a path on another computer, a device).
