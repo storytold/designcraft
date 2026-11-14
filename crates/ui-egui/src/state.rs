@@ -130,7 +130,7 @@ pub struct PdfExportSettings {
     pub standard: String,
     /// Compression › Compress images (JPEG).
     pub compress_images: bool,
-    /// Transparency flattener preset (`""` = none, `high`, `medium`, `low`).
+    /// Transparency flattener preset (`""` = unset, `"none"` = none, `high`, `medium`, `low`).
     pub flatten: String,
     pub spreads: bool,
     pub bleed: bool,
@@ -158,6 +158,21 @@ impl Default for PdfExportSettings {
             marks_weight: "0.25".into(),
             marks_offset: "6".into(),
             tagged: true,
+        }
+    }
+}
+
+impl PdfExportSettings {
+    /// The flattener preset to seed the Export PDF dialog and Separations Preview with (`""` =
+    /// live transparency, `"high"`, `"medium"`, or `"low"`). An unset value (`""`) falls back to
+    /// `global` (`UiState.flattener`); an explicit `"none"` choice — or `"low"` left behind by an
+    /// earlier `"Screen and Email"` preset — keeps live transparency (`""`).
+    pub fn resolved_flatten<'a>(&'a self, global: &'a str) -> &'a str {
+        match self.flatten.as_str() {
+            "" => global,
+            "none" => "",
+            "low" if self.preset == "Screen and Email" => "",
+            saved => saved,
         }
     }
 }

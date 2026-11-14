@@ -513,3 +513,43 @@ fn rasterized_links_keep_exactly_one_wrapping_stand_in() {
     assert_eq!(copy.item(id).unwrap().wrap, before);
     assert_ne!(before.mode, designcraft_doc::WrapMode::None);
 }
+
+#[test]
+fn high_resolution_png_with_soft_effect_preserves_resolution_in_pdf_export() {
+    use hayro_syntax::object::Name;
+    let mut pixels = Vec::with_capacity(800 * 800 * 4);
+    for y in 0..800u32 {
+        for x in 0..800u32 {
+            let v = if ((x + y) / 4).is_multiple_of(2) { 0u8 } else { 255u8 };
+            pixels.extend_from_slice(&[v, v, v, 255]);
+        }
+    }
+    let png = designcraft_render::Rendered { width: 800, height: 800, pixels }.to_png();
+    let b64 = super::super::file::base64_encode(&png);
+
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    let shadowed = s.execute("file.place", &json!({"base64": &b64, "name": "hi.png", "x": 36, "y": 36, "width": 72})).unwrap()["id"].clone();
+    s.execute("object.dropShadow", &json!({"ids": [shadowed], "on": true, "distance": 4, "size": 4})).unwrap();
+    let feathered = s.execute("file.place", &json!({"base64": &b64, "name": "hi2.png", "x": 150, "y": 36, "width": 72})).unwrap()["id"].clone();
+    s.execute("object.feather", &json!({"ids": [feathered], "width": 4})).unwrap();
+
+    let r = s.execute("file.exportPdf", &json!({})).unwrap();
+    let bytes = super::super::file::base64_decode(r["base64"].as_str().unwrap());
+    let pdf = hayro_syntax::Pdf::new(std::sync::Arc::new(bytes)).unwrap();
+    let dims: Vec<(u32, u32)> = pdf
+        .objects()
+        .into_iter()
+        .filter_map(|obj| {
+            let stream = obj.into_stream()?;
+            let dict = stream.dict();
+            if dict.get::<Name>(b"Subtype").is_some_and(|n| n.as_str() == "Image") {
+                Some((dict.get::<u32>(b"Width")?, dict.get::<u32>(b"Height")?))
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert!(!dims.is_empty(), "expected exported effect images");
+    assert!(dims.iter().all(|&(w, h)| w >= 800 && h >= 800), "expected >= 800px native resolution, got {dims:?}");
+}

@@ -139,15 +139,176 @@ fn raster_effects(it: &designcraft_doc::Item) -> bool {
         || e.directional_feather.on
 }
 
-/// A copy of `d` where spread-level objects with soft effects are 300 ppi images of their whole
-/// appearance (transparent around them, so they composite over what's behind). Objects in `skip`
-/// stay as they are.
+const EFFECT_BASE_PPI: f64 = 300.0;
+const EFFECT_MAX_PPI: f64 = 1200.0;
+const MAX_RASTER_PIXELS: u64 = 60_000_000;
+
+/// Updates `best` with the highest effective resolution (in PPI) of `g` when placed with transform `xf`.
+fn graphic_raster_ppi(d: &designcraft_doc::Document, g: &designcraft_doc::Graphic, xf: designcraft_geom::Affine, best: &mut f64) {
+    let Some(a) = d.assets.get(&g.asset) else {
+        return;
+    };
+    let is_vector_bytes = |b: &[u8]| designcraft_images::is_pdf(b) || designcraft_images::is_svg(b) || designcraft_images::is_eps(b);
+    let vector = matches!(a.mime.as_str(), "application/pdf" | "image/svg+xml" | "application/postscript")
+        || a.data.resident().is_some_and(|b| is_vector_bytes(&b))
+        || ((a.mime.is_empty() || a.mime == "application/octet-stream") && a.data.load().is_ok_and(|b| is_vector_bytes(&b)));
+    if let Some((pw, ph)) = a.pixels.filter(|_| !vector) {
+        let [xx, yx, xy, yy, _, _] = (xf * g.xf).as_coeffs();
+        let placed_w = xx.hypot(yx) * g.size.0;
+        let placed_h = xy.hypot(yy) * g.size.1;
+        if placed_w.is_finite() && placed_w > 1e-6 {
+            let ppi_x = (pw as f64 * 72.0) / placed_w;
+            if ppi_x.is_finite() {
+                *best = best.max(ppi_x);
+            }
+        }
+        if placed_h.is_finite() && placed_h > 1e-6 {
+            let ppi_y = (ph as f64 * 72.0) / placed_h;
+            if ppi_y.is_finite() {
+                *best = best.max(ppi_y);
+            }
+        }
+    }
+}
+
+/// Highest effective resolution (in PPI) of any non-vector placed graphic inside `it`.
+fn placed_raster_max_ppi(d: &designcraft_doc::Document, cache: &designcraft_compose::Cache, it: &designcraft_doc::Item) -> f64 {
+    use std::sync::Arc;
+
+    use designcraft_doc::{AnchoredObject, Content, Item};
+    use designcraft_geom::Affine;
+
+    enum PendingItem<'a> {
+        Root(&'a Item),
+        Child(Arc<Item>),
+        Anchored(Arc<AnchoredObject>),
+    }
+    impl PendingItem<'_> {
+        fn as_item(&self) -> &Item {
+            match self {
+                Self::Root(it) => it,
+                Self::Child(it) => it,
+                Self::Anchored(o) => &o.item,
+            }
+        }
+    }
+    struct PendingText {
+        story: Arc<designcraft_compose::ComposedStory>,
+        frame_index: usize,
+        xf: Affine,
+        depth: usize,
+    }
+
+    let mut best = 0.0_f64;
+    let mut pending = vec![(PendingItem::Root(it), Affine::IDENTITY, 0usize)];
+    while let Some((node, parent, depth)) = pending.pop() {
+        let cur = node.as_item();
+        if cur.hidden || depth > MAX_STAND_IN_DEPTH {
+            continue;
+        }
+        let xf = parent * cur.xf;
+        if let Content::Graphic(g) = &cur.content {
+            graphic_raster_ppi(d, g, xf, &mut best);
+        }
+        if depth < MAX_STAND_IN_DEPTH {
+            if let Content::Text(tf) = &cur.content
+                && tf.options.path.is_none()
+            {
+                let cs = cache.get_on(d, tf.story, designcraft_compose::ShownOn::Own);
+                if let Some(frame_index) = cs.frames.iter().position(|f| f.frame == cur.id) {
+                    let mut texts = vec![PendingText { story: cs, frame_index, xf: xf * d.text_local(cur), depth: depth + 1 }];
+                    while let Some(pt) = texts.pop() {
+                        if pt.depth > MAX_STAND_IN_DEPTH {
+                            continue;
+                        }
+                        let Some(f) = pt.story.frames.get(pt.frame_index) else {
+                            continue;
+                        };
+                        for o in &f.objects {
+                            pending.push((PendingItem::Anchored(Arc::clone(&o.object)), pt.xf * Affine::translate(o.origin.to_vec2()), pt.depth));
+                        }
+                        for t in &f.tables {
+                            for c in &t.cells {
+                                if let Some(g) = &c.graphic {
+                                    graphic_raster_ppi(d, g, pt.xf * Affine::translate((c.clip.x0, c.clip.y0)), &mut best);
+                                } else if pt.depth < MAX_STAND_IN_DEPTH && !c.text.frames.is_empty() {
+                                    texts.push(PendingText {
+                                        story: Arc::clone(&c.text),
+                                        frame_index: 0,
+                                        xf: pt.xf * Affine::translate(c.origin.to_vec2()),
+                                        depth: pt.depth + 1,
+                                    });
+                                }
+                            }
+                        }
+                        if pt.depth < MAX_STAND_IN_DEPTH {
+                            for n in &f.notes {
+                                if !n.text.frames.is_empty() {
+                                    texts.push(PendingText {
+                                        story: Arc::clone(&n.text),
+                                        frame_index: 0,
+                                        xf: pt.xf * Affine::translate(n.origin.to_vec2()),
+                                        depth: pt.depth + 1,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            for child in cur.shown_children() {
+                pending.push((PendingItem::Child(Arc::clone(child)), xf, depth + 1));
+            }
+        }
+    }
+    best
+}
+
+/// Resolution for rasterising `it`'s soft effects: at least 300 ppi, raised up to 1200 ppi so
+/// high-resolution placed raster graphics keep their detail without exceeding `MAX_RASTER_PIXELS`
+/// or [`designcraft_render::MAX_SIDE`].
+fn effect_raster_ppi(
+    d: &designcraft_doc::Document,
+    cache: &designcraft_compose::Cache,
+    it: &designcraft_doc::Item,
+    reach: designcraft_geom::Rect,
+) -> f64 {
+    let raw = placed_raster_max_ppi(d, cache, it);
+    let mut target = if raw.is_finite() { raw.clamp(EFFECT_BASE_PPI, EFFECT_MAX_PPI) } else { EFFECT_BASE_PPI };
+    let (rw, rh) = (reach.width(), reach.height());
+    if !rw.is_finite() || !rh.is_finite() || rw <= 0.0 || rh <= 0.0 {
+        return target;
+    }
+    let area = rw * rh;
+    let max_k_sq = MAX_RASTER_PIXELS as f64 / area;
+    if max_k_sq.is_finite() && max_k_sq > 0.0 {
+        let budget_ppi = (max_k_sq.sqrt() * 72.0 * 0.99).max(EFFECT_BASE_PPI);
+        target = target.min(budget_ppi);
+    }
+    let max_side_k = designcraft_render::MAX_SIDE as f64 / rw.max(rh);
+    if max_side_k.is_finite() && max_side_k > 0.0 {
+        let side_ppi = (max_side_k * 72.0 * 0.99).max(EFFECT_BASE_PPI);
+        target = target.min(side_ppi);
+    }
+    target
+}
+
+/// A copy of `d` where spread-level objects with soft effects are 300–1200 ppi images of their
+/// whole appearance (transparent around them, so they composite over what's behind). Objects in
+/// `skip` stay as they are.
 pub(super) fn rasterize_effects(
     d: &designcraft_doc::Document,
     cache: &designcraft_compose::Cache,
     skip: &std::collections::HashMap<designcraft_doc::ItemId, designcraft_pdf::ShadowMask>,
 ) -> (Option<designcraft_doc::Document>, usize) {
-    rasterize_where_with_links(d, cache, 300.0, true, true, |it| raster_effects(it) && !threaded(d, it) && !skip.contains_key(&it.id))
+    rasterize_where_with_links(
+        d,
+        cache,
+        |it, reach| effect_raster_ppi(d, cache, it, reach),
+        true,
+        true,
+        |it| raster_effects(it) && !threaded(d, it) && !skip.contains_key(&it.id),
+    )
 }
 
 /// A drop shadow is the object's only soft effect, and the PDF writer draws its shadow itself
@@ -254,13 +415,13 @@ pub(super) fn rasterize_where(
     keep_wrap: bool,
     pred: impl Fn(&designcraft_doc::Item) -> bool,
 ) -> (Option<designcraft_doc::Document>, usize) {
-    rasterize_where_with_links(d, cache, ppi, keep_wrap, false, pred)
+    rasterize_where_with_links(d, cache, |_, _| ppi, keep_wrap, false, pred)
 }
 
 fn rasterize_where_with_links(
     d: &designcraft_doc::Document,
     cache: &designcraft_compose::Cache,
-    ppi: f64,
+    ppi_for: impl Fn(&designcraft_doc::Item, designcraft_geom::Rect) -> f64,
     keep_wrap: bool,
     keep_links: bool,
     pred: impl Fn(&designcraft_doc::Item) -> bool,
@@ -274,14 +435,16 @@ fn rasterize_where_with_links(
     let mut out = d.clone();
     let mut rr = designcraft_render::Renderer::new();
     rr.threads = designcraft_render::default_threads();
-    let k = ppi / 72.0;
     let mut n = 0;
     for (si, id) in todo {
         let Some(it) = d.item(id) else { continue };
-        let reach = it.bounds().inflate(
-            designcraft_render::effect_outset(it) + it.stroke.extent() + 2.0,
-            designcraft_render::effect_outset(it) + it.stroke.extent() + 2.0,
-        );
+        let grow = designcraft_render::effect_outset(it) + it.stroke.extent() + 2.0;
+        let reach = it.bounds().inflate(grow, grow);
+        let ppi = ppi_for(it, reach);
+        if !ppi.is_finite() || ppi <= 0.0 {
+            continue;
+        }
+        let k = ppi / 72.0;
         // Just this object on its spread, no paper.
         let mut solo = d.clone();
         let sp = std::sync::Arc::make_mut(&mut solo.spreads[si]);
@@ -289,8 +452,12 @@ fn rasterize_where_with_links(
         for pg in &mut sp.pages {
             pg.show_parent_items = false;
         }
-        let (w, h) = ((reach.width() * k).ceil().max(1.0) as u32, (reach.height() * k).ceil().max(1.0) as u32);
-        if w as u64 * h as u64 > 60_000_000 {
+        let (wf, hf) = ((reach.width() * k).ceil().max(1.0), (reach.height() * k).ceil().max(1.0));
+        if !wf.is_finite() || !hf.is_finite() || wf > designcraft_render::MAX_SIDE as f64 || hf > designcraft_render::MAX_SIDE as f64 {
+            continue;
+        }
+        let (w, h) = (wf as u32, hf as u32);
+        if w as u64 * h as u64 > MAX_RASTER_PIXELS {
             continue;
         }
         let view = designcraft_geom::Affine::scale(k) * designcraft_geom::Affine::translate((-reach.x0, -reach.y0));
@@ -649,5 +816,114 @@ mod placed_layer_tests {
     #[test]
     fn layered_pdf_a_endnote_anchor() {
         check_placement("endnote");
+    }
+}
+
+#[cfg(test)]
+mod effect_ppi_tests {
+    use std::sync::Arc;
+
+    use designcraft_doc::{AnchoredObject, Asset, AssetId, Content, Document, Graphic, Item, ItemId, Shape, SpreadRef};
+    use designcraft_geom::{Affine, Rect};
+
+    #[test]
+    fn effect_raster_ppi_respects_groups_vectors_bounds_and_degenerate_transforms() {
+        let mut d = Document::new(&Default::default());
+        let cache = designcraft_compose::Cache::default();
+        let png_id = AssetId(d.alloc());
+        d.assets.insert(
+            png_id,
+            Arc::new(Asset {
+                id: png_id,
+                name: "hi.png".into(),
+                mime: "image/png".into(),
+                data: designcraft_doc::AssetData::embedded(b"\x89PNG\r\n\x1a\n".to_vec()),
+                pixels: Some((900, 900)),
+                ..Default::default()
+            }),
+        );
+        let svg_id = AssetId(d.alloc());
+        d.assets.insert(
+            svg_id,
+            Arc::new(Asset {
+                id: svg_id,
+                name: "vec.svg".into(),
+                mime: "image/svg+xml".into(),
+                data: designcraft_doc::AssetData::embedded(b"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"10\" height=\"10\"/>".to_vec()),
+                pixels: Some((2000, 2000)),
+                ..Default::default()
+            }),
+        );
+
+        let layer = d.default_layer();
+        let make_graphic = |id: u64, asset: AssetId, sx: f64, sy: f64| {
+            let mut it = Item::new(ItemId(id), layer, Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 72.0, 72.0)));
+            it.content = Content::Graphic(Graphic {
+                layer_options: None,
+                asset,
+                size: (100.0, 100.0),
+                xf: Affine::scale_non_uniform(sx, sy),
+                clip: None,
+                auto_fit: Default::default(),
+                fit_align: 4,
+                crop: [0.0; 4],
+                wrap: Default::default(),
+                fill: Default::default(),
+            });
+            it
+        };
+
+        // Grouped 900 px PNG mapped into 72 pt -> 900 ppi.
+        let child_png = make_graphic(d.alloc(), png_id, 0.72, 0.72);
+        let mut group = Item::new(ItemId(d.alloc()), layer, Shape::Group, Default::default());
+        group.content = Content::Group { items: vec![Arc::new(child_png)] };
+        let normal_reach = Rect::new(0.0, 0.0, 80.0, 80.0);
+        let ppi = super::effect_raster_ppi(&d, &cache, &group, normal_reach);
+        assert!((ppi - 900.0).abs() < 1e-6, "expected 900 ppi for grouped PNG, got {ppi}");
+
+        // Over-budget reach (where 300 ppi fits in 39M px, while 900 ppi would hit 351M px)
+        // clamps cleanly to MAX_RASTER_PIXELS without falling below the 300 ppi baseline.
+        let huge_reach = Rect::new(0.0, 0.0, 1500.0, 1500.0);
+        let capped = super::effect_raster_ppi(&d, &cache, &group, huge_reach);
+        assert!(capped.is_finite() && (300.0..900.0).contains(&capped), "expected capped ppi, got {capped}");
+        let k = capped / 72.0;
+        let est_pixels = (huge_reach.width() * k).ceil() * (huge_reach.height() * k).ceil();
+        assert!(est_pixels <= super::MAX_RASTER_PIXELS as f64, "estimated {est_pixels} exceeded budget");
+
+        // Wide reach that fits MAX_RASTER_PIXELS at 900 ppi but would exceed MAX_SIDE drops its PPI cleanly.
+        let wide_reach = Rect::new(0.0, 0.0, 6000.0, 20.0);
+        let side_capped = super::effect_raster_ppi(&d, &cache, &group, wide_reach);
+        assert!(side_capped.is_finite() && (300.0..900.0).contains(&side_capped), "expected MAX_SIDE-capped ppi, got {side_capped}");
+        let est_side = (wide_reach.width() * (side_capped / 72.0)).ceil();
+        assert!(est_side <= designcraft_render::MAX_SIDE as f64, "estimated side {est_side} exceeded MAX_SIDE");
+
+        // Vector assets keep the 300 ppi baseline even when preview pixels exist.
+        let vec_item = make_graphic(d.alloc(), svg_id, 0.72, 0.72);
+        assert_eq!(super::placed_raster_max_ppi(&d, &cache, &vec_item), 0.0);
+        assert_eq!(super::effect_raster_ppi(&d, &cache, &vec_item, normal_reach), super::EFFECT_BASE_PPI);
+
+        // Zero-scale transform does not divide by zero or produce non-finite PPI.
+        let zero_item = make_graphic(d.alloc(), png_id, 0.0, 0.0);
+        assert_eq!(super::placed_raster_max_ppi(&d, &cache, &zero_item), 0.0);
+        assert_eq!(super::effect_raster_ppi(&d, &cache, &zero_item, Rect::ZERO), super::EFFECT_BASE_PPI);
+
+        // Anchored 900 px PNG inside an unthreaded text frame -> 900 ppi.
+        let (tf_id, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 200.0, 200.0), layer, "Body", Default::default()).unwrap();
+        let anchored_png = make_graphic(d.alloc(), png_id, 0.72, 0.72);
+        d.story_mut(sid).unwrap().insert_object(0, AnchoredObject { item: anchored_png, position: Default::default() });
+        let tf_item = d.item(tf_id).unwrap();
+        let tf_ppi = super::effect_raster_ppi(&d, &cache, tf_item, normal_reach);
+        assert!((tf_ppi - 900.0).abs() < 1e-6, "expected 900 ppi for anchored PNG in text frame, got {tf_ppi}");
+
+        // Object whose width exceeds MAX_SIDE even at 300 ppi (while under MAX_RASTER_PIXELS) is skipped.
+        let wide_id = ItemId(d.alloc());
+        let mut wide_item = Item::new(wide_id, layer, Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 16_000.0, 10.0)));
+        wide_item.effects.feather = 4.0;
+        Arc::make_mut(&mut d.spreads[0]).items.push(Arc::new(wide_item));
+        let (rasterized, count) = super::rasterize_effects(&d, &cache, &Default::default());
+        assert_eq!(count, 0, "over-MAX_SIDE object must be skipped rather than clamped by renderer");
+        if let Some(out) = rasterized {
+            assert!(out.item(wide_id).is_some_and(|it| it.graphic().is_none()));
+        }
     }
 }
