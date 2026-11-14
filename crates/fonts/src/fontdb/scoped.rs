@@ -258,6 +258,12 @@ impl ScopedFonts<'_> {
 
     fn find_or_load(&self, family: &str, style: &str) -> Option<Arc<FontFace>> {
         if let Some(f) = self.find(family, style) {
+            // Only another style of the family is loaded: the asked one may have been installed
+            // since the family was loaded (#2617).
+            #[cfg(not(target_arch = "wasm32"))]
+            if !style.contains('{') && !Self::is_style(&f, family, style) && self.db.load_cataloged_style(family, style) {
+                return self.find(family, style);
+            }
             return Some(f);
         }
         #[cfg(not(target_arch = "wasm32"))]
@@ -265,6 +271,16 @@ impl ScopedFonts<'_> {
             return self.find(family, style);
         }
         None
+    }
+
+    /// Is `face`, found for `family`, the `style` asked for (by its own, a localized or its WWS
+    /// style name), not the closest of another style?
+    #[cfg(not(target_arch = "wasm32"))]
+    fn is_style(face: &FontFace, family: &str, style: &str) -> bool {
+        let ns = norm(style);
+        norm(&face.style) == ns
+            || (face.coords.is_empty() && face.style_aliases.iter().any(|alias| norm(alias) == ns))
+            || face.wws.as_ref().is_some_and(|w| w.0.eq_ignore_ascii_case(family) && norm(&w.1) == ns)
     }
 
     /// The family and style of the face whose PostScript name is `name`, ignoring case (the
