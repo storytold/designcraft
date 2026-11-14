@@ -211,8 +211,8 @@ fn reduced_estimates(wants: &[Want]) -> Option<(usize, usize)> {
     }
     let dims = dims?;
     let cached = levels.iter().enumerate().filter(|(_, keep)| **keep).fold(0usize, |n, (level, _)| {
-        let (w, h) = dims[level];
-        n.saturating_add(w as usize * h as usize * 4)
+        let Some(&(w, h)) = dims.get(level) else { return n };
+        n.saturating_add((w as usize).saturating_mul(h as usize).saturating_mul(4))
     });
     Some((cached, peak))
 }
@@ -370,7 +370,12 @@ pub(crate) fn warm(wants: Vec<Want>) -> usize {
                     // Released even if the decode panics, so no other decode waits forever.
                     let _release = Release(&mine, *size);
                     for w in job {
-                        let _ = mip(&w.bytes, w.page, w.width_pt, w.on_screen);
+                        // A decoder panic would otherwise reach the render through the scope and
+                        // be retried on every frame; mark the image bad as a failed decode is.
+                        let run = std::panic::AssertUnwindSafe(|| mip(&w.bytes, w.page, w.width_pt, w.on_screen));
+                        if std::panic::catch_unwind(run).is_err() {
+                            with(|c| c.mark_bad((Arc::as_ptr(&w.bytes) as usize, w.page), &w.bytes));
+                        }
                     }
                 }
             };
