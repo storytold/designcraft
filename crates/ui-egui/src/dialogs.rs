@@ -287,7 +287,8 @@ fn convert_table_dialog(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
         let same = same_separators(d);
         label(ui, "Number of Columns", same);
         let max = designcraft_engine::cmd::table::MAX_COLUMNS as f64;
-        let field = crate::widgets::NumField::number("columns", d.n("columns"), "", 0).width(70.0).range(1.0, max).spinner().enabled(same);
+        let name = crate::i18n::tr(lang, "Number of Columns");
+        let field = crate::widgets::NumField::number("columns", d.n("columns"), "", 0).name(name).width(70.0).range(1.0, max).spinner().enabled(same);
         if let Some(v) = field.show(ui) {
             d.fields.insert("columns".into(), json!(v.round()));
         }
@@ -342,7 +343,7 @@ fn insert_table_dialog(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
         egui::Grid::new(("ins_table", g)).num_columns(2).min_col_width(100.0).spacing([8.0, 6.0]).show(ui, |ui| {
             for (key, label, min, max) in pair {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| crate::rtl::label(ui, format!("{label}:")));
-                let field = crate::widgets::NumField::number(key, d.n(key), "", 0).width(70.0).range(*min, *max as f64).spinner();
+                let field = crate::widgets::NumField::number(key, d.n(key), "", 0).name(label).width(70.0).range(*min, *max as f64).spinner();
                 if let Some(v) = field.show(ui) {
                     d.fields.insert((*key).into(), json!(v.round()));
                 }
@@ -4339,9 +4340,11 @@ fn cell_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
             d.fields.insert("fill".into(), json!(n));
         }
         ui.end_row();
-        crate::rtl::label(ui, crate::i18n::tr(&lang, "Tint:"));
+        let caption = crate::i18n::tr(&lang, "Tint:");
+        crate::rtl::label(ui, caption);
         let tint = values["fillTint"].as_f64().map(|t| (t * 100.0).round());
-        if let Some(t) = crate::widgets::NumField::number("cell_fill_tint", tint, "%", 0).width(60.0).range(0.0, 100.0).show(ui) {
+        let field = crate::widgets::NumField::number("cell_fill_tint", tint, "%", 0).name(caption.trim_end_matches(':'));
+        if let Some(t) = field.width(60.0).range(0.0, 100.0).show(ui) {
             d.fields.insert("fillTint".into(), json!(t / 100.0));
         }
         ui.end_row();
@@ -5979,9 +5982,11 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
                         ("Space Before:", "spaceBefore"),
                         ("Space After:", "spaceAfter"),
                     ] {
-                        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, label));
+                        let caption = crate::i18n::tr(&app.ui.language, label);
+                        crate::rtl::label(ui, caption);
                         let v = cur(d, &format!("p.{key}"), &pv[key]).as_f64();
-                        if let Some(n) = crate::widgets::measure(ui, &format!("ps{key}"), v, units, 80.0) {
+                        let id = format!("ps{key}");
+                        if let Some(n) = crate::widgets::NumField::measure(&id, v, units).name(caption.trim_end_matches(':')).width(80.0).show(ui) {
                             d.fields.insert(format!("p.{key}"), json!(n));
                         }
                         ui.end_row();
@@ -6254,8 +6259,10 @@ fn style_tabs(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, doc: &d
             }
         }
         ui.add_space(6.0);
-        crate::rtl::label(ui, crate::i18n::tr(lang, "X:"));
-        if let Some(x) = crate::widgets::measure(ui, "pstabx", stop.as_ref().map(|s| s.position), unit, 72.0) {
+        let x_caption = crate::i18n::tr(lang, "X:");
+        crate::rtl::label(ui, x_caption);
+        let x_field = crate::widgets::NumField::measure("pstabx", stop.as_ref().map(|s| s.position), unit).name(x_caption.trim_end_matches(':'));
+        if let Some(x) = x_field.width(72.0).show(ui) {
             result = Some(match sel {
                 Some(i) => tabs::move_to(&mut list, i, x),
                 None => tabs::add(&mut list, designcraft_doc::TabStop { position: x, align, leader: String::new(), align_on: String::new() }),
@@ -6322,10 +6329,11 @@ fn para_set(d: &mut Dialog, key: &str, v: Value) {
     d.fields.insert(format!("p.{key}"), v);
 }
 
-/// A count attribute (lines, columns), rounded and kept in `range`.
-fn para_count(ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, key: &str, range: (u32, u32)) {
+/// A count attribute (lines, columns), rounded and kept in `range`, named from `caption`.
+fn para_count(ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, key: &str, caption: &str, range: (u32, u32)) {
     let v = para_value(d, pv, key).as_f64();
-    if let Some(n) = crate::widgets::number(ui, &format!("ps{key}"), v, "", 50.0, 0) {
+    let id = format!("ps{key}");
+    if let Some(n) = crate::widgets::NumField::number(&id, v, "", 0).name(caption.trim_end_matches(':')).width(50.0).show(ui) {
         let n = if n.is_finite() { n.round().clamp(f64::from(range.0), f64::from(range.1)) as u32 } else { range.0 };
         para_set(d, key, json!(n));
     }
@@ -6338,9 +6346,11 @@ fn para_check(ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, key: &str, label: &
     }
 }
 
-fn para_measure(ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, key: &str, unit: Unit) {
+/// A measure attribute in `unit`, named from `caption`.
+fn para_measure(ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, key: &str, caption: &str, unit: Unit) {
     let v = para_value(d, pv, key).as_f64();
-    if let Some(n) = crate::widgets::measure(ui, &format!("ps{key}"), v, unit, 80.0) {
+    let id = format!("ps{key}");
+    if let Some(n) = crate::widgets::NumField::measure(&id, v, unit).name(caption.trim_end_matches(':')).width(80.0).show(ui) {
         para_set(d, key, json!(n));
     }
 }
@@ -6364,16 +6374,27 @@ fn para_choice_width(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, 
 }
 
 /// Four per-side values in the order the attribute holds them: top, left, bottom, right. An
-/// edited side stores the whole array.
-fn para_sides(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, key: &str, field: &dyn Fn(&mut egui::Ui, &str, Option<f64>) -> Option<f64>) {
+/// edited side stores the whole array. `field` draws one side's field: its id, its name (`group`
+/// and the side's caption, as "Offsets Top") and its value.
+fn para_sides(
+    lang: &str,
+    ui: &mut egui::Ui,
+    d: &mut Dialog,
+    pv: &Value,
+    key: &str,
+    group: &str,
+    field: &dyn Fn(&mut egui::Ui, &str, &str, Option<f64>) -> Option<f64>,
+) {
     let mut sides: [f64; 4] = serde_json::from_value(para_value(d, pv, key)).unwrap_or_default();
     let linked = linked(d, key, sides.iter().all(|v| (v - sides[0]).abs() < 1e-9));
     let mut changed = false;
     // As InDesign's: Top and Bottom, the link, Left and Right.
     egui::Grid::new(("pssides", key)).num_columns(5).spacing([8.0, 6.0]).show(ui, |ui| {
         for (i, label) in ["Top:", "Left:", "Bottom:", "Right:"].into_iter().enumerate() {
-            crate::rtl::label(ui, crate::i18n::tr(lang, label));
-            if let Some(v) = field(ui, &format!("ps{key}{i}"), sides.get(i).copied()) {
+            let caption = crate::i18n::tr(lang, label);
+            crate::rtl::label(ui, caption);
+            let name = format!("{group} {}", caption.trim_end_matches(':'));
+            if let Some(v) = field(ui, &format!("ps{key}{i}"), &name, sides.get(i).copied()) {
                 // Linked, a side typed in sets all four.
                 if linked {
                     sides = [v; 4];
@@ -6507,7 +6528,7 @@ fn para_corners(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, key: 
         resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, tip));
         resp.on_hover_text(tip);
         let id = format!("ps{key}{i}");
-        if let Some(v) = crate::widgets::NumField::measure(&id, Some(c.size), units).width(84.0).spinner().range(0.0, 10_000.0).show(ui) {
+        if let Some(v) = crate::widgets::NumField::measure(&id, Some(c.size), units).name(tip).width(84.0).spinner().range(0.0, 10_000.0).show(ui) {
             c.size = if v.is_finite() { v.clamp(0.0, 10_000.0) } else { 0.0 };
             *changed = Some(i);
         }
@@ -6590,7 +6611,8 @@ fn para_color_tint(
     ui.add_enabled_ui(enabled, |ui| {
         ui.horizontal(|ui| {
             let id = format!("ps{tint_key}");
-            let field = crate::widgets::NumField::number(&id, tint, "%", 0).width(96.0).spinner().presets(TINTS).step(10.0).range(0.0, 100.0);
+            let field = crate::widgets::NumField::number(&id, tint, "%", 0).name(labels.1.trim_end_matches(':'));
+            let field = field.width(96.0).spinner().presets(TINTS).step(10.0).range(0.0, 100.0);
             if let Some(v) = field.show(ui) {
                 para_set(d, tint_key, json!(if v.is_finite() { (v / 100.0).clamp(0.0, 1.0) } else { 1.0 }));
             }
@@ -6619,8 +6641,10 @@ fn border_shading(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, doc
         ui.add_enabled_ui(on, |ui| {
             if border {
                 head(ui, "Stroke");
-                para_sides(lang, ui, d, pv, &key("Weights"), &|ui: &mut egui::Ui, id: &str, v: Option<f64>| {
+                let group = crate::i18n::tr(lang, "Stroke");
+                para_sides(lang, ui, d, pv, &key("Weights"), group, &|ui: &mut egui::Ui, id: &str, name: &str, v: Option<f64>| {
                     crate::widgets::NumField::number(id, v, " pt", 2)
+                        .name(name)
                         .width(84.0)
                         .spinner()
                         .range(0.0, 1000.0)
@@ -6658,8 +6682,9 @@ fn border_shading(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, doc
             ui.horizontal_top(|ui| {
                 ui.vertical(|ui| {
                     head(ui, "Offsets");
-                    para_sides(lang, ui, d, pv, &key("Offsets"), &|ui: &mut egui::Ui, id: &str, v: Option<f64>| {
-                        crate::widgets::spin_measure(ui, id, v, units, 72.0)
+                    let group = crate::i18n::tr(lang, "Offsets");
+                    para_sides(lang, ui, d, pv, &key("Offsets"), group, &|ui: &mut egui::Ui, id: &str, name: &str, v: Option<f64>| {
+                        crate::widgets::NumField::measure(id, v, units).name(name).width(72.0).spinner().show(ui)
                     });
                 });
                 ui.add_space(12.0);
@@ -6728,9 +6753,11 @@ fn drop_cap_fields(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, cn
             ("Lines:", "dropCapLines", designcraft_compose::MAX_DROP_CAP_LINES),
             ("Characters:", "dropCapChars", designcraft_compose::MAX_DROP_CAP_CHARS),
         ] {
-            crate::rtl::label(ui, crate::i18n::tr(lang, label));
+            let caption = crate::i18n::tr(lang, label);
+            crate::rtl::label(ui, caption);
             let v = field_or(d, &format!("p.{key}"), &pv[key]).as_f64();
-            if let Some(n) = crate::widgets::number(ui, &format!("ps{key}"), v, "", 60.0, 0) {
+            let id = format!("ps{key}");
+            if let Some(n) = crate::widgets::NumField::number(&id, v, "", 0).name(caption.trim_end_matches(':')).width(60.0).show(ui) {
                 d.fields.insert(format!("p.{key}"), json!((n.max(0.0) as u64).min(max as u64)));
             }
             ui.end_row();
@@ -6981,8 +7008,9 @@ fn grep_styles(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, cnames
 /// lines kept together (all of them, or its first and last lines), and where it starts.
 fn keep_options(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Value) {
     ui.horizontal(|ui| {
-        crate::rtl::label(ui, crate::i18n::tr(lang, "Keep with Next:"));
-        para_count(ui, d, pv, "keepWithNext", (0, 5));
+        let caption = crate::i18n::tr(lang, "Keep with Next:");
+        crate::rtl::label(ui, caption);
+        para_count(ui, d, pv, "keepWithNext", caption, (0, 5));
         crate::rtl::label(ui, crate::i18n::tr(lang, "lines"));
     });
     ui.add_space(4.0);
@@ -7000,8 +7028,9 @@ fn keep_options(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Value) {
             ui.add_enabled_ui(!all, |ui| {
                 egui::Grid::new("pskeepends").num_columns(3).spacing([8.0, 6.0]).show(ui, |ui| {
                     for (label, key) in [("Start:", "keepFirst"), ("End:", "keepLast")] {
-                        crate::rtl::label(ui, crate::i18n::tr(lang, label));
-                        para_count(ui, d, pv, key, (1, 50));
+                        let caption = crate::i18n::tr(lang, label);
+                        crate::rtl::label(ui, caption);
+                        para_count(ui, d, pv, key, caption, (1, 50));
                         crate::rtl::label(ui, crate::i18n::tr(lang, "lines"));
                         ui.end_row();
                     }
@@ -7071,8 +7100,10 @@ fn span_columns(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, doc: 
                 ui.end_row();
             }
             SpanColumns::Split(n) => {
-                crate::rtl::label(ui, crate::i18n::tr(lang, "Columns:"));
-                if let Some(c) = crate::widgets::number(ui, "pssplitn", Some(f64::from(n)), "", 50.0, 0) {
+                let caption = crate::i18n::tr(lang, "Columns:");
+                crate::rtl::label(ui, caption);
+                let field = crate::widgets::NumField::number("pssplitn", Some(f64::from(n)), "", 0).name(caption.trim_end_matches(':'));
+                if let Some(c) = field.width(50.0).show(ui) {
                     next = Some(SpanColumns::Split(if c.is_finite() { c.round().clamp(2.0, 20.0) as u32 } else { 2 }));
                 }
                 ui.end_row();
@@ -7086,15 +7117,17 @@ fn span_columns(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, doc: 
         };
         if let Some((before, after)) = spaces {
             for (label, key) in [(before, "spanSpaceBefore"), (after, "spanSpaceAfter")] {
-                crate::rtl::label(ui, crate::i18n::tr(lang, label));
-                para_measure(ui, d, pv, key, v_units);
+                let caption = crate::i18n::tr(lang, label);
+                crate::rtl::label(ui, caption);
+                para_measure(ui, d, pv, key, caption, v_units);
                 ui.end_row();
             }
         }
         if matches!(cur, SpanColumns::Split(_)) {
             for (label, key) in [("Inside Gutter:", "splitInsideGutter"), ("Outside Gutter:", "splitOutsideGutter")] {
-                crate::rtl::label(ui, crate::i18n::tr(lang, label));
-                para_measure(ui, d, pv, key, units);
+                let caption = crate::i18n::tr(lang, label);
+                crate::rtl::label(ui, caption);
+                para_measure(ui, d, pv, key, caption, units);
                 ui.end_row();
             }
         }
@@ -7265,8 +7298,9 @@ fn bullets_and_numbering(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Val
             para_choice(lang, ui, d, pv, "listType", &[("none", "None"), ("bullets", "Bullets"), ("numbers", "Numbers")]);
             ui.end_row();
             if kind != "none" {
-                crate::rtl::label(ui, crate::i18n::tr(lang, "Level:"));
-                para_count(ui, d, pv, "listLevel", (1, designcraft_doc::LIST_LEVELS as u32));
+                let caption = crate::i18n::tr(lang, "Level:");
+                crate::rtl::label(ui, caption);
+                para_count(ui, d, pv, "listLevel", caption, (1, designcraft_doc::LIST_LEVELS as u32));
                 ui.end_row();
             }
             match kind.as_str() {
@@ -7315,8 +7349,9 @@ fn bullets_and_numbering(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Val
                                 para_set(d, "startAt", json!(1));
                             }
                         });
+                        let start_at = crate::i18n::tr(lang, "Start At");
                         if let Some(n) = start
-                            && let Some(v) = crate::widgets::number(ui, "psstartat", Some(n as f64), "", 60.0, 0)
+                            && let Some(v) = crate::widgets::NumField::number("psstartat", Some(n as f64), "", 0).name(start_at).width(60.0).show(ui)
                         {
                             para_set(d, "startAt", json!(if v.is_finite() { v.round().clamp(0.0, 1_000_000.0) as u32 } else { 1 }));
                         }
@@ -7351,12 +7386,14 @@ fn bullets_and_numbering(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Val
                 para_choice(lang, ui, d, pv, key, &[("left", "Left"), ("center", "Center"), ("right", "Right")]);
                 ui.end_row();
                 for (label, key) in [("Left Indent:", "leftIndent"), ("First Line Indent:", "firstLineIndent")] {
-                    crate::rtl::label(ui, crate::i18n::tr(lang, label));
-                    para_measure(ui, d, pv, key, units);
+                    let caption = crate::i18n::tr(lang, label);
+                    crate::rtl::label(ui, caption);
+                    para_measure(ui, d, pv, key, caption, units);
                     ui.end_row();
                 }
                 // Tab Position: none, or a stop for the text after the label.
-                crate::rtl::label(ui, crate::i18n::tr(lang, "Tab Position:"));
+                let tab_caption = crate::i18n::tr(lang, "Tab Position:");
+                crate::rtl::label(ui, tab_caption);
                 ui.horizontal(|ui| {
                     let tab = para_value(d, pv, "listTab").as_f64();
                     let mut on = tab.is_some();
@@ -7365,7 +7402,10 @@ fn bullets_and_numbering(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Val
                         para_set(d, "listTab", if on { json!(left) } else { Value::Null });
                     }
                     if let Some(t) = tab
-                        && let Some(v) = crate::widgets::measure(ui, "pslisttab", Some(t), units, 80.0)
+                        && let Some(v) = crate::widgets::NumField::measure("pslisttab", Some(t), units)
+                            .name(tab_caption.trim_end_matches(':'))
+                            .width(80.0)
+                            .show(ui)
                     {
                         para_set(d, "listTab", json!(if v.is_finite() { v.max(0.0) } else { 0.0 }));
                     }
@@ -7679,10 +7719,12 @@ impl CharFields<'_> {
     }
 }
 
-/// A number attribute shown multiplied by `scale` (100 for a fraction shown as a percentage).
-fn char_number(ui: &mut egui::Ui, d: &mut Dialog, cf: &CharFields, key: &str, suffix: &str, scale: f64, range: (f64, f64)) {
+/// A number attribute shown multiplied by `scale` (100 for a fraction shown as a percentage),
+/// named from `caption`.
+#[allow(clippy::too_many_arguments)]
+fn char_number(ui: &mut egui::Ui, d: &mut Dialog, cf: &CharFields, key: &str, caption: &str, suffix: &str, scale: f64, range: (f64, f64)) {
     let v = cf.get(d, key).as_f64().map(|x| x * scale);
-    let field = crate::widgets::NumField::number(key, v, suffix, 2).width(80.0).range(range.0, range.1);
+    let field = crate::widgets::NumField::number(key, v, suffix, 2).name(caption.trim_end_matches(':')).width(80.0).range(range.0, range.1);
     let edit = if cf.sparse { field.show_or_clear(ui) } else { field.show(ui).map(Some) };
     if let Some(n) = edit {
         cf.set(d, key, n.map_or(Value::Null, |n| json!(n / scale)));
@@ -7789,13 +7831,16 @@ fn basic_character_formats(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
     });
     egui::Grid::new("psc2").num_columns(4).spacing([8.0, 6.0]).show(ui, |ui| {
         crate::rtl::label(ui, crate::i18n::tr(lang, "Size:"));
-        char_number(ui, d, cf, "size", " pt", 1.0, (0.1, 1296.0));
+        char_number(ui, d, cf, "size", crate::i18n::tr(lang, "Size:"), " pt", 1.0, (0.1, 1296.0));
         crate::rtl::label(ui, crate::i18n::tr(lang, "Leading:"));
         let lv = match cf.get(d, "leading") {
             v if v["kind"] == "points" => v["value"].as_f64(),
             _ => None,
         };
-        let field = crate::widgets::NumField::points("pslead", lv, 2).width(80.0).range(0.0, 5000.0);
+        let field = crate::widgets::NumField::points("pslead", lv, 2)
+            .name(crate::i18n::tr(lang, "Leading:").trim_end_matches(':'))
+            .width(80.0)
+            .range(0.0, 5000.0);
         let edit = if cf.sparse { field.show_or_clear(ui) } else { field.show(ui).map(Some) };
         if let Some(n) = edit {
             cf.set(d, "leading", n.map_or(Value::Null, |n| json!({"kind": "points", "value": n})));
@@ -7811,7 +7856,7 @@ fn basic_character_formats(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
             &[(json!({"kind": "metrics"}), "Metrics"), (json!({"kind": "optical"}), "Optical"), (json!({"kind": "none"}), "0")],
         );
         crate::rtl::label(ui, crate::i18n::tr(lang, "Tracking:"));
-        char_number(ui, d, cf, "tracking", "", 1.0, (-1000.0, 10000.0));
+        char_number(ui, d, cf, "tracking", crate::i18n::tr(lang, "Tracking:"), "", 1.0, (-1000.0, 10000.0));
         ui.end_row();
         crate::rtl::label(ui, crate::i18n::tr(lang, "Case:"));
         char_choice(
@@ -7861,16 +7906,16 @@ fn basic_character_formats(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
 fn advanced_character_formats(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, cf: &CharFields) {
     egui::Grid::new("csa").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
         crate::rtl::label(ui, crate::i18n::tr(lang, "Horizontal Scale:"));
-        char_number(ui, d, cf, "hScale", "%", 100.0, (1.0, 1000.0));
+        char_number(ui, d, cf, "hScale", crate::i18n::tr(lang, "Horizontal Scale:"), "%", 100.0, (1.0, 1000.0));
         ui.end_row();
         crate::rtl::label(ui, crate::i18n::tr(lang, "Vertical Scale:"));
-        char_number(ui, d, cf, "vScale", "%", 100.0, (1.0, 1000.0));
+        char_number(ui, d, cf, "vScale", crate::i18n::tr(lang, "Vertical Scale:"), "%", 100.0, (1.0, 1000.0));
         ui.end_row();
         crate::rtl::label(ui, crate::i18n::tr(lang, "Baseline Shift:"));
-        char_number(ui, d, cf, "baselineShift", " pt", 1.0, (-5000.0, 5000.0));
+        char_number(ui, d, cf, "baselineShift", crate::i18n::tr(lang, "Baseline Shift:"), " pt", 1.0, (-5000.0, 5000.0));
         ui.end_row();
         crate::rtl::label(ui, crate::i18n::tr(lang, "Skew:"));
-        char_number(ui, d, cf, "skew", "°", 1.0, (-85.0, 85.0));
+        char_number(ui, d, cf, "skew", crate::i18n::tr(lang, "Skew:"), "°", 1.0, (-85.0, 85.0));
         ui.end_row();
         crate::rtl::label(ui, crate::i18n::tr(lang, "Language:"));
         let opts: Vec<(Value, &str)> = crate::panels::properties::LANGUAGES.iter().map(|l| (json!(l), *l)).collect();
@@ -7922,10 +7967,10 @@ fn character_color(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, cf: &CharField
     });
     egui::Grid::new("cscg").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
         crate::rtl::label(ui, crate::i18n::tr(lang, "Tint:"));
-        char_number(ui, d, cf, if stroke { "strokeTint" } else { "fillTint" }, "%", 100.0, (0.0, 100.0));
+        char_number(ui, d, cf, if stroke { "strokeTint" } else { "fillTint" }, crate::i18n::tr(lang, "Tint:"), "%", 100.0, (0.0, 100.0));
         ui.end_row();
         crate::rtl::label(ui, crate::i18n::tr(lang, "Weight:"));
-        char_number(ui, d, cf, "strokeWeight", " pt", 1.0, (0.0, 800.0));
+        char_number(ui, d, cf, "strokeWeight", crate::i18n::tr(lang, "Weight:"), " pt", 1.0, (0.0, 800.0));
         ui.end_row();
         ui.label("");
         char_check(ui, d, cf, "strokeBehindFill", crate::i18n::tr(lang, "Stroke Behind Fill"));
@@ -7996,16 +8041,16 @@ fn line_options(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, cf: &CharFields, 
     ui.add_space(4.0);
     egui::Grid::new(("csline", key)).num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
         crate::rtl::label(ui, crate::i18n::tr(lang, "Weight:"));
-        char_number(ui, d, cf, &format!("{key}Weight"), " pt", 1.0, (0.0, 800.0));
+        char_number(ui, d, cf, &format!("{key}Weight"), crate::i18n::tr(lang, "Weight:"), " pt", 1.0, (0.0, 800.0));
         ui.end_row();
         crate::rtl::label(ui, crate::i18n::tr(lang, "Offset:"));
-        char_number(ui, d, cf, &format!("{key}Offset"), " pt", 1.0, (-800.0, 800.0));
+        char_number(ui, d, cf, &format!("{key}Offset"), crate::i18n::tr(lang, "Offset:"), " pt", 1.0, (-800.0, 800.0));
         ui.end_row();
         crate::rtl::label(ui, crate::i18n::tr(lang, "Color:"));
         char_swatch(lang, ui, d, cf, doc, &format!("{key}Color"), Some("(Text Color)"));
         ui.end_row();
         crate::rtl::label(ui, crate::i18n::tr(lang, "Tint:"));
-        char_number(ui, d, cf, &format!("{key}Tint"), "%", 100.0, (0.0, 100.0));
+        char_number(ui, d, cf, &format!("{key}Tint"), crate::i18n::tr(lang, "Tint:"), "%", 100.0, (0.0, 100.0));
         ui.end_row();
     });
 }
@@ -8243,16 +8288,22 @@ fn hyphenation(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, prefix: &str, curr
             ("Before Last:", "hyphBeforeLast", "letters", 15.0),
             ("Hyphen Limit:", "hyphLimit", "hyphens", 25.0),
         ] {
-            label_right(ui, &tr(label));
+            let caption = tr(label);
+            label_right(ui, &caption);
             let min = if key == "hyphLimit" { 0.0 } else { 1.0 };
-            if let Some(n) = crate::widgets::spin_number(ui, &format!("hy{prefix}{key}"), cur(d, key).as_f64(), "", 60.0, 0) {
+            let id = format!("hy{prefix}{key}");
+            let field = crate::widgets::NumField::number(&id, cur(d, key).as_f64(), "", 0).name(caption.trim_end_matches(':'));
+            if let Some(n) = field.width(60.0).spinner().show(ui) {
                 d.fields.insert(format!("{prefix}{key}"), json!(n.round().clamp(min, max) as u64));
             }
             crate::rtl::label(ui, tr(unit));
             ui.end_row();
         }
-        label_right(ui, &tr("Hyphenation Zone:"));
-        if let Some(n) = crate::widgets::spin_measure(ui, &format!("hy{prefix}zone"), cur(d, "hyphZone").as_f64(), units, 60.0) {
+        let zone = tr("Hyphenation Zone:");
+        label_right(ui, &zone);
+        let id = format!("hy{prefix}zone");
+        let field = crate::widgets::NumField::measure(&id, cur(d, "hyphZone").as_f64(), units).name(zone.trim_end_matches(':'));
+        if let Some(n) = field.width(60.0).spinner().show(ui) {
             d.fields.insert(format!("{prefix}hyphZone"), json!(if n.is_finite() { n.clamp(0.0, 8640.0) } else { 36.0 }));
         }
         ui.end_row();
@@ -8361,19 +8412,26 @@ fn justification(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, prefix: &str, cu
         crate::rtl::label(ui, crate::i18n::tr(lang, "Maximum"));
         ui.end_row();
         for (label, base, _) in JUSTIFY_ROWS {
-            crate::rtl::label(ui, crate::i18n::tr(lang, &format!("{label}:")));
-            for suffix in ["Min", "Desired", "Max"] {
+            let row = format!("{label}:");
+            let caption = crate::i18n::tr(lang, &row);
+            crate::rtl::label(ui, caption);
+            // Each field is named by its row and column ("Word Spacing Minimum").
+            for (suffix, column) in [("Min", "Minimum"), ("Desired", "Desired"), ("Max", "Maximum")] {
                 let key = format!("{base}{suffix}");
                 let v = cur(d, &key).as_f64().map(|x| x * 100.0);
-                if let Some(n) = ui.scope(|ui| crate::widgets::number(ui, &format!("ps{key}"), v, "%", 60.0, 0)).inner {
+                let (id, name) = (format!("ps{key}"), format!("{} {}", caption.trim_end_matches(':'), crate::i18n::tr(lang, column)));
+                if let Some(n) = ui.scope(|ui| crate::widgets::NumField::number(&id, v, "%", 0).name(&name).width(60.0).show(ui)).inner {
                     d.fields.insert(format!("{prefix}{key}"), json!(n / 100.0));
                 }
             }
             ui.end_row();
         }
-        crate::rtl::label(ui, crate::i18n::tr(lang, "Auto Leading:"));
+        let auto_caption = crate::i18n::tr(lang, "Auto Leading:");
+        crate::rtl::label(ui, auto_caption);
         let auto = cur(d, "autoLeading").as_f64().map(|x| x * 100.0);
-        if let Some(n) = ui.scope(|ui| crate::widgets::number(ui, &format!("ps{prefix}autoLeading"), auto, "%", 60.0, 0)).inner {
+        let id = format!("ps{prefix}autoLeading");
+        let name = auto_caption.trim_end_matches(':');
+        if let Some(n) = ui.scope(|ui| crate::widgets::NumField::number(&id, auto, "%", 0).name(name).width(60.0).show(ui)).inner {
             d.fields.insert(format!("{prefix}autoLeading"), json!(auto_leading_typed(n)));
         }
         ui.end_row();
@@ -8484,9 +8542,12 @@ fn paragraph_rules(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog, prefix: &
     // Left and Right Indent, then Keep In Frame (rule above).
     ui.add_enabled_ui(on, |ui| {
         egui::Grid::new(("rules", which)).num_columns(4).spacing([8.0, 6.0]).show(ui, |ui| {
-            crate::rtl::label(ui, crate::i18n::tr(lang, "Weight:"));
+            let weight = crate::i18n::tr(lang, "Weight:");
+            crate::rtl::label(ui, weight);
             if let Some(v) = sized(ui, &mut |ui| {
-                crate::widgets::NumField::number(&key("weight"), rule["weight"].as_f64(), " pt", 2).width(80.0).spinner().range(0.0, 1000.0).show(ui)
+                let id = key("weight");
+                let field = crate::widgets::NumField::number(&id, rule["weight"].as_f64(), " pt", 2).name(weight.trim_end_matches(':'));
+                field.width(80.0).spinner().range(0.0, 1000.0).show(ui)
             }) {
                 d.fields.insert(key("weight"), json!(v.clamp(0.0, 1000.0)));
             }
@@ -8514,8 +8575,13 @@ fn paragraph_rules(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog, prefix: &
             if let Some(w) = doc.and_then(|doc| swatch_menu_with(ui, doc, ("rule_color", which), &color, 130.0, Some(text_color))) {
                 d.fields.insert(key("color"), json!(w));
             }
-            crate::rtl::label(ui, crate::i18n::tr(lang, "Tint:"));
-            if let Some(v) = sized(ui, &mut |ui| crate::widgets::number(ui, &key("tint"), rule["tint"].as_f64().map(|t| t * 100.0), "%", 80.0, 0)) {
+            let tint = crate::i18n::tr(lang, "Tint:");
+            crate::rtl::label(ui, tint);
+            if let Some(v) = sized(ui, &mut |ui| {
+                let id = key("tint");
+                let field = crate::widgets::NumField::number(&id, rule["tint"].as_f64().map(|t| t * 100.0), "%", 0).name(tint.trim_end_matches(':'));
+                field.width(80.0).show(ui)
+            }) {
                 d.fields.insert(key("tint"), json!((v / 100.0).clamp(0.0, 1.0)));
             }
             ui.end_row();
@@ -8528,11 +8594,16 @@ fn paragraph_rules(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog, prefix: &
                     d.fields.insert(key("gapColor"), json!(w));
                 }
             });
-            crate::rtl::label(ui, crate::i18n::tr(lang, "Gap Tint:"));
+            let gap_tint_caption = crate::i18n::tr(lang, "Gap Tint:");
+            crate::rtl::label(ui, gap_tint_caption);
             ui.add_enabled_ui(gaps && gap != designcraft_color::swatch::NONE, |ui| {
                 // A full gap tint is left out of the rule's JSON: it reads 100%.
                 let gap_tint = rule["gapTint"].as_f64().unwrap_or(1.0) * 100.0;
-                if let Some(v) = sized(ui, &mut |ui| crate::widgets::number(ui, &key("gapTint"), Some(gap_tint), "%", 80.0, 0)) {
+                if let Some(v) = sized(ui, &mut |ui| {
+                    let id = key("gapTint");
+                    let field = crate::widgets::NumField::number(&id, Some(gap_tint), "%", 0).name(gap_tint_caption.trim_end_matches(':'));
+                    field.width(80.0).show(ui)
+                }) {
                     d.fields.insert(key("gapTint"), json!((v / 100.0).clamp(0.0, 1.0)));
                 }
             });
@@ -8549,18 +8620,30 @@ fn paragraph_rules(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog, prefix: &
                         }
                     }
                 });
-            crate::rtl::label(ui, crate::i18n::tr(lang, "Offset:"));
+            let offset = crate::i18n::tr(lang, "Offset:");
+            crate::rtl::label(ui, offset);
             if let Some(v) = sized(ui, &mut |ui| {
-                crate::widgets::NumField::measure(&key("offset"), rule["offset"].as_f64(), v_units).width(80.0).spinner().show(ui)
+                let id = key("offset");
+                crate::widgets::NumField::measure(&id, rule["offset"].as_f64(), v_units)
+                    .name(offset.trim_end_matches(':'))
+                    .width(80.0)
+                    .spinner()
+                    .show(ui)
             }) {
                 d.fields.insert(key("offset"), json!(v));
             }
             ui.end_row();
             for (label, field) in [("Left Indent:", "leftIndent"), ("Right Indent:", "rightIndent")] {
-                crate::rtl::label(ui, crate::i18n::tr(lang, label));
-                if let Some(v) =
-                    sized(ui, &mut |ui| crate::widgets::NumField::measure(&key(field), rule[field].as_f64(), h_units).width(80.0).spinner().show(ui))
-                {
+                let caption = crate::i18n::tr(lang, label);
+                crate::rtl::label(ui, caption);
+                if let Some(v) = sized(ui, &mut |ui| {
+                    let id = key(field);
+                    crate::widgets::NumField::measure(&id, rule[field].as_f64(), h_units)
+                        .name(caption.trim_end_matches(':'))
+                        .width(80.0)
+                        .spinner()
+                        .show(ui)
+                }) {
                     d.fields.insert(key(field), json!(v));
                 }
             }
