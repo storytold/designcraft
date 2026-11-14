@@ -177,8 +177,25 @@ impl AssetData {
     }
 
     /// The bytes for output: [`Self::load`], or for a linked file that has changed the file's
-    /// current bytes, flagged `true`. Never cached.
+    /// current bytes, flagged `true`, which are never cached. Linked bytes already in memory are
+    /// used only while the file still holds them ([`Loader::holds`]): output goes by the file as
+    /// it is now.
     pub fn load_for_output(&self) -> Result<(Arc<Vec<u8>>, bool), Unavailable> {
+        if let Repr::Linked(l) = &self.repr
+            && let Some(kept) = store::global().resident(self.key)
+            && let Some(loader) = store::installed()
+        {
+            return match loader.holds(&l.source, l.trusted(), &kept) {
+                Ok(found) => {
+                    if let Some(fingerprint) = found {
+                        l.trust(fingerprint);
+                    }
+                    Ok((kept, false))
+                }
+                Err(Unavailable::Modified) => loader.load_current(&l.source).map(|b| (Arc::new(b), true)),
+                Err(e) => Err(e),
+            };
+        }
         match self.load() {
             Ok(b) => Ok((b, false)),
             Err(Unavailable::Modified) => {

@@ -34,6 +34,15 @@ pub trait Loader: Send + Sync {
     fn load_current(&self, _source: &LinkedSource) -> Result<Vec<u8>, Unavailable> {
         Err(Unavailable::NoLoader)
     }
+
+    /// Whether the file `source` names still holds `kept`, the bytes read from it earlier: by its
+    /// fingerprint as [`Self::load`] goes by it, else by its content hash, or for a source without
+    /// a hash by its bytes. → the file's fingerprint when it was read to tell, else `None`;
+    /// [`Unavailable::Modified`] when the files there hold other bytes. A loader that can't look
+    /// takes the kept bytes as the file's.
+    fn holds(&self, _source: &LinkedSource, _trusted: Option<Fingerprint>, _kept: &[u8]) -> Result<Option<Fingerprint>, Unavailable> {
+        Ok(None)
+    }
 }
 
 static LOADER: RwLock<Option<Arc<dyn Loader>>> = RwLock::new(None);

@@ -68,6 +68,9 @@ impl Exporter<'_> {
             return o.clone();
         }
         let asset = self.doc.assets.get(&id)?;
+        // Embedded bytes cost nothing to hand out again and aren't kept here: a graphic whose
+        // converted image is shared by content then holds no second copy of them.
+        let keep = asset.data.is_linked();
         let name = asset.name.clone();
         let out = match asset.output_bytes() {
             Ok(out) => {
@@ -81,7 +84,9 @@ impl Exporter<'_> {
                 None
             }
         };
-        self.outputs.insert(id, out.clone());
+        if keep {
+            self.outputs.insert(id, out.clone());
+        }
         out
     }
 
@@ -225,10 +230,11 @@ impl Exporter<'_> {
     fn graphic_placed_pdf(&mut self, s: &mut Surface, g: &designcraft_doc::Graphic, hidden: Option<&[String]>) -> bool {
         let doc = self.doc;
         let Some(asset) = doc.assets.get(&g.asset) else { return false };
-        if asset.mime != "application/pdf" {
+        let Some((bytes, _, proxied)) = self.asset_output(g.asset) else { return false };
+        // A PDF by its bytes; a proxy (a raster) by the asset's type.
+        if !(if proxied { asset.mime == "application/pdf" } else { bytes.starts_with(b"%PDF") }) {
             return false;
         }
-        let Some((bytes, _, proxied)) = self.asset_output(g.asset) else { return false };
         if proxied {
             // The preview shows every layer: with layers hidden or overridden it would show what
             // the document hides, so nothing is drawn (the canvas fails closed too).

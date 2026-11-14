@@ -410,6 +410,20 @@ pub(crate) fn status_cached(a: &designcraft_doc::Asset, document: Option<&Path>,
     image_status(a, document, checks, None).0
 }
 
+/// Whether the automation read roots let this session read a file at one of `a`'s link paths
+/// (always without roots in force, and then nothing is asked of the file system).
+fn may_read_link(a: &Asset, document: Option<&Path>) -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        LinkedSource::of(a, document).is_some_and(|s| crate::asset_io::candidates(&s).iter().any(|p| crate::file_access::check_read(p).is_ok()))
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (a, document);
+        true
+    }
+}
+
 /// Whether `a`'s bytes are the document's own copy, with no file to compare them with: embedded
 /// with no link, or with the link record Embed keeps (it has a hash; a copy saved before linked
 /// storage has none, and is compared with its file).
@@ -434,7 +448,9 @@ fn image_status(
     }
     if a.storage == Storage::Linked {
         if open.is_some_and(|o| o.checking() && o.status(a) == Some(super::native_links::LinkStatus::Checking)) {
-            return ("checking", None);
+            // A file this session may not read (outside the automation read roots) is missing,
+            // whatever the background check finds.
+            return (if may_read_link(a, document) { "checking" } else { "missing" }, None);
         }
         return linked_status(a, document, checks);
     }

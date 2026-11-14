@@ -27,6 +27,38 @@ impl Loader for FileLoader {
     fn load_current(&self, source: &LinkedSource) -> Result<Vec<u8>, Unavailable> {
         read_current(source)
     }
+
+    fn holds(&self, source: &LinkedSource, trusted: Option<Fingerprint>, kept: &[u8]) -> Result<Option<Fingerprint>, Unavailable> {
+        still_holds(source, trusted, kept)
+    }
+}
+
+/// Whether a candidate file ([`candidates`]) still holds `kept`, the bytes read for `source`
+/// earlier ([`Loader::holds`]): one of `source.len` bytes with the recorded or `trusted`
+/// fingerprint (nothing is read), else one whose content hash is `source.hash`, or without a
+/// hash whose bytes are `kept`. → the fingerprint of a file that was read to tell.
+pub fn still_holds(source: &LinkedSource, trusted: Option<Fingerprint>, kept: &[u8]) -> Result<Option<Fingerprint>, Unavailable> {
+    let mut seen = false;
+    for path in candidates(source) {
+        let Some(meta) = crate::io::file_metadata(&path) else { continue };
+        seen = true;
+        let found = fingerprint_from(&meta);
+        if found.size != source.len {
+            continue;
+        }
+        if has_time(&found) && (Some(found) == source.fingerprint || Some(found) == trusted) {
+            return Ok(None);
+        }
+        let Ok(bytes) = crate::io::read_capped(&path, source.len) else { continue };
+        let same = match &source.hash {
+            Some(hash) => *hash == content_hash(&bytes),
+            None => bytes == kept,
+        };
+        if same {
+            return Ok(has_time(&found).then_some(found));
+        }
+    }
+    Err(if seen { Unavailable::Modified } else { Unavailable::Missing })
 }
 
 /// The bytes of the first candidate file that exists, whatever they are (no fingerprint or hash
