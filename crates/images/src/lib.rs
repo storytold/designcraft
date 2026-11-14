@@ -378,7 +378,7 @@ pub fn decode_rgba(bytes: &[u8]) -> Option<image::RgbaImage> {
     }
     let decoded = craft_image_codecs::decode_with(bytes, &decode_options()).ok()?;
     if decoded.layout().is_cmyk() {
-        let raster = cmyk_raster(&decoded)?;
+        let raster = cmyk_raster(&decoded, bytes)?;
         return to_display_rgba(Pixels::Cmyk(raster), decoded.icc.as_deref(), &DisplayColour::active());
     }
     let rgba = image::RgbaImage::from_raw(decoded.width(), decoded.height(), decoded.to_rgba8())?;
@@ -391,17 +391,42 @@ fn decode_options() -> craft_image_codecs::DecodeOptions {
     craft_image_codecs::DecodeOptions { limits: craft_image_codecs::Limits { max_alloc: MAX_RGBA_BYTES, ..Default::default() }, ..Default::default() }
 }
 
-fn cmyk_raster(image: &craft_image_codecs::Image) -> Option<CmykRaster> {
+/// Whether an APP14 "Adobe" segment comes before the image data.
+fn adobe_marker(bytes: &[u8]) -> bool {
+    let mut i = 2;
+    while let Some(&[0xFF, marker, hi, lo]) = bytes.get(i..i + 4).and_then(|s| <&[u8; 4]>::try_from(s).ok()) {
+        // Start of scan or end of image: no more header segments.
+        if marker == 0xDA || marker == 0xD9 {
+            return false;
+        }
+        let n = u16::from_be_bytes([hi, lo]) as usize;
+        if n < 2 || i.saturating_add(2 + n) > bytes.len() {
+            return false;
+        }
+        if marker == 0xEE && bytes.get(i + 4..i + 9) == Some(b"Adobe") {
+            return true;
+        }
+        i += 2 + n;
+    }
+    false
+}
+
+fn cmyk_raster(image: &craft_image_codecs::Image, bytes: &[u8]) -> Option<CmykRaster> {
     let converted = image.convert(craft_image_codecs::ChannelLayout::CmykA, craft_image_codecs::SampleType::U8);
     let pixels = usize::try_from(converted.width()).ok()?.checked_mul(usize::try_from(converted.height()).ok()?)?;
     let data = converted.as_u8()?;
     if data.len() != pixels.checked_mul(5)? {
         return None;
     }
+    let invert = bytes.starts_with(&[0xFF, 0xD8]) && !adobe_marker(bytes);
     let mut cmyk = Vec::with_capacity(pixels.checked_mul(4)?);
     let mut alpha = Vec::with_capacity(pixels);
     for &[c, m, y, k, a] in data.as_chunks::<5>().0 {
-        cmyk.extend([c, m, y, k]);
+        if invert {
+            cmyk.extend([255 - c, 255 - m, 255 - y, 255 - k]);
+        } else {
+            cmyk.extend([c, m, y, k]);
+        }
         alpha.push(a);
     }
     let alpha = alpha.iter().any(|&a| a < 255).then_some(alpha);
@@ -420,24 +445,33 @@ pub struct CmykRaster {
     pub alpha: Option<Vec<u8>>,
 }
 
+/// The TIFF page that decoding opens; `None` for other formats.
+fn default_tiff_page(bytes: &[u8]) -> Option<craft_image_codecs::TiffPage> {
+    let mut info = craft_image_codecs::tiff_info(bytes).ok()?;
+    let page = info.default_page()?;
+    (page < info.pages.len()).then(|| info.pages.swap_remove(page))
+}
+
 /// A TIFF whose pixels are CMYK (PhotometricInterpretation Separated, four inks).
 pub fn is_cmyk_tiff(bytes: &[u8]) -> bool {
-    craft_image_codecs::tiff_info(bytes)
-        .ok()
-        .and_then(|info| info.default_page().and_then(|i| info.pages.get(i).map(|page| (page.photometric, page.samples_per_pixel))))
-        .is_some_and(|(photometric, samples)| photometric == Some(5) && matches!(samples, 4 | 5))
+    default_tiff_page(bytes).is_some_and(|page| page.photometric == Some(5) && matches!(page.samples_per_pixel, 4 | 5))
 }
 
 /// The ink values of a CMYK TIFF, which [`decode_rgba`] converts to RGB. 8- or 16-bit CMYK,
-/// pixels interleaved, opaque or with unassociated alpha. `None` for anything else — another
-/// format, another ink set (InkSet 2), planar storage or premultiplied alpha — and for files
-/// over the decoder's 256 MiB limit; [`is_cmyk_tiff`] tells those apart from RGB files.
+/// opaque or with alpha (associated alpha is made straight). `None` for anything else —
+/// another format or another ink set (InkSet 2) — and for files over the decoder's 256 MiB
+/// limit; [`is_cmyk_tiff`] tells those apart from RGB files.
 pub fn decode_cmyk_tiff(bytes: &[u8]) -> Option<CmykRaster> {
     if too_large_to_decode(bytes) {
         return None;
     }
+    // InkSet (tag 332): absent or 1 = CMYK; 2 = the inks named in InkNames; other values are
+    // undefined. Only CMYK samples are C, M, Y and K; reading others as such prints wrong colours.
+    if default_tiff_page(bytes).is_some_and(|page| page.ink_set.is_some_and(|set| set != craft_image_codecs::InkSet::Cmyk)) {
+        return None;
+    }
     let image = craft_image_codecs::decode_with(bytes, &decode_options()).ok()?;
-    image.layout().is_cmyk().then(|| cmyk_raster(&image)).flatten()
+    image.layout().is_cmyk().then(|| cmyk_raster(&image, bytes)).flatten()
 }
 
 /// An SVG rasterised so its longer side is `max_side` pixels: premultiplied RGBA8.
