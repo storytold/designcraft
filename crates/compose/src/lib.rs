@@ -271,6 +271,9 @@ pub struct Deco {
     pub nonprinting: bool,
     /// Set to overprint (paragraph shading or border); PDF export doesn't overprint yet.
     pub overprint: bool,
+    /// The paragraphs (story indices, as [`Line::para`]) a rule, shading or border belongs to;
+    /// `None` for the frame's own (column rules, the footnote separator).
+    pub paras: Option<Range<usize>>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -3090,7 +3093,7 @@ fn finish_paragraph(input: ParagraphFinishInput<'_>) -> ParagraphFinish {
             let top = frames.get(fi).map_or(f64::NEG_INFINITY, |f| f.area.y0 - if f.vertical { 0.0 } else { f.opts.inset[0] });
             let y = if r.keep_in_frame && y - r.weight < top { top + r.weight } else { y };
             let rect = Rect::new(col.0 + r.left_indent, y - r.weight, col.1 - r.right_indent, y);
-            ft.decos.extend(rule_decos(doc, r, rect, (color, tint), above));
+            ft.decos.extend(rule_decos(doc, r, rect, (color, tint), above).into_iter().map(|d| Deco { paras: Some(pi..pi + 1), ..d }));
         }
     }
     if pp.rule_below.on
@@ -3101,7 +3104,8 @@ fn finish_paragraph(input: ParagraphFinishInput<'_>) -> ParagraphFinish {
         let y = l.baseline + r.offset;
         let (x0, x1) = if r.column_width { (l.x0, l.x1) } else { (l.x0, l.end_x) };
         let (color, tint) = rule_color(r, below);
-        ft.decos.extend(rule_decos(doc, r, Rect::new(x0 + r.left_indent, y, x1 - r.right_indent, y + r.weight), (color, tint), below));
+        let rect = Rect::new(x0 + r.left_indent, y, x1 - r.right_indent, y + r.weight);
+        ft.decos.extend(rule_decos(doc, r, rect, (color, tint), below).into_iter().map(|d| Deco { paras: Some(pi..pi + 1), ..d }));
     }
     // The end of a split block: text after it continues below its deepest sub-column, which
     // are balanced first. A block that ends the story fills its sub-columns in turn.
