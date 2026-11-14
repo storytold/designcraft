@@ -13,6 +13,7 @@ workspace = true
 craft-ui = { workspace = true, features = ["native-windows"] }
 craft-window = { workspace = true }
 craft-keymap = { workspace = true }
+craft-file-formats = { workspace = true }
 designcraft-geom = { workspace = true }
 designcraft-color = { workspace = true }
 designcraft-doc = { workspace = true }
