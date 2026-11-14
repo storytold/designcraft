@@ -19,15 +19,38 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use designcraft_doc::notes::NoteRestart;
-use designcraft_doc::{Document, FOOTNOTE_REF, ItemId, Story, TextFrameOptions};
+use designcraft_doc::{Document, FOOTNOTE_REF, Footnote, ItemId, Story, TextFrameOptions};
 use designcraft_geom::{Point, Rect};
 
 use crate::shape::{Glyph, SubstCtx};
 use crate::{ComposeOptions, ComposedStory, Deco, FrameSpec, PlacedNote};
 
+/// Where a placed footnote comes from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum NoteSource {
+    /// Index in the composed story's own [`Story::notes`].
+    Story(usize),
+    /// A table cell's footnote: its table, the owner cell, its place among the notes the cell's
+    /// composition shows (`slot`, which tells a nested table's note from the cell's own), and its
+    /// index in the story that owns it (`k`).
+    Cell { table: u64, row: usize, col: usize, slot: usize, k: usize },
+}
+
+/// A footnote referenced inside a table cell, placed at the foot of the column that takes its
+/// row (unlike a story's own footnotes, which come from [`Notes::refs_in`]).
+#[derive(Clone)]
+pub(crate) struct CellNote {
+    pub(crate) source: NoteSource,
+    /// The number the cell's own composition shows.
+    pub(crate) label: String,
+    pub(crate) note: Arc<Footnote>,
+}
+
 /// A footnote assigned to a column.
 pub(crate) struct Placed {
-    k: usize,
+    source: NoteSource,
+    note: Arc<Footnote>,
+    label: String,
     fi: usize,
     col: usize,
     m: NoteMetrics,
@@ -54,6 +77,18 @@ pub(crate) struct NoteColumn<'a> {
     pub(crate) frame: &'a FrameSpec,
 }
 
+/// The page, spread or section a reference on absolute page `page` counts in (none when numbering
+/// never restarts, or when the frame is on no page).
+fn restart_key(doc: &Document, page: Option<usize>) -> Option<usize> {
+    let p = page?;
+    match doc.footnote_options.restart {
+        NoteRestart::Never => None,
+        NoteRestart::Page => Some(p),
+        NoteRestart::Spread => doc.page_loc(p).map(|l| l.0),
+        NoteRestart::Section => Some(doc.section_of(p).map_or(0, |s| s.start)),
+    }
+}
+
 /// Height of footnotes stacked baseline to baseline, from the top of the footnote area to the
 /// last footnote's descent.
 fn stack_height<'a>(notes: impl IntoIterator<Item = &'a NoteMetrics>, space_between: f64) -> f64 {
@@ -70,6 +105,14 @@ fn stack_height<'a>(notes: impl IntoIterator<Item = &'a NoteMetrics>, space_betw
     h.map_or(0.0, |h| h + descent)
 }
 
+/// The number a story's next footnote reference takes, and the restart unit it counts in.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NoteNumber {
+    pub num: u32,
+    /// The page, spread or section the number counts in (none when numbering never restarts).
+    pub key: Option<usize>,
+}
+
 pub(crate) struct Notes {
     /// Byte offsets of the reference characters (index = footnote index).
     refs: Vec<usize>,
@@ -79,8 +122,8 @@ pub(crate) struct Notes {
     pub num: u32,
     pub key: Option<usize>,
     pub placed: Vec<Placed>,
-    /// Composed footnote text by (index, label, width).
-    cache: HashMap<(usize, String, u64, bool, bool), (Arc<ComposedStory>, NoteMetrics)>,
+    /// Composed footnote text by (source, label, width, page sides, page).
+    cache: HashMap<(NoteSource, String, u64, bool, bool, Option<usize>), (Arc<ComposedStory>, NoteMetrics)>,
     notes: Vec<Arc<designcraft_doc::Footnote>>,
     /// Footnotes span the columns of their frame.
     span: bool,
@@ -89,21 +132,53 @@ pub(crate) struct Notes {
     floor: HashMap<usize, f64>,
 }
 
+/// Whether composition can number footnotes directly or inside a paragraph's table.
+pub(crate) fn has_notes_or_tables(story: &Story) -> bool {
+    !story.notes.is_empty() || (0..story.paras.len()).any(|pi| story.para_table(pi).is_some())
+}
+
 impl Notes {
-    pub fn new(doc: &Document, story: &Story) -> Notes {
+    /// The story's notes. `start` is where numbering begins: a table cell continues the
+    /// numbering of the story holding the table, so its notes take their place in the story's
+    /// one sequence; anything else starts from the document's numbering for this story.
+    pub fn continuing(doc: &Document, story: &Story, start: Option<NoteNumber>) -> Notes {
         let refs: Vec<usize> = if story.notes.is_empty() { Vec::new() } else { story.text.match_indices(FOOTNOTE_REF).map(|(i, _)| i).collect() };
-        let start = if refs.is_empty() { 1 } else { doc.footnote_start(story.id) };
+        let start = match start {
+            Some(n) => n,
+            None => NoteNumber { num: if has_notes_or_tables(story) { doc.footnote_start(story.id) } else { 1 }, key: None },
+        };
         Notes {
-            numbers: vec![start; refs.len()],
+            numbers: vec![start.num; refs.len()],
             refs,
-            num: start,
-            key: None,
+            num: start.num,
+            key: start.key,
             placed: Vec::new(),
             cache: HashMap::new(),
             notes: story.notes.clone(),
             span: doc.footnote_options.span_columns,
             floor: HashMap::new(),
         }
+    }
+
+    /// Numbering after the story's last reference, for the next cell or continuation to carry on.
+    pub fn next_number(&self) -> NoteNumber {
+        NoteNumber { num: self.num, key: self.key }
+    }
+
+    /// Where the numbering of a table cell's notes begins: the host story's next number, or a
+    /// fresh count when the cell is on a different page, spread or section and numbering restarts.
+    pub fn cell_start(&self, doc: &Document, page: Option<usize>) -> NoteNumber {
+        let o = &doc.footnote_options;
+        match restart_key(doc, page) {
+            Some(key) if self.key != Some(key) => NoteNumber { num: o.start_at, key: Some(key) },
+            _ => NoteNumber { num: self.num, key: self.key },
+        }
+    }
+
+    /// Carry on numbering from `at` (the host story continues after its table's cells).
+    pub fn resume(&mut self, at: NoteNumber) {
+        self.num = at.num;
+        self.key = at.key;
     }
 
     /// Whether a note placed in (fi, col) shares the footnote area of column (`fi`, `ci`).
@@ -124,12 +199,7 @@ impl Notes {
     /// Number the references in a paragraph (shaped on `page`) and hand their labels to the shaper.
     pub fn number_refs(&mut self, doc: &Document, prange: Range<usize>, page: Option<usize>, sub: &mut SubstCtx) {
         let o = &doc.footnote_options;
-        let key = page.and_then(|p| match o.restart {
-            NoteRestart::Never => None,
-            NoteRestart::Page => Some(p),
-            NoteRestart::Spread => doc.page_loc(p).map(|l| l.0),
-            NoteRestart::Section => Some(doc.section_of(p).map_or(0, |s| s.start)),
-        });
+        let key = restart_key(doc, page);
         let a = self.refs.partition_point(|&b| b < prange.start);
         let b = self.refs.partition_point(|&b| b < prange.end);
         for k in a..b {
@@ -161,10 +231,24 @@ impl Notes {
     }
 
     fn compose(&mut self, doc: &Document, k: usize, w: f64, f: &FrameSpec, opts: &ComposeOptions) -> (Arc<ComposedStory>, NoteMetrics) {
+        let note = Arc::clone(&self.notes[k]);
+        let label = doc.footnote_options.label(self.numbers[k], true);
+        self.compose_note(doc, NoteSource::Story(k), &label, &note, (w, f), opts)
+    }
+
+    fn compose_note(
+        &mut self,
+        doc: &Document,
+        source: NoteSource,
+        label: &str,
+        note: &Footnote,
+        (w, f): (f64, &FrameSpec),
+        opts: &ComposeOptions,
+    ) -> (Arc<ComposedStory>, NoteMetrics) {
         let o = &doc.footnote_options;
-        let label = format!("{}{}", o.label(self.numbers[k], true), o.separator);
+        let shown = format!("{label}{}", o.separator);
         // The page side sets towards/away-from-spine alignment and spine-relative anchored objects.
-        let key = (k, label.clone(), w.to_bits(), f.left_page, f.right_page);
+        let key = (source, shown, w.to_bits(), f.left_page, f.right_page, f.page);
         if let Some(c) = self.cache.get(&key) {
             return c.clone();
         }
@@ -189,11 +273,12 @@ impl Notes {
             section_marker: opts.section_marker.clone(),
             page: opts.page,
             running: opts.running.clone(),
-            label: Some(label),
+            label: Some(key.1.clone()),
             xrefs: opts.xrefs.clone(),
             placed: Vec::new(),
+            notes_start: None,
         };
-        let cs = crate::compose(doc, &self.notes[k].text, std::slice::from_ref(&spec), &nopts);
+        let cs = crate::compose(doc, &note.text, std::slice::from_ref(&spec), &nopts);
         let lines = cs.frames.first().map(|ft| ft.lines.as_slice()).unwrap_or_default();
         let m = match (lines.first(), lines.last()) {
             (Some(a), Some(z)) => NoteMetrics { first: a.baseline, last: z.baseline, lead: a.leading, descent: z.descent },
@@ -206,12 +291,28 @@ impl Notes {
 
     /// Height the footnotes of column (fi, col) take, with `extra` footnotes added.
     pub fn reserve(&mut self, doc: &Document, column: NoteColumn<'_>, extra: &[usize], opts: &ComposeOptions) -> f64 {
+        self.reserve_metrics(doc, column, extra, &[], opts)
+    }
+
+    /// [`Notes::reserve`] with table-cell footnotes added.
+    pub fn reserve_cells(&mut self, doc: &Document, column: NoteColumn<'_>, extra: &[CellNote], opts: &ComposeOptions) -> f64 {
+        self.reserve_metrics(doc, column, &[], extra, opts)
+    }
+
+    fn reserve_metrics(&mut self, doc: &Document, column: NoteColumn<'_>, own: &[usize], cells: &[CellNote], opts: &ComposeOptions) -> f64 {
         let o = &doc.footnote_options;
         let (space_between, space_before) = (o.space_between, o.space_before);
         let mut ms: Vec<NoteMetrics> =
             self.placed.iter().filter(|p| self.same_area(p, column.frame_index, column.column_index)).map(|p| p.m).collect();
-        for &k in extra {
+        for &k in own {
             ms.push(self.compose(doc, k, column.width, column.frame, opts).1);
+        }
+        for n in cells {
+            // A note placed already (here or in another column) counts once.
+            if self.placed.iter().any(|p| p.source == n.source) {
+                continue;
+            }
+            ms.push(self.compose_note(doc, n.source, &n.label, &n.note, (column.width, column.frame), opts).1);
         }
         let r = if ms.is_empty() { 0.0 } else { stack_height(&ms, space_between) + space_before };
         if self.span { r.max(self.floor.get(&column.frame_index).copied().unwrap_or(0.0)) } else { r }
@@ -233,15 +334,30 @@ impl Notes {
     }
 
     pub fn place(&mut self, doc: &Document, k: usize, column: NoteColumn<'_>, opts: &ComposeOptions) {
-        if self.placed.iter().any(|p| p.k == k) {
+        let source = NoteSource::Story(k);
+        if self.placed.iter().any(|p| p.source == source) {
             return;
         }
-        let (text, m) = self.compose(doc, k, column.width, column.frame, opts);
-        self.placed.push(Placed { k, fi: column.frame_index, col: column.column_index, m, text });
+        let note = Arc::clone(&self.notes[k]);
+        let label = doc.footnote_options.label(self.numbers[k], true);
+        self.push_placed(doc, source, note, label, column, opts);
+    }
+
+    /// Place a table cell's footnote at the foot of `column`.
+    pub fn place_cell(&mut self, doc: &Document, n: &CellNote, column: NoteColumn<'_>, opts: &ComposeOptions) {
+        if self.placed.iter().any(|p| p.source == n.source) {
+            return;
+        }
+        self.push_placed(doc, n.source, Arc::clone(&n.note), n.label.clone(), column, opts);
+    }
+
+    fn push_placed(&mut self, doc: &Document, source: NoteSource, note: Arc<Footnote>, label: String, column: NoteColumn<'_>, opts: &ComposeOptions) {
+        let (text, m) = self.compose_note(doc, source, &label, &note, (column.width, column.frame), opts);
+        self.placed.push(Placed { source, note, label, fi: column.frame_index, col: column.column_index, m, text });
     }
 
     /// Stack each column's footnotes against its bottom, rule above the first.
-    pub fn finish(&mut self, doc: &Document, story: &Story, frames: &[FrameSpec], cols: &[Vec<Rect>], out: &mut ComposedStory) {
+    pub fn finish(&mut self, doc: &Document, frames: &[FrameSpec], cols: &[Vec<Rect>], out: &mut ComposedStory) {
         if self.placed.is_empty() {
             return;
         }
@@ -263,13 +379,13 @@ impl Notes {
                     rect: Rect::new(x0, y, (x0 + o.rule.width).min(col.x1), y + o.rule.weight),
                     color: o.rule.color.clone(),
                     tint: o.rule.tint,
+                    footnote_rule: true,
                     ..Deco::default()
                 });
             }
             // Previous footnote's last baseline and bottom.
             let mut prev: Option<(f64, f64)> = None;
             for p in here {
-                let Some(note) = story.notes.get(p.k) else { continue };
                 let (y, y0) = match prev {
                     None => (top, top),
                     Some((last, bottom)) => {
@@ -279,14 +395,17 @@ impl Notes {
                 };
                 let y1 = y + p.m.last + p.m.descent;
                 ft.notes.push(PlacedNote {
-                    id: note.id,
-                    index: p.k,
+                    id: p.note.id,
+                    index: match p.source {
+                        NoteSource::Story(k) | NoteSource::Cell { k, .. } => k,
+                    },
                     column: p.col as u32,
-                    label: o.label(self.numbers[p.k], true),
+                    label: p.label.clone(),
                     origin: Point::new(col.x0, y),
                     rect: Rect::new(col.x0, y0, col.x1, y1),
                     text: p.text.clone(),
-                    source: Arc::from(note.text.text.as_str()),
+                    source: Arc::from(p.note.text.text.as_str()),
+                    note: Arc::clone(&p.note),
                 });
                 prev = Some((y + p.m.last, y1));
             }

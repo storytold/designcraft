@@ -4,7 +4,7 @@
 - 2026-10-23: placed-artwork layer options survive IDML and native round trips per placement, independently of shared assets. Unsupported visibility overrides are explicit import/preflight/PDF warnings; format 4 prevents older native readers from silently discarding them. Rendering parity is still open; see [graphic-layer-options.md](docs/graphic-layer-options.md).
 - FID1: PDF export normalizes mixed emitted gradient color spaces to RGB with an explicit warning; homogeneous device-space gradients retain their components. Linear/radial, midpoint, archival and print policies have synthetic regression coverage.
 
-> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-11-06 · **Change:** minor (Pages panel parents and alternate layouts; File ▸ Export Layouts and Versions; placed graphic layer-option preservation and explicit rendering warnings; File ▸ Open Recent; .indd and .indt open through indd-utils; text threads by hand; the alpha gate waits on Primary Text Frame page fixes; Japanese print, import and table controls localized; Live corners (#186); Optical kerning from outlines (#181); window and menu quit confirmation; failed writes preserve live save and collection state; spring-loaded Zoom navigation; orderly native exit recovery; Pages panel parents; cancelable macOS Dock Quit; text stroke behind fill; Based on Parent; object styles carry effects; table anchors keep their own paragraphs; grouped HTML/EPUB reading order; Links source paths; XLSX cached cell values retain numeric precision and text; automation roots refuse superscript COM/LPT names and a device name before a colon) · **Target:** Adobe InDesign 2026
+> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-11-13 · **Change:** minor (Pages panel parents and alternate layouts; File ▸ Export Layouts and Versions; placed graphic layer-option preservation and explicit rendering warnings; File ▸ Open Recent; .indd and .indt open through indd-utils; text threads by hand; the alpha gate waits on Primary Text Frame page fixes; Japanese print, import and table controls localized; Live corners (#186); Optical kerning from outlines (#181); window and menu quit confirmation; failed writes preserve live save and collection state; spring-loaded Zoom navigation; orderly native exit recovery; Pages panel parents; cancelable macOS Dock Quit; text stroke behind fill; Based on Parent; object styles carry effects; table anchors keep their own paragraphs; grouped HTML/EPUB reading order; Links source paths; XLSX cached cell values retain numeric precision and text; automation roots refuse superscript COM/LPT names and a device name before a colon) · **Target:** Adobe InDesign 2026
 - AR1.1: Kashida justification tests verify space fallback without Tatweel fonts using an isolated font database, while retaining elongation assertions when fonts support it.
 
 - AR1: Arabic IDML controls now retain character direction, kashida switches, diacritic offsets/forms, paragraph policy values and independent story/table directions. Shaping preserves joining context and script/language selection; paragraph-level bidi, contextual digit conversion, mark-safe elongation, RTL columns/tables and physical column insertion have regression coverage. Vendor-specific justification and diacritic presets remain explicit preflight warnings; see docs/arabic-typography.md.
@@ -12,6 +12,15 @@
 
 DesignCraft aims at full Adobe InDesign parity — and to be better: faster, open (documented JSON format + IDML), scriptable by agents (MCP), and available on the web.
 
+- **2026-11-13** · Table-cell footnotes share the column-foot stack with body notes (#2611).
+  Row-group fitting reserves their height, and repeated headers and footers place each note
+  once. Page-dependent notes recompose after row movement; header notes follow the first body
+  group, and non-repeating footer notes reserve space only for the final group. Cell notes use
+  the story's numbering sequence in logical reading order, including RTL and nested tables
+  (#2612). Page/spread/section restarts use the table's
+  pre-pagination page. Spanning notes do not rewind earlier columns; clipped fixed-height
+  cells still print their notes. Editing cell-note text with the canvas caret is not supported.
+  No readiness percentage change.
 - **2026-11-06** · Automation roots refuse `COM¹` to `LPT³` and a device name before a colon (`COM1:`, `NUL:x`). A batch-export layout of that name is written with a leading `_` on every platform. No readiness percentage change.
 - **2026-10-30** · Document Fonts lookup treats a bare document filename's empty parent as the current directory (#2014), preserving case-insensitive discovery and automation read-root checks. No readiness percentage change.
 - **2026-10-27** · Automatic recovery writes off the interface thread, straight to disk: on a
@@ -21,9 +30,9 @@ DesignCraft aims at full Adobe InDesign parity — and to be better: faster, ope
   blocked for 109 ms instead, and Save, Close and Revert cancel a snapshot still being written.
   No readiness percentage change.
 - **2026-10-28** · Inline table rows leave room for column and spanning footnotes, continuing in
-  the next column or frame when needed (#1901). Cell-local footnotes contribute to row height
-  and sit inside the cell rather than outside its measuring frame. Vertical justification keeps
-  paragraphs and table fragments above the footnote area. No readiness percentage change.
+  the next column or frame when needed (#1901). Cell-note placement was subsequently corrected
+  to the column foot (#2611), with numbering in the story's sequence (#2612). Vertical justification
+  keeps paragraphs and table fragments above the footnote area. No readiness percentage change.
 - **2026-10-28** · Duplicate, paste, parent overrides and data merge give anchored objects in the
   copied story fresh ids (#1522). Copies used to keep the original's ids, and the saved file then
   failed to open with "duplicate item id". Files already saved that way still don't open; no

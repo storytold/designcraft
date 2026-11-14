@@ -11,6 +11,7 @@ use std::sync::Arc;
 use designcraft_doc::{Align, Cell, CellStroke, Document, ItemId, ParaProps, RowHeightMode, Table, TextFrameOptions, VerticalJustification};
 use designcraft_geom::{Point, Rect};
 
+use crate::notes::NoteNumber;
 use crate::{ComposeOptions, ComposedStory, Cursor, FrameSpec, Line};
 
 /// A cell placed in a frame (frame inner space).
@@ -112,6 +113,18 @@ struct CellLayout {
     text: Arc<ComposedStory>,
     content_h: f64,
     line_heights: Vec<f64>,
+    /// Footnote numbering after the cell's last reference, for the next cell.
+    notes_after: Option<NoteNumber>,
+    /// Footnotes the cell's text references, in the order they appear, for the column foot.
+    notes: Vec<CellNoteSlot>,
+}
+
+/// A footnote referenced in a cell's text, kept for placement when the row is placed.
+struct CellNoteSlot {
+    /// Index in the owning cell story's notes, including references excluded from composition.
+    ordinal: usize,
+    label: String,
+    note: Arc<designcraft_doc::Footnote>,
 }
 
 /// Cell text fits by its baseline, while its typographic/inline-object bounds must still
@@ -129,8 +142,20 @@ impl CellLineExtent {
 }
 
 /// Compose a cell story at width `w` (content space, top-left at the origin).
-fn compose_cell(doc: &Document, cell: &Cell, w: f64, opts: &ComposeOptions, (left_page, right_page): (bool, bool)) -> CellLayout {
-    let mut spec = FrameSpec {
+///
+/// A cell is a story of its own, but its footnotes belong to the story holding the table: `start`
+/// is where its numbering continues from, and `page` is the page of the frame holding the table
+/// (for numbering that restarts on pages, spreads or sections).
+fn compose_cell(
+    doc: &Document,
+    cell: &Cell,
+    w: f64,
+    opts: &ComposeOptions,
+    (left_page, right_page): (bool, bool),
+    page: Option<usize>,
+    start: NoteNumber,
+) -> CellLayout {
+    let spec = FrameSpec {
         id: ItemId(0),
         area: Rect::new(0.0, 0.0, w.max(1.0), 1.0e6),
         opts: TextFrameOptions { first_baseline: cell.first_baseline, first_baseline_min: cell.first_baseline_min, ..TextFrameOptions::default() },
@@ -139,21 +164,25 @@ fn compose_cell(doc: &Document, cell: &Cell, w: f64, opts: &ComposeOptions, (lef
         outline: None,
         page_name: opts.page_name.clone(),
         section_marker: opts.section_marker.clone(),
-        page: opts.page,
+        page: page.or(opts.page),
         parent: false,
         grid: None,
         left_page,
         right_page,
         page_rect: None,
     };
+    let opts = &ComposeOptions { notes_start: Some(start), ..opts.clone() };
     let mut cs = crate::compose(doc, &cell.text, std::slice::from_ref(&spec), opts);
-    // The measuring frame is deliberately tall. Recompose at the actual content height so
-    // cell-local footnotes sit inside the row rather than at the measuring frame's bottom.
-    if let Some(frame) = cs.frames.first().filter(|f| !f.notes.is_empty()) {
-        let body = frame.lines.iter().map(|l| l.baseline + l.descent).fold(0.0, f64::max);
-        let note_top = frame.notes.first().map_or(spec.area.y1, |n| n.rect.y0);
-        spec.area.y1 = body + doc.footnote_options.space_before + (spec.area.y1 - note_top);
-        cs = crate::compose(doc, &cell.text, std::slice::from_ref(&spec), opts);
+    // A cell's footnotes belong to the enclosing story: they are placed at the foot of the
+    // column that takes the row, so the cell's own composed text carries none of them.
+    let notes: Vec<CellNoteSlot> = cs
+        .frames
+        .first()
+        .map(|f| f.notes.iter().map(|n| CellNoteSlot { ordinal: n.index, label: n.label.clone(), note: Arc::clone(&n.note) }).collect())
+        .unwrap_or_default();
+    for f in &mut cs.frames {
+        f.notes.clear();
+        f.decos.retain(|d| !d.footnote_rule);
     }
     let line_heights: Vec<f64> = cs
         .frames
@@ -174,9 +203,9 @@ fn compose_cell(doc: &Document, cell: &Cell, w: f64, opts: &ComposeOptions, (lef
         .unwrap_or_default();
     // Check all lines: a large descender or lowered inline object on an earlier line can
     // extend below the final baseline when leading is fixed.
-    let note_bottom = cs.frames.first().map_or(0.0, |f| f.notes.iter().map(|n| n.rect.y1).fold(0.0, f64::max));
-    let content_h = line_heights.iter().copied().fold(note_bottom, f64::max);
-    CellLayout { text: Arc::new(cs), content_h, line_heights }
+    let content_h = line_heights.iter().copied().fold(0.0, f64::max);
+    let notes_after = cs.notes_after;
+    CellLayout { text: Arc::new(cs), content_h, line_heights, notes, notes_after }
 }
 
 /// Lay out `table` (anchored at byte `anchor` of paragraph `pi`) from the cursor. Returns false
@@ -221,20 +250,29 @@ pub(crate) fn place_table(
     let owners = table.owners();
     let is_owner = |r: usize, c: usize| owners[r * nc + c] == (r, c);
     let side = (frames[cur.fi].left_page, frames[cur.fi].right_page);
-    // Compose every owner cell.
-    let mut layouts: Vec<Option<CellLayout>> = Vec::with_capacity(nr * nc);
+    // Compose owner cells in logical row/column order; column 0 is already rightmost in RTL.
+    // Cell footnotes are numbered in the host story's sequence, so each cell carries on from the
+    // one before it and the host story continues after the table.
+    // ponytail: page/spread/section restarts use the pre-pagination page, including later-page
+    // cells and a table whose first row moves to the next page; recompute numbering per placed
+    // row fragment to fix this.
+    let page = frames[cur.fi].page;
+    let mut note_number = notes.cell_start(doc, page);
+    let mut layouts: Vec<Option<CellLayout>> = (0..nr * nc).map(|_| None).collect();
     for r in 0..nr {
         for c in 0..nc {
             if !is_owner(r, c) {
-                layouts.push(None);
                 continue;
             }
             let cell = &table.cells[r * nc + c];
             let cs = (cell.col_span.max(1) as usize).min(nc - c);
             let w = colx[c + cs] - colx[c] - cell.insets[1] - cell.insets[3];
-            layouts.push(Some(compose_cell(doc, cell, w, opts, side)));
+            let layout = compose_cell(doc, cell, w, opts, side, page, note_number);
+            note_number = layout.notes_after.unwrap_or(note_number);
+            layouts[r * nc + c] = Some(layout);
         }
     }
+    notes.resume(note_number);
     // Row heights.
     let need = |r: usize, c: usize| -> f64 {
         let cell = &table.cells[r * nc + c];
@@ -311,13 +349,47 @@ pub(crate) fn place_table(
         }
     };
     place_rows(0..header, &mut y, false, &mut frag_rows);
-    // Table rows do not add story footnotes; cell-local notes are composed separately.
-    let column_reserve = |notes: &mut crate::notes::Notes, cur: &Cursor, col: Rect| {
-        let note_w = notes.area(&cols[cur.fi], cur.col).map_or(col.width(), |a| a.width());
-        let column = crate::notes::NoteColumn { frame_index: cur.fi, column_index: cur.col, width: note_w, frame: &frames[cur.fi] };
-        notes.reserve(doc, column, &[], opts)
+    // A cell footnote belongs to the enclosing story: it sits at the foot of the column that
+    // takes its row, in the same area and stack as body notes, so row fitting reserves it.
+    fn note_column<'a>(
+        notes: &crate::notes::Notes,
+        cols: &[Vec<Rect>],
+        fi: usize,
+        ci: usize,
+        frame: &'a FrameSpec,
+        fallback: Rect,
+    ) -> crate::notes::NoteColumn<'a> {
+        let width = notes.area(&cols[fi], ci).map_or(fallback.width(), |a| a.width());
+        crate::notes::NoteColumn { frame_index: fi, column_index: ci, width, frame }
+    }
+    let cell_notes = |rows: std::ops::Range<usize>| -> Vec<crate::notes::CellNote> {
+        let mut v = Vec::new();
+        for r in rows {
+            for c in 0..nc {
+                if !is_owner(r, c) {
+                    continue;
+                }
+                let Some(lay) = layouts.get(r * nc + c).and_then(Option::as_ref) else { continue };
+                for (i, slot) in lay.notes.iter().enumerate() {
+                    v.push(crate::notes::CellNote {
+                        source: crate::notes::NoteSource::Cell { table: table.id, row: r, col: c, slot: i, k: slot.ordinal },
+                        label: slot.label.clone(),
+                        note: Arc::clone(&slot.note),
+                    });
+                }
+            }
+        }
+        v
     };
-    let mut reserve = column_reserve(notes, cur, col);
+    // ponytail: With Span Footnotes Across Columns, a cell note first placed in a later column
+    // does not re-lay earlier columns overlapping the enlarged area. Upgrade by routing through
+    // Notes::earlier_columns_collide and the story-level rewind path.
+    let place_cell_notes = |notes: &mut crate::notes::Notes, items: &[crate::notes::CellNote], cur: &Cursor, rect: Rect| {
+        let column = note_column(notes, cols, cur.fi, cur.col, &frames[cur.fi], rect);
+        for n in items {
+            notes.place_cell(doc, n, column, opts);
+        }
+    };
     let mut r = header;
     loop {
         if r >= body_end {
@@ -325,6 +397,16 @@ pub(crate) fn place_table(
         }
         let ge = group_end[r].min(body_end).max(r + 1);
         let gh = sum(r, ge);
+        let group = cell_notes(r..ge);
+        // Headers commit with the first fitting body group, in the column taking the fragment.
+        let pending_header = body_placed == 0 && (first_frag || o.repeat_header);
+        let mut extra = if pending_header { cell_notes(0..header) } else { Vec::new() };
+        extra.extend(group.iter().cloned());
+        if o.repeat_footer || ge == body_end {
+            extra.extend(cell_notes(body_end..nr));
+        }
+        let column = note_column(notes, cols, cur.fi, cur.col, &frames[cur.fi], col);
+        let reserve = notes.reserve_cells(doc, column, &extra, opts);
         let bottom = col.y1 - reserve;
         let at_col_top = cur.last_baseline.is_none() && (top - col.y0).abs() < 1e-6;
         if y + gh + footer_h <= bottom + 0.01 || (body_placed == 0 && at_col_top && reserve == 0.0) {
@@ -332,7 +414,11 @@ pub(crate) fn place_table(
                 // A row group taller than an empty column can never fit.
                 return false;
             }
+            if pending_header {
+                place_cell_notes(notes, &cell_notes(0..header), cur, col);
+            }
             place_rows(r..ge, &mut y, false, &mut frag_rows);
+            place_cell_notes(notes, &group, cur, col);
             body_placed += 1;
             r = ge;
             continue;
@@ -341,6 +427,7 @@ pub(crate) fn place_table(
         if body_placed > 0 {
             if o.repeat_footer {
                 place_rows(body_end..nr, &mut y, true, &mut frag_rows);
+                place_cell_notes(notes, &cell_notes(body_end..nr), cur, col);
             }
             emit(table, anchor, pi, &frag_rows, &heights, &colx, col.x0 + x_off, top, y, first_frag, false, &layouts, &owners, cur, col, out);
             first_frag = false;
@@ -351,7 +438,6 @@ pub(crate) fn place_table(
             return false;
         }
         col = col_rect(cur);
-        reserve = column_reserve(notes, cur, col);
         y = col.y0;
         top = y;
         frag_rows.clear();
@@ -361,9 +447,15 @@ pub(crate) fn place_table(
             place_rows(0..header, &mut y, false, &mut frag_rows);
         } else if o.repeat_header {
             place_rows(0..header, &mut y, true, &mut frag_rows);
+        } else {
+            continue;
         }
     }
+    if body_placed == 0 && (first_frag || o.repeat_header) {
+        place_cell_notes(notes, &cell_notes(0..header), cur, col);
+    }
     place_rows(body_end..nr, &mut y, false, &mut frag_rows);
+    place_cell_notes(notes, &cell_notes(body_end..nr), cur, col);
     emit(table, anchor, pi, &frag_rows, &heights, &colx, col.x0 + x_off, top, y, first_frag, true, &layouts, &owners, cur, col, out);
     cur.last_baseline = Some(y);
     cur.last_descent = 0.0;
@@ -852,7 +944,15 @@ mod height_tests {
     }
 
     fn measure(cell: &Cell, width: f64) -> CellLayout {
-        compose_cell(&Document::new(&NewDocument::default()), cell, width, &ComposeOptions::default(), (false, false))
+        compose_cell(
+            &Document::new(&NewDocument::default()),
+            cell,
+            width,
+            &ComposeOptions::default(),
+            (false, false),
+            None,
+            NoteNumber { num: 1, key: None },
+        )
     }
 
     fn compose_table(table: Table, height: f64) -> ComposedStory {
@@ -861,6 +961,168 @@ mod height_tests {
         let (_, sid) = doc.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 200.0, height), layer, "", ParaFormat::default()).unwrap();
         doc.story_mut(sid).unwrap().insert_table(0, table);
         crate::compose_story(&doc, sid, &ComposeOptions::default())
+    }
+
+    fn note_cell() -> Cell {
+        let mut cell = text_cell("Cell", 8.5);
+        cell.text.insert_note(4, "Cell note.", ParaFormat::default()).unwrap();
+        cell
+    }
+
+    // Check the generated note-body label as well as the placed note metadata.
+    fn note_labels(cs: &ComposedStory) -> Vec<String> {
+        let notes: Vec<_> = cs.frames.iter().flat_map(|f| &f.notes).collect();
+        let labels: Vec<_> = notes.iter().map(|n| n.label.clone()).collect();
+        for note in notes {
+            let generated: String =
+                note.text.frames.iter().flat_map(|f| &f.lines).flat_map(|l| &l.glyphs).filter_map(|g| g.generated_text.as_deref()).collect();
+            assert_eq!(generated, format!("{}\t", note.label));
+        }
+        labels
+    }
+
+    fn reference_labels(cs: &ComposedStory) -> Vec<String> {
+        assert!(cs.frames.iter().all(|f| f.notes.is_empty()), "notes must leave cell frames");
+        cs.frames.iter().flat_map(|f| &f.lines).flat_map(|l| &l.glyphs).filter_map(|g| g.generated_text.as_deref().map(str::to_owned)).collect()
+    }
+
+    fn story_with_note_table(direction: designcraft_doc::TextDirection, with_notes: bool) -> ComposedStory {
+        let mut table = Table::new(77, 2, 2, 0, 0, 180.0);
+        table.options.direction = direction;
+        for i in [0, 1, 3] {
+            table.cells[i] = if with_notes { note_cell() } else { text_cell("Cell", 8.5) };
+        }
+        let mut doc = Document::new(&NewDocument::default());
+        let (_, sid) = doc
+            .add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 200.0, 700.0), doc.default_layer(), "Before\nAfter", ParaFormat::default())
+            .unwrap();
+        let story = doc.story_mut(sid).unwrap();
+        story.insert_note(6, "Before note.", ParaFormat::default()).unwrap();
+        story.insert_table(story.text.find("After").unwrap(), table);
+        story.insert_note(story.len(), "After note.", ParaFormat::default()).unwrap();
+        crate::compose_story(&doc, sid, &ComposeOptions::default())
+    }
+
+    #[test]
+    fn cell_footnotes_continue_the_host_story_sequence() {
+        let cs = story_with_note_table(designcraft_doc::TextDirection::LeftToRight, true);
+        assert!(!cs.is_overset());
+        assert_eq!(note_labels(&cs), ["1", "2", "3", "4", "5"]);
+        let table = &cs.frames[0].tables[0];
+        for (r, c, label) in [(0, 0, "2"), (0, 1, "3"), (1, 1, "4")] {
+            assert_eq!(reference_labels(&table.cell(r, c).unwrap().text), [label]);
+        }
+    }
+
+    #[test]
+    fn body_and_2x2_cell_notes_share_numbered_column_foot_without_growing_rows() {
+        let cs = story_with_note_table(designcraft_doc::TextDirection::LeftToRight, true);
+        let plain = story_with_note_table(designcraft_doc::TextDirection::LeftToRight, false);
+        assert!(!cs.is_overset());
+        assert_eq!(cs.frames.len(), 1);
+        let frame = &cs.frames[0];
+        let table = &frame.tables[0];
+        assert_eq!(note_labels(&cs), ["1", "2", "3", "4", "5"]);
+        let sources: Vec<_> = frame.notes.iter().map(|n| n.source.as_ref()).collect();
+        assert_eq!(sources, ["Before note.", "Cell note.", "Cell note.", "Cell note.", "After note."]);
+        for note in &frame.notes {
+            assert!(note.rect.y0 >= table.rect.y1);
+            assert!(note.rect.x0 >= 0.0 && note.rect.x1 <= 200.0);
+            assert!(note.rect.y1 <= 700.0);
+        }
+        assert!(frame.notes.windows(2).all(|pair| pair[0].rect.y1 <= pair[1].rect.y0));
+        for cell in &table.cells {
+            assert!(cell.text.frames.iter().all(|f| f.notes.is_empty()));
+            let plain_cell = plain.frames[0].tables[0].cell(cell.row, cell.col).unwrap();
+            assert!((cell.rect.height() - plain_cell.rect.height()).abs() < 1e-6);
+        }
+        for (r, c, label) in [(0, 0, "2"), (0, 1, "3"), (1, 1, "4")] {
+            assert_eq!(reference_labels(&table.cell(r, c).unwrap().text), [label]);
+        }
+    }
+
+    #[test]
+    fn rtl_cell_footnotes_follow_logical_columns() {
+        let cs = story_with_note_table(designcraft_doc::TextDirection::RightToLeft, true);
+        assert_eq!(note_labels(&cs), ["1", "2", "3", "4", "5"]);
+        let table = &cs.frames[0].tables[0];
+        assert!(table.cell(0, 0).unwrap().rect.x0 > table.cell(0, 1).unwrap().rect.x0);
+        for (r, c, label) in [(0, 0, "2"), (0, 1, "3"), (1, 1, "4")] {
+            assert_eq!(reference_labels(&table.cell(r, c).unwrap().text), [label]);
+        }
+    }
+
+    #[test]
+    fn nested_only_cell_footnotes_advance_the_next_cell() {
+        let nested = single_table(note_cell());
+        let mut table = Table::new(88, 1, 2, 0, 0, 180.0);
+        table.cells[0].text.insert_table(0, nested);
+        table.cells[1] = note_cell();
+        let cs = compose_table(table, 700.0);
+        assert!(!cs.is_overset());
+        let table = &cs.frames[0].tables[0];
+        let first = &table.cell(0, 0).unwrap().text;
+        let nested = &first.frames[0].tables[0].cell(0, 0).unwrap().text;
+        assert_eq!(note_labels(&cs), ["1", "2"]);
+        assert!(first.frames.iter().all(|f| f.notes.is_empty()));
+        assert_eq!(reference_labels(nested), ["1"]);
+        assert_eq!(reference_labels(&table.cell(0, 1).unwrap().text), ["2"]);
+    }
+
+    #[test]
+    fn table_only_story_continues_earlier_story_footnotes() {
+        let mut doc = Document::new(&NewDocument::default());
+        doc.footnote_options.restart = designcraft_doc::notes::NoteRestart::Never;
+        doc.footnote_options.start_at = 1;
+        let (_, earlier) =
+            doc.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 200.0, 200.0), doc.default_layer(), "Before", ParaFormat::default()).unwrap();
+        doc.story_mut(earlier).unwrap().insert_note(6, "Earlier note.", ParaFormat::default()).unwrap();
+        let (_, later) =
+            doc.add_text_frame(SpreadRef::Doc(0), Rect::new(220.0, 0.0, 420.0, 700.0), doc.default_layer(), "", ParaFormat::default()).unwrap();
+        doc.story_mut(later).unwrap().insert_table(0, single_table(note_cell()));
+        let cs = crate::compose_story(&doc, later, &ComposeOptions::default());
+        assert!(!cs.is_overset());
+        assert_eq!(note_labels(&cs), ["2"]);
+        assert_eq!(reference_labels(&cs.frames[0].tables[0].cell(0, 0).unwrap().text), ["2"]);
+    }
+
+    #[test]
+    fn cached_table_only_story_updates_after_earlier_story_note() {
+        let mut doc = Document::new(&NewDocument::default());
+        doc.footnote_options.restart = designcraft_doc::notes::NoteRestart::Never;
+        doc.footnote_options.start_at = 1;
+        let (_, earlier) =
+            doc.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 200.0, 200.0), doc.default_layer(), "Before", ParaFormat::default()).unwrap();
+        doc.story_mut(earlier).unwrap().insert_note(6, "Earlier note.", ParaFormat::default()).unwrap();
+        let (_, later) =
+            doc.add_text_frame(SpreadRef::Doc(0), Rect::new(220.0, 0.0, 420.0, 700.0), doc.default_layer(), "", ParaFormat::default()).unwrap();
+        doc.story_mut(later).unwrap().insert_table(0, single_table(note_cell()));
+        let cache = crate::Cache::new();
+        let before = cache.get(&doc, later, None);
+        assert!(!before.is_overset());
+        assert_eq!(note_labels(&before), ["2"]);
+        assert_eq!(reference_labels(&before.frames[0].tables[0].cell(0, 0).unwrap().text), ["2"]);
+        let story = doc.story_mut(earlier).unwrap();
+        story.insert_note(story.len(), "Another earlier note.", ParaFormat::default()).unwrap();
+        let after = cache.get(&doc, later, None);
+        assert!(!after.is_overset());
+        assert_eq!(note_labels(&after), ["3"]);
+        assert_eq!(reference_labels(&after.frames[0].tables[0].cell(0, 0).unwrap().text), ["3"]);
+    }
+
+    #[test]
+    fn cell_footnotes_restart_on_the_tables_page() {
+        let mut doc = Document::new(&NewDocument::default());
+        doc.footnote_options.restart = designcraft_doc::notes::NoteRestart::Page;
+        doc.footnote_options.start_at = 7;
+        let (_, sid) =
+            doc.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 200.0, 700.0), doc.default_layer(), "", ParaFormat::default()).unwrap();
+        doc.story_mut(sid).unwrap().insert_table(0, single_table(note_cell()));
+        // A continuation from an earlier page must reset when this table starts on page 0.
+        let opts = ComposeOptions { notes_start: Some(NoteNumber { num: 42, key: Some(99) }), ..Default::default() };
+        let cs = crate::compose_story(&doc, sid, &opts);
+        assert_eq!(note_labels(&cs), ["7"]);
+        assert_eq!(reference_labels(&cs.frames[0].tables[0].cell(0, 0).unwrap().text), ["7"]);
     }
 
     fn single_table(cell: Cell) -> Table {
