@@ -199,30 +199,17 @@ impl<'a> Exporter<'a> {
         let b = doc.settings.bleed;
         self.clip = Rect::new(bounds.x0 - b[2].max(b[3]), bounds.y0 - b[0], bounds.x1 + b[2].max(b[3]), bounds.y1 + b[1]);
         let page_name = doc.page_name(abs);
-        // What the canvas hides: this page's overrides and those of the parent pages behind it.
-        let overridden = doc.page_loc(abs).map(|(si, pi)| doc.overridden_parent_items(designcraft_doc::SpreadRef::Doc(si), pi)).unwrap_or_default();
+        // Parent items through the whole based-on chain, as drawing and PDF export show them.
+        let shown = doc.shown_parent_items(designcraft_doc::SpreadRef::Doc(si), pi);
         for layer in doc.layers.iter().rev() {
             if !layer.visible || !layer.printable {
                 continue;
             }
-            if page.show_parent_items
-                && let Some((ppi, ppage)) = doc.parent_page_for(abs)
-                && let Some(parent) = doc.parents.get(ppi)
-                && let Some(pp) = parent.pages.get(ppage)
-            {
-                let dx = page.x - pp.x;
-                for it in &parent.items {
-                    if it.layer != layer.id || overridden.contains(&it.id) {
-                        continue;
-                    }
-                    if parent.pages.len() > 1 && parent.page_at_x(it.bounds().center().x) != Some(ppage) {
-                        continue;
-                    }
-                    // Parent items compose per page (page numbers, running heads).
-                    self.page = Some(abs);
-                    self.item(it, Affine::translate((dx, 0.0)), 1.0);
-                    self.page = None;
-                }
+            for s in shown.iter().filter(|s| s.item.layer == layer.id) {
+                // Parent items compose per page (page numbers, running heads).
+                self.page = Some(abs);
+                self.item(s.item, Affine::translate((s.dx, 0.0)), 1.0);
+                self.page = None;
             }
             for it in &sp.items {
                 if it.layer == layer.id {
