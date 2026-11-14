@@ -132,6 +132,36 @@ fn style_records(styles: &StyleSheet, doc: &craft_wordmodel::Document) -> (Vec<I
     (paras, chars, names)
 }
 
+/// Plain text under the importer's accepted-changes policy, with inline objects expanded. The
+/// neutral Word model retains tracked deletions for editing, while text import treats changes as
+/// accepted, just like [`append_paragraph`].
+fn accepted_plain_text(p: &Paragraph) -> String {
+    let mut out = String::with_capacity(p.text.len());
+    let mut object_i = 0usize;
+    let mut runs = p.run_ranges().peekable();
+    for (at, c) in p.text.char_indices() {
+        while runs.peek().is_some_and(|(range, _)| range.end <= at) {
+            runs.next();
+        }
+        let deleted = runs.peek().is_some_and(|(range, props)| range.contains(&at) && props.del.is_some());
+        if deleted {
+            if c == craft_wordmodel::para::OBJ {
+                object_i = object_i.saturating_add(1);
+            }
+            continue;
+        }
+        if c == craft_wordmodel::para::OBJ {
+            if let Some(object) = p.objects.get(object_i) {
+                out.push_str(&object.plain_text());
+            }
+            object_i = object_i.saturating_add(1);
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 fn plain_blocks(blocks: &[std::sync::Arc<Block>]) -> String {
     let mut out = String::new();
     let mut first = true;
@@ -142,7 +172,7 @@ fn plain_blocks(blocks: &[std::sync::Arc<Block>]) -> String {
                     out.push('\n');
                 }
                 first = false;
-                out.push_str(&p.plain_text());
+                out.push_str(&accepted_plain_text(p));
             }
             Block::Table(t) => {
                 for row in &t.rows {
