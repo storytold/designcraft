@@ -371,7 +371,7 @@ impl<'r> Importer<'r> {
             a.bullet_font_style = Some(if f == "Nothing" || f == "$ID/" { String::new() } else { f.trim_start_matches("$ID/").to_string() });
         }
         if let Some(gid) = bullet_glyph {
-            self.glyph_bullet(gid, &mut a);
+            self.glyph_bullet(e, gid, &mut a);
         }
         a
     }
@@ -379,10 +379,32 @@ impl<'r> Importer<'r> {
     /// A bullet stored as glyph `gid` of the bullet font this element names becomes the character
     /// that draws it (#2620). When the font can't be read, the default `•` in the text font
     /// stands in: `•` in a symbol font such as Webdings is an empty box. Without a font named
-    /// here the font and glyph are the paragraph style's, already read with it.
-    fn glyph_bullet(&mut self, gid: u32, a: &mut ParaAttrs) {
-        let Some(family) = a.bullet_font.clone().filter(|f| !f.is_empty()) else { return };
-        let style = a.bullet_font_style.clone().unwrap_or_default();
+    /// here the font is that of the style this one is based on, and the glyph is still this
+    /// element's own.
+    fn glyph_bullet(&mut self, e: &El, gid: u32, a: &mut ParaAttrs) {
+        let family = match a.bullet_font.clone() {
+            Some(f) => f,
+            None => self
+                .para_setting(e, "BulletsFont")
+                .map(|f| {
+                    let f = f.trim();
+                    if f == "$ID/" { String::new() } else { f.split('\t').next().unwrap_or(f).to_string() }
+                })
+                .unwrap_or_default(),
+        };
+        if family.is_empty() {
+            return;
+        }
+        let style = match a.bullet_font_style.clone() {
+            Some(s) => s,
+            None => self
+                .para_setting(e, "BulletsFontStyle")
+                .map(|f| {
+                    let f = f.trim();
+                    if f == "Nothing" || f == "$ID/" { String::new() } else { f.trim_start_matches("$ID/").to_string() }
+                })
+                .unwrap_or_default(),
+        };
         let key = (family, style, gid);
         let c = match self.glyph_chars.get(&key) {
             Some(c) => *c,

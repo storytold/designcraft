@@ -3321,7 +3321,7 @@ fn glyph_with_font_bullet_maps_to_its_character_or_falls_back_to_the_text_font()
       <ParagraphStyle Self="ParagraphStyle/Arrow2" Name="Arrow2">
         <Properties>
           <BasedOn type="object">ParagraphStyle/Arrow</BasedOn>
-          <BulletChar BulletCharacterType="GlyphWithFont" BulletCharacterValue="23"/>
+          <BulletChar BulletCharacterType="GlyphWithFont" BulletCharacterValue="24"/>
         </Properties>
       </ParagraphStyle>
     </ParagraphStyleGroup>"#,
@@ -3345,13 +3345,21 @@ fn glyph_with_font_bullet_maps_to_its_character_or_falls_back_to_the_text_font()
     let asked = std::cell::RefCell::new(Vec::new());
     let fonts = |family: &str, style: &str, gid: u32| {
         asked.borrow_mut().push((family.to_string(), style.to_string(), gid));
-        (family == "Webdings" && gid == 23).then_some('4')
+        match (family, gid) {
+            ("Webdings", 23) => Some('4'),
+            ("Webdings", 24) => Some('5'),
+            _ => None,
+        }
     };
     let r = crate::import_idml_report_with_fonts(&bytes, &|_| None, &std::collections::HashMap::new(), &fonts).unwrap();
     assert_eq!(bullet(&r.document, "Arrow"), webdings("4"));
-    // A style that names no bullet font inherits the font and its character.
-    assert_eq!(bullet(&r.document, "Arrow2"), webdings("4"));
-    assert_eq!(asked.borrow().as_slice(), [("Webdings".to_string(), "Regular".to_string(), 23)], "the font is asked once");
+    // A style that names no bullet font inherits the font; its own glyph is drawn in it.
+    assert_eq!(bullet(&r.document, "Arrow2"), webdings("5"));
+    assert_eq!(
+        asked.borrow().as_slice(),
+        [("Webdings".to_string(), "Regular".to_string(), 23), ("Webdings".to_string(), "Regular".to_string(), 24)],
+        "each glyph is asked once"
+    );
     assert!(!r.warnings.iter().any(|w| w.contains("bullet")), "{:?}", r.warnings);
 
     // Webdings not available: `•` in the text font, and the report says so once.

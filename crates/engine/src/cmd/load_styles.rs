@@ -19,7 +19,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Load Styles…",
             [],
             None,
-            "{path | base64, name?: the file's name (`.idml` reads IDML), paragraph?: [name], character?: [name], conflicts?: redefine|useExisting|autoRename} — paragraph and character styles of another document (.designcraft or .idml): all of a kind, or the named ones (`[]`: none). The styles, swatches and lists they name come along where this document has none. A style this document defines differently under the same name takes the loaded definition (redefine, the default), stays as it is (useExisting), or the loaded one gets a new name (autoRename) → {paragraph: {added, replaced, renamed: {name: new name}}, character: {…}, swatches: [name]}",
+            "{path | base64, name?: the file's name (`.idml` reads IDML), paragraph?: [name], character?: [name], conflicts?: redefine|useExisting|autoRename} — paragraph and character styles of another document (.designcraft or .idml): all of a kind, or the named ones (`[]`: none). The styles, swatches and lists they name come along where this document has none. A style this document defines differently under the same name takes the loaded definition (redefine, the default), stays as it is (useExisting), or the loaded one gets a new name (autoRename) → {paragraph: {added, replaced, renamed: {name: new name}}, character: {…}, swatches: [name], warnings?: [what the import of an .idml file could not keep, such as a bullet glyph of a font that is not available]}",
             has_doc,
             load
         ),
@@ -79,7 +79,7 @@ impl Kind {
 }
 
 /// The document a command reads styles from.
-fn source(p: &Value, id: &str) -> Result<Document> {
+fn source(p: &Value, id: &str) -> Result<(Document, Vec<String>)> {
     let (bytes, name) = match (str_param(p, "path"), str_param(p, "base64")) {
         (_, Some(b)) => (super::file::base64_decode(b), str_param(p, "name").unwrap_or("").to_string()),
         (Some(path), None) => (crate::io::read_file(path).map_err(|e| bad(id, e))?, path.to_string()),
@@ -87,10 +87,10 @@ fn source(p: &Value, id: &str) -> Result<Document> {
     };
     if name.to_lowercase().ends_with(".idml") {
         designcraft_idml::import_idml_report_with_fonts(&bytes, &|_| None, &std::collections::HashMap::new(), &super::interchange::glyph_char)
-            .map(|r| r.document)
+            .map(|r| (r.document, r.warnings))
             .map_err(|e| bad(id, e.to_string()))
     } else {
-        super::file::from_bytes(&bytes).map_err(|e| bad(id, e.to_string()))
+        super::file::from_bytes(&bytes).map(|d| (d, Vec::new())).map_err(|e| bad(id, e.to_string()))
     }
 }
 
@@ -242,7 +242,7 @@ fn check_based_on_cycles(styles: &Styles, loaded: &[(bool, String)]) -> Result<(
 }
 
 fn load(s: &mut Session, p: &Value) -> Result<Value> {
-    let src = source(p, ID)?;
+    let (src, warnings) = source(p, ID)?;
     let conflict = conflict_param(p)?;
     let (paragraph, character) = (names(p, "paragraph")?, names(p, "character")?);
     let doc = s.doc()?.doc.clone();
@@ -307,7 +307,12 @@ fn load(s: &mut Session, p: &Value) -> Result<Value> {
         let has = |n: &str| doc.settings.lists.iter().any(|l| l.name == n);
         src.settings.lists.iter().filter(|l| lists.contains(&l.name) && !has(&l.name) && seen.insert(l.name.as_str())).cloned().collect()
     };
-    let report = json!({"paragraph": para.report(), "character": chars.report(), "swatches": swatches.iter().map(|w| &w.name).collect::<Vec<_>>()});
+    let mut report =
+        json!({"paragraph": para.report(), "character": chars.report(), "swatches": swatches.iter().map(|w| &w.name).collect::<Vec<_>>()});
+    // Only when the import had something to say.
+    if !warnings.is_empty() {
+        report["warnings"] = json!(warnings);
+    }
     // Nothing to load leaves no undo step.
     if para.changes() || chars.changes() {
         s.edit(|d, _| {
@@ -336,7 +341,7 @@ fn missing_swatches(doc: &Document, src: &Document, mut used: HashSet<String>) -
 }
 
 fn list(s: &mut Session, p: &Value) -> Result<Value> {
-    let src = source(p, "style.load.list")?;
+    let (src, _) = source(p, "style.load.list")?;
     let mine = &s.doc()?.doc.styles;
     let row = |name: &str, conflict: bool| json!({"name": name, "conflict": conflict});
     let paragraph: Vec<Value> =

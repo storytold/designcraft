@@ -318,7 +318,7 @@ impl<'r> Importer<'r> {
 
     /// Paragraph setting `k` of `e` (a paragraph style or a range): its own, else from its
     /// paragraph style chain (`BasedOn` of a style, the applied style of a range).
-    fn para_setting(&self, e: &El, k: &str) -> Option<String> {
+    pub(super) fn para_setting(&self, e: &El, k: &str) -> Option<String> {
         if let Some(v) = e.prop(k) {
             return Some(v);
         }
