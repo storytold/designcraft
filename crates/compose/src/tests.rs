@@ -3089,6 +3089,9 @@ fn a_corner_radius_keeps_a_cap_height_line_in_place() {
         let (_, area, top) = compose_tall(height, 0.0, Top);
         let (_, _, center) = compose_tall(height, 0.0, Center);
         assert!((center - (area.y1 + top) / 2.0).abs() < 1e-6, "{height} pt: Center at {center}, Top at {top}, inset at {}", area.y1);
+        // A corner radius sets the line where the rectangular frame does.
+        let (_, _, rounded_top) = compose_tall(height, 0.1 * mm, Top);
+        assert!((rounded_top - top).abs() < 1e-6, "{height} pt: Top at {rounded_top} with a radius, {top} without");
     }
 
     // A corner radius doesn't change where Bottom and Justify put the last baseline: on the
@@ -3119,6 +3122,53 @@ fn a_corner_radius_keeps_a_cap_height_line_in_place() {
             assert!((last - area.y1).abs() < 1e-6, "{mode:?} insets {insets:?}: last baseline at {last}, inset at {}", area.y1);
         }
     }
+}
+
+/// A band that ends on a bottom edge of a shaped frame's outline is inside it, as one that starts
+/// on a top edge is: down to the frame's bottom and down to a lobe's bottom.
+#[test]
+fn a_shaped_frame_holds_a_band_down_to_a_bottom_edge() {
+    use designcraft_geom::BezPath;
+    // A 100 pt square with a 50 pt wide lobe on the right down to 150 pt.
+    let mut bp = BezPath::new();
+    bp.move_to((0.0, 0.0));
+    for p in [(100.0, 0.0), (100.0, 150.0), (50.0, 150.0), (50.0, 100.0), (0.0, 100.0)] {
+        bp.line_to(p);
+    }
+    bp.close_path();
+    let o = FrameOutline::new(&bp, 0.0).unwrap();
+    assert_eq!(o.intervals(0.0, 100.0, 0.0, 20.0), vec![(0.0, 100.0)]);
+    assert_eq!(o.intervals(0.0, 100.0, 80.0, 100.0), vec![(0.0, 100.0)]);
+    assert_eq!(o.intervals(0.0, 100.0, 120.0, 150.0), vec![(50.0, 100.0)]);
+    assert!(o.intervals(0.0, 100.0, 120.0, 150.5).is_empty());
+}
+
+/// At a corner where the outline steps in or out, a band keeps only the inside on its own side of
+/// the corner: the side below it when the band starts there, the side above it when the band ends
+/// there, and both sides when the band crosses it.
+#[test]
+fn a_shaped_frame_band_keeps_the_inside_on_its_side_of_a_corner() {
+    use designcraft_geom::BezPath;
+    let outline = |pts: &[(f64, f64)]| {
+        let mut bp = BezPath::new();
+        bp.move_to((0.0, 0.0));
+        for &p in pts {
+            bp.line_to(p);
+        }
+        bp.close_path();
+        FrameOutline::new(&bp, 0.0).unwrap()
+    };
+    // A 100 pt square with a notch on the right from 50 pt down: 60 pt wide at 50 pt, widening to
+    // 100 pt at the bottom.
+    let notch = outline(&[(100.0, 0.0), (100.0, 50.0), (60.0, 50.0), (100.0, 100.0), (0.0, 100.0)]);
+    assert_eq!(notch.intervals(0.0, 100.0, 50.0, 70.0), vec![(0.0, 60.0)]);
+    assert_eq!(notch.intervals(0.0, 100.0, 40.0, 70.0), vec![(0.0, 60.0)]);
+    assert_eq!(notch.intervals(0.0, 100.0, 20.0, 50.0), vec![(0.0, 100.0)]);
+    // A 100 pt square whose right side narrows to 20 pt at 50 pt and steps back out to 100 pt there.
+    let step = outline(&[(100.0, 0.0), (20.0, 50.0), (100.0, 50.0), (100.0, 100.0), (0.0, 100.0)]);
+    assert_eq!(step.intervals(0.0, 100.0, 0.0, 100.0), vec![(0.0, 20.0)]);
+    assert_eq!(step.intervals(0.0, 100.0, 0.0, 50.0), vec![(0.0, 20.0)]);
+    assert_eq!(step.intervals(0.0, 100.0, 50.0, 100.0), vec![(0.0, 100.0)]);
 }
 
 /// In a shaped frame, Center, Bottom and Justify keep each moved line's slot inside the outline:
