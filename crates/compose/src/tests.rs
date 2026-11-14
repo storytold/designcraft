@@ -5285,6 +5285,53 @@ fn nested_line_style_beside_a_drop_cap_moved_on_to_the_next_frame_covers_its_fir
     }
 }
 
+/// A first-line nested line style beside a drop cap covers exactly the first line when the
+/// paragraph's first line doesn't fit the frame it starts in (Start Paragraph Anywhere) and goes on
+/// to a wider frame with another baseline grid, and when Start Paragraph moves it on to a wider frame
+/// with the same grid.
+#[test]
+fn nested_line_style_beside_a_drop_cap_covers_its_first_line_in_a_wider_next_frame() {
+    use designcraft_doc::{FrameBaselineGrid, GridAlign, NestedLineStyle, StartParagraph};
+    let text = format!("Intro.\n{}", CORPUS.join(" "));
+    let cases = [(StartParagraph::Anywhere, 20.0, 40.0), (StartParagraph::NextFrame, 300.0, 15.0)];
+    for (w, (start, first_height, inc)) in (160..320).step_by(10).flat_map(|w| cases.map(|c| (w as f64, c))) {
+        let para = ParaAttrs {
+            grid_align: Some(GridAlign::AllLines),
+            align: Some(Align::Left),
+            nested_line_styles: Some(vec![NestedLineStyle { style: "Lead".into(), lines: 1 }]),
+            ..drop_cap(3, 1)
+        };
+        let (mut d, sid, first) = drop_doc_in(&text, Rect::new(0.0, 0.0, w, first_height), para);
+        let lid = d.default_layer();
+        let (second, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 400.0, w + 50.0, 1000.0), lid, "", ParaFormat::default()).unwrap();
+        d.thread(first, second).unwrap();
+        for (id, inc) in [(first, 15.0), (second, inc)] {
+            d.item_mut(id).unwrap().text_frame_mut().unwrap().options.baseline_grid = Some(FrameBaselineGrid::new(0.0, inc));
+        }
+        let chars = designcraft_doc::CharAttrs { fill: Some("[Registration]".into()), ..Default::default() };
+        std::sync::Arc::make_mut(&mut d.styles).character.push(designcraft_doc::CharacterStyle {
+            name: "Lead".into(),
+            based_on: None,
+            chars,
+            shortcut: String::new(),
+        });
+        let paras = &mut d.story_mut(sid).unwrap().paras;
+        paras[0].para = ParaAttrs { grid_align: Some(GridAlign::AllLines), ..Default::default() };
+        paras[1].para.start_paragraph = Some(start);
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        assert_eq!(cs.frame(first).unwrap().lines.iter().map(|l| l.para).collect::<Vec<_>>(), [0], "{w} {start:?}");
+        let lines = &cs.frame(second).unwrap().lines;
+        assert!(lines.len() > 3 && lines[0].para == 1, "{w} {start:?}");
+        let lead = |l: &Line| {
+            l.glyphs.iter().filter(|g| g.len > 0 && g.visible).map(|g| cs.styles[g.style as usize].fill == "[Registration]").collect::<Vec<_>>()
+        };
+        assert!(lead(&lines[0]).iter().all(|&r| r), "{w} {start:?}: first line");
+        assert!(lead(&lines[1]).iter().all(|&r| !r), "{w} {start:?}: second line");
+        // The drop cap reaches down two of the second frame's grid steps.
+        assert!((lines[0].baseline + lines[0].glyphs[0].y - lines[2].baseline).abs() < 1e-6, "{w} {start:?}");
+    }
+}
+
 /// A line with a larger auto leading doesn't move the drop cap: it reaches down `lines − 1`
 /// leadings of the text after it, not to where line N is set.
 #[test]

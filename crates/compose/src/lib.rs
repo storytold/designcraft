@@ -2420,10 +2420,9 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
         // The drop cap was shaped in the frame the paragraph would have started in. When the
         // paragraph start options or a first line that doesn't fit move it on, it reaches down by
         // the grid of the frame its first line is set in.
-        let Some(fitted) = refit_drop_cap(db, drop_cap, (pi, line_no), ((cur.fi, cur.col), f), para_props, refitted.take(), drop_frames) else {
-            rewind(pi, snaps, note_snaps, notes, out, cur, list_counter, force_col, line_cap, no_hyph);
-            return LinePlacement::Restart(pi);
-        };
+        // A paragraph with nested line styles is shaped again here once its first line fits.
+        let (fitted, reshape) = refit_drop_cap(db, drop_cap, (pi, line_no), ((cur.fi, cur.col), f), para_props, refitted.take(), drop_frames);
+        let reshape_at = reshape.then_some((cur.fi, cur.col));
         refitted = fitted;
         let drop_cap = refitted.as_ref().or(drop_cap);
         // The Indent to Here character sits past the drop cap, so the lines that start at it
@@ -2575,6 +2574,13 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
                     break;
                 }
             };
+            if line_no == 0
+                && let Some(at) = reshape_at
+                && reshape_drop_cap_paragraph(drop_frames, pi, at)
+            {
+                rewind(pi, snaps, note_snaps, notes, out, cur, list_counter, force_col, line_cap, no_hyph);
+                return LinePlacement::Restart(pi);
+            }
             let col_w = notes.area(&cols[cur.fi], cur.col).map_or(0.0, |r| r.width());
             let note_column = NoteColumn { frame_index: cur.fi, column_index: cur.col, width: col_w, frame: f };
             // A drop cap sits at the start-side indent; the first-line indent doesn't move it.
@@ -3244,7 +3250,7 @@ fn compose_run(
     let mut hyph_relays = 0usize;
     let mut restores = 0usize;
     // The frame and column a paragraph with a drop cap and nested line styles is shaped again for,
-    // when its first line goes to a frame with another baseline grid than the one it was shaped in.
+    // when its first line is set in a frame or column other than the one it was shaped for.
     let mut drop_frames = vec![DropCapReshape::default(); np];
     let mut pi = 0;
     let var_story = vars::has_vars(story);
@@ -3394,7 +3400,7 @@ fn compose_run(
         });
         #[cfg(test)]
         reuse::SHAPED.with(|n| n.set(n.get() + 1));
-        let shape_at = drop_frames.get(pi).and_then(|r| r.at);
+        let shape_at = drop_cap_shape_at(&mut drop_frames, pi, (cur.fi, cur.col));
         let shaped = shape_paragraph(ParagraphShapeInput {
             db,
             doc,
@@ -5789,10 +5795,9 @@ fn drop_cap_grid(frame: Option<&FrameSpec>, pp: &ParaProps) -> Option<f64> {
 /// The drop cap beside paragraph `pi`'s lines in frame `frame` (at frame and column `at`). While
 /// its first line (`line_no` 0) has yet to be set, a drop cap shaped for another baseline grid than
 /// that frame's is sized again for it; past the first line, the one sized then (`refitted`) stays.
-/// `None`: the paragraph has nested line styles, which were set for the lines beside the cap as
-/// shaped, so it is shaped again for `at`, recorded in `drop_frames`. That happens when the cap was
-/// shaped for another grid, or the paragraph was shaped again for another frame or column than
-/// `at`, up to [`MAX_DROP_CAP_RESHAPES`] times for each paragraph; after that the cap is sized again.
+/// The flag is set when the paragraph has nested line styles, which were set for the lines beside
+/// the cap as shaped, and it was shaped for another grid or for another frame or column than `at`:
+/// once its first line fits there, it is shaped again for `at` (see [`reshape_drop_cap_paragraph`]).
 fn refit_drop_cap(
     db: &ScopedFonts<'_>,
     drop_cap: Option<&DropCap>,
@@ -5800,20 +5805,34 @@ fn refit_drop_cap(
     (at, frame): ((usize, usize), &FrameSpec),
     pp: &ParaProps,
     refitted: Option<DropCap>,
-    drop_frames: &mut [DropCapReshape],
-) -> Option<Option<DropCap>> {
-    let Some(dc) = drop_cap.filter(|_| line_no == 0) else { return Some(refitted) };
+    drop_frames: &[DropCapReshape],
+) -> (Option<DropCap>, bool) {
+    let Some(dc) = drop_cap.filter(|_| line_no == 0) else { return (refitted, false) };
     let grid = drop_cap_grid(Some(frame), pp);
     let stale = dc.grid.map(f64::to_bits) != grid.map(f64::to_bits);
-    if let Some(r) = drop_frames.get_mut(pi)
-        && !pp.nested_line_styles.is_empty()
-        && (stale || r.at.is_some_and(|a| a != at))
-        && r.count < MAX_DROP_CAP_RESHAPES
-    {
-        *r = DropCapReshape { at: Some(at), count: r.count + 1 };
-        return None;
+    let reshape = !pp.nested_line_styles.is_empty()
+        && drop_frames.get(pi).is_some_and(|r| (stale || r.shaped.is_some_and(|s| s != at)) && r.count < MAX_DROP_CAP_RESHAPES);
+    (stale.then(|| fit_drop_cap(db, dc.fit.clone(), grid)), reshape)
+}
+
+/// The frame and column paragraph `pi` was last asked to be shaped again for, if any; it is shaped
+/// for that one, or else for `here`, and that is recorded as the one it was shaped for.
+fn drop_cap_shape_at(drop_frames: &mut [DropCapReshape], pi: usize, here: (usize, usize)) -> Option<(usize, usize)> {
+    let r = drop_frames.get_mut(pi)?;
+    r.shaped = Some(r.at.unwrap_or(here));
+    r.at
+}
+
+/// Record that paragraph `pi` is to be shaped again for frame and column `at`, where its first line
+/// fits, up to [`MAX_DROP_CAP_RESHAPES`] times for each paragraph. `false` when it can't be.
+fn reshape_drop_cap_paragraph(drop_frames: &mut [DropCapReshape], pi: usize, at: (usize, usize)) -> bool {
+    match drop_frames.get_mut(pi) {
+        Some(r) if r.count < MAX_DROP_CAP_RESHAPES => {
+            *r = DropCapReshape { at: Some(at), count: r.count + 1, ..*r };
+            true
+        }
+        _ => false,
     }
-    Some(stale.then(|| fit_drop_cap(db, dc.fit.clone(), grid)))
 }
 
 /// How many times a paragraph with a drop cap and nested line styles is shaped again for the frame
@@ -5821,11 +5840,12 @@ fn refit_drop_cap(
 const MAX_DROP_CAP_RESHAPES: u8 = 4;
 
 /// The frame and column a paragraph with a drop cap was last shaped again for (see
-/// [`refit_drop_cap`]), and how many times it was.
+/// [`refit_drop_cap`]), how many times it was, and the frame and column it was last shaped for.
 #[derive(Clone, Copy, Default)]
 struct DropCapReshape {
     at: Option<(usize, usize)>,
     count: u8,
+    shaped: Option<(usize, usize)>,
 }
 
 /// The drop cap's glyphs set from `at` (right to left: mirrored, its first character on the right).
