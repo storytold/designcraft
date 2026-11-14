@@ -3160,7 +3160,7 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ),
     ("  Close  ", ["  Close  ", "  Fermer  ", "  Cerrar  ", "  Close  ", "  关闭  "]),
     ("  New file  ", ["  New file  ", "  Nouveau fichier  ", "  Archivo nuevo  ", "  New file  ", "  新建文件  "]),
-    ("  OK  ", ["  OK  ", "  OK  ", "  OK  ", "  OK  ", "  确定  "]),
+    ("  OK  ", ["  OK  ", "  OK  ", "  Aceptar  ", "  OK  ", "  确定  "]),
     ("  Open  ", ["  Open  ", "  Ouvrir  ", "  Abrir  ", "  Open  ", "  打开  "]),
     (
         "  Open sample magazine  ",

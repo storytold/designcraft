@@ -4,7 +4,6 @@
 //! Only the strings the shared table has no row for: that table's Spanish column stays the
 //! fallback for the rest, the way `fr::TABLE` is for French.
 pub(super) const TABLE: &[(&str, &str)] = &[
-    ("  OK  ", "  Aceptar  "),
     ("  Save  ", "Guardar"),
     ("  Update  ", "Actualizar"),
     ("% of all commits", "% de todos los commits"),
