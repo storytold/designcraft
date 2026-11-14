@@ -265,7 +265,15 @@ pub(super) fn place_load(s: &mut Session, p: &Value) -> Result<Value> {
         let (pw, ph) = designcraft_render::image_size(&bytes).ok_or_else(|| bad("place.load", "unsupported or corrupt image"))?;
         let natural = eps_size(&bytes, "place.load")?.or_else(|| designcraft_render::natural_size(&bytes, 0)).unwrap_or((pw as f64, ph as f64));
         let mime = designcraft_render::image_mime(&bytes).to_string();
-        let asset = Asset { name, mime, link, link_fingerprint, data: designcraft_doc::AssetData::embedded(bytes), pixels: Some((pw, ph)), ..Default::default() };
+        let asset = Asset {
+            name,
+            mime,
+            link,
+            link_fingerprint,
+            data: designcraft_doc::AssetData::embedded(bytes),
+            pixels: Some((pw, ph)),
+            ..Default::default()
+        };
         return load_cursor(s, asset, natural, append);
     }
     let sources = p.get("files").and_then(Value::as_array).ok_or_else(|| bad("place.load", "files must be an array"))?;
@@ -280,7 +288,18 @@ pub(super) fn place_load(s: &mut Session, p: &Value) -> Result<Value> {
         let size = eps_size(&bytes, "place.load")?.or_else(|| designcraft_render::natural_size(&bytes, 0)).unwrap_or((pw as f64, ph as f64));
         validate_placement(size, Rect::new(0.0, 0.0, size.0, size.1), Affine::IDENTITY, "place.load")?;
         let mime = designcraft_render::image_mime(&bytes).to_string();
-        images.push((Asset { name, mime, link, link_fingerprint, data: designcraft_doc::AssetData::embedded(bytes), pixels: Some((pw, ph)), ..Default::default() }, size));
+        images.push((
+            Asset {
+                name,
+                mime,
+                link,
+                link_fingerprint,
+                data: designcraft_doc::AssetData::embedded(bytes),
+                pixels: Some((pw, ph)),
+                ..Default::default()
+            },
+            size,
+        ));
     }
     let queue = s.edit(|d, _| {
         let mut queue = std::collections::VecDeque::with_capacity(images.len());
@@ -682,7 +701,8 @@ pub(super) mod image_place_tests {
     }
 
     fn loaded_names(s: &Session) -> Vec<String> {
-        let d = &s.doc().unwrap().doc;
+        let Ok(st) = s.doc() else { return Vec::new() };
+        let d = &st.doc;
         s.loaded.iter().chain(s.loaded_queue.iter()).map(|g| d.assets[&g.asset].name.clone()).collect()
     }
 
