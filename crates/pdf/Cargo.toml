@@ -24,6 +24,7 @@ image = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }
 chrono = { workspace = true }
+flate2 = "1"
 
 [dev-dependencies]
 image = { workspace = true, features = ["png", "jpeg", "webp", "gif", "tiff", "bmp"] }
@@ -31,5 +32,4 @@ hayro-interpret = { version = "0.7.0", default-features = false, features = ["em
 hayro-cmap = "0.1"
 kurbo = { workspace = true }
 tiff = { workspace = true }
-flate2 = "1"
 designcraft-fonts = { workspace = true, features = ["testing"] }

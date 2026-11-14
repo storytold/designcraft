@@ -411,6 +411,70 @@ pub fn decode_rgba(bytes: &[u8]) -> Option<image::RgbaImage> {
     to_display_rgba(px, Some(icc), &DisplayColour::active())
 }
 
+/// About how many bytes a pixel [`decode_rgba`] of `bytes` holds at once, with a premultiplied
+/// copy of its result. A decode holds the samples as decoded beside the 8-bit RGBA (or, for
+/// CMYK, the 8-bit CMYKA copy and its ink and alpha planes) they are converted to, or two copies
+/// of the decoded samples while they are turned upright; float and Lab samples convert through
+/// 32-bit float copies. A progressive JPEG adds its coefficients (two bytes a component). At
+/// least 8: the RGBA result and its premultiplied copy. An EPS counts as its TIFF preview, or 8
+/// for its placeholder or drawn PostScript.
+pub fn decode_bytes_per_pixel(bytes: &[u8]) -> usize {
+    use craft_image_codecs::{Format, RasterColorType as C};
+    if is_eps(bytes) {
+        return eps::preview(bytes).map_or(8, |(tiff, _)| if is_eps(tiff) { 8 } else { decode_bytes_per_pixel(tiff) });
+    }
+    let info = craft_image_codecs::inspect_raster(bytes).ok().flatten();
+    let sample_bytes = |bits: u8| match bits {
+        0..=8 => 1,
+        9..=16 => 2,
+        _ => 4,
+    };
+    if is_psd(bytes) {
+        // The merged channels as stored, an 8-bit copy of each when they are deeper, and the RGBA
+        // result; CMYK keeps its ink and alpha planes beside the stored channels instead.
+        let Some(info) = info else { return 9 };
+        let size = sample_bytes(info.bits_per_sample);
+        let stored = usize::from(info.channels.max(1)) * size;
+        let narrowed = if size > 1 { usize::from(info.channels.max(1)) } else { 0 };
+        let peak = if info.color_type == C::Cmyk { stored + 5 } else { stored + narrowed + 4 };
+        return peak.max(9);
+    }
+    let format = craft_image_codecs::detect(bytes);
+    let Some(info) = info else {
+        return match format {
+            None | Some(Format::WebP) => 8,
+            // Formats the header inspection doesn't read: counted as 32-bit float RGBA.
+            Some(_) => 16 + 16 + 4,
+        };
+    };
+    let float = info.bits_per_sample > 16
+        || (format == Some(Format::Tiff)
+            && craft_image_codecs::tiff_info(bytes)
+                .ok()
+                .is_some_and(|t| t.default_page().and_then(|i| t.pages.get(i)).is_some_and(|page| page.sample_format == 3)));
+    let (model_channels, direct) = match info.color_type {
+        C::Bitmap | C::Gray => (1, true),
+        C::GrayAlpha => (2, true),
+        C::Rgb => (3, true),
+        C::Indexed | C::Rgba => (4, true),
+        C::Cmyk => (4, true),
+        C::CmykAlpha => (5, true),
+        C::Lab => (3, false),
+        C::Other => (4, false),
+    };
+    let channels = usize::from(info.channels).max(model_channels);
+    let stored = channels * sample_bytes(info.bits_per_sample);
+    let cmyk = matches!(info.color_type, C::Cmyk | C::CmykAlpha);
+    let out = if cmyk { 5 } else { 4 };
+    // Integer samples of the same colour model convert straight into the 8-bit copy; others go
+    // through 32-bit float samples, then a float copy in the target layout.
+    let converted = if direct && !float { out } else { 4 * channels + 4 * out + out };
+    // CMYK splits the 8-bit CMYKA copy into ink and alpha planes.
+    let split = if cmyk { 5 } else { 0 };
+    let coefficients = jpeg::progressive_coefficient_bytes(bytes);
+    (stored + converted + split).max(2 * stored).max(coefficients + stored).max(8)
+}
+
 fn decode_options() -> craft_image_codecs::DecodeOptions {
     craft_image_codecs::DecodeOptions { limits: craft_image_codecs::Limits { max_alloc: MAX_RGBA_BYTES, ..Default::default() }, ..Default::default() }
 }
@@ -452,6 +516,13 @@ fn cmyk_raster(image: &craft_image_codecs::Image, bytes: &[u8]) -> Option<CmykRa
     }
     let alpha = alpha.iter().any(|&a| a < 255).then_some(alpha);
     Some(CmykRaster { width: converted.width(), height: converted.height(), cmyk, alpha })
+}
+
+/// Dimensions and estimated peak bytes for a JPEG decoded at `1/2^shrink`, without decoding its
+/// pixels. Progressive JPEG coefficient buffers are included. `None` when the reduced decoder
+/// cannot handle the image.
+pub fn reduced_jpeg_estimate(bytes: &[u8], shrink: u8) -> Option<(u32, u32, usize)> {
+    jpeg::reduced_estimate(bytes, shrink)
 }
 
 /// False when `bytes` is a WebP whose `ICCP` chunk declares more bytes than the file holds or than
@@ -512,20 +583,29 @@ pub struct CmykRaster {
     pub alpha: Option<Vec<u8>>,
 }
 
+/// The TIFF page that decoding opens; `None` for other formats.
+fn default_tiff_page(bytes: &[u8]) -> Option<craft_image_codecs::TiffPage> {
+    let mut info = craft_image_codecs::tiff_info(bytes).ok()?;
+    let page = info.default_page()?;
+    (page < info.pages.len()).then(|| info.pages.swap_remove(page))
+}
+
 /// A TIFF whose pixels are CMYK (PhotometricInterpretation Separated, four inks).
 pub fn is_cmyk_tiff(bytes: &[u8]) -> bool {
-    craft_image_codecs::tiff_info(bytes)
-        .ok()
-        .and_then(|info| info.default_page().and_then(|i| info.pages.get(i).map(|page| (page.photometric, page.samples_per_pixel))))
-        .is_some_and(|(photometric, samples)| photometric == Some(5) && matches!(samples, 4 | 5))
+    default_tiff_page(bytes).is_some_and(|page| page.photometric == Some(5) && matches!(page.samples_per_pixel, 4 | 5))
 }
 
 /// The ink values of a CMYK TIFF, which [`decode_rgba`] converts to RGB. 8- or 16-bit CMYK,
-/// pixels interleaved, opaque or with unassociated alpha. `None` for anything else — another
-/// format, another ink set (InkSet 2), planar storage or premultiplied alpha — and for files
-/// over the decoder's 256 MiB limit; [`is_cmyk_tiff`] tells those apart from RGB files.
+/// opaque or with alpha (associated alpha is made straight). `None` for anything else —
+/// another format or another ink set (InkSet 2) — and for files over the decoder's 256 MiB
+/// limit; [`is_cmyk_tiff`] tells those apart from RGB files.
 pub fn decode_cmyk_tiff(bytes: &[u8]) -> Option<CmykRaster> {
     if too_large_to_decode(bytes) {
+        return None;
+    }
+    // InkSet (tag 332): absent or 1 = CMYK; 2 = the inks named in InkNames; other values are
+    // undefined. Only CMYK samples are C, M, Y and K; reading others as such prints wrong colours.
+    if default_tiff_page(bytes).is_some_and(|page| page.ink_set.is_some_and(|set| set != craft_image_codecs::InkSet::Cmyk)) {
         return None;
     }
     let image = craft_image_codecs::decode_with(bytes, &decode_options()).ok()?;
