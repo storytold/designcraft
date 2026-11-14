@@ -112,6 +112,19 @@ fn caption(s: &mut Session, p: &Value) -> Result<Value> {
     })
 }
 
+/// Whether any item on the document spreads, inside groups included, is a live caption: the
+/// items [`refresh_live`] visits.
+pub(crate) fn has_live(d: &Document) -> bool {
+    let mut found = false;
+    for it in d.spreads.iter().flat_map(|sp| &sp.items) {
+        it.walk(&mut |i| found |= i.live_caption.is_some());
+        if found {
+            return true;
+        }
+    }
+    false
+}
+
 /// Bring live captions up to date with their source objects (the text frame's story is
 /// replaced when its text changed; a caption whose source is gone keeps its last text).
 pub(crate) fn refresh_live(d: &mut Document) -> bool {
@@ -217,5 +230,28 @@ mod tests {
         s.preview("object.altText", json!({"text": long, "ids": [a]})).unwrap();
         s.commit_interaction().unwrap();
         assert!(height(&s) > short + 5.0, "the caption frame grows with its text: {short} -> {}", height(&s));
+    }
+
+    #[test]
+    fn grouped_live_caption_follows_its_source() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let a = s.execute("frame.create", &json!({"rect": [72, 72, 272, 172]})).unwrap()["id"].as_u64().unwrap();
+        let b = s.execute("frame.create", &json!({"rect": [300, 72, 400, 172]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("object.altText", &json!({"text": "First", "ids": [a]})).unwrap();
+        let r = s.execute("object.caption", &json!({"ids": [a], "text": "Photo: {altText}", "live": true})).unwrap();
+        let cid = designcraft_doc::ItemId(r["ids"][0].as_u64().unwrap());
+        // The only live caption sits inside a group, not at the top of the spread.
+        s.execute("object.group", &json!({"ids": [cid.0, b]})).unwrap();
+        let text = |s: &Session| {
+            let d = &s.doc().unwrap().doc;
+            d.stories[&d.item(cid).unwrap().text_frame().unwrap().story].text.clone()
+        };
+        s.execute("object.altText", &json!({"text": "Second", "ids": [a]})).unwrap();
+        assert_eq!(text(&s), "Photo: Second", "updated by a command");
+        s.begin_interaction("Alt Text").unwrap();
+        s.preview("object.altText", json!({"text": "Third", "ids": [a]})).unwrap();
+        s.commit_interaction().unwrap();
+        assert_eq!(text(&s), "Photo: Third", "updated when the gesture commits");
     }
 }

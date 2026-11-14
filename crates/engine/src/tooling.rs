@@ -312,7 +312,7 @@ impl Session {
         if !Arc::ptr_eq(&it.doc, &st.doc) {
             // Previews skip the live caption refresh, so the committed change brings captions up
             // to date here, in the same undo step, and auto-sizes the caption frames it changed.
-            if st.doc.spreads.iter().any(|sp| sp.items.iter().any(|i| i.live_caption.is_some())) {
+            if crate::cmd::captions::has_live(&st.doc) {
                 let mut d = (*st.doc).clone();
                 if crate::cmd::captions::refresh_live(&mut d) {
                     let todo = crate::autosize::candidates(&d, Some(&st.doc));
