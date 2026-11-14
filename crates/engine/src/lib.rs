@@ -408,6 +408,12 @@ pub struct Session {
     /// The selection tool a Cmd-held press borrows for one gesture while another tool stays
     /// chosen (#919). Dropped on release.
     pub(crate) temp_tool: Option<Box<dyn designcraft_tools::Tool>>,
+    /// The tool's gesture began while another interaction (a dialog's preview) was open, so its
+    /// Begin was refused: its previews, commit and cancel are dropped until it ends.
+    pub(crate) refused_gesture: bool,
+    /// The document uid and starting revision of the interaction the tool's gesture opened, while
+    /// it is open.
+    pub(crate) tool_interaction: Option<(u64, u64)>,
     /// The selection tool (`selection` or `directSelection`) chosen last: the one Cmd borrows.
     pub(crate) last_selection_tool: &'static str,
     pub journal: Vec<(String, Value)>,
@@ -484,6 +490,8 @@ impl Session {
             cache: Arc::new(Cache::new()),
             tool: designcraft_tools::create("selection"),
             temp_tool: None,
+            refused_gesture: false,
+            tool_interaction: None,
             last_selection_tool: "selection",
             journal: vec![],
             find_context: None,
