@@ -461,9 +461,11 @@ pub(crate) fn add_system_fallbacks(fonts: &mut FontDefinitions, system: &[System
     for (family, stack) in fonts.families.iter_mut() {
         // The Arabic families keep their own order (see `font_definitions`).
         let arabic = matches!(family, FontFamily::Name(n) if n.starts_with("arabic"));
-        let at = if arabic { stack.len() } else { stack.iter().position(|n| n.starts_with("craft-")).unwrap_or(stack.len()) };
+        let mono_fallback = |stack: &[String]| stack.iter().position(|n| n == "mono").filter(|&i| i > 0).unwrap_or(stack.len());
+        let at = if arabic { mono_fallback(stack) } else { stack.iter().position(|n| n.starts_with("craft-")).unwrap_or(mono_fallback(stack)) };
         stack.splice(at..at, preferred.iter().cloned());
-        stack.extend(rest.iter().cloned());
+        let at = mono_fallback(stack);
+        stack.splice(at..at, rest.iter().cloned());
     }
 }
 
@@ -536,6 +538,12 @@ pub(crate) fn font_definitions(craft: &'static [designcraft_fonts::CraftFont], l
             .chain(last_resort.iter().cloned());
         let mut seen = std::collections::HashSet::new();
         fonts.families.insert(FontFamily::Name(family.into()), stack.filter(|n| seen.insert(n.clone())).collect());
+    }
+    // The bundled mono face supplies shortcut symbols such as ⇥ that the UI face lacks.
+    for stack in fonts.families.values_mut() {
+        if !stack.iter().any(|name| name == "mono") {
+            stack.push("mono".into());
+        }
     }
     fonts
 }
@@ -612,6 +620,48 @@ mod japanese_font_tests {
         ctx
     }
 
+    #[test]
+    fn keyboard_shortcut_symbols_are_available_without_extra_fonts() {
+        let defs = super::font_definitions(&[], "ja");
+        assert_eq!(defs.families[&egui::FontFamily::Proportional][0], "ui");
+        assert_eq!(defs.families[&egui::FontFamily::Name("semibold".into())][0], "ui-semibold");
+        let ctx = ctx_with(&[]);
+        ctx.fonts_mut(|fonts| {
+            for family in families() {
+                let font = egui::FontId::new(13.0, family);
+                for ch in "⌃⌥⇧⌘⇥".chars() {
+                    assert!(fonts.has_glyph(&font, ch), "missing {ch} in {font:?}");
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn installed_script_fonts_precede_the_mono_fallback_without_craft_fonts() {
+        let face = |family: &str, script| {
+            super::SystemFont::new(script, family.into(), designcraft_fonts::testing::font_with(family, &['日', '｝']).unwrap(), 0)
+        };
+        let system = [face("DC Ja", "Jpan"), face("DC Hans", "Hans"), face("DC Arabic", "Arab"), face("DC Tamil", "Taml")];
+        for (lang, preferred, other) in [("ja", "system-DC Ja", "system-DC Hans"), ("zh", "system-DC Hans", "system-DC Ja")] {
+            let mut defs = super::font_definitions(&[], lang);
+            super::add_system_fallbacks(&mut defs, &system, lang);
+            for family in [
+                egui::FontFamily::Proportional,
+                egui::FontFamily::Name("semibold".into()),
+                egui::FontFamily::Name("arabic".into()),
+                egui::FontFamily::Name("arabic-semibold".into()),
+            ] {
+                let stack = &defs.families[&family];
+                let at = |name: &str| stack.iter().position(|n| n == name).unwrap();
+                assert!(at(preferred) < at(other), "{lang} {family:?}: {stack:?}");
+                for name in [preferred, other, "system-DC Arabic", "system-DC Tamil"] {
+                    assert!(at(name) < at("mono"), "{lang} {family:?}: {name} follows mono: {stack:?}");
+                }
+            }
+            assert_eq!(defs.families[&egui::FontFamily::Monospace][0], "mono");
+        }
+    }
+
     /// A newly supplied script must remain usable without any matching installed system font.
     /// Previously craft's script coverage suppressed system discovery while these faces were
     /// omitted from the actual UI font definitions, so a Hebrew tab panicked on its first glyph.
@@ -663,7 +713,10 @@ mod japanese_font_tests {
         let mut defs = super::font_definitions(&[], "ja");
         super::add_system_fallbacks(&mut defs, &system, "ja");
         for family in families() {
-            assert_eq!(defs.families[&family].last().map(String::as_str), Some("system-DC UI Japanese"), "{family:?}");
+            let stack = &defs.families[&family];
+            let system_at = stack.iter().position(|n| n == "system-DC UI Japanese").unwrap();
+            let mono_at = stack.iter().position(|n| n == "mono").unwrap();
+            assert!(if family == egui::FontFamily::Monospace { mono_at < system_at } else { system_at < mono_at }, "{family:?}: {stack:?}");
         }
         let ctx = egui::Context::default();
         ctx.set_fonts(defs);
@@ -730,7 +783,9 @@ mod japanese_font_tests {
         for (lang, first) in [("ja", "DC Ja"), ("zh", "DC Hans"), ("zh-hant", "DC Hant"), ("ko", "DC Ko"), ("", "DC Ja")] {
             let mut defs = super::font_definitions(&[], lang);
             // Stand-in for a built-in CJK face (craft-fonts may be absent in this build).
-            defs.families.entry(egui::FontFamily::Proportional).or_default().push("craft-Stand-in".into());
+            let stack = defs.families.entry(egui::FontFamily::Proportional).or_default();
+            let at = stack.iter().position(|name| name == "mono").unwrap_or(stack.len());
+            stack.insert(at, "craft-Stand-in".into());
             super::add_system_fallbacks(&mut defs, &system, lang);
             let stack = &defs.families[&egui::FontFamily::Proportional];
             let at = |n: &str| stack.iter().position(|x| x == n).unwrap();
@@ -770,7 +825,9 @@ mod japanese_font_tests {
         assert_eq!(picked, [("Jpan", "Noto Sans CJK JP"), ("Taml", "Nirmala UI"), ("Thai", "Noto Sans Thai")]);
 
         let mut defs = super::font_definitions(&[], "ja");
-        defs.families.entry(egui::FontFamily::Proportional).or_default().push("craft-Stand-in".into());
+        let stack = defs.families.entry(egui::FontFamily::Proportional).or_default();
+        let at = stack.iter().position(|name| name == "mono").unwrap_or(stack.len());
+        stack.insert(at, "craft-Stand-in".into());
         super::add_system_fallbacks(&mut defs, &system, "ja");
         let stack = &defs.families[&egui::FontFamily::Proportional];
         let at = |n: &str| stack.iter().position(|x| x == n).unwrap();
