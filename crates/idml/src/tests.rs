@@ -1276,6 +1276,37 @@ fn round_trips_footnotes_and_options() {
     assert_eq!(back.footnote_options, d.footnote_options);
 }
 
+/// IDML has no endnote structure written yet, so each endnote reference keeps its number as
+/// superscript text: the place of the endnote isn't lost (#2753).
+#[test]
+fn exports_endnote_reference_numbers() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (_, sid) =
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(40.0, 40.0, 400.0, 400.0), lid, "One here, two there.", ParaFormat::default()).unwrap();
+    {
+        let s = d.story_mut(sid).unwrap();
+        s.insert_endnote(8, "First endnote.", ParaFormat::default()).unwrap();
+        let at = s.text.find(" there").unwrap() + " there".len();
+        s.insert_endnote(at, "Second endnote.", ParaFormat::default()).unwrap();
+    }
+    d.endnote_options.start_at = 4;
+    d.endnote_options.prefix = "[".into();
+    d.endnote_options.suffix = "]".into();
+    d.check().unwrap();
+    let bytes = export_idml(&d);
+    let xml = zip_text(&bytes, "Stories/");
+    assert!(xml.contains("<Content>[4]</Content>"), "first reference number: {xml}");
+    assert!(xml.contains("<Content>[5]</Content>"), "second reference number: {xml}");
+    let back = import_idml(&bytes).unwrap();
+    back.check().unwrap();
+    let s = back.stories.values().find(|s| s.text.contains("One here")).unwrap();
+    assert_eq!(s.text, "One here[4], two there[5].");
+    let at = s.text.find("[4]").unwrap();
+    assert_eq!(s.char_format_at(at + 1).over.position, Some(designcraft_doc::Position::Superscript));
+    assert_eq!(s.char_format_at(0).over.position, None);
+}
+
 /// The structure InDesign writes: the footnote in its own superscript range, its text starting
 /// with the number marker and the separator.
 #[test]
@@ -4313,6 +4344,8 @@ fn object_style_effects_round_trip() {
     };
     d.styles_mut().object.push(ObjectStyle { name: "Photo".into(), effects: Some(fx.clone()), ..Default::default() });
     d.styles_mut().object.push(ObjectStyle { name: "Plain".into(), fill: Some(Fill::swatch("Black")), ..Default::default() });
+    let rounded = designcraft_geom::corners::CornerOptions::uniform(designcraft_geom::corners::CornerShape::Rounded, 9.0);
+    d.styles_mut().object.push(ObjectStyle { name: "Rounded".into(), corners: Some(rounded), ..Default::default() });
     let lid = d.default_layer();
     let id = designcraft_doc::ItemId(d.alloc());
     let mut it = designcraft_doc::Item::new(id, lid, Shape::Rectangle, shapes::rectangle(Rect::new(40.0, 40.0, 140.0, 140.0)));
@@ -4343,6 +4376,9 @@ fn object_style_effects_round_trip() {
     assert!((ds.distance - 5.0).abs() < 1e-6 && (ds.angle - DropShadow::default().angle).abs() < 1e-6, "{ds:?}");
     assert_eq!(got.feather, 3.0);
     assert!(style("Plain").effects.is_none());
+    // Corner options (Stroke & Corner Options).
+    assert_eq!(style("Rounded").corners, Some(rounded));
+    assert_eq!(style("Plain").corners, None);
     // The frame's effects are the style's, so it follows later edits of the style.
     let frames: Vec<_> = back.spreads[0].items.iter().filter(|i| i.object_style == "Photo").collect();
     assert_eq!(frames[0].effects, got);
@@ -4722,7 +4758,7 @@ fn oversized_part_is_refused() {
     }
     assert_eq!(patched, 2);
     let Err(err) = import_idml(&bytes) else { panic!("an oversized part imported") };
-    assert!(err.to_string().contains("limit"), "{err}");
+    assert!(err.to_string().contains("IDML part"), "{err}");
 }
 
 /// A package with more entries than any document needs is refused before any is read.

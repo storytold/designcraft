@@ -15,22 +15,26 @@ impl Renderer {
             drawing_items: Vec::new(),
             cmyk_view: None,
             cmyk_ran: false,
+            kept: Default::default(),
             #[cfg(test)]
             cmyk_passes: 0,
             #[cfg(test)]
             cmyk_pass_pixels: 0,
             #[cfg(test)]
             cmyk_pass_items: 0,
+            #[cfg(test)]
+            cmyk_convert_bands: 0,
             threads: default_threads(),
             stats: FrameStats::default(),
         }
     }
 
-    /// Drop cached glyph paths and the CMYK viewport (rebuilt on demand).
+    /// Drop cached glyph paths, effect images and the CMYK viewport (rebuilt on demand).
     pub fn clear_caches(&mut self) {
         self.cmyk_view = None;
         self.glyphs.clear();
         self.stories.clear();
+        self.kept.clear();
     }
 
     /// Number of text frames whose glyph paths are cached.
@@ -44,6 +48,7 @@ impl Renderer {
         let (width, height) = size;
         RICH_BLACK.with(|r| r.set(opts.rich_black));
         PLATE.with(|p| p.set(opts.plate));
+        self.kept.begin(doc);
         if let Some(hit) = self.cmyk_view.as_ref().filter(|entry| entry.matches(doc, spreads, width, height, view, opts, self.threads)) {
             let image = hit.image();
             self.stats = hit.stats();

@@ -565,7 +565,10 @@ fn screenshot(b: &mut dyn Backend, a: &Args) -> Result<ToolResult, String> {
 fn private_temp_dir(prefix: &str) -> Result<std::path::PathBuf, String> {
     let nanos = std::time::SystemTime::UNIX_EPOCH.elapsed().map_or(0, |d| d.as_nanos());
     let dir = std::env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()));
+    #[cfg(unix)]
     let mut builder = std::fs::DirBuilder::new();
+    #[cfg(not(unix))]
+    let builder = std::fs::DirBuilder::new();
     #[cfg(unix)]
     {
         use std::os::unix::fs::DirBuilderExt;

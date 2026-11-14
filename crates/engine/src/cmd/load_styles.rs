@@ -85,7 +85,7 @@ fn source(p: &Value, id: &str) -> Result<(Document, Vec<String>)> {
         (Some(path), None) => (crate::io::read_file(path).map_err(|e| bad(id, e))?, path.to_string()),
         _ => return Err(bad(id, "give `path` or `base64`")),
     };
-    if name.to_lowercase().ends_with(".idml") {
+    if craft_file_formats::detect(&name, &bytes) == Some(craft_file_formats::Format::Idml) {
         designcraft_idml::import_idml_report_with_fonts(&bytes, &|_| None, &std::collections::HashMap::new(), &super::interchange::glyph_char)
             .map(|r| (r.document, r.warnings))
             .map_err(|e| bad(id, e.to_string()))
