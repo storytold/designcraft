@@ -4,7 +4,8 @@
 //! entry per reference in text order (like footnotes). Numbering runs through the document in
 //! page order. The endnote frame shows a story that is generated from every endnote: a heading
 //! and one numbered paragraph per endnote ([`Document::endnote_text`]); its text isn't typed
-//! into, endnotes are edited through their references.
+//! into, endnotes are edited through their references. Character formatting applied to endnote
+//! text in the frame goes into the endnotes ([`Document::keep_endnote_frame_formatting`]).
 
 use std::sync::Arc;
 
@@ -158,6 +159,12 @@ impl crate::Document {
 
     /// The endnote frame's text: the heading, then "number separator text" per endnote, in order.
     pub fn endnote_text(&self, id: StoryId) -> Story {
+        self.endnote_text_spans(id).0
+    }
+
+    /// [`Self::endnote_text`] and where each endnote's text is in it: (story, endnote id, range).
+    fn endnote_text_spans(&self, id: StoryId) -> (Story, Vec<(StoryId, u64, std::ops::Range<usize>)>) {
+        let mut spans = Vec::new();
         let o = &self.endnote_options;
         let para = |style: &str| ParaFormat { style: style.to_string(), ..Default::default() };
         let mut out = Story::with_text(id, &o.heading, para(&o.heading_style));
@@ -173,14 +180,58 @@ impl crate::Document {
                 out.paras[pi] = para(&o.para_style);
                 let at = out.len();
                 out.insert_with(at, &format!("{}{}", o.label(n), o.separator), CharFormat::default());
+                let start = out.len();
                 for (r, f) in note.text.runs() {
                     let at = out.len();
                     out.insert_with(at, &note.text.text[r].replace('\n', " "), f.clone());
                 }
+                spans.push((st.id, note.id, start..out.len()));
                 n = n.saturating_add(1);
             }
         }
-        out
+        (out, spans)
+    }
+
+    /// Character formatting applied to endnote text in the endnote frame since `before` goes
+    /// into the endnotes, so rebuilding the frame ([`Self::sync_endnote_story`]) keeps it (#1398).
+    /// The endnotes stay the source: only an endnote whose formatting changed in the frame takes
+    /// the frame's, and only while the frame's text is unchanged and still lists the endnotes as
+    /// they are (a frame left stale by an edit to the endnotes never overwrites them).
+    pub fn keep_endnote_frame_formatting(&mut self, before: &crate::Document) {
+        let Some(sid) = self.endnote_story else { return };
+        let (Some(cur), Some(old)) = (self.stories.get(&sid), before.stories.get(&sid)) else { return };
+        if Arc::ptr_eq(cur, old) || cur.chars == old.chars || cur.text != old.text {
+            return;
+        }
+        let (fresh, spans) = self.endnote_text_spans(sid);
+        if fresh.text != cur.text {
+            return;
+        }
+        // The runs of `st` within `r`, relative to `r.start`.
+        let runs_in = |st: &Story, r: &std::ops::Range<usize>| -> Vec<(std::ops::Range<usize>, CharFormat)> {
+            st.runs()
+                .filter_map(|(x, f)| {
+                    let (a, b) = (x.start.max(r.start), x.end.min(r.end));
+                    (a < b).then(|| (a - r.start..b - r.start, f.clone()))
+                })
+                .collect()
+        };
+        let mut changed = Vec::new();
+        for (owner, id, r) in spans {
+            let now = runs_in(cur, &r);
+            if now != runs_in(old, &r) {
+                changed.push((owner, id, r.len(), now));
+            }
+        }
+        for (owner, id, len, runs) in changed {
+            let Some(note) = self.story_mut(owner).and_then(|st| st.endnote_mut(id)) else { continue };
+            if note.text.len() != len {
+                continue;
+            }
+            for (r, f) in runs {
+                note.text.format_chars(r, |c| *c = f.clone());
+            }
+        }
     }
 
     /// Bring the endnote frame's story up to date with the endnotes (after any edit).

@@ -839,7 +839,8 @@ impl Session {
         crate::cmd::flex::sync(&mut doc);
         crate::cmd::alpha_wrap::sync(&mut doc);
         // The generated endnote story first: it replaces its text, anchored frames pasted into it
-        // included.
+        // included. Formatting applied to endnote text in the frame goes into the endnotes first.
+        doc.keep_endnote_frame_formatting(&st.doc);
         doc.sync_endnote_story();
         // Text and frames copied or deleted: anchored items keep ids and stories of their own. The
         // repair copies and removes stories with their endnotes, so the endnotes follow it.

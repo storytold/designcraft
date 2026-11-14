@@ -177,6 +177,49 @@ mod tests {
         assert_eq!(s.doc().unwrap().doc.stories[&esid].text, "Notes\ni\tEarlier.\nii\tEdited.");
     }
 
+    /// Italics and character styles applied to endnote text in the endnote frame stay there
+    /// through later edits (#1398).
+    #[test]
+    fn formatting_applied_in_the_endnote_frame_is_kept() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 1})).unwrap();
+        let a = s.execute("frame.create", &json!({"rect": [72, 72, 400, 300], "content": "text", "text": "Alpha beta."})).unwrap();
+        s.execute("text.select", &json!({"story": a["story"], "anchor": 5, "focus": 5})).unwrap();
+        let r = s.execute("endnote.insert", &json!({"text": "See Moby-Dick, passim."})).unwrap();
+        s.execute("text.select", &json!({"story": a["story"], "anchor": 0, "focus": 0})).unwrap();
+        s.execute("endnote.insert", &json!({"text": "Earlier."})).unwrap();
+        let esid = s.doc().unwrap().doc.endnote_story.unwrap();
+        let text = s.doc().unwrap().doc.stories[&esid].text.clone();
+        assert_eq!(text, "Endnotes\n1\tEarlier.\n2\tSee Moby-Dick, passim.");
+        let at = |w: &str| text.find(w).unwrap();
+        let (moby, passim) = (at("Moby-Dick"), at("passim"));
+        s.execute("text.select", &json!({"story": esid.0, "anchor": moby, "focus": moby + "Moby-Dick".len()})).unwrap();
+        s.execute("type.char", &json!({"attrs": {"fontStyle": "Italic"}})).unwrap();
+        s.execute("style.character.create", &json!({"name": "Foreign", "chars": {"fontStyle": "Italic"}})).unwrap();
+        s.execute("text.select", &json!({"story": esid.0, "anchor": passim, "focus": passim + "passim".len()})).unwrap();
+        s.execute("style.character.apply", &json!({"name": "Foreign"})).unwrap();
+        // Another edit rebuilds the endnote frame.
+        s.execute("endnote.options", &json!({"heading": "Notes"})).unwrap();
+        let d = s.doc().unwrap().doc.clone();
+        let sid = designcraft_doc::StoryId(r["story"].as_u64().unwrap());
+        let note = &d.stories[&sid].endnote(r["id"].as_u64().unwrap()).unwrap().text;
+        let style_of = |f: &designcraft_doc::CharFormat| serde_json::to_value(&f.over).unwrap()["fontStyle"].clone();
+        assert_eq!(style_of(note.char_format_of(4)), json!("Italic"), "direct italic kept in the endnote");
+        assert_eq!(style_of(note.char_format_of(0)), serde_json::Value::Null, "the rest stays roman");
+        assert_eq!(note.char_format_of(15).style, "Foreign", "character style kept in the endnote");
+        let shown = &d.stories[&esid];
+        assert_eq!(shown.text, "Notes\n1\tEarlier.\n2\tSee Moby-Dick, passim.");
+        assert_eq!(style_of(shown.char_format_of(shown.text.find("Moby").unwrap())), json!("Italic"));
+        assert_eq!(shown.char_format_of(shown.text.find("passim").unwrap()).style, "Foreign");
+        assert_eq!(style_of(shown.char_format_of(shown.text.find("Earlier").unwrap())), serde_json::Value::Null);
+        // Undo takes the character style back off.
+        s.execute("edit.undo", &json!({})).unwrap();
+        s.execute("edit.undo", &json!({})).unwrap();
+        let d = s.doc().unwrap().doc.clone();
+        let note = &d.stories[&sid].endnote(r["id"].as_u64().unwrap()).unwrap().text;
+        assert_ne!(note.char_format_of(15).style, "Foreign");
+    }
+
     #[test]
     fn deleting_an_endnote_keeps_the_caret_on_its_character() {
         let mut s = Session::new();
