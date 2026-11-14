@@ -40,10 +40,9 @@ fn shown(file: Vec<u8>, fill: Fill) -> Vec<[u8; 4]> {
             name: "a".into(),
             mime: "image/png".into(),
             link: None,
-            data: Arc::new(file),
+            data: designcraft_doc::AssetData::embedded(file),
             pixels: Some((3, 1)),
-            pdf_crop: Default::default(),
-            pdf_box: None,
+            ..Default::default()
         }),
     );
     let id = ItemId(d.alloc());

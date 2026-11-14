@@ -13,6 +13,7 @@ workspace = true
 craft-ui = { workspace = true, features = ["native-windows"] }
 craft-window = { workspace = true }
 craft-keymap = { workspace = true }
+craft-file-formats = { workspace = true }
 designcraft-geom = { workspace = true }
 designcraft-color = { workspace = true }
 designcraft-doc = { workspace = true }
@@ -26,6 +27,7 @@ craft-prepress = { workspace = true }
 # The UI draws monochrome icon glyphs from egui's bundled emoji faces (☰, ⚠, 📋); 0.37 moved
 # them behind this feature. They stay bundled copies of OSI/CC0 faces from `epaint_default_fonts`.
 egui = { workspace = true, features = ["monochrome_emoji_fonts"] }
+egui_extras = { workspace = true }
 web-time = { workspace = true }
 # Unicode bidi classes are used only to bypass the label cache for ordinary LTR text.
 unicode-bidi = { workspace = true }
@@ -43,6 +45,7 @@ zip = { workspace = true }
 # Headless (offscreen wgpu) rendering of the whole window for UI screenshots: `examples/ui_shot.rs`.
 egui_kittest = { workspace = true, features = ["wgpu", "snapshot"] }
 designcraft-fonts = { workspace = true, features = ["testing"] }
+designcraft-engine = { workspace = true, features = ["testing"] }
 
 [build-dependencies]
 serde_json = { workspace = true }
