@@ -271,6 +271,8 @@ pub struct Deco {
     pub nonprinting: bool,
     /// Set to overprint (paragraph shading or border); PDF export doesn't overprint yet.
     pub overprint: bool,
+    /// The rule above a footnote area (a table cell's composition drops it with its notes).
+    pub footnote_rule: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -313,7 +315,8 @@ pub struct PlacedObject {
 /// A footnote composed at the bottom of a column.
 #[derive(Clone, Debug)]
 pub struct PlacedNote {
-    /// Footnote id (in the story's [`Story::notes`]) and its index there.
+    /// Footnote id and index in its owning story (the host story or a table cell).
+    /// Cell-note indices must not be used to index the host story's notes.
     pub id: u64,
     pub index: usize,
     pub column: u32,
@@ -326,6 +329,8 @@ pub struct PlacedNote {
     pub text: Arc<ComposedStory>,
     /// The footnote's story text (exporters map glyphs back to text).
     pub source: Arc<str>,
+    /// The footnote itself (a table cell's notes reach the column foot too).
+    pub note: Arc<designcraft_doc::Footnote>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -3681,7 +3686,7 @@ struct FinishInput<'a> {
 
 fn finish_composition(input: FinishInput<'_>) -> ComposedStory {
     let FinishInput { doc, story, frames, cols, notes, out, boxes, span_paras, split_paras, grid_paras, styles_tab } = input;
-    notes.finish(doc, story, frames, cols, out);
+    notes.finish(doc, frames, cols, out);
     // The story byte of each anchored object's mark, found once for every frame that holds one.
     let mut marks: Option<Vec<usize>> = None;
     // Ranges, content heights and vertical justification.
