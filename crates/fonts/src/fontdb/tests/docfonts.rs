@@ -227,6 +227,8 @@ fn a_wws_family_that_is_also_the_legacy_family_finds_the_optical_size_face() {
     assert_eq!(fonts.face("DocFont Kepler Display", "Light").style, "Light Display", "the display face, not the text size");
     assert_eq!(fonts.styles("DocFont Kepler Display"), ["Light"]);
     assert!(fonts.has_style("DocFont Kepler Display", "Light"));
+    // Axis settings on a static face aren't applied, so that style isn't there (#2672 review).
+    assert!(!fonts.has_style("DocFont Kepler Display", "Light {wght:650}"));
     assert_eq!(fonts.face("DocFont Kepler", "Light").style, "Light");
     let _ = std::fs::remove_dir_all(&folder);
 }

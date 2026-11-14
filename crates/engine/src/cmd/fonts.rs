@@ -554,4 +554,38 @@ mod resolution_tests {
         s.execute("edit.undo", &json!({})).unwrap();
         assert_eq!(before, s.execute("font.list", &json!({})).unwrap());
     }
+
+    /// #2618: a face's legacy family name with a style it doesn't have (`Source Serif 4
+    /// Semibold` `Regular`, which the lookup takes to Source Serif 4 Regular) is a substitute,
+    /// not exact; the typographic name and an alternate spelling of it stay exact.
+    #[test]
+    fn a_legacy_family_name_resolving_to_another_face_is_a_style_substitute() {
+        let status = |family: &str, style: &str| {
+            let mut s = Session::new();
+            s.execute("file.new", &json!({})).unwrap();
+            s.execute("frame.create", &json!({"rect":[20,20,300,400],"content":"text","text":"Body"})).unwrap();
+            let d = Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+            let sid = *d.stories.keys().next().unwrap();
+            d.story_mut(sid).unwrap().format_chars(0..4, |f| {
+                f.over.font_family = Some(family.into());
+                f.over.font_style = Some(style.into());
+            });
+            let list = s.execute("font.list", &json!({})).unwrap();
+            let font = list.as_array().unwrap().iter().find(|f| f["family"] == family).cloned().unwrap();
+            let preflight = s.execute("preflight.run", &json!({})).unwrap();
+            let flagged = preflight["issues"].as_array().unwrap().iter().any(|i| i["kind"] == "missingFontStyle");
+            (font, flagged)
+        };
+        let (font, flagged) = status("Source Serif 4 Semibold", "Regular");
+        assert_eq!((font["resolvedFamily"].as_str(), font["resolvedStyle"].as_str()), (Some("Source Serif 4"), Some("Regular")), "{font}");
+        assert_eq!(font["matchStatus"], "styleSubstitute", "{font}");
+        assert_eq!(font["styleMissing"], true);
+        assert_eq!(font["missing"], false);
+        assert!(flagged, "preflight reports the substituted style");
+        for (family, style) in [("Source Serif 4", "Semibold"), ("Source Serif 4 (OTF)", "Semibold"), ("Source Serif 4", "Regular")] {
+            let (font, flagged) = status(family, style);
+            assert_eq!(font["matchStatus"], "exact", "{family} {style}: {font}");
+            assert!(!flagged, "{family} {style}");
+        }
+    }
 }
