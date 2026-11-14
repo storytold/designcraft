@@ -1786,6 +1786,7 @@ struct ParagraphLines<'a> {
     drop_cap: Option<&'a DropCap>,
     base_chars: &'a designcraft_doc::CharProps,
     mark_chars: &'a designcraft_doc::CharProps,
+    mark_em: &'a MarkEm,
     mark_leading: f64,
     base_leading: f64,
     last_line_mark: Option<f64>,
@@ -1840,6 +1841,7 @@ struct PositionLineInput<'a, 'font> {
     db: &'a ScopedFonts<'font>,
     mark_leading: f64,
     mark_chars: &'a designcraft_doc::CharProps,
+    mark_em: &'a MarkEm,
     last_line_mark: Option<f64>,
 }
 
@@ -1883,6 +1885,7 @@ fn position_line(input: PositionLineInput<'_, '_>) -> LinePosition {
         db,
         mark_leading,
         mark_chars,
+        mark_em,
         last_line_mark,
     } = input;
     let (mut x0, mut x1) = (col.x0, col.x1);
@@ -1935,7 +1938,7 @@ fn position_line(input: PositionLineInput<'_, '_>) -> LinePosition {
                                 Some(mark) if j + 1 == breaks.len() => next_lead.max(mark),
                                 _ => next_lead,
                             };
-                            let (next_reference, next_model) = cjk_line_reference(next_glyphs);
+                            let (next_reference, next_model) = line_reference(next_glyphs, mark_em, pp, f.vertical);
                             down += prev_aki.unwrap_or(next_lead) + prev - next_reference;
                             prev = next_reference;
                             prev_aki = aki_below(next_model, next_lead);
@@ -2349,6 +2352,7 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
         drop_cap,
         base_chars,
         mark_chars,
+        mark_em,
         mark_leading,
         base_leading,
         last_line_mark,
@@ -2456,7 +2460,7 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
                 Some(m) if k + 1 == breaks.len() => lead.max(m),
                 _ => lead,
             };
-            let (reference, model) = cjk_line_reference(line_glyphs);
+            let (reference, model) = line_reference(line_glyphs, mark_em, pp, f.vertical);
             let advance = if cur.last_baseline.is_some() { cur.aki_below.unwrap_or(lead) } else { lead };
             let position = position_line(PositionLineInput {
                 frame: f,
@@ -2489,6 +2493,7 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
                 db,
                 mark_leading,
                 mark_chars,
+                mark_em,
                 last_line_mark,
             });
             let LinePosition { x0, x1, baseline, grid_end, continues } = position;
@@ -2742,6 +2747,7 @@ struct ShapedParagraph {
     base_size: f64,
     spacing: Spacing,
     mark_chars: designcraft_doc::CharProps,
+    mark_em: MarkEm,
     mark_leading: f64,
     last_line_mark: Option<f64>,
     para_box: Option<ParaBox>,
@@ -2935,8 +2941,20 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
     suppress_hyphens(&mut hyph_after, &glyphs, suppressed_hyphens);
     let base_size = base_chars.size;
     let spacing = spacing_for(pp, base_size, story);
-    // An empty paragraph takes its height from its paragraph mark's character format.
-    let mark_chars = if glyphs.is_empty() { doc.styles.resolve_char(base_chars, story.char_format_of(prange.start)) } else { base_chars.clone() };
+    // An empty line takes its height from its paragraph mark's character format, the one character
+    // it holds: an empty paragraph's line, and the line a trailing forced line break leaves.
+    let mark_chars = if glyphs.is_empty() {
+        doc.styles.resolve_char(base_chars, story.char_format_of(prange.start))
+    } else if glyphs.last().is_some_and(|g| g.ch == designcraft_doc::story::FORCED_LINE_BREAK) {
+        doc.styles.resolve_char(base_chars, story.char_format_of(prange.end))
+    } else {
+        base_chars.clone()
+    };
+    let mark_em = {
+        let mark = story.text.get(prange.end..).and_then(|t| t.chars().next()).unwrap_or('\n');
+        let (face, height) = shape::em_face(db, &doc.styles, &mark_chars, mark, &doc.settings.advanced_type);
+        MarkEm { face, height, model: mark_chars.leading_model }
+    };
     let mark_leading = match mark_chars.leading {
         designcraft_doc::Leading::Auto => mark_chars.size * pp.auto_leading,
         designcraft_doc::Leading::Points(v) => v,
@@ -2968,6 +2986,7 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
         base_size,
         spacing,
         mark_chars,
+        mark_em,
         mark_leading,
         last_line_mark,
         para_box,
@@ -3412,6 +3431,7 @@ fn compose_run(
             base_size,
             spacing,
             mark_chars,
+            mark_em,
             mark_leading,
             last_line_mark,
             para_box: _,
@@ -3581,6 +3601,7 @@ fn compose_run(
                 drop_cap: drop_cap.as_ref(),
                 base_chars: &base_chars,
                 mark_chars: &mark_chars,
+                mark_em: &mark_em,
                 mark_leading,
                 base_leading,
                 last_line_mark,
@@ -4657,8 +4678,12 @@ fn em_box_top(face: &designcraft_fonts::FontFace, size: f64) -> f64 {
 /// Em box relative to the baseline. Font ascender/descender proportions locate it;
 /// the box's total extent is the em, rather than the font's optional line gap.
 fn cjk_em_box(g: &Glyph) -> (f64, f64) {
-    let height = g.face.units_per_em() * g.sy.abs();
-    let top = -height * g.ascent / (g.ascent + g.descent).max(1e-9);
+    em_box(g.face.units_per_em() * g.sy.abs(), g.ascent, g.descent)
+}
+/// An em box `height` tall relative to the baseline, placed by the font's `ascent` and `descent`
+/// proportions (see [`cjk_em_box`]).
+fn em_box(height: f64, ascent: f64, descent: f64) -> (f64, f64) {
+    let top = -height * ascent / (ascent + descent).max(1e-9);
     (top, top + height)
 }
 /// The ideographic character face (ICF) box relative to the baseline: the em box of
@@ -4700,16 +4725,53 @@ fn cjk_alignment_shift(g: &Glyph, reference: &Glyph) -> f64 {
 fn cjk_line_reference(line: &[Glyph]) -> (f64, designcraft_doc::cjk::LeadingModel) {
     use designcraft_doc::cjk::LeadingModel as L;
     let Some(g) = line.iter().max_by(|a, b| a.size.total_cmp(&b.size)) else { return (0.0, L::Roman) };
-    let (top, bottom) = cjk_em_box(g);
-    let reference = match g.leading_model {
+    (leading_reference(g.leading_model, cjk_em_box(g)), g.leading_model)
+}
+
+/// The paragraph mark's em box, which an empty line measures leading from: the face and em box
+/// height the mark is shaped with (a composite font's entry, a superscript or subscript at its
+/// Advanced Type size; see [`shape::em_face`]) and its leading model.
+struct MarkEm {
+    face: std::sync::Arc<designcraft_fonts::FontFace>,
+    height: f64,
+    model: designcraft_doc::cjk::LeadingModel,
+}
+
+/// [`cjk_line_reference`] of a line of paragraph `pp`. An empty line (an empty paragraph, or the
+/// line a trailing forced line break leaves) has no character to measure from: it measures from
+/// its paragraph mark's em box under the mark's leading model (`mark`), as in InDesign, so it
+/// keeps the leading like any other line instead of moving by the em box's offset from the
+/// baseline. In `vertical` text that is the upright em box, as for the upright characters around
+/// it. Only the Japanese composers use a leading model.
+fn line_reference(line: &[Glyph], mark: &MarkEm, pp: &ParaProps, vertical: bool) -> (f64, designcraft_doc::cjk::LeadingModel) {
+    use designcraft_doc::cjk::LeadingModel as L;
+    if !line.is_empty() {
+        return cjk_line_reference(line);
+    }
+    if !pp.composer.japanese() || mark.model == L::Roman {
+        return (0.0, L::Roman);
+    }
+    // Placed by the proportions the shaper gives the glyphs: upright ones fill the em box.
+    let (ascent, descent) = if vertical {
+        let (top, bottom) = mark.face.em_box();
+        (top, -bottom)
+    } else {
+        (mark.face.ascent, mark.face.descent)
+    };
+    (leading_reference(mark.model, em_box(mark.height, ascent, descent)), mark.model)
+}
+
+/// Where `model` measures leading from, for an em box at `top..bottom` from the baseline.
+fn leading_reference(model: designcraft_doc::cjk::LeadingModel, (top, bottom): (f64, f64)) -> f64 {
+    use designcraft_doc::cjk::LeadingModel as L;
+    match model {
         L::Roman => 0.0,
         // "Space below" measures from the em box top (Em Box Top/Right), "space above" from its
         // bottom (Em Box Bottom/Left).
         L::AkiBelow => top,
         L::AkiAbove => bottom,
         L::Center | L::CenterDown => (top + bottom) / 2.0,
-    };
-    (reference, g.leading_model)
+    }
 }
 
 fn line_metrics(
