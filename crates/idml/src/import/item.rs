@@ -1,12 +1,12 @@
 use super::frame::{Prefs, text_frame_options, text_wrap};
 use super::package::uri_to_path;
-use super::{CharAttrs, CharFormat, CharRun, Rect};
-use crate::base64_decode;
 use super::values::tint;
 use super::{
     Affine, Anchor, Arc, Asset, AssetId, Content, Corner, CornerOptions, El, Fill, Importer, Item, ItemId, OBJECT_BUILTINS, PathData, Point, Shape,
     Story, StoryId, Stroke, SubPath, TextFrame, TextFrameOptions, names, sniff_image, swatch, unescape_id,
 };
+use super::{CharAttrs, CharFormat, CharRun, Rect};
+use crate::base64_decode;
 
 /// InDesign's corner size when a corner shape is set without an explicit radius.
 const INDESIGN_CORNER_SIZE: f64 = 12.0;
