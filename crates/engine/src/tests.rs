@@ -160,6 +160,63 @@ fn tool_gesture_creates_one_undo_step() {
     assert!((it.visible_bounds().x0 - 36.0).abs() < 1e-6, "visible {:?} path {:?}", it.visible_bounds(), it.bounds());
 }
 
+/// A tool's drag while a dialog's preview is open is refused: the preview stays for the dialog to
+/// keep or cancel, and the drag leaves no change without an undo step.
+#[test]
+fn a_tool_drag_leaves_a_dialogs_preview_alone() {
+    use designcraft_tools::{PointerEvent, PointerKind};
+    let mut s = session();
+    let v = ViewInfo::at_zoom(1.0);
+    let before = s.doc().unwrap().doc.clone();
+    s.begin_interaction("Create Guides").unwrap();
+    s.preview("layout.createGuides", json!({"rows": 2, "columns": 2})).unwrap();
+    let previewed = s.doc().unwrap().doc.clone();
+    assert_ne!(previewed, before, "previewed");
+    s.set_tool("rectangle");
+    s.pointer(&PointerEvent::new(PointerKind::Down, 100.0, 100.0), v).unwrap();
+    let err = s.pointer(&PointerEvent::new(PointerKind::Drag, 200.0, 150.0), v).unwrap_err().to_string();
+    assert!(err.contains("Create Guides is in progress"), "{err}");
+    s.pointer(&PointerEvent::new(PointerKind::Drag, 250.0, 200.0), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Up, 250.0, 200.0), v).unwrap();
+    let st = s.doc().unwrap();
+    assert_eq!(st.interaction.as_ref().map(|it| it.label.as_str()), Some("Create Guides"));
+    assert_eq!(st.doc, previewed, "the drag drew nothing");
+    assert!(st.history.undo.is_empty());
+    s.cancel_interaction();
+    assert_eq!(s.doc().unwrap().doc, before, "Cancel takes the guides away");
+    // With the preview gone, the next drag draws as before.
+    s.pointer(&PointerEvent::new(PointerKind::Down, 100.0, 100.0), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Drag, 200.0, 150.0), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Up, 200.0, 150.0), v).unwrap();
+    let st = s.doc().unwrap();
+    assert_eq!(st.doc.spreads[0].items.len(), 1);
+    assert_eq!(st.history.undo.len(), 1);
+}
+
+/// A dialog's preview does not start while a tool's drag is open, and a drag whose release never
+/// came is kept as its own undo step when the tool's next one begins.
+#[test]
+fn an_open_tool_drag_is_not_replaced() {
+    use designcraft_tools::{PointerEvent, PointerKind};
+    let mut s = session();
+    let v = ViewInfo::at_zoom(1.0);
+    s.set_tool("rectangle");
+    s.pointer(&PointerEvent::new(PointerKind::Down, 10.0, 10.0), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Drag, 100.0, 55.0), v).unwrap();
+    let label = s.doc().unwrap().interaction.as_ref().map(|it| it.label.clone()).expect("the drag is open");
+    let err = s.begin_interaction("Create Guides").unwrap_err().to_string();
+    assert_eq!(err, format!("{label} is in progress"));
+    assert_eq!(s.doc().unwrap().interaction.as_ref().map(|it| it.label.clone()), Some(label));
+    // No release: the next press starts another drag.
+    s.pointer(&PointerEvent::new(PointerKind::Down, 200.0, 200.0), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Drag, 300.0, 300.0), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Up, 300.0, 300.0), v).unwrap();
+    let st = s.doc().unwrap();
+    assert!(st.interaction.is_none());
+    assert_eq!(st.doc.spreads[0].items.len(), 2);
+    assert_eq!(st.history.undo.len(), 2, "one undo step for each drag");
+}
+
 /// A command that runs another one (Cut runs Clear) recorded an undo step for each, so the
 /// second Undo did nothing. One command is one step, whatever it runs inside.
 #[test]

@@ -222,3 +222,19 @@ fn a_cancelled_gesture_puts_back_the_revision_and_leaves_a_saved_document_saved(
     assert!(!seen.contains(&after), "{after} in {seen:?}");
     assert!(s.doc().unwrap().is_dirty());
 }
+
+/// A dialog's preview that opens during a composition keeps the marked text as typed first, as
+/// one undo step, and then opens on that document.
+#[test]
+fn a_dialog_preview_ends_the_composition_first() {
+    let mut s = session();
+    let sid = typing_into(&mut s, "a");
+    s.tool_preedit("が", None, ViewInfo::default()).unwrap();
+    let before = steps(&s);
+    s.begin_interaction("Hyphenation").unwrap();
+    assert!(!s.tool_composing());
+    assert_eq!(s.doc().unwrap().interaction.as_ref().map(|it| it.label.as_str()), Some("Hyphenation"));
+    assert_eq!(steps(&s), before + 1);
+    s.cancel_interaction();
+    assert_eq!(text(&mut s, sid), "aが");
+}
