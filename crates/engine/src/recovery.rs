@@ -748,10 +748,17 @@ impl Drop for Owner {
 
 impl Snapshot {
     fn of(access: &Access, dir: &Path, d: &DocState) -> Self {
+        let doc = d.preview_stash.clone().unwrap_or_else(|| d.doc.clone());
+        // Linked files are recorded as a save to the document's own file records them, never
+        // copied in; relative paths are relative to that file, which recovery resolves them against.
+        let doc = match d.path.as_deref().map(Path::new) {
+            Some(path) => crate::cmd::native_links::for_destination(&doc, Some(path), path).map_or(doc, std::sync::Arc::new),
+            None => doc,
+        };
         Snapshot {
             dir: dir.to_path_buf(),
             uid: d.uid,
-            doc: d.preview_stash.clone().unwrap_or_else(|| d.doc.clone()),
+            doc,
             path: d.path.clone(),
             title: d.title(),
             // An entry this run did not write is never replaced, even one made since it checked.
@@ -1787,7 +1794,10 @@ fn open_with_publisher(s: &mut Session, dir: &Path, mut publish: impl FnMut(&Pat
         let path = meta.get("path").and_then(Value::as_str).map(str::to_string);
         // Skipped font files are logged; the document opens without them.
         let fonts = path.as_deref().and_then(|p| crate::cmd::load_document_fonts(&mut d, p).0);
+        // Linked files are found as the document's own open finds them; nothing becomes a link.
+        let links = crate::cmd::native_links::resolve(&mut d, path.as_deref().map(Path::new), false);
         let mut st = DocState::new(d, path);
+        crate::cmd::native_links::start(&mut st, links);
         reserve_uid(&mut st, &mut occupied)?;
         st.recovery_entries.push((dir.to_path_buf(), uid));
         // Recovered, the entry is this run's: Save and Close of its document may remove it.

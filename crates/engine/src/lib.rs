@@ -115,6 +115,8 @@ pub struct DocState {
     pub preview_record: Option<u32>,
     /// The fonts the document brought (`doc.font_scope`), found while it is open.
     pub fonts: Option<Arc<FontScope>>,
+    /// What the open found for its linked files, and their background check.
+    pub links: cmd::native_links::OpenLinks,
 }
 
 /// A document's font scope ([`designcraft_fonts::FontDb::load_document_fonts`]): its fonts are
@@ -171,6 +173,7 @@ impl DocState {
             preview_stash: None,
             preview_record: None,
             fonts: None,
+            links: Default::default(),
         }
     }
     /// The document changed: it gets a revision no document state had before. A cancelled

@@ -354,6 +354,10 @@ fn is_graphic(bytes: &[u8]) -> bool {
 pub(crate) fn resolve_packaged_links(document: &mut Document, package: Option<&std::path::Path>) {
     let Some(package) = package else { return };
     for asset in document.assets.values_mut() {
+        // Linked storage finds its files itself (`native_links::resolve`).
+        if asset.storage == designcraft_doc::Storage::Linked {
+            continue;
+        }
         let Some(link) = asset.link.as_deref() else { continue };
         if link.len() > MAX_LINK_PATH_BYTES {
             continue;

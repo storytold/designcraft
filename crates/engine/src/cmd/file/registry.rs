@@ -1,10 +1,8 @@
-#[cfg(not(target_arch = "wasm32"))]
-use super::EngineError;
-use super::bytes::{base64_encode, to_bytes, to_bytes_with_preview, with_document_extension};
+use super::bytes::{base64_encode, to_bytes};
 use super::new::{file_new, file_sample, save_preset};
 use super::open::{file_open, file_open_bytes, file_open_recent, has_recent, recent_entry};
 use super::place::{file_place, place_contact_sheet, place_cycle, place_drop, place_grid, place_load, place_skip, read_source};
-use super::save::{FolderAccess, can_revert, file_revert, file_save, recovery_dir};
+use super::save::{FolderAccess, can_revert, file_revert, file_save, file_save_a_copy, recovery_dir};
 use super::snippets::{snippet_export, snippet_place};
 use super::{CommandSpec, PRESETS, Value, always, bad, cmd, has_doc, json, ok, str_param};
 
@@ -52,16 +50,7 @@ pub fn specs() -> Vec<CommandSpec> {
         }),
         cmd!(noundo "file.save", "Save", ["File"], Some("Cmd+S"), "{path?} — a `path` without the .designcraft extension gets it → {path: the file written, bytes}", has_doc, file_save),
         cmd!(noundo "file.saveAs", "Save As…", ["File"], Some("Cmd+Shift+S"), "{path} — a path without the .designcraft extension gets it → {path: the file written, bytes}", has_doc, file_save),
-        cmd!(noundo "file.saveACopy", "Save a Copy…", ["File"], None, "{path} — writes the document without changing which file it is or its unsaved state; a path without the .designcraft extension gets it → {path: the file written, bytes}", has_doc, |s, p| {
-            let path = str_param(p, "path").ok_or_else(|| bad("file.saveACopy", "missing `path`"))?;
-            let path = with_document_extension(path);
-            let mut copy = (*s.doc()?.doc).clone();
-            crate::cmd::datamerge::refresh_relative_paths(&mut copy, std::path::Path::new(&path));
-            let bytes = to_bytes_with_preview(&copy, &s.cache)?;
-            #[cfg(not(target_arch = "wasm32"))]
-            crate::io::write_file(&path, &bytes).map_err(EngineError::Other)?;
-            Ok(json!({"path": path, "bytes": bytes.len()}))
-        }),
+        cmd!(noundo "file.saveACopy", "Save a Copy…", ["File"], None, "{path, embedLinks?: copy every linked file in (fails when one is missing or changed)} — writes the document without changing which file it is or its unsaved state; a path without the .designcraft extension gets it → {path: the file written, bytes, warnings}", has_doc, file_save_a_copy),
         cmd!(noundo "file.revert", "Revert", ["File"], None, "{} — back to the last saved version (not undoable)", can_revert, file_revert),
         cmd!(query "file.recovery.list", "Recovery Data", [], None, "{dir?} → [{uid, path, title, saved}] unsaved documents left by a crash (default: the session's recovery folder)", always, |s, p| {
             let dir = recovery_dir(s, p, FolderAccess::Read)?;
@@ -90,12 +79,13 @@ pub fn specs() -> Vec<CommandSpec> {
             let dir = recovery_dir(s, p, FolderAccess::ReadWrite)?;
             Ok(json!({"opened": crate::recovery::open(s, &dir)?}))
         }),
-        cmd!(query "file.serialize", "Serialize", [], None, "{} → {base64, bytes} the .designcraft file", has_doc, |s, _| {
+        cmd!(query "file.serialize", "Serialize", [], None, "{} → {base64, bytes, warnings} the .designcraft file (on the web, linked files stay links, with a warning)", has_doc, |s, _| {
             let st = s.doc()?;
             // Preview fill is session state. Serialize the unfilled template.
             let doc = st.preview_stash.as_deref().unwrap_or(st.doc.as_ref());
             let bytes = to_bytes(doc)?;
-            Ok(json!({"base64": base64_encode(&bytes), "bytes": bytes.len()}))
+            let warnings = crate::cmd::native_links::web_save_warnings(doc);
+            Ok(json!({"base64": base64_encode(&bytes), "bytes": bytes.len(), "warnings": warnings}))
         }),
         cmd!(noundo "file.close", "Close", ["File"], Some("Cmd+W"), "{index?}", has_doc, |s, p| {
             let i = p.get("index").and_then(Value::as_u64).map(|v| v as usize).or(s.active_index()).unwrap_or(0);

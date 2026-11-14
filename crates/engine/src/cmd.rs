@@ -34,6 +34,7 @@ mod layout;
 pub mod library;
 mod linked;
 mod links;
+pub mod native_links;
 pub use links::{LinkListChecks, list_document_links, preview_document_links, remember_link_files};
 mod liquid;
 mod lists;
@@ -201,6 +202,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(library::specs());
         v.extend(lists::specs());
         v.extend(linked::specs());
+        v.extend(native_links::specs());
         v.extend(mathexpr::specs());
         v.extend(media::specs());
         v.extend(pdflayers::specs());
