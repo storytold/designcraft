@@ -1639,7 +1639,8 @@ struct NestedLineStyleInput<'a, 'b, 'font> {
     drop_grid: Option<f64>,
     drop_align: bool,
     drop_tabs: (&'a [designcraft_doc::TabStop], f64),
-    cursor: &'a Cursor,
+    /// The frame and column the first lines are measured in.
+    at: (usize, usize),
     frames: &'a [FrameSpec],
     columns: &'a [Vec<Rect>],
     exceptions: &'a HashMap<String, Vec<usize>>,
@@ -1664,7 +1665,7 @@ fn apply_nested_line_styles(input: NestedLineStyleInput<'_, '_, '_>) {
         drop_grid,
         drop_align,
         drop_tabs,
-        cursor: cur,
+        at: (fi, ci),
         frames,
         columns: cols,
         exceptions: hyph_exceptions,
@@ -1674,11 +1675,11 @@ fn apply_nested_line_styles(input: NestedLineStyleInput<'_, '_, '_>) {
         env,
         shaped: sp,
     } = input;
-    if !pp.nested_line_styles.is_empty() && cur.fi < frames.len() {
+    if !pp.nested_line_styles.is_empty() && fi < frames.len() {
         // Nested line styles: find where the first lines end in this column, restyle them, and
         // look again (the style changes the widths) until the lines settle.
-        let cols_here = &cols[cur.fi];
-        let col = span_rect(cols_here, cols_here[cur.col.min(cols_here.len() - 1)], pp.span_columns);
+        let cols_here = &cols[fi];
+        let col = span_rect(cols_here, cols_here[ci.min(cols_here.len() - 1)], pp.span_columns);
         let col = SplitCfg::of(pp).map_or(col, |c| c.sub_rect(col, 0));
         let spacing = spacing_for(pp, base_chars.size, story);
         let mut lines: Vec<(std::ops::Range<usize>, String)> = Vec::new();
@@ -1775,6 +1776,8 @@ struct PlacementShared<'a, 'font> {
     split_budget: usize,
     hyph_relays: &'a mut usize,
     restores: &'a mut usize,
+    /// The frame and column each paragraph with a drop cap is shaped for, when not where it starts.
+    drop_frames: &'a mut [DropCapReshape],
 }
 
 struct ParagraphLines<'a> {
@@ -2339,6 +2342,7 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
         split_budget,
         hyph_relays,
         restores,
+        drop_frames,
     } = shared;
     let ParagraphLines {
         paragraph: pi,
@@ -2386,6 +2390,8 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
     let mut carry_grid: Option<f64> = None;
     // Re-breaks after a line's segment turned out other than the breaker assumed.
     let mut rebreaks = 0usize;
+    // The drop cap sized to the grid of the frame the first line is set in, when that differs.
+    let mut refitted: Option<DropCap> = None;
     loop {
         if cur.fi >= frames.len() {
             // An empty last paragraph isn't overset text, as in InDesign.
@@ -2410,10 +2416,18 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
             });
         }
         let pp = indented.as_ref().unwrap_or(para_props);
+        let f = &frames[cur.fi];
+        // The drop cap was shaped in the frame the paragraph would have started in. When the
+        // paragraph start options or a first line that doesn't fit move it on, it reaches down by
+        // the grid of the frame its first line is set in.
+        // A paragraph with nested line styles is shaped again here once its first line fits.
+        let (fitted, reshape) = refit_drop_cap(db, drop_cap, (pi, line_no), ((cur.fi, cur.col), f), para_props, refitted.take(), drop_frames);
+        let reshape_at = reshape.then_some((cur.fi, cur.col));
+        refitted = fitted;
+        let drop_cap = refitted.as_ref().or(drop_cap);
         // The Indent to Here character sits past the drop cap, so the lines that start at it
         // aren't indented by the drop cap again.
         let beside_cap = drop_cap.filter(|_| indented.is_none());
-        let f = &frames[cur.fi];
         let base = cols[cur.fi][cur.col.min(cols[cur.fi].len() - 1)];
         let col = cur.clip(base);
         // A spanning paragraph isn't held to the balanced bottom of the columns above it.
@@ -2560,6 +2574,13 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
                     break;
                 }
             };
+            if line_no == 0
+                && let Some(at) = reshape_at
+                && reshape_drop_cap_paragraph(drop_frames, pi, at)
+            {
+                rewind(pi, snaps, note_snaps, notes, out, cur, list_counter, force_col, line_cap, no_hyph);
+                return LinePlacement::Restart(pi);
+            }
             let col_w = notes.area(&cols[cur.fi], cur.col).map_or(0.0, |r| r.width());
             let note_column = NoteColumn { frame_index: cur.fi, column_index: cur.col, width: col_w, frame: f };
             // A drop cap sits at the start-side indent; the first-line indent doesn't move it.
@@ -2724,7 +2745,8 @@ struct ParagraphShapeInput<'a, 'font> {
     missing_fonts: &'a mut HashMap<String, bool>,
     frames: &'a [FrameSpec],
     columns: &'a [Vec<Rect>],
-    cursor: &'a Cursor,
+    /// The frame and column its first lines are measured in.
+    at: (usize, usize),
 }
 
 struct ShapedParagraph {
@@ -2767,7 +2789,7 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
         missing_fonts,
         frames,
         columns,
-        cursor,
+        at,
     } = input;
     let drop_end = drop_cap_end(&story.text, prange.clone(), pp, sub.vertical);
     let mut table = StyleTable { styles, missing: missing_fonts };
@@ -2808,7 +2830,7 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
         let face = db.face(&base_chars.font_family, &base_chars.font_style);
         face.cap_height * base_chars.size / face.upem * base_chars.v_scale
     };
-    let drop_grid = cur_frame.and_then(|f| f.grid).filter(|_| pp.grid_align == GridAlign::AllLines).map(|g| g.1);
+    let drop_grid = drop_cap_grid(cur_frame, pp);
     // Align Left Edge (left-to-right paragraphs).
     let drop_align = pp.drop_cap_align_left && pp.direction == designcraft_doc::TextDirection::LeftToRight;
     // Tab stops for the drop cap, with the start-side indent (the right one, right to left).
@@ -2826,7 +2848,7 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
         drop_grid,
         drop_align,
         drop_tabs: (&pp.tabs[..], drop_tab_indent),
-        cursor,
+        at,
         frames,
         columns,
         exceptions: hyph_exceptions,
@@ -3227,6 +3249,9 @@ fn compose_run(
     let mut no_hyph: Vec<Vec<usize>> = vec![Vec::new(); np];
     let mut hyph_relays = 0usize;
     let mut restores = 0usize;
+    // The frame and column a paragraph with a drop cap and nested line styles is shaped again for,
+    // when its first line is set in a frame or column other than the one it was shaped for.
+    let mut drop_frames = vec![DropCapReshape::default(); np];
     let mut pi = 0;
     let var_story = vars::has_vars(story);
     let mut notes = Notes::new(doc, story);
@@ -3375,6 +3400,7 @@ fn compose_run(
         });
         #[cfg(test)]
         reuse::SHAPED.with(|n| n.set(n.get() + 1));
+        let shape_at = drop_cap_shape_at(&mut drop_frames, pi, (cur.fi, cur.col));
         let shaped = shape_paragraph(ParagraphShapeInput {
             db,
             doc,
@@ -3383,7 +3409,8 @@ fn compose_run(
             range: prange.clone(),
             props: &mut pp,
             para_chars: &base_chars,
-            frame: cur_frame,
+            // The drop cap reaches down by this frame's baseline grid.
+            frame: shape_at.and_then(|(fi, _)| frames.get(fi)).or(cur_frame),
             paragraph: pi,
             subst: &sub,
             exceptions: &hyph_exceptions,
@@ -3394,7 +3421,7 @@ fn compose_run(
             missing_fonts: &mut missing_fonts,
             frames,
             columns: &cols,
-            cursor: &cur,
+            at: shape_at.unwrap_or((cur.fi, cur.col)),
         });
         boxes[pi] = shaped.para_box;
         let ShapedParagraph {
@@ -3571,6 +3598,7 @@ fn compose_run(
                 split_budget,
                 hyph_relays: &mut hyph_relays,
                 restores: &mut restores,
+                drop_frames: &mut drop_frames,
             },
             ParagraphLines {
                 paragraph: pi,
@@ -5630,6 +5658,27 @@ struct DropCap {
     drop: f64,
     /// Its cap height as set (how far its top sits above its baseline).
     cap: f64,
+    /// The baseline grid increment it was sized to, if any.
+    grid: Option<f64>,
+    /// What it was sized from, to size it again to another frame's grid.
+    fit: DropCapFit,
+}
+
+/// A drop cap's glyphs at their own size, and the measures [`fit_drop_cap`] sizes them with.
+#[derive(Clone)]
+struct DropCapFit {
+    glyphs: Vec<Glyph>,
+    /// The spaces right after it.
+    after: Vec<Glyph>,
+    end: usize,
+    lines: usize,
+    /// Leading, cap height and size of the text after it (none when there's no such text).
+    body: Option<(f64, f64, f64)>,
+    base_leading: f64,
+    base_cap: f64,
+    align_left: bool,
+    stops: Vec<designcraft_doc::TabStop>,
+    indent: f64,
 }
 
 /// Take the drop cap (the glyphs before byte `end`) off the front of a paragraph's glyphs and scale
@@ -5659,12 +5708,22 @@ fn split_drop_cap(
         return None;
     }
     let lines = lines.clamp(1, MAX_DROP_CAP_LINES) as usize;
-    let mut dc: Vec<Glyph> = glyphs.drain(..n).collect();
+    let dc: Vec<Glyph> = glyphs.drain(..n).collect();
     let spaces = glyphs.iter().take_while(|g| g.is_space()).count();
-    let mut after: Vec<Glyph> = glyphs.drain(..spaces).collect();
+    let after: Vec<Glyph> = glyphs.drain(..spaces).collect();
     let end = after.last().map_or(end, |g| g.byte.saturating_add(g.len).max(end));
-    let body = glyphs.iter().find(|g| g.len > 0 && g.cap > 0.0);
-    let (lead, cap, body_size) = body.map_or((base_leading, base_cap, None), |g| (g.leading, g.cap, Some(g.size)));
+    let body = glyphs.iter().find(|g| g.len > 0 && g.cap > 0.0).map(|g| (g.leading, g.cap, g.size));
+    let (stops, indent) = tabs;
+    let fit = DropCapFit { glyphs: dc, after, end, lines, body, base_leading, base_cap, align_left, stops: stops.to_vec(), indent };
+    Some(fit_drop_cap(db, fit, grid))
+}
+
+/// Size a drop cap's glyphs as [`split_drop_cap`] describes, on a baseline grid of increment `grid`.
+fn fit_drop_cap(db: &ScopedFonts<'_>, fit: DropCapFit, grid: Option<f64>) -> DropCap {
+    let DropCapFit { glyphs: ref own_glyphs, after: ref own_after, end, lines, body, base_leading, base_cap, align_left, ref stops, indent } = fit;
+    let mut dc = own_glyphs.clone();
+    let mut after = own_after.clone();
+    let (lead, cap, body_size) = body.map_or((base_leading, base_cap, None), |(lead, cap, size)| (lead, cap, Some(size)));
     let lead = match grid.map(|inc| (lead / inc - 1e-6).ceil().max(1.0) * inc) {
         Some(pitch) if pitch.is_finite() && pitch > 0.0 => pitch,
         _ => lead,
@@ -5703,7 +5762,6 @@ fn split_drop_cap(
     };
     // Tabs advance to the paragraph's stops, measured from the column's start edge. Right to left,
     // its glyphs run from that (right) edge in this order (see `place_drop_cap`).
-    let (stops, indent) = tabs;
     let mut x = indent - lsb;
     for i in 0..dc.len() {
         let tab = match dc.get(i) {
@@ -5718,7 +5776,7 @@ fn split_drop_cap(
     let width = dc.iter().map(|g| g.adv).sum();
     dc.append(&mut after);
     let cap = dc.iter().map(|g| g.cap).fold(0.0, f64::max);
-    Some(DropCap { glyphs: dc, end, lines, width, drop, lsb, cap })
+    DropCap { glyphs: dc, end, lines, width, drop, lsb, cap, grid, fit }
 }
 
 impl DropCap {
@@ -5726,6 +5784,68 @@ impl DropCap {
     fn indent(&self) -> f64 {
         self.width - self.lsb
     }
+}
+
+/// The baseline grid increment a drop cap in frame `frame` reaches down by: that frame's, when the
+/// paragraph aligns all its lines to the grid.
+fn drop_cap_grid(frame: Option<&FrameSpec>, pp: &ParaProps) -> Option<f64> {
+    frame.and_then(|f| f.grid).filter(|_| pp.grid_align == GridAlign::AllLines).map(|g| g.1)
+}
+
+/// The drop cap beside paragraph `pi`'s lines in frame `frame` (at frame and column `at`). While
+/// its first line (`line_no` 0) has yet to be set, a drop cap shaped for another baseline grid than
+/// that frame's is sized again for it; past the first line, the one sized then (`refitted`) stays.
+/// The flag is set when the paragraph has nested line styles, which were set for the lines beside
+/// the cap as shaped, and it was shaped for another grid or for another frame or column than `at`:
+/// once its first line fits there, it is shaped again for `at` (see [`reshape_drop_cap_paragraph`]).
+fn refit_drop_cap(
+    db: &ScopedFonts<'_>,
+    drop_cap: Option<&DropCap>,
+    (pi, line_no): (usize, usize),
+    (at, frame): ((usize, usize), &FrameSpec),
+    pp: &ParaProps,
+    refitted: Option<DropCap>,
+    drop_frames: &[DropCapReshape],
+) -> (Option<DropCap>, bool) {
+    let Some(dc) = drop_cap.filter(|_| line_no == 0) else { return (refitted, false) };
+    let grid = drop_cap_grid(Some(frame), pp);
+    let stale = dc.grid.map(f64::to_bits) != grid.map(f64::to_bits);
+    let reshape = !pp.nested_line_styles.is_empty()
+        && drop_frames.get(pi).is_some_and(|r| (stale || r.shaped.is_some_and(|s| s != at)) && r.count < MAX_DROP_CAP_RESHAPES);
+    (stale.then(|| fit_drop_cap(db, dc.fit.clone(), grid)), reshape)
+}
+
+/// The frame and column paragraph `pi` was last asked to be shaped again for, if any; it is shaped
+/// for that one, or else for `here`, and that is recorded as the one it was shaped for.
+fn drop_cap_shape_at(drop_frames: &mut [DropCapReshape], pi: usize, here: (usize, usize)) -> Option<(usize, usize)> {
+    let r = drop_frames.get_mut(pi)?;
+    r.shaped = Some(r.at.unwrap_or(here));
+    r.at
+}
+
+/// Record that paragraph `pi` is to be shaped again for frame and column `at`, where its first line
+/// fits, up to [`MAX_DROP_CAP_RESHAPES`] times for each paragraph. `false` when it can't be.
+fn reshape_drop_cap_paragraph(drop_frames: &mut [DropCapReshape], pi: usize, at: (usize, usize)) -> bool {
+    match drop_frames.get_mut(pi) {
+        Some(r) if r.count < MAX_DROP_CAP_RESHAPES => {
+            *r = DropCapReshape { at: Some(at), count: r.count + 1, ..*r };
+            true
+        }
+        _ => false,
+    }
+}
+
+/// How many times a paragraph with a drop cap and nested line styles is shaped again for the frame
+/// its first line goes to, in one composition.
+const MAX_DROP_CAP_RESHAPES: u8 = 4;
+
+/// The frame and column a paragraph with a drop cap was last shaped again for (see
+/// [`refit_drop_cap`]), how many times it was, and the frame and column it was last shaped for.
+#[derive(Clone, Copy, Default)]
+struct DropCapReshape {
+    at: Option<(usize, usize)>,
+    count: u8,
+    shaped: Option<(usize, usize)>,
 }
 
 /// The drop cap's glyphs set from `at` (right to left: mirrored, its first character on the right).
