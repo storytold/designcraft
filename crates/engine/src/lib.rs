@@ -7,6 +7,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
 
+pub mod asset_io;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod atomic;
 pub mod autosize;
@@ -467,6 +468,7 @@ impl Session {
 
     pub fn new() -> Self {
         guard::install_panic_hook();
+        asset_io::install();
         Session {
             docs: vec![],
             active: None,

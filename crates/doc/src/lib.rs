@@ -45,7 +45,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 pub use anchored::{AnchorPosition, AnchoredObject, OBJECT_MARK};
-pub use asset_data::{AssetData, SourceKey, Unavailable, WeakAssetData};
+pub use asset_data::{AssetData, LinkedSource, SourceKey, Unavailable, WeakAssetData};
 pub use assets::{AssetIndex, find_same_asset, insert_asset, remap_story_assets, story_asset_refs};
 pub use attrs::*;
 pub use datamerge::{
@@ -697,8 +697,9 @@ impl Storage {
 pub struct Proxy {
     pub mime: String,
     pub pixels: (u32, u32),
+    /// The preview's encoded bytes, under a key of their own (decoded images are cached by it).
     #[serde(skip)]
-    pub data: Arc<Vec<u8>>,
+    pub data: AssetData,
 }
 
 impl std::fmt::Debug for Proxy {
