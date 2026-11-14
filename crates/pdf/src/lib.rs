@@ -48,6 +48,7 @@ mod forms;
 mod optional_content;
 mod pdfx;
 mod pdfx1a;
+mod svg_options;
 mod transitions;
 pub use export::{
     BookletKind, BookletOptions, booklet_pairs, drawn_children, export_booklet, export_pdf, export_pdf_with_report, item_exported, layer_exported,

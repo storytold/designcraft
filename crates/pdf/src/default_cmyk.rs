@@ -10,10 +10,12 @@ use std::io::Write;
 
 use flate2::Compression;
 use flate2::write::ZlibEncoder;
-use hayro_syntax::Pdf;
-use hayro_syntax::content::UntypedIter;
-use hayro_syntax::object::{Dict, Name, Object, ObjectIdentifier, Stream};
-use hayro_syntax::page::{Page, Resources};
+use craft_pdf::syntax::Pdf;
+use craft_pdf::syntax::content::UntypedIter;
+use craft_pdf::syntax::object::{Dict, Name, Object, ObjectIdentifier, Stream};
+use craft_pdf::syntax::page::{Page, Resources};
+use flate2::Compression;
+use flate2::write::ZlibEncoder;
 
 use crate::optional_content::{append_with, edited_with, has_entry, trailer_size};
 use crate::pdfx::pdfx_intents;

@@ -1,13 +1,13 @@
 //! CMYK print output, read back from the exported PDF: blending spaces, the output intent,
 //! overprint and knockout groups.
 
+use craft_pdf::syntax::Pdf;
+use craft_pdf::syntax::object::{Array, Dict, Name, Object, Stream};
 use designcraft_color::cms::{self, Cms, ColorSettings};
 use designcraft_compose::Cache;
 use designcraft_doc::build::NewDocument;
 use designcraft_doc::{BlendSpace, Document, Fill, Item, ItemId, SpreadRef};
 use designcraft_geom::Rect;
-use hayro_syntax::Pdf;
-use hayro_syntax::object::{Array, Dict, Name, Object, Stream};
 
 use crate::{PdfOptions, export_pdf};
 
@@ -38,7 +38,7 @@ pub(crate) struct Intent {
 }
 
 fn text(d: &Dict<'_>, key: &[u8]) -> Option<String> {
-    d.get::<hayro_syntax::object::String>(key).map(|s| String::from_utf8_lossy(s.as_bytes()).into_owned())
+    d.get::<craft_pdf::syntax::object::String>(key).map(|s| String::from_utf8_lossy(s.as_bytes()).into_owned())
 }
 
 /// The catalog's `GTS_PDFX` output intent.
@@ -289,7 +289,7 @@ fn knockout_and_isolation_are_group_attributes() {
 }
 
 /// Read the `/DefaultCMYK` ICC stream (object id and decoded profile bytes) from `res`.
-fn default_cmyk_profile(res: &hayro_syntax::page::Resources<'_>) -> Option<(i32, i32, Vec<u8>)> {
+fn default_cmyk_profile(res: &craft_pdf::syntax::page::Resources<'_>) -> Option<(i32, i32, Vec<u8>)> {
     let cs = res.get_color_space(&Name::new_unescaped(b"DefaultCMYK"))?.into_array()?;
     let mut items = cs.iter::<Object<'_>>();
     let name = items.next()?.into_name()?;
@@ -345,7 +345,7 @@ fn default_cmyk_profile_is_written_where_appropriate() {
             && xo.dict().get::<Name>(b"Subtype").as_deref() == Some(b"Form")
         {
             forms += 1;
-            let form_res = hayro_syntax::page::Resources::from_scope(xo.dict().get::<Dict>(b"Resources"), page_res.clone());
+            let form_res = craft_pdf::syntax::page::Resources::from_scope(xo.dict().get::<Dict>(b"Resources"), page_res.clone());
             let (form_icc_id, form_n, _) = default_cmyk_profile(&form_res).expect("form /DefaultCMYK in plain export");
             assert_eq!(form_n, 4);
             assert_eq!(form_icc_id, icc_id, "all scopes share one embedded ICC stream");
@@ -421,7 +421,7 @@ fn interpreted_fill_rgba(bytes: &[u8]) -> Vec<[u8; 4]> {
         fn pop_clip_path(&mut self) {}
         fn pop_transparency_group(&mut self) {}
     }
-    let pdf = hayro_syntax::Pdf::new(bytes.to_vec()).unwrap();
+    let pdf = craft_pdf::syntax::Pdf::new(bytes.to_vec()).unwrap();
     let cache = InterpreterCache::new();
     let mut ctx = Context::new(kurbo::Affine::IDENTITY, kurbo::Rect::new(0.0, 0.0, 400.0, 400.0), &cache, pdf.xref(), InterpreterSettings::default());
     let mut out = Collector(Vec::new());

@@ -1,6 +1,6 @@
-use hayro_syntax::Pdf;
-use hayro_syntax::object::{Array, Dict, MaybeRef, Name, Object, ObjectIdentifier, Stream};
-use hayro_syntax::reader::{Reader, ReaderExt};
+use craft_pdf::syntax::Pdf;
+use craft_pdf::syntax::object::{Array, Dict, MaybeRef, Name, Object, ObjectIdentifier, Stream};
+use craft_pdf::syntax::reader::{Reader, ReaderExt};
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -285,7 +285,7 @@ pub(crate) fn prepare(bytes: &Arc<Vec<u8>>, choice: Option<&[String]>) -> Result
         if group.get::<Name<'_>>(b"Type").as_ref().map(AsRef::as_ref) != Some(b"OCG") {
             return Err(invalid());
         }
-        let name = group.get::<hayro_syntax::object::String<'_>>(b"Name");
+        let name = group.get::<craft_pdf::syntax::object::String<'_>>(b"Name");
         let is_hidden = match (choice, name.as_ref()) {
             (None, _) => !fallback && (off.contains(&id) || (base_off && !on.contains(&id))),
             (Some([]), None) => false,
