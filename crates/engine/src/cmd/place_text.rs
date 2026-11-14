@@ -506,6 +506,29 @@ pub(super) fn place_text(
     })
 }
 
+/// A minimal Word package for tests: the document and its styles, with the content types and
+/// relationships that tell a reader where those parts are.
+#[cfg(test)]
+pub(crate) fn word_package(document: &str, styles: &str) -> Vec<u8> {
+    use std::io::Write;
+    const CONTENT_TYPES: &str = r#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/></Types>"#;
+    const ROOT_RELS: &str = r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>"#;
+    const DOCUMENT_RELS: &str = r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>"#;
+    let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let o = zip::write::SimpleFileOptions::default();
+    for (n, c) in [
+        ("[Content_Types].xml", CONTENT_TYPES),
+        ("_rels/.rels", ROOT_RELS),
+        ("word/_rels/document.xml.rels", DOCUMENT_RELS),
+        ("word/document.xml", document),
+        ("word/styles.xml", styles),
+    ] {
+        w.start_file(n, o).unwrap();
+        w.write_all(c.as_bytes()).unwrap();
+    }
+    w.finish().unwrap().into_inner()
+}
+
 #[cfg(test)]
 mod tests;
 
@@ -710,7 +733,6 @@ mod pdf_page_tests {
     }
 
     fn word_file() -> Vec<u8> {
-        use std::io::Write;
         const W: &str = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main""#;
         let styles = format!(
             r#"<w:styles {W}><w:style w:type="paragraph" w:styleId="Normal"><w:name w:val="Normal"/></w:style>
@@ -721,13 +743,7 @@ mod pdf_page_tests {
             r#"<w:document {W}><w:body><w:p><w:pPr><w:pStyle w:val="Title"/></w:pPr><w:r><w:t>Head</w:t></w:r></w:p>
             <w:p><w:pPr><w:pStyle w:val="Body"/></w:pPr><w:r><w:t>Text</w:t></w:r></w:p></w:body></w:document>"#
         );
-        let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
-        let o = zip::write::SimpleFileOptions::default();
-        for (n, c) in [("word/document.xml", doc), ("word/styles.xml", styles)] {
-            w.start_file(n, o).unwrap();
-            w.write_all(c.as_bytes()).unwrap();
-        }
-        w.finish().unwrap().into_inner()
+        super::word_package(&doc, &styles)
     }
 
     #[test]
@@ -770,19 +786,13 @@ mod pdf_page_tests {
     #[test]
     fn word_normal_comes_in_as_its_own_style() {
         // Regression (#722): Normal's formatting (over Word's document defaults) was dropped.
-        use std::io::Write;
         const W: &str = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main""#;
         let styles = format!(
             r#"<w:styles {W}><w:docDefaults><w:rPrDefault><w:rPr><w:sz w:val="22"/></w:rPr></w:rPrDefault></w:docDefaults>
             <w:style w:type="paragraph" w:styleId="Normal"><w:name w:val="Normal"/><w:rPr><w:rFonts w:ascii="Georgia"/><w:sz w:val="26"/></w:rPr></w:style></w:styles>"#
         );
         let doc = format!(r#"<w:document {W}><w:body><w:p><w:r><w:t>Plain</w:t></w:r></w:p></w:body></w:document>"#);
-        let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
-        for (n, c) in [("word/document.xml", doc), ("word/styles.xml", styles)] {
-            w.start_file(n, zip::write::SimpleFileOptions::default()).unwrap();
-            w.write_all(c.as_bytes()).unwrap();
-        }
-        let b64 = crate::cmd::base64_encode(&w.finish().unwrap().into_inner());
+        let b64 = crate::cmd::base64_encode(&super::word_package(&doc, &styles));
         let basic = designcraft_doc::story::BASIC_PARAGRAPH;
         let placed = |s: &Session, story: &serde_json::Value| {
             let d = &s.doc().unwrap().doc;
