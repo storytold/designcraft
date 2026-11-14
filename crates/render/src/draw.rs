@@ -113,7 +113,7 @@ fn wanted_in(f: &Frame, it: &Item, parent: Affine, depth: usize, out: &mut Vec<i
             let Some(asset) = f.doc.assets.get(&g.asset) else { return };
             let hidden = it.has_pdf_layer_override().then(|| it.pdf_hidden_layers.clone());
             let previous = HIDDEN_LAYERS.with(|h| h.replace(hidden));
-            if let Some((want, ..)) = image_want(f, asset, g, xf) {
+            if let Some((crate::stroke::Source::Want(want), ..)) = image_want(f, asset, g, xf) {
                 out.push(want);
             }
             HIDDEN_LAYERS.with(|h| h.replace(previous));

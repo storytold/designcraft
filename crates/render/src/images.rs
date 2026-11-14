@@ -161,7 +161,7 @@ pub fn unavailable(data: &AssetData) -> Option<Unavailable> {
 
 /// The bytes of `data` to decode. Linked bytes the store doesn't hold are loaded, `gate`d at
 /// [`GATE`] for their size; a failure is remembered ([`unavailable_now`]).
-fn load_bytes(data: &AssetData, gate: bool) -> Option<Arc<Vec<u8>>> {
+pub(crate) fn load_bytes(data: &AssetData, gate: bool) -> Option<Arc<Vec<u8>>> {
     if let Some(bytes) = data.resident() {
         return Some(bytes);
     }
@@ -487,6 +487,33 @@ pub fn mip_now(data: &AssetData, page: u32, width_pt: f64, on_screen: f64) -> Mi
     Mip::Pending(stand_in)
 }
 
+/// What is cached of the bytes `id` names, page `page`, drawn `width_pt` points wide at
+/// `on_screen` device pixels per point, without needing the bytes: the level asked for (`true`),
+/// else the nearest coarser, else the nearest finer one.
+pub(crate) fn cached(id: SourceKey, page: u32, width_pt: f64, on_screen: f64) -> Option<(Arc<Pixmap>, bool)> {
+    let Some(level) = known_dims(id, page).map(|size| level_for(size, width_pt, on_screen)) else {
+        return (0..=MAX_LEVEL).find_map(|l| lookup((id, page, l))).map(|pm| (pm, false));
+    };
+    if let Some(pm) = lookup((id, page, level)) {
+        return Some((pm, true));
+    }
+    (level + 1..=MAX_LEVEL).find_map(|c| lookup((id, page, c))).or_else(|| (0..level).rev().find_map(|f| lookup((id, page, f)))).map(|pm| (pm, false))
+}
+
+/// Count this frame as waiting for images ([`take_deferred`]): work it needs is being done in
+/// the background.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn defer() {
+    DEFERRED.with(|d| d.set(true));
+}
+
+/// Advance [`generation`] (and run the waker): background work a deferred frame waited for is
+/// done.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn advance() {
+    background::advance();
+}
+
 /// Advances each time a background decode queued by [`mip_now`] finishes.
 pub fn generation() -> u64 {
     background::GENERATION.load(Ordering::Acquire)
@@ -687,7 +714,7 @@ mod background {
     }
 
     /// Advance the generation and run the waker.
-    fn advance() {
+    pub(super) fn advance() {
         GENERATION.fetch_add(1, Ordering::AcqRel);
         let waker = WAKER.lock().unwrap_or_else(PoisonError::into_inner).clone();
         if let Some(wake) = waker {
@@ -1177,7 +1204,7 @@ pub fn clear() {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::decode::decoded_bytes;
 
@@ -1661,7 +1688,7 @@ mod tests {
     }
 
     /// Linked files for these tests: bytes by path, served by a loader that counts its reads.
-    mod linked {
+    pub(crate) mod linked {
         use super::*;
         use designcraft_doc::asset_data::{Loaded, Loader};
         use designcraft_doc::{Fingerprint, LinkedSource};
@@ -1681,7 +1708,7 @@ mod tests {
         }
 
         /// A linked asset whose file is `bytes` (`None`: missing for now) at the unique `path`.
-        pub(super) fn file(path: &str, bytes: Option<Vec<u8>>, len: u64) -> AssetData {
+        pub(crate) fn file(path: &str, bytes: Option<Vec<u8>>, len: u64) -> AssetData {
             static INSTALL: std::sync::Once = std::sync::Once::new();
             INSTALL.call_once(|| designcraft_doc::asset_data::install_loader(Arc::new(Files)));
             if let Some(b) = bytes {
@@ -1690,11 +1717,11 @@ mod tests {
             AssetData::linked(LinkedSource { path: path.into(), relative: None, document: None, len, fingerprint: None, hash: None })
         }
 
-        pub(super) fn put(path: &str, bytes: Vec<u8>) {
+        pub(crate) fn put(path: &str, bytes: Vec<u8>) {
             FILES.lock().unwrap().get_or_insert_with(HashMap::new).insert(path.into(), bytes);
         }
 
-        pub(super) fn reads(path: &str) -> usize {
+        pub(crate) fn reads(path: &str) -> usize {
             READS.lock().unwrap().iter().filter(|p| *p == path).count()
         }
     }

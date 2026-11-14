@@ -39,6 +39,7 @@ mod decode;
 mod draw;
 mod driver;
 mod pdf_raster;
+mod prepare;
 mod stroke;
 mod types;
 

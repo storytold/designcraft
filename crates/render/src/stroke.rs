@@ -1,35 +1,64 @@
 use super::color::{HIDDEN_LAYERS, PLATE, color_of, overprints, plate_pixmap, screen_color, set_fill_paint};
-use super::pdf_raster::{is_pdf, shown_box};
+use super::pdf_raster::{is_pdf, shown_box_now};
+use super::prepare::Prepared;
 use super::types::{DisplayQuality, Frame};
 use super::{
     Affine, BezPath, BlendMode, Compose, Item, Mix, Rect, RenderContext, Renderer, Shape, StrokeAlign, StrokeType, colorize, images, kurbo,
     pdf_layers, peniko, vello_cpu,
 };
 
-/// The pixels drawing placed graphic `g` takes from the image cache, the page rectangle they
-/// cover in graphic space and that page's height (points). `None` for video and sound, Fast
-/// display and a PDF whose hidden layers can't be applied (none of these draw image pixels).
-pub(crate) fn image_want(f: &Frame, asset: &designcraft_doc::Asset, g: &designcraft_doc::Graphic, xf: Affine) -> Option<(images::Want, Rect, f64)> {
+/// What a placed graphic takes from the image cache.
+pub(crate) enum Source {
+    /// The pixels of these bytes.
+    Want(images::Want),
+    /// The bytes to draw aren't known yet: a PDF layer variant is being made, or the crop of a
+    /// placed PDF measured, in the background. What is cached under `cached` (an earlier copy of
+    /// the variant) is drawn meanwhile, else a light box.
+    Waiting { cached: Option<designcraft_doc::SourceKey>, page: u32, width_pt: f64, on_screen: f64 },
+}
+
+/// What drawing placed graphic `g` takes from the image cache, the page rectangle it covers in
+/// graphic space and that page's height (points). `None` for video and sound, Fast display and a
+/// PDF whose hidden layers can't be applied (none of these draw image pixels). A frame that
+/// doesn't wait for images reads no file and rewrites none here.
+pub(crate) fn image_want(f: &Frame, asset: &designcraft_doc::Asset, g: &designcraft_doc::Graphic, xf: Affine) -> Option<(Source, Rect, f64)> {
     if designcraft_doc::media_kind(&asset.mime).is_some() || f.opts.quality == DisplayQuality::Fast {
         return None;
     }
+    let wait = !f.opts.defer_images;
     // Pick a mip level close to the on-screen size (Typical: a 72 ppi proxy).
     let on_screen = (f.view * xf * g.xf).determinant().abs().sqrt();
     let on_screen = if f.opts.quality == DisplayQuality::Typical { on_screen.min(1.0) } else { on_screen };
+    // A placed PDF cropped to a box: the whole page, placed so that the box spans graphic space.
+    let shown = match shown_box_now(asset, wait) {
+        Prepared::Ready(b) => b,
+        Prepared::Failed => None,
+        Prepared::Pending => {
+            let waiting = Source::Waiting { cached: None, page: asset.page, width_pt: g.size.0, on_screen };
+            return Some((waiting, Rect::new(0.0, 0.0, g.size.0, g.size.1), g.size.1));
+        }
+    };
+    let [l, t, r, b] = shown.unwrap_or([0.0, 0.0, 1.0, 1.0]);
+    let (page_w, page_h) = (g.size.0 / (r - l), g.size.1 / (b - t));
+    let page = Rect::new(-l * page_w, -t * page_h, (1.0 - l) * page_w, (1.0 - t) * page_h);
     let hidden = HIDDEN_LAYERS.with(|h| h.borrow().clone());
     // Linked bytes not in memory aren't loaded to ask: their type says.
     let pdf = asset.data.resident().map_or(asset.mime == "application/pdf", |b| is_pdf(&b));
-    let data = match hidden.as_deref().filter(|_| pdf) {
+    let want = |bytes| Source::Want(images::Want { bytes, page: asset.page, width_pt: page_w, on_screen });
+    let source = match hidden.as_deref().filter(|_| pdf) {
         // An explicit choice (including all-on) that cannot be rewritten fails closed:
         // stale persisted/relinked choices must not reveal hidden source content.
-        Some(hidden) => pdf_layers::layered(&asset.data, hidden)?,
-        None => asset.data.clone(),
+        Some(hidden) => {
+            let covered = |id| images::cached(id, asset.page, page_w, on_screen).is_some_and(|(_, exact)| exact);
+            match pdf_layers::layered(&asset.data, hidden, wait, covered) {
+                pdf_layers::Layered::Ready(v) => want(v),
+                pdf_layers::Layered::Making(cached) => Source::Waiting { cached, page: asset.page, width_pt: page_w, on_screen },
+                pdf_layers::Layered::Failed => return None,
+            }
+        }
+        None => want(asset.data.clone()),
     };
-    // A placed PDF cropped to a box: the whole page, placed so that the box spans graphic space.
-    let [l, t, r, b] = shown_box(asset).unwrap_or([0.0, 0.0, 1.0, 1.0]);
-    let (page_w, page_h) = (g.size.0 / (r - l), g.size.1 / (b - t));
-    let page = Rect::new(-l * page_w, -t * page_h, (1.0 - l) * page_w, (1.0 - t) * page_h);
-    Some((images::Want { bytes: data, page: asset.page, width_pt: page_w, on_screen }, page, page_h))
+    Some((source, page, page_h))
 }
 
 /// What a placed graphic draws.
@@ -228,38 +257,74 @@ impl Renderer {
             ctx.fill_rect(&Rect::new(0.0, 0.0, g.size.0, g.size.1));
             return;
         }
-        let Some((want, page, page_h)) = image_want(f, asset, g, xf) else { return };
+        let Some((source, page, page_h)) = image_want(f, asset, g, xf) else { return };
+        let loading = |ctx: &mut RenderContext| {
+            ctx.set_transform(f.view * xf * g.xf);
+            ctx.set_paint(screen_color([222, 222, 222], 255));
+            ctx.fill_rect(&Rect::new(0.0, 0.0, g.size.0, g.size.1).intersect(page));
+        };
+        let want = match source {
+            Source::Want(want) => want,
+            Source::Waiting { cached, page: pdf_page, width_pt, on_screen } => {
+                // A layer variant: a PDF, which takes no swatch.
+                match cached.and_then(|id| images::cached(id, pdf_page, width_pt, on_screen)) {
+                    Some((pm, _)) => {
+                        let pm = match PLATE.with(std::cell::Cell::get) {
+                            Some(plate) => plate_pixmap(&pm, plate),
+                            None => pm,
+                        };
+                        paint_pixels(ctx, f, g, xf, page, width_pt, page_h, pm);
+                    }
+                    None => loading(ctx),
+                }
+                return;
+            }
+        };
         let page_w = want.width_pt;
         // A layer variant has no proxy: the asset's shows the file's default layers.
         let proxy = asset.proxy.as_ref().map(|p| &p.data).filter(|_| want.bytes.key() == asset.data.key());
         let (pm, data) = match pixels(f, &want, proxy) {
             Drawn::Pixels(pm, data) => (pm, data),
-            Drawn::Loading => {
-                ctx.set_transform(f.view * xf * g.xf);
-                ctx.set_paint(screen_color([222, 222, 222], 255));
-                ctx.fill_rect(&Rect::new(0.0, 0.0, g.size.0, g.size.1).intersect(page));
-                return;
-            }
+            Drawn::Loading => return loading(ctx),
             Drawn::Nothing => return,
         };
         // A coloured image is already in the plate's inks (its colours come from `color_of`).
-        let pm = match (colorize::colorized(f.doc, &g.fill, data, &pm), PLATE.with(std::cell::Cell::get)) {
+        let coloured = match colorize::colorized(f.doc, &g.fill, data, &pm, !f.opts.defer_images) {
+            Prepared::Ready(coloured) => coloured,
+            Prepared::Pending | Prepared::Failed => return loading(ctx),
+        };
+        let pm = match (coloured, PLATE.with(std::cell::Cell::get)) {
             (Some(coloured), _) => coloured,
             (None, Some(plate)) => plate_pixmap(&pm, plate),
             (None, None) => pm,
         };
-        // Only where the page is: a box reaching past it (a media box larger than the crop box)
-        // shows nothing there.
-        let rect = Rect::new(0.0, 0.0, g.size.0, g.size.1).intersect(page);
-        ctx.set_transform(f.view * xf * g.xf);
-        let sx = page_w / pm.width().max(1) as f64;
-        let sy = page_h / pm.height().max(1) as f64;
-        ctx.set_paint(vello_cpu::Image {
-            image: vello_cpu::ImageSource::Pixmap(pm),
-            sampler: peniko::ImageSampler::default().with_quality(peniko::ImageQuality::Medium),
-        });
-        ctx.set_paint_transform(Affine::translate((page.x0, page.y0)) * Affine::scale_non_uniform(sx, sy));
-        ctx.fill_rect(&rect);
-        ctx.reset_paint_transform();
+        paint_pixels(ctx, f, g, xf, page, page_w, page_h, pm);
     }
+}
+
+/// Draw `pm`, the pixels of a page `page_w` × `page_h` points at `page` in graphic `g`'s space.
+#[allow(clippy::too_many_arguments)]
+fn paint_pixels(
+    ctx: &mut RenderContext,
+    f: &Frame,
+    g: &designcraft_doc::Graphic,
+    xf: Affine,
+    page: Rect,
+    page_w: f64,
+    page_h: f64,
+    pm: std::sync::Arc<vello_cpu::Pixmap>,
+) {
+    // Only where the page is: a box reaching past it (a media box larger than the crop box)
+    // shows nothing there.
+    let rect = Rect::new(0.0, 0.0, g.size.0, g.size.1).intersect(page);
+    ctx.set_transform(f.view * xf * g.xf);
+    let sx = page_w / pm.width().max(1) as f64;
+    let sy = page_h / pm.height().max(1) as f64;
+    ctx.set_paint(vello_cpu::Image {
+        image: vello_cpu::ImageSource::Pixmap(pm),
+        sampler: peniko::ImageSampler::default().with_quality(peniko::ImageQuality::Medium),
+    });
+    ctx.set_paint_transform(Affine::translate((page.x0, page.y0)) * Affine::scale_non_uniform(sx, sy));
+    ctx.fill_rect(&rect);
+    ctx.reset_paint_transform();
 }
