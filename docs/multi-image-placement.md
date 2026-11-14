@@ -1,6 +1,6 @@
 # Multiple images
 
-Choose **File > Place** (Cmd+D on macOS) and select several images. They load into a placement cursor in the order supplied by the file picker. The cursor shows the next image's thumbnail and, beside it, how many are loaded ("(6)").
+Choose **File > Place** (Cmd+D on macOS) and select several images, or drop a selection of images from your file manager onto the document. Multiple images load into a placement cursor in the order supplied by the file picker (or the drop). The cursor shows the next image's thumbnail and, beside it, how many are loaded ("(6)").
 
 - Click to place the next image at its natural size.
 - Drag to draw its frame: it keeps the image's proportions, and shows the scale beside the pointer.
@@ -10,6 +10,14 @@ Choose **File > Place** (Cmd+D on macOS) and select several images. They load in
 - Switching to, opening or closing a document also cancels it, and goes back to the Selection tool.
 
 A single selected file retains the normal Place behavior, including filling a selected frame and PDF import options. Several files go to the place cursor whatever is selected, even with a PDF first. A multi-page PDF in a batch pauses the batch at its import options; once confirmed, it queues after the images loaded before it and the rest of the batch follows. Cancelling them ends the batch, and the images already loaded stay. The place cursor holds up to 1000 images, counting those already in it when a batch adds to them. Rows and columns each range from 1 to 100. A batch containing an unreadable image fails without replacing the existing queue or changing the document. An invalid grid area also leaves the document and queue unchanged.
+
+## Dropping files
+
+- One image dropped on an empty or graphic frame fills it, or replaces the image in it.
+- One image dropped anywhere else loads into the place cursor, as File > Place does with nothing selected: the next click or drag places it.
+- Several images dropped together load into the place cursor in the order they came, wherever they are dropped.
+- Images dropped while the cursor already holds some queue after them.
+- DesignCraft, IDML and InDesign documents open; text files (.txt, .docx, .rtf, .md) and spreadsheets go into a new frame where they are dropped; a PDF is placed where it is dropped (or fills the frame under it); swatch exchange (.ase) files load their swatches.
 
 Images here are PNG, JPEG, GIF, WebP, BMP, TIFF, SVG, PSD and EPS files.
 

@@ -195,7 +195,7 @@ impl DesignApp {
     /// the batch.
     fn import_delivered(&mut self, files: Vec<ImportedFile>, mut append: bool) {
         let cursor_image = |file: &ImportedFile| {
-            file.request.purpose == "place"
+            matches!(file.request.purpose.as_str(), "place" | "drop")
                 && !file.name.to_ascii_lowercase().ends_with(".pdf")
                 && (is_cursor_image(&file.name) || designcraft_render::image_size(&file.bytes).is_some())
         };
@@ -206,7 +206,7 @@ impl DesignApp {
                 shortcut_import::import_delivered(self, &file.bytes);
                 continue;
             }
-            let placing = file.request.purpose == "place";
+            let placing = matches!(file.request.purpose.as_str(), "place" | "drop");
             let mut group = vec![];
             if cursor_image(&file) {
                 while let Some(next) =
@@ -215,8 +215,9 @@ impl DesignApp {
                     group.push(next);
                 }
             }
-            // Several images: into the place cursor.
-            if !group.is_empty() {
+            // Several images, or one dropped (a browser drop has no position to place it at or
+            // frame to fill): into the place cursor.
+            if !group.is_empty() || (file.request.purpose == "drop" && cursor_image(&file)) {
                 if self.ui.dialog.is_some() {
                     self.status(crate::i18n::tr(&self.ui.language, "Image import cancelled while a dialog is open"));
                     continue;
@@ -304,9 +305,9 @@ impl DesignApp {
     }
 
     /// A file dropped on the window: documents open, the swatches in a swatch exchange (.ase) file
-    /// are loaded, and anything else is placed on the spread in view (a parent spread while parents
-    /// are being edited). A file without an extension opens when its content is a DesignCraft or
-    /// IDML document.
+    /// are loaded, an image loads into the place cursor, and anything else is placed on the spread
+    /// in view (a parent spread while parents are being edited). A file without an extension
+    /// opens when its content is a DesignCraft or IDML document.
     pub fn open_dropped(&mut self, path: &str) -> Result<Value, String> {
         self.open_dropped_at(path, None)
     }
@@ -315,18 +316,49 @@ impl DesignApp {
     /// window's coordinates.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn open_dropped_files(&mut self, files: &[egui::DroppedFileHandle], pointer: Option<egui::Pos2>) {
+        let drops = files.iter().map(|f| f.path().to_string_lossy().to_string()).filter(|p| !p.is_empty()).map(|p| (p, pointer)).collect();
+        self.open_dropped_batch(drops);
+    }
+
+    /// Files dropped on the window together, each with the pointer it was dropped at, handled in
+    /// the order they came. Each that isn't an image opens or is placed as
+    /// [`Self::open_dropped_at`] does at its own pointer. One image is dropped as that does too
+    /// (filling the frame under the pointer, else loading the place cursor); several load the place
+    /// cursor, each run of them where it came in the order, after any images it already holds,
+    /// whatever is under the pointer: click to place them one by one, drag with the arrow keys for
+    /// a grid. The rest of the drop is cancelled once a file opens a dialog (a multi-page PDF's
+    /// Import Options, an alert): unlike File › Place with several chosen, nothing waits for a
+    /// PDF's options to be confirmed.
+    pub fn open_dropped_batch(&mut self, drops: Vec<(String, Option<egui::Pos2>)>) {
+        let several = drops.iter().filter(|(p, _)| is_cursor_image(p)).count() > 1;
+        // Only the first graphic of a drop fills the frame under the pointer.
         let mut frame_free = true;
-        for f in files {
-            let p = f.path().to_string_lossy().to_string();
-            if !p.is_empty() {
-                let _ = self.place_dropped(&p, pointer, &mut frame_free);
+        let mut images = Vec::new();
+        // `None` at the end flushes the images left.
+        for drop in drops.into_iter().map(Some).chain([None]) {
+            if several
+                && let Some((path, _)) = &drop
+                && is_cursor_image(path)
+            {
+                images.push(path.clone());
+                continue;
             }
+            // A file that can't be placed has its alert, which cancels the rest below.
+            if !images.is_empty() {
+                let _ = self.place_paths(std::mem::take(&mut images));
+            }
+            let Some((path, pointer)) = drop else { break };
+            if self.ui.dialog.is_some() {
+                self.status(crate::i18n::tr(&self.ui.language, "Place cancelled while a dialog is open"));
+                return;
+            }
+            let _ = self.place_dropped(&path, pointer, &mut frame_free);
         }
     }
 
     /// [`Self::open_dropped`] at the pointer: a graphic dropped on an empty or graphic frame fills
-    /// it, elsewhere its top left lands where the file was dropped on the canvas; text goes to a
-    /// new frame on the document page there.
+    /// it; elsewhere an image loads into the place cursor, and another graphic's top left lands
+    /// where the file was dropped on the canvas; text goes to a new frame on the document page there.
     pub fn open_dropped_at(&mut self, path: &str, pointer: Option<egui::Pos2>) -> Result<Value, String> {
         self.place_dropped(path, pointer, &mut true)
     }
@@ -346,14 +378,23 @@ impl DesignApp {
         if document {
             return self.open_file("file.open", json!({"path": path}));
         }
-        let mut params = json!({"path": path});
-        // A graphic dropped on an empty or graphic frame fills it, as File > Place does. Text keeps
+        // A graphic dropped on a frame that takes one fills it, as File > Place does. Text keeps
         // getting a frame of its own, so it never replaces the image in a graphic frame.
         let is_text = designcraft_textimport::is_text_file(path);
         let frame = if *frame_free && !is_text { canvas::drop_frame(self, pointer) } else { None };
-        if let (Some(frame), Some(o)) = (frame, params.as_object_mut()) {
-            o.insert("frame".into(), json!(frame.0));
+        if let Some(frame) = frame {
+            let placed = self.open_file("file.place", json!({"path": path, "frame": frame.0}));
+            if placed.is_ok() {
+                *frame_free = false;
+            }
+            return placed;
         }
+        // An image dropped anywhere else waits in the place cursor, after any it already holds.
+        if is_cursor_image(path) {
+            let append = self.session.loaded.is_some();
+            return self.open_file("place.load", json!({"path": path, "append": append}));
+        }
+        let mut params = json!({"path": path});
         if let (Some((sr, at)), Some(o)) = (canvas::drop_point(self, pointer), params.as_object_mut()) {
             o.insert("spread".into(), serde_json::to_value(sr).unwrap_or(Value::Null));
             o.insert("x".into(), json!(at.x));
@@ -954,6 +995,23 @@ pub(crate) mod browser_import_tests {
         }
         app.drain_inbox();
         assert_eq!(loaded_names(&app), ["a.png", "one.pdf", "b.png"], "in the order dropped, all in the cursor");
+    }
+
+    /// A browser drop of one image (it has no position or frame under it) loads the place
+    /// cursor; images dropped together load it at once, after what it holds.
+    #[test]
+    fn browser_dropped_images_load_the_place_cursor() {
+        let mut app = app();
+        let request = app.import_request("drop");
+        deliver(&mut app, request, "one.png", png(200));
+        assert_eq!(app.session.tool_id(), "placeGun");
+        assert!(app.session.doc().unwrap().doc.spreads[0].items.is_empty(), "nothing placed yet");
+        let request = app.import_request("drop");
+        for (name, v) in [("two.png", 90), ("three.png", 60)] {
+            app.services.inbox.as_ref().unwrap().lock().unwrap().push(ImportedFile { request: request.clone(), name: name.into(), bytes: png(v) });
+        }
+        app.drain_inbox();
+        assert_eq!(loaded_names(&app), ["one.png", "two.png", "three.png"]);
     }
 
     /// A graphic frame, holding a picture and selected, with an empty place cursor; the frame's id.
