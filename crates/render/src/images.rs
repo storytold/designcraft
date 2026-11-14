@@ -5,7 +5,7 @@
 //! clone of that `Arc`, so the address can't be reused while cached. Least recently used levels
 //! are evicted beyond a memory budget; at most `MAX_BAD` failed assets are remembered.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
@@ -217,6 +217,55 @@ fn reduced_estimates(wants: &[Want]) -> Option<(usize, usize)> {
     Some((cached, peak))
 }
 
+/// The bytes each asset in `index` holds in the cache, when it is cached or failed, and the bytes
+/// of everything else cached. An asset with only some of the levels it is drawn at cached is not
+/// held: it is decoded again, and the levels its decode estimate covers are not counted with
+/// everything else either. The levels of the assets in `index` become the most recently used, so
+/// later stores evict other images first.
+fn held_in_view(
+    c: &mut Cache,
+    index: &HashMap<(usize, u32), usize>,
+    targets: &HashMap<(usize, u32), Vec<u8>>,
+) -> (HashMap<(usize, u32), usize>, usize) {
+    // Smaller levels alone don't make an asset cached, unless they are the reduced JPEG levels
+    // every drawing of it takes.
+    let cached: HashSet<(usize, u32)> = index
+        .keys()
+        .filter(|k| c.map.contains_key(&(k.0, k.1, 0)) || targets.get(k).is_some_and(|ls| ls.iter().all(|l| c.map.contains_key(&(k.0, k.1, *l)))))
+        .copied()
+        .collect();
+    // The levels the decode estimate of an asset that is not cached covers: every level for a full
+    // decode, and for reduced JPEG levels those from the level read from the blocks to the level
+    // drawn, as [`reduced_estimates`] counts them.
+    let covered = |k: &(usize, u32), level: u8| {
+        targets.get(k).is_none_or(|ls| ls.iter().any(|l| (*l).min(designcraft_images::MAX_REDUCED_SHRINK) <= level && level <= *l))
+    };
+    c.clock += 1;
+    let clock = c.clock;
+    let mut held: HashMap<(usize, u32), usize> = HashMap::new();
+    let mut in_view = 0usize;
+    for (k, e) in c.map.iter_mut() {
+        let asset = (k.0, k.1);
+        if !index.contains_key(&asset) {
+            continue;
+        }
+        e.stamp = clock;
+        let n = size_of(&e.pm);
+        if cached.contains(&asset) {
+            *held.entry(asset).or_default() += n;
+            in_view = in_view.saturating_add(n);
+        } else if covered(&asset, k.2) {
+            in_view = in_view.saturating_add(n);
+        }
+    }
+    for k in index.keys() {
+        if c.bad.contains_key(k) {
+            held.entry(*k).or_default();
+        }
+    }
+    (held, c.bytes.saturating_sub(in_view))
+}
+
 /// Threads [`warm`] decodes on (1 on the web, which has none).
 fn workers() -> usize {
     #[cfg(target_arch = "wasm32")]
@@ -294,32 +343,7 @@ pub(crate) fn warm(wants: Vec<Want>) -> usize {
             Some((*key, levels))
         })
         .collect();
-    // The bytes each asset in view holds in the cache, when it is cached or failed, and the bytes
-    // of everything else cached. Its levels become the most recently used, so the stores below
-    // evict other images first.
-    let (held, others) = with(|c| {
-        c.clock += 1;
-        let clock = c.clock;
-        let mut held: HashMap<(usize, u32), usize> = HashMap::new();
-        for (k, e) in c.map.iter_mut() {
-            if index.contains_key(&(k.0, k.1)) {
-                e.stamp = clock;
-                *held.entry((k.0, k.1)).or_default() += size_of(&e.pm);
-            }
-        }
-        // Smaller levels alone don't make an asset cached, unless they are the reduced JPEG levels
-        // every drawing of it takes.
-        held.retain(|k, _| {
-            c.map.contains_key(&(k.0, k.1, 0)) || targets.get(k).is_some_and(|ls| ls.iter().all(|l| c.map.contains_key(&(k.0, k.1, *l))))
-        });
-        let in_view = held.values().sum::<usize>();
-        for k in index.keys() {
-            if c.bad.contains_key(k) {
-                held.entry(*k).or_default();
-            }
-        }
-        (held, c.bytes.saturating_sub(in_view))
-    });
+    let (held, others) = with(|c| held_in_view(c, &index, &targets));
     // One image to decode gains nothing from threads (and is not worth sizing).
     if assets.iter().filter(|(key, _)| !held.contains_key(key)).count() < 2 {
         return 0;
@@ -561,9 +585,11 @@ mod tests {
         let reserved = decoding * 3 / 2;
         assert!(admits(0, reserved) && !admits(reserved, reserved) && admits(reserved, decode_peak_bytes(&small, 0) * 3 / 2));
         assert!(admits(0, usize::MAX), "an image over half the budget still decodes alone");
+        // Whether the small image's decode overlaps a large one depends on the threads, so the
+        // most decoding at once is one large reservation, or one large and the small one.
+        let small_reserved = decode_peak_bytes(&small, 0) * 3 / 2;
         let peak = warm(vec![want(&d), want(&e), want(&small)]);
-        assert!(peak <= BUDGET / 2, "{peak} bytes decoding at once");
-        assert!(peak >= reserved, "the large images were decoded ahead");
+        assert!(peak == reserved || peak == reserved + small_reserved, "{peak} bytes decoding at once");
         let me = std::thread::current().id();
         for img in [&d, &e, &small] {
             let on = decoders(img, since);
@@ -640,6 +666,36 @@ mod tests {
         assert!(warm(vec![small(&a), small(&b)]) > 0, "decoded ahead");
         assert!(lookup((Arc::as_ptr(&a) as usize, 0, 0)).is_none(), "no full-size decode is kept");
         assert_eq!(warm(vec![small(&a), small(&b)]), 0, "nothing left to decode");
+    }
+
+    #[test]
+    fn levels_of_an_image_in_view_count_once_when_only_some_are_cached() {
+        // A JPEG drawn at reduced levels 3 and 4 has levels 3 and 5 cached; another image is cached
+        // outside the view.
+        let (jpeg, other) = (Arc::new(vec![1u8]), Arc::new(vec![2u8]));
+        let (id, other_id) = (Arc::as_ptr(&jpeg) as usize, Arc::as_ptr(&other) as usize);
+        let mut c = Cache::default();
+        for (bytes, key, side) in [(&jpeg, (id, 0, 3), 16u16), (&jpeg, (id, 0, 5), 4), (&other, (other_id, 0, 0), 8)] {
+            let pm = Arc::new(Pixmap::new(side, side));
+            c.bytes += size_of(&pm);
+            c.map.insert(key, Entry { _bytes: bytes.clone(), pm, stamp: 0 });
+        }
+        let index = HashMap::from([((id, 0), 0)]);
+        let targets = HashMap::from([((id, 0), vec![3, 4])]);
+        let (held, others) = held_in_view(&mut c, &index, &targets);
+        assert!(held.is_empty(), "level 4 is missing, so the JPEG is decoded");
+        // Its decode estimate counts level 3, not level 5, which stays cached beside it.
+        assert_eq!(others, 8 * 8 * 4 + 4 * 4 * 4, "level 3 is not counted as another image, level 5 is");
+        // With every level it is drawn at cached, it is held with all three levels.
+        let pm = Arc::new(Pixmap::new(8, 8));
+        c.bytes += size_of(&pm);
+        c.map.insert((id, 0, 4), Entry { _bytes: jpeg.clone(), pm, stamp: 0 });
+        let (held, others) = held_in_view(&mut c, &index, &targets);
+        assert_eq!((held.get(&(id, 0)).copied(), others), (Some(16 * 16 * 4 + 8 * 8 * 4 + 4 * 4 * 4), 8 * 8 * 4));
+        // A full decode's estimate counts every level, so an image drawn without reduced levels,
+        // with only smaller levels cached, adds nothing to the other images.
+        let (held, others) = held_in_view(&mut c, &HashMap::from([((id, 0), 0)]), &HashMap::new());
+        assert!(held.is_empty() && others == 8 * 8 * 4, "{others}");
     }
 
     #[test]
