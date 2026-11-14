@@ -1,4 +1,4 @@
-use super::target::{edit_table, target};
+use super::target::{clamp_selection, target};
 use super::{CellRange, CellStroke, Document, Result, Session, StrokeType, Table, Value, VerticalJustification, bad, compose, json, ok, str_param};
 
 /// Cell edges chosen for a stroke edit: the target range's four outer sides (physical left and
@@ -247,13 +247,11 @@ pub(super) fn set_cell(s: &mut Session, p: &Value) -> Result<Value> {
         Some(sv) => Some((StrokeEdit::parse(doc, sv, ID)?, EdgeSel::parse(sv.get("edges"), ID)?)),
         None => None,
     };
-    edit_table(s, &g, ID, |t| {
+    let apply = |t: &mut Table| {
         let owners = t.owners();
         let nc = t.ncols();
         let nr = t.nrows();
         let rtl = t.options.direction == designcraft_doc::TextDirection::RightToLeft;
-        // Local edits outrank previously imported edges, including explicit zero/None.
-        let priority = if stroke.is_some() { next_cell_stroke_priority(t) } else { 0 };
         let rg = g.range;
         // Edges are inner or outer within the selection grown to whole merged cells, so a
         // merged cell selected through one of its grid positions keeps its own outline.
@@ -269,6 +267,27 @@ pub(super) fn set_cell(s: &mut Session, p: &Value) -> Result<Value> {
                         bases.insert((r, c, i), base);
                     }
                 }
+            }
+        }
+        // An edge that already shows the edit as its own local stroke, at the table's highest
+        // priority, is left as it is; the edit renumbers no edge when every chosen edge is.
+        let mut priority = 0;
+        if let Some((edit, _)) = &stroke {
+            let top = t.cells.iter().flat_map(|cell| cell.stroke_priorities).max().unwrap_or(0);
+            let shown = |&(r, c, i): &(usize, usize, usize), base: &CellStroke| {
+                t.cell(r, c).is_some_and(|cell| {
+                    top > 0
+                        && cell.stroke_priorities[i] == top
+                        && cell.stroke_defined[i]
+                        && cell.border_overrides[i]
+                        && cell.strokes[i] == edit.apply(base.clone())
+                })
+            };
+            if bases.iter().all(|(edge, base)| shown(edge, base)) {
+                bases.clear();
+            } else {
+                // Local edits outrank previously imported edges, including explicit zero/None.
+                priority = next_cell_stroke_priority(t);
             }
         }
         let mut edited = std::collections::HashSet::new();
@@ -296,8 +315,16 @@ pub(super) fn set_cell(s: &mut Session, p: &Value) -> Result<Value> {
                 cell.rotation = v;
             }
             if let Some(tx) = &text {
-                let len = cell.text.len();
-                cell.text.replace(0..len, tx);
+                // Replacing the text bumps the story's revision even when the text and its
+                // formatting come out the same; the cell then keeps its story as it is.
+                let mut replaced = cell.text.clone();
+                let len = replaced.len();
+                replaced.replace(0..len, tx);
+                let rev = std::mem::replace(&mut replaced.rev, cell.text.rev);
+                if replaced != cell.text {
+                    replaced.rev = rev;
+                    cell.text = replaced;
+                }
             }
             if let Some((edit, _)) = &stroke {
                 for i in 0..4 {
@@ -313,6 +340,22 @@ pub(super) fn set_cell(s: &mut Session, p: &Value) -> Result<Value> {
         }
         // Keep both copies of unmerged shared boundaries consistent, including in RTL tables.
         mirror_edited_cell_edges(t, rg, (nr, nc, rtl), stroke.as_ref(), &edited, &owners);
+    };
+    // When every value already matches the target cells, the document is left as it is and no
+    // undo step is recorded.
+    let current = s.doc()?.doc.story(g.story).and_then(|x| x.tables.get(&g.table)).ok_or_else(|| bad(ID, "no table"))?;
+    let mut edited_table = Table::clone(current);
+    apply(&mut edited_table);
+    if edited_table == **current {
+        return ok();
+    }
+    // The edited copy takes the table's place, so the table is not copied a second time.
+    s.edit(|d, sel| {
+        let st = d.story_mut(g.story).ok_or_else(|| bad(ID, "no story"))?;
+        let t = st.tables.get_mut(&g.table).ok_or_else(|| bad(ID, "no table"))?;
+        *t = std::sync::Arc::new(edited_table);
+        st.rev = st.rev.wrapping_add(1);
+        clamp_selection(d, sel);
         ok()
     })
 }
@@ -483,5 +526,39 @@ mod arabic_tests {
             s.execute("table.insert", &json!({"rows": 1, "cols": 2})).unwrap();
             assert_eq!(only_table(&s).options.direction, expected, "table.insert in a {direction} paragraph");
         }
+    }
+}
+
+#[cfg(test)]
+mod set_cell_tests {
+    use super::*;
+
+    #[test]
+    fn set_cell_with_the_values_the_cells_already_have_records_no_undo_step() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [0, 0, 400, 300], "content": "text", "text": ""})).unwrap();
+        s.execute("text.select", &json!({"story": r["story"], "anchor": 0, "focus": 0})).unwrap();
+        s.execute("table.insert", &json!({"rows": 2, "cols": 2})).unwrap();
+        let edit = json!({"rows": [0, 1], "cols": [0, 0], "fill": "[Black]", "tint": 0.5, "insets": [1, 2, 3, 4], "vj": "center", "rotation": 90, "text": "Same"});
+        s.execute("table.setCell", &edit).unwrap();
+        let state = |s: &Session| {
+            let st = s.doc().unwrap();
+            (st.history.undo.len(), st.revision)
+        };
+        let before = state(&s);
+        s.execute("table.setCell", &edit).unwrap();
+        assert_eq!(state(&s), before, "no undo step and no new revision when nothing changes");
+        s.execute("table.setCell", &json!({"rows": [0, 1], "cols": [0, 0], "tint": 0.25})).unwrap();
+        assert_eq!(state(&s).0, before.0 + 1, "a changed value is still one undo step");
+
+        let stroke = json!({"rows": [0, 0], "cols": [1, 1], "stroke": {"weight": 2, "edges": ["all"]}});
+        s.execute("table.setCell", &stroke).unwrap();
+        let before = state(&s);
+        s.execute("table.setCell", &stroke).unwrap();
+        assert_eq!(state(&s), before, "the same stroke again is not a new undo step");
+        s.execute("table.setCell", &json!({"rows": [1, 1], "cols": [1, 1], "stroke": {"weight": 2, "edges": ["all"]}})).unwrap();
+        s.execute("table.setCell", &stroke).unwrap();
+        assert_eq!(state(&s).0, before.0 + 2, "an edge a later edit outranks takes the stroke again");
     }
 }
