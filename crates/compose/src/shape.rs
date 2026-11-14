@@ -363,6 +363,8 @@ pub(crate) fn shape_para(input: ShapeInput<'_, '_>, table: &mut StyleTable<'_>) 
     ShapedPara { glyphs, range }
 }
 
+/// The pieces of a paragraph's text with their resolved styles (a footnote reference's custom
+/// mark in its own character style), and the ranges they cover.
 fn resolve_pieces(input: &ShapeInput<'_, '_>, table: &mut StyleTable<'_>) -> (Vec<Piece>, Vec<std::ops::Range<usize>>) {
     let db = input.db;
     let styles = input.styles;

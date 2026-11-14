@@ -6,6 +6,7 @@ use serde_json::{Value, json};
 use super::{CommandSpec, bad, cmd, has_doc};
 use crate::{Result, Session};
 
+/// The footnote commands: insert, delete, list, options and moving between a note and its reference.
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(
@@ -92,6 +93,8 @@ fn merge(base: &mut Value, p: &Value) {
     }
 }
 
+/// `footnote.options`: the document's footnote options, changed by the keys given (custom marks
+/// checked only when they change) in one undo step → the options as they are now.
 fn options(s: &mut Session, p: &Value) -> Result<Value> {
     let cur = s.doc()?.doc.footnote_options.clone();
     if p.as_object().is_none_or(|o| o.is_empty()) {

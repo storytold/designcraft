@@ -163,6 +163,8 @@ impl Notes {
         v
     }
 
+    /// Compose footnote `k` at width `w`: its text with its label (number or custom mark, with
+    /// the mark's character style) and the separator, cached until any of them changes.
     fn compose(&mut self, doc: &Document, k: usize, w: f64, f: &FrameSpec, opts: &ComposeOptions) -> (Arc<ComposedStory>, NoteMetrics) {
         let o = &doc.footnote_options;
         let (before, mark, after) = o.label_parts(self.numbers[k], true);

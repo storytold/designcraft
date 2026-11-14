@@ -1771,7 +1771,12 @@ fn eyedropper_samples_a_placed_image_and_matches_other_objects() {
             name: "photo.png".into(),
             mime: "image/png".into(),
             link: None,
-            data: std::sync::Arc::new(vec![]),
+            link_fingerprint: None,
+            link_relative: None,
+            link_hash: None,
+            storage: Default::default(),
+            proxy: None,
+            data: designcraft_doc::AssetData::embedded(vec![]),
             pixels: Some((100, 100)),
             page: 0,
             pdf_crop: Default::default(),
@@ -2150,7 +2155,7 @@ fn eyedropper_ignores_inactive_states_of_a_multi_state_object() {
             name: "photo.png".into(),
             mime: "image/png".into(),
             link: None,
-            data: std::sync::Arc::new(vec![]),
+            data: designcraft_doc::AssetData::embedded(vec![]),
             pixels: Some((100, 100)),
             ..Default::default()
         }),
@@ -2414,4 +2419,200 @@ fn direct_selection_marquee_selects_points_of_several_frames_and_drags_them_toge
     let want = lt.delta_to_spread(SpreadRef::Doc(0), designcraft_geom::Vec2::new(inc, 0.0));
     assert!(want.x.abs() < 1e-9 && (want.y.abs() - inc).abs() < 1e-9, "a quarter turn: {want:?}");
     assert!(moves(p).iter().all(|&(x, y)| (x - want.x).abs() < 1e-9 && (y - want.y).abs() < 1e-9), "{p}");
+}
+
+#[test]
+fn gap_tool_follows_snapping_settings() {
+    let mut d = Document::new(&NewDocument::default());
+    add_rect(&mut d, Rect::new(100.0, 100.0, 180.0, 200.0));
+    add_rect(&mut d, Rect::new(200.0, 100.0, 300.0, 200.0));
+    add_rect(&mut d, Rect::new(250.0, 250.0, 320.0, 350.0));
+    Arc::make_mut(&mut d.spreads[0]).pages[0].guides.push(Guide {
+        orientation: Orientation::Vertical,
+        position: 225.0,
+        spread: false,
+        locked: false,
+        layer: None,
+        liquid: false,
+    });
+    Arc::make_mut(&mut d.spreads[0]).pages[0].guides.push(Guide {
+        orientation: Orientation::Vertical,
+        position: 310.0,
+        spread: false,
+        locked: false,
+        layer: None,
+        liquid: false,
+    });
+    let sel = Selection::default();
+    let c = Cache::new();
+    let l = CanvasLayout::new(&d, false);
+    let p0 = spread_pt(&l, 190.0, 150.0);
+
+    let drag_dx = |snap: SnapView, mods: Mods, raw_dx: f64| -> (f64, Vec<Overlay>) {
+        let mut t = create("gap");
+        let cx = ToolContext { snap, ..ctx(&d, &sel, &c, &l) };
+        t.pointer(&cx, &PointerEvent::new(PointerKind::Down, p0.x, p0.y));
+        let drag = t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, p0.x + raw_dx, p0.y).with_mods(mods));
+        let Some(Action::Preview(cmd, p)) = drag.last() else { panic!("{drag:?}") };
+        assert_eq!(cmd, "gap.move");
+        let overlays = t.overlays(&cx);
+        t.pointer(&cx, &PointerEvent::new(PointerKind::Up, p0.x + raw_dx, p0.y).with_mods(mods));
+        (p["dx"].as_f64().unwrap(), overlays)
+    };
+
+    // Ruler guide at x = 225: gap right edge is 200 + 23 = 223, snaps +2 pt to 225.
+    let (dx, _) = drag_dx(SnapView::FACTORY, Mods::default(), 23.0);
+    assert!((dx - 25.0).abs() < 1e-6, "expected snap to guide (dx=25), got {dx}");
+
+    // Snapping off: stays at raw 23.0.
+    let (dx, overlays) = drag_dx(SnapView::OFF, Mods::default(), 23.0);
+    assert!((dx - 23.0).abs() < 1e-6, "expected unsnapped dx=23, got {dx}");
+    assert!(overlays.is_empty(), "expected no overlays when snap is off: {overlays:?}");
+
+    // Cmd suspends snapping: stays at raw 23.0.
+    let (dx, overlays) = drag_dx(SnapView::FACTORY, Mods { cmd: true, ..Default::default() }, 23.0);
+    assert!((dx - 23.0).abs() < 1e-6, "expected unsnapped dx=23 with Cmd, got {dx}");
+    assert!(overlays.is_empty(), "expected no overlays with Cmd: {overlays:?}");
+
+    // Smart guide alignment to third item's left edge (x = 250): gap left edge 180 + 68 = 248, snaps to 250 (dx = 70).
+    let (dx, overlays) = drag_dx(SnapView::FACTORY, Mods::default(), 68.0);
+    assert!((dx - 70.0).abs() < 1e-6, "expected smart-guide snap (dx=70), got {dx}");
+    assert!(overlays.iter().any(|o| matches!(o, Overlay::Guide { .. })), "expected alignment guide overlay: {overlays:?}");
+
+    // Smart guides disabled: no snap to third item.
+    let no_smart = SnapView { smart_guides: false, ..SnapView::FACTORY };
+    let (dx, overlays) = drag_dx(no_smart, Mods::default(), 68.0);
+    assert!((dx - 68.0).abs() < 1e-6, "expected no smart-guide snap when disabled, got {dx}");
+    assert!(overlays.is_empty(), "expected no guide overlay when smart_guides=false: {overlays:?}");
+
+    // Ruler guide beyond gap_move's minimum-width clamp (right item [200..300] clamps at x=299, max_delta=99):
+    // dragging 108 pt reaches x=308 near guide x=310 (dx=110), which must be rejected as unreachable.
+    let (dx, overlays) = drag_dx(no_smart, Mods::default(), 108.0);
+    assert!((dx - 108.0).abs() < 1e-6, "expected unreachable snap target to be rejected, got {dx}");
+    assert!(overlays.is_empty(), "expected no guide overlay for unreachable snap target: {overlays:?}");
+
+    // With two left neighbours of different widths ([100..180] and [140..180]), dragging left by 60 pt
+    // without a snap match preserves the raw delta (-60) instead of clamping it to the narrower item (-39).
+    let mut d2 = Document::new(&NewDocument::default());
+    add_rect(&mut d2, Rect::new(100.0, 100.0, 180.0, 150.0));
+    add_rect(&mut d2, Rect::new(140.0, 150.0, 180.0, 200.0));
+    add_rect(&mut d2, Rect::new(200.0, 100.0, 300.0, 200.0));
+    let l2 = CanvasLayout::new(&d2, false);
+    let q0 = spread_pt(&l2, 190.0, 150.0);
+    let mut t2 = create("gap");
+    let cx2 = ToolContext { snap: SnapView::FACTORY, ..ctx(&d2, &sel, &c, &l2) };
+    t2.pointer(&cx2, &PointerEvent::new(PointerKind::Down, q0.x, q0.y));
+    let drag2 = t2.pointer(&cx2, &PointerEvent::new(PointerKind::Drag, q0.x - 60.0, q0.y));
+    let Some(Action::Preview(cmd2, p2)) = drag2.last() else { panic!("{drag2:?}") };
+    assert_eq!(cmd2, "gap.move");
+    assert!((p2["dx"].as_f64().unwrap() - (-60.0)).abs() < 1e-6, "expected raw dx=-60 preserved, got {p2}");
+    assert!(t2.overlays(&cx2).is_empty(), "expected no guide overlay without snap match");
+    t2.pointer(&cx2, &PointerEvent::new(PointerKind::Up, q0.x - 60.0, q0.y));
+}
+
+/// While the place cursor drags out a grid, the arrow keys change it and are handled, even at a
+/// limit, so the session doesn't try them elsewhere; other keys and keys before a drag aren't.
+#[test]
+fn place_gun_grid_arrow_keys_are_handled_during_a_drag() {
+    let d = Document::new(&NewDocument::default());
+    let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    let mut t = create("placeGun");
+    assert!(t.key(&cx, ToolKey::Right, Mods::default()).is_empty(), "no drag yet");
+    let _ = t.pointer(&cx, &PointerEvent::new(PointerKind::Down, 10.0, 10.0));
+    let _ = t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, 110.0, 60.0));
+    for key in [ToolKey::Right, ToolKey::Up, ToolKey::Left, ToolKey::Left, ToolKey::Down, ToolKey::Down] {
+        assert_eq!(t.key(&cx, key, Mods::default()), vec![Action::Handled], "{key:?}");
+    }
+    assert!(t.key(&cx, ToolKey::Delete, Mods::default()).is_empty());
+}
+
+/// Escape drops only the current loaded image; between drags the arrows cycle the loaded images,
+/// and during a drag they keep their grid meaning.
+#[test]
+fn place_gun_escape_skips_and_arrows_cycle_between_drags() {
+    let d = Document::new(&NewDocument::default());
+    let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
+    let mut cx = ctx(&d, &s, &c, &l);
+    cx.loaded = Some((40.0, 20.0));
+    let mut t = create("placeGun");
+    let exec = |cmd: &str, p: serde_json::Value| vec![Action::Exec(cmd.into(), p)];
+    assert_eq!(t.key(&cx, ToolKey::Escape, Mods::default()), exec("place.skip", serde_json::json!({})));
+    for (key, dir) in [(ToolKey::Right, 1), (ToolKey::Down, 1), (ToolKey::Left, -1), (ToolKey::Up, -1)] {
+        assert_eq!(t.key(&cx, key, Mods::default()), exec("place.cycle", serde_json::json!({"dir": dir})), "{key:?}");
+    }
+    let _ = t.pointer(&cx, &PointerEvent::new(PointerKind::Down, 10.0, 10.0));
+    let _ = t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, 110.0, 60.0));
+    assert_eq!(t.key(&cx, ToolKey::Right, Mods::default()), vec![Action::Handled]);
+    // Nothing loaded: Escape leaves the tool instead of asking to skip an image there isn't.
+    cx.loaded = None;
+    assert_eq!(t.key(&cx, ToolKey::Escape, Mods::default()), vec![Action::SwitchTool("selection".into())]);
+}
+
+/// A place-cursor grid drag too thin for its cells shows and places the single frame an ordinary
+/// drag would; one with room shows its cells and places the grid.
+#[test]
+fn place_gun_grid_too_small_for_its_cells_previews_and_places_one_frame() {
+    let d = Document::new(&NewDocument::default());
+    let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
+    let mut cx = ctx(&d, &s, &c, &l);
+    cx.loaded = Some((40.0, 20.0));
+    // Drag from (10, 10) to `to`, pressing ↑ (two rows) when `grid`: the overlay before release,
+    // and the release.
+    let drag = |to: (f64, f64), grid: bool| {
+        let mut t = create("placeGun");
+        let _ = t.pointer(&cx, &PointerEvent::new(PointerKind::Down, 10.0, 10.0));
+        let _ = t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, to.0, to.1));
+        if grid {
+            assert_eq!(t.key(&cx, ToolKey::Up, Mods::default()), vec![Action::Handled]);
+        }
+        let shown = t.overlays(&cx);
+        (shown, t.pointer(&cx, &PointerEvent::new(PointerKind::Up, to.0, to.1)))
+    };
+    // 100 × 8 pt: two rows 6 pt apart leave each a 1 pt cell; 100 × 4 pt leaves none.
+    let (shown, out) = drag((110.0, 18.0), true);
+    assert_eq!(shown.len(), 2, "{shown:?}");
+    assert!(matches!(out.as_slice(), [Action::Exec(cmd, p)] if cmd == "place.grid" && p["rows"] == 2), "{out:?}");
+    let (shown, out) = drag((110.0, 14.0), true);
+    let (single_shown, single_out) = drag((110.0, 14.0), false);
+    assert_eq!(shown, single_shown);
+    assert_eq!(out, single_out);
+    assert!(matches!(out.as_slice(), [Action::Exec(cmd, _)] if cmd == "place.drop"), "{out:?}");
+}
+
+/// On a rotated spread a place-cursor grid previews the cells it places: worked out on the spread,
+/// then shown on the canvas, so two columns on the spread don't preview as two across the canvas.
+#[test]
+fn place_gun_grid_preview_matches_the_release_on_a_rotated_spread() {
+    let mut d = Document::new(&NewDocument::default());
+    std::sync::Arc::make_mut(&mut d.spreads[0]).pages[0].view_rotation = 1;
+    let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    let (start, end) = (Point::new(10.0, 10.0), Point::new(210.0, 110.0));
+    let (spread, a) = l.spread_at(start).unwrap();
+    let b = l.to_spread(spread, end);
+    let mut t = create("placeGun");
+    let _ = t.pointer(&cx, &PointerEvent::new(PointerKind::Down, start.x, start.y));
+    let _ = t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, end.x, end.y));
+    assert_eq!(t.key(&cx, ToolKey::Right, Mods::default()), vec![Action::Handled]);
+    let shown = t.overlays(&cx);
+    let out = t.pointer(&cx, &PointerEvent::new(PointerKind::Up, end.x, end.y));
+    assert!(matches!(out.as_slice(), [Action::Exec(cmd, p)] if cmd == "place.grid" && p["columns"] == 2 && p["gutter"] == 6.0), "{out:?}");
+    // Two columns on the spread, 6 pt apart, each shown where its corners land on the canvas.
+    let r = Rect::from_points(a, b);
+    let w = (r.width() - 6.0) / 2.0;
+    let expected: Vec<Overlay> = [r.x0, r.x0 + w + 6.0]
+        .into_iter()
+        .map(|x| Overlay::Marquee(Rect::from_points(l.to_canvas(spread, Point::new(x, r.y0)), l.to_canvas(spread, Point::new(x + w, r.y1)))))
+        .collect();
+    assert_eq!(shown.len(), 2, "{shown:?}");
+    for (got, want) in shown.iter().zip(&expected) {
+        let (Overlay::Marquee(got), Overlay::Marquee(want)) = (got, want) else { panic!("{got:?}") };
+        for (g, w) in [(got.x0, want.x0), (got.y0, want.y0), (got.x1, want.x1), (got.y1, want.y1)] {
+            assert!((g - w).abs() < 1e-6, "{shown:?} against {expected:?}");
+        }
+    }
+    // A quarter turn: the columns stack down the canvas.
+    let (Overlay::Marquee(first), Overlay::Marquee(second)) = (&shown[0], &shown[1]) else { panic!("{shown:?}") };
+    assert!((first.x0 - second.x0).abs() < 1e-6, "{shown:?}");
 }

@@ -1,10 +1,8 @@
-#[cfg(not(target_arch = "wasm32"))]
-use super::EngineError;
-use super::bytes::{base64_encode, to_bytes, to_bytes_with_preview, with_document_extension};
+use super::bytes::{base64_encode, to_bytes};
 use super::new::{file_new, file_sample, save_preset};
 use super::open::{file_open, file_open_bytes, file_open_recent, has_recent, recent_entry};
-use super::place::{file_place, place_drop, place_load, read_source};
-use super::save::{FolderAccess, can_revert, file_revert, file_save, recovery_dir};
+use super::place::{file_place, place_contact_sheet, place_cycle, place_drop, place_grid, place_load, place_skip, read_source};
+use super::save::{FolderAccess, can_revert, file_revert, file_save, file_save_a_copy, recovery_dir};
 use super::snippets::{snippet_export, snippet_place};
 use super::{CommandSpec, PRESETS, Value, always, bad, cmd, has_doc, json, ok, str_param};
 
@@ -52,36 +50,44 @@ pub fn specs() -> Vec<CommandSpec> {
         }),
         cmd!(noundo "file.save", "Save", ["File"], Some("Cmd+S"), "{path?} — a `path` without the .designcraft extension gets it → {path: the file written, bytes}", has_doc, file_save),
         cmd!(noundo "file.saveAs", "Save As…", ["File"], Some("Cmd+Shift+S"), "{path} — a path without the .designcraft extension gets it → {path: the file written, bytes}", has_doc, file_save),
-        cmd!(noundo "file.saveACopy", "Save a Copy…", ["File"], None, "{path} — writes the document without changing which file it is or its unsaved state; a path without the .designcraft extension gets it → {path: the file written, bytes}", has_doc, |s, p| {
-            let path = str_param(p, "path").ok_or_else(|| bad("file.saveACopy", "missing `path`"))?;
-            let path = with_document_extension(path);
-            let mut copy = (*s.doc()?.doc).clone();
-            crate::cmd::datamerge::refresh_relative_paths(&mut copy, std::path::Path::new(&path));
-            let bytes = to_bytes_with_preview(&copy, &s.cache)?;
-            #[cfg(not(target_arch = "wasm32"))]
-            crate::io::write_file(&path, &bytes).map_err(EngineError::Other)?;
-            Ok(json!({"path": path, "bytes": bytes.len()}))
-        }),
+        cmd!(noundo "file.saveACopy", "Save a Copy…", ["File"], None, "{path, embedLinks?: copy every linked file in (fails when one is missing or changed)} — writes the document without changing which file it is or its unsaved state; a path without the .designcraft extension gets it → {path: the file written, bytes, warnings}", has_doc, file_save_a_copy),
         cmd!(noundo "file.revert", "Revert", ["File"], None, "{} — back to the last saved version (not undoable)", can_revert, file_revert),
         cmd!(query "file.recovery.list", "Recovery Data", [], None, "{dir?} → [{uid, path, title, saved}] unsaved documents left by a crash (default: the session's recovery folder)", always, |s, p| {
             let dir = recovery_dir(s, p, FolderAccess::Read)?;
             Ok(Value::Array(crate::recovery::list(&dir).into_iter().map(|(uid, mut m)| { m["uid"] = json!(uid); m }).collect()))
         }),
-        cmd!(noundo "file.recovery.save", "Save Recovery Data", [], None, "{dir?} — write every unsaved document to the recovery folder (the app does this on a timer)", always, |s, p| {
+        cmd!(noundo "file.recovery.save", "Save Recovery Data", [], None,
+            "{dir?, background?} — write every unsaved document to the recovery folder (the app does this on a timer; `background` queues the writes and returns at once) → {saved} or {queued}",
+            always, |s, p| {
+            let background = match p.get("background") {
+                None | Some(Value::Null) => false,
+                Some(v) => v.as_bool().ok_or_else(|| bad("file.recovery.save", "`background` must be true or false"))?,
+            };
             let dir = recovery_dir(s, p, FolderAccess::Write)?;
+            if background {
+                return Ok(json!({"queued": crate::recovery::start_tracked(s, &dir)?}));
+            }
             Ok(json!({"saved": crate::recovery::save_tracked(s, &dir)?}))
+        }),
+        cmd!(query "file.recovery.progress", "Recovery Progress", [], None,
+            "{} → {written, busy, errors} recovery data queued in the background has been written", always, |s, _| {
+            let done = crate::recovery::finished(s);
+            Ok(json!({"written": done.written, "busy": done.busy, "errors": done.errors}))
         }),
         cmd!(noundo "file.recovery.open", "Recover Documents", [], None, "{dir?} — reopen documents left in the recovery folder (unsaved)", always, |s, p| {
             // Reopening removes the entries it read.
             let dir = recovery_dir(s, p, FolderAccess::ReadWrite)?;
             Ok(json!({"opened": crate::recovery::open(s, &dir)?}))
         }),
-        cmd!(query "file.serialize", "Serialize", [], None, "{} → {base64, bytes} the .designcraft file", has_doc, |s, _| {
+        cmd!(query "file.serialize", "Serialize", [], None, "{} → {base64, bytes, warnings} the .designcraft file (on the web, linked files stay links, with a warning)", has_doc, |s, _| {
             let st = s.doc()?;
             // Preview fill is session state. Serialize the unfilled template.
             let doc = st.preview_stash.as_deref().unwrap_or(st.doc.as_ref());
+            let proxied = crate::cmd::native_links::with_proxies(doc, || false);
+            let doc = proxied.as_ref().unwrap_or(doc);
             let bytes = to_bytes(doc)?;
-            Ok(json!({"base64": base64_encode(&bytes), "bytes": bytes.len()}))
+            let warnings = crate::cmd::native_links::web_save_warnings(doc);
+            Ok(json!({"base64": base64_encode(&bytes), "bytes": bytes.len(), "warnings": warnings}))
         }),
         cmd!(noundo "file.close", "Close", ["File"], Some("Cmd+W"), "{index?}", has_doc, |s, p| {
             let i = p.get("index").and_then(Value::as_u64).map(|v| v as usize).or(s.active_index()).unwrap_or(0);
@@ -97,8 +103,8 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(query "place.styles", "Import Options: Styles", [], None,
         "{path | base64, name} → {paragraph: [name], character: [name], conflicts: [name]} — the styles a Word/RTF file brings (for styleMap / styleConflicts)",
         has_doc, |s, p| {
-            let (bytes, name, _) = read_source(p)?;
-            let imp = designcraft_textimport::import(&name, &bytes).map_err(|e| bad("place.styles", e.to_string()))?;
+            let source = read_source(p)?;
+            let imp = designcraft_textimport::import(&source.name, &source.bytes).map_err(|e| bad("place.styles", e.to_string()))?;
             let st = &s.doc()?.doc.styles;
             let conflicts: Vec<&str> = imp
                 .para_styles
@@ -123,17 +129,43 @@ pub fn specs() -> Vec<CommandSpec> {
             "Load Place Cursor",
             [],
             None,
-            "{path | base64, name?} — load a graphic into the place cursor (then click/drag with the placeGun tool)",
+            "{path | base64, name?, files?: [{path | base64, name?, embed?}], append? (keep the images already loaded and queue these after them), embed? (keep every image's bytes in the document; default: images read from a path link to their files)} — load up to 1000 images into the place cursor, in order (then click/drag with the placeGun tool)",
             has_doc,
             place_load
         ),
         cmd!("place.drop", "Place Loaded Graphic", [], None, "{spread?, x, y, rect?: [x0,y0,x1,y1], frame?: id}", has_doc, place_drop),
         cmd!(
+            "place.grid",
+            "Place Image Grid",
+            [],
+            None,
+            "{spread?, rect: [x0,y0,x1,y1], columns?: 1, rows?: 1, gutter?: 6} — place queued images in row order",
+            has_doc,
+            place_grid
+        ),
+        cmd!(
+            "place.contactSheet",
+            "Place Contact Sheet",
+            ["File"],
+            None,
+            "{columns?: 3, rows?: 4, gutter?: 6, margin?: 36} — place all loaded images on new pages",
+            has_doc,
+            place_contact_sheet
+        ),
+        cmd!(noundo "place.skip", "Skip Loaded Image", [], None, "{} — drops the current loaded image without placing it and loads the next; the last one ends placing", has_doc, place_skip),
+        cmd!(noundo "place.cycle", "Cycle Loaded Images", [], None, "{dir: 1|-1} — makes the next (1) or previous (-1) loaded image the current one", has_doc, place_cycle),
+        cmd!(noundo "place.cancel", "Cancel Image Placement", [], None, "{} — clears every loaded image", has_doc, |s, _| {
+            s.loaded = None;
+            s.loaded_queue.clear();
+            s.set_tool("selection");
+            ok()
+        }),
+        cmd!(
             "file.place",
             "Place…",
             ["File"],
             Some("Cmd+D"),
-            "{path?|base64?, name?, frame?: id (place into), spread?, x?, y?, width?: finite number > 0 (null: absent), height? (video/audio), pdfPage?: n (1-based, Image Import Options), pdfCrop?: crop|art|trim|bleed|media|contentVisible|contentAll (the box the graphic shows; `width` is the whole page's), loadCursor? (with no frame to fill and no x/y, an image loads into the place cursor, as File › Place), layoutPage?: n (IDML / .designcraft: that page's objects as a group), page?, rect?: [x0,y0,x1,y1] (text: a new frame there), autoflow? (threads one frame per page column from the first frame on, adding pages until the text fits), removeStyles?, styleMap?: {imported name: document style}, styleConflicts?: useExisting|redefine|autoRename, link? (keep the file linked in the Links panel; default: the linkTextFiles preference)} — places an image into `frame` when given; otherwise any explicit x/y/spread/width creates a new frame; otherwise uses the selected empty or graphic frame, or creates a new frame; text files (.txt, .docx, .rtf, .md) and Excel workbooks (.xlsx, as a table) go into the insertion point, the selected frame or a new frame on `page`/`rect`",
+            "{path?|base64?, name?, embed? (keep the file's bytes in the document; default: a graphic placed from a path links to its file, base64 bytes and the web always embed), frame?: id (place into), spread?, x?, y?, width?: finite number > 0 (null: absent), height? (video/audio), pdfPage?: n (1-based, Image Import Options), pdfCrop?: crop|art|trim|bleed|media|contentVisible|contentAll (the box the graphic shows; `width` is the whole page's), loadCursor? (with no frame to fill and no x/y, an image loads into the place cursor, as File › Place), append? (with loadCursor: queue the image after those already loaded instead of replacing them), layoutPage?: n (IDML / .designcraft: that page's objects as a group), page?, rect?: [x0,y0,x1,y1] (text: a new frame there), autoflow? (threads one frame per page column from the first frame on, adding pages until the text fits), removeStyles?, styleMap?: {imported name: document style}, styleConflicts?: useExisting|redefine|autoRename, link? (keep the file linked in the Links panel; default: the linkTextFiles preference)} — places an image into `frame` when given; otherwise any explicit x/y/spread/width creates a new frame; otherwise uses the selected empty or graphic frame, or creates a new frame; text files (.txt, .docx, .rtf, .md) and Excel workbooks (.xlsx, as a table) go into the insertion point, the selected frame or a new frame on `page`/`rect`",
             has_doc,
             file_place
         ),
