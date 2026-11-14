@@ -39,8 +39,7 @@ fn sheet_cells(
     let result = package.sheet(entry, |row| {
         for cell in row.cells {
             let value = match cell.value {
-                // Preserve the former importer’s display of non-finite numeric spellings such
-                // as `inf`; craft-xlsx correctly keeps these out of its numeric model as invalid.
+                // Retain legacy display of non-finite spellings such as `inf`.
                 craft_xlsx::CellValue::Invalid(raw) => raw.parse::<f64>().map(general).unwrap_or_default(),
                 value => display(value.resolve(&strings, date_1904)),
             };

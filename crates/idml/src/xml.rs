@@ -65,6 +65,12 @@ impl El {
     pub fn find(&self, local: &str) -> Option<&El> {
         self.elements().find(|e| e.local() == local)
     }
+    pub fn find_mut(&mut self, local: &str) -> Option<&mut El> {
+        self.children.iter_mut().find_map(|n| match n {
+            Node::El(e) if e.local() == local => Some(e),
+            _ => None,
+        })
+    }
     pub fn find_all<'a>(&'a self, local: &'a str) -> impl Iterator<Item = &'a El> + 'a {
         self.elements().filter(move |e| e.local() == local)
     }
@@ -260,8 +266,7 @@ mod tests {
 
         let written = from_craft_for_write(tree);
         assert_eq!(written.children, vec![Node::CData("JVBERi0=".into())]);
-        let xml = document(&written);
-        assert!(String::from_utf8(xml).unwrap().contains("<![CDATA[JVBERi0=]]>"));
+        assert!(String::from_utf8(document(&written)).unwrap().contains("<![CDATA[JVBERi0=]]>"));
     }
 
     /// Issue #712: nesting past the budget is an error from the parser, not a stack overflow later.

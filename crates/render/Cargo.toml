@@ -3,7 +3,7 @@ name = "designcraft-render"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "DesignCraft renderer: spreads, pages, frames, composed text and images to pixels (vello_cpu)"
+description = "DesignCraft renderer: vello_cpu software rasterizer for canvas and exports"
 
 [lints]
 workspace = true
@@ -16,6 +16,7 @@ designcraft-fonts = { workspace = true }
 designcraft-compose = { workspace = true }
 vello_cpu = { workspace = true }
 vello_common = { workspace = true }
+bytemuck = { workspace = true }
 craft-pdf = { workspace = true, features = ["raster"] }
 designcraft-images = { workspace = true }
 log = { workspace = true }

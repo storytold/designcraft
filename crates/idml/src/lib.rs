@@ -59,7 +59,7 @@ mod tests;
 
 pub use craft_idml::is_idml;
 pub use craft_idml::value::{base64_decode, base64_encode};
-pub use export::{ExportOptions, export_idml, export_idml_with};
+pub use export::{ExportOptions, export_idml, export_idml_report, export_idml_with};
 pub use import::{Imported, import_idml, import_idml_report, import_idml_report_with_previews, import_idml_with};
 
 /// The IDML package mimetype (content of the first, stored `mimetype` entry).

@@ -1,7 +1,5 @@
 use super::common::{affine_s, bool_s, pct, uid, with_props};
-use super::{
-    Affine, ColumnsKind, Content, El, Ex, HashSet, Item, Node, OBJECT_BUILTINS, PathData, Shape, TextFrameOptions, base64_encode, names, num, pt,
-};
+use super::{Affine, ColumnsKind, Content, El, Ex, Item, Node, OBJECT_BUILTINS, PathData, Shape, TextFrameOptions, base64_encode, names, num, pt};
 
 impl<'a> Ex<'a> {
     pub(super) fn item_el(&mut self, it: &Item, xf: Affine) -> El {
@@ -82,8 +80,10 @@ impl<'a> Ex<'a> {
             el.set("GradientStrokeAngle", num(a));
         }
         self.stroke_attrs(&mut el, &it.stroke);
-        // Corner options: map path-order corners to the named corners by geometry.
-        if !it.corners.is_none() {
+        // Corner options: map path-order corners to the named corners by geometry. An item without
+        // corners whose object style chain sets some writes None, so an import does not give it
+        // the style's corners.
+        if !it.corners.is_none() || self.style_sets_corners(os) {
             let names_by_index = corner_names(&it.path);
             for (i, c) in it.corners.corners.iter().enumerate() {
                 let n = names_by_index[i];
@@ -146,6 +146,36 @@ impl<'a> Ex<'a> {
             _ => {}
         }
         el
+    }
+
+    /// Whether object style `name`, a style it is based on, or `[None]` (which an import reads
+    /// after every item's style chain) sets corners other than None. A built-in style the
+    /// document lacks counts as its default.
+    fn style_sets_corners(&mut self, name: &str) -> bool {
+        if let Some(&known) = self.style_corners.get(name) {
+            return known;
+        }
+        let defaults = designcraft_doc::Styles::default();
+        let style = |n: &str| self.d.styles.object_style(n).or_else(|| defaults.object_style(n));
+        let rounds = |os: &designcraft_doc::ObjectStyle| os.corners.is_some_and(|c| !c.is_none());
+        let mut seen: Vec<&str> = Vec::new();
+        let mut cur = Some(name);
+        let mut found = false;
+        while let Some(n) = cur.take() {
+            if seen.contains(&n) {
+                break;
+            }
+            let Some(os) = style(n) else { break };
+            if rounds(os) {
+                found = true;
+                break;
+            }
+            seen.push(n);
+            cur = os.based_on.as_deref();
+        }
+        let found = found || style(designcraft_doc::NO_OBJECT_STYLE).is_some_and(rounds);
+        self.style_corners.insert(name.to_string(), found);
+        found
     }
 
     fn append_transparency(&self, el: &mut El, it: &Item, os: &str) {
@@ -253,7 +283,26 @@ impl<'a> Ex<'a> {
 
     fn image_el(&mut self, asset: &designcraft_doc::Asset, g: &designcraft_doc::Graphic) -> El {
         let is_pdf = asset.mime == "application/pdf";
-        let is_eps = asset.mime == "application/postscript" || designcraft_images::is_eps(&asset.data);
+        // Bytes are read only when they are embedded (an image with no link of its own always
+        // is); a link without embedding stays a link. Bytes that can't be had are written like
+        // a link without data.
+        let embedding = self.opts.embed_images || asset.link.is_none();
+        let data = if embedding {
+            match asset.output_bytes() {
+                Ok(out) => {
+                    if let Some(w) = out.warning
+                        && !self.warnings.contains(&w)
+                    {
+                        self.warnings.push(w);
+                    }
+                    out.bytes
+                }
+                Err(_) => Default::default(),
+            }
+        } else {
+            Default::default()
+        };
+        let is_eps = asset.mime == "application/postscript" || (!data.is_empty() && designcraft_images::is_eps(&data));
         let mut el = El::new(if is_eps {
             "EPS"
         } else if is_pdf {
@@ -278,11 +327,21 @@ impl<'a> Ex<'a> {
             el.set("FillColor", id.clone());
             el.set("FillTint", pct(g.fill.tint as f64));
         }
-        let embed = !asset.data.is_empty() && (self.opts.embed_images || asset.link.is_none());
+        let wanted = !data.is_empty() && embedding;
+        // An image with no link of its own has nowhere else to live, so it is always embedded
+        // (dropping its data would lose it); only an image with a real link can fall back to it.
+        let embed = wanted && (asset.link.is_none() || self.embedded.saturating_add(data.len()) <= self.embed_limit);
+        if wanted && !embed {
+            self.warnings.push(format!(
+                "image {} is written as a link, not embedded: the package already holds {} bytes of images (limit {})",
+                asset.name, self.embedded, self.embed_limit
+            ));
+        }
         let mut props = Vec::new();
         if embed {
+            self.embedded = self.embedded.saturating_add(data.len());
             let mut c = El::new("Contents");
-            c.children.push(Node::CData(base64_encode(&asset.data)));
+            c.children.push(Node::CData(base64_encode(&data)));
             props.push(c);
         }
         props.push(El::new("GraphicBounds").attr("Left", "0").attr("Top", "0").attr("Right", num(g.size.0)).attr("Bottom", num(g.size.1)));
@@ -338,14 +397,18 @@ impl<'a> Ex<'a> {
 /// `TextWrapPreference` of a page item or a placed graphic.
 fn text_wrap_pref(w: &designcraft_doc::TextWrap) -> El {
     let paths: Vec<_> = w.path.iter().filter(|p| !p.is_empty()).map(path_geometry_value).collect();
-    crate::xml::from_craft(craft_idml::model::TextWrapPreference::to_el(
+    let mut el = crate::xml::from_craft(craft_idml::model::TextWrapPreference::to_el(
         names::wrap_mode_out(w.mode),
         w.invert,
         names::wrap_side_out(w.side),
         names::contour_type_out(w.contour),
         w.offsets,
         &paths,
-    ))
+    ));
+    if let Some(c) = el.find_mut("ContourOption") {
+        c.set("IncludeInsideEdges", bool_s(w.inside_edges));
+    }
+    el
 }
 
 pub(super) fn text_frame_pref(o: &TextFrameOptions, rule_color: &str) -> El {
@@ -423,28 +486,7 @@ fn path_geometry_value(path: &PathData) -> craft_idml::model::PathGeometry {
 
 /// IDML corner names for anchors 0..4 of a path (by position on its bounding box).
 pub(crate) fn corner_names(path: &PathData) -> [&'static str; 4] {
-    let default = ["TopLeft", "TopRight", "BottomRight", "BottomLeft"];
-    let Some(sp) = path.subpaths.first() else { return default };
-    if sp.anchors.len() != 4 {
-        return default;
-    }
-    let Some(b) = path.bounds() else { return default };
-    let c = b.center();
-    let mut out = default;
-    let mut seen = HashSet::new();
-    for (i, a) in sp.anchors.iter().enumerate() {
-        let n = match (a.p.y < c.y, a.p.x < c.x) {
-            (true, true) => "TopLeft",
-            (true, false) => "TopRight",
-            (false, false) => "BottomRight",
-            (false, true) => "BottomLeft",
-        };
-        if !seen.insert(n) {
-            return default;
-        }
-        out[i] = n;
-    }
-    out
+    designcraft_geom::corners::named_slots(path).map(|k| ["TopLeft", "TopRight", "BottomRight", "BottomLeft"][k])
 }
 
 fn format_name(mime: &str) -> &'static str {

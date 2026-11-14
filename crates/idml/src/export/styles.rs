@@ -117,6 +117,13 @@ impl<'a> Ex<'a> {
             el.set("EnableStroke", bool_s(os.stroke.is_some()));
             el.set("EnableParagraphStyle", bool_s(os.paragraph_style.is_some()));
             el.set("EnableTextFrameGeneralOptions", bool_s(os.text_frame.is_some()));
+            el.set("EnableStrokeAndCornerOptions", bool_s(os.corners.is_some()));
+            if let Some(c) = &os.corners {
+                for (n, c) in ["TopLeft", "TopRight", "BottomRight", "BottomLeft"].iter().zip(c.corners) {
+                    el.set(&format!("{n}CornerOption"), names::corner_out(c.shape));
+                    el.set(&format!("{n}CornerRadius"), num(c.size));
+                }
+            }
             if let Some(f) = &os.fill {
                 el.set("FillColor", self.sw(&f.swatch));
                 el.set("FillTint", pct(f.tint as f64));
@@ -126,6 +133,7 @@ impl<'a> Ex<'a> {
             }
             if let Some(ps) = &os.paragraph_style {
                 el.set("AppliedParagraphStyle", names::style_self("ParagraphStyle", PARA_BUILTINS, ps));
+                el.set("ApplyNextParagraphStyle", bool_s(os.apply_next_style));
             }
             let mut el = with_props(el, props);
             if let Some(e) = &os.effects {

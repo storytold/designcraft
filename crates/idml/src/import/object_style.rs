@@ -1,5 +1,38 @@
+use designcraft_geom::corners::Corner;
+
 use super::values::{finite, tint};
 use super::{DirectionalFeather, DropShadow, Effects, El, GradientFeather, Importer, Stroke, names};
+
+/// The four corners of a paragraph border or shading (`prefix` `ParagraphBorder` /
+/// `ParagraphShading`), or an object style (no prefix): top left, top right, bottom right,
+/// bottom left. Unset when none is given.
+pub(super) fn corners(e: &El, prefix: &str) -> Option<[Corner; 4]> {
+    corners_in(&[e], prefix)
+}
+
+/// [`corners`] over `levels` (an object style, then the styles it is based on): each corner's
+/// shape and size from the first level that gives it.
+pub(super) fn corners_in(levels: &[&El], prefix: &str) -> Option<[Corner; 4]> {
+    let keys = ["TopLeft", "TopRight", "BottomRight", "BottomLeft"];
+    // An object style (no prefix) may give all four with the legacy `CornerOption` /
+    // `CornerRadius`; at each level a per-corner attribute wins over it, as for page items.
+    let legacy = |e: &El, what: &str| if prefix.is_empty() { e.prop(&format!("Corner{what}")) } else { None };
+    let shapes = keys.map(|n| levels.iter().find_map(|e| e.prop(&format!("{prefix}{n}CornerOption")).or_else(|| legacy(e, "Option"))));
+    let sizes = keys.map(|n| {
+        levels
+            .iter()
+            .find_map(|e| e.num(&format!("{prefix}{n}CornerRadius")).or_else(|| legacy(e, "Radius").and_then(|v| v.trim().parse::<f64>().ok())))
+    });
+    if shapes.iter().all(Option::is_none) && sizes.iter().all(Option::is_none) {
+        return None;
+    }
+    let mut out = [Corner::default(); 4];
+    for (c, (shape, size)) in out.iter_mut().zip(shapes.iter().zip(sizes)) {
+        c.shape = shape.as_deref().map_or(designcraft_geom::corners::CornerShape::None, |s| names::corner_in(s.trim()));
+        c.size = size.filter(|v| v.is_finite()).map_or(12.0, |v| v.max(0.0));
+    }
+    Some(out)
+}
 
 impl<'r> Importer<'r> {
     /// An item's object style chain: its applied style, the styles that one is based on, then

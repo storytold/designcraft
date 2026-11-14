@@ -45,6 +45,9 @@ fn append_para(story: &mut Story, para: &craft_rtf::Para, separate: bool) {
     for run in &para.runs {
         let mut text = String::with_capacity(run.text.len());
         for c in run.text.chars() {
+            if c == '\u{FFFD}' || c == '\u{FFFF}' {
+                continue;
+            }
             text.push(match c {
                 craft_rtf::LINE_BREAK => designcraft_doc::FORCED_LINE_BREAK,
                 craft_rtf::PAGE_BREAK => designcraft_doc::PAGE_BREAK,

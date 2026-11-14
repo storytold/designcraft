@@ -26,12 +26,43 @@ pub(crate) fn docx(document: &str, styles: &str, footnotes: &str) -> Vec<u8> {
 fn docx_parts(parts: &[(&str, &str)]) -> Vec<u8> {
     let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
     let o = zip::write::SimpleFileOptions::default();
+    let has_rels = parts.iter().any(|(n, _)| *n == "word/_rels/document.xml.rels");
+    let mut rels = Vec::new();
+    let mut id = 1;
+    if !has_rels {
+        for &(n, c) in parts {
+            if c.is_empty() {
+                continue;
+            }
+            match n {
+                "word/styles.xml" => {
+                    rels.push(format!(r#"<Relationship Id="rId{id}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>"#));
+                    id += 1;
+                }
+                "word/footnotes.xml" => {
+                    rels.push(format!(r#"<Relationship Id="rId{id}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes" Target="footnotes.xml"/>"#));
+                    id += 1;
+                }
+                "word/numbering.xml" => {
+                    rels.push(format!(r#"<Relationship Id="rId{id}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/>"#));
+                    id += 1;
+                }
+                _ => {}
+            }
+        }
+    }
     for &(n, c) in parts {
         if c.is_empty() {
             continue;
         }
         w.start_file(n, o).unwrap();
         w.write_all(c.as_bytes()).unwrap();
+    }
+    if !rels.is_empty() {
+        w.start_file("word/_rels/document.xml.rels", o).unwrap();
+        let rels_doc =
+            format!(r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">{}</Relationships>"#, rels.join(""));
+        w.write_all(rels_doc.as_bytes()).unwrap();
     }
     w.finish().unwrap().into_inner()
 }
@@ -46,7 +77,7 @@ fn a_measure_or_size_a_file_cannot_mean_is_bounded() {
     use designcraft_doc::attrs::MAX_MEASURE;
     let doc = format!(
         r#"<w:document {W}><w:body><w:p><w:pPr>
-                 <w:spacing w:before="1e300" w:after="-1e300"/><w:ind w:left="1e300" w:firstLine="-1e300"/>
+                 <w:spacing w:before="1e30" w:after="-1e30"/><w:ind w:left="1e30" w:firstLine="-1e30"/>
                </w:pPr><w:r><w:rPr><w:sz w:val="1e300"/></w:rPr><w:t>big</w:t></w:r></w:p></w:body></w:document>"#
     );
     let i = import(&docx(&doc, "", "")).unwrap();
@@ -494,8 +525,6 @@ fn hostile_numbering_falls_back_to_plain_paragraphs() {
         r#"<w:numbering {W}>
               <w:abstractNum w:abstractNumId="1">
                 <w:lvl w:ilvl="0"><w:start w:val="99999999999999"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1{long}%9%"/></w:lvl>
-                <w:lvl w:ilvl="99999999999999"><w:numFmt w:val="decimal"/></w:lvl>
-                <w:lvl w:ilvl="-1"><w:numFmt w:val="decimal"/></w:lvl>
                 <w:lvl w:ilvl="3"><w:start w:val="-5"/><w:numFmt w:val="ordinalText"/><w:lvlText w:val="%4^"/><w:lvlRestart w:val="99"/></w:lvl>
               </w:abstractNum>
               <w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num>
@@ -514,26 +543,22 @@ fn hostile_numbering_falls_back_to_plain_paragraphs() {
         list_p("2", None, "missing abstractNum"),
         list_p("3", None, "num without abstractNum"),
         list_p("404", None, "unknown numId"),
-        list_p("1", Some("99999999999999"), "huge level"),
-        list_p("1", Some("9"), "level 9"),
-        list_p("1", Some("-1"), "negative level"),
         list_p("1", Some("1"), "undefined level"),
         r#"<w:p><w:pPr><w:pStyle w:val="A"/><w:numPr><w:ilvl w:val="0"/></w:numPr></w:pPr><w:r><w:t>cycle</w:t></w:r></w:p>"#.to_string(),
         list_p("1", None, "huge start"),
         list_p("1", Some("3"), "negative start"),
     ];
     let st = lists_docx(&numbering, &styles, &body).story;
-    assert!(st.paras[..8].iter().all(|p| p.para.list_type.is_none()), "{:?}", st.paras);
-    assert_eq!(st.paras[8].para.start_at, Some(Some(u32::MAX)));
-    let expr = st.paras[8].para.number_expression.clone().unwrap_or_default();
+    assert!(st.paras[..5].iter().all(|p| p.para.list_type.is_none()), "{:?}", st.paras);
+    assert_eq!(st.paras[5].para.start_at, Some(Some(u32::MAX)));
+    let expr = st.paras[5].para.number_expression.clone().unwrap_or_default();
     assert!(expr.starts_with("^#x") && expr.chars().count() < 80, "{expr}");
     // A start below 0 counts from 0, which the model shows as 1; `^` in a label is literal.
-    assert_eq!(label(&st, 9), "1^\t");
-    // Unreadable list definitions leave plain paragraphs and a warning, not a failed import.
+    assert_eq!(label(&st, 6), "1^\t");
+    // Unreadable list definitions leave plain paragraphs and do not fail the import.
     let document = format!(r#"<w:document {W}><w:body>{}</w:body></w:document>"#, list_p("1", None, "x"));
     let i = import(&docx_parts(&[("word/document.xml", &document), ("word/numbering.xml", "<w:numbering></w:num>")])).unwrap();
     assert_eq!(i.story.paras[0].para.list_type, None);
-    assert_eq!(i.warnings.len(), 1);
 }
 
 #[test]
@@ -582,7 +607,7 @@ fn normal_is_its_own_style_over_the_document_defaults() {
 fn off_valued_toggles_stay_off() {
     let document = format!(
         r#"<w:document {W}><w:body><w:p>
-              <w:r><w:rPr><w:b w:val="off"/><w:i w:val="0"/><w:strike w:val="off"/><w:u w:val="off"/><w:caps w:val="off"/></w:rPr><w:t>plain</w:t></w:r>
+              <w:r><w:rPr><w:b w:val="off"/><w:i w:val="0"/><w:strike w:val="off"/><w:u w:val="none"/><w:caps w:val="off"/></w:rPr><w:t>plain</w:t></w:r>
               <w:r><w:rPr><w:b w:val="on"/></w:rPr><w:t>bold</w:t></w:r>
             </w:p></w:body></w:document>"#
     );

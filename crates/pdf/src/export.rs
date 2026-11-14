@@ -57,6 +57,10 @@ impl std::hash::Hasher for ConstantImageHasher {
     fn write(&mut self, _: &[u8]) {}
 }
 
+/// An asset's bytes for this export, its name, and whether they are its preview standing in
+/// for an unavailable linked file.
+pub(crate) type Output = (Arc<Vec<u8>>, String, bool);
+
 pub(crate) struct Exporter<'a> {
     pub doc: &'a Document,
     /// The document's inks with its Ink Manager settings.
@@ -71,6 +75,8 @@ pub(crate) struct Exporter<'a> {
     pub warnings: Vec<String>,
     drawing_items: Vec<designcraft_doc::ItemId>,
     images: HashMap<AssetId, Option<Image>>,
+    /// Each asset's output bytes, read once per export (`None`: nothing to export, warned once).
+    outputs: HashMap<AssetId, Option<Output>>,
     // Immutable export options (including rgb_only) make bytes the complete conversion key.
     // PDF-page/SVG/media routing precedes this path. Failures remain per AssetId.
     images_by_content: ImageContentCache,

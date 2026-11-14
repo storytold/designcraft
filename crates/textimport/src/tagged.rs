@@ -7,15 +7,14 @@ use crate::{ImportError, Imported, ImportedStyle};
 pub fn tagged_text(doc: &Document, story: &Story) -> String {
     let mut paragraphs = Vec::new();
     for (i, range) in story.para_ranges().iter().enumerate() {
+        let pf = story.paras.get(i).cloned().unwrap_or_default();
+        let base = doc.styles.resolve_para(&pf).1;
         let mut paragraph =
             craft_idml::tagged::Paragraph { style: story.paras.get(i).map_or_else(String::new, |p| p.style.clone()), runs: Vec::new() };
         for (run_range, format) in story.runs() {
             let start = run_range.start.max(range.start);
             let end = run_range.end.min(range.end);
-            if start >= end
-                || doc.conditions_hide(format.over.conditions.as_deref().unwrap_or(&[]))
-                || format.over.change == Some(designcraft_doc::ChangeMark::Deleted)
-            {
+            if start >= end || doc.hides_run(&base, format) {
                 continue;
             }
             paragraph.runs.push(craft_idml::tagged::Run {

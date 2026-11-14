@@ -10,6 +10,7 @@ pub(super) fn text_wrap(w: &El) -> TextWrap {
         invert: model.inverse(),
         side: names::wrap_side_in(model.side().unwrap_or("BothSides")),
         contour: names::contour_type_in(model.contour_type().unwrap_or("SameAsClipping")),
+        inside_edges: w.find("ContourOption").and_then(|c| c.get("IncludeInsideEdges")) == Some("true"),
         ..TextWrap::default()
     };
     if let Some(offsets) = model.offsets() {

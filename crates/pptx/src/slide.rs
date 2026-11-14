@@ -13,8 +13,7 @@ use crate::fonts::Fonts;
 use crate::model::{Media, Slide};
 use crate::{PptxError, PptxOptions, Result};
 
-/// Preserve fractional DesignCraft opacity in DrawingML instead of rounding it through 8-bit
-/// alpha and back to PresentationML's 100,000-step alpha value.
+/// Preserve fractional DesignCraft opacity in DrawingML instead of rounding it through 8-bit alpha.
 pub(crate) fn color_with_opacity(color: designcraft_color::Color, opacity: f32) -> craft_pptx::ColorRef {
     let [r, g, b, _] = color.to_rgba8(1.0);
     let color = craft_pptx::ColorRef::rgb(craft_pptx::Rgba::rgb(r, g, b));
@@ -558,7 +557,18 @@ impl<'a> Exporter<'a> {
 
     fn convert(&mut self, asset: AssetId) -> Option<(String, Option<String>)> {
         let a = self.doc.assets.get(&asset)?.clone();
-        let data: &[u8] = &a.data;
+        // A changed file is used as it is on disk, a missing one by its preview (both warned);
+        // with neither the image is left out like a missing file.
+        let bytes = match a.output_bytes() {
+            Ok(out) => {
+                if let Some(w) = out.warning {
+                    self.warn(w);
+                }
+                out.bytes
+            }
+            Err(_) => Default::default(),
+        };
+        let data: &[u8] = &bytes;
         if data.is_empty() {
             self.warn(format!("`{}` is missing (linked file not found); left out", a.name));
             return None;

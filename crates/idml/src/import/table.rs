@@ -160,9 +160,8 @@ impl<'r> Importer<'r> {
             if r >= nr || c >= nc {
                 continue;
             }
-            // Preserve the earlier import behavior for malformed positive spans such as `inf`:
-            // saturate the float-to-integer conversion, then clamp to the remaining grid before
-            // arithmetic. The neutral model reports unusable non-finite spans as the default 1.
+            // Preserve the prior importer behavior for malformed positive spans such as `inf`:
+            // saturate the float-to-integer conversion, then clamp before grid arithmetic.
             let span = |key| model_cell.values.prop(key).and_then(|v| v.trim().parse::<f64>().ok()).unwrap_or(1.0).max(1.0) as usize;
             let rs = span("RowSpan").min(nr - r);
             let cs = span("ColumnSpan").min(nc - c);

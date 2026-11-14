@@ -31,6 +31,7 @@ pub mod glyphs;
 mod grid;
 mod pdf_bounds;
 mod pdf_layers;
+pub mod proxy;
 pub use pdf_layers::{pdf_hide_layers, pdf_layers};
 
 mod color;
@@ -38,6 +39,7 @@ mod decode;
 mod draw;
 mod driver;
 mod pdf_raster;
+mod prepare;
 mod stroke;
 mod types;
 
@@ -148,6 +150,7 @@ impl Default for RenderOptions {
             overprint_preview: false,
             blend_space_view: false,
             document_grid: vec![],
+            defer_images: false,
         }
     }
 }
@@ -164,6 +167,10 @@ pub struct Renderer {
     cmyk_view: Option<blendspace::CachedView>,
     /// Whether the last render ran the CMYK ink passes (only then is its view worth keeping).
     cmyk_ran: bool,
+    /// Whether the last render drew an image still decoding in the background (a stand-in).
+    images_pending: bool,
+    /// Drop shadow and outer glow images kept between renders.
+    kept: fx::KeptEffects,
     #[cfg(test)]
     cmyk_passes: usize,
     /// Pixels the last ink pass covered (tests).
@@ -172,6 +179,9 @@ pub struct Renderer {
     /// Items the last ink pass drew (tests).
     #[cfg(test)]
     cmyk_pass_items: usize,
+    /// Bands of rows the last ink passes' colours were converted in (tests).
+    #[cfg(test)]
+    cmyk_convert_bands: usize,
     pub threads: u16,
     pub stats: FrameStats,
 }

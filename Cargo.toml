@@ -4,7 +4,7 @@ members = ["crates/*", "apps/*", "xtask"]
 default-members = ["crates/*", "apps/designcraft", "apps/designcraft-cli", "xtask"]
 
 [workspace.package]
-version = "0.20.1"
+version = "0.21.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.95"
@@ -13,7 +13,7 @@ repository = "https://github.com/storytold/designcraft"
 [workspace.dependencies]
 # Shared reader and writer; publish the immutable revision before this consumer.
 craft-pdf = { git = "https://github.com/storytold/craft-libs", rev = "40525913633942f84b06d4837a8d90534a55d63f", version = "=0.1.0", default-features = false }
-craft-designcraft-format = { git = "https://github.com/storytold/craft-libs", rev = "93d0998383aa150fa50a2ffbf49ef37786e37eca", version = "=0.1.0" }
+craft-designcraft-format = { git = "https://github.com/storytold/craft-libs", rev = "b1b4602a71d19e09ad33f7752a10d6598cf39b2b", version = "=0.1.0" }
 craft-eps = { git = "https://github.com/storytold/craft-libs", rev = "ba24fe2435adb3c81ad6057faf36365fbba736cf", version = "=0.1.0" }
 craft-epub = { git = "https://github.com/storytold/craft-libs", rev = "ba24fe2435adb3c81ad6057faf36365fbba736cf", version = "=0.1.0" }
 craft-idml = { git = "https://github.com/storytold/craft-libs", rev = "899e396b9e2710fcdf1ad9b6249d6c456b7ca9a2", version = "=0.1.0" }
@@ -82,6 +82,8 @@ skrifa = "0.47"
 harfrust = "0.13"
 vello_cpu = "0.2"
 vello_common = { version = "0.2", default-features = false }
+# Decoded image buffers become pixmap pixels without a copy; the version vello_common uses.
+bytemuck = { version = "1.25", features = ["extern_crate_alloc"] }
 image = { version = "0.25", default-features = false }
 # CMYK TIFF samples for PDF export (`image` decodes them to RGB); the version `image` uses.
 tiff = "0.11"

@@ -18,19 +18,36 @@ use crate::transitions::{find, int_after, object, rfind};
 
 mod fonts;
 
-/// The serialization settings for CMYK print output: DeviceCMYK and CMYK blending groups in the
-/// document's CMYK working space (Coated FOGRA39 when it has none or its profile can't be
-/// written). With `intent` (PDF/X), the working space is also the `GTS_PDFX` output intent, with
-/// `/Trapped /False`. The second value is a warning when the working space's profile was replaced.
-pub(crate) fn print_settings(intent: bool) -> crate::Result<(krilla::SerializeSettings, Option<String>)> {
-    print_settings_with(&designcraft_color::cms::active(), intent)
+/// [`print_settings_and_profile`] without the ICC bytes, kept for tests.
+#[cfg(test)]
+pub(crate) fn print_settings_with(cms: &designcraft_color::cms::Cms, intent: bool) -> crate::Result<(krilla::SerializeSettings, Option<String>)> {
+    let (settings, _, warning) = print_settings_and_profile_with(cms, intent)?;
+    Ok((settings, warning))
 }
 
-/// [`print_settings`] for the working spaces of `cms`.
-pub(crate) fn print_settings_with(cms: &designcraft_color::cms::Cms, intent: bool) -> crate::Result<(krilla::SerializeSettings, Option<String>)> {
+/// The serialization settings for CMYK print output: DeviceCMYK and CMYK blending groups in the
+/// document's CMYK working space (Coated FOGRA39 when it has none or its profile can't be
+/// written), together with the validated ICC profile bytes actually used. With `intent` (PDF/X),
+/// the working space is also the `GTS_PDFX` output intent, with `/Trapped /False`. The third
+/// value is a warning when the working space's profile was replaced.
+pub(crate) fn print_settings_and_profile(intent: bool) -> crate::Result<(krilla::SerializeSettings, Vec<u8>, Option<String>)> {
+    print_settings_and_profile_with(&designcraft_color::cms::active(), intent)
+}
+
+/// [`print_settings_and_profile`] for the working spaces of `cms`.
+pub(crate) fn print_settings_and_profile_with(
+    cms: &designcraft_color::cms::Cms,
+    intent: bool,
+) -> crate::Result<(krilla::SerializeSettings, Vec<u8>, Option<String>)> {
     let write = |color: PrintColor<'_>| if intent { print::settings(color) } else { print::cmyk_blending(color.profile) };
-    let fogra39 = || write(PrintColor::fogra39(craft_cms::builtin::COATED_FOGRA39_ICC));
-    let Ok(space) = cms.output_intent() else { return Ok((fogra39()?, None)) };
+    let fogra39 = || {
+        let profile = craft_cms::builtin::COATED_FOGRA39_ICC;
+        Ok::<_, crate::PdfError>((write(PrintColor::fogra39(profile))?, profile.to_vec()))
+    };
+    let Ok(space) = cms.output_intent() else {
+        let (settings, icc) = fogra39()?;
+        return Ok((settings, icc, None));
+    };
     let registered = space.identifier != "Custom";
     let color = PrintColor {
         profile: &space.icc,
@@ -40,9 +57,10 @@ pub(crate) fn print_settings_with(cms: &designcraft_color::cms::Cms, intent: boo
         info: Some(&space.condition),
     };
     match write(color) {
-        Ok(settings) => Ok((settings, None)),
+        Ok(settings) => Ok((settings, space.icc.into_owned(), None)),
         Err(WriteError::InvalidProfile) => {
-            Ok((fogra39()?, Some(format!("the CMYK working space `{}` couldn't be written to the PDF; Coated FOGRA39 was used", space.condition))))
+            let (settings, icc) = fogra39()?;
+            Ok((settings, icc, Some(format!("the CMYK working space `{}` couldn't be written to the PDF; Coated FOGRA39 was used", space.condition))))
         }
         Err(e) => Err(e.into()),
     }
