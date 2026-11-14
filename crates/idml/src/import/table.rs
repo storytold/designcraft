@@ -160,15 +160,11 @@ impl<'r> Importer<'r> {
             if r >= nr || c >= nc {
                 continue;
             }
-            let (mut cs, mut rs) = model_cell.span();
-            if model_cell.values.get("RowSpan").is_some_and(|v| v.eq_ignore_ascii_case("inf") || v.eq_ignore_ascii_case("infinity")) {
-                rs = (nr - r) as u32;
-            }
-            if model_cell.values.get("ColumnSpan").is_some_and(|v| v.eq_ignore_ascii_case("inf") || v.eq_ignore_ascii_case("infinity")) {
-                cs = (nc - c) as u32;
-            }
-            let rs = (rs as usize).min(nr - r);
-            let cs = (cs as usize).min(nc - c);
+            // Preserve the prior importer behavior for malformed positive spans such as `inf`:
+            // saturate the float-to-integer conversion, then clamp before grid arithmetic.
+            let span = |key| model_cell.values.prop(key).and_then(|v| v.trim().parse::<f64>().ok()).unwrap_or(1.0).max(1.0) as usize;
+            let rs = span("RowSpan").min(nr - r);
+            let cs = span("ColumnSpan").min(nc - c);
             let mut cell = t.cell(r, c).cloned().unwrap_or_default();
             let cell_el = crate::xml::from_craft(model_cell.to_el());
             let cell_style =

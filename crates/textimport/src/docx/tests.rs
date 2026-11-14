@@ -240,7 +240,7 @@ fn imports_styles_runs_footnotes_and_tables() {
     st.check().unwrap();
     assert!(st.text.starts_with("Title & more\nPlain bold styled\tx"), "{:?}", st.text);
     assert!(st.text.ends_with("After"));
-    assert_eq!(st.paras[0].style, "Heading 1");
+    assert_eq!(st.paras[0].style, "heading 1");
     assert_eq!(st.paras[1].style, "Normal");
     let at = st.text.find("bold").unwrap();
     assert_eq!(st.format_after(at).over.font_style.as_deref(), Some("Bold"));
@@ -249,7 +249,7 @@ fn imports_styles_runs_footnotes_and_tables() {
     assert_eq!(st.notes[0].text.text, "The note.");
     assert_eq!(st.tables.len(), 1);
     let names: Vec<&str> = i.para_styles.iter().map(|s| s.name.as_str()).collect();
-    assert_eq!(names, ["Normal", "Heading 1"], "unused styles are skipped");
+    assert_eq!(names, ["Normal", "heading 1"], "unused styles are skipped");
     assert_eq!(i.para_styles[1].based_on.as_deref(), Some("Normal"));
     assert_eq!(i.para_styles[1].chars.size, Some(16.0));
     assert_eq!(i.para_styles[1].para.space_before, Some(12.0));

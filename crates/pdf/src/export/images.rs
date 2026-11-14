@@ -17,7 +17,8 @@ pub(super) struct ConvertedImage {
     pub(super) warning: Option<&'static str>,
 }
 
-pub(super) const CMYK_FALLBACK_WARNING: &str = "converted to RGB (a CMYK TIFF that uses other inks or is over 256 MiB)";
+pub(super) const CMYK_FALLBACK_WARNING: &str =
+    "converted to RGB (a CMYK TIFF that is planar, has premultiplied alpha, uses other inks or is over 256 MiB)";
 
 #[cfg(not(test))]
 pub(super) type ImageContentCache = HashMap<Arc<Vec<u8>>, ConvertedImage>;
@@ -86,7 +87,16 @@ pub(super) fn jpeg(data: krilla::Data, icc: impl FnOnce() -> Option<Vec<u8>>, mo
 /// its own. The header inspection doesn't read WebP, which has no grey form, so a file it can't
 /// read counts as colour.
 fn untagged_rgb(data: &[u8]) -> bool {
-    !is_grey(data) && embedded_icc(data).is_none()
+    // WebP has no greyscale pixel model; header inspection cannot classify it, so treat it as
+    // color while respecting an embedded profile.
+    if craft_image_codecs::detect(data) == Some(craft_image_codecs::Format::WebP) {
+        return embedded_icc(data).is_none();
+    }
+    let Some(info) = craft_image_codecs::inspect_raster(data).ok().flatten() else { return false };
+    !matches!(
+        info.color_type,
+        craft_image_codecs::RasterColorType::Bitmap | craft_image_codecs::RasterColorType::Gray | craft_image_codecs::RasterColorType::GrayAlpha
+    ) && embedded_icc(data).is_none()
 }
 
 pub(super) fn lossless(data: &Arc<Vec<u8>>, fmt: Option<craft_image_codecs::Format>, mode: RasterMode) -> Option<Image> {

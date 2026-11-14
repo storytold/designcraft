@@ -22,8 +22,20 @@ fn capped_name(name: &str) -> String {
     name.chars().take(MAX_NAME_CHARS).collect()
 }
 
+fn display_style_name(style: &craft_wordmodel::styles::Style) -> String {
+    // Keep the source's lowercase built-in heading spelling in imported app style names.
+    if style.builtin
+        && style.id.strip_prefix("Heading").is_some_and(|n| (1..=9).any(|level| n == level.to_string()))
+        && style.name.starts_with("Heading ")
+    {
+        style.name.to_ascii_lowercase()
+    } else {
+        style.name.clone()
+    }
+}
+
 fn style_names(styles: &StyleSheet) -> HashMap<String, String> {
-    styles.styles.iter().map(|s| (s.id.clone(), capped_name(&s.name))).collect()
+    styles.styles.iter().map(|s| (s.id.clone(), capped_name(&display_style_name(s)))).collect()
 }
 
 fn char_attrs(p: &WordCharProps) -> CharAttrs {
@@ -309,6 +321,34 @@ fn style_records(styles: &StyleSheet) -> (Vec<ImportedStyle>, Vec<ImportedStyle>
     (paras, chars, names)
 }
 
+/// Plain text under the importer's accepted-changes policy, with inline objects expanded.
+fn accepted_plain_text(p: &Paragraph) -> String {
+    let mut out = String::with_capacity(p.text.len());
+    let mut object_i = 0usize;
+    let mut runs = p.run_ranges().peekable();
+    for (at, c) in p.text.char_indices() {
+        while runs.peek().is_some_and(|(range, _)| range.end <= at) {
+            runs.next();
+        }
+        let deleted = runs.peek().is_some_and(|(range, props)| range.contains(&at) && props.del.is_some());
+        if deleted {
+            if c == craft_wordmodel::para::OBJ {
+                object_i = object_i.saturating_add(1);
+            }
+            continue;
+        }
+        if c == craft_wordmodel::para::OBJ {
+            if let Some(object) = p.objects.get(object_i) {
+                out.push_str(object.plain_text());
+            }
+            object_i = object_i.saturating_add(1);
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 fn plain_blocks(blocks: &[std::sync::Arc<Block>]) -> String {
     let mut out = String::new();
     let mut first = true;
@@ -319,7 +359,7 @@ fn plain_blocks(blocks: &[std::sync::Arc<Block>]) -> String {
                     out.push('\n');
                 }
                 first = false;
-                let text = p.final_text();
+                let text = accepted_plain_text(p);
                 let is_break = |c: char| matches!(c, designcraft_doc::PAGE_BREAK | designcraft_doc::COLUMN_BREAK);
                 out.push_str(&text.chars().map(|c| if is_break(c) { '\n' } else { c }).collect::<String>());
             }

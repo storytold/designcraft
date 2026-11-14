@@ -38,9 +38,10 @@ fn sheet_cells(
     let mut cut = false;
     let result = package.sheet(entry, |row| {
         for cell in row.cells {
-            let value = match &cell.value {
-                craft_xlsx::CellValue::Invalid(s) => s.clone(),
-                other => display(other.resolve(&strings, date_1904)),
+            let value = match cell.value {
+                // Retain legacy display of non-finite spellings such as `inf`.
+                craft_xlsx::CellValue::Invalid(raw) => raw.parse::<f64>().map(general).unwrap_or_default(),
+                value => display(value.resolve(&strings, date_1904)),
             };
             text_bytes = text_bytes.saturating_add(value.len());
             if cells.len() >= max_cells || text_bytes > max_text_bytes {

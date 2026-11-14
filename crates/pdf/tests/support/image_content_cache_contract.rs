@@ -240,7 +240,7 @@ fn successful_fallback_warns_for_both_names_and_preserves_rgb_samples() {
     for (name, x) in [("other-inks-a.tif", 36.0), ("other-inks-b.tif", 66.0)] {
         place_named(&mut d, bytes.clone(), x, name, "image/tiff", 0);
     }
-    let reason = "converted to RGB (a CMYK TIFF that uses other inks or is over 256 MiB)";
+    let reason = "converted to RGB (a CMYK TIFF that is planar, has premultiplied alpha, uses other inks or is over 256 MiB)";
     let expected_warnings = [format!("other-inks-a.tif: {reason}"), format!("other-inks-b.tif: {reason}")];
     // The fallback is the RGB the screen shows: converted through the working CMYK space.
     let rgb: Vec<u8> = designcraft_images::decode_rgba(&bytes).unwrap().pixels().flat_map(|p| [p[0], p[1], p[2]]).collect();
