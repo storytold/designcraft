@@ -407,7 +407,7 @@ mod image_content_cache_tests {
     // Serialize the converted raster without an archival validator so the RGB-only pixel
     // contract stays independent of main's existing PDF/A interpolation validation failure.
     fn image_color_samples(image: Image) -> (String, Vec<u8>) {
-        use craft_pdf::syntax::object::Name;
+        use craft_pdf::syntax::object::{Name, Stream};
         let mut pdf = krilla::Document::new();
         let size = Size::from_wh(20.0, 20.0).unwrap();
         let mut page = pdf.start_page_with(PageSettings::new(size));
@@ -421,7 +421,9 @@ mod image_content_cache_tests {
             .objects()
             .into_iter()
             .filter_map(|o| o.into_stream())
-            .find(|s| s.dict().get::<Name>("Subtype").is_some_and(|n| n.as_str() == "Image"))
+            .filter(|s| s.dict().get::<Name>("Subtype").is_some_and(|n| n.as_str() == "Image"))
+            // An image with alpha comes with its soft mask, another image; take the masked one.
+            .max_by_key(|s| s.dict().get::<Stream<'_>>("SMask").is_some())
             .unwrap();
         (stream.dict().get::<Name>("ColorSpace").unwrap().as_str().to_owned(), stream.decoded().unwrap().into_owned())
     }

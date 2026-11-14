@@ -232,18 +232,20 @@ fn successful_fallback_warns_for_both_names_and_preserves_rgb_samples() {
     }
     let reason = "converted to RGB (a CMYK TIFF that uses other inks or is over 256 MiB)";
     let expected_warnings = [format!("other-inks-a.tif: {reason}"), format!("other-inks-b.tif: {reason}")];
+    // The fallback is the RGB the screen shows: converted through the working CMYK space.
+    let rgb: Vec<u8> = designcraft_images::decode_rgba(&bytes).unwrap().pixels().flat_map(|p| [p[0], p[1], p[2]]).collect();
     for compress_images in [false, true] {
         let report = export_pdf_with_report(&d, &Cache::new(), &PdfOptions { compress_images, ..Default::default() }).unwrap();
         assert_eq!(report.warnings, expected_warnings);
         let images = image_objects(&report.bytes);
         assert_eq!(images.len(), 1);
         assert_eq!(images[0].space, "DeviceRGB");
-        assert_eq!(images[0].samples, [0, 0, 0, 255, 0, 0]);
+        assert_eq!(images[0].samples, rgb);
         assert_eq!(images[0].size, (2, 1));
     }
     let booklet = export_booklet(&d, &Cache::new(), &BookletOptions::default()).unwrap();
     assert_eq!(booklet.warnings, expected_warnings);
-    assert_eq!(image_objects(&booklet.bytes)[0].samples, [0, 0, 0, 255, 0, 0]);
+    assert_eq!(image_objects(&booklet.bytes)[0].samples, rgb);
 }
 
 #[test]
