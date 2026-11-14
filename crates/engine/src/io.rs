@@ -288,10 +288,17 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel();
         let p = fifo.clone();
         std::thread::spawn(move || {
-            let _ = tx.send((read_whole(&p).is_err(), read_capped(&p, 9).is_ok()));
+            let capped = read_capped(&p, 9).map_err(|e| e.kind());
+            let _ = tx.send((read_whole(&p).is_err(), capped));
         });
         let got = rx.recv_timeout(std::time::Duration::from_secs(10));
         let _ = std::fs::remove_dir_all(&dir);
-        assert_eq!(got, Ok((true, true)), "reads of a FIFO must return");
+        // The whole-file read refuses a FIFO. The capped read returns too: empty where a FIFO with
+        // no writer reads as ended (Linux, macOS), a `WouldBlock` error where it doesn't (FreeBSD).
+        // Either is fine; what it must not do is hang.
+        assert!(
+            matches!(&got, Ok((true, Ok(bytes))) if bytes.is_empty()) || matches!(&got, Ok((true, Err(std::io::ErrorKind::WouldBlock)))),
+            "reads of a FIFO must return, empty or as a would-block error: {got:?}"
+        );
     }
 }
