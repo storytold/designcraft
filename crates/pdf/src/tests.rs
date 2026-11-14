@@ -499,7 +499,7 @@ fn archival_exports_keep_placed_images_without_interpolation() {
 }
 
 /// What a page draws: each glyph (its text and outline bounds) and each filled path's bounds.
-fn drawn(bytes: &[u8]) -> (Vec<(String, kurbo::Rect)>, Vec<kurbo::Rect>) {
+fn drawn(bytes: &[u8]) -> (Vec<(String, kurbo::Point)>, Vec<kurbo::Rect>) {
     use hayro_interpret::font::Glyph;
     use hayro_interpret::{
         BlendMode, ClipPath, Context, Device, GlyphDrawMode, Image, InterpreterCache, InterpreterSettings, Paint, PathDrawMode, SoftMask,
@@ -507,7 +507,7 @@ fn drawn(bytes: &[u8]) -> (Vec<(String, kurbo::Rect)>, Vec<kurbo::Rect>) {
     };
     use kurbo::Shape as _;
     #[derive(Default)]
-    struct Rec(Vec<(String, kurbo::Rect)>, Vec<kurbo::Rect>);
+    struct Rec(Vec<(String, kurbo::Point)>, Vec<kurbo::Rect>);
     impl Device<'_> for Rec {
         fn set_soft_mask(&mut self, _: Option<SoftMask<'_>>) {}
         fn set_blend_mode(&mut self, _: BlendMode) {}
@@ -516,17 +516,13 @@ fn drawn(bytes: &[u8]) -> (Vec<(String, kurbo::Rect)>, Vec<kurbo::Rect>) {
         }
         fn push_clip_path(&mut self, _: &ClipPath) {}
         fn push_transparency_group(&mut self, _: f32, _: Option<SoftMask<'_>>, _: BlendMode) {}
-        fn draw_glyph(&mut self, g: &Glyph<'_>, _: kurbo::Affine, _: kurbo::Affine, _: &Paint<'_>, _: &GlyphDrawMode) {
+        fn draw_glyph(&mut self, g: &Glyph<'_>, xf: kurbo::Affine, glyph_xf: kurbo::Affine, _: &Paint<'_>, _: &GlyphDrawMode) {
             let text = match g.as_unicode() {
                 Some(hayro_cmap::BfString::Char(c)) => c.to_string(),
                 Some(hayro_cmap::BfString::String(s)) => s,
                 None => String::new(),
             };
-            let bounds = match g {
-                Glyph::Outline(o) => o.outline().bounding_box(),
-                Glyph::Type3(_) => kurbo::Rect::ZERO,
-            };
-            self.0.push((text, bounds));
+            self.0.push((text, xf * glyph_xf * kurbo::Point::ORIGIN));
         }
         fn draw_image(&mut self, _: Image<'_, '_>, _: kurbo::Affine) {}
         fn pop_clip_path(&mut self) {}
@@ -644,7 +640,7 @@ fn pdfa_leaves_out_form_fields_added_after_validation() {
 }
 
 #[test]
-fn missing_glyphs_print_as_boxes() {
+fn missing_glyphs_print_as_the_fonts_notdef() {
     // Source Serif 4 lacks 語: its .notdef box is drawn as a path, not as a .notdef glyph
     // (which PDF/A and PDF/UA forbid).
     let boxes = |paths: &[kurbo::Rect]| paths.iter().filter(|r| r.width() > 1.0 && r.width() < 12.0 && r.height() > 3.0 && r.height() < 12.0).count();
@@ -655,7 +651,7 @@ fn missing_glyphs_print_as_boxes() {
     assert_eq!(boxes(&paths), 1, "{paths:?}");
     let a = export_pdf_with_report(&d, &Cache::new(), &PdfOptions { standard: Standard::PdfA2b, ..Default::default() });
     assert!(a.is_ok(), "PDF/A takes the box: {:?}", a.err());
-    // A font whose .notdef is empty: the box DesignCraft draws for it.
+    // A font whose .notdef is empty prints nothing there, as InDesign exports it.
     const FAMILY: &str = "DC Test PDF Empty Notdef";
     let font = designcraft_fonts::testing::font_mapping(FAMILY, &[('a', 'a'), ('b', 'b')]).unwrap();
     designcraft_fonts::FontDb::global().add_font(designcraft_fonts::testing::with_empty_notdef(font).unwrap());
@@ -664,7 +660,15 @@ fn missing_glyphs_print_as_boxes() {
     d.story_mut(sid).unwrap().format_chars(0.."a語b".len(), |f| f.over.font_family = Some(FAMILY.into()));
     let (glyphs, paths) = drawn(&export_pdf(&d, &Cache::new(), &PdfOptions::default()).unwrap());
     assert_eq!(glyphs.iter().map(|g| g.0.as_str()).collect::<Vec<_>>(), ["a", "b"], "{glyphs:?}");
-    assert_eq!(boxes(&paths), 1, "{paths:?}");
+    assert_eq!(boxes(&paths), 0, "{paths:?}");
+    // The empty .notdef still takes its advance: `b` stays where the layout puts it.
+    let cs = designcraft_compose::compose_story(&d, sid, &designcraft_compose::ComposeOptions::default());
+    let line = &cs.frames[0].lines[0];
+    let x = |c: char| line.glyphs.iter().find(|g| g.rendered_char == c).unwrap().x;
+    let notdef = line.glyphs.iter().find(|g| g.gid == 0).unwrap();
+    assert!(notdef.adv > 0.0 && x('b') - x('a') > notdef.adv, "the .notdef has an advance");
+    let pdf_gap = glyphs[1].1.x - glyphs[0].1.x;
+    assert!((pdf_gap - (x('b') - x('a'))).abs() < 0.01, "pdf {pdf_gap}, layout {}", x('b') - x('a'));
 }
 
 #[test]
