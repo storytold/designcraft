@@ -518,12 +518,31 @@ pub fn specs() -> Vec<CommandSpec> {
                     let (old_w, old_h) = (d.settings.page_width, d.settings.page_height);
                     let new_w = w.unwrap_or(old_w);
                     let new_h = h.unwrap_or(old_h);
-                    if let Some(b) = bleed {
-                        d.settings.bleed = b;
-                    }
                     let size_changed = new_w != old_w || new_h != old_h;
                     let scale_margins = auto_margins && margins.is_none() && old_w > 1e-6 && old_h > 1e-6;
                     let (sx, sy) = if scale_margins { (new_w / old_w, new_h / old_h) } else { (1.0, 1.0) };
+                    // Validate every affected page's resulting margin box before mutating the document.
+                    for pg in d.spreads.iter().chain(d.parents.iter()).flat_map(|sp| &sp.pages) {
+                        let (pw, ph) = if size_changed { (new_w, new_h) } else { (pg.width, pg.height) };
+                        let m = if let Some(m) = margins {
+                            m
+                        } else if scale_margins {
+                            Margins {
+                                top: (pg.margins.top * sy).clamp(0.0, ph / 2.0),
+                                bottom: (pg.margins.bottom * sy).clamp(0.0, ph / 2.0),
+                                inside: (pg.margins.inside * sx).clamp(0.0, pw / 2.0),
+                                outside: (pg.margins.outside * sx).clamp(0.0, pw / 2.0),
+                            }
+                        } else {
+                            pg.margins
+                        };
+                        if m.top + m.bottom >= ph - 1e-6 || m.inside + m.outside >= pw - 1e-6 {
+                            return Err(bad(ID, "margins must fit within the page size"));
+                        }
+                    }
+                    if let Some(b) = bleed {
+                        d.settings.bleed = b;
+                    }
                     if size_changed {
                         d.settings.page_width = new_w;
                         d.settings.page_height = new_h;

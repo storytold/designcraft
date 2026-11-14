@@ -2467,7 +2467,8 @@ fn setup_group(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
 }
 
 /// The link beside a group's four edges: keeps them equal (linking makes them the first's).
-fn setup_link(ui: &mut egui::Ui, lang: &str, d: &mut Dialog, group: &str, changed: Option<String>) {
+/// Returns true when copying updated at least one edge field.
+fn setup_link(ui: &mut egui::Ui, lang: &str, d: &mut Dialog, group: &str, changed: Option<String>) -> bool {
     let key = format!("{group}Linked");
     let linked = d.b(&key);
     let mut source = if linked { changed } else { None };
@@ -2478,11 +2479,17 @@ fn setup_link(ui: &mut egui::Ui, lang: &str, d: &mut Dialog, group: &str, change
             source = Some(format!("{group}Top"));
         }
     }
+    let mut updated = false;
     if let Some(v) = source.and_then(|k| d.fields.get(&k).cloned()) {
         for e in SETUP_EDGES {
-            d.fields.insert(format!("{group}{e}"), v.clone());
+            let field = format!("{group}{e}");
+            if d.fields.get(&field) != Some(&v) {
+                d.fields.insert(field, v.clone());
+                updated = true;
+            }
         }
     }
+    updated
 }
 
 /// File › Document Setup, laid out like InDesign's: intent, pages, start page #, facing pages,
@@ -2709,7 +2716,7 @@ fn setup_two_column_edges(ui: &mut egui::Ui, lang: &str, d: &mut Dialog, group: 
             }
         });
         ui.add_space(4.0);
-        setup_link(ui, lang, d, group, changed.take());
+        edited |= setup_link(ui, lang, d, group, changed.take());
         ui.add_space(4.0);
         ui.vertical(|ui| {
             for (a, b) in [(side_labels.0, "Inside"), (side_labels.1, "Outside")] {
@@ -2741,6 +2748,7 @@ pub fn open_adjust_layout(app: &mut DesignApp) {
     let mi = cur["margins"]["inside"].as_f64().unwrap_or(36.0);
     let mo = cur["margins"]["outside"].as_f64().unwrap_or(36.0);
     let mut f = json!({
+        "uid": app.session.active().map(|doc| doc.identity_epoch),
         "units": units,
         "facingPages": cur["facingPages"],
         "width": fm(w),
@@ -2917,6 +2925,11 @@ fn adjust_layout_dialog(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialo
 /// Confirm Adjust Layout: validate dimensions, margins, bleed, and optional font-size limits, then
 /// run `layout.adjust`.
 fn confirm_adjust_layout(app: &mut DesignApp, d: &Dialog) -> Result<Value, String> {
+    if let Some(uid) = d.fields.get("uid").and_then(Value::as_u64)
+        && Some(uid) != app.session.active().map(|doc| doc.identity_epoch)
+    {
+        return Err("the document the dialog opened on is no longer the active one".into());
+    }
     let measure = |key: &str| setup_measure(d, key).ok_or_else(|| format!("{key}: not a measure"));
     let w = measure("width")?;
     let h = measure("height")?;

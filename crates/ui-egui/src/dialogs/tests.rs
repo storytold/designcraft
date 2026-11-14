@@ -426,6 +426,35 @@ fn adjust_layout_dialog_opens_from_menu_and_applies_options() {
     assert!((pg.margins.top - 18.0).abs() < 1e-6 && (pg.margins.inside - 18.0).abs() < 1e-6, "{:?}", pg.margins);
     let size = doc.story(sid).unwrap().char_format_of(0).over.size;
     assert_eq!(size, Some(14.0), "24 * 0.5 clamped to minFontSize 14.0");
+
+    // Switch to another document while the dialog is open: confirming must not overwrite the new document.
+    open_adjust_layout(&mut app);
+    setup_fields(&mut app, json!({"width": "500 pt"}));
+    app.run("file.new", json!({"pages": 1, "width": 612.0, "height": 792.0})).unwrap();
+    assert!(confirm(&mut app).is_err(), "confirmation rejected when active document changed");
+    assert!((app.session.active().unwrap().doc.settings.page_width - 612.0).abs() < 1e-6);
+
+    // Linking unequal margins copies Top across all four edges and disables auto-adjust.
+    open_adjust_layout(&mut app);
+    setup_fields(
+        &mut app,
+        json!({
+            "autoAdjustMargins": true,
+            "marginLinked": false,
+            "marginTop": "72 pt",
+            "marginBottom": "36 pt",
+            "marginInside": "36 pt",
+            "marginOutside": "36 pt",
+        }),
+    );
+    let mut h = crate::test_window::open(app, egui::vec2(1400.0, 900.0));
+    h.run_steps(4);
+    let margin_link = dialog_links(&h)[0].center();
+    crate::test_window::click_at(&mut h, margin_link);
+    let d = h.state().app.ui.dialog.as_ref().unwrap();
+    assert!(d.b("marginLinked"), "margin link toggled on");
+    assert!(!d.b("autoAdjustMargins"), "linking unequal margins disables auto-adjust");
+    assert_eq!(d.s("marginBottom"), "72 pt");
 }
 
 #[test]

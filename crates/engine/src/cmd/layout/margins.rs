@@ -34,53 +34,41 @@ pub(super) fn adjust_layout_with(
 ) {
     use designcraft_geom::Affine;
     let after = margin_boxes(d);
+    // Capture each item's original page assignment before any object is transformed so moving an
+    // object across a spread cannot cause a later page iteration to transform it a second time.
+    let mut seen_spreads = Vec::new();
+    let mut assigned = Vec::new();
+    for (r, _, _) in before {
+        if seen_spreads.contains(r) {
+            continue;
+        }
+        seen_spreads.push(*r);
+        let Some(sp) = d.spread(*r) else { continue };
+        for it in &sp.items {
+            if !(opts.adjust_locked_content || (!it.locked && !d.layer(it.layer).is_some_and(|l| l.locked))) {
+                continue;
+            }
+            let c = it.bounds().center();
+            // Pages share a spread side by side: the margin box's page is the one under the centre's x.
+            if let Some((_, pid, _)) = before.iter().filter(|(r2, _, _)| r2 == r).min_by(|a, b| dist(a.2, c.x).total_cmp(&dist(b.2, c.x))) {
+                assigned.push((*r, *pid, it.id));
+            }
+        }
+    }
     let mut story_scales: std::collections::BTreeMap<designcraft_doc::StoryId, f64> = std::collections::BTreeMap::new();
     for (r, pid, old) in before {
         let Some((_, _, new)) = after.iter().find(|(r2, p2, _)| r2 == r && p2 == pid) else { continue };
-        if old == new || old.width() < 1e-6 || old.height() < 1e-6 {
+        if old == new || old.width() < 1e-6 || old.height() < 1e-6 || new.width() < 1e-6 || new.height() < 1e-6 {
             continue;
         }
         let sx = new.width() / old.width();
         let sy = new.height() / old.height();
         let font_scale = (sx * sy).sqrt();
         let m = Affine::translate((new.x0, new.y0)) * Affine::scale_non_uniform(sx, sy) * Affine::translate((-old.x0, -old.y0));
-        let Some(sp) = d.spread(*r) else { continue };
-        // The page's objects (by centre, measured against the old boxes).
-        let ids: Vec<designcraft_doc::ItemId> = sp
-            .items
-            .iter()
-            .filter(|it| opts.adjust_locked_content || (!it.locked && !d.layer(it.layer).is_some_and(|l| l.locked)))
-            .filter(|it| {
-                let c = it.bounds().center();
-                // Pages share a spread side by side: the margin box's page is the one under the centre's x.
-                before
-                    .iter()
-                    .filter(|(r2, _, _)| r2 == r)
-                    .min_by(|a, b| dist(a.2, c.x).total_cmp(&dist(b.2, c.x)))
-                    .is_some_and(|(_, p2, _)| p2 == pid)
-            })
-            .map(|it| it.id)
-            .collect();
+        let ids: Vec<designcraft_doc::ItemId> = assigned.iter().filter(|(r2, p2, _)| r2 == r && p2 == pid).map(|(_, _, id)| *id).collect();
         for id in ids {
             let Some(it) = d.item_mut(id) else { continue };
-            if matches!(it.content, designcraft_doc::Content::Group { .. }) {
-                it.xf = m * it.xf;
-            } else {
-                let inner = it.xf.inverse() * m * it.xf;
-                it.path.transform(inner);
-                if let Some(w) = &mut it.wrap.path {
-                    w.transform(inner);
-                }
-                let ib = it.inner_bounds();
-                if let designcraft_doc::Content::Graphic(g) = &mut it.content {
-                    // Content keeps its size but moves with the frame; auto-fit refits.
-                    let o = inner * designcraft_geom::Point::ZERO;
-                    g.xf = Affine::translate(o.to_vec2()) * g.xf;
-                    if let Some(xf) = g.fitted(ib, g.auto_fit) {
-                        g.xf = xf;
-                    }
-                }
-            }
+            adjust_item(it, m, 0);
             if opts.adjust_font_size {
                 let mut sids = Vec::new();
                 collect_item_stories(it, 0, &mut sids);
@@ -97,6 +85,36 @@ pub(super) fn adjust_layout_with(
                 scale_story_fonts(story, &styles, scale, opts.font_limits, 0);
             }
         }
+    }
+}
+
+/// Transforms an item and any nested group children in their own path spaces without scaling
+/// group transforms, so text frames inside groups scale fonts only once.
+fn adjust_item(it: &mut designcraft_doc::Item, m: designcraft_geom::Affine, depth: usize) {
+    if depth >= 32 {
+        return;
+    }
+    let inner = it.xf.inverse() * m * it.xf;
+    it.path.transform(inner);
+    if let Some(w) = &mut it.wrap.path {
+        w.transform(inner);
+    }
+    let ib = it.inner_bounds();
+    match &mut it.content {
+        designcraft_doc::Content::Group { items } => {
+            for child in items {
+                adjust_item(std::sync::Arc::make_mut(child), inner, depth + 1);
+            }
+        }
+        designcraft_doc::Content::Graphic(g) => {
+            // Content keeps its size but moves with the frame; auto-fit refits.
+            let o = inner * designcraft_geom::Point::ZERO;
+            g.xf = designcraft_geom::Affine::translate(o.to_vec2()) * g.xf;
+            if let Some(xf) = g.fitted(ib, g.auto_fit) {
+                g.xf = xf;
+            }
+        }
+        designcraft_doc::Content::Unassigned | designcraft_doc::Content::Text(_) => {}
     }
 }
 
@@ -577,5 +595,45 @@ mod adjust_tests {
 
         assert!(s.execute("layout.adjust", &json!({"minFontSize": 24, "maxFontSize": 12})).is_err());
         assert!(s.execute("layout.adjust", &json!({"width": 0})).is_err());
+        // Collapsing margins must be rejected without mutating the document.
+        assert!(s.execute("layout.adjust", &json!({"width": 306, "margins": 200})).is_err());
+        assert_eq!(s.doc().unwrap().doc.settings.page_width, 2448.0);
+    }
+
+    #[test]
+    fn adjust_layout_avoids_double_scaling_groups_and_facing_spread_items() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 3, "facingPages": true, "width": 612, "height": 792, "margins": 36})).unwrap();
+        // Grouped text frame on page 1 (spread 0): scales font once and keeps transforms unscaled.
+        let tf = s.execute("frame.create", &json!({"spread": 0, "rect": [36, 36, 300, 300], "content": "text", "text": "Group"})).unwrap();
+        let tf_id = tf["id"].as_u64().unwrap();
+        let sid = designcraft_doc::StoryId(tf["story"].as_u64().unwrap());
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": 5})).unwrap();
+        s.execute("type.char", &json!({"attrs": {"size": 20.0}})).unwrap();
+        let bx = s.execute("frame.create", &json!({"spread": 0, "rect": [300, 36, 576, 300]})).unwrap()["id"].as_u64().unwrap();
+        let gid = designcraft_doc::ItemId(s.execute("object.group", &json!({"ids": [tf_id, bx]})).unwrap()["id"].as_u64().unwrap());
+
+        // Left-page frame on facing spread 1 whose doubled centre (882) falls in the old right page (648..1188).
+        let left_id =
+            designcraft_doc::ItemId(s.execute("frame.create", &json!({"spread": 1, "rect": [306, 36, 576, 756]})).unwrap()["id"].as_u64().unwrap());
+
+        s.execute("layout.adjust", &json!({"width": 1224, "height": 1584, "autoAdjustMargins": true, "adjustFontSize": true})).unwrap();
+
+        let d = &s.doc().unwrap().doc;
+        let grp = d.item(gid).unwrap();
+        assert_eq!(grp.xf, designcraft_geom::Affine::IDENTITY, "group transform stays unscaled");
+        assert_eq!(grp.children()[0].xf, designcraft_geom::Affine::IDENTITY, "child text transform stays unscaled");
+        let gb = grp.bounds();
+        assert!(
+            (gb.x0 - 72.0).abs() < 1e-6 && (gb.y0 - 72.0).abs() < 1e-6 && (gb.x1 - 1152.0).abs() < 1e-6 && (gb.y1 - 600.0).abs() < 1e-6,
+            "{gb:?}"
+        );
+        assert_eq!(d.story(sid).unwrap().char_format_of(0).over.size, Some(40.0), "grouped story scales once (20 * 2)");
+
+        let lb = d.item(left_id).unwrap().bounds();
+        assert!(
+            (lb.x0 - 612.0).abs() < 1e-6 && (lb.y0 - 72.0).abs() < 1e-6 && (lb.x1 - 1152.0).abs() < 1e-6 && (lb.y1 - 1512.0).abs() < 1e-6,
+            "left-page frame is transformed only once across a facing spread: {lb:?}"
+        );
     }
 }
