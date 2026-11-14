@@ -10111,3 +10111,50 @@ fn cross_reference_text_breaks_at_its_spaces() {
         }
     }
 }
+
+/// A contents entry (#2586): a right indent keeps the title short of the page-number column, a
+/// negative last-line right indent lets the last line run to the frame edge, where a right tab
+/// stop sets the number. The last-line indent was ignored, so the stop lay past the measure and
+/// the entry broke at every word.
+#[test]
+fn last_line_right_indent_lets_a_contents_entry_reach_its_right_tab() {
+    let tabs = vec![designcraft_doc::TabStop { position: 324.0, align: TabAlign::Right, leader: ".".into(), align_on: String::new() }];
+    let para = ParaAttrs { tabs: Some(tabs), right_indent: Some(30.0), last_line_indent: Some(-30.0), ..Default::default() };
+    let (d, sid, _) = doc_with("Chapter One\t12", Rect::new(0.0, 0.0, 324.0, 200.0), para.clone());
+    let cs = compose_story(&d, sid, &Default::default());
+    let lines = all_lines(&cs);
+    assert_eq!(lines.len(), 1, "one line, as in InDesign");
+    assert!((lines[0].end_x - 324.0).abs() < 0.01, "the number ends at the tab stop, not {}", lines[0].end_x);
+
+    let long = "Chapter Two: A Title Long Enough to Run on to a Second Line of the Contents of This Book\t34";
+    let (d, sid, _) = doc_with(long, Rect::new(0.0, 0.0, 324.0, 200.0), para);
+    let cs = compose_story(&d, sid, &Default::default());
+    let lines = all_lines(&cs);
+    assert_eq!(lines.len(), 2, "the title wraps once and the number stays on its last line");
+    assert!(lines[0].end_x <= 294.01, "the first line keeps the right indent: {}", lines[0].end_x);
+    assert!((lines[1].end_x - 324.0).abs() < 0.01, "the number ends at the tab stop, not {}", lines[1].end_x);
+}
+
+/// A positive last-line right indent narrows only the last line (Paragraph Composer and
+/// right-aligned placement).
+#[test]
+fn last_line_right_indent_narrows_the_last_line() {
+    let text = "The story flows around the illustration while the frame keeps its original dimensions and the reader turns the page.";
+    let rect = Rect::new(0.0, 0.0, 200.0, 400.0);
+    let (d, sid, _) = doc_with(text, rect, ParaAttrs::default());
+    let plain = compose_story(&d, sid, &Default::default());
+    let plain_lines = all_lines(&plain);
+    let last = plain_lines.last().unwrap();
+    assert!(plain_lines.len() > 1 && last.end_x > 60.0, "the setup needs a last line wider than 60 pt");
+    let indent = 200.0 - last.end_x + 10.0;
+    let para = ParaAttrs { last_line_indent: Some(indent), align: Some(Align::Right), ..Default::default() };
+    let (d, sid, _) = doc_with(text, rect, para);
+    let cs = compose_story(&d, sid, &Default::default());
+    assert!(!cs.is_overset());
+    let lines = all_lines(&cs);
+    for line in &lines[..lines.len() - 1] {
+        assert!((line.end_x - 200.0).abs() < 0.01, "other lines keep the full measure: {}", line.end_x);
+    }
+    let last = lines.last().unwrap();
+    assert!((last.end_x - (200.0 - indent)).abs() < 0.01, "the last line ends at its indent: {} vs {}", last.end_x, 200.0 - indent);
+}
