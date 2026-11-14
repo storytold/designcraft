@@ -71,7 +71,9 @@ fn print_with(
         let job = craft_print::Job {
             printer: str_param(p, "printer").map(str::to_string),
             copies,
-            scaling: craft_print::Scaling::ShrinkToFit,
+            // Exact: each sheet keeps the document's size and so picks the matching paper; shrink-to-fit
+            // would put a Legal page on the printer's default Letter.
+            scaling: craft_print::Scaling::Exact,
             title: title.clone(),
             ..craft_print::Job::default()
         };
@@ -118,25 +120,32 @@ mod tests {
         let command: Vec<&str> = r["command"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
         if craft_print::backend() == Some(craft_print::Backend::Cups) {
             assert_eq!(&command[..5], ["lp", "-d", "Office", "-n", "2"]);
-            assert!(command.contains(&"print-scaling=auto-fit"));
+            assert!(command.contains(&"fit-to-page=false"));
             assert!(!command.iter().any(|a| a.starts_with("sides=")));
         } else {
             assert_eq!(
                 command,
-                [
-                    "xps-print",
-                    "printer=Office",
-                    "copies=2",
-                    "collate=true",
-                    "duplex=(queue default)",
-                    "scaling=shrink-to-fit",
-                    "color=(driver default)"
-                ]
+                ["xps-print", "printer=Office", "copies=2", "collate=true", "duplex=(queue default)", "scaling=exact", "color=(driver default)"]
             );
         }
         assert!(r["bytes"].as_u64().unwrap() > 500);
         assert!(s.execute("file.print", &json!({"pages": "9", "dryRun": true})).is_err());
         assert!(s.execute("file.printers", &json!({})).unwrap()["printers"].is_array());
+    }
+
+    /// The sheet is the document's page size: Legal prints on Legal, not shrunk onto the printer's
+    /// default paper.
+    #[test]
+    fn print_uses_the_documents_paper_size() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"preset": "Legal", "width": 1008, "height": 612})).unwrap();
+        let mut scaling = None;
+        print_with(&mut s, &json!({}), |_, job| {
+            scaling = Some(job.scaling);
+            Ok(String::new())
+        })
+        .unwrap();
+        assert_eq!(scaling, Some(craft_print::Scaling::Exact));
     }
 
     #[test]
@@ -154,7 +163,7 @@ mod tests {
             assert_eq!(job.copies, 2);
             assert_eq!(job.duplex, None);
             assert!(!job.grayscale);
-            assert_eq!(job.scaling, craft_print::Scaling::ShrinkToFit);
+            assert_eq!(job.scaling, craft_print::Scaling::Exact);
             assert!(!job.title.is_empty());
             Ok("request id is Office-1".into())
         })
