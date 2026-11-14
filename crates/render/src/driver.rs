@@ -17,6 +17,7 @@ impl Renderer {
             drawing_items: Vec::new(),
             cmyk_view: None,
             cmyk_ran: false,
+            images_pending: false,
             kept: Default::default(),
             #[cfg(test)]
             cmyk_passes: 0,
@@ -39,6 +40,12 @@ impl Renderer {
         self.kept.clear();
     }
 
+    /// Whether the last render drew an image still decoding in the background in its place
+    /// ([`RenderOptions::defer_images`]): render again when [`images::generation`] advances.
+    pub fn images_pending(&self) -> bool {
+        self.images_pending
+    }
+
     /// Number of text frames whose glyph paths are cached.
     pub fn cached_frames(&self) -> usize {
         self.glyphs.len()
@@ -51,6 +58,8 @@ impl Renderer {
         RICH_BLACK.with(|r| r.set(opts.rich_black));
         PLATE.with(|p| p.set(opts.plate));
         self.kept.begin(doc);
+        // A kept view had every image drawn.
+        self.images_pending = false;
         if let Some(hit) = self.cmyk_view.as_ref().filter(|entry| entry.matches(doc, spreads, width, height, view, opts, self.threads)) {
             let image = hit.image();
             self.stats = hit.stats();
@@ -65,6 +74,7 @@ impl Renderer {
         // Kept only when the ink passes ran: other views render at their usual cost anyway. Not
         // with images still decoding: the next render must show them.
         let deferred = images::take_deferred();
+        self.images_pending = deferred;
         if self.cmyk_ran && !deferred && image.pixels.len() <= blendspace::CachedView::MAX_BYTES {
             self.cmyk_view = Some(blendspace::CachedView::new(doc, spreads, view, opts, &image, self.stats, self.threads));
         }
