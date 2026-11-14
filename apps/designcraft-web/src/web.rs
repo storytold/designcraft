@@ -38,16 +38,30 @@ pub fn start() {
             log::error!("no document");
             return;
         };
+        // `?host=parent`: a same-origin page framing DesignCraft (or the parent on the origin
+        // `?host_origin=` names) opens documents in it and stores what it saves (`host`). Made
+        // first, so the parent hears about a startup that stops early.
+        let bridge = if crate::host::query_param(&query(), "host").as_deref() == Some("parent") {
+            crate::host::Bridge::new(crate::host::query_param(&query(), "host_origin").as_deref())
+        } else {
+            None
+        };
         if let Err(e) = create_error_panel(&document) {
             log::error!("couldn't create graphics error panel: {e:?}");
             if let Some(el) = document.get_element_by_id(LOADING_ID) {
                 el.set_text_content(Some("DesignCraft couldn't start. Reload this page to try again."));
+            }
+            if let Some(bridge) = &bridge {
+                bridge.post_failed(&format!("couldn't create the error panel: {e:?}"));
             }
             return;
         }
         let graphics = GraphicsState::default();
         let Some(canvas) = document.get_element_by_id(CANVAS_ID).and_then(|e| e.dyn_into::<web_sys::HtmlCanvasElement>().ok()) else {
             graphics_failed(&graphics, "DesignCraft failed to start", "Reload this page to try again.", &format!("Missing canvas {CANVAS_ID}."));
+            if let Some(bridge) = &bridge {
+                bridge.post_failed(&format!("Missing canvas {CANVAS_ID}."));
+            }
             return;
         };
         let mut options = eframe::WebOptions::default();
@@ -56,6 +70,7 @@ pub fn start() {
         {
             create.instance_descriptor.backends = eframe::wgpu::Backends::GL;
         }
+        let app_bridge = bridge.clone();
         let runner = eframe::WebRunner::new();
         let creator_graphics = graphics.clone();
         let result = runner
@@ -72,16 +87,24 @@ pub fn start() {
                         });
                     }
                     let inbox: Inbox = Inbox::default();
-                    let mut app = DesignApp::new(Session::new(), services(inbox.clone(), cc.egui_ctx.clone()));
-                    if has_query_flag(&query(), "sample") {
+                    let mut services = services(inbox.clone(), cc.egui_ctx.clone());
+                    if let Some(bridge) = &app_bridge {
+                        bridge.connect(&mut services, inbox.clone(), cc.egui_ctx.clone());
+                    }
+                    let mut app = DesignApp::new(Session::new(), services);
+                    if app_bridge.is_none() && has_query_flag(&query(), "sample") {
                         let _ = app.run("file.newSample", serde_json::json!({}));
                     }
-                    Ok(Box::new(WebShell { app, inbox, graphics: creator_graphics }))
+                    Ok(Box::new(WebShell { app, inbox, graphics: creator_graphics, bridge: app_bridge }))
                 }),
             )
             .await;
         match result {
             Ok(()) => {
+                // Ready only once the runner started.
+                if let Some(bridge) = &bridge {
+                    bridge.post_ready();
+                }
                 if let Err(e) = install_recovery_controls(&runner, &canvas, &graphics) {
                     graphics_failed(&graphics, GRAPHICS_TITLE, GRAPHICS_MESSAGE, &format!("Couldn't install graphics recovery controls: {e:?}"));
                     if let Some(shell) = runner.app_mut::<WebShell>()
@@ -98,6 +121,9 @@ pub fn start() {
                 }
             }
             Err(e) => {
+                if let Some(bridge) = &bridge {
+                    bridge.post_failed(&format!("{e:?}"));
+                }
                 graphics_failed(
                     &graphics,
                     "DesignCraft failed to start",
@@ -345,12 +371,19 @@ struct WebShell {
     app: DesignApp,
     inbox: Inbox,
     graphics: GraphicsState,
+    /// The host page, with `?host=parent` (told about unsaved changes every frame).
+    bridge: Option<crate::host::Bridge>,
 }
 
 impl eframe::App for WebShell {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let graphics = self.graphics.clone();
-        let _ = graphics.run_if_healthy(|| self.app.logic(ctx));
+        let _ = graphics.run_if_healthy(|| {
+            self.app.logic(ctx);
+            if let Some(bridge) = &self.bridge {
+                bridge.post_dirty(ctx, self.app.session.documents().iter().any(|d| d.is_dirty()));
+            }
+        });
     }
 
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
