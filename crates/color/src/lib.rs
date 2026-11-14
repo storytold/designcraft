@@ -1,6 +1,6 @@
 //! Colour, paint and blend-mode types for DesignCraft.
 //!
-//! Colours keep the model the user picked them in (RGB, CMYK, Gray, HSB is a UI view of RGB), so
+//! Colours keep the model the user picked them in (RGB, CMYK, Gray, Lab; HSB is a UI view of RGB), so
 //! documents don't drift when converting back and forth. Rendering asks for [`Color::to_rgba`].
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
@@ -18,13 +18,15 @@ pub use swatch::{ColorType, Swatch, SwatchValue, default_swatches};
 
 use serde::{Deserialize, Serialize};
 
-/// A colour in its authoring model. Components are 0..=1.
+/// A colour in its authoring model. Components are 0..=1, except Lab: `l` is 0..=100 and `a`, `b`
+/// are -128..=127 (CIE L*a*b*, D50).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "model", rename_all = "lowercase")]
 pub enum Color {
     Rgb { r: f32, g: f32, b: f32 },
     Cmyk { c: f32, m: f32, y: f32, k: f32 },
     Gray { k: f32 },
+    Lab { l: f32, a: f32, b: f32 },
 }
 
 impl Default for Color {
@@ -49,6 +51,10 @@ impl Color {
     pub fn gray(k: f32) -> Self {
         Color::Gray { k }
     }
+    /// CIE L*a*b* (D50), clamped to `l` 0..=100 and `a`, `b` -128..=127.
+    pub fn lab(l: f32, a: f32, b: f32) -> Self {
+        Color::Lab { l: l.clamp(0.0, 100.0), a: a.clamp(-128.0, 127.0), b: b.clamp(-128.0, 127.0) }
+    }
 
     /// Display (sRGB) colour through the active colour settings ([`cms::active`]): RGB is
     /// converted from the working RGB space, CMYK through the working CMYK profile (relative
@@ -68,6 +74,7 @@ impl Color {
             Color::Rgb { r, g, b } => [r, g, b],
             Color::Cmyk { c, m, y, k } => cms::naive_cmyk_to_rgb([c, m, y, k]),
             Color::Gray { k } => [1.0 - k; 3],
+            Color::Lab { l, a, b } => cms::lab::lab_to_srgb(cms::Lab::new(l, a, b)),
         }
     }
     /// CIE Lab (D50) through the active colour settings.
@@ -182,6 +189,7 @@ impl Color {
         match (*self, *other) {
             (Color::Cmyk { c, m, y, k }, Color::Cmyk { c: c2, m: m2, y: y2, k: k2 }) => return Color::cmyk(l(c, c2), l(m, m2), l(y, y2), l(k, k2)),
             (Color::Gray { k }, Color::Gray { k: k2 }) => return Color::gray(l(k, k2)),
+            (Color::Lab { l: l1, a, b }, Color::Lab { l: l2, a: a2, b: b2 }) => return Color::Lab { l: l(l1, l2), a: l(a, a2), b: l(b, b2) },
             (Color::Gray { k }, Color::Cmyk { .. }) => return Color::cmyk(0.0, 0.0, 0.0, k).lerp(other, t),
             (Color::Cmyk { .. }, Color::Gray { k }) => return self.lerp(&Color::cmyk(0.0, 0.0, 0.0, k), t),
             _ => {}
@@ -195,6 +203,7 @@ impl Color {
             Color::Rgb { .. } => "RGB",
             Color::Cmyk { .. } => "CMYK",
             Color::Gray { .. } => "Grayscale",
+            Color::Lab { .. } => "Lab",
         }
     }
 }

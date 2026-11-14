@@ -26,13 +26,13 @@ enum Ink {
     },
 }
 
-/// Inks of a plain color: CMYK as it is, gray as black. RGB has none.
+/// Inks of a plain color: CMYK as it is, gray as black. RGB and Lab have none.
 fn process_inks(c: Color) -> Option<[f32; 4]> {
     let tint = |v: f32| if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.0 };
     match c {
         Color::Cmyk { c, m, y, k } => Some([tint(c), tint(m), tint(y), tint(k)]),
         Color::Gray { k } => Some([0.0, 0.0, 0.0, tint(k)]),
-        Color::Rgb { .. } => None,
+        Color::Rgb { .. } | Color::Lab { .. } => None,
     }
 }
 

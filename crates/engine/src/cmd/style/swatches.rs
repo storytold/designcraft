@@ -133,7 +133,8 @@ pub fn parse_color(v: &Value) -> Option<designcraft_color::Color> {
     }
 }
 
-/// `{model: rgb|cmyk|gray, …}` with every component in 0..=1; anything else is not a colour.
+/// `{model: rgb|cmyk|gray, …}` with every component in 0..=1, or `{model: lab, l, a, b}` with `l` in
+/// 0..=100 and `a`, `b` in -128..=127; anything else is not a colour.
 fn model_color(v: &Value) -> Option<designcraft_color::Color> {
     use designcraft_color::Color;
     let color: Color = serde_json::from_value(v.clone()).ok()?;
@@ -144,6 +145,10 @@ fn model_color(v: &Value) -> Option<designcraft_color::Color> {
         Color::Rgb { r, g, b } => [r, g, b].into_iter().all(unit).then(|| Color::rgb(q(r), q(g), q(b))),
         Color::Cmyk { c, m, y, k } => [c, m, y, k].into_iter().all(unit).then(|| Color::cmyk(q(c), q(m), q(y), q(k))),
         Color::Gray { k } => unit(k).then_some(Color::Gray { k: q(k) }),
+        Color::Lab { l, a, b } => {
+            let in_range = |x: f32, lo: f32, hi: f32| x.is_finite() && (lo - 1e-3..=hi + 1e-3).contains(&x);
+            (in_range(l, 0.0, 100.0) && in_range(a, -128.0, 127.0) && in_range(b, -128.0, 127.0)).then(|| Color::lab(l, a, b))
+        }
     }
 }
 

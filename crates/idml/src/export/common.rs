@@ -36,6 +36,7 @@ pub(super) fn color_value(c: &Color) -> (&'static str, String) {
         Color::Cmyk { c, m, y, k } => ("CMYK", format!("{} {} {} {}", pct(c as f64), pct(m as f64), pct(y as f64), pct(k as f64))),
         Color::Rgb { r, g, b } => ("RGB", format!("{} {} {}", num(r as f64 * 255.0), num(g as f64 * 255.0), num(b as f64 * 255.0))),
         Color::Gray { k } => ("CMYK", format!("0 0 0 {}", pct(k as f64))),
+        Color::Lab { l, a, b } => ("LAB", format!("{} {} {}", num(l as f64), num(a as f64), num(b as f64))),
     }
 }
 

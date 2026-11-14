@@ -48,6 +48,7 @@ fn prints_no_ink(d: &Document, name: &str, tint: f32) -> bool {
         Some(Color::Cmyk { c, m, y, k }) => [c, m, y, k].iter().all(|v| *v <= INK),
         Some(Color::Gray { k }) => k <= INK,
         Some(Color::Rgb { r, g, b }) => [r, g, b].iter().all(|v| *v >= 1.0 - INK),
+        Some(c @ Color::Lab { .. }) => c.to_rgb().iter().all(|v| *v >= 1.0 - INK),
         None => false,
     }
 }

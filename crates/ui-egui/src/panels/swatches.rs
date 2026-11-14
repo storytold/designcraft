@@ -332,6 +332,7 @@ enum RowMode {
     Cmyk,
     Rgb,
     Gray,
+    Lab,
     None,
     Registration,
 }
@@ -346,6 +347,7 @@ fn row_marks(sw: &designcraft_color::swatch::Swatch) -> RowMarks {
                 Color::Cmyk { .. } => RowMode::Cmyk,
                 Color::Rgb { .. } => RowMode::Rgb,
                 Color::Gray { .. } => RowMode::Gray,
+                Color::Lab { .. } => RowMode::Lab,
             };
             RowMarks { not_editable, kind: Some(*color_type), mode: Some(mode) }
         }
@@ -369,6 +371,7 @@ fn row_label(lang: &str, name: &str, marks: RowMarks) -> String {
         Some(RowMode::Cmyk) => parts.push(tr("CMYK")),
         Some(RowMode::Rgb) => parts.push(tr("RGB")),
         Some(RowMode::Gray) => parts.push(tr("Gray")),
+        Some(RowMode::Lab) => parts.push(tr("Lab")),
         Some(RowMode::None | RowMode::Registration) | None => {}
     }
     if marks.not_editable {
@@ -417,7 +420,8 @@ fn paint_color_type(p: &egui::Painter, r: egui::Rect, kind: ColorType, ink: egui
 }
 
 /// The colour mode: CMYK's four inks meeting in the middle, RGB's three primaries, a grey ramp,
-/// [None]'s red slash and [Registration]'s target.
+/// Lab's two axes (green to red above blue to yellow), [None]'s red slash and [Registration]'s
+/// target.
 fn paint_mode(p: &egui::Painter, r: egui::Rect, mode: RowMode, ink: egui::Color32) {
     let sq = egui::Rect::from_center_size(r.center(), vec2(11.0, 11.0));
     let c = sq.center();
@@ -450,6 +454,15 @@ fn paint_mode(p: &egui::Painter, r: egui::Rect, mode: RowMode, ink: egui::Color3
                     0.0,
                     egui::Color32::from_gray(255 - 70 * k),
                 );
+            }
+            p.rect_stroke(sq, 0.0, egui::Stroke::new(1.0, ink), egui::StrokeKind::Outside);
+        }
+        RowMode::Lab => {
+            // The a axis on top (green, red), the b axis below (blue, yellow).
+            let quarters = [(0.0, 0.0, rgb(40, 170, 90)), (0.5, 0.0, rgb(225, 50, 70)), (0.0, 0.5, rgb(50, 100, 220)), (0.5, 0.5, rgb(245, 215, 40))];
+            for (fx, fy, colour) in quarters {
+                let min = egui::pos2(sq.min.x + sq.width() * fx, sq.min.y + sq.height() * fy);
+                p.rect_filled(egui::Rect::from_min_size(min, sq.size() / 2.0), 0.0, colour);
             }
             p.rect_stroke(sq, 0.0, egui::Stroke::new(1.0, ink), egui::StrokeKind::Outside);
         }
@@ -759,7 +772,7 @@ pub(crate) fn picker_fields(color: Option<designcraft_color::Color>, stroke: boo
             f["model"] = json!("rgb");
             f["rgb"] = json!([r, g, b].map(|v| f64::from(v) * 255.0));
         }
-        designcraft_color::Color::Gray { .. } => f["model"] = json!("rgb"),
+        designcraft_color::Color::Gray { .. } | designcraft_color::Color::Lab { .. } => f["model"] = json!("rgb"),
     }
     f
 }
@@ -834,6 +847,7 @@ fn gradient_stop(app: &mut DesignApp, ui: &mut egui::Ui, g: &designcraft_color::
     let values = match c {
         Color::Cmyk { c, m, y, k } => format!("C={} M={} Y={} K={}", pct(c), pct(m), pct(y), pct(k)),
         Color::Gray { k } => format!("K={}", pct(k)),
+        Color::Lab { .. } => designcraft_color::swatch::value_name(c),
         Color::Rgb { .. } => {
             let [r, g, b, _] = c.to_rgba8(1.0);
             format!("R={r} G={g} B={b}")
@@ -929,6 +943,7 @@ fn color_json(c: &designcraft_color::Color) -> serde_json::Value {
         // The model form takes fractions; bare CMYK would be read as 0..100.
         Color::Cmyk { c, m, y, k } => json!({"model": "cmyk", "c": c, "m": m, "y": y, "k": k}),
         Color::Gray { k } => json!({"model": "gray", "k": k}),
+        Color::Lab { l, a, b } => json!({"model": "lab", "l": l, "a": a, "b": b}),
         Color::Rgb { .. } => json!(c.to_hex()),
     }
 }
@@ -1913,6 +1928,12 @@ mod row_mark_tests {
             ..cyan.clone()
         };
         assert_eq!(row_marks(&spot), RowMarks { not_editable: false, kind: Some(ColorType::Spot), mode: Some(RowMode::Rgb) });
+        // A spot defined in Lab shows as Lab (#2761).
+        let value = SwatchValue::Color { color: Color::Lab { l: 50.0, a: 20.0, b: -40.0 }, color_type: ColorType::Spot };
+        assert_eq!(
+            row_marks(&Swatch { value, ..spot.clone() }),
+            RowMarks { not_editable: false, kind: Some(ColorType::Spot), mode: Some(RowMode::Lab) }
+        );
         // A locked Paper swatch under another name (a document from elsewhere) is still editable.
         let paper = all.iter().find(|s| s.name == designcraft_color::swatch::PAPER).unwrap();
         let renamed = designcraft_color::swatch::Swatch { name: "Papier".into(), ..paper.clone() };
