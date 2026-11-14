@@ -36,6 +36,16 @@ pub fn save_with_preview(doc: &Document, preview: Option<&[u8]>) -> Result<Vec<u
     craft_designcraft_format::save(&compact, concat!("DesignCraft ", env!("CARGO_PKG_VERSION")), preview, &assets)
 }
 
+/// [`save_with_preview`] into `out`, in chunks, so a writer that stops on cancellation stops the
+/// write at its next chunk.
+pub fn write<W: std::io::Write>(out: &mut W, doc: &Document, preview: Option<&[u8]>) -> Result<(), FormatError> {
+    let bytes = save_with_preview(doc, preview)?;
+    for chunk in bytes.chunks(1 << 20) {
+        out.write_all(chunk).map_err(|e| FormatError::Io(e.to_string()))?;
+    }
+    Ok(())
+}
+
 /// Required native format version for a document. Kept for app-side compatibility; inference is
 /// performed by the shared codec over the serialized neutral document schema.
 #[cfg(test)]
