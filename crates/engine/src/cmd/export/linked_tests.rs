@@ -134,3 +134,37 @@ fn opening_a_document_with_a_linked_alpha_wrap_image_reads_no_original() {
     let o = d.alpha_outlines.first().expect("the outline is traced from the proxy");
     assert_eq!((o.width, o.height), (64, 64), "scaled to the original's size");
 }
+
+#[test]
+fn epub_and_html_carry_a_linked_graphic_and_a_modified_one_from_disk() {
+    let dir = Dir::new("epub");
+    let file = dir.0.join("art.png");
+    let (mut s, _) = linked_session(&file, &png(40, 20, false));
+    let html = s.execute("file.exportHtml", &json!({})).unwrap();
+    assert!(html["text"].as_str().unwrap().contains("<img"), "the linked graphic is in the HTML");
+    let r = s.execute("file.exportEpub", &json!({})).unwrap();
+    let z = zip::ZipArchive::new(std::io::Cursor::new(crate::cmd::base64_decode(r["base64"].as_str().unwrap()))).unwrap();
+    let names: Vec<String> = z.file_names().map(str::to_string).collect();
+    let image = names.iter().find(|n| n.starts_with("OEBPS/images/")).unwrap_or_else(|| panic!("no image in {names:?}")).clone();
+    // A modified link exports the file on disk, with a warning.
+    std::fs::write(&file, png(77, 33, false)).unwrap();
+    let r = s.execute("file.exportEpub", &json!({})).unwrap();
+    assert!(warnings(&r).contains("file on disk"), "{}", warnings(&r));
+    let mut z = zip::ZipArchive::new(std::io::Cursor::new(crate::cmd::base64_decode(r["base64"].as_str().unwrap()))).unwrap();
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(&mut z.by_name(&image).unwrap(), &mut bytes).unwrap();
+    assert_eq!(bytes, std::fs::read(&file).unwrap());
+}
+
+#[test]
+fn a_package_copies_a_modified_link_from_disk_with_a_warning() {
+    let dir = Dir::new("package-modified");
+    let file = dir.0.join("art.png");
+    let (mut s, _) = linked_session(&file, &png(40, 20, false));
+    let changed = png(77, 33, false);
+    std::fs::write(&file, &changed).unwrap();
+    let out = dir.0.join("out");
+    let r = s.execute("file.package", &json!({"dir": out.to_string_lossy(), "pdf": false, "idml": false})).unwrap();
+    assert_eq!(std::fs::read(out.join("Links/art.png")).unwrap(), changed);
+    assert!(r.to_string().contains("file on disk"), "{r}");
+}

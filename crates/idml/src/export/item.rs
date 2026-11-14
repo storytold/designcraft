@@ -283,9 +283,26 @@ impl<'a> Ex<'a> {
 
     fn image_el(&mut self, asset: &designcraft_doc::Asset, g: &designcraft_doc::Graphic) -> El {
         let is_pdf = asset.mime == "application/pdf";
-        // Bytes that can't be had are written like a link without data.
-        let data = asset.data.load().unwrap_or_default();
-        let is_eps = asset.mime == "application/postscript" || designcraft_images::is_eps(&data);
+        // Bytes are read only when they are embedded (an image with no link of its own always
+        // is); a link without embedding stays a link. Bytes that can't be had are written like
+        // a link without data.
+        let embedding = self.opts.embed_images || asset.link.is_none();
+        let data = if embedding {
+            match asset.output_bytes() {
+                Ok(out) => {
+                    if let Some(w) = out.warning
+                        && !self.warnings.contains(&w)
+                    {
+                        self.warnings.push(w);
+                    }
+                    out.bytes
+                }
+                Err(_) => Default::default(),
+            }
+        } else {
+            Default::default()
+        };
+        let is_eps = asset.mime == "application/postscript" || (!data.is_empty() && designcraft_images::is_eps(&data));
         let mut el = El::new(if is_eps {
             "EPS"
         } else if is_pdf {
@@ -310,7 +327,7 @@ impl<'a> Ex<'a> {
             el.set("FillColor", id.clone());
             el.set("FillTint", pct(g.fill.tint as f64));
         }
-        let wanted = !data.is_empty() && (self.opts.embed_images || asset.link.is_none());
+        let wanted = !data.is_empty() && embedding;
         // An image with no link of its own has nowhere else to live, so it is always embedded
         // (dropping its data would lose it); only an image with a real link can fall back to it.
         let embed = wanted && (asset.link.is_none() || self.embedded.saturating_add(data.len()) <= self.embed_limit);

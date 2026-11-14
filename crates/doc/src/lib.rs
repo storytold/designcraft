@@ -659,6 +659,8 @@ pub struct OutputBytes {
     /// A warning to report: the file on disk replaced a changed original, or the proxy stands in
     /// for a missing one.
     pub warning: Option<String>,
+    /// The bytes are the asset's preview, not the original (a missing or unreadable link).
+    pub proxied: bool,
 }
 
 impl Asset {
@@ -667,16 +669,20 @@ impl Asset {
     /// there is neither.
     pub fn output_bytes(&self) -> std::result::Result<OutputBytes, Unavailable> {
         match self.data.load_for_output() {
-            Ok((bytes, false)) => Ok(OutputBytes { bytes, warning: None }),
-            Ok((bytes, true)) => {
-                Ok(OutputBytes { bytes, warning: Some(format!("the linked file `{}` has changed; the file on disk is used", self.name)) })
-            }
+            Ok((bytes, false)) => Ok(OutputBytes { bytes, warning: None, proxied: false }),
+            Ok((bytes, true)) => Ok(OutputBytes {
+                bytes,
+                warning: Some(format!("the linked file `{}` has changed; the file on disk is used", self.name)),
+                proxied: false,
+            }),
             Err(e) => {
                 let proxy = self.proxy.as_ref().and_then(|p| p.data.load().ok());
                 match proxy {
-                    Some(bytes) => {
-                        Ok(OutputBytes { bytes, warning: Some(format!("the linked file `{}` is unavailable ({e}); its preview is used", self.name)) })
-                    }
+                    Some(bytes) => Ok(OutputBytes {
+                        bytes,
+                        warning: Some(format!("the linked file `{}` is unavailable ({e}); its preview is used", self.name)),
+                        proxied: true,
+                    }),
                     None => Err(e),
                 }
             }

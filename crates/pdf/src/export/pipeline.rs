@@ -212,6 +212,7 @@ fn export_pdf_with_report_inner(doc: &Document, cache: &Cache, opts: &PdfOptions
         clip: Rect::ZERO,
         warnings,
         images: HashMap::new(),
+        outputs: HashMap::new(),
         images_by_content: ImageContentCache::default(),
         #[cfg(test)]
         image_conversions: 0,

@@ -227,6 +227,7 @@ mod image_content_cache_tests {
             clip: Rect::ZERO,
             warnings: Vec::new(),
             images: HashMap::new(),
+            outputs: HashMap::new(),
             images_by_content: ImageContentCache::default(),
             image_conversions: 0,
             pdfs: HashMap::new(),

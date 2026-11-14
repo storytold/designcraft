@@ -70,7 +70,7 @@ The status line reports once: "N images will be saved as links to their files (L
 ## Packages, export and preflight
 
 - **Package** and **Copy Link(s) To** copy the original files disk to disk into `Links/` and relink to the copies, hash-checked. A linked asset stays linked, now to its copy. A missing or unreadable file is left as a missing link; no empty file is written in its place.
-- **Export** (PDF, flattened output, EPS and the other formats, alpha wraps) uses the file on disk. When the link is Modified, the export uses the current file and warns. When the file is Missing, the image is skipped and the export warns by name ("image `x` was skipped: …").
+- **Export** (PDF, flattened output, EPS and the other formats, alpha wraps) uses the file on disk. When the link is Modified, the export uses the current file and warns. When the file is Missing, the export uses the proxy (a preview of at most 1024 px) and warns by name; with no proxy the image is skipped and the export warns ("image `x` was skipped: …"). A placed PDF whose layers are hidden or overridden is left out instead of drawn from the proxy, which shows every layer. HTML, EPUB, PowerPoint and IDML read linked files the same way; Package and Copy Link(s) To warn when they copy a Modified file.
 - **Preflight** reports `missingLink` (error) for Missing links, with the reason when the path is refused, and `modifiedLink` for Modified ones ("exports use the file as it is now").
 
 ## Web builds

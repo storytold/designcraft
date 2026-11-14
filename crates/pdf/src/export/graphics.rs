@@ -60,24 +60,34 @@ impl Exporter<'_> {
         )))
     }
 
-    /// The bytes of asset `id` for this export ([`designcraft_doc::Asset::output_bytes`]), with
-    /// its warning recorded. `None` when there is nothing to export (warned once, by name).
-    pub(super) fn asset_bytes(&mut self, id: AssetId) -> Option<(Arc<Vec<u8>>, String)> {
+    /// The output of asset `id` ([`designcraft_doc::Asset::output_bytes`]), read once per
+    /// export with its warning recorded. `None` when there is nothing to export (warned once, by
+    /// name).
+    pub(super) fn asset_output(&mut self, id: AssetId) -> Option<Output> {
+        if let Some(o) = self.outputs.get(&id) {
+            return o.clone();
+        }
         let asset = self.doc.assets.get(&id)?;
-        match asset.output_bytes() {
+        let name = asset.name.clone();
+        let out = match asset.output_bytes() {
             Ok(out) => {
-                let name = asset.name.clone();
                 if let Some(w) = out.warning {
                     self.warn(w);
                 }
-                Some((out.bytes, name))
+                Some((out.bytes, name, out.proxied))
             }
             Err(e) => {
-                let w = format!("image `{}` was skipped: {e}", asset.name);
-                self.warn(w);
+                self.warn(format!("image `{name}` was skipped: {e}"));
                 None
             }
-        }
+        };
+        self.outputs.insert(id, out.clone());
+        out
+    }
+
+    /// The bytes of asset `id` for this export, and its name.
+    pub(super) fn asset_bytes(&mut self, id: AssetId) -> Option<(Arc<Vec<u8>>, String)> {
+        self.asset_output(id).map(|(b, n, _)| (b, n))
     }
 
     pub(super) fn load_image(&mut self, id: AssetId) -> Option<Image> {
@@ -215,7 +225,19 @@ impl Exporter<'_> {
     fn graphic_placed_pdf(&mut self, s: &mut Surface, g: &designcraft_doc::Graphic, hidden: Option<&[String]>) -> bool {
         let doc = self.doc;
         let Some(asset) = doc.assets.get(&g.asset) else { return false };
-        let Some((bytes, _)) = self.asset_bytes(g.asset).filter(|(b, _)| b.starts_with(b"%PDF")) else { return false };
+        if asset.mime != "application/pdf" {
+            return false;
+        }
+        let Some((bytes, _, proxied)) = self.asset_output(g.asset) else { return false };
+        if proxied {
+            // The preview shows every layer: with layers hidden or overridden it would show what
+            // the document hides, so nothing is drawn (the canvas fails closed too).
+            if hidden.is_some() {
+                self.warn(format!("{}: the linked PDF is unavailable, so its layer choice can't be applied; the graphic was left out", asset.name));
+                return true;
+            }
+            return false;
+        }
         // Cropped to a box: the whole page, placed so that the box spans graphic space.
         let shown = asset.shown_box();
         let [l, t, r, b] = shown.unwrap_or([0.0, 0.0, 1.0, 1.0]);
@@ -286,7 +308,10 @@ impl Exporter<'_> {
     fn graphic_placed_svg(&mut self, s: &mut Surface, g: &designcraft_doc::Graphic) -> bool {
         let doc = self.doc;
         let Some(asset) = doc.assets.get(&g.asset) else { return false };
-        let Some((bytes, _)) = self.asset_bytes(g.asset).filter(|(b, _)| designcraft_images::is_svg(b)) else { return false };
+        if asset.mime != "image/svg+xml" {
+            return false;
+        }
+        let Some((bytes, _, false)) = self.asset_output(g.asset) else { return false };
         let Some(size) = Size::from_wh(g.size.0.max(1e-3) as f32, g.size.1.max(1e-3) as f32) else { return true };
         let tree = self
             .svgs
