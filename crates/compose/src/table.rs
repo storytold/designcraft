@@ -296,8 +296,10 @@ pub(crate) fn place_table(
     let sum = |a: usize, b: usize| heights[a..b].iter().sum::<f64>();
     let footer_h = sum(body_end, nr);
     let o = &table.options;
+    // InDesign measures Space Before from the previous line's baseline (the descenders may hang
+    // into it), as it measures text after the table from the table's bottom.
     let mut y = match cur.last_baseline {
-        Some(b) => b + cur.last_descent + cur.pending + o.space_before,
+        Some(b) => b + cur.pending + o.space_before,
         None => col.y0,
     };
     let mut frag_rows: Vec<(usize, f64, bool)> = Vec::new(); // (row, y, repeated)
