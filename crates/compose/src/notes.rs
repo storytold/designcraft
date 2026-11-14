@@ -108,6 +108,8 @@ pub(crate) struct Notes {
 }
 
 impl Notes {
+    /// The footnotes of `story` to place, numbered from the document's start for it, or from the
+    /// numbers `opts` hands down for the text of a footnote holding nested notes.
     pub fn new(doc: &Document, story: &Story, opts: &ComposeOptions) -> Notes {
         let refs: Vec<usize> = if story.notes.is_empty() { Vec::new() } else { story.text.match_indices(FOOTNOTE_REF).map(|(i, _)| i).collect() };
         let inner = opts.note_numbers.clone();
@@ -305,6 +307,7 @@ impl Notes {
         hit
     }
 
+    /// Place footnote `k` in `column` (once), with its nested notes after it as their own parts.
     pub fn place(&mut self, doc: &Document, k: usize, column: NoteColumn<'_>, opts: &ComposeOptions) {
         if self.placed.iter().any(|p| p.k == k) {
             return;

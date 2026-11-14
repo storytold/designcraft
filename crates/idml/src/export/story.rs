@@ -1,93 +1,33 @@
-use super::common::{anchor_self, bool_s, change_type, topic_self, uid, with_props, xref_format_self};
-use super::graphics::graphic_layer_attribute_name;
-use super::{
-    BTreeMap, CHAR_BUILTINS, CharFormat, El, Ex, ListType, NO_CHAR_ID, Node, PARA_BUILTINS, ParaAttrs, ParaFormat, Story, TOC_STYLE_ID, names, num,
-    st,
-};
+use super::common::{change_type, uid, with_props, xref_format_self};
+use super::{CHAR_BUILTINS, CharFormat, El, Ex, ListType, NO_CHAR_ID, Node, PARA_BUILTINS, ParaAttrs, ParaFormat, Story, TOC_STYLE_ID, names, st};
 
 impl<'a> Ex<'a> {
-    /// `<GraphicLayerOption>` of a placed graphic: its layer attributes and the nested layer tree.
+    /// `<GraphicLayerOption>` of a placed graphic: its layer attributes and nested layer tree.
     pub(super) fn layer_option_el(&mut self, options: &designcraft_doc::GraphicLayerOptions) -> El {
-        let mut option = El::new("GraphicLayerOption");
-        for (key, value) in &options.attributes {
-            if graphic_layer_attribute_name(key) {
-                option.set(key, value);
-            }
-        }
-        // Only an ancestor whose subtree is still open can parent the next layer.
-        // Reopening a closed subtree would reorder native-edited lists on roundtrip.
-        let mut open = Vec::new();
-        let mut parents = Vec::with_capacity(options.layers.len());
-        for i in 0..options.layers.len() {
-            let parent = options.parents.get(i).copied().flatten();
-            if let Some(at) = parent.and_then(|p| open.iter().position(|id| *id == p)).filter(|at| *at < 239) {
-                open.truncate(at + 1);
-                parents.push(parent);
-            } else {
-                open.clear();
-                parents.push(None);
-            }
-            open.push(i);
-        }
-        let mut children: Vec<Vec<El>> = vec![Vec::new(); options.layers.len()];
-        let mut roots = Vec::new();
-        for (i, attributes) in options.layers.iter().enumerate().rev() {
-            let mut layer = El::new("GraphicLayer").attr("Self", self.fresh());
-            for (key, value) in attributes {
-                if graphic_layer_attribute_name(key) {
-                    layer.set(key, value);
-                }
-            }
-            if let Some(nested) = children.get_mut(i) {
-                for child in std::mem::take(nested).into_iter().rev() {
-                    layer.push(child);
-                }
-            }
-            if let Some(nested) = parents.get(i).copied().flatten().and_then(|parent| children.get_mut(parent)) {
-                nested.push(layer);
-            } else {
-                roots.push(layer);
-            }
-        }
-        for layer in roots.into_iter().rev() {
-            option.push(layer);
-        }
-        option
+        let model = craft_idml::model::GraphicLayerOptions {
+            attributes: options.attributes.iter().map(|(key, value)| (key.clone(), value.clone())).collect(),
+            layers: options.layers.iter().map(|layer| layer.iter().map(|(key, value)| (key.clone(), value.clone())).collect()).collect(),
+            parents: options.parents.clone(),
+        };
+        let self_id = self.fresh();
+        crate::xml::from_craft(model.to_el(&self_id, || self.fresh()))
     }
 
     /// `<Index>`: nested topics with their See / See also cross-references.
     pub(super) fn index_el(&mut self) -> El {
-        let mut topics = self.index_topics.clone();
-        for (_, _, target) in &self.index_xrefs {
-            topics.entry(vec![target.clone()]).or_default();
-        }
-        fn build(ex: &mut Ex, topics: &BTreeMap<Vec<String>, String>, prefix: &[String]) -> Vec<El> {
-            let mut out = Vec::new();
-            for (t, sort) in topics.iter().filter(|(t, _)| t.len() == prefix.len() + 1 && t.starts_with(prefix)) {
-                let mut el = El::new("Topic").attr("Self", topic_self(t)).attr("SortOrder", sort).attr("Name", t.last().map_or("", String::as_str));
-                for (from, kind, target) in ex.index_xrefs.clone() {
-                    if from == *t {
-                        el.push(
-                            El::new("CrossReference")
-                                .attr("Self", ex.fresh())
-                                .attr("ReferencedTopic", topic_self(std::slice::from_ref(&target)))
-                                .attr("CrossReferenceType", kind)
-                                .attr("CustomTypeString", ""),
-                        );
-                    }
-                }
-                for c in build(ex, topics, t) {
-                    el.push(c);
-                }
-                out.push(el);
-            }
-            out
-        }
-        let mut el = El::new("Index").attr("Self", "ix");
-        for t in build(self, &topics, &[]) {
-            el.push(t);
-        }
-        el
+        let model = craft_idml::model::IndexValues {
+            topics: self.index_topics.clone(),
+            cross_references: self
+                .index_xrefs
+                .iter()
+                .map(|(from, reference_type, target)| craft_idml::model::IndexCrossReferenceValues {
+                    from: from.clone(),
+                    reference_type: (*reference_type).into(),
+                    target: target.clone(),
+                })
+                .collect(),
+        };
+        crate::xml::from_craft(model.to_el(|| self.fresh()))
     }
 
     pub(super) fn footnote_option_el(&self) -> El {
@@ -97,41 +37,33 @@ impl<'a> Ex<'a> {
         } else {
             names::style_self("CharacterStyle", CHAR_BUILTINS, &o.ref_char_style)
         };
-        let enumv = |name: &str, v: &str| {
-            let mut e = El::new(name).attr("type", "enumeration");
-            e.children.push(Node::Text(v.into()));
-            e
-        };
-        let mut color = El::new("RuleColor").attr("type", "object");
-        color.children.push(Node::Text(self.sw(&o.rule.color)));
-        let mut el = El::new("FootnoteOption")
-            .attr("StartAt", o.start_at)
-            .attr("Prefix", &o.prefix)
-            .attr("Suffix", &o.suffix)
-            .attr("FootnoteTextStyle", names::style_self("ParagraphStyle", PARA_BUILTINS, &o.para_style))
-            .attr("FootnoteMarkerStyle", marker)
-            .attr("SeparatorText", &o.separator)
-            .attr("SpaceBetween", num(o.space_between))
-            .attr("Spacer", num(o.space_before))
-            .attr("FootnoteFirstBaselineOffset", names::first_baseline_out(o.first_baseline))
-            .attr("FootnoteMinimumFirstBaselineOffset", num(o.first_baseline_min))
-            .attr("EnableStraddling", bool_s(o.span_columns))
-            .attr("RuleOn", bool_s(o.rule.on))
-            .attr("RuleLineWeight", num(o.rule.weight))
-            .attr("RuleTint", num(o.rule.tint as f64 * 100.0))
-            .attr("RuleLeftIndent", num(o.rule.left_indent))
-            .attr("RuleWidth", num(o.rule.width))
-            .attr("RuleOffset", num(o.rule.offset));
         let restart = names::NOTE_RESTART.iter().find(|r| r.0 == o.restart).map_or("DontRestart", |r| r.1);
         let affix = names::NOTE_AFFIX.iter().find(|r| r.0 == o.affix_in).map_or("NoPrefixSuffix", |r| r.1);
-        let mut props = El::new("Properties");
-        props.push(enumv("FootnoteNumberingStyle", names::number_style_out(o.style)));
-        props.push(enumv("RestartNumbering", restart));
-        props.push(enumv("ShowPrefixSuffix", affix));
-        props.push(enumv("MarkerPositioning", names::note_marker_out(o.ref_position)));
-        props.push(color);
-        el.push(props);
-        el
+        let values = craft_idml::model::FootnotePreferences {
+            start_at: Some(f64::from(o.start_at)),
+            prefix: Some(o.prefix.clone()),
+            suffix: Some(o.suffix.clone()),
+            paragraph_style: Some(names::style_self("ParagraphStyle", PARA_BUILTINS, &o.para_style)),
+            marker_style: Some(marker),
+            separator: Some(o.separator.clone()),
+            space_between: Some(o.space_between),
+            space_before: Some(o.space_before),
+            first_baseline: Some(names::first_baseline_out(o.first_baseline).into()),
+            first_baseline_minimum: Some(o.first_baseline_min),
+            span_columns: Some(o.span_columns),
+            rule_on: Some(o.rule.on),
+            rule_weight: Some(o.rule.weight),
+            rule_tint: Some(f64::from(o.rule.tint) * 100.0),
+            rule_left_indent: Some(o.rule.left_indent),
+            rule_width: Some(o.rule.width),
+            rule_offset: Some(o.rule.offset),
+            rule_color: Some(self.sw(&o.rule.color)),
+            numbering_style: Some(names::number_style_out(o.style).into()),
+            restart_numbering: Some(restart.into()),
+            show_prefix_suffix: Some(affix.into()),
+            marker_positioning: Some(names::note_marker_out(o.ref_position).into()),
+        };
+        crate::xml::from_craft(values.to_el())
     }
 
     /// `<Footnote>`: the footnote's paragraphs, the first starting with the footnote number marker
@@ -172,20 +104,16 @@ impl<'a> Ex<'a> {
             .attr("AppliedTOCStyle", if toc { TOC_STYLE_ID } else { "n" })
             .attr("TrackChanges", "false")
             .attr("StoryTitle", "$ID/");
-        el.push(
-            El::new("StoryPreference")
-                .attr("OpticalMarginAlignment", bool_s(s.optical_margin.on))
-                .attr(
-                    "OpticalMarginSize",
-                    num(designcraft_doc::OpticalMargin::clamp_size(s.optical_margin.size).unwrap_or(designcraft_doc::OpticalMargin::DEFAULT_SIZE)),
-                )
-                .attr("FrameType", "TextFrameType")
-                .attr("StoryOrientation", if s.vertical { "Vertical" } else { "Horizontal" })
-                .attr(
-                    "StoryDirection",
-                    if s.direction == designcraft_doc::TextDirection::RightToLeft { "RightToLeftDirection" } else { "LeftToRightDirection" },
-                ),
-        );
+        el.push(crate::xml::from_craft(
+            craft_idml::model::StoryPreference {
+                optical_margin_alignment: s.optical_margin.on,
+                optical_margin_size: designcraft_doc::OpticalMargin::clamp_size(s.optical_margin.size)
+                    .unwrap_or(designcraft_doc::OpticalMargin::DEFAULT_SIZE),
+                vertical: s.vertical,
+                right_to_left: s.direction == designcraft_doc::TextDirection::RightToLeft,
+            }
+            .to_el(),
+        ));
         for psr in self.story_paras(s) {
             el.push(psr);
         }
@@ -216,15 +144,14 @@ impl<'a> Ex<'a> {
                 }
             };
             if let Some(kind) = kind {
-                let mut el = El::new("PageReference")
-                    .attr("Self", self.fresh())
-                    .attr("PageReferenceType", kind)
-                    .attr("ReferencedTopic", topic_self(&r.topics))
-                    .attr("Id", k + 1);
-                if let Some(n) = limit {
-                    el.set("PageReferenceLimit", n);
-                }
-                return Some(el);
+                let model = craft_idml::model::PageReference::to_el(
+                    &self.fresh(),
+                    kind,
+                    &craft_idml::model::IndexValues::topic_self(&r.topics),
+                    k + 1,
+                    limit,
+                );
+                return Some(crate::xml::from_craft(model));
             }
         }
         None
@@ -235,21 +162,19 @@ impl<'a> Ex<'a> {
             let mut e = self.item_el(&o.item, o.item.xf);
             use designcraft_doc::anchored::AnchorAlign as A;
             let setting = match &o.position {
-                designcraft_doc::AnchorPosition::Inline { y_offset } => {
-                    El::new("AnchoredObjectSetting").attr("AnchoredPosition", "InlinePosition").attr("AnchorYoffset", num(*y_offset))
-                }
-                designcraft_doc::AnchorPosition::AboveLine { align, space_before, space_after } => El::new("AnchoredObjectSetting")
-                    .attr("AnchoredPosition", "AboveLine")
-                    .attr(
-                        "HorizontalAlignment",
+                designcraft_doc::AnchorPosition::Inline { y_offset } => craft_idml::model::AnchoredObjectSetting::inline_position(*y_offset).to_el(),
+                designcraft_doc::AnchorPosition::AboveLine { align, space_before, space_after } => {
+                    craft_idml::model::AnchoredObjectSetting::above_line(
                         match align {
                             A::Left => "LeftAlign",
                             A::Center => "CenterAlign",
                             A::Right => "RightAlign",
                         },
+                        *space_before,
+                        *space_after,
                     )
-                    .attr("AnchorSpaceAbove", num(*space_before))
-                    .attr("AnchorYoffset", num(*space_after)),
+                    .to_el()
+                }
                 designcraft_doc::AnchorPosition::Custom {
                     x_relative,
                     y_relative,
@@ -259,26 +184,34 @@ impl<'a> Ex<'a> {
                     ref_point,
                     keep_within_column,
                     spine_relative,
-                } => El::new("AnchoredObjectSetting")
-                    .attr("AnchoredPosition", "Anchored")
-                    .attr("AnchorPoint", names::anchor_out(*object_point))
-                    .attr("HorizontalReferencePoint", names::anchor_rel_out(*x_relative, false))
-                    .attr("VerticalReferencePoint", names::anchor_rel_out(*y_relative, true))
-                    .attr("HorizontalAlignment", ["LeftAlign", "CenterAlign", "RightAlign"][(*ref_point % 3) as usize])
-                    .attr("VerticalAlignment", ["TopAlign", "CenterAlign", "BottomAlign"][(*ref_point / 3).min(2) as usize])
+                } => craft_idml::model::AnchoredObjectSetting::anchored(
+                    names::anchor_out(*object_point),
+                    names::anchor_rel_out(*x_relative, false),
+                    names::anchor_rel_out(*y_relative, true),
+                    ["LeftAlign", "CenterAlign", "RightAlign"][(*ref_point % 3) as usize],
+                    ["TopAlign", "CenterAlign", "BottomAlign"][(*ref_point / 3).min(2) as usize],
                     // IDML measures a left-aligned object's X offset leftwards.
-                    .attr("AnchorXoffset", num(if *ref_point % 3 == 0 { 0.0 - *x_offset } else { *x_offset }))
-                    .attr("AnchorYoffset", num(*y_offset))
-                    .attr("PinPosition", bool_s(*keep_within_column))
-                    .attr("SpineRelative", bool_s(*spine_relative)),
+                    if *ref_point % 3 == 0 { 0.0 - *x_offset } else { *x_offset },
+                    *y_offset,
+                    *keep_within_column,
+                    *spine_relative,
+                )
+                .to_el(),
             };
-            e.push(setting);
+            e.push(crate::xml::from_craft(setting));
             return Some(e);
         }
         None
     }
 
-    fn apply_tracked_changes(&mut self, s: &Story, f: &CharFormat, csrs: &mut [El], para_br: bool, para_end: usize) {
+    fn apply_tracked_changes(
+        &mut self,
+        f: &CharFormat,
+        csrs: &mut [El],
+        para_br: bool,
+        runs: &[(std::ops::Range<usize>, &CharFormat)],
+        para_end: usize,
+    ) {
         // Tracked changes wrap the text they mark.
         if let Some(kind) = change_type(f.over.change) {
             for c in csrs.iter_mut().filter(|c| c.name == "CharacterStyleRange" && !c.children.is_empty()) {
@@ -288,7 +221,10 @@ impl<'a> Ex<'a> {
             }
         }
         if para_br && let Some(c) = csrs.last_mut() {
-            let nl = s.runs().find(|(rr, _)| rr.contains(&para_end)).and_then(|(_, nf)| change_type(nf.over.change));
+            let nl = runs
+                .get(runs.partition_point(|(rr, _)| rr.end <= para_end))
+                .filter(|(rr, _)| rr.start <= para_end)
+                .and_then(|(_, nf)| change_type(nf.over.change));
             match nl {
                 None => c.push(El::new("Br")),
                 Some(kind) => match c.children.last_mut() {
@@ -307,17 +243,27 @@ impl<'a> Ex<'a> {
     pub(super) fn story_paras(&mut self, s: &Story) -> Vec<El> {
         let ranges = s.para_ranges();
         let n = ranges.len();
-        ranges.into_iter().enumerate().map(|(pi, r)| self.story_para(s, pi, r, pi + 1 == n)).collect()
+        // The runs and the marker offsets, once: each paragraph (and each marker) searched them from the start.
+        let runs: Vec<(std::ops::Range<usize>, &CharFormat)> = s.runs().collect();
+        let marks = Marks::of(s);
+        ranges.into_iter().enumerate().map(|(pi, r)| self.story_para(s, pi, r, pi + 1 == n, &runs, &marks)).collect()
     }
 
-    fn paragraph_runs(s: &Story, r: &std::ops::Range<usize>) -> Vec<(std::ops::Range<usize>, CharFormat)> {
-        // Character runs intersecting the paragraph.
+    fn paragraph_runs(
+        s: &Story,
+        r: &std::ops::Range<usize>,
+        runs: &[(std::ops::Range<usize>, &CharFormat)],
+    ) -> Vec<(std::ops::Range<usize>, CharFormat)> {
+        // Character runs intersecting the paragraph (they ascend: the first is a search away).
         let mut segs: Vec<(std::ops::Range<usize>, CharFormat)> = Vec::new();
-        for (rr, f) in s.runs() {
+        for (rr, f) in &runs[runs.partition_point(|(rr, _)| rr.end <= r.start)..] {
+            if rr.start >= r.end {
+                break;
+            }
             let a = rr.start.max(r.start);
             let b = rr.end.min(r.end);
             if a < b {
-                segs.push((a..b, f.clone()));
+                segs.push((a..b, (*f).clone()));
             }
         }
         if segs.is_empty() {
@@ -354,11 +300,35 @@ impl<'a> Ex<'a> {
         }
     }
 
-    fn story_para(&mut self, s: &Story, pi: usize, r: std::ops::Range<usize>, last: bool) -> El {
+    /// Footnote `n` of story `s` as a `Footnote`. InDesign has no footnotes in footnotes: nested
+    /// notes are written out in its text as marks and forced line breaks (and kept whole in a
+    /// document label).
+    fn note_el(&mut self, s: &Story, n: &designcraft_doc::Footnote) -> El {
+        if n.text.notes.is_empty() {
+            return self.footnote_el(&n.text);
+        }
+        let numbers = self.d.nested_note_numbers(s.id);
+        let o = &self.d.footnote_options;
+        let mark = |id: u64| numbers.get(&id).map_or_else(String::new, |&k| o.label(k, false));
+        let flat = n.flattened(&mark, &o.separator);
+        self.footnote_el(&flat)
+    }
+
+    /// One paragraph of a story as a `ParagraphStyleRange`, footnotes with their nested notes
+    /// written out in their text.
+    fn story_para(
+        &mut self,
+        s: &Story,
+        pi: usize,
+        r: std::ops::Range<usize>,
+        last: bool,
+        runs: &[(std::ops::Range<usize>, &CharFormat)],
+        marks: &Marks,
+    ) -> El {
         let pf = s.paras.get(pi).cloned().unwrap_or_default();
         let mut psr = self.psr_el(&pf);
         let ends_with_break = s.text.get(r.clone()).and_then(|t| t.chars().next_back()).is_some_and(st::is_break_char);
-        let segs = Self::paragraph_runs(s, &r);
+        let segs = Self::paragraph_runs(s, &r, runs);
         // A hyperlink on a run of text is written as a `HyperlinkTextSource` around the
         // ranges it covers, so the runs are cut at its edges first (#1446).
         let (links, segs) = self.cut_runs_at_links(s, &r, segs);
@@ -414,28 +384,22 @@ impl<'a> Ex<'a> {
                 } else if ch == designcraft_doc::ANCHOR_MARK {
                     flush_text(&mut cur, &mut pending);
                     flush_content(&mut pending, &mut out);
-                    let k = s.text[..seg_start + ci].matches(designcraft_doc::ANCHOR_MARK).count();
+                    let k = marks.anchor.partition_point(|&at| at < seg_start + ci);
                     if let Some(a) = s.anchors.get(k) {
-                        out.push(Node::El(
-                            El::new("HyperlinkTextDestination")
-                                .attr("Self", anchor_self(a.id))
-                                .attr("Name", &a.name)
-                                .attr("Hidden", "false")
-                                .attr("DestinationUniqueKey", a.id & 0xFFFF_FFFF),
-                        ));
+                        out.push(Node::El(crate::xml::from_craft(craft_idml::model::StoryAnchor::destination_el(a.id, &a.name))));
                     }
                 } else if ch == designcraft_doc::OBJECT_MARK {
                     // An anchored object: the item inside the range with its anchoring settings.
                     flush_text(&mut cur, &mut pending);
                     flush_content(&mut pending, &mut out);
-                    let k = s.text[..seg_start + ci].matches(designcraft_doc::OBJECT_MARK).count();
+                    let k = marks.object.partition_point(|&at| at < seg_start + ci);
                     if let Some(el) = self.anchored_object(s, k) {
                         out.push(Node::El(el));
                     }
                 } else if ch == designcraft_doc::INDEX_MARK {
                     flush_text(&mut cur, &mut pending);
                     flush_content(&mut pending, &mut out);
-                    let k = s.text[..seg_start + ci].matches(designcraft_doc::INDEX_MARK).count();
+                    let k = marks.index.partition_point(|&at| at < seg_start + ci);
                     if let Some(el) = self.index_reference(s, k) {
                         out.push(Node::El(el));
                     }
@@ -448,7 +412,7 @@ impl<'a> Ex<'a> {
                         c.children.append(&mut out);
                         csrs.push(c);
                     }
-                    let k = s.text[..seg_start + ci].matches(designcraft_doc::XREF_MARK).count();
+                    let k = marks.xref.partition_point(|&at| at < seg_start + ci);
                     if let Some(x) = s.xrefs.get(k) {
                         let me = self.fresh();
                         let fmt = self.d.xref_formats.iter().position(|ff| ff.name == x.format).map_or("n".to_string(), xref_format_self);
@@ -479,8 +443,24 @@ impl<'a> Ex<'a> {
                 } else if ch == designcraft_doc::NOTE_MARK {
                     // Editorial notes aren't written to IDML yet.
                 } else if ch == designcraft_doc::ENDNOTE_REF {
-                    // Endnotes aren't written to IDML yet: the endnote frame keeps their text
-                    // (numbers included) and the references are left out.
+                    // Endnote structures aren't written to IDML yet: the endnote frame keeps their
+                    // text (numbers included), and the reference keeps its number as superscript
+                    // text, so the endnote's place isn't lost (#2753).
+                    flush_text(&mut cur, &mut pending);
+                    flush_content(&mut pending, &mut out);
+                    if !out.is_empty() {
+                        let mut c = self.csr_el(&f);
+                        c.children.append(&mut out);
+                        csrs.push(c);
+                    }
+                    let k = u32::try_from(s.endnotes_before(seg_start + ci)).unwrap_or(u32::MAX);
+                    let n = self.d.endnote_start(s.id).saturating_add(k);
+                    let mut c = self.csr_el(&f);
+                    c.set("Position", names::position_out(designcraft_doc::Position::Superscript));
+                    let mut content = El::new("Content");
+                    content.children.push(Node::Text(self.d.endnote_options.label(n)));
+                    c.push(content);
+                    csrs.push(c);
                 } else if ch == designcraft_doc::FOOTNOTE_REF {
                     // The reference: its own range carrying the reference position.
                     flush_text(&mut cur, &mut pending);
@@ -496,17 +476,7 @@ impl<'a> Ex<'a> {
                         if pos != designcraft_doc::Position::Normal {
                             c.set("Position", names::position_out(pos));
                         }
-                        // InDesign has no footnotes in footnotes: nested notes are written out
-                        // as marks and forced line breaks (kept whole in a document label).
-                        if n.text.notes.is_empty() {
-                            c.push(self.footnote_el(&n.text));
-                        } else {
-                            let numbers = self.d.nested_note_numbers(s.id);
-                            let o = &self.d.footnote_options;
-                            let mark = |id: u64| numbers.get(&id).map_or_else(String::new, |&k| o.label(k, false));
-                            let flat = n.flattened(&mark, &o.separator);
-                            c.push(self.footnote_el(&flat));
-                        }
+                        c.push(self.note_el(s, n));
                         csrs.push(c);
                     }
                 } else if let Some(bt) = brk {
@@ -535,7 +505,7 @@ impl<'a> Ex<'a> {
                 c.children.extend(out);
                 csrs.push(c);
             }
-            self.apply_tracked_changes(s, &f, &mut csrs, para_br, r.end);
+            self.apply_tracked_changes(&f, &mut csrs, para_br, runs, r.end);
             let link = links.iter().find(|(_, l)| l.contains(&seg_start) || (l.start == seg_start && l.start == l.end)).map(|(i, _)| *i);
             for c in csrs {
                 psr_csrs.push((link, c));
@@ -664,4 +634,24 @@ pub(super) fn with_list_tab(mut a: ParaAttrs, resolved: impl FnOnce() -> (design
     }
     a.tabs = Some(tabs);
     a
+}
+
+/// Byte offsets of a story's anchor, object, index and cross-reference markers, in text order.
+pub(super) struct Marks {
+    anchor: Vec<usize>,
+    object: Vec<usize>,
+    index: Vec<usize>,
+    xref: Vec<usize>,
+}
+
+impl Marks {
+    fn of(s: &Story) -> Self {
+        let at = |c: char| s.text.match_indices(c).map(|(i, _)| i).collect::<Vec<_>>();
+        Marks {
+            anchor: at(designcraft_doc::ANCHOR_MARK),
+            object: at(designcraft_doc::OBJECT_MARK),
+            index: at(designcraft_doc::INDEX_MARK),
+            xref: at(designcraft_doc::XREF_MARK),
+        }
+    }
 }

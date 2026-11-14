@@ -6,6 +6,7 @@ use serde_json::{Value, json};
 use super::{CommandSpec, bad, cmd, has_doc};
 use crate::{Result, Session};
 
+/// The footnote commands: insert, delete, list, options and moving between a note and its reference.
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(
@@ -41,6 +42,8 @@ pub fn specs() -> Vec<CommandSpec> {
     ]
 }
 
+/// Whether a footnote can be inserted at the caret: in a story's text or in footnote text above
+/// the depth limit, not in a table cell.
 fn in_story_text(s: &Session) -> std::result::Result<(), String> {
     super::has_text(s)?;
     let Some(d) = s.active() else { return Ok(()) };
@@ -62,6 +65,8 @@ fn in_note(s: &Session) -> std::result::Result<(), String> {
     }
 }
 
+/// `footnote.insert`: a footnote (nested in a footnote when the caret is in one) at the caret,
+/// which moves into its text.
 fn insert(s: &mut Session, p: &Value) -> Result<Value> {
     let text = super::text_param(p, "text");
     in_story_text(s).map_err(|e| bad("footnote.insert", e))?;
@@ -147,6 +152,7 @@ pub(super) fn follow_delete(sel: &mut designcraft_doc::Selection, sid: StoryId, 
     }
 }
 
+/// `footnote.list`: every footnote in reading order, nested ones with their parent and depth.
 fn list(s: &mut Session, p: &Value) -> Result<Value> {
     let d = &s.doc()?.doc;
     let only = p.get("story").and_then(Value::as_u64).map(StoryId);
@@ -182,6 +188,7 @@ fn set_text(s: &mut Session, p: &Value) -> Result<Value> {
     })
 }
 
+/// `footnote.delete`: a footnote with its reference and the notes nested in it, in one undo step.
 fn delete(s: &mut Session, p: &Value) -> Result<Value> {
     let sid = story_id(p, "footnote.delete")?;
     let id = note_id(p, "footnote.delete")?;
@@ -220,6 +227,8 @@ fn delete(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(Value::Null)
 }
 
+/// `footnote.goToReference`: the caret from footnote text to its reference, in the text that
+/// holds it (the parent note's, for a nested one).
 fn go_to_reference(s: &mut Session, _: &Value) -> Result<Value> {
     let st = s.doc_mut()?;
     let t = st.selection.text.ok_or_else(|| bad("footnote.goToReference", "no caret"))?;

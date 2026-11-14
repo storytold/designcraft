@@ -72,6 +72,8 @@ impl Footnote {
             }
             out
         }
+        /// Each of `st`'s notes after `out`: a forced line break, its mark, the separator and its
+        /// text, then its own nested notes the same way.
         fn append(out: &mut Story, st: &Story, depth: usize, mark: &dyn Fn(u64) -> String, separator: &str) {
             if depth > MAX_NOTE_DEPTH {
                 return;
@@ -98,6 +100,7 @@ impl Footnote {
     /// notes nested in it, before its next sibling, down to [`MAX_NOTE_DEPTH`]. Read in this order
     /// they are numbered and printed under it.
     pub fn nested(&self) -> Vec<&Footnote> {
+        /// `st`'s notes and theirs, in reading order, into `out`.
         fn walk<'a>(st: &'a Story, depth: usize, out: &mut Vec<&'a Footnote>) {
             if depth > MAX_NOTE_DEPTH {
                 return;
@@ -244,6 +247,7 @@ impl Story {
     /// Indices from this story down to footnote `id`: `notes[a]`, then that note's `notes[b]`,
     /// and so on (at most [`MAX_NOTE_DEPTH`] + 1 steps).
     pub fn note_path(&self, id: u64) -> Option<Vec<usize>> {
+        /// Whether note `id` is under `st`, with the indices to it pushed onto `path`.
         fn walk(st: &Story, id: u64, depth: usize, path: &mut Vec<usize>) -> bool {
             for (k, n) in st.notes.iter().enumerate() {
                 path.push(k);
@@ -309,6 +313,7 @@ impl Story {
 
     /// Every footnote id in this story and its nested notes.
     fn note_ids_deep(&self) -> Vec<u64> {
+        /// The ids of `st`'s notes and theirs, into `out`.
         fn walk(st: &Story, depth: usize, out: &mut Vec<u64>) {
             for n in &st.notes {
                 out.push(n.id);
@@ -339,12 +344,14 @@ impl Story {
     /// kept but never shown. Like export, it writes at most `MAX_NOTE_DEPTH - 1` levels below
     /// that note; any deeper are left out. Returns how many notes were written out so.
     pub fn fold_deep_notes(&mut self, separator: &str) -> usize {
+        /// Fold the notes under each of `st`'s notes at the depth limit into its text → how many.
         fn walk(st: &mut Story, depth: usize, separator: &str) -> usize {
             let mut folded = 0;
             for n in &mut st.notes {
                 if depth >= MAX_NOTE_DEPTH && !n.text.notes.is_empty() {
                     // The notes under it numbered 1, 2, … in reading order, each id its mark:
                     // ids this deep aren't kept unique, as nothing reaches them.
+                    /// Number `st`'s notes and theirs from `k` in reading order.
                     fn number(st: &mut Story, depth: usize, k: &mut u64) {
                         for n in &mut st.notes {
                             let n = Arc::make_mut(n);
@@ -392,6 +399,8 @@ impl Story {
     /// A story whose ids are all different is left untouched, its notes not copied (only a
     /// repair copies them).
     pub fn fix_note_ids(&mut self) -> bool {
+        /// Give each note under `st` whose id was `seen` already a new one from `next` → whether
+        /// any changed.
         fn walk(st: &mut Story, depth: usize, seen: &mut std::collections::HashSet<u64>, next: &mut u64) -> bool {
             let mut changed = false;
             for n in &mut st.notes {
@@ -444,8 +453,12 @@ impl Story {
 
     /// Insert empty footnotes for `n` new reference characters before which `k` references sit.
     pub(crate) fn notes_inserted(&mut self, k: usize, n: usize) {
+        // The largest id so far, kept as ids are given out (finding it again for every new note
+        // was quadratic in a batch); past the largest id, the free-id search as before.
+        let mut max = self.notes.iter().map(|x| x.id).max().unwrap_or(0);
         for i in 0..n {
-            let id = self.next_note_id();
+            let id = max.checked_add(1).unwrap_or_else(|| self.next_note_id());
+            max = max.max(id);
             let mut text = Story::new(StoryId(0));
             text.chars[0].format = CharFormat::default();
             self.notes.insert((k + i).min(self.notes.len()), Arc::new(Footnote { id, text }));

@@ -11,7 +11,9 @@ pub fn cmyk_tiff(alpha: Option<u16>, other_inks: bool) -> Vec<u8> {
     if let Some(kind) = alpha {
         let mut image = encoder.new_image::<CMYKA8>(2, 1).unwrap();
         image.encoder().write_tag(Tag::ExtraSamples, &[kind][..]).unwrap();
-        image.write_data(&[0, 0, 0, 255, ALPHA[0], 0, 255, 255, 0, ALPHA[1]]).unwrap();
+        // Associated alpha (1) stores each ink multiplied by alpha: 255 at alpha 128 is 128.
+        let ink = if kind == 1 { 128 } else { 255 };
+        image.write_data(&[0, 0, 0, 255, ALPHA[0], 0, ink, ink, 0, ALPHA[1]]).unwrap();
     } else {
         let mut image = encoder.new_image::<CMYK8>(2, 1).unwrap();
         if other_inks {

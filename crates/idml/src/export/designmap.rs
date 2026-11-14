@@ -1,23 +1,22 @@
-use super::common::{anchor_self, bool_s, p, uid, with_props, xref_format_self};
-use super::{CHAR_BUILTINS, DOM_VERSION, Document, El, Ex, HashSet, PARA_BUILTINS, PKG_NS, document_with_pi, escape_id, names, num};
+use super::common::{bool_s, p, uid, with_props, xref_format_self};
+use super::{CHAR_BUILTINS, Document, El, Ex, HashSet, PARA_BUILTINS, escape_id, names, num};
 
 impl<'a> Ex<'a> {
     // ---------- designmap ----------
 
+    /// `designmap.xml`: the document's root element, its parts, and the settings InDesign has no
+    /// place for (the structure of nested footnotes) as document labels.
     pub(super) fn designmap(&mut self, masters: &[(String, Vec<u8>)], spreads: &[(String, Vec<u8>)], stories: &[(String, Vec<u8>)]) -> Vec<u8> {
         let d = self.d;
         let story_list: Vec<String> = d.stories.keys().map(|k| uid(k.0)).collect();
-        let mut root = El::new("Document")
-            .attr("xmlns:idPkg", PKG_NS)
-            .attr("DOMVersion", DOM_VERSION)
-            .attr("Self", "d")
-            .attr("StoryList", story_list.join(" "))
-            .attr("Name", format!("{}.indd", d.title))
-            .attr("ZeroPoint", {
-                let [x, y] = d.zero_point();
-                format!("{} {}", num(x), num(y))
-            })
-            .attr("ActiveLayer", d.layers.first().map(|l| uid(l.id.0)).unwrap_or_else(|| "n".into()));
+        let [x, y] = d.zero_point();
+        let mut root = crate::xml::from_craft(craft_idml::designmap_root(
+            "d",
+            &story_list.join(" "),
+            &format!("{}.indd", d.title),
+            &format!("{} {}", num(x), num(y)),
+            &d.layers.first().map(|l| uid(l.id.0)).unwrap_or_else(|| "n".into()),
+        ));
         // Settings InDesign has no place for, kept as document labels it carries along.
         if let Some(json) = nested_footnotes_label(d) {
             let mut label = El::new("Label");
@@ -72,9 +71,9 @@ impl<'a> Ex<'a> {
         for t in &d.styles.mojikumi_tables {
             root.push(mojikumi_table_el(t));
         }
-        root.push(El::new("idPkg:Graphic").attr("src", "Resources/Graphic.xml"));
-        root.push(El::new("idPkg:Fonts").attr("src", "Resources/Fonts.xml"));
-        root.push(El::new("idPkg:Styles").attr("src", "Resources/Styles.xml"));
+        root.push(crate::xml::from_craft(craft_idml::designmap_include("Graphic", "Resources/Graphic.xml")));
+        root.push(crate::xml::from_craft(craft_idml::designmap_include("Fonts", "Resources/Fonts.xml")));
+        root.push(crate::xml::from_craft(craft_idml::designmap_include("Styles", "Resources/Styles.xml")));
         root.push(
             El::new("NumberingList")
                 .attr("Self", "NumberingList/$ID/[Default]")
@@ -82,7 +81,7 @@ impl<'a> Ex<'a> {
                 .attr("ContinueNumbersAcrossStories", "false")
                 .attr("ContinueNumbersAcrossDocuments", "false"),
         );
-        root.push(El::new("idPkg:Preferences").attr("src", "Resources/Preferences.xml"));
+        root.push(crate::xml::from_craft(craft_idml::designmap_include("Preferences", "Resources/Preferences.xml")));
         for c in &d.conditions {
             root.push(
                 El::new("Condition")
@@ -107,10 +106,10 @@ impl<'a> Ex<'a> {
             root.push(layer_el(l));
         }
         for (name, _) in masters {
-            root.push(El::new("idPkg:MasterSpread").attr("src", name));
+            root.push(crate::xml::from_craft(craft_idml::designmap_include("MasterSpread", name)));
         }
         for (name, _) in spreads {
-            root.push(El::new("idPkg:Spread").attr("src", name));
+            root.push(crate::xml::from_craft(craft_idml::designmap_include("Spread", name)));
         }
         // Sections.
         let mut secs = d.sections.clone();
@@ -162,7 +161,7 @@ impl<'a> Ex<'a> {
             root.push(xref_format_el(i, f));
         }
         for (name, _) in stories {
-            root.push(El::new("idPkg:Story").attr("src", name));
+            root.push(crate::xml::from_craft(craft_idml::designmap_include("Story", name)));
         }
         // The document's own hyperlinks (#1446): a destination element, a source element for a
         // page item (a text source is already in its story) and a `Hyperlink` joining them.
@@ -176,7 +175,7 @@ impl<'a> Ex<'a> {
                 // deleted names no element, so the file would hold a `Hyperlink` whose
                 // `Destination` points at nothing -- import only warns and InDesign may refuse
                 // the file (noted in review).
-                De::Anchor(a) => d.find_anchor(*a).map(|_| anchor_self(*a)),
+                De::Anchor(a) => d.find_anchor(*a).map(|_| craft_idml::model::StoryAnchor::destination_self(*a)),
                 De::Url(u) => Some(self.url_dest_el(&mut root, u, &h.name)),
                 De::Email(e) => Some(self.url_dest_el(&mut root, &format!("mailto:{e}"), &h.name)),
                 De::Page(p) => d.page(*p).map(|pg| {
@@ -248,7 +247,7 @@ impl<'a> Ex<'a> {
                 .attr("Hidden", "false")
                 .attr("DestinationUniqueKey", target & 0xFFFF_FFFF);
             let mut props = El::new("Properties");
-            props.push(p("Destination", "object", anchor_self(target)));
+            props.push(p("Destination", "object", craft_idml::model::StoryAnchor::destination_self(target)));
             h.push(props);
             root.push(h);
         }
@@ -265,69 +264,23 @@ impl<'a> Ex<'a> {
         }
         self.next += 1;
         root.push(cg);
-        document_with_pi(
-            &root,
-            &format!("<?aid style=\"50\" type=\"document\" readerVersion=\"6.0\" featureSet=\"257\" product=\"{DOM_VERSION}(1)\" ?>"),
-        )
+        craft_idml::designmap_xml(&crate::xml::to_craft(&root))
     }
 }
 
-pub(super) const CONTAINER: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<container version=\"1.0\" xmlns=\"urn:oasis:names:tc:opendocument:xmlns:container\">\n\t<rootfiles>\n\t\t<rootfile full-path=\"designmap.xml\" media-type=\"text/xml\"/>\n\t</rootfiles>\n</container>\n";
+pub(super) const CONTAINER: &str = craft_idml::CONTAINER_XML;
 
 /// A cross-reference format as InDesign building blocks.
 fn xref_format_el(i: usize, f: &designcraft_doc::XrefFormat) -> El {
     let me = xref_format_self(i);
-    let mut el = El::new("CrossReferenceFormat").attr("Self", &me).attr("Name", &f.name).attr("AppliedCharacterStyle", "n");
-    let mut k = 0;
-    let mut block = |el: &mut El, kind: &str, text: &str, delim: &str, include: bool| {
-        el.push(
-            El::new("BuildingBlock")
-                .attr("Self", format!("{me}BuildingBlock{k}"))
-                .attr("BlockType", kind)
-                .attr("AppliedCharacterStyle", "n")
-                .attr("CustomText", if text.is_empty() { "$ID/" } else { text })
-                .attr("AppliedDelimiter", if delim.is_empty() { "$ID/" } else { delim })
-                .attr("IncludeDelimiter", bool_s(include)),
-        );
-        k += 1;
-    };
-    let mut rest = f.definition.as_str();
-    while let Some(a) = rest.find('<') {
-        let Some(b) = rest[a..].find('>') else { break };
-        if a > 0 {
-            block(&mut el, "CustomStringBuildingBlock", &rest[..a], "", false);
-        }
-        let tag = rest[a + 1..a + b].trim().trim_end_matches('/').trim();
-        let attr = |k: &str| tag.find(&format!("{k}=\"")).and_then(|i| tag[i + k.len() + 2..].split('"').next()).unwrap_or("").to_string();
-        match tag.split_whitespace().next().unwrap_or("") {
-            "fullPara" => block(&mut el, "FullParagraphBuildingBlock", "", "", false),
-            "paraText" => block(&mut el, "ParagraphTextBuildingBlock", "", "", false),
-            "paraNum" => block(&mut el, "ParagraphNumberBuildingBlock", "", "", false),
-            "pageNum" => block(&mut el, "PageNumberBuildingBlock", "", "", false),
-            "txtAnchrName" => block(&mut el, "BookmarkNameBuildingBlock", "", "", false),
-            "chapNum" => block(&mut el, "ChapterNumberBuildingBlock", "", "", false),
-            "fileName" => block(&mut el, "FileNameBuildingBlock", "", "", false),
-            "partialPara" => block(&mut el, "PartialParagraphBuildingBlock", "", &attr("delim"), attr("includeDelim") == "true"),
-            _ => block(&mut el, "CustomStringBuildingBlock", &rest[a..a + b + 1], "", false),
-        }
-        rest = &rest[a + b + 1..];
-    }
-    if !rest.is_empty() {
-        block(&mut el, "CustomStringBuildingBlock", rest, "", false);
-    }
-    el
+    crate::xml::from_craft(craft_idml::model::CrossReferenceFormatValues::to_el(&me, &f.name, &f.definition))
 }
-
 /// Package metadata: the creation and modification times that date variables show.
 pub(super) fn metadata_xmp(d: &Document) -> String {
     use designcraft_doc::vars::format_date;
     let iso = |t: i64| format!("{}:{:02}Z", format_date(t, "yyyy-MM-ddTHH:mm"), t.rem_euclid(60));
     let modified = if d.modified > 0 { d.modified } else { d.created };
-    format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<x:xmpmeta xmlns:x=\"adobe:ns:meta/\">\n <rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">\n  <rdf:Description rdf:about=\"\" xmlns:xmp=\"http://ns.adobe.com/xap/1.0/\">\n   <xmp:CreateDate>{}</xmp:CreateDate>\n   <xmp:ModifyDate>{}</xmp:ModifyDate>\n  </rdf:Description>\n </rdf:RDF>\n</x:xmpmeta>\n",
-        iso(d.created),
-        iso(modified)
-    )
+    craft_idml::xmp_metadata(&iso(d.created), &iso(modified))
 }
 
 /// A `MojikumiTable` element with its spacing overrides.

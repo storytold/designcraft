@@ -264,6 +264,13 @@ mod tests {
         t.check().unwrap();
         assert_eq!(t.cell(1, 1).unwrap().row_span, 3);
         assert_eq!(t.nrows(), 5);
+        // Several rows at once go in together, in order, inside the merged region.
+        t.insert_rows(2, 3);
+        t.check().unwrap();
+        assert_eq!(t.cell(1, 1).unwrap().row_span, 6);
+        assert_eq!(t.nrows(), 8);
+        t.delete_rows(2, 3);
+        t.check().unwrap();
         // Header stays first.
         t.insert_rows(0, 1);
         t.check().unwrap();

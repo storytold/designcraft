@@ -37,11 +37,12 @@ fn extract(s: &mut Session, p: &Value) -> Result<Value> {
     };
     let graphic = st.doc.item(id).and_then(|it| it.graphic()).ok_or_else(|| bad(ID, "select one placed raster image"))?;
     let asset = st.doc.assets.get(&graphic.asset).filter(|a| a.is_raster()).ok_or_else(|| bad(ID, "a raster image is required"))?;
-    let (width, height) = designcraft_images::pixel_size(&asset.data).ok_or_else(|| bad(ID, "cannot read image dimensions"))?;
+    let bytes = crate::cmd::asset_bytes(ID, asset)?;
+    let (width, height) = designcraft_images::pixel_size(&bytes).ok_or_else(|| bad(ID, "cannot read image dimensions"))?;
     if width == 0 || height == 0 || u64::from(width) * u64::from(height) > 16_000_000 {
         return Err(bad(ID, "the image must contain between 1 and 16 million pixels"));
     }
-    let img = designcraft_images::decode_rgba(&asset.data).ok_or_else(|| bad(ID, "cannot decode this image"))?;
+    let img = designcraft_images::decode_rgba(&bytes).ok_or_else(|| bad(ID, "cannot decode this image"))?;
     // A regular 128 × 128 grid bounds work and includes both axes even for very thin images.
     let (nx, ny) = (width.min(128), height.min(128));
     let mut samples = Vec::with_capacity((nx * ny) as usize);
