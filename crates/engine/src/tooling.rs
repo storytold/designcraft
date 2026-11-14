@@ -317,6 +317,7 @@ impl Session {
                 if crate::cmd::captions::refresh_live(&mut d) {
                     let todo = crate::autosize::candidates(&d, Some(&st.doc));
                     crate::autosize::fit(&mut d, todo);
+                    crate::cmd::captions::clamp_text_selection(&d, &mut st.selection);
                     st.doc = Arc::new(d);
                     st.bump_revision();
                 }

@@ -674,6 +674,7 @@ impl Session {
         {
             let mut d = (*st.doc).clone();
             if cmd::captions::refresh_live(&mut d) {
+                cmd::captions::clamp_text_selection(&d, &mut st.selection);
                 st.doc = Arc::new(d);
             }
         }

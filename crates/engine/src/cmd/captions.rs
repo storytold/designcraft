@@ -149,6 +149,17 @@ pub(crate) fn refresh_live(d: &mut Document) -> bool {
     changed
 }
 
+/// Keep a text selection inside its story after `refresh_live` replaced the story's text.
+pub(crate) fn clamp_text_selection(d: &Document, sel: &mut Selection) {
+    if let Some(ts) = sel.text.as_mut()
+        && ts.cell.is_none()
+        && let Some(st) = d.story(ts.story)
+    {
+        ts.anchor = designcraft_doc::floor_char_boundary(&st.text, ts.anchor);
+        ts.focus = designcraft_doc::floor_char_boundary(&st.text, ts.focus);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -253,5 +264,45 @@ mod tests {
         s.preview("object.altText", json!({"text": "Third", "ids": [a]})).unwrap();
         s.commit_interaction().unwrap();
         assert_eq!(text(&s), "Photo: Third", "updated when the gesture commits");
+    }
+
+    /// A session with a live caption reading "Photo: First" and the caret at its end.
+    fn caret_at_end_of_live_caption() -> (Session, designcraft_doc::StoryId) {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let a = s.execute("frame.create", &json!({"rect": [72, 72, 272, 172]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("object.altText", &json!({"text": "First", "ids": [a]})).unwrap();
+        let r = s.execute("object.caption", &json!({"ids": [a], "text": "Photo: {altText}", "live": true})).unwrap();
+        let cid = designcraft_doc::ItemId(r["ids"][0].as_u64().unwrap());
+        let sid = s.doc().unwrap().doc.item(cid).unwrap().text_frame().unwrap().story;
+        let len = "Photo: First".len();
+        s.execute("text.select", &json!({"story": sid.0, "anchor": len, "focus": len})).unwrap();
+        (s, sid)
+    }
+
+    fn assert_caret_inside(s: &Session, sid: designcraft_doc::StoryId) {
+        let st = s.doc().unwrap();
+        let len = st.doc.stories[&sid].text.len();
+        let ts = st.selection.text.unwrap();
+        assert!(ts.anchor <= len && ts.focus <= len, "caret {}..{} past the end of {len} bytes", ts.anchor, ts.focus);
+        assert!(s.ime_text_context().is_some(), "the caret still describes its text");
+    }
+
+    #[test]
+    fn caret_stays_inside_a_live_caption_that_discards_typing() {
+        let (mut s, sid) = caret_at_end_of_live_caption();
+        s.execute("text.insert", &json!({"text": " and more"})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.stories[&sid].text, "Photo: First");
+        assert_caret_inside(&s, sid);
+    }
+
+    #[test]
+    fn caret_stays_inside_a_live_caption_after_a_committed_gesture() {
+        let (mut s, sid) = caret_at_end_of_live_caption();
+        s.begin_interaction("Typing").unwrap();
+        s.preview("text.insert", json!({"text": " and more"})).unwrap();
+        s.commit_interaction().unwrap();
+        assert_eq!(s.doc().unwrap().doc.stories[&sid].text, "Photo: First");
+        assert_caret_inside(&s, sid);
     }
 }
