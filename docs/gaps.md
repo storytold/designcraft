@@ -1,6 +1,6 @@
 # Where DesignCraft falls short of InDesign
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-24 · **Change:** minor (placed graphic layer-option preservation and explicit rendering warnings; gap 16 shrunk: File › File Info; gap 16: Convert Variable to Text; gap 28 added: placed-PDF font repair remains after visible unembedded font detection, #909; gap 26 shrunk: autoflow fills the following pages before it adds pages at the end; gap 6 shrunk: Type › Reload Fonts reads fonts installed, edited or removed while running (#328); gap 3: Package links are relative, #340; gap 27 closed: the loaded text cursor threads into a frame inside a group (#1075); .indd and .indt open through indd-utils; gap 0 shrunk: text threads by hand; threading gaps added; Optical kerning from outlines (#181); gap 6: macOS lists fonts that font services and managers activate; shared print spooler; image clipping paths from IDML; Tabs panel listed as present (#343); book chapter update safety; gap 16: Based on Parent leftovers; bounded control click/drag input; swatches on placed greyscale and bitmap images) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-04 · **Change:** minor (gap 20: automatic recovery moved off the interface thread; gap 21 shrunk: pt-BR translates the whole interface; placed graphic layer-option preservation and explicit rendering warnings; gap 16 shrunk: File › File Info; gap 16: Convert Variable to Text; gap 28 added: placed-PDF font repair remains after visible unembedded font detection, #909; gap 26 shrunk: autoflow fills the following pages before it adds pages at the end; gap 6 shrunk: Type › Reload Fonts reads fonts installed, edited or removed while running (#328); gap 3: Package links are relative, #340; gap 27 closed: the loaded text cursor threads into a frame inside a group (#1075); .indd and .indt open through indd-utils; gap 0 shrunk: text threads by hand; threading gaps added; Optical kerning from outlines (#181); gap 6: macOS lists fonts that font services and managers activate; shared print spooler; image clipping paths from IDML; Tabs panel listed as present (#343); book chapter update safety; gap 16: Based on Parent leftovers; bounded control click/drag input; swatches on placed greyscale and bitmap images) · **Target:** Adobe InDesign 2026 (21.6)
 
 Every known shortfall against InDesign 2026, one entry each, ranked by how much it stops an
 InDesign professional from doing real work. This is the work list: agents pick from the top.
@@ -159,8 +159,8 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
 
 ### 12. Tables in depth (F)
 - **Missing:** anchored objects in cells not drawn (#163); Table ▸ Table Options and Cell Options
-  submenus as InDesign lays them out, Diagonal Lines, Edit Header/Footer,
-  Go to Row; general reliability (#20).
+  submenus as InDesign lays them out, Diagonal Lines, Edit Header/Footer; general reliability
+  (#20).
 - **Estimate:** 25–40 h.
 
 ### 13. Hyphenation and spelling languages (T, L)
@@ -236,10 +236,20 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
 - **Estimate:** 30–60 h (PostScript interpreter is a large separate project: +80–150 h).
 
 ### 20. Performance on large documents (P)
-- **Missing:** incremental composition (recompose from the edited paragraph; 8 ms keystroke
-  budget), benchmarks against InDesign on long books and image-heavy catalogues.
+- **Missing:** the 8 ms keystroke budget in long stories: an edit that moves lines into other
+  frames composes the story to its end, the lines an edit keeps are copied, and stories with
+  footnotes, endnotes, tables, anchored objects, named lists, tracked deletions, balanced
+  columns, vertical justification other than Top, column rules, type on a path, spanning or
+  split paragraphs, paragraph borders or shading, or keep options that move lines compose
+  whole; benchmarks
+  against InDesign on long books and image-heavy catalogues.
 - **Have:** compose 300k characters ~38 ms warm, damage-region repaint (< 1 ms while typing),
-  parallel story composition.
+  parallel story composition, and an edit composes only the paragraphs it can change in a plain
+  story (240 paragraphs: 3 composed for a typed character). Automatic recovery writes on a
+  background thread and streams to disk, so an autosave of that catalogue no longer blocks the
+  interface thread for 30-100 s (`file.recovery.save {background}`, `file.recovery.progress`). A
+  snapshot still being written when its document is saved, reverted or closed is cancelled before
+  it is published, so a crash cannot offer back a copy older than the saved file.
 - **Estimate:** 40–80 h.
 
 ### 26. Autoflow flows into the primary text frame of the pages that follow (F)
@@ -252,7 +262,7 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
 
 ### 21. Localization breadth (L)
 - **Missing:** Hindi, Indonesian, Korean, Vietnamese interfaces; ~17% of strings in the 83–85%
-  languages; 39% of pt-BR; native-speaker review for all. **Estimate:** 120–180 h.
+  languages; native-speaker review for all. **Estimate:** 120–180 h.
   **Doc:** [localization-parity.md](localization-parity.md)
 
 ### 22. InDesign scripting compatibility (E)
@@ -283,6 +293,7 @@ Cue. These are excluded from every percentage.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-04 | trivial | Gap 21 shrunk: pt-BR translates 2,936 of 2,939 strings, all but three Control panel captions (61% before) |
 | 2026-10-22 | minor | Gap 26 shrunk: autoflow threads a frame per column on the pages that follow the story's last frame, then adds pages at the end of the document |
 | 2026-10-19 | minor | Gap 28 added for remaining placed-PDF font embedding, substitution or outlining; visible unembedded font detection now ships in PDF/X-4 export and `validate-pdf`, with invisible text exempt and operation- or depth-limited checks reported incomplete (#909) |
 | 2026-10-16 | minor | Gap 27 closed: the loaded text cursor threads into a text frame inside a group (#1075) |
