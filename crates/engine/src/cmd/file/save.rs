@@ -2,7 +2,7 @@
 use super::DocState;
 #[cfg(not(target_arch = "wasm32"))]
 use super::bytes::from_bytes;
-use super::bytes::{to_bytes_with_preview, with_document_extension};
+use super::bytes::{bytes_for_path, with_save_extension};
 #[cfg(not(target_arch = "wasm32"))]
 use super::open::load_document_fonts;
 #[cfg(test)]
@@ -13,7 +13,7 @@ pub(super) fn file_save(s: &mut Session, p: &Value) -> Result<Value> {
     let st = s.doc_mut()?;
     // Saving to the document's own file keeps its name, even one opened without the extension.
     let path = str_param(p, "path")
-        .map(with_document_extension)
+        .map(with_save_extension)
         .or_else(|| st.path.clone())
         .ok_or_else(|| bad("file.save", "missing `path` (document has never been saved)"))?;
     // Before anything about the document changes: a refused save leaves it as it was.
@@ -32,8 +32,10 @@ pub(super) fn file_save(s: &mut Session, p: &Value) -> Result<Value> {
     let saved = proxied.unwrap_or(saved);
     let changed = links_changed || proxies_made || saved.data_merge != st.doc.data_merge;
     let saved = if changed { Arc::new(saved) } else { st.doc.clone() };
-    let warnings = crate::cmd::native_links::web_save_warnings(&saved);
-    let bytes = to_bytes_with_preview(&saved, &s.cache)?;
+    let mut warnings = crate::cmd::native_links::web_save_warnings(&saved);
+    let allow_loss = p.get("allowLoss").and_then(Value::as_bool).unwrap_or(false);
+    let (bytes, written) = bytes_for_path(&saved, &path, &s.cache, allow_loss)?;
+    warnings.extend(written);
     #[cfg(not(target_arch = "wasm32"))]
     crate::io::write_file(&path, &bytes).map_err(EngineError::Other)?;
     let st = s.doc_mut()?;
@@ -61,7 +63,7 @@ pub(super) fn file_save(s: &mut Session, p: &Value) -> Result<Value> {
 /// anywhere.
 pub(super) fn file_save_a_copy(s: &mut Session, p: &Value) -> Result<Value> {
     let path = str_param(p, "path").ok_or_else(|| bad("file.saveACopy", "missing `path`"))?;
-    let path = with_document_extension(path);
+    let path = with_save_extension(path);
     let embed = match p.get("embedLinks") {
         None | Some(Value::Null) => false,
         Some(v) => v.as_bool().ok_or_else(|| bad("file.saveACopy", "`embedLinks` must be true or false"))?,
@@ -77,8 +79,10 @@ pub(super) fn file_save_a_copy(s: &mut Session, p: &Value) -> Result<Value> {
     if let Some(proxied) = crate::cmd::native_links::with_proxies(&copy, || false) {
         copy = proxied;
     }
-    let warnings = crate::cmd::native_links::web_save_warnings(&copy);
-    let bytes = to_bytes_with_preview(&copy, &s.cache)?;
+    let mut warnings = crate::cmd::native_links::web_save_warnings(&copy);
+    let allow_loss = p.get("allowLoss").and_then(Value::as_bool).unwrap_or(false);
+    let (bytes, written) = bytes_for_path(&copy, &path, &s.cache, allow_loss)?;
+    warnings.extend(written);
     #[cfg(not(target_arch = "wasm32"))]
     crate::io::write_file(&path, &bytes).map_err(EngineError::Other)?;
     Ok(json!({"path": path, "bytes": bytes.len(), "warnings": warnings}))

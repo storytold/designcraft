@@ -129,6 +129,8 @@ impl DesignApp {
             close_requested_pending: false,
             quit_without_asking: false,
             quitting: None,
+            lossy_save: None,
+            idml_loss_accepted: Default::default(),
             waiting_save: None,
             cursors: cursors::Images::default(),
             live_preview: LivePreview::default(),
