@@ -95,6 +95,42 @@ pub fn font_with_names(entries: &[(u16, &str)], chars: &[char]) -> Option<Vec<u8
     with_tables(&base, vec![(*b"name", name)])
 }
 
+/// `font` with an `fvar` table: `axes` are (tag, min, default, max, axis name id) and `instances`
+/// are (subfamily name id, PostScript name id, one user coordinate per axis). Version 1.0, with
+/// the optional `postScriptNameID` present only when some instance names one.
+pub fn with_fvar(font: &[u8], axes: &[([u8; 4], f32, f32, f32, u16)], instances: &[(u16, Option<u16>, Vec<f32>)]) -> Option<Vec<u8>> {
+    let fixed = |v: f32| ((v * 65536.0).round() as i32).to_be_bytes();
+    let any_ps = instances.iter().any(|(_, ps, _)| ps.is_some());
+    let axis_count = u16::try_from(axes.len()).ok()?;
+    let instance_size = axis_count.checked_mul(4)?.checked_add(if any_ps { 6 } else { 4 })?;
+    let mut t = Vec::new();
+    for v in [1u16, 0, 16, 2, axis_count, 20, u16::try_from(instances.len()).ok()?, instance_size] {
+        t.extend_from_slice(&v.to_be_bytes());
+    }
+    for (tag, min, def, max, name_id) in axes {
+        t.extend_from_slice(tag);
+        t.extend_from_slice(&fixed(*min));
+        t.extend_from_slice(&fixed(*def));
+        t.extend_from_slice(&fixed(*max));
+        t.extend_from_slice(&0u16.to_be_bytes());
+        t.extend_from_slice(&name_id.to_be_bytes());
+    }
+    for (subfamily, ps, coords) in instances {
+        if coords.len() != axes.len() {
+            return None;
+        }
+        t.extend_from_slice(&subfamily.to_be_bytes());
+        t.extend_from_slice(&0u16.to_be_bytes());
+        coords.iter().for_each(|v| t.extend_from_slice(&fixed(*v)));
+        if any_ps {
+            // 0xFFFF is "no PostScript name" in `fvar`; 0 is the copyright notice's name id, so
+            // writing 0 made an instance look as though it named itself (noted in review).
+            t.extend_from_slice(&ps.unwrap_or(0xFFFF).to_be_bytes());
+        }
+    }
+    with_tables(font, vec![(*b"fvar", t)])
+}
+
 /// Every table of the font file `font`: (tag, bytes).
 fn tables_of(font: &[u8]) -> Option<Vec<([u8; 4], Vec<u8>)>> {
     let be16 = |b: &[u8], at: usize| b.get(at..at + 2).and_then(|s| s.try_into().ok()).map(u16::from_be_bytes);
