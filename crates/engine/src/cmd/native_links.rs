@@ -207,7 +207,7 @@ fn locate(a: &mut Asset, source: &LinkedSource, document: Option<&Path>, work: &
         let found: Vec<(PathBuf, Fingerprint)> = crate::asset_io::candidates(source)
             .into_iter()
             .filter_map(|p| {
-                let meta = crate::io::metadata(&p).ok().filter(std::fs::Metadata::is_file)?;
+                let meta = crate::io::file_metadata(&p)?;
                 Some((p, crate::asset_io::fingerprint_from(&meta)))
             })
             .collect();
@@ -287,8 +287,7 @@ fn migration(a: &Asset, document: &Path) -> Option<Work> {
             fingerprint: None,
             hash: None,
         };
-        let path =
-            crate::asset_io::candidates(&source).into_iter().find(|p| crate::io::metadata(p).is_ok_and(|m| m.is_file() && m.len() == source.len))?;
+        let path = crate::asset_io::candidates(&source).into_iter().find(|p| crate::io::file_metadata(p).is_some_and(|m| m.len() == source.len))?;
         Some(Work::Migrate { asset: a.id, key: a.data.key(), bytes, path, page: a.page })
     }
     #[cfg(target_arch = "wasm32")]
@@ -387,7 +386,7 @@ fn check(work: Work, cancel: &AtomicBool) -> Option<Outcome> {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn fingerprint(path: &Path) -> Option<Fingerprint> {
-    crate::io::metadata(path).ok().filter(std::fs::Metadata::is_file).map(|m| crate::asset_io::fingerprint_from(&m))
+    crate::io::file_metadata(path).map(|m| crate::asset_io::fingerprint_from(&m))
 }
 
 /// Read the file at `path`, which must be `len` bytes, handing each chunk to `keep` (with its

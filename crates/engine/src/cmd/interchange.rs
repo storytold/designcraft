@@ -214,34 +214,17 @@ fn import_report_with_previews(
     Ok((document, warnings, story_ids))
 }
 
-/// `asset`, whose embedded bytes were just read from the file its link names, as a linked asset:
-/// the file's record (hash, relative path, fingerprint) and a proxy (the document's preview when
-/// the importer kept one, else made from the bytes). The bytes stay resident for the first draw.
+/// `asset`, whose embedded bytes were just read from the file its link names, as a linked asset
+/// ([`super::links::link_to_file`]), drawn with the document's preview while the file can't be
+/// read when the importer kept one.
 #[cfg(not(target_arch = "wasm32"))]
 fn link_read_file(asset: &mut designcraft_doc::Asset, package: Option<&std::path::Path>) {
     let Some(bytes) = asset.data.embedded_bytes().cloned() else { return };
     let Some(path) = asset.link.clone() else { return };
-    asset.link_hash = Some(crate::asset_io::content_hash(&bytes));
-    asset.link_relative = package.and_then(|d| super::native_links::relative_to(d, std::path::Path::new(&path)));
-    if asset.proxy.is_none() {
-        asset.proxy = designcraft_render::proxy::make_proxy(&bytes, asset.page).map(|p| designcraft_doc::Proxy {
-            mime: p.mime.into(),
-            pixels: p.pixels,
-            data: designcraft_doc::AssetData::embedded(p.data),
-        });
-    }
-    asset.storage = designcraft_doc::Storage::Linked;
-    // A file just written has no settled fingerprint ([`super::links::loaded_fingerprint`]): the
-    // hash tells its bytes.
-    let source = designcraft_doc::LinkedSource {
-        path,
-        relative: asset.link_relative.clone(),
-        document: package.map(std::path::Path::to_path_buf),
-        len: bytes.len() as u64,
-        fingerprint: asset.link_fingerprint,
-        hash: asset.link_hash.clone(),
-    };
-    asset.data = designcraft_doc::AssetData::linked_resident(asset.data.key(), source, bytes);
+    let preview = asset.proxy.take();
+    // The fingerprint kept by the read (none for a file just written: its hash tells its bytes).
+    let file = super::links::FileLink::of(std::path::Path::new(&path), asset.link_fingerprint);
+    super::links::link_to_file(asset, bytes, file, package, preview);
 }
 
 /// Placed PDFs read from IDML name their crop (`PDFCrop`): find where each box sits on its page,

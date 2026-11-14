@@ -139,13 +139,6 @@ impl AssetData {
         AssetData { key, repr: Repr::Linked(Arc::new(Linked { source, trusted: Mutex::new(None) })) }
     }
 
-    /// [`AssetData::linked_under`] with `bytes` (the file's, just read) already in the store, so
-    /// the first draw doesn't read the file again.
-    pub fn linked_resident(key: SourceKey, source: LinkedSource, bytes: Arc<Vec<u8>>) -> Self {
-        store::global().keep(key, bytes);
-        AssetData::linked_under(key, source)
-    }
-
     /// This value pointing at `source` (the file moved, the document was saved elsewhere, the
     /// fingerprint was brought up to date). It keeps the key when both name the same bytes
     /// (same size and content hash), so nothing decoded is decoded again.

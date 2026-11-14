@@ -100,10 +100,7 @@ pub fn read_linked(source: &LinkedSource, trusted: Option<Fingerprint>) -> Resul
 }
 
 fn read_candidate(path: &Path, source: &LinkedSource, trusted: Option<Fingerprint>) -> Result<Loaded, Miss> {
-    let meta = crate::io::metadata(path).map_err(|_| Miss::Absent)?;
-    if !meta.is_file() {
-        return Err(Miss::Absent);
-    }
+    let meta = crate::io::file_metadata(path).ok_or(Miss::Absent)?;
     let found = fingerprint_from(&meta);
     if found.size > MAX_LINKED_BYTES {
         return Err(Miss::TooLarge);

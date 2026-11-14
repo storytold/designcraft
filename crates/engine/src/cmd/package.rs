@@ -11,7 +11,7 @@ use std::io::Write;
 use super::{CommandSpec, bad, cmd, has_doc, str_param};
 use crate::{EngineError, Result, Session};
 use designcraft_compose::ComposedStory;
-use designcraft_doc::{AssetId, Document};
+use designcraft_doc::{AssetId, Document, Fingerprint, LinkedSource, Storage};
 use designcraft_fonts::{FaceRef, FontFace, FontSource};
 use serde_json::{Value, json};
 
@@ -354,7 +354,21 @@ fn write_links(d: &Document, root: &OutputRoot, dir: &Path, only: Option<&[Asset
         // The copy is the linked file now, and the original's size and time say nothing of it.
         // Its own are too recent to vouch for it yet: the first check compares the bytes and
         // keeps them (`remember_link_files`).
-        na.set_link(Some(link), None);
+        if na.storage == Storage::Linked {
+            // A linked graphic is told by its hash until then; its paths name the copy.
+            na.link_relative = relative_to.map(|_| link.clone());
+            na.set_link(Some(link), Some(Fingerprint { size: bytes.len() as u64, mtime: super::links::UNVERIFIED_MTIME }));
+            // Without a folder the link is the copy's full path, which the open document reads
+            // from now on; a package's document reads its copies once opened beside them.
+            if relative_to.is_none()
+                && na.data.is_linked()
+                && let Some(source) = LinkedSource::of(&na, None)
+            {
+                na.data = na.data.with_source(source);
+            }
+        } else {
+            na.set_link(Some(link), None);
+        }
         out.assets.insert(id, Arc::new(na));
         written.push(path);
     }

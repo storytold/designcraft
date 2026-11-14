@@ -200,15 +200,6 @@ impl FileLink {
     }
 }
 
-/// `target` relative to the folder of the document file `document`, as link records keep it.
-fn relative_to(document: &Path, target: &Path) -> Option<String> {
-    let document = std::path::absolute(document).ok()?;
-    let relative = super::datamerge::relative_between(document.parent()?, target);
-    #[cfg(windows)]
-    let relative = relative.replace('\\', "/");
-    Some(relative)
-}
-
 /// The proxy a linked graphic is drawn with while its file can't be read: none for video and
 /// sound, or a file that doesn't decode.
 fn proxy_of(a: &Asset, bytes: &[u8]) -> Option<designcraft_doc::Proxy> {
@@ -220,9 +211,9 @@ fn proxy_of(a: &Asset, bytes: &[u8]) -> Option<designcraft_doc::Proxy> {
 }
 
 /// Give `a` the bytes of a graphic being placed, relinked or updated (its `mime` and `page` set).
-/// Bytes read from a file (`file`) link to it, unless `embed` or on the web, where they are
-/// embedded with the link record kept; the bytes just read stay in memory for the first draw.
-/// Other bytes (pasted, dropped, base64) are embedded without a link.
+/// Bytes read from a file (`file`) link to it ([`link_to_file`]), unless `embed` or on the web,
+/// where they are embedded with the link record kept. Other bytes (pasted, dropped, base64) are
+/// embedded without a link.
 pub(crate) fn give_bytes(a: &mut Asset, bytes: impl Into<Arc<Vec<u8>>>, file: Option<FileLink>, embed: bool, document: Option<&Path>) {
     let bytes: Arc<Vec<u8>> = bytes.into();
     a.proxy = None;
@@ -234,26 +225,41 @@ pub(crate) fn give_bytes(a: &mut Asset, bytes: impl Into<Arc<Vec<u8>>>, file: Op
         a.data = AssetData::embedded(bytes);
         return;
     };
-    let loaded = loaded_fingerprint(file.before, &bytes);
-    a.link_relative = document.and_then(|d| relative_to(d, Path::new(&file.path)));
-    a.link = Some(file.path);
-    a.link_hash = Some(crate::asset_io::content_hash(&bytes));
     if embed || cfg!(target_arch = "wasm32") {
-        a.link_fingerprint = loaded;
+        record_file(a, &bytes, file, document);
         a.storage = Storage::Embedded;
         a.data = AssetData::embedded(bytes);
         return;
     }
-    a.link_fingerprint = Some(loaded.unwrap_or(Fingerprint { size: bytes.len() as u64, mtime: UNVERIFIED_MTIME }));
+    link_to_file(a, bytes, file, document, None);
+}
+
+/// Link `a` to `file`, whose bytes (`bytes`) were just read: the file's record (paths, size and
+/// time, content hash) and a proxy to draw while the file can't be read (`preview` when there is
+/// one, else made from the bytes). The bytes stay in memory for the first draw.
+pub(crate) fn link_to_file(a: &mut Asset, bytes: Arc<Vec<u8>>, file: FileLink, document: Option<&Path>, preview: Option<designcraft_doc::Proxy>) {
+    record_file(a, &bytes, file, document);
+    a.link_fingerprint = Some(a.link_fingerprint.unwrap_or(Fingerprint { size: bytes.len() as u64, mtime: UNVERIFIED_MTIME }));
     let Some(source) = LinkedSource::of(a, document) else {
         a.storage = Storage::Embedded;
+        a.proxy = None;
         a.data = AssetData::embedded(bytes);
         return;
     };
     a.storage = Storage::Linked;
-    a.proxy = proxy_of(a, &bytes);
+    a.proxy = preview.or_else(|| proxy_of(a, &bytes));
     a.data = AssetData::linked(source);
     a.data.keep_resident(bytes);
+}
+
+/// Keep with `a` the record of `file`, which `bytes` were read from: its absolute path, its path
+/// relative to the `document` file, the size and time that vouch for the bytes
+/// ([`loaded_fingerprint`]) and their content hash.
+fn record_file(a: &mut Asset, bytes: &[u8], file: FileLink, document: Option<&Path>) {
+    a.link_fingerprint = loaded_fingerprint(file.before, bytes);
+    a.link_relative = document.and_then(|d| super::native_links::relative_to(d, Path::new(&file.path)));
+    a.link = Some(file.path);
+    a.link_hash = Some(crate::asset_io::content_hash(bytes));
 }
 
 /// Does `bytes` (a file's) hold `a`'s bytes: its recorded hash, or, without one, its bytes?
@@ -274,7 +280,7 @@ fn linked_status(a: &Asset, document: Option<&Path>, checks: &mut ImageChecks) -
     {
         let mut status = "missing";
         for path in crate::asset_io::candidates(&source) {
-            let Some(meta) = crate::io::metadata(&path).ok().filter(std::fs::Metadata::is_file) else { continue };
+            let Some(meta) = crate::io::file_metadata(&path) else { continue };
             let now = crate::asset_io::fingerprint_from(&meta);
             if Some(now) == source.fingerprint && settled(&now) {
                 return ("ok", None);
@@ -1014,7 +1020,7 @@ fn write_into(folder: &Path, name: &str, mime: &str, bytes: &[u8]) -> Result<std
 /// Does the regular file at `path` hold exactly `bytes`?
 #[cfg(not(target_arch = "wasm32"))]
 fn file_holds(path: &Path, bytes: &[u8]) -> bool {
-    crate::io::metadata(path).is_ok_and(|m| m.is_file() && m.len() == bytes.len() as u64)
+    crate::io::file_metadata(path).is_some_and(|m| m.len() == bytes.len() as u64)
         && crate::io::read_capped(path, bytes.len() as u64).is_ok_and(|b| b == bytes)
 }
 
