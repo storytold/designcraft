@@ -17,7 +17,9 @@ pub(crate) fn image_want(f: &Frame, asset: &designcraft_doc::Asset, g: &designcr
     let on_screen = (f.view * xf * g.xf).determinant().abs().sqrt();
     let on_screen = if f.opts.quality == DisplayQuality::Typical { on_screen.min(1.0) } else { on_screen };
     let hidden = HIDDEN_LAYERS.with(|h| h.borrow().clone());
-    let data = match hidden.as_deref().filter(|_| asset.data.load().is_ok_and(|b| is_pdf(&b))) {
+    // Linked bytes not in memory aren't loaded to ask: their type says.
+    let pdf = asset.data.resident().map_or(asset.mime == "application/pdf", |b| is_pdf(&b));
+    let data = match hidden.as_deref().filter(|_| pdf) {
         // An explicit choice (including all-on) that cannot be rewritten fails closed:
         // stale persisted/relinked choices must not reveal hidden source content.
         Some(hidden) => pdf_layers::layered(&asset.data, hidden)?,
@@ -28,6 +30,38 @@ pub(crate) fn image_want(f: &Frame, asset: &designcraft_doc::Asset, g: &designcr
     let (page_w, page_h) = (g.size.0 / (r - l), g.size.1 / (b - t));
     let page = Rect::new(-l * page_w, -t * page_h, (1.0 - l) * page_w, (1.0 - t) * page_h);
     Some((images::Want { bytes: data, page: asset.page, width_pt: page_w, on_screen }, page, page_h))
+}
+
+/// What a placed graphic draws.
+enum Drawn<'a> {
+    /// Pixels decoded from these bytes (the graphic's, or its proxy's).
+    Pixels(std::sync::Arc<vello_cpu::Pixmap>, &'a designcraft_doc::AssetData),
+    /// Nothing decoded yet: a light box where it goes.
+    Loading,
+    Nothing,
+}
+
+/// The pixels to draw for `want`: its own, else (still loading or decoding, or its linked file
+/// can't be had) those of `proxy`, the asset's preview, which spans the same page.
+fn pixels<'a>(f: &Frame, want: &'a images::Want, proxy: Option<&'a designcraft_doc::AssetData>) -> Drawn<'a> {
+    let (width_pt, on_screen) = (want.width_pt, want.on_screen);
+    if !f.opts.defer_images {
+        if let Some(pm) = images::mip(&want.bytes, want.page, width_pt, on_screen) {
+            return Drawn::Pixels(pm, &want.bytes);
+        }
+        return proxy.and_then(|p| Some(Drawn::Pixels(images::mip(p, 0, width_pt, on_screen)?, p))).unwrap_or(Drawn::Nothing);
+    }
+    let loading = match images::mip_now(&want.bytes, want.page, width_pt, on_screen) {
+        images::Mip::Ready(pm) | images::Mip::Pending(Some(pm)) => return Drawn::Pixels(pm, &want.bytes),
+        images::Mip::Pending(None) => true,
+        images::Mip::Failed => false,
+    };
+    match proxy.map(|p| (p, images::mip_now(p, 0, width_pt, on_screen))) {
+        Some((p, images::Mip::Ready(pm) | images::Mip::Pending(Some(pm)))) => Drawn::Pixels(pm, p),
+        Some((_, images::Mip::Pending(None))) => Drawn::Loading,
+        _ if loading => Drawn::Loading,
+        _ => Drawn::Nothing,
+    }
 }
 
 /// `stroke` as round dots `weight` wide, one every `2 × weight`. Kurbo's stroker drops
@@ -196,24 +230,20 @@ impl Renderer {
         }
         let Some((want, page, page_h)) = image_want(f, asset, g, xf) else { return };
         let page_w = want.width_pt;
-        let pm = if f.opts.defer_images {
-            match images::mip_now(&want.bytes, want.page, page_w, want.on_screen) {
-                images::Mip::Ready(pm) | images::Mip::Pending(Some(pm)) => pm,
-                images::Mip::Pending(None) => {
-                    // Still decoding: a light box where it goes.
-                    ctx.set_transform(f.view * xf * g.xf);
-                    ctx.set_paint(screen_color([222, 222, 222], 255));
-                    ctx.fill_rect(&Rect::new(0.0, 0.0, g.size.0, g.size.1).intersect(page));
-                    return;
-                }
-                images::Mip::Failed => return,
+        // A layer variant has no proxy: the asset's shows the file's default layers.
+        let proxy = asset.proxy.as_ref().map(|p| &p.data).filter(|_| want.bytes.key() == asset.data.key());
+        let (pm, data) = match pixels(f, &want, proxy) {
+            Drawn::Pixels(pm, data) => (pm, data),
+            Drawn::Loading => {
+                ctx.set_transform(f.view * xf * g.xf);
+                ctx.set_paint(screen_color([222, 222, 222], 255));
+                ctx.fill_rect(&Rect::new(0.0, 0.0, g.size.0, g.size.1).intersect(page));
+                return;
             }
-        } else {
-            let Some(pm) = images::mip(&want.bytes, want.page, page_w, want.on_screen) else { return };
-            pm
+            Drawn::Nothing => return,
         };
         // A coloured image is already in the plate's inks (its colours come from `color_of`).
-        let pm = match (colorize::colorized(f.doc, &g.fill, &asset.data, &pm), PLATE.with(std::cell::Cell::get)) {
+        let pm = match (colorize::colorized(f.doc, &g.fill, data, &pm), PLATE.with(std::cell::Cell::get)) {
             (Some(coloured), _) => coloured,
             (None, Some(plate)) => plate_pixmap(&pm, plate),
             (None, None) => pm,

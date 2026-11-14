@@ -9,12 +9,17 @@
 //! from: a 12-megapixel photo drawn a few hundred pixels wide costs its proxy, not 48 MB, so a
 //! book of photos fits the budget instead of evicting itself on every edit. [`mip_now`] is the
 //! canvas's version: it never waits for a decode.
+//!
+//! Linked bytes are loaded ([`AssetData::load`]) only to decode a level that isn't cached, and
+//! on the canvas only on a decode thread. A linked file that can't be had ([`Unavailable`]) is
+//! remembered apart from failed decodes: it is asked for again once
+//! [`designcraft_doc::asset_data::link_generation`] has advanced (a relink, an update).
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
-use designcraft_doc::{AssetData, SourceKey};
+use designcraft_doc::{AssetData, SourceKey, Unavailable};
 use vello_cpu::Pixmap;
 
 use crate::decode::{decode_pixmap_reduced, decode_sizes, drawn_pixels};
@@ -25,6 +30,9 @@ const BUDGET: usize = 768 << 20;
 
 /// Failed assets remembered; the oldest is forgotten (and retried if drawn again) beyond this.
 const MAX_BAD: usize = 64;
+
+/// Linked files remembered as unavailable; those recorded before the last link change go first.
+const MAX_UNAVAILABLE: usize = 1024;
 
 /// Coarsest mip level.
 const MAX_LEVEL: u8 = 8;
@@ -61,6 +69,8 @@ struct Cache {
     epoch: u64,
     /// Full decodes kept for a zoom-in ([`KEEP_FULL`]), oldest first; at most [`MAX_KEPT_FULL`].
     kept_full: std::collections::VecDeque<(SourceKey, u32)>,
+    /// Linked bytes that couldn't be loaded: why, the link generation then, and a stamp.
+    unavailable: HashMap<SourceKey, (Unavailable, u64, u64)>,
 }
 
 impl Cache {
@@ -71,6 +81,19 @@ impl Cache {
         while self.bad.len() > MAX_BAD {
             let Some(oldest) = self.bad.iter().min_by_key(|(_, stamp)| **stamp).map(|(k, _)| *k) else { break };
             self.bad.remove(&oldest);
+        }
+    }
+
+    /// Remember that the bytes `id` names can't be had, as of link generation `generation`.
+    fn mark_unavailable(&mut self, id: SourceKey, why: Unavailable, generation: u64) {
+        self.clock += 1;
+        self.unavailable.insert(id, (why, generation, self.clock));
+        if self.unavailable.len() > MAX_UNAVAILABLE {
+            self.unavailable.retain(|_, (_, g, _)| *g == generation);
+        }
+        while self.unavailable.len() > MAX_UNAVAILABLE {
+            let Some(oldest) = self.unavailable.iter().min_by_key(|(_, (_, _, stamp))| *stamp).map(|(k, _)| *k) else { break };
+            self.unavailable.remove(&oldest);
         }
     }
 }
@@ -103,6 +126,11 @@ fn lookup(key: (SourceKey, u32, u8)) -> Option<Arc<Pixmap>> {
     })
 }
 
+/// Whether any level of the bytes `id` names is cached.
+pub(crate) fn has_decodes(id: SourceKey) -> bool {
+    with(|c| c.map.keys().any(|k| k.0 == id))
+}
+
 /// Whether `key` is cached (without marking it used).
 fn is_cached(key: (SourceKey, u32, u8)) -> bool {
     with(|c| c.map.contains_key(&key))
@@ -116,6 +144,37 @@ fn epoch() -> u64 {
 
 fn is_bad(id: SourceKey, page: u32) -> bool {
     with(|c| c.bad.contains_key(&(id, page)))
+}
+
+/// Why the bytes `id` names couldn't be loaded, when that was found since the links last
+/// changed.
+fn unavailable_now(id: SourceKey) -> Option<Unavailable> {
+    let generation = designcraft_doc::asset_data::link_generation();
+    with(|c| c.unavailable.get(&id).filter(|(_, g, _)| *g == generation).map(|(why, ..)| *why))
+}
+
+/// Why `data` couldn't be loaded for a decode, when it couldn't (since the links last changed):
+/// it is drawn from its proxy meanwhile.
+pub fn unavailable(data: &AssetData) -> Option<Unavailable> {
+    if data.is_linked() { unavailable_now(data.key()) } else { None }
+}
+
+/// The bytes of `data` to decode. Linked bytes the store doesn't hold are loaded, `gate`d at
+/// [`GATE`] for their size; a failure is remembered ([`unavailable_now`]).
+fn load_bytes(data: &AssetData, gate: bool) -> Option<Arc<Vec<u8>>> {
+    if let Some(bytes) = data.resident() {
+        return Some(bytes);
+    }
+    let generation = designcraft_doc::asset_data::link_generation();
+    let fits = data.len() <= designcraft_doc::asset_data::MAX_LINKED_BYTES;
+    let _reserved = (gate && fits).then(|| reserve(usize::try_from(data.len()).unwrap_or(usize::MAX), data.key(), None));
+    match data.load() {
+        Ok(bytes) => Some(bytes),
+        Err(why) => {
+            with(|c| c.mark_unavailable(data.key(), why, generation));
+            None
+        }
+    }
 }
 
 /// Cache `pm` as `level` of the bytes `id` names. `colour` is the
@@ -175,24 +234,44 @@ fn set_dims(id: SourceKey, page: u32, size: (u32, u32), exact: bool) {
     });
 }
 
-/// The full-resolution pixel size of `data`: as decoded, else as its header gives it.
-fn dims_of(data: &AssetData, page: u32) -> Option<(u32, u32)> {
-    let id = data.key();
-    if let Some(size) = with(|c| c.dims.get(&(id, page)).copied()) {
+/// The remembered full-resolution pixel size of the bytes `id` names.
+fn known_dims(id: SourceKey, page: u32) -> Option<(u32, u32)> {
+    with(|c| c.dims.get(&(id, page)).copied())
+}
+
+/// The full-resolution pixel size of `bytes` (named by `id`): as decoded, else as its header
+/// gives it.
+fn dims_from(id: SourceKey, bytes: &[u8], page: u32) -> Option<(u32, u32)> {
+    if let Some(size) = known_dims(id, page) {
         return Some(size);
     }
-    let size = drawn_pixels(&data.load().ok()?, page)?;
+    let size = drawn_pixels(bytes, page)?;
     set_dims(id, page, size, false);
     Some(size)
 }
 
-/// Decode `data` at full resolution without caching the pixels (its size is remembered); a
-/// failure marks it bad.
-fn decode_full(data: &AssetData, page: u32) -> Option<Arc<Pixmap>> {
-    let id = data.key();
-    let bytes = data.load().ok()?;
+/// The full-resolution pixel size of `data` (loading it if need be: a failure is remembered).
+fn dims_of(data: &AssetData, page: u32) -> Option<(u32, u32)> {
+    match known_dims(data.key(), page) {
+        Some(size) => Some(size),
+        None if unavailable_now(data.key()).is_some() => None,
+        None => dims_from(data.key(), &load_bytes(data, false)?, page),
+    }
+}
+
+/// [`dims_of`] without loading anything: `None` for linked bytes not in memory.
+fn dims_now(data: &AssetData, page: u32) -> Option<(u32, u32)> {
+    match known_dims(data.key(), page) {
+        Some(size) => Some(size),
+        None => dims_from(data.key(), &data.resident()?, page),
+    }
+}
+
+/// Decode `bytes` (named by `id`) at full resolution without caching the pixels (its size is
+/// remembered); a failure marks it bad.
+fn decode_full(id: SourceKey, bytes: &[u8], page: u32) -> Option<Arc<Pixmap>> {
     // Decode outside the lock: other threads keep drawing cached images meanwhile.
-    let pm = decode_pixmap_page(&bytes, page);
+    let pm = decode_pixmap_page(bytes, page);
     log_decode(id);
     match pm {
         Some(pm) => {
@@ -236,10 +315,11 @@ pub fn decoded(data: &AssetData, page: u32) -> Option<Arc<Pixmap>> {
     if let Some(pm) = lookup((id, page, 0)) {
         return Some(pm);
     }
-    if is_bad(id, page) {
+    if is_bad(id, page) || unavailable_now(id).is_some() {
         return None;
     }
-    let pm = decode_full(data, page)?;
+    let bytes = load_bytes(data, false)?;
+    let pm = decode_full(id, &bytes, page)?;
     store(id, page, 0, pm.clone(), colour);
     Some(pm)
 }
@@ -294,28 +374,44 @@ pub fn mip(data: &AssetData, page: u32, width_pt: f64, on_screen: f64) -> Option
 
 /// [`mip`]; with `gate`, a decode first waits at [`GATE`] for its peak bytes ([`reserve`]),
 /// counted for the decode path it takes.
+///
+/// The bytes are loaded only when the level isn't cached (nor a finer one to halve). Gated, a
+/// load of linked bytes waits at [`GATE`] for their size first, and the decode counts them too
+/// when the store didn't keep them (two reservations one after the other, never one inside the
+/// other: a decode holding one while waiting for another could wait for itself).
 fn mip_gated(data: &AssetData, page: u32, width_pt: f64, on_screen: f64, gate: bool) -> Option<Arc<Pixmap>> {
     let id = data.key();
-    if is_bad(id, page) {
+    if is_bad(id, page) || unavailable_now(id).is_some() {
         return None;
     }
     let colour = designcraft_color::cms::generation();
-    let mut zoom_in = false;
-    if let Some(size) = dims_of(data, page) {
+    let cached = |size: (u32, u32)| {
         let level = level_for(size, width_pt, on_screen);
-        if let Some(pm) = cached_level(id, page, level, colour) {
-            if level == 0 {
-                drawn_full((id, page));
-            }
+        let pm = cached_level(id, page, level, colour)?;
+        if level == 0 {
+            drawn_full((id, page));
+        }
+        Some(pm)
+    };
+    if let Some(pm) = known_dims(id, page).and_then(cached) {
+        return Some(pm);
+    }
+    let bytes = load_bytes(data, gate)?;
+    // Encoded bytes this decode alone holds.
+    let held = if gate && data.is_linked() && data.resident().is_none() { bytes.len() } else { 0 };
+    let mut zoom_in = false;
+    if let Some(size) = dims_from(id, &bytes, page) {
+        if let Some(pm) = cached(size) {
             return Some(pm);
         }
-        if let Some(pm) = reduced(data, page, level, gate, colour) {
+        let level = level_for(size, width_pt, on_screen);
+        if let Some(pm) = reduced(id, &bytes, page, level, gate.then_some(held), colour) {
             return Some(pm);
         }
         zoom_in = (level + 1..=MAX_LEVEL).any(|l| is_cached((id, page, l)));
     }
-    let _reserved = gate.then(|| reserve(data.load().map_or(0, |b| decode_sizes(&b, page).1).saturating_mul(3) / 2, id, None));
-    let full = decode_full(data, page)?;
+    let _reserved = gate.then(|| reserve((decode_sizes(&bytes, page).1.saturating_mul(3) / 2).saturating_add(held), id, None));
+    let full = decode_full(id, &bytes, page)?;
     let level = level_for((u32::from(full.width()), u32::from(full.height())), width_pt, on_screen);
     if level == 0 {
         store(id, page, 0, full.clone(), colour);
@@ -356,10 +452,10 @@ fn keep_full(key: (SourceKey, u32)) {
 pub enum Mip {
     /// The level asked for.
     Ready(Arc<Pixmap>),
-    /// Still decoding; another cached level to draw in its place (the nearest coarser one,
-    /// else the nearest finer one), if any.
+    /// Still decoding (or loading); another cached level to draw in its place (the nearest
+    /// coarser one, else the nearest finer one), if any.
     Pending(Option<Arc<Pixmap>>),
-    /// The image can't be decoded.
+    /// The image can't be decoded, or its linked file can't be had ([`unavailable`]).
     Failed,
 }
 
@@ -368,10 +464,11 @@ pub enum Mip {
 /// decodes in place.
 pub fn mip_now(data: &AssetData, page: u32, width_pt: f64, on_screen: f64) -> Mip {
     let id = data.key();
-    if is_bad(id, page) {
+    if is_bad(id, page) || unavailable_now(id).is_some() {
         return Mip::Failed;
     }
-    let level = dims_of(data, page).map(|size| level_for(size, width_pt, on_screen));
+    // Linked bytes not in memory are left to the decode thread to load.
+    let level = dims_now(data, page).map(|size| level_for(size, width_pt, on_screen));
     // Only the exact level: building it from a finer one is left to the decode thread too.
     if let Some((l, pm)) = level.and_then(|l| lookup((id, page, l)).map(|pm| (l, pm))) {
         if l == 0 {
@@ -645,7 +742,8 @@ mod background {
             // with it, nor leave the image drawn as decoding.
             let run = std::panic::AssertUnwindSafe(|| {
                 super::fault(key.0);
-                super::mip_gated(&w.bytes, w.page, w.width_pt, w.on_screen, true).is_some()
+                // An unavailable file is drawn again too: from its proxy.
+                super::mip_gated(&w.bytes, w.page, w.width_pt, w.on_screen, true).is_some() || super::unavailable_now(key.0).is_some()
             });
             let ok = std::panic::catch_unwind(run).unwrap_or_else(|_| {
                 super::with(|c| c.mark_bad(key));
@@ -912,8 +1010,9 @@ fn plan(wants: Vec<Want>) -> Vec<(usize, Vec<Want>)> {
         // An asset is cached when every drawing of it finds its level, or a finer one to halve.
         held.retain(|k, _| levels.get(k).is_some_and(|(_, ls)| ls.iter().all(|l| (0..=*l).any(|f| c.map.contains_key(&(k.0, k.1, f))))));
         let in_view = held.values().sum::<usize>();
+        let generation = designcraft_doc::asset_data::link_generation();
         for k in index.keys() {
-            if c.bad.contains_key(k) {
+            if c.bad.contains_key(k) || c.unavailable.get(&k.0).is_some_and(|(_, g, _)| *g == generation) {
                 held.entry(*k).or_default();
             }
         }
@@ -1006,30 +1105,31 @@ fn waited(id: SourceKey) {
 /// Level `level` of a JPEG for [`mip`], decoded at 1/2, 1/4 or 1/8 of its size straight from
 /// its blocks and halved from there, so a screen-sized level needs no full-size decode. `None`
 /// when the full size is drawn, for other formats and for JPEGs only a full decode reads (CMYK).
-fn reduced(data: &AssetData, page: u32, level: u8, gate: bool, colour: u64) -> Option<Arc<Pixmap>> {
+///
+/// `gate`: wait at [`GATE`] for the decode's peak bytes, plus the encoded bytes it holds.
+fn reduced(id: SourceKey, bytes: &[u8], page: u32, level: u8, gate: Option<usize>, colour: u64) -> Option<Arc<Pixmap>> {
     if level == 0 || page != 0 {
         return None;
     }
-    let bytes = data.load().ok()?;
     if !bytes.starts_with(&[0xFF, 0xD8]) {
         return None;
     }
-    let id = data.key();
     let shrink = level.min(designcraft_images::MAX_REDUCED_SHRINK);
     let mut pm = match lookup((id, page, shrink)) {
         Some(p) => p,
         None => {
             // Cut to `halve`'s size (it rounds down, the decoder up), as the level a full
             // decode makes.
-            let (sw, sh) = halved(crate::image_size(&bytes)?, shrink);
+            let (sw, sh) = halved(crate::image_size(bytes)?, shrink);
             // Gated, a JPEG without an estimate (one only a full decode reads) isn't tried here.
-            let _reserved = if gate {
-                let (_, _, peak) = designcraft_images::reduced_jpeg_estimate(&bytes, shrink)?;
-                Some(reserve(peak.saturating_mul(3) / 2, id, None))
-            } else {
-                None
+            let _reserved = match gate {
+                Some(held) => {
+                    let (_, _, peak) = designcraft_images::reduced_jpeg_estimate(bytes, shrink)?;
+                    Some(reserve((peak.saturating_mul(3) / 2).saturating_add(held), id, None))
+                }
+                None => None,
             };
-            let p = decode_pixmap_reduced(&bytes, shrink)?;
+            let p = decode_pixmap_reduced(bytes, shrink)?;
             log_decode(id);
             let p = Arc::new(crop(p, sw, sh)?);
             store(id, page, shrink, p.clone(), colour);
@@ -1068,6 +1168,7 @@ pub fn clear() {
     with(|c| {
         c.map.clear();
         c.bad.clear();
+        c.unavailable.clear();
         c.dims.clear();
         c.kept_full.clear();
         c.bytes = 0;
@@ -1557,5 +1658,145 @@ mod tests {
         }
         let full: Vec<bool> = images.iter().map(|img| is_cached((img.key(), 0, 0))).collect();
         assert_eq!(full, [false, true, true], "the oldest is let go");
+    }
+
+    /// Linked files for these tests: bytes by path, served by a loader that counts its reads.
+    mod linked {
+        use super::*;
+        use designcraft_doc::asset_data::{Loaded, Loader};
+        use designcraft_doc::{Fingerprint, LinkedSource};
+        use std::collections::HashMap;
+
+        static FILES: Mutex<Option<HashMap<String, Vec<u8>>>> = Mutex::new(None);
+        static READS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+        struct Files;
+
+        impl Loader for Files {
+            fn load(&self, source: &LinkedSource, _: Option<Fingerprint>) -> Result<Loaded, Unavailable> {
+                READS.lock().unwrap().push(source.path.clone());
+                let bytes = FILES.lock().unwrap().as_ref().and_then(|f| f.get(&source.path).cloned()).ok_or(Unavailable::Missing)?;
+                Ok(Loaded { bytes, fingerprint: None })
+            }
+        }
+
+        /// A linked asset whose file is `bytes` (`None`: missing for now) at the unique `path`.
+        pub(super) fn file(path: &str, bytes: Option<Vec<u8>>, len: u64) -> AssetData {
+            static INSTALL: std::sync::Once = std::sync::Once::new();
+            INSTALL.call_once(|| designcraft_doc::asset_data::install_loader(Arc::new(Files)));
+            if let Some(b) = bytes {
+                put(path, b);
+            }
+            AssetData::linked(LinkedSource { path: path.into(), relative: None, document: None, len, fingerprint: None, hash: None })
+        }
+
+        pub(super) fn put(path: &str, bytes: Vec<u8>) {
+            FILES.lock().unwrap().get_or_insert_with(HashMap::new).insert(path.into(), bytes);
+        }
+
+        pub(super) fn reads(path: &str) -> usize {
+            READS.lock().unwrap().iter().filter(|p| *p == path).count()
+        }
+    }
+
+    fn png_bytes(w: u32, h: u32, rgba: [u8; 4]) -> Vec<u8> {
+        let mut out = Vec::new();
+        image::RgbaImage::from_pixel(w, h, image::Rgba(rgba)).write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png).unwrap();
+        out
+    }
+
+    /// A linked file is read on the decode thread, and a level once decoded is drawn again
+    /// without reading the file, even after the store let go of its bytes.
+    #[test]
+    fn a_linked_image_is_loaded_off_the_canvas_and_its_cached_levels_need_no_reload() {
+        let bytes = png_bytes(256, 256, [0, 0, 255, 255]);
+        let data = linked::file("mem:/cached.png", Some(bytes.clone()), bytes.len() as u64);
+        assert!(matches!(mip_now(&data, 0, 128.0, 1.0), Mip::Pending(None)), "not loaded on the drawing thread");
+        assert_eq!(ready(&data, 128.0, 1.0).map(|pm| pm.width()), Some(256));
+        assert_eq!(linked::reads("mem:/cached.png"), 1);
+        data.evict();
+        assert!(data.resident().is_none());
+        assert!(matches!(mip_now(&data, 0, 128.0, 1.0), Mip::Ready(_)));
+        assert!(mip(&data, 0, 128.0, 1.0).is_some());
+        assert_eq!(mip(&data, 0, 128.0, 0.25).map(|pm| pm.width()), Some(64), "a coarser level is halved from the cached one");
+        assert_eq!(linked::reads("mem:/cached.png"), 1, "no level drawn needed the file again");
+    }
+
+    /// A linked file that can't be had isn't a bad image: it is asked for again once the links
+    /// changed (the file came back).
+    #[test]
+    fn an_unavailable_linked_file_is_tried_again_after_the_links_change() {
+        let bytes = png_bytes(8, 8, [0, 255, 0, 255]);
+        let data = linked::file("mem:/comes-back.png", None, bytes.len() as u64);
+        assert!(mip(&data, 0, 8.0, 1.0).is_none());
+        assert_eq!(unavailable(&data), Some(Unavailable::Missing));
+        assert!(!is_bad(data.key(), 0));
+        assert!(matches!(mip_now(&data, 0, 8.0, 1.0), Mip::Failed));
+        assert!(mip(&data, 0, 8.0, 1.0).is_none());
+        assert_eq!(linked::reads("mem:/comes-back.png"), 1, "not read again before the links change");
+        linked::put("mem:/comes-back.png", bytes);
+        designcraft_doc::asset_data::links_changed();
+        assert_eq!(unavailable(&data), None);
+        assert_eq!(mip(&data, 0, 8.0, 1.0).map(|pm| pm.width()), Some(8));
+    }
+
+    /// The page draws a missing linked image from its proxy, at the graphic's place.
+    #[test]
+    fn a_missing_linked_image_draws_its_proxy() {
+        use designcraft_doc::build::NewDocument;
+        use designcraft_doc::{Document, Item, SpreadRef};
+        use designcraft_geom::kurbo::{Affine, Rect};
+        let original = png_bytes(64, 64, [0, 0, 255, 255]);
+        for defer in [false, true] {
+            let path = format!("mem:/missing-{defer}.png");
+            let mut d = Document::new(&NewDocument::default());
+            let lid = d.default_layer();
+            let aid = designcraft_doc::AssetId(d.alloc());
+            let proxy =
+                designcraft_doc::Proxy { mime: "image/png".into(), pixels: (4, 4), data: AssetData::embedded(png_bytes(4, 4, [255, 0, 0, 255])) };
+            d.assets.insert(
+                aid,
+                Arc::new(designcraft_doc::Asset {
+                    id: aid,
+                    name: "photo.png".into(),
+                    mime: "image/png".into(),
+                    link: Some(path.clone()),
+                    storage: designcraft_doc::Storage::Linked,
+                    data: linked::file(&path, None, original.len() as u64),
+                    proxy: Some(proxy),
+                    pixels: Some((64, 64)),
+                    ..Default::default()
+                }),
+            );
+            let id = designcraft_doc::ItemId(d.alloc());
+            let mut it =
+                Item::new(id, lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(100.0, 100.0, 200.0, 200.0)));
+            it.content = designcraft_doc::Content::Graphic(designcraft_doc::Graphic {
+                layer_options: None,
+                asset: aid,
+                size: (100.0, 100.0),
+                xf: Affine::translate((100.0, 100.0)),
+                clip: None,
+                auto_fit: Default::default(),
+                fit_align: 4,
+                crop: [0.0; 4],
+                wrap: Default::default(),
+                fill: Default::default(),
+            });
+            d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+            let cache = crate::Cache::new();
+            let mut r = crate::Renderer::new();
+            r.threads = 0;
+            let opts = crate::RenderOptions { defer_images: defer, ..Default::default() };
+            let mut px = [0; 4];
+            for _ in 0..500 {
+                px = r.render_page(&d, &cache, 0, 1.0, false, &opts).unwrap().pixel(150, 150);
+                if px[..3] == [255, 0, 0] {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            assert_eq!(px[..3], [255, 0, 0], "defer {defer}: the proxy stands in");
+        }
     }
 }

@@ -240,39 +240,54 @@ pub fn pdf_hide_layers(bytes: &[u8], hidden: &[String]) -> Option<Vec<u8>> {
 }
 
 /// Shared copies of layer variants (by source and hidden set). A variant keeps its identity
-/// (the same [`SourceKey`]) for as long as anything holds it: the image cache keys decodes by
-/// it, so a variant rebuilt under a new key would miss decodes it already has and be decoded
-/// again.
+/// (the same [`SourceKey`]) across rebuilds: the image cache keys decodes by it, so a variant
+/// rebuilt under a new key would miss decodes it already has and be decoded again. The bytes of
+/// a variant are a function of its source's and the hidden set, so the same key always names the
+/// same bytes. Recent variants are held here; older ones are made again when asked for.
 pub(crate) fn layered(data: &AssetData, hidden: &[String]) -> Option<AssetData> {
     type Key = (SourceKey, Vec<String>);
-    /// Variants by key (`None`: the file couldn't be rewritten), weak; `KEEP` holds recent ones.
-    type Known = HashMap<Key, Option<WeakAssetData>>;
+    enum Variant {
+        /// The file couldn't be rewritten with these layers off.
+        Failed,
+        Made(WeakAssetData),
+    }
+    type Known = HashMap<Key, Variant>;
     static CACHE: Mutex<Option<(Known, VecDeque<AssetData>)>> = Mutex::new(None);
     /// How many recent variants are kept alive here (each is a copy of its file).
     const KEEP: usize = 64;
     let key = (data.key(), hidden.to_vec());
     let mut c = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let (known, keep) = c.get_or_insert_with(Default::default);
-    if let Some(variant) = known.get(&key) {
-        // `None`: this file couldn't be rewritten with these layers off.
-        if let Some(v) = variant.as_ref()?.upgrade() {
-            return Some(v);
-        }
-    }
-    let v = pdf_hide_layers(&data.load().ok()?, hidden).map(AssetData::embedded);
-    known.insert(key, v.as_ref().map(AssetData::downgrade));
+    let id = match known.get(&key) {
+        Some(Variant::Failed) => return None,
+        Some(Variant::Made(weak)) => match weak.upgrade() {
+            Some(v) => return Some(v),
+            None => weak.key(),
+        },
+        None => SourceKey::fresh(),
+    };
+    // A source that can't be loaded now isn't a file that can't be rewritten: asked again later.
+    let bytes = data.load().ok()?;
+    let v = pdf_hide_layers(&bytes, hidden).map(|b| AssetData::embedded_under(id, b));
+    known.insert(key, v.as_ref().map_or(Variant::Failed, |v| Variant::Made(v.downgrade())));
     if let Some(v) = &v {
         keep.push_back(v.clone());
         while keep.len() > KEEP {
             keep.pop_front();
         }
     }
-    // Forget variants nothing holds any more.
+    // Forget variants nothing holds and nothing decoded is cached of.
     if known.len() > 4 * KEEP {
-        known.retain(|_, variant| variant.as_ref().is_none_or(|v| v.upgrade().is_some()));
+        known.retain(|_, variant| match variant {
+            Variant::Failed => true,
+            Variant::Made(weak) => weak.upgrade().is_some() || crate::images::has_decodes(weak.key()),
+        });
         // Failures are cheap to find again; a hostile run of hidden sets doesn't grow this.
         if known.len() > 4 * KEEP {
-            known.retain(|_, variant| variant.is_some());
+            known.retain(|_, variant| matches!(variant, Variant::Made(_)));
+        }
+        if known.len() > 4 * KEEP {
+            known.retain(|_, variant| matches!(variant, Variant::Made(weak) if weak.upgrade().is_some()));
         }
     }
     v
@@ -282,6 +297,7 @@ pub(crate) fn layered(data: &AssetData, hidden: &[String]) -> Option<AssetData> 
 mod tests {
     use super::*;
     use craft_pdf::syntax::reader::{Reader, ReaderExt};
+    use std::sync::Arc;
 
     /// A one-page PDF with two layers, Blue and Red.
     fn two_layer_pdf() -> Vec<u8> {
@@ -324,12 +340,18 @@ mod tests {
         }
         assert_eq!(first.key(), layered(&data, &blue).unwrap().key(), "still the same variant");
         let red = vec!["Red".to_string()];
-        let weak = layered(&data, &red).unwrap().downgrade();
-        for i in 0..200 {
+        let variant = layered(&data, &red).unwrap();
+        assert!(crate::images::mip(&variant, 0, 100.0, 1.0).is_some(), "the variant draws");
+        let weak = variant.downgrade();
+        drop(variant);
+        for i in 0..300 {
             let _ = layered(&data, &["Blue".to_string(), format!("other {i}")]);
         }
         assert!(weak.upgrade().is_none(), "a variant nothing holds is let go");
-        assert!(layered(&data, &red).is_some(), "and made again when asked for");
+        let again = layered(&data, &red).expect("made again when asked for");
+        assert_eq!(again.key(), weak.key(), "under the key its decodes are cached by");
+        assert!(crate::images::has_decodes(again.key()));
+        assert_eq!(again.load().unwrap(), pdf_hide_layers(&data.load().unwrap(), &red).map(Arc::new).unwrap());
     }
 
     #[test]
