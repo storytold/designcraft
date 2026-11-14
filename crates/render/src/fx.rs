@@ -690,12 +690,17 @@ impl Renderer {
             self.with_filters(ctx, f, reach, look.sigma, None, draw);
             return;
         };
-        let image = Arc::new(self.draw_offscreen(f, &o, None, draw));
+        let (image, deferred) = crate::images::deferring(|| self.draw_offscreen(f, &o, None, draw));
+        let image = Arc::new(image);
         #[cfg(test)]
         {
             self.kept.drawn += 1;
         }
         place(ctx, o.x0, o.y0, o.scale, image.clone());
+        // Drawn from a placeholder or a stand-in for an image still decoding: not its shape.
+        if deferred {
+            return;
+        }
         let kept = Kept {
             item: it.clone(),
             linear,
@@ -1363,6 +1368,31 @@ mod tests {
         single.threads = 0;
         render(&mut single, &d, (500, 450), view);
         assert_eq!(single.kept.drawn, 0);
+    }
+
+    /// A shadow drawn while its image decodes in the background has the placeholder's shape: it
+    /// isn't kept, and the render once the image is decoded draws it again.
+    #[test]
+    fn a_shadow_drawn_while_its_image_decodes_is_not_kept() {
+        use designcraft_doc::SpreadRef;
+        let (d, _) = shadowed_image();
+        let cache = crate::Cache::new();
+        let placed = [crate::Placed { spread: SpreadRef::Doc(0), xf: Affine::IDENTITY }];
+        let opts = crate::RenderOptions { defer_images: true, background: Some([255, 255, 255, 255]), ..Default::default() };
+        let mut r = Renderer::new();
+        r.threads = 2;
+        r.render(&d, &cache, &placed, (500, 450), Affine::IDENTITY, &opts);
+        assert!(r.images_pending());
+        assert!(r.kept.entries.is_empty(), "drawn from the placeholder");
+        for _ in 0..500 {
+            if !r.images_pending() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            r.render(&d, &cache, &placed, (500, 450), Affine::IDENTITY, &opts);
+        }
+        assert!(!r.images_pending(), "the image decoded");
+        assert_eq!(r.kept.entries.len(), 1, "kept once drawn from the image");
     }
 
     /// In the CMYK blend space view the ink passes keep an image per plate, placed again on a move.

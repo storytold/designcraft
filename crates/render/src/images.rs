@@ -120,8 +120,14 @@ fn is_bad(id: usize, page: u32) -> bool {
     with(|c| c.bad.contains_key(&(id, page)))
 }
 
-fn store(bytes: &Arc<Vec<u8>>, page: u32, level: u8, pm: Arc<Pixmap>) {
+/// Cache `pm` as `level` of `bytes`. `colour` is the [`designcraft_color::cms::generation`] read
+/// before the pixels were looked up or decoded: pixels converted under settings changed since
+/// are not kept (the next request decodes them again).
+fn store(bytes: &Arc<Vec<u8>>, page: u32, level: u8, pm: Arc<Pixmap>, colour: u64) {
     with(|c| {
+        if c.colour != colour {
+            return;
+        }
         c.clock += 1;
         let key = (Arc::as_ptr(bytes) as usize, page, level);
         let n = size_of(&pm);
@@ -219,6 +225,7 @@ fn fault(_: usize) {}
 /// Full-resolution decode of `bytes` (cached).
 pub fn decoded(bytes: &Arc<Vec<u8>>, page: u32) -> Option<Arc<Pixmap>> {
     let id = Arc::as_ptr(bytes) as usize;
+    let colour = designcraft_color::cms::generation();
     if let Some(pm) = lookup((id, page, 0)) {
         return Some(pm);
     }
@@ -226,7 +233,7 @@ pub fn decoded(bytes: &Arc<Vec<u8>>, page: u32) -> Option<Arc<Pixmap>> {
         return None;
     }
     let pm = decode_full(bytes, page)?;
-    store(bytes, page, 0, pm.clone());
+    store(bytes, page, 0, pm.clone(), colour);
     Some(pm)
 }
 
@@ -261,14 +268,14 @@ fn halve_to(mut pm: Arc<Pixmap>, from: u8, to: u8) -> Arc<Pixmap> {
 
 /// Level `level` of `bytes` from the cache: that level, or one built from the nearest finer
 /// cached level (no decode).
-fn cached_level(bytes: &Arc<Vec<u8>>, page: u32, level: u8) -> Option<Arc<Pixmap>> {
+fn cached_level(bytes: &Arc<Vec<u8>>, page: u32, level: u8, colour: u64) -> Option<Arc<Pixmap>> {
     let id = Arc::as_ptr(bytes) as usize;
     if let Some(pm) = lookup((id, page, level)) {
         return Some(pm);
     }
     let (from, finer) = (0..level).rev().find_map(|l| lookup((id, page, l)).map(|pm| (l, pm)))?;
     let pm = halve_to(finer, from, level);
-    store(bytes, page, level, pm.clone());
+    store(bytes, page, level, pm.clone(), colour);
     Some(pm)
 }
 
@@ -286,13 +293,17 @@ fn mip_gated(bytes: &Arc<Vec<u8>>, page: u32, width_pt: f64, on_screen: f64, gat
     if is_bad(id, page) {
         return None;
     }
+    let colour = designcraft_color::cms::generation();
     let mut zoom_in = false;
     if let Some(size) = dims_of(bytes, page) {
         let level = level_for(size, width_pt, on_screen);
-        if let Some(pm) = cached_level(bytes, page, level) {
+        if let Some(pm) = cached_level(bytes, page, level, colour) {
+            if level == 0 {
+                drawn_full((id, page));
+            }
             return Some(pm);
         }
-        if let Some(pm) = reduced(bytes, page, level, gate) {
+        if let Some(pm) = reduced(bytes, page, level, gate, colour) {
             return Some(pm);
         }
         zoom_in = (level + 1..=MAX_LEVEL).any(|l| is_cached((id, page, l)));
@@ -301,18 +312,23 @@ fn mip_gated(bytes: &Arc<Vec<u8>>, page: u32, width_pt: f64, on_screen: f64, gat
     let full = decode_full(bytes, page)?;
     let level = level_for((u32::from(full.width()), u32::from(full.height())), width_pt, on_screen);
     if level == 0 {
-        store(bytes, page, 0, full.clone());
-        // Drawn, not kept for a zoom-in: not evicted for another one.
-        with(|c| c.kept_full.retain(|k| *k != (id, page)));
+        store(bytes, page, 0, full.clone(), colour);
+        drawn_full((id, page));
     } else if zoom_in && size_of(&full) <= KEEP_FULL {
-        store(bytes, page, 0, full.clone());
+        store(bytes, page, 0, full.clone(), colour);
         keep_full((id, page));
     }
     let pm = halve_to(full, 0, level);
     if level > 0 {
-        store(bytes, page, level, pm.clone());
+        store(bytes, page, level, pm.clone(), colour);
     }
     Some(pm)
+}
+
+/// The full decode of `key` is drawn, not kept for a zoom-in: another image's zoom-in doesn't
+/// evict it ([`keep_full`]).
+fn drawn_full(key: (usize, u32)) {
+    with(|c| c.kept_full.retain(|k| *k != key));
 }
 
 /// Count the full decode of `key` just stored as kept for a zoom-in, evicting the oldest such
@@ -351,7 +367,10 @@ pub fn mip_now(bytes: &Arc<Vec<u8>>, page: u32, width_pt: f64, on_screen: f64) -
     }
     let level = dims_of(bytes, page).map(|size| level_for(size, width_pt, on_screen));
     // Only the exact level: building it from a finer one is left to the decode thread too.
-    if let Some(pm) = level.and_then(|l| lookup((id, page, l))) {
+    if let Some((l, pm)) = level.and_then(|l| lookup((id, page, l)).map(|pm| (l, pm))) {
+        if l == 0 {
+            drawn_full((id, page));
+        }
         return Mip::Ready(pm);
     }
     let want = Want { bytes: bytes.clone(), page, width_pt, on_screen };
@@ -384,6 +403,15 @@ thread_local! {
 /// Whether [`mip_now`] deferred an image on this thread since the last call (and reset).
 pub(crate) fn take_deferred() -> bool {
     DEFERRED.with(|d| d.replace(false))
+}
+
+/// Run `f` and say whether it deferred an image ([`mip_now`]); the thread's flag still holds
+/// every deferral for [`take_deferred`].
+pub(crate) fn deferring<R>(f: impl FnOnce() -> R) -> (R, bool) {
+    let before = take_deferred();
+    let r = f();
+    let deferred = DEFERRED.with(|d| d.replace(before || d.get()));
+    (r, deferred)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -434,13 +462,24 @@ mod background {
         at: Instant,
         /// The cache's epoch then: a record of a decode into a cache emptied since doesn't count.
         epoch: u64,
+        /// A request turned away as [`Queued::Recent`] scheduled a wake for this decode.
+        woken: bool,
+        /// One did for an earlier decode of the same image, level and epoch. Turned away again,
+        /// this one schedules none: the view holds more than the cache (or than the list of
+        /// failed images), and each wake would decode it again, every [`RECENT`] without end.
+        rewoken: bool,
     }
 
     impl Done {
+        /// Whether this is `key` at `level` decoded into the cache of `epoch`, its image alive.
+        fn is_of(&self, key: (usize, u32), level: Option<u8>, epoch: u64) -> bool {
+            self.key == key && self.level == level && self.epoch == epoch && self.bytes.strong_count() > 0
+        }
+
         /// Whether this is `key` at `level`, finished too recently to decode in the background
         /// again (into the cache of `epoch`).
         fn is_recent(&self, key: (usize, u32), level: Option<u8>, epoch: u64) -> bool {
-            self.key == key && self.level == level && self.epoch == epoch && self.bytes.strong_count() > 0 && self.at.elapsed() < RECENT
+            self.is_of(key, level, epoch) && self.at.elapsed() < RECENT
         }
     }
 
@@ -484,10 +523,20 @@ mod background {
             // Finishing it advances the generation; a different size is asked for then.
             return Queued::Yes;
         }
-        if let Some(at) = q.done.iter().find(|d| d.is_recent(key, level, epoch)).and_then(|d| d.at.checked_add(RECENT)) {
-            if q.wake_at.is_none_or(|w| at < w) {
-                q.wake_at = Some(at);
-                READY.notify_one();
+        let q = &mut *q;
+        if let Some(d) = q.done.iter_mut().find(|d| d.is_recent(key, level, epoch)) {
+            if !d.rewoken
+                && let Some(at) = d.at.checked_add(RECENT)
+            {
+                #[cfg(test)]
+                if !d.woken {
+                    WOKEN.lock().unwrap_or_else(PoisonError::into_inner).push(key);
+                }
+                d.woken = true;
+                if q.wake_at.is_none_or(|w| at < w) {
+                    q.wake_at = Some(at);
+                    READY.notify_one();
+                }
             }
             return Queued::Recent;
         }
@@ -514,6 +563,10 @@ mod background {
         loop {
             if let Some(job) = q.jobs.pop_back() {
                 q.busy.push(job.key());
+                // This thread may have been the one waiting for `wake_at`: another takes over.
+                if q.wake_at.is_some() {
+                    READY.notify_one();
+                }
                 return Some(job);
             }
             match q.wake_at {
@@ -544,10 +597,18 @@ mod background {
 
     impl Drop for Busy<'_> {
         fn drop(&mut self) {
-            let (key, epoch) = (self.0.key(), super::epoch());
+            let (key, level, epoch) = (self.0.key(), self.0.level, super::epoch());
             let mut q = lock();
             q.busy.retain(|k| *k != key);
-            q.done.push_back(Done { bytes: Arc::downgrade(&self.0.want.bytes), key, level: self.0.level, at: Instant::now(), epoch });
+            // This decode replaces the earlier records of the image at this level.
+            let mut rewoken = false;
+            q.done.retain(|d| {
+                let earlier = d.is_of(key, level, epoch);
+                rewoken |= earlier && (d.woken || d.rewoken);
+                !earlier
+            });
+            let bytes = Arc::downgrade(&self.0.want.bytes);
+            q.done.push_back(Done { bytes, key, level, at: Instant::now(), epoch, woken: false, rewoken });
             while q.done.len() > 64 {
                 q.done.pop_front();
             }
@@ -600,10 +661,22 @@ mod background {
         lock().busy.iter().any(|k| k.0 == id)
     }
 
-    /// Whether a generation advance is scheduled ([`Queue::wake_at`]).
+    /// The decodes (image address, page) a turned-away request scheduled a wake for.
     #[cfg(test)]
-    pub(super) fn wake_scheduled() -> bool {
-        lock().wake_at.is_some()
+    static WOKEN: Mutex<Vec<(usize, u32)>> = Mutex::new(Vec::new());
+
+    /// The wakes scheduled for `key` so far.
+    #[cfg(test)]
+    pub(super) fn wakes(key: (usize, u32)) -> usize {
+        WOKEN.lock().unwrap_or_else(PoisonError::into_inner).iter().filter(|k| **k == key).count()
+    }
+
+    /// Move the records of `key`'s decodes back past [`RECENT`], as if it had passed.
+    #[cfg(test)]
+    pub(super) fn age(key: (usize, u32)) {
+        for d in lock().done.iter_mut().filter(|d| d.key == key) {
+            d.at = d.at.checked_sub(RECENT).unwrap();
+        }
     }
 
     #[cfg(test)]
@@ -616,7 +689,7 @@ mod background {
         fn a_finished_decode_counts_only_while_its_image_lives() {
             let bytes = Arc::new(vec![1u8]);
             let key = (Arc::as_ptr(&bytes) as usize, 0);
-            let done = Done { bytes: Arc::downgrade(&bytes), key, level: Some(1), at: Instant::now(), epoch: 3 };
+            let done = Done { bytes: Arc::downgrade(&bytes), key, level: Some(1), at: Instant::now(), epoch: 3, woken: false, rewoken: false };
             assert!(done.is_recent(key, Some(1), 3));
             assert!(!done.is_recent(key, Some(2), 3), "another level");
             assert!(!done.is_recent((key.0, 1), Some(1), 3), "another page");
@@ -928,7 +1001,7 @@ fn waited(id: usize) {
 /// Level `level` of a JPEG for [`mip`], decoded at 1/2, 1/4 or 1/8 of its size straight from
 /// its blocks and halved from there, so a screen-sized level needs no full-size decode. `None`
 /// when the full size is drawn, for other formats and for JPEGs only a full decode reads (CMYK).
-fn reduced(bytes: &Arc<Vec<u8>>, page: u32, level: u8, gate: bool) -> Option<Arc<Pixmap>> {
+fn reduced(bytes: &Arc<Vec<u8>>, page: u32, level: u8, gate: bool, colour: u64) -> Option<Arc<Pixmap>> {
     if level == 0 || page != 0 || !bytes.starts_with(&[0xFF, 0xD8]) {
         return None;
     }
@@ -950,7 +1023,7 @@ fn reduced(bytes: &Arc<Vec<u8>>, page: u32, level: u8, gate: bool) -> Option<Arc
             let p = decode_pixmap_reduced(bytes, shrink)?;
             log_decode(id);
             let p = Arc::new(crop(p, sw, sh)?);
-            store(bytes, page, shrink, p.clone());
+            store(bytes, page, shrink, p.clone(), colour);
             p
         }
     };
@@ -959,7 +1032,7 @@ fn reduced(bytes: &Arc<Vec<u8>>, page: u32, level: u8, gate: bool) -> Option<Arc
             Some(p) => p,
             None => {
                 let half = Arc::new(halve(&pm));
-                store(bytes, page, l, half.clone());
+                store(bytes, page, l, half.clone(), colour);
                 half
             }
         };
@@ -1419,12 +1492,34 @@ mod tests {
     }
 
     #[test]
-    fn an_image_turned_away_as_recent_is_drawn_when_its_window_passes() {
+    fn an_image_turned_away_as_recent_is_woken_for_once() {
         let bytes = png_sized(96, 96);
+        let key = (Arc::as_ptr(&bytes) as usize, 0);
+        // Another test's image may have had this address.
+        let before = background::wakes(key);
         assert!(ready(&bytes, 96.0, 1.0).is_some());
         evict(&bytes);
         assert!(matches!(mip_now(&bytes, 0, 96.0, 1.0), Mip::Pending(None)));
-        assert!(background::wake_scheduled(), "the generation advances once the window has passed");
+        assert_eq!(background::wakes(key), before + 1, "the generation advances once the window has passed");
+        // Its window passed, it is decoded again and evicted at once again: turned away, it
+        // waits for the next redraw instead of decoding every two seconds.
+        background::age(key);
+        assert!(ready(&bytes, 96.0, 1.0).is_some(), "decoded again once the window passed");
+        evict(&bytes);
+        assert!(matches!(mip_now(&bytes, 0, 96.0, 1.0), Mip::Pending(None)));
+        assert_eq!(background::wakes(key), before + 1, "no second wake");
+    }
+
+    #[test]
+    fn pixels_made_under_old_colour_settings_are_not_cached() {
+        let bytes = png_sized(64, 64);
+        let id = Arc::as_ptr(&bytes) as usize;
+        let pm = Arc::new(Pixmap::new(64, 64));
+        let old = designcraft_color::cms::generation().wrapping_sub(1);
+        store(&bytes, 0, 0, pm.clone(), old);
+        assert!(!is_cached((id, 0, 0)), "converted before the settings changed");
+        store(&bytes, 0, 0, pm, designcraft_color::cms::generation());
+        assert!(is_cached((id, 0, 0)));
     }
 
     #[test]
