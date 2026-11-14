@@ -2138,7 +2138,9 @@ fn fit_line(input: LineFitInput<'_>) -> LineFit {
         } else {
             0.0
         };
-    let fits = baseline + fit_descent <= col.y1 - reserve + 0.01 && !capped;
+    // A text area with no height (insets that fill the frame) holds no line, even one whose first
+    // baseline is on its top.
+    let fits = f.area.height() > 0.0 && baseline + fit_descent <= col.y1 - reserve + 0.01 && !capped;
     if !fits
         && !pp.hyph_across_column
         && line_no > col_first_line

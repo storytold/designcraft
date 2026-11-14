@@ -4559,6 +4559,42 @@ fn ascent_first_baseline_uses_the_typographic_ascender() {
     assert!(close(first(&d), top + 16.0), "{}", first(&d));
 }
 
+/// A frame whose insets fill its height has a text area with no height, and no line fits in it,
+/// with a fixed first baseline of 0 as with the other first baselines: the text is overset. A
+/// line set there had its baseline on the top inset and its descenders below the frame.
+#[test]
+fn a_text_area_with_no_height_sets_no_line() {
+    use designcraft_doc::FirstBaseline;
+    for inset in [[299.0, 0.0, 2.0, 0.0], [270.0, 0.0, 30.0, 0.0], [0.0, 0.0, 310.0, 0.0]] {
+        for kind in [FirstBaseline::Fixed, FirstBaseline::Ascent, FirstBaseline::Leading] {
+            let (mut d, sid, fid) = doc_with("One", Rect::new(0.0, 0.0, 200.0, 300.0), ParaAttrs::default());
+            let o = &mut d.item_mut(fid).unwrap().text_frame_mut().unwrap().options;
+            o.inset = inset;
+            o.first_baseline = kind;
+            o.first_baseline_min = 0.0;
+            assert_eq!(d.item(fid).unwrap().text_area().height(), 0.0, "{inset:?}");
+            let cs = compose_story(&d, sid, &ComposeOptions::default());
+            assert!(
+                all_lines(&cs).is_empty(),
+                "{inset:?} {kind:?}: {:?}",
+                all_lines(&cs).iter().map(|l| (l.baseline, l.descent)).collect::<Vec<_>>()
+            );
+            assert_eq!(cs.overset_at, Some(0), "{inset:?} {kind:?}");
+        }
+    }
+    // A text area 1 pt tall still holds the line at its top with a fixed first baseline of 0.
+    let (mut d, sid, fid) = doc_with("One", Rect::new(0.0, 0.0, 200.0, 300.0), ParaAttrs::default());
+    let o = &mut d.item_mut(fid).unwrap().text_frame_mut().unwrap().options;
+    o.inset = [289.0, 0.0, 10.0, 0.0];
+    o.first_baseline = FirstBaseline::Fixed;
+    o.first_baseline_min = 0.0;
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    assert_eq!(lines.len(), 1);
+    assert!((lines[0].baseline - 289.0).abs() < 1e-6, "baseline {}", lines[0].baseline);
+    assert_eq!(cs.overset_at, None);
+}
+
 #[test]
 fn em_box_first_baseline_follows_base_then_the_typo_box_or_the_cap_height() {
     use designcraft_doc::FirstBaseline;
