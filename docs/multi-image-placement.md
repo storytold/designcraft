@@ -6,8 +6,9 @@ Choose **File > Place** (Cmd+D on macOS) and select several images, or drop a se
 - Drag to draw its frame: it keeps the image's proportions, and shows the scale beside the pointer.
 - Click an existing graphic frame to replace its contents.
 - While drawing, Right/Left add/remove columns and Up/Down add/remove rows. Release to place a grid in row order with 6-point gutters. Extra images remain in the cursor; unused grid cells create no empty frames. A drag too small for the grid's cells shows and places one frame instead, as an ordinary drag does.
-- Press Escape or select another tool to cancel the remaining placement.
-- Switching to, opening or closing a document also cancels it, and goes back to the Selection tool.
+- Press Escape to drop the current image and load the next one; Escape on the last image ends placing. Selecting another tool cancels the remaining placement.
+- When no drag is in progress, Right/Down and Left/Up cycle the loaded images: the next or previous one becomes the current one.
+- Switching to or opening a document, or closing the active one, also cancels it, and goes back to the Selection tool.
 
 For larger selections, choose **File > Place Contact Sheet…** after loading the images. Set columns, rows, gutter and page margin. All remaining images are fitted proportionally and centered in equal frames across as many new pages as needed. The default is 3 columns by 4 rows. New pages use the last document page's size and have no parent-page artwork. The entire contact sheet is one undo step.
 
@@ -32,7 +33,11 @@ All placement behavior is available through the engine, CLI, control channel and
 {"command":"place.load","params":{"files":[{"path":"/images/three.png"}],"append":true}}
 {"command":"place.grid","params":{"rect":[36,36,576,756],"columns":3,"rows":4,"gutter":6}}
 {"command":"place.contactSheet","params":{"columns":3,"rows":4,"gutter":6,"margin":36}}
+{"command":"place.skip","params":{}}
+{"command":"place.cycle","params":{"dir":1}}
 {"command":"place.cancel","params":{}}
 ```
 
-Each source can instead supply `base64` and `name`, including on the web. `append` queues the images after those already loaded instead of replacing them. `place.grid` consumes only the images that fit; `place.contactSheet` consumes the entire queue. Undo removes placed frames/pages together, while the cursor remains at its current position in the queue. The UI command `app.placeDialog` takes `paths` for a File > Place of several files without the dialog.
+`place.cancel` clears every loaded image at once.
+
+Each source can instead supply `base64` and `name`, including on the web. `append` queues the images after those already loaded instead of replacing them. `place.grid` consumes only the images that fit; `place.contactSheet` consumes the entire queue. Undo removes placed frames/pages together, while the cursor remains at its current position in the queue: Undo does not put a placed image back on the cursor. The UI command `app.placeDialog` takes `paths` for a File > Place of several files without the dialog.
