@@ -115,12 +115,20 @@ impl FrameOutline {
         // Midpoints catch spans that close between two sampled heights.
         let mids: Vec<f64> = ys.windows(2).map(|w| (w[0] + w[1]) / 2.0).collect();
         ys.extend(mids);
+        // At an edge's end the scanline also takes the inside just above it, so an edge that ends
+        // there holds the text: a band down to a bottom edge (the frame's or a lobe's) is inside,
+        // as one up to a top edge is.
+        let mut ends: Vec<f64> = near.iter().flat_map(|(a, b)| [a.y, b.y]).collect();
+        ends.sort_by(f64::total_cmp);
+        let eps = 1e-12 * y0.abs().max(y1.abs()).max(1.0);
         let mut free = vec![(x0, x1)];
         for y in ys {
             let off = y0 - y;
             let off = if off > 0.0 { off } else { (y - y1).max(0.0) };
             let shrink = (d * d - off * off).max(0.0).sqrt();
-            let row: Vec<(f64, f64)> = inside_at(&near, y).into_iter().map(|(a, b)| (a + shrink, b - shrink)).filter(|(a, b)| b > a).collect();
+            let at_end = ends.get(ends.partition_point(|&e| e < y - eps)).is_some_and(|&e| e <= y + eps);
+            let inside = if at_end { union(&inside_at(&near, y), &inside_at(&near, y - 2.0 * eps)) } else { inside_at(&near, y) };
+            let row: Vec<(f64, f64)> = inside.into_iter().map(|(a, b)| (a + shrink, b - shrink)).filter(|(a, b)| b > a).collect();
             free = intersect(&free, &row);
             if free.is_empty() {
                 break;
@@ -172,6 +180,20 @@ fn intersect(a: &[(f64, f64)], b: &[(f64, f64)]) -> Vec<(f64, f64)> {
             i += 1;
         } else {
             j += 1;
+        }
+    }
+    out
+}
+
+/// Union of two sorted lists of disjoint intervals, sorted and with overlapping ones merged.
+fn union(a: &[(f64, f64)], b: &[(f64, f64)]) -> Vec<(f64, f64)> {
+    let mut all: Vec<(f64, f64)> = a.iter().chain(b).copied().collect();
+    all.sort_by(|p, q| p.0.total_cmp(&q.0));
+    let mut out: Vec<(f64, f64)> = Vec::with_capacity(all.len());
+    for (s, e) in all {
+        match out.last_mut() {
+            Some(last) if s <= last.1 => last.1 = last.1.max(e),
+            _ => out.push((s, e)),
         }
     }
     out

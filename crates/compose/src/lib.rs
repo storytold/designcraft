@@ -4847,7 +4847,8 @@ fn wrap_slot(
 }
 
 /// Free segments of `col` in the band `y0..y1` (a line's top to its baseline: descenders may reach
-/// into the wrap; a shaped frame's outline holds them too, `desc` below `y1`), in the order text
+/// into the wrap; a shaped frame's outline holds them too, `desc` below `y1` and, in a horizontal
+/// frame, no lower than the text area's bottom), in the order text
 /// fills them (left to right, or right to left for right-to-left paragraphs); empty if the band is blocked. A line beside an
 /// object that lets text through on both sides has a segment on each side. When an object cuts
 /// the column, segments narrower than 1.5 em of `size` are skipped (slivers beside it); a column
@@ -4857,9 +4858,13 @@ fn wrap_slot(
 fn free_slots(f: &FrameSpec, col: Rect, y0: f64, y1: f64, desc: f64, size: f64, rtl: bool, line_start: usize) -> Vec<(f64, f64)> {
     // A shaped frame: the parts of the band its outline covers (a concave one can give several),
     // descenders included: they stay inside the frame. The part of the band above the column's
-    // top is not tested, as in a rectangular frame: a Cap Height first line reaches above it.
+    // top is not tested, as in a rectangular frame: a Cap Height first line reaches above it. Nor,
+    // in a horizontal frame, is the part below the text area's bottom, where a rectangular frame
+    // lets the last line's descenders hang; a vertical frame keeps them inside, as it does when
+    // the line is fitted.
+    let bottom = if f.vertical { f64::INFINITY } else { f.area.y1.max(y1) };
     let mut free = match &f.outline {
-        Some(o) => o.intervals(col.x0, col.x1, y0.max(col.y0).min(y1), y1 + desc.max(0.0)),
+        Some(o) => o.intervals(col.x0, col.x1, y0.max(col.y0).min(y1), (y1 + desc.max(0.0)).min(bottom)),
         None => vec![(col.x0, col.x1)],
     };
     let mut cut = f.outline.is_some();
