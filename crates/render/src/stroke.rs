@@ -148,7 +148,10 @@ impl Renderer {
     }
 
     fn draw_graphic_unclipped(&mut self, ctx: &mut RenderContext, f: &Frame, g: &designcraft_doc::Graphic, xf: Affine) {
-        let Some(asset) = f.doc.assets.get(&g.asset) else { return };
+        let Some(asset) = f.doc.assets.get(&g.asset) else {
+            draw_missing_graphic(ctx, f, g, xf);
+            return;
+        };
         if designcraft_doc::media_kind(&asset.mime).is_some() {
             // Video / sound: a dark frame with a play mark (the poster, when set, is drawn by the item).
             ctx.set_transform(f.view * xf * g.xf);
@@ -162,6 +165,10 @@ impl Renderer {
             tri.close_path();
             ctx.set_paint(screen_color([235, 235, 235], 255));
             ctx.fill_path(&tri);
+            return;
+        }
+        if asset.data.is_empty() {
+            draw_missing_graphic(ctx, f, g, xf);
             return;
         }
         if f.opts.quality == DisplayQuality::Fast {
@@ -178,7 +185,10 @@ impl Renderer {
             // An explicit choice (including all-on) that cannot be rewritten fails closed:
             // stale persisted/relinked choices must not reveal hidden source content.
             Some(hidden) => {
-                let Some(variant) = pdf_layers::layered(&asset.data, hidden) else { return };
+                let Some(variant) = pdf_layers::layered(&asset.data, hidden) else {
+                    draw_missing_graphic(ctx, f, g, xf);
+                    return;
+                };
                 variant
             }
             None => asset.data.clone(),
@@ -187,7 +197,10 @@ impl Renderer {
         let [l, t, r, b] = shown_box(asset).unwrap_or([0.0, 0.0, 1.0, 1.0]);
         let (page_w, page_h) = (g.size.0 / (r - l), g.size.1 / (b - t));
         let page = Rect::new(-l * page_w, -t * page_h, (1.0 - l) * page_w, (1.0 - t) * page_h);
-        let Some(pm) = images::mip(&data, asset.page, page_w, on_screen) else { return };
+        let Some(pm) = images::mip(&data, asset.page, page_w, on_screen) else {
+            draw_missing_graphic(ctx, f, g, xf);
+            return;
+        };
         // A coloured image is already in the plate's inks (its colours come from `color_of`).
         let pm = match (colorize::colorized(f.doc, &g.fill, &asset.data, &pm), PLATE.with(std::cell::Cell::get)) {
             (Some(coloured), _) => coloured,
@@ -208,4 +221,28 @@ impl Renderer {
         ctx.fill_rect(&rect);
         ctx.reset_paint_transform();
     }
+}
+
+/// On screen, a graphic that can't be drawn (its data is gone, missing or not decodable) as
+/// InDesign shows one without a preview: a grey box with a cross, hiding what's behind it as the
+/// graphic would. Exports and prints draw nothing there.
+fn draw_missing_graphic(ctx: &mut RenderContext, f: &Frame, g: &designcraft_doc::Graphic, xf: Affine) {
+    if !f.opts.missing_graphics || g.size.0 <= 0.0 || g.size.1 <= 0.0 {
+        return;
+    }
+    let to_screen = f.view * xf * g.xf;
+    ctx.set_transform(to_screen);
+    let r = Rect::new(0.0, 0.0, g.size.0, g.size.1);
+    ctx.set_paint(screen_color([204, 204, 204], 255));
+    ctx.fill_rect(&r);
+    let mut cross = BezPath::new();
+    cross.move_to((r.x0, r.y0));
+    cross.line_to((r.x1, r.y1));
+    cross.move_to((r.x1, r.y0));
+    cross.line_to((r.x0, r.y1));
+    // A hairline at any zoom.
+    let px = 1.0 / to_screen.determinant().abs().sqrt().max(1e-9);
+    ctx.set_paint(screen_color([150, 150, 150], 255));
+    ctx.set_stroke(kurbo::Stroke::new(px));
+    ctx.stroke_path(&cross);
 }

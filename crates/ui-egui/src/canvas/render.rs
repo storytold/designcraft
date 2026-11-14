@@ -41,6 +41,7 @@ pub(super) fn screen_options(app: &DesignApp, layout: &CanvasLayout, preview: bo
         printing_only: preview,
         greek_below_px: 3.0 * ppp,
         highlight_missing_fonts: !preview && app.session.prefs.highlight_substituted_fonts,
+        missing_graphics: true,
         highlight_hj: !preview && app.session.prefs.highlight_hj,
         condition_indicators: !preview,
         note_indicators: !preview && app.session.prefs.show_note_anchors,

@@ -803,3 +803,86 @@ fn dotted_strokes_draw_every_dot() {
     let dots = outline.elements().iter().filter(|e| matches!(e, kurbo::PathEl::MoveTo(_))).count();
     assert_eq!(dots, 13);
 }
+
+/// A placed graphic that can't be drawn (no data, or data that doesn't decode) shows on screen as
+/// a grey box with a cross that hides what's behind it, as InDesign's box without a preview does;
+/// output draws nothing there.
+#[test]
+fn undrawable_graphics_show_a_grey_box_on_screen_only() {
+    for data in [Vec::new(), b"not an image".to_vec()] {
+        let mut d = Document::new(&NewDocument::default());
+        let lid = d.default_layer();
+        // A black box behind the graphic.
+        let back = designcraft_doc::ItemId(d.alloc());
+        let mut it =
+            Item::new(back, lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(100.0, 100.0, 200.0, 200.0)));
+        it.fill = designcraft_doc::Fill::swatch(designcraft_color::swatch::BLACK);
+        d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+        let aid = designcraft_doc::AssetId(d.alloc());
+        d.assets.insert(
+            aid,
+            Arc::new(designcraft_doc::Asset { id: aid, name: "image".into(), mime: "image/png".into(), data: Arc::new(data), ..Default::default() }),
+        );
+        let id = designcraft_doc::ItemId(d.alloc());
+        let mut it =
+            Item::new(id, lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(100.0, 100.0, 200.0, 200.0)));
+        it.content = designcraft_doc::Content::Graphic(designcraft_doc::Graphic {
+            layer_options: None,
+            asset: aid,
+            size: (100.0, 100.0),
+            xf: Affine::translate((100.0, 100.0)),
+            clip: None,
+            auto_fit: Default::default(),
+            fit_align: 4,
+            crop: [0.0; 4],
+            wrap: Default::default(),
+            fill: Default::default(),
+        });
+        d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+        let cache = Cache::new();
+        let mut r = Renderer::new();
+        r.threads = 0;
+        // Off the cross's diagonals.
+        let px = |missing: bool, r: &mut Renderer| {
+            r.render_page(&d, &cache, 0, 1.0, false, &RenderOptions { missing_graphics: missing, ..Default::default() }).unwrap().pixel(130, 150)
+        };
+        let screen = px(true, &mut r);
+        assert_eq!(screen[..3], [204, 204, 204], "a grey box on screen");
+        let output = px(false, &mut r);
+        assert!(output[0] < 80, "output shows what's behind: {output:?}");
+        // The cross runs corner to corner.
+        let at = r.render_page(&d, &cache, 0, 1.0, false, &RenderOptions { missing_graphics: true, ..Default::default() }).unwrap().pixel(150, 150);
+        assert!(at[0] < 190, "the cross: {at:?}");
+    }
+}
+
+/// A video or sound without data keeps its dark media frame, on screen and in output.
+#[test]
+fn media_without_data_keeps_its_frame() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let aid = designcraft_doc::AssetId(d.alloc());
+    d.assets.insert(aid, Arc::new(designcraft_doc::Asset { id: aid, name: "clip".into(), mime: "video/mp4".into(), ..Default::default() }));
+    let id = designcraft_doc::ItemId(d.alloc());
+    let mut it = Item::new(id, lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(100.0, 100.0, 200.0, 200.0)));
+    it.content = designcraft_doc::Content::Graphic(designcraft_doc::Graphic {
+        layer_options: None,
+        asset: aid,
+        size: (100.0, 100.0),
+        xf: Affine::translate((100.0, 100.0)),
+        clip: None,
+        auto_fit: Default::default(),
+        fit_align: 4,
+        crop: [0.0; 4],
+        wrap: Default::default(),
+        fill: Default::default(),
+    });
+    d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+    let cache = Cache::new();
+    let mut r = Renderer::new();
+    r.threads = 0;
+    for missing in [false, true] {
+        let p = r.render_page(&d, &cache, 0, 1.0, false, &RenderOptions { missing_graphics: missing, ..Default::default() }).unwrap().pixel(110, 110);
+        assert_eq!(p[..3], [48, 48, 52], "the media frame (missing_graphics: {missing})");
+    }
+}

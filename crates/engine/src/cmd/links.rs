@@ -194,12 +194,12 @@ pub(crate) fn status_cached(a: &designcraft_doc::Asset, document: Option<&Path>,
 /// although the fingerprint kept with the asset says nothing or something else: what
 /// [`remember_link_files`] keeps, so the file isn't read again in another session.
 fn image_status(a: &designcraft_doc::Asset, document: Option<&Path>, checks: &mut ImageChecks) -> (&'static str, Option<Fingerprint>) {
-    let Some(link) = &a.link else { return ("embedded", None) };
-    // Nothing was read from the file (a package's link that wasn't followed): missing, as in
-    // Preflight.
+    // Nothing was read from the file (a package's link that wasn't followed, an image an import
+    // found no data for): missing, as in Preflight.
     if a.data.is_empty() {
         return ("missing", None);
     }
+    let Some(link) = &a.link else { return ("embedded", None) };
     #[cfg(not(target_arch = "wasm32"))]
     {
         let Ok(path) = crate::io::document_path(link, document) else { return ("missing", None) };
@@ -525,8 +525,8 @@ fn list(d: &Document, cache: &Cache, document: Option<&Path>, files: Option<&mut
                     }
                     status
                 }
-                None if a.link.is_none() => "embedded",
                 None if a.data.is_empty() || why.is_some() => "missing",
+                None if a.link.is_none() => "embedded",
                 None => "checking",
             };
             Some(json!({"asset": a.id.0, "name": a.name, "path": a.link, "status": status, "refused": why, "pixels": a.pixels, "pdfCrop": pdf_crop, "uses": uses}))
