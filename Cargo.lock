@@ -2120,6 +2120,7 @@ dependencies = [
  "designcraft-geom",
  "designcraft-idml",
  "designcraft-images",
+ "designcraft-pages",
  "designcraft-pdf",
  "designcraft-pptx",
  "designcraft-render",
@@ -2238,6 +2239,18 @@ dependencies = [
  "image",
  "log",
  "serde_json",
+]
+
+[[package]]
+name = "designcraft-pages"
+version = "0.20.1"
+dependencies = [
+ "designcraft-color",
+ "designcraft-doc",
+ "designcraft-geom",
+ "designcraft-images",
+ "thiserror 2.0.21",
+ "zip 3.0.0",
 ]
 
 [[package]]
