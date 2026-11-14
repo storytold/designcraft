@@ -1,7 +1,7 @@
 use super::*;
 use designcraft_doc::build::NewDocument;
 use designcraft_doc::geom::{Affine, Rect, shapes};
-use designcraft_doc::{Asset, AssetId, Content, Graphic, Item, ItemId, ParaFormat, Shape, SpreadRef, Story, StoryId, Table};
+use designcraft_doc::{Asset, AssetData, AssetId, Content, Graphic, Item, ItemId, ParaFormat, Shape, SpreadRef, Story, StoryId, Table};
 use std::io::Read;
 use std::sync::Arc;
 
@@ -72,7 +72,7 @@ fn anchored_objects_are_exported_in_place() {
             name: "dot.png".into(),
             mime: "image/png".into(),
             link: None,
-            data: Arc::new(vec![7]),
+            data: AssetData::embedded(vec![7]),
             pixels: Some((1, 1)),
             ..Default::default()
         }),
@@ -587,7 +587,7 @@ fn images_get_readable_names_and_no_file_name_alt() {
                 name: name.into(),
                 mime: mime.into(),
                 link: None,
-                data: Arc::new(vec![1]),
+                data: AssetData::embedded(vec![1]),
                 pixels: Some((1, 1)),
                 ..Default::default()
             }),
@@ -704,7 +704,7 @@ fn metadata_is_serialized_for_its_output_context() {
             id: aid,
             name: "Cover & Notes".into(),
             mime: "image/png; profile=screen".into(),
-            data: Arc::new(vec![1]),
+            data: AssetData::embedded(vec![1]),
             pixels: Some((1, 1)),
             ..Default::default()
         }),

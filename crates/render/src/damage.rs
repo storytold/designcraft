@@ -272,7 +272,7 @@ mod tests {
         Arc::make_mut(&mut d.spreads[0]).items.push(Arc::new(it));
         let old = d.clone();
         // Relink: the same asset id now holds other bytes; the item itself is unchanged.
-        let fresh = Asset { data: Arc::new(vec![1, 2, 3]), link: Some("/new/a.png".into()), ..(*d.assets[&aid]).clone() };
+        let fresh = Asset { data: designcraft_doc::AssetData::embedded(vec![1, 2, 3]), link: Some("/new/a.png".into()), ..(*d.assets[&aid]).clone() };
         d.assets.insert(aid, Arc::new(fresh));
         let dmg = damage(&old, &d);
         assert!(
