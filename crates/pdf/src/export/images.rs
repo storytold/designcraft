@@ -46,12 +46,7 @@ pub(super) struct RasterMode {
 
 /// The ICC profile embedded in an image file, if it has one.
 pub(super) fn embedded_icc(data: &[u8]) -> Option<Vec<u8>> {
-    use image::ImageDecoder;
-    if !designcraft_images::webp_icc_is_sane(data) {
-        return None;
-    }
-    let mut dec = image::ImageReader::new(std::io::Cursor::new(data)).with_guessed_format().ok()?.into_decoder().ok()?;
-    dec.icc_profile().ok().flatten()
+    craft_image_codecs::embedded_icc(data).ok().flatten()
 }
 
 /// Whether an ICC profile describes RGB (its colour space signature, header bytes 16 to 20).
@@ -66,12 +61,12 @@ pub(super) fn is_grey_icc(icc: &[u8]) -> bool {
 
 /// Whether `data` decodes to grey (with or without alpha), read from its header.
 pub(super) fn is_grey(data: &[u8]) -> bool {
-    use image::ImageDecoder;
-    image::ImageReader::new(std::io::Cursor::new(data))
-        .with_guessed_format()
-        .ok()
-        .and_then(|r| r.into_decoder().ok())
-        .is_some_and(|dec| !dec.color_type().has_color())
+    craft_image_codecs::inspect_raster(data).ok().flatten().is_some_and(|info| {
+        matches!(
+            info.color_type,
+            craft_image_codecs::RasterColorType::Bitmap | craft_image_codecs::RasterColorType::Gray | craft_image_codecs::RasterColorType::GrayAlpha
+        )
+    })
 }
 
 /// A JPEG, passed through. With `tag_rgb`, a JPEG keeps its own profile, and one without gets
@@ -91,28 +86,28 @@ pub(super) fn jpeg(data: krilla::Data, icc: impl FnOnce() -> Option<Vec<u8>>, mo
 /// Whether krilla would write this PNG, GIF or WebP as untagged RGB: not grey, and no profile of
 /// its own.
 fn untagged_rgb(data: &[u8]) -> bool {
-    use image::ImageDecoder;
-    if !designcraft_images::webp_icc_is_sane(data) {
-        return false;
-    }
-    let Some(mut dec) = image::ImageReader::new(std::io::Cursor::new(data)).with_guessed_format().ok().and_then(|r| r.into_decoder().ok()) else {
-        return false;
-    };
-    let grey = matches!(dec.color_type(), image::ColorType::L8 | image::ColorType::La8 | image::ColorType::L16 | image::ColorType::La16);
-    !grey && dec.icc_profile().ok().flatten().is_none()
+    let Some(info) = craft_image_codecs::inspect_raster(data).ok().flatten() else { return false };
+    !matches!(
+        info.color_type,
+        craft_image_codecs::RasterColorType::Bitmap | craft_image_codecs::RasterColorType::Gray | craft_image_codecs::RasterColorType::GrayAlpha
+    ) && embedded_icc(data).is_none()
 }
 
-pub(super) fn lossless(data: &Arc<Vec<u8>>, fmt: Option<image::ImageFormat>, mode: RasterMode) -> Option<Image> {
+pub(super) fn lossless(data: &Arc<Vec<u8>>, fmt: Option<craft_image_codecs::Format>, mode: RasterMode) -> Option<Image> {
     // krilla reads PNG, GIF and WebP lazily: a damaged file is accepted here and fails the whole
     // export when the PDF is written. Decoding it first means it is skipped, like any other
     // image that can't be decoded.
     let rgba = designcraft_images::decode_rgba(data)?;
     let i = mode.interpolate;
     let direct = match fmt {
-        Some(image::ImageFormat::Png | image::ImageFormat::Gif | image::ImageFormat::WebP) if mode.tag_rgb && untagged_rgb(data) => None,
-        Some(image::ImageFormat::Png) => Image::from_png(data.clone().into(), i).ok(),
-        Some(image::ImageFormat::Gif) => Image::from_gif(data.clone().into(), i).ok(),
-        Some(image::ImageFormat::WebP) => Image::from_webp(data.clone().into(), i).ok(),
+        Some(craft_image_codecs::Format::Png | craft_image_codecs::Format::Gif | craft_image_codecs::Format::WebP)
+            if mode.tag_rgb && untagged_rgb(data) =>
+        {
+            None
+        }
+        Some(craft_image_codecs::Format::Png) => Image::from_png(data.clone().into(), i).ok(),
+        Some(craft_image_codecs::Format::Gif) => Image::from_gif(data.clone().into(), i).ok(),
+        Some(craft_image_codecs::Format::WebP) => Image::from_webp(data.clone().into(), i).ok(),
         _ => None,
     };
     direct.or_else(|| {
@@ -183,21 +178,20 @@ pub(super) fn recompress(data: &[u8], mode: RasterMode) -> Option<Image> {
     {
         RECOMPRESS_DECODES.with(|n| n.set(n.get() + 1));
     }
-    let img = image::load_from_memory(data).ok()?;
-    if img.color().has_alpha() && img.to_rgba8().pixels().any(|p| p[3] < 255) {
+    let img = craft_image_codecs::decode(data).ok()?;
+    let rgba = img.to_rgba8();
+    if img.layout().has_alpha() && rgba.as_chunks::<4>().0.iter().any(|p| p[3] < 255) {
         return None;
     }
-    let mut buf = Vec::new();
-    let enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 90);
     // A grey image stays a grey JPEG (#1426).
-    let grey = !img.color().has_color();
-    if grey {
-        let l = img.to_luma8();
-        image::ImageEncoder::write_image(enc, l.as_raw(), l.width(), l.height(), image::ExtendedColorType::L8).ok()?;
+    let grey = img.layout().is_gray();
+    let jpeg_image = if grey {
+        img.convert(craft_image_codecs::ChannelLayout::Gray, craft_image_codecs::SampleType::U8)
     } else {
-        let rgb = img.to_rgb8();
-        image::ImageEncoder::write_image(enc, rgb.as_raw(), rgb.width(), rgb.height(), image::ExtendedColorType::Rgb8).ok()?;
-    }
+        img.convert(craft_image_codecs::ChannelLayout::Rgb, craft_image_codecs::SampleType::U8)
+    };
+    let options = craft_image_codecs::EncodeOptions { jpeg_quality: 90, ..Default::default() };
+    let buf = craft_image_codecs::encode(&jpeg_image, craft_image_codecs::Format::Jpeg, &options).ok()?;
     jpeg(buf.into(), || embedded_icc(data).filter(|p| if grey { is_grey_icc(p) } else { is_rgb_icc(p) }), mode)
 }
 
@@ -427,7 +421,7 @@ mod image_content_cache_tests {
     // Serialize the converted raster without an archival validator so the RGB-only pixel
     // contract stays independent of main's existing PDF/A interpolation validation failure.
     fn image_color_samples(image: Image) -> (String, Vec<u8>) {
-        use hayro_syntax::object::Name;
+        use craft_pdf::syntax::object::Name;
         let mut pdf = krilla::Document::new();
         let size = Size::from_wh(20.0, 20.0).unwrap();
         let mut page = pdf.start_page_with(PageSettings::new(size));
@@ -436,7 +430,7 @@ mod image_content_cache_tests {
         surface.finish();
         page.finish();
         let bytes = pdf.finish().unwrap();
-        let pdf = hayro_syntax::Pdf::new(bytes).unwrap();
+        let pdf = craft_pdf::syntax::Pdf::new(bytes).unwrap();
         let stream = pdf
             .objects()
             .into_iter()
@@ -472,7 +466,7 @@ mod image_content_cache_tests {
 #[cfg(test)]
 mod eps_tests {
     use super::*;
-    use hayro_syntax::object::Name;
+    use craft_pdf::syntax::object::Name;
 
     #[test]
     fn eps_tiff_preview_keeps_cmyk_inks_in_pdf() {
@@ -528,7 +522,7 @@ mod eps_tests {
         for standard in [Standard::None, Standard::PdfX4] {
             let report = export_pdf_with_report(&doc, &Cache::new(), &PdfOptions { standard, ..Default::default() }).unwrap();
             assert!(report.warnings.is_empty(), "{:?}", report.warnings);
-            let pdf = hayro_syntax::Pdf::new(report.bytes).unwrap();
+            let pdf = craft_pdf::syntax::Pdf::new(report.bytes).unwrap();
             let images: Vec<_> = pdf
                 .objects()
                 .into_iter()

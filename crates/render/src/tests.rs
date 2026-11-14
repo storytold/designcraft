@@ -559,7 +559,7 @@ fn degenerate_dash_patterns_draw_solid_and_fill_types_close_table_corners() {
     let (fid, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 336.0, 400.0), lid, "", ParaFormat::default()).unwrap();
     d.item_mut(fid).unwrap().stroke = designcraft_doc::Stroke { weight: 2.0, kind: fine.clone(), ..Default::default() };
     let mut t = designcraft_doc::Table::new(1, 2, 2, 0, 0, 200.0);
-    for row in t.rows.iter_mut().take(2) {
+    for row in &mut t.rows {
         row.height = 60.0;
         row.mode = designcraft_doc::RowHeightMode::Exactly;
     }
