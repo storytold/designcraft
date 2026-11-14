@@ -2304,6 +2304,21 @@ fn table_rows_fit_their_content() {
 }
 
 #[test]
+fn a_table_starts_at_the_baseline_of_the_line_above() {
+    // As in InDesign: the line's descenders hang into the space above the table, which starts at
+    // the baseline plus the paragraph's space after.
+    let mut t = filled(2, 2, 0, 300.0);
+    t.options.space_before = 0.0;
+    let (mut d, sid, _) = table_doc(Rect::new(0.0, 0.0, 400.0, 1000.0), t);
+    d.story_mut(sid).unwrap().paras[0].para.space_after = Some(3.0);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let ft = &cs.frames[0];
+    let intro = ft.lines.iter().find(|l| l.para == 0).unwrap();
+    assert!(intro.descent > 0.0);
+    assert!((ft.tables[0].rect.y0 - (intro.baseline + 3.0)).abs() < 1e-6, "{} vs {}", ft.tables[0].rect.y0, intro.baseline);
+}
+
+#[test]
 fn table_columns_scale_to_the_text_column() {
     let (d, sid, _) = table_doc(Rect::new(0.0, 0.0, 200.0, 1000.0), filled(2, 4, 0, 600.0));
     let cs = compose_story(&d, sid, &ComposeOptions::default());
@@ -10110,4 +10125,146 @@ fn cross_reference_text_breaks_at_its_spaces() {
             assert!(words.contains(&w), "a line breaks inside a word: {w:?} in {lines:?}");
         }
     }
+}
+
+#[test]
+fn a_table_in_a_spanning_paragraph_spans_the_columns() {
+    // A heading table set across a two-column frame (as InDesign documents anchor section bars),
+    // with text before it (`intro`) or not.
+    for intro in [false, true] {
+        let body = [LOREM; 4].join("\n");
+        let text = if intro { format!("Intro\n{body}") } else { body };
+        let (mut d, sid, fid) = doc_with(&text, Rect::new(0.0, 0.0, 400.0, 450.0), ParaAttrs::default());
+        d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = 2;
+        let st = d.story_mut(sid).unwrap();
+        let at = if intro { "Intro\n".len() } else { 0 };
+        st.insert_table(at, filled(2, 1, 0, 380.0));
+        let tp = (0..st.paras.len()).find(|&i| st.para_table(i).is_some()).unwrap();
+        st.paras[tp].para.span_columns = Some(SpanColumns::Span(0));
+        d.check().unwrap();
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        assert!(!cs.is_overset());
+        let ft = &cs.frames[0];
+        let tf = &ft.tables[0];
+        // The table keeps its width, wider than one column.
+        assert!((tf.rect.width() - 380.0).abs() < 1e-6, "{}", tf.rect.width());
+        assert!((tf.rect.x0 - ft.columns[0].x0).abs() < 1e-6);
+        // The text after it starts below it, in both columns.
+        let after: Vec<&Line> = ft.lines.iter().filter(|l| l.para > tp).collect();
+        assert!(after.iter().all(|l| line_box(l).0 >= tf.rect.y1 - 0.5), "intro {intro}");
+        assert!((0..2).all(|c| after.iter().any(|l| l.column == c)), "intro {intro}");
+        if intro {
+            let first = ft.lines.iter().find(|l| l.para == 0).unwrap();
+            assert!(tf.rect.y0 >= first.baseline, "the table goes below the text above it");
+        }
+    }
+}
+
+#[test]
+fn a_spanning_table_spaces_and_column_starts_as_spanning_text() {
+    // Intro text, then a table across two columns with space before/after, then text.
+    let body = [LOREM; 4].join(
+        "
+",
+    );
+    let (mut d, sid, fid) = doc_with(
+        &format!(
+            "Intro
+{body}"
+        ),
+        Rect::new(0.0, 0.0, 400.0, 450.0),
+        ParaAttrs::default(),
+    );
+    d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = 2;
+    let st = d.story_mut(sid).unwrap();
+    st.paras[0].para.space_after = Some(3.0);
+    let mut t = filled(1, 1, 0, 380.0);
+    t.options.space_before = 0.0;
+    t.options.space_after = 0.0;
+    st.insert_table(
+        "Intro
+"
+        .len(),
+        t,
+    );
+    let tp = (0..st.paras.len()).find(|&i| st.para_table(i).is_some()).unwrap();
+    let p = &mut st.paras[tp].para;
+    p.span_columns = Some(SpanColumns::Span(0));
+    p.span_space_before = Some(6.0);
+    p.space_after = Some(4.0);
+    p.span_space_after = Some(10.0);
+    d.check().unwrap();
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let ft = &cs.frames[0];
+    let intro = ft.lines.iter().find(|l| l.para == 0).unwrap();
+    let tf = &ft.tables[0];
+    // Space before the span adds to the intro's space after (below its descenders).
+    assert!((tf.rect.y0 - (intro.baseline + intro.descent + 3.0 + 6.0)).abs() < 1e-6, "{} after {}", tf.rect.y0, intro.baseline);
+    // The larger of the space before and the span space before, as for spanning text.
+    let below = |d: &Document| {
+        let cs = compose_story(d, sid, &ComposeOptions::default());
+        let ft = &cs.frames[0];
+        ft.tables[0].rect.y0 - ft.lines.iter().find(|l| l.para == 0).map(|l| l.baseline + l.descent).unwrap()
+    };
+    d.story_mut(sid).unwrap().paras[tp].para.space_before = Some(8.0);
+    assert!((below(&d) - (3.0 + 8.0)).abs() < 1e-6, "{}", below(&d));
+    d.story_mut(sid).unwrap().paras[tp].para.space_before = None;
+    // Both columns below start the larger space after (10 pt) under the table, on one baseline.
+    let firsts: Vec<f64> = (0..2).map(|c| ft.lines.iter().find(|l| l.para > tp && l.column == c).unwrap().baseline).collect();
+    assert!((firsts[0] - firsts[1]).abs() < 1e-6, "{firsts:?}");
+    let gap = |b: f64| b - tf.rect.y1;
+    let alone = {
+        let st = d.story_mut(sid).unwrap();
+        st.paras[tp].para.span_space_after = Some(0.0);
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let ft = &cs.frames[0];
+        ft.lines.iter().find(|l| l.para > tp && l.column == 0).unwrap().baseline - ft.tables[0].rect.y1
+    };
+    assert!((gap(firsts[0]) - alone - 6.0).abs() < 1e-6, "span space after replaces the 4 pt space after: {} vs {alone}", gap(firsts[0]));
+
+    // Start in Next Column moves a spanning table on to the next frame, as for spanning text.
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (f1, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 400.0, 300.0), lid, "Intro", ParaFormat::default()).unwrap();
+    let (f2, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 400.0, 400.0, 700.0), lid, "", ParaFormat::default()).unwrap();
+    d.thread(f1, f2).unwrap();
+    for f in [f1, f2] {
+        d.item_mut(f).unwrap().text_frame_mut().unwrap().options.columns = 2;
+    }
+    let st = d.story_mut(sid).unwrap();
+    let end = st.len();
+    st.insert_table(end, filled(1, 1, 0, 380.0));
+    let tp = (0..st.paras.len()).find(|&i| st.para_table(i).is_some()).unwrap();
+    st.paras[tp].para.span_columns = Some(SpanColumns::Span(0));
+    st.paras[tp].para.start_paragraph = Some(designcraft_doc::StartParagraph::NextColumn);
+    d.check().unwrap();
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(cs.frames[0].tables.is_empty() && cs.frames[1].tables.len() == 1);
+}
+
+#[test]
+fn a_spanning_table_right_below_another_keeps_its_space_before() {
+    let (mut d, sid, fid) = doc_with(LOREM, Rect::new(0.0, 0.0, 400.0, 450.0), ParaAttrs::default());
+    d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = 2;
+    let st = d.story_mut(sid).unwrap();
+    let table = |id: u64| {
+        let mut t = filled(1, 1, 0, 380.0);
+        t.options.space_before = 0.0;
+        t.options.space_after = 0.0;
+        t.id = id;
+        t
+    };
+    st.insert_table(0, table(77));
+    let after = st.para_ranges()[(0..st.paras.len()).find(|&i| st.para_table(i).is_some()).unwrap()].end + 1;
+    st.insert_table(after, table(78));
+    let tables: Vec<usize> = (0..st.paras.len()).filter(|&i| st.para_table(i).is_some()).collect();
+    for &p in &tables {
+        st.paras[p].para.span_columns = Some(SpanColumns::Span(0));
+    }
+    st.paras[tables[1]].para.space_before = Some(8.0);
+    d.check().unwrap();
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let ft = &cs.frames[0];
+    let (a, b) = (&ft.tables[0], &ft.tables[1]);
+    assert!((b.rect.y0 - a.rect.y1 - 8.0).abs() < 1e-6, "{} below {}", b.rect.y0, a.rect.y1);
 }
