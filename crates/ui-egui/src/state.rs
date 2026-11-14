@@ -540,6 +540,9 @@ pub struct Shown {
     pub origin: Point,
     pub zoom: f64,
     pub size: (f32, f32),
+    /// [`designcraft_render::images::generation`] when rendered: images decoded since are
+    /// drawn by rendering again.
+    pub images: u64,
 }
 
 impl CanvasCache {
@@ -562,6 +565,7 @@ impl CanvasCache {
             patcher: designcraft_render::Renderer::new(),
             patches: 0,
             separations: separations::Preview::default(),
+            images: (0, f64::NEG_INFINITY),
         }
     }
 }
@@ -595,6 +599,9 @@ pub struct CanvasCache {
     pub patches: u64,
     /// View › Separations Preview: the visible spreads' plates.
     pub separations: separations::Preview,
+    /// The [`designcraft_render::images::generation`] the canvas renders with, and when it took
+    /// it (ms): finished background decodes are taken up in batches, one render for many.
+    pub images: (u64, f64),
 }
 
 #[derive(Default, Clone, Copy, Debug, Serialize)]

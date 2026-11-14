@@ -181,7 +181,7 @@ mod tests {
         let Content::Graphic(g) = &d.item(id).unwrap().content else { panic!("not a graphic") };
         let a = &d.assets[&g.asset];
         assert_eq!(a.link, None, "embedded, not linked");
-        a.data.to_vec()
+        a.data.load().unwrap().to_vec()
     }
 
     #[test]
@@ -209,7 +209,7 @@ mod tests {
 
         let idml = s.execute("file.exportIdml", &json!({})).unwrap();
         let imported = designcraft_idml::import_idml(&base64_decode(idml["base64"].as_str().unwrap())).unwrap();
-        assert!(imported.assets.values().any(|a| *a.data == png), "the IDML package carries the pixels");
+        assert!(imported.assets.values().any(|a| **a.data.embedded_bytes().unwrap() == png), "the IDML package carries the pixels");
     }
 
     #[test]
