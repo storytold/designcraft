@@ -152,7 +152,7 @@ fn accepted_plain_text(p: &Paragraph) -> String {
         }
         if c == craft_wordmodel::para::OBJ {
             if let Some(object) = p.objects.get(object_i) {
-                out.push_str(&object.plain_text());
+                out.push_str(object.plain_text());
             }
             object_i = object_i.saturating_add(1);
         } else {
