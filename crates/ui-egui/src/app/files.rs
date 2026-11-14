@@ -492,15 +492,59 @@ impl DesignApp {
     /// Links panel's statuses fill in.
     pub(crate) fn poll_link_checks(&mut self, ctx: &egui::Context) {
         // Running any command ends a text composition in progress: ask only while files are checked.
-        if !self.session.active().is_some_and(|st| st.links.checking()) {
+        if !self.session.active().is_some_and(|st| st.links.checking()) && self.waiting_save.is_none() {
             return;
         }
         let Ok(progress) = self.session.execute("links.progress", &json!({})) else { return };
         if let Some(notice) = progress["notice"].as_str() {
             self.status(notice.to_string());
         }
-        if progress["checking"].as_bool() == Some(true) {
+        if progress["checking"].as_bool() == Some(true) || self.waiting_save.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(400));
+        }
+        let now = self.waiting_save.is_some() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+        self.run_waiting_save(now);
+    }
+
+    /// The status line while a save waits for the checks of linked files ([`crate::menus::save_when_checked`]).
+    pub(crate) fn show_save_wait(&mut self, remaining: usize) {
+        self.status(crate::i18n::tr(&self.ui.language, "Checking {n} linked images…").replace("{n}", &remaining.max(1).to_string()));
+    }
+
+    /// Run the save waiting for the checks of its document's linked files once they are done, or
+    /// at once when `now` (Esc). It saves its own document, which is made active for that and
+    /// the active one again after. A document closed meanwhile drops it.
+    pub(crate) fn run_waiting_save(&mut self, now: bool) {
+        let Some(uid) = self.waiting_save.as_ref().map(|w| w.uid) else { return };
+        let Some(st) = self.session.documents().iter().find(|d| d.uid == uid) else {
+            self.waiting_save = None;
+            return;
+        };
+        if st.links.checking() && !now {
+            let remaining = st.links.remaining();
+            self.show_save_wait(remaining);
+            return;
+        }
+        let Some(waiting) = self.waiting_save.take() else { return };
+        let active = self.session.active().map(|d| d.uid);
+        let index_of = |app: &Self, uid: u64| app.session.documents().iter().position(|d| d.uid == uid);
+        if active != Some(uid)
+            && let Some(i) = index_of(self, uid)
+            && let Err(e) = self.run("file.activate", json!({"index": i}))
+        {
+            self.status_error("Save", e);
+            return;
+        }
+        // The count of files left goes; what the save reports stays.
+        self.status(String::new());
+        let saved = (waiting.save)(self);
+        if active != Some(uid)
+            && let Some(i) = active.and_then(|a| index_of(self, a))
+        {
+            let _ = self.run("file.activate", json!({"index": i}));
+        }
+        if let Err(e) = saved {
+            self.status_error("Save", e);
         }
     }
 

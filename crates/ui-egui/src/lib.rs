@@ -143,6 +143,12 @@ struct ShotRequest {
     slot: Option<craft_ui::capture::CaptureSlot>,
 }
 
+/// A save that waits for the checks of document `uid`'s linked files ([`DesignApp::waiting_save`]).
+pub(crate) struct WaitingSave {
+    pub(crate) uid: u64,
+    pub(crate) save: Box<dyn FnOnce(&mut DesignApp) -> Result<Value, String>>,
+}
+
 pub struct DesignApp {
     pending_pdf: Option<ImportedFile>,
     /// The files of the batch after `pending_pdf`, which wait for its Import Options.
@@ -306,6 +312,9 @@ pub struct DesignApp {
     pub(crate) quit_without_asking: bool,
     /// No document is discarded until every unsaved document has an up-to-date approval.
     quitting: Option<QuitState>,
+    /// A save asked for while the open-time checks of the document's linked files run: it runs
+    /// once they are done, so the first save already writes the links they confirm.
+    pub(crate) waiting_save: Option<WaitingSave>,
     /// The tool cursor bitmaps handed to the OS.
     pub cursors: cursors::Images,
     /// A panel's live preview (a slider being dragged), committed when it is let go.

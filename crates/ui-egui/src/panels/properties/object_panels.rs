@@ -27,7 +27,7 @@ pub fn stroke_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     egui::Grid::new("stroke_panel").num_columns(2).spacing(vec2(8.0, 6.0)).show(ui, |ui| {
         caption(ui, crate::i18n::tr(&app.ui.language, "Weight:"));
         if let Some(v) = number(ui, "sw", Some(i.stroke_weight), " pt", 60.0, 3) {
-            let _ = app.run("object.stroke", json!({"weight": v}));
+            let _ = app.run("object.stroke", json!({"weight": v.clamp(0.0, 1000.0)}));
         }
         ui.end_row();
         caption(ui, crate::i18n::tr(&app.ui.language, "Cap:"));
@@ -50,7 +50,7 @@ pub fn stroke_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         ui.end_row();
         caption(ui, crate::i18n::tr(&app.ui.language, "Miter Limit:"));
         if let Some(v) = number(ui, "smiter", Some(st.miter_limit), " x", 60.0, 0) {
-            let _ = app.run("object.stroke", json!({"miterLimit": v}));
+            let _ = app.run("object.stroke", json!({"miterLimit": v.clamp(1.0, 500.0)}));
         }
         ui.end_row();
         caption(ui, crate::i18n::tr(&app.ui.language, "Align Stroke:"));

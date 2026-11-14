@@ -15,7 +15,7 @@
 //! remembered apart from failed decodes: it is asked for again once
 //! [`designcraft_doc::asset_data::link_generation`] has advanced (a relink, an update).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
@@ -996,6 +996,90 @@ pub(crate) fn warm(wants: Vec<Want>) -> usize {
     run_jobs(workers, jobs)
 }
 
+/// Each asset's full pixel size and the levels it is drawn at.
+type DrawnLevels = HashMap<(SourceKey, u32), ((u32, u32), Vec<u8>)>;
+
+/// Whether every drawing of `k` in `levels` finds its level cached, or a finer one to halve.
+fn drawn_cached(c: &Cache, k: &(SourceKey, u32), levels: &DrawnLevels) -> bool {
+    levels.get(k).is_some_and(|(_, ls)| ls.iter().all(|l| (0..=*l).any(|f| c.map.contains_key(&(k.0, k.1, f)))))
+}
+
+/// Whether `k` failed to decode, or its linked bytes couldn't be had under the links of
+/// `generation`.
+fn failed(c: &Cache, k: &(SourceKey, u32), generation: u64) -> bool {
+    c.bad.contains_key(k) || c.unavailable.get(&k.0).is_some_and(|(_, g, _)| *g == generation)
+}
+
+/// What decoding the drawings `wanted` of the asset `key` adds to the cache and holds at its
+/// peak, and whether that is their reduced JPEG estimate (else a full decode's, which keeps only
+/// the levels drawn).
+fn estimate(key: (SourceKey, u32), wanted: &[Want], levels: &DrawnLevels) -> (usize, usize, bool) {
+    fault(key.0);
+    if let Some((size, decoding)) = reduced_estimates(wanted) {
+        return (size, decoding, true);
+    }
+    let full = wanted.first().and_then(|w| Some(decode_sizes(&w.bytes.load().ok()?, w.page))).unwrap_or((0, 0));
+    let kept = levels.get(&key).map_or(full.0, |(size, ls)| {
+        let mut ls = ls.clone();
+        ls.sort_unstable();
+        ls.dedup();
+        ls.iter().fold(0usize, |n, l| {
+            let (w, h) = halved(*size, *l);
+            n.saturating_add((w as usize).saturating_mul(h as usize).saturating_mul(4))
+        })
+    });
+    (kept, full.1, false)
+}
+
+/// The bytes each asset in `index` holds in the cache, when it is cached or failed, and the bytes
+/// of everything else cached. An asset some drawing of which finds no level to draw is not held:
+/// it is decoded again, and the cached levels its decode estimate covers count with that
+/// estimate, not with everything else. The estimate of an asset in `reduced` covers the levels
+/// from the one read from the JPEG blocks to each one drawn, as [`reduced_estimates`] counts
+/// them; a full decode's covers the levels drawn. The levels of the assets in `index` become the
+/// most recently used, so later stores evict other images first.
+fn held_in_view(
+    c: &mut Cache,
+    index: &HashMap<(SourceKey, u32), usize>,
+    levels: &DrawnLevels,
+    reduced: &HashSet<(SourceKey, u32)>,
+    generation: u64,
+) -> (HashMap<(SourceKey, u32), usize>, usize) {
+    let cached: HashSet<(SourceKey, u32)> = index.keys().filter(|k| drawn_cached(c, k, levels)).copied().collect();
+    let covered = |k: &(SourceKey, u32), level: u8| {
+        let Some((_, ls)) = levels.get(k) else { return level == 0 };
+        if reduced.contains(k) {
+            ls.iter().any(|l| (*l).min(designcraft_images::MAX_REDUCED_SHRINK) <= level && level <= *l)
+        } else {
+            ls.contains(&level)
+        }
+    };
+    c.clock += 1;
+    let clock = c.clock;
+    let mut held: HashMap<(SourceKey, u32), usize> = HashMap::new();
+    let mut in_view = 0usize;
+    for (k, e) in c.map.iter_mut() {
+        let asset = (k.0, k.1);
+        if !index.contains_key(&asset) {
+            continue;
+        }
+        e.stamp = clock;
+        let n = size_of(&e.pm);
+        if cached.contains(&asset) {
+            *held.entry(asset).or_default() += n;
+            in_view = in_view.saturating_add(n);
+        } else if covered(&asset, k.2) {
+            in_view = in_view.saturating_add(n);
+        }
+    }
+    for k in index.keys() {
+        if failed(c, k, generation) {
+            held.entry(*k).or_default();
+        }
+    }
+    (held, c.bytes.saturating_sub(in_view))
+}
+
 /// [`warm`]'s decodes: the bytes to reserve for each and the drawings it serves. Empty when
 /// fewer than two images need decoding.
 fn plan(wants: Vec<Want>) -> Vec<(usize, Vec<Want>)> {
@@ -1013,7 +1097,7 @@ fn plan(wants: Vec<Want>) -> Vec<(usize, Vec<Want>)> {
         }
     }
     // Each asset's full pixel size and the level [`mip`] takes for each drawing of it.
-    let levels: HashMap<(SourceKey, u32), ((u32, u32), Vec<u8>)> = assets
+    let levels: DrawnLevels = assets
         .iter()
         .filter_map(|(key, wanted)| {
             let w = wanted.first()?;
@@ -1021,31 +1105,20 @@ fn plan(wants: Vec<Want>) -> Vec<(usize, Vec<Want>)> {
             Some((*key, (size, wanted.iter().map(|w| level_for(size, w.width_pt, w.on_screen)).collect())))
         })
         .collect();
-    // The bytes each asset in view holds in the cache, when it is cached or failed, and the bytes
-    // of everything else cached. Its levels become the most recently used, so the stores below
-    // evict other images first.
-    let (held, others) = with(|c| {
-        c.clock += 1;
-        let clock = c.clock;
-        let mut held: HashMap<(SourceKey, u32), usize> = HashMap::new();
-        for (k, e) in c.map.iter_mut() {
-            if index.contains_key(&(k.0, k.1)) {
-                e.stamp = clock;
-                *held.entry((k.0, k.1)).or_default() += size_of(&e.pm);
-            }
-        }
-        // An asset is cached when every drawing of it finds its level, or a finer one to halve.
-        held.retain(|k, _| levels.get(k).is_some_and(|(_, ls)| ls.iter().all(|l| (0..=*l).any(|f| c.map.contains_key(&(k.0, k.1, f))))));
-        let in_view = held.values().sum::<usize>();
-        let generation = designcraft_doc::asset_data::link_generation();
-        for k in index.keys() {
-            if c.bad.contains_key(k) || c.unavailable.get(&k.0).is_some_and(|(_, g, _)| *g == generation) {
-                held.entry(*k).or_default();
-            }
-        }
-        (held, c.bytes.saturating_sub(in_view))
-    });
+    let generation = designcraft_doc::asset_data::link_generation();
+    // The assets that are neither cached nor failed.
+    let to_decode: HashSet<(SourceKey, u32)> =
+        with(|c| index.keys().filter(|k| !failed(c, k, generation) && !drawn_cached(c, k, &levels)).copied().collect());
     // One image to decode gains nothing from threads (and is not worth sizing).
+    if to_decode.len() < 2 {
+        return Vec::new();
+    }
+    let estimates: HashMap<(SourceKey, u32), (usize, usize, bool)> =
+        assets.iter().filter(|(key, _)| to_decode.contains(key)).map(|(key, wanted)| (*key, estimate(*key, wanted, &levels))).collect();
+    let reduced: HashSet<(SourceKey, u32)> = estimates.iter().filter(|(_, e)| e.2).map(|(k, _)| *k).collect();
+    // Another render may have stored or evicted levels since: an asset evicted in between is sized
+    // below, and its cached levels count as a full decode's.
+    let (held, others) = with(|c| held_in_view(c, &index, &levels, &reduced, generation));
     if assets.iter().filter(|(key, _)| !held.contains_key(key)).count() < 2 {
         return Vec::new();
     }
@@ -1055,21 +1128,10 @@ fn plan(wants: Vec<Want>) -> Vec<(usize, Vec<Want>)> {
         if held.contains_key(&key) {
             continue;
         }
-        fault(key.0);
-        let (size, decoding) = reduced_estimates(&wanted).unwrap_or_else(|| {
-            let full = wanted.first().and_then(|w| Some(decode_sizes(&w.bytes.load().ok()?, w.page))).unwrap_or((0, 0));
-            // Only the levels drawn are kept.
-            let kept = levels.get(&key).map_or(full.0, |(size, ls)| {
-                let mut ls = ls.clone();
-                ls.sort_unstable();
-                ls.dedup();
-                ls.iter().fold(0usize, |n, l| {
-                    let (w, h) = halved(*size, *l);
-                    n.saturating_add((w as usize).saturating_mul(h as usize).saturating_mul(4))
-                })
-            });
-            (kept, full.1)
-        });
+        let (size, decoding, _) = match estimates.get(&key) {
+            Some(e) => *e,
+            None => estimate(key, &wanted, &levels),
+        };
         // A store past the budget evicts down to three quarters of it: the images in view must
         // fit in that, unless they and the rest fit in the budget. A decode that alone holds
         // more than the budget is left to the render too.
@@ -1308,9 +1370,11 @@ pub(crate) mod tests {
         let reserved = decoding * 3 / 2;
         assert!(admits(0, reserved) && !admits(reserved, reserved) && admits(reserved, decode_peak_bytes(&small.load().unwrap(), 0) * 3 / 2));
         assert!(admits(0, usize::MAX), "an image over half the budget still decodes alone");
+        // Whether the small image's decode overlaps a large one depends on the threads, so the
+        // most decoding at once is one large reservation, or one large and the small one.
+        let small_reserved = decode_peak_bytes(&small.load().unwrap(), 0) * 3 / 2;
         let peak = warm(vec![want(&d), want(&e), want(&small)]);
-        assert!(peak <= BUDGET / 2, "{peak} bytes decoding at once");
-        assert!(peak >= reserved, "the large images were decoded ahead");
+        assert!(peak == reserved || peak == reserved + small_reserved, "{peak} bytes decoding at once");
         let me = std::thread::current().id();
         for img in [&d, &e, &small] {
             let on = decoders(img, since);
@@ -1387,6 +1451,38 @@ pub(crate) mod tests {
         assert!(warm(vec![small(&a), small(&b)]) > 0, "decoded ahead");
         assert!(lookup((a.key(), 0, 0)).is_none(), "no full-size decode is kept");
         assert_eq!(warm(vec![small(&a), small(&b)]), 0, "nothing left to decode");
+    }
+
+    #[test]
+    fn levels_of_an_image_in_view_count_once_when_it_is_decoded_again() {
+        // A JPEG drawn at levels 3 and 5 has levels 4 and 6 cached: the drawing at level 3 finds
+        // nothing to halve, so it is decoded again. Another image is cached outside the view.
+        let (jpeg, other) = (AssetData::embedded(vec![1]), AssetData::embedded(vec![2]));
+        let (id, other_id) = (jpeg.key(), other.key());
+        let mut c = Cache::default();
+        let put = |c: &mut Cache, key: (SourceKey, u32, u8), side: u16| {
+            let pm = Arc::new(Pixmap::new(side, side));
+            c.bytes += size_of(&pm);
+            c.map.insert(key, Entry { pm, stamp: 0 });
+        };
+        put(&mut c, (id, 0, 4), 16);
+        put(&mut c, (id, 0, 6), 4);
+        put(&mut c, (other_id, 0, 0), 8);
+        let index = HashMap::from([((id, 0), 0)]);
+        let levels = HashMap::from([((id, 0), ((256, 256), vec![3, 5]))]);
+        let reduced = HashSet::from([(id, 0)]);
+        let (held, others) = held_in_view(&mut c, &index, &levels, &reduced, 0);
+        assert!(held.is_empty(), "level 3 has nothing to halve, so the JPEG is decoded");
+        // Its reduced estimate counts levels 3 to 5, so level 4 counts with it; level 6 stays
+        // cached beside it.
+        assert_eq!(others, 8 * 8 * 4 + 4 * 4 * 4);
+        // A full decode keeps only the levels drawn: level 4 stays with the other images too.
+        let (_, others) = held_in_view(&mut c, &index, &levels, &HashSet::new(), 0);
+        assert_eq!(others, 8 * 8 * 4 + 16 * 16 * 4 + 4 * 4 * 4);
+        // With level 3 cached, every drawing finds its level and the JPEG is held with all three.
+        put(&mut c, (id, 0, 3), 32);
+        let (held, others) = held_in_view(&mut c, &index, &levels, &reduced, 0);
+        assert_eq!((held.get(&(id, 0)).copied(), others), (Some(32 * 32 * 4 + 16 * 16 * 4 + 4 * 4 * 4), 8 * 8 * 4));
     }
 
     #[test]
