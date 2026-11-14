@@ -84,13 +84,10 @@ pub(super) fn jpeg(data: krilla::Data, icc: impl FnOnce() -> Option<Vec<u8>>, mo
 }
 
 /// Whether krilla would write this PNG, GIF or WebP as untagged RGB: not grey, and no profile of
-/// its own.
+/// its own. The header inspection doesn't read WebP, which has no grey form, so a file it can't
+/// read counts as colour.
 fn untagged_rgb(data: &[u8]) -> bool {
-    let Some(info) = craft_image_codecs::inspect_raster(data).ok().flatten() else { return false };
-    !matches!(
-        info.color_type,
-        craft_image_codecs::RasterColorType::Bitmap | craft_image_codecs::RasterColorType::Gray | craft_image_codecs::RasterColorType::GrayAlpha
-    ) && embedded_icc(data).is_none()
+    !is_grey(data) && embedded_icc(data).is_none()
 }
 
 pub(super) fn lossless(data: &Arc<Vec<u8>>, fmt: Option<craft_image_codecs::Format>, mode: RasterMode) -> Option<Image> {
