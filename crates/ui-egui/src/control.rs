@@ -406,7 +406,15 @@ fn handle_request(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest
                 app.session.reset_find_scope();
             }
             let fields = p.get("fields").cloned().unwrap_or(Value::Null);
-            let d = if id == "frameSize" { crate::dialogs::frame_size_dialog(app, fields) } else { crate::dialogs::Dialog::new(id, fields) };
+            let d = match id {
+                "frameSize" => crate::dialogs::frame_size_dialog(app, fields),
+                // Bound to the target cells and document, as Table › Cell Options › Diagonal Lines… opens it.
+                "diagonalLines" => match crate::dialogs::diagonal_lines_dialog(app, fields) {
+                    Ok(d) => d,
+                    Err(e) => return err(e),
+                },
+                _ => crate::dialogs::Dialog::new(id, fields),
+            };
             let v = serde_json::to_value(&d).unwrap_or_default();
             app.ui.dialog = Some(d);
             ok(v)
@@ -533,6 +541,25 @@ mod automation_contract_tests {
         app.run("style.paragraph.edit", json!({"name":designcraft_doc::BASIC_PARAGRAPH,"chars":{"size":18}})).unwrap();
         assert_eq!(app.session.doc().unwrap().history.undo.len(), history + 1);
     }
+    #[test]
+    fn diagonal_lines_opened_through_the_control_channel_applies_to_its_target_cells() {
+        let mut app = app();
+        let ctx = egui::Context::default();
+        app.run("frame.create", json!({"rect": [72, 72, 400, 400], "content": "text", "caret": true})).unwrap();
+        let tid = app.run("table.insert", json!({"rows": 2, "cols": 2})).unwrap()["table"].as_u64().unwrap();
+        app.run("table.select", json!({"rows": [0, 0], "cols": [0, 0]})).unwrap();
+        let response = call(&mut app, &ctx, "ui.dialog.open", json!({"id": "diagonalLines", "fields": {"lines": "crossed"}}));
+        assert_eq!(response["ok"], true, "{response}");
+        app.run("table.select", json!({"rows": [1, 1], "cols": [1, 1]})).unwrap();
+        let response = call(&mut app, &ctx, "ui.dialog.confirm", json!({}));
+        assert_eq!(response["ok"], true, "{response}");
+        let st = app.session.active().unwrap();
+        let t = st.doc.stories.values().find_map(|s| s.tables.get(&tid)).unwrap();
+        let lines: Vec<_> = t.cells.iter().map(|c| c.diagonal.lines).collect();
+        use designcraft_doc::DiagonalLines::{Crossed, None as No};
+        assert_eq!(lines, [Crossed, No, No, No]);
+    }
+
     fn app() -> DesignApp {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
         app.session.execute("file.new", &json!({"pages":2})).unwrap();

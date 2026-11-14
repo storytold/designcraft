@@ -143,6 +143,9 @@ fn table(ex: &mut Exporter, t: &TableFrag, m: Affine, k: f64, opacity: f32) {
     if t.cells.iter().any(|c| c.graphic.is_some()) {
         ex.warn("graphic cells are exported empty");
     }
+    if t.cells.iter().any(|c| !c.diagonals.is_empty() && !c.diagonals_in_front) {
+        ex.warn("diagonal lines drawn behind cell contents are exported without that drawing order");
+    }
     let edges_of = EdgeIndex::new(&t.strokes);
     let id = ex.id();
     let mut s = format!(
@@ -232,6 +235,12 @@ fn cell(ex: &mut Exporter, c: &PlacedCell, attrs: &str, edges: &EdgeIndex, k: f6
         let (a, bb) = ln(side);
         let seg = edges.stroke(a, bb);
         pr.push_str(&border(ex, tag, seg, k, opacity));
+    }
+    // Cell Options › Diagonal Lines.
+    for (tag, down) in [("lnTlToBr", true), ("lnBlToTr", false)] {
+        if let Some(seg) = c.diagonals.iter().find(|s| ((s.a.x < s.b.x) == (s.a.y < s.b.y)) == down) {
+            pr.push_str(&border(ex, tag, Some(seg), k, opacity));
+        }
     }
     match c.fill.as_ref().and_then(|(sw, tint)| ex.color(sw, *tint, opacity)) {
         Some(col) => {

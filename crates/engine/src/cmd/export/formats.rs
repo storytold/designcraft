@@ -415,6 +415,36 @@ mod pptx_tests {
     }
 
     #[test]
+    fn cell_diagonal_lines_export_as_cell_diagonal_borders() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 500, 400], "content": "text", "text": ""})).unwrap();
+        s.execute("text.select", &json!({"story": r["story"], "anchor": 0, "focus": 0})).unwrap();
+        s.execute("table.insert", &json!({"rows": 2, "cols": 2})).unwrap();
+        for (row, col, lines) in [(0, 0, "topLeft"), (0, 1, "topRight"), (1, 0, "crossed")] {
+            s.execute("table.setCell", &json!({"row": row, "col": col, "diagonal": {"lines": lines, "weight": 3}})).unwrap();
+        }
+        let r = s.execute("file.exportPptx", &json!({})).unwrap();
+        let x = read(&mut unzip(r["base64"].as_str().unwrap()), "ppt/slides/slide1.xml");
+        let cells: Vec<&str> = x.split("</a:tc>").filter(|c| c.contains("<a:tcPr")).collect();
+        assert_eq!(cells.len(), 4, "{x}");
+        let has = |c: &str| (c.contains("<a:lnTlToBr w=\"38100\""), c.contains("<a:lnBlToTr w=\"38100\""));
+        let got: Vec<(bool, bool)> = cells.iter().map(|c| has(c)).collect();
+        assert_eq!(got, [(true, false), (false, true), (true, true), (false, false)], "{x}");
+        // The diagonals follow the four edges and come before the cell's fill, in the schema's order.
+        let c = cells[2];
+        let at = |tag: &str| c.find(tag).unwrap_or(usize::MAX);
+        assert!(at("<a:lnB ") < at("<a:lnTlToBr") && at("<a:lnTlToBr") < at("<a:lnBlToTr"), "{c}");
+        assert!(c.rfind("Fill").is_some_and(|f| f > at("<a:lnBlToTr")), "{c}");
+        // The slide has no drawing order for them, so diagonals behind the contents are reported.
+        let behind = |r: &serde_json::Value| r["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("diagonal lines"));
+        assert!(!behind(&r), "{}", r["warnings"]);
+        s.execute("table.setCell", &json!({"row": 1, "col": 0, "diagonal": {"inFront": false}})).unwrap();
+        let r = s.execute("file.exportPptx", &json!({})).unwrap();
+        assert!(behind(&r), "{}", r["warnings"]);
+    }
+
+    #[test]
     fn rasterize_option_places_a_picture() {
         let mut s = Session::new();
         s.execute("file.new", &json!({})).unwrap();
