@@ -91,3 +91,8 @@ display_name = "Jonathan Cardoso"
 [people.adikshan11]
 real_name = "Adithya Shankaran"
 sync_github_name = true
+
+[people.Marantz5779]
+real_name = "Mendi Marantz"
+display_name = "Mendi Marantz"
+sync_github_name = false

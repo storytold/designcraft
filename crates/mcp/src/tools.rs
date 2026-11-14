@@ -191,6 +191,7 @@ pub fn tool_definitions() -> Vec<Value> {
                     "height": num("Page height (pt)"),
                     "pages": {"type": "integer", "minimum": 1, "description": "Number of pages"},
                     "facingPages": boolean("Facing pages (spreads)"),
+                    "binding": {"type": "string", "enum": ["leftToRight", "rightToLeft"], "description": "Binding: rightToLeft for Hebrew and Arabic books (page 1 a left page, spreads right to left)"},
                     "columns": {"type": "integer", "minimum": 1, "description": "Column count"},
                     "gutter": num("Column gutter (pt)"),
                     "margins": {"description": "Uniform margin (pt) or {top, bottom, inside, outside}", "anyOf": [{"type": "number"}, {"type": "object"}]},

@@ -2922,6 +2922,34 @@ fn show_cjk_features_is_a_persisted_preference() {
     assert!(crate::cjk_features(&app), "follows the Japanese interface again");
 }
 
+/// Preferences › Type › Show Right-to-Left Features: off in an English interface and on in an
+/// Arabic one until it is changed; changed, it is kept in prefs.json, and null follows the
+/// interface language again.
+#[test]
+fn show_rtl_features_is_a_persisted_preference() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    for (lang, on) in [("", false), ("de", false), ("ja", false), ("ar", true)] {
+        app.ui.language = lang.into();
+        assert_eq!(crate::rtl_features(&app), on, "{lang:?}");
+    }
+    app.ui.language = String::new();
+    run_ui(&mut app, "app.preferences", &json!({})).unwrap().unwrap();
+    assert_eq!(app.ui.dialog.as_ref().unwrap().fields["rtlFeatures"], false);
+    crate::dialogs::confirm(&mut app).unwrap();
+    assert_eq!(app.session.prefs.rtl_features, None, "untouched: follows the language");
+    run_ui(&mut app, "app.preferences", &json!({})).unwrap().unwrap();
+    app.ui.dialog.as_mut().unwrap().fields.insert("rtlFeatures".into(), json!(true));
+    crate::dialogs::confirm(&mut app).unwrap();
+    assert_eq!(app.session.prefs.rtl_features, Some(true));
+    assert!(crate::rtl_features(&app), "on in an English interface");
+    // prefs.json round trip; a file from before the setting follows the language.
+    let saved = serde_json::to_vec(&app.session.prefs).unwrap();
+    assert_eq!(serde_json::from_slice::<designcraft_engine::Prefs>(&saved).unwrap().rtl_features, Some(true));
+    assert_eq!(serde_json::from_str::<designcraft_engine::Prefs>(r#"{"scaleStrokes": false}"#).unwrap().rtl_features, None);
+    assert_eq!(app.run("prefs.set", json!({"rtlFeatures": null})).unwrap()["rtlFeatures"], Value::Null);
+    assert!(!crate::rtl_features(&app), "follows the English interface again");
+}
+
 #[test]
 fn menu_button_fits_its_anchor_and_resets_scroll_on_reopen() {
     // Workspace/panel menus may be in the middle; the status-bar zoom menu opens upwards.

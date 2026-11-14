@@ -604,6 +604,9 @@ fn run_ui_part2(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             let cjk = crate::cjk_features(app);
             f["cjkFeatures"] = json!(cjk);
             f["cjkFeatures.initial"] = json!(cjk);
+            let rtl = crate::rtl_features(app);
+            f["rtlFeatures"] = json!(rtl);
+            f["rtlFeatures.initial"] = json!(rtl);
             f["section"] = json!("general");
             // The language previews as it changes; Cancel goes back to this one.
             f["openedLanguage"] = json!(app.ui.language);

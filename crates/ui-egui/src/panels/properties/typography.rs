@@ -243,6 +243,22 @@ pub fn paragraph_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     }
     place(ui, sub(b, fw - 20.0, 0.0, 20.0, 21.0), |ui| crate::menus::menu_button(ui, "☰", |ui| paragraph_panel_menu(app, ui, &p)));
     ui.add_space(6.0);
+    // Paragraph Direction, right after alignment, under Show Right-to-Left Features (the panel menu
+    // has it either way).
+    if crate::rtl_features(app) {
+        let b = block(ui, 21.0);
+        let rtl = p["direction"] == "rightToLeft";
+        for (i, (on, dir)) in [(!rtl, "leftToRight"), (rtl, "rightToLeft")].into_iter().enumerate() {
+            let (icon, tip) = direction_icon(dir);
+            if place(ui, sub(b, i as f32 * pitch, 0.0, pitch, 21.0), |ui| widgets::icon_toggle_sized(ui, icon, on, &tr(tip), vec2(pitch, 21.0)))
+                .clicked()
+                && !on
+            {
+                let _ = app.run("type.para", json!({"attrs": direction_attrs(&p, dir)}));
+            }
+        }
+        ui.add_space(6.0);
+    }
     // Indents, spacing and drop cap, two to a row as in InDesign.
     let row = FIELD_H + 5.0;
     let b = block(ui, 5.0 * row - 5.0);
@@ -331,6 +347,28 @@ pub fn paragraph_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     ui.add_space(4.0);
 }
 
+/// The icon and tooltip of a Paragraph Direction button (`leftToRight` or `rightToLeft`).
+pub(crate) fn direction_icon(dir: &str) -> (&'static str, &'static str) {
+    if dir == "rightToLeft" { ("pdir-rtl", "Right-to-Left Paragraph Direction") } else { ("pdir-ltr", "Left-to-Right Paragraph Direction") }
+}
+
+/// The paragraph attributes that switch paragraph `p` to direction `dir`: the direction, and its
+/// left or right alignment mirrored, as the Paragraph panel menu, the Control panel and Paragraph
+/// Style Options all switch it.
+pub(crate) fn direction_attrs(p: &Value, dir: &str) -> Value {
+    let align = mirrored_align(serde_json::from_value(p["align"].clone()).unwrap_or_default());
+    json!({"direction": dir, "align": align})
+}
+
+/// Left alignment for right, right for left; other alignments stay.
+pub(crate) fn mirrored_align(a: Align) -> Align {
+    match a {
+        Align::Left => Align::Right,
+        Align::Right => Align::Left,
+        a => a,
+    }
+}
+
 /// The Paragraph panel menu, in the order of InDesign's.
 fn paragraph_panel_menu(app: &mut DesignApp, ui: &mut Ui, p: &Value) {
     let lang = app.ui.language.clone();
@@ -414,12 +452,7 @@ fn paragraph_panel_menu(app: &mut DesignApp, ui: &mut Ui, p: &Value) {
     let rtl = p["direction"] == "rightToLeft";
     for (on, label, dir) in [(!rtl, "Left to Right", "leftToRight"), (rtl, "Right to Left", "rightToLeft")] {
         if item(ui, label, Some(on), true) && !on {
-            let align = match serde_json::from_value(p["align"].clone()).unwrap_or_default() {
-                Align::Left => Align::Right,
-                Align::Right => Align::Left,
-                a => a,
-            };
-            attrs = Some(json!({"direction": dir, "align": align}));
+            attrs = Some(direction_attrs(p, dir));
         }
     }
     if let Some(attrs) = attrs {

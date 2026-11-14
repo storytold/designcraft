@@ -26,6 +26,8 @@ const DETAILS_W: f32 = 300.0;
 const TWO_PANES: f32 = 700.0;
 const COLUMN_W: f32 = 124.0;
 const FIELD_H: f32 = 24.0;
+/// The space between Orientation and Binding when they share a column.
+const BINDING_GAP: f32 = 6.0;
 const CARD: egui::Vec2 = egui::vec2(132.0, 150.0);
 const MAX_RECENT: usize = 12;
 const EDGES: [&str; 4] = ["Top", "Bottom", "Inside", "Outside"];
@@ -44,6 +46,7 @@ fn fields_for(nd: &NewDocument) -> Map<String, Value> {
     f.insert("pages".into(), json!(nd.pages));
     f.insert("startPage".into(), json!(nd.start_page));
     f.insert("facingPages".into(), json!(nd.facing_pages));
+    f.insert("binding".into(), json!(if nd.right_to_left_binding { "rightToLeft" } else { "leftToRight" }));
     f.insert("primaryTextFrame".into(), json!(nd.primary_text_frame));
     f.insert("columns".into(), json!(nd.columns));
     f.insert("gutter".into(), m(nd.gutter));
@@ -113,6 +116,7 @@ pub(crate) fn params(d: &Dialog) -> Value {
         "pages": count(d, "pages"),
         "startPage": count(d, "startPage"),
         "facingPages": d.b("facingPages"),
+        "binding": if d.s("binding") == "rightToLeft" { "rightToLeft" } else { "leftToRight" },
         "columns": count(d, "columns"),
         "gutter": m("gutter", 12.0),
         "margins": {"top": margins[0], "bottom": margins[1], "inside": margins[2], "outside": margins[3]},
@@ -132,6 +136,10 @@ fn as_preset(p: &Value) -> Option<NewDocument> {
     let mut v = p.clone();
     let o = v.as_object_mut()?;
     o.remove("title");
+    // `file.new` takes `binding`; the preset keeps it as `rightToLeftBinding`.
+    if let Some(binding) = o.remove("binding") {
+        o.insert("rightToLeftBinding".into(), json!(binding.as_str() == Some("rightToLeft")));
+    }
     o.retain(|_, v| !v.is_null());
     if let Some(b) = o.get("bleed").and_then(Value::as_f64) {
         o.insert("bleed".into(), json!([b, b, b, b]));
@@ -806,20 +814,48 @@ fn details(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) {
     });
     row(ui, rtl, |ui| {
         cell(ui, rtl, tr("Height"), |ui| spin(ui, d, "height", COLUMN_W - 8.0, Step::Measure(1.0)));
-        cell(ui, rtl, tr("Orientation"), |ui| {
-            let (w, h) = (measure(d, "width"), measure(d, "height"));
-            let portrait = !matches!((w, h), (Some(w), Some(h)) if w > h);
-            row(ui, rtl, |ui| {
-                for (icon, tip, on) in [("orient-portrait", "Portrait", portrait), ("orient-landscape", "Landscape", !portrait)] {
-                    if crate::widgets::icon_toggle_sized(ui, icon, on, tr(tip), vec2(30.0, FIELD_H)).clicked() && !on {
-                        let (w, h) = (d.fields.get("width").cloned(), d.fields.get("height").cloned());
-                        if let (Some(w), Some(h)) = (w, h) {
-                            d.fields.insert("width".into(), h);
-                            d.fields.insert("height".into(), w);
+        // Binding sits beside Orientation, under Show Right-to-Left Features; the two share the
+        // column, with narrower buttons.
+        let binding = crate::rtl_features(app);
+        let (w_cell, w_icon) = if binding { ((COLUMN_W - BINDING_GAP) / 2.0, 27.0) } else { (COLUMN_W, 30.0) };
+        row(ui, rtl, |ui| {
+            if binding {
+                ui.spacing_mut().item_spacing.x = BINDING_GAP;
+            }
+            cell_w(ui, rtl, w_cell, tr("Orientation"), |ui| {
+                let (w, h) = (measure(d, "width"), measure(d, "height"));
+                let portrait = !matches!((w, h), (Some(w), Some(h)) if w > h);
+                row(ui, rtl, |ui| {
+                    if binding {
+                        ui.spacing_mut().item_spacing.x = 2.0;
+                    }
+                    for (icon, tip, on) in [("orient-portrait", "Portrait", portrait), ("orient-landscape", "Landscape", !portrait)] {
+                        if crate::widgets::icon_toggle_sized(ui, icon, on, tr(tip), vec2(w_icon, FIELD_H)).clicked() && !on {
+                            let (w, h) = (d.fields.get("width").cloned(), d.fields.get("height").cloned());
+                            if let (Some(w), Some(h)) = (w, h) {
+                                d.fields.insert("width".into(), h);
+                                d.fields.insert("height".into(), w);
+                            }
                         }
                     }
-                }
+                });
             });
+            if binding {
+                cell_w(ui, rtl, w_cell, tr("Binding"), |ui| {
+                    let right_to_left = d.s("binding") == "rightToLeft";
+                    row(ui, rtl, |ui| {
+                        ui.spacing_mut().item_spacing.x = 2.0;
+                        for (icon, tip, value, on) in [
+                            ("bind-ltr", "Left to Right", "leftToRight", !right_to_left),
+                            ("bind-rtl", "Right to Left", "rightToLeft", right_to_left),
+                        ] {
+                            if crate::widgets::icon_toggle_sized(ui, icon, on, tr(tip), vec2(w_icon, FIELD_H)).clicked() && !on {
+                                d.fields.insert("binding".into(), json!(value));
+                            }
+                        }
+                    });
+                });
+            }
         });
     });
     row(ui, rtl, |ui| {

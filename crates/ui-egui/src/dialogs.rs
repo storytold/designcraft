@@ -2470,6 +2470,7 @@ fn setup_link(ui: &mut egui::Ui, lang: &str, d: &mut Dialog, group: &str, change
 /// then Page Size (preset, width, height, orientation), Margins, Bleed and Slug (each edge, linked or
 /// not), and Adjust Layout. Returns true when Adjust Layout was clicked (apply now, objects follow).
 fn document_setup(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) -> bool {
+    let rtl_features = crate::rtl_features(app);
     let lang = app.ui.language.as_str();
     let tr = |s: &'static str| crate::i18n::tr(lang, s);
     let rtl = crate::i18n::is_rtl(lang);
@@ -2510,20 +2511,6 @@ fn document_setup(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) -> 
         // Set when the document is made (New Document); shown here, as InDesign does.
         ui.add_enabled_ui(false, |ui| check(ui, d, "primaryTextFrame", tr("Primary Text Frame")));
     });
-    setup_row(ui, rtl, |ui| {
-        setup_caption(ui, tr("Binding:"), label_w);
-        let right_to_left = d.s("binding") == "rightToLeft";
-        craft_ui::ComboBox::from_id_salt("ds_binding")
-            .selected_text(crate::rtl::widget(ui, tr(if right_to_left { "Right to Left" } else { "Left to Right" })))
-            .width(150.0)
-            .show_ui(ui, |ui| {
-                for (v, l) in [("leftToRight", "Left to Right"), ("rightToLeft", "Right to Left")] {
-                    if ui.selectable_label((v == "rightToLeft") == right_to_left, crate::rtl::widget(ui, tr(l))).clicked() {
-                        d.fields.insert("binding".into(), json!(v));
-                    }
-                }
-            });
-    });
     ui.add_space(4.0);
     // Page Size.
     let (w, h) = (setup_measure(d, "width").unwrap_or(612.0), setup_measure(d, "height").unwrap_or(792.0));
@@ -2563,6 +2550,19 @@ fn document_setup(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) -> 
         setup_row(ui, rtl, |ui| {
             setup_caption(ui, tr("Height:"), 70.0);
             setup_spin(ui, d, "height", 130.0, 1.0);
+            // Binding, under Orientation as two buttons, under Show Right-to-Left Features.
+            if rtl_features {
+                ui.add_space(30.0);
+                crate::rtl::label(ui, tr("Binding:"));
+                let right_to_left = d.s("binding") == "rightToLeft";
+                for (icon, tip, value, on) in
+                    [("bind-ltr", "Left to Right", "leftToRight", !right_to_left), ("bind-rtl", "Right to Left", "rightToLeft", right_to_left)]
+                {
+                    if crate::widgets::icon_toggle_sized(ui, icon, on, tr(tip), egui::vec2(26.0, 26.0)).clicked() && !on {
+                        d.fields.insert("binding".into(), json!(value));
+                    }
+                }
+            }
         });
     });
     ui.add_space(4.0);
@@ -2839,6 +2839,7 @@ fn preferences(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog, max_he
                     check(ui, d, "typographersQuotes", crate::i18n::tr(&app.ui.language, "Use Typographer's Quotes"));
                     check(ui, d, "showFontNamesInEnglish", crate::i18n::tr(&app.ui.language, "Show Font Names in English"));
                     check(ui, d, "cjkFeatures", crate::i18n::tr(&app.ui.language, "Show CJK Features"));
+                    check(ui, d, "rtlFeatures", crate::i18n::tr(&app.ui.language, "Show Right-to-Left Features"));
                     ui.add_space(6.0);
                     ui.label(crate::rtl::widget(
                         ui,
@@ -5183,6 +5184,9 @@ fn confirm_part4(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
             if d.b("cjkFeatures") != d.b("cjkFeatures.initial") {
                 prefs["cjkFeatures"] = json!(d.b("cjkFeatures"));
             }
+            if d.b("rtlFeatures") != d.b("rtlFeatures.initial") {
+                prefs["rtlFeatures"] = json!(d.b("rtlFeatures"));
+            }
             // No document open: the Units & Increments new documents start with, saved with the
             // rest in one `prefs.set` (which checks everything before it changes anything). A value
             // that doesn't read, or that it refuses, keeps the dialog open to be fixed, with no
@@ -5908,6 +5912,30 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
                         .response
                         .labelled_by(alignment_label.id);
                     ui.end_row();
+                    // Paragraph Direction, under Show Right-to-Left Features: switching also mirrors
+                    // left and right alignment, as the Paragraph panel does (after #1220).
+                    if crate::rtl_features(app) {
+                        let direction_label = crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Paragraph Direction:"));
+                        let rtl = cur(d, "p.direction", &pv["direction"]).as_str() == Some("rightToLeft");
+                        craft_ui::ComboBox::from_id_salt("psdirection")
+                            .selected_text(crate::rtl::widget(
+                                ui,
+                                crate::i18n::tr(&app.ui.language, if rtl { "Right to Left" } else { "Left to Right" }),
+                            ))
+                            .width(240.0)
+                            .show_ui(ui, |ui| {
+                                for (on, label, dir) in [(!rtl, "Left to Right", "leftToRight"), (rtl, "Right to Left", "rightToLeft")] {
+                                    if ui.selectable_label(on, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).clicked() && !on {
+                                        d.fields.insert("p.direction".into(), json!(dir));
+                                        let align = crate::panels::properties::mirrored_align(a);
+                                        d.fields.insert("p.align".into(), serde_json::to_value(align).unwrap_or_default());
+                                    }
+                                }
+                            })
+                            .response
+                            .labelled_by(direction_label.id);
+                        ui.end_row();
+                    }
                     for (label, key) in [
                         ("Left Indent:", "leftIndent"),
                         ("First Line Indent:", "firstLineIndent"),

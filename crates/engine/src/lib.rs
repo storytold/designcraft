@@ -230,6 +230,10 @@ pub struct Prefs {
     /// Japanese, Chinese and Korean typesetting uses. `None` follows the interface language. It
     /// hides interface only: layout, file formats and commands work either way.
     pub cjk_features: Option<bool>,
+    /// Preferences › Type › Show Right-to-Left Features: the controls a right-to-left document is
+    /// set up with (paragraph direction, binding and table direction). `None` follows the
+    /// interface language. It hides interface only: layout, file formats and commands work either way.
+    pub rtl_features: Option<bool>,
     /// Preferences › Type › Smart Text Reflow: pages follow the primary text frame's story
     /// (added while it oversets, empty ones at the end removed).
     pub smart_text_reflow: bool,
@@ -375,6 +379,7 @@ impl Default for Prefs {
             recent_fonts: Vec::new(),
             show_font_names_in_english: false,
             cjk_features: None,
+            rtl_features: None,
             smart_text_reflow: true,
             autocorrect: false,
             autocorrect_list: default_autocorrect(),
