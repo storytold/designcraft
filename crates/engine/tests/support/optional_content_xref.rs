@@ -103,7 +103,7 @@ fn two_assets(first: Vec<u8>, second: Vec<u8>) -> designcraft_doc::Document {
     let mut other = original;
     other.id = id;
     other.name = "second.pdf".into();
-    other.data = Arc::new(second);
+    other.data = designcraft_doc::AssetData::embedded(second);
     doc.add_asset(other);
     let spread = Arc::make_mut(doc.spreads.first_mut().unwrap());
     let item = Arc::make_mut(spread.items.last_mut().unwrap());

@@ -406,7 +406,7 @@ fn display_performance_fast_draws_grey_boxes() {
             id: aid,
             name: "red.png".into(),
             mime: "image/png".into(),
-            data: Arc::new(png),
+            data: designcraft_doc::AssetData::embedded(png),
             pixels: Some((4, 4)),
             ..Default::default()
         }),
@@ -452,7 +452,7 @@ fn clipping_path_hides_the_image_outside_it() {
             name: "red.png".into(),
             mime: "image/png".into(),
             link: None,
-            data: Arc::new(png),
+            data: designcraft_doc::AssetData::embedded(png),
             pixels: Some((4, 4)),
             ..Default::default()
         }),
@@ -802,4 +802,107 @@ fn dotted_strokes_draw_every_dot() {
     let outline = kurbo::stroke(kurbo::Shape::path_elements(&edge, 0.01), &stroke, &kurbo::StrokeOpts::default(), 0.01);
     let dots = outline.elements().iter().filter(|e| matches!(e, kurbo::PathEl::MoveTo(_))).count();
     assert_eq!(dots, 13);
+}
+
+/// The size the image cache budgets for a decode is the size the decode has: a PDF page by the
+/// pixels it is rasterized at, not by its size in points.
+#[test]
+fn decode_size_estimates_match_the_decodes() {
+    let mut png = Vec::new();
+    image::RgbaImage::from_pixel(30, 20, image::Rgba([1, 2, 3, 255])).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
+    let pdf = one_page_pdf("0 0 1 rg 0 0 100 100 re f");
+    for bytes in [&png, &pdf] {
+        let pm = decode_pixmap_page(bytes, 0).unwrap();
+        assert_eq!(decode::decoded_bytes(bytes, 0), pm.width() as usize * pm.height() as usize * 16 / 3);
+    }
+    assert_eq!(decode::decoded_bytes(b"not an image", 0), 0);
+    // An EPS drawn from its PostScript is budgeted at no less than it takes.
+    let eps = b"%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 100 50\n%%EndComments\n0 0 1 setrgbcolor 0 0 100 50 rectfill\n%%EOF\n";
+    let pm = decode_pixmap_page(eps, 0).unwrap();
+    let drawn = pm.width() as usize * pm.height() as usize * 16 / 3;
+    assert!(drawn > 200 * 100 * 16 / 3, "drawn above 2 pixels per point: {}×{}", pm.width(), pm.height());
+    assert!(decode::decoded_bytes(eps, 0) >= drawn);
+    // A wide EPS whose PostScript isn't drawn keeps its placeholder, clamped to 4000 pixels on
+    // each side: it is budgeted at no less than that.
+    let eps = b"%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 10000 4000\n%%EndComments\n0 0 moveto 10 10 lineto stroke\n%%EOF\n";
+    let pm = decode_pixmap_page(eps, 0).unwrap();
+    assert_eq!((pm.width(), pm.height()), (4000, 4000));
+    let px = pm.width() as usize * pm.height() as usize;
+    assert!(decode::decoded_bytes(eps, 0) >= px * 16 / 3);
+    assert!(decode::decode_sizes(eps, 0).1 >= px * 8);
+}
+
+#[test]
+fn images_in_view_are_decoded_together_before_drawing() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    // Place a 4×4 PNG of one red value in `r`; returns its encoded bytes.
+    let place = |d: &mut Document, r: Rect, red: u8, hidden: bool| {
+        let mut png = Vec::new();
+        image::RgbaImage::from_pixel(4, 4, image::Rgba([red, 0, 0, 255]))
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let data = designcraft_doc::AssetData::embedded(png);
+        let aid = designcraft_doc::AssetId(d.alloc());
+        let asset = designcraft_doc::Asset {
+            id: aid,
+            name: "red.png".into(),
+            mime: "image/png".into(),
+            data: data.clone(),
+            pixels: Some((4, 4)),
+            ..Default::default()
+        };
+        d.assets.insert(aid, Arc::new(asset));
+        let mut it = Item::new(designcraft_doc::ItemId(d.alloc()), lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(r));
+        it.hidden = hidden;
+        it.content = designcraft_doc::Content::Graphic(designcraft_doc::Graphic {
+            layer_options: None,
+            asset: aid,
+            size: (r.width(), r.height()),
+            xf: Affine::translate((r.x0, r.y0)),
+            clip: None,
+            auto_fit: Default::default(),
+            fit_align: 4,
+            crop: [0.0; 4],
+            wrap: Default::default(),
+            fill: Default::default(),
+        });
+        d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+        data
+    };
+    let shown: Vec<_> =
+        (0..3).map(|i| place(&mut d, Rect::new(20.0 + 90.0 * i as f64, 20.0, 100.0 + 90.0 * i as f64, 100.0), 200 + i as u8, false)).collect();
+    let hidden = place(&mut d, Rect::new(20.0, 150.0, 100.0, 230.0), 10, true);
+    let outside = place(&mut d, Rect::new(400.0, 600.0, 500.0, 700.0), 20, false);
+    // Scaled 4 times, a 10 point stroke reaches 40 points out: from 320 to the left of the view's
+    // edge at 300. The render draws this image, so it is decoded ahead too.
+    let stretched = place(&mut d, Rect::new(0.0, 0.0, 20.0, 20.0), 30, false);
+    let sid = d.spread(SpreadRef::Doc(0)).unwrap().items.last().unwrap().id;
+    let it = d.item_mut(sid).unwrap();
+    it.xf = Affine::translate((320.0, 20.0)) * Affine::scale(4.0);
+    it.stroke = designcraft_doc::Stroke { swatch: designcraft_color::swatch::BLACK.into(), weight: 10.0, ..Default::default() };
+    // Decodes logged from here on with these images' keys are theirs.
+    let since = images::DECODED_ON.lock().unwrap().len();
+    let cache = Cache::new();
+    let mut r = Renderer::new();
+    r.threads = 0;
+    let placed = [Placed { spread: SpreadRef::Doc(0), xf: Affine::IDENTITY }];
+    let img = r.render(&d, &cache, &placed, (300, 300), Affine::IDENTITY, &RenderOptions { background: Some([255; 4]), ..Default::default() });
+    for i in 0..3u8 {
+        assert_eq!(img.pixel(60 + 90 * u32::from(i), 60)[..3], [200 + i, 0, 0], "image {i} drawn");
+    }
+    let me = std::thread::current().id();
+    let decoded_on = |data: &designcraft_doc::AssetData| -> Vec<std::thread::ThreadId> {
+        let id = data.key();
+        images::DECODED_ON.lock().unwrap().iter().skip(since).filter(|(a, _)| *a == id).map(|(_, t)| *t).collect()
+    };
+    for (i, data) in shown.iter().enumerate() {
+        let on = decoded_on(data);
+        assert_eq!(on.len(), 1, "image {i} decoded once");
+        assert_ne!(on[0], me, "image {i} decoded ahead, off the render thread");
+    }
+    let on = decoded_on(&stretched);
+    assert!(on.len() == 1 && on[0] != me, "a scaled image whose stroke reaches the view is decoded ahead: {on:?}");
+    assert!(decoded_on(&hidden).is_empty(), "a hidden image is not decoded");
+    assert!(decoded_on(&outside).is_empty(), "an image out of view is not decoded");
 }

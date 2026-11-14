@@ -93,22 +93,30 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
             // Asset and story ids come from one counter: a row is chosen by either.
             let aid = r["asset"].as_u64().or_else(|| r["story"].as_u64()).unwrap_or(0);
             let name = r["name"].as_str().unwrap_or("");
+            let storage = r["storage"].as_str().unwrap_or("");
+            let thumb = if r["story"].is_null() { app.session.active().and_then(|st| proxy_thumb(ui.ctx(), st.uid, &st.doc, aid)) } else { None };
             let response = ui
-                .vertical(|ui| {
-                    ui.set_width(name_width);
-                    let name = ui.add(egui::Button::selectable(chosen == Some(aid), name).truncate());
-                    match r["path"].as_str().filter(|path| !path.is_empty()) {
-                        Some(path) => name.union(
-                            ui.add(
-                                egui::Label::new(egui::RichText::new(path).color(t.text_dim).size(11.0))
-                                    .truncate()
-                                    .sense(Sense::click())
-                                    .show_tooltip_when_elided(false),
-                            )
-                            .on_hover_text(path),
-                        ),
-                        None => name,
+                .horizontal(|ui| {
+                    if let Some(tex) = &thumb {
+                        ui.add(egui::Image::new(tex).fit_to_exact_size(vec2(THUMB, THUMB)));
                     }
+                    ui.vertical(|ui| {
+                        ui.set_width(name_width - if thumb.is_some() { THUMB + 6.0 } else { 0.0 });
+                        let name = ui.add(egui::Button::selectable(chosen == Some(aid), name).truncate());
+                        match r["path"].as_str().filter(|path| !path.is_empty()) {
+                            Some(path) => name.union(
+                                ui.add(
+                                    egui::Label::new(egui::RichText::new(path).color(t.text_dim).size(11.0))
+                                        .truncate()
+                                        .sense(Sense::click())
+                                        .show_tooltip_when_elided(false),
+                                )
+                                .on_hover_text(path),
+                            ),
+                            None => name,
+                        }
+                    })
+                    .inner
                 })
                 .inner;
             if response.clicked() {
@@ -118,11 +126,18 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
                 "missing" => ("\u{26A0} Missing", egui::Color32::from_rgb(0xe5, 0x4b, 0x4b)),
                 "modified" => ("\u{25B2} Modified", egui::Color32::from_rgb(0xe8, 0xb3, 0x2c)),
                 "embedded" => ("Embedded", t.text_dim),
-                "checking" => ("Checking", t.text_dim),
+                "checking" => ("Checking\u{2026}", t.text_dim),
                 "tooLarge" => ("Too large to check", egui::Color32::from_rgb(0xe8, 0xb3, 0x2c)),
-                _ => ("OK", t.text_dim),
+                _ => ("OK", egui::Color32::from_rgb(60, 200, 90)),
             };
-            let status = crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, txt)).color(col).size(11.0));
+            let status = ui
+                .horizontal(|ui| {
+                    if !storage.is_empty() {
+                        storage_icon(ui, storage == "linked", t.text_dim, &app.ui.language);
+                    }
+                    badge(ui, crate::i18n::tr(&app.ui.language, txt), col)
+                })
+                .inner;
             // Why a link isn't followed (a path on another computer, a device).
             if let Some(why) = r["refused"].as_str() {
                 status.on_hover_text(why);
@@ -186,8 +201,12 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Go To"))).clicked() {
             let _ = app.run("links.goTo", target.clone());
         }
+        let row = rows.iter().find(|r| r["asset"].as_u64() == Some(aid));
+        let status = row.and_then(|r| r["status"].as_str()).unwrap_or("");
         let edited = rows.iter().any(|r| r["story"].as_u64() == Some(aid) && r["edited"].as_bool() == Some(true));
-        let update = ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Update")));
+        // A graphic is updated only when its file changed; a linked story can always be imported again.
+        let update =
+            ui.add_enabled(is_text || status == "modified", egui::Button::new(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Update"))));
         let update = if edited {
             update.on_hover_ui(|ui| {
                 crate::rtl::label(
@@ -201,8 +220,30 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         if update.clicked() {
             update_links(app, target.clone());
         }
-        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, if is_text { "Unlink" } else { "Embed" }))).clicked() {
-            let _ = app.run("links.embed", target.clone());
+        if is_text {
+            if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Unlink"))).clicked() {
+                let _ = app.run("links.embed", target.clone());
+            }
+        } else if status == "embedded" {
+            #[cfg(not(target_arch = "wasm32"))]
+            if ui
+                .button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Unembed\u{2026}")))
+                .on_hover_text(crate::i18n::tr(&app.ui.language, "Keep the graphic in a file and link to it"))
+                .clicked()
+            {
+                app.unembed_link(aid);
+            }
+        } else {
+            let embed = ui.add_enabled(
+                !matches!(status, "missing" | "modified"),
+                egui::Button::new(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Embed"))),
+            );
+            let embed = embed.on_hover_text(crate::i18n::tr(&app.ui.language, "Copy the file into the document"));
+            if embed.clicked()
+                && let Err(e) = app.run("links.embed", target.clone())
+            {
+                app.status_error("Embed", e);
+            }
         }
     });
     ui.horizontal(|ui| {
@@ -226,6 +267,92 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
             }
         }
     });
+}
+
+/// Thumbnail edge in the Links panel, in points.
+const THUMB: f32 = 28.0;
+
+/// A small rounded label in the status colour.
+fn badge(ui: &mut egui::Ui, text: &str, color: egui::Color32) -> egui::Response {
+    egui::Frame::NONE
+        .fill(color.gamma_multiply(0.18))
+        .corner_radius(3.0)
+        .inner_margin(egui::Margin::symmetric(5, 1))
+        .show(ui, |ui| crate::rtl::label(ui, egui::RichText::new(text).color(color).size(11.0)))
+        .response
+}
+
+/// Chain links for a linked graphic, a page with a folded corner for an embedded one.
+fn storage_icon(ui: &mut egui::Ui, linked: bool, color: egui::Color32, language: &str) {
+    let (rect, response) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
+    let p = ui.painter();
+    let stroke = egui::Stroke::new(1.3, color);
+    let c = rect.center();
+    if linked {
+        let link = |center: egui::Pos2| egui::Rect::from_center_size(center, vec2(8.0, 5.0));
+        p.rect_stroke(link(c + vec2(-2.0, 2.0)), 2.5, stroke, egui::StrokeKind::Inside);
+        p.rect_stroke(link(c + vec2(2.0, -2.0)), 2.5, stroke, egui::StrokeKind::Inside);
+    } else {
+        let body = egui::Rect::from_center_size(c, vec2(9.0, 12.0));
+        let fold = 3.5;
+        let pts =
+            vec![body.left_top(), body.right_top() + vec2(-fold, 0.0), body.right_top() + vec2(0.0, fold), body.right_bottom(), body.left_bottom()];
+        p.add(egui::Shape::closed_line(pts, stroke));
+        p.line_segment([body.right_top() + vec2(-fold, 0.0), body.right_top() + vec2(-fold, fold)], stroke);
+        p.line_segment([body.right_top() + vec2(-fold, fold), body.right_top() + vec2(0.0, fold)], stroke);
+    }
+    response.on_hover_text(crate::i18n::tr(
+        language,
+        if linked { "Linked: the file stays outside the document" } else { "Embedded: the document holds the file" },
+    ));
+}
+
+/// The proxy of a linked graphic, drawn small. `None` when the graphic has no proxy or it can't be
+/// decoded; the answer is kept per proxy so a failed decode isn't retried every frame.
+fn proxy_thumb(ctx: &egui::Context, uid: u64, doc: &designcraft_doc::Document, asset: u64) -> Option<egui::TextureHandle> {
+    let proxy = doc.assets.get(&designcraft_doc::AssetId(asset))?.proxy.as_ref()?;
+    let key = egui::Id::NULL.with(("links_thumb", uid, asset, proxy.data.key().0));
+    if let Some(cached) = ctx.data(|d| d.get_temp::<Option<egui::TextureHandle>>(key)) {
+        return cached;
+    }
+    let tex = designcraft_render::images::decoded(&proxy.data, 0).and_then(|pm| {
+        let (w, h) = (pm.width() as usize, pm.height() as usize);
+        if w == 0 || h == 0 {
+            return None;
+        }
+        // Nearest-neighbour reduction to the thumbnail's size at twice the density.
+        let k = f64::from(2.0 * THUMB) / w.max(h) as f64;
+        let (tw, th) = (((w as f64 * k) as usize).clamp(1, w), ((h as f64 * k) as usize).clamp(1, h));
+        let src = pm.data_as_u8_slice();
+        let mut px: Vec<u8> = Vec::with_capacity(tw * th * 4);
+        for y in 0..th {
+            for x in 0..tw {
+                let i = ((y * h / th) * w + x * w / tw) * 4;
+                let c = src.get(i..i + 4)?;
+                px.extend_from_slice(c);
+            }
+        }
+        Some(ctx.load_texture(format!("links-thumb-{asset}"), egui::ColorImage::from_rgba_premultiplied([tw, th], &px), egui::TextureOptions::LINEAR))
+    });
+    ctx.data_mut(|d| d.insert_temp(key, tex.clone()));
+    tex
+}
+
+impl DesignApp {
+    /// Unembed Link: the graphic is linked to its original file when that still holds the same
+    /// bytes, else to a copy written into a folder the user picks.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn unembed_link(&mut self, asset: u64) {
+        if self.run("links.unembed", json!({"asset": asset})).is_ok() {
+            return;
+        }
+        let asked = self.ask_folder("Choose a folder for the linked file", Bound::Document, move |app, dir| {
+            app.run("links.unembed", json!({"asset": asset, "dir": dir})).inspect_err(|e| app.status_error("Unembed", e))
+        });
+        if let Err(e) = asked {
+            self.status_error("Unembed", e);
+        }
+    }
 }
 
 /// Update Link from the Links panel or the menu (`{asset}`, `{story}`, or `{}` for all): asks
