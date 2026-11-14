@@ -393,7 +393,7 @@ fn color_theme(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
         });
     }
     if let Some(status) = d.fields.get("status").and_then(Value::as_str) {
-        crate::rtl::label(ui, status);
+        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, status));
     }
 }
 
@@ -949,7 +949,7 @@ fn print_dialog(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
         ui.end_row();
     });
     if let Some(st) = d.fields.get("status").and_then(Value::as_str) {
-        crate::rtl::label(ui, egui::RichText::new(st).color(ui.visuals().error_fg_color));
+        crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, st)).color(ui.visuals().error_fg_color));
     }
 }
 
@@ -1351,7 +1351,7 @@ fn text_frame_options_dialog(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog)
     ui.add_space(6.0);
     check(ui, d, "preview", tr("Preview"));
     if let Some(st) = d.fields.get("status").and_then(Value::as_str) {
-        crate::rtl::label(ui, egui::RichText::new(st).color(crate::theme::Tokens::get(ui.ctx()).text_dim));
+        crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&lang, st)).color(crate::theme::Tokens::get(ui.ctx()).text_dim));
     }
 }
 
@@ -1875,7 +1875,7 @@ fn go_to_row_dialog(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
         text_field_named(ui, d, "row", 60.0, tr("Row"));
     });
     if let Some(st) = d.fields.get("status").and_then(Value::as_str) {
-        ui.label(egui::RichText::new(st).color(crate::theme::Tokens::get(ui.ctx()).text_dim));
+        ui.label(egui::RichText::new(crate::i18n::tr(&app.ui.language, st)).color(crate::theme::Tokens::get(ui.ctx()).text_dim));
     }
 }
 
@@ -2053,7 +2053,7 @@ fn margins_and_columns_dialog(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Di
     link_margins(d);
     layout_dialog_preview(app, d, "layout.marginsAndColumns", "Margins and Columns");
     if let Some(st) = d.fields.get("status").and_then(Value::as_str) {
-        ui.label(egui::RichText::new(st).color(crate::theme::Tokens::get(ui.ctx()).text_dim));
+        ui.label(egui::RichText::new(tr(st)).color(crate::theme::Tokens::get(ui.ctx()).text_dim));
     }
 }
 
@@ -2119,7 +2119,7 @@ fn create_guides_dialog(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) 
     });
     layout_dialog_preview(app, d, "layout.createGuides", "Create Guides");
     if let Some(st) = d.fields.get("status").and_then(Value::as_str) {
-        ui.label(egui::RichText::new(st).color(crate::theme::Tokens::get(ui.ctx()).text_dim));
+        ui.label(egui::RichText::new(tr(st)).color(crate::theme::Tokens::get(ui.ctx()).text_dim));
     }
 }
 
@@ -3524,7 +3524,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                                     d.fields.insert("status".into(), json!(format!("{n} changed")));
                                 }
                             });
-                            ui.label(d.s("status"));
+                            ui.label(find_change_status(&app.ui.language, &d.s("status")));
                         } else {
                             let (find_formatted, formatted) = (format_set(&d, FIND_FORMAT), format_set(&d, CHANGE_FORMAT));
                             egui::Grid::new("fc").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
@@ -3596,31 +3596,29 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                                 let mut found = params0.clone();
                                 found["found"] = json!(true);
                                 let selected = app.session.active().and_then(|st| st.selection.text).is_some_and(|t| !t.is_caret());
-                                let next_status = |app: &mut DesignApp, r: Result<Value, String>| match r {
-                                    Ok(Value::Null) => crate::i18n::tr(&app.ui.language, "No matches").to_string(),
-                                    Ok(_) => crate::i18n::tr(&app.ui.language, "Found").to_string(),
+                                // The status is stored in English and translated where it is shown.
+                                let next_status = |r: Result<Value, String>| match r {
+                                    Ok(Value::Null) => "No matches".to_string(),
+                                    Ok(_) => "Found".to_string(),
                                     Err(e) => e,
                                 };
                                 if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Find Next"))).clicked() {
                                     let r = app.run("find.next", params());
-                                    let msg = next_status(app, r);
-                                    d.fields.insert("status".into(), json!(msg));
+                                    d.fields.insert("status".into(), json!(next_status(r)));
                                 }
                                 if ui
                                     .add_enabled(selected, egui::Button::new(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Change"))))
                                     .clicked()
                                 {
                                     let msg = match app.run("find.change", found.clone()) {
-                                        Ok(v) => crate::i18n::tr(&app.ui.language, "{count} replacement(s) made")
-                                            .replace("{count}", &v["count"].to_string()),
+                                        Ok(v) => format!("{} replacement(s) made", v["count"]),
                                         Err(e) => e,
                                     };
                                     d.fields.insert("status".into(), json!(msg));
                                 }
                                 if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Change All"))).clicked() {
                                     let msg = match app.run("find.change", params()) {
-                                        Ok(v) => crate::i18n::tr(&app.ui.language, "{count} replacement(s) made")
-                                            .replace("{count}", &v["count"].to_string()),
+                                        Ok(v) => format!("{} replacement(s) made", v["count"]),
                                         Err(e) => e,
                                     };
                                     d.fields.insert("status".into(), json!(msg));
@@ -3633,20 +3631,20 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                                     .clicked()
                                 {
                                     let r = app.run("find.change", found.clone()).and_then(|_| app.run("find.next", params()));
-                                    let msg = next_status(app, r);
-                                    d.fields.insert("status".into(), json!(msg));
+                                    d.fields.insert("status".into(), json!(next_status(r)));
                                 }
                                 if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Count"))).clicked() {
                                     let msg = match app.run("find.find", params()) {
-                                        Ok(v) => crate::i18n::tr(&app.ui.language, "{count} match(es)")
-                                            .replace("{count}", &v.as_array().map_or(0, |a| a.len()).to_string()),
+                                        Ok(v) => format!("{} match(es)", v.as_array().map_or(0, |a| a.len())),
                                         Err(e) => e,
                                     };
                                     d.fields.insert("status".into(), json!(msg));
                                 }
                             });
                             if let Some(st) = d.fields.get("status").and_then(Value::as_str) {
-                                ui.label(egui::RichText::new(st).color(crate::theme::Tokens::get(ui.ctx()).text_dim));
+                                ui.label(
+                                    egui::RichText::new(find_change_status(&app.ui.language, st)).color(crate::theme::Tokens::get(ui.ctx()).text_dim),
+                                );
                             }
                         }
                     }
@@ -3676,7 +3674,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                         hyphenation_preview(app, &mut d);
                         if let Some(st) = d.fields.get("status").and_then(Value::as_str) {
                             ui.add_space(6.0);
-                            crate::rtl::label(ui, egui::RichText::new(st).color(ui.visuals().error_fg_color));
+                            crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, st)).color(ui.visuals().error_fg_color));
                         }
                     }
                     "insertXref" => insert_xref(app, ui, &mut d),
@@ -3721,6 +3719,10 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                                 }
                             });
                         });
+                        // Why OK didn't place the page (a range or a number that isn't a page).
+                        if let Some(st) = d.fields.get("status").and_then(Value::as_str) {
+                            crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, st)).color(ui.visuals().error_fg_color));
+                        }
                     }
                     "layerOptions" => {
                         let mut layers = d.fields.get("layers").and_then(Value::as_array).cloned().unwrap_or_default();
@@ -3978,7 +3980,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                             ui.end_row();
                         });
                         if let Some(st) = d.fields.get("status").and_then(Value::as_str) {
-                            crate::rtl::label(ui, st);
+                            crate::rtl::label(ui, crate::i18n::tr(&lang, st));
                         }
                     }
                     "updateLink" => {
@@ -4216,7 +4218,10 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                     check(ui, &mut d, "preview", crate::i18n::tr(&app.ui.language, "Preview"));
                     if let Some(st) = d.fields.get("status").and_then(Value::as_str) {
                         ui.add_space(8.0);
-                        crate::rtl::label(ui, egui::RichText::new(st).color(crate::theme::Tokens::get(ui.ctx()).text_dim));
+                        crate::rtl::label(
+                            ui,
+                            egui::RichText::new(crate::i18n::tr(&app.ui.language, st)).color(crate::theme::Tokens::get(ui.ctx()).text_dim),
+                        );
                     }
                 }
                 if d.id == "closeDocument" && ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Don't Save"))).clicked() {
@@ -4452,6 +4457,23 @@ const FORMAT_EDIT: &str = "formatEdit";
 /// Whether the dialog has a Find (`FIND_FORMAT`) or Change Format.
 fn format_set(d: &Dialog, key: &str) -> bool {
     d.fields.get(key).and_then(Value::as_object).is_some_and(|f| !f.is_empty())
+}
+
+/// Find/Change's messages with a count, as they are stored (in English, the count filled in).
+const FIND_CHANGE_COUNTS: [&str; 4] = ["{count} match(es)", "{count} replacement(s) made", "{count} found", "{count} changed"];
+
+/// A Find/Change status in `lang`: a count message by its template, anything else as [`crate::i18n::tr`] has it.
+fn find_change_status(lang: &str, status: &str) -> String {
+    for template in FIND_CHANGE_COUNTS {
+        if let Some((before, after)) = template.split_once("{count}")
+            && let Some(count) = status.strip_prefix(before).and_then(|s| s.strip_suffix(after))
+            && !count.is_empty()
+            && count.bytes().all(|b| b.is_ascii_digit())
+        {
+            return crate::i18n::tr(lang, template).replace("{count}", count);
+        }
+    }
+    crate::i18n::tr(lang, status).to_string()
 }
 
 /// The sections of Find and Change Format Settings: Style Options, then those of Character Style
@@ -6069,7 +6091,7 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
     // Why OK didn't apply (a pattern that can't compile, a taken name).
     let status = d.s("status");
     if !status.is_empty() {
-        crate::rtl::label(ui, egui::RichText::new(status).color(crate::theme::Tokens::get(ui.ctx()).text_strong));
+        crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, &status)).color(crate::theme::Tokens::get(ui.ctx()).text_strong));
     }
 }
 
@@ -7480,7 +7502,7 @@ fn character_style_general(
     });
     let status = d.s("status");
     if !status.is_empty() {
-        crate::rtl::label(ui, egui::RichText::new(status).color(crate::theme::Tokens::get(ui.ctx()).text_strong));
+        crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(lang, &status)).color(crate::theme::Tokens::get(ui.ctx()).text_strong));
     }
     ui.add_space(8.0);
     crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(lang, "Style Settings:")).font(semibold(12.0)));
@@ -8792,7 +8814,7 @@ fn command_form(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
         }
     });
     if let Some(st) = d.fields.get("status").and_then(Value::as_str) {
-        ui.label(egui::RichText::new(st).color(crate::theme::Tokens::get(ui.ctx()).text_dim));
+        ui.label(egui::RichText::new(crate::i18n::tr(&app.ui.language, st)).color(crate::theme::Tokens::get(ui.ctx()).text_dim));
     }
 }
 
@@ -9115,7 +9137,7 @@ fn toc_dialog(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     ui.add_enabled_ui(has_toc, |ui| check(ui, d, "replace", &tr("Replace Existing Table of Contents")));
     if let Some(st) = d.fields.get("status").and_then(Value::as_str) {
         ui.add_space(6.0);
-        crate::rtl::label(ui, egui::RichText::new(st).color(crate::theme::Tokens::get(ui.ctx()).text_dim));
+        crate::rtl::label(ui, egui::RichText::new(tr(st)).color(crate::theme::Tokens::get(ui.ctx()).text_dim));
     }
     d.fields.insert("moreOptions".into(), json!(expanded));
     d.fields.insert("included".into(), json!(rows));
@@ -9176,7 +9198,7 @@ fn step_and_repeat_dialog(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog
     step_and_repeat_preview(app, d);
     if let Some(st) = d.fields.get("status").and_then(Value::as_str) {
         ui.add_space(6.0);
-        crate::rtl::label(ui, egui::RichText::new(st).color(crate::theme::Tokens::get(ui.ctx()).text_dim));
+        crate::rtl::label(ui, egui::RichText::new(tr(st)).color(crate::theme::Tokens::get(ui.ctx()).text_dim));
     }
 }
 
@@ -9401,7 +9423,7 @@ fn corner_options_dialog(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog)
     corner_options_preview(app, d);
     if let Some(st) = d.fields.get("status").and_then(Value::as_str) {
         ui.add_space(6.0);
-        crate::rtl::label(ui, egui::RichText::new(st).color(crate::theme::Tokens::get(ui.ctx()).text_dim));
+        crate::rtl::label(ui, egui::RichText::new(tr(st)).color(crate::theme::Tokens::get(ui.ctx()).text_dim));
     }
 }
 
@@ -9522,7 +9544,7 @@ fn insert_xref(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
         combo(ui, d, "format", &opts);
     });
     if let Some(m) = d.fields.get("status").and_then(Value::as_str) {
-        ui.label(egui::RichText::new(m).color(dim));
+        ui.label(egui::RichText::new(crate::i18n::tr(&app.ui.language, m)).color(dim));
     }
 }
 
