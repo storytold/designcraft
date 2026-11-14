@@ -334,6 +334,19 @@ impl Document {
         complete
     }
 
+    /// Number of references to one asset across page items, media posters, anchored/inline
+    /// objects, table cells and notes. `None` when a hostile/deep document exceeds the traversal
+    /// budget, so callers can conservatively avoid assuming the asset has a single owner.
+    pub fn asset_ref_count(&self, target: AssetId) -> Option<usize> {
+        let mut count = 0;
+        self.asset_refs(&mut |a| {
+            if a == target {
+                count += 1;
+            }
+        })
+        .then_some(count)
+    }
+
     /// The assets something in the document references. When the document nests deeper than
     /// the traversal limit, every asset counts as used.
     pub fn used_assets(&self) -> BTreeSet<AssetId> {

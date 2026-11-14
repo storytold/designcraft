@@ -208,6 +208,35 @@ fn links_panel_keeps_long_source_paths_inside_a_narrow_panel() {
 }
 
 #[test]
+fn links_panel_exposes_individual_placements_and_makes_action_scope_clear() {
+    let path = "/project/assets/photo.svg";
+    let (mut app, items, assets) = linked_graphics(&[Some(path)]);
+    app.run("selection.set", json!({"ids": [items[0].0]})).unwrap();
+    let dup = app.run("edit.duplicate", json!({})).unwrap();
+    let second = designcraft_doc::ItemId(dup["ids"][0].as_u64().unwrap());
+    assert_eq!(app.session.active().unwrap().doc.item(second).unwrap().graphic().unwrap().asset, assets[0]);
+
+    let mut h = links_harness(app, 420.0);
+    let _ = h.get_by_label("↳ photo.svg 1");
+    h.get_by_label("↳ photo.svg 2").click();
+    h.run_steps(3);
+    let _ = h.get_by_label("Placement 2 of photo.svg");
+    let _ = h.get_by_label("Update");
+    let _ = h.get_by_label("Embed");
+    let _ = h.get_by_label("Relink and Go To affect this placement; Update and Embed affect all placements of the source.");
+    h.get_by_label("Go To").click();
+    h.run_steps(3);
+    assert_eq!(h.state().session.active().unwrap().selection.items, vec![second]);
+
+    // Choosing the source name button clears placement scope.
+    h.get_by_label("photo.svg").click();
+    h.run_steps(3);
+    let _ = h.get_by_label("Update");
+    let _ = h.get_by_label("Embed");
+    assert!(h.query_by_label("Placement 2 of photo.svg").is_none());
+}
+
+#[test]
 fn properties_character_section_sets_the_language() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.run("file.new", json!({})).unwrap();

@@ -35,6 +35,7 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     }
     let Some(st) = app.session.active() else { return };
     let t = Tokens::get(ui.ctx());
+    let document_identity = st.identity_epoch;
     // Whether a linked file is still there and unchanged is asked of the file system, and a
     // network path may take an operating-system timeout to answer: native builds list the links
     // from the document and take their statuses from a check on a background worker.
@@ -80,8 +81,29 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "No placed graphics.")).color(t.text_dim));
         return;
     }
-    let sel_key = egui::Id::unique("links_panel_sel");
+    let sel_key = egui::Id::unique(("links_panel_sel", document_identity));
+    let item_sel_key = egui::Id::unique(("links_panel_item_sel", document_identity));
     let mut chosen: Option<u64> = ui.data(|d| d.get_temp(sel_key));
+    let mut chosen_item: Option<u64> = ui.data(|d| d.get_temp(item_sel_key));
+
+    // If a placement was relinked, it moved under another asset row. Follow its use id so the
+    // Links panel keeps the same placement selected after the document revision changes.
+    if let Some(item) = chosen_item {
+        match rows.iter().find_map(|r| {
+            let uses = r["uses"].as_array()?;
+            if uses.iter().any(|u| u["id"].as_u64() == Some(item)) { Some((r["asset"].as_u64()?, uses.len())) } else { None }
+        }) {
+            Some((asset, uses)) => {
+                chosen = Some(asset);
+                // With one placement, source-level Relink/Go To and placement-level targeting
+                // are equivalent; do not keep an invisible placement target after a split.
+                if uses <= 1 {
+                    chosen_item = None;
+                }
+            }
+            None => chosen_item = None,
+        }
+    }
     // Leave room for Status and Page/PPI instead of widening the grid for long source paths.
     let name_width = (ui.available_width() - 160.0).max(50.0);
     egui::Grid::new("links_grid").num_columns(3).striped(true).spacing([10.0, 4.0]).show(ui, |ui| {
@@ -96,7 +118,7 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
             let response = ui
                 .vertical(|ui| {
                     ui.set_width(name_width);
-                    let name = ui.add(egui::Button::selectable(chosen == Some(aid), name).truncate());
+                    let name = ui.add(egui::Button::selectable(chosen == Some(aid) && chosen_item.is_none(), name).truncate());
                     match r["path"].as_str().filter(|path| !path.is_empty()) {
                         Some(path) => name.union(
                             ui.add(
@@ -113,6 +135,7 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
                 .inner;
             if response.clicked() {
                 chosen = Some(aid);
+                chosen_item = None;
             }
             let (txt, col) = match r["status"].as_str().unwrap_or("") {
                 "missing" => ("\u{26A0} Missing", egui::Color32::from_rgb(0xe5, 0x4b, 0x4b)),
@@ -144,10 +167,56 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
                 egui::RichText::new(info).size(11.0).color(if low { egui::Color32::from_rgb(0xe8, 0xb3, 0x2c) } else { t.text_dim }),
             );
             ui.end_row();
+
+            // One source file can be placed more than once. Keep the asset row for source-level
+            // operations, and expose each ordinary page placement as a sublink that can be
+            // targeted by Relink and Go To independently.
+            if r["asset"].as_u64().is_some() && uses.len() > 1 {
+                for (index, u) in uses.iter().enumerate() {
+                    let Some(item) = u["id"].as_u64() else { continue };
+                    // Placement-level commands target ordinary page/group graphics. Anchored or
+                    // inline occurrences are still listed, but use the shared source row.
+                    let selectable =
+                        app.session.active().is_some_and(|st| st.doc.item(designcraft_doc::ItemId(item)).and_then(|it| it.graphic()).is_some());
+                    let page = u["page"].as_str().unwrap_or("PB");
+                    let label = format!("↳ {name} {}", index + 1);
+                    let selected = chosen == Some(aid) && chosen_item == Some(item);
+                    let response = ui.add_enabled(selectable, egui::Button::selectable(selected, label).truncate());
+                    let response = response.on_hover_text(if selectable {
+                        format!("Placement {} · page {page} · item {item}. Relink and Go To affect only this placement.", index + 1)
+                    } else {
+                        format!("Placement {} · page {page} · item {item} is anchored/inline; use the source row.", index + 1)
+                    });
+                    if response.clicked() {
+                        chosen = Some(aid);
+                        chosen_item = Some(item);
+                    }
+                    crate::rtl::label(ui, egui::RichText::new("").size(11.0));
+                    let ppi = u["ppi"].as_f64().map(|p| format!(" · {p:.0} ppi")).unwrap_or_default();
+                    let low = u["ppi"].as_f64().is_some_and(|p| p < 150.0);
+                    crate::rtl::label(
+                        ui,
+                        egui::RichText::new(format!("{page}{ppi}")).size(11.0).color(if low {
+                            egui::Color32::from_rgb(0xe8, 0xb3, 0x2c)
+                        } else {
+                            t.text_dim
+                        }),
+                    );
+                    ui.end_row();
+                }
+            }
         }
     });
     if let Some(c) = chosen {
         ui.data_mut(|d| d.insert_temp(sel_key, c));
+    }
+    match chosen_item {
+        Some(item) => {
+            ui.data_mut(|d| d.insert_temp(item_sel_key, item));
+        }
+        None => {
+            ui.data_mut(|d| d.remove::<u64>(item_sel_key));
+        }
     }
     ui.add_space(6.0);
     if let Some(path) = rows
@@ -160,6 +229,24 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         ui.add(egui::Label::new(egui::RichText::new(path).color(t.text_dim).size(11.0)).wrap());
         ui.add_space(6.0);
     }
+    if let Some(aid) = chosen
+        && let Some(r) = rows.iter().find(|r| r["asset"].as_u64().or_else(|| r["story"].as_u64()) == Some(aid))
+    {
+        let name = r["name"].as_str().unwrap_or("");
+        if let Some(item) = chosen_item {
+            let index = r["uses"].as_array().and_then(|uses| uses.iter().position(|u| u["id"].as_u64() == Some(item))).map_or(1, |i| i + 1);
+            crate::rtl::label(ui, egui::RichText::new(format!("Placement {index} of {name}")).strong().size(11.0));
+            crate::rtl::label(
+                ui,
+                egui::RichText::new("Relink and Go To affect this placement; Update and Embed affect all placements of the source.")
+                    .color(t.text_dim)
+                    .size(10.0),
+            );
+        } else if r["asset"].as_u64().is_some() && r["uses"].as_array().is_some_and(|uses| uses.len() > 1) {
+            crate::rtl::label(ui, egui::RichText::new(format!("All placements of {name}")).strong().size(11.0));
+        }
+        ui.add_space(4.0);
+    }
     ui.horizontal_wrapped(|ui| {
         let Some(aid) = chosen else {
             crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Choose a link.")).color(t.text_dim).size(11.0));
@@ -167,9 +254,10 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         };
         // A linked text file is addressed by its story.
         let is_text = rows.iter().any(|r| r["story"].as_u64() == Some(aid));
-        let target = if is_text { json!({"story": aid}) } else { json!({"asset": aid}) };
+        let source_target = if is_text { json!({"story": aid}) } else { json!({"asset": aid}) };
+        let placement_target = if !is_text && let Some(item) = chosen_item { json!({"item": item}) } else { source_target.clone() };
         let with = |k: &str, v: Value| {
-            let mut p = target.clone();
+            let mut p = placement_target.clone();
             p[k] = v;
             p
         };
@@ -184,25 +272,34 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
             }
         }
         if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Go To"))).clicked() {
-            let _ = app.run("links.goTo", target.clone());
+            let _ = app.run("links.goTo", placement_target.clone());
         }
+        let placement_scope = !is_text && chosen_item.is_some();
         let edited = rows.iter().any(|r| r["story"].as_u64() == Some(aid) && r["edited"].as_bool() == Some(true));
-        let update = ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Update")));
-        let update = if edited {
-            update.on_hover_ui(|ui| {
+        let mut update = ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Update")));
+        if placement_scope {
+            update = update.on_hover_text("Update applies to the shared source and therefore affects all placements.");
+        }
+        if edited {
+            update = update.on_hover_ui(|ui| {
                 crate::rtl::label(
                     ui,
                     crate::i18n::tr(&app.ui.language, "This story was edited in the layout: you'll be asked before those edits are replaced"),
                 );
-            })
-        } else {
-            update
-        };
-        if update.clicked() {
-            update_links(app, target.clone());
+            });
         }
-        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, if is_text { "Unlink" } else { "Embed" }))).clicked() {
-            let _ = app.run("links.embed", target.clone());
+        if update.clicked() {
+            update_links(app, source_target.clone());
+        }
+        let mut embed = ui.button(crate::rtl::widget(
+            ui,
+            crate::i18n::tr(&app.ui.language, if is_text { "Unlink" } else { "Embed" }),
+        ));
+        if placement_scope {
+            embed = embed.on_hover_text("Embed applies to the shared source and therefore affects all placements.");
+        }
+        if embed.clicked() {
+            let _ = app.run("links.embed", source_target.clone());
         }
     });
     ui.horizontal(|ui| {

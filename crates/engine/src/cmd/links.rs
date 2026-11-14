@@ -37,7 +37,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Relink…",
             ["Window", "Links"],
             None,
-            "{asset | story, path} — use another file for every placement of the graphic (keeps the selected PDF page; error if missing), or import another text file into the linked story",
+            "{path: string, exactly one of asset: id | item: id | story: id} — asset relinks every placement of a graphic; item relinks only that placed graphic; asset/item graphic relink keeps the selected PDF page and errors if it is missing; story imports another text file into the linked story",
             has_doc,
             relink
         ),
@@ -81,11 +81,19 @@ pub fn specs() -> Vec<CommandSpec> {
                 })
             }
         ),
-        cmd!(noundo "links.goTo", "Go To Link", ["Window", "Links"], None, "{asset | story} — selects the frames showing the graphic or the linked text", has_doc, |s, p| {
+        cmd!(noundo "links.goTo", "Go To Link", ["Window", "Links"], None, "{exactly one of asset: id | item: id | story: id} — selects all frames showing an asset, one placed graphic, or the linked text", has_doc, |s, p| {
+            let selector = link_selector(p, "links.goTo")?;
             let st = s.doc_mut()?;
-            let ids = match story_param(p) {
-                Some(sid) => st.doc.story(sid).map(|s| s.frames.clone()).unwrap_or_default(),
-                None => uses(&st.doc, asset_param(p, "links.goTo")?),
+            let ids = match selector {
+                LinkSelector::Story(sid) => st.doc.story(sid).ok_or_else(|| bad("links.goTo", "no such story"))?.frames.clone(),
+                LinkSelector::Item(id) => {
+                    let it = st.doc.item(id).ok_or_else(|| bad("links.goTo", "no such item"))?;
+                    if it.graphic().is_none() {
+                        return Err(bad("links.goTo", "item is not a placed graphic"));
+                    }
+                    vec![id]
+                }
+                LinkSelector::Asset(aid) => uses(&st.doc, aid),
             };
             if ids.is_empty() {
                 return Err(bad("links.goTo", "the graphic isn't placed"));
@@ -103,6 +111,35 @@ fn asset_param(p: &Value, cmd: &str) -> Result<AssetId> {
 
 fn story_param(p: &Value) -> Option<StoryId> {
     p.get("story").and_then(Value::as_u64).map(StoryId)
+}
+
+/// The mutually exclusive target accepted by placement/source Links commands.
+#[derive(Clone, Copy)]
+enum LinkSelector {
+    Asset(AssetId),
+    Item(ItemId),
+    Story(StoryId),
+}
+
+/// Exactly one Links selector, with field-specific type errors instead of silently preferring
+/// one selector when callers accidentally send several.
+fn link_selector(p: &Value, cmd: &str) -> Result<LinkSelector> {
+    let id = |key: &str| -> Result<Option<u64>> {
+        match p.get(key) {
+            None => Ok(None),
+            Some(v) => v.as_u64().map(Some).ok_or_else(|| bad(cmd, format!("`{key}` must be an integer id"))),
+        }
+    };
+    let asset = id("asset")?;
+    let item = id("item")?;
+    let story = id("story")?;
+    match (asset, item, story) {
+        (Some(id), None, None) => Ok(LinkSelector::Asset(AssetId(id))),
+        (None, Some(id), None) => Ok(LinkSelector::Item(ItemId(id))),
+        (None, None, Some(id)) => Ok(LinkSelector::Story(StoryId(id))),
+        (None, None, None) => Err(bad(cmd, "give exactly one of `asset`, `item`, or `story`")),
+        _ => Err(bad(cmd, "`asset`, `item`, and `story` are mutually exclusive")),
+    }
 }
 
 /// FNV-1a (64-bit) of `bytes`, in hex: a linked text file's fingerprint.
@@ -634,23 +671,85 @@ fn relinked_asset(a: &designcraft_doc::Asset, read: &Path, link: &str) -> Result
 
 /// `links.relink`: a placed graphic or linked text file takes its bytes from `path` from now on.
 fn relink(s: &mut Session, p: &Value) -> Result<Value> {
+    let selector = link_selector(p, "links.relink")?;
     let path = str_param(p, "path").ok_or_else(|| bad("links.relink", "missing path"))?.to_string();
-    if let Some(sid) = story_param(p) {
+
+    if let LinkSelector::Story(sid) = selector {
         let (bytes, before) = read_text(&path)?;
         let name = file_name(&path);
         return s.edit(|d, _| {
             let warnings = reimport(d, sid, &path, &bytes, before)?;
-            Ok(json!({"name": name, "warnings": warnings}))
+            Ok(json!({"name": name, "warnings": warnings, "story": sid.0}))
         });
     }
-    let aid = asset_param(p, "links.relink")?;
+
+    if let LinkSelector::Item(iid) = selector {
+        // Validate the target and source asset before reading or allocating anything. A failed
+        // item check must leave both the asset map and the document id counter untouched.
+        let (aid, only_use, fresh) = {
+            let d = &s.doc()?.doc;
+            let it = d.item(iid).ok_or_else(|| bad("links.relink", "no such item"))?;
+            let g = it.graphic().ok_or_else(|| bad("links.relink", "item is not a placed graphic"))?;
+            let a = d.assets.get(&g.asset).ok_or_else(|| bad("links.relink", "placed graphic refers to a missing asset"))?;
+            let aid = g.asset;
+            let only_use = d.asset_ref_count(aid) == Some(1);
+            let fresh = relinked_asset(a, Path::new(&path), &path)?;
+            (aid, only_use, fresh)
+        };
+
+        let r = s.edit(|d, _| {
+            // Revalidate before mutating: a stale placement target must not allocate or add an asset.
+            let current = d.item(iid).and_then(Item::graphic).map(|g| g.asset).ok_or_else(|| bad("links.relink", "item is not a placed graphic"))?;
+            if current != aid {
+                return Err(bad("links.relink", "placed graphic changed before relink"));
+            }
+
+            let name = fresh.name.clone();
+            // Reuse an identical target already in the document. If this placement is the source
+            // asset's only reference, keep its id stable instead of splitting it unnecessarily.
+            let replacement_id = if let Some(existing) = designcraft_doc::find_same_asset(&d.assets, fresh.as_ref()) {
+                existing
+            } else if only_use {
+                d.assets.insert(aid, fresh.clone());
+                aid
+            } else {
+                let mut replacement = (*fresh).clone();
+                replacement.id = AssetId(d.alloc());
+                d.add_asset(replacement)
+            };
+
+            if replacement_id != aid {
+                let it = d.item_mut(iid).ok_or_else(|| bad("links.relink", "no such item"))?;
+                let Content::Graphic(g) = &mut it.content else {
+                    return Err(bad("links.relink", "item is not a placed graphic"));
+                };
+                if g.asset != aid {
+                    return Err(bad("links.relink", "placed graphic changed before relink"));
+                }
+                g.asset = replacement_id;
+
+                // Repeated placement-only relinks must not accumulate unused intermediate assets.
+                if !d.used_assets().contains(&aid) {
+                    d.assets.remove(&aid);
+                }
+            }
+            Ok(json!({"name": name, "warnings": [], "asset": replacement_id.0, "item": iid.0}))
+        });
+        s.link_checks.images.clear();
+        return r;
+    }
+
+    let aid = match selector {
+        LinkSelector::Asset(aid) => aid,
+        LinkSelector::Item(_) | LinkSelector::Story(_) => return Err(bad("links.relink", "unsupported selector")),
+    };
     let a = s.doc()?.doc.assets.get(&aid).ok_or_else(|| bad("links.relink", "no such graphic"))?;
     // Build the replacement before the edit: a file that cannot be read leaves the document as it was.
     let fresh = relinked_asset(a, Path::new(&path), &path)?;
     let r = s.edit(|d, _| {
         let name = fresh.name.clone();
         d.assets.insert(aid, fresh);
-        Ok(json!({"name": name}))
+        Ok(json!({"name": name, "warnings": [], "asset": aid.0}))
     });
     s.link_checks.images.clear();
     r
