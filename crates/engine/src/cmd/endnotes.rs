@@ -50,8 +50,9 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(query "endnote.list", "Endnotes", [], None, "{} → [{story, id, number, text}] in numbering order", has_doc, |s, _| {
             let d = &s.doc()?.doc;
             let mut out = Vec::new();
+            let starts = d.number_starts();
             for st in d.stories.values().filter(|st| !st.endnotes.is_empty()) {
-                let first = d.endnote_start(st.id);
+                let first = starts.endnote(st.id);
                 for (k, n) in st.endnotes.iter().enumerate() {
                     out.push(json!({"story": st.id.0, "id": n.id, "number": first.saturating_add(k as u32), "text": n.text.text}));
                 }

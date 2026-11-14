@@ -27,6 +27,7 @@ pub mod index;
 pub mod item;
 pub mod mojikumi;
 pub mod notes;
+pub mod numbering;
 pub mod otf;
 pub mod page;
 pub mod ruby;

@@ -240,7 +240,9 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
   against InDesign on long books and image-heavy catalogues.
 - **Have:** compose 300k characters ~38 ms warm, damage-region repaint (< 1 ms while typing),
   parallel story composition, and an edit composes only the paragraphs it can change in a plain
-  story (240 paragraphs: 3 composed for a typed character). Automatic recovery writes on a
+  story (240 paragraphs: 3 composed for a typed character); list/footnote/endnote numbering
+  across stories built once per document version (a 677-story IDML with 8 continuing lists:
+  69 s → 37 ms to compose). Automatic recovery writes on a
   background thread and streams to disk, so an autosave of that catalogue no longer blocks the
   interface thread for 30-100 s (`file.recovery.save {background}`, `file.recovery.progress`). A
   snapshot still being written when its document is saved, reverted or closed is cancelled before
