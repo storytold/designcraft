@@ -24,7 +24,12 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ("app.contactSheetDialog", "Place Contact Sheet…", None, "{} — place the images loaded in the place cursor on new pages"),
     ("app.saveDialog", "Save As…", Some("Cmd+Shift+S"), "{path?} — without a path, choose where in a dialog"),
     ("app.save", "Save", Some("Cmd+S"), "{}"),
-    ("app.quit", "Quit DesignCraft", Some("Cmd+Q"), "{} — close the window; each document with unsaved changes asks first"),
+    (
+        "app.quit",
+        "Quit DesignCraft",
+        Some("Cmd+Q"),
+        "{} — close the window; unsaved documents ask first; during PDF export returns a version 2 queued envelope and waits for its terminal result",
+    ),
     ("app.saveCopyDialog", "Save a Copy…", Some("Cmd+Alt+S"), "{path?} — choose where to write a copy (the document stays as it is)"),
     ("app.loadSwatches", "Load Swatches…", None, "{path?} — pick a swatch exchange (.ase) file"),
     (
@@ -95,7 +100,19 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ("app.placeAndLink", "Place and Link", None, "{} — a linked copy of the selected frame's story, beside it"),
     ("app.placeWithOptions", "Place with Import Options…", Some("Cmd+Shift+D"), "{path?} — Word/RTF style mapping before placing"),
     ("app.exportText", "Export Text…", None, "{path?} — the story being edited, as Text Only (.txt) or Rich Text Format (.rtf)"),
-    ("app.exportPdf", "Export PDF…", None, "{path?, …file.exportPdf options} — asks for a path when none is given"),
+    (
+        "app.exportPdf",
+        "Export PDF…",
+        None,
+        "{path?, …file.exportPdf options} — without path opens the options/save dialog; with path, desktop returns version 2 {path, queued:true, operationId, statusCommand, bytes:null, pages:null, warnings:null}; poll app.pdfExportStatus for the terminal result; browser/file.exportPdf stay synchronous",
+    ),
+    ("app.pdfExportStatus", "PDF Export Status", None, "{operationId?} — version 2 status for the current/latest operation; older IDs are unknown"),
+    (
+        "app.cancelPdfExport",
+        "Cancel PDF Export",
+        None,
+        "{operationId?} — cancel before saving starts; editing resumes while the cancelled worker finishes; no new export starts until it exits",
+    ),
     (
         "app.exportBatch",
         "Export Layouts and Versions…",

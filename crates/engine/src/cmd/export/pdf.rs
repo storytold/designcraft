@@ -89,9 +89,7 @@ fn first_page_ref(pdf: &[u8]) -> Option<usize> {
 
 /// Every page sharing a spread with one of `pages` (0-based), for an export that puts whole
 /// spreads on a sheet. The pages come back in document order.
-fn with_their_spreads(s: &Session, pages: &[usize]) -> Vec<usize> {
-    let Some(st) = s.active() else { return pages.to_vec() };
-    let d = &st.doc;
+fn with_their_spreads(d: &designcraft_doc::Document, pages: &[usize]) -> Vec<usize> {
     let spreads: std::collections::BTreeSet<usize> = pages.iter().filter_map(|p| d.page_loc(*p)).map(|(si, _)| si).collect();
     if spreads.is_empty() {
         return pages.to_vec();
@@ -100,14 +98,7 @@ fn with_their_spreads(s: &Session, pages: &[usize]) -> Vec<usize> {
 }
 
 pub(super) fn export_pdf(s: &mut Session, p: &Value) -> Result<Value> {
-    let mut r = pdf_export(s, p)?;
-    // Text the pages have no room for is not in the file: say so, as preflight does (#1465).
-    // A spread export puts the whole spread on the sheet, so choosing page 2 exports page 3 as
-    // well and page 3's overset is as absent from the file as page 2's would be. The selection
-    // is widened to the spreads it touches before the warnings are collected (noted in review).
-    let opts = options(p, s.doc()?.doc.page_count())?;
-    let warn_pages = opts.pages.as_deref().map(|pages| if opts.spreads { with_their_spreads(s, pages) } else { pages.to_vec() });
-    r.warnings.extend(crate::cmd::preflight::overset_warnings(s, warn_pages.as_deref()));
+    let r = pdf_export(s, p)?;
     match str_param(p, "path") {
         Some(path) => {
             write_file(path, &r.bytes)?;
@@ -188,10 +179,30 @@ pub(crate) fn print_pdf(
 /// The PDF that File › Export PDF writes for `p`, with its warnings: the print PDF
 /// ([`print_pdf`]) with its view options, timings and transitions. File › Print prints it.
 pub(crate) fn pdf_export(s: &Session, p: &Value) -> Result<designcraft_pdf::ExportReport> {
-    pdf_report(&s.doc()?.doc, &s.cache, p)
+    export_pdf_document(&s.doc()?.doc, &s.cache, p)
 }
 
-/// [`pdf_export`] of `doc`: `file.package` writes its PDF of the packaged copy with it.
+/// Export an immutable document snapshot through the export/print/package PDF pipeline.
+///
+/// `doc` is the snapshot to compose; callers retain its document font scope for the entire
+/// call. `cache` is the shared, internally synchronized composition cache. `p` accepts the
+/// same options object as `file.exportPdf` (page range, PDF standard, bleed, marks,
+/// flattening and view options). The path is not written by this function.
+///
+/// Returns a [`designcraft_pdf::ExportReport`] containing PDF bytes, page count and warnings.
+/// Errors include invalid options/page ranges, empty exports, composition or PDF generation
+/// failures. The document is never mutated; using an `Arc<Document>` snapshot and retaining
+/// its fonts lets a worker call this independently of the live session. The caller is
+/// responsible for file-access checks, atomic output writing and cancellation before writing.
+pub fn export_pdf_document(doc: &designcraft_doc::Document, cache: &designcraft_compose::Cache, p: &Value) -> Result<designcraft_pdf::ExportReport> {
+    let mut report = pdf_report(doc, cache, p)?;
+    let opts = options(p, doc.page_count())?;
+    let warn_pages = opts.pages.as_deref().map(|pages| if opts.spreads { with_their_spreads(doc, pages) } else { pages.to_vec() });
+    report.warnings.extend(crate::cmd::preflight::overset_warnings_document(doc, cache, warn_pages.as_deref()));
+    Ok(report)
+}
+
+/// The shared report also used when packaging an immutable document copy.
 pub(crate) fn pdf_report(doc: &designcraft_doc::Document, cache: &designcraft_compose::Cache, p: &Value) -> Result<designcraft_pdf::ExportReport> {
     let opts = options(p, doc.page_count())?;
     let ppi = flatten_ppi("file.exportPdf", p)?;

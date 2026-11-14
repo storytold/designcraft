@@ -16,6 +16,10 @@ mod edit;
 mod editorial;
 mod endnotes;
 mod export;
+/// Generated PDF bytes, exported page count and nonfatal warnings; no output path is written.
+pub use designcraft_pdf::ExportReport as PdfExportReport;
+/// Snapshot-based PDF generation, independent of the session command and its file writer.
+pub use export::export_pdf_document;
 pub(crate) use export::print_pdf;
 pub mod export_batch;
 mod file;

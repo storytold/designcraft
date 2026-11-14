@@ -186,7 +186,11 @@ fn overset_chars(story: &designcraft_doc::Story, cs: &ComposedStory) -> usize {
 
 pub fn overset_warnings(s: &Session, pages: Option<&[usize]>) -> Vec<String> {
     let Some(st) = s.active() else { return vec![] };
-    let d = &st.doc;
+    overset_warnings_document(&st.doc, &s.cache, pages)
+}
+
+/// Overset warnings for an immutable export snapshot.
+pub(crate) fn overset_warnings_document(d: &Document, cache: &Cache, pages: Option<&[usize]>) -> Vec<String> {
     let mut out = Vec::new();
     for story in d.stories.values() {
         let last = story.frames.last().copied();
@@ -200,7 +204,7 @@ pub fn overset_warnings(s: &Session, pages: Option<&[usize]>) -> Vec<String> {
                 if pages.is_some_and(|sel| !sel.contains(&page)) {
                     continue;
                 }
-                let cs = s.cache.get(d, story.id, Some(page));
+                let cs = cache.get(d, story.id, Some(page));
                 let n = overset_chars(story, &cs);
                 if cs.is_overset() && n > 0 {
                     by_count.entry(n).or_default().push(page);
@@ -214,7 +218,7 @@ pub fn overset_warnings(s: &Session, pages: Option<&[usize]>) -> Vec<String> {
             );
             continue;
         }
-        let cs = s.cache.get(d, story.id, None);
+        let cs = cache.get(d, story.id, None);
         if !cs.is_overset() {
             continue;
         }
@@ -226,7 +230,7 @@ pub fn overset_warnings(s: &Session, pages: Option<&[usize]>) -> Vec<String> {
             out.push(format!("a story with no text frame: {n} character(s) of it are not in the export"));
             continue;
         }
-        let location = last.and_then(|f| overset_location(d, &s.cache, f));
+        let location = last.and_then(|f| overset_location(d, cache, f));
         let centre = location.as_ref().and_then(|(_, page, _)| *page);
         let touched: &[usize] = location.as_ref().map(|(_, _, ps)| ps.as_slice()).unwrap_or_default();
         // A sheet draws its spread's items without asking which page they are on, so a frame

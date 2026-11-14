@@ -151,6 +151,9 @@ impl DesignApp {
     /// said the pointer was when they arrived, so one dropped on a frame still fills it.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn take_pending_drops(&mut self) {
+        if self.pdf_export.busy() {
+            return;
+        }
         // Sample the generation once for the whole batch: placing the first valid file must not
         // suppress later files that belong to the same captured batch.
         let current = self.input_generation();

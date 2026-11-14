@@ -200,3 +200,46 @@ Auto-Collapse Iconic Panels setting; `hidden` lists closed panels that remember 
 `Resize` with its edge, or `Divider`), naming groups, columns and windows by their first panel;
 `rect` is `[x, y, width, height]` in points. Drag from a rect's centre with `ui.drag`, or click
 it with `ui.click`, to script a gesture.
+
+### Desktop PDF export jobs
+
+On native desktop, `app.exportPdf` with an explicit path starts a background job and returns
+`{path, queued:true}`. Poll `ui.inspect.pdfExport`: `busy` stays true during generation and saving;
+`last` then contains `{path, bytes, pages, warnings, seconds}` or `{error}`. A queued result is
+not a completed export. Only one job runs at a time; editing and normal Quit wait for it.
+The options dialog uses the same job path. The engine's `file.exportPdf` remains synchronous
+and returns its existing final result, as does browser export.
+
+#### PDF jobs: version 2 contract
+
+Native `app.exportPdf` with an explicit path returns `{version:2, path, queued:true, operationId,
+statusCommand:"app.pdfExportStatus", bytes:null, pages:null, warnings:null}`. This is
+an explicitly asynchronous response, not the synchronous written-result contract.
+Clients needing a completed result must poll `app.pdfExportStatus {operationId}`.
+`ui.inspect.pdfExport` exposes the same typed `PdfExportStatus` schema:
+
+- `version:2`, `operationId` (integer or null when idle), `state` (`idle`, `generating`,
+  `saving`, `succeeded`, `failed`, `cancelled`), `busy`, `workerActive`, `cancellable`,
+  `elapsed` (seconds), and `last` (null until terminal).
+- `last` always has `operationId`, `path`, `bytes` (integer/null), `pages` (integer/null),
+  `warnings` (array), `seconds`, `error` (string/null), `cancelled` (boolean).
+  Success has byte/page counts; failure has an error; cancellation has `cancelled:true`.
+- Only the current/latest operation is retained; another ID is an unknown operation,
+  not another job's result. IDs increase within this application process and reset
+  on restart. Read the terminal result before starting another job.
+
+`app.cancelPdfExport {operationId}` discards generation before saving starts and
+returns status. The UI has the same Cancel export button. It does not interrupt a
+decoder mid-call: `busy:false` resumes editing, while `workerActive:true` reserves
+the sole worker slot until it drains. A cancelled worker cannot publish or write its
+late result. Once saving begins, cancellation is refused and the dialog says so;
+arbitrary host writers cannot safely be rolled back. The existing destination remains
+untouched when cancellation succeeds. A new export is refused while any worker remains.
+
+During an active export, `document.inspect`, PDF status/cancellation and zoom/fit
+view commands remain available. Editing commands return the existing human `error`
+plus `errorCode:"EXPORT_IN_PROGRESS"` and typed status in `errorData` over control.
+Cancellation refused during saving uses `EXPORT_NOT_CANCELLABLE`. Unknown or malformed operation IDs use `UNKNOWN_EXPORT_OPERATION` or `INVALID_OPERATION_ID`. `app.quit` returns
+the job's version 2 queued envelope, shows "Quit queued until PDF export finishes",
+and resumes the normal unsaved-document flow after the result. Successful cancellation
+clears that queued quit. `file.exportPdf` and browser export stay synchronous.

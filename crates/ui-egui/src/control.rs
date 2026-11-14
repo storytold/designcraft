@@ -74,6 +74,7 @@ pub fn all_commands(app: &DesignApp) -> Value {
 pub fn inspect(app: &DesignApp, ctx: &egui::Context) -> Value {
     let r = ctx.content_rect();
     json!({
+        "pdfExport": app.pdf_export.status(),
         "tool": app.session.tool_id(),
         "ui": serde_json::to_value(&app.ui).unwrap_or_default(),
         "view": app.view().map(|v| serde_json::to_value(v).unwrap_or_default()),
@@ -226,6 +227,27 @@ fn control_click(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest)
     ok(Value::Null)
 }
 
+fn run_command(app: &mut DesignApp, id: &str, params: Value) -> Outcome {
+    let result = app.run(id, params);
+    if let Err(error) = &result {
+        let code = if error == "Unknown PDF export operation" {
+            Some("UNKNOWN_EXPORT_OPERATION")
+        } else if error == "operationId must be a positive integer" {
+            Some("INVALID_OPERATION_ID")
+        } else if id == "app.cancelPdfExport" {
+            Some("EXPORT_NOT_CANCELLABLE")
+        } else if error == "Please wait for the PDF export to finish" || error == "A PDF export worker is still running" {
+            Some("EXPORT_IN_PROGRESS")
+        } else {
+            None
+        };
+        if let Some(code) = code {
+            return Outcome::Done(json!({"ok":false,"error":error,"errorCode":code,"errorData":app.pdf_export.status()}));
+        }
+    }
+    wrap(result)
+}
+
 fn handle_request(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest) -> Outcome {
     let p = &req.params;
     let s = |k: &str| p.get(k).and_then(Value::as_str);
@@ -244,7 +266,7 @@ fn handle_request(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest
             if let Err(e) = designcraft_engine::check_params(id, &params) {
                 return err(e.to_string());
             }
-            wrap(app.run(id, params))
+            run_command(app, id, params)
         }
         "engine.commands" => ok(all_commands(app)),
         "document.inspect" => wrap(app.run("document.inspect", json!({}))),

@@ -231,6 +231,7 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
 - **Estimate:** 30–60 h (PostScript interpreter is a large separate project: +80–150 h).
 
 ### 20. Performance on large documents (P)
+- **Have:** native PDF export generates and atomically saves on a worker with cancellation before saving; the interface retains input until the result is terminal. See [background-pdf-export.md](background-pdf-export.md).
 - **Missing:** the 8 ms keystroke budget in long stories: an edit that moves lines into other
   frames composes the story to its end, the lines an edit keeps are copied, and stories with
   footnotes, endnotes, tables, anchored objects, named lists, tracked deletions, balanced
