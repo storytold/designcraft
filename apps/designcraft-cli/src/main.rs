@@ -319,16 +319,17 @@ fn names_the_same_file(input: &std::path::Path, out: &std::path::Path) -> bool {
 /// as it is; it is decoded anyway, so a broken one is an error rather than an unreadable thumbnail.
 fn fit_png(png: Vec<u8>, size: Option<u32>) -> Result<Vec<u8>, String> {
     // The preview comes from the file: it may claim any size.
-    let mut limits = image::Limits::default();
-    limits.max_image_width = Some(4096);
-    limits.max_image_height = Some(4096);
-    let mut reader = image::ImageReader::with_format(std::io::Cursor::new(&png), image::ImageFormat::Png);
-    reader.limits(limits);
-    let img = reader.decode().map_err(|e| e.to_string())?;
-    let Some(size) = size.filter(|s| img.width().max(img.height()) > *s) else { return Ok(png) };
-    let mut out = std::io::Cursor::new(Vec::new());
-    img.resize(size, size, image::imageops::FilterType::Triangle).write_to(&mut out, image::ImageFormat::Png).map_err(|e| e.to_string())?;
-    Ok(out.into_inner())
+    let info = craft_image_codecs::inspect_raster(&png).map_err(|e| e.to_string())?.ok_or("invalid PNG preview")?;
+    if info.width > 4096 || info.height > 4096 {
+        return Err("preview is larger than 4096 pixels".into());
+    }
+    let decoded = craft_image_codecs::decode(&png).map_err(|e| e.to_string())?;
+    let Some(size) = size.filter(|s| decoded.width().max(decoded.height()) > *s) else { return Ok(png) };
+    let rgba = image::RgbaImage::from_raw(decoded.width(), decoded.height(), decoded.to_rgba8()).ok_or("invalid PNG pixel data")?;
+    let resized = image::DynamicImage::ImageRgba8(rgba).resize(size, size, image::imageops::FilterType::Triangle).to_rgba8();
+    let encoded = craft_image_codecs::Image::from_u8(resized.width(), resized.height(), craft_image_codecs::ChannelLayout::Rgba, resized.into_raw())
+        .map_err(|e| e.to_string())?;
+    craft_image_codecs::encode(&encoded, craft_image_codecs::Format::Png, &Default::default()).map_err(|e| e.to_string())
 }
 
 /// `mcp` (headless, in-process engine) or `mcp --connect PORT|HOST:PORT` (drive a running app
@@ -597,8 +598,8 @@ fn export(s: &mut Session, out: &str, page: usize, scale: f64) -> Result<(), Str
     let img = r
         .render_page(&st.doc, &s.cache, page, scale, true, &designcraft_render::RenderOptions { printing_only: true, ..Default::default() })
         .ok_or("no such page")?;
-    let lower = out.to_lowercase();
-    let bytes = if lower.ends_with(".jpg") || lower.ends_with(".jpeg") { img.to_jpeg(90) } else { img.to_png() };
+    let jpeg = craft_file_formats::detect(out, &[]) == Some(craft_file_formats::Format::Jpeg);
+    let bytes = if jpeg { img.to_jpeg(90) } else { img.to_png() };
     designcraft_engine::atomic::write_atomic(std::path::Path::new(out), &bytes).map_err(|e| format!("{out}: {e}"))?;
     eprintln!("wrote {out} ({}×{}, {:.1} ms, {} glyphs)", img.width, img.height, t.elapsed().as_secs_f64() * 1000.0, r.stats.glyphs);
     Ok(())
@@ -645,7 +646,7 @@ fn script(args: &[String]) -> Result<(), String> {
         match a.as_str() {
             "--in" => {
                 let p = val()?;
-                let cmd = if p.to_lowercase().ends_with(".idml") { "file.openIdml" } else { "file.open" };
+                let cmd = if craft_file_formats::detect(&p, &[]) == Some(craft_file_formats::Format::Idml) { "file.openIdml" } else { "file.open" };
                 setup.push((cmd.into(), json!({"path": p})));
             }
             "--sample" => setup.push(("file.newSample".into(), json!({}))),
