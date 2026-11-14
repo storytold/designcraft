@@ -347,6 +347,98 @@ fn a_frame_with_pasted_in_content_shows_its_own_edge_only() {
     );
 }
 
+/// A frame slanted by about its own width has one diagonal near vertical. The X fell back to the
+/// bounds when either diagonal was near an axis, so while the top points were dragged across that
+/// range it jumped from the corners to the bounds and back; only a diamond, both of whose
+/// diagonals are near an axis, keeps the bounds (#2280).
+#[test]
+fn a_frame_slanted_by_its_own_width_keeps_its_x_corner_to_corner() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    // 60 pt wide, 100 pt tall, as in the issue.
+    let id = app.run("frame.create", json!({"rect": [100, 100, 160, 200]})).unwrap()["id"].as_u64().unwrap();
+    let item = |app: &DesignApp| app.session.active().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap().clone();
+    let it = item(&app);
+    let top: Vec<Value> =
+        it.path.subpaths[0].anchors.iter().enumerate().filter(|(_, a)| (it.xf * a.p).y < 150.0).map(|(k, _)| json!([0, k])).collect();
+    assert_eq!(top.len(), 2);
+    // Drag the top points right in 6 pt steps, to 150 pt: the 42-78 pt range the issue names,
+    // where a diagonal is within the vertical tolerance, is crossed on the way.
+    for step in 0..=25 {
+        if step > 0 {
+            app.run("path.moveAnchors", json!({"id": id, "anchors": top, "dx": 6, "dy": 0})).unwrap();
+        }
+        let it = item(&app);
+        let corners: Vec<Point> = it.path.subpaths[0].anchors.iter().map(|a| a.p).collect();
+        let at_corner = |p: Point| corners.iter().any(|c| (*c - p).hypot() < 1e-9);
+        for (a, b) in frame_x(&it) {
+            assert!(at_corner(a) && at_corner(b), "slanted {} pt: the X runs {a:?}-{b:?}, not between the corners {corners:?}", step * 6);
+        }
+    }
+    let corner_x = |app: &DesignApp, id: u64| {
+        let it = app.session.active().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap().clone();
+        let corners: Vec<Point> = it.path.subpaths[0].anchors.iter().map(|a| a.p).collect();
+        frame_x(&it).iter().all(|(a, b)| [a, b].iter().all(|p| corners.iter().any(|c| (*c - **p).hypot() < 1e-9)))
+    };
+    // A wide frame slanted further than its height, and one corner moved alone (a trapezoid).
+    let wide = app.run("frame.create", json!({"rect": [300, 100, 400, 160]})).unwrap()["id"].as_u64().unwrap();
+    let it = item_of(&app, wide);
+    let top: Vec<Value> =
+        it.path.subpaths[0].anchors.iter().enumerate().filter(|(_, a)| (it.xf * a.p).y < 130.0).map(|(k, _)| json!([0, k])).collect();
+    app.run("path.moveAnchors", json!({"id": wide, "anchors": top, "dx": 90, "dy": 0})).unwrap();
+    assert!(corner_x(&app, wide), "a 100x60 frame slanted 90 pt");
+    let trap = app.run("frame.create", json!({"rect": [500, 100, 560, 200]})).unwrap()["id"].as_u64().unwrap();
+    let it = item_of(&app, trap);
+    let corner: Vec<Value> = it.path.subpaths[0]
+        .anchors
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| (it.xf * a.p).y < 150.0 && (it.xf * a.p).x < 530.0)
+        .map(|(k, _)| json!([0, k]))
+        .collect();
+    app.run("path.moveAnchors", json!({"id": trap, "anchors": corner, "dx": 50, "dy": 0})).unwrap();
+    assert!(corner_x(&app, trap), "a trapezoid");
+    // One corner moved (50, 1): its two other edges stay on the bounds, side by side (noted in
+    // review).
+    let nudged = app.run("frame.create", json!({"rect": [900, 100, 960, 200]})).unwrap()["id"].as_u64().unwrap();
+    let it = item_of(&app, nudged);
+    let corner: Vec<Value> = it.path.subpaths[0]
+        .anchors
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| (it.xf * a.p).y < 150.0 && (it.xf * a.p).x < 930.0)
+        .map(|(k, _)| json!([0, k]))
+        .collect();
+    app.run("path.moveAnchors", json!({"id": nudged, "anchors": corner, "dx": 50, "dy": 1})).unwrap();
+    assert!(corner_x(&app, nudged), "a frame with one corner moved (50, 1)");
+    // Slanted the other way: the right edge moved down by the frame's height.
+    let down = app.run("frame.create", json!({"rect": [700, 100, 760, 200]})).unwrap()["id"].as_u64().unwrap();
+    let it = item_of(&app, down);
+    let right: Vec<Value> =
+        it.path.subpaths[0].anchors.iter().enumerate().filter(|(_, a)| (it.xf * a.p).x > 730.0).map(|(k, _)| json!([0, k])).collect();
+    app.run("path.moveAnchors", json!({"id": down, "anchors": right, "dx": 0, "dy": 100})).unwrap();
+    assert!(corner_x(&app, down), "a frame whose right edge moved down 100 pt");
+    // A diamond keeps the bounds however far one of its points is moved sideways, and when the
+    // move puts it in line with the next point, giving the diamond one edge on its bounds (noted in
+    // review): only a rectangle has two opposite ones.
+    for dx in [15, 30, 50] {
+        let p = app.run("frame.create", json!({"rect": [300, 300, 400, 360], "shape": "polygon", "sides": 4, "starInset": 0})).unwrap()["id"]
+            .as_u64()
+            .unwrap();
+        app.run("path.moveAnchors", json!({"id": p, "anchors": [[0, 0]], "dx": dx, "dy": 0})).unwrap();
+        assert!(!corner_x(&app, p), "a diamond with a point moved {dx} pt");
+    }
+    let p = app.run("frame.create", json!({"rect": [300, 300, 400, 360], "shape": "polygon", "sides": 4, "starInset": 0})).unwrap()["id"]
+        .as_u64()
+        .unwrap();
+    app.run("path.moveAnchors", json!({"id": p, "anchors": [[0, 0], [0, 2]], "dx": 50, "dy": 0})).unwrap();
+    assert!(!corner_x(&app, p), "a diamond whose top and bottom points were moved onto its right side");
+}
+
+fn item_of(app: &DesignApp, id: u64) -> designcraft_doc::Item {
+    app.session.active().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap().clone()
+}
+
 /// Each preview mode's shown area: Preview stops at the trim, Bleed reaches the bleed box and
 /// Slug the slug box. A slug narrower than the bleed never pulls the edge back in.
 #[test]
