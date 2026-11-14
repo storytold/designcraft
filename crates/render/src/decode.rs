@@ -31,6 +31,11 @@ pub(crate) fn decode_sizes(bytes: &[u8], page: u32) -> (usize, usize) {
     ((w * h * 16.0 / 3.0) as usize, (w * h * per_pixel) as usize)
 }
 
+/// [`drawn_size`] in whole pixels, from the header (no decode).
+pub(crate) fn drawn_pixels(bytes: &[u8], page: u32) -> Option<(u32, u32)> {
+    drawn_size(bytes, page).map(|(w, h)| (w.clamp(1.0, f64::from(u32::MAX)) as u32, h.clamp(1.0, f64::from(u32::MAX)) as u32))
+}
+
 /// The pixel size [`decode_pixmap_page`] of `bytes` draws at, as [`decoded_bytes`] describes it.
 fn drawn_size(bytes: &[u8], page: u32) -> Option<(f64, f64)> {
     let drawn = |(w, h): (f64, f64), side: f64, most: f64| {

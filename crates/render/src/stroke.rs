@@ -196,7 +196,22 @@ impl Renderer {
         }
         let Some((want, page, page_h)) = image_want(f, asset, g, xf) else { return };
         let page_w = want.width_pt;
-        let Some(pm) = images::mip(&want.bytes, want.page, page_w, want.on_screen) else { return };
+        let pm = if f.opts.defer_images {
+            match images::mip_now(&want.bytes, want.page, page_w, want.on_screen) {
+                images::Mip::Ready(pm) | images::Mip::Pending(Some(pm)) => pm,
+                images::Mip::Pending(None) => {
+                    // Still decoding: a light box where it goes.
+                    ctx.set_transform(f.view * xf * g.xf);
+                    ctx.set_paint(screen_color([222, 222, 222], 255));
+                    ctx.fill_rect(&Rect::new(0.0, 0.0, g.size.0, g.size.1).intersect(page));
+                    return;
+                }
+                images::Mip::Failed => return,
+            }
+        } else {
+            let Some(pm) = images::mip(&want.bytes, want.page, page_w, want.on_screen) else { return };
+            pm
+        };
         // A coloured image is already in the plate's inks (its colours come from `color_of`).
         let pm = match (colorize::colorized(f.doc, &g.fill, &asset.data, &pm), PLATE.with(std::cell::Cell::get)) {
             (Some(coloured), _) => coloured,

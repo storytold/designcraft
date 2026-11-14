@@ -60,9 +60,12 @@ impl Renderer {
         // Release the old snapshot before rendering an edited document or resized viewport.
         self.cmyk_view = None;
         self.cmyk_ran = false;
+        images::take_deferred();
         let image = self.render_uncached(doc, cache, spreads, size, view, opts);
-        // Kept only when the ink passes ran: other views render at their usual cost anyway.
-        if self.cmyk_ran && image.pixels.len() <= blendspace::CachedView::MAX_BYTES {
+        // Kept only when the ink passes ran: other views render at their usual cost anyway. Not
+        // with images still decoding: the next render must show them.
+        let deferred = images::take_deferred();
+        if self.cmyk_ran && !deferred && image.pixels.len() <= blendspace::CachedView::MAX_BYTES {
             self.cmyk_view = Some(blendspace::CachedView::new(doc, spreads, view, opts, &image, self.stats, self.threads));
         }
         self.stats.micros = now().saturating_sub(start);
@@ -112,8 +115,9 @@ impl Renderer {
                     .then_some((Frame { doc, cache, view: view * pl.xf, visible, px, opts, mt }, pl.spread))
             })
             .collect();
-        // Decode the images in view that aren't cached yet together, before drawing them.
-        if images::can_warm() {
+        // Decode the images in view that aren't cached yet together, before drawing them. The
+        // canvas doesn't wait: it decodes them in the background ([`images::mip_now`]).
+        if images::can_warm() && !opts.defer_images {
             let mut wanted = Vec::new();
             for (f, sr) in &frames {
                 wanted_images(f, *sr, &mut wanted);

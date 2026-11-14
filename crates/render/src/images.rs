@@ -1,17 +1,22 @@
 //! Decoded placed images, shared by every [`crate::Renderer`] in the process (canvas worker,
-//! thumbnails, exports), so each asset is decoded once and each mip level built once.
+//! thumbnails, exports), so each asset is decoded once per size it is drawn at.
 //!
 //! Entries are keyed by the address of the asset's encoded bytes (`Arc<Vec<u8>>`) and hold a
 //! clone of that `Arc`, so the address can't be reused while cached. Least recently used levels
 //! are evicted beyond a memory budget; at most `MAX_BAD` failed assets are remembered.
+//!
+//! [`mip`] keeps only the level it was asked for, not the full-resolution decode it was built
+//! from: a 12-megapixel photo drawn a few hundred pixels wide costs its proxy, not 48 MB, so a
+//! book of photos fits the budget instead of evicting itself on every edit. [`mip_now`] is the
+//! canvas's version: it never waits for a decode.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, Weak};
 
 use vello_cpu::Pixmap;
 
-use crate::decode::{decode_pixmap_reduced, decode_sizes};
+use crate::decode::{decode_pixmap_reduced, decode_sizes, drawn_pixels};
 use crate::{decode_pixmap_page, halve};
 
 /// Decoded pixels kept (bytes).
@@ -19,6 +24,14 @@ const BUDGET: usize = 768 << 20;
 
 /// Failed assets remembered; the oldest is forgotten (and retried if drawn again) beyond this.
 const MAX_BAD: usize = 64;
+
+/// Coarsest mip level.
+const MAX_LEVEL: u8 = 8;
+
+/// The largest full-resolution decode kept beside the level drawn when an image is zoomed into
+/// (a finer level asked for while a coarser one is cached): each further step in is then halved
+/// from it instead of decoded again.
+const KEEP_FULL: usize = BUDGET / 8;
 
 struct Entry {
     _bytes: Arc<Vec<u8>>,
@@ -35,6 +48,10 @@ struct Cache {
     /// Assets that failed to decode (don't retry every frame).
     /// Value: (insertion stamp, the encoded bytes keeping the address reserved).
     bad: HashMap<(usize, u32), (u64, Arc<Vec<u8>>)>,
+    /// Pixel size of each asset at full resolution (as decoded, else as its header gives it), so
+    /// the level to draw is known without decoding. The weak reference keeps the address
+    /// reserved without keeping the bytes.
+    dims: HashMap<(usize, u32), (Weak<Vec<u8>>, (u32, u32))>,
     /// The colour settings the pixels were converted with ([`designcraft_color::cms::generation`]).
     colour: u64,
 }
@@ -79,6 +96,15 @@ fn lookup(key: (usize, u32, u8)) -> Option<Arc<Pixmap>> {
     })
 }
 
+/// Whether `key` is cached (without marking it used).
+fn is_cached(key: (usize, u32, u8)) -> bool {
+    with(|c| c.map.contains_key(&key))
+}
+
+fn is_bad(id: usize, page: u32) -> bool {
+    with(|c| c.bad.contains_key(&(id, page)))
+}
+
 fn store(bytes: &Arc<Vec<u8>>, page: u32, level: u8, pm: Arc<Pixmap>) {
     with(|c| {
         c.clock += 1;
@@ -106,24 +132,44 @@ fn store(bytes: &Arc<Vec<u8>>, page: u32, level: u8, pm: Arc<Pixmap>) {
     });
 }
 
-/// Full-resolution decode of `bytes` (cached).
-pub fn decoded(bytes: &Arc<Vec<u8>>, page: u32) -> Option<Arc<Pixmap>> {
+/// Remember `size` as the full-resolution pixel size of `bytes`; a header's estimate (`exact`
+/// false) doesn't replace a decode's size.
+fn set_dims(bytes: &Arc<Vec<u8>>, page: u32, size: (u32, u32), exact: bool) {
+    let key = (Arc::as_ptr(bytes) as usize, page);
+    with(|c| {
+        if !exact && c.dims.get(&key).is_some_and(|(w, _)| w.strong_count() > 0) {
+            return;
+        }
+        // Forget assets that are gone before adding one.
+        if c.dims.len() >= 1024 {
+            c.dims.retain(|_, (w, _)| w.strong_count() > 0);
+        }
+        c.dims.insert(key, (Arc::downgrade(bytes), size));
+    });
+}
+
+/// The full-resolution pixel size of `bytes`: as decoded, else as its header gives it.
+fn dims_of(bytes: &Arc<Vec<u8>>, page: u32) -> Option<(u32, u32)> {
+    let key = (Arc::as_ptr(bytes) as usize, page);
+    if let Some(size) = with(|c| c.dims.get(&key).filter(|(w, _)| w.strong_count() > 0).map(|(_, d)| *d)) {
+        return Some(size);
+    }
+    let size = drawn_pixels(bytes, page)?;
+    set_dims(bytes, page, size, false);
+    Some(size)
+}
+
+/// Decode `bytes` at full resolution without caching the pixels (its size is remembered); a
+/// failure marks it bad.
+fn decode_full(bytes: &Arc<Vec<u8>>, page: u32) -> Option<Arc<Pixmap>> {
     let id = Arc::as_ptr(bytes) as usize;
-    if let Some(pm) = lookup((id, page, 0)) {
-        return Some(pm);
-    }
-    if with(|c| c.bad.contains_key(&(id, page))) {
-        return None;
-    }
     // Decode outside the lock: other threads keep drawing cached images meanwhile.
     let pm = decode_pixmap_page(bytes, page);
-    #[cfg(test)]
-    DECODED_ON.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((id, std::thread::current().id()));
+    log_decode(id);
     match pm {
         Some(pm) => {
-            let pm = Arc::new(pm);
-            store(bytes, page, 0, pm.clone());
-            Some(pm)
+            set_dims(bytes, page, (u32::from(pm.width()), u32::from(pm.height())), true);
+            Some(Arc::new(pm))
         }
         None => {
             with(|c| c.mark_bad((id, page), bytes));
@@ -132,34 +178,359 @@ pub fn decoded(bytes: &Arc<Vec<u8>>, page: u32) -> Option<Arc<Pixmap>> {
     }
 }
 
-/// The mip level of `bytes` closest above `on_screen` device pixels per point for a graphic
-/// `width_pt` points wide.
-pub fn mip(bytes: &Arc<Vec<u8>>, page: u32, width_pt: f64, on_screen: f64) -> Option<Arc<Pixmap>> {
-    if lookup((Arc::as_ptr(bytes) as usize, page, 0)).is_none()
-        && let Some(pm) = reduced(bytes, page, width_pt, on_screen)
-    {
+#[cfg(test)]
+fn log_decode(id: usize) {
+    DECODED_ON.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((id, std::thread::current().id()));
+}
+
+#[cfg(not(test))]
+fn log_decode(_: usize) {}
+
+/// Full-resolution decode of `bytes` (cached).
+pub fn decoded(bytes: &Arc<Vec<u8>>, page: u32) -> Option<Arc<Pixmap>> {
+    let id = Arc::as_ptr(bytes) as usize;
+    if let Some(pm) = lookup((id, page, 0)) {
         return Some(pm);
     }
-    let full = decoded(bytes, page)?;
-    let ppt = full.width() as f64 / width_pt.max(1e-6);
-    let id = Arc::as_ptr(bytes) as usize;
-    let mut pm = full;
-    let mut level = 0u8;
-    while ppt / (1u64 << (level + 1)) as f64 >= on_screen * 1.2 && pm.width() > 64 && pm.height() > 64 && level < 8 {
+    if is_bad(id, page) {
+        return None;
+    }
+    let pm = decode_full(bytes, page)?;
+    store(bytes, page, 0, pm.clone());
+    Some(pm)
+}
+
+/// The mip level of an image `size` pixels at full resolution closest above `on_screen` device
+/// pixels per point when drawn `width_pt` points wide.
+fn level_for(size: (u32, u32), width_pt: f64, on_screen: f64) -> u8 {
+    let ppt = f64::from(size.0) / width_pt.max(1e-6);
+    let (mut w, mut h, mut level) = (size.0, size.1, 0u8);
+    while ppt / (1u64 << (level + 1)) as f64 >= on_screen * 1.2 && w > 64 && h > 64 && level < MAX_LEVEL {
         level += 1;
-        pm = match lookup((id, page, level)) {
-            Some(p) => p,
-            None => {
-                let half = Arc::new(halve(&pm));
-                store(bytes, page, level, half.clone());
-                half
-            }
-        };
+        w = (w / 2).max(1);
+        h = (h / 2).max(1);
+    }
+    level
+}
+
+/// `size` halved `times` times, as [`halve`] does.
+fn halved((mut w, mut h): (u32, u32), times: u8) -> (u32, u32) {
+    for _ in 0..times {
+        (w, h) = ((w / 2).max(1), (h / 2).max(1));
+    }
+    (w, h)
+}
+
+/// Halve `pm`, at level `from`, down to level `to`.
+fn halve_to(mut pm: Arc<Pixmap>, from: u8, to: u8) -> Arc<Pixmap> {
+    for _ in from..to {
+        pm = Arc::new(halve(&pm));
+    }
+    pm
+}
+
+/// Level `level` of `bytes` from the cache: that level, or one built from the nearest finer
+/// cached level (no decode).
+fn cached_level(bytes: &Arc<Vec<u8>>, page: u32, level: u8) -> Option<Arc<Pixmap>> {
+    let id = Arc::as_ptr(bytes) as usize;
+    if let Some(pm) = lookup((id, page, level)) {
+        return Some(pm);
+    }
+    let (from, finer) = (0..level).rev().find_map(|l| lookup((id, page, l)).map(|pm| (l, pm)))?;
+    let pm = halve_to(finer, from, level);
+    store(bytes, page, level, pm.clone());
+    Some(pm)
+}
+
+/// Whether level `level` of an asset, or a finer one it is halved from, is cached.
+#[cfg(not(target_arch = "wasm32"))]
+fn has_level(key: (usize, u32), level: u8) -> bool {
+    with(|c| (0..=level).any(|l| c.map.contains_key(&(key.0, key.1, l))))
+}
+
+/// The mip level of `bytes` closest above `on_screen` device pixels per point for a graphic
+/// `width_pt` points wide. Only that level is cached, not the full decode it is built from,
+/// except while an image is zoomed into (see [`KEEP_FULL`]).
+pub fn mip(bytes: &Arc<Vec<u8>>, page: u32, width_pt: f64, on_screen: f64) -> Option<Arc<Pixmap>> {
+    let id = Arc::as_ptr(bytes) as usize;
+    if is_bad(id, page) {
+        return None;
+    }
+    let mut zoom_in = false;
+    if let Some(size) = dims_of(bytes, page) {
+        let level = level_for(size, width_pt, on_screen);
+        if let Some(pm) = cached_level(bytes, page, level) {
+            return Some(pm);
+        }
+        if let Some(pm) = reduced(bytes, page, level) {
+            return Some(pm);
+        }
+        zoom_in = (level + 1..=MAX_LEVEL).any(|l| is_cached((id, page, l)));
+    }
+    let full = decode_full(bytes, page)?;
+    let level = level_for((u32::from(full.width()), u32::from(full.height())), width_pt, on_screen);
+    if level == 0 || (zoom_in && size_of(&full) <= KEEP_FULL) {
+        store(bytes, page, 0, full.clone());
+    }
+    let pm = halve_to(full, 0, level);
+    if level > 0 {
+        store(bytes, page, level, pm.clone());
     }
     Some(pm)
 }
 
-/// The decodes [`decoded`] ran: the address of the encoded bytes and the thread.
+/// What [`mip_now`] has to draw.
+pub enum Mip {
+    /// The level asked for.
+    Ready(Arc<Pixmap>),
+    /// Still decoding; another cached level to draw in its place (the nearest coarser one,
+    /// else the nearest finer one), if any.
+    Pending(Option<Arc<Pixmap>>),
+    /// The image can't be decoded.
+    Failed,
+}
+
+/// [`mip`] without waiting: a level that isn't cached is decoded on a background thread and
+/// [`generation`] advances when it is ready (the [`set_waker`] callback runs too). On wasm it
+/// decodes in place.
+pub fn mip_now(bytes: &Arc<Vec<u8>>, page: u32, width_pt: f64, on_screen: f64) -> Mip {
+    let id = Arc::as_ptr(bytes) as usize;
+    if is_bad(id, page) {
+        return Mip::Failed;
+    }
+    let level = dims_of(bytes, page).map(|size| level_for(size, width_pt, on_screen));
+    // Only the exact level: building it from a finer one is left to the decode thread too.
+    if let Some(pm) = level.and_then(|l| lookup((id, page, l))) {
+        return Mip::Ready(pm);
+    }
+    let want = Want { bytes: bytes.clone(), page, width_pt, on_screen };
+    match background::queue(want, level) {
+        background::Queued::Yes | background::Queued::Recent => {}
+        background::Queued::InPlace => return mip(bytes, page, width_pt, on_screen).map_or(Mip::Failed, Mip::Ready),
+    }
+    DEFERRED.with(|d| d.set(true));
+    let stand_in =
+        level.and_then(|l| (l + 1..=MAX_LEVEL).find_map(|c| lookup((id, page, c))).or_else(|| (0..l).rev().find_map(|f| lookup((id, page, f)))));
+    Mip::Pending(stand_in)
+}
+
+/// Advances each time a background decode queued by [`mip_now`] finishes.
+pub fn generation() -> u64 {
+    background::GENERATION.load(Ordering::Acquire)
+}
+
+/// Called (from a decode thread) each time a background decode finishes, e.g. to request a
+/// repaint.
+pub fn set_waker(waker: impl Fn() + Send + Sync + 'static) {
+    *background::WAKER.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::new(waker));
+}
+
+thread_local! {
+    /// Set when [`mip_now`] left an image to a background decode on this thread.
+    static DEFERRED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether [`mip_now`] deferred an image on this thread since the last call (and reset).
+pub(crate) fn take_deferred() -> bool {
+    DEFERRED.with(|d| d.replace(false))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+mod background {
+    //! A few decode threads, newest request first: what was just scrolled into view decodes
+    //! before what was scrolled past. Their decodes count at [`super::GATE`] as [`super::warm`]'s
+    //! do, so they wait while others hold half the budget.
+
+    use std::collections::VecDeque;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{Arc, Condvar, Mutex, PoisonError, Weak};
+
+    use super::Want;
+
+    /// Decode threads.
+    const THREADS: usize = 3;
+    /// Requests kept waiting; the oldest are dropped beyond this (they are asked for again if
+    /// they are still in view).
+    const MAX_QUEUED: usize = 256;
+    /// An image asked for again this soon after its decode finished was evicted at once: the
+    /// view holds more than the cache. It isn't decoded again until this has passed (the canvas
+    /// draws what is cached of it meanwhile), so decodes don't loop and never run in place on
+    /// the canvas.
+    const RECENT: std::time::Duration = std::time::Duration::from_secs(2);
+
+    pub(super) static GENERATION: AtomicU64 = AtomicU64::new(0);
+    #[allow(clippy::type_complexity)]
+    pub(super) static WAKER: Mutex<Option<Arc<dyn Fn() + Send + Sync>>> = Mutex::new(None);
+
+    struct Job {
+        want: Want,
+        level: Option<u8>,
+    }
+
+    impl Job {
+        fn key(&self) -> (usize, u32) {
+            (Arc::as_ptr(&self.want.bytes) as usize, self.want.page)
+        }
+    }
+
+    /// A decode that finished. The `Weak` keeps its address reserved, so an image allocated later
+    /// can't match this record by address, as in the cache's `dims`.
+    struct Done {
+        bytes: Weak<Vec<u8>>,
+        key: (usize, u32),
+        level: Option<u8>,
+        at: std::time::Instant,
+    }
+
+    impl Done {
+        /// Whether this is `key` at `level`, finished too recently to decode in the background again.
+        fn is_recent(&self, key: (usize, u32), level: Option<u8>) -> bool {
+            self.key == key && self.level == level && self.bytes.strong_count() > 0 && self.at.elapsed() < RECENT
+        }
+    }
+
+    struct Queue {
+        jobs: VecDeque<Job>,
+        /// Being decoded now (one per thread).
+        busy: Vec<(usize, u32)>,
+        /// The last decodes finished, newest last.
+        done: VecDeque<Done>,
+        threads: usize,
+    }
+
+    static QUEUE: Mutex<Queue> = Mutex::new(Queue { jobs: VecDeque::new(), busy: Vec::new(), done: VecDeque::new(), threads: 0 });
+    static READY: Condvar = Condvar::new();
+
+    /// What [`queue`] did with a request.
+    pub(super) enum Queued {
+        /// Queued, or already decoding.
+        Yes,
+        /// Decoded moments ago and evicted since: not queued again yet.
+        Recent,
+        /// No decode thread can run: decode in place.
+        InPlace,
+    }
+
+    /// Ask for a background decode of `want`, whose level is `level` when its size is known.
+    pub(super) fn queue(want: Want, level: Option<u8>) -> Queued {
+        let job = Job { want, level };
+        let key = job.key();
+        let mut q = QUEUE.lock().unwrap_or_else(PoisonError::into_inner);
+        if q.busy.contains(&key) {
+            // Finishing it advances the generation; a different size is asked for then.
+            return Queued::Yes;
+        }
+        if q.done.iter().any(|d| d.is_recent(key, level)) {
+            return Queued::Recent;
+        }
+        q.jobs.retain(|j| j.key() != key);
+        q.jobs.push_back(job);
+        while q.jobs.len() > MAX_QUEUED {
+            q.jobs.pop_front();
+        }
+        if q.threads < THREADS {
+            if std::thread::Builder::new().name("designcraft-decode".into()).spawn(run).is_ok() {
+                q.threads += 1;
+            } else if q.threads == 0 {
+                q.jobs.retain(|j| j.key() != key);
+                return Queued::InPlace;
+            }
+        }
+        READY.notify_one();
+        Queued::Yes
+    }
+
+    fn run() {
+        loop {
+            let job = {
+                let mut q = QUEUE.lock().unwrap_or_else(PoisonError::into_inner);
+                loop {
+                    if let Some(job) = q.jobs.pop_back() {
+                        q.busy.push(job.key());
+                        break job;
+                    }
+                    q = READY.wait(q).unwrap_or_else(PoisonError::into_inner);
+                }
+            };
+            let key = job.key();
+            let w = &job.want;
+            let ok = {
+                let (_release, _) = super::reserve(super::decode_reservation(w), key.0, None);
+                // A decoder panic must not take the thread with it.
+                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| super::mip(&w.bytes, w.page, w.width_pt, w.on_screen))) {
+                    Ok(pm) => pm.is_some(),
+                    Err(_) => {
+                        super::with(|c| c.mark_bad(key, &w.bytes));
+                        false
+                    }
+                }
+            };
+            {
+                let mut q = QUEUE.lock().unwrap_or_else(PoisonError::into_inner);
+                q.busy.retain(|k| *k != key);
+                q.done.push_back(Done { bytes: Arc::downgrade(&w.bytes), key, level: job.level, at: std::time::Instant::now() });
+                while q.done.len() > 64 {
+                    q.done.pop_front();
+                }
+            }
+            // A failure redraws the image as failed (no placeholder), unless the failures fill
+            // the list of bad images: forgotten ones would be asked for again, without end.
+            if ok || super::with(|c| c.bad.len() < super::MAX_BAD) {
+                GENERATION.fetch_add(1, Ordering::AcqRel);
+                let waker = WAKER.lock().unwrap_or_else(PoisonError::into_inner).clone();
+                if let Some(wake) = waker {
+                    wake();
+                }
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// A record of an image that's gone doesn't count: a new image at its address is decoded
+        /// in the background, not skipped.
+        #[test]
+        fn a_finished_decode_counts_only_while_its_image_lives() {
+            let bytes = Arc::new(vec![1u8]);
+            let key = (Arc::as_ptr(&bytes) as usize, 0);
+            let done = Done { bytes: Arc::downgrade(&bytes), key, level: Some(1), at: std::time::Instant::now() };
+            assert!(done.is_recent(key, Some(1)));
+            assert!(!done.is_recent(key, Some(2)), "another level");
+            assert!(!done.is_recent((key.0, 1), Some(1)), "another page");
+            drop(bytes);
+            assert!(!done.is_recent(key, Some(1)), "the image is gone");
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+mod background {
+    use std::sync::atomic::AtomicU64;
+    use std::sync::{Arc, Mutex};
+
+    use super::Want;
+
+    pub(super) static GENERATION: AtomicU64 = AtomicU64::new(0);
+    #[allow(clippy::type_complexity)]
+    pub(super) static WAKER: Mutex<Option<Arc<dyn Fn() + Send + Sync>>> = Mutex::new(None);
+
+    pub(super) enum Queued {
+        #[allow(dead_code)]
+        Yes,
+        #[allow(dead_code)]
+        Recent,
+        InPlace,
+    }
+
+    /// No threads: always decode in place.
+    pub(super) fn queue(_: Want, _: Option<u8>) -> Queued {
+        Queued::InPlace
+    }
+}
+
+/// The decodes run, full or reduced: the address of the encoded bytes and the thread.
 #[cfg(test)]
 pub(crate) static DECODED_ON: Mutex<Vec<(usize, std::thread::ThreadId)>> = Mutex::new(Vec::new());
 
@@ -240,21 +611,54 @@ fn admits(in_flight: usize, size: usize) -> bool {
     in_flight == 0 || in_flight.saturating_add(size) <= BUDGET / 2
 }
 
-/// Bytes [`warm`] is decoding at once in every render in the process (canvas worker, thumbnails,
-/// exports), with the signal that some finished.
+/// Bytes decoding at once in the process ([`warm`] in every render and the canvas's background
+/// decodes), with the signal that some finished.
 static GATE: (Mutex<usize>, Condvar) = (Mutex::new(0), Condvar::new());
 
-/// Takes a finished decode's bytes off [`GATE`] and off its own call's count when dropped.
-struct Release<'a>(&'a AtomicUsize, usize);
+/// Takes a finished decode's bytes off its own call's count, if any, and off [`GATE`] when
+/// dropped.
+struct Release<'a>(Option<&'a AtomicUsize>, usize);
 
 impl Drop for Release<'_> {
     fn drop(&mut self) {
-        self.0.fetch_sub(self.1, Ordering::Relaxed);
+        if let Some(mine) = self.0 {
+            mine.fetch_sub(self.1, Ordering::Relaxed);
+        }
         let mut g = GATE.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         *g = g.saturating_sub(self.1);
         drop(g);
         GATE.1.notify_all();
     }
+}
+
+/// Wait at [`GATE`] until a decode of about `size` bytes of the image at address `id` may start
+/// and count it there (and in `mine`) until the guard is dropped, even if the decode panics, so
+/// no other decode waits forever. Also returns `mine` with it added.
+fn reserve(size: usize, id: usize, mine: Option<&AtomicUsize>) -> (Release<'_>, usize) {
+    let mut g = GATE.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    while !admits(*g, size) {
+        #[cfg(test)]
+        waited(id);
+        g = GATE.1.wait(g).unwrap_or_else(std::sync::PoisonError::into_inner);
+    }
+    #[cfg(not(test))]
+    let _ = id;
+    *g = g.saturating_add(size);
+    let now = mine.map_or(size, |m| m.fetch_add(size, Ordering::Relaxed).saturating_add(size));
+    drop(g);
+    (Release(mine, size), now)
+}
+
+/// Bytes a decode of `w` holds at its peak, with headroom for temporary buffers inside the
+/// format decoders: 0 when its level is halved from a cached one.
+#[cfg(not(target_arch = "wasm32"))]
+fn decode_reservation(w: &Want) -> usize {
+    let key = (Arc::as_ptr(&w.bytes) as usize, w.page);
+    if dims_of(&w.bytes, w.page).is_some_and(|size| has_level(key, level_for(size, w.width_pt, w.on_screen))) {
+        return 0;
+    }
+    let peak = reduced_estimates(std::slice::from_ref(w)).map_or_else(|| decode_sizes(&w.bytes, w.page).1, |(_, peak)| peak);
+    peak.saturating_mul(3) / 2
 }
 
 /// Decode the images in `wants` that are not cached yet on several threads at once, with the
@@ -282,16 +686,13 @@ pub(crate) fn warm(wants: Vec<Want>) -> usize {
             }
         }
     }
-    // The reduced JPEG level [`reduced`] takes for each drawing of an asset, when every drawing
-    // of it takes one.
-    let targets: HashMap<(usize, u32), Vec<u8>> = assets
+    // Each asset's full pixel size and the level [`mip`] takes for each drawing of it.
+    let levels: HashMap<(usize, u32), ((u32, u32), Vec<u8>)> = assets
         .iter()
         .filter_map(|(key, wanted)| {
-            let levels = wanted
-                .iter()
-                .map(|w| reduced_sizes(&w.bytes, w.page, w.width_pt, w.on_screen).and_then(|s| u8::try_from(s.len() - 1).ok()).filter(|l| *l > 0))
-                .collect::<Option<Vec<u8>>>()?;
-            Some((*key, levels))
+            let w = wanted.first()?;
+            let size = dims_of(&w.bytes, w.page)?;
+            Some((*key, (size, wanted.iter().map(|w| level_for(size, w.width_pt, w.on_screen)).collect())))
         })
         .collect();
     // The bytes each asset in view holds in the cache, when it is cached or failed, and the bytes
@@ -307,11 +708,8 @@ pub(crate) fn warm(wants: Vec<Want>) -> usize {
                 *held.entry((k.0, k.1)).or_default() += size_of(&e.pm);
             }
         }
-        // Smaller levels alone don't make an asset cached, unless they are the reduced JPEG levels
-        // every drawing of it takes.
-        held.retain(|k, _| {
-            c.map.contains_key(&(k.0, k.1, 0)) || targets.get(k).is_some_and(|ls| ls.iter().all(|l| c.map.contains_key(&(k.0, k.1, *l))))
-        });
+        // An asset is cached when every drawing of it finds its level, or a finer one to halve.
+        held.retain(|k, _| levels.get(k).is_some_and(|(_, ls)| ls.iter().all(|l| (0..=*l).any(|f| c.map.contains_key(&(k.0, k.1, f))))));
         let in_view = held.values().sum::<usize>();
         for k in index.keys() {
             if c.bad.contains_key(k) {
@@ -330,12 +728,25 @@ pub(crate) fn warm(wants: Vec<Want>) -> usize {
         if held.contains_key(&key) {
             continue;
         }
-        let full = wanted.first().map_or((0, 0), |w| decode_sizes(&w.bytes, w.page));
-        let (size, decoding) = reduced_estimates(&wanted).unwrap_or(full);
+        let (size, decoding) = reduced_estimates(&wanted).unwrap_or_else(|| {
+            let full = wanted.first().map_or((0, 0), |w| decode_sizes(&w.bytes, w.page));
+            // Only the levels drawn are kept.
+            let kept = levels.get(&key).map_or(full.0, |(size, ls)| {
+                let mut ls = ls.clone();
+                ls.sort_unstable();
+                ls.dedup();
+                ls.iter().fold(0usize, |n, l| {
+                    let (w, h) = halved(*size, *l);
+                    n.saturating_add((w as usize).saturating_mul(h as usize).saturating_mul(4))
+                })
+            });
+            (kept, full.1)
+        });
         // A store past the budget evicts down to three quarters of it: the images in view must
-        // fit in that, unless they and the rest fit in the budget.
+        // fit in that, unless they and the rest fit in the budget. A decode that alone holds
+        // more than the budget is left to the render too.
         let total = pixels.saturating_add(size);
-        if total > BUDGET * 3 / 4 && others.saturating_add(total) > BUDGET {
+        if (total > BUDGET * 3 / 4 && others.saturating_add(total) > BUDGET) || decoding > BUDGET {
             continue;
         }
         pixels = total;
@@ -349,7 +760,6 @@ pub(crate) fn warm(wants: Vec<Want>) -> usize {
     // While it converts the pixels, a decode holds the buffers `decode_sizes` counts: a
     // decode waits while those in flight in any render would take it past half the budget (one
     // always runs).
-    let lock = || GATE.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let next = AtomicUsize::new(0);
     // This call's bytes decoding, and the most there were.
     let (mine, peak) = (AtomicUsize::new(0), AtomicUsize::new(0));
@@ -357,18 +767,9 @@ pub(crate) fn warm(wants: Vec<Want>) -> usize {
         for _ in 0..workers.min(jobs.len()) {
             let work = || {
                 while let Some((size, job)) = jobs.get(next.fetch_add(1, Ordering::Relaxed)) {
-                    let mut g = lock();
-                    while !admits(*g, *size) {
-                        #[cfg(test)]
-                        waited(job);
-                        g = GATE.1.wait(g).unwrap_or_else(std::sync::PoisonError::into_inner);
-                    }
-                    *g = g.saturating_add(*size);
-                    let now = mine.fetch_add(*size, Ordering::Relaxed).saturating_add(*size);
+                    let id = job.first().map_or(0, |w| Arc::as_ptr(&w.bytes) as usize);
+                    let (_release, now) = reserve(*size, id, Some(&mine));
                     peak.fetch_max(now, Ordering::Relaxed);
-                    drop(g);
-                    // Released even if the decode panics, so no other decode waits forever.
-                    let _release = Release(&mine, *size);
                     for w in job {
                         // A decoder panic would otherwise reach the render through the scope and
                         // be retried on every frame; mark the image bad as a failed decode is.
@@ -394,37 +795,29 @@ pub(crate) fn warm(wants: Vec<Want>) -> usize {
 static WAITED: (Mutex<Vec<usize>>, Condvar) = (Mutex::new(Vec::new()), Condvar::new());
 
 #[cfg(test)]
-fn waited(job: &[Want]) {
-    let id = job.first().map_or(0, |w| Arc::as_ptr(&w.bytes) as usize);
+fn waited(id: usize) {
     WAITED.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(id);
     WAITED.1.notify_all();
 }
 
-/// [`mip`]'s level for a JPEG, decoded at 1/2, 1/4 or 1/8 of its size straight from its blocks
-/// and halved from there, so a screen-sized level needs no full-size decode. `None` when the
-/// full size is drawn, for other formats and for JPEGs only a full decode reads (CMYK).
-fn reduced(bytes: &Arc<Vec<u8>>, page: u32, width_pt: f64, on_screen: f64) -> Option<Arc<Pixmap>> {
+/// Level `level` of a JPEG for [`mip`], decoded at 1/2, 1/4 or 1/8 of its size straight from
+/// its blocks and halved from there, so a screen-sized level needs no full-size decode. `None`
+/// when the full size is drawn, for other formats and for JPEGs only a full decode reads (CMYK).
+fn reduced(bytes: &Arc<Vec<u8>>, page: u32, level: u8) -> Option<Arc<Pixmap>> {
+    if level == 0 || page != 0 || !bytes.starts_with(&[0xFF, 0xD8]) {
+        return None;
+    }
     let id = Arc::as_ptr(bytes) as usize;
-    if with(|c| c.bad.contains_key(&(id, page))) {
-        return None;
-    }
-    // The level `mip` picks from a full decode, with each level's size as `halve` gives it.
-    let sizes = reduced_sizes(bytes, page, width_pt, on_screen)?;
-    let level = u8::try_from(sizes.len() - 1).ok()?;
-    if level == 0 {
-        return None;
-    }
-    if let Some(pm) = lookup((id, page, level)) {
-        return Some(pm);
-    }
     let shrink = level.min(designcraft_images::MAX_REDUCED_SHRINK);
     let mut pm = match lookup((id, page, shrink)) {
         Some(p) => p,
         None => {
             // Cut to `halve`'s size (it rounds down, the decoder up), as the level a full
             // decode makes.
-            let (sw, sh) = sizes[usize::from(shrink)];
-            let p = Arc::new(crop(decode_pixmap_reduced(bytes, shrink)?, sw, sh)?);
+            let (sw, sh) = halved(crate::image_size(bytes)?, shrink);
+            let p = decode_pixmap_reduced(bytes, shrink);
+            log_decode(id);
+            let p = Arc::new(crop(p?, sw, sh)?);
             store(bytes, page, shrink, p.clone());
             p
         }
@@ -461,6 +854,7 @@ pub fn clear() {
     with(|c| {
         c.map.clear();
         c.bad.clear();
+        c.dims.clear();
         c.bytes = 0;
     });
 }
@@ -703,5 +1097,133 @@ mod tests {
         assert!(mip(&bytes, 0, 256.0, 0.1).is_none());
         assert!(with(|c| c.bad.contains_key(&(Arc::as_ptr(&bytes) as usize, 0))));
         assert!(mip(&bytes, 0, 256.0, 0.1).is_none());
+    }
+
+    fn png_sized(w: u32, h: u32) -> Arc<Vec<u8>> {
+        let img = image::RgbaImage::from_pixel(w, h, image::Rgba([200, 100, 50, 255]));
+        let mut out = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut out, image::ImageFormat::Png).unwrap();
+        Arc::new(out.into_inner())
+    }
+
+    /// Polls `mip_now` until it has the level asked for.
+    fn ready(bytes: &Arc<Vec<u8>>, width_pt: f64, on_screen: f64) -> Option<Arc<Pixmap>> {
+        for _ in 0..500 {
+            if let Mip::Ready(pm) = mip_now(bytes, 0, width_pt, on_screen) {
+                return Some(pm);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        None
+    }
+
+    #[test]
+    fn mip_keeps_only_the_level_drawn() {
+        let bytes = png_sized(1024, 512);
+        let id = Arc::as_ptr(&bytes) as usize;
+        // 1024 px across 128 pt at 1 px/pt: level 2 (256 px) is the closest above 1.2 px/pt.
+        let pm = mip(&bytes, 0, 128.0, 1.0).unwrap();
+        assert_eq!((pm.width(), pm.height()), (256, 128));
+        assert!(lookup((id, 0, 2)).is_some());
+        assert!(lookup((id, 0, 0)).is_none(), "the full decode is not kept");
+        assert_eq!(dims_of(&bytes, 0), Some((1024, 512)));
+        // A coarser level comes from the cached one (halving stops at 64 px tall).
+        let small = mip(&bytes, 0, 128.0, 0.25).unwrap();
+        assert_eq!((small.width(), small.height()), (128, 64));
+    }
+
+    #[test]
+    fn zooming_in_step_by_step_decodes_an_image_at_most_twice() {
+        let bytes = png_sized(1024, 1024);
+        let since = mark();
+        // 8 px per point, from 1/16 to 4 device pixels per point: level 4 (64 px) to level 0.
+        let mut widths = Vec::new();
+        for step in 0..7 {
+            let on_screen = 0.0625 * f64::from(1u32 << step);
+            widths.push(mip(&bytes, 0, 128.0, on_screen).unwrap().width());
+        }
+        assert_eq!(widths, [64, 64, 64, 128, 256, 512, 1024]);
+        // The first step in decodes again and keeps the full size; later steps halve it.
+        assert_eq!(decoders(&bytes, since).len(), 2);
+        // Back out and in again: no decode.
+        for on_screen in [0.0625, 1.0, 4.0] {
+            assert!(mip(&bytes, 0, 128.0, on_screen).is_some());
+        }
+        assert_eq!(decoders(&bytes, since).len(), 2);
+    }
+
+    #[test]
+    fn warm_counts_cached_levels_of_any_format_as_cached() {
+        // Drawn at a tenth of their pixels, two PNGs keep only that level; once it is cached, a
+        // later warm has nothing to decode.
+        let (a, b) = (png(256, 21), png(256, 23));
+        let small = |bytes: &Arc<Vec<u8>>| Want { bytes: bytes.clone(), page: 0, width_pt: 256.0, on_screen: 0.1 };
+        assert!(warm(vec![small(&a), small(&b)]) > 0, "decoded ahead");
+        assert!(lookup((Arc::as_ptr(&a) as usize, 0, 0)).is_none(), "no full-size decode is kept");
+        assert_eq!(warm(vec![small(&a), small(&b)]), 0, "nothing left to decode");
+    }
+
+    #[test]
+    fn mip_now_decodes_in_the_background() {
+        let bytes = png_sized(512, 512);
+        let before = generation();
+        let first = mip_now(&bytes, 0, 256.0, 1.0);
+        assert!(matches!(first, Mip::Pending(None)));
+        assert!(take_deferred());
+        assert_eq!(ready(&bytes, 256.0, 1.0).map(|pm| pm.width()), Some(512));
+        assert!(generation() > before);
+    }
+
+    #[test]
+    fn mip_now_leaves_building_a_coarser_level_to_the_decode_thread() {
+        let bytes = png_sized(512, 512);
+        let id = Arc::as_ptr(&bytes) as usize;
+        // 512 px across 256 pt at 1 px/pt: level 0.
+        assert_eq!(mip(&bytes, 0, 256.0, 1.0).map(|pm| pm.width()), Some(512));
+        // Zoomed out to 0.25 px/pt: level 2 (128 px), not cached yet. The finer level stands in
+        // while it is built off this thread.
+        match mip_now(&bytes, 0, 256.0, 0.25) {
+            Mip::Pending(Some(pm)) => assert_eq!(pm.width(), 512),
+            Mip::Pending(None) => panic!("the cached finer level should stand in"),
+            Mip::Ready(_) => panic!("the coarser level was built on the drawing thread"),
+            Mip::Failed => panic!("decodable bytes reported as failed"),
+        }
+        assert_eq!(ready(&bytes, 256.0, 0.25).map(|pm| pm.width()), Some(128));
+        assert!(lookup((id, 0, 2)).is_some());
+    }
+
+    #[test]
+    fn mip_now_reports_undecodable_bytes() {
+        let bytes = Arc::new(b"not an image".to_vec());
+        assert!(matches!(mip_now(&bytes, 0, 100.0, 1.0), Mip::Pending(None)));
+        let mut failed = false;
+        for _ in 0..500 {
+            if matches!(mip_now(&bytes, 0, 100.0, 1.0), Mip::Failed) {
+                failed = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(failed);
+    }
+
+    #[test]
+    fn an_image_evicted_right_after_its_decode_is_not_decoded_on_the_canvas_thread() {
+        let bytes = png_sized(256, 256);
+        let id = Arc::as_ptr(&bytes) as usize;
+        assert!(ready(&bytes, 256.0, 1.0).is_some());
+        // Evicted at once, as when the view holds more than the cache.
+        with(|c| {
+            let gone: Vec<_> = c.map.keys().filter(|k| k.0 == id).copied().collect();
+            for k in gone {
+                if let Some(e) = c.map.remove(&k) {
+                    c.bytes -= size_of(&e.pm);
+                }
+            }
+        });
+        let since = mark();
+        assert!(matches!(mip_now(&bytes, 0, 256.0, 1.0), Mip::Pending(None)), "drawn as still decoding");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(decoders(&bytes, since).is_empty(), "not decoded again, in place or in the background");
     }
 }
