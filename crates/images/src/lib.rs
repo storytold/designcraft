@@ -512,20 +512,29 @@ pub struct CmykRaster {
     pub alpha: Option<Vec<u8>>,
 }
 
+/// The TIFF page that decoding opens; `None` for other formats.
+fn default_tiff_page(bytes: &[u8]) -> Option<craft_image_codecs::TiffPage> {
+    let mut info = craft_image_codecs::tiff_info(bytes).ok()?;
+    let page = info.default_page()?;
+    (page < info.pages.len()).then(|| info.pages.swap_remove(page))
+}
+
 /// A TIFF whose pixels are CMYK (PhotometricInterpretation Separated, four inks).
 pub fn is_cmyk_tiff(bytes: &[u8]) -> bool {
-    craft_image_codecs::tiff_info(bytes)
-        .ok()
-        .and_then(|info| info.default_page().and_then(|i| info.pages.get(i).map(|page| (page.photometric, page.samples_per_pixel))))
-        .is_some_and(|(photometric, samples)| photometric == Some(5) && matches!(samples, 4 | 5))
+    default_tiff_page(bytes).is_some_and(|page| page.photometric == Some(5) && matches!(page.samples_per_pixel, 4 | 5))
 }
 
 /// The ink values of a CMYK TIFF, which [`decode_rgba`] converts to RGB. 8- or 16-bit CMYK,
-/// pixels interleaved, opaque or with unassociated alpha. `None` for anything else — another
-/// format, another ink set (InkSet 2), planar storage or premultiplied alpha — and for files
-/// over the decoder's 256 MiB limit; [`is_cmyk_tiff`] tells those apart from RGB files.
+/// opaque or with alpha (associated alpha is made straight). `None` for anything else —
+/// another format or another ink set (InkSet 2) — and for files over the decoder's 256 MiB
+/// limit; [`is_cmyk_tiff`] tells those apart from RGB files.
 pub fn decode_cmyk_tiff(bytes: &[u8]) -> Option<CmykRaster> {
     if too_large_to_decode(bytes) {
+        return None;
+    }
+    // InkSet (tag 332): absent or 1 = CMYK; 2 = the inks named in InkNames; other values are
+    // undefined. Only CMYK samples are C, M, Y and K; reading others as such prints wrong colours.
+    if default_tiff_page(bytes).is_some_and(|page| page.ink_set.is_some_and(|set| set != craft_image_codecs::InkSet::Cmyk)) {
         return None;
     }
     let image = craft_image_codecs::decode_with(bytes, &decode_options()).ok()?;

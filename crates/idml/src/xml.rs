@@ -236,7 +236,9 @@ pub(crate) fn from_craft(el: craft_xml::El) -> El {
             .filter_map(|n| match n {
                 craft_xml::Node::El(e) => Some(Node::El(from_craft(e))),
                 craft_xml::Node::Text(t) => Some(Node::Text(t)),
-                craft_xml::Node::CData(t) => Some(Node::Text(t)),
+                // The parser joins CDATA to the text around it, so only trees built for export
+                // (`<Contents>` image data passed through `with_props`) carry sections here.
+                craft_xml::Node::CData(t) => Some(Node::CData(t)),
                 craft_xml::Node::Pi { target, data } => Some(Node::Pi(target, data.trim().to_string())),
                 craft_xml::Node::Comment(_) => None,
             })

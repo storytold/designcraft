@@ -60,7 +60,8 @@ fn docx_parts(parts: &[(&str, &str)]) -> Vec<u8> {
     }
     if !rels.is_empty() {
         w.start_file("word/_rels/document.xml.rels", o).unwrap();
-        let rels_doc = format!(r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">{}</Relationships>"#, rels.join(""));
+        let rels_doc =
+            format!(r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">{}</Relationships>"#, rels.join(""));
         w.write_all(rels_doc.as_bytes()).unwrap();
     }
     w.finish().unwrap().into_inner()

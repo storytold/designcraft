@@ -1,7 +1,5 @@
 use super::common::{affine_s, bool_s, pct, uid, with_props};
-use super::{
-    Affine, ColumnsKind, Content, El, Ex, Item, Node, OBJECT_BUILTINS, PathData, Shape, TextFrameOptions, base64_encode, names, num, pt,
-};
+use super::{Affine, ColumnsKind, Content, El, Ex, Item, Node, OBJECT_BUILTINS, PathData, Shape, TextFrameOptions, base64_encode, names, num, pt};
 
 impl<'a> Ex<'a> {
     pub(super) fn item_el(&mut self, it: &Item, xf: Affine) -> El {
