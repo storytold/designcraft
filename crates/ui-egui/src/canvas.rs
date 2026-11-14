@@ -51,6 +51,8 @@ use render::{c32, invalidate_on_display_change, screen_options};
 pub(crate) use rulers::fmt_tick;
 #[cfg(test)]
 use rulers::ruler_pieces;
+#[cfg(test)]
+use rulers::zero_point_at;
 use rulers::{draw_rulers, ruler_units_menus};
 use scroll::{mods, navigation_space, scrollbars, spring_zoom_mode};
 pub use text_overlay::selected_text;
