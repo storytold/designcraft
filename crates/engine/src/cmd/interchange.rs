@@ -474,20 +474,30 @@ fn read_packaged_link(link: &str, package: Option<&std::path::Path>) -> Option<(
 }
 
 pub(crate) fn open_idml(s: &mut Session, p: &Value) -> Result<Value> {
-    let (bytes, package, file, title) = if let Some(b) = str_param(p, "base64") {
+    if let Some(b) = str_param(p, "base64") {
         let name = str_param(p, "name").unwrap_or_default();
-        (base64_decode(b), None, name.to_string(), without_document_extension(name).to_string())
-    } else if let Some(path) = str_param(p, "path") {
-        #[cfg(not(target_arch = "wasm32"))]
-        let b = crate::io::read_file(path).map_err(EngineError::Other)?;
-        #[cfg(target_arch = "wasm32")]
-        let b: Vec<u8> = Vec::new();
-        let pp = std::path::Path::new(path);
-        let file = pp.file_name().map_or_else(|| path.to_string(), |n| n.to_string_lossy().to_string());
-        (b, Some(pp.to_path_buf()), file, pp.file_stem().map(|n| n.to_string_lossy().to_string()).unwrap_or_default())
-    } else {
-        return Err(bad("file.openIdml", "missing `path` or `base64`"));
-    };
+        return import_interchange(s, base64_decode(b), None, name.to_string(), without_document_extension(name).to_string());
+    }
+    let Some(path) = str_param(p, "path") else { return Err(bad("file.openIdml", "missing `path` or `base64`")) };
+    #[cfg(not(target_arch = "wasm32"))]
+    let b = crate::io::read_file(path).map_err(EngineError::Other)?;
+    #[cfg(target_arch = "wasm32")]
+    let b: Vec<u8> = Vec::new();
+    open_idml_file(s, b, path)
+}
+
+/// Open the IDML or InDesign file at `path`, whose content is `bytes`: titled by its file name,
+/// with the fonts in the `Document Fonts` folder beside it.
+pub(crate) fn open_idml_file(s: &mut Session, bytes: Vec<u8>, path: &str) -> Result<Value> {
+    let pp = std::path::Path::new(path);
+    let file = pp.file_name().map_or_else(|| path.to_string(), |n| n.to_string_lossy().to_string());
+    let title = pp.file_stem().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    import_interchange(s, bytes, Some(pp), file, title)
+}
+
+/// Import IDML or InDesign `bytes` named `file` as a new document titled `title`. `package` is
+/// the file they were read from, which links resolve against and whose folder's fonts load.
+fn import_interchange(s: &mut Session, bytes: Vec<u8>, package: Option<&std::path::Path>, file: String, title: String) -> Result<Value> {
     let mut warnings = Vec::new();
     // InDesign's previews of linked graphics show while their files are missing (graphic `Self` →
     // preview), as InDesign shows them. One preview can stand for any number of graphics: they
@@ -511,12 +521,12 @@ pub(crate) fn open_idml(s: &mut Session, p: &Value) -> Result<Value> {
     } else {
         bytes
     };
-    let (mut d, import_warnings, story_ids) = import_report_with_previews(&bytes, package.as_deref(), &previews)?;
+    let (mut d, import_warnings, story_ids) = import_report_with_previews(&bytes, package, &previews)?;
     warnings.extend(import_warnings);
     if !title.is_empty() {
         d.title = title;
     }
-    let (fonts, faces, font_warnings) = match str_param(p, "path").filter(|_| str_param(p, "base64").is_none()) {
+    let (fonts, faces, font_warnings) = match package.and_then(std::path::Path::to_str) {
         Some(path) => super::file::load_document_fonts(&mut d, path),
         None => (None, 0, Vec::new()),
     };
