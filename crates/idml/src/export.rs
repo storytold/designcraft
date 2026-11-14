@@ -1,7 +1,6 @@
 //! Document → IDML package.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::io::Write;
 
 use designcraft_color::{Color, ColorType, GradientKind, SwatchValue, swatch};
 use designcraft_doc::{
@@ -10,9 +9,9 @@ use designcraft_doc::{
 };
 use designcraft_geom::{Affine, PathData};
 
+use crate::base64_encode;
 use crate::names::{self, CHAR_BUILTINS, OBJECT_BUILTINS, PARA_BUILTINS, escape_id, num, pt};
-use crate::xml::{El, Node, document, document_with_pi};
-use crate::{DOM_VERSION, MIMETYPE, base64_encode};
+use crate::xml::{El, Node, document};
 
 mod common;
 mod designmap;
@@ -32,7 +31,6 @@ pub(crate) use item::corner_names;
 #[cfg(test)]
 pub(crate) use item::path_to_uri;
 
-const PKG_NS: &str = "http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging";
 const NO_PARA_ID: &str = "ParagraphStyle/$ID/[No paragraph style]";
 const TOC_STYLE_ID: &str = "TOCStyle/Table of Contents";
 const TOC_STYLE_NAME: &str = "Table of Contents";
@@ -82,22 +80,7 @@ pub(crate) fn export_with_limit(doc: &Document, opts: &ExportOptions, embed_limi
 }
 
 fn zip_parts(parts: &[(String, Vec<u8>)]) -> Vec<u8> {
-    use zip::write::SimpleFileOptions;
-    let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
-    let stored = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
-    let deflated = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
-    let mut write = || -> zip::result::ZipResult<()> {
-        w.start_file("mimetype", stored)?;
-        w.write_all(MIMETYPE.as_bytes())?;
-        for (name, data) in parts {
-            w.start_file(name.as_str(), deflated)?;
-            w.write_all(data)?;
-        }
-        Ok(())
-    };
-    // Writing into memory cannot fail except on internal errors; return what we have then.
-    let _ = write();
-    w.finish().map(|c| c.into_inner()).unwrap_or_default()
+    craft_idml::write_package(parts).unwrap_or_default()
 }
 
 struct Ex<'a> {
@@ -122,6 +105,8 @@ struct Ex<'a> {
     embed_limit: usize,
     /// Images written as links because the embed limit was reached (one line per placement).
     warnings: Vec<String>,
+    /// Object style name → whether its chain or `[None]` sets corners, found once per style.
+    style_corners: HashMap<String, bool>,
 }
 
 /// Image bytes one export embeds, counting each placement (IDML holds a copy per placement): past
@@ -145,6 +130,7 @@ impl<'a> Ex<'a> {
             embedded: 0,
             embed_limit: MAX_EMBEDDED_BYTES,
             warnings: Vec::new(),
+            style_corners: HashMap::new(),
         };
         ex.assign_swatch_ids();
         for s in d.stories.values() {

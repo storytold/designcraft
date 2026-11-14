@@ -143,7 +143,7 @@ config works across the suite) keep the agent to the folders you give it:
   folder that doesn't exist is refused, as is a link that leads nowhere (writing through it would
   create its target). The result is compared with each root by whole folder names: `/work2/x` is not
   inside `/work`. On Windows case is ignored, UNC paths (`\\server\share\...`) are resolved like
-  drive-letter ones, and device names (`CON`, `NUL`, `COM1`...) are refused.
+  drive-letter ones, and device names (`CON`, `NUL`, `COM1`, `COM¹`, including before a colon) are refused.
 - A refused path is an ordinary tool error the agent can read and correct, for example
   `automation path rejected: outside the write root /work/project/out: /etc/x.designcraft` (with
   several, `outside the write roots /work/project/out, /tmp/scratch: ...`) or
@@ -185,6 +185,12 @@ In connected mode every tool maps to a control-channel method (`engine.execute`,
 what the agent does shows up live in the window. A failed request is not resent: the operation may have completed,
 so inspect the document before retrying. The next request re-establishes the connection.
 
+## Table targets
+
+Table IDs can repeat across stories. For `execute` commands that target an existing table, supply `story` with `table`
+when an ID repeats. An ambiguous table-only request returns an error. Supplied `story` and `table` values must be
+nonnegative integers; `null` and values of other types return an error.
+
 ## Coordinates
 
 Points (1/72 in), y down, in **spread** space: on a single-page spread the page's top-left is (0, 0); on a facing
@@ -224,6 +230,16 @@ execute          {"command": "type.para", "params": {"attrs": {"hyphenate": fals
 ```
 
 With a text selection, this formats the selected paragraphs; with selected text frames, it formats their whole stories.
+
+`object.textFrameOptions` (columns, inset spacing, vertical justification and the rest of Text Frame Options) acts on
+the selected frames or on the `ids` the call passes. With the Type tool and no frame selected, it acts on the frame that
+shows the insertion point, or on every frame that holds part of the selected text, not on the other frames of the
+thread. With the insertion point in a footnote or a table cell, it acts on the frame that shows the footnote or the
+cell. An empty `ids`, or an `ids` that is not a list of object ids, is an error. Options a frame already has leave the document unchanged and add no undo step.
+
+```text
+execute          {"command": "object.textFrameOptions", "params": {"verticalJustification": "center", "inset": 6}}
+```
 
 Use `execute` with `object.fit` to fit a selected graphic frame (or pass `ids`):
 
