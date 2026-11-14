@@ -173,9 +173,13 @@ impl Tool for PlaceGun {
     }
     fn key(&mut self, cx: &ToolContext, key: crate::ToolKey, _mods: Mods) -> Vec<Action> {
         use crate::ToolKey;
-        // Escape drops the current image and loads the next; `place.cancel` clears them all.
+        // Escape drops the current image and loads the next; `place.cancel` clears them all. With
+        // nothing loaded there is nothing to drop: Escape only leaves the tool.
         if key == ToolKey::Escape {
             self.start = None;
+            if cx.loaded.is_none() {
+                return vec![Action::SwitchTool("selection".into())];
+            }
             return vec![Action::Exec("place.skip".into(), json!({}))];
         }
         // During a drag the arrow keys change the grid, and are handled even when it is already

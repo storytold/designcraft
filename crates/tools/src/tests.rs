@@ -2544,6 +2544,9 @@ fn place_gun_escape_skips_and_arrows_cycle_between_drags() {
     let _ = t.pointer(&cx, &PointerEvent::new(PointerKind::Down, 10.0, 10.0));
     let _ = t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, 110.0, 60.0));
     assert_eq!(t.key(&cx, ToolKey::Right, Mods::default()), vec![Action::Handled]);
+    // Nothing loaded: Escape leaves the tool instead of asking to skip an image there isn't.
+    cx.loaded = None;
+    assert_eq!(t.key(&cx, ToolKey::Escape, Mods::default()), vec![Action::SwitchTool("selection".into())]);
 }
 
 /// A place-cursor grid drag too thin for its cells shows and places the single frame an ordinary
