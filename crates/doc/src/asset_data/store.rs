@@ -193,8 +193,8 @@ impl Store {
         self.lock().touch(key)
     }
 
-    /// Keep `bytes` under `key` when they fit the budget.
-    pub(super) fn insert(&self, key: SourceKey, bytes: Arc<Vec<u8>>) {
+    /// Keep `bytes` under `key` as if a load had read them (not when over the budget).
+    pub(super) fn keep(&self, key: SourceKey, bytes: Arc<Vec<u8>>) {
         if bytes.len() as u64 <= self.budget {
             self.lock().keep(key, bytes, self.budget);
         }

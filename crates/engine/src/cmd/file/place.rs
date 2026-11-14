@@ -6,6 +6,7 @@ use super::bytes::{base64_decode, from_bytes};
 use super::{
     Affine, Asset, AssetId, Content, Graphic, Item, ItemId, PdfCrop, Rect, Result, Selection, Session, Shape, Value, bad, json, ok, shapes, str_param,
 };
+use crate::cmd::links::{FileLink, give_bytes};
 
 pub(super) fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
     // The file's size and time before it is read (a linked text file remembers them).
@@ -37,9 +38,15 @@ pub(super) fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
     }
     // Keep the EPS source for link comparison; rendering uses its preview at the bounding box size.
     let eps_size = eps_size(&bytes, "file.place")?;
+    // A file placed from a path links to it unless `embed`.
+    let embed = p.get("embed").and_then(Value::as_bool) == Some(true);
+    let document = document_of(s);
     // Video and sound: a media frame (Window › Interactive › Media).
     if let Some(mime) = designcraft_doc::media_mime(&name) {
-        return crate::cmd::media::place_media(s, p, name, mime, bytes, link);
+        let file = link.as_deref().map(|l| FileLink::of(std::path::Path::new(l), before));
+        let mut asset = Asset { name, mime: mime.to_string(), ..Default::default() };
+        give_bytes(&mut asset, bytes, file, embed, document.as_deref());
+        return crate::cmd::media::place_media(s, p, asset);
     }
     // Text files (plain, Word, RTF) flow into frames.
     if designcraft_textimport::is_text_file(&name) {
@@ -89,17 +96,9 @@ pub(super) fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
         _ => PdfCrop::Crop,
     };
     let mime = designcraft_render::image_mime(&bytes).to_string();
-    let mut asset = Asset {
-        page: pdf_page,
-        name,
-        mime,
-        link,
-        link_fingerprint: crate::cmd::links::loaded_fingerprint(before, &bytes),
-        data: designcraft_doc::AssetData::embedded(bytes),
-        pixels: Some((pw, ph)),
-        pdf_crop,
-        ..Default::default()
-    };
+    let file = link.as_deref().map(|l| FileLink::of(std::path::Path::new(l), before));
+    let mut asset = Asset { page: pdf_page, name, mime, pixels: Some((pw, ph)), pdf_crop, ..Default::default() };
+    give_bytes(&mut asset, bytes, file, embed, document.as_deref());
     // The graphic's natural size: the box in points (the whole page when the box can't be found,
     // and then the document says so).
     let (bw, bh) = match crop_pdf(&mut asset) {
@@ -210,16 +209,35 @@ pub(crate) fn crop_pdf(a: &mut Asset) -> Option<(f64, f64)> {
     Some(size)
 }
 
-pub(crate) fn read_source(p: &Value) -> Result<(Vec<u8>, String, Option<String>)> {
-    read_linked_source(p).map(|(bytes, name, link, _)| (bytes, name, link))
+/// A file to place: its bytes and name, and its link record when it was read from a path.
+pub(crate) struct Source {
+    pub bytes: Vec<u8>,
+    pub name: String,
+    file: Option<FileLink>,
+    /// `embed: true`: the bytes are kept in the document instead of linking the file.
+    embed: bool,
 }
 
-/// [`read_source`], with the size and time to keep with a linked file's bytes
-/// ([`crate::cmd::links::loaded_fingerprint`]): the file's from before it is read, not those of a
-/// later version that replaces it while a network or syncing source is being loaded.
-fn read_linked_source(p: &Value) -> Result<(Vec<u8>, String, Option<String>, Option<designcraft_doc::Fingerprint>)> {
+impl Source {
+    /// Give `a` these bytes: linked to the file they were read from, else embedded
+    /// ([`give_bytes`]). `a`'s `mime` and `page` are set.
+    pub(crate) fn give(self, a: &mut Asset, document: Option<&std::path::Path>) {
+        give_bytes(a, self.bytes, self.file, self.embed, document);
+    }
+}
+
+/// The file of the document open in `s`, which relative links are recorded against.
+pub(crate) fn document_of(s: &Session) -> Option<std::path::PathBuf> {
+    s.doc().ok()?.path.as_deref().map(std::path::PathBuf::from)
+}
+
+/// The file `p` names: `{path, embed?}` or `{base64, name?}`. Its size and time are taken before
+/// it is read, so a later version that replaces it while a network or syncing source is being
+/// loaded isn't vouched for ([`crate::cmd::links::loaded_fingerprint`]).
+pub(crate) fn read_source(p: &Value) -> Result<Source> {
+    let embed = p.get("embed").and_then(Value::as_bool) == Some(true);
     if let Some(b) = str_param(p, "base64") {
-        return Ok((base64_decode(b), str_param(p, "name").unwrap_or("image").to_string(), None, None));
+        return Ok(Source { bytes: base64_decode(b), name: str_param(p, "name").unwrap_or("image").to_string(), file: None, embed });
     }
     let path = str_param(p, "path").ok_or_else(|| bad("place", "missing `path` or `base64`"))?;
     let before = crate::cmd::datamerge::fingerprint_from_path(path);
@@ -228,8 +246,8 @@ fn read_linked_source(p: &Value) -> Result<(Vec<u8>, String, Option<String>, Opt
     #[cfg(target_arch = "wasm32")]
     let b: Vec<u8> = vec![];
     let name = std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.into());
-    let loaded = crate::cmd::links::loaded_fingerprint(before, &b);
-    Ok((b, name, Some(path.to_string()), loaded))
+    let file = Some(FileLink::of(std::path::Path::new(path), before));
+    Ok(Source { bytes: b, name, file, embed })
 }
 
 fn eps_size(bytes: &[u8], command: &str) -> Result<Option<(f64, f64)>> {
@@ -260,20 +278,20 @@ pub(crate) fn validate_placement(size: (f64, f64), frame: Rect, xf: Affine, comm
 /// Decode and validate the complete batch before replacing the placement cursor.
 pub(super) fn place_load(s: &mut Session, p: &Value) -> Result<Value> {
     let append = p.get("append").and_then(Value::as_bool) == Some(true);
+    let embed = p.get("embed").and_then(Value::as_bool) == Some(true);
+    let document = document_of(s);
     if p.get("files").is_none() {
-        let (bytes, name, link, link_fingerprint) = read_linked_source(p)?;
-        let (pw, ph) = designcraft_render::image_size(&bytes).ok_or_else(|| bad("place.load", "unsupported or corrupt image"))?;
-        let natural = eps_size(&bytes, "place.load")?.or_else(|| designcraft_render::natural_size(&bytes, 0)).unwrap_or((pw as f64, ph as f64));
-        let mime = designcraft_render::image_mime(&bytes).to_string();
-        let asset = Asset {
-            name,
-            mime,
-            link,
-            link_fingerprint,
-            data: designcraft_doc::AssetData::embedded(bytes),
+        let source = read_source(p)?;
+        let bytes = &source.bytes;
+        let (pw, ph) = designcraft_render::image_size(bytes).ok_or_else(|| bad("place.load", "unsupported or corrupt image"))?;
+        let natural = eps_size(bytes, "place.load")?.or_else(|| designcraft_render::natural_size(bytes, 0)).unwrap_or((pw as f64, ph as f64));
+        let mut asset = Asset {
+            name: source.name.clone(),
+            mime: designcraft_render::image_mime(bytes).to_string(),
             pixels: Some((pw, ph)),
             ..Default::default()
         };
+        source.give(&mut asset, document.as_deref());
         return load_cursor(s, asset, natural, append);
     }
     let sources = p.get("files").and_then(Value::as_array).ok_or_else(|| bad("place.load", "files must be an array"))?;
@@ -283,23 +301,21 @@ pub(super) fn place_load(s: &mut Session, p: &Value) -> Result<Value> {
     check_cursor_room(s, sources.len(), append, "place.load")?;
     let mut images = Vec::with_capacity(sources.len());
     for source in sources {
-        let (bytes, name, link, link_fingerprint) = read_linked_source(source)?;
-        let (pw, ph) = designcraft_render::image_size(&bytes).ok_or_else(|| bad("place.load", format!("unsupported or corrupt image: {name}")))?;
-        let size = eps_size(&bytes, "place.load")?.or_else(|| designcraft_render::natural_size(&bytes, 0)).unwrap_or((pw as f64, ph as f64));
+        let mut source = read_source(source)?;
+        source.embed |= embed;
+        let bytes = &source.bytes;
+        let (pw, ph) =
+            designcraft_render::image_size(bytes).ok_or_else(|| bad("place.load", format!("unsupported or corrupt image: {}", source.name)))?;
+        let size = eps_size(bytes, "place.load")?.or_else(|| designcraft_render::natural_size(bytes, 0)).unwrap_or((pw as f64, ph as f64));
         validate_placement(size, Rect::new(0.0, 0.0, size.0, size.1), Affine::IDENTITY, "place.load")?;
-        let mime = designcraft_render::image_mime(&bytes).to_string();
-        images.push((
-            Asset {
-                name,
-                mime,
-                link,
-                link_fingerprint,
-                data: designcraft_doc::AssetData::embedded(bytes),
-                pixels: Some((pw, ph)),
-                ..Default::default()
-            },
-            size,
-        ));
+        let mut asset = Asset {
+            name: source.name.clone(),
+            mime: designcraft_render::image_mime(bytes).to_string(),
+            pixels: Some((pw, ph)),
+            ..Default::default()
+        };
+        source.give(&mut asset, document.as_deref());
+        images.push((asset, size));
     }
     let queue = s.edit(|d, _| {
         let mut queue = std::collections::VecDeque::with_capacity(images.len());
@@ -802,9 +818,9 @@ pub(super) mod image_place_tests {
         };
 
         // Written just now: another write in the same second would keep its time, so the time
-        // can't vouch for the bytes later and isn't kept.
+        // can't vouch for the bytes later: only the size is kept, with a time no file has.
         let asset = load(&mut session);
-        assert_eq!(asset.link_fingerprint, None);
+        assert_eq!(asset.link_fingerprint.map(|f| f.mtime), Some(crate::cmd::links::UNVERIFIED_MTIME));
         assert_eq!(asset.link.as_deref(), image.path().to_str());
 
         // A file that has been as it is for a while is remembered by its size and time.

@@ -142,7 +142,7 @@ impl AssetData {
     /// [`AssetData::linked_under`] with `bytes` (the file's, just read) already in the store, so
     /// the first draw doesn't read the file again.
     pub fn linked_resident(key: SourceKey, source: LinkedSource, bytes: Arc<Vec<u8>>) -> Self {
-        store::global().insert(key, bytes);
+        store::global().keep(key, bytes);
         AssetData::linked_under(key, source)
     }
 
@@ -188,6 +188,17 @@ impl AssetData {
         match &self.repr {
             Repr::Embedded(b) => Some(Arc::clone(b)),
             Repr::Linked(_) => store::global().resident(self.key),
+        }
+    }
+
+    /// Keep `bytes`, just read from the linked file and checked by the caller to be the ones its
+    /// source names, in the store, so the first [`AssetData::load`] doesn't read the file again.
+    /// Embedded values, bytes of another size and bytes over the store's budget are ignored.
+    pub fn keep_resident(&self, bytes: Arc<Vec<u8>>) {
+        if let Repr::Linked(l) = &self.repr
+            && bytes.len() as u64 == l.source.len
+        {
+            store::global().keep(self.key, bytes);
         }
     }
 
