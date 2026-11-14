@@ -25,7 +25,7 @@ fn references(dict: &Dict<'_>, key: &[u8]) -> Result<Vec<ObjectIdentifier>> {
     dict.get::<Array<'_>>(key).ok_or_else(invalid)?.raw_iter().map(|value| value.as_obj_ref().map(Into::into).ok_or_else(invalid)).collect()
 }
 
-fn edited(dict: &Dict<'_>, replacements: &[(&[u8], &[u8])]) -> Result<Vec<u8>> {
+pub(crate) fn edited(dict: &Dict<'_>, replacements: &[(&[u8], &[u8])]) -> Result<Vec<u8>> {
     let data = dict.data();
     let body = data.strip_prefix(b"<<").and_then(|d| d.strip_suffix(b">>")).ok_or_else(invalid)?;
     let mut reader = Reader::new(body);
@@ -104,7 +104,7 @@ fn has_entry(dict: &Dict<'_>, key: &[u8]) -> bool {
     dict.contains_key(key) && !matches!(dict.get_raw::<Object<'_>>(key), Some(MaybeRef::NotRef(Object::Null(_))))
 }
 
-fn append(bytes: &[u8], changes: &[(ObjectIdentifier, Vec<u8>)], root: ObjectIdentifier) -> Result<Vec<u8>> {
+pub(crate) fn append(bytes: &[u8], changes: &[(ObjectIdentifier, Vec<u8>)], root: ObjectIdentifier) -> Result<Vec<u8>> {
     let damaged = || PdfError::Write("the placed PDF's cross-reference table is damaged; layer changes could not be preserved safely".into());
     let at = crate::transitions::rfind(bytes, b"startxref").ok_or_else(damaged)?;
     let tail = std::str::from_utf8(bytes.get(at..).ok_or_else(damaged)?).map_err(|_| damaged())?;
