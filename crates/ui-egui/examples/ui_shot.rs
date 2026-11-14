@@ -7,6 +7,8 @@
 //! see `docs/control-protocol.md`), or `{"shot": "/abs/out.png"}` to save the window as PNG, or
 //! `{"steps": n}` to run extra frames. The window is 1440×900 pt at 2× and opens `file.newSample`
 //! (unless the first line is `{"empty": true}`).
+//! `{"providerRecents": false|true}` seeds synthetic device/provider recent metadata for native
+//! Home-screen evidence. Use an empty session; it does not read or save any provider content.
 
 use designcraft_engine::Session;
 use designcraft_ui_egui::{ControlRequest, DesignApp, Services};
@@ -66,6 +68,8 @@ fn main() {
             }
         } else if let Some(n) = l.get("steps").and_then(|v| v.as_u64()) {
             step_n(&mut harness, n as usize);
+        } else if let Some(enabled) = l.get("providerRecents").and_then(|v| v.as_bool()) {
+            provider_recents_fixture(&mut harness, enabled);
         } else if let Some(m) = l.get("method").and_then(|v| v.as_str()) {
             let (req, reply) = ControlRequest::new(m, l.get("params").cloned().unwrap_or_default());
             tx.send(req).expect("send");
@@ -103,4 +107,42 @@ fn step_n(harness: &mut egui_kittest::Harness<'_, DesignApp>, n: usize) {
     for _ in 0..n {
         step(harness);
     }
+}
+
+/// Exercise the real Home renderer through the same public capability used by a web host.
+/// This opt-in screenshot-script fixture is not a product configuration or storage backend.
+fn provider_recents_fixture(harness: &mut egui_kittest::Harness<'_, DesignApp>, enabled: bool) {
+    let app = harness.state_mut();
+    app.session.prefs.recent_files = vec!["Device publication.designcraft".into()];
+    app.file_providers = Default::default();
+    if enabled {
+        let host = &app.file_providers;
+        host.set_session("fixture-session-0123456789abcdef".into()).expect("fixture session");
+        let connection = host.connect("fixture".into(), "External storage".into(), "fixture-account".into()).expect("fixture connection");
+        host.set_resources(
+            &connection,
+            vec![designcraft_ui_egui::file_providers::Resource {
+                id: "provider-publication".into(),
+                name: "Provider publication.designcraft".into(),
+                updated_at: String::new(),
+            }],
+        )
+        .expect("fixture resource list");
+    }
+    step_n(harness, 6);
+    fn texts(shape: &egui::Shape, found: &mut Vec<String>) {
+        match shape {
+            egui::Shape::Text(text) => found.push(text.galley.text().to_string()),
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| texts(shape, found)),
+            _ => {}
+        }
+    }
+    let mut found = Vec::new();
+    for shape in &harness.output().shapes {
+        texts(&shape.shape, &mut found);
+    }
+    assert!(found.iter().any(|text| text == "Device publication"), "use an empty Home session: {found:?}");
+    assert_eq!(found.iter().any(|text| text == "Provider publication.designcraft"), enabled, "{found:?}");
+    assert_eq!(found.iter().any(|text| text == "Recent files — External storage"), enabled, "{found:?}");
+    assert_eq!(found.iter().any(|text| text == "Recent files on this device"), enabled, "{found:?}");
 }

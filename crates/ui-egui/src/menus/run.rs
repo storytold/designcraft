@@ -59,18 +59,21 @@ pub(crate) fn save_when_checked(app: &mut DesignApp, save: impl FnOnce(&mut Desi
 /// Save the active document (a download in a browser; Save As for one never saved), then run
 /// `after` once it is written. A save dialog answers on a later frame; Cancel runs nothing.
 #[track_caller]
-pub(crate) fn save_then(app: &mut DesignApp, after: impl FnOnce(&mut DesignApp) -> Result<Value, String> + 'static) -> Result<Value, String> {
+pub(crate) fn save_then(app: &mut DesignApp, after: crate::file_provider_app::After) -> Result<Value, String> {
+    if app.file_providers.enabled() && !app.in_control {
+        return crate::file_provider_app::save(app, false, Some(after));
+    }
     if app.services.download.is_some() {
         download_document(app)?;
-        return after(app);
+        return after.local(app);
     }
     if app.session.active().is_some_and(|d| d.path.is_some()) {
-        return save_when_checked(app, |app| {
+        return save_when_checked(app, move |app| {
             app.run("file.save", json!({}))?;
-            after(app)
+            after.local(app)
         });
     }
-    save_as_dialog(app, after)
+    save_as_dialog(app, move |app| after.local(app))
 }
 
 /// Run a UI command; `None` if `id` isn't one.
@@ -106,6 +109,8 @@ fn flag(b: &mut bool) -> Result<Value, String> {
 /// One slice of the UI commands: `None` if `id` isn't one of them.
 fn run_ui_part1(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, String>> {
     Some(match id {
+        "file.openProviderResource" => crate::file_provider_app::open_resource(app, p),
+        "edit.discardNumericDrafts" => crate::file_provider_app::discard_active_numeric_drafts(app),
         "window.minimize" => {
             app.pending_window_commands.push(egui::ViewportCommand::Minimized(true));
             Ok(Value::Null)
@@ -190,6 +195,9 @@ fn run_ui_part1(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
                 json!({"path": path, "styles": info["paragraph"], "charStyles": info["character"], "conflicts": info["conflicts"], "styleConflicts": "useExisting", "removeStyles": false, "map": {}}),
             ));
             Ok(Value::Null)
+        }
+        "app.save" | "app.saveDialog" if app.file_providers.enabled() && !app.in_control => {
+            crate::file_provider_app::save(app, id == "app.saveDialog", None)
         }
         "app.save" | "app.saveDialog" if app.services.download.is_some() => download_document(app),
         "app.save" => {
