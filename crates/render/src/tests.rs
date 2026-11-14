@@ -803,3 +803,39 @@ fn dotted_strokes_draw_every_dot() {
     let dots = outline.elements().iter().filter(|e| matches!(e, kurbo::PathEl::MoveTo(_))).count();
     assert_eq!(dots, 13);
 }
+
+/// Grids in Back governs the baseline grid the way it already governed the document grid: behind the
+/// page's objects when it is on, over them when it is off. The baseline grid used to be painted by the
+/// canvas after everything else, so the preference could not reach it at all (#2421).
+#[test]
+fn the_baseline_grid_goes_behind_the_page_objects_with_grids_in_back() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let page = d.spreads[0].pages[0].bounds();
+    let id = designcraft_doc::ItemId(d.alloc());
+    let mut sheet = Item::new(id, lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(page));
+    sheet.fill = Fill::swatch(designcraft_color::swatch::BLACK);
+    d.insert_item(SpreadRef::Doc(0), sheet, None).unwrap();
+    let cache = Cache::new();
+    let placed = [Placed { spread: SpreadRef::Doc(0), xf: Affine::IDENTITY }];
+    // The default baseline grid starts at 36 pt and goes every 12, so 48 pt is a rule and 52 is not.
+    let render = |d: &Document, grid: Vec<(SpreadRef, Rect)>| {
+        let opts = RenderOptions { baseline_grid: grid, ..Default::default() };
+        Renderer::new().render(d, &cache, &placed, (612, 792), Affine::IDENTITY, &opts)
+    };
+
+    // The rule falls on 48 pt and not on 52, so the two rows differ exactly when it is drawn over
+    // the sheet — which is the whole question the preference answers.
+    d.settings.grid.in_back = true;
+    let behind = render(&d, vec![(SpreadRef::Doc(0), page)]);
+    assert_eq!(behind.pixel(300, 48), behind.pixel(300, 52), "behind the sheet, the rule does not show");
+    assert_eq!(behind.pixel(300, 60), behind.pixel(300, 64), "and no other rule does either");
+
+    d.settings.grid.in_back = false;
+    let over = render(&d, vec![(SpreadRef::Doc(0), page)]);
+    assert_ne!(over.pixel(300, 48), over.pixel(300, 52), "in front, the rule shows over the sheet");
+    assert_ne!(over.pixel(300, 60), over.pixel(300, 64), "one per increment");
+
+    let hidden = render(&d, vec![]);
+    assert_eq!(hidden.pixel(300, 48), hidden.pixel(300, 52), "nothing while the grid is hidden");
+}

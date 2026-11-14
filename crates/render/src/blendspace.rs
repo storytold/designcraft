@@ -425,6 +425,7 @@ impl Renderer {
             page_shadow: false,
             blend_space_view: false,
             document_grid: Vec::new(),
+            baseline_grid: Vec::new(),
             ..f.opts.clone()
         };
         if area.width() < 1.0 || area.height() < 1.0 {

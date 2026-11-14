@@ -1,11 +1,11 @@
-//! The document grid on screen (View › Grids & Guides › Show/Hide Document Grid).
+//! The document grid and the baseline grid on screen (View › Grids & Guides › Show/Hide Document Grid, Show/Hide Baseline Grid).
 //!
 //! The lines are the positions Snap to Document Grid snaps to: every `vertical / subdivisions`
 //! on x and `horizontal / subdivisions` on y, counted from the top-left corner of the page that
 //! owns that x (`Spread::page_at_x`: a page owns its own width, the outer pages also own the
 //! pasteboard beside them).
 
-use designcraft_doc::{DocumentGrid, Spread};
+use designcraft_doc::{BaselineGrid, DocumentGrid, Spread};
 use designcraft_geom::Rect;
 use vello_cpu::{RenderContext, peniko};
 
@@ -79,6 +79,44 @@ pub(crate) fn draw(ctx: &mut RenderContext, f: &Frame, sp: &Spread, grid: &Docum
     }
 }
 
+/// Draws the baseline grid of `sp` over `area` (spread coordinates) — one rule per increment across
+/// each page, counted from where that page's grid starts — clipped to what is visible.
+pub(crate) fn draw_baseline(ctx: &mut RenderContext, f: &Frame, sp: &Spread, grid: &BaselineGrid, area: Rect) {
+    let area = area.intersect(f.visible);
+    if area.width() <= 0.0 || area.height() <= 0.0 {
+        return;
+    }
+    let half = f.px / 2.0;
+    let [r, g, b] = grid.color;
+    ctx.set_transform(f.view);
+    ctx.set_paint(crate::screen_color([r, g, b], 210));
+    for p in &sp.pages {
+        let pb = p.bounds();
+        let (x0, x1) = (pb.x0.max(area.x0), pb.x1.min(area.x1));
+        if x1 <= x0 {
+            continue;
+        }
+        for y in baseline_lines(grid.origin(p), grid.increment, p.height) {
+            let y = pb.y0 + y;
+            if y >= area.y0 && y <= area.y1 {
+                ctx.fill_rect(&Rect::new(x0, y - half, x1, y + half));
+            }
+        }
+    }
+}
+
+/// The most baseline grid lines drawn on a page: one per point of the tallest page (216 in).
+const MAX_BASELINES: usize = 216 * 72;
+
+/// Baseline grid lines inside a page, measured from its top: `start + n × increment` for n >= 0 (the
+/// bottom edge is not a line), `start` from [`BaselineGrid::origin`](designcraft_doc::BaselineGrid::origin).
+/// Lines above the page are skipped without walking them, however far up the start is.
+fn baseline_lines(start: f64, increment: f64, height: f64) -> impl Iterator<Item = f64> {
+    let step = increment.max(1.0);
+    let first = if start < 0.0 { start.rem_euclid(step) } else { start };
+    (0..MAX_BASELINES).map(move |n| first + n as f64 * step).take_while(move |y| *y < height)
+}
+
 fn paints(grid: &DocumentGrid) -> [peniko::Color; 2] {
     let [r, g, b] = grid.color;
     [crate::screen_color([r, g, b], 110), crate::screen_color([r, g, b], 255)]
@@ -135,5 +173,19 @@ mod tests {
         // A span too wide for the cap draws no lines instead of looping.
         assert!(lines(0.0, (1e-9, 1), 0.0, 1e9).is_empty());
         assert_eq!(lines(10.0, (9.0, 8), 0.0, 30.0), vec![(1.0, false), (10.0, true), (19.0, false), (28.0, false)]);
+    }
+
+    #[test]
+    fn the_baseline_rules_are_the_ones_on_the_page() {
+        // A start far above the page used to be walked line by line, without end.
+        for start in [-1e9, -1e17] {
+            let mut far = baseline_lines(start, 12.0, 792.0);
+            assert_eq!((far.next(), far.count()), (Some(8.0), 65));
+        }
+        let rules = |start, increment, height| baseline_lines(start, increment, height).collect::<Vec<_>>();
+        assert_eq!(rules(36.0, 12.0, 72.0), [36.0, 48.0, 60.0], "the bottom edge is not a line");
+        assert_eq!(rules(-30.0, 12.0, 30.0), [6.0, 18.0], "a start above the page keeps its rhythm");
+        assert_eq!(rules(f64::NAN, 12.0, 792.0), [0.0; 0]);
+        assert_eq!(baseline_lines(0.0, 12.0, f64::INFINITY).count(), MAX_BASELINES);
     }
 }

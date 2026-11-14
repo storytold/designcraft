@@ -24,7 +24,7 @@ pub fn color_at(app: &mut DesignApp, ctx: &egui::Context, pos: Pos2) -> Option<[
     let placed: Vec<designcraft_render::Placed> = layout.slots.iter().map(|s| designcraft_render::Placed { spread: s.spread, xf: s.xf }).collect();
     let ppp = ctx.pixels_per_point() as f64;
     let view = Affine::scale(ppp) * Affine::scale(xf.zoom) * Affine::translate((-at.x, -at.y));
-    let opts = screen_options(app, &layout, app.ui.screen_mode != ScreenMode::Normal, ppp);
+    let opts = screen_options(app, &layout, app.ui.screen_mode != ScreenMode::Normal, ppp, xf.zoom);
     let mut img = app.canvas.patcher.render(&doc, &app.session.cache, &placed, (1, 1), view, &opts);
     // The colour as the canvas shows it (proofed).
     screen_post(app, &mut img);
@@ -36,7 +36,7 @@ pub fn color_at(app: &mut DesignApp, ctx: &egui::Context, pos: Pos2) -> Option<[
 }
 
 /// Render options for the canvas texture.
-pub(super) fn screen_options(app: &DesignApp, layout: &CanvasLayout, preview: bool, ppp: f64) -> designcraft_render::RenderOptions {
+pub(super) fn screen_options(app: &DesignApp, layout: &CanvasLayout, preview: bool, ppp: f64, zoom: f64) -> designcraft_render::RenderOptions {
     designcraft_render::RenderOptions {
         printing_only: preview,
         greek_below_px: 3.0 * ppp,
@@ -53,8 +53,18 @@ pub(super) fn screen_options(app: &DesignApp, layout: &CanvasLayout, preview: bo
         overprint_preview: app.ui.overprint_preview,
         blend_space_view: !app.ui.proof_colors,
         document_grid: if app.ui.document_grid && !preview { grid_areas(layout) } else { vec![] },
+        baseline_grid: if app.ui.guides && app.ui.baseline_grid && !preview && zoom >= baseline_view_threshold(app) {
+            grid_areas(layout)
+        } else {
+            vec![]
+        },
         ..Default::default()
     }
+}
+
+/// Below its own threshold the baseline grid is too dense to read, and is not drawn at all.
+fn baseline_view_threshold(app: &DesignApp) -> f64 {
+    app.session.active().map_or(1.0, |s| s.doc.settings.baseline_grid.view_threshold)
 }
 
 /// The area each spread's document grid covers, in spread coordinates: the full-width band of
@@ -83,6 +93,8 @@ pub struct DisplayKey {
     proof_colors: bool,
     tag_markers: bool,
     document_grid: bool,
+    baseline_grid: bool,
+    guides: bool,
     highlight_substituted_fonts: bool,
     highlight_hj: bool,
     show_note_anchors: bool,
@@ -100,6 +112,8 @@ fn display_key(app: &DesignApp) -> DisplayKey {
         proof_colors: ui.proof_colors,
         tag_markers: ui.tag_markers,
         document_grid: ui.document_grid,
+        baseline_grid: ui.baseline_grid,
+        guides: ui.guides,
         highlight_substituted_fonts: prefs.highlight_substituted_fonts,
         highlight_hj: prefs.highlight_hj,
         show_note_anchors: prefs.show_note_anchors,
@@ -174,7 +188,7 @@ pub(super) fn render_texture(app: &mut DesignApp, ctx: &egui::Context, rect: Rec
         let w = (target.size.0 as f64 * ppp).round().max(1.0) as u32;
         let h = (target.size.1 as f64 * ppp).round().max(1.0) as u32;
         let view = Affine::scale(ppp) * Affine::scale(xf.zoom) * Affine::translate((-target.origin.x, -target.origin.y));
-        let opts = screen_options(app, layout, preview, ppp);
+        let opts = screen_options(app, layout, preview, ppp, xf.zoom);
         Some((st.doc.clone(), placed, w, h, view, opts))
     };
     // Synchronous path: document edits (keep editing crisp), first frame, or no worker.
@@ -279,7 +293,7 @@ fn patch_texture(app: &mut DesignApp, layout: &CanvasLayout, ppp: f64, doc_key: 
         * Affine::scale(ppp)
         * Affine::scale(sh.zoom)
         * Affine::translate((-sh.origin.x, -sh.origin.y));
-    let opts = screen_options(app, layout, preview, ppp);
+    let opts = screen_options(app, layout, preview, ppp, sh.zoom);
     let img = app.canvas.patcher.render(&new, &app.session.cache, &placed, ((x1 - x0) as u32, (y1 - y0) as u32), view, &opts);
     let ci = egui::ColorImage::from_rgba_premultiplied([img.width as usize, img.height as usize], &img.pixels);
     if let Some(tex) = app.canvas.texture.as_mut() {
