@@ -23,6 +23,7 @@ log = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
 craft-image-codecs = { workspace = true }
+image = { workspace = true }
 
 [dev-dependencies]
 image = { workspace = true, features = ["png", "gif", "tiff"] }
