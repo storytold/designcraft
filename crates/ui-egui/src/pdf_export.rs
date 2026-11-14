@@ -340,6 +340,37 @@ mod tests {
     }
 
     #[test]
+    fn busy_pdf_export_defers_new_recovery_but_polls_an_existing_writer() {
+        let (mut app, _tx) = pending_app(GENERATING).unwrap();
+        app.session.execute("frame.create", &json!({"rect": [0, 0, 20, 20]})).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        app.session.recovery_dir = Some(dir.path().to_path_buf());
+        app.last_recovery = -1.0e9;
+        let ctx = egui::Context::default();
+        let frame = |app: &mut crate::DesignApp| {
+            let raw =
+                egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))), ..Default::default() };
+            ctx.run_ui(raw, |ui| app.ui(ui)).textures_delta.clear();
+        };
+        for _ in 0..3 {
+            frame(&mut app);
+        }
+        assert!(app.pdf_export.busy());
+        assert_eq!(app.last_recovery, -1.0e9, "busy export does not start a new recovery snapshot");
+        assert!(!app.recovery_writing);
+        // Simulate a snapshot queued immediately before the export began.
+        let result = app.session.execute("file.recovery.save", &json!({"background": true})).unwrap();
+        assert!(result["queued"].as_u64().unwrap() > 0);
+        app.recovery_writing = true;
+        // The result stays queued until the interface polls it, even after the writer finishes.
+        designcraft_engine::recovery::testing::wait_until_idle();
+        frame(&mut app);
+        assert!(!app.recovery_writing, "an existing writer is polled even while the PDF export stays busy");
+        assert!(app.pdf_export.busy());
+        assert_eq!(app.last_recovery, -1.0e9);
+    }
+
+    #[test]
     fn pdf_progress_cancel_button_dismisses_the_modal_before_saving() {
         use egui_kittest::kittest::Queryable;
         let (app, _tx) = pending_app(0).unwrap();

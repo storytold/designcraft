@@ -95,6 +95,7 @@ pub fn document(bytes: Vec<u8>, hidden_sets: &[&[&str]]) -> Document {
         mime: "application/pdf".into(),
         data: Arc::new(bytes),
         link: None,
+        link_fingerprint: None,
         pixels: None,
         page: 0,
         pdf_crop: Default::default(),

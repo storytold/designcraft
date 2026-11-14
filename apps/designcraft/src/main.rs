@@ -15,6 +15,7 @@
 
 #[cfg(target_os = "macos")]
 mod apple_events;
+mod clipboard_image;
 mod control_server;
 mod gpu;
 mod gpu_limits;
@@ -230,6 +231,9 @@ fn services() -> Services {
         write: Some(Box::new(|p: &str, b: &[u8]| designcraft_engine::io::write_file(p, b))),
         background_write: Some(std::sync::Arc::new(|p: &str, b: &[u8]| designcraft_engine::io::write_file(p, b))),
         clipboard_text: Some(Box::new(|| arboard::Clipboard::new().and_then(|mut c| c.get_text()).ok())),
+        clipboard_image: Some(Box::new(clipboard_image::read)),
+        #[cfg(target_os = "macos")]
+        clipboard_change: Some(Box::new(clipboard_image::change_count)),
         #[cfg(target_os = "macos")]
         pointer: Some(Box::new(pointer::screen_position)),
         ..Default::default()
