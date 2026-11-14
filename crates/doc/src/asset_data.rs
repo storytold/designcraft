@@ -132,6 +132,13 @@ impl AssetData {
         AssetData { key: SourceKey::fresh(), repr: Repr::Linked(Arc::new(Linked { source, trusted: Mutex::new(None) })) }
     }
 
+    /// The linked file `source` names, under `key`: embedded bytes found identical to the file
+    /// (hash-checked by the caller) become a link without decoding them again. As with
+    /// [`AssetData::embedded_under`], other bytes under one key would draw stale pixels.
+    pub fn linked_under(key: SourceKey, source: LinkedSource) -> Self {
+        AssetData { key, repr: Repr::Linked(Arc::new(Linked { source, trusted: Mutex::new(None) })) }
+    }
+
     /// This value pointing at `source` (the file moved, the document was saved elsewhere, the
     /// fingerprint was brought up to date). It keeps the key when both name the same bytes
     /// (same size and content hash), so nothing decoded is decoded again.
