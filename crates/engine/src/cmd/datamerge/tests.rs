@@ -749,6 +749,231 @@ fn role_overrides_column_kind_qr_and_hyperlink() {
     assert_eq!(kinds, vec!["email:a@b.c".to_string(), "url:https://example.com".to_string()]);
 }
 
+fn write_png_sized(path: &Path, width: u32, height: u32) {
+    let pixels = vec![255; width as usize * height as usize * 4];
+    let bytes = designcraft_render::Rendered { width, height, pixels }.to_png();
+    assert_eq!(designcraft_render::image_size(&bytes), Some((width, height)), "the fixture png must decode");
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    std::fs::write(path, bytes).unwrap();
+}
+
+/// The images anchored in the stories of document `index`, as (file name, width, height), by name.
+fn inline_images(s: &Session, index: usize) -> Vec<(String, f64, f64)> {
+    let doc = &s.documents()[index].doc;
+    let mut out = Vec::new();
+    for st in doc.stories.values() {
+        for o in &st.objects {
+            if let Content::Graphic(g) = &o.item.content {
+                let name = doc.assets.get(&g.asset).map(|a| a.name.clone()).unwrap_or_default();
+                let (w, h) = o.size();
+                out.push((name, w, h));
+            }
+        }
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+/// An image field inserted at a text insertion point placed the path as text. It places the
+/// image in the text: at its natural size, scaled down to fit the frame, with a missing file
+/// reported and its marker removed.
+#[test]
+fn an_image_field_at_the_insertion_point_merges_as_an_inline_image() {
+    let dir = scratch("inline-image");
+    let data = dir.join("data");
+    write_png_sized(&data.join("pics").join("small.png"), 40, 20);
+    write_png_sized(&data.join("pics").join("wide.png"), 800, 100);
+    write(&data.join("cards.csv"), "Name,@Photo\nAda,pics/small.png\nGrace,pics/wide.png\nKai,pics/none.png\n");
+
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    exec(&mut s, "data.source.select", json!({"path": data.join("cards.csv")}));
+    let made = text_frame(&mut s, [36.0, 36.0, 236.0, 236.0], "Photo: ", None);
+    exec(&mut s, "text.select", json!({"story": made["story"], "anchor": 7, "focus": 7}));
+    exec(&mut s, "data.placeholder.add", json!({"field": "Photo"}));
+    let template = &s.documents()[0].doc;
+    assert_eq!(template.stories.values().next().unwrap().text, "Photo: <<Photo>>");
+    let width = template.item(designcraft_doc::ItemId(made["id"].as_u64().unwrap())).unwrap().inner_bounds().width();
+
+    exec(&mut s, "data.preview", json!({"record": 1}));
+    assert_eq!(inline_images(&s, 0).len(), 1, "the preview shows the image");
+    exec(&mut s, "data.preview.stop", json!({}));
+
+    let r = exec(&mut s, "data.merge", json!({}));
+    assert_eq!(r["records"], 3);
+    let missing = r["missingImages"].as_array().unwrap();
+    assert_eq!(missing.len(), 1, "{missing:?}");
+    assert_eq!((missing[0]["record"].as_u64(), missing[0]["path"].as_str()), (Some(3), Some("pics/none.png")));
+    let mark = designcraft_doc::OBJECT_MARK;
+    assert_eq!(texts(&s), vec!["Photo: ".to_string(), format!("Photo: {mark}"), format!("Photo: {mark}")]);
+    let placed = inline_images(&s, s.active_index().unwrap());
+    assert_eq!(placed.len(), 2, "{placed:?}");
+    let (small, wide) = (&placed[0], &placed[1]);
+    assert_eq!(small.0, "small.png");
+    assert!((small.1 - 40.0).abs() < 0.01 && (small.2 - 20.0).abs() < 0.01, "a small image keeps its natural size: {small:?}");
+    assert_eq!(wide.0, "wide.png");
+    assert!((wide.1 - width).abs() < 0.01 && (wide.2 - width / 8.0).abs() < 0.01, "a wide image is scaled down to the frame: {wide:?}");
+}
+
+/// A QR field at a text insertion point is refused instead of merging its payload as text.
+#[test]
+fn a_qr_field_at_the_insertion_point_is_refused() {
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    select_csv(&mut s, "@Photo,#Code\n/x.png,hello\n");
+    let made = text_frame(&mut s, [36.0, 36.0, 300.0, 300.0], "Hi ", None);
+    exec(&mut s, "text.select", json!({"story": made["story"], "anchor": 3, "focus": 3}));
+    let msg = err(&mut s, "data.placeholder.add", json!({"field": "Code"}));
+    assert!(msg.contains("bind to a frame"), "{msg}");
+    assert_eq!(texts(&s), vec!["Hi ".to_string()]);
+    assert!(s.documents()[0].doc.data_merge.placeholders.is_empty());
+}
+
+/// An explicit QR role at a text insertion point is refused too, rather than binding the QR code
+/// to a selected frame the caret is not in.
+#[test]
+fn an_explicit_qr_role_at_the_insertion_point_is_refused() {
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    select_csv(&mut s, "Name,#Code\nAda,hello\n");
+    let made = text_frame(&mut s, [36.0, 36.0, 300.0, 300.0], "Hi ", None);
+    let other = text_frame(&mut s, [36.0, 400.0, 300.0, 600.0], "", None);
+    let other_id = designcraft_doc::ItemId(other["id"].as_u64().unwrap());
+    let sid = StoryId(made["story"].as_u64().unwrap());
+    let doc = s.doc_mut().unwrap();
+    doc.selection = Selection::text(TextSel { story: sid, anchor: 3, focus: 3, frame: None, cell: None });
+    doc.selection.items = vec![other_id];
+    let msg = err(&mut s, "data.placeholder.add", json!({"field": "Code", "role": "qr"}));
+    assert!(msg.contains("bind to a frame"), "{msg}");
+    let doc = &s.documents()[0].doc;
+    assert!(doc.data_merge.placeholders.is_empty());
+    assert_eq!(doc.item(other_id).unwrap().label, "", "the other frame is not bound");
+}
+
+/// Fields inserted one after another at the insertion point keep their order: the caret moves
+/// past each marker, as after typing.
+#[test]
+fn fields_inserted_at_the_insertion_point_keep_their_order() {
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    select_csv(&mut s, "Name,City,@Photo\nAda,Paris,/x.png\n");
+    let made = text_frame(&mut s, [36.0, 36.0, 300.0, 300.0], "Hi ", None);
+    exec(&mut s, "text.select", json!({"story": made["story"], "anchor": 3, "focus": 3}));
+    exec(&mut s, "data.placeholder.add", json!({"field": "Name", "role": "text"}));
+    exec(&mut s, "data.placeholder.add", json!({"field": "City", "role": "text"}));
+    exec(&mut s, "data.placeholder.add", json!({"field": "Photo"}));
+    assert_eq!(texts(&s), vec!["Hi <<Name>><<City>><<Photo>>".to_string()]);
+    let t = s.documents()[0].selection.text.unwrap();
+    assert_eq!((t.anchor, t.focus), (28, 28));
+}
+
+/// A typed `<<name>>` marker for an image column places the image too, from an absolute path;
+/// an explicit text role still writes the path as text.
+#[test]
+fn a_typed_image_marker_places_the_image_and_a_text_role_keeps_the_path() {
+    let dir = scratch("typed-image");
+    let pic = dir.join("pic.png");
+    write_png_sized(&pic, 10, 30);
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    select_csv(&mut s, &format!("@Photo\n{}\n", pic.display()));
+    text_frame(&mut s, [36.0, 36.0, 300.0, 300.0], "A <<Photo>> B", None);
+    let r = exec(&mut s, "data.merge", json!({}));
+    assert_eq!(r["missingImages"].as_array().map(Vec::len), Some(0));
+    assert_eq!(texts(&s), vec![format!("A {} B", designcraft_doc::OBJECT_MARK)]);
+    let placed = inline_images(&s, s.active_index().unwrap());
+    assert_eq!(placed.len(), 1);
+    assert!((placed[0].1 - 10.0).abs() < 0.01 && (placed[0].2 - 30.0).abs() < 0.01, "{placed:?}");
+
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    select_csv(&mut s, &format!("@Photo\n{}\n", pic.display()));
+    let made = text_frame(&mut s, [36.0, 36.0, 300.0, 300.0], "", None);
+    exec(&mut s, "text.select", json!({"story": made["story"], "anchor": 0, "focus": 0}));
+    exec(&mut s, "data.placeholder.add", json!({"field": "Photo", "role": "text"}));
+    exec(&mut s, "data.merge", json!({}));
+    assert_eq!(texts(&s), vec![pic.display().to_string()]);
+    assert!(inline_images(&s, s.active_index().unwrap()).is_empty());
+}
+
+/// An explicit image role at a text insertion point places an inline image too, and in a frame
+/// with two columns the image is scaled down to one column's width.
+#[test]
+fn an_inline_image_role_at_text_fits_one_column() {
+    let dir = scratch("inline-columns");
+    let pic = dir.join("wide.png");
+    write_png_sized(&pic, 800, 100);
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    select_csv(&mut s, &format!("@Photo\n{}\n", pic.display()));
+    let made = text_frame(&mut s, [36.0, 36.0, 456.0, 336.0], "", None);
+    exec(&mut s, "object.textFrameOptions", json!({"ids": [made["id"]], "columns": 2, "gutter": 20}));
+    exec(&mut s, "text.select", json!({"story": made["story"], "anchor": 0, "focus": 0}));
+    exec(&mut s, "data.placeholder.add", json!({"field": "Photo", "role": "image"}));
+    let r = exec(&mut s, "data.merge", json!({}));
+    assert_eq!(r["missingImages"].as_array().map(Vec::len), Some(0), "{r}");
+    let placed = inline_images(&s, s.active_index().unwrap());
+    assert_eq!(placed.len(), 1, "{placed:?}");
+    // 420 pt wide, less the 20 pt gutter, gives two 200 pt columns.
+    assert!((placed[0].1 - 200.0).abs() < 0.01 && (placed[0].2 - 25.0).abs() < 0.01, "{placed:?}");
+
+    // The story threads on into a 100 pt frame: the image fits that one, wherever the marker lands.
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    select_csv(&mut s, &format!("@Photo\n{}\n", pic.display()));
+    let made = text_frame(&mut s, [36.0, 36.0, 456.0, 336.0], "", None);
+    let small = exec(&mut s, "frame.create", json!({"rect": [36.0, 400.0, 136.0, 500.0], "content": "unassigned"}));
+    exec(&mut s, "text.thread", json!({"from": made["id"], "to": small["id"]}));
+    exec(&mut s, "text.select", json!({"story": made["story"], "anchor": 0, "focus": 0}));
+    exec(&mut s, "data.placeholder.add", json!({"field": "Photo"}));
+    exec(&mut s, "data.merge", json!({}));
+    let placed = inline_images(&s, s.active_index().unwrap());
+    assert_eq!(placed.len(), 1, "{placed:?}");
+    assert!(placed[0].1 <= 100.0 + 0.01, "{placed:?}");
+}
+
+/// A cell that starts with one separator (`\pics\a.png`) and names no file from the drive's root
+/// is found beside the data file.
+#[test]
+fn an_image_path_with_a_leading_separator_is_found_beside_the_data_file() {
+    let dir = scratch("rooted-image");
+    let data = dir.join("data");
+    write_png_sized(&data.join("dc-merge-rooted-pics").join("a.png"), 12, 12);
+    write(&data.join("cards.csv"), "@Photo\n\\dc-merge-rooted-pics\\a.png\n/dc-merge-rooted-pics/a.png\n");
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    exec(&mut s, "data.source.select", json!({"path": data.join("cards.csv")}));
+    let frame = exec(&mut s, "frame.create", json!({"rect": [36.0, 36.0, 80.0, 80.0], "content": "graphic"}));
+    exec(&mut s, "data.placeholder.add", json!({"field": "Photo", "item": frame["id"]}));
+    let r = exec(&mut s, "data.merge", json!({}));
+    assert_eq!(r["records"], 2);
+    assert_eq!(r["missingImages"].as_array().map(Vec::len), Some(0), "{r}");
+}
+
+/// A file at an earlier candidate that is not an image does not hide a valid image at a later
+/// one: the search goes on past it.
+#[test]
+fn a_non_image_file_beside_the_data_does_not_hide_the_image_beside_the_document() {
+    let dir = scratch("undecodable-image");
+    let (data, docs) = (dir.join("data"), dir.join("docs"));
+    write(&data.join("pics").join("a.png"), "not an image");
+    write_png_sized(&docs.join("pics").join("a.png"), 12, 12);
+    write(&data.join("cards.csv"), "@Photo\npics/a.png\n");
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    exec(&mut s, "data.source.select", json!({"path": data.join("cards.csv")}));
+    exec(&mut s, "file.save", json!({"path": docs.join("layout.designcraft")}));
+    let frame = exec(&mut s, "frame.create", json!({"rect": [36.0, 36.0, 80.0, 80.0], "content": "graphic"}));
+    exec(&mut s, "data.placeholder.add", json!({"field": "Photo", "item": frame["id"]}));
+    exec(&mut s, "data.options", json!({"linkImages": true}));
+    let r = exec(&mut s, "data.merge", json!({}));
+    assert_eq!(r["missingImages"].as_array().map(Vec::len), Some(0), "{r}");
+    let link = graphic_link(&s).unwrap_or_default();
+    assert!(link.contains("docs"), "{link}");
+}
+
 #[test]
 fn single_record_merge_copies_pages_and_leaves_the_template() {
     let mut s = Session::new();
@@ -1311,6 +1536,76 @@ fn merged_records_give_anchored_objects_their_own_ids() {
     designcraft_format::load(&designcraft_format::save(doc).unwrap()).unwrap();
 }
 
+/// A record previewed into an image placeholder whose frame wraps with an Alpha Channel contour
+/// gets the image's outline, as an edit would.
+#[test]
+fn a_previewed_image_gets_its_alpha_channel_outline() {
+    let dir = scratch("alpha-preview");
+    let mut pixels = vec![0u8; 64 * 64 * 4];
+    for y in 0..64 {
+        for x in 16..48 {
+            pixels[(y * 64 + x) * 4 + 3] = 255;
+        }
+    }
+    std::fs::write(dir.join("cut.png"), designcraft_render::Rendered { width: 64, height: 64, pixels }.to_png()).unwrap();
+    write(&dir.join("pics.csv"), "Photo\ncut.png\n");
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    exec(&mut s, "data.source.select", json!({"path": dir.join("pics.csv")}));
+    let frame = exec(&mut s, "frame.create", json!({"rect": [0.0, 0.0, 200.0, 100.0], "content": "graphic"}));
+    exec(&mut s, "data.placeholder.add", json!({"field": "Photo", "role": "image", "item": frame["id"]}));
+    exec(&mut s, "object.textWrap", json!({"ids": [frame["id"]], "mode": "contour", "contour": "alphaChannel"}));
+    assert!(s.doc().unwrap().doc.alpha_outlines.is_empty(), "no image placed yet");
+    exec(&mut s, "data.preview", json!({"record": 1}));
+    let d = &s.doc().unwrap().doc;
+    assert_eq!(d.alpha_outlines.len(), 1, "the previewed image is traced");
+    assert!(d.alpha_outlines[0].width > 0 && !d.alpha_outlines[0].outer.subpaths.is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The overset count data merge reports is composed with the merged images' Alpha Channel
+/// outlines: a caption over the image's transparent part is set, not counted as overset. With a
+/// bounding box wrap the same caption is overset, so the count depends on the outline.
+#[test]
+fn a_merge_counts_overset_text_with_the_merged_images_outlines() {
+    let (r, outlines) = merge_with_wrap("alpha-merge", json!({"mode": "contour", "contour": "alphaChannel", "offset": 0}));
+    assert_eq!(r["oversetStories"], 0, "the caption sits beside the image's visible pixels: {r}");
+    assert_eq!(outlines, 1, "the merged document has the image's outline");
+    let (r, _) = merge_with_wrap("alpha-merge-box", json!({"mode": "boundingBox", "offset": 0}));
+    assert_eq!(r["oversetStories"], 1, "the image's frame covers the caption: {r}");
+}
+
+/// Merges one record whose image is visible only in its left quarter into a graphic placeholder
+/// with the text wrap `wrap`, beside a caption over the image's transparent part. Returns the
+/// merge's answer and the number of nonempty Alpha Channel outlines in the merged document.
+fn merge_with_wrap(name: &str, wrap: Value) -> (Value, usize) {
+    let dir = scratch(name);
+    // Visible only in the left quarter.
+    let mut pixels = vec![0u8; 64 * 64 * 4];
+    for y in 0..64 {
+        for x in 0..16 {
+            pixels[(y * 64 + x) * 4 + 3] = 255;
+        }
+    }
+    std::fs::write(dir.join("cut.png"), designcraft_render::Rendered { width: 64, height: 64, pixels }.to_png()).unwrap();
+    write(&dir.join("pics.csv"), "Photo\ncut.png\n");
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    exec(&mut s, "data.source.select", json!({"path": dir.join("pics.csv")}));
+    let frame = exec(&mut s, "frame.create", json!({"rect": [100.0, 100.0, 300.0, 300.0], "content": "graphic"}));
+    exec(&mut s, "data.placeholder.add", json!({"field": "Photo", "role": "image", "item": frame["id"]}));
+    exec(&mut s, "data.options", json!({"fitting": "fitContentToFrame"}));
+    let mut params = wrap;
+    params["ids"] = json!([frame["id"]]);
+    exec(&mut s, "object.textWrap", params);
+    text_frame(&mut s, [220.0, 180.0, 290.0, 220.0], "Hi", None);
+    let r = exec(&mut s, "data.merge", json!({}));
+    let doc = &s.documents()[s.active_index().unwrap()].doc;
+    let outlines = doc.alpha_outlines.iter().filter(|o| o.width > 0 && !o.outer.subpaths.is_empty()).count();
+    let _ = std::fs::remove_dir_all(&dir);
+    (r, outlines)
+}
+
 /// The cell texts of the first table in the active document's first story that has one.
 fn cell_texts(s: &Session) -> Vec<String> {
     let doc = &s.documents()[s.active_index().unwrap()].doc;
@@ -1416,6 +1711,25 @@ fn a_field_named_with_angle_brackets_is_refused_in_a_cell() {
     exec(&mut s, "text.select", json!({"story": other["story"], "anchor": 4, "focus": 4}));
     assert!(exec(&mut s, "data.placeholder.add", json!({"field": "Customer <ID>"}))["id"].is_u64(), "body text still takes it");
     let _ = made;
+}
+
+/// An image field with the insertion point in a table cell is refused with a message about image
+/// fields, and nothing is inserted; with role text its marker goes into the cell.
+#[test]
+fn an_image_field_in_a_cell_is_refused_unless_its_role_is_text() {
+    let mut s = Session::new();
+    table_with_caret_in_cell(&mut s, "Name,@Photo\nAda,pics/a.png\n");
+    for params in [json!({"field": "Photo"}), json!({"field": "Photo", "role": "image"})] {
+        let e = s.execute("data.placeholder.add", &params).expect_err("refused").to_string();
+        assert!(e.contains("an image field can't go in a table cell or a note"), "{e}");
+        assert!(!e.contains("hyperlink"), "{e}");
+        assert_eq!(cell_texts(&s), ["Who", "Where"], "nothing inserted");
+    }
+    let r = exec(&mut s, "data.placeholder.add", json!({"field": "Photo", "role": "text"}));
+    assert_eq!(r["marker"], "<<Photo>>", "{r}");
+    assert_eq!(cell_texts(&s), ["Who", "<<Photo>>Where"]);
+    exec(&mut s, "data.preview", json!({"record": 1}));
+    assert_eq!(cell_texts(&s), ["Who", "pics/a.pngWhere"], "the text role merges the path");
 }
 
 /// Endnote text is filled too: it is a text inside its story, like a footnote's.

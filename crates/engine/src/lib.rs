@@ -146,7 +146,9 @@ fn next_revision() -> u64 {
 
 impl DocState {
     /// Initialize saved/live document identity, revision, epoch, active default layer, empty history with limit 1,000 and the initial path.
-    pub fn new(doc: Document, path: Option<String>) -> Self {
+    pub fn new(mut doc: Document, path: Option<String>) -> Self {
+        // Alpha Channel contour outlines aren't saved: trace them for the document as opened.
+        crate::cmd::alpha_wrap::sync(&mut doc);
         let active_layer = doc.working_layer();
         let doc = Arc::new(doc);
         let revision = next_revision();
@@ -412,6 +414,10 @@ pub struct Session {
     pub clipboard_origin: f64,
     /// Crash-recovery folder (the app sets it; saving or closing a document removes its entry).
     pub recovery_dir: Option<std::path::PathBuf>,
+    /// This session's number for the background recovery writer, which returns each result to
+    /// the session that queued it.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub(crate) recovery_owner: recovery::Owner,
     /// Copied text with its formatting (a frameless story slice), its plain text, and what pasting
     /// it needs from its document: a copy holding only the stories its anchored text frames show
     /// (and theirs) and the graphics the text and those stories place.
@@ -477,6 +483,7 @@ impl Session {
             clipboard: None,
             clipboard_origin: 0.0,
             recovery_dir: None,
+            recovery_owner: recovery::Owner::new(),
             text_clipboard: None,
             link_checks: Default::default(),
             ui_requests: vec![],
@@ -686,8 +693,8 @@ impl Session {
             // A table command that takes `story` and `table` acts on the table the call names, so
             // the selection doesn't matter: with nothing selected, the caret outside a table, or
             // selected rows the command can't act on, `{"table": 3}` still runs.
-            if let Some(table) = cmd::named_table(spec, params)
-                && cmd::has_doc(self).is_ok()
+            if cmd::has_doc(self).is_ok()
+                && let Some(table) = cmd::named_table(spec, params, id)?
             {
                 let story = cmd::table_story(params, id)?;
                 let st = self.doc()?;
@@ -830,6 +837,7 @@ impl Session {
         let r = f(&mut doc, &mut sel)?;
         crate::cmd::sync_placeholders(&mut doc);
         crate::cmd::flex::sync(&mut doc);
+        crate::cmd::alpha_wrap::sync(&mut doc);
         // The generated endnote story first: it replaces its text, anchored frames pasted into it
         // included.
         doc.sync_endnote_story();

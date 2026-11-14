@@ -47,9 +47,9 @@ fn rtl() -> ParaAttrs {
 
 /// The ActualText of every marked-content span on the first page.
 fn actual_texts(bytes: &[u8]) -> Vec<String> {
-    use hayro_syntax::content::ops::TypedInstruction;
-    use hayro_syntax::object::{Dict, Object};
-    let pdf = hayro_syntax::Pdf::new(bytes.to_vec()).expect("parse");
+    use craft_pdf::syntax::content::ops::TypedInstruction;
+    use craft_pdf::syntax::object::{Dict, Object};
+    let pdf = craft_pdf::syntax::Pdf::new(bytes.to_vec()).expect("parse");
     let page = &pdf.pages()[0];
     let mut out = Vec::new();
     let mut ops = page.typed_operations();
@@ -57,7 +57,7 @@ fn actual_texts(bytes: &[u8]) -> Vec<String> {
         let TypedInstruction::BeginMarkedContentWithProperties(op) = op else { continue };
         let Object::Dict(props) = op.1 else { continue };
         let props: &Dict<'_> = props;
-        let Some(s) = props.get::<hayro_syntax::object::String>(b"ActualText") else { continue };
+        let Some(s) = props.get::<craft_pdf::syntax::object::String>(b"ActualText") else { continue };
         let units: Vec<u16> = s.as_bytes().as_chunks::<2>().0.iter().map(|&b| u16::from_be_bytes(b)).collect();
         let text = String::from_utf16(&units).expect("UTF-16");
         out.push(text.trim_start_matches('\u{FEFF}').to_string());
@@ -112,7 +112,7 @@ fn glyph_origins(bytes: &[u8]) -> Vec<kurbo::Point> {
         fn pop_clip_path(&mut self) {}
         fn pop_transparency_group(&mut self) {}
     }
-    let pdf = hayro_syntax::Pdf::new(bytes.to_vec()).expect("parse");
+    let pdf = craft_pdf::syntax::Pdf::new(bytes.to_vec()).expect("parse");
     let cache = InterpreterCache::new();
     let mut ctx = Context::new(kurbo::Affine::IDENTITY, kurbo::Rect::new(0.0, 0.0, 1.0, 1.0), &cache, pdf.xref(), InterpreterSettings::default());
     let mut rec = Rec(Vec::new());
@@ -183,9 +183,9 @@ fn arabic_ligatures_extract_their_letters() {
 /// How many marked-content sections the first page opens while an ActualText span is open.
 /// Viewers such as poppler drop the text before an ActualText span nested in another.
 fn opened_inside_actual_text(bytes: &[u8]) -> usize {
-    use hayro_syntax::content::ops::TypedInstruction;
-    use hayro_syntax::object::Object;
-    let pdf = hayro_syntax::Pdf::new(bytes.to_vec()).expect("parse");
+    use craft_pdf::syntax::content::ops::TypedInstruction;
+    use craft_pdf::syntax::object::Object;
+    let pdf = craft_pdf::syntax::Pdf::new(bytes.to_vec()).expect("parse");
     let page = &pdf.pages()[0];
     let (mut open, mut nested) = (Vec::new(), 0);
     let mut ops = page.typed_operations();
