@@ -430,5 +430,5 @@ fn an_unlinked_image_is_embedded_past_the_embed_limit() {
     let (out, warnings) = crate::export::export_with_limit(&d, &ExportOptions { embed_images: true }, 100);
     assert!(warnings.is_empty(), "{warnings:?}");
     let back = import_idml_with(&out, &|_: &str| None).unwrap();
-    assert!(!back.assets.is_empty() && back.assets.values().all(|a| a.data.as_slice() == bytes.as_slice()));
+    assert!(!back.assets.is_empty() && back.assets.values().all(|a| a.data.load().unwrap().as_slice() == bytes.as_slice()));
 }
