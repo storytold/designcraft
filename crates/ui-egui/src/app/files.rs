@@ -16,27 +16,90 @@ impl DesignApp {
             open(request);
             return Ok(Value::Null);
         }
-        let bound = if purpose == "place" { file_dialogs::Bound::Document } else { file_dialogs::Bound::App };
+        // File › Place takes several files: they load the place cursor in the order chosen.
+        if purpose == "place" {
+            return self.ask_open_many(purpose, file_dialogs::Bound::Document, |app, paths| match paths.as_slice() {
+                [path] => app.open_picked("place", path.clone()),
+                _ => app.place_paths(paths).map(|()| Value::Null),
+            });
+        }
         let purpose_owned = purpose.to_string();
-        self.ask_open(purpose, bound, move |app, path| app.open_picked(&purpose_owned, path))
+        self.ask_open(purpose, file_dialogs::Bound::App, move |app, path| app.open_picked(&purpose_owned, path))
     }
 
     /// Open (`open`) or place (`place`) the file at `path`, chosen in a dialog or passed by a script.
     pub(crate) fn open_picked(&mut self, purpose: &str, path: String) -> Result<Value, String> {
-        // Image Import Options: a multi-page PDF asks which page.
-        if purpose == "place" && path.to_ascii_lowercase().ends_with(".pdf") {
-            let target = self.session.active().map(|d| d.uid);
-            let pages = self.services.read.as_mut().and_then(|r| r(&path).ok()).and_then(|b| designcraft_render::pdf_page_count(&b)).unwrap_or(1);
-            if pages > 1 {
-                self.ui.dialog = Some(dialogs::Dialog::new("pdfImport", json!({"path": path, "page": "1", "pages": pages, "target": target})));
-                return Ok(Value::Null);
-            }
-            return self.place_file(json!({"path": path}));
-        }
         if purpose == "place" {
-            return self.place_file(json!({"path": path}));
+            return self.place_path(&path, false);
         }
         self.open_file("file.open", json!({"path": path}))
+    }
+
+    /// File › Place of the file at `path`, asking a multi-page PDF's Image Import Options first.
+    /// With `append`, an image that loads the cursor queues after the ones already loaded rather
+    /// than replacing them.
+    fn place_path(&mut self, path: &str, append: bool) -> Result<Value, String> {
+        // Image Import Options: a multi-page PDF asks which page.
+        if path.to_ascii_lowercase().ends_with(".pdf") {
+            let target = self.session.active().map(|d| d.uid);
+            let pages = self.services.read.as_mut().and_then(|r| r(path).ok()).and_then(|b| designcraft_render::pdf_page_count(&b)).unwrap_or(1);
+            if pages > 1 {
+                self.ui.dialog =
+                    Some(dialogs::Dialog::new("pdfImport", json!({"path": path, "page": "1", "pages": pages, "target": target, "append": append})));
+                return Ok(Value::Null);
+            }
+        }
+        self.place_file(if append { json!({"path": path, "append": true}) } else { json!({"path": path}) })
+    }
+
+    /// Place an ordered batch of files, as File › Place with several chosen. A multi-page PDF's
+    /// Import Options pause the batch: the files after it wait in the dialog and carry on when it
+    /// is confirmed, and Cancel ends the batch. Any other dialog (an alert, one already open) stops
+    /// it, as the inbox's does. Every file that loads the cursor adds to what the earlier ones
+    /// loaded, in the order the files were chosen (images in a row load together, before the file
+    /// after them). A file that can't be placed gets an alert and stops the batch; its error is
+    /// returned, so automation doesn't carry on as if the batch had loaded.
+    pub(crate) fn place_paths(&mut self, paths: Vec<String>) -> Result<(), String> {
+        let mut images = Vec::new();
+        // Several files go to the place cursor, even a PDF first with a frame selected.
+        let batch = paths.len() > 1;
+        // Images already in the place cursor stay: the batch queues after them.
+        let mut loaded = self.session.loaded.is_some();
+        let mut paths = paths.into_iter();
+        loop {
+            // `None` at the end loads the images left.
+            let path = paths.next();
+            if let Some(p) = &path
+                && is_cursor_image(p)
+            {
+                images.push(json!({"path": p}));
+                continue;
+            }
+            if path.is_none() && images.is_empty() {
+                return Ok(());
+            }
+            if self.ui.dialog.is_some() {
+                self.status(crate::i18n::tr(&self.ui.language, "Place cancelled while a dialog is open"));
+                return Ok(());
+            }
+            if !images.is_empty() {
+                let r = self.load_place_cursor(std::mem::take(&mut images), loaded)?;
+                loaded |= r.get("loaded").and_then(Value::as_bool) == Some(true);
+            }
+            let Some(p) = path else { return Ok(()) };
+            let r = self.place_path(&p, batch || loaded)?;
+            loaded |= r.get("loaded").and_then(Value::as_bool) == Some(true);
+            if let Some(d) = self.ui.dialog.as_mut().filter(|d| d.id == "pdfImport") {
+                d.fields.insert(dialogs::PDF_IMPORT_REST.into(), json!(paths.collect::<Vec<_>>()));
+                return Ok(());
+            }
+        }
+    }
+
+    /// `place.load` of `files` (`{path}` or `{name, base64}` each), queued after the images
+    /// already loaded when `append`. An image that can't be read gets an alert, as a placed one does.
+    fn load_place_cursor(&mut self, files: Vec<Value>, append: bool) -> Result<Value, String> {
+        self.open_named_file("place.load", json!({"files": files, "append": append}), String::new())
     }
 
     /// Load Styles: ask the host for a document whose styles to load; `kind` is `paragraph`,
@@ -102,14 +165,28 @@ impl DesignApp {
     }
 
     pub(crate) fn cancel_pdf_import(&mut self) {
-        self.pending_pdf = None;
+        self.release_pending_pdf();
     }
 
-    pub(crate) fn confirm_pdf_import(&mut self, page: u64, crop: String) -> Result<Value, String> {
+    fn release_pending_pdf(&mut self) {
+        self.pending_pdf = None;
+        self.pending_pdf_rest = Vec::new();
+    }
+
+    /// Import Options confirmed for the delivered PDF; a placed one is added to the place cursor
+    /// when `append`, so the images loaded before it stay. The files of its batch that waited for
+    /// the options carry on; if it can't be placed, the batch ends, as a native one does.
+    pub(crate) fn confirm_pdf_import(&mut self, page: u64, crop: String, append: bool) -> Result<Value, String> {
         let file = self.pending_pdf.take().ok_or("PDF import cancelled: no pending file")?;
+        let rest = std::mem::take(&mut self.pending_pdf_rest);
         self.activate_import_target(&file.request)?;
-        let params = json!({"name": file.name, "base64": designcraft_engine::cmd::base64_encode(&file.bytes), "pdfPage": page, "pdfCrop": crop});
-        if file.request.purpose == "place" { self.place_file(params) } else { self.open_file("file.place", params) }
+        let params = json!({"name": file.name, "base64": designcraft_engine::cmd::base64_encode(&file.bytes), "pdfPage": page, "pdfCrop": crop, "append": append});
+        if file.request.purpose != "place" {
+            return self.open_file("file.place", params);
+        }
+        let placed = self.place_file(params)?;
+        self.import_delivered(rest, true);
+        Ok(placed)
     }
 
     /// A single unresolved PDF owns its bytes. Later deliveries cancel explicitly rather than
@@ -120,7 +197,7 @@ impl DesignApp {
             let owns_dialog =
                 self.ui.dialog.as_ref().is_some_and(|d| d.id == "pdfImport" && d.fields.get("async").and_then(Value::as_bool) == Some(true));
             if !target_exists || !owns_dialog {
-                self.pending_pdf = None;
+                self.release_pending_pdf();
                 if !target_exists {
                     if owns_dialog {
                         self.ui.dialog = None;
@@ -132,9 +209,57 @@ impl DesignApp {
         let Some(inbox) = self.services.inbox.clone() else { return };
         let files = std::mem::take(&mut *inbox.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
         let files = self.relink_from_inbox(files);
-        for file in files {
+        // A browser delivers one Place's files together. Several go to the place cursor, even a
+        // PDF first with a frame selected, as a native batch's do.
+        let batch = files.iter().filter(|f| f.request.purpose == "place").count() > 1;
+        self.import_delivered(files, batch);
+    }
+
+    /// Imports `files` in the order they came; placed ones are added to the place cursor when
+    /// `append`, and after the first that loads it. A multi-page PDF's Import Options pause a
+    /// Place: the files after it wait with it and carry on when it is confirmed, and Cancel ends
+    /// the batch.
+    fn import_delivered(&mut self, files: Vec<ImportedFile>, mut append: bool) {
+        let cursor_image = |file: &ImportedFile| {
+            matches!(file.request.purpose.as_str(), "place" | "drop")
+                && !file.name.to_ascii_lowercase().ends_with(".pdf")
+                && (is_cursor_image(&file.name) || designcraft_render::image_size(&file.bytes).is_some())
+        };
+        // Consecutive images for the same document load the place cursor together.
+        let mut files = files.into_iter().peekable();
+        while let Some(file) = files.next() {
             if file.request.purpose == "shortcuts" {
                 shortcut_import::import_delivered(self, &file.bytes);
+                continue;
+            }
+            let placing = matches!(file.request.purpose.as_str(), "place" | "drop");
+            let mut group = vec![];
+            if cursor_image(&file) {
+                while let Some(next) =
+                    files.next_if(|n| cursor_image(n) && n.request.target == file.request.target && n.request.purpose == file.request.purpose)
+                {
+                    group.push(next);
+                }
+            }
+            // Several images, or one dropped (a browser drop has no position to place it at or
+            // frame to fill): into the place cursor.
+            if !group.is_empty() || (file.request.purpose == "drop" && cursor_image(&file)) {
+                if self.ui.dialog.is_some() {
+                    self.status(crate::i18n::tr(&self.ui.language, "Image import cancelled while a dialog is open"));
+                    continue;
+                }
+                if self.activate_import_target(&file.request).is_err() {
+                    continue;
+                }
+                let sources: Vec<_> = std::iter::once(file)
+                    .chain(group)
+                    .map(|f| json!({"name": f.name, "base64": designcraft_engine::cmd::base64_encode(&f.bytes)}))
+                    .collect();
+                // They queue after images already in the cursor, as a native batch's do.
+                let queue_after = append || self.session.loaded.is_some();
+                if self.load_place_cursor(sources, queue_after).is_ok() {
+                    append = true;
+                }
                 continue;
             }
             if self.ui.dialog.is_some() {
@@ -145,14 +270,23 @@ impl DesignApp {
                 continue;
             }
             let name = file.name.clone();
-            if let Err(e) = self.import_file(file) {
-                self.status(format!("{name}: {e}"));
+            let target = file.request.target;
+            match self.import_file(file, append) {
+                Ok(_) if placing => append = true,
+                Ok(_) => {}
+                Err(e) => self.status(format!("{name}: {e}")),
+            }
+            if placing && self.pending_pdf.is_some() {
+                while let Some(next) = files.next_if(|n| n.request.purpose == "place" && n.request.target == target) {
+                    self.pending_pdf_rest.push(next);
+                }
             }
         }
     }
 
-    fn import_file(&mut self, file: ImportedFile) -> Result<Value, String> {
-        let lower = file.name.to_ascii_lowercase();
+    /// Imports `file`; a placed one is added to the place cursor when `append`.
+    fn import_file(&mut self, file: ImportedFile, append: bool) -> Result<Value, String> {
+        let format = craft_file_formats::detect(&file.name, &file.bytes);
         if let Some(kind) = file.request.purpose.strip_prefix("styles") {
             self.activate_import_target(&file.request)?;
             let mut params = json!({"name": file.name, "base64": designcraft_engine::cmd::base64_encode(&file.bytes)});
@@ -164,26 +298,31 @@ impl DesignApp {
             return self.run("style.load", params);
         }
         let layout = opens_as_document(&file.name)
-            || (std::path::Path::new(&file.name).extension().is_none() && designcraft_engine::cmd::is_document(&file.bytes));
-        let place =
-            file.request.purpose == "place" || (matches!(file.request.purpose.as_str(), "drop" | "open") && !layout && !lower.ends_with(".ase"));
-        if place || lower.ends_with(".ase") || file.request.purpose == "swatches" {
+            || matches!(
+                format,
+                Some(craft_file_formats::Format::DesignCraft | craft_file_formats::Format::DesignCraftJson | craft_file_formats::Format::Idml)
+            );
+        let place = file.request.purpose == "place"
+            || (matches!(file.request.purpose.as_str(), "drop" | "open") && !layout && format != Some(craft_file_formats::Format::Ase));
+        if place || format == Some(craft_file_formats::Format::Ase) || file.request.purpose == "swatches" {
             self.activate_import_target(&file.request)?;
         }
-        if place && lower.ends_with(".pdf") {
+        if place && craft_file_formats::detect(&file.name, &file.bytes) == Some(craft_file_formats::Format::Pdf) {
             let pages = designcraft_render::pdf_page_count(&file.bytes).unwrap_or(1);
             if pages > 1 {
-                self.ui.dialog =
-                    Some(dialogs::Dialog::new("pdfImport", json!({"async": true, "name": file.name.clone(), "page": "1", "pages": pages})));
+                self.ui.dialog = Some(dialogs::Dialog::new(
+                    "pdfImport",
+                    json!({"async": true, "name": file.name.clone(), "page": "1", "pages": pages, "append": append}),
+                ));
                 self.pending_pdf = Some(file);
                 return Ok(Value::Null);
             }
         }
         let b64 = designcraft_engine::cmd::base64_encode(&file.bytes);
-        if lower.ends_with(".ase") || file.request.purpose == "swatches" {
+        if format == Some(craft_file_formats::Format::Ase) || file.request.purpose == "swatches" {
             self.run("swatch.load", json!({"base64": b64}))
         } else if file.request.purpose == "place" {
-            self.place_file(json!({"name": file.name, "base64": b64}))
+            self.place_file(json!({"name": file.name, "base64": b64, "append": append}))
         } else if place {
             self.open_file("file.place", json!({"name": file.name, "base64": b64}))
         } else {
@@ -192,9 +331,9 @@ impl DesignApp {
     }
 
     /// A file dropped on the window: documents open, the swatches in a swatch exchange (.ase) file
-    /// are loaded, and anything else is placed on the spread in view (a parent spread while parents
-    /// are being edited). A file without an extension opens when its content is a DesignCraft or
-    /// IDML document.
+    /// are loaded, an image loads into the place cursor, and anything else is placed on the spread
+    /// in view (a parent spread while parents are being edited). A file without an extension
+    /// opens when its content is a DesignCraft or IDML document.
     pub fn open_dropped(&mut self, path: &str) -> Result<Value, String> {
         self.open_dropped_at(path, None)
     }
@@ -203,27 +342,59 @@ impl DesignApp {
     /// window's coordinates.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn open_dropped_files(&mut self, files: &[egui::DroppedFileHandle], pointer: Option<egui::Pos2>) {
+        let drops = files.iter().map(|f| f.path().to_string_lossy().to_string()).filter(|p| !p.is_empty()).map(|p| (p, pointer)).collect();
+        self.open_dropped_batch(drops);
+    }
+
+    /// Files dropped on the window together, each with the pointer it was dropped at, handled in
+    /// the order they came. Each that isn't an image opens or is placed as
+    /// [`Self::open_dropped_at`] does at its own pointer. One image is dropped as that does too
+    /// (filling the frame under the pointer, else placed where it lands, or queued when the place cursor holds images); several load the place
+    /// cursor, each run of them where it came in the order, after any images it already holds,
+    /// whatever is under the pointer: click to place them one by one, drag with the arrow keys for
+    /// a grid. The rest of the drop is cancelled once a file opens a dialog (a multi-page PDF's
+    /// Import Options, an alert): unlike File › Place with several chosen, nothing waits for a
+    /// PDF's options to be confirmed.
+    pub fn open_dropped_batch(&mut self, drops: Vec<(String, Option<egui::Pos2>)>) {
+        let several = drops.iter().filter(|(p, _)| is_cursor_image(p)).count() > 1;
+        // Only the first graphic of a drop fills the frame under the pointer.
         let mut frame_free = true;
-        for f in files {
-            let p = f.path().to_string_lossy().to_string();
-            if !p.is_empty() {
-                let _ = self.place_dropped(&p, pointer, &mut frame_free);
+        let mut images = Vec::new();
+        // `None` at the end flushes the images left.
+        for drop in drops.into_iter().map(Some).chain([None]) {
+            if several
+                && let Some((path, _)) = &drop
+                && is_cursor_image(path)
+            {
+                images.push(path.clone());
+                continue;
             }
+            // A file that can't be placed has its alert, which cancels the rest below.
+            if !images.is_empty() {
+                let _ = self.place_paths(std::mem::take(&mut images));
+            }
+            let Some((path, pointer)) = drop else { break };
+            if self.ui.dialog.is_some() {
+                self.status(crate::i18n::tr(&self.ui.language, "Place cancelled while a dialog is open"));
+                return;
+            }
+            let _ = self.place_dropped(&path, pointer, &mut frame_free);
         }
     }
 
     /// [`Self::open_dropped`] at the pointer: a graphic dropped on an empty or graphic frame fills
-    /// it, elsewhere its top left lands where the file was dropped on the canvas; text goes to a
-    /// new frame on the document page there.
+    /// it; elsewhere an image is placed where it lands (or queued when the place cursor holds images), and another graphic's top left lands
+    /// where the file was dropped on the canvas; text goes to a new frame on the document page there.
     pub fn open_dropped_at(&mut self, path: &str, pointer: Option<egui::Pos2>) -> Result<Value, String> {
         self.place_dropped(path, pointer, &mut true)
     }
 
     /// [`Self::open_dropped_at`] for one file of a drop. `frame_free` is whether the frame under the
-    /// pointer can still be filled: the first graphic of a drop takes it (and clears the flag), so
-    /// the files after it land at the pointer instead of replacing that graphic.
+    /// pointer can still be filled: the first graphic of a drop takes it, or a frame of its own at
+    /// the pointer when there is none, and clears the flag, so the files after it land at the
+    /// pointer instead of replacing that graphic.
     pub(crate) fn place_dropped(&mut self, path: &str, pointer: Option<egui::Pos2>, frame_free: &mut bool) -> Result<Value, String> {
-        if path.to_ascii_lowercase().ends_with(".ase") {
+        if craft_file_formats::detect(path, &[]) == Some(craft_file_formats::Format::Ase) {
             return self.run("swatch.load", json!({"path": path}));
         }
         let document = opens_as_document(path)
@@ -233,13 +404,24 @@ impl DesignApp {
         if document {
             return self.open_file("file.open", json!({"path": path}));
         }
-        let mut params = json!({"path": path});
-        // A graphic dropped on an empty or graphic frame fills it, as File > Place does. Text keeps
+        // A graphic dropped on a frame that takes one fills it, as File > Place does. Text keeps
         // getting a frame of its own, so it never replaces the image in a graphic frame.
-        let frame = if *frame_free && !designcraft_textimport::is_text_file(path) { canvas::drop_frame(self, pointer) } else { None };
-        if let (Some(frame), Some(o)) = (frame, params.as_object_mut()) {
-            o.insert("frame".into(), json!(frame.0));
+        let is_text = designcraft_textimport::is_text_file(path);
+        let frame = if *frame_free && !is_text { canvas::drop_frame(self, pointer) } else { None };
+        if let Some(frame) = frame {
+            let placed = self.open_file("file.place", json!({"path": path, "frame": frame.0}));
+            if placed.is_ok() {
+                *frame_free = false;
+            }
+            return placed;
         }
+        // A single image dropped anywhere else is placed where it lands, unless the place cursor
+        // already holds images: it then queues after them. Several images load the cursor in
+        // `open_dropped_batch`.
+        if is_cursor_image(path) && self.session.loaded.is_some() {
+            return self.open_file("place.load", json!({"path": path, "append": true}));
+        }
+        let mut params = json!({"path": path});
         if let (Some((sr, at)), Some(o)) = (canvas::drop_point(self, pointer), params.as_object_mut()) {
             o.insert("spread".into(), serde_json::to_value(sr).unwrap_or(Value::Null));
             o.insert("x".into(), json!(at.x));
@@ -250,7 +432,9 @@ impl DesignApp {
             }
         }
         let placed = self.open_file("file.place", params);
-        if frame.is_some() && placed.is_ok() {
+        // A graphic placed in a frame of its own (dropped on a line or on the page) is under the
+        // pointer too, so the next file of the drop must not replace it (#2290).
+        if placed.is_ok() && !is_text {
             *frame_free = false;
         }
         placed
@@ -296,7 +480,7 @@ impl DesignApp {
     pub fn open_named_file(&mut self, cmd: &str, params: Value, file: String) -> Result<Value, String> {
         let r = self.run(cmd, params);
         if let Err(e) = &r {
-            let title = if cmd == "file.place" { "Can't Place the File" } else { "Can't Open the File" };
+            let title = if cmd == "file.place" || cmd == "place.load" { "Can't Place the File" } else { "Can't Open the File" };
             if self.ui.dialog.as_ref().is_some_and(|d| d.id == "findChange") {
                 self.session.reset_find_scope();
             }
@@ -390,6 +574,67 @@ impl DesignApp {
         rest
     }
 
+    /// Applies what the background checks of linked files found, shows the notice about images
+    /// that will be saved as links once, and repaints at a low rate while checks run so the
+    /// Links panel's statuses fill in.
+    pub(crate) fn poll_link_checks(&mut self, ctx: &egui::Context) {
+        // Running any command ends a text composition in progress: ask only while files are checked.
+        if !self.session.active().is_some_and(|st| st.links.checking()) && self.waiting_save.is_none() {
+            return;
+        }
+        let Ok(progress) = self.session.execute("links.progress", &json!({})) else { return };
+        if let Some(notice) = progress["notice"].as_str() {
+            self.status(notice.to_string());
+        }
+        if progress["checking"].as_bool() == Some(true) || self.waiting_save.is_some() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(400));
+        }
+        let now = self.waiting_save.is_some() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+        self.run_waiting_save(now);
+    }
+
+    /// The status line while a save waits for the checks of linked files ([`crate::menus::save_when_checked`]).
+    pub(crate) fn show_save_wait(&mut self, remaining: usize) {
+        self.status(crate::i18n::tr(&self.ui.language, "Checking {n} linked images…").replace("{n}", &remaining.max(1).to_string()));
+    }
+
+    /// Run the save waiting for the checks of its document's linked files once they are done, or
+    /// at once when `now` (Esc). It saves its own document, which is made active for that and
+    /// the active one again after. A document closed meanwhile drops it.
+    pub(crate) fn run_waiting_save(&mut self, now: bool) {
+        let Some(uid) = self.waiting_save.as_ref().map(|w| w.uid) else { return };
+        let Some(st) = self.session.documents().iter().find(|d| d.uid == uid) else {
+            self.waiting_save = None;
+            return;
+        };
+        if st.links.checking() && !now {
+            let remaining = st.links.remaining();
+            self.show_save_wait(remaining);
+            return;
+        }
+        let Some(waiting) = self.waiting_save.take() else { return };
+        let active = self.session.active().map(|d| d.uid);
+        let index_of = |app: &Self, uid: u64| app.session.documents().iter().position(|d| d.uid == uid);
+        if active != Some(uid)
+            && let Some(i) = index_of(self, uid)
+            && let Err(e) = self.run("file.activate", json!({"index": i}))
+        {
+            self.status_error("Save", e);
+            return;
+        }
+        // The count of files left goes; what the save reports stays.
+        self.status(String::new());
+        let saved = (waiting.save)(self);
+        if active != Some(uid)
+            && let Some(i) = active.and_then(|a| index_of(self, a))
+        {
+            let _ = self.run("file.activate", json!({"index": i}));
+        }
+        if let Err(e) = saved {
+            self.status_error("Save", e);
+        }
+    }
+
     /// Deliver window actions to the host without persisting them in UI preferences.
     pub(crate) fn flush_window_commands(&mut self, ctx: &egui::Context) {
         for command in std::mem::take(&mut self.pending_window_commands) {
@@ -403,11 +648,21 @@ fn file_name_of(name: &str) -> &str {
     name.rsplit(['/', '\\']).next().unwrap_or(name)
 }
 
+/// Graphics that can wait in the place cursor, several at a time: raster images, SVG, PSD and
+/// EPS. A PDF can't (it may ask which page), nor can text, media or documents.
+pub(crate) fn is_cursor_image(name: &str) -> bool {
+    std::path::Path::new(name).extension().and_then(|e| e.to_str()).is_some_and(|e| {
+        matches!(e.to_ascii_lowercase().as_str(), "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "tif" | "tiff" | "svg" | "psd" | "eps")
+    })
+}
+
 /// Files that open as documents (when dropped or picked) rather than being placed: DesignCraft,
 /// IDML, and InDesign documents and templates (converted to IDML on open).
 pub fn opens_as_document(name: &str) -> bool {
-    let n = name.to_ascii_lowercase();
-    [".designcraft", ".idml", ".indd", ".indt"].iter().any(|ext| n.ends_with(ext))
+    matches!(
+        craft_file_formats::detect(name, &[]),
+        Some(craft_file_formats::Format::DesignCraft | craft_file_formats::Format::Idml | craft_file_formats::Format::Indd)
+    )
 }
 
 #[cfg(test)]
@@ -539,7 +794,9 @@ pub(crate) mod browser_import_tests {
                 let a = std::sync::Arc::make_mut(d.assets.get_mut(&aid).unwrap());
                 a.link = Some("/Users/someone/Links/a.svg".into());
                 a.name = "a.svg".into();
-                a.data = std::sync::Arc::new(Vec::new());
+                a.data = designcraft_doc::AssetData::embedded(Vec::new());
+                // No copy of its own: a link whose file wasn't read.
+                a.link_hash = None;
                 Ok(())
             })
             .unwrap();
@@ -584,7 +841,7 @@ pub(crate) mod browser_import_tests {
         }
         app.drain_inbox();
         let a = &app.session.doc().unwrap().doc.assets[&aid];
-        assert_eq!(*a.data, image(), "the Links folder's file: {}", app.ui.status);
+        assert_eq!(a.data.resident().as_deref(), Some(&image()), "the Links folder's file: {}", app.ui.status);
     }
 
     /// The web build relinks from files it is handed: chosen with Relink… (one graphic) or
@@ -602,13 +859,15 @@ pub(crate) mod browser_import_tests {
         deliver(&mut app, request, "a.svg", image());
         assert!(has_data(&app), "{}", app.ui.status);
         assert_eq!(app.session.doc().unwrap().doc.assets[&aid].link.as_deref(), Some("/Users/someone/Links/a.svg"));
-        // A dropped image is placed, as ever, even when it is named like a missing graphic.
+        // A dropped image goes to the place cursor, as any does, even when it is named like a
+        // missing graphic.
         make_missing(&mut app);
         app.run("edit.deselectAll", json!({})).unwrap();
         let request = app.import_request("drop");
         deliver(&mut app, request, "A.SVG", image());
         assert!(!has_data(&app), "the dropped file doesn't relink");
-        assert_eq!(items(&app), n + 1, "it is placed");
+        assert!(app.session.loaded.is_some(), "it is in the place cursor");
+        assert_eq!(items(&app), n, "nothing placed yet");
         // Relink… for one graphic: the chosen file, whatever its name.
         make_missing(&mut app);
         let request = app.import_request(&format!("relink:{}", aid.0));
@@ -785,7 +1044,7 @@ pub(crate) mod browser_import_tests {
         assert_eq!(app.session.active_index(), Some(0));
         let asset = app.session.doc().unwrap().doc.assets.values().next().unwrap();
         assert_eq!(asset.page, 1);
-        assert_eq!(*asset.data, bytes);
+        assert_eq!(**asset.data.embedded_bytes().unwrap(), bytes);
         assert!(app.pending_pdf.is_none());
         assert!(app.session.documents()[1].doc.assets.is_empty());
         app.run("place.drop", json!({"x": 36, "y": 36})).unwrap();
@@ -850,7 +1109,7 @@ pub(crate) mod browser_import_tests {
             app.ui.dialog.as_mut().unwrap().fields.insert("page".into(), json!(page.to_string()));
             // The native dialog clamps zero to one; positive invalid pages must fail.
             if page == 0 {
-                assert!(app.confirm_pdf_import(page, "crop".into()).is_err());
+                assert!(app.confirm_pdf_import(page, "crop".into(), false).is_err());
             } else {
                 assert!(dialogs::confirm(&mut app).is_err());
             }
@@ -943,6 +1202,449 @@ pub(crate) mod browser_import_tests {
         app.run("file.new", json!({})).unwrap();
         assert!(dialogs::confirm(&mut app).is_err());
         assert!(app.pending_pdf.is_none());
+        assert!(app.session.doc().unwrap().doc.assets.is_empty());
+    }
+
+    fn png(v: u8) -> Vec<u8> {
+        designcraft_render::Rendered { width: 10, height: 10, pixels: vec![v; 400] }.to_png()
+    }
+
+    /// The names of the images in the place cursor, the one a click places first.
+    fn loaded_names(app: &DesignApp) -> Vec<String> {
+        let doc = &app.session.doc().unwrap().doc;
+        app.session.loaded.iter().chain(app.session.loaded_queue.iter()).map(|g| doc.assets[&g.asset].name.clone()).collect()
+    }
+
+    #[test]
+    fn multi_image_inbox_loads_one_queue_on_its_original_document() {
+        let mut app = app();
+        let request = app.import_request("place");
+        app.run("file.new", json!({"title": "B"})).unwrap();
+        for i in 0..3 {
+            app.services.inbox.as_ref().unwrap().lock().unwrap().push(ImportedFile {
+                request: request.clone(),
+                name: format!("{i}.png"),
+                bytes: png(200),
+            });
+        }
+        app.drain_inbox();
+        assert_eq!(app.session.doc().unwrap().uid, request.target.unwrap());
+        assert_eq!(app.session.tool_id(), "placeGun");
+        assert_eq!(app.session.loaded_queue.len(), 2);
+        assert!(app.session.documents()[1].doc.assets.is_empty());
+        app.run("app.contactSheetDialog", json!({})).unwrap();
+        let result = dialogs::confirm(&mut app).unwrap();
+        assert_eq!(result["images"], 3);
+        assert_eq!(result["pages"], 1);
+    }
+
+    /// Files dropped together are placed in the order they came: images around a PDF go into the
+    /// place cursor before and after it, and each adds to the cursor rather than replacing it.
+    #[test]
+    fn inbox_places_images_and_a_pdf_in_their_order_into_one_cursor() {
+        let mut app = app();
+        let request = app.import_request("place");
+        for (name, bytes) in [("a.png", png(200)), ("one.pdf", pdf_pages(1)), ("b.png", png(90))] {
+            app.services.inbox.as_ref().unwrap().lock().unwrap().push(ImportedFile { request: request.clone(), name: name.into(), bytes });
+        }
+        app.drain_inbox();
+        assert_eq!(loaded_names(&app), ["a.png", "one.pdf", "b.png"], "in the order dropped, all in the cursor");
+    }
+
+    /// A browser drop of one image (it has no position or frame under it) loads the place
+    /// cursor; images dropped together load it at once, after what it holds.
+    #[test]
+    fn browser_dropped_images_load_the_place_cursor() {
+        let mut app = app();
+        let request = app.import_request("drop");
+        deliver(&mut app, request, "one.png", png(200));
+        assert_eq!(app.session.tool_id(), "placeGun");
+        assert!(app.session.doc().unwrap().doc.spreads[0].items.is_empty(), "nothing placed yet");
+        let request = app.import_request("drop");
+        for (name, v) in [("two.png", 90), ("three.png", 60)] {
+            app.services.inbox.as_ref().unwrap().lock().unwrap().push(ImportedFile { request: request.clone(), name: name.into(), bytes: png(v) });
+        }
+        app.drain_inbox();
+        assert_eq!(loaded_names(&app), ["one.png", "two.png", "three.png"]);
+    }
+
+    /// A graphic frame, holding a picture and selected, with an empty place cursor; the frame's id.
+    fn select_a_graphic_frame(app: &mut DesignApp) -> u64 {
+        let frame = app.run("frame.create", json!({"rect": [10, 10, 100, 100]})).unwrap()["id"].as_u64().unwrap();
+        let b64 = designcraft_engine::cmd::base64_encode(&image());
+        app.run("file.place", json!({"base64": b64, "name": "old.svg", "frame": frame})).unwrap();
+        app.run("selection.set", json!({"ids": [frame]})).unwrap();
+        assert!(app.session.loaded.is_none());
+        frame
+    }
+
+    fn frame_asset(app: &DesignApp, frame: u64) -> String {
+        let doc = &app.session.active().unwrap().doc;
+        let designcraft_doc::Content::Graphic(g) = &doc.item(designcraft_doc::ItemId(frame)).unwrap().content else { panic!("a graphic") };
+        doc.assets[&g.asset].name.clone()
+    }
+
+    /// A PDF first in a native batch joins the cursor like the rest; the selected frame keeps its
+    /// picture. A PDF alone still fills it.
+    #[test]
+    fn native_batch_starting_with_a_pdf_leaves_the_selected_frame() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = |n: &str| dir.path().join(n).to_string_lossy().to_string();
+        std::fs::write(path("one.pdf"), pdf_pages(1)).unwrap();
+        std::fs::write(path("a.svg"), image()).unwrap();
+        let mut app = app();
+        app.services.read = Some(Box::new(|p| std::fs::read(p).map_err(|e| e.to_string())));
+        let frame = select_a_graphic_frame(&mut app);
+        app.place_paths(vec![path("one.pdf"), path("a.svg")]).unwrap();
+        assert_eq!(loaded_names(&app), ["one.pdf", "a.svg"]);
+        assert_eq!(frame_asset(&app, frame), "old.svg");
+
+        let mut app = self::app();
+        app.services.read = Some(Box::new(|p| std::fs::read(p).map_err(|e| e.to_string())));
+        let frame = select_a_graphic_frame(&mut app);
+        app.place_paths(vec![path("one.pdf")]).unwrap();
+        assert!(app.session.loaded.is_none());
+        assert_eq!(frame_asset(&app, frame), "one.pdf");
+    }
+
+    /// The same for files a host delivers (a browser's Place), with a PDF or an image first.
+    #[test]
+    fn inbox_batch_leaves_the_selected_frame() {
+        for names in [["one.pdf", "a.png"], ["a.png", "one.pdf"]] {
+            let mut app = app();
+            let frame = select_a_graphic_frame(&mut app);
+            let request = app.import_request("place");
+            for name in names {
+                let bytes = if name.ends_with(".pdf") { pdf_pages(1) } else { png(200) };
+                app.services.inbox.as_ref().unwrap().lock().unwrap().push(ImportedFile { request: request.clone(), name: name.into(), bytes });
+            }
+            app.drain_inbox();
+            assert_eq!(loaded_names(&app), names);
+            assert_eq!(frame_asset(&app, frame), "old.svg");
+        }
+        // One file alone still fills it.
+        let mut app = app();
+        let frame = select_a_graphic_frame(&mut app);
+        let request = app.import_request("place");
+        app.services.inbox.as_ref().unwrap().lock().unwrap().push(ImportedFile { request, name: "one.pdf".into(), bytes: pdf_pages(1) });
+        app.drain_inbox();
+        assert_eq!(frame_asset(&app, frame), "one.pdf");
+    }
+
+    /// The files a host delivered after a multi-page PDF wait for its Import Options, through a
+    /// second such PDF too, keep their order and don't replace what the cursor holds.
+    #[test]
+    fn inbox_batch_continues_after_a_multi_page_pdf_is_confirmed() {
+        let mut app = app();
+        let request = app.import_request("place");
+        let files =
+            [("a.png", png(200)), ("three.pdf", pdf_pages(3)), ("b.png", png(90)), ("c.png", png(40)), ("two.pdf", pdf_pages(2)), ("d.png", png(20))];
+        for (name, bytes) in files {
+            app.services.inbox.as_ref().unwrap().lock().unwrap().push(ImportedFile { request: request.clone(), name: name.into(), bytes });
+        }
+        app.drain_inbox();
+        assert_eq!(loaded_names(&app), ["a.png"], "waiting for the first PDF's options");
+        assert_eq!(app.pending_pdf_rest.len(), 4);
+        dialogs::confirm(&mut app).unwrap();
+        assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some("pdfImport"), "the second PDF asks in its turn");
+        assert_eq!(loaded_names(&app), ["a.png", "three.pdf", "b.png", "c.png"]);
+        dialogs::confirm(&mut app).unwrap();
+        assert!(app.ui.dialog.is_none());
+        assert_eq!(loaded_names(&app), ["a.png", "three.pdf", "b.png", "c.png", "two.pdf", "d.png"]);
+        assert!(app.pending_pdf.is_none() && app.pending_pdf_rest.is_empty());
+    }
+
+    /// Cancel ends a delivered batch, as a native one's does: what it loaded stays, the waiting
+    /// files are released.
+    #[test]
+    fn inbox_batch_ends_when_a_multi_page_pdf_is_cancelled() {
+        let mut app = app();
+        let request = app.import_request("place");
+        for (name, bytes) in [("a.png", png(200)), ("three.pdf", pdf_pages(3)), ("b.png", png(90))] {
+            app.services.inbox.as_ref().unwrap().lock().unwrap().push(ImportedFile { request: request.clone(), name: name.into(), bytes });
+        }
+        app.drain_inbox();
+        assert_eq!(app.pending_pdf_rest.len(), 1);
+        dialogs::cancel(&mut app);
+        assert!(app.pending_pdf.is_none() && app.pending_pdf_rest.is_empty());
+        assert_eq!(loaded_names(&app), ["a.png"]);
+    }
+
+    /// A multi-page PDF after images in a native batch asks which page, then queues after them.
+    #[test]
+    fn native_batch_keeps_its_images_when_a_multi_page_pdf_is_confirmed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = |n: &str| dir.path().join(n).to_string_lossy().to_string();
+        std::fs::write(path("a.svg"), image()).unwrap();
+        std::fs::write(path("b.svg"), image()).unwrap();
+        std::fs::write(path("three.pdf"), pdf_pages(3)).unwrap();
+        let mut app = app();
+        app.services.read = Some(Box::new(|p| std::fs::read(p).map_err(|e| e.to_string())));
+        app.place_paths(vec![path("a.svg"), path("b.svg"), path("three.pdf")]).unwrap();
+        assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some("pdfImport"));
+        dialogs::confirm(&mut app).unwrap();
+        assert_eq!(loaded_names(&app), ["a.svg", "b.svg", "three.pdf"]);
+    }
+
+    /// The same for files delivered by the host (a browser's Place): the images stay.
+    #[test]
+    fn inbox_keeps_its_images_when_a_multi_page_pdf_is_confirmed() {
+        let mut app = app();
+        let request = app.import_request("place");
+        for (name, bytes) in [("a.png", png(200)), ("b.png", png(90)), ("three.pdf", pdf_pages(3))] {
+            app.services.inbox.as_ref().unwrap().lock().unwrap().push(ImportedFile { request: request.clone(), name: name.into(), bytes });
+        }
+        app.drain_inbox();
+        assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some("pdfImport"));
+        dialogs::confirm(&mut app).unwrap();
+        assert_eq!(loaded_names(&app), ["a.png", "b.png", "three.pdf"]);
+    }
+
+    /// The files after a multi-page PDF in a native batch wait for its Import Options, through a
+    /// second such PDF too, and keep the order chosen.
+    #[test]
+    fn native_batch_continues_after_a_multi_page_pdf_is_confirmed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = |n: &str| dir.path().join(n).to_string_lossy().to_string();
+        for name in ["a.svg", "b.svg", "c.svg", "d.svg"] {
+            std::fs::write(path(name), image()).unwrap();
+        }
+        std::fs::write(path("three.pdf"), pdf_pages(3)).unwrap();
+        std::fs::write(path("two.pdf"), pdf_pages(2)).unwrap();
+        let mut app = app();
+        app.services.read = Some(Box::new(|p| std::fs::read(p).map_err(|e| e.to_string())));
+        let batch = ["a.svg", "three.pdf", "b.svg", "c.svg", "two.pdf", "d.svg"].map(path).to_vec();
+        app.place_paths(batch).unwrap();
+        assert_eq!(loaded_names(&app), ["a.svg"], "waiting for the first PDF's options");
+        dialogs::confirm(&mut app).unwrap();
+        assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some("pdfImport"), "the second PDF asks in its turn");
+        assert_eq!(loaded_names(&app), ["a.svg", "three.pdf", "b.svg", "c.svg"]);
+        dialogs::confirm(&mut app).unwrap();
+        assert!(app.ui.dialog.is_none());
+        assert_eq!(loaded_names(&app), ["a.svg", "three.pdf", "b.svg", "c.svg", "two.pdf", "d.svg"]);
+    }
+
+    /// A refused page number keeps the rest of the batch waiting; Cancel ends the batch, and what
+    /// loaded before the PDF stays.
+    #[test]
+    fn native_batch_waits_through_a_refused_page_and_ends_at_cancel() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = |n: &str| dir.path().join(n).to_string_lossy().to_string();
+        std::fs::write(path("a.svg"), image()).unwrap();
+        std::fs::write(path("b.svg"), image()).unwrap();
+        std::fs::write(path("three.pdf"), pdf_pages(3)).unwrap();
+        let mut app = app();
+        app.services.read = Some(Box::new(|p| std::fs::read(p).map_err(|e| e.to_string())));
+        let batch = ["a.svg", "three.pdf", "b.svg"].map(path).to_vec();
+        app.place_paths(batch.clone()).unwrap();
+        app.ui.dialog.as_mut().unwrap().fields.insert("page".into(), json!("4-5"));
+        assert!(dialogs::confirm(&mut app).is_err());
+        app.ui.dialog.as_mut().unwrap().fields.insert("page".into(), json!("2"));
+        dialogs::confirm(&mut app).unwrap();
+        assert_eq!(loaded_names(&app), ["a.svg", "three.pdf", "b.svg"]);
+
+        let mut app = self::app();
+        app.services.read = Some(Box::new(|p| std::fs::read(p).map_err(|e| e.to_string())));
+        app.place_paths(batch).unwrap();
+        dialogs::cancel(&mut app);
+        assert!(app.ui.dialog.is_none());
+        assert_eq!(loaded_names(&app), ["a.svg"]);
+    }
+
+    /// A single multi-page PDF still replaces what the cursor holds, as any single Place does.
+    #[test]
+    fn a_single_multi_page_pdf_replaces_the_cursor_when_confirmed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("three.pdf").to_string_lossy().to_string();
+        std::fs::write(&path, pdf_pages(3)).unwrap();
+        let mut app = app();
+        app.services.read = Some(Box::new(|p| std::fs::read(p).map_err(|e| e.to_string())));
+        let b64 = designcraft_engine::cmd::base64_encode(&image());
+        app.run("place.load", json!({"base64": b64, "name": "a.svg"})).unwrap();
+        app.open_picked("place", path).unwrap();
+        dialogs::confirm(&mut app).unwrap();
+        assert_eq!(loaded_names(&app), ["three.pdf"]);
+    }
+
+    #[test]
+    fn batch_cancel_status_uses_the_interface_language() {
+        let mut app = app();
+        app.ui.language = "de".into();
+        app.ui.dialog = Some(dialogs::Dialog::new("alert", json!({"title": "t", "message": "m"})));
+        let request = app.import_request("place");
+        for name in ["one.png", "two.png"] {
+            app.services.inbox.as_ref().unwrap().lock().unwrap().push(ImportedFile { request: request.clone(), name: name.into(), bytes: png(200) });
+        }
+        app.drain_inbox();
+        assert_eq!(app.ui.status, "Bildimport bei geöffnetem Dialog abgebrochen");
+        assert!(app.ui.dialog.is_some());
+        assert!(app.session.loaded.is_none());
+    }
+
+    #[test]
+    fn native_batch_stops_when_a_dialog_is_open_and_appends_to_the_cursor() {
+        let mut app = app();
+        app.ui.dialog = Some(dialogs::Dialog::new("alert", json!({"title": "t", "message": "m"})));
+        let _ = app.place_paths(vec!["one.pdf".into(), "two.png".into()]);
+        assert_eq!(app.ui.status, "Place cancelled while a dialog is open");
+        assert!(app.session.loaded.is_none());
+        app.ui.dialog = None;
+        let b64 = designcraft_engine::cmd::base64_encode(&image());
+        app.run("place.load", json!({"base64": b64, "name": "a.svg"})).unwrap();
+        let first = app.session.loaded.as_ref().unwrap().asset;
+        let files = json!([{"base64": b64, "name": "b.svg"}, {"base64": b64, "name": "c.svg"}]);
+        app.run("place.load", json!({"files": files, "append": true})).unwrap();
+        assert_eq!(app.session.loaded.as_ref().unwrap().asset, first);
+        assert_eq!(app.session.loaded_queue.len(), 2);
+        app.run("place.load", json!({"files": files})).unwrap();
+        assert_eq!(app.session.loaded_queue.len(), 1);
+    }
+
+    /// Images around a single-page PDF load into the cursor in the order they were chosen.
+    #[test]
+    fn native_batch_keeps_the_chosen_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = |n: &str| dir.path().join(n).to_string_lossy().to_string();
+        std::fs::write(path("a.svg"), image()).unwrap();
+        std::fs::write(path("one.pdf"), pdf_pages(1)).unwrap();
+        std::fs::write(path("b.svg"), image()).unwrap();
+        let mut app = app();
+        app.services.read = Some(Box::new(|p| std::fs::read(p).map_err(|e| e.to_string())));
+        app.place_paths(vec![path("a.svg"), path("one.pdf"), path("b.svg")]).unwrap();
+        assert_eq!(loaded_names(&app), ["a.svg", "one.pdf", "b.svg"]);
+        // A second batch queues after what the cursor still holds.
+        std::fs::write(path("c.svg"), image()).unwrap();
+        app.place_paths(vec![path("c.svg"), path("a.svg")]).unwrap();
+        assert_eq!(loaded_names(&app), ["a.svg", "one.pdf", "b.svg", "c.svg", "a.svg"]);
+    }
+
+    /// A PDF later in a batch joins the place cursor with the images around it, even with a
+    /// graphic frame selected: it doesn't fill that frame and leave the others queued.
+    #[test]
+    fn a_pdf_in_a_batch_queues_rather_than_filling_the_selected_frame() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = |n: &str| dir.path().join(n).to_string_lossy().to_string();
+        std::fs::write(path("a.svg"), image()).unwrap();
+        std::fs::write(path("one.pdf"), pdf_pages(1)).unwrap();
+        std::fs::write(path("b.svg"), image()).unwrap();
+        let mut app = app();
+        app.services.read = Some(Box::new(|p| std::fs::read(p).map_err(|e| e.to_string())));
+        let f = designcraft_doc::ItemId(
+            app.run("frame.create", json!({"rect": [200, 200, 300, 300], "content": "graphic"})).unwrap()["id"].as_u64().unwrap(),
+        );
+        assert!(app.session.active().unwrap().selection.items.contains(&f));
+        app.place_paths(vec![path("a.svg"), path("one.pdf"), path("b.svg")]).unwrap();
+        assert_eq!(loaded_names(&app), ["a.svg", "one.pdf", "b.svg"]);
+        let frame = app.session.active().unwrap().doc.item(f).unwrap();
+        assert!(!matches!(frame.content, designcraft_doc::Content::Graphic(_)), "the selected frame stays empty");
+    }
+
+    /// File › Place with several files chosen in the dialog loads them all into the place
+    /// cursor, in the order chosen; with one, it is placed as before.
+    #[test]
+    fn place_dialog_with_several_files_loads_them_all() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths: Vec<std::path::PathBuf> = ["b.svg", "a.svg", "c.svg"].iter().map(|n| dir.path().join(n)).collect();
+        for p in &paths {
+            std::fs::write(p, image()).unwrap();
+        }
+        let mut app = app();
+        let answer = paths.clone();
+        app.answer_dialogs(move |_| craft_dialogs::Answer::Paths(answer.clone()));
+        app.run("app.placeDialog", json!({})).unwrap();
+        app.settle_dialogs();
+        assert_eq!(loaded_names(&app), ["b.svg", "a.svg", "c.svg"]);
+        assert_eq!(app.session.tool_id(), "placeGun");
+        // The same through the command's `paths`, as the control channel gives them.
+        let mut scripted = self::app();
+        let paths: Vec<String> = paths.iter().map(|p| p.to_string_lossy().to_string()).collect();
+        scripted.run("app.placeDialog", json!({"paths": paths})).unwrap();
+        assert_eq!(loaded_names(&scripted), ["b.svg", "a.svg", "c.svg"]);
+    }
+
+    #[test]
+    fn contact_sheet_measures_use_the_document_unit() {
+        let mut app = app();
+        app.run("document.preferences", json!({"horizontalUnits": "millimeters"})).unwrap();
+        app.run("app.contactSheetDialog", json!({})).unwrap();
+        let d = app.ui.dialog.as_ref().unwrap();
+        assert_eq!(d.unit, designcraft_geom::Unit::Millimeters);
+        assert_eq!(d.s("gutter"), "6pt");
+    }
+
+    /// A bare number in a field means the document's ruler unit, whether it was typed or came as
+    /// a number over `ui.dialog.open` or `ui.dialog.set`.
+    #[test]
+    fn contact_sheet_numbers_are_in_the_document_unit_however_they_came() {
+        let frames = |margin: Value, gutter: Value, set: bool| {
+            let mut app = app();
+            app.run("document.preferences", json!({"horizontalUnits": "inches"})).unwrap();
+            let request = app.import_request("place");
+            for name in ["one.png", "two.png"] {
+                app.services.inbox.as_ref().unwrap().lock().unwrap().push(ImportedFile {
+                    request: request.clone(),
+                    name: name.into(),
+                    bytes: png(200),
+                });
+            }
+            app.drain_inbox();
+            let fields = json!({"columns": 2, "rows": 1, "gutter": gutter, "margin": margin});
+            app.ui.dialog = Some(dialogs::contact_sheet_dialog(&app, if set { json!({"columns": 2, "rows": 1}) } else { fields.clone() }));
+            if set {
+                let d = app.ui.dialog.as_mut().unwrap();
+                d.set_field("gutter", fields["gutter"].clone());
+                d.set_field("margin", fields["margin"].clone());
+            }
+            dialogs::confirm(&mut app).unwrap();
+            let doc = &app.session.doc().unwrap().doc;
+            doc.spreads.last().unwrap().items.iter().map(|item| item.bounds()).collect::<Vec<_>>()
+        };
+        let typed = frames(json!("1"), json!("0.5"), false);
+        assert_eq!(typed.len(), 2);
+        assert_eq!(frames(json!(1), json!(0.5), false), typed, "numbers over ui.dialog.open");
+        assert_eq!(frames(json!(1), json!(0.5), true), typed, "numbers over ui.dialog.set");
+        assert_eq!(frames(json!("72pt"), json!("36pt"), false), typed, "an explicit unit still says what it means");
+    }
+
+    #[test]
+    fn contact_sheet_validation_preserves_fields_and_pending_images() {
+        let mut app = app();
+        let request = app.import_request("place");
+        deliver(&mut app, request, "image.png", png(200));
+        app.run("app.contactSheetDialog", json!({})).unwrap();
+        let before = app.session.doc().unwrap().doc.clone();
+        for (field, value) in [("rows", "bad"), ("rows", "0"), ("rows", "4"), ("margin", "999999pt")] {
+            app.ui.dialog.as_mut().unwrap().fields.insert(field.into(), json!(value));
+            if field == "rows" && value == "4" {
+                continue;
+            }
+            assert!(dialogs::confirm(&mut app).is_err());
+            let dialog = app.ui.dialog.as_ref().unwrap();
+            assert_eq!(dialog.s(field), value);
+            assert!(!dialog.s("status").is_empty());
+            assert!(std::sync::Arc::ptr_eq(&before, &app.session.doc().unwrap().doc));
+            assert!(app.session.loaded.is_some());
+        }
+        app.ui.dialog.as_mut().unwrap().fields.insert("margin".into(), json!("36pt"));
+        assert!(dialogs::confirm(&mut app).is_ok());
+        assert!(app.ui.dialog.is_none());
+    }
+
+    #[test]
+    fn multi_image_inbox_cancels_when_original_document_closed() {
+        let mut app = app();
+        let request = app.import_request("place");
+        app.run("file.new", json!({"title": "B"})).unwrap();
+        app.run("file.close", json!({"index": 0})).unwrap();
+        for i in 0..2 {
+            app.services.inbox.as_ref().unwrap().lock().unwrap().push(ImportedFile {
+                request: request.clone(),
+                name: format!("{i}.png"),
+                bytes: png(200),
+            });
+        }
+        app.drain_inbox();
+        assert!(app.session.loaded.is_none());
         assert!(app.session.doc().unwrap().doc.assets.is_empty());
     }
 }

@@ -1,680 +1,557 @@
-//! Word (.docx, Office Open XML) → story.
+//! DOCX to DesignCraft story adapter. Package, XML, styles and numbering are read by craft-docx;
+//! this module maps the neutral Word model into the app's story and style model.
 
-use std::collections::HashMap;
-use std::io::Read;
+use std::collections::{HashMap, HashSet};
 
+use craft_wordmodel::Block;
+use craft_wordmodel::numbering::LevelSuffix;
+use craft_wordmodel::para::{InlineObject, NoteKind, Paragraph};
+use craft_wordmodel::props::{Align as WordAlign, CharProps as WordCharProps, NumRef, ParaProps as WordParaProps, Underline, VertAlign};
+use craft_wordmodel::section::NumFormat;
+use craft_wordmodel::styles::{StyleKind, StyleSheet};
 use designcraft_doc::story::{BASIC_PARAGRAPH, NO_CHAR_STYLE};
-use designcraft_doc::{CharAttrs, CharFormat, ListCounter, ListType, ParaAttrs, ParaFormat, ParaProps, Story, StoryId, Table};
-use quick_xml::events::Event;
+use designcraft_doc::{CharAttrs, CharFormat, ListCounter, ListType, NumberStyle, ParaAttrs, ParaFormat, ParaProps, Story, StoryId, Table};
 
-use crate::docx_numbering::{ListPara, Numbering};
 use crate::{ImportError, Imported, ImportedStyle};
 
-/// A minimal element tree (local names, attributes by local name).
-#[derive(Debug, Default, Clone)]
-pub(crate) struct El {
-    pub(crate) name: String,
-    attrs: Vec<(String, String)>,
-    kids: Vec<Node>,
+const MAX_NAME_CHARS: usize = 256;
+const MAX_NOTE_BYTES: usize = 8 << 20;
+const MAX_WARNINGS: usize = 100;
+
+fn capped_name(name: &str) -> String {
+    name.chars().take(MAX_NAME_CHARS).collect()
 }
 
-#[derive(Debug, Clone)]
-enum Node {
-    El(El),
-    Text(String),
+fn style_names(styles: &StyleSheet) -> HashMap<String, String> {
+    styles.styles.iter().map(|s| (s.id.clone(), capped_name(&s.name))).collect()
 }
 
-impl El {
-    pub(crate) fn attr(&self, k: &str) -> Option<&str> {
-        self.attrs.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str())
-    }
-    pub(crate) fn els(&self) -> impl Iterator<Item = &El> {
-        self.kids.iter().filter_map(|n| if let Node::El(e) = n { Some(e) } else { None })
-    }
-    pub(crate) fn child(&self, name: &str) -> Option<&El> {
-        self.els().find(|e| e.name == name)
-    }
-    pub(crate) fn text(&self) -> String {
-        self.kids
-            .iter()
-            .map(|n| match n {
-                Node::Text(t) => t.clone(),
-                Node::El(e) => e.text(),
-            })
-            .collect()
-    }
-    /// `<w:x w:val="…"/>` → the value; a bare `<w:b/>` counts as "on".
-    pub(crate) fn val(&self, name: &str) -> Option<String> {
-        self.child(name).map(|e| e.attr("val").unwrap_or("true").to_string())
-    }
-    /// A toggle property (`ST_OnOff`: a boolean, or the words `on` and `off`). None when unset.
-    pub(crate) fn on(&self, name: &str) -> Option<bool> {
-        self.val(name).map(|v| !matches!(v.as_str(), "0" | "false" | "none" | "off"))
+fn char_attrs(p: &WordCharProps) -> CharAttrs {
+    CharAttrs {
+        font_family: p.font.as_ref().map(|s| capped_name(s)),
+        font_style: match (p.bold, p.italic) {
+            (Some(true), Some(true)) => Some("Bold Italic".into()),
+            (Some(true), _) => Some("Bold".into()),
+            (_, Some(true)) => Some("Italic".into()),
+            (Some(false), Some(false)) | (Some(false), None) | (None, Some(false)) => Some("Regular".into()),
+            _ => None,
+        },
+        size: p.size.map(f64::from).and_then(designcraft_doc::attrs::imported_type_size),
+        underline: p.underline.map(|u| u != Underline::None),
+        strikethrough: p.strike.or(p.double_strike),
+        capitalization: p.caps.filter(|&on| on).map(|_| designcraft_doc::Capitalization::AllCaps),
+        position: p.vert_align.map(|v| match v {
+            VertAlign::Superscript => designcraft_doc::Position::Superscript,
+            VertAlign::Subscript => designcraft_doc::Position::Subscript,
+            VertAlign::Baseline => designcraft_doc::Position::Normal,
+        }),
+        ..Default::default()
     }
 }
 
-fn local(n: &[u8]) -> String {
-    let s = String::from_utf8_lossy(n);
-    s.rsplit(':').next().unwrap_or(&s).to_string()
+fn number_style(fmt: NumFormat) -> Option<NumberStyle> {
+    match fmt {
+        NumFormat::UpperRoman => Some(NumberStyle::UpperRoman),
+        NumFormat::LowerRoman => Some(NumberStyle::LowerRoman),
+        NumFormat::UpperLetter => Some(NumberStyle::UpperLetters),
+        NumFormat::LowerLetter => Some(NumberStyle::LowerLetters),
+        NumFormat::DecimalZero => Some(NumberStyle::ArabicLeadingZero),
+        NumFormat::Chicago => Some(NumberStyle::Symbols),
+        NumFormat::Bullet | NumFormat::None => None,
+        _ => Some(NumberStyle::Arabic),
+    }
 }
 
-/// How deep elements may nest. Word's own XML stays well under a hundred levels; the tree is read
-/// recursively afterwards (`El::text`, the block walk) and dropped recursively, so a document
-/// nested without bound must be refused here, not run into the stack (#712).
-pub(crate) const MAX_DEPTH: usize = 256;
-
-pub(crate) fn parse(xml: &str) -> Result<El, ImportError> {
-    let mut r = quick_xml::Reader::from_str(xml);
-    let mut stack: Vec<El> = vec![El::default()];
-    loop {
-        match r.read_event().map_err(|e| ImportError::Corrupt(e.to_string()))? {
-            Event::Start(e) => {
-                if stack.len() > MAX_DEPTH {
-                    return Err(ImportError::Corrupt(format!("XML elements nested deeper than {MAX_DEPTH} levels")));
-                }
-                let el = El {
-                    name: local(e.name().as_ref()),
-                    attrs: e
-                        .attributes()
-                        .flatten()
-                        .map(|a| {
-                            (local(a.key.as_ref()), a.normalized_value(quick_xml::XmlVersion::Implicit1_0).map(|v| v.to_string()).unwrap_or_default())
-                        })
-                        .collect(),
-                    kids: vec![],
+fn bullet_char(text: &str, font: Option<&str>) -> String {
+    let font = font.unwrap_or_default().to_ascii_lowercase();
+    let symbol = font.contains("symbol");
+    let wingdings = font.contains("wingdings");
+    text.chars()
+        .map(|c| {
+            let code = u32::from(c);
+            let low = if (0xF000..=0xF0FF).contains(&code) { code - 0xF000 } else { code };
+            if wingdings {
+                return match low {
+                    0x6C => '●',
+                    0x6E => '■',
+                    0x71 => '❑',
+                    0x76 => '❖',
+                    0xA7 => '▪',
+                    0xD8 => '➢',
+                    0xFC => '✓',
+                    _ => '•',
                 };
-                stack.push(el);
             }
-            Event::Empty(e) => {
-                let el = El {
-                    name: local(e.name().as_ref()),
-                    attrs: e
-                        .attributes()
-                        .flatten()
-                        .map(|a| {
-                            (local(a.key.as_ref()), a.normalized_value(quick_xml::XmlVersion::Implicit1_0).map(|v| v.to_string()).unwrap_or_default())
-                        })
-                        .collect(),
-                    kids: vec![],
+            if symbol {
+                return match low {
+                    0x2D => '–',
+                    0x6F => '◦',
+                    _ => '•',
                 };
-                if let Some(p) = stack.last_mut() {
-                    p.kids.push(Node::El(el));
-                }
             }
-            Event::End(_) => {
-                let el = stack.pop().unwrap_or_default();
-                match stack.last_mut() {
-                    Some(p) => p.kids.push(Node::El(el)),
-                    None => return Ok(el),
-                }
+            match c {
+                'o' => '◦',
+                '\u{E000}'..='\u{F8FF}' => '•',
+                c => c,
             }
-            Event::Text(t) => {
-                let s = t.decode().map(|s| s.to_string()).unwrap_or_default();
-                let s = quick_xml::escape::unescape(&s).map(|s| s.to_string()).unwrap_or(s);
-                if let Some(p) = stack.last_mut() {
-                    p.kids.push(Node::Text(s));
-                }
-            }
-            Event::CData(t) => {
-                let s = t.decode().map(|s| s.to_string()).unwrap_or_default();
-                if let Some(p) = stack.last_mut() {
-                    p.kids.push(Node::Text(s));
-                }
-            }
-            Event::GeneralRef(e) => {
-                let name = String::from_utf8_lossy(&e).to_string();
-                let s = match name.as_str() {
-                    "amp" => "&".to_string(),
-                    "lt" => "<".into(),
-                    "gt" => ">".into(),
-                    "quot" => "\"".into(),
-                    "apos" => "'".into(),
-                    n if n.starts_with("#x") && n[2..].bytes().all(|b| b.is_ascii_hexdigit()) => {
-                        u32::from_str_radix(&n[2..], 16).ok().and_then(char::from_u32).map(String::from).unwrap_or_default()
+        })
+        .filter(|c| *c != '\n' && *c != '\r')
+        .collect()
+}
+
+fn style_numbering(style_id: &str, doc: &craft_wordmodel::Document) -> Option<NumRef> {
+    let mut cur = Some(style_id);
+    for _ in 0..32 {
+        let id = cur?;
+        let s = doc.styles.styles.iter().find(|s| s.id == id)?;
+        if let Some(num) = s.para.numbering {
+            return Some(num);
+        }
+        cur = s.based_on.as_deref();
+    }
+    None
+}
+
+#[derive(Default)]
+struct NumberingState {
+    counters: HashMap<String, [Option<u32>; 9]>,
+    model_counter: ListCounter,
+}
+
+impl NumberingState {
+    fn next_para(&mut self, num_ref: NumRef, doc: &craft_wordmodel::Document) -> Option<ParaAttrs> {
+        let lv = usize::from(num_ref.level);
+        if lv > 8 {
+            return None;
+        }
+        let num = doc.numbering.num(num_ref.num)?;
+        let abs = doc.numbering.abstract_of(num_ref.num)?;
+        let level = |k: usize| doc.numbering.level(num_ref.num, k as u8);
+        let def = level(lv)?;
+        if def.text.is_empty() && def.format != NumFormat::Bullet && def.format != NumFormat::None {
+            return None;
+        }
+        let own = !num.start_overrides.is_empty();
+        let key = if own { format!("n:{}", num.id) } else { format!("a:{}", abs.id) };
+        let start = |k: usize| {
+            let o = if own { num.start_overrides.iter().find(|(l, _)| *l as usize == k).map(|(_, s)| *s) } else { None };
+            o.or_else(|| level(k).map(|l| l.start)).unwrap_or(1)
+        };
+        let counters = self.counters.entry(key).or_default();
+        let n = counters.get(lv).copied().flatten().map_or_else(|| start(lv), |v| v.saturating_add(1));
+        if let Some(c) = counters.get_mut(lv) {
+            *c = Some(n);
+        }
+        for (m, c) in counters.iter_mut().enumerate().skip(lv + 1) {
+            let restart = match level(m) {
+                None => true,
+                Some(l) => {
+                    if !l.restart {
+                        false
+                    } else {
+                        match l.restart_after {
+                            None => true,
+                            Some(r) => lv < r as usize,
+                        }
                     }
-                    n if n.starts_with('#') && !n.starts_with("#x") && n[1..].bytes().all(|b| b.is_ascii_digit()) => {
-                        n[1..].parse::<u32>().ok().and_then(char::from_u32).map(String::from).unwrap_or_default()
+                }
+            };
+            if restart {
+                *c = None;
+            }
+        }
+
+        let parent = |k: usize| -> String {
+            let v = counters.get(k).copied().flatten().unwrap_or_else(|| start(k));
+            match level(k).map(|l| l.format) {
+                Some(fmt) if !def.legal => number_style(fmt).map_or_else(String::new, |s| s.format(v)),
+                Some(_) => v.to_string(),
+                _ => String::new(),
+            }
+        };
+
+        let mut parents = Vec::new();
+        let mut label = |own_level: &str, escape: bool, refs: bool| -> String {
+            let mut out = String::new();
+            let mut it = def.text.chars().peekable();
+            while let Some(c) = it.next() {
+                if c == '%'
+                    && let Some(k) = it.peek().and_then(|d| d.to_digit(10)).filter(|d| (1..=9).contains(d))
+                {
+                    it.next();
+                    let k = k as usize - 1;
+                    let is_number = matches!(level(k).map(|l| l.format), Some(f) if f != NumFormat::Bullet && f != NumFormat::None);
+                    if k == lv {
+                        out.push_str(own_level);
+                    } else if refs && is_number && !def.legal {
+                        out.push('^');
+                        out.push_str(&(k + 1).to_string());
+                        parents.push((k as u32 + 1, parent(k)));
+                    } else {
+                        let p = parent(k);
+                        out.push_str(&if escape { p.replace('^', "^^") } else { p });
                     }
-                    _ => String::new(),
-                };
-                if let Some(p) = stack.last_mut() {
-                    p.kids.push(Node::Text(s));
+                } else if escape && c == '^' {
+                    out.push_str("^^");
+                } else if c != '\n' && c != '\r' {
+                    out.push(c);
                 }
             }
-            Event::Eof => break,
+            out
+        };
+
+        let (number_sep, bullet_sep) = match def.suffix {
+            LevelSuffix::Tab => ("^t", "\t"),
+            LevelSuffix::Space => (" ", " "),
+            LevelSuffix::Nothing => ("", ""),
+        };
+        let mut a = ParaAttrs::default();
+        let mut fixed_expression = None;
+        if def.format == NumFormat::Bullet {
+            a.list_type = Some(ListType::Bullets);
+            a.bullet_char = Some(bullet_char(&def.text, def.chr.font.as_deref()));
+            a.list_separator = Some(bullet_sep.into());
+        } else if def.format == NumFormat::None {
+            a.list_type = Some(ListType::Bullets);
+            a.bullet_char = Some(label("", false, false));
+            a.list_separator = Some(bullet_sep.into());
+        } else {
+            a.list_type = Some(ListType::Numbers);
+            a.number_style = number_style(def.format);
+            a.number_expression = Some(format!("{}{number_sep}", label("^#", true, true)));
+            fixed_expression = Some(format!("{}{number_sep}", label("^#", true, false)));
+        }
+        a.left_indent = designcraft_doc::attrs::imported_measure(f64::from(def.indent));
+        a.first_line_indent = designcraft_doc::attrs::imported_measure(-f64::from(def.hanging));
+        a.list_level = Some(u32::from(num_ref.level) + 1);
+        if !def.restart {
+            a.restart_numbers = Some(false);
+        } else if let Some(r) = def.restart_after {
+            a.restart_after_level = Some(u32::from(r));
+        }
+
+        if a.list_type == Some(ListType::Numbers) {
+            let want = n.max(1);
+            let mut pp = ParaProps::default();
+            pp.apply(&a);
+            let mut model = self.model_counter.clone();
+            let start = (model.advance(&pp) != want).then_some(want);
+            if start.is_some() {
+                model = self.model_counter.clone();
+                pp.start_at = start;
+                model.advance(&pp);
+            }
+            let level_text = |k: u32| ParaProps { number_expression: format!("^{k}"), ..ParaProps::default() }.number_label_in(&model);
+            let expression = parents.iter().any(|(k, text)| level_text(*k) != *text).then(|| fixed_expression.clone()).flatten();
+            self.model_counter = model;
+            if let Some(s) = start {
+                a.start_at = Some(Some(s));
+            }
+            if let Some(e) = expression {
+                a.number_expression = Some(e);
+            }
+        }
+
+        Some(a)
+    }
+
+    fn reset_model_counter(&mut self) {
+        self.model_counter = ListCounter::default();
+    }
+}
+
+fn para_attrs(p: &WordParaProps) -> ParaAttrs {
+    ParaAttrs {
+        align: p.align.map(|a| match a {
+            WordAlign::Center => designcraft_doc::Align::Center,
+            WordAlign::Right => designcraft_doc::Align::Right,
+            WordAlign::Justify | WordAlign::Distribute => designcraft_doc::Align::LeftJustified,
+            WordAlign::Left => designcraft_doc::Align::Left,
+        }),
+        left_indent: p.indent_left.map(f64::from).and_then(designcraft_doc::attrs::imported_measure),
+        right_indent: p.indent_right.map(f64::from).and_then(designcraft_doc::attrs::imported_measure),
+        first_line_indent: p.indent_first.map(f64::from).and_then(designcraft_doc::attrs::imported_measure),
+        space_before: p.space_before.map(f64::from).and_then(designcraft_doc::attrs::imported_measure),
+        space_after: p.space_after.map(f64::from).and_then(designcraft_doc::attrs::imported_measure),
+        ..Default::default()
+    }
+}
+
+fn char_format(p: &WordCharProps, names: &HashMap<String, String>) -> CharFormat {
+    let style = p.style.as_ref().and_then(|id| names.get(id)).cloned().unwrap_or_else(|| NO_CHAR_STYLE.into());
+    CharFormat { style, over: char_attrs(p) }
+}
+
+fn style_records(styles: &StyleSheet) -> (Vec<ImportedStyle>, Vec<ImportedStyle>, HashMap<String, String>) {
+    let names = style_names(styles);
+    let mut paras = Vec::new();
+    let mut chars = Vec::new();
+    for style in &styles.styles {
+        let name = names.get(&style.id).cloned().unwrap_or_else(|| capped_name(&style.name));
+        let based_on = style.based_on.as_ref().and_then(|id| names.get(id)).cloned();
+        let mut para = para_attrs(&style.para);
+        let mut char_values = char_attrs(&style.chr);
+        if based_on.is_none() {
+            let mut defaults = para_attrs(&styles.default_para);
+            defaults.merge(&para);
+            para = defaults;
+            let mut defaults = char_attrs(&styles.default_chr);
+            defaults.merge(&char_values);
+            char_values = defaults;
+        }
+        let record = ImportedStyle { name: name.clone(), based_on, para, chars: char_values };
+        match style.kind {
+            StyleKind::Paragraph => paras.push(record),
+            StyleKind::Character if name != NO_CHAR_STYLE => chars.push(record),
             _ => {}
         }
     }
-    let mut root = stack.pop().unwrap_or_default();
-    Ok(root.kids.drain(..).find_map(|n| if let Node::El(e) = n { Some(e) } else { None }).unwrap_or_default())
+    (paras, chars, names)
 }
 
-/// Largest decompressed zip part read (a small file can inflate to gigabytes).
-pub(crate) const PART_LIMIT: u64 = 64 * 1024 * 1024;
-
-/// A zip part as text. `Ok(None)` when the part is missing or isn't text; an error when it
-/// decompresses to more than [`PART_LIMIT`].
-pub(crate) fn part(zip: &mut zip::ZipArchive<std::io::Cursor<&[u8]>>, name: &str) -> Result<Option<String>, ImportError> {
-    part_capped(zip, name, PART_LIMIT)
-}
-
-pub(crate) fn part_capped(zip: &mut zip::ZipArchive<std::io::Cursor<&[u8]>>, name: &str, limit: u64) -> Result<Option<String>, ImportError> {
-    let Ok(f) = zip.by_name(name) else { return Ok(None) };
-    let mut s = String::new();
-    // Read one byte past the limit to tell "exactly at the limit" from "over it".
-    if f.take(limit.saturating_add(1)).read_to_string(&mut s).is_err() {
-        return Ok(None);
-    }
-    if s.len() as u64 > limit {
-        return Err(ImportError::Corrupt(format!("{name} is larger than {} MiB uncompressed", limit / (1024 * 1024))));
-    }
-    Ok(Some(s))
-}
-
-/// Character attributes from `<w:rPr>`.
-fn run_attrs(rpr: Option<&El>) -> CharAttrs {
-    let mut a = CharAttrs::default();
-    let Some(r) = rpr else { return a };
-    let bold = r.on("b");
-    let italic = r.on("i");
-    a.font_style = match (bold, italic) {
-        (Some(true), Some(true)) => Some("Bold Italic".into()),
-        (Some(true), _) => Some("Bold".into()),
-        (_, Some(true)) => Some("Italic".into()),
-        (Some(false), Some(false)) | (Some(false), None) | (None, Some(false)) => Some("Regular".into()),
-        _ => None,
-    };
-    if let Some(u) = r.val("u") {
-        a.underline = Some(!matches!(u.as_str(), "none" | "0" | "false" | "off"));
-    }
-    if let Some(s) = r.on("strike") {
-        a.strikethrough = Some(s);
-    }
-    // Half-points; a size the engine cannot mean is dropped (#1593).
-    if let Some(pt) = r.val("sz").and_then(|v| v.parse::<f64>().ok()).map(|sz| sz / 2.0).and_then(designcraft_doc::attrs::imported_type_size) {
-        a.size = Some(pt);
-    }
-    if let Some(f) = r.child("rFonts").and_then(|f| f.attr("ascii").or(f.attr("hAnsi"))) {
-        a.font_family = Some(f.to_string());
-    }
-    if r.on("caps") == Some(true) {
-        a.capitalization = Some(designcraft_doc::Capitalization::AllCaps);
-    }
-    if let Some(v) = r.val("vertAlign") {
-        a.position = Some(match v.as_str() {
-            "superscript" => designcraft_doc::Position::Superscript,
-            "subscript" => designcraft_doc::Position::Subscript,
-            _ => designcraft_doc::Position::Normal,
-        });
-    }
-    a
-}
-
-/// Paragraph attributes from `<w:pPr>` (spacing in twips = 1/20 pt, indents likewise).
-fn para_attrs(ppr: Option<&El>) -> ParaAttrs {
-    let mut a = ParaAttrs::default();
-    let Some(p) = ppr else { return a };
-    // Twips, clamped: a file can hold 1e300, which became a 5e298 pt indent (#1593).
-    let tw = |v: Option<&str>| v.and_then(|v| v.parse::<f64>().ok()).map(|v| v / 20.0).and_then(designcraft_doc::attrs::imported_measure);
-    if let Some(sp) = p.child("spacing") {
-        a.space_before = tw(sp.attr("before"));
-        a.space_after = tw(sp.attr("after"));
-    }
-    if let Some(ind) = p.child("ind") {
-        a.left_indent = tw(ind.attr("left").or(ind.attr("start")));
-        a.right_indent = tw(ind.attr("right").or(ind.attr("end")));
-        a.first_line_indent = tw(ind.attr("firstLine")).or(tw(ind.attr("hanging")).map(|h| -h));
-    }
-    if let Some(j) = p.val("jc") {
-        a.align = Some(match j.as_str() {
-            "center" => designcraft_doc::Align::Center,
-            "right" | "end" => designcraft_doc::Align::Right,
-            "both" | "distribute" => designcraft_doc::Align::LeftJustified,
-            _ => designcraft_doc::Align::Left,
-        });
-    }
-    a
-}
-
-struct Ctx {
-    para_names: HashMap<String, String>,
-    char_names: HashMap<String, String>,
-    footnotes: HashMap<String, El>,
-    /// Footnote ids already imported, and how much note text has been built. A reference clones
-    /// its note and walks it again, so one 1 MB footnote referenced 100k times meant ~100 GB
-    /// (#1584). Word gives each note its own id and references it once; a second reference to the
-    /// same id gets the mark without the text.
-    notes_done: std::collections::HashSet<String>,
-    note_bytes: usize,
-    warnings: Vec<String>,
-    /// What has already been said, so saying it again is a lookup rather than a scan of
-    /// everything said so far. A warning that names a footnote id is one per id, and the
-    /// document chooses how many ids it has (noted in review).
-    warned: std::collections::HashSet<String>,
-    next_table: u64,
-    numbering: Numbering,
-    /// A paragraph style's list (`w:numPr` numId and ilvl, through `w:basedOn`), by style id.
-    style_lists: HashMap<String, (Option<String>, Option<String>)>,
-    /// The number the model's own list counter is at (it restarts after a paragraph that isn't
-    /// in a list), to tell where a numbered paragraph needs an explicit Start At.
-    /// The model's unnamed-list numbering as composition will count it.
-    model_counter: ListCounter,
-    /// The style of paragraphs without `w:pStyle` (Word's default paragraph style, usually Normal).
-    default_para: String,
-}
-
-/// A note's tables may hold tables of their own. The document model stops nesting at 64, so
-/// counting no deeper than that reaches every cell a note can actually have.
-const MAX_NOTE_DEPTH: usize = 64;
-
-/// The text `s` holds, including its tables' cell text. A table's cells each keep their text in
-/// a story of their own rather than in `s.text`, which holds only the anchor, so counting
-/// `s.text` scored a table of any size as a couple of bytes (noted in review).
-fn note_bytes(s: &Story, depth: usize) -> usize {
-    let mut n = s.text.len();
-    if depth == 0 {
-        return n;
-    }
-    for t in s.tables.values() {
-        for c in &t.cells {
-            n = n.saturating_add(note_bytes(&c.text, depth - 1));
-        }
-    }
-    n
-}
-
-/// Warnings one import reports. A document that earns more than this has earned the point.
-const MAX_WARNINGS: usize = 100;
-
-impl Ctx {
-    /// Report `message` once. Beyond [`MAX_WARNINGS`] distinct messages nothing further is kept,
-    /// not even in the set, so neither the report nor the memory behind it grows with the
-    /// document -- a footnote warning names an id, and a file can hold as many ids as it likes.
-    fn warn(&mut self, message: String) {
-        if self.warnings.len() > MAX_WARNINGS {
-            return;
-        }
-        if !self.warned.insert(message.clone()) {
-            return;
-        }
-        if self.warnings.len() == MAX_WARNINGS {
-            self.warnings.push(format!("The Word file has more than {MAX_WARNINGS} kinds of problem: the rest are not listed."));
-        } else {
-            self.warnings.push(message);
-        }
-    }
-
-    fn para_style(&self, ppr: Option<&El>) -> String {
-        ppr.and_then(|p| p.val("pStyle")).and_then(|id| self.para_names.get(&id).cloned()).unwrap_or_else(|| self.default_para.clone())
-    }
-
-    /// Append the paragraphs and tables of `body` to `st`.
-    fn blocks(&mut self, body: &El, st: &mut Story, allow_notes: bool) {
-        let mut first = st.is_empty();
-        for e in body.els() {
-            match e.name.as_str() {
-                "p" => {
+fn plain_blocks(blocks: &[std::sync::Arc<Block>]) -> String {
+    let mut out = String::new();
+    let mut first = true;
+    for block in blocks {
+        match block.as_ref() {
+            Block::Para(p) => {
+                if !first {
+                    out.push('\n');
+                }
+                first = false;
+                let text = p.final_text();
+                let is_break = |c: char| matches!(c, designcraft_doc::PAGE_BREAK | designcraft_doc::COLUMN_BREAK);
+                out.push_str(&text.chars().map(|c| if is_break(c) { '\n' } else { c }).collect::<String>());
+            }
+            Block::Table(t) => {
+                for row in &t.rows {
                     if !first {
-                        let len = st.len();
-                        st.insert(len, "\n");
+                        out.push('\n');
                     }
                     first = false;
-                    let ppr = e.child("pPr");
-                    let style = self.para_style(ppr);
-                    let mut attrs = para_attrs(ppr);
-                    let list = self.list(ppr);
-                    if let Some(l) = &list {
-                        // The level's indents, unless the paragraph sets its own.
-                        let direct = attrs;
-                        attrs = l.attrs.clone();
-                        attrs.merge(&direct);
-                    }
-                    let at = st.len();
-                    st.format_paras(at..at, |f| *f = ParaFormat { style: style.clone(), para: attrs.clone(), ..Default::default() });
-                    self.inline(e, st, allow_notes);
-                    let (start_at, expression) = self.start_at(list.as_ref(), st.len() == at);
-                    if let Some(n) = start_at {
-                        st.format_paras(at..at, |f| f.para.start_at = Some(Some(n)));
-                    }
-                    if let Some(e) = expression {
-                        st.format_paras(at..at, |f| f.para.number_expression = Some(e.clone()));
-                    }
+                    out.push_str(&row.cells.iter().map(|c| plain_blocks(&c.blocks)).collect::<Vec<_>>().join("\t"));
                 }
-                "tbl" => {
-                    let mut rows: Vec<Vec<String>> = Vec::new();
-                    for r in e.els().filter(|r| r.name == "tr") {
-                        let mut row = Vec::new();
-                        for c in r.els().filter(|c| c.name == "tc") {
-                            let mut paras = Vec::new();
-                            self.cell_paras(c, &mut paras);
-                            row.push(paras.join("\n"));
-                        }
-                        rows.push(row);
-                    }
-                    if rows.is_empty() {
-                        continue;
-                    }
-                    self.next_table += 1;
-                    let t = Table::from_strings(self.next_table, &rows, 300.0, &ParaFormat::default(), &CharFormat::default());
-                    let len = st.len();
-                    st.insert_table(len, t);
-                    first = st.text.ends_with('\n');
-                }
-                "sdt" => {
-                    if let Some(c) = e.child("sdtContent") {
-                        self.blocks(c, st, allow_notes);
-                    }
-                }
-                _ => {}
             }
-        }
-    }
-
-    /// The text of each paragraph in a table cell, read by the same run rules as body text.
-    /// Cells are plain text, so a page or column break in a cell ends its paragraph.
-    fn cell_paras(&mut self, el: &El, out: &mut Vec<String>) {
-        for e in el.els() {
-            match e.name.as_str() {
-                "p" => {
-                    let mut st = Story::new(StoryId(0));
-                    self.inline(e, &mut st, false);
-                    let is_break = |c: char| matches!(c, designcraft_doc::PAGE_BREAK | designcraft_doc::COLUMN_BREAK);
-                    out.push(st.text.chars().map(|c| if is_break(c) { '\n' } else { c }).collect());
-                }
-                "sdt" => {
-                    if let Some(c) = e.child("sdtContent") {
-                        self.cell_paras(c, out);
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    /// The list a paragraph is in (its own `w:numPr`, else its style's), counting it.
-    fn list(&mut self, ppr: Option<&El>) -> Option<ListPara> {
-        let direct = ppr.and_then(|p| p.child("numPr"));
-        let style = ppr.and_then(|p| p.val("pStyle")).and_then(|id| self.style_lists.get(&id));
-        let num_id = direct.and_then(|n| n.val("numId")).or_else(|| style.and_then(|s| s.0.clone()))?;
-        let ilvl = direct.and_then(|n| n.val("ilvl")).or_else(|| style.and_then(|s| s.1.clone()));
-        // A level that isn't a small number is no list.
-        let ilvl = ilvl.map_or(Some(0), |l| l.trim().parse::<u32>().ok())?;
-        self.numbering.next(num_id.trim(), ilvl)
-    }
-
-    /// Start At for a paragraph, so that the model numbers it as Word does: only where the
-    /// model's counter (per level; restarted after a paragraph that isn't in a list) would give a
-    /// different number. And the number expression with parent levels as text, where the model's
-    /// numbers for those levels differ from Word's.
-    fn start_at(&mut self, list: Option<&ListPara>, empty: bool) -> (Option<u32>, Option<String>) {
-        let Some(l) = list else {
-            self.model_counter = ListCounter::default();
-            return (None, None);
-        };
-        // Bullets and empty paragraphs leave the counter alone (they show no number).
-        if l.attrs.list_type != Some(ListType::Numbers) || empty {
-            return (None, None);
-        }
-        let want = l.number.max(1);
-        let mut pp = ParaProps::default();
-        pp.apply(&l.attrs);
-        let mut model = self.model_counter.clone();
-        let start = (model.advance(&pp) != want).then_some(want);
-        if start.is_some() {
-            model = self.model_counter.clone();
-            pp.start_at = start;
-            model.advance(&pp);
-        }
-        let level_text = |k: u32| ParaProps { number_expression: format!("^{k}"), ..ParaProps::default() }.number_label_in(&model);
-        let expression = l.parents.iter().any(|(k, text)| level_text(*k) != *text).then(|| l.fixed_expression.clone()).flatten();
-        self.model_counter = model;
-        (start, expression)
-    }
-
-    /// Runs (and hyperlinks, fields' results) of a paragraph.
-    fn inline(&mut self, p: &El, st: &mut Story, allow_notes: bool) {
-        for e in p.els() {
-            match e.name.as_str() {
-                "r" => self.run(e, st, allow_notes),
-                // Tracked changes import as accepted: insertions and move destinations are kept,
-                // deletions (`del`) and move sources (`moveFrom`) are dropped.
-                "hyperlink" | "smartTag" | "ins" | "moveTo" | "fldSimple" | "customXml" => self.inline(e, st, allow_notes),
-                // A content control (date picker, drop-down, plain text) keeps its runs in `sdtContent`.
-                "sdt" => {
-                    if let Some(c) = e.child("sdtContent") {
-                        self.inline(c, st, allow_notes);
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    fn run(&mut self, r: &El, st: &mut Story, allow_notes: bool) {
-        let rpr = r.child("rPr");
-        let style = rpr.and_then(|p| p.val("rStyle")).and_then(|id| self.char_names.get(&id).cloned()).unwrap_or_else(|| NO_CHAR_STYLE.into());
-        let fmt = CharFormat { style, over: run_attrs(rpr) };
-        for e in r.els() {
-            let text = match e.name.as_str() {
-                "t" => e.text(),
-                "tab" => "\t".into(),
-                "br" => match e.attr("type") {
-                    Some("page") => designcraft_doc::PAGE_BREAK.to_string(),
-                    Some("column") => designcraft_doc::COLUMN_BREAK.to_string(),
-                    _ => designcraft_doc::FORCED_LINE_BREAK.to_string(),
-                },
-                "noBreakHyphen" => "\u{2011}".into(),
-                "softHyphen" => "\u{AD}".into(),
-                "footnoteReference" if allow_notes => {
-                    const MAX_NOTE_BYTES: usize = 8 << 20;
-                    let id = e.attr("id").unwrap_or_default().to_string();
-                    // The note's text is built once per id, and only while the budget lasts. A
-                    // repeat reference, or one past the budget, still gets its mark and its
-                    // number -- the reference is part of the text -- with an empty note (#1584).
-                    //
-                    // The id is recorded only once its text has actually been kept, further down:
-                    // recording it here meant a first reference arriving after the budget was
-                    // spent counted as "done" with an empty note, and the next reference to it
-                    // then claimed the text was kept at the first one (noted in review).
-                    let again = !id.is_empty() && self.notes_done.contains(&id);
-                    let spent = self.note_bytes >= MAX_NOTE_BYTES;
-                    if again || spent {
-                        let len = st.len();
-                        if st.insert_note(len, "", ParaFormat::default()).is_some() {
-                            let message = if again {
-                                format!("Footnote {id} is referenced more than once in the Word file: the text is kept at its first reference.")
-                            } else {
-                                format!("The Word file's footnotes are longer than {} MB: the rest were imported empty.", MAX_NOTE_BYTES / (1 << 20))
-                            };
-                            self.warn(message);
-                        }
-                        continue;
-                    }
-                    if let Some(note) = e.attr("id").and_then(|id| self.footnotes.get(id).cloned()) {
-                        let mut ns = Story::new(StoryId(0));
-                        let counter = std::mem::take(&mut self.model_counter);
-                        self.blocks(&note, &mut ns, false);
-                        self.model_counter = counter;
-                        self.note_bytes = self.note_bytes.saturating_add(note_bytes(&ns, MAX_NOTE_DEPTH));
-                        if !id.is_empty() {
-                            self.notes_done.insert(id.clone());
-                        }
-                        // Word puts the reference mark in the note text: we generate the number.
-                        let len = st.len();
-                        match st.insert_note(len, "", ParaFormat::default()) {
-                            Some(id) => {
-                                if let Some(n) = st.note_mut(id) {
-                                    n.text = ns;
-                                }
-                            }
-                            None => self.warn("A footnote in the Word file could not be imported.".into()),
-                        }
-                    }
-                    continue;
-                }
-                "drawing" | "pict" | "object" => {
-                    self.warn("Images and drawings in the Word file were not imported (place them separately).".into());
-                    continue;
-                }
-                _ => continue,
-            };
-            if !text.is_empty() {
-                let len = st.len();
-                st.insert_with(len, &text, fmt.clone());
-            }
-        }
-    }
-}
-
-/// Largest `word/numbering.xml` read.
-const NUMBERING_LIMIT: u64 = 16 * 1024 * 1024;
-/// Deepest `w:basedOn` chain followed (a cycle stops here too).
-const MAX_STYLE_DEPTH: usize = 32;
-
-/// Each paragraph style's list: the first `w:numId` and `w:ilvl` on its `w:basedOn` chain.
-fn style_lists(styles: &El) -> HashMap<String, (Option<String>, Option<String>)> {
-    let by_id: HashMap<&str, &El> = styles.els().filter(|s| s.name == "style").filter_map(|s| Some((s.attr("styleId")?, s))).collect();
-    let mut out = HashMap::new();
-    for (id, s) in &by_id {
-        let (mut num_id, mut ilvl) = (None, None);
-        let mut cur = Some(*s);
-        for _ in 0..MAX_STYLE_DEPTH {
-            let Some(c) = cur else { break };
-            if let Some(n) = c.child("pPr").and_then(|p| p.child("numPr")) {
-                num_id = num_id.or_else(|| n.val("numId"));
-                ilvl = ilvl.or_else(|| n.val("ilvl"));
-            }
-            if num_id.is_some() && ilvl.is_some() {
-                break;
-            }
-            cur = c.val("basedOn").and_then(|b| by_id.get(b.as_str()).copied());
-        }
-        if num_id.is_some() {
-            out.insert(id.to_string(), (num_id, ilvl));
         }
     }
     out
 }
 
+fn word_text(c: char) -> char {
+    use craft_wordmodel::para::{COLUMN_BREAK, LINE_BREAK, PAGE_BREAK};
+    match c {
+        LINE_BREAK => designcraft_doc::FORCED_LINE_BREAK,
+        PAGE_BREAK => designcraft_doc::PAGE_BREAK,
+        COLUMN_BREAK => designcraft_doc::COLUMN_BREAK,
+        c => c,
+    }
+}
+
+struct ImportContext<'a> {
+    doc: &'a craft_wordmodel::Document,
+    names: &'a HashMap<String, String>,
+    default_para: String,
+    warned_objects: bool,
+    notes_done: HashSet<u32>,
+    note_bytes: usize,
+    warnings: Vec<String>,
+    numbering: NumberingState,
+}
+
+fn append_paragraph(ctx: &mut ImportContext<'_>, p: &Paragraph, st: &mut Story) {
+    let para_at = st.len();
+    let style = p.props.style.as_ref().and_then(|id| ctx.names.get(id)).cloned().unwrap_or_else(|| ctx.default_para.clone());
+
+    let mut attrs = para_attrs(&p.props);
+    let num_ref = match p.props.numbering {
+        Some(n) if n.num == 0 => None,
+        Some(n) => Some(n),
+        None => p.props.style.as_deref().and_then(|id| style_numbering(id, ctx.doc)),
+    };
+    let list_attrs = num_ref.and_then(|nr| ctx.numbering.next_para(nr, ctx.doc));
+    if let Some(la) = list_attrs {
+        let direct = attrs;
+        attrs = la;
+        attrs.merge(&direct);
+    } else {
+        ctx.numbering.reset_model_counter();
+    }
+
+    st.format_paras(para_at..para_at, |fmt| *fmt = ParaFormat { style: style.clone(), para: attrs.clone(), ..Default::default() });
+
+    let mut object_i = 0usize;
+    let mut last_format: Option<CharFormat> = None;
+    let mut chunk = String::new();
+    let flush = |st: &mut Story, fmt: &mut Option<CharFormat>, text: &mut String| {
+        if !text.is_empty() {
+            st.insert_with(st.len(), text, fmt.clone().unwrap_or_default());
+            text.clear();
+        }
+    };
+    for (at, c) in p.text.char_indices() {
+        let run = p
+            .runs
+            .iter()
+            .scan(0usize, |offset, r| {
+                let range = *offset..offset.saturating_add(r.len);
+                *offset = range.end;
+                Some((range, r))
+            })
+            .find(|(range, _)| range.contains(&at))
+            .map(|(_, r)| r);
+
+        if run.is_some_and(|r| r.props.del.is_some()) {
+            if c == craft_wordmodel::para::OBJ {
+                object_i = object_i.saturating_add(1);
+            }
+            continue;
+        }
+
+        let fmt = run.map(|r| char_format(&r.props, ctx.names)).unwrap_or_default();
+        if last_format.as_ref().is_some_and(|prev| prev != &fmt) {
+            flush(st, &mut last_format, &mut chunk);
+        }
+        last_format = Some(fmt);
+        if c == craft_wordmodel::para::OBJ {
+            flush(st, &mut last_format, &mut chunk);
+            if let Some(object) = p.objects.get(object_i) {
+                match object {
+                    InlineObject::NoteRef { kind: NoteKind::Footnote, id, .. } => {
+                        let mut text = ctx.doc.parts.get(id).map(|part| plain_blocks(&part.blocks)).unwrap_or_default();
+                        if ctx.notes_done.contains(id) {
+                            text.clear();
+                            add_warning(
+                                &mut ctx.warnings,
+                                format!("Footnote {id} is referenced more than once in the Word file: the text is kept at its first reference."),
+                            );
+                        } else if ctx.note_bytes.saturating_add(text.len()) > MAX_NOTE_BYTES {
+                            text.clear();
+                            add_warning(
+                                &mut ctx.warnings,
+                                format!("The Word file's footnotes are longer than {} MB: the rest were imported empty.", MAX_NOTE_BYTES / (1 << 20)),
+                            );
+                        } else {
+                            ctx.notes_done.insert(*id);
+                            ctx.note_bytes = ctx.note_bytes.saturating_add(text.len());
+                        }
+                        let _ = st.insert_note(st.len(), &text, ParaFormat::default());
+                    }
+                    InlineObject::NoteRef { .. } => {
+                        ctx.warned_objects = true;
+                        let _ = st.insert_note(st.len(), "", ParaFormat::default());
+                    }
+                    other => {
+                        let text = other.plain_text();
+                        if text.is_empty() {
+                            ctx.warned_objects = true;
+                        } else {
+                            st.insert_with(st.len(), text, last_format.clone().unwrap_or_default());
+                        }
+                    }
+                }
+            } else {
+                ctx.warned_objects = true;
+            }
+            object_i = object_i.saturating_add(1);
+        } else {
+            chunk.push(word_text(c));
+        }
+    }
+    flush(st, &mut last_format, &mut chunk);
+}
+
+fn append_blocks(ctx: &mut ImportContext<'_>, blocks: &[std::sync::Arc<Block>], st: &mut Story) {
+    let mut first = st.is_empty();
+    for block in blocks {
+        match block.as_ref() {
+            Block::Para(p) => {
+                if !first && !st.text.ends_with('\n') {
+                    st.insert(st.len(), "\n");
+                }
+                first = false;
+                append_paragraph(ctx, p, st);
+            }
+            Block::Table(table) => {
+                let rows: Vec<Vec<String>> = table.rows.iter().map(|r| r.cells.iter().map(|c| plain_blocks(&c.blocks)).collect()).collect();
+                if !rows.is_empty() {
+                    let id = st.tables.keys().next_back().copied().unwrap_or(0).saturating_add(1);
+                    let t = Table::from_strings(id, &rows, 300.0, &ParaFormat::default(), &CharFormat::default());
+                    st.insert_table(st.len(), t);
+                    first = st.text.ends_with('\n');
+                }
+            }
+        }
+    }
+}
+
 pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
-    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|e| ImportError::Corrupt(e.to_string()))?;
-    let doc = part(&mut zip, "word/document.xml")?.ok_or_else(|| ImportError::Corrupt("no word/document.xml (not a Word document)".into()))?;
-    let doc = parse(&doc)?;
-    // Styles.
-    let mut ctx = Ctx {
-        para_names: HashMap::new(),
-        char_names: HashMap::new(),
-        footnotes: HashMap::new(),
-        notes_done: std::collections::HashSet::new(),
+    let doc = craft_docx::read(bytes).map_err(|e| ImportError::Corrupt(e.to_string()))?;
+    let (mut para_styles, mut char_styles, names) = style_records(&doc.styles);
+    let builtin_styles = craft_wordmodel::styles::StyleSheet::builtin();
+    let is_default_stylesheet = doc.styles.as_ref() == &builtin_styles;
+    let is_explicit = |s: &craft_wordmodel::styles::Style| {
+        if is_default_stylesheet {
+            return false;
+        }
+        if s.id == "Normal" && builtin_styles.get("Normal") == Some(s) {
+            return doc.styles.styles.first().is_some_and(|first| first.id == "Normal");
+        }
+        builtin_styles.get(&s.id).is_none_or(|b| b != s)
+    };
+    let default_para = doc
+        .styles
+        .styles
+        .iter()
+        .filter(|s| is_explicit(s))
+        .find(|s| s.kind == StyleKind::Paragraph && s.default)
+        .or_else(|| doc.styles.styles.iter().filter(|s| is_explicit(s)).find(|s| s.kind == StyleKind::Paragraph && s.id == "Normal"))
+        .and_then(|s| names.get(&s.id))
+        .cloned()
+        .unwrap_or_else(|| BASIC_PARAGRAPH.into());
+    let mut story = Story::new(StoryId(0));
+    let mut ctx = ImportContext {
+        doc: &doc,
+        names: &names,
+        default_para,
+        warned_objects: false,
+        notes_done: HashSet::new(),
         note_bytes: 0,
-        warnings: vec![],
-        warned: std::collections::HashSet::new(),
-        next_table: 0,
-        numbering: Numbering::default(),
-        style_lists: HashMap::new(),
-        model_counter: ListCounter::default(),
-        default_para: BASIC_PARAGRAPH.into(),
+        warnings: Vec::new(),
+        numbering: NumberingState::default(),
     };
-    // Lists that can't be read leave plain paragraphs, not a failed import.
-    match part_capped(&mut zip, "word/numbering.xml", NUMBERING_LIMIT).and_then(|s| s.map(|s| parse(&s)).transpose()) {
-        Ok(Some(n)) => ctx.numbering = Numbering::parse(&n),
-        Ok(None) => {}
-        Err(_) => ctx.warnings.push("The Word file's list definitions could not be read: lists were imported as plain paragraphs.".into()),
+    append_blocks(&mut ctx, &doc.body, &mut story);
+    story.end_paragraphs_at_breaks();
+    if ctx.warned_objects {
+        add_warning(&mut ctx.warnings, "Images, drawings and endnotes in the Word file were not imported (place them separately).".into());
     }
-    let mut para_styles = Vec::new();
-    let mut char_styles = Vec::new();
-    if let Some(styles) = part(&mut zip, "word/styles.xml")?.map(|s| parse(&s)).transpose()? {
-        let ids: HashMap<String, String> = styles
-            .els()
-            .filter(|s| s.name == "style")
-            .filter_map(|s| Some((s.attr("styleId")?.to_string(), crate::capped_name(s.val("name")?))))
-            .collect();
-        ctx.style_lists = style_lists(&styles);
-        // Word's document defaults sit beneath every paragraph style that isn't based on another.
-        let defaults = styles.child("docDefaults");
-        let default_para = para_attrs(defaults.and_then(|d| d.child("pPrDefault")).and_then(|d| d.child("pPr")));
-        let default_chars = run_attrs(defaults.and_then(|d| d.child("rPrDefault")).and_then(|d| d.child("rPr")));
-        let is_para = |s: &&El| s.name == "style" && s.attr("type").unwrap_or("paragraph") == "paragraph";
-        let default_id = styles
-            .els()
-            .filter(is_para)
-            .find(|s| matches!(s.attr("default"), Some("1" | "true" | "on")))
-            .or_else(|| styles.els().filter(is_para).find(|s| s.attr("styleId") == Some("Normal")))
-            .and_then(|s| s.attr("styleId"));
-        if let Some(name) = default_id.and_then(|id| ids.get(id)) {
-            ctx.default_para = name.clone();
-        }
-        for s in styles.els().filter(|s| s.name == "style") {
-            let (Some(id), Some(name)) = (s.attr("styleId"), s.val("name")) else { continue };
-            let kind = s.attr("type").unwrap_or("paragraph");
-            // Word's default paragraph font is "no character style": our [None].
-            let name = match (kind, name.as_str()) {
-                ("character", "Default Paragraph Font") => NO_CHAR_STYLE.to_string(),
-                _ => crate::capped_name(name.clone()),
-            };
-            let based_on = s.val("basedOn").and_then(|b| ids.get(&b).cloned());
-            let mut imp = ImportedStyle { name: name.clone(), based_on, para: para_attrs(s.child("pPr")), chars: run_attrs(s.child("rPr")) };
-            match kind {
-                "paragraph" => {
-                    ctx.para_names.insert(id.to_string(), name.clone());
-                    if imp.based_on.is_none() {
-                        let (mut para, mut chars) = (default_para.clone(), default_chars.clone());
-                        para.merge(&imp.para);
-                        chars.merge(&imp.chars);
-                        (imp.para, imp.chars) = (para, chars);
-                    }
-                    para_styles.push(imp);
-                }
-                "character" => {
-                    ctx.char_names.insert(id.to_string(), name.clone());
-                    if name != NO_CHAR_STYLE {
-                        char_styles.push(imp);
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-    // Footnotes (ids -1 / 0 are the separators).
-    if let Some(f) = part(&mut zip, "word/footnotes.xml")?.map(|s| parse(&s)).transpose()? {
-        for n in f.els().filter(|n| n.name == "footnote") {
-            if let Some(id) = n.attr("id").filter(|id| id.parse::<i64>().is_ok_and(|v| v > 0)) {
-                ctx.footnotes.insert(id.to_string(), n.clone());
-            }
-        }
-    }
-    let body = doc.child("body").ok_or_else(|| ImportError::Corrupt("no document body".into()))?;
-    let mut st = Story::new(StoryId(0));
-    ctx.blocks(body, &mut st, true);
-    // A page or column break ends its paragraph.
-    st.end_paragraphs_at_breaks();
-    // Only styles that are used, plus what they are based on.
-    let stories = || std::iter::once(&st).chain(st.notes.iter().map(|n| &n.text));
-    let used_p: std::collections::HashSet<String> = stories().flat_map(|s| s.paras.iter().map(|p| p.style.clone())).collect();
-    let used_c: std::collections::HashSet<String> = stories().flat_map(|s| s.runs().map(|(_, f)| f.style.clone())).collect();
-    let keep = |list: Vec<ImportedStyle>, used: &std::collections::HashSet<String>| {
-        let mut want: std::collections::HashSet<String> = used.clone();
-        {
-            // What each name is based on (every style of that name), then a worklist: each name
-            // is looked at once, however long the chain.
-            let mut bases: HashMap<&str, Vec<&str>> = HashMap::new();
-            for s in &list {
-                if let Some(b) = &s.based_on {
-                    bases.entry(s.name.as_str()).or_default().push(b.as_str());
-                }
-            }
-            let mut todo: Vec<String> = want.iter().cloned().collect();
-            while let Some(name) = todo.pop() {
-                for b in bases.get(name.as_str()).into_iter().flatten() {
-                    if want.insert((*b).to_string()) {
-                        todo.push((*b).to_string());
-                    }
+    let used_p: HashSet<String> = story.paras.iter().map(|p| p.style.clone()).collect();
+    let used_c: HashSet<String> = story.runs().map(|(_, f)| f.style.clone()).collect();
+    let keep = |list: &mut Vec<ImportedStyle>, used: &HashSet<String>| {
+        let mut want = used.clone();
+        let mut todo: Vec<String> = used.iter().cloned().collect();
+        while let Some(name) = todo.pop() {
+            for base in list.iter().filter(|s| s.name == name).filter_map(|s| s.based_on.as_ref()) {
+                if want.insert(base.clone()) {
+                    todo.push(base.clone());
                 }
             }
         }
-        list.into_iter().filter(|s| want.contains(&s.name)).collect::<Vec<_>>()
+        list.retain(|s| want.contains(&s.name));
     };
-    Ok(Imported { story: st, para_styles: keep(para_styles, &used_p), char_styles: keep(char_styles, &used_c), warnings: ctx.warnings })
+    keep(&mut para_styles, &used_p);
+    keep(&mut char_styles, &used_c);
+    Ok(Imported { story, para_styles, char_styles, warnings: ctx.warnings })
+}
+
+fn add_warning(warnings: &mut Vec<String>, message: String) {
+    if warnings.contains(&message) || warnings.len() > MAX_WARNINGS {
+        return;
+    }
+    if warnings.len() == MAX_WARNINGS {
+        warnings.push(format!("The Word file has more than {MAX_WARNINGS} kinds of problem: the rest are not listed."));
+    } else {
+        warnings.push(message);
+    }
 }
 
 #[cfg(test)]
