@@ -794,7 +794,11 @@ mod read_install_tests {
         let installed = staged.execute("file.open", &json!({"path": path})).unwrap();
 
         assert_eq!(installed, opened);
-        assert_eq!(staged.doc().unwrap().doc, by_command.doc().unwrap().doc);
+        // Asset data keys are process-wide counters, so compare the saved form and the data apart.
+        let (a, b) = (&staged.doc().unwrap().doc, &by_command.doc().unwrap().doc);
+        assert_eq!(serde_json::to_value(a).unwrap(), serde_json::to_value(b).unwrap());
+        let data = |d: &designcraft_doc::Document| d.assets.values().map(|x| (x.id, x.data.is_linked(), x.data.len())).collect::<Vec<_>>();
+        assert_eq!(data(a), data(b));
         assert_eq!(staged.doc().unwrap().path, by_command.doc().unwrap().path);
         assert_eq!(staged.prefs.recent_files, by_command.prefs.recent_files);
         assert!(staged.execute("file.open", &json!({"path": path})).is_err(), "a staged document opens once");
