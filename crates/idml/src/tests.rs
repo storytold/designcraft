@@ -675,7 +675,7 @@ fn slightly_slanted_text_frame_sets_its_text_in_the_rectangle() {
 <Document xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging" DOMVersion="16.0" Self="d">
 <Story Self="s1"><ParagraphStyleRange><CharacterStyleRange><Content>Results at a glance</Content><Br/><Content>{body}</Content></CharacterStyleRange></ParagraphStyleRange></Story>
 <Spread Self="sp1"><Page Self="p1"/>
-<TextFrame Self="tf" ParentStory="s1" ItemTransform="1 0 0 1 300 300"><Properties><PathGeometry><GeometryPathType PathOpen="false"><PathPointArray>{pts}</PathPointArray></GeometryPathType></PathGeometry></Properties></TextFrame>
+<TextFrame Self="tf" ParentStory="s1" ItemTransform="1 0 0 1 300 300" GradientFillLength="100" GradientFillStart="-100 0"><Properties><PathGeometry><GeometryPathType PathOpen="false"><PathPointArray>{pts}</PathPointArray></GeometryPathType></PathGeometry></Properties></TextFrame>
 </Spread>
 </Document>"#
     );
@@ -686,6 +686,12 @@ fn slightly_slanted_text_frame_sets_its_text_in_the_rectangle() {
     for (a, &(x, y)) in anchors.iter().zip(&corners) {
         let p = it.xf * a.p;
         assert!((p.x - (x + 300.0)).abs() < 1e-9 && (p.y - (y + 300.0)).abs() < 1e-9, "{p:?} vs {x} {y}");
+    }
+    // An explicit gradient vector moves with the path: it is still where InDesign put it.
+    let [x0, y0, x1, y1] = it.fill.gradient_vector.expect("gradient vector");
+    for ((x, y), (ex, ey)) in [(x0, y0), (x1, y1)].into_iter().zip([(-100.0, 0.0), (0.0, 0.0)]) {
+        let p = it.xf * designcraft_geom::Point::new(x, y);
+        assert!((p.x - (ex + 300.0)).abs() < 1e-9 && (p.y - (ey + 300.0)).abs() < 1e-9, "{p:?} vs {ex} {ey}");
     }
     let sid = it.text_frame().unwrap().story;
     let cs = designcraft_compose::compose_story(&d, sid, &Default::default());

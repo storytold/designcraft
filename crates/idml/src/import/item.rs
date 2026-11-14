@@ -193,6 +193,13 @@ impl<'r> Importer<'r> {
             if let Some(p) = &mut it.wrap.path {
                 p.transform(back);
             }
+            // Explicit gradient vectors are in the inner space too, so they move with the path.
+            for v in [&mut it.fill.gradient_vector, &mut it.stroke.gradient_vector] {
+                if let Some([x0, y0, x1, y1]) = *v {
+                    let (a, b) = (back * Point::new(x0, y0), back * Point::new(x1, y1));
+                    *v = Some([a.x, a.y, b.x, b.y]);
+                }
+            }
         }
         Some(it)
     }
