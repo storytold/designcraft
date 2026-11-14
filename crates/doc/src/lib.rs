@@ -12,6 +12,7 @@
 pub mod anchored;
 pub mod arabic;
 pub mod arrow;
+pub mod asset_data;
 pub mod assets;
 pub mod attrs;
 pub mod build;
@@ -44,6 +45,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 pub use anchored::{AnchorPosition, AnchoredObject, OBJECT_MARK};
+pub use asset_data::{AssetData, SourceKey, Unavailable, WeakAssetData};
 pub use assets::{AssetIndex, find_same_asset, insert_asset, remap_story_assets, story_asset_refs};
 pub use attrs::*;
 pub use datamerge::{
@@ -620,8 +622,20 @@ pub struct Asset {
     /// clears them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link_fingerprint: Option<Fingerprint>,
+    /// `link` relative to the document's folder, for finding the file after both moved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link_relative: Option<String>,
+    /// The linked file's content hash (`sha256:` and hex digits).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link_hash: Option<String>,
+    /// Whether a save writes the bytes into the document or only the link to them.
+    #[serde(default, skip_serializing_if = "Storage::is_embedded")]
+    pub storage: Storage,
+    /// A small preview drawn while the full file can't be read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy: Option<Proxy>,
     #[serde(skip)]
-    pub data: Arc<Vec<u8>>,
+    pub data: AssetData,
     /// Pixel size for raster images.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pixels: Option<(u32, u32)>,
@@ -657,6 +671,39 @@ impl Asset {
     /// stored yet: finding it needs the page's drawing interpreted.
     pub fn content_box_pending(&self) -> bool {
         self.pdf_box.is_none() && matches!(self.pdf_crop, PdfCrop::ContentVisible | PdfCrop::ContentAll) && self.mime == "application/pdf"
+    }
+}
+
+/// Where a save keeps an asset's bytes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Storage {
+    /// In the document.
+    #[default]
+    Embedded,
+    /// In the linked file only.
+    Linked,
+}
+
+impl Storage {
+    fn is_embedded(&self) -> bool {
+        *self == Storage::Embedded
+    }
+}
+
+/// A linked asset's preview image. Its bytes are stored next to the JSON, like asset bytes.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Proxy {
+    pub mime: String,
+    pub pixels: (u32, u32),
+    #[serde(skip)]
+    pub data: Arc<Vec<u8>>,
+}
+
+impl std::fmt::Debug for Proxy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Proxy").field("mime", &self.mime).field("pixels", &self.pixels).field("len", &self.data.len()).finish()
     }
 }
 
@@ -717,9 +764,8 @@ pub struct AlphaOutline {
     /// The boundaries of transparent holes those areas enclose (wound the other way).
     pub holes: designcraft_geom::PathData,
     /// The image data it was traced from: a relink or link update replaces the asset's data
-    /// under the same id, and the outline is traced again. (Weak, so it doesn't keep old image
-    /// data alive, and its address can't be reused by new data while it's held.)
-    pub source: std::sync::Weak<Vec<u8>>,
+    /// under the same id, and the outline is traced again.
+    pub source: SourceKey,
     /// A number no other outline traced in this process has ([`AlphaOutline::next_serial`]):
     /// composition caches compare it to tell a new outline from the one they used.
     pub serial: u64,
@@ -733,8 +779,8 @@ impl AlphaOutline {
     }
 
     /// Traced from `data`, the asset's current image data.
-    pub fn traced_from(&self, data: &Arc<Vec<u8>>) -> bool {
-        std::ptr::eq(self.source.as_ptr(), Arc::as_ptr(data))
+    pub fn traced_from(&self, data: &AssetData) -> bool {
+        self.source == data.key()
     }
 }
 
@@ -743,7 +789,7 @@ impl PartialEq for AlphaOutline {
         (self.asset, self.threshold, self.width, self.height) == (other.asset, other.threshold, other.width, other.height)
             && self.outer == other.outer
             && self.holes == other.holes
-            && self.source.ptr_eq(&other.source)
+            && self.source == other.source
     }
 }
 
