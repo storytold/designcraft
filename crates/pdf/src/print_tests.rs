@@ -287,3 +287,217 @@ fn knockout_and_isolation_are_group_attributes() {
     assert_eq!(attributes(grouped(true, true)), [(true, true)]);
     assert_eq!(attributes(grouped(false, false)), []);
 }
+
+/// Read the `/DefaultCMYK` ICC stream (object id and decoded profile bytes) from `res`.
+fn default_cmyk_profile(res: &craft_pdf::syntax::page::Resources<'_>) -> Option<(i32, i32, Vec<u8>)> {
+    let cs = res.get_color_space(&Name::new_unescaped(b"DefaultCMYK"))?.into_array()?;
+    let mut items = cs.iter::<Object<'_>>();
+    let name = items.next()?.into_name()?;
+    if name.as_ref() != b"ICCBased" {
+        return None;
+    }
+    let icc = items.next()?.into_stream()?;
+    let n = icc.dict().get::<i32>(b"N")?;
+    let id = icc.obj_id().obj_number;
+    let decoded = icc.decoded().ok()?.into_owned();
+    Some((id, n, decoded))
+}
+
+/// Plain print exports, PDF/X-4 and Print Booklet attach the working CMYK profile as `/DefaultCMYK`
+/// on every page and form XObject without adding `/OutputIntents` outside PDF/X; PDF/X-1a and
+/// PDF/A-2b leave `/DefaultCMYK` out.
+#[test]
+fn default_cmyk_profile_is_written_where_appropriate() {
+    use designcraft_color::swatch::{ColorType, SwatchValue};
+    use designcraft_color::{Color, Swatch};
+
+    let mut d = transparent_doc();
+    d.swatches.push(Swatch::color("Card Blue", Color::cmyk(0.425, 0.175, 0.16, 0.071)));
+    add_box(&mut d, Rect::new(20.0, 20.0, 100.0, 100.0), "Card Blue", |_| {});
+    d.swatches.push(Swatch {
+        name: "Spot Gold".into(),
+        value: SwatchValue::Color { color: Color::cmyk(0.0, 0.3, 1.0, 0.0), color_type: ColorType::Spot },
+        locked: false,
+        named: true,
+        hidden: false,
+    });
+    add_box(&mut d, Rect::new(40.0, 40.0, 120.0, 120.0), "Spot Gold", |_| {});
+
+    let expected = craft_cms::builtin::COATED_FOGRA39_ICC;
+
+    // 1. Plain export (Standard::None): no OutputIntents / Trapped, but /DefaultCMYK on page and form XObjects.
+    let plain = export_pdf(&d, &Cache::new(), &PdfOptions::default()).unwrap();
+    assert!(output_intent(&plain).is_none());
+    assert!(!String::from_utf8_lossy(&plain).contains("/OutputIntents"));
+    let pdf = Pdf::new(plain.clone()).expect("parse plain");
+    let page_res = pdf.pages()[0].resources();
+    let (icc_id, n, prof) = default_cmyk_profile(page_res).expect("page /DefaultCMYK in plain export");
+    assert_eq!(n, 4);
+    assert_eq!(prof, expected);
+    // Spot Separation resource is kept alongside /DefaultCMYK.
+    assert!(!page_res.color_spaces.is_empty());
+    let has_separation = page_res.color_spaces.entries().any(|(k, _)| k.as_ref() != b"DefaultCMYK");
+    assert!(has_separation, "spot color space entry must be preserved alongside DefaultCMYK");
+    // Transparency group Form XObject has its own /Resources dict, so it also needs /DefaultCMYK.
+    let mut forms = 0usize;
+    for name in page_res.x_objects.keys() {
+        if let Some(xo) = page_res.get_x_object(&name)
+            && xo.dict().get::<Name>(b"Subtype").as_deref() == Some(b"Form")
+        {
+            forms += 1;
+            let form_res = craft_pdf::syntax::page::Resources::from_scope(xo.dict().get::<Dict>(b"Resources"), page_res.clone());
+            let (form_icc_id, form_n, _) = default_cmyk_profile(&form_res).expect("form /DefaultCMYK in plain export");
+            assert_eq!(form_n, 4);
+            assert_eq!(form_icc_id, icc_id, "all scopes share one embedded ICC stream");
+        }
+    }
+    assert!(forms > 0, "transparent box must produce a Form XObject");
+
+    // 2. PDF/X-4: passes check_pdfx4, keeps OutputIntents, and reuses DestOutputProfile for DefaultCMYK.
+    let x4_report =
+        crate::export_pdf_with_report(&d, &Cache::new(), &PdfOptions { standard: crate::Standard::PdfX4, ..PdfOptions::default() }).unwrap();
+    assert!(x4_report.warnings.is_empty(), "{:?}", x4_report.warnings);
+    assert!(crate::check_pdfx4(&x4_report.bytes).is_empty());
+    let x4_pdf = Pdf::new(x4_report.bytes.clone()).expect("parse x4");
+    let catalog = x4_pdf.xref().get::<Dict>(x4_pdf.xref().root_id()).unwrap();
+    let intents = catalog.get::<Array>(b"OutputIntents").unwrap();
+    let oi = intents.iter::<Dict>().next().unwrap();
+    let dest_ref = oi.get_ref(b"DestOutputProfile").expect("DestOutputProfile ref");
+    let (x4_icc_id, x4_n, x4_prof) = default_cmyk_profile(x4_pdf.pages()[0].resources()).expect("page /DefaultCMYK in PDF/X-4");
+    assert_eq!(x4_n, 4);
+    assert_eq!(x4_icc_id, dest_ref.obj_number, "PDF/X-4 DefaultCMYK must reuse DestOutputProfile");
+    assert_eq!(x4_prof, expected);
+
+    // 3. Booklet export also includes /DefaultCMYK.
+    let booklet = crate::export_booklet(&d, &Cache::new(), &crate::BookletOptions::default()).unwrap();
+    let booklet_pdf = Pdf::new(booklet.bytes).expect("parse booklet");
+    let (_, b_n, b_prof) = default_cmyk_profile(booklet_pdf.pages()[0].resources()).expect("booklet /DefaultCMYK");
+    assert_eq!(b_n, 4);
+    assert_eq!(b_prof, expected);
+
+    // 4. PDF/X-1a and PDF/A-2b must NOT carry /DefaultCMYK (ICCBased is forbidden in PDF/X-1a; PDF/A-2b is RGB).
+    let x1a = crate::export_pdf(
+        &d,
+        &Cache::new(),
+        &PdfOptions { standard: crate::Standard::PdfX1a, created: Some(1_700_000_000), ..PdfOptions::default() },
+    )
+    .unwrap();
+    assert!(crate::check_pdfx1a(&x1a).is_empty());
+    let x1a_pdf = Pdf::new(x1a).expect("parse x1a");
+    assert!(default_cmyk_profile(x1a_pdf.pages()[0].resources()).is_none(), "PDF/X-1a cannot carry ICCBased DefaultCMYK");
+
+    let pdfa = crate::export_pdf(
+        &d,
+        &Cache::new(),
+        &PdfOptions { standard: crate::Standard::PdfA2b, created: Some(1_700_000_000), ..PdfOptions::default() },
+    )
+    .unwrap();
+    let pdfa_pdf = Pdf::new(pdfa).expect("parse pdfa");
+    assert!(default_cmyk_profile(pdfa_pdf.pages()[0].resources()).is_none());
+}
+
+/// Draw fills via hayro-interpret on page 0 and return each solid fill's resolved `[R, G, B, A]`.
+fn interpreted_fill_rgba(bytes: &[u8]) -> Vec<[u8; 4]> {
+    use hayro_interpret::font::Glyph;
+    use hayro_interpret::{
+        BlendMode, ClipPath, Context, Device, GlyphDrawMode, Image, InterpreterCache, InterpreterSettings, Paint, PathDrawMode, SoftMask,
+        interpret_page,
+    };
+    struct Collector(Vec<[u8; 4]>);
+    impl Device<'_> for Collector {
+        fn set_soft_mask(&mut self, _: Option<SoftMask<'_>>) {}
+        fn set_blend_mode(&mut self, _: BlendMode) {}
+        fn draw_path(&mut self, _: &kurbo::BezPath, _: kurbo::Affine, paint: &Paint<'_>, mode: &PathDrawMode) {
+            if matches!(mode, PathDrawMode::Fill(_))
+                && let Paint::Color(c) = paint
+            {
+                self.0.push(c.to_rgba().to_rgba8());
+            }
+        }
+        fn push_clip_path(&mut self, _: &ClipPath) {}
+        fn push_transparency_group(&mut self, _: f32, _: Option<SoftMask<'_>>, _: BlendMode) {}
+        fn draw_glyph(&mut self, _: &Glyph<'_>, _: kurbo::Affine, _: kurbo::Affine, _: &Paint<'_>, _: &GlyphDrawMode) {}
+        fn draw_image(&mut self, _: Image<'_, '_>, _: kurbo::Affine) {}
+        fn pop_clip_path(&mut self) {}
+        fn pop_transparency_group(&mut self) {}
+    }
+    let pdf = craft_pdf::syntax::Pdf::new(bytes.to_vec()).unwrap();
+    let cache = InterpreterCache::new();
+    let mut ctx = Context::new(kurbo::Affine::IDENTITY, kurbo::Rect::new(0.0, 0.0, 400.0, 400.0), &cache, pdf.xref(), InterpreterSettings::default());
+    let mut out = Collector(Vec::new());
+    interpret_page(&pdf.pages()[0], &mut ctx, &mut out);
+    out.0
+}
+
+/// With `/DefaultCMYK`, hayro-interpret maps `DeviceCMYK(0.425, 0.175, 0.16, 0.071)` through the
+/// Coated FOGRA39 ICC profile (`~[152, 179, 195]`) identically in plain export and PDF/X-4, instead
+/// of falling back to naive untagged `1 - c` (`[136, 195, 199]`).
+#[test]
+fn default_cmyk_resolves_cmyk_colors_through_icc_profile() {
+    use designcraft_color::{Color, Swatch};
+
+    let mut d = Document::new(&NewDocument::default());
+    d.swatches.push(Swatch::color("Slate", Color::cmyk(0.425, 0.175, 0.16, 0.071)));
+    add_box(&mut d, Rect::new(20.0, 20.0, 120.0, 120.0), "Slate", |_| {});
+
+    let plain = export_pdf(&d, &Cache::new(), &PdfOptions::default()).unwrap();
+    let x4 = export_pdf(&d, &Cache::new(), &PdfOptions { standard: crate::Standard::PdfX4, ..PdfOptions::default() }).unwrap();
+
+    let plain_fills = interpreted_fill_rgba(&plain);
+    let x4_fills = interpreted_fill_rgba(&x4);
+    assert_eq!(plain_fills.len(), 1);
+    assert_eq!(plain_fills, x4_fills, "plain export and PDF/X-4 must resolve CMYK identically");
+    let [r, g, b, a] = plain_fills[0];
+    assert_eq!(a, 255);
+    assert!(
+        (148..=158).contains(&r) && (175..=185).contains(&g) && (190..=200).contains(&b),
+        "expected FOGRA39 slate ~[152,179,195], got {:?}",
+        [r, g, b]
+    );
+}
+
+/// RGB-blend documents skip `/DefaultCMYK` when they contain only RGB, and attach it when they draw CMYK.
+#[test]
+fn rgb_blend_document_attaches_default_cmyk_only_when_cmyk_is_present() {
+    use designcraft_color::{Color, Swatch};
+
+    let mut d = Document::new(&NewDocument::default());
+    d.settings.blend_space = BlendSpace::Rgb;
+    d.swatches.push(Swatch::color("PureRGB", Color::rgb(0.2, 0.5, 0.8)));
+    d.swatches.push(Swatch::color("Slate", Color::cmyk(0.425, 0.175, 0.16, 0.071)));
+    add_box(&mut d, Rect::new(10.0, 10.0, 100.0, 100.0), "PureRGB", |_| {});
+    let pure_rgb = export_pdf(&d, &Cache::new(), &PdfOptions::default()).unwrap();
+    let pure_pdf = Pdf::new(pure_rgb).unwrap();
+    assert!(default_cmyk_profile(pure_pdf.pages()[0].resources()).is_none(), "pure RGB export should not embed a CMYK ICC profile");
+
+    add_box(&mut d, Rect::new(120.0, 10.0, 200.0, 100.0), "Slate", |_| {});
+    let mixed = export_pdf(&d, &Cache::new(), &PdfOptions::default()).unwrap();
+    let mixed_pdf = Pdf::new(mixed).unwrap();
+    let (_, n, prof) = default_cmyk_profile(mixed_pdf.pages()[0].resources()).expect("RGB doc with CMYK graphic needs /DefaultCMYK");
+    assert_eq!(n, 4);
+    assert_eq!(prof, craft_cms::builtin::COATED_FOGRA39_ICC);
+}
+
+/// An RGB-blend document whose only graphic is a CMYK-backed spot swatch writes a `/Separation`
+/// color space with a `/DeviceCMYK` alternate, so `/DefaultCMYK` must still be attached.
+#[test]
+fn rgb_blend_spot_only_document_with_cmyk_alternate_attaches_default_cmyk() {
+    use designcraft_color::swatch::{ColorType, SwatchValue};
+    use designcraft_color::{Color, Swatch};
+
+    let mut d = Document::new(&NewDocument::default());
+    d.settings.blend_space = BlendSpace::Rgb;
+    d.swatches.push(Swatch {
+        name: "Spot Gold".into(),
+        value: SwatchValue::Color { color: Color::cmyk(0.0, 0.3, 1.0, 0.0), color_type: ColorType::Spot },
+        locked: false,
+        named: true,
+        hidden: false,
+    });
+    add_box(&mut d, Rect::new(10.0, 10.0, 100.0, 100.0), "Spot Gold", |_| {});
+    let pdf_bytes = export_pdf(&d, &Cache::new(), &PdfOptions::default()).unwrap();
+    let pdf = Pdf::new(pdf_bytes).unwrap();
+    let (_, n, prof) = default_cmyk_profile(pdf.pages()[0].resources()).expect("RGB doc with CMYK-alternate spot color needs /DefaultCMYK");
+    assert_eq!(n, 4);
+    assert_eq!(prof, craft_cms::builtin::COATED_FOGRA39_ICC);
+}

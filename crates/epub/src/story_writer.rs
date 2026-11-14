@@ -303,14 +303,16 @@ impl<'a, 'f> StoryWriter<'a, 'f> {
         let doc = self.doc;
         let Content::Graphic(g) = &it.content else { return None };
         let a = doc.assets.get(&g.asset)?;
-        if a.data.is_empty() {
+        // Linked bytes aren't read here: the graphic is left out like one without data.
+        let data = a.data.embedded_bytes()?.as_slice();
+        if data.is_empty() {
             return None;
         }
         let mime = safe_mime(&a.mime);
         // Video and sound: an HTML5 player (with the poster, when there is one).
         if let Some(kind) = designcraft_doc::media_kind(mime) {
             let name = asset_path("media", a, mime);
-            self.images.insert(name.clone(), (mime, a.data.as_slice()));
+            self.images.insert(name.clone(), (mime, data));
             let m = it.media.clone().unwrap_or_default();
             let mut attrs = String::new();
             for (on, attr) in [(m.controls, " controls=\"controls\""), (m.play_on_page_load, " autoplay=\"autoplay\""), (m.looping, " loop=\"loop\"")]
@@ -319,25 +321,27 @@ impl<'a, 'f> StoryWriter<'a, 'f> {
                     attrs.push_str(attr);
                 }
             }
-            if let Some(pa) = m.poster.and_then(|p| doc.assets.get(&p)) {
+            if let Some(pa) = m.poster.and_then(|p| doc.assets.get(&p))
+                && let Some(poster) = pa.data.embedded_bytes()
+            {
                 let poster_mime = safe_mime(&pa.mime);
                 let pn = asset_path("images", pa, poster_mime);
-                self.images.insert(pn.clone(), (poster_mime, pa.data.as_slice()));
+                self.images.insert(pn.clone(), (poster_mime, poster.as_slice()));
                 if kind == "video" {
-                    attrs.push_str(&format!(" poster=\"{}\"", xml_attr(&img_src(&pn, poster_mime, &pa.data))));
+                    attrs.push_str(&format!(" poster=\"{}\"", xml_attr(&img_src(&pn, poster_mime, poster))));
                 }
             }
-            let markup = format!("<{kind} src=\"{}\"{attrs}>{}</{kind}>", xml_attr(&img_src(&name, mime, &a.data)), xml_text(&a.name));
+            let markup = format!("<{kind} src=\"{}\"{attrs}>{}</{kind}>", xml_attr(&img_src(&name, mime, data)), xml_text(&a.name));
             return Some((markup, true));
         }
         let name = asset_path("images", a, mime);
-        self.images.insert(name.clone(), (mime, a.data.as_slice()));
+        self.images.insert(name.clone(), (mime, data));
         // Alt text from Object Export Options; without one the image counts as decorative
         // (`alt=""`): a file name read aloud helps nobody.
         if it.alt_text.trim().is_empty() {
             self.no_alt.push(a.name.clone());
         }
-        Some((format!("<img src=\"{}\" alt=\"{}\"/>", xml_attr(&img_src(&name, mime, &a.data)), xml_attr(&it.alt_text)), false))
+        Some((format!("<img src=\"{}\" alt=\"{}\"/>", xml_attr(&img_src(&name, mime, data)), xml_attr(&it.alt_text)), false))
     }
 
     /// The footnote whose reference is at byte `pos` of `st`: a note reference in `out`, the note
