@@ -98,11 +98,11 @@ pub(crate) fn trace(data: &AssetData, asset: AssetId, threshold: u8) -> Option<A
 /// [`trace`] of encoded `bytes` standing for the data under `source`. With `size`, the outline
 /// is scaled to an image of that size (a preview traced for the original it stands for).
 fn trace_bytes(bytes: &[u8], source: designcraft_doc::SourceKey, size: Option<(u32, u32)>, asset: AssetId, threshold: u8) -> Option<AlphaOutline> {
-    let (w, h) = designcraft_images::pixel_size(&bytes)?;
+    let (w, h) = designcraft_images::pixel_size(bytes)?;
     if w == 0 || h == 0 || u64::from(w) * u64::from(h) > MAX_PIXELS {
         return None;
     }
-    let img = designcraft_images::decode_rgba(&bytes)?;
+    let img = designcraft_images::decode_rgba(bytes)?;
     if img.width() != w || img.height() != h {
         return None;
     }

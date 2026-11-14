@@ -276,6 +276,22 @@ pub fn check(s: &mut Session, min_ppi: f64) -> Vec<Issue> {
 /// compositions in `cache`. It needs no session, so it can run on another thread. `links` is what
 /// the caller remembers of linked files between checks: a file is read only when its size is the
 /// recorded one and its time is new.
+/// A linked file that is not the one placed: exports use the file as it is now.
+fn modified_link(d: &Document, it: &Item, page: Option<usize>, document: Option<&std::path::Path>, links: &mut LinkListChecks) -> Option<Issue> {
+    let Content::Graphic(g) = &it.content else { return None };
+    let a = d.assets.get(&g.asset)?;
+    if !a.data.is_linked() || !super::links::link_modified(a, document, links) {
+        return None;
+    }
+    Some(Issue {
+        severity: "warning",
+        kind: "modifiedLink",
+        message: format!("Modified link: {} (exports use the file as it is now)", a.link.as_deref().unwrap_or(&a.name)),
+        item: Some(it.id.0),
+        page,
+    })
+}
+
 pub fn check_document(d: &Document, cache: &Cache, document: Option<&std::path::Path>, min_ppi: f64, links: &mut LinkListChecks) -> Vec<Issue> {
     let mut out = Vec::new();
     // Stories: overset and fonts.
@@ -442,20 +458,7 @@ pub fn check_document(d: &Document, cache: &Cache, document: Option<&std::path::
                     page,
                 });
             }
-            // A linked file that is not the one placed: exports use the file as it is now.
-            if let Content::Graphic(g) = &it.content
-                && let Some(a) = d.assets.get(&g.asset)
-                && a.data.is_linked()
-                && super::links::link_modified(a, document, links)
-            {
-                out.push(Issue {
-                    severity: "warning",
-                    kind: "modifiedLink",
-                    message: format!("Modified link: {} (exports use the file as it is now)", a.link.as_deref().unwrap_or(&a.name)),
-                    item: Some(it.id.0),
-                    page,
-                });
-            }
+            out.extend(modified_link(d, it, page, document, links));
             match &it.content {
                 Content::Graphic(g) => match d.assets.get(&g.asset) {
                     None => out.push(Issue { severity: "error", kind: "missingLink", message: "Missing graphic".into(), item: Some(it.id.0), page }),
