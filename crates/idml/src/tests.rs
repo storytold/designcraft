@@ -5452,6 +5452,111 @@ fn epub_split_document_round_trips() {
     }
 }
 
+/// Custom footnote marks, which InDesign has no setting for: export writes its Symbols style and
+/// keeps the marks in a document label, which import reads back (a mark naming a character style
+/// the file lacks keeps the reference's style alone).
+#[test]
+fn custom_footnote_marks_round_trip_through_a_document_label() {
+    use designcraft_doc::{CustomMarks, MarksAfter, NoteMark};
+    let mut d = Document::new(&NewDocument::default());
+    std::sync::Arc::make_mut(&mut d.styles).character.push(designcraft_doc::CharacterStyle {
+        name: "Music".into(),
+        based_on: None,
+        chars: Default::default(),
+        shortcut: String::new(),
+    });
+    let marks = CustomMarks {
+        marks: vec![NoteMark { text: "\u{266A}".into(), char_style: "Music".into() }, NoteMark { text: "[\"x\"]".into(), ..Default::default() }],
+        after: MarksAfter::Counter,
+    };
+    d.footnote_options.custom_marks = Some(marks.clone());
+    let bytes = export_idml(&d);
+    let designmap = zip_text(&bytes, "designmap.xml");
+    assert!(designmap.contains("designcraft.footnoteMarks"), "the label: {designmap}");
+    let prefs = zip_text(&bytes, "Resources/Preferences.xml");
+    assert!(prefs.contains(r#"<FootnoteNumberingStyle type="enumeration">Symbols</FootnoteNumberingStyle>"#), "InDesign's nearest style: {prefs}");
+    let back = import_idml(&bytes).unwrap();
+    assert_eq!(back.footnote_options.custom_marks, Some(marks));
+    // Without the character style in the file, the mark stays and takes the reference's style.
+    std::sync::Arc::make_mut(&mut d.styles).character.retain(|s| s.name != "Music");
+    let back = import_idml(&export_idml(&d)).unwrap();
+    let got = back.footnote_options.custom_marks.unwrap();
+    assert_eq!(got.marks[0].text, "\u{266A}");
+    assert_eq!(got.marks[0].char_style, designcraft_doc::NO_CHAR_STYLE);
+    // No custom marks: no label.
+    assert!(!zip_text(&export_idml(&Document::new(&NewDocument::default())), "designmap.xml").contains("footnoteMarks"));
+}
+
+/// The package `bytes` with part `name` rewritten by `f` (every part of an exported package is text).
+fn rewrite_part(bytes: &[u8], name: &str, f: impl Fn(String) -> String) -> Vec<u8> {
+    use std::io::Read;
+    let mut z = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+    let mut parts = Vec::new();
+    for i in 0..z.len() {
+        let mut e = z.by_index(i).unwrap();
+        let mut text = String::new();
+        e.read_to_string(&mut text).unwrap();
+        let n = e.name().to_string();
+        if n != "mimetype" {
+            let text = if n == name { f(text) } else { text };
+            parts.push((n, text));
+        }
+    }
+    let parts: Vec<(&str, &str)> = parts.iter().map(|(n, t)| (n.as_str(), t.as_str())).collect();
+    zip_files(&parts)
+}
+
+/// A document with custom footnote marks over numbering style `style`.
+fn custom_marks_doc(style: designcraft_doc::NumberStyle) -> Document {
+    let mut d = Document::new(&NewDocument::default());
+    d.footnote_options.style = style;
+    d.footnote_options.custom_marks = Some(designcraft_doc::CustomMarks {
+        marks: vec![designcraft_doc::NoteMark { text: "\u{2726}".into(), ..Default::default() }],
+        after: designcraft_doc::MarksAfter::Repeat,
+    });
+    d
+}
+
+/// The numbering style under custom marks comes back with them: clearing the marks after a
+/// round trip gives the footnotes that style again, not the Symbols written for InDesign.
+#[test]
+fn custom_footnote_marks_keep_the_style_under_them() {
+    let d = custom_marks_doc(designcraft_doc::NumberStyle::LowerRoman);
+    let back = import_idml(&export_idml(&d)).unwrap();
+    assert_eq!(back.footnote_options.custom_marks, d.footnote_options.custom_marks);
+    assert_eq!(back.footnote_options.style, designcraft_doc::NumberStyle::LowerRoman);
+}
+
+/// InDesign keeps the label when its numbering style is changed there: the marks then don't
+/// come back over the style chosen.
+#[test]
+fn custom_footnote_marks_count_only_while_the_style_is_symbols() {
+    let bytes = export_idml(&custom_marks_doc(designcraft_doc::NumberStyle::Arabic));
+    let symbols = r#"<FootnoteNumberingStyle type="enumeration">Symbols</FootnoteNumberingStyle>"#;
+    let changed = rewrite_part(&bytes, "Resources/Preferences.xml", |t| {
+        assert!(t.contains(symbols));
+        t.replace(symbols, r#"<FootnoteNumberingStyle type="enumeration">Arabic</FootnoteNumberingStyle>"#)
+    });
+    let back = import_idml(&changed).unwrap();
+    assert_eq!(back.footnote_options.custom_marks, None);
+    assert_eq!(back.footnote_options.style, designcraft_doc::NumberStyle::Arabic);
+}
+
+/// A custom marks label past its size cap isn't parsed: a file can't make import build marks
+/// of any size before their limits apply.
+#[test]
+fn an_oversized_footnote_marks_label_is_not_read() {
+    let bytes = export_idml(&custom_marks_doc(designcraft_doc::NumberStyle::Arabic));
+    let padded = rewrite_part(&bytes, "designmap.xml", |t| {
+        assert!(t.contains(r#"Value="{"#));
+        // Still valid JSON, only larger than the cap.
+        t.replacen(r#"Value="{"#, &format!(r#"Value="{{{}"#, " ".repeat(crate::names::MAX_FOOTNOTE_MARKS_LABEL)), 1)
+    });
+    assert!(import_idml(&padded).unwrap().footnote_options.custom_marks.is_none());
+    // Within the cap the same label is read.
+    assert!(import_idml(&bytes).unwrap().footnote_options.custom_marks.is_some());
+}
+
 /// Text typed over a cross-reference's generated text is kept as shown, its page number live
 /// (InDesign's cross-reference page number variable, found by its `AssociatedTextVariable`),
 /// tracked insertions in and deletions out. The edits survive export and import.

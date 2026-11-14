@@ -6,6 +6,7 @@ use serde_json::{Value, json};
 use super::{CommandSpec, bad, cmd, has_doc};
 use crate::{Result, Session};
 
+/// The footnote commands: insert, delete, list, options and moving between a note and its reference.
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(
@@ -22,7 +23,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Document Footnote Options…",
             ["Type"],
             None,
-            "{style?: arabic|upperRoman|lowerRoman|upperLetters|lowerLetters|symbols|kanji, startAt?, restart?: never|page|spread|section, prefix?, suffix?, affixIn?: none|reference|text|both, refPosition?: superscript|subscript|normal|otSuperscript, refCharStyle?, paraStyle?, separator?, spaceBefore?, spaceBetween?, firstBaseline?: ascent|capHeight|leading|xHeight|emboxHeight|fixed, firstBaselineMin?, spanColumns?, rule?: {on, weight, color, tint, width, offset, leftIndent}} → the options (no params: just read them)",
+            "{style?: arabic|upperRoman|lowerRoman|upperLetters|lowerLetters|symbols|kanji, startAt?, restart?: never|page|spread|section, prefix?, suffix?, affixIn?: none|reference|text|both, refPosition?: superscript|subscript|normal|otSuperscript, refCharStyle?, paraStyle?, separator?, spaceBefore?, spaceBetween?, firstBaseline?: ascent|capHeight|leading|xHeight|emboxHeight|fixed, firstBaselineMin?, spanColumns?, rule?: {on, weight, color, tint, width, offset, leftIndent}, customMarks?: {marks: [{text, charStyle?}] (at most 64, each at most 32 characters; the character style goes on top of the reference's), after?: double|repeat|counter|numbers (what follows the last mark)} | null (the marks the user defines, used instead of `style`; null: back to `style`)} → the options (no params: just read them)",
             has_doc,
             options
         ),
@@ -92,6 +93,8 @@ fn merge(base: &mut Value, p: &Value) {
     }
 }
 
+/// `footnote.options`: the document's footnote options, changed by the keys given (custom marks
+/// checked only when they change) in one undo step → the options as they are now.
 fn options(s: &mut Session, p: &Value) -> Result<Value> {
     let cur = s.doc()?.doc.footnote_options.clone();
     if p.as_object().is_none_or(|o| o.is_empty()) {
@@ -100,6 +103,13 @@ fn options(s: &mut Session, p: &Value) -> Result<Value> {
     let mut v = serde_json::to_value(&cur).unwrap_or_default();
     merge(&mut v, p);
     let next: FootnoteOptions = serde_json::from_value(v).map_err(|e| bad("footnote.options", e.to_string()))?;
+    // Only marks that change are checked: a mark's character style deleted since doesn't stop
+    // other changes (the mark then takes the reference's style alone).
+    if next.custom_marks != cur.custom_marks
+        && let Some(c) = &next.custom_marks
+    {
+        check_marks(c, &s.doc()?.doc)?;
+    }
     let out = serde_json::to_value(&next).unwrap_or_default();
     if next != cur {
         s.edit(|d, _| {
@@ -108,6 +118,27 @@ fn options(s: &mut Session, p: &Value) -> Result<Value> {
         })?;
     }
     Ok(out)
+}
+
+/// Custom footnote marks a command may set: within the caps, each with text, and character styles
+/// the document has.
+fn check_marks(c: &designcraft_doc::CustomMarks, d: &designcraft_doc::Document) -> Result<()> {
+    const CMD: &str = "footnote.options";
+    if c.marks.len() > designcraft_doc::MAX_CUSTOM_MARKS {
+        return Err(bad(CMD, format!("at most {} custom marks", designcraft_doc::MAX_CUSTOM_MARKS)));
+    }
+    for m in &c.marks {
+        if m.text.is_empty() {
+            return Err(bad(CMD, "a custom mark needs text"));
+        }
+        if m.text.chars().count() > designcraft_doc::MAX_MARK_CHARS {
+            return Err(bad(CMD, format!("a custom mark has at most {} characters", designcraft_doc::MAX_MARK_CHARS)));
+        }
+        if m.char_style != designcraft_doc::NO_CHAR_STYLE && d.styles.char_style(&m.char_style).is_none() {
+            return Err(bad(CMD, format!("no character style `{}`", m.char_style)));
+        }
+    }
+    Ok(())
 }
 
 fn story_id(p: &Value, cmd: &str) -> Result<StoryId> {
@@ -276,6 +307,61 @@ mod tests {
         s.execute("footnote.insert", &json!({"text": "x"})).unwrap();
         // Caret is now in footnote text: no nested footnotes.
         assert!(s.execute("footnote.insert", &json!({})).is_err());
+    }
+
+    /// Custom marks through the command: set (one undo step), read back, refused past the caps or
+    /// with a missing character style, and cleared with null.
+    #[test]
+    fn custom_marks_are_set_checked_and_cleared() {
+        let (mut s, sid) = session_with_text();
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 4, "focus": 4})).unwrap();
+        s.execute("footnote.insert", &json!({"text": "x"})).unwrap();
+        let set = json!({"customMarks": {"marks": [{"text": "\u{266A}"}, {"text": "[ii]"}], "after": "counter"}});
+        let r = s.execute("footnote.options", &set).unwrap();
+        assert_eq!(r["customMarks"]["marks"][1]["text"], "[ii]");
+        assert_eq!(r["customMarks"]["after"], "counter");
+        let o = s.doc().unwrap().doc.footnote_options.clone();
+        assert_eq!(o.label(1, false), "\u{266A}");
+        assert_eq!(o.label(3, false), "\u{266A}2");
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert!(s.doc().unwrap().doc.footnote_options.custom_marks.is_none(), "one undo step");
+        s.execute("edit.redo", &json!({})).unwrap();
+        // Refused, leaving the marks as they were.
+        let too_many: Vec<Value> = (0..65).map(|i| json!({"text": i.to_string()})).collect();
+        for bad in [
+            json!({"customMarks": {"marks": too_many}}),
+            json!({"customMarks": {"marks": [{"text": "x".repeat(33)}]}}),
+            json!({"customMarks": {"marks": [{"text": ""}]}}),
+            json!({"customMarks": {"marks": [{"text": "a", "charStyle": "Nonexistent"}]}}),
+            json!({"customMarks": {"marks": [{"text": "a"}], "after": "sideways"}}),
+        ] {
+            assert!(s.execute("footnote.options", &bad).is_err(), "{bad}");
+        }
+        assert_eq!(s.doc().unwrap().doc.footnote_options.label(2, false), "[ii]");
+        // An existing character style is accepted.
+        s.execute("style.character.create", &json!({"name": "Music"})).unwrap();
+        s.execute("footnote.options", &json!({"customMarks": {"marks": [{"text": "\u{266B}", "charStyle": "Music"}]}})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.footnote_options.mark_style(1).as_deref(), Some("Music"));
+        // null: back to the numbering style.
+        s.execute("footnote.options", &json!({"customMarks": null})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.footnote_options.label(1, false), "1");
+    }
+
+    /// A mark's character style deleted since doesn't stop other footnote options changing, nor
+    /// the same marks being sent again (as the dialog does); new marks are still checked.
+    #[test]
+    fn a_deleted_mark_style_does_not_stop_other_changes() {
+        let (mut s, _) = session_with_text();
+        s.execute("style.character.create", &json!({"name": "Music"})).unwrap();
+        let marks = json!({"marks": [{"text": "\u{266B}", "charStyle": "Music"}]});
+        s.execute("footnote.options", &json!({"customMarks": marks})).unwrap();
+        s.execute("style.character.delete", &json!({"name": "Music", "replaceWith": designcraft_doc::NO_CHAR_STYLE})).unwrap();
+        s.execute("footnote.options", &json!({"startAt": 5})).unwrap();
+        s.execute("footnote.options", &json!({"customMarks": marks, "prefix": "("})).unwrap();
+        let o = s.doc().unwrap().doc.footnote_options.clone();
+        assert_eq!((o.start_at, o.prefix.as_str()), (5, "("));
+        let other = json!({"marks": [{"text": "x", "charStyle": "Music"}]});
+        assert!(s.execute("footnote.options", &json!({"customMarks": other})).is_err(), "new marks are checked");
     }
 
     #[test]

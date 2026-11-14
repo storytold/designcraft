@@ -19,6 +19,7 @@ craft-svg = { workspace = true }
 craft-file-formats = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 designcraft-compose = { workspace = true }

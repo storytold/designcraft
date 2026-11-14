@@ -1034,6 +1034,10 @@ pub struct ComposeOptions {
     pub running: Option<std::sync::Arc<vars::RunningIndex>>,
     /// Generated text before the first paragraph (a footnote's number and separator).
     pub label: Option<String>,
+    /// The character style part of the label takes on top of the paragraph's, and that part's
+    /// byte range in the label (a custom footnote mark's own style, which the prefix, suffix and
+    /// separator don't take).
+    pub label_style: Option<(String, std::ops::Range<usize>)>,
     /// Anchor pages for cross-references (needed when the story contains cross-references).
     pub xrefs: Option<Arc<xref::XrefIndex>>,
     /// Where the story's anchored frames sit on their spreads; an anchored frame not listed is
@@ -2747,6 +2751,8 @@ struct ShapedParagraph {
     para_box: Option<ParaBox>,
 }
 
+/// Shape one paragraph of a story: its glyphs and pieces, with a footnote label (and the custom
+/// mark's own character style over its range) put before the text of a note's first paragraph.
 fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
     let ParagraphShapeInput {
         db,
@@ -2903,7 +2909,24 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
     if paragraph == 0
         && let Some(label) = &opts.label
     {
-        prepend_label(db, &mut sp.glyphs, label, prange.start, base_chars, label_env, &mut table);
+        // A custom footnote mark's own character style, on top of the paragraph's, for the mark
+        // alone. The parts go on in reverse: each goes before what is there.
+        let styled = opts.label_style.as_ref().and_then(|(s, range)| {
+            let chars = doc.styles.resolve_char(base_chars, &designcraft_doc::CharFormat { style: s.clone(), ..Default::default() });
+            Some((chars, label.get(..range.start)?, label.get(range.clone())?, label.get(range.end..)?))
+        });
+        match &styled {
+            Some((chars, before, mark, after)) => {
+                for (part, chars) in [(*after, base_chars), (*mark, chars), (*before, base_chars)] {
+                    if !part.is_empty() {
+                        prepend_label(db, &mut sp.glyphs, part, prange.start, chars, label_env, &mut table);
+                    }
+                }
+            }
+            None => {
+                prepend_label(db, &mut sp.glyphs, label, prange.start, base_chars, label_env, &mut table);
+            }
+        }
         label_aligned = 0;
     }
     let list_align = match pp.list_type {

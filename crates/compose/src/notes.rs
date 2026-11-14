@@ -80,7 +80,7 @@ pub(crate) struct Notes {
     pub key: Option<usize>,
     pub placed: Vec<Placed>,
     /// Composed footnote text by (index, label, width).
-    cache: HashMap<(usize, String, u64, bool, bool), (Arc<ComposedStory>, NoteMetrics)>,
+    cache: HashMap<(usize, String, Option<(String, std::ops::Range<usize>)>, u64, bool, bool), (Arc<ComposedStory>, NoteMetrics)>,
     notes: Vec<Arc<designcraft_doc::Footnote>>,
     /// Footnotes span the columns of their frame.
     span: bool,
@@ -140,6 +140,9 @@ impl Notes {
             self.numbers[k] = self.num;
             self.num = self.num.saturating_add(1);
             sub.notes.insert(self.refs[k], o.label(self.numbers[k], false));
+            if let Some(ms) = o.mark_style(self.numbers[k]) {
+                sub.note_mark_styles.insert(self.refs[k], ms);
+            }
         }
         sub.note_position = o.ref_position;
         sub.note_style = (o.ref_char_style != designcraft_doc::NO_CHAR_STYLE).then(|| o.ref_char_style.clone());
@@ -160,11 +163,16 @@ impl Notes {
         v
     }
 
+    /// Compose footnote `k` at width `w`: its text with its label (number or custom mark, with
+    /// the mark's character style) and the separator, cached until any of them changes.
     fn compose(&mut self, doc: &Document, k: usize, w: f64, f: &FrameSpec, opts: &ComposeOptions) -> (Arc<ComposedStory>, NoteMetrics) {
         let o = &doc.footnote_options;
-        let label = format!("{}{}", o.label(self.numbers[k], true), o.separator);
+        let (before, mark, after) = o.label_parts(self.numbers[k], true);
+        let label = format!("{before}{mark}{after}{}", o.separator);
+        // The mark's own style, for the mark alone.
+        let label_style = o.mark_style(self.numbers[k]).map(|s| (s, before.len()..before.len() + mark.len()));
         // The page side sets towards/away-from-spine alignment and spine-relative anchored objects.
-        let key = (k, label.clone(), w.to_bits(), f.left_page, f.right_page);
+        let key = (k, label.clone(), label_style.clone(), w.to_bits(), f.left_page, f.right_page);
         if let Some(c) = self.cache.get(&key) {
             return c.clone();
         }
@@ -190,6 +198,7 @@ impl Notes {
             page: opts.page,
             running: opts.running.clone(),
             label: Some(label),
+            label_style,
             xrefs: opts.xrefs.clone(),
             placed: Vec::new(),
         };

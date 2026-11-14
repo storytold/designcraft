@@ -4,6 +4,8 @@ use super::{CHAR_BUILTINS, Document, El, Ex, HashSet, PARA_BUILTINS, escape_id, 
 impl<'a> Ex<'a> {
     // ---------- designmap ----------
 
+    /// `designmap.xml`: the document's root element, its parts, and the settings InDesign has no
+    /// place for (custom footnote marks) as document labels.
     pub(super) fn designmap(&mut self, masters: &[(String, Vec<u8>)], spreads: &[(String, Vec<u8>)], stories: &[(String, Vec<u8>)]) -> Vec<u8> {
         let d = self.d;
         let story_list: Vec<String> = d.stories.keys().map(|k| uid(k.0)).collect();
@@ -15,6 +17,16 @@ impl<'a> Ex<'a> {
             &format!("{} {}", num(x), num(y)),
             &d.layers.first().map(|l| uid(l.id.0)).unwrap_or_else(|| "n".into()),
         ));
+        // Settings InDesign has no place for, kept as document labels it carries along.
+        if let Some(c) = d.footnote_options.custom()
+            && let Some(json) = footnote_marks_label(c, d.footnote_options.style)
+        {
+            let mut label = El::new("Label");
+            label.push(El::new("KeyValuePair").attr("Key", names::FOOTNOTE_MARKS_LABEL).attr("Value", json));
+            let mut props = El::new("Properties");
+            props.push(label);
+            root.push(props);
+        }
         root.push(
             El::new("Language")
                 .attr("Self", "Language/$ID/[No Language]")
@@ -407,6 +419,13 @@ fn fnv(s: &str) -> u64 {
 /// one element, so a `Self` written twice is a broken file.
 fn has_self(root: &El, name: &str, me: &str) -> bool {
     root.children.iter().any(|n| matches!(n, crate::xml::Node::El(e) if e.name == name && e.get("Self") == Some(me)))
+}
+
+/// [`names::FOOTNOTE_MARKS_LABEL`]'s value: the marks, and the numbering style under them.
+fn footnote_marks_label(c: &designcraft_doc::CustomMarks, style: designcraft_doc::NumberStyle) -> Option<String> {
+    let mut v = serde_json::to_value(c).ok()?;
+    v.as_object_mut()?.insert(names::FOOTNOTE_MARKS_STYLE.into(), serde_json::to_value(style).ok()?);
+    serde_json::to_string(&v).ok()
 }
 
 #[cfg(test)]
