@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::fontdb::{Arc, DOCUMENT_FONTS_FOLDER, FALLBACK_FAMILY, FontDb, FontSource, MAX_DOCUMENT_FONT_BYTES, MAX_DOCUMENT_FONT_FILES};
-use crate::testing::{font_with, font_with_names, font_with_wws, with_fs_type};
+use crate::testing::{font_with, font_with_names, font_with_wws, with_fs_type, with_table_u16};
 
 /// An empty temporary folder unique to `name` and this process.
 fn temp_dir(name: &str) -> PathBuf {
@@ -49,6 +49,44 @@ fn document_fonts_load_ahead_of_installed_ones() {
     assert_eq!((again.faces, again.skipped.len()), (1, 0));
     assert_ne!(again.scope, r.scope);
     assert!(Arc::ptr_eq(&db.scoped(again.scope).face("DocFont Precedence", "Regular"), &face));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn document_fonts_add_to_the_installed_styles_of_their_family() {
+    // #2619: the folder holds only the family's Light; its Regular and Bold are installed.
+    const FAMILY: &str = "DocFont Partial";
+    let root = temp_dir("partial");
+    let system = root.join("system");
+    let folder = root.join(DOCUMENT_FONTS_FOLDER);
+    std::fs::create_dir_all(&system).unwrap();
+    std::fs::create_dir_all(&folder).unwrap();
+    let write = |path: PathBuf, names: &[(u16, &str)], weight: u16, c: char| {
+        std::fs::write(path, with_table_u16(font_with_names(names, &[c]).unwrap(), b"OS/2", 4, weight).unwrap()).unwrap();
+    };
+    write(system.join("Partial-Regular.ttf"), &[(1, FAMILY), (2, "Regular")], 400, 'r');
+    write(system.join("Partial-Bold.ttf"), &[(1, FAMILY), (2, "Bold")], 700, 'b');
+    let light = folder.join("Partial-Light.ttf");
+    write(light.clone(), &[(1, "DocFont Partial Light"), (2, "Regular"), (16, FAMILY), (17, "Light")], 300, 'l');
+
+    let db = FontDb::with_font_dirs(vec![system]);
+    let r = db.load_document_fonts(&folder, &|_| Ok(()));
+    assert_eq!((r.faces, r.skipped.len()), (1, 0), "{:?}", r.skipped);
+    let fonts = db.scoped(r.scope);
+    for (style, c) in [("Regular", 'r'), ("Bold", 'b')] {
+        let face = fonts.face(FAMILY, style);
+        assert_eq!(face.style, style, "the installed {style}, not the document's Light");
+        assert!(face.covers(c) && matches!(face.source, FontSource::Installed(_)), "{:?}", face.source);
+        assert!(fonts.has_style(FAMILY, style));
+    }
+    let face = fonts.face(FAMILY, "Light");
+    assert_eq!((face.style.as_str(), &face.source), ("Light", &FontSource::Document(light)));
+    // A style neither has is the closest of all of them.
+    assert_eq!(fonts.face(FAMILY, "Black").style, "Bold");
+    assert_eq!(fonts.styles(FAMILY), ["Light", "Regular", "Bold"]);
+    // Another document beside the folder, with the installed family loaded already.
+    let again = db.scoped(db.load_document_fonts(&folder, &|_| Ok(())).scope);
+    assert_eq!((again.face(FAMILY, "Regular").style.as_str(), again.face(FAMILY, "Light").style.as_str()), ("Regular", "Light"));
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -229,4 +267,31 @@ fn a_wws_family_that_is_also_the_legacy_family_finds_the_optical_size_face() {
     assert!(fonts.has_style("DocFont Kepler Display", "Light"));
     assert_eq!(fonts.face("DocFont Kepler", "Light").style, "Light");
     let _ = std::fs::remove_dir_all(&folder);
+}
+
+#[test]
+fn document_fonts_keep_the_installed_wws_styles_that_share_a_typographic_style() {
+    // Both faces are "Regular" by their typographic names and differ only by their WWS style names:
+    // the document's Light must not hide the installed Bold.
+    const WWS_FAMILY: &str = "DocFont Opsz Display";
+    let root = temp_dir("wws-partial");
+    let system = root.join("system");
+    let folder = root.join(DOCUMENT_FONTS_FOLDER);
+    std::fs::create_dir_all(&system).unwrap();
+    std::fs::create_dir_all(&folder).unwrap();
+    let write = |path: PathBuf, wws_style: &str, weight: u16, c: char| {
+        let names = [(1, WWS_FAMILY), (2, "Regular"), (16, "DocFont Opsz"), (17, "Regular"), (21, WWS_FAMILY), (22, wws_style)];
+        std::fs::write(path, with_table_u16(font_with_names(&names, &[c]).unwrap(), b"OS/2", 4, weight).unwrap()).unwrap();
+    };
+    write(system.join("Opsz-Bold.ttf"), "Bold", 700, 'b');
+    write(folder.join("Opsz-Light.ttf"), "Light", 300, 'l');
+
+    let db = FontDb::with_font_dirs(vec![system]);
+    let r = db.load_document_fonts(&folder, &|_| Ok(()));
+    assert_eq!((r.faces, r.skipped.len()), (1, 0), "{:?}", r.skipped);
+    let fonts = db.scoped(r.scope);
+    let bold = fonts.face(WWS_FAMILY, "Bold");
+    assert!(bold.covers('b') && matches!(bold.source, FontSource::Installed(_)), "{:?}", bold.source);
+    assert!(fonts.face(WWS_FAMILY, "Light").covers('l'));
+    let _ = std::fs::remove_dir_all(&root);
 }
