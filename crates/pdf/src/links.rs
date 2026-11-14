@@ -15,8 +15,7 @@ use crate::export::Sheet;
 /// `javascript:`, `data:`, `file:` or custom scheme is left out rather than embedded in the PDF
 /// (audit: DesignCraft #4).
 fn allowed_link(url: &str) -> Option<&str> {
-    let lower = url.to_ascii_lowercase();
-    ["http://", "https://", "mailto:", "ftp://"].iter().any(|p| lower.starts_with(p)).then_some(url)
+    designcraft_doc::is_safe_link_url(url).then_some(url)
 }
 
 /// Index of the output sheet showing absolute page `abs`.
@@ -184,10 +183,19 @@ mod tests {
 
     #[test]
     fn only_web_and_mail_schemes_become_link_annotations() {
-        for ok in ["https://example.com", "HTTP://example.com", "mailto:a@b.example", "ftp://example.com"] {
+        for ok in ["https://example.com", "HTTP://example.com", "mailto:a@b.example"] {
             assert_eq!(allowed_link(ok), Some(ok));
         }
-        for bad in ["javascript:alert(1)", "JavaScript:alert(1)", "data:text/html,x", "file:///etc/passwd", "vbscript:x", "example.com", ""] {
+        for bad in [
+            "javascript:alert(1)",
+            "JavaScript:alert(1)",
+            "data:text/html,x",
+            "file:///etc/passwd",
+            "ftp://example.com",
+            "vbscript:x",
+            "example.com",
+            "",
+        ] {
             assert_eq!(allowed_link(bad), None, "{bad}");
         }
     }

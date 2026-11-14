@@ -955,6 +955,15 @@ pub enum HyperlinkDest {
     Anchor(u64),
 }
 
+/// Whether a URL may be used as an external link. Only web and mail schemes are allowed: a
+/// `file:`, `javascript:` or UNC link can make a recipient's PDF viewer contact an attacker.
+pub fn is_safe_link_url(url: &str) -> bool {
+    let Some((scheme, rest)) = url.split_once(':') else { return false };
+    !rest.is_empty()
+        && !url.chars().any(|c| c.is_control() || c.is_whitespace())
+        && matches!(scheme.to_ascii_lowercase().as_str(), "http" | "https" | "mailto")
+}
+
 impl HyperlinkDest {
     /// The name a hyperlink is given when none is supplied.
     pub fn label(&self) -> String {
