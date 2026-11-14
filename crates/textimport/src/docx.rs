@@ -171,6 +171,7 @@ fn word_text(c: char) -> char {
 struct ImportContext<'a> {
     doc: &'a craft_wordmodel::Document,
     names: &'a HashMap<String, String>,
+    default_para_style: Option<String>,
     warned_objects: bool,
     notes_done: HashSet<u32>,
     note_bytes: usize,
@@ -179,7 +180,10 @@ struct ImportContext<'a> {
 
 fn append_paragraph(ctx: &mut ImportContext<'_>, p: &Paragraph, st: &mut Story) {
     let para_at = st.len();
-    let style = p.props.style.as_ref().and_then(|id| ctx.names.get(id)).cloned().unwrap_or_else(|| BASIC_PARAGRAPH.into());
+    let style = match p.props.style.as_ref() {
+        Some(id) => ctx.names.get(id).cloned().unwrap_or_else(|| BASIC_PARAGRAPH.into()),
+        None => ctx.default_para_style.clone().unwrap_or_else(|| BASIC_PARAGRAPH.into()),
+    };
     st.format_paras(para_at..para_at, |fmt| *fmt = ParaFormat { style: style.clone(), para: para_attrs(&p.props, ctx.doc), ..Default::default() });
 
     let mut object_i = 0usize;
@@ -282,8 +286,23 @@ fn append_blocks(ctx: &mut ImportContext<'_>, blocks: &[std::sync::Arc<Block>], 
 pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
     let doc = craft_docx::read(bytes).map_err(|e| ImportError::Corrupt(e.to_string()))?;
     let (mut para_styles, mut char_styles, names) = style_records(&doc.styles, &doc);
+    let default_para_style = doc
+        .styles
+        .styles
+        .iter()
+        .find(|style| style.kind == StyleKind::Paragraph && style.default)
+        .or_else(|| doc.styles.styles.iter().find(|style| style.kind == StyleKind::Paragraph && style.id == "Normal"))
+        .and_then(|style| names.get(&style.id).cloned());
     let mut story = Story::new(StoryId(0));
-    let mut ctx = ImportContext { doc: &doc, names: &names, warned_objects: false, notes_done: HashSet::new(), note_bytes: 0, warnings: Vec::new() };
+    let mut ctx = ImportContext {
+        doc: &doc,
+        names: &names,
+        default_para_style,
+        warned_objects: false,
+        notes_done: HashSet::new(),
+        note_bytes: 0,
+        warnings: Vec::new(),
+    };
     append_blocks(&mut ctx, &doc.body, &mut story);
     story.end_paragraphs_at_breaks();
     if ctx.warned_objects {
