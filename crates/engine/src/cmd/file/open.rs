@@ -70,53 +70,108 @@ pub(super) fn file_open_recent(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// `file.open`: the document opens and moves to the front of File › Open Recent.
 pub(super) fn file_open(s: &mut Session, p: &Value) -> Result<Value> {
-    let r = open_path(s, p)?;
-    if let Some(path) = str_param(p, "path") {
-        s.prefs.note_recent_file(path);
-    }
-    Ok(r)
-}
-
-fn open_path(s: &mut Session, p: &Value) -> Result<Value> {
     let path = str_param(p, "path").ok_or_else(|| bad("file.open", "missing `path`"))?;
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let bytes = crate::io::read_file(path).map_err(EngineError::Other)?;
-        // The content decides first: a file's extension may be missing or wrong. The extension
-        // then routes files whose content isn't recognised to the reader that explains why.
-        let format = craft_file_formats::detect(path, &bytes);
-        let native = matches!(
-            craft_file_formats::detect("", &bytes),
-            Some(craft_file_formats::Format::DesignCraft | craft_file_formats::Format::DesignCraftJson)
-        );
-        let legacy = (format == Some(craft_file_formats::Format::Indd) && !native).then(|| load_bytes(&bytes).ok()).flatten();
-        if format == Some(craft_file_formats::Format::Idml) || (!native && format == Some(craft_file_formats::Format::Indd) && legacy.is_none()) {
-            return crate::cmd::interchange::open_idml(s, p);
-        }
-        if !native && legacy.is_none() {
-            return Err(bad("file.open", format!("{path}: not a DesignCraft or IDML file")));
-        }
-        let (mut d, mut warnings) = match legacy {
-            Some(loaded) => loaded,
-            None => load_bytes(&bytes)?,
+        let read = match s.staged_open.take().filter(|r| r.path == path) {
+            Some(read) => read,
+            None => read_document(path, &std::sync::atomic::AtomicBool::new(false))?,
         };
-        crate::cmd::interchange::resolve_packaged_links(&mut d, Some(std::path::Path::new(path)));
-        crate::cmd::datamerge::resolve_sources_on_open(&mut d, Some(std::path::Path::new(path)));
-        let links = crate::cmd::native_links::resolve(&mut d, Some(std::path::Path::new(path)), true);
-        let (fonts, faces, font_warnings) = load_document_fonts(&mut d, path);
-        warnings.extend(font_warnings);
-        warnings.extend(crate::cmd::style::grep_style_warnings(&d));
-        let mut st = DocState::new(d, Some(path.to_string()));
-        st.fonts = fonts;
-        let checks = crate::cmd::native_links::start(&mut st, links);
-        let i = s.add_document(st);
-        Ok(json!({"index": i, "documentFonts": faces, "warnings": warnings, "linkChecks": checks}))
+        install_document(s, read)
     }
     #[cfg(target_arch = "wasm32")]
     {
         let _ = (s, path);
         Err(EngineError::Other("use file.openBytes on the web".into()))
     }
+}
+
+/// A document file read and parsed by [`read_document`], which needs no session and may run on
+/// any thread. `file.open` reads its file this way and then opens what it read; one read ahead
+/// of time is handed to it with [`Session::stage_open`].
+#[cfg(not(target_arch = "wasm32"))]
+pub struct ReadDocument {
+    path: String,
+    content: ReadContent,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+enum ReadContent {
+    /// A DesignCraft document (or one with an InDesign extension), its repair warnings, and the
+    /// links found for the background check.
+    Native { doc: Box<Document>, warnings: Vec<String>, links: crate::cmd::native_links::Opened },
+    /// An IDML or InDesign file's bytes, imported when installed.
+    Interchange(Vec<u8>),
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl ReadDocument {
+    /// The file the document was read from.
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+}
+
+/// Read and parse the document file at `path` for `file.open`: the slow part of
+/// `file.open` (reading, unzipping and decoding the document, finding its linked files). The
+/// file roots in force on the calling thread apply. When `cancel` is set between steps it stops
+/// with an error.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn read_document(path: &str, cancel: &std::sync::atomic::AtomicBool) -> Result<ReadDocument> {
+    let cancelled = || cancel.load(std::sync::atomic::Ordering::Relaxed).then(|| EngineError::Other(format!("{path}: opening cancelled")));
+    let bytes = crate::io::read_file(path).map_err(EngineError::Other)?;
+    if let Some(e) = cancelled() {
+        return Err(e);
+    }
+    // The content decides first: a file's extension may be missing or wrong. The extension
+    // then routes files whose content isn't recognised to the reader that explains why.
+    let format = craft_file_formats::detect(path, &bytes);
+    let native =
+        matches!(craft_file_formats::detect("", &bytes), Some(craft_file_formats::Format::DesignCraft | craft_file_formats::Format::DesignCraftJson));
+    let legacy = (format == Some(craft_file_formats::Format::Indd) && !native).then(|| load_bytes(&bytes).ok()).flatten();
+    if format == Some(craft_file_formats::Format::Idml) || (!native && format == Some(craft_file_formats::Format::Indd) && legacy.is_none()) {
+        return Ok(ReadDocument { path: path.to_string(), content: ReadContent::Interchange(bytes) });
+    }
+    if !native && legacy.is_none() {
+        return Err(bad("file.open", format!("{path}: not a DesignCraft or IDML file")));
+    }
+    let (mut d, warnings) = match legacy {
+        Some(loaded) => loaded,
+        None => load_bytes(&bytes)?,
+    };
+    drop(bytes);
+    if let Some(e) = cancelled() {
+        return Err(e);
+    }
+    let file = std::path::Path::new(path);
+    crate::cmd::interchange::resolve_packaged_links(&mut d, Some(file));
+    crate::cmd::datamerge::resolve_sources_on_open(&mut d, Some(file));
+    let links = crate::cmd::native_links::resolve(&mut d, Some(file), true);
+    Ok(ReadDocument { path: path.to_string(), content: ReadContent::Native { doc: Box::new(d), warnings, links } })
+}
+
+/// Open the document [`read_document`] read as the active document, with its fonts and the
+/// background check of its linked files, and move its file to the front of File › Open Recent.
+/// → what `file.open` answers.
+#[cfg(not(target_arch = "wasm32"))]
+fn install_document(s: &mut Session, read: ReadDocument) -> Result<Value> {
+    let ReadDocument { path, content } = read;
+    let r = match content {
+        ReadContent::Interchange(bytes) => crate::cmd::interchange::open_idml_file(s, bytes, &path)?,
+        ReadContent::Native { doc, mut warnings, links } => {
+            let mut d = *doc;
+            let (fonts, faces, font_warnings) = load_document_fonts(&mut d, &path);
+            warnings.extend(font_warnings);
+            warnings.extend(crate::cmd::style::grep_style_warnings(&d));
+            let mut st = DocState::new(d, Some(path.clone()));
+            st.fonts = fonts;
+            let checks = crate::cmd::native_links::start(&mut st, links);
+            let i = s.add_document(st);
+            json!({"index": i, "documentFonts": faces, "warnings": warnings, "linkChecks": checks})
+        }
+    };
+    s.prefs.note_recent_file(&path);
+    Ok(r)
 }
 
 /// Load the fonts in the `Document Fonts` folder beside the document file at `path` for `d` alone
@@ -697,5 +752,56 @@ mod recent_tests {
         assert_eq!(back.recent_files_max, 20);
         let old: crate::Prefs = serde_json::from_slice(br#"{"recoveryMinutes": 2.0}"#).unwrap();
         assert!(old.recent_files.is_empty(), "older prefs.json without the list still load");
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod read_install_tests {
+    use std::sync::atomic::AtomicBool;
+
+    use serde_json::json;
+
+    use super::read_document;
+    use crate::Session;
+
+    /// A document read on another thread and staged for `file.open` (what a background open
+    /// does) gives the document, answer and recent files that `file.open` reading the file gives,
+    /// without reading the file again.
+    #[test]
+    fn a_document_read_on_another_thread_opens_as_file_open_opens_it() {
+        let dir = std::env::temp_dir().join(format!("dc-read-install-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let image = dir.join("photo.png");
+        std::fs::write(&image, designcraft_render::Rendered { width: 40, height: 20, pixels: [200, 90, 30, 255].repeat(800) }.to_png()).unwrap();
+        let path = dir.join("Brochure.designcraft").to_string_lossy().to_string();
+        let mut writer = Session::new();
+        writer.execute("file.new", &json!({})).unwrap();
+        writer.execute("frame.create", &json!({"rect": [36, 36, 300, 200], "content": "text", "text": "Hello"})).unwrap();
+        writer.execute("file.place", &json!({"path": image.to_string_lossy(), "x": 40, "y": 260})).unwrap();
+        writer.execute("file.save", &json!({"path": path})).unwrap();
+
+        let mut by_command = Session::new();
+        let opened = by_command.execute("file.open", &json!({"path": path})).unwrap();
+
+        let worker_path = path.clone();
+        let read = std::thread::spawn(move || read_document(&worker_path, &AtomicBool::new(false))).join().unwrap().unwrap();
+        assert_eq!(read.path(), path);
+        let saved = std::fs::read(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        let mut staged = Session::new();
+        staged.stage_open(read);
+        let installed = staged.execute("file.open", &json!({"path": path})).unwrap();
+
+        assert_eq!(installed, opened);
+        assert_eq!(staged.doc().unwrap().doc, by_command.doc().unwrap().doc);
+        assert_eq!(staged.doc().unwrap().path, by_command.doc().unwrap().path);
+        assert_eq!(staged.prefs.recent_files, by_command.prefs.recent_files);
+        assert!(staged.execute("file.open", &json!({"path": path})).is_err(), "a staged document opens once");
+
+        std::fs::write(&path, saved).unwrap();
+        let cancelled = read_document(&path, &AtomicBool::new(true));
+        assert!(cancelled.is_err_and(|e| e.to_string().contains("cancelled")));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

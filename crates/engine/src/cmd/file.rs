@@ -20,6 +20,8 @@ mod snippets;
 
 pub use bytes::{DOCUMENT_SNIFF_BYTES, base64_decode, base64_encode, from_bytes, is_document, to_bytes, with_document_extension};
 pub(crate) use open::load_document_fonts;
+#[cfg(not(target_arch = "wasm32"))]
+pub use open::{ReadDocument, read_document};
 pub use open::{RecentPreview, recent_preview};
 pub(crate) use place::{crop_pdf, crop_pdf_from, document_of, prepare_placed, read_source, validate_placement};
 pub use registry::specs;
