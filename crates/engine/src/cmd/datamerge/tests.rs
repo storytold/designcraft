@@ -1536,6 +1536,53 @@ fn merged_records_give_anchored_objects_their_own_ids() {
     designcraft_format::load(&designcraft_format::save(doc).unwrap()).unwrap();
 }
 
+/// A record's copy gives the objects anchored in an endnote of a table cell or of a footnote ids of
+/// their own, and maps them, so placeholders on them follow the copy.
+#[test]
+fn record_copies_renumber_objects_anchored_in_nested_endnotes() {
+    use designcraft_doc::{AnchoredObject, ItemId, SpreadRef};
+    use std::sync::Arc;
+
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    let made = text_frame(&mut s, [36.0, 36.0, 400.0, 300.0], "Body", None);
+    let (frame, sid) = (ItemId(made["id"].as_u64().unwrap()), StoryId(made["story"].as_u64().unwrap()));
+    let a = exec(&mut s, "frame.create", json!({"rect": [450, 450, 474, 490]}))["id"].as_u64().unwrap();
+    let b = exec(&mut s, "frame.create", json!({"rect": [480, 450, 504, 490]}))["id"].as_u64().unwrap();
+    let mut src = s.doc().unwrap().doc.as_ref().clone();
+    let d = &mut src;
+    let take = |d: &mut designcraft_doc::Document, id: u64| {
+        let it = d.item(ItemId(id)).cloned().unwrap();
+        Arc::make_mut(&mut d.spreads[0]).items.retain(|i| i.id.0 != id);
+        AnchoredObject::new(it, Default::default())
+    };
+    let in_cell = take(d, a);
+    let in_footnote = take(d, b);
+    let mut table = designcraft_doc::Table::new(d.alloc(), 1, 1, 0, 0, 40.0);
+    let cell = &mut table.cells[0].text;
+    cell.insert_endnote(cell.len(), "Cell endnote", Default::default()).unwrap();
+    Arc::make_mut(&mut cell.endnotes[0]).text.insert_object(0, in_cell);
+    let st = d.story_mut(sid).unwrap();
+    st.insert_note(st.len(), "Footnote", Default::default()).unwrap();
+    let note = &mut Arc::make_mut(&mut st.notes[0]).text;
+    note.insert_endnote(note.len(), "Footnote endnote", Default::default()).unwrap();
+    Arc::make_mut(&mut note.endnotes[0]).text.insert_object(0, in_footnote);
+    st.insert_table(0, table);
+    src.check().unwrap();
+
+    let mut dst = src.clone();
+    let it = src.item(frame).cloned().unwrap();
+    let mut maps = super::fill::Maps::default();
+    super::fill::copy_item(&mut dst, &src, &it, SpreadRef::Doc(0), designcraft_geom::Vec2::new(0.0, 0.0), &mut maps).unwrap();
+    let ids: Vec<u64> = dst.anchored_items().into_iter().map(|(_, i)| i.id.0).collect();
+    let unique: std::collections::BTreeSet<_> = ids.iter().collect();
+    assert_eq!((ids.len(), unique.len()), (4, 4), "the copies have ids of their own: {ids:?}");
+    for old in [a, b] {
+        assert!(maps.items.contains_key(&ItemId(old)), "object {old} is mapped to its copy");
+    }
+    dst.check().unwrap();
+}
+
 /// A record previewed into an image placeholder whose frame wraps with an Alpha Channel contour
 /// gets the image's outline, as an edit would.
 #[test]
