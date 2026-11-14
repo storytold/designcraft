@@ -3508,7 +3508,7 @@ fn pdf_export_override_keeps_override() {
 }
 
 #[test]
-fn pdf_export_preset_high_quality_print_keeps_flatten() {
+fn pdf_export_preset_desktop_printing_clears_flatten() {
     let mut d = Dialog::new("pdfExport", json!({}));
     d.fields.insert("flatten".into(), json!("medium"));
     apply_pdf_preset(&mut d, "Desktop Printing");
@@ -3517,11 +3517,11 @@ fn pdf_export_preset_high_quality_print_keeps_flatten() {
     assert!(!d.b("marksCrop"));
     assert!(!d.b("marksBleed"));
     assert!(!d.b("marksPageInfo"));
-    assert_eq!(d.s("flatten"), "medium", "a leave-unchanged preset must not touch flatten");
+    assert_eq!(d.s("flatten"), "", "non-X-1a presets keep transparency live");
 }
 
 #[test]
-fn pdf_export_preset_press_quality_keeps_flatten() {
+fn pdf_export_preset_commercial_printing_clears_flatten() {
     let mut d = Dialog::new("pdfExport", json!({}));
     d.fields.insert("flatten".into(), json!("high"));
     apply_pdf_preset(&mut d, "Commercial Printing");
@@ -3530,19 +3530,20 @@ fn pdf_export_preset_press_quality_keeps_flatten() {
     assert!(d.b("marksCrop"));
     assert!(d.b("marksBleed"));
     assert!(!d.b("marksPageInfo"));
-    assert_eq!(d.s("flatten"), "high");
+    assert_eq!(d.s("flatten"), "");
 }
 
 #[test]
-fn pdf_export_preset_smallest_file_size_sets_flatten_low() {
+fn pdf_export_preset_screen_and_email_keeps_transparency_live() {
     let mut d = Dialog::new("pdfExport", json!({}));
+    d.fields.insert("flatten".into(), json!("low"));
     apply_pdf_preset(&mut d, "Screen and Email");
     assert_eq!(d.s("standard"), "none");
     assert!(d.b("compressImages"));
     assert!(!d.b("marksCrop"));
     assert!(!d.b("marksBleed"));
     assert!(!d.b("marksPageInfo"));
-    assert_eq!(d.s("flatten"), "low");
+    assert_eq!(d.s("flatten"), "");
 }
 
 /// The PDF/X-1a preset exports X-1a with the High Resolution flattener and printer's marks.
@@ -3557,7 +3558,7 @@ fn pdf_export_preset_pdf_x1a_flattens_at_high_resolution() {
 }
 
 #[test]
-fn pdf_export_preset_pdf_x4_keeps_flatten() {
+fn pdf_export_preset_pdf_x4_clears_flatten() {
     let mut d = Dialog::new("pdfExport", json!({}));
     d.fields.insert("flatten".into(), json!("medium"));
     apply_pdf_preset(&mut d, "PDF/X-4");
@@ -3566,11 +3567,11 @@ fn pdf_export_preset_pdf_x4_keeps_flatten() {
     assert!(d.b("marksCrop"));
     assert!(d.b("marksBleed"));
     assert!(!d.b("marksPageInfo"));
-    assert_eq!(d.s("flatten"), "medium");
+    assert_eq!(d.s("flatten"), "");
 }
 
 #[test]
-fn pdf_export_preset_pdf_a2b_keeps_flatten() {
+fn pdf_export_preset_pdf_a2b_clears_flatten() {
     let mut d = Dialog::new("pdfExport", json!({}));
     d.fields.insert("flatten".into(), json!("low"));
     apply_pdf_preset(&mut d, "PDF/A-2b");
@@ -3579,7 +3580,7 @@ fn pdf_export_preset_pdf_a2b_keeps_flatten() {
     assert!(!d.b("marksCrop"));
     assert!(!d.b("marksBleed"));
     assert!(!d.b("marksPageInfo"));
-    assert_eq!(d.s("flatten"), "low");
+    assert_eq!(d.s("flatten"), "");
 }
 
 #[test]
@@ -3606,6 +3607,21 @@ fn open_pdf_export_seeds_fields_from_settings() {
     open_pdf_export(&mut app);
     let d = app.ui.dialog.as_ref().unwrap();
     assert_eq!(d.s("flatten"), "low");
+
+    // An explicitly persisted "none" maps to "" in the dialog without falling back to the global flattener.
+    app.ui.pdf_export.flatten = "none".into();
+    app.ui.flattener = "medium".into();
+    open_pdf_export(&mut app);
+    let d = app.ui.dialog.as_ref().unwrap();
+    assert_eq!(d.s("flatten"), "");
+
+    // Legacy settings saved under "Screen and Email" with flatten = "low" open with live transparency.
+    app.ui.pdf_export.preset = "Screen and Email".into();
+    app.ui.pdf_export.flatten = "low".into();
+    app.ui.flattener = "medium".into();
+    open_pdf_export(&mut app);
+    let d = app.ui.dialog.as_ref().unwrap();
+    assert_eq!(d.s("flatten"), "");
 }
 
 #[test]
@@ -3657,6 +3673,83 @@ fn confirm_pdf_export_writes_file_and_persists_settings() {
     assert!(!app.ui.pdf_export.bleed);
     assert!(app.ui.pdf_export.marks_crop);
     assert!(!app.ui.pdf_export.tagged);
+}
+
+#[test]
+fn pdf_export_presets_keep_full_png_resolution_with_effects_and_blending() {
+    use std::sync::{Arc, Mutex};
+    let make_png = |side: u32| {
+        let mut pixels = Vec::with_capacity((side * side * 4) as usize);
+        for y in 0..side {
+            for x in 0..side {
+                let v = if ((x + y) / 4).is_multiple_of(2) { 20u8 } else { 235u8 };
+                pixels.extend_from_slice(&[v, v, v, 255]);
+            }
+        }
+        let png = designcraft_render::Rendered { width: side, height: side, pixels }.to_png();
+        designcraft_engine::cmd::base64_encode(&png)
+    };
+    let b64_blend = make_png(400);
+    let b64_feather = make_png(440);
+
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let blended = app.run("file.place", json!({"base64": &b64_blend, "name": "blend.png", "x": 36, "y": 36, "width": 200})).unwrap()["id"].clone();
+    app.run("object.effects", json!({"ids": [blended], "blend": "Multiply"})).unwrap();
+    let feathered =
+        app.run("file.place", json!({"base64": &b64_feather, "name": "grad.png", "x": 260, "y": 36, "width": 200})).unwrap()["id"].clone();
+    app.run("object.gradientFeather", json!({"ids": [feathered], "from": [260, 136], "to": [460, 136]})).unwrap();
+
+    let writes: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = writes.clone();
+    app.services.write = Some(Box::new(move |_path: &str, bytes: &[u8]| {
+        sink.lock().unwrap().push(bytes.to_vec());
+        Ok(())
+    }));
+    app.answer_dialogs(crate::app::file_dialogs::testing::answer_with(Some("/tmp/preset-resolution-test.pdf".into())));
+
+    // 1. "Screen and Email" must keep transparency live instead of flattening effects/blends to 72 ppi.
+    open_pdf_export(&mut app);
+    {
+        let d = app.ui.dialog.as_mut().unwrap();
+        apply_pdf_preset(d, "Screen and Email");
+        assert_eq!(d.s("flatten"), "");
+    }
+    confirm(&mut app).unwrap();
+    app.settle_dialogs();
+    assert_eq!(app.ui.pdf_export.flatten, "none");
+
+    // 2. Switching away from a prior "low" choice (and with global flattener = "low") must not re-flatten at 72 ppi.
+    app.ui.flattener = "low".into();
+    app.ui.pdf_export.flatten = "low".into();
+    open_pdf_export(&mut app);
+    {
+        let d = app.ui.dialog.as_mut().unwrap();
+        assert_eq!(d.s("flatten"), "low");
+        apply_pdf_preset(d, "Desktop Printing");
+        assert_eq!(d.s("flatten"), "");
+    }
+    confirm(&mut app).unwrap();
+    app.settle_dialogs();
+    assert_eq!(app.ui.pdf_export.flatten, "none");
+
+    // 3. Reopening the dialog without re-selecting the preset must keep flatten = "" (not fall back to "low").
+    open_pdf_export(&mut app);
+    {
+        let d = app.ui.dialog.as_ref().unwrap();
+        assert_eq!(d.s("flatten"), "");
+    }
+    confirm(&mut app).unwrap();
+    app.settle_dialogs();
+    assert_eq!(app.ui.pdf_export.flatten, "none");
+
+    let pdfs = writes.lock().unwrap();
+    assert_eq!(pdfs.len(), 3);
+    for (i, pdf) in pdfs.iter().enumerate() {
+        let text = String::from_utf8_lossy(pdf);
+        assert!(text.contains("/Width 400"), "export #{i} should keep 400px blended PNG unflattened");
+        assert!(text.contains("/Width 440"), "export #{i} should keep 440px feathered PNG unflattened");
+    }
 }
 
 #[test]

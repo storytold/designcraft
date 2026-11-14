@@ -153,8 +153,8 @@ fn package_pdf_takes_export_options() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
-/// A preset that flattens transparency (Screen and Email's `flatten: low`) gives the packaged
-/// PDF the flattening `file.exportPdf` does.
+/// A preset or explicit `flatten` option (such as `flatten: low`) gives the packaged PDF the
+/// flattening `file.exportPdf` does.
 #[test]
 fn the_packaged_pdf_is_flattened_as_export_flattens_it() {
     let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();

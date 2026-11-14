@@ -784,16 +784,16 @@ pub fn open_print(app: &mut DesignApp) {
 
 /// File › Export PDF…: the "Export PDF" options dialog, seeded from the persisted settings
 /// (`UiState.pdf_export`). `pages` is per-job (not persisted); `flatten` falls back to the global
-/// flattener preset when the persisted value is empty. `title` starts empty: a title given to the
+/// flattener preset when no choice has been saved (`""`), while a saved `"none"` keeps live
+/// transparency (`""` in the dialog). `title` starts empty: a title given to the
 /// dialog is the PDF's title and names the file, and without one the file is named after the
 /// document and the PDF takes its title from File Info.
 pub fn open_pdf_export(app: &mut DesignApp) {
     let mut fields = serde_json::to_value(&app.ui.pdf_export).unwrap_or_else(|_| json!({}));
     if let Value::Object(m) = &mut fields {
         m.insert("pages".into(), json!("all"));
-        if app.ui.pdf_export.flatten.is_empty() {
-            m.insert("flatten".into(), json!(app.ui.flattener));
-        }
+        let flatten = app.ui.pdf_export.resolved_flatten(&app.ui.flattener);
+        m.insert("flatten".into(), json!(flatten));
     }
     app.ui.dialog = Some(Dialog::new("pdfExport", fields));
 }
@@ -976,9 +976,7 @@ fn pdf_export_params(d: &Dialog) -> Value {
         },
     });
     let flatten = d.s("flatten");
-    if !flatten.is_empty() {
-        params["flatten"] = json!(flatten);
-    }
+    params["flatten"] = if flatten.is_empty() || flatten == "none" { json!(false) } else { json!(flatten) };
     params
 }
 
@@ -994,16 +992,16 @@ pub(crate) fn pdf_preset_params(preset: &str) -> Value {
     pdf_export_params(&d)
 }
 
-/// Apply a preset's dependent fields. Flatten is only touched by "Screen and Email" and
-/// "PDF/X-1a:2003" (High Resolution); "Custom" (and any unknown value) changes nothing.
+/// Apply a preset's dependent fields. Every preset keeps live transparency (`flatten = ""`)
+/// except `"PDF/X-1a:2003"` (High Resolution); `"Custom"` (and any unknown value) changes nothing.
 fn apply_pdf_preset(d: &mut Dialog, preset: &str) {
     let (standard, compress, crop, bleed, page_info, flatten) = match preset {
-        "Desktop Printing" => ("none", false, false, false, false, None),
-        "Commercial Printing" => ("none", true, true, true, false, None),
-        "Screen and Email" => ("none", true, false, false, false, Some("low")),
-        "PDF/X-1a:2003" => ("x1a", false, true, true, false, Some("high")),
-        "PDF/X-4" => ("x4", false, true, true, false, None),
-        "PDF/A-2b" => ("a2b", false, false, false, false, None),
+        "Desktop Printing" => ("none", false, false, false, false, ""),
+        "Commercial Printing" => ("none", true, true, true, false, ""),
+        "Screen and Email" => ("none", true, false, false, false, ""),
+        "PDF/X-1a:2003" => ("x1a", false, true, true, false, "high"),
+        "PDF/X-4" => ("x4", false, true, true, false, ""),
+        "PDF/A-2b" => ("a2b", false, false, false, false, ""),
         _ => return,
     };
     d.fields.insert("standard".into(), json!(standard));
@@ -1011,9 +1009,7 @@ fn apply_pdf_preset(d: &mut Dialog, preset: &str) {
     d.fields.insert("marksCrop".into(), json!(crop));
     d.fields.insert("marksBleed".into(), json!(bleed));
     d.fields.insert("marksPageInfo".into(), json!(page_info));
-    if let Some(f) = flatten {
-        d.fields.insert("flatten".into(), json!(f));
-    }
+    d.fields.insert("flatten".into(), json!(flatten));
 }
 
 /// File › Export PDF: the "Export PDF" options (General / Compression / Marks and Bleeds /
@@ -5184,7 +5180,8 @@ fn confirm_part3(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
             app.ui.pdf_export.preset = d.s("preset");
             app.ui.pdf_export.standard = d.s("standard");
             app.ui.pdf_export.compress_images = d.b("compressImages");
-            app.ui.pdf_export.flatten = d.s("flatten");
+            let flatten = d.s("flatten");
+            app.ui.pdf_export.flatten = if flatten.is_empty() { "none".into() } else { flatten };
             app.ui.pdf_export.spreads = d.b("spreads");
             app.ui.pdf_export.bleed = d.b("bleed");
             app.ui.pdf_export.marks_crop = d.b("marksCrop");
