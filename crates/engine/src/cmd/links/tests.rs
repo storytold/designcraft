@@ -188,7 +188,9 @@ fn preview_rows_look_at_no_file() {
     std::fs::remove_file(&gone).unwrap();
     let st = s.doc().unwrap();
     assert!(st.doc.assets[&ids[0]].link_fingerprint.is_some(), "a placed file is remembered by its size and time");
-    assert!(st.doc.assets[&ids[1]].link_fingerprint.is_none(), "embed forgets the file");
+    let copy = &st.doc.assets[&ids[1]];
+    assert_eq!(copy.storage, designcraft_doc::Storage::Embedded);
+    assert!(copy.link.is_some() && copy.link_hash.is_some(), "embed keeps the link record for Unembed");
     let statuses = |rows: &[Value]| -> Vec<String> {
         ids.iter().map(|id| rows.iter().find(|r| r["asset"] == id.0).unwrap()["status"].as_str().unwrap().to_string()).collect()
     };
@@ -243,7 +245,8 @@ fn a_file_written_just_now_is_not_vouched_for_by_its_time() {
     let mut s = Session::new();
     s.execute("file.new", &json!({})).unwrap();
     let aid = AssetId(s.execute("file.place", &json!({"path": path.to_string_lossy()})).unwrap()["asset"].as_u64().unwrap());
-    assert_eq!(s.doc().unwrap().doc.assets[&aid].link_fingerprint, None);
+    let kept = s.doc().unwrap().doc.assets[&aid].link_fingerprint.unwrap();
+    assert_eq!((kept.size, kept.mtime), (image.len() as u64, UNVERIFIED_MTIME), "the time can't vouch for the bytes");
     let mut other = image.clone();
     if let Some(last) = other.last_mut() {
         *last ^= 0xff;
@@ -505,10 +508,14 @@ fn eps_legacy_preview_document_is_upgraded_by_update() {
     s.execute("file.new", &json!({})).unwrap();
     let aid = AssetId(s.execute("file.place", &json!({"path": path.to_string_lossy()})).unwrap()["asset"].as_u64().unwrap());
     let proxy = designcraft_images::eps_proxy(source).unwrap().0;
+    // A document saved before linked storage: the preview embedded, a link without a hash.
     s.edit(|d, _| {
         let a = Arc::make_mut(d.assets.get_mut(&aid).unwrap());
         a.data = designcraft_doc::AssetData::embedded(proxy);
         a.mime = "image/png".into();
+        a.storage = designcraft_doc::Storage::Embedded;
+        a.link_hash = None;
+        a.proxy = None;
         Ok(())
     })
     .unwrap();
@@ -706,4 +713,198 @@ fn link_status_relink_update_embed() {
     s.execute("links.embed", &json!({"asset": aid})).unwrap();
     assert_eq!(s.execute("links.list", &json!({})).unwrap()[0]["status"], "embedded");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A temporary folder, removed when dropped.
+#[cfg(not(target_arch = "wasm32"))]
+struct TempDir(std::path::PathBuf);
+
+#[cfg(not(target_arch = "wasm32"))]
+impl TempDir {
+    fn new(name: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!("dc-links-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        TempDir(dir)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Two valid PNGs of one byte length with other pixels (a uniform fill compresses to the same size).
+fn same_size_pngs() -> (Vec<u8>, Vec<u8>) {
+    let a = designcraft_render::Rendered { width: 30, height: 20, pixels: vec![200u8; 30 * 20 * 4] }.to_png();
+    let b = designcraft_render::Rendered { width: 30, height: 20, pixels: vec![100u8; 30 * 20 * 4] }.to_png();
+    assert_eq!(a.len(), b.len());
+    (a, b)
+}
+
+fn placed(s: &mut Session, params: Value) -> AssetId {
+    AssetId(s.execute("file.place", &params).unwrap()["asset"].as_u64().unwrap())
+}
+
+fn asset_of(s: &Session, id: AssetId) -> Arc<designcraft_doc::Asset> {
+    Arc::clone(&s.doc().unwrap().doc.assets[&id])
+}
+
+fn row(s: &mut Session, id: AssetId) -> Value {
+    s.execute("links.list", &json!({})).unwrap().as_array().unwrap().iter().find(|r| r["asset"] == id.0).unwrap().clone()
+}
+
+/// The format version a saved bundle declares.
+#[cfg(not(target_arch = "wasm32"))]
+fn bundle_version(bytes: &[u8]) -> (u64, Vec<String>) {
+    use std::io::Read;
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+    let names: Vec<String> = zip.file_names().map(str::to_string).collect();
+    let mut version = 0;
+    for name in names.iter().filter(|n| n.ends_with(".json")) {
+        let mut text = String::new();
+        zip.by_name(name).unwrap().read_to_string(&mut text).unwrap();
+        if let Ok(v) = serde_json::from_str::<Value>(&text)
+            && v.get("format").is_some()
+        {
+            version = v["version"].as_u64().unwrap();
+        }
+    }
+    (version, names.into_iter().filter(|n| n.starts_with("assets/")).collect())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_file_placed_from_a_path_links_to_it_and_embed_true_embeds_it() {
+    use designcraft_doc::Storage;
+    let dir = TempDir::new("place");
+    let path = dir.0.join("art.png");
+    let (bytes, _) = same_size_pngs();
+    std::fs::write(&path, &bytes).unwrap();
+    set_age(&path, 60);
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+
+    let id = placed(&mut s, json!({"path": path.to_string_lossy()}));
+    let a = asset_of(&s, id);
+    assert_eq!(a.storage, Storage::Linked);
+    assert!(a.data.is_linked() && a.data.embedded_bytes().is_none(), "no embedded copy");
+    assert_eq!(a.link.as_deref(), path.to_str());
+    assert_eq!(a.link_hash.as_deref(), Some(crate::asset_io::content_hash(&bytes).as_str()));
+    assert!(a.proxy.as_ref().is_some_and(|p| p.pixels == (30, 20)));
+    assert_eq!(a.data.resident().as_deref(), Some(&bytes), "the bytes read for placing are kept for the first draw");
+    let r = row(&mut s, id);
+    assert_eq!((r["storage"].as_str(), r["status"].as_str()), (Some("linked"), Some("ok")));
+    let (version, stored) = bundle_version(&designcraft_format::save(&s.doc().unwrap().doc).unwrap());
+    assert_eq!((version, stored), (5, vec![]), "linked: format 5 and no copy of the file");
+
+    let e = placed(&mut s, json!({"path": path.to_string_lossy(), "embed": true, "x": 200}));
+    let a = asset_of(&s, e);
+    assert_eq!(a.storage, Storage::Embedded);
+    assert_eq!(a.data.embedded_bytes().map(|b| b.as_slice()), Some(bytes.as_slice()));
+    assert!(a.link.is_some() && a.link_hash.is_some(), "the link record stays for Unembed");
+    let r = row(&mut s, e);
+    assert_eq!((r["storage"].as_str(), r["status"].as_str()), (Some("embedded"), Some("embedded")));
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_modified_link_is_updated_undoably() {
+    let dir = TempDir::new("update");
+    let path = dir.0.join("art.png");
+    let (first, second) = same_size_pngs();
+    std::fs::write(&path, &first).unwrap();
+    set_age(&path, 60);
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    let id = placed(&mut s, json!({"path": path.to_string_lossy()}));
+    let key = asset_of(&s, id).data.key();
+
+    std::fs::write(&path, &second).unwrap();
+    set_age(&path, 30);
+    assert_eq!(row(&mut s, id)["status"], "modified");
+    assert_eq!(asset_of(&s, id).data.load().unwrap().as_slice(), first, "changed bytes are never adopted");
+    assert_eq!(s.execute("links.update", &json!({"asset": id.0})).unwrap()["updated"], 1);
+    let a = asset_of(&s, id);
+    assert_eq!(row(&mut s, id)["status"], "ok");
+    assert_ne!(a.data.key(), key);
+    assert_eq!(a.link_hash.as_deref(), Some(crate::asset_io::content_hash(&second).as_str()));
+    assert_eq!(a.data.load().unwrap().as_slice(), second);
+
+    s.execute("edit.undo", &json!({})).unwrap();
+    let a = asset_of(&s, id);
+    assert_eq!((a.data.key(), a.link_hash.clone()), (key, Some(crate::asset_io::content_hash(&first))));
+    assert_eq!(row(&mut s, id)["status"], "modified");
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn embed_refuses_a_missing_link_and_unembed_links_to_the_original_or_into_a_folder() {
+    use designcraft_doc::Storage;
+    let dir = TempDir::new("embed");
+    let path = dir.0.join("art.png");
+    let (first, second) = same_size_pngs();
+    std::fs::write(&path, &first).unwrap();
+    set_age(&path, 60);
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    let id = placed(&mut s, json!({"path": path.to_string_lossy()}));
+
+    std::fs::remove_file(&path).unwrap();
+    let before = s.doc().unwrap().doc.clone();
+    let err = s.execute("links.embed", &json!({"asset": id.0})).unwrap_err().to_string();
+    assert!(err.contains("missing"), "{err}");
+    assert!(Arc::ptr_eq(&s.doc().unwrap().doc, &before));
+
+    std::fs::write(&path, &first).unwrap();
+    s.execute("links.embed", &json!({"asset": id.0})).unwrap();
+    let a = asset_of(&s, id);
+    assert_eq!((a.storage, a.data.embedded_bytes().map(|b| b.to_vec())), (Storage::Embedded, Some(first.clone())));
+    assert_eq!(row(&mut s, id)["status"], "embedded");
+
+    // The original still holds the bytes: linked to it again.
+    let r = s.execute("links.unembed", &json!({"asset": id.0})).unwrap();
+    assert_eq!(r["path"].as_str(), path.to_str());
+    assert_eq!(asset_of(&s, id).storage, Storage::Linked);
+    assert_eq!(row(&mut s, id)["status"], "ok");
+
+    // Changed since: no original, so the bytes are written into `dir` (and found there next time).
+    s.execute("links.embed", &json!({"asset": id.0})).unwrap();
+    std::fs::write(&path, &second).unwrap();
+    assert!(s.execute("links.unembed", &json!({"asset": id.0})).is_err(), "no original and no folder");
+    let out = dir.0.join("out");
+    std::fs::create_dir_all(&out).unwrap();
+    let r = s.execute("links.unembed", &json!({"asset": id.0, "dir": out.to_string_lossy()})).unwrap();
+    let written = out.join("art.png");
+    assert_eq!(r["path"].as_str(), written.to_str());
+    assert_eq!(std::fs::read(&written).unwrap(), first);
+    let r = row(&mut s, id);
+    assert_eq!((r["storage"].as_str(), r["status"].as_str()), (Some("linked"), Some("ok")));
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(asset_of(&s, id).storage, Storage::Embedded);
+    s.execute("links.unembed", &json!({"asset": id.0, "dir": out.to_string_lossy()})).unwrap();
+    assert_eq!(std::fs::read_dir(&out).unwrap().count(), 1, "the file with the same bytes is reused");
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn every_image_the_place_cursor_loads_is_linked() {
+    let dir = TempDir::new("cursor");
+    let files: Vec<_> = (0..3u32)
+        .map(|i| {
+            let path = dir.0.join(format!("{i}.png"));
+            std::fs::write(&path, png(10 + i, 10)).unwrap();
+            json!({"path": path.to_string_lossy()})
+        })
+        .collect();
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    s.execute("place.load", &json!({"files": files})).unwrap();
+    s.execute("place.contactSheet", &json!({})).unwrap();
+    let d = &s.doc().unwrap().doc;
+    let used = d.used_assets();
+    assert_eq!(used.len(), 3);
+    assert!(used.iter().all(|id| d.assets[id].storage == designcraft_doc::Storage::Linked && d.assets[id].data.is_linked()));
 }
