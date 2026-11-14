@@ -232,18 +232,20 @@ fn successful_fallback_warns_for_both_names_and_preserves_rgb_samples() {
     }
     let reason = "converted to RGB (a CMYK TIFF that is planar, has premultiplied alpha, uses other inks or is over 256 MiB)";
     let expected_warnings = [format!("other-inks-a.tif: {reason}"), format!("other-inks-b.tif: {reason}")];
+    // The fallback is the RGB the screen shows: converted through the working CMYK space.
+    let rgb: Vec<u8> = designcraft_images::decode_rgba(&bytes).unwrap().pixels().flat_map(|p| [p[0], p[1], p[2]]).collect();
     for compress_images in [false, true] {
         let report = export_pdf_with_report(&d, &Cache::new(), &PdfOptions { compress_images, ..Default::default() }).unwrap();
         assert_eq!(report.warnings, expected_warnings);
         let images = image_objects(&report.bytes);
         assert_eq!(images.len(), 1);
         assert_eq!(images[0].space, "DeviceRGB");
-        assert_eq!(images[0].samples, [0, 0, 0, 255, 0, 0]);
+        assert_eq!(images[0].samples, rgb);
         assert_eq!(images[0].size, (2, 1));
     }
     let booklet = export_booklet(&d, &Cache::new(), &BookletOptions::default()).unwrap();
     assert_eq!(booklet.warnings, expected_warnings);
-    assert_eq!(image_objects(&booklet.bytes)[0].samples, [0, 0, 0, 255, 0, 0]);
+    assert_eq!(image_objects(&booklet.bytes)[0].samples, rgb);
 }
 
 #[test]
@@ -272,19 +274,20 @@ fn pdfa_rgb_conversion_does_not_poison_later_cmyk_exports() {
 }
 
 #[test]
-fn unsupported_associated_alpha_keeps_each_asset_failure_warning() {
+fn associated_alpha_exports_straight_inks_once() {
+    // The fixture stores the inks multiplied by alpha; the export carries them made straight.
     let bytes = fixtures::cmyk_tiff(Some(1), false);
     let mut d = Document::new(&Default::default());
     for (name, x) in [("alpha-a.tif", 36.0), ("alpha-b.tif", 66.0)] {
         place_named(&mut d, bytes.clone(), x, name, "image/tiff", 0);
     }
     let report = export_pdf_with_report(&d, &Cache::new(), &PdfOptions::default()).unwrap();
-    assert!(image_objects(&report.bytes).is_empty());
-    assert_eq!(report.warnings.len(), 4);
-    for name in ["alpha-a.tif", "alpha-b.tif"] {
-        assert!(report.warnings.iter().any(|w| w.starts_with(&format!("{name}: converted to RGB"))));
-        assert!(report.warnings.contains(&format!("image `{name}` could not be decoded and was skipped")));
-    }
+    assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+    let images = image_objects(&report.bytes);
+    let cmyk: Vec<_> = images.iter().filter(|i| i.space == "DeviceCMYK").collect();
+    assert_eq!(cmyk.len(), 1, "{images:?}");
+    assert_eq!(cmyk[0].samples, fixtures::INKS);
+    assert_eq!(cmyk[0].alpha.as_deref(), Some(&fixtures::ALPHA[..]));
 }
 
 fn two_page_pdf() -> Vec<u8> {
