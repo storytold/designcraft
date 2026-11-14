@@ -76,6 +76,11 @@ impl FrameOutline {
         self.inset
     }
 
+    /// The same outline keeping no distance from text.
+    pub fn without_inset(&self) -> FrameOutline {
+        FrameOutline { edges: self.edges.clone(), inset: 0.0 }
+    }
+
     /// The heights of the outline's corners, sorted and without repeats: the inside intervals of a
     /// scanline change linearly between two of them.
     pub fn corner_heights(&self) -> Vec<f64> {
