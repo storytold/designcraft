@@ -408,13 +408,18 @@ fn items(glyphs: &[Glyph], hyph_after: &[bool], emergency_after: &[bool], sp: &S
             continue;
         }
         if is_forced(g.ch) {
-            it.push(Item::glue(0.0, INF, 0.0));
-            ig.push(i);
+            // The fill glue is a break opportunity of its own: it carries the hang of the break after
+            // it, or a line that only fits by hanging its last glyph would be given up here.
+            let mut fill = Item::glue(0.0, INF, 0.0);
+            fill.hang = prev_hang;
             let mut p = Item::penalty(0.0, -INF, false);
             p.hang = prev_hang;
             if let Some(prev) = i.checked_sub(1).and_then(|j| glyphs.get(j)) {
                 p.edge_elastic = crate::mojikumi::end_elastic(prev, sp.justify, sp.kinsoku_priority != 3);
+                fill.edge_elastic = p.edge_elastic;
             }
+            it.push(fill);
+            ig.push(i);
             it.push(p);
             ig.push(i + 1);
             last_space = NONE;
@@ -491,14 +496,18 @@ fn items(glyphs: &[Glyph], hyph_after: &[bool], emergency_after: &[bool], sp: &S
             }
         }
     }
-    // Paragraph end: fill glue + forced break.
-    it.push(Item::glue(0.0, INF, 0.0));
-    ig.push(n);
+    // Paragraph end: fill glue + forced break (the glue carries the hang, as at a forced break above).
+    let end_hang = if n > 0 { right_hang(&glyphs[n - 1], sp) } else { 0.0 };
+    let mut fill = Item::glue(0.0, INF, 0.0);
+    fill.hang = end_hang;
     let mut p = Item::penalty(0.0, -INF, false);
-    p.hang = if n > 0 { right_hang(&glyphs[n - 1], sp) } else { 0.0 };
+    p.hang = end_hang;
     if let Some(g) = glyphs.last() {
         p.edge_elastic = crate::mojikumi::end_elastic(g, sp.justify, sp.kinsoku_priority != 3);
+        fill.edge_elastic = p.edge_elastic;
     }
+    it.push(fill);
+    ig.push(n);
     it.push(p);
     ig.push(n);
     (it, ig)

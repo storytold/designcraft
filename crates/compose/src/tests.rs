@@ -10111,3 +10111,28 @@ fn cross_reference_text_breaks_at_its_spaces() {
         }
     }
 }
+
+#[test]
+fn a_line_that_fits_only_by_hanging_its_last_glyph_keeps_it_before_a_forced_line_break() {
+    // The fill glue before a forced line break carries the hang of the break after it: the comma
+    // hangs past the measure, and the line is not given up (comma wrapped, or the line overset).
+    let k = designcraft_doc::cjk::Kinsoku { name: "Test".into(), no_start: ",".into(), hanging: ",".into(), ..Default::default() };
+    for align in [Align::Left, Align::LeftJustified] {
+        let para = ParaAttrs {
+            align: Some(align),
+            hyphenate: Some(false),
+            kinsoku: Some(Some(k.clone())),
+            kinsoku_hang: Some(designcraft_doc::cjk::KinsokuHang::Regular),
+            ..Default::default()
+        };
+        let (mut d, sid, fid) = doc_with("AB,\u{2028}AB", Rect::new(0.0, 0.0, 300.0, 100.0), para);
+        let initial = compose_story(&d, sid, &ComposeOptions::default());
+        let text_w = initial.frames[0].lines[0].glyphs.iter().take(2).map(|g| g.adv).sum::<f64>();
+        d.item_mut(fid).unwrap().path = designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, text_w + 1.0, 100.0));
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let lines = all_lines(&cs);
+        assert_eq!(lines.len(), 2, "{align:?}");
+        assert_eq!(lines[0].glyphs.iter().filter(|g| g.visible).count(), 3, "{align:?}: the comma stays on the first line");
+        assert!(!cs.is_overset(), "{align:?}");
+    }
+}
