@@ -484,6 +484,10 @@ fn handle_request(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest
 pub fn save_screenshot(app: &mut DesignApp, image: &egui::ColorImage, path: Option<&str>) -> Value {
     let [w, h] = image.size;
     let Some(path) = path else {
+        // The web build has no file system to write to: the PNG comes back inline, as `ui.render`'s does.
+        if cfg!(target_arch = "wasm32") {
+            return json!({"ok": true, "result": inline_screenshot(image)});
+        }
         return json!({"ok": true, "result": {"width": w, "height": h}});
     };
     let rgba: Vec<u8> = image.pixels.iter().flat_map(|c| c.to_array()).collect();
@@ -496,6 +500,14 @@ pub fn save_screenshot(app: &mut DesignApp, image: &egui::ColorImage, path: Opti
         },
         None => json!({"ok": false, "error": "no writer configured"}),
     }
+}
+
+/// A screenshot's size and its PNG as base64 (`pngBase64`), for a caller with no file system.
+fn inline_screenshot(image: &egui::ColorImage) -> Value {
+    let [w, h] = image.size;
+    let rgba: Vec<u8> = image.pixels.iter().flat_map(|c| c.to_array()).collect();
+    let png = designcraft_render::Rendered { width: w as u32, height: h as u32, pixels: rgba }.to_png();
+    json!({"width": w, "height": h, "pngBase64": designcraft_engine::cmd::base64_encode(&png)})
 }
 
 /// Parse explicit page indices without treating invalid values as omission.
@@ -513,6 +525,15 @@ pub(crate) fn page_index(p: &Value, default: usize, count: usize) -> Result<usiz
 #[cfg(test)]
 mod automation_contract_tests {
     use super::*;
+
+    #[test]
+    fn an_inline_screenshot_carries_the_png_and_its_size() {
+        let image = egui::ColorImage::filled([3, 2], egui::Color32::from_rgb(10, 20, 30));
+        let result = inline_screenshot(&image);
+        assert_eq!((result["width"].as_u64(), result["height"].as_u64()), (Some(3), Some(2)));
+        let b64 = result["pngBase64"].as_str().unwrap_or_default();
+        assert!(b64.starts_with("iVBORw0KGgo"), "a PNG signature in base64: {b64:.20}");
+    }
 
     #[test]
     fn replacing_a_style_preview_dialog_restores_the_document_and_undo_recording() {

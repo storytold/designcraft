@@ -29,5 +29,7 @@ eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit"] }
 rfd = { workspace = true }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
+# The page command API (storytold/craft-libs#413): window.designcraft over the control channel.
+craft-web-api = { git = "https://github.com/storytold/craft-libs", rev = "2bfc45c49378effb801c6433758fb5aaa5d7808e", version = "0.1.0" }
 js-sys = "0.3"
 web-sys = { version = "0.3", features = ["Event", "EventTarget", "Window", "Document", "Element", "HtmlElement", "HtmlCanvasElement", "HtmlAnchorElement", "Blob", "BlobPropertyBag", "Url", "Location", "CssStyleDeclaration"] }

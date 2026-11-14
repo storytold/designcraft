@@ -5,7 +5,8 @@
 //! from this directory (output in `dist/web`).
 //!
 //! Differences from the desktop app:
-//! - no TCP control channel (browsers can't listen on sockets);
+//! - no TCP control channel (browsers can't listen on sockets); `window.designcraft` (`api`) drives the
+//!   same control channel from the page instead;
 //! - File → Open / Place use the browser file picker; bytes arrive asynchronously through
 //!   `Services::inbox` (`.designcraft` → `file.openBytes`, images → `file.place`);
 //! - Save and Export trigger a browser download;
@@ -18,6 +19,9 @@
 
 #[cfg(any(target_arch = "wasm32", test))]
 mod browser_policy;
+
+#[cfg(target_arch = "wasm32")]
+mod api;
 
 #[cfg(target_arch = "wasm32")]
 mod web;
