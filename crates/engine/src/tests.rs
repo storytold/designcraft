@@ -2558,6 +2558,17 @@ fn changing_documents_unloads_the_place_cursor_and_its_tool() {
     }
 }
 
+/// Closing a background document leaves the active document's place cursor loaded.
+#[test]
+fn closing_a_background_document_keeps_the_place_cursor() {
+    let mut s = session();
+    s.execute("file.new", &json!({})).unwrap();
+    load_test_images(&mut s, 2);
+    s.close_document(0);
+    assert!(s.loaded.is_some() && s.loaded_queue.len() == 1);
+    assert_eq!(s.tool_id(), "placeGun");
+}
+
 /// Issue #1637: with several objects selected, a click on one of them (no drag) makes it the key
 /// object, and Align to Key Object leaves it in place. A second click on it drops the key.
 #[test]

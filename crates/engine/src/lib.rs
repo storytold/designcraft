@@ -608,7 +608,10 @@ impl Session {
             recovery::discard_document(self, i, recovery_dir.as_deref());
         }
         if i < self.docs.len() {
-            self.unload_place_cursor();
+            // A background document's closing leaves the active document's place cursor alone.
+            if self.active == Some(i) {
+                self.unload_place_cursor();
+            }
             self.reset_find_scope();
             self.docs.remove(i);
             self.active = if self.docs.is_empty() { None } else { Some(i.min(self.docs.len() - 1)) };
