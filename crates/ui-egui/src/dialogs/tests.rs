@@ -1796,6 +1796,67 @@ fn text_frame_options_dims_the_sides_for_a_non_rectangular_frame() {
     }
 }
 
+/// The number fields of Insert Table and of Paragraph Style Options' sections are named from the
+/// captions beside them, not from their internal keys; each name listed is found exactly once.
+#[test]
+fn dialog_number_fields_are_named_from_their_captions() {
+    use egui::accesskit::Role;
+    use egui_kittest::{Harness, kittest::Queryable};
+    let para = |section: &str, extra: Value| {
+        let mut fields = json!({"name": designcraft_doc::story::BASIC_PARAGRAPH, "section": section});
+        if let (Some(f), Value::Object(extra)) = (fields.as_object_mut(), extra) {
+            f.extend(extra);
+        }
+        Dialog::new("paragraphStyleOptions", fields)
+    };
+    let cases: Vec<(Dialog, &[&str])> = vec![
+        (Dialog::new("insertTable", Value::Null), &["Body Rows", "Columns", "Header Rows", "Footer Rows"]),
+        (para("chars", json!({})), &["Size", "Leading", "Tracking"]),
+        (para("advanced", json!({})), &["Horizontal Scale", "Vertical Scale", "Baseline Shift", "Skew"]),
+        (para("indents", json!({})), &["Left Indent", "First Line Indent", "Right Indent", "Space Before", "Space After"]),
+        (para("tabs", json!({})), &["X"]),
+        (para("rules", json!({})), &["Weight", "Tint", "Gap Tint", "Offset", "Left Indent", "Right Indent"]),
+        (
+            para("border", json!({})),
+            &["Stroke Top", "Stroke Right", "Tint", "Gap Tint", "Top Left Corner", "Bottom Right Corner", "Offsets Top", "Offsets Right"],
+        ),
+        (para("shading", json!({})), &["Tint", "Top Left Corner", "Offsets Top"]),
+        (para("keep", json!({})), &["Keep with Next", "Start", "End"]),
+        (para("hyph", json!({})), &["Words with at Least", "After First", "Before Last", "Hyphen Limit", "Hyphenation Zone"]),
+        (para("justify", json!({})), &["Word Spacing Minimum", "Letter Spacing Desired", "Glyph Scaling Maximum", "Auto Leading"]),
+        (para("nested", json!({})), &["Lines", "Characters"]),
+        (
+            para("bullets", json!({"p.listType": "numbers", "p.startAt": 1, "p.listTab": 18})),
+            &["Level", "Start At", "Left Indent", "First Line Indent", "Tab Position"],
+        ),
+        (para("color", json!({})), &["Tint", "Weight"]),
+        (para("underline", json!({})), &["Weight", "Offset", "Tint"]),
+    ];
+    for (dialog, names) in cases {
+        let what = format!("{} {}", dialog.id, dialog.s("section"));
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        app.ui.dialog = Some(dialog);
+        // The check covers the number fields only: some dropdowns in these views have no name yet.
+        let mut h = Harness::builder().with_size(egui::vec2(1400.0, 1000.0)).with_accessibility_check(false).build_ui_state(
+            |ui, app: &mut DesignApp| {
+                let key = egui::Id::unique("dialog_field_names_test_fonts");
+                if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
+                    crate::theme::install_fonts(ui.ctx(), "");
+                    ui.data_mut(|d| d.insert_temp(key, true));
+                    return;
+                }
+                show(app, ui.ctx());
+            },
+            app,
+        );
+        h.run_steps(3);
+        for name in names {
+            assert_eq!(h.query_all_by_role_and_label(Role::TextInput, name).count(), 1, "{what}: the {name} field");
+        }
+    }
+}
+
 /// Text Frame Options shows the insets (or a non-rectangular frame's one Inset), the gutter and
 /// the other measures in the document's ruler unit, not always in picas, and reads a bare number
 /// typed there in that unit (#2739).
