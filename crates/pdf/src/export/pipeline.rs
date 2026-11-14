@@ -239,6 +239,8 @@ fn export_pdf_with_report_inner(doc: &Document, cache: &Cache, opts: &PdfOptions
     if let Some(o) = crate::links::outline(doc, &sheets) {
         pdf.set_outline(o);
     }
+    // Link annotations on tagged text by (story, paragraph), for the structure tree.
+    let mut link_tags: HashMap<(designcraft_doc::StoryId, usize), Vec<Identifier>> = HashMap::new();
     for (sheet_idx, sh) in sheets.iter().enumerate() {
         let size = Size::from_wh(sh.media.width().max(1.0) as f32, sh.media.height().max(1.0) as f32).ok_or(PdfError::NoPages)?;
         let local = |r: Rect| {
@@ -270,13 +272,21 @@ fn export_pdf_with_report_inner(doc: &Document, cache: &Cache, opts: &PdfOptions
         }
         s.pop();
         s.finish();
-        for a in crate::links::annotations(doc, cache, &sheets, sheet_idx) {
+        let (plain, linked) = crate::links::annotations(doc, cache, &sheets, sheet_idx);
+        for a in plain {
             page.add_annotation(a);
+        }
+        for (a, key) in linked {
+            if opts.tagged && ex.story_tags.contains_key(&key.0) {
+                link_tags.entry(key).or_default().push(page.add_tagged_annotation(a));
+            } else {
+                page.add_annotation(a);
+            }
         }
         page.finish();
     }
     if opts.tagged {
-        pdf.set_tag_tree(ex.tag_tree());
+        pdf.set_tag_tree(ex.tag_tree(link_tags));
     }
     ex.check_placed_versions()?;
     if let Some(error) = ex.layer_error {

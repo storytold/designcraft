@@ -102,16 +102,17 @@ impl Exporter<'_> {
     }
 
     /// The structure tree: stories (one paragraph each, its frames in thread order of appearance)
-    /// and figures, in the order they first appear.
-    pub(super) fn tag_tree(&mut self) -> TagTree {
+    /// and figures, in the order they first appear. `links` are the link annotations of each paragraph.
+    pub(super) fn tag_tree(&mut self, mut links: HashMap<(designcraft_doc::StoryId, usize), Vec<Identifier>>) -> TagTree {
         let mut tree = TagTree::new();
         for e in std::mem::take(&mut self.tags) {
             match e {
                 TagEntry::Story(sid) => {
                     // One structure element per paragraph: headings and quotes from the
                     // paragraph style's Export Tagging, else P.
-                    let mut paras: Vec<usize> = self.para_tags.keys().filter(|(s, _)| *s == sid).map(|(_, p)| *p).collect();
+                    let mut paras: Vec<usize> = self.para_tags.keys().chain(links.keys()).filter(|(s, _)| *s == sid).map(|(_, p)| *p).collect();
                     paras.sort_unstable();
+                    paras.dedup();
                     let story = self.doc.story(sid);
                     for pi in paras {
                         let ids = self.para_tags.remove(&(sid, pi)).unwrap_or_default();
@@ -129,6 +130,11 @@ impl Exporter<'_> {
                         let mut g = TagGroup::new(kind);
                         for id in ids {
                             g.push(id);
+                        }
+                        for id in links.remove(&(sid, pi)).unwrap_or_default() {
+                            let mut link = TagGroup::new(Tag::Link);
+                            link.push(id);
+                            g.push(link);
                         }
                         tree.push(g);
                     }
