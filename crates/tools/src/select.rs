@@ -848,7 +848,9 @@ impl SelectionTool {
         {
             let at = anchor_spread_point(cx, id, si, ai);
             self.drag = Drag::Anchor { id, si, ai, handle: None, start: p, at, others: vec![] };
-            return vec![Action::Exec("selection.set".into(), json!({"ids": [id], "content": false})), Action::Begin("Move Anchor".into())];
+            // The point pressed is selected too, so it draws solid like any selected point.
+            let points = json!({"ids": [id], "content": false, "anchors": [[id, si, ai]]});
+            return vec![Action::Exec("selection.set".into(), points), Action::Begin("Move Anchor".into())];
         }
         // A selected placed graphic's own handles resize it inside its frame (the
         // frame's anchors, under Direct Selection, come first).
