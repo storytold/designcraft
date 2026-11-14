@@ -2238,6 +2238,7 @@ dependencies = [
  "flate2",
  "image",
  "log",
+ "quick-xml 0.41.0",
  "skrifa 0.47.0",
  "tiff",
 ]

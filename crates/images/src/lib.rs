@@ -261,8 +261,46 @@ fn add_face(db: &mut Arc<usvg::fontdb::Database>, face: Arc<designcraft_fonts::F
     ids.into_iter().find(|id| db.face(*id).is_some_and(|f| f.index == index))
 }
 
+/// Require UTF-8, bounded XML events, balanced tags and depth at most 64; reject internal DTD subsets while accepting ordinary external doctypes.
+fn svg_preflight(bytes: &[u8]) -> Option<()> {
+    use quick_xml::events::Event;
+
+    let text = std::str::from_utf8(bytes).ok()?;
+    let mut reader = quick_xml::Reader::from_str(text);
+    let mut depth = 0usize;
+    for _ in 0..MAX_SVG_EVENTS {
+        match reader.read_event().ok()? {
+            Event::Start(_) => {
+                depth += 1;
+                if depth > MAX_SVG_DEPTH {
+                    return None;
+                }
+            }
+            Event::Empty(_) if depth >= MAX_SVG_DEPTH => return None,
+            Event::End(_) => depth = depth.checked_sub(1)?,
+            Event::DocType(doctype) => {
+                // A '[' inside a quoted external identifier is not an internal subset.
+                let mut quote = None;
+                for &byte in &doctype[..] {
+                    match (quote, byte) {
+                        (Some(q), b) if b == q => quote = None,
+                        (None, b'\'' | b'"') => quote = Some(byte),
+                        (None, b'[') => return None,
+                        _ => {}
+                    }
+                }
+            }
+            Event::Eof => return (depth == 0).then_some(()),
+            _ => {}
+        }
+    }
+    None
+}
+
 /// Parse SVG/SVGZ through craft-svg's bounded parser and data-only nested-image resolver.
 pub fn svg_tree(bytes: &[u8]) -> Option<usvg::Tree> {
+    let xml = craft_svg::svgz::inflate(bytes, MAX_SVG_BYTES).ok()?;
+    svg_preflight(&xml)?;
     let limits = craft_svg::tree::Limits {
         bytes: MAX_SVG_BYTES,
         depth: MAX_SVG_DEPTH,
@@ -274,7 +312,7 @@ pub fn svg_tree(bytes: &[u8]) -> Option<usvg::Tree> {
     };
     let mut options = svg_options();
     options.image_href_resolver = craft_svg::tree::image_resolver(limits);
-    craft_svg::tree::parse(bytes, &limits, &options).ok()
+    craft_svg::tree::parse(&xml, &limits, &options).ok()
 }
 
 /// Natural size of a placed graphic in points: rasters at 72 ppi (one pixel per point), PSDs
@@ -294,6 +332,11 @@ pub fn natural_size(bytes: &[u8]) -> Option<(f64, f64)> {
 
 /// Pixel dimensions of a raster.
 pub fn pixel_size(bytes: &[u8]) -> Option<(u32, u32)> {
+    if (bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a")) && bytes.len() >= 10 {
+        let w = u16::from_le_bytes([bytes[6], bytes[7]]) as u32;
+        let h = u16::from_le_bytes([bytes[8], bytes[9]]) as u32;
+        return Some((w, h));
+    }
     if is_psd(bytes) {
         let header = craft_psd::header::Header::from_bytes(bytes).ok()?;
         return Some((header.width, header.height));

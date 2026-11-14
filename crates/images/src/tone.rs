@@ -13,6 +13,11 @@ pub enum Tone {
 
 /// The [`Tone`] of an image file, `None` when a swatch doesn't colour it.
 pub fn tone(bytes: &[u8]) -> Option<Tone> {
+    if let Some(info) = craft_image_codecs::inspect_raster(bytes).ok().flatten()
+        && info.channels > 1
+    {
+        return None;
+    }
     match craft_image_codecs::classify_tone(bytes)? {
         craft_image_codecs::ToneClass::Bitmap => Some(Tone::Bitmap),
         craft_image_codecs::ToneClass::Gray => Some(Tone::Gray),
