@@ -1093,10 +1093,10 @@ dependencies = [
 [[package]]
 name = "craft-designcraft-format"
 version = "0.1.0"
-source = "git+https://github.com/aiongg/craft-libs?rev=808ec65380fb8fe0d71816aeadb9b2c5dc0142a4#808ec65380fb8fe0d71816aeadb9b2c5dc0142a4"
+source = "git+https://github.com/aiongg/craft-libs?rev=7df4cc9ab07152d313a5faa378855235984ab22f#7df4cc9ab07152d313a5faa378855235984ab22f"
 dependencies = [
  "craft-document-bundle",
- "craft-eps 0.1.0 (git+https://github.com/aiongg/craft-libs?rev=808ec65380fb8fe0d71816aeadb9b2c5dc0142a4)",
+ "craft-eps 0.1.0 (git+https://github.com/aiongg/craft-libs?rev=7df4cc9ab07152d313a5faa378855235984ab22f)",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -1123,9 +1123,9 @@ source = "git+https://github.com/storytold/craft-libs?rev=92d392cff132eaf53e13af
 [[package]]
 name = "craft-document-bundle"
 version = "0.1.0"
-source = "git+https://github.com/aiongg/craft-libs?rev=808ec65380fb8fe0d71816aeadb9b2c5dc0142a4#808ec65380fb8fe0d71816aeadb9b2c5dc0142a4"
+source = "git+https://github.com/aiongg/craft-libs?rev=7df4cc9ab07152d313a5faa378855235984ab22f#7df4cc9ab07152d313a5faa378855235984ab22f"
 dependencies = [
- "craft-zip 0.1.0 (git+https://github.com/aiongg/craft-libs?rev=808ec65380fb8fe0d71816aeadb9b2c5dc0142a4)",
+ "craft-zip 0.1.0 (git+https://github.com/aiongg/craft-libs?rev=7df4cc9ab07152d313a5faa378855235984ab22f)",
  "serde_json",
  "thiserror 2.0.21",
  "zip 9.1.1",
@@ -1187,7 +1187,7 @@ dependencies = [
 [[package]]
 name = "craft-eps"
 version = "0.1.0"
-source = "git+https://github.com/aiongg/craft-libs?rev=808ec65380fb8fe0d71816aeadb9b2c5dc0142a4#808ec65380fb8fe0d71816aeadb9b2c5dc0142a4"
+source = "git+https://github.com/aiongg/craft-libs?rev=7df4cc9ab07152d313a5faa378855235984ab22f#7df4cc9ab07152d313a5faa378855235984ab22f"
 
 [[package]]
 name = "craft-eps"
@@ -1771,7 +1771,7 @@ dependencies = [
 [[package]]
 name = "craft-zip"
 version = "0.1.0"
-source = "git+https://github.com/aiongg/craft-libs?rev=808ec65380fb8fe0d71816aeadb9b2c5dc0142a4#808ec65380fb8fe0d71816aeadb9b2c5dc0142a4"
+source = "git+https://github.com/aiongg/craft-libs?rev=7df4cc9ab07152d313a5faa378855235984ab22f#7df4cc9ab07152d313a5faa378855235984ab22f"
 dependencies = [
  "flate2",
  "thiserror 2.0.21",

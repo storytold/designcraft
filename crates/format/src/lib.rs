@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::hash::BuildHasher;
 use std::sync::Arc;
 
-use designcraft_doc::{AssetData, AssetId, Document, Storage};
+use designcraft_doc::{AssetData, AssetId, Document, LinkedSource, Storage};
 #[cfg(test)]
 use serde_json::Value;
 #[cfg(test)]
@@ -43,8 +43,10 @@ pub fn write<W: std::io::Write + std::io::Seek>(out: &mut W, doc: &Document, pre
     let mut owned_proxies = Vec::new();
     for asset in compact.assets.values() {
         let id = asset.id.0.to_string();
-        if let Some(proxy) = &asset.proxy {
-            owned_proxies.push((id.clone(), proxy.mime.clone(), proxy.data.clone()));
+        if let Some(proxy) = &asset.proxy
+            && let Some(bytes) = proxy.data.embedded_bytes()
+        {
+            owned_proxies.push((id.clone(), proxy.mime.clone(), bytes.clone()));
         }
         if asset.storage == Storage::Linked {
             continue;
@@ -93,13 +95,15 @@ pub fn load(bytes: &[u8]) -> Result<Document, FormatError> {
         let Ok(id) = raw_id.parse::<u64>() else { continue };
         let Some(asset) = doc.assets.get_mut(&AssetId(id)) else { continue };
         if asset.proxy.is_some() {
-            Arc::make_mut(asset).proxy.iter_mut().for_each(|proxy| proxy.data = Arc::new(bytes.clone()));
+            Arc::make_mut(asset).proxy.iter_mut().for_each(|proxy| proxy.data = AssetData::embedded(bytes.clone()));
         }
     }
     for asset in doc.assets.values_mut() {
-        if asset.storage == Storage::Linked {
-            // T3/T7: the loader (and the linked file's length) attach here.
-            Arc::make_mut(asset).data = AssetData::linked(0);
+        // The document's own path is unknown here; open re-resolves relative links against it.
+        if asset.storage == Storage::Linked
+            && let Some(source) = LinkedSource::of(asset, None)
+        {
+            Arc::make_mut(asset).data = AssetData::linked(source);
         }
     }
     doc.merge_duplicate_assets();

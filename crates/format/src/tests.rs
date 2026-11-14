@@ -899,17 +899,18 @@ fn zip_version(bytes: &[u8]) -> u32 {
 fn linked_asset_roundtrips_as_record_and_proxy_without_original() {
     let mut d = Document::new(&NewDocument::default());
     let aid = AssetId(d.alloc());
-    let asset = Asset {
+    let mut asset = Asset {
         id: aid,
         name: "big.tif".into(),
         mime: "image/tiff".into(),
         link: Some("/pics/big.tif".into()),
+        link_fingerprint: Some(designcraft_doc::Fingerprint { size: 1 << 30, mtime: 0 }),
         storage: Storage::Linked,
-        proxy: Some(designcraft_doc::Proxy { mime: "image/png".into(), pixels: (2, 2), data: Arc::new(vec![9, 8, 7]) }),
-        data: AssetData::linked(1 << 30),
+        proxy: Some(designcraft_doc::Proxy { mime: "image/png".into(), pixels: (2, 2), data: AssetData::embedded(vec![9, 8, 7]) }),
         pixels: Some((4000, 3000)),
         ..Default::default()
     };
+    asset.data = AssetData::linked(designcraft_doc::LinkedSource::of(&asset, None).unwrap());
     d.assets.insert(aid, Arc::new(asset));
     place(&mut d, aid, 0.0);
     let bytes = save(&d).unwrap();
@@ -921,7 +922,7 @@ fn linked_asset_roundtrips_as_record_and_proxy_without_original() {
     assert_eq!(a.link.as_deref(), Some("/pics/big.tif"));
     assert!(a.data.is_linked());
     let proxy = a.proxy.as_ref().unwrap();
-    assert_eq!((proxy.mime.as_str(), proxy.pixels, proxy.data.as_slice()), ("image/png", (2, 2), &[9u8, 8, 7][..]));
+    assert_eq!((proxy.mime.as_str(), proxy.pixels, proxy.data.embedded_bytes().map(|b| b.as_slice())), ("image/png", (2, 2), Some(&[9u8, 8, 7][..])));
 }
 
 #[test]
