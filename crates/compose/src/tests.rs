@@ -10111,3 +10111,44 @@ fn cross_reference_text_breaks_at_its_spaces() {
         }
     }
 }
+
+#[test]
+fn an_inline_graphic_as_tall_as_its_frame_lets_the_text_descend_below_it() {
+    // A full-frame cover image inline at the start of a book (#2369): the graphic fills the frame
+    // and the line's text descenders hang below it, as they do on any last line. Counting them
+    // made the first line fit no frame, so the whole story composed to zero lines.
+    let (mut d, sid, _) = doc_with("Hello world", Rect::new(0.0, 0.0, 300.0, 150.0), ParaAttrs::default());
+    let it = designcraft_doc::Item::new(
+        ItemId(d.alloc()),
+        d.default_layer(),
+        designcraft_doc::Shape::Rectangle,
+        designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 200.0, 150.0)),
+    );
+    d.story_mut(sid).unwrap().insert_object(0, designcraft_doc::AnchoredObject::new(it, designcraft_doc::AnchorPosition::Inline { y_offset: 0.0 }));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert_eq!(cs.line_count(), 1, "the line holding the graphic is set");
+    assert!(!cs.is_overset());
+    let line = &cs.frames[0].lines[0];
+    assert_eq!(line.baseline, 150.0, "the graphic sits on the frame's bottom edge");
+    assert!(line.descent > 0.0, "the text's descenders hang below the frame");
+    assert_eq!(cs.frames[0].objects.len(), 1, "the graphic is drawn");
+}
+
+#[test]
+fn a_numbered_paragraph_starting_with_a_frame_tall_graphic_still_fits() {
+    // The generated number shares the graphic's byte offset; its descent must not count as the
+    // graphic's own (#2369).
+    let attrs = numbered(designcraft_doc::NumberStyle::Arabic, "^#.^t");
+    let (mut d, sid, _) = doc_with("Hello world", Rect::new(0.0, 0.0, 300.0, 150.0), attrs);
+    let it = designcraft_doc::Item::new(
+        ItemId(d.alloc()),
+        d.default_layer(),
+        designcraft_doc::Shape::Rectangle,
+        designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 200.0, 150.0)),
+    );
+    d.story_mut(sid).unwrap().insert_object(0, designcraft_doc::AnchoredObject::new(it, designcraft_doc::AnchorPosition::Inline { y_offset: 0.0 }));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert_eq!(cs.line_count(), 1, "the numbered line holding the graphic is set");
+    assert!(!cs.is_overset());
+    assert_eq!(cs.frames[0].objects.len(), 1, "the graphic is drawn");
+}

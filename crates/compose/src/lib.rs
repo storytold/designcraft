@@ -2132,12 +2132,16 @@ fn fit_line(input: LineFitInput<'_>) -> LineFit {
     let note_column = NoteColumn { frame_index: cur.fi, column_index: cur.col, width: col_w, frame: f };
     let reserve = notes.reserve(doc, note_column, &line_notes, opts);
     let reserve = if cur.last_baseline.is_none() { notes.reserve(doc, note_column, &[], opts) } else { reserve };
-    let fit_descent =
-        if f.opts.path.is_some() || f.vertical || reserve > 0.0 || line_glyphs.iter().any(|g| sub_objects.get(&g.byte).is_some_and(|o| !o.custom)) {
-            desc
-        } else {
-            0.0
-        };
+    // A line's text descenders may hang below the frame; an inline object on it may not. Only the
+    // part of an inline object below the baseline counts, so an inline graphic as tall as its
+    // frame sits on the bottom edge instead of oversetting the whole story (#2369).
+    // Generated list-label glyphs share the object's byte offset but have `len == 0`; skip them.
+    let objects = line_glyphs.iter().filter(|g| g.len > 0).filter_map(|g| sub_objects.get(&g.byte).filter(|o| !o.custom).map(|o| (g, o)));
+    let object_descent = objects.fold(None, |d: Option<f64>, (g, o)| {
+        let below = if o.y_offset.is_some() { g.descent - g.shift.min(0.0) } else { desc };
+        Some(d.map_or(below, |d| d.max(below)))
+    });
+    let fit_descent = if f.opts.path.is_some() || f.vertical || reserve > 0.0 { desc } else { object_descent.unwrap_or(0.0) };
     let fits = baseline + fit_descent <= col.y1 - reserve + 0.01 && !capped;
     if !fits
         && !pp.hyph_across_column
