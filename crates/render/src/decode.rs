@@ -28,7 +28,7 @@ pub(crate) fn decode_pixmap_reduced(bytes: &[u8], shrink: u8) -> Option<Pixmap> 
     premultiplied(designcraft_images::decode_rgba_reduced(bytes, shrink)?)
 }
 
-fn premultiplied(img: image::RgbaImage) -> Option<Pixmap> {
+fn premultiplied(img: designcraft_images::RgbaImage) -> Option<Pixmap> {
     let (w, h) = img.dimensions();
     if w == 0 || h == 0 || w > u16::MAX as u32 || h > u16::MAX as u32 {
         return None;

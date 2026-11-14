@@ -93,7 +93,7 @@ fn drawn_content(bytes: Vec<u8>) -> (Vec<DrawnImage>, Vec<([u8; 4], kurbo::Rect)
         fn pop_clip_path(&mut self) {}
         fn pop_transparency_group(&mut self) {}
     }
-    let pdf = hayro_syntax::Pdf::new(bytes).unwrap();
+    let pdf = craft_pdf::syntax::Pdf::new(bytes).unwrap();
     let cache = InterpreterCache::new();
     let mut sink = Sink(Vec::new(), Vec::new());
     for page in pdf.pages().iter() {
@@ -182,8 +182,8 @@ struct ImageObject {
 }
 
 fn image_objects(bytes: &[u8]) -> Vec<ImageObject> {
-    use hayro_syntax::object::{Name, Stream};
-    let pdf = hayro_syntax::Pdf::new(bytes.to_vec()).unwrap();
+    use craft_pdf::syntax::object::{Name, Stream};
+    let pdf = craft_pdf::syntax::Pdf::new(bytes.to_vec()).unwrap();
     pdf.objects()
         .into_iter()
         .filter_map(|o| o.into_stream())

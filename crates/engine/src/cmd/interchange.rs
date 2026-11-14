@@ -422,7 +422,7 @@ pub(crate) fn open_idml(s: &mut Session, p: &Value) -> Result<Value> {
     let mut previews = std::collections::HashMap::new();
     let bytes = if is_indd(&file, &bytes) {
         // What the converter can't read still comes over as IDML (#21).
-        let conversion = indd::convert(&bytes, &file).map_err(|e| {
+        let conversion = craft_indd::convert(&bytes, &file).map_err(|e| {
             EngineError::Other(format!(
                 "can't convert the InDesign file: {e}. In InDesign, choose File ▸ Export… ▸ InDesign Markup (IDML) and open the .idml in DesignCraft."
             ))
@@ -474,19 +474,17 @@ fn warning_item(
 /// the bytes are neither a recognized DesignCraft document nor IDML. The converter explains
 /// unrecognized data with an InDesign extension.
 pub(crate) fn is_indd(name: &str, bytes: &[u8]) -> bool {
-    bytes.starts_with(&indd::header::SIGNATURE)
-        || (has_indd_extension(name) && !super::file::is_document(bytes) && !bytes.trim_ascii_start().starts_with(b"{"))
-}
-
-pub(crate) fn has_indd_extension(name: &str) -> bool {
-    let n = name.to_ascii_lowercase();
-    n.ends_with(".indd") || n.ends_with(".indt")
+    craft_file_formats::detect(name, bytes) == Some(craft_file_formats::Format::Indd) && !super::file::is_document(bytes)
 }
 
 /// `name` without a trailing .idml, .indd or .indt (any case).
 fn without_document_extension(name: &str) -> &str {
     match name.rsplit_once('.') {
-        Some((stem, ext)) if ["idml", "indd", "indt"].iter().any(|e| ext.eq_ignore_ascii_case(e)) => stem,
+        Some((stem, ext))
+            if matches!(craft_file_formats::from_extension(ext), Some(craft_file_formats::Format::Idml | craft_file_formats::Format::Indd)) =>
+        {
+            stem
+        }
         _ => name,
     }
 }
@@ -687,7 +685,7 @@ mod tests {
     /// name) go to the converter, and what it can't read is an open error that adds no document.
     #[test]
     fn indd_files_go_through_the_converter_and_its_errors_are_open_errors() {
-        let mut signed = indd::header::SIGNATURE.to_vec();
+        let mut signed = craft_indd::SIGNATURE.to_vec();
         signed.resize(4096, 0);
         let cases = [(signed, "Brochure"), (vec![0; 4096], "Brochure.indd"), (b"not an InDesign file".to_vec(), "Template.INDT")];
         let mut s = Session::new();
@@ -811,8 +809,10 @@ mod nested_layer_tests {
             }
             let mut xml = String::new();
             entry.read_to_string(&mut xml).unwrap();
-            for cdata in xml.split("<![CDATA[").skip(1) {
-                let data = base64_decode(cdata.split("]]>").next().unwrap());
+            // Character data may use CDATA or escaped text; verify the embedded bytes either way.
+            let root = craft_xml::parse(xml.as_bytes()).unwrap();
+            for contents in root.descendants().filter(|element| element.local() == "Contents") {
+                let data = base64_decode(&contents.deep_text());
                 if designcraft_render::is_pdf(&data) {
                     actual.push(designcraft_render::pdf_layers(&data));
                 }

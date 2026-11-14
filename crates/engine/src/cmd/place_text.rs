@@ -723,7 +723,9 @@ mod pdf_page_tests {
         );
         let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
         let o = zip::write::SimpleFileOptions::default();
-        for (n, c) in [("word/document.xml", doc), ("word/styles.xml", styles)] {
+        for (n, c) in
+            [("word/document.xml", doc), ("word/styles.xml", styles), ("word/_rels/document.xml.rels", crate::tests::DOCX_STYLES_RELS.into())]
+        {
             w.start_file(n, o).unwrap();
             w.write_all(c.as_bytes()).unwrap();
         }
@@ -778,7 +780,9 @@ mod pdf_page_tests {
         );
         let doc = format!(r#"<w:document {W}><w:body><w:p><w:r><w:t>Plain</w:t></w:r></w:p></w:body></w:document>"#);
         let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
-        for (n, c) in [("word/document.xml", doc), ("word/styles.xml", styles)] {
+        for (n, c) in
+            [("word/document.xml", doc), ("word/styles.xml", styles), ("word/_rels/document.xml.rels", crate::tests::DOCX_STYLES_RELS.into())]
+        {
             w.start_file(n, zip::write::SimpleFileOptions::default()).unwrap();
             w.write_all(c.as_bytes()).unwrap();
         }
