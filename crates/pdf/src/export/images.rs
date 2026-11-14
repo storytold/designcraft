@@ -17,8 +17,7 @@ pub(super) struct ConvertedImage {
     pub(super) warning: Option<&'static str>,
 }
 
-pub(super) const CMYK_FALLBACK_WARNING: &str =
-    "converted to RGB (a CMYK TIFF that is planar, has premultiplied alpha, uses other inks or is over 256 MiB)";
+pub(super) const CMYK_FALLBACK_WARNING: &str = "converted to RGB (a CMYK TIFF that uses other inks or is over 256 MiB)";
 
 #[cfg(not(test))]
 pub(super) type ImageContentCache = HashMap<Arc<Vec<u8>>, ConvertedImage>;
@@ -84,13 +83,10 @@ pub(super) fn jpeg(data: krilla::Data, icc: impl FnOnce() -> Option<Vec<u8>>, mo
 }
 
 /// Whether krilla would write this PNG, GIF or WebP as untagged RGB: not grey, and no profile of
-/// its own.
+/// its own. The header inspection doesn't read WebP, which has no grey form, so a file it can't
+/// read counts as colour.
 fn untagged_rgb(data: &[u8]) -> bool {
-    let Some(info) = craft_image_codecs::inspect_raster(data).ok().flatten() else { return false };
-    !matches!(
-        info.color_type,
-        craft_image_codecs::RasterColorType::Bitmap | craft_image_codecs::RasterColorType::Gray | craft_image_codecs::RasterColorType::GrayAlpha
-    ) && embedded_icc(data).is_none()
+    !is_grey(data) && embedded_icc(data).is_none()
 }
 
 pub(super) fn lossless(data: &Arc<Vec<u8>>, fmt: Option<craft_image_codecs::Format>, mode: RasterMode) -> Option<Image> {
@@ -401,28 +397,18 @@ mod image_content_cache_tests {
                 let opts = PdfOptions { standard, ..Default::default() };
                 let mut ex = exporter(&d, &cache, &opts);
                 ex.rgb_only = standard == Standard::PdfA2b;
-                // Unassociated alpha (2) decodes as inks, and as RGB for RGB-only exports.
-                // Associated alpha is rejected by both paths: retain both failure names.
-                let succeeds = alpha.is_none() || alpha == Some(2);
-                let first = ex.load_image(a);
-                assert_eq!(first.is_some(), succeeds, "{alpha:?} {standard:?}");
-                if alpha.is_none() {
-                    let (space, samples) = image_color_samples(first.unwrap());
-                    assert_eq!(space, if ex.rgb_only { "DeviceRGB" } else { "DeviceCMYK" });
-                    assert_eq!(samples, if ex.rgb_only { screen_rgb.clone() } else { crate::image_fixtures::INKS.to_vec() });
-                }
-                assert_eq!(ex.load_image(b).is_some(), succeeds, "{alpha:?} {standard:?}");
-                assert_eq!(ex.load_image(a).is_some(), succeeds);
-                assert_eq!(ex.image_conversions, if succeeds { 1 } else { 2 });
-                assert_eq!(ex.images_by_content.len(), usize::from(succeeds));
-                if succeeds {
-                    assert!(ex.warnings.is_empty());
-                } else {
-                    for name in ["a.tif", "b.tif"] {
-                        assert!(ex.warnings.contains(&format!("image `{name}` could not be decoded and was skipped")));
-                        assert_eq!(ex.warnings.contains(&format!("{name}: {CMYK_FALLBACK_WARNING}")), !ex.rgb_only);
-                    }
-                }
+                // Every alpha kind decodes as inks, and as RGB for RGB-only exports; associated
+                // alpha (1) is made straight, so it gives the same inks as unassociated (2).
+                let first = ex.load_image(a).unwrap();
+                let (space, samples) = image_color_samples(first);
+                assert_eq!(space, if ex.rgb_only { "DeviceRGB" } else { "DeviceCMYK" }, "{alpha:?} {standard:?}");
+                let want = if ex.rgb_only { screen_rgb.clone() } else { crate::image_fixtures::INKS.to_vec() };
+                assert_eq!(samples, want, "{alpha:?} {standard:?}");
+                assert!(ex.load_image(b).is_some(), "{alpha:?} {standard:?}");
+                assert!(ex.load_image(a).is_some());
+                assert_eq!(ex.image_conversions, 1);
+                assert_eq!(ex.images_by_content.len(), 1);
+                assert!(ex.warnings.is_empty());
             }
         }
     }
@@ -430,7 +416,7 @@ mod image_content_cache_tests {
     // Serialize the converted raster without an archival validator so the RGB-only pixel
     // contract stays independent of main's existing PDF/A interpolation validation failure.
     fn image_color_samples(image: Image) -> (String, Vec<u8>) {
-        use craft_pdf::syntax::object::Name;
+        use craft_pdf::syntax::object::{Name, Stream};
         let mut pdf = krilla::Document::new();
         let size = Size::from_wh(20.0, 20.0).unwrap();
         let mut page = pdf.start_page_with(PageSettings::new(size));
@@ -444,7 +430,9 @@ mod image_content_cache_tests {
             .objects()
             .into_iter()
             .filter_map(|o| o.into_stream())
-            .find(|s| s.dict().get::<Name>("Subtype").is_some_and(|n| n.as_str() == "Image"))
+            .filter(|s| s.dict().get::<Name>("Subtype").is_some_and(|n| n.as_str() == "Image"))
+            // An image with alpha comes with its soft mask, another image; take the masked one.
+            .max_by_key(|s| s.dict().get::<Stream<'_>>("SMask").is_some())
             .unwrap();
         (stream.dict().get::<Name>("ColorSpace").unwrap().as_str().to_owned(), stream.decoded().unwrap().into_owned())
     }
