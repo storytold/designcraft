@@ -116,7 +116,7 @@ pub fn checked(app: &DesignApp, id: &str, params: &Value) -> Option<bool> {
         "list.bullets" | "list.numbers" => {
             app.session.selection_has_list(if id == "list.bullets" { designcraft_doc::ListType::Bullets } else { designcraft_doc::ListType::Numbers })
         }
-        "window.controlBar" => app.ui.control_bar,
+        "window.controlBar" => app.ui.control_bar && app.ui.hidden_panels == 0,
         "window.split" => app.split,
         "window.newWindow" => app.second_window,
         "view.proofColors" => app.ui.proof_colors,
@@ -183,6 +183,15 @@ pub fn menu_enabled(app: &DesignApp, id: &str) -> bool {
     }
     if id.starts_with("fit.") {
         return enabled(app, "object.fit");
+    }
+    // Em Space and En Space go in at an insertion point only; they do not replace selected text.
+    if matches!(id, "app.insertEmSpace" | "app.insertEnSpace") {
+        let caret = app.session.active().and_then(|d| d.selection.text).is_some_and(|t| t.is_caret());
+        return caret && enabled(app, "text.insert");
+    }
+    // Go to Row runs on a named table from anywhere; the menu item needs the selection in a table.
+    if id == "table.goToRow" {
+        return enabled(app, "table.selectColumn");
     }
     if id == "guide.selectAll" && (!app.ui.guides || app.ui.guides_locked) {
         return false;

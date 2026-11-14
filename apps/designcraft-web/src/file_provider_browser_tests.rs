@@ -273,7 +273,7 @@ fn page_local_provider_delivery_failure_preserves_native_resources_and_recovers(
     let restored = designcraft_format::load(&bytes).map_err(error)?;
     assert_eq!(serde_json::to_value(&restored).map_err(error)?, serde_json::to_value(newer.doc.as_ref()).map_err(error)?);
     let asset = restored.assets.values().find(|asset| asset.name == "Original.svg").ok_or_else(|| error("embedded SVG missing"))?;
-    assert_eq!(asset.data.as_slice(), SVG);
+    assert_eq!(asset.data.embedded_bytes().ok_or_else(|| error("restored SVG is linked"))?.as_slice(), SVG);
     assert!(call(&api, "saveResult", &Array::of2(&retry.clone().into(), &"saved".into())).is_err());
     assert!(host.pending_for(captured.uid));
     call(&api, "saveResult", &Array::of3(&retry.clone().into(), &"saved".into(), &"saved-resource".into()))?;
@@ -305,10 +305,8 @@ fn page_local_provider_delivery_failure_preserves_native_resources_and_recovers(
     let mut expected = newer.doc.as_ref().clone();
     expected.title = "Restored".into();
     assert_eq!(serde_json::to_value(opened.doc.as_ref()).map_err(error)?, serde_json::to_value(expected).map_err(error)?);
-    assert_eq!(
-        opened.doc.assets.values().find(|asset| asset.name == "Original.svg").ok_or_else(|| error("opened SVG missing"))?.data.as_slice(),
-        SVG
-    );
+    let asset = opened.doc.assets.values().find(|asset| asset.name == "Original.svg").ok_or_else(|| error("opened SVG missing"))?;
+    assert_eq!(asset.data.embedded_bytes().ok_or_else(|| error("opened SVG is linked"))?.as_slice(), SVG);
     assert_eq!(host.bound_document("fresh-open"), Some(opened.uid));
     publish(&host, &ctx);
     let admissions = events.matching("opened")?;

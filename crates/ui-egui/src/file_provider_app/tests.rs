@@ -1,4 +1,5 @@
 use super::*;
+use designcraft_doc::{AssetData, LinkedSource};
 use designcraft_engine::Session;
 fn app() -> DesignApp {
     let mut session = Session::new();
@@ -41,6 +42,31 @@ fn successful_ack_updates_the_captured_document_not_the_current_tab() {
     tick(&mut app);
     assert!(!app.session.documents().iter().find(|d| d.uid == uid).unwrap().is_dirty());
     assert_eq!(app.file_providers.bound_document("file-1"), Some(uid));
+}
+#[test]
+fn provider_save_rejects_referenced_links_before_emitting_a_save_dialog() {
+    const SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8"/></svg>"#;
+    let mut app = app();
+    app.session.execute("file.place", &json!({"name":"Linked.svg","base64":designcraft_engine::cmd::base64_encode(SVG)})).unwrap();
+    let st = app.session.active_mut().unwrap();
+    let uid = st.uid;
+    let doc = std::sync::Arc::make_mut(&mut st.doc);
+    let id = *doc.used_assets().iter().next().expect("placed SVG is referenced");
+    let asset = std::sync::Arc::make_mut(doc.assets.get_mut(&id).unwrap());
+    let path = "Linked.svg".to_owned();
+    asset.link = Some(path.clone());
+    asset.storage = Storage::Linked;
+    asset.data = AssetData::linked(LinkedSource { path, relative: None, document: None, len: SVG.len() as u64, fingerprint: None, hash: None });
+
+    assert!(app.session.active().unwrap().is_dirty());
+    for save_as in [false, true] {
+        assert_eq!(save(&mut app, save_as, Some(After::Close(uid))).unwrap_err(), EMBED_LINKS);
+        assert!(app.file_providers.take_events().is_empty());
+        assert!(!provider_operations_pending(&app));
+        let active = app.session.active().unwrap();
+        assert_eq!(active.uid, uid);
+        assert!(active.is_dirty());
+    }
 }
 #[test]
 fn download_result_does_not_claim_durable_provider_storage() {
@@ -607,7 +633,8 @@ fn failed_delivery_uses_the_real_consumer_preserves_project_resources_and_checkp
                 if let Some(bytes) = bytes {
                     let restored = designcraft_engine::cmd::from_bytes(&bytes).unwrap();
                     assert_eq!(serde_json::to_value(&restored).unwrap(), serde_json::to_value(original.doc.as_ref()).unwrap());
-                    assert_eq!(restored.assets.values().find(|asset| asset.name == "Original.svg").unwrap().data.as_slice(), SVG);
+                    let asset = restored.assets.values().find(|asset| asset.name == "Original.svg").expect("restored SVG missing");
+                    assert_eq!(asset.data.embedded_bytes().expect("restored SVG must be embedded").as_slice(), SVG);
                 }
                 Err("injected delivery failure")
             },
@@ -647,7 +674,8 @@ fn failed_delivery_uses_the_real_consumer_preserves_project_resources_and_checkp
         assert_eq!(event.metadata["filename"], "Retry.designcraft");
         let restored = designcraft_engine::cmd::from_bytes(&event.bytes.unwrap()).unwrap();
         assert_eq!(serde_json::to_value(&restored).unwrap(), serde_json::to_value(newer.doc.as_ref()).unwrap());
-        assert_eq!(restored.assets.values().find(|asset| asset.name == "Original.svg").unwrap().data.as_slice(), SVG);
+        let asset = restored.assets.values().find(|asset| asset.name == "Original.svg").expect("restored SVG missing");
+        assert_eq!(asset.data.embedded_bytes().expect("restored SVG must be embedded").as_slice(), SVG);
         host.result(retry, "saved".into(), "retry-resource".into()).unwrap();
         tick(&mut app);
         assert_eq!(host.bound_document("retry-resource"), Some(uid));

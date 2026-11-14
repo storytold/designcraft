@@ -36,10 +36,12 @@ pub mod menus;
 mod modal_drag;
 mod new_document;
 mod object_control;
+pub mod object_style_dialog;
 pub mod package_dialog;
 mod page_history;
 mod panel_docking;
 pub mod panels;
+mod preflight_worker;
 mod prefs;
 pub mod render_worker;
 mod rtl;
@@ -76,7 +78,10 @@ use app::browser_import_tests;
 pub use app::opens_as_document;
 pub use clock::now_ms;
 pub use key_names::{drop_key_name_text, is_key_name};
-pub use services::{ClipboardFn, DownloadFn, Inbox, OpenAsyncFn, PointerFn, ReadFn, Services, WindowFrameFn, WriteFn};
+pub use services::{
+    ClipboardChangeFn, ClipboardFn, ClipboardImage, ClipboardImageFn, DownloadFn, Inbox, OpenAsyncFn, PointerFn, ReadFn, Services, WindowFrameFn,
+    WriteFn,
+};
 pub(crate) use state::second_window_viewport;
 pub use state::{CanvasCache, HiddenPanels, ImportRequest, ImportedFile, PdfExportSettings, Perf, SavedWorkspace, ScreenMode, Shown, UiState, View};
 
@@ -116,6 +121,13 @@ struct InputGeneration {
 struct PendingDrop {
     path: String,
     pointer: Option<egui::Pos2>,
+    /// Where the system said the pointer was in the window when this drop's raw input arrived,
+    /// for a drop that brought no pointer events ([`crate::Services::pointer`]). Each drop keeps
+    /// its own, converted with the window's place and the UI scale of that input.
+    system: Option<egui::Pos2>,
+    /// Which drop this file came with: files of one raw input share it, so drops that arrive
+    /// before the same UI pass stay separate.
+    batch: u64,
     generation: InputGeneration,
 }
 
@@ -133,8 +145,16 @@ struct ShotRequest {
     slot: Option<craft_ui::capture::CaptureSlot>,
 }
 
+/// A save that waits for the checks of document `uid`'s linked files ([`DesignApp::waiting_save`]).
+pub(crate) struct WaitingSave {
+    pub(crate) uid: u64,
+    pub(crate) save: Box<dyn FnOnce(&mut DesignApp) -> Result<Value, String>>,
+}
+
 pub struct DesignApp {
     pending_pdf: Option<ImportedFile>,
+    /// The files of the batch after `pending_pdf`, which wait for its Import Options.
+    pending_pdf_rest: Vec<ImportedFile>,
     /// File and message dialogs: asked for during a frame, shown by the host at its end, answered
     /// on a later frame (see `app/file_dialogs.rs`).
     #[cfg(not(target_arch = "wasm32"))]
@@ -163,6 +183,8 @@ pub struct DesignApp {
     /// operating-system timeout.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) links_worker: links_worker::State,
+    /// Live preflight: the issues last found for the active document.
+    pub(crate) preflight: preflight_worker::State,
     pub canvas_rect: Option<egui::Rect>,
     /// Window › Arrange › Split Window: two views of the document side by side.
     pub split: bool,
@@ -253,6 +275,9 @@ pub struct DesignApp {
     last_time: f64,
     /// When recovery data was last written (seconds on the monotonic clock; see [`now_ms`]).
     pub last_recovery: f64,
+    /// Recovery data is being written in the background: poll for it, and keep repainting.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub(crate) recovery_writing: bool,
     /// The egui context (set by the first UI pass): copied text goes to the system clipboard through it.
     egui_ctx: Option<egui::Context>,
     /// A control-channel request is being handled: commands it runs never read or write the
@@ -262,6 +287,9 @@ pub struct DesignApp {
     /// (no native menu: without it the paste keys produce no paste event), or what it held then
     /// (native menu). It is never pasted as text: Paste with it pastes the copied objects.
     object_clip_text: Option<String>,
+    /// The clipboard's change count at the last object copy (native menu). While it is unchanged,
+    /// Paste pastes the copied objects rather than an image the clipboard held before the copy.
+    object_clip_change: Option<i64>,
     /// The marked text the system IME last sent (`None` once it commits or clears). When the
     /// composition ends some other way (a click, a tool switch), the IME is told to drop it.
     pub(crate) ime_marked: Option<String>,
@@ -289,6 +317,9 @@ pub struct DesignApp {
     pub(crate) quit_without_asking: bool,
     /// No document is discarded until every unsaved document has an up-to-date approval.
     quitting: Option<QuitState>,
+    /// A save asked for while the open-time checks of the document's linked files run: it runs
+    /// once they are done, so the first save already writes the links they confirm.
+    pub(crate) waiting_save: Option<WaitingSave>,
     /// The tool cursor bitmaps handed to the OS.
     pub cursors: cursors::Images,
     /// A panel's live preview (a slider being dragged), committed when it is let go.

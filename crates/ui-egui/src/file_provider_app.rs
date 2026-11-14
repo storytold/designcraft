@@ -3,12 +3,15 @@ use crate::{
     DesignApp,
     file_providers::{Action, Capture, Host, suggested_native_name},
 };
+use designcraft_doc::Storage;
 use serde_json::{Value, json};
 
 pub(crate) mod drafts;
 
 const MAX_CONTINUATIONS: usize = 16;
 const FINISH_DRAFT: &str = "Finish the numeric edit or use Edit › Discard Numeric Drafts on its document";
+const EMBED_LINKS: &str =
+    "Embed the linked files in desktop DesignCraft before saving to a provider. You can also use desktop Save a Copy with linked files embedded.";
 
 pub(crate) enum After {
     Close(u64),
@@ -142,6 +145,10 @@ pub(crate) fn save(app: &mut DesignApp, save_as: bool, after: Option<After>) -> 
     }
     if doc.preview_stash.is_some() {
         return Err("leave Data Merge Preview before saving with a file provider".into());
+    }
+    if doc.doc.used_assets().iter().any(|id| doc.doc.assets.get(id).is_some_and(|asset| asset.storage == Storage::Linked)) {
+        app.status(EMBED_LINKS);
+        return Err(EMBED_LINKS.into());
     }
     let (uid, revision, identity_epoch, snapshot) = (doc.uid, doc.revision, doc.identity_epoch, doc.clone());
     let name = host.bound_filename(uid).unwrap_or_else(|| suggested_native_name(&doc.doc.title));

@@ -1,14 +1,14 @@
 //! Gradients on spot swatches shade in their inks: Separation for one spot, DeviceN for a spot
 //! with process inks or a second spot.
+use craft_pdf::syntax::{
+    Pdf,
+    object::{Array, Dict, Name},
+};
 use designcraft_color::{Color, ColorType, Gradient, GradientKind, GradientStop, Swatch, SwatchValue};
 use designcraft_compose::Cache;
 use designcraft_doc::{Document, Fill, Item, ItemId, Shape, SpreadRef, build::NewDocument};
 use designcraft_geom::{Rect, shapes};
 use designcraft_pdf::{PdfOptions, Standard, export_pdf_with_report};
-use hayro_syntax::{
-    Pdf,
-    object::{Array, Dict, Name},
-};
 
 const CYAN: &str = "C=100 M=0 Y=0 K=0";
 

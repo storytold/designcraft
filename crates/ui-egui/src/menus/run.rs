@@ -9,8 +9,14 @@ use crate::app::file_dialogs::{Bound, with_path};
 /// Type › Tabs: float the Tabs panel (placed above the selected text frame) or close it.
 fn toggle_tabs_panel(app: &mut DesignApp) {
     if app.ui.floating.iter().any(|(p, _)| p == "tabs") {
-        app.ui.floating.retain(|(p, _)| p != "tabs");
+        if app.ui.hidden_panels != 0 {
+            app.ui.hidden_panels = 0;
+            app.ui.tabs_panel.snap_request = 2;
+        } else {
+            app.ui.floating.retain(|(p, _)| p != "tabs");
+        }
     } else {
+        app.ui.hidden_panels = 0;
         let at = app.canvas_rect.map_or(egui::pos2(300.0, 140.0), |r| r.min + egui::vec2(80.0, 60.0));
         app.ui.floating.push(("tabs".into(), [at.x, at.y]));
         app.ui.tabs_panel.snap_request = 2;
@@ -30,9 +36,24 @@ fn rerun_with_path(app: &mut DesignApp, purpose: &str, id: &str, p: &Value, key:
 fn save_as_dialog(app: &mut DesignApp, after: impl FnOnce(&mut DesignApp) -> Result<Value, String> + 'static) -> Result<Value, String> {
     let name = app.session.active().map(|d| format!("{}.designcraft", d.doc.title)).unwrap_or_default();
     app.ask_save(&name, Bound::Document, move |app, path| {
-        app.run("file.saveAs", json!({"path": path}))?;
-        after(app)
+        save_when_checked(app, move |app| {
+            app.run("file.saveAs", json!({"path": path}))?;
+            after(app)
+        })
     })
+}
+
+/// Run `save` (a save of the active document) now, or, while the open-time checks of its linked
+/// files run, once they are done ([`DesignApp::run_waiting_save`]): a document saved before
+/// linked storage then writes the links the checks confirm in its first save, not a copy of every
+/// image. The status line counts the files left; Esc saves at once. A later save replaces one
+/// still waiting.
+pub(crate) fn save_when_checked(app: &mut DesignApp, save: impl FnOnce(&mut DesignApp) -> Result<Value, String> + 'static) -> Result<Value, String> {
+    let Some(st) = app.session.active().filter(|st| st.links.checking()) else { return save(app) };
+    let (uid, remaining) = (st.uid, st.links.remaining());
+    app.waiting_save = Some(crate::WaitingSave { uid, save: Box::new(save) });
+    app.show_save_wait(remaining);
+    Ok(json!({"waiting": true}))
 }
 
 /// Save the active document (a download in a browser; Save As for one never saved), then run
@@ -47,8 +68,10 @@ pub(crate) fn save_then(app: &mut DesignApp, after: crate::file_provider_app::Af
         return after.local(app);
     }
     if app.session.active().is_some_and(|d| d.path.is_some()) {
-        app.run("file.save", json!({}))?;
-        return after.local(app);
+        return save_when_checked(app, move |app| {
+            app.run("file.save", json!({}))?;
+            after.local(app)
+        });
     }
     save_as_dialog(app, move |app| after.local(app))
 }
@@ -140,15 +163,27 @@ fn run_ui_part1(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
                 .unwrap_or_default();
             app.open_named_file("file.openRecent", json!({"index": index}), name)
         }
-        "app.placeDialog" => match p.get("path").and_then(Value::as_str) {
-            Some(path) => app.open_picked("place", path.to_string()),
-            None => app.pick_and_open("place"),
+        "app.placeDialog" => match (p.get("path").and_then(Value::as_str), p.get("paths").and_then(Value::as_array)) {
+            (Some(path), _) => app.open_picked("place", path.to_string()),
+            // Several files, as chosen together in the dialog: in their order. One is placed as the
+            // dialog places one (filling the selected frame). Every entry must be a path.
+            (None, Some(paths)) => match paths.iter().map(|v| v.as_str().map(str::to_string)).collect::<Option<Vec<_>>>() {
+                None => Err("app.placeDialog: every entry of paths must be a string".into()),
+                Some(paths) => match <[String; 1]>::try_from(paths) {
+                    Ok([path]) => app.open_picked("place", path),
+                    Err(paths) => app.place_paths(paths).map(|()| Value::Null),
+                },
+            },
+            (None, None) => app.pick_and_open("place"),
         },
+        "app.contactSheetDialog" => {
+            crate::dialogs::open_contact_sheet(app);
+            Ok(Value::Null)
+        }
         "app.placeWithOptions" => {
             // Word/RTF Import Options: style mapping and conflicts before the text lands.
             let Some(path) = p.get("path").and_then(Value::as_str) else { return Some(rerun_with_path(app, "place", id, p, "path")) };
-            let l = path.to_lowercase();
-            if !(l.ends_with(".docx") || l.ends_with(".rtf")) {
+            if !matches!(craft_file_formats::detect(path, &[]), Some(craft_file_formats::Format::Docx | craft_file_formats::Format::Rtf)) {
                 return Some(app.place_file(json!({"path": path})));
             }
             let info = match app.run("place.styles", json!({"path": path})) {
@@ -167,12 +202,15 @@ fn run_ui_part1(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
         "app.save" | "app.saveDialog" if app.services.download.is_some() => download_document(app),
         "app.save" => {
             if app.session.active().is_some_and(|d| d.path.is_some()) {
-                return Some(app.run("file.save", json!({})));
+                return Some(save_when_checked(app, |app| app.run("file.save", json!({}))));
             }
             return run_ui(app, "app.saveDialog", p);
         }
         "app.saveDialog" => match p.get("path").and_then(Value::as_str) {
-            Some(path) => app.run("file.saveAs", json!({"path": path})),
+            Some(path) => {
+                let path = path.to_owned();
+                save_when_checked(app, move |app| app.run("file.saveAs", json!({"path": path})))
+            }
             None => save_as_dialog(app, |_| Ok(Value::Null)),
         },
         "app.quit" => {
@@ -180,10 +218,13 @@ fn run_ui_part1(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             Ok(Value::Null)
         }
         "app.saveCopyDialog" => match p.get("path").and_then(Value::as_str) {
-            Some(path) => app.run("file.saveACopy", json!({"path": path})),
+            Some(path) => {
+                let path = path.to_owned();
+                save_when_checked(app, move |app| app.run("file.saveACopy", json!({"path": path})))
+            }
             None => {
                 let name = app.session.active().map(|d| format!("{} copy.designcraft", d.doc.title)).unwrap_or_default();
-                app.ask_save(&name, Bound::Document, |app, path| app.run("file.saveACopy", json!({"path": path})))
+                app.ask_save(&name, Bound::Document, |app, path| save_when_checked(app, move |app| app.run("file.saveACopy", json!({"path": path}))))
             }
         },
         "app.exportPng" => export_png(app, p),
@@ -293,6 +334,13 @@ fn run_ui_part1(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             crate::effects_dialog::open(app, p.get("page").and_then(Value::as_str).unwrap_or("transparency"));
             Ok(Value::Null)
         }
+        "objectStyle.dialog" => match p.get("name").and_then(Value::as_str) {
+            Some(n) => crate::object_style_dialog::open_edit(app, n).map(|()| Value::Null),
+            None => {
+                crate::object_style_dialog::open_new(app);
+                Ok(Value::Null)
+            }
+        },
         "app.loadSwatches" => {
             if let Some(path) = p.get("path").and_then(Value::as_str) {
                 return Some(app.run("swatch.load", json!({"path": path})));
@@ -852,6 +900,13 @@ fn run_ui_part4(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             run_ui(app, "window.panel", &json!({"panel": panel})).unwrap_or(Ok(Value::Null))
         }
         "app.insertCurrentPageNumber" => app.run("text.insert", json!({"text": "\u{e000}", "raw": true})),
+        "app.insertEmSpace" | "app.insertEnSpace" => {
+            if !menu_enabled(app, id) {
+                return Some(Err("place the insertion point in text to insert a space".into()));
+            }
+            let space = if id == "app.insertEmSpace" { "\u{2003}" } else { "\u{2002}" };
+            app.run("text.insert", json!({"text": space, "raw": true}))
+        }
         // `panel_docking::command` takes the dock panels (and the Window › Styles group) first.
         "window.panel" => {
             let panel = p.get("panel").and_then(Value::as_str).unwrap_or("properties");
@@ -978,7 +1033,15 @@ fn run_ui_part5(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             app.ui.ui_scale = v.clamp(0.5, 3.0);
             Ok(json!({"scale": app.ui.ui_scale}))
         }
-        "window.controlBar" => flag(&mut app.ui.control_bar),
+        "window.controlBar" => {
+            app.ui.control_bar = if app.ui.hidden_panels != 0 {
+                app.ui.hidden_panels = 0;
+                true
+            } else {
+                !app.ui.control_bar
+            };
+            Ok(json!(app.ui.control_bar))
+        }
         "view.flattenerPreview" => flag(&mut app.ui.flattener_preview),
         "view.tagMarkers" => {
             app.canvas.shown = None;
@@ -1109,6 +1172,7 @@ fn run_ui_part5(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
         "window.workspace" => {
             app.ui.docking_generation = app.ui.docking_generation.wrapping_add(1);
             crate::panel_docking::forget_panels(app);
+            app.ui.hidden_panels = 0;
             let name = p.get("name").and_then(Value::as_str).unwrap_or("Essentials");
             if let Some(w) = app.ui.custom_workspaces.iter().find(|w| w.name == name).cloned() {
                 if let Some(hidden) = w.hidden_menu_items {

@@ -63,7 +63,10 @@ result, **not durable provider confirmation**, and does not clear the document's
 Save Copy, Export and programmatic commands keep their existing local behavior. With the capability
 disabled or unregistered, the original browser/native save flow remains in use.
 
-Provider Save/Save As always captures .designcraft, the editable native project with its embedded resources.
+Provider Save/Save As captures a portable .designcraft project with its embedded resources.
+A project that references linked files must first embed them in desktop DesignCraft. You can also
+use desktop Save a Copy with linked files embedded. The provider chooser stays closed until the
+project is portable.
 Use the existing local Copy/Export commands for interchange formats. The host must preserve the native
 extension; changing a suffix cannot turn native bytes into PDF, SVG or another interchange format.
 The native project serializer includes the project data. Data Merge Preview must be exited before a provider save: a preview record must not be marked saved as the underlying unfilled template.
