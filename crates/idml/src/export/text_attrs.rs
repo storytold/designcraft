@@ -383,6 +383,8 @@ impl<'a> Ex<'a> {
         }
     }
 
+    /// Writes the paragraph's hyphenation, justification and spacing limits, keep options and
+    /// paragraph start position.
     fn para_flow_attrs(&self, el: &mut El, a: &ParaAttrs) {
         b!(a, el, hyphenate, "Hyphenation");
         n!(a, el, hyph_min_word, "HyphenateWordsLongerThan");
@@ -410,6 +412,7 @@ impl<'a> Ex<'a> {
             el.set("SingleWordJustification", names::align_out(v));
         }
         n!(a, el, keep_with_next, "KeepWithNext");
+        b!(a, el, keep_with_previous, "KeepWithPrevious");
         b!(a, el, keep_lines_together, "KeepLinesTogether");
         b!(a, el, ignore_optical_margin, "IgnoreEdgeAlignment");
         b!(a, el, keep_all_lines, "KeepAllLinesTogether");

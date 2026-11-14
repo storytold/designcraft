@@ -1851,6 +1851,108 @@ fn keep_with_next_moves_a_heading() {
     assert_eq!(column_of_para(&cs, n - 2), vec![0]);
 }
 
+/// A heading that would end a column moves to the next one when the body after it keeps with it.
+#[test]
+fn keep_with_previous_moves_the_heading_before_it() {
+    let h = 200.0;
+    let n = lines_per_column(h);
+    let body = "Body text that follows the heading.";
+    let (mut d, sid, _) = keep_doc(n - 1, &["Heading", body], h);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert_eq!(column_of_para(&cs, n - 1), vec![0], "without keeps the heading ends column 0");
+    d.story_mut(sid).unwrap().paras[n].para.keep_with_previous = Some(true);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert_eq!(column_of_para(&cs, n - 1), vec![1], "the body pulls its heading along");
+    assert_eq!(column_of_para(&cs, n), vec![1]);
+    assert_eq!(column_of_para(&cs, n - 2), vec![0]);
+}
+
+/// Heading, then a description and an example that each keep with the paragraph before them:
+/// when the example doesn't fit, all three go to the next column.
+#[test]
+fn keep_with_previous_chain_moves_together() {
+    let h = 200.0;
+    let n = lines_per_column(h);
+    let (mut d, sid, _) = keep_doc(n - 2, &["Heading", "Description", "Example"], h);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert_eq!(column_of_para(&cs, n), vec![1], "without keeps only the example moves");
+    {
+        let paras = &mut d.story_mut(sid).unwrap().paras;
+        paras[n - 1].para.keep_with_previous = Some(true);
+        paras[n].para.keep_with_previous = Some(true);
+    }
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    for p in n - 2..=n {
+        assert_eq!(column_of_para(&cs, p), vec![1], "paragraph {p} moves with the chain");
+    }
+    assert_eq!(column_of_para(&cs, n - 3), vec![0]);
+}
+
+/// Heading, a paragraph that tracked changes delete, then a body that keeps with the
+/// previous paragraph: the deleted paragraph takes no room, so the body keeps with the heading.
+#[test]
+fn keep_with_previous_skips_a_deleted_paragraph() {
+    let h = 200.0;
+    let n = lines_per_column(h);
+    let (mut d, sid, _) = keep_doc(n - 1, &["Heading", "Removed", "Body text that follows the heading."], h);
+    {
+        let st = d.story_mut(sid).unwrap();
+        let removed = st.para_ranges()[n].clone();
+        st.format_chars(removed.start..removed.end + 1, |f| f.over.change = Some(designcraft_doc::ChangeMark::Deleted));
+        st.paras[n + 1].para.keep_with_previous = Some(true);
+    }
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert_eq!(column_of_para(&cs, n - 1), vec![1], "the body pulls its heading along past the deleted paragraph");
+    assert_eq!(column_of_para(&cs, n + 1), vec![1]);
+    assert!(all_lines(&cs).iter().all(|l| !l.keep_violation), "the keep is met");
+}
+
+/// Fillers, a one-row table, then a body that keeps with the table: find a filler count where
+/// the table ends column 0 and the body starts column 1, then the keep moves the table too.
+#[test]
+fn keep_with_previous_moves_a_table_before_it() {
+    let h = 200.0;
+    let n = lines_per_column(h);
+    let build = |fillers: usize, keep: bool, height: f64| {
+        let (mut d, sid, _) = keep_doc(fillers, &[], h);
+        let st = d.story_mut(sid).unwrap();
+        let mut t = designcraft_doc::Table::new(77, 1, 1, 0, 0, 150.0);
+        t.rows[0].mode = designcraft_doc::RowHeightMode::Exactly;
+        t.rows[0].height = height;
+        st.insert_table(st.len(), t);
+        st.insert(st.len(), "Body after the table.");
+        let last = st.paras.len() - 1;
+        if keep {
+            st.paras[last].para.keep_with_previous = Some(true);
+        }
+        d.check().unwrap();
+        (d, sid, last)
+    };
+    let table_column = |cs: &ComposedStory| cs.frames.iter().flat_map(|f| &f.tables).map(|t| t.column).next().unwrap();
+    let (fillers, height) = (n.saturating_sub(6)..=n + 3)
+        .flat_map(|k| [4.0, 10.0, 16.0, 22.0, 28.0].map(|height| (k, height)))
+        .find(|&(k, height)| {
+            let (d, sid, last) = build(k, false, height);
+            let cs = compose_story(&d, sid, &ComposeOptions::default());
+            table_column(&cs) == 0 && column_of_para(&cs, last) == vec![1]
+        })
+        .expect("a filler count leaves the table at the bottom of column 0");
+    let (d, sid, last) = build(fillers, true, height);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert_eq!(table_column(&cs), 1, "the body pulls the table along");
+    assert_eq!(column_of_para(&cs, last), vec![1]);
+    assert!(all_lines(&cs).iter().all(|l| !l.keep_violation), "the keep is met");
+}
+
+/// Keep with Previous on a story's first paragraph has nothing to keep with and changes nothing.
+#[test]
+fn keep_with_previous_on_the_first_paragraph_is_harmless() {
+    let (mut d, sid, _) = keep_doc(3, &[], 200.0);
+    d.story_mut(sid).unwrap().paras[0].para.keep_with_previous = Some(true);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert_eq!(column_of_para(&cs, 0), vec![0]);
+}
+
 #[test]
 fn keep_lines_together_moves_the_paragraph() {
     let h = 200.0;

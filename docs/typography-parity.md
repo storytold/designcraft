@@ -52,7 +52,7 @@ Fidelity: **unmeasured** unless stated.
 | Columns, span / split columns | ✓ | ✓ | ✓ | split columns within a column (#295); text after a span flows below it (#276) |
 | Column rules | ✓ | ✓ (screen, PDF, IDML) | ~ | no stroke types or overprint (#274) |
 | Balance columns | ✓ | ✓ (IDML `VerticalBalanceColumns`) | ✓ | evens out the columns of the frame the story ends in, after its last column break (#609) |
-| Keep options and breaks | keep with next, lines together, start in next column/frame/page/odd/even | ✓ | ✓ | break characters end paragraphs (#285); the line before a break is a last line (#283) |
+| Keep options and breaks | keep with next, keep with previous, lines together, start in next column/frame/page/odd/even | ✓ | ✓ | break characters end paragraphs (#285); the line before a break is a last line (#283) |
 | Drop caps, nested, line and GREP styles | ✓ | ✓ | ✓ | |
 | Bullets and numbering | lists, levels, formats, restart, across stories | ✓ | ~ | numbering expressions from IDML (#298); Convert Bullets/Numbering to Text missing |
 | Tabs | left/center/right/decimal/align-on, leaders, right-indent tab | ✓ | ~ | Tabs panel with a ruler over the text column, and a Tabs section in Paragraph Style Options (#343); wrapping of lines with tabs fixed (#282) |

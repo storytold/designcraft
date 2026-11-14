@@ -1564,6 +1564,8 @@ enum TableParagraphResult {
     Overset,
 }
 
+/// Places the table anchored in `paragraph`, moving it to the next column first when a keep
+/// (Keep with Next, or the next paragraph's Keep with Previous) couldn't be met where it was.
 fn place_table_paragraph(input: TableParagraphInput<'_>) -> TableParagraphResult {
     let TableParagraphInput {
         doc,
@@ -1592,6 +1594,10 @@ fn place_table_paragraph(input: TableParagraphInput<'_>) -> TableParagraphResult
         info,
         boxes,
     } = input;
+    // A keep that couldn't be met where the table was first placed moves it to the next column.
+    if force_col.get(paragraph).copied().unwrap_or(false) {
+        if cursor.can_next_sub() { cursor.next_sub() } else { cursor.next_column(columns) }
+    }
     if cursor.last_baseline.is_some() {
         cursor.start(start, columns, frames, doc);
     } else {
@@ -1614,7 +1620,7 @@ fn place_table_paragraph(input: TableParagraphInput<'_>) -> TableParagraphResult
         end: (cursor.fi, cursor.col),
         lines: 1,
         lines_in_end_col: 1,
-        keep_with_next: 0,
+        keep_with_next: props.keep_with_next,
         keep_together: false,
         keep_all: false,
         keep_first: 1,
@@ -3147,6 +3153,7 @@ fn finish_paragraph(input: ParagraphFinishInput<'_>) -> ParagraphFinish {
     ParagraphFinish::Done(ends_split)
 }
 
+/// [`compose`] with an explicit font database, so tests can compose with their own fonts.
 fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &ComposeOptions, db: &FontDb) -> ComposedStory {
     compose_run(doc, story, frames, opts, db, None, false).map(|(out, _)| out).unwrap_or_default()
 }
@@ -3315,6 +3322,7 @@ fn compose_run(
         let prange = para_ranges[pi].clone();
         let pf = &story.paras[pi];
         let (mut pp, base_chars) = doc.styles.resolve_para(pf);
+        pp.keep_with_next = keep_with_next(doc, story, &deleted, pi, &pp);
         // A break character that ends the previous paragraph sends this one on, like a start option.
         // Deleted paragraphs in between don't count, nor does a deleted or hidden break.
         let after_break = previous_visible_break(doc, story, &para_ranges, &deleted, pi);
@@ -3798,6 +3806,21 @@ fn span_rect(cols: &[Rect], col: Rect, span: SpanColumns) -> Rect {
     Rect::new(a.x0.min(b.x0), col.y0, a.x1.max(b.x1), col.y1)
 }
 
+/// The first paragraph after `pi` that tracked changes don't delete.
+fn next_visible_paragraph(story: &Story, deleted: &[bool], pi: usize) -> Option<usize> {
+    let first = pi.checked_add(1)?;
+    (first..story.paras.len()).find(|&n| !deleted.get(n).copied().unwrap_or(false))
+}
+
+/// Lines paragraph `pi` keeps with the next one: its own Keep with Next, or at least one when the
+/// next visible paragraph has Keep with Previous (its first line stays with this paragraph's last
+/// line). Deleted paragraphs in between take no room, so they don't break the keep.
+fn keep_with_next(doc: &Document, story: &Story, deleted: &[bool], pi: usize, pp: &designcraft_doc::ParaProps) -> u32 {
+    let next_keeps_with_previous =
+        next_visible_paragraph(story, deleted, pi).and_then(|n| story.paras.get(n)).is_some_and(|p| doc.styles.resolve_para(p).0.keep_with_previous);
+    if next_keeps_with_previous { pp.keep_with_next.max(1) } else { pp.keep_with_next }
+}
+
 /// Flag the lines of paragraphs whose Keep Options the layout couldn't honour: lines kept
 /// together that split, too few lines at the bottom (orphans) or top (widows) of a column, or a
 /// keep-with-next paragraph separated from the next one.
@@ -3813,10 +3836,12 @@ fn mark_keep_violations(doc: &Document, story: &Story, out: &mut ComposedStory) 
             }
         }
     }
+    let deleted = deleted_paras(story, &story.para_ranges());
     let mut bad: Vec<usize> = Vec::new();
     for (&pi, v) in &cols {
         let Some(pf) = story.paras.get(pi) else { continue };
-        let (pp, _) = doc.styles.resolve_para(pf);
+        let (mut pp, _) = doc.styles.resolve_para(pf);
+        pp.keep_with_next = keep_with_next(doc, story, &deleted, pi, &pp);
         if pp.keep_lines_together && v.len() > 1 {
             let (first, last) = (v[0].1, v[v.len() - 1].1);
             if pp.keep_all_lines || first < pp.keep_first.max(1) as usize || last < pp.keep_last.max(1) as usize {
@@ -3825,7 +3850,7 @@ fn mark_keep_violations(doc: &Document, story: &Story, out: &mut ComposedStory) 
             }
         }
         if pp.keep_with_next > 0
-            && let (Some(end), Some(next)) = (v.last(), cols.get(&(pi + 1)))
+            && let (Some(end), Some(next)) = (v.last(), next_visible_paragraph(story, &deleted, pi).and_then(|n| cols.get(&n)))
             && next.first().is_some_and(|(c, n)| *c != end.0 || (*n < pp.keep_with_next as usize && next.len() > 1))
         {
             bad.push(pi);

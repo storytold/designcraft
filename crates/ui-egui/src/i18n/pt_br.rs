@@ -1487,6 +1487,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Bottom:", "Inferior:"),
     ("Right:", "Direita:"),
     ("Keep with Next:", "Manter com o próximo:"),
+    ("Keep with Previous", "Manter com o anterior"),
     ("Keep Lines Together", "Manter linhas juntas"),
     ("All Lines in Paragraph", "Todas as linhas do parágrafo"),
     ("At Start/End of Paragraph", "No início/fim do parágrafo"),
