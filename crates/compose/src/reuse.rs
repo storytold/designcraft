@@ -22,6 +22,8 @@ use crate::{Above, Band, ComposeOptions, ComposedStory, Cursor, FrameSpec, Line,
 thread_local! {
     /// Paragraphs shaped on this thread (tests count the work an edit causes).
     pub(crate) static SHAPED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Paragraph styles the passes over a whole story resolved on this thread.
+    pub(crate) static RESOLVED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// The composition's state before a paragraph: the cursor, the list numbering, and how much of
@@ -493,7 +495,7 @@ mod tests {
     use designcraft_doc::{Align, Document, ItemId, ListType, ParaFormat, SpreadRef, StartParagraph, Story, StoryId, VerticalJustification};
     use designcraft_geom::Rect;
 
-    use super::SHAPED;
+    use super::{RESOLVED, SHAPED};
     use crate::Cache;
 
     const SENTENCE: &str = "The quick brown fox jumps over the lazy dog while the workbook keeps growing page by page.";
@@ -554,6 +556,29 @@ mod tests {
                 assert!(n <= 3, "{n} of {paras} paragraphs composed for a character typed at {at}");
             }
         }
+    }
+
+    /// The passes over every paragraph that composing makes besides laying them (named-list
+    /// labels, the balancing budgets, keep violations) resolve one style for each run of
+    /// paragraphs with the same format.
+    #[test]
+    fn a_typed_character_resolves_one_style_per_run_of_paragraph_formats() {
+        let (mut d, sid, _) = threaded(240, 60);
+        // Every tenth paragraph centered: 24 centered paragraphs and 24 runs of nine others.
+        let starts: Vec<usize> = d.story(sid).unwrap().para_ranges().iter().step_by(10).map(|r| r.start).collect();
+        for at in starts {
+            d.story_mut(sid).unwrap().format_paras(at..at, |p| p.para.align = Some(Align::Center));
+        }
+        let cache = Cache::new();
+        assert!(!cache.get(&d, sid, None).is_overset());
+        let len = d.story(sid).unwrap().len();
+        d.story_mut(sid).unwrap().insert(len / 2, "x");
+        RESOLVED.with(|n| n.set(0));
+        let ((), laid) = shaped(|| drop(cache.get(&d, sid, None)));
+        let resolved = RESOLVED.with(|n| n.get());
+        assert!(laid <= 3, "{laid} of 240 paragraphs composed for a typed character");
+        assert!(resolved <= 2 * 48, "{resolved} paragraph styles resolved for 48 runs of formats in 240 paragraphs");
+        check(&cache, &d, sid, "a typed character");
     }
 
     /// The preflight cache reads an unchanged composition through its base, while edits

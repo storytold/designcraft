@@ -1436,23 +1436,62 @@ pub fn visible_break(doc: &Document, story: &Story, p: usize, at: usize) -> Opti
     (!gone).then_some(start)
 }
 
-fn named_list_labels(doc: &Document, story: &Story, ranges: &[Range<usize>], deleted: &[bool]) -> Vec<Option<String>> {
-    let mut counters: std::collections::HashMap<String, ListCounter> = std::collections::HashMap::new();
-    story
-        .paras
-        .iter()
-        .zip(ranges)
-        .zip(deleted)
-        .map(|((paragraph, range), is_deleted)| {
-            let (props, _) = doc.styles.resolve_para(paragraph);
-            if props.list_type != designcraft_doc::ListType::Numbers || props.list_name.is_empty() || range.is_empty() || *is_deleted {
-                return None;
+/// Paragraph properties resolved for paragraphs taken in story order. A paragraph whose format
+/// equals that of the paragraph asked for before it gets the properties already resolved, so a
+/// pass over a story resolves each run of paragraphs with one format once.
+struct ParaStyles<'a> {
+    doc: &'a Document,
+    last: Option<(&'a designcraft_doc::ParaFormat, ParaProps)>,
+}
+
+impl<'a> ParaStyles<'a> {
+    fn new(doc: &'a Document) -> Self {
+        ParaStyles { doc, last: None }
+    }
+
+    fn get(&mut self, format: &'a designcraft_doc::ParaFormat) -> &ParaProps {
+        let last = match self.last.take() {
+            Some((f, props)) if f == format => (f, props),
+            _ => {
+                #[cfg(test)]
+                reuse::RESOLVED.with(|n| n.set(n.get() + 1));
+                (format, self.doc.styles.resolve_para(format).0)
             }
-            let counter = counters.entry(props.list_name.clone()).or_insert_with(|| doc.list_start(story.id, &props.list_name));
-            counter.advance(&props);
-            Some(props.number_label_in(counter))
-        })
-        .collect()
+        };
+        &self.last.insert(last).1
+    }
+}
+
+/// What composing a story reads from every paragraph's style before laying any.
+struct ParagraphScan {
+    /// Each paragraph's named-list label: named lists number independently of layout.
+    labels: Vec<Option<String>>,
+    /// Paragraphs that span columns, and that split them.
+    spanning: usize,
+    split: usize,
+}
+
+fn scan_paragraphs(doc: &Document, story: &Story, ranges: &[Range<usize>], deleted: &[bool]) -> ParagraphScan {
+    let mut counters: std::collections::HashMap<String, ListCounter> = std::collections::HashMap::new();
+    let mut styles = ParaStyles::new(doc);
+    let mut scan = ParagraphScan { labels: Vec::with_capacity(story.paras.len()), spanning: 0, split: 0 };
+    for (i, paragraph) in story.paras.iter().enumerate() {
+        let props = styles.get(paragraph);
+        match props.span_columns {
+            SpanColumns::Span(_) => scan.spanning += 1,
+            SpanColumns::Split(_) => scan.split += 1,
+            SpanColumns::Single => {}
+        }
+        let (Some(range), Some(is_deleted)) = (ranges.get(i), deleted.get(i)) else { continue };
+        if props.list_type != designcraft_doc::ListType::Numbers || props.list_name.is_empty() || range.is_empty() || *is_deleted {
+            scan.labels.push(None);
+            continue;
+        }
+        let counter = counters.entry(props.list_name.clone()).or_insert_with(|| doc.list_start(story.id, &props.list_name));
+        counter.advance(props);
+        scan.labels.push(Some(props.number_label_in(counter)));
+    }
+    scan
 }
 
 fn deleted_paragraph_info(info: &[ParaInfo], cursor: &Cursor) -> ParaInfo {
@@ -3208,8 +3247,10 @@ fn compose_run(
     let deleted = deleted_paras(story, &para_ranges);
     let hyph_exceptions = doc.hyphenation_exception_map();
     let mut list_counter = ListCounter::default();
-    // Named lists number independently of layout: one pass up front, for the labels.
-    let named_labels = named_list_labels(doc, story, &para_ranges, &deleted);
+    // Named lists number independently of layout: one pass up front, for the labels, which also
+    // counts the paragraphs that span and split columns.
+    let scan = scan_paragraphs(doc, story, &para_ranges, &deleted);
+    let named_labels = scan.labels;
     // Endnote, anchored-object and cross-reference marks before each paragraph, for their numbers.
     let marks_before = MarkCounts::before_paragraphs(story, &para_ranges);
     // Border and shading of each paragraph set, drawn once the lines are in place.
@@ -3238,14 +3279,12 @@ fn compose_run(
     let mut trial: Option<Trial> = None;
     let mut balance_runs = 0usize;
     let balance_frames = frames.iter().zip(&cols).filter(|(f, c)| f.opts.balance_columns && c.len() > 1).count();
-    let balance_budget = 20
-        * (story.paras.iter().filter(|p| matches!(doc.styles.resolve_para(p).0.span_columns, SpanColumns::Span(_))).count()
-            + usize::from(balance_frames > 0));
+    let balance_budget = 20 * (scan.spanning + usize::from(balance_frames > 0));
     // Balancing split-column blocks that text follows.
     let mut split_limits: Rc<Vec<(SplitKey, f64)>> = Rc::default();
     let mut split_trial: Option<Trial<SplitKey>> = None;
     let mut split_runs = 0usize;
-    let split_budget = 20 * story.paras.iter().filter(|p| matches!(doc.styles.resolve_para(p).0.span_columns, SpanColumns::Split(_))).count();
+    let split_budget = 20 * scan.split;
     // Paragraphs set across columns (vertical justification moves their frames' lines together),
     // and in split columns.
     let mut span_paras = vec![false; np];
@@ -3803,40 +3842,41 @@ fn span_rect(cols: &[Rect], col: Rect, span: SpanColumns) -> Rect {
 /// keep-with-next paragraph separated from the next one.
 fn mark_keep_violations(doc: &Document, story: &Story, out: &mut ComposedStory) {
     // Per paragraph, the columns its lines sit in: ((frame, column), line count) in order.
-    let mut cols: HashMap<usize, Vec<((usize, u32), usize)>> = HashMap::new();
+    let mut cols: Vec<Vec<((usize, u32), usize)>> = vec![Vec::new(); story.paras.len()];
     for (fi, ft) in out.frames.iter().enumerate() {
         for l in &ft.lines {
-            let v = cols.entry(l.para).or_default();
+            let Some(v) = cols.get_mut(l.para) else { continue };
             match v.last_mut() {
                 Some((c, n)) if *c == (fi, l.column) => *n += 1,
                 _ => v.push(((fi, l.column), 1)),
             }
         }
     }
-    let mut bad: Vec<usize> = Vec::new();
-    for (&pi, v) in &cols {
-        let Some(pf) = story.paras.get(pi) else { continue };
-        let (pp, _) = doc.styles.resolve_para(pf);
-        if pp.keep_lines_together && v.len() > 1 {
-            let (first, last) = (v[0].1, v[v.len() - 1].1);
-            if pp.keep_all_lines || first < pp.keep_first.max(1) as usize || last < pp.keep_last.max(1) as usize {
-                bad.push(pi);
-                continue;
-            }
+    let mut styles = ParaStyles::new(doc);
+    let mut bad = vec![false; cols.len()];
+    for (pi, (v, pf)) in cols.iter().zip(&story.paras).enumerate() {
+        let (Some(start), Some(end)) = (v.first(), v.last()) else { continue };
+        let pp = styles.get(pf);
+        if pp.keep_lines_together
+            && v.len() > 1
+            && (pp.keep_all_lines || start.1 < pp.keep_first.max(1) as usize || end.1 < pp.keep_last.max(1) as usize)
+        {
+            bad[pi] = true;
+            continue;
         }
         if pp.keep_with_next > 0
-            && let (Some(end), Some(next)) = (v.last(), cols.get(&(pi + 1)))
+            && let Some(next) = cols.get(pi + 1)
             && next.first().is_some_and(|(c, n)| *c != end.0 || (*n < pp.keep_with_next as usize && next.len() > 1))
         {
-            bad.push(pi);
+            bad[pi] = true;
         }
     }
-    if bad.is_empty() {
+    if !bad.contains(&true) {
         return;
     }
     for ft in &mut out.frames {
         for l in &mut ft.lines {
-            if bad.contains(&l.para) {
+            if bad.get(l.para) == Some(&true) {
                 l.keep_violation = true;
             }
         }
