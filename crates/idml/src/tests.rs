@@ -4660,7 +4660,7 @@ fn oversized_part_is_refused() {
     }
     assert_eq!(patched, 2);
     let Err(err) = import_idml(&bytes) else { panic!("an oversized part imported") };
-    assert!(err.to_string().contains("limit"), "{err}");
+    assert!(err.to_string().contains("IDML part"), "{err}");
 }
 
 /// A package with more entries than any document needs is refused before any is read.
