@@ -349,7 +349,8 @@ fn an_edit_redraws_only_thumbnails_in_view_one_per_frame() {
     assert!(shown > 0 && shown < 60, "only the rows in view are rendered: {shown}");
     assert_eq!(frame(&mut app, 0.0), 0, "an unchanged document renders nothing");
 
-    app.run("frame.create", json!({"rect": [36, 36, 200, 200]})).unwrap();
+    // An edit on the parent shows on every page.
+    app.run("frame.create", json!({"spread": {"kind": "parent", "index": 0}, "rect": [36, 36, 200, 200]})).unwrap();
     assert_eq!(frame(&mut app, 1.0), 0, "the edit's frame keeps the previous thumbnails");
     assert_eq!(frame(&mut app, 1.0 + THUMB_QUIET_SECS / 2.0), 0, "still editing");
     let quiet = 1.0 + THUMB_QUIET_SECS + 0.01;
@@ -371,6 +372,47 @@ fn an_edit_redraws_only_thumbnails_in_view_one_per_frame() {
     app.run("layout.pages.delete", json!({"pages": (2..60).collect::<Vec<_>>()})).unwrap();
     frame(&mut app, quiet + 1.0);
     assert!((2..60).all(|abs| !cached(abs)), "no thumbnail of a deleted page is kept");
+}
+
+/// Moving the caret or selecting changes the document's revision but nothing a thumbnail shows,
+/// and typing on one page leaves the other pages as they were: only the edited page's thumbnail
+/// is drawn again (each redraw runs on the interface thread, #2735).
+#[test]
+fn caret_moves_redraw_no_thumbnails_and_typing_only_its_page() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"pages": 12, "facingPages": false})).unwrap();
+    let r =
+        app.run("frame.create", json!({"spread": 1, "rect": [36, 36, 400, 300], "content": "text", "text": "Some words to move through."})).unwrap();
+    let story = r["story"].as_u64().unwrap();
+    let ctx = egui::Context::default();
+    let frame = |app: &mut DesignApp, time: f64| {
+        let before = THUMB_RENDERS.with(std::cell::Cell::get);
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(280.0, 900.0))),
+            time: Some(time),
+            ..Default::default()
+        };
+        ctx.run_ui(raw, |ui| show(app, ui)).textures_delta.clear();
+        THUMB_RENDERS.with(std::cell::Cell::get) - before
+    };
+    let shown: usize = (0..4).map(|_| frame(&mut app, 0.0)).sum();
+    assert!(shown > 2, "several pages are in view: {shown}");
+    let mut time = 0.0;
+    // The frame after each command, then frames past THUMB_QUIET_SECS, one per thumbnail in view.
+    let mut redraws_after = |app: &mut DesignApp, id: &str, params: serde_json::Value| {
+        let revision = app.session.active().unwrap().revision;
+        app.run(id, params).unwrap();
+        assert_ne!(app.session.active().unwrap().revision, revision, "{id} gives a new revision");
+        time += 10.0;
+        frame(app, time) + (0..shown + 1).map(|_| frame(app, time + THUMB_QUIET_SECS + 0.01)).sum::<usize>()
+    };
+    assert_eq!(redraws_after(&mut app, "text.select", json!({"story": story, "anchor": 3})), 0);
+    assert_eq!(redraws_after(&mut app, "text.move", json!({"dir": "right"})), 0);
+    assert_eq!(redraws_after(&mut app, "text.move", json!({"dir": "right", "word": true})), 0);
+    assert_eq!(redraws_after(&mut app, "text.insert", json!({"text": "x"})), 1, "only the page with the text");
+    assert_eq!(redraws_after(&mut app, "text.move", json!({"dir": "left"})), 0);
+    // Reloaded fonts compose the same document again: every thumbnail is drawn again.
+    assert_eq!(redraws_after(&mut app, "font.reload", json!({})), shown);
 }
 
 /// Switching to a document whose thumbnails are all current stores that document in the clock,
