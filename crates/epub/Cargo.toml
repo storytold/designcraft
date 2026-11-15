@@ -9,7 +9,9 @@ description = "DesignCraft EPUB 3 (reflowable) export: stories in reading order,
 workspace = true
 
 [dependencies]
+craft-epub = { workspace = true }
 designcraft-doc = { workspace = true }
 designcraft-color = { workspace = true }
+
+[dev-dependencies]
 zip = { workspace = true }
-chrono = { workspace = true }

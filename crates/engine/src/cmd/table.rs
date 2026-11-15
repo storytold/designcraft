@@ -14,7 +14,7 @@ use designcraft_doc::{
 };
 use serde_json::{Value, json};
 
-use super::{CommandSpec, bad, cmd, f64_or, has_doc, has_text, ok, str_param};
+use super::{CommandSpec, bad, cmd, f64_or, has_doc, has_text, ok, str_param, table_story};
 use crate::{Result, Session};
 
 mod cell;

@@ -487,12 +487,15 @@ pub(super) fn change_case(s: &mut Session, p: &Value) -> Result<Value> {
                 let mut changes = Vec::new();
                 for seg in segs.iter().rev() {
                     let old = st.slice(seg.clone()).to_string();
-                    let new: String = starts.iter().zip(&mapped).filter(|(b, _)| seg.contains(b)).map(|(_, m)| m.as_str()).collect();
+                    // The characters in this run: `starts` is sorted, so a search finds the slice.
+                    let (from, to) = (starts.partition_point(|b| *b < seg.start), starts.partition_point(|b| *b < seg.end));
+                    let new: String = mapped.get(from..to).unwrap_or_default().iter().map(String::as_str).collect();
                     if new != old {
                         delta += new.len() as isize - old.len() as isize;
                         st.replace(seg.clone(), &new);
                         // Per-character changes (back to front), so ranges inside the run keep their boundaries.
-                        for (i, (b, m)) in starts.iter().zip(&mapped).enumerate().rev().filter(|(_, (b, _))| seg.contains(b)) {
+                        for i in (from..to.min(mapped.len())).rev() {
+                            let (b, m) = (&starts[i], &mapped[i]);
                             let ce = starts.get(i + 1).copied().unwrap_or(r.end);
                             if m.len() != ce - b {
                                 changes.push((*b..ce, m.len()));

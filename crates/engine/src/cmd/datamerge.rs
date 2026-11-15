@@ -19,13 +19,12 @@ use serde_json::{Value, json};
 use super::{CommandSpec, bad, cmd, has_doc, id_param, ok, str_param};
 use crate::{DocState, Result, Session};
 use fill::{FillReport, ImageCache, Maps, MissingImage, Sources, copy_item, fill_row, identity_map};
-use parse::{
-    Table, TileInput, extension, fingerprint_of, relative_between, select_records, status_of, table_from_bytes, table_from_grid, table_from_objects,
-    tile,
-};
+pub(crate) use parse::relative_between;
+use parse::{Table, TileInput, select_records, status_of, table_from_bytes, table_from_grid, table_from_objects, tile};
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use parse::fingerprint_from;
+pub(crate) use parse::fingerprint_of;
 
 pub(crate) fn fingerprint_from_path(path: &str) -> Option<designcraft_doc::Fingerprint> {
     fingerprint_of(Path::new(path))
@@ -60,7 +59,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Insert Field",
             [],
             None,
-            "{field, role?: text|image|qr|hyperlink, story?, at?, end?, item?} → {id}",
+            "{field, role?: text|image|qr|hyperlink, story?, at?, end?, item?} → {id}; an image field at a text insertion point merges as an inline image; with the insertion point in a table cell or a note → {cell: true, marker} (a typed marker, not an anchored placeholder; an image field there is an error unless role is text)",
             has_doc,
             placeholder_add
         ),
@@ -212,6 +211,8 @@ fn preview_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     let images = ImageCache::default();
     let sources = Sources { options: &options, data_dir: data_dir.as_deref(), doc_dir: doc_dir.as_deref(), images: &images };
     fill_row(&mut doc, &source.fields, &row, record as u32, &maps, &sources);
+    // An image the record placed gets its Alpha Channel outline, as an edit's would.
+    crate::cmd::alpha_wrap::sync(&mut doc);
     st.doc = Arc::new(doc);
     st.preview_record = Some(record as u32);
     st.bump_revision();
@@ -263,6 +264,8 @@ fn merge_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     merged.data_merge.placeholders.clear();
     merged.title = format!("{} merged", src.title);
     let pages = merged.page_count();
+    // The merged images' Alpha Channel outlines first: the overset count composes with them.
+    crate::cmd::alpha_wrap::sync(&mut merged);
     let overset = overset_count(&merged);
     let records = selected.len();
     let missing_json: Vec<Value> = missing.iter().map(|m| json!({"record": m.record, "field": m.field, "path": m.path})).collect();
@@ -276,37 +279,74 @@ fn merge_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     }))
 }
 
+/// Pages a merge may make in all, checked before any is built.
+const MAX_MERGED_PAGES: usize = 1_000_000;
+
 fn copy_records(dst: &mut Document, src: &Document, table: &Table, selected: &[usize], sources: &Sources, sink: &mut Sink) -> Result<()> {
     if let Some(&idx) = selected.first() {
         let maps = identity_map(dst);
         fill_at(dst, table, idx, sources, &maps, sink);
     }
-    for &idx in selected.iter().skip(1) {
-        let maps = append_copy(dst, src)?;
+    let rest = selected.len().saturating_sub(1);
+    if rest == 0 {
+        return Ok(());
+    }
+    // The pages of every further record in one insertion (one repagination, not one per record),
+    // then each copy goes onto its own.
+    let n = src.page_count().max(1);
+    let first_new = dst.page_count();
+    let total = n
+        .checked_mul(rest)
+        .filter(|t| t.saturating_add(first_new) <= MAX_MERGED_PAGES)
+        .ok_or_else(|| bad("data.merge", format!("the merge would make more than {MAX_MERGED_PAGES} pages")))?;
+    let parent = src.page(0).and_then(|p| p.parent);
+    dst.insert_pages(Some(first_new.saturating_sub(1)), total, parent)?;
+    let dst_starts = spread_starts(dst);
+    let src_starts = spread_starts(src);
+    for (k, &idx) in selected.iter().skip(1).enumerate() {
+        let maps = append_copy(dst, src, first_new + k * n, &dst_starts, &src_starts)?;
         fill_at(dst, table, idx, sources, &maps, sink);
     }
     Ok(())
 }
 
-fn append_copy(dst: &mut Document, src: &Document) -> Result<Maps> {
-    let start = dst.page_count();
+/// Absolute index of each spread's first page: page lookups by search rather than by walking the spreads.
+fn spread_starts(d: &Document) -> Vec<usize> {
+    let mut n = 0;
+    d.spreads
+        .iter()
+        .map(|s| {
+            let at = n;
+            n += s.pages.len();
+            at
+        })
+        .collect()
+}
+
+/// (spread, page in spread) of absolute page `abs`, as [`Document::page_loc`] says, given `starts`.
+fn loc_of(d: &Document, starts: &[usize], abs: usize) -> Option<(usize, usize)> {
+    let si = starts.partition_point(|&s| s <= abs).checked_sub(1)?;
+    let pi = abs - starts.get(si)?;
+    (pi < d.spreads.get(si)?.pages.len()).then_some((si, pi))
+}
+
+/// Copy `src`'s pages and items onto the pages of `dst` from absolute page `start`.
+fn append_copy(dst: &mut Document, src: &Document, start: usize, dst_starts: &[usize], src_starts: &[usize]) -> Result<Maps> {
     let n = src.page_count().max(1);
-    let parent = src.page(0).and_then(|p| p.parent);
-    dst.insert_pages(Some(start.saturating_sub(1)), n, parent)?;
     for i in 0..n {
         if let Some(pg) = src.page(i).cloned() {
-            assign_page(dst, start.saturating_add(i), &pg);
+            assign_page(dst, loc_of(dst, dst_starts, start.saturating_add(i)), &pg);
         }
     }
     let mut maps = Maps::default();
     for (spi, sp) in src.spreads.iter().enumerate() {
         for it in &sp.items {
             let pi = sp.page_at_x(it.bounds().center().x).unwrap_or(0);
-            let abs = src.first_page_of_spread(spi).saturating_add(pi);
+            let abs = src_starts.get(spi).copied().unwrap_or(0).saturating_add(pi);
             let dest_abs = start.saturating_add(abs);
-            let Some((dsi, _)) = dst.page_loc(dest_abs) else { continue };
+            let Some((dsi, dpi)) = loc_of(dst, dst_starts, dest_abs) else { continue };
             let src_x = src.page(abs).map(|p| p.x).unwrap_or(0.0);
-            let dst_x = dst.page(dest_abs).map(|p| p.x).unwrap_or(0.0);
+            let dst_x = dst.spreads.get(dsi).and_then(|s| s.pages.get(dpi)).map(|p| p.x).unwrap_or(0.0);
             copy_item(dst, src, it, SpreadRef::Doc(dsi), Vec2::new(dst_x - src_x, 0.0), &mut maps)?;
         }
     }
@@ -335,11 +375,13 @@ fn tile_records(dst: &mut Document, src: &Document, table: &Table, selected: &[u
         let template = src.page(0).cloned();
         dst.insert_pages(Some(0), plan.pages.saturating_sub(1), parent)?;
         if let Some(pg) = template {
+            let starts = spread_starts(dst);
             for i in 1..plan.pages {
-                assign_page(dst, i, &pg);
+                assign_page(dst, loc_of(dst, &starts, i), &pg);
             }
         }
     }
+    let starts = spread_starts(dst);
     for hit in plan.hits {
         let Some(&idx) = selected.get(hit.index) else { continue };
         if hit.index == 0 && hit.page == 0 && hit.col == 0 && hit.row == 0 {
@@ -347,7 +389,7 @@ fn tile_records(dst: &mut Document, src: &Document, table: &Table, selected: &[u
             fill_at(dst, table, idx, sources, &maps, sink);
             continue;
         }
-        let Some((dsi, _)) = dst.page_loc(hit.page) else { continue };
+        let Some((dsi, _)) = loc_of(dst, &starts, hit.page) else { continue };
         let mut maps = Maps::default();
         for id in &ids {
             let Some(it) = src.item(*id) else { continue };
@@ -408,8 +450,8 @@ fn block_of(doc: &Document) -> (Rect, Vec<ItemId>) {
     (block.unwrap_or(Rect::ZERO), ids)
 }
 
-fn assign_page(dst: &mut Document, abs: usize, from: &Page) {
-    let Some((si, pi)) = dst.page_loc(abs) else { return };
+fn assign_page(dst: &mut Document, loc: Option<(usize, usize)>, from: &Page) {
+    let Some((si, pi)) = loc else { return };
     let Some(sp) = dst.spreads.get_mut(si) else { return };
     let sp = Arc::make_mut(sp);
     let Some(p) = sp.pages.get_mut(pi) else { return };
@@ -433,7 +475,7 @@ fn overset_count(doc: &Document) -> usize {
         .count()
 }
 
-fn add_placeholder(d: &mut Document, sel: &Selection, p: &Value, name: &str) -> Result<Value> {
+fn add_placeholder(d: &mut Document, sel: &mut Selection, p: &Value, name: &str) -> Result<Value> {
     let (source_id, field) = {
         let source = d.data_merge.sources.first().ok_or_else(|| bad("data.placeholder.add", "select a data source"))?;
         let field =
@@ -447,8 +489,13 @@ fn add_placeholder(d: &mut Document, sel: &Selection, p: &Value, name: &str) -> 
         true
     } else if explicit_story || role_param == Some("text") {
         false
-    } else if matches!(role_param, Some("image" | "qr")) {
-        true
+    } else if role_param == Some("qr") {
+        // A QR role with the insertion point in text is refused below rather than bound to a
+        // selected frame the caret is not in.
+        sel.text.is_none()
+    } else if role_param == Some("image") {
+        // An image role with the insertion point in text places an inline image there.
+        sel.text.is_none()
     } else {
         sel.text.is_none() && !sel.items.is_empty()
     };
@@ -460,6 +507,12 @@ fn add_placeholder(d: &mut Document, sel: &Selection, p: &Value, name: &str) -> 
             DataFieldKind::Qr => PlaceholderRole::Qr,
             DataFieldKind::Text => return Err(bad("data.placeholder.add", "say which role to use on this frame")),
         }
+    } else if field.kind == DataFieldKind::Image {
+        // An image field at the insertion point places the image inline in the text.
+        PlaceholderRole::Image
+    } else if field.kind == DataFieldKind::Qr {
+        // A QR field at the insertion point is refused below: QR codes bind to a frame.
+        PlaceholderRole::Qr
     } else {
         PlaceholderRole::Text
     };
@@ -478,14 +531,58 @@ fn add_placeholder(d: &mut Document, sel: &Selection, p: &Value, name: &str) -> 
         }
         PlaceholderAnchor::Item { id: item }
     } else {
-        if matches!(role, PlaceholderRole::Image | PlaceholderRole::Qr) {
-            return Err(bad("data.placeholder.add", "image and qr placeholders bind to a frame"));
+        if role == PlaceholderRole::Qr {
+            return Err(bad("data.placeholder.add", "qr placeholders bind to a frame"));
+        }
+        // The insertion point is in a table cell or a footnote: the field goes into that text as
+        // its marker, which the merge fills as it fills a typed one. Such a text is a story of its
+        // own that a placeholder can't name, and the selection's offsets are its own, so they used
+        // to put the marker in the table's story instead (#2315).
+        if !explicit_story
+            && let Some(t) = sel.text
+            && let Some(pressed) = t.cell
+        {
+            // The merge fills such a text with the record's value as text, so an image there
+            // would merge as its path.
+            if role == PlaceholderRole::Image {
+                return Err(bad(
+                    "data.placeholder.add",
+                    "an image field can't go in a table cell or a note; bind it to a frame, or insert it with role text to merge its path",
+                ));
+            }
+            if role != PlaceholderRole::Text {
+                return Err(bad("data.placeholder.add", "a hyperlink field can't go in a table cell or a note; insert it as text"));
+            }
+            // The merge finds a marker by its name, so a name that can't be read back out of one
+            // would stay a marker: say so rather than insert it.
+            if name.is_empty() || name.contains(['<', '>', '\n']) {
+                return Err(bad(
+                    "data.placeholder.add",
+                    format!("the field \"{name}\" can't be inserted in a table cell or a note: its name holds < > or a line break"),
+                ));
+            }
+            // A position a merged cell covers is the merged cell's: the field goes where it shows.
+            let cell = d.story(t.story).and_then(|st| st.tables.get(&pressed.table)).map_or(pressed, |tab| {
+                let (row, col) = tab.owner(pressed.row, pressed.col);
+                designcraft_doc::CellAddr { row, col, ..pressed }
+            });
+            let marker = format!("<<{name}>>");
+            let st = d.text_story_mut(t.story, Some(cell)).ok_or_else(|| bad("data.placeholder.add", "no table cell there"))?;
+            let at = if cell == pressed { t.range().start.min(st.text.len()) } else { st.text.len() };
+            let at = designcraft_doc::floor_char_boundary(&st.text, at);
+            st.replace(at..at, &marker);
+            // The caret goes after the field, in that text, as after typing; a cell selection
+            // would have the next keystroke replace the whole cell, field and all.
+            let end = at + marker.len();
+            sel.cells = None;
+            sel.text = Some(designcraft_doc::TextSel { anchor: end, focus: end, cell: Some(cell), ..t });
+            return Ok(json!({"cell": true, "marker": marker}));
         }
         let (story, at, end) = text_target(p, sel).ok_or_else(|| bad("data.placeholder.add", "select text or a frame"))?;
         if d.story(story).is_none() {
             return Err(bad("data.placeholder.add", "no story"));
         }
-        if role == PlaceholderRole::Text {
+        if matches!(role, PlaceholderRole::Text | PlaceholderRole::Image) {
             let marker = format!("<<{name}>>");
             let at = {
                 let text = d.story(story).map(|st| st.text.clone()).unwrap_or_default();
@@ -495,6 +592,11 @@ fn add_placeholder(d: &mut Document, sel: &Selection, p: &Value, name: &str) -> 
                 st.replace(at..at, &marker);
             }
             d.adjust_text_ranges(story, at..at, marker.len());
+            // The caret moves past the field, as after typing, so the next field goes after it.
+            if let Some(t) = sel.text.as_mut().filter(|t| t.story == story && t.cell.is_none()) {
+                let shift = |pos: usize| if pos >= at { pos + marker.len() } else { pos };
+                (t.anchor, t.focus) = (shift(t.anchor), shift(t.focus));
+            }
             PlaceholderAnchor::Text { story, start: at, end: at.saturating_add(marker.len()) }
         } else {
             let text = d.story(story).map(|st| st.text.clone()).unwrap_or_default();
@@ -537,7 +639,7 @@ pub(crate) fn sync_placeholders(doc: &mut Document) {
             }
             PlaceholderAnchor::Text { story, start, end } => {
                 let text = doc.story(story).map(|st| st.text.clone()).unwrap_or_default();
-                if ph.role != PlaceholderRole::Text {
+                if !matches!(ph.role, PlaceholderRole::Text | PlaceholderRole::Image) {
                     if start <= end && end <= text.len() {
                         keep.push(ph);
                     }
@@ -726,11 +828,10 @@ fn take_file(p: &Value) -> std::result::Result<(Vec<u8>, String, Option<String>)
 }
 
 fn parse_file(bytes: &[u8], name: &str, delimiter: Option<Delimiter>, sheet: Option<&str>) -> std::result::Result<Table, String> {
-    let ext = extension(name);
-    if ext == "xls" || ext == "xlsm" {
-        return Err(format!("{ext} workbooks are not supported"));
+    if craft_file_formats::detect(name, &[]) == Some(craft_file_formats::Format::LegacyExcel) {
+        return Err("legacy Excel .xls/.xlsm workbooks are not supported".into());
     }
-    if ext == "xlsx" {
+    if craft_file_formats::detect(name, bytes) == Some(craft_file_formats::Format::Xlsx) {
         let grid = designcraft_textimport::xlsx_records(bytes, sheet).map_err(|e| e.to_string())?;
         return table_from_grid(grid, Delimiter::Comma);
     }
