@@ -959,9 +959,20 @@ pub fn equation(doc: &designcraft_doc::Document, id: designcraft_doc::ItemId) ->
     if asset.mime != "image/svg+xml" || asset.name != "math.svg" || it.alt_text.trim().is_empty() {
         return None;
     }
-    // The layout scales linearly with the size: compare the placed height with 12 pt's.
+    // Start from the height compared with 12 pt's, then refine: rules keep a minimum thickness,
+    // so small sizes are not quite linear.
     let (_, (_, h12)) = to_svg(&it.alt_text, 12.0);
-    let size = 12.0 * g.size.1 / h12;
+    let mut size = 12.0 * g.size.1 / h12;
+    for _ in 0..4 {
+        if !size.is_finite() {
+            break;
+        }
+        let (_, (_, h)) = to_svg(&it.alt_text, size.clamp(2.0, 400.0));
+        if h.is_nan() || h <= 0.0 {
+            break;
+        }
+        size *= g.size.1 / h;
+    }
     let size = if size.is_finite() { ((size * 100.0).round() / 100.0).clamp(2.0, 400.0) } else { 12.0 };
     Some((it.alt_text.clone(), size))
 }

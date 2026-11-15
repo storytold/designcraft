@@ -5626,6 +5626,13 @@ fn confirm_part6(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
             {
                 p.insert("id".into(), id.clone());
             }
+            // The LaTeX is always text, even when it reads as a number ("123") or `true`.
+            if cid == "math.insert"
+                && let Some(Value::String(v)) = d.fields.get("latex")
+                && !v.trim().is_empty()
+            {
+                p.insert("latex".into(), json!(v.trim()));
+            }
             let r = app.run(cid, Value::Object(p));
             if let Err(e) = &r {
                 // Keep the dialog open with the error.
