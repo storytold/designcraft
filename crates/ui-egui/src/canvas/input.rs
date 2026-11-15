@@ -143,11 +143,19 @@ fn context_target(app: &mut DesignApp, p: Point, zoom: f64) -> crate::menus::Con
         }
         return ContextMenu::Text;
     }
-    let Some((id, _)) = hit else { return ContextMenu::Canvas };
+    let Some((id, sp)) = hit else { return ContextMenu::Canvas };
     let direct = app.session.tool_id() == "directSelection";
-    let Some((target, selected)) = app.session.active().map(|st| {
-        let target = if direct { id } else { st.doc.top_level_of(id).unwrap_or(id) };
-        (target, st.selection.contains(target))
+    let Some((target, selected)) = app.session.active().and_then(|st| {
+        let target = if direct {
+            // As a Direct Selection click picks it: the item inside the group, not the group.
+            st.doc
+                .item(id)
+                .and_then(|it| designcraft_doc::hit_descendant(it, sp, 4.0 / zoom.max(1e-6), &|c| !c.is_group()))
+                .filter(|leaf| !st.doc.ancestor_locked(*leaf))
+        } else {
+            Some(st.doc.top_level_of(id).unwrap_or(id))
+        };
+        target.map(|t| (t, st.selection.contains(t)))
     }) else {
         return ContextMenu::Canvas;
     };

@@ -217,6 +217,21 @@ impl Document {
         Some(self.spread(loc.spread)?.items[loc.top()].id)
     }
 
+    /// Item IDs along the ancestry path from top-level down to `id` (inclusive); empty when `id`
+    /// is not on a spread.
+    pub fn ancestry_chain(&self, id: ItemId) -> Vec<ItemId> {
+        let Some(loc) = self.find(id) else { return vec![] };
+        let Some(sp) = self.spread(loc.spread) else { return vec![] };
+        let mut items: &[Arc<Item>] = &sp.items;
+        let mut chain = Vec::with_capacity(loc.path.len());
+        for &i in &loc.path {
+            let Some(it) = items.get(i) else { break };
+            chain.push(it.id);
+            items = it.children();
+        }
+        chain
+    }
+
     /// Spread-space transform of the parent group chain of the item at `loc` (identity at top level).
     pub fn parent_xf(&self, loc: &ItemLoc) -> designcraft_geom::Affine {
         let mut xf = designcraft_geom::Affine::IDENTITY;
@@ -749,6 +764,22 @@ impl Document {
             }
         }
         n
+    }
+
+    /// True if `id` itself is locked, sits on a locked layer, or has any locked ancestor group.
+    pub fn is_locked(&self, id: ItemId) -> bool {
+        let Some(it) = self.item(id) else { return false };
+        it.locked || self.layer(it.layer).is_some_and(|l| l.locked) || self.ancestor_locked(id)
+    }
+
+    /// True if a group around `id` is locked (the item's own lock and its layer's are not
+    /// looked at): the lock `id` inherits.
+    pub fn ancestor_locked(&self, id: ItemId) -> bool {
+        let chain = self.ancestry_chain(id);
+        match chain.split_last() {
+            Some((last, parents)) if *last == id => parents.iter().any(|&p| self.item(p).is_some_and(|g| g.locked)),
+            _ => false,
+        }
     }
 
     /// Every item id (pre-order) on document spreads.
