@@ -1,6 +1,6 @@
 # DesignCraft architecture
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-04 · **Change:** minor (document the existing INDD/INDT import path) · **Target:** Adobe InDesign 2026
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-15 · **Change:** minor (document the existing INDD/INDT import path; pull-request and main-branch quality gate; recovery writes on a background thread, streamed to disk) · **Target:** Adobe InDesign 2026
 
 How DesignCraft is built today. The design notes behind it are in `plan/architecture.md`
 (local, gitignored); this file describes what the code on `main` does. Agents: AGENTS.md has the
@@ -95,7 +95,7 @@ fails or hangs at start-up (`apps/designcraft/src/gpu.rs`).
 Native `.designcraft` (zip + JSON); IDML both ways; PDF, EPUB, HTML, PNG/JPEG, text, XML export;
 placed graphics through `images` (PDF/AI pages through hayro); Word/RTF/Excel/Tagged Text through
 `textimport`. InDesign documents (`.indd`) and templates (`.indt`) are converted to IDML in memory
-by [storytold/indd-utils](https://github.com/storytold/indd-utils), then read by the IDML importer;
+by [craft-indd](https://github.com/storytold/craft-libs), then read by the IDML importer;
 conversion warnings are included in the open result. See [file-format-parity.md](file-format-parity.md)
 for current fidelity and test-coverage limitations.
 
@@ -117,13 +117,14 @@ tools, headless or connected to the app. See [agents.md](agents.md), [mcp.md](mc
 
 `cargo xtask ci`: rustfmt, clippy `-D warnings`, tests, `assets` (every asset attributed in
 ASSETS.md), `layers`, `wasm`. Clean crates deny `unwrap`/`expect`/`panic!`/`todo!`/
-`unimplemented!`/`unreachable!`. CI on GitHub currently runs only the FreeBSD and Windows ARM64
-builds (on manifest changes), packaging lint and the release workflow; `xtask ci` runs locally.
+`unimplemented!`/`unreachable!`. [GitHub CI](../.github/workflows/ci.yml) runs this gate through
+the shared workflow on every pull request and push to `main`. The gate can also be run locally.
 
 ## Revision history
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-15 | trivial | Quality gates describe the existing shared CI workflow on every pull request and push to main |
 | 2026-10-27 | minor | Recovery writes off the interface thread, streamed to disk; a snapshot still being written when its document is saved, reverted or closed is cancelled |
 | 2026-11-04 | minor | Corrected the file I/O summary to describe the existing INDD/INDT conversion and import path |
 | 2026-10-12 | minor | Documented cancelable Dock Quit through the native event-loop boundary |
