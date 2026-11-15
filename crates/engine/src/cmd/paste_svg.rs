@@ -1,13 +1,14 @@
 //! Paste vector art copied in another app (Illustrator, VectorCraft, Figma, Inkscape) as editable
 //! paths, as InDesign pastes Illustrator art. Those apps put the copied objects on the system
 //! clipboard as SVG markup; each path becomes a DesignCraft path with its fill and stroke, groups
-//! stay groups, and text comes in as outlines.
+//! stay groups, gradients stay gradients, and text comes in as outlines.
 
 use std::collections::{HashMap, HashSet};
 
 use craft_svg::tree::document::{Document as SvgDocument, LineCap, LineJoin, Node as SvgNode, Paint as SvgPaint, Segment};
 use designcraft_doc::{Content, Fill, Item, ItemId, Selection, Shape, Stroke, StrokeType};
 use designcraft_geom::{Affine, BezPath, PathData, Point, Rect};
+use designcraft_images::usvg;
 use serde_json::{Value, json};
 
 use super::{CommandSpec, Result, Session, bad, cmd, has_doc, spread_param, str_param};
@@ -47,10 +48,87 @@ impl Art {
     }
 }
 
-#[derive(Clone, Copy)]
 struct Paint {
     rgb: [u8; 3],
     opacity: f32,
+    /// A gradient paint's stops and placement (`rgb` is then its first stop).
+    gradient: Option<Box<PastedGradient>>,
+}
+
+/// An SVG gradient as the shared scene can't hold it (it keeps the first colour only): the
+/// stops, and where it sits in the art's CSS-pixel space.
+#[derive(Clone)]
+struct PastedGradient {
+    gradient: designcraft_color::Gradient,
+    at: GradientAt,
+}
+
+#[derive(Clone, Copy)]
+enum GradientAt {
+    Linear(Point, Point),
+    /// Centre and horizontal and vertical radii.
+    Radial(Point, f64, f64),
+}
+
+/// The fill and stroke gradients of each path the shared scene keeps, in its order.
+type PathGradients = [Option<PastedGradient>; 2];
+
+fn pasted_gradient(paint: &usvg::Paint, abs: usvg::Transform) -> Option<PastedGradient> {
+    use designcraft_color::{Color, Gradient, GradientKind, GradientStop};
+    let at = |m: usvg::Transform, x: f32, y: f32| {
+        let mut p = usvg::tiny_skia_path::Point::from_xy(x, y);
+        m.map_point(&mut p);
+        Point::new(f64::from(p.x), f64::from(p.y))
+    };
+    let (kind, base, at): (_, &usvg::BaseGradient, _) = match paint {
+        usvg::Paint::LinearGradient(g) => {
+            let m = abs.pre_concat(g.transform());
+            (GradientKind::Linear, g, GradientAt::Linear(at(m, g.x1(), g.y1()), at(m, g.x2(), g.y2())))
+        }
+        usvg::Paint::RadialGradient(g) => {
+            // The circle's radius along each axis after the transforms (an ellipse, as an
+            // objectBoundingBox gradient on a box that isn't square).
+            let m = abs.pre_concat(g.transform());
+            let r = f64::from(g.r().get());
+            let rx = r * f64::from(m.sx).hypot(f64::from(m.ky));
+            let ry = r * f64::from(m.kx).hypot(f64::from(m.sy));
+            (GradientKind::Radial, g, GradientAt::Radial(at(m, g.cx(), g.cy()), rx, ry))
+        }
+        usvg::Paint::Color(_) | usvg::Paint::Pattern(_) => return None,
+    };
+    let stops: Vec<GradientStop> = base
+        .stops()
+        .iter()
+        .map(|s| {
+            let c = s.color();
+            GradientStop { opacity: s.opacity().get(), ..GradientStop::new(s.offset().get(), Color::rgb8(c.red, c.green, c.blue)) }
+        })
+        .collect();
+    if stops.is_empty() {
+        return None;
+    }
+    Some(PastedGradient { gradient: Gradient { kind, stops }, at })
+}
+
+/// The gradients of the paths [`SvgDocument::from_tree`] keeps, in the order it keeps them: it
+/// skips the same nodes (hidden or empty paths, images, groups past `max_depth`).
+fn path_gradients(group: &usvg::Group, depth: usize, max_depth: usize, out: &mut Vec<PathGradients>) {
+    for node in group.children() {
+        match node {
+            usvg::Node::Path(path) => {
+                if !path.is_visible() || path.data().is_empty() {
+                    continue;
+                }
+                let abs = path.abs_transform();
+                let fill = path.fill().and_then(|f| pasted_gradient(f.paint(), abs));
+                let stroke = path.stroke().and_then(|s| pasted_gradient(s.paint(), abs));
+                out.push([fill, stroke]);
+            }
+            usvg::Node::Group(child) if depth < max_depth => path_gradients(child, depth + 1, max_depth, out),
+            usvg::Node::Text(text) if depth < max_depth => path_gradients(text.flattened(), depth + 1, max_depth, out),
+            _ => {}
+        }
+    }
 }
 
 struct StrokeStyle {
@@ -70,20 +148,27 @@ struct Notes {
     too_deep: bool,
 }
 
-fn paint(p: &SvgPaint, notes: &mut Notes) -> Option<Paint> {
-    let (rgb, opacity) = match p {
-        SvgPaint::Color { rgb, opacity } => (*rgb, *opacity),
-        // Gradients and patterns are retained as their first color where available.
+/// A scene paint; `gradient` is the same paint's gradient read from the SVG tree.
+fn paint(p: &SvgPaint, gradient: Option<PastedGradient>, notes: &mut Notes) -> Option<Paint> {
+    let (rgb, opacity, gradient) = match p {
+        SvgPaint::Color { rgb, opacity } => (*rgb, *opacity, None),
         SvgPaint::Gradient { first_rgb, opacity } => {
-            notes.gradients += 1;
-            (*first_rgb.as_ref()?, *opacity)
+            let rgb = *first_rgb.as_ref()?;
+            // The tree's gradient, when it's this one (it starts with the scene's first colour).
+            let gradient =
+                gradient.filter(|g| g.gradient.stops.first().is_some_and(|s| s.color == designcraft_color::Color::rgb8(rgb[0], rgb[1], rgb[2])));
+            if gradient.is_none() {
+                // Retained as its first colour.
+                notes.gradients += 1;
+            }
+            (rgb, *opacity, gradient.map(Box::new))
         }
         SvgPaint::Pattern => {
             notes.gradients += 1;
             return None;
         }
     };
-    Some(Paint { rgb, opacity })
+    Some(Paint { rgb, opacity, gradient })
 }
 
 /// To 1/10000 pt: SVG numbers are 32-bit floats (a 1 pt stroke reads as 0.99999994).
@@ -106,13 +191,15 @@ fn bezpath(segments: &[Segment]) -> BezPath {
     bp
 }
 
-fn convert(nodes: &[SvgNode], notes: &mut Notes, out: &mut Vec<Art>) {
+/// `gradients` holds each scene path's gradients from [`path_gradients`], taken in turn.
+fn convert(nodes: &[SvgNode], gradients: &mut std::vec::IntoIter<PathGradients>, notes: &mut Notes, out: &mut Vec<Art>) {
     for node in nodes {
         match node {
             SvgNode::Path(path) => {
-                let fill = path.fill.as_ref().and_then(|p| paint(p, notes));
+                let [fill_gradient, stroke_gradient] = gradients.next().unwrap_or_default();
+                let fill = path.fill.as_ref().and_then(|p| paint(p, fill_gradient, notes));
                 let stroke = path.stroke.as_ref().and_then(|s| {
-                    let c = paint(&s.paint, notes)?;
+                    let c = paint(&s.paint, stroke_gradient, notes)?;
                     let width = round(s.width * designcraft_images::PT_PER_PX);
                     let dashes = s.dash_array.as_ref().map(|d| d.iter().map(|v| round(v * designcraft_images::PT_PER_PX)).collect::<Vec<_>>());
                     let style = StrokeStyle {
@@ -144,7 +231,7 @@ fn convert(nodes: &[SvgNode], notes: &mut Notes, out: &mut Vec<Art>) {
             }
             SvgNode::Group { children, opacity } => {
                 let mut items = Vec::new();
-                convert(children, notes, &mut items);
+                convert(children, gradients, notes, &mut items);
                 // usvg wraps nodes in groups for transforms and opacity; only a group of several
                 // objects stays a group. Its opacity goes to what it holds.
                 if items.len() > 1 {
@@ -173,10 +260,16 @@ fn bounds(art: &[Art]) -> Option<Rect> {
 /// (a pasted SVG can hold tens of thousands of colours).
 struct PasteSwatches {
     by_rgb: HashMap<[u32; 3], String>,
+    by_gradient: HashMap<String, String>,
     names: HashSet<String>,
 }
 
 impl PasteSwatches {
+    /// A gradient as a key: equal gradients, equal keys.
+    fn gradient_key(g: &designcraft_color::Gradient) -> String {
+        format!("{g:?}")
+    }
+
     /// An RGB colour as a key: equal colours, equal keys (`+ 0.0` makes -0 and 0 one key).
     fn key(r: f32, g: f32, b: f32) -> [u32; 3] {
         [(r + 0.0).to_bits(), (g + 0.0).to_bits(), (b + 0.0).to_bits()]
@@ -184,14 +277,20 @@ impl PasteSwatches {
 
     fn new(d: &designcraft_doc::Document) -> Self {
         use designcraft_color::swatch::SwatchValue;
-        let mut by_rgb = HashMap::new();
+        let (mut by_rgb, mut by_gradient) = (HashMap::new(), HashMap::new());
         for w in &d.swatches {
-            if let SwatchValue::Color { color: designcraft_color::Color::Rgb { r, g, b }, .. } = &w.value {
-                // The first swatch of a colour is the one, as a search from the start finds it.
-                by_rgb.entry(Self::key(*r, *g, *b)).or_insert_with(|| w.name.clone());
+            // The first swatch of a colour or gradient is the one, as a search from the start finds it.
+            match &w.value {
+                SwatchValue::Color { color: designcraft_color::Color::Rgb { r, g, b }, .. } => {
+                    by_rgb.entry(Self::key(*r, *g, *b)).or_insert_with(|| w.name.clone());
+                }
+                SwatchValue::Gradient { gradient } => {
+                    by_gradient.entry(Self::gradient_key(gradient)).or_insert_with(|| w.name.clone());
+                }
+                _ => {}
             }
         }
-        Self { by_rgb, names: d.swatches.iter().map(|w| w.name.clone()).collect() }
+        Self { by_rgb, by_gradient, names: d.swatches.iter().map(|w| w.name.clone()).collect() }
     }
 }
 
@@ -219,12 +318,53 @@ fn swatch_for(d: &mut designcraft_doc::Document, known: &mut PasteSwatches, rgb:
     name
 }
 
+/// The swatch holding exactly `g`: an existing gradient swatch, else a new unnamed one (hidden
+/// until Add to Swatches), as Swatches ▸ apply does for an unnamed gradient.
+fn gradient_swatch_for(d: &mut designcraft_doc::Document, known: &mut PasteSwatches, g: designcraft_color::Gradient) -> String {
+    use designcraft_color::swatch::{Swatch, SwatchValue};
+    let key = PasteSwatches::gradient_key(&g);
+    if let Some(name) = known.by_gradient.get(&key) {
+        return name.clone();
+    }
+    let name = designcraft_doc::Styles::unique_name(|n| known.names.contains(n), "Gradient");
+    known.names.insert(name.clone());
+    known.by_gradient.insert(key, name.clone());
+    d.swatches.push(Swatch { name: name.clone(), value: SwatchValue::Gradient { gradient: g }, locked: false, named: false, hidden: true });
+    name
+}
+
+/// A pasted fill's or stroke's swatch and gradient vector (in the item's space, which is the
+/// spread's: pasted items aren't transformed), on an object whose bounds are `b`.
+fn paint_swatch(d: &mut designcraft_doc::Document, known: &mut PasteSwatches, p: Paint, shift: Affine, b: Rect) -> (String, Option<[f64; 4]>) {
+    let Some(PastedGradient { gradient, at }) = p.gradient.map(|g| *g) else {
+        return (swatch_for(d, known, p.rgb), None);
+    };
+    let pt = |q: Point| shift * Point::new(q.x * designcraft_images::PT_PER_PX, q.y * designcraft_images::PT_PER_PX);
+    let vector = match at {
+        // A gradient with no length paints no ramp; it fits the object instead.
+        GradientAt::Linear(a, z) => Some((pt(a), pt(z))).filter(|(a, z)| (*z - *a).hypot() > 1e-9),
+        GradientAt::Radial(c, rx, ry) => {
+            // DesignCraft's radial gradient stretches with the object's box (`Fill::radial_ellipse`):
+            // the radius that gives the SVG ellipse's area, which is the SVG ellipse itself when
+            // it has the box's proportions (an objectBoundingBox gradient).
+            let k = if b.width() > 1e-9 && b.height() > 1e-9 { b.height() / b.width() } else { 1.0 };
+            let r = (rx * ry / k).sqrt() * designcraft_images::PT_PER_PX;
+            let c = pt(c);
+            Some((c, c + designcraft_geom::Vec2::new(r, 0.0))).filter(|(a, z)| (*z - *a).hypot() > 1e-9)
+        }
+    }
+    .filter(|(a, z)| [a.x, a.y, z.x, z.y].iter().all(|v| v.is_finite()))
+    .map(|(a, z)| [a.x, a.y, z.x, z.y]);
+    (gradient_swatch_for(d, known, gradient), vector)
+}
+
 fn build(d: &mut designcraft_doc::Document, known: &mut PasteSwatches, art: Vec<Art>, layer: designcraft_doc::LayerId, shift: Affine) -> Vec<Item> {
     let mut out = Vec::new();
     for a in art {
         match a {
             Art::Path { path, fill, stroke, opacity } => {
-                let data = PathData::from_bezpath(&(shift * path));
+                let path = shift * path;
+                let data = PathData::from_bezpath(&path);
                 if data.subpaths.is_empty() {
                     continue;
                 }
@@ -234,22 +374,30 @@ fn build(d: &mut designcraft_doc::Document, known: &mut PasteSwatches, art: Vec<
                 let line = data.subpaths.len() == 1 && anchors == 2 && data.subpaths.iter().all(|s| !s.closed && s.anchors.iter().all(straight));
                 // The object's opacity: its own times the paint's. Items have no separate fill and
                 // stroke opacity, so a path with both takes the fill's (`Notes::mixed_opacity`).
-                let paint = fill.map(|f| f.opacity).or(stroke.as_ref().map(|(c, _)| c.opacity)).unwrap_or(1.0);
+                let paint = fill.as_ref().map(|f| f.opacity).or(stroke.as_ref().map(|(c, _)| c.opacity)).unwrap_or(1.0);
+                let b = designcraft_geom::Shape::bounding_box(&path);
                 let mut it = Item::new(ItemId(d.alloc()), layer, if line { Shape::GraphicLine } else { Shape::Path }, data);
                 it.fill = match fill {
-                    Some(f) => Fill::swatch(&swatch_for(d, known, f.rgb)),
+                    Some(f) => {
+                        let (swatch, gradient_vector) = paint_swatch(d, known, f, shift, b);
+                        Fill { gradient_vector, ..Fill::swatch(&swatch) }
+                    }
                     None => Fill::none(),
                 };
                 it.stroke = match stroke {
-                    Some((c, s)) => Stroke {
-                        swatch: swatch_for(d, known, c.rgb),
-                        weight: s.width,
-                        cap: s.cap,
-                        join: s.join,
-                        miter_limit: s.miter,
-                        kind: s.dashes.map_or(StrokeType::Solid, |pattern| StrokeType::Dashed { pattern }),
-                        ..Stroke::default()
-                    },
+                    Some((c, s)) => {
+                        let (swatch, gradient_vector) = paint_swatch(d, known, c, shift, b);
+                        Stroke {
+                            swatch,
+                            gradient_vector,
+                            weight: s.width,
+                            cap: s.cap,
+                            join: s.join,
+                            miter_limit: s.miter,
+                            kind: s.dashes.map_or(StrokeType::Solid, |pattern| StrokeType::Dashed { pattern }),
+                            ..Stroke::default()
+                        }
+                    }
                     None => Stroke::none(),
                 };
                 it.opacity = (opacity * paint).clamp(0.0, 1.0);
@@ -280,8 +428,10 @@ fn paste_svg(s: &mut Session, p: &Value) -> Result<Value> {
     let tree = designcraft_images::svg_tree(svg.as_bytes()).ok_or_else(|| bad(ID, "the SVG on the clipboard can't be read"))?;
     let scene = SvgDocument::from_tree(&tree, MAX_DEPTH);
     let mut notes = Notes { images: scene.images, too_deep: scene.too_deep, ..Default::default() };
+    let mut gradients = Vec::new();
+    path_gradients(tree.root(), 0, MAX_DEPTH, &mut gradients);
     let mut art = Vec::new();
-    convert(&scene.nodes, &mut notes, &mut art);
+    convert(&scene.nodes, &mut gradients.into_iter(), &mut notes, &mut art);
     let b = bounds(&art).ok_or_else(|| bad(ID, "the SVG on the clipboard has no paths to paste"))?;
     let sr = spread_param(p, ID)?;
     let layer = s.doc()?.active_layer;
@@ -410,6 +560,51 @@ mod tests {
         let id = ItemId(r["ids"][0].as_u64().unwrap());
         assert!((s.doc().unwrap().doc.item(id).unwrap().opacity - 0.4).abs() < 1e-3);
         assert_eq!(r["warnings"], json!([]), "equal opacities fit the object's");
+    }
+
+    /// Issue #2714: a logo's gradient copied in VectorCraft pasted as its first colour.
+    #[test]
+    fn gradients_paste_as_gradient_swatches_where_they_were() {
+        use designcraft_color::{Color, GradientKind, swatch::SwatchValue};
+        let mut s = session();
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100">
+            <defs><linearGradient id="a"><stop offset="0" stop-color="#ff0000"/><stop offset="0.25" stop-color="#00ff00" stop-opacity="0.5"/><stop offset="1" stop-color="#0000ff"/></linearGradient>
+            <radialGradient id="b" gradientUnits="userSpaceOnUse" cx="150" cy="50" r="40"><stop offset="0" stop-color="#fff"/><stop offset="1" stop-color="#000"/></radialGradient></defs>
+            <rect x="0" y="0" width="100" height="100" fill="url(#a)" stroke="url(#a)" stroke-width="4"/>
+            <circle cx="150" cy="50" r="40" fill="url(#b)" transform="translate(100 0) scale(0.5) translate(-100 0)"/></svg>"##;
+        let r = s.execute("edit.pasteSvg", &json!({"svg": svg, "at": [300, 400]})).unwrap();
+        assert_eq!(r["warnings"], json!([]), "nothing lost: {r}");
+        let st = s.doc().unwrap();
+        let ids: Vec<ItemId> = r["ids"].as_array().unwrap().iter().map(|v| ItemId(v.as_u64().unwrap())).collect();
+        assert_eq!(ids.len(), 2, "{r}");
+        let (rect, circle) = (st.doc.item(ids[0]).unwrap(), st.doc.item(ids[1]).unwrap());
+        let gradient = |name: &str| match &st.doc.swatch(name).unwrap().value {
+            SwatchValue::Gradient { gradient } => gradient.clone(),
+            v => panic!("{name} is {v:?}, not a gradient"),
+        };
+        // The linear gradient, all three stops, on both fill and stroke: one swatch.
+        let g = gradient(&rect.fill.swatch);
+        assert_eq!(g.kind, GradientKind::Linear);
+        assert_eq!(
+            g.stops.iter().map(|s| (s.offset, s.color, s.opacity)).collect::<Vec<_>>(),
+            [(0.0, Color::rgb8(255, 0, 0), 1.0), (0.25, Color::rgb8(0, 255, 0), 0.5), (1.0, Color::rgb8(0, 0, 255), 1.0)]
+        );
+        assert_eq!(rect.stroke.swatch, rect.fill.swatch);
+        // Across the square from its left edge to its right (objectBoundingBox), at its top.
+        let b = rect.bounds();
+        let v = rect.fill.gradient_vector.unwrap();
+        let near = |a: f64, b: f64| (a - b).abs() < 0.01;
+        assert!(near(v[0], b.x0) && near(v[1], b.y0) && near(v[2], b.x1) && near(v[3], b.y0), "{v:?} on {b:?}");
+        assert_eq!(rect.stroke.gradient_vector, rect.fill.gradient_vector);
+        // The radial gradient, centred on the circle, with the circle's radius after its
+        // transform: 40 px × 0.5 = 15 pt.
+        let g = gradient(&circle.fill.swatch);
+        assert_eq!(g.kind, GradientKind::Radial);
+        assert_eq!(g.stops.len(), 2);
+        let b = circle.bounds();
+        let v = circle.fill.gradient_vector.unwrap();
+        assert!(near(v[0], b.center().x) && near(v[1], b.center().y) && near(v[2] - v[0], 15.0) && near(v[3], v[1]), "{v:?} on {b:?}");
+        assert!(near(b.width(), 30.0), "{b:?}");
     }
 
     #[test]
