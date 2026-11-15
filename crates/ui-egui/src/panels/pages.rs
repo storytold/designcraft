@@ -294,7 +294,10 @@ const LAYOUT_COL_MIN: f32 = 96.0;
 /// pages numbered on in one section (an en dash), and the names apart ("2, 1", "8, A") when a section starts
 /// inside the spread.
 pub(crate) fn spread_label(app: &DesignApp, doc: &designcraft_doc::Document, first: usize, n: usize) -> String {
-    let names: Vec<String> = (first..first + n).map(|abs| app.session.page_label(abs)).collect();
+    let mut names: Vec<String> = (first..first + n).map(|abs| app.session.page_label(abs)).collect();
+    if doc.settings.right_to_left_binding {
+        names.reverse();
+    }
     let starts = |abs: usize| abs == 0 || doc.sections.iter().any(|s| s.start == abs);
     match (names.first(), names.last()) {
         (Some(a), Some(b)) if names.len() > 1 => {
@@ -1304,6 +1307,21 @@ mod spread_label_tests {
         // Absolute numbering: positions, always a range.
         app.session.prefs.absolute_page_numbers = true;
         assert_eq!(labels(&app), ["1", "2–3", "4–5", "6–7", "8–9"]);
+    }
+
+    /// Bound right to left, a spread's label follows the document's reading order: the left
+    /// page first ("3–2", not "2–3"), and a section inside a spread lists its pages left to
+    /// right. Left-to-right labels are unchanged.
+    #[test]
+    fn rtl_binding_labels_spreads_in_visual_left_to_right_order() {
+        let mut app = app();
+        assert_eq!(labels(&app), ["1", "2–3", "4–5", "6–7", "8–9"]);
+        app.run("layout.documentSetup", json!({"binding": "rightToLeft"})).unwrap();
+        assert_eq!(labels(&app), ["1", "3–2", "5–4", "7–6", "9–8"]);
+        app.run("layout.section", json!({"page": 3, "startNumber": 1})).unwrap();
+        let got = labels(&app);
+        assert_eq!(got[1], "1, 2");
+        assert_eq!(got[2], "3–2");
     }
 
     /// Labels navigate to document spreads, including when parent editing was active.
