@@ -48,7 +48,7 @@ impl Dialog {
             "documentSetup" => json!({}),
             // As the menu item exported before it had options: single pages, fitted.
             INTERACTIVE_PDF_EXPORT => json!({"range": "all", "pages": "", "spreads": false, "view": "fitPage", "pageLayout": "single",
-                "fullScreen": false, "flip": false, "seconds": "5"}),
+                "fullScreen": false, "flip": false, "seconds": "5", "bookmarksPanel": true, "media": true}),
             "pdfExport" => {
                 json!({
                     "preset": "Desktop Printing",
@@ -819,14 +819,18 @@ pub fn open_epub_export(app: &mut DesignApp) {
 /// OK asks where to save (#2756).
 pub fn open_interactive_pdf_export(app: &mut DesignApp, p: &Value) {
     let mut fields = json!({});
-    for key in ["spreads", "view", "pageLayout", "fullScreen"] {
+    for key in ["spreads", "view", "pageLayout", "fullScreen", "bookmarksPanel", "media"] {
         if let Some(v) = p.get(key).filter(|v| !v.is_null()) {
             fields[key] = v.clone();
         }
     }
     if let Some(pages) = p.get("pages").filter(|v| !v.is_null()) {
         fields["range"] = json!("range");
-        fields["pages"] = json!(pages.as_str().map_or_else(|| pages.to_string(), str::to_string));
+        fields["pages"] = json!(match pages {
+            Value::String(s) => s.clone(),
+            Value::Array(a) => a.iter().map(|x| x.as_str().map_or_else(|| x.to_string(), str::to_string)).collect::<Vec<_>>().join(","),
+            o => o.to_string(),
+        });
     }
     if let Some(secs) = p.get("advanceSeconds").and_then(Value::as_f64).filter(|s| s.is_finite() && *s > 0.0) {
         fields["flip"] = json!(true);
@@ -906,7 +910,8 @@ fn interactive_pdf_export(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
 /// Export to Interactive PDF › OK: the `file.exportPdf` options of its fields, then the save
 /// dialog. A flip time that is not a positive number keeps the dialog open, saying why.
 fn confirm_interactive_pdf_export(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
-    let mut params = json!({"spreads": d.b("spreads"), "fullScreen": d.b("fullScreen"), "bookmarksPanel": true, "media": true});
+    let mut params =
+        json!({"spreads": d.b("spreads"), "fullScreen": d.b("fullScreen"), "bookmarksPanel": d.b("bookmarksPanel"), "media": d.b("media")});
     let pages = d.s("pages");
     if d.s("range") == "range" && !pages.trim().is_empty() {
         params["pages"] = json!(pages);

@@ -5694,4 +5694,8 @@ fn interactive_pdf_export_options_seed_and_refuse_a_bad_flip_time() {
         assert!(d.s("status").contains("Flip Pages Every"), "{bad}: says why");
     }
     cancel(&mut app);
+    app.run("app.exportInteractivePdf", json!({"pages": [2, 3], "bookmarksPanel": false})).unwrap();
+    let d = app.ui.dialog.as_ref().unwrap();
+    assert_eq!((d.s("pages"), d.b("bookmarksPanel"), d.b("media")), ("2,3".to_string(), false, true));
+    cancel(&mut app);
 }
