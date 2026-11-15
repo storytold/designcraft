@@ -256,6 +256,31 @@ fn imports_styles_runs_footnotes_and_tables() {
     assert_eq!(i.char_styles[0].chars.font_style.as_deref(), Some("Italic"));
 }
 
+/// Word stores its built-in heading names in lower case (`heading 1`); they come in under the
+/// name Word shows, `Heading 1`, as in v0.21.0.
+#[test]
+fn built_in_headings_take_the_name_word_shows() {
+    let styles = format!(
+        r#"<w:styles {W}>
+              <w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/></w:style>
+              <w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="heading 2"/></w:style>
+              <w:style w:type="paragraph" w:styleId="Heading9"><w:name w:val="heading 9"/></w:style>
+            </w:styles>"#
+    );
+    let document = format!(
+        r#"<w:document {W}><w:body>
+              <w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>One</w:t></w:r></w:p>
+              <w:p><w:pPr><w:pStyle w:val="Heading2"/></w:pPr><w:r><w:t>Two</w:t></w:r></w:p>
+              <w:p><w:pPr><w:pStyle w:val="Heading9"/></w:pPr><w:r><w:t>Nine</w:t></w:r></w:p>
+            </w:body></w:document>"#
+    );
+    let i = import(&docx(&document, &styles, "")).unwrap();
+    let used: Vec<&str> = i.story.paras.iter().map(|p| p.style.as_str()).collect();
+    assert_eq!(used, ["Heading 1", "Heading 2", "Heading 9"]);
+    let names: Vec<&str> = i.para_styles.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, ["Heading 1", "Heading 2", "Heading 9"]);
+}
+
 /// A content control inside a paragraph (`w:sdt`) keeps its text, also around a hyperlink.
 #[test]
 fn inline_content_control_text_is_kept() {
