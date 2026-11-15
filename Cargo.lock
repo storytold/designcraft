@@ -1108,6 +1108,11 @@ version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=ba24fe2435adb3c81ad6057faf36365fbba736cf#6d0b33c0cd63ae4250c180a04eb4a4d66ab81448"
 
 [[package]]
+name = "craft-codepage"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=f0f4758c01581d79577b9bf5046c06f4e77b1f18#f0f4758c01581d79577b9bf5046c06f4e77b1f18"
+
+[[package]]
 name = "craft-csv"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=387c64892b30fdad491b263cc3d9eac660d88dcc#387c64892b30fdad491b263cc3d9eac660d88dcc"
@@ -1428,6 +1433,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-mime"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=f0f4758c01581d79577b9bf5046c06f4e77b1f18#f0f4758c01581d79577b9bf5046c06f4e77b1f18"
+dependencies = [
+ "chrono",
+ "craft-codepage 0.1.0 (git+https://github.com/storytold/craft-libs?rev=f0f4758c01581d79577b9bf5046c06f4e77b1f18)",
+ "encoding_rs",
+]
+
+[[package]]
 name = "craft-offcrypto"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=ba24fe2435adb3c81ad6057faf36365fbba736cf#6d0b33c0cd63ae4250c180a04eb4a4d66ab81448"
@@ -1561,7 +1576,7 @@ name = "craft-rtf"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=ba24fe2435adb3c81ad6057faf36365fbba736cf#6d0b33c0cd63ae4250c180a04eb4a4d66ab81448"
 dependencies = [
- "craft-codepage",
+ "craft-codepage 0.1.0 (git+https://github.com/storytold/craft-libs?rev=ba24fe2435adb3c81ad6057faf36365fbba736cf)",
  "encoding_rs",
 ]
 
@@ -2106,6 +2121,7 @@ dependencies = [
  "craft-docpath",
  "craft-file-formats",
  "craft-indd",
+ "craft-mime",
  "craft-prepress",
  "craft-print",
  "craft-svg 0.1.0 (git+https://github.com/storytold/craft-libs?rev=cc23ffd4d26f3074808e2187d332564817624f8f)",
@@ -2146,6 +2162,7 @@ name = "designcraft-epub"
 version = "0.21.0"
 dependencies = [
  "craft-epub",
+ "craft-mime",
  "designcraft-color",
  "designcraft-doc",
  "zip 3.0.0",
