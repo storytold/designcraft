@@ -376,10 +376,10 @@ Ranked; detail and estimates in [docs/roadmap.md](docs/roadmap.md), the full lis
 
 1. **Alpha gate:** Primary Text Frame page fixes: autoflow adds pages users can't delete (#165) (5–7 h)
 2. Basic editing on every platform: copy/paste, context menus, caret formatting (30–50 h)
-4. INDD real-file corpus: measure what `.indd` files keep through indd-utils (10–30 h)
-5. IDML real-file corpus and fixes (60–100 h)
-6. Composition oracle against InDesign; optical kerning tuning; overset rule (70–125 h)
-7. Start on any GPU; find every installed font (25–50 h)
+3. INDD real-file corpus: measure what `.indd` files keep through indd-utils (10–30 h)
+4. IDML real-file corpus and fixes (60–100 h)
+5. Composition oracle against InDesign; optical kerning tuning; overset rule (70–125 h)
+6. Start on any GPU; find every installed font (25–50 h)
 
 ## Documents
 
