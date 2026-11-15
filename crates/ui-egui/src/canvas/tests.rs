@@ -3497,3 +3497,34 @@ fn direct_selection_right_click_keeps_the_picked_item_in_a_group() {
     right_click(&mut h, on_a);
     assert_eq!(selected(&h), [a], "right-clicking the picked item does not replace it with its group");
 }
+
+#[test]
+fn type_tool_click_in_a_grouped_text_frame_places_the_caret_and_types() {
+    let (mut h, [_, b, _]) = nested_groups();
+    h.state_mut().run("tool.select", json!({"tool": "type"})).unwrap();
+    h.run_steps(3);
+    let on_b = screen_of(&h, 60.0, 190.0);
+    click(&mut h, on_b);
+    h.run_steps(5);
+    assert!(h.state_mut().session.wants_text(), "a click on a grouped text frame starts text editing");
+    let sel = h.state().session.doc().unwrap().selection.text;
+    assert_eq!(sel.and_then(|t| t.frame), Some(designcraft_doc::ItemId(b)), "the caret is in the clicked frame");
+    h.state_mut().run("text.insert", json!({"text": "!"})).unwrap();
+    let story = h.state().session.doc().unwrap().doc.text_story(sel.unwrap().story, None).unwrap().text.clone();
+    assert!(story.contains('!'), "typed text goes into the grouped frame's story");
+}
+
+#[test]
+fn right_clicking_a_grouped_text_frame_while_typing_places_the_caret_there() {
+    let (mut h, [_, b, _]) = nested_groups();
+    h.state_mut().run("tool.select", json!({"tool": "type"})).unwrap();
+    h.run_steps(3);
+    let on_b = screen_of(&h, 60.0, 190.0);
+    click(&mut h, on_b);
+    h.run_steps(5);
+    let on_a = screen_of(&h, 60.0, 60.0);
+    right_click(&mut h, on_a);
+    let frame = h.state().session.doc().unwrap().selection.text.and_then(|t| t.frame);
+    assert_ne!(frame, Some(designcraft_doc::ItemId(b)), "the caret moved to the frame under the pointer");
+    assert!(frame.is_some());
+}
