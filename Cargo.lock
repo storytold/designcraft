@@ -1619,7 +1619,7 @@ name = "craft-rtf"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=bfea7d9800a9f14e496209f9df30e9ef45655701#bfea7d9800a9f14e496209f9df30e9ef45655701"
 dependencies = [
- "craft-codepage 0.1.0 (git+https://github.com/storytold/craft-libs?rev=ba24fe2435adb3c81ad6057faf36365fbba736cf)",
+ "craft-codepage 0.1.0 (git+https://github.com/storytold/craft-libs?rev=bfea7d9800a9f14e496209f9df30e9ef45655701)",
  "encoding_rs",
 ]
 
