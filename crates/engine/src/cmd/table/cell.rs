@@ -314,17 +314,13 @@ pub(super) fn set_cell(s: &mut Session, p: &Value) -> Result<Value> {
             if let Some(v) = rotation {
                 cell.rotation = v;
             }
-            if let Some(tx) = &text {
-                // Replacing the text bumps the story's revision even when the text and its
-                // formatting come out the same; the cell then keeps its story as it is.
-                let mut replaced = cell.text.clone();
-                let len = replaced.len();
-                replaced.replace(0..len, tx);
-                let rev = std::mem::replace(&mut replaced.rev, cell.text.rev);
-                if replaced != cell.text {
-                    replaced.rev = rev;
-                    cell.text = replaced;
-                }
+            // A cell that already holds the text keeps its story as it is: replacing it would
+            // give every character the first character's format and bump the story's revision.
+            if let Some(tx) = &text
+                && cell.text.text != *tx
+            {
+                let len = cell.text.len();
+                cell.text.replace(0..len, tx);
             }
             if let Some((edit, _)) = &stroke {
                 for i in 0..4 {
@@ -560,5 +556,39 @@ mod set_cell_tests {
         s.execute("table.setCell", &json!({"rows": [1, 1], "cols": [1, 1], "stroke": {"weight": 2, "edges": ["all"]}})).unwrap();
         s.execute("table.setCell", &stroke).unwrap();
         assert_eq!(state(&s).0, before.0 + 2, "an edge a later edit outranks takes the stroke again");
+    }
+
+    #[test]
+    fn set_cell_with_the_same_text_keeps_mixed_character_formatting() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [0, 0, 400, 300], "content": "text", "text": ""})).unwrap();
+        let story = designcraft_doc::StoryId(r["story"].as_u64().unwrap());
+        s.execute("text.select", &json!({"story": r["story"], "anchor": 0, "focus": 0})).unwrap();
+        s.execute("table.insert", &json!({"rows": 1, "cols": 1})).unwrap();
+        let edit = json!({"rows": [0, 0], "cols": [0, 0], "text": "Mixed"});
+        s.execute("table.setCell", &edit).unwrap();
+        s.edit(|d, _| {
+            let st = d.story_mut(story).ok_or_else(|| bad("test", "no story"))?;
+            for t in st.tables.values_mut() {
+                let cell = std::sync::Arc::make_mut(t).cell_mut(0, 0).ok_or_else(|| bad("test", "no cell"))?;
+                cell.text.format_chars(0..2, |f| f.over.font_family = Some("Source Serif 4".into()));
+            }
+            ok()
+        })
+        .unwrap();
+        let cell_text = |s: &Session| {
+            let st = s.doc().unwrap();
+            let t = st.doc.story(story).and_then(|x| x.tables.values().next().cloned()).unwrap();
+            t.cell(0, 0).unwrap().text.clone()
+        };
+        let formatted = cell_text(&s);
+        assert!(formatted.chars.len() > 1, "the cell text has two character formats");
+        let before = (s.doc().unwrap().history.undo.len(), s.doc().unwrap().revision);
+        s.execute("table.setCell", &edit).unwrap();
+        assert_eq!(cell_text(&s), formatted, "the same text keeps its character formats");
+        assert_eq!((s.doc().unwrap().history.undo.len(), s.doc().unwrap().revision), before, "the same text is not an undo step");
+        s.execute("table.setCell", &json!({"rows": [0, 0], "cols": [0, 0], "text": "Other"})).unwrap();
+        assert_eq!(cell_text(&s).text, "Other", "different text still replaces the cell's text");
     }
 }
