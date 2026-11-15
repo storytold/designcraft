@@ -1,7 +1,7 @@
 use super::layers::{duplicate_layer, set_layer};
 use super::margins::{
-    AdjustOptions, adjust_layout, adjust_layout_with, column_guides_unlocked, margin_boxes, move_column_guide, scale_columns, set_margins_columns,
-    set_page_width,
+    AdjustOptions, adjust_layout, adjust_layout_assigned, assign_items, column_guides_unlocked, margin_boxes, move_column_guide, scale_columns,
+    set_margins_columns, set_page_width,
 };
 use super::pages::{document_setup, page_options, page_size};
 use super::parents::{
@@ -515,24 +515,26 @@ pub fn specs() -> Vec<CommandSpec> {
                 }
                 s.edit(|d, _| {
                     let before = margin_boxes(d);
+                    let assigned = assign_items(d, &before, adjust_locked_content);
                     let (old_w, old_h) = (d.settings.page_width, d.settings.page_height);
                     let new_w = w.unwrap_or(old_w);
                     let new_h = h.unwrap_or(old_h);
                     let size_changed = new_w != old_w || new_h != old_h;
                     let scale_margins = auto_margins && margins.is_none() && old_w > 1e-6 && old_h > 1e-6;
                     let (sx, sy) = if scale_margins { (new_w / old_w, new_h / old_h) } else { (1.0, 1.0) };
+                    let scaled_margins = |cur: Margins, pw: f64, ph: f64| Margins {
+                        top: (cur.top * sy).clamp(0.0, ph / 2.0),
+                        bottom: (cur.bottom * sy).clamp(0.0, ph / 2.0),
+                        inside: (cur.inside * sx).clamp(0.0, pw / 2.0),
+                        outside: (cur.outside * sx).clamp(0.0, pw / 2.0),
+                    };
                     // Validate every affected page's resulting margin box before mutating the document.
                     for pg in d.spreads.iter().chain(d.parents.iter()).flat_map(|sp| &sp.pages) {
                         let (pw, ph) = if size_changed { (new_w, new_h) } else { (pg.width, pg.height) };
                         let m = if let Some(m) = margins {
                             m
                         } else if scale_margins {
-                            Margins {
-                                top: (pg.margins.top * sy).clamp(0.0, ph / 2.0),
-                                bottom: (pg.margins.bottom * sy).clamp(0.0, ph / 2.0),
-                                inside: (pg.margins.inside * sx).clamp(0.0, pw / 2.0),
-                                outside: (pg.margins.outside * sx).clamp(0.0, pw / 2.0),
-                            }
+                            scaled_margins(pg.margins, pw, ph)
                         } else {
                             pg.margins
                         };
@@ -551,14 +553,12 @@ pub fn specs() -> Vec<CommandSpec> {
                         for sp in d.spreads.iter_mut().chain(d.parents.iter_mut()) {
                             let sp = std::sync::Arc::make_mut(sp);
                             for pg in &mut sp.pages {
+                                let (pw, ph) = if size_changed { (new_w, new_h) } else { (pg.width, pg.height) };
                                 let width_before = pg.margin_rect().width();
                                 if let Some(m) = margins {
                                     pg.margins = m;
                                 } else if scale_margins {
-                                    pg.margins.top = (pg.margins.top * sy).clamp(0.0, new_h / 2.0);
-                                    pg.margins.bottom = (pg.margins.bottom * sy).clamp(0.0, new_h / 2.0);
-                                    pg.margins.inside = (pg.margins.inside * sx).clamp(0.0, new_w / 2.0);
-                                    pg.margins.outside = (pg.margins.outside * sx).clamp(0.0, new_w / 2.0);
+                                    pg.margins = scaled_margins(pg.margins, pw, ph);
                                 }
                                 if size_changed {
                                     pg.width = new_w;
@@ -577,12 +577,13 @@ pub fn specs() -> Vec<CommandSpec> {
                     } else if scale_margins {
                         d.sync_parent_margins();
                     }
-                    d.repaginate();
-                    adjust_layout_with(
+                    adjust_layout_assigned(
                         d,
                         &before,
+                        &assigned,
                         AdjustOptions { adjust_font_size, font_limits: font_limits.then_some((min_font, max_font)), adjust_locked_content },
                     );
+                    d.repaginate();
                     Ok(document_setup(d))
                 })
             }
