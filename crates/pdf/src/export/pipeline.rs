@@ -156,6 +156,12 @@ pub fn export_pdf_with_report(doc: &Document, cache: &Cache, opts: &PdfOptions) 
     write::guard(|| export_pdf_with_report_inner(doc, cache, opts))
 }
 
+/// Whether a PDF of this standard gets its form fields (`add_form_fields` leaves them out of
+/// PDF/X and PDF/A).
+pub(crate) fn form_fields_exported(standard: Standard) -> bool {
+    !matches!(standard, Standard::PdfX4 | Standard::PdfX1a | Standard::PdfA2b)
+}
+
 /// Form fields (Buttons and Forms) and, for interactive PDF, video and sound; not in PDF/X
 /// or PDF/A: this update comes after krilla's validator ran, and its NeedAppearances fields and
 /// Screen annotations aren't allowed in PDF/A.

@@ -643,6 +643,34 @@ fn pdfa_leaves_out_form_fields_added_after_validation() {
     assert!(a.warnings.iter().any(|w| w.contains("PDF/A-2b") && w.contains("left out")), "{:?}", a.warnings);
 }
 
+/// A text frame converted to a form field kept drawing its text into the page, under the field's
+/// opaque widget: hidden in a viewer, but still in the file for anyone who moves the field or
+/// extracts the text (#2810). Where the fields are left out (PDF/X), the text is all there is.
+#[test]
+fn a_form_fields_frame_text_is_not_hidden_under_its_widget() {
+    let mut d = Document::new(&NewDocument { pages: 1, ..NewDocument::default() });
+    let lid = d.default_layer();
+    d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 300.0, 80.0), lid, "Visible label", ParaFormat::default()).unwrap();
+    let (id, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 100.0, 300.0, 140.0), lid, "my private text", ParaFormat::default()).unwrap();
+    d.item_mut(id).unwrap().form_field = Some(designcraft_doc::FormField {
+        kind: designcraft_doc::FieldKind::TextField,
+        name: "name".into(),
+        value: String::new(),
+        options: Vec::new(),
+        multiline: false,
+        required: false,
+        font_size: 0.0,
+    });
+    let bytes = export_pdf(&d, &Cache::new(), &PdfOptions::default()).unwrap();
+    assert!(String::from_utf8_lossy(&bytes).contains("/AcroForm"), "the field is exported");
+    let text = extract_text(&bytes).concat();
+    assert!(text.contains("Visible label"), "other text stays: {text:?}");
+    assert!(!text.contains("private"), "the field's frame text must not be in the PDF: {text:?}");
+    let opts = PdfOptions { standard: Standard::PdfX4, created: Some(1_700_000_000), ..Default::default() };
+    let x4 = export_pdf_with_report(&d, &Cache::new(), &opts).unwrap();
+    assert!(extract_text(&x4.bytes).concat().contains("my private text"), "without the field, the text is drawn");
+}
+
 #[test]
 fn missing_glyphs_print_as_boxes() {
     // Source Serif 4 lacks 語: its .notdef box is drawn as a path, not as a .notdef glyph
