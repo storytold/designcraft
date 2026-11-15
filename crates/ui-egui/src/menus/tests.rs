@@ -1794,6 +1794,40 @@ fn cmd_plus_zooms_the_canvas_not_the_window() {
 }
 
 #[test]
+fn an_option_shortcut_the_mac_menu_bar_cannot_take_runs_in_the_app() {
+    use egui::{Key, Modifiers};
+    // ⌥⇧P types ∏ on macOS, so the window takes the key before the menu bar sees it (#2710):
+    // the bar carries no such key equivalent, and the app runs it.
+    assert!(!crate::menus::native_key_equivalent("Alt+Shift+P"));
+    assert!(!crate::menus::native_key_equivalent("Alt+1"));
+    assert!(!crate::menus::native_key_equivalent("Alt+Space"));
+    assert!(!crate::menus::native_key_equivalent("Shift+P"));
+    for sc in ["Cmd+Shift+P", "Ctrl+P", "Cmd+Alt+P", "Alt+Shift+F11", "Alt+PageDown"] {
+        assert!(crate::menus::native_key_equivalent(sc), "{sc}");
+    }
+    let ctx = egui::Context::default();
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let frame = app.run("frame.create", json!({"rect": [36, 36, 300, 200], "content": "text"})).unwrap();
+    app.run("selection.set", json!({"ids": [frame["id"]]})).unwrap();
+    run_ui(&mut app, "window.setShortcut", &json!({"id": "type.fillWithPlaceholder", "shortcut": "Alt+Shift+P"})).unwrap().unwrap();
+    // The macOS menu bar, as `NativeMenu` builds it.
+    app.native_menu = true;
+    for id in ["type.fillWithPlaceholder", "view.zoomIn"] {
+        let sc = shortcut_of(&app, id).unwrap();
+        if crate::menus::native_key_equivalent(&sc) {
+            app.native_shortcuts.insert(id.to_string(), sc);
+        }
+    }
+    assert!(app.native_shortcuts.contains_key("view.zoomIn"));
+    assert_eq!(app.session.tool_id(), "selection");
+    native_frame(&mut app, &ctx, vec![], None);
+    native_frame(&mut app, &ctx, vec![], None);
+    press(&mut app, &ctx, Key::P, Modifiers::ALT | Modifiers::SHIFT);
+    assert!(!story_text(&app, &frame["story"]).is_empty(), "⌥⇧P fills the selected frame with placeholder text");
+}
+
+#[test]
 fn the_quick_apply_shortcut_opens_it_without_running_an_entry() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.session.execute("file.new", &json!({})).unwrap();
