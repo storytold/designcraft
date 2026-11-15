@@ -4,7 +4,7 @@
 //! designcraft-cli run [--in FILE.designcraft|FILE.idml | --sample] [--cmd ID[=JSON]]... [--page N] [--scale S] [--pdf-options JSON] [--export OUT.png|.jpg|.pdf|.designcraft|.idml|.epub|.pptx|.html|.rtf|.txt] [--all-pages DIR]
 //!                                      # --page, --scale and --pdf-options apply to the exports that follow them
 //!                                      # .rtf and .txt hold the story being edited or of the selected frame
-//! designcraft-cli commands [FILTER]   # list commands (JSON), optionally only ids/labels/menus containing FILTER
+//! designcraft-cli commands [FILTER] [--json]   # list commands (JSON; --json is accepted), optionally only ids/labels/menus containing FILTER
 //! designcraft-cli describe ID          # one command: label, menu, shortcut, parameters
 //! designcraft-cli script [FILE|-] [--in FILE | --sample] [--connect PORT] [--save OUT] [--export OUT] [--keep-going]
 //!                                      # run a command script (crates/engine/src/script.rs): `$N.path` references
@@ -42,7 +42,7 @@ use designcraft_engine::Session;
 use serde_json::{Value, json};
 
 /// The usage block. Shared by `--help` (stdout, success) and an unknown command (stderr, failure).
-const USAGE: &str = "usage: designcraft-cli run [--in FILE | --sample] [--cmd ID[=JSON]]... [--page N] [--scale S] [--pdf-options JSON] [--export OUT] [--all-pages DIR]\n         (--page, --scale and --pdf-options apply to the exports that follow them)\n       designcraft-cli commands [FILTER]\n       designcraft-cli describe COMMAND\n       designcraft-cli script [FILE|-] [--in FILE | --sample] [--connect PORT] [--save OUT] [--export OUT] [--keep-going]\n       designcraft-cli app [--port PORT] COMMAND [JSON] | --method METHOD [JSON]\n       designcraft-cli mcp [--connect PORT] [--sample] [--automation-read-root DIR]... [--automation-write-root DIR]...\n         the roots confine every file the agent's commands read (open, placed images, data sources, libraries) and\n         write (save, export, package) to those folders, links followed. Each may be given more than once; a kind\n         left out grants none of its access.\n         They run the in-process server, so they conflict with --connect (a running app is not confined by them).\n       designcraft-cli perf [--pages N] [--runs N] [--strict]\n       designcraft-cli bench FILE [--runs N]\n       designcraft-cli validate-pdf FILE.pdf [--standard x4|x1a]  # built-in PDF/X checks (including visible unembedded fonts; the standard defaults to the file's own)\n       designcraft-cli thumbnail FILE.designcraft OUT.png [SIZE]  # the saved first-page preview, at most SIZE px\n       designcraft-cli links\n       designcraft-cli --version";
+const USAGE: &str = "usage: designcraft-cli run [--in FILE | --sample] [--cmd ID[=JSON]]... [--page N] [--scale S] [--pdf-options JSON] [--export OUT] [--all-pages DIR]\n         (--page, --scale and --pdf-options apply to the exports that follow them)\n       designcraft-cli commands [FILTER] [--json]\n       designcraft-cli describe COMMAND\n       designcraft-cli script [FILE|-] [--in FILE | --sample] [--connect PORT] [--save OUT] [--export OUT] [--keep-going]\n       designcraft-cli app [--port PORT] COMMAND [JSON] | --method METHOD [JSON]\n       designcraft-cli mcp [--connect PORT] [--sample] [--automation-read-root DIR]... [--automation-write-root DIR]...\n         the roots confine every file the agent's commands read (open, placed images, data sources, libraries) and\n         write (save, export, package) to those folders, links followed. Each may be given more than once; a kind\n         left out grants none of its access.\n         They run the in-process server, so they conflict with --connect (a running app is not confined by them).\n       designcraft-cli perf [--pages N] [--runs N] [--strict]\n       designcraft-cli bench FILE [--runs N]\n       designcraft-cli validate-pdf FILE.pdf [--standard x4|x1a]  # built-in PDF/X checks (including visible unembedded fonts; the standard defaults to the file's own)\n       designcraft-cli thumbnail FILE.designcraft OUT.png [SIZE]  # the saved first-page preview, at most SIZE px\n       designcraft-cli links\n       designcraft-cli --version";
 
 /// `script --help`: the script syntax, otherwise only in `describe script.run` and docs/agents.md.
 const SCRIPT_HELP: &str = r#"usage: designcraft-cli script [FILE|-] [--in FILE | --sample] [--connect PORT] [--save OUT] [--export OUT] [--keep-going]
@@ -192,19 +192,7 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Some("run") => report(run(&args[1..])),
-        Some("commands") => {
-            let s = Session::new();
-            let filter = args.get(1).map(|f| f.to_lowercase());
-            let list: Vec<Value> = serde_json::to_value(s.commands())
-                .ok()
-                .and_then(|v| v.as_array().cloned())
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|c| filter.as_ref().is_none_or(|f| c.to_string().to_lowercase().contains(f.as_str())))
-                .collect();
-            outln!("{}", serde_json::to_string_pretty(&list).unwrap_or_default());
-            ExitCode::SUCCESS
-        }
+        Some("commands") => report(commands(&args[1..])),
         Some("describe") => report(describe(args.get(1).map(String::as_str))),
         Some("script") => report(script(&args[1..])),
         Some("app") => report(app(&args[1..])),
@@ -231,6 +219,38 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// `commands [FILTER] [--json]`: the catalogue as JSON, optionally only the entries whose JSON
+/// contains FILTER (case-insensitive).
+///
+/// The output is always JSON. `--json` is accepted because the other Craft CLIs list their
+/// catalogue as JSON with it; before, it was taken as a FILTER no command contains, so it printed
+/// `[]` and succeeded. Any other option is an error, not an empty list.
+fn commands(args: &[String]) -> Result<(), String> {
+    let mut filter: Option<String> = None;
+    for arg in args {
+        match arg.as_str() {
+            "--json" => {}
+            other if other.starts_with('-') => return Err(format!("unknown option {other}")),
+            other => {
+                // The first one is the FILTER, as before.
+                if filter.is_none() {
+                    filter = Some(other.to_lowercase());
+                }
+            }
+        }
+    }
+    let s = Session::new();
+    let list: Vec<Value> = serde_json::to_value(s.commands())
+        .ok()
+        .and_then(|v| v.as_array().cloned())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|c| filter.as_ref().is_none_or(|f| c.to_string().to_lowercase().contains(f.as_str())))
+        .collect();
+    outln!("{}", serde_json::to_string_pretty(&list).unwrap_or_default());
+    Ok(())
 }
 
 fn report(r: Result<(), String>) -> ExitCode {
