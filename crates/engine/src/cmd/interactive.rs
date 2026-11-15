@@ -101,6 +101,9 @@ pub fn specs() -> Vec<CommandSpec> {
 /// and kept the old destination (noted in review).
 fn dest_param(id: &str, d: &designcraft_doc::Document, p: &Value) -> Result<Option<HyperlinkDest>> {
     if let Some(u) = str_param(p, "url") {
+        if !designcraft_doc::is_safe_link_url(u) {
+            return Err(bad(id, "`url` must start with http://, https:// or mailto:"));
+        }
         return Ok(Some(HyperlinkDest::Url(u.to_string())));
     }
     if let Some(e) = str_param(p, "email") {
@@ -194,6 +197,19 @@ mod panel_tests {
         s.execute("bookmark.add", &json!({"page": 2})).unwrap();
         s.execute("bookmark.rename", &json!({"index": 0, "name": "Back"})).unwrap();
         assert_eq!(s.execute("bookmark.list", &json!({})).unwrap()[0]["name"], "Back");
+    }
+
+    #[test]
+    fn hyperlinks_refuse_non_web_schemes() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 1})).unwrap();
+        let id = s.execute("frame.create", &json!({"rect": [72, 72, 200, 120]})).unwrap()["id"].clone();
+        for bad in ["javascript:alert(1)", "file:///etc/passwd", "data:text/html,hi", "\\\\attacker\\share"] {
+            let e = s.execute("hyperlink.create", &json!({"ids": [id.clone()], "url": bad})).expect_err("refused").to_string();
+            assert!(e.contains("http://"), "{bad}: {e}");
+        }
+        s.execute("hyperlink.create", &json!({"ids": [id.clone()], "url": "mailto:info@example.com"})).unwrap();
+        s.execute("hyperlink.create", &json!({"ids": [id], "url": "https://example.com"})).unwrap();
     }
 }
 

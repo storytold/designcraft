@@ -272,11 +272,27 @@ fn handle_request(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest
             ctx.request_repaint();
             ok(Value::Null)
         }
-        // What Ctrl/Cmd+V delivers from the system clipboard: text, or SVG markup copied in an
-        // illustration app (pasted as editable paths when no text is being edited).
+        // What Ctrl/Cmd+V delivers from the system clipboard: text, SVG markup copied in an
+        // illustration app (pasted as editable paths when no text is being edited), or an image
+        // (`image`: an image file as base64, pasted as a placed image).
         "ui.paste" => {
-            let Some(text) = s("text") else { return err("missing `text`") };
-            app.control_synthetic.push(egui::Event::Paste(text.to_string()));
+            let event = match (s("text"), s("image")) {
+                (Some(text), None) => egui::Event::Paste(text.to_string()),
+                (None, Some(image)) => {
+                    if let Err(e) = designcraft_engine::cmd::check_pasted_base64(image) {
+                        return err(format!("`image`: {e}"));
+                    }
+                    let bytes = designcraft_engine::cmd::base64_decode(image);
+                    let Some((w, h, rgba)) = designcraft_engine::cmd::pasted_pixels(&bytes) else {
+                        return err("`image` is not an image file that can be pasted");
+                    };
+                    let size = [w, h].map(|n| usize::try_from(n).unwrap_or(0));
+                    egui::Event::PasteImage(std::sync::Arc::new(egui::ColorImage::from_rgba_unmultiplied(size, &rgba)))
+                }
+                (Some(_), Some(_)) => return err("give `text` or `image`, not both"),
+                (None, None) => return err("missing `text` or `image`"),
+            };
+            app.control_synthetic.push(event);
             ctx.request_repaint();
             ok(Value::Null)
         }
@@ -390,7 +406,11 @@ fn handle_request(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest
                 app.session.reset_find_scope();
             }
             let fields = p.get("fields").cloned().unwrap_or(Value::Null);
-            let d = if id == "frameSize" { crate::dialogs::frame_size_dialog(app, fields) } else { crate::dialogs::Dialog::new(id, fields) };
+            let d = match id {
+                "frameSize" => crate::dialogs::frame_size_dialog(app, fields),
+                "contactSheet" => crate::dialogs::contact_sheet_dialog(app, fields),
+                _ => crate::dialogs::Dialog::new(id, fields),
+            };
             let v = serde_json::to_value(&d).unwrap_or_default();
             app.ui.dialog = Some(d);
             ok(v)
@@ -516,6 +536,18 @@ mod automation_contract_tests {
         assert_eq!(app.session.doc().unwrap().history.undo.len(), history);
         app.run("style.paragraph.edit", json!({"name":designcraft_doc::BASIC_PARAGRAPH,"chars":{"size":18}})).unwrap();
         assert_eq!(app.session.doc().unwrap().history.undo.len(), history + 1);
+    }
+    /// `ui.dialog.open` opens Place Contact Sheet as the menu does: bare numbers are in the
+    /// document's ruler unit, so `1` on an inch document is an inch, not a pica.
+    #[test]
+    fn a_contact_sheet_opened_over_the_control_channel_uses_the_document_unit() {
+        let mut app = app();
+        let ctx = egui::Context::default();
+        app.run("document.preferences", json!({"horizontalUnits": "inches"})).unwrap();
+        let response = call(&mut app, &ctx, "ui.dialog.open", json!({"id": "contactSheet", "fields": {"margin": "1"}}));
+        assert_eq!(response["ok"], true, "{response}");
+        let d = app.ui.dialog.as_ref().unwrap();
+        assert_eq!(d.unit, designcraft_geom::Unit::Inches);
     }
     fn app() -> DesignApp {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());

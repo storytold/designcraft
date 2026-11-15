@@ -1,6 +1,8 @@
 //! Books (File › New / Open Book): an ordered list of documents with continuous page numbers,
 //! styles synchronised from a style source, and one PDF for the whole book. Saved as `.dcbook`.
 
+use std::collections::{HashMap, HashSet};
+
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -57,7 +59,7 @@ fn load(path: &str) -> Result<designcraft_doc::Document> {
         let _ = path;
         vec![]
     };
-    if path.to_lowercase().ends_with(".idml") {
+    if craft_file_formats::detect(path, &bytes) == Some(craft_file_formats::Format::Idml) {
         return super::interchange::import_idml_confined(&bytes, Some(std::path::Path::new(path)))
             .map_err(|e| EngineError::Other(format!("{path}: {e}")));
     }
@@ -130,7 +132,11 @@ impl ChapterBatch {
 fn writable_chapter(s: &Session, path: &str, command: &'static str) -> Result<()> {
     use std::path::Path;
 
-    if Path::new(path).extension().and_then(std::ffi::OsStr::to_str).is_some_and(|ext| ext.eq_ignore_ascii_case("idml")) {
+    if Path::new(path)
+        .extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(|ext| craft_file_formats::from_extension(ext) == Some(craft_file_formats::Format::Idml))
+    {
         return Err(bad(command, format!("cannot change imported IDML chapter {path}; convert it to a native DesignCraft document first")));
     }
     let target = crate::io::canonicalize(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
@@ -177,6 +183,15 @@ fn paginate(s: &Session) -> Result<Value> {
     Ok(json!({"pages": next - 1, "chapters": chapters}))
 }
 
+/// `list` with only the last entry of each name, in the order of those last entries.
+#[cfg(not(target_arch = "wasm32"))]
+fn keep_last<T>(list: &[T], name: impl Fn(&T) -> &str) -> Vec<&T> {
+    let mut seen = HashSet::new();
+    let mut out: Vec<&T> = list.iter().rev().filter(|x| seen.insert(name(x))).collect();
+    out.reverse();
+    out
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn sync_styles(s: &Session) -> Result<Value> {
     let b = s.book.as_ref().ok_or_else(no_book)?;
@@ -187,6 +202,11 @@ fn sync_styles(s: &Session) -> Result<Value> {
     let styles = src.styles.clone();
     let swatches = src.swatches.clone();
     drop(src);
+    // A name the source defines twice keeps its last definition, at its last position.
+    let paragraph = keep_last(&styles.paragraph, |x| x.name.as_str());
+    let character = keep_last(&styles.character, |x| x.name.as_str());
+    let (paragraph_names, character_names): (HashSet<&str>, HashSet<&str>) =
+        (paragraph.iter().map(|x| x.name.as_str()).collect(), character.iter().map(|x| x.name.as_str()).collect());
     let mut n = 0;
     for (i, path) in paths.iter().enumerate() {
         if i == b.style_source {
@@ -195,21 +215,27 @@ fn sync_styles(s: &Session) -> Result<Value> {
         writable_chapter(s, path, "book.syncStyles")?;
         let mut d = load(path)?;
         {
+            // The source's styles replace the chapter's of the same names and go last, in the
+            // source's order (one pass over each list, not one per style).
             let st = d.styles_mut();
-            for ps in &styles.paragraph {
-                st.paragraph.retain(|x| x.name != ps.name);
-                st.paragraph.push(ps.clone());
-            }
-            for cs in &styles.character {
-                st.character.retain(|x| x.name != cs.name);
-                st.character.push(cs.clone());
-            }
+            st.paragraph.retain(|x| !paragraph_names.contains(x.name.as_str()));
+            st.paragraph.extend(paragraph.iter().map(|x| (*x).clone()));
+            st.character.retain(|x| !character_names.contains(x.name.as_str()));
+            st.character.extend(character.iter().map(|x| (*x).clone()));
+        }
+        // First index per name, as Document::swatch resolves colours.
+        let mut at: HashMap<String, usize> = HashMap::new();
+        for (i, w) in d.swatches.iter().enumerate() {
+            at.entry(w.name.clone()).or_insert(i);
         }
         for sw in &swatches {
-            match d.swatches.iter_mut().find(|w| w.name == sw.name) {
+            match at.get(&sw.name).and_then(|i| d.swatches.get_mut(*i)) {
                 Some(w) if !w.locked => *w = sw.clone(),
                 Some(_) => {}
-                None => d.swatches.push(sw.clone()),
+                None => {
+                    at.insert(sw.name.clone(), d.swatches.len());
+                    d.swatches.push(sw.clone());
+                }
             }
         }
         batch.stage(path, &d)?;
@@ -430,5 +456,14 @@ mod tests {
         let mut t = Session::new();
         assert_eq!(t.execute("book.open", &json!({"path": p("book.dcbook")})).unwrap()["documents"], 2);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_source_style_defined_twice_keeps_its_last_definition() {
+        let list = [("a", 1), ("b", 2), ("a", 3), ("c", 4)];
+        let kept: Vec<_> = super::keep_last(&list, |x| x.0).into_iter().copied().collect();
+        // As the one-style-at-a-time loop left them: each name once, at its last position.
+        assert_eq!(kept, [("b", 2), ("a", 3), ("c", 4)]);
     }
 }

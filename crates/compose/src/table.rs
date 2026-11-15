@@ -53,6 +53,9 @@ pub struct TableFrag {
     pub column: u32,
     pub rect: Rect,
     pub cells: Vec<PlacedCell>,
+    /// The table rows in the fragment, each with its top and bottom; repeated header and footer
+    /// rows are left out.
+    pub rows: Vec<(usize, f64, f64)>,
     pub strokes: Vec<StrokeSeg>,
     /// Index of the fragment's (glyph-less) line in the frame's lines.
     pub line: usize,
@@ -88,6 +91,10 @@ impl TableFrag {
             c.rect = c.rect + v;
             c.clip = c.clip + v;
             c.origin += v;
+        }
+        for r in &mut self.rows {
+            r.1 += dy;
+            r.2 += dy;
         }
         for s in &mut self.strokes {
             s.a += v;
@@ -500,6 +507,7 @@ fn emit(
         column: cur.col as u32,
         rect: Rect::new(x0, top, right, bottom),
         cells,
+        rows: rows.iter().filter(|r| !r.2).map(|&(r, y, _)| (r, y, y + heights[r])).collect(),
         strokes,
         line,
         first,
