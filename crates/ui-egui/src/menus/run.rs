@@ -227,6 +227,11 @@ fn run_ui_part1(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             crate::dialogs::open_epub_export(app);
             Ok(Value::Null)
         }
+        // From the menu, Export to Interactive PDF's options first; with a path, straight to the file.
+        "app.exportInteractivePdf" if p.get("path").is_none_or(Value::is_null) => {
+            crate::dialogs::open_interactive_pdf_export(app, p);
+            Ok(Value::Null)
+        }
         "app.exportInteractivePdf" => {
             let mut q = if p.is_object() { p.clone() } else { json!({}) };
             for (k, v) in [("pageLayout", json!("single")), ("view", json!("fitPage")), ("bookmarksPanel", json!(true)), ("media", json!(true))] {

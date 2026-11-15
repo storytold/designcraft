@@ -46,6 +46,9 @@ impl Dialog {
             "insertXref" => json!({"linkTo": "paragraph", "style": "", "target": "", "format": ""}),
             "findChange" => json!({"find": "", "change": "", "grep": false, "caseSensitive": false, "wholeWord": false, "scope": "document"}),
             "documentSetup" => json!({}),
+            // As the menu item exported before it had options: single pages, fitted.
+            INTERACTIVE_PDF_EXPORT => json!({"range": "all", "pages": "", "spreads": false, "view": "fitPage", "pageLayout": "single",
+                "fullScreen": false, "flip": false, "seconds": "5"}),
             "pdfExport" => {
                 json!({
                     "preset": "Desktop Printing",
@@ -809,6 +812,124 @@ pub fn open_epub_export(app: &mut DesignApp) {
         EpubSplit::ExportTags => json!({"split": true, "mode": "exportTags"}),
     };
     app.ui.dialog = Some(Dialog::new("epubExport", fields));
+}
+
+/// File › Export PDF (Interactive)…: its options (pages, Export As Pages or Spreads, the view,
+/// the layout and the presentation), seeded from `p`, the command's own `file.exportPdf` options.
+/// OK asks where to save (#2756).
+pub fn open_interactive_pdf_export(app: &mut DesignApp, p: &Value) {
+    let mut fields = json!({});
+    for key in ["spreads", "view", "pageLayout", "fullScreen"] {
+        if let Some(v) = p.get(key).filter(|v| !v.is_null()) {
+            fields[key] = v.clone();
+        }
+    }
+    if let Some(pages) = p.get("pages").filter(|v| !v.is_null()) {
+        fields["range"] = json!("range");
+        fields["pages"] = json!(pages.as_str().map_or_else(|| pages.to_string(), str::to_string));
+    }
+    if let Some(secs) = p.get("advanceSeconds").and_then(Value::as_f64).filter(|s| s.is_finite() && *s > 0.0) {
+        fields["flip"] = json!(true);
+        fields["seconds"] = json!(secs.to_string());
+    }
+    app.ui.dialog = Some(Dialog::new(INTERACTIVE_PDF_EXPORT, fields));
+}
+
+/// The id of the Export to Interactive PDF dialog.
+pub(crate) const INTERACTIVE_PDF_EXPORT: &str = "interactivePdfExport";
+
+/// The View choices of Export to Interactive PDF: (`file.exportPdf` `view`, caption).
+const INTERACTIVE_PDF_VIEWS: [(&str, &str); 4] =
+    [("default", "Default"), ("fitPage", "Fit Page"), ("fitWidth", "Fit Width"), ("actual", "Actual Size")];
+
+/// The Layout choices of Export to Interactive PDF: (`file.exportPdf` `pageLayout`, caption).
+const INTERACTIVE_PDF_LAYOUTS: [(&str, &str); 6] = [
+    ("default", "Default"),
+    ("single", "Single Page"),
+    ("continuous", "Single Page Continuous"),
+    ("twoUp", "Two-Up (Facing)"),
+    ("twoUpCover", "Two-Up (Cover Page)"),
+    ("twoUpContinuous", "Two-Up Continuous (Cover Page)"),
+];
+
+fn interactive_pdf_export(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
+    let lang = app.ui.language.as_str();
+    let tr = |t: &'static str| -> &'static str { crate::i18n::tr(lang, t) };
+    egui::Grid::new("interactive_pdf").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+        crate::rtl::label(ui, tr("Pages:"));
+        ui.horizontal(|ui| {
+            let range = d.s("range");
+            if ui.radio(range != "range", crate::rtl::widget(ui, tr("All"))).clicked() {
+                d.fields.insert("range".into(), json!("all"));
+            }
+            if ui.radio(range == "range", crate::rtl::widget(ui, tr("Range:"))).clicked() {
+                d.fields.insert("range".into(), json!("range"));
+            }
+            text_field_named(ui, d, "pages", 120.0, tr("Range:"));
+        });
+        ui.end_row();
+        crate::rtl::label(ui, tr("Export As:"));
+        ui.horizontal(|ui| {
+            let spreads = d.b("spreads");
+            if ui.radio(!spreads, crate::rtl::widget(ui, tr("Pages"))).clicked() {
+                d.fields.insert("spreads".into(), json!(false));
+            }
+            if ui.radio(spreads, crate::rtl::widget(ui, tr("Spreads"))).clicked() {
+                d.fields.insert("spreads".into(), json!(true));
+            }
+        });
+        ui.end_row();
+        crate::rtl::label(ui, tr("View:"));
+        translated_combo(lang, ui, d, "view", &INTERACTIVE_PDF_VIEWS).accessible_name(tr("View:").to_owned());
+        ui.end_row();
+        crate::rtl::label(ui, tr("Layout:"));
+        translated_combo(lang, ui, d, "pageLayout", &INTERACTIVE_PDF_LAYOUTS).accessible_name(tr("Layout:").to_owned());
+        ui.end_row();
+        crate::rtl::label(ui, tr("Presentation:"));
+        ui.vertical(|ui| {
+            check(ui, d, "fullScreen", tr("Open in Full Screen Mode"));
+            ui.horizontal(|ui| {
+                check(ui, d, "flip", tr("Flip Pages Every:"));
+                ui.add_enabled_ui(d.b("flip"), |ui| {
+                    text_field_named(ui, d, "seconds", 50.0, tr("Flip Pages Every:"));
+                    crate::rtl::label(ui, tr("seconds"));
+                });
+            });
+        });
+        ui.end_row();
+    });
+    if let Some(st) = d.fields.get("status").and_then(Value::as_str) {
+        crate::rtl::label(ui, egui::RichText::new(st).color(ui.visuals().error_fg_color));
+    }
+}
+
+/// Export to Interactive PDF › OK: the `file.exportPdf` options of its fields, then the save
+/// dialog. A flip time that is not a positive number keeps the dialog open, saying why.
+fn confirm_interactive_pdf_export(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
+    let mut params = json!({"spreads": d.b("spreads"), "fullScreen": d.b("fullScreen"), "bookmarksPanel": true, "media": true});
+    let pages = d.s("pages");
+    if d.s("range") == "range" && !pages.trim().is_empty() {
+        params["pages"] = json!(pages);
+    }
+    for key in ["view", "pageLayout"] {
+        let v = d.s(key);
+        if !v.is_empty() && v != "default" {
+            params[key] = json!(v);
+        }
+    }
+    if d.b("flip") {
+        let Some(secs) = d.n("seconds").filter(|s| s.is_finite() && *s > 0.0) else {
+            let e = crate::i18n::tr(&app.ui.language, "Flip Pages Every: a number of seconds above 0").to_string();
+            let mut d = d;
+            d.fields.insert("status".into(), json!(e));
+            app.ui.dialog = Some(d);
+            return Err(e);
+        };
+        params["advanceSeconds"] = json!(secs);
+    }
+    let title = app.session.active().map(|st| st.doc.title.clone()).unwrap_or_default();
+    let name = if title.is_empty() { "Export.pdf".to_string() } else { format!("{title}.pdf") };
+    app.ask_save(&name, Bound::Document, move |app, path| crate::menus::export_pdf(app, &with_path(&params, "path", path)))
 }
 
 /// The Split Document setting the EPUB Export Options dialog's fields describe.
@@ -3325,6 +3446,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         "pdfImport" => crate::i18n::tr(&app.ui.language, "Place PDF"),
         "pdfExport" => crate::i18n::tr(&app.ui.language, "Export PDF"),
         "epubExport" => crate::i18n::tr(&app.ui.language, "EPUB Export Options"),
+        INTERACTIVE_PDF_EXPORT => crate::i18n::tr(&app.ui.language, "Export to Interactive PDF"),
         "colorSettings" => crate::i18n::tr(&app.ui.language, "Color Settings"),
         "layerOptions" => crate::i18n::tr(&app.ui.language, "Object Layer Options"),
         "colorPicker" => crate::i18n::tr(&app.ui.language, "Color Picker"),
@@ -4180,6 +4302,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                     "numberingSection" => crate::section_options::body(app, ui, &mut d),
                     "pdfExport" => pdf_export(app, ui, &mut d),
                     "epubExport" => epub_export(app, ui, &mut d),
+                    INTERACTIVE_PDF_EXPORT => interactive_pdf_export(app, ui, &mut d),
                     "alert" => {
                         let file = d.s("file");
                         if !file.is_empty() {
@@ -5179,6 +5302,7 @@ fn confirm_part3(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
             let params = if cover.is_empty() { json!({}) } else { json!({"coverImage": cover}) };
             crate::menus::export_epub(app, &params)
         }
+        INTERACTIVE_PDF_EXPORT => confirm_interactive_pdf_export(app, d),
         "pdfExport" => {
             // Remember the last-used options; `pages` and `title` are per-job and not persisted.
             app.ui.pdf_export.preset = d.s("preset");
