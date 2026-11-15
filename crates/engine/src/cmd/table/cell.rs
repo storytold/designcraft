@@ -1,4 +1,4 @@
-use super::target::{edit_table, target};
+use super::target::{clamp_selection, target};
 use super::{
     CellRange, CellStroke, DiagonalLines, Document, Result, Session, StrokeType, Table, Value, VerticalJustification, bad, compose, json, ok,
     str_param,
@@ -296,13 +296,11 @@ pub(super) fn set_cell(s: &mut Session, p: &Value) -> Result<Value> {
         Some(dv) => Some(DiagonalEdit::parse(doc, dv, ID)?),
         None => None,
     };
-    edit_table(s, &g, ID, |t| {
+    let apply = |t: &mut Table| {
         let owners = t.owners();
         let nc = t.ncols();
         let nr = t.nrows();
         let rtl = t.options.direction == designcraft_doc::TextDirection::RightToLeft;
-        // Local edits outrank previously imported edges, including explicit zero/None.
-        let priority = if stroke.is_some() { next_cell_stroke_priority(t) } else { 0 };
         let rg = g.range;
         // Edges are inner or outer within the selection grown to whole merged cells, so a
         // merged cell selected through one of its grid positions keeps its own outline.
@@ -318,6 +316,28 @@ pub(super) fn set_cell(s: &mut Session, p: &Value) -> Result<Value> {
                         bases.insert((r, c, i), base);
                     }
                 }
+            }
+        }
+        // An edge that already shows the edit as its own local stroke, drawn along the whole
+        // side, is left as it is; the edit renumbers no edge when every chosen edge is. Edits
+        // to other edges of the table do not count. A neighbor that wins a tie on a shared edge,
+        // or on one part of a merged cell's side, draws its own stroke, so that edge still takes
+        // the edit.
+        let mut priority = 0;
+        if let Some((edit, _)) = &stroke {
+            let shown = |&(r, c, i): &(usize, usize, usize), base: &CellStroke| {
+                t.cell(r, c).is_some_and(|cell| {
+                    cell.stroke_defined[i]
+                        && cell.border_overrides[i]
+                        && cell.strokes[i] == edit.apply(base.clone())
+                        && compose::table::cell_side_strokes(t, &owners, (r, c), i).iter().all(|side| *side.stroke == cell.strokes[i])
+                })
+            };
+            if bases.iter().all(|(edge, base)| shown(edge, base)) {
+                bases.clear();
+            } else {
+                // Local edits outrank previously imported edges, including explicit zero/None.
+                priority = next_cell_stroke_priority(t);
             }
         }
         let mut edited = std::collections::HashSet::new();
@@ -344,7 +364,11 @@ pub(super) fn set_cell(s: &mut Session, p: &Value) -> Result<Value> {
             if let Some(v) = rotation {
                 cell.rotation = v;
             }
-            if let Some(tx) = &text {
+            // A cell that already holds the text keeps its story as it is: replacing it would
+            // give every character the first character's format and bump the story's revision.
+            if let Some(tx) = &text
+                && cell.text.text != *tx
+            {
                 let len = cell.text.len();
                 cell.text.replace(0..len, tx);
             }
@@ -365,6 +389,22 @@ pub(super) fn set_cell(s: &mut Session, p: &Value) -> Result<Value> {
         }
         // Keep both copies of unmerged shared boundaries consistent, including in RTL tables.
         mirror_edited_cell_edges(t, rg, (nr, nc, rtl), stroke.as_ref(), &edited, &owners);
+    };
+    // When every value already matches the target cells, the document is left as it is and no
+    // undo step is recorded.
+    let current = s.doc()?.doc.story(g.story).and_then(|x| x.tables.get(&g.table)).ok_or_else(|| bad(ID, "no table"))?;
+    let mut edited_table = Table::clone(current);
+    apply(&mut edited_table);
+    if edited_table == **current {
+        return ok();
+    }
+    // The edited copy takes the table's place, so the table is not copied a second time.
+    s.edit(|d, sel| {
+        let st = d.story_mut(g.story).ok_or_else(|| bad(ID, "no story"))?;
+        let t = st.tables.get_mut(&g.table).ok_or_else(|| bad(ID, "no table"))?;
+        *t = std::sync::Arc::new(edited_table);
+        st.rev = st.rev.wrapping_add(1);
+        clamp_selection(d, sel);
         ok()
     })
 }
@@ -569,5 +609,132 @@ mod arabic_tests {
             s.execute("table.insert", &json!({"rows": 1, "cols": 2})).unwrap();
             assert_eq!(only_table(&s).options.direction, expected, "table.insert in a {direction} paragraph");
         }
+    }
+}
+
+#[cfg(test)]
+mod set_cell_tests {
+    use super::*;
+
+    #[test]
+    fn set_cell_with_the_values_the_cells_already_have_records_no_undo_step() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [0, 0, 400, 300], "content": "text", "text": ""})).unwrap();
+        s.execute("text.select", &json!({"story": r["story"], "anchor": 0, "focus": 0})).unwrap();
+        s.execute("table.insert", &json!({"rows": 2, "cols": 2})).unwrap();
+        let edit = json!({"rows": [0, 1], "cols": [0, 0], "fill": "[Black]", "tint": 0.5, "insets": [1, 2, 3, 4], "vj": "center", "rotation": 90, "text": "Same"});
+        s.execute("table.setCell", &edit).unwrap();
+        let state = |s: &Session| {
+            let st = s.doc().unwrap();
+            (st.history.undo.len(), st.revision)
+        };
+        let before = state(&s);
+        s.execute("table.setCell", &edit).unwrap();
+        assert_eq!(state(&s), before, "no undo step and no new revision when nothing changes");
+        s.execute("table.setCell", &json!({"rows": [0, 1], "cols": [0, 0], "tint": 0.25})).unwrap();
+        assert_eq!(state(&s).0, before.0 + 1, "a changed value is still one undo step");
+
+        let stroke = json!({"rows": [0, 0], "cols": [1, 1], "stroke": {"weight": 2, "edges": ["all"]}});
+        s.execute("table.setCell", &stroke).unwrap();
+        let before = state(&s);
+        s.execute("table.setCell", &stroke).unwrap();
+        assert_eq!(state(&s), before, "the same stroke again is not a new undo step");
+        s.execute("table.setCell", &json!({"rows": [1, 1], "cols": [0, 0], "stroke": {"weight": 3, "edges": ["all"]}})).unwrap();
+        let before = state(&s);
+        s.execute("table.setCell", &stroke).unwrap();
+        assert_eq!(state(&s), before, "an edit to other edges does not make the same stroke a new undo step");
+        s.execute("table.setCell", &json!({"rows": [1, 1], "cols": [1, 1], "stroke": {"weight": 4, "edges": ["all"]}})).unwrap();
+        s.execute("table.setCell", &stroke).unwrap();
+        assert_eq!(state(&s).0, before.0 + 2, "an edge a later edit changed takes the stroke again");
+    }
+
+    #[test]
+    fn set_cell_with_the_same_text_keeps_mixed_character_formatting() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [0, 0, 400, 300], "content": "text", "text": ""})).unwrap();
+        let story = designcraft_doc::StoryId(r["story"].as_u64().unwrap());
+        s.execute("text.select", &json!({"story": r["story"], "anchor": 0, "focus": 0})).unwrap();
+        s.execute("table.insert", &json!({"rows": 1, "cols": 1})).unwrap();
+        let edit = json!({"rows": [0, 0], "cols": [0, 0], "text": "Mixed"});
+        s.execute("table.setCell", &edit).unwrap();
+        s.edit(|d, _| {
+            let st = d.story_mut(story).ok_or_else(|| bad("test", "no story"))?;
+            for t in st.tables.values_mut() {
+                let cell = std::sync::Arc::make_mut(t).cell_mut(0, 0).ok_or_else(|| bad("test", "no cell"))?;
+                cell.text.format_chars(0..2, |f| f.over.font_family = Some("Source Serif 4".into()));
+            }
+            ok()
+        })
+        .unwrap();
+        let cell_text = |s: &Session| {
+            let st = s.doc().unwrap();
+            let t = st.doc.story(story).and_then(|x| x.tables.values().next().cloned()).unwrap();
+            t.cell(0, 0).unwrap().text.clone()
+        };
+        let formatted = cell_text(&s);
+        assert!(formatted.chars.len() > 1, "the cell text has two character formats");
+        let before = (s.doc().unwrap().history.undo.len(), s.doc().unwrap().revision);
+        s.execute("table.setCell", &edit).unwrap();
+        assert_eq!(cell_text(&s), formatted, "the same text keeps its character formats");
+        assert_eq!((s.doc().unwrap().history.undo.len(), s.doc().unwrap().revision), before, "the same text is not an undo step");
+        s.execute("table.setCell", &json!({"rows": [0, 0], "cols": [0, 0], "text": "Other"})).unwrap();
+        assert_eq!(cell_text(&s).text, "Other", "different text still replaces the cell's text");
+    }
+
+    #[test]
+    fn set_cell_stroke_applies_when_the_neighbor_draws_a_different_edge() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [0, 0, 400, 300], "content": "text", "text": ""})).unwrap();
+        let story = designcraft_doc::StoryId(r["story"].as_u64().unwrap());
+        s.execute("text.select", &json!({"story": r["story"], "anchor": 0, "focus": 0})).unwrap();
+        s.execute("table.insert", &json!({"rows": 2, "cols": 1})).unwrap();
+        let stroke = json!({"rows": [0, 0], "cols": [0, 0], "stroke": {"weight": 2, "edges": ["bottom"]}});
+        s.execute("table.setCell", &stroke).unwrap();
+        // The cell below keeps the same priority on the shared edge but a heavier stroke, so it
+        // wins the tie and draws the edge.
+        s.edit(|d, _| {
+            let st = d.story_mut(story).ok_or_else(|| bad("test", "no story"))?;
+            for t in st.tables.values_mut() {
+                let cell = std::sync::Arc::make_mut(t).cell_mut(1, 0).ok_or_else(|| bad("test", "no cell"))?;
+                cell.strokes[0].weight = 5.0;
+            }
+            ok()
+        })
+        .unwrap();
+        let drawn = |s: &Session| {
+            let st = s.doc().unwrap();
+            let t = st.doc.story(story).and_then(|x| x.tables.values().next().cloned()).unwrap();
+            drawn_side(&t, &t.owners(), (0, 0), 2).map(|x| x.weight)
+        };
+        assert_eq!(drawn(&s), Some(5.0), "the cell below draws the shared edge");
+        let undo = s.doc().unwrap().history.undo.len();
+        s.execute("table.setCell", &stroke).unwrap();
+        assert_eq!(drawn(&s), Some(2.0), "the edit takes the drawn edge");
+        assert_eq!(s.doc().unwrap().history.undo.len(), undo + 1, "the edit is one undo step");
+    }
+
+    #[test]
+    fn set_cell_stroke_applies_when_part_of_a_merged_side_draws_a_different_edge() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [0, 0, 400, 300], "content": "text", "text": ""})).unwrap();
+        let story = designcraft_doc::StoryId(r["story"].as_u64().unwrap());
+        s.execute("text.select", &json!({"story": r["story"], "anchor": 0, "focus": 0})).unwrap();
+        s.execute("table.insert", &json!({"rows": 2, "cols": 2})).unwrap();
+        s.execute("table.merge", &json!({"rows": [0, 1], "cols": [0, 0]})).unwrap();
+        let stroke = json!({"rows": [0, 1], "cols": [0, 0], "stroke": {"weight": 2, "edges": ["right"]}});
+        s.execute("table.setCell", &stroke).unwrap();
+        s.execute("table.setCell", &json!({"rows": [1, 1], "cols": [1, 1], "stroke": {"weight": 4, "edges": ["left"]}})).unwrap();
+        let drawn = |s: &Session| {
+            let st = s.doc().unwrap();
+            let t = st.doc.story(story).and_then(|x| x.tables.values().next().cloned()).unwrap();
+            compose::table::cell_side_strokes(&t, &t.owners(), (0, 0), 3).iter().map(|x| x.stroke.weight).collect::<Vec<_>>()
+        };
+        assert_eq!(drawn(&s), [2.0, 4.0], "the lower neighbor draws its part of the merged side");
+        s.execute("table.setCell", &stroke).unwrap();
+        assert_eq!(drawn(&s), [2.0, 2.0], "the edit takes every part of the merged side");
     }
 }

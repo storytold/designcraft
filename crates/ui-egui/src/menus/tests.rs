@@ -346,6 +346,33 @@ fn pdf_export_menu_item_opens_the_dialog_or_exports() {
     assert!(app.ui.dialog.is_none());
 }
 
+/// With the Type tool in the second frame of a thread, Cmd+B opens Text Frame Options, and OK
+/// changes the frame that shows the caret.
+#[test]
+fn text_frame_options_open_from_the_type_tool() {
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let text = (0..40).map(|i| format!("Line {i} of the threaded story.")).collect::<Vec<_>>().join(" ");
+    let a = app.run("frame.create", json!({"rect": [36, 36, 300, 120], "content": "text", "text": text})).unwrap();
+    let b = app.run("frame.create", json!({"rect": [36, 200, 300, 700], "content": "text", "text": "", "caret": false})).unwrap();
+    let (a, b, sid) = (a["id"].as_u64().unwrap(), b["id"].as_u64().unwrap(), a["story"].as_u64().unwrap());
+    app.run("text.thread", json!({"from": a, "to": b})).unwrap();
+    // The end of the story is in the second frame.
+    app.run("text.select", json!({"story": sid, "anchor": text.len()})).unwrap();
+    assert!(super::state::enabled(&app, "object.textFrameOptions"), "the menu item is enabled while typing");
+    let ctx = egui::Context::default();
+    press_keys(&mut app, &ctx, &[(egui::Key::B, egui::Modifiers::COMMAND)]);
+    assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some("textFrameOptions"), "Cmd+B opens the dialog while typing");
+    if let Some(d) = app.ui.dialog.as_mut() {
+        d.fields.insert("columns".into(), json!(3));
+    }
+    crate::dialogs::confirm(&mut app).unwrap();
+    let columns = |app: &crate::DesignApp, id: u64| {
+        app.session.active().unwrap().doc.item(designcraft_doc::ItemId(id)).and_then(|i| i.text_frame().map(|t| t.options.columns))
+    };
+    assert_eq!((columns(&app, a), columns(&app, b)), (Some(1), Some(3)));
+}
+
 #[test]
 fn snap_preferences_are_a_command() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
@@ -3491,4 +3518,92 @@ fn zoom_commands_zoom_around_the_pointer_when_it_is_over_the_canvas() {
     native_frame(&mut app, &ctx, vec![egui::Event::PointerGone], Some("view.zoomOut"));
     let kept = under(&app, rect.center());
     assert!((kept.x - centre.x).abs() < 1e-3 && (kept.y - centre.y).abs() < 1e-3);
+}
+
+#[test]
+fn window_menu_commands_restore_hidden_panels() {
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.session.execute("file.new", &json!({})).unwrap();
+    let ctx = egui::Context::default();
+    let frame = |app: &mut crate::DesignApp| {
+        for _ in 0..2 {
+            let input =
+                egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))), ..Default::default() };
+            let mut out = ctx.run_ui(input, |ui| {
+                app.logic(&ui.ctx().clone());
+                app.ui(ui);
+            });
+            out.textures_delta.clear();
+        }
+    };
+    let props_tab = crate::panel_docking::tab_id("properties");
+    frame(&mut app);
+    assert!(ctx.read_response(props_tab).is_some(), "properties panel starts visible");
+
+    // Window › Properties unhides panels hidden by Tab.
+    run_ui(&mut app, "window.hidePanels", &json!({})).unwrap().unwrap();
+    assert_eq!(app.ui.hidden_panels, 1);
+    frame(&mut app);
+    assert!(ctx.read_response(props_tab).is_none());
+    run_ui(&mut app, "window.panel", &json!({"panel": "properties"})).unwrap().unwrap();
+    assert_eq!(app.ui.hidden_panels, 0);
+    frame(&mut app);
+    assert!(ctx.read_response(props_tab).is_some(), "Window > Properties restores hidden panels");
+
+    // Shift+Tab + Type/Window panel commands unhide and reveal the requested panel.
+    run_ui(&mut app, "window.hidePanelsExceptTools", &json!({})).unwrap().unwrap();
+    assert_eq!(app.ui.hidden_panels, 2);
+    run_ui(&mut app, "app.characterPanel", &json!({})).unwrap().unwrap();
+    assert_eq!(app.ui.hidden_panels, 0);
+    assert!(crate::panel_docking::showing(&app, "character"));
+
+    run_ui(&mut app, "window.hidePanels", &json!({})).unwrap().unwrap();
+    run_ui(&mut app, "app.paragraphStylesPanel", &json!({})).unwrap().unwrap();
+    assert_eq!(app.ui.hidden_panels, 0);
+    assert!(crate::panel_docking::showing(&app, "paragraphStyles"));
+
+    // Float-only Tabs: opening when hidden reveals it; choosing it while already open but hidden
+    // reveals it instead of closing it invisibly.
+    run_ui(&mut app, "window.hidePanels", &json!({})).unwrap().unwrap();
+    run_ui(&mut app, "window.panel", &json!({"panel": "tabs"})).unwrap().unwrap();
+    assert_eq!(app.ui.hidden_panels, 0);
+    assert!(app.ui.floating.iter().any(|(p, _)| p == "tabs"));
+
+    run_ui(&mut app, "window.hidePanels", &json!({})).unwrap().unwrap();
+    run_ui(&mut app, "window.panel", &json!({"panel": "tabs"})).unwrap().unwrap();
+    assert_eq!(app.ui.hidden_panels, 0);
+    assert!(app.ui.floating.iter().any(|(p, _)| p == "tabs"), "Tabs stays open when unhidden");
+
+    // Table toggle activates instead of closing while hidden.
+    run_ui(&mut app, "window.panel", &json!({"panel": "table"})).unwrap().unwrap();
+    assert!(crate::panel_docking::showing(&app, "table"));
+    run_ui(&mut app, "window.hidePanels", &json!({})).unwrap().unwrap();
+    run_ui(&mut app, "app.tablePanel", &json!({})).unwrap().unwrap();
+    assert_eq!(app.ui.hidden_panels, 0);
+    assert!(crate::panel_docking::showing(&app, "table"));
+
+    // An open flyout in an iconic column isn't closed by Window › <panel> while hidden.
+    run_ui(&mut app, "window.workspace", &json!({"name": "Typography"})).unwrap().unwrap();
+    run_ui(&mut app, "window.panel", &json!({"panel": "character"})).unwrap().unwrap();
+    assert_eq!(app.ui.docking_flyout.as_deref(), Some("character"));
+    run_ui(&mut app, "window.hidePanels", &json!({})).unwrap().unwrap();
+    run_ui(&mut app, "window.panel", &json!({"panel": "character"})).unwrap().unwrap();
+    assert_eq!(app.ui.hidden_panels, 0);
+    assert!(crate::panel_docking::showing(&app, "character"));
+
+    // Window › Workspace › Reset and Control restore hidden panels.
+    run_ui(&mut app, "window.workspace", &json!({"name": "Essentials"})).unwrap().unwrap();
+    run_ui(&mut app, "window.hidePanels", &json!({})).unwrap().unwrap();
+    run_ui(&mut app, "window.resetWorkspace", &json!({})).unwrap().unwrap();
+    assert_eq!(app.ui.hidden_panels, 0);
+    frame(&mut app);
+    assert!(ctx.read_response(props_tab).is_some(), "Reset Workspace restores hidden panels");
+
+    app.ui.control_bar = true;
+    run_ui(&mut app, "window.hidePanels", &json!({})).unwrap().unwrap();
+    assert_eq!(checked(&app, "window.controlBar", &Value::Null), Some(false));
+    run_ui(&mut app, "window.controlBar", &json!({})).unwrap().unwrap();
+    assert_eq!(app.ui.hidden_panels, 0);
+    assert!(app.ui.control_bar);
+    assert_eq!(checked(&app, "window.controlBar", &Value::Null), Some(true));
 }
