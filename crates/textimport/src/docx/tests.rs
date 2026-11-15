@@ -240,7 +240,7 @@ fn imports_styles_runs_footnotes_and_tables() {
     st.check().unwrap();
     assert!(st.text.starts_with("Title & more\nPlain bold styled\tx"), "{:?}", st.text);
     assert!(st.text.ends_with("After"));
-    assert_eq!(st.paras[0].style, "heading 1");
+    assert_eq!(st.paras[0].style, "Heading 1");
     assert_eq!(st.paras[1].style, "Normal");
     let at = st.text.find("bold").unwrap();
     assert_eq!(st.format_after(at).over.font_style.as_deref(), Some("Bold"));
@@ -249,7 +249,7 @@ fn imports_styles_runs_footnotes_and_tables() {
     assert_eq!(st.notes[0].text.text, "The note.");
     assert_eq!(st.tables.len(), 1);
     let names: Vec<&str> = i.para_styles.iter().map(|s| s.name.as_str()).collect();
-    assert_eq!(names, ["Normal", "heading 1"], "unused styles are skipped");
+    assert_eq!(names, ["Normal", "Heading 1"], "unused styles are skipped");
     assert_eq!(i.para_styles[1].based_on.as_deref(), Some("Normal"));
     assert_eq!(i.para_styles[1].chars.size, Some(16.0));
     assert_eq!(i.para_styles[1].para.space_before, Some(12.0));
@@ -620,4 +620,27 @@ fn off_valued_toggles_stay_off() {
     assert_eq!(plain.capitalization, None, "no all-caps");
     let on = st.format_after(st.text.find("bold").unwrap()).clone().over;
     assert_eq!(on.font_style.as_deref(), Some("Bold"), "`on` is still on");
+}
+
+#[test]
+fn built_in_headings_take_the_name_word_shows() {
+    let styles = format!(
+        r#"<w:styles {W}>
+              <w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/></w:style>
+              <w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="heading 2"/></w:style>
+              <w:style w:type="paragraph" w:styleId="Heading9"><w:name w:val="heading 9"/></w:style>
+            </w:styles>"#
+    );
+    let document = format!(
+        r#"<w:document {W}><w:body>
+              <w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>One</w:t></w:r></w:p>
+              <w:p><w:pPr><w:pStyle w:val="Heading2"/></w:pPr><w:r><w:t>Two</w:t></w:r></w:p>
+              <w:p><w:pPr><w:pStyle w:val="Heading9"/></w:pPr><w:r><w:t>Nine</w:t></w:r></w:p>
+            </w:body></w:document>"#
+    );
+    let i = import(&docx(&document, &styles, "")).unwrap();
+    let used: Vec<&str> = i.story.paras.iter().map(|p| p.style.as_str()).collect();
+    assert_eq!(used, ["Heading 1", "Heading 2", "Heading 9"]);
+    let names: Vec<&str> = i.para_styles.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, ["Heading 1", "Heading 2", "Heading 9"]);
 }

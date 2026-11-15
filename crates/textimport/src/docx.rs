@@ -22,20 +22,8 @@ fn capped_name(name: &str) -> String {
     name.chars().take(MAX_NAME_CHARS).collect()
 }
 
-fn display_style_name(style: &craft_wordmodel::styles::Style) -> String {
-    // Keep the source's lowercase built-in heading spelling in imported app style names.
-    if style.builtin
-        && style.id.strip_prefix("Heading").is_some_and(|n| (1..=9).any(|level| n == level.to_string()))
-        && style.name.starts_with("Heading ")
-    {
-        style.name.to_ascii_lowercase()
-    } else {
-        style.name.clone()
-    }
-}
-
 fn style_names(styles: &StyleSheet) -> HashMap<String, String> {
-    styles.styles.iter().map(|s| (s.id.clone(), capped_name(&display_style_name(s)))).collect()
+    styles.styles.iter().map(|s| (s.id.clone(), capped_name(&s.name))).collect()
 }
 
 fn char_attrs(p: &WordCharProps) -> CharAttrs {
