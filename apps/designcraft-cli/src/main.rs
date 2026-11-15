@@ -462,24 +462,29 @@ impl Export {
 /// value is reported only after the exports before it have been written -- and `run --export
 /// first.png --scale --export second.png` would then have overwritten an existing `first.png` on
 /// an invocation that fails (noted in review).
-fn values_present(args: &[String]) -> Result<(), String> {
+/// Return the first unknown token so value, order and export type errors keep their priority.
+fn values_present(args: &[String]) -> Result<Option<&str>, String> {
     let mut i = 0;
+    let mut unknown = None;
     while let Some(a) = args.get(i) {
         i += 1;
         if !matches!(a.as_str(), "--in" | "--cmd" | "--export" | "--all-pages" | "--page" | "--scale" | "--pdf-options") {
+            if a.as_str() != "--sample" {
+                unknown = unknown.or(Some(a.as_str()));
+            }
             continue;
         }
         value(a, args.get(i))?;
         // Step over the value, so one that looks like an option is not checked as one.
         i += 1;
     }
-    Ok(())
+    Ok(unknown)
 }
 
 fn run(args: &[String]) -> Result<(), String> {
     // Before the order check and before any export: a value error is about the line as written,
     // and reporting it must not cost a file that was already there.
-    values_present(args)?;
+    let unknown = values_present(args)?;
     if let Some(opt) = option_after_last_export(args) {
         return Err(format!(
             "{opt} has no --export or --all-pages after it; options apply to the exports that follow them, so put it before its --export"
@@ -490,6 +495,9 @@ fn run(args: &[String]) -> Result<(), String> {
         if a[0] == "--export" {
             Export::of(&a[1])?;
         }
+    }
+    if let Some(other) = unknown {
+        return Err(format!("unknown option {other}"));
     }
     let mut s = Session::new();
     let mut page = 0usize;
