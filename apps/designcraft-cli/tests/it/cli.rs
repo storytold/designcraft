@@ -8,6 +8,31 @@ fn cli() -> Command {
 }
 
 #[test]
+fn bench_without_spreads_reports_an_error_instead_of_panicking() {
+    struct Fixture(std::path::PathBuf);
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    let path = std::env::temp_dir().join(format!("dc-cli-empty-bench-{}.designcraft", std::process::id()));
+    assert!(std::fs::symlink_metadata(&path).is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound));
+    let fixture = Fixture(path);
+    let mut document = designcraft_doc::Document::new(&Default::default());
+    document.spreads.clear();
+    document.check().unwrap();
+    let bytes = designcraft_format::save(&document).unwrap();
+    assert!(designcraft_format::load(&bytes).unwrap().spreads.is_empty());
+    std::fs::write(&fixture.0, bytes).unwrap();
+
+    let out = cli().args(["bench", fixture.0.to_str().unwrap(), "--runs", "1"]).output().unwrap();
+
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{err}");
+    assert!(err.contains("cannot benchmark a document with no spreads"), "{err}");
+}
+
+#[test]
 fn script_from_stdin_with_references_saves_and_exports() {
     let dir = std::env::temp_dir().join(format!("dc-cli-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
