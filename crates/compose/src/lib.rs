@@ -1000,6 +1000,13 @@ pub struct FrameSpec {
 }
 
 impl FrameSpec {
+    /// The baseline grid when the text area can be counted in its steps: a step so small, or a
+    /// first line so far off, that the count is more than an f64 holds is no grid (as for the lines).
+    fn countable_grid(&self) -> Option<(f64, f64)> {
+        self.grid
+            .filter(|&(g_start, inc)| inc > 0.0 && inc.is_finite() && [self.area.y0, self.area.y1].iter().all(|y| ((y - g_start) / inc).is_finite()))
+    }
+
     pub fn columns(&self) -> Vec<Rect> {
         let a = self.area;
         // Primary frames inherit the document limit (216), beyond the interactive frame editor's 40.
@@ -2808,7 +2815,7 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
         let face = db.face(&base_chars.font_family, &base_chars.font_style);
         face.cap_height * base_chars.size / face.upem * base_chars.v_scale
     };
-    let drop_grid = cur_frame.and_then(|f| f.grid).filter(|_| pp.grid_align == GridAlign::AllLines).map(|g| g.1);
+    let drop_grid = cur_frame.and_then(FrameSpec::countable_grid).filter(|_| pp.grid_align == GridAlign::AllLines).map(|g| g.1);
     // Align Left Edge (left-to-right paragraphs).
     let drop_align = pp.drop_cap_align_left && pp.direction == designcraft_doc::TextDirection::LeftToRight;
     // Tab stops for the drop cap, with the start-side indent (the right one, right to left).
@@ -6253,7 +6260,7 @@ fn vertical_justify(
             }
         };
         let center = f.opts.vertical_justification == VerticalJustification::Center;
-        let step = f.grid.map(|(_, inc)| inc).filter(|inc| *inc > 0.0 && inc.is_finite()).filter(|_| match f.opts.vertical_justification {
+        let step = f.countable_grid().map(|(_, inc)| inc).filter(|_| match f.opts.vertical_justification {
             VerticalJustification::Justify => idx.iter().zip(&rows).any(|(&i, &k)| k == n && on_grid(i)),
             _ => idx.iter().any(|&i| on_grid(i)),
         });
