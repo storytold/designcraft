@@ -1295,6 +1295,19 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ("Find Next", ["Find Next", "Rechercher suivant", "Find Next", "Find Next", "查找下一个"]),
     ("{count} found", ["{count} gefunden", "{count} trouvé(s)", "{count} encontrado(s)", "{count} 件見つかりました", "找到 {count} 个"]),
     ("{count} changed", ["{count} geändert", "{count} modifié(s)", "{count} cambiado(s)", "{count} 件変更しました", "已更改 {count} 个"]),
+    ("{count} match(es)", ["{count} Treffer", "{count} correspondance(s)", "{count} coincidencia(s)", "{count} 件一致しました", "{count} 个匹配项"]),
+    (
+        "{count} replacement(s) made",
+        [
+            "{count} Ersetzung(en) vorgenommen",
+            "{count} remplacement(s) effectué(s)",
+            "{count} sustitución(es) realizada(s)",
+            "{count} 件置換しました",
+            "已替换 {count} 处",
+        ],
+    ),
+    ("Found", ["Gefunden", "Trouvé", "Encontrado", "見つかりました", "已找到"]),
+    ("No matches", ["Keine Treffer", "Aucune correspondance", "Sin coincidencias", "一致するものはありません", "无匹配项"]),
     (
         "Choose a destination paragraph or text anchor.",
         [
