@@ -27,6 +27,9 @@ struct Preedit {
 
 #[derive(Default)]
 pub struct TypeTool {
+    /// The tool this one was switched to from (`selection` or `directSelection`): Escape goes
+    /// back to it.
+    prev_tool: Option<String>,
     /// Vertical Type Tool: frames it draws set text vertically.
     pub vertical: bool,
     start: Option<Point>,
@@ -411,7 +414,10 @@ impl Tool for TypeTool {
             ToolKey::Tab => vec![Action::Exec("text.insert".into(), json!({"text": "\t"}))],
             // In a table Esc toggles between the cell's text and the cell, as InDesign.
             ToolKey::Escape if in_cell => vec![Action::Exec("table.toggleSelection".into(), json!({}))],
-            ToolKey::Escape => vec![Action::SwitchTool("selection".into()), Action::Exec("text.exitToFrame".into(), json!({}))],
+            ToolKey::Escape => {
+                let back = self.prev_tool.as_deref().filter(|t| matches!(*t, "selection" | "directSelection")).unwrap_or("selection");
+                vec![Action::SwitchTool(back.into()), Action::Exec("text.exitToFrame".into(), json!({}))]
+            }
             _ => vec![],
         }
     }
@@ -515,6 +521,12 @@ impl Tool for TypeTool {
             let r = it.inner_bounds();
             Some((m * Point::new(r.x1, r.y1 - 12.0), m * Point::new(r.x1, r.y1)))
         })
+    }
+
+    fn set_option(&mut self, key: &str, value: &serde_json::Value) {
+        if key == "prevTool" {
+            self.prev_tool = value.as_str().map(String::from);
+        }
     }
 }
 

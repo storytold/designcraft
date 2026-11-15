@@ -158,7 +158,10 @@ fn context_target(app: &mut DesignApp, p: Point, zoom: f64) -> crate::menus::Con
                 .and_then(|it| designcraft_doc::hit_descendant(it, sp, 4.0 / zoom.max(1e-6), &|c| !c.is_group()))
                 .filter(|leaf| !st.doc.ancestor_locked(*leaf))
         } else {
-            Some(st.doc.top_level_of(id).unwrap_or(id))
+            // As a Selection-tool click picks it: a selected item inside a group stays the
+            // target, otherwise the top-level item.
+            let leaf = st.doc.item(id).and_then(|it| designcraft_doc::hit_descendant(it, sp, 4.0 / zoom.max(1e-6), &|c| !c.is_group()));
+            Some(st.doc.selection_target(leaf.unwrap_or(id), |i| st.selection.contains(i)))
         };
         target.map(|t| (t, st.selection.contains(t)))
     }) else {

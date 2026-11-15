@@ -3528,3 +3528,77 @@ fn right_clicking_a_grouped_text_frame_while_typing_places_the_caret_there() {
     assert_ne!(frame, Some(designcraft_doc::ItemId(b)), "the caret moved to the frame under the pointer");
     assert!(frame.is_some());
 }
+
+#[test]
+fn right_clicking_a_selected_group_child_with_the_selection_tool_keeps_it_selected() {
+    let (mut h, [a, _, _]) = nested_groups();
+    h.state_mut().run("tool.select", json!({"tool": "selection"})).unwrap();
+    h.state_mut().run("selection.set", json!({"ids": [a]})).unwrap();
+    h.run_steps(3);
+    let on_a = screen_of(&h, 60.0, 60.0);
+    right_click(&mut h, on_a);
+    assert_eq!(selected(&h), [a], "the selected child is not replaced by its top-level group");
+}
+
+#[test]
+fn double_click_drills_into_groups_edits_text_and_escape_climbs_back() {
+    let (mut h, [a, b, _]) = nested_groups();
+    h.state_mut().run("tool.select", json!({"tool": "selection"})).unwrap();
+    h.run_steps(3);
+    let on_a = screen_of(&h, 60.0, 60.0);
+    let group_of_a = {
+        let st = h.state().session.doc().unwrap();
+        st.doc.ancestry_chain(designcraft_doc::ItemId(a))
+    };
+    assert_eq!(group_of_a.len(), 3, "the frame is two groups deep");
+    // Each double click selects one level deeper; the one on the selected frame edits its text.
+    click(&mut h, on_a);
+    click(&mut h, on_a);
+    h.run_steps(35);
+    assert_eq!(selected(&h), [group_of_a[1].0]);
+    click(&mut h, on_a);
+    click(&mut h, on_a);
+    h.run_steps(35);
+    assert_eq!(selected(&h), [a]);
+    assert_eq!(h.state().session.tool_id(), "selection");
+    click(&mut h, on_a);
+    click(&mut h, on_a);
+    h.run_steps(5);
+    assert_eq!(h.state().session.tool_id(), "type");
+    assert!(h.state_mut().session.wants_text());
+    // Escape leaves the text and goes back to the Selection tool with the frame selected, then
+    // climbs the groups one level per press, then deselects.
+    h.key_press(egui::Key::Escape);
+    h.run_steps(5);
+    assert_eq!((h.state().session.tool_id(), selected(&h)), ("selection", vec![a]));
+    h.key_press(egui::Key::Escape);
+    h.run_steps(5);
+    assert_eq!(selected(&h), [group_of_a[1].0]);
+    h.key_press(egui::Key::Escape);
+    h.run_steps(5);
+    assert_eq!(selected(&h), [group_of_a[0].0]);
+    h.key_press(egui::Key::Escape);
+    h.run_steps(5);
+    assert!(selected(&h).is_empty());
+    let _ = b;
+}
+
+#[test]
+fn double_click_with_direct_selection_edits_text_and_escape_returns_to_it() {
+    let (mut h, [a, _, _]) = nested_groups();
+    h.state_mut().run("tool.select", json!({"tool": "directSelection"})).unwrap();
+    h.run_steps(3);
+    let on_a = screen_of(&h, 60.0, 60.0);
+    click(&mut h, on_a);
+    click(&mut h, on_a);
+    h.run_steps(5);
+    assert_eq!(h.state().session.tool_id(), "type");
+    assert!(h.state_mut().session.wants_text());
+    h.key_press(egui::Key::Escape);
+    h.run_steps(5);
+    assert_eq!((h.state().session.tool_id(), selected(&h)), ("directSelection", vec![a]));
+    // A second Escape goes back to the Selection tool, as it did before.
+    h.key_press(egui::Key::Escape);
+    h.run_steps(5);
+    assert_eq!(h.state().session.tool_id(), "selection");
+}
