@@ -34,6 +34,7 @@ impl DesignApp {
             self.handle_file_dialog_answers();
             self.drain_inbox();
             self.open_os_documents();
+            self.poll_link_checks(ctx);
         }
         if self.host_order_pending() {
             ctx.request_repaint();
