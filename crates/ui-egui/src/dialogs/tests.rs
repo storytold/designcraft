@@ -5620,3 +5620,29 @@ fn parent_resize_exact_dialog_keeps_its_target_and_rejects_invalid_input() {
     assert!(app.ui.dialog.is_some());
     assert!(std::sync::Arc::ptr_eq(&saved, &app.session.doc().unwrap().doc));
 }
+
+/// #2397: opening Text Frame Options focuses the Columns count field, so Ctrl/Cmd+B, Up, Up,
+/// Return changes 1 column to 3 without the mouse.
+#[test]
+fn text_frame_options_opens_with_the_columns_field_focused() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let r = app.run("frame.create", json!({"rect": [36, 36, 336, 236], "content": "text", "text": "Hello"})).unwrap();
+    let id = designcraft_doc::ItemId(r["id"].as_u64().unwrap());
+    app.run("selection.set", json!({"ids": [id.0]})).unwrap();
+    crate::menus::activate(&mut app, "object.textFrameOptions", &Value::Null);
+    assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some("textFrameOptions"));
+    let ctx = dialog_context("en");
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0));
+    dialog_frame(&mut app, &ctx, screen, vec![]);
+    dialog_frame(&mut app, &ctx, screen, vec![]);
+    let up = || egui::Event::Key { key: egui::Key::ArrowUp, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+    dialog_frame(&mut app, &ctx, screen, vec![up()]);
+    dialog_frame(&mut app, &ctx, screen, vec![]);
+    dialog_frame(&mut app, &ctx, screen, vec![up()]);
+    dialog_frame(&mut app, &ctx, screen, vec![]);
+    let d = app.ui.dialog.as_ref().unwrap();
+    assert_eq!(d.n("columns"), Some(3.0), "two Up presses step 1 column to 3: {:?}", d.fields.get("columns"));
+    confirm(&mut app).unwrap();
+    assert_eq!(app.session.doc().unwrap().doc.item(id).unwrap().text_frame().unwrap().options.columns, 3);
+}

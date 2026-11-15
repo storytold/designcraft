@@ -1464,6 +1464,14 @@ pub(crate) fn general(lang: &str, ui: &mut egui::Ui, d: &mut Dialog) {
             if let Some(v) = columns.width(field).spinner().range(1.0, 40.0).show(ui) {
                 d.fields.insert("columns".into(), json!(v.round().to_string()));
             }
+            // InDesign opens with the Columns count focused, so Up, Up, Return makes 3 columns
+            // without the mouse. Once, after the field is shown and registered this frame:
+            // moving focus elsewhere is not overridden on later frames. (Object Styles reuse
+            // this page for their Text Frame section: only Text Frame Options takes the focus.)
+            if d.id == "textFrameOptions" && !d.fields.contains_key("_focusColumns") {
+                ui.ctx().memory_mut(|m| m.request_focus(crate::widgets::NumField::editor_id(ui, "tfo_columns")));
+                d.fields.insert("_focusColumns".into(), json!(true));
+            }
             // Fixed Number: the width follows from the frame; Fixed Width: it's set here.
             caption_at(ui, tr("Width:"), cap2);
             if d.s("columnsKind") == "fixedWidth" {

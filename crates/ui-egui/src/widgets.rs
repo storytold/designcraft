@@ -188,6 +188,12 @@ impl<'a> NumField<'a> {
         self.show_or_clear(ui).flatten()
     }
 
+    /// The id of the text editor a [`NumField`] with id `id` shows in `ui`: request focus on it
+    /// to put the keyboard there (a dialog does so once for its first field when it opens).
+    pub fn editor_id(ui: &Ui, id: &str) -> egui::Id {
+        ui.scope_id().with(id).with("te")
+    }
+
     /// The spinner segment's up and down buttons; the value a click on one gives.
     fn spinner_segment(&self, ui: &mut Ui, rect: Rect, key: egui::Id, enabled: bool, t: &Tokens) -> Option<f64> {
         let name = self.name.unwrap_or(self.id);
