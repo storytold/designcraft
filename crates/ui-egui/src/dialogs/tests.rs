@@ -1196,7 +1196,7 @@ fn justification_dialog_sets_auto_leading_and_single_word_justification() {
         assert_eq!(auto_leading_typed(typed), stored, "{typed}%");
         let mut probe = d.clone();
         probe.fields.insert("autoLeading".into(), json!(auto_leading_typed(typed)));
-        assert_eq!(check_justification(&probe, "", &current), Ok(()), "{typed}%");
+        assert_eq!(check_justification(&probe, "", &current, "en"), Ok(()), "{typed}%");
     }
 
     app.ui.dialog = Some(d);
@@ -5635,4 +5635,17 @@ fn a_margin_that_does_not_parse_is_reported_in_the_interface_language() {
     // The English interface keeps its own sentence.
     let en = layout_dialog_params(&d, "en").unwrap_err();
     assert!(en.starts_with("Enter a valid top margin"), "{en}");
+}
+
+/// The justification checks' messages reached the catalogue, sentence and row name alike: they used to
+/// be built with `format!`, so Spanish showed them in English with an English label in the middle.
+#[test]
+fn a_justification_out_of_range_is_reported_in_the_interface_language() {
+    let mut d = Dialog::new("justification", json!({}));
+    d.fields.insert("wordSpaceMin".into(), json!(2000.0));
+    let e = check_justification(&d, "", &json!({}), "es").unwrap_err();
+    assert!(e.contains("Espaciado entre palabras"), "the row is named in Spanish: {e}");
+    assert!(e.contains("debe estar entre"), "and the range is stated: {e}");
+    let en = check_justification(&d, "", &json!({}), "en").unwrap_err();
+    assert!(en.starts_with("Justification: Word Spacing"), "{en}");
 }

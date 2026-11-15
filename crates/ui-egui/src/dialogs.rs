@@ -1707,7 +1707,8 @@ fn confirm_text_frame_options(app: &mut DesignApp, d: &mut Dialog) -> Result<Val
 /// The `object.textFrameOptions` params of what the dialog changed.
 fn text_frame_params(app: &DesignApp, d: &Dialog) -> Result<Map<String, Value>, String> {
     let mut p = Map::new();
-    let bad = |what: &str| format!("Text Frame Options: {what}");
+    let lang = &app.ui.language;
+    let bad = |what: &str| crate::i18n::tr(lang, "Text Frame Options: {what}").replace("{what}", crate::i18n::tr(lang, what));
     if edited(d, "columns") {
         p.insert("columns".into(), json!(d.n("columns").ok_or_else(|| bad("the number of columns is not a number"))?.max(1.0) as u64));
     }
@@ -2679,9 +2680,15 @@ fn setup_link_follow(d: &mut Dialog, group: &str, changed: Option<String>) {
 /// refused before anything changes. The margins (the first page's, shown) go to every page only
 /// when they were edited, so pages keep their own margins otherwise.
 fn confirm_document_setup(app: &mut DesignApp, d: &Dialog) -> Result<Value, String> {
-    let measure = |key: &str| setup_measure(d, key).ok_or_else(|| format!("{key}: not a measure"));
+    let lang = app.ui.language.clone();
+    let measure = |key: &str| setup_measure(d, key).ok_or_else(|| crate::i18n::tr(&lang, "{key}: not a measure").replace("{key}", key));
     let edges = |group: &str| -> Result<Vec<f64>, String> { SETUP_EDGES.iter().map(|e| measure(&format!("{group}{e}"))).collect() };
-    let count = |key: &str| d.n(key).filter(|n| n.is_finite() && *n >= 1.0).map(|n| n as u64).ok_or_else(|| format!("{key}: a whole number from 1"));
+    let count = |key: &str| {
+        d.n(key)
+            .filter(|n| n.is_finite() && *n >= 1.0)
+            .map(|n| n as u64)
+            .ok_or_else(|| crate::i18n::tr(&lang, "{key}: a whole number from 1").replace("{key}", key))
+    };
     let margins = edges("margin")?;
     let shown = d.fields.get("marginsShown").and_then(Value::as_array);
     let edited = SETUP_EDGES.iter().enumerate().any(|(i, e)| shown.and_then(|s| s.get(i)) != d.fields.get(&format!("margin{e}")));
@@ -4924,7 +4931,7 @@ fn confirm_part2(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
         }
         "justification" => {
             let current = d.fields.get("current").cloned().unwrap_or_default();
-            if let Err(e) = check_justification(&d, "", &current) {
+            if let Err(e) = check_justification(&d, "", &current, &app.ui.language) {
                 // The dialog stays open to be corrected.
                 app.status(e.clone());
                 let mut d = d;
@@ -5196,7 +5203,8 @@ fn confirm_part4(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
             // rest in one `prefs.set` (which checks everything before it changes anything). A value
             // that doesn't read, or that it refuses, keeps the dialog open to be fixed, with no
             // preference changed.
-            let saved = default_units_of(&d).and_then(|du| {
+            let lang = app.ui.language.clone();
+            let saved = default_units_of(&d, &lang).and_then(|du| {
                 if let Some(du) = du {
                     prefs["defaultUnits"] = du;
                 }
@@ -5628,7 +5636,7 @@ fn check_paragraph_style_justification(app: &DesignApp, d: &Dialog) -> Result<()
             serde_json::to_value(pp).unwrap_or_default()
         })
         .unwrap_or_default();
-    check_justification(d, "p.", &base)
+    check_justification(d, "p.", &base, &app.ui.language)
 }
 
 /// The `p.*` and `c.*` dialog fields as the paragraph and character attribute maps a style
@@ -7380,7 +7388,7 @@ fn section_list(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, cjk: bool, sectio
 /// Preferences with no document open: the Units & Increments new documents start with, as
 /// `prefs.set`'s `defaultUnits` (None with a document open). An increment that doesn't read is an
 /// error naming the field.
-fn default_units_of(d: &Dialog) -> Result<Option<Value>, String> {
+fn default_units_of(d: &Dialog, lang: &str) -> Result<Option<Value>, String> {
     if !d.b("defaults") {
         return Ok(None);
     }
@@ -7391,11 +7399,16 @@ fn default_units_of(d: &Dialog) -> Result<Option<Value>, String> {
         }
     }
     if let Some(t) = d.fields.get("keyboardIncrement").and_then(Value::as_str) {
-        du["keyboardIncrement"] = json!(parse_measure(t, Unit::Points).map_err(|_| format!("Cursor Key: `{t}` is not a measurement"))?);
+        du["keyboardIncrement"] = json!(
+            parse_measure(t, Unit::Points)
+                .map_err(|_| { crate::i18n::tr(lang, "Cursor Key: `{value}` is not a measurement").replace("{value}", t) })?
+        );
     }
     if let Some(v) = d.fields.get("kerningIncrement").filter(|v| !v.is_null()) {
         let n = d.n("kerningIncrement").filter(|v| v.is_finite());
-        du["kerningIncrement"] = json!(n.ok_or_else(|| format!("Kerning/Tracking: `{}` is not a number", v.as_str().unwrap_or_default()))?);
+        du["kerningIncrement"] = json!(n.ok_or_else(|| {
+            crate::i18n::tr(lang, "Kerning/Tracking: `{value}` is not a number").replace("{value}", v.as_str().unwrap_or_default())
+        })?);
     }
     Ok(Some(du))
 }
@@ -8102,18 +8115,24 @@ const SINGLE_WORD_CHOICES: [(&str, &str); 4] =
 /// Checks the edited spacing values: each within its range, and minimum ≤ desired ≤ maximum
 /// (values left mixed are not compared); an edited Auto Leading within its range, and an edited
 /// Single Word Justification one of its choices.
-fn check_justification(d: &Dialog, prefix: &str, current: &Value) -> Result<(), String> {
+fn check_justification(d: &Dialog, prefix: &str, current: &Value, lang: &str) -> Result<(), String> {
     if let Some(v) = d.fields.get(&format!("{prefix}autoLeading")) {
         let (lo, hi) = AUTO_LEADING_RANGE;
-        let pct = v.as_f64().map(|x| x * 100.0).filter(|x| x.is_finite()).ok_or("Justification: Auto Leading is not a number")?;
+        let pct = v
+            .as_f64()
+            .map(|x| x * 100.0)
+            .filter(|x| x.is_finite())
+            .ok_or_else(|| crate::i18n::tr(lang, "Justification: Auto Leading is not a number"))?;
         if !(lo..=hi).contains(&pct) {
-            return Err(format!("Justification: Auto Leading must be between {lo}% and {hi}%"));
+            return Err(crate::i18n::tr(lang, "Justification: Auto Leading must be between {lo}% and {hi}%")
+                .replace("{lo}", &lo.to_string())
+                .replace("{hi}", &hi.to_string()));
         }
     }
     if let Some(v) = d.fields.get(&format!("{prefix}singleWordJustify"))
         && !SINGLE_WORD_CHOICES.iter().any(|(k, _)| v.as_str() == Some(k))
     {
-        return Err(format!("Justification: Single Word Justification cannot be {v}"));
+        return Err(crate::i18n::tr(lang, "Justification: Single Word Justification cannot be {value}").replace("{value}", &v.to_string()));
     }
     for (label, stem, (lo, hi)) in JUSTIFY_ROWS {
         let mut edited = false;
@@ -8123,11 +8142,15 @@ fn check_justification(d: &Dialog, prefix: &str, current: &Value) -> Result<(), 
             let v = match d.fields.get(&format!("{prefix}{key}")) {
                 Some(v) => {
                     edited = true;
-                    let pct =
-                        v.as_f64().map(|x| x * 100.0).filter(|x| x.is_finite()).ok_or_else(|| format!("Justification: {label} is not a number"))?;
+                    let pct = v.as_f64().map(|x| x * 100.0).filter(|x| x.is_finite()).ok_or_else(|| {
+                        crate::i18n::tr(lang, "Justification: {label} is not a number").replace("{label}", crate::i18n::tr(lang, label))
+                    })?;
                     // The fields show whole percents; compare what was shown.
                     if pct.round() < lo || pct.round() > hi {
-                        return Err(format!("Justification: {label} must be between {lo}% and {hi}%"));
+                        return Err(crate::i18n::tr(lang, "Justification: {label} must be between {lo}% and {hi}%")
+                            .replace("{label}", crate::i18n::tr(lang, label))
+                            .replace("{lo}", &lo.to_string())
+                            .replace("{hi}", &hi.to_string()));
                     }
                     Some(pct)
                 }
@@ -8136,7 +8159,9 @@ fn check_justification(d: &Dialog, prefix: &str, current: &Value) -> Result<(), 
             known.extend(v);
         }
         if edited && known.windows(2).any(|w| w[0] > w[1] + 1e-9) {
-            return Err(format!("Justification: {label} needs Minimum ≤ Desired ≤ Maximum"));
+            return Err(
+                crate::i18n::tr(lang, "Justification: {label} needs Minimum ≤ Desired ≤ Maximum").replace("{label}", crate::i18n::tr(lang, label))
+            );
         }
     }
     Ok(())
