@@ -2781,19 +2781,20 @@ pub fn open_adjust_layout(app: &mut DesignApp) {
 
 /// Update displayed margin fields proportionally to page size changes when auto-adjust is enabled.
 fn sync_adjust_margins(d: &mut Dialog) {
-    let Some(ow) = d.n("origWidth").filter(|v| *v > 1e-6) else { return };
-    let Some(oh) = d.n("origHeight").filter(|v| *v > 1e-6) else { return };
-    let (Some(nw), Some(nh)) = (setup_measure(d, "width"), setup_measure(d, "height")) else { return };
+    let Some(ow) = d.n("origWidth").filter(|v| v.is_finite() && *v > 1e-6) else { return };
+    let Some(oh) = d.n("origHeight").filter(|v| v.is_finite() && *v > 1e-6) else { return };
+    let Some(nw) = setup_measure(d, "width").filter(|v| v.is_finite() && *v > 0.0) else { return };
+    let Some(nh) = setup_measure(d, "height").filter(|v| v.is_finite() && *v > 0.0) else { return };
     let (sx, sy) = (nw / ow, nh / oh);
     let units = setup_units(d);
-    for (orig_key, key, scale, limit) in [
-        ("origMarginTop", "marginTop", sy, nh / 2.0),
-        ("origMarginBottom", "marginBottom", sy, nh / 2.0),
-        ("origMarginInside", "marginInside", sx, nw / 2.0),
-        ("origMarginOutside", "marginOutside", sx, nw / 2.0),
+    for (orig_key, key, scale) in [
+        ("origMarginTop", "marginTop", sy),
+        ("origMarginBottom", "marginBottom", sy),
+        ("origMarginInside", "marginInside", sx),
+        ("origMarginOutside", "marginOutside", sx),
     ] {
-        if let Some(orig) = d.n(orig_key) {
-            let next = (orig * scale).clamp(0.0, limit.max(0.0));
+        if let Some(orig) = d.n(orig_key).filter(|v| v.is_finite()) {
+            let next = (orig * scale).max(0.0);
             d.fields.insert(key.into(), json!(format_measure(next, units)));
         }
     }

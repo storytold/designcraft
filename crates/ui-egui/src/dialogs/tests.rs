@@ -458,6 +458,61 @@ fn adjust_layout_dialog_opens_from_menu_and_applies_options() {
 }
 
 #[test]
+fn adjust_layout_dialog_preserves_valid_asymmetric_margins_across_auto_adjust_toggle() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"pages": 1, "facingPages": false, "width": 612.0, "height": 792.0})).unwrap();
+    app.run("document.preferences", json!({"horizontalUnits": "points", "verticalUnits": "points"})).unwrap();
+    app.run("layout.marginsAndColumns", json!({"pages": [0], "margins": {"top": 36, "bottom": 36, "inside": 400, "outside": 100}})).unwrap();
+    let frame = app.run("frame.create", json!({"rect": [400, 36, 512, 200], "content": "text"})).unwrap();
+    let fid = designcraft_doc::ItemId(frame["id"].as_u64().unwrap());
+
+    open_adjust_layout(&mut app);
+    let ctx = dialog_context("en");
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 900.0));
+    let mut labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+    for _ in 0..2 {
+        labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+    }
+
+    // Enable Auto-adjust without changing the page size: inside 400 pt must not clamp to 306 pt.
+    click_dialog(&mut app, &ctx, screen, visible_label(&labels, screen, "Auto-adjust margins to page size changes").center());
+    labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+    let d = app.ui.dialog.as_ref().unwrap();
+    assert!(d.b("autoAdjustMargins"));
+    assert_eq!(d.s("marginInside"), "400 pt");
+    assert_eq!(d.s("marginOutside"), "100 pt");
+
+    // Disable Auto-adjust again and confirm: margins and frame stay untouched.
+    click_dialog(&mut app, &ctx, screen, visible_label(&labels, screen, "Auto-adjust margins to page size changes").center());
+    dialog_frame(&mut app, &ctx, screen, vec![]);
+    assert!(!app.ui.dialog.as_ref().unwrap().b("autoAdjustMargins"));
+    confirm(&mut app).unwrap();
+    assert!(app.ui.dialog.is_none());
+
+    let doc = &app.session.active().unwrap().doc;
+    let m = doc.page(0).unwrap().margins;
+    assert_eq!((m.top, m.bottom, m.inside, m.outside), (36.0, 36.0, 400.0, 100.0));
+    let b = doc.item(fid).unwrap().bounds();
+    assert!((b.x0 - 400.0).abs() < 1e-6 && (b.x1 - 512.0).abs() < 1e-6, "frame stays untouched: {b:?}");
+
+    // Proportional scaling when page width halves keeps the valid 200 / 50 asymmetric ratio (exceeding 306 / 2).
+    open_adjust_layout(&mut app);
+    setup_fields(&mut app, json!({"width": "306 pt"}));
+    labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+    click_dialog(&mut app, &ctx, screen, visible_label(&labels, screen, "Auto-adjust margins to page size changes").center());
+    dialog_frame(&mut app, &ctx, screen, vec![]);
+    let d = app.ui.dialog.as_ref().unwrap();
+    assert_eq!(d.s("marginInside"), "200 pt");
+    assert_eq!(d.s("marginOutside"), "50 pt");
+
+    // Combined-fit validation still rejects explicit margins that leave no usable area.
+    click_dialog(&mut app, &ctx, screen, visible_label(&labels, screen, "Auto-adjust margins to page size changes").center());
+    setup_fields(&mut app, json!({"width": "612 pt", "marginInside": "550 pt", "marginOutside": "100 pt"}));
+    let err = confirm(&mut app).unwrap_err();
+    assert!(err.contains("margins must fit within the page size"), "{err}");
+}
+
+#[test]
 fn cell_options_dialog_draws_and_applies_only_changed_values_to_the_chosen_edges() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.run("file.new", json!({})).unwrap();
