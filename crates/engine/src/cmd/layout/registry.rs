@@ -520,13 +520,18 @@ pub fn specs() -> Vec<CommandSpec> {
                     let new_w = w.unwrap_or(old_w);
                     let new_h = h.unwrap_or(old_h);
                     let size_changed = new_w != old_w || new_h != old_h;
-                    let scale_margins = auto_margins && margins.is_none() && old_w > 1e-6 && old_h > 1e-6;
-                    let (sx, sy) = if scale_margins { (new_w / old_w, new_h / old_h) } else { (1.0, 1.0) };
-                    let scaled_margins = |cur: Margins, pw: f64, ph: f64| Margins {
-                        top: (cur.top * sy).clamp(0.0, ph / 2.0),
-                        bottom: (cur.bottom * sy).clamp(0.0, ph / 2.0),
-                        inside: (cur.inside * sx).clamp(0.0, pw / 2.0),
-                        outside: (cur.outside * sx).clamp(0.0, pw / 2.0),
+                    let scale_margins = auto_margins && margins.is_none();
+                    // Scale each page's margins by its own resize ratio and preserve valid
+                    // asymmetric margins (overall fit is validated below).
+                    let scaled_margins = |cur: Margins, old_pw: f64, old_ph: f64, pw: f64, ph: f64| {
+                        let sx = if old_pw > 1e-6 { pw / old_pw } else { 1.0 };
+                        let sy = if old_ph > 1e-6 { ph / old_ph } else { 1.0 };
+                        Margins {
+                            top: (cur.top * sy).max(0.0),
+                            bottom: (cur.bottom * sy).max(0.0),
+                            inside: (cur.inside * sx).max(0.0),
+                            outside: (cur.outside * sx).max(0.0),
+                        }
                     };
                     // Validate every affected page's resulting margin box before mutating the document.
                     for pg in d.spreads.iter().chain(d.parents.iter()).flat_map(|sp| &sp.pages) {
@@ -534,11 +539,17 @@ pub fn specs() -> Vec<CommandSpec> {
                         let m = if let Some(m) = margins {
                             m
                         } else if scale_margins {
-                            scaled_margins(pg.margins, pw, ph)
+                            scaled_margins(pg.margins, pg.width, pg.height, pw, ph)
                         } else {
                             pg.margins
                         };
-                        if m.top + m.bottom >= ph - 1e-6 || m.inside + m.outside >= pw - 1e-6 {
+                        if !m.top.is_finite()
+                            || !m.bottom.is_finite()
+                            || !m.inside.is_finite()
+                            || !m.outside.is_finite()
+                            || m.top + m.bottom >= ph - 1e-6
+                            || m.inside + m.outside >= pw - 1e-6
+                        {
                             return Err(bad(ID, "margins must fit within the page size"));
                         }
                     }
@@ -558,7 +569,7 @@ pub fn specs() -> Vec<CommandSpec> {
                                 if let Some(m) = margins {
                                     pg.margins = m;
                                 } else if scale_margins {
-                                    pg.margins = scaled_margins(pg.margins, pw, ph);
+                                    pg.margins = scaled_margins(pg.margins, pg.width, pg.height, pw, ph);
                                 }
                                 if size_changed {
                                     pg.width = new_w;
