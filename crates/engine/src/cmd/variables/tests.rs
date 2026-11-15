@@ -290,6 +290,30 @@ fn delete_variable_reaches_table_cells() {
     assert_eq!(t.cells[0].text.text, format!("Alpha|{}", var_char(nb).unwrap()));
 }
 
+/// A custom variable whose text holds its own instance marker: deleting it puts that text in
+/// once per instance, without the value's own marker, and ends (the text put in isn't searched
+/// for instances again).
+#[test]
+fn delete_variable_whose_value_holds_its_marker_ends() {
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    s.execute("variables.define", &json!({"name": "A", "type": "custom", "text": "a"})).unwrap();
+    let a = s.doc().unwrap().doc.variable("A").unwrap();
+    let marker = var_char(a).unwrap();
+    s.execute("variables.define", &json!({"name": "A", "type": "custom", "text": format!("<{marker}>")})).unwrap();
+    let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 300], "content": "text", "text": format!("x{marker}y{marker}z")})).unwrap();
+    let sid = s.doc().unwrap().doc.item(designcraft_doc::ItemId(r["id"].as_u64().unwrap())).unwrap().text_frame().unwrap().story;
+    // A link on the last "z": its range follows the text put in (without the marker).
+    let z = format!("x{marker}y{marker}").len();
+    s.execute("text.select", &json!({"story": sid.0, "anchor": z, "focus": z + 1})).unwrap();
+    s.execute("hyperlink.create", &json!({"url": "https://example.org"})).unwrap();
+    s.execute("variables.delete", &json!({"name": "A"})).unwrap();
+    let d = &s.doc().unwrap().doc;
+    assert_eq!(d.stories.values().next().unwrap().text, "x<>y<>z");
+    let designcraft_doc::HyperlinkSource::Text { start, end, .. } = &d.hyperlinks[0].source else { panic!("a text link") };
+    assert_eq!((*start, *end), (6, 7));
+}
+
 /// Deleting a variable flattens its instances in footnotes and endnotes too and moves the
 /// instances of later variables down.
 #[test]

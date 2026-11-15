@@ -26,6 +26,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let cols = info["columns"].as_array().cloned().unwrap_or_default();
     let range = info["range"].clone();
     let (r0, c0) = (range["r0"].as_u64().unwrap_or(0) as usize, range["c0"].as_u64().unwrap_or(0) as usize);
+    let sid = info["story"].clone();
     let tid = info["table"].clone();
     let cell = info["cells"].as_array().and_then(|cs| cs.iter().find(|c| c["row"] == r0 && c["col"] == c0)).cloned().unwrap_or(Value::Null);
     let run = |app: &mut DesignApp, id: &str, p: Value| {
@@ -72,7 +73,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                 let combo = craft_ui::ComboBox::from_id_salt(("tp_style", kind)).selected_text(&cur).width(130.0).show_ui(ui, |ui| {
                     for n in &names {
                         if ui.selectable_label(*n == cur, n).clicked() {
-                            run(app, &format!("style.{kind}.apply"), json!({"name": n, "table": tid}));
+                            run(app, &format!("style.{kind}.apply"), json!({"name": n, "story": sid, "table": tid, "rows": [range["r0"], range["r1"]], "cols": [range["c0"], range["c1"]]}));
                         }
                     }
                 });
@@ -103,10 +104,10 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                 run(
                     app,
                     "table.insertRow",
-                    json!({"table": tid, "rows": [rows.len() - 1, rows.len() - 1], "where": "below", "count": n - rows.len()}),
+                    json!({"story": sid, "table": tid, "rows": [rows.len() - 1, rows.len() - 1], "where": "below", "count": n - rows.len()}),
                 );
             } else if n < rows.len() {
-                run(app, "table.deleteRow", json!({"table": tid, "rows": [n, rows.len() - 1]}));
+                run(app, "table.deleteRow", json!({"story": sid, "table": tid, "rows": [n, rows.len() - 1]}));
             }
         }
         caption(ui, crate::i18n::tr_context(&app.ui.language, "Columns", "table"));
@@ -116,10 +117,10 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                 run(
                     app,
                     "table.insertColumn",
-                    json!({"table": tid, "cols": [cols.len() - 1, cols.len() - 1], "where": "right", "count": n - cols.len()}),
+                    json!({"story": sid, "table": tid, "cols": [cols.len() - 1, cols.len() - 1], "where": "right", "count": n - cols.len()}),
                 );
             } else if n < cols.len() {
-                run(app, "table.deleteColumn", json!({"table": tid, "cols": [n, cols.len() - 1]}));
+                run(app, "table.deleteColumn", json!({"story": sid, "table": tid, "cols": [n, cols.len() - 1]}));
             }
         }
         ui.end_row();

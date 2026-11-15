@@ -494,9 +494,8 @@ Clipboard:
   freshness, owner/seat changes, empty/absent offers, self-paste, canceled/slow transfers,
   password exclusion and no unchanged-selection reclaim on wlroots/KWin/Mutter. Native
   capability evidence is still required; compile-only is not acceptance.
-- `Event::PasteImage` is new but DesignCraft has no image-paste contract. Leave it
-  unhandled rather than inventing a placement path. Add a test that it does not panic and
-  does not leak into text paste.
+- `Event::PasteImage` (an image on the clipboard with no text) pastes through `edit.pasteImage`: in the
+  selected empty frame, else centered in the view, and never into text being edited.
 
 Keyboard layouts: after the fork pin, `RawInput::keyboard_layout_is_latin` and
 `RawInput::latin_layout_chars` (E19) must preserve tool and command shortcuts on Russian,
