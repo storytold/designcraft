@@ -101,6 +101,18 @@ fn activate_inner(app: &mut DesignApp, id: &str, params: &Value) {
             return;
         }
     }
+    // Insert Math Expression… with one equation selected edits it: the dialog starts with its
+    // LaTeX and size, and OK replaces it in place.
+    if params.is_null()
+        && id == "math.insert"
+        && let Some(st) = app.session.active()
+        && st.selection.text.is_none()
+        && let [one] = st.selection.items[..]
+        && let Some((latex, size)) = designcraft_engine::math::equation(&st.doc, one)
+    {
+        app.ui.dialog = Some(crate::dialogs::Dialog::new("cmd:math.insert", json!({"id": one.0, "latex": latex, "size": size.to_string()})));
+        return;
+    }
     if params.is_null()
         && ui_label(id).is_none()
         && let Some(c) = designcraft_engine::find_command(id)

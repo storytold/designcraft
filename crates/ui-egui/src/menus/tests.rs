@@ -3607,3 +3607,50 @@ fn window_menu_commands_restore_hidden_panels() {
     assert!(app.ui.control_bar);
     assert_eq!(checked(&app, "window.controlBar", &Value::Null), Some(true));
 }
+
+/// Type ▸ Insert Math Expression… with an equation selected edits that equation (#2559): the
+/// dialog starts with its LaTeX and size, and OK replaces it in place instead of adding another.
+#[test]
+fn insert_math_expression_edits_the_selected_equation() {
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let r = app.run("math.insert", json!({"latex": r"\frac{a}{b}", "size": 24, "x": 100, "y": 100})).unwrap();
+    let id = designcraft_doc::ItemId(r["id"].as_u64().unwrap());
+    let count = |app: &crate::DesignApp| app.session.active().unwrap().doc.all_items().len();
+    let before = count(&app);
+    activate(&mut app, "math.insert", &Value::Null);
+    let d = app.ui.dialog.as_mut().expect("the dialog opens");
+    assert_eq!(d.id, "cmd:math.insert");
+    assert_eq!(d.s("latex"), r"\frac{a}{b}", "it starts with the equation's LaTeX");
+    assert_eq!(d.s("size"), "24", "and its size");
+    d.fields.insert("latex".into(), json!(r"\sqrt{x}"));
+    // Through the real dialog, then OK.
+    let ctx = egui::Context::default();
+    let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))), ..Default::default() };
+    let mut out = ctx.run_ui(input, |ui| {
+        app.logic(&ui.ctx().clone());
+        app.ui(ui);
+    });
+    out.textures_delta.clear();
+    assert!(app.ui.dialog.as_ref().is_some_and(|d| d.id == "cmd:math.insert"), "the dialog is still open");
+    crate::dialogs::confirm(&mut app).unwrap();
+    assert_eq!(count(&app), before, "no second equation");
+    let doc = &app.session.active().unwrap().doc;
+    let it = doc.item(id).unwrap();
+    assert_eq!(it.alt_text, r"\sqrt{x}");
+    let (_, (_, h24)) = designcraft_engine::math::to_svg(r"\sqrt{x}", 24.0);
+    assert!((it.graphic().unwrap().size.1 - h24).abs() < 1e-6, "the size is kept");
+}
+
+/// With anything but an equation selected, the menu item still inserts a new equation.
+#[test]
+fn insert_math_expression_inserts_beside_other_selections() {
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let r = app.run("frame.create", json!({"rect": [72, 72, 200, 200]})).unwrap();
+    let id = designcraft_doc::ItemId(r["id"].as_u64().unwrap());
+    app.run("selection.set", json!({"ids": [id.0]})).unwrap();
+    activate(&mut app, "math.insert", &Value::Null);
+    let d = app.ui.dialog.as_ref().expect("the dialog opens");
+    assert!(d.fields.get("id").is_none() && d.s("latex").is_empty());
+}

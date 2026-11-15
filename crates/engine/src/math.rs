@@ -950,5 +950,21 @@ pub fn to_svg(latex: &str, size: f64) -> (Vec<u8>, (f64, f64)) {
     (svg.into_bytes(), (w, h))
 }
 
+/// The LaTeX and point size of an equation placed by `math.insert` (an SVG graphic named
+/// `math.svg` whose alt text is the LaTeX), so it can be edited. `None` for any other item.
+pub fn equation(doc: &designcraft_doc::Document, id: designcraft_doc::ItemId) -> Option<(String, f64)> {
+    let it = doc.item(id)?;
+    let g = it.graphic()?;
+    let asset = doc.assets.get(&g.asset)?;
+    if asset.mime != "image/svg+xml" || asset.name != "math.svg" || it.alt_text.trim().is_empty() {
+        return None;
+    }
+    // The layout scales linearly with the size: compare the placed height with 12 pt's.
+    let (_, (_, h12)) = to_svg(&it.alt_text, 12.0);
+    let size = 12.0 * g.size.1 / h12;
+    let size = if size.is_finite() { ((size * 100.0).round() / 100.0).clamp(2.0, 400.0) } else { 12.0 };
+    Some((it.alt_text.clone(), size))
+}
+
 #[cfg(test)]
 mod tests;

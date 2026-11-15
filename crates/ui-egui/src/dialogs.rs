@@ -5620,6 +5620,12 @@ fn confirm_part6(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
             if cid == "layout.alternate.options" {
                 drop_unchanged_size(&d, &mut p);
             }
+            // Opened on a selected equation (not a form field): edit that one, not a new one.
+            if cid == "math.insert"
+                && let Some(id) = d.fields.get("id").filter(|v| v.is_u64())
+            {
+                p.insert("id".into(), id.clone());
+            }
             let r = app.run(cid, Value::Object(p));
             if let Err(e) = &r {
                 // Keep the dialog open with the error.

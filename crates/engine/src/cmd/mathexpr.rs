@@ -191,6 +191,19 @@ mod tests {
     }
 
     #[test]
+    fn equations_are_recognised_with_their_size() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("math.insert", &json!({"latex": r"\frac{a}{b}", "size": 30})).unwrap();
+        let id = designcraft_doc::ItemId(r["id"].as_u64().unwrap());
+        let f = s.execute("frame.create", &json!({"rect": [300, 300, 400, 400]})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        assert_eq!(crate::math::equation(d, id), Some((r"\frac{a}{b}".to_string(), 30.0)));
+        assert_eq!(crate::math::equation(d, designcraft_doc::ItemId(f["id"].as_u64().unwrap())), None);
+        assert_eq!(crate::math::equation(d, designcraft_doc::ItemId(u64::MAX)), None);
+    }
+
+    #[test]
     fn editing_a_moved_equation_keeps_its_bounds() {
         let mut s = Session::new();
         s.execute("file.new", &json!({})).unwrap();
