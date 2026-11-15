@@ -397,6 +397,12 @@ fn link_leads_to_refused_prefix(path: &Path, roots: &[&Path]) -> Option<&'static
 /// walk has scanned (so none is scanned twice, nor in a cycle forever) and `hops_left` the links
 /// still allowed in this chain, which the other spelling of a target does not use up.
 fn follow_links(path: &Path, roots: &[&Path], judged: &mut std::collections::HashSet<PathBuf>, hops_left: usize) -> Option<&'static str> {
+    // A \\?\ path is opened as written, so a link before its `..` is followed; rebuilding the path below would pop that link unseen.
+    if matches!(path.components().next(), Some(Component::Prefix(p)) if p.kind().is_verbatim())
+        && path.components().any(|c| c == Component::ParentDir)
+    {
+        return Some("parent traversal in a verbatim path");
+    }
     // Without a trailing separator: Windows reads `remote\` as a folder to go into, so a link named `remote` would be followed by the
     // probe itself, to wherever it leads, instead of being seen as a link.
     let normalized: PathBuf = path.components().collect();
@@ -954,6 +960,16 @@ mod tests {
         let e = roots.check(s(base.join("in").join("remote ").join("x.designcraft")), Access::Read).unwrap_err();
         assert!(e.contains("name Windows trims"), "{e}");
         assert!(!e.contains("cannot resolve") && !e.to_ascii_lowercase().contains("os error"), "{e}");
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_verbatim_path_with_a_parent_name_is_refused() {
+        let (base, roots) = folders("verbatim-dotdot");
+        let p = format!(r"\\?\{}\..\a.designcraft", s(base.join("in").join("sub")));
+        let e = roots.check(&p, Access::Read).unwrap_err();
+        assert!(e.contains("parent traversal in a verbatim path"), "{p}: {e}");
         let _ = std::fs::remove_dir_all(base);
     }
 

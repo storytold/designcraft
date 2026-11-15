@@ -146,7 +146,7 @@ config works across the suite) keep the agent to the folders you give it:
   A network path (`\\server\share\...`, `\\?\UNC\...`, WebDAV's `\\host@SSL\share\...`), a device path (`\\.\...`) or a
   verbatim path that isn't a disk (a volume by its `\\?\Volume{…}` name is local) is refused by its name before anything looks it up, since looking it up would
   contact that host, unless a root is on the same server and share (or the same verbatim prefix). A link whose
-  target is one of those is refused from the link's text, before it is followed. On Windows a name that ends in a period or a space, in a path or as a link's target, is refused too, since Windows trims it where it looks a name up.
+  target is one of those is refused from the link's text, before it is followed. A \\?\ path with a `..` in it is refused, since Windows opens such a path as written and would follow a link before the `..`. On Windows a name that ends in a period or a space, in a path or as a link's target, is refused too, since Windows trims it where it looks a name up.
 - A refused path is an ordinary tool error the agent can read and correct, for example
   `automation path rejected: outside the write root /work/project/out: /etc/x.designcraft` (with
   several, `outside the write roots /work/project/out, /tmp/scratch: ...`) or
