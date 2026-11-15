@@ -3066,7 +3066,6 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Toggle Text and Cell Selection", "Växla mellan text- och cellmarkering"),
     ("Image import cancelled while a dialog is open", "Bildimporten avbröts eftersom en dialogruta är öppen"),
     ("Place cancelled while a dialog is open", "Placeringen avbröts eftersom en dialogruta är öppen"),
-    ("Screen", "Skärm"),
 ];
 
 pub(super) const CONTEXT: &[(&str, &str, &str)] = &[
