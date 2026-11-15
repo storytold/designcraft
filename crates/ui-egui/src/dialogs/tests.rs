@@ -1857,6 +1857,39 @@ fn dialog_number_fields_are_named_from_their_captions() {
     }
 }
 
+/// A caption that ends in a full-width colon, as the Chinese catalog writes them, names its number
+/// field without that colon.
+#[test]
+fn dialog_number_field_names_drop_a_full_width_colon() {
+    use egui::accesskit::Role;
+    use egui_kittest::{Harness, kittest::Queryable};
+    let cases: [(&str, &[&str]); 2] = [("chars", &["大小", "行距", "字距调整"]), ("advanced", &["基线偏移", "倾斜"])];
+    for (section, names) in cases {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        app.ui.language = "zh".into();
+        app.ui.dialog = Some(Dialog::new("paragraphStyleOptions", json!({"name": designcraft_doc::story::BASIC_PARAGRAPH, "section": section})));
+        // The check reads accessible names only, so captions may draw without a CJK face installed.
+        let builder = Harness::builder().with_size(egui::vec2(1400.0, 1000.0)).with_accessibility_check(false).allow_missing_glyphs();
+        let mut h = builder.build_ui_state(
+            |ui, app: &mut DesignApp| {
+                let key = egui::Id::unique("dialog_field_names_zh_test_fonts");
+                if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
+                    crate::theme::install_fonts(ui.ctx(), "");
+                    ui.data_mut(|d| d.insert_temp(key, true));
+                    return;
+                }
+                show(app, ui.ctx());
+            },
+            app,
+        );
+        h.run_steps(3);
+        for name in names {
+            assert_eq!(h.query_all_by_role_and_label(Role::TextInput, name).count(), 1, "{section}: the {name} field");
+        }
+    }
+}
+
 /// Text Frame Options shows the insets (or a non-rectangular frame's one Inset), the gutter and
 /// the other measures in the document's ruler unit, not always in picas, and reads a bare number
 /// typed there in that unit (#2739).

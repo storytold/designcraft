@@ -121,7 +121,7 @@ fn grid(id: &str) -> egui::Grid {
 #[allow(clippy::too_many_arguments)]
 fn char_auto_number(ui: &mut egui::Ui, d: &mut Dialog, cf: &CharFields, key: &str, caption: &str, suffix: &str, scale: f64, range: (f64, f64)) {
     let v = cf.get(d, key).as_f64().map(|x| x * scale);
-    let field = crate::widgets::NumField::number(key, v, suffix, 2).name(caption.trim_end_matches(':')).width(80.0).range(range.0, range.1);
+    let field = crate::widgets::NumField::number(key, v, suffix, 2).name(caption.trim_end_matches([':', '：'])).width(80.0).range(range.0, range.1);
     if let Some(n) = field.show_or_clear(ui) {
         cf.set(d, key, n.map_or(Value::Null, |n| json!(n / scale)));
     }
@@ -572,7 +572,7 @@ fn shatai(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, cf: &CharFields) {
         let angle = tr(lang, "Angle:");
         crate::rtl::label(ui, angle);
         let v = cf.get(d, "shataiAngle").as_f64();
-        let field = crate::widgets::NumField::number("shataiAngle", v, "°", 2).name(angle.trim_end_matches(':'));
+        let field = crate::widgets::NumField::number("shataiAngle", v, "°", 2).name(angle.trim_end_matches([':', '：']));
         let field = field.width(80.0).range(0.0, 180.0).presets(&[30.0, 45.0, 60.0]);
         let edit = if cf.sparse { field.show_or_clear(ui) } else { field.show(ui).map(Some) };
         if let Some(n) = edit {
@@ -598,7 +598,7 @@ fn auto_tate_chu_yoko(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Value)
 /// A whole-number paragraph attribute, named from `caption`.
 fn para_count(ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, key: &str, caption: &str, range: (f64, f64)) {
     let v = para_value(d, pv, key).as_f64();
-    let field = crate::widgets::NumField::number(key, v, "", 0).name(caption.trim_end_matches(':'));
+    let field = crate::widgets::NumField::number(key, v, "", 0).name(caption.trim_end_matches([':', '：']));
     if let Some(n) = field.width(80.0).range(range.0, range.1).show(ui) {
         d.fields.insert(format!("p.{key}"), json!(n.round().max(range.0).min(range.1) as u64));
     }
@@ -608,7 +608,7 @@ fn para_count(ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, key: &str, caption:
 /// `caption`.
 fn char_count(ui: &mut egui::Ui, d: &mut Dialog, cf: &CharFields, key: &str, caption: &str, range: (f64, f64)) {
     let v = cf.get(d, key).as_f64();
-    let field = crate::widgets::NumField::number(key, v, "", 0).name(caption.trim_end_matches(':')).width(80.0).range(range.0, range.1);
+    let field = crate::widgets::NumField::number(key, v, "", 0).name(caption.trim_end_matches([':', '：'])).width(80.0).range(range.0, range.1);
     let edit = if cf.sparse { field.show_or_clear(ui) } else { field.show(ui).map(Some) };
     if let Some(n) = edit {
         cf.set(d, key, n.map_or(Value::Null, |n| json!(n.round().max(range.0).min(range.1) as u64)));
@@ -876,7 +876,7 @@ fn grid_settings(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Value) {
         ui.horizontal(|ui| {
             // Empty or 0: automatic (as many grid lines as the leading needs).
             let field = crate::widgets::NumField::number("gridGyoudori", (lines > 0).then_some(lines as f64), "", 0)
-                .name(gyoudori.trim_end_matches(':'))
+                .name(gyoudori.trim_end_matches([':', '：']))
                 .width(80.0)
                 .range(0.0, 100.0)
                 .presets(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
