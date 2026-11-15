@@ -641,3 +641,18 @@ fn czech_counts_use_the_plural_form_for_the_number() {
     // A noun without plural forms keeps the plain translation.
     assert_eq!(count_label("cs", "a new noun", 3), "3 a new noun");
 }
+
+#[test]
+fn adjust_layout_translations_cover_dialog_options_and_match_min_max_style() {
+    assert_eq!((tr("de", "Min:"), tr("de", "Max:")), ("Min.:", "Max.:"));
+    assert_eq!((tr("ja", "Min:"), tr("ja", "Max:")), ("最小:", "最大:"));
+    assert_eq!((tr("es", "Adjust Layout"), tr("es", "Adjust Layout…")), ("Ajustar maquetación", "Ajustar maquetación…"));
+    for lang in ["de", "fr", "es", "ja", "zh", "sv"] {
+        for key in ["Adjust Layout…", "Auto-adjust margins to page size changes", "Adjust font size", "Set font size limits", "Adjust locked content"]
+        {
+            let text = tr(lang, key);
+            assert!(text != key && !text.trim().is_empty(), "{lang}: {key:?}");
+        }
+    }
+    assert!(sv::TABLE.iter().any(|(key, text)| *key == "Max:" && !text.trim().is_empty()));
+}
