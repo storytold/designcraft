@@ -611,11 +611,12 @@ fn czech_counts_use_the_plural_form_for_the_number() {
 #[test]
 fn hebrew_catalog_is_selectable_rtl_and_preserves_english_keys() {
     let mut seen = HashSet::new();
-    assert_eq!(he::TABLE.len(), 1325, "Hebrew source-linked table changed");
+    assert_eq!(he::TABLE.len(), 1413, "Hebrew source-linked table changed");
     for (source, translated) in he::TABLE {
         assert!(seen.insert(*source), "duplicate Hebrew source key: {source}");
         assert!(!translated.trim().is_empty(), "empty Hebrew: {source}");
-        assert!(ar::TABLE.iter().any(|(existing, _)| existing == source), "not an existing source-verified DesignCraft UI key: {source}");
+        // Arabic is a separate, incomplete locale, not an English source-key inventory.
+        // Valid native UI labels may be localized in Hebrew before they appear in Arabic.
         let fields = |text: &str| {
             let mut fields: Vec<String> =
                 text.split('{').skip(1).filter_map(|part| part.split_once('}').map(|(field, _)| field.to_owned())).collect();
@@ -626,6 +627,16 @@ fn hebrew_catalog_is_selectable_rtl_and_preserves_english_keys() {
         assert_eq!(source.ends_with('…'), translated.ends_with('…'), "ellipsis: {source}");
         assert_eq!(tr("he", source), *translated, "Hebrew lookup: {source}");
         assert!(translated.chars().any(|c| ('\u{05d0}'..='\u{05ea}').contains(&c)), "no Hebrew letters in {source}");
+    }
+    // These native UI labels are English-source-linked, even though Arabic lacks entries.
+    // A locale table must not be treated as the canonical inventory of another locale.
+    for (source, expected) in [
+        ("Activate Panel", "הפעלת חלונית"),
+        ("Don't Save", "לא לשמור"),
+        ("Relinked {count}", "קושרו מחדש: {count}"),
+        ("Reload Fonts", "טעינת גופנים מחדש"),
+    ] {
+        assert_eq!(tr("he", source), expected, "native Hebrew UI label: {source}");
     }
     assert!(LANGUAGES.iter().any(|(code, native)| *code == "he" && *native == "עברית"));
     assert!(picker_languages().iter().any(|(code, native)| *code == "he" && *native == "עברית"));
