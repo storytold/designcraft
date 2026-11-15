@@ -986,6 +986,32 @@ fn fitting_has_indesigns_shortcuts() {
     assert!((width(&app) - 200.0).abs() < 1e-6, "fitted: {}", width(&app));
 }
 
+/// Frame Fitting Options shows and reads its crop amounts in the document's ruler unit (#2812).
+#[test]
+fn fitting_options_follow_the_ruler_units() {
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("document.preferences", json!({"horizontalUnits": "millimeters"})).unwrap();
+    let png = designcraft_render::Rendered { width: 40, height: 20, pixels: vec![200; 40 * 20 * 4] }.to_png();
+    let f = app.run("frame.create", json!({"rect": [100, 100, 300, 300]})).unwrap()["id"].as_u64().unwrap();
+    app.run("file.place", json!({"base64": designcraft_engine::cmd::base64_encode(&png), "name": "a.png", "frame": f})).unwrap();
+    app.run("selection.set", json!({"ids": [f]})).unwrap();
+    run_ui(&mut app, "app.fittingOptions", &json!({})).unwrap().unwrap();
+    let d = app.ui.dialog.as_ref().expect("Frame Fitting Options dialog");
+    assert_eq!(d.id, "fittingOptions");
+    assert_eq!(d.unit, designcraft_geom::Unit::Millimeters, "a bare number means the ruler unit");
+    for k in ["cropTop", "cropLeft", "cropBottom", "cropRight"] {
+        assert!(d.s(k).contains("mm"), "{k} is prefilled in millimetres, got {:?}", d.s(k));
+    }
+    // A bare number typed in a crop field is millimetres, not points.
+    app.ui.dialog.as_mut().unwrap().fields.insert("cropTop".into(), json!("2"));
+    crate::dialogs::confirm(&mut app).unwrap();
+    let it = app.session.doc().unwrap().doc.item(designcraft_doc::ItemId(f)).unwrap().clone();
+    let designcraft_doc::Content::Graphic(g) = &it.content else { panic!("placed graphic") };
+    let want = 2.0 * designcraft_geom::units::PT_PER_MM;
+    assert!((g.crop[0] - want).abs() < 1e-6, "cropTop 2 means 2 mm ({} pt), got {}", want, g.crop[0]);
+}
+
 #[test]
 fn tab_and_presentation_hide_floating_panels_too() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
