@@ -225,7 +225,7 @@ fn apply_save(app: &mut DesignApp, host: &Host, request: String, capture: Captur
         app.status("Saved with file provider");
     } else {
         if app.provider_after.remove(&request).is_some() {
-            app.quitting = None;
+            app.cancel_quit();
         }
         if status == "failed" {
             app.status("File provider save failed; the document is still unsaved");
@@ -259,7 +259,7 @@ fn continuations(app: &mut DesignApp, host: &Host, ctx: &egui::Context) {
             && current.is_some_and(|doc| !after.ready || (doc.saved_revision == after.revision && !doc.is_dirty()));
         if !valid {
             app.provider_after.remove(&request);
-            app.quitting = None;
+            app.cancel_quit();
             continue;
         }
         if !after.ready
@@ -274,11 +274,12 @@ fn continuations(app: &mut DesignApp, host: &Host, ctx: &egui::Context) {
         let Some(after) = app.provider_after.remove(&request) else { continue };
         let previous = active_identity(app);
         // All UI callbacks carry their own UID. Activating A here would commit B's IME/preview.
-        if let Err(error) = after.callback.provider(app, (after.uid, after.identity_epoch)) {
-            app.status(error);
-            app.quitting = None;
-        }
+        let result = after.callback.provider(app, (after.uid, after.identity_epoch));
         activate_identity(app, previous);
+        if let Err(error) = result {
+            app.status(error);
+            app.cancel_quit();
+        }
     }
 }
 

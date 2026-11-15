@@ -185,6 +185,50 @@ fn frame(app: &mut DesignApp, ctx: &egui::Context) {
     output.textures_delta.clear();
 }
 
+#[wasm_bindgen_test]
+fn quit_save_restores_the_original_tab_after_cancel_or_failure() -> Result<(), JsValue> {
+    let mut events = Events::new()?;
+    let mut session = Session::new();
+    session.execute("file.new", &json!({})).map_err(error)?;
+    session.execute("file.place", &json!({"name":"Quit.svg","base64":designcraft_engine::cmd::base64_encode(SVG)})).map_err(error)?;
+    let edited = session.active().ok_or_else(|| error("missing edited tab"))?.uid;
+    session.execute("file.new", &json!({})).map_err(error)?;
+    let original = session.active().ok_or_else(|| error("missing original tab"))?.uid;
+    let mut app = DesignApp::new(session, Services::default());
+    let host = app.file_providers.clone();
+    let ctx = egui::Context::default();
+    events.installed = true;
+    install(host.clone(), ctx.clone())?;
+    let api = Reflect::get(&events.window, &API.into())?;
+    call(&api, "registerProvider", &Array::of3(&"test".into(), &"Test storage".into(), &"account".into()))?;
+    frame(&mut app, &ctx);
+
+    for (attempt, (destination, kind)) in [("cancel", "saveCancelled"), ("provider", "saveFailed")].into_iter().enumerate() {
+        let mut raw = egui::RawInput::default();
+        raw.viewports.entry(egui::ViewportId::ROOT).or_default().events.push(egui::ViewportEvent::Close);
+        ctx.run_ui(raw, |ui| app.logic(ui.ctx())).textures_delta.clear();
+        assert_eq!(app.session.active().map(|doc| doc.uid), Some(edited));
+        designcraft_ui_egui::dialogs::confirm(&mut app).map_err(error)?;
+        publish(&host, &ctx);
+        let dialogs = events.matching("saveDialog")?;
+        assert_eq!(dialogs.len(), attempt + 1);
+        let request: JsValue = field(&dialogs[attempt], "requestId")?.into();
+        call(&api, "resolveSaveDialog", &Array::of3(&request, &destination.into(), &"Quit.designcraft".into()))?;
+        if destination == "provider" {
+            publish(&host, &ctx);
+            call(&api, "saveResult", &Array::of2(&request, &"failed".into()))?;
+        }
+        frame(&mut app, &ctx);
+        publish(&host, &ctx);
+        assert_eq!(events.matching(kind)?.len(), 1);
+        assert_eq!(app.session.active().map(|doc| doc.uid), Some(original), "{kind}");
+        assert_eq!(app.session.documents().len(), 2);
+        assert!(app.session.documents().iter().any(|doc| doc.uid == edited && doc.is_dirty()));
+    }
+    assert!(!host.busy());
+    Ok(())
+}
+
 fn omitted_non_saved_resources(api: &JsValue, app: &mut DesignApp, host: &Host, ctx: &egui::Context, events: &Events) -> Result<(), JsValue> {
     for (status, destination, event) in
         [("failed", "provider", "saveFailed"), ("download", "device", "downloaded"), ("cancel", "provider", "saveCancelled")]

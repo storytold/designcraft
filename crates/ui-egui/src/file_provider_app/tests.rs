@@ -372,8 +372,11 @@ fn quit_save_approves_only_after_settlement_and_cancels_on_failure_or_new_input(
     for outcome in ["saved", "failed", "cancel", "download", "laterEdit"] {
         let mut app = app();
         let a = active_uid(&app);
-        app.quitting = Some(crate::QuitState { original_active: Some(a), accepted: Default::default(), pending: Some(a), saving: None });
+        app.run("file.new", json!({})).unwrap();
+        let original = active_uid(&app);
+        app.quitting = Some(crate::QuitState { original_active: Some(original), accepted: Default::default(), pending: Some(a), saving: None });
         app.confirm_quit_document(a, false).unwrap();
+        assert_eq!(active_uid(&app), a);
         let events = app.file_providers.take_events();
         let request = events[0].metadata["requestId"].as_str().unwrap().to_string();
         let status = if outcome == "laterEdit" { "saved" } else { outcome };
@@ -389,9 +392,28 @@ fn quit_save_approves_only_after_settlement_and_cancels_on_failure_or_new_input(
             assert_eq!(quit.accepted.get(&a), Some(&app.session.active().unwrap().revision));
         } else {
             assert!(app.quitting.is_none(), "{outcome}");
+            assert_eq!(active_uid(&app), original, "{outcome}");
         }
         assert!(has_document(&app, a));
+        assert!(has_document(&app, original));
     }
+}
+
+#[test]
+fn quit_restores_the_original_tab_after_a_failed_provider_callback() {
+    let mut app = app();
+    let saving = active_uid(&app);
+    app.run("file.new", json!({})).unwrap();
+    let original = active_uid(&app);
+    activate(&mut app, saving);
+    app.quitting = Some(crate::QuitState { original_active: Some(original), accepted: Default::default(), pending: None, saving: Some(saving) });
+    let request = choose(&mut app, Some(After::Test(Box::new(|_| Err("save continuation failed".into())))));
+    save_result(&mut app, &request, "provider", "saved");
+    tick(&mut app);
+    settled(&mut app, &egui::Context::default());
+    assert!(app.quitting.is_none());
+    assert_eq!(active_uid(&app), original);
+    assert!(has_document(&app, saving));
 }
 
 #[test]
