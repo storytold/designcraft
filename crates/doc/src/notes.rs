@@ -114,6 +114,9 @@ pub struct FootnoteOptions {
 /// or a command can't make a label of unbounded size.
 pub const MAX_CUSTOM_MARKS: usize = 64;
 pub const MAX_MARK_CHARS: usize = 32;
+/// The longest character-style name a custom mark takes, so the marks always fit the IDML label
+/// that keeps them (`designcraft-idml`'s limit is worked out from these three).
+pub const MAX_MARK_STYLE_CHARS: usize = 256;
 /// [`MarksAfter::Double`] writes a mark at most this many times; past that it counts instead
 /// ([`MarksAfter::Counter`]'s form).
 const MAX_MARK_REPEATS: u32 = 10;

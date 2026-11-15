@@ -5525,6 +5525,8 @@ fn confirm_part6(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
             app.run("xref.insert", params)
         }
         "footnoteOptions" => {
+            let mut d = d;
+            drop_unusable_mark_styles(app, &mut d);
             let pt = |k: &str| d.pt(k).map_or(Value::Null, |v| json!(v));
             // Custom: the marks with text (none: back to the built-in style), and the built-in
             // style kept underneath.
@@ -8650,6 +8652,32 @@ fn dialog_marks(d: &Dialog) -> Vec<designcraft_doc::NoteMark> {
         .collect()
 }
 
+/// The first footnotes' marks as they will read: from Start At, counting on as the footnotes do.
+fn marks_preview(d: &Dialog) -> Vec<String> {
+    let after = serde_json::from_value(json!(d.s("marksAfter"))).unwrap_or_default();
+    let marks = designcraft_doc::CustomMarks { marks: dialog_marks(d), after };
+    let start = d.n("startAt").unwrap_or(1.0).max(0.0) as u32;
+    (0..8u32).filter_map(|k| marks.mark(start.saturating_add(k)).map(|(m, _)| m)).collect()
+}
+
+/// Marks whose character style is gone (deleted since), or has a name longer than a mark takes,
+/// show and save with none of their own: on the page they already have none, and
+/// `footnote.options` refuses such a style once the marks change, after the dialog has closed.
+fn drop_unusable_mark_styles(app: &DesignApp, d: &mut Dialog) {
+    let n = d.n("markCount").unwrap_or(0.0).clamp(0.0, designcraft_doc::MAX_CUSTOM_MARKS as f64) as usize;
+    let Some(doc) = app.session.active().map(|st| &st.doc) else { return };
+    for i in 0..n {
+        let key = format!("mark.{i}.charStyle");
+        let style = d.s(&key);
+        if style.is_empty() || style == designcraft_doc::NO_CHAR_STYLE {
+            continue;
+        }
+        if style.chars().count() > designcraft_doc::MAX_MARK_STYLE_CHARS || doc.styles.char_style(&style).is_none() {
+            d.fields.insert(key, json!(designcraft_doc::NO_CHAR_STYLE));
+        }
+    }
+}
+
 /// Footnote Options › Custom › Add Mark: an empty row at the end (at most [`MAX_CUSTOM_MARKS`]).
 ///
 /// [`MAX_CUSTOM_MARKS`]: designcraft_doc::MAX_CUSTOM_MARKS
@@ -8685,6 +8713,7 @@ fn remove_mark_row(d: &mut Dialog, r: usize) {
 /// removed, what follows the last mark, and the first footnotes' marks as they will read.
 fn custom_marks_editor(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     let lang = app.ui.language.clone();
+    drop_unusable_mark_styles(app, d);
     let mut n = d.n("markCount").unwrap_or(0.0).clamp(0.0, designcraft_doc::MAX_CUSTOM_MARKS as f64) as usize;
     if n == 0 {
         n = 1;
@@ -8728,10 +8757,7 @@ fn custom_marks_editor(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
             ],
         );
     });
-    // The first footnotes' marks as they will read.
-    let after = serde_json::from_value(json!(d.s("marksAfter"))).unwrap_or_default();
-    let marks = designcraft_doc::CustomMarks { marks: dialog_marks(d), after };
-    let preview: Vec<String> = (1..=8).filter_map(|k| marks.mark(k).map(|(m, _)| m)).collect();
+    let preview = marks_preview(d);
     if !preview.is_empty() {
         crate::rtl::label(ui, egui::RichText::new(format!("{} {}", crate::i18n::tr(&lang, "Preview:"), preview.join("  "))).size(11.0));
     }

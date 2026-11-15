@@ -134,6 +134,9 @@ fn check_marks(c: &designcraft_doc::CustomMarks, d: &designcraft_doc::Document) 
         if m.text.chars().count() > designcraft_doc::MAX_MARK_CHARS {
             return Err(bad(CMD, format!("a custom mark has at most {} characters", designcraft_doc::MAX_MARK_CHARS)));
         }
+        if m.char_style.chars().count() > designcraft_doc::MAX_MARK_STYLE_CHARS {
+            return Err(bad(CMD, format!("a custom mark's character style name has at most {} characters", designcraft_doc::MAX_MARK_STYLE_CHARS)));
+        }
         if m.char_style != designcraft_doc::NO_CHAR_STYLE && d.styles.char_style(&m.char_style).is_none() {
             return Err(bad(CMD, format!("no character style `{}`", m.char_style)));
         }
@@ -362,6 +365,19 @@ mod tests {
         assert_eq!((o.start_at, o.prefix.as_str()), (5, "("));
         let other = json!({"marks": [{"text": "x", "charStyle": "Music"}]});
         assert!(s.execute("footnote.options", &json!({"customMarks": other})).is_err(), "new marks are checked");
+    }
+
+    #[test]
+    fn a_mark_style_name_past_the_cap_is_refused() {
+        let (mut s, _) = session_with_text();
+        let long = "s".repeat(designcraft_doc::MAX_MARK_STYLE_CHARS + 1);
+        let longest = "s".repeat(designcraft_doc::MAX_MARK_STYLE_CHARS);
+        for name in [&long, &longest] {
+            s.execute("style.character.create", &json!({"name": name})).unwrap();
+        }
+        let marks = |name: &str| json!({"customMarks": {"marks": [{"text": "*", "charStyle": name}]}});
+        assert!(s.execute("footnote.options", &marks(&long)).is_err());
+        s.execute("footnote.options", &marks(&longest)).unwrap();
     }
 
     #[test]

@@ -5450,6 +5450,33 @@ fn footnote_options_dialog_cuts_a_long_mark() {
     assert_eq!(o.label(1, false), "\u{2726}".repeat(designcraft_doc::MAX_MARK_CHARS));
 }
 
+/// The marks preview starts where the footnotes do: at Start At.
+#[test]
+fn footnote_options_preview_starts_at_start_at() {
+    let d = Dialog::new("footnoteOptions", json!({"customMarks": {"marks": [{"text": "*"}, {"text": "\u{2020}"}], "after": "repeat"}, "startAt": 2}));
+    assert_eq!(marks_preview(&d)[..3], ["\u{2020}", "*", "\u{2020}"]);
+}
+
+/// A mark whose character style was deleted saves with none of its own when the marks change,
+/// instead of the command refusing the style after the dialog has closed.
+#[test]
+fn footnote_options_dialog_drops_a_deleted_mark_style() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("style.character.create", json!({"name": "Music"})).unwrap();
+    app.run("footnote.options", json!({"customMarks": {"marks": [{"text": "\u{266B}", "charStyle": "Music"}]}})).unwrap();
+    app.run("style.character.delete", json!({"name": "Music", "replaceWith": designcraft_doc::NO_CHAR_STYLE})).unwrap();
+    app.run("app.footnoteOptionsDialog", json!({})).unwrap();
+    let d = app.ui.dialog.as_mut().unwrap();
+    d.fields.insert("markCount".into(), json!(2));
+    d.fields.insert("mark.1.text".into(), json!("\u{266A}"));
+    d.fields.insert("mark.1.charStyle".into(), json!(designcraft_doc::NO_CHAR_STYLE));
+    confirm(&mut app).unwrap();
+    let marks = app.session.doc().unwrap().doc.footnote_options.custom_marks.clone().unwrap().marks;
+    let got: Vec<(&str, &str)> = marks.iter().map(|m| (m.text.as_str(), m.char_style.as_str())).collect();
+    assert_eq!(got, [("\u{266B}", designcraft_doc::NO_CHAR_STYLE), ("\u{266A}", designcraft_doc::NO_CHAR_STYLE)]);
+}
+
 /// Find/Change's Change and Change/Find, as InDesign's: Find Next selects a match, Change/Find
 /// changes it and selects the next, Change changes that one and keeps it selected. With no
 /// text selected they're off.

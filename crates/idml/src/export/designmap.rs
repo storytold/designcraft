@@ -423,7 +423,24 @@ fn has_self(root: &El, name: &str, me: &str) -> bool {
 
 /// [`names::FOOTNOTE_MARKS_LABEL`]'s value: the marks, and the numbering style under them.
 fn footnote_marks_label(c: &designcraft_doc::CustomMarks, style: designcraft_doc::NumberStyle) -> Option<String> {
-    let mut v = serde_json::to_value(c).ok()?;
+    // The marks as the limits keep them, so the label always fits what import reads
+    // (`names::MAX_FOOTNOTE_MARKS_LABEL`): a document file can hold anything.
+    let marks = c
+        .marks
+        .iter()
+        .filter(|m| !m.text.is_empty())
+        .take(designcraft_doc::MAX_CUSTOM_MARKS)
+        .map(|m| designcraft_doc::NoteMark {
+            text: m.text.chars().take(designcraft_doc::MAX_MARK_CHARS).collect(),
+            char_style: if m.char_style.chars().count() > designcraft_doc::MAX_MARK_STYLE_CHARS {
+                designcraft_doc::NO_CHAR_STYLE.into()
+            } else {
+                m.char_style.clone()
+            },
+        })
+        .collect();
+    let c = designcraft_doc::CustomMarks { marks, after: c.after };
+    let mut v = serde_json::to_value(&c).ok()?;
     v.as_object_mut()?.insert(names::FOOTNOTE_MARKS_STYLE.into(), serde_json::to_value(style).ok()?);
     serde_json::to_string(&v).ok()
 }

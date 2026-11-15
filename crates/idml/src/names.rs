@@ -144,9 +144,13 @@ pub const FOOTNOTE_MARKS_LABEL: &str = "designcraft.footnoteMarks";
 /// The field of [`FOOTNOTE_MARKS_LABEL`]'s value that keeps the numbering style under the marks
 /// (the style the footnotes take again when the marks are cleared).
 pub const FOOTNOTE_MARKS_STYLE: &str = "style";
-/// [`FOOTNOTE_MARKS_LABEL`]'s value is read only up to this size: 64 marks of 32 characters and
-/// their style names fit many times over, and a larger one isn't parsed at all.
-pub const MAX_FOOTNOTE_MARKS_LABEL: usize = 64 * 1024;
+/// [`FOOTNOTE_MARKS_LABEL`]'s value is read only up to this size, and a larger one isn't parsed
+/// at all. It is the largest label export can write: every mark ([`designcraft_doc::MAX_CUSTOM_MARKS`])
+/// with its text and style name at their longest ([`designcraft_doc::MAX_MARK_CHARS`],
+/// [`designcraft_doc::MAX_MARK_STYLE_CHARS`]), each character at most 6 bytes of JSON (`\u001f`),
+/// with room for the field names and the rest of the value.
+pub const MAX_FOOTNOTE_MARKS_LABEL: usize =
+    1024 + designcraft_doc::MAX_CUSTOM_MARKS * (64 + 6 * (designcraft_doc::MAX_MARK_CHARS + designcraft_doc::MAX_MARK_STYLE_CHARS));
 
 pub const PARA_BUILTINS: &[(&str, &str)] = &[("[No Paragraph Style]", "$ID/[No paragraph style]"), ("[Basic Paragraph]", "$ID/NormalParagraphStyle")];
 pub const CHAR_BUILTINS: &[(&str, &str)] = &[("[None]", "$ID/[No character style]")];

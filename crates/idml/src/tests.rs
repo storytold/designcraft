@@ -5557,6 +5557,46 @@ fn an_oversized_footnote_marks_label_is_not_read() {
     assert!(import_idml(&bytes).unwrap().footnote_options.custom_marks.is_some());
 }
 
+/// The largest marks the limits allow (every mark at its longest, each with a character style of
+/// the longest name a mark takes) come back from IDML: the label export writes always fits what
+/// import reads.
+#[test]
+fn the_largest_custom_marks_survive_idml() {
+    let mut d = Document::new(&NewDocument::default());
+    let name = "\u{1F3B5}".repeat(designcraft_doc::MAX_MARK_STYLE_CHARS);
+    std::sync::Arc::make_mut(&mut d.styles).character.push(designcraft_doc::CharacterStyle {
+        name: name.clone(),
+        based_on: None,
+        chars: Default::default(),
+        shortcut: String::new(),
+    });
+    let mark = designcraft_doc::NoteMark { text: "\u{1F3B6}".repeat(designcraft_doc::MAX_MARK_CHARS), char_style: name };
+    d.footnote_options.custom_marks =
+        Some(designcraft_doc::CustomMarks { marks: vec![mark; designcraft_doc::MAX_CUSTOM_MARKS], after: designcraft_doc::MarksAfter::Repeat });
+    let back = import_idml(&export_idml(&d)).unwrap();
+    assert_eq!(back.footnote_options.custom_marks, d.footnote_options.custom_marks);
+}
+
+/// A mark whose character style has a longer name than a mark takes (only a hand-made file can
+/// hold one) is written without it, so the label still fits.
+#[test]
+fn a_mark_style_name_past_the_cap_is_left_out_of_the_label() {
+    let mut d = custom_marks_doc(designcraft_doc::NumberStyle::Arabic);
+    let name = "s".repeat(designcraft_doc::MAX_MARK_STYLE_CHARS + 1);
+    std::sync::Arc::make_mut(&mut d.styles).character.push(designcraft_doc::CharacterStyle {
+        name: name.clone(),
+        based_on: None,
+        chars: Default::default(),
+        shortcut: String::new(),
+    });
+    if let Some(c) = d.footnote_options.custom_marks.as_mut() {
+        c.marks[0].char_style = name;
+    }
+    let back = import_idml(&export_idml(&d)).unwrap();
+    let marks = back.footnote_options.custom_marks.unwrap().marks;
+    assert_eq!(marks[0].char_style, designcraft_doc::NO_CHAR_STYLE);
+}
+
 /// Text typed over a cross-reference's generated text is kept as shown, its page number live
 /// (InDesign's cross-reference page number variable, found by its `AssociatedTextVariable`),
 /// tracked insertions in and deletions out. The edits survive export and import.

@@ -221,7 +221,9 @@ impl<'r> Importer<'r> {
         c.marks.retain(|m| !m.text.is_empty() && m.text.chars().count() <= designcraft_doc::MAX_MARK_CHARS);
         c.marks.truncate(designcraft_doc::MAX_CUSTOM_MARKS);
         for m in &mut c.marks {
-            if m.char_style != designcraft_doc::NO_CHAR_STYLE && self.styles.char_style(&m.char_style).is_none() {
+            if m.char_style != designcraft_doc::NO_CHAR_STYLE
+                && (m.char_style.chars().count() > designcraft_doc::MAX_MARK_STYLE_CHARS || self.styles.char_style(&m.char_style).is_none())
+            {
                 m.char_style = designcraft_doc::NO_CHAR_STYLE.into();
             }
         }
