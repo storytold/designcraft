@@ -297,40 +297,37 @@ impl Session {
     /// composition is kept as typed first. Fails while another interaction is open.
     pub fn begin_interaction(&mut self, label: &str) -> Result<()> {
         self.end_composition()?;
-        self.open_interaction(label)
+        self.open_interaction(label, false)
     }
 
-    /// A tool's Begin. The tool's own gesture that never got its end (a release lost to a tool
-    /// switch) is kept as its own undo step first. While another interaction is open (a dialog's
-    /// preview) the gesture is refused, and its previews, commit and cancel are dropped.
+    /// A tool's Begin. The tool's own gesture on this document that never got its end (a release
+    /// lost to a tool or document switch) is kept as its own undo step first. While another
+    /// interaction is open (a dialog's preview) the gesture is refused, and its previews, commit and
+    /// cancel are dropped.
     fn begin_gesture(&mut self, label: &str) -> Result<()> {
-        if self.active().is_some_and(|st| st.interaction.as_ref().is_some_and(|it| self.tool_interaction == Some((st.uid, it.revision)))) {
+        if self.active().is_some_and(|st| st.interaction.as_ref().is_some_and(|it| it.tool)) {
             self.commit_interaction()?;
         }
-        let r = self.open_interaction(label);
+        let r = self.open_interaction(label, true);
         self.refused_gesture = r.is_err();
-        if r.is_ok() {
-            self.tool_interaction = self.active().and_then(|st| st.interaction.as_ref().map(|it| (st.uid, it.revision)));
-        }
         r
     }
 
-    fn open_interaction(&mut self, label: &str) -> Result<()> {
+    fn open_interaction(&mut self, label: &str, tool: bool) -> Result<()> {
         let st = self.doc_mut()?;
         // Replacing an open interaction would leave its preview in the document with no undo step.
         if let Some(open) = &st.interaction {
             return Err(EngineError::Other(format!("{} is in progress", open.label)));
         }
-        st.interaction =
-            Some(Interaction { label: label.into(), doc: st.doc.clone(), selection: st.selection.clone(), preview: None, revision: st.revision });
+        st.interaction = Some(Interaction {
+            label: label.into(),
+            doc: st.doc.clone(),
+            selection: st.selection.clone(),
+            preview: None,
+            revision: st.revision,
+            tool,
+        });
         Ok(())
-    }
-
-    /// The interaction of the document with `uid` ended: it is no longer the tool's.
-    fn end_tool_interaction(&mut self, uid: Option<u64>) {
-        if self.tool_interaction.is_some_and(|(u, _)| Some(u) == uid) {
-            self.tool_interaction = None;
-        }
     }
 
     /// Apply `cmd` on top of the interaction's snapshot (replacing the previous preview).
@@ -355,7 +352,6 @@ impl Session {
     }
 
     pub fn commit_interaction(&mut self) -> Result<()> {
-        self.end_tool_interaction(self.active().map(|st| st.uid));
         let st = self.doc_mut()?;
         let Some(it) = st.interaction.take() else { return Ok(()) };
         if !Arc::ptr_eq(&it.doc, &st.doc) {
@@ -370,7 +366,6 @@ impl Session {
     }
 
     pub fn cancel_interaction(&mut self) {
-        self.end_tool_interaction(self.active().map(|st| st.uid));
         if let Some(st) = self.active_mut()
             && let Some(it) = st.interaction.take()
         {
@@ -396,7 +391,6 @@ impl Session {
             st.doc = it.doc;
             st.selection = it.selection;
             st.revision = it.revision;
-            self.end_tool_interaction(Some(uid));
         }
     }
 }

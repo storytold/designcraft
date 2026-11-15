@@ -217,6 +217,38 @@ fn an_open_tool_drag_is_not_replaced() {
     assert_eq!(st.history.undo.len(), 2, "one undo step for each drag");
 }
 
+/// A drag left open in one document stays that document's: a finished drag in another document
+/// does not take it over, and the next drag back in the first one keeps it as its own undo step.
+#[test]
+fn an_open_tool_drag_stays_with_its_document() {
+    use designcraft_tools::{PointerEvent, PointerKind};
+    let mut s = session();
+    let v = ViewInfo::at_zoom(1.0);
+    s.execute("file.new", &json!({})).unwrap();
+    s.set_active(0);
+    s.set_tool("rectangle");
+    s.pointer(&PointerEvent::new(PointerKind::Down, 10.0, 10.0), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Drag, 100.0, 55.0), v).unwrap();
+    // No release: the other document's drag begins and ends.
+    s.set_active(1);
+    s.pointer(&PointerEvent::new(PointerKind::Down, 10.0, 10.0), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Drag, 100.0, 55.0), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Up, 100.0, 55.0), v).unwrap();
+    s.set_active(0);
+    s.pointer(&PointerEvent::new(PointerKind::Down, 200.0, 200.0), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Drag, 300.0, 300.0), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Up, 300.0, 300.0), v).unwrap();
+    let st = s.doc().unwrap();
+    assert!(st.interaction.is_none());
+    assert_eq!(st.doc.spreads[0].items.len(), 2);
+    assert_eq!(st.history.undo.len(), 2, "one undo step for each drag");
+    s.set_active(1);
+    let st = s.doc().unwrap();
+    assert!(st.interaction.is_none());
+    assert_eq!(st.doc.spreads[0].items.len(), 1);
+    assert_eq!(st.history.undo.len(), 1);
+}
+
 /// A command that runs another one (Cut runs Clear) recorded an undo step for each, so the
 /// second Undo did nothing. One command is one step, whatever it runs inside.
 #[test]
