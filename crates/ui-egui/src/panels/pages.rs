@@ -44,6 +44,17 @@ fn still_current(drawn: &Drawn, doc: &Arc<designcraft_doc::Document>, cache: &Ar
     if Arc::ptr_eq(&old, doc) {
         return true;
     }
+    // What composition and rendering read but damage doesn't compare: hidden conditions, named
+    // stroke styles, inks, document fonts and alpha contours.
+    if old.conditions != doc.conditions
+        || old.stroke_styles != doc.stroke_styles
+        || old.inks != doc.inks
+        || old.font_scope != doc.font_scope
+        || old.alpha_outlines.len() != doc.alpha_outlines.len()
+        || old.alpha_outlines.iter().zip(&doc.alpha_outlines).any(|(a, b)| !Arc::ptr_eq(a, b))
+    {
+        return false;
+    }
     // Any change to a parent spread gives no regions.
     let Some(regions) = designcraft_render::damage::damage_with(&old, doc, Some(cache)) else { return false };
     match of {

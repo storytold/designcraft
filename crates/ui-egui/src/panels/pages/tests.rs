@@ -411,6 +411,12 @@ fn caret_moves_redraw_no_thumbnails_and_typing_only_its_page() {
     assert_eq!(redraws_after(&mut app, "text.move", json!({"dir": "right", "word": true})), 0);
     assert_eq!(redraws_after(&mut app, "text.insert", json!({"text": "x"})), 1, "only the page with the text");
     assert_eq!(redraws_after(&mut app, "text.move", json!({"dir": "left"})), 0);
+    // Hiding a condition changes no story, only what its text shows: every thumbnail is drawn again.
+    app.run("condition.new", json!({"name": "EU"})).unwrap();
+    app.run("text.select", json!({"story": story, "anchor": 0, "focus": 4})).unwrap();
+    app.run("condition.apply", json!({"name": "EU"})).unwrap();
+    redraws_after(&mut app, "text.move", json!({"dir": "left"}));
+    assert_eq!(redraws_after(&mut app, "condition.options", json!({"name": "EU", "visible": false})), shown);
     // Reloaded fonts compose the same document again: every thumbnail is drawn again.
     assert_eq!(redraws_after(&mut app, "font.reload", json!({})), shown);
 }
