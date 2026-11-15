@@ -692,11 +692,15 @@ fn script(args: &[String]) -> Result<(), String> {
     let report = if keep_going {
         // Run every step; failures become {"error": …} results.
         let mut results: Vec<Value> = Vec::new();
-        for st in &steps {
+        let mut failed = None;
+        for (i, st) in steps.iter().enumerate() {
             let r = designcraft_engine::script::resolve(&st.params, &results).and_then(|p| exec(b, &st.command, p));
-            results.push(r.unwrap_or_else(|e| json!({"error": e, "command": st.command})));
+            results.push(r.unwrap_or_else(|e| {
+                failed.get_or_insert_with(|| (i, st.command.clone(), e.clone()));
+                json!({"error": e, "command": st.command})
+            }));
         }
-        designcraft_engine::script::Report { results, failed: None }
+        designcraft_engine::script::Report { results, failed }
     } else {
         designcraft_engine::script::run(&steps, |id, p| exec(b, id, p))
     };
