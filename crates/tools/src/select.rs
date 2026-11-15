@@ -1560,6 +1560,25 @@ fn edit_text_at(cx: &ToolContext, p: Point) -> Option<Vec<Action>> {
     Some(vec![Action::SwitchTool("type".into()), Action::Exec("text.placeCaret".into(), json!({"frame": id.0, "point": [sp.x, sp.y]}))])
 }
 
+/// Add the items inside group `it` that the marquee `r` touches (Direct Selection reaches into
+/// groups): hidden items and groups, and everything in a locked group, are skipped. Only the
+/// children that show count, as for a click.
+fn collect_direct_marquee_ids(cx: &ToolContext, it: &Item, r: &Rect, ids: &mut Vec<Value>) {
+    if it.hidden || it.locked {
+        return;
+    }
+    if it.is_group() {
+        for c in it.shown_children() {
+            collect_direct_marquee_ids(cx, c, r, ids);
+        }
+    } else if let Some(c_xf) = cx.item_canvas_xf(it.id) {
+        let b = c_xf.transform_rect_bbox(it.bounds());
+        if b.x0 < r.x1 && b.x1 > r.x0 && b.y0 < r.y1 && b.y1 > r.y0 {
+            ids.push(Value::from(it.id.0));
+        }
+    }
+}
+
 #[cfg(test)]
 mod handle_tests {
     use super::handle_shown;
@@ -1580,24 +1599,5 @@ mod handle_tests {
         assert_eq!(shown(true, &[0]), vec![(0, false), (0, true), (1, false), (3, true)]);
         // Open, the end has no neighbour beyond it.
         assert_eq!(shown(false, &[0]), vec![(0, false), (0, true), (1, false)]);
-    }
-}
-
-/// Add the items inside group `it` that the marquee `r` touches (Direct Selection reaches into
-/// groups): hidden items and groups, and everything in a locked group, are skipped. Only the
-/// children that show count, as for a click.
-fn collect_direct_marquee_ids(cx: &ToolContext, it: &Item, r: &Rect, ids: &mut Vec<Value>) {
-    if it.hidden || it.locked {
-        return;
-    }
-    if it.is_group() {
-        for c in it.shown_children() {
-            collect_direct_marquee_ids(cx, c, r, ids);
-        }
-    } else if let Some(c_xf) = cx.item_canvas_xf(it.id) {
-        let b = c_xf.transform_rect_bbox(it.bounds());
-        if b.x0 < r.x1 && b.x1 > r.x0 && b.y0 < r.y1 && b.y1 > r.y0 {
-            ids.push(Value::from(it.id.0));
-        }
     }
 }
