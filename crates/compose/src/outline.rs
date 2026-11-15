@@ -59,9 +59,30 @@ impl FrameOutline {
         Some(FrameOutline { edges, inset })
     }
 
+    /// The outline of `item`'s path with its corner options applied, or None when that is the
+    /// item's own rectangle. The composer and the Properties panel's one Inset field both use it.
+    pub fn of_item(item: &designcraft_doc::Item, inset: f64) -> Option<FrameOutline> {
+        let bp = if item.corners.is_none() { item.path.to_bezpath() } else { designcraft_geom::corners::apply(&item.path, &item.corners) };
+        FrameOutline::new(&bp, inset)
+    }
+
     /// The outline mapped by `xf` (into a vertical frame's turned box).
     pub fn transformed(&self, xf: Affine) -> FrameOutline {
         FrameOutline { edges: self.edges.iter().map(|&(a, b)| (xf * a, xf * b)).collect(), inset: self.inset }
+    }
+
+    /// The distance kept between text and the outline.
+    pub fn inset(&self) -> f64 {
+        self.inset
+    }
+
+    /// The heights of the outline's corners, sorted and without repeats: the inside intervals of a
+    /// scanline change linearly between two of them.
+    pub fn corner_heights(&self) -> Vec<f64> {
+        let mut ys: Vec<f64> = self.edges.iter().map(|(a, _)| a.y).collect();
+        ys.sort_by(f64::total_cmp);
+        ys.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+        ys
     }
 
     /// The parts of `[x0, x1]` inside the outline over the whole band `[y0, y1]`, at least the

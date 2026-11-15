@@ -41,9 +41,10 @@ struct RecentMenu {
     separator: Option<PredefinedMenuItem>,
 }
 
-/// Accelerator for "Cmd+Shift+]" (modifier-less shortcuts stay in the app so typing works).
+/// Accelerator for "Cmd+Shift+]". Shortcuts the bar would never see, such as modifier-less ones
+/// or Option on a character key, stay in the app (`menus::native_key_equivalent`).
 fn accel(sc: &str) -> Option<Accelerator> {
-    if !(sc.contains("Cmd") || sc.contains("Ctrl") || sc.contains("Alt")) {
+    if !menus::native_key_equivalent(sc) {
         return None;
     }
     Accelerator::from_str(&sc.replace("Cmd", "CMD").replace("Alt", "ALT").replace("Shift", "SHIFT").replace("Ctrl", "CTRL")).ok()
@@ -230,10 +231,12 @@ fn build(
     path: &str,
     recent: &mut Option<Submenu>,
 ) {
-    for e in entries {
+    for (i, e) in entries.iter().enumerate() {
         match e {
             Item::Sep => {
-                let _ = parent.append(&PredefinedMenuItem::separator());
+                if menus::has_shown_item(app, &entries[i + 1..]) {
+                    let _ = parent.append(&PredefinedMenuItem::separator());
+                }
             }
             Item::Sub(label, children) => {
                 let sub = Submenu::new(menu_title(app, label), true);
