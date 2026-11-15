@@ -3043,7 +3043,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Intent", "Återgivningsmetod"),
     ("Marker", "Markör"),
     ("Message", "Meddelande"),
-    ("Number", "Tal"),
+    ("Number", "Antal"),
     ("Option", "Alternativ"),
     ("Paragraphs", "Stycken"),
     ("Parent", "Mallsida"),
