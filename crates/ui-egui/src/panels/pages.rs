@@ -45,13 +45,21 @@ fn still_current(drawn: &Drawn, doc: &Arc<designcraft_doc::Document>, cache: &Ar
         return true;
     }
     // What composition and rendering read but damage doesn't compare: hidden conditions, named
-    // stroke styles, inks, document fonts and alpha contours.
+    // stroke styles, inks, document fonts, alpha contours, hyphenation exceptions and endnote options.
     if old.conditions != doc.conditions
         || old.stroke_styles != doc.stroke_styles
         || old.inks != doc.inks
         || old.font_scope != doc.font_scope
+        || old.hyphenation_exceptions != doc.hyphenation_exceptions
+        || old.endnote_options != doc.endnote_options
         || old.alpha_outlines.len() != doc.alpha_outlines.len()
         || old.alpha_outlines.iter().zip(&doc.alpha_outlines).any(|(a, b)| !Arc::ptr_eq(a, b))
+    {
+        return false;
+    }
+    // Endnote numbers and lists that continue across stories follow text on other pages.
+    if old.stories.values().chain(doc.stories.values()).any(|s| !s.endnotes.is_empty())
+        || doc.settings.lists.iter().any(|l| l.continue_across_stories)
     {
         return false;
     }
