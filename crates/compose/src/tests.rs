@@ -3000,6 +3000,19 @@ fn vertical_justification_with_an_extreme_grid_increment_stays_finite() {
             assert!((b - natural).abs() < 1e-6, "Top, grid away from the line: baseline {b}, natural {natural}");
         }
     }
+
+    // A grid whose first line is too far off to count the text area in its 0.7 pt steps: Bottom
+    // takes the room as it does without a grid.
+    let mut area = Rect::ZERO;
+    let (lines, _) = grid_doc("One", ParaAttrs { grid_align: Some(GridAlign::AllLines), ..Default::default() }, |d, sid| {
+        let spec = frame_specs(d, sid).remove(0);
+        area = spec.area;
+        let opts = &mut d.item_mut(spec.id).unwrap().text_frame_mut().unwrap().options;
+        opts.baseline_grid = Some(designcraft_doc::FrameBaselineGrid::new(-1.7e308, 0.7));
+        opts.vertical_justification = Bottom;
+    });
+    let b = lines[0].baseline;
+    assert!((b - area.y1).abs() < 1e-6, "Bottom with a far-off grid: baseline {b}, text area {area:?}");
 }
 
 /// In a shaped frame that narrows and widens again, Align to Baseline Grid takes the grid step
@@ -5193,6 +5206,22 @@ fn drop_cap_on_a_baseline_grid_reaches_down_by_grid_steps() {
     // Scaled to the grid's line pitch: its cap top is still line 1's.
     let body = lines[0].glyphs.iter().find(|g| g.byte == 1).unwrap();
     assert!((lines[2].baseline - cap_of(dc) - (lines[0].baseline - cap_of(body))).abs() < 0.01);
+}
+
+/// A grid the lines can't count in steps (its first line too far off for a 0.7 pt step) is no grid
+/// for the drop cap either: it reaches down to line 3 at the 12 pt leading the lines are set at.
+#[test]
+fn drop_cap_skips_a_grid_the_lines_skip() {
+    let (d, sid, _) = drop_doc(LOREM, ParaAttrs { grid_align: Some(designcraft_doc::GridAlign::AllLines), ..drop_cap(3, 1) });
+    let mut specs = frame_specs(&d, sid);
+    specs[0].grid = Some((-1.7e308, 0.7));
+    let cs = compose(&d, d.story(sid).unwrap(), &specs, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    assert!((lines[2].baseline - lines[0].baseline - 24.0).abs() < 1e-6, "{} {}", lines[0].baseline, lines[2].baseline);
+    let dc = &lines[0].glyphs[0];
+    assert!((lines[0].baseline + dc.y - lines[2].baseline).abs() < 1e-6, "drop cap baseline {} below line 1", dc.y);
+    let b = lines[0].drop_cap.unwrap();
+    assert!((b.baseline - lines[2].baseline).abs() < 1e-6, "{}", b.baseline);
 }
 
 /// A line with a larger auto leading doesn't move the drop cap: it reaches down `lines − 1`
