@@ -4082,12 +4082,12 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                         egui::Grid::new("ff_crop").num_columns(4).spacing([8.0, 6.0]).show(ui, |ui| {
                             for (k, l) in [("cropTop", "Top:"), ("cropLeft", "Left:")] {
                                 crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, l));
-                                text_field(ui, &mut d, k, 70.0);
+                                measure_field(ui, &mut d, k, 70.0);
                             }
                             ui.end_row();
                             for (k, l) in [("cropBottom", "Bottom:"), ("cropRight", "Right:")] {
                                 crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, l));
-                                text_field(ui, &mut d, k, 70.0);
+                                measure_field(ui, &mut d, k, 70.0);
                             }
                             ui.end_row();
                         });
@@ -5445,7 +5445,7 @@ fn confirm_part5(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
             json!({"path": d.s("path"), "removeStyles": d.b("removeStyles"), "styleConflicts": d.s("styleConflicts"), "styleMap": d.fields.get("map").cloned().unwrap_or(json!({}))}),
         ),
         "fittingOptions" => {
-            let m = |k: &str| d.fields.get(k).and_then(Value::as_str).and_then(|s| parse_measure(s, Unit::Points).ok()).unwrap_or(0.0);
+            let m = |k: &str| d.m(k).unwrap_or(0.0);
             app.run(
                 "object.fittingOptions",
                 json!({"autoFit": d.b("autoFit"), "fitting": d.s("fitting"), "align": d.n("align").unwrap_or(4.0) as u64,
