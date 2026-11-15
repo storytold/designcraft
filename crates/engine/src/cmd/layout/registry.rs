@@ -1,4 +1,4 @@
-use super::layers::set_layer;
+use super::layers::{duplicate_layer, set_layer};
 use super::margins::{adjust_layout, column_guides_unlocked, margin_boxes, move_column_guide, set_margins_columns, set_page_width};
 use super::pages::{document_setup, page_options, page_size};
 use super::parents::{
@@ -14,7 +14,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Insert Pages…",
             ["Layout", "Pages"],
             Some("Cmd+Shift+P"),
-            "{count?: 1 (1 to 9999), after?: 0-based page index (default: the last page; past it: at the end), before?: 0-based page index (instead of `after`; 0: at the start), parent?: id|\"A-Parent\"|\"A\"|null}",
+            "{count?: 1 (1 to 9999), after?: 0-based page index (default: the last page; past it: at the end), before?: 0-based page index (instead of `after`; 0: at the start), parent?: id|\"A-Parent\"|\"A\"|null (default: the parent of the page they follow, or of the first page)}",
             has_doc,
             |s, p| {
                 const ID: &str = "layout.pages.insert";
@@ -50,7 +50,13 @@ pub fn specs() -> Vec<CommandSpec> {
                     (_, Some(b)) => b.checked_sub(1),
                     (a, None) => Some(a.unwrap_or(n.saturating_sub(1))),
                 };
-                let parent = parent_ref(ID, &st.doc, p.get("parent"))?.unwrap_or_else(|| st.doc.parents.first().map(|x| x.id));
+                // No parent given: the new pages continue the page they follow (the first page when
+                // they go at the start), [None] included (#2788); in a document without pages, the
+                // first parent.
+                let parent = parent_ref(ID, &st.doc, p.get("parent"))?.unwrap_or_else(|| match st.doc.page(after.unwrap_or(0)) {
+                    Some(pg) => pg.parent,
+                    None => st.doc.parents.first().map(|x| x.id),
+                });
                 s.edit(|d, _| {
                     let ids = d.insert_pages(after, count, parent)?;
                     Ok(json!({"pages": ids.len(), "total": d.page_count()}))
@@ -713,6 +719,15 @@ pub fn specs() -> Vec<CommandSpec> {
             s.doc_mut()?.active_layer = r;
             Ok(json!({"id": r.0}))
         }),
+        cmd!(
+            "layer.duplicate",
+            "Duplicate Layer",
+            [],
+            None,
+            "{id} → {id}. Adds a copy of the layer's settings and objects (document and parent spreads) above it, named \"<name> copy\"",
+            has_doc,
+            duplicate_layer
+        ),
         cmd!(
             "layer.set",
             "Layer Options…",

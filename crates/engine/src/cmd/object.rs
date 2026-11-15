@@ -26,6 +26,22 @@ pub(crate) fn known_swatch(doc: &designcraft_doc::Document, name: &str, cmd: &st
     Err(bad(cmd, format!("{key}: no swatch named `{name}`{hint}; create one with `swatch.create` and use its returned name")))
 }
 
+/// The fields of a stroke `type` object must be `kind` and the one its kind takes (`pattern` for
+/// dashed, `bands` for stripes, `name` for style). `kind` is the type's own, else `base_kind`.
+pub(crate) fn check_stroke_type_fields(v: &Value, base_kind: Option<&str>, cmd: &str) -> Result<()> {
+    let Some(fields) = v.as_object() else { return Ok(()) };
+    let field = match v.get("kind").and_then(Value::as_str).or(base_kind) {
+        Some("dashed") => Some("pattern"),
+        Some("stripes") => Some("bands"),
+        Some("style") => Some("name"),
+        _ => None,
+    };
+    match fields.keys().find(|key| *key != "kind" && Some(key.as_str()) != field) {
+        Some(key) => Err(bad(cmd, format!("type: unknown field `{key}`"))),
+        None => Ok(()),
+    }
+}
+
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(
@@ -259,25 +275,13 @@ pub fn specs() -> Vec<CommandSpec> {
             "Stroke",
             [],
             None,
-            "{swatch?, tint?, weight?, align?: center|inside|outside, type?: {kind: solid|dashed|dotted|thickThin|thinThick|thinThin|thickThick|thinThickThin|thickThinThick|wavy|hashed|stripes|style, pattern?: [dash, gap, …] (dashed: required, points), bands?: [[start, width], …] (stripes: required, fractions of stroke weight), name?: string (style: required, document stroke style name)} (other kinds take no extra fields; unknown type fields are errors), cap?: butt|round|projecting, join?: miter|round|bevel, miterLimit?, start?, end?: none|simple|simpleWide|triangle|triangleWide|barbed|curved|circle|circleSolid|square|squareSolid|bar, gapSwatch?, gapTint?, gapOverprint?: bool, ids?}",
+            "{swatch?, tint?: 0–1, weight?: 0–1000 pt, align?: center|inside|outside, type?: {kind: solid|dashed|dotted|thickThin|thinThick|thinThin|thickThick|thinThickThin|thickThinThick|wavy|hashed|stripes|style, pattern?: [dash, gap, …] (dashed: required, points), bands?: [[start, width], …] (stripes: required, fractions of stroke weight), name?: string (style: required, document stroke style name)} (other kinds take no extra fields; unknown type fields are errors), cap?: butt|round|projecting, join?: miter|round|bevel, miterLimit?: 1–500, start?, end?: none|simple|simpleWide|triangle|triangleWide|barbed|curved|circle|circleSolid|square|squareSolid|bar, gapSwatch?, gapTint?: 0–1, gapOverprint?: bool, ids?} (a value out of range or not listed is an error)",
             has_doc,
             |s, p| {
                 let kind: Option<designcraft_doc::StrokeType> = p
                     .get("type")
                     .map(|v| {
-                        if let Some(fields) = v.as_object() {
-                            let field = match v.get("kind").and_then(Value::as_str) {
-                                Some("dashed") => Some("pattern"),
-                                Some("stripes") => Some("bands"),
-                                Some("style") => Some("name"),
-                                _ => None,
-                            };
-                            for key in fields.keys() {
-                                if key != "kind" && Some(key.as_str()) != field {
-                                    return Err(bad("object.stroke", format!("type: unknown field `{key}`")));
-                                }
-                            }
-                        }
+                        check_stroke_type_fields(v, None, "object.stroke")?;
                         serde_json::from_value(v.clone()).map_err(|e| bad("object.stroke", format!("type: {e}")))
                     })
                     .transpose()?;
@@ -286,10 +290,31 @@ pub fn specs() -> Vec<CommandSpec> {
                         known_swatch(&s.doc()?.doc, name, "object.stroke", key)?;
                     }
                 }
+                // A number out of range or a name the stroke doesn't have is an error, not clamped or skipped.
+                let ranged = |key: &str, lo: f64, hi: f64, what: &str| match p.get(key) {
+                    None | Some(Value::Null) => Ok(None),
+                    Some(v) => match v.as_f64() {
+                        Some(x) if x.is_finite() && (lo..=hi).contains(&x) => Ok(Some(x)),
+                        _ => Err(bad("object.stroke", format!("{key} must be {what} from {lo} to {hi}, not {v}"))),
+                    },
+                };
+                let tint = ranged("tint", 0.0, 1.0, "a tint")?.map(|t| t as f32);
+                let weight = ranged("weight", 0.0, 1000.0, "a number of points")?;
+                let miter_limit = ranged("miterLimit", 1.0, 500.0, "a number")?;
+                let gap_tint = ranged("gapTint", 0.0, 1.0, "a tint")?.map(|t| t as f32);
+                let gap_overprint = match p.get("gapOverprint") {
+                    None | Some(Value::Null) => None,
+                    Some(v) => Some(v.as_bool().ok_or_else(|| bad("object.stroke", format!("gapOverprint must be true or false, not {v}")))?),
+                };
+                let align = stroke_choice_param(p, "align", "center, inside or outside")?;
+                let cap = stroke_choice_param(p, "cap", "butt, round or projecting")?;
+                let join = stroke_choice_param(p, "join", "miter, round or bevel")?;
+                let arrowheads = "none, simple, simpleWide, triangle, triangleWide, barbed, curved, circle, circleSolid, square, squareSolid or bar";
+                let start = stroke_choice_param(p, "start", arrowheads)?;
+                let end = stroke_choice_param(p, "end", arrowheads)?;
                 // With nothing selected, the swatch and tint are those of new shapes.
                 if nothing_targeted(s, p)? {
                     let sw = str_param(p, "swatch").map(str::to_string);
-                    let tint = p.get("tint").and_then(Value::as_f64).map(|t| t.clamp(0.0, 1.0) as f32);
                     if sw.is_none() && tint.is_none() {
                         return Err(bad("object.stroke", super::NOTHING_SELECTED));
                     }
@@ -315,38 +340,22 @@ pub fn specs() -> Vec<CommandSpec> {
                         if let Some(v) = p2.get("swatch").and_then(Value::as_str) {
                             st.swatch = v.into();
                         }
-                        if let Some(v) = p2.get("tint").and_then(Value::as_f64) {
-                            st.tint = v.clamp(0.0, 1.0) as f32;
-                        }
-                        if let Some(v) = p2.get("weight").and_then(Value::as_f64) {
-                            st.weight = v.max(0.0);
-                        }
-                        if let Some(v) = p2.get("miterLimit").and_then(Value::as_f64) {
-                            st.miter_limit = v.clamp(1.0, 500.0);
-                        }
+                        st.tint = tint.unwrap_or(st.tint);
+                        st.weight = weight.unwrap_or(st.weight);
+                        st.miter_limit = miter_limit.unwrap_or(st.miter_limit);
                         if let Some(v) = p2.get("gapSwatch").and_then(Value::as_str) {
                             st.gap_swatch = v.into();
                         }
-                        if let Some(v) = p2.get("gapTint").and_then(Value::as_f64) {
-                            st.gap_tint = v.clamp(0.0, 1.0) as f32;
-                        }
-                        if let Some(v) = p2.get("gapOverprint").and_then(Value::as_bool) {
-                            st.gap_overprint = v;
-                        }
+                        st.gap_tint = gap_tint.unwrap_or(st.gap_tint);
+                        st.gap_overprint = gap_overprint.unwrap_or(st.gap_overprint);
                         if let Some(kind) = &kind {
                             st.kind = kind.clone();
                         }
-                        for (k, apply) in [("align", 0), ("cap", 2), ("join", 3), ("start", 4), ("end", 5)] {
-                            if let Some(v) = p2.get(k).cloned() {
-                                let _ = match apply {
-                                    0 => serde_json::from_value(v).map(|x| st.align = x),
-                                    2 => serde_json::from_value(v).map(|x| st.cap = x),
-                                    3 => serde_json::from_value(v).map(|x| st.join = x),
-                                    4 => serde_json::from_value(v).map(|x| st.start = x),
-                                    _ => serde_json::from_value(v).map(|x| st.end = x),
-                                };
-                            }
-                        }
+                        st.align = align.unwrap_or(st.align);
+                        st.cap = cap.unwrap_or(st.cap);
+                        st.join = join.unwrap_or(st.join);
+                        st.start = start.unwrap_or(st.start);
+                        st.end = end.unwrap_or(st.end);
                         i.stroke = st;
                     },
                     false,
@@ -610,8 +619,8 @@ pub fn specs() -> Vec<CommandSpec> {
             "Text Frame Options…",
             ["Object"],
             Some("Cmd+B"),
-            "{columns? (1..40), gutter? (pt, 0..15552), inset?: number|[t,l,b,r] (pt, each 0..15552; a list has four sides, null keeps that side), verticalJustification?: top|center|bottom|justify, paragraphSpacingLimit? (pt: Justify adds at most this between paragraphs, the rest between lines), columnsKind?: fixedNumber|fixedWidth|flexibleWidth, columnWidth? (pt, Fixed Width), firstBaseline?: ascent|capHeight|leading|xHeight|emboxHeight|fixed, firstBaselineMin? (pt), autoSize?: off|heightOnly|widthOnly|heightAndWidth|heightAndWidthProportionally, autoSizeReference?: topLeft|topCenter|topRight|leftCenter|center|rightCenter|bottomLeft|bottomCenter|bottomRight (the point that stays put), useMinimumHeight?: bool, minimumHeight? (pt), useMinimumWidth?: bool, minimumWidth? (pt), noLineBreaks?: bool, ignoreWrap?, balanceColumns?, columnRule?: bool, columnRuleWeight? (pt), columnRuleColor? (swatch name), columnRuleTint? (0..1), columnRuleOffset? (pt, horizontal), columnRuleTopInset? (pt), columnRuleBottomInset? (pt), baselineGrid?: {start? (pt), increment? (pt), relativeTo?: page|margin|frame|inset} (the frame's custom baseline grid; fields not given keep the frame's, or come from the document grid; null turns it off), vertical?: bool (sets the story direction of the frames' stories, as Type ▸ Story Direction), ids?}",
-            has_selection,
+            "{columns? (1..40), gutter? (pt, 0..15552), inset?: number|[t,l,b,r] (pt, each 0..15552; a list has four sides, null keeps that side), verticalJustification?: top|center|bottom|justify, paragraphSpacingLimit? (pt: Justify adds at most this between paragraphs, the rest between lines), columnsKind?: fixedNumber|fixedWidth|flexibleWidth, columnWidth? (pt, Fixed Width), firstBaseline?: ascent|capHeight|leading|xHeight|emboxHeight|fixed, firstBaselineMin? (pt), autoSize?: off|heightOnly|widthOnly|heightAndWidth|heightAndWidthProportionally, autoSizeReference?: topLeft|topCenter|topRight|leftCenter|center|rightCenter|bottomLeft|bottomCenter|bottomRight (the point that stays put), useMinimumHeight?: bool, minimumHeight? (pt), useMinimumWidth?: bool, minimumWidth? (pt), noLineBreaks?: bool, ignoreWrap?, balanceColumns?, columnRule?: bool, columnRuleWeight? (pt), columnRuleColor? (swatch name), columnRuleTint? (0..1), columnRuleOffset? (pt, horizontal), columnRuleTopInset? (pt), columnRuleBottomInset? (pt), baselineGrid?: {start? (pt), increment? (pt), relativeTo?: page|margin|frame|inset} (the frame's custom baseline grid; fields not given keep the frame's, or come from the document grid; null turns it off), vertical?: bool (sets the story direction of the frames' stories, as Type ▸ Story Direction), ids? (without ids or selected objects: the frame showing the text caret, or every frame holding part of the selected text)}",
+            has_selection_or_text,
             text_frame_options
         ),
         cmd!(
@@ -1281,19 +1290,41 @@ fn retarget_xrefs(copy: &mut Story, orig: &Story, map: &HashMap<u64, u64>, depth
     }
 }
 
-/// Fresh ids for the objects anchored in story copy `st`, its table cells, footnotes and endnotes (#1522), each `depth`
-/// levels deep. False when one of them nests groups deeper than [`MAX_COPY_DEPTH`].
+/// Fresh ids for the objects anchored in story copy `st`, its table cells, footnotes and endnotes down to
+/// [`MAX_COPY_DEPTH`] levels (#1522), each `depth` levels deep. False when one of them nests groups deeper than
+/// [`MAX_COPY_DEPTH`], or when the stories below that level hold anchored objects, tables or notes.
 #[must_use = "false means the copy is incomplete and must not be inserted"]
 fn renumber_anchored(dst: &mut Document, src: &Document, st: &mut Story, stories: &mut HashMap<StoryId, StoryId>, depth: usize) -> bool {
+    renumber_anchored_in(dst, src, st, stories, depth, 0)
+}
+
+/// [`renumber_anchored`] for a story `level` table cells and notes below the story copy.
+#[must_use = "false means the copy is incomplete and must not be inserted"]
+fn renumber_anchored_in(
+    dst: &mut Document,
+    src: &Document,
+    st: &mut Story,
+    stories: &mut HashMap<StoryId, StoryId>,
+    depth: usize,
+    level: usize,
+) -> bool {
     let mut complete = true;
-    let mut fresh = |t: &mut Story| {
-        for o in &mut t.objects {
-            complete &= renumber_in(dst, src, &mut Arc::make_mut(o).item, stories, depth, false);
+    for o in &mut st.objects {
+        complete &= renumber_in(dst, src, &mut Arc::make_mut(o).item, stories, depth, false);
+    }
+    if level >= MAX_COPY_DEPTH {
+        let leaf = |s: &Story| s.objects.is_empty() && s.tables.is_empty() && s.notes.is_empty() && s.endnotes.is_empty();
+        return complete
+            && st.tables.values().all(|t| t.cells.iter().all(|c| leaf(&c.text)))
+            && st.notes.iter().chain(&st.endnotes).all(|n| leaf(&n.text));
+    }
+    for t in st.tables.values_mut() {
+        for c in &mut Arc::make_mut(t).cells {
+            complete &= renumber_anchored_in(dst, src, &mut c.text, stories, depth, level + 1);
         }
-    };
-    st.for_each_text_mut(&mut fresh);
-    for n in &mut st.endnotes {
-        Arc::make_mut(n).text.for_each_text_mut(&mut fresh);
+    }
+    for n in st.notes.iter_mut().chain(st.endnotes.iter_mut()) {
+        complete &= renumber_anchored_in(dst, src, &mut Arc::make_mut(n).text, stories, depth, level + 1);
     }
     complete
 }
@@ -2706,15 +2737,45 @@ fn content_type(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// The most columns a text frame takes.
 const MAX_FRAME_COLUMNS: u64 = 40;
+/// The frames `object.textFrameOptions` changes when the call names none: the selected objects,
+/// or with the Type tool the frame that shows the caret or every frame holding part of the
+/// selected text.
+pub fn text_frame_options_frames(s: &Session) -> Vec<ItemId> {
+    let Ok(st) = s.doc() else { return Vec::new() };
+    if !st.selection.items.is_empty() {
+        return st.selection.items.clone();
+    }
+    st.selection.text.map(|t| text_selection_frames(s, &t)).unwrap_or_default()
+}
+
+/// Text Frame Options act on the selected objects, or with the Type tool on the frames that hold
+/// the caret or the selected text.
+fn has_selection_or_text(s: &Session) -> std::result::Result<(), String> {
+    if s.active().is_some_and(|d| d.selection.text.is_some()) {
+        return Ok(());
+    }
+    has_selection(s)
+}
 
 fn text_frame_options(s: &mut Session, p: &Value) -> Result<Value> {
     const ID: &str = "object.textFrameOptions";
     let st = s.doc()?;
-    let mut ids = targets(s, p)?;
-    if ids.is_empty()
-        && let Some(t) = st.selection.text
-    {
-        ids = st.doc.story(t.story).map(|s| s.frames.clone()).unwrap_or_default();
+    // A call that names its objects acts on those; an empty `ids` names nothing. `ids`, when
+    // given, wins over `id`, and a value that is not an object id is an error.
+    let ids = match (p.get("ids"), p.get("id")) {
+        (Some(v), _) => v
+            .as_array()
+            .and_then(|a| a.iter().map(|x| x.as_u64().map(ItemId)).collect::<Option<Vec<_>>>())
+            .ok_or_else(|| bad(ID, format!("ids must be a list of object ids, not {v}")))?,
+        (None, Some(v)) => vec![v.as_u64().map(ItemId).ok_or_else(|| bad(ID, format!("id must be an object id, not {v}")))?],
+        (None, None) => text_frame_options_frames(s),
+    };
+    // With a text caret the command runs before named objects are checked.
+    if let Some(gone) = ids.iter().find(|i| st.doc.item(**i).is_none()) {
+        return Err(bad(ID, format!("no object with id {}", gone.0)));
+    }
+    if ids.is_empty() {
+        return Err(bad(ID, super::NOTHING_SELECTED));
     }
     let ranged = |key: &str, lo: f64, hi: f64, what: &str| match p.get(key) {
         None | Some(Value::Null) => Ok(None),
@@ -2811,8 +2872,10 @@ fn text_frame_options(s: &mut Session, p: &Value) -> Result<Value> {
         Some(Value::String(c)) if st.doc.swatch(c).is_some() => Some(c.clone()),
         Some(v) => return Err(bad(ID, format!("no swatch {v}"))),
     };
+    let (before, revision) = (Arc::clone(&st.doc), st.revision);
+    let find = s.find_context.take();
     let p = p.clone();
-    s.edit(|d, _| {
+    let edited = s.edit(|d, _| {
         for id in &ids {
             let Some(tf) = d.item_mut(*id).and_then(Item::text_frame_mut) else { continue };
             let o = &mut tf.options;
@@ -2899,6 +2962,7 @@ fn text_frame_options(s: &mut Session, p: &Value) -> Result<Value> {
             if fixed_width
                 && ["columnsKind", "columnWidth", "columns", "gutter", "inset"].iter().any(|k| p.get(*k).is_some())
                 && let Some(r) = d.item(*id).map(Item::inner_bounds)
+                && ((r.width() - width).abs() >= 1e-9 || !width.is_finite())
             {
                 let r = super::finite_rect("object.textFrameOptions", Rect::new(r.x0, r.y0, r.x0 + width, r.y1))?;
                 crate::autosize::resize(d, *id, r);
@@ -2910,7 +2974,84 @@ fn text_frame_options(s: &mut Session, p: &Value) -> Result<Value> {
             super::text::set_story_direction(d, &stories, v);
         }
         Ok(json!({"changed": ids.len()}))
-    })
+    });
+    let changed = match edited {
+        Ok(v) => v,
+        Err(e) => {
+            s.find_context = find;
+            return Err(e);
+        }
+    };
+    // Options the frames already have: the document, its revision and the Find Next scope go back
+    // to what they were, which leaves no undo step. Only the frames and their stories are compared.
+    let st = s.doc_mut()?;
+    let same = ids.iter().all(|id| {
+        let (now, was) = (st.doc.item(*id), before.item(*id));
+        now == was && now.and_then(Item::text_frame).is_none_or(|t| st.doc.story(t.story) == before.story(t.story))
+    });
+    if same {
+        st.doc = before;
+        st.revision = revision;
+        s.find_context = find;
+        return Ok(json!({"changed": 0}));
+    }
+    Ok(changed)
+}
+
+/// The frames Text Frame Options acts on from the Type tool: the frame that shows the caret, or
+/// every frame that holds part of the selected text. Text past the last frame counts as the last
+/// frame's.
+fn text_selection_frames(s: &Session, t: &TextSel) -> Vec<ItemId> {
+    let Ok(st) = s.doc() else { return Vec::new() };
+    let Some(story) = st.doc.story(t.story) else { return Vec::new() };
+    let last = story.frames.last().copied();
+    let cs = s.cache.get(&st.doc, t.story, None);
+    // In footnote text or a table cell, `anchor` and `focus` index that text: the frame the caret
+    // is drawn in (the placed footnote, or the cell's first non-repeated occurrence), else the
+    // frame that shows the footnote reference or the table's anchor character.
+    if let Some(c) = t.cell {
+        let (drawn, anchor) = match c.footnote_id() {
+            Some(id) => (designcraft_compose::find_note(&cs, id).map(|(fi, _)| fi), story.note_anchor(id)),
+            None => (designcraft_compose::find_cell(&cs, c.table, c.row, c.col).map(|(fi, ..)| fi), story.table_anchor(c.table)),
+        };
+        return drawn
+            .or_else(|| anchor.and_then(|a| designcraft_compose::caret(&cs, a)).map(|(fi, ..)| fi))
+            .and_then(|fi| cs.frames.get(fi))
+            .map(|f| f.frame)
+            .or_else(|| t.frame.filter(|f| story.frames.contains(f)))
+            .or(last)
+            .into_iter()
+            .collect();
+    }
+    let r = t.range();
+    // The frame the caret at the start is drawn in; the caret's stored frame only when no line
+    // holds it.
+    let caret_frame = || {
+        designcraft_compose::caret(&cs, r.start)
+            .and_then(|(fi, ..)| cs.frames.get(fi))
+            .map(|f| f.frame)
+            .or_else(|| t.frame.filter(|f| story.frames.contains(f) && cs.overset_at.is_none_or(|o| r.start < o)))
+    };
+    // A frame's range stops before the paragraph return that ends its last line; the return
+    // belongs to that frame.
+    let end_of = |f: &designcraft_compose::FrameText| f.range.end + usize::from(story.text.as_bytes().get(f.range.end) == Some(&b'\n'));
+    let mut frames: Vec<ItemId> = if t.is_caret() {
+        caret_frame().into_iter().collect()
+    } else {
+        cs.frames.iter().filter(|f| f.range.start < r.end && r.start < end_of(f)).map(|f| f.frame).collect()
+    };
+    // Selected text no frame holds goes with the line before it.
+    if frames.is_empty() {
+        frames.extend(caret_frame());
+    }
+    let overset = cs.overset_at.is_some_and(|o| r.end > o);
+    if let Some(l) = last
+        && (frames.is_empty() || overset)
+        && !frames.contains(&l)
+    {
+        frames.push(l);
+    }
+    frames
 }
 
 /// `object.textFrameOptions` Inset Spacing: one number for every side, or [top, left, bottom,
@@ -2947,6 +3088,14 @@ fn frame_choice_param<T: serde::de::DeserializeOwned>(p: &Value, key: &str, name
     }
 }
 
+/// An `object.stroke` choice: absent or null leaves it, a name outside `names` is an error.
+fn stroke_choice_param<T: serde::de::DeserializeOwned>(p: &Value, key: &str, names: &str) -> Result<Option<T>> {
+    match p.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => serde_json::from_value(v.clone()).map(Some).map_err(|_| bad("object.stroke", format!("{key} must be one of {names}, not {v}"))),
+    }
+}
+
 fn apply_custom_frame_grid(
     options: &mut TextFrameOptions,
     custom: Option<Option<(Option<f64>, Option<f64>, Option<designcraft_doc::FrameGridRelative>)>>,
@@ -2965,37 +3114,6 @@ fn apply_custom_frame_grid(
     }
 }
 
-/// The gap at `p` on spread `sr`: (vertical gap?, edge a, edge b, ids ending at a, ids starting at b).
-pub(crate) fn find_gap(d: &Document, sr: designcraft_doc::SpreadRef, p: Point) -> Option<(bool, f64, f64, Vec<ItemId>, Vec<ItemId>)> {
-    let sp = d.spread(sr)?;
-    let page = sp.page_at_x(p.x).and_then(|i| sp.pages.get(i)).map(|pg| pg.bounds())?;
-    let items: Vec<(ItemId, Rect)> = sp
-        .items
-        .iter()
-        .filter(|it| !it.hidden && !it.locked && d.layer(it.layer).is_none_or(|l| !l.locked && l.visible))
-        .map(|it| (it.id, it.bounds()))
-        .collect();
-    if items.iter().any(|(_, b)| b.contains(p)) {
-        return None;
-    }
-    // Between left and right neighbours (a vertical gap), or above and below (horizontal).
-    let side = |vertical: bool| {
-        let (pos, lo, hi) = if vertical { (p.x, page.x0, page.x1) } else { (p.y, page.y0, page.y1) };
-        let across = |b: &Rect| if vertical { b.y0 <= p.y && p.y <= b.y1 } else { b.x0 <= p.x && p.x <= b.x1 };
-        let end = |b: &Rect| if vertical { b.x1 } else { b.y1 };
-        let start = |b: &Rect| if vertical { b.x0 } else { b.y0 };
-        let a = items.iter().filter(|(_, b)| across(b) && end(b) <= pos).map(|(_, b)| end(b)).fold(lo, f64::max);
-        let z = items.iter().filter(|(_, b)| across(b) && start(b) >= pos).map(|(_, b)| start(b)).fold(hi, f64::min);
-        let before: Vec<ItemId> = items.iter().filter(|(_, b)| across(b) && (end(b) - a).abs() < 0.5).map(|(i, _)| *i).collect();
-        let after: Vec<ItemId> = items.iter().filter(|(_, b)| across(b) && (start(b) - z).abs() < 0.5).map(|(i, _)| *i).collect();
-        (!before.is_empty() || !after.is_empty()).then_some((vertical, a, z, before, after))
-    };
-    match (side(true), side(false)) {
-        (Some(v), Some(h)) => Some(if v.2 - v.1 <= h.2 - h.1 { v } else { h }),
-        (v, h) => v.or(h),
-    }
-}
-
 fn gap_move(s: &mut Session, p: &Value) -> Result<Value> {
     const ID: &str = "gap.move";
     let at = p
@@ -3004,19 +3122,20 @@ fn gap_move(s: &mut Session, p: &Value) -> Result<Value> {
         .and_then(|a| Some(Point::new(a.first()?.as_f64()?, a.get(1)?.as_f64()?)))
         .ok_or_else(|| bad(ID, "missing at"))?;
     let sr = spread_param(p, ID)?;
-    let (vertical, a, z, before, after) = find_gap(&s.doc()?.doc, sr, at).ok_or_else(|| bad(ID, "no gap there"))?;
+    let gap = s.doc()?.doc.find_gap(sr, at).ok_or_else(|| bad(ID, "no gap there"))?;
     // `delta` along the gap's axis, or a drag (dx, dy) of which the axis part counts.
-    let delta =
-        p.get("delta").and_then(Value::as_f64).unwrap_or_else(|| p.get(if vertical { "dx" } else { "dy" }).and_then(Value::as_f64).unwrap_or(0.0));
-    let _ = (a, z);
+    let delta = p
+        .get("delta")
+        .and_then(Value::as_f64)
+        .unwrap_or_else(|| p.get(if gap.vertical { "dx" } else { "dy" }).and_then(Value::as_f64).unwrap_or(0.0));
     s.edit(|d, _| {
         let mut n = 0;
-        for (ids, is_before) in [(&before, true), (&after, false)] {
+        for (ids, is_before) in [(&gap.before, true), (&gap.after, false)] {
             for id in ids {
                 let Some(it) = d.item_mut(*id) else { continue };
                 let b = it.bounds();
                 let mut to = b;
-                match (vertical, is_before) {
+                match (gap.vertical, is_before) {
                     (true, true) => to.x1 = (b.x1 + delta).max(b.x0 + 1.0),
                     (true, false) => to.x0 = (b.x0 + delta).min(b.x1 - 1.0),
                     (false, true) => to.y1 = (b.y1 + delta).max(b.y0 + 1.0),
@@ -3034,7 +3153,7 @@ fn gap_move(s: &mut Session, p: &Value) -> Result<Value> {
                 n += 1;
             }
         }
-        Ok(json!({"axis": if vertical { "x" } else { "y" }, "changed": n}))
+        Ok(json!({"axis": if gap.vertical { "x" } else { "y" }, "changed": n}))
     })
 }
 
@@ -3058,7 +3177,7 @@ fn clipping_path(s: &mut Session, p: &Value) -> Result<Value> {
             let Some(it) = d.item(*id) else { continue };
             let Some(g) = it.graphic() else { continue };
             let Some(asset) = d.assets.get(&g.asset) else { continue };
-            let Some(px) = designcraft_render::decode_pixmap_page(&asset.data, asset.page) else { continue };
+            let Some(px) = asset.data.load().ok().and_then(|b| designcraft_render::decode_pixmap_page(&b, asset.page)) else { continue };
             // A placed PDF cropped to a box: trace that box, which graphic space spans.
             let px = match designcraft_render::shown_box(asset) {
                 // A crop too big to trace is skipped, as a graphic that fails to decode is: tracing
@@ -5015,6 +5134,7 @@ mod named_target_tests {
         s.execute("file.new", &json!({})).unwrap();
         let r = s.execute("frame.create", &json!({"rect": [36, 36, 300, 300], "content": "text", "text": "Hello"})).unwrap();
         assert!(s.doc().unwrap().selection.items.is_empty(), "frame.create leaves a text caret");
+        s.execute("edit.deselectAll", &json!({})).unwrap();
         let e = s.execute("object.textFrameOptions", &json!({"columns": 2})).unwrap_err().to_string();
         assert!(e.contains("nothing selected"), "{e}");
         s.execute("object.textFrameOptions", &json!({"ids": [r["id"]], "columns": 2})).unwrap();
@@ -5031,6 +5151,257 @@ mod named_target_tests {
         assert_eq!(columns(&s), Some(2));
         // Commands documented with `ids` honour `id` too.
         assert_eq!(s.execute("conveyor.collect", &json!({"id": r["id"]})).unwrap()["count"], 1);
+    }
+}
+
+#[cfg(test)]
+mod type_tool_frame_options_tests {
+    use super::*;
+    use designcraft_doc::VerticalJustification;
+
+    /// One story threaded through two frames, with text in both: (first frame, second frame, story).
+    fn two_frame_thread(s: &mut Session) -> (ItemId, ItemId, StoryId) {
+        s.execute("file.new", &json!({})).unwrap();
+        let text = (0..40).map(|i| format!("Line {i} of the threaded story.")).collect::<Vec<_>>().join(" ");
+        let a = s.execute("frame.create", &json!({"rect": [36, 36, 300, 120], "content": "text", "text": text})).unwrap();
+        let b = s.execute("frame.create", &json!({"rect": [36, 200, 300, 700], "content": "text", "text": ""})).unwrap();
+        let (a, b) = (ItemId(a["id"].as_u64().unwrap()), ItemId(b["id"].as_u64().unwrap()));
+        s.execute("text.thread", &json!({"from": a.0, "to": b.0})).unwrap();
+        let sid = s.doc().unwrap().doc.item(a).and_then(Item::text_frame).unwrap().story;
+        (a, b, sid)
+    }
+
+    /// The story bytes `frame` shows.
+    fn shown(s: &Session, sid: StoryId, frame: ItemId) -> std::ops::Range<usize> {
+        let cs = designcraft_compose::compose_story(&s.doc().unwrap().doc, sid, &Default::default());
+        cs.frame(frame).unwrap().range.clone()
+    }
+
+    fn options(s: &Session, id: ItemId) -> TextFrameOptions {
+        s.doc().unwrap().doc.item(id).and_then(Item::text_frame).unwrap().options.clone()
+    }
+
+    fn undo_steps(s: &Session) -> usize {
+        s.doc().unwrap().history.undo.len()
+    }
+
+    /// With the Type tool, Text Frame Options change the frame that shows the caret, not every
+    /// frame of the story.
+    #[test]
+    fn a_caret_changes_the_frame_it_is_in() {
+        let mut s = Session::new();
+        let (a, b, sid) = two_frame_thread(&mut s);
+        let (ra, rb) = (shown(&s, sid, a), shown(&s, sid, b));
+        assert!(!ra.is_empty() && !rb.is_empty(), "both frames hold text: {ra:?} {rb:?}");
+        s.execute("text.select", &json!({"story": sid.0, "anchor": rb.start + 2})).unwrap();
+        assert!(s.doc().unwrap().selection.items.is_empty());
+        let steps = undo_steps(&s);
+        s.execute("object.textFrameOptions", &json!({"columns": 3, "verticalJustification": "center", "inset": 6})).unwrap();
+        assert_eq!(
+            (options(&s, b).columns, options(&s, b).vertical_justification, options(&s, b).inset),
+            (3, VerticalJustification::Center, [6.0; 4])
+        );
+        assert_eq!((options(&s, a).columns, options(&s, a).vertical_justification), (1, VerticalJustification::Top), "the first frame is left alone");
+        assert_eq!(undo_steps(&s), steps + 1, "one undo step");
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(options(&s, b).columns, 1);
+        // A caret in the first frame changes the first frame.
+        s.execute("text.select", &json!({"story": sid.0, "anchor": ra.start + 2})).unwrap();
+        s.execute("object.textFrameOptions", &json!({"verticalJustification": "bottom"})).unwrap();
+        assert_eq!(
+            (options(&s, a).vertical_justification, options(&s, b).vertical_justification),
+            (VerticalJustification::Bottom, VerticalJustification::Top)
+        );
+    }
+
+    /// A caret moved to the start of the second frame keeps the first frame as its stored frame;
+    /// the options go to the frame the caret is drawn in.
+    #[test]
+    fn a_caret_at_a_frame_boundary_changes_the_frame_it_is_drawn_in() {
+        let mut s = Session::new();
+        let (a, b, sid) = two_frame_thread(&mut s);
+        let rb = shown(&s, sid, b);
+        let cs = designcraft_compose::compose_story(&s.doc().unwrap().doc, sid, &Default::default());
+        let drawn = designcraft_compose::caret(&cs, rb.start).and_then(|(fi, ..)| cs.frames.get(fi)).map(|f| f.frame);
+        assert_eq!(drawn, Some(b), "the caret at the boundary is drawn in the second frame");
+        s.doc_mut().unwrap().selection = Selection::text(TextSel { story: sid, anchor: rb.start, focus: rb.start, frame: Some(a), cell: None });
+        s.execute("object.textFrameOptions", &json!({"columns": 2})).unwrap();
+        assert_eq!((options(&s, a).columns, options(&s, b).columns), (1, 2));
+    }
+
+    /// Selected text that runs from one frame into the next changes both frames.
+    #[test]
+    fn selected_text_changes_every_frame_it_runs_through() {
+        let mut s = Session::new();
+        let (a, b, sid) = two_frame_thread(&mut s);
+        let (ra, rb) = (shown(&s, sid, a), shown(&s, sid, b));
+        s.execute("text.select", &json!({"story": sid.0, "anchor": ra.end - 3, "focus": rb.start + 3})).unwrap();
+        s.execute("object.textFrameOptions", &json!({"columns": 2})).unwrap();
+        assert_eq!((options(&s, a).columns, options(&s, b).columns), (2, 2));
+        // Text inside one frame changes that frame only.
+        s.execute("text.select", &json!({"story": sid.0, "anchor": rb.start + 1, "focus": rb.start + 6})).unwrap();
+        s.execute("object.textFrameOptions", &json!({"columns": 4})).unwrap();
+        assert_eq!((options(&s, a).columns, options(&s, b).columns), (2, 4));
+    }
+
+    /// A selected paragraph return at the end of the first frame changes the first frame.
+    #[test]
+    fn a_selected_return_at_the_end_of_a_frame_changes_that_frame() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let text = (0..40).map(|i| format!("Paragraph {i}")).collect::<Vec<_>>().join("\n");
+        let a = s.execute("frame.create", &json!({"rect": [36, 36, 300, 120], "content": "text", "text": text})).unwrap();
+        let b = s.execute("frame.create", &json!({"rect": [36, 200, 300, 700], "content": "text", "text": ""})).unwrap();
+        let (a, b) = (ItemId(a["id"].as_u64().unwrap()), ItemId(b["id"].as_u64().unwrap()));
+        s.execute("text.thread", &json!({"from": a.0, "to": b.0})).unwrap();
+        let sid = s.doc().unwrap().doc.item(a).and_then(Item::text_frame).unwrap().story;
+        let (ra, rb) = (shown(&s, sid, a), shown(&s, sid, b));
+        assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().text.as_bytes()[ra.end], b'\n', "the first frame ends before a return");
+        assert_eq!(rb.start, ra.end + 1, "the second frame starts after it");
+        s.execute("text.select", &json!({"story": sid.0, "anchor": ra.end, "focus": ra.end + 1})).unwrap();
+        s.execute("object.textFrameOptions", &json!({"columns": 2})).unwrap();
+        assert_eq!((options(&s, a).columns, options(&s, b).columns), (2, 1));
+        // From that return into the second frame, with the first frame back as it was: both frames.
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!((shown(&s, sid, a), shown(&s, sid, b)), (ra.clone(), rb.clone()));
+        s.execute("text.select", &json!({"story": sid.0, "anchor": ra.end, "focus": rb.start + 3})).unwrap();
+        s.execute("object.textFrameOptions", &json!({"columns": 3})).unwrap();
+        assert_eq!((options(&s, a).columns, options(&s, b).columns), (3, 3));
+    }
+
+    /// An empty `ids` names no frame, so it does not fall back to the caret's frame.
+    #[test]
+    fn empty_ids_with_a_caret_is_an_error() {
+        let mut s = Session::new();
+        let (a, b, sid) = two_frame_thread(&mut s);
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 2})).unwrap();
+        let before = s.doc().unwrap().doc.clone();
+        let e = s.execute("object.textFrameOptions", &json!({"ids": [], "columns": 3})).unwrap_err().to_string();
+        assert!(e.contains("nothing selected"), "{e}");
+        // An id that is not in the document is refused too.
+        let e = s.execute("object.textFrameOptions", &json!({"ids": [99999, b.0], "columns": 3})).unwrap_err().to_string();
+        assert!(e.contains("no object with id 99999"), "{e}");
+        assert!(std::sync::Arc::ptr_eq(&before, &s.doc().unwrap().doc), "nothing changed");
+        assert_eq!((options(&s, a).columns, options(&s, b).columns), (1, 1));
+    }
+
+    /// An `ids` that is not a list of object ids is refused, not read as the selected frame or the
+    /// caret's frame.
+    #[test]
+    fn malformed_ids_are_an_error() {
+        let mut s = Session::new();
+        let (a, b, sid) = two_frame_thread(&mut s);
+        s.execute("selection.set", &json!({"ids": [b.0]})).unwrap();
+        let before = s.doc().unwrap().doc.clone();
+        for p in [json!({"ids": "bad", "columns": 2}), json!({"ids": [b.0, "x"], "columns": 2}), json!({"ids": null, "columns": 2})] {
+            let e = s.execute("object.textFrameOptions", &p).unwrap_err().to_string();
+            assert!(e.contains("ids must be a list of object ids"), "{p}: {e}");
+        }
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 2})).unwrap();
+        let e = s.execute("object.textFrameOptions", &json!({"ids": "bad", "columns": 2})).unwrap_err().to_string();
+        assert!(e.contains("ids must be a list of object ids"), "with a caret: {e}");
+        assert!(std::sync::Arc::ptr_eq(&before, &s.doc().unwrap().doc), "nothing changed");
+        assert_eq!((options(&s, a).columns, options(&s, b).columns), (1, 1));
+    }
+
+    /// Options the frame already has change nothing and add no undo step.
+    #[test]
+    fn unchanged_options_add_no_undo_step() {
+        let mut s = Session::new();
+        let (_, b, sid) = two_frame_thread(&mut s);
+        let rb = shown(&s, sid, b);
+        s.execute("text.select", &json!({"story": sid.0, "anchor": rb.start + 2})).unwrap();
+        let steps = undo_steps(&s);
+        let (before, revision) = (s.doc().unwrap().doc.clone(), s.doc().unwrap().revision);
+        let r = s.execute("object.textFrameOptions", &json!({"columns": 1, "verticalJustification": "top", "inset": 0})).unwrap();
+        assert_eq!(r["changed"], 0);
+        assert!(std::sync::Arc::ptr_eq(&before, &s.doc().unwrap().doc), "nothing changed");
+        assert_eq!(s.doc().unwrap().revision, revision, "the revision stays");
+        assert_eq!(undo_steps(&s), steps);
+        // The same holds for selected frames, Fixed Width columns included.
+        s.execute("selection.set", &json!({"ids": [b.0]})).unwrap();
+        s.execute("object.textFrameOptions", &json!({"gutter": options(&s, b).gutter})).unwrap();
+        assert_eq!(undo_steps(&s), steps);
+        let fixed = json!({"columnsKind": "fixedWidth", "columnWidth": 100.3, "columns": 2, "gutter": 12.1});
+        s.execute("object.textFrameOptions", &fixed).unwrap();
+        assert_eq!(undo_steps(&s), steps + 1);
+        assert_eq!(s.execute("object.textFrameOptions", &fixed).unwrap()["changed"], 0);
+        assert_eq!(undo_steps(&s), steps + 1, "the same Fixed Width options again add no undo step");
+    }
+
+    /// A caret in footnote text changes the frame that shows the footnote, with or without a
+    /// stored frame on the caret.
+    #[test]
+    fn a_caret_in_a_footnote_changes_the_frame_that_shows_it() {
+        for (in_second, stored) in [(false, None), (true, None), (false, Some(true))] {
+            let mut s = Session::new();
+            let (a, b, sid) = two_frame_thread(&mut s);
+            let r = shown(&s, sid, if in_second { b } else { a });
+            s.execute("text.select", &json!({"story": sid.0, "anchor": r.start + 2})).unwrap();
+            s.execute("footnote.insert", &json!({"text": "Note."})).unwrap();
+            let mut t = s.doc().unwrap().selection.text.unwrap();
+            assert!(t.cell.and_then(|c| c.footnote_id()).is_some(), "the caret is in the footnote: {t:?}");
+            if let Some(second) = stored {
+                t.frame = Some(if second { b } else { a });
+                s.doc_mut().unwrap().selection = Selection::text(t);
+            }
+            s.execute("object.textFrameOptions", &json!({"columns": 2})).unwrap();
+            let want = if in_second { (1, 2) } else { (2, 1) };
+            assert_eq!((options(&s, a).columns, options(&s, b).columns), want, "footnote in the second frame: {in_second}, stored frame: {stored:?}");
+        }
+    }
+
+    /// A caret in a table cell changes the frame that shows the cell, with or without a stored
+    /// frame on the caret.
+    #[test]
+    fn a_caret_in_a_table_cell_changes_the_frame_that_shows_it() {
+        for (in_second, stored) in [(false, None), (true, None), (false, Some(true))] {
+            let mut s = Session::new();
+            let (a, b, sid) = two_frame_thread(&mut s);
+            let r = shown(&s, sid, if in_second { b } else { a });
+            s.execute("text.select", &json!({"story": sid.0, "anchor": r.start + 2})).unwrap();
+            s.execute("table.insert", &json!({"rows": 1, "cols": 1})).unwrap();
+            let mut t = s.doc().unwrap().selection.text.unwrap();
+            assert!(t.cell.is_some_and(|c| c.footnote_id().is_none()), "the caret is in the cell: {t:?}");
+            if let Some(second) = stored {
+                t.frame = Some(if second { b } else { a });
+                s.doc_mut().unwrap().selection = Selection::text(t);
+            }
+            s.execute("object.textFrameOptions", &json!({"columns": 2})).unwrap();
+            let want = if in_second { (1, 2) } else { (2, 1) };
+            assert_eq!((options(&s, a).columns, options(&s, b).columns), want, "table in the second frame: {in_second}, stored frame: {stored:?}");
+        }
+    }
+
+    /// A caret in a repeated footer row is drawn in the footer's own occurrence at the end of the
+    /// table: that frame changes, not the earlier frame that shows a repeat of the footer.
+    #[test]
+    fn a_caret_in_a_repeated_footer_changes_the_frame_with_the_footer_itself() {
+        let mut s = Session::new();
+        let (a, b, sid) = two_frame_thread(&mut s);
+        let ra = shown(&s, sid, a);
+        s.execute("text.select", &json!({"story": sid.0, "anchor": ra.start + 2})).unwrap();
+        s.execute("table.insert", &json!({"rows": 15, "cols": 1, "footerRows": 1})).unwrap();
+        s.execute("table.options", &json!({"repeatFooter": true})).unwrap();
+        let t = s.doc().unwrap().selection.text.unwrap();
+        let table = t.cell.unwrap().table;
+        let footer = s.doc().unwrap().doc.story(sid).unwrap().tables.get(&table).unwrap().nrows() - 1;
+        let cs = designcraft_compose::compose_story(&s.doc().unwrap().doc, sid, &Default::default());
+        let placed = |f: ItemId| {
+            cs.frame(f)
+                .unwrap()
+                .tables
+                .iter()
+                .filter(|tf| tf.table == table)
+                .filter_map(|tf| tf.cell(footer, 0))
+                .map(|c| c.repeated)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!((placed(a), placed(b)), (vec![true], vec![false]), "the footer repeats in the first frame and ends the table in the second");
+        s.doc_mut().unwrap().selection =
+            Selection::text(TextSel { cell: Some(designcraft_doc::CellAddr { table, row: footer, col: 0 }), anchor: 0, focus: 0, frame: None, ..t });
+        s.execute("object.textFrameOptions", &json!({"columns": 2})).unwrap();
+        assert_eq!((options(&s, a).columns, options(&s, b).columns), (1, 2));
     }
 }
 
@@ -5507,6 +5878,52 @@ mod stroke_type_tests {
             assert_eq!(item.stroke.kind, serde_json::from_value::<designcraft_doc::StrokeType>(kind).unwrap());
         }
     }
+
+    /// A tint, weight or miter limit out of range, a gap overprint that isn't true or false, or an
+    /// alignment, cap, join or arrowhead name the stroke doesn't have is refused, with or without a
+    /// selection, and the document stays as it was. Values at the ends of each range are taken.
+    #[test]
+    fn stroke_settings_out_of_range_or_unknown_are_refused() {
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let id = s.execute("frame.create", &json!({"rect": [0, 0, 100, 100]})).unwrap()["id"].as_u64().unwrap();
+        for (key, value) in [
+            ("tint", json!(1.5)),
+            ("tint", json!(-0.1)),
+            ("tint", json!("half")),
+            ("gapTint", json!(2)),
+            ("weight", json!(-1)),
+            ("weight", json!(1001)),
+            ("miterLimit", json!(0.5)),
+            ("miterLimit", json!(501)),
+            ("gapOverprint", json!("yes")),
+            ("align", json!("middle")),
+            ("cap", json!("square")),
+            ("join", json!("sharp")),
+            ("start", json!("arrow")),
+            ("end", json!(3)),
+        ] {
+            for ids in [json!([id]), json!([])] {
+                let before = s.doc().unwrap().doc.clone();
+                let error = s.execute("object.stroke", &json!({"ids": ids, "swatch": "[Black]", key: value})).unwrap_err();
+                assert!(matches!(error, crate::EngineError::BadParams { .. }), "{error}");
+                assert!(error.to_string().contains(key), "{key} {value}: {error}");
+                assert!(std::sync::Arc::ptr_eq(&before, &s.doc().unwrap().doc), "{key} {value}: nothing changed");
+            }
+        }
+        let settings = json!({
+            "ids": [id], "swatch": "[Black]", "tint": 0, "weight": 1000, "miterLimit": 500, "gapTint": 1, "gapOverprint": true,
+            "align": "outside", "cap": "projecting", "join": "bevel", "start": "simpleWide", "end": "bar",
+        });
+        assert_eq!(s.execute("object.stroke", &settings).unwrap()["changed"], 1);
+        let st = s.doc().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap().stroke.clone();
+        assert_eq!((st.tint, st.weight, st.miter_limit, st.gap_tint, st.gap_overprint), (0.0, 1000.0, 500.0, 1.0, true));
+        assert_eq!(
+            (st.align, st.cap, st.join),
+            (designcraft_doc::StrokeAlign::Outside, designcraft_doc::Cap::Projecting, designcraft_doc::Join::Bevel)
+        );
+        assert_eq!((st.start, st.end), (designcraft_doc::Arrowhead::SimpleWide, designcraft_doc::Arrowhead::Bar));
+    }
 }
 
 #[cfg(test)]
@@ -5740,6 +6157,48 @@ mod copy_ids_tests {
         s.execute("edit.copy", &json!({})).unwrap();
         assert!(s.execute("edit.paste", &json!({})).is_err());
         assert_eq!(s.doc().unwrap().doc, before, "nothing is pasted");
+    }
+
+    #[test]
+    fn objects_anchored_in_cells_nested_too_deeply_are_not_copied() {
+        use std::sync::Arc;
+
+        // The first cell of the story's table holds `n` tables, each in the first cell of the one before, and the cell
+        // of the innermost one holds an anchored object.
+        fn nested(n: usize) -> crate::Session {
+            let mut s = crate::Session::new();
+            let (f, sid) = marked_frame(&mut s);
+            let leaf = s.execute("frame.create", &json!({"rect": [0, 0, 10, 10]})).unwrap()["id"].as_u64().unwrap();
+            let d = Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+            let item = d.item(designcraft_doc::ItemId(leaf)).cloned().unwrap();
+            Arc::make_mut(&mut d.spreads[0]).items.retain(|i| i.id.0 != leaf);
+            let mut chain: Option<designcraft_doc::Table> = None;
+            for _ in 0..n {
+                let mut t = designcraft_doc::Table::new(d.alloc(), 1, 1, 0, 0, 40.0);
+                match chain.take() {
+                    Some(inner) => {
+                        t.cells[0].text.insert_table(0, inner);
+                    }
+                    None => {
+                        t.cells[0].text.insert_object(0, designcraft_doc::AnchoredObject::new(item.clone(), Default::default()));
+                    }
+                }
+                chain = Some(t);
+            }
+            let st = d.story_mut(sid).unwrap();
+            let text = &mut Arc::make_mut(st.tables.values_mut().next().unwrap()).cells[0].text;
+            text.insert_table(text.len(), chain.unwrap());
+            s.execute("selection.set", &json!({"ids": [f]})).unwrap();
+            s
+        }
+        let mut s = nested(super::MAX_COPY_DEPTH - 1);
+        s.execute("edit.duplicate", &json!({})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.anchored_items().len(), 2, "the anchored object is copied");
+        let mut s = nested(super::MAX_COPY_DEPTH);
+        let before = s.doc().unwrap().doc.clone();
+        let e = s.execute("edit.duplicate", &json!({})).unwrap_err().to_string();
+        assert!(e.contains("too deeply to copy"), "{e}");
+        assert_eq!(s.doc().unwrap().doc, before, "nothing is copied");
     }
 
     #[test]

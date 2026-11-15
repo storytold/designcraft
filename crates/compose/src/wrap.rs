@@ -21,6 +21,7 @@
 use designcraft_doc::{AnchorPosition, AnchoredObject, Document, Item, OBJECT_MARK, PageSide, SpreadRef, Story, StoryId};
 use designcraft_geom::Affine;
 
+use crate::reuse::{Reuse, Trace};
 use crate::{ComposeOptions, ComposedStory, Exclusion, FrameSpec};
 
 /// Most extra compositions of a story with its own anchored objects' wrap, however many objects
@@ -46,6 +47,8 @@ pub(crate) struct Obstacle<'a> {
     xf: Affine,
     /// Story byte of the anchor, for obstacles in their own story.
     anchor: Option<usize>,
+    /// Baseline of the line holding the anchor, for obstacles in their own story.
+    anchor_baseline: Option<f64>,
 }
 
 /// The wrap may be set on the frame or on its placed graphic (Direct Selection).
@@ -127,7 +130,8 @@ pub(crate) fn obstacles<'a>(doc: &Document, story: &'a Story, cs: &ComposedStory
             } else {
                 None
             };
-            out.push(Obstacle { spread: loc.spread, item: &obj.item, xf, anchor });
+            let anchor_baseline = anchor.and_then(|_| ft.lines.get(o.line)).map(|l| l.baseline);
+            out.push(Obstacle { spread: loc.spread, item: &obj.item, xf, anchor, anchor_baseline });
         }
     }
     out
@@ -158,6 +162,7 @@ pub(crate) fn exclusions(doc: &Document, specs: &[FrameSpec], obs: &[Obstacle]) 
                 let r = e.rect;
                 if r.is_finite() && r.x0 < a.x1 && r.x1 > a.x0 && r.y0 < a.y1 && r.y1 > a.y0 {
                     e.after = ob.anchor;
+                    e.anchor_baseline = ob.anchor_baseline;
                     ex.push(e);
                 }
             }
@@ -193,7 +198,22 @@ fn settled(a: &[Vec<Exclusion>], b: &[Vec<Exclusion>]) -> bool {
 /// Compose story `sid` with the wrapping anchored objects of `others` (compositions of its
 /// [`neighbours`]) and of its own.
 pub(crate) fn compose_among(doc: &Document, sid: StoryId, opts: &ComposeOptions, others: &[&ComposedStory]) -> ComposedStory {
-    let Some(st) = doc.story(sid) else { return ComposedStory { story: sid, ..Default::default() } };
+    compose_among_traced(doc, sid, opts, others, None).0
+}
+
+/// [`compose_among`], also giving the trace for composing the story again after an edit, when
+/// the composition leaves one ([`crate::reuse`]). `before` is the story before an edit with its
+/// composition among the same `others` and that composition's trace: the paragraphs the edit
+/// cannot change are taken from it. A story with wrapping anchored objects of its own is
+/// composed whole and leaves no trace.
+pub(crate) fn compose_among_traced(
+    doc: &Document,
+    sid: StoryId,
+    opts: &ComposeOptions,
+    others: &[&ComposedStory],
+    before: Option<Reuse<'_>>,
+) -> (ComposedStory, Option<Trace>) {
+    let Some(st) = doc.story(sid) else { return (ComposedStory { story: sid, ..Default::default() }, None) };
     let mut specs = crate::frame_specs_placed(doc, sid, &opts.placed);
     if !others.is_empty() {
         let mut obs = Vec::new();
@@ -207,10 +227,10 @@ pub(crate) fn compose_among(doc: &Document, sid: StoryId, opts: &ComposeOptions,
             specs = with_exclusions(&specs, &added);
         }
     }
-    let mut out = crate::compose(doc, st, &specs, opts);
     if !has_wrapping_objects(st) {
-        return out;
+        return crate::compose_traced(doc, st, &specs, opts, before);
     }
+    let mut out = crate::compose(doc, st, &specs, opts);
     let own = st.objects.iter().filter(|o| wraps(o) && !matches!(o.position, AnchorPosition::Inline { .. })).count();
     let mut prev = vec![Vec::new(); specs.len()];
     for _ in 0..(own + 1).clamp(MIN_PASSES, MAX_PASSES) {
@@ -221,5 +241,5 @@ pub(crate) fn compose_among(doc: &Document, sid: StoryId, opts: &ComposeOptions,
         out = crate::compose(doc, st, &with_exclusions(&specs, &added), opts);
         prev = added;
     }
-    out
+    (out, None)
 }

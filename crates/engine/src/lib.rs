@@ -7,6 +7,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
 
+pub mod asset_io;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod atomic;
 pub mod autosize;
@@ -114,6 +115,8 @@ pub struct DocState {
     pub preview_record: Option<u32>,
     /// The fonts the document brought (`doc.font_scope`), found while it is open.
     pub fonts: Option<Arc<FontScope>>,
+    /// What the open found for its linked files, and their background check.
+    pub links: cmd::native_links::OpenLinks,
 }
 
 /// A document's font scope ([`designcraft_fonts::FontDb::load_document_fonts`]): its fonts are
@@ -170,6 +173,7 @@ impl DocState {
             preview_stash: None,
             preview_record: None,
             fonts: None,
+            links: Default::default(),
         }
     }
     /// The document changed: it gets a revision no document state had before. A cancelled
@@ -414,6 +418,10 @@ pub struct Session {
     pub clipboard_origin: f64,
     /// Crash-recovery folder (the app sets it; saving or closing a document removes its entry).
     pub recovery_dir: Option<std::path::PathBuf>,
+    /// This session's number for the background recovery writer, which returns each result to
+    /// the session that queued it.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub(crate) recovery_owner: recovery::Owner,
     /// Copied text with its formatting (a frameless story slice), its plain text, and what pasting
     /// it needs from its document: a copy holding only the stories its anchored text frames show
     /// (and theirs) and the graphics the text and those stories place.
@@ -422,6 +430,8 @@ pub struct Session {
     pub ui_requests: Vec<UiRequest>,
     /// Graphic loaded in the place cursor.
     pub loaded: Option<LoadedGraphic>,
+    /// Remaining graphics, in source-selection order, after `loaded`.
+    pub loaded_queue: std::collections::VecDeque<LoadedGraphic>,
     pub(crate) untitled: u32,
     /// Transforms applied to the current selection, oldest first (Transform Again / Sequence
     /// Again), with the selection they were applied to and whether the last one came from a
@@ -463,6 +473,7 @@ impl Session {
 
     pub fn new() -> Self {
         guard::install_panic_hook();
+        asset_io::install();
         Session {
             docs: vec![],
             active: None,
@@ -479,10 +490,12 @@ impl Session {
             clipboard: None,
             clipboard_origin: 0.0,
             recovery_dir: None,
+            recovery_owner: recovery::Owner::new(),
             text_clipboard: None,
             link_checks: Default::default(),
             ui_requests: vec![],
             loaded: None,
+            loaded_queue: Default::default(),
             transforms: Default::default(),
             text_drag: false,
             text_unit: None,
@@ -558,6 +571,7 @@ impl Session {
             }
             self.reset_find_scope();
             self.stop_data_preview();
+            self.unload_place_cursor();
             self.active = Some(i);
         }
     }
@@ -574,6 +588,7 @@ impl Session {
             }
         }
         self.stop_data_preview();
+        self.unload_place_cursor();
         self.docs.push(d);
         self.active = Some(self.docs.len() - 1);
         self.docs.len() - 1
@@ -596,6 +611,10 @@ impl Session {
             recovery::discard_document(self, i, recovery_dir.as_deref());
         }
         if i < self.docs.len() {
+            // A background document's closing leaves the active document's place cursor alone.
+            if self.active == Some(i) {
+                self.unload_place_cursor();
+            }
             self.reset_find_scope();
             self.docs.remove(i);
             self.active = if self.docs.is_empty() { None } else { Some(i.min(self.docs.len() - 1)) };
@@ -665,11 +684,13 @@ impl Session {
         if spec.undoable
             && let Some(st) = self.active_mut()
             && st.interaction.is_none()
-            && st.doc.spreads.iter().any(|sp| sp.items.iter().any(|i| i.live_caption.is_some()))
+            && cmd::captions::has_live(&st.doc)
         {
             let mut d = (*st.doc).clone();
             if cmd::captions::refresh_live(&mut d) {
+                cmd::captions::clamp_text_selection(&d, &mut st.selection);
                 st.doc = Arc::new(d);
+                st.bump_revision();
             }
         }
         self.autosize_changed(spec, before.as_ref());

@@ -151,11 +151,49 @@ fn script_export_of_the_document_in_the_running_app_saves_a_copy() {
 #[test]
 fn failing_script_exits_nonzero_with_the_step() {
     let mut child = cli().args(["script", "-"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
-    child.stdin.take().unwrap().write_all(b"document.inspect\nno.such.command\n").unwrap();
+    child.stdin.take().unwrap().write_all(b"document.inspect\nno.such.command\ndocument.inspect\n").unwrap();
     let out = child.wait_with_output().unwrap();
     assert!(!out.status.success());
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["failedIndex"], 1);
+    assert_eq!(v["completed"], 1);
+}
+
+#[test]
+fn keep_going_reports_the_first_failure_and_does_not_write_outputs() {
+    struct Outputs([std::path::PathBuf; 2]);
+    impl Drop for Outputs {
+        fn drop(&mut self) {
+            for path in &self.0 {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+    }
+    let root = std::env::temp_dir();
+    let name = format!("dc-cli-keep-going-{}", std::process::id());
+    let paths = [root.join(format!("{name}.designcraft")), root.join(format!("{name}.png"))];
+    assert!(paths.iter().all(|path| !path.exists()));
+    let outputs = Outputs(paths);
+
+    let mut child = cli()
+        .args(["script", "-", "--keep-going", "--save", outputs.0[0].to_str().unwrap(), "--export", outputs.0[1].to_str().unwrap()])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(b"no.such.command\ndocument.inspect\nno.other.command\n").unwrap();
+    let out = child.wait_with_output().unwrap();
+
+    assert!(!out.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["completed"], 3);
+    assert_eq!(v["failedIndex"], 0);
+    assert_eq!(v["failedCommand"], "no.such.command");
+    assert!(v["results"][0]["error"].is_string());
+    assert!(v["results"][1].is_object() && v["results"][1]["error"].is_null());
+    assert!(v["results"][2]["error"].is_string());
+    assert!(outputs.0.iter().all(|path| !path.exists()), "--save and --export require a successful script");
 }
 
 #[test]

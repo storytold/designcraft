@@ -1512,6 +1512,59 @@ fn text_frame_options_set_columns_baseline_and_wrap_as_indesign_does() {
     assert_eq!((opts(&app).columns_kind, opts(&app).column_width), (designcraft_doc::ColumnsKind::FixedNumber, 120.0));
 }
 
+/// The frames Text Frame Options took while typing belong to the document it opened on: when
+/// another document becomes active before OK, OK changes nothing there.
+#[test]
+fn text_frame_options_from_the_type_tool_stay_with_their_document() {
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    let make = |app: &mut crate::DesignApp| {
+        app.run("file.new", json!({})).unwrap();
+        let r = app.run("frame.create", json!({"rect": [36, 36, 300, 300], "content": "text", "text": "Hello"})).unwrap();
+        let (id, story) = (r["id"].as_u64().unwrap(), r["story"].as_u64().unwrap());
+        app.run("text.select", json!({"story": story, "anchor": 2})).unwrap();
+        id
+    };
+    let a = make(&mut app);
+    let mut d = Dialog::new("textFrameOptions", json!({}));
+    seed_text_frame_options(&app, &mut d);
+    assert_eq!(d.fields.get("_targets"), Some(&json!([a])));
+    d.fields.insert("columns".into(), json!(3));
+    // A second document, with a caret in a frame that has the same id, becomes active.
+    let b = make(&mut app);
+    assert_eq!(a, b);
+    app.ui.dialog = Some(d);
+    let err = confirm(&mut app).unwrap_err().to_string();
+    assert!(err.contains("no longer the active one"), "{err}");
+    let columns = app.session.active().unwrap().doc.item(designcraft_doc::ItemId(b)).and_then(|i| i.text_frame().map(|t| t.options.columns));
+    assert_eq!(columns, Some(1), "the other document's frame is unchanged");
+}
+
+/// Revert replaces the document while Text Frame Options taken while typing stay open: OK is
+/// refused, since the saved frame ids can name another frame in the reverted document.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn text_frame_options_from_the_type_tool_are_refused_after_revert() {
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    app.run("file.saveAs", json!({"path": dir.path().join("revert.designcraft")})).unwrap();
+    let a = app.run("frame.create", json!({"rect": [36, 36, 300, 120], "content": "text", "text": "Unsaved"})).unwrap();
+    app.run("text.select", json!({"story": a["story"], "anchor": 1})).unwrap();
+    let mut d = Dialog::new("textFrameOptions", json!({}));
+    seed_text_frame_options(&app, &mut d);
+    d.fields.insert("columns".into(), json!(3));
+    app.run("file.revert", json!({})).unwrap();
+    let b = app.run("frame.create", json!({"rect": [36, 200, 300, 300], "content": "text", "text": "After"})).unwrap();
+    assert_eq!(a["id"], b["id"], "the reverted document gives a new frame the same id");
+    app.ui.dialog = Some(d);
+    let err = confirm(&mut app).unwrap_err().to_string();
+    assert!(err.contains("no longer the active one"), "{err}");
+    assert!(app.ui.dialog.is_some(), "the dialog stays open");
+    let b = designcraft_doc::ItemId(b["id"].as_u64().unwrap());
+    let columns = app.session.active().unwrap().doc.item(b).and_then(|i| i.text_frame().map(|t| t.options.columns));
+    assert_eq!(columns, Some(1), "the new frame is unchanged");
+}
+
 #[test]
 fn baseline_grid_increment_error_explains_the_positive_measure_rule() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
@@ -1637,6 +1690,47 @@ fn text_frame_options_show_four_sides_for_a_mixed_selection() {
     assert!(d.b("_shaped"));
 }
 
+/// With the Type tool, text selected through an oval and a threaded rectangle shows the four
+/// sides even when the caret's frame is the oval, and a changed side leaves the rectangle's other
+/// sides as they were.
+#[test]
+fn text_frame_options_show_four_sides_for_text_through_an_oval_and_a_rectangle() {
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let text = (0..40).map(|i| format!("Line {i} of the threaded story.")).collect::<Vec<_>>().join(" ");
+    let oval = app.run("frame.create", json!({"rect": [36, 36, 236, 136], "shape": "ellipse", "content": "text", "text": text})).unwrap();
+    let sid = oval["story"].as_u64().unwrap();
+    let oval = designcraft_doc::ItemId(oval["id"].as_u64().unwrap());
+    let rect = app.run("frame.create", json!({"rect": [36, 200, 336, 700], "content": "text", "text": "", "caret": false})).unwrap();
+    let rect = designcraft_doc::ItemId(rect["id"].as_u64().unwrap());
+    app.run("text.thread", json!({"from": oval.0, "to": rect.0})).unwrap();
+    app.run("object.textFrameOptions", json!({"ids": [oval.0, rect.0], "inset": [6, 2, 3, 4]})).unwrap();
+    let opts = |app: &DesignApp, id| app.session.doc().unwrap().doc.item(id).unwrap().text_frame().unwrap().options.clone();
+    let select_through_both = |app: &mut DesignApp| {
+        app.run("text.select", json!({"story": sid, "anchor": 0, "focus": text.len()})).unwrap();
+        // The caret's stored frame is the oval.
+        if let Some(t) = app.session.active_mut().unwrap().selection.text.as_mut() {
+            t.frame = Some(oval);
+        }
+        assert_eq!(designcraft_engine::cmd::text_frame_options_frames(&app.session), vec![oval, rect], "the selected text runs through both frames");
+    };
+    select_through_both(&mut app);
+    let mut d = Dialog::new("textFrameOptions", json!({}));
+    seed_text_frame_options(&app, &mut d);
+    assert!(!d.b("_shaped") && !d.fields.contains_key("inset"), "text through a rectangle shows the four sides");
+    d.fields.insert("insetTop".into(), json!("1p0"));
+    app.ui.dialog = Some(d);
+    confirm(&mut app).unwrap();
+    assert_eq!(opts(&app, rect).inset, [12.0, 2.0, 3.0, 4.0]);
+    assert_eq!(opts(&app, oval).inset, [12.0, 2.0, 3.0, 4.0]);
+    // An even oval does not link the sides while the rectangle's sides are uneven.
+    app.run("object.textFrameOptions", json!({"ids": [oval.0], "inset": [5, 5, 5, 5]})).unwrap();
+    select_through_both(&mut app);
+    let mut d = Dialog::new("textFrameOptions", json!({}));
+    seed_text_frame_options(&app, &mut d);
+    assert!(!d.b("insetLinked"), "a frame with uneven sides among the targets leaves the link off");
+}
+
 /// The dialog dims Top, Left, Bottom, Right and the link for a non-rectangular frame and adds an
 /// Inset field; for a rectangle it shows no Inset field and the sides stay editable.
 #[test]
@@ -1652,8 +1746,7 @@ fn text_frame_options_dims_the_sides_for_a_non_rectangular_frame() {
         let r = app.run("frame.create", json!({"rect": [36, 36, 336, 236], "shape": shape, "content": "text", "text": "Hello"})).unwrap();
         app.run("selection.set", json!({"ids": [r["id"]]})).unwrap();
         app.ui.dialog = Some(Dialog::new("textFrameOptions", json!({})));
-        // The General tab's Columns and Align dropdowns have no accessible name yet.
-        let mut h = Harness::builder().with_size(egui::vec2(1000.0, 800.0)).with_accessibility_check(false).build_ui_state(
+        let mut h = Harness::builder().with_size(egui::vec2(1000.0, 800.0)).build_ui_state(
             |ui, app: &mut DesignApp| {
                 let key = egui::Id::unique("text_frame_inset_test_fonts");
                 if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
@@ -1666,17 +1759,31 @@ fn text_frame_options_dims_the_sides_for_a_non_rectangular_frame() {
             app,
         );
         h.run_steps(3);
-        for side in ["insetTop", "insetLeft", "insetBottom", "insetRight"] {
-            let label = format!("Increase tfo_{side}");
+        // The Columns and Align dropdowns carry their captions as accessible names.
+        for name in ["Columns:", "Align:"] {
+            let _ = h.get_by_role_and_label(egui::accesskit::Role::ComboBox, name);
+        }
+        // The numeric fields and their spinners are named from the captions beside them.
+        for name in ["Number", "Width", "Gutter", "Maximum", "Paragraph Spacing Limit"] {
+            let _ = h.get_by_role_and_label(egui::accesskit::Role::TextInput, name);
+            let _ = h.get_by_label(&format!("Increase {name}"));
+        }
+        for side in ["Top", "Left", "Bottom", "Right"] {
+            let _ = h.get_by_role_and_label(egui::accesskit::Role::TextInput, side);
+            let label = format!("Increase {side}");
             assert_eq!(h.get_by_label(&label).accesskit_node().is_disabled(), shaped, "{shape}: {side}");
         }
         assert_eq!(h.query_by_label("Inset:").is_some(), shaped, "{shape}: the Inset caption");
-        assert_eq!(h.query_by_label("Increase tfo_inset").is_some(), shaped, "{shape}: the Inset field");
+        assert_eq!(h.query_by_role_and_label(egui::accesskit::Role::TextInput, "Inset").is_some(), shaped, "{shape}: the Inset editor");
+        assert_eq!(h.query_by_label("Increase Inset").is_some(), shaped, "{shape}: the Inset field");
         // The General tab fits in the dialog's fixed height: the buttons stay put on another tab.
         let (wrap, cancel) = (h.get_by_label("Ignore Text Wrap").rect().bottom(), h.get_by_label("Cancel").rect().top());
         assert!(wrap < cancel, "{shape}: Ignore Text Wrap ends at {wrap}, below the top of Cancel at {cancel}");
-        h.get_by_label("Auto-Size").click();
-        h.run_steps(3);
+        // Every tab names its inputs (the harness checks after each settled run).
+        for tab in ["Column Rules", "Baseline Options", "Auto-Size"] {
+            h.get_by_label(tab).click();
+            h.run();
+        }
         assert_eq!(h.get_by_label("Cancel").rect().top(), cancel, "{shape}: the buttons stay put on another tab");
         h.get_by_label("General").click();
         h.run_steps(3);
@@ -1686,6 +1793,62 @@ fn text_frame_options_dims_the_sides_for_a_non_rectangular_frame() {
         h.get_by_label("Make all settings the same").click();
         h.run_steps(3);
         assert_eq!(linked(&h) != before, !shaped, "{shape}: the link");
+    }
+}
+
+/// Text Frame Options shows the insets (or a non-rectangular frame's one Inset), the gutter and
+/// the other measures in the document's ruler unit, not always in picas, and reads a bare number
+/// typed there in that unit (#2739).
+#[test]
+fn text_frame_options_follow_the_ruler_units() {
+    use egui::accesskit::Role;
+    use egui_kittest::{Harness, kittest::Queryable};
+    let mm = |pt: f64| format_measure(pt, Unit::Millimeters);
+    for shape in ["rectangle", "ellipse"] {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        app.run("document.preferences", json!({"horizontalUnits": "millimeters", "verticalUnits": "millimeters"})).unwrap();
+        let r = app.run("frame.create", json!({"rect": [36, 36, 336, 236], "shape": shape, "content": "text", "text": "Hello"})).unwrap();
+        let id = designcraft_doc::ItemId(r["id"].as_u64().unwrap());
+        app.run("object.textFrameOptions", json!({"ids": [id.0], "columns": 2, "gutter": 18, "inset": [9, 9, 9, 9]})).unwrap();
+        app.run("selection.set", json!({"ids": [id.0]})).unwrap();
+        app.ui.dialog = Some(Dialog::new("textFrameOptions", json!({})));
+        let mut h = Harness::builder().with_size(egui::vec2(1000.0, 800.0)).build_ui_state(
+            |ui, app: &mut DesignApp| {
+                let key = egui::Id::unique("text_frame_units_test_fonts");
+                if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
+                    crate::theme::install_fonts(ui.ctx(), "");
+                    ui.data_mut(|d| d.insert_temp(key, true));
+                    return;
+                }
+                show(app, ui.ctx());
+            },
+            app,
+        );
+        h.run_steps(3);
+        let value = |h: &Harness<'_, DesignApp>, name: &str| h.get_by_role_and_label(Role::TextInput, name).value().unwrap_or_default();
+        let sides: &[&str] = if shape == "ellipse" { &["Inset"] } else { &["Top", "Left", "Bottom", "Right"] };
+        for side in sides {
+            assert_eq!(value(&h, side), mm(9.0), "{shape}: {side}");
+        }
+        assert_eq!(value(&h, "Gutter"), mm(18.0), "{shape}: the gutter");
+        assert_eq!(value(&h, "Paragraph Spacing Limit"), mm(0.0), "{shape}: the paragraph spacing limit");
+        let width = value(&h, "Width");
+        assert!(width.ends_with(" mm"), "{shape}: the column width {width:?} in millimetres");
+        // Bare numbers typed in the fields are millimetres.
+        let mut app = h.into_state();
+        let d = app.ui.dialog.as_mut().expect("the dialog stays open");
+        assert_eq!(d.unit, Unit::Millimeters, "{shape}");
+        let inset_key = if shape == "ellipse" { "inset" } else { "insetTop" };
+        for (k, v) in [(inset_key, "5"), ("gutter", "4"), ("firstBaselineMin", "2")] {
+            d.fields.insert(k.into(), json!(v));
+        }
+        confirm(&mut app).unwrap();
+        let o = app.session.doc().unwrap().doc.item(id).unwrap().text_frame().unwrap().options.clone();
+        let pt = |n: f64| Unit::Millimeters.to_pt(n);
+        assert!((o.inset[0] - pt(5.0)).abs() < 1e-6, "{shape}: the inset {:?}", o.inset);
+        assert!((o.gutter - pt(4.0)).abs() < 1e-6, "{shape}: the gutter {}", o.gutter);
+        assert!((o.first_baseline_min - pt(2.0)).abs() < 1e-6, "{shape}: the first baseline minimum {}", o.first_baseline_min);
     }
 }
 
@@ -1778,15 +1941,15 @@ fn text_frame_options_link_the_insets_only_when_every_selected_frame_has_even_si
     assert!(!seeded(&app).b("insetLinked"));
     app.run("text.select", json!({"story": other_even_story, "anchor": 0, "focus": 0})).unwrap();
     assert!(seeded(&app).b("insetLinked"));
-    // A story threaded on into the uneven frame: a caret placed in the first frame changes only
-    // that frame, and a caret with no frame changes every frame of the story.
+    // A story threaded on into the uneven frame: a caret placed in the first frame, or a caret
+    // with no stored frame drawn in the first frame, changes only that frame.
     let (first, story) = frame(&mut app, [300, 300, 500, 500], json!(6));
     let (last, _) = frame(&mut app, [300, 520, 500, 700], json!([1, 2, 3, 4]));
     app.run("text.thread", json!({"from": first.0, "to": last.0})).unwrap();
     app.run("text.placeCaret", json!({"frame": first.0, "point": [310, 310]})).unwrap();
     assert!(seeded(&app).b("insetLinked"));
     app.run("text.select", json!({"story": story, "anchor": 0, "focus": 0})).unwrap();
-    assert!(!seeded(&app).b("insetLinked"));
+    assert!(seeded(&app).b("insetLinked"));
 }
 
 #[test]
@@ -4297,12 +4460,20 @@ fn retype_beside(h: &mut egui_kittest::Harness<'static, crate::test_window::Wind
     h.run_steps(3);
 }
 
+/// The dialog's "Make all settings the same" links, in reading order: the Properties panel's
+/// own links (its Text Frame insets, with a caret in a frame) are to the right of its Quick
+/// Actions heading's left edge and are left out.
+fn dialog_links(h: &egui_kittest::Harness<'static, crate::test_window::Window>) -> Vec<egui::Rect> {
+    use egui_kittest::kittest::Queryable;
+    let panel_left = h.query_by_label("Quick Actions").map_or(f32::INFINITY, |n| n.rect().left());
+    h.get_all_by_label("Make all settings the same").map(|n| n.rect()).filter(|r| r.center().x < panel_left).collect()
+}
+
 /// The course's chapter 40: Paragraph Border's four weights are linked as InDesign's, so a
 /// side typed in sets all four; with the link off ("Make all settings the same") a side is set
 /// alone, as the lesson gives the border only a thick left side. The corners link the same way.
 #[test]
 fn paragraph_border_sides_and_corners_link_as_indesigns() {
-    use egui_kittest::kittest::Queryable;
     let (app, _) = ruled_paragraph();
     let mut h = crate::test_window::open(app, egui::vec2(1400.0, 900.0));
     h.state_mut().app.ui.dialog = Some(Dialog::new("paragraphStyleOptions", json!({"name": "Ruled Child", "section": "border", "p.borderOn": true})));
@@ -4317,7 +4488,7 @@ fn paragraph_border_sides_and_corners_link_as_indesigns() {
     // The link of the weights (0), corners (1) or offsets (2), where it is now: the dialog
     // scrolls as fields take focus.
     let link = |h: &egui_kittest::Harness<'static, crate::test_window::Window>, n: usize| {
-        let links: Vec<egui::Rect> = h.get_all_by_label("Make all settings the same").map(|n| n.rect()).collect();
+        let links = dialog_links(h);
         assert_eq!(links.len(), 3, "weights, corners and offsets each have a link");
         links[n].center()
     };
@@ -4374,7 +4545,7 @@ fn paragraph_shading_page_is_laid_out_as_indesigns() {
     assert_eq!(field(&h, "shadingOverprint"), json!(true));
     // The corners' link (0) and the offsets' (1).
     let link = |h: &egui_kittest::Harness<'static, crate::test_window::Window>, n: usize| {
-        let links: Vec<egui::Rect> = h.get_all_by_label("Make all settings the same").map(|n| n.rect()).collect();
+        let links = dialog_links(h);
         assert_eq!(links.len(), 2, "corners and offsets each have a link");
         links[n].center()
     };
