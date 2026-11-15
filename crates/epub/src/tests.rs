@@ -1074,3 +1074,12 @@ fn a_threaded_story_is_skipped_only_when_every_frame_is_hidden() {
     d.item_mut(b).unwrap().hidden = true;
     assert_eq!(story(&d), 0);
 }
+
+#[test]
+fn shared_base64_keeps_binary_padding_and_long_data_uris_on_one_line() {
+    assert_eq!(base64(b""), "");
+    assert_eq!(base64(&[0xfb, 0xff, 0xff]), "+///");
+    assert_eq!(base64(&[0xff]), "/w==");
+    assert_eq!(base64(&[0xff, 0xff]), "//8=");
+    assert_eq!(base64(&[0; 60]), "A".repeat(80));
+}
