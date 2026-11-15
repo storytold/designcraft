@@ -2837,7 +2837,7 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
         let face = db.face(&base_chars.font_family, &base_chars.font_style);
         face.cap_height * base_chars.size / face.upem * base_chars.v_scale
     };
-    let drop_grid = drop_cap_grid(cur_frame.filter(|f| f.countable_grid().is_some()), pp);
+    let drop_grid = drop_cap_grid(cur_frame, pp);
     // Align Left Edge (left-to-right paragraphs).
     let drop_align = pp.drop_cap_align_left && pp.direction == designcraft_doc::TextDirection::LeftToRight;
     // Tab stops for the drop cap, with the start-side indent (the right one, right to left).
@@ -5794,9 +5794,9 @@ impl DropCap {
 }
 
 /// The baseline grid increment a drop cap in frame `frame` reaches down by: that frame's, when the
-/// paragraph aligns all its lines to the grid.
+/// paragraph aligns all its lines to the grid and the lines can count that grid's steps.
 fn drop_cap_grid(frame: Option<&FrameSpec>, pp: &ParaProps) -> Option<f64> {
-    frame.and_then(|f| f.grid).filter(|_| pp.grid_align == GridAlign::AllLines).map(|g| g.1)
+    frame.and_then(FrameSpec::countable_grid).filter(|_| pp.grid_align == GridAlign::AllLines).map(|g| g.1)
 }
 
 /// The drop cap beside paragraph `pi`'s lines in frame `frame` (at frame and column `at`). While

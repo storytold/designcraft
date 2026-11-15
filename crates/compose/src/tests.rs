@@ -5361,6 +5361,33 @@ fn drop_cap_skips_a_grid_the_lines_skip() {
     assert!((b.baseline - lines[2].baseline).abs() < 1e-6, "{}", b.baseline);
 }
 
+/// A paragraph that moves on to a next frame whose grid the lines can't count (its first line too
+/// far off for a 0.7 pt step) sizes its drop cap to no grid there: it reaches down to line 3 at the
+/// 12 pt leading the lines are set at, not by the first frame's 15 pt grid or by 0.7 pt steps.
+#[test]
+fn drop_cap_moved_on_to_a_frame_with_a_grid_the_lines_skip_reaches_down_by_its_leading() {
+    use designcraft_doc::{FrameBaselineGrid, GridAlign, StartParagraph};
+    let para = ParaAttrs { grid_align: Some(GridAlign::AllLines), ..drop_cap(3, 1) };
+    let (mut d, sid, first) = drop_doc_in(&format!("Intro.\n{LOREM}"), Rect::new(0.0, 0.0, 300.0, 300.0), para);
+    let lid = d.default_layer();
+    let (second, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 400.0, 300.0, 1000.0), lid, "", ParaFormat::default()).unwrap();
+    d.thread(first, second).unwrap();
+    d.item_mut(first).unwrap().text_frame_mut().unwrap().options.baseline_grid = Some(FrameBaselineGrid::new(0.0, 15.0));
+    let paras = &mut d.story_mut(sid).unwrap().paras;
+    paras[0].para = ParaAttrs { grid_align: Some(GridAlign::AllLines), ..Default::default() };
+    paras[1].para.start_paragraph = Some(StartParagraph::NextFrame);
+    let mut specs = frame_specs(&d, sid);
+    specs[1].grid = Some((-1.7e308, 0.7));
+    let cs = compose(&d, d.story(sid).unwrap(), &specs, &ComposeOptions::default());
+    let lines = &cs.frame(second).unwrap().lines;
+    assert!(lines.len() > 3 && lines[0].para == 1);
+    assert!((lines[2].baseline - lines[0].baseline - 24.0).abs() < 1e-6, "{} {}", lines[0].baseline, lines[2].baseline);
+    let dc = &lines[0].glyphs[0];
+    assert!((lines[0].baseline + dc.y - lines[2].baseline).abs() < 1e-6, "drop cap baseline {} below line 1", dc.y);
+    let b = lines[0].drop_cap.unwrap();
+    assert!((b.baseline - lines[2].baseline).abs() < 1e-6, "{}", b.baseline);
+}
+
 /// A line with a larger auto leading doesn't move the drop cap: it reaches down `lines − 1`
 /// leadings of the text after it, not to where line N is set.
 #[test]
