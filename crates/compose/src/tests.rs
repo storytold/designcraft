@@ -1104,6 +1104,59 @@ fn a_drop_cap_still_counts_when_a_paragraph_is_judged_korean() {
     assert!(all_lines(&cs).iter().any(|l| l.hyphenated), "one more Latin letter tips it and hyphens appear");
 }
 
+/// A fill-only nested style exposes the temporary measurement break, independently of the
+/// final layout's recomputed Korean classification. Search a bounded range of widths so this
+/// does not depend on one particular font's advances; require a boundary-sensitive witness.
+#[test]
+fn korean_drop_cap_nested_style_uses_visible_classification() {
+    let english = "hyphenation composition";
+    let letters = english.chars().filter(char::is_ascii_alphabetic).count();
+    // Put the English immediately after the cap so its break can affect the first line.
+    let tail = "가".repeat(letters - 1);
+    let text = format!("가 {english} {tail}");
+    let tipped = format!("{text}x");
+    let compose = |text: &str, width: f64| {
+        let para = ParaAttrs {
+            align: Some(Align::Left),
+            composer: Some(Composer::SingleLine),
+            hyphenate: Some(true),
+            drop_cap_lines: Some(2),
+            drop_cap_chars: Some(1),
+            nested_line_styles: Some(vec![designcraft_doc::NestedLineStyle { style: "Lead".into(), lines: 1 }]),
+            ..Default::default()
+        };
+        let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, width, 100_000.0), para);
+        std::sync::Arc::make_mut(&mut d.styles).character.push(designcraft_doc::CharacterStyle {
+            name: "Lead".into(),
+            based_on: None,
+            chars: designcraft_doc::CharAttrs { fill: Some("[Registration]".into()), ..Default::default() },
+            shortcut: String::new(),
+        });
+        compose_story(&d, sid, &ComposeOptions::default())
+    };
+    let mut witnesses = 0;
+    for width in (60..180).step_by(5) {
+        let balanced = compose(&text, width as f64);
+        let latin = compose(&tipped, width as f64);
+        let lines = all_lines(&balanced);
+        let control = all_lines(&latin);
+        if lines.len() < 2 || control.is_empty() || !control[0].hyphenated || lines[0].range.end == control[0].range.end {
+            continue;
+        }
+        assert!(!lines[0].hyphenated);
+        for (i, line) in lines.iter().take(2).enumerate() {
+            let glyphs: Vec<_> = line.glyphs.iter().filter(|g| g.visible && g.len > 0 && g.byte > 0).collect();
+            assert!(!glyphs.is_empty(), "width {width}: line {i} must contain visible source glyphs");
+            assert!(
+                glyphs.iter().all(|g| (balanced.styles[g.style as usize].fill == "[Registration]") == (i == 0)),
+                "width {width}: nested style must match final first-line boundary"
+            );
+        }
+        witnesses += 1;
+    }
+    assert!(witnesses > 0, "fixture must reach a boundary-sensitive nested break");
+}
+
 /// A Korean notice leaves its paragraphs at the default English language, so English
 /// hyphenation broke the Latin words Korean particles attach to and the addresses such a document
 /// is full of: `New-` / `s와`, `library.exam-` / `ple.kr` (#1688). The lines may now be looser --

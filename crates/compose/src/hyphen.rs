@@ -286,13 +286,19 @@ pub fn keep_whole(token: &str) -> bool {
     // A domain: dot-separated labels up to the first `/`, whose last label is a short run of
     // letters -- "example.kr", "library.example.kr". Ordinary prose ("end. Next") never reaches
     // here, because a token holds no space.
-    // Judged as written, not lower-cased: a domain's last label is lower-case letters, so `Mr.Smith`
-    // is not one and stays a word to hyphenate.
+    // DNS labels are case-insensitive. Keep the existing prose heuristic only for two
+    // title-cased words (such as `Mr.Smith`), not for an uppercase domain suffix.
     let host = token.split('/').next().unwrap_or("");
     let labels: Vec<&str> = host.trim_end_matches('.').split('.').collect();
-    if labels.len() >= 2
+    let title_case = |label: &str| {
+        let mut chars = label.chars();
+        chars.next().is_some_and(|c| c.is_ascii_uppercase()) && label.len() > 1 && chars.all(|c| c.is_ascii_lowercase())
+    };
+    let prose = labels.len() == 2 && labels.iter().all(|label| title_case(label));
+    if !prose
+        && labels.len() >= 2
         && labels.iter().all(|l| !l.is_empty() && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
-        && labels.last().is_some_and(|tld| tld.len() <= 6 && tld.chars().all(|c| c.is_ascii_lowercase()))
+        && labels.last().is_some_and(|tld| tld.len() <= 6 && tld.chars().all(|c| c.is_ascii_alphabetic()))
     {
         return true;
     }
@@ -506,6 +512,10 @@ mod tests {
             "https://example.kr/page",
             "www.example.kr",
             "library.example.kr",
+            "library.example.KR",
+            "library.example.Kr",
+            "EXAMPLE.COM",
+            "example.CoM",
             "mail@example.kr",
             "/usr/share/fonts",
             "C:\\Users\\Hong",
@@ -537,8 +547,7 @@ mod tests {
             assert!(keep_whole(t), "{t:?} should be kept whole");
         }
 
-        // A domain's last label is lower-case letters as written: a name run into the next word
-        // after a full stop is not one, and its words still hyphenate.
+        // Two title-cased prose words still retain the existing punctuation heuristic.
         for t in ["Mr.Smith", "Section.Introduction", "End.Next"] {
             assert!(!keep_whole(t), "{t} is not an address");
         }
