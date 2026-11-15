@@ -3126,6 +3126,22 @@ fn hostile_table_spans_are_clamped_before_arithmetic() {
     assert_eq!(table.cell(1, 1).unwrap().col_span, 2);
 }
 
+/// Spans are read as numbers: a fraction rounds down, a span past the table (even one too large for
+/// 32 bits) reaches its edge, and anything under 1 or not a number spans one cell.
+#[test]
+fn numeric_table_spans_round_down_and_stop_at_the_table_edge() {
+    for (raw, rows, cols) in
+        [("1.5", 1, 1), ("2.5", 2, 2), ("4000000000", 2, 3), ("1e300", 2, 3), ("0", 1, 1), ("-3", 1, 1), ("NaN", 1, 1), ("x", 1, 1)]
+    {
+        let story = CASCADE_STORY.replace("Name=\"0:0\"", &format!("Name=\"0:0\" RowSpan=\"{raw}\" ColumnSpan=\"{raw}\""));
+        let document = import_idml(&fixture_with_table_styles(CASCADE_STYLES, &story)).unwrap();
+        document.check().unwrap();
+        let table = document.stories.values().flat_map(|s| s.tables.values()).next().unwrap();
+        let cell = table.cell(0, 0).unwrap();
+        assert_eq!((cell.row_span, cell.col_span), (rows, cols), "{raw}");
+    }
+}
+
 #[test]
 fn signed_idml_edge_priorities_roundtrip_without_clamping() {
     let story = CASCADE_STORY.replace(
