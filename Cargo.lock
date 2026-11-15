@@ -2009,7 +2009,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft"
-version = "0.20.1"
+version = "0.21.0"
 dependencies = [
  "arboard",
  "craft-update",
@@ -2034,7 +2034,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-cli"
-version = "0.20.1"
+version = "0.21.0"
 dependencies = [
  "craft-file-formats",
  "craft-image-codecs 0.1.0 (git+https://github.com/storytold/craft-libs?rev=ea1c84290dadec636900b4d1bce107e59ca3f0d6)",
@@ -2053,7 +2053,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-color"
-version = "0.20.1"
+version = "0.21.0"
 dependencies = [
  "craft-cms",
  "kurbo",
@@ -2065,7 +2065,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-compose"
-version = "0.20.1"
+version = "0.21.0"
 dependencies = [
  "designcraft-color",
  "designcraft-doc",
@@ -2085,7 +2085,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-doc"
-version = "0.20.1"
+version = "0.21.0"
 dependencies = [
  "chrono",
  "designcraft-color",
@@ -2098,7 +2098,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-engine"
-version = "0.20.1"
+version = "0.21.0"
 dependencies = [
  "caseless",
  "craft-atomic",
@@ -2143,7 +2143,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-epub"
-version = "0.20.1"
+version = "0.21.0"
 dependencies = [
  "craft-epub",
  "designcraft-color",
@@ -2153,7 +2153,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-fonts"
-version = "0.20.1"
+version = "0.21.0"
 dependencies = [
  "core-text",
  "harfrust 0.13.3",
@@ -2166,7 +2166,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-format"
-version = "0.20.1"
+version = "0.21.0"
 dependencies = [
  "craft-designcraft-format",
  "designcraft-doc",
@@ -2176,7 +2176,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-geom"
-version = "0.20.1"
+version = "0.21.0"
 dependencies = [
  "flo_curves",
  "kurbo",
@@ -2189,7 +2189,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-idml"
-version = "0.20.1"
+version = "0.21.0"
 dependencies = [
  "craft-file-formats",
  "craft-idml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=1ad5f35bf)",
@@ -2207,7 +2207,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-images"
-version = "0.20.1"
+version = "0.21.0"
 dependencies = [
  "craft-cms",
  "craft-eps 0.1.0 (git+https://github.com/storytold/craft-libs?rev=ba24fe2435adb3c81ad6057faf36365fbba736cf)",
@@ -2228,7 +2228,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-mcp"
-version = "0.20.1"
+version = "0.21.0"
 dependencies = [
  "craft-file-formats",
  "designcraft-engine",
@@ -2242,7 +2242,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-pdf"
-version = "0.20.1"
+version = "0.21.0"
 dependencies = [
  "chrono",
  "craft-cms",
@@ -2268,7 +2268,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-pptx"
-version = "0.20.1"
+version = "0.21.0"
 dependencies = [
  "chrono",
  "craft-image-codecs 0.1.0 (git+https://github.com/storytold/craft-libs?rev=ea1c84290dadec636900b4d1bce107e59ca3f0d6)",
@@ -2289,7 +2289,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-render"
-version = "0.20.1"
+version = "0.21.0"
 dependencies = [
  "bytemuck",
  "craft-image-codecs 0.1.0 (git+https://github.com/storytold/craft-libs?rev=ea1c84290dadec636900b4d1bce107e59ca3f0d6)",
@@ -2310,7 +2310,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-textimport"
-version = "0.20.1"
+version = "0.21.0"
 dependencies = [
  "craft-docx",
  "craft-file-formats",
@@ -2324,7 +2324,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-tools"
-version = "0.20.1"
+version = "0.21.0"
 dependencies = [
  "designcraft-color",
  "designcraft-compose",
@@ -2336,7 +2336,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-ui-egui"
-version = "0.20.1"
+version = "0.21.0"
 dependencies = [
  "craft-dialogs",
  "craft-file-formats",
@@ -2371,7 +2371,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-web"
-version = "0.20.1"
+version = "0.21.0"
 dependencies = [
  "designcraft-engine",
  "designcraft-format",
@@ -8612,7 +8612,7 @@ checksum = "9440ea3e5aeabb0ac63af70daf835274065238cdd0cec83418f417eae38bacee"
 
 [[package]]
 name = "xtask"
-version = "0.20.1"
+version = "0.21.0"
 dependencies = [
  "serde_json",
 ]
