@@ -269,21 +269,19 @@ pub(super) fn set_cell(s: &mut Session, p: &Value) -> Result<Value> {
                 }
             }
         }
-        // An edge that already shows the edit as its own local stroke, at the table's highest
-        // priority and as the stroke drawn there, is left as it is; the edit renumbers no edge
-        // when every chosen edge is. A neighbor that wins a tie on a shared edge draws its own
-        // stroke, so that edge still takes the edit.
+        // An edge that already shows the edit as its own local stroke, drawn along the whole
+        // side, is left as it is; the edit renumbers no edge when every chosen edge is. Edits
+        // to other edges of the table do not count. A neighbor that wins a tie on a shared edge,
+        // or on one part of a merged cell's side, draws its own stroke, so that edge still takes
+        // the edit.
         let mut priority = 0;
         if let Some((edit, _)) = &stroke {
-            let top = t.cells.iter().flat_map(|cell| cell.stroke_priorities).max().unwrap_or(0);
             let shown = |&(r, c, i): &(usize, usize, usize), base: &CellStroke| {
                 t.cell(r, c).is_some_and(|cell| {
-                    top > 0
-                        && cell.stroke_priorities[i] == top
-                        && cell.stroke_defined[i]
+                    cell.stroke_defined[i]
                         && cell.border_overrides[i]
-                        && cell.strokes[i] == *base
                         && cell.strokes[i] == edit.apply(base.clone())
+                        && compose::table::cell_side_strokes(t, &owners, (r, c), i).iter().all(|side| *side.stroke == cell.strokes[i])
                 })
             };
             if bases.iter().all(|(edge, base)| shown(edge, base)) {
@@ -556,9 +554,13 @@ mod set_cell_tests {
         let before = state(&s);
         s.execute("table.setCell", &stroke).unwrap();
         assert_eq!(state(&s), before, "the same stroke again is not a new undo step");
-        s.execute("table.setCell", &json!({"rows": [1, 1], "cols": [1, 1], "stroke": {"weight": 2, "edges": ["all"]}})).unwrap();
+        s.execute("table.setCell", &json!({"rows": [1, 1], "cols": [0, 0], "stroke": {"weight": 3, "edges": ["all"]}})).unwrap();
+        let before = state(&s);
         s.execute("table.setCell", &stroke).unwrap();
-        assert_eq!(state(&s).0, before.0 + 2, "an edge a later edit outranks takes the stroke again");
+        assert_eq!(state(&s), before, "an edit to other edges does not make the same stroke a new undo step");
+        s.execute("table.setCell", &json!({"rows": [1, 1], "cols": [1, 1], "stroke": {"weight": 4, "edges": ["all"]}})).unwrap();
+        s.execute("table.setCell", &stroke).unwrap();
+        assert_eq!(state(&s).0, before.0 + 2, "an edge a later edit changed takes the stroke again");
     }
 
     #[test]
@@ -626,5 +628,27 @@ mod set_cell_tests {
         s.execute("table.setCell", &stroke).unwrap();
         assert_eq!(drawn(&s), Some(2.0), "the edit takes the drawn edge");
         assert_eq!(s.doc().unwrap().history.undo.len(), undo + 1, "the edit is one undo step");
+    }
+
+    #[test]
+    fn set_cell_stroke_applies_when_part_of_a_merged_side_draws_a_different_edge() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [0, 0, 400, 300], "content": "text", "text": ""})).unwrap();
+        let story = designcraft_doc::StoryId(r["story"].as_u64().unwrap());
+        s.execute("text.select", &json!({"story": r["story"], "anchor": 0, "focus": 0})).unwrap();
+        s.execute("table.insert", &json!({"rows": 2, "cols": 2})).unwrap();
+        s.execute("table.merge", &json!({"rows": [0, 1], "cols": [0, 0]})).unwrap();
+        let stroke = json!({"rows": [0, 1], "cols": [0, 0], "stroke": {"weight": 2, "edges": ["right"]}});
+        s.execute("table.setCell", &stroke).unwrap();
+        s.execute("table.setCell", &json!({"rows": [1, 1], "cols": [1, 1], "stroke": {"weight": 4, "edges": ["left"]}})).unwrap();
+        let drawn = |s: &Session| {
+            let st = s.doc().unwrap();
+            let t = st.doc.story(story).and_then(|x| x.tables.values().next().cloned()).unwrap();
+            compose::table::cell_side_strokes(&t, &t.owners(), (0, 0), 3).iter().map(|x| x.stroke.weight).collect::<Vec<_>>()
+        };
+        assert_eq!(drawn(&s), [2.0, 4.0], "the lower neighbor draws its part of the merged side");
+        s.execute("table.setCell", &stroke).unwrap();
+        assert_eq!(drawn(&s), [2.0, 2.0], "the edit takes every part of the merged side");
     }
 }
