@@ -20,6 +20,10 @@ use crate::EngineError;
 pub struct Maps {
     pub items: HashMap<ItemId, ItemId>,
     pub stories: HashMap<StoryId, StoryId>,
+    /// Each source text frame's place in its story's thread, for the stories copied so far.
+    source_ranks: HashMap<ItemId, usize>,
+    /// The same place, by the id of the frame's copy.
+    frame_ranks: HashMap<ItemId, usize>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -103,6 +107,7 @@ fn renumber_in(dst: &mut designcraft_doc::Document, src: &designcraft_doc::Docum
                     }
                 }
                 designcraft_doc::remap_story_assets(&mut st, &assets);
+                maps.source_ranks.extend(st.frames.iter().enumerate().map(|(i, f)| (*f, i)));
                 st.frames.clear();
                 // Mapped first: the map is the seen-set that stops story recursion.
                 maps.stories.insert(tf.story, n);
@@ -111,8 +116,13 @@ fn renumber_in(dst: &mut designcraft_doc::Document, src: &designcraft_doc::Docum
                 n
             };
             tf.story = new_sid;
+            // Frames are copied in page and nesting order, which can differ from the thread order:
+            // each copy goes where its source frame is in the source story's thread.
+            let rank = maps.source_ranks.get(&old).copied().unwrap_or(usize::MAX);
+            maps.frame_ranks.insert(new_id, rank);
             if let Some(st) = dst.story_mut(new_sid) {
-                st.frames.push(new_id);
+                let at = st.frames.partition_point(|f| maps.frame_ranks.get(f).is_some_and(|r| *r <= rank));
+                st.frames.insert(at, new_id);
             }
         }
         Content::Graphic(g) => {
