@@ -11,6 +11,8 @@ rust-version = "1.95"
 repository = "https://github.com/storytold/designcraft"
 
 [workspace.dependencies]
+# Shared RFC 4648 encoding; document decoding policies remain local.
+craft-mime = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "f0f4758c01581d79577b9bf5046c06f4e77b1f18" }
 # Shared reader and writer; publish the immutable revision before this consumer.
 craft-pdf = { git = "https://github.com/storytold/craft-libs", rev = "a5ac3aa05cf3ec013961a85599ddd9e0b5c03813", version = "=0.1.0", default-features = false }
 craft-designcraft-format = { git = "https://github.com/storytold/craft-libs", rev = "b1b4602a71d19e09ad33f7752a10d6598cf39b2b", version = "=0.1.0" }
