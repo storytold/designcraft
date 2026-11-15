@@ -428,9 +428,9 @@ fn missing_translations_report() {
 }
 
 #[test]
-fn only_arabic_lays_out_right_to_left() {
+fn arabic_and_hebrew_lay_out_right_to_left() {
     for (code, _) in LANGUAGES {
-        assert_eq!(is_rtl(code), *code == "ar", "{code}");
+        assert_eq!(is_rtl(code), matches!(*code, "ar" | "he"), "{code}");
     }
 }
 
