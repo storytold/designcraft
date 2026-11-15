@@ -270,7 +270,9 @@ pub(super) fn set_cell(s: &mut Session, p: &Value) -> Result<Value> {
             }
         }
         // An edge that already shows the edit as its own local stroke, at the table's highest
-        // priority, is left as it is; the edit renumbers no edge when every chosen edge is.
+        // priority and as the stroke drawn there, is left as it is; the edit renumbers no edge
+        // when every chosen edge is. A neighbor that wins a tie on a shared edge draws its own
+        // stroke, so that edge still takes the edit.
         let mut priority = 0;
         if let Some((edit, _)) = &stroke {
             let top = t.cells.iter().flat_map(|cell| cell.stroke_priorities).max().unwrap_or(0);
@@ -280,6 +282,7 @@ pub(super) fn set_cell(s: &mut Session, p: &Value) -> Result<Value> {
                         && cell.stroke_priorities[i] == top
                         && cell.stroke_defined[i]
                         && cell.border_overrides[i]
+                        && cell.strokes[i] == *base
                         && cell.strokes[i] == edit.apply(base.clone())
                 })
             };
@@ -590,5 +593,38 @@ mod set_cell_tests {
         assert_eq!((s.doc().unwrap().history.undo.len(), s.doc().unwrap().revision), before, "the same text is not an undo step");
         s.execute("table.setCell", &json!({"rows": [0, 0], "cols": [0, 0], "text": "Other"})).unwrap();
         assert_eq!(cell_text(&s).text, "Other", "different text still replaces the cell's text");
+    }
+
+    #[test]
+    fn set_cell_stroke_applies_when_the_neighbor_draws_a_different_edge() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [0, 0, 400, 300], "content": "text", "text": ""})).unwrap();
+        let story = designcraft_doc::StoryId(r["story"].as_u64().unwrap());
+        s.execute("text.select", &json!({"story": r["story"], "anchor": 0, "focus": 0})).unwrap();
+        s.execute("table.insert", &json!({"rows": 2, "cols": 1})).unwrap();
+        let stroke = json!({"rows": [0, 0], "cols": [0, 0], "stroke": {"weight": 2, "edges": ["bottom"]}});
+        s.execute("table.setCell", &stroke).unwrap();
+        // The cell below keeps the same priority on the shared edge but a heavier stroke, so it
+        // wins the tie and draws the edge.
+        s.edit(|d, _| {
+            let st = d.story_mut(story).ok_or_else(|| bad("test", "no story"))?;
+            for t in st.tables.values_mut() {
+                let cell = std::sync::Arc::make_mut(t).cell_mut(1, 0).ok_or_else(|| bad("test", "no cell"))?;
+                cell.strokes[0].weight = 5.0;
+            }
+            ok()
+        })
+        .unwrap();
+        let drawn = |s: &Session| {
+            let st = s.doc().unwrap();
+            let t = st.doc.story(story).and_then(|x| x.tables.values().next().cloned()).unwrap();
+            drawn_side(&t, &t.owners(), (0, 0), 2).map(|x| x.weight)
+        };
+        assert_eq!(drawn(&s), Some(5.0), "the cell below draws the shared edge");
+        let undo = s.doc().unwrap().history.undo.len();
+        s.execute("table.setCell", &stroke).unwrap();
+        assert_eq!(drawn(&s), Some(2.0), "the edit takes the drawn edge");
+        assert_eq!(s.doc().unwrap().history.undo.len(), undo + 1, "the edit is one undo step");
     }
 }
