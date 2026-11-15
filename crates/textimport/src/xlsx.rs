@@ -39,8 +39,9 @@ fn sheet_cells(
     let result = package.sheet(entry, |row| {
         for cell in row.cells {
             let value = match cell.value {
-                // Retain legacy display of non-finite spellings such as `inf`.
-                craft_xlsx::CellValue::Invalid(raw) => raw.parse::<f64>().map(general).unwrap_or_default(),
+                // A value that doesn't read as its type says (`inf`, `n/a` in a number cell) is
+                // shown as written, as the importer did before the shared reader.
+                craft_xlsx::CellValue::Invalid(raw) => raw,
                 value => display(value.resolve(&strings, date_1904)),
             };
             text_bytes = text_bytes.saturating_add(value.len());
@@ -416,6 +417,15 @@ mod tests {
             let book = one_value(&format!(r#"<c r="A2"><v>{text}</v></c>"#));
             let rows = crate::xlsx_records(&book, None).unwrap();
             assert_eq!(rows[1][0], shown, "cell {text}");
+        }
+    }
+
+    #[test]
+    fn number_cells_that_are_not_numbers_show_as_written() {
+        for text in ["inf", "Infinity", "NaN", "n/a", "12 apples"] {
+            let book = one_value(&format!(r#"<c r="A2"><v>{text}</v></c>"#));
+            let rows = crate::xlsx_records(&book, None).unwrap();
+            assert_eq!(rows[1][0], text, "cell {text}");
         }
     }
 
