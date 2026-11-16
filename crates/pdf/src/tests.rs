@@ -872,7 +872,7 @@ fn base_items_a_parent_page_overrides_or_hides_do_not_export() {
     // A valid one-page PDF with B's magenta item and without A's cyan one.
     let check = |d: &Document, why: &str| {
         let bytes = export_pdf(d, &Cache::new(), &PdfOptions { compress: false, ..PdfOptions::default() }).expect("export");
-        let pdf = hayro_syntax::Pdf::new(bytes.clone()).expect("a valid PDF");
+        let pdf = craft_pdf::syntax::Pdf::new(bytes.clone()).expect("a valid PDF");
         assert_eq!(pdf.pages().len(), 1, "{why}");
         let s = String::from_utf8_lossy(&bytes);
         assert!(!s.contains("1 0 0 0 k") && s.contains("0 1 0 0 k"), "{why}");
