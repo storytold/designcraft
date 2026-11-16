@@ -208,6 +208,10 @@ fn table(ex: &mut Exporter, t: &TableFrag, m: Affine, k: f64, opacity: f32) {
             cell.vertical = match placed.rotation {
                 r if (r - 90.0).abs() < 0.5 => Some(craft_pptx::text::TextDir::Vertical),
                 r if (r - 270.0).abs() < 0.5 => Some(craft_pptx::text::TextDir::Vertical270),
+                r if (r - 180.0).abs() < 0.5 => {
+                    ex.warn("table cell text turned 180° is exported horizontally");
+                    None
+                }
                 _ => None,
             };
             cell.fill = Some(
