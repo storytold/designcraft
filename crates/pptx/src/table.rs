@@ -204,6 +204,12 @@ fn table(ex: &mut Exporter, t: &TableFrag, m: Affine, k: f64, opacity: f32) {
             let (text, [left, top, right, bottom]) = model_cell_text(ex, placed, k, opacity);
             cell.text = text;
             cell.margins = Some([left * k, right * k, top * k, bottom * k]);
+            // Turned cell text: 90° reads downwards, 270° upwards (the slide format has no 180° cell text).
+            cell.vertical = match placed.rotation {
+                r if (r - 90.0).abs() < 0.5 => Some(craft_pptx::text::TextDir::Vertical),
+                r if (r - 270.0).abs() < 0.5 => Some(craft_pptx::text::TextDir::Vertical270),
+                _ => None,
+            };
             cell.fill = Some(
                 placed
                     .fill
