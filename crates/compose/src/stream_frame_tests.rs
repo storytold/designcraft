@@ -371,3 +371,33 @@ fn note_options_reflow_cached_cross_reference_pages() {
     let updated = cache.xref_index(&doc);
     assert_eq!(anchors.iter().map(|id| updated.page_index(*id)).collect::<Vec<_>>(), expected);
 }
+
+#[test]
+fn advancing_a_column_foot_carry_does_not_accept_a_rejected_stream_anchor() {
+    let (mut doc, host, _) = commentary(5, 0, 140.0);
+    let body = format!("Opening.\nReference.{}Next reference.\nClosing.", designcraft_doc::story::FRAME_BREAK);
+    let long = (0..60).map(|i| format!("Note line {i}.")).collect::<Vec<_>>().join("\n");
+    let story = doc.story_mut(host).unwrap();
+    story.insert(0, &body);
+    let earlier = story.insert_note(14, &long, Default::default()).unwrap();
+    let at = story.text.find("Next reference.").unwrap() + 5;
+    story.insert_note(at, "Later column-foot note.", Default::default()).unwrap();
+    let stream = story.insert_note(at + FOOTNOTE_REF.len_utf8(), "Routed comment.", Default::default()).unwrap();
+    story.note_mut(stream).unwrap().series = 1;
+    let cs = compose_story(&doc, host, &Default::default());
+    assert!(!cs.is_overset());
+    let anchor = doc.story(host).unwrap().note_anchor(stream).unwrap();
+    let body_frames = frame_specs(&doc, host);
+    let anchor_page = body_frames.iter().find(|f| cs.frame(f.id).unwrap().lines.iter().any(|l| l.range.contains(&anchor))).unwrap().page;
+    assert!(anchor_page.unwrap() > 1, "the earlier note must postpone the new reference");
+    let starts: Vec<_> = cs.frames.iter().filter(|f| f.notes.iter().any(|n| n.id == stream && n.text.frames[0].range.start == 0)).collect();
+    assert_eq!(starts.len(), 1, "a rejected main line must not emit an early duplicate comment");
+    let routes = stream_frame_specs(&doc, host);
+    assert_eq!(routes.iter().find(|f| f.id == starts[0].frame).unwrap().page, anchor_page);
+    let mut end = 0;
+    for note in cs.frames.iter().flat_map(|f| &f.notes).filter(|n| n.id == earlier) {
+        assert_eq!(note.text.frames[0].range.start, end);
+        end = note.text.frames[0].range.end;
+    }
+    assert_eq!(end, long.len());
+}

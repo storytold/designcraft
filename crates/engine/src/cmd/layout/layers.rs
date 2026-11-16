@@ -160,6 +160,7 @@ pub(super) fn duplicate_layer(s: &mut Session, p: &Value) -> Result<Value> {
                 remap_xrefs(st, &anchors);
             }
         }
+        super::super::object::retarget_copied_note_streams(d, &src, &stories);
         // The hyperlinks of copied objects and copied text get copies with ids of their own and the same destinations.
         let links: Vec<_> = src
             .hyperlinks

@@ -1259,6 +1259,16 @@ pub(crate) fn retarget_copied_xrefs(
             copy.frames.sort_by_key(|id| frame_origins.get(id).and_then(|old| order.get(old)).copied().unwrap_or(usize::MAX));
         }
     }
+    retarget_copied_note_streams(dst, src, stories);
+    let anchors = copied_anchors(dst, src, stories);
+    if !anchors.is_empty() {
+        retarget_copies(dst, src, stories, &anchors);
+    }
+}
+
+/// Finalize commentary routes after all copied hosts are known. Layer duplication has
+/// its own anchor finalization and only needs this route step.
+pub(crate) fn retarget_copied_note_streams(dst: &mut Document, src: &Document, stories: &HashMap<StoryId, StoryId>) {
     // Route hosts can be copied after their routes, so resolve them only after all stories.
     // A route copied without its host becomes an ordinary empty frame rather than referring
     // to an unrelated document-local story id in the destination.
@@ -1280,10 +1290,6 @@ pub(crate) fn retarget_copied_xrefs(
                 }
             },
         );
-    }
-    let anchors = copied_anchors(dst, src, stories);
-    if !anchors.is_empty() {
-        retarget_copies(dst, src, stories, &anchors);
     }
 }
 
@@ -7336,6 +7342,28 @@ mod stream_review_tests {
             assert_eq!(route.options.note_stream.unwrap().story, host.story, "{command}");
         }
         doc.check().unwrap();
+    }
+
+    #[test]
+    fn duplicate_layer_retargets_commentary_to_the_copied_host() {
+        let (mut s, _, route, host, _) = frames();
+        s.execute("footnote.options", &json!({"placement":"stream"})).unwrap();
+        s.execute("textFrame.options", &json!({"ids":[route.0],"noteStream":{"story":host.0,"series":0}})).unwrap();
+        s.execute("text.select", &json!({"story":host.0,"anchor":4,"focus":4})).unwrap();
+        s.execute("footnote.insert", &json!({"text":"Original commentary"})).unwrap();
+        let layer = s.doc().unwrap().doc.default_layer();
+        let result = s.execute("layer.duplicate", &json!({"id":layer.0})).unwrap();
+        let copied_layer = designcraft_doc::LayerId(result["id"].as_u64().unwrap());
+        let d = &s.doc().unwrap().doc;
+        let copied: Vec<_> = d.all_items().into_iter().filter_map(|id| d.item(id)).filter(|item| item.layer == copied_layer).collect();
+        let copied_host = copied.iter().find_map(|it| it.text_frame().filter(|tf| tf.options.note_stream.is_none()).map(|tf| tf.story)).unwrap();
+        let copied_route = copied.iter().find_map(|it| it.text_frame().and_then(|tf| tf.options.note_stream)).unwrap();
+        assert_ne!(copied_host, host);
+        assert_eq!(copied_route.story, copied_host);
+        assert_eq!(copied_route.series, 0);
+        d.check().unwrap();
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.item(route).unwrap().text_frame().unwrap().options.note_stream.unwrap().story, host);
     }
 
     #[test]
