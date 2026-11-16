@@ -95,10 +95,10 @@ pub(super) fn export_bytes(app: &mut DesignApp, p: &Value, ext: &str, cmd: &str)
         _ => json!({}),
     };
     if cmd == "file.exportText" {
-        let lower = path.to_ascii_lowercase();
-        params["format"] = json!(if lower.ends_with(".txt") {
+        let txt = craft_file_formats::detect(&path, &[]) == Some(craft_file_formats::Format::PlainText);
+        params["format"] = json!(if txt {
             "txt"
-        } else if lower.ends_with(".icml") {
+        } else if path.to_ascii_lowercase().ends_with(".icml") {
             "icml"
         } else {
             "rtf"

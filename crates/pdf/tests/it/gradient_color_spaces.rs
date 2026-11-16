@@ -1,13 +1,13 @@
 //! Synthetic regressions for gradients that previously aborted inside the PDF writer.
+use craft_pdf::syntax::{
+    Pdf,
+    object::{Array, Dict, Name},
+};
 use designcraft_color::{Color, Gradient, GradientKind, GradientStop, Swatch, SwatchValue};
 use designcraft_compose::Cache;
 use designcraft_doc::{Document, Fill, Item, ItemId, Shape, SpreadRef, build::NewDocument};
 use designcraft_geom::{Rect, shapes};
 use designcraft_pdf::{PdfOptions, Standard, export_pdf_with_report};
-use hayro_syntax::{
-    Pdf,
-    object::{Array, Dict, Name},
-};
 
 fn document(colors: &[Color], kind: GradientKind, midpoint: f32, opacity: f32) -> Document {
     let mut doc = Document::new(&NewDocument { width: 120.0, height: 120.0, facing_pages: false, ..Default::default() });

@@ -42,7 +42,7 @@ use designcraft_engine::Session;
 use serde_json::{Value, json};
 
 /// The usage block. Shared by `--help` (stdout, success) and an unknown command (stderr, failure).
-const USAGE: &str = "usage: designcraft-cli run [--in FILE | --sample] [--cmd ID[=JSON]]... [--page N] [--scale S] [--pdf-options JSON] [--export OUT] [--all-pages DIR]\n         (--page, --scale and --pdf-options apply to the exports that follow them)\n       designcraft-cli commands [FILTER]\n       designcraft-cli describe COMMAND\n       designcraft-cli script [FILE|-] [--in FILE | --sample] [--connect PORT] [--save OUT] [--export OUT] [--keep-going]\n       designcraft-cli app [--port PORT] COMMAND [JSON] | --method METHOD [JSON]\n       designcraft-cli mcp [--connect PORT] [--sample] [--automation-read-root DIR]... [--automation-write-root DIR]...\n         the roots confine every file the agent's commands read (open, placed images, data sources, libraries) and\n         write (save, export, package) to those folders, links followed. Each may be given more than once; a kind\n         left out grants none of its access.\n         They run the in-process server, so they conflict with --connect (a running app is not confined by them).\n       designcraft-cli perf [--pages N] [--runs N] [--strict]\n       designcraft-cli bench FILE [--runs N]\n       designcraft-cli validate-pdf FILE.pdf [--standard x4|x1a]  # built-in PDF/X checks (including visible unembedded fonts; the standard defaults to the file's own)\n       designcraft-cli thumbnail FILE.designcraft OUT.png [SIZE]  # the saved first-page preview, at most SIZE px\n       designcraft-cli links\n       designcraft-cli --version";
+const USAGE: &str = "usage: designcraft-cli run [--in FILE | --sample] [--cmd ID[=JSON]]... [--page N] [--scale S] [--pdf-options JSON] [--export OUT] [--all-pages DIR]\n         (--page, --scale and --pdf-options apply to the exports that follow them)\n       designcraft-cli commands [FILTER]\n       designcraft-cli describe COMMAND\n       designcraft-cli script [FILE|-] [--in FILE | --sample] [--connect PORT] [--save OUT] [--export OUT] [--keep-going]\n       designcraft-cli app [--port PORT] COMMAND [JSON] | --method METHOD [JSON]\n       designcraft-cli mcp [--connect PORT] [--sample] [--automation-read-root DIR]... [--automation-write-root DIR]...\n         the roots confine every file the agent's commands read (open, placed images, data sources, libraries) and\n         write (save, export, package) to those folders, links followed. Each may be given more than once; a kind\n         left out grants none of its access.\n         They run the in-process server, so they conflict with --connect (a running app is not confined by them).\n       designcraft-cli perf [--pages N] [--frames N] [--chars N] [--images N] [--runs N] [--strict]\n       designcraft-cli bench FILE [--runs N]\n       designcraft-cli validate-pdf FILE.pdf [--standard x4|x1a]  # built-in PDF/X checks (including visible unembedded fonts; the standard defaults to the file's own)\n       designcraft-cli thumbnail FILE.designcraft OUT.png [SIZE]  # the saved first-page preview, at most SIZE px\n       designcraft-cli links\n       designcraft-cli --version";
 
 /// `script --help`: the script syntax, otherwise only in `describe script.run` and docs/agents.md.
 const SCRIPT_HELP: &str = r#"usage: designcraft-cli script [FILE|-] [--in FILE | --sample] [--connect PORT] [--save OUT] [--export OUT] [--keep-going]
@@ -319,16 +319,17 @@ fn names_the_same_file(input: &std::path::Path, out: &std::path::Path) -> bool {
 /// as it is; it is decoded anyway, so a broken one is an error rather than an unreadable thumbnail.
 fn fit_png(png: Vec<u8>, size: Option<u32>) -> Result<Vec<u8>, String> {
     // The preview comes from the file: it may claim any size.
-    let mut limits = image::Limits::default();
-    limits.max_image_width = Some(4096);
-    limits.max_image_height = Some(4096);
-    let mut reader = image::ImageReader::with_format(std::io::Cursor::new(&png), image::ImageFormat::Png);
-    reader.limits(limits);
-    let img = reader.decode().map_err(|e| e.to_string())?;
-    let Some(size) = size.filter(|s| img.width().max(img.height()) > *s) else { return Ok(png) };
-    let mut out = std::io::Cursor::new(Vec::new());
-    img.resize(size, size, image::imageops::FilterType::Triangle).write_to(&mut out, image::ImageFormat::Png).map_err(|e| e.to_string())?;
-    Ok(out.into_inner())
+    let info = craft_image_codecs::inspect_raster(&png).map_err(|e| e.to_string())?.ok_or("invalid PNG preview")?;
+    if info.width > 4096 || info.height > 4096 {
+        return Err("preview is larger than 4096 pixels".into());
+    }
+    let decoded = craft_image_codecs::decode(&png).map_err(|e| e.to_string())?;
+    let Some(size) = size.filter(|s| decoded.width().max(decoded.height()) > *s) else { return Ok(png) };
+    let rgba = image::RgbaImage::from_raw(decoded.width(), decoded.height(), decoded.to_rgba8()).ok_or("invalid PNG pixel data")?;
+    let resized = image::DynamicImage::ImageRgba8(rgba).resize(size, size, image::imageops::FilterType::Triangle).to_rgba8();
+    let encoded = craft_image_codecs::Image::from_u8(resized.width(), resized.height(), craft_image_codecs::ChannelLayout::Rgba, resized.into_raw())
+        .map_err(|e| e.to_string())?;
+    craft_image_codecs::encode(&encoded, craft_image_codecs::Format::Png, &Default::default()).map_err(|e| e.to_string())
 }
 
 /// `mcp` (headless, in-process engine) or `mcp --connect PORT|HOST:PORT` (drive a running app
@@ -599,8 +600,8 @@ fn export(s: &mut Session, out: &str, page: usize, scale: f64) -> Result<(), Str
     let img = r
         .render_page(&st.doc, &s.cache, page, scale, true, &designcraft_render::RenderOptions { printing_only: true, ..Default::default() })
         .ok_or("no such page")?;
-    let lower = out.to_lowercase();
-    let bytes = if lower.ends_with(".jpg") || lower.ends_with(".jpeg") { img.to_jpeg(90) } else { img.to_png() };
+    let jpeg = craft_file_formats::detect(out, &[]) == Some(craft_file_formats::Format::Jpeg);
+    let bytes = if jpeg { img.to_jpeg(90) } else { img.to_png() };
     designcraft_engine::atomic::write_atomic(std::path::Path::new(out), &bytes).map_err(|e| format!("{out}: {e}"))?;
     eprintln!("wrote {out} ({}×{}, {:.1} ms, {} glyphs)", img.width, img.height, t.elapsed().as_secs_f64() * 1000.0, r.stats.glyphs);
     Ok(())
@@ -647,7 +648,7 @@ fn script(args: &[String]) -> Result<(), String> {
         match a.as_str() {
             "--in" => {
                 let p = val()?;
-                let cmd = if p.to_lowercase().ends_with(".idml") { "file.openIdml" } else { "file.open" };
+                let cmd = if craft_file_formats::detect(&p, &[]) == Some(craft_file_formats::Format::Idml) { "file.openIdml" } else { "file.open" };
                 setup.push((cmd.into(), json!({"path": p})));
             }
             "--sample" => setup.push(("file.newSample".into(), json!({}))),
@@ -693,11 +694,15 @@ fn script(args: &[String]) -> Result<(), String> {
     let report = if keep_going {
         // Run every step; failures become {"error": …} results.
         let mut results: Vec<Value> = Vec::new();
-        for st in &steps {
+        let mut failed = None;
+        for (i, st) in steps.iter().enumerate() {
             let r = designcraft_engine::script::resolve(&st.params, &results).and_then(|p| exec(b, &st.command, p));
-            results.push(r.unwrap_or_else(|e| json!({"error": e, "command": st.command})));
+            results.push(r.unwrap_or_else(|e| {
+                failed.get_or_insert_with(|| (i, st.command.clone(), e.clone()));
+                json!({"error": e, "command": st.command})
+            }));
         }
-        designcraft_engine::script::Report { results, failed: None }
+        designcraft_engine::script::Report { results, failed }
     } else {
         designcraft_engine::script::run(&steps, |id, p| exec(b, id, p))
     };
