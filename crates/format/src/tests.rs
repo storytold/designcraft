@@ -220,13 +220,15 @@ fn one_place_picks_the_oldest_reader_that_keeps_the_document() {
 fn roundtrip_with_assets() {
     let mut d = Document::new(&NewDocument { pages: 3, ..Default::default() });
     let lid = d.default_layer();
-    d.add_text_frame(SpreadRef::Doc(0), Rect::new(10.0, 10.0, 200.0, 200.0), lid, "héllo\nworld", ParaFormat::default()).unwrap();
+    let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(10.0, 10.0, 200.0, 200.0), lid, "héllo\nworld", ParaFormat::default()).unwrap();
+    d.story_mut(sid).unwrap().paras[0].para.hebrew_letter_extension = Some(true);
     let aid = png_asset(&mut d, &[1, 2, 3, 4]);
     place(&mut d, aid, 0.0);
     let bytes = save(&d).unwrap();
     assert!(bytes.starts_with(b"PK"));
     let back = load(&bytes).unwrap();
     assert_eq!(back.page_count(), 3);
+    assert_eq!(back.story(sid).unwrap().paras[0].para.hebrew_letter_extension, Some(true));
     assert_eq!(**back.assets[&aid].data.embedded_bytes().unwrap(), vec![1, 2, 3, 4]);
     assert_eq!(back.stories, d.stories);
 }

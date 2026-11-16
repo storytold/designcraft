@@ -5154,6 +5154,78 @@ fn allocate_kashidas(line: &[Glyph], add: &mut [f64], pp: &ParaProps, seg: usize
     kashidas
 }
 
+/// Choose the last eligible letter per word, spending the shortfall from the logical end.
+fn allocate_hebrew_extension(line: &[Glyph], add: &mut [f64], pp: &ParaProps, seg: usize, extra: &mut f64) -> Vec<(usize, u32, f64)> {
+    if !(*extra > 0.0 && pp.hebrew_letter_extension) {
+        return Vec::new();
+    }
+    let mut candidates = Vec::new();
+    let mut candidate = None;
+    for (i, g) in line.iter().enumerate().skip(seg) {
+        if g.is_space() {
+            candidates.extend(candidate.take());
+            continue;
+        }
+        if g.len == 0 || i.checked_sub(1).and_then(|j| line.get(j)).is_some_and(|prev| prev.byte == g.byte) {
+            continue;
+        }
+        let wide_char = match g.ch {
+            'א' => '\u{FB21}',
+            'ד' => '\u{FB22}',
+            'ה' => '\u{FB23}',
+            'כ' => '\u{FB24}',
+            'ל' => '\u{FB25}',
+            'ם' => '\u{FB26}',
+            'ר' => '\u{FB27}',
+            'ת' => '\u{FB28}',
+            _ => continue,
+        };
+        let Some((base_index, base)) =
+            line.iter().enumerate().skip(i).take_while(|(_, glyph)| glyph.byte == g.byte).find(|(_, glyph)| glyph.gid == glyph.face.glyph_for(g.ch))
+        else {
+            continue;
+        };
+        let wide = base.face.glyph_for(wide_char);
+        // Face advances are font units; sx converts them to points, as in append_kashidas.
+        let delta = (base.face.advance(wide) - base.face.advance(base.gid)) * base.sx;
+        if wide != 0 && delta.is_finite() && delta > 0.0 {
+            candidate = Some((base_index, wide, delta));
+        }
+    }
+    candidates.extend(candidate);
+    let mut chosen = Vec::new();
+    for (i, wide, delta) in candidates.into_iter().rev() {
+        if delta <= *extra
+            && let Some(advance) = add.get_mut(i)
+        {
+            *advance += delta;
+            *extra -= delta;
+            chosen.push((i, wide, delta));
+        }
+    }
+    chosen
+}
+
+/// Substitute selected bases and centre their marks before clusters are reordered visually.
+fn apply_hebrew_extensions(line: &[Glyph], out: &mut [PlacedGlyph], extensions: &[(usize, u32, f64)]) {
+    for &(base, wide, delta) in extensions {
+        let Some(g) = line.get(base) else { continue };
+        for (i, (source, placed)) in line.iter().zip(out.iter_mut()).enumerate() {
+            if source.byte != g.byte {
+                continue;
+            }
+            if i == base {
+                placed.gid = wide;
+            } else {
+                // Marks after the base already inherit its extra advance; marks before it do not.
+                let shift = if i < base { delta / 2.0 } else { -delta / 2.0 };
+                placed.x += shift;
+                placed.dx += shift;
+            }
+        }
+    }
+}
+
 /// Add stretched tatweel glyphs to the gaps allocated for Arabic elongation.
 fn append_kashidas(line: &[Glyph], out: &mut Vec<PlacedGlyph>, kashidas: Vec<(usize, f64)>) {
     for (i, l) in kashidas {
@@ -5271,6 +5343,7 @@ fn layout_line(
     let mut offset = 0.0;
     // Kashidas: in justified Arabic, the joins of words take the extra length first.
     let kashidas = if justify_this { allocate_kashidas(&line, &mut add, pp, seg, &mut extra) } else { Vec::new() };
+    let hebrew_extensions = if justify_this { allocate_hebrew_extension(&line, &mut add, pp, seg, &mut extra) } else { Vec::new() };
     if (justify_this || squeeze_last) && (extra >= 0.0 || !sp.push_out_only()) {
         extra = mojikumi::distribute(line.get_mut(seg..).unwrap_or_default(), extra, add.get_mut(seg..).unwrap_or_default());
     }
@@ -5359,6 +5432,7 @@ fn layout_line(
         }
         out.push(p);
     }
+    apply_hebrew_extensions(&line, &mut out, &hebrew_extensions);
     if bidi {
         pens.push(x);
         reorder_visual(&line, &mut out, &pens, x0 + offset, bidi_info);

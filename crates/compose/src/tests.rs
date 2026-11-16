@@ -3674,6 +3674,165 @@ fn check_kashida_justification(db: &FontDb, require_fallback: bool) {
     }
 }
 
+const HEBREW_EXTENSION_TEXT: &str = "בראשית ברא אלהים את השמים ואת הארץ והארץ היתה תהו ובהו וחשך על פני תהום ורוח אלהים מרחפת על פני המים ויאמר אלהים יהי אור ויהי אור וירא אלהים את האור כי טוב ויבדל אלהים בין האור ובין החשך ויקרא אלהים לאור יום ולחשך קרא לילה ויהי ערב ויהי בקר יום אחד";
+
+fn hebrew_extension_compositions(db: &FontDb, text: &str) -> (ComposedStory, ComposedStory) {
+    let mut d = Document::new(&designcraft_doc::build::NewDocument::default());
+    let lid = d.default_layer();
+    let pf = ParaFormat {
+        para: ParaAttrs { align: Some(Align::RightJustified), direction: Some(designcraft_doc::TextDirection::RightToLeft), ..Default::default() },
+        ..Default::default()
+    };
+    let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 286.0, 700.0), lid, text, pf).unwrap();
+    d.settings.glyph_fallback = true;
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| {
+        f.over.font_family = Some("Times New Roman".into());
+        f.over.size = Some(16.0);
+    });
+    let composed = |d: &Document| compose_with_db(d, d.story(sid).unwrap(), &frame_specs(d, sid), &ComposeOptions::default(), db);
+    // Resolve lazy fallback faces before comparing otherwise identical compositions.
+    let _ = composed(&d);
+    let off = composed(&d);
+    d.story_mut(sid).unwrap().paras[0].para.hebrew_letter_extension = Some(true);
+    (off, composed(&d))
+}
+
+fn hebrew_wide_char(ch: char) -> Option<char> {
+    "אדהכלםרת".chars().position(|c| c == ch).and_then(|i| char::from_u32(0xFB21 + i as u32))
+}
+
+fn is_hebrew_wide(g: &PlacedGlyph, text: &str) -> bool {
+    text[g.byte..].chars().next().and_then(hebrew_wide_char).is_some_and(|ch| {
+        let gid = g.face.glyph_for(ch);
+        gid != 0 && gid == g.gid
+    })
+}
+
+fn lacks_hebrew_wide_forms(cs: &ComposedStory) -> bool {
+    if cs.frames.iter().flat_map(|f| &f.lines).flat_map(|l| &l.glyphs).all(|g| g.face.glyph_for('\u{FB22}') == 0) {
+        eprintln!("skipping Hebrew wide-form assertions: no face with U+FB22");
+        true
+    } else {
+        false
+    }
+}
+
+#[test]
+fn hebrew_letter_extension_widens_letters_before_spaces() {
+    let text = HEBREW_EXTENSION_TEXT;
+    let (off, on) = hebrew_extension_compositions(FontDb::global(), text);
+    if lacks_hebrew_wide_forms(&off) {
+        return;
+    }
+    let (off_line, on_line) = (&off.frames[0].lines[0], &on.frames[0].lines[0]);
+    assert!(on.frames[0].lines.len() > 1);
+    assert!(on_line.glyphs.iter().any(|g| is_hebrew_wide(g, text)));
+    let space = |line: &Line| line.glyphs.iter().filter(|g| g.len > 0 && text[g.byte..].starts_with(' ')).map(|g| g.adv).fold(0.0, f64::max);
+    assert!(space(on_line) < space(off_line) - 0.5, "{} {}", space(on_line), space(off_line));
+    let left = |line: &Line| line.glyphs.iter().filter(|g| g.len > 0).map(|g| g.x).fold(f64::MAX, f64::min);
+    assert!((left(on_line) - left(off_line)).abs() < 1.0);
+    assert!(!on.frames[0].lines.last().unwrap().glyphs.iter().any(|g| is_hebrew_wide(g, text)));
+    assert!(on_line.glyphs.iter().chain(&off_line.glyphs).all(|g| (g.sx - 16.0 / g.face.units_per_em()).abs() < 1e-12));
+}
+
+#[test]
+fn hebrew_letter_extension_keeps_marks_centred() {
+    let passage = "וַיֹּאמֶר אֱלֹהִים יְהִי אוֹר וַיְהִי אוֹר הַדָּבָר הַזֶּה לְדָוִד מִזְמוֹר תּוֹרַת מֹשֶׁה ";
+    let text = passage.repeat(6);
+    let (off, on) = hebrew_extension_compositions(FontDb::global(), &text);
+    if lacks_hebrew_wide_forms(&off) {
+        return;
+    }
+    let mut marks_checked = 0;
+    let mut marks_before = 0;
+    let mut marks_after = 0;
+    for (plain, extended) in off.frames[0].lines.iter().zip(&on.frames[0].lines) {
+        assert_eq!(plain.glyphs.len(), extended.glyphs.len());
+        for (i, base) in extended.glyphs.iter().enumerate().filter(|(_, g)| is_hebrew_wide(g, &text)) {
+            let original = &plain.glyphs[i];
+            let delta = (base.face.advance(base.gid) - base.face.advance(original.gid)) * base.sx;
+            for (j, (mark, old_mark)) in
+                extended.glyphs.iter().zip(&plain.glyphs).enumerate().filter(|(j, (mark, _))| *j != i && mark.byte == base.byte)
+            {
+                assert!(
+                    ((mark.x - base.x) - (old_mark.x - original.x) - delta / 2.0).abs() < 1e-6,
+                    "byte {}: mark offset {} vs {} plus {}",
+                    base.byte,
+                    mark.x - base.x,
+                    old_mark.x - original.x,
+                    delta / 2.0
+                );
+                marks_checked += 1;
+                if j < i {
+                    marks_before += 1;
+                } else {
+                    marks_after += 1;
+                }
+            }
+        }
+    }
+    eprintln!("checked {marks_checked} marks: {marks_before} before, {marks_after} after base");
+    assert!(marks_checked > 0, "must exercise a widened base with attached marks");
+}
+
+#[test]
+fn hebrew_letter_extension_centres_marks_before_and_after_base() {
+    let (off, _) = hebrew_extension_compositions(FontDb::global(), HEBREW_EXTENSION_TEXT);
+    if lacks_hebrew_wide_forms(&off) {
+        return;
+    }
+    let face = off.frames.iter().flat_map(|f| &f.lines).flat_map(|l| &l.glyphs).find(|g| g.face.glyph_for('\u{FB22}') != 0).unwrap().face;
+    let text = "דַּ";
+    let mut base = shape_for_script_test("ד").remove(0);
+    base.face = face;
+    base.gid = face.glyph_for('ד');
+    base.sx = 16.0 / face.units_per_em();
+    base.adv = face.advance(base.gid) * base.sx;
+    base.byte = 0;
+    base.bidi_offset = 0;
+    base.bidi_end = text.len();
+    base.len = 0;
+    let mut before = base.clone();
+    before.gid = face.glyph_for('ַ');
+    before.adv = 0.0;
+    before.dx = -2.0;
+    before.len = text.len();
+    let mut after = before.clone();
+    after.gid = face.glyph_for('ּ');
+    after.dx = -base.adv + 1.0;
+    after.len = 0;
+    // A valid cluster with marks on both sides of its base, independent of font output order.
+    let glyphs = vec![before, base, after];
+    let bidi = unicode_bidi::BidiInfo::new(text, Some(unicode_bidi::Level::rtl()));
+    let mut pp = ParaProps { align: Align::RightJustified, single_word_justify: Align::Left, ..Default::default() };
+    let spacing = Spacing { justify: true, ..Default::default() };
+    let layout = |pp: &ParaProps| layout_line(&glyphs, 0, glyphs.len(), false, 0.0, 100.0, 0.0, pp, &spacing, false, false, false, &bidi).0;
+    let plain = layout(&pp);
+    pp.hebrew_letter_extension = true;
+    let extended = layout(&pp);
+    assert_eq!(extended[1].gid, face.glyph_for('\u{FB22}'));
+    let delta = extended[1].adv - plain[1].adv;
+    assert!(delta > 0.0);
+    for i in [0, 2] {
+        assert!(((extended[i].x - extended[1].x) - (plain[i].x - plain[1].x) - delta / 2.0).abs() < 1e-6);
+    }
+}
+
+#[test]
+fn hebrew_letter_extension_without_wide_forms_falls_back_to_spaces() {
+    let db = FontDb::with_font_dirs(Vec::new());
+    db.set_system_fallback(false);
+    let (off, on) = hebrew_extension_compositions(&db, HEBREW_EXTENSION_TEXT);
+    assert!(off.frames[0].lines[0].glyphs.iter().all(|g| g.face.glyph_for('\u{FB22}') == 0));
+    assert_eq!(off.frames[0].lines.len(), on.frames[0].lines.len());
+    for (plain, extended) in off.frames[0].lines.iter().zip(&on.frames[0].lines) {
+        assert_eq!(plain.glyphs.len(), extended.glyphs.len());
+        for (a, b) in plain.glyphs.iter().zip(&extended.glyphs) {
+            assert_eq!((a.byte, a.gid, a.x, a.adv), (b.byte, b.gid, b.x, b.adv));
+        }
+    }
+}
+
 #[test]
 fn digits_option_draws_figures_in_another_script() {
     let mut d = Document::new(&designcraft_doc::build::NewDocument::default());

@@ -1060,11 +1060,13 @@ fn justification_dialog_applies_to_a_local_paragraph_and_cancel_changes_nothing(
     assert_eq!(d.fields["current"]["wordSpaceMin"], 0.7);
     assert_eq!(d.fields["current"]["wordSpaceDesired"], 1.0);
     app.ui.dialog.as_mut().unwrap().fields.insert("wordSpaceDesired".into(), json!(1.1));
+    app.ui.dialog.as_mut().unwrap().fields.insert("hebrewLetterExtension".into(), json!(true));
     draw(&mut app, &ctx);
     let before = undo_steps(&app);
     confirm(&mut app).unwrap();
     assert_eq!(undo_steps(&app), before + 1, "one undo step");
     assert_eq!(para_attr(&mut app, &story, 0, "wordSpaceDesired"), 1.1);
+    assert_eq!(para_attr(&mut app, &story, 0, "hebrewLetterExtension"), true);
     assert_eq!(para_attr(&mut app, &story, 0, "wordSpaceMin"), 0.7, "unedited fields stay");
     assert_eq!(para_attr(&mut app, &story, 4, "wordSpaceDesired"), 1.0, "only the selected paragraph");
     let style = app.session.doc().unwrap().doc.styles.resolve_para_style(designcraft_doc::story::BASIC_PARAGRAPH).0.word_space_desired;
@@ -1247,10 +1249,12 @@ fn paragraph_style_options_justification_sets_auto_leading_and_single_word_justi
     assert_eq!(style(&app).auto_leading, None, "nothing saved");
     app.ui.dialog.as_mut().unwrap().fields.insert("p.autoLeading".into(), json!(1.0));
     app.ui.dialog.as_mut().unwrap().fields.insert("p.singleWordJustify".into(), json!("right"));
+    app.ui.dialog.as_mut().unwrap().fields.insert("p.hebrewLetterExtension".into(), json!(true));
     draw(&mut app, &ctx);
     confirm(&mut app).unwrap();
     let para = style(&app);
     assert_eq!((para.auto_leading, para.single_word_justify), (Some(1.0), Some(designcraft_doc::Align::Right)));
+    assert_eq!(para.hebrew_letter_extension, Some(true));
 }
 
 /// Paragraph Style Options › Justification fits at the normal dialog width: the spacing table
@@ -1283,6 +1287,7 @@ fn paragraph_style_options_justification_fits_without_horizontal_scrolling() {
     visible_label(&labels, screen, "Single Word Justification:");
     visible_label(&labels, screen, "Composer:");
     visible_label(&labels, screen, "Insert Kashidas:");
+    visible_label(&labels, screen, "Extend Hebrew Letters:");
     visible_label(&labels, screen, "Korean Line Breaks:");
 }
 

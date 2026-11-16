@@ -727,6 +727,18 @@ mod korean_breaks_tests {
     use crate::Session;
 
     #[test]
+    fn hebrew_letter_extension_is_a_paragraph_attribute() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 200], "content": "text", "text": "דבר תורה"})).unwrap();
+        let sid = designcraft_doc::StoryId(r["story"].as_u64().unwrap());
+        s.execute("type.para", &json!({"attrs": {"hebrewLetterExtension": true}})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().paras[0].para.hebrew_letter_extension, Some(true));
+        s.execute("style.paragraph.create", &json!({"name": "Hebrew", "para": {"hebrewLetterExtension": true}})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.styles.para("Hebrew").unwrap().para.hebrew_letter_extension, Some(true));
+    }
+
+    #[test]
     fn korean_character_breaks_are_a_paragraph_attribute() {
         let mut s = Session::new();
         s.execute("file.new", &json!({})).unwrap();
