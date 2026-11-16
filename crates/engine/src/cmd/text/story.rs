@@ -5,8 +5,10 @@ use super::{ItemId, Result, Session, StoryId, Value, bad, bool_or, id_param, jso
 /// Composed body lines in thread order, with their text-space boxes transformed to the spread.
 pub(super) fn story_lines(s: &mut Session, p: &Value) -> Result<Value> {
     let st = s.doc()?;
-    let sid = story_of(s, p).ok_or_else(|| bad("story.lines", "no story"))?;
     let d = &st.doc;
+    // `story_of` finds spread frames only; an anchored frame is found in its host story.
+    let anchored = || id_param(p, "frame").and_then(|f| d.anchored_item(f)).and_then(|i| i.text_frame()).map(|t| t.story);
+    let sid = story_of(s, p).or_else(anchored).ok_or_else(|| bad("story.lines", "no story"))?;
     d.story(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
     let frame = id_param(p, "frame");
     let cs = s.cache.get(&st.doc, sid, None);
@@ -624,6 +626,8 @@ mod story_lines_tests {
         let line = &lines[0];
         assert_eq!(line["frame"], fid.0);
         assert_eq!(line["page"], 0);
+        // Asked by the anchored frame alone.
+        assert_eq!(s.execute("story.lines", &json!({"frame": fid.0})).unwrap()["lines"], r["lines"]);
         // Inside the host frame, not at the stored frame's origin.
         assert!(line["left"].as_f64().unwrap() >= 72.0 && line["top"].as_f64().unwrap() >= 72.0, "{line}");
     }
