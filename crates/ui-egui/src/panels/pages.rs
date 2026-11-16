@@ -1317,7 +1317,7 @@ mod spread_label_tests {
     /// Bound right to left, a spread's label follows the document's reading order: the left
     /// page first ("3–2", not "2–3"), and a section inside a spread lists its pages left to
     /// right. Left-to-right labels are unchanged. A spread of more pages, drawn in document
-    /// order, keeps its label in that order.
+    /// order, lists its names in that order, apart while a section still starts inside it.
     #[test]
     fn rtl_binding_labels_spreads_in_visual_left_to_right_order() {
         let mut app = app();
@@ -1329,7 +1329,9 @@ mod spread_label_tests {
         assert_eq!(got[1], "1, 2");
         assert_eq!(got[2], "3–2");
         app.run("layout.pages.toSpread", json!({"page": 4, "spread": 1})).unwrap();
-        assert_eq!(labels(&app)[1], "2–4");
+        // Three pages, drawn in document order: 2, 3 and 4 are numbered 2, 1 and 2, and the
+        // section that starts on page 3 stays inside the spread, so the names stay apart.
+        assert_eq!(labels(&app)[1], "2, 1, 2");
     }
 
     /// Labels navigate to document spreads, including when parent editing was active.
