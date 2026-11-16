@@ -11067,3 +11067,204 @@ fn xref_index_does_not_reenter_through_an_anchored_margin_host() {
     assert_eq!(cache.xref_index(&d).page(anchor), Some("1"));
     assert!(!cache.get(&d, source, None).frames[0].lines.is_empty());
 }
+
+fn margin_running_definition(d: &mut Document) -> char {
+    let mut style = d.styles.paragraph[0].clone();
+    style.name = "Margin heading".into();
+    Arc::make_mut(&mut d.styles).paragraph.push(style);
+    d.text_variables.clear();
+    d.text_variables.push(designcraft_doc::vars::TextVariable::new(
+        "Margin running",
+        designcraft_doc::vars::VarKind::RunningHeader { style: "Margin heading".into(), use_: Default::default(), character: false },
+    ));
+    designcraft_doc::vars::var_char(0).unwrap()
+}
+
+#[test]
+fn margin_neighbours_use_the_displayed_running_index_and_rebuild_after_edits() {
+    let mut d = Document::new(&NewDocument::default());
+    let var = margin_running_definition(&mut d);
+    d.footnote_options.placement = designcraft_doc::NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 8.0, width: 72.0 };
+    d.footnote_options.separator = " ".into();
+    d.footnote_options.space_between = 7.0;
+    let lid = d.default_layer();
+    let (_, heading) = d
+        .add_text_frame(
+            SpreadRef::Doc(0),
+            Rect::new(36.0, 600.0, 576.0, 750.0),
+            lid,
+            "Running title",
+            ParaFormat { style: "Margin heading".into(), ..Default::default() },
+        )
+        .unwrap();
+    let (_, a) =
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(72.0, 72.0, 172.0, 580.0), lid, &format!("See {var} reference"), Default::default()).unwrap();
+    let at = d.story(a).unwrap().text.len();
+    d.story_mut(a).unwrap().insert_note(at, "First\nSecond\nThird", Default::default());
+    let running = Cache::new().running_index(&d);
+    let opts = ComposeOptions { running: Some(running), ..Default::default() };
+    let raw = compose_story_unstacked(&d, a, &opts);
+    let baseline = raw.frames[0].notes[0].reference_baseline;
+    let empty_baseline = compose_story_unstacked(&d, a, &Default::default()).frames[0].notes[0].reference_baseline;
+    assert!(baseline > empty_baseline + 10.0, "resolved {baseline}, unresolved {empty_baseline}");
+    let (_, b) =
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(120.0, baseline + 8.0, 220.0, baseline + 310.0), lid, "Other", Default::default()).unwrap();
+    d.story_mut(b).unwrap().insert_note(5, "Next\nSecond\nThird", Default::default());
+    for reverse in [false, true] {
+        let cache = Cache::new();
+        let (ca, cb) = if reverse {
+            let b = cache.get(&d, b, None);
+            (cache.get(&d, a, None), b)
+        } else {
+            (cache.get(&d, a, None), cache.get(&d, b, None))
+        };
+        let (ar, br) = (ca.frames[0].notes[0].rect, cb.frames[0].notes[0].rect);
+        assert!(ar.y1 + 7.0 <= br.y0 + 0.01 || br.y1 + 7.0 <= ar.y0 + 0.01, "displayed running stacks overlap: {ar:?}, {br:?}");
+        assert_eq!(ar, compose_story(&d, a, &opts).frames[0].notes[0].rect);
+        assert_eq!(br, compose_story(&d, b, &opts).frames[0].notes[0].rect);
+    }
+    let cache = Cache::new();
+    let before = cache.get(&d, b, None).frames[0].notes[0].rect;
+    let st = d.story_mut(heading).unwrap();
+    st.delete(0..st.len());
+    st.insert(0, "X");
+    st.paras[0].style = "Margin heading".into();
+    let fresh = Cache::new().get(&d, b, None);
+    assert!(fresh.frames[0].notes[0].rect.y0 < before.y0 - 1.0);
+    assert_eq!(cache.get(&d, b, None).frames[0].notes[0].rect, fresh.frames[0].notes[0].rect);
+}
+
+#[test]
+fn running_index_tracks_condition_changes_that_move_its_source_page() {
+    let mut d = Document::new(&NewDocument { pages: 2, facing_pages: false, ..Default::default() });
+    margin_running_definition(&mut d);
+    d.conditions.push(designcraft_doc::Condition { name: "Prefix".into(), color: [255, 0, 0], visible: true });
+    let prefix = "prefix ".repeat(40);
+    let heading = "Header after prefix";
+    let body = format!("{prefix}\n{heading}");
+    let (first, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 156.0, 96.0), d.default_layer(), &body, Default::default()).unwrap();
+    let (second, _) = d.add_text_frame(SpreadRef::Doc(1), Rect::new(36.0, 36.0, 156.0, 750.0), d.default_layer(), "", Default::default()).unwrap();
+    d.thread(first, second).unwrap();
+    let st = d.story_mut(sid).unwrap();
+    st.format_chars(0..prefix.len(), |f| f.over.conditions = Some(vec!["Prefix".into()]));
+    st.format_paras(prefix.len() + 1..body.len(), |p| p.style = "Margin heading".into());
+    let cache = Cache::new();
+    let value = |i: &crate::vars::RunningIndex| i.value("Margin heading", false, Default::default(), 0);
+    assert_eq!(value(&cache.running_index(&d)), "");
+    d.conditions[0].visible = false;
+    assert_eq!(value(&Cache::new().running_index(&d)), heading);
+    assert_eq!(value(&cache.running_index(&d)), heading);
+    d.conditions[0].visible = true;
+    assert_eq!(value(&cache.running_index(&d)), value(&Cache::new().running_index(&d)));
+}
+
+fn margin_running_cycle_fixture(anchored: bool) -> Document {
+    let mut d = Document::new(&NewDocument::default());
+    let var = margin_running_definition(&mut d);
+    d.footnote_options.placement = designcraft_doc::NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 8.0, width: 72.0 };
+    let (_, target) = d
+        .add_text_frame(
+            SpreadRef::Doc(0),
+            Rect::new(36.0, 36.0, 200.0, 200.0),
+            d.default_layer(),
+            "Target header",
+            ParaFormat { style: "Margin heading".into(), ..Default::default() },
+        )
+        .unwrap();
+    let host = if anchored {
+        let (item, embedded) = anchored_text_frame(&mut d, "Embedded heading", 100.0, 80.0);
+        d.story_mut(embedded).unwrap().paras[0].style = "Margin heading".into();
+        let (host, _) = body_holding(&mut d, item);
+        d.item(host).unwrap().text_frame().unwrap().story
+    } else {
+        let (_, host) =
+            d.add_text_frame(SpreadRef::Doc(0), Rect::new(240.0, 36.0, 440.0, 200.0), d.default_layer(), "Host", Default::default()).unwrap();
+        let mut item = designcraft_doc::Item::new(
+            ItemId(d.alloc()),
+            d.default_layer(),
+            designcraft_doc::Shape::Rectangle,
+            designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 20.0, 20.0)),
+        );
+        item.wrap.mode = designcraft_doc::WrapMode::BoundingBox;
+        d.story_mut(host).unwrap().insert_object(0, designcraft_doc::AnchoredObject::new(item, Default::default()));
+        assert!(crate::wrap::neighbours(&d, target).contains(&host));
+        host
+    };
+    let at = d.story(host).unwrap().text.len();
+    d.story_mut(host).unwrap().insert_note(at, "Host margin", Default::default());
+    d.add_text_frame(SpreadRef::Doc(0), Rect::new(300.0, 400.0, 500.0, 700.0), d.default_layer(), &var.to_string(), Default::default()).unwrap();
+    d
+}
+
+#[test]
+fn running_index_does_not_reenter_through_a_margin_wrap_neighbour() {
+    let d = margin_running_cycle_fixture(false);
+    assert_eq!(Cache::new().running_index(&d).value("Margin heading", false, Default::default(), 0), "Target header");
+}
+
+#[test]
+fn running_index_does_not_reenter_through_an_anchored_margin_host() {
+    let d = margin_running_cycle_fixture(true);
+    assert_eq!(Cache::new().running_index(&d).value("Margin heading", false, Default::default(), 0), "Target header");
+}
+
+#[test]
+fn running_header_source_pages_follow_displayed_cross_references() {
+    let mut d = Document::new(&NewDocument { pages: 2, start_page: 99999, facing_pages: false, ..Default::default() });
+    margin_running_definition(&mut d);
+    let (_, target) =
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(300.0, 600.0, 500.0, 750.0), d.default_layer(), "Target", Default::default()).unwrap();
+    let anchor = d.story_mut(target).unwrap().insert_anchor(0, "Target");
+    let heading = "Header after reference";
+    let (first, sid) = d
+        .add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 156.0, 96.0), d.default_layer(), &format!("\n{heading}"), Default::default())
+        .unwrap();
+    let (second, _) = d.add_text_frame(SpreadRef::Doc(1), Rect::new(36.0, 36.0, 156.0, 750.0), d.default_layer(), "", Default::default()).unwrap();
+    d.thread(first, second).unwrap();
+    let st = d.story_mut(sid).unwrap();
+    st.insert_xref(0, designcraft_doc::CrossRef { target: anchor, text: Some("<pageNum /> ".repeat(16)), ..Default::default() });
+    let at = st.text.find(heading).unwrap();
+    st.format_paras(at..st.text.len(), |p| p.style = "Margin heading".into());
+    let cache = Cache::new();
+    let displayed = cache.get(&d, sid, None);
+    let unresolved = compose_story_unstacked(&d, sid, &Default::default());
+    assert_eq!(crate::vars::place(&d, &unresolved, at).unwrap().0, 0, "fixture must fit the unresolved reference on the first page");
+    assert_eq!(crate::vars::place(&d, &displayed, at).unwrap().0, 1, "displayed page numbers must push the heading to page two");
+    let index = cache.running_index(&d);
+    assert_eq!(index.value("Margin heading", false, Default::default(), 0), "");
+    assert_eq!(index.value("Margin heading", false, Default::default(), 1), heading);
+}
+
+#[test]
+fn running_header_source_pages_follow_named_format_edits() {
+    let mut d = Document::new(&NewDocument { pages: 2, start_page: 99999, facing_pages: false, ..Default::default() });
+    margin_running_definition(&mut d);
+    d.xref_formats.push(designcraft_doc::XrefFormat { name: "Repeated page".into(), definition: "<pageNum /> ".repeat(16) });
+    let (_, target) =
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(300.0, 600.0, 500.0, 750.0), d.default_layer(), "Target", Default::default()).unwrap();
+    let anchor = d.story_mut(target).unwrap().insert_anchor(0, "Target");
+    let heading = "Header after reference";
+    let (first, sid) = d
+        .add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 156.0, 96.0), d.default_layer(), &format!("\n{heading}"), Default::default())
+        .unwrap();
+    let (second, _) = d.add_text_frame(SpreadRef::Doc(1), Rect::new(36.0, 36.0, 156.0, 750.0), d.default_layer(), "", Default::default()).unwrap();
+    d.thread(first, second).unwrap();
+    let st = d.story_mut(sid).unwrap();
+    st.insert_xref(0, designcraft_doc::CrossRef { target: anchor, format: "Repeated page".into(), ..Default::default() });
+    let at = st.text.find(heading).unwrap();
+    st.format_paras(at..st.text.len(), |p| p.style = "Margin heading".into());
+    let source = d.stories[&sid].clone();
+    let cache = Cache::new();
+    let value = |i: &crate::vars::RunningIndex| i.value("Margin heading", false, Default::default(), 0);
+    assert_eq!(crate::vars::place(&d, &cache.get(&d, sid, None), at).unwrap().0, 1);
+    assert_eq!(value(&cache.running_index(&d)), "");
+    for (definition, expected_page) in [("Short".to_string(), 0), ("<pageNum /> ".repeat(16), 1)] {
+        d.xref_formats.last_mut().unwrap().definition = definition;
+        let displayed = cache.get(&d, sid, None);
+        assert_eq!(crate::vars::place(&d, &displayed, at).unwrap().0, expected_page);
+        let expected = if expected_page == 0 { heading } else { "" };
+        assert_eq!(value(&Cache::new().running_index(&d)), expected);
+        assert_eq!(value(&cache.running_index(&d)), expected, "warm index must follow the displayed source page after a format edit");
+    }
+    assert!(Arc::ptr_eq(&source, &d.stories[&sid]), "format edits must not rely on a story revision to invalidate the index");
+}

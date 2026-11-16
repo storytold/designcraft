@@ -2286,6 +2286,7 @@ fn fit_line(input: LineFitInput<'_>) -> LineFit {
     // remainder can reject the same body line in every later column without making progress.
     if !capped && !line_notes.is_empty() {
         let bottom = cur.last_baseline.map_or(col.y0, |b| b + cur.last_descent);
+        // The series wrapper applies each pending note's split policy and spacing.
         let available = col.y1 - bottom;
         if let Some(plan) = notes.split_plan(doc, note_column, &[], available, opts) {
             notes.place_line(doc, note_column, &[], Some(plan), opts);
