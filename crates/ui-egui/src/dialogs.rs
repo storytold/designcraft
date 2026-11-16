@@ -36,6 +36,7 @@ impl Dialog {
         };
         let defaults = match id {
             "newDocument" => crate::new_document::defaults(),
+            "contactSheet" => json!({"columns": 3, "rows": 4, "gutter": "6pt", "margin": "36pt"}),
             "goToPage" => json!({"page": "1"}),
             "epubExport" => json!({"split": false, "mode": "style", "style": designcraft_doc::BASIC_PARAGRAPH, "coverImage": ""}),
             "qrCode" => json!({"type": "url", "content": "https://", "color": "[Black]"}),
@@ -1165,7 +1166,10 @@ fn seed_text_frame_options(app: &DesignApp, d: &mut Dialog) {
         return;
     }
     let o = selected_frame_options(app).unwrap_or_default();
-    let units = app.session.active().map(|s| s.doc.settings.horizontal_units).unwrap_or(Unit::Picas);
+    let units = doc_unit(app);
+    // The spinner fields show their measures in it and a bare number typed is in it (#2739):
+    // kept from when the dialog opened, as the Rectangle dialog keeps its units.
+    d.unit = units;
     let mut shown = text_frame_fields(&o, units, selected_frame_width(app), &document_grid(app));
     // A non-rectangular frame shows one Inset (its top inset, the one kept from the outline).
     let shaped = selected_frame_is_shaped(app);
@@ -1303,16 +1307,17 @@ fn text_frame_options_dialog(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog)
             "baseline" => {
                 crate::rtl::label(ui, egui::RichText::new(tr("First Baseline")).font(semibold(12.0)));
                 egui::Grid::new("tfo_fb").num_columns(4).spacing([8.0, 6.0]).show(ui, |ui| {
-                    crate::rtl::label(ui, tr("Offset:"));
+                    let name = crate::rtl::label(ui, tr("Offset:"));
                     translated_combo(
                         &lang,
                         ui,
                         d,
                         "firstBaseline",
                         &[("ascent", "Ascent"), ("capHeight", "Cap Height"), ("leading", "Leading"), ("xHeight", "x Height"), ("fixed", "Fixed")],
-                    );
+                    )
+                    .labelled_by(name.id);
                     crate::rtl::label(ui, tr("Min:"));
-                    text_field(ui, d, "firstBaselineMin", 70.0);
+                    text_field_named(ui, d, "firstBaselineMin", 70.0, tr("Min:"));
                     ui.end_row();
                 });
                 ui.add_space(8.0);
@@ -1321,19 +1326,20 @@ fn text_frame_options_dialog(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog)
                 ui.add_enabled_ui(d.b("customGrid"), |ui| {
                     egui::Grid::new("tfo_grid").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
                         crate::rtl::label(ui, tr("Start:"));
-                        text_field(ui, d, "gridStart", 70.0);
+                        text_field_named(ui, d, "gridStart", 70.0, tr("Start:"));
                         ui.end_row();
-                        crate::rtl::label(ui, tr("Relative To:"));
+                        let name = crate::rtl::label(ui, tr("Relative To:"));
                         translated_combo(
                             &lang,
                             ui,
                             d,
                             "gridRelativeTo",
                             &[("page", "Top of Page"), ("margin", "Top Margin"), ("frame", "Top of Frame"), ("inset", "Top Inset")],
-                        );
+                        )
+                        .labelled_by(name.id);
                         ui.end_row();
                         crate::rtl::label(ui, tr("Increment Every:"));
-                        text_field(ui, d, "gridIncrement", 70.0);
+                        text_field_named(ui, d, "gridIncrement", 70.0, tr("Increment Every:"));
                         ui.end_row();
                     });
                 });
@@ -1350,10 +1356,12 @@ fn text_frame_options_dialog(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog)
     }
 }
 
-/// A measure field of the dialog with InDesign's spinner (stored as text in the document's unit).
-fn spin_measure(ui: &mut egui::Ui, d: &mut Dialog, key: &str, w: f32, enabled: bool) {
+/// A measure field of the dialog with InDesign's spinner (stored as text in the document's unit),
+/// named from its `caption`.
+fn spin_measure(ui: &mut egui::Ui, d: &mut Dialog, key: &str, caption: &str, w: f32, enabled: bool) {
     let id = format!("tfo_{key}");
-    if let Some(v) = crate::widgets::NumField::measure(&id, d.m(key), d.unit).width(w).spinner().range(0.0, 15552.0).enabled(enabled).show(ui) {
+    let field = crate::widgets::NumField::measure(&id, d.m(key), d.unit).name(caption.trim_end_matches(':'));
+    if let Some(v) = field.width(w).spinner().range(0.0, 15552.0).enabled(enabled).show(ui) {
         d.fields.insert(key.into(), json!(format_measure(v, d.unit)));
     }
 }
@@ -1444,19 +1452,22 @@ pub(crate) fn general(lang: &str, ui: &mut egui::Ui, d: &mut Dialog) {
     framed(ui, None, |ui| {
         ui.horizontal(|ui| {
             caption_at(ui, tr("Columns:"), cap);
-            translated_combo(lang, ui, d, "columnsKind", &[("fixedNumber", "Fixed Number"), ("fixedWidth", "Fixed Width")]);
+            translated_combo(lang, ui, d, "columnsKind", &[("fixedNumber", "Fixed Number"), ("fixedWidth", "Fixed Width")])
+                .accessible_name(tr("Columns:").to_owned());
         });
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            caption_at(ui, crate::i18n::tr_context(lang, "Number:", "count"), cap);
+            let number = crate::i18n::tr_context(lang, "Number:", "count");
+            caption_at(ui, number, cap);
             let n = d.n("columns");
-            if let Some(v) = crate::widgets::NumField::number("tfo_columns", n, "", 0).width(field).spinner().range(1.0, 40.0).show(ui) {
+            let columns = crate::widgets::NumField::number("tfo_columns", n, "", 0).name(number.trim_end_matches(':'));
+            if let Some(v) = columns.width(field).spinner().range(1.0, 40.0).show(ui) {
                 d.fields.insert("columns".into(), json!(v.round().to_string()));
             }
             // Fixed Number: the width follows from the frame; Fixed Width: it's set here.
             caption_at(ui, tr("Width:"), cap2);
             if d.s("columnsKind") == "fixedWidth" {
-                spin_measure(ui, d, "columnWidth", field, true);
+                spin_measure(ui, d, "columnWidth", tr("Width:"), field, true);
             } else {
                 // Fixed Number: each column's width, from the frame, the insets and the gutter.
                 let frame = d.fields.get("_frameWidth").and_then(Value::as_f64);
@@ -1467,16 +1478,18 @@ pub(crate) fn general(lang: &str, ui: &mut egui::Ui, d: &mut Dialog) {
                     let inner = w - d.m(left).unwrap_or(0.0) - d.m(right).unwrap_or(0.0);
                     ((inner - d.m("gutter").unwrap_or(0.0) * (n - 1.0)) / n).max(0.0)
                 });
-                let _ = crate::widgets::NumField::measure("tfo_auto_width", width, d.unit).width(field).spinner().enabled(false).show(ui);
+                let auto = crate::widgets::NumField::measure("tfo_auto_width", width, d.unit).name(tr("Width:").trim_end_matches(':'));
+                let _ = auto.width(field).spinner().enabled(false).show(ui);
             }
         });
         ui.horizontal(|ui| {
             caption_at(ui, tr("Gutter:"), cap);
-            spin_measure(ui, d, "gutter", field, true);
+            spin_measure(ui, d, "gutter", tr("Gutter:"), field, true);
             // Maximum is for Flexible Width columns, which aren't in the document model yet.
             caption_at(ui, tr("Maximum:"), cap2);
             ui.add_enabled_ui(false, |ui| {
-                let _ = crate::widgets::NumField::number("tfo_max", None, "", 0).width(field).spinner().enabled(false).show(ui);
+                let max = crate::widgets::NumField::number("tfo_max", None, "", 0).name(tr("Maximum:").trim_end_matches(':'));
+                let _ = max.width(field).spinner().enabled(false).show(ui);
             });
         });
         check(ui, d, "balanceColumns", tr("Balance Columns"));
@@ -1493,7 +1506,7 @@ pub(crate) fn general(lang: &str, ui: &mut egui::Ui, d: &mut Dialog) {
         {
             ui.horizontal(|ui| {
                 caption_at(ui, tr(l1), cap);
-                spin_measure(ui, d, k1, field, !shaped);
+                spin_measure(ui, d, k1, tr(l1), field, !shaped);
                 ui.add_space(8.0);
                 if r == 0 {
                     let linked = d.b("insetLinked");
@@ -1508,13 +1521,13 @@ pub(crate) fn general(lang: &str, ui: &mut egui::Ui, d: &mut Dialog) {
                     ui.add_space(22.0 + ui.spacing().item_spacing.x);
                 }
                 caption_at(ui, tr(l2), cap2 - 30.0);
-                spin_measure(ui, d, k2, field, !shaped);
+                spin_measure(ui, d, k2, tr(l2), field, !shaped);
             });
         }
         if shaped {
             ui.horizontal(|ui| {
                 caption_at(ui, tr("Inset:"), cap);
-                spin_measure(ui, d, "inset", field, true);
+                spin_measure(ui, d, "inset", tr("Inset:"), field, true);
             });
         }
         if !shaped
@@ -1536,12 +1549,13 @@ pub(crate) fn general(lang: &str, ui: &mut egui::Ui, d: &mut Dialog) {
                 d,
                 "verticalJustification",
                 &[("top", "Top"), ("center", "Center"), ("bottom", "Bottom"), ("justify", "Justify")],
-            );
+            )
+            .accessible_name(tr("Align:").to_owned());
         });
         ui.horizontal(|ui| {
             caption_at(ui, tr("Paragraph Spacing Limit:"), 170.0);
             let justify = d.s("verticalJustification") == "justify";
-            spin_measure(ui, d, "paragraphSpacingLimit", field, justify);
+            spin_measure(ui, d, "paragraphSpacingLimit", tr("Paragraph Spacing Limit:"), field, justify);
         });
     });
     ui.add_space(4.0);
@@ -1567,10 +1581,10 @@ fn column_rules(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     let opts: Vec<(&str, &str)> = swatches.iter().map(|n| (n.as_str(), n.as_str())).collect();
     egui::Grid::new("tfo_rule").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
         crate::rtl::label(ui, tr("Weight"));
-        text_field(ui, d, "columnRuleWeight", 70.0);
+        text_field_named(ui, d, "columnRuleWeight", 70.0, tr("Weight"));
         ui.end_row();
-        crate::rtl::label(ui, tr("Color"));
-        combo(ui, d, "columnRuleColor", &opts);
+        let name = crate::rtl::label(ui, tr("Color"));
+        combo(ui, d, "columnRuleColor", &opts).labelled_by(name.id);
         ui.end_row();
         for (label, key) in [
             ("Tint %", "columnRuleTint"),
@@ -1579,7 +1593,7 @@ fn column_rules(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
             ("Horizontal Offset", "columnRuleOffset"),
         ] {
             crate::rtl::label(ui, tr(label));
-            text_field(ui, d, key, 70.0);
+            text_field_named(ui, d, key, 70.0, tr(label));
             ui.end_row();
         }
     });
@@ -1590,7 +1604,7 @@ fn auto_size(lang: &str, ui: &mut egui::Ui, d: &mut Dialog) {
     let tr = |s: &'static str| crate::i18n::tr(lang, s);
     crate::rtl::label(ui, egui::RichText::new(tr("Auto-Size")).font(semibold(12.0)));
     egui::Grid::new("tfo_autosize").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
-        crate::rtl::label(ui, tr("Auto-Sizing"));
+        let name = crate::rtl::label(ui, tr("Auto-Sizing"));
         translated_combo(
             lang,
             ui,
@@ -1603,16 +1617,17 @@ fn auto_size(lang: &str, ui: &mut egui::Ui, d: &mut Dialog) {
                 ("heightAndWidth", "Height and Width"),
                 ("heightAndWidthProportionally", "Height and Width (Keep Proportions)"),
             ],
-        );
+        )
+        .labelled_by(name.id);
         ui.end_row();
         crate::rtl::label(ui, tr("Reference Point"));
         reference_point(ui, d, "autoSizeReference");
         ui.end_row();
         check(ui, d, "useMinimumHeight", tr("Minimum Height"));
-        text_field(ui, d, "minimumHeight", 70.0);
+        text_field_named(ui, d, "minimumHeight", 70.0, tr("Minimum Height"));
         ui.end_row();
         check(ui, d, "useMinimumWidth", tr("Minimum Width"));
-        text_field(ui, d, "minimumWidth", 70.0);
+        text_field_named(ui, d, "minimumWidth", 70.0, tr("Minimum Width"));
         ui.end_row();
     });
     check(ui, d, "noLineBreaks", tr("No Line Breaks"));
@@ -1805,6 +1820,9 @@ fn text_frame_targets(app: &DesignApp, d: &Dialog) -> Result<Option<Value>, &'st
     Ok(Some(ids))
 }
 
+/// In a native batch's `pdfImport` dialog: the paths chosen after its PDF, placed once it is confirmed.
+pub(crate) const PDF_IMPORT_REST: &str = "rest";
+
 /// File › Document Setup, filled from the document.
 /// The active document's ruler unit (picas without a document).
 fn doc_unit(app: &DesignApp) -> Unit {
@@ -1863,6 +1881,20 @@ fn go_to_row_dialog(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     if let Some(st) = d.fields.get("status").and_then(Value::as_str) {
         ui.label(egui::RichText::new(st).color(crate::theme::Tokens::get(ui.ctx()).text_dim));
     }
+}
+
+/// File › Place Contact Sheet…: bare numbers typed in the dialog are in the document's ruler unit
+/// (the defaults keep their explicit `pt`).
+pub fn open_contact_sheet(app: &mut DesignApp) {
+    app.ui.dialog = Some(contact_sheet_dialog(app, json!({})));
+}
+
+/// The Place Contact Sheet dialog with `fields`, its bare numbers in the document's ruler unit,
+/// for the menu and for `ui.dialog.open` alike.
+pub fn contact_sheet_dialog(app: &DesignApp, fields: Value) -> Dialog {
+    let mut d = Dialog::new("contactSheet", fields);
+    d.unit = doc_unit(app);
+    d
 }
 
 /// The document's vertical ruler unit: what a bare number means in a height field.
@@ -3289,6 +3321,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         "qrCode" => crate::i18n::tr(&app.ui.language, "Generate QR Code"),
         "preferences" => crate::i18n::tr(&app.ui.language, "Preferences"),
         "print" => crate::i18n::tr(&app.ui.language, "Print"),
+        "contactSheet" => crate::i18n::tr(&app.ui.language, "Place Contact Sheet"),
         "pdfImport" => crate::i18n::tr(&app.ui.language, "Place PDF"),
         "pdfExport" => crate::i18n::tr(&app.ui.language, "Export PDF"),
         "epubExport" => crate::i18n::tr(&app.ui.language, "EPUB Export Options"),
@@ -3680,6 +3713,19 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                     crate::object_style_dialog::ID => crate::object_style_dialog::show(app, ui, &mut d),
                     "preferences" => preferences(app, ui, &mut d, body_height),
                     "print" => print_dialog(app, ui, &mut d),
+                    "contactSheet" => {
+                        if !d.s("status").is_empty() {
+                            ui.label(d.s("status"));
+                        }
+                        ui.label(crate::i18n::tr(&app.ui.language, "Place loaded images on new pages, in file order."));
+                        for (label, key) in [("Columns", "columns"), ("Rows", "rows"), ("Gutter", "gutter"), ("Page margin", "margin")] {
+                            let label = crate::i18n::tr(&app.ui.language, label);
+                            ui.horizontal(|ui| {
+                                ui.add_sized([95.0, 20.0], egui::Label::new(label));
+                                text_field_named(ui, &mut d, key, 80.0, label);
+                            });
+                        }
+                    }
                     "pdfImport" => {
                         ui.label(egui::RichText::new(if d.b("async") { d.s("name") } else { d.s("path") }).size(11.0));
                         ui.horizontal(|ui| {
@@ -4038,12 +4084,12 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                         egui::Grid::new("ff_crop").num_columns(4).spacing([8.0, 6.0]).show(ui, |ui| {
                             for (k, l) in [("cropTop", "Top:"), ("cropLeft", "Left:")] {
                                 crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, l));
-                                text_field(ui, &mut d, k, 70.0);
+                                measure_field(ui, &mut d, k, 70.0);
                             }
                             ui.end_row();
                             for (k, l) in [("cropBottom", "Bottom:"), ("cropRight", "Right:")] {
                                 crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, l));
-                                text_field(ui, &mut d, k, 70.0);
+                                measure_field(ui, &mut d, k, 70.0);
                             }
                             ui.end_row();
                         });
@@ -5029,6 +5075,27 @@ fn confirm_part3(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
             app.canvas.shown = None;
             Ok(r)
         }
+        "contactSheet" => {
+            let result = (|| {
+                // A bare number means the ruler unit, as typed or as a JSON number (`Dialog::m`
+                // takes the latter as points).
+                let measure = |k: &str| parse_measure(&d.s(k), d.unit).ok();
+                let params = json!({
+                    "columns": d.s("columns").trim().parse::<u64>().map_err(|_| "Columns must be a whole number")?,
+                    "rows": d.s("rows").trim().parse::<u64>().map_err(|_| "Rows must be a whole number")?,
+                    "gutter": measure("gutter").ok_or("Enter a valid gutter")?,
+                    "margin": measure("margin").ok_or("Enter a valid margin")?,
+                });
+                app.run("place.contactSheet", params)
+            })();
+            // A mistake keeps the dialog, with what was typed and why it can't be placed.
+            if let Err(error) = &result {
+                let mut d = d;
+                d.fields.insert("status".into(), json!(error));
+                app.ui.dialog = Some(d);
+            }
+            result
+        }
         "pdfImport" => {
             let crop = d.s("crop");
             // One page number, 1 or more; a blank field is page 1. A range or list ("4-5", "2,5"), a
@@ -5048,12 +5115,23 @@ fn confirm_part3(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
                 },
             };
             if d.b("async") {
-                return app.confirm_pdf_import(page, if crop.is_empty() { "crop".into() } else { crop });
+                return app.confirm_pdf_import(page, if crop.is_empty() { "crop".into() } else { crop }, d.b("append"));
             }
             if let Some(target) = d.fields.get("target").and_then(Value::as_u64) {
                 app.activate_import_target(&crate::ImportRequest { purpose: "place".into(), target: Some(target) })?;
             }
-            app.place_file(json!({"path": d.s("path"), "pdfPage": page, "pdfCrop": if crop.is_empty() { "crop".to_string() } else { crop }}))
+            let placed = app.place_file(
+                json!({"path": d.s("path"), "pdfPage": page, "pdfCrop": if crop.is_empty() { "crop".to_string() } else { crop }, "append": d.b("append")}),
+            )?;
+            // The files chosen after this PDF, which waited for its options.
+            let rest: Vec<String> = d
+                .fields
+                .get(PDF_IMPORT_REST)
+                .and_then(Value::as_array)
+                .map(|paths| paths.iter().filter_map(Value::as_str).map(str::to_string).collect())
+                .unwrap_or_default();
+            app.place_paths(rest)?;
+            Ok(placed)
         }
         "print" => {
             let pages = if d.s("range") == "range" { json!(d.s("pages")) } else { Value::Null };
@@ -5370,7 +5448,7 @@ fn confirm_part5(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
             json!({"path": d.s("path"), "removeStyles": d.b("removeStyles"), "styleConflicts": d.s("styleConflicts"), "styleMap": d.fields.get("map").cloned().unwrap_or(json!({}))}),
         ),
         "fittingOptions" => {
-            let m = |k: &str| d.fields.get(k).and_then(Value::as_str).and_then(|s| parse_measure(s, Unit::Points).ok()).unwrap_or(0.0);
+            let m = |k: &str| d.m(k).unwrap_or(0.0);
             app.run(
                 "object.fittingOptions",
                 json!({"autoFit": d.b("autoFit"), "fitting": d.s("fitting"), "align": d.n("align").unwrap_or(4.0) as u64,
@@ -8279,6 +8357,9 @@ const PREVIEW_FAILED: &str = "previewFailed";
 /// edited.
 fn justification(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, prefix: &str, current: &Value) {
     let cur = |d: &Dialog, k: &str| d.fields.get(&format!("{prefix}{k}")).cloned().unwrap_or_else(|| current[k].clone());
+    // The spacing table keeps its own grid: its columns are only as wide as the percent fields.
+    // The rows below (a wide menu, composer buttons, long checkboxes) sit outside it, so they
+    // cannot stretch its columns and push Desired and Maximum off-screen.
     egui::Grid::new("psj").num_columns(4).spacing([8.0, 6.0]).show(ui, |ui| {
         ui.label("");
         crate::rtl::label(ui, crate::i18n::tr(lang, "Minimum"));
@@ -8302,6 +8383,8 @@ fn justification(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, prefix: &str, cu
             d.fields.insert(format!("{prefix}autoLeading"), json!(auto_leading_typed(n)));
         }
         ui.end_row();
+    });
+    ui.horizontal(|ui| {
         let single_label = crate::rtl::label(ui, crate::i18n::tr(lang, "Single Word Justification:"));
         let single = cur(d, "singleWordJustify");
         // Mixed (null) shows blank until a choice is made.
@@ -8324,7 +8407,8 @@ fn justification(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, prefix: &str, cu
             })
             .response
             .labelled_by(single_label.id);
-        ui.end_row();
+    });
+    ui.horizontal(|ui| {
         crate::rtl::label(ui, crate::i18n::tr(lang, "Composer:"));
         let composer = cur(d, "composer");
         // Mixed (null) selects neither; a Japanese composer keeps its kind.
@@ -8336,20 +8420,20 @@ fn justification(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, prefix: &str, cu
         if ui.selectable_label(known && single, crate::rtl::widget(ui, crate::i18n::tr(lang, "Single-line Composer"))).clicked() {
             d.fields.insert(format!("{prefix}composer"), json!(single_line));
         }
-        ui.end_row();
-        for (label, key, text, default) in [
-            ("Insert Kashidas:", "kashidas", "In justified Arabic text", true),
-            ("Korean Line Breaks:", "koreanCharBreaks", "Between syllables (not only at spaces)", false),
-        ] {
+    });
+    for (label, key, text, default) in [
+        ("Insert Kashidas:", "kashidas", "In justified Arabic text", true),
+        ("Korean Line Breaks:", "koreanCharBreaks", "Between syllables (not only at spaces)", false),
+    ] {
+        ui.horizontal(|ui| {
             crate::rtl::label(ui, crate::i18n::tr(lang, label));
             let v = cur(d, key);
             let mut on = v.as_bool().unwrap_or(default);
             if ui.add(egui::Checkbox::new(&mut on, crate::rtl::widget(ui, crate::i18n::tr(lang, text))).indeterminate(v.is_null())).changed() {
                 d.fields.insert(format!("{prefix}{key}"), json!(on));
             }
-            ui.end_row();
-        }
-    });
+        });
+    }
     if let Some(e) = d.fields.get("justifyError").and_then(Value::as_str) {
         ui.add_space(6.0);
         crate::rtl::label(ui, egui::RichText::new(e).color(ui.visuals().error_fg_color));

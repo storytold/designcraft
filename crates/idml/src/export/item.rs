@@ -1,7 +1,5 @@
-use super::common::{affine_s, bool_s, p, pct, uid, with_props};
-use super::{
-    Affine, ColumnsKind, Content, El, Ex, Item, Node, OBJECT_BUILTINS, PathData, Shape, TextFrameOptions, base64_encode, escape_id, names, num, pt,
-};
+use super::common::{affine_s, bool_s, pct, uid, with_props};
+use super::{Affine, ColumnsKind, Content, El, Ex, Item, Node, OBJECT_BUILTINS, PathData, Shape, TextFrameOptions, base64_encode, names, num, pt};
 
 impl<'a> Ex<'a> {
     pub(super) fn item_el(&mut self, it: &Item, xf: Affine) -> El {
@@ -30,19 +28,14 @@ impl<'a> Ex<'a> {
         {
             // Type on a path: a TextPath child holds the story.
             let len = designcraft_geom::warp::PathWarp::new(&it.path.to_bezpath(), false).length();
-            el.push(
-                El::new("TextPath")
-                    .attr("Self", format!("{}tp", uid(it.id.0)))
-                    .attr("ParentStory", uid(t.story.0))
-                    .attr("PreviousTextFrame", "n")
-                    .attr("NextTextFrame", "n")
-                    .attr("PathEffect", "RainbowPathEffect")
-                    .attr("PathAlignment", "CenterPathAlignment")
-                    .attr("TextAlignment", names::path_align_out(pt.align))
-                    .attr("FlipPathEffect", if pt.flip { "Flipped" } else { "NotFlipped" })
-                    .attr("StartBracket", num(pt.start))
-                    .attr("EndBracket", num(pt.end.map_or(len, |e| e.min(len)))),
-            );
+            el.push(crate::xml::from_craft(craft_idml::model::TextPath::to_el(
+                &uid(it.id.0),
+                &uid(t.story.0),
+                names::path_align_out(pt.align),
+                pt.flip,
+                pt.start,
+                pt.end.map_or(len, |end| end.min(len)),
+            )));
         } else if let Content::Text(t) = &it.content {
             let (prev, next) = self.threads.get(&it.id.0).copied().unwrap_or((None, None));
             el.set("ParentStory", uid(t.story.0));
@@ -193,46 +186,58 @@ impl<'a> Ex<'a> {
         let ds = &it.effects.drop_shadow;
         let (gf, df) = (&it.effects.gradient_feather, &it.effects.directional_feather);
         if it.opacity < 1.0 || it.blend != designcraft_color::BlendMode::Normal || ds.on || it.effects.feather > 0.0 || gf.on || df.on || styled {
-            let mut t = El::new("TransparencySetting");
-            t.push(El::new("BlendingSetting").attr("BlendMode", names::blend_out(it.blend)).attr("Opacity", pct(it.opacity as f64)));
-            for c in self.effect_els(&it.effects, styled) {
-                t.push(c);
-            }
-            if df.on {
-                let [top, left, bottom, right] = df.widths;
-                t.push(
-                    El::new("DirectionalFeatherSetting")
-                        .attr("Applied", "true")
-                        .attr("LeftWidth", num(left))
-                        .attr("RightWidth", num(right))
-                        .attr("TopWidth", num(top))
-                        .attr("BottomWidth", num(bottom)),
-                );
-            }
-            if gf.on {
-                let mut g = El::new("GradientFeatherSetting").attr("Applied", "true").attr("Type", if gf.radial { "Radial" } else { "Linear" });
-                if let Some([x0, y0, x1, y1]) = gf.vector {
-                    // Gradient Feather tool vector: start, length and angle in the item's space.
-                    g.set("Angle", num((-(y1 - y0)).atan2(x1 - x0).to_degrees()));
-                    g.set("Length", num((x1 - x0).hypot(y1 - y0)));
-                    g.set("GradientStart", format!("{} {}", num(x0), num(y0)));
-                } else {
-                    g.set("Angle", num(gf.angle));
-                }
-                let id = uid(it.id.0);
-                for (i, (opacity, location)) in [(gf.start, 0.0), (gf.end, 100.0)].into_iter().enumerate() {
-                    let mut s = El::new("OpacityGradientStop")
-                        .attr("Self", format!("{id}TransparencySetting1GradientFeatherSetting1OpacityGradientStop{i}"))
-                        .attr("Opacity", pct(opacity as f64))
-                        .attr("Location", num(location));
-                    if i > 0 {
-                        s.set("Midpoint", "50");
+            let gradient_feather = if gf.on {
+                let (angle, length, start) = gf.vector.map_or((Some(gf.angle), None, None), |[x0, y0, x1, y1]| {
+                    (Some((-(y1 - y0)).atan2(x1 - x0).to_degrees()), Some((x1 - x0).hypot(y1 - y0)), Some([x0, y0]))
+                });
+                Some(craft_idml::model::GradientFeatherValues {
+                    applied: true,
+                    radial: gf.radial,
+                    angle,
+                    length,
+                    start,
+                    stops: vec![
+                        craft_idml::model::OpacityStopValues { location: Some(0.0), opacity: Some(f64::from(gf.start) * 100.0) },
+                        craft_idml::model::OpacityStopValues { location: Some(100.0), opacity: Some(f64::from(gf.end) * 100.0) },
+                    ],
+                })
+            } else {
+                None
+            };
+            let directional_feather = df.on.then(|| craft_idml::model::DirectionalFeatherValues { applied: true, widths: df.widths.map(Some) });
+            let transparency = craft_idml::model::TransparencySetting {
+                blend_mode: Some(names::blend_out(it.blend).into()),
+                opacity: Some(f64::from(it.opacity) * 100.0),
+                drop_shadow: (ds.on || styled).then(|| {
+                    let a = self.d.light_angle(ds.angle, ds.global_light).to_radians();
+                    craft_idml::model::DropShadowValues {
+                        mode: Some(if ds.on { "Drop" } else { "None" }.into()),
+                        x_offset: Some(-ds.distance * a.cos()),
+                        y_offset: Some(ds.distance * a.sin()),
+                        color: Some(self.sw(&ds.color)),
+                        opacity: Some(f64::from(ds.opacity) * 100.0),
+                        size: Some(ds.size),
+                        spread: Some(ds.spread),
+                        blend_mode: Some(names::blend_out(ds.mode).into()),
                     }
-                    g.push(s);
-                }
-                t.push(g);
-            }
-            el.push(t);
+                }),
+                feather: (it.effects.feather > 0.0 || styled).then(|| {
+                    let corners = match it.effects.feather_options.corners {
+                        designcraft_doc::FeatherCorners::Sharp => "Sharp",
+                        designcraft_doc::FeatherCorners::Rounded => "Rounded",
+                        designcraft_doc::FeatherCorners::Diffused => "Diffusion",
+                    };
+                    craft_idml::model::FeatherValues {
+                        mode: Some(if it.effects.feather > 0.0 { "Standard" } else { "None" }.into()),
+                        width: Some(it.effects.feather),
+                        choke_amount: Some(it.effects.feather_options.choke),
+                        corner_type: Some(corners.into()),
+                    }
+                }),
+                gradient_feather,
+                directional_feather,
+            };
+            el.push(crate::xml::from_craft(transparency.to_el(&uid(it.id.0))));
         }
     }
 
@@ -243,17 +248,19 @@ impl<'a> Ex<'a> {
         let ds = &e.drop_shadow;
         if ds.on || all {
             let a = self.d.light_angle(ds.angle, ds.global_light).to_radians();
-            out.push(
-                El::new("DropShadowSetting")
-                    .attr("Mode", if ds.on { "Drop" } else { "None" })
-                    .attr("XOffset", num(-ds.distance * a.cos()))
-                    .attr("YOffset", num(ds.distance * a.sin()))
-                    .attr("Size", num(ds.size))
-                    .attr("Spread", num(ds.spread))
-                    .attr("Opacity", pct(ds.opacity as f64))
-                    .attr("BlendMode", names::blend_out(ds.mode))
-                    .attr("EffectColor", self.sw(&ds.color)),
-            );
+            out.push(crate::xml::from_craft(
+                craft_idml::model::DropShadowValues {
+                    mode: Some(if ds.on { "Drop" } else { "None" }.into()),
+                    x_offset: Some(-ds.distance * a.cos()),
+                    y_offset: Some(ds.distance * a.sin()),
+                    color: Some(self.sw(&ds.color)),
+                    opacity: Some(f64::from(ds.opacity) * 100.0),
+                    size: Some(ds.size),
+                    spread: Some(ds.spread),
+                    blend_mode: Some(names::blend_out(ds.mode).into()),
+                }
+                .to_el(),
+            ));
         }
         if e.feather > 0.0 || all {
             let corners = match e.feather_options.corners {
@@ -261,20 +268,41 @@ impl<'a> Ex<'a> {
                 designcraft_doc::FeatherCorners::Rounded => "Rounded",
                 designcraft_doc::FeatherCorners::Diffused => "Diffusion",
             };
-            out.push(
-                El::new("FeatherSetting")
-                    .attr("Mode", if e.feather > 0.0 { "Standard" } else { "None" })
-                    .attr("Width", num(e.feather))
-                    .attr("ChokeAmount", num(e.feather_options.choke))
-                    .attr("CornerType", corners),
-            );
+            out.push(crate::xml::from_craft(
+                craft_idml::model::FeatherValues {
+                    mode: Some(if e.feather > 0.0 { "Standard" } else { "None" }.into()),
+                    width: Some(e.feather),
+                    choke_amount: Some(e.feather_options.choke),
+                    corner_type: Some(corners.into()),
+                }
+                .to_el(),
+            ));
         }
         out
     }
 
     fn image_el(&mut self, asset: &designcraft_doc::Asset, g: &designcraft_doc::Graphic) -> El {
         let is_pdf = asset.mime == "application/pdf";
-        let is_eps = asset.mime == "application/postscript" || designcraft_images::is_eps(&asset.data);
+        // Bytes are read only when they are embedded (an image with no link of its own always
+        // is); a link without embedding stays a link. Bytes that can't be had are written like
+        // a link without data.
+        let embedding = self.opts.embed_images || asset.link.is_none();
+        let data = if embedding {
+            match asset.output_bytes() {
+                Ok(out) => {
+                    if let Some(w) = out.warning
+                        && !self.warnings.contains(&w)
+                    {
+                        self.warnings.push(w);
+                    }
+                    out.bytes
+                }
+                Err(_) => Default::default(),
+            }
+        } else {
+            Default::default()
+        };
+        let is_eps = asset.mime == "application/postscript" || (!data.is_empty() && designcraft_images::is_eps(&data));
         let mut el = El::new(if is_eps {
             "EPS"
         } else if is_pdf {
@@ -299,10 +327,10 @@ impl<'a> Ex<'a> {
             el.set("FillColor", id.clone());
             el.set("FillTint", pct(g.fill.tint as f64));
         }
-        let wanted = !asset.data.is_empty() && (self.opts.embed_images || asset.link.is_none());
+        let wanted = !data.is_empty() && embedding;
         // An image with no link of its own has nowhere else to live, so it is always embedded
         // (dropping its data would lose it); only an image with a real link can fall back to it.
-        let embed = wanted && (asset.link.is_none() || self.embedded.saturating_add(asset.data.len()) <= self.embed_limit);
+        let embed = wanted && (asset.link.is_none() || self.embedded.saturating_add(data.len()) <= self.embed_limit);
         if wanted && !embed {
             self.warnings.push(format!(
                 "image {} is written as a link, not embedded: the package already holds {} bytes of images (limit {})",
@@ -311,9 +339,9 @@ impl<'a> Ex<'a> {
         }
         let mut props = Vec::new();
         if embed {
-            self.embedded = self.embedded.saturating_add(asset.data.len());
+            self.embedded = self.embedded.saturating_add(data.len());
             let mut c = El::new("Contents");
-            c.children.push(Node::CData(base64_encode(&asset.data)));
+            c.children.push(Node::CData(base64_encode(&data)));
             props.push(c);
         }
         props.push(El::new("GraphicBounds").attr("Left", "0").attr("Top", "0").attr("Right", num(g.size.0)).attr("Bottom", num(g.size.1)));
@@ -365,107 +393,55 @@ impl<'a> Ex<'a> {
     }
 }
 
-/// Most nested style folders one style name can create.
-const MAX_STYLE_GROUP_DEPTH: usize = 32;
-
-/// Style folder tree (names `A/B/C` → groups A, B).
-#[derive(Default)]
-pub(super) struct Group {
-    styles: Vec<El>,
-    groups: Vec<(String, Group)>,
-}
-
-impl Group {
-    pub(super) fn insert(&mut self, name: &str, el: El) {
-        let builtin = name.starts_with('[');
-        let mut segs: Vec<&str> = if builtin { vec![name] } else { name.split('/').collect() };
-        let _leaf = segs.pop();
-        let mut g = self;
-        // Deeper folders than this are not made (the style lands in the deepest one), so the recursive `emit` is bounded.
-        for s in segs.into_iter().take(MAX_STYLE_GROUP_DEPTH) {
-            let i = match g.groups.iter().position(|(n, _)| n == s) {
-                Some(i) => i,
-                None => {
-                    g.groups.push((s.to_string(), Group::default()));
-                    g.groups.len() - 1
-                }
-            };
-            g = &mut g.groups[i].1;
-        }
-        g.styles.push(el);
-    }
-
-    pub(super) fn emit(self, parent: &mut El, kind: &str, path: &str) {
-        for s in self.styles {
-            parent.push(s);
-        }
-        for (name, g) in self.groups {
-            let full = if path.is_empty() { name.clone() } else { format!("{path}:{name}") };
-            let mut ge = El::new(kind).attr("Self", format!("{kind}/{}", escape_id(&full))).attr("Name", &name);
-            g.emit(&mut ge, kind, &full);
-            parent.push(ge);
-        }
-    }
-}
-
 /// `rule_color` is the IDML reference of the column rule's swatch.
 /// `TextWrapPreference` of a page item or a placed graphic.
 fn text_wrap_pref(w: &designcraft_doc::TextWrap) -> El {
-    with_props(
-        El::new("TextWrapPreference")
-            .attr("Inverse", bool_s(w.invert))
-            .attr("ApplyToMasterPageOnly", "false")
-            .attr("TextWrapSide", names::wrap_side_out(w.side))
-            .attr("TextWrapMode", names::wrap_mode_out(w.mode)),
-        w.path
-            .iter()
-            .filter(|p| !p.is_empty())
-            .map(path_geometry)
-            .chain([El::new("TextWrapOffset")
-                .attr("Top", num(w.offsets[0]))
-                .attr("Left", num(w.offsets[1]))
-                .attr("Bottom", num(w.offsets[2]))
-                .attr("Right", num(w.offsets[3]))])
-            .collect(),
-    )
-    .child(El::new("ContourOption").attr("ContourType", names::contour_type_out(w.contour)).attr("IncludeInsideEdges", bool_s(w.inside_edges)))
+    let paths: Vec<_> = w.path.iter().filter(|p| !p.is_empty()).map(path_geometry_value).collect();
+    let mut el = crate::xml::from_craft(craft_idml::model::TextWrapPreference::to_el(
+        names::wrap_mode_out(w.mode),
+        w.invert,
+        names::wrap_side_out(w.side),
+        names::contour_type_out(w.contour),
+        w.offsets,
+        &paths,
+    ));
+    if let Some(c) = el.find_mut("ContourOption") {
+        c.set("IncludeInsideEdges", bool_s(w.inside_edges));
+    }
+    el
 }
 
 pub(super) fn text_frame_pref(o: &TextFrameOptions, rule_color: &str) -> El {
-    let mut inset = El::new("InsetSpacing").attr("type", "list");
-    for v in o.inset {
-        inset.push(p("ListItem", "unit", num(v)));
-    }
-    let el = El::new("TextFramePreference")
-        .attr("TextColumnCount", o.columns.max(1))
-        .attr("TextColumnGutter", num(o.gutter))
-        .attr("UseFixedColumnWidth", bool_s(o.columns_kind == ColumnsKind::FixedWidth))
-        .attr("UseFlexibleColumnWidth", bool_s(o.columns_kind == ColumnsKind::FlexibleWidth))
-        .attr("VerticalBalanceColumns", bool_s(o.balance_columns))
-        .attr("FirstBaselineOffset", names::first_baseline_out(o.first_baseline))
-        .attr("MinimumFirstBaselineOffset", num(o.first_baseline_min))
-        .attr("VerticalJustification", names::vj_out(o.vertical_justification))
-        .attr("VerticalThreshold", num(o.vj_paragraph_spacing_limit))
-        .attr("IgnoreWrap", bool_s(o.ignore_wrap))
-        .attr("AutoSizingType", names::auto_size_out(o.auto_size))
-        .attr("AutoSizingReferencePoint", names::REF_POINTS[(o.auto_size_ref as usize).min(8)])
-        .attr("UseMinimumHeightForAutoSizing", bool_s(o.auto_size_use_min_height))
-        .attr("MinimumHeightForAutoSizing", num(o.auto_size_min_height))
-        .attr("UseMinimumWidthForAutoSizing", bool_s(o.auto_size_use_min_width))
-        .attr("MinimumWidthForAutoSizing", num(o.auto_size_min_width))
-        .attr("UseNoLineBreaksForAutoSizing", bool_s(o.auto_size_no_line_breaks));
-    let el = if o.column_width > 0.0 { el.attr("TextColumnFixedWidth", num(o.column_width)) } else { el };
-    // Written on every frame: on import a frame takes any value it lacks from its object style.
-    let el = el
-        .attr("ColumnRuleOverride", bool_s(o.column_rule))
-        .attr("ColumnRuleStrokeWidth", num(o.column_rule_weight))
-        .attr("ColumnRuleStrokeColor", rule_color)
-        .attr("ColumnRuleStrokeTint", num(f64::from(o.column_rule_tint) * 100.0))
-        .attr("ColumnRuleOffset", num(o.column_rule_offset))
-        .attr("ColumnRuleTopInset", num(o.column_rule_top_inset))
-        .attr("ColumnRuleBottomInset", num(o.column_rule_bottom_inset))
-        .attr("ColumnRuleInsetChainOverride", bool_s(o.column_rule_top_inset == o.column_rule_bottom_inset));
-    with_props(el, vec![inset])
+    crate::xml::from_craft(
+        craft_idml::model::TextFramePreferences {
+            column_count: Some(f64::from(o.columns.max(1))),
+            column_gutter: Some(o.gutter),
+            fixed_column_width: (o.column_width > 0.0).then_some(o.column_width),
+            fixed_width: o.columns_kind == ColumnsKind::FixedWidth,
+            flexible_width: o.columns_kind == ColumnsKind::FlexibleWidth,
+            balance_columns: o.balance_columns,
+            inset: Some(o.inset),
+            vertical_justification: Some(names::vj_out(o.vertical_justification).into()),
+            vertical_threshold: Some(o.vj_paragraph_spacing_limit),
+            first_baseline: Some(names::first_baseline_out(o.first_baseline).into()),
+            minimum_first_baseline: Some(o.first_baseline_min),
+            ignore_wrap: o.ignore_wrap,
+            auto_sizing_type: Some(names::auto_size_out(o.auto_size).into()),
+            auto_sizing_reference: Some(names::REF_POINTS[(o.auto_size_ref as usize).min(8)].into()),
+            use_minimum_height: o.auto_size_use_min_height,
+            minimum_height: Some(o.auto_size_min_height),
+            use_minimum_width: o.auto_size_use_min_width,
+            minimum_width: Some(o.auto_size_min_width),
+            no_line_breaks: o.auto_size_no_line_breaks,
+            column_rule_override: o.column_rule,
+            column_rule_width: Some(o.column_rule_weight),
+            column_rule_tint: Some(f64::from(o.column_rule_tint) * 100.0),
+            column_rule_offset: Some(o.column_rule_offset),
+            column_rule_top_inset: Some(o.column_rule_top_inset),
+            column_rule_bottom_inset: Some(o.column_rule_bottom_inset),
+        }
+        .to_el(rule_color),
+    )
 }
 
 /// `<ClippingPathSettings>` with the outline (graphic space is the image's inner space, whose
@@ -488,20 +464,24 @@ fn clipping_settings(c: &designcraft_doc::ClippingPath) -> El {
 }
 
 fn path_geometry(path: &PathData) -> El {
-    let mut pg = El::new("PathGeometry");
-    for sp in &path.subpaths {
-        let mut arr = El::new("PathPointArray");
-        for a in &sp.anchors {
-            arr.push(
-                El::new("PathPointType")
-                    .attr("Anchor", pt(a.p.x, a.p.y))
-                    .attr("LeftDirection", pt(a.h_in.x, a.h_in.y))
-                    .attr("RightDirection", pt(a.h_out.x, a.h_out.y)),
-            );
-        }
-        pg.push(El::new("GeometryPathType").attr("PathOpen", bool_s(!sp.closed)).child(arr));
+    crate::xml::from_craft(path_geometry_value(path).to_el())
+}
+
+fn path_geometry_value(path: &PathData) -> craft_idml::model::PathGeometry {
+    craft_idml::model::PathGeometry {
+        paths: path
+            .subpaths
+            .iter()
+            .map(|sp| craft_idml::model::SubPath {
+                open: !sp.closed,
+                points: sp
+                    .anchors
+                    .iter()
+                    .map(|a| craft_idml::model::PathPoint { anchor: [a.p.x, a.p.y], left: [a.h_in.x, a.h_in.y], right: [a.h_out.x, a.h_out.y] })
+                    .collect(),
+            })
+            .collect(),
     }
-    pg
 }
 
 /// IDML corner names for anchors 0..4 of a path (by position on its bounding box).
@@ -541,20 +521,20 @@ pub(crate) fn path_to_uri(path: &str) -> String {
 
 #[cfg(test)]
 mod group_depth_tests {
-    use super::*;
+    use craft_idml::model::{StyleGroupWriter, StyleKind};
 
     #[test]
     fn a_style_name_with_many_separators_makes_bounded_folders() {
-        let mut g = Group::default();
-        g.insert(&"a/".repeat(10_000), El::new("S"));
-        let (mut depth, mut cur) = (0, &g);
-        while let Some((_, next)) = cur.groups.first() {
+        let mut group = StyleGroupWriter::new(StyleKind::Character, "root");
+        let style = craft_idml::El::new("CharacterStyle");
+        group.insert(&"a/".repeat(10_000), style);
+        let root = group.to_el();
+        let mut depth = 0;
+        let mut current = root.elements().next();
+        while let Some(el) = current.filter(|el| el.local() == "CharacterStyleGroup") {
             depth += 1;
-            cur = next;
+            current = el.elements().next();
         }
-        assert_eq!(depth, MAX_STYLE_GROUP_DEPTH);
-        assert_eq!(cur.styles.len(), 1);
-        let mut root = El::new("Root");
-        g.emit(&mut root, "K", "");
+        assert_eq!(depth, 32);
     }
 }

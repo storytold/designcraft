@@ -14,7 +14,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Insert Pages…",
             ["Layout", "Pages"],
             Some("Cmd+Shift+P"),
-            "{count?: 1 (1 to 9999), after?: 0-based page index (default: the last page; past it: at the end), before?: 0-based page index (instead of `after`; 0: at the start), parent?: id|\"A-Parent\"|\"A\"|null}",
+            "{count?: 1 (1 to 9999), after?: 0-based page index (default: the last page; past it: at the end), before?: 0-based page index (instead of `after`; 0: at the start), parent?: id|\"A-Parent\"|\"A\"|null (default: the parent of the page they follow, or of the first page)}",
             has_doc,
             |s, p| {
                 const ID: &str = "layout.pages.insert";
@@ -50,7 +50,13 @@ pub fn specs() -> Vec<CommandSpec> {
                     (_, Some(b)) => b.checked_sub(1),
                     (a, None) => Some(a.unwrap_or(n.saturating_sub(1))),
                 };
-                let parent = parent_ref(ID, &st.doc, p.get("parent"))?.unwrap_or_else(|| st.doc.parents.first().map(|x| x.id));
+                // No parent given: the new pages continue the page they follow (the first page when
+                // they go at the start), [None] included (#2788); in a document without pages, the
+                // first parent.
+                let parent = parent_ref(ID, &st.doc, p.get("parent"))?.unwrap_or_else(|| match st.doc.page(after.unwrap_or(0)) {
+                    Some(pg) => pg.parent,
+                    None => st.doc.parents.first().map(|x| x.id),
+                });
                 s.edit(|d, _| {
                     let ids = d.insert_pages(after, count, parent)?;
                     Ok(json!({"pages": ids.len(), "total": d.page_count()}))
@@ -705,6 +711,7 @@ pub fn specs() -> Vec<CommandSpec> {
                         locked: false,
                         printable: true,
                         show_guides: true,
+                        lock_guides: false,
                         suppress_wrap_when_hidden: false,
                     },
                 );
@@ -727,7 +734,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Layer Options…",
             [],
             None,
-            "{id, name?, color?: [r,g,b] | layer colour name (\"Light Blue\", \"Red\", …), visible?, locked?, printable?, showGuides?, suppressWrapWhenHidden?} — names are unique and not empty",
+            "{id, name?, color?: [r,g,b] | layer colour name (\"Light Blue\", \"Red\", …), visible?, locked?, printable?, showGuides?, lockGuides?, suppressWrapWhenHidden?} — names are unique and not empty",
             has_doc,
             set_layer
         ),
