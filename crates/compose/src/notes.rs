@@ -497,6 +497,16 @@ pub fn find_note(cs: &ComposedStory, id: u64) -> Option<(usize, &PlacedNote)> {
     cs.frames.iter().enumerate().find_map(|(fi, ft)| ft.notes.iter().find(|n| n.id == id).map(|n| (fi, n)))
 }
 
+/// The footnote's text with every placed part in placement order.
+/// Caret commands use it so line movement crosses parts like body frames;
+/// each frame stays in its part's local coordinates.
+pub fn note_text(cs: &ComposedStory, id: u64) -> Option<ComposedStory> {
+    let mut parts = cs.frames.iter().flat_map(|ft| &ft.notes).filter(|n| n.id == id);
+    let mut text = (*parts.next()?.text).clone();
+    text.frames = text.frames.first().cloned().into_iter().chain(parts.filter_map(|n| n.text.frames.first().cloned())).collect();
+    Some(text)
+}
+
 /// Find the footnote part holding byte `pos` for caret movement and selection drawing.
 /// The story-end caret belongs to the last part.
 pub fn find_note_part(cs: &ComposedStory, id: u64, pos: usize) -> Option<(usize, &PlacedNote)> {

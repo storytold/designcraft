@@ -77,7 +77,7 @@ fn unit_at(s: &Session, sid: StoryId, cell: Option<CellAddr>, b: usize, unit: &s
         "word" => word_or_spaces_at(text, b),
         "line" => {
             let cs = s.cache.get(&st.doc, sid, None);
-            line_at(&text_composition(cs, cell, b), b).unwrap_or((b, b))
+            line_at(&text_composition(cs, cell), b).unwrap_or((b, b))
         }
         // The paragraph with its return (the last paragraph has none).
         "paragraph" => story.para_ranges().get(story.para_at(b)).map_or((b, b), |r| (r.start, (r.end + 1).min(text.len()))),
@@ -119,9 +119,9 @@ fn word_or_spaces_at(s: &str, i: usize) -> (usize, usize) {
 }
 
 /// The composition whose lines hold a story's text: the story's own, a table cell's or a footnote's.
-fn text_composition(cs: std::sync::Arc<compose::ComposedStory>, cell: Option<CellAddr>, pos: usize) -> std::sync::Arc<compose::ComposedStory> {
+fn text_composition(cs: std::sync::Arc<compose::ComposedStory>, cell: Option<CellAddr>) -> std::sync::Arc<compose::ComposedStory> {
     match cell {
-        Some(c) if c.footnote_id().is_some() => compose::find_note_part(&cs, c.row as u64, pos).map(|(_, n)| n.text.clone()).unwrap_or(cs),
+        Some(c) if c.footnote_id().is_some() => compose::note_text(&cs, c.row as u64).map(std::sync::Arc::new).unwrap_or(cs),
         Some(c) => compose::find_cell(&cs, c.table, c.row, c.col).map(|(_, _, pc)| pc.text.clone()).unwrap_or(cs),
         None => cs,
     }
@@ -347,7 +347,7 @@ pub(super) fn move_caret(s: &mut Session, p: &Value) -> Result<Value> {
     let text = story.text.clone();
     // In a cell, lines come from the cell's own composition.
     let pos = t.focus.min(text.len());
-    let cs = text_composition(s.cache.get(&st.doc, t.story, None), t.cell, pos);
+    let cs = text_composition(s.cache.get(&st.doc, t.story, None), t.cell);
     // Vertical lines run top to bottom and follow each other right to left: Down and Up move along
     // the line (Right and Left of horizontal text), Left and Right to the next and previous line.
     let vertical_text = compose::caret(&cs, pos).and_then(|(fi, ..)| cs.frames.get(fi)).is_some_and(|f| f.vertical);
@@ -425,9 +425,8 @@ mod multi_click_tests {
 
     use crate::Session;
 
-    #[test]
-    fn split_footnote_line_down_uses_second_part() {
-        use designcraft_doc::{CellAddr, ParaFormat, Selection, SpreadRef, TextSel};
+    fn split_footnote_fixture() -> (Session, designcraft_doc::StoryId, designcraft_doc::ItemId, u64) {
+        use designcraft_doc::{ParaFormat, SpreadRef};
         use designcraft_geom::Rect;
 
         let mut s = Session::new();
@@ -451,6 +450,14 @@ mod multi_click_tests {
             let id = d.story_mut(sid).unwrap().insert_note(14, &text, ParaFormat::default()).unwrap();
             (sid, second, id)
         };
+        (s, sid, second, id)
+    }
+
+    #[test]
+    fn split_footnote_line_down_uses_second_part() {
+        use designcraft_doc::{CellAddr, Selection, TextSel};
+
+        let (mut s, sid, second, id) = split_footnote_fixture();
         let cs = s.cache.get(&s.doc().unwrap().doc, sid, None);
         assert!(!cs.is_overset());
         assert!(cs.frames[0].notes.iter().any(|n| n.id == id));
@@ -462,6 +469,35 @@ mod multi_click_tests {
         s.doc_mut().unwrap().selection =
             Selection::text(TextSel { story: sid, anchor: pos, focus: pos, frame: Some(second), cell: Some(CellAddr::footnote(id)) });
         let result = s.execute("text.move", &json!({"dir": "down"})).unwrap();
+        assert_eq!(result["pos"].as_u64().unwrap() as usize, expected);
+        assert_eq!(s.doc().unwrap().selection.text.unwrap().focus, expected);
+    }
+
+    #[test]
+    fn split_footnote_line_down_crosses_parts() {
+        split_footnote_line_crosses_parts(false);
+    }
+
+    #[test]
+    fn split_footnote_line_up_crosses_parts() {
+        split_footnote_line_crosses_parts(true);
+    }
+
+    fn split_footnote_line_crosses_parts(up: bool) {
+        use designcraft_doc::{CellAddr, Selection, TextSel};
+
+        let (mut s, sid, _, id) = split_footnote_fixture();
+        let cs = s.cache.get(&s.doc().unwrap().doc, sid, None);
+        assert!(!cs.is_overset());
+        let first = cs.frames[0].notes.iter().find(|n| n.id == id).unwrap();
+        let second = cs.frames[1].notes.iter().find(|n| n.id == id).unwrap();
+        let last_line = first.text.frames[0].lines.last().unwrap().range.start;
+        let next_line = second.text.frames[0].lines[0].range.start;
+        assert!(next_line > last_line);
+        let (pos, expected, frame) = if up { (next_line, last_line, cs.frames[1].frame) } else { (last_line, next_line, cs.frames[0].frame) };
+        s.doc_mut().unwrap().selection =
+            Selection::text(TextSel { story: sid, anchor: pos, focus: pos, frame: Some(frame), cell: Some(CellAddr::footnote(id)) });
+        let result = s.execute("text.move", &json!({"dir": if up { "up" } else { "down" }})).unwrap();
         assert_eq!(result["pos"].as_u64().unwrap() as usize, expected);
         assert_eq!(s.doc().unwrap().selection.text.unwrap().focus, expected);
     }
