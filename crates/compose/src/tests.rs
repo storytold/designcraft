@@ -10409,6 +10409,55 @@ fn assert_note_parts(cs: &ComposedStory, id: u64, end: usize) {
     assert_eq!(next, end);
 }
 
+/// Re-laying earlier parts for a continuation must preserve their marker widths and byte breaks.
+#[test]
+fn split_footnote_parts_keep_their_page() {
+    let mut d = Document::new(&NewDocument { pages: 2, start_page: 9, facing_pages: false, ..Default::default() });
+    let lid = d.default_layer();
+    let (first, sid) = d
+        .add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 156.0, 216.0), lid, "Opening.\nReference.\nClosing.", ParaFormat::default())
+        .unwrap();
+    let (second, _) = d.add_text_frame(SpreadRef::Doc(1), Rect::new(36.0, 36.0, 156.0, 756.0), lid, "", ParaFormat::default()).unwrap();
+    d.thread(first, second).unwrap();
+    // Repeated markers fill each narrow line: changing 9 to 10 adds a digit at every marker,
+    // so recomposing the first area with page 10 moves the continuation's starting byte.
+    let paragraph = vec![story::PAGE_NUMBER.to_string(); 12].join(" ");
+    let text = vec![paragraph; 20].join("\n");
+    let id = d.story_mut(sid).unwrap().insert_note(14, &text, ParaFormat::default()).unwrap();
+    let specs = frame_specs(&d, sid);
+    assert_eq!(specs.iter().map(|f| f.page_name.as_deref()).collect::<Vec<_>>(), vec![Some("9"), Some("10")]);
+
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    let a = cs.frames[0].notes.iter().find(|n| n.id == id).unwrap();
+    let b = cs.frames[1].notes.iter().find(|n| n.id == id).unwrap();
+    assert_note_parts(&cs, id, text.len());
+    let first_markers: String = a.text.frames[0]
+        .lines
+        .iter()
+        .flat_map(|l| &l.glyphs)
+        .filter(|g| g.byte > 0 && text.get(g.byte..).is_some_and(|s| s.starts_with(story::PAGE_NUMBER)) && g.visible)
+        .map(|g| g.rendered_char)
+        .collect();
+    assert!(!first_markers.is_empty());
+    assert!(first_markers.chars().all(|c| c == '9'), "first part markers: {first_markers}");
+    let last_marker = b.text.frames[0]
+        .lines
+        .iter()
+        .flat_map(|l| &l.glyphs)
+        .rfind(|g| text.get(g.byte..).is_some_and(|s| s.starts_with(story::PAGE_NUMBER)))
+        .unwrap()
+        .byte;
+    let continued_marker: String = b.text.frames[0]
+        .lines
+        .iter()
+        .flat_map(|l| &l.glyphs)
+        .filter(|g| g.byte == last_marker && text.get(g.byte..).is_some_and(|s| s.starts_with(story::PAGE_NUMBER)) && g.visible)
+        .map(|g| g.rendered_char)
+        .collect();
+    assert_eq!(continued_marker, "10");
+}
+
 #[test]
 fn split_footnote_threads_across_columns() {
     let (d, sid, id, text) = split_footnote_fixture(2, 1, false, "Opening.\nReference.\nClosing.", 40);

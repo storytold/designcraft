@@ -2694,3 +2694,48 @@ fn type_tool_respects_foreground_frames_over_margin_notes() {
         );
     }
 }
+
+#[test]
+fn foreground_margin_note_takes_the_caret_over_a_lower_table_border() {
+    let (mut d, table_frame) = table_frame(0.0);
+    let table_story = d.item(table_frame).unwrap().text_frame().unwrap().story;
+    let cache = Cache::new();
+    let cs = cache.get(&d, table_story, None);
+    let cell = cs.frames[0].tables[0].cell(1, 0).unwrap();
+    let table_xf = d.text_xf(d.item(table_frame).unwrap());
+    let border = table_xf * Point::new(cell.rect.x1, (cell.rect.y0 + cell.rect.y1) / 2.0);
+    let edge = border.x - 8.0 - 36.0;
+    let (host, sid) =
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(edge - 120.0, 72.0, edge, 400.0), d.default_layer(), "Host", Default::default()).unwrap();
+    d.footnote_options.placement = designcraft_doc::NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 8.0, width: 72.0 };
+    d.story_mut(sid).unwrap().insert_note(4, "Source", Default::default());
+    let note = cache.get(&d, sid, None).frames[0].notes[0].rect;
+    let center = d.text_xf(d.item(host).unwrap()) * note.center();
+    d.item_mut(host).unwrap().xf = designcraft_geom::Affine::translate((0.0, border.y - center.y));
+    let note = cache.get(&d, sid, None).frames[0].notes[0].rect;
+    assert!(note.contains(d.text_xf(d.item(host).unwrap()).inverse() * border));
+    let sel = Selection::default();
+    for foreground_note in [true, false] {
+        if !foreground_note {
+            Arc::make_mut(&mut d.spreads[0]).items.reverse();
+        }
+        let layout = CanvasLayout::new(&d, false);
+        let point = layout.to_canvas(SpreadRef::Doc(0), border);
+        let cx = ctx(&d, &sel, &cache, &layout);
+        assert_eq!(cx.hit(point).unwrap().1, table_frame);
+        let mut tool = create("type");
+        let actions = tool.pointer(&cx, &PointerEvent::new(PointerKind::Down, point.x, point.y));
+        if foreground_note {
+            assert!(matches!(actions.as_slice(), [Action::Exec(cmd, p)] if cmd == "text.placeCaret" && p["frame"] == host.0), "{actions:?}");
+            tool.pointer(&cx, &PointerEvent::new(PointerKind::Up, point.x, point.y));
+            assert_eq!(tool.cursor(&cx, point, Mods::default()), Cursor::Text);
+        } else {
+            assert!(actions.is_empty(), "the foreground table still starts a border drag: {actions:?}");
+            assert_eq!(tool.cursor(&cx, point, Mods::default()), Cursor::ResizeH);
+            let actions = tool.pointer(&cx, &PointerEvent::new(PointerKind::Drag, point.x + 20.0, point.y));
+            assert!(
+                matches!(actions.as_slice(), [Action::Begin(_), Action::Preview(cmd, p)] if cmd == "table.resizeBorder" && p["frame"] == table_frame.0)
+            );
+        }
+    }
+}

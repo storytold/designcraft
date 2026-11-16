@@ -14,7 +14,7 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
 
 ## Alpha blocker (the core-workflow gate in [roadmap.md](roadmap.md#alpha-gate))
 
-Note series (#2871) now provide independent numbering/styles and column-foot or margin placement. Margin notes align with their references, stack by page side, and report overflow. Native files retain the series; IDML writes all notes using its one footnote setup with a warning. Anchored commentary routing (#2872) and inset-column geometry (#2873) remain separate work.
+Note series (#2871) now provide independent numbering/styles and column-foot or margin placement. Margin notes align with their references, stack by page side, and report overflow. Native files retain the series; IDML writes all notes using its one footnote setup with a warning. Anchored commentary routing (#2872) and inset-column geometry (#2873) remain separate work. Continued-note parts replay their original page context; page-number markers within a paragraph spanning pages still use the paragraph-start page (#2886).
 
 ### 0. Primary Text Frame autoflow adds pages users can't delete (F) · **ALPHA BLOCKER**
 - **Missing:** fixes to Smart Text Reflow on the Primary Text Frame, which users report adding
