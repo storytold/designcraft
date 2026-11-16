@@ -74,11 +74,35 @@ fn stack_height<'a>(notes: impl IntoIterator<Item = &'a NoteMetrics>, space_betw
     h.map_or(0.0, |h| h + descent)
 }
 
-/// Last placed part, including the (width, height) of each part's area used to thread its text.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct PartPage {
+    page_name: Option<String>,
+    section_marker: Option<String>,
+    page: Option<usize>,
+    parent: bool,
+    left_page: bool,
+    right_page: bool,
+}
+
+impl PartPage {
+    fn of(f: &FrameSpec) -> PartPage {
+        PartPage {
+            page_name: f.page_name.clone(),
+            section_marker: f.section_marker.clone(),
+            page: f.page,
+            parent: f.parent,
+            left_page: f.left_page,
+            right_page: f.right_page,
+        }
+    }
+}
+
+/// Last placed part, including each part's area and page context used to thread its text.
 #[derive(Clone)]
 pub(crate) struct Carry {
     k: usize,
     heights: Vec<(f64, f64)>,
+    pages: Vec<PartPage>,
     fi: usize,
     col: usize,
 }
@@ -87,13 +111,14 @@ pub(crate) struct SplitPlan {
     remainder: bool,
     k: usize,
     heights: Vec<(f64, f64)>,
+    pages: Vec<PartPage>,
     text: Arc<ComposedStory>,
     m: NoteMetrics,
 }
 
 type SeriesSnapshot = (u32, Option<usize>, usize, Option<Carry>);
 type Part = (Arc<ComposedStory>, NoteMetrics);
-type CacheKey = (usize, String, u64, bool, bool, Vec<(u64, u64)>);
+type CacheKey = (usize, String, u64, Option<usize>, bool, bool, Vec<(u64, u64, Option<usize>, bool, bool)>);
 
 pub(super) struct SeriesNotes {
     series: u64,
@@ -106,7 +131,7 @@ pub(super) struct SeriesNotes {
     pub num: u32,
     pub key: Option<usize>,
     pub placed: Vec<Placed>,
-    /// Composed footnote text by (index, label, width).
+    /// Composed footnote text by note, label, area dimensions and page context.
     cache: HashMap<CacheKey, Vec<Option<Part>>>,
     pub carry: Option<Carry>,
     notes: Vec<Arc<designcraft_doc::Footnote>>,
@@ -202,14 +227,15 @@ impl SeriesNotes {
     }
 
     fn compose(&mut self, doc: &Document, k: usize, w: f64, f: &FrameSpec, opts: &ComposeOptions) -> Part {
-        self.compose_parts(doc, k, w, f, opts, &[])
+        self.compose_parts(doc, k, w, f, opts, &[], &[])
             .first()
             .and_then(Clone::clone)
             .unwrap_or_else(|| (Arc::new(ComposedStory::default()), NoteMetrics::default()))
     }
 
     /// One threaded composition lets the note's own paragraph keeps govern each frame break.
-    /// `heights` holds the (width, height) of each earlier part; the last part is `w` wide and unbounded.
+    /// `heights` and `pages` hold each earlier part's area and page context; the last part is `w` wide and unbounded.
+    #[allow(clippy::too_many_arguments)] // Each earlier area needs its dimensions and page context.
     pub(super) fn compose_parts(
         &mut self,
         doc: &Document,
@@ -218,11 +244,28 @@ impl SeriesNotes {
         f: &FrameSpec,
         opts: &ComposeOptions,
         heights: &[(f64, f64)],
+        pages: &[PartPage],
     ) -> Vec<Option<Part>> {
         let o = doc.note_options(self.series);
         let label = format!("{}{}", o.label(self.numbers.get(k).copied().unwrap_or(o.start_at), true), o.separator);
         // The page side sets towards/away-from-spine alignment and spine-relative anchored objects.
-        let key = (k, label.clone(), w.to_bits(), f.left_page, f.right_page, heights.iter().map(|(pw, h)| (pw.to_bits(), h.to_bits())).collect());
+        let current_page = PartPage::of(f);
+        let key = (
+            k,
+            label.clone(),
+            w.to_bits(),
+            f.page,
+            f.left_page,
+            f.right_page,
+            heights
+                .iter()
+                .enumerate()
+                .map(|(i, (pw, h))| {
+                    let page = pages.get(i).unwrap_or(&current_page);
+                    (pw.to_bits(), h.to_bits(), page.page, page.left_page, page.right_page)
+                })
+                .collect(),
+        );
         if let Some(c) = self.cache.get(&key) {
             return c.clone();
         }
@@ -254,7 +297,20 @@ impl SeriesNotes {
         let Some(note) = self.notes.get(k) else { return Vec::new() };
         let specs: Vec<FrameSpec> = heights
             .iter()
-            .map(|&(pw, h)| FrameSpec { area: Rect::new(0.0, 0.0, pw.max(1.0), h), ..spec.clone() })
+            .enumerate()
+            .map(|(i, &(pw, h))| {
+                let page = pages.get(i).unwrap_or(&current_page);
+                FrameSpec {
+                    area: Rect::new(0.0, 0.0, pw.max(1.0), h),
+                    page_name: page.page_name.clone(),
+                    section_marker: page.section_marker.clone(),
+                    page: page.page,
+                    parent: page.parent,
+                    left_page: page.left_page,
+                    right_page: page.right_page,
+                    ..spec.clone()
+                }
+            })
             .chain(std::iter::once(spec.clone()))
             .collect();
         let cs = crate::compose(doc, &note.text, &specs, &nopts);
@@ -284,7 +340,7 @@ impl SeriesNotes {
     }
 
     fn remainder(&mut self, doc: &Document, c: &Carry, column: NoteColumn<'_>, opts: &ComposeOptions) -> Option<Part> {
-        self.compose_parts(doc, c.k, column.width, column.frame, opts, &c.heights).get(c.heights.len()).and_then(Clone::clone)
+        self.compose_parts(doc, c.k, column.width, column.frame, opts, &c.heights, &c.pages).get(c.heights.len()).and_then(Clone::clone)
     }
 
     fn metrics(&mut self, doc: &Document, column: NoteColumn<'_>, extra: &[usize], opts: &ComposeOptions) -> Vec<NoteMetrics> {
@@ -313,7 +369,7 @@ impl SeriesNotes {
             return None;
         }
         let pending = self.pending(column);
-        let (k, mut heights, ms, original) = if let Some((&k, before)) = extra.split_last() {
+        let (k, mut heights, mut pages, ms, original) = if let Some((&k, before)) = extra.split_last() {
             // If the carry must split too, move this referencing line on as before.
             if self.carry.is_some() && pending.is_none() {
                 return None;
@@ -326,12 +382,12 @@ impl SeriesNotes {
             if pending.as_ref().is_some_and(|c| self.remainder(doc, c, column, opts).is_none()) {
                 return None;
             }
-            (k, Vec::new(), ms, self.compose(doc, k, column.width, column.frame, opts))
+            (k, Vec::new(), Vec::new(), ms, self.compose(doc, k, column.width, column.frame, opts))
         } else {
             let c = pending?;
             let original = self.remainder(doc, &c, column, opts)?;
             let ms = self.placed.iter().filter(|p| self.same_area(p, column.frame_index, column.column_index)).map(|p| p.m).collect();
-            (c.k, c.heights, ms, original)
+            (c.k, c.heights, c.pages, ms, original)
         };
         let offset = ms.last().map_or(0.0, |last| {
             stack_height(&ms, doc.note_options(self.series).space_between) - last.descent
@@ -342,6 +398,7 @@ impl SeriesNotes {
         let mut h = available - offset;
         let part = heights.len();
         heights.push((column.width, h));
+        pages.push(PartPage::of(column.frame));
         // Ordinary text frames fit baselines, but a footnote stack also includes descent.
         // Each retry drops its last line; the unsplit remainder bounds the attempts.
         let attempts = original.0.frames.first().map_or(0, |f| f.lines.len());
@@ -350,11 +407,11 @@ impl SeriesNotes {
                 return None;
             }
             *heights.get_mut(part)? = (column.width, h);
-            let parts = self.compose_parts(doc, k, column.width, column.frame, opts, &heights);
+            let parts = self.compose_parts(doc, k, column.width, column.frame, opts, &heights, &pages);
             let (text, m) = parts.get(part).and_then(Clone::clone)?;
             let total = stack_height(ms.iter().chain(std::iter::once(&m)), doc.note_options(self.series).space_between);
             if m.last + m.descent <= h + 0.01 && total <= available + 0.01 {
-                return Some(SplitPlan { remainder: parts.get(heights.len()).is_some_and(Option::is_some), k, heights, text, m });
+                return Some(SplitPlan { remainder: parts.get(heights.len()).is_some_and(Option::is_some), k, heights, pages, text, m });
             }
             let smaller = h.min(m.last - 0.02);
             if smaller >= h {
@@ -415,7 +472,8 @@ impl SeriesNotes {
     fn place_split(&mut self, plan: SplitPlan, column: NoteColumn<'_>) {
         let part = plan.heights.len().saturating_sub(1);
         self.push(plan.k, part, plan.text, plan.m, column);
-        self.carry = plan.remainder.then_some(Carry { k: plan.k, heights: plan.heights, fi: column.frame_index, col: column.column_index });
+        self.carry =
+            plan.remainder.then_some(Carry { k: plan.k, heights: plan.heights, pages: plan.pages, fi: column.frame_index, col: column.column_index });
     }
 
     /// Stack each column's footnotes against its bottom, rule above the first.
