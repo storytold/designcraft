@@ -20,6 +20,9 @@ fn language(app: &mut DesignApp) -> Value {
     text_attrs(app).unwrap()["chars"]["language"].clone()
 }
 
+/// The graphic [`linked_graphics`] places.
+const SVG: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect width="32" height="32" fill="#4488cc"/></svg>"##;
+
 fn linked_graphics(paths: &[Option<&str>]) -> (DesignApp, Vec<designcraft_doc::ItemId>, Vec<designcraft_doc::AssetId>) {
     use designcraft_doc::{Asset, AssetId, Content, Graphic, ItemId};
     use std::sync::Arc;
@@ -39,10 +42,7 @@ fn linked_graphics(paths: &[Option<&str>]) -> (DesignApp, Vec<designcraft_doc::I
                 name: "photo.svg".into(),
                 mime: "image/svg+xml".into(),
                 link: path.map(str::to_owned),
-                data: Arc::new(
-                    br##"<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect width="32" height="32" fill="#4488cc"/></svg>"##
-                        .to_vec(),
-                ),
+                data: designcraft_doc::AssetData::embedded(SVG.to_vec()),
                 pixels: Some((32, 32)),
                 ..Default::default()
             }),
@@ -135,6 +135,66 @@ fn stroke_panel_shows_the_text_stroke_options_while_text_is_selected() {
     h.get_by_label("Stroke Behind Fill");
 }
 
+/// The text Stroke panel's Weight keeps a typed value inside the character stroke weight's
+/// range of 0 to 800 pt, as the character style's Weight field does.
+#[test]
+fn text_stroke_panel_keeps_the_weight_in_range() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("frame.create", json!({"rect": [72, 72, 400, 400], "content": "text", "text": "Hello", "caret": true})).unwrap();
+    app.run("edit.selectAll", json!({})).unwrap();
+    let mut ready = false;
+    let mut h = Harness::builder().with_size(vec2(320.0, 400.0)).build_ui_state(
+        move |ui, app: &mut DesignApp| {
+            if !ready {
+                crate::theme::install_fonts(ui.ctx(), "");
+                crate::theme::apply(ui.ctx(), &Tokens::for_brightness(Default::default()));
+                ready = true;
+                return;
+            }
+            stroke_panel(app, ui);
+        },
+        app,
+    );
+    h.run_steps(3);
+    let weight = |h: &mut Harness<'_, DesignApp>| crate::panels::text_attrs(h.state_mut()).unwrap()["chars"]["strokeWeight"].as_f64();
+    for (typed, expected) in [("2000", 800.0), ("12", 12.0), ("-5", 0.0)] {
+        let field = h.get_all_by_role(egui::accesskit::Role::TextInput).next().unwrap().rect();
+        type_in_field(&mut h, field, typed);
+        assert_eq!(weight(&mut h), Some(expected), "{typed}");
+    }
+}
+
+/// The Properties panel's text stroke Weight keeps a typed value inside the same 0 to 800 pt
+/// range as the Stroke panel and the character style's Weight field.
+#[test]
+fn properties_text_stroke_weight_keeps_the_character_range() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("frame.create", json!({"rect": [72, 72, 400, 400], "content": "text", "text": "Hello", "caret": true})).unwrap();
+    app.run("edit.selectAll", json!({})).unwrap();
+    let mut ready = false;
+    let mut h = Harness::builder().with_size(vec2(320.0, 400.0)).build_ui_state(
+        move |ui, app: &mut DesignApp| {
+            if !ready {
+                crate::theme::install_fonts(ui.ctx(), "");
+                crate::theme::apply(ui.ctx(), &Tokens::for_brightness(Default::default()));
+                ready = true;
+                return;
+            }
+            super::text::text_appearance_section(app, ui);
+        },
+        app,
+    );
+    h.run_steps(3);
+    let weight = |h: &mut Harness<'_, DesignApp>| crate::panels::text_attrs(h.state_mut()).unwrap()["chars"]["strokeWeight"].as_f64();
+    for (typed, expected) in [("500", 500.0), ("2000", 800.0), ("-5", 0.0)] {
+        let field = h.get_all_by_role(egui::accesskit::Role::TextInput).next().unwrap().rect();
+        type_in_field(&mut h, field, typed);
+        assert_eq!(weight(&mut h), Some(expected), "{typed}");
+    }
+}
+
 /// As InDesign's: Edit Page takes the Page tool to the page in view, and Properties sets that
 /// page alone; Back returns to the document.
 #[test]
@@ -167,8 +227,14 @@ fn edit_page_shows_the_page_and_sets_its_size_alone() {
 
 #[test]
 fn links_panel_distinguishes_same_named_sources_and_keeps_link_actions() {
-    let first = "/project/assets/studio-a/photo.svg";
-    let second = "/project/assets/studio-b/photo.svg";
+    // Files holding the graphics' bytes, so their links are OK and can be embedded.
+    let dir = std::env::temp_dir().join(format!("dc-links-panel-same-name-{}", std::process::id()));
+    let (first, second) = (dir.join("studio-a/photo.svg"), dir.join("studio-b/photo.svg"));
+    for file in [&first, &second] {
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, SVG).unwrap();
+    }
+    let (first, second) = (first.to_str().unwrap(), second.to_str().unwrap());
     let (app, items, assets) = linked_graphics(&[Some(first), Some(second), None]);
     let mut h = links_harness(app, 320.0);
     assert_eq!(h.get_all_by_label("photo.svg").count(), 3);
@@ -181,9 +247,10 @@ fn links_panel_distinguishes_same_named_sources_and_keeps_link_actions() {
     h.get_by_label("Embed").click();
     h.run_steps(3);
     settle_links(&mut h);
-    assert!(h.state().session.active().unwrap().doc.assets[&assets[1]].link.is_none());
-    assert_eq!(h.state().session.active().unwrap().doc.assets[&assets[0]].link.as_deref(), Some(first));
-    assert!(h.query_by_label(second).is_none(), "an embedded graphic no longer shows a source path");
+    // Embedding keeps the link for Unembed.
+    let doc = &h.state().session.active().unwrap().doc;
+    assert_eq!(doc.assets[&assets[1]].link.as_deref(), Some(second));
+    assert_eq!(doc.assets[&assets[0]].link.as_deref(), Some(first));
     assert_eq!(h.get_all_by_label("Embedded").count(), 2);
     assert_eq!(h.get_all_by_label("photo.svg").count(), 3);
     h.get_by_label(first).click();
@@ -191,6 +258,7 @@ fn links_panel_distinguishes_same_named_sources_and_keeps_link_actions() {
     h.get_by_label("Go To").click();
     h.run_steps(3);
     assert_eq!(h.state().session.active().unwrap().selection.items, vec![items[0]]);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

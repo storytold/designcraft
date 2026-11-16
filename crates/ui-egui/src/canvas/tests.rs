@@ -410,10 +410,24 @@ fn harness_with_step(app: DesignApp, step_dt: f32) -> Harness<'static, DesignApp
     h
 }
 
+/// Background decodes finishing one after another are taken up in batches, and not while a
+/// render is in flight (a newer request would drop it before it is shown).
+#[test]
+fn finished_image_decodes_rerender_the_canvas_in_batches() {
+    use render::{IMAGE_BATCH_MS, image_generation};
+    let mut seen = (0, f64::NEG_INFINITY);
+    assert_eq!(image_generation(&mut seen, 1, 1000.0, false), (1, None), "the first is taken at once");
+    assert_eq!(image_generation(&mut seen, 2, 1010.0, false), (1, Some(IMAGE_BATCH_MS - 10.0)));
+    assert_eq!(image_generation(&mut seen, 9, 1100.0, false).0, 1, "more finish meanwhile");
+    assert_eq!(image_generation(&mut seen, 9, 1000.0 + IMAGE_BATCH_MS, true), (1, None), "a render is in flight");
+    assert_eq!(image_generation(&mut seen, 9, 1000.0 + IMAGE_BATCH_MS, false), (9, None), "all taken by one render");
+}
+
 #[test]
 fn display_option_change_drops_the_render_in_flight() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    let shown = crate::Shown { doc: (1, 2, 3, false), origin: Point::new(0.0, 0.0), zoom: 1.0, size: (10.0, 10.0), editing_parents: false };
+    let shown =
+        crate::Shown { doc: (1, 2, 3, false), origin: Point::new(0.0, 0.0), zoom: 1.0, size: (10.0, 10.0), editing_parents: false, images: 0 };
     invalidate_on_display_change(&mut app);
     app.canvas.shown = Some(shown);
     app.canvas.pending = Some((7, shown));
