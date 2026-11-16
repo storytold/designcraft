@@ -889,6 +889,8 @@ fn known(action: &Action<String>) -> bool {
         | Action::ResizeColumn { panel, .. }
         | Action::ResizeGroup { panel, .. }
         | Action::ResizeIconic { panel, .. }
+        | Action::ResizeFlyoutWidth { panel, .. }
+        | Action::MoveFlyoutTop { panel, .. }
         | Action::SetNative { panel, .. }
         | Action::SetMonitor { panel, .. } => registered(panel),
         // Actions newer than this list are rejected until DesignCraft checks them.

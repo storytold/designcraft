@@ -40,6 +40,27 @@ fn svg_depth_is_checked_before_recursive_parsing() {
     }
 }
 
+/// An SVG whose `<use>` elements hold one another `links` deep, with no element nested deeper
+/// than three levels.
+fn use_chain_svg(links: usize) -> String {
+    let chain: String = (0..links).map(|i| format!("<g id='g{i}'><use xlink:href='#g{}'/></g>", i + 1)).collect();
+    format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="10" height="10"><defs>{chain}<rect id='g{links}' width='10' height='10'/></defs><use xlink:href='#g0'/></svg>"#
+    )
+}
+
+/// Following references counts toward the depth limit: a short `<use>` chain parses, a chain
+/// past `MAX_SVG_DEPTH` levels is rejected by the tree, size and render APIs.
+#[test]
+fn svg_reference_depth_is_checked_before_recursive_parsing() {
+    let short = use_chain_svg(8);
+    assert!(svg_tree(short.as_bytes()).is_some());
+    let long = use_chain_svg(MAX_SVG_DEPTH);
+    assert!(svg_tree(long.as_bytes()).is_none());
+    assert!(natural_size(long.as_bytes()).is_none());
+    assert!(render_svg(long.as_bytes(), 10).is_none());
+}
+
 /// Markup-looking text in comments, CDATA and attributes does not count as XML depth.
 #[test]
 fn svg_depth_ignores_markup_in_comments_cdata_and_attributes() {
