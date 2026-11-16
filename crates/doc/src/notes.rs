@@ -155,6 +155,8 @@ pub struct FootnoteOptions {
     pub span_columns: bool,
     /// Allow Split Footnotes: continue long notes across columns and frames.
     /// Each part obeys the note paragraphs' widow/orphan and keep options.
+    // Native files predating splitting omit this field and must retain their unsplit layout.
+    #[serde(default)]
     pub allow_split: bool,
     /// Rule above the first footnote in a column.
     pub rule: NoteRule,
@@ -466,6 +468,22 @@ mod tests {
         s.delete(0..n);
         s.check().unwrap();
         assert!(s.notes.is_empty());
+    }
+
+    #[test]
+    fn legacy_footnote_options_keep_unsplit_layouts() {
+        let doc = crate::Document::new(&crate::build::NewDocument::default());
+        assert!(doc.footnote_options.allow_split);
+        assert!(FootnoteOptions::default().allow_split);
+        let mut legacy = serde_json::to_value(&doc).unwrap();
+        legacy["footnoteOptions"].as_object_mut().unwrap().remove("allowSplit");
+        let loaded: crate::Document = serde_json::from_value(legacy).unwrap();
+        assert!(!loaded.footnote_options.allow_split);
+        for allow in [false, true] {
+            let options = FootnoteOptions { allow_split: allow, ..Default::default() };
+            let roundtrip: FootnoteOptions = serde_json::from_value(serde_json::to_value(options).unwrap()).unwrap();
+            assert_eq!(roundtrip.allow_split, allow);
+        }
     }
 
     #[test]
