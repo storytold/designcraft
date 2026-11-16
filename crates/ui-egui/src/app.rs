@@ -51,6 +51,8 @@ impl DesignApp {
             session,
             ui: UiState::default(),
             services,
+            cloud_backend: None,
+            share_backend: None,
             views: HashMap::new(),
             page_history: HashMap::new(),
             canvas: CanvasCache::new(),

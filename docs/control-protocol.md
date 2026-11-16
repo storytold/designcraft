@@ -53,6 +53,10 @@ so only enable it while you use it. Transport: `apps/designcraft/src/control_ser
 | `app.open` / `app.save` / `app.export` | | Files |
 | `app.quit` | | Quit without asking about unsaved changes (the `app.quit` command, like ⌘Q, asks) |
 
+`cloud.open` runs through `engine.execute` too. It answers with the signed-in account's note once a
+`CloudBackend` is connected, and refuses with "no cloud service is configured" otherwise ([cloud
+storage](cloud.md)). No backend ships in this repository today.
+
 Data merge runs through `engine.execute` like any command: `data.source.select`, `data.fields`, `data.placeholder.add` /
 `.remove`, `data.options`, `data.preview` / `data.preview.stop`, `data.merge`. `data.merge` creates and activates a new
 merged document; the template stays as it was ([agents.md](agents.md#data-merge)).

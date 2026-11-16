@@ -18,6 +18,7 @@ pub const UPDATE_APP: craft_update::app::App = craft_update::app::App {
 pub mod about;
 pub mod canvas;
 pub mod chrome;
+pub mod cloud;
 pub mod control;
 pub mod credits;
 pub mod cursors;
@@ -169,6 +170,11 @@ pub struct DesignApp {
     pub session: Session,
     pub ui: UiState,
     pub services: Services,
+    /// Open and Save against cloud storage, and sharing a layout, when the
+    /// host has connected a backend for either. Neither is drawn without
+    /// one; see [`cloud`].
+    pub cloud_backend: Option<Box<dyn cloud::CloudBackend>>,
+    pub share_backend: Option<Box<dyn cloud::ShareBackend>>,
     pub views: HashMap<u64, View>,
     /// Layout ▸ Go Back / Go Forward, by view (like `views`).
     pub(crate) page_history: HashMap<u64, page_history::PageHistory>,

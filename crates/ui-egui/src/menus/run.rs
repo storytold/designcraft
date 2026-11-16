@@ -205,6 +205,15 @@ fn run_ui_part1(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             }
             None => save_as_dialog(app, |_| Ok(Value::Null)),
         },
+        "cloud.open" if !crate::cloud::available(app) => Err(crate::cloud::UNAVAILABLE.to_owned()),
+        "cloud.open" => {
+            let account = app.cloud_backend.as_ref().and_then(|b| b.account());
+            app.status(match &account {
+                Some(name) => format!("Signed in to the cloud as {name}"),
+                None => "Signed out of the cloud".to_owned(),
+            });
+            Ok(json!({"account": account}))
+        }
         "app.quit" => {
             app.request_quit();
             Ok(Value::Null)

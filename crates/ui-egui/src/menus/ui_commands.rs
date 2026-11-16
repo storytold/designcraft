@@ -24,6 +24,8 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ("app.contactSheetDialog", "Place Contact Sheet…", None, "{} — place the images loaded in the place cursor on new pages"),
     ("app.saveDialog", "Save As…", Some("Cmd+Shift+S"), "{path?} — without a path, choose where in a dialog"),
     ("app.save", "Save", Some("Cmd+S"), "{}"),
+    // Cloud storage. Disabled, and refuses, without a backend connected (see `crate::cloud`).
+    ("cloud.open", "Open from the Cloud…", None, "{} — the signed-in account's note; refuses when no backend is connected"),
     ("app.quit", "Quit DesignCraft", Some("Cmd+Q"), "{} — close the window; each document with unsaved changes asks first"),
     ("app.saveCopyDialog", "Save a Copy…", Some("Cmd+Alt+S"), "{path?} — choose where to write a copy (the document stays as it is)"),
     ("app.loadSwatches", "Load Swatches…", None, "{path?} — pick a swatch exchange (.ase) file"),
