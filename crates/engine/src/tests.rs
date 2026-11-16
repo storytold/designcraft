@@ -2718,3 +2718,21 @@ fn deleting_the_active_layer_moves_to_a_usable_layer() {
     s.execute("layer.delete", &json!({"id": bottom.0})).unwrap();
     assert_eq!(s.doc().unwrap().active_layer, artwork);
 }
+
+#[test]
+fn preflight_hebrew_page_number_range() {
+    for style in ["hebrew", "hebrewPlain"] {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 5})).unwrap();
+        s.execute("layout.section", &json!({"page": 1, "startNumber": 998, "style": style})).unwrap();
+        let result = s.execute("preflight.run", &json!({})).unwrap();
+        let issues: Vec<_> = result["issues"].as_array().unwrap().iter().filter(|i| i["kind"] == "hebrewNumberRange").collect();
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0]["page"], 2);
+        assert_eq!(issues[0]["severity"], "warning");
+        assert_eq!(issues[0]["message"], "Page 1000: Hebrew page numbers stop at 999, so later pages print in Arabic digits");
+        s.execute("layout.section", &json!({"page": 1, "startNumber": 1})).unwrap();
+        let result = s.execute("preflight.run", &json!({})).unwrap();
+        assert!(result["issues"].as_array().unwrap().iter().all(|i| i["kind"] != "hebrewNumberRange"));
+    }
+}

@@ -406,6 +406,13 @@ impl<'a> Ex<'a> {
                 .collect();
             props.push(crate::xml::from_craft(craft_idml::model::TabStopValues::to_list(&values)));
         }
+        if matches!(a.number_style, Some(designcraft_doc::NumberStyle::Hebrew | designcraft_doc::NumberStyle::HebrewPlain)) {
+            let warning = "Hebrew list numbering is written as Arabic numerals (1, 2, 3, 4...): IDML has no documented Hebrew list numbering format."
+                .to_string();
+            if !self.warnings.contains(&warning) {
+                self.warnings.push(warning);
+            }
+        }
         let list = craft_idml::model::ParagraphListValues {
             applied_list: a.list_name.as_deref().map(craft_idml::model::ParagraphListValues::numbering_list_reference),
             list_type: a.list_type.map(|list| {

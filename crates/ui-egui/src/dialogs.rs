@@ -7105,7 +7105,7 @@ fn span_columns(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, doc: 
 }
 
 /// Number styles as the list's Format menu shows them (`NumberStyle` values).
-const NUMBER_STYLES: [(&str, &str); 9] = [
+const NUMBER_STYLES: [(&str, &str); 11] = [
     ("arabic", "1, 2, 3, 4..."),
     ("upperRoman", "I, II, III, IV..."),
     ("lowerRoman", "i, ii, iii, iv..."),
@@ -7115,6 +7115,8 @@ const NUMBER_STYLES: [(&str, &str); 9] = [
     ("arabicThreeDigits", "001, 002, 003..."),
     ("arabicFourDigits", "0001, 0002, 0003..."),
     ("symbols", "*, †, ‡, §..."),
+    ("hebrew", "א׳, ב׳, ג׳, ד׳..."),
+    ("hebrewPlain", "א, ב, ג, ד..."),
 ];
 
 /// A list label text (Text After, Number), shown with its tab as `^t`; labels expand
@@ -8684,6 +8686,8 @@ fn footnote_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
                 ("arabicLeadingZero", "01, 02, 03..."),
                 ("symbols", "*, †, ‡, §..."),
                 ("kanji", "一, 二, 三, 四..."),
+                ("hebrew", "א׳, ב׳, ג׳, ד׳..."),
+                ("hebrewPlain", "א, ב, ג, ד..."),
             ],
         );
         ui.end_row();

@@ -292,8 +292,31 @@ fn modified_link(d: &Document, it: &Item, page: Option<usize>, document: Option<
     })
 }
 
+/// Warns once per Hebrew-numbered section at its first page numbered past 999, which prints in
+/// Arabic digits (`NumberStyle::format`'s fallback).
+fn hebrew_number_range(d: &Document, out: &mut Vec<Issue>) {
+    for section in &d.sections {
+        if !matches!(section.style, designcraft_doc::NumberStyle::Hebrew | designcraft_doc::NumberStyle::HebrewPlain) {
+            continue;
+        }
+        if let Some(page) =
+            (section.start..d.page_count()).take_while(|&abs| d.section_of(abs) == Some(section)).find(|&abs| d.page_number(abs) > 999)
+        {
+            let name = d.page_name(page);
+            out.push(Issue {
+                severity: "warning",
+                kind: "hebrewNumberRange",
+                message: format!("Page {name}: Hebrew page numbers stop at 999, so later pages print in Arabic digits"),
+                item: None,
+                page: Some(page),
+            });
+        }
+    }
+}
+
 pub fn check_document(d: &Document, cache: &Cache, document: Option<&std::path::Path>, min_ppi: f64, links: &mut LinkListChecks) -> Vec<Issue> {
     let mut out = Vec::new();
+    hebrew_number_range(d, &mut out);
     // Stories: overset and fonts.
     let mut missing_fonts: Vec<String> = Vec::new();
     let mut unsupported_typography = std::collections::BTreeSet::new();

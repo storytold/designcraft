@@ -434,6 +434,16 @@ mod page_numbering_view_tests {
     use crate::Session;
 
     #[test]
+    fn hebrew_section_page_names() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 15})).unwrap();
+        s.execute("layout.section", &json!({"page": 1, "style": "hebrew"})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.page_name(0), "א׳");
+        s.execute("layout.section", &json!({"page": 1, "style": "hebrewPlain"})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.page_name(14), "טו");
+    }
+
+    #[test]
     fn section_and_absolute_page_numbering_view() {
         let mut s = Session::new();
         s.execute("file.new", &json!({"pages": 4})).unwrap();
