@@ -191,6 +191,87 @@ fn compose_cell(
     CellLayout { text: Arc::new(cs), content_h, line_heights }
 }
 
+struct CellLayouts {
+    cells: Vec<Option<CellLayout>>,
+    heights: Vec<f64>,
+    legacy_first_baseline: bool,
+}
+
+impl CellLayouts {
+    fn sum(&self, start: usize, end: usize) -> f64 {
+        self.heights[start..end].iter().sum()
+    }
+
+    fn place_rows(&self, rows: std::ops::Range<usize>, y: &mut f64, repeated: bool, placed: &mut Vec<(usize, f64, bool)>) {
+        for row in rows {
+            placed.push((row, *y, repeated));
+            *y += self.heights[row];
+        }
+    }
+}
+
+fn compose_owner_cells(
+    doc: &Document,
+    table: &Table,
+    colx: &[f64],
+    owners: &[(usize, usize)],
+    opts: &ComposeOptions,
+    side: (bool, bool),
+    legacy_first_baseline: bool,
+) -> CellLayouts {
+    let (nr, nc) = (table.nrows(), table.ncols());
+    let is_owner = |r: usize, c: usize| owners[r * nc + c] == (r, c);
+    // Compose every owner cell.
+    let mut layouts: Vec<Option<CellLayout>> = Vec::with_capacity(nr * nc);
+    for r in 0..nr {
+        for c in 0..nc {
+            if !is_owner(r, c) {
+                layouts.push(None);
+                continue;
+            }
+            let cell = &table.cells[r * nc + c];
+            let cs = (cell.col_span.max(1) as usize).min(nc - c);
+            let w = colx[c + cs] - colx[c] - cell.insets[1] - cell.insets[3];
+            layouts.push(Some(compose_cell(doc, cell, w, opts, side, legacy_first_baseline)));
+        }
+    }
+    // Row heights.
+    let need = |r: usize, c: usize| -> f64 {
+        let cell = &table.cells[r * nc + c];
+        layouts[r * nc + c].as_ref().map_or(0.0, |l| l.content_h) + cell.insets[0] + cell.insets[2]
+    };
+    let mut heights: Vec<f64> = table
+        .rows
+        .iter()
+        .enumerate()
+        .map(|(r, row)| match row.mode {
+            RowHeightMode::Exactly => row.height.max(0.0),
+            RowHeightMode::AtLeast => {
+                let content = (0..nc).filter(|&c| is_owner(r, c) && table.cells[r * nc + c].row_span <= 1).map(|c| need(r, c)).fold(0.0, f64::max);
+                content.max(row.height)
+            }
+        })
+        .collect();
+    // Row-spanning cells grow the last row they span (unless it is fixed).
+    for r in 0..nr {
+        for c in 0..nc {
+            let cell = &table.cells[r * nc + c];
+            if !is_owner(r, c) || cell.row_span <= 1 {
+                continue;
+            }
+            let end = (r + cell.row_span as usize).min(nr);
+            let have: f64 = heights[r..end].iter().sum();
+            let n = need(r, c);
+            if n > have
+                && let Some(i) = (r..end).rev().find(|&i| table.rows[i].mode == RowHeightMode::AtLeast)
+            {
+                heights[i] += n - have;
+            }
+        }
+    }
+    CellLayouts { cells: layouts, heights, legacy_first_baseline }
+}
+
 /// Lay out `table` (anchored at byte `anchor` of paragraph `pi`) from the cursor. Returns false
 /// when it doesn't fit the remaining frames (overset).
 #[allow(clippy::too_many_arguments)]
@@ -233,54 +314,7 @@ pub(crate) fn place_table(
     let owners = table.owners();
     let is_owner = |r: usize, c: usize| owners[r * nc + c] == (r, c);
     let side = (frames[cur.fi].left_page, frames[cur.fi].right_page);
-    // Compose every owner cell.
-    let mut layouts: Vec<Option<CellLayout>> = Vec::with_capacity(nr * nc);
-    for r in 0..nr {
-        for c in 0..nc {
-            if !is_owner(r, c) {
-                layouts.push(None);
-                continue;
-            }
-            let cell = &table.cells[r * nc + c];
-            let cs = (cell.col_span.max(1) as usize).min(nc - c);
-            let w = colx[c + cs] - colx[c] - cell.insets[1] - cell.insets[3];
-            layouts.push(Some(compose_cell(doc, cell, w, opts, side, frames[cur.fi].opts.legacy_first_baseline)));
-        }
-    }
-    // Row heights.
-    let need = |r: usize, c: usize| -> f64 {
-        let cell = &table.cells[r * nc + c];
-        layouts[r * nc + c].as_ref().map_or(0.0, |l| l.content_h) + cell.insets[0] + cell.insets[2]
-    };
-    let mut heights: Vec<f64> = table
-        .rows
-        .iter()
-        .enumerate()
-        .map(|(r, row)| match row.mode {
-            RowHeightMode::Exactly => row.height.max(0.0),
-            RowHeightMode::AtLeast => {
-                let content = (0..nc).filter(|&c| is_owner(r, c) && table.cells[r * nc + c].row_span <= 1).map(|c| need(r, c)).fold(0.0, f64::max);
-                content.max(row.height)
-            }
-        })
-        .collect();
-    // Row-spanning cells grow the last row they span (unless it is fixed).
-    for r in 0..nr {
-        for c in 0..nc {
-            let cell = &table.cells[r * nc + c];
-            if !is_owner(r, c) || cell.row_span <= 1 {
-                continue;
-            }
-            let end = (r + cell.row_span as usize).min(nr);
-            let have: f64 = heights[r..end].iter().sum();
-            let n = need(r, c);
-            if n > have
-                && let Some(i) = (r..end).rev().find(|&i| table.rows[i].mode == RowHeightMode::AtLeast)
-            {
-                heights[i] += n - have;
-            }
-        }
-    }
+    let mut layout = compose_owner_cells(doc, table, &colx, &owners, opts, side, frames[cur.fi].opts.legacy_first_baseline);
     // Row groups that must stay together: end (exclusive) of the group starting at each row.
     let mut group_end: Vec<usize> = (0..nr).map(|r| r + 1).collect();
     {
@@ -305,8 +339,6 @@ pub(crate) fn place_table(
     let header = table.header_rows();
     let footer = table.footer_rows();
     let body_end = nr - footer;
-    let sum = |a: usize, b: usize| heights[a..b].iter().sum::<f64>();
-    let footer_h = sum(body_end, nr);
     let o = &table.options;
     let mut y = match cur.last_baseline {
         Some(b) => b + cur.last_descent + cur.pending + o.space_before,
@@ -316,13 +348,7 @@ pub(crate) fn place_table(
     let mut first_frag = true;
     let mut body_placed = 0usize;
     let mut top = y;
-    let place_rows = |rows: std::ops::Range<usize>, y: &mut f64, repeated: bool, frag_rows: &mut Vec<(usize, f64, bool)>| {
-        for r in rows {
-            frag_rows.push((r, *y, repeated));
-            *y += heights[r];
-        }
-    };
-    place_rows(0..header, &mut y, false, &mut frag_rows);
+    layout.place_rows(0..header, &mut y, false, &mut frag_rows);
     // Table rows do not add story footnotes; cell-local notes are composed separately.
     let column_reserve = |notes: &mut crate::notes::Notes, cur: &Cursor, col: Rect| {
         let note_w = notes.area(&cols[cur.fi], cur.col).map_or(col.width(), |a| a.width());
@@ -336,7 +362,8 @@ pub(crate) fn place_table(
             break;
         }
         let ge = group_end[r].min(body_end).max(r + 1);
-        let gh = sum(r, ge);
+        let gh = layout.sum(r, ge);
+        let footer_h = layout.sum(body_end, nr);
         let bottom = col.y1 - reserve;
         let at_col_top = cur.last_baseline.is_none() && (top - col.y0).abs() < 1e-6;
         if y + gh + footer_h <= bottom + 0.01 || (body_placed == 0 && at_col_top && reserve == 0.0) {
@@ -344,7 +371,7 @@ pub(crate) fn place_table(
                 // A row group taller than an empty column can never fit.
                 return false;
             }
-            place_rows(r..ge, &mut y, false, &mut frag_rows);
+            layout.place_rows(r..ge, &mut y, false, &mut frag_rows);
             body_placed += 1;
             r = ge;
             continue;
@@ -352,9 +379,26 @@ pub(crate) fn place_table(
         // Continue in the next column / frame.
         if body_placed > 0 {
             if o.repeat_footer {
-                place_rows(body_end..nr, &mut y, true, &mut frag_rows);
+                layout.place_rows(body_end..nr, &mut y, true, &mut frag_rows);
             }
-            emit(table, anchor, pi, &frag_rows, &heights, &colx, col.x0 + x_off, top, y, first_frag, false, &layouts, &owners, cur, col, out);
+            emit(
+                table,
+                anchor,
+                pi,
+                &frag_rows,
+                &layout.heights,
+                &colx,
+                col.x0 + x_off,
+                top,
+                y,
+                first_frag,
+                false,
+                &layout.cells,
+                &owners,
+                cur,
+                col,
+                out,
+            );
             first_frag = false;
         }
         let was_first = first_frag;
@@ -363,6 +407,13 @@ pub(crate) fn place_table(
             return false;
         }
         col = col_rect(cur);
+        let legacy_first_baseline = frames[cur.fi].opts.legacy_first_baseline;
+        if layout.legacy_first_baseline != legacy_first_baseline {
+            // Emitted fragments keep their Arc layouts. Only later fragments adopt the
+            // destination frame's baseline metrics, including nested cells and notes.
+            let side = (frames[cur.fi].left_page, frames[cur.fi].right_page);
+            layout = compose_owner_cells(doc, table, &colx, &owners, opts, side, legacy_first_baseline);
+        }
         reserve = column_reserve(notes, cur, col);
         y = col.y0;
         top = y;
@@ -370,13 +421,13 @@ pub(crate) fn place_table(
         body_placed = 0;
         // Headers: the first fragment's header moves along; later ones repeat it.
         if was_first {
-            place_rows(0..header, &mut y, false, &mut frag_rows);
+            layout.place_rows(0..header, &mut y, false, &mut frag_rows);
         } else if o.repeat_header {
-            place_rows(0..header, &mut y, true, &mut frag_rows);
+            layout.place_rows(0..header, &mut y, true, &mut frag_rows);
         }
     }
-    place_rows(body_end..nr, &mut y, false, &mut frag_rows);
-    emit(table, anchor, pi, &frag_rows, &heights, &colx, col.x0 + x_off, top, y, first_frag, true, &layouts, &owners, cur, col, out);
+    layout.place_rows(body_end..nr, &mut y, false, &mut frag_rows);
+    emit(table, anchor, pi, &frag_rows, &layout.heights, &colx, col.x0 + x_off, top, y, first_frag, true, &layout.cells, &owners, cur, col, out);
     cur.last_baseline = Some(y);
     cur.last_descent = 0.0;
     cur.pending = o.space_after;

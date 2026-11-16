@@ -10177,3 +10177,142 @@ fn legacy_nested_cell_and_footnote_text_inherits_the_frame_baseline_metrics() {
     assert!((legacy.0 - modern.0).abs() > 0.1, "cell baseline must use the inherited compatibility bit: {legacy:?} vs {modern:?}");
     assert!((legacy.1 - modern.1).abs() > 0.1, "note baseline must use the inherited compatibility bit: {legacy:?} vs {modern:?}");
 }
+
+fn legacy_flow_table() -> designcraft_doc::Table {
+    use designcraft_doc::{FirstBaseline, Table};
+    let family = "LegacyFlow 17";
+    designcraft_fonts::FontDb::global().add_font(typo_test_font(family, Some(700)));
+    let mut table = Table::new(778, 6, 1, 1, 1, 180.0);
+    table.options.repeat_header = true;
+    table.options.repeat_footer = true;
+    for cell in &mut table.cells {
+        cell.first_baseline = FirstBaseline::Ascent;
+        cell.text = designcraft_doc::Story::with_text(StoryId(0), "Cell", ParaFormat::default());
+        cell.text.insert_note(4, "Note", ParaFormat::default());
+        let note = std::sync::Arc::make_mut(&mut cell.text.notes[0]);
+        note.text.format_chars(0..4, |f| {
+            f.over.font_family = Some(family.into());
+            f.over.size = Some(20.0);
+        });
+        let mut nested = Table::new(779, 1, 1, 0, 0, 140.0);
+        nested.cells[0].first_baseline = FirstBaseline::Ascent;
+        nested.cells[0].text = designcraft_doc::Story::with_text(StoryId(0), "Nested", ParaFormat::default());
+        nested.cells[0].text.format_chars(0..6, |f| {
+            f.over.font_family = Some(family.into());
+            f.over.size = Some(20.0);
+        });
+        let end = cell.text.len();
+        cell.text.insert_table(end, nested);
+        let end = cell.text.len();
+        cell.text.format_chars(0..end, |f| {
+            f.over.font_family = Some(family.into());
+            f.over.size = Some(20.0);
+        });
+    }
+    table
+}
+
+fn legacy_flow_doc(table: &designcraft_doc::Table, heights: &[f64], flags: &[bool], intro: bool) -> (Document, StoryId) {
+    assert_eq!(heights.len(), flags.len());
+    let mut doc = Document::new(&NewDocument::default());
+    doc.footnote_options.first_baseline = designcraft_doc::FirstBaseline::Ascent;
+    let layer = doc.default_layer();
+    let mut ids = Vec::new();
+    let mut story = None;
+    for (i, (&height, &legacy)) in heights.iter().zip(flags).enumerate() {
+        let y = i as f64 * 12000.0;
+        let text = if i == 0 && intro { "Intro" } else { "" };
+        let (id, sid) = doc.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, y, 300.0, y + height), layer, text, ParaFormat::default()).unwrap();
+        doc.item_mut(id).unwrap().text_frame_mut().unwrap().options.legacy_first_baseline = legacy;
+        if let Some(&prior) = ids.last() {
+            doc.thread(prior, id).unwrap();
+        } else {
+            story = Some(sid);
+        }
+        ids.push(id);
+    }
+    let sid = story.unwrap();
+    let text = doc.story_mut(sid).unwrap();
+    let at = text.len();
+    text.insert_table(at, table.clone());
+    doc.check().unwrap();
+    (doc, sid)
+}
+
+fn legacy_cell_signature(cell: &crate::table::PlacedCell) -> Vec<f64> {
+    let mut result = vec![cell.rect.height()];
+    let frame = &cell.text.frames[0];
+    result.extend(frame.lines.iter().map(|line| line.baseline));
+    for nested in &frame.tables {
+        for child in &nested.cells {
+            result.extend(legacy_cell_signature(child));
+        }
+    }
+    for note in &frame.notes {
+        result.extend(note.text.frames[0].lines.iter().map(|line| line.baseline));
+    }
+    result
+}
+
+fn legacy_flow_reference(table: &designcraft_doc::Table, legacy: bool) -> Vec<Vec<f64>> {
+    let (doc, sid) = legacy_flow_doc(table, &[10000.0], &[legacy], false);
+    let composed = compose_story(&doc, sid, &ComposeOptions::default());
+    assert!(!composed.is_overset());
+    composed.frames[0].tables[0].cells.iter().map(legacy_cell_signature).collect()
+}
+
+#[test]
+fn legacy_table_fragments_recompose_cells_for_each_destination_frame() {
+    let table = legacy_flow_table();
+    let reference = [legacy_flow_reference(&table, false), legacy_flow_reference(&table, true)];
+    assert!((reference[0][1][0] - reference[1][1][0]).abs() > 0.1, "fixture must distinguish row heights");
+    for flags in [[false, true, false], [true, false, true]] {
+        let height = |legacy: bool| {
+            let rows = &reference[usize::from(legacy)];
+            rows[0][0] + rows[1][0] + rows.last().unwrap()[0] + 0.1
+        };
+        let (doc, sid) = legacy_flow_doc(&table, &[height(flags[0]), height(flags[1]), 10000.0], &flags, false);
+        let composed = compose_story(&doc, sid, &ComposeOptions::default());
+        assert!(!composed.is_overset());
+        for (index, frame) in composed.frames.iter().enumerate() {
+            assert_eq!(frame.tables.len(), 1, "each destination must receive a fragment");
+            let fragment = &frame.tables[0];
+            for cell in &fragment.cells {
+                let expected = &reference[usize::from(flags[index])][cell.row];
+                let actual = legacy_cell_signature(cell);
+                assert_eq!(actual.len(), expected.len());
+                assert!(
+                    actual.iter().zip(expected).all(|(a, b)| (a - b).abs() < 1e-6),
+                    "frame {index}, row {}: {actual:?} vs {expected:?}",
+                    cell.row
+                );
+            }
+            if index > 0 {
+                assert!(fragment.cell(0, 0).unwrap().repeated);
+            }
+        }
+    }
+}
+
+#[test]
+fn legacy_table_pushed_to_a_different_frame_recomputes_row_heights() {
+    let table = legacy_flow_table();
+    for legacy in [false, true] {
+        let expected = legacy_flow_reference(&table, legacy);
+        let (doc, sid) = legacy_flow_doc(&table, &[30.0, 10000.0], &[!legacy, legacy], true);
+        let composed = compose_story(&doc, sid, &ComposeOptions::default());
+        assert!(!composed.is_overset());
+        assert!(composed.frames[0].tables.is_empty());
+        assert_eq!(composed.frames[1].tables.len(), 1);
+        for cell in &composed.frames[1].tables[0].cells {
+            let actual = legacy_cell_signature(cell);
+            assert_eq!(actual.len(), expected[cell.row].len());
+            assert!(
+                actual.iter().zip(&expected[cell.row]).all(|(a, b)| (a - b).abs() < 1e-6),
+                "row {}: {actual:?} vs {:?}",
+                cell.row,
+                expected[cell.row]
+            );
+        }
+    }
+}

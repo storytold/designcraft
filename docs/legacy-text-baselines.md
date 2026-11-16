@@ -13,7 +13,9 @@ false restores current metrics. Choosing a different First Baseline option also 
 current metrics; unrelated edits retain compatibility. New documents use current metrics.
 
 Parent and nested frames have their own flag. Table cells, nested tables and footnotes
-inherit the containing frame’s flag; note caches distinguish it. A flagged native save
+inherit the containing frame’s flag; note caches distinguish it. Table continuations
+recompose their cells and repeated headers/footers when the destination frame uses
+different metrics; fragments already placed in earlier frames retain their layouts. A flagged native save
 requires reader capability 6. The shared `craft-designcraft-format` codec owns that
 capability, inference and the bundle reader/writer. The app does not duplicate its ZIP
 specification or add runtime JSON/ZIP dependencies. Linked originals and proxies retain
