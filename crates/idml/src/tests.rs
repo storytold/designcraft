@@ -2713,6 +2713,52 @@ fn custom_glyph_imports_and_round_trips() {
     check(&import_idml(&export_idml(&d)).unwrap());
 }
 
+/// An empty CustomGlyph (`$ID/`) on a range resets the glyph name its character style gives: the
+/// U+E013 there is text, and it goes back out as text with the reset, not as a custom glyph. The
+/// empty name used to be dropped, so the style's glyph drew in its place.
+#[test]
+fn an_empty_custom_glyph_resets_the_character_styles_glyph() {
+    let styles = STYLES.replace(
+        r#"<CharacterStyle Self="CharacterStyle/Strong" Name="Strong" FontStyle="Bold">"#,
+        r#"<CharacterStyle Self="CharacterStyle/Glyph" Name="Glyph"><Properties><CustomGlyph type="string">$ID/laa03</CustomGlyph></Properties></CharacterStyle>
+    <CharacterStyle Self="CharacterStyle/Strong" Name="Strong" FontStyle="Bold">"#,
+    );
+    let story = r#"<?xml version="1.0" encoding="UTF-8"?>
+<idPkg:Story xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging" DOMVersion="16.0">
+  <Story Self="s1">
+    <ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/Text%3aBody">
+      <CharacterStyleRange AppliedCharacterStyle="CharacterStyle/Glyph"><Content><?ACE 1a?></Content></CharacterStyleRange>
+      <CharacterStyleRange AppliedCharacterStyle="CharacterStyle/Glyph"><Properties><CustomGlyph type="string">$ID/</CustomGlyph></Properties><Content>a&#xE013;b</Content></CharacterStyleRange>
+    </ParagraphStyleRange>
+  </Story>
+</idPkg:Story>"#;
+    let pkg = zip_files(&[
+        ("designmap.xml", DESIGNMAP),
+        ("Resources/Graphic.xml", GRAPHIC),
+        ("Resources/Styles.xml", &styles),
+        ("Resources/Preferences.xml", PREFS),
+        ("MasterSpreads/MasterSpread_m1.xml", MASTER),
+        ("Spreads/Spread_sp1.xml", SPREAD),
+        ("Stories/Story_s1.xml", story),
+    ]);
+    // The glyph each U+E013 draws, resolved through its character style.
+    let glyphs = |d: &designcraft_doc::Document| {
+        let st = d.story(*d.stories.keys().next().unwrap()).unwrap();
+        let (_, base) = d.styles.resolve_para(&st.paras[0]);
+        let ats: Vec<usize> = st.text.match_indices(designcraft_doc::story::CUSTOM_GLYPH).map(|(at, _)| at).collect();
+        ats.iter().map(|&at| d.styles.resolve_char(&base, st.char_format_at(at + 1)).custom_glyph).collect::<Vec<_>>()
+    };
+    let d = import_idml(&pkg).unwrap();
+    assert_eq!(glyphs(&d), ["laa03", ""]);
+    let bytes = export_idml(&d);
+    let text = zip_text(&bytes, "Stories/");
+    assert_eq!(text.matches("ACE 1a").count(), 1, "{text}");
+    // The reset is written once, on the U+E013 only: not on the plain text around it.
+    assert_eq!(text.matches("<CustomGlyph").count(), 1, "{text}");
+    assert!(text.contains(r#"<CustomGlyph type="string">$ID/</CustomGlyph>"#), "{text}");
+    assert_eq!(glyphs(&import_idml(&bytes).unwrap()), ["laa03", ""]);
+}
+
 /// A U+E013 typed as text (no CustomGlyph) stays text on export: it used to go out as a custom
 /// glyph (`<?ACE 1a?>`) naming nothing.
 #[test]
