@@ -5217,6 +5217,47 @@ fn right_to_left_drop_word_keeps_size_hangs_from_the_tops_and_indents_two_lines(
 }
 
 #[test]
+fn keep_size_drop_cap_trailing_space_follows_word_spacing() {
+    let text = "Hello body words ".repeat(30);
+    let (mut d, sid, _) = drop_doc(&text, ParaAttrs { drop_cap_keep_size: Some(true), ..drop_cap(2, 5) });
+    let normal = compose_story(&d, sid, &ComposeOptions::default());
+    let normal_lines = all_lines(&normal);
+    let gap = normal_lines[0].glyphs.iter().find(|g| g.byte == 5).unwrap().adv;
+    assert!(gap > 0.0);
+    d.story_mut(sid).unwrap().paras[0].para.word_space_desired = Some(2.0);
+    let spaced = compose_story(&d, sid, &ComposeOptions::default());
+    let spaced_lines = all_lines(&spaced);
+    let width = |line: &Line| line.drop_cap.unwrap().rect.width();
+    assert!((width(spaced_lines[0]) - width(normal_lines[0]) - gap).abs() < 0.01);
+    let body_gap = spaced_lines[0].glyphs.iter().find(|g| g.byte == 10).unwrap().adv;
+    let normal_body_gap = normal_lines[0].glyphs.iter().find(|g| g.byte == 10).unwrap().adv;
+    assert!((body_gap - normal_body_gap - gap).abs() < 0.01);
+}
+
+#[test]
+fn hebrew_drop_cap_height_skips_leading_punctuation() {
+    const FAMILY: &str = "DC Test Hebrew Quoted Drop";
+    let db = designcraft_fonts::FontDb::global();
+    db.add_font(designcraft_fonts::testing::font_with_glyph(FAMILY, &['ה', 'ד', ' ', '"'], 'z').unwrap());
+    let compose = |prefix: &str, chars| {
+        let text = format!("{prefix}{}", "הדה הדה הדה ".repeat(30));
+        let para = ParaAttrs { direction: Some(designcraft_doc::TextDirection::RightToLeft), align: Some(Align::Right), ..drop_cap(2, chars) };
+        let (mut d, sid, _) = drop_doc(&text, para);
+        d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.font_family = Some(FAMILY.into()));
+        compose_story(&d, sid, &ComposeOptions::default())
+    };
+    let plain = compose("", 3);
+    let quoted = compose("\"", 4);
+    let plain_lines = all_lines(&plain);
+    let quoted_lines = all_lines(&quoted);
+    let first = plain_lines[0].glyphs.iter().find(|g| g.byte == 0).unwrap();
+    let after_quote = quoted_lines[0].glyphs.iter().find(|g| g.byte == 1).unwrap();
+    assert_eq!(after_quote.face.family, FAMILY);
+    assert!((first.sy - after_quote.sy).abs() < 1e-6);
+    assert!((first.y - after_quote.y).abs() < 0.01);
+}
+
+#[test]
 fn right_to_left_drop_cap_keeps_marks_on_their_letters() {
     const FAMILY: &str = "DC Test Hebrew Drop Marks";
     designcraft_fonts::FontDb::global().add_font(
