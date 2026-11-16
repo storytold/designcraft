@@ -2658,3 +2658,39 @@ fn review_hidden_margin_note_cannot_receive_a_type_click() {
         assert!(!actions.iter().any(|a| matches!(a, Action::Exec(cmd, _) if cmd == "text.placeCaret")));
     }
 }
+
+#[test]
+fn type_tool_respects_foreground_frames_over_margin_notes() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (host, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(120.0, 72.0, 420.0, 600.0), lid, "Body", Default::default()).unwrap();
+    d.footnote_options.placement = designcraft_doc::NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 8.0, width: 72.0 };
+    d.story_mut(sid).unwrap().insert_note(4, "Source", Default::default());
+    let cache = Cache::new();
+    let note = cache.get(&d, sid, None).frames[0].notes[0].rect;
+    let rect = d.text_xf(d.item(host).unwrap()).transform_rect_bbox(note);
+    let (front, _) = d.add_text_frame(SpreadRef::Doc(0), rect, lid, "Foreground", Default::default()).unwrap();
+    let sel = Selection::default();
+    for (reverse, upper_layer, expected) in [(false, false, front), (true, false, host), (false, true, front)] {
+        if reverse {
+            Arc::make_mut(&mut d.spreads[0]).items.reverse();
+        }
+        if upper_layer {
+            let mut layer = d.layers[0].clone();
+            layer.id = designcraft_doc::LayerId(d.alloc());
+            layer.name = "Foreground".into();
+            d.item_mut(front).unwrap().layer = layer.id;
+            d.layers.insert(0, layer);
+        }
+        let layout = CanvasLayout::new(&d, false);
+        let point = layout.to_canvas(SpreadRef::Doc(0), rect.center());
+        let cx = ctx(&d, &sel, &cache, &layout);
+        assert_eq!(cx.hit(point).unwrap().1, front, "the host path does not cover its note");
+        let mut tool = create("type");
+        let actions = tool.pointer(&cx, &PointerEvent::new(PointerKind::Down, point.x, point.y));
+        assert!(
+            matches!(actions.as_slice(), [Action::Exec(cmd, params)] if cmd == "text.placeCaret" && params["frame"] == expected.0),
+            "{actions:?}"
+        );
+    }
+}
