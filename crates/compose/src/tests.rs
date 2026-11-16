@@ -5140,7 +5140,7 @@ fn hebrew_drop_word_aligns_ink_tops_with_the_first_body_line() {
 }
 
 #[test]
-fn right_to_left_drop_word_keeps_size_baseline_and_two_line_indent() {
+fn right_to_left_drop_word_keeps_size_hangs_from_the_tops_and_indents_two_lines() {
     const FAMILY: &str = "DC Test Hebrew Keep Size";
     designcraft_fonts::FontDb::global().add_font(designcraft_fonts::testing::font_with(FAMILY, &['ה', 'ד', ' ']).unwrap());
     let first_word = "הדה";
@@ -5163,8 +5163,13 @@ fn right_to_left_drop_word_keeps_size_baseline_and_two_line_indent() {
     assert_eq!(dc.len(), 3);
     for g in &dc {
         assert!((g.sy * g.face.upem - 12.0).abs() < 0.01, "size {}", g.sy * g.face.upem);
-        assert!(g.y.abs() < 0.01, "baseline offset {}", g.y);
     }
+    // Its top is level with the body's tops, so it sits lower than the baseline by what it is taller.
+    let db = designcraft_fonts::FontDb::global();
+    let top = |g: &PlacedGlyph| g.y + designcraft_geom::Shape::bounding_box(&*db.outline(&g.face, g.gid)).y0 * g.sy;
+    let body = lines[0].glyphs.iter().find(|g| g.byte == "הדה ".len()).unwrap();
+    assert!(body.sy < dc[0].sy, "the drop word is larger than the body");
+    assert!((top(dc[0]) - top(body)).abs() < 0.01, "drop top {}, body top {}", top(dc[0]), top(body));
     // The word space after it stays: the lines beside it start where the next word does.
     let width: f64 = lines[0].glyphs.iter().filter(|g| g.byte <= first_word.len()).map(|g| g.adv).sum();
     assert!(width > dc.iter().map(|g| g.adv).sum::<f64>(), "the word space after the drop word is kept");

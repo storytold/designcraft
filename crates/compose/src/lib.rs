@@ -5705,7 +5705,7 @@ struct DropCap {
 /// steps apart. With `align_left` its ink starts at the indent (see [`DropCap::lsb`]). Tabs inside
 /// it advance to the stops of `tabs` (stops and the start-side indent; in right-to-left paragraphs
 /// both measured from the column's right edge). Spaces right after it join it at its size without
-/// widening it. With `keep_size`, it keeps its own size and the first line baseline, and those
+/// widening it. With `keep_size`, it keeps its own size, hangs from the first line's tops, and those
 /// spaces count in its width.
 #[allow(clippy::too_many_arguments)]
 fn split_drop_cap(
@@ -5750,7 +5750,7 @@ fn split_drop_cap(
         Some(pitch) if pitch.is_finite() && pitch > 0.0 => pitch,
         _ => lead,
     };
-    let drop = if keep_size { 0.0 } else { (lines - 1) as f64 * lead };
+    let drop = (lines - 1) as f64 * lead;
     // The cap's tallest glyph sets its height; its point size over the body's scales the fit.
     let (own, own_size) = dc.iter().fold((0.0, 0.0), |(c, s), g| {
         let h = height(g);
@@ -5759,6 +5759,12 @@ fn split_drop_cap(
     let ratio = match body_size {
         Some(b) if b > 0.0 && own_size > 0.0 && (own_size / b).is_finite() => own_size / b,
         _ => 1.0,
+    };
+    // Kept at its size, it hangs from the first line's tops: as much lower as it is taller.
+    let drop = match keep_size {
+        true if (own - cap).is_finite() => (own - cap).max(0.0),
+        true => 0.0,
+        false => drop,
     };
     let k = if keep_size {
         1.0

@@ -29,7 +29,7 @@ attr_set! {
         drop_cap_align_left: bool = true,
         /// Scale for Descenders (kept and round-tripped; doesn't change the layout).
         drop_cap_scale_descenders: bool = false,
-        /// Keep Size: the drop cap keeps its own point size and sits on the first line's baseline;
+        /// Keep Size: the drop cap keeps its own point size, its top level with the first line's tops;
         /// the lines beside it are still indented by its width.
         drop_cap_keep_size: bool = false,
         /// Nested styles, in order from the paragraph start.
