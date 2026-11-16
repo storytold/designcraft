@@ -330,6 +330,14 @@ mod tests {
     }
 
     #[test]
+    fn footnote_options_omitted_split_preserves_the_document_setting() {
+        let (mut s, _) = session_with_text();
+        assert_eq!(s.execute("footnote.options", &json!({"spaceBefore": 2.0})).unwrap()["allowSplit"], true);
+        s.execute("footnote.options", &json!({"allowSplit": false})).unwrap();
+        assert_eq!(s.execute("footnote.options", &json!({"spaceBefore": 3.0})).unwrap()["allowSplit"], false);
+    }
+
+    #[test]
     fn insert_type_and_undo_footnotes() {
         let (mut s, sid) = session_with_text();
         s.execute("text.select", &json!({"story": sid.0, "anchor": 16, "focus": 16})).unwrap();

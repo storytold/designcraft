@@ -71,7 +71,7 @@ fn stack_height<'a>(notes: impl IntoIterator<Item = &'a NoteMetrics>, space_betw
     h.map_or(0.0, |h| h + descent)
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(super) struct PartPage {
     page_name: Option<String>,
     section_marker: Option<String>,
@@ -115,7 +115,7 @@ pub(crate) struct SplitPlan {
 
 type SeriesSnapshot = (u32, Option<usize>, usize, Option<Carry>);
 type Part = (Arc<ComposedStory>, NoteMetrics);
-type CacheKey = (usize, String, u64, Option<usize>, bool, bool, Vec<(u64, u64, Option<usize>, bool, bool)>);
+type CacheKey = (usize, String, u64, PartPage, Vec<(u64, u64, PartPage)>);
 
 pub(super) struct SeriesNotes {
     series: u64,
@@ -245,21 +245,19 @@ impl SeriesNotes {
     ) -> Vec<Option<Part>> {
         let o = doc.note_options(self.series);
         let label = format!("{}{}", o.label(self.numbers.get(k).copied().unwrap_or(o.start_at), true), o.separator);
-        // The page side sets towards/away-from-spine alignment and spine-relative anchored objects.
+        // Parent frames have no page index: their prefix and section context must also distinguish cached text.
         let current_page = PartPage::of(f);
         let key = (
             k,
             label.clone(),
             w.to_bits(),
-            f.page,
-            f.left_page,
-            f.right_page,
+            current_page.clone(),
             heights
                 .iter()
                 .enumerate()
                 .map(|(i, (pw, h))| {
                     let page = pages.get(i).unwrap_or(&current_page);
-                    (pw.to_bits(), h.to_bits(), page.page, page.left_page, page.right_page)
+                    (pw.to_bits(), h.to_bits(), page.clone())
                 })
                 .collect(),
         );
@@ -591,3 +589,40 @@ pub fn note_caret(cs: &ComposedStory, id: u64, pos: usize) -> Option<(usize, f64
 
 mod page_margins;
 pub(crate) use page_margins::stack_page_margins;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use designcraft_doc::{ParaFormat, SpreadRef, build::NewDocument, story};
+
+    #[test]
+    fn note_cache_distinguishes_parent_prefixes_in_current_and_earlier_parts() {
+        let mut doc = Document::new(&NewDocument::default());
+        let (_, sid) =
+            doc.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 200.0, 100.0), doc.default_layer(), "Body", ParaFormat::default()).unwrap();
+        let text = vec![story::PAGE_NUMBER.to_string(); 8].join("\n");
+        doc.story_mut(sid).unwrap().insert_note(0, &text, ParaFormat::default()).unwrap();
+        let mut notes = SeriesNotes::new(&doc, doc.story(sid).unwrap(), 0, false);
+        let mut frame = crate::frame_specs(&doc, sid).remove(0);
+        frame.page = None;
+        frame.parent = true;
+        frame.page_name = Some("A".into());
+        let opts = ComposeOptions::default();
+        let visible = |text: &ComposedStory| -> String {
+            text.frames.iter().flat_map(|f| &f.lines).flat_map(|l| &l.glyphs).filter(|g| g.visible).map(|g| g.rendered_char).collect()
+        };
+        let first = notes.compose_parts(&doc, 0, 200.0, &frame, &opts, &[], &[]);
+        assert!(visible(&first[0].as_ref().unwrap().0).contains('A'));
+        let earlier_a = PartPage::of(&frame);
+        frame.page_name = Some("B".into());
+        let second = notes.compose_parts(&doc, 0, 200.0, &frame, &opts, &[], &[]);
+        assert!(visible(&second[0].as_ref().unwrap().0).contains('B'), "parent B must not reuse parent A's markers");
+        let earlier_b = PartPage::of(&frame);
+        frame.page_name = Some("C".into());
+        let heights = [(200.0, 30.0)];
+        let first = notes.compose_parts(&doc, 0, 200.0, &frame, &opts, &heights, &[earlier_a]);
+        assert!(visible(&first[0].as_ref().unwrap().0).contains('A'));
+        let second = notes.compose_parts(&doc, 0, 200.0, &frame, &opts, &heights, &[earlier_b]);
+        assert!(visible(&second[0].as_ref().unwrap().0).contains('B'), "earlier parent B must not reuse parent A's markers");
+    }
+}
