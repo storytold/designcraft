@@ -611,7 +611,7 @@ fn czech_counts_use_the_plural_form_for_the_number() {
 #[test]
 fn hebrew_catalog_is_selectable_rtl_and_preserves_english_keys() {
     let mut seen = HashSet::new();
-    assert_eq!(he::TABLE.len(), 1508, "Hebrew source-linked table changed");
+    assert_eq!(he::TABLE.len(), 1534, "Hebrew source-linked table changed");
     for (source, translated) in he::TABLE {
         assert!(seen.insert(*source), "duplicate Hebrew source key: {source}");
         assert!(!translated.trim().is_empty(), "empty Hebrew: {source}");
@@ -944,4 +944,41 @@ fn hebrew_source_linked_typography_panels_and_search_night05() {
         assert_eq!(tr("he", source), expected, "Hebrew UI label: {source}");
     }
     assert_eq!(tr("en", "Step and Repeat"), "Step and Repeat");
+}
+
+#[test]
+fn hebrew_typography_table_and_view_source_labels_day05() {
+    // Official DesignCraft English keys; no translation content is copied from other locales.
+    for (source, expected) in [
+        ("Alpha Channel", "ערוץ אלפא"),
+        ("Invalid panel layout; restored the default dock", "פריסת החלוניות אינה תקינה; סידור ברירת המחדל שוחזר"),
+        ("Kerning/Tracking Step", "צעד ריווח בין אותיות"),
+        ("Object Style Options…", "אפשרויות סגנון אובייקט…"),
+        ("Punctuation Space", "רווח סימני פיסוק"),
+        ("Quarter Space", "רבע רווח"),
+        ("Registered Trademark Symbol", "סימן מסחר רשום"),
+        ("Section Symbol", "סימן סעיף"),
+        ("Set OpenType Features", "הגדרת תכונות OpenType"),
+        ("Single Left Quotation Mark", "גרש פותח"),
+        ("Single Right Quotation Mark", "גרש סוגר"),
+        ("Sixth Space", "שישית רווח"),
+        ("Straight Double Quotation Marks", "מרכאות כפולות ישרות"),
+        ("Straight Single Quotation Mark (Apostrophe)", "גרש ישר (אפוסטרוף)"),
+        ("Table/Convert Cell Type", "טבלה/המרת סוג תא"),
+        ("Table/Delete", "טבלה/מחיקה"),
+        ("Table/Insert", "טבלה/הוספה"),
+        ("Table/Select", "טבלה/בחירה"),
+        ("Thin Space", "רווח דק"),
+        ("Third Space", "שליש רווח"),
+        ("To Body", "לגוף הטקסט"),
+        ("Trademark Symbol", "סימן מסחר"),
+        ("Vertical Type on a Path Tool", "כלי טקסט אנכי על נתיב"),
+        ("View/Proof Setup", "תצוגה/הגדרת הגהת צבע"),
+        ("View/Separations Preview", "תצוגה/תצוגה מקדימה של הפרדות צבע"),
+        ("Working CMYK", "מרחב CMYK לעבודה"),
+    ] {
+        assert!(fr::TABLE.iter().any(|(english, _)| english == source), "official English source missing: {source}");
+        assert_eq!(tr("he", source), expected, "Hebrew UI label: {source}");
+    }
+    assert_eq!(tr("en", "Object Style Options…"), "Object Style Options…");
 }
