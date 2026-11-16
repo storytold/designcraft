@@ -653,4 +653,26 @@ mod story_lines_tests {
             assert_eq!(r["lines"][0]["page"], page, "{r}");
         }
     }
+
+    /// The page follows a group's transform: a group moving its frame onto the pasteboard leaves
+    /// it on no page, though the frame's own bounds are still on page 0.
+    #[test]
+    fn story_lines_take_the_page_through_a_group_transform() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 300, 200], "content": "text", "text": "Words"})).unwrap();
+        let other = s.execute("frame.create", &json!({"rect": [72, 300, 100, 330]})).unwrap();
+        let g = s.execute("object.group", &json!({"ids": [r["id"], other["id"]]})).unwrap();
+        let gid = ItemId(g["id"].as_u64().unwrap());
+        s.edit(|d, _| {
+            let group = d.item_mut(gid).ok_or(designcraft_doc::DocError::NoItem(gid))?;
+            group.xf = designcraft_geom::Affine::translate((-2000.0, 0.0)) * group.xf;
+            Ok(())
+        })
+        .unwrap();
+        let r = s.execute("story.lines", &json!({"story": r["story"]})).unwrap();
+        let line = &r["lines"][0];
+        assert!(line["right"].as_f64().unwrap() < 0.0, "{line}");
+        assert_eq!(line["page"], json!(null), "{line}");
+    }
 }
