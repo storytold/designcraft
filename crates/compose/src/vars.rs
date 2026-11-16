@@ -61,7 +61,7 @@ pub(crate) fn place(doc: &Document, cs: &ComposedStory, pos: usize) -> Option<(u
 pub(crate) fn frame_page(doc: &Document, frame_item: ItemId) -> Option<usize> {
     let loc = doc.find(frame_item)?;
     let SpreadRef::Doc(si) = loc.spread else { return None };
-    let b = doc.item(frame_item)?.bounds();
+    let b = doc.parent_xf(&loc).transform_rect_bbox(doc.item(frame_item)?.bounds());
     let pi = doc.spreads.get(si)?.page_at_x(b.center().x).unwrap_or(0);
     doc.first_page_of_spread(si).checked_add(pi)
 }
@@ -80,6 +80,41 @@ fn first_word(text: &str) -> Option<(usize, String)> {
     (!word.is_empty()).then(|| (start, word.to_string()))
 }
 
+/// Reconstruct source text represented by visible glyphs, in source order. Hidden placeholders
+/// keep byte ranges for editing but must not supply catchwords. Undrawn trimmed spaces and
+/// actual line-break controls still delimit words; generated labels have no source length.
+fn visible_source<'a>(source: &str, glyphs: impl Iterator<Item = &'a crate::PlacedGlyph>) -> String {
+    let mut spans = BTreeMap::new();
+    for g in glyphs.filter(|g| g.len > 0) {
+        let shown = g.visible || g.adv > 0.0 || crate::breaker::is_forced(g.rendered_char) || g.rendered_char == '\t';
+        spans
+            .entry(g.byte)
+            .and_modify(|v: &mut (usize, bool)| {
+                v.0 = v.0.max(g.len);
+                v.1 |= shown;
+            })
+            .or_insert((g.len, shown));
+    }
+    let mut text = String::new();
+    let mut end = None;
+    for (start, (len, shown)) in spans {
+        if let Some(before) = end {
+            if start < before {
+                continue;
+            }
+            if source.get(before..start).is_some_and(|s| s.contains('\n')) {
+                text.push('\n');
+            }
+        }
+        let next = start.saturating_add(len);
+        if shown && let Some(part) = source.get(start..next) {
+            text.push_str(part);
+        }
+        end = Some(next);
+    }
+    text
+}
+
 /// First visible word on the next page showing this series. Source ranges, rather than
 /// generated labels, distinguish a continued note from the next note in the same stream.
 pub(crate) fn series_catchwords(doc: &Document, cs: &ComposedStory, series: u64) -> BTreeMap<usize, String> {
@@ -88,24 +123,21 @@ pub(crate) fn series_catchwords(doc: &Document, cs: &ComposedStory, series: u64)
         let Some(page) = frame_page(doc, frame.frame) else { continue };
         for note in frame.notes.iter().filter(|n| n.series == series) {
             for part in &note.text.frames {
-                let glyphs = || part.lines.iter().flat_map(|l| &l.glyphs).filter(|g| g.visible && g.len > 0);
-                let (Some(start), Some(end)) = (glyphs().map(|g| g.byte).min(), glyphs().map(|g| g.byte.saturating_add(g.len)).max()) else {
-                    continue;
-                };
-                pages.entry(page).or_default().push((note.index, start..end, note.source.clone()));
+                let glyphs = || part.lines.iter().flat_map(|l| &l.glyphs);
+                let Some(start) = glyphs().filter(|g| g.visible && g.len > 0).map(|g| g.byte).min() else { continue };
+                pages.entry(page).or_default().push((note.index, start, visible_source(&note.source, glyphs())));
             }
         }
     }
     for parts in pages.values_mut() {
-        parts.sort_by_key(|(index, range, _)| (*index, range.start));
+        parts.sort_by_key(|(index, start, _)| (*index, *start));
     }
     let mut out = BTreeMap::new();
     for page in pages.keys() {
-        let word = pages.range(page.saturating_add(1)..).next().and_then(|(_, parts)| {
-            parts.iter().find_map(|(_, range, source)| {
-                source.get(range.start..).and_then(first_word).filter(|(at, _)| range.start.saturating_add(*at) < range.end).map(|(_, word)| word)
-            })
-        });
+        let word = pages
+            .range(page.saturating_add(1)..)
+            .next()
+            .and_then(|(_, parts)| parts.iter().find_map(|(_, _, text)| first_word(text).map(|(_, word)| word)));
         out.insert(*page, word.unwrap_or_default());
     }
     out
@@ -113,8 +145,11 @@ pub(crate) fn series_catchwords(doc: &Document, cs: &ComposedStory, series: u64)
 
 /// Catchwords for the main source, with its shown-byte count for default-source selection.
 pub(crate) fn story_catchwords(doc: &Document, cs: &ComposedStory, st: &Story) -> BTreeMap<usize, (usize, String)> {
+    // Routed note frames are appended to the composition but never carry main-story bytes.
+    let main =
+        |ft: &&crate::FrameText| doc.item(ft.frame).and_then(|i| i.text_frame()).is_some_and(|f| f.story == st.id && f.options.note_stream.is_none());
     let mut pages: BTreeMap<usize, (usize, usize)> = BTreeMap::new();
-    for ft in &cs.frames {
+    for ft in cs.frames.iter().filter(main) {
         if let Some(page) = frame_page(doc, ft.frame) {
             let shown = pages.entry(page).or_default();
             shown.0 = shown.0.saturating_add(ft.range.len());
@@ -126,16 +161,15 @@ pub(crate) fn story_catchwords(doc: &Document, cs: &ComposedStory, st: &Story) -
         let word = if end >= st.text.len() || cs.overset_at.is_some_and(|o| end >= o) {
             String::new()
         } else {
-            st.text
-                .get(end..)
-                .and_then(first_word)
-                .filter(|(offset, _)| {
-                    let Some(start) = end.checked_add(*offset) else { return false };
-                    cs.overset_at.is_none_or(|o| start < o)
-                        && cs.frames.iter().any(|ft| ft.range.contains(&start) && frame_page(doc, ft.frame) != Some(page))
-                })
-                .map(|(_, word)| word)
-                .unwrap_or_default()
+            let glyphs = cs
+                .frames
+                .iter()
+                .filter(main)
+                .filter(|ft| frame_page(doc, ft.frame).is_some_and(|p| p > page))
+                .flat_map(|ft| &ft.lines)
+                .flat_map(|l| &l.glyphs)
+                .filter(|g| g.byte >= end && cs.overset_at.is_none_or(|o| g.byte < o));
+            first_word(&visible_source(&st.text, glyphs)).map(|(_, word)| word).unwrap_or_default()
         };
         out.insert(page, (shown, word));
     }

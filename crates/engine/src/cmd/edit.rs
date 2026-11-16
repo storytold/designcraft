@@ -141,11 +141,12 @@ fn paste_text(s: &mut Session, text: Option<String>, formatted: bool) -> Result<
                 d.adjust_text_ranges(t.story, del, 0);
                 // Fresh ids, story and asset copies for every paste, as on the page.
                 let mut stories = std::collections::HashMap::new();
+                let mut frame_origins = std::collections::HashMap::new();
                 let fresh: Vec<designcraft_doc::Item> = list
                     .iter()
                     .map(|orig| {
                         let mut i = orig.clone();
-                        if !super::object::renumber(d, &items, &mut i, &mut stories) {
+                        if !super::object::renumber(d, &items, &mut i, &mut stories, &mut frame_origins) {
                             return Err(designcraft_doc::DocError::Invalid(format!("{} nests groups or tables too deeply to copy", orig.id)));
                         }
                         if d.layer(i.layer).is_none() {
@@ -154,7 +155,7 @@ fn paste_text(s: &mut Session, text: Option<String>, formatted: bool) -> Result<
                         Ok(i)
                     })
                     .collect::<std::result::Result<_, _>>()?;
-                super::object::retarget_copied_xrefs(d, &items, &stories);
+                super::object::retarget_copied_xrefs(d, &items, &stories, &frame_origins);
                 let end = super::anchored::anchor_items(d, t.story, r.start, fresh, &Default::default())?;
                 sel.text = Some(designcraft_doc::TextSel { anchor: end, focus: end, ..t });
                 Ok(json!({"pos": end, "anchored": list.len()}))

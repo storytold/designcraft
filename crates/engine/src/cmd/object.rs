@@ -1109,11 +1109,12 @@ pub(crate) fn duplicate_placements(
 ) -> Result<Vec<ItemId>> {
     let mut out = Vec::new();
     let mut story_map: HashMap<StoryId, StoryId> = HashMap::new();
+    let mut frame_origins = HashMap::new();
     for (id, to, off) in placements {
         let Some(it) = src.item(id) else { continue };
         let mut copy = it.clone();
         copy.xf = Affine::translate(off) * copy.xf;
-        if !renumber(dst, src, &mut copy, &mut story_map) {
+        if !renumber(dst, src, &mut copy, &mut story_map, &mut frame_origins) {
             return Err(designcraft_doc::DocError::Invalid(format!("{id} nests groups or tables too deeply to copy")).into());
         }
         if dst.layer(copy.layer).is_none() {
@@ -1123,7 +1124,7 @@ pub(crate) fn duplicate_placements(
         dst.insert_item(to, copy, None)?;
         out.push(nid);
     }
-    retarget_copied_xrefs(dst, src, &story_map);
+    retarget_copied_xrefs(dst, src, &story_map, &frame_origins);
     Ok(out)
 }
 
@@ -1143,14 +1144,29 @@ fn adopt_or_dangle(dst: &mut Document, src: &Document, id: AssetId) -> AssetId {
 /// tables and notes in the table cells of its stories, nest deeper than [`MAX_COPY_DEPTH`]: the items and tables below
 /// that keep their ids, and the copy must not be used.
 #[must_use = "false means the copy is incomplete and must not be inserted"]
-pub(crate) fn renumber(dst: &mut Document, src: &Document, it: &mut Item, stories: &mut HashMap<StoryId, StoryId>) -> bool {
-    renumber_in(dst, src, it, stories, 0, true)
+pub(crate) fn renumber(
+    dst: &mut Document,
+    src: &Document,
+    it: &mut Item,
+    stories: &mut HashMap<StoryId, StoryId>,
+    frame_origins: &mut HashMap<ItemId, ItemId>,
+) -> bool {
+    renumber_in(dst, src, it, stories, frame_origins, 0, true)
 }
 
 /// [`renumber`] for an item `depth` groups deep. `adopt` is false inside a story copy, whose asset references the copy
 /// has already adopted.
 #[must_use = "false means the copy is incomplete and must not be inserted"]
-fn renumber_in(dst: &mut Document, src: &Document, it: &mut Item, stories: &mut HashMap<StoryId, StoryId>, depth: usize, adopt: bool) -> bool {
+fn renumber_in(
+    dst: &mut Document,
+    src: &Document,
+    it: &mut Item,
+    stories: &mut HashMap<StoryId, StoryId>,
+    frame_origins: &mut HashMap<ItemId, ItemId>,
+    depth: usize,
+    adopt: bool,
+) -> bool {
+    let original_id = it.id;
     it.id = ItemId(dst.alloc());
     let my_id = it.id;
     if adopt
@@ -1181,12 +1197,13 @@ fn renumber_in(dst: &mut Document, src: &Document, it: &mut Item, stories: &mut 
                     st.frames.clear();
                     // Mapped first: the map is the seen-set that stops story recursion.
                     stories.insert(tf.story, n);
-                    complete = renumber_anchored(dst, src, &mut st, stories, depth + 1) && marked;
+                    complete = renumber_anchored(dst, src, &mut st, stories, frame_origins, depth + 1) && marked;
                     dst.stories.insert(n, Arc::new(st));
                     n
                 }
             };
             tf.story = new_sid;
+            frame_origins.insert(my_id, original_id);
             if let Some(st) = dst.story_mut(new_sid) {
                 st.frames.push(my_id);
             }
@@ -1203,7 +1220,7 @@ fn renumber_in(dst: &mut Document, src: &Document, it: &mut Item, stories: &mut 
             }
             let mut complete = true;
             for c in items.iter_mut() {
-                complete &= renumber_in(dst, src, Arc::make_mut(c), stories, depth + 1, adopt);
+                complete &= renumber_in(dst, src, Arc::make_mut(c), stories, frame_origins, depth + 1, adopt);
             }
             return complete;
         }
@@ -1227,7 +1244,31 @@ fn renumber_marks(dst: &mut Document, st: &mut Story) -> bool {
 
 /// Point the cross-references in the story copies in `dst` that `stories` maps at the copies of their destinations
 /// where [`renumber`] copied those, in one pass after the last copy. Other cross-references keep their destination.
-pub(crate) fn retarget_copied_xrefs(dst: &mut Document, src: &Document, stories: &HashMap<StoryId, StoryId>) {
+pub(crate) fn retarget_copied_xrefs(
+    dst: &mut Document,
+    src: &Document,
+    stories: &HashMap<StoryId, StoryId>,
+    frame_origins: &HashMap<ItemId, ItemId>,
+) {
+    // Selection and paint order need not match the source thread. Keep every copied frame,
+    // including repeated selections, but sort the new thread by its original frame order.
+    for (old, new) in stories {
+        let Some(original) = src.story(*old) else { continue };
+        let order: HashMap<_, _> = original.frames.iter().enumerate().map(|(index, id)| (*id, index)).collect();
+        if let Some(copy) = dst.story_mut(*new) {
+            copy.frames.sort_by_key(|id| frame_origins.get(id).and_then(|old| order.get(old)).copied().unwrap_or(usize::MAX));
+        }
+    }
+    retarget_copied_note_streams(dst, src, stories);
+    let anchors = copied_anchors(dst, src, stories);
+    if !anchors.is_empty() {
+        retarget_copies(dst, src, stories, &anchors);
+    }
+}
+
+/// Finalize commentary routes after all copied hosts are known. Layer duplication has
+/// its own anchor finalization and only needs this route step.
+pub(crate) fn retarget_copied_note_streams(dst: &mut Document, src: &Document, stories: &HashMap<StoryId, StoryId>) {
     // Route hosts can be copied after their routes, so resolve them only after all stories.
     // A route copied without its host becomes an ordinary empty frame rather than referring
     // to an unrelated document-local story id in the destination.
@@ -1260,10 +1301,6 @@ pub(crate) fn retarget_copied_xrefs(dst: &mut Document, src: &Document, stories:
                 }
             },
         );
-    }
-    let anchors = copied_anchors(dst, src, stories);
-    if !anchors.is_empty() {
-        retarget_copies(dst, src, stories, &anchors);
     }
 }
 
@@ -1347,8 +1384,15 @@ fn retarget_xrefs(copy: &mut Story, orig: &Story, map: &HashMap<u64, u64>, depth
 /// [`MAX_COPY_DEPTH`] levels (#1522), each `depth` levels deep. False when one of them nests groups deeper than
 /// [`MAX_COPY_DEPTH`], or when the stories below that level hold anchored objects, tables or notes.
 #[must_use = "false means the copy is incomplete and must not be inserted"]
-fn renumber_anchored(dst: &mut Document, src: &Document, st: &mut Story, stories: &mut HashMap<StoryId, StoryId>, depth: usize) -> bool {
-    renumber_anchored_in(dst, src, st, stories, depth, 0)
+fn renumber_anchored(
+    dst: &mut Document,
+    src: &Document,
+    st: &mut Story,
+    stories: &mut HashMap<StoryId, StoryId>,
+    frame_origins: &mut HashMap<ItemId, ItemId>,
+    depth: usize,
+) -> bool {
+    renumber_anchored_in(dst, src, st, stories, frame_origins, depth, 0)
 }
 
 /// [`renumber_anchored`] for a story `level` table cells and notes below the story copy.
@@ -1358,12 +1402,13 @@ fn renumber_anchored_in(
     src: &Document,
     st: &mut Story,
     stories: &mut HashMap<StoryId, StoryId>,
+    frame_origins: &mut HashMap<ItemId, ItemId>,
     depth: usize,
     level: usize,
 ) -> bool {
     let mut complete = true;
     for o in &mut st.objects {
-        complete &= renumber_in(dst, src, &mut Arc::make_mut(o).item, stories, depth, false);
+        complete &= renumber_in(dst, src, &mut Arc::make_mut(o).item, stories, frame_origins, depth, false);
     }
     if level >= MAX_COPY_DEPTH {
         let leaf = |s: &Story| s.objects.is_empty() && s.tables.is_empty() && s.notes.is_empty() && s.endnotes.is_empty();
@@ -1373,11 +1418,11 @@ fn renumber_anchored_in(
     }
     for t in st.tables.values_mut() {
         for c in &mut Arc::make_mut(t).cells {
-            complete &= renumber_anchored_in(dst, src, &mut c.text, stories, depth, level + 1);
+            complete &= renumber_anchored_in(dst, src, &mut c.text, stories, frame_origins, depth, level + 1);
         }
     }
     for n in st.notes.iter_mut().chain(st.endnotes.iter_mut()) {
-        complete &= renumber_anchored_in(dst, src, &mut Arc::make_mut(n).text, stories, depth, level + 1);
+        complete &= renumber_anchored_in(dst, src, &mut Arc::make_mut(n).text, stories, frame_origins, depth, level + 1);
     }
     complete
 }
@@ -7381,6 +7426,42 @@ mod stream_review_tests {
             assert_ne!(host.story, sid);
             assert_eq!(route.options.note_stream.unwrap().story, host.story, "{command}");
         }
+        doc.check().unwrap();
+    }
+
+    #[test]
+    fn duplicate_layer_retargets_commentary_to_the_copied_host() {
+        let (mut s, _, route, host, _) = frames();
+        s.execute("footnote.options", &json!({"placement":"stream"})).unwrap();
+        s.execute("textFrame.options", &json!({"ids":[route.0],"noteStream":{"story":host.0,"series":0}})).unwrap();
+        s.execute("text.select", &json!({"story":host.0,"anchor":4,"focus":4})).unwrap();
+        s.execute("footnote.insert", &json!({"text":"Original commentary"})).unwrap();
+        let layer = s.doc().unwrap().doc.default_layer();
+        let result = s.execute("layer.duplicate", &json!({"id":layer.0})).unwrap();
+        let copied_layer = designcraft_doc::LayerId(result["id"].as_u64().unwrap());
+        let d = &s.doc().unwrap().doc;
+        let copied: Vec<_> = d.all_items().into_iter().filter_map(|id| d.item(id)).filter(|item| item.layer == copied_layer).collect();
+        let copied_host = copied.iter().find_map(|it| it.text_frame().filter(|tf| tf.options.note_stream.is_none()).map(|tf| tf.story)).unwrap();
+        let copied_route = copied.iter().find_map(|it| it.text_frame().and_then(|tf| tf.options.note_stream)).unwrap();
+        assert_ne!(copied_host, host);
+        assert_eq!(copied_route.story, copied_host);
+        assert_eq!(copied_route.series, 0);
+        d.check().unwrap();
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.item(route).unwrap().text_frame().unwrap().options.note_stream.unwrap().story, host);
+    }
+
+    #[test]
+    fn copied_threads_keep_source_order_when_selection_is_reversed() {
+        let (mut s, first, second, original, _) = frames();
+        s.execute("text.thread", &json!({"from":first.0,"to":second.0})).unwrap();
+        let result = s.execute("transform.move", &json!({"ids":[second.0,first.0],"copy":true,"dx":12})).unwrap();
+        let copied_second = ItemId(result["ids"][0].as_u64().unwrap());
+        let copied_first = ItemId(result["ids"][1].as_u64().unwrap());
+        let doc = &s.doc().unwrap().doc;
+        let story = doc.item(copied_first).unwrap().text_frame().unwrap().story;
+        assert_ne!(story, original);
+        assert_eq!(doc.story(story).unwrap().frames, [copied_first, copied_second]);
         doc.check().unwrap();
     }
 

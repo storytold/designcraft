@@ -65,14 +65,14 @@ page. The word follows that stream's last rectangle, aligned right on right/sing
 left on left pages. Its 18-point row is part of the band geometry, so another stream cannot
 occupy it. Intermediate width changes do not add rows. Catchwords use the stream's font family
 and colour at 9 points; a long word shrinks uniformly to fit its column. Ended and overset
-streams show no catchword. Generated words leave editable source ranges and caret positions
+streams show no catchword. Conditional visibility and tracked deletions determine which source words are shown. Generated words leave editable source ranges and caret positions
 unchanged, and are included in native rendering and PDF export.
 
 A separate text-variable frame can use
 `variables.define {name:"Inner",type:"nextPageFirstWord",story:11,series:1}`. A routed `frame`
 source supplies its host and series automatically. Without `series`, existing main-story and
 default-source behaviour remains. A series source requires a host; deleting the series moves
-its catchword binding to series 0 with its notes. IDML exports series catchwords as empty
+its catchword binding to series 0 with its notes. A bound source cannot contain running-header or catchword markers; commands reject that cycle before changing the document. IDML exports all catchwords as empty
 custom-text variables and reports the loss.
 
 The implementation is in `crates/compose/src/inset`: pure geometry, bounded page trials and

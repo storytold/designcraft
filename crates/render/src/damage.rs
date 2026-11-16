@@ -30,6 +30,8 @@ pub fn damage_with(old: &Document, new: &Document, cache: Option<&designcraft_co
         || old.settings != new.settings
         || old.sections != new.sections
         || old.text_variables != new.text_variables
+        // Visibility can reflow body text and catchwords outside the changed story.
+        || old.conditions != new.conditions
         || old.footnote_options != new.footnote_options
         || old.note_series != new.note_series
         || old.xref_formats != new.xref_formats
@@ -232,6 +234,16 @@ mod tests {
     use super::*;
     use designcraft_doc::ParaFormat;
     use designcraft_doc::build::NewDocument;
+
+    #[test]
+    fn condition_visibility_and_undo_repaint_the_canvas() {
+        let mut d = Document::new(&NewDocument { pages: 2, ..Default::default() });
+        d.conditions.push(designcraft_doc::Condition { name: "Draft".into(), color: [79, 153, 255], visible: true });
+        let shown = d.clone();
+        d.conditions[0].visible = false;
+        assert!(damage(&shown, &d).is_none());
+        assert!(damage(&d, &shown).is_none());
+    }
 
     #[test]
     fn typing_damages_only_the_frame() {

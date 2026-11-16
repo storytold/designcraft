@@ -2282,6 +2282,24 @@ fn fit_line(input: LineFitInput<'_>) -> LineFit {
             return LineFit::Restart(j);
         }
     }
+    // A new reference can wait while an earlier note continues. Otherwise its unchanged
+    // remainder can reject the same body line in every later column without making progress.
+    if !capped && !line_notes.is_empty() {
+        let bottom = cur.last_baseline.map_or(col.y0, |b| b + cur.last_descent);
+        let available = col.y1 - bottom;
+        if let Some(plan) = notes.split_plan(doc, note_column, &[], available, opts) {
+            notes.place_line(doc, note_column, &[], Some(plan), opts);
+            let reserve = notes.reserve(doc, note_column, &[], opts);
+            if let Some(ft) = out.frames.get(cur.fi)
+                && let Some(columns) = cols.get(cur.fi)
+                && notes.earlier_columns_collide(&ft.lines, cur.fi, cur.col, columns, reserve)
+                && let Some(j) = ft.lines.first().map(|l| l.para)
+            {
+                rewind(j, snaps, note_snaps, notes, out, cur, list_counter, force_col, line_cap, no_hyph);
+                return LineFit::Restart(j);
+            }
+        }
+    }
     carry.clear();
     LineFit::NextColumn { keep_break: capped }
 }
@@ -5755,7 +5773,8 @@ fn place(g: &Glyph, x: f64) -> PlacedGlyph {
         || g.ch == designcraft_doc::FOOTNOTE_REF && g.generated_text.as_deref() == Some("")
         || g.ch == shape::HIDDEN);
     PlacedGlyph {
-        rendered_char: g.rendered_char,
+        // Hidden controls must stay distinct from active, undrawn tabs and breaks.
+        rendered_char: if g.ch == shape::HIDDEN { shape::HIDDEN } else { g.rendered_char },
         face: g.face,
         gid: g.gid,
         x: x + g.dx,

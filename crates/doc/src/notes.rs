@@ -155,6 +155,8 @@ pub struct FootnoteOptions {
     pub span_columns: bool,
     /// Allow Split Footnotes: continue long notes across columns and frames.
     /// Each part obeys the note paragraphs' widow/orphan and keep options.
+    // Native files predating splitting omit this field and must retain their unsplit layout.
+    #[serde(default)]
     pub allow_split: bool,
     /// Rule above the first footnote in a column.
     pub rule: NoteRule,
@@ -343,19 +345,41 @@ impl crate::Document {
     /// Adopt additional series by meaning, not by their document-local numeric ids.
     /// Legacy notes still join the destination's series 0, as ordinary footnote paste always did.
     pub fn adopt_note_series(&mut self, story: &mut Story, source: &Self) {
-        if !story.notes.iter().any(|note| source.note_series_id(note.series) != 0) {
-            for note in &mut story.notes {
-                if note.series != 0 {
-                    Arc::make_mut(note).series = 0;
+        let (has_nonzero, has_declared) = {
+            let mut pending = vec![&*story];
+            let (mut nonzero, mut declared) = (false, false);
+            while let Some(text) = pending.pop() {
+                nonzero |= text.notes.iter().any(|note| note.series != 0);
+                declared |= text.notes.iter().any(|note| source.note_series_id(note.series) != 0);
+                if declared {
+                    break;
                 }
+                pending.extend(text.notes.iter().chain(&text.endnotes).map(|note| &note.text));
+                pending.extend(text.tables.values().flat_map(|table| table.cells.iter().map(|cell| &cell.text)));
             }
+            (nonzero, declared)
+        };
+        if !has_nonzero {
             return;
         }
-        let mapped = self.adopt_note_series_ids(source);
-        for note in &mut story.notes {
-            let id = mapped.get(&source.note_series_id(note.series)).copied().unwrap_or(0);
-            if note.series != id {
-                Arc::make_mut(note).series = id;
+        let mapped = if has_declared { self.adopt_note_series_ids(source) } else { std::collections::HashMap::new() };
+        // Nested cells and note bodies are clipboard content too. An explicit work list
+        // visits them without consuming the call stack on deeply nested input.
+        let mut pending = vec![story];
+        while let Some(text) = pending.pop() {
+            for note in &mut text.notes {
+                let id = mapped.get(&source.note_series_id(note.series)).copied().unwrap_or(0);
+                if note.series != id {
+                    Arc::make_mut(note).series = id;
+                }
+            }
+            for note in text.notes.iter_mut().chain(&mut text.endnotes) {
+                pending.push(&mut Arc::make_mut(note).text);
+            }
+            for table in text.tables.values_mut() {
+                for cell in &mut Arc::make_mut(table).cells {
+                    pending.push(&mut cell.text);
+                }
             }
         }
     }
@@ -440,6 +464,22 @@ mod tests {
     }
 
     #[test]
+    fn legacy_footnote_options_keep_unsplit_layouts() {
+        let doc = crate::Document::new(&crate::build::NewDocument::default());
+        assert!(doc.footnote_options.allow_split);
+        assert!(FootnoteOptions::default().allow_split);
+        let mut legacy = serde_json::to_value(&doc).unwrap();
+        legacy["footnoteOptions"].as_object_mut().unwrap().remove("allowSplit");
+        let loaded: crate::Document = serde_json::from_value(legacy).unwrap();
+        assert!(!loaded.footnote_options.allow_split);
+        for allow in [false, true] {
+            let options = FootnoteOptions { allow_split: allow, ..Default::default() };
+            let roundtrip: FootnoteOptions = serde_json::from_value(serde_json::to_value(options).unwrap()).unwrap();
+            assert_eq!(roundtrip.allow_split, allow);
+        }
+    }
+
+    #[test]
     fn references_own_notes_in_order() {
         let mut s = st("alpha beta gamma");
         let b = s.insert_note(10, "second", ParaFormat::default()).unwrap();
@@ -508,6 +548,35 @@ mod series_tests {
 #[cfg(test)]
 mod adoption_tests {
     use super::*;
+    #[test]
+    fn adoption_remaps_notes_in_cells_and_nested_note_bodies() {
+        let mut source = crate::Document::new(&Default::default());
+        source.note_series.push(NoteSeries { id: 1, name: "Sources".into(), options: Default::default() });
+        let mut destination = crate::Document::new(&Default::default());
+        destination.note_series.push(NoteSeries { id: 1, name: "Unrelated".into(), options: Default::default() });
+        let mut copied = Story::new(StoryId(0));
+        let outer = copied.insert_note(0, "Outer", Default::default()).unwrap();
+        let body = &mut copied.note_mut(outer).unwrap().text;
+        let nested = body.insert_note(0, "Nested source", Default::default()).unwrap();
+        body.note_mut(nested).unwrap().series = 1;
+        let mut table = crate::Table::new(7, 1, 1, 0, 0, 100.0);
+        let cell = &mut table.cells[0].text;
+        let note = cell.insert_note(0, "Cell source", Default::default()).unwrap();
+        cell.note_mut(note).unwrap().series = 1;
+        let endnote = cell.insert_endnote(cell.len(), "Endnote body", Default::default()).unwrap();
+        let body = &mut cell.endnote_mut(endnote).unwrap().text;
+        let note = body.insert_note(0, "Source inside endnote", Default::default()).unwrap();
+        body.note_mut(note).unwrap().series = 1;
+        copied.insert_table(0, table);
+        destination.adopt_note_series(&mut copied, &source);
+        let cell = &copied.tables[&7].cells[0].text;
+        let mapped = cell.notes[0].series;
+        assert_ne!(mapped, 1, "nested source must not resolve to the unrelated destination series");
+        assert_eq!(copied.notes[0].text.notes[0].series, mapped);
+        assert_eq!(cell.endnotes[0].text.notes[0].series, mapped);
+        assert_eq!(destination.note_series.iter().find(|series| series.id == mapped).unwrap().name, "Sources");
+    }
+
     #[test]
     fn repeated_adoption_keeps_conflicting_identical_definitions_mapped_consistently() {
         let mut source = crate::Document::new(&Default::default());

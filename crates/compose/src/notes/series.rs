@@ -178,7 +178,10 @@ impl Notes {
     }
 
     pub fn place_line(&mut self, doc: &Document, column: NoteColumn<'_>, extra: &[usize], plan: Option<SplitPlan>, opts: &ComposeOptions) -> bool {
-        self.streams.place_line();
+        // Carry-only placement must not accept the staged main line's stream references.
+        if !extra.is_empty() {
+            self.streams.place_line();
+        }
         let mut plans = plan.map_or_else(Vec::new, |p| p.0);
         let mut placed = false;
         for i in 0..self.series.len() {
@@ -332,6 +335,31 @@ impl Notes {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_column_foot_placement_does_not_accept_a_stream_anchor() {
+        let mut doc = Document::new(&Default::default());
+        let (_, sid) = doc
+            .add_text_frame(designcraft_doc::SpreadRef::Doc(0), Rect::new(36.0, 36.0, 250.0, 300.0), doc.default_layer(), "Body", Default::default())
+            .unwrap();
+        let (route, _) = doc
+            .add_text_frame(designcraft_doc::SpreadRef::Doc(0), Rect::new(270.0, 36.0, 490.0, 300.0), doc.default_layer(), "", Default::default())
+            .unwrap();
+        doc.footnote_options.placement = NotePlacement::Stream;
+        doc.item_mut(route).unwrap().text_frame_mut().unwrap().options.note_stream = Some(designcraft_doc::NoteStream { story: sid, series: 0 });
+        doc.story_mut(sid).unwrap().insert_note(0, "Commentary", Default::default()).unwrap();
+        let story = doc.story(sid).unwrap();
+        let frames = crate::frame_specs(&doc, sid);
+        let frame = &frames[0];
+        let column = NoteColumn { frame_index: 0, column_index: 0, width: frame.columns()[0].width(), frame };
+        let opts = ComposeOptions::default();
+        let mut notes = Notes::new(&doc, story, &frames);
+        let mut out = ComposedStory::default();
+        assert!(notes.streams_fit(&doc, column, &[0], &out, &opts));
+        notes.place_line(&doc, column, &[], None, &opts);
+        notes.finish_streams(&doc, story, &opts, &mut out);
+        assert!(out.frames.iter().all(|f| f.notes.is_empty()), "no main reference was accepted");
+    }
 
     #[test]
     fn split_plan_keeps_the_spanning_floor_after_a_rewind() {

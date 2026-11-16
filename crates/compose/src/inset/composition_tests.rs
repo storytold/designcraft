@@ -493,3 +493,46 @@ fn terminal_forced_break_does_not_duplicate_the_paragraph_source_range() {
     assert_eq!(cs.frames[0].lines.last().unwrap().range, at..at);
     continuity(&cs);
 }
+
+#[test]
+fn series_catchword_omits_deleted_source_inside_a_word() {
+    let (mut doc, sid) = document(3, &"Main word.\u{2028}".repeat(80), &"INNER body.\u{2028}".repeat(90), "");
+    enable_catchwords(&mut doc, sid);
+    let before = compose_story(&doc, sid, &Default::default());
+    let note = before.frames[1].notes.iter().find(|n| n.series == 1).unwrap();
+    let start = note.text.frames[0].range.start;
+    let at = start + note.source.get(start..).unwrap().find("INNER").unwrap();
+    let source = &mut doc.story_mut(sid).unwrap().note_mut(note.id).unwrap().text;
+    source.replace(at..at + 5, "PuHIDEblic");
+    source.format_chars(at + 2..at + 6, |f| f.over.change = Some(designcraft_doc::ChangeMark::Deleted));
+    let after = compose_story(&doc, sid, &Default::default());
+    assert_eq!(after.frames[0].catchwords.iter().find(|c| c.series == Some(1)).unwrap().source.as_ref(), "Public");
+}
+
+#[test]
+fn series_catchword_distinguishes_hidden_controls_from_active_delimiters() {
+    for control in ['\t', designcraft_doc::story::FORCED_LINE_BREAK] {
+        for state in ["active", "hidden", "deleted"] {
+            let (mut doc, sid) = document(3, &"Main word.\u{2028}".repeat(80), &"INNER body.\u{2028}".repeat(90), "");
+            enable_catchwords(&mut doc, sid);
+            let before = compose_story(&doc, sid, &Default::default());
+            let note = before.frames[1].notes.iter().find(|n| n.series == 1).unwrap();
+            let start = note.text.frames[0].range.start;
+            let at = start + note.source.get(start..).unwrap().find("INNER").unwrap();
+            doc.conditions.push(designcraft_doc::Condition { name: "Hidden".into(), visible: false, color: [0, 0, 0] });
+            let source = &mut doc.story_mut(sid).unwrap().note_mut(note.id).unwrap().text;
+            source.replace(at..at + 5, &format!("Pu{control}blic"));
+            source.format_chars(at + 2..at + 2 + control.len_utf8(), |f| match state {
+                "hidden" => f.over.conditions = Some(vec!["Hidden".into()]),
+                "deleted" => f.over.change = Some(designcraft_doc::ChangeMark::Deleted),
+                _ => {}
+            });
+            let after = compose_story(&doc, sid, &Default::default());
+            assert_eq!(
+                after.frames[0].catchwords.iter().find(|c| c.series == Some(1)).unwrap().source.as_ref(),
+                if state == "active" { "Pu" } else { "Public" },
+                "{state} {control:?}"
+            );
+        }
+    }
+}
