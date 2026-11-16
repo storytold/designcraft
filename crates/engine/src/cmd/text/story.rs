@@ -22,10 +22,15 @@ pub(super) fn story_lines(s: &mut Session, p: &Value) -> Result<Value> {
         };
         let Some((parent, spread, item)) = placed else { continue };
         let xf = parent * d.text_xf(item);
-        // The page under the frame's centre on the spread, a group's transform included.
-        let center_x = parent.transform_rect_bbox(item.bounds()).center().x;
+        // The page under the frame's centre on the spread, a group's transform included; none on
+        // the pasteboard (unlike `page_at_x`, which snaps to the nearest page).
+        let c = parent.transform_rect_bbox(item.bounds()).center();
         let page = match (spread, d.spread(spread)) {
-            (designcraft_doc::SpreadRef::Doc(si), Some(sp)) => Some(d.first_page_of_spread(si) + sp.page_at_x(center_x).unwrap_or(0)),
+            (designcraft_doc::SpreadRef::Doc(si), Some(sp)) => sp
+                .pages
+                .iter()
+                .position(|pg| c.x >= pg.x && c.x < pg.x + pg.width && c.y >= 0.0 && c.y < pg.height)
+                .map(|i| d.first_page_of_spread(si) + i),
             _ => None,
         };
         // Type on a path: composed lines are straight; their points go onto the path first.
@@ -635,5 +640,17 @@ mod story_lines_tests {
         assert!((line["baseline"].as_f64().unwrap() - 300.0).abs() < 0.5, "{line}");
         assert!(line["top"].as_f64().unwrap() < 300.0 && line["bottom"].as_f64().unwrap() > 300.0, "{line}");
         assert!(line["left"].as_f64().unwrap() >= 99.0, "{line}");
+    }
+
+    /// A frame on the pasteboard is on no page: its lines report a null page.
+    #[test]
+    fn story_lines_report_no_page_on_the_pasteboard() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        for (rect, page) in [(json!([-300, 72, -100, 200]), json!(null)), (json!([72, 72, 300, 200]), json!(0))] {
+            let r = s.execute("frame.create", &json!({"rect": rect, "content": "text", "text": "Words"})).unwrap();
+            let r = s.execute("story.lines", &json!({"story": r["story"]})).unwrap();
+            assert_eq!(r["lines"][0]["page"], page, "{r}");
+        }
     }
 }
