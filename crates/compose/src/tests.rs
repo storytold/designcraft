@@ -10129,7 +10129,7 @@ fn cross_reference_text_breaks_at_its_spaces() {
 }
 
 #[test]
-fn legacy_vertical_embox_keeps_the_historical_ascent() {
+fn vertical_embox_is_an_invariant_shared_by_legacy_and_modern_metrics() {
     use designcraft_doc::FirstBaseline;
     let db = designcraft_fonts::FontDb::global();
     db.add_font(typo_test_font("LegacyVert 09", Some(700)));
@@ -10140,4 +10140,40 @@ fn legacy_vertical_embox_keeps_the_historical_ascent() {
         })
     };
     assert!((at(true) - at(false)).abs() < 0.001);
+}
+
+#[test]
+fn legacy_nested_cell_and_footnote_text_inherits_the_frame_baseline_metrics() {
+    use designcraft_doc::{FirstBaseline, Table};
+    let family = "LegacyNest 16";
+    designcraft_fonts::FontDb::global().add_font(typo_test_font(family, Some(700)));
+    let (mut doc, sid, fid) = doc_with("Body text", Rect::new(0.0, 0.0, 300.0, 500.0), ParaAttrs::default());
+    let mut table = Table::new(777, 1, 1, 0, 0, 180.0);
+    table.cells[0].first_baseline = FirstBaseline::Ascent;
+    table.cells[0].text = designcraft_doc::Story::with_text(StoryId(0), "Cell", ParaFormat::default());
+    table.cells[0].text.format_chars(0..4, |f| {
+        f.over.font_family = Some(family.into());
+        f.over.size = Some(20.0);
+    });
+    doc.story_mut(sid).unwrap().insert_table(0, table);
+    let note_at = doc.story(sid).unwrap().text.find("Body").unwrap() + 4;
+    doc.story_mut(sid).unwrap().insert_note(note_at, "Note", ParaFormat::default());
+    let note = std::sync::Arc::make_mut(&mut doc.story_mut(sid).unwrap().notes[0]);
+    note.text.format_chars(0..4, |f| {
+        f.over.font_family = Some(family.into());
+        f.over.size = Some(20.0);
+    });
+    doc.footnote_options.first_baseline = FirstBaseline::Ascent;
+    let at = |doc: &mut Document, legacy| {
+        doc.item_mut(fid).unwrap().text_frame_mut().unwrap().options.legacy_first_baseline = legacy;
+        let cs = compose_story(doc, sid, &ComposeOptions::default());
+        let frame = cs.frame(fid).unwrap();
+        let cell = &frame.tables[0].cells[0].text.frames[0].lines[0];
+        let note = &frame.notes[0].text.frames[0].lines[0];
+        (cell.baseline, note.baseline)
+    };
+    let modern = at(&mut doc, false);
+    let legacy = at(&mut doc, true);
+    assert!((legacy.0 - modern.0).abs() > 0.1, "cell baseline must use the inherited compatibility bit: {legacy:?} vs {modern:?}");
+    assert!((legacy.1 - modern.1).abs() > 0.1, "note baseline must use the inherited compatibility bit: {legacy:?} vs {modern:?}");
 }

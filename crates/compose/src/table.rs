@@ -129,11 +129,23 @@ impl CellLineExtent {
 }
 
 /// Compose a cell story at width `w` (content space, top-left at the origin).
-fn compose_cell(doc: &Document, cell: &Cell, w: f64, opts: &ComposeOptions, (left_page, right_page): (bool, bool)) -> CellLayout {
+fn compose_cell(
+    doc: &Document,
+    cell: &Cell,
+    w: f64,
+    opts: &ComposeOptions,
+    (left_page, right_page): (bool, bool),
+    legacy_first_baseline: bool,
+) -> CellLayout {
     let mut spec = FrameSpec {
         id: ItemId(0),
         area: Rect::new(0.0, 0.0, w.max(1.0), 1.0e6),
-        opts: TextFrameOptions { first_baseline: cell.first_baseline, first_baseline_min: cell.first_baseline_min, ..TextFrameOptions::default() },
+        opts: TextFrameOptions {
+            legacy_first_baseline,
+            first_baseline: cell.first_baseline,
+            first_baseline_min: cell.first_baseline_min,
+            ..TextFrameOptions::default()
+        },
         vertical: false,
         exclusions: vec![],
         outline: None,
@@ -232,7 +244,7 @@ pub(crate) fn place_table(
             let cell = &table.cells[r * nc + c];
             let cs = (cell.col_span.max(1) as usize).min(nc - c);
             let w = colx[c + cs] - colx[c] - cell.insets[1] - cell.insets[3];
-            layouts.push(Some(compose_cell(doc, cell, w, opts, side)));
+            layouts.push(Some(compose_cell(doc, cell, w, opts, side, frames[cur.fi].opts.legacy_first_baseline)));
         }
     }
     // Row heights.
@@ -852,7 +864,7 @@ mod height_tests {
     }
 
     fn measure(cell: &Cell, width: f64) -> CellLayout {
-        compose_cell(&Document::new(&NewDocument::default()), cell, width, &ComposeOptions::default(), (false, false))
+        compose_cell(&Document::new(&NewDocument::default()), cell, width, &ComposeOptions::default(), (false, false), false)
     }
 
     fn compose_table(table: Table, height: f64) -> ComposedStory {

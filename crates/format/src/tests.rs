@@ -12,11 +12,14 @@ fn format_one_baselines_survive_resaving_and_require_a_capable_reader() {
     let (id, _) = original
         .add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 200.0, 200.0), original.default_layer(), "Legacy", ParaFormat::default())
         .unwrap();
-    let legacy = load(&serde_json::to_vec(&original).unwrap()).unwrap();
+    let mut legacy = load(&serde_json::to_vec(&original).unwrap()).unwrap();
+    assert!(!legacy.item(id).unwrap().text_frame().unwrap().options.legacy_first_baseline);
+    legacy.item_mut(id).unwrap().text_frame_mut().unwrap().options.legacy_first_baseline = true;
     assert!(legacy.item(id).unwrap().text_frame().unwrap().options.legacy_first_baseline);
     let bytes = save(&legacy).unwrap();
     assert_eq!(required_version(&legacy), 6);
-    assert!(matches!(craft_designcraft_format::load::<Document>(&bytes), Err(FormatError::TooNew(6))));
+    let shared = craft_designcraft_format::load::<Document>(&bytes).unwrap();
+    assert!(shared.document.item(id).unwrap().text_frame().unwrap().options.legacy_first_baseline);
     let reopened = load(&bytes).unwrap();
     assert!(reopened.item(id).unwrap().text_frame().unwrap().options.legacy_first_baseline);
     let modern = load(&save(&original).unwrap()).unwrap();
@@ -965,13 +968,29 @@ fn linked_asset_roundtrips_as_record_and_proxy_without_original() {
 }
 
 #[test]
-fn embedded_documents_keep_their_older_version_and_version_5_loads() {
+fn embedded_documents_keep_their_older_version_with_the_capability_six_reader() {
     let mut d = Document::new(&NewDocument::default());
     assert_eq!(zip_version(&save(&d).unwrap()), 2);
     let aid = png_asset(&mut d, &[1, 2, 3]);
     place(&mut d, aid, 0.0);
     assert_eq!(zip_version(&save(&d).unwrap()), 2);
-    assert_eq!(craft_designcraft_format::VERSION, 5);
+    assert_eq!(craft_designcraft_format::VERSION, 6);
     let loaded = load(&save(&d).unwrap()).unwrap();
     assert_eq!(loaded.assets.len(), d.assets.len());
+}
+
+#[test]
+fn duplicate_format_one_frame_ids_are_repaired_without_guessing_their_metrics() {
+    let mut doc = Document::new(&NewDocument::default());
+    for text in ["First", "Second"] {
+        doc.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 200.0, 200.0), doc.default_layer(), text, ParaFormat::default()).unwrap();
+    }
+    let first = doc.spreads[0].items[0].id;
+    let second_story = doc.spreads[0].items[1].text_frame().unwrap().story;
+    doc.story_mut(second_story).unwrap().frames[0] = first;
+    Arc::make_mut(&mut Arc::make_mut(&mut doc.spreads[0]).items[1]).id = first;
+    let loaded = load(&serde_json::to_vec(&doc).unwrap()).unwrap();
+    let frames = &loaded.spreads[0].items;
+    assert_ne!(frames[0].id, frames[1].id);
+    assert!(frames.iter().all(|item| !item.text_frame().unwrap().options.legacy_first_baseline));
 }

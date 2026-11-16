@@ -16,9 +16,8 @@ pub use craft_designcraft_format::{
     EXTENSION, Error as FormatError, MAX_PREVIEW_BYTES, MIME, PREVIEW, is_designcraft, read_preview, starts_designcraft,
 };
 
-mod legacy_baselines;
-/// Highest reader capability: version 6 also preserves legacy first-baseline metrics.
-pub const VERSION: u32 = legacy_baselines::VERSION;
+/// Native schema capabilities and migrations are owned by the shared codec.
+pub const VERSION: u32 = craft_designcraft_format::VERSION;
 
 #[cfg(test)]
 mod tests;
@@ -60,9 +59,6 @@ pub fn write<W: std::io::Write + std::io::Seek>(out: &mut W, doc: &Document, pre
     }
     let assets = owned_assets.iter().map(|(id, mime, data)| craft_designcraft_format::Asset { id, mime, data }).collect::<Vec<_>>();
     let proxies = owned_proxies.iter().map(|(id, mime, data)| craft_designcraft_format::Asset { id, mime, data }).collect::<Vec<_>>();
-    if legacy_baselines::contains(&compact) {
-        return legacy_baselines::write(out, &compact, preview, &assets, &proxies);
-    }
     craft_designcraft_format::write_to(out, &compact, concat!("DesignCraft ", env!("CARGO_PKG_VERSION")), preview, &assets, &proxies)
 }
 
@@ -70,9 +66,6 @@ pub fn write<W: std::io::Write + std::io::Seek>(out: &mut W, doc: &Document, pre
 /// performed by the shared codec over the serialized neutral document schema.
 #[cfg(test)]
 fn required_version(doc: &Document) -> u32 {
-    if legacy_baselines::contains(doc) {
-        return VERSION;
-    }
     let Ok(value) = serde_json::to_value(doc) else { return VERSION };
     let owned_assets =
         doc.assets.values().map(|asset| (asset.id.0.to_string(), asset.mime.clone(), asset.data.load().unwrap_or_default())).collect::<Vec<_>>();
@@ -82,7 +75,7 @@ fn required_version(doc: &Document) -> u32 {
 
 /// Read `.designcraft` bytes (ZIP, or legacy single JSON).
 pub fn load(bytes: &[u8]) -> Result<Document, FormatError> {
-    let loaded = legacy_baselines::load(bytes)?;
+    let loaded = craft_designcraft_format::load::<Document>(bytes)?;
     let mut doc = loaded.document;
     let fingerprint = std::collections::hash_map::RandomState::new();
     let mut dedup: HashMap<u64, Vec<AssetData>> = HashMap::new();

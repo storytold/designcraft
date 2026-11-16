@@ -80,7 +80,7 @@ pub(crate) struct Notes {
     pub key: Option<usize>,
     pub placed: Vec<Placed>,
     /// Composed footnote text by (index, label, width).
-    cache: HashMap<(usize, String, u64, bool, bool), (Arc<ComposedStory>, NoteMetrics)>,
+    cache: HashMap<(usize, String, u64, bool, bool, bool), (Arc<ComposedStory>, NoteMetrics)>,
     notes: Vec<Arc<designcraft_doc::Footnote>>,
     /// Footnotes span the columns of their frame.
     span: bool,
@@ -164,14 +164,19 @@ impl Notes {
         let o = &doc.footnote_options;
         let label = format!("{}{}", o.label(self.numbers[k], true), o.separator);
         // The page side sets towards/away-from-spine alignment and spine-relative anchored objects.
-        let key = (k, label.clone(), w.to_bits(), f.left_page, f.right_page);
+        let key = (k, label.clone(), w.to_bits(), f.left_page, f.right_page, f.opts.legacy_first_baseline);
         if let Some(c) = self.cache.get(&key) {
             return c.clone();
         }
         let spec = FrameSpec {
             id: ItemId(0),
             area: Rect::new(0.0, 0.0, w.max(1.0), 1.0e6),
-            opts: TextFrameOptions { first_baseline: o.first_baseline, first_baseline_min: o.first_baseline_min, ..Default::default() },
+            opts: TextFrameOptions {
+                legacy_first_baseline: f.opts.legacy_first_baseline,
+                first_baseline: o.first_baseline,
+                first_baseline_min: o.first_baseline_min,
+                ..Default::default()
+            },
             vertical: false,
             exclusions: vec![],
             outline: None,
@@ -319,5 +324,27 @@ pub fn note_caret(cs: &ComposedStory, id: u64, pos: usize) -> Option<(usize, f64
     match crate::caret(&n.text, pos) {
         Some((_, x, bl, a, d)) => Some((fi, x + n.origin.x, bl + n.origin.y, a, d)),
         None => Some((fi, n.origin.x, n.origin.y + 10.0, 9.0, 3.0)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_note_cache_keeps_modern_and_compatibility_metrics_separate() {
+        let mut doc = Document::new(&designcraft_doc::build::NewDocument::default());
+        let (_, sid) = doc
+            .add_text_frame(designcraft_doc::SpreadRef::Doc(0), Rect::new(0.0, 0.0, 300.0, 500.0), doc.default_layer(), "Body", Default::default())
+            .unwrap();
+        doc.story_mut(sid).unwrap().insert_note(0, "Note", Default::default());
+        doc.footnote_options.first_baseline = designcraft_doc::FirstBaseline::CapHeight;
+        let mut notes = Notes::new(&doc, doc.story(sid).unwrap());
+        let mut frame = crate::frame_specs(&doc, sid).remove(0);
+        let opts = ComposeOptions::default();
+        let modern = notes.compose(&doc, 0, 200.0, &frame, &opts).1.first;
+        frame.opts.legacy_first_baseline = true;
+        let legacy = notes.compose(&doc, 0, 200.0, &frame, &opts).1.first;
+        assert!((legacy - modern).abs() > 0.01, "a same-width cached modern note must not mask compatibility metrics: {legacy} vs {modern}");
     }
 }

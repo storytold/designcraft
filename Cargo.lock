@@ -1118,10 +1118,10 @@ dependencies = [
 [[package]]
 name = "craft-designcraft-format"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=b1b4602a71d19e09ad33f7752a10d6598cf39b2b#b1b4602a71d19e09ad33f7752a10d6598cf39b2b"
+source = "git+https://github.com/ForestParks/craft-libs?rev=b0d3ca5b56f733a99669e286e1a417044bba6fe7#b0d3ca5b56f733a99669e286e1a417044bba6fe7"
 dependencies = [
  "craft-document-bundle",
- "craft-eps 0.1.0 (git+https://github.com/storytold/craft-libs?rev=b1b4602a71d19e09ad33f7752a10d6598cf39b2b)",
+ "craft-eps 0.1.0 (git+https://github.com/ForestParks/craft-libs?rev=b0d3ca5b56f733a99669e286e1a417044bba6fe7)",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -1148,9 +1148,9 @@ source = "git+https://github.com/storytold/craft-libs?rev=92d392cff132eaf53e13af
 [[package]]
 name = "craft-document-bundle"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=b1b4602a71d19e09ad33f7752a10d6598cf39b2b#b1b4602a71d19e09ad33f7752a10d6598cf39b2b"
+source = "git+https://github.com/ForestParks/craft-libs?rev=b0d3ca5b56f733a99669e286e1a417044bba6fe7#b0d3ca5b56f733a99669e286e1a417044bba6fe7"
 dependencies = [
- "craft-zip 0.1.0 (git+https://github.com/storytold/craft-libs?rev=b1b4602a71d19e09ad33f7752a10d6598cf39b2b)",
+ "craft-zip 0.1.0 (git+https://github.com/ForestParks/craft-libs?rev=b0d3ca5b56f733a99669e286e1a417044bba6fe7)",
  "serde_json",
  "thiserror 2.0.21",
  "zip 9.1.1",
@@ -1212,7 +1212,7 @@ dependencies = [
 [[package]]
 name = "craft-eps"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=b1b4602a71d19e09ad33f7752a10d6598cf39b2b#b1b4602a71d19e09ad33f7752a10d6598cf39b2b"
+source = "git+https://github.com/ForestParks/craft-libs?rev=b0d3ca5b56f733a99669e286e1a417044bba6fe7#b0d3ca5b56f733a99669e286e1a417044bba6fe7"
 
 [[package]]
 name = "craft-eps"
@@ -1828,7 +1828,7 @@ dependencies = [
 [[package]]
 name = "craft-zip"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=b1b4602a71d19e09ad33f7752a10d6598cf39b2b#b1b4602a71d19e09ad33f7752a10d6598cf39b2b"
+source = "git+https://github.com/ForestParks/craft-libs?rev=b0d3ca5b56f733a99669e286e1a417044bba6fe7#b0d3ca5b56f733a99669e286e1a417044bba6fe7"
 dependencies = [
  "flate2",
  "thiserror 2.0.21",
@@ -2169,7 +2169,6 @@ name = "designcraft-format"
 version = "0.20.1"
 dependencies = [
  "craft-designcraft-format",
- "craft-document-bundle",
  "designcraft-doc",
  "serde_json",
  "zip 3.0.0",
