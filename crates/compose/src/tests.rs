@@ -5120,6 +5120,40 @@ fn drop_cap_words_end_at_whitespace_and_clamp_to_the_paragraph() {
 }
 
 #[test]
+fn drop_cap_words_stop_before_hard_breaks() {
+    let props = designcraft_doc::ParaProps { drop_cap_lines: 2, drop_cap_words: 2, ..Default::default() };
+    for (text, expected) in [("one\u{2028}two three", 3), ("one \u{2028}two", 3), ("one two\u{E002}", 7), ("\u{2028}one two", 0)] {
+        assert_eq!(super::drop_cap_end(text, 0..text.len(), &props, false), expected, "{text:?}");
+    }
+}
+
+#[test]
+fn word_drop_cap_stops_at_a_forced_line_break() {
+    let text = format!("one\u{2028}two three four {LOREM}");
+    let para = ParaAttrs { drop_cap_words: Some(2), ..drop_cap(2, 1) };
+    let (d, sid, _) = drop_doc(&text, para);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    assert!(lines[0].glyphs.iter().any(|g| g.byte == 0 && g.y > 1.0));
+    let two = "one\u{2028}".len();
+    let (line, glyph) = lines.iter().enumerate().find_map(|(i, l)| l.glyphs.iter().find(|g| g.byte == two && g.len > 0).map(|g| (i, g))).unwrap();
+    assert!(line >= 1, "two starts on line {line}; the forced break must survive the drop cap");
+    assert!(glyph.y.abs() < 1e-6, "two must be body text, got y={}", glyph.y);
+}
+
+#[test]
+fn scaled_single_character_drop_cap_indent_ignores_word_spacing() {
+    let (mut d, sid, _) = drop_doc(LOREM, drop_cap(2, 1));
+    d.story_mut(sid).unwrap().paras[0].para.word_space_desired = Some(1.0);
+    let plain = compose_story(&d, sid, &ComposeOptions::default());
+    d.story_mut(sid).unwrap().paras[0].para.word_space_desired = Some(2.0);
+    let spaced = compose_story(&d, sid, &ComposeOptions::default());
+    let plain_x = text_x(all_lines(&plain)[1], 1);
+    let spaced_x = text_x(all_lines(&spaced)[1], 1);
+    assert!((plain_x - spaced_x).abs() < 1e-6, "line 2 indent: spacing 1.0={plain_x}, spacing 2.0={spaced_x}");
+}
+
+#[test]
 fn hostile_drop_cap_values_do_not_panic() {
     for (lines, chars) in [(u32::MAX, u32::MAX), (1_000_000, 1), (2, 0), (0, 3)] {
         let (d, sid, _) = drop_doc(LOREM, drop_cap(lines, chars));

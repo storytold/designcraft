@@ -5665,9 +5665,10 @@ pub const MAX_DROP_CAP_CHARS: u32 = 150;
 pub const MAX_DROP_CAP_WORDS: u32 = 25;
 
 /// Byte where paragraph `prange`'s drop cap ends: after its first `drop_cap_words` runs of
-/// non-whitespace when above zero, otherwise its first `drop_cap_chars` code points (spaces
-/// included). Extend to the end of the grapheme cluster so a letter keeps its combining marks;
-/// take the whole paragraph when shorter. Counts are capped at their respective maxima.
+/// non-whitespace when above zero (ending at the last word before a forced line, column, frame or
+/// page break, so the break stays in the text), otherwise its first `drop_cap_chars` code points
+/// (spaces included). Extend to the end of the grapheme cluster so a letter keeps its combining
+/// marks; take the whole paragraph when shorter. Counts are capped at their respective maxima.
 /// Return `prange.start` with no lines, neither words nor characters, or vertical text.
 fn drop_cap_end(text: &str, prange: Range<usize>, pp: &ParaProps, vertical: bool) -> usize {
     use unicode_segmentation::UnicodeSegmentation as _;
@@ -5679,8 +5680,12 @@ fn drop_cap_end(text: &str, prange: Range<usize>, pp: &ParaProps, vertical: bool
     let end = if pp.drop_cap_words > 0 {
         let mut remaining = pp.drop_cap_words.min(MAX_DROP_CAP_WORDS);
         let mut in_word = false;
+        let mut word_end = 0;
         para.char_indices()
             .find_map(|(i, ch)| {
+                if breaker::is_forced(ch) {
+                    return Some(word_end);
+                }
                 if ch.is_whitespace() {
                     if in_word {
                         remaining -= 1;
@@ -5691,6 +5696,7 @@ fn drop_cap_end(text: &str, prange: Range<usize>, pp: &ParaProps, vertical: bool
                     in_word = false;
                 } else {
                     in_word = true;
+                    word_end = i + ch.len_utf8();
                 }
                 None
             })
