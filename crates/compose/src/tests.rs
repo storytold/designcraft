@@ -5641,6 +5641,27 @@ fn an_empty_line_takes_its_auto_leading_from_a_larger_paragraph_mark() {
     }
 }
 
+/// A paragraph that holds only a drop cap is left with an empty line once the drop cap is split
+/// off: that line takes its auto leading from the paragraph mark, as an empty paragraph's does. It
+/// read the format of the paragraph's first character, the drop cap.
+#[test]
+fn a_drop_cap_only_paragraph_takes_its_leading_from_the_mark() {
+    let text = "Aaa\nW\nBbb";
+    let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 300.0, 300.0), ParaAttrs::default());
+    let cap = text.find('W').unwrap();
+    let story = d.story_mut(sid).unwrap();
+    story.format_chars(0..text.len(), |f| f.over.size = Some(10.0));
+    story.format_chars(cap..cap + 1, |f| f.over.size = Some(40.0));
+    story.format_chars(cap + 1..cap + 2, |f| f.over.size = Some(20.0));
+    story.paras[1].para.drop_cap_lines = Some(2);
+    story.paras[1].para.drop_cap_chars = Some(1);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let base: Vec<f64> = all_lines(&cs).iter().map(|l| l.baseline).collect();
+    assert!(base.len() >= 2, "{base:?}");
+    // The 20 pt mark's auto leading (24 pt), not the 40 pt drop cap's (48 pt).
+    assert!((base[1] - base[0] - 24.0).abs() < 1e-6, "{base:?}");
+}
+
 /// Under a leading model the lines of `text` (all formatted by `format`, with a 16 pt leading)
 /// are 16 pt apart, empty lines included.
 fn assert_leading_kept(text: &str, mut d: Document, sid: StoryId, format: impl Fn(&mut designcraft_doc::CharFormat)) {

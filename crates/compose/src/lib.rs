@@ -2957,10 +2957,9 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
     let base_size = base_chars.size;
     let spacing = spacing_for(pp, base_size, story, cjk);
     // An empty line takes its height from its paragraph mark's character format, the one character
-    // it holds: an empty paragraph's line, and the line a trailing forced line break leaves.
-    let mark_chars = if glyphs.is_empty() {
-        doc.styles.resolve_char(base_chars, story.char_format_of(prange.start))
-    } else if glyphs.last().is_some_and(|g| g.ch == designcraft_doc::story::FORCED_LINE_BREAK) {
+    // it holds: an empty paragraph's line, the line left once a drop cap that is the whole
+    // paragraph is split off, and the line a trailing forced line break leaves.
+    let mark_chars = if glyphs.is_empty() || glyphs.last().is_some_and(|g| g.ch == designcraft_doc::story::FORCED_LINE_BREAK) {
         doc.styles.resolve_char(base_chars, story.char_format_of(prange.end))
     } else {
         base_chars.clone()
