@@ -1,6 +1,47 @@
 use super::caret::story_of;
 use super::format::{Target, effective_char_format, format_targets};
-use super::{ItemId, Result, Session, StoryId, Value, bad, bool_or, json};
+use super::{ItemId, Result, Session, StoryId, Value, bad, bool_or, id_param, json};
+
+/// Composed body lines in thread order, with their text-space boxes transformed to the spread.
+pub(super) fn story_lines(s: &mut Session, p: &Value) -> Result<Value> {
+    let st = s.doc()?;
+    let sid = story_of(s, p).ok_or_else(|| bad("story.lines", "no story"))?;
+    let d = &st.doc;
+    d.story(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
+    let frame = id_param(p, "frame");
+    let cs = s.cache.get(&st.doc, sid, None);
+    let mut lines = Vec::new();
+    for ft in &cs.frames {
+        if frame.is_some_and(|id| ft.frame != id) {
+            continue;
+        }
+        let (Some(loc), Some(item)) = (d.find(ft.frame), d.item(ft.frame)) else { continue };
+        let xf = d.parent_xf(&loc) * d.text_xf(item);
+        let page = d.page_of_item(ft.frame);
+        for line in &ft.lines {
+            let top = line.baseline - line.ascent;
+            let bottom = line.baseline + line.descent;
+            let corners = [
+                super::Point::new(line.x0, top),
+                super::Point::new(line.x1, top),
+                super::Point::new(line.x0, bottom),
+                super::Point::new(line.x1, bottom),
+            ]
+            .map(|point| xf * point);
+            let left = corners.iter().map(|p| p.x).fold(f64::INFINITY, f64::min);
+            let right = corners.iter().map(|p| p.x).fold(f64::NEG_INFINITY, f64::max);
+            let top = corners.iter().map(|p| p.y).fold(f64::INFINITY, f64::min);
+            let bottom = corners.iter().map(|p| p.y).fold(f64::NEG_INFINITY, f64::max);
+            let baseline = (xf * super::Point::new(line.x0, line.baseline)).y;
+            lines.push(json!({
+                "start": line.range.start, "end": line.range.end, "frame": ft.frame.0,
+                "column": line.column, "page": page, "paragraph": line.para,
+                "baseline": baseline, "left": left, "top": top, "right": right, "bottom": bottom,
+            }));
+        }
+    }
+    Ok(json!({"story": sid.0, "overset": cs.overset_at, "lines": lines}))
+}
 
 /// The stories of the text selection, the selected cells and the selected text frames.
 fn selected_stories(s: &Session) -> Result<Vec<StoryId>> {
@@ -454,5 +495,92 @@ mod story_query_contract_tests {
         // The story still composes with every setting at its limit.
         let cs = designcraft_compose::compose_story(&s.doc().unwrap().doc, sid, &Default::default());
         assert!(!cs.frames.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod story_lines_tests {
+    use super::*;
+
+    #[test]
+    fn story_lines_report_each_line_across_a_threaded_story_with_hebrew() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        if s.doc().unwrap().doc.page_count() < 2 {
+            s.execute("layout.pages.insert", &json!({"count": 1})).unwrap();
+        }
+        let english = "English words fill several lines in this narrow text frame. ".repeat(2);
+        let hebrew = "שלום עולם זהו פסקה בעברית שנמשכת על פני כמה שורות בטקסט ".repeat(8);
+        let a = s
+            .execute(
+                "frame.create",
+                &json!({
+                    "rect": [72, 72, 272, 140], "content": "text", "text": format!("{english}\r{hebrew}")
+                }),
+            )
+            .unwrap();
+        let sid = a["story"].as_u64().unwrap();
+        s.execute("text.select", &json!({"story": sid, "anchor": english.len() + 1, "focus": english.len() + 1})).unwrap();
+        s.execute("type.para", &json!({"attrs": {"direction": "rightToLeft"}})).unwrap();
+        let spread = s.doc().unwrap().doc.page_loc(1).unwrap().0;
+        let b = s
+            .execute(
+                "frame.create",
+                &json!({
+                    "spread": spread, "rect": [72, 72, 272, 140], "content": "text"
+                }),
+            )
+            .unwrap();
+        s.execute("text.thread", &json!({"from": a["id"], "to": b["id"]})).unwrap();
+
+        let summary = s.execute("story.get", &json!({"story": sid})).unwrap();
+        let text = summary["text"].as_str().unwrap();
+        let result = s.execute("story.lines", &json!({"story": sid})).unwrap();
+        assert_eq!(result["story"], sid);
+        assert_eq!(result["overset"], summary["overset"]);
+        assert!(!result["overset"].is_null());
+        let lines = result["lines"].as_array().unwrap();
+        assert!(!lines.is_empty());
+        assert_eq!(lines.len() as u64, summary["lines"].as_u64().unwrap());
+        let a_lines: Vec<_> = lines.iter().filter(|line| line["frame"] == a["id"]).collect();
+        let b_lines: Vec<_> = lines.iter().filter(|line| line["frame"] == b["id"]).collect();
+        assert!(!a_lines.is_empty() && !b_lines.is_empty());
+        assert!(lines.iter().take(a_lines.len()).all(|line| line["frame"] == a["id"]));
+        assert!(lines.iter().skip(a_lines.len()).all(|line| line["frame"] == b["id"]));
+        assert_ne!(a_lines[0]["page"], b_lines[0]["page"]);
+        assert!(!a_lines[0]["page"].is_null() && !b_lines[0]["page"].is_null());
+        let mut previous_end = 0;
+        let mut hebrew_lines = 0;
+        for line in lines {
+            let start = line["start"].as_u64().unwrap() as usize;
+            let end = line["end"].as_u64().unwrap() as usize;
+            assert!(start >= previous_end && end >= start);
+            assert!(text.is_char_boundary(start) && text.is_char_boundary(end));
+            let slice = &text[start..end];
+            assert!(!slice.contains('\n'));
+            let contains_hebrew = slice.chars().any(|c| ('א'..='ת').contains(&c));
+            if line["paragraph"] == 1 {
+                assert!(contains_hebrew, "{slice:?}");
+                hebrew_lines += 1;
+            }
+            previous_end = end;
+        }
+        assert!(hebrew_lines > 0);
+        for frame_lines in [&a_lines, &b_lines] {
+            for pair in frame_lines.windows(2) {
+                if pair[0]["column"] == pair[1]["column"] {
+                    assert!(pair[0]["baseline"].as_f64().unwrap() < pair[1]["baseline"].as_f64().unwrap());
+                }
+            }
+        }
+        for line in a_lines {
+            assert!(line["top"].as_f64().unwrap() >= 72.0);
+            assert!(line["left"].as_f64().unwrap() >= 71.0);
+        }
+        let filtered = s.execute("story.lines", &json!({"frame": b["id"]})).unwrap();
+        let filtered_lines = filtered["lines"].as_array().unwrap();
+        assert_eq!(filtered_lines.len(), b_lines.len());
+        assert!(filtered_lines.iter().all(|line| line["frame"] == b["id"]));
+        assert!(s.execute("story.lines", &json!({"story": 999999})).is_err());
     }
 }
