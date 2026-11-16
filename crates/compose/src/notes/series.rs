@@ -110,6 +110,11 @@ impl Notes {
         available: f64,
         opts: &ComposeOptions,
     ) -> Option<SplitPlan> {
+        // A rewind preserves the space needed by a later spanning stack. Splitting a local
+        // note must not admit a body line into that space before the stack is replayed.
+        if available + 0.01 < self.floor.get(&column.frame_index).copied().unwrap_or(0.0) {
+            return None;
+        }
         let (total, reserves) = self.reservations(doc, column, extra, opts);
         // Split the last series needing room. Others must fit intact before it.
         for i in (0..self.series.len()).rev() {
@@ -290,5 +295,49 @@ impl Notes {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn split_plan_keeps_the_spanning_floor_after_a_rewind() {
+        let mut doc = Document::new(&Default::default());
+        let (fid, sid) = doc
+            .add_text_frame(designcraft_doc::SpreadRef::Doc(0), Rect::new(36.0, 36.0, 436.0, 436.0), doc.default_layer(), "Body", Default::default())
+            .unwrap();
+        doc.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = 2;
+        doc.note_series.push(designcraft_doc::NoteSeries {
+            id: 1,
+            name: "Spanning".into(),
+            options: designcraft_doc::FootnoteOptions { span_columns: true, space_before: 70.0, allow_split: true, ..Default::default() },
+        });
+        let story = doc.story_mut(sid).unwrap();
+        let span = story.insert_note(0, "Spanning", Default::default()).unwrap();
+        story.note_mut(span).unwrap().series = 1;
+        story.insert_note(story.len(), "Local\nLocal\nLocal\nLocal", Default::default());
+        let story = doc.story(sid).unwrap();
+        let frames = crate::frame_specs(&doc, sid);
+        let frame = &frames[0];
+        let cols = frame.columns();
+        let opts = ComposeOptions::default();
+        let mut notes = Notes::new(&doc, story, &frames);
+        let snapshot = notes.snapshot();
+        let column = NoteColumn { frame_index: 0, column_index: 1, width: cols[1].width(), frame };
+        assert!(notes.place_line(&doc, column, &[0], None, &opts));
+        let floor = notes.reserve(&doc, column, &[], &opts);
+        let local = NoteColumn { column_index: 0, ..column };
+        // A late local reference fits its own stack, but not the later spanning reservation.
+        let available = floor - 10.0;
+        let mut line = crate::compose_story(&doc, sid, &opts).frames[0].lines[0].clone();
+        line.column = 0;
+        line.baseline = cols[0].y1 - available - line.descent;
+        assert!(notes.earlier_columns_collide(&[line], 0, 1, &cols, floor));
+        notes.restore(&snapshot);
+        assert!(notes.reserve(&doc, local, &[1], &opts) >= floor);
+        assert!(notes.split_plan(&doc, local, &[1], available, &opts).is_none());
+        assert!(notes.split_plan(&doc, local, &[1], floor + 10.0, &opts).is_some());
     }
 }

@@ -161,10 +161,24 @@ fn text_canvas_xf(cx: &ToolContext, fid: ItemId) -> Option<Affine> {
     Some(cx.item_canvas_xf(fid)? * cx.doc.text_xf(cx.doc.item(fid)?))
 }
 
-/// Margin notes sit outside their host frame's path, so Type must hit their placed rectangles.
-fn margin_note_frame(cx: &ToolContext, point: Point) -> Option<(designcraft_doc::SpreadRef, ItemId)> {
-    let (spread, _) = cx.layout.spread_at(point)?;
-    for story in cx.doc.stories.values().filter(|st| st.notes.iter().any(|n| !cx.doc.note_options(n.series).placement.is_column_foot())) {
+/// Root layer and item path follow the renderer's layer order and each group's child order.
+fn paint_key(cx: &ToolContext, id: ItemId) -> Option<(usize, Vec<usize>)> {
+    let loc = cx.doc.find(id)?;
+    let root = cx.doc.spread(loc.spread)?.items.get(*loc.path.first()?)?;
+    Some((cx.doc.layer_rank(root.layer), loc.path))
+}
+
+/// Margin notes extend their host's painted area; merge them with ordinary hits in paint order.
+fn type_hit(cx: &ToolContext, point: Point) -> Option<(designcraft_doc::SpreadRef, ItemId)> {
+    let (spread, sp) = cx.layout.spread_at(point)?;
+    let mut hit = cx.hit(point);
+    let mut top = hit.and_then(|(_, id)| {
+        let item = cx.doc.item(id)?;
+        let front = designcraft_doc::hit_descendant(item, sp, cx.tol(4.0), &|_| true).unwrap_or(id);
+        paint_key(cx, front)
+    });
+    let margin = |series| matches!(cx.doc.note_options(series).placement, designcraft_doc::NotePlacement::Margin { .. });
+    for story in cx.doc.stories.values().filter(|st| st.notes.iter().any(|n| margin(n.series))) {
         let cs = cx.cache.get(cx.doc, story.id, None);
         for ft in &cs.frames {
             let Some(loc) = cx.doc.find(ft.frame) else { continue };
@@ -192,12 +206,16 @@ fn margin_note_frame(cx: &ToolContext, point: Point) -> Option<(designcraft_doc:
             }
             let Some(xf) = text_canvas_xf(cx, ft.frame) else { continue };
             let local = xf.inverse() * point;
-            if ft.notes.iter().any(|n| !cx.doc.note_options(n.series).placement.is_column_foot() && n.rect.contains(local)) {
-                return Some((spread, ft.frame));
+            if ft.notes.iter().any(|n| margin(n.series) && n.rect.contains(local))
+                && let Some(key) = paint_key(cx, ft.frame)
+                && top.as_ref().is_none_or(|front| key > *front)
+            {
+                top = Some(key);
+                hit = Some((spread, ft.frame));
             }
         }
     }
-    None
+    hit
 }
 
 /// Where the marked text starts: the preview typed it just before the caret.
@@ -285,7 +303,7 @@ impl TypeTool {
         }
         // Text frames take the caret (locked ones too, as in InDesign); an empty frame
         // becomes one, unless it's locked: then the press draws a new text frame over it.
-        if let Some((_, id)) = margin_note_frame(cx, ev.pos).or_else(|| cx.hit(ev.pos))
+        if let Some((_, id)) = type_hit(cx, ev.pos)
             && let Some(it) = cx.doc.item(id)
             && !matches!(it.content, designcraft_doc::Content::Graphic(_) | designcraft_doc::Content::Group { .. })
             && (it.is_text_frame() || !it.locked)
