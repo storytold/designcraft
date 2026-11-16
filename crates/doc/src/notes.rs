@@ -101,6 +101,9 @@ pub struct FootnoteOptions {
     pub first_baseline_min: f64,
     /// Footnotes span all columns of a multi-column frame (else each column gets its own).
     pub span_columns: bool,
+    /// Allow Split Footnotes: continue long notes across columns and frames.
+    /// Each part obeys the note paragraphs' widow/orphan and keep options.
+    pub allow_split: bool,
     /// Rule above the first footnote in a column.
     pub rule: NoteRule,
 }
@@ -123,6 +126,7 @@ impl Default for FootnoteOptions {
             first_baseline: FirstBaseline::Leading,
             first_baseline_min: 0.0,
             span_columns: false,
+            allow_split: true,
             rule: NoteRule::default(),
         }
     }
