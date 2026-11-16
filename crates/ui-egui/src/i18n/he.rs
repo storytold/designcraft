@@ -1497,7 +1497,6 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Email Address:", "כתובת דוא״ל:"),
     ("Graphic", "גרפיקה"),
     ("Hair Space", "רווח דקיק"),
-    ("Invalid panel layout; restored the default dock", "פריסת החלוניות אינה תקינה; שוחזרה פריסת העגינה כברירת מחדל"),
     ("Light", "בהיר"),
     ("Lines added", "שורות שנוספו"),
     ("Lines deleted", "שורות שנמחקו"),
