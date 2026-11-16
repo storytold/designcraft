@@ -1369,6 +1369,19 @@ impl Document {
             }
         }
         let mut ids = std::collections::HashSet::new();
+        for item in self.placed_items() {
+            let Some(tf) = item.text_frame() else { continue };
+            let Some(stream) = tf.options.note_stream else { continue };
+            let own = self.story(tf.story).ok_or(DocError::NoStory(tf.story))?;
+            if self.story(stream.story).is_none()
+                || (stream.series != 0 && !self.note_series.iter().any(|series| series.id == stream.series))
+                || tf.story == stream.story
+                || !own.is_empty()
+                || own.frames != [item.id]
+            {
+                return Err(DocError::Invalid(format!("invalid note stream assignment on frame {}", item.id)));
+            }
+        }
         // Every item's story (text frames), by id, and every (story, frame) of the threads: built
         // once, so checking each reference both ways is a lookup, not a search of the document.
         let mut frame_story: std::collections::HashMap<ItemId, Option<StoryId>> = std::collections::HashMap::new();

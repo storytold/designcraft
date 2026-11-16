@@ -49,6 +49,7 @@ use designcraft_geom::{Affine, Point, Rect};
 use crate::breaker::{Break, Spacing};
 pub use crate::cache::{Cache, ShownOn};
 use crate::notes::{NoteColumn, NoteSnapshot, Notes, SeriesSplitPlan as SplitPlan};
+pub use crate::notes::{StreamPageFit, StreamPageInput, StreamState, fit_stream_page};
 pub use crate::notes::{find_note, find_note_part, hit_note, hit_note_with, note_caret, note_text};
 pub use crate::outline::FrameOutline;
 use crate::parabox::ParaBox;
@@ -1148,8 +1149,32 @@ pub fn frame_specs(doc: &Document, sid: StoryId) -> Vec<FrameSpec> {
 /// [`frame_specs`] with anchored frames where their host story placed them (`placed`).
 pub(crate) fn frame_specs_placed(doc: &Document, sid: StoryId, placed: &[(ItemId, Placement)]) -> Vec<FrameSpec> {
     let Some(st) = doc.story(sid) else { return vec![] };
-    let mut out = Vec::with_capacity(st.frames.len());
-    for &fid in &st.frames {
+    let ids: Vec<_> =
+        st.frames.iter().copied().filter(|id| doc.item(*id).and_then(Item::text_frame).is_none_or(|tf| tf.options.note_stream.is_none())).collect();
+    frame_specs_ids(doc, sid, placed, &ids)
+}
+
+/// The host's commentary frames in page order, including pages outside its body thread.
+pub fn stream_frame_specs(doc: &Document, sid: StoryId) -> Vec<FrameSpec> {
+    let mut ids = Vec::new();
+    for spread in &doc.spreads {
+        for item in &spread.items {
+            item.walk(&mut |it| {
+                if it.text_frame().and_then(|tf| tf.options.note_stream).is_some_and(|stream| stream.story == sid) {
+                    ids.push(it.id);
+                }
+            });
+        }
+    }
+    let mut specs = frame_specs_ids(doc, sid, &[], &ids);
+    specs.sort_by_key(|frame| frame.page);
+    specs
+}
+
+fn frame_specs_ids(doc: &Document, sid: StoryId, placed: &[(ItemId, Placement)], ids: &[ItemId]) -> Vec<FrameSpec> {
+    let Some(st) = doc.story(sid) else { return vec![] };
+    let mut out = Vec::with_capacity(ids.len());
+    for &fid in ids {
         let loc = doc.find(fid);
         let Some(item) = loc.as_ref().and_then(|l| doc.item_at(l)).or_else(|| doc.anchored_item(fid)) else { continue };
         let Some(tf) = item.text_frame() else { continue };
@@ -2155,10 +2180,12 @@ fn fit_line(input: LineFitInput<'_>) -> LineFit {
     let line_notes = if notes.active() { notes.refs_in(line_glyphs) } else { Vec::new() };
     let col_w = notes.area(&cols[cur.fi], cur.col).map_or(0.0, |r| r.width());
     let note_column = NoteColumn { frame_index: cur.fi, column_index: cur.col, width: col_w, frame: f };
+    let streams_fit = notes.streams_fit(doc, note_column, &line_notes, out, opts);
     let reserve = notes.reserve(doc, note_column, &line_notes, opts);
     // A note that doesn't fit whole splits, keeping its first part with this line. Without a
     // split, a column's first line is set even when its own notes don't fit (as before).
     if !capped
+        && streams_fit
         && baseline + desc > col.y1 - reserve + 0.01
         && let Some(plan) = notes.split_plan(doc, note_column, &line_notes, col.y1 - (baseline + desc), opts)
     {
@@ -2171,7 +2198,7 @@ fn fit_line(input: LineFitInput<'_>) -> LineFit {
         } else {
             0.0
         };
-    let fits = baseline + fit_descent <= col.y1 - reserve + 0.01 && !capped;
+    let fits = baseline + fit_descent <= col.y1 - reserve + 0.01 && !capped && streams_fit;
     if !fits
         && !pp.hyph_across_column
         && line_no > col_first_line
@@ -3824,6 +3851,7 @@ fn finish_composition(input: FinishInput<'_>) -> ComposedStory {
         }
     }
     notes.finish_margins(doc, story, frames, opts, out);
+    notes.finish_streams(doc, story, opts, out);
     out.styles = styles_tab;
     mark_keep_violations(doc, story, out);
     std::mem::take(out)
@@ -5646,6 +5674,7 @@ fn place(g: &Glyph, x: f64) -> PlacedGlyph {
         || g.ch == story::RIGHT_INDENT_TAB
         || g.ch == story::TABLE_ANCHOR
         || g.ch == shape::SOFT_HYPHEN
+        || g.ch == designcraft_doc::FOOTNOTE_REF && g.generated_text.as_deref() == Some("")
         || g.ch == shape::HIDDEN);
     PlacedGlyph {
         rendered_char: g.rendered_char,
@@ -6959,6 +6988,8 @@ pub fn adjacent_row(l: &Line, x: f64, caret_y: f64, up: bool) -> Option<f64> {
     if up { candidates.map(|r| r.0).max_by(f64::total_cmp) } else { candidates.map(|r| r.0).min_by(f64::total_cmp) }
 }
 
+#[cfg(test)]
+mod stream_frame_tests;
 #[cfg(test)]
 mod tests;
 

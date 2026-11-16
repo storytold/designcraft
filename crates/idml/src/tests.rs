@@ -5585,3 +5585,18 @@ fn idml_note_series_export_keeps_all_notes_and_warns() {
     assert!(notes.iter().any(|n| n.text.text == "Ordinary"));
     assert!(notes.iter().any(|n| n.text.text == "Source"));
 }
+
+#[test]
+fn idml_warns_before_flattening_streams_and_hidden_references_even_in_series_zero() {
+    use designcraft_doc::{Document, NotePlacement, SpreadRef, build::NewDocument, geom::Rect};
+    let mut doc = Document::new(&NewDocument::default());
+    let (_, host) =
+        doc.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 250.0, 400.0), doc.default_layer(), "Body", Default::default()).unwrap();
+    doc.story_mut(host).unwrap().insert_note(4, "Commentary", Default::default()).unwrap();
+    doc.footnote_options.placement = NotePlacement::Stream;
+    doc.footnote_options.ref_hidden = true;
+    let (bytes, warnings) = crate::export_idml_report(&doc, &Default::default());
+    assert!(warnings.iter().any(|w| w.contains("commentary stream routes or hidden note references")));
+    let reopened = import_idml(&bytes).unwrap();
+    assert!(reopened.stories.values().flat_map(|s| &s.notes).any(|note| note.text.text == "Commentary"));
+}

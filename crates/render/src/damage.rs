@@ -148,7 +148,7 @@ fn text_stories(it: &Item) -> Vec<StoryId> {
     let mut v = Vec::new();
     it.walk(&mut |i| {
         if let Some(t) = i.text_frame() {
-            v.push(t.story);
+            v.push(t.composed_story());
         }
     });
     v

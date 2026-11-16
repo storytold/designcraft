@@ -1,17 +1,23 @@
 //! Body-facing note state. Each series retains its own numbering and split continuation.
+use super::streams::StreamComposer;
 use super::{
     Arc, ComposeOptions, ComposedStory, Document, FrameSpec, Glyph, HashMap, HashSet, NoteColumn, PlacedNote, Point, Range, Rect, SeriesNotes,
     SeriesSnapshot, Story, SubstCtx, stack_height,
 };
 use designcraft_doc::{MarginSide, NotePlacement};
 
-pub(crate) type NoteSnapshot = Vec<SeriesSnapshot>;
+#[derive(Clone)]
+pub(crate) struct NoteSnapshot {
+    series: Vec<SeriesSnapshot>,
+    streams: usize,
+}
 pub(crate) struct SplitPlan(Vec<(usize, super::SplitPlan)>);
 
 pub(crate) struct Notes {
     series: Vec<SeriesNotes>,
     nested: bool,
     floor: HashMap<usize, f64>,
+    streams: StreamComposer,
 }
 
 impl Notes {
@@ -22,19 +28,33 @@ impl Notes {
         if !nested {
             ids.extend(doc.note_series.iter().map(|s| s.id).filter(|id| *id != 0));
         }
-        Self { series: ids.into_iter().map(|id| SeriesNotes::new(doc, story, id, nested)).collect(), nested, floor: HashMap::new() }
+        Self {
+            series: ids.into_iter().map(|id| SeriesNotes::new(doc, story, id, nested)).collect(),
+            nested,
+            floor: HashMap::new(),
+            streams: StreamComposer::new(doc, story, frames),
+        }
     }
 
     fn at_foot(&self, doc: &Document, i: usize) -> bool {
-        self.nested || matches!(doc.note_options(self.series[i].series).placement, NotePlacement::ColumnFoot)
+        self.nested
+            || match doc.note_options(self.series[i].series).placement {
+                NotePlacement::ColumnFoot => true,
+                NotePlacement::Stream => !self.streams.has_route(self.series[i].series),
+                NotePlacement::Margin { .. } => false,
+            }
     }
 
     pub fn snapshot(&self) -> NoteSnapshot {
-        self.series.iter().map(|s| (s.num, s.key, s.placed.len(), s.carry.clone())).collect()
+        NoteSnapshot {
+            series: self.series.iter().map(|s| (s.num, s.key, s.placed.len(), s.carry.clone())).collect(),
+            streams: self.streams.snapshot(),
+        }
     }
 
     pub fn restore(&mut self, snapshot: &NoteSnapshot) {
-        for (s, (num, key, placed, carry)) in self.series.iter_mut().zip(snapshot) {
+        self.streams.restore(snapshot.streams);
+        for (s, (num, key, placed, carry)) in self.series.iter_mut().zip(&snapshot.series) {
             (s.num, s.key) = (*num, *key);
             s.placed.truncate(*placed);
             s.carry = carry.clone();
@@ -43,6 +63,16 @@ impl Notes {
 
     pub fn active(&self) -> bool {
         self.series.iter().any(SeriesNotes::active)
+    }
+
+    pub fn streams_fit(&mut self, doc: &Document, column: NoteColumn<'_>, extra: &[usize], out: &ComposedStory, opts: &ComposeOptions) -> bool {
+        self.streams.fits(doc, column, extra, out, opts)
+    }
+
+    pub fn finish_streams(&self, doc: &Document, story: &Story, opts: &ComposeOptions, out: &mut ComposedStory) {
+        if !self.nested {
+            self.streams.finish(doc, story, opts, out);
+        }
     }
 
     pub fn number_refs(&mut self, doc: &Document, range: Range<usize>, page: Option<usize>, sub: &mut SubstCtx) {
@@ -143,6 +173,7 @@ impl Notes {
     }
 
     pub fn place_line(&mut self, doc: &Document, column: NoteColumn<'_>, extra: &[usize], plan: Option<SplitPlan>, opts: &ComposeOptions) -> bool {
+        self.streams.place_line();
         let mut plans = plan.map_or_else(Vec::new, |p| p.0);
         let mut placed = false;
         for i in 0..self.series.len() {

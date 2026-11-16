@@ -66,6 +66,7 @@ pub enum MarginSide {
 pub enum NotePlacement {
     #[default]
     ColumnFoot,
+    Stream,
     Margin {
         #[serde(default)]
         side: MarginSide,
@@ -137,6 +138,9 @@ pub struct FootnoteOptions {
     pub affix_in: AffixIn,
     /// Footnote reference number in text.
     pub ref_position: Position,
+    /// Keep the anchor addressable without printing a reference or taking line width.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub ref_hidden: bool,
     pub ref_char_style: String,
     /// Footnote text formatting.
     pub para_style: String,
@@ -167,6 +171,7 @@ impl Default for FootnoteOptions {
             suffix: String::new(),
             affix_in: AffixIn::None,
             ref_position: Position::Superscript,
+            ref_hidden: false,
             ref_char_style: NO_CHAR_STYLE.into(),
             para_style: BASIC_PARAGRAPH.into(),
             separator: "\t".into(),

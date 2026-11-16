@@ -519,7 +519,18 @@ fn signature(doc: &Document, story: &Arc<Story>) -> (Vec<usize>, Vec<Arc<Item>>)
     sig.extend([g.start, g.increment].into_iter().flat_map(bits));
     let mut keep = Vec::new();
     let mut spreads = Vec::new();
-    for f in &story.frames {
+    // Stream geometry changes the host's page cuts, including routes beyond its own frames.
+    let mut frames = story.frames.clone();
+    for spread in &doc.spreads {
+        for item in &spread.items {
+            item.walk(&mut |it| {
+                if it.text_frame().and_then(|tf| tf.options.note_stream).is_some_and(|stream| stream.story == story.id) && !frames.contains(&it.id) {
+                    frames.push(it.id);
+                }
+            });
+        }
+    }
+    for f in &frames {
         let Some(loc) = doc.find(*f) else {
             // Embedded frames live in another story (possibly in a note/cell),
             // so changing their geometry does not change this story's pointer.

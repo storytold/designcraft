@@ -45,10 +45,21 @@ pub enum ColumnsKind {
     FlexibleWidth,
 }
 
+/// The host story and note series whose commentary this frame displays.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteStream {
+    pub story: StoryId,
+    pub series: u64,
+}
+
 /// Text Frame Options.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct TextFrameOptions {
+    /// Commentary is composed by the host, independently of this frame's own story.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note_stream: Option<NoteStream>,
     pub columns: u32,
     pub columns_kind: ColumnsKind,
     pub gutter: f64,
@@ -209,6 +220,7 @@ pub enum PathAlign {
 impl Default for TextFrameOptions {
     fn default() -> Self {
         TextFrameOptions {
+            note_stream: None,
             columns: 1,
             columns_kind: ColumnsKind::FixedNumber,
             gutter: 12.0,
@@ -406,4 +418,29 @@ pub struct TextFrame {
     pub story: StoryId,
     #[serde(default)]
     pub options: TextFrameOptions,
+}
+
+impl TextFrame {
+    /// The composition that supplies this frame's text, including hosted commentary.
+    pub fn composed_story(&self) -> StoryId {
+        self.options.note_stream.map_or(self.story, |stream| stream.story)
+    }
+}
+
+#[cfg(test)]
+mod stream_tests {
+    use super::*;
+
+    #[test]
+    fn stream_assignment_round_trips_and_old_frames_use_their_own_story() {
+        let mut frame: TextFrame = serde_json::from_str(r#"{"story":4}"#).unwrap();
+        assert_eq!(frame.composed_story(), StoryId(4));
+        assert!(serde_json::to_value(&frame).unwrap()["options"].get("noteStream").is_none());
+        frame.options.note_stream = Some(NoteStream { story: StoryId(8), series: 2 });
+        let saved = serde_json::to_value(&frame).unwrap();
+        assert_eq!(saved["options"]["noteStream"], serde_json::json!({"story":8,"series":2}));
+        let reopened: TextFrame = serde_json::from_value(saved).unwrap();
+        assert_eq!(reopened, frame);
+        assert_eq!(reopened.composed_story(), StoryId(8));
+    }
 }

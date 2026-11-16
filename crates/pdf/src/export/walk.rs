@@ -71,7 +71,7 @@ impl Exporter<'_> {
         if !self.opts.tagged || !item_exported(it) {
             return self.item(s, it, parent, page);
         }
-        let story = it.text_frame().map(|t| t.story);
+        let story = it.text_frame().map(|t| t.composed_story());
         let figure = !it.alt_text.is_empty() || matches!(it.content, Content::Graphic(_)) || it.has_nested_items();
         if on_parent || it.export_options.artifact || (story.is_none() && !figure) {
             // Page furniture and decoration.
@@ -305,7 +305,7 @@ impl Exporter<'_> {
         if let Content::Text(tfr) = &it.content
             && !drawn
         {
-            let cs = self.composed(tfr.story, page);
+            let cs = self.composed(tfr.composed_story(), page);
             if let Some(ft) = cs.frame(it.id) {
                 self.frame_objects(s, ft, xf * self.doc.text_local(it), page);
             }
@@ -354,7 +354,7 @@ impl Exporter<'_> {
                 }
             }
             Content::Text(tfr) => {
-                let cs = self.composed(tfr.story, page);
+                let cs = self.composed(tfr.composed_story(), page);
                 if let (Some(ft), Some(pt)) = (cs.frame(it.id), &tfr.options.path) {
                     // Type on a path: the glyphs as outlines along the path.
                     for (si, gp) in designcraft_compose::path_glyphs(&cs, ft, bp, pt) {
@@ -378,7 +378,7 @@ impl Exporter<'_> {
                         }
                     }
                 } else if let Some(ft) = cs.frame(it.id) {
-                    let text = doc.story(tfr.story).map(|st| st.text.as_str()).unwrap_or("");
+                    let text = doc.story(tfr.composed_story()).map(|st| st.text.as_str()).unwrap_or("");
                     let local = doc.text_local(it);
                     if local != Affine::IDENTITY {
                         s.push_transform(&tf(local));

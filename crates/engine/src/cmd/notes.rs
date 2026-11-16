@@ -22,17 +22,25 @@ pub fn specs() -> Vec<CommandSpec> {
             "Document Footnote Options…",
             ["Type"],
             None,
-            "{placement?: {kind: columnFoot|margin, side?: inside|outside|left|right (default right), gap: pt, width: pt (gap and width required when first selecting margin)}, style?: arabic|upperRoman|lowerRoman|upperLetters|lowerLetters|symbols|kanji, startAt?, restart?: never|page|spread|section, prefix?, suffix?, affixIn?: none|reference|text|both, refPosition?: superscript|subscript|normal|otSuperscript, refCharStyle?, paraStyle?, separator?, spaceBefore?, spaceBetween?, firstBaseline?: ascent|capHeight|leading|xHeight|emboxHeight|fixed, firstBaselineMin?, spanColumns?, allowSplit? (default true), rule?: {on, weight, color, tint, width, offset, leftIndent}} → the options (no params: just read them)",
+            "{placement?: {kind: columnFoot|margin|stream, side?: inside|outside|left|right (default right), gap: pt, width: pt (gap and width required when first selecting margin)}, style?: arabic|upperRoman|lowerRoman|upperLetters|lowerLetters|symbols|kanji, startAt?, restart?: never|page|spread|section, prefix?, suffix?, affixIn?: none|reference|text|both, refHidden?: bool (zero-width unprinted anchor), refPosition?: superscript|subscript|normal|otSuperscript, refCharStyle?, paraStyle?, separator?, spaceBefore?, spaceBetween?, firstBaseline?: ascent|capHeight|leading|xHeight|emboxHeight|fixed, firstBaselineMin?, spanColumns?, allowSplit? (default true), rule?: {on, weight, color, tint, width, offset, leftIndent}} → the options (no params: just read them)",
             has_doc,
             options
         ),
-        cmd!("footnote.series.create", "Create Note Series", [], None, "{name, …options} → {id}", has_doc, series_create),
+        cmd!(
+            "footnote.series.create",
+            "Create Note Series",
+            [],
+            None,
+            "{name, placement?: stream|{kind: columnFoot|margin|stream, …}, refHidden?: bool, …options} → {id}",
+            has_doc,
+            series_create
+        ),
         cmd!(
             "footnote.series.options",
             "Note Series Options",
             [],
             None,
-            "{series, …options} → options; placement?: {kind: columnFoot|margin, side?: inside|outside|left|right (default right), gap: pt, width: pt (gap and width required when first selecting margin)}",
+            "{series, …options} → options; placement?: {kind: columnFoot|margin|stream, side?: inside|outside|left|right (default right), gap: pt, width: pt (gap and width required when first selecting margin)}",
             has_doc,
             series_options
         ),
@@ -124,7 +132,7 @@ fn options(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let mut v = serde_json::to_value(&cur).unwrap_or_default();
     merge(&mut v, p);
-    let next: FootnoteOptions = serde_json::from_value(v).map_err(|e| bad("footnote.options", e.to_string()))?;
+    let next = read_options(v, "footnote.options")?;
     validate_options(&next, "footnote.options")?;
     let out = serde_json::to_value(&next).unwrap_or_default();
     if next != cur {
@@ -152,6 +160,15 @@ fn validate_options(o: &FootnoteOptions, cmd: &str) -> Result<()> {
     o.check().map_err(|e| bad(cmd, e))
 }
 
+fn read_options(mut value: Value, cmd: &str) -> Result<FootnoteOptions> {
+    if let Some(slot) = value.get_mut("placement")
+        && let Some(kind) = slot.as_str().map(str::to_owned)
+    {
+        *slot = json!({"kind": kind});
+    }
+    serde_json::from_value(value).map_err(|e| bad(cmd, e.to_string()))
+}
+
 fn series_create(s: &mut Session, p: &Value) -> Result<Value> {
     let name = p
         .get("name")
@@ -159,7 +176,7 @@ fn series_create(s: &mut Session, p: &Value) -> Result<Value> {
         .filter(|n| !n.trim().is_empty())
         .ok_or_else(|| bad("footnote.series.create", "missing name"))?
         .to_owned();
-    let options: FootnoteOptions = serde_json::from_value(p.clone()).map_err(|e| bad("footnote.series.create", e.to_string()))?;
+    let options = read_options(p.clone(), "footnote.series.create")?;
     validate_options(&options, "footnote.series.create")?;
     s.edit(|d, _| {
         let id = d
@@ -181,7 +198,7 @@ fn series_options(s: &mut Session, p: &Value) -> Result<Value> {
     let cur = s.doc()?.doc.note_options(id).clone();
     let mut value = serde_json::to_value(&cur).map_err(|e| bad("footnote.series.options", e.to_string()))?;
     merge(&mut value, p);
-    let next: FootnoteOptions = serde_json::from_value(value).map_err(|e| bad("footnote.series.options", e.to_string()))?;
+    let next = read_options(value, "footnote.series.options")?;
     validate_options(&next, "footnote.series.options")?;
     let out = serde_json::to_value(&next).map_err(|e| bad("footnote.series.options", e.to_string()))?;
     if next == cur {
@@ -228,6 +245,14 @@ fn series_delete(s: &mut Session, p: &Value) -> Result<Value> {
                 story.rev = story.rev.wrapping_add(1);
             }
         }
+        d.update_placed_items(
+            |it| it.text_frame().and_then(|tf| tf.options.note_stream).is_some_and(|stream| stream.series == id),
+            |it| {
+                if let Some(tf) = it.text_frame_mut() {
+                    tf.options.note_stream = None;
+                }
+            },
+        );
         d.note_series.retain(|s| s.id != id);
         Ok(Value::Null)
     })

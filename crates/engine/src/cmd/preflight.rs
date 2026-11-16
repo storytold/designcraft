@@ -215,6 +215,7 @@ pub fn overset_warnings(s: &Session, pages: Option<&[usize]>) -> Vec<String> {
             continue;
         }
         let cs = s.cache.get(d, story.id, None);
+        out.extend(cs.warnings.iter().filter(|warning| warning.starts_with("Stream")).cloned());
         if !cs.is_overset() {
             continue;
         }
@@ -303,6 +304,13 @@ pub fn check_document(d: &Document, cache: &Cache, document: Option<&std::path::
     let mut white_text: std::collections::BTreeMap<Option<designcraft_doc::ItemId>, Vec<&'static str>> = std::collections::BTreeMap::new();
     for story in d.stories.values() {
         let cs = cache.get(d, story.id, None);
+        out.extend(cs.warnings.iter().map(|message| Issue {
+            severity: "warning",
+            kind: "noteLayout",
+            message: message.clone(),
+            item: None,
+            page: None,
+        }));
         missing_glyphs(&cs, None, 0, &mut missing);
         if cs.is_overset() {
             let last = story.frames.last().copied();

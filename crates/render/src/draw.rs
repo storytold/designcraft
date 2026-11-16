@@ -317,7 +317,7 @@ impl Renderer {
                 ctx.pop_layer();
             }
             Content::Text(tf) => {
-                let cs = self.story(f, tf.story, page);
+                let cs = self.story(f, tf.composed_story(), page);
                 if let Some(ft) = cs.frame(it.id) {
                     match &tf.options.path {
                         Some(pt) => self.draw_path_text(ctx, f, &cs, ft, xf, bp, pt),
