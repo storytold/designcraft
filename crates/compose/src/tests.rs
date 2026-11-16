@@ -3000,6 +3000,19 @@ fn vertical_justification_with_an_extreme_grid_increment_stays_finite() {
             assert!((b - natural).abs() < 1e-6, "Top, grid away from the line: baseline {b}, natural {natural}");
         }
     }
+
+    // A grid whose first line is too far off to count the text area in its 0.7 pt steps: Bottom
+    // takes the room as it does without a grid.
+    let mut area = Rect::ZERO;
+    let (lines, _) = grid_doc("One", ParaAttrs { grid_align: Some(GridAlign::AllLines), ..Default::default() }, |d, sid| {
+        let spec = frame_specs(d, sid).remove(0);
+        area = spec.area;
+        let opts = &mut d.item_mut(spec.id).unwrap().text_frame_mut().unwrap().options;
+        opts.baseline_grid = Some(designcraft_doc::FrameBaselineGrid::new(-1.7e308, 0.7));
+        opts.vertical_justification = Bottom;
+    });
+    let b = lines[0].baseline;
+    assert!((b - area.y1).abs() < 1e-6, "Bottom with a far-off grid: baseline {b}, text area {area:?}");
 }
 
 /// In a shaped frame that narrows and widens again, Align to Baseline Grid takes the grid step
@@ -5195,6 +5208,22 @@ fn drop_cap_on_a_baseline_grid_reaches_down_by_grid_steps() {
     assert!((lines[2].baseline - cap_of(dc) - (lines[0].baseline - cap_of(body))).abs() < 0.01);
 }
 
+/// A grid the lines can't count in steps (its first line too far off for a 0.7 pt step) is no grid
+/// for the drop cap either: it reaches down to line 3 at the 12 pt leading the lines are set at.
+#[test]
+fn drop_cap_skips_a_grid_the_lines_skip() {
+    let (d, sid, _) = drop_doc(LOREM, ParaAttrs { grid_align: Some(designcraft_doc::GridAlign::AllLines), ..drop_cap(3, 1) });
+    let mut specs = frame_specs(&d, sid);
+    specs[0].grid = Some((-1.7e308, 0.7));
+    let cs = compose(&d, d.story(sid).unwrap(), &specs, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    assert!((lines[2].baseline - lines[0].baseline - 24.0).abs() < 1e-6, "{} {}", lines[0].baseline, lines[2].baseline);
+    let dc = &lines[0].glyphs[0];
+    assert!((lines[0].baseline + dc.y - lines[2].baseline).abs() < 1e-6, "drop cap baseline {} below line 1", dc.y);
+    let b = lines[0].drop_cap.unwrap();
+    assert!((b.baseline - lines[2].baseline).abs() < 1e-6, "{}", b.baseline);
+}
+
 /// A line with a larger auto leading doesn't move the drop cap: it reaches down `lines − 1`
 /// leadings of the text after it, not to where line N is set.
 #[test]
@@ -6974,6 +7003,224 @@ fn mojikumi_kinsoku_push_in_and_push_out_select_different_legal_breaks() {
     for cs in [&inside, &outside] {
         assert!(all_lines(cs).iter().all(|l| l.end_x <= l.x1 + 0.01));
     }
+}
+
+/// A paragraph that can compress: the Mojikumi table gives its ideographs shrinkable space, so
+/// a line ending before a 禁則 boundary can be pulled in (追い込み) or pushed out (追い出し).
+fn kinsoku_push_pull_doc(kind: Option<&str>) -> (Document, StoryId) {
+    kinsoku_push_pull_doc_text("甲乙丙丁戊己庚辛", kind)
+}
+
+/// Same paragraph with a different body: used for the supplementary-plane ideographs, whose
+/// CJK classification must match the breaker's Han set.
+fn kinsoku_push_pull_doc_text(text: &str, kind: Option<&str>) -> (Document, StoryId) {
+    use designcraft_doc::cjk::{MojikumiAki, MojikumiTable};
+    let (mut d, sid, _) = doc_with(
+        text,
+        Rect::new(0.0, 0.0, 45.0, 300.0),
+        ParaAttrs {
+            composer: Some(Composer::SingleLine),
+            mojikumi: Some("MojikumiTable/Compress".into()),
+            kinsoku_type: kind.map(str::to_string),
+            ..Default::default()
+        },
+    );
+    Arc::make_mut(&mut d.styles).mojikumi_tables.push(MojikumiTable {
+        name: "Compress".into(),
+        based_on: "SimpChineseDefault".into(),
+        overrides: vec![MojikumiAki {
+            target_class: 12,
+            side_class: 12,
+            after: true,
+            minimum: 0.0,
+            desired: 1.0,
+            maximum: 2.0,
+            priority: 1,
+            ..Default::default()
+        }],
+    });
+    (d, sid)
+}
+
+fn first_line_end(cs: &ComposedStory) -> (usize, f64) {
+    let line = all_lines(cs)[0];
+    (line.range.end, line.end_x)
+}
+
+#[test]
+fn default_kinsoku_type_composes_as_push_in_first() {
+    // The empty value is InDesign's default (and what the UI's "Push In First" stores): it must
+    // behave as push-in-first, not as the minimum-adjustment mode.
+    let (d, sid) = kinsoku_push_pull_doc(None);
+    let default = compose_story(&d, sid, &ComposeOptions::default());
+    let (d, sid) = kinsoku_push_pull_doc(Some("KinsokuPushInFirst"));
+    let push_in = compose_story(&d, sid, &ComposeOptions::default());
+    let (d, sid) = kinsoku_push_pull_doc(Some("KinsokuPushOutFirst"));
+    let push_out = compose_story(&d, sid, &ComposeOptions::default());
+    assert_eq!(first_line_end(&default).0, first_line_end(&push_in).0);
+    assert!(first_line_end(&default).0 > first_line_end(&push_out).0, "{:?} vs {:?}", first_line_end(&default), first_line_end(&push_out));
+}
+
+#[test]
+fn push_out_only_leaves_the_line_end_uncompressed() {
+    // Push-out-only turns the 追い込み compression off: the line cannot be squeezed to reach a
+    // break, so it ends earlier (and never past the measure).
+    let (d, sid) = kinsoku_push_pull_doc(None);
+    let push_in = compose_story(&d, sid, &ComposeOptions::default());
+    let (d, sid) = kinsoku_push_pull_doc(Some("KinsokuPushOutOnly"));
+    let push_out_only = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(first_line_end(&push_out_only).0 <= first_line_end(&push_in).0);
+    for cs in [&push_in, &push_out_only] {
+        for line in all_lines(cs) {
+            assert!(line.end_x <= line.x1 + 0.01, "line end {} past the measure {}", line.end_x, line.x1);
+        }
+    }
+    // Push-out-only's first line is not compressed to the measure: it ends short of it.
+    let (_, short) = first_line_end(&push_out_only);
+    let line = all_lines(&push_out_only)[0];
+    assert!(line.x1 - short > 0.5, "no compression: end {short} vs measure {}", line.x1);
+}
+
+#[test]
+fn supplementary_ideograph_paragraph_keeps_the_kinsoku_gate() {
+    // Extension B 以降の漢字 (U+20000..) は breaker では Han として扱われる。段落全体の CJK 判定
+    // (is_cjk_char) がそこを落とすと、補助面だけの段落で禁則の指定が効かなくなる。
+    // 補助面だけの本文でも、追い込みと追い出しで行末が変わる (指定が効いている) こと。
+    let first_end = |text: &str, kind: Option<&str>| {
+        let (d, sid) = kinsoku_push_pull_doc_text(text, kind);
+        first_line_end(&compose_story(&d, sid, &ComposeOptions::default())).0
+    };
+    let bmp = "甲乙丙丁戊己庚辛";
+    let sup = "\u{20000}\u{20001}\u{20002}\u{20003}\u{20004}\u{20005}\u{20006}\u{20007}";
+    // 対照: BMP の漢字だけの段落では、追い込みと追い出しで行末が変わる
+    assert_ne!(first_end(bmp, None), first_end(bmp, Some("KinsokuPushOutOnly")), "BMP の対照で禁則の指定が効いていない");
+    // 補助面だけの段落でも同じように効く (判定から漏れると、どちらも同じ行末になる)
+    assert_ne!(first_end(sup, None), first_end(sup, Some("KinsokuPushOutOnly")), "補助面だけの段落で禁則の指定が効いていない");
+    // 判定そのもの (Extension B の最初と最後、Ext G の終わり)
+    assert!(is_cjk_char('\u{20000}'));
+    assert!(is_cjk_char('\u{2A6DF}'));
+    assert!(is_cjk_char('\u{3FFFF}'));
+    assert!(!is_cjk_char('A'));
+}
+
+#[test]
+fn hangul_jamo_extended_blocks_count_as_cjk() {
+    // `is_cjk_char` takes Hangul from the breaker's classification, so the syllables and the
+    // Jamo Extended-A/B blocks count as well: a Hangul-only paragraph keeps its 禁則 priority.
+    for c in ['\u{A960}', '\u{A97F}', '\u{D7B0}', '\u{D7FF}'] {
+        assert!(is_cjk_char(c), "U+{:04X} is Hangul", c as u32);
+    }
+    assert!(is_cjk_char('\u{3105}'), "bopomofo is still CJK");
+}
+
+/// Shape `text` as a one-paragraph story with the default font and styles: the glyph list the
+/// composition classifies before `split_drop_cap` and `prepend_label`.
+fn shape_for_script_test(text: &str) -> Vec<Glyph> {
+    shape_for_script_test_with(text, &SubstCtx::default())
+}
+
+/// Same, with text variables resolved through `sub`.
+fn shape_for_script_test_with(text: &str, sub: &SubstCtx) -> Vec<Glyph> {
+    let db = designcraft_fonts::FontDb::global().scoped(0);
+    let mut styles = Vec::new();
+    let mut missing = std::collections::HashMap::new();
+    let mut table = shape::StyleTable { styles: &mut styles, missing: &mut missing };
+    let mut story = Story::new(StoryId(0));
+    story.insert(0, text);
+    let doc_styles = designcraft_doc::Styles::default();
+    shape::shape_para(
+        shape::ShapeInput {
+            db: &db,
+            styles: &doc_styles,
+            story: &story,
+            range: 0..text.len(),
+            para_chars: &designcraft_doc::CharProps::default(),
+            auto_leading: shape::TypeEnv { auto_leading: 1.2, adv: Default::default(), glyph_fallback: true },
+            sub,
+            nested: &[],
+            grep: &[],
+            lines: &[],
+            drop_cap: (0, ""),
+        },
+        &mut table,
+    )
+    .glyphs
+}
+
+#[test]
+fn paragraph_script_counts_a_drop_cap_but_not_a_generated_label() {
+    // The 禁則 gate reads the paragraph's own shaped glyphs. The drop cap has not been split off
+    // yet, so a CJK one still makes the paragraph CJK.
+    assert!(paragraph_is_cjk(&shape_for_script_test("漢abc")));
+    // A generated list label is prepended after the gate, so it is not part of the paragraph.
+    let mut glyphs = shape_for_script_test("abc");
+    assert!(!paragraph_is_cjk(&glyphs));
+    let db = designcraft_fonts::FontDb::global().scoped(0);
+    let mut styles = Vec::new();
+    let mut missing = std::collections::HashMap::new();
+    let mut table = shape::StyleTable { styles: &mut styles, missing: &mut missing };
+    let n = prepend_label(
+        &db,
+        &mut glyphs,
+        "第1章",
+        0,
+        &designcraft_doc::CharProps::default(),
+        shape::TypeEnv { auto_leading: 1.2, adv: Default::default(), glyph_fallback: true },
+        &mut table,
+    );
+    assert!(n > 0);
+    // The label's glyphs are CJK, so a gate computed after prepend_label would flip the answer.
+    assert!(glyphs.iter().take(n).any(|g| is_cjk_char(g.ch)));
+}
+
+#[test]
+fn paragraph_script_reads_a_text_variable_replacement() {
+    // A text variable's glyphs keep the source marker in `ch`; the paragraph shows the replacement,
+    // so a CJK replacement makes it CJK text even though no source character is.
+    let marker = designcraft_doc::vars::var_char(0).expect("variable 0");
+    let text = format!("{marker}abc");
+    let sub = SubstCtx { vars: Arc::new(vec!["漢字".into()]), ..Default::default() };
+    let glyphs = shape_for_script_test_with(&text, &sub);
+    assert!(!glyphs.iter().any(|g| is_cjk_char(g.ch)), "the source is only the marker and Latin text");
+    assert!(glyphs.iter().any(|g| g.generated_text.as_deref().is_some_and(|t| t.chars().any(is_cjk_char))));
+    assert!(paragraph_is_cjk(&glyphs), "the CJK replacement is the paragraph's text");
+}
+
+#[test]
+fn kinsoku_priority_modes_map_to_breaker_policies() {
+    let mut pp = ParaProps::default();
+    let story = designcraft_doc::Story::new(designcraft_doc::StoryId::default());
+    for (kind, priority) in [
+        ("", 1u8),
+        ("KinsokuPushInFirst", 1),
+        ("KinsokuPushOutFirst", 2),
+        ("KinsokuPushOutOnly", 3),
+        ("KinsokuPrioritizeAdjustmentAmount", 0),
+        ("KinsokuSomethingElse", 0),
+    ] {
+        pp.kinsoku_type = kind.to_string();
+        let sp = spacing_for(&pp, 12.0, &story, true);
+        assert_eq!(sp.kinsoku_priority, priority, "{kind}");
+        assert!(sp.kinsoku_cjk, "{kind}");
+        assert!(!spacing_for(&pp, 12.0, &story, false).kinsoku_cjk, "{kind}: Latin text is not biased");
+    }
+}
+
+#[test]
+fn latin_paragraphs_are_not_biased_by_the_kinsoku_priority() {
+    // A justified Latin paragraph composes the same with push-in-first, push-out-first and
+    // minimum adjustment: the policy is about CJK 禁則, and a Latin paragraph has none.
+    let compose_with = |kind: &str| {
+        let (mut d, sid, _) =
+            doc_with(LOREM, Rect::new(0.0, 0.0, 200.0, 500.0), ParaAttrs { align: Some(Align::FullyJustified), ..Default::default() });
+        d.story_mut(sid).unwrap().paras[0].para.kinsoku_type = Some(kind.to_string());
+        compose_story(&d, sid, &ComposeOptions::default())
+    };
+    let ends = |cs: &ComposedStory| all_lines(cs).iter().map(|l| l.range.end).collect::<Vec<_>>();
+    let push_in = ends(&compose_with(""));
+    assert_eq!(ends(&compose_with("KinsokuPushInFirst")), push_in);
+    assert_eq!(ends(&compose_with("KinsokuPushOutFirst")), push_in);
+    assert_eq!(ends(&compose_with("KinsokuPrioritizeAdjustmentAmount")), push_in);
 }
 
 #[test]

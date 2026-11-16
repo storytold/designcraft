@@ -1363,6 +1363,39 @@ fn paragraph_style_options_justification_sets_auto_leading_and_single_word_justi
     assert_eq!((para.auto_leading, para.single_word_justify), (Some(1.0), Some(designcraft_doc::Align::Right)));
 }
 
+/// Paragraph Style Options › Justification fits at the normal dialog width: the spacing table
+/// keeps its own narrow columns (the wide Single Word Justification menu must not stretch
+/// them), so Minimum/Desired sit close together and Maximum stays in view with no horizontal
+/// scrolling.
+#[test]
+fn paragraph_style_options_justification_fits_without_horizontal_scrolling() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("style.paragraph.create", json!({"name": "Headline"})).unwrap();
+    app.ui.dialog = Some(Dialog::new("paragraphStyleOptions", json!({"name": "Headline", "section": "justify"})));
+    let ctx = dialog_context("en");
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0));
+    for _ in 0..3 {
+        dialog_frame(&mut app, &ctx, screen, vec![]);
+    }
+    let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+    let rect_of =
+        |text: &str| labels.iter().find(|(t, _, _)| t.trim() == text).map(|(_, r, _)| *r).unwrap_or_else(|| panic!("{text} is painted: {labels:?}"));
+    let (minimum, desired) = (rect_of("Minimum"), rect_of("Desired"));
+    // Left edge to left edge of the two header labels. With the 130 pt Single Word menu sharing
+    // the grid's column, column 1 stretches and this distance measures ~130+; with the spacing
+    // table in its own grid it is ~70. The bound sits comfortably between the two.
+    let gap = desired.min.x - minimum.min.x;
+    assert!(gap < 100.0, "Minimum/Desired headers {gap:.1} pt apart: {minimum:?} {desired:?}");
+    // The whole section stays inside the dialog: Maximum and every control label are painted
+    // unclipped on screen (no horizontal scrolling needed to reach them).
+    visible_label(&labels, screen, "Maximum");
+    visible_label(&labels, screen, "Single Word Justification:");
+    visible_label(&labels, screen, "Composer:");
+    visible_label(&labels, screen, "Insert Kashidas:");
+    visible_label(&labels, screen, "Korean Line Breaks:");
+}
+
 fn command_app(id: &str, fields: Value) -> DesignApp {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.ui.dialog = Some(Dialog::new(&format!("cmd:{id}"), fields));
