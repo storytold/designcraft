@@ -6750,7 +6750,9 @@ fn drop_cap_fields(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, cn
             });
         ui.end_row();
     });
-    for (label, key) in [("Align Left Edge", "dropCapAlignLeft"), ("Scale for Descenders", "dropCapScaleDescenders")] {
+    for (label, key) in
+        [("Align Left Edge", "dropCapAlignLeft"), ("Scale for Descenders", "dropCapScaleDescenders"), ("Keep Size", "dropCapKeepSize")]
+    {
         let mut on = field_or(d, &format!("p.{key}"), &pv[key]).as_bool().unwrap_or(false);
         if ui.checkbox(&mut on, crate::rtl::widget(ui, crate::i18n::tr(lang, label))).changed() {
             d.fields.insert(format!("p.{key}"), json!(on));

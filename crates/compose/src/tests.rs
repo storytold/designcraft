@@ -5140,6 +5140,40 @@ fn hebrew_drop_word_aligns_ink_tops_with_the_first_body_line() {
 }
 
 #[test]
+fn right_to_left_drop_word_keeps_size_baseline_and_two_line_indent() {
+    const FAMILY: &str = "DC Test Hebrew Keep Size";
+    designcraft_fonts::FontDb::global().add_font(designcraft_fonts::testing::font_with(FAMILY, &['ה', 'ד', ' ']).unwrap());
+    let first_word = "הדה";
+    let text = "הדה הדה הדה ".repeat(30);
+    let para = ParaAttrs {
+        direction: Some(designcraft_doc::TextDirection::RightToLeft),
+        align: Some(Align::Right),
+        drop_cap_keep_size: Some(true),
+        ..drop_cap(2, 3)
+    };
+    let (mut d, sid, _) = drop_doc(&text, para);
+    let story = d.story_mut(sid).unwrap();
+    story.format_chars(0..text.len(), |f| f.over.font_family = Some(FAMILY.into()));
+    // Own formatting, 120% of the body, must survive without a fit-to-lines scale.
+    story.format_chars(0..first_word.len(), |f| f.over.size = Some(12.0));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    assert!(lines.len() > 2);
+    let dc: Vec<_> = lines[0].glyphs.iter().filter(|g| g.byte < first_word.len()).collect();
+    assert_eq!(dc.len(), 3);
+    for g in &dc {
+        assert!((g.sy * g.face.upem - 12.0).abs() < 0.01, "size {}", g.sy * g.face.upem);
+        assert!(g.y.abs() < 0.01, "baseline offset {}", g.y);
+    }
+    let width: f64 = dc.iter().map(|g| g.adv).sum();
+    let right =
+        |line: &Line| line.glyphs.iter().filter(|g| g.visible && g.byte >= first_word.len()).map(|g| g.x + g.adv).fold(f64::NEG_INFINITY, f64::max);
+    assert!((right(lines[0]) - (300.0 - width)).abs() < 0.01);
+    assert!((right(lines[1]) - (300.0 - width)).abs() < 0.01, "line 2 right {} width {width}", right(lines[1]));
+    assert!((right(lines[2]) - 300.0).abs() < 0.01, "line 3 right {}", right(lines[2]));
+}
+
+#[test]
 fn right_to_left_drop_cap_keeps_marks_on_their_letters() {
     const FAMILY: &str = "DC Test Hebrew Drop Marks";
     designcraft_fonts::FontDb::global().add_font(

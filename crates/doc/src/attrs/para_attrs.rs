@@ -29,6 +29,9 @@ attr_set! {
         drop_cap_align_left: bool = true,
         /// Scale for Descenders (kept and round-tripped; doesn't change the layout).
         drop_cap_scale_descenders: bool = false,
+        /// Keep Size: the drop cap keeps its own point size and sits on the first line's baseline;
+        /// the lines beside it are still indented by its width.
+        drop_cap_keep_size: bool = false,
         /// Nested styles, in order from the paragraph start.
         nested_styles: Vec<NestedStyle> = Vec::new(),
         /// GREP styles: a character style for every match of a pattern (applied after nested).

@@ -1,5 +1,7 @@
 # DesignCraft roadmap
 
+- **2026-11-16** · Drop caps have an opt-in Keep Size setting: the opening word keeps its formatting and first-line baseline while the chosen lines remain indented (#1930).
+
 - **2026-11-16** · Hebrew drop words use the measured ה ink height to align their tops with the first body line (#1930).
 
 **Stage: pre-alpha** · next: alpha, ~5–7 h away; beta ~28 points and ~420–750 h beyond that (the core-workflow gate, not the percentage: ready for real work is already ~47%)
