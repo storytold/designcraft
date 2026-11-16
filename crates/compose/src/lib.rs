@@ -16,6 +16,7 @@ mod cache;
 pub mod grep;
 mod grid;
 pub mod hyphen;
+pub mod inset;
 pub mod kenten;
 mod mojikumi;
 mod notes;
