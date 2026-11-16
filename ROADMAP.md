@@ -4,7 +4,7 @@
 - 2026-10-23: placed-artwork layer options survive IDML and native round trips per placement, independently of shared assets. Unsupported visibility overrides are explicit import/preflight/PDF warnings; format 4 prevents older native readers from silently discarding them. Rendering parity is still open; see [graphic-layer-options.md](docs/graphic-layer-options.md).
 - FID1: PDF export normalizes mixed emitted gradient color spaces to RGB with an explicit warning; homogeneous device-space gradients retain their components. Linear/radial, midpoint, archival and print policies have synthetic regression coverage.
 
-> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-11-06 · **Change:** minor (Pages panel parents and alternate layouts; File ▸ Export Layouts and Versions; placed graphic layer-option preservation and explicit rendering warnings; File ▸ Open Recent; .indd and .indt open through indd-utils; text threads by hand; the alpha gate waits on Primary Text Frame page fixes; Japanese print, import and table controls localized; Live corners (#186); Optical kerning from outlines (#181); window and menu quit confirmation; failed writes preserve live save and collection state; spring-loaded Zoom navigation; orderly native exit recovery; Pages panel parents; cancelable macOS Dock Quit; text stroke behind fill; Based on Parent; object styles carry effects; table anchors keep their own paragraphs; grouped HTML/EPUB reading order; Links source paths; XLSX cached cell values retain numeric precision and text; automation roots refuse superscript COM/LPT names and a device name before a colon) · **Target:** Adobe InDesign 2026
+> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-11-15 · **Change:** minor (obsolete CI gap removed; tracked-change selection mapping; Pages panel parents and alternate layouts; File ▸ Export Layouts and Versions; placed graphic layer-option preservation and explicit rendering warnings; File ▸ Open Recent; .indd and .indt open through indd-utils; text threads by hand; the alpha gate waits on Primary Text Frame page fixes; Japanese print, import and table controls localized; Live corners (#186); Optical kerning from outlines (#181); window and menu quit confirmation; failed writes preserve live save and collection state; spring-loaded Zoom navigation; orderly native exit recovery; Pages panel parents; cancelable macOS Dock Quit; text stroke behind fill; Based on Parent; object styles carry effects; table anchors keep their own paragraphs; grouped HTML/EPUB reading order; Links source paths; XLSX cached cell values retain numeric precision and text; automation roots refuse superscript COM/LPT names and a device name before a colon) · **Target:** Adobe InDesign 2026
 - AR1.1: Kashida justification tests verify space fallback without Tatweel fonts using an isolated font database, while retaining elongation assertions when fonts support it.
 
 - AR1: Arabic IDML controls now retain character direction, kashida switches, diacritic offsets/forms, paragraph policy values and independent story/table directions. Shaping preserves joining context and script/language selection; paragraph-level bidi, contextual digit conversion, mark-safe elongation, RTL columns/tables and physical column insertion have regression coverage. Vendor-specific justification and diacritic presets remain explicit preflight warnings; see docs/arabic-typography.md.
@@ -376,11 +376,10 @@ Ranked; detail and estimates in [docs/roadmap.md](docs/roadmap.md), the full lis
 
 1. **Alpha gate:** Primary Text Frame page fixes: autoflow adds pages users can't delete (#165) (5–7 h)
 2. Basic editing on every platform: copy/paste, context menus, caret formatting (30–50 h)
-3. CI running `cargo xtask ci` on pull requests (4–8 h)
-4. INDD real-file corpus: measure what `.indd` files keep through indd-utils (10–30 h)
-5. IDML real-file corpus and fixes (60–100 h)
-6. Composition oracle against InDesign; optical kerning tuning; overset rule (70–125 h)
-7. Start on any GPU; find every installed font (25–50 h)
+3. INDD real-file corpus: measure what `.indd` files keep through indd-utils (10–30 h)
+4. IDML real-file corpus and fixes (60–100 h)
+5. Composition oracle against InDesign; optical kerning tuning; overset rule (70–125 h)
+6. Start on any GPU; find every installed font (25–50 h)
 
 ## Documents
 
@@ -395,6 +394,9 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 ## Progress log
 
+- **2026-11-15** · Removed the obsolete gap saying pull requests have no test workflow: [CI](.github/workflows/ci.yml) runs the shared quality gate on every pull request and push to main (#1352). No readiness percentage change.
+- **2026-11-15** · Accepting tracked deletions or rejecting insertions follows body-text selections through the removed text, including resolving all changes, and preserves independent cell and footnote insertion points. No readiness percentage change.
+- **2026-11-15** · Format follow-ups to the craft-libs cutover (craft-libs#778; ported from #2734 by Dylan M. Taylor): IDML export keeps CDATA image contents and table spans such as `inf` reach the table edge; DOCX plain-text import leaves out deleted tracked changes and expands inline objects; an XLSX number cell that isn't a number shows as written; unmarked CMYK JPEGs keep the shared decoder's ink polarity; PPTX export writes exact opacity; PDF export repins craft-pdf and craft-prepress to craft-libs main. No readiness percentage change.
 - **2026-11-14** · `object.stroke` refuses a tint or gap tint outside 0 to 1, a weight outside 0 to 1000 pt, a miter limit outside 1 to 500, a gap overprint that isn't true or false, and an alignment, cap, join or arrowhead name it doesn't have, instead of clamping the numbers and skipping the names. The Stroke panel's Weight and Miter Limit fields keep their values in those ranges. No readiness percentage change.
 - **2026-11-14** · Photo books no longer freeze the canvas (#1411; based on #2051 by texjer). The image cache keeps only the mip level each image is drawn at, for every format and display quality: a TIFF, PNG, PSD or CMYK JPEG used to keep its full decode too (48 MB for a 12 MP photo), so after about a dozen photos each edit evicted and decoded them again on the render thread. The canvas no longer waits for decodes: an image not cached at its size shows a light box or another cached level and decodes on one of three background threads (within the same in-flight memory limit as the decodes ahead of a render), and finished decodes are drawn in batches, at most one canvas render every 250 ms. Zooming into an image decodes it at most twice. Thumbnails and exports still wait for every image. No readiness percentage change.
 - **2026-11-14** · IDML export keeps each endnote reference as its number in superscript text, as the endnote frame lists it, instead of dropping it; the endnotes are still written as plain text, without IDML's endnote elements (#2753). No readiness percentage change.
@@ -535,6 +537,7 @@ Newest first.
 - **2026-10-16** · Lock Guides and Lock Column Guides are commands in View ▸ Grids & Guides (`view.lockGuides`, ⌥⌘;, and `view.lockColumnGuides`), so the control channel and MCP reach them. Lock Column Guides is an undo step, is saved with the document, on in new ones, and read from and written to IDML's `ColumnGuideLocked`, which export always wrote as locked (#1096). No readiness percentage change.
 - **2026-10-16** · IDML: a page keeps column guides that were dragged off centre (InDesign's Custom columns). They were divided evenly on import, so the gutter sprang back to the middle; the imported positions now place the columns, with the canvas guides, snapping and text placement following them, and they are written back on export. Layout › Margins and Columns re-divides them evenly when the count or gutter changes, as InDesign's does. No readiness percentage change.
 - **2026-10-16** · IDML: custom column positions are checked before they are used (#1096). A set must give two edges per column, ascending from the left margin to the right one; any other (a wrong count, unsorted or non-numeric values, a list longer than 216 columns allow, or positions left behind by a margin or page-size change) is the even split, in the canvas, on import and on export, instead of columns drawn outside the margins. No readiness percentage change.
+- **2026-10-21** · Layer Options has InDesign's Lock Guides: the layer's ruler guides can't be moved or deleted while its objects stay editable (`layer.set {lockGuides}`), and IDML reads and writes the layer's `LockGuides` (it was always written as false). The options are arranged as InDesign's: Show Layer and Show Guides, Lock Layer and Lock Guides, Print Layer. Found in the Learn Skills Daily course, chapter 32. No readiness percentage change.
 - **2026-10-20** · Smart guides: an edge being drawn or resized snaps to the page's centre line, as in InDesign, so a frame drawn from the top margin to the middle of the page stops there instead of at the nearest baseline grid line. No readiness percentage change.
 - **2026-10-21** · An empty graphic frame's X joins its corners, so a frame slanted with Direct Selection keeps its X corner to corner, as InDesign draws it; it used to stay across the old rectangle. Found in Zero2Graphic's *How to Page Layout design in Adobe InDesign 2022 CC*. No readiness percentage change.
 - **2026-10-21** · Paragraph Border and Paragraph Shading link their four sides as InDesign's: the stroke weights, offsets and corners have the "Make all settings the same" link, on when the four are the same, so a side typed in sets all four; with the link off a side is set alone (a border with only a thick left side). Found in the Learn Skills Daily course, chapter 40. No readiness percentage change.
@@ -878,6 +881,7 @@ Newest first.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-15 | minor | Track Changes resolution maps body selections through removed text and preserves nested text positions |
 | 2026-10-12 | minor | Manual text threading landed; alpha distance 15–25 h → 5–7 h (Primary Text Frame page fixes, #165) |
 | 2026-10-11 | minor | Localized Japanese print, import and table controls; readiness estimates unchanged |
 | 2026-10-10 | minor | Full number 42% → 47% (plain weighted sum, no new evidence); readiness table with hours per audience |
@@ -895,3 +899,5 @@ The shared craft-installer UI preserves this revision's install options and prov
 - **2026-10-15** · Windows recovery folders validate the identity of the live locked file without reading it through a second handle. Missing or replaced locks disable writes and cleanup; regression tests cover retained exclusive locking and replacement-file protection. No readiness percentage change.
 
 - PDF reader infrastructure: pinned shared parsing/rasterization, transformed page-box geometry and explicit failures for known incomplete layered-PDF exports. Application ownership and parity targets are unchanged.
+
+- Format reuse: HTML data URIs and file serialization use craft-mime Base64 encoding; existing decoder policies and document budgets remain unchanged.

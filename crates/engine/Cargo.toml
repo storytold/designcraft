@@ -13,6 +13,7 @@ workspace = true
 testing = []
 
 [dependencies]
+craft-mime = { workspace = true }
 unicode-normalization = "0.1"
 craft-proof = { workspace = true }
 craft-print = { workspace = true }

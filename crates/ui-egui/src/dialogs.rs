@@ -4086,12 +4086,12 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                         egui::Grid::new("ff_crop").num_columns(4).spacing([8.0, 6.0]).show(ui, |ui| {
                             for (k, l) in [("cropTop", "Top:"), ("cropLeft", "Left:")] {
                                 crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, l));
-                                text_field(ui, &mut d, k, 70.0);
+                                measure_field(ui, &mut d, k, 70.0);
                             }
                             ui.end_row();
                             for (k, l) in [("cropBottom", "Bottom:"), ("cropRight", "Right:")] {
                                 crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, l));
-                                text_field(ui, &mut d, k, 70.0);
+                                measure_field(ui, &mut d, k, 70.0);
                             }
                             ui.end_row();
                         });
@@ -5449,7 +5449,7 @@ fn confirm_part5(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
             json!({"path": d.s("path"), "removeStyles": d.b("removeStyles"), "styleConflicts": d.s("styleConflicts"), "styleMap": d.fields.get("map").cloned().unwrap_or(json!({}))}),
         ),
         "fittingOptions" => {
-            let m = |k: &str| d.fields.get(k).and_then(Value::as_str).and_then(|s| parse_measure(s, Unit::Points).ok()).unwrap_or(0.0);
+            let m = |k: &str| d.m(k).unwrap_or(0.0);
             app.run(
                 "object.fittingOptions",
                 json!({"autoFit": d.b("autoFit"), "fitting": d.s("fitting"), "align": d.n("align").unwrap_or(4.0) as u64,
@@ -8358,6 +8358,9 @@ const PREVIEW_FAILED: &str = "previewFailed";
 /// edited.
 fn justification(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, prefix: &str, current: &Value) {
     let cur = |d: &Dialog, k: &str| d.fields.get(&format!("{prefix}{k}")).cloned().unwrap_or_else(|| current[k].clone());
+    // The spacing table keeps its own grid: its columns are only as wide as the percent fields.
+    // The rows below (a wide menu, composer buttons, long checkboxes) sit outside it, so they
+    // cannot stretch its columns and push Desired and Maximum off-screen.
     egui::Grid::new("psj").num_columns(4).spacing([8.0, 6.0]).show(ui, |ui| {
         ui.label("");
         crate::rtl::label(ui, crate::i18n::tr(lang, "Minimum"));
@@ -8381,6 +8384,8 @@ fn justification(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, prefix: &str, cu
             d.fields.insert(format!("{prefix}autoLeading"), json!(auto_leading_typed(n)));
         }
         ui.end_row();
+    });
+    ui.horizontal(|ui| {
         let single_label = crate::rtl::label(ui, crate::i18n::tr(lang, "Single Word Justification:"));
         let single = cur(d, "singleWordJustify");
         // Mixed (null) shows blank until a choice is made.
@@ -8403,7 +8408,8 @@ fn justification(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, prefix: &str, cu
             })
             .response
             .labelled_by(single_label.id);
-        ui.end_row();
+    });
+    ui.horizontal(|ui| {
         crate::rtl::label(ui, crate::i18n::tr(lang, "Composer:"));
         let composer = cur(d, "composer");
         // Mixed (null) selects neither; a Japanese composer keeps its kind.
@@ -8415,20 +8421,20 @@ fn justification(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, prefix: &str, cu
         if ui.selectable_label(known && single, crate::rtl::widget(ui, crate::i18n::tr(lang, "Single-line Composer"))).clicked() {
             d.fields.insert(format!("{prefix}composer"), json!(single_line));
         }
-        ui.end_row();
-        for (label, key, text, default) in [
-            ("Insert Kashidas:", "kashidas", "In justified Arabic text", true),
-            ("Korean Line Breaks:", "koreanCharBreaks", "Between syllables (not only at spaces)", false),
-        ] {
+    });
+    for (label, key, text, default) in [
+        ("Insert Kashidas:", "kashidas", "In justified Arabic text", true),
+        ("Korean Line Breaks:", "koreanCharBreaks", "Between syllables (not only at spaces)", false),
+    ] {
+        ui.horizontal(|ui| {
             crate::rtl::label(ui, crate::i18n::tr(lang, label));
             let v = cur(d, key);
             let mut on = v.as_bool().unwrap_or(default);
             if ui.add(egui::Checkbox::new(&mut on, crate::rtl::widget(ui, crate::i18n::tr(lang, text))).indeterminate(v.is_null())).changed() {
                 d.fields.insert(format!("{prefix}{key}"), json!(on));
             }
-            ui.end_row();
-        }
-    });
+        });
+    }
     if let Some(e) = d.fields.get("justifyError").and_then(Value::as_str) {
         ui.add_space(6.0);
         crate::rtl::label(ui, egui::RichText::new(e).color(ui.visuals().error_fg_color));
