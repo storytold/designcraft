@@ -310,3 +310,14 @@ fn unrelated_malformed_preferences_are_still_rejected() {
     assert!(UiState::from_preferences_json(br#"{"uiScale":"invalid","docking":false}"#).is_err());
     assert!(UiState::from_preferences_json(br#"{"customWorkspaces":false}"#).is_err());
 }
+
+#[test]
+fn hidden_panels_is_not_persisted_across_restarts() {
+    let read = UiState::read_preferences(br#"{"hiddenPanels":1}"#).unwrap();
+    assert!(read.intact);
+    assert_eq!(read.ui.hidden_panels, 0);
+    let mut ui = read.ui;
+    ui.hidden_panels = 2;
+    let saved = serde_json::to_value(&ui).unwrap();
+    assert!(saved.get("hiddenPanels").is_none());
+}
