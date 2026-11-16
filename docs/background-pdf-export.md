@@ -32,3 +32,19 @@ host writers, so the UI disables cancellation once saving begins. Read-only docu
 inspection, status and zoom/fit remain available during generation/saving. A queued
 Quit has visible feedback and is cleared if the export is cancelled. The version 2
 control contract and terminal-result schema are in `control-protocol.md`.
+
+
+## Review scope and validation
+
+This PR changes PDF snapshot generation, status, cancellation, deferred application inputs
+and writing. Native graphics backend selection is unchanged from its base; the Metal-only
+startup change is proposed independently in #1111. Test-only macOS shortcut/optional-font
+and CLI pipe portability prerequisites are proposed independently in #2549 and mirrored
+here until merged. They do not change production input or font behavior.
+
+Reproduce the exact-head check with `cargo xtask ci`. For native smoke validation build
+`cargo build --locked -p designcraft` and use an isolated `DESIGNCRAFT_CONFIG_DIR`.
+During export, query `app.pdfExportStatus` until terminal, exercise read-only inspection,
+check cancellation before saving, and verify normal Quit still asks about dirty documents.
+The desktop queued result is versioned and documented in command help; use the terminal
+result for bytes, page counts and warnings. Hosted workflow approval remains separate.
