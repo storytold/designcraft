@@ -10835,3 +10835,54 @@ fn margin_stacks_compare_scaled_hosts_in_physical_page_space() {
     let br = d.text_xf(d.item(bf).unwrap()).transform_rect_bbox(cb.frames[0].notes[0].rect);
     assert!((br.y0 - ar.y1 - 7.0).abs() < 0.01, "physical rectangles {ar:?}, {br:?}");
 }
+
+#[test]
+fn placed_anchored_margin_notes_share_the_regular_page_stack() {
+    use designcraft_doc::{MarginSide, NotePlacement};
+    let mut d = Document::new(&NewDocument { pages: 1, ..Default::default() });
+    d.footnote_options.placement = NotePlacement::Margin { side: MarginSide::Right, gap: 8.0, width: 72.0 };
+    d.footnote_options.space_between = 7.0;
+    let (mut item, anchored) = anchored_text_frame(&mut d, "Anchored", 200.0, 120.0);
+    item.xf = Affine::scale(1.5);
+    let fid = item.id;
+    d.story_mut(anchored).unwrap().insert_note(8, "Anchored\nSecond\nThird", Default::default());
+    let mut group = designcraft_doc::Item::new(ItemId(d.alloc()), d.default_layer(), designcraft_doc::Shape::Group, Default::default());
+    group.content = Content::Group { items: vec![Arc::new(item)] };
+    let (host, _) = body_holding(&mut d, group);
+    let positions = placed::placements(&d, anchored, &mut |host| Arc::new(compose_story_unstacked(&d, host, &Default::default())));
+    assert_eq!(positions.len(), 1);
+    let xf = positions[0].1.xf * d.text_xf(d.anchored_item(fid).unwrap());
+    let raw = compose_story_unstacked(&d, anchored, &Default::default());
+    let raw_rect = xf.transform_rect_bbox(raw.frames[0].notes[0].rect);
+    let (regular_frame, regular) = d
+        .add_text_frame(
+            SpreadRef::Doc(0),
+            Rect::new(120.0, raw_rect.y0 + 15.0, 420.0, raw_rect.y0 + 415.0),
+            d.default_layer(),
+            "Regular",
+            Default::default(),
+        )
+        .unwrap();
+    d.story_mut(regular).unwrap().insert_note(7, "Regular\nSecond\nThird", Default::default());
+    assert!(d.find(fid).is_none());
+    let a = compose_story(&d, anchored, &Default::default());
+    let b = compose_story(&d, regular, &Default::default());
+    let anchored_rect = xf.transform_rect_bbox(a.frames[0].notes[0].rect);
+    let regular_rect = d.text_xf(d.item(regular_frame).unwrap()).transform_rect_bbox(b.frames[0].notes[0].rect);
+    assert!(
+        anchored_rect.y0 >= regular_rect.y1 + 7.0 * 1.5 - 0.01 || regular_rect.y0 >= anchored_rect.y1 + 7.0 - 0.01,
+        "anchored {anchored_rect:?}, regular {regular_rect:?}"
+    );
+    let cache = Cache::new();
+    assert_eq!(cache.get(&d, anchored, None).frames[0].notes[0].rect, a.frames[0].notes[0].rect);
+    assert_eq!(cache.get(&d, regular, None).frames[0].notes[0].rect, b.frames[0].notes[0].rect);
+    d.item_mut(host).unwrap().hidden = true;
+    let hidden = cache.get(&d, regular, None);
+    assert_eq!(hidden.frames[0].notes[0].rect, compose_story(&d, regular, &Default::default()).frames[0].notes[0].rect);
+    assert!(hidden.frames[0].notes[0].rect.y0 < b.frames[0].notes[0].rect.y0);
+    d.item_mut(host).unwrap().hidden = false;
+    let host_story = d.item(host).unwrap().text_frame().unwrap().story;
+    std::sync::Arc::make_mut(&mut d.story_mut(host_story).unwrap().objects[0]).item.hidden = true;
+    let hidden_group = cache.get(&d, regular, None);
+    assert_eq!(hidden_group.frames[0].notes[0].rect, hidden.frames[0].notes[0].rect);
+}

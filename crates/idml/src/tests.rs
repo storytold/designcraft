@@ -5600,3 +5600,36 @@ fn idml_warns_before_flattening_streams_and_hidden_references_even_in_series_zer
     let reopened = import_idml(&bytes).unwrap();
     assert!(reopened.stories.values().flat_map(|s| &s.notes).any(|note| note.text.text == "Commentary"));
 }
+
+#[test]
+fn idml_warns_for_additional_note_series_inside_a_table_cell() {
+    let mut d = Document::new(&NewDocument::default());
+    let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(72.0, 72.0, 400.0, 600.0), d.default_layer(), "Body", Default::default()).unwrap();
+    d.note_series.push(designcraft_doc::NoteSeries { id: 1, name: "Sources".into(), options: Default::default() });
+    let tid = d.alloc();
+    let st = d.story_mut(sid).unwrap();
+    st.insert_table(0, designcraft_doc::Table::new(tid, 1, 1, 0, 0, 240.0));
+    let table = std::sync::Arc::make_mut(st.tables.get_mut(&tid).unwrap());
+    let text = &mut table.cells[0].text;
+    let id = text.insert_note(0, "Embedded source", Default::default()).unwrap();
+    text.note_mut(id).unwrap().series = 1;
+    let (bytes, warnings) = crate::export_idml_report(&d, &Default::default());
+    assert!(warnings.iter().any(|w| w.contains("one footnote setup")), "{warnings:?}");
+    let back = import_idml(&bytes).unwrap();
+    let note = back.stories.values().flat_map(|s| s.tables.values()).flat_map(|t| &t.cells).flat_map(|c| &c.text.notes).next().unwrap();
+    assert_eq!(note.series, 0);
+    assert_eq!(note.text.text, "Embedded source");
+}
+
+#[test]
+fn idml_warns_when_visible_series_zero_margin_notes_become_ordinary_footnotes() {
+    let mut d = Document::new(&NewDocument::default());
+    let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(72.0, 72.0, 400.0, 600.0), d.default_layer(), "Body", Default::default()).unwrap();
+    d.footnote_options.placement = designcraft_doc::NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 8.0, width: 72.0 };
+    d.story_mut(sid).unwrap().insert_note(0, "Margin source", Default::default());
+    let (bytes, warnings) = crate::export_idml_report(&d, &Default::default());
+    assert!(warnings.iter().any(|w| w.contains("margin") && w.contains("ordinary footnotes")), "{warnings:?}");
+    let back = import_idml(&bytes).unwrap();
+    assert!(back.footnote_options.placement.is_column_foot());
+    assert!(back.stories.values().flat_map(|s| &s.notes).any(|n| n.text.text == "Margin source"));
+}

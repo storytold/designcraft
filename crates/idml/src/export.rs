@@ -75,8 +75,10 @@ pub fn export_idml_report(doc: &Document, opts: &ExportOptions) -> (Vec<u8>, Vec
 pub(crate) fn export_with_limit(doc: &Document, opts: &ExportOptions, embed_limit: usize) -> (Vec<u8>, Vec<String>) {
     let mut ex = Ex::new(doc, opts);
     ex.embed_limit = embed_limit;
-    if doc.stories.values().any(|st| st.notes.iter().any(|n| n.series != 0)) {
-        ex.warnings.push("IDML supports one footnote setup; notes from additional series are exported as ordinary footnotes using series 0.".into());
+    if any_footnote(doc, |n| n.series != 0 || matches!(doc.note_options(n.series).placement, designcraft_doc::NotePlacement::Margin { .. })) {
+        ex.warnings.push(
+            "IDML supports one footnote setup; additional note series and margin placement are exported as ordinary footnotes using series 0.".into(),
+        );
     }
     if doc.stories.values().any(|st| {
         st.notes.iter().any(|note| {
@@ -89,6 +91,23 @@ pub(crate) fn export_with_limit(doc: &Document, opts: &ExportOptions, embed_limi
     }
     let parts = ex.build();
     (zip_parts(&parts), ex.warnings)
+}
+
+/// Test exported footnotes in roots and embedded cell/note stories without recursive walking.
+fn any_footnote(doc: &Document, mut predicate: impl FnMut(&designcraft_doc::Footnote) -> bool) -> bool {
+    let mut pending: Vec<&Story> = doc.stories.values().map(AsRef::as_ref).collect();
+    let mut seen = HashSet::new();
+    while let Some(story) = pending.pop() {
+        if !seen.insert(std::ptr::from_ref(story)) {
+            continue;
+        }
+        if story.notes.iter().any(|note| predicate(note)) {
+            return true;
+        }
+        pending.extend(story.tables.values().flat_map(|table| table.cells.iter().map(|cell| &cell.text)));
+        pending.extend(story.notes.iter().chain(&story.endnotes).map(|note| &note.text));
+    }
+    false
 }
 
 fn zip_parts(parts: &[(String, Vec<u8>)]) -> Vec<u8> {

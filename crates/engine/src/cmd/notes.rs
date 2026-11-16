@@ -176,7 +176,10 @@ fn series_create(s: &mut Session, p: &Value) -> Result<Value> {
         .filter(|n| !n.trim().is_empty())
         .ok_or_else(|| bad("footnote.series.create", "missing name"))?
         .to_owned();
-    let options = read_options(p.clone(), "footnote.series.create")?;
+    // New command objects use API defaults; native files may default a missing allowSplit to false.
+    let mut value = serde_json::to_value(FootnoteOptions::default()).map_err(|e| bad("footnote.series.create", e.to_string()))?;
+    merge(&mut value, p);
+    let options = read_options(value, "footnote.series.create")?;
     validate_options(&options, "footnote.series.create")?;
     s.edit(|d, _| {
         let id = d
@@ -472,6 +475,22 @@ mod tests {
 #[cfg(test)]
 mod series_tests {
     use super::*;
+
+    #[test]
+    fn new_series_api_defaults_to_splitting_and_honors_explicit_false() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        assert!(s.doc().unwrap().doc.footnote_options.allow_split);
+        for (name, explicit, expected) in [("Default", None, true), ("Unsplit", Some(false), false), ("Split", Some(true), true)] {
+            let mut params = json!({"name": name});
+            if let Some(value) = explicit {
+                params["allowSplit"] = json!(value);
+            }
+            let id = s.execute("footnote.series.create", &params).unwrap()["id"].as_u64().unwrap();
+            let options = s.execute("footnote.series.options", &json!({"series": id, "separator": " "})).unwrap();
+            assert_eq!(options["allowSplit"], expected);
+        }
+    }
 
     #[test]
     fn series_commands_insert_filter_delete_and_undo() {

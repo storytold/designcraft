@@ -284,6 +284,17 @@ impl Cache {
                 for layer in &doc.layers {
                     (layer.id, layer.visible).hash(&mut h);
                 }
+                // Hidden hosts and inactive containing states can remove a neighbour's margin
+                // note without changing its story or spread allocation.
+                let mut items: Vec<&Item> = doc.spreads.iter().chain(&doc.parents).flat_map(|sp| sp.items.iter().map(AsRef::as_ref)).collect();
+                items.extend(doc.anchored_items().into_iter().map(|(_, item)| item));
+                let mut seen = HashSet::new();
+                while let Some(item) = items.pop() {
+                    if seen.insert(std::ptr::from_ref(item)) {
+                        (item.id, item.hidden, item.layer, item.states.len(), item.active_state).hash(&mut h);
+                        items.extend(item.children().iter().map(AsRef::as_ref));
+                    }
+                }
             }
             for series in &doc.note_series {
                 doc.footnote_series_start(sid, series.id).hash(&mut h);
