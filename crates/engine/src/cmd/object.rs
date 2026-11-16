@@ -3011,7 +3011,10 @@ fn text_selection_frames(s: &Session, t: &TextSel) -> Vec<ItemId> {
     // frame that shows the footnote reference or the table's anchor character.
     if let Some(c) = t.cell {
         let (drawn, anchor) = match c.footnote_id() {
-            Some(id) => (designcraft_compose::find_note(&cs, id).map(|(fi, _)| fi), story.note_anchor(id)),
+            Some(id) => (
+                designcraft_compose::find_note_part(&cs, id, t.focus).or_else(|| designcraft_compose::find_note(&cs, id)).map(|(fi, _)| fi),
+                story.note_anchor(id),
+            ),
             None => (designcraft_compose::find_cell(&cs, c.table, c.row, c.col).map(|(fi, ..)| fi), story.table_anchor(c.table)),
         };
         return drawn
