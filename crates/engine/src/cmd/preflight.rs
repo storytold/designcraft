@@ -292,15 +292,19 @@ fn modified_link(d: &Document, it: &Item, page: Option<usize>, document: Option<
     })
 }
 
-/// Warns once per Hebrew-numbered section at its first page numbered past 999, which prints in
-/// Arabic digits (`NumberStyle::format`'s fallback).
+/// Warns once per Hebrew-numbered section at its first page numbered past 999, and for Hebrew
+/// footnote or endnote numbering that starts past 999: those numbers print in Arabic digits
+/// (`NumberStyle::format`'s fallback).
 fn hebrew_number_range(d: &Document, out: &mut Vec<Issue>) {
+    use designcraft_doc::NumberStyle::{Hebrew, HebrewPlain};
+    let numbers = d.page_numbers(d.page_count());
     for section in &d.sections {
-        if !matches!(section.style, designcraft_doc::NumberStyle::Hebrew | designcraft_doc::NumberStyle::HebrewPlain) {
+        if !matches!(section.style, Hebrew | HebrewPlain) {
             continue;
         }
-        if let Some(page) =
-            (section.start..d.page_count()).take_while(|&abs| d.section_of(abs) == Some(section)).find(|&abs| d.page_number(abs) > 999)
+        if let Some(page) = (section.start..d.page_count())
+            .take_while(|&abs| d.section_of(abs) == Some(section))
+            .find(|&abs| numbers.get(abs).is_some_and(|&n| n > 999))
         {
             let name = d.page_name(page);
             out.push(Issue {
@@ -309,6 +313,21 @@ fn hebrew_number_range(d: &Document, out: &mut Vec<Issue>) {
                 message: format!("Page {name}: Hebrew page numbers stop at 999, so later pages print in Arabic digits"),
                 item: None,
                 page: Some(page),
+            });
+        }
+    }
+    // ponytail: checks only the start number; a run of notes that counts past 999 from a lower
+    // start isn't flagged (it needs the composed note numbers).
+    let notes =
+        [("Footnote", d.footnote_options.style, d.footnote_options.start_at), ("Endnote", d.endnote_options.style, d.endnote_options.start_at)];
+    for (kind, style, start) in notes {
+        if matches!(style, Hebrew | HebrewPlain) && start > 999 {
+            out.push(Issue {
+                severity: "warning",
+                kind: "hebrewNumberRange",
+                message: format!("{kind} numbering starts at {start}: Hebrew numbers stop at 999, so these notes print in Arabic digits"),
+                item: None,
+                page: None,
             });
         }
     }

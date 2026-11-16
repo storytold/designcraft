@@ -2720,6 +2720,36 @@ fn deleting_the_active_layer_moves_to_a_usable_layer() {
 }
 
 #[test]
+fn preflight_hebrew_note_number_range() {
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    let ranges = |s: &mut Session| -> Vec<String> {
+        let result = s.execute("preflight.run", &json!({})).unwrap();
+        result["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|i| i["kind"] == "hebrewNumberRange")
+            .map(|i| i["message"].as_str().unwrap().to_string())
+            .collect()
+    };
+    s.execute("footnote.options", &json!({"style": "hebrew", "startAt": 999})).unwrap();
+    s.execute("endnote.options", &json!({"style": "hebrewPlain", "startAt": 1})).unwrap();
+    assert!(ranges(&mut s).is_empty());
+    s.execute("footnote.options", &json!({"startAt": 1000})).unwrap();
+    s.execute("endnote.options", &json!({"startAt": 1200})).unwrap();
+    assert_eq!(
+        ranges(&mut s),
+        [
+            "Footnote numbering starts at 1000: Hebrew numbers stop at 999, so these notes print in Arabic digits",
+            "Endnote numbering starts at 1200: Hebrew numbers stop at 999, so these notes print in Arabic digits",
+        ]
+    );
+    s.execute("footnote.options", &json!({"style": "arabic"})).unwrap();
+    assert_eq!(ranges(&mut s).len(), 1);
+}
+
+#[test]
 fn preflight_hebrew_page_number_range() {
     for style in ["hebrew", "hebrewPlain"] {
         let mut s = Session::new();
