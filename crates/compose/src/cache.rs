@@ -112,6 +112,10 @@ fn doc_signature(doc: &Document) -> u64 {
     }
     (Arc::as_ptr(&doc.styles) as usize).hash(&mut h);
     format!("{:?}", doc.text_variables).hash(&mut h);
+    // Visibility can change displayed words and anchor pages without editing a story.
+    for condition in &doc.conditions {
+        (&condition.name, condition.visible).hash(&mut h);
+    }
     format!("{:?}{:?}", doc.footnote_options, doc.note_series).hash(&mut h);
     sections_hash(doc).hash(&mut h);
     // The compositions the indexes are built from also depend on these (see `signature`).
@@ -125,6 +129,12 @@ fn doc_signature(doc: &Document) -> u64 {
 fn margin_needs_xrefs(doc: &Document, story: &Story) -> bool {
     story.notes.iter().any(|n| matches!(doc.note_options(n.series).placement, designcraft_doc::NotePlacement::Margin { .. }))
         && doc.stories.values().any(|st| crate::xref::has_xrefs(st))
+}
+
+/// A plain margin host still stacks against neighbours with running-header variables.
+fn margin_needs_running(doc: &Document, story: &Story) -> bool {
+    story.notes.iter().any(|n| matches!(doc.note_options(n.series).placement, designcraft_doc::NotePlacement::Margin { .. }))
+        && doc.stories.values().any(|st| crate::vars::has_running(doc, st))
 }
 
 /// The Alpha Channel outlines text wraps around: a relink traces a new one while the items and
@@ -259,8 +269,9 @@ impl Cache {
             sig.push(h.finish() as usize);
         }
         let with_vars = crate::vars::has_vars(story);
-        let running = with_vars && crate::vars::has_running(doc, story);
-        if with_vars {
+        let margin_running = on == ShownOn::Own && margin_needs_running(doc, story);
+        let running = (with_vars && crate::vars::has_running(doc, story)) || margin_running;
+        if with_vars || margin_running {
             // Variables depend on the page count, sections and definitions (and running headers on
             // the whole document).
             use std::hash::{Hash, Hasher};
@@ -462,7 +473,10 @@ impl Cache {
     /// indexes (they compose every story).
     fn neighbour(&self, doc: &Document, sid: StoryId, depth: usize, resolved: &mut Resolved) -> Arc<ComposedStory> {
         let indexed = doc.stories.get(&sid).is_some_and(|st| {
-            crate::xref::has_xrefs(st) || (crate::vars::has_vars(st) && crate::vars::has_running(doc, st)) || margin_needs_xrefs(doc, st)
+            crate::xref::has_xrefs(st)
+                || (crate::vars::has_vars(st) && crate::vars::has_running(doc, st))
+                || margin_needs_xrefs(doc, st)
+                || margin_needs_running(doc, st)
         });
         if indexed {
             Arc::new(crate::wrap::compose_among(doc, sid, &ComposeOptions::default(), &[]))
@@ -512,7 +526,9 @@ impl Cache {
         {
             return r.clone();
         }
-        let r = Arc::new(RunningIndex::build(doc, &|sid| self.get(doc, sid, None)));
+        // Index sources can reach a running-index consumer through a margin neighbour or
+        // anchored host. Body-only composition keeps those indirect paths outside the cache.
+        let r = Arc::new(RunningIndex::build(doc, &|sid| Arc::new(crate::compose_story_unstacked(doc, sid, &ComposeOptions::default()))));
         *self.running.lock().unwrap_or_else(PoisonError::into_inner) = Some((sig, r.clone()));
         r
     }
