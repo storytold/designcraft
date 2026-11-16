@@ -127,3 +127,11 @@ fn predefined_variables_round_trip() {
     let back = import_idml(&export_idml(&d)).unwrap();
     assert_eq!(back.text_variables, d.text_variables);
 }
+
+#[test]
+fn catchword_exports_as_empty_custom_text() {
+    let mut d = Document::new(&NewDocument::default());
+    d.text_variables.push(designcraft_doc::vars::TextVariable::new("Catchword", VarKind::NextPageFirstWord { story: None }));
+    let back = import_idml(&export_idml(&d)).unwrap();
+    assert_eq!(back.text_variables.last().unwrap().kind, VarKind::Custom { text: String::new() });
+}
