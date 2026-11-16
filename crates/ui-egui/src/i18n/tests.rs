@@ -611,7 +611,7 @@ fn czech_counts_use_the_plural_form_for_the_number() {
 #[test]
 fn hebrew_catalog_is_selectable_rtl_and_preserves_english_keys() {
     let mut seen = HashSet::new();
-    assert_eq!(he::TABLE.len(), 1451, "Hebrew source-linked table changed");
+    assert_eq!(he::TABLE.len(), 1477, "Hebrew source-linked table changed");
     for (source, translated) in he::TABLE {
         assert!(seen.insert(*source), "duplicate Hebrew source key: {source}");
         assert!(!translated.trim().is_empty(), "empty Hebrew: {source}");
@@ -863,5 +863,41 @@ fn hebrew_source_linked_native_tool_and_window_labels() {
             expected,
             "Hebrew native UI label regression: {source}"
         );
+    }
+}
+
+#[test]
+fn hebrew_source_linked_data_merge_styles_and_export_labels() {
+    for (source, expected) in [
+        ("Convert Rows", "המרת שורות"),
+        ("Data Fields", "שדות נתונים"),
+        ("Define Lists", "הגדרת רשימות"),
+        ("Figure Space", "רווח ברוחב ספרה"),
+        ("Generate Live Caption", "יצירת כיתוב דינמי"),
+        ("Import InDesign Shortcut Set", "ייבוא ערכת קיצורי דרך של InDesign"),
+        ("Insert Field", "הוספת שדה"),
+        ("List Styles in File", "הצגת סגנונות בקובץ"),
+        ("None (keep transparency)", "ללא (שמירה על שקיפות)"),
+        ("Place with Import Options", "הצבה עם אפשרויות ייבוא"),
+        ("Preview Change", "תצוגה מקדימה של שינוי"),
+        ("Preview Record", "תצוגה מקדימה של רשומה"),
+        ("Rectangle Frame Tool", "כלי מסגרת מלבנית"),
+        ("Redefine Character Style", "הגדרה מחדש של סגנון תו"),
+        ("Redefine Paragraph Style", "הגדרה מחדש של סגנון פסקה"),
+        ("Remove Data Source", "הסרת מקור נתונים"),
+        ("Remove Field", "הסרת שדה"),
+        ("Resize Row or Column", "שינוי גודל שורה או עמודה"),
+        ("Reset Bar Position", "איפוס מיקום הסרגל"),
+        ("Files to export: {n}", "קבצים לייצוא: {n}"),
+        ("Put each version in its own folder", "שמירת כל גרסה בתיקייה נפרדת"),
+        ("Message:", "הודעה:"),
+        ("Range:", "טווח:"),
+        ("Organization:", "ארגון:"),
+    ] {
+        assert!(
+            fr::TABLE.iter().any(|(english, _)| english == source),
+            "official English source key missing: {source}"
+        );
+        assert_eq!(tr("he", source), expected, "Hebrew native UI label: {source}");
     }
 }
