@@ -15,24 +15,34 @@ pub(super) fn story_lines(s: &mut Session, p: &Value) -> Result<Value> {
         if frame.is_some_and(|id| ft.frame != id) {
             continue;
         }
-        let (Some(loc), Some(item)) = (d.find(ft.frame), d.item(ft.frame)) else { continue };
-        let xf = d.parent_xf(&loc) * d.text_xf(item);
-        let page = d.page_of_item(ft.frame);
+        // A spread frame, or an anchored frame where its host story's composition places it.
+        let placed = match d.find(ft.frame) {
+            Some(loc) => d.item_at(&loc).map(|item| (d.parent_xf(&loc), loc.spread, item)),
+            None => s.cache.placement(d, sid, ft.frame).zip(d.anchored_item(ft.frame)).map(|(p, item)| (p.xf, p.spread, item)),
+        };
+        let Some((parent, spread, item)) = placed else { continue };
+        let xf = parent * d.text_xf(item);
+        // The page under the frame's centre on the spread, a group's transform included.
+        let center_x = parent.transform_rect_bbox(item.bounds()).center().x;
+        let page = match (spread, d.spread(spread)) {
+            (designcraft_doc::SpreadRef::Doc(si), Some(sp)) => Some(d.first_page_of_spread(si) + sp.page_at_x(center_x).unwrap_or(0)),
+            _ => None,
+        };
+        // Type on a path: composed lines are straight; their points go onto the path first.
+        let path = super::compose::PathTextMap::new(item, ft);
+        let to_spread = |p: super::Point| xf * path.as_ref().map_or(p, |m| m.to_path(p));
+        // A curved path's box is sampled at 32 points along each edge, not solved for extrema.
+        let steps: u32 = if path.is_some() { 32 } else { 1 };
         for line in &ft.lines {
-            let top = line.baseline - line.ascent;
-            let bottom = line.baseline + line.descent;
-            let corners = [
-                super::Point::new(line.x0, top),
-                super::Point::new(line.x1, top),
-                super::Point::new(line.x0, bottom),
-                super::Point::new(line.x1, bottom),
-            ]
-            .map(|point| xf * point);
-            let left = corners.iter().map(|p| p.x).fold(f64::INFINITY, f64::min);
-            let right = corners.iter().map(|p| p.x).fold(f64::NEG_INFINITY, f64::max);
-            let top = corners.iter().map(|p| p.y).fold(f64::INFINITY, f64::min);
-            let bottom = corners.iter().map(|p| p.y).fold(f64::NEG_INFINITY, f64::max);
-            let baseline = (xf * super::Point::new(line.x0, line.baseline)).y;
+            let (mut left, mut top, mut right, mut bottom) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+            for i in 0..=steps {
+                let x = line.x0 + (line.x1 - line.x0) * f64::from(i) / f64::from(steps);
+                for y in [line.baseline - line.ascent, line.baseline + line.descent] {
+                    let q = to_spread(super::Point::new(x, y));
+                    (left, top, right, bottom) = (left.min(q.x), top.min(q.y), right.max(q.x), bottom.max(q.y));
+                }
+            }
+            let baseline = to_spread(super::Point::new(line.x0, line.baseline)).y;
             lines.push(json!({
                 "start": line.range.start, "end": line.range.end, "frame": ft.frame.0,
                 "column": line.column, "page": page, "paragraph": line.para,
@@ -582,5 +592,48 @@ mod story_lines_tests {
         assert_eq!(filtered_lines.len(), b_lines.len());
         assert!(filtered_lines.iter().all(|line| line["frame"] == b["id"]));
         assert!(s.execute("story.lines", &json!({"story": 999999})).is_err());
+    }
+
+    /// An anchored text frame is not on a spread: its lines are where its host story places it.
+    #[test]
+    fn story_lines_place_an_anchored_text_frame_by_its_host() {
+        use designcraft_doc::{AnchorPosition, AnchoredObject, DocError, ParaFormat, SpreadRef};
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 400], "content": "text", "text": "Host  end"})).unwrap();
+        let host = StoryId(r["story"].as_u64().unwrap());
+        let (fid, sid) = s
+            .edit(|d, _| {
+                let layer = d.default_layer();
+                let rect = designcraft_geom::Rect::new(0.0, 0.0, 200.0, 40.0);
+                let (fid, sid) = d.add_text_frame(SpreadRef::Doc(0), rect, layer, "Anchored words", ParaFormat::default())?;
+                let item = d.item(fid).ok_or(DocError::NoItem(fid))?.clone();
+                d.spread_mut(SpreadRef::Doc(0)).ok_or(DocError::NoItem(fid))?.items.retain(|i| i.id != fid);
+                d.story_mut(host).ok_or(DocError::NoStory(host))?.insert_object(5, AnchoredObject::new(item, AnchorPosition::default()));
+                Ok((fid, sid))
+            })
+            .unwrap();
+        let r = s.execute("story.lines", &json!({"story": sid.0})).unwrap();
+        let lines = r["lines"].as_array().unwrap();
+        assert_eq!(lines.len(), 1, "{r}");
+        let line = &lines[0];
+        assert_eq!(line["frame"], fid.0);
+        assert_eq!(line["page"], 0);
+        // Inside the host frame, not at the stored frame's origin.
+        assert!(line["left"].as_f64().unwrap() >= 72.0 && line["top"].as_f64().unwrap() >= 72.0, "{line}");
+    }
+
+    /// Type on a path: the line sits on the path, not on the composed line's own baseline.
+    #[test]
+    fn story_lines_put_type_on_a_path_on_the_path() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let id = s.execute("path.create", &json!({"anchors": [{"p": [100, 300]}, {"p": [500, 300]}]})).unwrap()["id"].clone();
+        let r = s.execute("type.onPath", &json!({"id": id, "text": "Along the path"})).unwrap();
+        let r = s.execute("story.lines", &json!({"story": r["story"]})).unwrap();
+        let line = &r["lines"][0];
+        assert!((line["baseline"].as_f64().unwrap() - 300.0).abs() < 0.5, "{line}");
+        assert!(line["top"].as_f64().unwrap() < 300.0 && line["bottom"].as_f64().unwrap() > 300.0, "{line}");
+        assert!(line["left"].as_f64().unwrap() >= 99.0, "{line}");
     }
 }
