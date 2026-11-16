@@ -336,8 +336,10 @@ fn hostile_section_start_numbers_saturate() {
 fn document_serde_roundtrip() {
     let mut d = doc();
     let lid = d.default_layer();
-    d.add_text_frame(SpreadRef::Doc(0), Rect::new(10.0, 10.0, 100.0, 100.0), lid, "héllo\nworld", ParaFormat::default()).unwrap();
+    let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(10.0, 10.0, 100.0, 100.0), lid, "héllo\nworld", ParaFormat::default()).unwrap();
+    d.story_mut(sid).unwrap().paras[0].para.hebrew_letter_extension = Some(true);
     let s = serde_json::to_string(&d).unwrap();
+    assert!(s.contains("\"hebrewLetterExtension\":true"));
     let back: Document = serde_json::from_str(&s).unwrap();
     assert_eq!(d, back);
     back.check().unwrap();
