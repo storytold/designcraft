@@ -64,7 +64,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Document Endnote Options…",
             ["Type"],
             None,
-            "{style?: arabic|upperRoman|lowerRoman|upperLetters|lowerLetters|kanji, startAt?, prefix?, suffix?, heading?, headingStyle?, paraStyle?, separator?} → the options",
+            "{style?: arabic|upperRoman|lowerRoman|upperLetters|lowerLetters|kanji|hebrew|hebrewPlain, startAt?, prefix?, suffix?, heading?, headingStyle?, paraStyle?, separator?} → the options",
             has_doc,
             |s, p| {
                 let cur = serde_json::to_value(&s.doc()?.doc.endnote_options).map_err(|e| bad("endnote.options", e.to_string()))?;

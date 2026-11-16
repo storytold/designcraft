@@ -14,6 +14,7 @@
 
 DesignCraft aims at full Adobe InDesign parity — and to be better: faster, open (documented JSON format + IDML), scriptable by agents (MCP), and available on the web.
 
+- **2026-11-16** · Hebrew letter numerals (א׳ … ט״ו … תתקצ״ט, with or without geresh and gershayim) number pages, chapters, footnotes, endnotes and lists; IDML writes them as Hebrew Biblical and lists as Arabic with an export warning (#2860, Hebrew half of #1355). No readiness percentage change.
 - **2026-11-15** · Story targets are checked before they are used: `story.setDirection`, `story.get`,
   `type.fillWithPlaceholder` and `file.exportText` refuse a `story` or `frame` the document doesn't have instead
   of acting on the selected frame's story, so an edit can no longer land on the wrong story and an export cannot
