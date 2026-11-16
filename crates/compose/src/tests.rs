@@ -5121,8 +5121,8 @@ fn drop_cap_in_right_to_left_paragraphs_is_on_the_right() {
 fn hebrew_drop_word_aligns_ink_tops_with_the_first_body_line() {
     const FAMILY: &str = "DC Test Hebrew Drop Height";
     let db = designcraft_fonts::FontDb::global();
-    // Lowercase x has a flat top below the font's declared Latin cap height.
-    db.add_font(designcraft_fonts::testing::font_with_glyph(FAMILY, &['ה', 'ד', ' '], 'x').unwrap());
+    // Lowercase z has a flat horizontal top below the font's declared Latin cap height.
+    db.add_font(designcraft_fonts::testing::font_with_glyph(FAMILY, &['ה', 'ד', ' '], 'z').unwrap());
     let text = "הדה הדה הדה ".repeat(30);
     let para = ParaAttrs { direction: Some(designcraft_doc::TextDirection::RightToLeft), align: Some(Align::Right), ..drop_cap(2, 3) };
     let (mut d, sid, _) = drop_doc(&text, para);
@@ -5140,9 +5140,45 @@ fn hebrew_drop_word_aligns_ink_tops_with_the_first_body_line() {
 }
 
 #[test]
+fn hebrew_drop_word_aligns_top_strokes_instead_of_serifs() {
+    use designcraft_geom::kurbo::{Line as OutlineLine, ParamCurve as _};
+
+    const FAMILY: &str = "DC Test Hebrew Drop Stroke";
+    let db = designcraft_fonts::FontDb::global();
+    // v's sides rise above its centre, standing in for serifs above a horizontal stroke.
+    db.add_font(designcraft_fonts::testing::font_with_glyph(FAMILY, &['ה', 'ד', ' '], 'v').unwrap());
+    let text = "הדה הדה הדה ".repeat(30);
+    let para = ParaAttrs { direction: Some(designcraft_doc::TextDirection::RightToLeft), align: Some(Align::Right), ..drop_cap(2, 3) };
+    let (mut d, sid, _) = drop_doc(&text, para);
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.font_family = Some(FAMILY.into()));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let line = &all_lines(&cs)[0];
+    let dropped = line.glyphs.iter().find(|g| g.byte == 0).unwrap();
+    let body = line.glyphs.iter().find(|g| g.byte == "הדה ".len()).unwrap();
+    let top = |g: &PlacedGlyph| {
+        let outline = db.outline(&g.face, g.gid);
+        let ink = designcraft_geom::Shape::bounding_box(&*outline);
+        let x = (ink.x0 + ink.x1) / 2.0;
+        let column = OutlineLine::new((x, ink.y0 - 1.0), (x, ink.y1 + 1.0));
+        let top_y = outline
+            .segments()
+            .flat_map(|seg| seg.intersect_line(column).into_iter().map(move |hit| seg.eval(hit.segment_t).y))
+            .filter(|y| y.is_finite())
+            .min_by(f64::total_cmp)
+            .unwrap();
+        assert!(top_y - ink.y0 > 1.0, "the fixture's centre top must be below its ink top");
+        g.y + top_y * g.sy
+    };
+    let ink_top = |g: &PlacedGlyph| g.y + designcraft_geom::Shape::bounding_box(&*db.outline(&g.face, g.gid)).y0 * g.sy;
+    assert!((top(dropped) - top(body)).abs() < 0.01, "drop stroke {}, body stroke {}", top(dropped), top(body));
+    assert!((ink_top(dropped) - ink_top(body)).abs() > 0.1, "ink tops must differ when strokes align");
+}
+
+#[test]
 fn right_to_left_drop_word_keeps_size_hangs_from_the_tops_and_indents_two_lines() {
     const FAMILY: &str = "DC Test Hebrew Keep Size";
-    designcraft_fonts::FontDb::global().add_font(designcraft_fonts::testing::font_with(FAMILY, &['ה', 'ד', ' ']).unwrap());
+    // A horizontal top makes ink-top alignment equivalent to stroke-top alignment.
+    designcraft_fonts::FontDb::global().add_font(designcraft_fonts::testing::font_with_glyph(FAMILY, &['ה', 'ד', ' '], 'z').unwrap());
     let first_word = "הדה";
     let text = "הדה הדה הדה ".repeat(30);
     let para = ParaAttrs {

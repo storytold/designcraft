@@ -5696,6 +5696,20 @@ struct DropCap {
     cap: f64,
 }
 
+/// Measure the top of the horizontal stroke at the glyph's centre so that serifs don't count.
+fn drop_cap_stroke_top(outline: &designcraft_geom::kurbo::BezPath) -> Option<f64> {
+    use designcraft_geom::kurbo::{Line, ParamCurve as _};
+
+    let ink = designcraft_geom::Shape::bounding_box(outline);
+    let x = (ink.x0 + ink.x1) / 2.0;
+    let column = Line::new((x, ink.y0 - 1.0), (x, ink.y1 + 1.0));
+    outline
+        .segments()
+        .flat_map(|seg| seg.intersect_line(column).into_iter().map(move |hit| seg.eval(hit.segment_t).y))
+        .filter(|y| y.is_finite())
+        .min_by(f64::total_cmp)
+}
+
 /// Take the drop cap (the glyphs before byte `end`) off the front of a paragraph's glyphs and scale
 /// it so its cap height reaches from the first line's cap height down to line `lines`' baseline,
 /// measured in the leading and cap height of the text after it: the size of a cap set at that text's
@@ -5735,7 +5749,11 @@ fn split_drop_cap(
             let gid = g.face.glyph_for('ה');
             if gid != 0 {
                 // Outlines are y-down in font units; cap heights are positive points.
-                let ink = designcraft_geom::Shape::bounding_box(&*db.outline(g.face.get(), gid));
+                let outline = db.outline(g.face.get(), gid);
+                if let Some(measured) = drop_cap_stroke_top(&outline).map(|y| -y * g.sy).filter(|h| h.is_finite() && *h > 0.0) {
+                    return measured;
+                }
+                let ink = designcraft_geom::Shape::bounding_box(&*outline);
                 let measured = -ink.y0 * g.sy;
                 if measured.is_finite() && measured > 0.0 {
                     return measured;
