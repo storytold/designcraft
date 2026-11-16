@@ -11234,3 +11234,37 @@ fn running_header_source_pages_follow_displayed_cross_references() {
     assert_eq!(index.value("Margin heading", false, Default::default(), 0), "");
     assert_eq!(index.value("Margin heading", false, Default::default(), 1), heading);
 }
+
+#[test]
+fn running_header_source_pages_follow_named_format_edits() {
+    let mut d = Document::new(&NewDocument { pages: 2, start_page: 99999, facing_pages: false, ..Default::default() });
+    margin_running_definition(&mut d);
+    d.xref_formats.push(designcraft_doc::XrefFormat { name: "Repeated page".into(), definition: "<pageNum /> ".repeat(16) });
+    let (_, target) =
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(300.0, 600.0, 500.0, 750.0), d.default_layer(), "Target", Default::default()).unwrap();
+    let anchor = d.story_mut(target).unwrap().insert_anchor(0, "Target");
+    let heading = "Header after reference";
+    let (first, sid) = d
+        .add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 156.0, 96.0), d.default_layer(), &format!("\n{heading}"), Default::default())
+        .unwrap();
+    let (second, _) = d.add_text_frame(SpreadRef::Doc(1), Rect::new(36.0, 36.0, 156.0, 750.0), d.default_layer(), "", Default::default()).unwrap();
+    d.thread(first, second).unwrap();
+    let st = d.story_mut(sid).unwrap();
+    st.insert_xref(0, designcraft_doc::CrossRef { target: anchor, format: "Repeated page".into(), ..Default::default() });
+    let at = st.text.find(heading).unwrap();
+    st.format_paras(at..st.text.len(), |p| p.style = "Margin heading".into());
+    let source = d.stories[&sid].clone();
+    let cache = Cache::new();
+    let value = |i: &crate::vars::RunningIndex| i.value("Margin heading", false, Default::default(), 0);
+    assert_eq!(crate::vars::place(&d, &cache.get(&d, sid, None), at).unwrap().0, 1);
+    assert_eq!(value(&cache.running_index(&d)), "");
+    for (definition, expected_page) in [("Short".to_string(), 0), ("<pageNum /> ".repeat(16), 1)] {
+        d.xref_formats.last_mut().unwrap().definition = definition;
+        let displayed = cache.get(&d, sid, None);
+        assert_eq!(crate::vars::place(&d, &displayed, at).unwrap().0, expected_page);
+        let expected = if expected_page == 0 { heading } else { "" };
+        assert_eq!(value(&Cache::new().running_index(&d)), expected);
+        assert_eq!(value(&cache.running_index(&d)), expected, "warm index must follow the displayed source page after a format edit");
+    }
+    assert!(Arc::ptr_eq(&source, &d.stories[&sid]), "format edits must not rely on a story revision to invalidate the index");
+}
