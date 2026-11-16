@@ -63,7 +63,8 @@ struct BorderDrag {
     horizontal_drag: bool,
 }
 
-/// The row or column border of a table near canvas point `pos`, in an unlocked text frame.
+/// The row or column border of the frontmost Type target, in an unlocked text frame.
+/// A margin note painted over a lower table takes the caret instead of its border drag.
 fn border_at(cx: &ToolContext, pos: Point) -> Option<BorderDrag> {
     let (_, id) = cx.hit(pos)?;
     let it = cx.doc.item(id)?;
@@ -85,6 +86,9 @@ fn border_at(cx: &ToolContext, pos: Point) -> Option<BorderDrag> {
     let cs = cx.cache.get(cx.doc, sid, None);
     let fi = cs.frames.iter().position(|f| f.frame == id)?;
     let hit = compose::hit_border(&cs, fi, &story.tables, start, cx.tol(4.0) / det.sqrt())?;
+    if type_hit(cx, pos).is_some_and(|(_, front)| front != id) {
+        return None;
+    }
     let axis = if hit.column { Point::new(1.0, 0.0) } else { Point::new(0.0, 1.0) };
     let v = (xf * axis) - (xf * Point::ORIGIN);
     Some(BorderDrag { frame: id.0, story: sid.0, hit, inv, start, begun: false, horizontal_drag: v.x.abs() >= v.y.abs() })
