@@ -1523,7 +1523,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
 
     // Original Hebrew typography, table and view labels from DesignCraft's official English source keys.
     ("Alpha Channel", "ערוץ אלפא"),
-    ("Invalid panel layout; restored the default dock", "פריסת החלוניות אינה תקינה; סידור ברירת המחדל שוחזר"),
+    ("View/Structure", "תצוגה/מבנה"),
     ("Kerning/Tracking Step", "צעד ריווח בין אותיות"),
     ("Object Style Options…", "אפשרויות סגנון אובייקט…"),
     ("Punctuation Space", "רווח סימני פיסוק"),
