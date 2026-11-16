@@ -10675,3 +10675,24 @@ fn split_footnote_continues_into_narrower_frame() {
     assert_eq!(cs.frames[1].notes.iter().filter(|n| n.id == id).count(), 1);
     assert_note_parts(&cs, id, text.len());
 }
+
+/// Keep options in a note decide its break; a wider continuation frame must not move that break.
+#[test]
+fn split_footnote_keeps_hold_into_wider_frame() {
+    for keep_last in 2..7 {
+        let (mut d, sid, first) = doc_with("Opening.\nReference.\nClosing.", Rect::new(0.0, 0.0, 120.0, 300.0), ParaAttrs::default());
+        let (second, _) =
+            d.add_text_frame(SpreadRef::Doc(0), Rect::new(200.0, 0.0, 620.0, 300.0), d.default_layer(), "", ParaFormat::default()).unwrap();
+        d.thread(first, second).unwrap();
+        let text = (0..60).map(|i| format!("word{i}")).collect::<Vec<_>>().join(" ");
+        let para = ParaFormat {
+            para: ParaAttrs { keep_lines_together: Some(true), keep_first: Some(2), keep_last: Some(keep_last), ..Default::default() },
+            ..Default::default()
+        };
+        let id = d.story_mut(sid).unwrap().insert_note(14, &text, para).unwrap();
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let ranges: Vec<_> = cs.frames.iter().flat_map(|f| &f.notes).filter(|n| n.id == id).map(|n| n.text.frames[0].range.clone()).collect();
+        assert!(ranges.len() >= 2, "keep_last {keep_last}: the note must split: {ranges:?}");
+        assert_note_parts(&cs, id, text.len());
+    }
+}
