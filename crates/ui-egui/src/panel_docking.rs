@@ -763,6 +763,8 @@ impl Transaction {
         if let Some(saved) = &location.group {
             state.push(Action::ResizeGroup { panel: panel.clone(), height: saved.height });
             state.push(Action::SetMinimized { panel: panel.clone(), minimized: saved.minimized });
+            state.push(Action::ResizeFlyoutWidth { panel: panel.clone(), width: saved.flyout_width });
+            state.push(Action::MoveFlyoutTop { panel: panel.clone(), offset: saved.flyout_offset });
             // A group that had a column of its own gets that column back as it was.
             if let (Placement::Column { .. }, Some(column)) = (&location.placement, saved.column) {
                 state.push(Action::ResizeColumn { panel: panel.clone(), width: column.width });

@@ -41,7 +41,7 @@ fn svg_depth_is_checked_before_recursive_parsing() {
 }
 
 /// An SVG whose `<use>` elements hold one another `links` deep, with no element nested deeper
-/// than three levels.
+/// than four levels (the root counts as one).
 fn use_chain_svg(links: usize) -> String {
     let chain: String = (0..links).map(|i| format!("<g id='g{i}'><use xlink:href='#g{}'/></g>", i + 1)).collect();
     format!(
