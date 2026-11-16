@@ -5118,6 +5118,28 @@ fn drop_cap_in_right_to_left_paragraphs_is_on_the_right() {
 }
 
 #[test]
+fn hebrew_drop_word_aligns_ink_tops_with_the_first_body_line() {
+    const FAMILY: &str = "DC Test Hebrew Drop Height";
+    let db = designcraft_fonts::FontDb::global();
+    // Lowercase x has a flat top below the font's declared Latin cap height.
+    db.add_font(designcraft_fonts::testing::font_with_glyph(FAMILY, &['ה', 'ד', ' '], 'x').unwrap());
+    let text = "הדה הדה הדה ".repeat(30);
+    let para = ParaAttrs { direction: Some(designcraft_doc::TextDirection::RightToLeft), align: Some(Align::Right), ..drop_cap(2, 3) };
+    let (mut d, sid, _) = drop_doc(&text, para);
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.font_family = Some(FAMILY.into()));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let line = &all_lines(&cs)[0];
+    let dropped = line.glyphs.iter().find(|g| g.byte == 0).unwrap();
+    let body = line.glyphs.iter().find(|g| g.byte == "הדה ".len()).unwrap();
+    let top = |g: &PlacedGlyph| {
+        let ink = designcraft_geom::Shape::bounding_box(&*db.outline(&g.face, g.gid));
+        assert!(-ink.y0 < g.face.cap_height, "the fixture must be shorter than Latin capitals");
+        g.y + ink.y0 * g.sy
+    };
+    assert!((top(dropped) - top(body)).abs() < 0.01, "drop top {}, body top {}", top(dropped), top(body));
+}
+
+#[test]
 fn right_to_left_drop_cap_keeps_marks_on_their_letters() {
     const FAMILY: &str = "DC Test Hebrew Drop Marks";
     designcraft_fonts::FontDb::global().add_font(

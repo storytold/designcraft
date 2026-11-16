@@ -5715,15 +5715,33 @@ fn split_drop_cap(
     let spaces = glyphs.iter().take_while(|g| g.is_space()).count();
     let mut after: Vec<Glyph> = glyphs.drain(..spaces).collect();
     let end = after.last().map_or(end, |g| g.byte.saturating_add(g.len).max(end));
+    let hebrew = dc.first().is_some_and(|g| ('\u{05D0}'..='\u{05EA}').contains(&g.ch));
+    let height = |g: &Glyph| {
+        if hebrew {
+            let gid = g.face.glyph_for('ה');
+            if gid != 0 {
+                // Outlines are y-down in font units; cap heights are positive points.
+                let ink = designcraft_geom::Shape::bounding_box(&*db.outline(g.face.get(), gid));
+                let measured = -ink.y0 * g.sy;
+                if measured.is_finite() && measured > 0.0 {
+                    return measured;
+                }
+            }
+        }
+        g.cap
+    };
     let body = glyphs.iter().find(|g| g.len > 0 && g.cap > 0.0);
-    let (lead, cap, body_size) = body.map_or((base_leading, base_cap, None), |g| (g.leading, g.cap, Some(g.size)));
+    let (lead, cap, body_size) = body.map_or((base_leading, base_cap, None), |g| (g.leading, height(g), Some(g.size)));
     let lead = match grid.map(|inc| (lead / inc - 1e-6).ceil().max(1.0) * inc) {
         Some(pitch) if pitch.is_finite() && pitch > 0.0 => pitch,
         _ => lead,
     };
     let drop = (lines - 1) as f64 * lead;
     // The cap's tallest glyph sets its height; its point size over the body's scales the fit.
-    let (own, own_size) = dc.iter().fold((0.0, 0.0), |(c, s), g| if g.cap > c { (g.cap, g.size) } else { (c, s) });
+    let (own, own_size) = dc.iter().fold((0.0, 0.0), |(c, s), g| {
+        let h = height(g);
+        if h > c { (h, g.size) } else { (c, s) }
+    });
     let ratio = match body_size {
         Some(b) if b > 0.0 && own_size > 0.0 && (own_size / b).is_finite() => own_size / b,
         _ => 1.0,
@@ -5769,7 +5787,7 @@ fn split_drop_cap(
     }
     let width = dc.iter().map(|g| g.adv).sum();
     dc.append(&mut after);
-    let cap = dc.iter().map(|g| g.cap).fold(0.0, f64::max);
+    let cap = dc.iter().map(height).fold(0.0, f64::max);
     Some(DropCap { glyphs: dc, end, lines, width, drop, lsb, cap })
 }
 
