@@ -10,8 +10,9 @@
 //!   folder, the rest of the path being plain names (`..` below a missing folder is refused, and so
 //!   is a link that leads nowhere).
 //! - The result must lie inside one of the roots of its kind, compared by whole components
-//!   (`/work2` isn't inside `/work`), without regard to case on Windows. Two roots don't make their
-//!   common parent one.
+//!   (`/work2` isn't inside `/work`), in the case the file system stores (so a case-variant name
+//!   reaches the same folder on an ordinary Windows volume, and a distinct sibling in a
+//!   case-sensitive one stays outside). Two roots don't make their common parent one.
 //! - Read and write access are separate: a root given alone grants only its own kind of access.
 //!
 //! Roots are in force on a thread inside [`confine`], and in the whole process after
@@ -255,30 +256,20 @@ fn resolve(path: &Path) -> Result<PathBuf, String> {
     }
 }
 
-/// Is `path` (resolved) `root` or inside it, component by component (without regard to case on
-/// Windows, whose file systems ignore it)?
+/// Is `path` (resolved) `root` or inside it, component by component? Both are canonical, so each
+/// component carries the case the file system stores: a path that differs only in case names the
+/// same folder on an ordinary Windows volume (and resolves to the same components), and a distinct
+/// sibling in a case-sensitive folder (which must not pass as the root).
 fn inside(path: &Path, root: &Path) -> bool {
     let mut path = path.components();
-    root.components().all(|r| path.next().is_some_and(|p| same_component(p, r)))
+    root.components().all(|r| path.next() == Some(r))
 }
 
-fn same_component(a: Component, b: Component) -> bool {
-    if a == b {
-        return true;
-    }
-    if !cfg!(windows) {
-        return false;
-    }
-    match (a.as_os_str().to_str(), b.as_os_str().to_str()) {
-        (Some(a), Some(b)) => a.to_lowercase() == b.to_lowercase(),
-        _ => false,
-    }
-}
-
-/// A Windows device name (`CON`, `NUL`, `COM1`… also with an extension), which names no file.
+/// A Windows device name (`CON`, `NUL`, `COM1`, `COM¹`… also with an extension or a colon), which names no file.
 pub(crate) fn is_device_name(component: &str) -> bool {
-    let stem = component.split('.').next().unwrap_or(component).trim_end_matches(' ').to_ascii_uppercase();
-    let numbered = |prefix: &str| stem.strip_prefix(prefix).is_some_and(|n| matches!(n, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"));
+    let stem = component.split(['.', ':']).next().unwrap_or(component).trim_end_matches(' ').to_ascii_uppercase();
+    let numbered =
+        |prefix: &str| stem.strip_prefix(prefix).is_some_and(|n| matches!(n, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"));
     matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CLOCK$" | "CONIN$" | "CONOUT$") || numbered("COM") || numbered("LPT")
 }
 
@@ -536,6 +527,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(base);
     }
 
+    /// On Windows an existing file spelled in another case is still inside its root, and `NUL`,
+    /// `COM1` and `COM¹` are refused.
     #[cfg(windows)]
     #[test]
     fn windows_ignores_case_and_refuses_devices() {
@@ -546,6 +539,8 @@ mod tests {
         let e = roots.check(s(base.join("out/NUL")), Access::Write).unwrap_err();
         assert!(e.contains("reserved device names"), "{e}");
         assert!(roots.check(s(base.join("out/com1.txt")), Access::Write).is_err());
+        let e = roots.check(s(base.join("out/COM¹.txt")), Access::Write).unwrap_err();
+        assert!(e.contains("reserved device names"), "{e}");
         assert_eq!(roots.check(s(base.join("out/console.txt")), Access::Write), Ok(()));
         let _ = std::fs::remove_dir_all(base);
     }
@@ -571,12 +566,22 @@ mod tests {
         let _ = std::fs::remove_dir_all(base);
     }
 
+    /// `COM¹` to `LPT³`, and a device name before a colon, are reserved. `COM⁴`, `com¹0`, `lpt¹x`
+    /// and `console:x` are file names.
+    #[test]
+    fn inside_compares_components_exactly() {
+        assert!(inside(Path::new("/work/in/a"), Path::new("/work/in")));
+        assert!(inside(Path::new("/work/in"), Path::new("/work/in")));
+        assert!(!inside(Path::new("/work/In/a"), Path::new("/work/in")), "a case-variant sibling is another folder");
+        assert!(!inside(Path::new("/work/in2/a"), Path::new("/work/in")));
+    }
+
     #[test]
     fn device_names() {
-        for d in ["CON", "nul", "Com1", "LPT9.txt", "aux.designcraft", "NUL "] {
+        for d in ["CON", "nul", "Com1", "LPT9.txt", "aux.designcraft", "NUL ", "COM¹", "Lpt²", "lpt³.txt", "COM1:", "nul:x", "COM¹:"] {
             assert!(is_device_name(d), "{d}");
         }
-        for f in ["console", "com10", "COM0", "lpt", "a.designcraft", "nul-x"] {
+        for f in ["console", "com10", "COM0", "lpt", "a.designcraft", "nul-x", "COM⁴", "com¹0", "lpt¹x", "console:x"] {
             assert!(!is_device_name(f), "{f}");
         }
     }
