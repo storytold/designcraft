@@ -5705,7 +5705,8 @@ struct DropCap {
 /// steps apart. With `align_left` its ink starts at the indent (see [`DropCap::lsb`]). Tabs inside
 /// it advance to the stops of `tabs` (stops and the start-side indent; in right-to-left paragraphs
 /// both measured from the column's right edge). Spaces right after it join it at its size without
-/// widening it. With `keep_size`, it keeps its own size and the first line baseline.
+/// widening it. With `keep_size`, it keeps its own size and the first line baseline, and those
+/// spaces count in its width.
 #[allow(clippy::too_many_arguments)]
 fn split_drop_cap(
     db: &ScopedFonts<'_>,
@@ -5804,7 +5805,8 @@ fn split_drop_cap(
         }
         x += dc.get(i).map_or(0.0, |g| g.adv);
     }
-    let width = dc.iter().map(|g| g.adv).sum();
+    // Kept at its size, the word sits in the line, so the space after it separates it from the next word.
+    let width = dc.iter().chain(after.iter().filter(|_| keep_size)).map(|g| g.adv).sum();
     dc.append(&mut after);
     let cap = dc.iter().map(height).fold(0.0, f64::max);
     Some(DropCap { glyphs: dc, end, lines, width, drop, lsb, cap })

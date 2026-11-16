@@ -5165,9 +5165,11 @@ fn right_to_left_drop_word_keeps_size_baseline_and_two_line_indent() {
         assert!((g.sy * g.face.upem - 12.0).abs() < 0.01, "size {}", g.sy * g.face.upem);
         assert!(g.y.abs() < 0.01, "baseline offset {}", g.y);
     }
-    let width: f64 = dc.iter().map(|g| g.adv).sum();
+    // The word space after it stays: the lines beside it start where the next word does.
+    let width: f64 = lines[0].glyphs.iter().filter(|g| g.byte <= first_word.len()).map(|g| g.adv).sum();
+    assert!(width > dc.iter().map(|g| g.adv).sum::<f64>(), "the word space after the drop word is kept");
     let right =
-        |line: &Line| line.glyphs.iter().filter(|g| g.visible && g.byte >= first_word.len()).map(|g| g.x + g.adv).fold(f64::NEG_INFINITY, f64::max);
+        |line: &Line| line.glyphs.iter().filter(|g| g.visible && g.byte > first_word.len()).map(|g| g.x + g.adv).fold(f64::NEG_INFINITY, f64::max);
     assert!((right(lines[0]) - (300.0 - width)).abs() < 0.01);
     assert!((right(lines[1]) - (300.0 - width)).abs() < 0.01, "line 2 right {} width {width}", right(lines[1]));
     assert!((right(lines[2]) - 300.0).abs() < 0.01, "line 3 right {}", right(lines[2]));
