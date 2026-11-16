@@ -95,8 +95,8 @@ fn candidates(
 // The uncached entry point resolves placements internally without changing its caller's opts.
 // Reuse the same bounded host resolver here so anchored neighbours have page geometry too.
 fn placements(doc: &Document, sid: StoryId, opts: &ComposeOptions) -> Vec<(ItemId, Placement)> {
-    let visible =
-        crate::placed::visible_placements(doc, sid, &mut |host| Arc::new(crate::compose_story_unstacked(doc, host, &ComposeOptions::default())));
+    let host_opts = ComposeOptions { xrefs: opts.xrefs.clone(), running: opts.running.clone(), ..Default::default() };
+    let visible = crate::placed::visible_placements(doc, sid, &mut |host| Arc::new(crate::compose_story_unstacked(doc, host, &host_opts)));
     if opts.placed.is_empty() {
         return visible;
     }
@@ -113,6 +113,7 @@ pub(crate) fn stack_page_margins(doc: &Document, sid: StoryId, opts: &ComposeOpt
     let placed = placements(doc, sid, opts);
     let frames = crate::frame_specs_placed(doc, sid, &placed);
     let pages: HashSet<_> = frames.iter().filter_map(|f| f.page).collect();
+    let neighbour_opts = ComposeOptions { xrefs: opts.xrefs.clone(), running: opts.running.clone(), ..Default::default() };
     let mut all = Vec::new();
     candidates(doc, out, &frames, &placed, &pages, &mut all);
     for story in doc
@@ -120,12 +121,12 @@ pub(crate) fn stack_page_margins(doc: &Document, sid: StoryId, opts: &ComposeOpt
         .values()
         .filter(|s| s.id != sid && s.notes.iter().any(|n| matches!(doc.note_options(n.series).placement, NotePlacement::Margin { .. })))
     {
-        let placed = placements(doc, story.id, &ComposeOptions::default());
+        let placed = placements(doc, story.id, &neighbour_opts);
         let frames = crate::frame_specs_placed(doc, story.id, &placed);
         if !frames.iter().any(|f| f.page.is_some_and(|p| pages.contains(&p))) {
             continue;
         }
-        let cs = crate::compose_story_unstacked(doc, story.id, &ComposeOptions { placed: placed.clone(), ..Default::default() });
+        let cs = crate::compose_story_unstacked(doc, story.id, &ComposeOptions { placed: placed.clone(), ..neighbour_opts.clone() });
         candidates(doc, &cs, &frames, &placed, &pages, &mut all);
     }
     all.sort_by(|a, b| a.page.cmp(&b.page).then(a.baseline.total_cmp(&b.baseline)).then(a.story.0.cmp(&b.story.0)).then(a.index.cmp(&b.index)));
