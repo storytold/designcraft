@@ -322,7 +322,7 @@ fn hebrew_number_range(d: &Document, out: &mut Vec<Issue>) {
     let footnotes = &d.footnote_options;
     let mut footnote_count = count(|st| st.notes.len());
     if footnotes.restart != designcraft_doc::notes::NoteRestart::Never {
-        // ponytail: numbering that restarts every page, spread or section is judged by its start
+        // Numbering that restarts every page, spread or section is judged by its start
         // only; counting the notes per page needs the composed layout.
         footnote_count = footnote_count.min(1);
     }
