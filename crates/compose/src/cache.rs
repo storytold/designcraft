@@ -138,6 +138,35 @@ fn margin_needs_running(doc: &Document, story: &Story) -> bool {
         && doc.stories.values().any(|st| crate::vars::has_running(doc, st))
 }
 
+fn indexed_neighbour(doc: &Document, story: &Story) -> bool {
+    crate::xref::has_xrefs(story)
+        || (crate::vars::has_vars(story) && crate::vars::has_running(doc, story))
+        || margin_needs_xrefs(doc, story)
+        || margin_needs_running(doc, story)
+}
+
+fn raw_neighbour_placements(doc: &Document, sid: StoryId, depth: usize) -> Vec<(designcraft_doc::ItemId, crate::Placement)> {
+    if depth >= crate::placed::MAX_DEPTH {
+        return Vec::new();
+    }
+    // Cached host resolution can re-enter an index; raw host traversal remains depth bounded.
+    crate::placed::placements(doc, sid, &mut |host| Arc::new(crate::compose_story_unstacked(doc, host, &ComposeOptions::default())))
+}
+
+fn neighbour_placement_signature(doc: &Document, sid: StoryId, story: &Story, depth: usize) -> Option<usize> {
+    if !indexed_neighbour(doc, story) {
+        return None;
+    }
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    // A host edit can move an anchored neighbour without editing that neighbour.
+    for (id, p) in raw_neighbour_placements(doc, sid, depth) {
+        (id, p.spread, p.xf.as_coeffs().map(f64::to_bits)).hash(&mut h);
+        format!("{:?}", doc.spread(p.spread).map(|sp| &sp.pages)).hash(&mut h);
+    }
+    Some(h.finish() as usize)
+}
+
 /// The Alpha Channel outlines text wraps around: a relink traces a new one while the items and
 /// stories stay the same.
 fn outlines_hash(doc: &Document) -> u64 {
@@ -225,6 +254,7 @@ impl Cache {
                 let (s, k) = signature(doc, ns);
                 sig.push(usize::MAX - 1);
                 sig.push(hash_of(&s));
+                sig.extend(neighbour_placement_signature(doc, *n, ns, depth));
                 keep_items.extend(k.into_iter().filter(|it| kept.insert(Arc::as_ptr(it))));
                 keep_stories.push(ns.clone());
             }
@@ -473,14 +503,9 @@ impl Cache {
     /// stories' anchored objects (no cycles), and outside the cache when it needs the document-wide
     /// indexes (they compose every story).
     fn neighbour(&self, doc: &Document, sid: StoryId, depth: usize, resolved: &mut Resolved) -> Arc<ComposedStory> {
-        let indexed = doc.stories.get(&sid).is_some_and(|st| {
-            crate::xref::has_xrefs(st)
-                || (crate::vars::has_vars(st) && crate::vars::has_running(doc, st))
-                || margin_needs_xrefs(doc, st)
-                || margin_needs_running(doc, st)
-        });
-        if indexed {
-            Arc::new(crate::wrap::compose_among(doc, sid, &ComposeOptions::default(), &[]))
+        if doc.stories.get(&sid).is_some_and(|st| indexed_neighbour(doc, st)) {
+            let placed = raw_neighbour_placements(doc, sid, depth);
+            Arc::new(crate::wrap::compose_among(doc, sid, &ComposeOptions { placed, ..Default::default() }, &[]))
         } else {
             self.resolve(doc, sid, false, depth, resolved)
         }

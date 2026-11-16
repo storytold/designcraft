@@ -11268,3 +11268,37 @@ fn running_header_source_pages_follow_named_format_edits() {
     }
     assert!(Arc::ptr_eq(&source, &d.stories[&sid]), "format edits must not rely on a story revision to invalidate the index");
 }
+
+#[test]
+fn indexed_margin_neighbours_keep_their_anchored_frame_placements() {
+    let mut d = Document::new(&NewDocument::default());
+    d.settings.baseline_grid.start = 0.0;
+    d.settings.baseline_grid.increment = 20.0;
+    d.footnote_options.placement = designcraft_doc::NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 8.0, width: 72.0 };
+    let text = "One.\nTwo.\nThree.\nFour.\nFive.\nSix.";
+    let (embedded, sid) = anchored_text_frame(&mut d, text, 100.0, 25.0);
+    let (host_frame, _) = body_holding(&mut d, embedded);
+    let host = d.item(host_frame).unwrap().text_frame().unwrap().story;
+    let (continuation, empty) =
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(72.0, 72.0, 400.0, 500.0), d.default_layer(), "", Default::default()).unwrap();
+    d.item_mut(continuation).unwrap().text_frame_mut().unwrap().story = sid;
+    d.stories.remove(&empty);
+    d.story_mut(sid).unwrap().frames.push(continuation);
+    d.story_mut(sid).unwrap().format_paras(0..text.len(), |p| p.para.grid_align = Some(GridAlign::AllLines));
+    anchor_box(&mut d, sid, text.find("Four.").unwrap(), 0.0, 0.0, true, WrapMode::BoundingBox);
+    let end = d.story(sid).unwrap().len();
+    d.story_mut(sid).unwrap().insert_note(end, "Margin note", Default::default());
+    let (_, recipient) =
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(72.0, 72.0, 400.0, 500.0), d.default_layer(), &LOREM.repeat(4), Default::default()).unwrap();
+    assert!(crate::wrap::neighbours(&d, recipient).contains(&sid));
+    let before = Cache::new().get(&d, recipient, None);
+    let var = margin_running_definition(&mut d);
+    d.add_text_frame(SpreadRef::Doc(0), Rect::new(450.0, 600.0, 550.0, 750.0), d.default_layer(), &var.to_string(), Default::default()).unwrap();
+    let cache = Cache::new();
+    let after = cache.get(&d, recipient, None);
+    assert_eq!(line_layout(&after), line_layout(&before), "an unrelated running consumer must not move the anchored neighbour's wrap");
+    d.story_mut(host).unwrap().insert(0, "Preface.\n");
+    let fresh = Cache::new().get(&d, recipient, None);
+    assert_ne!(line_layout(&fresh), line_layout(&after), "fixture host edit must move the wrap");
+    assert_eq!(line_layout(&cache.get(&d, recipient, None)), line_layout(&fresh), "recipient cache must follow host placement changes");
+}
