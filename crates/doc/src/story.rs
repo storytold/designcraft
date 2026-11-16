@@ -460,9 +460,11 @@ impl Story {
         }
         self.text.insert_str(pos, text);
         // Character runs. Appending extends or pushes at the end: no scan, and the runs stay normalized.
+        // A format naming a custom glyph is normalized, which keeps it on the custom glyphs only.
+        let append = at_end && fmt.over.custom_glyph.is_none();
         match self.chars.last_mut() {
-            Some(last) if at_end && last.len > 0 && last.format == fmt => last.len += text.len(),
-            Some(last) if at_end && last.len > 0 => self.chars.push(CharRun { len: text.len(), format: fmt }),
+            Some(last) if append && last.len > 0 && last.format == fmt => last.len += text.len(),
+            Some(last) if append && last.len > 0 => self.chars.push(CharRun { len: text.len(), format: fmt }),
             _ => {
                 self.splice_runs(pos, 0, text.len(), fmt);
                 self.normalize();
@@ -781,6 +783,20 @@ mod tests {
         st.format_chars(0..len, |f| f.over.custom_glyph = Some("g3".into()));
         let glyphs: Vec<_> = st.text.char_indices().map(|(i, c)| (c == CUSTOM_GLYPH, named(&st, i).is_some())).collect();
         assert!(glyphs.iter().all(|(g, n)| g == n), "{glyphs:?}");
+    }
+
+    /// Text appended after a custom glyph at the end of the story, which takes the glyph's format,
+    /// doesn't carry the custom glyph attribute: appending skipped the normalizing that drops it.
+    #[test]
+    fn text_appended_after_a_custom_glyph_drops_the_attribute() {
+        let glyph = CharFormat { over: CharAttrs { custom_glyph: Some("g1".into()), ..Default::default() }, ..Default::default() };
+        let mut st = Story::new(StoryId(1));
+        st.insert(0, "a");
+        st.insert_with(1, &CUSTOM_GLYPH.to_string(), glyph);
+        let end = st.text.len();
+        st.insert(end, "xy");
+        assert_eq!(st.char_format_at(end + 1).over.custom_glyph, None, "{:?}", st.chars);
+        assert_eq!(st.char_format_at(end).over.custom_glyph.as_deref(), Some("g1"), "the glyph keeps it");
     }
 
     fn st(t: &str) -> Story {

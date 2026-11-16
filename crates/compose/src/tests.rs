@@ -7303,7 +7303,7 @@ fn shape_for_script_test_with(text: &str, sub: &SubstCtx) -> Vec<Glyph> {
             story: &story,
             range: 0..text.len(),
             para_chars: &designcraft_doc::CharProps::default(),
-            auto_leading: shape::TypeEnv { auto_leading: 1.2, adv: Default::default(), glyph_fallback: true },
+            auto_leading: shape::TypeEnv { auto_leading: 1.2, adv: Default::default(), glyph_fallback: true, context: None },
             sub,
             nested: &[],
             grep: &[],
@@ -7333,7 +7333,7 @@ fn paragraph_script_counts_a_drop_cap_but_not_a_generated_label() {
         "第1章",
         0,
         &designcraft_doc::CharProps::default(),
-        shape::TypeEnv { auto_leading: 1.2, adv: Default::default(), glyph_fallback: true },
+        shape::TypeEnv { auto_leading: 1.2, adv: Default::default(), glyph_fallback: true, context: None },
         &mut table,
     );
     assert!(n > 0);
