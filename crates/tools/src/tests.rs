@@ -2444,6 +2444,7 @@ fn gap_tool_follows_snapping_settings() {
         locked: false,
         layer: None,
         liquid: false,
+        options: Default::default(),
     });
     Arc::make_mut(&mut d.spreads[0]).pages[0].guides.push(Guide {
         orientation: Orientation::Vertical,
@@ -2452,6 +2453,7 @@ fn gap_tool_follows_snapping_settings() {
         locked: false,
         layer: None,
         liquid: false,
+        options: Default::default(),
     });
     let sel = Selection::default();
     let c = Cache::new();

@@ -76,7 +76,10 @@ impl<'r> Importer<'r> {
                     locked: g.locked(),
                     layer: g.item_layer().and_then(|l| self.layer_ids.get(l)).copied(),
                     liquid: g.liquid(),
-                    options: ruler_guide_options(g.values.num("ViewThreshold"), g.values.prop_el("GuideColor").cloned().map(crate::xml::from_craft).as_ref()),
+                    options: ruler_guide_options(
+                        g.values.num("ViewThreshold"),
+                        g.values.prop_el("GuideColor").cloned().map(crate::xml::from_craft).as_ref(),
+                    ),
                 })
             })
             .collect()
