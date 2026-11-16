@@ -352,13 +352,55 @@ fn data_source_discarded_quoted_fields_keep_records_and_warning_lines() {
 fn data_source_delimiter_override_and_known_extensions_win() {
     let body = "Name;City\nAda;London\n";
     let csv = parse::table_from_bytes(body.as_bytes(), "people.csv", None).unwrap();
-    assert_eq!(csv.delimiter, Delimiter::Comma);
-    assert_eq!(csv.rows, vec![vec!["Ada;London"]]);
-    let explicit = parse::table_from_bytes(body.as_bytes(), "people.csv", Some(Delimiter::Semicolon)).unwrap();
-    assert_eq!(explicit.rows, vec![vec!["Ada", "London"]]);
+    assert_eq!(csv.delimiter, Delimiter::Semicolon);
+    assert_eq!(csv.rows, vec![vec!["Ada", "London"]]);
+    let explicit_comma = parse::table_from_bytes(body.as_bytes(), "people.csv", Some(Delimiter::Comma)).unwrap();
+    assert_eq!(explicit_comma.delimiter, Delimiter::Comma);
+    assert_eq!(explicit_comma.rows, vec![vec!["Ada;London"]]);
+    let explicit_semi = parse::table_from_bytes(body.as_bytes(), "people.csv", Some(Delimiter::Semicolon)).unwrap();
+    assert_eq!(explicit_semi.rows, vec![vec!["Ada", "London"]]);
     let tab = parse::table_from_bytes(b"Name,Title\tCity\nAda,Analyst\tLondon", "people.tsv", None).unwrap();
     assert_eq!(tab.delimiter, Delimiter::Tab);
     assert_eq!(tab.rows, vec![vec!["Ada,Analyst", "London"]]);
+}
+
+/// #2874: a tab-delimited `.csv` file splits into separate fields and merges their values.
+#[test]
+fn csv_name_sniffs_tab_and_semicolon_separators() {
+    let tab_csv = "Name\tPosition\tStrasse\tPLZ\tOrt\nAda\tLead\tHauptstr 1\t10115\tBerlin\nGrace\tAdmiral\tRing 2\t80331\tMunich\n";
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    let selected =
+        exec(&mut s, "data.source.select", json!({"bytes": crate::cmd::base64_encode(tab_csv.as_bytes()), "name": "CSV-Visitenkarten.csv"}));
+    assert_eq!(selected["records"], 2);
+    assert_eq!(
+        selected["fields"],
+        json!([
+            {"name": "Name", "kind": "text"},
+            {"name": "Position", "kind": "text"},
+            {"name": "Strasse", "kind": "text"},
+            {"name": "PLZ", "kind": "text"},
+            {"name": "Ort", "kind": "text"},
+        ])
+    );
+    let source = &s.documents()[0].doc.data_merge.sources[0];
+    assert_eq!(source.delimiter, Delimiter::Tab);
+    assert_eq!(source.rows, vec![vec!["Ada", "Lead", "Hauptstr 1", "10115", "Berlin"], vec!["Grace", "Admiral", "Ring 2", "80331", "Munich"]]);
+    let frame = text_frame(&mut s, [36.0, 36.0, 300.0, 120.0], "", None);
+    let story = frame["story"].as_u64().unwrap();
+    exec(&mut s, "data.placeholder.add", json!({"field": "Name", "role": "text", "story": story, "at": 0}));
+    exec(&mut s, "data.placeholder.add", json!({"field": "Ort", "role": "text", "story": story, "at": 8}));
+    let merged = exec(&mut s, "data.merge", json!({}));
+    assert_eq!(merged["records"], 2);
+    assert_eq!(texts(&s), vec!["AdaBerlin", "GraceMunich"]);
+
+    let semi_csv = parse::table_from_bytes(b"Name;City\nAda;London\n", "people.csv", None).unwrap();
+    assert_eq!(semi_csv.delimiter, Delimiter::Semicolon);
+    assert_eq!(semi_csv.rows, vec![vec!["Ada", "London"]]);
+
+    let comma_csv = parse::table_from_bytes(b"\"Name\tLabel\",City\nAda,London\n", "people.csv", None).unwrap();
+    assert_eq!(comma_csv.delimiter, Delimiter::Comma);
+    assert_eq!(comma_csv.fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), vec!["Name\tLabel", "City"]);
 }
 
 #[test]
