@@ -11207,3 +11207,30 @@ fn running_index_does_not_reenter_through_an_anchored_margin_host() {
     let d = margin_running_cycle_fixture(true);
     assert_eq!(Cache::new().running_index(&d).value("Margin heading", false, Default::default(), 0), "Target header");
 }
+
+#[test]
+fn running_header_source_pages_follow_displayed_cross_references() {
+    let mut d = Document::new(&NewDocument { pages: 2, start_page: 99999, facing_pages: false, ..Default::default() });
+    margin_running_definition(&mut d);
+    let (_, target) =
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(300.0, 600.0, 500.0, 750.0), d.default_layer(), "Target", Default::default()).unwrap();
+    let anchor = d.story_mut(target).unwrap().insert_anchor(0, "Target");
+    let heading = "Header after reference";
+    let (first, sid) = d
+        .add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 156.0, 96.0), d.default_layer(), &format!("\n{heading}"), Default::default())
+        .unwrap();
+    let (second, _) = d.add_text_frame(SpreadRef::Doc(1), Rect::new(36.0, 36.0, 156.0, 750.0), d.default_layer(), "", Default::default()).unwrap();
+    d.thread(first, second).unwrap();
+    let st = d.story_mut(sid).unwrap();
+    st.insert_xref(0, designcraft_doc::CrossRef { target: anchor, text: Some("<pageNum /> ".repeat(16)), ..Default::default() });
+    let at = st.text.find(heading).unwrap();
+    st.format_paras(at..st.text.len(), |p| p.style = "Margin heading".into());
+    let cache = Cache::new();
+    let displayed = cache.get(&d, sid, None);
+    let unresolved = compose_story_unstacked(&d, sid, &Default::default());
+    assert_eq!(crate::vars::place(&d, &unresolved, at).unwrap().0, 0, "fixture must fit the unresolved reference on the first page");
+    assert_eq!(crate::vars::place(&d, &displayed, at).unwrap().0, 1, "displayed page numbers must push the heading to page two");
+    let index = cache.running_index(&d);
+    assert_eq!(index.value("Margin heading", false, Default::default(), 0), "");
+    assert_eq!(index.value("Margin heading", false, Default::default(), 1), heading);
+}

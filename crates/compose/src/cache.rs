@@ -528,7 +528,11 @@ impl Cache {
         }
         // Index sources can reach a running-index consumer through a margin neighbour or
         // anchored host. Body-only composition keeps those indirect paths outside the cache.
-        let r = Arc::new(RunningIndex::build(doc, &|sid| Arc::new(crate::compose_story_unstacked(doc, sid, &ComposeOptions::default()))));
+        // Resolve cross-references before measuring source pages, without entering cached layouts.
+        let xrefs = doc.stories.values().any(|st| crate::xref::has_xrefs(st)).then(|| self.xref_index(doc));
+        let r = Arc::new(RunningIndex::build(doc, &|sid| {
+            Arc::new(crate::compose_story_unstacked(doc, sid, &ComposeOptions { xrefs: xrefs.clone(), ..Default::default() }))
+        }));
         *self.running.lock().unwrap_or_else(PoisonError::into_inner) = Some((sig, r.clone()));
         r
     }
