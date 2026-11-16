@@ -125,8 +125,8 @@ the shared workflow on every pull request and push to `main`. The gate can also 
 | Date | Change | Summary |
 |---|---|---|
 | 2026-11-15 | trivial | Quality gates describe the existing shared CI workflow on every pull request and push to main |
-| 2026-10-27 | minor | Recovery writes off the interface thread, streamed to disk; a snapshot still being written when its document is saved, reverted or closed is cancelled |
 | 2026-11-04 | minor | Corrected the file I/O summary to describe the existing INDD/INDT conversion and import path |
+| 2026-10-27 | minor | Recovery writes off the interface thread, streamed to disk; a snapshot still being written when its document is saved, reverted or closed is cancelled |
 | 2026-10-12 | minor | Documented cancelable Dock Quit through the native event-loop boundary |
 | 2026-10-12 | minor | Documented orderly native exit recovery and the remaining cancelable Dock Quit gap |
 | 2026-10-10 | major | Created from the code on main (92649ff) and `plan/architecture.md` |
