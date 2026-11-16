@@ -1149,6 +1149,7 @@ fn renumber_in(dst: &mut Document, src: &Document, it: &mut Item, stories: &mut 
                     let n = StoryId(dst.alloc());
                     let mut st = src.story(tf.story).cloned().unwrap_or_else(|| Story::new(n));
                     st.id = n;
+                    dst.adopt_note_series(&mut st, src);
                     let marked = renumber_marks(dst, &mut st);
                     let mut assets = HashMap::new();
                     for a in designcraft_doc::story_asset_refs(&st) {

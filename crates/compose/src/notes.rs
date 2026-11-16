@@ -117,11 +117,7 @@ impl SeriesNotes {
         let start = if refs.is_empty() { 1 } else { doc.footnote_series_start(story.id, series) };
         Self {
             series,
-            members: story
-                .notes
-                .iter()
-                .map(|n| nested || n.series == series || (series == 0 && !doc.note_series.iter().any(|s| s.id == n.series)))
-                .collect(),
+            members: story.notes.iter().map(|n| nested || doc.note_series_id(n.series) == series).collect(),
             numbers: vec![start; refs.len()],
             refs,
             num: start,

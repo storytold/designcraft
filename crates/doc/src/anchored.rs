@@ -292,6 +292,7 @@ impl Document {
                     copy.id = id;
                     copy.frames.clear();
                     if let Some(from) = assets {
+                        self.adopt_note_series(&mut copy, from);
                         // The graphics it places, under this document's ids.
                         let mut map = HashMap::new();
                         for a in crate::story_asset_refs(&copy) {
