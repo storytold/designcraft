@@ -133,6 +133,11 @@ fn reapply_cell_styles(d: &mut Document, names: &[String]) {
 /// Include descendants when editing an inherited style, with the resolver's depth limit.
 fn dependent_styles<'a>(name: &str, styles: impl Iterator<Item = (&'a str, Option<&'a str>)>) -> Vec<String> {
     let styles: Vec<_> = styles.collect();
+    // The first style of a name is the one, as the resolver's lookup finds it.
+    let mut based_on: std::collections::HashMap<&str, Option<&str>> = std::collections::HashMap::new();
+    for (n, base) in &styles {
+        based_on.entry(n).or_insert(*base);
+    }
     styles
         .iter()
         .filter(|(candidate, _)| {
@@ -142,7 +147,7 @@ fn dependent_styles<'a>(name: &str, styles: impl Iterator<Item = (&'a str, Optio
                 if current_name == name {
                     return true;
                 }
-                current = styles.iter().find(|(n, _)| *n == current_name).and_then(|(_, base)| *base);
+                current = based_on.get(current_name).copied().flatten();
             }
             false
         })
