@@ -1100,8 +1100,11 @@ fn note_series_keep_independent_labels_in_html() {
     let id = st.insert_note(st.len(), "Source", Default::default()).unwrap();
     st.note_mut(id).unwrap().series = 1;
     st.insert_note(st.len(), "Second ordinary", Default::default());
+    let unknown = st.insert_note(st.len(), "Unknown series", Default::default()).unwrap();
+    st.note_mut(unknown).unwrap().series = 99;
     let html = story_html(&d, sid);
     assert!(html.contains("href=\"#fn-1\">1</a>"), "{html}");
     assert!(html.contains("href=\"#fn-2\">a</a>"), "{html}");
     assert!(html.contains("href=\"#fn-3\">2</a>"), "{html}");
+    assert!(html.contains("href=\"#fn-4\">3</a>"), "{html}");
 }

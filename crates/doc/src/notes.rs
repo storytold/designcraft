@@ -67,6 +67,7 @@ pub enum NotePlacement {
     #[default]
     ColumnFoot,
     Margin {
+        #[serde(default)]
         side: MarginSide,
         gap: f64,
         width: f64,
@@ -329,12 +330,39 @@ impl crate::Document {
         self.footnote_series_start(sid, 0)
     }
 
+    /// The effective series of native or pasted notes with an undeclared id.
+    pub fn note_series_id(&self, series: u64) -> u64 {
+        if self.note_series.iter().any(|s| s.id == series && series != 0) { series } else { 0 }
+    }
+
+    /// Adopt additional series by meaning, not by their document-local numeric ids.
+    /// Legacy notes still join the destination's series 0, as ordinary footnote paste always did.
+    pub fn adopt_note_series(&mut self, story: &mut Story, source: &Self) {
+        let mut mapped = std::collections::HashMap::new();
+        for note in &mut story.notes {
+            let source_id = source.note_series_id(note.series);
+            let id = *mapped.entry(source_id).or_insert_with(|| {
+                let Some(series) = source.note_series.iter().find(|s| s.id == source_id && source_id != 0) else { return 0 };
+                if let Some(existing) = self.note_series.iter().find(|s| s.name == series.name && s.options == series.options) {
+                    return existing.id;
+                }
+                let id = crate::ids::next_local_id(self.note_series.iter().map(|s| s.id));
+                self.note_series.push(NoteSeries { id, ..series.clone() });
+                id
+            });
+            if note.series != id {
+                Arc::make_mut(note).series = id;
+            }
+        }
+    }
+
     /// Options for a series; unknown ids use the legacy series on imported or pasted text.
     pub fn note_options(&self, series: u64) -> &FootnoteOptions {
         self.note_series.iter().find(|s| s.id == series && series != 0).map_or(&self.footnote_options, |s| &s.options)
     }
 
     pub fn footnote_series_start(&self, sid: StoryId, series: u64) -> u32 {
+        let series = self.note_series_id(series);
         let o = self.note_options(series);
         if o.restart != NoteRestart::Never {
             return o.start_at;
@@ -349,7 +377,7 @@ impl crate::Document {
             .stories
             .values()
             .filter(|st| st.id != sid && !st.notes.is_empty() && key(st) < mine)
-            .map(|st| st.notes.iter().filter(|n| n.series == series).count())
+            .map(|st| st.notes.iter().filter(|n| self.note_series_id(n.series) == series).count())
             .sum();
         o.start_at.saturating_add(before as u32)
     }
@@ -435,5 +463,33 @@ mod series_tests {
         d.stories.insert(StoryId(2), Arc::new(Story::new(StoryId(2))));
         assert_eq!(d.footnote_series_start(StoryId(2), 0), 3);
         assert_eq!(d.footnote_series_start(StoryId(2), 1), 11);
+    }
+}
+
+#[cfg(test)]
+mod adoption_tests {
+    use super::*;
+    #[test]
+    fn note_series_adoption_remaps_conflicting_ids_and_reuses_equivalent_series() {
+        let mut source = crate::Document::new(&Default::default());
+        source.note_series.push(NoteSeries {
+            id: 1,
+            name: "Sources".into(),
+            options: FootnoteOptions { style: NumberStyle::LowerLetters, ..Default::default() },
+        });
+        let mut dest = crate::Document::new(&Default::default());
+        dest.note_series.push(NoteSeries { id: 1, name: "Other".into(), options: FootnoteOptions { start_at: 20, ..Default::default() } });
+        let mut text = Story::with_text(StoryId(0), "Body", Default::default());
+        let id = text.insert_note(4, "Source", Default::default()).unwrap();
+        text.note_mut(id).unwrap().series = 1;
+        let mut copy = text.clone();
+        dest.adopt_note_series(&mut copy, &source);
+        let adopted = copy.notes[0].series;
+        assert_ne!(adopted, 1);
+        assert_eq!(dest.note_options(adopted), &source.note_series[0].options);
+        assert_eq!(dest.note_options(1).start_at, 20);
+        dest.adopt_note_series(&mut text, &source);
+        assert_eq!(text.notes[0].series, adopted);
+        assert_eq!(dest.note_series.len(), 2);
     }
 }

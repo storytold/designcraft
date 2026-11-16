@@ -10767,3 +10767,22 @@ fn review_margin_stacks_share_a_page_across_stories_and_invalidate_cache() {
     let shown = cache.get(&d, b, None);
     assert_eq!(shown.frames[0].notes[0].rect, after.frames[0].notes[0].rect);
 }
+
+#[test]
+fn margin_stacks_compare_scaled_hosts_in_physical_page_space() {
+    use designcraft_doc::{MarginSide, NotePlacement};
+    let (mut d, a, af) = doc_with("First body", Rect::new(60.0, 36.0, 210.0, 300.0), ParaAttrs::default());
+    d.item_mut(af).unwrap().xf = Affine::scale(2.0);
+    let (bf, b) =
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(120.0, 110.0, 420.0, 600.0), d.default_layer(), "Second body", Default::default()).unwrap();
+    d.footnote_options.placement = NotePlacement::Margin { side: MarginSide::Right, gap: 8.0, width: 72.0 };
+    d.footnote_options.space_between = 7.0;
+    d.footnote_options.separator = " ".into();
+    d.story_mut(a).unwrap().insert_note(5, "First\nSecond\nThird", Default::default());
+    d.story_mut(b).unwrap().insert_note(5, "Next", Default::default());
+    let ca = compose_story(&d, a, &Default::default());
+    let cb = compose_story(&d, b, &Default::default());
+    let ar = d.text_xf(d.item(af).unwrap()).transform_rect_bbox(ca.frames[0].notes[0].rect);
+    let br = d.text_xf(d.item(bf).unwrap()).transform_rect_bbox(cb.frames[0].notes[0].rect);
+    assert!((br.y0 - ar.y1 - 7.0).abs() < 0.01, "physical rectangles {ar:?}, {br:?}");
+}

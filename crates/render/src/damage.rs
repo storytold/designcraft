@@ -95,7 +95,7 @@ pub fn damage_with(old: &Document, new: &Document, cache: Option<&designcraft_co
         }
         changed_text |= edited;
         // Margin notes can move beyond both the old and new host frame's painted bounds.
-        let margins = [(old, a), (new, b)].iter().any(|(d, st)| has_margin_notes(d, *st));
+        let margins = [old, new].iter().any(|d| margin_reflow(d, sid));
         // Footnote numbers continue across stories.
         if margins || a.map_or(0, |s| s.notes.len()) != b.map_or(0, |s| s.notes.len()) {
             return None;
@@ -197,6 +197,11 @@ fn painted_bounds(it: &Item) -> Option<Rect> {
         b = b.union(it.xf.transform_rect_bbox(painted_bounds(c)?.inflate(stroke, stroke)));
     }
     Some(b)
+}
+
+fn margin_reflow(doc: &Document, sid: StoryId) -> bool {
+    has_margin_notes(doc, doc.stories.get(&sid))
+        || designcraft_compose::wrap::wrapped_by(doc, sid).into_iter().any(|id| has_margin_notes(doc, doc.stories.get(&id)))
 }
 
 fn has_margin_notes(doc: &Document, story: Option<&Arc<Story>>) -> bool {
@@ -305,6 +310,26 @@ mod tests {
         d.story_mut(a).unwrap().insert_object(0, designcraft_doc::AnchoredObject::new(it, Default::default()));
         let dmg = damage(&old, &d).unwrap();
         assert!(dmg.iter().any(|(_, r)| r.contains(designcraft_geom::Point::new(400.0, 500.0))));
+    }
+
+    #[test]
+    fn reflow_of_wrapped_margin_story_repaints_beyond_its_frame() {
+        let mut d = Document::new(&NewDocument::default());
+        let lid = d.default_layer();
+        let (_, a) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 200.0, 200.0), lid, "Anchor", Default::default()).unwrap();
+        let (_, b) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(300.0, 400.0, 500.0, 600.0), lid, "Wrapped", Default::default()).unwrap();
+        d.footnote_options.placement = designcraft_doc::NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 8.0, width: 72.0 };
+        d.story_mut(b).unwrap().insert_note(4, "Source", Default::default());
+        let mut object = designcraft_doc::Item::new(
+            ItemId(d.alloc()),
+            lid,
+            designcraft_doc::Shape::Rectangle,
+            designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 20.0, 20.0)),
+        );
+        object.wrap.mode = designcraft_doc::WrapMode::BoundingBox;
+        let old = d.clone();
+        d.story_mut(a).unwrap().insert_object(0, designcraft_doc::AnchoredObject::new(object, Default::default()));
+        assert!(damage(&old, &d).is_none());
     }
 
     /// Channels where `old`'s render patched over `new`'s damage differs from `new`'s full render.

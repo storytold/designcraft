@@ -355,7 +355,7 @@ impl<'a, 'f> StoryWriter<'a, 'f> {
         let Some(note) = st.notes.get(k) else { return };
         let doc = self.doc;
         let o = doc.note_options(note.series);
-        let counter = self.next_footnote.entry(note.series).or_insert(o.start_at);
+        let counter = self.next_footnote.entry(doc.note_series_id(note.series)).or_insert(o.start_at);
         let n = *counter;
         *counter = n.saturating_add(1);
         self.footnote_ids = self.footnote_ids.saturating_add(1);

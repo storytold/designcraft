@@ -2,6 +2,7 @@
 use std::collections::{HashMap, HashSet};
 
 use designcraft_doc::{Document, MarginSide, NotePlacement, StoryId};
+use designcraft_geom::{Affine, Point};
 
 use crate::{ComposeOptions, ComposedStory, FrameSpec};
 
@@ -9,20 +10,28 @@ struct Candidate {
     page: usize,
     left: bool,
     baseline: f64,
-    first: f64,
+    requested: f64,
     height: f64,
     gap: f64,
     story: StoryId,
     index: usize,
     frame: usize,
     note: usize,
-    page_y: f64,
+    current_top: f64,
+    to_local: Affine,
     bottom_limit: f64,
 }
 
 fn candidates(doc: &Document, cs: &ComposedStory, frames: &[FrameSpec], pages: &HashSet<usize>, out: &mut Vec<Candidate>) {
     for (fi, (ft, f)) in cs.frames.iter().zip(frames).enumerate() {
-        let (Some(page), Some((page_rect, margin))) = (f.page, f.page_rect) else { continue };
+        let (Some(page), Some(_)) = (f.page, f.page_rect) else { continue };
+        let (Some(loc), Some(item), Some(page_spec)) = (doc.find(ft.frame), doc.item(ft.frame), doc.page(page)) else { continue };
+        let xf = doc.parent_xf(&loc) * doc.text_xf(item);
+        let to_local = xf.inverse();
+        if !to_local.as_coeffs().iter().all(|v| v.is_finite()) {
+            continue;
+        }
+        let vertical_scale = ((xf * Point::new(0.0, 1.0)) - (xf * Point::ORIGIN)).hypot();
         if !pages.contains(&page) || !doc.item_is_visible(ft.frame) {
             continue;
         }
@@ -36,19 +45,26 @@ fn candidates(doc: &Document, cs: &ComposedStory, frames: &[FrameSpec], pages: &
                 MarginSide::Inside => !f.left_page,
                 MarginSide::Outside => f.left_page,
             };
+            let physical = xf.transform_rect_bbox(n.rect);
+            let mut requested = n.rect;
+            let unstack = n.reference_baseline - first.baseline - n.origin.y;
+            requested.y0 += unstack;
+            requested.y1 += unstack;
+            let requested = xf.transform_rect_bbox(requested);
             out.push(Candidate {
                 page,
                 left,
-                baseline: n.reference_baseline - page_rect.y0,
-                first: first.baseline,
-                height: n.rect.height(),
-                gap: o.space_between,
+                baseline: (xf * Point::new(n.origin.x, n.reference_baseline)).y,
+                requested: requested.y0,
+                height: physical.height(),
+                gap: o.space_between * vertical_scale,
                 story: cs.story,
                 index: n.index,
                 frame: fi,
                 note: ni,
-                page_y: page_rect.y0,
-                bottom_limit: margin.y1 - page_rect.y0,
+                current_top: physical.y0,
+                to_local,
+                bottom_limit: page_spec.margin_rect().y1,
             });
         }
     }
@@ -76,18 +92,20 @@ pub(crate) fn stack_page_margins(doc: &Document, sid: StoryId, opts: &ComposeOpt
     let mut bottoms: HashMap<(usize, bool), f64> = HashMap::new();
     out.warnings.retain(|w| !w.starts_with("Margin note "));
     for c in all {
-        let requested = c.baseline - c.first;
-        let top = bottoms.get(&(c.page, c.left)).map_or(requested, |bottom| requested.max(bottom + c.gap));
+        let top = bottoms.get(&(c.page, c.left)).map_or(c.requested, |bottom| c.requested.max(bottom + c.gap));
         let bottom = top + c.height;
         bottoms.insert((c.page, c.left), bottom);
         if c.story != sid {
             continue;
         }
         let Some(n) = out.frames.get_mut(c.frame).and_then(|f| f.notes.get_mut(c.note)) else { continue };
-        let y = top + c.page_y;
-        n.origin.y += y - n.rect.y0;
-        n.rect.y1 += y - n.rect.y0;
-        n.rect.y0 = y;
+        let delta = (c.to_local * Point::new(0.0, top - c.current_top)) - (c.to_local * Point::ORIGIN);
+        n.origin.x += delta.x;
+        n.origin.y += delta.y;
+        n.rect.x0 += delta.x;
+        n.rect.x1 += delta.x;
+        n.rect.y0 += delta.y;
+        n.rect.y1 += delta.y;
         n.overflow = bottom > c.bottom_limit + 0.01;
         if n.overflow {
             out.warnings.push(format!("Margin note {} in series {} runs below the bottom margin on page {}", n.id, n.series, c.page + 1));
