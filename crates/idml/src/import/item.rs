@@ -10,9 +10,10 @@ use super::{
 const INDESIGN_CORNER_SIZE: f64 = 12.0;
 
 /// The viewBox size of an SVG whose root has a viewBox but no width or height (percentages count
-/// as none): such a file is placed at one viewBox unit to the point. The XML parse is bounded to
-/// 16 MiB.
+/// as none): such a file is placed at one viewBox unit to the point. A leading UTF-8 byte order
+/// mark is skipped. The XML parse is bounded to 16 MiB.
 fn svg_viewbox_size(data: &[u8]) -> Option<(f64, f64)> {
+    let data = data.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(data);
     if data.iter().find(|b| !b.is_ascii_whitespace()) != Some(&b'<') {
         return None;
     }

@@ -269,14 +269,17 @@ fn placed_svg_with_only_a_viewbox_keeps_its_viewbox_size() {
     let reader = |p: &str| match p {
         "/art/overhang.svg" => Some(OVERHANG.as_bytes().to_vec()),
         "/art/sized.svg" => Some(SIZED.as_bytes().to_vec()),
+        "/art/bom.svg" => Some(format!("\u{feff}{OVERHANG}").into_bytes()),
         _ => None,
     };
     // GraphicBounds are the art's bounds: 211 wide for the overhanging one, placed twice (the second
-    // reuses the first's asset); a sized SVG is still stretched onto its bounds.
+    // reuses the first's asset); a sized SVG is still stretched onto its bounds. A file that starts
+    // with a UTF-8 byte order mark keeps its viewBox size too.
     let frames = vec![
         frame(1, 0.0, 0.0, &svg(1, "file:/art/overhang.svg", [-11.0, 0.0, 200.0, 100.0])),
         frame(2, 100.0, 0.0, &svg(2, "file:/art/overhang.svg", [-11.0, 0.0, 200.0, 100.0])),
         frame(3, 200.0, 0.0, &svg(3, "file:/art/sized.svg", [-10.0, 0.0, 200.0, 100.0])),
+        frame(4, 300.0, 0.0, &svg(4, "file:/art/bom.svg", [-11.0, 0.0, 200.0, 100.0])),
     ];
     let d = import_idml_with(&package(&frames), &reader).unwrap();
     let mut gs: Vec<_> = d.spreads[0]
@@ -289,7 +292,7 @@ fn placed_svg_with_only_a_viewbox_keeps_its_viewbox_size() {
         .collect();
     gs.sort_by(|a, b| a.0.total_cmp(&b.0));
     let got: Vec<_> = gs.into_iter().map(|(_, size, x)| (size, x)).collect();
-    assert_eq!(got, vec![((200.0, 100.0), -11.0), ((200.0, 100.0), -11.0), ((210.0, 100.0), -10.0)]);
+    assert_eq!(got, vec![((200.0, 100.0), -11.0), ((200.0, 100.0), -11.0), ((210.0, 100.0), -10.0), ((200.0, 100.0), -11.0)]);
 }
 
 /// `PDFAttribute/@PageNumber` (1-based) is read into `Asset.page` (0-based), and the same file at
