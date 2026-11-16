@@ -5780,17 +5780,21 @@ impl DropCap {
     }
 }
 
-/// The drop cap's glyphs set from `at` (right to left: mirrored, its first character on the right).
+/// The drop cap's glyphs set from `at`; right to left mirrors whole clusters so marks keep their offsets.
 fn place_drop_cap(dc: &DropCap, at: f64, rtl: bool) -> Vec<PlacedGlyph> {
     let mut x = at;
     let mut out = Vec::with_capacity(dc.glyphs.len());
-    for g in &dc.glyphs {
-        let pen = if rtl { at + at + dc.width - x - g.adv } else { x };
-        let mut p = place(g, pen);
-        p.y += dc.drop;
-        p.rtl = rtl;
-        out.push(p);
-        x += g.adv;
+    for cluster in dc.glyphs.chunk_by(|a, b| a.byte == b.byte && a.bidi_offset == b.bidi_offset) {
+        let w: f64 = cluster.iter().map(|g| g.adv).sum();
+        let mut pen = if rtl { at + at + dc.width - x - w } else { x };
+        for g in cluster {
+            let mut p = place(g, pen);
+            p.y += dc.drop;
+            p.rtl = rtl;
+            out.push(p);
+            pen += g.adv;
+        }
+        x += w;
     }
     out
 }

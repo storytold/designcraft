@@ -5118,6 +5118,60 @@ fn drop_cap_in_right_to_left_paragraphs_is_on_the_right() {
 }
 
 #[test]
+fn right_to_left_drop_cap_keeps_marks_on_their_letters() {
+    const FAMILY: &str = "DC Test Hebrew Drop Marks";
+    designcraft_fonts::FontDb::global().add_font(
+        designcraft_fonts::testing::font_with(
+            FAMILY,
+            &[
+                'ה', 'ע', 'מ', 'ו', 'ד', 'ר', 'א', 'ש', 'ן', 'ל', 'ס', 'פ', '\u{5B8}', '\u{5B7}', '\u{5BC}', '\u{5B4}', '\u{5C1}', '\u{5B9}',
+                '\u{5B6}', '\u{5B5}', ' ',
+            ],
+        )
+        .unwrap(),
+    );
+    let first_word = "הָעַמּוּד";
+    let text = "הָעַמּוּד הָרִאשׁוֹן שֶׁל הַסֵּפֶר ".repeat(20);
+    let compose = |cap| {
+        let para = ParaAttrs { direction: Some(designcraft_doc::TextDirection::RightToLeft), align: Some(Align::Right), ..cap };
+        let (mut d, sid, _) = drop_doc(&text, para);
+        d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.font_family = Some(FAMILY.into()));
+        compose_story(&d, sid, &ComposeOptions::default())
+    };
+    let plain = compose(ParaAttrs::default());
+    let dropped = compose(drop_cap(2, 9));
+    let plain_lines = all_lines(&plain);
+    let lines = all_lines(&dropped);
+    assert!(plain_lines.len() > 2 && lines.len() > 2, "the paragraph wraps beside the drop cap");
+    let plain_glyphs = &plain_lines[0].glyphs;
+    let glyphs = &lines[0].glyphs;
+    let marks: Vec<_> = glyphs
+        .iter()
+        .enumerate()
+        .filter(|(_, g)| {
+            g.byte < first_word.len() && (g.adv == 0.0 || first_word.get(g.byte..).is_some_and(|s| s.starts_with(['\u{5B8}', '\u{5B7}', '\u{5BC}'])))
+        })
+        .collect();
+    assert!(!marks.is_empty(), "the synthetic font must shape marks in their base clusters");
+    for (i, mark_dc) in marks {
+        let base_dc = glyphs.iter().find(|g| g.byte == mark_dc.byte && g.adv > 0.0).unwrap();
+        let cluster_index = glyphs[..i].iter().filter(|g| g.byte == mark_dc.byte).count();
+        let mark_plain = plain_glyphs.iter().filter(|g| g.byte == mark_dc.byte).nth(cluster_index).unwrap();
+        let base_plain = plain_glyphs.iter().find(|g| g.byte == mark_dc.byte && g.adv > 0.0).unwrap();
+        assert_eq!(mark_dc.face.family, FAMILY);
+        assert_ne!(mark_dc.gid, 0);
+        let k = base_dc.sx / base_plain.sx;
+        let rel = mark_plain.x - base_plain.x;
+        let rel_dc = mark_dc.x - base_dc.x;
+        assert!((rel_dc - rel * k).abs() < 0.01 * k, "byte {}: drop-cap mark offset {rel_dc}, expected {} (scale {k})", mark_dc.byte, rel * k);
+    }
+    let rect = lines[0].drop_cap.unwrap().rect;
+    for g in glyphs.iter().filter(|g| g.byte < first_word.len()) {
+        assert!(g.x >= rect.x0 - 0.01 && g.x <= rect.x1 + 0.01, "byte {}: x {} outside {rect:?}", g.byte, g.x);
+    }
+}
+
+#[test]
 fn vertical_frames_set_no_drop_cap() {
     let (mut d, sid, _) = drop_doc(LOREM, drop_cap(3, 1));
     d.story_mut(sid).unwrap().vertical = true;
