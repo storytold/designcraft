@@ -1,11 +1,20 @@
 /// English → [German, French, Spanish, Japanese, Simplified Chinese].
 pub(super) const TABLE: &[(&str, [&str; 5])] = &[
-    ("Keep In Frame", ["Im Rahmen behalten", "Conserver dans le bloc", "Mantener en el marco", "フレーム内に保持", "保持在框架内"]),
-    ("Next Style:", ["Nächstes Format:", "Style suivant :", "Estilo siguiente:", "次のスタイル :", "下一样式："]),
-    ("[Same style]", ["[Gleiches Format]", "[Même style]", "[Mismo estilo]", "[同じスタイル]", "[相同样式]"]),
-    ("Reset To Base", ["Auf Basis zurücksetzen", "Rétablir la base", "Restablecer a base", "基準に戻す", "重置为基准"]),
-    ("New Paragraph Style", ["Neues Absatzformat", "Nouveau style de paragraphe", "Nuevo estilo de párrafo", "新規段落スタイル", "新建段落样式"]),
-    ("New Character Style", ["Neues Zeichenformat", "Nouveau style de caractère", "Nuevo estilo de carácter", "新規文字スタイル", "新建字符样式"]),
+    ("New Object Style", ["Neues Objektformat", "Nouveau style d'objet", "Nuevo estilo de objeto", "新規オブジェクトスタイル", "新建对象样式"]),
+    (
+        "Object Style Options",
+        ["Objektformatoptionen", "Options de style d'objet", "Opciones de estilo de objeto", "オブジェクトスタイルの設定", "对象样式选项"],
+    ),
+    (
+        "Object Style Options…",
+        ["Objektformatoptionen…", "Options de style d'objet…", "Opciones de estilo de objeto…", "オブジェクトスタイルの設定…", "对象样式选项…"],
+    ),
+    ("Basic Attributes", ["Grundattribute", "Attributs de base", "Atributos básicos", "基本属性", "基本属性"]),
+    (
+        "Stroke & Corner Options",
+        ["Kontur- und Eckenoptionen", "Options de contour et d'angle", "Opciones de trazo y esquina", "線とコーナーのオプション", "描边和角选项"],
+    ),
+    ("Effects for:", ["Effekte für:", "Effets pour :", "Efectos para:", "効果 :", "效果："]),
     (
         "Apply Style to Selection",
         [
@@ -16,6 +25,26 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
             "将样式应用于选区",
         ],
     ),
+    ("Create New Style", ["Neues Format erstellen", "Créer un style", "Crear nuevo estilo", "新規スタイルを作成", "创建新样式"]),
+    ("Clear Overrides", ["Abweichungen löschen", "Effacer les remplacements", "Borrar modificaciones", "オーバーライドを消去", "清除覆盖"]),
+    ("Shape:", ["Form:", "Forme :", "Forma:", "形状 :", "形状："]),
+    ("(no attributes)", ["(keine Attribute)", "(aucun attribut)", "(sin atributos)", "（属性なし）", "（无属性）"]),
+    (
+        "Enter a style name.",
+        [
+            "Geben Sie einen Formatnamen ein.",
+            "Saisissez un nom de style.",
+            "Escriba un nombre de estilo.",
+            "スタイル名を入力してください。",
+            "请输入样式名称。",
+        ],
+    ),
+    ("Keep In Frame", ["Im Rahmen behalten", "Conserver dans le bloc", "Mantener en el marco", "フレーム内に保持", "保持在框架内"]),
+    ("Next Style:", ["Nächstes Format:", "Style suivant :", "Estilo siguiente:", "次のスタイル :", "下一样式："]),
+    ("[Same style]", ["[Gleiches Format]", "[Même style]", "[Mismo estilo]", "[同じスタイル]", "[相同样式]"]),
+    ("Reset To Base", ["Auf Basis zurücksetzen", "Rétablir la base", "Restablecer a base", "基準に戻す", "重置为基准"]),
+    ("New Paragraph Style", ["Neues Absatzformat", "Nouveau style de paragraphe", "Nuevo estilo de párrafo", "新規段落スタイル", "新建段落样式"]),
+    ("New Character Style", ["Neues Zeichenformat", "Nouveau style de caractère", "Nuevo estilo de carácter", "新規文字スタイル", "新建字符样式"]),
     (
         "Clear Frame Fitting Options",
         [
@@ -146,6 +175,45 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ("Save a Copy…", ["Kopie speichern …", "Enregistrer une copie…", "Guardar una copia…", "コピーを保存…", "保存副本…"]),
     ("Revert", ["Zurück zur letzten Version", "Version précédente", "Volver a la versión guardada", "復帰", "恢复到上次保存"]),
     ("Place…", ["Platzieren …", "Importer…", "Colocar…", "配置…", "置入…"]),
+    (
+        "Place Contact Sheet…",
+        ["Kontaktbogen platzieren…", "Importer une planche-contact…", "Colocar hoja de contactos…", "コンタクトシートを配置…", "置入联系表…"],
+    ),
+    (
+        "Place Contact Sheet",
+        ["Kontaktbogen platzieren", "Importer une planche-contact", "Colocar hoja de contactos", "コンタクトシートを配置", "置入联系表"],
+    ),
+    (
+        "Place loaded images on new pages, in file order.",
+        [
+            "Geladene Bilder in Dateireihenfolge auf neuen Seiten platzieren.",
+            "Importer les images chargées sur de nouvelles pages, dans l’ordre des fichiers.",
+            "Colocar las imágenes cargadas en páginas nuevas, en el orden de los archivos.",
+            "読み込んだ画像をファイル順に新しいページに配置します。",
+            "按文件顺序将载入的图像置入新页面。",
+        ],
+    ),
+    ("Page margin", ["Seitenrand", "Marge de page", "Margen de página", "ページマージン", "页边距"]),
+    (
+        "Image import cancelled while a dialog is open",
+        [
+            "Bildimport bei geöffnetem Dialog abgebrochen",
+            "Importation des images annulée car une boîte de dialogue est ouverte",
+            "Importación de imágenes cancelada mientras hay un diálogo abierto",
+            "ダイアログが開いているため画像の読み込みをキャンセルしました",
+            "对话框打开时已取消图像导入",
+        ],
+    ),
+    (
+        "Place cancelled while a dialog is open",
+        [
+            "Platzieren bei geöffnetem Dialog abgebrochen",
+            "Importation annulée car une boîte de dialogue est ouverte",
+            "Colocación cancelada mientras hay un diálogo abierto",
+            "ダイアログが開いているため配置をキャンセルしました",
+            "对话框打开时已取消置入",
+        ],
+    ),
     ("Export PDF…", ["PDF exportieren …", "Exporter en PDF…", "Exportar PDF…", "PDF を書き出し…", "导出PDF…"]),
     ("Print…", ["Drucken …", "Imprimer…", "Imprimir…", "プリント…", "打印…"]),
     ("Document Setup…", ["Dokument einrichten …", "Format de document…", "Ajustar documento…", "ドキュメント設定…", "文档设置…"]),
@@ -390,6 +458,11 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ("Add CMYK Swatch", ["CMYK-Farbfeld hinzufügen", "Ajouter une nuance CMJN", "Añadir muestra CMYK", "CMYK スウォッチを追加", "添加 CMYK 色板"]),
     ("Added swatch", ["Farbfeld hinzugefügt", "Nuance ajoutée", "Muestra añadida", "スウォッチを追加しました", "已添加色板"]),
     (
+        "Include Inside Edges",
+        ["Innenkanten einschließen", "Inclure les bords intérieurs", "Incluir bordes interiores", "内側エッジを含める", "包含内边缘"],
+    ),
+    ("Alpha Channel", ["Alphakanal", "Couche alpha", "Canal alfa", "アルファチャンネル", "Alpha 通道"]),
+    (
         "Bulleted & Numbered Lists",
         [
             "Aufzählungszeichen und nummerierte Listen",
@@ -479,6 +552,7 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ("Gutter:", ["Steg:", "Gouttière :", "Medianil:", "間隔:", "栏间距："]),
     ("Fit Guides to:", ["Hilfslinien einpassen in:", "Ajuster les repères à :", "Ajustar guías a:", "ガイドの適用先:", "参考线适合："]),
     ("Top:", ["Oben:", "Haut :", "Superior:", "天:", "上："]),
+    ("Inset:", ["Versatz:", "Marge intérieure :", "Margen interior:", "フレーム内マージン :", "内边距："]),
     ("Bottom:", ["Unten:", "Bas :", "Inferior:", "地:", "下："]),
     ("Inside:", ["Innen:", "Intérieur :", "Interior:", "ノド:", "内："]),
     ("Outside:", ["Außen:", "Extérieur :", "Exterior:", "小口:", "外："]),
@@ -1151,7 +1225,7 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ),
     ("Color Settings", ["Color Settings", "Réglages des couleurs", "Color Settings", "Color Settings", "颜色设置"]),
     ("Color:", ["Color:", "Couleur :", "Color:", "Color:", "颜色："]),
-    ("Columns", ["Columns", "Colonnes", "Columns", "Columns", "栏"]),
+    ("Columns", ["Columns", "Colonnes", "Columnas", "Columns", "栏"]),
     ("Composer:", ["Composer:", "Compositeur :", "Composer:", "Composer:", "排版器："]),
     ("Copies:", ["Copies:", "Copies :", "Copies:", "Copies:", "份数："]),
     ("Count", ["Count", "Compter", "Count", "Count", "数量"]),
@@ -1253,7 +1327,8 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ("Generate QR Code", ["Generate QR Code", "Générer un code QR", "Generate QR Code", "Generate QR Code", "生成二维码"]),
     ("Go To", ["Go To", "Atteindre", "Go To", "Go To", "转到"]),
     ("Go to Page", ["Go to Page", "Atteindre la page", "Go to Page", "Go to Page", "转到页面"]),
-    ("Gutter", ["Gutter", "Gouttière", "Gutter", "Gutter", "栏间距"]),
+    ("Go to Row", ["Go to Row", "Atteindre la ligne", "Go to Row", "Go to Row", "转到行"]),
+    ("Gutter", ["Gutter", "Gouttière", "Medianil", "Gutter", "栏间距"]),
     ("Header Rows", ["Header Rows", "Lignes d'en-tête", "Header Rows", "Header Rows", "表头行"]),
     ("Height", ["Height", "Hauteur", "Height", "Height", "高度"]),
     ("Height:", ["Height:", "Hauteur :", "Height:", "Height:", "高度："]),
@@ -1434,6 +1509,20 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     (
         "Hyphenate Across Column",
         ["Über Spalten trennen", "Césure entre colonnes", "Separar entre columnas", "段をまたいでハイフネーション", "跨栏连字"],
+    ),
+    (
+        "Apply Next Style",
+        ["Nächstes Format anwenden", "Appliquer le style suivant", "Aplicar estilo siguiente", "次のスタイルを適用", "应用下一样式"],
+    ),
+    (
+        "Text Frame General Options",
+        [
+            "Allgemeine Textrahmenoptionen",
+            "Options générales du bloc de texte",
+            "Opciones generales de marco de texto",
+            "テキストフレーム一般オプション",
+            "文本框架常规选项",
+        ],
     ),
     (
         "Differs from this document",
@@ -2254,6 +2343,7 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
         ],
     ),
     ("Go to Page…", ["Go to Page…", "Atteindre la page…", "Go to Page…", "Go to Page…", "转到页面…"]),
+    ("Go to Row…", ["Go to Row…", "Atteindre la ligne…", "Go to Row…", "Go to Row…", "转到行…"]),
     ("Gradient Feather", ["Gradient Feather", "Contour progressif dégradé", "Gradient Feather", "Gradient Feather", "渐变羽化"]),
     ("Gridify", ["Gridify", "Mettre en grille", "Gridify", "Gridify", "网格化"]),
     ("Group Transparency", ["Group Transparency", "Transparence du groupe", "Group Transparency", "Group Transparency", "编组透明度"]),
@@ -3480,6 +3570,11 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
             "在音节之间（不仅在空格处）",
         ],
     ),
+    ("Auto Leading:", ["Automatischer Zeilenabstand:", "Interlignage automatique :", "Interlineado automático:", "自動行送り:", "自动行距："]),
+    (
+        "Single Word Justification:",
+        ["Ausrichtung einzelner Wörter:", "Justification des mots isolés :", "Justificación de palabra única:", "単語のみの行の揃え:", "单字齐行："],
+    ),
     ("Binding:", ["Binding:", "Reliure :", "Binding:", "Binding:", "装订方向："]),
     ("Ruby:", ["Ruby:", "Ruby :", "Ruby:", "Ruby:", "旁注："]),
     (
@@ -3684,7 +3779,7 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ),
     ("Rotate 180°", ["180° drehen", "Rotation à 180°", "Girar 180°", "180°回転", "旋转 180°"]),
     ("Rotation Angle", ["Rotation Angle", "Angle de rotation", "Rotation Angle", "Rotation Angle", "旋转角度"]),
-    ("Rows", ["Rows", "Lignes", "Rows", "Rows", "行数"]),
+    ("Rows", ["Rows", "Lignes", "Filas", "Rows", "行数"]),
     ("Run", ["Run", "Exécuter", "Run", "Run", "运行"]),
     ("Scale X Percentage", ["Scale X Percentage", "Échelle X en pourcentage", "Scale X Percentage", "Scale X Percentage", "水平缩放百分比"]),
     ("Scale Y Percentage", ["Scale Y Percentage", "Échelle Y en pourcentage", "Scale Y Percentage", "Scale Y Percentage", "垂直缩放百分比"]),
@@ -3939,6 +4034,7 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ),
     ("Greek", ["Greek", "Grec", "Greek", "Greek", "希腊语"]),
     ("Hebrew", ["Hebrew", "Hébreu", "Hebrew", "Hebrew", "希伯来语"]),
+    ("Esperanto", ["Esperanto", "Espéranto", "Esperanto", "エスペラント語", "世界语"]),
     ("Hindi", ["Hindi", "Hindi", "Hindi", "Hindi", "印地语"]),
     ("Hungarian", ["Hungarian", "Hongrois", "Hungarian", "Hungarian", "匈牙利语"]),
     (
@@ -4147,6 +4243,17 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ("Set", ["Set", "Jeu", "Set", "Set", "样式集"]),
     ("unused", ["unused", "inutilisé", "unused", "unused", "未使用"]),
     ("⚠ Missing", ["⚠ Missing", "⚠ Manquant", "⚠ Missing", "⚠ Missing", "⚠ 缺失"]),
+    ("Checking", ["Wird geprüft", "Vérification", "Comprobando", "確認中", "正在检查"]),
+    (
+        "Link status is unavailable.",
+        [
+            "Der Verknüpfungsstatus ist nicht verfügbar.",
+            "L'état des liens n'est pas disponible.",
+            "El estado de los vínculos no está disponible.",
+            "リンクの状態を取得できません。",
+            "链接状态不可用。",
+        ],
+    ),
     ("▲ Modified", ["▲ Modified", "▲ Modifié", "▲ Modified", "▲ Modified", "▲ 已修改"]),
     ("(Text Color)", ["(Text Color)", "(Couleur du texte)", "(Text Color)", "(Text Color)", "（文本颜色）"]),
     (
@@ -4765,6 +4872,10 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
             "「{name}」のレイヤーオプション…",
             "“{name}”的图层选项…",
         ],
+    ),
+    (
+        "Duplicate Layer \"{name}\"",
+        ["Ebene „{name}“ duplizieren", "Dupliquer le calque « {name} »", "Duplicar capa «{name}»", "レイヤー「{name}」を複製", "复制图层“{name}”"],
     ),
     ("Swatch Name:", ["Farbfeldname:", "Nom de la nuance :", "Nombre de muestra:", "スウォッチ名:", "色板名称:"]),
     (

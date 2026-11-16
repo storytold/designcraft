@@ -101,7 +101,8 @@ pub fn expand(definition: &str, v: &XrefValues) -> String {
         out.push_str(&rest[..i]);
         let Some(j) = tag_end(&rest[i..]) else {
             out.push_str(&rest[i..]);
-            return out;
+            rest = "";
+            break;
         };
         let tag = rest[i + 1..i + j].trim().trim_end_matches('/').trim();
         let name = tag.split_whitespace().next().unwrap_or("");
@@ -450,6 +451,12 @@ mod tests {
     fn gt_inside_quoted_attribute_does_not_end_tag() {
         let v = XrefValues { para: "Intro > the start".into(), ..Default::default() };
         assert_eq!(expand("<partialPara delim=\">\" includeDelim=\"false\" />|", &v), "Intro |");
+    }
+
+    #[test]
+    fn unterminated_lt_still_gets_typographic_quotes() {
+        let v = XrefValues { para: "Intro".into(), ..Default::default() };
+        assert_eq!(expand("\"<paraText />\" <", &v), "\u{201C}Intro\u{201D} <");
     }
 
     #[test]

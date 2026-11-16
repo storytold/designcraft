@@ -36,6 +36,7 @@ fn linked_picture(dir: &Path) -> Session {
     let mut s = Session::new();
     s.execute("file.new", &json!({})).unwrap();
     s.execute("file.place", &json!({"path": p(&dir.join("pic.png")), "x": 36, "y": 36, "width": 72})).unwrap();
+    crate::cmd::native_links::wait(&mut s);
     s
 }
 
