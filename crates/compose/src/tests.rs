@@ -10526,3 +10526,23 @@ fn cross_reference_text_breaks_at_its_spaces() {
         }
     }
 }
+
+/// Heh goal with hamza above (U+06C2) and the Arabic Supplement letters join as Unicode's
+/// ArabicShaping.txt says (dual- or right-joining): they were missing, so a custom glyph drawing
+/// one, and kashidas, took them for letters that don't join.
+#[test]
+fn joining_types_cover_heh_goal_with_hamza_and_arabic_supplement() {
+    let dual = [
+        '\u{06C2}', '\u{0750}', '\u{0758}', '\u{075C}', '\u{076A}', '\u{076D}', '\u{0770}', '\u{0772}', '\u{0775}', '\u{0777}', '\u{077A}',
+        '\u{077F}',
+    ];
+    for c in dual {
+        assert!(joins_next(c) && joins_prev(c), "U+{:04X} is dual-joining", c as u32);
+    }
+    let right = ['\u{0759}', '\u{075B}', '\u{076B}', '\u{076C}', '\u{0771}', '\u{0773}', '\u{0774}', '\u{0778}', '\u{0779}'];
+    for c in right {
+        assert!(!joins_next(c) && joins_prev(c), "U+{:04X} is right-joining", c as u32);
+    }
+    // Past the block: Syriac and Thaana letters aren't Arabic letters here.
+    assert!(!joins_prev('\u{0749}') && !joins_prev('\u{0780}'));
+}
