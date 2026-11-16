@@ -409,6 +409,12 @@ fn handle_request(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest
             let d = match id {
                 "frameSize" => crate::dialogs::frame_size_dialog(app, fields),
                 "contactSheet" => crate::dialogs::contact_sheet_dialog(app, fields),
+                "fittingOptions" => {
+                    let mut d = crate::dialogs::Dialog::new(id, fields);
+                    d.unit = app.session.active().map_or(designcraft_geom::Unit::Picas, |s| s.doc.settings.horizontal_units);
+                    d.vertical_unit = Some(d.unit);
+                    d
+                }
                 _ => crate::dialogs::Dialog::new(id, fields),
             };
             let v = serde_json::to_value(&d).unwrap_or_default();
