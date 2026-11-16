@@ -13,6 +13,8 @@ struct Cursor {
     starts_fit: bool,
     warnings: Vec<String>,
     first_line: Option<usize>,
+    tail_pending: bool,
+    catchword: Option<Rect>,
 }
 struct Trial {
     first_line: Option<usize>,
@@ -22,6 +24,25 @@ struct Trial {
     state: StreamState,
     feasible: bool,
     warnings: Vec<String>,
+    catchwords: Vec<(Option<u64>, Rect)>,
+}
+
+/// A catchword has its own row, so a neighbour cannot reclaim the space beneath its source.
+pub(super) const CATCHWORD_SPACE: f64 = 18.0;
+
+fn tail(rect: Rect, height: f64, finished: bool, needed: bool, bottom: bool) -> (f64, bool, bool, Option<Rect>) {
+    if needed && (finished || bottom) {
+        if height + CATCHWORD_SPACE <= rect.height() + 0.01 {
+            let area = Rect::new(rect.x0, rect.y0 + height, rect.x1, rect.y0 + height + CATCHWORD_SPACE);
+            // The footer closes this stream's slice on this page even when its source
+            // continues. Keep its carry for the next page, rather than replaying the row.
+            (height + CATCHWORD_SPACE, true, false, Some(area))
+        } else {
+            (height, false, finished, None)
+        }
+    } else {
+        (height, finished, false, None)
+    }
 }
 
 fn end(story: &Story, line: &crate::Line) -> usize {
@@ -50,6 +71,8 @@ fn band_frame(frame: &FrameSpec, area: Rect) -> FrameSpec {
     let mut f = frame.clone();
     f.area = area;
     f.opts.columns = 1;
+    f.opts.columns_kind = designcraft_doc::ColumnsKind::FixedNumber;
+    f.opts.column_width = 0.0;
     f.opts.balance_columns = false;
     f.opts.vertical_justification = designcraft_doc::VerticalJustification::Top;
     f
@@ -120,6 +143,8 @@ impl Page<'_> {
                         starts_fit: true,
                         warnings: Vec::new(),
                         first_line: None,
+                        tail_pending: false,
+                        catchword: None,
                     },
                     ratio: s.ratio,
                     finished,
@@ -163,6 +188,26 @@ impl Page<'_> {
         let mut first_line_seen = None;
         let out = layout(cfg, streams, |index, cursor, rect| {
             let series = self.options.streams.get(index).and_then(|s| s.series);
+            if cursor.tail_pending {
+                let (height, finished, tail_pending, catchword) = tail(rect, 0.0, true, true, false);
+                return Measurement {
+                    height,
+                    finished,
+                    cursor: Cursor { tail_pending, catchword, ..cursor.clone() },
+                    placement: FrameText::default(),
+                };
+            }
+            let bottom = rect.y1 >= self.frame.area.y1 - CATCHWORD_SPACE - 0.01;
+            let future = self.options.catchwords
+                && match series {
+                    None => wanted < self.story.text.len(),
+                    Some(id) => self
+                        .story
+                        .notes
+                        .iter()
+                        .zip(&refs)
+                        .any(|(note, at)| self.doc.note_series_id(note.series) == id && *at >= wanted && !note.text.text.is_empty()),
+                };
             let mut areas = cursor.areas.clone();
             let mut f = band_frame(self.frame, rect);
             if let Some(previous) = cursor.areas.last() {
@@ -185,29 +230,51 @@ impl Page<'_> {
             }
             if let Some(series) = series {
                 f.opts.note_stream = Some(NoteStream { story: self.story.id, series });
+            } else if future && bottom {
+                f.area.y1 = (f.area.y1 - CATCHWORD_SPACE).max(f.area.y0);
             }
             areas.push(f);
             if let Some(series) = series {
-                let fit = crate::notes::fit_stream_page_for(
-                    self.doc,
-                    self.story,
-                    StreamPageInput {
-                        page: self.frame.page.unwrap_or(0),
-                        main: self.start..wanted,
-                        areas: &areas,
-                        force_starts: force.then_some(self.start..wanted),
-                    },
-                    self.before,
-                    &ComposeOptions { note_bands: true, ..self.opts.clone() },
-                    Some(series),
-                );
+                let fit_notes = |areas: &[FrameSpec]| {
+                    crate::notes::fit_stream_page_for(
+                        self.doc,
+                        self.story,
+                        StreamPageInput {
+                            page: self.frame.page.unwrap_or(0),
+                            main: self.start..wanted,
+                            areas,
+                            force_starts: force.then_some(self.start..wanted),
+                        },
+                        self.before,
+                        &ComposeOptions { note_bands: true, ..self.opts.clone() },
+                        Some(series),
+                    )
+                };
+                let mut fit = fit_notes(&areas);
+                let needed = self.options.catchwords && (future || fit.state.pending_series().any(|id| id == series));
+                if needed && bottom {
+                    if let Some(last) = areas.last_mut() {
+                        last.area.y1 = (last.area.y1 - CATCHWORD_SPACE).max(last.area.y0);
+                    }
+                    fit = fit_notes(&areas);
+                }
                 let part = fit.frames.last().cloned().unwrap_or_default();
                 let height = part.notes.iter().map(|n| n.rect.y1 - rect.y0).fold(0.0_f64, f64::max).min(rect.height());
                 let finished = fit.starts_fit && !fit.state.pending_series().any(|id| id == series);
+                let (height, finished, tail_pending, catchword) = tail(rect, height, finished, needed, bottom);
                 Measurement {
                     height,
                     finished,
-                    cursor: Cursor { areas, state: fit.state, starts_fit: fit.starts_fit, cut: wanted, warnings: fit.warnings, first_line: None },
+                    cursor: Cursor {
+                        areas,
+                        state: fit.state,
+                        starts_fit: fit.starts_fit,
+                        cut: wanted,
+                        warnings: fit.warnings,
+                        first_line: None,
+                        tail_pending,
+                        catchword,
+                    },
                     placement: part,
                 }
             } else {
@@ -243,26 +310,30 @@ impl Page<'_> {
                         areas.pop();
                     }
                 }
+                let (height, finished, tail_pending, catchword) = tail(rect, height, finished, future, bottom);
                 Measurement {
                     height: height.min(rect.height()),
                     finished,
-                    cursor: Cursor { areas, cut, first_line, ..cursor.clone() },
+                    cursor: Cursor { areas, cut, first_line, tail_pending, catchword, ..cursor.clone() },
                     placement: FrameText::default(),
                 }
             }
         })?;
         let c = &out.streams.get(main).ok_or(super::Error::InvalidGeometry)?.cursor;
         let mut state = self.before.clone();
-        let mut feasible = c.cut == wanted;
+        let mut feasible = c.cut == wanted && !c.tail_pending;
         for (s, config) in out.streams.iter().zip(&self.options.streams) {
             if let Some(id) = config.series {
                 state.take_series(&s.cursor.state, id);
                 feasible &= s.cursor.starts_fit;
             }
+            feasible &= !s.cursor.tail_pending;
         }
         let warnings = out.streams.iter().flat_map(|s| s.cursor.warnings.iter().cloned()).collect();
         let notes = out.parts.into_iter().flat_map(|p| p.placement.notes).collect();
-        Ok(Trial { first_line: c.first_line.or(first_line_seen), cut: c.cut, areas: c.areas.clone(), notes, state, feasible, warnings })
+        let catchwords =
+            out.streams.iter().zip(&self.options.streams).filter_map(|(s, config)| s.cursor.catchword.map(|area| (config.series, area))).collect();
+        Ok(Trial { first_line: c.first_line.or(first_line_seen), cut: c.cut, areas: c.areas.clone(), notes, state, feasible, warnings, catchwords })
     }
 
     fn probe(&self, key: usize, force: bool) -> Result<Trial, super::Error> {
@@ -336,6 +407,7 @@ struct PageRecord {
     areas: Vec<FrameSpec>,
     notes: Vec<crate::PlacedNote>,
     warnings: Vec<String>,
+    catchwords: Vec<(Option<u64>, Rect)>,
 }
 #[derive(Debug)]
 pub(crate) struct Trace {
@@ -414,8 +486,20 @@ fn resume_page(story: &Story, before: crate::reuse::Reuse<'_>, trace: &Trace) ->
     }
     if old.notes.len() != story.notes.len() {
         first = 0;
+        changed.extend(story.notes.len()..old.notes.len());
     }
     (first, changed)
+}
+
+fn rejoined(old: &Story, trace: &Trace, index: usize, record: &PageRecord, story: &Story, changed: &[usize], refs: &[usize]) -> bool {
+    trace.pages.get(index).is_some_and(|p| {
+        p.start == record.start && p.cut == record.cut && p.state.progress() == record.state.progress()
+    })
+        && same_main_tail(old, story, record.cut)
+        && !record.state.pending_indices().any(|k| changed.contains(&k))
+        && !changed.iter().any(|k| refs.get(*k).is_some_and(|at| *at >= record.cut))
+        // A later, independently changed note may not be pending on this page yet.
+        && !trace.pages.iter().skip(index.saturating_add(1)).flat_map(|p| &p.notes).any(|n| changed.contains(&n.index))
 }
 
 pub(crate) fn compose_frames(
@@ -434,6 +518,7 @@ pub(crate) fn compose_frames(
         .map(|p| p.incoming.clone())
         .unwrap_or_else(|| pages.last().map_or_else(Arc::default, |p| p.state.clone()));
     let mut start = pages.last().map_or(0, |p| p.cut);
+    let refs: Vec<_> = story.text.match_indices(designcraft_doc::FOOTNOTE_REF).map(|(at, _)| at).collect();
     let mut warnings = Vec::new();
     for (index, frame) in frames.iter().enumerate().skip(resume) {
         let default = InsetColumns {
@@ -442,6 +527,7 @@ pub(crate) fn compose_frames(
             main_start_lines: 0,
             main_left_inset: None,
             main_right_inset: None,
+            catchwords: false,
         };
         let options = frame.opts.inset_columns.as_ref().unwrap_or(&default);
         if !options.valid() {
@@ -464,17 +550,12 @@ pub(crate) fn compose_frames(
                     areas: trial.areas.clone(),
                     notes: trial.notes,
                     warnings: trial.warnings,
+                    catchwords: trial.catchwords,
                 };
                 start = trial.cut;
                 past.extend(trial.areas);
                 state = record.state.clone();
-                let rejoin = old.and_then(|(before, trace)| trace.pages.get(index).map(|p| (before, p))).is_some_and(|(before, p)| {
-                    p.start == record.start
-                            && p.cut == record.cut
-                            && p.state.progress() == record.state.progress()
-                            // Matching this page cannot conceal another edit farther down the story.
-                            && same_main_tail(before.story, story, record.cut)
-                }) && !state.pending_indices().any(|k| changed.contains(&k));
+                let rejoin = old.is_some_and(|(before, trace)| rejoined(before.story, trace, index, &record, story, &changed, &refs));
                 pages.push(record);
                 if rejoin {
                     if let Some((_, trace)) = old {
@@ -515,7 +596,6 @@ pub(crate) fn compose_frames(
             merged.push(FrameText { frame: frame.id, range: start..start, ..Default::default() });
         }
     }
-    let refs: Vec<_> = story.text.match_indices(designcraft_doc::FOOTNOTE_REF).map(|(at, _)| at).collect();
     for (index, page) in pages.iter().enumerate() {
         let Some(id) = frames.get(index).map(|f| f.id) else { continue };
         for mut note in page.notes.clone() {
@@ -541,12 +621,28 @@ pub(crate) fn compose_frames(
     out.frames = merged;
     out.overset_at = (start < story.text.len()).then_some(start);
     out.warnings.extend(warnings);
+    let catchwords: Vec<_> = pages.iter().map(|p| p.catchwords.clone()).collect();
+    super::catchwords::place(doc, story, &mut out, frames, &catchwords);
     (out, Some(crate::reuse::Trace::inset(Trace { pages })))
 }
 
 #[cfg(test)]
 mod search_tests {
     use super::*;
+    #[test]
+    fn catchword_row_is_committed_once_and_can_wait_for_a_wider_band() {
+        let short = Rect::new(0.0, 0.0, 100.0, 10.0);
+        let (height, finished, pending, caption) = tail(short, 9.0, true, true, false);
+        assert_eq!(height, 9.0);
+        assert!(!finished && pending && caption.is_none());
+        let next = Rect::new(0.0, 10.0, 200.0, 50.0);
+        let (height, finished, pending, caption) = tail(next, 0.0, true, true, false);
+        assert_eq!(height, CATCHWORD_SPACE);
+        assert!(finished && !pending);
+        assert_eq!(caption, Some(Rect::new(0.0, 10.0, 200.0, 28.0)));
+        assert_eq!(tail(next, 9.0, false, true, false), (9.0, false, false, None));
+        assert_eq!(tail(next, 9.0, false, true, true).0, 9.0 + CATCHWORD_SPACE);
+    }
     #[test]
     fn nonmonotone_search_retains_only_a_measured_feasible_layout_within_budget() {
         for count in 1..33_usize {

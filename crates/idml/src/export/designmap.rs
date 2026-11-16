@@ -344,6 +344,7 @@ fn text_variable_el(v: &designcraft_doc::vars::TextVariable) -> El {
         VarKind::CreationDate { format } => ("CreationDateType", Some(pref("DateVariablePreference").attr("Format", format))),
         VarKind::ModificationDate { format } => ("ModificationDateType", Some(pref("DateVariablePreference").attr("Format", format))),
         VarKind::OutputDate { format } => ("OutputDateType", Some(pref("DateVariablePreference").attr("Format", format))),
+        VarKind::NextPageFirstWord { .. } => ("CustomTextType", Some(pref("CustomTextVariablePreference").attr("Contents", ""))),
         VarKind::RunningHeader { style, use_, character } => {
             let (ty, el, key, style_ref) = if *character {
                 (

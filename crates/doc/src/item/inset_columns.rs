@@ -20,6 +20,9 @@ fn gutter() -> f64 {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct InsetColumns {
     pub streams: Vec<InsetStream>,
+    /// Add a catchword below each stream that continues on a later page.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub catchwords: bool,
     #[serde(default = "gutter")]
     pub gutter: f64,
     #[serde(default)]

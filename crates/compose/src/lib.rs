@@ -292,6 +292,8 @@ pub struct FrameText {
     pub tables: Vec<TableFrag>,
     /// Footnotes placed at the bottom of this frame's columns.
     pub notes: Vec<PlacedNote>,
+    /// Generated inset catchwords, separate from editable source lines and note identities.
+    pub catchwords: Vec<PlacedCatchword>,
     /// Anchored objects placed in this frame's lines.
     pub objects: Vec<PlacedObject>,
 }
@@ -310,6 +312,17 @@ pub struct PlacedObject {
     pub line: usize,
     x: f64,
     text_ascent: f64,
+}
+
+#[derive(Clone, Debug)]
+pub struct PlacedCatchword {
+    pub series: Option<u64>,
+    pub origin: Point,
+    pub rect: Rect,
+    /// Uniformly shrink a long word to its stream's width without changing its spelling.
+    pub scale: f64,
+    pub text: Arc<ComposedStory>,
+    pub source: Arc<str>,
 }
 
 /// A footnote composed at the bottom of a column.
@@ -2704,7 +2717,9 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
             kenten::annotate(db, styles_tab, &mut placed, doc.settings.glyph_fallback);
             let here_props = indent_here(&placed, pp, x0, x1, rtl);
             let range_end = if last { prange.end } else { glyphs.get(g0 + b.next).map(|g| g.byte).unwrap_or(prange.end) };
-            let range_start = glyphs.get(s).map(|g| g.byte).unwrap_or(prange.start).min(range_end);
+            // A final forced break may leave an empty line after all paragraph glyphs.
+            // That caret is at the end, rather than owning the whole paragraph again.
+            let range_start = glyphs.get(s).map(|g| g.byte).unwrap_or(range_end).min(range_end);
             let range_start = if line_no == 0 { prange.start } else { range_start };
             let ft = &mut out.frames[cur.fi];
             if line_no == 0 {
@@ -4746,8 +4761,14 @@ impl Cursor {
         while frames.get(fi).is_some_and(skip) {
             fi += 1;
         }
-        self.next_frame();
         self.fi = fi;
+        self.col = 0;
+        self.band = Band { para: self.pi, ..Band::default() };
+        // A page jump may skip same-page continuation frames, whose baseline is not
+        // the destination page's first baseline.
+        self.resume();
+        self.grid_next = None;
+        self.split_part();
     }
     fn band_key(&self) -> BandKey {
         (self.fi, self.band.para)

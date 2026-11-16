@@ -14,6 +14,7 @@ notes into the main story with `footnote.insert {series,text}`, then set the mai
   "insetColumns": {
     "streams": [{"series": 1}, {"ratio": 2}, {"series": 2}],
     "gutter": 12,
+    "catchwords": true,
     "mainStartLines": 10,
     "mainLeftInset": 210,
     "mainRightInset": 162
@@ -59,10 +60,25 @@ Native saves retain the options. PDF and raster export use the composed regions.
 retain inset geometry and emits an explicit export warning. Deleting a series removes its
 entry from inset frames and moves its notes to series 0, as for ordinary stream routes.
 
+`catchwords:true` adds a generated catchword below each stream that has visible text on a later
+page. The word follows that stream's last rectangle, aligned right on right/single pages and
+left on left pages. Its 18-point row is part of the band geometry, so another stream cannot
+occupy it. Intermediate width changes do not add rows. Catchwords use the stream's font family
+and colour at 9 points; a long word shrinks uniformly to fit its column. Ended and overset
+streams show no catchword. Generated words leave editable source ranges and caret positions
+unchanged, and are included in native rendering and PDF export.
+
+A separate text-variable frame can use
+`variables.define {name:"Inner",type:"nextPageFirstWord",story:11,series:1}`. A routed `frame`
+source supplies its host and series automatically. Without `series`, existing main-story and
+default-source behaviour remains. A series source requires a host; deleting the series moves
+its catchword binding to series 0 with its notes. IDML exports series catchwords as empty
+custom-text variables and reports the loss.
+
 The implementation is in `crates/compose/src/inset`: pure geometry, bounded page trials and
 real-text regressions. Tests cover the issue's numeric layouts, mirrored and empty regions,
 positioned starts, mixed leading, overlap, source continuity over pages, progress overflow,
 nonmonotone search and an edit on page three that leaves earlier pages unchanged.
 
-Per-stream catchwords are the remaining slice of
-[#2873](https://github.com/storytold/designcraft/issues/2873), following #2870.
+The catchword source extends #2870; the geometry and placement complete the corresponding
+slice of [#2873](https://github.com/storytold/designcraft/issues/2873).

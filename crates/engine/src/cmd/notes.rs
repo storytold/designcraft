@@ -134,6 +134,7 @@ fn options(s: &mut Session, p: &Value) -> Result<Value> {
     merge(&mut v, p);
     let next = read_options(v, "footnote.options")?;
     validate_options(&next, "footnote.options")?;
+    validate_inset_placement(&s.doc()?.doc, 0, &next, "footnote.options")?;
     let out = serde_json::to_value(&next).unwrap_or_default();
     if next != cur {
         s.edit(|d, _| {
@@ -158,6 +159,66 @@ fn require_series(d: &designcraft_doc::Document, id: u64, cmd: &str) -> Result<(
 
 fn validate_options(o: &FootnoteOptions, cmd: &str) -> Result<()> {
     o.check().map_err(|e| bad(cmd, e))
+}
+
+fn validate_inset_placement(doc: &designcraft_doc::Document, id: u64, options: &FootnoteOptions, cmd: &str) -> Result<()> {
+    if options.placement != doc.note_options(id).placement
+        && !matches!(options.placement, designcraft_doc::NotePlacement::Stream)
+        && doc.placed_items().iter().any(|item| {
+            item.text_frame().and_then(|f| f.options.inset_columns.as_ref()).is_some_and(|c| c.streams.iter().any(|s| s.series == Some(id)))
+        })
+    {
+        return Err(bad(cmd, "clear this series from inset frames before changing its placement"));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod inset_placement_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_inset_selector_does_not_block_unchanged_placement() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let frame = s.execute("frame.create", &json!({"rect": [36,36,500,700], "content": "text", "text": "Body"})).unwrap();
+        // Legacy series 0 inherits destination options when an inset frame is copied.
+        s.edit(|doc, _| {
+            doc.item_mut(designcraft_doc::ItemId(frame["id"].as_u64().unwrap())).unwrap().text_frame_mut().unwrap().options.inset_columns =
+                Some(serde_json::from_value(json!({"streams": [{}, {"series": 0}]})).unwrap());
+            Ok(Value::Null)
+        })
+        .unwrap();
+        s.execute("footnote.series.options", &json!({"series": 0})).unwrap();
+        s.execute("footnote.options", &json!({"separator": " / "})).unwrap();
+        s.doc().unwrap().doc.check().unwrap();
+    }
+
+    #[test]
+    fn inset_selected_series_cannot_change_placement_until_cleared() {
+        for default in [false, true] {
+            let mut s = Session::new();
+            s.execute("file.new", &json!({})).unwrap();
+            let frame = s.execute("frame.create", &json!({"rect": [36,36,500,700], "content": "text", "text": "Body"})).unwrap();
+            let series = if default {
+                s.execute("footnote.options", &json!({"placement": "stream"})).unwrap();
+                json!(0)
+            } else {
+                s.execute("footnote.series.create", &json!({"name": "Commentary", "placement": "stream"})).unwrap()["id"].clone()
+            };
+            s.execute("textFrame.options", &json!({"ids": [frame["id"]], "insetColumns": {"streams": [{}, {"series": series}]}})).unwrap();
+            for placement in [json!("columnFoot"), json!({"kind": "margin", "width": 72, "gap": 8})] {
+                assert!(s.execute("footnote.series.options", &json!({"series": series, "placement": placement})).is_err());
+                if default {
+                    assert!(s.execute("footnote.options", &json!({"placement": placement})).is_err());
+                }
+            }
+            assert!(matches!(s.doc().unwrap().doc.note_options(series.as_u64().unwrap()).placement, designcraft_doc::NotePlacement::Stream));
+            s.execute("textFrame.options", &json!({"ids": [frame["id"]], "insetColumns": null})).unwrap();
+            s.execute("footnote.series.options", &json!({"series": series, "placement": "columnFoot"})).unwrap();
+            s.doc().unwrap().doc.check().unwrap();
+        }
+    }
 }
 
 fn read_options(mut value: Value, cmd: &str) -> Result<FootnoteOptions> {
@@ -200,6 +261,7 @@ fn series_options(s: &mut Session, p: &Value) -> Result<Value> {
     merge(&mut value, p);
     let next = read_options(value, "footnote.series.options")?;
     validate_options(&next, "footnote.series.options")?;
+    validate_inset_placement(&s.doc()?.doc, id, &next, "footnote.series.options")?;
     let out = serde_json::to_value(&next).map_err(|e| bad("footnote.series.options", e.to_string()))?;
     if next == cur {
         return Ok(out);
@@ -264,6 +326,13 @@ fn series_delete(s: &mut Session, p: &Value) -> Result<Value> {
             },
         );
         d.note_series.retain(|s| s.id != id);
+        for variable in &mut d.text_variables {
+            if let designcraft_doc::vars::VarKind::NextPageFirstWord { series: Some(series), .. } = &mut variable.kind
+                && *series == id
+            {
+                *series = 0;
+            }
+        }
         Ok(Value::Null)
     })
 }

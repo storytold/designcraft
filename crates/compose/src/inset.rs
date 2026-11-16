@@ -2,6 +2,7 @@
 //! paragraph state and baseline progression; only measurements clipped to a band are committed.
 
 use designcraft_geom::Rect;
+mod catchwords;
 mod fitting;
 pub(crate) use fitting::{Trace, compose_frames};
 

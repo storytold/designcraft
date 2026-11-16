@@ -5613,6 +5613,7 @@ fn idml_warns_before_dropping_inset_geometry() {
         main_start_lines: 0,
         main_left_inset: None,
         main_right_inset: None,
+        catchwords: false,
     });
     let (_, warnings) = crate::export_idml_report(&doc, &Default::default());
     assert!(warnings.iter().any(|w| w.contains("inset-column geometry")));

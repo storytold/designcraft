@@ -14,7 +14,7 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
 
 ## Alpha blocker (the core-workflow gate in [roadmap.md](roadmap.md#alpha-gate))
 
-Note series (#2871) now provide independent numbering/styles and column-foot or margin placement. Margin notes align with their references, stack by page side, and report overflow. Native files retain the series; IDML writes all notes using its one footnote setup with a warning. Anchored commentary streams (#2872) fit first parts on their anchor pages, route continuations independently of the body thread, and report stream overflow separately from body overset. Inset-column geometry and stream catchwords remain #2873.
+Note series (#2871) now provide independent numbering/styles and column-foot or margin placement. Margin notes align with their references, stack by page side, and report overflow. Native files retain the series; IDML writes all notes using its one footnote setup with a warning. Anchored commentary streams (#2872) fit first parts on their anchor pages, route continuations independently of the body thread, and report stream overflow separately from body overset. Inset columns and optional per-stream catchwords now share dynamic regions (#2873). Continued-note parts replay their original page context; page-number markers within a paragraph spanning pages still use the paragraph-start page (#2886).
 
 ### 0. Primary Text Frame autoflow adds pages users can't delete (F) · **ALPHA BLOCKER**
 - **Missing:** fixes to Smart Text Reflow on the Primary Text Frame, which users report adding
@@ -68,7 +68,7 @@ Note series (#2871) now provide independent numbering/styles and column-foot or 
 - **Doc:** [file-format-parity.md](file-format-parity.md)
 
 ### 4. Composition isn't compared with InDesign (T)
-- **Inset columns:** the multi-stream band rule, positioned/mirrored frame option, whole-line page fitting and incremental re-fit are implemented (#2873). Per-stream catchwords remain open; see [inset-columns.md](inset-columns.md).
+- **Inset columns:** the multi-stream band rule, positioned/mirrored frame option, whole-line page fitting and incremental re-fit are implemented (#2873). Optional per-stream catchwords follow the last rectangle; see [inset-columns.md](inset-columns.md).
 - **Missing:** an oracle harness: the same synthetic stories set by InDesign 2026 (observed
   black-box, results kept under `plan/`) and by DesignCraft, comparing line breaks, overset and
   frame fit. Known differences: optical kerning is an outline-based approximation, not Adobe's

@@ -596,6 +596,7 @@ fn shape_pieces(input: &ShapeInput<'_, '_>, table: &mut StyleTable<'_>, pieces: 
             && first.props.jidori == 0
             && !pieces[j].hidden
             && !pieces[j].composite_note
+            && !sub.notes.get(&pieces[j].range.start).is_some_and(String::is_empty)
             && pieces[j].range.start == pieces[j - 1].range.end
             && pieces[j].env.glyph_fallback == first.env.glyph_fallback
             && shaping_key(&pieces[j].props) == key

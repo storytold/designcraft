@@ -49,6 +49,7 @@ fn document(pages: usize, main: &str, left: &str, right: &str) -> (Document, Sto
             main_start_lines: 0,
             main_left_inset: None,
             main_right_inset: None,
+            catchwords: false,
         });
     }
     let sid = host.unwrap();
@@ -326,4 +327,169 @@ fn commentary_keep_all_crosses_bands_on_one_physical_page() {
     assert_eq!(lines(&ordinary), lines(&kept));
     assert!(kept.frames.iter().flat_map(|f| &f.notes).flat_map(|n| &n.text.frames).flat_map(|f| &f.lines).all(|l| !l.keep_violation));
     no_overlap(&kept);
+}
+
+fn enable_catchwords(doc: &mut Document, sid: StoryId) {
+    for id in doc.story(sid).unwrap().frames.clone() {
+        doc.item_mut(id).unwrap().text_frame_mut().unwrap().options.inset_columns.as_mut().unwrap().catchwords = true;
+    }
+}
+
+#[test]
+fn catchwords_follow_each_stream_and_its_mirrored_outer_edge() {
+    let (mut doc, sid) = document(3, &"Main word.\u{2028}".repeat(80), &"INNER body.\u{2028}".repeat(90), &"OUTER body.\u{2028}".repeat(80));
+    enable_catchwords(&mut doc, sid);
+    let cs = compose_story(&doc, sid, &Default::default());
+    assert!(!cs.is_overset(), "{:?}", cs.warnings);
+    assert_eq!(cs.frames[0].catchwords.len(), 3);
+    assert!(cs.frames.last().unwrap().catchwords.is_empty());
+    doc.text_variables.push(designcraft_doc::vars::TextVariable::new(
+        "Inner catchword",
+        designcraft_doc::vars::VarKind::NextPageFirstWord { story: Some(sid), series: Some(1) },
+    ));
+    let index = crate::vars::RunningIndex::build(&doc, &|id| {
+        assert_eq!(id, sid);
+        std::sync::Arc::new(cs.clone())
+    });
+    let values = crate::vars::values(&doc, Some(0), Some(&index));
+    assert_eq!(values[doc.variable("Inner catchword").unwrap()], "INNER");
+    for frame in &cs.frames {
+        let spec = frame_specs(&doc, sid).into_iter().find(|f| f.id == frame.frame).unwrap();
+        for c in &frame.catchwords {
+            let expected = match c.series {
+                None => "Main",
+                Some(1) => "INNER",
+                Some(2) => "OUTER",
+                _ => "",
+            };
+            assert_eq!(&*c.source, expected);
+            let width = c.text.frames.iter().flat_map(|f| &f.lines).flat_map(|l| &l.glyphs).map(|g| g.x + g.adv).fold(0.0_f64, f64::max);
+            let edge = if spec.left_page { c.origin.x } else { c.origin.x + width * c.scale };
+            assert!((edge - if spec.left_page { c.rect.x0 } else { c.rect.x1 }).abs() < 0.01);
+            for line in &frame.lines {
+                assert!(
+                    line.x1 <= c.rect.x0 + 0.01
+                        || c.rect.x1 <= line.x0 + 0.01
+                        || line.baseline + line.descent <= c.rect.y0 + 0.01
+                        || line.baseline - line.ascent >= c.rect.y1 - 0.01
+                );
+            }
+            for note in &frame.notes {
+                for line in note.text.frames.iter().flat_map(|f| &f.lines) {
+                    let (x0, x1) = (note.origin.x + line.x0, note.origin.x + line.x1);
+                    let (y0, y1) = (note.origin.y + line.baseline - line.ascent, note.origin.y + line.baseline + line.descent);
+                    assert!(x1 <= c.rect.x0 + 0.01 || c.rect.x1 <= x0 + 0.01 || y1 <= c.rect.y0 + 0.01 || y0 >= c.rect.y1 - 0.01);
+                }
+            }
+        }
+    }
+    continuity(&cs);
+}
+
+#[test]
+fn changed_next_page_word_updates_previous_page_catchword() {
+    let (mut doc, sid) = document(3, &"Main word.\u{2028}".repeat(80), &"INNER body.\u{2028}".repeat(90), "");
+    enable_catchwords(&mut doc, sid);
+    let cache = Cache::new();
+    let before = cache.get(&doc, sid, None);
+    let note = before.frames[1].notes.iter().find(|n| n.series == 1).unwrap();
+    let start = note.text.frames.first().unwrap().range.start;
+    let at = start + note.source.get(start..).unwrap().find("INNER").unwrap();
+    doc.story_mut(sid).unwrap().note_mut(note.id).unwrap().text.replace(at..at + 5, "ALTER");
+    let after = cache.get(&doc, sid, None);
+    let fresh = compose_story(&doc, sid, &Default::default());
+    assert_eq!(before.frames[0].catchwords.iter().find(|c| c.series == Some(1)).unwrap().source.as_ref(), "INNER");
+    assert_eq!(after.frames[0].catchwords.iter().find(|c| c.series == Some(1)).unwrap().source.as_ref(), "ALTER");
+    for (a, b) in after.frames.iter().zip(&fresh.frames) {
+        assert_eq!(
+            a.catchwords.iter().map(|c| (&c.source, c.rect)).collect::<Vec<_>>(),
+            b.catchwords.iter().map(|c| (&c.source, c.rect)).collect::<Vec<_>>()
+        );
+    }
+}
+
+#[test]
+fn fixed_width_host_columns_do_not_partition_inset_bands() {
+    let (mut doc, sid) = document(1, &"Main source words. ".repeat(40), &"Inner source. ".repeat(30), &"Outer source. ".repeat(40));
+    let expected = compose_story(&doc, sid, &Default::default());
+    for id in doc.story(sid).unwrap().frames.clone() {
+        let options = &mut doc.item_mut(id).unwrap().text_frame_mut().unwrap().options;
+        options.columns_kind = designcraft_doc::ColumnsKind::FixedWidth;
+        options.column_width = 90.0;
+    }
+    let actual = compose_story(&doc, sid, &Default::default());
+    assert_eq!(actual.frames[0].columns, expected.frames[0].columns);
+    assert_eq!(actual.frames[0].range, expected.frames[0].range);
+    no_overlap(&actual);
+}
+
+#[test]
+fn independently_changed_future_notes_are_not_reused() {
+    let main: String = (0..150).map(|i| format!("Main line {i:03}.\u{2028}")).collect();
+    let (mut doc, sid) = document(4, &main, "First commentary.", "");
+    let at = doc.story(sid).unwrap().text.find("Main line 110").unwrap();
+    let late = doc.story_mut(sid).unwrap().insert_note(at, "Later commentary.", Default::default()).unwrap();
+    doc.story_mut(sid).unwrap().note_mut(late).unwrap().series = 1;
+    let first = doc.story(sid).unwrap().notes[0].id;
+    let cache = Cache::new();
+    let before = cache.get(&doc, sid, None);
+    assert!(before.frames[2].notes.iter().any(|n| n.id == late));
+    for id in [first, late] {
+        let note = doc.story_mut(sid).unwrap().note_mut(id).unwrap();
+        let len = note.text.len();
+        note.text.format_chars(0..len, |f| f.over.fill = Some("[Registration]".into()));
+    }
+    let warm = cache.get(&doc, sid, None);
+    let fresh = compose_story(&doc, sid, &Default::default());
+    let a = warm.frames.iter().flat_map(|f| &f.notes).find(|n| n.id == late).unwrap();
+    let b = fresh.frames.iter().flat_map(|f| &f.notes).find(|n| n.id == late).unwrap();
+    assert_eq!(a.text.styles, b.text.styles);
+    assert!(a.text.styles.iter().any(|s| s.fill == "[Registration]"));
+}
+
+#[test]
+fn explicit_page_break_skips_band_baselines() {
+    let (mut doc, sid) = document(2, &format!("{}\nAfter the page break.", "Before.\u{2028}".repeat(7)), "", "");
+    let at = doc.story(sid).unwrap().text.find("After").unwrap();
+    let len = doc.story(sid).unwrap().len();
+    doc.story_mut(sid).unwrap().format_paras(at..len, |p| p.para.start_paragraph = Some(designcraft_doc::StartParagraph::NextPage));
+    let original = frame_specs(&doc, sid);
+    let frames = vec![original[0].clone(), original[0].clone(), original[1].clone()];
+    let ordinary = compose(&doc, doc.story(sid).unwrap(), &frames, &ComposeOptions { inset_measure: true, ..Default::default() });
+    let bands =
+        compose(&doc, doc.story(sid).unwrap(), &frames, &ComposeOptions { inset_measure: true, continuations: vec![(1, 0.0)], ..Default::default() });
+    assert_eq!(bands.frames[2].lines[0].baseline, ordinary.frames[2].lines[0].baseline);
+    assert_eq!(bands.frames[2].range, ordinary.frames[2].range);
+}
+
+#[test]
+fn band_note_cache_respects_changed_exclusions() {
+    let (doc, sid) = document(1, "Body", &"Cache input words. ".repeat(20), "");
+    let story = doc.story(sid).unwrap();
+    let mut notes = crate::notes::SeriesNotes::new(&doc, story, 1, false);
+    let spec = frame_specs(&doc, sid).remove(0);
+    let opts = ComposeOptions { note_bands: true, ..Default::default() };
+    let plain = notes.compose_parts(&doc, 0, spec.area.width(), &spec, &opts, &[], &[]);
+    let mut blocked = spec.clone();
+    blocked.exclusions.push(Exclusion {
+        rect: Rect::new(spec.area.x0, spec.area.y0, spec.area.x1 - 40.0, spec.area.y0 + 100.0),
+        mode: designcraft_doc::WrapMode::BoundingBox,
+        side: designcraft_doc::WrapSide::BothSides,
+        contour: None,
+        after: None,
+        anchor_baseline: None,
+    });
+    let wrapped = notes.compose_parts(&doc, 0, spec.area.width(), &blocked, &opts, &[], &[]);
+    let plain = plain[0].as_ref().unwrap().0.frames[0].lines[0].range.end;
+    let wrapped = wrapped[0].as_ref().unwrap().0.frames[0].lines[0].range.end;
+    assert!(wrapped < plain, "{wrapped} not before {plain}");
+}
+
+#[test]
+fn terminal_forced_break_does_not_duplicate_the_paragraph_source_range() {
+    let (doc, sid) = document(1, "Main\u{2028}", "", "");
+    let cs = compose_story(&doc, sid, &Default::default());
+    let at = doc.story(sid).unwrap().len();
+    assert_eq!(cs.frames[0].lines.last().unwrap().range, at..at);
+    continuity(&cs);
 }

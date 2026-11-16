@@ -215,7 +215,7 @@ pub fn overset_warnings(s: &Session, pages: Option<&[usize]>) -> Vec<String> {
             continue;
         }
         let cs = s.cache.get(d, story.id, None);
-        out.extend(cs.warnings.iter().filter(|warning| warning.starts_with("Stream")).cloned());
+        out.extend(cs.warnings.iter().filter(|warning| warning.starts_with("Stream") || warning.starts_with("Inset ")).cloned());
         if !cs.is_overset() {
             continue;
         }
@@ -504,7 +504,7 @@ pub fn check_document(d: &Document, cache: &Cache, document: Option<&std::path::
                         }
                     }
                 },
-                Content::Text(tf) if d.story(tf.story).is_some_and(|s| s.is_empty()) => {
+                Content::Text(tf) if tf.options.note_stream.is_none() && d.story(tf.story).is_some_and(|s| s.is_empty()) => {
                     out.push(Issue { severity: "warning", kind: "emptyText", message: "Empty text frame".into(), item: Some(it.id.0), page });
                 }
                 _ => {}

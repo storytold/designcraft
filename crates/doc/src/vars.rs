@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::Document;
+use crate::{Document, StoryId};
 
 /// First character of the variable-instance range; instance `i` refers to `doc.text_variables[i]`.
 pub const VAR_BASE: u32 = 0xE100;
@@ -64,6 +64,16 @@ pub enum VarKind {
         /// `style` names a character style instead of a paragraph style.
         #[serde(default)]
         character: bool,
+    },
+    /// The first word after the story's last composed text on this page, when that text
+    /// continues in a later frame. Empty at the end or in overset text. Without a story,
+    /// uses the story with the most shown bytes on the page (ties: lowest StoryId).
+    NextPageFirstWord {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        story: Option<StoryId>,
+        /// A note series within the named host story; omitted for the main story.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        series: Option<u64>,
     },
     /// A variable type that isn't computed here (an image caption, say): it shows the result
     /// recorded in the imported file, which already includes any text before and after.
@@ -255,8 +265,8 @@ pub fn format_date(secs: i64, fmt: &str) -> String {
 }
 
 impl Document {
-    /// The value of variable `i` on absolute page `page`, except running headers (which need the
-    /// composed document; see the compose crate). `None` for unknown indices and running headers.
+    /// The value of variable `i` on absolute page `page`, except running headers and catchwords
+    /// (which need the composed document; see the compose crate). `None` for those and unknown indices.
     pub fn variable_value(&self, i: usize, page: Option<usize>) -> Option<String> {
         let v = self.text_variables.get(i)?;
         let body = match &v.kind {
@@ -286,7 +296,7 @@ impl Document {
             VarKind::CreationDate { format } => format_date(self.created, format),
             VarKind::ModificationDate { format } => format_date(if self.modified > 0 { self.modified } else { self.created }, format),
             VarKind::OutputDate { format } => format_date(now(), format),
-            VarKind::RunningHeader { .. } => return None,
+            VarKind::RunningHeader { .. } | VarKind::NextPageFirstWord { .. } => return None,
             VarKind::Imported { result, .. } => return Some(result.clone()),
         };
         Some(format!("{}{}{}", v.before, body, v.after))

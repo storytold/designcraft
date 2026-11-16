@@ -1383,6 +1383,7 @@ impl Document {
             if self.story(stream.story).is_none()
                 || (stream.series != 0 && !self.note_series.iter().any(|series| series.id == stream.series))
                 || tf.story == stream.story
+                || tf.options.path.is_some()
                 || !own.is_empty()
                 || own.frames != [item.id]
             {

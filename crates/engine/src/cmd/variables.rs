@@ -28,7 +28,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Define Text Variable…",
             ["Type", "Text Variables"],
             None,
-            "{name, type: custom|lastPageNumber|chapterNumber|fileName|creationDate|modificationDate|outputDate|runningHeader, text? (a string; a number or a boolean is shown as typed, anything else is refused), format?, style?, use?: firstOnPage|lastOnPage, character?, section?, extension?, before?, after?} — creates or replaces by name",
+            "{name, type: custom|lastPageNumber|chapterNumber|fileName|creationDate|modificationDate|outputDate|runningHeader|nextPageFirstWord, story? (story id for nextPageFirstWord), series? (note series in the named story), frame? (text frame id for nextPageFirstWord), text? (a string; a number or a boolean is shown as typed, anything else is refused), format?, style?, use?: firstOnPage|lastOnPage, character?, section?, extension?, before?, after?} — creates or replaces by name",
             has_doc,
             define
         ),
@@ -419,6 +419,35 @@ fn text_param(p: &Value, key: &str) -> Option<String> {
     }
 }
 
+fn catchword_source(d: &designcraft_doc::Document, p: &Value) -> Result<VarKind> {
+    let (story, routed_series) = if let Some(value) = p.get("story") {
+        let id = value.as_u64().map(designcraft_doc::StoryId).ok_or_else(|| bad("variables.define", "invalid story id"))?;
+        if d.story(id).is_none() {
+            return Err(bad("variables.define", "unknown story"));
+        }
+        (Some(id), None)
+    } else if let Some(value) = p.get("frame") {
+        let id = value.as_u64().map(designcraft_doc::ItemId).ok_or_else(|| bad("variables.define", "invalid frame id"))?;
+        let frame = d.item(id).and_then(|item| item.text_frame()).ok_or_else(|| bad("variables.define", "unknown or non-text frame"))?;
+        if d.story(frame.composed_story()).is_none() {
+            return Err(bad("variables.define", "unknown story"));
+        }
+        (Some(frame.composed_story()), frame.options.note_stream.map(|route| route.series))
+    } else {
+        (None, None)
+    };
+    let series = p.get("series").map(|v| v.as_u64().ok_or_else(|| bad("variables.define", "invalid series id"))).transpose()?.or(routed_series);
+    if let Some(id) = series {
+        if story.is_none() {
+            return Err(bad("variables.define", "series needs a story or frame"));
+        }
+        if id != 0 && !d.note_series.iter().any(|s| s.id == id) {
+            return Err(bad("variables.define", "unknown note series"));
+        }
+    }
+    Ok(VarKind::NextPageFirstWord { story, series })
+}
+
 fn define(s: &mut Session, p: &Value) -> Result<Value> {
     let name = str_param(p, "name").ok_or_else(|| bad("variables.define", "missing name"))?.to_string();
     let fmt = || str_param(p, "format").unwrap_or("MM/dd/yy").to_string();
@@ -437,6 +466,7 @@ fn define(s: &mut Session, p: &Value) -> Result<Value> {
         "creationDate" => VarKind::CreationDate { format: fmt() },
         "modificationDate" => VarKind::ModificationDate { format: fmt() },
         "outputDate" => VarKind::OutputDate { format: fmt() },
+        "nextPageFirstWord" => catchword_source(&s.doc()?.doc, p)?,
         "runningHeader" => VarKind::RunningHeader {
             style: str_param(p, "style").ok_or_else(|| bad("variables.define", "runningHeader needs `style`"))?.into(),
             use_: if str_param(p, "use") == Some("lastOnPage") { designcraft_doc::vars::Use::LastOnPage } else { Default::default() },

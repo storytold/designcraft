@@ -141,7 +141,7 @@ pub(super) struct SeriesNotes {
     pub num: u32,
     pub key: Option<usize>,
     pub placed: Vec<Placed>,
-    /// Composed footnote text by (index, label, width).
+    /// Composed footnote text by note, label, area dimensions and page context.
     cache: HashMap<CacheKey, Vec<Option<Part>>>,
     pub carry: Option<Carry>,
     notes: Vec<Arc<designcraft_doc::Footnote>>,
@@ -265,23 +265,27 @@ impl SeriesNotes {
         let label = format!("{}{}", o.label(self.numbers.get(k).copied().unwrap_or(o.start_at), true), o.separator);
         // The page side sets towards/away-from-spine alignment and spine-relative anchored objects.
         let current_page = PartPage::of(f);
-        let key = (
-            k,
-            label.clone(),
-            w.to_bits(),
-            f.page,
-            f.left_page,
-            f.right_page,
-            heights
-                .iter()
-                .enumerate()
-                .map(|(i, (pw, h))| {
-                    let page = pages.get(i).unwrap_or(&current_page);
-                    (pw.to_bits(), h.to_bits(), page.page, page.left_page, page.right_page)
-                })
-                .collect(),
-        );
-        if let Some(c) = self.cache.get(&key) {
+        // Band replays depend on mutable continuation and contour history. Keep the
+        // ordinary route cache; band trials must measure their exact current inputs.
+        let key = (!opts.note_bands).then(|| {
+            (
+                k,
+                label.clone(),
+                w.to_bits(),
+                f.page,
+                f.left_page,
+                f.right_page,
+                heights
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (pw, h))| {
+                        let page = pages.get(i).unwrap_or(&current_page);
+                        (pw.to_bits(), h.to_bits(), page.page, page.left_page, page.right_page)
+                    })
+                    .collect(),
+            )
+        });
+        if let Some(c) = key.as_ref().and_then(|key| self.cache.get(key)) {
             return c.clone();
         }
         let spec = FrameSpec {
@@ -368,7 +372,9 @@ impl SeriesNotes {
                 Some((Arc::new(text), m))
             })
             .collect::<Vec<_>>();
-        self.cache.insert(key, parts.clone());
+        if let Some(key) = key {
+            self.cache.insert(key, parts.clone());
+        }
         parts
     }
 

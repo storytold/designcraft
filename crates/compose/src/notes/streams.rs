@@ -342,7 +342,17 @@ impl StreamComposer {
         anchors.push(Anchors { page, range, forced: false });
         let Some(fit) = self.replay(doc, &anchors, Some(page), opts).pop() else { return true };
         let has_main = out.frames.iter().zip(&self.host_pages).any(|(frame, p)| *p == Some(page) && !frame.lines.is_empty());
-        let can_force = !has_main && !fit.had_continuation;
+        // Missing routes can be reached on a later page; forcing is only for an existing
+        // empty area that cannot fit its first comment.
+        let routes_present = extra
+            .iter()
+            .filter_map(|k| story.notes.get(*k))
+            .filter(|note| matches!(doc.note_options(note.series).placement, NotePlacement::Stream))
+            .all(|note| {
+                let series = doc.note_series_id(note.series);
+                !self.has_route(series) || self.routes.iter().any(|f| f.page == Some(page) && f.opts.note_stream.is_some_and(|s| s.series == series))
+            });
+        let can_force = !has_main && !fit.had_continuation && routes_present;
         if !fit.starts_fit && !can_force {
             return false;
         }
