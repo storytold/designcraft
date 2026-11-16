@@ -2733,17 +2733,24 @@ fn preflight_hebrew_note_number_range() {
             .map(|i| i["message"].as_str().unwrap().to_string())
             .collect()
     };
-    s.execute("footnote.options", &json!({"style": "hebrew", "startAt": 999})).unwrap();
-    s.execute("endnote.options", &json!({"style": "hebrewPlain", "startAt": 1})).unwrap();
-    assert!(ranges(&mut s).is_empty());
-    s.execute("footnote.options", &json!({"startAt": 1000})).unwrap();
-    s.execute("endnote.options", &json!({"startAt": 1200})).unwrap();
+    s.execute("footnote.options", &json!({"style": "hebrew", "startAt": 1000})).unwrap();
+    s.execute("endnote.options", &json!({"style": "hebrewPlain", "startAt": 999})).unwrap();
+    assert!(ranges(&mut s).is_empty(), "no notes, nothing printed");
+    let f = s.execute("frame.create", &json!({"rect": [72, 72, 400, 300], "content": "text", "text": "Alpha beta."})).unwrap();
+    s.execute("text.select", &json!({"story": f["story"], "anchor": 5, "focus": 5})).unwrap();
+    s.execute("footnote.insert", &json!({"text": "One."})).unwrap();
+    s.execute("text.select", &json!({"story": f["story"], "anchor": 0, "focus": 0})).unwrap();
+    s.execute("endnote.insert", &json!({"text": "First."})).unwrap();
+    assert_eq!(ranges(&mut s), ["Footnote 1000: Hebrew numbers stop at 999, so it and later notes print in Arabic digits"]);
+    s.execute("text.select", &json!({"story": f["story"], "anchor": 0, "focus": 0})).unwrap();
+    s.execute("endnote.insert", &json!({"text": "Second."})).unwrap();
     assert_eq!(
         ranges(&mut s),
         [
-            "Footnote numbering starts at 1000: Hebrew numbers stop at 999, so these notes print in Arabic digits",
-            "Endnote numbering starts at 1200: Hebrew numbers stop at 999, so these notes print in Arabic digits",
-        ]
+            "Footnote 1000: Hebrew numbers stop at 999, so it and later notes print in Arabic digits",
+            "Endnote 1000: Hebrew numbers stop at 999, so it and later notes print in Arabic digits",
+        ],
+        "starting at 999, the second endnote is 1000"
     );
     s.execute("footnote.options", &json!({"style": "arabic"})).unwrap();
     assert_eq!(ranges(&mut s).len(), 1);
