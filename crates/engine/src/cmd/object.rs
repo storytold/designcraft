@@ -249,6 +249,9 @@ pub fn specs() -> Vec<CommandSpec> {
                     return set_new_object(s, |c| {
                         std::mem::swap(&mut c.fill, &mut c.stroke);
                         std::mem::swap(&mut c.fill_tint, &mut c.stroke_tint);
+                        if c.stroke != designcraft_color::swatch::NONE && c.stroke_weight <= 0.0 {
+                            c.stroke_weight = Stroke::default().weight;
+                        }
                     });
                 }
                 has_editable_selection(s).map_err(|e| bad("object.swapFillStroke", e))?;
@@ -275,7 +278,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Stroke",
             [],
             None,
-            "{swatch?, tint?: 0–1, weight?: 0–1000 pt, align?: center|inside|outside, type?: {kind: solid|dashed|dotted|thickThin|thinThick|thinThin|thickThick|thinThickThin|thickThinThick|wavy|hashed|stripes|style, pattern?: [dash, gap, …] (dashed: required, points), bands?: [[start, width], …] (stripes: required, fractions of stroke weight), name?: string (style: required, document stroke style name)} (other kinds take no extra fields; unknown type fields are errors), cap?: butt|round|projecting, join?: miter|round|bevel, miterLimit?: 1–500, start?, end?: none|simple|simpleWide|triangle|triangleWide|barbed|curved|circle|circleSolid|square|squareSolid|bar, gapSwatch?, gapTint?: 0–1, gapOverprint?: bool, ids?} (a value out of range or not listed is an error)",
+            "{swatch?, tint?: 0–1, weight?: 0–1000 pt, align?: center|inside|outside, type?: {kind: solid|dashed|dotted|thickThin|thinThick|thinThin|thickThick|thinThickThin|thickThinThick|wavy|hashed|stripes|style, pattern?: [dash, gap, …] (dashed: required, points), bands?: [[start, width], …] (stripes: required, fractions of stroke weight), name?: string (style: required, document stroke style name)} (other kinds take no extra fields; unknown type fields are errors), cap?: butt|round|projecting, join?: miter|round|bevel, miterLimit?: 1–500, start?, end?: none|simple|simpleWide|triangle|triangleWide|barbed|curved|circle|circleSolid|square|squareSolid|bar, gapSwatch?, gapTint?: 0–1, gapOverprint?: bool, ids?} (a value out of range or not listed is an error). With nothing selected: the stroke of new shapes",
             has_doc,
             |s, p| {
                 let kind: Option<designcraft_doc::StrokeType> = p
@@ -312,18 +315,54 @@ pub fn specs() -> Vec<CommandSpec> {
                 let arrowheads = "none, simple, simpleWide, triangle, triangleWide, barbed, curved, circle, circleSolid, square, squareSolid or bar";
                 let start = stroke_choice_param(p, "start", arrowheads)?;
                 let end = stroke_choice_param(p, "end", arrowheads)?;
-                // With nothing selected, the swatch and tint are those of new shapes.
+                // With nothing selected, the stroke settings become the defaults for new shapes.
                 if nothing_targeted(s, p)? {
                     let sw = str_param(p, "swatch").map(str::to_string);
-                    if sw.is_none() && tint.is_none() {
+                    let gap_sw = str_param(p, "gapSwatch").map(str::to_string);
+                    if sw.is_none()
+                        && tint.is_none()
+                        && weight.is_none()
+                        && miter_limit.is_none()
+                        && gap_sw.is_none()
+                        && gap_tint.is_none()
+                        && gap_overprint.is_none()
+                        && kind.is_none()
+                        && align.is_none()
+                        && cap.is_none()
+                        && join.is_none()
+                        && start.is_none()
+                        && end.is_none()
+                    {
                         return Err(bad("object.stroke", super::NOTHING_SELECTED));
                     }
+                    let tint_only = p.as_object().is_some_and(|o| o.contains_key("tint") && o.keys().all(|k| k == "tint"));
                     return set_new_object(s, |c| {
-                        if let Some(sw) = &sw {
-                            c.stroke = sw.clone();
-                            c.stroke_tint = 1.0;
+                        let cur = c.to_stroke();
+                        if tint_only && cur.is_none() {
+                            return;
                         }
-                        c.stroke_tint = tint.unwrap_or(c.stroke_tint);
+                        let mut st = if cur.is_none() && sw.is_none() { Stroke::default() } else { cur };
+                        if let Some(sw) = &sw {
+                            st.swatch = sw.clone();
+                            st.tint = 1.0;
+                        }
+                        st.tint = tint.unwrap_or(st.tint);
+                        st.weight = weight.unwrap_or(st.weight);
+                        st.miter_limit = miter_limit.unwrap_or(st.miter_limit);
+                        if let Some(gap_sw) = &gap_sw {
+                            st.gap_swatch = gap_sw.clone();
+                        }
+                        st.gap_tint = gap_tint.unwrap_or(st.gap_tint);
+                        st.gap_overprint = gap_overprint.unwrap_or(st.gap_overprint);
+                        if let Some(kind) = &kind {
+                            st.kind = kind.clone();
+                        }
+                        st.align = align.unwrap_or(st.align);
+                        st.cap = cap.unwrap_or(st.cap);
+                        st.join = join.unwrap_or(st.join);
+                        st.start = start.unwrap_or(st.start);
+                        st.end = end.unwrap_or(st.end);
+                        c.set_stroke(&st);
                     });
                 }
                 let p2 = p.clone();
@@ -978,16 +1017,24 @@ pub(crate) fn nothing_targeted(s: &Session, p: &Value) -> Result<bool> {
         && st.selection.cells.is_none())
 }
 
-/// Change the colours new shapes are drawn with (one undo step).
+/// Change the fill and stroke defaults new shapes are drawn with (one undo step).
 pub(crate) fn set_new_object(s: &mut Session, f: impl FnOnce(&mut designcraft_doc::NewObjectColors)) -> Result<Value> {
     s.edit(|d, _| {
         f(&mut d.settings.new_object);
         let c = &d.settings.new_object;
-        Ok(json!({"newObject": {"fill": c.fill, "fillTint": c.fill_tint, "stroke": c.stroke, "strokeTint": c.stroke_tint}}))
+        Ok(json!({
+            "newObject": {
+                "fill": c.fill,
+                "fillTint": c.fill_tint,
+                "stroke": c.stroke,
+                "strokeTint": c.stroke_tint,
+                "strokeWeight": c.stroke_weight,
+            }
+        }))
     })
 }
 
-/// A new shape's fill and stroke: the document's colours for new objects (a swatch deleted
+/// A new shape's fill and stroke: the document's defaults for new objects (a swatch deleted
 /// since leaves the shape's own).
 fn new_object_colors(d: &designcraft_doc::Document, it: &mut Item) {
     let c = &d.settings.new_object;
@@ -995,10 +1042,16 @@ fn new_object_colors(d: &designcraft_doc::Document, it: &mut Item) {
     if known(&c.fill) {
         it.fill = Fill { swatch: c.fill.clone(), tint: c.fill_tint, ..it.fill.clone() };
     }
-    if known(&c.stroke) {
-        it.stroke.swatch = c.stroke.clone();
-        it.stroke.tint = c.stroke_tint;
+    let mut st = c.to_stroke();
+    if !known(&st.swatch) {
+        st.swatch = it.stroke.swatch.clone();
+        st.tint = it.stroke.tint;
     }
+    if !known(&st.gap_swatch) {
+        st.gap_swatch = designcraft_color::swatch::NONE.into();
+        st.gap_tint = 1.0;
+    }
+    it.stroke = st;
 }
 
 fn frame_create(s: &mut Session, p: &Value) -> Result<Value> {
@@ -1044,8 +1097,8 @@ fn frame_create(s: &mut Session, p: &Value) -> Result<Value> {
                 it.effects = e.clone();
             }
         } else {
-            // Shapes drawn with Rectangle/Ellipse/Polygon get a 1 pt stroke in the document's
-            // colours for new objects (no fill and black at first).
+            // Shapes drawn with Rectangle/Ellipse/Polygon get the document's fill and stroke
+            // defaults for new objects (no fill and 1 pt black stroke at first).
             it.stroke = Stroke::default();
             new_object_colors(d, &mut it);
         }
@@ -4272,6 +4325,122 @@ mod step_repeat_tests {
         s.execute("object.fill", &json!({"swatch": "[Black]"})).unwrap();
         assert_eq!(colors(&s, a).0, "[Black]");
         assert_eq!(s.doc().unwrap().doc.settings.new_object.fill, "[Paper]");
+    }
+
+    /// Regression test for #2858: with nothing selected, setting stroke weight and style attributes
+    /// updates the document defaults for newly drawn Pencil, Pen, Line, and shape items without
+    /// altering existing items.
+    #[test]
+    fn with_nothing_selected_stroke_defaults_apply_to_pencil_pen_line_and_shapes() {
+        use designcraft_doc::{Arrowhead, Cap, Join, StrokeAlign, StrokeType};
+        use designcraft_tools::{PointerEvent, PointerKind};
+
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let existing = s.execute("frame.create", &json!({"rect": [20, 20, 80, 80], "content": "unassigned"})).unwrap()["id"].as_u64().unwrap();
+        assert_eq!(s.doc().unwrap().doc.item(ItemId(existing)).unwrap().stroke.weight, 1.0);
+
+        // Deselect all objects and change stroke defaults.
+        s.execute("selection.set", &json!({"ids": []})).unwrap();
+        let res = s
+            .execute(
+                "object.stroke",
+                &json!({
+                    "weight": 6,
+                    "cap": "round",
+                    "join": "bevel",
+                    "align": "inside",
+                    "miterLimit": 12,
+                    "start": "circle",
+                    "end": "triangle",
+                    "type": {"kind": "dashed", "pattern": [8.0, 3.0]},
+                    "gapSwatch": "[Paper]",
+                    "gapTint": 0.5,
+                    "gapOverprint": true
+                }),
+            )
+            .unwrap();
+        assert_eq!(res["newObject"]["strokeWeight"], 6.0);
+        // Existing item is unchanged.
+        assert_eq!(s.doc().unwrap().doc.item(ItemId(existing)).unwrap().stroke.weight, 1.0);
+
+        // Draw with the Pencil tool: the created path inherits the 6 pt stroke and all attributes.
+        s.set_tool("pencil");
+        let v = crate::ViewInfo::at_zoom(1.0);
+        s.pointer(&PointerEvent::new(PointerKind::Down, 120.0, 120.0), v).unwrap();
+        for i in 1..=20 {
+            s.pointer(&PointerEvent::new(PointerKind::Drag, 120.0 + i as f64 * 5.0, 120.0 + (i as f64 * 0.4).sin() * 15.0), v).unwrap();
+        }
+        s.pointer(&PointerEvent::new(PointerKind::Up, 220.0, 125.0), v).unwrap();
+        let pencil_id = *s.doc().unwrap().selection.items.first().expect("pencil stroke should select created path");
+        let pencil_stroke = s.doc().unwrap().doc.item(pencil_id).unwrap().stroke.clone();
+        assert_eq!(pencil_stroke.weight, 6.0);
+        assert_eq!(pencil_stroke.cap, Cap::Round);
+        assert_eq!(pencil_stroke.join, Join::Bevel);
+        assert_eq!(pencil_stroke.align, StrokeAlign::Inside);
+        assert_eq!(pencil_stroke.miter_limit, 12.0);
+        assert_eq!(pencil_stroke.start, Arrowhead::Circle);
+        assert_eq!(pencil_stroke.end, Arrowhead::Triangle);
+        assert_eq!(pencil_stroke.kind, StrokeType::Dashed { pattern: vec![8.0, 3.0] });
+        assert_eq!(pencil_stroke.gap_swatch, "[Paper]");
+        assert_eq!(pencil_stroke.gap_tint, 0.5);
+        assert!(pencil_stroke.gap_overprint);
+
+        // New Pen path, Line, and unassigned shape also inherit the defaults.
+        s.execute("selection.set", &json!({"ids": []})).unwrap();
+        let pen_id =
+            ItemId(s.execute("path.create", &json!({"anchors": [{"p": [0, 0]}, {"p": [50, 20]}, {"p": [100, 0]}]})).unwrap()["id"].as_u64().unwrap());
+        let line_id = ItemId(s.execute("line.create", &json!({"a": [0, 0], "b": [100, 0]})).unwrap()["id"].as_u64().unwrap());
+        let rect_id = ItemId(s.execute("frame.create", &json!({"rect": [10, 10, 90, 90], "content": "unassigned"})).unwrap()["id"].as_u64().unwrap());
+        for id in [pen_id, line_id, rect_id] {
+            let st = &s.doc().unwrap().doc.item(id).unwrap().stroke;
+            assert_eq!(st.weight, 6.0, "{id:?}");
+            assert_eq!(st.cap, Cap::Round, "{id:?}");
+        }
+
+        // Editing a selected object leaves the document defaults alone.
+        s.execute("selection.set", &json!({"ids": [existing]})).unwrap();
+        s.execute("object.stroke", &json!({"weight": 2})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.item(ItemId(existing)).unwrap().stroke.weight, 2.0);
+        assert_eq!(s.doc().unwrap().doc.settings.new_object.stroke_weight, 6.0);
+
+        // Save/load round-trips the stroke defaults.
+        let reloaded = designcraft_format::load(&designcraft_format::save(&s.doc().unwrap().doc).unwrap()).unwrap();
+        assert_eq!(reloaded.settings.new_object, s.doc().unwrap().doc.settings.new_object);
+
+        // Undo/redo restores and re-applies default stroke changes.
+        s.execute("selection.set", &json!({"ids": []})).unwrap();
+        s.execute("object.stroke", &json!({"weight": 9})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.settings.new_object.stroke_weight, 9.0);
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.settings.new_object.stroke_weight, 6.0);
+        s.execute("edit.redo", &json!({})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.settings.new_object.stroke_weight, 9.0);
+    }
+
+    #[test]
+    fn with_nothing_selected_stroke_edge_cases_and_validation() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("selection.set", &json!({"ids": []})).unwrap();
+
+        // Empty `object.stroke {}` still requires a parameter or selection.
+        let err = s.execute("object.stroke", &json!({})).unwrap_err();
+        assert!(matches!(err, crate::EngineError::BadParams { .. }));
+
+        // Out-of-range weight with nothing selected is refused without mutating defaults.
+        let before = s.doc().unwrap().doc.settings.new_object.clone();
+        assert!(s.execute("object.stroke", &json!({"weight": 1500})).is_err());
+        assert_eq!(s.doc().unwrap().doc.settings.new_object, before);
+
+        // When default stroke swatch is [None], tint alone does not add a stroke, whereas setting
+        // weight activates a [Black] stroke at that weight.
+        s.execute("object.stroke", &json!({"swatch": "[None]"})).unwrap();
+        s.execute("object.stroke", &json!({"tint": 0.5})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.settings.new_object.stroke, "[None]");
+        s.execute("object.stroke", &json!({"weight": 4})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.settings.new_object.stroke, "[Black]");
+        assert_eq!(s.doc().unwrap().doc.settings.new_object.stroke_weight, 4.0);
     }
 
     #[test]

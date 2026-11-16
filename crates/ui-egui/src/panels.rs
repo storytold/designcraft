@@ -253,10 +253,7 @@ pub fn sel_info(app: &DesignApp) -> Option<SelInfo> {
         kind: first.default_label(),
         is_graphic: matches!(first.content, Content::Graphic(_)),
         is_text: first.is_text_frame(),
-        stroke_kind: serde_json::to_value(&first.stroke.kind)
-            .ok()
-            .and_then(|v| v.get("kind").and_then(Value::as_str).map(str::to_string).or_else(|| v.as_str().map(str::to_string)))
-            .unwrap_or_else(|| "solid".into()),
+        stroke_kind: stroke_kind_id(&first.stroke.kind),
         corner: (first.corners.corners[0].shape, first.corners.corners[0].size),
         wrap_invert: tw.invert,
         wrap_side: serde_json::to_value(tw.side).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(),
@@ -265,6 +262,14 @@ pub fn sel_info(app: &DesignApp) -> Option<SelInfo> {
         wrap_inside_edges: tw.inside_edges,
         locked: first.locked,
     })
+}
+
+/// The JSON kind string for a stroke type (`solid`, `dashed`, `thickThin`, …).
+pub fn stroke_kind_id(kind: &designcraft_doc::StrokeType) -> String {
+    serde_json::to_value(kind)
+        .ok()
+        .and_then(|v| v.get("kind").and_then(Value::as_str).map(str::to_string).or_else(|| v.as_str().map(str::to_string)))
+        .unwrap_or_else(|| "solid".into())
 }
 
 /// Resolved attributes at the text selection (or the selected text frames).

@@ -135,6 +135,48 @@ fn stroke_panel_shows_the_text_stroke_options_while_text_is_selected() {
     h.get_by_label("Stroke Behind Fill");
 }
 
+#[test]
+fn stroke_panel_with_no_selection_edits_default_stroke_for_pencil_tool() {
+    use designcraft_tools::{PointerEvent, PointerKind};
+
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let existing = app.run("frame.create", json!({"rect": [10, 10, 50, 50], "content": "unassigned"})).unwrap()["id"].as_u64().unwrap();
+    app.run("selection.set", json!({"ids": []})).unwrap();
+
+    let mut ready = false;
+    let mut h = Harness::builder().with_size(vec2(320.0, 400.0)).build_ui_state(
+        move |ui, app: &mut DesignApp| {
+            if !ready {
+                crate::theme::install_fonts(ui.ctx(), "");
+                crate::theme::apply(ui.ctx(), &Tokens::for_brightness(Default::default()));
+                ready = true;
+                return;
+            }
+            stroke_panel(app, ui);
+        },
+        app,
+    );
+    h.run_steps(3);
+    assert!(h.query_by_label("Select an object.").is_none());
+    let field = h.get_all_by_role(egui::accesskit::Role::TextInput).next().unwrap().rect();
+    type_in_field(&mut h, field, "6");
+
+    let app = h.state_mut();
+    assert_eq!(app.session.active().unwrap().doc.settings.new_object.stroke_weight, 6.0);
+    assert_eq!(app.session.active().unwrap().doc.item(designcraft_doc::ItemId(existing)).unwrap().stroke.weight, 1.0);
+
+    app.session.set_tool("pencil");
+    let v = designcraft_engine::ViewInfo::at_zoom(1.0);
+    app.session.pointer(&PointerEvent::new(PointerKind::Down, 100.0, 100.0), v).unwrap();
+    for i in 1..=15 {
+        app.session.pointer(&PointerEvent::new(PointerKind::Drag, 100.0 + i as f64 * 4.0, 100.0 + i as f64 * 2.0), v).unwrap();
+    }
+    app.session.pointer(&PointerEvent::new(PointerKind::Up, 160.0, 130.0), v).unwrap();
+    let drawn = *app.session.active().unwrap().selection.items.first().unwrap();
+    assert_eq!(app.session.active().unwrap().doc.item(drawn).unwrap().stroke.weight, 6.0);
+}
+
 /// The text Stroke panel's Weight keeps a typed value inside the character stroke weight's
 /// range of 0 to 800 pt, as the character style's Weight field does.
 #[test]

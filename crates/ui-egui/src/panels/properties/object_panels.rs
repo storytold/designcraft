@@ -16,17 +16,21 @@ pub fn stroke_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         text_stroke_panel(app, ui, &a["chars"]);
         return;
     }
-    let Some(i) = sel_info(app) else {
-        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Select an object."));
-        return;
-    };
-    let Some(st) = app.session.active().and_then(|d| d.selection.items.first().and_then(|id| d.doc.item(*id)).map(|it| it.stroke.clone())) else {
+    let st = if sel_info(app).is_some() {
+        let Some(st) = app.session.active().and_then(|d| d.selection.items.first().and_then(|id| d.doc.item(*id)).map(|it| it.stroke.clone())) else {
+            return;
+        };
+        st
+    } else if let Some(d) = app.session.active() {
+        d.doc.settings.new_object.to_stroke()
+    } else {
+        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "No document open"));
         return;
     };
     let t = Tokens::get(ui.ctx());
     egui::Grid::new("stroke_panel").num_columns(2).spacing(vec2(8.0, 6.0)).show(ui, |ui| {
         caption(ui, crate::i18n::tr(&app.ui.language, "Weight:"));
-        if let Some(v) = number(ui, "sw", Some(i.stroke_weight), " pt", 60.0, 3) {
+        if let Some(v) = number(ui, "sw", Some(st.weight), " pt", 60.0, 3) {
             let _ = app.run("object.stroke", json!({"weight": v.clamp(0.0, 1000.0)}));
         }
         ui.end_row();
@@ -134,7 +138,7 @@ pub fn stroke_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         });
         ui.end_row();
         caption(ui, crate::i18n::tr(&app.ui.language, "Color:"));
-        crate::panels::swatch_picker(app, ui, "spick", Some(i.stroke.clone()), |app, n| {
+        crate::panels::swatch_picker(app, ui, "spick", Some(st.swatch.clone()), |app, n| {
             let _ = app.run("object.stroke", json!({"swatch": n}));
         });
         ui.end_row();
