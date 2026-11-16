@@ -11,6 +11,13 @@ use krilla::outline::{Outline, OutlineNode};
 
 use crate::export::Sheet;
 
+/// A URL a PDF link annotation may carry. Only ordinary web and mail schemes are written; a
+/// `javascript:`, `data:`, `file:` or custom scheme is left out rather than embedded in the PDF
+/// (audit: DesignCraft #4).
+fn allowed_link(url: &str) -> Option<&str> {
+    designcraft_doc::is_safe_link_url(url).then_some(url)
+}
+
 /// Index of the output sheet showing absolute page `abs`.
 pub(crate) fn sheet_of_page(doc: &Document, sheets: &[Sheet], abs: usize) -> Option<usize> {
     let (si, pi) = doc.page_loc(abs)?;
@@ -67,9 +74,17 @@ pub(crate) fn annotations(doc: &Document, cache: &designcraft_compose::Cache, sh
             );
             let Some(rect) = rect else { continue };
             let target = match &h.dest {
-                HyperlinkDest::Url(u) => Target::Action(Action::Link(LinkAction::new(u.clone()))),
+                HyperlinkDest::Url(u) => match allowed_link(u) {
+                    Some(u) => Target::Action(Action::Link(LinkAction::new(u.to_string()))),
+                    None => continue,
+                },
                 HyperlinkDest::Email(e) => Target::Action(Action::Link(LinkAction::new(format!("mailto:{e}")))),
                 HyperlinkDest::Page(p) => match sheet_of_page(doc, sheets, *p) {
+                    Some(i) => Target::Destination(XyzDestination::new(i, krilla::geom::Point::from_xy(0.0, 0.0)).into()),
+                    None => continue,
+                },
+                // The page the anchor's text has landed on, as a cross-reference resolves it.
+                HyperlinkDest::Anchor(a) => match cache.xref_index(doc).page_index(*a).and_then(|p| sheet_of_page(doc, sheets, p)) {
                     Some(i) => Target::Destination(XyzDestination::new(i, krilla::geom::Point::from_xy(0.0, 0.0)).into()),
                     None => continue,
                 },
@@ -96,8 +111,9 @@ pub(crate) fn annotations(doc: &Document, cache: &designcraft_compose::Cache, sh
         let total = doc.page_count();
         let page = match action {
             B::GoToUrl { url } => {
+                let Some(url) = allowed_link(url) else { continue };
                 out.push(Annotation::new_link(
-                    LinkAnnotation::new(rect, Target::Action(Action::Link(LinkAction::new(url.clone())))),
+                    LinkAnnotation::new(rect, Target::Action(Action::Link(LinkAction::new(url.to_string())))),
                     Some(it.name.clone()),
                 ));
                 continue;
@@ -159,4 +175,28 @@ pub(crate) fn outline(doc: &Document, sheets: &[Sheet]) -> Option<Outline> {
         }
     }
     Some(o)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::allowed_link;
+
+    #[test]
+    fn only_web_and_mail_schemes_become_link_annotations() {
+        for ok in ["https://example.com", "HTTP://example.com", "mailto:a@b.example"] {
+            assert_eq!(allowed_link(ok), Some(ok));
+        }
+        for bad in [
+            "javascript:alert(1)",
+            "JavaScript:alert(1)",
+            "data:text/html,x",
+            "file:///etc/passwd",
+            "ftp://example.com",
+            "vbscript:x",
+            "example.com",
+            "",
+        ] {
+            assert_eq!(allowed_link(bad), None, "{bad}");
+        }
+    }
 }

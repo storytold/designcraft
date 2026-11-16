@@ -304,7 +304,7 @@ pub(crate) fn show(app: &mut DesignApp, ui: &mut Ui) {
         group(ui, "columns", (caption_w + 2.0).ceil().max(48.0), |ui, rect| {
             cell(ui, rect, 0.0, 0, rect.width(), true, |ui| widgets::caption(ui, &caption));
             if let Some(v) = cell(ui, rect, 0.0, 1, 48.0, true, |ui| {
-                NumField::number("ccols", Some(columns as f64), "", 0).width(48.0).spinner().range(1.0, 100.0).show(ui)
+                NumField::number("ccols", Some(columns as f64), "", 0).width(48.0).spinner().range(1.0, 40.0).show(ui)
             }) {
                 let _ = app.run("object.textFrameOptions", json!({"columns": v as u64}));
             }
