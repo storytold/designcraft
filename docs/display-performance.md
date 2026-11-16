@@ -71,3 +71,25 @@ resume rendering. This is a test-harness control, not a product option.
 A canvas already sampled down to the GPU texture limit is reused at rest; its expected pixel size uses the same fitting calculation as upload. Edits still reject full-resolution partial uploads into a reduced texture and repaint it whole.
 
 Native macOS startup keeps Metal as the only instance backend. The native event loop returns graphics errors to the existing recovery handler. An approved quit saves preferences and recovery and preserves queued Finder documents, then exits before AppKit destroys its window; pending or cancelled quit questions do not take this path. These retain the existing submission's macOS startup and late Touch Bar cleanup fixes.
+
+
+## Reproducing review validation
+
+Run `cargo xtask ci` from the exact PR head, with the repository's pinned dependencies and
+Rust toolchain. This runs formatting, Clippy, tests, asset/layer checks and WebAssembly;
+GitHub workflow approval is independent of the author-run result. The test-only portability
+prerequisite is proposed separately in #2549 and is mirrored here until it lands.
+
+For the native path, build `cargo build --locked -p designcraft`, launch
+`target/debug/designcraft --control 7979` with a disposable `DESIGNCRAFT_CONFIG_DIR`, and
+exercise a synthetic document through the documented control protocol. Inspect a window
+capture, drag an image, cancel with Escape and verify a later mouse-up cannot commit, then
+commit and Undo another drag. Check startup and normal Quit, including cancelling an
+unsaved-document prompt, discarding it, and recovery after an orderly control-channel exit.
+On macOS verify that the backend log records Metal; the OpenGL exclusion is native macOS
+behavior, while Windows and Linux retain their existing selection rules. Do not infer their
+runtime success from a macOS build or from skipped/pending hosted checks.
+
+Complex effects deliberately use the normal redraw path. The calendar timings above do
+not establish a drag speedup. A presented-window capture validates that run only; it is not
+proof of all GPU drivers, platforms or an independently reproduced historical AppKit crash.
