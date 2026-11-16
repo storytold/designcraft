@@ -201,15 +201,21 @@ fn underlines(cx: &ToolContext, ts: TextSel, r: Range<usize>) -> Vec<(Point, Poi
     match ts.cell {
         // A cell's or footnote's text is composed on its own and placed in the frame.
         Some(c) => {
-            let found = match c.footnote_id() {
-                Some(id) => compose::find_note(&cs, id).map(|(fi, n)| (fi, n.origin, n.text.clone())),
-                None => compose::find_cell(&cs, c.table, c.row, c.col).map(|(fi, _, pc)| (fi, pc.origin, pc.text.clone())),
+            let parts: Vec<_> = match c.footnote_id() {
+                Some(id) => cs
+                    .frames
+                    .iter()
+                    .enumerate()
+                    .flat_map(|(fi, ft)| ft.notes.iter().filter(move |n| n.id == id).map(move |n| (fi, n.origin, n.text.clone())))
+                    .collect(),
+                None => compose::find_cell(&cs, c.table, c.row, c.col).map(|(fi, _, pc)| (fi, pc.origin, pc.text.clone())).into_iter().collect(),
             };
-            if let Some((fi, origin, text)) = found
-                && let Some(m) = cs.frames.get(fi).and_then(|ft| text_canvas_xf(cx, ft.frame))
-                && let Some(ft) = text.frames.first()
-            {
-                add(&ft.lines, m * Affine::translate(origin.to_vec2()));
+            for (fi, origin, text) in parts {
+                if let Some(m) = cs.frames.get(fi).and_then(|ft| text_canvas_xf(cx, ft.frame))
+                    && let Some(ft) = text.frames.first()
+                {
+                    add(&ft.lines, m * Affine::translate(origin.to_vec2()));
+                }
             }
         }
         None => {
