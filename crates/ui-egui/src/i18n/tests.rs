@@ -982,3 +982,39 @@ fn hebrew_typography_table_and_view_source_labels_day05() {
     }
     assert_eq!(tr("en", "Object Style Options…"), "Object Style Options…");
 }
+
+#[test]
+fn hebrew_layout_color_typography_and_panel_controls_are_localized() {
+    // Original English keys are independently present in the official source-language catalog.
+    for (source, expected) in [
+        ("All Inks", "כל צבעי הדפוס"),
+        ("Ink Limit 300%", "מגבלת דיו 300%"),
+        ("Internet Standard RGB (sRGB)", "RGB תקני לאינטרנט (sRGB)"),
+        ("Monitor RGB", "RGB של הצג"),
+        ("Get Cell Stroke", "קבלת קו המתאר של התא"),
+        ("Global Light", "תאורה כללית"),
+        ("List Composite Fonts", "רשימת גופנים מורכבים"),
+        ("Set Composite Font", "הגדרת גופן מורכב"),
+        ("View/Extras", "תצוגה/עזרים"),
+        ("View/Rotate Spread", "תצוגה/סיבוב מפתח עמודים"),
+        ("View/Screen Mode", "תצוגה/מצב מסך"),
+        ("Transform Again Individually", "חזרה על שינוי צורה לכל פריט בנפרד"),
+        ("Transform Sequence Again", "חזרה על רצף שינויי צורה"),
+        ("Transform Sequence Again Individually", "חזרה על רצף שינויי צורה לכל פריט בנפרד"),
+        ("Title Case", "אות גדולה בתחילת כל מילה"),
+        ("Sentence case", "אות גדולה בתחילת משפט"),
+        ("lowercase", "אותיות קטנות"),
+        ("Name (A–Z)", "שם (A–Z)"),
+        ("Invalid panel layout; restored the default dock", "פריסת החלוניות אינה תקינה; סידור החלוניות המוגדר כברירת מחדל שוחזר"),
+        ("Text:", "טקסט:"),
+        ("Subject:", "נושא:"),
+        ("URL:", "כתובת URL:"),
+        ("Load DTD", "טעינת DTD"),
+        ("Validate from Root Element", "אימות מרכיב השורש"),
+        ("Layout/Index", "פריסה/אינדקס"),
+        ("Layout/Pages", "פריסה/עמודים"),
+    ] {
+        assert!(fr::TABLE.iter().any(|(english, _)| english == source), "official English source missing: {source}");
+        assert_eq!(tr("he", source), expected, "Hebrew UI label: {source}");
+    }
+}
