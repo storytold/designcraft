@@ -4,7 +4,9 @@ use std::collections::{HashMap, HashSet};
 use designcraft_doc::{Document, MarginSide, NotePlacement, StoryId};
 use designcraft_geom::{Affine, Point};
 
-use crate::{ComposeOptions, ComposedStory, FrameSpec};
+use crate::{ComposeOptions, ComposedStory, FrameSpec, Placement};
+use designcraft_doc::ItemId;
+use std::sync::Arc;
 
 struct Candidate {
     page: usize,
@@ -22,17 +24,37 @@ struct Candidate {
     bottom_limit: f64,
 }
 
-fn candidates(doc: &Document, cs: &ComposedStory, frames: &[FrameSpec], pages: &HashSet<usize>, out: &mut Vec<Candidate>) {
+fn candidates(
+    doc: &Document,
+    cs: &ComposedStory,
+    frames: &[FrameSpec],
+    placed: &[(ItemId, Placement)],
+    pages: &HashSet<usize>,
+    out: &mut Vec<Candidate>,
+) {
     for (fi, (ft, f)) in cs.frames.iter().zip(frames).enumerate() {
         let (Some(page), Some(_)) = (f.page, f.page_rect) else { continue };
-        let (Some(loc), Some(item), Some(page_spec)) = (doc.find(ft.frame), doc.item(ft.frame), doc.page(page)) else { continue };
-        let xf = doc.parent_xf(&loc) * doc.text_xf(item);
+        let Some(page_spec) = doc.page(page) else { continue };
+        let xf = if let Some(loc) = doc.find(ft.frame) {
+            let Some(item) = doc.item_at(&loc) else { continue };
+            if !doc.item_is_visible(ft.frame) {
+                continue;
+            }
+            doc.parent_xf(&loc) * doc.text_xf(item)
+        } else {
+            let Some(item) = doc.anchored_item(ft.frame) else { continue };
+            let Some((_, placement)) = placed.iter().find(|(id, _)| *id == ft.frame) else { continue };
+            if item.hidden || doc.layer(item.layer).is_some_and(|layer| !layer.visible) {
+                continue;
+            }
+            placement.xf * doc.text_xf(item)
+        };
         let to_local = xf.inverse();
         if !to_local.as_coeffs().iter().all(|v| v.is_finite()) {
             continue;
         }
         let vertical_scale = ((xf * Point::new(0.0, 1.0)) - (xf * Point::ORIGIN)).hypot();
-        if !pages.contains(&page) || !doc.item_is_visible(ft.frame) {
+        if !pages.contains(&page) {
             continue;
         }
         for (ni, n) in ft.notes.iter().enumerate() {
@@ -70,23 +92,37 @@ fn candidates(doc: &Document, cs: &ComposedStory, frames: &[FrameSpec], pages: &
     }
 }
 
+// The uncached entry point resolves placements internally without changing its caller's opts.
+// Reuse the same bounded host resolver here so anchored neighbours have page geometry too.
+fn placements(doc: &Document, sid: StoryId, opts: &ComposeOptions) -> Vec<(ItemId, Placement)> {
+    let visible =
+        crate::placed::visible_placements(doc, sid, &mut |host| Arc::new(crate::compose_story_unstacked(doc, host, &ComposeOptions::default())));
+    if opts.placed.is_empty() {
+        return visible;
+    }
+    // Cache callers provide authoritative transforms; use the traversal only for eligibility.
+    opts.placed.iter().filter(|(id, _)| visible.iter().any(|(shown, _)| shown == id)).copied().collect()
+}
+
 /// Local note composition sets reference baselines and text metrics. Only the document-facing
 /// entry points call this final pass; neighbour layouts never recurse into page stacking.
 pub(crate) fn stack_page_margins(doc: &Document, sid: StoryId, opts: &ComposeOptions, out: &mut ComposedStory) {
     if !out.frames.iter().flat_map(|f| &f.notes).any(|n| !doc.note_options(n.series).placement.is_column_foot()) {
         return;
     }
-    let frames = crate::frame_specs_placed(doc, sid, &opts.placed);
+    let placed = placements(doc, sid, opts);
+    let frames = crate::frame_specs_placed(doc, sid, &placed);
     let pages: HashSet<_> = frames.iter().filter_map(|f| f.page).collect();
     let mut all = Vec::new();
-    candidates(doc, out, &frames, &pages, &mut all);
+    candidates(doc, out, &frames, &placed, &pages, &mut all);
     for story in doc.stories.values().filter(|s| s.id != sid && s.notes.iter().any(|n| !doc.note_options(n.series).placement.is_column_foot())) {
-        let frames = crate::frame_specs(doc, story.id);
+        let placed = placements(doc, story.id, &ComposeOptions::default());
+        let frames = crate::frame_specs_placed(doc, story.id, &placed);
         if !frames.iter().any(|f| f.page.is_some_and(|p| pages.contains(&p))) {
             continue;
         }
-        let cs = crate::compose_story_unstacked(doc, story.id, &ComposeOptions::default());
-        candidates(doc, &cs, &frames, &pages, &mut all);
+        let cs = crate::compose_story_unstacked(doc, story.id, &ComposeOptions { placed: placed.clone(), ..Default::default() });
+        candidates(doc, &cs, &frames, &placed, &pages, &mut all);
     }
     all.sort_by(|a, b| a.page.cmp(&b.page).then(a.baseline.total_cmp(&b.baseline)).then(a.story.0.cmp(&b.story.0)).then(a.index.cmp(&b.index)));
     let mut bottoms: HashMap<(usize, bool), f64> = HashMap::new();
