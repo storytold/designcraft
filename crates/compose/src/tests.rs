@@ -10488,6 +10488,22 @@ fn split_footnote_continuation_precedes_new_note() {
 }
 
 #[test]
+fn split_footnote_continuation_does_not_block_the_next_reference() {
+    let body = format!("Opening.\nReference.{}Next reference.\nClosing.", story::FRAME_BREAK);
+    let (mut d, sid, id, text) = split_footnote_fixture(1, 5, false, &body, 60);
+    let at = d.story(sid).unwrap().text.find("Next reference").unwrap() + 5;
+    let other_text = "Later note.";
+    let other = d.story_mut(sid).unwrap().insert_note(at, other_text, ParaFormat::default()).unwrap();
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset(), "the pending continuation must not strand the next reference line");
+    assert_eq!(cs.frames.iter().flat_map(|f| &f.notes).filter(|n| n.id == id).count(), 3);
+    assert_note_parts(&cs, id, text.len());
+    assert_note_parts(&cs, other, other_text.len());
+    let frame = cs.frames.iter().find(|f| f.notes.iter().any(|n| n.id == other)).unwrap();
+    assert!(frame.lines.iter().any(|l| l.glyphs.iter().any(|g| g.byte == at && g.len > 0)), "note B must stay with its reference");
+}
+
+#[test]
 fn split_footnote_disabled_preserves_unsplit_behavior() {
     let (mut d, sid, id, _) = split_footnote_fixture(1, 2, false, "Opening.\nReference.\nClosing.", 40);
     d.footnote_options.allow_split = false;
