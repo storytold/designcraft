@@ -1084,3 +1084,24 @@ fn shared_base64_keeps_binary_padding_and_long_data_uris_on_one_line() {
     assert_eq!(base64(&[0xff, 0xff]), "//8=");
     assert_eq!(base64(&[0; 60]), "A".repeat(80));
 }
+
+#[test]
+fn note_series_keep_independent_labels_in_html() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(72.0, 72.0, 400.0, 600.0), lid, "Body", ParaFormat::default()).unwrap();
+    d.note_series.push(designcraft_doc::NoteSeries {
+        id: 1,
+        name: "Sources".into(),
+        options: designcraft_doc::FootnoteOptions { style: designcraft_doc::NumberStyle::LowerLetters, ..Default::default() },
+    });
+    let st = d.story_mut(sid).unwrap();
+    st.insert_note(0, "Ordinary", Default::default());
+    let id = st.insert_note(st.len(), "Source", Default::default()).unwrap();
+    st.note_mut(id).unwrap().series = 1;
+    st.insert_note(st.len(), "Second ordinary", Default::default());
+    let html = story_html(&d, sid);
+    assert!(html.contains("href=\"#fn-1\">1</a>"), "{html}");
+    assert!(html.contains("href=\"#fn-2\">a</a>"), "{html}");
+    assert!(html.contains("href=\"#fn-3\">2</a>"), "{html}");
+}

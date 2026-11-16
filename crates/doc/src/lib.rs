@@ -61,7 +61,7 @@ pub use flex::{FlexAlign, FlexDirection, FlexJustify, FlexLayout, FlexSize};
 pub use ids::*;
 pub use index::{INDEX_MARK, IndexRef};
 pub use item::*;
-pub use notes::{FOOTNOTE_REF, FOOTNOTE_TABLE, Footnote, FootnoteOptions};
+pub use notes::{FOOTNOTE_REF, FOOTNOTE_TABLE, Footnote, FootnoteOptions, MarginSide, NotePlacement, NoteSeries};
 pub use page::*;
 pub use selection::*;
 pub use story::*;
@@ -917,6 +917,9 @@ pub struct Document {
     /// Type › Document Footnote Options.
     #[serde(default)]
     pub footnote_options: FootnoteOptions,
+    /// Additional independent note series (series 0 remains in footnote_options).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub note_series: Vec<NoteSeries>,
     /// Cross-reference formats (Type › Hyperlinks & Cross-References › Cross-Reference Formats).
     #[serde(default = "xref::default_formats")]
     pub xref_formats: Vec<XrefFormat>,
@@ -1345,6 +1348,14 @@ impl Document {
 
     /// Validate structural invariants (ids unique, threads consistent, stories well-formed).
     pub fn check(&self) -> Result<()> {
+        self.footnote_options.check().map_err(DocError::Invalid)?;
+        let mut series_ids = std::collections::HashSet::from([0]);
+        for series in &self.note_series {
+            if !series_ids.insert(series.id) {
+                return Err(DocError::Invalid(format!("duplicate note series {}", series.id)));
+            }
+            series.options.check().map_err(DocError::Invalid)?;
+        }
         for f in &self.styles.composite_fonts {
             if f.entries.iter().any(|e| {
                 ![e.relative_size, e.horizontal_scale, e.vertical_scale].iter().all(|v| v.is_finite() && *v > 0.0) || !e.baseline_shift.is_finite()

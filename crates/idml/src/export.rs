@@ -75,6 +75,9 @@ pub fn export_idml_report(doc: &Document, opts: &ExportOptions) -> (Vec<u8>, Vec
 pub(crate) fn export_with_limit(doc: &Document, opts: &ExportOptions, embed_limit: usize) -> (Vec<u8>, Vec<String>) {
     let mut ex = Ex::new(doc, opts);
     ex.embed_limit = embed_limit;
+    if doc.stories.values().any(|st| st.notes.iter().any(|n| n.series != 0)) {
+        ex.warnings.push("IDML supports one footnote setup; notes from additional series are exported as ordinary footnotes using series 0.".into());
+    }
     let parts = ex.build();
     (zip_parts(&parts), ex.warnings)
 }

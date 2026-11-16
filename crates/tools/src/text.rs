@@ -161,6 +161,45 @@ fn text_canvas_xf(cx: &ToolContext, fid: ItemId) -> Option<Affine> {
     Some(cx.item_canvas_xf(fid)? * cx.doc.text_xf(cx.doc.item(fid)?))
 }
 
+/// Margin notes sit outside their host frame's path, so Type must hit their placed rectangles.
+fn margin_note_frame(cx: &ToolContext, point: Point) -> Option<(designcraft_doc::SpreadRef, ItemId)> {
+    let (spread, _) = cx.layout.spread_at(point)?;
+    for story in cx.doc.stories.values().filter(|st| st.notes.iter().any(|n| !cx.doc.note_options(n.series).placement.is_column_foot())) {
+        let cs = cx.cache.get(cx.doc, story.id, None);
+        for ft in &cs.frames {
+            let Some(loc) = cx.doc.find(ft.frame) else { continue };
+            if loc.spread != spread || !cx.doc.item_is_visible(ft.frame) {
+                continue;
+            }
+            let Some(sp) = cx.doc.spread(spread) else { continue };
+            let mut children = sp.items.as_slice();
+            let mut eligible = true;
+            for &index in &loc.path {
+                let Some(item) = children.get(index) else {
+                    eligible = false;
+                    break;
+                };
+                if cx.doc.layer(item.layer).is_some_and(|layer| layer.locked)
+                    || matches!(spread, designcraft_doc::SpreadRef::Parent(_)) && item.locked
+                {
+                    eligible = false;
+                    break;
+                }
+                children = item.children();
+            }
+            if !eligible {
+                continue;
+            }
+            let Some(xf) = text_canvas_xf(cx, ft.frame) else { continue };
+            let local = xf.inverse() * point;
+            if ft.notes.iter().any(|n| !cx.doc.note_options(n.series).placement.is_column_foot() && n.rect.contains(local)) {
+                return Some((spread, ft.frame));
+            }
+        }
+    }
+    None
+}
+
 /// Where the marked text starts: the preview typed it just before the caret.
 fn marked_start(cx: &ToolContext, ts: TextSel, p: &Preedit) -> usize {
     let text = cx.doc.text_story(ts.story, ts.cell).map_or("", |s| s.text.as_str());
@@ -201,15 +240,21 @@ fn underlines(cx: &ToolContext, ts: TextSel, r: Range<usize>) -> Vec<(Point, Poi
     match ts.cell {
         // A cell's or footnote's text is composed on its own and placed in the frame.
         Some(c) => {
-            let found = match c.footnote_id() {
-                Some(id) => compose::find_note(&cs, id).map(|(fi, n)| (fi, n.origin, n.text.clone())),
-                None => compose::find_cell(&cs, c.table, c.row, c.col).map(|(fi, _, pc)| (fi, pc.origin, pc.text.clone())),
+            let parts: Vec<_> = match c.footnote_id() {
+                Some(id) => cs
+                    .frames
+                    .iter()
+                    .enumerate()
+                    .flat_map(|(fi, ft)| ft.notes.iter().filter(move |n| n.id == id).map(move |n| (fi, n.origin, n.text.clone())))
+                    .collect(),
+                None => compose::find_cell(&cs, c.table, c.row, c.col).map(|(fi, _, pc)| (fi, pc.origin, pc.text.clone())).into_iter().collect(),
             };
-            if let Some((fi, origin, text)) = found
-                && let Some(m) = cs.frames.get(fi).and_then(|ft| text_canvas_xf(cx, ft.frame))
-                && let Some(ft) = text.frames.first()
-            {
-                add(&ft.lines, m * Affine::translate(origin.to_vec2()));
+            for (fi, origin, text) in parts {
+                if let Some(m) = cs.frames.get(fi).and_then(|ft| text_canvas_xf(cx, ft.frame))
+                    && let Some(ft) = text.frames.first()
+                {
+                    add(&ft.lines, m * Affine::translate(origin.to_vec2()));
+                }
             }
         }
         None => {
@@ -240,7 +285,7 @@ impl TypeTool {
         }
         // Text frames take the caret (locked ones too, as in InDesign); an empty frame
         // becomes one, unless it's locked: then the press draws a new text frame over it.
-        if let Some((_, id)) = cx.hit(ev.pos)
+        if let Some((_, id)) = margin_note_frame(cx, ev.pos).or_else(|| cx.hit(ev.pos))
             && let Some(it) = cx.doc.item(id)
             && !matches!(it.content, designcraft_doc::Content::Graphic(_) | designcraft_doc::Content::Group { .. })
             && (it.is_text_frame() || !it.locked)

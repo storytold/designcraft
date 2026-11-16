@@ -111,7 +111,7 @@ impl Story {
             max = max.max(id);
             let mut text = Story::new(StoryId(0));
             text.chars[0].format = CharFormat::default();
-            self.endnotes.insert((k + i).min(self.endnotes.len()), Arc::new(Footnote { id, text }));
+            self.endnotes.insert((k + i).min(self.endnotes.len()), Arc::new(Footnote { id, series: 0, text }));
         }
     }
 
