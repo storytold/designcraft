@@ -241,14 +241,18 @@ impl Document {
     /// empty story when `src` hasn't it) threaded to the copied frames that show it, copying the
     /// frames anchored in those stories the same way.
     pub fn adopt_anchored(&mut self, st: &mut Story, src: &dyn Fn(StoryId) -> Option<Arc<Story>>) {
-        self.adopt(&mut |f| items_mut(st, 0, f), src, None, &mut Vec::new(), &mut HashMap::new());
+        let mut copies = HashMap::new();
+        self.adopt(&mut |f| items_mut(st, 0, f), src, None, &mut Vec::new(), &mut copies);
+        self.retarget_anchored_streams(&mut |f| items_mut(st, 0, f), &copies, None);
     }
 
     /// [`Document::adopt_anchored`] for text copied from document `src`: the copies of the
     /// stories its anchored text frames show also take the assets they place along from `src`
     /// (or reuse the same file here), since `src`'s asset ids may name other files here.
     pub fn adopt_anchored_from(&mut self, st: &mut Story, src: &Document) {
-        self.adopt(&mut |f| items_mut(st, 0, f), &|id| src.stories.get(&id).cloned(), Some(src), &mut Vec::new(), &mut HashMap::new());
+        let mut copies = HashMap::new();
+        self.adopt(&mut |f| items_mut(st, 0, f), &|id| src.stories.get(&id).cloned(), Some(src), &mut Vec::new(), &mut copies);
+        self.retarget_anchored_streams(&mut |f| items_mut(st, 0, f), &copies, Some(src));
     }
 
     /// `visit` runs a function on every copied item. `path`: the stories being copied (a frame
@@ -329,6 +333,46 @@ impl Document {
         for (fid, _) in frames {
             if let Some(st) = shows.get(&fid).and_then(|id| self.stories.get_mut(id)) {
                 Arc::make_mut(st).frames.push(fid);
+            }
+        }
+    }
+
+    /// Resolve root and nested routes only after all copied host stories are known. A route
+    /// whose host was not copied becomes an ordinary empty frame, as with spread-frame copy.
+    fn retarget_anchored_streams(
+        &mut self,
+        visit: &mut dyn FnMut(&mut dyn FnMut(&mut Item)),
+        copies: &HashMap<StoryId, StoryId>,
+        source: Option<&Document>,
+    ) {
+        let mut has_routes = false;
+        visit(&mut |item| has_routes |= item.text_frame().is_some_and(|tf| tf.options.note_stream.is_some()));
+        for id in copies.values() {
+            if let Some(story) = self.story(*id) {
+                items(story, 0, &mut |item| has_routes |= item.text_frame().is_some_and(|tf| tf.options.note_stream.is_some()));
+            }
+        }
+        if !has_routes {
+            return;
+        }
+        let series = source.map(|src| self.adopt_note_series_ids(src));
+        let mut retarget = |item: &mut Item| {
+            if let Some(tf) = item.text_frame_mut() {
+                tf.options.note_stream = tf.options.note_stream.and_then(|route| {
+                    copies.get(&route.story).map(|host| crate::NoteStream {
+                        story: *host,
+                        series: match (&series, source) {
+                            (Some(ids), Some(src)) => ids.get(&src.note_series_id(route.series)).copied().unwrap_or(0),
+                            _ => route.series,
+                        },
+                    })
+                });
+            }
+        };
+        visit(&mut retarget);
+        for id in copies.values() {
+            if let Some(story) = self.story_mut(*id) {
+                items_mut(story, 0, &mut retarget);
             }
         }
     }
@@ -477,7 +521,9 @@ impl Document {
                     // Only the stories the copy reaches, as they are now (copies made for earlier
                     // frames included).
                     let reachable = self.anchored_stories(&copy);
-                    self.adopt(&mut |f| items_mut(&mut copy, 0, f), &|s| reachable.get(&s).cloned(), None, &mut vec![sid], &mut HashMap::new());
+                    let mut copies = HashMap::from([(sid, id)]);
+                    self.adopt(&mut |f| items_mut(&mut copy, 0, f), &|s| reachable.get(&s).cloned(), None, &mut vec![sid], &mut copies);
+                    self.retarget_anchored_streams(&mut |f| items_mut(&mut copy, 0, f), &copies, None);
                     copy.frames = vec![fid];
                     self.stories.insert(id, Arc::new(copy));
                     id
@@ -538,6 +584,55 @@ mod tests {
     /// The stories the anchored text frames show, with their texts.
     fn shown(d: &Document) -> Vec<(StoryId, String)> {
         d.anchored_items().iter().filter_map(|(_, i)| i.text_frame()).map(|t| (t.story, d.story(t.story).unwrap().text.clone())).collect()
+    }
+
+    #[test]
+    fn anchored_copy_retargets_streams_after_all_stories_are_copied() {
+        let (mut source, root) = doc();
+        source.note_series.push(crate::NoteSeries {
+            id: 1,
+            name: "Commentary".into(),
+            options: crate::FootnoteOptions { placement: crate::NotePlacement::Stream, ..Default::default() },
+        });
+        let (container, _) = anchor(&mut source, root, "");
+        anchor(&mut source, container, "");
+        anchor(&mut source, root, "");
+        let (host, _) = anchor(&mut source, root, "Main");
+        let note = source.story_mut(host).unwrap().insert_note(0, "Commentary", Default::default()).unwrap();
+        source.story_mut(host).unwrap().note_mut(note).unwrap().series = 1;
+        for (story, index) in [(container, 0), (root, 1)] {
+            Arc::make_mut(&mut source.story_mut(story).unwrap().objects[index]).item.text_frame_mut().unwrap().options.note_stream =
+                Some(crate::NoteStream { story: host, series: 1 });
+        }
+        for cross_document in [false, true] {
+            let (mut destination, target) = if cross_document { doc() } else { (source.clone(), root) };
+            if cross_document {
+                destination.note_series.push(crate::NoteSeries { id: 1, name: "Other".into(), options: Default::default() });
+                while destination.alloc() <= source.next_id {}
+            }
+            let original = source.story(root).unwrap();
+            let mut copy = original.extract(0..original.len());
+            if cross_document {
+                destination.adopt_anchored_from(&mut copy, &source);
+            } else {
+                let stories = source.anchored_stories(&copy);
+                destination.adopt_anchored(&mut copy, &|id| stories.get(&id).cloned());
+            }
+            let copied_host = copy.objects[2].item.text_frame().unwrap().story;
+            let copied_container = copy.objects[0].item.text_frame().unwrap().story;
+            let series = destination.story(copied_host).unwrap().notes[0].series;
+            for route in [
+                copy.objects[1].item.text_frame().unwrap().options.note_stream.unwrap(),
+                destination.story(copied_container).unwrap().objects[0].item.text_frame().unwrap().options.note_stream.unwrap(),
+            ] {
+                assert_eq!(route.story, copied_host);
+                assert_eq!(route.series, series);
+            }
+            assert_ne!(copied_host, host);
+            let st = destination.story_mut(target).unwrap();
+            st.insert_story(st.len(), &copy);
+            destination.check().unwrap();
+        }
     }
 
     /// Stories shared between layers (two per layer, each anchoring a frame showing each story of

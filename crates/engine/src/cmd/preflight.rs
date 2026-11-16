@@ -504,7 +504,7 @@ pub fn check_document(d: &Document, cache: &Cache, document: Option<&std::path::
                         }
                     }
                 },
-                Content::Text(tf) if d.story(tf.story).is_some_and(|s| s.is_empty()) => {
+                Content::Text(tf) if tf.options.note_stream.is_none() && d.story(tf.story).is_some_and(|s| s.is_empty()) => {
                     out.push(Issue { severity: "warning", kind: "emptyText", message: "Empty text frame".into(), item: Some(it.id.0), page });
                 }
                 _ => {}

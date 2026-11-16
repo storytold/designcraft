@@ -2618,6 +2618,29 @@ fn place_gun_grid_preview_matches_the_release_on_a_rotated_spread() {
 }
 
 #[test]
+fn stream_type_click_uses_its_route_and_respects_a_foreground_frame() {
+    let mut d = Document::new(&NewDocument::default());
+    let layer = d.default_layer();
+    let (_, host) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 250.0, 300.0), layer, "Main", Default::default()).unwrap();
+    let (route, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(270.0, 36.0, 490.0, 300.0), layer, "", Default::default()).unwrap();
+    d.footnote_options.placement = designcraft_doc::NotePlacement::Stream;
+    d.item_mut(route).unwrap().text_frame_mut().unwrap().options.note_stream = Some(designcraft_doc::NoteStream { story: host, series: 0 });
+    d.story_mut(host).unwrap().insert_note(0, "Commentary", Default::default()).unwrap();
+    let (selection, cache, layout) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
+    let note = cache.get(&d, host, None).frame(route).unwrap().notes[0].rect;
+    let cx = ctx(&d, &selection, &cache, &layout);
+    let point = cx.item_canvas_xf(route).unwrap() * d.text_xf(d.item(route).unwrap()) * Point::new(note.x0 + 10.0, note.y0 + 5.0);
+    let click = |cx: &ToolContext<'_>, id: ItemId| {
+        let mut tool = create("type");
+        let actions = tool.pointer(cx, &PointerEvent::new(PointerKind::Down, point.x, point.y));
+        assert!(actions.iter().any(|action| matches!(action, Action::Exec(cmd, p) if cmd == "text.placeCaret" && p["frame"] == id.0)));
+    };
+    click(&cx, route);
+    let (front, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(270.0, 36.0, 490.0, 300.0), layer, "Foreground", Default::default()).unwrap();
+    click(&ctx(&d, &selection, &cache, &layout), front);
+}
+
+#[test]
 fn type_tool_hits_a_margin_note_outside_the_host_frame() {
     let mut d = Document::new(&NewDocument::default());
     let lid = d.default_layer();

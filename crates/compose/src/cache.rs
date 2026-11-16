@@ -112,6 +112,7 @@ fn doc_signature(doc: &Document) -> u64 {
     }
     (Arc::as_ptr(&doc.styles) as usize).hash(&mut h);
     format!("{:?}", doc.text_variables).hash(&mut h);
+    format!("{:?}{:?}", doc.footnote_options, doc.note_series).hash(&mut h);
     sections_hash(doc).hash(&mut h);
     // The compositions the indexes are built from also depend on these (see `signature`).
     let g = &doc.settings.baseline_grid;

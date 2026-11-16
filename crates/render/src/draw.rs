@@ -258,7 +258,7 @@ impl Renderer {
         // Margin notes can be visible while their host frame is outside the viewport.
         let margin_notes = it
             .text_frame()
-            .and_then(|tf| f.doc.story(tf.story))
+            .and_then(|tf| f.doc.story(tf.composed_story()))
             .is_some_and(|st| st.notes.iter().any(|n| !f.doc.note_options(n.series).placement.is_column_foot()));
         if !margin_notes && !rect_overlaps(vb.inflate(margin + fx_outset, margin + fx_outset), f.visible) {
             return;

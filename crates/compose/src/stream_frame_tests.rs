@@ -334,3 +334,40 @@ fn stream_route_includes_pages_without_host_frames_and_invalidates_host_cache() 
     assert!(!Arc::ptr_eq(&before, &after), "stream changes on a page without host text must recompose the host");
     assert_eq!(stream_frame_specs(&doc, host)[2].area.y0, 56.0);
 }
+
+#[test]
+fn a_hidden_normal_reference_after_body_text_keeps_its_stream_anchor() {
+    let (mut doc, host, _) = commentary(1, 1, 100.0);
+    doc.note_series[0].options.ref_position = designcraft_doc::Position::Normal;
+    let cs = compose_story(&doc, host, &Default::default());
+    assert!(!cs.is_overset());
+    check_starts(&doc, host, &cs);
+    assert_eq!(cs.frames.iter().map(|f| f.notes.len()).sum::<usize>(), 1);
+}
+
+#[test]
+fn the_first_anchor_advances_to_a_page_with_a_route() {
+    let (mut doc, host, streams) = commentary(2, 1, 100.0);
+    doc.item_mut(streams[0]).unwrap().text_frame_mut().unwrap().options.note_stream = None;
+    let cs = compose_story(&doc, host, &Default::default());
+    assert!(!cs.is_overset());
+    check_starts(&doc, host, &cs);
+    assert_eq!(cs.frame(streams[1]).unwrap().notes.len(), 1);
+    assert!(cs.frame(frame_specs(&doc, host)[0].id).unwrap().lines.is_empty());
+}
+
+#[test]
+fn note_options_reflow_cached_cross_reference_pages() {
+    let (mut doc, host, _) = commentary(3, 10, 135.0);
+    let positions: Vec<_> = doc.story(host).unwrap().notes.iter().map(|n| doc.story(host).unwrap().note_anchor(n.id).unwrap()).collect();
+    let anchors: Vec<_> = positions.into_iter().rev().map(|at| doc.story_mut(host).unwrap().insert_anchor(at, "Passage")).collect();
+    let cache = Cache::default();
+    let old = cache.xref_index(&doc);
+    let old_pages: Vec<_> = anchors.iter().map(|id| old.page_index(*id)).collect();
+    doc.note_series[0].options.space_before = 100.0;
+    let fresh = Cache::default().xref_index(&doc);
+    let expected: Vec<_> = anchors.iter().map(|id| fresh.page_index(*id)).collect();
+    assert_ne!(old_pages, expected, "note options must actually change anchor pages");
+    let updated = cache.xref_index(&doc);
+    assert_eq!(anchors.iter().map(|id| updated.page_index(*id)).collect::<Vec<_>>(), expected);
+}
