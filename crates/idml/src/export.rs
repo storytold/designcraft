@@ -80,11 +80,9 @@ pub(crate) fn export_with_limit(doc: &Document, opts: &ExportOptions, embed_limi
             "IDML supports one footnote setup; additional note series and margin placement are exported as ordinary footnotes using series 0.".into(),
         );
     }
-    if doc.stories.values().any(|st| {
-        st.notes.iter().any(|note| {
-            let options = doc.note_options(note.series);
-            matches!(options.placement, designcraft_doc::NotePlacement::Stream) || options.ref_hidden
-        })
+    if any_footnote(doc, |note| {
+        let options = doc.note_options(note.series);
+        matches!(options.placement, designcraft_doc::NotePlacement::Stream) || options.ref_hidden
     }) {
         ex.warnings
             .push("IDML cannot retain commentary stream routes or hidden note references; comments are exported as ordinary footnotes.".into());

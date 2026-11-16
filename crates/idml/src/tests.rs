@@ -5633,3 +5633,30 @@ fn idml_warns_when_visible_series_zero_margin_notes_become_ordinary_footnotes() 
     assert!(back.footnote_options.placement.is_column_foot());
     assert!(back.stories.values().flat_map(|s| &s.notes).any(|n| n.text.text == "Margin source"));
 }
+
+#[test]
+fn idml_warns_for_hidden_references_inside_cells_and_note_bodies() {
+    for nested in [false, true] {
+        let mut d = Document::new(&NewDocument::default());
+        let (_, sid) =
+            d.add_text_frame(SpreadRef::Doc(0), Rect::new(72.0, 72.0, 400.0, 600.0), d.default_layer(), "Body", Default::default()).unwrap();
+        d.note_series.push(designcraft_doc::NoteSeries {
+            id: 1,
+            name: "Hidden".into(),
+            options: designcraft_doc::FootnoteOptions { ref_hidden: true, ..Default::default() },
+        });
+        let tid = d.alloc();
+        let st = d.story_mut(sid).unwrap();
+        let text = if nested {
+            let id = st.insert_note(0, "Outer", Default::default()).unwrap();
+            &mut st.note_mut(id).unwrap().text
+        } else {
+            st.insert_table(0, designcraft_doc::Table::new(tid, 1, 1, 0, 0, 240.0));
+            &mut std::sync::Arc::make_mut(st.tables.get_mut(&tid).unwrap()).cells[0].text
+        };
+        let id = text.insert_note(0, "Hidden embedded source", Default::default()).unwrap();
+        text.note_mut(id).unwrap().series = 1;
+        let (_, warnings) = crate::export_idml_report(&d, &Default::default());
+        assert!(warnings.iter().any(|w| w.contains("hidden note references")), "nested={nested}: {warnings:?}");
+    }
+}

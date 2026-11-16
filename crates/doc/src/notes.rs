@@ -464,6 +464,22 @@ mod tests {
     }
 
     #[test]
+    fn legacy_footnote_options_keep_unsplit_layouts() {
+        let doc = crate::Document::new(&crate::build::NewDocument::default());
+        assert!(doc.footnote_options.allow_split);
+        assert!(FootnoteOptions::default().allow_split);
+        let mut legacy = serde_json::to_value(&doc).unwrap();
+        legacy["footnoteOptions"].as_object_mut().unwrap().remove("allowSplit");
+        let loaded: crate::Document = serde_json::from_value(legacy).unwrap();
+        assert!(!loaded.footnote_options.allow_split);
+        for allow in [false, true] {
+            let options = FootnoteOptions { allow_split: allow, ..Default::default() };
+            let roundtrip: FootnoteOptions = serde_json::from_value(serde_json::to_value(options).unwrap()).unwrap();
+            assert_eq!(roundtrip.allow_split, allow);
+        }
+    }
+
+    #[test]
     fn references_own_notes_in_order() {
         let mut s = st("alpha beta gamma");
         let b = s.insert_note(10, "second", ParaFormat::default()).unwrap();
@@ -490,22 +506,6 @@ mod tests {
         s.delete(0..n);
         s.check().unwrap();
         assert!(s.notes.is_empty());
-    }
-
-    #[test]
-    fn legacy_footnote_options_keep_unsplit_layouts() {
-        let doc = crate::Document::new(&crate::build::NewDocument::default());
-        assert!(doc.footnote_options.allow_split);
-        assert!(FootnoteOptions::default().allow_split);
-        let mut legacy = serde_json::to_value(&doc).unwrap();
-        legacy["footnoteOptions"].as_object_mut().unwrap().remove("allowSplit");
-        let loaded: crate::Document = serde_json::from_value(legacy).unwrap();
-        assert!(!loaded.footnote_options.allow_split);
-        for allow in [false, true] {
-            let options = FootnoteOptions { allow_split: allow, ..Default::default() };
-            let roundtrip: FootnoteOptions = serde_json::from_value(serde_json::to_value(options).unwrap()).unwrap();
-            assert_eq!(roundtrip.allow_split, allow);
-        }
     }
 
     #[test]

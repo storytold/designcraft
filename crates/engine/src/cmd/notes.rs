@@ -166,6 +166,11 @@ fn read_options(mut value: Value, cmd: &str) -> Result<FootnoteOptions> {
     {
         *slot = json!({"kind": kind});
     }
+    // Native files preserve the pre-setting no-split behavior; new API options keep the
+    // documented split-enabled default. Serialized current options already contain the flag.
+    if let Some(options) = value.as_object_mut() {
+        options.entry("allowSplit").or_insert(json!(true));
+    }
     serde_json::from_value(value).map_err(|e| bad(cmd, e.to_string()))
 }
 
@@ -535,5 +540,17 @@ mod margin_default_tests {
         s.execute("footnote.series.create", &json!({"name":"Sources","placement":{"kind":"margin","gap":8,"width":72}})).unwrap();
         let all = s.execute("footnote.series.list", &json!({})).unwrap();
         assert_eq!(all[1]["placement"]["side"], "right");
+    }
+}
+
+#[cfg(test)]
+mod api_split_default_tests {
+    use super::*;
+
+    #[test]
+    fn new_api_options_default_to_split_and_honor_explicit_false() {
+        assert!(read_options(json!({}), "test").unwrap().allow_split);
+        assert!(read_options(json!({"allowSplit": true}), "test").unwrap().allow_split);
+        assert!(!read_options(json!({"allowSplit": false}), "test").unwrap().allow_split);
     }
 }
