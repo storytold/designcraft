@@ -611,7 +611,7 @@ fn czech_counts_use_the_plural_form_for_the_number() {
 #[test]
 fn hebrew_catalog_is_selectable_rtl_and_preserves_english_keys() {
     let mut seen = HashSet::new();
-    assert_eq!(he::TABLE.len(), 1425, "Hebrew source-linked table changed");
+    assert_eq!(he::TABLE.len(), 1451, "Hebrew source-linked table changed");
     for (source, translated) in he::TABLE {
         assert!(seen.insert(*source), "duplicate Hebrew source key: {source}");
         assert!(!translated.trim().is_empty(), "empty Hebrew: {source}");
@@ -822,5 +822,46 @@ fn hebrew_core_dialog_controls_are_translated() {
         ("Justification", "יישור לשני הצדדים"),
     ] {
         assert_eq!(tr("he", source), expected, "Hebrew native UI control: {source}");
+    }
+}
+#[test]
+fn hebrew_source_linked_native_tool_and_window_labels() {
+    for (source, expected) in [
+    ("Display name", "שם לתצוגה"),
+    ("Maximize/Restore Window", "הגדל/שחזר חלון"),
+    ("Menus", "תפריטים"),
+    ("Minimize Window", "מזער חלון"),
+    ("Move Tab", "העבר כרטיסייה"),
+    ("Page Options", "אפשרויות עמוד"),
+    ("Polygon Frame Tool", "כלי מסגרת מצולעת"),
+    ("Polygon Tool", "כלי מצולע"),
+    ("Reorder Objects", "סדר אובייקטים מחדש"),
+    ("Report an Issue", "דווח על בעיה"),
+    ("Resize Window", "שנה את גודל החלון"),
+    ("Rotate Tool", "כלי סיבוב"),
+    ("Scissors Tool", "כלי מספריים"),
+    ("Scripts", "סקריפטים"),
+    ("Select Page", "בחר עמוד"),
+    ("Selection Tool", "כלי בחירה"),
+    ("Shear Tool", "כלי הטיה"),
+    ("Smooth Tool", "כלי החלקה"),
+    ("Type Tool", "כלי טקסט"),
+    ("Type on a Path Tool", "כלי טקסט על נתיב"),
+    ("Unassigned", "לא משויך"),
+    ("Unsaved Changes", "שינויים שלא נשמרו"),
+    ("Username", "שם משתמש"),
+    ("Versions", "גרסאות"),
+    ("Vertical Type Tool", "כלי טקסט אנכי"),
+    ("Zoom Tool", "כלי הגדלה"),
+    ] {
+        assert!(
+            fr::TABLE.iter().any(|(english, _)| english == source),
+            "official English source key missing: {source}"
+        );
+        assert_eq!(
+            tr("he", source),
+            expected,
+            "Hebrew native UI label regression: {source}"
+        );
     }
 }
