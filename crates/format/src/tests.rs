@@ -936,3 +936,68 @@ fn embedded_documents_keep_their_older_version_and_version_5_loads() {
     let loaded = load(&save(&d).unwrap()).unwrap();
     assert_eq!(loaded.assets.len(), d.assets.len());
 }
+
+#[test]
+fn note_series_native_roundtrip_and_legacy_defaults() {
+    use designcraft_doc::{FootnoteOptions, MarginSide, NotePlacement, NoteSeries};
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(72.0, 72.0, 400.0, 600.0), lid, "Body", ParaFormat::default()).unwrap();
+    d.note_series.push(NoteSeries {
+        id: 1,
+        name: "Sources".into(),
+        options: FootnoteOptions { placement: NotePlacement::Margin { side: MarginSide::Outside, gap: 8.0, width: 72.0 }, ..Default::default() },
+    });
+    let st = d.story_mut(sid).unwrap();
+    let id = st.insert_note(4, "Source", ParaFormat::default()).unwrap();
+    st.note_mut(id).unwrap().series = 1;
+    let bytes = save(&d).unwrap();
+    let back = load(&bytes).unwrap();
+    assert_eq!(back.note_series, d.note_series);
+    assert_eq!(back.story(sid).unwrap().notes[0].series, 1);
+    // The original native JSON has neither the series list nor the note's series field.
+    d.note_series.clear();
+    d.story_mut(sid).unwrap().note_mut(id).unwrap().series = 0;
+    let value = serde_json::to_value(&d).unwrap();
+    assert!(value.get("noteSeries").is_none());
+    let legacy = load(&serde_json::to_vec(&d).unwrap()).unwrap();
+    assert!(legacy.note_series.is_empty());
+    assert_eq!(legacy.story(sid).unwrap().notes[0].series, 0);
+    assert_eq!(legacy.footnote_options, d.footnote_options);
+}
+
+#[test]
+fn commentary_stream_routes_and_hidden_refs_survive_native_roundtrip() {
+    use designcraft_doc::{NotePlacement, NoteStream};
+    let mut doc = Document::new(&NewDocument::default());
+    let layer = doc.default_layer();
+    let (_, host) = doc.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 250.0, 400.0), layer, "Body", Default::default()).unwrap();
+    doc.footnote_options.placement = NotePlacement::Stream;
+    doc.footnote_options.ref_hidden = true;
+    doc.story_mut(host).unwrap().insert_note(4, "Comment", Default::default()).unwrap();
+    let (frame, own) = doc.add_text_frame(SpreadRef::Doc(0), Rect::new(270.0, 36.0, 500.0, 400.0), layer, "", Default::default()).unwrap();
+    doc.item_mut(frame).unwrap().text_frame_mut().unwrap().options.note_stream = Some(NoteStream { story: host, series: 0 });
+    let reopened = load(&save(&doc).unwrap()).unwrap();
+    assert_eq!(reopened.footnote_options, doc.footnote_options);
+    let tf = reopened.item(frame).unwrap().text_frame().unwrap();
+    assert_eq!(tf.story, own);
+    assert_eq!(tf.options.note_stream, Some(NoteStream { story: host, series: 0 }));
+    reopened.check().unwrap();
+}
+
+#[test]
+fn inset_columns_survive_native_roundtrip() {
+    let mut doc = Document::new(&NewDocument::default());
+    let (id, _) =
+        doc.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 500.0, 700.0), doc.default_layer(), "Main", Default::default()).unwrap();
+    doc.item_mut(id).unwrap().text_frame_mut().unwrap().options.inset_columns = Some(designcraft_doc::InsetColumns {
+        streams: vec![designcraft_doc::InsetStream { series: None, ratio: 2.0 }],
+        gutter: 12.0,
+        main_start_lines: 10,
+        main_left_inset: Some(210.0),
+        main_right_inset: Some(162.0),
+    });
+    let back = load(&save(&doc).unwrap()).unwrap();
+    assert_eq!(back.item(id).unwrap().text_frame().unwrap().options, doc.item(id).unwrap().text_frame().unwrap().options);
+    back.check().unwrap();
+}

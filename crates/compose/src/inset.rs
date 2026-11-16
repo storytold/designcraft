@@ -2,6 +2,8 @@
 //! paragraph state and baseline progression; only measurements clipped to a band are committed.
 
 use designcraft_geom::Rect;
+mod fitting;
+pub(crate) use fitting::{Trace, compose_frames};
 
 const MAX_STREAMS: usize = 64;
 const EPS: f64 = 1e-7;
@@ -241,3 +243,6 @@ pub fn layout<C, P>(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod composition_tests;

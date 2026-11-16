@@ -13,6 +13,7 @@
 //! leaves no trace, and one that does so while it reuses a trace is abandoned for a full pass.
 
 use std::rc::Rc;
+use std::sync::Arc;
 
 use designcraft_doc::{CharRun, ListCounter, Story, VerticalJustification};
 
@@ -87,6 +88,7 @@ impl Mark {
 
     fn cursor(&self, pi: usize) -> Cursor {
         Cursor {
+            continuations: Arc::default(),
             fi: self.fi,
             col: self.col,
             last_baseline: self.last_baseline,
@@ -136,8 +138,15 @@ impl Mark {
 /// paragraph it laid (and after the last one), and where each paragraph sits.
 #[derive(Debug)]
 pub(crate) struct Trace {
+    pub(crate) inset: Option<Arc<crate::inset::Trace>>,
     marks: Vec<Mark>,
     info: Vec<ParaInfo>,
+}
+
+impl Trace {
+    pub(crate) fn inset(trace: crate::inset::Trace) -> Self {
+        Self { marks: Vec::new(), info: Vec::new(), inset: Some(Arc::new(trace)) }
+    }
 }
 
 /// A story as it was before an edit, its composition and that composition's trace.
@@ -461,7 +470,7 @@ impl<'a> Pass<'a> {
         if self.abandoned {
             return None;
         }
-        let trace = if self.traced && plain_end { self.marks(snaps).map(|marks| Trace { marks, info }) } else { None };
+        let trace = if self.traced && plain_end { self.marks(snaps).map(|marks| Trace { marks, info, inset: None }) } else { None };
         if self.before.is_some() && trace.is_none() {
             return None;
         }

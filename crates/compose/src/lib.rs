@@ -49,8 +49,9 @@ use designcraft_geom::{Affine, Point, Rect};
 
 use crate::breaker::{Break, Spacing};
 pub use crate::cache::{Cache, ShownOn};
-use crate::notes::{NoteColumn, Notes};
-pub use crate::notes::{find_note, hit_note, hit_note_with, note_caret};
+use crate::notes::{NoteColumn, NoteSnapshot, Notes, SeriesSplitPlan as SplitPlan};
+pub use crate::notes::{StreamPageFit, StreamPageInput, StreamState, fit_stream_page};
+pub use crate::notes::{find_note, find_note_part, hit_note, hit_note_with, note_caret, note_text};
 pub use crate::outline::FrameOutline;
 use crate::parabox::ParaBox;
 pub use crate::placed::Placement;
@@ -317,6 +318,11 @@ pub struct PlacedNote {
     /// Footnote id (in the story's [`Story::notes`]) and its index there.
     pub id: u64,
     pub index: usize,
+    pub series: u64,
+    /// Baseline of the body line holding the reference, in frame inner space.
+    pub reference_baseline: f64,
+    /// Margin text runs below the page bottom margin.
+    pub overflow: bool,
     pub column: u32,
     /// The number shown.
     pub label: String,
@@ -338,6 +344,8 @@ pub struct ComposedStory {
     pub overset_at: Option<usize>,
     pub styles: Vec<RunStyle>,
     pub text_len: usize,
+    /// Layout warnings that leave the main story overset position unchanged.
+    pub warnings: Vec<String>,
 }
 
 impl ComposedStory {
@@ -1032,6 +1040,12 @@ pub fn section_marker(doc: &Document, abs: usize) -> String {
 /// Composition inputs that are not in the story itself.
 #[derive(Clone, Debug, Default)]
 pub struct ComposeOptions {
+    /// Synthetic same-page frame transitions, with the translation of the previous baseline.
+    pub continuations: Vec<(usize, f64)>,
+    /// Band trials place stream notes separately from their host's main text.
+    pub inset_measure: bool,
+    /// Replay note parts as bands of one page rather than separate routed frames.
+    pub note_bands: bool,
     /// Page name for page-number markers when the story is composed for a specific page (parent items).
     pub page_name: Option<String>,
     /// Section marker text when the story is composed for a specific page (parent items).
@@ -1142,8 +1156,32 @@ pub fn frame_specs(doc: &Document, sid: StoryId) -> Vec<FrameSpec> {
 /// [`frame_specs`] with anchored frames where their host story placed them (`placed`).
 pub(crate) fn frame_specs_placed(doc: &Document, sid: StoryId, placed: &[(ItemId, Placement)]) -> Vec<FrameSpec> {
     let Some(st) = doc.story(sid) else { return vec![] };
-    let mut out = Vec::with_capacity(st.frames.len());
-    for &fid in &st.frames {
+    let ids: Vec<_> =
+        st.frames.iter().copied().filter(|id| doc.item(*id).and_then(Item::text_frame).is_none_or(|tf| tf.options.note_stream.is_none())).collect();
+    frame_specs_ids(doc, sid, placed, &ids)
+}
+
+/// The host's commentary frames in page order, including pages outside its body thread.
+pub fn stream_frame_specs(doc: &Document, sid: StoryId) -> Vec<FrameSpec> {
+    let mut ids = Vec::new();
+    for spread in &doc.spreads {
+        for item in &spread.items {
+            item.walk(&mut |it| {
+                if it.text_frame().and_then(|tf| tf.options.note_stream).is_some_and(|stream| stream.story == sid) {
+                    ids.push(it.id);
+                }
+            });
+        }
+    }
+    let mut specs = frame_specs_ids(doc, sid, &[], &ids);
+    specs.sort_by_key(|frame| frame.page);
+    specs
+}
+
+fn frame_specs_ids(doc: &Document, sid: StoryId, placed: &[(ItemId, Placement)], ids: &[ItemId]) -> Vec<FrameSpec> {
+    let Some(st) = doc.story(sid) else { return vec![] };
+    let mut out = Vec::with_capacity(ids.len());
+    for &fid in ids {
         let loc = doc.find(fid);
         let Some(item) = loc.as_ref().and_then(|l| doc.item_at(l)).or_else(|| doc.anchored_item(fid)) else { continue };
         let Some(tf) = item.text_frame() else { continue };
@@ -1253,6 +1291,14 @@ pub(crate) fn frame_specs_placed(doc: &Document, sid: StoryId, placed: &[(ItemId
 /// objects ([`wrap`]).
 /// Anchored frames are composed where their host story places them (unless `opts` places them).
 pub fn compose_story(doc: &Document, sid: StoryId, opts: &ComposeOptions) -> ComposedStory {
+    let mut out = compose_story_unstacked(doc, sid, opts);
+    notes::stack_page_margins(doc, sid, opts, &mut out);
+    out
+}
+
+/// Document layout before the final cross-story margin collision pass. Keeping this separate
+/// lets that pass compose neighbours without recursively asking them to stack against us.
+pub(crate) fn compose_story_unstacked(doc: &Document, sid: StoryId, opts: &ComposeOptions) -> ComposedStory {
     compose_story_at(doc, sid, opts, 0, &mut HashMap::new())
 }
 
@@ -1556,7 +1602,7 @@ struct TableParagraphInput<'a> {
     balance_runs: &'a mut usize,
     balance_budget: usize,
     snaps: &'a [Snapshot],
-    note_snaps: &'a [(u32, Option<usize>, usize)],
+    note_snaps: &'a [NoteSnapshot],
     notes: &'a mut Notes,
     list_counter: &'a mut ListCounter,
     force_col: &'a mut [bool],
@@ -1606,7 +1652,7 @@ fn place_table_paragraph(input: TableParagraphInput<'_>) -> TableParagraphResult
         cursor.start_at_top(start, frames, doc);
     }
     let at_top = cursor.last_baseline.is_none();
-    let start_at = (cursor.fi, cursor.col);
+    let start_at = cursor.keep_column();
     if !table::place_table(doc, table, anchor, paragraph, props, frames, columns, cursor, out, notes, opts) {
         if let Some(j) = trial_failed(trial, limits, *balance_runs < balance_budget) {
             *balance_runs += 1;
@@ -1619,7 +1665,7 @@ fn place_table_paragraph(input: TableParagraphInput<'_>) -> TableParagraphResult
     info.push(ParaInfo {
         start: start_at,
         at_top,
-        end: (cursor.fi, cursor.col),
+        end: cursor.keep_column(),
         lines: 1,
         lines_in_end_col: 1,
         keep_with_next: 0,
@@ -1771,7 +1817,7 @@ struct PlacementShared<'a, 'font> {
     cur: &'a mut Cursor,
     notes: &'a mut Notes,
     snaps: &'a [Snapshot],
-    note_snaps: &'a [(u32, Option<usize>, usize)],
+    note_snaps: &'a [NoteSnapshot],
     list_counter: &'a mut ListCounter,
     force_col: &'a mut [bool],
     line_cap: &'a mut [Option<usize>],
@@ -2061,7 +2107,7 @@ struct LineFitInput<'a> {
     cur: &'a mut Cursor,
     notes: &'a mut Notes,
     snaps: &'a [Snapshot],
-    note_snaps: &'a [(u32, Option<usize>, usize)],
+    note_snaps: &'a [NoteSnapshot],
     list_counter: &'a mut ListCounter,
     force_col: &'a mut [bool],
     line_cap: &'a mut [Option<usize>],
@@ -2092,10 +2138,10 @@ struct LineFitInput<'a> {
 }
 
 enum LineFit {
-    Ready(Vec<usize>),
+    Ready(Vec<usize>, Option<SplitPlan>),
     Restart(usize),
     NextSub,
-    NextColumn,
+    NextColumn { keep_break: bool },
 }
 
 fn fit_line(input: LineFitInput<'_>) -> LineFit {
@@ -2141,7 +2187,17 @@ fn fit_line(input: LineFitInput<'_>) -> LineFit {
     let line_notes = if notes.active() { notes.refs_in(line_glyphs) } else { Vec::new() };
     let col_w = notes.area(&cols[cur.fi], cur.col).map_or(0.0, |r| r.width());
     let note_column = NoteColumn { frame_index: cur.fi, column_index: cur.col, width: col_w, frame: f };
+    let streams_fit = notes.streams_fit(doc, note_column, &line_notes, out, opts);
     let reserve = notes.reserve(doc, note_column, &line_notes, opts);
+    // A note that doesn't fit whole splits, keeping its first part with this line. Without a
+    // split, a column's first line is set even when its own notes don't fit (as before).
+    if !capped
+        && streams_fit
+        && baseline + desc > col.y1 - reserve + 0.01
+        && let Some(plan) = notes.split_plan(doc, note_column, &line_notes, col.y1 - (baseline + desc), opts)
+    {
+        return LineFit::Ready(line_notes, Some(plan));
+    }
     let reserve = if cur.last_baseline.is_none() { notes.reserve(doc, note_column, &[], opts) } else { reserve };
     let fit_descent =
         if f.opts.path.is_some() || f.vertical || reserve > 0.0 || line_glyphs.iter().any(|g| sub_objects.get(&g.byte).is_some_and(|o| !o.custom)) {
@@ -2149,10 +2205,11 @@ fn fit_line(input: LineFitInput<'_>) -> LineFit {
         } else {
             0.0
         };
-    let fits = baseline + fit_descent <= col.y1 - reserve + 0.01 && !capped;
+    let fits = baseline + fit_descent <= col.y1 - reserve + 0.01 && !capped && streams_fit;
     if !fits
         && !pp.hyph_across_column
         && line_no > col_first_line
+        && !cur.next_is_continuation(cols)
         && let Some(at) = hyphen_at
         && *hyph_relays < story.text.len().saturating_add(64).saturating_mul(restores.saturating_add(1))
     {
@@ -2162,7 +2219,7 @@ fn fit_line(input: LineFitInput<'_>) -> LineFit {
         return LineFit::Restart(pi);
     }
     if fits {
-        return LineFit::Ready(line_notes);
+        return LineFit::Ready(line_notes, None);
     }
     if cur.can_next_sub() {
         cur.next_sub();
@@ -2184,7 +2241,7 @@ fn fit_line(input: LineFitInput<'_>) -> LineFit {
             return LineFit::Restart(j);
         }
     }
-    if !capped && cur.split.is_none_or(|s| s.part_lines == 0) {
+    if !capped && !cur.next_is_continuation(cols) && cur.split.is_none_or(|s| s.part_lines == 0) {
         let ctx = KeepCtx {
             pi,
             line_no,
@@ -2192,7 +2249,7 @@ fn fit_line(input: LineFitInput<'_>) -> LineFit {
             started_here: col_first_line == 0,
             at_top,
             remaining: remaining_lines,
-            here: (cur.fi, cur.col),
+            here: cur.keep_column(),
         };
         if *restores < (4 * paragraph_count + 64) * (balance_runs + 1)
             && let Some(action) = keep_violation(&ctx, pp, info, force_col, line_cap)
@@ -2213,7 +2270,7 @@ fn fit_line(input: LineFitInput<'_>) -> LineFit {
         }
     }
     carry.clear();
-    LineFit::NextColumn
+    LineFit::NextColumn { keep_break: capped }
 }
 
 struct PlacementOverflow<'a> {
@@ -2226,7 +2283,7 @@ struct PlacementOverflow<'a> {
     balance_runs: &'a mut usize,
     balance_budget: usize,
     snaps: &'a [Snapshot],
-    note_snaps: &'a [(u32, Option<usize>, usize)],
+    note_snaps: &'a [NoteSnapshot],
     notes: &'a mut Notes,
     out: &'a mut ComposedStory,
     cur: &'a mut Cursor,
@@ -2276,6 +2333,24 @@ fn advance_placement_column(cursor: &mut Cursor, spanning: bool, columns: &[Vec<
     } else {
         cursor.next_column(columns);
     }
+}
+
+fn advance_keep_column(cursor: &mut Cursor, frames: usize, mut next: impl FnMut(&mut Cursor)) {
+    let previous = cursor.keep_column();
+    next(cursor);
+    while cursor.fi < frames && cursor.keep_column() == previous {
+        next(cursor);
+    }
+}
+
+fn advance_line_column(cursor: &mut Cursor, spanning: bool, columns: &[Vec<Rect>], keep_break: bool) -> bool {
+    let previous = cursor.keep_column();
+    if keep_break {
+        advance_keep_column(cursor, columns.len(), |c| advance_placement_column(c, spanning, columns));
+    } else {
+        advance_placement_column(cursor, spanning, columns);
+    }
+    cursor.keep_column() != previous
 }
 
 fn start_placement(cursor: &mut Cursor, start: StartParagraph, spanning: bool, frames: &[FrameSpec], columns: &[Vec<Rect>], doc: &Document) {
@@ -2517,7 +2592,7 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
                 moved = true;
                 break;
             }
-            let line_notes = match fit_line(LineFitInput {
+            let (line_notes, split_plan) = match fit_line(LineFitInput {
                 doc,
                 story,
                 cols,
@@ -2555,7 +2630,7 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
                 sub_objects,
                 carry: &mut carry,
             }) {
-                LineFit::Ready(line_notes) => line_notes,
+                LineFit::Ready(line_notes, plan) => (line_notes, plan),
                 LineFit::Restart(j) => return LinePlacement::Restart(j),
                 LineFit::NextSub => {
                     g0 = s;
@@ -2563,10 +2638,11 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
                     moved = true;
                     break;
                 }
-                LineFit::NextColumn => {
+                LineFit::NextColumn { keep_break } => {
                     g0 = s;
-                    advance_placement_column(cur, spanning, cols);
-                    col_first_line = line_no;
+                    if advance_line_column(cur, spanning, cols, keep_break) {
+                        col_first_line = line_no;
+                    }
                     moved = true;
                     break;
                 }
@@ -2659,10 +2735,7 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
                 keep_violation: false,
                 drop_cap: drop_box,
             });
-            let placed_notes = !line_notes.is_empty();
-            for k in line_notes {
-                notes.place(doc, k, note_column, opts);
-            }
+            let placed_notes = notes.place_line(doc, note_column, &line_notes, split_plan, opts);
             // Notes spanning the columns take room from the columns before this one too: re-lay
             // the frame with that room left.
             if placed_notes {
@@ -2999,7 +3072,7 @@ struct ParagraphFinishInput<'a> {
     cur: &'a mut Cursor,
     notes: &'a mut Notes,
     snaps: &'a [Snapshot],
-    note_snaps: &'a [(u32, Option<usize>, usize)],
+    note_snaps: &'a [NoteSnapshot],
     list_counter: &'a mut ListCounter,
     force_col: &'a mut [bool],
     line_cap: &'a mut [Option<usize>],
@@ -3063,7 +3136,7 @@ fn finish_paragraph(input: ParagraphFinishInput<'_>) -> ParagraphFinish {
     info.push(ParaInfo {
         start: start_at,
         at_top,
-        end: (cur.fi, cur.col),
+        end: cur.keep_column(),
         lines: line_no,
         lines_in_end_col: line_no - col_first_line,
         keep_with_next: pp.keep_with_next,
@@ -3164,6 +3237,9 @@ fn finish_paragraph(input: ParagraphFinishInput<'_>) -> ParagraphFinish {
 }
 
 fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &ComposeOptions, db: &FontDb) -> ComposedStory {
+    if !opts.inset_measure && frames.iter().any(|f| f.opts.inset_columns.is_some()) {
+        return inset::compose_frames(doc, story, frames, opts, None).0;
+    }
     compose_run(doc, story, frames, opts, db, None, false).map(|(out, _)| out).unwrap_or_default()
 }
 
@@ -3177,6 +3253,9 @@ pub(crate) fn compose_traced(
     opts: &ComposeOptions,
     before: Option<reuse::Reuse<'_>>,
 ) -> (ComposedStory, Option<reuse::Trace>) {
+    if !opts.inset_measure && frames.iter().any(|f| f.opts.inset_columns.is_some()) {
+        return inset::compose_frames(doc, story, frames, opts, before);
+    }
     let db = FontDb::global();
     if before.is_some()
         && let Some(done) = compose_run(doc, story, frames, opts, db, before.as_ref(), true)
@@ -3205,6 +3284,7 @@ fn compose_run(
     let (cols, frame_text) = frame_columns_and_text(frames, story.direction);
     out.frames = frame_text;
     let mut cur = Cursor {
+        continuations: Arc::new(opts.continuations.clone()),
         fi: 0,
         col: 0,
         last_baseline: None,
@@ -3245,8 +3325,8 @@ fn compose_run(
     let mut restores = 0usize;
     let mut pi = 0;
     let var_story = vars::has_vars(story);
-    let mut notes = Notes::new(doc, story);
-    let mut note_snaps: Vec<(u32, Option<usize>, usize)> = Vec::with_capacity(np);
+    let mut notes = Notes::new(doc, story, frames);
+    let mut note_snaps: Vec<NoteSnapshot> = Vec::with_capacity(np);
     let mut var_cache: std::collections::HashMap<(Option<usize>, bool), std::sync::Arc<Vec<String>>> = Default::default();
     // Column balancing above spanning paragraphs: settled and trial bottoms by band, the search
     // in progress, and a budget for the re-lays.
@@ -3276,7 +3356,7 @@ fn compose_run(
     let (mut pass, start) = reuse::Pass::new(before, story, plain, reuse::Start { pi, cur, list_counter, info }, &mut out, &mut styles_tab);
     (pi, cur, list_counter, info) = (start.pi, start.cur, start.list_counter, start.info);
     snaps.extend((0..pi).map(|_| Snapshot::take(&out, &cur, &list_counter)));
-    note_snaps.resize(pi, (notes.num, notes.key, 0));
+    note_snaps.resize(pi, notes.snapshot());
     'paras: while pi <= np {
         cur.pi = pi;
         cur.limits = Rc::clone(&limits);
@@ -3285,7 +3365,7 @@ fn compose_run(
         snaps.truncate(pi);
         snaps.push(snap);
         note_snaps.truncate(pi);
-        note_snaps.push((notes.num, notes.key, notes.placed.len()));
+        note_snaps.push(notes.snapshot());
         info.truncate(pi);
         // Whether nothing is left to lay: the rest of the story is in place, copied from its
         // composition before an edit, or that composition turned out not to hold for this one.
@@ -3479,7 +3559,7 @@ fn compose_run(
             }
         }
         if force_col[pi] {
-            next_column(&mut cur);
+            advance_keep_column(&mut cur, frames.len(), next_column);
         }
         if cur.last_baseline.is_some() {
             go(&mut cur, pp.start_paragraph);
@@ -3557,7 +3637,7 @@ fn compose_run(
             cur.split_part();
         }
         let at_top = cur.last_baseline.is_none();
-        let start_at = (cur.fi, cur.col);
+        let start_at = cur.keep_column();
         // Rule above / shading track the paragraph's first line.
         let placement = place_paragraph_lines(
             PlacementShared {
@@ -3670,6 +3750,7 @@ fn compose_run(
             frames,
             cols: &cols,
             notes: &mut notes,
+            opts,
             out: &mut out,
             boxes: &boxes,
             span_paras: &span_paras,
@@ -3682,6 +3763,7 @@ fn compose_run(
 }
 
 struct FinishInput<'a> {
+    opts: &'a ComposeOptions,
     doc: &'a Document,
     story: &'a Story,
     frames: &'a [FrameSpec],
@@ -3696,7 +3778,8 @@ struct FinishInput<'a> {
 }
 
 fn finish_composition(input: FinishInput<'_>) -> ComposedStory {
-    let FinishInput { doc, story, frames, cols, notes, out, boxes, span_paras, split_paras, grid_paras, styles_tab } = input;
+    let FinishInput { doc, story, frames, cols, notes, opts, out, boxes, span_paras, split_paras, grid_paras, styles_tab } = input;
+    notes.finish_carry(doc, frames, cols, opts, out, story.text.len());
     notes.finish(doc, story, frames, cols, out);
     // The story byte of each anchored object's mark, found once for every frame that holds one.
     let mut marks: Option<Vec<usize>> = None;
@@ -3720,7 +3803,7 @@ fn finish_composition(input: FinishInput<'_>) -> ComposedStory {
         } else {
             marks.get_or_insert_with(|| story.text.match_indices(designcraft_doc::OBJECT_MARK).map(|(i, _)| i).collect())
         };
-        vertical_justify(ft, f, spanned, &doc.footnote_options, grid_paras, anchors);
+        vertical_justify(ft, f, spanned, doc, grid_paras, anchors);
         for (t, b) in ft.tables.iter_mut().zip(before) {
             let now = ft.lines.get(t.line).map_or(b, |l| l.baseline);
             t.shift(now - b);
@@ -3801,8 +3884,10 @@ fn finish_composition(input: FinishInput<'_>) -> ComposedStory {
             ft.decos.extend(rects.into_iter().map(|rect| Deco { rect, color: f.opts.column_rule_color.clone(), tint, ..Deco::default() }));
         }
     }
+    notes.finish_margins(doc, story, frames, opts, out);
+    notes.finish_streams(doc, story, opts, out);
     out.styles = styles_tab;
-    mark_keep_violations(doc, story, out);
+    mark_keep_violations(doc, story, out, &opts.continuations);
     std::mem::take(out)
 }
 
@@ -3817,15 +3902,16 @@ fn span_rect(cols: &[Rect], col: Rect, span: SpanColumns) -> Rect {
 /// Flag the lines of paragraphs whose Keep Options the layout couldn't honour: lines kept
 /// together that split, too few lines at the bottom (orphans) or top (widows) of a column, or a
 /// keep-with-next paragraph separated from the next one.
-fn mark_keep_violations(doc: &Document, story: &Story, out: &mut ComposedStory) {
+fn mark_keep_violations(doc: &Document, story: &Story, out: &mut ComposedStory, continuations: &[(usize, f64)]) {
     // Per paragraph, the columns its lines sit in: ((frame, column), line count) in order.
     let mut cols: HashMap<usize, Vec<((usize, u32), usize)>> = HashMap::new();
     for (fi, ft) in out.frames.iter().enumerate() {
         for l in &ft.lines {
+            let column = logical_column(fi, l.column as usize, continuations);
             let v = cols.entry(l.para).or_default();
             match v.last_mut() {
-                Some((c, n)) if *c == (fi, l.column) => *n += 1,
-                _ => v.push(((fi, l.column), 1)),
+                Some((c, n)) if *c == (column.0, column.1 as u32) => *n += 1,
+                _ => v.push(((column.0, column.1 as u32), 1)),
             }
         }
     }
@@ -4117,7 +4203,7 @@ impl Snapshot {
 fn rewind(
     j: usize,
     snaps: &[Snapshot],
-    note_snaps: &[(u32, Option<usize>, usize)],
+    note_snaps: &[NoteSnapshot],
     notes: &mut Notes,
     out: &mut ComposedStory,
     cur: &mut Cursor,
@@ -4132,9 +4218,8 @@ fn rewind(
     if let Some(s) = snaps.get(j) {
         s.restore(out, cur, list_counter);
     }
-    if let Some(&(num, key, placed)) = note_snaps.get(j) {
-        (notes.num, notes.key) = (num, key);
-        notes.placed.truncate(placed);
+    if let Some(snapshot) = note_snaps.get(j) {
+        notes.restore(snapshot);
     }
 }
 
@@ -4292,6 +4377,7 @@ fn ft_prev_end(overset: &Option<usize>, len: usize) -> usize {
 
 #[derive(Clone)]
 struct Cursor {
+    continuations: Arc<Vec<(usize, f64)>>,
     fi: usize,
     col: usize,
     last_baseline: Option<f64>,
@@ -4526,7 +4612,23 @@ fn limit_of<K: TrialKey>(limits: &[(K, f64)], key: K) -> Option<f64> {
     limits.iter().find(|(k, _)| *k == key).map(|&(_, b)| b)
 }
 
+/// Same-page continuation bands share keep constraints; real frame/column breaks still split them.
+fn logical_column(mut fi: usize, col: usize, continuations: &[(usize, f64)]) -> (usize, usize) {
+    while fi > 0 && col == 0 && continuations.iter().any(|(index, _)| *index == fi) {
+        fi -= 1;
+    }
+    (fi, col)
+}
+
 impl Cursor {
+    fn keep_column(&self) -> (usize, usize) {
+        logical_column(self.fi, self.col, &self.continuations)
+    }
+
+    fn next_is_continuation(&self, cols: &[Vec<Rect>]) -> bool {
+        cols.get(self.fi).is_some_and(|c| self.col.saturating_add(1) >= c.len())
+            && self.continuations.iter().any(|(index, _)| *index == self.fi.saturating_add(1))
+    }
     fn next_column(&mut self, cols: &[Vec<Rect>]) {
         self.col += 1;
         if self.fi < cols.len() && self.col >= cols[self.fi].len() {
@@ -4540,7 +4642,12 @@ impl Cursor {
         self.fi += 1;
         self.col = 0;
         self.band = Band { para: self.pi, ..Band::default() };
-        self.resume();
+        if let Some((_, dy)) = self.continuations.iter().find(|(index, _)| *index == self.fi) {
+            self.last_baseline = self.last_baseline.map(|b| b + dy);
+            self.grid_next = self.grid_next.map(|(b, y)| (b + dy, y + dy));
+        } else {
+            self.resume();
+        }
         self.split_part();
     }
     fn state(&self) -> Resume {
@@ -5624,6 +5731,7 @@ fn place(g: &Glyph, x: f64) -> PlacedGlyph {
         || g.ch == story::RIGHT_INDENT_TAB
         || g.ch == story::TABLE_ANCHOR
         || g.ch == shape::SOFT_HYPHEN
+        || g.ch == designcraft_doc::FOOTNOTE_REF && g.generated_text.as_deref() == Some("")
         || g.ch == shape::HIDDEN);
     PlacedGlyph {
         rendered_char: g.rendered_char,
@@ -6086,14 +6194,7 @@ fn rule_decos(doc: &Document, r: &designcraft_doc::Rule, rect: Rect, (color, tin
 /// `spanned`: a paragraph spans the frame's columns, so the lines move together. `anchors`: the
 /// story byte of each anchored object's mark, by object index.
 /// `grid_aligns`: each paragraph's Align to Baseline Grid setting.
-fn vertical_justify(
-    ft: &mut FrameText,
-    f: &FrameSpec,
-    spanned: bool,
-    notes: &designcraft_doc::FootnoteOptions,
-    grid_aligns: &[GridAlign],
-    anchors: &[usize],
-) {
+fn vertical_justify(ft: &mut FrameText, f: &FrameSpec, spanned: bool, doc: &Document, grid_aligns: &[GridAlign], anchors: &[usize]) {
     if ft.lines.is_empty() || f.opts.vertical_justification == VerticalJustification::Top {
         return;
     }
@@ -6111,8 +6212,8 @@ fn vertical_justify(
         let note_top = ft
             .notes
             .iter()
-            .filter(|n| spanned || notes.span_columns || n.column == c)
-            .map(|n| n.rect.y0 - notes.space_before)
+            .filter(|n| spanned || doc.note_options(n.series).span_columns || n.column == c)
+            .map(|n| n.rect.y0 - doc.note_options(n.series).space_before)
             .fold(f64::INFINITY, f64::min);
         let limit = note_top.min(f.area.y1);
         let tables = ft.tables.iter().filter(|t| spanned || t.column == c).map(|t| t.rect.y1).fold(f64::NEG_INFINITY, f64::max);
@@ -6944,6 +7045,8 @@ pub fn adjacent_row(l: &Line, x: f64, caret_y: f64, up: bool) -> Option<f64> {
     if up { candidates.map(|r| r.0).max_by(f64::total_cmp) } else { candidates.map(|r| r.0).min_by(f64::total_cmp) }
 }
 
+#[cfg(test)]
+mod stream_frame_tests;
 #[cfg(test)]
 mod tests;
 

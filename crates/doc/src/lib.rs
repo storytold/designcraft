@@ -61,7 +61,7 @@ pub use flex::{FlexAlign, FlexDirection, FlexJustify, FlexLayout, FlexSize};
 pub use ids::*;
 pub use index::{INDEX_MARK, IndexRef};
 pub use item::*;
-pub use notes::{FOOTNOTE_REF, FOOTNOTE_TABLE, Footnote, FootnoteOptions};
+pub use notes::{FOOTNOTE_REF, FOOTNOTE_TABLE, Footnote, FootnoteOptions, MarginSide, NotePlacement, NoteSeries};
 pub use page::*;
 pub use selection::*;
 pub use story::*;
@@ -917,6 +917,9 @@ pub struct Document {
     /// Type › Document Footnote Options.
     #[serde(default)]
     pub footnote_options: FootnoteOptions,
+    /// Additional independent note series (series 0 remains in footnote_options).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub note_series: Vec<NoteSeries>,
     /// Cross-reference formats (Type › Hyperlinks & Cross-References › Cross-Reference Formats).
     #[serde(default = "xref::default_formats")]
     pub xref_formats: Vec<XrefFormat>,
@@ -1345,6 +1348,14 @@ impl Document {
 
     /// Validate structural invariants (ids unique, threads consistent, stories well-formed).
     pub fn check(&self) -> Result<()> {
+        self.footnote_options.check().map_err(DocError::Invalid)?;
+        let mut series_ids = std::collections::HashSet::from([0]);
+        for series in &self.note_series {
+            if !series_ids.insert(series.id) {
+                return Err(DocError::Invalid(format!("duplicate note series {}", series.id)));
+            }
+            series.options.check().map_err(DocError::Invalid)?;
+        }
         for f in &self.styles.composite_fonts {
             if f.entries.iter().any(|e| {
                 ![e.relative_size, e.horizontal_scale, e.vertical_scale].iter().all(|v| v.is_finite() && *v > 0.0) || !e.baseline_shift.is_finite()
@@ -1358,6 +1369,26 @@ impl Document {
             }
         }
         let mut ids = std::collections::HashSet::new();
+        for item in self.placed_items() {
+            let Some(tf) = item.text_frame() else { continue };
+            if let Some(inset) = &tf.options.inset_columns
+                && (!inset.valid()
+                    || tf.options.note_stream.is_some()
+                    || inset.streams.iter().filter_map(|s| s.series).any(|id| id != 0 && !self.note_series.iter().any(|s| s.id == id)))
+            {
+                return Err(DocError::Invalid(format!("invalid inset columns on frame {}", item.id)));
+            }
+            let Some(stream) = tf.options.note_stream else { continue };
+            let own = self.story(tf.story).ok_or(DocError::NoStory(tf.story))?;
+            if self.story(stream.story).is_none()
+                || (stream.series != 0 && !self.note_series.iter().any(|series| series.id == stream.series))
+                || tf.story == stream.story
+                || !own.is_empty()
+                || own.frames != [item.id]
+            {
+                return Err(DocError::Invalid(format!("invalid note stream assignment on frame {}", item.id)));
+            }
+        }
         // Every item's story (text frames), by id, and every (story, frame) of the threads: built
         // once, so checking each reference both ways is a lookup, not a search of the document.
         let mut frame_story: std::collections::HashMap<ItemId, Option<StoryId>> = std::collections::HashMap::new();

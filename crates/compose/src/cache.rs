@@ -276,7 +276,17 @@ impl Cache {
             // Footnote numbers continue from earlier stories; layout follows the options.
             use std::hash::{Hash, Hasher};
             let mut h = std::collections::hash_map::DefaultHasher::new();
-            format!("{:?}", doc.footnote_options).hash(&mut h);
+            format!("{:?}{:?}", doc.footnote_options, doc.note_series).hash(&mut h);
+            if story.notes.iter().any(|n| matches!(doc.note_options(n.series).placement, designcraft_doc::NotePlacement::Margin { .. })) {
+                // Another story's margin note can push ours down on their shared page.
+                doc_signature(doc).hash(&mut h);
+                for layer in &doc.layers {
+                    (layer.id, layer.visible).hash(&mut h);
+                }
+            }
+            for series in &doc.note_series {
+                doc.footnote_series_start(sid, series.id).hash(&mut h);
+            }
             sig.extend([doc.footnote_start(sid) as usize, h.finish() as usize]);
         }
         // Endnote numbers continue from stories on earlier pages.
@@ -332,13 +342,25 @@ impl Cache {
         let page = page.filter(|_| with_vars);
         let running = running.then(|| self.running_index(doc));
         let others: Vec<Arc<ComposedStory>> = neighbours.iter().map(|n| self.neighbour(doc, *n, depth, resolved)).collect();
-        let (out, trace) = crate::wrap::compose_among_traced(
+        let (mut out, trace) = crate::wrap::compose_among_traced(
             doc,
             sid,
-            &ComposeOptions { page_name, section_marker, page, running, label: None, xrefs: with_xrefs.then(|| self.xref_index(doc)), placed },
+            &ComposeOptions {
+                page_name,
+                section_marker,
+                page,
+                running,
+                label: None,
+                xrefs: with_xrefs.then(|| self.xref_index(doc)),
+                placed: placed.clone(),
+                ..Default::default()
+            },
             &others.iter().map(|o| &**o).collect::<Vec<_>>(),
             before.as_ref().map(|(story, composed, trace)| Reuse { story, composed, trace }),
         );
+        if on == ShownOn::Own {
+            crate::notes::stack_page_margins(doc, sid, &ComposeOptions { placed, ..Default::default() }, &mut out);
+        }
         let (out, trace) = (Arc::new(out), trace.map(Arc::new));
         let mut g = self.map.lock().unwrap_or_else(PoisonError::into_inner);
         let stamp = g.1;
@@ -498,7 +520,18 @@ fn signature(doc: &Document, story: &Arc<Story>) -> (Vec<usize>, Vec<Arc<Item>>)
     sig.extend([g.start, g.increment].into_iter().flat_map(bits));
     let mut keep = Vec::new();
     let mut spreads = Vec::new();
-    for f in &story.frames {
+    // Stream geometry changes the host's page cuts, including routes beyond its own frames.
+    let mut frames = story.frames.clone();
+    for spread in &doc.spreads {
+        for item in &spread.items {
+            item.walk(&mut |it| {
+                if it.text_frame().and_then(|tf| tf.options.note_stream).is_some_and(|stream| stream.story == story.id) && !frames.contains(&it.id) {
+                    frames.push(it.id);
+                }
+            });
+        }
+    }
+    for f in &frames {
         let Some(loc) = doc.find(*f) else {
             // Embedded frames live in another story (possibly in a note/cell),
             // so changing their geometry does not change this story's pointer.

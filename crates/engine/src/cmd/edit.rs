@@ -79,6 +79,7 @@ fn text_source(doc: &designcraft_doc::Document, slice: &designcraft_doc::Story) 
 /// [`text_source`]) under `d`'s ids, since `src`'s may name other files in another document;
 /// fresh ids for its anchored items and copies of the stories its anchored text frames show.
 fn adopt_text(d: &mut designcraft_doc::Document, slice: &mut designcraft_doc::Story, src: &designcraft_doc::Document) {
+    d.adopt_note_series(slice, src);
     let refs: std::collections::BTreeSet<designcraft_doc::AssetId> = designcraft_doc::story_asset_refs(slice).into_iter().collect();
     let mut map = std::collections::HashMap::new();
     for a in refs {

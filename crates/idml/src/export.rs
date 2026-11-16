@@ -75,6 +75,21 @@ pub fn export_idml_report(doc: &Document, opts: &ExportOptions) -> (Vec<u8>, Vec
 pub(crate) fn export_with_limit(doc: &Document, opts: &ExportOptions, embed_limit: usize) -> (Vec<u8>, Vec<String>) {
     let mut ex = Ex::new(doc, opts);
     ex.embed_limit = embed_limit;
+    if doc.stories.values().any(|st| st.notes.iter().any(|n| n.series != 0)) {
+        ex.warnings.push("IDML supports one footnote setup; notes from additional series are exported as ordinary footnotes using series 0.".into());
+    }
+    if doc.stories.values().any(|st| {
+        st.notes.iter().any(|note| {
+            let options = doc.note_options(note.series);
+            matches!(options.placement, designcraft_doc::NotePlacement::Stream) || options.ref_hidden
+        })
+    }) {
+        ex.warnings
+            .push("IDML cannot retain commentary stream routes or hidden note references; comments are exported as ordinary footnotes.".into());
+    }
+    if doc.placed_items().iter().any(|item| item.text_frame().is_some_and(|f| f.options.inset_columns.is_some())) {
+        ex.warnings.push("IDML cannot retain inset-column geometry; export PDF for the composed stream layout.".into());
+    }
     let parts = ex.build();
     (zip_parts(&parts), ex.warnings)
 }

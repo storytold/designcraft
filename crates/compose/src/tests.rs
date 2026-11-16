@@ -2784,7 +2784,7 @@ fn vertical_justification_counts_table_fragment_bottoms() {
         let mut spec = frame_specs(&d, sid).remove(0);
         spec.opts.vertical_justification = mode;
 
-        vertical_justify(&mut ft, &spec, false, &d.footnote_options, &[], &[]);
+        vertical_justify(&mut ft, &spec, false, &d, &[], &[]);
 
         let moved = ft.lines[anchor].baseline - baseline;
         let limit = ft.notes[0].rect.y0 - d.footnote_options.space_before;
@@ -10357,4 +10357,481 @@ fn cross_reference_text_breaks_at_its_spaces() {
             assert!(words.contains(&w), "a line breaks inside a word: {w:?} in {lines:?}");
         }
     }
+}
+
+/// A note taller than either frame must thread without moving its reference.
+#[test]
+fn split_footnote_threads_across_frames() {
+    let (mut d, sid, first) = doc_with("Opening.\nReference.\nClosing.", Rect::new(0.0, 0.0, 220.0, 360.0), ParaAttrs::default());
+    let (second, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(250.0, 0.0, 470.0, 360.0), d.default_layer(), "", ParaFormat::default()).unwrap();
+    d.thread(first, second).unwrap();
+    let text = (0..40).map(|i| format!("Note line {i}.")).collect::<Vec<_>>().join("\n");
+    let id = d.story_mut(sid).unwrap().insert_note(14, &text, ParaFormat::default()).unwrap();
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset(), "long footnote should thread");
+    assert!(cs.frames[0].lines.iter().any(|l| l.glyphs.iter().any(|g| g.byte == 14 && g.len > 0)));
+    let a = cs.frames[0].notes.iter().find(|n| n.id == id).unwrap();
+    let b = cs.frames[1].notes.iter().find(|n| n.id == id).unwrap();
+    let ar = &a.text.frames[0].range;
+    let br = &b.text.frames[0].range;
+    assert_eq!(ar.start, 0);
+    assert_eq!(ar.end, br.start);
+    assert_eq!(br.end, text.len());
+    assert!(!a.text.frames[0].lines.is_empty() && !b.text.frames[0].lines.is_empty());
+}
+
+fn split_footnote_fixture(columns: u32, frames: usize, span: bool, body: &str, count: usize) -> (Document, StoryId, u64, String) {
+    let width = if columns == 1 { 220.0 } else { 460.0 };
+    let (mut d, sid, mut previous) = doc_with(body, Rect::new(0.0, 0.0, width, 360.0), ParaAttrs::default());
+    d.item_mut(previous).unwrap().text_frame_mut().unwrap().options.columns = columns;
+    for _ in 1..frames {
+        let (next, _) =
+            d.add_text_frame(SpreadRef::Doc(0), Rect::new(500.0, 0.0, 500.0 + width, 360.0), d.default_layer(), "", ParaFormat::default()).unwrap();
+        d.item_mut(next).unwrap().text_frame_mut().unwrap().options.columns = columns;
+        d.thread(previous, next).unwrap();
+        previous = next;
+    }
+    d.footnote_options.span_columns = span;
+    let text = (0..count).map(|i| format!("Note line {i}.")).collect::<Vec<_>>().join("\n");
+    let id = d.story_mut(sid).unwrap().insert_note(14, &text, ParaFormat::default()).unwrap();
+    (d, sid, id, text)
+}
+
+fn assert_note_parts(cs: &ComposedStory, id: u64, end: usize) {
+    let mut next = 0;
+    for n in cs.frames.iter().flat_map(|f| &f.notes).filter(|n| n.id == id) {
+        assert_eq!(n.text.frames.len(), 1);
+        let f = &n.text.frames[0];
+        assert!(!f.lines.is_empty());
+        assert_eq!(f.range.start, next, "parts must neither skip nor repeat text");
+        next = f.range.end;
+    }
+    assert_eq!(next, end);
+}
+
+/// Re-laying earlier parts for a continuation must preserve their marker widths and byte breaks.
+#[test]
+fn split_footnote_parts_keep_their_page() {
+    let mut d = Document::new(&NewDocument { pages: 2, start_page: 9, facing_pages: false, ..Default::default() });
+    let lid = d.default_layer();
+    let (first, sid) = d
+        .add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 156.0, 216.0), lid, "Opening.\nReference.\nClosing.", ParaFormat::default())
+        .unwrap();
+    let (second, _) = d.add_text_frame(SpreadRef::Doc(1), Rect::new(36.0, 36.0, 156.0, 756.0), lid, "", ParaFormat::default()).unwrap();
+    d.thread(first, second).unwrap();
+    // Repeated markers fill each narrow line: changing 9 to 10 adds a digit at every marker,
+    // so recomposing the first area with page 10 moves the continuation's starting byte.
+    let paragraph = vec![story::PAGE_NUMBER.to_string(); 12].join(" ");
+    let text = vec![paragraph; 20].join("\n");
+    let id = d.story_mut(sid).unwrap().insert_note(14, &text, ParaFormat::default()).unwrap();
+    let specs = frame_specs(&d, sid);
+    assert_eq!(specs.iter().map(|f| f.page_name.as_deref()).collect::<Vec<_>>(), vec![Some("9"), Some("10")]);
+
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    let a = cs.frames[0].notes.iter().find(|n| n.id == id).unwrap();
+    let b = cs.frames[1].notes.iter().find(|n| n.id == id).unwrap();
+    assert_note_parts(&cs, id, text.len());
+    let first_markers: String = a.text.frames[0]
+        .lines
+        .iter()
+        .flat_map(|l| &l.glyphs)
+        .filter(|g| g.byte > 0 && text.get(g.byte..).is_some_and(|s| s.starts_with(story::PAGE_NUMBER)) && g.visible)
+        .map(|g| g.rendered_char)
+        .collect();
+    assert!(!first_markers.is_empty());
+    assert!(first_markers.chars().all(|c| c == '9'), "first part markers: {first_markers}");
+    let last_marker = b.text.frames[0]
+        .lines
+        .iter()
+        .flat_map(|l| &l.glyphs)
+        .rfind(|g| text.get(g.byte..).is_some_and(|s| s.starts_with(story::PAGE_NUMBER)))
+        .unwrap()
+        .byte;
+    let continued_marker: String = b.text.frames[0]
+        .lines
+        .iter()
+        .flat_map(|l| &l.glyphs)
+        .filter(|g| g.byte == last_marker && text.get(g.byte..).is_some_and(|s| s.starts_with(story::PAGE_NUMBER)) && g.visible)
+        .map(|g| g.rendered_char)
+        .collect();
+    assert_eq!(continued_marker, "10");
+}
+
+#[test]
+fn split_footnote_threads_across_columns() {
+    let (d, sid, id, text) = split_footnote_fixture(2, 1, false, "Opening.\nReference.\nClosing.", 40);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    let ft = &cs.frames[0];
+    assert!(ft.lines.iter().any(|l| l.column == 0 && l.glyphs.iter().any(|g| g.byte == 14 && g.len > 0)));
+    let parts: Vec<_> = ft.notes.iter().filter(|n| n.id == id).collect();
+    assert_eq!(parts.len(), 2);
+    assert_eq!((parts[0].column, parts[1].column), (0, 1));
+    assert!((parts[1].rect.y1 - ft.columns[1].y1).abs() < 0.01);
+    assert_note_parts(&cs, id, text.len());
+}
+
+#[test]
+fn split_footnote_continuation_precedes_new_note() {
+    let body = format!("Opening.\nReference.{}Next reference.", designcraft_doc::story::COLUMN_BREAK);
+    let (mut d, sid, id, text) = split_footnote_fixture(2, 1, false, &body, 40);
+    let at = d.story(sid).unwrap().text.find("Next").unwrap() + 5;
+    let other = d.story_mut(sid).unwrap().insert_note(at, "Later note.", ParaFormat::default()).unwrap();
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    let notes: Vec<_> = cs.frames[0].notes.iter().filter(|n| n.column == 1).collect();
+    assert_eq!(notes.iter().map(|n| n.id).collect::<Vec<_>>(), vec![id, other]);
+    assert!(notes[0].rect.y0 < notes[1].rect.y0);
+    assert!(notes[0].rect.y1 <= notes[1].rect.y0 + 0.01);
+    assert_note_parts(&cs, id, text.len());
+}
+
+#[test]
+fn split_footnote_disabled_preserves_unsplit_behavior() {
+    let (mut d, sid, id, _) = split_footnote_fixture(1, 2, false, "Opening.\nReference.\nClosing.", 40);
+    d.footnote_options.allow_split = false;
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(cs.is_overset());
+    assert!(cs.frames[0].notes.is_empty());
+    assert_eq!(cs.frames[1].notes.iter().filter(|n| n.id == id).count(), 1);
+    assert!(cs.frames[1].notes[0].text.frames[0].lines.len() >= 40);
+}
+
+#[test]
+fn split_footnote_caret_selects_second_part() {
+    let (d, sid, id, text) = split_footnote_fixture(1, 2, false, "Opening.\nReference.\nClosing.", 40);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let n = cs.frames[1].notes.iter().find(|n| n.id == id).unwrap();
+    let range = &n.text.frames[0].range;
+    for pos in [range.start, range.start + 1, text.len()] {
+        let (fi, _, baseline, _, _) = note_caret(&cs, id, pos).unwrap();
+        assert_eq!(fi, 1);
+        assert!(baseline >= n.rect.y0 && baseline <= n.rect.y1);
+    }
+    // The note's start stays with its reference in frame 0.
+    assert_eq!(note_caret(&cs, id, 0).unwrap().0, 0);
+}
+
+#[test]
+fn split_footnote_spanning_columns_continues_in_next_frame() {
+    let (d, sid, id, text) = split_footnote_fixture(2, 2, true, "Opening.\nReference.\nClosing.", 40);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    assert_eq!(cs.frames[0].notes.len(), 1);
+    assert_eq!(cs.frames[1].notes.len(), 1);
+    assert_eq!(cs.frames[1].notes[0].id, id);
+    assert!(cs.frames[0].notes[0].rect.width() > cs.frames[0].columns[0].width());
+    assert_note_parts(&cs, id, text.len());
+}
+
+#[test]
+fn split_footnote_finishes_after_body_and_reports_exhausted_areas() {
+    for frames in [2, 3] {
+        let (d, sid, id, text) = split_footnote_fixture(1, frames, false, "Opening.\nReference.", 60);
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        assert_eq!(cs.is_overset(), frames == 2);
+        if frames == 2 {
+            assert_eq!(cs.overset_at, Some(d.story(sid).unwrap().text.len()));
+        } else {
+            assert_note_parts(&cs, id, text.len());
+            assert!(cs.frames[2].lines.is_empty());
+            assert_eq!(cs.frames[2].notes.len(), 1);
+        }
+    }
+}
+
+#[test]
+fn split_footnote_obeys_paragraph_widows_and_orphans() {
+    let (mut d, sid, id, _) = split_footnote_fixture(1, 2, false, "Opening.\nReference.", 25);
+    let text = (0..25).map(|i| format!("Note line {i}.")).collect::<Vec<_>>().join(&designcraft_doc::story::FORCED_LINE_BREAK.to_string());
+    let note = d.story_mut(sid).unwrap().note_mut(id).unwrap();
+    note.text = Story::with_text(
+        StoryId(0),
+        &text,
+        ParaFormat {
+            para: ParaAttrs { keep_lines_together: Some(true), keep_first: Some(5), keep_last: Some(8), ..Default::default() },
+            ..Default::default()
+        },
+    );
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    let a = &cs.frames[0].notes[0].text.frames[0];
+    let b = &cs.frames[1].notes[0].text.frames[0];
+    assert!(a.lines.len() >= 5);
+    assert!(b.lines.len() >= 8);
+    assert_eq!(a.lines.len() + b.lines.len(), 25);
+    assert_note_parts(&cs, id, text.len());
+}
+
+#[test]
+fn split_footnote_at_first_body_line_uses_available_height() {
+    let (mut d, sid, _) = doc_with("Reference.", Rect::new(0.0, 0.0, 220.0, 360.0), ParaAttrs::default());
+    let first = d.story(sid).unwrap().frames[0];
+    let (next, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(250.0, 0.0, 470.0, 360.0), d.default_layer(), "", ParaFormat::default()).unwrap();
+    d.thread(first, next).unwrap();
+    let text = (0..40).map(|i| format!("Note line {i}.")).collect::<Vec<_>>().join("\n");
+    let id = d.story_mut(sid).unwrap().insert_note(5, &text, ParaFormat::default()).unwrap();
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    let ft = &cs.frames[0];
+    assert!(ft.lines[0].baseline + ft.lines[0].descent <= ft.notes[0].rect.y0 + 0.01);
+    assert_eq!(cs.frames[1].notes.len(), 1);
+    assert_note_parts(&cs, id, text.len());
+}
+
+/// A continuation in a narrower frame must start where the wider first part ended.
+#[test]
+fn split_footnote_continues_into_narrower_frame() {
+    let (mut d, sid, first) = doc_with("Opening.\nReference.\nClosing.", Rect::new(0.0, 0.0, 260.0, 360.0), ParaAttrs::default());
+    let (second, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(300.0, 0.0, 420.0, 360.0), d.default_layer(), "", ParaFormat::default()).unwrap();
+    d.thread(first, second).unwrap();
+    let text = (0..12).map(|i| format!("Note paragraph {i} has enough words in it to wrap over several lines.")).collect::<Vec<_>>().join("\n");
+    let id = d.story_mut(sid).unwrap().insert_note(14, &text, ParaFormat::default()).unwrap();
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    assert_eq!(cs.frames[1].notes.iter().filter(|n| n.id == id).count(), 1);
+    assert_note_parts(&cs, id, text.len());
+}
+
+/// Keep options in a note decide its break; a wider continuation frame must not move that break.
+#[test]
+fn split_footnote_keeps_hold_into_wider_frame() {
+    for keep_last in 2..7 {
+        let (mut d, sid, first) = doc_with("Opening.\nReference.\nClosing.", Rect::new(0.0, 0.0, 120.0, 300.0), ParaAttrs::default());
+        let (second, _) =
+            d.add_text_frame(SpreadRef::Doc(0), Rect::new(200.0, 0.0, 620.0, 300.0), d.default_layer(), "", ParaFormat::default()).unwrap();
+        d.thread(first, second).unwrap();
+        let text = (0..60).map(|i| format!("word{i}")).collect::<Vec<_>>().join(" ");
+        let para = ParaFormat {
+            para: ParaAttrs { keep_lines_together: Some(true), keep_first: Some(2), keep_last: Some(keep_last), ..Default::default() },
+            ..Default::default()
+        };
+        let id = d.story_mut(sid).unwrap().insert_note(14, &text, para).unwrap();
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let ranges: Vec<_> = cs.frames.iter().flat_map(|f| &f.notes).filter(|n| n.id == id).map(|n| n.text.frames[0].range.clone()).collect();
+        assert!(ranges.len() >= 2, "keep_last {keep_last}: the note must split: {ranges:?}");
+        assert_note_parts(&cs, id, text.len());
+    }
+}
+
+fn note_series_doc(placement: designcraft_doc::NotePlacement) -> (Document, StoryId, ItemId) {
+    let (mut d, sid, fid) = doc_with(
+        "First reference.\nSecond reference.\nThird reference.\nFourth reference.",
+        Rect::new(120.0, 72.0, 420.0, 600.0),
+        ParaAttrs::default(),
+    );
+    d.note_series.push(designcraft_doc::NoteSeries {
+        id: 1,
+        name: "Sources".into(),
+        options: designcraft_doc::FootnoteOptions {
+            style: designcraft_doc::NumberStyle::LowerLetters,
+            separator: " ".into(),
+            placement,
+            ..Default::default()
+        },
+    });
+    let st = d.story_mut(sid).unwrap();
+    for (at, series) in [(65, 1), (45, 0), (25, 1), (5, 0)] {
+        let id = st.insert_note(at, "Source.", ParaFormat::default()).unwrap();
+        st.note_mut(id).unwrap().series = series;
+    }
+    (d, sid, fid)
+}
+
+#[test]
+fn note_series_number_independently_and_stack_at_column_foot() {
+    let (d, sid, _) = note_series_doc(designcraft_doc::NotePlacement::ColumnFoot);
+    let cs = compose_story(&d, sid, &Default::default());
+    let notes = &cs.frames[0].notes;
+    assert_eq!(notes.iter().filter(|n| n.series == 0).map(|n| n.label.as_str()).collect::<Vec<_>>(), ["1", "2"]);
+    assert_eq!(notes.iter().filter(|n| n.series == 1).map(|n| n.label.as_str()).collect::<Vec<_>>(), ["a", "b"]);
+    let mut rects: Vec<_> = notes.iter().map(|n| n.rect).collect();
+    rects.sort_by(|a, b| a.y0.total_cmp(&b.y0));
+    for pair in rects.windows(2) {
+        assert!(pair[0].y1 <= pair[1].y0 + 0.01);
+    }
+    assert!(cs.frames[0].lines.last().unwrap().baseline < rects[0].y0);
+}
+
+#[test]
+fn margin_series_align_to_reference_without_reserving_body_space() {
+    let (mut d, sid, _) =
+        note_series_doc(designcraft_doc::NotePlacement::Margin { side: designcraft_doc::MarginSide::Outside, gap: 8.0, width: 72.0 });
+    let cs = compose_story(&d, sid, &Default::default());
+    let ft = &cs.frames[0];
+    for n in ft.notes.iter().filter(|n| n.series == 1) {
+        let first = n.text.frames[0].lines.first().unwrap();
+        assert!(
+            (n.origin.y + first.baseline - n.reference_baseline).abs() < 0.01,
+            "origin {:?}, baseline {}, reference {}, lines {}",
+            n.origin,
+            first.baseline,
+            n.reference_baseline,
+            n.text.line_count()
+        );
+        assert_eq!(n.rect.x0, 428.0); // frame edge 420 + gap
+        assert!(!n.overflow);
+        assert!(hit_note(&cs, 0, Point::new(n.rect.x0 + 10.0, n.rect.y0 + 5.0)).is_some());
+        assert!(note_caret(&cs, n.id, 0).is_some());
+    }
+    // Remove only margin references' visible labels, retaining the same advance to compare room.
+    for n in &mut d.story_mut(sid).unwrap().notes {
+        if n.series == 1 {
+            std::sync::Arc::make_mut(n).text = Story::new(StoryId(0));
+        }
+    }
+    let empty = compose_story(&d, sid, &Default::default());
+    assert_eq!(cs.frames[0].lines.len(), empty.frames[0].lines.len());
+    assert_eq!(cs.overset_at, empty.overset_at);
+    for (a, b) in cs.frames[0].notes.iter().filter(|n| n.series == 0).zip(empty.frames[0].notes.iter().filter(|n| n.series == 0)) {
+        assert_eq!(a.rect, b.rect);
+    }
+}
+
+#[test]
+fn margin_series_mirror_on_left_right_and_single_pages() {
+    use designcraft_doc::{MarginSide, NotePlacement, PageSide};
+    for (page_side, inside_left) in [(PageSide::Left, false), (PageSide::Right, true), (PageSide::Single, true)] {
+        for (side, left) in
+            [(MarginSide::Inside, inside_left), (MarginSide::Outside, !inside_left), (MarginSide::Left, true), (MarginSide::Right, false)]
+        {
+            let (d, sid, _) = note_series_doc(NotePlacement::Margin { side, gap: 8.0, width: 72.0 });
+            let mut frames = frame_specs(&d, sid);
+            frames[0].left_page = page_side == PageSide::Left;
+            frames[0].right_page = page_side == PageSide::Right;
+            let cs = compose(&d, d.story(sid).unwrap(), &frames, &Default::default());
+            let n = cs.frames[0].notes.iter().find(|n| n.series == 1).unwrap();
+            assert_eq!(n.rect.x0, if left { 40.0 } else { 428.0 });
+        }
+    }
+}
+
+#[test]
+fn margin_series_stack_across_series_and_report_overflow_without_body_overset() {
+    use designcraft_doc::{MarginSide, NotePlacement};
+    let (mut d, sid, _) = note_series_doc(NotePlacement::Margin { side: MarginSide::Right, gap: 8.0, width: 72.0 });
+    d.footnote_options.placement = NotePlacement::Margin { side: MarginSide::Right, gap: 8.0, width: 72.0 };
+    d.footnote_options.space_between = 3.0;
+    d.note_series[0].options.space_between = 7.0;
+    for n in &mut d.story_mut(sid).unwrap().notes {
+        std::sync::Arc::make_mut(n).text = Story::with_text(StoryId(0), "line one\nline two\nline three", ParaFormat::default());
+    }
+    let mut frames = frame_specs(&d, sid);
+    frames[0].page_rect.as_mut().unwrap().1.y1 = 95.0;
+    let cs = compose(&d, d.story(sid).unwrap(), &frames, &Default::default());
+    let ns = &cs.frames[0].notes;
+    assert_eq!(ns.len(), 4);
+    assert_eq!(cs.overset_at, None);
+    for pair in ns.windows(2) {
+        assert!((pair[1].rect.y0 - pair[0].rect.y1 - d.note_options(pair[1].series).space_between).abs() < 0.01);
+    }
+    assert!(ns.iter().any(|n| n.overflow));
+    assert_eq!(cs.warnings.len(), ns.iter().filter(|n| n.overflow).count());
+}
+
+#[test]
+fn note_series_reference_positions_are_independent_in_one_paragraph() {
+    use designcraft_doc::{FootnoteOptions, NoteSeries, Position};
+    let (mut d, sid, _) = doc_with("one two three", Rect::new(72.0, 72.0, 400.0, 600.0), ParaAttrs::default());
+    d.note_series.push(NoteSeries {
+        id: 1,
+        name: "Sources".into(),
+        options: FootnoteOptions { ref_position: Position::Normal, ..Default::default() },
+    });
+    let st = d.story_mut(sid).unwrap();
+    let normal = st.insert_note(7, "Source", Default::default()).unwrap();
+    st.note_mut(normal).unwrap().series = 1;
+    let raised = st.insert_note(3, "Ordinary", Default::default()).unwrap();
+    let (raised, normal) = (st.note_anchor(raised).unwrap(), st.note_anchor(normal).unwrap());
+    let cs = compose_story(&d, sid, &Default::default());
+    let reference = |at| cs.frames[0].lines.iter().flat_map(|l| &l.glyphs).find(|g| g.byte == at && g.len > 0).unwrap();
+    assert!(reference(raised).sy < reference(normal).sy);
+    assert!(reference(raised).y < reference(normal).y);
+}
+
+#[test]
+fn review_mixed_local_and_spanning_series_reserve_their_final_geometry() {
+    let (mut d, sid, fid) = doc_with(&[LOREM; 10].join(" "), Rect::new(36.0, 36.0, 436.0, 436.0), ParaAttrs::default());
+    d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = 2;
+    d.footnote_options.allow_split = false;
+    d.note_series.push(designcraft_doc::NoteSeries {
+        id: 1,
+        name: "Spanning".into(),
+        options: designcraft_doc::FootnoteOptions { span_columns: true, allow_split: false, ..Default::default() },
+    });
+    let st = d.story_mut(sid).unwrap();
+    let spanning = st.insert_note(20, "Spanning note", Default::default()).unwrap();
+    st.note_mut(spanning).unwrap().series = 1;
+    st.insert_note(5, "Local line\nLocal line\nLocal line\nLocal line\nLocal line\nLocal line", Default::default());
+    let cs = compose_story(&d, sid, &Default::default());
+    let ft = &cs.frames[0];
+    let note = ft.notes.iter().find(|n| n.series == 1).unwrap();
+    assert!(ft.lines.iter().any(|l| l.column == 1));
+    for line in &ft.lines {
+        assert!(
+            line.baseline + line.descent <= note.rect.y0 + 0.01,
+            "column {} body bottom {} passes note top {}",
+            line.column,
+            line.baseline + line.descent,
+            note.rect.y0
+        );
+    }
+}
+
+#[test]
+fn review_margin_stacks_share_a_page_across_stories_and_invalidate_cache() {
+    use designcraft_doc::{MarginSide, NotePlacement};
+    let (mut d, a, _) = doc_with("First body", Rect::new(120.0, 72.0, 420.0, 600.0), ParaAttrs::default());
+    let (bframe, b) =
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(120.0, 90.0, 420.0, 600.0), d.default_layer(), "Second body", Default::default()).unwrap();
+    let original_layer = d.default_layer();
+    let mut layer = d.layers[0].clone();
+    layer.id = designcraft_doc::LayerId(d.alloc());
+    layer.name = "Second story".into();
+    let second_layer = layer.id;
+    d.layers.push(layer);
+    d.item_mut(bframe).unwrap().layer = second_layer;
+    d.footnote_options.placement = NotePlacement::Margin { side: MarginSide::Right, gap: 8.0, width: 72.0 };
+    d.footnote_options.space_between = 7.0;
+    d.footnote_options.separator = " ".into();
+    let id = d.story_mut(a).unwrap().insert_note(5, "First\nSecond\nThird", Default::default()).unwrap();
+    d.story_mut(b).unwrap().insert_note(5, "Next", Default::default());
+    let first = compose_story(&d, a, &Default::default());
+    let second = compose_story(&d, b, &Default::default());
+    assert!((second.frames[0].notes[0].rect.y0 - first.frames[0].notes[0].rect.y1 - 7.0).abs() < 0.01);
+    let cache = Cache::new();
+    let before = cache.get(&d, b, None);
+    assert_eq!(before.frames[0].notes[0].rect, second.frames[0].notes[0].rect);
+    d.story_mut(a).unwrap().note_mut(id).unwrap().text.insert(0, "Extra line\n");
+    let after = cache.get(&d, b, None);
+    assert!(!std::sync::Arc::ptr_eq(&before, &after));
+    assert!(after.frames[0].notes[0].rect.y0 > before.frames[0].notes[0].rect.y0);
+    d.layers.iter_mut().find(|l| l.id == original_layer).unwrap().visible = false;
+    let hidden = cache.get(&d, b, None);
+    let fresh = compose_story(&d, b, &Default::default());
+    assert_eq!(hidden.frames[0].notes[0].rect, fresh.frames[0].notes[0].rect);
+    assert!(hidden.frames[0].notes[0].rect.y0 < after.frames[0].notes[0].rect.y0);
+    d.layers.iter_mut().find(|l| l.id == original_layer).unwrap().visible = true;
+    let shown = cache.get(&d, b, None);
+    assert_eq!(shown.frames[0].notes[0].rect, after.frames[0].notes[0].rect);
+}
+
+#[test]
+fn margin_stacks_compare_scaled_hosts_in_physical_page_space() {
+    use designcraft_doc::{MarginSide, NotePlacement};
+    let (mut d, a, af) = doc_with("First body", Rect::new(60.0, 36.0, 210.0, 300.0), ParaAttrs::default());
+    d.item_mut(af).unwrap().xf = Affine::scale(2.0);
+    let (bf, b) =
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(120.0, 110.0, 420.0, 600.0), d.default_layer(), "Second body", Default::default()).unwrap();
+    d.footnote_options.placement = NotePlacement::Margin { side: MarginSide::Right, gap: 8.0, width: 72.0 };
+    d.footnote_options.space_between = 7.0;
+    d.footnote_options.separator = " ".into();
+    d.story_mut(a).unwrap().insert_note(5, "First\nSecond\nThird", Default::default());
+    d.story_mut(b).unwrap().insert_note(5, "Next", Default::default());
+    let ca = compose_story(&d, a, &Default::default());
+    let cb = compose_story(&d, b, &Default::default());
+    let ar = d.text_xf(d.item(af).unwrap()).transform_rect_bbox(ca.frames[0].notes[0].rect);
+    let br = d.text_xf(d.item(bf).unwrap()).transform_rect_bbox(cb.frames[0].notes[0].rect);
+    assert!((br.y0 - ar.y1 - 7.0).abs() < 0.01, "physical rectangles {ar:?}, {br:?}");
 }
