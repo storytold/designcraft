@@ -5066,6 +5066,60 @@ fn drop_cap_counts_code_points_without_splitting_clusters_and_clamps_to_the_para
 }
 
 #[test]
+fn drop_cap_words_override_characters_and_keep_hebrew_marks() {
+    const FAMILY: &str = "DC Test Hebrew Drop Words";
+    let first_words = "אֵלּוּ דְבָרִים";
+    let text = format!("{first_words} {}", "הדה ".repeat(60));
+    let chars: Vec<_> = text.chars().collect();
+    designcraft_fonts::FontDb::global().add_font(designcraft_fonts::testing::font_with(FAMILY, &chars).unwrap());
+    let para = ParaAttrs {
+        direction: Some(designcraft_doc::TextDirection::RightToLeft),
+        align: Some(Align::Right),
+        drop_cap_words: Some(2),
+        ..drop_cap(2, 1)
+    };
+    let (mut d, sid, _) = drop_doc(&text, para);
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.font_family = Some(FAMILY.into()));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    let end = first_words.len() + 1;
+    let dropped: Vec<_> = lines[0].glyphs.iter().filter(|g| g.len > 0 && g.y > 1.0).collect();
+    assert!(!dropped.is_empty());
+    assert!(dropped.iter().all(|g| g.byte < end && g.face.family == FAMILY));
+    let mut ranges: Vec<_> = dropped.iter().map(|g| (g.byte, g.byte + g.len)).collect();
+    ranges.sort_unstable();
+    ranges.dedup();
+    let mut covered = 0;
+    for (start, stop) in ranges {
+        assert!(start <= covered, "missing drop-cap bytes before {start}");
+        covered = covered.max(stop);
+    }
+    assert_eq!(covered, end, "both words, their marks and the trailing space are dropped");
+    assert!(lines[0].glyphs.iter().any(|g| g.byte == end && g.y.abs() < 1e-6));
+    // Interior and trailing word spaces obey the same desired spacing before scaling.
+    d.story_mut(sid).unwrap().paras[0].para.word_space_desired = Some(2.0);
+    let spaced = compose_story(&d, sid, &ComposeOptions::default());
+    for gap in dropped.iter().filter(|g| text.get(g.byte..).is_some_and(|s| s.starts_with(' '))) {
+        let spaced_gap = all_lines(&spaced)[0].glyphs.iter().find(|g| g.byte == gap.byte).unwrap();
+        assert!((spaced_gap.adv - gap.adv * 2.0).abs() < 0.01);
+    }
+}
+
+#[test]
+fn drop_cap_words_end_at_whitespace_and_clamp_to_the_paragraph() {
+    let props = designcraft_doc::ParaProps { drop_cap_lines: 2, drop_cap_words: 2, ..Default::default() };
+    for (text, expected) in
+        [("  one\t two\u{a0}three", "  one\t two".len()), ("one", 3), ("one two\n", 7), ("one־two three four", "one־two three".len())]
+    {
+        assert_eq!(super::drop_cap_end(text, 0..text.len(), &props, false), expected);
+    }
+    assert_eq!(super::drop_cap_end("one two", 0..7, &props, true), 0);
+    let props = designcraft_doc::ParaProps { drop_cap_words: u32::MAX, ..props };
+    let text = "word ".repeat(30);
+    assert_eq!(super::drop_cap_end(&text, 0..text.len(), &props, false), 25 * 5 - 1);
+}
+
+#[test]
 fn hostile_drop_cap_values_do_not_panic() {
     for (lines, chars) in [(u32::MAX, u32::MAX), (1_000_000, 1), (2, 0), (0, 3)] {
         let (d, sid, _) = drop_doc(LOREM, drop_cap(lines, chars));

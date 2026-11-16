@@ -23,6 +23,10 @@ attr_set! {
         /// character style `drop_cap_style` ("" or `[None]`: the text's own formatting).
         drop_cap_lines: u32 = 0,
         drop_cap_chars: u32 = 0,
+        /// When above 0, use the paragraph's first `drop_cap_words` words instead of
+        /// `drop_cap_chars` characters. Words are runs of non-whitespace, so combining marks
+        /// and maqaf-joined words stay whole.
+        drop_cap_words: u32 = 0,
         drop_cap_style: String = String::new(),
         /// Align Left Edge: the drop cap's ink starts at the indent (its first letter's left side
         /// bearing is taken off), and the lines beside it start where its advance ends.

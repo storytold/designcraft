@@ -5659,24 +5659,46 @@ fn place(g: &Glyph, x: f64) -> PlacedGlyph {
     }
 }
 
-/// Drop caps are at most this many lines and characters (larger values are capped).
+/// Drop caps are at most this many lines, characters or words (larger values are capped).
 pub const MAX_DROP_CAP_LINES: u32 = 25;
 pub const MAX_DROP_CAP_CHARS: u32 = 150;
+pub const MAX_DROP_CAP_WORDS: u32 = 25;
 
-/// Byte where paragraph `prange`'s drop cap ends: after its first `drop_cap_chars` characters
-/// (code points, as InDesign counts them, spaces included), extended to the end of the grapheme
-/// cluster they end in so a letter keeps its combining marks; all of them in a shorter paragraph.
-/// `prange.start` when it has none: no lines or characters, or vertical text (which sets no drop
-/// caps).
+/// Byte where paragraph `prange`'s drop cap ends: after its first `drop_cap_words` runs of
+/// non-whitespace when above zero, otherwise its first `drop_cap_chars` code points (spaces
+/// included). Extend to the end of the grapheme cluster so a letter keeps its combining marks;
+/// take the whole paragraph when shorter. Counts are capped at their respective maxima.
+/// Return `prange.start` with no lines, neither words nor characters, or vertical text.
 fn drop_cap_end(text: &str, prange: Range<usize>, pp: &ParaProps, vertical: bool) -> usize {
     use unicode_segmentation::UnicodeSegmentation as _;
-    if vertical || pp.drop_cap_lines == 0 || pp.drop_cap_chars == 0 {
+    if vertical || pp.drop_cap_lines == 0 || (pp.drop_cap_chars == 0 && pp.drop_cap_words == 0) {
         return prange.start;
     }
     let Some(para) = text.get(prange.clone()) else { return prange.start };
     let para = para.trim_end_matches('\n');
-    let n = pp.drop_cap_chars.min(MAX_DROP_CAP_CHARS) as usize;
-    let end = para.char_indices().nth(n).map_or(para.len(), |(i, _)| i);
+    let end = if pp.drop_cap_words > 0 {
+        let mut remaining = pp.drop_cap_words.min(MAX_DROP_CAP_WORDS);
+        let mut in_word = false;
+        para.char_indices()
+            .find_map(|(i, ch)| {
+                if ch.is_whitespace() {
+                    if in_word {
+                        remaining -= 1;
+                        if remaining == 0 {
+                            return Some(i);
+                        }
+                    }
+                    in_word = false;
+                } else {
+                    in_word = true;
+                }
+                None
+            })
+            .unwrap_or(para.len())
+    } else {
+        let n = pp.drop_cap_chars.min(MAX_DROP_CAP_CHARS) as usize;
+        para.char_indices().nth(n).map_or(para.len(), |(i, _)| i)
+    };
     prange.start + para.grapheme_indices(true).map(|(i, _)| i).find(|i| *i >= end).unwrap_or(para.len())
 }
 

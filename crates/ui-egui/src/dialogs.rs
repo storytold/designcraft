@@ -6727,6 +6727,7 @@ fn drop_cap_fields(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, cn
         for (label, key, max) in [
             ("Lines:", "dropCapLines", designcraft_compose::MAX_DROP_CAP_LINES),
             ("Characters:", "dropCapChars", designcraft_compose::MAX_DROP_CAP_CHARS),
+            ("Words:", "dropCapWords", designcraft_compose::MAX_DROP_CAP_WORDS),
         ] {
             crate::rtl::label(ui, crate::i18n::tr(lang, label));
             let v = field_or(d, &format!("p.{key}"), &pv[key]).as_f64();
