@@ -611,7 +611,7 @@ fn czech_counts_use_the_plural_form_for_the_number() {
 #[test]
 fn hebrew_catalog_is_selectable_rtl_and_preserves_english_keys() {
     let mut seen = HashSet::new();
-    assert_eq!(he::TABLE.len(), 1477, "Hebrew source-linked table changed");
+    assert_eq!(he::TABLE.len(), 1509, "Hebrew source-linked table changed");
     for (source, translated) in he::TABLE {
         assert!(seen.insert(*source), "duplicate Hebrew source key: {source}");
         assert!(!translated.trim().is_empty(), "empty Hebrew: {source}");
@@ -900,4 +900,49 @@ fn hebrew_source_linked_data_merge_styles_and_export_labels() {
         );
         assert_eq!(tr("he", source), expected, "Hebrew native UI label: {source}");
     }
+}
+
+#[test]
+fn hebrew_source_linked_typography_panels_and_search_night05() {
+    for (source, expected) in [
+        ("Cell Number:", "מספר תא:"),
+        ("Change fill to:", "שינוי המילוי ל:"),
+        ("Company", "חברה"),
+        ("Contributors", "תורמים"),
+        ("Dark", "כהה"),
+        ("Email Address:", "כתובת דוא״ל:"),
+        ("Graphic", "גרפיקה"),
+        ("Hair Space", "רווח דקיק"),
+        ("Invalid panel layout; restored the default dock", "פריסת החלוניות אינה תקינה; שוחזרה פריסת העגינה כברירת מחדל"),
+        ("Light", "בהיר"),
+        ("Lines added", "שורות שנוספו"),
+        ("Lines deleted", "שורות שנמחקו"),
+        ("Low Resolution", "רזולוציה נמוכה"),
+        ("Medium Resolution", "רזולוציה בינונית"),
+        ("PDF import cancelled: the originating document has closed", "ייבוא PDF בוטל: מסמך המקור נסגר"),
+        ("Pin Bar Position", "קיבוע מיקום הסרגל"),
+        ("Reverse the order", "היפוך הסדר"),
+        ("Ruler Zero Point", "נקודת האפס בסרגל"),
+        ("Select Story", "בחירת רצף טקסט"),
+        ("Select Text Unit", "בחירת יחידת טקסט"),
+        ("Simulate Paper Color", "הדמיית צבע הנייר"),
+        ("Step and Repeat", "שכפול בצעדים קבועים"),
+        ("Story Editor — {count} words", "עורך רצף טקסט — {count} מילים"),
+        ("Subscript:", "כתב תחתי:"),
+        ("Swap Text Fill and Stroke", "החלפת המילוי וקו המתאר של הטקסט"),
+        ("Thread Text Frames", "שרשור מסגרות טקסט"),
+        ("To Footer", "לכותרת תחתונה"),
+        ("To Header", "לכותרת עליונה"),
+        ("Update Data Source", "עדכון מקור הנתונים"),
+        ("[No Language]", "[ללא שפה]"),
+        ("{count} match(es)", "{count} התאמות"),
+        ("{count} replacement(s) made", "בוצעו {count} החלפות"),
+    ] {
+        assert!(
+            fr::TABLE.iter().any(|(english, _)| english == source),
+            "official English source key missing: {source}"
+        );
+        assert_eq!(tr("he", source), expected, "Hebrew UI label: {source}");
+    }
+    assert_eq!(tr("en", "Step and Repeat"), "Step and Repeat");
 }
