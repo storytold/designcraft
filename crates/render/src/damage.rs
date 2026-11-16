@@ -97,7 +97,7 @@ pub fn damage_with(old: &Document, new: &Document, cache: Option<&designcraft_co
         // Margin notes can move beyond both the old and new host frame's painted bounds.
         let margins = [old, new].iter().any(|d| margin_reflow(d, sid));
         // Footnote numbers continue across stories.
-        if margins || a.map_or(0, |s| s.notes.len()) != b.map_or(0, |s| s.notes.len()) {
+        if margins || note_counts(old, a) != note_counts(new, b) {
             return None;
         }
         // Its anchored objects' text wrap reflows the other stories on its spreads.
@@ -197,6 +197,16 @@ fn painted_bounds(it: &Item) -> Option<Rect> {
         b = b.union(it.xf.transform_rect_bbox(painted_bounds(c)?.inflate(stroke, stroke)));
     }
     Some(b)
+}
+
+fn note_counts(doc: &Document, story: Option<&Arc<Story>>) -> std::collections::BTreeMap<u64, usize> {
+    let mut counts = std::collections::BTreeMap::new();
+    if let Some(story) = story {
+        for note in &story.notes {
+            *counts.entry(doc.note_series_id(note.series)).or_default() += 1;
+        }
+    }
+    counts
 }
 
 fn margin_reflow(doc: &Document, sid: StoryId) -> bool {
@@ -310,6 +320,23 @@ mod tests {
         d.story_mut(a).unwrap().insert_object(0, designcraft_doc::AnchoredObject::new(it, Default::default()));
         let dmg = damage(&old, &d).unwrap();
         assert!(dmg.iter().any(|(_, r)| r.contains(designcraft_geom::Point::new(400.0, 500.0))));
+    }
+
+    #[test]
+    fn changing_series_membership_repaints_later_story_numbers() {
+        let mut d = Document::new(&NewDocument::default());
+        d.note_series.push(designcraft_doc::NoteSeries { id: 1, name: "Sources".into(), options: Default::default() });
+        let lid = d.default_layer();
+        let (_, first) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 200.0, 200.0), lid, "First", Default::default()).unwrap();
+        let (_, later) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(300.0, 36.0, 500.0, 200.0), lid, "Later", Default::default()).unwrap();
+        let id = d.story_mut(first).unwrap().insert_note(0, "Source", Default::default()).unwrap();
+        d.story_mut(later).unwrap().insert_note(0, "Later source", Default::default());
+        let old = d.clone();
+        d.story_mut(first).unwrap().note_mut(id).unwrap().series = 1;
+        assert_eq!(old.footnote_series_start(later, 0), 2);
+        assert_eq!(d.footnote_series_start(later, 0), 1);
+        assert_eq!(d.footnote_series_start(later, 1), 2);
+        assert!(damage(&old, &d).is_none());
     }
 
     #[test]

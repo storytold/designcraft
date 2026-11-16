@@ -338,18 +338,33 @@ impl crate::Document {
     /// Adopt additional series by meaning, not by their document-local numeric ids.
     /// Legacy notes still join the destination's series 0, as ordinary footnote paste always did.
     pub fn adopt_note_series(&mut self, story: &mut Story, source: &Self) {
-        let mut mapped = std::collections::HashMap::new();
-        for note in &mut story.notes {
-            let source_id = source.note_series_id(note.series);
-            let id = *mapped.entry(source_id).or_insert_with(|| {
-                let Some(series) = source.note_series.iter().find(|s| s.id == source_id && source_id != 0) else { return 0 };
-                if let Some(existing) = self.note_series.iter().find(|s| s.name == series.name && s.options == series.options) {
-                    return existing.id;
+        if !story.notes.iter().any(|note| source.note_series_id(note.series) != 0) {
+            for note in &mut story.notes {
+                if note.series != 0 {
+                    Arc::make_mut(note).series = 0;
                 }
+            }
+            return;
+        }
+        let mut mapped = std::collections::HashMap::new();
+        let mut used = std::collections::HashSet::new();
+        // Map the source library in declaration order, so separate copied stories reuse the
+        // same counters while distinct source series with matching definitions stay distinct.
+        for series in source.note_series.iter().filter(|s| s.id != 0) {
+            let id = if let Some(existing) =
+                self.note_series.iter().find(|s| !used.contains(&s.id) && s.name == series.name && s.options == series.options)
+            {
+                existing.id
+            } else {
                 let id = crate::ids::next_local_id(self.note_series.iter().map(|s| s.id));
                 self.note_series.push(NoteSeries { id, ..series.clone() });
                 id
-            });
+            };
+            used.insert(id);
+            mapped.insert(series.id, id);
+        }
+        for note in &mut story.notes {
+            let id = mapped.get(&source.note_series_id(note.series)).copied().unwrap_or(0);
             if note.series != id {
                 Arc::make_mut(note).series = id;
             }
@@ -469,6 +484,52 @@ mod series_tests {
 #[cfg(test)]
 mod adoption_tests {
     use super::*;
+    #[test]
+    fn adoption_keeps_identical_source_series_independent() {
+        let mut source = crate::Document::new(&Default::default());
+        for id in [1, 2] {
+            source.note_series.push(NoteSeries { id, name: "Sources".into(), options: Default::default() });
+        }
+        let mut dest = source.clone();
+        let mut text = Story::new(StoryId(0));
+        for series in [1, 2, 1, 2] {
+            let id = text.insert_note(text.len(), "Source", Default::default()).unwrap();
+            text.note_mut(id).unwrap().series = series;
+        }
+        dest.adopt_note_series(&mut text, &source);
+        let ids: Vec<_> = text.notes.iter().map(|n| n.series).collect();
+        assert_ne!(ids[0], ids[1]);
+        assert_eq!(ids[0], ids[2]);
+        assert_eq!(ids[1], ids[3]);
+        assert_eq!(dest.note_series.len(), 2);
+        let mut empty = crate::Document::new(&Default::default());
+        empty.adopt_note_series(&mut text, &dest);
+        assert_ne!(text.notes[0].series, text.notes[1].series);
+        assert_eq!(empty.note_series.len(), 2);
+    }
+
+    #[test]
+    fn adoption_matches_identical_series_across_separate_stories() {
+        let mut source = crate::Document::new(&Default::default());
+        for id in [1, 2] {
+            source.note_series.push(NoteSeries { id, name: "Sources".into(), options: Default::default() });
+        }
+        // Frame and anchored-story paste adopt stories separately, possibly in reverse order.
+        let mut separate = crate::Document::new(&Default::default());
+        let mut adopted = Vec::new();
+        for series in [2, 1, 2, 1] {
+            let mut story = Story::new(StoryId(0));
+            let id = story.insert_note(0, "Source", Default::default()).unwrap();
+            story.note_mut(id).unwrap().series = series;
+            separate.adopt_note_series(&mut story, &source);
+            adopted.push(story.notes[0].series);
+        }
+        assert_ne!(adopted[0], adopted[1]);
+        assert_eq!(adopted[0], adopted[2]);
+        assert_eq!(adopted[1], adopted[3]);
+        assert_eq!(separate.note_series.len(), 2);
+    }
+
     #[test]
     fn note_series_adoption_remaps_conflicting_ids_and_reuses_equivalent_series() {
         let mut source = crate::Document::new(&Default::default());
