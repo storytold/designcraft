@@ -611,7 +611,7 @@ fn czech_counts_use_the_plural_form_for_the_number() {
 #[test]
 fn hebrew_catalog_is_selectable_rtl_and_preserves_english_keys() {
     let mut seen = HashSet::new();
-    assert_eq!(he::TABLE.len(), 1413, "Hebrew source-linked table changed");
+    assert_eq!(he::TABLE.len(), 1425, "Hebrew source-linked table changed");
     for (source, translated) in he::TABLE {
         assert!(seen.insert(*source), "duplicate Hebrew source key: {source}");
         assert!(!translated.trim().is_empty(), "empty Hebrew: {source}");
@@ -634,6 +634,10 @@ fn hebrew_catalog_is_selectable_rtl_and_preserves_english_keys() {
         ("Activate Panel", "הפעלת חלונית"),
         ("Don't Save", "לא לשמור"),
         ("Relinked {count}", "קושרו מחדש: {count}"),
+        ("About", "אודות"),
+        ("Quick Apply", "החלה מהירה"),
+        ("Press keys…", "הקש על מקשים…"),
+        ("Stop Preview", "עצור תצוגה מקדימה"),
         ("Reload Fonts", "טעינת גופנים מחדש"),
     ] {
         assert_eq!(tr("he", source), expected, "native Hebrew UI label: {source}");
