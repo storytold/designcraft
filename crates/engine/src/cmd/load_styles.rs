@@ -85,7 +85,7 @@ fn source(p: &Value, id: &str) -> Result<Document> {
         (Some(path), None) => (crate::io::read_file(path).map_err(|e| bad(id, e))?, path.to_string()),
         _ => return Err(bad(id, "give `path` or `base64`")),
     };
-    if name.to_lowercase().ends_with(".idml") {
+    if craft_file_formats::detect(&name, &bytes) == Some(craft_file_formats::Format::Idml) {
         designcraft_idml::import_idml(&bytes).map_err(|e| bad(id, e.to_string()))
     } else {
         super::file::from_bytes(&bytes).map_err(|e| bad(id, e.to_string()))

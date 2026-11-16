@@ -289,20 +289,23 @@ fn fill(d: &mut Document, toc: &Toc, width: Option<f64>) -> Result<usize> {
         }
         styles.push(e.entry_style.clone().unwrap_or_else(|| format!("TOC Level {}", f.level.max(1))));
     }
-    let st = d.story_mut(toc.story).ok_or(designcraft_doc::DocError::NoStory(toc.story))?;
-    let len = st.len();
-    st.replace(0..len, &text);
-    // The text takes the format of the old first character: its character style would spread
-    // over the whole table (a page number before the first entry, without a title).
-    st.format_chars(0..st.len(), |f| f.style = NO_CHAR_STYLE.into());
-    for (r, style) in spans {
-        st.format_chars(r, |f| f.style.clone_from(&style));
-    }
-    for (pi, r) in st.para_ranges().into_iter().enumerate() {
-        if let Some(name) = styles.get(pi) {
-            st.format_paras(r.start..r.start, |f| *f = ParaFormat { style: name.clone(), ..Default::default() });
+    {
+        let st = d.story_mut(toc.story).ok_or(designcraft_doc::DocError::NoStory(toc.story))?;
+        let len = st.len();
+        st.replace(0..len, &text);
+        // The text takes the format of the old first character: its character style would spread
+        // over the whole table (a page number before the first entry, without a title).
+        st.format_chars(0..st.len(), |f| f.style = NO_CHAR_STYLE.into());
+        for (r, style) in spans {
+            st.format_chars(r, |f| f.style.clone_from(&style));
+        }
+        for (pi, r) in st.para_ranges().into_iter().enumerate() {
+            if let Some(name) = styles.get(pi) {
+                st.format_paras(r.start..r.start, |f| *f = ParaFormat { style: name.clone(), ..Default::default() });
+            }
         }
     }
+    d.prune_story_text_ranges(toc.story);
     let insertion = d.bookmarks.iter().position(|b| b.generated_by_toc).unwrap_or(d.bookmarks.len());
     d.bookmarks.retain(|b| !b.generated_by_toc);
     if toc.create_bookmarks {
