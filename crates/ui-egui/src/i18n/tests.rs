@@ -951,7 +951,7 @@ fn hebrew_typography_table_and_view_source_labels_day05() {
     // Official DesignCraft English keys; no translation content is copied from other locales.
     for (source, expected) in [
         ("Alpha Channel", "ערוץ אלפא"),
-        ("Invalid panel layout; restored the default dock", "פריסת החלוניות אינה תקינה; סידור ברירת המחדל שוחזר"),
+        ("View/Structure", "תצוגה/מבנה"),
         ("Kerning/Tracking Step", "צעד ריווח בין אותיות"),
         ("Object Style Options…", "אפשרויות סגנון אובייקט…"),
         ("Punctuation Space", "רווח סימני פיסוק"),
