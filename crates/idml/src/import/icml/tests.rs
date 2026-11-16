@@ -1,8 +1,6 @@
 //! ICML import and export: hand-written files in the shapes InDesign/InCopy and Pandoc write, and
 //! stories exported and read back.
 
-use std::sync::Arc;
-
 use designcraft_color::{Color, Swatch};
 use designcraft_doc::build::NewDocument;
 use designcraft_doc::{
@@ -234,7 +232,7 @@ fn rich_document() -> (Document, designcraft_doc::StoryId) {
         id: asset,
         name: "dot.png".into(),
         mime: "image/png".into(),
-        data: Arc::new(PNG.to_vec()),
+        data: designcraft_doc::AssetData::embedded(PNG.to_vec()),
         pixels: Some((1, 1)),
         ..Default::default()
     });
@@ -325,7 +323,7 @@ fn an_exported_story_reads_back() {
     // The image comes with its data; the anchored frame with its story.
     assert_eq!(back.objects.len(), 2);
     let Content::Graphic(g) = &back.objects[0].item.content else { panic!("an image first: {:?}", back.objects[0].item.content) };
-    assert_eq!(i.document.assets.get(&g.asset).map(|a| a.data.as_slice()), Some(PNG));
+    assert_eq!(i.document.assets.get(&g.asset).and_then(|a| a.data.load().ok()).as_deref().map(Vec::as_slice), Some(PNG));
     let tf = back.objects[1].item.text_frame().unwrap();
     let inner = i.document.stories.get(&tf.story).unwrap();
     assert_eq!(inner.text, "Sidebar");

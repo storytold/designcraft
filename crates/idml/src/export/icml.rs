@@ -9,16 +9,8 @@
 
 use designcraft_doc::StoryId;
 
-use super::{DOM_VERSION, Document, El, Ex, ExportOptions, HashSet, document_with_pi};
-use crate::xml::parse;
-use crate::{IdmlError, Result};
-
-/// The processing instructions that mark an ICML file.
-fn icml_pi() -> String {
-    format!(
-        "<?aid style=\"50\" type=\"snippet\" readerVersion=\"6.0\" featureSet=\"513\" product=\"{DOM_VERSION}(1)\" ?>\n<?aid SnippetType=\"InCopyInterchange\"?>"
-    )
-}
+use super::{Document, El, Ex, ExportOptions, HashSet};
+use crate::{DOM_VERSION, IdmlError, Result};
 
 /// Export story `story` of `doc` as an ICML file (UTF-8 XML). Images placed in the story are
 /// embedded, so the file stands on its own.
@@ -65,8 +57,8 @@ fn with_anchored(d: &Document, story: StoryId) -> Vec<StoryId> {
 /// The children of the root element of `part` (its name, for the error), as the IDML export
 /// wrote it. A part that doesn't read back is an error: the file would be missing its contents.
 fn part_children(part: &str, bytes: &[u8]) -> Result<Vec<El>> {
-    let root = parse(bytes).map_err(|msg| IdmlError::Part { part: part.into(), msg })?;
-    Ok(root.elements().cloned().collect())
+    let root = craft_idml::parse_part(bytes).map_err(|e| IdmlError::Part { part: part.into(), msg: e.to_string() })?;
+    Ok(crate::xml::from_craft(root).elements().cloned().collect())
 }
 
 impl Ex<'_> {
@@ -102,7 +94,8 @@ impl Ex<'_> {
             }
         }
         stories.into_iter().flatten().for_each(|s| root.push(s));
-        Ok(document_with_pi(&root, &icml_pi()))
+        // The XML declaration and the two instructions that mark an ICML file, then the root.
+        Ok(craft_idml::icml::icml_xml(&crate::xml::to_craft(&root)))
     }
 }
 

@@ -14,7 +14,6 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use designcraft_doc::{Document, NO_PARA_STYLE, Spread, SpreadId, StoryId, story as st};
 
 use super::Importer;
-use crate::xml::{El, parse};
 use crate::{IdmlError, Result};
 
 /// Most bytes an ICML file may hold: the limit one part of an IDML package has.
@@ -51,18 +50,18 @@ pub fn is_icml(bytes: &[u8]) -> bool {
 /// touches the file system; see [`crate::import_idml_with`]).
 pub fn import_icml(bytes: &[u8], read_link: &dyn Fn(&str) -> Option<Vec<u8>>) -> Result<ImportedStory> {
     check_size(bytes.len())?;
-    let root = parse(bytes).map_err(|msg| IdmlError::Part { part: "ICML".into(), msg })?;
+    let root = craft_idml::parse_part(bytes).map_err(|e| IdmlError::Part { part: "ICML".into(), msg: e.to_string() })?;
     if root.local() != "Document" {
         return Err(IdmlError::NotIdml(format!("ICML root is <{}>, not <Document>", root.name)));
     }
     let mut warnings = Vec::new();
     // Everything is inline. A reference to a package part can't be followed: there is no package.
-    let top: Vec<El> = root
+    let top: Vec<craft_idml::El> = root
         .elements()
         .filter(|c| {
             let part = c.name.starts_with("idPkg:");
             if part {
-                warnings.push(format!("{}: an ICML file has no package parts; it was not read", c.get("src").unwrap_or(&c.name)));
+                warnings.push(format!("{}: an ICML file has no package parts; it was not read", c.attr("src").unwrap_or(&c.name)));
             }
             !part
         })
@@ -71,12 +70,16 @@ pub fn import_icml(bytes: &[u8], read_link: &dyn Fn(&str) -> Option<Vec<u8>>) ->
     if !top.iter().any(|e| e.local() == "Story") {
         return Err(IdmlError::Invalid("the ICML file holds no story".into()));
     }
+    // The sources of the file's hyperlinks, to count those left without a destination.
+    let sources: Vec<Option<String>> = top.iter().filter(|h| h.local() == "Hyperlink").map(|h| h.attr("Source").map(str::to_string)).collect();
+    // The ICML file read as a package's designmap with its parts already inline.
+    let model = craft_idml::model::ModelDocument::from_package(craft_idml::Document { root, top, warnings: Vec::new(), metadata: None });
     let previews = HashMap::new();
     let mut im = Importer::new(read_link, &previews);
-    im.run(&root, &top)?;
+    im.run(&model.root, &model.top)?;
     let paragraph_styles = defined(im.para_names.values(), im.styles.paragraph.iter().map(|s| &s.name), &[st::BASIC_PARAGRAPH, NO_PARA_STYLE]);
     let character_styles = defined(im.char_names.values(), im.styles.character.iter().map(|s| &s.name), &[st::NO_CHAR_STYLE]);
-    let unlinked = top.iter().filter(|h| h.local() == "Hyperlink").filter(|h| h.get("Source").is_none_or(|s| !im.xref_srcs.contains_key(s))).count();
+    let unlinked = sources.iter().filter(|s| s.as_deref().is_none_or(|s| !im.xref_srcs.contains_key(s))).count();
     if unlinked > 0 {
         warnings.push(format!("{unlinked} hyperlink(s) kept as text, without their destinations"));
     }
@@ -87,7 +90,7 @@ pub fn import_icml(bytes: &[u8], read_link: &dyn Fn(&str) -> Option<Vec<u8>>) ->
     // The importer finishes a document only with a spread: it gets an empty one, taken away again.
     let id = SpreadId(im.alloc());
     im.spreads.push(Spread { id, pages: Vec::new(), items: Vec::new(), parent: None, allow_shuffle: true });
-    let (mut document, finishing) = im.finish(&root)?;
+    let (mut document, finishing) = im.finish(&model.root)?;
     warnings.extend(finishing);
     document.spreads.clear();
     document.check().map_err(|e| IdmlError::Invalid(e.to_string()))?;

@@ -118,7 +118,7 @@ fn an_exported_story_places_with_what_it_uses() {
     // The anchored image: its file came along, under an id of this document.
     assert_eq!(story.objects.len(), 1);
     let Content::Graphic(g) = &story.objects[0].item.content else { panic!("an image: {:?}", story.objects[0].item.content) };
-    assert_eq!(d.assets.get(&g.asset).map(|a| a.data.as_slice()), Some(png().as_slice()));
+    assert_eq!(d.assets.get(&g.asset).and_then(|a| a.data.load().ok()).as_deref().map(Vec::as_slice), Some(png().as_slice()));
     let ids = item_ids(d);
     let unique: std::collections::BTreeSet<_> = ids.iter().collect();
     assert_eq!(unique.len(), ids.len(), "{ids:?}");
@@ -366,7 +366,7 @@ fn linked_graphics_are_read_beside_the_file_and_updates_follow_it() {
     assert!(st.text.starts_with("First draft "), "{:?}", st.text);
     let Content::Graphic(g) = &st.objects[0].item.content else { panic!("an image") };
     let asset = doc(&s).assets.get(&g.asset).unwrap();
-    assert_eq!(asset.data.as_slice(), png().as_slice());
+    assert_eq!(asset.data.load().unwrap().as_slice(), png().as_slice());
     // The link, relative in the story, names the file it was read from.
     let link = std::path::Path::new(asset.link.as_deref().unwrap());
     assert!(link.is_absolute() && link.ends_with("art/pic.png"), "{link:?}");
