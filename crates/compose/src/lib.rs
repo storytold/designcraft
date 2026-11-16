@@ -5154,19 +5154,23 @@ fn allocate_kashidas(line: &[Glyph], add: &mut [f64], pp: &ParaProps, seg: usize
     kashidas
 }
 
-/// Choose the last eligible letter per word, spending the shortfall from the logical end.
-fn allocate_hebrew_extension(line: &[Glyph], add: &mut [f64], pp: &ParaProps, seg: usize, extra: &mut f64) -> Vec<(usize, u32, f64)> {
+/// Choose the last eligible letter per word, spending the shortfall from the logical end. The
+/// chosen base's own advance grows by the wide form's extra width, so glyph scaling in
+/// [`distribute`] scales the wide advance it will draw.
+fn allocate_hebrew_extension(line: &mut [Glyph], pp: &ParaProps, seg: usize, extra: &mut f64) -> Vec<(usize, u32, f64)> {
     if !(*extra > 0.0 && pp.hebrew_letter_extension) {
         return Vec::new();
     }
     let mut candidates = Vec::new();
     let mut candidate = None;
     for (i, g) in line.iter().enumerate().skip(seg) {
-        if g.is_space() {
+        // A nonbreaking space still separates words, though it is no break opportunity.
+        if g.is_justify_space() {
             candidates.extend(candidate.take());
             continue;
         }
-        if g.len == 0 || i.checked_sub(1).and_then(|j| line.get(j)).is_some_and(|prev| prev.byte == g.byte) {
+        // Jidori runs keep their fitted width.
+        if g.locked_advance || g.len == 0 || i.checked_sub(1).and_then(|j| line.get(j)).is_some_and(|prev| prev.byte == g.byte) {
             continue;
         }
         let wide_char = match g.ch {
@@ -5196,9 +5200,9 @@ fn allocate_hebrew_extension(line: &[Glyph], add: &mut [f64], pp: &ParaProps, se
     let mut chosen = Vec::new();
     for (i, wide, delta) in candidates.into_iter().rev() {
         if delta <= *extra
-            && let Some(advance) = add.get_mut(i)
+            && let Some(base) = line.get_mut(i)
         {
-            *advance += delta;
+            base.adv += delta;
             *extra -= delta;
             chosen.push((i, wide, delta));
         }
@@ -5207,9 +5211,11 @@ fn allocate_hebrew_extension(line: &[Glyph], add: &mut [f64], pp: &ParaProps, se
 }
 
 /// Substitute selected bases and centre their marks before clusters are reordered visually.
-fn apply_hebrew_extensions(line: &[Glyph], out: &mut [PlacedGlyph], extensions: &[(usize, u32, f64)]) {
+fn apply_hebrew_extensions(line: &[Glyph], out: &mut [PlacedGlyph], extensions: &[(usize, u32, f64)], scale: &[f64]) {
     for &(base, wide, delta) in extensions {
         let Some(g) = line.get(base) else { continue };
+        // The base's advance, extension included, was scaled with it.
+        let delta = delta * scale.get(base).copied().unwrap_or(1.0);
         for (i, (source, placed)) in line.iter().zip(out.iter_mut()).enumerate() {
             if source.byte != g.byte {
                 continue;
@@ -5343,7 +5349,7 @@ fn layout_line(
     let mut offset = 0.0;
     // Kashidas: in justified Arabic, the joins of words take the extra length first.
     let kashidas = if justify_this { allocate_kashidas(&line, &mut add, pp, seg, &mut extra) } else { Vec::new() };
-    let hebrew_extensions = if justify_this { allocate_hebrew_extension(&line, &mut add, pp, seg, &mut extra) } else { Vec::new() };
+    let hebrew_extensions = if justify_this { allocate_hebrew_extension(&mut line, pp, seg, &mut extra) } else { Vec::new() };
     if (justify_this || squeeze_last) && (extra >= 0.0 || !sp.push_out_only()) {
         extra = mojikumi::distribute(line.get_mut(seg..).unwrap_or_default(), extra, add.get_mut(seg..).unwrap_or_default());
     }
@@ -5432,7 +5438,7 @@ fn layout_line(
         }
         out.push(p);
     }
-    apply_hebrew_extensions(&line, &mut out, &hebrew_extensions);
+    apply_hebrew_extensions(&line, &mut out, &hebrew_extensions, &scale);
     if bidi {
         pens.push(x);
         reorder_visual(&line, &mut out, &pens, x0 + offset, bidi_info);

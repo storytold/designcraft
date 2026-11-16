@@ -3819,6 +3819,30 @@ fn hebrew_letter_extension_centres_marks_before_and_after_base() {
 }
 
 #[test]
+fn hebrew_letter_extension_treats_nbsp_as_a_word_break_and_skips_locked_letters() {
+    let mut line = shape_for_script_test("דבר\u{a0}דבר");
+    if line.iter().all(|g| g.face.glyph_for('\u{FB27}') == 0) {
+        eprintln!("skipping Hebrew wide-form assertions: no face with U+FB27");
+        return;
+    }
+    let pp = ParaProps { hebrew_letter_extension: true, ..Default::default() };
+    let natural: f64 = line.iter().map(|g| g.adv).sum();
+    let mut extra = 1000.0;
+    let mut locked = line.clone();
+    // One candidate per word on either side of the nonbreaking space; the base advances carry the extension.
+    let chosen = allocate_hebrew_extension(&mut line, &pp, 0, &mut extra);
+    assert_eq!(chosen.len(), 2, "{chosen:?}");
+    let widened: f64 = chosen.iter().map(|c| c.2).sum();
+    assert!((line.iter().map(|g| g.adv).sum::<f64>() - natural - widened).abs() < 1e-9);
+    assert!((1000.0 - extra - widened).abs() < 1e-9);
+    // A jidori run keeps its fitted width.
+    for g in locked.iter_mut().take_while(|g| g.ch != '\u{a0}') {
+        g.locked_advance = true;
+    }
+    assert_eq!(allocate_hebrew_extension(&mut locked, &pp, 0, &mut 1000.0).len(), 1);
+}
+
+#[test]
 fn hebrew_letter_extension_without_wide_forms_falls_back_to_spaces() {
     let db = FontDb::with_font_dirs(Vec::new());
     db.set_system_fallback(false);
