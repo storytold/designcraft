@@ -4444,6 +4444,34 @@ mod step_repeat_tests {
     }
 
     #[test]
+    fn renaming_default_gap_swatch_applies_to_next_shape() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("swatch.create", &json!({"name": "Gap", "color": "#ff4020"})).unwrap();
+        let expected_color = s.doc().unwrap().doc.resolve_color("Gap", 1.0).unwrap();
+
+        s.execute("selection.set", &json!({"ids": []})).unwrap();
+        s.execute(
+            "object.stroke",
+            &json!({
+                "type": {"kind": "dashed", "pattern": [6.0, 2.0]},
+                "gapSwatch": "Gap"
+            }),
+        )
+        .unwrap();
+
+        s.execute("swatch.options", &json!({"name": "Gap", "to": "Renamed Gap"})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.settings.new_object.gap_swatch, "Renamed Gap");
+
+        let shape_id =
+            ItemId(s.execute("frame.create", &json!({"rect": [10, 10, 90, 90], "content": "unassigned"})).unwrap()["id"].as_u64().unwrap());
+        let doc = &s.doc().unwrap().doc;
+        let st = &doc.item(shape_id).unwrap().stroke;
+        assert_eq!(st.gap_swatch, "Renamed Gap");
+        assert_eq!(doc.resolve_color(&st.gap_swatch, st.gap_tint), Some(expected_color));
+    }
+
+    #[test]
     fn swap_and_default_fill_stroke_are_one_undo_step_per_object() {
         let mut s = Session::new();
         s.execute("file.new", &json!({})).unwrap();

@@ -237,10 +237,10 @@ impl Document {
     }
 
     /// Point every reference to swatch `from` at `to`: tints based on it, colour groups, inks,
-    /// styles, page items (fills, strokes, gaps, effects, column rules, the swatch an image is
-    /// coloured with), text, kenten and ruby colours, rules, shading, borders and border gaps,
-    /// tables (with stroke gaps and cell images), footnotes, gradient stops, endnotes and the
-    /// footnote rule. The swatch itself is renamed by the caller.
+    /// styles, new-object defaults, page items (fills, strokes, gaps, effects, column rules, the
+    /// swatch an image is coloured with), text, kenten and ruby colours, rules, shading, borders
+    /// and border gaps, tables (with stroke gaps and cell images), footnotes, gradient stops,
+    /// endnotes and the footnote rule. The swatch itself is renamed by the caller.
     pub fn rename_swatch_refs(&mut self, from: &str, to: &str) {
         if from == to {
             return;
@@ -270,6 +270,9 @@ impl Document {
             n.s(b);
         }
         n.s(&mut self.footnote_options.rule.color);
+        n.s(&mut self.settings.new_object.fill);
+        n.s(&mut self.settings.new_object.stroke);
+        n.s(&mut self.settings.new_object.gap_swatch);
         n.styles(self.styles_mut());
         for sp in self.spreads.iter_mut().chain(self.parents.iter_mut()) {
             for it in &mut Arc::make_mut(sp).items {
@@ -284,5 +287,24 @@ impl Document {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rename_swatch_refs_updates_new_object_defaults() {
+        let mut d = Document::new(&crate::build::NewDocument::default());
+        d.settings.new_object.fill = "Gap".into();
+        d.settings.new_object.stroke = "Keep".into();
+        d.settings.new_object.gap_swatch = "Gap".into();
+
+        d.rename_swatch_refs("Gap", "Renamed Gap");
+
+        assert_eq!(d.settings.new_object.fill, "Renamed Gap");
+        assert_eq!(d.settings.new_object.stroke, "Keep");
+        assert_eq!(d.settings.new_object.gap_swatch, "Renamed Gap");
     }
 }
