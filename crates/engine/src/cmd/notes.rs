@@ -243,15 +243,49 @@ fn series_delete(s: &mut Session, p: &Value) -> Result<Value> {
     require_series(&s.doc()?.doc, id, "footnote.series.delete")?;
     s.edit(|d, _| {
         for story in d.stories.values_mut() {
-            if story.notes.iter().any(|n| n.series == id) {
-                let story = std::sync::Arc::make_mut(story);
-                for note in &mut story.notes {
+            // Embedded notes also retain document-local series ids. Clear them before a
+            // later create can reuse the deleted id for an unrelated series.
+            let needs_reset = {
+                let mut pending = vec![story.as_ref()];
+                let mut found = false;
+                while let Some(text) = pending.pop() {
+                    if text.notes.iter().any(|note| note.series == id) {
+                        found = true;
+                        break;
+                    }
+                    pending.extend(text.notes.iter().chain(&text.endnotes).map(|note| &note.text));
+                    pending.extend(text.tables.values().flat_map(|table| table.cells.iter().map(|cell| &cell.text)));
+                }
+                found
+            };
+            if !needs_reset {
+                continue;
+            }
+            let root = std::sync::Arc::make_mut(story);
+            let revision = root.rev;
+            let mut pending = vec![&mut *root];
+            while let Some(text) = pending.pop() {
+                let mut changed = false;
+                for note in &mut text.notes {
                     if note.series == id {
                         std::sync::Arc::make_mut(note).series = 0;
+                        changed = true;
                     }
                 }
-                story.rev = story.rev.wrapping_add(1);
+                if changed {
+                    text.rev = text.rev.wrapping_add(1);
+                }
+                for note in text.notes.iter_mut().chain(&mut text.endnotes) {
+                    pending.push(&mut std::sync::Arc::make_mut(note).text);
+                }
+                for table in text.tables.values_mut() {
+                    for cell in &mut std::sync::Arc::make_mut(table).cells {
+                        pending.push(&mut cell.text);
+                    }
+                }
             }
+            drop(pending);
+            root.rev = revision.wrapping_add(1);
         }
         d.update_placed_items(
             |it| it.text_frame().and_then(|tf| tf.options.note_stream).is_some_and(|stream| stream.series == id),
@@ -552,5 +586,59 @@ mod api_split_default_tests {
         assert!(read_options(json!({}), "test").unwrap().allow_split);
         assert!(read_options(json!({"allowSplit": true}), "test").unwrap().allow_split);
         assert!(!read_options(json!({"allowSplit": false}), "test").unwrap().allow_split);
+    }
+}
+
+#[cfg(test)]
+mod nested_series_delete_tests {
+    use super::*;
+
+    #[test]
+    fn deleting_and_recreating_a_series_cannot_rebind_embedded_notes() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let frame = s.execute("frame.create", &json!({"rect":[72,72,400,600],"content":"text","text":"Body"})).unwrap();
+        let sid = StoryId(frame["story"].as_u64().unwrap());
+        let series = s.execute("footnote.series.create", &json!({"name":"Sources"})).unwrap()["id"].as_u64().unwrap();
+        let (table_id, outer_id, endnote_id) = s
+            .edit(|d, _| {
+                let table_id = d.alloc();
+                let st = d.story_mut(sid).unwrap();
+                let outer = st.insert_note(0, "Outer", Default::default()).unwrap();
+                let body = &mut st.note_mut(outer).unwrap().text;
+                let nested = body.insert_note(0, "Nested source", Default::default()).unwrap();
+                body.note_mut(nested).unwrap().series = series;
+                let mut table = designcraft_doc::Table::new(table_id, 1, 1, 0, 0, 240.0);
+                let cell = &mut table.cells[0].text;
+                let note = cell.insert_note(0, "Cell source", Default::default()).unwrap();
+                cell.note_mut(note).unwrap().series = series;
+                let endnote = cell.insert_endnote(cell.len(), "Endnote body", Default::default()).unwrap();
+                let body = &mut cell.endnote_mut(endnote).unwrap().text;
+                let note = body.insert_note(0, "Source in endnote", Default::default()).unwrap();
+                body.note_mut(note).unwrap().series = series;
+                st.insert_table(0, table);
+                Ok((table_id, outer, endnote))
+            })
+            .unwrap();
+        let inspect = |d: &designcraft_doc::Document| {
+            let st = d.story(sid).unwrap();
+            let cell = &st.tables[&table_id].cells[0].text;
+            let notes = [&cell.notes[0], &st.note(outer_id).unwrap().text.notes[0], &cell.endnote(endnote_id).unwrap().text.notes[0]];
+            notes.map(|note| (note.series, note.text.text.clone()))
+        };
+        let original = inspect(&s.doc().unwrap().doc);
+        assert!(original.iter().all(|(id, _)| *id == series));
+        s.execute("footnote.series.delete", &json!({"series":series})).unwrap();
+        let fresh = s.execute("footnote.series.create", &json!({"name":"Unrelated"})).unwrap()["id"].as_u64().unwrap();
+        assert_eq!(fresh, series, "the library may reuse the deleted numeric id");
+        let reset = inspect(&s.doc().unwrap().doc);
+        for ((id, text), (_, before)) in reset.iter().zip(&original) {
+            assert_eq!(*id, 0, "embedded note must not join the unrelated new series");
+            assert_eq!(text, before);
+        }
+        s.execute("edit.undo", &json!({})).unwrap();
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(inspect(&s.doc().unwrap().doc), original);
+        assert_eq!(s.doc().unwrap().doc.note_series.iter().find(|s| s.id == series).unwrap().name, "Sources");
     }
 }
