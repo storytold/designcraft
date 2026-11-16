@@ -539,24 +539,76 @@ fn handle_at(cx: &ToolContext, p: Point) -> Option<usize> {
     handles(b).iter().position(|h| (h.x - p.x).abs() <= tol && (h.y - p.y).abs() <= tol)
 }
 
-/// Side handles are drawn on the canvas bounding box; fitting uses the frame's local axes.
-fn fitting_axis(cx: &ToolContext, handle: usize) -> &'static str {
-    if handle.is_multiple_of(2) {
-        return "both";
+/// Side handles are drawn on the canvas bounding box; fitting uses the frame's local axes and
+/// keeps the opposite local edge/corner (`ref` 0..=8) fixed. When a multi-selection has differing
+/// local orientations for the handle, `ref` is omitted so each frame keeps its own default.
+fn fitting_params(cx: &ToolContext, handle: usize) -> (&'static str, Option<usize>) {
+    let dir = match handle {
+        0 => Point::new(-1.0, -1.0),
+        1 => Point::new(0.0, -1.0),
+        2 => Point::new(1.0, -1.0),
+        3 => Point::new(1.0, 0.0),
+        4 => Point::new(1.0, 1.0),
+        5 => Point::new(0.0, 1.0),
+        6 => Point::new(-1.0, 1.0),
+        _ => Point::new(-1.0, 0.0),
+    };
+    let corner = handle.is_multiple_of(2);
+    let fallback_axis = if corner {
+        "both"
+    } else if matches!(handle, 3 | 7) {
+        "width"
+    } else {
+        "height"
+    };
+    let for_item = |id: ItemId| -> Option<(&'static str, usize)> {
+        let it = cx.doc.item(id)?;
+        let xf = cx.item_canvas_xf(id)? * it.xf;
+        fitting_item_params(xf, dir, corner, fallback_axis)
+    };
+    let mut results = cx.selection.items.iter().filter_map(|id| for_item(*id));
+    let Some((first_axis, first_ref)) = results.next() else {
+        return (fallback_axis, None);
+    };
+    let all_match = results.all(|(ax, rf)| ax == first_axis && rf == first_ref);
+    (first_axis, all_match.then_some(first_ref))
+}
+
+fn fitting_item_params(xf: designcraft_geom::Affine, dir: Point, corner: bool, fallback_axis: &'static str) -> Option<(&'static str, usize)> {
+    let [a, b, c, d, _, _] = xf.as_coeffs();
+    let det = a * d - b * c;
+    if !(det.is_finite() && det.abs() > 1e-12) {
+        return None;
     }
-    let canvas_height = matches!(handle, 1 | 5);
-    let local_width_is_vertical = cx
-        .selection
-        .items
-        .first()
-        .and_then(|id| {
-            let it = cx.doc.item(*id)?;
-            let xf = cx.item_canvas_xf(*id)? * it.xf;
-            let [a, b, _, _, _, _] = xf.as_coeffs();
-            Some(b.abs() > a.abs())
-        })
-        .unwrap_or(false);
-    if canvas_height == local_width_is_vertical { "width" } else { "height" }
+    let lx = (d * dir.x - c * dir.y) / det;
+    let ly = (-b * dir.x + a * dir.y) / det;
+    if !(lx.is_finite() && ly.is_finite()) {
+        return None;
+    }
+    let axis = if corner {
+        "both"
+    } else if (lx.abs() - ly.abs()).abs() <= 1e-9 {
+        fallback_axis
+    } else if lx.abs() > ly.abs() {
+        "width"
+    } else {
+        "height"
+    };
+    let anchor = |v: f64| {
+        if v < -1e-6 {
+            2
+        } else if v > 1e-6 {
+            0
+        } else {
+            1
+        }
+    };
+    let (rx, ry) = match axis {
+        "width" => (anchor(lx), 1),
+        "height" => (1, anchor(ly)),
+        _ => (anchor(lx), anchor(ly)),
+    };
+    Some((axis, ry * 3 + rx))
 }
 
 /// Just outside a corner handle of the selection → rotate.
@@ -1276,14 +1328,19 @@ impl Tool for SelectionTool {
             return actions;
         }
         // The second press of a double click on a selection handle: Fit Frame to Content, along
-        // that handle's side (a corner fits both).
+        // that handle's side (a corner fits both), anchoring the opposite side.
         if !self.direct
             && matches!(ev.kind, PointerKind::Down | PointerKind::DoubleClick)
             && ev.click_count() == 2
             && let Some(h) = handle_at(cx, p)
         {
             self.drag = Drag::None;
-            return vec![Action::Exec("object.fit".into(), json!({"mode": "fitFrameToContent", "axis": fitting_axis(cx, h)}))];
+            let (axis, rf) = fitting_params(cx, h);
+            let params = match rf {
+                Some(rf) => json!({"mode": "fitFrameToContent", "axis": axis, "ref": rf}),
+                None => json!({"mode": "fitFrameToContent", "axis": axis}),
+            };
+            return vec![Action::Exec("object.fit".into(), params)];
         }
         // The second press of a double click on a text frame: edit its text.
         if matches!(ev.kind, PointerKind::Down | PointerKind::DoubleClick)
