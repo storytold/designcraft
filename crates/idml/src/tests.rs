@@ -1264,6 +1264,7 @@ fn round_trips_footnotes_and_options() {
     d.footnote_options.prefix = "[".into();
     d.footnote_options.rule.width = 100.0;
     d.footnote_options.space_before = 4.0;
+    d.footnote_options.allow_split = false;
     d.check().unwrap();
     let bytes = export_idml(&d);
     let back = import_idml(&bytes).unwrap();
@@ -5576,4 +5577,21 @@ fn only_exactly_generated_cross_reference_text_is_regenerated() {
     let s = back.stories.values().find(|s| !s.xrefs.is_empty()).unwrap();
     let got: Vec<Option<&str>> = s.xrefs.iter().map(|x| x.text.as_deref()).collect();
     assert_eq!(got, [Some("Page <pageNum />, revised"), None, Some("Seite <pageNum />")]);
+}
+
+#[test]
+fn footnote_no_splitting_import() {
+    for (attribute, expected) in [(" NoSplitting=\"true\"", false), ("", true)] {
+        let prefs = PREFS.replace("</idPkg:Preferences>", &format!("<FootnoteOption{attribute}/></idPkg:Preferences>"));
+        let bytes = zip_files(&[
+            ("designmap.xml", DESIGNMAP),
+            ("Resources/Graphic.xml", GRAPHIC),
+            ("Resources/Styles.xml", STYLES),
+            ("Resources/Preferences.xml", &prefs),
+            ("MasterSpreads/MasterSpread_m1.xml", MASTER),
+            ("Spreads/Spread_sp1.xml", SPREAD),
+            ("Stories/Story_s1.xml", STORY),
+        ]);
+        assert_eq!(import_idml(&bytes).unwrap().footnote_options.allow_split, expected);
+    }
 }

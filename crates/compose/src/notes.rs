@@ -28,6 +28,7 @@ use crate::{ComposeOptions, ComposedStory, Deco, FrameSpec, PlacedNote};
 /// A footnote assigned to a column.
 pub(crate) struct Placed {
     k: usize,
+    part: usize,
     fi: usize,
     col: usize,
     m: NoteMetrics,
@@ -70,6 +71,27 @@ fn stack_height<'a>(notes: impl IntoIterator<Item = &'a NoteMetrics>, space_betw
     h.map_or(0.0, |h| h + descent)
 }
 
+/// Last placed part, including the (width, height) of each part's area used to thread its text.
+#[derive(Clone)]
+pub(crate) struct Carry {
+    k: usize,
+    heights: Vec<(f64, f64)>,
+    fi: usize,
+    col: usize,
+}
+
+pub(crate) struct SplitPlan {
+    remainder: bool,
+    k: usize,
+    heights: Vec<(f64, f64)>,
+    text: Arc<ComposedStory>,
+    m: NoteMetrics,
+}
+
+pub(crate) type NoteSnapshot = (u32, Option<usize>, usize, Option<Carry>);
+type Part = (Arc<ComposedStory>, NoteMetrics);
+type CacheKey = (usize, String, u64, bool, bool, Vec<(u64, u64)>);
+
 pub(crate) struct Notes {
     /// Byte offsets of the reference characters (index = footnote index).
     refs: Vec<usize>,
@@ -80,7 +102,8 @@ pub(crate) struct Notes {
     pub key: Option<usize>,
     pub placed: Vec<Placed>,
     /// Composed footnote text by (index, label, width).
-    cache: HashMap<(usize, String, u64, bool, bool), (Arc<ComposedStory>, NoteMetrics)>,
+    cache: HashMap<CacheKey, Vec<Option<Part>>>,
+    pub carry: Option<Carry>,
     notes: Vec<Arc<designcraft_doc::Footnote>>,
     /// Footnotes span the columns of their frame.
     span: bool,
@@ -100,6 +123,7 @@ impl Notes {
             key: None,
             placed: Vec::new(),
             cache: HashMap::new(),
+            carry: None,
             notes: story.notes.clone(),
             span: doc.footnote_options.span_columns,
             floor: HashMap::new(),
@@ -160,11 +184,20 @@ impl Notes {
         v
     }
 
-    fn compose(&mut self, doc: &Document, k: usize, w: f64, f: &FrameSpec, opts: &ComposeOptions) -> (Arc<ComposedStory>, NoteMetrics) {
+    fn compose(&mut self, doc: &Document, k: usize, w: f64, f: &FrameSpec, opts: &ComposeOptions) -> Part {
+        self.compose_parts(doc, k, w, f, opts, &[])
+            .first()
+            .and_then(Clone::clone)
+            .unwrap_or_else(|| (Arc::new(ComposedStory::default()), NoteMetrics::default()))
+    }
+
+    /// One threaded composition lets the note's own paragraph keeps govern each frame break.
+    /// `heights` holds the (width, height) of each earlier part; the last part is `w` wide and unbounded.
+    fn compose_parts(&mut self, doc: &Document, k: usize, w: f64, f: &FrameSpec, opts: &ComposeOptions, heights: &[(f64, f64)]) -> Vec<Option<Part>> {
         let o = &doc.footnote_options;
-        let label = format!("{}{}", o.label(self.numbers[k], true), o.separator);
+        let label = format!("{}{}", o.label(self.numbers.get(k).copied().unwrap_or(o.start_at), true), o.separator);
         // The page side sets towards/away-from-spine alignment and spine-relative anchored objects.
-        let key = (k, label.clone(), w.to_bits(), f.left_page, f.right_page);
+        let key = (k, label.clone(), w.to_bits(), f.left_page, f.right_page, heights.iter().map(|(pw, h)| (pw.to_bits(), h.to_bits())).collect());
         if let Some(c) = self.cache.get(&key) {
             return c.clone();
         }
@@ -193,26 +226,120 @@ impl Notes {
             xrefs: opts.xrefs.clone(),
             placed: Vec::new(),
         };
-        let cs = crate::compose(doc, &self.notes[k].text, std::slice::from_ref(&spec), &nopts);
-        let lines = cs.frames.first().map(|ft| ft.lines.as_slice()).unwrap_or_default();
-        let m = match (lines.first(), lines.last()) {
-            (Some(a), Some(z)) => NoteMetrics { first: a.baseline, last: z.baseline, lead: a.leading, descent: z.descent },
-            _ => NoteMetrics::default(),
+        let Some(note) = self.notes.get(k) else { return Vec::new() };
+        let specs: Vec<FrameSpec> = heights
+            .iter()
+            .map(|&(pw, h)| FrameSpec { area: Rect::new(0.0, 0.0, pw.max(1.0), h), ..spec.clone() })
+            .chain(std::iter::once(spec.clone()))
+            .collect();
+        let cs = crate::compose(doc, &note.text, &specs, &nopts);
+        let parts = cs
+            .frames
+            .iter()
+            .enumerate()
+            .map(|(i, ft)| {
+                let (Some(a), Some(z)) = (ft.lines.first(), ft.lines.last()) else { return None };
+                let m = NoteMetrics { first: a.baseline, last: z.baseline, lead: a.leading, descent: z.descent };
+                let mut frame = ft.clone();
+                // Body frame ranges exclude paragraph separators; parts own those bytes too.
+                frame.range.end = cs.frames.iter().skip(i.saturating_add(1)).find(|f| !f.lines.is_empty()).map_or(note.text.len(), |f| f.range.start);
+                let text = ComposedStory { frames: vec![frame], ..cs.clone() };
+                Some((Arc::new(text), m))
+            })
+            .collect::<Vec<_>>();
+        self.cache.insert(key, parts.clone());
+        parts
+    }
+
+    fn pending(&self, column: NoteColumn<'_>) -> Option<Carry> {
+        self.carry.as_ref().filter(|c| c.fi != column.frame_index || (!self.span && c.col != column.column_index)).cloned()
+    }
+
+    fn remainder(&mut self, doc: &Document, c: &Carry, column: NoteColumn<'_>, opts: &ComposeOptions) -> Option<Part> {
+        self.compose_parts(doc, c.k, column.width, column.frame, opts, &c.heights).get(c.heights.len()).and_then(Clone::clone)
+    }
+
+    fn metrics(&mut self, doc: &Document, column: NoteColumn<'_>, extra: &[usize], opts: &ComposeOptions) -> Vec<NoteMetrics> {
+        let mut ms: Vec<_> = self.placed.iter().filter(|p| self.same_area(p, column.frame_index, column.column_index)).map(|p| p.m).collect();
+        if let Some(c) = self.pending(column)
+            && let Some((_, m)) = self.remainder(doc, &c, column, opts)
+        {
+            ms.push(m);
+        }
+        for &k in extra {
+            ms.push(self.compose(doc, k, column.width, column.frame, opts).1);
+        }
+        ms
+    }
+
+    /// Reserve fixed notes first, then use the largest frame height left for the final note.
+    pub fn split_plan(
+        &mut self,
+        doc: &Document,
+        column: NoteColumn<'_>,
+        extra: &[usize],
+        available: f64,
+        opts: &ComposeOptions,
+    ) -> Option<SplitPlan> {
+        if !available.is_finite() || available <= 0.0 {
+            return None;
+        }
+        let pending = self.pending(column);
+        let (k, mut heights, ms, original) = if let Some((&k, before)) = extra.split_last() {
+            // If the carry must split too, move this referencing line on as before.
+            if self.carry.is_some() && pending.is_none() {
+                return None;
+            }
+            let ms = self.metrics(doc, column, before, opts);
+            if stack_height(&ms, doc.footnote_options.space_between) > available {
+                return None;
+            }
+            // A second carry would discard the first note's remainder.
+            if pending.as_ref().is_some_and(|c| self.remainder(doc, c, column, opts).is_none()) {
+                return None;
+            }
+            (k, Vec::new(), ms, self.compose(doc, k, column.width, column.frame, opts))
+        } else {
+            let c = pending?;
+            let original = self.remainder(doc, &c, column, opts)?;
+            let ms = self.placed.iter().filter(|p| self.same_area(p, column.frame_index, column.column_index)).map(|p| p.m).collect();
+            (c.k, c.heights, ms, original)
         };
-        let v = (Arc::new(cs), m);
-        self.cache.insert(key, v.clone());
-        v
+        let offset = ms.last().map_or(0.0, |last| {
+            stack_height(&ms, doc.footnote_options.space_between) - last.descent + doc.footnote_options.space_between + original.1.lead
+                - original.1.first
+        });
+        let mut h = available - offset;
+        let part = heights.len();
+        heights.push((column.width, h));
+        // Ordinary text frames fit baselines, but a footnote stack also includes descent.
+        // Each retry drops its last line; the unsplit remainder bounds the attempts.
+        let attempts = original.0.frames.first().map_or(0, |f| f.lines.len());
+        for _ in 0..attempts {
+            if !h.is_finite() || h <= 0.0 {
+                return None;
+            }
+            *heights.get_mut(part)? = (column.width, h);
+            let parts = self.compose_parts(doc, k, column.width, column.frame, opts, &heights);
+            let (text, m) = parts.get(part).and_then(Clone::clone)?;
+            let total = stack_height(ms.iter().chain(std::iter::once(&m)), doc.footnote_options.space_between);
+            if m.last + m.descent <= h + 0.01 && total <= available + 0.01 {
+                return Some(SplitPlan { remainder: parts.get(heights.len()).is_some_and(Option::is_some), k, heights, text, m });
+            }
+            let smaller = h.min(m.last - 0.02);
+            if smaller >= h {
+                return None;
+            }
+            h = smaller;
+        }
+        None
     }
 
     /// Height the footnotes of column (fi, col) take, with `extra` footnotes added.
     pub fn reserve(&mut self, doc: &Document, column: NoteColumn<'_>, extra: &[usize], opts: &ComposeOptions) -> f64 {
         let o = &doc.footnote_options;
         let (space_between, space_before) = (o.space_between, o.space_before);
-        let mut ms: Vec<NoteMetrics> =
-            self.placed.iter().filter(|p| self.same_area(p, column.frame_index, column.column_index)).map(|p| p.m).collect();
-        for &k in extra {
-            ms.push(self.compose(doc, k, column.width, column.frame, opts).1);
-        }
+        let ms = self.metrics(doc, column, extra, opts);
         let r = if ms.is_empty() { 0.0 } else { stack_height(&ms, space_between) + space_before };
         if self.span { r.max(self.floor.get(&column.frame_index).copied().unwrap_or(0.0)) } else { r }
     }
@@ -233,11 +360,82 @@ impl Notes {
     }
 
     pub fn place(&mut self, doc: &Document, k: usize, column: NoteColumn<'_>, opts: &ComposeOptions) {
-        if self.placed.iter().any(|p| p.k == k) {
+        let (text, m) = self.compose(doc, k, column.width, column.frame, opts);
+        self.push(k, 0, text, m, column);
+    }
+
+    fn push(&mut self, k: usize, part: usize, text: Arc<ComposedStory>, m: NoteMetrics, column: NoteColumn<'_>) {
+        if self.placed.iter().any(|p| p.k == k && p.part == part) {
             return;
         }
-        let (text, m) = self.compose(doc, k, column.width, column.frame, opts);
-        self.placed.push(Placed { k, fi: column.frame_index, col: column.column_index, m, text });
+        self.placed.push(Placed { k, part, fi: column.frame_index, col: column.column_index, m, text });
+    }
+
+    /// Continued text precedes references belonging to the new column's body.
+    pub fn place_line(&mut self, doc: &Document, column: NoteColumn<'_>, extra: &[usize], plan: Option<SplitPlan>, opts: &ComposeOptions) -> bool {
+        let before = self.placed.len();
+        if let Some(c) = self.pending(column) {
+            if plan.as_ref().is_some_and(|p| p.k == c.k) {
+                if let Some(p) = plan {
+                    self.place_split(p, column);
+                }
+                return self.placed.len() != before;
+            }
+            if let Some((text, m)) = self.remainder(doc, &c, column, opts) {
+                self.push(c.k, c.heights.len(), text, m, column);
+            }
+            self.carry = None;
+        }
+        for &k in extra {
+            if plan.as_ref().is_some_and(|p| p.k == k) {
+                continue;
+            }
+            self.place(doc, k, column, opts);
+        }
+        if let Some(p) = plan {
+            self.place_split(p, column);
+        }
+        self.placed.len() != before
+    }
+
+    fn place_split(&mut self, plan: SplitPlan, column: NoteColumn<'_>) {
+        let part = plan.heights.len().saturating_sub(1);
+        self.push(plan.k, part, plan.text, plan.m, column);
+        self.carry = plan.remainder.then_some(Carry { k: plan.k, heights: plan.heights, fi: column.frame_index, col: column.column_index });
+    }
+
+    /// Body text can end before its note. Visit each following area at most once.
+    pub fn finish_carry(
+        &mut self,
+        doc: &Document,
+        frames: &[FrameSpec],
+        cols: &[Vec<Rect>],
+        opts: &ComposeOptions,
+        out: &mut ComposedStory,
+        end: usize,
+    ) {
+        let Some(start) = self.carry.clone() else { return };
+        for (fi, (frame, columns)) in frames.iter().zip(cols).enumerate().skip(start.fi) {
+            for (ci, _) in columns.iter().enumerate().take(if self.span { 1 } else { columns.len() }) {
+                if fi == start.fi && (self.span || ci <= start.col) {
+                    continue;
+                }
+                let Some(area) = self.area(columns, ci) else { continue };
+                let column = NoteColumn { frame_index: fi, column_index: ci, width: area.width(), frame };
+                if self.carry.is_none() {
+                    return;
+                }
+                let available = area.height() - doc.footnote_options.space_before;
+                if self.reserve(doc, column, &[], opts) <= area.height() + 0.01 {
+                    self.place_line(doc, column, &[], None, opts);
+                } else if let Some(plan) = self.split_plan(doc, column, &[], available, opts) {
+                    self.place_line(doc, column, &[], Some(plan), opts);
+                }
+            }
+        }
+        if self.carry.is_some() && out.overset_at.is_none() {
+            out.overset_at = Some(end);
+        }
     }
 
     /// Stack each column's footnotes against its bottom, rule above the first.
@@ -255,7 +453,7 @@ impl Notes {
             let here: Vec<&Placed> = self.placed.iter().filter(|p| self.same_area(p, fi, ci)).collect();
             let total = stack_height(here.iter().map(|p| &p.m), o.space_between);
             let top = col.y1 - total;
-            let ft = &mut out.frames[fi];
+            let Some(ft) = out.frames.get_mut(fi) else { continue };
             if o.rule.on && o.rule.weight > 0.0 {
                 let x0 = col.x0 + o.rule.left_indent;
                 let y = top + o.rule.offset - o.rule.weight;
@@ -282,7 +480,7 @@ impl Notes {
                     id: note.id,
                     index: p.k,
                     column: p.col as u32,
-                    label: o.label(self.numbers[p.k], true),
+                    label: o.label(self.numbers.get(p.k).copied().unwrap_or(o.start_at), true),
                     origin: Point::new(col.x0, y),
                     rect: Rect::new(col.x0, y0, col.x1, y1),
                     text: p.text.clone(),
@@ -297,6 +495,23 @@ impl Notes {
 /// The placed footnote with id `id`: (frame index, footnote).
 pub fn find_note(cs: &ComposedStory, id: u64) -> Option<(usize, &PlacedNote)> {
     cs.frames.iter().enumerate().find_map(|(fi, ft)| ft.notes.iter().find(|n| n.id == id).map(|n| (fi, n)))
+}
+
+/// Select the part containing the byte; the story-end caret belongs to the last part.
+fn find_note_part(cs: &ComposedStory, id: u64, pos: usize) -> Option<(usize, &PlacedNote)> {
+    let mut last = None;
+    for (fi, ft) in cs.frames.iter().enumerate() {
+        for n in ft.notes.iter().filter(|n| n.id == id) {
+            let range = &n.text.frames.first()?.range;
+            if range.contains(&pos) {
+                return Some((fi, n));
+            }
+            if pos == range.end {
+                last = Some((fi, n));
+            }
+        }
+    }
+    last
 }
 
 /// Footnote text hit at frame-inner point `p`: (footnote id, byte in the footnote's story).
@@ -315,7 +530,7 @@ pub fn hit_note_with(cs: &ComposedStory, fi: usize, p: Point, hit: fn(&ComposedS
 /// Caret geometry for byte `pos` of a footnote's story, in frame inner space:
 /// (frame index, x, baseline, ascent, descent).
 pub fn note_caret(cs: &ComposedStory, id: u64, pos: usize) -> Option<(usize, f64, f64, f64, f64)> {
-    let (fi, n) = find_note(cs, id)?;
+    let (fi, n) = find_note_part(cs, id, pos)?;
     match crate::caret(&n.text, pos) {
         Some((_, x, bl, a, d)) => Some((fi, x + n.origin.x, bl + n.origin.y, a, d)),
         None => Some((fi, n.origin.x, n.origin.y + 10.0, 9.0, 3.0)),
