@@ -3584,9 +3584,13 @@ fn fitted_column_width(d: &Document, story: &Story, ft: &designcraft_compose::Fr
         push(ink + ind_l + ind_r + wrap);
     }
     for t in &ft.tables {
-        let col = ft.columns.get(t.column as usize);
-        let wrap = col.map_or(0.0, |c| (t.rect.x0 - c.x0).max(0.0) + (c.x1 - t.rect.x1).max(0.0));
-        push(t.rect.width() + wrap);
+        // TableFrag::rect is the table's placed bounds (not a column slot), so gaps to the column
+        // edges are unused whitespace; only add horizontal indents that place_table reserves.
+        let indents = ft.lines.get(t.line).and_then(|l| story.paras.get(l.para)).map(|pf| d.styles.resolve_para(pf).0).map_or(0.0, |pp| {
+            let pos = |v: f64| if v.is_finite() { v.max(0.0) } else { 0.0 };
+            pos(pp.left_indent) + pos(pp.right_indent)
+        });
+        push(t.rect.width() + indents);
     }
     max_w
 }
@@ -6855,6 +6859,41 @@ mod fit_text_frame_tests {
         let p1 = bottom_spread(&s);
         let h1 = s.doc().unwrap().doc.item(rot).unwrap().inner_bounds().height();
         assert!(h1 < h0 * 0.5 && (p1 - p0).hypot() < 1e-9, "{p0:?} vs {p1:?}, h: {h0} -> {h1}");
+    }
+
+    #[test]
+    fn fit_frame_shrinks_around_narrow_table() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let created = s.execute("frame.create", &json!({"rect": [100, 100, 500, 300], "content": "text"})).unwrap();
+        let id = ItemId(created["id"].as_u64().unwrap());
+        let sid = designcraft_doc::StoryId(created["story"].as_u64().unwrap());
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": 0})).unwrap();
+        s.execute("type.para", &json!({"attrs": {"align": "right"}})).unwrap();
+        s.execute("table.insert", &json!({"rows": 1, "cols": 2, "width": 120.0})).unwrap();
+        s.execute("object.textFrameOptions", &json!({"ids": [id.0], "verticalJustification": "bottom"})).unwrap();
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "both", "ref": 8, "ids": [id.0]})).unwrap();
+        let b = bounds(&s, id);
+        assert!((b.x1 - 500.0).abs() < 1e-9 && (b.y1 - 300.0).abs() < 1e-9, "{b:?}");
+        assert!((b.width() - 120.001).abs() < 1e-6, "width should fit the 120 pt table: {b:?}");
+        let d = &s.doc().unwrap().doc;
+        let cs = s.cache.get(d, sid, None);
+        assert!(!cs.is_overset());
+        assert!((cs.frame(id).unwrap().tables[0].rect.width() - 120.0).abs() < 1e-6);
+
+        // Paragraph horizontal indents are still preserved so fitting does not squeeze the table.
+        let created2 = s.execute("frame.create", &json!({"rect": [100, 400, 500, 600], "content": "text"})).unwrap();
+        let id2 = ItemId(created2["id"].as_u64().unwrap());
+        let sid2 = designcraft_doc::StoryId(created2["story"].as_u64().unwrap());
+        s.execute("text.select", &json!({"story": sid2.0, "anchor": 0, "focus": 0})).unwrap();
+        s.execute("type.para", &json!({"attrs": {"leftIndent": 20.0, "rightIndent": 10.0}})).unwrap();
+        s.execute("table.insert", &json!({"rows": 1, "cols": 2, "width": 100.0})).unwrap();
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "both", "ids": [id2.0]})).unwrap();
+        let b2 = bounds(&s, id2);
+        assert!((b2.width() - 130.001).abs() < 1e-6, "100 pt table + 20/10 indents: {b2:?}");
+        let d2 = &s.doc().unwrap().doc;
+        let cs2 = s.cache.get(d2, sid2, None);
+        assert!((cs2.frame(id2).unwrap().tables[0].rect.width() - 100.0).abs() < 1e-6);
     }
 }
 
