@@ -143,7 +143,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Story Options",
             [],
             None,
-            "{story?, frame?: a text frame of the story (default: the stories of the text selection or the selected frames), opticalMargin?: bool — Optical Margin Alignment: punctuation and letter edges hang outside the frame in every paragraph of the story except those with ignoreOpticalMargin, opticalMarginSize?: pt (0.1–1296, default 12) — the type size the hang amounts are set for} → {stories}",
+            "{story?, frame?: a text frame of the story (default: the stories of the text selection or the selected frames), opticalMargin?: bool — Optical Margin Alignment: punctuation and letter edges hang outside the frame in every paragraph of the story except those with ignoreOpticalMargin, opticalMarginSize?: pt (0.1–1296, default 12) — the type size the hang amounts are set for, direction?: leftToRight|rightToLeft — column direction: the first column on the left or on the right} → {stories}",
             has_doc,
             story_options
         ),
@@ -430,7 +430,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Selection Attributes",
             [],
             None,
-            "{mixed?: bool} → resolved character/paragraph attributes at the text selection; `ownChars`: what the text has of its own over its paragraph (its character style's attributes and its overrides, what a character style made from the selection sets); with mixed, paraMixed lists the paragraph attributes that differ across the selected paragraphs; the selection's start as `selectedText` (one line, up to 60 characters); `storyOptions` {opticalMargin, opticalMarginSize} of the stories story.options would change (null where they differ)",
+            "{mixed?: bool} → resolved character/paragraph attributes at the text selection; `ownChars`: what the text has of its own over its paragraph (its character style's attributes and its overrides, what a character style made from the selection sets); with mixed, paraMixed lists the paragraph attributes that differ across the selected paragraphs; the selection's start as `selectedText` (one line, up to 60 characters); `storyOptions` {opticalMargin, opticalMarginSize, direction} of the stories story.options would change (null where they differ)",
             has_doc,
             selection_attrs
         ),
