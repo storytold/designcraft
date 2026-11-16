@@ -31,6 +31,7 @@ pub fn damage_with(old: &Document, new: &Document, cache: Option<&designcraft_co
         || old.sections != new.sections
         || old.text_variables != new.text_variables
         || old.footnote_options != new.footnote_options
+        || old.note_series != new.note_series
         || old.xref_formats != new.xref_formats
         || old.spreads.len() != new.spreads.len()
         || old.parents.len() != new.parents.len()
@@ -93,8 +94,10 @@ pub fn damage_with(old: &Document, new: &Document, cache: Option<&designcraft_co
             continue;
         }
         changed_text |= edited;
+        // Margin notes can move beyond both the old and new host frame's painted bounds.
+        let margins = [(old, a), (new, b)].iter().any(|(d, st)| has_margin_notes(d, *st));
         // Footnote numbers continue across stories.
-        if a.map_or(0, |s| s.notes.len()) != b.map_or(0, |s| s.notes.len()) {
+        if margins || a.map_or(0, |s| s.notes.len()) != b.map_or(0, |s| s.notes.len()) {
             return None;
         }
         // Its anchored objects' text wrap reflows the other stories on its spreads.
@@ -194,6 +197,10 @@ fn painted_bounds(it: &Item) -> Option<Rect> {
         b = b.union(it.xf.transform_rect_bbox(painted_bounds(c)?.inflate(stroke, stroke)));
     }
     Some(b)
+}
+
+fn has_margin_notes(doc: &Document, story: Option<&Arc<Story>>) -> bool {
+    story.is_some_and(|st| st.notes.iter().any(|n| !doc.note_options(n.series).placement.is_column_foot()))
 }
 
 /// A text frame's area: its spread and bounds with room for glyph overhang.

@@ -2616,3 +2616,45 @@ fn place_gun_grid_preview_matches_the_release_on_a_rotated_spread() {
     let (Overlay::Marquee(first), Overlay::Marquee(second)) = (&shown[0], &shown[1]) else { panic!("{shown:?}") };
     assert!((first.x0 - second.x0).abs() < 1e-6, "{shown:?}");
 }
+
+#[test]
+fn type_tool_hits_a_margin_note_outside_the_host_frame() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (fid, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(120.0, 72.0, 420.0, 600.0), lid, "Body", ParaFormat::default()).unwrap();
+    d.footnote_options.placement = designcraft_doc::NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 8.0, width: 72.0 };
+    d.story_mut(sid).unwrap().insert_note(4, "Source", ParaFormat::default());
+    let (sel, cache, layout) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
+    let cs = cache.get(&d, sid, None);
+    let n = &cs.frames[0].notes[0];
+    let cx = ctx(&d, &sel, &cache, &layout);
+    let xf = cx.item_canvas_xf(fid).unwrap() * d.text_xf(d.item(fid).unwrap());
+    let point = xf * Point::new(n.rect.x0 + 10.0, n.rect.y0 + 5.0);
+    assert!(cx.hit(point).is_none(), "the point is outside the frame's path");
+    let mut tool = create("type");
+    let actions = tool.pointer(&cx, &PointerEvent::new(PointerKind::Down, point.x, point.y));
+    assert!(actions.iter().any(|a| matches!(a, Action::Exec(cmd, p) if cmd == "text.placeCaret" && p["frame"] == fid.0)));
+}
+
+#[test]
+fn review_hidden_margin_note_cannot_receive_a_type_click() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (fid, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(120.0, 72.0, 420.0, 600.0), lid, "Body", ParaFormat::default()).unwrap();
+    d.footnote_options.placement = designcraft_doc::NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 8.0, width: 72.0 };
+    d.story_mut(sid).unwrap().insert_note(4, "Source", Default::default());
+    let (sel, cache, layout) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
+    let cs = cache.get(&d, sid, None);
+    let n = &cs.frames[0].notes[0];
+    let xf = ctx(&d, &sel, &cache, &layout).item_canvas_xf(fid).unwrap() * d.text_xf(d.item(fid).unwrap());
+    let point = xf * Point::new(n.rect.x0 + 10.0, n.rect.y0 + 5.0);
+    for hidden in [true, false] {
+        d.item_mut(fid).unwrap().hidden = hidden;
+        let layer = d.layers.iter_mut().find(|l| l.id == lid).unwrap();
+        layer.visible = hidden; // host hidden, then layer hidden
+        let cx = ctx(&d, &sel, &cache, &layout);
+        let mut tool = create("type");
+        let actions = tool.pointer(&cx, &PointerEvent::new(PointerKind::Down, point.x, point.y));
+        assert!(!actions.iter().any(|a| matches!(a, Action::Exec(cmd, _) if cmd == "text.placeCaret")));
+    }
+}

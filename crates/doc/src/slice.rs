@@ -104,7 +104,7 @@ impl Story {
         for (k, n) in src.notes.iter().enumerate() {
             if let Some(slot) = self.notes.get_mut(nf + k) {
                 let id = slot.id;
-                *slot = Arc::new(crate::notes::Footnote { id, text: n.text.clone() });
+                *slot = Arc::new(crate::notes::Footnote { id, series: n.series, text: n.text.clone() });
             }
         }
         // Notes keep the ids made for their new markers, so a pasted copy never shares an id.
@@ -113,7 +113,7 @@ impl Story {
         for (k, n) in src.endnotes.iter().take(src.text.matches(ENDNOTE_REF).count()).enumerate() {
             if let Some(slot) = self.endnotes.get_mut(ne + k) {
                 let id = slot.id;
-                *slot = Arc::new(crate::notes::Footnote { id, text: n.text.clone() });
+                *slot = Arc::new(crate::notes::Footnote { id, series: n.series, text: n.text.clone() });
             }
         }
         for (k, n) in src.editorial.iter().take(src.text.matches(NOTE_MARK).count()).enumerate() {
@@ -203,11 +203,11 @@ impl Story {
         self.paras.extend(other.paras);
         for n in other.notes {
             let id = self.next_note_id();
-            self.notes.push(Arc::new(crate::notes::Footnote { id, text: n.text.clone() }));
+            self.notes.push(Arc::new(crate::notes::Footnote { id, series: n.series, text: n.text.clone() }));
         }
         for n in other.endnotes {
             let id = crate::ids::next_local_id(self.endnotes.iter().map(|x| x.id));
-            self.endnotes.push(Arc::new(crate::notes::Footnote { id, text: n.text.clone() }));
+            self.endnotes.push(Arc::new(crate::notes::Footnote { id, series: n.series, text: n.text.clone() }));
         }
         for n in other.editorial {
             let id = crate::ids::next_local_id(self.editorial.iter().map(|x| x.id));
@@ -444,7 +444,7 @@ mod tests {
     fn append_story_with_maximal_ids_does_not_overflow() {
         let mut a = Story::with_text(StoryId(1), "Alpha", ParaFormat::default());
         a.tables.insert(u64::MAX, Arc::new(crate::table::Table::new(u64::MAX, 1, 1, 0, 0, 100.0)));
-        let note = |id| Arc::new(crate::notes::Footnote { id, text: Story::with_text(StoryId(0), "n", ParaFormat::default()) });
+        let note = |id| Arc::new(crate::notes::Footnote { id, series: 0, text: Story::with_text(StoryId(0), "n", ParaFormat::default()) });
         a.endnotes.push(note(u64::MAX));
         a.notes.push(note(u64::MAX));
         a.rev = u64::MAX;

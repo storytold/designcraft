@@ -13,7 +13,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Insert Footnote",
             ["Type"],
             None,
-            "{text?} — a footnote reference at the insertion point; the caret moves into the new footnote's text",
+            "{text?, series?} — a footnote reference at the insertion point; the caret moves into the new footnote's text",
             in_story_text,
             insert
         ),
@@ -22,11 +22,31 @@ pub fn specs() -> Vec<CommandSpec> {
             "Document Footnote Options…",
             ["Type"],
             None,
-            "{style?: arabic|upperRoman|lowerRoman|upperLetters|lowerLetters|symbols|kanji, startAt?, restart?: never|page|spread|section, prefix?, suffix?, affixIn?: none|reference|text|both, refPosition?: superscript|subscript|normal|otSuperscript, refCharStyle?, paraStyle?, separator?, spaceBefore?, spaceBetween?, firstBaseline?: ascent|capHeight|leading|xHeight|emboxHeight|fixed, firstBaselineMin?, spanColumns?, rule?: {on, weight, color, tint, width, offset, leftIndent}} → the options (no params: just read them)",
+            "{placement?: {kind: columnFoot|margin, side?: inside|outside|left|right, gap?, width?}, style?: arabic|upperRoman|lowerRoman|upperLetters|lowerLetters|symbols|kanji, startAt?, restart?: never|page|spread|section, prefix?, suffix?, affixIn?: none|reference|text|both, refPosition?: superscript|subscript|normal|otSuperscript, refCharStyle?, paraStyle?, separator?, spaceBefore?, spaceBetween?, firstBaseline?: ascent|capHeight|leading|xHeight|emboxHeight|fixed, firstBaselineMin?, spanColumns?, allowSplit? (default true), rule?: {on, weight, color, tint, width, offset, leftIndent}} → the options (no params: just read them)",
             has_doc,
             options
         ),
-        cmd!(query "footnote.list", "Footnotes", [], None, "{story?} → [{story, id, index, anchor, text}] in story order", has_doc, list),
+        cmd!("footnote.series.create", "Create Note Series", [], None, "{name, …options} → {id}", has_doc, series_create),
+        cmd!(
+            "footnote.series.options",
+            "Note Series Options",
+            [],
+            None,
+            "{series, …options} → options; placement?: {kind: columnFoot|margin, side?: inside|outside|left|right, gap?, width?}",
+            has_doc,
+            series_options
+        ),
+        cmd!(
+            "footnote.series.delete",
+            "Delete Note Series",
+            [],
+            None,
+            "{series} — moves its notes to series 0; series 0 cannot be deleted",
+            has_doc,
+            series_delete
+        ),
+        cmd!(query "footnote.series.list", "Note Series", [], None, "{} → [{id, name, …options}] including series 0", has_doc, series_list),
+        cmd!(query "footnote.list", "Footnotes", [], None, "{story?, series?} → [{story, id, series, index, anchor, text}] in story order", has_doc, list),
         cmd!("footnote.setText", "Set Footnote Text", [], None, "{story, id, text} — replaces the footnote's text", has_doc, set_text),
         cmd!("footnote.delete", "Delete Footnote", [], None, "{story, id} — deletes the reference (and so the footnote)", has_doc, delete),
         cmd!(
@@ -59,14 +79,19 @@ fn in_note(s: &Session) -> std::result::Result<(), String> {
 
 fn insert(s: &mut Session, p: &Value) -> Result<Value> {
     let text = super::text_param(p, "text");
+    let series = series_id(p, "footnote.insert", true)?;
+    require_series(&s.doc()?.doc, series, "footnote.insert")?;
     let r = s.edit(|d, sel| {
         let t = sel.text.ok_or_else(|| bad("footnote.insert", "no insertion point"))?;
-        let para = ParaFormat { style: d.footnote_options.para_style.clone(), ..Default::default() };
+        let para = ParaFormat { style: d.note_options(series).para_style.clone(), ..Default::default() };
         let st = d.story_mut(t.story).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
         let r = t.range();
         let r = r.start.min(st.len())..r.end.min(st.len());
         st.delete(r.clone());
         let id = st.insert_note(r.start, &text, para).ok_or_else(|| bad("footnote.insert", "the story's footnotes don't match their references"))?;
+        if let Some(note) = st.note_mut(id) {
+            note.series = series;
+        }
         d.adjust_text_ranges(t.story, r, designcraft_doc::FOOTNOTE_REF.len_utf8());
         sel.text = Some(TextSel { story: t.story, anchor: text.len(), focus: text.len(), frame: t.frame, cell: Some(CellAddr::footnote(id)) });
         Ok(json!({"story": t.story.0, "id": id}))
@@ -100,6 +125,7 @@ fn options(s: &mut Session, p: &Value) -> Result<Value> {
     let mut v = serde_json::to_value(&cur).unwrap_or_default();
     merge(&mut v, p);
     let next: FootnoteOptions = serde_json::from_value(v).map_err(|e| bad("footnote.options", e.to_string()))?;
+    validate_options(&next, "footnote.options")?;
     let out = serde_json::to_value(&next).unwrap_or_default();
     if next != cur {
         s.edit(|d, _| {
@@ -108,6 +134,103 @@ fn options(s: &mut Session, p: &Value) -> Result<Value> {
         })?;
     }
     Ok(out)
+}
+
+fn series_id(p: &Value, cmd: &str, default: bool) -> Result<u64> {
+    match p.get("series") {
+        None if default => Ok(0),
+        Some(v) => v.as_u64().ok_or_else(|| bad(cmd, "series must be an unsigned integer")),
+        _ => Err(bad(cmd, "missing series")),
+    }
+}
+
+fn require_series(d: &designcraft_doc::Document, id: u64, cmd: &str) -> Result<()> {
+    if id == 0 || d.note_series.iter().any(|s| s.id == id) { Ok(()) } else { Err(bad(cmd, format!("no note series {id}"))) }
+}
+
+fn validate_options(o: &FootnoteOptions, cmd: &str) -> Result<()> {
+    o.check().map_err(|e| bad(cmd, e))
+}
+
+fn series_create(s: &mut Session, p: &Value) -> Result<Value> {
+    let name = p
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|n| !n.trim().is_empty())
+        .ok_or_else(|| bad("footnote.series.create", "missing name"))?
+        .to_owned();
+    let options: FootnoteOptions = serde_json::from_value(p.clone()).map_err(|e| bad("footnote.series.create", e.to_string()))?;
+    validate_options(&options, "footnote.series.create")?;
+    s.edit(|d, _| {
+        let id = d
+            .note_series
+            .iter()
+            .map(|s| s.id)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or_else(|| bad("footnote.series.create", "series ids exhausted"))?;
+        d.note_series.push(designcraft_doc::NoteSeries { id, name, options });
+        Ok(json!({"id": id}))
+    })
+}
+
+fn series_options(s: &mut Session, p: &Value) -> Result<Value> {
+    let id = series_id(p, "footnote.series.options", false)?;
+    require_series(&s.doc()?.doc, id, "footnote.series.options")?;
+    let cur = s.doc()?.doc.note_options(id).clone();
+    let mut value = serde_json::to_value(&cur).map_err(|e| bad("footnote.series.options", e.to_string()))?;
+    merge(&mut value, p);
+    let next: FootnoteOptions = serde_json::from_value(value).map_err(|e| bad("footnote.series.options", e.to_string()))?;
+    validate_options(&next, "footnote.series.options")?;
+    let out = serde_json::to_value(&next).map_err(|e| bad("footnote.series.options", e.to_string()))?;
+    if next == cur {
+        return Ok(out);
+    }
+    s.edit(|d, _| {
+        if id == 0 {
+            d.footnote_options = next;
+        } else if let Some(series) = d.note_series.iter_mut().find(|s| s.id == id) {
+            series.options = next;
+        }
+        Ok(Value::Null)
+    })?;
+    Ok(out)
+}
+
+fn series_list(s: &mut Session, _: &Value) -> Result<Value> {
+    let d = &s.doc()?.doc;
+    let mut list = vec![
+        serde_json::to_value(designcraft_doc::NoteSeries { id: 0, name: "Footnotes".into(), options: d.footnote_options.clone() })
+            .map_err(|e| bad("footnote.series.list", e.to_string()))?,
+    ];
+    for series in &d.note_series {
+        list.push(serde_json::to_value(series).map_err(|e| bad("footnote.series.list", e.to_string()))?);
+    }
+    Ok(Value::Array(list))
+}
+
+fn series_delete(s: &mut Session, p: &Value) -> Result<Value> {
+    let id = series_id(p, "footnote.series.delete", false)?;
+    if id == 0 {
+        return Err(bad("footnote.series.delete", "series 0 cannot be deleted"));
+    }
+    require_series(&s.doc()?.doc, id, "footnote.series.delete")?;
+    s.edit(|d, _| {
+        for story in d.stories.values_mut() {
+            if story.notes.iter().any(|n| n.series == id) {
+                let story = std::sync::Arc::make_mut(story);
+                for note in &mut story.notes {
+                    if note.series == id {
+                        std::sync::Arc::make_mut(note).series = 0;
+                    }
+                }
+                story.rev = story.rev.wrapping_add(1);
+            }
+        }
+        d.note_series.retain(|s| s.id != id);
+        Ok(Value::Null)
+    })
 }
 
 fn story_id(p: &Value, cmd: &str) -> Result<StoryId> {
@@ -133,8 +256,8 @@ fn list(s: &mut Session, p: &Value) -> Result<Value> {
     let only = p.get("story").and_then(Value::as_u64).map(StoryId);
     let mut out = Vec::new();
     for st in d.stories.values().filter(|st| only.is_none_or(|o| o == st.id)) {
-        for (k, n) in st.notes.iter().enumerate() {
-            out.push(json!({"story": st.id.0, "id": n.id, "index": k, "anchor": st.note_anchor(n.id), "text": n.text.text}));
+        for (k, n) in st.notes.iter().enumerate().filter(|(_, n)| p.get("series").and_then(Value::as_u64).is_none_or(|id| n.series == id)) {
+            out.push(json!({"story": st.id.0, "id": n.id, "series": n.series, "index": k, "anchor": st.note_anchor(n.id), "text": n.text.text}));
         }
     }
     Ok(Value::Array(out))
@@ -318,5 +441,32 @@ mod tests {
         assert_eq!((t.anchor, t.focus), (4, 4));
         s.execute("text.delete", &json!({})).unwrap();
         assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().notes[0].text.text, "é");
+    }
+}
+
+#[cfg(test)]
+mod series_tests {
+    use super::*;
+
+    #[test]
+    fn series_commands_insert_filter_delete_and_undo() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let frame = s.execute("frame.create", &json!({"rect":[72,72,400,600],"content":"text","text":"Body"})).unwrap();
+        let fid = designcraft_doc::ItemId(frame["id"].as_u64().unwrap());
+        let sid = s.doc().unwrap().doc.item(fid).unwrap().text_frame().unwrap().story;
+        let series = s.execute("footnote.series.create", &json!({"name":"Sources","style":"lowerLetters"})).unwrap()["id"].as_u64().unwrap();
+        s.execute("footnote.series.options", &json!({"series":series,"placement":{"kind":"margin","side":"outside","gap":8,"width":72}})).unwrap();
+        s.execute("text.select", &json!({"story":sid.0,"anchor":4,"focus":4})).unwrap();
+        s.execute("footnote.insert", &json!({"series":series,"text":"Source"})).unwrap();
+        assert_eq!(s.execute("footnote.list", &json!({"series":series})).unwrap()[0]["series"], series);
+        assert_eq!(s.execute("footnote.series.list", &json!({})).unwrap().as_array().unwrap().len(), 2);
+        assert!(s.execute("footnote.series.delete", &json!({"series":0})).is_err());
+        assert!(s.execute("footnote.series.options", &json!({"series":series,"placement":{"width":0}})).is_err());
+        s.execute("footnote.series.delete", &json!({"series":series})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().notes[0].series, 0);
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().notes[0].series, series);
+        assert!(s.execute("footnote.insert", &json!({"series":999})).is_err());
     }
 }

@@ -30,8 +30,53 @@ pub const FOOTNOTE_TABLE: u64 = u64::MAX;
 pub struct Footnote {
     /// Stable within the story (selection addresses).
     pub id: u64,
+    /// Independent numbering and layout; absent in older documents.
+    #[serde(default, skip_serializing_if = "is_default_series")]
+    pub series: u64,
     /// The footnote text (no frames).
     pub text: Story,
+}
+
+fn is_default_series(series: &u64) -> bool {
+    *series == 0
+}
+
+/// Extra series only; series 0 keeps the legacy `Document::footnote_options` field.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteSeries {
+    pub id: u64,
+    pub name: String,
+    #[serde(flatten)]
+    pub options: FootnoteOptions,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MarginSide {
+    Inside,
+    Outside,
+    Left,
+    #[default]
+    Right,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum NotePlacement {
+    #[default]
+    ColumnFoot,
+    Margin {
+        side: MarginSide,
+        gap: f64,
+        width: f64,
+    },
+}
+
+impl NotePlacement {
+    pub fn is_column_foot(&self) -> bool {
+        matches!(self, Self::ColumnFoot)
+    }
 }
 
 /// Restart Numbering Every.
@@ -81,6 +126,8 @@ impl Default for NoteRule {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct FootnoteOptions {
+    #[serde(skip_serializing_if = "NotePlacement::is_column_foot")]
+    pub placement: NotePlacement,
     pub style: NumberStyle,
     pub start_at: u32,
     pub restart: NoteRestart,
@@ -101,6 +148,9 @@ pub struct FootnoteOptions {
     pub first_baseline_min: f64,
     /// Footnotes span all columns of a multi-column frame (else each column gets its own).
     pub span_columns: bool,
+    /// Allow Split Footnotes: continue long notes across columns and frames.
+    /// Each part obeys the note paragraphs' widow/orphan and keep options.
+    pub allow_split: bool,
     /// Rule above the first footnote in a column.
     pub rule: NoteRule,
 }
@@ -108,6 +158,7 @@ pub struct FootnoteOptions {
 impl Default for FootnoteOptions {
     fn default() -> Self {
         FootnoteOptions {
+            placement: NotePlacement::ColumnFoot,
             style: NumberStyle::Arabic,
             start_at: 1,
             restart: NoteRestart::Never,
@@ -123,12 +174,32 @@ impl Default for FootnoteOptions {
             first_baseline: FirstBaseline::Leading,
             first_baseline_min: 0.0,
             span_columns: false,
+            allow_split: true,
             rule: NoteRule::default(),
         }
     }
 }
 
 impl FootnoteOptions {
+    /// Validate layout dimensions at command and native-file boundaries.
+    pub fn check(&self) -> Result<(), String> {
+        if let NotePlacement::Margin { gap, width, .. } = self.placement
+            && (!gap.is_finite() || gap < 0.0 || !width.is_finite() || width <= 0.0 || width > 1.0e6)
+        {
+            return Err("margin gap must be nonnegative and width must be greater than zero and at most 1000000 pt".into());
+        }
+        if [self.space_before, self.space_between, self.first_baseline_min, self.rule.weight, self.rule.width]
+            .iter()
+            .any(|n| !n.is_finite() || *n < 0.0)
+            || !self.rule.offset.is_finite()
+            || !self.rule.left_indent.is_finite()
+            || !self.rule.tint.is_finite()
+        {
+            return Err("note spacing and rule dimensions must be finite, with nonnegative spacing, width and weight".into());
+        }
+        Ok(())
+    }
+
     /// The number as shown at the reference (`text == false`) or before the footnote text.
     pub fn label(&self, n: u32, text: bool) -> String {
         let num = self.style.format(n);
@@ -194,7 +265,7 @@ impl Story {
             max = max.max(id);
             let mut text = Story::new(StoryId(0));
             text.chars[0].format = CharFormat::default();
-            self.notes.insert((k + i).min(self.notes.len()), Arc::new(Footnote { id, text }));
+            self.notes.insert((k + i).min(self.notes.len()), Arc::new(Footnote { id, series: 0, text }));
         }
     }
 
@@ -255,7 +326,16 @@ impl crate::Document {
     /// Number of the first footnote of story `sid` when numbering runs through the document:
     /// the start number plus the footnotes of stories that start on earlier pages.
     pub fn footnote_start(&self, sid: StoryId) -> u32 {
-        let o = &self.footnote_options;
+        self.footnote_series_start(sid, 0)
+    }
+
+    /// Options for a series; unknown ids use the legacy series on imported or pasted text.
+    pub fn note_options(&self, series: u64) -> &FootnoteOptions {
+        self.note_series.iter().find(|s| s.id == series && series != 0).map_or(&self.footnote_options, |s| &s.options)
+    }
+
+    pub fn footnote_series_start(&self, sid: StoryId, series: u64) -> u32 {
+        let o = self.note_options(series);
         if o.restart != NoteRestart::Never {
             return o.start_at;
         }
@@ -265,7 +345,12 @@ impl crate::Document {
         };
         let Some(me) = self.story(sid) else { return o.start_at };
         let mine = key(me);
-        let before: usize = self.stories.values().filter(|st| st.id != sid && !st.notes.is_empty() && key(st) < mine).map(|st| st.notes.len()).sum();
+        let before: usize = self
+            .stories
+            .values()
+            .filter(|st| st.id != sid && !st.notes.is_empty() && key(st) < mine)
+            .map(|st| st.notes.iter().filter(|n| n.series == series).count())
+            .sum();
         o.start_at.saturating_add(before as u32)
     }
 
@@ -330,5 +415,25 @@ mod tests {
         o.affix_in = AffixIn::Reference;
         assert_eq!(o.label(4, false), "[4]");
         assert_eq!(o.label(4, true), "4");
+    }
+}
+
+#[cfg(test)]
+mod series_tests {
+    use super::*;
+
+    #[test]
+    fn continuous_series_count_only_their_own_earlier_notes() {
+        let mut d = crate::Document::new(&crate::build::NewDocument::default());
+        d.note_series.push(NoteSeries { id: 1, name: "Sources".into(), options: FootnoteOptions { start_at: 10, ..Default::default() } });
+        let mut first = Story::with_text(StoryId(1), "Body", Default::default());
+        first.insert_note(0, "ordinary", Default::default());
+        let id = first.insert_note(first.len(), "source", Default::default()).unwrap();
+        first.note_mut(id).unwrap().series = 1;
+        first.insert_note(first.len(), "ordinary", Default::default());
+        d.stories.insert(first.id, Arc::new(first));
+        d.stories.insert(StoryId(2), Arc::new(Story::new(StoryId(2))));
+        assert_eq!(d.footnote_series_start(StoryId(2), 0), 3);
+        assert_eq!(d.footnote_series_start(StoryId(2), 1), 11);
     }
 }
