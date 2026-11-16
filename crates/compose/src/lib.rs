@@ -49,7 +49,7 @@ use designcraft_geom::{Affine, Point, Rect};
 use crate::breaker::{Break, Spacing};
 pub use crate::cache::{Cache, ShownOn};
 use crate::notes::{NoteColumn, NoteSnapshot, Notes, SplitPlan};
-pub use crate::notes::{find_note, hit_note, hit_note_with, note_caret};
+pub use crate::notes::{find_note, find_note_part, hit_note, hit_note_with, note_caret};
 pub use crate::outline::FrameOutline;
 use crate::parabox::ParaBox;
 pub use crate::placed::Placement;
