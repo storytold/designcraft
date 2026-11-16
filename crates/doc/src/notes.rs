@@ -351,29 +351,48 @@ impl crate::Document {
             }
             return;
         }
-        let mut mapped = std::collections::HashMap::new();
-        let mut used = std::collections::HashSet::new();
-        // Map the source library in declaration order, so separate copied stories reuse the
-        // same counters while distinct source series with matching definitions stay distinct.
-        for series in source.note_series.iter().filter(|s| s.id != 0) {
-            let id = if let Some(existing) =
-                self.note_series.iter().find(|s| !used.contains(&s.id) && s.name == series.name && s.options == series.options)
-            {
-                existing.id
-            } else {
-                let id = crate::ids::next_local_id(self.note_series.iter().map(|s| s.id));
-                self.note_series.push(NoteSeries { id, ..series.clone() });
-                id
-            };
-            used.insert(id);
-            mapped.insert(series.id, id);
-        }
+        let mapped = self.adopt_note_series_ids(source);
         for note in &mut story.notes {
             let id = mapped.get(&source.note_series_id(note.series)).copied().unwrap_or(0);
             if note.series != id {
                 Arc::make_mut(note).series = id;
             }
         }
+    }
+
+    /// Map an imported series library once for notes and stream routes using the same ids.
+    pub fn adopt_note_series_ids(&mut self, source: &Self) -> std::collections::HashMap<u64, u64> {
+        let mut mapped = std::collections::HashMap::new();
+        let mut used = std::collections::HashSet::new();
+        // Clipboard snapshots can outlive a deleted equivalent series. Reserve surviving
+        // id-and-definition matches before declaration-order matching can consume them.
+        for series in source.note_series.iter().filter(|s| s.id != 0) {
+            if self.note_series.iter().any(|s| s.id == series.id && s.name == series.name && s.options == series.options) {
+                mapped.insert(series.id, series.id);
+                used.insert(series.id);
+            }
+        }
+        // Map the source library in declaration order, so separate copied stories reuse the
+        // same counters while distinct source series with matching definitions stay distinct.
+        for series in source.note_series.iter().filter(|s| s.id != 0) {
+            if mapped.contains_key(&series.id) {
+                continue;
+            }
+            let id = if let Some(existing) =
+                self.note_series.iter().find(|s| !used.contains(&s.id) && s.name == series.name && s.options == series.options)
+            {
+                existing.id
+            } else {
+                // Do not give a newly adopted definition another source definition's id:
+                // a later adoption would mistake it for a surviving exact match.
+                let id = crate::ids::next_local_id(self.note_series.iter().chain(&source.note_series).map(|s| s.id));
+                self.note_series.push(NoteSeries { id, ..series.clone() });
+                id
+            };
+            used.insert(id);
+            mapped.insert(series.id, id);
+        }
+        mapped
     }
 
     /// Options for a series; unknown ids use the legacy series on imported or pasted text.
@@ -489,6 +508,37 @@ mod series_tests {
 #[cfg(test)]
 mod adoption_tests {
     use super::*;
+    #[test]
+    fn repeated_adoption_keeps_conflicting_identical_definitions_mapped_consistently() {
+        let mut source = crate::Document::new(&Default::default());
+        for id in [1, 2] {
+            source.note_series.push(NoteSeries { id, name: "Sources".into(), options: Default::default() });
+        }
+        let mut destination = crate::Document::new(&Default::default());
+        destination.note_series.push(NoteSeries { id: 1, name: "Other".into(), options: Default::default() });
+        let first = destination.adopt_note_series_ids(&source);
+        let again = destination.adopt_note_series_ids(&source);
+        assert_eq!(again, first);
+        assert_ne!(first[&1], first[&2]);
+        assert_eq!(destination.note_series.len(), 3);
+    }
+
+    #[test]
+    fn adoption_preserves_a_surviving_identical_series_after_copy_then_delete() {
+        let mut source = crate::Document::new(&Default::default());
+        for id in [1, 2] {
+            source.note_series.push(NoteSeries { id, name: "Sources".into(), options: Default::default() });
+        }
+        let mut copied = Story::new(StoryId(0));
+        let note = copied.insert_note(0, "Second series", Default::default()).unwrap();
+        copied.note_mut(note).unwrap().series = 2;
+        let mut destination = source.clone();
+        destination.note_series.retain(|series| series.id != 1);
+        destination.adopt_note_series(&mut copied, &source);
+        assert_eq!(copied.notes[0].series, 2, "paste stays in the surviving numbering sequence");
+        assert_eq!(destination.note_series.iter().filter(|series| series.id == 2).count(), 1);
+    }
+
     #[test]
     fn adoption_keeps_identical_source_series_independent() {
         let mut source = crate::Document::new(&Default::default());
