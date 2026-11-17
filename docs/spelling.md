@@ -1,7 +1,7 @@
 # Spelling and proofreading
 
 DesignCraft checks spelling with the suite's shared engine, [`craft-proof`](https://github.com/storytold/craft-libs/tree/main/crates/proof),
-and reviews it with the shared interface, [`craft-proof-ui`](https://github.com/storytold/craft-libs/tree/379ba8560b36bc3c22a1ce854abb135cc7f06861/crates/proof-ui).
+and reviews it with the shared interface, [`craft-proof-ui`](https://github.com/storytold/craft-libs/tree/2444cc99ca4db03d08cc903b003ce3c275e7a80a/crates/proof-ui).
 
 ## Using it
 
@@ -49,8 +49,8 @@ normalized or inserted.
 Builds contain no Khmer dictionaries for now. They never report Khmer as checked without them: the
 panel says the text was not checked, and `spelling.status` reports availability. `craft-khmer` refuses
 `CRAFT_KHMER_DIR`, with no bypass, until maintainers sign off on the data's licence classification and the
-policy for trained models and converted configuration; see [PROVENANCE.md](https://github.com/storytold/craft-libs/blob/bef543b3731e624f963572e8c11b9545faf136f8/crates/khmer/PROVENANCE.md).
-[`crates/khmer/DATA.md`](https://github.com/storytold/craft-libs/blob/bef543b3731e624f963572e8c11b9545faf136f8/crates/khmer/DATA.md) in craft-libs describes the build for after that approval.
+policy for trained models and converted configuration; see [PROVENANCE.md](https://github.com/storytold/craft-libs/blob/d8ca3a6cf287868f648175d9ee8b9134d0b81ae1/crates/khmer/PROVENANCE.md).
+[`crates/khmer/DATA.md`](https://github.com/storytold/craft-libs/blob/d8ca3a6cf287868f648175d9ee8b9134d0b81ae1/crates/khmer/DATA.md) in craft-libs describes the build for after that approval.
 
 SBBIC identifies its internal work, the SEAlang frequency lists and SIL NRSI's khmerlbdict as the data's
 sources; their MIT notices are in `NOTICE`. The tagger was trained on internal documents that SBBIC has

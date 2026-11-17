@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 
 use designcraft_compose::Cache;
 use designcraft_doc::Document;
+use designcraft_engine::cmd::LinkListChecks;
 use designcraft_engine::cmd::preflight::{Issue, check_document};
 
 use crate::DesignApp;
@@ -177,7 +178,7 @@ fn issues_at(app: &mut DesignApp, ctx: &egui::Context, now: f64) -> Option<Arc<V
         return state.found.iter().find(|f| f.of.uid == of.uid).map(|f| Arc::clone(&f.issues));
     }
     let _ = (ctx, now);
-    let issues = Arc::new(check_document(&doc, &cache, of.path.as_deref().map(std::path::Path::new), MIN_PPI));
+    let issues = Arc::new(check_document(&doc, &cache, of.path.as_deref().map(std::path::Path::new), MIN_PPI, &mut LinkListChecks::default()));
     #[cfg(test)]
     {
         state.inline_checks += 1;
@@ -373,16 +374,19 @@ fn spawn(ctx: egui::Context, live: &Arc<std::sync::atomic::AtomicUsize>) -> Opti
         .spawn(move || {
             let _alive = alive;
             let mut own = None;
+            // The linked files read and what they held, so a file is read once per new time.
+            let mut links = LinkListChecks::default();
             loop {
                 let job = match jobs.recv_timeout(FORGET_AFTER) {
                     Ok(job) => job,
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                         own = None;
+                        links = LinkListChecks::default();
                         continue;
                     }
                     Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
                 };
-                if done_tx.send(check(&mut own, job)).is_err() {
+                if done_tx.send(check(&mut own, &mut links, job)).is_err() {
                     break;
                 }
                 ctx.request_repaint();
@@ -394,9 +398,9 @@ fn spawn(ctx: egui::Context, live: &Arc<std::sync::atomic::AtomicUsize>) -> Opti
 
 /// Checks `job` with the worker's own compositions, `own`.
 #[cfg(not(target_arch = "wasm32"))]
-fn check(own: &mut Option<(u64, Cache)>, job: Job) -> Found {
+fn check(own: &mut Option<(u64, Cache)>, links: &mut LinkListChecks, job: Job) -> Found {
     let started = Instant::now();
-    let issues = check_document(&job.doc, reader(own, &job), job.of.path.as_deref().map(std::path::Path::new), MIN_PPI);
+    let issues = check_document(&job.doc, reader(own, &job), job.of.path.as_deref().map(std::path::Path::new), MIN_PPI, links);
     // The checked state isn't kept alive by its check once the result is sent.
     drop(job.doc);
     Found { of: job.of, issues: Arc::new(issues), took: started.elapsed(), asked_at: 0.0 }
