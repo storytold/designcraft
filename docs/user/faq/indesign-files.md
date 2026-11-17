@@ -11,4 +11,4 @@ DesignCraft converts INDD and INDT to IDML in memory before importing. Check the
 
 Check the layout after importing IDML. Some text frames may fail to render without a warning ([#193](https://github.com/storytold/designcraft/issues/193)). For pink text, see [Missing fonts](../guides/open-a-file.md#missing-fonts). Round trips still need testing across a representative set of real InDesign files.
 
-DesignCraft can also export PDF (including PDF/X-4 and PDF/A-2b), PNG and EPUB. See [Export a PDF](../guides/export-a-pdf.md).
+DesignCraft can also export PDF (including PDF/X-1a:2003, PDF/X-4 and PDF/A-2b), PNG and EPUB. See [Export a PDF](../guides/export-a-pdf.md).

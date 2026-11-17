@@ -1,6 +1,6 @@
 # DesignCraft parity with Adobe InDesign
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-17 · **Change:** patch (IDML warnings reflect open issues and the remaining real-file corpus gap (#2908)) · **Target:** Adobe InDesign 2026 (21.6.0.57, macOS)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-17 · **Change:** patch (PDF export summaries include the shipped PDF/X-1a:2003 standard (#2909)) · **Target:** Adobe InDesign 2026 (21.6.0.57, macOS)
 
 The authoritative assessment of how close DesignCraft is to Adobe InDesign. [ROADMAP.md](../ROADMAP.md)
 summarizes it; [gaps.md](gaps.md) lists every known shortfall one at a time; the feature-by-feature
@@ -60,7 +60,7 @@ they receive, setting type exactly, and basic editing that never fails.
 |---|---|---|---|---|---|
 | Features (depth of each area) | 25% | 55% | 250–400 | 275 catalogue rows exist; many lack options (e.g. Books is 258 lines of engine code, Liquid Layout 329); see the area table | this file |
 | Typography and composition fidelity | 15% | 45% | 120–200 | Knuth–Plass composer, keeps, grids, CJK, Arabic all exist; no comparison with InDesign's line breaks; optical kerning falls back to metrics (#181); overset rule differs (#180); hyphenation patterns for English, Spanish, Portuguese, Norwegian, Danish, Greek, German 2006, French, Italian and Dutch only | [typography-parity.md](typography-parity.md) |
-| File formats | 20% | 40% | 150–250 (+10–30 for an INDD corpus) | INDD and INDT open through indd-utils, measured on synthetic bytes only (#21); IDML both ways and verified in InDesign 2026, with open text-frame issue #193 and no real-file corpus test; PDF export strong; PDF/X-4 only | [file-format-parity.md](file-format-parity.md) |
+| File formats | 20% | 40% | 150–250 (+10–30 for an INDD corpus) | INDD and INDT open through indd-utils, measured on synthetic bytes only (#21); IDML both ways and verified in InDesign 2026, with open text-frame issue #193 and no real-file corpus test; PDF export includes PDF/X-4 and PDF/X-1a:2003 | [file-format-parity.md](file-format-parity.md) |
 | UI/UX fidelity | 15% | 45% | 120–180 | Measured InDesign 2026 look; but users report object copy/paste (#351, #348, #185, #164), right-click menus (#238, #187, #160), out-port threading (#352, #194, #165) failing | [ui-parity.md](ui-parity.md) |
 | Stability | 10% | 45% | 60–100 | Never-crash rules and last-resort guards; startup failures on some GPUs and machines (#334, #273, #220, #192, #167, #166); [shared quality gate](../.github/workflows/ci.yml) runs on pull requests and pushes to main | [gaps.md](gaps.md) |
 | Performance | 5% | 65% | 40–80 | 300k characters compose in ~38 ms warm; typing repaints in < 1 ms (damage regions); no incremental composition; nothing benchmarked against InDesign; no large real documents | [gaps.md](gaps.md) |
@@ -116,7 +116,7 @@ twice.
 | Tables | 5% | 55% | anchored objects in cells, Table Options submenus |
 | Layers | 3% | 75% | |
 | Effects and transparency | 3% | 50% | fidelity unmeasured |
-| Output: PDF export, print, package | 8% | 60% | PDF/X-4 strong; no X-1a or presets; physical print validation pending |
+| Output: PDF export, print, package | 8% | 60% | PDF/X-4 and PDF/X-1a:2003; PDF/X-3 and Adobe .joboptions are pending, as is physical print validation |
 | View, navigation, undo, save | 3% | 70% | |
 | **Weighted depth** | 100% | **60.7%** | |
 
@@ -216,7 +216,7 @@ table is the one summed.
 | Tables | 100% | 55% | 25–40 | anchored objects in cells not drawn (#163); Table ▸ Table Options submenus, Diagonal Lines, Edit Header/Footer |
 | Long documents | 100% | 45% | 30–50 | Books are shallow (sync, book pagination, book PDF/TOC/index); Table of Contents Styles |
 | Interactivity & digital | 100% | 40% | 30–50 | HTML export basic (#314); fixed-layout EPUB is page images; no animation, timing, media playback |
-| Output & production | 92% | 55% | 40–70 | PDF/X-4 only (no X-1a/X-3), with visible unembedded font detection (below); no PDF/print presets or `.joboptions`, print via craft-print (CUPS/Windows), no trapping; Output Preview panel |
+| Output & production | 92% | 55% | 40–70 | PDF/X-4 (with visible unembedded font detection) and PDF/X-1a:2003; PDF/X-3 and Adobe `.joboptions` pending, print via craft-print (CUPS/Windows), no trapping; Output Preview panel |
 | XML & automation | 100% | 35% | (ecosystem dimension) | no ExtendScript/UXP; XML structure depth |
 | View & navigation | 100% | 65% | 10–20 | Navigator, display badges, Show/Hide extras (content grabber, live corners) |
 | Undo, history, saving | 100% | 70% | 5–10 | Undo/Redo name the action |
@@ -477,6 +477,7 @@ Task notes that headed ROADMAP.md:
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-17 | patch | PDF export summaries include the shipped PDF/X-1a:2003 standard (#2909) |
 | 2026-11-17 | patch | IDML warnings reflect open issues and the remaining real-file corpus gap (#2908) |
 | 2026-11-15 | minor | Correct Stability evidence to reflect the existing PR quality gate; readiness, factors and hours unchanged |
 | 2026-11-04 | minor | Localization evidence: 15 translations beyond English, pt-BR ~100%; readiness and hours unchanged |
