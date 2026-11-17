@@ -5,8 +5,8 @@ use std::process::Command;
 use serde_json::Value;
 
 const REPO: &str = "https://github.com/storytold/craft-libs";
-const REV: &str = "3af718585c60d8e9bab05c241d7a28282c61f85c";
-const COMMIT: &str = "3af718585c60d8e9bab05c241d7a28282c61f85c";
+const REV: &str = "453b0da782ccef39be9a6dac8d27c80b553ef1cc";
+const COMMIT: &str = "453b0da782ccef39be9a6dac8d27c80b553ef1cc";
 const PACKAGES: &[(&str, &str)] = &[
     ("craft-pdf", "0.1.0"),
     ("krilla", "0.8.2"),
