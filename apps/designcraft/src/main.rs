@@ -428,6 +428,9 @@ fn main() -> std::process::ExitCode {
                 session.recovery_dir = profile::recovery_dir();
                 let recovered = session.execute("file.recovery.open", &serde_json::json!({})).ok();
                 let mut app = DesignApp::new(session, services());
+                // The craft UI framework's runtime, when the Transform pilot asked for it, before the
+                // context's first pass (it refuses to install inside one).
+                app.install_framework(&cc.egui_ctx);
                 app.set_startup_update_check(true);
                 if let Some(line) = restarted.or_else(|| created.status_line()) {
                     app.status(line);

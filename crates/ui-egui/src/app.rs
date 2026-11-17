@@ -28,6 +28,25 @@ pub(crate) use files::browser_import_tests;
 pub use files::opens_as_document;
 
 impl DesignApp {
+    /// Installs the craft UI framework's runtime on `ctx` when the Transform pilot is on.
+    ///
+    /// The runtime's pass hooks are what give the framework's components an env, a pointer snapshot and
+    /// key state, and it refuses to install inside a pass, so a host calls this once after it made the
+    /// context and before the first pass: the desktop shell with the eframe creation context, a test with
+    /// its own. With the pilot off nothing is installed, so the app's context, input options and wheel
+    /// modifiers stay exactly what they were.
+    pub fn install_framework(&mut self, ctx: &egui::Context) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.framework_transform {
+            crate::framework_transform::install(ctx);
+            // A context that already had the runtime is fine; the fields draw either way. Without it they
+            // would paint and take no input, so the panel keeps the bespoke fields instead.
+            self.framework_installed = true;
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = ctx;
+    }
+
     /// Start the background font scan, establish the monotonic timing origin, and initialize document, view, input, screenshot, dialog and control state.
     pub fn new(session: Session, services: Services) -> Self {
         // The font menus and the first file opened need the installed fonts: catalog them now.
@@ -95,6 +114,14 @@ impl DesignApp {
             #[cfg(test)]
             input_ticks: 0,
             styled: false,
+            // the third-track pilot's framework-drawn Transform fields: off unless asked for, so the
+            // shipping app keeps the bespoke numeric fields and its own context options
+            #[cfg(not(target_arch = "wasm32"))]
+            framework_transform: crate::framework_transform::enabled(),
+            #[cfg(target_arch = "wasm32")]
+            framework_transform: false,
+            framework_installed: false,
+            framework_fields: Vec::new(),
             fonts_lang: String::new(),
             fonts_system: false,
             restyle: false,
@@ -193,6 +220,9 @@ impl DesignApp {
             self.input_ticks += 1;
         }
         let ctx = ui.ctx().clone();
+        // The Transform pilot's field rects are this frame's only: a frame that draws no pilot field
+        // (bespoke units, no selection, Properties hidden) reports none rather than the last ones.
+        self.framework_fields.clear();
         self.canvas_ime = false;
         self.ime_canvas = None;
         self.ime_interrupt = false;

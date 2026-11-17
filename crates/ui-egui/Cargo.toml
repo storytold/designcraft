@@ -52,6 +52,9 @@ serde_json = { workspace = true }
 toml = "1"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The craft UI framework's own components (Properties > Transform's pilot rows). The browser build
+# keeps the bespoke fields, so the framework is not a wasm dependency.
+craft = { workspace = true }
 craft-update = { workspace = true }
 # File and message dialogs that never block the frame; the browser build uses its own path.
 craft-dialogs = { workspace = true }

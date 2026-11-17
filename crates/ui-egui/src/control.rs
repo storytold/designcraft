@@ -71,6 +71,20 @@ pub fn all_commands(app: &DesignApp) -> Value {
     Value::Array(v)
 }
 
+/// The Transform pilot's field rects from the last pass: `{"x": [left, top, width, height], …}`, empty
+/// unless `DESIGNCRAFT_FRAMEWORK_TRANSFORM` is on and a selection shows the Transform section.
+fn framework_transform(app: &DesignApp) -> Value {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        crate::framework_transform::inspect(app)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = app;
+        Value::Null
+    }
+}
+
 pub fn inspect(app: &DesignApp, ctx: &egui::Context) -> Value {
     let r = ctx.content_rect();
     json!({
@@ -97,6 +111,8 @@ pub fn inspect(app: &DesignApp, ctx: &egui::Context) -> Value {
         "dialog": app.ui.dialog.as_ref().map(|d| serde_json::to_value(d).unwrap_or_default()),
         "activeDocument": app.session.active_index(),
         "perf": {"frameMs": app.perf.frame_ms, "renderMs": app.perf.render_ms, "fps": app.perf.fps, "patches": app.canvas.patches},
+        // The Transform pilot's own field rects, as the craft UI framework laid them out (`DESIGNCRAFT_FRAMEWORK_TRANSFORM=1`).
+        "frameworkTransform": framework_transform(app),
     })
 }
 

@@ -67,6 +67,10 @@ pub use prefs::ReadPreferences;
 
 mod app;
 mod clock;
+#[cfg(not(target_arch = "wasm32"))]
+mod framework_transform;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod framework_transform_tests;
 mod key_names;
 mod services;
 mod state;
@@ -319,6 +323,15 @@ pub struct DesignApp {
     pub cursors: cursors::Images,
     /// A panel's live preview (a slider being dragged), committed when it is let go.
     live_preview: LivePreview,
+    /// Properties > Transform's X/Y/W/H on the craft UI framework's own `NumberField`
+    /// (`DESIGNCRAFT_FRAMEWORK_TRANSFORM=1`, see [`framework_transform`]). Off, every panel keeps the
+    /// implementation it had.
+    pub framework_transform: bool,
+    /// The framework's runtime is on this context: without it a component paints but takes no input, so
+    /// the Transform fields stay bespoke instead of drawing fields that ignore the pointer.
+    pub(crate) framework_installed: bool,
+    /// The pilot's field rects from the last pass, as the framework laid them out (tests and `ui.inspect`).
+    pub(crate) framework_fields: Vec<(String, egui::Rect)>,
     pub(crate) updates_rt: updates_ui::Runtime,
 }
 

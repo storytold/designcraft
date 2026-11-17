@@ -30,7 +30,12 @@ fn main() {
     if lines.first().is_none_or(|l| l.get("empty").is_none()) {
         let _ = app.run("file.newSample", serde_json::json!({}));
     }
+    // The craft UI framework's runtime goes on the context before its first pass, as the desktop shell
+    // does; it is a no-op unless `DESIGNCRAFT_FRAMEWORK_TRANSFORM` asked for the Transform pilot.
+    let ctx = egui::Context::default();
+    app.install_framework(&ctx);
     let mut harness = egui_kittest::Harness::builder()
+        .with_context(ctx)
         .with_size(egui::vec2(1440.0, 900.0))
         .with_step_dt(1.0 / 60.0)
         .with_pixels_per_point(2.0)

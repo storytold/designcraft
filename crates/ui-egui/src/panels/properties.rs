@@ -54,17 +54,17 @@ fn show_panel(app: &mut DesignApp, panel: &str) {
     }
 }
 
-fn units(app: &DesignApp) -> Unit {
+pub(crate) fn units(app: &DesignApp) -> Unit {
     app.session.active().map(|d| d.doc.settings.horizontal_units).unwrap_or(Unit::Picas)
 }
 
 /// Allocate a full-width block `h` tall.
-fn block(ui: &mut Ui, h: f32) -> Rect {
+pub(crate) fn block(ui: &mut Ui, h: f32) -> Rect {
     ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::hover()).0
 }
 
 /// A sub-rect of a block at (`x`, `y`) relative to its top-left.
-fn sub(b: Rect, x: f32, y: f32, w: f32, h: f32) -> Rect {
+pub(crate) fn sub(b: Rect, x: f32, y: f32, w: f32, h: f32) -> Rect {
     Rect::from_min_size(b.min + vec2(x, y), vec2(w, h))
 }
 

@@ -37,6 +37,21 @@ pub(crate) fn ref_point_proxy(ui: &mut Ui, r: Rect, cur: u8) -> Option<u8> {
     out
 }
 
+/// Whether the four transform fields are the craft UI framework's own (`DESIGNCRAFT_FRAMEWORK_TRANSFORM=1`,
+/// see [`crate::framework_transform`]): the pilot is on, its runtime is on this context, and the
+/// document's unit is one the framework names. Otherwise every field stays bespoke.
+fn framework_fields(app: &DesignApp, i: &SelInfo) -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        app.framework_transform && crate::framework_transform::available(app, i)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (app, i);
+        false
+    }
+}
+
 pub(super) fn transform_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
     let u = units(app);
     let rp = app.ui.ref_point;
@@ -50,21 +65,30 @@ pub(super) fn transform_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
     }
     let constrain = temp_bool(ui, "constrain_wh", false);
     let mut set = serde_json::Map::new();
-    for (row, (lx, vx, kx, lw, vw, kw)) in
-        [("X:", x, "x", "W:", r.width(), "width"), ("Y:", y, "y", "H:", r.height(), "height")].into_iter().enumerate()
-    {
-        let yy = row as f32 * 25.0;
-        place(ui, sub(b, 40.0, yy, 18.0, FIELD_H), |ui| widgets::caption_w(ui, lx, 18.0));
-        if let Some(v) = place(ui, sub(b, 59.0, yy, 54.0, FIELD_H), |ui| measure(ui, kx, Some(vx), u, 54.0)) {
-            set.insert(kx.into(), json!(v));
+    if framework_fields(app, i) {
+        // The third-track pilot: the four fields are the craft UI framework's own `NumberField`s, and
+        // what one commits is the same `transform.set` below (one gesture, one undo step).
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            set = crate::framework_transform::rows(app, ui, b, i, rp, constrain);
         }
-        place(ui, sub(b, 120.0, yy, 19.0, FIELD_H), |ui| widgets::caption_w(ui, lw, 19.0));
-        if let Some(v) = place(ui, sub(b, 140.0, yy, 54.0, FIELD_H), |ui| measure(ui, kw, Some(vw), u, 54.0)) {
-            set.insert(kw.into(), json!(v));
-            if constrain && vw > 0.0 {
-                let k = v / vw;
-                let (ok, ov) = if kw == "width" { ("height", r.height()) } else { ("width", r.width()) };
-                set.insert(ok.into(), json!(ov * k));
+    } else {
+        for (row, (lx, vx, kx, lw, vw, kw)) in
+            [("X:", x, "x", "W:", r.width(), "width"), ("Y:", y, "y", "H:", r.height(), "height")].into_iter().enumerate()
+        {
+            let yy = row as f32 * 25.0;
+            place(ui, sub(b, 40.0, yy, 18.0, FIELD_H), |ui| widgets::caption_w(ui, lx, 18.0));
+            if let Some(v) = place(ui, sub(b, 59.0, yy, 54.0, FIELD_H), |ui| measure(ui, kx, Some(vx), u, 54.0)) {
+                set.insert(kx.into(), json!(v));
+            }
+            place(ui, sub(b, 120.0, yy, 19.0, FIELD_H), |ui| widgets::caption_w(ui, lw, 19.0));
+            if let Some(v) = place(ui, sub(b, 140.0, yy, 54.0, FIELD_H), |ui| measure(ui, kw, Some(vw), u, 54.0)) {
+                set.insert(kw.into(), json!(v));
+                if constrain && vw > 0.0 {
+                    let k = v / vw;
+                    let (ok, ov) = if kw == "width" { ("height", r.height()) } else { ("width", r.width()) };
+                    set.insert(ok.into(), json!(ov * k));
+                }
             }
         }
     }
