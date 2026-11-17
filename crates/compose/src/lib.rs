@@ -1002,6 +1002,13 @@ pub struct FrameSpec {
 }
 
 impl FrameSpec {
+    /// The baseline grid when the text area can be counted in its steps: a step so small, or a
+    /// first line so far off, that the count is more than an f64 holds is no grid (as for the lines).
+    fn countable_grid(&self) -> Option<(f64, f64)> {
+        self.grid
+            .filter(|&(g_start, inc)| inc > 0.0 && inc.is_finite() && [self.area.y0, self.area.y1].iter().all(|y| ((y - g_start) / inc).is_finite()))
+    }
+
     pub fn columns(&self) -> Vec<Rect> {
         let a = self.area;
         // Primary frames inherit the document limit (216), beyond the interactive frame editor's 40.
@@ -1635,6 +1642,8 @@ struct NestedLineStyleInput<'a, 'b, 'font> {
     range: Range<usize>,
     props: &'a designcraft_doc::ParaProps,
     para_chars: &'a designcraft_doc::CharProps,
+    /// The paragraph has CJK text, so its 禁則 priority applies.
+    cjk: bool,
     drop_end: usize,
     base_leading: f64,
     base_cap: f64,
@@ -1660,6 +1669,7 @@ fn apply_nested_line_styles(input: NestedLineStyleInput<'_, '_, '_>) {
         range: prange,
         props: pp,
         para_chars: base_chars,
+        cjk,
         drop_end,
         base_leading,
         base_cap,
@@ -1682,7 +1692,7 @@ fn apply_nested_line_styles(input: NestedLineStyleInput<'_, '_, '_>) {
         let cols_here = &cols[cur.fi];
         let col = span_rect(cols_here, cols_here[cur.col.min(cols_here.len() - 1)], pp.span_columns);
         let col = SplitCfg::of(pp).map_or(col, |c| c.sub_rect(col, 0));
-        let spacing = spacing_for(pp, base_chars.size, story);
+        let spacing = spacing_for(pp, base_chars.size, story, cjk);
         let mut lines: Vec<(std::ops::Range<usize>, String)> = Vec::new();
         for _ in 0..3 {
             // The same drop cap, spacing, hyphenation and breaker as the layout below.
@@ -2791,6 +2801,10 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
         },
         &mut table,
     );
+    // The paragraph's script decides whether its 禁則 priority applies. Classify the shaped
+    // glyphs before split_drop_cap removes the drop cap and prepend_label adds the list
+    // label: a CJK drop cap is part of the paragraph, a generated label is not.
+    let cjk = paragraph_is_cjk(&sp.glyphs);
     // An empty paragraph has no glyphs of its own, so its only addressable character is its
     // hidden paragraph mark (the `\n` just past `prange.end`). A leading/size override applied
     // there (e.g. selecting the pilcrow to adjust line height) still needs to set the line's
@@ -2811,7 +2825,7 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
         let face = db.face(&base_chars.font_family, &base_chars.font_style);
         face.cap_height * base_chars.size / face.upem * base_chars.v_scale
     };
-    let drop_grid = cur_frame.and_then(|f| f.grid).filter(|_| pp.grid_align == GridAlign::AllLines).map(|g| g.1);
+    let drop_grid = cur_frame.and_then(FrameSpec::countable_grid).filter(|_| pp.grid_align == GridAlign::AllLines).map(|g| g.1);
     // Align Left Edge (left-to-right paragraphs).
     let drop_align = pp.drop_cap_align_left && pp.direction == designcraft_doc::TextDirection::LeftToRight;
     // Tab stops for the drop cap, with the start-side indent (the right one, right to left).
@@ -2823,6 +2837,7 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
         range: prange.clone(),
         props: pp,
         para_chars: base_chars,
+        cjk,
         drop_end,
         base_leading,
         base_cap,
@@ -2938,7 +2953,7 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
     let mut hyph_after = hyphenation_points(&story.text, &glyphs, pp, hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), base_chars));
     suppress_hyphens(&mut hyph_after, &glyphs, suppressed_hyphens);
     let base_size = base_chars.size;
-    let spacing = spacing_for(pp, base_size, story);
+    let spacing = spacing_for(pp, base_size, story, cjk);
     // An empty paragraph takes its height from its paragraph mark's character format.
     let mark_chars = if glyphs.is_empty() { doc.styles.resolve_char(base_chars, story.char_format_of(prange.start)) } else { base_chars.clone() };
     let mark_leading = match mark_chars.leading {
@@ -3939,8 +3954,9 @@ fn optical_for(pp: &ParaProps, story: &Story) -> (bool, Option<f64>) {
     }
 }
 
-/// Breaker parameters from the paragraph's settings.
-fn spacing_for(pp: &ParaProps, base_size: f64, story: &Story) -> Spacing {
+/// Breaker parameters from the paragraph's settings; `cjk` says the paragraph has CJK text (so
+/// its 禁則 priority applies).
+fn spacing_for(pp: &ParaProps, base_size: f64, story: &Story, cjk: bool) -> Spacing {
     let (optical, optical_size) = optical_for(pp, story);
     Spacing {
         justify: pp.align.is_justified(),
@@ -3962,13 +3978,49 @@ fn spacing_for(pp: &ParaProps, base_size: f64, story: &Story) -> Spacing {
         optical,
         optical_size,
         korean_char_breaks: pp.korean_char_breaks,
+        kinsoku_cjk: cjk,
+        // JIS X 4051 禁則処理: the empty value is InDesign's default and the UI's "Push In First",
+        // and 調整量優先 (adjustment amount) is the breaker's minimum-adjustment mode 0.
         kinsoku_priority: match pp.kinsoku_type.as_str() {
-            "KinsokuPushInFirst" => 1,
+            "" | "KinsokuPushInFirst" => 1,
             "KinsokuPushOutFirst" => 2,
             "KinsokuPushOutOnly" => 3,
+            "KinsokuPrioritizeAdjustmentAmount" => 0,
             _ => 0,
         },
     }
+}
+
+/// Whether the paragraph's own shaped glyphs contain CJK text, the gate for its 禁則 priority.
+/// Called before `split_drop_cap` and `prepend_label`, so a drop cap counts and generated list
+/// and story labels do not. A text variable or page number keeps its marker in [`Glyph::ch`], so
+/// its replacement text is what the paragraph shows; inspect that too.
+fn paragraph_is_cjk(glyphs: &[Glyph]) -> bool {
+    glyphs.iter().any(|g| is_cjk_char(g.ch) || g.generated_text.as_deref().is_some_and(|text| text.chars().any(is_cjk_char)))
+}
+
+/// Is `c` CJK text (the scripts the 禁則 line-start/line-end rules are about): ideographs, kana,
+/// CJK punctuation and full/half-width forms, bopomofo, Hangul.
+fn is_cjk_char(c: char) -> bool {
+    // Hangul comes from the breaker's classification (Jamo including Extended-A/B, syllables),
+    // so the two sets agree. Bopomofo is 0x3100..=0x312F; 0x3130..=0x318F is Hangul.
+    breaker::is_hangul(c)
+        || matches!(
+            c as u32,
+            0x2E80..=0x2FFF
+                | 0x3000..=0x30FF
+                | 0x3100..=0x312F
+                | 0x3190..=0x33FF
+                | 0x3400..=0x4DBF
+                | 0x4E00..=0x9FFF
+                | 0xA000..=0xA4CF
+                | 0xF900..=0xFAFF
+                | 0xFE30..=0xFE4F
+                | 0xFF00..=0xFFEF
+                // Extension B and later (U+20000..): the same range as the breaker's Han check,
+                // so the kinsoku settings apply to a paragraph of supplementary-plane text alone.
+                | 0x20000..=0x3FFFF
+        )
 }
 
 /// Desired word spacing, letter spacing and glyph scaling apply to every line (any alignment).
@@ -5232,7 +5284,7 @@ fn layout_line(
     let mut offset = 0.0;
     // Kashidas: in justified Arabic, the joins of words take the extra length first.
     let kashidas = if justify_this { allocate_kashidas(&line, &mut add, pp, seg, &mut extra) } else { Vec::new() };
-    if (justify_this || squeeze_last) && (extra >= 0.0 || sp.kinsoku_priority != 3) {
+    if (justify_this || squeeze_last) && (extra >= 0.0 || !sp.push_out_only()) {
         extra = mojikumi::distribute(line.get_mut(seg..).unwrap_or_default(), extra, add.get_mut(seg..).unwrap_or_default());
     }
     if (justify_this || squeeze_last) && !spaces.is_empty() && !khmer_natural {
@@ -6185,21 +6237,72 @@ fn vertical_justify(
                 shift[k] <= 0.0 || ((k == n || l.baseline + l.descent + shift[k] <= limit + 1e-9) && in_outline(l, shift[k]))
             }) && clear(shift)
         };
+        // The room in 0..=`top` at which a moved line's band (from its top down to its baseline, or
+        // to its descent where `inside`), widened by the outline's inset, reaches one of the
+        // outline's corner heights: between two of these each line's fit changes only along the
+        // outline's straight edges. Empty when there are more than `MAX_BAND_BREAKS`.
+        const MAX_BAND_BREAKS: usize = 256;
+        let band_breaks = |o: &FrameOutline, top: f64| -> Vec<f64> {
+            let corners = o.corner_heights();
+            let d = o.inset();
+            // Each row's shift is linear in the room, apart from Justify's turn where the space
+            // between paragraphs reaches the Paragraph Spacing Limit.
+            let mut knots = vec![0.0, top];
+            let turn = gaps as f64 * para_limit;
+            if f.opts.vertical_justification == VerticalJustification::Justify && turn > 0.0 && turn < top {
+                knots.insert(1, turn);
+            }
+            let at: Vec<Vec<f64>> = knots.iter().map(|&c| shifts(c)).collect();
+            let mut out = Vec::new();
+            for (&i, &k) in idx.iter().zip(&rows) {
+                let l = &ft.lines[i];
+                let desc = if inside { l.descent.max(0.0) } else { 0.0 };
+                for &y in &corners {
+                    for v in [y + d - (l.baseline - l.ascent), y - d - (l.baseline + desc)] {
+                        for (c, s) in knots.windows(2).zip(at.windows(2)) {
+                            let (s0, s1) = (s[0][k], s[1][k]);
+                            if s1 > s0 && v > s0 && v < s1 {
+                                out.push(c[0] + (v - s0) * (c[1] - c[0]) / (s1 - s0));
+                            }
+                        }
+                    }
+                    if out.len() > MAX_BAND_BREAKS {
+                        return Vec::new();
+                    }
+                }
+            }
+            out
+        };
         // In a rectangular frame fit decreases monotonically as the shift grows. A shaped
         // frame can narrow and widen again, so scan from the largest shift before refining the
-        // first fitting interval. This also bounds the room used for baseline-grid quantization
-        // and preserves clearance from fixed and anchor-following wraps.
+        // first fitting interval. The scan takes even steps, the band breaks and a room on each
+        // side of every band break, so a band that fits over less room than one step is found
+        // too. This also bounds the room used for baseline-grid quantization and preserves
+        // clearance from fixed and anchor-following wraps.
         let most_room = |top: f64| -> f64 {
             if fits(&shifts(top)) {
                 return top;
             }
-            let (mut lo, mut hi) = if f.outline.is_some() {
+            let (mut lo, mut hi) = if let Some(o) = &f.outline {
                 let steps = top.ceil().clamp(64.0, 512.0) as usize;
+                // Each try is marked when it is a band break; only the gaps next to a break get a
+                // try in their middle.
+                let mut marked: Vec<(f64, bool)> = (0..steps).map(|j| (top * j as f64 / steps as f64, false)).collect();
+                marked.extend(band_breaks(o, top).into_iter().map(|c| (c, true)));
+                marked.push((top, false));
+                marked.sort_by(|a, b| a.0.total_cmp(&b.0));
+                marked.dedup_by(|a, b| {
+                    let same = (a.0 - b.0).abs() < 1e-9;
+                    b.1 |= same && a.1;
+                    same
+                });
+                let mut tries: Vec<f64> = marked.windows(2).filter(|w| w[0].1 || w[1].1).map(|w| (w[0].0 + w[1].0) / 2.0).collect();
+                tries.extend(marked.iter().map(|m| m.0));
+                tries.sort_by(f64::total_cmp);
                 let mut found = (0.0, top);
-                for j in 1..=steps {
-                    let candidate = top * (steps - j) as f64 / steps as f64;
-                    if fits(&shifts(candidate)) {
-                        found = (candidate, top * (steps - j + 1) as f64 / steps as f64);
+                for w in tries.windows(2).rev() {
+                    if fits(&shifts(w[0])) {
+                        found = (w[0], w[1]);
                         break;
                     }
                 }
@@ -6228,7 +6331,7 @@ fn vertical_justify(
             }
         };
         let center = f.opts.vertical_justification == VerticalJustification::Center;
-        let step = f.grid.map(|(_, inc)| inc).filter(|inc| *inc > 0.0 && inc.is_finite()).filter(|_| match f.opts.vertical_justification {
+        let step = f.countable_grid().map(|(_, inc)| inc).filter(|_| match f.opts.vertical_justification {
             VerticalJustification::Justify => idx.iter().zip(&rows).any(|(&i, &k)| k == n && on_grid(i)),
             _ => idx.iter().any(|&i| on_grid(i)),
         });
