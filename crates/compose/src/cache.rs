@@ -540,10 +540,11 @@ fn signature(doc: &Document, story: &Arc<Story>) -> (Vec<usize>, Vec<Arc<Item>>)
 }
 
 /// The start of each named list `story` numbers, for its signature: lists continue from earlier
-/// stories. Finding a start walks the stories before it, so lists the story doesn't number (whose
-/// start can't change its layout) are left out.
+/// stories. Lists that don't continue always start fresh, so a document without continuing lists
+/// adds nothing. Finding a start walks the stories before it, so lists the story doesn't number
+/// (whose start can't change its layout) are left out.
 fn list_starts(doc: &Document, story: &designcraft_doc::Story) -> Vec<usize> {
-    if doc.settings.lists.is_empty() {
+    if !doc.settings.lists.iter().any(|l| l.continue_across_stories) {
         return Vec::new();
     }
     let numbered = numbered_lists(doc, story);
