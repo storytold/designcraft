@@ -43,18 +43,21 @@ fn placed_on(doc: &Document, loc: &ItemLoc, si: usize, pi: Option<usize>) -> Opt
     }
 }
 
-/// Whether the item at `loc` shows in the PDF: it is on an exported layer, and neither it nor a
-/// group around it is hidden. A link on a hidden item would cover nothing. A nonprinting item
+/// Whether the item at `loc` shows in the PDF: it is on an exported layer, neither it nor a
+/// group around it is hidden, and it is not an inactive state of a multi-state object (a frame
+/// draws all the states pasted into it). A link on a hidden item would cover nothing. A nonprinting item
 /// keeps its link: an object rasterized for its soft effects leaves a nonprinting stand-in that
 /// carries the object's links (`link_stand_in` in the engine's PDF flattening).
 fn shown(doc: &Document, loc: &ItemLoc) -> bool {
     let Some(sp) = doc.spread(loc.spread) else { return false };
     let mut items: &[std::sync::Arc<designcraft_doc::Item>] = &sp.items;
+    let mut only: Option<usize> = None;
     for (depth, &i) in loc.path.iter().enumerate() {
-        let Some(it) = items.get(i) else { return false };
+        let Some(it) = items.get(i).filter(|_| only.is_none_or(|a| a == i)) else { return false };
         if it.hidden || (depth == 0 && !doc.layer(it.layer).is_some_and(crate::export::layer_exported)) {
             return false;
         }
+        only = (!it.states.is_empty() && !it.has_nested_items()).then_some(it.active_state);
         items = it.children();
     }
     true
