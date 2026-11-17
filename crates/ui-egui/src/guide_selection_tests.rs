@@ -358,7 +358,8 @@ fn a_guide_dragged_out_of_a_ruler_keeps_its_cursor_until_dropped() {
 }
 
 /// A click on a guide whose release came while something else had the pointer (here Space, which
-/// pans) still ends the guide's drag: the guide doesn't follow the pointer afterwards, and the
+/// pans) still ends the guide's drag where it was, even if the pointer moved before Space was let go:
+/// the guide doesn't follow the pointer afterwards, and the
 /// next click doesn't drop it there (#2833).
 #[test]
 fn a_guide_click_released_during_space_does_not_leave_the_guide_on_the_pointer() {
@@ -370,8 +371,11 @@ fn a_guide_click_released_during_space_does_not_leave_the_guide_on_the_pointer()
     h.key_down(egui::Key::Space);
     h.run_steps(2);
     press(&mut h, at, false, Modifiers::NONE);
+    h.hover_at(screen_of(&h, 260.0, 600.0));
+    h.run_steps(2);
     h.key_up(egui::Key::Space);
     h.run_steps(2);
+    assert_eq!(positions(&h), [200.0, 300.0, 400.0], "the pointer moved after the release: the click still doesn't move the guide");
     assert_eq!(selected(&h), [0], "the click selected the guide");
     h.hover_at(screen_of(&h, 260.0, 600.0));
     h.run_steps(2);

@@ -274,7 +274,10 @@ pub(super) fn guide_drag(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Re
         drag = begin_guide_drag(app, ui, resp, rect, xf, o);
     }
     let Some(mut g) = drag else { return false };
-    if let Some(p) = latest {
+    // A release missed while something else had the pointer ends the drag where it was last shown,
+    // not wherever the pointer went since.
+    let missed = released && !ui.input(|i| i.pointer.primary_released());
+    if let Some(p) = latest.filter(|_| !missed) {
         g.at = Some(p);
     }
     g.mods = ui.input(|i| i.modifiers);
