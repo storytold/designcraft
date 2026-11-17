@@ -18,7 +18,13 @@ fn parse(p: &Value) -> Result<Option<ButtonAction>> {
         "lastPage" => ButtonAction::GoToLastPage,
         "nextPage" => ButtonAction::GoToNextPage,
         "previousPage" => ButtonAction::GoToPreviousPage,
-        "url" => ButtonAction::GoToUrl { url: p.get("url").and_then(Value::as_str).ok_or_else(|| bad("button.set", "`url` required"))?.to_string() },
+        "url" => {
+            let url = p.get("url").and_then(Value::as_str).ok_or_else(|| bad("button.set", "`url` required"))?;
+            if !designcraft_doc::is_safe_link_url(url) {
+                return Err(bad("button.set", "`url` must start with http://, https:// or mailto:"));
+            }
+            ButtonAction::GoToUrl { url: url.to_string() }
+        }
         o => return Err(bad("button.set", format!("unknown action `{o}`"))),
     }))
 }
@@ -178,5 +184,17 @@ mod tests {
         assert!(text.contains("/AcroForm<</Fields[") && text.contains("/FT/Tx") && text.contains("(Your name)") && text.contains("/AS/On"), "fields");
         assert_eq!(designcraft_render::pdf_page_count(&bytes), Some(3), "the update still reads");
         assert!(s.execute("button.list", &json!({})).unwrap().as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn buttons_refuse_non_web_schemes() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 1})).unwrap();
+        let id = s.execute("frame.create", &json!({"rect": [72, 72, 200, 120]})).unwrap()["id"].clone();
+        for bad in ["javascript:alert(1)", "file:///etc/passwd", "\\\\attacker\\share"] {
+            let e = s.execute("button.set", &json!({"ids": [id.clone()], "action": "url", "url": bad})).expect_err("refused").to_string();
+            assert!(e.contains("http://"), "{bad}: {e}");
+        }
+        s.execute("button.set", &json!({"ids": [id], "action": "url", "url": "https://example.com"})).unwrap();
     }
 }
