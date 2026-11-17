@@ -4,6 +4,7 @@
 //! de Rezende, J. Joao Dias Almeida, Leonardo Araujo, Aline Benevides), BSD-3-Clause; Norwegian is
 //! `hyph-no.tex` from hyph-utf8 (Rune Kleveland, Ole Michael Selberg), permissive (see NOTICE);
 //! Danish is `hyph-da.tex` 2011-01-11 from hyph-utf8 (Frank Jensen), LPPL or MIT, taken under MIT;
+//! Estonian is Enn Saar's `hyph-et.tex` from hyph-utf8, LPPL or MIT, taken under MIT;
 //! Dutch is Piet Tutelaers's `hyph-nl.tex` 1.1 from hyph-utf8, MIT; Greek is `hyph-el-monoton.tex` 5.0 from hyph-utf8 (Dimitrios Filippou), LPPL or MIT, taken
 //! under MIT. Those are the **monotonic** patterns, which is what `hypher` maps `el` to, so
 //! polytonic text hyphenates by them as well. French is `hyph-fr.tex` 2.13 from hyph-utf8 (Daniel
@@ -639,6 +640,39 @@ mod tests {
         assert_eq!(h("ziekenhuisopname"), "zie-ken-huis-op-na-me");
         assert_eq!(h("gemeenteraadsverkiezingen"), "ge-meen-te-raads-ver-kie-zin-gen");
         assert_eq!(h("kinderdagverblijf"), "kin-der-dag-ver-blijf");
+    }
+
+    #[test]
+    fn estonian_uses_the_hyph_et_patterns() {
+        let et = Lang::for_language("et").expect("Estonian patterns are bundled");
+        assert_ne!(et, Lang::English);
+        for name in ["Estonian", "$ID/Estonian", " estonian ", "et-EE", "et_EE"] {
+            assert_eq!(Lang::for_language(name), Some(et), "{name}");
+        }
+        for (word, expected) in [
+            ("raamatukogu", "raa-ma-tu-ko-gu"),
+            ("õpetamine", "õpe-ta-mi-ne"),
+            ("tähelepanu", "tä-he-le-pa-nu"),
+            ("küsimused", "kü-si-mu-sed"),
+            ("tööpäev", "töö-päev"),
+            ("ÕPETAMINE", "ÕPE-TA-MI-NE"),
+            ("“õpetamine,”", "“õpe-ta-mi-ne,”"),
+        ] {
+            assert_eq!(word_breaks_in(word, et).1, Source::Patterns, "{word}");
+            assert_eq!(marked(word, et), expected, "{word}");
+        }
+    }
+
+    #[test]
+    fn estonian_respects_paragraph_limits() {
+        let et = Lang::for_language("et").expect("Estonian patterns are bundled");
+        let lim = Limits { after_first: 4, before_last: 4, ..Limits::default() };
+        assert_eq!(hyphen_points_in("raamatukogu", &lim, et), vec![5, 7]);
+        let lim = Limits { min_word: 12, ..Limits::default() };
+        assert!(hyphen_points_in("raamatukogu", &lim, et).is_empty());
+        let lim = Limits { capitalized: false, ..Limits::default() };
+        assert!(hyphen_points_in("Õpetamine", &lim, et).is_empty());
+        assert!(!hyphen_points_in("õpetamine", &lim, et).is_empty());
     }
 
     #[test]

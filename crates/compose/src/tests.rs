@@ -5603,6 +5603,41 @@ fn german_2006_text_gets_german_hyphenation() {
 }
 
 #[test]
+fn estonian_text_gets_estonian_hyphenation() {
+    let text = "õpetamine raamatukogu tähelepanu küsimused tööpäev õpetamine raamatukogu";
+    for composer in [Composer::Paragraph, Composer::SingleLine] {
+        for language in ["Estonian", "et_EE", "$ID/Estonian"] {
+            let para = ParaAttrs { composer: Some(composer), ..Default::default() };
+            let (mut d, sid, _) = doc_with(text, Rect::new(36.0, 36.0, 76.0, 700.0), para);
+            d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.language = Some(language.into()));
+            let cs = compose_story(&d, sid, &ComposeOptions::default());
+            assert!(!cs.is_overset(), "{composer:?}, {language}");
+            let lines = all_lines(&cs);
+            assert!(lines.iter().any(|l| l.hyphenated), "{composer:?}, {language}: Estonian text hyphenates");
+            for line in lines.iter().filter(|l| l.hyphenated) {
+                // The source ranges are bytes, while allowed break positions count characters.
+                let end = line.range.end;
+                let start = text[..end].rfind(' ').map_or(0, |at| at + 1);
+                let word = text[start..].split_whitespace().next().unwrap();
+                let allowed: &[usize] = match word {
+                    "õpetamine" => &[3, 5, 7],
+                    "raamatukogu" => &[3, 5, 7, 9],
+                    "tähelepanu" => &[2, 4, 6, 8],
+                    "küsimused" => &[2, 4, 6],
+                    "tööpäev" => &[3],
+                    _ => panic!("unexpected fixture word: {word}"),
+                };
+                let point = text[start..end].chars().count();
+                assert!(allowed.contains(&point), "{composer:?}, {language}: {word} at {point}");
+            }
+            d.story_mut(sid).unwrap().format_paras(0..text.len(), |f| f.para.hyphenate = Some(false));
+            let cs = compose_story(&d, sid, &ComposeOptions::default());
+            assert!(all_lines(&cs).iter().all(|l| !l.hyphenated), "{composer:?}, {language}: hyphenation can be disabled");
+        }
+    }
+}
+
+#[test]
 fn spanish_text_gets_spanish_hyphenation() {
     let text = "La transición democrática fue una construcción colectiva extraordinariamente compleja y desesperadamente necesaria.";
     let narrow = Rect::new(36.0, 36.0, 120.0, 700.0);
