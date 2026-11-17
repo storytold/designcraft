@@ -190,8 +190,8 @@ anyone outside the project had used the app. New evidence since then:
 - 79 open issues, many about core editing on Windows and Linux (copy/paste, context menus,
   threading, fonts not found, startup crashes), filed against the 0.4 and 0.5 releases.
 - The first measured menu coverage: 69% of the in-scope items of InDesign 21.6's own menu dump.
-- The main file format: InDesign users receive `.indd` files, which DesignCraft can't open. The
-  previous estimate treated INDD as out of scope; a professional can't.
+- The main file format: InDesign users receive `.indd` files. DesignCraft now imports them through indd-utils.
+  Fidelity still needs measurement on a real-file corpus.
 - No comparison of composition against InDesign exists, so typographic fidelity is unproven.
 
 ## Features by area
