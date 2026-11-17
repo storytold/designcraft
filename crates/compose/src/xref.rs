@@ -20,16 +20,39 @@ pub fn has_xrefs(st: &Story) -> bool {
 
 impl XrefIndex {
     /// `get` composes a story (normally through the cache). Stories that hold cross-references or
-    /// running headers are composed without resolving them (their anchors' pages hardly move):
-    /// through the cache they would build this index again, directly or by way of the running-header index.
+    /// running headers are composed here, not through `get`: through the cache they would build
+    /// this index again, directly or by way of the running-header index. Their cross-references
+    /// stay unresolved (their anchors' pages hardly move), but their running headers show what
+    /// they show on the page, since a long one can push an anchor onto the next page. Those come
+    /// from a running-header index of its own, built once, in which the stories that hold
+    /// cross-references, or sit in anchored frames, are composed outside the cache too, so
+    /// nothing comes back here.
     pub fn build(doc: &Document, get: &dyn Fn(StoryId) -> Arc<ComposedStory>) -> XrefIndex {
         let mut pages = HashMap::new();
+        let mut running: Option<Arc<crate::vars::RunningIndex>> = None;
         for (sid, st) in &doc.stories {
             if st.anchors.is_empty() {
                 continue;
             }
-            let indexed = has_xrefs(st) || crate::vars::has_running(doc, st);
-            let cs = if indexed { Arc::new(crate::compose_story(doc, *sid, &Default::default())) } else { get(*sid) };
+            let with_running = crate::vars::has_running(doc, st);
+            let cs = if has_xrefs(st) || with_running {
+                let running = with_running.then(|| {
+                    running
+                        .get_or_insert_with(|| {
+                            Arc::new(crate::vars::RunningIndex::build(doc, &|s| match doc.stories.get(&s) {
+                                // An anchored frame's story would compose its host through the cache too.
+                                Some(src) if has_xrefs(src) || src.frames.iter().any(|f| doc.find(*f).is_none()) => {
+                                    Arc::new(crate::compose_story(doc, s, &Default::default()))
+                                }
+                                _ => get(s),
+                            }))
+                        })
+                        .clone()
+                });
+                Arc::new(crate::compose_story(doc, *sid, &crate::ComposeOptions { running, ..Default::default() }))
+            } else {
+                get(*sid)
+            };
             for a in &st.anchors {
                 let Some(pos) = st.anchor_pos(a.id) else { continue };
                 if let Some((page, ..)) = crate::vars::place(doc, &cs, pos) {

@@ -296,4 +296,53 @@ mod tests {
         let glyphs: usize = cs.frames[0].lines.iter().map(|l| l.glyphs.iter().filter(|g| g.visible && g.adv > 0.0).count()).sum();
         assert_eq!(glyphs, "SeeChapter".len());
     }
+
+    /// The anchor's page was measured with the running header left empty, so a long header in
+    /// front of it, which pushes it onto the next page as shown, left the reference on the old page.
+    #[test]
+    fn cross_reference_page_follows_a_running_header_that_moves_its_destination() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 2, "facingPages": false})).unwrap();
+        // The heading the running header shows, on page 1.
+        let heading = "Alpha beta gamma delta epsilon zeta eta theta iota kappa";
+        let head = s.execute("frame.create", &json!({"rect": [72, 36, 500, 60], "content": "text", "text": heading})).unwrap()["story"].clone();
+        // A one-line frame on page 1 threaded to one on page 2: the header (which does not break
+        // across lines), then the destination in the same paragraph.
+        let a = s.execute("frame.create", &json!({"rect": [72, 200, 272, 218], "content": "text", "text": " Target"})).unwrap();
+        let sp = s.doc().unwrap().doc.page_loc(1).unwrap().0;
+        let b = s.execute("frame.create", &json!({"spread": sp, "rect": [72, 200, 272, 400], "content": "text"})).unwrap();
+        s.execute("text.thread", &json!({"from": a["id"], "to": b["id"]})).unwrap();
+        let dest = a["story"].clone();
+        s.execute("text.select", &json!({"story": dest, "anchor": 0, "focus": 0})).unwrap();
+        s.execute("variables.insert", &json!({"name": "Running Header"})).unwrap();
+        let at = s.doc().unwrap().doc.story(StoryId(dest.as_u64().unwrap())).unwrap().text.find("Target").unwrap();
+        s.execute("text.select", &json!({"story": dest, "anchor": at, "focus": at})).unwrap();
+        let anchor = s.execute("anchor.create", &json!({"name": "Target"})).unwrap()["id"].clone();
+        // The reference, on page 2.
+        let r = s.execute("frame.create", &json!({"spread": sp, "rect": [300, 200, 500, 300], "content": "text", "text": "See"})).unwrap();
+        s.execute("text.select", &json!({"story": r["story"], "anchor": 3, "focus": 3})).unwrap();
+        s.execute("xref.insert", &json!({"anchor": anchor, "format": "Page Number"})).unwrap();
+
+        // The page the destination is shown on, and the one the reference gives, with the
+        // session's cache and with a fresh one.
+        let sid = StoryId(dest.as_u64().unwrap());
+        let pages = |s: &mut Session| {
+            let d = s.doc().unwrap().doc.clone();
+            let st = d.story(sid).unwrap();
+            let (id, pos) = (st.anchors[0].id, st.anchor_pos(st.anchors[0].id).unwrap());
+            let shown = designcraft_compose::vars::page_of(&d, &s.cache.get(&d, sid, None), pos).unwrap();
+            let fresh = designcraft_compose::Cache::new();
+            let fresh = designcraft_compose::xref::XrefIndex::build(&d, &|story| fresh.get(&d, story, None)).page_index(id);
+            (shown, s.execute("xref.list", &json!({})).unwrap()[0]["text"].clone(), fresh)
+        };
+        // The long header pushes the destination onto page 2.
+        assert_eq!(pages(&mut s), (1, json!("page 2"), Some(1)));
+        // A short heading brings it back.
+        let len = s.doc().unwrap().doc.story(StoryId(head.as_u64().unwrap())).unwrap().len();
+        s.execute("text.select", &json!({"story": head, "anchor": 0, "focus": len})).unwrap();
+        s.execute("text.insert", &json!({"text": "Hi"})).unwrap();
+        assert_eq!(pages(&mut s), (0, json!("page 1"), Some(0)));
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(pages(&mut s), (1, json!("page 2"), Some(1)));
+    }
 }
