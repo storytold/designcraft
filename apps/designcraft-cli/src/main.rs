@@ -302,16 +302,20 @@ fn thumbnail(args: &[String]) -> Result<(), String> {
 /// link (the same device and inode). An `out` that doesn't exist yet can't be the input.
 fn names_the_same_file(input: &std::path::Path, out: &std::path::Path) -> bool {
     let (Ok(a), Ok(b)) = (std::fs::canonicalize(input), std::fs::canonicalize(out)) else { return false };
-    if a == b {
-        return true;
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        if let (Ok(a), Ok(b)) = (std::fs::metadata(&a), std::fs::metadata(&b)) {
-            return (a.dev(), a.ino()) == (b.dev(), b.ino());
-        }
-    }
+    a == b || same_inode(&a, &b)
+}
+
+/// Whether `a` and `b` are hard links to one file: the same device and inode.
+#[cfg(unix)]
+fn same_inode(a: &std::path::Path, b: &std::path::Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let (Ok(a), Ok(b)) = (std::fs::metadata(a), std::fs::metadata(b)) else { return false };
+    (a.dev(), a.ino()) == (b.dev(), b.ino())
+}
+
+/// Only Unix has hard links; elsewhere the canonical path is all there is.
+#[cfg(not(unix))]
+fn same_inode(_a: &std::path::Path, _b: &std::path::Path) -> bool {
     false
 }
 
