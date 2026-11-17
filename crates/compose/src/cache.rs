@@ -145,22 +145,27 @@ fn indexed_neighbour(doc: &Document, story: &Story) -> bool {
         || margin_needs_running(doc, story)
 }
 
-fn raw_neighbour_placements(doc: &Document, sid: StoryId, depth: usize) -> Vec<(designcraft_doc::ItemId, crate::Placement)> {
+fn raw_neighbour_placements(
+    doc: &Document,
+    sid: StoryId,
+    depth: usize,
+    context: &ComposeOptions,
+) -> Vec<(designcraft_doc::ItemId, crate::Placement)> {
     if depth >= crate::placed::MAX_DEPTH {
         return Vec::new();
     }
     // Cached host resolution can re-enter an index; raw host traversal remains depth bounded.
-    crate::placed::placements(doc, sid, &mut |host| Arc::new(crate::compose_story_unstacked(doc, host, &ComposeOptions::default())))
+    crate::placed::placements(doc, sid, &mut |host| Arc::new(crate::compose_story_unstacked(doc, host, context)))
 }
 
-fn neighbour_placement_signature(doc: &Document, sid: StoryId, story: &Story, depth: usize) -> Option<usize> {
+fn neighbour_placement_signature(doc: &Document, sid: StoryId, story: &Story, depth: usize, context: &ComposeOptions) -> Option<usize> {
     if !indexed_neighbour(doc, story) {
         return None;
     }
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     // A host edit can move an anchored neighbour without editing that neighbour.
-    for (id, p) in raw_neighbour_placements(doc, sid, depth) {
+    for (id, p) in raw_neighbour_placements(doc, sid, depth, context) {
         (id, p.spread, p.xf.as_coeffs().map(f64::to_bits)).hash(&mut h);
         format!("{:?}", doc.spread(p.spread).map(|sp| &sp.pages)).hash(&mut h);
     }
@@ -245,6 +250,8 @@ impl Cache {
         let (mut sig, mut keep_items) = signature(doc, story);
         let neighbours = if cross { crate::wrap::neighbours(doc, sid) } else { Vec::new() };
         let mut keep_stories = Vec::new();
+        let neighbour_context = self.neighbour_context(doc, &neighbours);
+        sig.extend((neighbour_context.running.is_some() || neighbour_context.xrefs.is_some()).then(|| doc_signature(doc) as usize));
         // A neighbour's signature goes in as its hash, and its items only once each: stories on
         // one spread share its wrapping items, so copying every neighbour's whole signature and
         // items made each entry as large as all of theirs together.
@@ -254,7 +261,7 @@ impl Cache {
                 let (s, k) = signature(doc, ns);
                 sig.push(usize::MAX - 1);
                 sig.push(hash_of(&s));
-                sig.extend(neighbour_placement_signature(doc, *n, ns, depth));
+                sig.extend(neighbour_placement_signature(doc, *n, ns, depth, &neighbour_context));
                 keep_items.extend(k.into_iter().filter(|it| kept.insert(Arc::as_ptr(it))));
                 keep_stories.push(ns.clone());
             }
@@ -410,7 +417,7 @@ impl Cache {
         let page = page.filter(|_| with_vars);
         let running = running.then(|| self.running_index(doc));
         let xrefs = with_xrefs.then(|| self.xref_index(doc));
-        let others: Vec<Arc<ComposedStory>> = neighbours.iter().map(|n| self.neighbour(doc, *n, depth, resolved)).collect();
+        let others: Vec<Arc<ComposedStory>> = neighbours.iter().map(|n| self.neighbour(doc, *n, depth, resolved, &neighbour_context)).collect();
         let (mut out, trace) = crate::wrap::compose_among_traced(
             doc,
             sid,
@@ -510,13 +517,26 @@ impl Cache {
         out
     }
 
+    /// Prepare display context before composing guarded neighbours. Index builders never call
+    /// this cache path: their source layouts remain body-only, without index lookups.
+    fn neighbour_context(&self, doc: &Document, neighbours: &[StoryId]) -> ComposeOptions {
+        if !neighbours.iter().filter_map(|sid| doc.story(*sid)).any(|st| indexed_neighbour(doc, st)) {
+            return ComposeOptions::default();
+        }
+        ComposeOptions {
+            running: doc.stories.values().any(|st| crate::vars::has_running(doc, st)).then(|| self.running_index(doc)),
+            xrefs: doc.stories.values().any(|st| crate::xref::has_xrefs(st)).then(|| self.xref_index(doc)),
+            ..Default::default()
+        }
+    }
+
     /// Story `sid` composed for the wrap of its anchored objects in other stories: without other
     /// stories' anchored objects (no cycles), and outside the cache when it needs the document-wide
     /// indexes (they compose every story).
-    fn neighbour(&self, doc: &Document, sid: StoryId, depth: usize, resolved: &mut Resolved) -> Arc<ComposedStory> {
+    fn neighbour(&self, doc: &Document, sid: StoryId, depth: usize, resolved: &mut Resolved, context: &ComposeOptions) -> Arc<ComposedStory> {
         if doc.stories.get(&sid).is_some_and(|st| indexed_neighbour(doc, st)) {
-            let placed = raw_neighbour_placements(doc, sid, depth);
-            Arc::new(crate::wrap::compose_among(doc, sid, &ComposeOptions { placed, ..Default::default() }, &[]))
+            let placed = raw_neighbour_placements(doc, sid, depth, context);
+            Arc::new(crate::wrap::compose_among(doc, sid, &ComposeOptions { placed, ..context.clone() }, &[]))
         } else {
             self.resolve(doc, sid, false, depth, resolved)
         }
