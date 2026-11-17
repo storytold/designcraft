@@ -237,6 +237,45 @@ fn remap_adopted_captions(st: &mut Story, ids: &HashMap<ItemId, ItemId>, depth: 
     }
 }
 
+/// Repair each text scope separately: equal old ids in different cells or notes are independent.
+fn repair_scope_ids(st: &mut Story, seen: &mut HashSet<ItemId>, next: &mut u64, depth: usize) -> usize {
+    let mut renamed = HashMap::new();
+    let mut changed = 0;
+    for obj in &mut st.objects {
+        walk_mut(&mut Arc::make_mut(obj).item, &mut |item| {
+            if !seen.insert(item.id) {
+                let old = item.id;
+                *next = next.saturating_add(1);
+                item.id = ItemId(*next);
+                seen.insert(item.id);
+                renamed.insert(old, item.id);
+                changed += 1;
+            }
+        });
+    }
+    // A surviving caption in this scope still owns its original id; do not redirect its link.
+    for obj in &st.objects {
+        renamed.remove(&obj.item.id);
+    }
+    for obj in &mut st.objects {
+        if let Some(id) = obj.caption_id.and_then(|id| renamed.get(&id).copied()) {
+            Arc::make_mut(obj).caption_id = Some(id);
+        }
+    }
+    if depth >= NESTING {
+        return changed;
+    }
+    for note in st.notes.iter_mut().chain(st.endnotes.iter_mut()) {
+        changed += repair_scope_ids(&mut Arc::make_mut(note).text, seen, next, depth + 1);
+    }
+    for table in st.tables.values_mut() {
+        for cell in &mut Arc::make_mut(table).cells {
+            changed += repair_scope_ids(&mut cell.text, seen, next, depth + 1);
+        }
+    }
+    changed
+}
+
 impl Document {
     /// Does any story (its footnotes and table cells included) hold anchored objects?
     pub fn has_anchored_items(&self) -> bool {
@@ -441,14 +480,7 @@ impl Document {
             let mut next = self.next_id;
             let Some(st) = self.stories.get_mut(sid) else { continue };
             let st = Arc::make_mut(st);
-            items_mut(st, 0, &mut |i| {
-                if !seen.insert(i.id) {
-                    next = next.saturating_add(1);
-                    i.id = ItemId(next);
-                    seen.insert(i.id);
-                    changed += 1;
-                }
-            });
+            changed += repair_scope_ids(st, &mut seen, &mut next, 0);
             st.rev = st.rev.wrapping_add(1);
             self.next_id = next;
         }
@@ -560,6 +592,62 @@ mod tests {
         let n = h.len();
         h.insert_object(n, AnchoredObject::new(it, AnchorPosition::default()));
         (sid, fid)
+    }
+
+    /// Repair duplicate copies independently in body text, footnotes and table-cell scopes.
+    #[test]
+    fn review2_duplicate_repair_remaps_caption_links_in_their_own_scopes() {
+        use crate::{Content, Graphic, Shape, Table};
+        let (mut d, sid) = doc();
+        let (_, caption) = anchor(&mut d, sid, "Caption");
+        let image = ItemId(d.alloc());
+        let mut item = Item::new(image, d.default_layer(), Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 30.0, 20.0)));
+        item.content = Content::Graphic(Graphic {
+            layer_options: None,
+            asset: AssetId(999),
+            size: (30.0, 20.0),
+            xf: designcraft_geom::Affine::IDENTITY,
+            clip: None,
+            auto_fit: Default::default(),
+            fit_align: 4,
+            crop: [0.0; 4],
+            wrap: Default::default(),
+            fill: Default::default(),
+        });
+        let mut obj = AnchoredObject::new(item, Default::default());
+        obj.caption_id = Some(caption);
+        d.story_mut(sid).unwrap().insert_object(0, obj);
+        d.check().unwrap();
+        let source = d.story(sid).unwrap().clone();
+        let layer = d.default_layer();
+        let (_, target) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(320.0, 36.0, 600.0, 700.0), layer, "", ParaFormat::default()).unwrap();
+        let tid = d.alloc();
+        let mut table = Table::new(tid, 1, 1, 0, 0, 200.0);
+        table.cells[0].text.insert_story(0, &source);
+        let end = table.cells[0].text.len();
+        table.cells[0].text.insert_note(end, "", ParaFormat::default());
+        Arc::make_mut(&mut table.cells[0].text.notes[0]).text.insert_story(0, &source);
+        let st = d.story_mut(target).unwrap();
+        st.insert_story(0, &source);
+        st.insert_note(st.len(), "", ParaFormat::default());
+        Arc::make_mut(&mut st.notes[0]).text.insert_story(0, &source);
+        st.insert_table(st.len(), table);
+        assert!(d.fix_anchored_text_frames() > 0);
+        fn linked(st: &Story) {
+            let graphic = st.objects.iter().find(|o| matches!(o.item.content, Content::Graphic(_))).unwrap();
+            let caption = st.objects.iter().find(|o| o.item.text_frame().is_some()).unwrap();
+            assert_eq!(graphic.caption_id, Some(caption.item.id));
+        }
+        linked(d.story(sid).unwrap());
+        assert_eq!(d.story(sid).unwrap().objects[0].caption_id, Some(caption), "unrelated original link stays unchanged");
+        let st = d.story(target).unwrap();
+        linked(st);
+        linked(&st.notes[0].text);
+        let cell = &st.tables[&tid].cells[0];
+        linked(&cell.text);
+        linked(&cell.text.notes[0].text);
+        d.check().unwrap();
+        assert_eq!(d.fix_anchored_text_frames(), 0, "repair is idempotent");
     }
 
     /// The stories the anchored text frames show, with their texts.

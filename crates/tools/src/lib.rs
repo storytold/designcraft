@@ -252,6 +252,47 @@ fn frame_contains_anchor(frame: &designcraft_compose::FrameText, id: ItemId, dep
         || frame.tables.iter().flat_map(|t| &t.cells).any(|c| c.text.frames.iter().any(|f| frame_contains_anchor(f, id, depth + 1)))
 }
 
+/// Nested note/cell frames use anonymous frame ids. Carry their real host and composed offsets.
+fn collect_frame_graphics(
+    frame: &designcraft_compose::FrameText,
+    parent: Affine,
+    host: ItemId,
+    doc: &Document,
+    depth: usize,
+    out: &mut Vec<(ItemId, Rect, Affine, ItemId)>,
+) {
+    for placed in &frame.objects {
+        let item = &placed.object.item;
+        if !matches!(item.content, designcraft_doc::Content::Graphic(_))
+            || item.hidden
+            || item.locked
+            || doc.layer(item.layer).is_some_and(|l| !l.visible || l.locked)
+        {
+            continue;
+        }
+        let xf = parent * Affine::translate(placed.origin.to_vec2());
+        let rect = xf.transform_rect_bbox(item.bounds());
+        if [rect.x0, rect.y0, rect.x1, rect.y1].iter().all(|v| v.is_finite()) {
+            out.push((item.id, rect, xf, host));
+        }
+    }
+    if depth >= 8 {
+        return;
+    }
+    for note in &frame.notes {
+        let xf = parent * Affine::translate(note.origin.to_vec2());
+        for child in &note.text.frames {
+            collect_frame_graphics(child, xf, host, doc, depth + 1, out);
+        }
+    }
+    for cell in frame.tables.iter().flat_map(|t| &t.cells) {
+        let xf = parent * Affine::translate(cell.origin.to_vec2());
+        for child in &cell.text.frames {
+            collect_frame_graphics(child, xf, host, doc, depth + 1, out);
+        }
+    }
+}
+
 impl ToolContext<'_> {
     pub fn tol(&self, px: f64) -> f64 {
         px / self.zoom.max(1e-9)
@@ -287,20 +328,7 @@ impl ToolContext<'_> {
                     continue;
                 }
                 let parent = self.layout.xf(spread) * host_parent * self.doc.text_xf(host);
-                for placed in &frame.objects {
-                    let item = &placed.object.item;
-                    if !matches!(item.content, designcraft_doc::Content::Graphic(_)) || item.hidden || item.locked {
-                        continue;
-                    }
-                    if self.doc.layer(item.layer).is_some_and(|l| !l.visible || l.locked) {
-                        continue;
-                    }
-                    let xf = parent * Affine::translate(placed.origin.to_vec2());
-                    let rect = xf.transform_rect_bbox(item.bounds());
-                    if rect.x0.is_finite() && rect.y0.is_finite() && rect.x1.is_finite() && rect.y1.is_finite() {
-                        out.push((item.id, rect, xf, frame.frame));
-                    }
-                }
+                collect_frame_graphics(frame, parent, frame.frame, self.doc, 0, &mut out);
             }
         }
         out
@@ -337,20 +365,33 @@ impl ToolContext<'_> {
             let item = self.doc.spread(loc.spread)?.items.get(loc.top())?;
             Some((loc.spread, loc.top(), self.doc.layer_rank(item.layer)))
         });
-        self.anchored_graphic_geometry().into_iter().rev().find_map(|(id, bounds, _, host_id)| {
-            if !bounds.contains(p) {
-                return None;
-            }
-            if let Some((front_spread, front_index, front_layer)) = front {
-                let host = self.anchored_host_location(host_id, 0)?;
-                let host_item = self.doc.spread(host.spread)?.items.get(host.top())?;
-                let host_layer = self.doc.layer_rank(host_item.layer);
-                if front_spread != host.spread || front_layer > host_layer || (front_layer == host_layer && front_index > host.top()) {
+        // Story allocation order is unrelated to stacking, especially for custom anchors outside frames.
+        let candidate = self
+            .anchored_graphic_geometry()
+            .into_iter()
+            .enumerate()
+            .filter_map(|(order, (id, bounds, _, host_id))| {
+                if !bounds.contains(p) {
                     return None;
                 }
-            }
-            Some(id)
-        })
+                let host = self.anchored_host_location(host_id, 0)?;
+                let host_item = self.doc.spread(host.spread)?.items.get(host.top())?;
+                let layer = self.doc.layer_rank(host_item.layer);
+                let spread = match host.spread {
+                    SpreadRef::Doc(i) => (0, i),
+                    SpreadRef::Parent(i) => (1, i),
+                };
+                Some(((spread, layer, host.path.clone(), order), id, host.spread))
+            })
+            .max_by(|a, b| a.0.cmp(&b.0))?;
+        let ((_, host_layer, host_path, _), id, host_spread) = candidate;
+        let host_index = *host_path.first()?;
+        if let Some((front_spread, front_index, front_layer)) = front
+            && (front_spread != host_spread || front_layer > host_layer || (front_layer == host_layer && front_index > host_index))
+        {
+            return None;
+        }
+        Some(id)
     }
 
     /// The frontmost text frame under `p`, looking inside groups. [`Self::hit`] stops at the

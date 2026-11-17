@@ -1835,6 +1835,112 @@ mod anchored_transform_tests {
         }
     }
 
+    /// Note/cell graphics use their actual composed offsets and a real host for hits and selection.
+    #[test]
+    fn review2_graphics_in_notes_and_cells_have_valid_geometry() {
+        use designcraft_doc::{ParaFormat, Table};
+        for scope in [0, 1, 2] {
+            let (mut d, host, image, _) = anchored_fixture();
+            let sid = d.item(host).unwrap().text_frame().unwrap().story;
+            let obj = (*d.story(sid).unwrap().objects[0]).clone();
+            d.story_mut(sid).unwrap().delete(0..designcraft_doc::OBJECT_MARK.len_utf8());
+            let tid = d.alloc();
+            let st = d.story_mut(sid).unwrap();
+            if scope == 0 {
+                st.insert_note(0, "Note", ParaFormat::default());
+                std::sync::Arc::make_mut(&mut st.notes[0]).text.insert_object(0, obj);
+            } else {
+                let mut table = Table::new(tid, 1, 1, 0, 0, 250.0);
+                if scope == 1 {
+                    table.cells[0].text.insert_object(0, obj);
+                } else {
+                    table.cells[0].text.insert_note(0, "Cell note", ParaFormat::default());
+                    std::sync::Arc::make_mut(&mut table.cells[0].text.notes[0]).text.insert_object(0, obj);
+                }
+                st.insert_table(0, table);
+            }
+            d.check().unwrap();
+            let (cache, layout) = (Cache::new(), CanvasLayout::new(&d, false));
+            let selected = Selection::items(vec![image]);
+            let cx = context(&d, &selected, &cache, &layout, 1.0);
+            let geometry = cx.anchored_graphic_geometry();
+            let (_, bounds, _, found_host) = geometry.iter().find(|(id, _, _, _)| *id == image).unwrap();
+            assert_eq!(*found_host, host, "synthetic note/cell frame ids must not escape");
+            assert_eq!(cx.selection_bounds(), Some(*bounds));
+            assert_eq!(cx.hit_anchored_graphic(bounds.center()), Some(image));
+            let composed = cache.get(&d, sid, None);
+            let frame = composed.frame(host).unwrap();
+            let (offset, child) = if scope == 0 {
+                (frame.notes[0].origin, &frame.notes[0].text.frames[0])
+            } else {
+                let cell = &frame.tables[0].cells[0];
+                if scope == 1 {
+                    (cell.origin, &cell.text.frames[0])
+                } else {
+                    let note = &cell.text.frames[0].notes[0];
+                    (cell.origin + note.origin.to_vec2(), &note.text.frames[0])
+                }
+            };
+            let placed = &child.objects[0];
+            let xf = layout.xf(SpreadRef::Doc(0))
+                * d.text_xf(d.item(host).unwrap())
+                * Affine::translate(offset.to_vec2())
+                * Affine::translate(placed.origin.to_vec2());
+            assert_eq!(*bounds, xf.transform_rect_bbox(placed.object.item.bounds()));
+        }
+    }
+
+    /// Outside host rectangles, anchored overlaps follow item and layer stacking, not story ids.
+    #[test]
+    fn review2_custom_anchor_hit_follows_host_stacking() {
+        use designcraft_doc::anchored::AnchorRelative;
+        use designcraft_doc::{AnchorPosition, ParaFormat};
+        let (mut d, first, image, _) = anchored_fixture();
+        let first_sid = d.item(first).unwrap().text_frame().unwrap().story;
+        let layer = d.default_layer();
+        let (second, second_sid) =
+            d.add_text_frame(SpreadRef::Doc(0), Rect::new(72.0, 72.0, 420.0, 450.0), layer, "Second", ParaFormat::default()).unwrap();
+        let second_image = ItemId(d.alloc());
+        let mut copy = (*d.story(first_sid).unwrap().objects[0]).clone();
+        copy.item.id = second_image;
+        let position = AnchorPosition::Custom {
+            x_relative: AnchorRelative::TextFrame,
+            y_relative: AnchorRelative::TextFrame,
+            x_offset: 450.0,
+            y_offset: 0.0,
+            object_point: 0,
+            ref_point: 0,
+            keep_within_column: false,
+            spine_relative: false,
+        };
+        copy.position = position.clone();
+        std::sync::Arc::make_mut(&mut d.story_mut(first_sid).unwrap().objects[0]).position = position;
+        d.story_mut(second_sid).unwrap().insert_object(0, copy);
+        let mut upper = d.layers[0].clone();
+        upper.id = designcraft_doc::LayerId(d.alloc());
+        let upper_id = upper.id;
+        d.layers.insert(0, upper);
+        for (front, higher) in [(first, false), (second, false), (first, false), (second, true)] {
+            d.item_mut(first).unwrap().layer = if higher { upper_id } else { layer };
+            let spread = d.spread_mut(SpreadRef::Doc(0)).unwrap();
+            let index = spread.items.iter().position(|i| i.id == front).unwrap();
+            let item = spread.items.remove(index);
+            spread.items.push(item);
+            let (cache, layout) = (Cache::new(), CanvasLayout::new(&d, false));
+            let selection = Selection::default();
+            let cx = context(&d, &selection, &cache, &layout, 1.0);
+            let bounds = cx.anchored_graphic_bounds().into_iter().find(|(id, _)| *id == image).unwrap().1;
+            assert!(cx.hit(bounds.center()).is_none(), "custom anchors must be outside both host frames");
+            assert_eq!(
+                cx.hit_anchored_graphic(bounds.center()),
+                Some(if higher || front == first { image } else { second_image }),
+                "front={front:?}, higher={higher}, first rank={}, second rank={}",
+                d.layer_rank(d.item(first).unwrap().layer),
+                d.layer_rank(d.item(second).unwrap().layer)
+            );
+        }
+    }
+
     /// Verify overlapping handle tolerances choose the nearest handle.
     #[test]
     fn nearest_handle_prefers_closest_when_tolerances_overlap() {
