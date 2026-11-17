@@ -377,6 +377,11 @@ impl ToolContext<'_> {
                 let host = self.anchored_host_location(host_id, 0)?;
                 let host_item = self.doc.spread(host.spread)?.items.get(host.top())?;
                 let layer = self.doc.layer_rank(host_item.layer);
+                if let Some((front_spread, front_index, front_layer)) = front
+                    && (front_spread != host.spread || front_layer > layer || (front_layer == layer && front_index > host.top()))
+                {
+                    return None;
+                }
                 let spread = match host.spread {
                     SpreadRef::Doc(i) => (0, i),
                     SpreadRef::Parent(i) => (1, i),
@@ -384,14 +389,7 @@ impl ToolContext<'_> {
                 Some(((spread, layer, host.path.clone(), order), id, host.spread))
             })
             .max_by(|a, b| a.0.cmp(&b.0))?;
-        let ((_, host_layer, host_path, _), id, host_spread) = candidate;
-        let host_index = *host_path.first()?;
-        if let Some((front_spread, front_index, front_layer)) = front
-            && (front_spread != host_spread || front_layer > host_layer || (front_layer == host_layer && front_index > host_index))
-        {
-            return None;
-        }
-        Some(id)
+        Some(candidate.1)
     }
 
     /// The frontmost text frame under `p`, looking inside groups. [`Self::hit`] stops at the

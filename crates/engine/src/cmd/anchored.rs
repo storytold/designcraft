@@ -98,12 +98,8 @@ fn link_caption(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad("anchored.linkCaption", "caption cannot be image"));
     }
     s.edit(|d, _| {
-        let (sid, idx) = d
-            .stories
-            .values()
-            .find_map(|st| st.objects.iter().position(|o| o.item.id == image).map(|i| (st.id, i)))
-            .ok_or_else(|| bad("anchored.linkCaption", "image not found"))?;
-        let story = d.story_mut(sid).ok_or_else(|| bad("anchored.linkCaption", "story not found"))?;
+        let story = d.anchored_scope_mut(image).ok_or_else(|| bad("anchored.linkCaption", "image not found"))?;
+        let idx = story.objects.iter().position(|obj| obj.item.id == image).ok_or_else(|| bad("anchored.linkCaption", "image not found"))?;
         if !matches!(story.objects[idx].item.content, Content::Graphic(_)) {
             return Err(bad("anchored.linkCaption", "source is not a graphic"));
         }
@@ -160,13 +156,10 @@ fn resize_graphic(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let (left, top, right, bottom) = (read("left")?, read("top")?, read("right")?, read("bottom")?);
     s.edit(|d, _| {
-        let (sid, index) = d
-            .stories
-            .values()
-            .find_map(|story| story.objects.iter().position(|o| o.item.id == id).map(|i| (story.id, i)))
+        let obj = d
+            .anchored_scope_mut(id)
+            .and_then(|story| story.objects.iter_mut().find(|obj| obj.item.id == id))
             .ok_or_else(|| bad("anchored.resize", "anchored item not found"))?;
-        let story = d.story_mut(sid).ok_or_else(|| bad("anchored.resize", "story not found"))?;
-        let obj = story.objects.get_mut(index).ok_or_else(|| bad("anchored.resize", "object not found"))?;
         let mut resized = obj.item.clone();
         let Content::Graphic(ref mut graphic) = resized.content else {
             return Err(bad("anchored.resize", "object is not a graphic"));
@@ -245,13 +238,10 @@ fn transform_content(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad("anchored.contentTransform", "invalid scale"));
     }
     s.edit(|d, _| {
-        let (sid, index) = d
-            .stories
-            .values()
-            .find_map(|story| story.objects.iter().position(|o| o.item.id == id).map(|i| (story.id, i)))
+        let obj = d
+            .anchored_scope_mut(id)
+            .and_then(|story| story.objects.iter_mut().find(|obj| obj.item.id == id))
             .ok_or_else(|| bad("anchored.contentTransform", "anchored item not found"))?;
-        let story = d.story_mut(sid).ok_or_else(|| bad("anchored.contentTransform", "story not found"))?;
-        let obj = story.objects.get_mut(index).ok_or_else(|| bad("anchored.contentTransform", "object not found"))?;
         let mut edited = obj.item.clone();
         let Content::Graphic(ref mut graphic) = edited.content else {
             return Err(bad("anchored.contentTransform", "not a graphic"));
@@ -737,6 +727,61 @@ mod tests {
         s.doc().unwrap().doc.check().unwrap();
         let result = s.execute("edit.clear", &json!({"ids":[999999]})).unwrap();
         assert_eq!(result["deleted"], 0);
+    }
+
+    /// Real edits and drag previews must reach graphics in every nested text scope.
+    #[test]
+    fn review3_nested_graphic_commands_support_edit_preview_and_undo() {
+        use designcraft_doc::{ParaFormat, Table};
+        for scope in 0..4 {
+            let (mut s, sid, image, caption) = review_fixture();
+            s.edit(|d, _| {
+                let tid = d.alloc();
+                let st = d.story_mut(sid).unwrap();
+                let len = st.len();
+                let slice = st.extract(0..len);
+                st.delete(0..len);
+                match scope {
+                    0 => {
+                        st.insert_note(0, "", ParaFormat::default());
+                        Arc::make_mut(&mut st.notes[0]).text.insert_story(0, &slice);
+                    }
+                    1 => {
+                        st.insert_endnote(0, "", ParaFormat::default()).unwrap();
+                        Arc::make_mut(&mut st.endnotes[0]).text.insert_story(0, &slice);
+                    }
+                    _ => {
+                        let mut table = Table::new(tid, 1, 1, 0, 0, 200.0);
+                        if scope == 2 {
+                            table.cells[0].text.insert_story(0, &slice);
+                        } else {
+                            table.cells[0].text.insert_note(0, "", ParaFormat::default());
+                            Arc::make_mut(&mut table.cells[0].text.notes[0]).text.insert_story(0, &slice);
+                        }
+                        st.insert_table(0, table);
+                    }
+                }
+                Ok(json!({}))
+            })
+            .unwrap();
+            let source = serde_json::to_value(&*s.doc().unwrap().doc).unwrap();
+            s.execute("selection.set", &json!({"ids":[image.0]})).unwrap();
+            s.execute("anchored.resize", &json!({"id":image.0,"width":80,"height":50})).unwrap();
+            let bounds = s.doc().unwrap().doc.anchored_item(image).unwrap().bounds();
+            assert!((bounds.width() - 80.0).abs() < 1e-8);
+            s.execute("edit.undo", &json!({})).unwrap();
+            assert_eq!(serde_json::to_value(&*s.doc().unwrap().doc).unwrap(), source);
+            s.begin_interaction("nested graphic").unwrap();
+            s.preview("anchored.contentTransform", json!({"id":image.0,"dx":8,"dy":-3,"scale":1.1})).unwrap();
+            s.commit_interaction().unwrap();
+            assert_ne!(serde_json::to_value(&*s.doc().unwrap().doc).unwrap(), source);
+            s.doc().unwrap().doc.check().unwrap();
+            s.execute("edit.undo", &json!({})).unwrap();
+            assert_eq!(serde_json::to_value(&*s.doc().unwrap().doc).unwrap(), source);
+            s.execute("anchored.linkCaption", &json!({"image":image.0})).unwrap();
+            s.execute("anchored.linkCaption", &json!({"image":image.0,"caption":caption.0})).unwrap();
+            s.doc().unwrap().doc.check().unwrap();
+        }
     }
 
     /// Ensure repeated crops preserve graphic coordinates in frame space.

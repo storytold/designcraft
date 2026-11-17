@@ -1941,6 +1941,47 @@ mod anchored_transform_tests {
         }
     }
 
+    /// A later spread's custom anchor must not suppress a valid hit on the earlier spread.
+    #[test]
+    fn review3_cross_spread_custom_hits_filter_before_ranking() {
+        use designcraft_doc::anchored::AnchorRelative;
+        use designcraft_doc::{AnchorPosition, ParaFormat};
+        let (template, _, _, _) = anchored_fixture();
+        let template = template.stories.values().find_map(|st| st.objects.first()).unwrap().as_ref().clone();
+        let mut d = Document::new(&NewDocument { pages: 2, facing_pages: false, ..Default::default() });
+        let layer = d.default_layer();
+        let (first, sid1) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(72.0, 72.0, 420.0, 450.0), layer, "First", ParaFormat::default()).unwrap();
+        let (_, sid2) = d.add_text_frame(SpreadRef::Doc(1), Rect::new(72.0, 72.0, 420.0, 450.0), layer, "Second", ParaFormat::default()).unwrap();
+        let layout = CanvasLayout::new(&d, false);
+        let delta = layout.xf(SpreadRef::Doc(1)).translation() - layout.xf(SpreadRef::Doc(0)).translation();
+        let image1 = ItemId(d.alloc());
+        let image2 = ItemId(d.alloc());
+        for (sid, id, off) in [(sid1, image1, Vec2::ZERO), (sid2, image2, delta)] {
+            let mut obj = template.clone();
+            obj.item.id = id;
+            obj.position = AnchorPosition::Custom {
+                x_relative: AnchorRelative::TextFrame,
+                y_relative: AnchorRelative::TextFrame,
+                x_offset: 20.0 - off.x,
+                y_offset: 20.0 - off.y,
+                object_point: 0,
+                ref_point: 0,
+                keep_within_column: false,
+                spine_relative: false,
+            };
+            d.story_mut(sid).unwrap().insert_object(0, obj);
+        }
+        d.check().unwrap();
+        let (cache, selection) = (Cache::new(), Selection::default());
+        let cx = context(&d, &selection, &cache, &layout, 1.0);
+        let bounds = cx.anchored_graphic_bounds();
+        let a = bounds.iter().find(|(id, _)| *id == image1).unwrap().1;
+        let b = bounds.iter().find(|(id, _)| *id == image2).unwrap().1;
+        assert!((a.x0 - b.x0).abs() < 1e-8 && (a.y0 - b.y0).abs() < 1e-8);
+        assert_eq!(cx.hit(a.center()), Some((SpreadRef::Doc(0), first)));
+        assert_eq!(cx.hit_anchored_graphic(a.center()), Some(image1));
+    }
+
     /// Verify overlapping handle tolerances choose the nearest handle.
     #[test]
     fn nearest_handle_prefers_closest_when_tolerances_overlap() {

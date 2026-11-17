@@ -239,27 +239,30 @@ fn remap_adopted_captions(st: &mut Story, ids: &HashMap<ItemId, ItemId>, depth: 
 
 /// Repair each text scope separately: equal old ids in different cells or notes are independent.
 fn repair_scope_ids(st: &mut Story, seen: &mut HashSet<ItemId>, next: &mut u64, depth: usize) -> usize {
-    let mut renamed = HashMap::new();
+    let mut copies: HashMap<ItemId, Vec<ItemId>> = HashMap::new();
+    let mut links = Vec::new();
     let mut changed = 0;
     for obj in &mut st.objects {
+        let old = obj.item.id;
+        let occurrence = copies.get(&old).map_or(0, Vec::len);
+        links.push((obj.caption_id, occurrence));
         walk_mut(&mut Arc::make_mut(obj).item, &mut |item| {
-            if !seen.insert(item.id) {
-                let old = item.id;
+            let old = item.id;
+            if !seen.insert(old) {
                 *next = next.saturating_add(1);
                 item.id = ItemId(*next);
                 seen.insert(item.id);
-                renamed.insert(old, item.id);
                 changed += 1;
             }
+            copies.entry(old).or_default().push(item.id);
         });
     }
-    // A surviving caption in this scope still owns its original id; do not redirect its link.
-    for obj in &st.objects {
-        renamed.remove(&obj.item.id);
-    }
-    for obj in &mut st.objects {
-        if let Some(id) = obj.caption_id.and_then(|id| renamed.get(&id).copied()) {
-            Arc::make_mut(obj).caption_id = Some(id);
+    // Match explicit links per copied occurrence, including when the original pair survives here.
+    // A partial copy must not acquire a link back into another occurrence of the original pair.
+    for (obj, (caption, occurrence)) in st.objects.iter_mut().zip(links) {
+        let caption = caption.and_then(|id| copies.get(&id).and_then(|ids| ids.get(occurrence)).copied());
+        if obj.caption_id != caption {
+            Arc::make_mut(obj).caption_id = caption;
         }
     }
     if depth >= NESTING {
@@ -276,10 +279,41 @@ fn repair_scope_ids(st: &mut Story, seen: &mut HashSet<ItemId>, next: &mut u64, 
     changed
 }
 
+/// Find the owning text scope, preserving cache invalidation through all containing stories.
+fn anchored_scope_mut(st: &mut Story, id: ItemId, depth: usize) -> Option<&mut Story> {
+    st.rev = st.rev.wrapping_add(1);
+    if st.objects.iter().any(|obj| obj.item.id == id) {
+        return Some(st);
+    }
+    if depth >= NESTING {
+        return None;
+    }
+    for note in st.notes.iter_mut().chain(st.endnotes.iter_mut()) {
+        if let Some(scope) = anchored_scope_mut(&mut Arc::make_mut(note).text, id, depth + 1) {
+            return Some(scope);
+        }
+    }
+    for table in st.tables.values_mut() {
+        for cell in &mut Arc::make_mut(table).cells {
+            if let Some(scope) = anchored_scope_mut(&mut cell.text, id, depth + 1) {
+                return Some(scope);
+            }
+        }
+    }
+    None
+}
+
 impl Document {
     /// Does any story (its footnotes and table cells included) hold anchored objects?
     pub fn has_anchored_items(&self) -> bool {
         self.stories.values().any(|s| has_items(s))
+    }
+
+    /// Owning text of a direct anchored object, including notes, endnotes and table cells.
+    /// Group descendants are not independent text anchors.
+    pub fn anchored_scope_mut(&mut self, id: ItemId) -> Option<&mut Story> {
+        let owner = self.anchored_items().into_iter().find_map(|(owner, item)| (item.id == id).then_some(owner))?;
+        anchored_scope_mut(self.story_mut(owner)?, id, 0)
     }
 
     /// The stories the anchored text frames in `st` show, and the stories shown by the frames
@@ -619,6 +653,12 @@ mod tests {
         d.story_mut(sid).unwrap().insert_object(0, obj);
         d.check().unwrap();
         let source = d.story(sid).unwrap().clone();
+        // Include repeated raw copies in the original scope, not just copies in another story.
+        for _ in 0..2 {
+            let st = d.story_mut(sid).unwrap();
+            let end = st.len();
+            st.insert_story(end, &source);
+        }
         let layer = d.default_layer();
         let (_, target) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(320.0, 36.0, 600.0, 700.0), layer, "", ParaFormat::default()).unwrap();
         let tid = d.alloc();
@@ -639,6 +679,11 @@ mod tests {
             assert_eq!(graphic.caption_id, Some(caption.item.id));
         }
         linked(d.story(sid).unwrap());
+        let pairs = &d.story(sid).unwrap().objects;
+        assert_eq!(pairs.len(), 6);
+        for pair in pairs.as_chunks::<2>().0 {
+            assert_eq!(pair[0].caption_id, Some(pair[1].item.id), "each original/copy occurrence keeps its own caption");
+        }
         assert_eq!(d.story(sid).unwrap().objects[0].caption_id, Some(caption), "unrelated original link stays unchanged");
         let st = d.story(target).unwrap();
         linked(st);
