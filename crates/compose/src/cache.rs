@@ -145,17 +145,13 @@ fn indexed_neighbour(doc: &Document, story: &Story) -> bool {
         || margin_needs_running(doc, story)
 }
 
-fn raw_neighbour_placements(
-    doc: &Document,
-    sid: StoryId,
-    depth: usize,
-    context: &ComposeOptions,
-) -> Vec<(designcraft_doc::ItemId, crate::Placement)> {
+fn neighbour_placements(doc: &Document, sid: StoryId, depth: usize, context: &ComposeOptions) -> Vec<(designcraft_doc::ItemId, crate::Placement)> {
     if depth >= crate::placed::MAX_DEPTH {
         return Vec::new();
     }
-    // Cached host resolution can re-enter an index; raw host traversal remains depth bounded.
-    crate::placed::placements(doc, sid, &mut |host| Arc::new(crate::compose_story_unstacked(doc, host, context)))
+    // Margin stacking can move frames inside notes. Uncached host composition keeps that
+    // displacement without re-entering the cache or requesting another index.
+    crate::placed::placements(doc, sid, &mut |host| Arc::new(crate::compose_story(doc, host, context)))
 }
 
 fn neighbour_placement_signature(doc: &Document, sid: StoryId, story: &Story, depth: usize, context: &ComposeOptions) -> Option<usize> {
@@ -165,7 +161,7 @@ fn neighbour_placement_signature(doc: &Document, sid: StoryId, story: &Story, de
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     // A host edit can move an anchored neighbour without editing that neighbour.
-    for (id, p) in raw_neighbour_placements(doc, sid, depth, context) {
+    for (id, p) in neighbour_placements(doc, sid, depth, context) {
         (id, p.spread, p.xf.as_coeffs().map(f64::to_bits)).hash(&mut h);
         format!("{:?}", doc.spread(p.spread).map(|sp| &sp.pages)).hash(&mut h);
     }
@@ -535,7 +531,7 @@ impl Cache {
     /// indexes (they compose every story).
     fn neighbour(&self, doc: &Document, sid: StoryId, depth: usize, resolved: &mut Resolved, context: &ComposeOptions) -> Arc<ComposedStory> {
         if doc.stories.get(&sid).is_some_and(|st| indexed_neighbour(doc, st)) {
-            let placed = raw_neighbour_placements(doc, sid, depth, context);
+            let placed = neighbour_placements(doc, sid, depth, context);
             Arc::new(crate::wrap::compose_among(doc, sid, &ComposeOptions { placed, ..context.clone() }, &[]))
         } else {
             self.resolve(doc, sid, false, depth, resolved)
