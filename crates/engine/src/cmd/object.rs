@@ -3608,11 +3608,13 @@ fn fitted_text_frame(d: &Document, id: ItemId, height: bool, width: bool, ref_pt
                     if l.end_x.is_finite() {
                         hi = hi.max(l.end_x + ind_r);
                     }
-                    for g in l.glyphs.iter().filter(|g| g.visible) {
+                    for g in l.glyphs.iter().filter(|g| g.visible || (g.rendered_char == '\t' && g.adv > 0.0)) {
                         let pen = g.x - g.dx;
-                        let edge = pen.min(pen + g.adv);
-                        if edge.is_finite() {
-                            lo = lo.min(edge - ind_l);
+                        if pen.is_finite() && g.adv.is_finite() {
+                            let edge = pen.min(pen + g.adv);
+                            if edge.is_finite() {
+                                lo = lo.min(edge - ind_l);
+                            }
                         }
                     }
                 }
@@ -6907,6 +6909,36 @@ mod fit_text_frame_tests {
         let bb = bounds(&s, blank);
         let b_sid = s.doc().unwrap().doc.item(blank).unwrap().text_frame().unwrap().story;
         assert!(bb.is_finite() && (bb.x1 - 500.0).abs() < 1e-9 && !s.cache.get(&s.doc().unwrap().doc, b_sid, None).is_overset(), "{bb:?}");
+    }
+
+    #[test]
+    fn leading_tab_width_fit_keeps_tab_advance() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+
+        // Left-aligned leading-tab text in a one-line frame with axis="width", ref=5 retains
+        // the tab's 36 pt advance so recomposition keeps one line and stays non-overset.
+        let tabbed = frame(&mut s, [100.0, 100.0, 500.0, 145.0], "\tSHORT");
+        let t_sid = s.doc().unwrap().doc.item(tabbed).unwrap().text_frame().unwrap().story;
+        assert!(!s.cache.get(&s.doc().unwrap().doc, t_sid, None).is_overset());
+        assert_eq!(s.cache.get(&s.doc().unwrap().doc, t_sid, None).frame(tabbed).unwrap().lines.len(), 1);
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "width", "ref": 5, "ids": [tabbed.0]})).unwrap();
+        let tb = bounds(&s, tabbed);
+        let t_cs = s.cache.get(&s.doc().unwrap().doc, t_sid, None);
+        assert!(!t_cs.is_overset(), "leading tab caused overset after width fit: {tb:?}");
+        assert_eq!(t_cs.frame(tabbed).unwrap().lines.len(), 1, "leading tab wrapped after width fit: {tb:?}");
+        assert!((tb.x1 - 500.0).abs() < 1e-9 && tb.width() < 250.0, "{tb:?}");
+
+        // Stretchy right-indent tab still allows shrinking down to the visible content width.
+        let rtab_text = format!("{}SHORT", designcraft_doc::story::RIGHT_INDENT_TAB);
+        let rtab = frame(&mut s, [100.0, 100.0, 500.0, 145.0], &rtab_text);
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "width", "ref": 5, "ids": [rtab.0]})).unwrap();
+        let rb = bounds(&s, rtab);
+        let r_sid = s.doc().unwrap().doc.item(rtab).unwrap().text_frame().unwrap().story;
+        let r_cs = s.cache.get(&s.doc().unwrap().doc, r_sid, None);
+        assert!(!r_cs.is_overset() && r_cs.frame(rtab).unwrap().lines.len() == 1);
+        assert!((rb.x1 - 500.0).abs() < 1e-9 && rb.width() < 200.0, "{rb:?}");
+        assert!(tb.width() > rb.width() + 25.0, "leading tab advance missing: tb={tb:?} vs rb={rb:?}");
     }
 }
 
