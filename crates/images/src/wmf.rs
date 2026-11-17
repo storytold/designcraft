@@ -1,0 +1,189 @@
+//! The bitmap inside a Windows Metafile (WMF), from the public [MS-WMF] specification.
+//!
+//! A screenshot pasted from the Windows clipboard is often a WMF that only draws one bitmap.
+//! Only the bitmap records are read; vector records are skipped.
+
+/// The key at the start of a placeable WMF (its 22-byte header comes before the metafile header).
+const PLACEABLE_KEY: [u8; 4] = [0xD7, 0xCD, 0xC6, 0x9A];
+const PLACEABLE_HEADER_BYTES: usize = 22;
+
+const META_EOF: u16 = 0x0000;
+const META_DIBBITBLT: u16 = 0x0940;
+const META_DIBSTRETCHBLT: u16 = 0x0B41;
+const META_STRETCHDIB: u16 = 0x0F43;
+/// `ColorUsage` value: the colour table holds palette indices, not RGB colours.
+const DIB_PAL_COLORS: u16 = 1;
+
+/// The largest number of colour table entries a DIB can have (8 bits per pixel).
+const MAX_PALETTE: u32 = 256;
+const BI_BITFIELDS: u32 = 3;
+const BI_JPEG: u32 = 4;
+const BI_PNG: u32 = 5;
+const BITMAPFILEHEADER_BYTES: usize = 14;
+
+fn u16_at(b: &[u8], at: usize) -> Option<u16> {
+    Some(u16::from_le_bytes(b.get(at..at.checked_add(2)?)?.try_into().ok()?))
+}
+
+fn u32_at(b: &[u8], at: usize) -> Option<u32> {
+    Some(u32::from_le_bytes(b.get(at..at.checked_add(4)?)?.try_into().ok()?))
+}
+
+fn i32_at(b: &[u8], at: usize) -> Option<i32> {
+    Some(i32::from_le_bytes(b.get(at..at.checked_add(4)?)?.try_into().ok()?))
+}
+
+/// Where the records start, when `b` is a WMF (placeable or not).
+fn records_start(b: &[u8]) -> Option<usize> {
+    let header = if b.starts_with(&PLACEABLE_KEY) { PLACEABLE_HEADER_BYTES } else { 0 };
+    // META_HEADER: Type (1 memory, 2 disk), HeaderSize (9 words), Version (0x0100 or 0x0300).
+    let kind = u16_at(b, header)?;
+    let words = u16_at(b, header + 2)?;
+    let version = u16_at(b, header + 4)?;
+    if !matches!(kind, 1 | 2) || words != 9 || !matches!(version, 0x0100 | 0x0300) {
+        return None;
+    }
+    Some(header + usize::from(words) * 2)
+}
+
+/// Whether `b` is a Windows Metafile.
+pub fn is_wmf(b: &[u8]) -> bool {
+    records_start(b).is_some()
+}
+
+/// The largest bitmap a WMF draws, as a file the image decoders read: a BMP, or the JPEG or PNG
+/// a DIB can hold. `None` when `b` is not a WMF or draws no bitmap that can be read.
+pub fn wmf_bitmap(b: &[u8]) -> Option<Vec<u8>> {
+    let mut at = records_start(b)?;
+    let mut best: Option<(u64, Vec<u8>)> = None;
+    // Every record is at least 3 words long, so this ends after at most `b.len() / 6` records.
+    while let (Some(words), Some(function)) = (u32_at(b, at), u16_at(b, at.saturating_add(4))) {
+        if function == META_EOF || words < 3 {
+            break;
+        }
+        let len = usize::try_from(words).ok().and_then(|w| w.checked_mul(2)).unwrap_or(usize::MAX);
+        let end = at.saturating_add(len).min(b.len());
+        let record = b.get(at..end).unwrap_or_default();
+        // Parameter bytes before the DIB, after the 6-byte record header (RecordSize, RecordFunction).
+        let dib_at = match function {
+            META_DIBBITBLT => Some(6 + 16),
+            META_DIBSTRETCHBLT => Some(6 + 20),
+            META_STRETCHDIB if u16_at(record, 10) != Some(DIB_PAL_COLORS) => Some(6 + 22),
+            _ => None,
+        };
+        if let Some(found) = dib_at.and_then(|d| record.get(d..)).and_then(dib_file)
+            && best.as_ref().is_none_or(|(area, _)| found.0 > *area)
+        {
+            best = Some(found);
+        }
+        at = at.saturating_add(len);
+    }
+    best.map(|(_, file)| file)
+}
+
+/// A device-independent bitmap (`BITMAPINFOHEADER` or `BITMAPCOREHEADER`, colours, pixels) as a
+/// file, with its pixel count. `None` when the header doesn't describe a bitmap.
+fn dib_file(dib: &[u8]) -> Option<(u64, Vec<u8>)> {
+    let header = u32_at(dib, 0)?;
+    let (width, height, bits, compression, used, entry) = if header == 12 {
+        // BITMAPCOREHEADER: 16-bit sizes, 3-byte colours.
+        (i32::from(u16_at(dib, 4)?), i32::from(u16_at(dib, 6)?), u16_at(dib, 10)?, 0, 0, 3)
+    } else if (40..=124).contains(&header) {
+        (i32_at(dib, 4)?, i32_at(dib, 8)?, u16_at(dib, 14)?, u32_at(dib, 16)?, u32_at(dib, 32)?, 4)
+    } else {
+        return None;
+    };
+    if width <= 0 || height == 0 || height == i32::MIN {
+        return None;
+    }
+    let area = u64::from(width.unsigned_abs()) * u64::from(height.unsigned_abs());
+    let header_len = usize::try_from(header).ok()?;
+    if matches!(compression, BI_JPEG | BI_PNG) {
+        return Some((area, dib.get(header_len..)?.to_vec()));
+    }
+    if !matches!(bits, 1 | 4 | 8 | 16 | 24 | 32) {
+        return None;
+    }
+    let colours = match (used, bits) {
+        (0, 1 | 4 | 8) => 1u32 << bits,
+        (n, _) if n <= MAX_PALETTE => n,
+        _ => return None,
+    };
+    let masks = if header == 40 && compression == BI_BITFIELDS { 12 } else { 0 };
+    let offset = BITMAPFILEHEADER_BYTES + header_len + masks + usize::try_from(colours).ok()? * entry;
+    if dib.len() <= offset - BITMAPFILEHEADER_BYTES {
+        return None;
+    }
+    let size = u32::try_from(BITMAPFILEHEADER_BYTES + dib.len()).ok()?;
+    let mut file = Vec::with_capacity(BITMAPFILEHEADER_BYTES + dib.len());
+    file.extend_from_slice(b"BM");
+    file.extend_from_slice(&size.to_le_bytes());
+    file.extend_from_slice(&[0; 4]);
+    file.extend_from_slice(&u32::try_from(offset).ok()?.to_le_bytes());
+    file.extend_from_slice(dib);
+    Some((area, file))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A 2×1 24-bit DIB: a red pixel then a blue one.
+    fn dib() -> Vec<u8> {
+        let mut d = Vec::new();
+        for v in [40u32, 2, 1] {
+            d.extend_from_slice(&v.to_le_bytes());
+        }
+        d.extend_from_slice(&1u16.to_le_bytes());
+        d.extend_from_slice(&24u16.to_le_bytes());
+        d.extend_from_slice(&[0; 24]);
+        // BGR rows padded to 4 bytes.
+        d.extend_from_slice(&[0, 0, 255, 255, 0, 0, 0, 0]);
+        d
+    }
+
+    /// A placeable WMF holding one META_STRETCHDIB of `dib`, then META_EOF.
+    fn wmf(dib: &[u8]) -> Vec<u8> {
+        let mut w = PLACEABLE_KEY.to_vec();
+        w.extend_from_slice(&[0; 18]);
+        for v in [1u16, 9, 0x0300] {
+            w.extend_from_slice(&v.to_le_bytes());
+        }
+        w.extend_from_slice(&[0; 12]);
+        let params = 22 + dib.len() + dib.len() % 2;
+        w.extend_from_slice(&u32::try_from((6 + params) / 2).unwrap().to_le_bytes());
+        w.extend_from_slice(&META_STRETCHDIB.to_le_bytes());
+        w.extend_from_slice(&0x00CC_0020u32.to_le_bytes());
+        w.extend_from_slice(&0u16.to_le_bytes());
+        w.extend_from_slice(&[0; 16]);
+        w.extend_from_slice(dib);
+        w.resize(w.len() + dib.len() % 2, 0);
+        w.extend_from_slice(&3u32.to_le_bytes());
+        w.extend_from_slice(&META_EOF.to_le_bytes());
+        w
+    }
+
+    #[test]
+    fn the_bitmap_of_a_stretchdib_record_decodes() {
+        let file = wmf_bitmap(&wmf(&dib())).unwrap();
+        let rgba = crate::decode_rgba(&file).unwrap();
+        assert_eq!((rgba.width(), rgba.height()), (2, 1));
+        assert_eq!(rgba.get_pixel(0, 0).0, [255, 0, 0, 255]);
+        assert_eq!(rgba.get_pixel(1, 0).0, [0, 0, 255, 255]);
+    }
+
+    #[test]
+    fn hostile_metafiles_find_no_bitmap() {
+        assert!(wmf_bitmap(b"").is_none());
+        assert!(wmf_bitmap(&PLACEABLE_KEY).is_none());
+        let mut huge = dib();
+        huge[32..36].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(wmf_bitmap(&wmf(&huge)).is_none());
+        let mut truncated = wmf(&dib());
+        truncated.truncate(truncated.len() - 20);
+        let _ = wmf_bitmap(&truncated);
+        for cut in 0..wmf(&dib()).len() {
+            let _ = wmf_bitmap(&wmf(&dib())[..cut]);
+        }
+    }
+}

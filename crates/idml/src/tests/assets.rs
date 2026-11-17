@@ -432,3 +432,44 @@ fn an_unlinked_image_is_embedded_past_the_embed_limit() {
     let back = import_idml_with(&out, &|_: &str| None).unwrap();
     assert!(!back.assets.is_empty() && back.assets.values().all(|a| a.data.load().unwrap().as_slice() == bytes.as_slice()));
 }
+
+/// A placeable WMF holding one META_STRETCHDIB record of a 2×1 24-bit DIB (red, then blue).
+fn wmf_with_bitmap() -> Vec<u8> {
+    let mut dib = Vec::new();
+    for v in [40u32, 2, 1] {
+        dib.extend_from_slice(&v.to_le_bytes());
+    }
+    dib.extend_from_slice(&[1, 0, 24, 0]);
+    dib.extend_from_slice(&[0; 24]);
+    dib.extend_from_slice(&[0, 0, 255, 255, 0, 0, 0, 0]);
+    let mut w = vec![0xD7, 0xCD, 0xC6, 0x9A];
+    w.extend_from_slice(&[0; 18]);
+    w.extend_from_slice(&[1, 0, 9, 0, 0, 3]);
+    w.extend_from_slice(&[0; 12]);
+    let words = (6 + 22 + dib.len()) / 2;
+    w.extend_from_slice(&u32::try_from(words).unwrap().to_le_bytes());
+    w.extend_from_slice(&0x0F43u16.to_le_bytes());
+    w.extend_from_slice(&[0; 22]);
+    w.extend_from_slice(&dib);
+    w.extend_from_slice(&[3, 0, 0, 0, 0, 0]);
+    w
+}
+
+/// A screenshot pasted into InDesign from the Windows clipboard is an embedded `<WMF>`: it draws
+/// the bitmap it holds (#2829), where it used to import as bytes nothing could decode.
+#[test]
+fn an_embedded_wmf_draws_its_bitmap() {
+    let contents = format!("<Contents><![CDATA[{}]]></Contents>", base64_encode(&wmf_with_bitmap()));
+    let wmf = format!(
+        r#"<WMF Self="wm1" ItemTransform="0.62 0 0 0.6 0 0">
+        <Properties>{contents}<GraphicBounds Left="0" Top="0" Right="40" Bottom="30"/></Properties>
+      </WMF>"#
+    );
+    let d = import_idml_with(&package(&[frame(1, 0.0, 0.0, &wmf)]), &|_: &str| None).unwrap();
+    let Some(Content::Graphic(g)) = d.spreads[0].items.first().map(|i| &i.content) else { panic!("no graphic") };
+    let asset = &d.assets[&g.asset];
+    assert_eq!((asset.mime.as_str(), asset.pixels), ("image/bmp", Some((2, 1))));
+    let rgba = designcraft_images::decode_rgba(asset.data.embedded_bytes().unwrap()).expect("the WMF's bitmap decodes");
+    assert_eq!((rgba.get_pixel(0, 0).0, rgba.get_pixel(1, 0).0), ([255, 0, 0, 255], [0, 0, 255, 255]));
+    assert_eq!(g.size, (40.0, 30.0));
+}
