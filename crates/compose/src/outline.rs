@@ -71,6 +71,20 @@ impl FrameOutline {
         FrameOutline { edges: self.edges.iter().map(|&(a, b)| (xf * a, xf * b)).collect(), inset: self.inset }
     }
 
+    /// The distance kept between text and the outline.
+    pub fn inset(&self) -> f64 {
+        self.inset
+    }
+
+    /// The heights of the outline's corners, sorted and without repeats: the inside intervals of a
+    /// scanline change linearly between two of them.
+    pub fn corner_heights(&self) -> Vec<f64> {
+        let mut ys: Vec<f64> = self.edges.iter().map(|(a, _)| a.y).collect();
+        ys.sort_by(f64::total_cmp);
+        ys.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+        ys
+    }
+
     /// The parts of `[x0, x1]` inside the outline over the whole band `[y0, y1]`, at least the
     /// inset away from it: the inside intervals at every height of the band are intersected, and
     /// the inset is kept by testing the heights within the inset above and below the band, each

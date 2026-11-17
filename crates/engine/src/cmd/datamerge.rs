@@ -19,7 +19,8 @@ use serde_json::{Value, json};
 use super::{CommandSpec, bad, cmd, has_doc, id_param, ok, str_param};
 use crate::{DocState, Result, Session};
 use fill::{FillReport, ImageCache, Maps, MissingImage, Sources, copy_item, fill_row, identity_map};
-use parse::{Table, TileInput, extension, relative_between, select_records, status_of, table_from_bytes, table_from_grid, table_from_objects, tile};
+pub(crate) use parse::relative_between;
+use parse::{Table, TileInput, select_records, status_of, table_from_bytes, table_from_grid, table_from_objects, tile};
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use parse::fingerprint_from;
@@ -827,11 +828,10 @@ fn take_file(p: &Value) -> std::result::Result<(Vec<u8>, String, Option<String>)
 }
 
 fn parse_file(bytes: &[u8], name: &str, delimiter: Option<Delimiter>, sheet: Option<&str>) -> std::result::Result<Table, String> {
-    let ext = extension(name);
-    if ext == "xls" || ext == "xlsm" {
-        return Err(format!("{ext} workbooks are not supported"));
+    if craft_file_formats::detect(name, &[]) == Some(craft_file_formats::Format::LegacyExcel) {
+        return Err("legacy Excel .xls/.xlsm workbooks are not supported".into());
     }
-    if ext == "xlsx" {
+    if craft_file_formats::detect(name, bytes) == Some(craft_file_formats::Format::Xlsx) {
         let grid = designcraft_textimport::xlsx_records(bytes, sheet).map_err(|e| e.to_string())?;
         return table_from_grid(grid, Delimiter::Comma);
     }
