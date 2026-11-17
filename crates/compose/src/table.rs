@@ -228,7 +228,7 @@ pub(crate) fn place_table(
         return false;
     }
     let col_rect = |cur: &Cursor| cur.clip(cols[cur.fi][cur.col.min(cols[cur.fi].len() - 1)]);
-    let mut col = col_rect(cur);
+    let col = col_rect(cur);
     // Column widths: scaled to fit the measure.
     let avail = (col.width() - pp.left_indent - pp.right_indent).max(1.0);
     let natural = table.width();
@@ -253,213 +253,250 @@ pub(crate) fn place_table(
     // Compose owner cells in logical row/column order; column 0 is already rightmost in RTL.
     // Cell footnotes are numbered in the host story's sequence, so each cell carries on from the
     // one before it and the host story continues after the table.
-    // ponytail: page/spread/section restarts use the pre-pagination page, including later-page
-    // cells and a table whose first row moves to the next page; recompute numbering per placed
-    // row fragment to fix this.
-    let page = frames[cur.fi].page;
-    let mut note_number = notes.cell_start(doc, page);
-    let mut layouts: Vec<Option<CellLayout>> = (0..nr * nc).map(|_| None).collect();
-    for r in 0..nr {
-        for c in 0..nc {
-            if !is_owner(r, c) {
-                continue;
-            }
+    // shortcut: repeated footer notes number from their last page but print on first appearance;
+    // numbering/pagination settles for at most three passes. Revisit for unstable row placement.
+    let start = notes.cell_start(doc, frames[cur.fi].page);
+    let saved_cur = cur.clone();
+    let placed_len = notes.placed.len();
+    let frame_lengths: Vec<_> = out.frames.iter().skip(cur.fi).map(|f| (f.lines.len(), f.tables.len())).collect();
+    let mut row_page = vec![frames[cur.fi].page; nr];
+    // Row heights and groups depend on the recomposed cells after a restart changes labels.
+    let geometry = |layouts: &[Option<CellLayout>]| {
+        // Row heights.
+        let need = |r: usize, c: usize| -> f64 {
             let cell = &table.cells[r * nc + c];
-            let cs = (cell.col_span.max(1) as usize).min(nc - c);
-            let w = colx[c + cs] - colx[c] - cell.insets[1] - cell.insets[3];
-            let layout = compose_cell(doc, cell, w, opts, side, page, note_number);
-            note_number = layout.notes_after.unwrap_or(note_number);
-            layouts[r * nc + c] = Some(layout);
-        }
-    }
-    notes.resume(note_number);
-    // Row heights.
-    let need = |r: usize, c: usize| -> f64 {
-        let cell = &table.cells[r * nc + c];
-        layouts[r * nc + c].as_ref().map_or(0.0, |l| l.content_h) + cell.insets[0] + cell.insets[2]
-    };
-    let mut heights: Vec<f64> = table
-        .rows
-        .iter()
-        .enumerate()
-        .map(|(r, row)| match row.mode {
-            RowHeightMode::Exactly => row.height.max(0.0),
-            RowHeightMode::AtLeast => {
-                let content = (0..nc).filter(|&c| is_owner(r, c) && table.cells[r * nc + c].row_span <= 1).map(|c| need(r, c)).fold(0.0, f64::max);
-                content.max(row.height)
-            }
-        })
-        .collect();
-    // Row-spanning cells grow the last row they span (unless it is fixed).
-    for r in 0..nr {
-        for c in 0..nc {
-            let cell = &table.cells[r * nc + c];
-            if !is_owner(r, c) || cell.row_span <= 1 {
-                continue;
-            }
-            let end = (r + cell.row_span as usize).min(nr);
-            let have: f64 = heights[r..end].iter().sum();
-            let n = need(r, c);
-            if n > have
-                && let Some(i) = (r..end).rev().find(|&i| table.rows[i].mode == RowHeightMode::AtLeast)
-            {
-                heights[i] += n - have;
-            }
-        }
-    }
-    // Row groups that must stay together: end (exclusive) of the group starting at each row.
-    let mut group_end: Vec<usize> = (0..nr).map(|r| r + 1).collect();
-    {
-        let mut r = 0;
-        while r < nr {
-            let mut e = r + 1;
-            let mut i = r;
-            while i < e {
-                for c in 0..nc {
-                    if is_owner(i, c) {
-                        e = e.max((i + table.cells[i * nc + c].row_span.max(1) as usize).min(nr));
-                    }
+            layouts[r * nc + c].as_ref().map_or(0.0, |l| l.content_h) + cell.insets[0] + cell.insets[2]
+        };
+        let mut heights: Vec<f64> = table
+            .rows
+            .iter()
+            .enumerate()
+            .map(|(r, row)| match row.mode {
+                RowHeightMode::Exactly => row.height.max(0.0),
+                RowHeightMode::AtLeast => {
+                    let content =
+                        (0..nc).filter(|&c| is_owner(r, c) && table.cells[r * nc + c].row_span <= 1).map(|c| need(r, c)).fold(0.0, f64::max);
+                    content.max(row.height)
                 }
-                i += 1;
+            })
+            .collect();
+        // Row-spanning cells grow the last row they span (unless it is fixed).
+        for r in 0..nr {
+            for c in 0..nc {
+                let cell = &table.cells[r * nc + c];
+                if !is_owner(r, c) || cell.row_span <= 1 {
+                    continue;
+                }
+                let end = (r + cell.row_span as usize).min(nr);
+                let have: f64 = heights[r..end].iter().sum();
+                let n = need(r, c);
+                if n > have
+                    && let Some(i) = (r..end).rev().find(|&i| table.rows[i].mode == RowHeightMode::AtLeast)
+                {
+                    heights[i] += n - have;
+                }
             }
-            for g in group_end.iter_mut().take(e).skip(r) {
-                *g = e;
+        }
+        // Row groups that must stay together: end (exclusive) of the group starting at each row.
+        let mut group_end: Vec<usize> = (0..nr).map(|r| r + 1).collect();
+        {
+            let mut r = 0;
+            while r < nr {
+                let mut e = r + 1;
+                let mut i = r;
+                while i < e {
+                    for c in 0..nc {
+                        if is_owner(i, c) {
+                            e = e.max((i + table.cells[i * nc + c].row_span.max(1) as usize).min(nr));
+                        }
+                    }
+                    i += 1;
+                }
+                for g in group_end.iter_mut().take(e).skip(r) {
+                    *g = e;
+                }
+                r = e;
             }
-            r = e;
         }
-    }
-    let header = table.header_rows();
-    let footer = table.footer_rows();
-    let body_end = nr - footer;
-    let sum = |a: usize, b: usize| heights[a..b].iter().sum::<f64>();
-    let footer_h = sum(body_end, nr);
-    let o = &table.options;
-    let mut y = match cur.last_baseline {
-        Some(b) => b + cur.last_descent + cur.pending + o.space_before,
-        None => col.y0,
+        (heights, group_end)
     };
-    let mut frag_rows: Vec<(usize, f64, bool)> = Vec::new(); // (row, y, repeated)
-    let mut first_frag = true;
-    let mut body_placed = 0usize;
-    let mut top = y;
-    let place_rows = |rows: std::ops::Range<usize>, y: &mut f64, repeated: bool, frag_rows: &mut Vec<(usize, f64, bool)>| {
-        for r in rows {
-            frag_rows.push((r, *y, repeated));
-            *y += heights[r];
-        }
-    };
-    place_rows(0..header, &mut y, false, &mut frag_rows);
-    // A cell footnote belongs to the enclosing story: it sits at the foot of the column that
-    // takes its row, in the same area and stack as body notes, so row fitting reserves it.
-    fn note_column<'a>(
-        notes: &crate::notes::Notes,
-        cols: &[Vec<Rect>],
-        fi: usize,
-        ci: usize,
-        frame: &'a FrameSpec,
-        fallback: Rect,
-    ) -> crate::notes::NoteColumn<'a> {
-        let width = notes.area(&cols[fi], ci).map_or(fallback.width(), |a| a.width());
-        crate::notes::NoteColumn { frame_index: fi, column_index: ci, width, frame }
-    }
-    let cell_notes = |rows: std::ops::Range<usize>| -> Vec<crate::notes::CellNote> {
-        let mut v = Vec::new();
-        for r in rows {
+    for pass in 0..3 {
+        let mut col = col_rect(cur);
+        let mut note_number = start;
+        let mut layouts: Vec<Option<CellLayout>> = (0..nr * nc).map(|_| None).collect();
+        for r in 0..nr {
             for c in 0..nc {
                 if !is_owner(r, c) {
                     continue;
                 }
-                let Some(lay) = layouts.get(r * nc + c).and_then(Option::as_ref) else { continue };
-                for (i, slot) in lay.notes.iter().enumerate() {
-                    v.push(crate::notes::CellNote {
-                        source: crate::notes::NoteSource::Cell { table: table.id, row: r, col: c, slot: i, k: slot.ordinal },
-                        label: slot.label.clone(),
-                        note: Arc::clone(&slot.note),
-                    });
+                let cell = &table.cells[r * nc + c];
+                let cs = (cell.col_span.max(1) as usize).min(nc - c);
+                let w = colx[c + cs] - colx[c] - cell.insets[1] - cell.insets[3];
+                note_number = note_number.at_page(doc, row_page[r]);
+                let layout = compose_cell(doc, cell, w, opts, side, row_page[r], note_number);
+                note_number = layout.notes_after.unwrap_or(note_number);
+                layouts[r * nc + c] = Some(layout);
+            }
+        }
+        notes.resume(note_number);
+        let (heights, group_end) = geometry(&layouts);
+        let header = table.header_rows();
+        let footer = table.footer_rows();
+        let body_end = nr - footer;
+        let sum = |a: usize, b: usize| heights[a..b].iter().sum::<f64>();
+        let footer_h = sum(body_end, nr);
+        let o = &table.options;
+        let mut y = match cur.last_baseline {
+            Some(b) => b + cur.last_descent + cur.pending + o.space_before,
+            None => col.y0,
+        };
+        let mut frag_rows: Vec<(usize, f64, bool)> = Vec::new(); // (row, y, repeated)
+        let mut first_frag = true;
+        let mut body_placed = 0usize;
+        let mut top = y;
+        let place_rows = |rows: std::ops::Range<usize>, y: &mut f64, repeated: bool, frag_rows: &mut Vec<(usize, f64, bool)>| {
+            for r in rows {
+                frag_rows.push((r, *y, repeated));
+                *y += heights[r];
+            }
+        };
+        place_rows(0..header, &mut y, false, &mut frag_rows);
+        // A cell footnote belongs to the enclosing story: it sits at the foot of the column that
+        // takes its row, in the same area and stack as body notes, so row fitting reserves it.
+        fn note_column<'a>(
+            notes: &crate::notes::Notes,
+            cols: &[Vec<Rect>],
+            fi: usize,
+            ci: usize,
+            frame: &'a FrameSpec,
+            fallback: Rect,
+        ) -> crate::notes::NoteColumn<'a> {
+            let width = notes.area(&cols[fi], ci).map_or(fallback.width(), |a| a.width());
+            crate::notes::NoteColumn { frame_index: fi, column_index: ci, width, frame }
+        }
+        let cell_notes = |rows: std::ops::Range<usize>| -> Vec<crate::notes::CellNote> {
+            let mut v = Vec::new();
+            for r in rows {
+                for c in 0..nc {
+                    if !is_owner(r, c) {
+                        continue;
+                    }
+                    let Some(lay) = layouts.get(r * nc + c).and_then(Option::as_ref) else { continue };
+                    for (i, slot) in lay.notes.iter().enumerate() {
+                        v.push(crate::notes::CellNote {
+                            source: crate::notes::NoteSource::Cell { table: table.id, row: r, col: c, slot: i, k: slot.ordinal },
+                            label: slot.label.clone(),
+                            note: Arc::clone(&slot.note),
+                        });
+                    }
+                }
+            }
+            v
+        };
+        // ponytail: With Span Footnotes Across Columns, a cell note first placed in a later column
+        // does not re-lay earlier columns overlapping the enlarged area. Upgrade by routing through
+        // Notes::earlier_columns_collide and the story-level rewind path.
+        let place_cell_notes = |notes: &mut crate::notes::Notes, items: &[crate::notes::CellNote], cur: &Cursor, rect: Rect| {
+            let column = note_column(notes, cols, cur.fi, cur.col, &frames[cur.fi], rect);
+            for n in items {
+                notes.place_cell(doc, n, column, opts);
+            }
+        };
+        let mut r = header;
+        let fits = 'rows: loop {
+            if r >= body_end {
+                break 'rows true;
+            }
+            let ge = group_end[r].min(body_end).max(r + 1);
+            let gh = sum(r, ge);
+            let group = cell_notes(r..ge);
+            // Headers commit with the first fitting body group, in the column taking the fragment.
+            let pending_header = body_placed == 0 && (first_frag || o.repeat_header);
+            let mut extra = if pending_header { cell_notes(0..header) } else { Vec::new() };
+            extra.extend(group.iter().cloned());
+            if o.repeat_footer || ge == body_end {
+                extra.extend(cell_notes(body_end..nr));
+            }
+            let column = note_column(notes, cols, cur.fi, cur.col, &frames[cur.fi], col);
+            let reserve = notes.reserve_cells(doc, column, &extra, opts);
+            let bottom = col.y1 - reserve;
+            let at_col_top = cur.last_baseline.is_none() && (top - col.y0).abs() < 1e-6;
+            if y + gh + footer_h <= bottom + 0.01 || (body_placed == 0 && at_col_top && reserve == 0.0) {
+                if y + gh + footer_h > bottom + 0.01 && body_placed == 0 && at_col_top && y + gh > bottom + 0.01 {
+                    // A row group taller than an empty column can never fit.
+                    break 'rows false;
+                }
+                if pending_header {
+                    place_cell_notes(notes, &cell_notes(0..header), cur, col);
+                }
+                place_rows(r..ge, &mut y, false, &mut frag_rows);
+                place_cell_notes(notes, &group, cur, col);
+                body_placed += 1;
+                r = ge;
+                continue;
+            }
+            // Continue in the next column / frame.
+            if body_placed > 0 {
+                if o.repeat_footer {
+                    place_rows(body_end..nr, &mut y, true, &mut frag_rows);
+                    place_cell_notes(notes, &cell_notes(body_end..nr), cur, col);
+                }
+                emit(table, anchor, pi, &frag_rows, &heights, &colx, col.x0 + x_off, top, y, first_frag, false, &layouts, &owners, cur, col, out);
+                first_frag = false;
+            }
+            let was_first = first_frag;
+            cur.next_column(cols);
+            if cur.fi >= frames.len() {
+                break 'rows false;
+            }
+            col = col_rect(cur);
+            y = col.y0;
+            top = y;
+            frag_rows.clear();
+            body_placed = 0;
+            // Headers: the first fragment's header moves along; later ones repeat it.
+            if was_first {
+                place_rows(0..header, &mut y, false, &mut frag_rows);
+            } else if o.repeat_header {
+                place_rows(0..header, &mut y, true, &mut frag_rows);
+            } else {
+                continue;
+            }
+        };
+        if fits {
+            if body_placed == 0 && (first_frag || o.repeat_header) {
+                place_cell_notes(notes, &cell_notes(0..header), cur, col);
+            }
+            place_rows(body_end..nr, &mut y, false, &mut frag_rows);
+            place_cell_notes(notes, &cell_notes(body_end..nr), cur, col);
+            emit(table, anchor, pi, &frag_rows, &heights, &colx, col.x0 + x_off, top, y, first_frag, true, &layouts, &owners, cur, col, out);
+            cur.last_baseline = Some(y);
+            cur.last_descent = 0.0;
+            cur.pending = o.space_after;
+        }
+        let mut placed_page = row_page.clone();
+        for (offset, &(.., table_len)) in frame_lengths.iter().enumerate() {
+            let fi = saved_cur.fi + offset;
+            for frag in out.frames[fi].tables.iter().skip(table_len) {
+                for &(r, _, _) in &frag.rows {
+                    placed_page[r] = frames[fi].page;
                 }
             }
         }
-        v
-    };
-    // ponytail: With Span Footnotes Across Columns, a cell note first placed in a later column
-    // does not re-lay earlier columns overlapping the enlarged area. Upgrade by routing through
-    // Notes::earlier_columns_collide and the story-level rewind path.
-    let place_cell_notes = |notes: &mut crate::notes::Notes, items: &[crate::notes::CellNote], cur: &Cursor, rect: Rect| {
-        let column = note_column(notes, cols, cur.fi, cur.col, &frames[cur.fi], rect);
-        for n in items {
-            notes.place_cell(doc, n, column, opts);
+        let changed = (0..nr).any(|r| {
+            (0..nc).any(|c| is_owner(r, c)) && crate::notes::restart_key(doc, row_page[r]) != crate::notes::restart_key(doc, placed_page[r])
+        });
+        if !changed || pass == 2 {
+            return fits;
         }
-    };
-    let mut r = header;
-    loop {
-        if r >= body_end {
-            break;
+        for (frame, &(lines, tables)) in out.frames.iter_mut().skip(saved_cur.fi).zip(&frame_lengths) {
+            frame.lines.truncate(lines);
+            frame.tables.truncate(tables);
         }
-        let ge = group_end[r].min(body_end).max(r + 1);
-        let gh = sum(r, ge);
-        let group = cell_notes(r..ge);
-        // Headers commit with the first fitting body group, in the column taking the fragment.
-        let pending_header = body_placed == 0 && (first_frag || o.repeat_header);
-        let mut extra = if pending_header { cell_notes(0..header) } else { Vec::new() };
-        extra.extend(group.iter().cloned());
-        if o.repeat_footer || ge == body_end {
-            extra.extend(cell_notes(body_end..nr));
-        }
-        let column = note_column(notes, cols, cur.fi, cur.col, &frames[cur.fi], col);
-        let reserve = notes.reserve_cells(doc, column, &extra, opts);
-        let bottom = col.y1 - reserve;
-        let at_col_top = cur.last_baseline.is_none() && (top - col.y0).abs() < 1e-6;
-        if y + gh + footer_h <= bottom + 0.01 || (body_placed == 0 && at_col_top && reserve == 0.0) {
-            if y + gh + footer_h > bottom + 0.01 && body_placed == 0 && at_col_top && y + gh > bottom + 0.01 {
-                // A row group taller than an empty column can never fit.
-                return false;
-            }
-            if pending_header {
-                place_cell_notes(notes, &cell_notes(0..header), cur, col);
-            }
-            place_rows(r..ge, &mut y, false, &mut frag_rows);
-            place_cell_notes(notes, &group, cur, col);
-            body_placed += 1;
-            r = ge;
-            continue;
-        }
-        // Continue in the next column / frame.
-        if body_placed > 0 {
-            if o.repeat_footer {
-                place_rows(body_end..nr, &mut y, true, &mut frag_rows);
-                place_cell_notes(notes, &cell_notes(body_end..nr), cur, col);
-            }
-            emit(table, anchor, pi, &frag_rows, &heights, &colx, col.x0 + x_off, top, y, first_frag, false, &layouts, &owners, cur, col, out);
-            first_frag = false;
-        }
-        let was_first = first_frag;
-        cur.next_column(cols);
-        if cur.fi >= frames.len() {
-            return false;
-        }
-        col = col_rect(cur);
-        y = col.y0;
-        top = y;
-        frag_rows.clear();
-        body_placed = 0;
-        // Headers: the first fragment's header moves along; later ones repeat it.
-        if was_first {
-            place_rows(0..header, &mut y, false, &mut frag_rows);
-        } else if o.repeat_header {
-            place_rows(0..header, &mut y, true, &mut frag_rows);
-        } else {
-            continue;
-        }
+        notes.placed.truncate(placed_len);
+        *cur = saved_cur.clone();
+        row_page = placed_page;
     }
-    if body_placed == 0 && (first_frag || o.repeat_header) {
-        place_cell_notes(notes, &cell_notes(0..header), cur, col);
-    }
-    place_rows(body_end..nr, &mut y, false, &mut frag_rows);
-    place_cell_notes(notes, &cell_notes(body_end..nr), cur, col);
-    emit(table, anchor, pi, &frag_rows, &heights, &colx, col.x0 + x_off, top, y, first_frag, true, &layouts, &owners, cur, col, out);
-    cur.last_baseline = Some(y);
-    cur.last_descent = 0.0;
-    cur.pending = o.space_after;
     true
 }
 
@@ -1123,6 +1160,61 @@ mod height_tests {
         let cs = crate::compose_story(&doc, sid, &opts);
         assert_eq!(note_labels(&cs), ["7"]);
         assert_eq!(reference_labels(&cs.frames[0].tables[0].cell(0, 0).unwrap().text), ["7"]);
+    }
+
+    fn page_restart_table(rows: usize, first_height: f64) -> ComposedStory {
+        let mut doc = Document::new(&NewDocument { pages: 2, facing_pages: false, ..Default::default() });
+        doc.footnote_options.restart = designcraft_doc::notes::NoteRestart::Page;
+        doc.footnote_options.start_at = 1;
+        let layer = doc.default_layer();
+        let (first, sid) =
+            doc.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 200.0, first_height), layer, "Before\nAfter", ParaFormat::default()).unwrap();
+        let (second, _) = doc.add_text_frame(SpreadRef::Doc(1), Rect::new(0.0, 0.0, 200.0, 400.0), layer, "", ParaFormat::default()).unwrap();
+        doc.thread(first, second).unwrap();
+        let mut table = Table::new(77, rows, 1, 0, 0, 100.0);
+        for cell in &mut table.cells {
+            *cell = note_cell();
+        }
+        for row in &mut table.rows {
+            row.mode = RowHeightMode::Exactly;
+            row.height = 60.0;
+        }
+        let story = doc.story_mut(sid).unwrap();
+        story.insert_note(6, "Before note.", ParaFormat::default()).unwrap();
+        story.insert_table(story.text.find("After").unwrap(), table);
+        story.insert_note(story.len(), "After note.", ParaFormat::default()).unwrap();
+        crate::compose_story(&doc, sid, &ComposeOptions::default())
+    }
+
+    #[test]
+    fn cell_footnotes_restart_after_whole_table_moves_page() {
+        let cs = page_restart_table(1, 90.0);
+        assert!(!cs.is_overset());
+        assert!(cs.frames[0].tables.is_empty());
+        assert_eq!(note_labels(&cs), ["1", "1", "2"]);
+        assert_eq!(reference_labels(&cs.frames[1].tables[0].cell(0, 0).unwrap().text), ["1"]);
+        let body: Vec<_> = cs.frames[1].lines.iter().flat_map(|l| &l.glyphs).filter_map(|g| g.generated_text.as_deref()).collect();
+        assert_eq!(body, ["2"]);
+    }
+
+    #[test]
+    fn cell_footnotes_restart_after_table_splits_pages() {
+        let cs = page_restart_table(2, 150.0);
+        assert!(!cs.is_overset());
+        assert_eq!(note_labels(&cs), ["1", "2", "1", "2"]);
+        assert_eq!(reference_labels(&cs.frames[0].tables[0].cell(0, 0).unwrap().text), ["2"]);
+        assert_eq!(reference_labels(&cs.frames[1].tables[0].cell(1, 0).unwrap().text), ["1"]);
+        let body: Vec<_> = cs.frames[1].lines.iter().flat_map(|l| &l.glyphs).filter_map(|g| g.generated_text.as_deref()).collect();
+        assert_eq!(body, ["2"]);
+    }
+
+    #[test]
+    fn cell_footnotes_restart_after_partial_table_oversets() {
+        let cs = page_restart_table(10, 90.0);
+        assert!(cs.is_overset());
+        assert!(cs.frames[0].tables.is_empty());
+        assert_eq!(reference_labels(&cs.frames[1].tables[0].cell(0, 0).unwrap().text), ["1"]);
+        assert_eq!(note_labels(&cs)[..2], ["1", "1"]);
     }
 
     fn single_table(cell: Cell) -> Table {

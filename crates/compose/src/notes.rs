@@ -79,7 +79,7 @@ pub(crate) struct NoteColumn<'a> {
 
 /// The page, spread or section a reference on absolute page `page` counts in (none when numbering
 /// never restarts, or when the frame is on no page).
-fn restart_key(doc: &Document, page: Option<usize>) -> Option<usize> {
+pub(crate) fn restart_key(doc: &Document, page: Option<usize>) -> Option<usize> {
     let p = page?;
     match doc.footnote_options.restart {
         NoteRestart::Never => None,
@@ -111,6 +111,16 @@ pub struct NoteNumber {
     pub num: u32,
     /// The page, spread or section the number counts in (none when numbering never restarts).
     pub key: Option<usize>,
+}
+
+impl NoteNumber {
+    /// Continue this count on `page`, restarting when its page, spread or section changes.
+    pub fn at_page(self, doc: &Document, page: Option<usize>) -> Self {
+        match restart_key(doc, page) {
+            Some(key) if self.key != Some(key) => Self { num: doc.footnote_options.start_at, key: Some(key) },
+            _ => self,
+        }
+    }
 }
 
 pub(crate) struct Notes {
@@ -168,11 +178,7 @@ impl Notes {
     /// Where the numbering of a table cell's notes begins: the host story's next number, or a
     /// fresh count when the cell is on a different page, spread or section and numbering restarts.
     pub fn cell_start(&self, doc: &Document, page: Option<usize>) -> NoteNumber {
-        let o = &doc.footnote_options;
-        match restart_key(doc, page) {
-            Some(key) if self.key != Some(key) => NoteNumber { num: o.start_at, key: Some(key) },
-            _ => NoteNumber { num: self.num, key: self.key },
-        }
+        self.next_number().at_page(doc, page)
     }
 
     /// Carry on numbering from `at` (the host story continues after its table's cells).
