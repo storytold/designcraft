@@ -158,10 +158,9 @@ mod tests {
     }
 
     /// Offers `release` and returns once its prompt is open. The updater reads the installed files
-    /// for an offer on a thread of its own, which asks the context the updater keeps for a repaint
-    /// when it answers; the next tick opens the prompt. Each immediate repaint request is followed
-    /// by a tick until the prompt opens. A copy the launcher manages ignores the offer and fails
-    /// the test.
+    /// for an offer on a thread of its own. That thread sends its answer and then asks the context
+    /// the updater keeps for an immediate repaint, and the next tick opens the prompt. The test
+    /// fails when the offer opens no prompt, for example when the launcher manages this copy.
     #[cfg(not(target_arch = "wasm32"))]
     fn offer_and_wait(updater: &mut Updater, release: craft_update::Release) {
         let ctx = egui::Context::default();
@@ -175,10 +174,12 @@ mod tests {
         updater.tick(&ctx);
         updater.offer(release);
         assert!(updater.managed().is_none(), "the launcher manages this copy, so it ignored the offer");
-        while !updater.prompt_open() {
+        // Without its thread, the offer opens the prompt at once.
+        if !updater.prompt_open() {
             wait.recv().unwrap();
             updater.tick(&ctx);
         }
+        assert!(updater.prompt_open(), "the offer opened no prompt (launcher choice: {:?})", updater.managed());
     }
 
     #[test]
