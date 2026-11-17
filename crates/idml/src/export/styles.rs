@@ -118,6 +118,11 @@ impl<'a> Ex<'a> {
             el.set("EnableParagraphStyle", bool_s(os.paragraph_style.is_some()));
             el.set("EnableTextFrameGeneralOptions", bool_s(os.text_frame.is_some()));
             el.set("EnableStrokeAndCornerOptions", bool_s(os.corners.is_some()));
+            if let Some(anchored) = &os.anchored_options
+                && let Some(enabled) = anchored.enabled
+            {
+                el.set("EnableAnchoredObjectOptions", bool_s(enabled));
+            }
             if let Some(c) = &os.corners {
                 for (n, c) in ["TopLeft", "TopRight", "BottomRight", "BottomLeft"].iter().zip(c.corners) {
                     el.set(&format!("{n}CornerOption"), names::corner_out(c.shape));
@@ -136,6 +141,15 @@ impl<'a> Ex<'a> {
                 el.set("ApplyNextParagraphStyle", bool_s(os.apply_next_style));
             }
             let mut el = with_props(el, props);
+            if let Some(anchored) = &os.anchored_options
+                && let Some(settings_attrs) = &anchored.settings
+            {
+                let mut settings = El::new("AnchoredObjectSetting");
+                for (key, value) in settings_attrs {
+                    settings.set(key, value);
+                }
+                el.push(settings);
+            }
             if let Some(e) = &os.effects {
                 let mut t = El::new("TransparencySetting");
                 for c in self.effect_els(e, true) {
