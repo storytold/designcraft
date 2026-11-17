@@ -11,15 +11,20 @@ const INDESIGN_CORNER_SIZE: f64 = 12.0;
 
 /// The viewBox size of an SVG whose root has a viewBox but no width or height (percentages count
 /// as none): such a file is placed at one viewBox unit to the point. A leading UTF-8 byte order
-/// mark is skipped. The XML parse is bounded to 16 MiB.
+/// mark is skipped. Only the root's start tag is read, and a file over 16 MiB gives no size. A
+/// viewBox with a value that is not a number gives no size.
 fn svg_viewbox_size(data: &[u8]) -> Option<(f64, f64)> {
     let data = data.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(data);
-    if data.iter().find(|b| !b.is_ascii_whitespace()) != Some(&b'<') {
+    if data.len() > 16 << 20 || data.iter().find(|b| !b.is_ascii_whitespace()) != Some(&b'<') {
         return None;
     }
-    let mut options = craft_xml::Options::default();
-    options.limits.max_input = 16 << 20;
-    let root = options.parse(data).ok()?;
+    let text = craft_xml::to_utf8(data);
+    let mut events = craft_xml::Options::default().events(&text);
+    let root = loop {
+        if let craft_xml::Event::Start { name, attrs } = events.next().ok()?? {
+            break craft_xml::El { name, attrs, children: Vec::new() };
+        }
+    };
     if root.local() != "svg" {
         return None;
     }
@@ -29,7 +34,7 @@ fn svg_viewbox_size(data: &[u8]) -> Option<(f64, f64)> {
         return None;
     }
     let vb: Vec<f64> =
-        attr("viewBox")?.split(|c: char| c.is_whitespace() || c == ',').filter(|v| !v.is_empty()).filter_map(|v| v.parse().ok()).collect();
+        attr("viewBox")?.split(|c: char| c.is_whitespace() || c == ',').filter(|v| !v.is_empty()).map(|v| v.parse().ok()).collect::<Option<_>>()?;
     match vb[..] {
         [_, _, w, h] if w.is_finite() && h.is_finite() && w > 0.0 && h > 0.0 => Some((w, h)),
         _ => None,
