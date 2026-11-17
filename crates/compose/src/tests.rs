@@ -10316,3 +10316,54 @@ fn legacy_table_pushed_to_a_different_frame_recomputes_row_heights() {
         }
     }
 }
+
+#[test]
+fn legacy_table_skips_an_empty_frame_that_cannot_hold_the_next_row() {
+    use designcraft_doc::{FirstBaseline, Table};
+    let family = "LegacySkip 17";
+    designcraft_fonts::FontDb::global().add_font(typo_test_font(family, Some(700)));
+    let mut table = Table::new(780, 2, 1, 0, 0, 180.0);
+    for cell in &mut table.cells {
+        cell.first_baseline = FirstBaseline::Ascent;
+        cell.insets = [0.0; 4];
+        cell.text = designcraft_doc::Story::with_text(StoryId(0), "Cell", ParaFormat::default());
+        cell.text.format_chars(0..4, |f| {
+            f.over.font_family = Some(family.into());
+            f.over.size = Some(20.0);
+        });
+    }
+    let references = [legacy_flow_reference(&table, false), legacy_flow_reference(&table, true)];
+    let short = usize::from(references[1][0][0] < references[0][0][0]);
+    let tall = 1 - short;
+    let small = references[short][0][0];
+    let large = references[tall][0][0];
+    assert!(large - small > 0.1);
+    let h = (small + large.min(2.0 * small)) / 2.0;
+    let (doc, sid) = legacy_flow_doc(&table, &[h, h, h], &[short == 1, tall == 1, short == 1], false);
+    let composed = compose_story(&doc, sid, &ComposeOptions::default());
+    assert!(!composed.is_overset());
+    assert_eq!(composed.frames[0].tables[0].cells[0].row, 0);
+    assert!(composed.frames[1].tables.is_empty());
+    assert_eq!(composed.frames[2].tables[0].cells[0].row, 1);
+}
+
+#[test]
+fn legacy_table_skips_frames_without_emitting_or_repeating_a_first_header() {
+    let table = legacy_flow_table();
+    for legacy in [false, true] {
+        let expected = legacy_flow_reference(&table, legacy);
+        let (doc, sid) = legacy_flow_doc(&table, &[1.0, 1.0, 10000.0], &[!legacy, legacy, legacy], false);
+        let composed = compose_story(&doc, sid, &ComposeOptions::default());
+        assert!(!composed.is_overset());
+        assert!(composed.frames[0].tables.is_empty());
+        assert!(composed.frames[1].tables.is_empty());
+        let fragment = &composed.frames[2].tables[0];
+        assert!(!fragment.cell(0, 0).unwrap().repeated);
+        assert!(!fragment.cells.last().unwrap().repeated);
+        for cell in &fragment.cells {
+            let actual = legacy_cell_signature(cell);
+            assert_eq!(actual.len(), expected[cell.row].len());
+            assert!(actual.iter().zip(&expected[cell.row]).all(|(a, b)| (a - b).abs() < 1e-6));
+        }
+    }
+}

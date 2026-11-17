@@ -15,11 +15,16 @@ current metrics; unrelated edits retain compatibility. New documents use current
 Parent and nested frames have their own flag. Table cells, nested tables and footnotes
 inherit the containing frame’s flag; note caches distinguish it. Table continuations
 recompose their cells and repeated headers/footers when the destination frame uses
-different metrics; fragments already placed in earlier frames retain their layouts. A flagged native save
+different metrics; fragments already placed in earlier frames retain their layouts. A row group
+that is too tall for an empty frame skips ahead to later frames before it is marked overset;
+headers are emitted only with the first body fragment and repeat only on continuations. A flagged native save
 requires reader capability 6. The shared `craft-designcraft-format` codec owns that
 capability, inference and the bundle reader/writer. The app does not duplicate its ZIP
 specification or add runtime JSON/ZIP dependencies. Linked originals and proxies retain
-format-5 storage. Unflagged documents keep the capability required by their contents.
+format-5 storage. Wide unflagged documents do not require capability 6 merely because they
+contain more than one million values. The existing version-4 feature-scan fallback remains;
+data nested beyond the legacy scanner’s 256-level depth limit conservatively requires 6.
+The legacy scanner retains only ancestor iterators, bounding memory independently of width.
 
 Duplicate IDs are repaired by the existing loader without using them to infer text metrics.
 Vertical Em Box, Leading and Fixed are unchanged invariants, not regressions fixed by this

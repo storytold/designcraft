@@ -366,11 +366,10 @@ pub(crate) fn place_table(
         let footer_h = layout.sum(body_end, nr);
         let bottom = col.y1 - reserve;
         let at_col_top = cur.last_baseline.is_none() && (top - col.y0).abs() < 1e-6;
-        if y + gh + footer_h <= bottom + 0.01 || (body_placed == 0 && at_col_top && reserve == 0.0) {
-            if y + gh + footer_h > bottom + 0.01 && body_placed == 0 && at_col_top && y + gh > bottom + 0.01 {
-                // A row group taller than an empty column can never fit.
-                return false;
-            }
+        // An oversized group may fit a later frame with more room or different metrics.
+        // Let the normal continuation path skip this column without emitting a header-only
+        // fragment. The first-fragment state must follow the first body row actually placed.
+        if y + gh + footer_h <= bottom + 0.01 || (body_placed == 0 && at_col_top && reserve == 0.0 && y + gh <= bottom + 0.01) {
             layout.place_rows(r..ge, &mut y, false, &mut frag_rows);
             body_placed += 1;
             r = ge;
