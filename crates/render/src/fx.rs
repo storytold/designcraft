@@ -82,6 +82,23 @@ fn fades(it: &Item) -> bool {
     basic_feather(it) || e.directional_feather.on && e.directional_feather.widths.iter().any(|w| *w > 0.0) || e.gradient_feather.on
 }
 
+/// The box a directional feather is measured from, in the item's inner space: the edges of what
+/// the object paints. A fill or a stroke paints the frame's path, and text its frame; a placed
+/// graphic paints the part of the image the frame shows, so an image smaller than or offset in
+/// its frame fades at its own edge, not in the empty part of the frame (as in InDesign).
+fn painted_bounds(it: &Item) -> Rect {
+    let frame = it.inner_bounds();
+    if !it.fill.is_none() || !it.stroke.is_none() {
+        return frame;
+    }
+    let Some(g) = it.graphic() else { return frame };
+    let Some(shown) = g.shown_bounds(frame) else { return frame };
+    // A clipping path crops the image further.
+    let Some((path, _)) = g.clip_region().filter(|(p, _)| !p.is_empty()) else { return shown };
+    let clipped = shown.intersect(path.bounding_box());
+    if clipped.width() > 0.0 && clipped.height() > 0.0 { clipped } else { shown }
+}
+
 /// (blur σ, growth) in points for an effect `size` with `pct` percent hardened.
 fn split(size: f64, pct: f64) -> (f64, f64) {
     let size = bound(size).max(0.0);
@@ -553,7 +570,7 @@ impl Renderer {
         // Directional feather: one fading ramp per side, multiplied in.
         let df = &e.directional_feather;
         if df.on && df.widths.iter().any(|w| *w > 0.0) {
-            let b = it.inner_bounds();
+            let b = painted_bounds(it);
             let area = if xf.determinant().abs() > 1e-12 { xf.inverse().transform_rect_bbox(reach) } else { b };
             let ramps = [
                 (df.widths[0], kurbo::Point::new(b.x0, b.y0), kurbo::Point::new(b.x0, b.y0 + df.widths[0])),
@@ -1173,6 +1190,53 @@ mod tests {
         assert!(lum(250) + 60 < lum(204), "glow fades toward the image's own edge: {} vs {}", lum(250), lum(204));
     }
 
+    /// A directional feather is measured from the edges of what the object paints: an image
+    /// smaller than its frame fades at its own right edge, and the empty part of the frame stays
+    /// out of the fade (as in InDesign).
+    #[test]
+    fn directional_feather_follows_an_image_inside_its_frame() {
+        let (d, mut it) = offset_image_frame();
+        let df = &mut it.effects.directional_feather;
+        (df.on, df.widths) = (true, [0.0, 0.0, 0.0, 70.0]);
+        let lum = render_row(d, it);
+        // The image runs to x = 200; the 70 pt fade runs 130..200.
+        assert!(lum(120) < 60, "solid before the fade: {}", lum(120));
+        assert!(lum(150) > lum(120) + 100, "the fade runs inward from the image's edge: {} vs {}", lum(150), lum(120));
+        assert!(lum(195) > 600, "nearly transparent at the image's right edge: {}", lum(195));
+        assert!(lum(250) > 700, "the empty part of the frame: {}", lum(250));
+    }
+
+    /// An image larger than its frame is cropped by it, so what shows ends at the frame's edge and
+    /// the directional feather fades there.
+    #[test]
+    fn directional_feather_fades_at_the_frames_edge_when_the_image_overhangs_it() {
+        let (d, mut it) = image_frame(|_| image::Rgba([0, 0, 0, 255]));
+        if let designcraft_doc::Content::Graphic(g) = &mut it.content {
+            g.size = (400.0, 400.0);
+            g.xf = Affine::translate((-100.0, -100.0));
+        }
+        let df = &mut it.effects.directional_feather;
+        (df.on, df.widths) = (true, [0.0, 0.0, 0.0, 70.0]);
+        let lum = render_row(d, it);
+        // The frame's right edge is at x = 300: the fade runs 230..300.
+        assert!(lum(220) < 60, "solid before the fade: {}", lum(220));
+        assert!(lum(295) > 600, "nearly transparent at the frame's edge: {}", lum(295));
+    }
+
+    /// A fill paints the whole frame, so a frame with a fill fades at its own edge even when its
+    /// image is smaller.
+    #[test]
+    fn directional_feather_follows_a_filled_frames_edge() {
+        let (d, mut it) = offset_image_frame();
+        it.fill = designcraft_doc::Fill::swatch("C=0 M=100 Y=0 K=0");
+        let df = &mut it.effects.directional_feather;
+        (df.on, df.widths) = (true, [0.0, 0.0, 0.0, 70.0]);
+        let lum = render_row(d, it);
+        // The fill reaches the frame's right edge at x = 300: the fade runs 230..300.
+        assert!(lum(220) < 700, "the fill before the fade: {}", lum(220));
+        assert!(lum(295) > 700, "nearly transparent at the frame's edge: {}", lum(295));
+    }
+
     /// Eroding keeps a half-transparent area at half coverage away from its edge and clears the
     /// band along the edge.
     #[test]
@@ -1200,6 +1264,16 @@ mod tests {
         for (x, y) in [(27, 20), (20, 13), (25, 25), (14, 14)] {
             assert_eq!(out.sample(x, y).a, 255, "({x}, {y}) is more than 5 pixels from the hole");
         }
+    }
+
+    /// A 200 pt frame at (100, 100) holding a 100 × 200 black image at its left edge: the right
+    /// half of the frame is empty, in a new document.
+    fn offset_image_frame() -> (designcraft_doc::Document, Item) {
+        let (d, mut it) = image_frame(|_| image::Rgba([0, 0, 0, 255]));
+        if let designcraft_doc::Content::Graphic(g) = &mut it.content {
+            g.size = (100.0, 200.0);
+        }
+        (d, it)
     }
 
     /// A 200 pt frame at (100, 100) holding a 20 × 20 image with a transparent left half and an
