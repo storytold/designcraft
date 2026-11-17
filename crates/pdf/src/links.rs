@@ -2,7 +2,7 @@
 //! bookmark outline.
 
 use craft_pdf::write::backend as krilla;
-use designcraft_doc::{Bookmark, Document, HyperlinkDest, HyperlinkSource, SpreadRef};
+use designcraft_doc::{Bookmark, Document, HyperlinkDest, HyperlinkSource, ItemLoc, SpreadRef};
 use designcraft_geom::{Affine, Rect};
 use krilla::action::{Action, LinkAction};
 use krilla::annotation::{Annotation, LinkAnnotation, Target};
@@ -25,30 +25,60 @@ pub(crate) fn sheet_of_page(doc: &Document, sheets: &[Sheet], abs: usize) -> Opt
     sheets.iter().position(|s| s.spread == si && s.trim.x0 <= page.center().x && page.center().x <= s.trim.x1)
 }
 
+/// Where the item at `loc` is drawn on page `pi` of spread `si`, as the transform of its parent:
+/// an item of the spread itself (on any of its pages: `pi` is `None`), or an item of a parent page
+/// that page shows (#2910), moved onto it as the PDF draws it.
+fn placed_on(doc: &Document, loc: &ItemLoc, si: usize, pi: Option<usize>) -> Option<Affine> {
+    match (loc.spread, pi) {
+        (SpreadRef::Doc(s), None) => (s == si).then(|| doc.parent_xf(loc)),
+        (SpreadRef::Parent(_), Some(pi)) => {
+            let top = doc.spread(loc.spread)?.items.get(*loc.path.first()?)?.id;
+            let (xf, _) = crate::export::shown_parent_items(doc, si, pi).into_iter().find(|(_, it)| it.id == top)?;
+            Some(xf * doc.parent_xf(loc))
+        }
+        _ => None,
+    }
+}
+
+/// The pages a link's rectangles are looked for on: the spread's own items (`None`), then each
+/// page's parent items.
+fn page_slots(doc: &Document, si: usize) -> impl Iterator<Item = Option<usize>> {
+    let pages = doc.spreads.get(si).map_or(0, |sp| sp.pages.len());
+    std::iter::once(None).chain((0..pages).map(Some))
+}
+
 /// Spread-space rectangles covered by a hyperlink source on spread `si`.
 fn source_rects(doc: &Document, cache: &designcraft_compose::Cache, src: &HyperlinkSource, si: usize) -> Vec<Rect> {
     match src {
-        HyperlinkSource::Item { id } => match (doc.find(*id), doc.item(*id)) {
-            (Some(loc), Some(it)) if loc.spread == SpreadRef::Doc(si) => vec![doc.parent_xf(&loc).transform_rect_bbox(it.bounds())],
-            _ => vec![],
-        },
+        HyperlinkSource::Item { id } => {
+            let (Some(loc), Some(it)) = (doc.find(*id), doc.item(*id)) else { return vec![] };
+            page_slots(doc, si).filter_map(|pi| placed_on(doc, &loc, si, pi)).map(|xf| xf.transform_rect_bbox(it.bounds())).collect()
+        }
         HyperlinkSource::Text { story, start, end } => {
-            let cs = cache.get(doc, *story, None);
+            let first = doc.first_page_of_spread(si);
+            let own = cache.get(doc, *story, None);
+            let on_parent = own.frames.iter().any(|ft| doc.find(ft.frame).is_some_and(|l| matches!(l.spread, SpreadRef::Parent(_))));
             let mut out = Vec::new();
-            for ft in &cs.frames {
-                let (Some(loc), Some(it)) = (doc.find(ft.frame), doc.item(ft.frame)) else { continue };
-                if loc.spread != SpreadRef::Doc(si) {
-                    continue;
-                }
-                let m: Affine = doc.parent_xf(&loc) * doc.text_xf(it);
-                for l in &ft.lines {
-                    if l.range.end <= *start || l.range.start >= *end {
-                        continue;
+            for pi in page_slots(doc, si) {
+                // Text on a parent page is composed for each page that shows it (its page numbers).
+                let cs = match pi {
+                    None => own.clone(),
+                    Some(pi) if on_parent => cache.get(doc, *story, Some(first + pi)),
+                    Some(_) => continue,
+                };
+                for ft in &cs.frames {
+                    let (Some(loc), Some(it)) = (doc.find(ft.frame), doc.item(ft.frame)) else { continue };
+                    let Some(xf) = placed_on(doc, &loc, si, pi) else { continue };
+                    let m: Affine = xf * doc.text_xf(it);
+                    for l in &ft.lines {
+                        if l.range.end <= *start || l.range.start >= *end {
+                            continue;
+                        }
+                        let gs: Vec<_> = l.glyphs.iter().filter(|g| g.len > 0 && g.byte >= *start && g.byte < *end).collect();
+                        let (Some(a), Some(b)) = (gs.first(), gs.last()) else { continue };
+                        let r = Rect::new(a.x, l.baseline - l.ascent, b.x + b.adv, l.baseline + l.descent);
+                        out.push(m.transform_rect_bbox(r));
                     }
-                    let gs: Vec<_> = l.glyphs.iter().filter(|g| g.len > 0 && g.byte >= *start && g.byte < *end).collect();
-                    let (Some(a), Some(b)) = (gs.first(), gs.last()) else { continue };
-                    let r = Rect::new(a.x, l.baseline - l.ascent, b.x + b.adv, l.baseline + l.descent);
-                    out.push(m.transform_rect_bbox(r));
                 }
             }
             out

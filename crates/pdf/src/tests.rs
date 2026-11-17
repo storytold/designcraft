@@ -792,6 +792,52 @@ fn link_annotation_export_refuses_non_web_schemes() {
     assert!(!s.contains("javascript:"), "a javascript URL is not exported: {s}");
 }
 
+/// A hyperlink on a parent page's item or text links on every page that shows it, where it is
+/// drawn there; a page that hides its parent items has no link (#2910).
+#[test]
+fn links_on_a_parent_page_link_on_its_pages() {
+    use designcraft_doc::story::PAGE_NUMBER;
+    use designcraft_doc::{Hyperlink, HyperlinkDest, HyperlinkSource, Shape};
+    let mut d = Document::new(&NewDocument { pages: 12, facing_pages: false, ..NewDocument::default() });
+    let lid = d.default_layer();
+    let box_id = ItemId(d.alloc());
+    let it = Item::new(box_id, lid, Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(100.0, 100.0, 200.0, 160.0)));
+    d.insert_item(SpreadRef::Parent(0), it, None).unwrap();
+    let folio = format!("{PAGE_NUMBER} Folio");
+    let (_, sid) = d.add_text_frame(SpreadRef::Parent(0), Rect::new(36.0, 700.0, 300.0, 740.0), lid, &folio, ParaFormat::default()).unwrap();
+    let word = folio.len() - 5;
+    for (id, name, source) in
+        [(1, "box", HyperlinkSource::Item { id: box_id }), (2, "folio", HyperlinkSource::Text { story: sid, start: word, end: folio.len() })]
+    {
+        d.hyperlinks.push(Hyperlink { id, name: name.into(), source, dest: HyperlinkDest::Url(format!("https://example.com/{name}")) });
+    }
+    std::sync::Arc::make_mut(&mut d.spreads[1]).pages[0].show_parent_items = false;
+    let s = uncompressed(&d, PdfOptions::default());
+    // Each link's rectangles, from the annotations that carry its URL.
+    let rects = |name: &str| -> Vec<Vec<f64>> {
+        s.split("/Rect[")
+            .skip(1)
+            .filter(|a| a.split(">>").take(2).any(|p| p.contains(&format!("https://example.com/{name})"))))
+            .filter_map(|r| r.split(']').next())
+            .map(|r| r.split_whitespace().filter_map(|v| v.parse().ok()).collect())
+            .collect()
+    };
+    // Eleven pages show the parent's items; page 2 hides them.
+    let boxes = rects("box");
+    assert_eq!(boxes.len(), 11, "{boxes:?}");
+    // On a spread of its own, the box links where it is drawn: x 100 to 200, y 100 to 160 from the
+    // top of a 792 pt page.
+    assert!(boxes.iter().all(|r| *r == [100.0, 792.0 - 160.0, 200.0, 792.0 - 100.0]), "{boxes:?}");
+    // The word is on the line at the frame's top (y 700 down), after each page's own number: one
+    // digit up to page 9, two from page 10, so it starts further right on pages 10 to 12.
+    let words = rects("folio");
+    assert_eq!(words.len(), 11, "{words:?}");
+    assert!(words.iter().all(|r| r[0] > 36.0 && r[3] <= 92.5 && r[3] > 52.0), "{words:?}");
+    let starts: Vec<f64> = words.iter().map(|r| r[0]).collect();
+    let near = starts.iter().copied().fold(f64::MAX, f64::min);
+    assert_eq!(starts.iter().filter(|x| **x > near + 3.0).count(), 3, "pages 10 to 12: {starts:?}");
+}
+
 /// A clipping path on a placed image becomes a clip in the page content, inside the frame's.
 #[test]
 fn clipping_path_clips_the_image() {
