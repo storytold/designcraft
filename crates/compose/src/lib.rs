@@ -1280,15 +1280,16 @@ fn compose_story_at(
     depth: usize,
     hosts: &mut HashMap<(StoryId, usize), Arc<ComposedStory>>,
 ) -> ComposedStory {
-    let others: Vec<ComposedStory> =
-        wrap::neighbours(doc, sid).into_iter().map(|o| wrap::compose_among(doc, o, &ComposeOptions::default(), &[])).collect();
+    // Prebuilt indexes are safe to share with raw neighbours and hosts; no resolver runs here.
+    let context = ComposeOptions { running: opts.running.clone(), xrefs: opts.xrefs.clone(), ..Default::default() };
+    let others: Vec<ComposedStory> = wrap::neighbours(doc, sid).into_iter().map(|o| wrap::compose_among(doc, o, &context, &[])).collect();
     let others: Vec<&ComposedStory> = others.iter().collect();
     if opts.placed.is_empty() && depth < placed::MAX_DEPTH {
         let placed = placed::placements(doc, sid, &mut |host| {
             if let Some(c) = hosts.get(&(host, depth + 1)) {
                 return c.clone();
             }
-            let c = Arc::new(compose_story_at(doc, host, &ComposeOptions::default(), depth + 1, hosts));
+            let c = Arc::new(compose_story_at(doc, host, &context, depth + 1, hosts));
             hosts.insert((host, depth + 1), c.clone());
             c
         });
