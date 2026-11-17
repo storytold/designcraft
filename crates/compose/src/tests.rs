@@ -10549,9 +10549,33 @@ fn cross_reference_text_breaks_at_its_spaces() {
     }
 }
 
-/// Reloaded language packs invalidate Hungarian hyphenation without invalidating English.
+/// Reloaded language packs invalidate cached Hungarian hyphenation and composed stories.
 #[test]
 fn hungarian_hyphenation_cache_observes_pack_reload() {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        // Reload changes a process-wide generation. Keep it out of other composition tests.
+        const CHILD: &str = "DESIGNCRAFT_TEST_PACK_RELOAD_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "tests::hungarian_hyphenation_cache_observes_pack_reload"])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr),);
+            return;
+        }
+    }
+
+    let text = "asszony könnyen hosszú";
+    let (mut doc, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 25.0, 500.0), ParaAttrs { hyphenate: Some(true), ..Default::default() });
+    doc.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.language = Some("Hungarian".into()));
+    let cache = Cache::new();
+    let composed = cache.get(&doc, sid, None);
+    let xrefs = cache.xref_index(&doc);
+    let running = cache.running_index(&doc);
+    assert!(Arc::ptr_eq(&composed, &cache.get(&doc, sid, None)));
+
     let limits = hyphen::Limits::default();
     let hungarian = cached_hyphen_opportunities(&limits, hyphen::Lang::Hungarian, "asszony");
     let english = cached_hyphen_opportunities(&limits, hyphen::Lang::English, "typesetting");
@@ -10561,4 +10585,10 @@ fn hungarian_hyphenation_cache_observes_pack_reload() {
 
     assert!(!Arc::ptr_eq(&hungarian, &cached_hyphen_opportunities(&limits, hyphen::Lang::Hungarian, "asszony")));
     assert!(Arc::ptr_eq(&english, &cached_hyphen_opportunities(&limits, hyphen::Lang::English, "typesetting")));
+
+    let current = cache.get(&doc, sid, None);
+    assert!(!Arc::ptr_eq(&composed, &current), "pack reload must invalidate an unchanged story");
+    assert!(Arc::ptr_eq(&current, &cache.get(&doc, sid, None)));
+    assert!(!Arc::ptr_eq(&xrefs, &cache.xref_index(&doc)));
+    assert!(!Arc::ptr_eq(&running, &cache.running_index(&doc)));
 }

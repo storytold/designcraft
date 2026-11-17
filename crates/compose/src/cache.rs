@@ -114,6 +114,7 @@ fn doc_signature(doc: &Document) -> u64 {
     format!("{:?}", doc.text_variables).hash(&mut h);
     sections_hash(doc).hash(&mut h);
     // The compositions the indexes are built from also depend on these (see `signature`).
+    craft_proof::dictionary_generation().hash(&mut h);
     let g = &doc.settings.baseline_grid;
     (doc.font_scope, g.relative_to == designcraft_doc::GridRelative::TopMargin, g.start.to_bits(), g.increment.to_bits()).hash(&mut h);
     outlines_hash(doc).hash(&mut h);
@@ -496,6 +497,10 @@ fn signature(doc: &Document, story: &Arc<Story>) -> (Vec<usize>, Vec<Arc<Item>>)
         outlines_hash(doc) as usize,
     ];
     sig.extend([g.start, g.increment].into_iter().flat_map(bits));
+    // A Language pack reload can change line breaks without editing the story. Keep both
+    // halves on wasm32, and put them after STORY_SIG so incremental reuse checks them too.
+    let generation = craft_proof::dictionary_generation();
+    sig.extend([generation as u32 as usize, (generation >> 32) as usize]);
     let mut keep = Vec::new();
     let mut spreads = Vec::new();
     for f in &story.frames {
