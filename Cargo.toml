@@ -12,9 +12,9 @@ repository = "https://github.com/storytold/designcraft"
 
 [workspace.dependencies]
 # Shared Khmer segmentation and proofreading; data is an explicit, hash-verified build input.
-craft-khmer = { git = "https://github.com/storytold/craft-libs", rev = "d8ca3a6cf287868f648175d9ee8b9134d0b81ae1", version = "=0.1.0" }
+craft-khmer = { git = "https://github.com/storytold/craft-libs", rev = "5a8e94506c37dd959763de01cdf5c81a1d7386dc", version = "=0.1.0" }
 # Shared proofing: spelling, suggestions and Khmer preferred forms for each language's dictionary.
-craft-proof = { git = "https://github.com/storytold/craft-libs", rev = "d8ca3a6cf287868f648175d9ee8b9134d0b81ae1", version = "=0.1.0" }
+craft-proof = { git = "https://github.com/storytold/craft-libs", rev = "5a8e94506c37dd959763de01cdf5c81a1d7386dc", version = "=0.1.0" }
 # The shared spelling review: the Spelling panel and its right-click section.
 craft-proof-ui = { git = "https://github.com/storytold/craft-libs", rev = "2444cc99ca4db03d08cc903b003ce3c275e7a80a", version = "=0.1.0" }
 # Shared RFC 4648 encoding; document decoding policies remain local.
