@@ -18,6 +18,7 @@ pub mod guard;
 pub mod io;
 pub mod links;
 pub mod math;
+pub mod plugin;
 pub mod recovery;
 pub mod sample;
 pub mod script;
@@ -258,6 +259,10 @@ pub struct Prefs {
     pub recent_files: Vec<String>,
     /// Preferences › File Handling › Number of Recent Items to Display (0 keeps no list).
     pub recent_files_max: u32,
+    /// Each plug-in's settings, by plug-in id (`plugin::MAX_SETTINGS_BYTES` each).
+    pub plugin_settings: std::collections::BTreeMap<String, serde_json::Map<String, Value>>,
+    /// Plug-in catalogs added with `plugin.catalog.add` (`index.json` URLs).
+    pub plugin_catalogs: Vec<String>,
     /// Preferences › Units & Increments set with no document open: what new documents start
     /// with, as InDesign's application defaults. A document keeps its own once made.
     pub default_units: DefaultUnits,
@@ -388,6 +393,8 @@ impl Default for Prefs {
             link_text_files: false,
             recent_files: Vec::new(),
             recent_files_max: 20,
+            plugin_settings: Default::default(),
+            plugin_catalogs: Vec::new(),
             default_units: DefaultUnits::default(),
         }
     }
@@ -457,6 +464,8 @@ pub struct Session {
     /// polled): a file of the recorded size and time isn't read again, and one touched but not
     /// changed is read once.
     pub(crate) link_checks: cmd::LinkListChecks,
+    /// Installed plug-ins, their store and the last run (see [`plugin`]).
+    pub plugins: plugin::Runtime,
 }
 
 impl Default for Session {
@@ -505,6 +514,7 @@ impl Session {
             book: None,
             untitled: 0,
             new_document_preview: None,
+            plugins: Default::default(),
         }
     }
 

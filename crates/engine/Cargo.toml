@@ -43,6 +43,8 @@ craft-xml-dtd = { workspace = true }
 craft-svg = { workspace = true }
 caseless = { workspace = true }
 unicode-segmentation = { workspace = true }
+# WebAssembly command plug-ins (`plugin`).
+craft-plugin = { workspace = true }
 # Content hashes of linked files (`asset_io::content_hash`).
 sha2 = "0.10"
 
@@ -54,6 +56,8 @@ tempfile = { workspace = true }
 same-file = { workspace = true }
 
 [dev-dependencies]
+# Test plug-ins are written in WebAssembly text.
+wat = "1.261"
 designcraft-fonts = { workspace = true, features = ["testing"] }
 zip = { workspace = true }
 hayro-syntax = "0.7.2"

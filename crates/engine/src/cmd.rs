@@ -53,6 +53,7 @@ mod path_type;
 mod paths;
 mod pdflayers;
 mod place_text;
+mod plugins;
 pub mod preflight;
 mod prefs;
 mod prepress;
@@ -243,6 +244,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(datamerge::specs());
         v.extend(interactive::specs());
         v.extend(preflight::specs());
+        v.extend(plugins::specs());
         v
     })
 }
