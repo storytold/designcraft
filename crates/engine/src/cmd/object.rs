@@ -5906,12 +5906,20 @@ mod stroke_type_tests {
             (json!({"kind": "stripes", "bands": vec![[0.0, 0.01]; 65]}), "bands"),
             (json!({"kind": "style", "name": "Nope"}), "Nope"),
         ] {
-            for ids in [json!([id]), json!([])] {
+            for ids in [Some(json!([id])), Some(json!([])), None] {
+                let mut params = json!({"swatch": "[Black]", "type": kind});
+                match &ids {
+                    Some(ids) => params["ids"] = ids.clone(),
+                    // No ids and nothing selected: the stroke would go to new shapes.
+                    None => {
+                        s.execute("edit.deselectAll", &json!({})).unwrap();
+                    }
+                }
                 let before = s.doc().unwrap().doc.clone();
-                let error = s.execute("object.stroke", &json!({"ids": ids, "swatch": "[Black]", "type": kind})).unwrap_err();
+                let error = s.execute("object.stroke", &params).unwrap_err();
                 assert!(matches!(error, crate::EngineError::BadParams { .. }), "{error}");
-                assert!(error.to_string().contains(hint), "{kind}: {error}");
-                assert!(std::sync::Arc::ptr_eq(&before, &s.doc().unwrap().doc), "{kind}: nothing changed");
+                assert!(error.to_string().contains(hint), "{kind} {ids:?}: {error}");
+                assert!(std::sync::Arc::ptr_eq(&before, &s.doc().unwrap().doc), "{kind} {ids:?}: nothing changed");
             }
         }
         s.execute("object.stroke", &json!({"ids": [id], "type": {"kind": "dashed", "pattern": [0, 4, 0.1, 10_000]}})).unwrap();
