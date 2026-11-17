@@ -258,8 +258,16 @@ fn begin_guide_drag(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Respons
 /// the tools never see that press.
 pub(super) fn guide_drag(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, rect: Rect, xf: &Xf) -> bool {
     let id = egui::Id::unique(GUIDE_DRAG);
-    let (pressed, released, origin, latest) =
-        ui.input(|i| (i.pointer.primary_pressed(), i.pointer.primary_released(), i.pointer.press_origin(), i.pointer.latest_pos()));
+    let (pressed, released, origin, latest) = ui.input(|i| {
+        (
+            i.pointer.primary_pressed(),
+            // A release this frame, or one missed while something else had the pointer (#2833):
+            // otherwise the guide follows the pointer after the click and drops at the next one.
+            i.pointer.primary_released() || !i.pointer.primary_down(),
+            i.pointer.press_origin(),
+            i.pointer.latest_pos(),
+        )
+    });
     let mut drag: Option<GuideDrag> = ui.data(|d| d.get_temp(id));
     if drag.is_none() && pressed && resp.hovered() && app.ui.guides && !app.ui.guides_locked {
         let Some(o) = origin else { return false };
