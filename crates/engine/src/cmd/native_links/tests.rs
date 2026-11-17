@@ -27,6 +27,12 @@ impl Drop for Dir {
     }
 }
 
+/// A recorded link as a `Path`: the engine formats it with the platform's separator (`\` on
+/// Windows), and comparing paths ignores that difference.
+fn linked_path(link: Option<&str>) -> Option<&Path> {
+    link.map(Path::new)
+}
+
 fn png(red: u8) -> Vec<u8> {
     designcraft_render::Rendered { width: 40, height: 20, pixels: [red, 90, 180, 255].repeat(800) }.to_png()
 }
@@ -133,7 +139,7 @@ fn a_moved_folder_finds_its_files_by_relative_path() {
     let s = open(&moved.0.join("doc.designcraft"));
     let a = asset(&s, id);
     assert_eq!(status(&s, id), Some(LinkStatus::Ok));
-    assert_eq!(a.link.as_deref(), Some(moved.0.join("links/art.png").to_string_lossy().as_ref()), "the file found is the link now");
+    assert_eq!(linked_path(a.link.as_deref()), Some(moved.0.join("links/art.png").as_path()), "the file found is the link now");
     assert!(!s.doc().unwrap().is_dirty());
     assert_eq!(a.data.load().unwrap().as_slice(), png(30));
 }
@@ -149,7 +155,7 @@ fn the_absolute_file_wins_and_otherwise_the_one_with_the_bytes() {
     age(&copy.0.join("links/art.png"), 50);
     let s = open(&copy.0.join("doc.designcraft"));
     assert_eq!(status(&s, id), Some(LinkStatus::Ok));
-    assert_eq!(asset(&s, id).link.as_deref(), Some(dir.0.join("links/art.png").to_string_lossy().as_ref()), "the absolute path is tried first");
+    assert_eq!(linked_path(asset(&s, id).link.as_deref()), Some(dir.0.join("links/art.png").as_path()), "the absolute path is tried first");
 
     // The original changes (same size): the copy holds the bytes, found by its hash.
     flip_a_byte(&dir.0.join("links/art.png"));
@@ -159,7 +165,7 @@ fn the_absolute_file_wins_and_otherwise_the_one_with_the_bytes() {
     wait(&mut s);
     let a = asset(&s, id);
     assert_eq!(status(&s, id), Some(LinkStatus::Ok));
-    assert_eq!(a.link.as_deref(), Some(copy.0.join("links/art.png").to_string_lossy().as_ref()));
+    assert_eq!(linked_path(a.link.as_deref()), Some(copy.0.join("links/art.png").as_path()));
     assert_eq!(a.link_fingerprint, Some(fingerprint_from(&std::fs::metadata(copy.0.join("links/art.png")).unwrap())));
     assert_eq!(a.data.load().unwrap().as_slice(), png(30));
 }
