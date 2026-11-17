@@ -1567,7 +1567,6 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Sentence case", "אות גדולה בתחילת משפט"),
     ("lowercase", "אותיות קטנות"),
     ("Name (A–Z)", "שם (A–Z)"),
-    ("Invalid panel layout; restored the default dock", "פריסת החלוניות אינה תקינה; סידור החלוניות המוגדר כברירת מחדל שוחזר"),
     ("Text:", "טקסט:"),
     ("Subject:", "נושא:"),
     ("URL:", "כתובת URL:"),

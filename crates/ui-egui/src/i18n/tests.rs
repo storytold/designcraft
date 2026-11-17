@@ -1233,3 +1233,12 @@ fn hebrew_night04_live_page_export_and_font_controls() {
         assert_eq!(tr("en", source), source, "Unchanged English: {source}");
     }
 }
+
+#[test]
+fn hebrew_catalog_has_unique_source_keys_including_multiline_entries() {
+    let mut keys = HashSet::new();
+    for (source, translated) in he::TABLE {
+        assert!(keys.insert(*source), "duplicate Hebrew source key: {source}");
+        assert!(!translated.trim().is_empty(), "empty Hebrew translation: {source}");
+    }
+}
