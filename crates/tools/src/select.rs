@@ -1804,6 +1804,37 @@ mod anchored_transform_tests {
         (d, host, id, bounds.center())
     }
 
+    /// Graphics inside one or two anchored text frames retain canvas bounds and hit targets.
+    #[test]
+    fn review_nested_anchored_text_frames_resolve_graphic_geometry() {
+        use designcraft_doc::{AnchoredObject, ParaFormat, SpreadRef};
+        for levels in [1, 2] {
+            let (mut d, host, image, _) = anchored_fixture();
+            let mut child = host;
+            for _ in 0..levels {
+                let layer = d.default_layer();
+                let (_, sid) =
+                    d.add_text_frame(SpreadRef::Doc(0), Rect::new(72.0, 72.0, 500.0, 650.0), layer, "Outer", ParaFormat::default()).unwrap();
+                let item = d.item(child).unwrap().clone();
+                for spread in &mut d.spreads {
+                    std::sync::Arc::make_mut(spread).items.retain(|i| i.id != child);
+                }
+                d.story_mut(sid).unwrap().insert_object(0, AnchoredObject::new(item, Default::default()));
+                child = d.story(sid).unwrap().frames[0];
+            }
+            d.check().unwrap();
+            let (cache, layout) = (Cache::new(), CanvasLayout::new(&d, false));
+            let selected = Selection::items(vec![image]);
+            let cx = context(&d, &selected, &cache, &layout, 1.0);
+            let geometry = cx.anchored_graphic_geometry();
+            let (_, bounds, _, found_host) = geometry.iter().find(|(id, _, _, _)| *id == image).unwrap();
+            assert_eq!(*found_host, host);
+            assert!(bounds.width() > 0.0 && bounds.height() > 0.0);
+            assert_eq!(cx.selection_bounds(), Some(*bounds));
+            assert_eq!(cx.hit_anchored_graphic(bounds.center()), Some(image));
+        }
+    }
+
     /// Verify overlapping handle tolerances choose the nearest handle.
     #[test]
     fn nearest_handle_prefers_closest_when_tolerances_overlap() {

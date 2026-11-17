@@ -37,7 +37,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Resize Anchored Graphic",
             [],
             None,
-            "{id, left?, top?, right?, bottom?} crop edge deltas in frame points (clamped to graphic bounds and 1pt minimum frame), OR {id, width, height} explicit frame size (1..100000pt); modes cannot be mixed; frame changes preserve graphic content size; recomposes text",
+            "{id, left?, top?, right?, bottom?, width?, height?} crop edge deltas in frame points (clamped to graphic bounds and 1pt minimum frame), OR {id, width, height} explicit frame size (1..100000pt); modes cannot be mixed; frame changes preserve graphic content size; recomposes text",
             has_doc,
             resize_graphic
         ),
@@ -519,42 +519,224 @@ mod tests {
         assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().objects[0].caption_id, None);
     }
 
-    /// Reject invalid command inputs before attempting document mutations.
+    /// A real graphic and a valid text-frame caption for command rejection and edit tests.
+    fn review_fixture() -> (Session, StoryId, ItemId, ItemId) {
+        use designcraft_doc::{AssetId, Graphic, Shape};
+        use designcraft_geom::{Rect, shapes};
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let host = s.execute("frame.create", &json!({"rect": [72,72,400,500], "content":"text", "text":"Body"})).unwrap();
+        let sid = StoryId(host["story"].as_u64().unwrap());
+        let caption = s.execute("frame.create", &json!({"rect": [0,0,100,30], "content":"text", "text":"Caption"})).unwrap();
+        let caption = ItemId(caption["id"].as_u64().unwrap());
+        s.edit(|d, _| {
+            let item = d.item(caption).unwrap().clone();
+            for spread in &mut d.spreads {
+                Arc::make_mut(spread).items.retain(|i| i.id != caption);
+            }
+            d.story_mut(sid).unwrap().insert_object(0, AnchoredObject::new(item, Default::default()));
+            Ok(json!({}))
+        })
+        .unwrap();
+        let id = ItemId(s.doc().unwrap().doc.next_id);
+        let layer = s.doc().unwrap().doc.default_layer();
+        let mut item = Item::new(id, layer, Shape::Rectangle, shapes::rectangle(Rect::new(0.0, 0.0, 100.0, 60.0)));
+        item.content = Content::Graphic(Graphic {
+            layer_options: None,
+            asset: AssetId(1),
+            size: (100.0, 60.0),
+            xf: Affine::IDENTITY,
+            clip: None,
+            auto_fit: Default::default(),
+            fit_align: 4,
+            crop: [0.0; 4],
+            wrap: Default::default(),
+            fill: Default::default(),
+        });
+        s.edit(|d, _| {
+            d.alloc();
+            d.story_mut(sid).unwrap().insert_object(0, AnchoredObject::new(item, Default::default()));
+            Ok(json!({}))
+        })
+        .unwrap();
+        s.execute("anchored.linkCaption", &json!({"image":id.0, "caption":caption.0})).unwrap();
+        s.doc().unwrap().doc.check().unwrap();
+        (s, sid, id, caption)
+    }
+
+    /// Assert rejection reaches parameter validation and leaves the entire document unchanged.
+    fn rejected(s: &mut Session, command: &str, params: Value, expected: &str) {
+        let before = serde_json::to_value(&*s.doc().unwrap().doc).unwrap();
+        let error = s.execute(command, &params).unwrap_err().to_string();
+        assert!(error.contains(expected), "{command} {params}: {error}, expected {expected}");
+        assert_eq!(serde_json::to_value(&*s.doc().unwrap().doc).unwrap(), before);
+    }
+
+    /// Invalid parameters must be tested on existing objects, not rejected at object lookup.
     #[test]
     fn anchored_commands_reject_invalid_parameters_without_mutating_document() {
-        let mut session = Session::new();
-        session.execute("file.new", &json!({})).unwrap();
-        for caption in [json!(null), json!("7"), json!(-1), json!(1.5), json!(true)] {
-            assert!(session.execute("anchored.linkCaption", &json!({"image": 1, "caption": caption})).is_err());
+        let (mut s, _, id, caption) = review_fixture();
+        for value in [json!(null), json!("7"), json!(-1), json!(1.5), json!(true)] {
+            rejected(&mut s, "anchored.linkCaption", json!({"image":id.0,"caption":value}), "caption must be an unsigned integer");
         }
+        rejected(&mut s, "anchored.linkCaption", json!({"image":id.0,"caption":id.0}), "caption cannot be image");
+        rejected(&mut s, "anchored.linkCaption", json!({"image":caption.0,"caption":id.0}), "source is not a graphic");
         for key in ["left", "top", "right", "bottom", "width", "height"] {
             for value in [json!("5"), json!(null), json!(false)] {
-                let mut params = json!({"id": 1});
+                let mut params = json!({"id":id.0});
                 params[key] = value;
-                assert!(session.execute("anchored.resize", &params).is_err(), "{params}");
+                let expected = if key == "width" || key == "height" {
+                    "width and height must be supplied together".to_string()
+                } else {
+                    format!("{key} must be numeric")
+                };
+                rejected(&mut s, "anchored.resize", params, &expected);
             }
         }
-        for params in [
-            json!({"id": 1, "width": 40, "height": 50, "left": 1}),
-            json!({"id": 1, "width": 40}),
-            json!({"id": 1, "width": 0, "height": 10}),
-            json!({"id": 1, "width": 100001, "height": 10}),
+        for (extra, expected) in [
+            (json!({"width":40,"height":50,"left":1}), "explicit dimensions cannot be combined"),
+            (json!({"width":40}), "width and height must be supplied together"),
+            (json!({"width":0,"height":10}), "explicit dimensions must be between"),
+            (json!({"width":100001,"height":10}), "explicit dimensions must be between"),
+            (json!({"width":"5","height":10}), "width must be numeric"),
+            (json!({"width":10,"height":false}), "height must be numeric"),
         ] {
-            assert!(session.execute("anchored.resize", &params).is_err(), "{params}");
+            let mut params = extra;
+            params["id"] = json!(id.0);
+            rejected(&mut s, "anchored.resize", params, expected);
         }
-        assert!(session.execute("anchored.contentTransform", &json!({"id": 1})).is_err());
+        rejected(&mut s, "anchored.contentTransform", json!({"id":id.0}), "provide dx, dy, or scale");
         for key in ["dx", "dy", "scale"] {
             for value in [json!(null), json!("5"), json!(true)] {
-                let mut params = json!({"id": 1});
+                let mut params = json!({"id":id.0});
                 params[key] = value;
-                assert!(session.execute("anchored.contentTransform", &params).is_err(), "{params}");
+                rejected(&mut s, "anchored.contentTransform", params, &format!("{key} must be numeric"));
             }
         }
-        for params in
-            [json!({"id": 1, "dx": 1000001}), json!({"id": 1, "dy": -1000001}), json!({"id": 1, "scale": 0}), json!({"id": 1, "scale": 101})]
-        {
-            assert!(session.execute("anchored.contentTransform", &params).is_err(), "{params}");
+        for (extra, expected) in [
+            (json!({"dx":1000001}), "movement exceeds"),
+            (json!({"dy":-1000001}), "movement exceeds"),
+            (json!({"scale":0}), "invalid scale"),
+            (json!({"scale":101}), "invalid scale"),
+        ] {
+            let mut params = extra;
+            params["id"] = json!(id.0);
+            rejected(&mut s, "anchored.contentTransform", params, expected);
         }
+    }
+
+    /// Delete removes a selected marker, cleans caption links, and remains one undoable edit.
+    #[test]
+    fn review_clear_removes_anchored_selection_and_undo_restores_it() {
+        for caption_first in [false, true] {
+            let (mut s, sid, image, caption) = review_fixture();
+            let id = if caption_first { caption } else { image };
+            s.execute("selection.set", &json!({"ids":[id.0]})).unwrap();
+            let before = serde_json::to_value(&*s.doc().unwrap().doc).unwrap();
+            let result = s.execute("edit.clear", &json!({})).unwrap();
+            assert_eq!(result["deleted"], 1);
+            let d = &s.doc().unwrap().doc;
+            assert!(d.anchored_item(id).is_none());
+            if caption_first {
+                assert_eq!(d.story(sid).unwrap().objects[0].caption_id, None);
+            }
+            d.check().unwrap();
+            s.execute("edit.undo", &json!({})).unwrap();
+            assert_eq!(serde_json::to_value(&*s.doc().unwrap().doc).unwrap(), before);
+            s.execute("edit.redo", &json!({})).unwrap();
+            assert!(s.doc().unwrap().doc.anchored_item(id).is_none());
+        }
+    }
+
+    /// Unsupported anchored and mixed copies must preserve clipboard, document, and selection.
+    #[test]
+    fn review_copy_cut_reject_anchored_selections_without_mutation() {
+        let (mut s, _, image, _) = review_fixture();
+        let ordinary = s.execute("frame.create", &json!({"rect":[0,0,40,40]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("selection.set", &json!({"ids":[ordinary]})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+        let clip = s.clipboard.clone().unwrap();
+        for ids in [json!([image.0]), json!([ordinary, image.0])] {
+            s.execute("selection.set", &json!({"ids":ids})).unwrap();
+            let selected = s.doc().unwrap().selection.clone();
+            for command in ["edit.copy", "edit.cut"] {
+                rejected(&mut s, command, json!({}), "anchored selections is unsupported");
+                assert!(Arc::ptr_eq(s.clipboard.as_ref().unwrap(), &clip));
+                assert_eq!(s.doc().unwrap().selection, selected);
+            }
+        }
+        s.execute("selection.set", &json!({"ids":[ordinary]})).unwrap();
+        s.execute("edit.cut", &json!({})).unwrap();
+        assert!(s.doc().unwrap().doc.item(ItemId(ordinary)).is_none());
+    }
+
+    /// Formatted text paste remaps links in both the slice and any adopted child stories.
+    #[test]
+    fn review_formatted_paste_remaps_caption_links() {
+        for nested in [false, true] {
+            let (mut s, mut sid, image, caption) = review_fixture();
+            if nested {
+                let host = s.doc().unwrap().doc.story(sid).unwrap().frames[0];
+                let outer = s.execute("frame.create", &json!({"rect":[72,72,500,650],"content":"text","text":"Outer"})).unwrap();
+                sid = StoryId(outer["story"].as_u64().unwrap());
+                s.edit(|d, _| {
+                    let item = d.item(host).unwrap().clone();
+                    for spread in &mut d.spreads {
+                        Arc::make_mut(spread).items.retain(|i| i.id != host);
+                    }
+                    d.story_mut(sid).unwrap().insert_object(0, AnchoredObject::new(item, Default::default()));
+                    Ok(json!({}))
+                })
+                .unwrap();
+            }
+            let len = s.doc().unwrap().doc.story(sid).unwrap().len();
+            s.doc_mut().unwrap().selection.text = Some(designcraft_doc::TextSel { story: sid, anchor: 0, focus: len, frame: None, cell: None });
+            s.execute("edit.copy", &json!({})).unwrap();
+            let target = s.execute("frame.create", &json!({"rect":[420,72,700,500],"content":"text"})).unwrap()["story"].as_u64().unwrap();
+            let target = StoryId(target);
+            s.doc_mut().unwrap().selection.text = Some(designcraft_doc::TextSel { story: target, anchor: 0, focus: 0, frame: None, cell: None });
+            s.execute("edit.paste", &json!({})).unwrap();
+            let d = &s.doc().unwrap().doc;
+            let mut copied = d.story(target).unwrap();
+            if nested {
+                copied = d.story(copied.objects[0].item.text_frame().unwrap().story).unwrap();
+            }
+            let objects = &copied.objects;
+            assert_ne!(objects[0].item.id, image);
+            assert_ne!(objects[1].item.id, caption);
+            assert_eq!(objects[0].caption_id, Some(objects[1].item.id));
+            d.check().unwrap();
+            designcraft_format::load(&designcraft_format::save(d).unwrap()).unwrap();
+        }
+    }
+
+    /// A partial text copy must not retain a caption reference into the source document.
+    #[test]
+    fn review_adoption_clears_uncopied_caption_link() {
+        let (s, sid, _, _) = review_fixture();
+        let source = s.doc().unwrap().doc.clone();
+        let mut slice = source.story(sid).unwrap().extract(0..OBJECT_MARK.len_utf8());
+        let mut target = (*source).clone();
+        target.adopt_anchored_from(&mut slice, &source);
+        assert_eq!(slice.objects[0].caption_id, None);
+        assert_ne!(slice.objects[0].item.id, source.story(sid).unwrap().objects[0].item.id);
+        let mut slice = source.story(sid).unwrap().extract(0..source.story(sid).unwrap().len());
+        target.adopt_anchored(&mut slice, &|id| source.stories.get(&id).cloned());
+        assert_eq!(slice.objects[0].caption_id, Some(slice.objects[1].item.id));
+    }
+
+    /// Clearing image content keeps the anchor, while nonexistent ids never count as deleted.
+    #[test]
+    fn review_clear_content_keeps_anchor_and_counts_only_changes() {
+        let (mut s, _, image, _) = review_fixture();
+        s.execute("selection.set", &json!({"ids":[image.0],"content":true})).unwrap();
+        let result = s.execute("edit.clear", &json!({})).unwrap();
+        assert_eq!(result["deleted"], 1);
+        assert!(matches!(s.doc().unwrap().doc.anchored_item(image).unwrap().content, Content::Unassigned));
+        assert_eq!(s.doc().unwrap().selection.items, vec![image]);
+        s.doc().unwrap().doc.check().unwrap();
+        let result = s.execute("edit.clear", &json!({"ids":[999999]})).unwrap();
+        assert_eq!(result["deleted"], 0);
     }
 
     /// Ensure repeated crops preserve graphic coordinates in frame space.

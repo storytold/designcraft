@@ -218,6 +218,25 @@ fn has_items(st: &Story) -> bool {
     false
 }
 
+/// Caption ids belong to the copied text scope; targets outside the copy must not survive adoption.
+fn remap_adopted_captions(st: &mut Story, ids: &HashMap<ItemId, ItemId>, depth: usize) {
+    for obj in &mut st.objects {
+        let obj = Arc::make_mut(obj);
+        obj.caption_id = obj.caption_id.and_then(|id| ids.get(&id).copied());
+    }
+    if depth >= NESTING {
+        return;
+    }
+    for note in st.notes.iter_mut().chain(st.endnotes.iter_mut()) {
+        remap_adopted_captions(&mut Arc::make_mut(note).text, ids, depth + 1);
+    }
+    for table in st.tables.values_mut() {
+        for cell in &mut Arc::make_mut(table).cells {
+            remap_adopted_captions(&mut cell.text, ids, depth + 1);
+        }
+    }
+}
+
 impl Document {
     /// Does any story (its footnotes and table cells included) hold anchored objects?
     pub fn has_anchored_items(&self) -> bool {
@@ -246,17 +265,17 @@ impl Document {
     /// empty story when `src` hasn't it) threaded to the copied frames that show it, copying the
     /// frames anchored in those stories the same way.
     pub fn adopt_anchored(&mut self, st: &mut Story, src: &dyn Fn(StoryId) -> Option<Arc<Story>>) {
-        self.adopt(&mut |f| items_mut(st, 0, f), src, None, &mut Vec::new(), &mut HashMap::new());
+        self.adopt(st, src, None, &mut Vec::new(), &mut HashMap::new());
     }
 
     /// [`Document::adopt_anchored`] for text copied from document `src`: the copies of the
     /// stories its anchored text frames show also take the assets they place along from `src`
     /// (or reuse the same file here), since `src`'s asset ids may name other files here.
     pub fn adopt_anchored_from(&mut self, st: &mut Story, src: &Document) {
-        self.adopt(&mut |f| items_mut(st, 0, f), &|id| src.stories.get(&id).cloned(), Some(src), &mut Vec::new(), &mut HashMap::new());
+        self.adopt(st, &|id| src.stories.get(&id).cloned(), Some(src), &mut Vec::new(), &mut HashMap::new());
     }
 
-    /// `visit` runs a function on every copied item. `path`: the stories being copied (a frame
+    /// `st` contains the copied anchored items. `path`: the stories being copied (a frame
     /// showing one of them again gets an empty story, so copies never nest without end).
     /// `assets`: the document the copied stories' assets are in, when it isn't this one.
     /// `copies`: the copy made of each source story in this operation. A story shown by frames in
@@ -264,7 +283,7 @@ impl Document {
     /// so a graph of shared stories doesn't multiply into exponentially many copies.
     fn adopt(
         &mut self,
-        visit: &mut dyn FnMut(&mut dyn FnMut(&mut Item)),
+        st: &mut Story,
         src: &dyn Fn(StoryId) -> Option<Arc<Story>>,
         assets: Option<&Document>,
         path: &mut Vec<StoryId>,
@@ -272,11 +291,15 @@ impl Document {
     ) {
         let mut next = self.next_id;
         let mut frames = Vec::new();
-        visit(&mut |i| {
+        let mut ids = HashMap::new();
+        items_mut(st, 0, &mut |i| {
+            let old = i.id;
             next = next.saturating_add(1);
             i.id = ItemId(next);
+            ids.insert(old, i.id);
             frames.extend(i.text_frame().map(|t| (i.id, t.story)));
         });
+        remap_adopted_captions(st, &ids, 0);
         self.next_id = next;
         // The story each copied frame shows: the operation's copy of its story, or an empty one
         // where copying would loop or nest too deep.
@@ -308,7 +331,7 @@ impl Document {
                         crate::remap_story_assets(&mut copy, &map);
                     }
                     path.push(old);
-                    self.adopt(&mut |f| items_mut(&mut copy, 0, f), src, assets, path, copies);
+                    self.adopt(&mut copy, src, assets, path, copies);
                     path.pop();
                     copy
                 }
@@ -323,7 +346,7 @@ impl Document {
             };
             self.stories.insert(id, Arc::new(copy));
         }
-        visit(&mut |i| {
+        items_mut(st, 0, &mut |i| {
             if let Some(id) = shows.get(&i.id)
                 && let Some(t) = i.text_frame_mut()
             {
@@ -481,7 +504,7 @@ impl Document {
                     // Only the stories the copy reaches, as they are now (copies made for earlier
                     // frames included).
                     let reachable = self.anchored_stories(&copy);
-                    self.adopt(&mut |f| items_mut(&mut copy, 0, f), &|s| reachable.get(&s).cloned(), None, &mut vec![sid], &mut HashMap::new());
+                    self.adopt(&mut copy, &|s| reachable.get(&s).cloned(), None, &mut vec![sid], &mut HashMap::new());
                     copy.frames = vec![fid];
                     self.stories.insert(id, Arc::new(copy));
                     id

@@ -236,6 +236,22 @@ pub struct ToolContext<'a> {
     pub loaded: Option<(f64, f64)>,
 }
 
+/// Inspect the composed placement, including anchors inside note and table text.
+fn frame_contains_anchor(frame: &designcraft_compose::FrameText, id: ItemId, depth: usize) -> bool {
+    if frame.objects.iter().any(|o| {
+        let mut found = false;
+        o.object.item.walk(&mut |it| found |= it.id == id);
+        found
+    }) {
+        return true;
+    }
+    if depth >= 8 {
+        return false;
+    }
+    frame.notes.iter().any(|n| n.text.frames.iter().any(|f| frame_contains_anchor(f, id, depth + 1)))
+        || frame.tables.iter().flat_map(|t| &t.cells).any(|c| c.text.frames.iter().any(|f| frame_contains_anchor(f, id, depth + 1)))
+}
+
 impl ToolContext<'_> {
     pub fn tol(&self, px: f64) -> f64 {
         px / self.zoom.max(1e-9)
@@ -258,12 +274,19 @@ impl ToolContext<'_> {
         for story in self.doc.stories.values() {
             let composed = self.cache.get(self.doc, story.id, None);
             for frame in &composed.frames {
-                let Some(loc) = self.doc.find(frame.frame) else { continue };
-                let Some(host) = self.doc.item_at(&loc) else { continue };
+                let loc = self.doc.find(frame.frame);
+                let Some(host) = loc.as_ref().and_then(|l| self.doc.item_at(l)).or_else(|| self.doc.anchored_item(frame.frame)) else { continue };
+                let (spread, host_parent) = if let Some(loc) = &loc {
+                    (loc.spread, self.doc.parent_xf(loc))
+                } else if let Some(placed) = self.cache.placement(self.doc, story.id, frame.frame) {
+                    (placed.spread, placed.xf)
+                } else {
+                    continue;
+                };
                 if host.hidden || host.locked || self.doc.layer(host.layer).is_some_and(|l| !l.visible || l.locked) {
                     continue;
                 }
-                let parent = self.layout.xf(loc.spread) * self.doc.parent_xf(&loc) * self.doc.text_xf(host);
+                let parent = self.layout.xf(spread) * host_parent * self.doc.text_xf(host);
                 for placed in &frame.objects {
                     let item = &placed.object.item;
                     if !matches!(item.content, designcraft_doc::Content::Graphic(_)) || item.hidden || item.locked {
@@ -288,6 +311,22 @@ impl ToolContext<'_> {
         self.anchored_graphic_geometry().into_iter().map(|(id, bounds, _, _)| (id, bounds)).collect()
     }
 
+    /// Resolve stacking against the spread frame that actually contains a nested anchor.
+    fn anchored_host_location(&self, id: ItemId, depth: usize) -> Option<designcraft_doc::ItemLoc> {
+        if let Some(loc) = self.doc.find(id) {
+            return Some(loc);
+        }
+        if depth >= 8 {
+            return None;
+        }
+        let owner = self.doc.anchored_items().into_iter().find_map(|(owner, it)| (it.id == id).then_some(owner))?;
+        let composed = self.cache.get(self.doc, owner, None);
+        composed
+            .frames
+            .iter()
+            .find_map(|frame| frame_contains_anchor(frame, id, 0).then(|| self.anchored_host_location(frame.frame, depth + 1)).flatten())
+    }
+
     /// The frontmost anchored graphic under the pointer, unless a normal page
     /// item is stacked over its host frame. Respect both layer order and the
     /// order of items within the layer, rather than capturing clicks through
@@ -303,7 +342,7 @@ impl ToolContext<'_> {
                 return None;
             }
             if let Some((front_spread, front_index, front_layer)) = front {
-                let host = self.doc.find(host_id)?;
+                let host = self.anchored_host_location(host_id, 0)?;
                 let host_item = self.doc.spread(host.spread)?.items.get(host.top())?;
                 let host_layer = self.doc.layer_rank(host_item.layer);
                 if front_spread != host.spread || front_layer > host_layer || (front_layer == host_layer && front_index > host.top()) {
