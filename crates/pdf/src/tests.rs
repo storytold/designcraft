@@ -793,49 +793,70 @@ fn link_annotation_export_refuses_non_web_schemes() {
 }
 
 /// A hyperlink on a parent page's item or text links on every page that shows it, where it is
-/// drawn there; a page that hides its parent items has no link (#2910).
+/// drawn there; a page that hides its parent items has no link, nor has a hidden item (#2910).
 #[test]
 fn links_on_a_parent_page_link_on_its_pages() {
+    use craft_pdf::syntax::object::{Array, Dict};
     use designcraft_doc::story::PAGE_NUMBER;
     use designcraft_doc::{Hyperlink, HyperlinkDest, HyperlinkSource, Shape};
     let mut d = Document::new(&NewDocument { pages: 12, facing_pages: false, ..NewDocument::default() });
     let lid = d.default_layer();
+    let rect = |r: Rect| designcraft_geom::shapes::rectangle(r);
     let box_id = ItemId(d.alloc());
-    let it = Item::new(box_id, lid, Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(100.0, 100.0, 200.0, 160.0)));
-    d.insert_item(SpreadRef::Parent(0), it, None).unwrap();
+    d.insert_item(SpreadRef::Parent(0), Item::new(box_id, lid, Shape::Rectangle, rect(Rect::new(100.0, 100.0, 200.0, 160.0))), None).unwrap();
+    let hidden_id = ItemId(d.alloc());
+    let mut hidden = Item::new(hidden_id, lid, Shape::Rectangle, rect(Rect::new(300.0, 100.0, 400.0, 160.0)));
+    hidden.hidden = true;
+    d.insert_item(SpreadRef::Parent(0), hidden, None).unwrap();
     let folio = format!("{PAGE_NUMBER} Folio");
     let (_, sid) = d.add_text_frame(SpreadRef::Parent(0), Rect::new(36.0, 700.0, 300.0, 740.0), lid, &folio, ParaFormat::default()).unwrap();
     let word = folio.len() - 5;
-    for (id, name, source) in
-        [(1, "box", HyperlinkSource::Item { id: box_id }), (2, "folio", HyperlinkSource::Text { story: sid, start: word, end: folio.len() })]
-    {
+    for (id, name, source) in [
+        (1, "box", HyperlinkSource::Item { id: box_id }),
+        (2, "folio", HyperlinkSource::Text { story: sid, start: word, end: folio.len() }),
+        (3, "hidden", HyperlinkSource::Item { id: hidden_id }),
+    ] {
         d.hyperlinks.push(Hyperlink { id, name: name.into(), source, dest: HyperlinkDest::Url(format!("https://example.com/{name}")) });
     }
     std::sync::Arc::make_mut(&mut d.spreads[1]).pages[0].show_parent_items = false;
-    let s = uncompressed(&d, PdfOptions::default());
-    // Each link's rectangles, from the annotations that carry its URL.
-    let rects = |name: &str| -> Vec<Vec<f64>> {
-        s.split("/Rect[")
-            .skip(1)
-            .filter(|a| a.split(">>").take(2).any(|p| p.contains(&format!("https://example.com/{name})"))))
-            .filter_map(|r| r.split(']').next())
-            .map(|r| r.split_whitespace().filter_map(|v| v.parse().ok()).collect())
-            .collect()
-    };
-    // Eleven pages show the parent's items; page 2 hides them.
-    let boxes = rects("box");
-    assert_eq!(boxes.len(), 11, "{boxes:?}");
-    // On a spread of its own, the box links where it is drawn: x 100 to 200, y 100 to 160 from the
-    // top of a 792 pt page.
-    assert!(boxes.iter().all(|r| *r == [100.0, 792.0 - 160.0, 200.0, 792.0 - 100.0]), "{boxes:?}");
-    // The word is on the line at the frame's top (y 700 down), after each page's own number: one
-    // digit up to page 9, two from page 10, so it starts further right on pages 10 to 12.
-    let words = rects("folio");
-    assert_eq!(words.len(), 11, "{words:?}");
-    assert!(words.iter().all(|r| r[0] > 36.0 && r[3] <= 92.5 && r[3] > 52.0), "{words:?}");
-    let starts: Vec<f64> = words.iter().map(|r| r[0]).collect();
-    let near = starts.iter().copied().fold(f64::MAX, f64::min);
-    assert_eq!(starts.iter().filter(|x| **x > near + 3.0).count(), 3, "pages 10 to 12: {starts:?}");
+    let bytes = export_pdf(&d, &Cache::new(), &PdfOptions::default()).unwrap();
+    // Each page's links: (the URL's last segment, the rectangle).
+    let pdf = craft_pdf::syntax::Pdf::new(bytes).expect("parse");
+    let pages: Vec<Vec<(String, Vec<f32>)>> = pdf
+        .pages()
+        .iter()
+        .map(|page| {
+            let Some(annots) = page.raw().get::<Array>(b"Annots") else { return Vec::new() };
+            annots
+                .iter::<Dict>()
+                .filter_map(|a| {
+                    let uri = a.get::<Dict>(b"A")?.get::<craft_pdf::syntax::object::String>(b"URI")?;
+                    let uri = String::from_utf8_lossy(uri.as_bytes()).into_owned();
+                    let name = uri.rsplit('/').next()?.to_owned();
+                    Some((name, a.get::<Array>(b"Rect")?.iter::<f32>().collect()))
+                })
+                .collect()
+        })
+        .collect();
+    assert_eq!(pages.len(), 12);
+    assert!(pages[1].is_empty(), "page 2 hides its parent items: {:?}", pages[1]);
+    let mut starts = Vec::new();
+    for (i, links) in pages.iter().enumerate().filter(|(i, _)| *i != 1) {
+        let names: Vec<&str> = links.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["box", "folio"], "page {}: one of each, none for the hidden box", i + 1);
+        // On a spread of its own, the box links where it is drawn: x 100 to 200, y 100 to 160 from
+        // the top of a 792 pt page.
+        assert_eq!(links[0].1, [100.0, 632.0, 200.0, 692.0], "page {}", i + 1);
+        // The word is on the line at the frame's top (y 700 down), after the page's number.
+        let r = &links[1].1;
+        assert!(r[0] > 36.0 && r[3] <= 92.5 && r[3] > 52.0, "page {}: {r:?}", i + 1);
+        starts.push((i + 1, r[0]));
+    }
+    // Each page's own number: one digit up to page 9, two from page 10, so the word starts
+    // further right on pages 10 to 12.
+    let near = starts.iter().map(|s| s.1).fold(f32::MAX, f32::min);
+    let far: Vec<usize> = starts.iter().filter(|s| s.1 > near + 3.0).map(|s| s.0).collect();
+    assert_eq!(far, [10, 11, 12], "{starts:?}");
 }
 
 /// A clipping path on a placed image becomes a clip in the page content, inside the frame's.

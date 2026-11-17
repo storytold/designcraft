@@ -29,6 +29,9 @@ pub(crate) fn sheet_of_page(doc: &Document, sheets: &[Sheet], abs: usize) -> Opt
 /// an item of the spread itself (on any of its pages: `pi` is `None`), or an item of a parent page
 /// that page shows (#2910), moved onto it as the PDF draws it.
 fn placed_on(doc: &Document, loc: &ItemLoc, si: usize, pi: Option<usize>) -> Option<Affine> {
+    if !shown(doc, loc) {
+        return None;
+    }
     match (loc.spread, pi) {
         (SpreadRef::Doc(s), None) => (s == si).then(|| doc.parent_xf(loc)),
         (SpreadRef::Parent(_), Some(pi)) => {
@@ -38,6 +41,23 @@ fn placed_on(doc: &Document, loc: &ItemLoc, si: usize, pi: Option<usize>) -> Opt
         }
         _ => None,
     }
+}
+
+/// Whether the item at `loc` shows in the PDF: it is on an exported layer, and neither it nor a
+/// group around it is hidden. A link on a hidden item would cover nothing. A nonprinting item
+/// keeps its link: an object rasterized for its soft effects leaves a nonprinting stand-in that
+/// carries the object's links (`link_stand_in` in the engine's PDF flattening).
+fn shown(doc: &Document, loc: &ItemLoc) -> bool {
+    let Some(sp) = doc.spread(loc.spread) else { return false };
+    let mut items: &[std::sync::Arc<designcraft_doc::Item>] = &sp.items;
+    for (depth, &i) in loc.path.iter().enumerate() {
+        let Some(it) = items.get(i) else { return false };
+        if it.hidden || (depth == 0 && !doc.layer(it.layer).is_some_and(crate::export::layer_exported)) {
+            return false;
+        }
+        items = it.children();
+    }
+    true
 }
 
 /// The pages a link's rectangles are looked for on: the spread's own items (`None`), then each
