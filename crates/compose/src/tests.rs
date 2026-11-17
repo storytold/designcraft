@@ -11302,3 +11302,67 @@ fn indexed_margin_neighbours_keep_their_anchored_frame_placements() {
     assert_ne!(line_layout(&fresh), line_layout(&after), "fixture host edit must move the wrap");
     assert_eq!(line_layout(&cache.get(&d, recipient, None)), line_layout(&fresh), "recipient cache must follow host placement changes");
 }
+
+#[test]
+fn indexed_wrap_neighbours_use_displayed_running_and_xref_text() {
+    for running in [true, false] {
+        let mut d = Document::new(&NewDocument { start_page: 99999, ..Default::default() });
+        let var = margin_running_definition(&mut d);
+        let (_, target) = d
+            .add_text_frame(
+                SpreadRef::Doc(0),
+                Rect::new(36.0, 600.0, 576.0, 750.0),
+                d.default_layer(),
+                "Running title",
+                ParaFormat { style: "Margin heading".into(), ..Default::default() },
+            )
+            .unwrap();
+        let anchor = d.story_mut(target).unwrap().insert_anchor(0, "Target");
+        d.xref_formats.push(designcraft_doc::XrefFormat { name: "Repeated page".into(), definition: "<pageNum /> ".repeat(16) });
+        let (_, neighbour) = d
+            .add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 72.0, 136.0, 500.0), d.default_layer(), "See  reference\nAnchor", Default::default())
+            .unwrap();
+        if running {
+            d.story_mut(neighbour).unwrap().insert(4, &var.to_string());
+        } else {
+            d.story_mut(neighbour)
+                .unwrap()
+                .insert_xref(4, designcraft_doc::CrossRef { target: anchor, format: "Repeated page".into(), ..Default::default() });
+        }
+        let at = d.story(neighbour).unwrap().text.find("Anchor").unwrap();
+        anchor_box(&mut d, neighbour, at, 36.0, 0.0, true, WrapMode::BoundingBox);
+        let (_, recipient) = d
+            .add_text_frame(SpreadRef::Doc(0), Rect::new(72.0, 72.0, 400.0, 500.0), d.default_layer(), &LOREM.repeat(4), Default::default())
+            .unwrap();
+        let cache = Cache::new();
+        let displayed = cache.get(&d, neighbour, None);
+        let expected = crate::wrap::compose_among(&d, recipient, &Default::default(), &[&displayed]);
+        let before = cache.get(&d, recipient, None);
+        assert_eq!(line_layout(&before), line_layout(&expected), "running={running}: wrap must match the painted obstacle");
+        let context = ComposeOptions {
+            running: running.then(|| cache.running_index(&d)),
+            xrefs: (!running).then(|| cache.xref_index(&d)),
+            ..Default::default()
+        };
+        assert_eq!(
+            line_layout(&compose_story_unstacked(&d, recipient, &context)),
+            line_layout(&expected),
+            "raw composition must retain prebuilt neighbour context"
+        );
+        if running {
+            let st = d.story_mut(target).unwrap();
+            st.delete(0..st.len());
+            st.insert(0, "X");
+            st.paras[0].style = "Margin heading".into();
+        } else {
+            d.xref_formats.last_mut().unwrap().definition = "Short".into();
+        }
+        let fresh = Cache::new().get(&d, recipient, None);
+        assert_ne!(line_layout(&fresh), line_layout(&before), "fixture context edit must move the wrap");
+        assert_eq!(
+            line_layout(&cache.get(&d, recipient, None)),
+            line_layout(&fresh),
+            "running={running}: warm cache must follow neighbour text changes"
+        );
+    }
+}
