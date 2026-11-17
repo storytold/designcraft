@@ -27,7 +27,8 @@ winresource = "0.1"
 # Not called here: craft-dialogs shows the dialogs. rfd's default features keep its Wayland
 # support on, so portal dialogs get the window as their parent.
 rfd = { workspace = true }
-arboard = { workspace = true }
+# `image-data`: Edit › Paste reads bitmaps from the clipboard (src/clipboard_image.rs).
+arboard = { workspace = true, features = ["image-data"] }
 
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
 # The same winit eframe uses: to pick the X11 backend (file drag-and-drop) in main.rs.
@@ -46,9 +47,10 @@ winsafe = { version = "0.0.29", default-features = false, features = ["user"] }
 winit = { version = "0.30", default-features = false }
 muda = { version = "0.21", default-features = false }
 # The input context, to drop the IME's marked text when the Type tool ends a composition. The
-# versions muda uses, through safe methods.
+# versions muda uses, through safe methods. `NSPasteboard`: the pasteboard's change count, which
+# tells Paste whether anything was copied since an object Copy (src/clipboard_image.rs).
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSEvent", "NSResponder", "NSScreen", "NSTextInputContext"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSEvent", "NSPasteboard", "NSResponder", "NSScreen", "NSTextInputContext"] }
 # Files dragged in from the Finder: the pointer's place on the screen (src/pointer.rs).
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSGeometry"] }
 # The window's `movable` flag follows the application bar's controls.

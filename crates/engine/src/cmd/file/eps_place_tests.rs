@@ -167,8 +167,8 @@ fn eps_idml_roundtrip_preserves_source_and_resource_type() {
         let restored = designcraft_idml::import_idml(&idml).unwrap();
         let a = restored.assets.values().next().unwrap();
         assert_eq!(a.mime, "application/postscript");
-        assert_eq!(a.data.as_slice(), bytes);
-        assert!(designcraft_render::decode_pixmap(&a.data).is_some());
+        assert_eq!(a.data.load().unwrap().as_slice(), bytes);
+        assert!(designcraft_render::decode_pixmap(&a.data.load().unwrap()).is_some());
         // A linked-only EPS keeps its type even when the external file is unavailable;
         // when the resolver supplies it, sniff the raw source rather than PNG metadata.
         let mut linked = (*source).clone();
@@ -186,7 +186,7 @@ fn eps_idml_roundtrip_preserves_source_and_resource_type() {
         .unwrap();
         let a = resolved.assets.values().next().unwrap();
         assert_eq!(a.mime, "application/postscript");
-        assert_eq!(a.data.as_slice(), bytes);
+        assert_eq!(a.data.load().unwrap().as_slice(), bytes);
     }
 }
 
@@ -197,7 +197,7 @@ fn eps_place_cursor_retains_source_and_uses_bounding_box_size() {
     s.execute("file.new", &json!({})).unwrap();
     let result = s.execute("place.load", &json!({"base64": base64_encode(source), "name": "logo.eps"})).unwrap();
     let aid = AssetId(result["asset"].as_u64().unwrap());
-    assert_eq!(s.doc().unwrap().doc.assets[&aid].data.as_slice(), source);
+    assert_eq!(s.doc().unwrap().doc.assets[&aid].data.load().unwrap().as_slice(), source);
     assert_eq!(s.doc().unwrap().doc.assets[&aid].mime, "application/postscript");
     assert_eq!(s.doc().unwrap().doc.assets[&aid].pixels, Some((201, 101)));
     let result = s.execute("place.drop", &json!({"x": 72, "y": 72})).unwrap();
