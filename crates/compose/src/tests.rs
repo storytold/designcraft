@@ -11366,3 +11366,46 @@ fn indexed_wrap_neighbours_use_displayed_running_and_xref_text() {
         );
     }
 }
+
+#[test]
+fn indexed_neighbour_wrap_follows_stacked_margin_note_hosts() {
+    let mut d = Document::new(&NewDocument::default());
+    d.settings.baseline_grid.start = 0.0;
+    d.settings.baseline_grid.increment = 20.0;
+    d.footnote_options.placement = designcraft_doc::NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 8.0, width: 140.0 };
+    let var = margin_running_definition(&mut d);
+    let (_, earlier) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 136.0, 300.0), d.default_layer(), "A", Default::default()).unwrap();
+    d.story_mut(earlier).unwrap().insert_note(1, &"Earlier\n".repeat(6), Default::default());
+    let text = format!("{var}One.\nTwo.\nThree.\nFour.\nFive.\nSix.");
+    let (embedded, neighbour) = anchored_text_frame(&mut d, &text, 100.0, 25.0);
+    let (_, host) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 50.0, 136.0, 300.0), d.default_layer(), "B", Default::default()).unwrap();
+    d.story_mut(host).unwrap().insert_note(1, "Nested", Default::default());
+    Arc::make_mut(&mut d.story_mut(host).unwrap().notes[0]).text.insert_object(0, designcraft_doc::AnchoredObject::new(embedded, Default::default()));
+    let (continuation, empty) =
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(72.0, 72.0, 400.0, 500.0), d.default_layer(), "", Default::default()).unwrap();
+    d.item_mut(continuation).unwrap().text_frame_mut().unwrap().story = neighbour;
+    d.stories.remove(&empty);
+    d.story_mut(neighbour).unwrap().frames.push(continuation);
+    d.story_mut(neighbour).unwrap().format_paras(0..text.len(), |p| p.para.grid_align = Some(GridAlign::AllLines));
+    anchor_box(&mut d, neighbour, text.find("Four.").unwrap(), 0.0, 0.0, true, WrapMode::BoundingBox);
+    let (_, recipient) =
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(72.0, 72.0, 400.0, 500.0), d.default_layer(), &LOREM.repeat(4), Default::default()).unwrap();
+    let raw = compose_story_unstacked(&d, host, &Default::default());
+    let stacked = compose_story(&d, host, &Default::default());
+    assert!(stacked.frames[0].notes[0].origin.y > raw.frames[0].notes[0].origin.y + 60.0, "earlier note must displace the embedded host");
+    let cache = Cache::new();
+    let displayed = cache.get(&d, neighbour, None);
+    let expected = crate::wrap::compose_among(&d, recipient, &Default::default(), &[&displayed]);
+    let before = cache.get(&d, recipient, None);
+    assert_eq!(line_layout(&before), line_layout(&expected), "wrap must use the stacked host origin");
+    let note = Arc::make_mut(&mut d.story_mut(earlier).unwrap().notes[0]);
+    note.text.delete(0..note.text.len());
+    note.text.insert(0, "Earlier");
+    let fresh_cache = Cache::new();
+    let displayed_after = fresh_cache.get(&d, neighbour, None);
+    let expected_after = crate::wrap::compose_among(&d, recipient, &Default::default(), &[&displayed_after]);
+    assert_ne!(line_layout(&expected_after), line_layout(&expected), "fixture note edit must move the painted obstacle");
+    let fresh = fresh_cache.get(&d, recipient, None);
+    assert_eq!(line_layout(&fresh), line_layout(&expected_after), "wrap must follow the changed margin stack");
+    assert_eq!(line_layout(&cache.get(&d, recipient, None)), line_layout(&fresh), "warm recipient must follow the changed stack");
+}
