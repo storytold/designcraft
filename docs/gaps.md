@@ -260,8 +260,11 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
 - **Estimate:** 150–250 h for a useful DOM subset; **owner decision**.
 
 ### 23. Plug-ins (E)
-- **Missing:** any plug-in model. InDesign's third-party ecosystem (imposition, preflight, data
-  publishing) doesn't carry over and can't. **Owner decision**; not estimated.
+- **Done:** WebAssembly command plug-ins on the shared `craft-plugin` runtime (RFC-0041): the
+  `plugin.*` commands, the Plug-ins menu, installing from a file, a GitHub repository or a catalog
+  with a confirmation, one undo step per run ([plugins.md](plugins.md)).
+- **Missing:** plug-in panels (`ui_show`), `saveFile`, the Plug-ins menu in the macOS menu bar, and
+  downloads off the interface thread. InDesign's own plug-ins don't carry over and can't.
 
 ### 24. AI features (A)
 - **Missing:** InDesign 2026's Generative Expand, Text to Image and Auto Style equivalents; local
