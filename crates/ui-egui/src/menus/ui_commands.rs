@@ -74,6 +74,12 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ("app.exportXml", "Export XML…", None, "{path?} — the tagged content"),
     ("app.printBooklet", "Print Booklet…", None, "{path?} — saddle-stitched printer spreads as PDF"),
     ("app.qrCode", "Generate QR Code…", None, "{} — the QR Code dialog (object.qrCode does the work)"),
+    (
+        "app.pluginsDialog",
+        "Manage Plug-ins…",
+        None,
+        "{} — the installed plug-ins, installing from a file, a GitHub repository or a catalog (plugin.* commands)",
+    ),
     ("app.userDictionary", "User Dictionary…", None, "{} — hyphenation exceptions (hyphenation.* commands)"),
     ("app.fittingOptions", "Frame Fitting Options…", None, "{} — the dialog for object.fittingOptions"),
     ("app.menus", "Menus…", None, "{} — show or hide menu items"),

@@ -3260,6 +3260,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
     let popup_open = egui::Popup::is_any_open(ctx) || d.fields.get(FORMAT_EDIT).is_some_and(Value::is_object);
     let mut result: Option<bool> = None;
     let alert_title = d.s("title");
+    let plugin_title;
     let title = match d.id.as_str() {
         "alert" => crate::i18n::tr(&app.ui.language, &alert_title),
         "ruby" => crate::i18n::tr(&app.ui.language, "Ruby"),
@@ -3334,6 +3335,10 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         crate::effects_dialog::ID => crate::i18n::tr(&app.ui.language, "Effects"),
         crate::export_batch_dialog::ID => crate::i18n::tr(&app.ui.language, "Export Layouts and Versions"),
         crate::package_dialog::ID => crate::i18n::tr(&app.ui.language, "Package"),
+        crate::plugins_dialog::MANAGE | crate::plugins_dialog::CONFIRM | crate::plugins_dialog::PARAMS => {
+            plugin_title = crate::plugins_dialog::title(app, &d);
+            &plugin_title
+        }
         crate::package_dialog::INSTRUCTIONS => crate::i18n::tr(&app.ui.language, "Printing Instructions"),
         crate::object_style_dialog::ID => crate::i18n::tr(&app.ui.language, crate::object_style_dialog::title(&d)),
         id => match id.strip_prefix("cmd:").and_then(designcraft_engine::find_command) {
@@ -3707,6 +3712,9 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                     crate::effects_dialog::ID => crate::effects_dialog::show(app, ui, &mut d),
                     crate::export_batch_dialog::ID => crate::export_batch_dialog::show(app, ui, &mut d),
                     crate::package_dialog::ID => crate::package_dialog::show(app, ui, &mut d),
+                    crate::plugins_dialog::MANAGE | crate::plugins_dialog::CONFIRM | crate::plugins_dialog::PARAMS => {
+                        crate::plugins_dialog::body(app, ui, &mut d)
+                    }
                     crate::package_dialog::INSTRUCTIONS => crate::package_dialog::show_instructions(app, ui, &mut d),
                     crate::object_style_dialog::ID => crate::object_style_dialog::show(app, ui, &mut d),
                     "preferences" => preferences(app, ui, &mut d, body_height),
@@ -4211,6 +4219,9 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
             "newDocument" => format!("  {}  ", crate::i18n::tr(&app.ui.language, "Create")),
             crate::export_batch_dialog::ID => format!("  {}  ", crate::i18n::tr(&app.ui.language, "Export…")),
             crate::package_dialog::ID => crate::i18n::tr(&app.ui.language, "Package…").to_string(),
+            crate::plugins_dialog::MANAGE | crate::plugins_dialog::CONFIRM | crate::plugins_dialog::PARAMS => {
+                crate::plugins_dialog::ok_label(app, &d)
+            }
             crate::package_dialog::INSTRUCTIONS => crate::i18n::tr(&app.ui.language, "Continue").to_string(),
             _ => crate::i18n::tr(&app.ui.language, "  OK  ").to_string(),
         };
@@ -5526,6 +5537,7 @@ fn confirm_part6(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
         "alert" => Ok(Value::Null),
         crate::effects_dialog::ID => crate::effects_dialog::confirm(app, &d),
         crate::export_batch_dialog::ID => crate::export_batch_dialog::confirm(app, &d),
+        crate::plugins_dialog::MANAGE | crate::plugins_dialog::CONFIRM | crate::plugins_dialog::PARAMS => crate::plugins_dialog::confirm(app, d),
         crate::package_dialog::ID | crate::package_dialog::INSTRUCTIONS => {
             let r = if d.id == crate::package_dialog::ID {
                 crate::package_dialog::confirm(app, &d)

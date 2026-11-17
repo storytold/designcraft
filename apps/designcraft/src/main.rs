@@ -426,6 +426,14 @@ fn main() -> std::process::ExitCode {
                 let mut session = Session::new();
                 // Crash recovery: reopen what a previous run left unsaved, then keep it current.
                 session.recovery_dir = profile::recovery_dir();
+                // Plug-ins live in `Plug-ins/` beside the preferences, and download over the
+                // update checker's HTTPS client.
+                if !no_prefs()
+                    && let Some(dir) = profile::config_dir()
+                {
+                    session.plugins.open_store(&dir);
+                }
+                session.plugins.fetch = designcraft_ui_egui::plugins_dialog::http_fetch();
                 let recovered = session.execute("file.recovery.open", &serde_json::json!({})).ok();
                 let mut app = DesignApp::new(session, services());
                 app.set_startup_update_check(true);

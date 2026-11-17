@@ -36,6 +36,8 @@ serde_json = { workspace = true }
 log = { workspace = true }
 
 [dev-dependencies]
+# Test plug-ins are written in WebAssembly text.
+wat = "1.261"
 # egui 0.37 no longer enables `default_fonts` for library consumers; egui_kittest disables
 # egui's defaults, and package-scoped UI tests do not build the app binary.
 egui = { workspace = true, features = ["default_fonts", "monochrome_emoji_fonts"] }

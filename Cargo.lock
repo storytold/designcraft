@@ -2471,6 +2471,7 @@ dependencies = [
  "tempfile",
  "toml",
  "unicode-bidi",
+ "wat",
  "web-time",
  "zip 3.0.0",
 ]

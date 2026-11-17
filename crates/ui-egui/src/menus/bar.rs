@@ -89,7 +89,14 @@ pub fn menu_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
         menus.reverse();
     }
     for (menu, entries) in menus {
+        // Plug-ins, built from the installed plug-ins, comes before Help (after it, right to left).
+        if menu == "Help" && !crate::i18n::is_rtl(&lang) {
+            crate::plugins_dialog::menu(app, ui);
+        }
         menu_button(ui, crate::rtl::widget(ui, crate::i18n::tr(&lang, menu)), |ui| menu_column(app, ui, &[(menu, entries)]));
+        if menu == "Help" && crate::i18n::is_rtl(&lang) {
+            crate::plugins_dialog::menu(app, ui);
+        }
     }
 }
 

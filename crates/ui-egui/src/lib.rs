@@ -39,6 +39,7 @@ pub mod package_dialog;
 mod page_history;
 mod panel_docking;
 pub mod panels;
+pub mod plugins_dialog;
 mod preflight_worker;
 mod prefs;
 pub mod render_worker;
