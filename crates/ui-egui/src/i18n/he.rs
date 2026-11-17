@@ -1727,7 +1727,10 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Increment Every:", "הגדל בכל:"),
     ("Large Sample Text Size", "גודל טקסט לדוגמה — גדול"),
     ("Level:", "רמה:"),
-    ("Links and Images: {found} linked, {modified} changed, {missing} not found", "קישורים ותמונות: {found} מקושרים, {modified} שונו, {missing} לא נמצאו"),
+    (
+        "Links and Images: {found} linked, {modified} changed, {missing} not found",
+        "קישורים ותמונות: {found} מקושרים, {modified} שונו, {missing} לא נמצאו",
+    ),
     ("Medium Sample Text Size", "גודל טקסט לדוגמה — בינוני"),
     ("Min:", "מינימום:"),
     ("Minimum Height", "גובה מזערי"),
