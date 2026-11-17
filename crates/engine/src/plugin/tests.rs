@@ -239,3 +239,23 @@ fn a_repository_install_without_network_says_so() {
     let e = s.execute("plugin.install", &json!({"repo": "example/tools"})).unwrap_err().to_string();
     assert!(e.contains("no network access"), "{e}");
 }
+
+#[test]
+fn local_catalogs_and_bundle_paths_stay_inside_the_automation_roots() {
+    use crate::file_access::{AutomationRoots, confine};
+    let dir = tempfile::tempdir().unwrap();
+    let (inside, outside) = (dir.path().join("in"), dir.path().join("out"));
+    std::fs::create_dir_all(&inside).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    let file = outside.join("p.craftplugin");
+    std::fs::write(&file, bundle("io.example.out", "read", module(&[], true, ""))).unwrap();
+    let roots = AutomationRoots::new(&[&inside], &[]).unwrap().unwrap();
+    confine(Some(&roots), || {
+        let mut s = Session::new();
+        let e = s.execute("plugin.install", &json!({"path": file.to_string_lossy()})).unwrap_err().to_string();
+        assert!(e.contains("automation"), "{e}");
+        let url = format!("file://{}", outside.join("index.json").to_string_lossy().replace('\\', "/"));
+        let e = s.execute("plugin.catalog.add", &json!({"url": url})).unwrap_err().to_string();
+        assert!(e.contains("confined"), "{e}");
+    });
+}

@@ -63,7 +63,8 @@ fn update(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad(cmd, format!("no plug-in `{id}` is installed")));
     }
     let apply = bool_or(p, "apply", false);
-    let targets: Vec<plugin::Plugin> = s.plugins.list().iter().filter(|x| only.is_none_or(|id| x.manifest.id.eq_ignore_ascii_case(id))).cloned().collect();
+    let targets: Vec<plugin::Plugin> =
+        s.plugins.list().iter().filter(|x| only.is_none_or(|id| x.manifest.id.eq_ignore_ascii_case(id))).cloned().collect();
     let (mut updates, mut updated, mut errors) = (vec![], vec![], vec![]);
     for old in targets {
         let id = old.manifest.id.clone();
@@ -179,11 +180,6 @@ pub fn specs() -> Vec<CommandSpec> {
             "{url?} — the packages DesignCraft can run in that catalog, or in every catalog added → {catalogs, packages: [{catalog, id, name, version, author, description, license, repo, kind, sha256, installed}], warnings}",
             catalog_list,
         ),
-        spec(
-            "plugin.catalog.add",
-            "Add Plug-in Catalog",
-            "{url: https:// on GitHub or file:// index.json, remove?: bool} → {catalogs}",
-            catalog_add,
-        ),
+        spec("plugin.catalog.add", "Add Plug-in Catalog", "{url: https:// on GitHub or file:// index.json, remove?: bool} → {catalogs}", catalog_add),
     ]
 }

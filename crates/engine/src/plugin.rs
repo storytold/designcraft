@@ -325,7 +325,8 @@ fn set_setting(
         return Err(too_big());
     }
     let v: Value = serde_json::from_str(text).map_err(|e| format!("a setting must be JSON: {e}"))?;
-    let others: usize = all.get(id).map_or(0, |mine| mine.iter().filter(|(k, _)| k.as_str() != key).map(|(k, v)| k.len() + v.to_string().len()).sum());
+    let others: usize =
+        all.get(id).map_or(0, |mine| mine.iter().filter(|(k, _)| k.as_str() != key).map(|(k, v)| k.len() + v.to_string().len()).sum());
     if others + key.len() + v.to_string().len() > MAX_SETTINGS_BYTES {
         return Err(too_big());
     }
@@ -386,7 +387,9 @@ pub fn run(s: &mut Session, id: &str, command: Option<&str>, params: &Value, fue
     let output = serde_json::from_str::<Value>(&out.output).unwrap_or(Value::String(out.output));
     // Panels (`ui_show`) aren't shown in DesignCraft yet: say so rather than drop it silently.
     let panel = matches!(out.ui, Some(UiChange::Show(_))).then_some("DesignCraft doesn't show plug-in panels yet");
-    Ok(json!({"plugin": m.id, "command": c.id, "output": output, "notes": notes, "logs": out.logs, "calls": out.calls, "fuel": out.fuel, "panel": panel}))
+    Ok(
+        json!({"plugin": m.id, "command": c.id, "output": output, "notes": notes, "logs": out.logs, "calls": out.calls, "fuel": out.fuel, "panel": panel}),
+    )
 }
 
 // ---------- installing ----------
@@ -430,10 +433,9 @@ pub(crate) fn obtain(s: &mut Session, cmd: &str, p: &Value) -> Result<Candidate>
         .map_err(bad)?;
         let source = json!({"type": "github", "repo": plan.repo.slug(), "tag": plan.repo.tag.clone().unwrap_or_default(), "asset": plan.asset});
         let in_catalog = with_fetch(s, |f| {
-            catalogs.iter().any(|url| {
-                fetch::fetch_catalog(f, url).is_ok_and(|(cat, _)| {
-                    cat.packages.iter().any(|pkg| pkg.repo_ref().is_some_and(|r| r.same_repo(&repo.owner, &repo.name)))
-                })
+            catalogs.iter().filter(|url| local_refused(url).is_ok()).any(|url| {
+                fetch::fetch_catalog(f, url)
+                    .is_ok_and(|(cat, _)| cat.packages.iter().any(|pkg| pkg.repo_ref().is_some_and(|r| r.same_repo(&repo.owner, &repo.name))))
             })
         });
         return Ok(Candidate { bytes, source, in_catalog: Some(in_catalog) });
@@ -441,6 +443,7 @@ pub(crate) fn obtain(s: &mut Session, cmd: &str, p: &Value) -> Result<Candidate>
     if let Some(url) = text("catalog") {
         let id = text("id").ok_or_else(|| bad("`id` required with `catalog` (a package of the catalog)".into()))?;
         let version = text("version");
+        local_refused(url).map_err(bad)?;
         let bytes = with_fetch(s, |f| {
             let (cat, _) = fetch::fetch_catalog(f, url)?;
             let package = cat.package(id).ok_or_else(|| format!("{url} has no package `{id}`"))?;
@@ -537,6 +540,7 @@ pub(crate) fn remove(s: &mut Session, cmd: &str, id: &str) -> Result<bool> {
 
 /// The catalog `url`'s packages DesignCraft can run, with their newest release for it.
 pub(crate) fn catalog_packages(s: &mut Session, url: &str) -> std::result::Result<(Vec<Value>, Vec<String>), String> {
+    local_refused(url)?;
     let (cat, warnings) = with_fetch(s, |f| fetch::fetch_catalog(f, url))?;
     let packages = cat
         .packages
@@ -554,9 +558,19 @@ pub(crate) fn catalog_packages(s: &mut Session, url: &str) -> std::result::Resul
     Ok((packages, warnings))
 }
 
+/// Why the catalog `url` can't be read here: a `file://` catalog (and the files it names) is read
+/// straight from the disk, past the automation roots, so it is refused while they are in force.
+fn local_refused(url: &str) -> std::result::Result<(), String> {
+    if url.get(..7).is_some_and(|s| s.eq_ignore_ascii_case("file://")) && crate::file_access::current().is_some() {
+        return Err("file:// catalogs can't be read while automation is confined to folders".into());
+    }
+    Ok(())
+}
+
 /// Whether `url` is a catalog address DesignCraft reads (`https://` on GitHub's hosts, or
 /// `file://`), or why not.
 pub(crate) fn check_catalog_url(url: &str) -> std::result::Result<(), String> {
+    local_refused(url)?;
     catalog::check_url(url, None).map(|_| ())
 }
 
@@ -567,6 +581,7 @@ pub(crate) fn update_for(s: &mut Session, p: &Plugin) -> std::result::Result<Opt
     match p.source.get("type").and_then(Value::as_str) {
         Some("catalog") => {
             let (url, id) = (text("catalog"), text("package"));
+            local_refused(&url)?;
             let (cat, _) = with_fetch(s, |f| fetch::fetch_catalog(f, &url))?;
             let release = cat.package(&id).and_then(|pkg| pkg.latest_for(&APP));
             Ok(release
