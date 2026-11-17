@@ -4069,6 +4069,7 @@ fn apply_desired_spacing(glyphs: &mut [Glyph], pp: &ParaProps) {
             g.adv += g.space * (ws - 1.0);
         } else if !g.is_space() && g.adv > 0.0 {
             g.adv = g.adv * gs + ls * g.space;
+            g.track *= gs;
             g.sx *= gs;
             g.dx *= gs;
         }
@@ -5442,13 +5443,30 @@ fn reorder_visual(line: &[Glyph], out: &mut [PlacedGlyph], pens: &[f64], start: 
     let width = |u: &std::ops::Range<usize>| pens[u.end] - pens[u.start];
     let mut cur = start;
     let mut shifts = vec![0.0; line.len()];
+    // The glyph whose advance ends at `cur`: the last one of the cluster drawn there.
+    let mut left: Option<usize> = None;
     for &k in &order {
         let u = &units[k];
+        let rtl = levels[k].is_rtl();
+        // Tracking is space after the character in reading order (#2884): right-to-left, that
+        // is at its left. The space leaves the cluster's advance for the advance of whatever is
+        // drawn left of it (at the start of the line, nothing), so advances stay end to end.
+        let track: f64 = if rtl { line[u.clone()].iter().map(|g| g.track).sum() } else { 0.0 };
+        if track != 0.0 {
+            if let Some(o) = left.and_then(|l| out.get_mut(l)) {
+                o.adv += track;
+            }
+            for i in u.clone() {
+                out[i].adv -= line[i].track;
+            }
+            cur += track;
+        }
         for i in u.clone() {
             shifts[i] = cur - pens[u.start];
-            out[i].rtl = levels[k].is_rtl();
+            out[i].rtl = rtl;
         }
-        cur += width(u);
+        cur += width(u) - track;
+        left = u.end.checked_sub(1);
     }
     for (p, d) in out.iter_mut().zip(shifts) {
         p.x += d;
@@ -5733,6 +5751,7 @@ fn split_drop_cap(
     let k = if k.is_finite() && k > 0.0 { k.min(1000.0) } else { 1.0 };
     for g in dc.iter_mut().chain(after.iter_mut()) {
         g.adv *= k;
+        g.track *= k;
         g.dx *= k;
         g.dy *= k;
         g.sx *= k;
