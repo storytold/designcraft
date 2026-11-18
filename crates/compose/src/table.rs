@@ -194,7 +194,6 @@ fn compose_cell(
 struct CellLayouts {
     cells: Vec<Option<CellLayout>>,
     heights: Vec<f64>,
-    legacy_first_baseline: bool,
 }
 
 impl CellLayouts {
@@ -269,7 +268,7 @@ fn compose_owner_cells(
             }
         }
     }
-    CellLayouts { cells: layouts, heights, legacy_first_baseline }
+    CellLayouts { cells: layouts, heights }
 }
 
 /// Lay out `table` (anchored at byte `anchor` of paragraph `pi`) from the cursor. Returns false
@@ -313,8 +312,13 @@ pub(crate) fn place_table(
     let (nr, nc) = (table.nrows(), table.ncols());
     let owners = table.owners();
     let is_owner = |r: usize, c: usize| owners[r * nc + c] == (r, c);
-    let side = (frames[cur.fi].left_page, frames[cur.fi].right_page);
-    let mut layout = compose_owner_cells(doc, table, &colx, &owners, opts, side, frames[cur.fi].opts.legacy_first_baseline);
+    let context = |frame: &FrameSpec| (frame.opts.legacy_first_baseline, (frame.left_page, frame.right_page));
+    let compose_layout = |(legacy, side)| compose_owner_cells(doc, table, &colx, &owners, opts, side, legacy);
+    // The document, table, widths and options are fixed for this placement. The three
+    // context bits bound the cache even when a table flows through many frames.
+    let mut layouts = HashMap::new();
+    let mut active = context(&frames[cur.fi]);
+    let mut layout = layouts.entry(active).or_insert_with(|| compose_layout(active));
     // Row groups that must stay together: end (exclusive) of the group starting at each row.
     let mut group_end: Vec<usize> = (0..nr).map(|r| r + 1).collect();
     {
@@ -406,12 +410,12 @@ pub(crate) fn place_table(
             return false;
         }
         col = col_rect(cur);
-        let legacy_first_baseline = frames[cur.fi].opts.legacy_first_baseline;
-        if layout.legacy_first_baseline != legacy_first_baseline {
-            // Emitted fragments keep their Arc layouts. Only later fragments adopt the
-            // destination frame's baseline metrics, including nested cells and notes.
-            let side = (frames[cur.fi].left_page, frames[cur.fi].right_page);
-            layout = compose_owner_cells(doc, table, &colx, &owners, opts, side, legacy_first_baseline);
+        let destination = context(&frames[cur.fi]);
+        if active.0 != destination.0 {
+            // Preserve the active layout across same-mode frames. When the baseline
+            // mode changes, use the destination's page side when selecting the layout.
+            active = destination;
+            layout = layouts.entry(active).or_insert_with(|| compose_layout(active));
         }
         reserve = column_reserve(notes, cur, col);
         y = col.y0;

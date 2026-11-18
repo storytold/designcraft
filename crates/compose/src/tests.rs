@@ -10291,6 +10291,16 @@ fn legacy_table_fragments_recompose_cells_for_each_destination_frame() {
                 assert!(fragment.cell(0, 0).unwrap().repeated);
             }
         }
+        let header = |index: usize| &composed.frames[index].tables[0].cell(0, 0).unwrap().text;
+        assert!(!std::sync::Arc::ptr_eq(header(0), header(1)));
+        assert!(std::sync::Arc::ptr_eq(header(0), header(2)), "returning to the same context should reuse the header layout");
+
+        let mut specs = crate::frame_specs(&doc, sid);
+        specs[2].left_page = !specs[0].left_page;
+        let composed = crate::compose(&doc, doc.story(sid).unwrap(), &specs, &ComposeOptions::default());
+        assert!(!composed.is_overset());
+        let header = |index: usize| &composed.frames[index].tables[0].cell(0, 0).unwrap().text;
+        assert!(!std::sync::Arc::ptr_eq(header(0), header(2)), "a different page side needs its own layout");
     }
 }
 
