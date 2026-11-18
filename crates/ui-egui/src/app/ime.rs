@@ -9,6 +9,14 @@ impl DesignApp {
         std::mem::take(&mut self.ime_discard)
     }
 
+    /// The keyboard input source the system has selected now (macOS: its ID), read by the host
+    /// before each frame. The window layer reports Space as a plain space even in a Japanese
+    /// input mode, where the input method types an ideographic one; the source tells them apart
+    /// (see `canvas::ime::japanese_input_source`).
+    pub fn set_input_source(&mut self, id: Option<String>) {
+        self.input_source = id;
+    }
+
     /// Did the canvas ask for the system IME in the last frame (a Type tool caret)? The web
     /// build's hidden text input has the keyboard then, so text events hold what the browser
     /// typed (see [`drop_key_name_text`]).
