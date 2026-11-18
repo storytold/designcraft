@@ -267,7 +267,13 @@ pub fn specs() -> Vec<CommandSpec> {
             has_doc,
             |s, p| {
                 if nothing_targeted(s, p)? {
-                    return set_new_object(s, |c| *c = designcraft_doc::NewObjectColors::default());
+                    return set_new_object(s, |c| {
+                        let d = designcraft_doc::NewObjectColors::default();
+                        (c.fill, c.fill_tint, c.stroke, c.stroke_tint) = (d.fill, d.fill_tint, d.stroke, d.stroke_tint);
+                        if c.stroke_weight <= 0.0 {
+                            c.stroke_weight = d.stroke_weight;
+                        }
+                    });
                 }
                 has_editable_selection(s).map_err(|e| bad("object.defaultFillStroke", e))?;
                 edit_unlocked(s, p, default_fill_stroke)
@@ -4441,6 +4447,10 @@ mod step_repeat_tests {
         s.execute("object.stroke", &json!({"weight": 4})).unwrap();
         assert_eq!(s.doc().unwrap().doc.settings.new_object.stroke, "[Black]");
         assert_eq!(s.doc().unwrap().doc.settings.new_object.stroke_weight, 4.0);
+        s.execute("object.stroke", &json!({"cap": "round"})).unwrap();
+        s.execute("object.defaultFillStroke", &json!({})).unwrap();
+        let c = &s.doc().unwrap().doc.settings.new_object;
+        assert_eq!((c.fill.as_str(), c.stroke.as_str(), c.stroke_weight, c.stroke_cap), ("[None]", "[Black]", 4.0, designcraft_doc::Cap::Round));
     }
 
     #[test]
