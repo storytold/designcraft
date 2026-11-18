@@ -8867,7 +8867,10 @@ fn footnote_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
         check(ui, d, "spanColumns", crate::i18n::tr(&app.ui.language, "Span Footnotes Across Columns"));
         head(ui, "Rule Above");
         check(ui, d, "rule.on", crate::i18n::tr(&app.ui.language, "Rule On"));
-        egui::Grid::new("fn_rule").num_columns(4).spacing([8.0, 6.0]).show(ui, |ui| {
+        // A grid column is no wider than it was the frame before, and the first one holds only
+        // fields, so it never grew to their 60 px: Weight, Width and Left Indent showed two
+        // characters (#2966).
+        egui::Grid::new("fn_rule").num_columns(4).spacing([8.0, 6.0]).min_col_width(60.0).show(ui, |ui| {
             crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Weight:"));
             text_field(ui, d, "rule.weight", 60.0);
             crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Color:"));
@@ -10776,6 +10779,44 @@ mod synthetic_variable_style_regression {
                 h.run_steps(3);
             }
             assert!(h.query_by_label("SemiBold").is_some(), "{retry} retries the now-readable font");
+        }
+    }
+}
+
+#[cfg(test)]
+mod footnote_options_layout {
+    use super::*;
+    use egui_kittest::{Harness, kittest::Queryable};
+
+    /// The Rule Above fields in the grid's first column get the width they ask for. That column
+    /// held only those fields and never grew past its starting width, so Weight, Width and Left
+    /// Indent showed about two characters (198 read `19`) while Offset was full width (#2966).
+    #[test]
+    fn rule_above_fields_are_wide_enough_for_their_values() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let mut o = serde_json::to_value(&app.session.active().unwrap().doc.footnote_options).unwrap();
+        o["tab"] = json!("layout");
+        o["rule"]["weight"] = json!("1.25");
+        o["rule"]["width"] = json!("198.425");
+        o["rule"]["offset"] = json!("2.5");
+        o["rule"]["leftIndent"] = json!("340.157");
+        let mut h = Harness::builder()
+            .with_context_setup(|ctx| {
+                crate::theme::install_fonts(ctx, "");
+            })
+            // The dialog's fields are not named yet; this test is about their widths.
+            .with_accessibility_check(false)
+            .with_size(egui::vec2(700.0, 600.0))
+            .build_ui_state(
+                |ui, state: &mut (DesignApp, Dialog)| footnote_options(&mut state.0, ui, &mut state.1),
+                (app, Dialog::new("footnoteOptions", o)),
+            );
+        h.run_steps(4);
+        for value in ["1.25", "198.425", "2.5", "340.157"] {
+            // The field and the text inside it both carry the value; the field is the wider.
+            let w = h.query_all_by_value(value).map(|n| n.rect().width()).fold(0.0, f32::max);
+            assert!(w >= 59.0, "the field showing {value} is {w} px wide");
         }
     }
 }
