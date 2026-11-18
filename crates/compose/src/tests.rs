@@ -10590,3 +10590,18 @@ fn footnote_columns_end_caret_and_imported_gutter() {
     assert!(x >= ns[1].origin.x);
     assert!(bl >= ns[1].rect.y0 && bl <= ns[1].rect.y1 + 0.01);
 }
+
+#[test]
+fn footnote_columns_follow_rtl_story_order() {
+    let (mut d, sid, fid) = doc_with("Body references here.", Rect::new(0.0, 0.0, 400.0, 500.0), ParaAttrs::default());
+    d.footnote_options.columns = 2;
+    d.story_mut(sid).unwrap().direction = designcraft_doc::TextDirection::RightToLeft;
+    for pos in [8, 6, 4, 2] {
+        d.story_mut(sid).unwrap().insert_note(pos, "Source", ParaFormat::default());
+    }
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let ns = &cs.frame(fid).unwrap().notes;
+    assert_eq!(ns.len(), 4);
+    assert!(ns[0].rect.x0 > ns[3].rect.x0);
+    assert!(ns.windows(2).all(|w| w[0].index < w[1].index));
+}

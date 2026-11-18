@@ -5693,7 +5693,15 @@ fn confirm_part6(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
             app.run("xref.insert", params)
         }
         "footnoteOptions" => {
-            let (columns, column_gutter) = footnote_column_params(&d)?;
+            let (columns, column_gutter) = match footnote_column_params(&d) {
+                Ok(value) => value,
+                Err(error) => {
+                    let mut d = d;
+                    d.fields.insert("status".into(), json!(error));
+                    app.ui.dialog = Some(d);
+                    return Err(error);
+                }
+            };
             let pt = |k: &str| d.pt(k).map_or(Value::Null, |v| json!(v));
             let mut p = json!({
                 "style": d.s("style"), "startAt": d.n("startAt").unwrap_or(1.0).max(0.0) as u32, "restart": d.s("restart"),

@@ -41,14 +41,15 @@ pub(super) fn balance(texts: &[Arc<ComposedStory>], count: usize, space: f64) ->
                     continue;
                 }
                 let z = ls.get(end - 1)?;
-                bottom = bottom.max(y + z.baseline + z.descent);
+                let fragment_bottom = ls.get(start..end)?.iter().map(|line|y+line.baseline+line.descent).fold(0.0_f64,f64::max);
+                bottom = bottom.max(fragment_bottom);
                 out.push(Fragment {
                     note,
                     column: col,
                     lines: start..end,
                     y,
                     top: y + first.baseline - first.ascent,
-                    bottom: y + z.baseline + z.descent,
+                    bottom: fragment_bottom,
                 });
                 last = Some(y + z.baseline);
                 start = end;
@@ -68,7 +69,9 @@ pub(super) fn balance(texts: &[Arc<ComposedStory>], count: usize, space: f64) ->
     for ls in &lines {
         if let (Some(a), Some(z)) = (ls.first(), ls.last()) {
             let y = previous.map_or(0.0, |b| b + space + a.leading - a.baseline);
-            high = high.max(y + z.baseline + z.descent);
+            for line in *ls {
+                high = high.max(y + line.baseline + line.descent);
+            }
             previous = Some(y + z.baseline);
         }
     }
@@ -107,7 +110,7 @@ pub(super) fn fragment(text: &Arc<ComposedStory>, range: Range<usize>) -> Arc<Co
         let last = ft.lines.get(range.end.saturating_sub(1));
         if let (Some(a), Some(z)) = (first, last) {
             let y0 = a.baseline - a.ascent;
-            let y1 = z.baseline + z.descent;
+            let y1 = ft.lines.get(range.clone()).unwrap_or_default().iter().map(|l|l.baseline+l.descent).fold(z.baseline+z.descent,f64::max);
             ft.range = a.range.start..z.range.end;
             ft.decos.retain_mut(|d| {
                 d.rect.y0 = d.rect.y0.max(y0);
@@ -126,4 +129,40 @@ pub(super) fn fragment(text: &Arc<ComposedStory>, range: Range<usize>) -> Arc<Co
         ft.lines = ft.lines.get(range).unwrap_or_default().to_vec();
     }
     Arc::new(cs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn footnote_upper_bound_includes_earlier_line_descent() {
+        let mut d = designcraft_doc::Document::new(&designcraft_doc::build::NewDocument::default());
+        let (_, sid) = d
+            .add_text_frame(
+                designcraft_doc::SpreadRef::Doc(0),
+                designcraft_geom::Rect::new(0.0, 0.0, 200.0, 500.0),
+                d.default_layer(),
+                "First.\nSecond.",
+                Default::default(),
+            )
+            .unwrap();
+        let base = crate::compose_story(&d, sid, &Default::default());
+        let texts: Vec<_> = [40.0, 25.0]
+            .into_iter()
+            .map(|descent| {
+                let mut t = base.clone();
+                let lines = &mut t.frames[0].lines;
+                assert_eq!(lines.len(), 2);
+                for (i, line) in lines.iter_mut().enumerate() {
+                    line.baseline = 10.0 + 10.0 * i as f64;
+                    line.leading = 10.0;
+                    line.descent = if i == 0 { descent } else { 2.0 };
+                }
+                Arc::new(t)
+            })
+            .collect();
+        let (height, fragments) = balance(&texts, 2, 0.0);
+        assert!((height - 50.0).abs() < 0.01);
+        assert_eq!(fragments.iter().map(|f| f.column).collect::<Vec<_>>(), [0, 1]);
+    }
 }

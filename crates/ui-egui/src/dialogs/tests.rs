@@ -5924,3 +5924,15 @@ fn footnote_column_fields_reject_invalid_edits() {
         assert!(footnote_column_params(&d).is_err());
     }
 }
+
+#[test]
+fn footnote_column_invalid_confirmation_preserves_edits() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.ui.dialog = Some(Dialog::new("footnoteOptions", json!({"columns":"-1","columnGutter":17,"separator":"pending separator"})));
+    assert!(confirm(&mut app).is_err());
+    let d = app.ui.dialog.as_ref().unwrap();
+    assert_eq!(d.s("columns"), "-1");
+    assert_eq!(d.s("separator"), "pending separator");
+    assert!(d.s("status").contains("Footnote columns"));
+}
