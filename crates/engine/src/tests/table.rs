@@ -18,6 +18,78 @@ fn check(s: &Session) {
 }
 
 #[test]
+fn table_id_without_story_rejects_multiple_matching_stories() {
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    let first = s.execute("frame.create", &json!({"rect": [36, 36, 300, 200], "content": "text"})).unwrap();
+    let first_story = first["story"].as_u64().unwrap();
+    let shared_id = s.execute("table.insert", &json!({"rows": 1, "cols": 1})).unwrap()["table"].as_u64().unwrap();
+    let second = s.execute("frame.create", &json!({"rect": [320, 36, 580, 200], "content": "text"})).unwrap();
+    let second_story = second["story"].as_u64().unwrap();
+    let second_id = s.execute("table.insert", &json!({"rows": 2, "cols": 1})).unwrap()["table"].as_u64().unwrap();
+    s.edit(|d, _| {
+        let story = d.story_mut(doc::StoryId(second_story)).unwrap();
+        let mut table = (*story.tables.remove(&second_id).unwrap()).clone();
+        table.id = shared_id;
+        story.tables.insert(shared_id, std::sync::Arc::new(table));
+        for para in &mut story.paras {
+            if para.table == Some(second_id) {
+                para.table = Some(shared_id);
+            }
+        }
+        Ok(())
+    })
+    .unwrap();
+    check(&s);
+
+    let error = s.execute("table.get", &json!({"table": shared_id})).unwrap_err();
+    assert!(error.to_string().contains("multiple stories"), "{error}");
+    assert!(error.to_string().contains("story"), "{error}");
+    assert_eq!(s.execute("table.get", &json!({"story": first_story, "table": shared_id})).unwrap()["rows"].as_array().unwrap().len(), 1);
+    assert_eq!(s.execute("table.get", &json!({"story": second_story, "table": shared_id})).unwrap()["rows"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn table_target_rejects_wrong_typed_story_and_table_ids() {
+    let (mut s, story, _) = session_with_frame();
+    let table = s.execute("table.insert", &json!({"rows": 1, "cols": 1})).unwrap()["table"].as_u64().unwrap();
+    for (key, value) in [
+        ("story", json!("other")),
+        ("story", json!("")),
+        ("story", json!(-1)),
+        ("story", json!(1.5)),
+        ("story", Value::Null),
+        ("table", json!("other")),
+        ("table", json!("")),
+        ("table", json!(-1)),
+        ("table", json!(1.5)),
+        ("table", Value::Null),
+    ] {
+        let mut params = json!({"story": story, "table": table});
+        params[key] = value;
+        let error = s.execute("table.get", &params).unwrap_err();
+        assert!(error.to_string().contains(&format!("`{key}`")), "{key}: {error}");
+    }
+    let undo = s.doc().unwrap().history.undo.len();
+    let error = s.execute("table.setCell", &json!({"story": null, "table": table, "insets": 7})).unwrap_err();
+    assert!(error.to_string().contains("`story`"), "{error}");
+    assert_eq!(s.doc().unwrap().history.undo.len(), undo);
+    for params in [json!({"story": story, "table": u64::MAX}), json!({"story": u64::MAX, "table": table})] {
+        let error = s.execute("table.get", &params).unwrap_err();
+        assert!(error.to_string().contains("no table"), "{error}");
+    }
+    // With nothing in a table selected, a malformed `table` is refused as such, not as disabled.
+    s.execute("edit.deselectAll", &json!({})).unwrap();
+    for id in ["table.selectTable", "table.insertRow"] {
+        for value in [json!("other"), json!(-1), Value::Null] {
+            let error = s.execute(id, &json!({ "table": value })).unwrap_err();
+            assert!(!matches!(error, crate::EngineError::Disabled(..)) && error.to_string().contains("`table`"), "{id} {value}: {error}");
+        }
+    }
+    assert_eq!(s.doc().unwrap().history.undo.len(), undo);
+}
+
+#[test]
 fn table_text_replacement_floors_utf8_selection_and_allows_quote_typing() {
     for (original, (a, b), replacement, (after_a, after_b), quoted) in [
         ("a", (1, 1), "é", (0, 0), Some("“é")), // Exact caret/quote baseline.
@@ -569,6 +641,51 @@ fn a_named_table_edit_keeps_a_footnote_caret() {
     assert_eq!(s.execute("table.get", &json!({"table": tid})).unwrap()["rows"].as_array().unwrap().len(), 3);
     assert_eq!(s.doc().unwrap().selection, before);
     check(&s);
+}
+
+/// A caret in footnote text is not in a table: the table commands that need one are disabled
+/// there, also when the caret's offset in the footnote falls on a table's paragraph in the main
+/// story, and a call that names a table still runs.
+#[test]
+fn table_commands_are_disabled_in_footnote_text() {
+    let in_table = ["table.insertRow", "table.deleteColumn", "table.merge", "table.options", "table.selectTable", "style.table.apply"];
+    let info = |s: &Session, id: &str| crate::cmd::find_command(id).unwrap().info(s);
+    for on_table in [false, true] {
+        let (mut s, sid, _) = session_with_frame();
+        let tid = if on_table {
+            s.execute("story.setText", &json!({"story": sid, "text": "Hello"})).unwrap();
+            s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": 0})).unwrap();
+            let tid = s.execute("table.insert", &json!({"rows": 2, "cols": 2})).unwrap()["table"].as_u64().unwrap();
+            let end = s.doc().unwrap().doc.story(designcraft_doc::StoryId(sid)).unwrap().text.len();
+            s.execute("text.select", &json!({"story": sid, "anchor": end, "focus": end})).unwrap();
+            s.execute("footnote.insert", &json!({})).unwrap();
+            tid
+        } else {
+            let tid = s.execute("table.insert", &json!({"rows": 2, "cols": 2})).unwrap()["table"].as_u64().unwrap();
+            s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": 0})).unwrap();
+            s.execute("footnote.insert", &json!({"text": "Note"})).unwrap();
+            tid
+        };
+        let before = s.doc().unwrap().selection.clone();
+        let caret = before.text.unwrap();
+        assert!(caret.cell.and_then(|c| c.footnote_id()).is_some(), "the caret is in the footnote");
+        let story = s.doc().unwrap().doc.story(designcraft_doc::StoryId(sid)).unwrap();
+        assert_eq!(story.table_at(caret.focus).is_some(), on_table, "focus {}", caret.focus);
+        for id in in_table {
+            let i = info(&s, id);
+            assert!(!i.enabled, "{id} {on_table}");
+            assert_eq!(i.disabled_reason.as_deref(), Some("place the insertion point in a table"), "{id} {on_table}");
+            assert!(matches!(s.execute(id, &json!({})), Err(crate::EngineError::Disabled(..))), "{id} {on_table}");
+        }
+        // A query that takes any selection and names no table is told where to put the caret.
+        let error = s.execute("table.get", &json!({})).unwrap_err().to_string();
+        assert!(error.contains("place the insertion point in a table"), "{on_table}: {error}");
+        assert_eq!(s.doc().unwrap().selection, before);
+        s.execute("table.insertRow", &json!({"table": tid})).unwrap();
+        assert_eq!(s.execute("table.get", &json!({"table": tid})).unwrap()["rows"].as_array().unwrap().len(), 3);
+        assert_eq!(s.doc().unwrap().selection, before);
+        check(&s);
+    }
 }
 
 /// With nothing selected, the table commands stay disabled for menus and for calls that name no

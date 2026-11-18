@@ -165,6 +165,7 @@ impl Document {
             modified: 0,
             next_id: 0,
             font_scope: 0,
+            alpha_outlines: Vec::new(),
         };
         let lid = LayerId(d.alloc());
         d.layers.push(Layer {
@@ -175,6 +176,7 @@ impl Document {
             locked: false,
             printable: true,
             show_guides: true,
+            lock_guides: false,
             suppress_wrap_when_hidden: false,
         });
         // A-Parent.

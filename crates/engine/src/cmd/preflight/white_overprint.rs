@@ -12,13 +12,13 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use designcraft_color::{Color, ColorType, SwatchValue, swatch};
+use designcraft_compose::Cache;
 use designcraft_doc::cjk_settings::AdornmentOverprint;
 use designcraft_doc::{AnchoredObject, CharProps, Content, Document, Item, ItemId, SpreadRef, Story, StrokeType};
 use designcraft_geom::Affine;
 use designcraft_pdf::{drawn_children, item_exported, layer_exported, shown_parent_items};
 
 use super::{Issue, page_of};
-use crate::Session;
 
 /// The issue's `kind`.
 pub(super) const KIND: &str = "whiteOverprint";
@@ -100,7 +100,7 @@ enum On {
 /// that show them, and anchored objects in the frames that place them. Returns the white
 /// overprint issues of those items, and the page each text frame among them is first drawn on
 /// (the frames whose ruby and kenten print).
-pub(super) fn printed(s: &Session, d: &Document) -> (Vec<Issue>, BTreeMap<ItemId, Option<usize>>) {
+pub(super) fn printed(cache: &Cache, d: &Document) -> (Vec<Issue>, BTreeMap<ItemId, Option<usize>>) {
     let mut issues = Vec::new();
     let mut frames = BTreeMap::new();
     // A parent page's item shows on every page based on it: it is reported once, on the first.
@@ -129,7 +129,7 @@ pub(super) fn printed(s: &Session, d: &Document) -> (Vec<Issue>, BTreeMap<ItemId
             let children: Vec<_> = drawn_children(it).map(|c| (Node::Item(c.clone()), inside, composed)).collect();
             if let Content::Text(tf) = &it.content {
                 frames.entry(it.id).or_insert(page);
-                let cs = s.cache.get(d, tf.story, composed);
+                let cs = cache.get(d, tf.story, composed);
                 // The frame's anchored objects, and those in its footnotes and table cells.
                 let mut pending: Vec<_> = cs.frame(it.id).into_iter().collect();
                 while let Some(frame) = pending.pop() {
@@ -146,11 +146,11 @@ pub(super) fn printed(s: &Session, d: &Document) -> (Vec<Issue>, BTreeMap<ItemId
 
 /// The byte ranges `story`'s frames show, for [`frames_showing`]: none for a story with no frame
 /// of its own.
-pub(super) fn frame_ranges(s: &Session, d: &Document, story: &Story) -> Vec<(ItemId, Range<usize>)> {
+pub(super) fn frame_ranges(cache: &Cache, d: &Document, story: &Story) -> Vec<(ItemId, Range<usize>)> {
     if story.frames.is_empty() {
         return Vec::new();
     }
-    s.cache.get(d, story.id, None).frames.iter().map(|f| (f.frame, f.range.clone())).collect()
+    cache.get(d, story.id, None).frames.iter().map(|f| (f.frame, f.range.clone())).collect()
 }
 
 /// The frames of `story` that show the bytes `run` (`shown`: [`frame_ranges`]). `None` stands

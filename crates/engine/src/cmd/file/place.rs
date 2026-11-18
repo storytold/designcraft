@@ -4,9 +4,10 @@ use super::EngineError;
 use super::bytes::base64_encode;
 use super::bytes::{base64_decode, from_bytes};
 use super::{
-    Affine, Arc, Asset, AssetId, Content, Graphic, Item, ItemId, PdfCrop, Rect, Result, Selection, Session, Shape, Value, bad, json, ok, shapes,
-    str_param,
+    Affine, Asset, AssetId, Content, Graphic, Item, ItemId, PdfCrop, Rect, Result, Selection, Session, Shape, Value, bad, json, ok, shapes, str_param,
 };
+use crate::cmd::links::{FileLink, give_placed};
+use crate::cmd::native_links::Pending;
 
 pub(super) fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
     // The file's size and time before it is read (a linked text file remembers them).
@@ -32,15 +33,23 @@ pub(super) fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad("file.place", "the frame is locked"));
     }
     // A page of another layout (IDML or DesignCraft): its objects, as one group.
-    let lname = name.to_lowercase();
-    if lname.ends_with(".idml") || lname.ends_with(".designcraft") {
-        return place_layout_page(s, p, &name, &bytes);
+    let format = craft_file_formats::detect(&name, &bytes);
+    if matches!(format, Some(craft_file_formats::Format::Idml | craft_file_formats::Format::DesignCraft)) {
+        return place_layout_page(s, p, &bytes, format);
     }
     // Keep the EPS source for link comparison; rendering uses its preview at the bounding box size.
     let eps_size = eps_size(&bytes, "file.place")?;
+    // A file placed from a path links to it unless `embed`.
+    let embed = p.get("embed").and_then(Value::as_bool) == Some(true);
+    let document = document_of(s);
     // Video and sound: a media frame (Window › Interactive › Media).
     if let Some(mime) = designcraft_doc::media_mime(&name) {
-        return crate::cmd::media::place_media(s, p, name, mime, bytes, link);
+        let file = link.as_deref().map(|l| FileLink::of(std::path::Path::new(l), before));
+        let mut asset = Asset { name, mime: mime.to_string(), ..Default::default() };
+        let pending = give_placed(&mut asset, bytes, file, embed, document.as_deref());
+        let r = crate::cmd::media::place_media(s, p, asset)?;
+        prepare_placed(s, pending);
+        return Ok(r);
     }
     // Text files (plain, Word, RTF) flow into frames.
     if designcraft_textimport::is_text_file(&name) {
@@ -57,11 +66,11 @@ pub(super) fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
         })
         .transpose()?;
     // Image Import Options: which page of a PDF (1-based).
-    if designcraft_render::is_pdf(&bytes) {
+    if format == Some(craft_file_formats::Format::Pdf) {
         designcraft_render::check_pdf_input_size(bytes.len()).map_err(|e| bad("file.place", e.to_string()))?;
     }
     let pdf_page = match p.get("pdfPage").and_then(Value::as_u64) {
-        Some(n) if designcraft_render::is_pdf(&bytes) => {
+        Some(n) if format == Some(craft_file_formats::Format::Pdf) => {
             let count = designcraft_render::pdf_page_count(&bytes).unwrap_or(1);
             let invalid_page = || bad("file.place", format!("the PDF has {count} page(s)"));
             let one_based = usize::try_from(n).map_err(|_| invalid_page())?;
@@ -83,35 +92,31 @@ pub(super) fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
     // and SVGs keep their exact size: rounding it to whole points would stretch them unevenly.
     let (nw, nh) = eps_size.or_else(|| designcraft_render::natural_size(&bytes, pdf_page as usize)).unwrap_or((pw as f64, ph as f64));
     // Image Import Options › Crop to: the graphic spans that box of the PDF page.
-    let is_pdf = designcraft_render::is_pdf(&bytes);
+    let is_pdf = format == Some(craft_file_formats::Format::Pdf);
     let pdf_crop = match str_param(p, "pdfCrop") {
         Some(k) if is_pdf => PdfCrop::from_name(k)
             .ok_or_else(|| bad("file.place", format!("unknown pdfCrop `{k}` (crop, art, trim, bleed, media, contentVisible, contentAll)")))?,
         _ => PdfCrop::Crop,
     };
     let mime = designcraft_render::image_mime(&bytes).to_string();
-    let mut asset = Asset {
-        page: pdf_page,
-        name,
-        mime,
-        link,
-        link_fingerprint: crate::cmd::links::loaded_fingerprint(before, &bytes),
-        data: Arc::new(bytes),
-        pixels: Some((pw, ph)),
-        pdf_crop,
-        ..Default::default()
-    };
+    let file = link.as_deref().map(|l| FileLink::of(std::path::Path::new(l), before));
+    let mut asset = Asset { page: pdf_page, name, mime, pixels: Some((pw, ph)), pdf_crop, ..Default::default() };
     // The graphic's natural size: the box in points (the whole page when the box can't be found,
     // and then the document says so).
-    let (bw, bh) = match crop_pdf(&mut asset) {
+    let cropped = crop_pdf_from(&mut asset, &bytes);
+    let pending = give_placed(&mut asset, bytes, file, embed, document.as_deref());
+    let (bw, bh) = match cropped {
         Some(size) => size,
         None => {
             asset.pdf_crop = PdfCrop::Crop;
             (nw, nh)
         }
     };
+    // A file joining the place cursor's queue goes after the ones already there, whatever is selected.
+    let load_cursor_param = p.get("loadCursor").and_then(Value::as_bool) == Some(true);
+    let append = p.get("append").and_then(Value::as_bool) == Some(true);
     let target_frame = crate::cmd::id_param(p, "frame").or_else(|| {
-        if ["x", "y", "spread", "width"].iter().any(|key| p.get(*key).is_some_and(|value| !value.is_null())) {
+        if (load_cursor_param && append) || ["x", "y", "spread", "width"].iter().any(|key| p.get(*key).is_some_and(|value| !value.is_null())) {
             return None;
         }
         let st = s.active()?;
@@ -125,10 +130,12 @@ pub(super) fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
     let lid = s.doc()?.active_layer;
     let px = p.get("x").and_then(Value::as_f64);
     let py = p.get("y").and_then(Value::as_f64);
-    if target_frame.is_none() && px.is_none() && py.is_none() && p.get("loadCursor").and_then(Value::as_bool) == Some(true) {
-        return load_cursor(s, asset, (bw, bh));
+    if target_frame.is_none() && px.is_none() && py.is_none() && load_cursor_param {
+        let r = load_cursor(s, asset, (bw, bh), append)?;
+        prepare_placed(s, pending);
+        return Ok(r);
     }
-    s.edit(|d, sel| {
+    let r = s.edit(|d, sel| {
         let fresh = AssetId(d.alloc());
         let aid = d.add_asset(Asset { id: fresh, ..asset });
         // The width the whole page (or image) gets; the height follows the proportions.
@@ -191,32 +198,77 @@ pub(super) fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
         };
         *sel = Selection::items(vec![id]);
         Ok(json!({"id": id.0, "asset": aid.0}))
-    })
+    })?;
+    prepare_placed(s, pending);
+    Ok(r)
+}
+
+/// Have the hash and proxy of graphics just placed into the active document made in the
+/// background ([`crate::cmd::native_links::prepare`]).
+pub(crate) fn prepare_placed(s: &mut Session, pending: impl IntoIterator<Item = Pending>) {
+    if let Ok(st) = s.doc_mut() {
+        crate::cmd::native_links::prepare(st, pending.into_iter().collect());
+    }
 }
 
 /// Sets `a.pdf_box` to where its `pdf_crop` box sits on its page and returns the box's size in
 /// points. The crop box is the whole page and has none; nor has a page that can't be read, which
-/// keeps its crop choice (a missing link relinked later gets its box then).
+/// keeps its crop choice (a missing link relinked later gets its box then). Only a PDF with
+/// another box chosen is read.
 pub(crate) fn crop_pdf(a: &mut Asset) -> Option<(f64, f64)> {
     a.pdf_box = None;
-    if a.pdf_crop == PdfCrop::Crop || !designcraft_render::is_pdf(&a.data) {
+    if !crops_pdf(a) {
         return None;
     }
-    let (frac, size) = designcraft_render::pdf_crop_box(&a.data, a.page as usize, a.pdf_crop)?;
+    let bytes = a.data.load().ok()?;
+    crop_pdf_from(a, &bytes)
+}
+
+/// [`crop_pdf`] with `a`'s bytes, `bytes`, in hand.
+pub(crate) fn crop_pdf_from(a: &mut Asset, bytes: &[u8]) -> Option<(f64, f64)> {
+    a.pdf_box = None;
+    if !crops_pdf(a) || !designcraft_render::is_pdf(bytes) {
+        return None;
+    }
+    let (frac, size) = designcraft_render::pdf_crop_box(bytes, a.page as usize, a.pdf_crop)?;
     a.pdf_box = Some(frac);
     Some(size)
 }
 
-pub(crate) fn read_source(p: &Value) -> Result<(Vec<u8>, String, Option<String>)> {
-    read_linked_source(p).map(|(bytes, name, link, _)| (bytes, name, link))
+/// Whether `a` is a PDF placed with a box other than its crop box, which only its bytes locate.
+fn crops_pdf(a: &Asset) -> bool {
+    a.pdf_crop != PdfCrop::Crop && a.mime == "application/pdf"
 }
 
-/// [`read_source`], with the size and time to keep with a linked file's bytes
-/// ([`crate::cmd::links::loaded_fingerprint`]): the file's from before it is read, not those of a
-/// later version that replaces it while a network or syncing source is being loaded.
-fn read_linked_source(p: &Value) -> Result<(Vec<u8>, String, Option<String>, Option<designcraft_doc::Fingerprint>)> {
+/// A file to place: its bytes and name, and its link record when it was read from a path.
+pub(crate) struct Source {
+    pub bytes: Vec<u8>,
+    pub name: String,
+    file: Option<FileLink>,
+    /// `embed: true`: the bytes are kept in the document instead of linking the file.
+    embed: bool,
+}
+
+impl Source {
+    /// Give `a` these bytes: linked to the file they were read from once the returned work is
+    /// done, else embedded ([`give_placed`]). `a`'s `mime` and `page` are set.
+    pub(crate) fn give(self, a: &mut Asset, document: Option<&std::path::Path>) -> Option<Pending> {
+        give_placed(a, self.bytes, self.file, self.embed, document)
+    }
+}
+
+/// The file of the document open in `s`, which relative links are recorded against.
+pub(crate) fn document_of(s: &Session) -> Option<std::path::PathBuf> {
+    s.doc().ok()?.path.as_deref().map(std::path::PathBuf::from)
+}
+
+/// The file `p` names: `{path, embed?}` or `{base64, name?}`. Its size and time are taken before
+/// it is read, so a later version that replaces it while a network or syncing source is being
+/// loaded isn't vouched for ([`crate::cmd::links::loaded_fingerprint`]).
+pub(crate) fn read_source(p: &Value) -> Result<Source> {
+    let embed = p.get("embed").and_then(Value::as_bool) == Some(true);
     if let Some(b) = str_param(p, "base64") {
-        return Ok((base64_decode(b), str_param(p, "name").unwrap_or("image").to_string(), None, None));
+        return Ok(Source { bytes: base64_decode(b), name: str_param(p, "name").unwrap_or("image").to_string(), file: None, embed });
     }
     let path = str_param(p, "path").ok_or_else(|| bad("place", "missing `path` or `base64`"))?;
     let before = crate::cmd::datamerge::fingerprint_from_path(path);
@@ -225,8 +277,8 @@ fn read_linked_source(p: &Value) -> Result<(Vec<u8>, String, Option<String>, Opt
     #[cfg(target_arch = "wasm32")]
     let b: Vec<u8> = vec![];
     let name = std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.into());
-    let loaded = crate::cmd::links::loaded_fingerprint(before, &b);
-    Ok((b, name, Some(path.to_string()), loaded))
+    let file = Some(FileLink::of(std::path::Path::new(path), before));
+    Ok(Source { bytes: b, name, file, embed })
 }
 
 fn eps_size(bytes: &[u8], command: &str) -> Result<Option<(f64, f64)>> {
@@ -254,35 +306,126 @@ pub(crate) fn validate_placement(size: (f64, f64), frame: Rect, xf: Affine, comm
     Ok(())
 }
 
+/// Decode and validate the complete batch before replacing the placement cursor.
 pub(super) fn place_load(s: &mut Session, p: &Value) -> Result<Value> {
-    let (bytes, name, link, link_fingerprint) = read_linked_source(p)?;
-    let (pw, ph) = designcraft_render::image_size(&bytes).ok_or_else(|| bad("place.load", "unsupported or corrupt image"))?;
-    let natural = eps_size(&bytes, "place.load")?.or_else(|| designcraft_render::natural_size(&bytes, 0)).unwrap_or((pw as f64, ph as f64));
-    let mime = designcraft_render::image_mime(&bytes).to_string();
-    let asset = Asset { name, mime, link, link_fingerprint, data: Arc::new(bytes), pixels: Some((pw, ph)), ..Default::default() };
-    load_cursor(s, asset, natural)
+    let append = p.get("append").and_then(Value::as_bool) == Some(true);
+    let embed = p.get("embed").and_then(Value::as_bool) == Some(true);
+    let document = document_of(s);
+    if p.get("files").is_none() {
+        let source = read_source(p)?;
+        let bytes = &source.bytes;
+        let (pw, ph) = designcraft_render::image_size(bytes).ok_or_else(|| bad("place.load", "unsupported or corrupt image"))?;
+        let natural = eps_size(bytes, "place.load")?.or_else(|| designcraft_render::natural_size(bytes, 0)).unwrap_or((pw as f64, ph as f64));
+        let mut asset = Asset {
+            name: source.name.clone(),
+            mime: designcraft_render::image_mime(bytes).to_string(),
+            pixels: Some((pw, ph)),
+            ..Default::default()
+        };
+        let pending = source.give(&mut asset, document.as_deref());
+        let r = load_cursor(s, asset, natural, append)?;
+        prepare_placed(s, pending);
+        return Ok(r);
+    }
+    let sources = p.get("files").and_then(Value::as_array).ok_or_else(|| bad("place.load", "files must be an array"))?;
+    if sources.is_empty() || sources.len() > MAX_LOADED_IMAGES {
+        return Err(bad("place.load", format!("select between 1 and {MAX_LOADED_IMAGES} images")));
+    }
+    check_cursor_room(s, sources.len(), append, "place.load")?;
+    let mut images = Vec::with_capacity(sources.len());
+    let mut pending = Vec::new();
+    for source in sources {
+        let mut source = read_source(source)?;
+        source.embed |= embed;
+        let bytes = &source.bytes;
+        let (pw, ph) =
+            designcraft_render::image_size(bytes).ok_or_else(|| bad("place.load", format!("unsupported or corrupt image: {}", source.name)))?;
+        let size = eps_size(bytes, "place.load")?.or_else(|| designcraft_render::natural_size(bytes, 0)).unwrap_or((pw as f64, ph as f64));
+        validate_placement(size, Rect::new(0.0, 0.0, size.0, size.1), Affine::IDENTITY, "place.load")?;
+        let mut asset = Asset {
+            name: source.name.clone(),
+            mime: designcraft_render::image_mime(bytes).to_string(),
+            pixels: Some((pw, ph)),
+            ..Default::default()
+        };
+        pending.extend(source.give(&mut asset, document.as_deref()));
+        images.push((asset, size));
+    }
+    let queue = s.edit(|d, _| {
+        let mut queue = std::collections::VecDeque::with_capacity(images.len());
+        for (mut asset, size) in images {
+            asset.id = AssetId(d.alloc());
+            queue.push_back(crate::LoadedGraphic { asset: d.add_asset(asset), size });
+        }
+        Ok(queue)
+    })?;
+    prepare_placed(s, pending);
+    if append && s.loaded.is_some() {
+        s.loaded_queue.extend(queue);
+    } else {
+        s.loaded_queue = queue;
+        s.loaded = s.loaded_queue.pop_front();
+    }
+    s.set_tool("placeGun");
+    Ok(json!({"remaining": loaded_count(s), "loaded": true}))
 }
 
-/// Adds `asset` to the document (with a fresh id) and loads it into the place cursor.
-fn load_cursor(s: &mut Session, mut asset: Asset, size: (f64, f64)) -> Result<Value> {
+/// Most images the place cursor holds, and so most one `place.load` takes.
+const MAX_LOADED_IMAGES: usize = 1000;
+
+/// Whether `incoming` images fit in the place cursor: appended, they go after the ones it holds.
+fn check_cursor_room(s: &Session, incoming: usize, append: bool, command: &str) -> Result<()> {
+    let held = if append { loaded_count(s) } else { 0 };
+    if held.saturating_add(incoming) > MAX_LOADED_IMAGES {
+        return Err(bad(command, format!("the place cursor holds at most {MAX_LOADED_IMAGES} images, and it has {held}")));
+    }
+    Ok(())
+}
+
+/// How many images the place cursor holds: the current one and those queued after it.
+fn loaded_count(s: &Session) -> usize {
+    s.loaded_queue.len().saturating_add(usize::from(s.loaded.is_some()))
+}
+
+/// Add a decoded asset with a fresh id, replacing the previous placement queue (or, with
+/// `append` and an image already loaded, queued after it).
+fn load_cursor(s: &mut Session, mut asset: Asset, size: (f64, f64), append: bool) -> Result<Value> {
+    check_cursor_room(s, 1, append, "place.load")?;
     let name = asset.name.clone();
     let (pw, ph) = asset.pixels.unwrap_or_default();
     let aid = s.edit(|d, _| {
         asset.id = AssetId(d.alloc());
         Ok(d.add_asset(asset))
     })?;
-    s.loaded = Some(crate::LoadedGraphic { asset: aid, size });
+    let image = crate::LoadedGraphic { asset: aid, size };
+    if append && s.loaded.is_some() {
+        s.loaded_queue.push_back(image);
+    } else {
+        s.loaded_queue.clear();
+        s.loaded = Some(image);
+    }
     s.set_tool("placeGun");
     Ok(json!({"asset": aid.0, "name": name, "width": pw, "height": ph, "loaded": true}))
 }
 
-pub(super) fn place_drop(s: &mut Session, p: &Value) -> Result<Value> {
-    let crate::LoadedGraphic { asset: aid, size: (nw, nh) } = s.loaded.ok_or_else(|| bad("place.drop", "nothing loaded in the place cursor"))?;
-    // Undo can remove the loaded graphic's asset.
-    if !s.doc()?.doc.assets.contains_key(&aid) {
-        s.loaded = None;
-        return Err(bad("place.drop", "the loaded graphic is no longer in the document"));
+/// Cancel every pending image if Undo removed an asset used by the cursor.
+fn validate_place_cursor(s: &mut Session, command: &str) -> Result<()> {
+    // An empty cursor is its own error, and leaves the tool as it is.
+    if s.loaded.is_none() {
+        return Err(bad(command, "nothing loaded in the place cursor"));
     }
+    let valid = s.loaded.iter().chain(s.loaded_queue.iter()).all(|image| s.doc().is_ok_and(|d| d.doc.assets.contains_key(&image.asset)));
+    if !valid {
+        s.unload_place_cursor();
+        return Err(bad(command, "the loaded graphic is no longer in the document"));
+    }
+    Ok(())
+}
+
+/// Place the current image and advance the cursor only after success.
+pub(super) fn place_drop(s: &mut Session, p: &Value) -> Result<Value> {
+    validate_place_cursor(s, "place.drop")?;
+    let crate::LoadedGraphic { asset: aid, size: (nw, nh) } = s.loaded.ok_or_else(|| bad("place.drop", "nothing loaded in the place cursor"))?;
     let sr = crate::cmd::spread_param(p, "place.drop")?;
     let lid = s.doc()?.active_layer;
     let frame = crate::cmd::id_param(p, "frame");
@@ -340,16 +483,189 @@ pub(super) fn place_drop(s: &mut Session, p: &Value) -> Result<Value> {
         *sel = Selection::items(vec![id]);
         Ok(json!({"id": id.0}))
     })?;
-    s.loaded = None;
-    s.set_tool("selection");
+    advance_place_cursor(s);
     Ok(r)
+}
+
+/// Advance in file order, returning to selection when the queue is exhausted.
+fn advance_place_cursor(s: &mut Session) {
+    s.loaded = s.loaded_queue.pop_front();
+    if s.loaded.is_none() {
+        s.set_tool("selection");
+    }
+}
+
+/// Drop the current loaded image without placing it and move to the next; the last one ends placing.
+pub(super) fn place_skip(s: &mut Session, _p: &Value) -> Result<Value> {
+    validate_place_cursor(s, "place.skip")?;
+    advance_place_cursor(s);
+    Ok(json!({"remaining": loaded_count(s)}))
+}
+
+/// Rotate the loaded images: `dir` 1 makes the next one current (the current one goes to the back),
+/// -1 the previous one (the last goes to the front).
+pub(super) fn place_cycle(s: &mut Session, p: &Value) -> Result<Value> {
+    const ID: &str = "place.cycle";
+    let dir = p.get("dir").and_then(Value::as_i64).filter(|d| matches!(d, 1 | -1)).ok_or_else(|| bad(ID, "dir must be 1 or -1"))?;
+    validate_place_cursor(s, ID)?;
+    if let Some(current) = s.loaded {
+        if dir == 1 {
+            s.loaded_queue.push_back(current);
+            s.loaded = s.loaded_queue.pop_front();
+        } else if let Some(last) = s.loaded_queue.pop_back() {
+            s.loaded_queue.push_front(current);
+            s.loaded = Some(last);
+        }
+    }
+    Ok(json!({"remaining": loaded_count(s)}))
+}
+
+/// Validate bounded grid dimensions and a finite nonnegative gutter.
+fn grid_dimensions(p: &Value, command: &str, default_columns: usize, default_rows: usize) -> Result<(usize, usize, f64)> {
+    let dimension = |key, default| -> Result<usize> {
+        match p.get(key) {
+            None => Ok(default),
+            Some(v) => v
+                .as_u64()
+                .filter(|n| (1..=100).contains(n))
+                .and_then(|n| usize::try_from(n).ok())
+                .ok_or_else(|| bad(command, "rows and columns must be integers between 1 and 100")),
+        }
+    };
+    let gutter = crate::cmd::f64_or(p, "gutter", 6.0);
+    if !gutter.is_finite() || gutter < 0.0 {
+        return Err(bad(command, "gutter must be finite and nonnegative"));
+    }
+    Ok((dimension("columns", default_columns)?, dimension("rows", default_rows)?, gutter))
+}
+
+/// Calculate row-major cells, rejecting gutters that leave no usable space.
+fn grid_cells(rect: Rect, columns: usize, rows: usize, gutter: f64, command: &str) -> Result<Vec<Rect>> {
+    let (columns, rows) = (columns.max(1), rows.max(1));
+    let w = (rect.width() - gutter * columns.saturating_sub(1) as f64) / columns as f64;
+    let h = (rect.height() - gutter * rows.saturating_sub(1) as f64) / rows as f64;
+    if ![rect.x0, rect.y0, rect.x1, rect.y1, w, h].iter().all(|v| v.is_finite()) || w <= 0.0 || h <= 0.0 {
+        return Err(bad(command, "the grid area is too small for its rows, columns and gutter"));
+    }
+    Ok((0..rows)
+        .flat_map(|row| {
+            (0..columns).map(move |column| {
+                let x = rect.x0 + column as f64 * (w + gutter);
+                let y = rect.y0 + row as f64 * (h + gutter);
+                Rect::new(x, y, x + w, y + h)
+            })
+        })
+        .collect())
+}
+
+/// Insert a proportionally fitted image into one grid cell.
+fn insert_grid_image(
+    d: &mut designcraft_doc::Document,
+    spread: designcraft_doc::SpreadRef,
+    layer: designcraft_doc::LayerId,
+    image: crate::LoadedGraphic,
+    rect: Rect,
+    command: &str,
+) -> Result<ItemId> {
+    let crate::LoadedGraphic { asset, size: (nw, nh) } = image;
+    if !d.assets.contains_key(&asset) {
+        return Err(bad(command, "a loaded image is no longer in the document"));
+    }
+    let k = (rect.width() / nw).min(rect.height() / nh);
+    let xf = Affine::translate((rect.x0 + (rect.width() - nw * k) / 2.0, rect.y0 + (rect.height() - nh * k) / 2.0)) * Affine::scale(k);
+    validate_placement((nw, nh), rect, xf, command)?;
+    let id = ItemId(d.alloc());
+    let mut item = Item::new(id, layer, Shape::Rectangle, shapes::rectangle(rect));
+    item.object_style = d.styles.default_graphic_frame.clone();
+    if let Some(effects) = d.styles.object_effects(&item.object_style) {
+        item.effects = effects.clone();
+    }
+    item.content = Content::Graphic(Graphic {
+        layer_options: None,
+        asset,
+        size: (nw, nh),
+        xf,
+        auto_fit: designcraft_doc::Fitting::FitProportionally,
+        fit_align: 4,
+        crop: [0.0; 4],
+        clip: None,
+        wrap: Default::default(),
+        fill: Default::default(),
+    });
+    d.insert_item(spread, item, None)?;
+    Ok(id)
+}
+
+/// Place a row-major grid as one undoable edit.
+pub(super) fn place_grid(s: &mut Session, p: &Value) -> Result<Value> {
+    const ID: &str = "place.grid";
+    validate_place_cursor(s, ID)?;
+    let (columns, rows, gutter) = grid_dimensions(p, ID, 1, 1)?;
+    let rect = crate::cmd::rect_param(p, "rect").ok_or_else(|| bad(ID, "missing rect"))?;
+    let cells = grid_cells(rect, columns, rows, gutter, ID)?;
+    let images: Vec<_> = s.loaded.iter().chain(s.loaded_queue.iter()).copied().take(cells.len()).collect();
+    if images.is_empty() {
+        return Err(bad(ID, "nothing loaded in the place cursor"));
+    }
+    let layer = s.doc()?.active_layer;
+    let spread = crate::cmd::spread_param(p, ID)?;
+    let ids = s.edit(|d, sel| {
+        let mut ids = Vec::with_capacity(images.len());
+        for (image, rect) in images.iter().zip(cells) {
+            ids.push(insert_grid_image(d, spread, layer, *image, rect, ID)?);
+        }
+        *sel = Selection::items(ids.clone());
+        Ok(ids)
+    })?;
+    for _ in &ids {
+        advance_place_cursor(s);
+    }
+    Ok(json!({"ids": ids.iter().map(|id| id.0).collect::<Vec<_>>(), "remaining": loaded_count(s)}))
+}
+
+/// Place all queued images on new pages as one undoable edit.
+pub(super) fn place_contact_sheet(s: &mut Session, p: &Value) -> Result<Value> {
+    const ID: &str = "place.contactSheet";
+    validate_place_cursor(s, ID)?;
+    let (columns, rows, gutter) = grid_dimensions(p, ID, 3, 4)?;
+    let margin = crate::cmd::f64_or(p, "margin", 36.0);
+    if !margin.is_finite() || margin < 0.0 {
+        return Err(bad(ID, "invalid margin"));
+    }
+    let images: Vec<_> = s.loaded.iter().chain(s.loaded_queue.iter()).copied().collect();
+    if images.is_empty() {
+        return Err(bad(ID, "load images first using File > Place"));
+    }
+    let layer = s.doc()?.active_layer;
+    let per_page = columns.saturating_mul(rows).max(1);
+    let count = images.len().div_ceil(per_page);
+    let ids = s.edit(|d, sel| {
+        let after = d.page_count().saturating_sub(1);
+        d.insert_pages(Some(after), count, None)?;
+        let mut ids = Vec::with_capacity(images.len());
+        for (page_offset, chunk) in images.chunks(per_page).enumerate() {
+            let index = after.saturating_add(1).saturating_add(page_offset);
+            let (si, pi) = d.page_loc(index).ok_or_else(|| bad(ID, "missing page"))?;
+            let b = d.spreads.get(si).and_then(|sp| sp.pages.get(pi)).ok_or_else(|| bad(ID, "missing page"))?.bounds();
+            let cells = grid_cells(Rect::new(b.x0 + margin, b.y0 + margin, b.x1 - margin, b.y1 - margin), columns, rows, gutter, ID)?;
+            for (image, rect) in chunk.iter().zip(cells) {
+                ids.push(insert_grid_image(d, designcraft_doc::SpreadRef::Doc(si), layer, *image, rect, ID)?);
+            }
+        }
+        *sel = Selection::items(ids.clone());
+        Ok(ids)
+    })?;
+    for _ in &ids {
+        advance_place_cursor(s);
+    }
+    Ok(json!({"pages": count, "images": ids.len()}))
 }
 
 /// File › Place of an IDML or DesignCraft document: the objects of one page (`layoutPage`,
 /// 1-based) grouped, top-left at x/y (default: the source position on the first page).
-fn place_layout_page(s: &mut Session, p: &Value, name: &str, bytes: &[u8]) -> Result<Value> {
+fn place_layout_page(s: &mut Session, p: &Value, bytes: &[u8], format: Option<craft_file_formats::Format>) -> Result<Value> {
     const ID: &str = "file.place";
-    let src = if name.to_lowercase().ends_with(".idml") {
+    let src = if format == Some(craft_file_formats::Format::Idml) {
         crate::cmd::interchange::import_idml_confined(bytes, str_param(p, "path").map(std::path::Path::new)).map_err(|e| bad(ID, e.to_string()))?
     } else {
         from_bytes(bytes)?
@@ -412,6 +728,64 @@ pub(super) mod image_place_tests {
         let png = designcraft_render::Rendered { width: 40, height: 20, pixels: [red, 90, 180, 255].repeat(800) }.to_png();
         std::fs::write(file.path(), png)?;
         Ok(file)
+    }
+
+    /// With nothing in the place cursor, placing says so and leaves the tool as it is (the
+    /// cursor's graphic gone from the document is another error).
+    #[test]
+    fn an_empty_place_cursor_says_so_and_keeps_the_tool() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.set_tool("rectangleFrame");
+        for (cmd, p) in
+            [("place.drop", json!({"x": 10, "y": 10})), ("place.grid", json!({"rect": [0, 0, 100, 100]})), ("place.contactSheet", json!({}))]
+        {
+            let e = s.execute(cmd, &p).unwrap_err().to_string();
+            assert!(e.contains("nothing loaded"), "{cmd}: {e}");
+            assert_eq!(s.tool_id(), "rectangleFrame", "{cmd}");
+        }
+    }
+
+    fn test_png(shade: u8) -> String {
+        let png = designcraft_render::Rendered { width: 4, height: 4, pixels: vec![shade; 4 * 4 * 4] }.to_png();
+        crate::cmd::base64_encode(&png)
+    }
+
+    fn loaded_names(s: &Session) -> Vec<String> {
+        let Ok(st) = s.doc() else { return Vec::new() };
+        let d = &st.doc;
+        s.loaded.iter().chain(s.loaded_queue.iter()).map(|g| d.assets[&g.asset].name.clone()).collect()
+    }
+
+    #[test]
+    fn skip_drops_the_current_image_and_the_last_one_ends_placing() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let files: Vec<_> = (0..3).map(|i| json!({"base64": test_png(i as u8), "name": format!("{i}.png")})).collect();
+        s.execute("place.load", &json!({"files": files})).unwrap();
+        assert_eq!(s.execute("place.skip", &json!({})).unwrap()["remaining"], 2);
+        assert_eq!(loaded_names(&s), ["1.png", "2.png"]);
+        s.execute("place.skip", &json!({})).unwrap();
+        assert_eq!(s.tool_id(), "placeGun");
+        s.execute("place.skip", &json!({})).unwrap();
+        assert!(s.loaded.is_none());
+        assert_eq!(s.tool_id(), "selection");
+        assert!(s.execute("place.skip", &json!({})).is_err());
+    }
+
+    #[test]
+    fn cycle_rotates_the_loaded_images_both_ways() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let files: Vec<_> = (0..3).map(|i| json!({"base64": test_png(i as u8), "name": format!("{i}.png")})).collect();
+        s.execute("place.load", &json!({"files": files})).unwrap();
+        s.execute("place.cycle", &json!({"dir": 1})).unwrap();
+        assert_eq!(loaded_names(&s), ["1.png", "2.png", "0.png"]);
+        s.execute("place.cycle", &json!({"dir": -1})).unwrap();
+        s.execute("place.cycle", &json!({"dir": -1})).unwrap();
+        assert_eq!(loaded_names(&s), ["2.png", "0.png", "1.png"]);
+        assert!(s.execute("place.cycle", &json!({"dir": 2})).is_err());
+        assert!(s.execute("place.cycle", &json!({})).is_err());
     }
 
     #[test]
@@ -479,9 +853,9 @@ pub(super) mod image_place_tests {
         };
 
         // Written just now: another write in the same second would keep its time, so the time
-        // can't vouch for the bytes later and isn't kept.
+        // can't vouch for the bytes later: only the size is kept, with a time no file has.
         let asset = load(&mut session);
-        assert_eq!(asset.link_fingerprint, None);
+        assert_eq!(asset.link_fingerprint.map(|f| f.mtime), Some(crate::cmd::links::UNVERIFIED_MTIME));
         assert_eq!(asset.link.as_deref(), image.path().to_str());
 
         // A file that has been as it is for a while is remembered by its size and time.
@@ -586,6 +960,96 @@ pub(super) mod image_place_tests {
             let document = &session.doc().unwrap().doc;
             assert!(matches!(document.item(ItemId(selected["id"].as_u64().unwrap())).unwrap().content, Content::Graphic(_)), "{command}");
             assert_eq!(document.spreads[0].items.len(), 1, "{command}");
+        }
+    }
+
+    /// A `width` x `height` PNG with a pHYs chunk of `ppm` pixels per meter on both axes, or none.
+    fn png_with_density(width: u32, height: u32, ppm: Option<u32>) -> std::io::Result<tempfile::NamedTempFile> {
+        fn crc32(data: &[u8]) -> u32 {
+            let mut crc = 0xFFFF_FFFFu32;
+            for &b in data {
+                crc ^= b as u32;
+                for _ in 0..8 {
+                    crc = if crc & 1 == 1 { (crc >> 1) ^ 0xEDB8_8320 } else { crc >> 1 };
+                }
+            }
+            !crc
+        }
+        let pixels = [30, 90, 180, 255].repeat((width * height) as usize);
+        let png = designcraft_render::Rendered { width, height, pixels }.to_png();
+        assert_eq!(&png[12..16], b"IHDR");
+        let mut bytes = png[..33].to_vec();
+        if let Some(ppm) = ppm {
+            let mut phys = Vec::new();
+            phys.extend_from_slice(&ppm.to_be_bytes());
+            phys.extend_from_slice(&ppm.to_be_bytes());
+            phys.push(1);
+            bytes.extend_from_slice(&(phys.len() as u32).to_be_bytes());
+            bytes.extend_from_slice(b"pHYs");
+            bytes.extend_from_slice(&phys);
+            let mut c = b"pHYs".to_vec();
+            c.extend_from_slice(&phys);
+            bytes.extend_from_slice(&crc32(&c).to_be_bytes());
+        }
+        bytes.extend_from_slice(&png[33..]);
+        let file = tempfile::Builder::new().suffix(".png").tempfile()?;
+        std::fs::write(file.path(), bytes)?;
+        Ok(file)
+    }
+
+    #[test]
+    fn placed_photo_honors_its_embedded_resolution() {
+        // #1991: a placed graphic's embedded density sets its size (600 dpi: 40 px place
+        // 4.8 pt wide), instead of a pixel always becoming a point.
+        let file = png_with_density(40, 20, Some(23622)).unwrap();
+        let mut session = Session::new();
+        session.execute("file.new", &json!({})).unwrap();
+        let placed = session.execute("file.place", &json!({"path": file.path(), "x": 10.0, "y": 20.0})).unwrap();
+        let document = &session.doc().unwrap().doc;
+        let item = document.item(ItemId(placed["id"].as_u64().unwrap())).unwrap();
+        let b = item.bounds();
+        assert!((b.x0 - 10.0).abs() < 1e-9 && (b.y0 - 20.0).abs() < 1e-9, "{b:?}");
+        assert!((b.width() - 4.8).abs() < 0.01 && (b.height() - 2.4).abs() < 0.01, "{b:?}");
+    }
+
+    /// File › Place, then a click: an 11 x 17 in image (330 x 510 px at 30 ppi) comes in at
+    /// 792 x 1224 pt, keeps that size through a save and reopen, and an image with no stored
+    /// resolution comes in at 72 ppi (330 x 510 pt).
+    #[test]
+    fn a_clicked_image_keeps_its_print_size_through_save_and_reopen() {
+        // 1181 pixels per meter is 29.9974 ppi.
+        let (w, h) = (330.0 * 72.0 / (1181.0 * 0.0254), 510.0 * 72.0 / (1181.0 * 0.0254));
+        for (ppm, (ew, eh)) in [(Some(1181), (w, h)), (None, (330.0, 510.0))] {
+            let image = png_with_density(330, 510, ppm).unwrap();
+            let mut session = Session::new();
+            session.execute("file.new", &json!({})).unwrap();
+            session.execute("file.place", &json!({"path": image.path(), "loadCursor": true})).unwrap();
+            session.execute("place.drop", &json!({"x": 0, "y": 0})).unwrap();
+            // The bounds and natural size of the document's one placed graphic.
+            let shown = |session: &Session| {
+                let doc = &session.doc().unwrap().doc;
+                let graphics: Vec<_> = doc
+                    .all_items()
+                    .into_iter()
+                    .filter_map(|id| doc.item(id))
+                    .filter_map(|item| match &item.content {
+                        Content::Graphic(g) => Some((item.bounds(), g.size)),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(graphics.len(), 1, "{graphics:?}");
+                graphics[0]
+            };
+            let (b, size) = shown(&session);
+            assert!((b.width() - ew).abs() < 1e-6 && (b.height() - eh).abs() < 1e-6, "{ppm:?}: {b:?}");
+            assert!((size.0 - ew).abs() < 1e-6 && (size.1 - eh).abs() < 1e-6, "{ppm:?}: {size:?}");
+
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("placed.designcraft");
+            session.execute("file.save", &json!({"path": path.to_string_lossy()})).unwrap();
+            let mut reopened = Session::new();
+            reopened.execute("file.open", &json!({"path": path.to_string_lossy()})).unwrap();
+            assert_eq!(shown(&reopened), (b, size), "{ppm:?}");
         }
     }
 
@@ -921,5 +1385,82 @@ mod nested_frame_tests {
         assert_eq!(d.assets[&g.asset].name, "new.png");
         assert_eq!(it.inner_bounds(), Rect::new(0.0, 0.0, 60.0, 90.0), "the frame keeps its size");
         assert_eq!(d.spreads[0].items.len(), 1, "no new object");
+    }
+}
+
+#[cfg(test)]
+mod cursor_cap_tests {
+    use serde_json::{Value, json};
+
+    use super::MAX_LOADED_IMAGES;
+    use crate::Session;
+
+    fn png() -> String {
+        let png = designcraft_render::Rendered { width: 4, height: 4, pixels: [200, 90, 30, 255].repeat(16) }.to_png();
+        super::super::base64_encode(&png)
+    }
+
+    /// A session whose place cursor holds `held` images, loaded without decoding each of them.
+    fn holding(held: usize) -> Session {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("place.load", &json!({"base64": png(), "name": "first.png"})).unwrap();
+        let first = s.loaded.unwrap();
+        s.loaded_queue = std::iter::repeat_n(first, held - 1).collect();
+        s
+    }
+
+    fn count(s: &Session) -> usize {
+        super::loaded_count(s)
+    }
+
+    /// Every way of adding to the cursor stops at the cap, and a refused add changes nothing.
+    #[test]
+    fn appending_stops_at_the_cap_on_the_whole_cursor() {
+        let image = png();
+        let single = json!({"base64": image, "name": "a.png", "append": true});
+        let placed = json!({"base64": image, "name": "a.png", "append": true, "loadCursor": true});
+        let two = json!({"files": [{"base64": image, "name": "a.png"}, {"base64": image, "name": "b.png"}], "append": true});
+        for (command, params) in [("place.load", &single), ("file.place", &placed), ("place.load", &two)] {
+            let mut s = holding(MAX_LOADED_IMAGES);
+            let assets = s.doc().unwrap().doc.assets.len();
+            assert!(s.execute(command, params).is_err(), "{command} {params}");
+            assert_eq!(count(&s), MAX_LOADED_IMAGES, "{command} {params}");
+            assert_eq!(s.doc().unwrap().doc.assets.len(), assets, "{command} {params}");
+        }
+        // One over, as a batch.
+        let mut s = holding(MAX_LOADED_IMAGES - 1);
+        assert!(s.execute("place.load", &two).is_err());
+        assert_eq!(count(&s), MAX_LOADED_IMAGES - 1);
+    }
+
+    /// The last places up to the cap load, and an unreadable batch reports the cap before decoding.
+    #[test]
+    fn appending_up_to_the_cap_still_loads() {
+        let image = png();
+        for params in
+            [json!({"base64": image, "name": "a.png", "append": true}), json!({"files": [{"base64": image, "name": "a.png"}], "append": true})]
+        {
+            let mut s = holding(MAX_LOADED_IMAGES - 1);
+            s.execute("place.load", &params).unwrap();
+            assert_eq!(count(&s), MAX_LOADED_IMAGES, "{params}");
+        }
+        let mut s = holding(MAX_LOADED_IMAGES);
+        let error =
+            s.execute("place.load", &json!({"files": [{"base64": "not an image", "name": "a.png"}], "append": true})).unwrap_err().to_string();
+        assert!(error.contains(&MAX_LOADED_IMAGES.to_string()), "{error}");
+    }
+
+    /// Without `append` the new images replace the cursor, so what it holds doesn't count.
+    #[test]
+    fn replacing_a_full_cursor_is_not_capped() {
+        let image = png();
+        let mut s = holding(MAX_LOADED_IMAGES);
+        let result: Value = s.execute("place.load", &json!({"base64": image, "name": "a.png"})).unwrap();
+        assert_eq!(result["loaded"], true);
+        assert_eq!(count(&s), 1);
+        let mut s = holding(MAX_LOADED_IMAGES);
+        s.execute("place.load", &json!({"files": [{"base64": image, "name": "a.png"}]})).unwrap();
+        assert_eq!(count(&s), 1);
     }
 }
