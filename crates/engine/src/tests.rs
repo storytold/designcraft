@@ -2718,3 +2718,16 @@ fn deleting_the_active_layer_moves_to_a_usable_layer() {
     s.execute("layer.delete", &json!({"id": bottom.0})).unwrap();
     assert_eq!(s.doc().unwrap().active_layer, artwork);
 }
+
+#[test]
+fn footnote_columns_options_validate_and_read_back() {
+    let mut s = session();
+    let v = s.execute("footnote.options", &json!({"columns":2,"columnGutter":17})).unwrap();
+    assert_eq!(v["columns"], 2);
+    assert_eq!(v["columnGutter"], 17.0);
+    assert_eq!(s.execute("footnote.options", &json!({})).unwrap(), v);
+    for p in [json!({"columns":0}), json!({"columns":5}), json!({"columnGutter":-1}), json!({"columnGutter":145})] {
+        assert!(s.execute("footnote.options", &p).unwrap_err().to_string().contains("columns must"));
+        assert_eq!(s.execute("footnote.options", &json!({})).unwrap(), v);
+    }
+}

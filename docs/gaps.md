@@ -151,6 +151,9 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
   reliability (#20).
 - **Estimate:** 25–40 h.
 
+### Footnote layout
+- **Have:** independent balanced columns within each footnote area, including spanning areas; configurable gutter and narrow-area fallback (#1120).
+
 ### 13. Hyphenation and spelling languages (T, L)
 - **Missing:** hyphenation patterns for every language but English, Spanish, Portuguese, Norwegian, Danish, Greek, German (2006 reform), French, Italian and Dutch; spelling for
   every language but English. InDesign ships dictionaries for ~40 languages.

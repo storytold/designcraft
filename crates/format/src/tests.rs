@@ -936,3 +936,16 @@ fn embedded_documents_keep_their_older_version_and_version_5_loads() {
     let loaded = load(&save(&d).unwrap()).unwrap();
     assert_eq!(loaded.assets.len(), d.assets.len());
 }
+
+#[test]
+fn footnote_columns_native_roundtrip() {
+    let mut d = Document::new(&NewDocument::default());
+    let defaults = serde_json::to_value(&d.footnote_options).unwrap();
+    assert!(defaults.get("columns").is_none());
+    assert!(defaults.get("columnGutter").is_none());
+    d.footnote_options.columns = 2;
+    d.footnote_options.column_gutter = 17.0;
+    let restored = load(&save(&d).unwrap()).unwrap();
+    assert_eq!(restored.footnote_options.columns, 2);
+    assert_eq!(restored.footnote_options.column_gutter, 17.0);
+}

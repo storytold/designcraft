@@ -10489,3 +10489,65 @@ fn cross_reference_text_breaks_at_its_spaces() {
         }
     }
 }
+
+#[test]
+fn footnote_columns_balance_reading_order_and_reserve() {
+    for span in [false, true] {
+        let (mut d, sid, fid) = doc_with(&format!("{LOREM} {LOREM}"), Rect::new(0.0, 0.0, 400.0, 500.0), ParaAttrs::default());
+        if span {
+            d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = 2;
+        }
+        d.footnote_options.span_columns = span;
+        d.footnote_options.columns = 2;
+        d.footnote_options.column_gutter = 17.0;
+        d.footnote_options.space_before = 8.0;
+        let st = d.story_mut(sid).unwrap();
+        for offset in [30, 20, 10] {
+            st.insert_note(offset, &"A long source note that must wrap at the independent note column width. ".repeat(4), ParaFormat::default());
+        }
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let ft = cs.frame(fid).unwrap();
+        let left = ft.notes.iter().map(|n| n.rect.x0).fold(f64::INFINITY, f64::min);
+        let right = ft.notes.iter().map(|n| n.rect.x0).fold(f64::NEG_INFINITY, f64::max);
+        assert!((right - left - 208.5).abs() < 0.01, "spanning width is divided: {left}, {right}");
+        let bottoms: Vec<_> =
+            [left, right].iter().map(|x| ft.notes.iter().filter(|n| n.rect.x0 == *x).map(|n| n.rect.y1).fold(0.0, f64::max)).collect();
+        assert!((bottoms[0] - bottoms[1]).abs() <= 15.0);
+        let top = ft.notes.iter().map(|n| n.rect.y0).fold(f64::INFINITY, f64::min);
+        assert!(ft.lines.iter().all(|l| l.baseline + l.descent <= top - 8.0 + 0.01));
+        let specs = frame_specs(&d, sid);
+        let mut notes = notes::Notes::new(&d, d.story(sid).unwrap());
+        let reserved = notes.reserve(
+            &d,
+            notes::NoteColumn { frame_index: 0, column_index: 0, width: 400.0, frame: &specs[0] },
+            &[0, 1, 2],
+            &ComposeOptions::default(),
+        );
+        let rule_top = ft.decos.iter().find(|r| (r.rect.width() - 72.0).abs() < 0.01).unwrap().rect.y1;
+        assert!((reserved - (ft.columns[0].y1 - rule_top + 8.0)).abs() < 0.01, "reservation equals the balanced area");
+        let mut prev = (0, 0);
+        for n in &ft.notes {
+            let lines = &n.text.frames[0].lines;
+            let key = (n.index, lines[0].range.start);
+            assert!(key >= prev);
+            prev = key;
+            if n.text.frames[0].range.end < d.story(sid).unwrap().notes[n.index].text.len() {
+                assert!(lines.len() >= 2);
+            }
+        }
+    }
+}
+
+#[test]
+fn footnote_columns_narrow_area_falls_back() {
+    let (mut d, sid, fid) = doc_with("A reference here.", Rect::new(0.0, 0.0, 120.0, 500.0), ParaAttrs::default());
+    d.footnote_options.columns = 2;
+    d.footnote_options.column_gutter = 144.0;
+    d.story_mut(sid).unwrap().insert_note(2, &"Source note ".repeat(20), ParaFormat::default());
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let ns = &cs.frame(fid).unwrap().notes;
+    assert_eq!(ns.len(), 1);
+    assert_eq!(ns[0].rect.width(), 120.0);
+    assert!(ns[0].text.frames[0].lines.len() > 2);
+    assert_eq!(d.footnote_options.column_geometry(120.0), (1, 120.0));
+}

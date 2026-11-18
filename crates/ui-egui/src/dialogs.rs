@@ -74,6 +74,8 @@ impl Dialog {
             }
         }
         if id == "footnoteOptions" {
+            fields.entry("columns").or_insert(json!(1));
+            fields.entry("columnGutter").or_insert(json!(12));
             // Flatten the rule and show special characters as InDesign metacharacters.
             if let Some(Value::Object(r)) = fields.remove("rule") {
                 for (k, v) in r {
@@ -5699,6 +5701,7 @@ fn confirm_part6(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
                 "separator": d.s("separator").replace("^t", "\t").replace("^m", "\u{2003}").replace("^>", "\u{2002}"),
                 "spaceBefore": pt("spaceBefore"), "spaceBetween": pt("spaceBetween"), "firstBaseline": d.s("firstBaseline"),
                 "firstBaselineMin": pt("firstBaselineMin"), "spanColumns": d.b("spanColumns"),
+                "columns": d.s("columns").parse::<u8>().map_or(Value::Null, |v| json!(v)), "columnGutter": pt("columnGutter"),
                 "rule": {"on": d.b("rule.on"), "weight": pt("rule.weight"), "color": d.s("rule.color"), "width": pt("rule.width"),
                     "offset": pt("rule.offset"), "leftIndent": pt("rule.leftIndent")},
             });
@@ -8840,6 +8843,14 @@ fn footnote_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
             ui.end_row();
             crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Space Between Footnotes:"));
             text_field(ui, d, "spaceBetween", 70.0);
+            ui.end_row();
+        });
+        egui::Grid::new("fn_columns").num_columns(2).show(ui, |ui| {
+            ui.label("Footnote columns (1–4):");
+            text_field(ui, d, "columns", 70.0);
+            ui.end_row();
+            ui.label("Column gutter:");
+            text_field(ui, d, "columnGutter", 70.0);
             ui.end_row();
         });
         head(ui, "First Baseline");
