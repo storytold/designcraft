@@ -158,10 +158,13 @@ fn plain(t: &str) -> String {
 }
 
 /// A paragraph's text with inline-tagged runs as elements.
-fn para_xml(st: &designcraft_doc::Story, r: std::ops::Range<usize>) -> String {
+/// `runs` are the story's runs in order (collected once per story): only those reaching the
+/// paragraph are visited, found by binary search.
+fn para_xml(st: &designcraft_doc::Story, runs: &[(std::ops::Range<usize>, &designcraft_doc::CharFormat)], r: std::ops::Range<usize>) -> String {
     let mut out = String::new();
     let mut open: Option<String> = None;
-    for (rr, f) in st.runs() {
+    let first = runs.partition_point(|(rr, _)| rr.end <= r.start);
+    for (rr, f) in runs.iter().skip(first).take_while(|(rr, _)| rr.start < r.end) {
         let (a, b) = (rr.start.max(r.start), rr.end.min(r.end));
         if a >= b {
             continue;
@@ -195,8 +198,10 @@ pub fn export_xml(d: &Document) -> String {
                 let Some(st) = d.story(tf.story) else { continue };
                 let mapped = |style: &str| d.xml.style_map.iter().find(|(s, _)| s == style).map(|(_, t)| t.clone());
                 // Paragraph text with inline tags already escaped.
-                let paras: Vec<(Option<String>, String)> =
-                    st.para_ranges().into_iter().enumerate().map(|(i, r)| (mapped(&st.paras[i].style), para_xml(st, r))).collect();
+                let paras: Vec<(Option<String>, String)> = {
+                    let runs: Vec<_> = st.runs().collect();
+                    st.para_ranges().into_iter().enumerate().map(|(i, r)| (mapped(&st.paras[i].style), para_xml(st, &runs, r))).collect()
+                };
                 if paras.iter().any(|(m, _)| m.is_some()) {
                     out.push_str(&format!("  <{tag}>\n"));
                     for (m, text) in paras {
@@ -236,20 +241,10 @@ struct Image {
     crop: Option<String>,
 }
 
-/// The element's image: its `href` (also `xlink:href`), `fit` and `crop`, unescaped.
-fn image_attrs(e: &quick_xml::events::BytesStart) -> std::result::Result<Option<Image>, String> {
-    let (mut href, mut fit, mut crop) = (None, None, None);
-    for a in e.attributes() {
-        let a = a.map_err(|e| e.to_string())?;
-        let slot = match a.key.local_name().as_ref() {
-            b"href" => &mut href,
-            b"fit" => &mut fit,
-            b"crop" => &mut crop,
-            _ => continue,
-        };
-        *slot = Some(a.normalized_value(quick_xml::XmlVersion::Implicit1_0).map_err(|e| e.to_string())?.to_string());
-    }
-    Ok(href.map(|href| Image { href, fit, crop }))
+/// The element's image: its `href` (also `xlink:href`), `fit` and `crop`.
+fn image_attrs(e: &craft_xml::El) -> Option<Image> {
+    let get = |name: &str| e.attr_local(name).map(str::to_string);
+    get("href").map(|href| Image { href, fit: get("fit"), crop: get("crop") })
 }
 
 /// A file path from an `href`: `file://` URLs (with `%20` escapes) or plain paths, relative ones
@@ -303,69 +298,40 @@ const MAX_XML_DEPTH: usize = 64;
 
 /// The elements under the root.
 fn parse(xml: &str) -> std::result::Result<Vec<Element>, String> {
-    use quick_xml::events::Event;
-    let mut r = quick_xml::Reader::from_str(xml);
-    let mut depth = 0usize;
-    let mut out: Vec<Element> = Vec::new();
-    let mut child: Option<(String, String)> = None;
-    loop {
-        match r.read_event().map_err(|e| e.to_string())? {
-            Event::Start(e) => {
-                depth += 1;
-                if depth > MAX_XML_DEPTH {
-                    return Err(format!("elements nested deeper than {MAX_XML_DEPTH}"));
-                }
-                let name = String::from_utf8_lossy(e.local_name().as_ref()).to_string();
-                match depth {
-                    2 => out.push(Element { name, text: String::new(), children: vec![], image: image_attrs(&e)? }),
-                    3 => child = Some((name, String::new())),
-                    _ => {}
-                }
+    fn descendant_text(element: &craft_xml::El, into: &mut String) {
+        for node in &element.children {
+            match node {
+                craft_xml::Node::Text(text) | craft_xml::Node::CData(text) => into.push_str(text),
+                craft_xml::Node::El(child) => descendant_text(child, into),
+                craft_xml::Node::Pi { .. } | craft_xml::Node::Comment(_) => {}
             }
-            Event::Empty(e) if depth == 1 => {
-                out.push(Element {
-                    name: String::from_utf8_lossy(e.local_name().as_ref()).to_string(),
-                    text: String::new(),
-                    children: vec![],
-                    image: image_attrs(&e)?,
-                });
-            }
-            ev @ (Event::Text(_) | Event::GeneralRef(_) | Event::CData(_)) => {
-                let s = match ev {
-                    Event::Text(t) => t.decode().map_err(|e| e.to_string())?.to_string(),
-                    Event::CData(t) => String::from_utf8_lossy(&t).to_string(),
-                    Event::GeneralRef(g) => match g.resolve_char_ref().map_err(|e| e.to_string())? {
-                        Some(c) => c.to_string(),
-                        None => match g.decode().map_err(|e| e.to_string())?.as_ref() {
-                            "amp" => "&".into(),
-                            "lt" => "<".into(),
-                            "gt" => ">".into(),
-                            "quot" => "\"".into(),
-                            "apos" => "'".into(),
-                            _ => String::new(),
-                        },
-                    },
-                    _ => String::new(),
-                };
-                match (depth, child.as_mut(), out.last_mut()) {
-                    (3.., Some(c), _) => c.1.push_str(&s),
-                    (2, _, Some(el)) => el.text.push_str(&s),
-                    _ => {}
-                }
-            }
-            Event::End(_) => {
-                if depth == 3
-                    && let (Some(c), Some(el)) = (child.take(), out.last_mut())
-                {
-                    el.children.push(c);
-                }
-                depth = depth.saturating_sub(1);
-            }
-            Event::Eof => break,
-            _ => {}
         }
     }
-    Ok(out)
+
+    let mut options = craft_xml::Options::local();
+    options.strict = true;
+    // The root and its elements' children sit two levels down; deeper XML is refused.
+    options.limits.max_depth = MAX_XML_DEPTH;
+    let root = options.parse(xml.as_bytes()).map_err(|e| e.to_string())?;
+    root.elements()
+        .map(|element| {
+            let mut children = Vec::new();
+            for child in element.elements() {
+                let mut text = String::new();
+                descendant_text(child, &mut text);
+                children.push((child.name.clone(), text));
+            }
+            let mut text = String::new();
+            for node in &element.children {
+                match node {
+                    craft_xml::Node::Text(value) | craft_xml::Node::CData(value) => text.push_str(value),
+                    craft_xml::Node::Pi { .. } | craft_xml::Node::Comment(_) => {}
+                    craft_xml::Node::El(_) => {}
+                }
+            }
+            Ok(Element { name: element.name.clone(), text, children, image: image_attrs(element) })
+        })
+        .collect()
 }
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -530,8 +496,10 @@ pub fn specs() -> Vec<CommandSpec> {
                 let dtd = crate::dtd::parse(&text).map_err(|e| bad("xml.loadDtd", e))?;
                 let names: Vec<String> = dtd.element_names().map(str::to_string).collect();
                 s.edit(|d, _| {
+                    // The tags there are, then those added: one set, not a search per element.
+                    let mut known: std::collections::HashSet<String> = d.xml.tags.iter().map(|t| t.name.clone()).collect();
                     for n in &names {
-                        if valid_name(n) && !d.xml.tags.iter().any(|t| t.name == *n) {
+                        if valid_name(n) && known.insert(n.clone()) {
                             let color = COLORS[d.xml.tags.len() % COLORS.len()];
                             d.xml.tags.push(XmlTag { name: n.clone(), color });
                         }
@@ -929,15 +897,14 @@ mod tests {
     #[test]
     fn image_attrs_read_href_and_xlink_href() {
         let attrs = |xml: &str| {
-            let mut r = quick_xml::Reader::from_str(xml);
-            match r.read_event().unwrap() {
-                quick_xml::events::Event::Empty(e) => super::image_attrs(&e).unwrap().map(|i| (i.href, i.fit, i.crop)),
-                ev => panic!("{ev:?}"),
-            }
+            let mut options = craft_xml::Options::local();
+            options.strict = true;
+            let root = options.parse(xml.as_bytes()).unwrap();
+            super::image_attrs(&root).map(|i| (i.href, i.fit, i.crop))
         };
         assert_eq!(attrs(r#"<photo href="a&amp;b.png" fit="fitContent"/>"#), Some(("a&b.png".into(), Some("fitContent".into()), None)));
         assert_eq!(
-            attrs(r#"<photo xlink:href="file:///x.pdf" crop="contentVisible"/>"#),
+            attrs(r#"<photo xmlns:xlink="http://www.w3.org/1999/xlink" xlink:href="file:///x.pdf" crop="contentVisible"/>"#),
             Some(("file:///x.pdf".into(), None, Some("contentVisible".into())))
         );
         assert_eq!(attrs("<photo/>"), None);

@@ -3,91 +3,15 @@
 //! rectangles of a simple one drawn here (InDesign's QR codes), else a placeholder the size of its
 //! bounding box.
 
-/// An EPS file (plain, or DOS EPS with a binary header)?
-pub fn is_eps(bytes: &[u8]) -> bool {
-    bytes.starts_with(&[0xC5, 0xD0, 0xD3, 0xC6])
-        || (bytes.starts_with(b"%!PS-Adobe") && String::from_utf8_lossy(&bytes[..bytes.len().min(64)]).contains("EPSF"))
-}
-
-fn u32le(b: &[u8], at: usize) -> Option<usize> {
-    Some(u32::from_le_bytes(b.get(at..at + 4)?.try_into().ok()?) as usize)
-}
-
-/// The PostScript section and the TIFF preview (DOS EPS).
+/// The PostScript section and the TIFF preview (DOS EPS), read by craft-eps.
 fn sections(bytes: &[u8]) -> (&[u8], Option<&[u8]>) {
-    if bytes.starts_with(&[0xC5, 0xD0, 0xD3, 0xC6]) {
-        let ps = u32le(bytes, 4).zip(u32le(bytes, 8)).and_then(|(o, l)| bytes.get(o..o.checked_add(l)?)).unwrap_or(&[]);
-        let tiff = u32le(bytes, 20).zip(u32le(bytes, 24)).filter(|(o, l)| *o > 0 && *l > 0).and_then(|(o, l)| bytes.get(o..o.checked_add(l)?));
-        return (ps, tiff);
-    }
-    (bytes, None)
+    craft_eps::sections(bytes).map_or((&[][..], None), |parts| (parts.postscript, parts.tiff))
 }
 
 /// The bounding box in points: (x0, y0, x1, y1), the high-resolution one when given.
 pub fn bounding_box(bytes: &[u8]) -> Option<[f64; 4]> {
-    let (ps, _) = sections(bytes);
-    let head = String::from_utf8_lossy(&ps[..ps.len().min(64 * 1024)]);
-    // DSC allows (atend): scan a bounded trailer as well, without reading the whole program.
-    let tail = String::from_utf8_lossy(&ps[ps.len().saturating_sub(64 * 1024)..]);
-    let header_value = |key: &str| {
-        // Lines may end in `\r` alone (classic Mac files).
-        head.split(['\n', '\r'])
-            .take_while(|l| {
-                (l.starts_with('%') || l.trim().is_empty())
-                    && ![
-                        "%%EndComments",
-                        "%%BeginDocument",
-                        "%%BeginProlog",
-                        "%%BeginSetup",
-                        "%%BeginData",
-                        "%%BeginBinary",
-                        "%%BeginResource",
-                        "%%Page:",
-                    ]
-                    .iter()
-                    .any(|k| l.starts_with(k))
-            })
-            .find_map(|l| l.strip_prefix(key))
-    };
-    let hires = header_value("%%HiResBoundingBox:");
-    let bbox = header_value("%%BoundingBox:");
-    let at_end = |v: Option<&str>| v.is_some_and(|v| v.trim() == "(atend)");
-    // An outer header box must not be replaced by a nested document's trailer comments.
-    // Inspect the trailer only when the outer header delegates its bounds there.
-    hires
-        .and_then(parse_box)
-        .or_else(|| (at_end(hires) || at_end(bbox)).then(|| trailer_box(&tail, "%%HiResBoundingBox:")).flatten())
-        .or_else(|| bbox.and_then(parse_box))
-        .or_else(|| at_end(bbox).then(|| trailer_box(&tail, "%%BoundingBox:")).flatten())
-}
-
-fn parse_box(value: &str) -> Option<[f64; 4]> {
-    let mut words = value.split_whitespace();
-    let mut bb = [0.0f64; 4];
-    for n in &mut bb {
-        *n = words.next()?.parse().ok()?;
-    }
-    // Finite corners and a finite size (subtracting extreme corners can overflow to infinity).
-    let finite = [bb[0], bb[1], bb[2], bb[3], bb[2] - bb[0], bb[3] - bb[1]].iter().all(|n| n.is_finite());
-    (words.next().is_none() && finite && bb[2] > bb[0] && bb[3] > bb[1]).then_some(bb)
-}
-
-fn trailer_box(tail: &str, key: &str) -> Option<[f64; 4]> {
-    // Work backwards from the outer EOF so nesting remains known even when the bounded
-    // window begins inside a child document. Opaque DSC data/resource blocks are skipped too.
-    let mut nested = 0usize;
-    for line in tail.split(['\n', '\r']).rev() {
-        if ["%%EndDocument", "%%EndData", "%%EndBinary", "%%EndResource"].iter().any(|k| line.starts_with(k)) {
-            nested = nested.checked_add(1)?;
-        } else if ["%%BeginDocument", "%%BeginData", "%%BeginBinary", "%%BeginResource"].iter().any(|k| line.starts_with(k)) {
-            nested = nested.checked_sub(1)?;
-        } else if nested == 0
-            && let Some(bb) = line.strip_prefix(key).and_then(parse_box)
-        {
-            return Some(bb);
-        }
-    }
-    None
+    let parts = craft_eps::sections(bytes).ok()?;
+    craft_eps::Comments::read(parts.postscript).page_box()
 }
 
 /// Natural EPS dimensions in points. Bound sizes before fitting or allocating a proxy:
@@ -98,7 +22,7 @@ pub fn eps_size(bytes: &[u8]) -> Option<(f64, f64)> {
     ((0.001..=20_000.0).contains(&w) && (0.001..=20_000.0).contains(&h)).then_some((w, h))
 }
 
-fn preview(bytes: &[u8]) -> Option<(&[u8], (u32, u32))> {
+pub(crate) fn preview(bytes: &[u8]) -> Option<(&[u8], (u32, u32))> {
     let (_, tiff) = sections(bytes);
     let tiff = tiff?;
     let (w, h) = crate::pixel_size(tiff)?;
@@ -124,9 +48,7 @@ pub fn eps_png(bytes: &[u8]) -> Option<Vec<u8>> {
         return Some(proxy);
     }
     let rgba = crate::decode_rgba(&proxy)?;
-    let mut png = Vec::new();
-    image::DynamicImage::ImageRgba8(rgba).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).ok()?;
-    Some(png)
+    encode_png(rgba)
 }
 
 /// The proxy for a placed EPS: (image bytes, its size in points). The TIFF preview when present,
@@ -160,41 +82,23 @@ pub fn eps_proxy(bytes: &[u8]) -> Option<(Vec<u8>, (f64, f64))> {
         img.put_pixel(0, y, image::Rgba([150, 150, 150, 255]));
         img.put_pixel(pw - 1, y, image::Rgba([150, 150, 150, 255]));
     }
-    let mut out = Vec::new();
-    image::DynamicImage::ImageRgba8(img).write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png).ok()?;
-    Some((out, (w, h)))
+    Some((encode_png(img)?, (w, h)))
+}
+
+fn encode_png(img: image::RgbaImage) -> Option<Vec<u8>> {
+    let (width, height) = img.dimensions();
+    let image = craft_image_codecs::Image::from_u8(width, height, craft_image_codecs::ChannelLayout::Rgba, img.into_raw()).ok()?;
+    craft_image_codecs::encode(&image, craft_image_codecs::Format::Png, &Default::default()).ok()
 }
 
 /// Pixels per point for rendered EPS (a QR code's modules stay crisp when scaled up on screen).
 const RENDER_SCALE: f64 = 8.0;
-/// The most rectangles and operators read from an EPS before giving up on drawing it.
-const MAX_RECTS: usize = 200_000;
-const MAX_TOKENS: usize = 2_000_000;
 /// The most pixels painted, in multiples of the image's area (overlapping rectangles repaint).
 const MAX_PAINT_AREAS: u64 = 4;
-/// The deepest `gsave`/`save` nesting read.
-const MAX_SAVE_DEPTH: usize = 64;
 
-/// PostScript tokens without comments, `{` and `}` as tokens of their own. Lazy and borrowed, so
-/// a huge input costs no memory beyond itself; lines may end in `\n`, `\r\n` or `\r`.
-fn ps_tokens(text: &str) -> impl Iterator<Item = &str> {
-    text.split(['\n', '\r']).flat_map(|line| {
-        line.split('%').next().unwrap_or("").split_whitespace().flat_map(|w| w.split_inclusive(['{', '}'])).flat_map(|piece| {
-            let (body, brace) = match piece.char_indices().last() {
-                Some((at, '{' | '}')) => (piece.get(..at).unwrap_or(""), piece.get(at..)),
-                _ => (piece, None),
-            };
-            [Some(body).filter(|b| !b.is_empty()), brace].into_iter().flatten()
-        })
-    })
-}
-
-/// PostScript that only fills rectangles in solid colours (`setcmykcolor`, `setrgbcolor`,
-/// `setgray`, `rectfill`, and procedures that stand for one of them, such as InDesign's
-/// `/rf { rectfill } bind def`), drawn as a PNG of the bounding box `bb`. None for anything else
-/// (paths, text, images, transforms), which keeps its placeholder, or when nothing is drawn.
+/// Rasterize rectangles read by craft-eps; unsupported PostScript keeps the placeholder.
 fn render_rectangles(ps: &[u8], bb: [f64; 4]) -> Option<Vec<u8>> {
-    let text = std::str::from_utf8(ps).ok()?;
+    let rectangles = craft_eps::simple_rectangles(ps)?;
     let (w, h) = (bb[2] - bb[0], bb[3] - bb[1]);
     if !(w > 0.0 && h > 0.0) {
         return None;
@@ -202,114 +106,27 @@ fn render_rectangles(ps: &[u8], bb: [f64; 4]) -> Option<Vec<u8>> {
     let scale = RENDER_SCALE.min(4000.0 / w.max(h));
     let (pw, ph) = ((w * scale).round().max(1.0) as u32, (h * scale).round().max(1.0) as u32);
     let mut img = image::RgbaImage::from_pixel(pw, ph, image::Rgba([0, 0, 0, 0]));
-    let mut aliases: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    let mut stack: Vec<f64> = Vec::new();
-    let mut color = [0u8, 0, 0, 255];
-    let mut drawn = 0usize;
     let mut painted = 0u64;
     let paint_budget = u64::from(pw) * u64::from(ph) * MAX_PAINT_AREAS;
-    let mut saved: Vec<[u8; 4]> = Vec::new();
-    let mut tokens = ps_tokens(text);
-    let mut read = 0usize;
-    let mut next = || {
-        read += 1;
-        if read > MAX_TOKENS { None } else { Some(tokens.next()) }
-    };
-    let unit = |v: f64| v.clamp(0.0, 1.0);
-    // `None` from `next`: over the token limit; `Some(None)`: the end.
-    while let Some(tok) = next()? {
-        if let Ok(v) = tok.parse::<f64>() {
-            if !v.is_finite() {
-                return None;
-            }
-            stack.push(v);
-            continue;
+    for rect in rectangles {
+        let (x0, x1) = ((rect.x - bb[0]) * scale, (rect.x + rect.width - bb[0]) * scale);
+        let (y0, y1) = ((bb[3] - (rect.y + rect.height)) * scale, (bb[3] - rect.y) * scale);
+        let px = |a: f64, b: f64, max: u32| {
+            let (lo, hi) = (a.min(b).round().max(0.0), a.max(b).round().min(max as f64));
+            (lo as u32, hi.max(lo) as u32)
+        };
+        let ((xa, xb), (ya, yb)) = (px(x0, x1, pw), px(y0, y1, ph));
+        painted = painted.saturating_add(u64::from(xb - xa) * u64::from(yb - ya));
+        if painted > paint_budget {
+            return None;
         }
-        // `/name { op } bind def`: name stands for op.
-        if let Some(name) = tok.strip_prefix('/') {
-            // At most `{ op } bind`: anything longer isn't an alias this reader knows.
-            let mut body: Vec<&str> = Vec::new();
-            while body.len() < 5 {
-                match next()? {
-                    Some("def") | None => break,
-                    Some(t) => body.push(t),
-                }
+        for y in ya..yb {
+            for x in xa..xb {
+                img.put_pixel(x, y, image::Rgba(rect.color));
             }
-            let op = match body.as_slice() {
-                ["{", op, "}"] | ["{", op, "}", _] => (*op).to_string(),
-                _ => return None,
-            };
-            aliases.insert(name.to_string(), op);
-            continue;
-        }
-        let op = aliases.get(tok).map_or(tok, String::as_str);
-        let mut pop = |n: usize| -> Option<Vec<f64>> { (stack.len() >= n).then(|| stack.split_off(stack.len() - n)) };
-        match op {
-            "setcmykcolor" => {
-                let v = pop(4)?;
-                let k = unit(v[3]);
-                let ch = |c: f64| ((1.0 - unit(c)) * (1.0 - k) * 255.0).round() as u8;
-                color = [ch(v[0]), ch(v[1]), ch(v[2]), 255];
-            }
-            "setrgbcolor" => {
-                let v = pop(3)?;
-                let ch = |c: f64| (unit(c) * 255.0).round() as u8;
-                color = [ch(v[0]), ch(v[1]), ch(v[2]), 255];
-            }
-            "setgray" => {
-                let v = pop(1)?;
-                let g = (unit(v[0]) * 255.0).round() as u8;
-                color = [g, g, g, 255];
-            }
-            "rectfill" => {
-                let v = pop(4)?;
-                drawn += 1;
-                if drawn > MAX_RECTS {
-                    return None;
-                }
-                // PostScript y runs up; the image's down. Edges round to whole pixels, so
-                // touching rectangles (QR code modules) meet without gaps.
-                let (x0, x1) = ((v[0] - bb[0]) * scale, (v[0] + v[2] - bb[0]) * scale);
-                let (y0, y1) = ((bb[3] - (v[1] + v[3])) * scale, (bb[3] - v[1]) * scale);
-                let px = |a: f64, b: f64, max: u32| {
-                    let (lo, hi) = (a.min(b).round().max(0.0), a.max(b).round().min(max as f64));
-                    (lo as u32, hi.max(lo) as u32)
-                };
-                let ((xa, xb), (ya, yb)) = (px(x0, x1, pw), px(y0, y1, ph));
-                painted = painted.saturating_add(u64::from(xb - xa) * u64::from(yb - ya));
-                if painted > paint_budget {
-                    return None;
-                }
-                for y in ya..yb {
-                    for x in xa..xb {
-                        img.put_pixel(x, y, image::Rgba(color));
-                    }
-                }
-            }
-            "gsave" | "save" => {
-                if saved.len() >= MAX_SAVE_DEPTH {
-                    return None;
-                }
-                saved.push(color);
-            }
-            "grestore" | "restore" => {
-                if let Some(c) = saved.pop() {
-                    color = c;
-                }
-            }
-            "pop" => {
-                pop(1)?;
-            }
-            "bind" | "newpath" | "showpage" | "end" | "begin" => {}
-            _ => return None,
         }
     }
-    if drawn == 0 {
-        return None;
-    }
-    let mut out = Vec::new();
-    image::DynamicImage::ImageRgba8(img).write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png).ok()?;
-    Some(out)
+    encode_png(img)
 }
 
 #[cfg(test)]
@@ -381,14 +198,14 @@ mod tests {
         assert_eq!(drawn(eps, 28, 28), [0, 0, 0, 255], "bottom right: the colour from before gsave");
         assert_eq!(drawn(eps, 28, 4)[3], 0, "top right: nothing (pop removed the extra operand)");
         // Unbounded nesting isn't drawn.
-        let deep = format!("{} 0 0 2 2 rectfill", "gsave ".repeat(MAX_SAVE_DEPTH + 1));
+        let deep = format!("{} 0 0 2 2 rectfill", "gsave ".repeat(craft_eps::MAX_SIMPLE_RECTANGLE_SAVE_DEPTH + 1));
         assert_eq!(render_rectangles(deep.as_bytes(), [0.0, 0.0, 4.0, 4.0]), None);
     }
 
     #[test]
     fn a_huge_token_stream_on_one_line_is_refused() {
         // One line of more operands than the token limit, then a rectangle.
-        let ps = format!("{}\n0 0 2 2 rectfill\n", "0 ".repeat(MAX_TOKENS));
+        let ps = format!("{}\n0 0 2 2 rectfill\n", "0 ".repeat(craft_eps::MAX_SIMPLE_RECTANGLE_TOKENS));
         assert_eq!(render_rectangles(ps.as_bytes(), [0.0, 0.0, 4.0, 4.0]), None);
         let ps = format!("{}\n0 0 2 2 rectfill\n", "0 ".repeat(1000));
         assert!(render_rectangles(ps.as_bytes(), [0.0, 0.0, 4.0, 4.0]).is_some(), "under the limit it is drawn");
@@ -397,7 +214,7 @@ mod tests {
     #[test]
     fn eps_bounding_box_and_proxies() {
         let eps = b"%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 100 50\n%%HiResBoundingBox: 0 0 100.5 50.25\nnewpath\n%%EOF\n";
-        assert!(is_eps(eps));
+        assert!(craft_eps::is_eps(eps));
         assert_eq!(bounding_box(eps), Some([0.0, 0.0, 100.5, 50.25]));
         let (png, size) = eps_proxy(eps).unwrap();
         assert_eq!(size, (100.5, 50.25));
@@ -416,11 +233,34 @@ mod tests {
         dos.extend([0xFF, 0xFF]);
         dos.extend_from_slice(eps);
         dos.extend_from_slice(&tiff);
-        assert!(is_eps(&dos));
+        assert!(craft_eps::is_eps(&dos));
         let (p, size) = eps_proxy(&dos).unwrap();
         assert_eq!(size, (100.5, 50.25));
         assert_eq!(crate::pixel_size(&p), Some((10, 5)));
-        assert!(!is_eps(b"%!PS-Adobe-3.0\nnot encapsulated"));
+        assert!(!craft_eps::is_eps(b"%!PS-Adobe-3.0\nnot encapsulated"));
+    }
+
+    #[test]
+    fn dos_eps_wmf_only_is_not_read_as_tiff() {
+        let eps = b"%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 100 50\nnewpath\n%%EOF\n";
+        let wmf = b"WMFDATA!";
+        let mut dos = vec![0xC5, 0xD0, 0xD3, 0xC6];
+        let ps_off = 30usize;
+        let wmf_off = ps_off + eps.len();
+        for v in [ps_off, eps.len(), wmf_off, wmf.len(), 0, 0] {
+            dos.extend((v as u32).to_le_bytes());
+        }
+        dos.extend([0xFF, 0xFF]);
+        dos.extend_from_slice(eps);
+        dos.extend_from_slice(wmf);
+        assert!(craft_eps::is_eps(&dos));
+        // The WMF bytes are not a TIFF preview.
+        assert!(sections(&dos).1.is_none());
+        // The PostScript section still parses, and the proxy is the no-preview placeholder.
+        assert_eq!(bounding_box(&dos), Some([0.0, 0.0, 100.0, 50.0]));
+        let (png, size) = eps_proxy(&dos).unwrap();
+        assert_eq!(size, (100.0, 50.0));
+        assert_eq!(crate::pixel_size(&png), Some((200, 100)));
     }
 
     #[test]
