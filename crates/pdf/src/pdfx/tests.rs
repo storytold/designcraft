@@ -569,7 +569,9 @@ fn x4_checks_read_object_streams() {
 /// A one-page PDF whose page dictionary (with `entries`) is in an object stream, found through a
 /// cross-reference stream: as writers that use `/ObjStm` save it.
 fn object_stream_pdf(entries: &str) -> Vec<u8> {
-    let page = format!("<</Type/Page/Parent 2 0 R/MediaBox[0 0 100 100]{entries}>>");
+    // Spaced as many writers space it: the bytes then hold no `/Type/Page/`, as a compressed
+    // object stream wouldn't either.
+    let page = format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] {entries} >>");
     let head = "3 0 ";
     let objstm = format!("<</Type/ObjStm/N 1/First {}/Length {}>>\nstream\n{head}{page}\nendstream", head.len(), head.len() + page.len() + 1);
     let mut out = b"%PDF-1.6\n".to_vec();
