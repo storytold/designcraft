@@ -1,6 +1,6 @@
 # Localization parity
 
-> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-11-04 · **Change:** minor (pt-BR catalog filled; Russian listed; Esperanto text language; Hungarian interface catalog, bundled-font coverage and flyout regression checks; Swedish interface) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-11-18 · **Change:** minor (Tamil interface; pt-BR catalog filled; Russian listed; Esperanto text language; Hungarian interface catalog, bundled-font coverage and flyout regression checks; Swedish interface) · **Target:** Adobe InDesign 2026 (21.6)
 
 Per-language status of the DesignCraft interface and of document typesetting in each script.
 Script-specific typesetting detail: [cjk.md](cjk.md), [cjk-typography.md](cjk-typography.md),
@@ -95,8 +95,9 @@ for a story.
 | Polish | pl | 1,717 (99%), count captions category-first; AI-drafted, awaiting native review | partial |
 | Georgian | ka | 1,724 (~100%: every catalog key plus the command labels the others lack), count captions as `noun: n` | partial (reviewed by a native speaker) |
 | Swedish | sv | 2,857 of 2,891 (99%, 2026-11-01 missing-translations report): menus, panels, dialogs and messages; singular for a count of one; AI-drafted with Claude Code from the English source, spot-checked by a native speaker (not every string) | partial |
+| Tamil | ta | 3,008 of 3,008 (100%, 2026-11-18 missing-translations report): menus, panels, dialogs and messages; count captions category-first (பக்கங்கள்: 5); machine-drafted against a style guide and glossary, reviewed by a native speaker. Desktop draws Tamil from installed faces (#504); the web offers Tamil only once craft-fonts has a Tamil face built in | partial |
 
-DesignCraft ships **8** interface languages beyond the twelve; InDesign ships 17 beyond its
+DesignCraft ships **9** interface languages beyond the twelve; InDesign ships 17 beyond its
 eight of the twelve (cs, da, el, en_GB, fi, hu, it, nb, nl, pl, ro, ru, sq, sv, tr, uk, zh_TW).
 
 ## Document languages
