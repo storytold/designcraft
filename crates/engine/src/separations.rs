@@ -94,6 +94,7 @@ pub fn separate(doc: &Document, cache: &Cache, si: usize, dpi: f32, print: &Prin
         ..PdfOptions::default()
     };
     let report = crate::cmd::print_pdf(doc, cache, &opts, print.flatten)?;
+    let asked = dpi;
     let dpi = if dpi.is_finite() { dpi.clamp(MIN_DPI, MAX_DPI) } else { MIN_DPI };
     let (fallback, cms) = printing_condition();
     let plates = craft_prepress::plates(&report.bytes, 0, dpi, &Options { overprint: true, fallback })
@@ -101,11 +102,13 @@ pub fn separate(doc: &Document, cache: &Cache, si: usize, dpi: f32, print: &Prin
     let mut warnings = report.warnings;
     // Total-ink checks depend on resolution (a thin rich-black rule averages under the limit at a
     // low one), so a resolution lowered to fit the plate size is said, not only reported.
-    if plates.dpi < dpi - 0.5 {
+    // More than a tenth of a dpi lower, so the two values differ at one decimal place.
+    if plates.dpi < dpi - 0.1 {
+        // A request outside the range was clamped first; that one is said too.
+        let wanted = if asked == dpi { format!("the {dpi:.1} dpi asked for") } else { format!("{dpi:.1} dpi ({asked} dpi was asked for)") };
         warnings.push(format!(
-            "separated at {:.0} dpi, not the {:.0} dpi asked for: at that resolution the spread would be more than {:.0} megapixels per plate or 8192 pixels a side",
+            "separated at {:.1} dpi, not {wanted}: at that resolution the spread would be more than {:.0} megapixels per plate or 8192 pixels a side",
             plates.dpi,
-            dpi,
             craft_prepress::MAX_PLATE_PIXELS / 1.0e6
         ));
     }
@@ -230,10 +233,21 @@ mod tests {
         assert_eq!(lowered(&a3), 1, "{a3}");
         let text =
             a3["warnings"].as_array().and_then(|ws| ws.iter().filter_map(|w| w.as_str()).find(|w| w.contains("dpi asked for"))).unwrap_or_default();
-        assert!(text.contains(&format!("{used:.0} dpi")) && text.contains("300 dpi"), "{text}");
+        assert!(text.contains(&format!("separated at {used:.1} dpi, not the 300.0 dpi asked for")), "{text}");
         let a5 = run("A5", 72);
         assert_eq!(a5["dpi"].as_f64(), Some(72.0));
         assert_eq!(lowered(&a5), 0, "{a5}");
+        // A caller of `separate` asking for more than MAX_DPI is told what it asked for, and what
+        // that was clamped to.
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"preset": "A3", "facingPages": false, "pages": 1})).unwrap();
+        let sheet = separate(&s.doc().unwrap().doc, &s.cache, 0, 600.0, &Print::default()).unwrap();
+        let text = sheet.warnings.iter().find(|w| w.contains("dpi was asked for")).cloned().unwrap_or_default();
+        assert!(
+            text.starts_with(&format!("separated at {:.1} dpi, not 300.0 dpi (600 dpi was asked for)", sheet.plates.dpi)),
+            "{:?}",
+            sheet.warnings
+        );
     }
 
     #[test]
