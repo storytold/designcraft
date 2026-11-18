@@ -166,9 +166,12 @@ pub fn check_pdfx4(pdf: &[u8]) -> Vec<String> {
     // Each page's own dictionary, read as an object: counting `/Type/Page` and `/TrimBox` in the
     // bytes found no page at all when the pages were in object streams, or written with a space
     // after `/Type`, and passed a page without one (#2943). A TrimBox or an ArtBox will do (ISO
-    // 15930-7); neither is inherited.
+    // 15930-7); neither is inherited. A box counts only as a rectangle: `/TrimBox null` is no box.
     let without_trim = match file.as_ref() {
-        Some(f) => f.pages().iter().filter(|p| !p.raw().contains_key(b"TrimBox") && !p.raw().contains_key(b"ArtBox")).count(),
+        Some(f) => {
+            use craft_pdf::syntax::object::Rect;
+            f.pages().iter().filter(|p| p.raw().get::<Rect>(b"TrimBox").is_none() && p.raw().get::<Rect>(b"ArtBox").is_none()).count()
+        }
         None => {
             let pages = text.matches("/Type/Page/").count() + text.matches("/Type/Page>").count();
             pages.saturating_sub(text.matches("/TrimBox").count())
