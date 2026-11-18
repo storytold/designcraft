@@ -8,6 +8,31 @@ fn cli() -> Command {
 }
 
 #[test]
+fn bench_without_spreads_reports_an_error_instead_of_panicking() {
+    struct Fixture(std::path::PathBuf);
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    let path = std::env::temp_dir().join(format!("dc-cli-empty-bench-{}.designcraft", std::process::id()));
+    assert!(std::fs::symlink_metadata(&path).is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound));
+    let fixture = Fixture(path);
+    let mut document = designcraft_doc::Document::new(&Default::default());
+    document.spreads.clear();
+    document.check().unwrap();
+    let bytes = designcraft_format::save(&document).unwrap();
+    assert!(designcraft_format::load(&bytes).unwrap().spreads.is_empty());
+    std::fs::write(&fixture.0, bytes).unwrap();
+
+    let out = cli().args(["bench", fixture.0.to_str().unwrap(), "--runs", "1"]).output().unwrap();
+
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{err}");
+    assert!(err.contains("cannot benchmark a document with no spreads"), "{err}");
+}
+
+#[test]
 fn script_from_stdin_with_references_saves_and_exports() {
     let dir = std::env::temp_dir().join(format!("dc-cli-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -151,11 +176,49 @@ fn script_export_of_the_document_in_the_running_app_saves_a_copy() {
 #[test]
 fn failing_script_exits_nonzero_with_the_step() {
     let mut child = cli().args(["script", "-"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
-    child.stdin.take().unwrap().write_all(b"document.inspect\nno.such.command\n").unwrap();
+    child.stdin.take().unwrap().write_all(b"document.inspect\nno.such.command\ndocument.inspect\n").unwrap();
     let out = child.wait_with_output().unwrap();
     assert!(!out.status.success());
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["failedIndex"], 1);
+    assert_eq!(v["completed"], 1);
+}
+
+#[test]
+fn keep_going_reports_the_first_failure_and_does_not_write_outputs() {
+    struct Outputs([std::path::PathBuf; 2]);
+    impl Drop for Outputs {
+        fn drop(&mut self) {
+            for path in &self.0 {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+    }
+    let root = std::env::temp_dir();
+    let name = format!("dc-cli-keep-going-{}", std::process::id());
+    let paths = [root.join(format!("{name}.designcraft")), root.join(format!("{name}.png"))];
+    assert!(paths.iter().all(|path| !path.exists()));
+    let outputs = Outputs(paths);
+
+    let mut child = cli()
+        .args(["script", "-", "--keep-going", "--save", outputs.0[0].to_str().unwrap(), "--export", outputs.0[1].to_str().unwrap()])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(b"no.such.command\ndocument.inspect\nno.other.command\n").unwrap();
+    let out = child.wait_with_output().unwrap();
+
+    assert!(!out.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["completed"], 3);
+    assert_eq!(v["failedIndex"], 0);
+    assert_eq!(v["failedCommand"], "no.such.command");
+    assert!(v["results"][0]["error"].is_string());
+    assert!(v["results"][1].is_object() && v["results"][1]["error"].is_null());
+    assert!(v["results"][2]["error"].is_string());
+    assert!(outputs.0.iter().all(|path| !path.exists()), "--save and --export require a successful script");
 }
 
 #[test]
@@ -656,7 +719,10 @@ fn thumbnail_refuses_an_output_that_names_the_input() {
     let doc = dir.join("a.designcraft");
     make_document(&doc);
     let saved = std::fs::read(&doc).unwrap();
+    #[cfg(unix)]
     let mut outs = vec![doc.clone(), dir.join(".").join("a.designcraft")];
+    #[cfg(not(unix))]
+    let outs = vec![doc.clone(), dir.join(".").join("a.designcraft")];
     #[cfg(unix)]
     {
         let link = dir.join("link.png");
