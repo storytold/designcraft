@@ -103,7 +103,7 @@ pub fn separate(doc: &Document, cache: &Cache, si: usize, dpi: f32, print: &Prin
     // low one), so a resolution lowered to fit the plate size is said, not only reported.
     if plates.dpi < dpi - 0.5 {
         warnings.push(format!(
-            "separated at {:.0} dpi, not the {:.0} dpi asked for: at that resolution the spread would be more than {:.0} megapixels per plate",
+            "separated at {:.0} dpi, not the {:.0} dpi asked for: at that resolution the spread would be more than {:.0} megapixels per plate or 8192 pixels a side",
             plates.dpi,
             dpi,
             craft_prepress::MAX_PLATE_PIXELS / 1.0e6
