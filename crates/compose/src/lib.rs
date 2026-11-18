@@ -5331,14 +5331,20 @@ fn layout_line(
             Align::FullyJustified => Align::Left,
             a => a,
         };
-        offset = match last_align {
+        let shift = match last_align {
             Align::Center => extra / 2.0,
             Align::Right => extra,
             _ => 0.0,
         };
         // Overfull ragged lines are not shifted left of the slot.
-        if offset < 0.0 {
-            offset = 0.0;
+        let shift = shift.max(0.0);
+        // After a left tab, only the text after the line's last tab is aligned, in the space
+        // between that tab and the edge: the tab widens and the text before it keeps its positions
+        // (InDesign; justification above follows the same rule).
+        let ltr = pp.direction != designcraft_doc::TextDirection::RightToLeft && !bidi_info.has_rtl();
+        match last_tab.filter(|&(_, left)| left && ltr).and_then(|(t, _)| add.get_mut(t)) {
+            Some(tab) => *tab += shift,
+            None => offset = shift,
         }
     }
     let ratio = word_space_ratio(&line, &add, &spaces);

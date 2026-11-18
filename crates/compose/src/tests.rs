@@ -7975,6 +7975,40 @@ fn justified_line_with_a_tab_justifies_the_text_after_its_last_tab() {
 }
 
 #[test]
+fn right_and_centre_alignment_after_a_tab_keep_the_text_before_it() {
+    // InDesign (observed, #2985): with Align Right or Align Center, a line with a left tab keeps
+    // the text before its last tab in place and aligns only the text after it, between that tab's
+    // stop and the edge. Before, the whole line moved by the leftover space.
+    let stop = designcraft_doc::TabStop { position: 100.0, align: TabAlign::Left, leader: String::new(), align_on: String::new() };
+    let text = "Label\tsome words";
+    let after = text.find("some").unwrap();
+    let x_of = |l: &Line, byte: usize| l.glyphs.iter().find(|g| g.byte == byte && g.len > 0).map(|g| g.x).unwrap();
+    let line = |align| {
+        let para = ParaAttrs { align: Some(align), tabs: Some(vec![stop.clone()]), ..Default::default() };
+        let (d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 300.0, 100.0), para);
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        all_lines(&cs)[0].clone()
+    };
+    let left = line(Align::Left);
+    assert!((x_of(&left, after) - 100.0).abs() < 0.01);
+    let seg = left.end_x - x_of(&left, after);
+    let right = line(Align::Right);
+    assert!(x_of(&right, 0).abs() < 0.01, "text before the tab stays: {}", x_of(&right, 0));
+    assert!((x_of(&right, after) - (300.0 - seg)).abs() < 0.01, "text after the tab ends at the edge: {}", x_of(&right, after));
+    assert!((right.end_x - right.x1).abs() < 0.01);
+    let centre = line(Align::Center);
+    assert!(x_of(&centre, 0).abs() < 0.01, "text before the tab stays: {}", x_of(&centre, 0));
+    let want = 100.0 + (200.0 - seg) / 2.0;
+    assert!((x_of(&centre, after) - want).abs() < 0.01, "text after the tab is centred after the stop: {} vs {want}", x_of(&centre, after));
+
+    // Without a tab the whole line still moves.
+    let (d, sid, _) = doc_with("some words", Rect::new(0.0, 0.0, 300.0, 100.0), ParaAttrs { align: Some(Align::Right), ..Default::default() });
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let l = all_lines(&cs)[0];
+    assert!((l.end_x - l.x1).abs() < 0.01 && x_of(l, 0) > 1.0);
+}
+
+#[test]
 fn mojikumi_justification_after_a_tab_keeps_the_text_before_it() {
     // Justification (mojikumi included) adjusts only the text after a line's last tab.
     use designcraft_doc::cjk::{MojikumiAki, MojikumiTable};
