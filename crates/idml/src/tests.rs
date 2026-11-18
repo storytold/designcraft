@@ -1272,8 +1272,8 @@ fn override_lists_pair_nested_copies_on_their_own_pages() {
 }
 
 /// A page overriding 20,000 parent items, each with its copy: every parent item pairs with its own
-/// copy, in order. Pairing takes each copy from a queue instead of searching every copy for every
-/// entry (#2940 review), so this exports in about a second.
+/// copy, in order, and the export takes about a second (#2940 review asked about the cost of the
+/// search for each entry at this size).
 #[test]
 fn many_overrides_pair_in_linear_time() {
     use designcraft_doc::{Item, ItemId};
