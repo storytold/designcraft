@@ -146,6 +146,14 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
 - **Estimate:** 10–20 h. **Doc:** [ui-parity.md](ui-parity.md)
 
 ### 12. Tables in depth (F)
+- **Have:** cell footnotes share the column-foot area with body notes; row groups reserve their
+  notes before fitting, and repeated headers/footers do not duplicate notes (#2611).
+- **Still missing:** cell-footnote numbering in the enclosing story (#2612), insertion (#2613),
+  listing (#2614), and editing existing cell notes on the canvas. The caret currently resolves
+  footnote ids only in the host story, not in its table cells. With Span Footnotes Across
+  Columns in a multi-column frame, a cell note first placed in a later column does not rewind
+  earlier columns overlapping its enlarged area; this needs the story-level relayout path.
+  Notes whose references are clipped by fixed-height rows also remain a follow-up.
 - **Missing:** anchored objects in cells not drawn (#163); Table ▸ Table Options and Cell Options
   submenus as InDesign lays them out, Diagonal Lines, Edit Header/Footer; general reliability
   (#20).
@@ -284,6 +292,7 @@ Cue. These are excluded from every percentage.
 |---|---|---|
 | 2026-11-15 | trivial | Gap 7 closed: the quality gate already runs on every pull request and push to main (#1352) |
 | 2026-11-14 | minor | Gaps 19 and 20 shrunk: placed files are linked with proxies and a hash (save format 5); multi-image place cursor, grid and contact sheet |
+| 2026-11-13 | minor | Gap 12: table-cell notes share the column foot; cell-note editing remains open (#2611) |
 | 2026-11-04 | trivial | Gap 21 shrunk: pt-BR translates 2,936 of 2,939 strings, all but three Control panel captions (61% before) |
 | 2026-10-22 | minor | Gap 26 shrunk: autoflow threads a frame per column on the pages that follow the story's last frame, then adds pages at the end of the document |
 | 2026-10-19 | minor | Gap 28 added for remaining placed-PDF font embedding, substitution or outlining; visible unembedded font detection now ships in PDF/X-4 export and `validate-pdf`, with invisible text exempt and operation- or depth-limited checks reported incomplete (#909) |

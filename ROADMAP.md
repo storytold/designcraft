@@ -13,6 +13,12 @@
 DesignCraft aims at full Adobe InDesign parity — and to be better: faster, open (documented JSON format + IDML), scriptable by agents (MCP), and available on the web.
 
 - **2026-11-14** · Files placed from disk are linked instead of embedded: the document keeps a 1024 px proxy and a content hash, opens without reading the originals, and shows link status OK, Modified or Missing, with Update, Relink, Embed and Unembed (native format 5; old embedded documents migrate on save). Several images load into one place cursor, a grid or a contact sheet; see [linked-artwork.md](docs/linked-artwork.md) and [multi-image-placement.md](docs/multi-image-placement.md). No readiness percentage change.
+- **2026-11-13** · Table-cell footnotes share the column-foot stack with body notes (#2611).
+  Row-group fitting reserves their height, and repeated headers and footers place each note
+  once. Page-dependent notes recompose after row movement; header notes follow the first body
+  group, and non-repeating footer notes reserve space only for the final group. Cell-note numbering
+  (#2612), editing, spanning-note rewind and clipped-reference filtering remain separate work.
+  No readiness percentage change.
 - **2026-11-06** · Automation roots refuse `COM¹` to `LPT³` and a device name before a colon (`COM1:`, `NUL:x`). A batch-export layout of that name is written with a leading `_` on every platform. No readiness percentage change.
 - **2026-10-30** · Document Fonts lookup treats a bare document filename's empty parent as the current directory (#2014), preserving case-insensitive discovery and automation read-root checks. No readiness percentage change.
 - **2026-10-27** · Automatic recovery writes off the interface thread, straight to disk: on a
@@ -22,9 +28,9 @@ DesignCraft aims at full Adobe InDesign parity — and to be better: faster, ope
   blocked for 109 ms instead, and Save, Close and Revert cancel a snapshot still being written.
   No readiness percentage change.
 - **2026-10-28** · Inline table rows leave room for column and spanning footnotes, continuing in
-  the next column or frame when needed (#1901). Cell-local footnotes contribute to row height
-  and sit inside the cell rather than outside its measuring frame. Vertical justification keeps
-  paragraphs and table fragments above the footnote area. No readiness percentage change.
+  the next column or frame when needed (#1901). Cell-note placement was subsequently corrected
+  to the column foot (#2611). Vertical justification keeps paragraphs and table fragments above
+  the footnote area. No readiness percentage change.
 - **2026-10-28** · Duplicate, paste, parent overrides and data merge give anchored objects in the
   copied story fresh ids (#1522). Copies used to keep the original's ids, and the saved file then
   failed to open with "duplicate item id". Files already saved that way still don't open; no

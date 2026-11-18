@@ -112,6 +112,16 @@ struct CellLayout {
     text: Arc<ComposedStory>,
     content_h: f64,
     line_heights: Vec<f64>,
+    /// Footnotes the cell's text references, in the order they appear, for the column foot.
+    notes: Vec<CellNoteSlot>,
+}
+
+/// A footnote referenced in a cell's text, kept for placement when the row is placed.
+struct CellNoteSlot {
+    /// Index in the owning cell story's notes, including references excluded from composition.
+    ordinal: usize,
+    label: String,
+    note: Arc<designcraft_doc::Footnote>,
 }
 
 /// Cell text fits by its baseline, while its typographic/inline-object bounds must still
@@ -130,7 +140,7 @@ impl CellLineExtent {
 
 /// Compose a cell story at width `w` (content space, top-left at the origin).
 fn compose_cell(doc: &Document, cell: &Cell, w: f64, opts: &ComposeOptions, (left_page, right_page): (bool, bool)) -> CellLayout {
-    let mut spec = FrameSpec {
+    let spec = FrameSpec {
         id: ItemId(0),
         area: Rect::new(0.0, 0.0, w.max(1.0), 1.0e6),
         opts: TextFrameOptions { first_baseline: cell.first_baseline, first_baseline_min: cell.first_baseline_min, ..TextFrameOptions::default() },
@@ -147,13 +157,16 @@ fn compose_cell(doc: &Document, cell: &Cell, w: f64, opts: &ComposeOptions, (lef
         page_rect: None,
     };
     let mut cs = crate::compose(doc, &cell.text, std::slice::from_ref(&spec), opts);
-    // The measuring frame is deliberately tall. Recompose at the actual content height so
-    // cell-local footnotes sit inside the row rather than at the measuring frame's bottom.
-    if let Some(frame) = cs.frames.first().filter(|f| !f.notes.is_empty()) {
-        let body = frame.lines.iter().map(|l| l.baseline + l.descent).fold(0.0, f64::max);
-        let note_top = frame.notes.first().map_or(spec.area.y1, |n| n.rect.y0);
-        spec.area.y1 = body + doc.footnote_options.space_before + (spec.area.y1 - note_top);
-        cs = crate::compose(doc, &cell.text, std::slice::from_ref(&spec), opts);
+    // A cell's footnotes belong to the enclosing story: they are placed at the foot of the
+    // column that takes the row, so the cell's own composed text carries none of them.
+    let notes: Vec<CellNoteSlot> = cs
+        .frames
+        .first()
+        .map(|f| f.notes.iter().map(|n| CellNoteSlot { ordinal: n.index, label: n.label.clone(), note: Arc::clone(&n.note) }).collect())
+        .unwrap_or_default();
+    for f in &mut cs.frames {
+        f.notes.clear();
+        f.decos.retain(|d| !d.footnote_rule);
     }
     let line_heights: Vec<f64> = cs
         .frames
@@ -174,9 +187,8 @@ fn compose_cell(doc: &Document, cell: &Cell, w: f64, opts: &ComposeOptions, (lef
         .unwrap_or_default();
     // Check all lines: a large descender or lowered inline object on an earlier line can
     // extend below the final baseline when leading is fixed.
-    let note_bottom = cs.frames.first().map_or(0.0, |f| f.notes.iter().map(|n| n.rect.y1).fold(0.0, f64::max));
-    let content_h = line_heights.iter().copied().fold(note_bottom, f64::max);
-    CellLayout { text: Arc::new(cs), content_h, line_heights }
+    let content_h = line_heights.iter().copied().fold(0.0, f64::max);
+    CellLayout { text: Arc::new(cs), content_h, line_heights, notes }
 }
 
 /// Lay out `table` (anchored at byte `anchor` of paragraph `pi`) from the cursor. Returns false
@@ -311,13 +323,47 @@ pub(crate) fn place_table(
         }
     };
     place_rows(0..header, &mut y, false, &mut frag_rows);
-    // Table rows do not add story footnotes; cell-local notes are composed separately.
-    let column_reserve = |notes: &mut crate::notes::Notes, cur: &Cursor, col: Rect| {
-        let note_w = notes.area(&cols[cur.fi], cur.col).map_or(col.width(), |a| a.width());
-        let column = crate::notes::NoteColumn { frame_index: cur.fi, column_index: cur.col, width: note_w, frame: &frames[cur.fi] };
-        notes.reserve(doc, column, &[], opts)
+    // A cell footnote belongs to the enclosing story: it sits at the foot of the column that
+    // takes its row, in the same area and stack as body notes, so row fitting reserves it.
+    fn note_column<'a>(
+        notes: &crate::notes::Notes,
+        cols: &[Vec<Rect>],
+        fi: usize,
+        ci: usize,
+        frame: &'a FrameSpec,
+        fallback: Rect,
+    ) -> crate::notes::NoteColumn<'a> {
+        let width = notes.area(&cols[fi], ci).map_or(fallback.width(), |a| a.width());
+        crate::notes::NoteColumn { frame_index: fi, column_index: ci, width, frame }
+    }
+    let cell_notes = |rows: std::ops::Range<usize>| -> Vec<crate::notes::CellNote> {
+        let mut v = Vec::new();
+        for r in rows {
+            for c in 0..nc {
+                if !is_owner(r, c) {
+                    continue;
+                }
+                let Some(lay) = layouts.get(r * nc + c).and_then(Option::as_ref) else { continue };
+                for (i, slot) in lay.notes.iter().enumerate() {
+                    v.push(crate::notes::CellNote {
+                        source: crate::notes::NoteSource::Cell { table: table.id, row: r, col: c, slot: i, k: slot.ordinal },
+                        label: slot.label.clone(),
+                        note: Arc::clone(&slot.note),
+                    });
+                }
+            }
+        }
+        v
     };
-    let mut reserve = column_reserve(notes, cur, col);
+    // ponytail: With Span Footnotes Across Columns, a cell note first placed in a later column
+    // does not re-lay earlier columns overlapping the enlarged area. Upgrade by routing through
+    // Notes::earlier_columns_collide and the story-level rewind path.
+    let place_cell_notes = |notes: &mut crate::notes::Notes, items: &[crate::notes::CellNote], cur: &Cursor, rect: Rect| {
+        let column = note_column(notes, cols, cur.fi, cur.col, &frames[cur.fi], rect);
+        for n in items {
+            notes.place_cell(doc, n, column, opts);
+        }
+    };
     let mut r = header;
     loop {
         if r >= body_end {
@@ -325,6 +371,16 @@ pub(crate) fn place_table(
         }
         let ge = group_end[r].min(body_end).max(r + 1);
         let gh = sum(r, ge);
+        let group = cell_notes(r..ge);
+        // Headers commit with the first fitting body group, in the column taking the fragment.
+        let pending_header = body_placed == 0 && (first_frag || o.repeat_header);
+        let mut extra = if pending_header { cell_notes(0..header) } else { Vec::new() };
+        extra.extend(group.iter().cloned());
+        if o.repeat_footer || ge == body_end {
+            extra.extend(cell_notes(body_end..nr));
+        }
+        let column = note_column(notes, cols, cur.fi, cur.col, &frames[cur.fi], col);
+        let reserve = notes.reserve_cells(doc, column, &extra, opts);
         let bottom = col.y1 - reserve;
         let at_col_top = cur.last_baseline.is_none() && (top - col.y0).abs() < 1e-6;
         if y + gh + footer_h <= bottom + 0.01 || (body_placed == 0 && at_col_top && reserve == 0.0) {
@@ -332,7 +388,11 @@ pub(crate) fn place_table(
                 // A row group taller than an empty column can never fit.
                 return false;
             }
+            if pending_header {
+                place_cell_notes(notes, &cell_notes(0..header), cur, col);
+            }
             place_rows(r..ge, &mut y, false, &mut frag_rows);
+            place_cell_notes(notes, &group, cur, col);
             body_placed += 1;
             r = ge;
             continue;
@@ -341,6 +401,7 @@ pub(crate) fn place_table(
         if body_placed > 0 {
             if o.repeat_footer {
                 place_rows(body_end..nr, &mut y, true, &mut frag_rows);
+                place_cell_notes(notes, &cell_notes(body_end..nr), cur, col);
             }
             emit(table, anchor, pi, &frag_rows, &heights, &colx, col.x0 + x_off, top, y, first_frag, false, &layouts, &owners, cur, col, out);
             first_frag = false;
@@ -351,7 +412,6 @@ pub(crate) fn place_table(
             return false;
         }
         col = col_rect(cur);
-        reserve = column_reserve(notes, cur, col);
         y = col.y0;
         top = y;
         frag_rows.clear();
@@ -361,9 +421,15 @@ pub(crate) fn place_table(
             place_rows(0..header, &mut y, false, &mut frag_rows);
         } else if o.repeat_header {
             place_rows(0..header, &mut y, true, &mut frag_rows);
+        } else {
+            continue;
         }
     }
+    if body_placed == 0 && (first_frag || o.repeat_header) {
+        place_cell_notes(notes, &cell_notes(0..header), cur, col);
+    }
     place_rows(body_end..nr, &mut y, false, &mut frag_rows);
+    place_cell_notes(notes, &cell_notes(body_end..nr), cur, col);
     emit(table, anchor, pi, &frag_rows, &heights, &colx, col.x0 + x_off, top, y, first_frag, true, &layouts, &owners, cur, col, out);
     cur.last_baseline = Some(y);
     cur.last_descent = 0.0;
