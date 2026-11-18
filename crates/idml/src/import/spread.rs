@@ -1,6 +1,7 @@
 use super::frame::{fit_columns, margins_of};
 use super::{
-    Affine, Arc, Columns, Guide, Importer, ItemId, Margins, Orientation, Page, PageId, PageSide, ParentInfo, Point, Rect, Spread, SpreadId, names,
+    Affine, Arc, Columns, El, Guide, Importer, ItemId, Margins, Orientation, Page, PageId, PageSide, ParentInfo, Point, Rect, RulerGuideOptions,
+    Spread, SpreadId, names,
 };
 
 /// View › Rotate Spread from a `Spread` element's `ItemTransform`: quarter turns clockwise on
@@ -21,6 +22,33 @@ fn spread_view_rotation(s: Option<&str>) -> u8 {
     } else {
         0
     }
+}
+
+/// Layout › Ruler Guides options of a `Guide` (`ViewThreshold`, `GuideColor`) or of the
+/// `GuidePreference` (`RulerGuidesViewThreshold`, `RulerGuidesColor`), from the threshold and colour
+/// values read there. The threshold is a percent, held to InDesign's range of 5–4000 (what is below
+/// 5% shows at every zoom, as 5% does); a colour is a UI colour name or an RGB list of 0–255 values.
+/// Anything else keeps the default.
+pub(super) fn ruler_guide_options(threshold: Option<f64>, color: Option<&El>) -> RulerGuideOptions {
+    let mut o = RulerGuideOptions::default();
+    if let Some(v) = threshold {
+        o.view_threshold = (v / 100.0).clamp(RulerGuideOptions::MIN_VIEW_THRESHOLD, RulerGuideOptions::MAX_VIEW_THRESHOLD);
+    }
+    if let Some(rgb) = color.and_then(ui_color) {
+        o.set_rgb(rgb);
+    }
+    o
+}
+
+/// A UI colour property: `type="list"` with three 0–255 `ListItem`s, or a colour name.
+fn ui_color(c: &El) -> Option<[u8; 3]> {
+    if c.get("type") == Some("list") {
+        let v: Vec<f64> = c.find_all("ListItem").filter_map(|i| i.text_content().trim().parse().ok()).collect();
+        let [r, g, b] = <[f64; 3]>::try_from(v).ok()?;
+        let byte = |x: f64| (x.is_finite() && (0.0..=255.0).contains(&x)).then(|| x.round() as u8);
+        return Some([byte(r)?, byte(g)?, byte(b)?]);
+    }
+    names::layer_color_in(c.text_content().trim())
 }
 
 impl<'r> Importer<'r> {
@@ -48,6 +76,10 @@ impl<'r> Importer<'r> {
                     locked: g.locked(),
                     layer: g.item_layer().and_then(|l| self.layer_ids.get(l)).copied(),
                     liquid: g.liquid(),
+                    options: ruler_guide_options(
+                        g.values.num("ViewThreshold"),
+                        g.values.prop_el("GuideColor").cloned().map(crate::xml::from_craft).as_ref(),
+                    ),
                 })
             })
             .collect()

@@ -16,6 +16,8 @@ use serde_json::{Value, json};
 use super::{CommandSpec, bad, bool_or, cmd, has_doc, str_param};
 use crate::{DocState, Result, Session};
 
+pub(super) mod options;
+
 const MAX_GUIDE_DIVISIONS: u64 = 1000;
 const MAX_GUIDES_CREATED: usize = 10_000;
 const MAX_GUIDE_GUTTER: f64 = 1_000_000.0;
@@ -87,7 +89,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Guides",
             [],
             None,
-            "{spread?} → [{page, index, orientation, position, spread, selected}]",
+            "{spread?} → [{page, index, orientation, position, spread, selected, viewThreshold (percent), color (name or [r, g, b])}]",
             has_doc,
             |s, p| {
                 let st = s.doc()?;
@@ -98,7 +100,11 @@ pub fn specs() -> Vec<CommandSpec> {
                 for (pi, pg) in sp.pages.iter().enumerate() {
                     for (i, g) in pg.guides.iter().enumerate() {
                         let selected = picked.contains(&GuideSel { spread: r, page: pi, index: i });
-                        out.push(json!({"page": pi, "index": i, "orientation": g.orientation, "position": g.position, "spread": g.spread, "selected": selected}));
+                        let mut row = json!({"page": pi, "index": i, "orientation": g.orientation, "position": g.position, "spread": g.spread, "selected": selected});
+                        if let (Some(row), Value::Object(look)) = (row.as_object_mut(), options::describe(&g.options)) {
+                            row.extend(look);
+                        }
+                        out.push(row);
                     }
                 }
                 Ok(Value::Array(out))
@@ -191,6 +197,8 @@ fn page_at(d: &Document, r: SpreadRef, x: f64) -> usize {
     d.spread(r).and_then(|sp| sp.page_at_x(x)).unwrap_or(0)
 }
 
+/// `guide.add`: adds a ruler guide (or, with `orientation: "both"`, a horizontal and a vertical one
+/// through `point`) to a page or the spread, with the document's colour and view threshold for new guides.
 fn add(s: &mut Session, p: &Value) -> Result<Value> {
     let r = super::spread_param(p, "guide.add")?;
     let spread_guide = p.get("spreadGuide").and_then(Value::as_bool).unwrap_or(false);
@@ -230,6 +238,7 @@ fn add(s: &mut Session, p: &Value) -> Result<Value> {
         .collect();
     let layer = s.doc()?.active_layer;
     s.edit(|d, sel| {
+        let look = d.settings.ruler_guides;
         let sp = d.spread_mut(r).ok_or_else(|| bad("guide.add", "no such spread"))?;
         let mut out = Vec::new();
         let mut added = Vec::new();
@@ -243,6 +252,7 @@ fn add(s: &mut Session, p: &Value) -> Result<Value> {
                 locked: false,
                 layer: Some(layer),
                 liquid: liquid && !spread_guide,
+                options: look,
             });
             out.push(json!({"page": pi, "index": index}));
             added.push(GuideSel { spread: r, page: pi, index });
@@ -542,6 +552,8 @@ fn grid_positions(a: f64, b: f64, n: u64, gutter: f64) -> Result<Vec<f64>> {
     Ok(v)
 }
 
+/// `layout.createGuides`: Layout › Create Guides, rows and columns with gutters fitted to the margins
+/// or the page of one page or every page of the spread, optionally removing the existing ruler guides.
 fn create_guides(s: &mut Session, p: &Value) -> Result<Value> {
     let rows = guide_divisions(p, "rows")?;
     let cols = guide_divisions(p, "columns")?;
@@ -577,6 +589,7 @@ fn create_guides(s: &mut Session, p: &Value) -> Result<Value> {
             // The cleared pages' guide addresses name the new guides now.
             sel.guides.retain(|g| g.spread != r || only.is_some_and(|o| o != g.page));
         }
+        let look = d.settings.ruler_guides;
         let sp = d.spread_mut(r).ok_or_else(|| bad("layout.createGuides", "no such spread"))?;
         let mut n = 0usize;
         for (pi, pg) in sp.pages.iter_mut().enumerate() {
@@ -595,6 +608,7 @@ fn create_guides(s: &mut Session, p: &Value) -> Result<Value> {
                     locked: false,
                     layer: Some(layer),
                     liquid: false,
+                    options: look,
                 });
                 n += 1;
             }
@@ -606,6 +620,7 @@ fn create_guides(s: &mut Session, p: &Value) -> Result<Value> {
                     locked: false,
                     layer: Some(layer),
                     liquid: false,
+                    options: look,
                 });
                 n += 1;
             }

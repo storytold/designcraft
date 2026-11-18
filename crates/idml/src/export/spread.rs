@@ -1,4 +1,4 @@
-use super::common::{bool_s, uid};
+use super::common::{bool_s, pct, ui_color_el, uid, with_props};
 use super::{Affine, Document, El, Ex, PageSide, Spread, names, num};
 
 /// The IDML spread origin in our spread coordinates.
@@ -127,13 +127,13 @@ fn push_page_guides(d: &Document, sp: &Spread, pg: &designcraft_doc::Page, pe: &
             .attr("Orientation", if vertical { "Vertical" } else { "Horizontal" })
             .attr("Location", num(if vertical { g.position - origin_x } else { g.position }))
             .attr("FitToPage", bool_s(!g.spread))
-            .attr("ViewThreshold", "5")
+            .attr("ViewThreshold", pct(g.options.view_threshold))
             .attr("Locked", bool_s(g.locked))
             .attr("PageIndex", page_index.to_string())
             .attr("GuideType", if g.liquid { "Liquid" } else { "Ruler" });
         if let Some(l) = g.layer {
             ge.set("ItemLayer", uid(l.0));
         }
-        pe.push(ge);
+        pe.push(with_props(ge, vec![ui_color_el("GuideColor", g.options.rgb())]));
     }
 }

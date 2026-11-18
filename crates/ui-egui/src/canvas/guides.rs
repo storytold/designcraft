@@ -204,7 +204,8 @@ pub(super) fn guide_at(app: &DesignApp, xf: &Xf, p: Pos2) -> Option<(designcraft
         for (pi, pg) in sp.pages.iter().enumerate() {
             let pr = if pg.guides.iter().any(|g| g.spread) { slot.xf.inverse().transform_rect_bbox(layout.pasteboard) } else { pg.bounds() };
             for (gi, g) in pg.guides.iter().enumerate() {
-                if !g.editable_in(&st.doc) {
+                // A guide hidden below its view threshold can't be picked up either.
+                if !g.editable_in(&st.doc) || !g.options.shown_at(xf.zoom) {
                     continue;
                 }
                 let r = if g.spread { pr } else { pg.bounds() };

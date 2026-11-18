@@ -636,3 +636,17 @@ fn hyphenation_exceptions_are_read_in_one_pass() {
     assert!(t.elapsed() < std::time::Duration::from_secs(2), "{:?}", t.elapsed());
     assert_eq!(map.values().next().map(Vec::len), Some(199_999));
 }
+
+/// A layer never gets White by itself (its selection outlines are drawn in its colour and would
+/// not show on a white page); the other 36 UI colours come round in their order.
+#[test]
+fn automatic_layer_colours_take_the_ui_colours_in_turn_without_white() {
+    let white = [255, 255, 255];
+    assert_eq!(LAYER_COLORS.len(), 37);
+    assert_eq!(LAYER_COLORS.last().copied(), Some(("White", white)), "White stays in the list, to be chosen");
+    let turn: Vec<[u8; 3]> = (0..36).map(auto_layer_color).collect();
+    assert_eq!(turn, LAYER_COLORS[..36].iter().map(|(_, c)| *c).collect::<Vec<_>>());
+    assert_eq!(auto_layer_color(16), [0, 0, 135], "the 17th layer is Dark Blue");
+    assert_eq!((auto_layer_color(36), auto_layer_color(37)), (LAYER_COLORS[0].1, LAYER_COLORS[1].1), "the 37th starts again");
+    assert!((0..500).chain([usize::MAX]).all(|n| auto_layer_color(n) != white));
+}

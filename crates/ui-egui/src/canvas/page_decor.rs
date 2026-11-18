@@ -179,7 +179,9 @@ fn draw_page_guides(
     let GuideCtx { doc, slot, .. } = *cx;
     let (pi, p, pr) = page;
     let own = p.guides.len();
-    for (gi, mut g) in p.guides.iter().cloned().chain(doc.parent_guides(p)).enumerate().filter(|(_, g)| g.visible_in(doc)) {
+    // Layout › Ruler Guides: a guide below its view threshold is not drawn.
+    let shown = |g: &designcraft_doc::Guide| g.visible_in(doc) && g.options.shown_at(cx.xf.zoom);
+    for (gi, mut g) in p.guides.iter().cloned().chain(doc.parent_guides(p)).enumerate().filter(|(_, g)| shown(g)) {
         let key = GuideSel { spread: slot.spread, page: pi, index: gi };
         // Selected guides are drawn thicker, in their layer's color.
         let selected = gi < own && selection.contains(&key);
@@ -216,7 +218,7 @@ fn draw_guide(cx: &GuideCtx, pr: DRect, g: &designcraft_doc::Guide, selected: bo
         let color = g.layer.and_then(|l| doc.layer(l)).map_or(Color32::from_rgb(79, 153, 255), |l| c32(l.color));
         Stroke::new(2.0, color)
     } else {
-        Stroke::new(hair(painter), Color32::from_rgb(74, 227, 255))
+        Stroke::new(hair(painter), guide_color(g))
     };
     if g.liquid {
         // Liquid guides are dashed.
@@ -224,6 +226,12 @@ fn draw_guide(cx: &GuideCtx, pr: DRect, g: &designcraft_doc::Guide, selected: bo
     } else {
         painter.line_segment([pt(a), pt(bb)], stroke);
     }
+}
+
+/// An unselected ruler guide's colour (Layout › Ruler Guides): the canvas's guide cyan for the
+/// default Cyan.
+pub(super) fn guide_color(g: &designcraft_doc::Guide) -> Color32 {
+    g.options.color.map_or(Color32::from_rgb(74, 227, 255), c32)
 }
 
 /// View › Flattener Preview: red over every object that involves transparency (opacity, blend

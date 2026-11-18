@@ -236,7 +236,7 @@ fn anchors_in(cx: &ToolContext, r: Rect) -> Vec<(ItemId, usize, usize)> {
 }
 
 /// The ruler guides a marquee `r` (canvas) crosses that can be selected, as `guide.select`
-/// takes them: none while guides are hidden or locked.
+/// takes them: none while guides are hidden or locked, nor one hidden below its view threshold.
 fn guides_crossing(cx: &ToolContext, r: Rect) -> Vec<Value> {
     if !cx.snap.show_guides || cx.snap.guides_locked {
         return vec![];
@@ -247,7 +247,7 @@ fn guides_crossing(cx: &ToolContext, r: Rect) -> Vec<Value> {
         let pasteboard = slot.xf.inverse().transform_rect_bbox(cx.layout.pasteboard);
         for (pi, pg) in sp.pages.iter().enumerate() {
             for (gi, g) in pg.guides.iter().enumerate() {
-                if !g.editable_in(cx.doc) {
+                if !g.editable_in(cx.doc) || !g.options.shown_at(cx.zoom) {
                     continue;
                 }
                 // The line as the canvas draws it: a spread guide crosses the pasteboard (a

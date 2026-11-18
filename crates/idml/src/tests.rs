@@ -16,6 +16,7 @@ mod index_sort;
 mod liquid_guides;
 mod object_styles;
 mod rtl_binding;
+mod ruler_guides;
 mod spread_rotation;
 mod variables;
 mod wrap;
