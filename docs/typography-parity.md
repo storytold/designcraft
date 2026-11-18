@@ -47,7 +47,7 @@ Fidelity: **unmeasured** unless stated.
 | First baseline | ascent, cap height, x-height, leading, fixed, min | ✓ | ✓ | |
 | Frame fit / overset | baseline of the last line must fit | descenders must fit | ~ | **differs** (#180): frames go overset where InDesign fits |
 | Baseline grid | document grid relative to the top of the page or each page's top margin; frame grids relative to the top of the page, top margin, top of frame or top inset | ✓ | ✓ | |
-| Vertical justification | top, centre, bottom, justify, paragraph spacing limit | ✓ | ✓ | |
+| Vertical justification | top, centre, bottom, justify, paragraph spacing limit | ✓ | ✓ | with Center and Bottom, lines aligned to the baseline grid move by whole grid steps; with Justify only the first and last lines stay on the grid |
 | Text in shaped frames | lines follow oval, polygon and freeform frame outlines, one inset from the outline | ✓ | ~ | concave shapes set one slot per line (the widest); vertical justification and paragraph shading use the frame's rectangle (#646) |
 | Columns, span / split columns | ✓ | ✓ | ✓ | split columns within a column (#295); text after a span flows below it (#276) |
 | Column rules | ✓ | ✓ (screen, PDF, IDML) | ~ | no stroke types or overprint (#274) |

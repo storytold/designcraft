@@ -240,6 +240,65 @@ impl Default for TextFrameOptions {
     }
 }
 
+impl TextFrameOptions {
+    /// The JSON keys of the General options: columns, inset spacing, vertical justification and
+    /// Ignore Text Wrap. An object style's Text Frame General Options category sets these only.
+    pub const GENERAL_KEYS: [&str; 9] = [
+        "columns",
+        "columnsKind",
+        "gutter",
+        "columnWidth",
+        "balanceColumns",
+        "inset",
+        "verticalJustification",
+        "vjParagraphSpacingLimit",
+        "ignoreWrap",
+    ];
+
+    /// Whether the General options (see [`Self::GENERAL_KEYS`]) of `self` and `other` are the same.
+    pub fn general_eq(&self, other: &TextFrameOptions) -> bool {
+        self.columns == other.columns
+            && self.columns_kind == other.columns_kind
+            && self.gutter == other.gutter
+            && self.column_width == other.column_width
+            && self.balance_columns == other.balance_columns
+            && self.inset == other.inset
+            && self.vertical_justification == other.vertical_justification
+            && self.vj_paragraph_spacing_limit == other.vj_paragraph_spacing_limit
+            && self.ignore_wrap == other.ignore_wrap
+    }
+
+    /// Each General option that is `old`'s here takes `new`'s; the others stay. `true` when one
+    /// changed.
+    pub fn follow_general(&mut self, old: &TextFrameOptions, new: &TextFrameOptions) -> bool {
+        let mut changed = false;
+        macro_rules! follow {
+            ($($f:ident),*) => {$(
+                if self.$f == old.$f && self.$f != new.$f {
+                    self.$f = new.$f;
+                    changed = true;
+                }
+            )*};
+        }
+        follow!(columns, columns_kind, gutter, column_width, balance_columns, inset, vertical_justification, vj_paragraph_spacing_limit, ignore_wrap);
+        changed
+    }
+
+    /// Copies the General options of `from` (see [`Self::GENERAL_KEYS`]). Baseline, auto-size,
+    /// column rule and Type on a Path settings stay as they are.
+    pub fn set_general(&mut self, from: &TextFrameOptions) {
+        self.columns = from.columns;
+        self.columns_kind = from.columns_kind;
+        self.gutter = from.gutter;
+        self.column_width = from.column_width;
+        self.balance_columns = from.balance_columns;
+        self.inset = from.inset;
+        self.vertical_justification = from.vertical_justification;
+        self.vj_paragraph_spacing_limit = from.vj_paragraph_spacing_limit;
+        self.ignore_wrap = from.ignore_wrap;
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum WrapMode {

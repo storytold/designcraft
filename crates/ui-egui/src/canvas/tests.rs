@@ -410,10 +410,24 @@ fn harness_with_step(app: DesignApp, step_dt: f32) -> Harness<'static, DesignApp
     h
 }
 
+/// Background decodes finishing one after another are taken up in batches, and not while a
+/// render is in flight (a newer request would drop it before it is shown).
+#[test]
+fn finished_image_decodes_rerender_the_canvas_in_batches() {
+    use render::{IMAGE_BATCH_MS, image_generation};
+    let mut seen = (0, f64::NEG_INFINITY);
+    assert_eq!(image_generation(&mut seen, 1, 1000.0, false), (1, None), "the first is taken at once");
+    assert_eq!(image_generation(&mut seen, 2, 1010.0, false), (1, Some(IMAGE_BATCH_MS - 10.0)));
+    assert_eq!(image_generation(&mut seen, 9, 1100.0, false).0, 1, "more finish meanwhile");
+    assert_eq!(image_generation(&mut seen, 9, 1000.0 + IMAGE_BATCH_MS, true), (1, None), "a render is in flight");
+    assert_eq!(image_generation(&mut seen, 9, 1000.0 + IMAGE_BATCH_MS, false), (9, None), "all taken by one render");
+}
+
 #[test]
 fn display_option_change_drops_the_render_in_flight() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    let shown = crate::Shown { doc: (1, 2, 3, false), origin: Point::new(0.0, 0.0), zoom: 1.0, size: (10.0, 10.0), editing_parents: false };
+    let shown =
+        crate::Shown { doc: (1, 2, 3, false), origin: Point::new(0.0, 0.0), zoom: 1.0, size: (10.0, 10.0), editing_parents: false, images: 0 };
     invalidate_on_display_change(&mut app);
     app.canvas.shown = Some(shown);
     app.canvas.pending = Some((7, shown));
@@ -2417,6 +2431,34 @@ fn edits_patch_the_canvas_only_at_full_resolution() {
         let size = app.canvas.texture.as_ref().unwrap().size();
         assert!(max_side.is_none_or(|m| size[0] <= m && size[1] <= m), "{size:?}");
         assert_eq!(app.canvas.patches > 0, patches, "limit {max_side:?}");
+    }
+}
+
+/// Moving a frame with a drop shadow repaints the regions the frame and its shadow cover, as
+/// moving one without a shadow does, instead of rendering the whole canvas again on every step.
+#[test]
+fn moving_a_frame_with_a_drop_shadow_patches_the_canvas() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    let ctx = egui::Context::default();
+    let frame = |app: &mut DesignApp| {
+        let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1200.0, 900.0))), ..Default::default() };
+        let mut out = ctx.run_ui(raw, |ui| {
+            app.logic(ui.ctx());
+            app.ui(ui);
+        });
+        out.textures_delta.clear();
+    };
+    app.run("file.new", json!({})).unwrap();
+    app.run("frame.create", json!({"rect": [72, 72, 200, 180], "content": "unassigned"})).unwrap();
+    app.run("object.fill", json!({"swatch": "[Black]"})).unwrap();
+    app.run("object.dropShadow", json!({"on": true})).unwrap();
+    for _ in 0..3 {
+        frame(&mut app);
+    }
+    for step in 1..=3 {
+        app.run("transform.move", json!({"dx": 4, "dy": 2})).unwrap();
+        frame(&mut app);
+        assert_eq!(app.canvas.patches, step, "drag step {step} repaints only what changed");
     }
 }
 

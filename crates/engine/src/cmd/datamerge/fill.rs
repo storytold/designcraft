@@ -181,7 +181,7 @@ pub struct ImageCache {
 
 #[derive(Default)]
 struct ImageCacheInner {
-    files: std::collections::HashMap<PathBuf, std::sync::Arc<Vec<u8>>>,
+    files: std::collections::HashMap<PathBuf, designcraft_doc::AssetData>,
     bytes: usize,
 }
 
@@ -191,14 +191,16 @@ const MAX_CACHED_IMAGE_BYTES: usize = 256 << 20;
 
 impl ImageCache {
     /// The bytes of `path`, reading it once per merge. `read` is called only on a miss.
-    fn get_or_read(&self, path: &Path, read: impl FnOnce() -> Option<Vec<u8>>) -> Option<std::sync::Arc<Vec<u8>>> {
+    fn get_or_read(&self, path: &Path, read: impl FnOnce() -> Option<Vec<u8>>) -> Option<designcraft_doc::AssetData> {
         if let Some(found) = self.inner.borrow().files.get(path) {
             return Some(found.clone());
         }
-        let bytes = std::sync::Arc::new(read()?);
+        let bytes = read()?;
+        let len = bytes.len();
+        let bytes = designcraft_doc::AssetData::embedded(bytes);
         let mut inner = self.inner.borrow_mut();
-        if inner.bytes.saturating_add(bytes.len()) <= MAX_CACHED_IMAGE_BYTES {
-            inner.bytes = inner.bytes.saturating_add(bytes.len());
+        if inner.bytes.saturating_add(len) <= MAX_CACHED_IMAGE_BYTES {
+            inner.bytes = inner.bytes.saturating_add(len);
             inner.files.insert(path.to_path_buf(), bytes.clone());
         }
         Some(bytes)
@@ -525,7 +527,7 @@ fn create_link(doc: &mut designcraft_doc::Document, anchor: PlaceholderAnchor, d
 /// An image file named by a cell: where it was found, its bytes, its pixel size and its natural size.
 struct LoadedImage {
     path: PathBuf,
-    bytes: Arc<Vec<u8>>,
+    bytes: designcraft_doc::AssetData,
     pixels: (u32, u32),
     natural: (f64, f64),
 }
@@ -547,7 +549,8 @@ fn load_image(cell: &str, sources: &Sources) -> Option<LoadedImage> {
         })?;
         // A file that does not decode leaves the search going, so a valid image at a later
         // candidate is still found.
-        let (pixels, natural) = designcraft_render::image_size(&bytes).zip(designcraft_render::natural_size(&bytes, 0))?;
+        let raw = bytes.embedded_bytes()?;
+        let (pixels, natural) = designcraft_render::image_size(raw).zip(designcraft_render::natural_size(raw, 0))?;
         Some(LoadedImage { path: p.clone(), bytes, pixels, natural })
     })
 }
@@ -565,7 +568,7 @@ fn add_image_asset(doc: &mut designcraft_doc::Document, image: LoadedImage, fiel
     doc.add_asset(Asset {
         id: fresh,
         name,
-        mime: designcraft_render::image_mime(&image.bytes).to_string(),
+        mime: designcraft_render::image_mime(image.bytes.embedded_bytes().map_or(&[][..], |b| b.as_slice())).to_string(),
         link,
         // The cached buffer is shared with every other record naming this file, rather than
         // copied per record (#1595).
