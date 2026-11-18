@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use designcraft_doc::{Asset, AssetId, Content, Document, Graphic, Item, ItemId, Shape, SpreadRef, build::NewDocument};
 use designcraft_geom::{Affine, Rect, shapes};
 use hayro_syntax::{
@@ -93,9 +91,13 @@ pub fn document(bytes: Vec<u8>, hidden_sets: &[&[&str]]) -> Document {
         id: asset,
         name: "layers.pdf".into(),
         mime: "application/pdf".into(),
-        data: Arc::new(bytes),
+        data: designcraft_doc::AssetData::embedded(bytes),
         link: None,
         link_fingerprint: None,
+        link_relative: None,
+        link_hash: None,
+        storage: Default::default(),
+        proxy: None,
         pixels: None,
         page: 0,
         pdf_crop: Default::default(),
