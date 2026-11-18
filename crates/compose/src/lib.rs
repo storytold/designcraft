@@ -1554,6 +1554,8 @@ struct TableParagraphInput<'a> {
     limits: &'a mut Rc<Vec<(BandKey, f64)>>,
     balance_runs: &'a mut usize,
     balance_budget: usize,
+    restores: &'a mut usize,
+    paragraph_count: usize,
     snaps: &'a [Snapshot],
     note_snaps: &'a [(u32, Option<usize>, usize)],
     notes: &'a mut Notes,
@@ -1589,6 +1591,8 @@ fn place_table_paragraph(input: TableParagraphInput<'_>) -> TableParagraphResult
         limits,
         balance_runs,
         balance_budget,
+        restores,
+        paragraph_count,
         snaps,
         note_snaps,
         notes,
@@ -1606,7 +1610,23 @@ fn place_table_paragraph(input: TableParagraphInput<'_>) -> TableParagraphResult
     }
     let at_top = cursor.last_baseline.is_none();
     let start_at = (cursor.fi, cursor.col);
-    if !table::place_table(doc, table, anchor, paragraph, props, frames, columns, cursor, out, notes, opts) {
+    let placed = table::place_table(doc, table, anchor, paragraph, props, frames, columns, cursor, out, notes, opts);
+    let first_at = out
+        .frames
+        .iter()
+        .enumerate()
+        .find_map(|(fi, ft)| ft.tables.iter().find(|frag| frag.anchor == anchor && frag.first).map(|frag| (fi, frag.column as usize)));
+    // A table can leave this column before placing even its first row. Keep its heading chain with that row.
+    if first_at.is_some_and(|at| at > start_at) && *restores < (4 * paragraph_count + 64) * (*balance_runs + 1) {
+        let j = keep_chain_start(paragraph, true, start_at, info);
+        if j < paragraph && info.get(j).is_some_and(|p| !p.at_top) && force_col.get(j) == Some(&false) {
+            force_col[j] = true;
+            *restores += 1;
+            rewind(j, snaps, note_snaps, notes, out, cursor, list_counter, force_col, line_cap, no_hyph);
+            return TableParagraphResult::Restart(j);
+        }
+    }
+    if !placed {
         if let Some(j) = trial_failed(trial, limits, *balance_runs < balance_budget) {
             *balance_runs += 1;
             rewind(j, snaps, note_snaps, notes, out, cursor, list_counter, force_col, line_cap, no_hyph);
@@ -1616,7 +1636,7 @@ fn place_table_paragraph(input: TableParagraphInput<'_>) -> TableParagraphResult
         return TableParagraphResult::Overset;
     }
     info.push(ParaInfo {
-        start: start_at,
+        start: first_at.unwrap_or(start_at),
         at_top,
         end: (cursor.fi, cursor.col),
         lines: 1,
@@ -3353,6 +3373,8 @@ fn compose_run(
                 limits: &mut limits,
                 balance_runs: &mut balance_runs,
                 balance_budget,
+                restores: &mut restores,
+                paragraph_count: para_ranges.len(),
                 snaps: &snaps,
                 note_snaps: &note_snaps,
                 notes: &mut notes,
@@ -3841,7 +3863,9 @@ fn mark_keep_violations(doc: &Document, story: &Story, out: &mut ComposedStory) 
         }
         if pp.keep_with_next > 0
             && let (Some(end), Some(next)) = (v.last(), cols.get(&(pi + 1)))
-            && next.first().is_some_and(|(c, n)| *c != end.0 || (*n < pp.keep_with_next as usize && next.len() > 1))
+            && next
+                .first()
+                .is_some_and(|(c, n)| *c != end.0 || (*n < pp.keep_with_next as usize && next.len() > 1 && story.para_table(pi + 1).is_none()))
         {
             bad.push(pi);
         }
@@ -4202,24 +4226,26 @@ enum KeepAction {
     Cap(usize, usize),
 }
 
+/// The first kept paragraph in this column, ending at `pi` (which need not be recorded yet).
+fn keep_chain_start(pi: usize, started_here: bool, here: (usize, usize), info: &[ParaInfo]) -> usize {
+    let mut j = pi;
+    while j > 0 {
+        let Some(p) = info.get(j - 1) else { break };
+        let starts_here = if j == pi { started_here } else { info.get(j).is_some_and(|p| p.start == here) };
+        if p.keep_with_next > 0 && p.end == here && starts_here {
+            j -= 1;
+        } else {
+            break;
+        }
+    }
+    j
+}
+
 /// Keep Options (plan: typography §8): keep with next, keep all lines together, keep first/last
 /// lines. Returns how to re-lay, or None to just continue in the next column (also when a keep
 /// can't be satisfied, e.g. a paragraph already at the top of a column).
 fn keep_violation(ctx: &KeepCtx, pp: &ParaProps, info: &[ParaInfo], force_col: &[bool], line_cap: &[Option<usize>]) -> Option<KeepAction> {
-    // The first paragraph of the chain of keep-with-next paragraphs ending in `pi` that sit in this column.
-    let chain_start = |pi: usize| {
-        let mut j = pi;
-        while j > 0 {
-            let p = &info[j - 1];
-            let starts_here = if j == ctx.pi { ctx.started_here } else { info[j].start == ctx.here };
-            if p.keep_with_next > 0 && p.end == ctx.here && starts_here {
-                j -= 1;
-            } else {
-                break;
-            }
-        }
-        j
-    };
+    let chain_start = |pi| keep_chain_start(pi, ctx.started_here, ctx.here, info);
     let force = |j: usize| -> Option<KeepAction> {
         let top = if j == ctx.pi { ctx.at_top } else { info[j].at_top };
         // Keep the top-of-column fallback even when this paragraph has continued
