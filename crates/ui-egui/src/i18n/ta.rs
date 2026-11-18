@@ -428,7 +428,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Clear Frame Fitting Options", "ஃப்ரேம் பொருத்த விருப்பங்களை நீக்கு"),
     ("Clear Object Style Overrides", "ஆப்ஜெக்ட் ஸ்டைல் ஓவர்ரைடுகளை நீக்கு"),
     ("Clear Overrides", "ஓவர்ரைடுகளை நீக்கு"),
-    ("Clear Recent Files", "சமீபத்திய கோப்புகளை நீக்கு"),
+    ("Clear Recent Files", "சமீபத்திய கோப்புகள் பட்டியலை அழி"),
     ("Clear Rotation", "சுழற்சியை மீட்டமை"),
     ("Clear Transformations", "உருமாற்றங்களை நீக்கு"),
     ("Clear overrides", "ஓவர்ரைடுகளை நீக்கு"),
@@ -1669,7 +1669,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("No fonts match", "எழுத்துருக்கள் எதுவும் பொருந்தவில்லை"),
     (
         "No hyperlinks. Select text or a frame, type a URL and click New.",
-        "ஹைப்பர்லிங்க்கள் இல்லை. உரை அல்லது ஃப்ரேமைத் தேர்ந்தெடுத்து, URL-ஐ உள்ளிட்டு, New என்பதைக் கிளிக் செய்யவும்.",
+        "ஹைப்பர்லிங்க்கள் இல்லை. உரை அல்லது ஃப்ரேமைத் தேர்ந்தெடுத்து, URL-ஐ உள்ளிட்டு, புதியது என்பதைக் கிளிக் செய்யவும்.",
     ),
     ("No library open.", "லைப்ரரி எதுவும் திறக்கப்படவில்லை."),
     ("No matches", "பொருத்தங்கள் இல்லை"),
