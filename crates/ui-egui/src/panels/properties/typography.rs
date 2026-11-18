@@ -272,9 +272,15 @@ pub fn paragraph_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     if let Some(v) = half_field_or_clear(ui, b, false, 3.0 * row, half, "space-same", &tr("Space Between Paragraphs Using Same Style"), field) {
         let _ = app.run("type.para", json!({"attrs": {"sameParaStyleSpacing": v}}));
     }
+    // While Words is set it overrides Characters, so the field edits Words.
+    let (tip, key, max) = if p["dropCapWords"].as_u64().unwrap_or(0) > 0 {
+        ("Drop Cap Number of Words", "dropCapWords", designcraft_compose::MAX_DROP_CAP_WORDS)
+    } else {
+        ("Drop Cap One or More Characters", "dropCapChars", designcraft_compose::MAX_DROP_CAP_CHARS)
+    };
     for (right, icon, tip, key, max) in [
         (false, "drop-lines", "Drop Cap Number of Lines", "dropCapLines", designcraft_compose::MAX_DROP_CAP_LINES),
-        (true, "drop-chars", "Drop Cap One or More Characters", "dropCapChars", designcraft_compose::MAX_DROP_CAP_CHARS),
+        (true, "drop-chars", tip, key, max),
     ] {
         let field = NumField::number(key, p[key].as_f64(), "", 0).spinner().range(0.0, max as f64);
         if let Some(v) = half_field(ui, b, right, 4.0 * row, half, icon, &tr(tip), field) {

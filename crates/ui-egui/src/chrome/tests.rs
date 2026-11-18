@@ -516,6 +516,12 @@ fn the_type_control_panel_has_character_and_paragraph_modes() {
     click(&mut h, "Small Caps");
     click(&mut h, "Paragraph Formatting Controls");
     assert!(has(&h, "Drop Cap Number of Lines") && has(&h, "Space Before") && !has(&h, "Small Caps"));
+    h.state_mut().app.run("type.para", json!({"attrs": {"dropCapWords": 2}})).unwrap();
+    h.run_steps(3);
+    assert!(has(&h, "Drop Cap Number of Words") && !has(&h, "Drop Cap One or More Characters"));
+    h.state_mut().app.run("type.para", json!({"attrs": {"dropCapWords": 0}})).unwrap();
+    h.run_steps(3);
+    assert!(has(&h, "Drop Cap One or More Characters") && !has(&h, "Drop Cap Number of Words"));
     click(&mut h, "Align to Baseline Grid");
     click(&mut h, "Align center");
     let a = crate::panels::text_attrs(&mut h.state_mut().app).unwrap();

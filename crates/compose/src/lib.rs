@@ -45,6 +45,7 @@ use designcraft_doc::{
 };
 use designcraft_fonts::{FontDb, ScopedFonts};
 use designcraft_geom::{Affine, Point, Rect};
+use unicode_script::UnicodeScript;
 
 use crate::breaker::{Break, Spacing};
 pub use crate::cache::{Cache, ShownOn};
@@ -5792,8 +5793,10 @@ fn split_drop_cap(
     let spaces = glyphs.iter().take_while(|g| g.is_space()).count();
     let mut after: Vec<Glyph> = glyphs.drain(..spaces).collect();
     let end = after.last().map_or(end, |g| g.byte.saturating_add(g.len).max(end));
-    let hebrew = dc.iter().find(|g| g.ch.is_alphabetic()).is_some_and(|g| ('\u{05D0}'..='\u{05EA}').contains(&g.ch));
-    let height = |g: &Glyph| {
+    let is_hebrew = |glyphs: &[Glyph]| glyphs.iter().find(|g| g.ch.is_alphabetic()).is_some_and(|g| g.ch.script() == unicode_script::Script::Hebrew);
+    let hebrew = is_hebrew(&dc);
+    let body_hebrew = is_hebrew(glyphs);
+    let height = |g: &Glyph, hebrew: bool| {
         if hebrew {
             let gid = g.face.glyph_for('ה');
             if gid != 0 {
@@ -5812,7 +5815,7 @@ fn split_drop_cap(
         g.cap
     };
     let body = glyphs.iter().find(|g| g.len > 0 && g.cap > 0.0);
-    let (lead, cap, body_size) = body.map_or((base_leading, base_cap, None), |g| (g.leading, height(g), Some(g.size)));
+    let (lead, cap, body_size) = body.map_or((base_leading, base_cap, None), |g| (g.leading, height(g, body_hebrew), Some(g.size)));
     let lead = match grid.map(|inc| (lead / inc - 1e-6).ceil().max(1.0) * inc) {
         Some(pitch) if pitch.is_finite() && pitch > 0.0 => pitch,
         _ => lead,
@@ -5820,7 +5823,7 @@ fn split_drop_cap(
     let drop = (lines - 1) as f64 * lead;
     // The cap's tallest glyph sets its height; its point size over the body's scales the fit.
     let (own, own_size) = dc.iter().fold((0.0, 0.0), |(c, s), g| {
-        let h = height(g);
+        let h = height(g, hebrew);
         if h > c { (h, g.size) } else { (c, s) }
     });
     let ratio = match body_size {
@@ -5887,7 +5890,7 @@ fn split_drop_cap(
     // Kept at its size, the word sits in the line, so the space after it separates it from the next word.
     let width = dc.iter().chain(after.iter().filter(|_| keep_size)).map(|g| g.adv).sum();
     dc.append(&mut after);
-    let cap = dc.iter().map(height).fold(0.0, f64::max);
+    let cap = dc.iter().map(|g| height(g, hebrew)).fold(0.0, f64::max);
     Some(DropCap { glyphs: dc, end, lines, width, drop, lsb, cap })
 }
 

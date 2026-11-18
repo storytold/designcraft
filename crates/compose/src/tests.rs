@@ -5359,6 +5359,46 @@ fn hebrew_drop_word_aligns_ink_tops_with_the_first_body_line() {
 }
 
 #[test]
+fn hebrew_drop_word_aligns_with_latin_body_cap_height() {
+    const FAMILY: &str = "DC Test Hebrew Drop Latin Body";
+    let db = designcraft_fonts::FontDb::global();
+    db.add_font(designcraft_fonts::testing::font_with_glyph(FAMILY, &['ה', 'ד', ' ', 'a'], 'z').unwrap());
+    let text = format!("הדה {}", "aaa aaa ".repeat(30));
+    let para = ParaAttrs { direction: Some(designcraft_doc::TextDirection::RightToLeft), align: Some(Align::Right), ..drop_cap(2, 3) };
+    let (mut d, sid, _) = drop_doc(&text, para);
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.font_family = Some(FAMILY.into()));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let line = &all_lines(&cs)[0];
+    let dropped = line.glyphs.iter().find(|g| g.byte == 0).unwrap();
+    let body = line.glyphs.iter().find(|g| g.byte == "הדה ".len()).unwrap();
+    let top = |g: &PlacedGlyph| g.y + designcraft_geom::Shape::bounding_box(&*db.outline(&g.face, g.gid)).y0 * g.sy;
+    let body_cap_top = body.y - body.face.cap_height * body.sy;
+    assert!((top(dropped) - body_cap_top).abs() < 0.01, "drop top {}, body cap top {body_cap_top}", top(dropped));
+    assert!((top(dropped) - top(body)).abs() > 0.1, "the body's ink top must differ from its declared cap height");
+}
+
+#[test]
+fn hebrew_presentation_form_drop_word_aligns_ink_tops_with_the_first_body_line() {
+    const FAMILY: &str = "DC Test Hebrew Presentation Drop Height";
+    let db = designcraft_fonts::FontDb::global();
+    db.add_font(designcraft_fonts::testing::font_with_glyph(FAMILY, &['\u{FB2E}', 'ה', 'ד', ' '], 'z').unwrap());
+    let text = format!("\u{FB2E}דה {}", "הדה הדה הדה ".repeat(30));
+    let para = ParaAttrs { direction: Some(designcraft_doc::TextDirection::RightToLeft), align: Some(Align::Right), ..drop_cap(2, 3) };
+    let (mut d, sid, _) = drop_doc(&text, para);
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.font_family = Some(FAMILY.into()));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let line = &all_lines(&cs)[0];
+    let dropped = line.glyphs.iter().find(|g| g.byte == 0).unwrap();
+    let body = line.glyphs.iter().find(|g| g.byte == "\u{FB2E}דה ".len()).unwrap();
+    let top = |g: &PlacedGlyph| {
+        let ink = designcraft_geom::Shape::bounding_box(&*db.outline(&g.face, g.gid));
+        assert!(-ink.y0 < g.face.cap_height, "the fixture must be shorter than Latin capitals");
+        g.y + ink.y0 * g.sy
+    };
+    assert!((top(dropped) - top(body)).abs() < 0.01, "drop top {}, body top {}", top(dropped), top(body));
+}
+
+#[test]
 fn hebrew_drop_word_aligns_top_strokes_instead_of_serifs() {
     use designcraft_geom::kurbo::{Line as OutlineLine, ParamCurve as _};
 
