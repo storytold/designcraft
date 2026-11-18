@@ -17,7 +17,7 @@ fn selected_stories(s: &Session) -> Result<Vec<StoryId>> {
     Ok(stories)
 }
 
-/// Type ▸ Story: the story-wide options (Optical Margin Alignment and its size).
+/// Type ▸ Story: the story-wide optical margin options and column direction.
 pub(super) fn story_options(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "story.options";
     let on = match p.get("opticalMargin") {
@@ -32,8 +32,12 @@ pub(super) fn story_options(s: &mut Session, p: &Value) -> Result<Value> {
                 .ok_or_else(|| bad(CMD, "`opticalMarginSize` must be a finite number of points"))?,
         ),
     };
-    if on.is_none() && size.is_none() {
-        return Err(bad(CMD, "nothing to set: give opticalMargin or opticalMarginSize"));
+    let direction: Option<designcraft_doc::TextDirection> = p
+        .get("direction")
+        .map(|v| serde_json::from_value(v.clone()).map_err(|_| bad(CMD, "`direction` must be leftToRight or rightToLeft")))
+        .transpose()?;
+    if on.is_none() && size.is_none() && direction.is_none() {
+        return Err(bad(CMD, "nothing to set: give opticalMargin, opticalMarginSize or direction"));
     }
     let explicit = |key| p.get(key).filter(|v| !v.is_null());
     let stories = if explicit("story").is_some() || explicit("frame").is_some() {
@@ -66,8 +70,18 @@ pub(super) fn story_options(s: &mut Session, p: &Value) -> Result<Value> {
             let mut om = st.optical_margin;
             om.on = on.unwrap_or(om.on);
             om.size = size.unwrap_or(om.size);
+            let mut changed = false;
             if om != st.optical_margin {
                 st.optical_margin = om;
+                changed = true;
+            }
+            if let Some(direction) = direction
+                && direction != st.direction
+            {
+                st.direction = direction;
+                changed = true;
+            }
+            if changed {
                 st.rev = st.rev.wrapping_add(1);
             }
         }
@@ -148,14 +162,15 @@ pub(super) fn selection_attrs(s: &mut Session, p: &Value) -> Result<Value> {
 /// The story options of `stories`, as story.options names them; a value that differs between
 /// the stories is null.
 fn story_options_of(doc: &designcraft_doc::Document, stories: &[StoryId]) -> Value {
-    let mut values = stories.iter().filter_map(|sid| doc.story(*sid)).map(|st| st.optical_margin);
-    let Some(first) = values.next() else { return json!({"opticalMargin": null, "opticalMarginSize": null}) };
-    let (mut on, mut size) = (Some(first.on), Some(first.size));
-    for om in values {
-        on = on.filter(|v| *v == om.on);
-        size = size.filter(|v| *v == om.size);
+    let mut values = stories.iter().filter_map(|sid| doc.story(*sid));
+    let Some(first) = values.next() else { return json!({"opticalMargin": null, "opticalMarginSize": null, "direction": null}) };
+    let (mut on, mut size, mut direction) = (Some(first.optical_margin.on), Some(first.optical_margin.size), Some(first.direction));
+    for st in values {
+        on = on.filter(|v| *v == st.optical_margin.on);
+        size = size.filter(|v| *v == st.optical_margin.size);
+        direction = direction.filter(|v| *v == st.direction);
     }
-    json!({"opticalMargin": on, "opticalMarginSize": size})
+    json!({"opticalMargin": on, "opticalMarginSize": size, "direction": direction})
 }
 
 /// The paragraph attributes whose resolved values differ across the paragraphs of `targets`.
@@ -307,19 +322,52 @@ mod story_options_tests {
     }
 
     #[test]
+    fn story_options_set_and_report_column_direction() {
+        use designcraft_doc::TextDirection;
+
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let a = s.execute("frame.create", &json!({"rect": [0, 0, 300, 200], "content": "text", "text": "One", "caret": true})).unwrap();
+        let sid = StoryId(a["story"].as_u64().unwrap());
+        s.execute("edit.selectAll", &json!({})).unwrap();
+        let options = |s: &mut Session| s.execute("type.selectionAttrs", &json!({})).unwrap()["storyOptions"].clone();
+        let revision = |s: &Session| s.doc().unwrap().doc.story(sid).unwrap().rev;
+        assert_eq!(options(&mut s)["direction"], "leftToRight");
+        let before = revision(&s);
+        s.execute("story.options", &json!({"direction": "rightToLeft", "opticalMargin": true})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().direction, TextDirection::RightToLeft);
+        assert_eq!(revision(&s), before.wrapping_add(1));
+        assert_eq!(options(&mut s)["direction"], "rightToLeft");
+        s.execute("story.options", &json!({"direction": "rightToLeft"})).unwrap();
+        assert_eq!(revision(&s), before.wrapping_add(1));
+        let error = s.execute("story.options", &json!({"direction": "upward"})).unwrap_err();
+        assert!(error.to_string().contains("`direction` must be leftToRight or rightToLeft"));
+        s.execute("text.exitToFrame", &json!({})).unwrap();
+        let b = s.execute("frame.create", &json!({"rect": [0, 300, 300, 500], "content": "text", "text": "Two"})).unwrap();
+        s.execute("selection.set", &json!({"ids": [a["id"], b["id"]]})).unwrap();
+        assert_eq!(options(&mut s)["direction"], Value::Null);
+        s.execute("story.options", &json!({"direction": "rightToLeft"})).unwrap();
+        assert_eq!(options(&mut s)["direction"], "rightToLeft");
+    }
+
+    #[test]
     fn selection_attrs_report_the_story_options_with_differences_as_null() {
         let mut s = Session::new();
         s.execute("file.new", &json!({})).unwrap();
         let a = s.execute("frame.create", &json!({"rect": [0, 0, 300, 200], "content": "text", "text": "One"})).unwrap();
         let b = s.execute("frame.create", &json!({"rect": [0, 300, 300, 500], "content": "text", "text": "Two"})).unwrap();
         let options = |s: &mut Session| s.execute("type.selectionAttrs", &json!({})).unwrap()["storyOptions"].clone();
-        assert_eq!(options(&mut s), json!({"opticalMargin": false, "opticalMarginSize": 12.0}));
+        assert_eq!(options(&mut s), json!({"opticalMargin": false, "opticalMarginSize": 12.0, "direction": "leftToRight"}));
         s.execute("story.options", &json!({"story": b["story"], "opticalMargin": true, "opticalMarginSize": 18})).unwrap();
-        assert_eq!(options(&mut s), json!({"opticalMargin": true, "opticalMarginSize": 18.0}), "the selected frame's story");
+        assert_eq!(
+            options(&mut s),
+            json!({"opticalMargin": true, "opticalMarginSize": 18.0, "direction": "leftToRight"}),
+            "the selected frame's story"
+        );
         s.execute("selection.set", &json!({"ids": [a["id"], b["id"]]})).unwrap();
-        assert_eq!(options(&mut s), json!({"opticalMargin": null, "opticalMarginSize": null}));
+        assert_eq!(options(&mut s), json!({"opticalMargin": null, "opticalMarginSize": null, "direction": "leftToRight"}));
         s.execute("story.options", &json!({"opticalMarginSize": 18})).unwrap();
-        assert_eq!(options(&mut s), json!({"opticalMargin": null, "opticalMarginSize": 18.0}));
+        assert_eq!(options(&mut s), json!({"opticalMargin": null, "opticalMarginSize": 18.0, "direction": "leftToRight"}));
     }
 }
 

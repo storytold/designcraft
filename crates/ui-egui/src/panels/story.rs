@@ -6,8 +6,8 @@ use crate::DesignApp;
 use crate::widgets::{self, NumField};
 
 /// The Story panel: Optical Margin Alignment for the stories of the text selection or the
-/// selected text frames, and the type size its hang amounts are set for. Without text or a text
-/// frame selected, the controls are disabled.
+/// selected text frames, the type size its hang amounts are set for, and column direction.
+/// Without text or a text frame selected, the controls are disabled.
 pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let options = super::text_attrs(app).map(|a| a["storyOptions"].clone());
     let enabled = options.is_some();
@@ -26,6 +26,15 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                 .range(designcraft_doc::OpticalMargin::MIN_SIZE, designcraft_doc::OpticalMargin::MAX_SIZE);
             if let Some(size) = crate::chrome::icon_field(ui, "font-size", &tr("Optical Margin Size"), field) {
                 let _ = app.run("story.options", json!({"opticalMarginSize": size}));
+            }
+        });
+        ui.horizontal_wrapped(|ui| {
+            ui.label(crate::rtl::widget(ui, tr("Story Column Direction")));
+            for (label, direction) in [("Left to Right", "leftToRight"), ("Right to Left", "rightToLeft")] {
+                let selected = options["direction"] == direction;
+                if ui.selectable_label(selected, crate::rtl::widget(ui, tr(label))).clicked() {
+                    let _ = app.run("story.options", json!({"direction": direction}));
+                }
             }
         });
     });
@@ -94,11 +103,36 @@ mod tests {
     }
 
     #[test]
+    fn story_panel_sets_and_shows_the_storys_column_direction() {
+        use designcraft_doc::{StoryId, TextDirection};
+
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let story =
+            app.run("frame.create", json!({"rect": [72, 72, 300, 200], "content": "text", "text": "Columns", "caret": true})).unwrap()["story"]
+                .as_u64()
+                .unwrap();
+        app.run("edit.selectAll", json!({})).unwrap();
+        let mut h = harness(app);
+        let direction = |h: &Harness<'static, DesignApp>| h.state().session.active().unwrap().doc.story(StoryId(story)).unwrap().direction;
+        h.get_by_label("Right to Left").click();
+        h.run_steps(3);
+        assert_eq!(direction(&h), TextDirection::RightToLeft);
+        assert_eq!(h.get_by_label("Right to Left").accesskit_node().toggled(), Some(egui::accesskit::Toggled::True));
+        h.get_by_label("Left to Right").click();
+        h.run_steps(3);
+        assert_eq!(direction(&h), TextDirection::LeftToRight);
+        assert_eq!(h.get_by_label("Left to Right").accesskit_node().toggled(), Some(egui::accesskit::Toggled::True));
+    }
+
+    #[test]
     fn story_panel_is_disabled_without_text() {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
         app.run("file.new", json!({})).unwrap();
         let mut h = harness(app);
         assert!(h.get_by_label("Optical Margin Alignment").accesskit_node().is_disabled());
+        assert!(h.get_by_label("Right to Left").accesskit_node().is_disabled());
+        assert!(h.get_by_label("Left to Right").accesskit_node().is_disabled());
         h.get_by_label("Optical Margin Alignment").click();
         h.run_steps(3);
         assert_eq!(h.get_by_label("Optical Margin Alignment").accesskit_node().toggled(), Some(egui::accesskit::Toggled::False));
