@@ -2370,6 +2370,59 @@ fn line_before_a_break_character_is_a_last_line() {
 }
 
 #[test]
+fn a_run_of_tabs_at_the_end_of_a_line_breaks_between_the_tabs() {
+    // InDesign (observed, #2984): a tab that starts before the right edge stays on the line and
+    // ends at the edge, even when its stop lies beyond it; the remaining tabs start the next line.
+    // Before, a tab was no break opportunity, so the whole run moved to the next line.
+    let stop = designcraft_doc::TabStop { position: 70.0, align: TabAlign::Left, leader: String::new(), align_on: String::new() };
+    let para = ParaAttrs { align: Some(Align::Left), tabs: Some(vec![stop]), ..Default::default() };
+    let text = "Label\tWord \t\t\tafter";
+    let after = text.find("after").unwrap();
+    let x_of = |l: &Line, byte: usize| l.glyphs.iter().find(|g| g.byte == byte && g.len > 0).map(|g| g.x).unwrap();
+    // Where the space after `Word` ends in a wide frame, and the default stops after it.
+    let (d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 1000.0, 100.0), para.clone());
+    let wide = compose_story(&d, sid, &ComposeOptions::default());
+    let l = all_lines(&wide)[0];
+    let space = l.glyphs.iter().find(|g| g.byte == text.find(" \t").unwrap()).unwrap();
+    let word_end = space.x + space.adv;
+    let first_stop = ((word_end / 36.0).floor() + 1.0) * 36.0;
+    let lines_at = |width: f64| {
+        let (d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, width, 100.0), para.clone());
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        all_lines(&cs).into_iter().cloned().collect::<Vec<_>>()
+    };
+
+    // Two tabs start before the edge: the first reaches its stop, the second ends at the edge,
+    // and the third starts line 2, where it reaches the 70 pt stop.
+    let width = first_stop + 10.0;
+    let ls = lines_at(width);
+    assert_eq!(ls.len(), 2, "two lines at {width}");
+    assert!((ls[0].end_x - ls[0].x1).abs() < 0.01, "line 1 ends at the edge with its last tab: {} vs {}", ls[0].end_x, ls[0].x1);
+    assert!((x_of(&ls[1], after) - 70.0).abs() < 0.01, "after one tab: {}", x_of(&ls[1], after));
+
+    // Only one tab starts before the edge (its stop lies beyond it): it ends at the edge and the
+    // other two start line 2 (70 pt, then the next default stop at 72 pt).
+    let width = first_stop - 2.0;
+    let ls = lines_at(width);
+    assert_eq!(ls.len(), 2, "two lines at {width}");
+    assert!((ls[0].end_x - ls[0].x1).abs() < 0.01, "line 1 ends at the edge with its tab: {} vs {}", ls[0].end_x, ls[0].x1);
+    assert!((x_of(&ls[1], after) - 72.0).abs() < 0.01, "after two tabs: {}", x_of(&ls[1], after));
+
+    // The first tab ends exactly at the edge: the second starts there, stays on the line with no
+    // width, and ends it; the third starts line 2.
+    let width = first_stop;
+    let ls = lines_at(width);
+    assert_eq!(ls.len(), 2, "two lines at {width}");
+    assert!((x_of(&ls[1], after) - 70.0).abs() < 0.01, "a tab at the edge still ends line 1: {}", x_of(&ls[1], after));
+
+    // All three tabs start before the edge: `after` starts line 2 at the margin.
+    let width = first_stop + 72.0 + 10.0;
+    let ls = lines_at(width);
+    assert_eq!(ls.len(), 2, "two lines at {width}");
+    assert!(x_of(&ls[1], after).abs() < 0.01, "no tab before it: {}", x_of(&ls[1], after));
+}
+
+#[test]
 fn tabs_without_stops_use_default_half_inch() {
     let (d, sid, _) = doc_with("A\tB", Rect::new(0.0, 0.0, 300.0, 100.0), ParaAttrs::default());
     let cs = compose_story(&d, sid, &ComposeOptions::default());
