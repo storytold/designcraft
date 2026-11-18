@@ -964,8 +964,11 @@ fn shape_run_raw(
                     }
                 },
                 designcraft_doc::FOOTNOTE_REF | designcraft_doc::ENDNOTE_REF => {
-                    let s = sub.notes.get(&i).map_or("#", String::as_str);
-                    shape_segment(db, text, i..i + c.len_utf8(), Some(s), p, &primary, auto_leading, styles, out, sub.upright());
+                    // Like page numbers, a note's number follows the Digits of its reference's
+                    // character style; it was always drawn in Western digits (#1510).
+                    let mode = digit_mode(p, arabic_context);
+                    let s: String = sub.notes.get(&i).map_or("#", String::as_str).chars().map(|ch| mode.map(ch, &p.language)).collect();
+                    shape_segment(db, text, i..i + c.len_utf8(), Some(&s), p, &primary, auto_leading, styles, out, sub.upright());
                 }
                 _ => {
                     // Zero-width control glyph carrying metrics (tabs get their width at line layout).
