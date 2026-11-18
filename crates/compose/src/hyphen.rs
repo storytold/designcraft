@@ -290,13 +290,9 @@ pub fn keep_whole(token: &str) -> bool {
     // is not one and stays a word to hyphenate.
     let host = token.split('/').next().unwrap_or("");
     let labels: Vec<&str> = host.trim_end_matches('.').split('.').collect();
-    if labels.len() >= 2
+    labels.len() >= 2
         && labels.iter().all(|l| !l.is_empty() && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
         && labels.last().is_some_and(|tld| tld.len() <= 6 && tld.chars().all(|c| c.is_ascii_lowercase()))
-    {
-        return true;
-    }
-    false
 }
 
 /// Whether a paragraph is set in Korean, so automatic hyphenation does not apply to it.
