@@ -1235,11 +1235,13 @@ fn override_lists_pair_nested_copies_on_their_own_pages() {
     };
     let (left, right) = (d.spreads[1].pages[0].clone(), d.spreads[1].pages[1].clone());
     assert!(left.x + left.width <= right.x + 1e-9, "page 2 is left of page 3");
-    // One group, moved onto page 2, holds page 3's small copy first and page 2's wide one, so its
-    // centre is on page 2.
-    let to_left = Affine::translate((left.x, 0.0));
-    let on_right = copy(&mut d, &kept, Rect::new(right.x - left.x + 10.0, 40.0, right.x - left.x + 40.0, 80.0));
-    let on_left = copy(&mut d, &kept, Rect::new(10.0, 40.0, left.width - 10.0, 80.0));
+    // One group holds page 3's small copy first and page 2's wide one, so its centre is on page 2.
+    // The group is moved 300 pt right and its items drawn 300 pt left of where they show, so a page
+    // read from an item's own coordinates, not through its group, would be wrong.
+    let shift = 300.0;
+    let to_left = Affine::translate((left.x + shift, 0.0));
+    let on_right = copy(&mut d, &kept, Rect::new(right.x - left.x - shift + 10.0, 40.0, right.x - left.x - shift + 40.0, 80.0));
+    let on_left = copy(&mut d, &kept, Rect::new(10.0 - shift, 40.0, left.width - 10.0 - shift, 80.0));
     let (right_id, left_id) = (format!("u{:x}", on_right.id.0), format!("u{:x}", on_left.id.0));
     let g = group(&mut d, vec![on_right, on_left], to_left);
     assert!(g.bounds().center().x < left.x + left.width, "the group's centre is on page 2");
