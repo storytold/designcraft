@@ -915,6 +915,9 @@ fn relinked_asset(a: &designcraft_doc::Asset, read: &Path, document: Option<&Pat
 /// name as the link keeps the link's record, so the document still knows the file on the computer
 /// the link came from; another name becomes the link.
 fn relinked_bytes(a: &designcraft_doc::Asset, name: &str, bytes: Vec<u8>) -> Result<Arc<designcraft_doc::Asset>> {
+    if designcraft_render::is_pdf(&bytes) {
+        designcraft_render::check_pdf_input_size(bytes.len()).map_err(|e| bad("links", format!("{name}: {e}")))?;
+    }
     let px = designcraft_render::image_size(&bytes).ok_or_else(|| bad("links", format!("{name}: unsupported or corrupt image")))?;
     let mut a = relinked_from(a, &bytes, px, name)?;
     let same = a.link.as_deref().is_some_and(|old| link_file_name(old).eq_ignore_ascii_case(name));
