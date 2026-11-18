@@ -1841,6 +1841,7 @@ enum LinePlacement {
 }
 
 struct PositionLineInput<'a, 'font> {
+    cap_indent: Option<f64>,
     frame: &'a FrameSpec,
     column: Rect,
     glyphs: &'a [Glyph],
@@ -1884,6 +1885,7 @@ struct LinePosition {
 
 fn position_line(input: PositionLineInput<'_, '_>) -> LinePosition {
     let PositionLineInput {
+        cap_indent,
         frame: f,
         column: col,
         glyphs,
@@ -1917,7 +1919,7 @@ fn position_line(input: PositionLineInput<'_, '_>) -> LinePosition {
         last_line_mark,
     } = input;
     let (mut x0, mut x1) = (col.x0, col.x1);
-    let ind = pp.left_indent + pp.right_indent + if line_no == 0 { pp.first_line_indent } else { 0.0 };
+    let ind = pp.left_indent + pp.right_indent + if line_no == 0 { cap_indent.unwrap_or(pp.first_line_indent) } else { 0.0 };
     let need = if f.exclusions.is_empty() && f.outline.is_none() {
         0.0
     } else {
@@ -2161,6 +2163,7 @@ fn fit_line(input: LineFitInput<'_>) -> LineFit {
     let line_notes = if notes.active() { notes.refs_in(line_glyphs) } else { Vec::new() };
     let col_w = notes.area(&cols[cur.fi], cur.col).map_or(0.0, |r| r.width());
     let note_column = NoteColumn { frame_index: cur.fi, column_index: cur.col, width: col_w, frame: f };
+    let notes_fit = notes.fit(doc, note_column, &line_notes, opts);
     let reserve = notes.reserve(doc, note_column, &line_notes, opts);
     let reserve = if cur.last_baseline.is_none() { notes.reserve(doc, note_column, &[], opts) } else { reserve };
     let fit_descent =
@@ -2169,7 +2172,7 @@ fn fit_line(input: LineFitInput<'_>) -> LineFit {
         } else {
             0.0
         };
-    let fits = baseline + fit_descent <= col.y1 - reserve + 0.01 && !capped;
+    let fits = notes_fit && baseline + fit_descent <= col.y1 - reserve + 0.01 && !capped;
     if !fits
         && !pp.hyph_across_column
         && line_no > col_first_line
@@ -2491,6 +2494,7 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
             let (reference, model) = cjk_line_reference(line_glyphs);
             let advance = if cur.last_baseline.is_some() { cur.aki_below.unwrap_or(lead) } else { lead };
             let position = position_line(PositionLineInput {
+                cap_indent: beside_cap.filter(|_| line_no == 0).map(|dc| dc.indent()),
                 frame: f,
                 column: col,
                 glyphs,
@@ -2527,6 +2531,7 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
             // An oversized cap cannot start here; try the next column before placing any text.
             if drop_cap.filter(|_| line_no == 0).is_some_and(|dc| dc.indent() > x1 - x0 - pp.left_indent - pp.right_indent) {
                 advance_placement_column(cur, spanning, cols);
+                carry.clear();
                 moved = true;
                 break;
             }

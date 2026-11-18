@@ -5268,6 +5268,76 @@ fn unplaced_drop_word_is_reported_overset_from_the_paragraph_start() {
 }
 
 #[test]
+fn drop_word_note_wider_than_the_column_is_parent_overset() {
+    let (mut d, sid, _) = drop_doc("Body reference", ParaAttrs::default());
+    let fmt = ParaFormat {
+        para: ParaAttrs { drop_cap_words: Some(2), ..drop_cap(3, 0) },
+        chars: designcraft_doc::CharAttrs { size: Some(10.0), leading: Some(designcraft_doc::Leading::Points(12.0)), ..Default::default() },
+        ..Default::default()
+    };
+    let id = d.story_mut(sid).unwrap().insert_note(5, "Extraordinary typography body", fmt).unwrap();
+    let mut specs = frame_specs(&d, sid);
+    specs[0].area = Rect::new(0.0, 0.0, 600.0, 500.0);
+    let wide = compose(&d, d.story(sid).unwrap(), &specs, &ComposeOptions::default());
+    assert_eq!(wide.overset_at, None);
+    let note = &wide.frames[0].notes[0];
+    assert!(all_lines(&note.text).iter().any(|line| line.drop_cap.is_some()));
+    specs[0].area = Rect::new(0.0, 0.0, 80.0, 500.0);
+    let narrow = compose(&d, d.story(sid).unwrap(), &specs, &ComposeOptions::default());
+    assert!(narrow.overset_at.is_some(), "unplaceable note must make the parent overset");
+    assert!(narrow.frames.iter().flat_map(|f| &f.notes).filter(|n| n.id == id).all(|n| !all_lines(&n.text).is_empty()));
+}
+
+#[test]
+fn drop_cap_chooses_the_wider_first_line_wrap_segment() {
+    let (d, sid, _) = drop_doc_in("Hello body text", Rect::new(0.0, 0.0, 200.0, 300.0), drop_cap(2, 5));
+    let mut specs = frame_specs(&d, sid);
+    specs[0].exclusions.push(Exclusion {
+        rect: Rect::new(30.0, 0.0, 100.0, 300.0),
+        mode: WrapMode::BoundingBox,
+        side: WrapSide::BothSides,
+        contour: None,
+        after: None,
+        anchor_baseline: None,
+    });
+    let cs = compose(&d, d.story(sid).unwrap(), &specs, &ComposeOptions::default());
+    assert_eq!(cs.overset_at, None);
+    let line = all_lines(&cs).into_iter().find(|l| l.drop_cap.is_some()).unwrap();
+    assert!(line.x0 >= 100.0, "cap starts at {}", line.x0);
+}
+
+#[test]
+fn oversized_drop_cap_column_advance_discards_wrap_carry() {
+    let (mut d, sid, fid) = drop_doc_in("Hello", Rect::new(0.0, 0.0, 400.0, 300.0), drop_cap(2, 5));
+    d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = 2;
+    let mut specs = frame_specs(&d, sid);
+    let wide = compose(&d, d.story(sid).unwrap(), &specs, &ComposeOptions::default());
+    let line = all_lines(&wide)[0];
+    let indent = line.drop_cap.unwrap().rect.x1 - line.x0;
+    let column = wide.frames[0].columns[0];
+    // Both segments pass the positioner's 0.01 pt tolerance but fail the strict cap check.
+    // The later segment must not survive that check's column advance.
+    let segment_width = indent - 0.005;
+    assert!(segment_width > 15.0 && segment_width * 2.0 < column.width());
+    specs[0].exclusions.push(Exclusion {
+        rect: Rect::new(column.x0 + segment_width, 0.0, column.x1 - segment_width, 300.0),
+        mode: WrapMode::BoundingBox,
+        side: WrapSide::BothSides,
+        contour: None,
+        after: None,
+        anchor_baseline: None,
+    });
+    let cs = compose(&d, d.story(sid).unwrap(), &specs, &ComposeOptions::default());
+    assert_eq!(cs.overset_at, None);
+    let ft = &cs.frames[0];
+    assert_eq!(ft.lines.iter().find(|l| l.drop_cap.is_some()).unwrap().column, 1);
+    for line in &ft.lines {
+        let col = ft.columns[line.column as usize];
+        assert!(line.x0 >= col.x0 - 0.01 && line.x1 <= col.x1 + 0.01, "line {}..{} outside column {col:?}", line.x0, line.x1);
+    }
+}
+
+#[test]
 fn drop_word_wider_than_the_column_is_overset() {
     let para = ParaAttrs { drop_cap_words: Some(2), ..drop_cap(3, 0) };
     let (d, sid, _) = drop_doc_in("one two body", Rect::new(0.0, 0.0, 300.0, 300.0), para.clone());
