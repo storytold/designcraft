@@ -845,7 +845,7 @@ fn only_the_active_state_of_a_multi_state_object_links() {
 }
 
 /// A hyperlink on a parent page's item or text links on every page that shows it, where it is
-/// drawn there; a page that hides its parent items has no link, nor has a hidden item (#2910).
+/// drawn there; a page that hides its parent items has no link, nor has a hidden or nonprinting item (#2910).
 #[test]
 fn links_on_a_parent_page_link_on_its_pages() {
     use designcraft_doc::story::PAGE_NUMBER;
@@ -859,6 +859,10 @@ fn links_on_a_parent_page_link_on_its_pages() {
     let mut hidden = Item::new(hidden_id, lid, Shape::Rectangle, rect(Rect::new(300.0, 100.0, 400.0, 160.0)));
     hidden.hidden = true;
     d.insert_item(SpreadRef::Parent(0), hidden, None).unwrap();
+    let unprinted_id = ItemId(d.alloc());
+    let mut unprinted = Item::new(unprinted_id, lid, Shape::Rectangle, rect(Rect::new(300.0, 200.0, 400.0, 260.0)));
+    unprinted.nonprinting = true;
+    d.insert_item(SpreadRef::Parent(0), unprinted, None).unwrap();
     let folio = format!("{PAGE_NUMBER} Folio");
     let (_, sid) = d.add_text_frame(SpreadRef::Parent(0), Rect::new(36.0, 700.0, 300.0, 740.0), lid, &folio, ParaFormat::default()).unwrap();
     let word = folio.len() - 5;
@@ -866,6 +870,7 @@ fn links_on_a_parent_page_link_on_its_pages() {
         (1, "box", HyperlinkSource::Item { id: box_id }),
         (2, "folio", HyperlinkSource::Text { story: sid, start: word, end: folio.len() }),
         (3, "hidden", HyperlinkSource::Item { id: hidden_id }),
+        (4, "unprinted", HyperlinkSource::Item { id: unprinted_id }),
     ] {
         d.hyperlinks.push(Hyperlink { id, name: name.into(), source, dest: HyperlinkDest::Url(format!("https://example.com/{name}")) });
     }
@@ -877,7 +882,7 @@ fn links_on_a_parent_page_link_on_its_pages() {
     let mut starts = Vec::new();
     for (i, links) in pages.iter().enumerate().filter(|(i, _)| *i != 1) {
         let names: Vec<&str> = links.iter().map(|(n, _)| n.as_str()).collect();
-        assert_eq!(names, ["box", "folio"], "page {}: one of each, none for the hidden box", i + 1);
+        assert_eq!(names, ["box", "folio"], "page {}: one of each, none for the hidden or nonprinting box", i + 1);
         // On a spread of its own, the box links where it is drawn: x 100 to 200, y 100 to 160 from
         // the top of a 792 pt page.
         assert_eq!(links[0].1, [100.0, 632.0, 200.0, 692.0], "page {}", i + 1);
