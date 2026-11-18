@@ -54,7 +54,10 @@ fn shown(doc: &Document, loc: &ItemLoc) -> bool {
     let mut only: Option<usize> = None;
     for (depth, &i) in loc.path.iter().enumerate() {
         let Some(it) = items.get(i).filter(|_| only.is_none_or(|a| a == i)) else { return false };
-        if it.hidden || (depth == 0 && !doc.layer(it.layer).is_some_and(crate::export::layer_exported)) {
+        if it.hidden
+            || (it.nonprinting && matches!(loc.spread, SpreadRef::Parent(_)))
+            || (depth == 0 && !doc.layer(it.layer).is_some_and(crate::export::layer_exported))
+        {
             return false;
         }
         only = (!it.states.is_empty() && !it.has_nested_items()).then_some(it.active_state);
