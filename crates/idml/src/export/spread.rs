@@ -68,13 +68,21 @@ impl<'a> Ex<'a> {
         let mut copies = Vec::new();
         collect_copies(sp, &mut copies);
         let mut used = vec![false; copies.len()];
+        // The copies in writer order, by (parent item, page) and by parent item, so pairing takes
+        // each copy from a queue instead of searching every copy for every entry (review).
+        let mut by_page: std::collections::HashMap<_, std::collections::VecDeque<usize>> = std::collections::HashMap::new();
+        let mut by_parent: std::collections::HashMap<_, std::collections::VecDeque<usize>> = std::collections::HashMap::new();
+        for (k, c) in copies.iter().enumerate() {
+            by_page.entry((c.0, c.2)).or_default().push_back(k);
+            by_parent.entry(c.0).or_default().push_back(k);
+        }
         // Each page's own copies are paired first, for every page, so one page's spread-wide fallback
         // can't take the copy another page overrides with.
         let mut own: Vec<Vec<Option<usize>>> = Vec::with_capacity(sp.pages.len());
         for (i, pg) in sp.pages.iter().enumerate() {
             let mut row = Vec::with_capacity(pg.overridden.len());
             for parent in &pg.overridden {
-                let k = (0..copies.len()).find(|k| !used[*k] && copies[*k].0 == *parent && copies[*k].2 == Some(i));
+                let k = by_page.get_mut(&(*parent, Some(i))).and_then(|q| q.pop_front());
                 if let Some(k) = k {
                     used[k] = true;
                 }
@@ -93,11 +101,16 @@ impl<'a> Ex<'a> {
             let mut overrides: Vec<String> = Vec::with_capacity(pg.overridden.len() * 2);
             for (j, parent) in pg.overridden.iter().enumerate() {
                 let k = own.get(i).and_then(|r| r.get(j)).copied().flatten().or_else(|| {
-                    let k = (0..copies.len()).find(|k| !used[*k] && copies[*k].0 == *parent);
-                    if let Some(k) = k {
-                        used[k] = true;
+                    // The first copy of this parent item not yet paired: the queue drops the ones
+                    // paired since, so each copy is looked at once.
+                    let q = by_parent.get_mut(parent)?;
+                    while let Some(k) = q.pop_front() {
+                        if !used[k] {
+                            used[k] = true;
+                            return Some(k);
+                        }
                     }
-                    k
+                    None
                 });
                 let copy = match k.and_then(|k| copies.get(k)) {
                     Some(c) => uid(c.1.0),

@@ -1271,6 +1271,35 @@ fn override_lists_pair_nested_copies_on_their_own_pages() {
     assert_eq!(lists, [vec![], vec![k.clone(), left_id], vec![k, right_id, dp, deep_id]]);
 }
 
+/// A page overriding 20,000 parent items, each with its copy: every parent item pairs with its own
+/// copy, in order. Pairing takes each copy from a queue instead of searching every copy for every
+/// entry (#2940 review), so this exports in about a second.
+#[test]
+fn many_overrides_pair_in_linear_time() {
+    use designcraft_doc::{Item, ItemId};
+    let mut d = Document::new(&NewDocument { pages: 1, ..Default::default() });
+    let lid = d.default_layer();
+    let (ppi, _) = d.parent_page_for(0).unwrap();
+    let n = 20_000;
+    let mut copies = Vec::with_capacity(n);
+    for i in 0..n {
+        let y = (i % 500) as f64;
+        let parent = Item::new(ItemId(d.alloc()), lid, Shape::Rectangle, shapes::rectangle(Rect::new(40.0, y, 60.0, y + 1.0)));
+        let mut copy = parent.clone();
+        copy.id = ItemId(d.alloc());
+        copy.overrides = Some(parent.id);
+        copies.push(format!("u{:x}", copy.id.0));
+        std::sync::Arc::make_mut(&mut d.spreads[0]).pages[0].overridden.push(parent.id);
+        std::sync::Arc::make_mut(&mut d.parents[ppi]).items.push(std::sync::Arc::new(parent));
+        std::sync::Arc::make_mut(&mut d.spreads[0]).items.push(std::sync::Arc::new(copy));
+    }
+    let spreads = zip_text(&export_idml(&d), "Spreads/");
+    let list = spreads.split("OverrideList=\"").nth(1).and_then(|l| l.split('"').next()).unwrap_or_default();
+    let ids: Vec<&str> = list.split_whitespace().collect();
+    assert_eq!(ids.len(), 2 * n);
+    assert!(ids.chunks(2).zip(&copies).all(|(pair, copy)| pair[1] == copy), "each parent item pairs with its own copy");
+}
+
 #[test]
 fn uri_and_base64_helpers() {
     assert_eq!(import::uri_to_path("file:/a%20b/c.png"), "/a b/c.png");
