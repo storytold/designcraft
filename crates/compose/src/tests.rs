@@ -10489,3 +10489,28 @@ fn cross_reference_text_breaks_at_its_spaces() {
         }
     }
 }
+
+/// The rule above right-to-left footnotes starts at the right of the column, its indent measured
+/// from there. It was always at the left, so an Arabic document needed a left indent of nearly the
+/// column's width to move it across, redone whenever the column changed (#2965).
+#[test]
+fn the_rule_above_right_to_left_footnotes_starts_at_the_right() {
+    let rect = Rect::new(36.0, 36.0, 400.0, 400.0);
+    let rule = |direction| {
+        let (mut d, sid, fid) = doc_with("Body text.", rect, ParaAttrs::default());
+        d.footnote_options.rule.width = 72.0;
+        d.footnote_options.rule.left_indent = 10.0;
+        let para = ParaFormat { para: ParaAttrs { direction: Some(direction), ..Default::default() }, ..Default::default() };
+        d.story_mut(sid).unwrap().insert_note(5, "Note text.", para);
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let decos = &cs.frame(fid).unwrap().decos;
+        let r: Vec<Rect> = decos.iter().map(|x| x.rect).filter(|r| (r.width() - 72.0).abs() < 0.01).collect();
+        assert_eq!(r.len(), 1, "one rule: {decos:?}");
+        r[0]
+    };
+    let ltr = rule(designcraft_doc::TextDirection::LeftToRight);
+    assert!((ltr.x0 - (rect.x0 + 10.0)).abs() < 0.01, "left to right, from the left: {ltr:?}");
+    let rtl = rule(designcraft_doc::TextDirection::RightToLeft);
+    assert!((rtl.x1 - (rect.x1 - 10.0)).abs() < 0.01, "right to left, from the right: {rtl:?}");
+    assert!((rtl.y0 - ltr.y0).abs() < 0.01, "at the same height");
+}
