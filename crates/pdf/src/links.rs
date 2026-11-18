@@ -46,8 +46,10 @@ fn placed_on(doc: &Document, loc: &ItemLoc, si: usize, pi: Option<usize>) -> Opt
 /// Whether the item at `loc` shows in the PDF: it is on an exported layer, neither it nor a
 /// group around it is hidden, and it is not an inactive state of a multi-state object (a frame
 /// draws all the states pasted into it). A link on a hidden item would cover nothing. A nonprinting item
-/// keeps its link: an object rasterized for its soft effects leaves a nonprinting stand-in that
-/// carries the object's links (`link_stand_in` in the engine's PDF flattening).
+/// on a document spread keeps its link: an object rasterized for its soft effects leaves a
+/// nonprinting stand-in that carries the object's links (`link_stand_in` in the engine's PDF
+/// flattening). Flattening leaves no stand-in on a parent spread, so a nonprinting parent item is
+/// one the PDF does not draw, and it has no link.
 fn shown(doc: &Document, loc: &ItemLoc) -> bool {
     let Some(sp) = doc.spread(loc.spread) else { return false };
     let mut items: &[std::sync::Arc<designcraft_doc::Item>] = &sp.items;

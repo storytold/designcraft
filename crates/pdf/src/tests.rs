@@ -792,7 +792,8 @@ fn link_annotation_export_refuses_non_web_schemes() {
     assert!(!s.contains("javascript:"), "a javascript URL is not exported: {s}");
 }
 
-/// Each page's link annotations: the last segment of the URL and the rectangle.
+/// Each page's annotations: the URI of the link (empty for none) and the rectangle (empty for
+/// none), so an annotation with neither still counts.
 fn page_links(bytes: Vec<u8>) -> Vec<Vec<(String, Vec<f32>)>> {
     use craft_pdf::syntax::object::{Array, Dict};
     let pdf = craft_pdf::syntax::Pdf::new(bytes).expect("parse");
@@ -802,11 +803,10 @@ fn page_links(bytes: Vec<u8>) -> Vec<Vec<(String, Vec<f32>)>> {
             let Some(annots) = page.raw().get::<Array>(b"Annots") else { return Vec::new() };
             annots
                 .iter::<Dict>()
-                .filter_map(|a| {
-                    let uri = a.get::<Dict>(b"A")?.get::<craft_pdf::syntax::object::String>(b"URI")?;
-                    let uri = String::from_utf8_lossy(uri.as_bytes()).into_owned();
-                    let name = uri.rsplit('/').next()?.to_owned();
-                    Some((name, a.get::<Array>(b"Rect")?.iter::<f32>().collect()))
+                .map(|a| {
+                    let uri = a.get::<Dict>(b"A").and_then(|a| a.get::<craft_pdf::syntax::object::String>(b"URI"));
+                    let uri = uri.map(|u| String::from_utf8_lossy(u.as_bytes()).into_owned()).unwrap_or_default();
+                    (uri, a.get::<Array>(b"Rect").map(|r| r.iter::<f32>().collect()).unwrap_or_default())
                 })
                 .collect()
         })
@@ -836,16 +836,18 @@ fn only_the_active_state_of_a_multi_state_object_links() {
             dest: HyperlinkDest::Url(format!("https://example.com/{name}")),
         });
     }
-    let names = |d: &Document| -> Vec<String> {
-        page_links(export_pdf(d, &Cache::new(), &PdfOptions::default()).unwrap()).concat().into_iter().map(|(n, _)| n).collect()
-    };
-    assert_eq!(names(&d), ["a"], "state A shows");
+    let links = |d: &Document| page_links(export_pdf(d, &Cache::new(), &PdfOptions::default()).unwrap()).concat();
+    // Each state links over itself: y 100 to 160 from the top of a 792 pt page.
+    let a = ("https://example.com/a".to_owned(), vec![100.0, 632.0, 200.0, 692.0]);
+    let b = ("https://example.com/b".to_owned(), vec![300.0, 632.0, 400.0, 692.0]);
+    assert_eq!(links(&d), [a], "state A shows");
     d.item_mut(gid).unwrap().active_state = 1;
-    assert_eq!(names(&d), ["b"], "state B shows");
+    assert_eq!(links(&d), [b], "state B shows");
 }
 
 /// A hyperlink on a parent page's item or text links on every page that shows it, where it is
-/// drawn there; a page that hides its parent items has no link, nor has a hidden item (#2910).
+/// drawn there; a page that hides its parent items has no link, nor has a hidden or nonprinting
+/// parent item, which the PDF does not draw (#2910).
 #[test]
 fn links_on_a_parent_page_link_on_its_pages() {
     use designcraft_doc::story::PAGE_NUMBER;
@@ -859,6 +861,10 @@ fn links_on_a_parent_page_link_on_its_pages() {
     let mut hidden = Item::new(hidden_id, lid, Shape::Rectangle, rect(Rect::new(300.0, 100.0, 400.0, 160.0)));
     hidden.hidden = true;
     d.insert_item(SpreadRef::Parent(0), hidden, None).unwrap();
+    let unprinted_id = ItemId(d.alloc());
+    let mut unprinted = Item::new(unprinted_id, lid, Shape::Rectangle, rect(Rect::new(300.0, 200.0, 400.0, 260.0)));
+    unprinted.nonprinting = true;
+    d.insert_item(SpreadRef::Parent(0), unprinted, None).unwrap();
     let folio = format!("{PAGE_NUMBER} Folio");
     let (_, sid) = d.add_text_frame(SpreadRef::Parent(0), Rect::new(36.0, 700.0, 300.0, 740.0), lid, &folio, ParaFormat::default()).unwrap();
     let word = folio.len() - 5;
@@ -866,6 +872,7 @@ fn links_on_a_parent_page_link_on_its_pages() {
         (1, "box", HyperlinkSource::Item { id: box_id }),
         (2, "folio", HyperlinkSource::Text { story: sid, start: word, end: folio.len() }),
         (3, "hidden", HyperlinkSource::Item { id: hidden_id }),
+        (4, "nonprinting", HyperlinkSource::Item { id: unprinted_id }),
     ] {
         d.hyperlinks.push(Hyperlink { id, name: name.into(), source, dest: HyperlinkDest::Url(format!("https://example.com/{name}")) });
     }
@@ -876,8 +883,13 @@ fn links_on_a_parent_page_link_on_its_pages() {
     assert!(pages[1].is_empty(), "page 2 hides its parent items: {:?}", pages[1]);
     let mut starts = Vec::new();
     for (i, links) in pages.iter().enumerate().filter(|(i, _)| *i != 1) {
-        let names: Vec<&str> = links.iter().map(|(n, _)| n.as_str()).collect();
-        assert_eq!(names, ["box", "folio"], "page {}: one of each, none for the hidden box", i + 1);
+        let uris: Vec<&str> = links.iter().map(|(u, _)| u.as_str()).collect();
+        assert_eq!(
+            uris,
+            ["https://example.com/box", "https://example.com/folio"],
+            "page {}: one of each, none for the hidden or nonprinting box",
+            i + 1
+        );
         // On a spread of its own, the box links where it is drawn: x 100 to 200, y 100 to 160 from
         // the top of a 792 pt page.
         assert_eq!(links[0].1, [100.0, 632.0, 200.0, 692.0], "page {}", i + 1);
