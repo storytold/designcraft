@@ -10489,3 +10489,25 @@ fn cross_reference_text_breaks_at_its_spaces() {
         }
     }
 }
+
+/// The brackets of a footnote's number before its text are mirrored in a right-to-left footnote.
+/// The number is generated glyphs, which mirroring skipped, so `(١)` read `)١(` (#2964).
+#[test]
+fn a_right_to_left_footnote_mirrors_the_brackets_of_its_number() {
+    // The glyphs the number's opening and closing brackets are drawn with.
+    let brackets = |direction| {
+        let (mut d, sid, fid) = doc_with("Body text.", Rect::new(36.0, 36.0, 400.0, 400.0), ParaAttrs::default());
+        d.footnote_options.prefix = "(".into();
+        d.footnote_options.suffix = ")".into();
+        d.footnote_options.affix_in = designcraft_doc::notes::AffixIn::Both;
+        let para = ParaFormat { para: ParaAttrs { direction: Some(direction), ..Default::default() }, ..Default::default() };
+        d.story_mut(sid).unwrap().insert_note(5, "Note text.", para);
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let note = &cs.frame(fid).unwrap().notes[0].text;
+        let gid = |s: &str| note.frames[0].lines[0].glyphs.iter().find(|g| g.generated_text.as_deref() == Some(s)).map(|g| g.gid).unwrap();
+        (gid("("), gid(")"))
+    };
+    let (open, close) = brackets(designcraft_doc::TextDirection::LeftToRight);
+    assert_ne!(open, close);
+    assert_eq!(brackets(designcraft_doc::TextDirection::RightToLeft), (close, open), "mirrored right to left");
+}
