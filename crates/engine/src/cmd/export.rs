@@ -1,6 +1,8 @@
 //! File › Export PDF (Print).
 
-use designcraft_pdf::{Marks, PdfOptions, Standard};
+use designcraft_pdf::{
+    ColorConversion, Downsample, ImageCompression, ImageOptions, ImageSampling, JpegQuality, Marks, OutputColor, PdfOptions, Standard,
+};
 use serde_json::{Value, json};
 use std::{borrow::Cow, sync::Arc};
 
