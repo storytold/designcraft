@@ -249,6 +249,53 @@ fn cmd_ci() -> Result<(), String> {
 }
 
 const PNGSUITE_URL: &str = "http://www.schaik.com/pngsuite/PngSuite-2017jul19.tgz";
+/// The real archive is 68 KB, 178 entries and 256 KB expanded; the site has no HTTPS, so what
+/// arrives is bounded instead of trusted: compressed size, entries, and expanded bytes.
+const PNGSUITE_MAX_ARCHIVE: u64 = 1 << 20;
+const PNGSUITE_MAX_ENTRIES: usize = 1000;
+const PNGSUITE_MAX_EXTRACTED: u64 = 16 << 20;
+
+/// Bytes of the files under `dir`; `u64::MAX` when any part of it cannot be read, so the caller refuses it.
+fn dir_bytes(dir: &std::path::Path) -> u64 {
+    let mut total = 0u64;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&d) else { return u64::MAX };
+        for e in rd {
+            let Ok(e) = e else { return u64::MAX };
+            match e.metadata() {
+                Ok(m) if m.is_dir() => stack.push(e.path()),
+                Ok(m) => total = total.saturating_add(m.len()),
+                Err(_) => return u64::MAX,
+            }
+        }
+    }
+    total
+}
+
+/// Whether the file bytes of the tar.gz at `tgz` add up to at most `max`, found by streaming them
+/// through `tar -xzOf` and counting: nothing is written to disk, and a decompression bomb is cut
+/// off (the child is killed) as soon as it passes `max`.
+fn expands_within(tgz: &Path, max: u64) -> Result<bool, String> {
+    use std::io::Read;
+    let mut child = Command::new("tar")
+        .arg("-xzOf")
+        .arg(tgz)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("tar -xzOf: failed to spawn: {e}"))?;
+    let Some(out) = child.stdout.take() else { return Err("tar -xzOf: no stdout".into()) };
+    let n = std::io::copy(&mut out.take(max.saturating_add(1)), &mut std::io::sink()).map_err(|e| format!("tar -xzOf: {e}"))?;
+    if n > max {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Ok(false);
+    }
+    // Within the cap only counts when tar read the whole archive: an early exit proves nothing.
+    let status = child.wait().map_err(|e| format!("tar -xzOf: {e}"))?;
+    if status.success() { Ok(true) } else { Err(format!("tar -xzOf {} failed ({status}); archive refused", tgz.display())) }
+}
 
 fn cmd_corpus(download: bool) -> Result<(), String> {
     let corpus = root().join("corpus");
@@ -273,13 +320,59 @@ Tests that use a corpus skip cleanly when it is absent.
     std::fs::create_dir_all(&dest).map_err(|e| format!("create {}: {e}", dest.display()))?;
     let tgz = corpus.join("PngSuite-2017jul19.tgz");
     let mut curl = Command::new("curl");
-    curl.args(["-fsSL", "-o"]).arg(&tgz).arg(PNGSUITE_URL);
+    curl.args(["-fsSL", "--max-filesize"]).arg(PNGSUITE_MAX_ARCHIVE.to_string()).arg("-o").arg(&tgz).arg(PNGSUITE_URL);
     run(curl, &format!("curl {PNGSUITE_URL}"))?;
+    let refuse = |why: String| {
+        let _ = std::fs::remove_file(&tgz);
+        Err(why)
+    };
+    if std::fs::metadata(&tgz).map_or(true, |m| m.len() > PNGSUITE_MAX_ARCHIVE) {
+        return refuse(format!("the PngSuite download is larger than {PNGSUITE_MAX_ARCHIVE} bytes"));
+    }
+    let listing = Command::new("tar").arg("-tzf").arg(&tgz).output().map_err(|e| format!("tar -tzf: failed to spawn: {e}"))?;
+    if !listing.status.success() || listing.stdout.iter().filter(|b| **b == b'\n').count() > PNGSUITE_MAX_ENTRIES {
+        return refuse(format!("the PngSuite download isn't a tar.gz of at most {PNGSUITE_MAX_ENTRIES} entries"));
+    }
+    match expands_within(&tgz, PNGSUITE_MAX_EXTRACTED) {
+        Ok(true) => {}
+        Ok(false) => return refuse(format!("the PngSuite archive expands to more than {PNGSUITE_MAX_EXTRACTED} bytes; nothing was extracted")),
+        Err(e) => return refuse(e),
+    }
     let mut tar = Command::new("tar");
     tar.arg("-xzf").arg(&tgz).arg("-C").arg(&dest);
-    run(tar, "tar -xzf PngSuite-2017jul19.tgz")?;
+    if let Err(e) = run(tar, "tar -xzf PngSuite-2017jul19.tgz") {
+        let _ = std::fs::remove_dir_all(&dest);
+        return refuse(e);
+    }
     let _ = std::fs::remove_file(&tgz);
+    if dir_bytes(&dest) > PNGSUITE_MAX_EXTRACTED {
+        let _ = std::fs::remove_dir_all(&dest);
+        return Err(format!("the PngSuite archive expanded to more than {PNGSUITE_MAX_EXTRACTED} bytes; removed {}", dest.display()));
+    }
     let n = std::fs::read_dir(&dest).map(|d| d.flatten().filter(|e| e.path().extension().is_some_and(|x| x == "png")).count()).unwrap_or(0);
     println!("PngSuite: {n} PNG files in {}", dest.display());
     if n == 0 { Err("no PNG files extracted".into()) } else { Ok(()) }
+}
+
+#[cfg(test)]
+mod corpus_tests {
+    use super::*;
+
+    #[test]
+    fn a_tarball_that_expands_past_the_cap_is_refused_without_extracting() {
+        let dir = std::env::temp_dir().join(format!("dc-xtask-corpus-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("big"), vec![0u8; 100_000]).unwrap();
+        let tgz = dir.join("a.tgz");
+        let made = Command::new("tar").arg("-czf").arg(&tgz).arg("-C").arg(&dir).arg("big").status();
+        if made.is_ok_and(|s| s.success()) {
+            assert_eq!(expands_within(&tgz, 100_000), Ok(true));
+            assert_eq!(expands_within(&tgz, 99_999), Ok(false));
+            // A truncated archive makes tar fail: not a within-cap answer.
+            let bytes = std::fs::read(&tgz).unwrap();
+            std::fs::write(&tgz, &bytes[..bytes.len() / 2]).unwrap();
+            assert!(expands_within(&tgz, 1 << 20).is_err());
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

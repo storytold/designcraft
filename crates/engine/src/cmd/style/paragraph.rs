@@ -241,9 +241,14 @@ pub(super) fn redefine(s: &mut Session, p: &Value, paragraph: bool) -> Result<Va
     let char_changes = inherited.delta(&current);
     let result = s.edit(|d, _| {
         if paragraph {
+            let before = d.styles.resolve_para_style(&name).0;
             let style = d.styles_mut().para_mut(&name).ok_or_else(|| bad(command, "paragraph style no longer exists"))?;
             style.para.merge(&para_changes);
             style.chars.merge(&char_changes);
+            // Minimum ≤ Desired ≤ Maximum holds in the rows the redefinition changes, over the
+            // styles based on this one and the paragraphs that use them.
+            let rows = crate::cmd::text::justification_rows_changed(&before, &d.styles.resolve_para_style(&name).0);
+            check_justification_after_edit(d, &name, rows, command)?;
         } else {
             let style =
                 d.styles_mut().character.iter_mut().find(|st| st.name == name).ok_or_else(|| bad(command, "character style no longer exists"))?;
@@ -328,7 +333,7 @@ fn apply_para_in_story(
             f.chars.retain_differences(style_chars);
         }
     });
-    for (pi, range) in st.para_ranges().into_iter().enumerate().take(last.saturating_add(1)).skip(first) {
+    for (pi, range) in st.paras_touching(r.clone()).into_iter().filter(|(pi, _)| (first..=last).contains(pi)) {
         let Some(pf) = st.paras.get(pi) else { continue };
         let (_, base) = styles.resolve_para(pf);
         let end = range.end.saturating_add(1).min(st.len());
@@ -345,6 +350,13 @@ fn apply_para_in_story(
     }
 }
 
+/// Paragraph style `name` applied to the paragraphs of `r` in `st`: the paragraphs' and their
+/// text's overrides that the style now gives go (all of them with `clear`).
+pub(crate) fn apply_para_style(st: &mut designcraft_doc::Story, styles: &Styles, name: &str, r: &std::ops::Range<usize>, clear: bool) {
+    let (style_para, style_chars) = styles.resolve_para_style(name);
+    apply_para_in_story(st, r, name, clear, (&style_para, &style_chars), styles);
+}
+
 pub(super) fn apply_para(s: &mut Session, p: &Value) -> Result<Value> {
     let name = str_param(p, "name").ok_or_else(|| bad("style.paragraph.apply", "missing name"))?.to_string();
     let clear = p.get("clearOverrides").and_then(Value::as_bool).unwrap_or(false);
@@ -355,12 +367,24 @@ pub(super) fn apply_para(s: &mut Session, p: &Value) -> Result<Value> {
     s.edit(|d, _| {
         let styles = d.styles.clone();
         let (style_para, style_chars) = styles.resolve_para_style(&name);
+        // Minimum ≤ Desired ≤ Maximum holds in each justification row the style changes in a
+        // paragraph, over the overrides the paragraph keeps.
+        let mut refused = None;
         for t in &targets {
             if let Some(st) = d.text_story_mut(t.story, t.cell) {
+                let last = if t.range.is_empty() { t.range.start } else { t.range.end.saturating_sub(1) };
+                let touched = st.para_at(t.range.start)..=st.para_at(last);
+                let before: Vec<_> = st.paras.get(touched.clone()).unwrap_or_default().iter().map(|pf| styles.resolve_para(pf).0).collect();
                 apply_para_in_story(st, &t.range, &name, clear, (&style_para, &style_chars), &styles);
+                if refused.is_none() {
+                    refused = st.paras.get(touched).unwrap_or_default().iter().zip(&before).find_map(|(pf, old)| {
+                        let new = styles.resolve_para(pf).0;
+                        crate::cmd::text::justification_order_error(&new, crate::cmd::text::justification_rows_changed(old, &new))
+                    });
+                }
             }
         }
-        ok()
+        refused.map_or_else(ok, |m| Err(bad("style.paragraph.apply", m)))
     })
 }
 
@@ -374,23 +398,29 @@ pub(super) fn apply_char(s: &mut Session, p: &Value) -> Result<Value> {
         let styles = d.styles.clone();
         for t in &targets {
             if let Some(st) = d.text_story_mut(t.story, t.cell) {
-                for (pi, range) in st.para_ranges().into_iter().enumerate() {
-                    let range = range.start.max(t.range.start)..range.end.saturating_add(1).min(st.len()).min(t.range.end);
-                    if range.is_empty() {
-                        continue;
-                    }
-                    let Some(pf) = st.paras.get(pi) else { continue };
-                    let (_, mut inherited) = styles.resolve_para(pf);
-                    inherited.apply(&styles.char_style_attrs(&name));
-                    st.format_chars(range, |f| {
-                        f.style = name.clone();
-                        f.over.retain_differences(&inherited);
-                    });
-                }
+                apply_char_style(st, &styles, &name, &t.range);
             }
         }
         ok()
     })
+}
+
+/// Character style `name` applied to `r` in `st`: the text's overrides that the style (over its
+/// paragraph) now gives go.
+pub(crate) fn apply_char_style(st: &mut designcraft_doc::Story, styles: &Styles, name: &str, r: &std::ops::Range<usize>) {
+    for (pi, range) in st.paras_touching(r.clone()) {
+        let range = range.start.max(r.start)..range.end.saturating_add(1).min(st.len()).min(r.end);
+        if range.is_empty() {
+            continue;
+        }
+        let Some(pf) = st.paras.get(pi) else { continue };
+        let (_, mut inherited) = styles.resolve_para(pf);
+        inherited.apply(&styles.char_style_attrs(name));
+        st.format_chars(range, |f| {
+            f.style = name.to_string();
+            f.over.retain_differences(&inherited);
+        });
+    }
 }
 
 /// In a style, `startAt: null` is Continue from Previous Number: it is stored as an explicit
@@ -403,13 +433,69 @@ fn continue_numbering(p: Option<&Value>, para: &mut ParaAttrs) {
     }
 }
 
+/// After an edit of paragraph style `name`: Minimum ≤ Desired ≤ Maximum in `rows` for the style,
+/// the styles based on it and the story paragraphs that use any of them.
+fn check_justification_after_edit(d: &designcraft_doc::Document, name: &str, rows: [bool; 3], command_id: &str) -> Result<()> {
+    if !rows.contains(&true) {
+        return Ok(());
+    }
+    let styles = &d.styles;
+    let affected: Vec<&str> = styles.paragraph.iter().map(|st| st.name.as_str()).filter(|n| styles.para_based_on_cycles(name, n)).collect();
+    for n in &affected {
+        if let Some(m) = crate::cmd::text::justification_order_error(&styles.resolve_para_style(n).0, rows) {
+            return Err(bad(command_id, if *n == name { m } else { format!("paragraph style {n:?}: {m}") }));
+        }
+    }
+    for st in d.stories.values() {
+        let mut check = |pf: &designcraft_doc::ParaFormat| {
+            if affected.contains(&pf.style.as_str()) { crate::cmd::text::justification_order_error(&styles.resolve_para(pf).0, rows) } else { None }
+        };
+        if let Some(m) = first_in_nested_paras(st, &mut check) {
+            return Err(bad(command_id, format!("a paragraph of story {}: {m}", st.id.0)));
+        }
+    }
+    Ok(())
+}
+
+/// The first answer `f` gives for a paragraph of `story`, its table cells, footnotes or endnotes,
+/// at any depth. The walk keeps its own stack, so a deeply nested document can't exhaust the
+/// call stack.
+fn first_in_nested_paras(story: &designcraft_doc::Story, f: &mut impl FnMut(&designcraft_doc::ParaFormat) -> Option<String>) -> Option<String> {
+    let mut pending = vec![story];
+    while let Some(story) = pending.pop() {
+        if let Some(m) = story.paras.iter().find_map(&mut *f) {
+            return Some(m);
+        }
+        pending.extend(story.tables.values().flat_map(|t| t.cells.iter().map(|c| &c.text)));
+        pending.extend(story.notes.iter().chain(&story.endnotes).map(|n| &n.text));
+    }
+    None
+}
+
+/// The justification rows the `para` object of `p` sets or clears.
+fn justification_rows_given(p: &Value) -> [bool; 3] {
+    crate::cmd::text::justification_rows_named(p.get("para").and_then(Value::as_object).into_iter().flat_map(|o| o.keys().map(String::as_str)))
+}
+
+/// The style `p[key]` names: none when absent or null; anything but a name is refused.
+fn style_name_param(cmd: &str, p: &Value, key: &str) -> Result<Option<String>> {
+    match p.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(n)) => Ok(Some(n.clone())),
+        Some(_) => Err(bad(cmd, format!("`{key}` is a style name or null"))),
+    }
+}
+
 pub(super) fn create_para(s: &mut Session, p: &Value) -> Result<Value> {
     let base = str_param(p, "name").unwrap_or("Paragraph Style 1").to_string();
+    let based_on = style_name_param("style.paragraph.create", p, "basedOn")?;
+    let next = style_name_param("style.paragraph.create", p, "nextStyle")?;
     let mut para: ParaAttrs =
         attrs("style.paragraph.create", "para", p, |a: &mut ParaAttrs, k, v| a.set_json_over(k, v, &designcraft_doc::ParaProps::default()))?;
     continue_numbering(p.get("para"), &mut para);
     explicit_default_kinsoku(&mut para, p.get("para"));
     check_grep_styles("style.paragraph.create", &para)?;
+    let mut rows = justification_rows_given(p);
     let mut chars: CharAttrs = attrs("style.paragraph.create", "chars", p, |a: &mut CharAttrs, k, v| a.set_json(k, v))?;
     // Validate caller-supplied fills, not selection fills retained after a swatch is deleted.
     crate::cmd::text::validate_char_fill(&s.doc()?.doc, &chars, "style.paragraph.create")?;
@@ -421,6 +507,7 @@ pub(super) fn create_para(s: &mut Session, p: &Value) -> Result<Value> {
             let mut full = ParaProps_to_attrs(&pp);
             full.merge(&para);
             para = full;
+            rows = [true; 3];
         }
         if let Ok(cp) = serde_json::from_value::<designcraft_doc::CharProps>(cur["chars"].clone()) {
             let mut full = CharProps_to_attrs(&cp);
@@ -428,8 +515,8 @@ pub(super) fn create_para(s: &mut Session, p: &Value) -> Result<Value> {
             chars = full;
         }
     }
-    let based_on = str_param(p, "basedOn").map(str::to_string);
-    let next = str_param(p, "nextStyle").map(str::to_string);
+    // The values taken from the selection are checked with the given ones.
+    crate::cmd::text::validate_para_values(&para, "style.paragraph.create")?;
     s.edit(|d, _| {
         let name = Styles::unique_name(|n| d.styles.para(n).is_some(), &base);
         if let Some(b) = &based_on
@@ -437,7 +524,17 @@ pub(super) fn create_para(s: &mut Session, p: &Value) -> Result<Value> {
         {
             return Err(bad("style.paragraph.create", format!("no style `{b}`")));
         }
+        // Next Style: a style of the document, or this one.
+        if let Some(n) = &next
+            && *n != name
+            && d.styles.para(n).is_none()
+        {
+            return Err(bad("style.paragraph.create", format!("no style `{n}`")));
+        }
         d.styles_mut().paragraph.push(ParagraphStyle { name: name.clone(), based_on, next_style: next, para, chars, shortcut: String::new() });
+        // Minimum ≤ Desired ≤ Maximum holds over what the style resolves to.
+        let (resolved, _) = d.styles.resolve_para_style(&name);
+        crate::cmd::text::validate_justification_order(&resolved, rows, "style.paragraph.create")?;
         Ok(json!({"name": name}))
     })
 }
@@ -499,11 +596,41 @@ pub(super) fn edit_para(s: &mut Session, p: &Value) -> Result<Value> {
     crate::cmd::text::validate_char_fill(&s.doc()?.doc, &chars, "style.paragraph.edit")?;
     let rename = str_param(p, "rename").map(str::trim).filter(|n| *n != name).map(str::to_string);
     let based = p.get("basedOn").cloned();
+    let next = p.get("nextStyle").cloned();
+    let reset = p.get("resetToBase").and_then(Value::as_bool).unwrap_or(false);
+    for (key, v) in [("basedOn", &based), ("nextStyle", &next)] {
+        if v.as_ref().is_some_and(|v| !v.is_string() && !v.is_null()) {
+            return Err(bad("style.paragraph.edit", format!("`{key}` must be a style name or null")));
+        }
+    }
     s.edit(|d, _| {
-        if let Some(Value::String(b)) = &based
-            && d.styles.para_based_on_cycles(&name, b)
+        if let Some(Value::String(b)) = &based {
+            if d.styles.para(b).is_none() {
+                return Err(bad("style.paragraph.edit", format!("no style `{b}`")));
+            }
+            if d.styles.para_based_on_cycles(&name, b) {
+                return Err(bad("style.paragraph.edit", "based-on would create a cycle"));
+            }
+        }
+        if let Some(Value::String(n)) = &next
+            && d.styles.para(n).is_none()
         {
-            return Err(bad("style.paragraph.edit", "based-on would create a cycle"));
+            return Err(bad("style.paragraph.edit", format!("no style `{n}`")));
+        }
+        // Reset To Base: what the style set of its own goes before the edits apply.
+        if reset {
+            let st = d.styles_mut().para_mut(&name).ok_or_else(|| bad("style.paragraph.edit", format!("no style `{name}`")))?;
+            st.para = ParaAttrs::default();
+            st.chars = CharAttrs::default();
+        }
+        // A new Based On first, so the fields below resolve over the new parent.
+        if based.is_some() {
+            let st = d.styles_mut().para_mut(&name).ok_or_else(|| bad("style.paragraph.edit", format!("no style `{name}`")))?;
+            match &based {
+                Some(Value::String(b)) => st.based_on = Some(b.clone()),
+                Some(Value::Null) => st.based_on = None,
+                _ => {}
+            }
         }
         if let Some(n) = &rename {
             if n.is_empty() || n.starts_with('[') {
@@ -519,12 +646,18 @@ pub(super) fn edit_para(s: &mut Session, p: &Value) -> Result<Value> {
         continue_numbering(p.get("para"), &mut para);
         explicit_default_kinsoku(&mut para, p.get("para"));
         check_grep_styles("style.paragraph.edit", &para)?;
+        crate::cmd::text::validate_para_values(&para, "style.paragraph.edit")?;
         let st = d.styles_mut().para_mut(&name).ok_or_else(|| bad("style.paragraph.edit", format!("no style `{name}`")))?;
         st.para.merge(&para);
         st.chars.merge(&chars);
-        match based {
-            Some(Value::String(b)) => st.based_on = Some(b),
-            Some(Value::Null) => st.based_on = None,
+        // Minimum ≤ Desired ≤ Maximum holds over what the style resolves to: in the rows the edit
+        // names, or in every row when it changes Based On or resets the style.
+        let rows = if reset || based.is_some() { [true; 3] } else { justification_rows_given(p) };
+        check_justification_after_edit(d, &name, rows, "style.paragraph.edit")?;
+        let st = d.styles_mut().para_mut(&name).ok_or_else(|| bad("style.paragraph.edit", format!("no style `{name}`")))?;
+        match next {
+            Some(Value::String(n)) => st.next_style = Some(n),
+            Some(Value::Null) => st.next_style = None,
             _ => {}
         }
         if let Some(n) = rename.clone() {
@@ -781,7 +914,7 @@ pub(super) fn create_char(s: &mut Session, p: &Value) -> Result<Value> {
         chars = captured;
     }
     // Based on [None] is based on nothing.
-    let based_on = str_param(p, "basedOn").filter(|b| *b != designcraft_doc::NO_CHAR_STYLE).map(str::to_string);
+    let based_on = style_name_param("style.character.create", p, "basedOn")?.filter(|b| b != designcraft_doc::NO_CHAR_STYLE);
     s.edit(|d, _| {
         if let Some(b) = &based_on
             && d.styles.char_style(b).is_none()
@@ -1141,6 +1274,7 @@ mod delete_tests {
         assert_eq!(s.doc().unwrap().history.undo.len(), undo);
     }
 
+    /// Deleting a paragraph style also redirects TOC style references to its replacement.
     #[test]
     fn deleting_a_paragraph_style_points_every_use_at_the_replacement() {
         let mut s = Session::new();
@@ -1162,6 +1296,7 @@ mod delete_tests {
                 entries: vec![TocEntry { entry_style: Some("Table Body".into()), ..TocEntry::new("Table Body", 1) }],
                 page_numbers: false,
                 title_style: Some("Table Body".into()),
+                create_bookmarks: false,
             });
             Ok(())
         })

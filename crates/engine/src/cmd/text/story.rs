@@ -125,9 +125,12 @@ pub(super) fn selection_attrs(s: &mut Session, p: &Value) -> Result<Value> {
     let char_delta = character_base.delta(&cp);
     let style_keys = character_style.keys();
     let character_style_overrides = char_delta.keys().iter().filter(|key| style_keys.contains(key)).count();
+    // The text's own formatting over its paragraph, as Create New Style from Selection captures it.
+    let mut own = character_style.clone();
+    own.merge(&cf.over);
     // The selected text (its start, on one line), for previews such as the font menu's.
     let selected = selected_text_preview(story.text.get(r.start..r.end).unwrap_or_default().chars());
-    let mut out = json!({"story": sid.0, "paragraphStyle": pf.style, "characterStyle": cf.style, "para": pp, "chars": cp,
+    let mut out = json!({"story": sid.0, "paragraphStyle": pf.style, "characterStyle": cf.style, "para": pp, "chars": cp, "ownChars": own,
         "paraOverrides": style_para.delta(&pp).count() + style_chars.delta(&base).count(),
         "charOverrides": char_delta.count(), "characterStyleOverrides": character_style_overrides,
         "selectedText": selected.trim()});

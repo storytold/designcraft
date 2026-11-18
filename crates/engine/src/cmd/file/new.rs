@@ -13,10 +13,11 @@ fn find_preset(s: &Session, name: &str) -> Option<NewDocument> {
 }
 
 /// The settings `file.new` makes a document with for `p`: its preset, then the settings over it.
+/// Without a preset or `units`, it is in the default units (Preferences with no document).
 fn new_document_settings(s: &Session, p: &Value) -> Result<NewDocument> {
     let mut nd = match str_param(p, "preset") {
         Some(name) => find_preset(s, name).ok_or_else(|| bad("file.new", format!("unknown preset `{name}`")))?,
-        None => NewDocument::default(),
+        None => s.default_new_document(),
     };
     apply_settings(&mut nd, p);
     check_size("file.new", &nd)?;
@@ -40,12 +41,19 @@ pub(super) fn file_new(s: &mut Session, p: &Value) -> Result<Value> {
     let mut nd = new_document_settings(s, p)?;
     s.untitled += 1;
     nd.title = str_param(p, "title").map(str::to_string).unwrap_or_else(|| format!("Untitled-{}", s.untitled));
-    let d = new_document(&nd);
+    let mut d = new_document(&nd);
+    s.prefs.default_units.apply(&mut d.settings, p.get("preset").is_some_and(|v| !v.is_null()));
     let i = s.add_document(DocState::new(d, None));
     Ok(json!({"index": i}))
 }
 
 impl Session {
+    /// What New Document starts with: the factory settings, in the default units (Preferences
+    /// with no document open).
+    pub fn default_new_document(&self) -> NewDocument {
+        NewDocument { units: self.prefs.default_units.horizontal_units, ..NewDocument::default() }
+    }
+
     /// New Document's Preview: a document made as `file.new` would make it with `p`, shown while
     /// the New Document window is open. It replaces the previous preview document in its tab and
     /// takes no Untitled number, no undo step and no recovery entry. Settings `file.new` refuses
@@ -64,7 +72,9 @@ impl Session {
             self.untitled += 1;
         }
         nd.title = str_param(p, "title").map(str::to_string).unwrap_or_else(|| self.next_untitled_title());
-        let st = DocState::new(new_document(&nd), None);
+        let mut d = new_document(&nd);
+        self.prefs.default_units.apply(&mut d.settings, p.get("preset").is_some_and(|v| !v.is_null()));
+        let st = DocState::new(d, None);
         let uid = st.uid;
         match replace.and_then(|i| self.docs.get_mut(i).map(|d| (i, d))) {
             Some((i, d)) => {
@@ -166,7 +176,7 @@ fn apply_settings(nd: &mut NewDocument, p: &Value) {
     nd.start_page = p.get("startPage").and_then(Value::as_u64).map(|v| v.clamp(1, 99_999) as u32).unwrap_or(nd.start_page);
     nd.facing_pages = p.get("facingPages").and_then(Value::as_bool).unwrap_or(nd.facing_pages);
     nd.columns = p.get("columns").and_then(Value::as_u64).map(|v| v.clamp(1, 216) as u32).unwrap_or(nd.columns);
-    nd.gutter = f64_or(p, "gutter", nd.gutter);
+    nd.gutter = p.get("gutter").and_then(Value::as_f64).filter(|g| g.is_finite()).unwrap_or(nd.gutter).max(0.0);
     nd.primary_text_frame = p.get("primaryTextFrame").and_then(Value::as_bool).unwrap_or(nd.primary_text_frame);
     match p.get("margins") {
         Some(Value::Number(n)) => nd.margins = designcraft_doc::Margins::uniform(n.as_f64().unwrap_or(36.0)),
@@ -242,6 +252,16 @@ mod new_document_tests {
         s.execute("file.deletePreset", &json!({"name": "newsletter"})).unwrap();
         assert!(s.execute("file.deletePreset", &json!({"name": "newsletter"})).is_err());
         assert!(s.execute("file.new", &json!({"preset": "Newsletter"})).is_err());
+    }
+
+    #[test]
+    fn negative_gutter_is_clamped_to_zero() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"gutter": -50, "columns": 2})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        assert_eq!(d.page(0).unwrap().columns.gutter, 0.0);
+        s.execute("file.savePreset", &json!({"name": "Tight", "gutter": -50, "columns": 2})).unwrap();
+        assert_eq!(s.prefs.document_presets[0].gutter, 0.0);
     }
 
     #[test]

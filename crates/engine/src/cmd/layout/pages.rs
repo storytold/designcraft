@@ -61,84 +61,93 @@ pub(crate) fn resize_pages(d: &mut designcraft_doc::Document, pages: &[usize], w
 /// [`resize_pages`] keeping reference point `anchor` (0–8, row-major from the top-left) in place:
 /// the page grows away from it, so objects keep their place relative to it.
 pub(crate) fn resize_pages_from(d: &mut designcraft_doc::Document, pages: &[usize], w: Option<f64>, h: Option<f64>, anchor: usize) {
+    for page in pages {
+        let Some((si, pi)) = page.checked_sub(1).and_then(|i| d.page_loc(i)) else { continue };
+        resize_spread_page(d, designcraft_doc::SpreadRef::Doc(si), pi, w.map(|v| v.max(1.0)), h.map(|v| v.max(1.0)), anchor);
+    }
+}
+
+pub(super) fn resize_spread_page(
+    d: &mut designcraft_doc::Document,
+    sr: designcraft_doc::SpreadRef,
+    pi: usize,
+    w: Option<f64>,
+    h: Option<f64>,
+    anchor: usize,
+) {
     let (fx, fy) = ((anchor % 3) as f64 / 2.0, (anchor / 3).min(2) as f64 / 2.0);
-    {
-        for page in pages {
-            let Some((si, pi)) = d.page_loc(page - 1) else { continue };
-            let sp = std::sync::Arc::make_mut(&mut d.spreads[si]);
-            let old: Vec<f64> = sp.pages.iter().map(|x| x.x).collect();
-            let old_bounds = sp.pages[pi].bounds();
-            // The page's own objects (outer pages take the pasteboard beside them).
-            let last = sp.pages.len() - 1;
-            let (lo, hi) = (if pi == 0 { f64::NEG_INFINITY } else { old_bounds.x0 }, if pi == last { f64::INFINITY } else { old_bounds.x1 });
-            let own: Vec<usize> = sp
-                .items
-                .iter()
-                .enumerate()
-                .filter(|(_, it)| {
-                    let c = it.bounds().center().x;
-                    c >= lo && c < hi
-                })
-                .map(|(i, _)| i)
-                .collect();
-            let pg = &mut sp.pages[pi];
-            let dw = w.map_or(0.0, |w| w.max(1.0) - pg.width);
-            let dh = h.map_or(0.0, |h| h.max(1.0) - pg.height);
-            if let Some(w) = w {
-                set_page_width(pg, w.max(1.0));
-            }
-            if let Some(h) = h {
-                pg.height = h.max(1.0);
-            }
-            let left = pg.side == designcraft_doc::PageSide::Left;
-            sp.relayout();
-            // Keep the spine: shift the whole spread back when a left page grows.
-            if left && dw != 0.0 {
-                for q in &mut sp.pages {
-                    q.x -= dw;
-                }
-            }
-            let new: Vec<f64> = sp.pages.iter().map(|x| x.x).collect();
-            // Objects follow their page.
-            let shifts: Vec<(f64, f64, f64)> =
-                sp.pages.iter().enumerate().map(|(k, q)| (old[k], old[k] + q.width - if k == pi { dw } else { 0.0 }, new[k] - old[k])).collect();
-            for it in &mut sp.items {
-                let cx = it.bounds().center().x;
-                if let Some((_, _, dx)) = shifts.iter().find(|(a, b, _)| cx >= *a && cx < *b)
-                    && *dx != 0.0
-                {
-                    let it = std::sync::Arc::make_mut(it);
-                    it.xf = designcraft_geom::Affine::translate((*dx, 0.0)) * it.xf;
-                }
-            }
-            // Page guides move with their page.
-            for (k, q) in sp.pages.iter_mut().enumerate() {
-                let dx = new[k] - old[k];
-                if dx != 0.0 {
-                    for g in q.guides.iter_mut().filter(|g| g.orientation == designcraft_doc::Orientation::Vertical) {
-                        g.position += dx;
-                    }
-                }
-            }
-            // Growing away from the anchor: the page's objects and guides keep their place
-            // relative to it.
-            let shift = designcraft_geom::Vec2::new(fx * dw, fy * dh);
-            if shift != designcraft_geom::Vec2::ZERO {
-                for i in &own {
-                    if let Some(it) = sp.items.get_mut(*i) {
-                        let it = std::sync::Arc::make_mut(it);
-                        it.xf = designcraft_geom::Affine::translate(shift) * it.xf;
-                    }
-                }
-                for g in &mut sp.pages[pi].guides {
-                    g.position += if g.orientation == designcraft_doc::Orientation::Vertical { shift.x } else { shift.y };
-                }
-            }
-            // Liquid rules: objects were carried along with the page's left edge (and the anchor).
-            let moved = old_bounds + designcraft_geom::Vec2::new(new[pi] - old[pi], 0.0) + shift;
-            crate::cmd::liquid::apply(d, designcraft_doc::SpreadRef::Doc(si), pi, moved);
+    let Some(sp) = d.spread_mut(sr) else { return };
+    let origin = sp.bounds().x0;
+    let old: Vec<f64> = sp.pages.iter().map(|x| x.x).collect();
+    let old_bounds = sp.pages[pi].bounds();
+    // The page's own objects (outer pages take the pasteboard beside them).
+    let Some((leftmost, rightmost)) = sp.outer_page_indices() else { return };
+    let (lo, hi) = (if pi == leftmost { f64::NEG_INFINITY } else { old_bounds.x0 }, if pi == rightmost { f64::INFINITY } else { old_bounds.x1 });
+    let own: Vec<usize> = sp
+        .items
+        .iter()
+        .enumerate()
+        .filter(|(_, it)| {
+            let c = it.bounds().center().x;
+            c >= lo && c < hi
+        })
+        .map(|(i, _)| i)
+        .collect();
+    let pg = &mut sp.pages[pi];
+    let dw = w.map_or(0.0, |w| w - pg.width);
+    let dh = h.map_or(0.0, |h| h - pg.height);
+    if let Some(w) = w {
+        set_page_width(pg, w);
+    }
+    if let Some(h) = h {
+        pg.height = h;
+    }
+    let left = pg.side == designcraft_doc::PageSide::Left;
+    sp.relayout();
+    // Relayout resets the origin; retain prior edits and grow left pages away from the spine.
+    let offset = origin - if left { dw } else { 0.0 };
+    for q in &mut sp.pages {
+        q.x += offset;
+    }
+    let new: Vec<f64> = sp.pages.iter().map(|x| x.x).collect();
+    // Objects follow their page.
+    let shifts: Vec<(f64, f64, f64)> =
+        sp.pages.iter().enumerate().map(|(k, q)| (old[k], old[k] + q.width - if k == pi { dw } else { 0.0 }, new[k] - old[k])).collect();
+    for it in &mut sp.items {
+        let cx = it.bounds().center().x;
+        if let Some((_, _, dx)) = shifts.iter().find(|(a, b, _)| cx >= *a && cx < *b)
+            && *dx != 0.0
+        {
+            let it = std::sync::Arc::make_mut(it);
+            it.xf = designcraft_geom::Affine::translate((*dx, 0.0)) * it.xf;
         }
     }
+    // Page guides move with their page.
+    for (k, q) in sp.pages.iter_mut().enumerate() {
+        let dx = new[k] - old[k];
+        if dx != 0.0 {
+            for g in q.guides.iter_mut().filter(|g| g.orientation == designcraft_doc::Orientation::Vertical) {
+                g.position += dx;
+            }
+        }
+    }
+    // Growing away from the anchor: the page's objects and guides keep their place
+    // relative to it.
+    let shift = designcraft_geom::Vec2::new(fx * dw, fy * dh);
+    if shift != designcraft_geom::Vec2::ZERO {
+        for i in &own {
+            if let Some(it) = sp.items.get_mut(*i) {
+                let it = std::sync::Arc::make_mut(it);
+                it.xf = designcraft_geom::Affine::translate(shift) * it.xf;
+            }
+        }
+        for g in &mut sp.pages[pi].guides {
+            g.position += if g.orientation == designcraft_doc::Orientation::Vertical { shift.x } else { shift.y };
+        }
+    }
+    // Liquid rules: objects were carried along with the page's left edge (and the anchor).
+    let moved = old_bounds + designcraft_geom::Vec2::new(new[pi] - old[pi], 0.0) + shift;
+    crate::cmd::liquid::apply(d, sr, pi, moved);
 }
 
 /// File › Document Setup values.
@@ -321,6 +330,51 @@ mod setup_tests {
 #[cfg(test)]
 mod page_size_tests {
     use serde_json::json;
+
+    #[test]
+    fn document_page_resize_preserves_shifted_spread_objects_and_guides() {
+        for binding in ["leftToRight", "rightToLeft"] {
+            let mut s = crate::Session::new();
+            s.execute("file.new", &json!({"pages": 3, "facingPages": true, "width": 400, "height": 400})).unwrap();
+            s.execute("layout.documentSetup", &json!({"binding": binding})).unwrap();
+            let before = s.doc().unwrap().doc.clone();
+            let (si, _) = before.page_loc(1).unwrap();
+            let (left, right) = before.spreads[si].outer_page_indices().unwrap();
+            let mut items = Vec::new();
+            for pi in [left, right] {
+                let x = before.spreads[si].pages[pi].x;
+                let id = s.execute("frame.create", &json!({"spread": si, "rect": [x + 80.0, 80, x + 180.0, 180]})).unwrap()["id"].as_u64().unwrap();
+                items.push(designcraft_doc::ItemId(id));
+                s.execute("guide.add", &json!({"spread": si, "page": pi, "orientation": "vertical", "position": x + 120.0})).unwrap();
+            }
+            let first = before.first_page_of_spread(si) + 1;
+            s.execute("layout.pageSize", &json!({"pages": [first + left], "width": 300})).unwrap();
+            let shifted = s.doc().unwrap().doc.clone();
+            let sp = &shifted.spreads[si];
+            assert_eq!(sp.bounds().x0, 100.0);
+            assert_eq!(sp.pages[right].x, 400.0);
+            assert_eq!(sp.pages[left].guides[0].position, 220.0);
+            assert_eq!(sp.pages[right].guides[0].position, 520.0);
+            assert_eq!(shifted.item(items[0]).unwrap().bounds().x0, 180.0);
+            assert_eq!(shifted.item(items[1]).unwrap().bounds().x0, 480.0);
+            for width in [500, 450, 520] {
+                s.execute("layout.pageSize", &json!({"pages": [first + right], "width": width})).unwrap();
+                let d = &s.doc().unwrap().doc;
+                let sp = &d.spreads[si];
+                assert_eq!(sp.bounds().x0, 100.0, "{binding}, width {width}");
+                assert_eq!(sp.pages[right].x, 400.0);
+                for pi in [left, right] {
+                    assert_eq!(sp.pages[pi].guides, shifted.spreads[si].pages[pi].guides);
+                }
+                for id in &items {
+                    assert_eq!(d.item(*id).unwrap().bounds(), shifted.item(*id).unwrap().bounds());
+                }
+                assert_eq!(d.parents, before.parents);
+                assert_eq!(d.settings, before.settings);
+                d.check().unwrap();
+            }
+        }
+    }
 
     #[test]
     fn page_size_per_page_keeps_objects_on_their_page() {

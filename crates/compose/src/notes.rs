@@ -14,7 +14,7 @@
 //! With Span Footnotes Across Columns the notes of a frame share one area across all its columns,
 //! composed at the frame's text width: every column of the frame makes room for it.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -146,11 +146,13 @@ impl Notes {
     }
 
     /// Footnote indices referenced by a line's glyphs.
+    /// In the order they first appear; a set keeps a line with many references linear.
     pub fn refs_in(&self, glyphs: &[Glyph]) -> Vec<usize> {
         let mut v: Vec<usize> = Vec::new();
+        let mut seen = HashSet::new();
         for g in glyphs.iter().filter(|g| g.ch == FOOTNOTE_REF && g.len > 0) {
             if let Ok(k) = self.refs.binary_search(&g.byte)
-                && !v.contains(&k)
+                && seen.insert(k)
             {
                 v.push(k);
             }
@@ -176,6 +178,7 @@ impl Notes {
             page_name: f.page_name.clone(),
             section_marker: f.section_marker.clone(),
             page: f.page,
+            parent: f.parent,
             grid: None,
             left_page: f.left_page,
             right_page: f.right_page,

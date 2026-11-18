@@ -262,10 +262,23 @@ impl Exporter<'_> {
         }
     }
 
-    pub(crate) fn frame_text(&mut self, s: &mut Surface, cs: &ComposedStory, ft: &FrameText, story: &str) {
+    /// The frame's text. With `objects` (the frame text space → page transform and the page),
+    /// the frame's anchored objects are drawn too, over its paragraph shading and under its text;
+    /// returns whether they were.
+    pub(crate) fn frame_text(
+        &mut self,
+        s: &mut Surface,
+        cs: &ComposedStory,
+        ft: &FrameText,
+        story: &str,
+        objects: Option<(Affine, Option<usize>)>,
+    ) -> bool {
         // Paragraph shading and rules under the text.
         self.as_artifact(s, |me, s| {
             for d in ft.decos.iter().filter(|d| !d.nonprinting) {
+                if d.overprint {
+                    me.warn("overprint is not exported yet");
+                }
                 if let Some(c) = me.swatch_color(&d.color, d.tint) {
                     match &d.path {
                         Some(p) => me.fill_path(s, p, c),
@@ -277,6 +290,17 @@ impl Exporter<'_> {
                 me.tables(s, ft);
             }
         });
+        // Anchored objects under the text (as InDesign draws them): a picture whose frame reaches
+        // into the next line doesn't hide that line. Objects keep their page-space transforms.
+        let drawn = match objects {
+            Some((xf, page)) if xf.determinant().abs() > 1e-12 => {
+                s.push_transform(&tf(xf.inverse()));
+                self.frame_objects(s, ft, xf, page);
+                s.pop();
+                true
+            }
+            _ => false,
+        };
         // All underlines precede all glyph runs, including ink overlapping from another run.
         let underlines = text_rules(cs, ft, true);
         if !underlines.is_empty() {
@@ -301,12 +325,13 @@ impl Exporter<'_> {
                 if let Some(nft) = n.text.frames.first() {
                     s.push_transform(&tf(Affine::translate(n.origin.to_vec2())));
                     let area = std::mem::replace(&mut me.text_area, lines_area(nft));
-                    me.frame_text(s, &n.text, nft, &n.source);
+                    me.frame_text(s, &n.text, nft, &n.source, None);
                     me.text_area = area;
                     s.pop();
                 }
             }
         });
+        drawn
     }
 
     /// One table cell's graphic, or its text composed in the cell's own area.
@@ -322,7 +347,7 @@ impl Exporter<'_> {
         } else if let Some(cft) = c.text.frames.first() {
             s.push_transform(&tf(Affine::translate(c.origin.to_vec2())));
             let area = std::mem::replace(&mut self.text_area, lines_area(cft));
-            self.frame_text(s, &c.text, cft, &c.source);
+            self.frame_text(s, &c.text, cft, &c.source, None);
             self.text_area = area;
             s.pop();
         }
@@ -345,70 +370,86 @@ impl Exporter<'_> {
                 }
             }
             for c in &t.cells {
+                if !c.diagonals_in_front {
+                    self.cell_diagonals(s, c);
+                }
                 self.table_cell(s, c);
+                if c.diagonals_in_front {
+                    self.cell_diagonals(s, c);
+                }
             }
             for seg in &t.strokes {
-                let st = &seg.stroke;
-                let Some(col) = self.swatch_color(&st.color, st.tint) else { continue };
-                let kind = self.doc.stroke_kind(&st.kind);
-                let mut bp = BezPath::new();
-                bp.move_to(seg.a);
-                bp.line_to(seg.b);
-                let Some(p) = to_path(&bp) else { continue };
-                // Butt-ended fills close the table's corners the way square caps do.
-                let (ca, cb) = t.corner_capped(seg);
-                let mut capped = BezPath::new();
-                capped.move_to(ca);
-                capped.line_to(cb);
-                let Some(cp) = to_path(&capped) else { continue };
-                // Gap colour under dashes, dots and stripes: the whole edge, solid.
-                if !matches!(kind, designcraft_doc::StrokeType::Solid)
-                    && st.gap_color != designcraft_color::swatch::NONE
-                    && let Some(gap) = self.swatch_color(&st.gap_color, st.gap_tint)
-                {
-                    s.set_fill(None);
-                    s.set_stroke(Some(Stroke {
-                        paint: gap.into(),
-                        width: st.weight as f32,
-                        line_cap: krilla::paint::LineCap::Butt,
-                        ..Default::default()
-                    }));
-                    s.draw_path(&cp);
-                    s.set_stroke(None);
-                }
-                // Stripes, wavy and hash types are fills along the edge.
-                if let Some(o) = kind.outline(&capped, st.weight, 0.05)
-                    && let Some(op) = to_path(&o)
-                {
-                    s.set_stroke(None);
-                    s.set_fill(Some(solid_fill(col, 1.0)));
-                    s.draw_path(&op);
-                    s.set_fill(None);
-                    continue;
-                }
-                let (cap, dash) = match &kind {
-                    designcraft_doc::StrokeType::Dashed { pattern }
-                        if designcraft_doc::StrokeType::expandable_dashes(pattern, seg.a.distance(seg.b)) =>
-                    {
-                        let mut pat: Vec<f32> = pattern.iter().map(|v| v.max(0.0) as f32).collect();
-                        if pat.len() % 2 == 1 {
-                            pat.extend(pat.clone());
-                        }
-                        (krilla::paint::LineCap::Butt, Some(krilla::paint::StrokeDash { array: pat, offset: 0.0 }))
-                    }
-                    designcraft_doc::StrokeType::Dotted
-                        if designcraft_doc::StrokeType::expandable_dashes(&[0.0, st.weight * 2.0], seg.a.distance(seg.b)) =>
-                    {
-                        (krilla::paint::LineCap::Round, Some(krilla::paint::StrokeDash { array: vec![0.0, (st.weight * 2.0) as f32], offset: 0.0 }))
-                    }
-                    _ => (krilla::paint::LineCap::Square, None),
-                };
-                s.set_fill(None);
-                s.set_stroke(Some(Stroke { paint: col.into(), width: st.weight as f32, line_cap: cap, dash, ..Default::default() }));
-                s.draw_path(&p);
-                s.set_stroke(None);
+                self.cell_stroke(s, seg, t.corner_capped(seg));
             }
         }
+    }
+
+    /// A cell's diagonal lines, clipped to the cell so their caps stay inside it.
+    fn cell_diagonals(&mut self, s: &mut Surface, c: &designcraft_compose::PlacedCell) {
+        if c.diagonals.is_empty() {
+            return;
+        }
+        let Some(clip) = to_path(&c.rect.to_path(0.1)) else { return };
+        s.push_clip_path(&clip, &krilla::paint::FillRule::NonZero);
+        for seg in &c.diagonals {
+            self.cell_stroke(s, seg, (seg.a, seg.b));
+        }
+        s.pop();
+    }
+
+    /// One cell edge or diagonal: the gap color, then the stroke type. `capped` holds the ends the
+    /// butt-ended fills (stripes, wavy, hash, the gap color) run between.
+    fn cell_stroke(&mut self, s: &mut Surface, seg: &designcraft_compose::StrokeSeg, capped: (designcraft_geom::Point, designcraft_geom::Point)) {
+        let st = &seg.stroke;
+        let Some(col) = self.swatch_color(&st.color, st.tint) else { return };
+        let kind = self.doc.stroke_kind(&st.kind);
+        let mut bp = BezPath::new();
+        bp.move_to(seg.a);
+        bp.line_to(seg.b);
+        let Some(p) = to_path(&bp) else { return };
+        // Butt-ended fills close the table's corners the way square caps do.
+        let (ca, cb) = capped;
+        let mut capped = BezPath::new();
+        capped.move_to(ca);
+        capped.line_to(cb);
+        let Some(cp) = to_path(&capped) else { return };
+        // Gap colour under dashes, dots and stripes: the whole edge, solid.
+        if !matches!(kind, designcraft_doc::StrokeType::Solid)
+            && st.gap_color != designcraft_color::swatch::NONE
+            && let Some(gap) = self.swatch_color(&st.gap_color, st.gap_tint)
+        {
+            s.set_fill(None);
+            s.set_stroke(Some(Stroke { paint: gap.into(), width: st.weight as f32, line_cap: krilla::paint::LineCap::Butt, ..Default::default() }));
+            s.draw_path(&cp);
+            s.set_stroke(None);
+        }
+        // Stripes, wavy and hash types are fills along the edge.
+        if let Some(o) = kind.outline(&capped, st.weight, 0.05)
+            && let Some(op) = to_path(&o)
+        {
+            s.set_stroke(None);
+            s.set_fill(Some(solid_fill(col, 1.0)));
+            s.draw_path(&op);
+            s.set_fill(None);
+            return;
+        }
+        let (cap, dash) = match &kind {
+            designcraft_doc::StrokeType::Dashed { pattern } if designcraft_doc::StrokeType::expandable_dashes(pattern, seg.a.distance(seg.b)) => {
+                let mut pat: Vec<f32> = pattern.iter().map(|v| v.max(0.0) as f32).collect();
+                if pat.len() % 2 == 1 {
+                    pat.extend(pat.clone());
+                }
+                (krilla::paint::LineCap::Butt, Some(krilla::paint::StrokeDash { array: pat, offset: 0.0 }))
+            }
+            designcraft_doc::StrokeType::Dotted if designcraft_doc::StrokeType::expandable_dashes(&[0.0, st.weight * 2.0], seg.a.distance(seg.b)) => {
+                (krilla::paint::LineCap::Round, Some(krilla::paint::StrokeDash { array: vec![0.0, (st.weight * 2.0) as f32], offset: 0.0 }))
+            }
+            _ => (krilla::paint::LineCap::Square, None),
+        };
+        s.set_fill(None);
+        s.set_stroke(Some(Stroke { paint: col.into(), width: st.weight as f32, line_cap: cap, dash, ..Default::default() }));
+        s.draw_path(&p);
+        s.set_stroke(None);
     }
 
     fn fill_rect(&self, s: &mut Surface, r: Rect, c: krilla::color::Color) {

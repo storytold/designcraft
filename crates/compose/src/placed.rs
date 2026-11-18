@@ -4,6 +4,7 @@
 //! own story is composed against that placement (page, page side, page rect, baseline grid), so
 //! the host story is composed first.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use designcraft_doc::{Document, Item, ItemId, SpreadRef, StoryId};
@@ -23,33 +24,54 @@ pub struct Placement {
     pub xf: Affine,
 }
 
-/// The placements of `sid`'s anchored frames, from their host stories composed by `host`.
+/// The placements of `sid`'s anchored frames, from their host stories composed by `host`. Each
+/// host is asked for once, however many of the frames it holds.
 pub(crate) fn placements(doc: &Document, sid: StoryId, host: &mut dyn FnMut(StoryId) -> Arc<ComposedStory>) -> Vec<(ItemId, Placement)> {
     let Some(st) = doc.story(sid) else { return Vec::new() };
     let mut anchored = None;
+    let mut hosts: HashMap<StoryId, Arc<ComposedStory>> = HashMap::new();
     let mut out = Vec::new();
     for &fid in &st.frames {
         if doc.find(fid).is_some() {
             continue;
         }
         let items = anchored.get_or_insert_with(|| doc.anchored_items());
-        // A frame anchored in its own story would need its own composition to place it.
-        let Some(owner) = items.iter().find_map(|(owner, it)| (it.id == fid).then_some(*owner)).filter(|o| *o != sid) else { continue };
-        if let Some(p) = locate(doc, &host(owner), fid) {
+        if let Some(p) = locate(doc, items, sid, fid, &mut hosts, host, 0) {
             out.push((fid, p));
         }
     }
     out
 }
 
-/// Where `cs` (a host story's composition) places item `fid`: in its frames' anchored objects,
-/// footnotes and table cells.
-fn locate(doc: &Document, cs: &ComposedStory, fid: ItemId) -> Option<Placement> {
+/// Where the host story of `fid`, an anchored frame of story `sid`, places it: in its frames'
+/// anchored objects, footnotes and table cells. A host frame that is itself anchored is placed
+/// the same way first, up to [`MAX_DEPTH`] hosts out. `items` is [`Document::anchored_items`].
+fn locate(
+    doc: &Document,
+    items: &[(StoryId, &Item)],
+    sid: StoryId,
+    fid: ItemId,
+    hosts: &mut HashMap<StoryId, Arc<ComposedStory>>,
+    host: &mut dyn FnMut(StoryId) -> Arc<ComposedStory>,
+    depth: usize,
+) -> Option<Placement> {
+    if depth > MAX_DEPTH {
+        return None;
+    }
+    // A frame anchored in its own story would need its own composition to place it.
+    let owner = items.iter().find_map(|(owner, it)| (it.id == fid).then_some(*owner)).filter(|o| *o != sid)?;
+    let cs = hosts.entry(owner).or_insert_with(|| host(owner)).clone();
     cs.frames.iter().find_map(|ft| {
-        let loc = doc.find(ft.frame)?;
-        let frame = doc.item_at(&loc)?;
-        let xf = in_frame(ft, doc.parent_xf(&loc) * doc.text_xf(frame), fid, 0)?;
-        Some(Placement { spread: loc.spread, xf })
+        if let Some(loc) = doc.find(ft.frame) {
+            let frame = doc.item_at(&loc)?;
+            let xf = in_frame(ft, doc.parent_xf(&loc) * doc.text_xf(frame), fid, 0)?;
+            return Some(Placement { spread: loc.spread, xf });
+        }
+        // The host frame is anchored too: find `fid` in it before placing the frame.
+        let local = in_frame(ft, Affine::IDENTITY, fid, 0)?;
+        let frame = items.iter().find_map(|(_, it)| (it.id == ft.frame).then_some(*it))?;
+        let outer = locate(doc, items, owner, ft.frame, hosts, host, depth + 1)?;
+        Some(Placement { spread: outer.spread, xf: outer.xf * doc.text_xf(frame) * local })
     })
 }
 

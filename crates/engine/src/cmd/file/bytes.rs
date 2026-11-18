@@ -21,17 +21,30 @@ fn save_bytes(d: &Document, preview: Option<&[u8]>) -> Result<Vec<u8>> {
 pub fn with_document_extension(path: &str) -> String {
     let p = std::path::Path::new(path);
     let ext = p.extension().and_then(std::ffi::OsStr::to_str);
-    if p.file_name().is_none() || ext.is_some_and(|e| e.eq_ignore_ascii_case(designcraft_format::EXTENSION)) {
+    if p.file_name().is_none() || ext.is_some_and(|e| craft_file_formats::from_extension(e) == Some(craft_file_formats::Format::DesignCraft)) {
         return path.to_string();
     }
     format!("{path}.{}", designcraft_format::EXTENSION)
+}
+
+/// `name` without a trailing `.designcraft` (any case): the title of a document opened from bytes
+/// under its file name. Save, Save As and the File Name variable add the extension back, so a title
+/// that kept it would name the file `Brochure.designcraft.designcraft`. A bare `.designcraft` stays.
+pub(super) fn without_native_extension(name: &str) -> &str {
+    match name.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() && craft_file_formats::from_extension(ext) == Some(craft_file_formats::Format::DesignCraft) => stem,
+        _ => name,
+    }
 }
 
 /// Whether `bytes` are a document `file.open` reads: a DesignCraft package or an IDML package.
 /// The first [`DOCUMENT_SNIFF_BYTES`] of a file are enough for packages that start with their
 /// `mimetype` entry, as both formats write them.
 pub fn is_document(bytes: &[u8]) -> bool {
-    designcraft_idml::is_idml(bytes) || designcraft_format::starts_designcraft(bytes) || designcraft_format::is_designcraft(bytes)
+    matches!(
+        craft_file_formats::detect("", bytes),
+        Some(craft_file_formats::Format::DesignCraft | craft_file_formats::Format::DesignCraftJson | craft_file_formats::Format::Idml)
+    )
 }
 
 /// How much of a file [`is_document`] needs to recognise a package by its `mimetype` entry.
@@ -50,7 +63,12 @@ pub(super) fn to_bytes_with_preview(d: &Document, cache: &crate::Cache) -> Resul
     });
     let png =
         preview.and_then(|scale| designcraft_render::Renderer::new().render_page(d, cache, 0, scale, false, &Default::default())).map(|r| r.to_png());
-    save_bytes(d, png.as_deref())
+    let bytes = save_bytes(d, png.as_deref())?;
+    // `file.open` and `file.revert` refuse a longer file, so don't write one the app can't read back.
+    if bytes.len() as u64 > crate::io::MAX_FILE_BYTES {
+        return Err(EngineError::Other(format!("could not write the document: encoded file is longer than {} bytes", crate::io::MAX_FILE_BYTES)));
+    }
+    Ok(bytes)
 }
 
 pub fn from_bytes(b: &[u8]) -> Result<Document> {
@@ -65,19 +83,7 @@ pub(super) fn load_bytes(b: &[u8]) -> Result<(Document, Vec<String>)> {
     Ok((d, warnings))
 }
 
-const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-pub fn base64_encode(data: &[u8]) -> String {
-    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
-    for c in data.chunks(3) {
-        let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
-        out.push(B64[(n >> 18) as usize & 63] as char);
-        out.push(B64[(n >> 12) as usize & 63] as char);
-        out.push(if c.len() > 1 { B64[(n >> 6) as usize & 63] as char } else { '=' });
-        out.push(if c.len() > 2 { B64[n as usize & 63] as char } else { '=' });
-    }
-    out
-}
+pub use craft_mime::transfer::base64 as base64_encode;
 
 pub fn base64_decode(s: &str) -> Vec<u8> {
     let mut out = Vec::with_capacity(s.len() * 3 / 4);
@@ -161,5 +167,22 @@ mod extension_tests {
         let e = t.execute("file.open", &json!({"path": notes.to_string_lossy()})).unwrap_err();
         assert!(e.to_string().contains("not a DesignCraft or IDML file"), "{e}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod shared_base64_tests {
+    use super::{base64_decode, base64_encode};
+
+    #[test]
+    fn serialization_encoding_preserves_all_bytes_and_padding() {
+        let bytes: Vec<u8> = (0..=255).collect();
+        for n in 0..=bytes.len() {
+            let encoded = base64_encode(&bytes[..n]);
+            assert_eq!(encoded.len(), n.div_ceil(3) * 4);
+            assert!(!encoded.contains(['\r', '\n']));
+            assert_eq!(base64_decode(&encoded), bytes[..n]);
+        }
+        assert_eq!(base64_encode(&[0xfb, 0xff, 0xff]), "+///");
     }
 }

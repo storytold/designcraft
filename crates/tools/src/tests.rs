@@ -19,6 +19,7 @@ fn ctx<'a>(d: &'a Document, s: &'a Selection, c: &'a Cache, l: &'a CanvasLayout)
         snap: SnapView::OFF,
         unit: Unit::Points,
         stroke_in_front: false,
+        loaded: None,
     }
 }
 
@@ -68,6 +69,56 @@ fn frame_tool_drag_emits_begin_preview_commit() {
         other => panic!("{other:?}"),
     }
     assert_eq!(t.pointer(&cx, &PointerEvent::new(PointerKind::Up, 110.0, 60.0)), vec![Action::Commit]);
+}
+
+/// While a frame is drawn, its size shows in the document's units, as InDesign's readout does
+/// ("W: 6.08 cm" over "H: 6.08 cm" in Zero2Graphic's page layout tutorial, 0:43).
+#[test]
+fn frame_tool_readout_shows_the_size_in_the_document_units() {
+    let mut d = Document::new(&NewDocument::default());
+    d.settings.horizontal_units = Unit::Centimeters;
+    d.settings.vertical_units = Unit::Centimeters;
+    let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    let mut t = create("rectangleFrame");
+    t.pointer(&cx, &PointerEvent::new(PointerKind::Down, 10.0, 10.0));
+    // 172.35 pt square: 6.08 cm.
+    t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, 182.35, 182.35));
+    let texts: Vec<String> = t
+        .overlays(&cx)
+        .into_iter()
+        .filter_map(|o| match o {
+            Overlay::Measure { text, .. } => Some(text),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(texts, vec!["W: 6.08 cm\nH: 6.08 cm".to_string()]);
+}
+
+/// The Line tool's readout measures the line as drawn: Shift makes it level, so it has no
+/// height, wherever the pointer is.
+#[test]
+fn line_tool_readout_measures_the_line_as_drawn() {
+    let mut d = Document::new(&NewDocument::default());
+    d.settings.horizontal_units = Unit::Centimeters;
+    d.settings.vertical_units = Unit::Centimeters;
+    let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    let mut t = create("line");
+    t.pointer(&cx, &PointerEvent::new(PointerKind::Down, 10.0, 10.0));
+    let mut drag = PointerEvent::new(PointerKind::Drag, 182.35, 15.0);
+    drag.mods.shift = true;
+    t.pointer(&cx, &drag);
+    let texts: Vec<String> = t
+        .overlays(&cx)
+        .into_iter()
+        .filter_map(|o| match o {
+            Overlay::Measure { text, .. } => Some(text),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(texts.len(), 1, "{texts:?}");
+    assert_eq!(texts[0], "W: 6.08 cm\nH: 0 cm", "level, as drawn, not 5 pt down to the pointer");
 }
 
 #[test]
@@ -146,6 +197,28 @@ fn cmd_shift_click_overrides_parent_item() {
     assert_eq!(a, vec![Action::Exec("layout.overrideParentItems".into(), serde_json::json!({"page": 0, "ids": [pid.0]}))]);
 }
 
+/// A parent page that overrode an item of its base and deleted the override hides it on the pages
+/// that use it, so a click there finds nothing to override: the hit list is what the renderer
+/// draws, and it looked only at the page's own overrides (#1469).
+#[test]
+fn an_item_a_parent_overrode_and_deleted_is_not_hit() {
+    let mut d = Document::new(&NewDocument { pages: 1, facing_pages: false, ..Default::default() });
+    let lid = d.default_layer();
+    let a = d.parents[0].id;
+    let b = d.add_parent("B", "Opening", 1, 12.0, designcraft_doc::Margins::uniform(36.0));
+    Arc::make_mut(&mut d.parents[1]).parent.as_mut().unwrap().based_on = Some(a);
+    d.apply_parent(&[0], Some(b)).unwrap();
+    let (a_item, _) = d.add_text_frame(SpreadRef::Parent(0), Rect::new(100.0, 100.0, 200.0, 200.0), lid, "a", ParaFormat::default()).unwrap();
+    let hit = |d: &Document| {
+        let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(d, false));
+        let off = l.xf(SpreadRef::Doc(0)).translation();
+        ctx(d, &s, &c, &l).hit_parent_on_page(Point::new(150.0 + off.x, 150.0 + off.y))
+    };
+    assert_eq!(hit(&d).map(|(_, id)| id), Some(a_item), "A's item shows through B and is hit");
+    Arc::make_mut(&mut d.parents[1]).pages[0].overridden.push(a_item);
+    assert_eq!(hit(&d), None, "removed on B: nothing there to hit");
+}
+
 /// On a page whose parent B is based on A, A's items are hit too, B's win where they overlap, and
 /// nothing is hit when the page hides parent items.
 #[test]
@@ -167,6 +240,25 @@ fn parent_hit_reaches_base_parent_items_topmost_first() {
     assert_eq!(hit(&d, 175.0, 175.0), Some((0, b_item)), "B's item is drawn over A's");
     Arc::make_mut(&mut d.spreads[0]).pages[0].show_parent_items = false;
     assert_eq!(hit(&d, 120.0, 120.0), None);
+}
+
+/// While editing parent pages, a click doesn't pick items on a hidden or locked layer (#2221).
+#[test]
+fn parent_mode_hit_skips_hidden_and_locked_layers() {
+    let mut d = Document::new(&NewDocument { pages: 1, facing_pages: false, ..Default::default() });
+    let lid = d.default_layer();
+    let (id, _) = d.add_text_frame(SpreadRef::Parent(0), Rect::new(100.0, 100.0, 200.0, 200.0), lid, "a", ParaFormat::default()).unwrap();
+    let hit = |d: &Document| {
+        let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(d, true));
+        let p = l.to_canvas(SpreadRef::Parent(0), Point::new(150.0, 150.0));
+        ctx(d, &s, &c, &l).hit(p)
+    };
+    assert_eq!(hit(&d), Some((SpreadRef::Parent(0), id)));
+    d.layer_mut(lid).unwrap().visible = false;
+    assert_eq!(hit(&d), None, "hidden layer");
+    d.layer_mut(lid).unwrap().visible = true;
+    d.layer_mut(lid).unwrap().locked = true;
+    assert_eq!(hit(&d), None, "locked layer");
 }
 
 #[test]
@@ -425,6 +517,28 @@ fn turned_spread_maps_points_both_ways() {
     // A canvas drag rightwards is a drag down the spread.
     let dv = slot.delta_to_spread(designcraft_geom::Vec2::new(10.0, 0.0));
     assert!(dv.x.abs() < 1e-9 && (dv.y + 10.0).abs() < 1e-9 || (dv.y - 10.0).abs() < 1e-9, "{dv:?}");
+}
+
+#[test]
+fn place_gun_click_places_into_frames_but_not_onto_lines() {
+    let mut d = Document::new(&NewDocument::default());
+    let frame = add_rect(&mut d, Rect::new(100.0, 100.0, 200.0, 200.0));
+    let lid = d.default_layer();
+    let line = ItemId(d.alloc());
+    let mut it = Item::new(line, lid, Shape::GraphicLine, shapes::line(Point::new(100.0, 300.0), Point::new(300.0, 300.0)));
+    it.stroke = Stroke::default();
+    d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+    let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    let off = l.xf(SpreadRef::Doc(0)).translation();
+    let click = |t: &mut Box<dyn Tool>, x: f64, y: f64| {
+        t.pointer(&cx, &PointerEvent::new(PointerKind::Down, x + off.x, y + off.y));
+        t.pointer(&cx, &PointerEvent::new(PointerKind::Up, x + off.x, y + off.y))
+    };
+    let mut t = create("placeGun");
+    assert_eq!(click(&mut t, 150.0, 150.0), vec![Action::Exec("place.drop".into(), serde_json::json!({"frame": frame.0}))]);
+    let a = click(&mut t, 200.0, 300.0);
+    assert!(matches!(&a[..], [Action::Exec(cmd, p)] if cmd == "place.drop" && p.get("frame").is_none()), "{a:?}");
 }
 
 fn add_rect(doc: &mut Document, rect: Rect) -> ItemId {
@@ -837,6 +951,62 @@ fn pen_click_snaps_to_a_guide() {
     assert!((x - 100.0).abs() < 1e-6, "anchor x {x}");
 }
 
+/// #1438: dragging a smooth point shows the segment it shapes under the pointer (from the
+/// previous anchor's out handle to the new anchor's in handle), and after a smooth point the
+/// rubber band to the pointer curves out of its direction line; a corner keeps the straight one.
+#[test]
+fn pen_previews_the_curve_while_dragging_and_after_a_smooth_point() {
+    use designcraft_geom::{BezPath, PathEl};
+    let d = Document::new(&NewDocument::default());
+    let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    let (sr, _) = cx.layout.spread_at(Point::new(100.0, 100.0)).expect("the page is under the pointer");
+    let xf = cx.layout.xf(sr);
+    let sp = |x: f64, y: f64| cx.layout.to_spread(sr, Point::new(x, y));
+    let near = |a: Point, b: Point| (a - b).hypot() < 1e-6;
+    let paths = |t: &dyn Tool, dashed: bool| -> Vec<BezPath> {
+        t.overlays(&cx)
+            .into_iter()
+            .filter_map(|o| match o {
+                Overlay::Path { path, dashed: d, .. } if d == dashed => Some(path),
+                _ => None,
+            })
+            .collect()
+    };
+    let mut t = create("pen");
+    t.pointer(&cx, &PointerEvent::new(PointerKind::Down, 100.0, 100.0));
+    t.pointer(&cx, &PointerEvent::new(PointerKind::Up, 100.0, 100.0));
+    // A corner's rubber band is a straight line: no curve.
+    t.pointer(&cx, &PointerEvent::new(PointerKind::Move, 150.0, 120.0));
+    assert!(paths(&*t, true).is_empty() && paths(&*t, false).is_empty(), "a corner's rubber band is a line");
+    // Dragging the second anchor out: the segment from the first anchor is previewed live.
+    t.pointer(&cx, &PointerEvent::new(PointerKind::Down, 200.0, 100.0));
+    t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, 230.0, 130.0));
+    let [p] = &paths(&*t, false)[..] else { panic!("one solid curve preview: {:?}", t.overlays(&cx)) };
+    let in_handle = sp(200.0, 100.0) - (sp(230.0, 130.0) - sp(200.0, 100.0));
+    match p.elements() {
+        [PathEl::MoveTo(a), PathEl::CurveTo(c1, c2, b)] => {
+            assert!(near(*a, xf * sp(100.0, 100.0)) && near(*c1, xf * sp(100.0, 100.0)), "from the corner, whose out handle is itself: {a:?} {c1:?}");
+            assert!(near(*c2, xf * in_handle) && near(*b, xf * sp(200.0, 100.0)), "to the dragged anchor by its in handle: {c2:?} {b:?}");
+        }
+        other => panic!("{other:?}"),
+    }
+    // Let go: the anchor is committed and the segment preview goes; the rubber band now curves
+    // out of the smooth point's direction line towards the pointer.
+    let up = t.pointer(&cx, &PointerEvent::new(PointerKind::Up, 230.0, 130.0));
+    assert!(matches!(&up[..], [Action::Exec(cmd, _)] if cmd == "path.create"), "{up:?}");
+    assert!(paths(&*t, false).is_empty(), "no segment preview once let go");
+    t.pointer(&cx, &PointerEvent::new(PointerKind::Move, 300.0, 100.0));
+    let [band] = &paths(&*t, true)[..] else { panic!("a curved rubber band: {:?}", t.overlays(&cx)) };
+    match band.elements() {
+        [PathEl::MoveTo(a), PathEl::CurveTo(c1, c2, b)] => {
+            assert!(near(*a, xf * sp(200.0, 100.0)) && near(*c1, xf * sp(230.0, 130.0)), "{a:?} {c1:?}");
+            assert!(near(*c2, Point::new(300.0, 100.0)) && near(*b, Point::new(300.0, 100.0)), "{c2:?} {b:?}");
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
 /// A text frame with overset text (selected), an empty frame and a threaded pair x → y, on page 1.
 struct ThreadDoc {
     d: Document,
@@ -1083,6 +1253,33 @@ fn double_click_on_a_port_breaks_its_link() {
             assert!(t.pointer(&cx, &ev).is_empty(), "{ev:?}");
         }
     }
+}
+
+/// With the Type tool, a drag that starts in an empty rectangle draws a new text frame over it
+/// (the rectangle stays as it is), as InDesign's does; a click still turns the rectangle into a
+/// text frame with the caret in it.
+#[test]
+fn type_tool_drag_over_an_empty_frame_draws_a_new_text_frame() {
+    let mut d = Document::new(&NewDocument::default());
+    let id = add_rect(&mut d, Rect::new(100.0, 100.0, 300.0, 300.0));
+    let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    let off = l.xf(SpreadRef::Doc(0)).translation();
+    let at = |x: f64, y: f64| (x + off.x, y + off.y);
+    let mut t = create("type");
+    let (x, y) = at(120.0, 120.0);
+    assert!(t.pointer(&cx, &PointerEvent::new(PointerKind::Down, x, y)).is_empty());
+    let (x1, y1) = at(280.0, 200.0);
+    let a = t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, x1, y1));
+    assert!(matches!(&a[..], [Action::Begin(_), Action::Preview(cmd, p)] if cmd == "frame.create" && p["content"] == "text"), "{a:?}");
+    assert_eq!(t.pointer(&cx, &PointerEvent::new(PointerKind::Up, x1, y1)), vec![Action::Commit]);
+    // A click: the caret goes into the rectangle, which becomes a text frame.
+    assert!(t.pointer(&cx, &PointerEvent::new(PointerKind::Down, x, y)).is_empty());
+    let a = t.pointer(&cx, &PointerEvent::new(PointerKind::Up, x, y));
+    assert!(matches!(&a[..], [Action::Exec(cmd, p)] if cmd == "text.placeCaret" && p["frame"] == id.0), "{a:?}");
+    // A release away from the press with no drag in between isn't a click: no caret, no conversion.
+    assert!(t.pointer(&cx, &PointerEvent::new(PointerKind::Down, x, y)).is_empty());
+    assert!(t.pointer(&cx, &PointerEvent::new(PointerKind::Up, x1, y1)).is_empty());
 }
 
 #[test]
@@ -1480,6 +1677,32 @@ fn table_frame(degrees: f64) -> (Document, ItemId) {
     (d, id)
 }
 
+/// In a table cell Shift+Tab goes back a cell and Esc toggles cell selection, as InDesign; out of
+/// a table Tab types a tab and Esc leaves the text.
+#[test]
+fn type_tool_keys_in_a_table_cell() {
+    let (d, id) = table_frame(0.0);
+    let sid = d.item(id).unwrap().text_frame().unwrap().story;
+    let table = *d.story(sid).unwrap().tables.keys().next().unwrap();
+    let (c, l) = (Cache::new(), CanvasLayout::new(&d, false));
+    let cell = designcraft_doc::CellAddr { table, row: 1, col: 1 };
+    let s = Selection::text(designcraft_doc::TextSel { cell: Some(cell), ..designcraft_doc::TextSel::caret(sid, 0) });
+    let cx = ctx(&d, &s, &c, &l);
+    let mut t = create("type");
+    let shift = Mods { shift: true, ..Default::default() };
+    let exec = |c: &str, p: serde_json::Value| vec![Action::Exec(c.into(), p)];
+    assert_eq!(t.key(&cx, ToolKey::Tab, shift), exec("table.prevCell", serde_json::json!({})));
+    assert_eq!(t.key(&cx, ToolKey::Tab, Mods::default()), exec("text.insert", serde_json::json!({"text": "\t"})));
+    assert_eq!(t.key(&cx, ToolKey::Escape, Mods::default()), exec("table.toggleSelection", serde_json::json!({})));
+    // Out of a table, and in footnote text (addressed as a cell too).
+    for cell in [None, Some(designcraft_doc::CellAddr::footnote(1))] {
+        let s = Selection::text(designcraft_doc::TextSel { cell, ..designcraft_doc::TextSel::caret(sid, 0) });
+        let cx = ctx(&d, &s, &c, &l);
+        assert_eq!(t.key(&cx, ToolKey::Tab, shift), exec("text.insert", serde_json::json!({"text": "\t"})), "{cell:?}");
+        assert!(matches!(t.key(&cx, ToolKey::Escape, Mods::default()).first(), Some(Action::SwitchTool(_))), "{cell:?}");
+    }
+}
+
 #[test]
 fn type_tool_drags_a_table_column_border() {
     for degrees in [0.0, 90.0] {
@@ -1548,7 +1771,12 @@ fn eyedropper_samples_a_placed_image_and_matches_other_objects() {
             name: "photo.png".into(),
             mime: "image/png".into(),
             link: None,
-            data: std::sync::Arc::new(vec![]),
+            link_fingerprint: None,
+            link_relative: None,
+            link_hash: None,
+            storage: Default::default(),
+            proxy: None,
+            data: designcraft_doc::AssetData::embedded(vec![]),
             pixels: Some((100, 100)),
             page: 0,
             pdf_crop: Default::default(),
@@ -1746,6 +1974,52 @@ fn pen_over_a_selected_open_paths_end_point_continues_it() {
     assert!(t.busy(), "the path is being continued");
 }
 
+/// Continuing a path from an end point and dragging its direction lines previews the segment the
+/// drag reshapes: from the anchor joined to that end point, not from the path's other end, from
+/// either end (#1438).
+#[test]
+fn pen_previews_the_segment_joined_to_a_continued_end_point() {
+    use designcraft_geom::{BezPath, PathEl};
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let id = ItemId(d.alloc());
+    let anchors = vec![
+        designcraft_geom::Anchor::corner(Point::new(100.0, 100.0)),
+        designcraft_geom::Anchor::corner(Point::new(200.0, 100.0)),
+        designcraft_geom::Anchor::corner(Point::new(200.0, 200.0)),
+    ];
+    let mut it = Item::new(id, lid, Shape::Path, designcraft_geom::PathData::single(designcraft_geom::SubPath::new(anchors, false)));
+    it.stroke = Stroke::default();
+    d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+    let (s, c, l) = (Selection::items(vec![id]), Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    let xf = l.xf(SpreadRef::Doc(0));
+    let near = |a: Point, b: Point| (a - b).hypot() < 1e-6;
+    let solid = |t: &dyn Tool| -> Vec<BezPath> {
+        t.overlays(&cx)
+            .into_iter()
+            .filter_map(|o| match o {
+                Overlay::Path { path, dashed: false, .. } => Some(path),
+                _ => None,
+            })
+            .collect()
+    };
+    for (end, joined, far) in [((200.0, 200.0), (200.0, 100.0), (100.0, 100.0)), ((100.0, 100.0), (200.0, 100.0), (200.0, 200.0))] {
+        let mut t = create("pen");
+        let p = xf * Point::new(end.0, end.1);
+        t.pointer(&cx, &PointerEvent::new(PointerKind::Down, p.x, p.y));
+        t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, p.x + 30.0, p.y + 30.0));
+        let [path] = &solid(&*t)[..] else { panic!("one segment preview from {end:?}: {:?}", t.overlays(&cx)) };
+        match path.elements() {
+            [PathEl::MoveTo(a), PathEl::CurveTo(_, _, b)] => {
+                assert!(near(*a, xf * Point::new(joined.0, joined.1)), "from the anchor joined to {end:?}, not the other end {far:?}: {a:?}");
+                assert!(near(*b, p), "to the end point being reshaped: {b:?}");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+}
+
 #[test]
 fn the_selection_tool_drags_a_path_type_bracket_along_its_path() {
     let mut d = Document::new(&NewDocument::default());
@@ -1821,7 +2095,13 @@ fn direct_selection_drags_the_end_anchors_of_type_on_a_path() {
         let p = Point::new(x + off.x, 300.0 + off.y);
         let mut direct = create("directSelection");
         assert_ne!(direct.cursor(&cx, p, Mods::default()), Cursor::PathBracket, "anchor at {x}");
-        assert_eq!(direct.pointer(&cx, &PointerEvent::new(PointerKind::Down, p.x, p.y)), vec![Action::Begin("Move Anchor".into())]);
+        // The press selects that anchor point and starts moving it.
+        let a = direct.pointer(&cx, &PointerEvent::new(PointerKind::Down, p.x, p.y));
+        assert!(
+            matches!(a.first(), Some(Action::Exec(cmd, p)) if cmd == "selection.set" && p["anchors"].as_array().map(Vec::len) == Some(1)),
+            "{a:?}"
+        );
+        assert_eq!(a.last(), Some(&Action::Begin("Move Anchor".into())));
     }
 }
 
@@ -1875,7 +2155,7 @@ fn eyedropper_ignores_inactive_states_of_a_multi_state_object() {
             name: "photo.png".into(),
             mime: "image/png".into(),
             link: None,
-            data: std::sync::Arc::new(vec![]),
+            data: designcraft_doc::AssetData::embedded(vec![]),
             pixels: Some((100, 100)),
             ..Default::default()
         }),
@@ -1965,4 +2245,374 @@ fn loaded_text_cursor_threads_into_a_frame_inside_a_group() {
     let q = td2.at(650.0, 350.0);
     assert_eq!(cx2.hit_text_frame(q).map(|(_, i)| i), None, "no text frame in that group");
     assert_eq!(t2.cursor(&cx2, q, Mods::default()), Cursor::NotAllowed);
+}
+
+#[test]
+fn parent_resize_page_tool_targets_the_visible_parent() {
+    let d = Document::new(&NewDocument { width: 400.0, height: 600.0, pages: 3, facing_pages: true, ..Default::default() });
+    let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, true));
+    let cx = ctx(&d, &s, &c, &l);
+    let p = l.to_canvas(SpreadRef::Parent(0), d.parents[0].pages[0].bounds().center());
+    let mut t = create("page");
+    let a = t.pointer(&cx, &PointerEvent::new(PointerKind::DoubleClick, p.x, p.y));
+    assert_eq!(
+        a,
+        vec![Action::Dialog(
+            "cmd:layout.parentPageSize".into(),
+            serde_json::json!({"parent": d.parents[0].id.0, "page": 0, "width": 400.0, "height": 600.0})
+        )],
+        "double click must target the visible parent instead of document page zero"
+    );
+}
+
+#[test]
+fn parent_resize_selection_tracks_ids_and_never_crosses_canvas_modes() {
+    let mut d = Document::new(&NewDocument::default());
+    let second = d.add_parent("B", "Parent", 1, 12.0, designcraft_doc::Margins::uniform(36.0));
+    let selection = Selection { page: Some(0), parent_page: Some((second, 1)), ..Default::default() };
+    let l = CanvasLayout::new(&d, true);
+    assert_eq!(l.selected_page(&d, &selection), Some((SpreadRef::Parent(1), 1)));
+    d.parents.swap(0, 1);
+    let l = CanvasLayout::new(&d, true);
+    assert_eq!(l.selected_page(&d, &selection), Some((SpreadRef::Parent(0), 1)));
+    assert_eq!(CanvasLayout::new(&d, false).selected_page(&d, &selection), Some((SpreadRef::Doc(0), 0)));
+    d.parents.remove(0);
+    assert_eq!(CanvasLayout::new(&d, true).selected_page(&d, &selection), None);
+    let selection = Selection { page: Some(0), ..Default::default() };
+    assert_eq!(CanvasLayout::new(&d, true).selected_page(&d, &selection), None);
+}
+
+#[test]
+fn direct_selection_click_on_one_of_several_selected_frames_selects_only_it() {
+    let mut d = Document::new(&NewDocument::default());
+    let a = add_rect(&mut d, Rect::new(100.0, 100.0, 200.0, 200.0));
+    let b = add_rect(&mut d, Rect::new(300.0, 100.0, 400.0, 200.0));
+    let (s, c, l) = (Selection::items(vec![a, b]), Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    let p = spread_pt(&l, 150.0, 150.0);
+    let mut t = create("directSelection");
+    let acts = t.pointer(&cx, &PointerEvent::new(PointerKind::Down, p.x, p.y));
+    assert_eq!(acts, vec![Action::Exec("selection.set".into(), serde_json::json!({"ids": [a.0], "content": true}))]);
+}
+
+#[test]
+fn pulling_a_corner_of_an_unselected_frame_selects_the_frame_not_its_content() {
+    let mut d = Document::new(&NewDocument::default());
+    let a = add_rect(&mut d, Rect::new(100.0, 100.0, 200.0, 200.0));
+    let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    let p = spread_pt(&l, 200.0, 100.0);
+    let mut t = create("directSelection");
+    let acts = t.pointer(&cx, &PointerEvent::new(PointerKind::Down, p.x, p.y));
+    assert_eq!(
+        acts,
+        vec![Action::Exec("selection.set".into(), serde_json::json!({"ids": [a.0], "content": false})), Action::Begin("Move Anchor".into())]
+    );
+}
+
+#[test]
+fn anchor_drag_on_a_rotated_spread_sends_a_spread_space_delta() {
+    let mut d = Document::new(&NewDocument::default());
+    let a = add_rect(&mut d, Rect::new(100.0, 100.0, 200.0, 200.0));
+    Arc::make_mut(&mut d.spreads[0]).pages[0].view_rotation = 1;
+    let (s, c, l) = (Selection::items(vec![a]), Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    let p = l.to_canvas(SpreadRef::Doc(0), Point::new(200.0, 100.0));
+    let mut t = create("directSelection");
+    t.pointer(&cx, &PointerEvent::new(PointerKind::Down, p.x, p.y));
+    let acts = t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, p.x + 50.0, p.y));
+    let [Action::Preview(cmd, params)] = acts.as_slice() else { panic!("{acts:?}") };
+    assert_eq!(cmd, "path.moveAnchors");
+    let want = l.delta_to_spread(SpreadRef::Doc(0), Vec2::new(50.0, 0.0));
+    assert!(want.y.abs() > 1.0, "the view rotation turns a canvas x move into a spread y move: {want:?}");
+    let (dx, dy) = (params["dx"].as_f64().unwrap(), params["dy"].as_f64().unwrap());
+    assert!((dx - want.x).abs() < 1e-6 && (dy - want.y).abs() < 1e-6, "{params} want {want:?}");
+}
+
+/// Direct Selection selects anchor points with a marquee across several frames, and dragging one of
+/// them moves them all, as InDesign does when the top points of a row of frames are dragged to slant
+/// them (Zero2Graphic's page layout tutorial, 1:15).
+#[test]
+fn direct_selection_marquee_selects_points_of_several_frames_and_drags_them_together() {
+    let mut d = Document::new(&NewDocument::default());
+    let a = add_rect(&mut d, Rect::new(100.0, 100.0, 200.0, 200.0));
+    let b = add_rect(&mut d, Rect::new(200.0, 100.0, 300.0, 200.0));
+    let (c, l) = (Cache::new(), CanvasLayout::new(&d, false));
+    let none = Selection::default();
+    let mut t = create("directSelection");
+    // A marquee around the top edges: the four top points, not the frames' bottom ones.
+    let (p0, p1) = (spread_pt(&l, 80.0, 90.0), spread_pt(&l, 320.0, 110.0));
+    t.pointer(&ctx(&d, &none, &c, &l), &PointerEvent::new(PointerKind::Down, p0.x, p0.y));
+    t.pointer(&ctx(&d, &none, &c, &l), &PointerEvent::new(PointerKind::Drag, p1.x, p1.y));
+    let up = t.pointer(&ctx(&d, &none, &c, &l), &PointerEvent::new(PointerKind::Up, p1.x, p1.y));
+    let Some(Action::Exec(cmd, p)) = up.last() else { panic!("{up:?}") };
+    assert_eq!(cmd, "selection.set");
+    assert_eq!(p["ids"], serde_json::json!([a.0, b.0]));
+    let mut got: Vec<(u64, u64, u64)> =
+        p["anchors"].as_array().unwrap().iter().map(|v| (v[0].as_u64().unwrap(), v[1].as_u64().unwrap(), v[2].as_u64().unwrap())).collect();
+    got.sort();
+    assert_eq!(got, vec![(a.0, 0, 0), (a.0, 0, 1), (b.0, 0, 0), (b.0, 0, 1)]);
+    // With another frame selected before, a marquee without Shift selects only the paths whose
+    // points it takes; with Shift the other frame stays selected.
+    let other = add_rect(&mut d, Rect::new(400.0, 400.0, 450.0, 450.0));
+    let l = CanvasLayout::new(&d, false);
+    let was = Selection { items: vec![other], ..Default::default() };
+    let shift = Mods { shift: true, ..Default::default() };
+    for (mods, want) in [(Mods::default(), serde_json::json!([a.0, b.0])), (shift, serde_json::json!([other.0, a.0, b.0]))] {
+        t.pointer(&ctx(&d, &was, &c, &l), &PointerEvent::new(PointerKind::Down, p0.x, p0.y).with_mods(mods));
+        t.pointer(&ctx(&d, &was, &c, &l), &PointerEvent::new(PointerKind::Drag, p1.x, p1.y).with_mods(mods));
+        let up = t.pointer(&ctx(&d, &was, &c, &l), &PointerEvent::new(PointerKind::Up, p1.x, p1.y).with_mods(mods));
+        let Some(Action::Exec(_, p)) = up.last() else { panic!("{up:?}") };
+        assert_eq!(p["ids"], want, "{mods:?}");
+    }
+    // Those points selected: dragging one moves all four, in one preview.
+    let sel = Selection { items: vec![a, b], anchors: vec![(a, 0, 0), (a, 0, 1), (b, 0, 0), (b, 0, 1)], ..Default::default() };
+    let cx = ctx(&d, &sel, &c, &l);
+    let at = spread_pt(&l, 200.0, 100.0);
+    let down = t.pointer(&cx, &PointerEvent::new(PointerKind::Down, at.x, at.y));
+    assert_eq!(down, vec![Action::Begin("Move Anchors".into())]);
+    let drag = t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, at.x + 36.0, at.y + 3.0).with_mods(shift));
+    let Some(Action::Preview(cmd, p)) = drag.last() else { panic!("{drag:?}") };
+    assert_eq!(cmd, "path.moveAnchors");
+    assert_eq!(p["points"].as_array().map(Vec::len), Some(4), "{p}");
+    // Shift keeps the move horizontal.
+    // Each point carries its own movement (in its spread): here all the same.
+    let moves = |p: &serde_json::Value| -> Vec<(f64, f64)> {
+        p["points"].as_array().unwrap().iter().map(|v| (v[3].as_f64().unwrap(), v[4].as_f64().unwrap())).collect()
+    };
+    assert!(moves(p).iter().all(|&(x, y)| (x - 36.0).abs() < 1e-9 && y.abs() < 1e-9), "{p}");
+    assert_eq!(t.pointer(&cx, &PointerEvent::new(PointerKind::Up, at.x + 36.0, at.y)), vec![Action::Commit]);
+    // A Shift-drag that starts on a selected point keeps it: all four move, constrained.
+    t.pointer(&cx, &PointerEvent::new(PointerKind::Down, at.x, at.y).with_mods(shift));
+    let drag = t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, at.x + 3.0, at.y + 30.0).with_mods(shift));
+    let Some(Action::Preview(_, p)) = drag.last() else { panic!("{drag:?}") };
+    assert_eq!(p["points"].as_array().map(Vec::len), Some(4), "{p}");
+    assert!(moves(p).iter().all(|&(x, y)| x.abs() < 1e-9 && (y - 30.0).abs() < 1e-9), "vertical: {p}");
+    assert_eq!(t.pointer(&cx, &PointerEvent::new(PointerKind::Up, at.x, at.y + 30.0).with_mods(shift)), vec![Action::Commit]);
+    // Shift+click on a selected point takes it out of the selection, on release; the arrow keys
+    // move the points.
+    let out = t.pointer(&cx, &PointerEvent::new(PointerKind::Down, at.x, at.y).with_mods(shift));
+    assert!(!out.iter().any(|a| matches!(a, Action::Exec(..))), "kept while it may become a drag: {out:?}");
+    // A jiggle inside the drag tolerance moves nothing: it is still a click.
+    let jiggle = t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, at.x + 1.0, at.y + 1.0).with_mods(shift));
+    assert!(jiggle.is_empty(), "{jiggle:?}");
+    let out = t.pointer(&cx, &PointerEvent::new(PointerKind::Up, at.x + 1.0, at.y + 1.0).with_mods(shift));
+    let Some(Action::Exec(cmd, p)) = out.last() else { panic!("{out:?}") };
+    assert_eq!(cmd, "selection.set");
+    assert_eq!(p["anchors"].as_array().map(Vec::len), Some(3), "{p}");
+    let keys = t.key(&cx, ToolKey::Right, Mods::default());
+    assert!(
+        matches!(keys.as_slice(), [Action::Exec(cmd, p)] if cmd == "path.moveAnchors" && p["points"].as_array().map(Vec::len) == Some(4)),
+        "{keys:?}"
+    );
+    // Delete deletes the selected points, not their paths.
+    assert_eq!(t.key(&cx, ToolKey::Delete, Mods::default()), vec![Action::Exec("path.deletePoints".into(), serde_json::json!({}))]);
+    // On a spread turned a quarter on screen, → moves the points right on screen: up or down in
+    // the spread, not across it.
+    let mut turned = d.clone();
+    std::sync::Arc::make_mut(&mut turned.spreads[0]).pages[0].view_rotation = 1;
+    let lt = CanvasLayout::new(&turned, false);
+    let cxt = ctx(&turned, &sel, &c, &lt);
+    let keys = t.key(&cxt, ToolKey::Right, Mods::default());
+    let [Action::Exec(_, p)] = keys.as_slice() else { panic!("{keys:?}") };
+    let inc = turned.settings.keyboard_increment;
+    let want = lt.delta_to_spread(SpreadRef::Doc(0), designcraft_geom::Vec2::new(inc, 0.0));
+    assert!(want.x.abs() < 1e-9 && (want.y.abs() - inc).abs() < 1e-9, "a quarter turn: {want:?}");
+    assert!(moves(p).iter().all(|&(x, y)| (x - want.x).abs() < 1e-9 && (y - want.y).abs() < 1e-9), "{p}");
+}
+
+#[test]
+fn gap_tool_follows_snapping_settings() {
+    let mut d = Document::new(&NewDocument::default());
+    add_rect(&mut d, Rect::new(100.0, 100.0, 180.0, 200.0));
+    add_rect(&mut d, Rect::new(200.0, 100.0, 300.0, 200.0));
+    add_rect(&mut d, Rect::new(250.0, 250.0, 320.0, 350.0));
+    Arc::make_mut(&mut d.spreads[0]).pages[0].guides.push(Guide {
+        orientation: Orientation::Vertical,
+        position: 225.0,
+        spread: false,
+        locked: false,
+        layer: None,
+        liquid: false,
+    });
+    Arc::make_mut(&mut d.spreads[0]).pages[0].guides.push(Guide {
+        orientation: Orientation::Vertical,
+        position: 310.0,
+        spread: false,
+        locked: false,
+        layer: None,
+        liquid: false,
+    });
+    let sel = Selection::default();
+    let c = Cache::new();
+    let l = CanvasLayout::new(&d, false);
+    let p0 = spread_pt(&l, 190.0, 150.0);
+
+    let drag_dx = |snap: SnapView, mods: Mods, raw_dx: f64| -> (f64, Vec<Overlay>) {
+        let mut t = create("gap");
+        let cx = ToolContext { snap, ..ctx(&d, &sel, &c, &l) };
+        t.pointer(&cx, &PointerEvent::new(PointerKind::Down, p0.x, p0.y));
+        let drag = t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, p0.x + raw_dx, p0.y).with_mods(mods));
+        let Some(Action::Preview(cmd, p)) = drag.last() else { panic!("{drag:?}") };
+        assert_eq!(cmd, "gap.move");
+        let overlays = t.overlays(&cx);
+        t.pointer(&cx, &PointerEvent::new(PointerKind::Up, p0.x + raw_dx, p0.y).with_mods(mods));
+        (p["dx"].as_f64().unwrap(), overlays)
+    };
+
+    // Ruler guide at x = 225: gap right edge is 200 + 23 = 223, snaps +2 pt to 225.
+    let (dx, _) = drag_dx(SnapView::FACTORY, Mods::default(), 23.0);
+    assert!((dx - 25.0).abs() < 1e-6, "expected snap to guide (dx=25), got {dx}");
+
+    // Snapping off: stays at raw 23.0.
+    let (dx, overlays) = drag_dx(SnapView::OFF, Mods::default(), 23.0);
+    assert!((dx - 23.0).abs() < 1e-6, "expected unsnapped dx=23, got {dx}");
+    assert!(overlays.is_empty(), "expected no overlays when snap is off: {overlays:?}");
+
+    // Cmd suspends snapping: stays at raw 23.0.
+    let (dx, overlays) = drag_dx(SnapView::FACTORY, Mods { cmd: true, ..Default::default() }, 23.0);
+    assert!((dx - 23.0).abs() < 1e-6, "expected unsnapped dx=23 with Cmd, got {dx}");
+    assert!(overlays.is_empty(), "expected no overlays with Cmd: {overlays:?}");
+
+    // Smart guide alignment to third item's left edge (x = 250): gap left edge 180 + 68 = 248, snaps to 250 (dx = 70).
+    let (dx, overlays) = drag_dx(SnapView::FACTORY, Mods::default(), 68.0);
+    assert!((dx - 70.0).abs() < 1e-6, "expected smart-guide snap (dx=70), got {dx}");
+    assert!(overlays.iter().any(|o| matches!(o, Overlay::Guide { .. })), "expected alignment guide overlay: {overlays:?}");
+
+    // Smart guides disabled: no snap to third item.
+    let no_smart = SnapView { smart_guides: false, ..SnapView::FACTORY };
+    let (dx, overlays) = drag_dx(no_smart, Mods::default(), 68.0);
+    assert!((dx - 68.0).abs() < 1e-6, "expected no smart-guide snap when disabled, got {dx}");
+    assert!(overlays.is_empty(), "expected no guide overlay when smart_guides=false: {overlays:?}");
+
+    // Ruler guide beyond gap_move's minimum-width clamp (right item [200..300] clamps at x=299, max_delta=99):
+    // dragging 108 pt reaches x=308 near guide x=310 (dx=110), which must be rejected as unreachable.
+    let (dx, overlays) = drag_dx(no_smart, Mods::default(), 108.0);
+    assert!((dx - 108.0).abs() < 1e-6, "expected unreachable snap target to be rejected, got {dx}");
+    assert!(overlays.is_empty(), "expected no guide overlay for unreachable snap target: {overlays:?}");
+
+    // With two left neighbours of different widths ([100..180] and [140..180]), dragging left by 60 pt
+    // without a snap match preserves the raw delta (-60) instead of clamping it to the narrower item (-39).
+    let mut d2 = Document::new(&NewDocument::default());
+    add_rect(&mut d2, Rect::new(100.0, 100.0, 180.0, 150.0));
+    add_rect(&mut d2, Rect::new(140.0, 150.0, 180.0, 200.0));
+    add_rect(&mut d2, Rect::new(200.0, 100.0, 300.0, 200.0));
+    let l2 = CanvasLayout::new(&d2, false);
+    let q0 = spread_pt(&l2, 190.0, 150.0);
+    let mut t2 = create("gap");
+    let cx2 = ToolContext { snap: SnapView::FACTORY, ..ctx(&d2, &sel, &c, &l2) };
+    t2.pointer(&cx2, &PointerEvent::new(PointerKind::Down, q0.x, q0.y));
+    let drag2 = t2.pointer(&cx2, &PointerEvent::new(PointerKind::Drag, q0.x - 60.0, q0.y));
+    let Some(Action::Preview(cmd2, p2)) = drag2.last() else { panic!("{drag2:?}") };
+    assert_eq!(cmd2, "gap.move");
+    assert!((p2["dx"].as_f64().unwrap() - (-60.0)).abs() < 1e-6, "expected raw dx=-60 preserved, got {p2}");
+    assert!(t2.overlays(&cx2).is_empty(), "expected no guide overlay without snap match");
+    t2.pointer(&cx2, &PointerEvent::new(PointerKind::Up, q0.x - 60.0, q0.y));
+}
+
+/// While the place cursor drags out a grid, the arrow keys change it and are handled, even at a
+/// limit, so the session doesn't try them elsewhere; other keys and keys before a drag aren't.
+#[test]
+fn place_gun_grid_arrow_keys_are_handled_during_a_drag() {
+    let d = Document::new(&NewDocument::default());
+    let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    let mut t = create("placeGun");
+    assert!(t.key(&cx, ToolKey::Right, Mods::default()).is_empty(), "no drag yet");
+    let _ = t.pointer(&cx, &PointerEvent::new(PointerKind::Down, 10.0, 10.0));
+    let _ = t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, 110.0, 60.0));
+    for key in [ToolKey::Right, ToolKey::Up, ToolKey::Left, ToolKey::Left, ToolKey::Down, ToolKey::Down] {
+        assert_eq!(t.key(&cx, key, Mods::default()), vec![Action::Handled], "{key:?}");
+    }
+    assert!(t.key(&cx, ToolKey::Delete, Mods::default()).is_empty());
+}
+
+/// Escape drops only the current loaded image; between drags the arrows cycle the loaded images,
+/// and during a drag they keep their grid meaning.
+#[test]
+fn place_gun_escape_skips_and_arrows_cycle_between_drags() {
+    let d = Document::new(&NewDocument::default());
+    let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
+    let mut cx = ctx(&d, &s, &c, &l);
+    cx.loaded = Some((40.0, 20.0));
+    let mut t = create("placeGun");
+    let exec = |cmd: &str, p: serde_json::Value| vec![Action::Exec(cmd.into(), p)];
+    assert_eq!(t.key(&cx, ToolKey::Escape, Mods::default()), exec("place.skip", serde_json::json!({})));
+    for (key, dir) in [(ToolKey::Right, 1), (ToolKey::Down, 1), (ToolKey::Left, -1), (ToolKey::Up, -1)] {
+        assert_eq!(t.key(&cx, key, Mods::default()), exec("place.cycle", serde_json::json!({"dir": dir})), "{key:?}");
+    }
+    let _ = t.pointer(&cx, &PointerEvent::new(PointerKind::Down, 10.0, 10.0));
+    let _ = t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, 110.0, 60.0));
+    assert_eq!(t.key(&cx, ToolKey::Right, Mods::default()), vec![Action::Handled]);
+    // Nothing loaded: Escape leaves the tool instead of asking to skip an image there isn't.
+    cx.loaded = None;
+    assert_eq!(t.key(&cx, ToolKey::Escape, Mods::default()), vec![Action::SwitchTool("selection".into())]);
+}
+
+/// A place-cursor grid drag too thin for its cells shows and places the single frame an ordinary
+/// drag would; one with room shows its cells and places the grid.
+#[test]
+fn place_gun_grid_too_small_for_its_cells_previews_and_places_one_frame() {
+    let d = Document::new(&NewDocument::default());
+    let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
+    let mut cx = ctx(&d, &s, &c, &l);
+    cx.loaded = Some((40.0, 20.0));
+    // Drag from (10, 10) to `to`, pressing ↑ (two rows) when `grid`: the overlay before release,
+    // and the release.
+    let drag = |to: (f64, f64), grid: bool| {
+        let mut t = create("placeGun");
+        let _ = t.pointer(&cx, &PointerEvent::new(PointerKind::Down, 10.0, 10.0));
+        let _ = t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, to.0, to.1));
+        if grid {
+            assert_eq!(t.key(&cx, ToolKey::Up, Mods::default()), vec![Action::Handled]);
+        }
+        let shown = t.overlays(&cx);
+        (shown, t.pointer(&cx, &PointerEvent::new(PointerKind::Up, to.0, to.1)))
+    };
+    // 100 × 8 pt: two rows 6 pt apart leave each a 1 pt cell; 100 × 4 pt leaves none.
+    let (shown, out) = drag((110.0, 18.0), true);
+    assert_eq!(shown.len(), 2, "{shown:?}");
+    assert!(matches!(out.as_slice(), [Action::Exec(cmd, p)] if cmd == "place.grid" && p["rows"] == 2), "{out:?}");
+    let (shown, out) = drag((110.0, 14.0), true);
+    let (single_shown, single_out) = drag((110.0, 14.0), false);
+    assert_eq!(shown, single_shown);
+    assert_eq!(out, single_out);
+    assert!(matches!(out.as_slice(), [Action::Exec(cmd, _)] if cmd == "place.drop"), "{out:?}");
+}
+
+/// On a rotated spread a place-cursor grid previews the cells it places: worked out on the spread,
+/// then shown on the canvas, so two columns on the spread don't preview as two across the canvas.
+#[test]
+fn place_gun_grid_preview_matches_the_release_on_a_rotated_spread() {
+    let mut d = Document::new(&NewDocument::default());
+    std::sync::Arc::make_mut(&mut d.spreads[0]).pages[0].view_rotation = 1;
+    let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    let (start, end) = (Point::new(10.0, 10.0), Point::new(210.0, 110.0));
+    let (spread, a) = l.spread_at(start).unwrap();
+    let b = l.to_spread(spread, end);
+    let mut t = create("placeGun");
+    let _ = t.pointer(&cx, &PointerEvent::new(PointerKind::Down, start.x, start.y));
+    let _ = t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, end.x, end.y));
+    assert_eq!(t.key(&cx, ToolKey::Right, Mods::default()), vec![Action::Handled]);
+    let shown = t.overlays(&cx);
+    let out = t.pointer(&cx, &PointerEvent::new(PointerKind::Up, end.x, end.y));
+    assert!(matches!(out.as_slice(), [Action::Exec(cmd, p)] if cmd == "place.grid" && p["columns"] == 2 && p["gutter"] == 6.0), "{out:?}");
+    // Two columns on the spread, 6 pt apart, each shown where its corners land on the canvas.
+    let r = Rect::from_points(a, b);
+    let w = (r.width() - 6.0) / 2.0;
+    let expected: Vec<Overlay> = [r.x0, r.x0 + w + 6.0]
+        .into_iter()
+        .map(|x| Overlay::Marquee(Rect::from_points(l.to_canvas(spread, Point::new(x, r.y0)), l.to_canvas(spread, Point::new(x + w, r.y1)))))
+        .collect();
+    assert_eq!(shown.len(), 2, "{shown:?}");
+    for (got, want) in shown.iter().zip(&expected) {
+        let (Overlay::Marquee(got), Overlay::Marquee(want)) = (got, want) else { panic!("{got:?}") };
+        for (g, w) in [(got.x0, want.x0), (got.y0, want.y0), (got.x1, want.x1), (got.y1, want.y1)] {
+            assert!((g - w).abs() < 1e-6, "{shown:?} against {expected:?}");
+        }
+    }
+    // A quarter turn: the columns stack down the canvas.
+    let (Overlay::Marquee(first), Overlay::Marquee(second)) = (&shown[0], &shown[1]) else { panic!("{shown:?}") };
+    assert!((first.x0 - second.x0).abs() < 1e-6, "{shown:?}");
 }

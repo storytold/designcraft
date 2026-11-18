@@ -1,6 +1,6 @@
 //! JSON-RPC 2.0 framing and the MCP lifecycle / tools / resources methods.
 
-use std::io::{BufRead, Write};
+use std::io::{BufRead, Read, Write};
 
 use serde_json::{Value, json};
 
@@ -17,6 +17,30 @@ const METHOD_NOT_FOUND: i64 = -32601;
 const INVALID_PARAMS: i64 = -32602;
 const INTERNAL_ERROR: i64 = -32603;
 const RESOURCE_NOT_FOUND: i64 = -32002;
+
+/// Most bytes one request line may hold. A client that never sends a newline must not grow the
+/// reader's buffer without bound (audit: DesignCraft #3).
+const MAX_LINE_BYTES: u64 = 4 << 20;
+
+/// Drop the rest of an over-long request line without buffering it.
+fn discard_line(input: &mut impl BufRead) -> std::io::Result<()> {
+    loop {
+        let (consume, done) = {
+            let available = input.fill_buf()?;
+            if available.is_empty() {
+                return Ok(());
+            }
+            match available.iter().position(|&b| b == b'\n') {
+                Some(i) => (i + 1, true),
+                None => (available.len(), false),
+            }
+        };
+        input.consume(consume);
+        if done {
+            return Ok(());
+        }
+    }
+}
 
 const INSTRUCTIONS: &str = "DesignCraft is a page-layout app (an InDesign clone). Coordinates are points in spread \
 space (y down; on a single-page spread the page's top-left is (0,0); a default Letter page is 612×792). Every action \
@@ -63,8 +87,22 @@ impl Server {
         let mut buf = Vec::new();
         loop {
             buf.clear();
-            if input.read_until(b'\n', &mut buf)? == 0 {
+            // A client that never sends a newline must not grow this buffer without bound
+            // (audit: DesignCraft #3). Read one byte past the limit, then drop the rest.
+            if (&mut input).take(MAX_LINE_BYTES + 1).read_until(b'\n', &mut buf)? == 0 {
                 break;
+            }
+            if buf.len() as u64 > MAX_LINE_BYTES {
+                // The terminator may already be in `buf` (a line exactly at the limit); only a
+                // line cut before its newline leaves a rest to drop.
+                if buf.last() != Some(&b'\n') {
+                    discard_line(&mut input)?;
+                }
+                let reply = serde_json::to_vec(&error(Value::Null, INVALID_REQUEST, "request line is too long")).map_err(std::io::Error::other)?;
+                output.write_all(&reply)?;
+                output.write_all(b"\n")?;
+                output.flush()?;
+                continue;
             }
             // Invalid UTF-8 becomes U+FFFD, so the line gets a parse error instead of ending the stream.
             let line = String::from_utf8_lossy(&buf);
@@ -180,13 +218,15 @@ impl Server {
 }
 
 /// Arguments a tool doesn't take, and command params a command doesn't take, are invalid params
-/// (#776): a misspelt key is refused instead of being ignored. `execute` and `batch` are checked
-/// against the params descriptions of the commands they run, every step before the first runs.
+/// (#776): a misspelt key is refused instead of being ignored. Nested objects with listed
+/// properties (a `batch` step, a `pointer` event, `mods`) are checked the same way. `execute` and
+/// `batch` are checked against the params descriptions of the commands they run, every step
+/// before the first runs.
 fn check_arguments(name: &str, args: &Value) -> Result<(), String> {
     let Some(arguments) = args.as_object() else { return Ok(()) };
     if let Some(def) = tool_definitions().into_iter().find(|t| t.get("name").and_then(Value::as_str) == Some(name))
-        && let Some(properties) = def.get("inputSchema").and_then(|s| s.get("properties")).and_then(Value::as_object)
-        && let Some(key) = arguments.keys().find(|k| !properties.contains_key(*k))
+        && let Some(schema) = def.get("inputSchema")
+        && let Some(key) = unknown_key(schema, args, "", 0)
     {
         return Err(format!("unknown argument `{key}` for `{name}`"));
     }
@@ -214,5 +254,33 @@ fn check_arguments(name: &str, args: &Value) -> Result<(), String> {
             Ok(())
         }
         _ => Ok(()),
+    }
+}
+
+/// The path of the first key in `value` that `schema` doesn't list (`commands[0].parms`). Objects
+/// without listed properties (command `params`, `dialog_set`'s `value`) take any key; their
+/// contents are checked elsewhere or by the receiver.
+fn unknown_key(schema: &Value, value: &Value, at: &str, depth: usize) -> Option<String> {
+    // The tool schemas are a few levels deep; this only bounds hostile nesting in arguments.
+    if depth > 8 {
+        return None;
+    }
+    match value {
+        Value::Object(o) => {
+            let properties = schema.get("properties").and_then(Value::as_object)?;
+            for (k, v) in o {
+                let path = if at.is_empty() { k.clone() } else { format!("{at}.{k}") };
+                let Some(sub) = properties.get(k) else { return Some(path) };
+                if let Some(bad) = unknown_key(sub, v, &path, depth + 1) {
+                    return Some(bad);
+                }
+            }
+            None
+        }
+        Value::Array(items) => {
+            let sub = schema.get("items")?;
+            items.iter().enumerate().find_map(|(i, v)| unknown_key(sub, v, &format!("{at}[{i}]"), depth + 1))
+        }
+        _ => None,
     }
 }

@@ -40,28 +40,114 @@ pub(super) fn parent_ref(cmd: &str, d: &designcraft_doc::Document, v: Option<&Va
     }
 }
 
-/// Layout › Pages › Parent Options: Based on Parent. A base that would make a cycle is refused.
+/// Whether a parent other than index `except` is labelled `label` (`A-Parent`). Parents may share
+/// a prefix, but a label names one parent.
+pub(super) fn parent_label_taken(d: &designcraft_doc::Document, label: &str, except: Option<usize>) -> bool {
+    d.parents.iter().enumerate().any(|(i, x)| Some(i) != except && x.parent.as_ref().is_some_and(|o| o.label() == label))
+}
+
+/// A parent prefix parameter: trimmed, 1–4 characters, no `-` (it separates prefix and name).
+pub(super) fn parent_prefix_param(cmd: &str, p: &Value) -> Result<Option<String>> {
+    let Some(v) = p.get("prefix") else { return Ok(None) };
+    let s = v.as_str().ok_or_else(|| bad(cmd, "`prefix` is text"))?.trim();
+    if s.is_empty() || s.chars().count() > 4 || s.contains('-') {
+        return Err(bad(cmd, "a parent prefix has 1 to 4 characters and no `-`"));
+    }
+    Ok(Some(s.to_string()))
+}
+
+/// A parent name parameter: trimmed, not empty, at most 100 characters.
+pub(super) fn parent_name_param(cmd: &str, p: &Value) -> Result<Option<String>> {
+    let Some(v) = p.get("name") else { return Ok(None) };
+    let s = v.as_str().ok_or_else(|| bad(cmd, "`name` is text"))?.trim();
+    if s.is_empty() || s.chars().count() > 100 {
+        return Err(bad(cmd, "a parent name has 1 to 100 characters"));
+    }
+    Ok(Some(s.to_string()))
+}
+
+/// Layout › Pages › Parent Options: prefix, name and Based on Parent. A base that would make a
+/// cycle is refused.
 pub(super) fn parent_options(s: &mut crate::Session, p: &Value) -> Result<Value> {
     const CMD: &str = "layout.parents.options";
+    let prefix = parent_prefix_param(CMD, p)?;
+    let name = parent_name_param(CMD, p)?;
     let d = &s.doc()?.doc;
     let Some(Some(id)) = parent_ref(CMD, d, p.get("parent"))? else { return Err(bad(CMD, "`parent` names the parent to change")) };
     let pi = d.parent_index(id).ok_or_else(|| bad(CMD, format!("no parent with id {}", id.0)))?;
-    let base = parent_ref(CMD, d, p.get("basedOn"))?.ok_or_else(|| bad(CMD, "missing `basedOn` (a parent, or null for [None])"))?;
+    let info = d.parents.get(pi).and_then(|x| x.parent.clone()).ok_or_else(|| bad(CMD, "no such parent"))?;
+    let base = match parent_ref(CMD, d, p.get("basedOn"))? {
+        Some(b) => b,
+        None => info.based_on,
+    };
+    if base == Some(id) {
+        return Err(bad(CMD, format!("{} cannot be based on itself", info.label())));
+    }
     let label = |d: &designcraft_doc::Document, i: usize| d.parents.get(i).and_then(|x| x.parent.as_ref()).map(|i| i.label());
     if let Some(b) = base
         && d.parent_base_cycles(pi, b)
     {
-        let (name, b) = (label(d, pi).unwrap_or_default(), d.parent_index(b).and_then(|i| label(d, i)).unwrap_or_default());
+        let (name, b) = (info.label(), d.parent_index(b).and_then(|i| label(d, i)).unwrap_or_default());
         return Err(bad(CMD, format!("{name} cannot be based on {b}: that would make a cycle")));
     }
-    let out = json!({"parent": label(d, pi), "basedOn": base.and_then(|b| d.parent_index(b)).and_then(|i| label(d, i))});
-    if d.parents.get(pi).and_then(|x| x.parent.as_ref()).and_then(|i| i.based_on) == base {
+    let new = designcraft_doc::ParentInfo {
+        prefix: prefix.unwrap_or_else(|| info.prefix.clone()),
+        name: name.unwrap_or_else(|| info.name.clone()),
+        based_on: base,
+    };
+    let out = json!({
+        "parent": new.label(),
+        "prefix": new.prefix,
+        "name": new.name,
+        "basedOn": base.and_then(|b| d.parent_index(b)).and_then(|i| label(d, i)),
+    });
+    if new == info {
         return Ok(out);
+    }
+    if parent_label_taken(d, &new.label(), Some(pi)) {
+        return Err(bad(CMD, format!("a parent named {} exists", new.label())));
     }
     s.edit(|d, _| {
         let info = d.parents.get_mut(pi).map(std::sync::Arc::make_mut).and_then(|x| x.parent.as_mut()).ok_or_else(|| bad(CMD, "no such parent"))?;
-        info.based_on = base;
+        *info = new;
         Ok(out)
+    })
+}
+
+pub(super) fn parent_page_target(d: &designcraft_doc::Document, p: &Value, cmd: &str) -> Result<(usize, usize)> {
+    let parent = p.get("parent").and_then(Value::as_u64).map(SpreadId).ok_or_else(|| bad(cmd, "give a parent spread id"))?;
+    let si = d.parent_index(parent).ok_or_else(|| bad(cmd, "no such parent"))?;
+    let pi = p
+        .get("page")
+        .and_then(Value::as_u64)
+        .and_then(|n| usize::try_from(n).ok())
+        .filter(|i| *i < d.parents[si].pages.len())
+        .ok_or_else(|| bad(cmd, "no such parent page"))?;
+    Ok((si, pi))
+}
+
+pub(super) fn parent_page_size(s: &mut crate::Session, p: &Value) -> Result<Value> {
+    const ID: &str = "layout.parentPageSize";
+    let (si, pi) = parent_page_target(&s.doc()?.doc, p, ID)?;
+    let size = |key| {
+        p.get(key)
+            .map(|v| {
+                v.as_f64().filter(|v| v.is_finite() && *v > 0.0 && *v <= 15552.0).ok_or_else(|| bad(ID, "page size out of range (0 < size ≤ 216 in)"))
+            })
+            .transpose()
+    };
+    let (w, h) = (size("width")?, size("height")?);
+    if w.is_none() && h.is_none() {
+        return Err(bad(ID, "give width or height"));
+    }
+    let anchor = match p.get("anchor") {
+        None => 0,
+        Some(v) => v.as_u64().filter(|n| *n <= 8).ok_or_else(|| bad(ID, "anchor: 0–8"))? as usize,
+    };
+    s.edit(|d, _| {
+        super::pages::resize_spread_page(d, designcraft_doc::SpreadRef::Parent(si), pi, w, h, anchor);
+        d.sync_parent_margins();
+        Ok(json!({"parent": d.parents[si].id.0, "page": pi}))
     })
 }
 
@@ -115,6 +201,52 @@ mod parent_margin_tests {
         assert_eq!(m[2], (Margins::uniform(50.0), 1, false), "old page 2, now a right page");
         assert_eq!(m[3], (Margins::uniform(100.0), 1, true));
         assert!(s.execute("layout.marginsAndColumns", &json!({"parent": "Z", "margins": 10})).is_err());
+    }
+
+    /// Insert Pages before a page, or at the start of the document (`before: 0`), as InDesign's
+    /// dialog offers; `after` and `before` together are refused without an undo step.
+    #[test]
+    fn pages_go_in_before_a_page_or_at_the_start() {
+        let mut s = Session::new();
+        // Facing: [1] [2 3].
+        s.execute("file.new", &json!({"pages": 3})).unwrap();
+        let b = s.execute("layout.parents.new", &json!({"prefix": "B"})).unwrap()["id"].as_u64().unwrap();
+        let ids = |s: &Session| -> Vec<u64> {
+            let d = &s.doc().unwrap().doc;
+            (0..d.page_count()).map(|i| d.page(i).unwrap().id.0).collect()
+        };
+        let parent = |s: &Session, i: usize| s.doc().unwrap().doc.page(i).unwrap().parent.map(|p| p.0);
+        let old = ids(&s);
+        s.execute("layout.pages.insert", &json!({"before": 0, "parent": "B"})).unwrap();
+        let now = ids(&s);
+        assert_eq!(now.len(), 4);
+        assert_eq!(now[1..], old[..], "the old pages follow the new first page");
+        assert_eq!(parent(&s, 0), Some(b));
+        // Before page 4 (index 3, the old page 3): two pages without a parent.
+        s.execute("layout.pages.insert", &json!({"before": 3, "count": 2, "parent": null})).unwrap();
+        let then = ids(&s);
+        assert_eq!(then.len(), 6);
+        assert_eq!(then[..3], now[..3]);
+        assert_eq!(then[5], old[2]);
+        assert_eq!((parent(&s, 3), parent(&s, 4)), (None, None));
+        // Refused without a change or an undo step: both placements, even one of them null, and a
+        // placement that isn't a page index.
+        let undo = s.doc().unwrap().history.undo.len();
+        for bad in [
+            json!({"after": 0, "before": 1}),
+            json!({"after": 0, "before": null}),
+            json!({"after": null, "before": 1}),
+            json!({"before": -1}),
+            json!({"before": "0"}),
+            json!({"before": null}),
+            json!({"after": 1.5}),
+            json!({"before": 6}),
+            json!({"before": 99}),
+        ] {
+            assert!(s.execute("layout.pages.insert", &bad).is_err(), "{bad}");
+            assert_eq!(s.doc().unwrap().history.undo.len(), undo, "{bad}");
+            assert_eq!(ids(&s), then, "{bad}");
+        }
     }
 
     #[test]
@@ -184,6 +316,81 @@ mod parent_tests {
         assert_eq!(parent_of(&s, 1), Some(a));
         s.execute("layout.pages.applyParent", &json!({"pages": [1], "parent": "[None]"})).unwrap();
         assert_eq!(parent_of(&s, 1), None);
+    }
+
+    #[test]
+    fn new_parents_take_the_next_letters_and_options_rename_them() {
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({"pages": 2})).unwrap();
+        let b = s.execute("layout.parents.new", &json!({})).unwrap();
+        assert_eq!(b["prefix"], "B");
+        let c = s.execute("layout.parents.new", &json!({"basedOn": "A"})).unwrap();
+        assert_eq!(c["prefix"], "C");
+        let (b, c) = (b["id"].as_u64().unwrap(), c["id"].as_u64().unwrap());
+        let info = |s: &crate::Session, id: u64| {
+            let d = &s.doc().unwrap().doc;
+            d.parents.iter().find(|p| p.id.0 == id).and_then(|p| p.parent.clone()).unwrap()
+        };
+        assert!(info(&s, c).based_on.is_some());
+        s.execute("layout.pages.applyParent", &json!({"pages": [1], "parent": b})).unwrap();
+        let r = s.execute("layout.parents.options", &json!({"parent": "B", "prefix": " Z ", "name": "Cover"})).unwrap();
+        assert_eq!(r["parent"], "Z-Cover");
+        assert_eq!(info(&s, b).label(), "Z-Cover");
+        // The page keeps its parent, now called Z-Cover; Based On is untouched when not given.
+        assert_eq!(parent_of(&s, 1), Some(b));
+        assert!(info(&s, c).based_on.is_some());
+        s.execute("layout.parents.options", &json!({"parent": "C", "name": "Back"})).unwrap();
+        assert_eq!(info(&s, c).label(), "C-Back");
+        assert!(info(&s, c).based_on.is_some(), "a rename keeps the base");
+        // Bad prefixes and names change nothing and add no history.
+        let undo = s.doc().unwrap().history.undo.len();
+        for bad in [json!({"prefix": ""}), json!({"prefix": "ABCDE"}), json!({"prefix": "A-B"}), json!({"name": "  "}), json!({"prefix": 3})] {
+            let mut p = bad.clone();
+            p["parent"] = json!(b);
+            assert!(s.execute("layout.parents.options", &p).is_err(), "{bad}");
+            assert!(s.execute("layout.parents.new", &bad).is_err(), "{bad}");
+        }
+        assert!(s.execute("layout.parents.options", &json!({"parent": "C", "basedOn": "C-Back"})).is_err());
+        // A label names one parent: taking another parent's label is refused, a prefix may be shared.
+        assert!(s.execute("layout.parents.options", &json!({"parent": "C-Back", "prefix": "Z", "name": "Cover"})).is_err());
+        assert!(s.execute("layout.parents.new", &json!({"prefix": "Z", "name": "Cover"})).is_err());
+        assert!(s.execute("layout.parents.options", &json!({"parent": "C-Back", "prefix": "Z"})).is_ok());
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(s.doc().unwrap().history.undo.len(), undo);
+        assert_eq!(info(&s, b).label(), "Z-Cover");
+        // Four characters, including non-Latin ones, are fine.
+        s.execute("layout.parents.options", &json!({"parent": b, "prefix": "表紙ページ".chars().take(4).collect::<String>()})).unwrap();
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(info(&s, b).label(), "Z-Cover");
+    }
+
+    #[test]
+    fn duplicate_parent_copies_pages_and_items_with_a_new_prefix() {
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({"pages": 2})).unwrap();
+        let a = json!({"kind": "parent", "index": 0});
+        s.execute("frame.create", &json!({"spread": a, "rect": [40, 40, 200, 100], "content": "text"})).unwrap();
+        s.execute("frame.create", &json!({"spread": a, "rect": [60, 200, 160, 300]})).unwrap();
+        let n = s.doc().unwrap().doc.parents.len();
+        let r = s.execute("layout.parents.duplicate", &json!({"parent": "A-Parent"})).unwrap();
+        assert_eq!(r["prefix"], "B");
+        let d = &s.doc().unwrap().doc;
+        assert_eq!(d.parents.len(), n + 1);
+        let (src, copy) = (&d.parents[0], &d.parents[n]);
+        assert_eq!(copy.id.0, r["id"].as_u64().unwrap());
+        assert_eq!(copy.parent.as_ref().unwrap().label(), "B-Parent");
+        assert_eq!(copy.pages.len(), src.pages.len());
+        assert_eq!(copy.items.len(), 2);
+        assert!(copy.pages.iter().all(|p| src.pages.iter().all(|q| q.id != p.id)));
+        assert!(copy.items.iter().all(|i| src.items.iter().all(|j| j.id != i.id)));
+        // The copied text frame has its own story.
+        let story = |it: &designcraft_doc::Item| it.text_frame().map(|t| t.story);
+        let (s0, s1) = (src.items.iter().find_map(|i| story(i)), copy.items.iter().find_map(|i| story(i)));
+        assert!(s0.is_some() && s1.is_some() && s0 != s1);
+        assert!(s.execute("layout.parents.duplicate", &json!({"parent": "Nope"})).is_err());
+        assert!(s.execute("layout.parents.duplicate", &json!({})).is_err());
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.parents.len(), n);
     }
 
     #[test]
@@ -388,7 +595,7 @@ mod parent_base_tests {
         assert!(paper(page(&s, 1).pixel(50, 100)), "B alone does not show A's items");
 
         let r = s.execute("layout.parents.options", &json!({"parent": "B", "basedOn": "A"})).unwrap();
-        assert_eq!(r, json!({"parent": "B-Opening", "basedOn": "A-Parent"}));
+        assert_eq!(r, json!({"parent": "B-Opening", "prefix": "B", "name": "Opening", "basedOn": "A-Parent"}));
         let img = page(&s, 1);
         assert!(black(img.pixel(50, 100)), "A's item: {:?}", img.pixel(50, 100));
         assert!(cyan(img.pixel(150, 150)), "B's item over A's: {:?}", img.pixel(150, 150));

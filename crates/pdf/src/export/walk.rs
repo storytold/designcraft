@@ -1,6 +1,6 @@
 use super::common::{TagEntry, blend, norm, rects_overlap, solid_fill, tf, to_path};
 use super::graphics::draw_coverage;
-use super::pipeline::{item_exported, layer_exported};
+use super::pipeline::{drawn_children, item_exported, layer_exported, shown_parent_items};
 use super::*;
 
 impl Exporter<'_> {
@@ -12,21 +12,10 @@ impl Exporter<'_> {
 
     /// The parent pages' items on `layer` shown on page `pi` of spread `si`: the parent's bases
     /// first, then the parent.
-    fn parent_items(&mut self, s: &mut Surface, si: usize, pi: usize, page: &designcraft_doc::Page, layer: &designcraft_doc::Layer, first: usize) {
-        let doc = self.doc;
-        for (ppi, ppage) in doc.shown_parent_pages(SpreadRef::Doc(si), pi) {
-            let Some(parent) = doc.parents.get(ppi) else { continue };
-            let Some(ppg) = parent.pages.get(ppage) else { continue };
-            let dx = page.x - ppg.x;
-            for it in &parent.items {
-                if it.layer != layer.id || page.overridden.contains(&it.id) {
-                    continue;
-                }
-                // Parent items belong to the parent page they sit on.
-                if parent.page_at_x(it.bounds().center().x) != Some(ppage) && parent.pages.len() > 1 {
-                    continue;
-                }
-                self.top_item(s, it, Affine::translate((dx, 0.0)), Some(first + pi), true);
+    fn parent_items(&mut self, s: &mut Surface, si: usize, pi: usize, layer: &designcraft_doc::Layer, first: usize) {
+        for (xf, it) in shown_parent_items(self.doc, si, pi) {
+            if it.layer == layer.id {
+                self.top_item(s, it, xf, Some(first + pi), true);
             }
         }
     }
@@ -39,10 +28,8 @@ impl Exporter<'_> {
             if !layer_exported(layer) {
                 continue;
             }
-            for (pi, page) in sp.pages.iter().enumerate() {
-                if page.show_parent_items {
-                    self.parent_items(s, si, pi, page, layer, first);
-                }
+            for pi in 0..sp.pages.len() {
+                self.parent_items(s, si, pi, layer, first);
             }
             for it in &sp.items {
                 if it.layer == layer.id {
@@ -262,7 +249,7 @@ impl Exporter<'_> {
         if let Some(c) = &clip {
             s.push_clip_path(c, &FillRule::NonZero);
         }
-        for child in it.children() {
+        for child in drawn_children(it) {
             self.item(s, child, xf, page);
         }
         if clip.is_some() {
@@ -282,7 +269,7 @@ impl Exporter<'_> {
 
     fn draw_group_children(&mut self, s: &mut Surface, it: &Item, xf: Affine, page: Option<usize>) {
         let pushes = Self::push_group(s, it.opacity, it.blend) + Self::push_isolation(s, it);
-        for child in it.shown_children() {
+        for child in drawn_children(it) {
             self.item(s, child, xf, page);
         }
         for _ in 0..pushes {
@@ -308,13 +295,16 @@ impl Exporter<'_> {
         if frame_art {
             s.end_tagged();
         }
-        self.draw_leaf_content(s, it, bp, path, page);
+        // A text frame's anchored objects are drawn under its text when they can be.
+        let drawn = self.draw_leaf_content(s, it, xf, bp, path, page);
         self.draw_leaf_stroke(s, it, bp, path, frame_art);
         s.pop();
         for _ in 0..pushes {
             s.pop();
         }
-        if let Content::Text(tfr) = &it.content {
+        if let Content::Text(tfr) = &it.content
+            && !drawn
+        {
             let cs = self.composed(tfr.story, page);
             if let Some(ft) = cs.frame(it.id) {
                 self.frame_objects(s, ft, xf * self.doc.text_local(it), page);
@@ -347,8 +337,10 @@ impl Exporter<'_> {
         }
     }
 
-    fn draw_leaf_content(&mut self, s: &mut Surface, it: &Item, bp: &BezPath, path: Option<&Path>, page: Option<usize>) {
+    /// The item's content; returns whether a text frame's anchored objects were drawn with it.
+    fn draw_leaf_content(&mut self, s: &mut Surface, it: &Item, xf: Affine, bp: &BezPath, path: Option<&Path>, page: Option<usize>) -> bool {
         let doc = self.doc;
+        let mut drawn = false;
         match &it.content {
             Content::Graphic(g) => {
                 let g = &if it.media.is_some() { it.drawn_graphic(&self.doc.assets).unwrap_or_else(|| g.clone()) } else { g.clone() };
@@ -391,9 +383,12 @@ impl Exporter<'_> {
                     if local != Affine::IDENTITY {
                         s.push_transform(&tf(local));
                     }
-                    self.text_area = (local.determinant().abs() > 1e-12).then(|| local.inverse().transform_rect_bbox(it.inner_bounds()));
-                    self.frame_text(s, &cs, ft, text);
-                    self.text_area = None;
+                    // Anchored text frames now draw inside `frame_text`: restore the host's area
+                    // after, so an object drawn there doesn't clear it for the host's glyphs.
+                    let area = (local.determinant().abs() > 1e-12).then(|| local.inverse().transform_rect_bbox(it.inner_bounds()));
+                    let outer = std::mem::replace(&mut self.text_area, area);
+                    drawn = self.frame_text(s, &cs, ft, text, Some((xf * local, page)));
+                    self.text_area = outer;
                     if local != Affine::IDENTITY {
                         s.pop();
                     }
@@ -401,6 +396,7 @@ impl Exporter<'_> {
             }
             _ => {}
         }
+        drawn
     }
 
     fn draw_leaf_stroke(&mut self, s: &mut Surface, it: &Item, bp: &BezPath, path: Option<&Path>, frame_art: bool) {
@@ -419,7 +415,7 @@ impl Exporter<'_> {
 
     /// Draw embedded page items after restoring the surface, retaining spread-space
     /// transforms for page culling (also for anonymous note and cell stories).
-    fn frame_objects(&mut self, s: &mut Surface, ft: &designcraft_compose::FrameText, xf: Affine, page: Option<usize>) {
+    pub(crate) fn frame_objects(&mut self, s: &mut Surface, ft: &designcraft_compose::FrameText, xf: Affine, page: Option<usize>) {
         let mut pending = vec![(ft, xf)];
         while let Some((frame, transform)) = pending.pop() {
             for object in &frame.objects {

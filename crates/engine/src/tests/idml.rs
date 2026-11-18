@@ -516,6 +516,7 @@ fn type_para_sets_a_drop_cap_that_survives_idml() {
     assert_eq!(p.nested_styles, Some(vec![designcraft_doc::NestedStyle::drop_cap("Initial")]));
 }
 
+/// Imported TOC definitions retain their settings and remain refreshable.
 #[test]
 fn table_of_contents_definition_round_trips_through_idml_and_updates() {
     let mut s = Session::new();
@@ -525,8 +526,8 @@ fn table_of_contents_definition_round_trips_through_idml_and_updates() {
     let basic = designcraft_doc::story::BASIC_PARAGRAPH;
     s.execute(
         "toc.generate",
-        &json!({"page": page, "title": "Inside", "titleStyle": basic, "entries": [
-            {"style": "Cover Title", "level": 1, "pageNumber": "before", "separator": " ^ "},
+        &json!({"page": page, "title": "Inside", "titleStyle": basic, "createBookmarks": true, "entries": [
+            {"style": "Cover Title", "level": 1, "pageNumber": "before", "separator": " ^ \u{E006} "},
             {"style": "Headline", "level": 2, "entryStyle": basic, "pageNumber": "none"},
         ]}),
     )
@@ -540,6 +541,7 @@ fn table_of_contents_definition_round_trips_through_idml_and_updates() {
     let b64 = s.execute("file.exportIdml", &json!({})).unwrap()["base64"].as_str().unwrap().to_string();
     s.execute("file.openIdml", &json!({"base64": b64, "name": "toc.idml"})).unwrap();
     let after = s.doc().unwrap().doc.toc.clone().expect("the TOC definition is imported");
+    assert!(after.create_bookmarks);
     assert_eq!((&after.title, &after.title_style, &after.entries), (&before.title, &before.title_style, &before.entries));
     assert_eq!(toc_text(&s), text);
     s.execute("toc.update", &json!({})).unwrap();
@@ -687,4 +689,21 @@ fn idml_non_finite_numbers_import_to_a_document_that_reopens() {
         }
     }
     assert!(failures.is_empty(), "{failures:#?}");
+}
+
+#[test]
+fn alternate_layouts_round_trip_through_idml() {
+    let mut s = Session::new();
+    s.execute("file.new", &json!({"pages": 2, "facingPages": false})).unwrap();
+    s.execute("layout.createAlternate", &json!({"name": "Tablet H", "width": 1024, "height": 768, "fromName": "Print"})).unwrap();
+    s.execute("layout.section", &json!({"page": 4, "startNumber": 9})).unwrap();
+    let names = |d: &designcraft_doc::Document| d.layouts().into_iter().map(|l| (l.name, l.start, l.end)).collect::<Vec<_>>();
+    let before = names(&s.doc().unwrap().doc);
+    let back = designcraft_idml::import_idml(&designcraft_idml::export_idml(&s.doc().unwrap().doc)).unwrap();
+    assert_eq!(names(&back), before);
+    // A document without alternate layouts writes none.
+    let mut s = Session::new();
+    s.execute("file.new", &json!({"pages": 2})).unwrap();
+    let back = designcraft_idml::import_idml(&designcraft_idml::export_idml(&s.doc().unwrap().doc)).unwrap();
+    assert!(back.sections.iter().all(|x| x.layout.is_none()));
 }

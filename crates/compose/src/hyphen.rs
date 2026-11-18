@@ -3,9 +3,17 @@
 //! `hyph-es.tex` 5.0 from hyph-utf8, MIT; Portuguese is `hyph-pt.tex` 1.4 from hyph-utf8 (Pedro J.
 //! de Rezende, J. Joao Dias Almeida, Leonardo Araujo, Aline Benevides), BSD-3-Clause; Norwegian is
 //! `hyph-no.tex` from hyph-utf8 (Rune Kleveland, Ole Michael Selberg), permissive (see NOTICE);
-//! Greek is `hyph-el-monoton.tex` 5.0 from hyph-utf8 (Dimitrios Filippou), LPPL or MIT, taken
+//! Danish is `hyph-da.tex` 2011-01-11 from hyph-utf8 (Frank Jensen), LPPL or MIT, taken under MIT;
+//! Dutch is Piet Tutelaers's `hyph-nl.tex` 1.1 from hyph-utf8, MIT; Greek is `hyph-el-monoton.tex` 5.0 from hyph-utf8 (Dimitrios Filippou), LPPL or MIT, taken
 //! under MIT. Those are the **monotonic** patterns, which is what `hypher` maps `el` to, so
-//! polytonic text hyphenates by them as well.
+//! polytonic text hyphenates by them as well. French is `hyph-fr.tex` 2.13 from hyph-utf8 (Daniel
+//! Flipo, Bernard Gaulle, Arthur Reutenauer), MIT; Italian is `hyph-it.tex` 4.9 from hyph-utf8
+//! (Claudio Beccari), LPPL or MIT, taken under MIT. A word with an elision (`l'imprimerie`)
+//! hyphenates after its apostrophe.
+//! German uses `hyph-de-1996.tex` (2024-02-28, Deutschsprachige Trennmustermannschaft, MIT):
+//! despite the filename, these are the reformed 2006 spelling patterns. Only the two 2006 reform
+//! names and German locale codes without a reform year or with 2006 use this set. Traditional,
+//! 1901 and unknown German variants have no automatic hyphenation; no old-spelling set is bundled.
 //!
 //! English lookup order for each word:
 //! 1. the **dictionary** ([`Dictionary::en_us`]) — the public-domain Moby Hyphenator II word list
@@ -84,6 +92,11 @@ impl Lang {
         }
         let tag = designcraft_doc::language_tag(language)?;
         let sub = designcraft_doc::language_subtag(tag);
+        // language_tag deliberately drops spelling variants for shaping and quotes. Hyphenation
+        // must retain that distinction: the 2006 patterns are wrong for traditional ck/st breaks.
+        if sub == "de" && !german_2006_language(language) {
+            return None;
+        }
         if sub == "en" {
             return Some(Lang::English);
         }
@@ -93,6 +106,15 @@ impl Lang {
         }
         hypher::Lang::from_iso([b[0], b[1]]).map(Lang::Patterns)
     }
+}
+
+/// Accept explicit reform names and unqualified German locales (our modern default), but never
+/// silently substitute reform patterns for another spelling variant imported from IDML.
+fn german_2006_language(language: &str) -> bool {
+    let language = language.trim();
+    let normalized = language.strip_prefix("$ID/").unwrap_or(language).to_lowercase();
+    let words: Vec<&str> = normalized.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect();
+    matches!(words.as_slice(), ["german", "2006", "reform"] | ["german", "swiss", "2006", "reform"] | ["de"] | ["de", _] | ["de", _, "2006"])
 }
 
 /// Where a word's break points came from.
@@ -119,8 +141,14 @@ fn core_breaks(core: &[char], lang: Lang) -> (Vec<usize>, Source) {
         return (vec![], Source::None);
     }
     if let Lang::Patterns(l) = lang {
-        if core.contains(&'\'') {
-            return (vec![], Source::None);
+        if let Some(ap) = core.iter().rposition(|&c| c == '\'') {
+            // An elision (French "l'", Italian "dell'"): the word after the apostrophe hyphenates,
+            // with no break up to it. Elsewhere (German "Rock'n'Roll") an apostrophe word gets none.
+            if !matches!(l, hypher::Lang::French | hypher::Lang::Italian) {
+                return (vec![], Source::None);
+            }
+            let (pts, src) = if ap + 1 < n { core_breaks(&core[ap + 1..], lang) } else { (vec![], Source::None) };
+            return (pts.into_iter().map(|p| p + ap + 1).collect(), src);
         }
         let s: String = core.iter().collect();
         let mut out = Vec::new();
@@ -196,6 +224,135 @@ pub fn word_breaks_in(word: &str, lang: Lang) -> (Vec<usize>, Source) {
     (out, src)
 }
 
+/// Whether a whitespace-delimited token is one no language's hyphenation should break.
+///
+/// Korean attaches particles straight onto Latin words ("News와", "PDF로"), and notices are full
+/// of addresses. With the paragraph language left at the default English -- which is what an
+/// ordinary Korean document has -- a word run inside such a token was hyphenated as English,
+/// giving `New-` / `s와` and `library.exam-` / `ple.kr` (#1688).
+///
+/// A token is kept whole when it carries Hangul, kana or Han, or when it reads as an address: a
+/// URL with a scheme, an e-mail address, a dotted domain, a `/`-rooted path or a Windows drive
+/// path. Breaking at a hyphen the author typed is still allowed; this only stops hyphens being
+/// invented inside the token.
+pub fn keep_whole(token: &str) -> bool {
+    let cjk = |c: char| {
+        matches!(c as u32,
+            0xAC00..=0xD7A3       // Hangul syllables
+            | 0x1100..=0x11FF     // Hangul Jamo
+            | 0x3130..=0x318F     // Hangul compatibility Jamo
+            | 0xA960..=0xA97F     // Hangul Jamo Extended-A
+            | 0xD7B0..=0xD7FF     // Hangul Jamo Extended-B
+            | 0x3040..=0x30FF     // kana
+            | 0xFF66..=0xFF9F     // halfwidth katakana
+            | 0x4E00..=0x9FFF     // CJK unified ideographs
+            | 0x3400..=0x4DBF
+            | 0xF900..=0xFAFF
+            | 0x20000..=0x3FFFF) // supplementary ideographs
+    };
+    if token.chars().any(cjk) {
+        return true;
+    }
+    // Prose punctuation around a token is not part of the address inside it: `(https://...)` was
+    // not recognised because the bracket came first, and `library.example.kr,` because the comma
+    // ended the last label. Only this classification ignores it; the text keeps
+    // every character it had.
+    let wrapper = |c: char| {
+        matches!(c, '(' | ')' | '[' | ']' | '{' | '}' | '"' | '\'' | ',' | ';' | ':' | '!' | '?' | '\u{201C}' | '\u{201D}' | '\u{2018}' | '\u{2019}')
+    };
+    // Full stops count with the wrapper characters at the end, so `(library.example.kr).` loses
+    // both its closing bracket and the sentence's full stop.
+    let token = token.trim_start_matches(wrapper).trim_end_matches(|c: char| wrapper(c) || c == '.');
+    let lower = token.to_ascii_lowercase();
+    if lower.starts_with("http://") || lower.starts_with("https://") || lower.starts_with("ftp://") || lower.starts_with("www.") {
+        return true;
+    }
+    // An e-mail address: one `@` with something either side, no space (tokens have none).
+    if let Some((user, host)) = token.split_once('@') {
+        return !user.is_empty() && host.contains('.');
+    }
+    // A path, rooted or with a drive letter.
+    if token.starts_with('/') || token.starts_with('\\') {
+        return true;
+    }
+    let mut cs = token.chars();
+    if let (Some(a), Some(b), Some(c)) = (cs.next(), cs.next(), cs.next())
+        && a.is_ascii_alphabetic()
+        && b == ':'
+        && (c == '/' || c == '\\')
+    {
+        return true;
+    }
+    // A domain: dot-separated labels up to the first `/`, whose last label is a short run of
+    // letters -- "example.kr", "library.example.kr". Ordinary prose ("end. Next") never reaches
+    // here, because a token holds no space.
+    // Judged as written, not lower-cased: a domain's last label is lower-case letters, so `Mr.Smith`
+    // is not one and stays a word to hyphenate.
+    let host = token.split('/').next().unwrap_or("");
+    let labels: Vec<&str> = host.trim_end_matches('.').split('.').collect();
+    labels.len() >= 2
+        && labels.iter().all(|l| !l.is_empty() && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
+        && labels.last().is_some_and(|tld| tld.len() <= 6 && tld.chars().all(|c| c.is_ascii_lowercase()))
+}
+
+/// Whether a paragraph is set in Korean, so automatic hyphenation does not apply to it.
+///
+/// Korean is set word by word and is not hyphenated (KLREQ). A paragraph with at least as many
+/// Hangul syllables as Latin letters is treated as Korean however its language is set, since an
+/// ordinary Korean document leaves the paragraph language at the default English (#1688).
+pub fn mostly_hangul(text: &str) -> bool {
+    mostly_hangul_chars(text.chars())
+}
+
+/// [`mostly_hangul`] over characters, for judging the text that is actually set: hidden text has
+/// no glyphs, and counting it let hidden Korean turn hyphenation off for the visible English
+/// around it, and hidden Latin keep it on for visible Korean.
+pub fn mostly_hangul_chars(chars: impl Iterator<Item = char>) -> bool {
+    let (mut hangul, mut latin) = (0usize, 0usize);
+    for c in chars {
+        match c as u32 {
+            _ if crate::breaker::is_hangul(c) => hangul += 1,
+            _ if c.is_ascii_alphabetic() => latin += 1,
+            _ => {}
+        }
+    }
+    hangul > 0 && hangul >= latin
+}
+
+/// [`mostly_hangul`] over a paragraph's set glyphs, given as `(source byte, character,
+/// generated)` so it can be tested without a font.
+///
+/// One vote per set character, not per glyph. Shaping makes a cluster several glyphs over one
+/// character and each repeats that character, so a syllable shaped into three glyphs voted three
+/// times -- and since the test is `hangul >= latin`, that can turn hyphenation off for a
+/// paragraph that is mostly Latin. Consecutive glyphs on one source byte are one character.
+///
+/// Generated glyphs do not vote: a list bullet or number, or a footnote label, is not the
+/// paragraph's own text, and `prepend_label` gives it the paragraph's *first* byte -- so counting
+/// it would also swallow the real first character in the deduplication.
+///
+/// **Approximation.** A ligature is one glyph over several characters, so those characters vote
+/// once between them and Latin is under-counted. That can change the answer: 16 Hangul with
+/// `office hyphenation` is 17 Latin letters, and a font that shapes `fi` counts at most 16, so
+/// the paragraph classifies as Korean and loses its hyphens. Fixing it needs
+/// the visible source characters each cluster stands for; `byte..byte + len` is not that, because
+/// the glyph after a hidden run spans it -- measured, every byte of the paragraph came out
+/// covered -- which would revive the hidden-text bug this function was changed to avoid.
+pub fn korean_paragraph(glyphs: impl Iterator<Item = (usize, char, bool)>) -> bool {
+    let mut chars: Vec<char> = Vec::new();
+    let mut last: Option<usize> = None;
+    for (byte, ch, generated) in glyphs {
+        if generated {
+            continue;
+        }
+        if last != Some(byte) {
+            chars.push(ch);
+        }
+        last = Some(byte);
+    }
+    mostly_hangul_chars(chars.into_iter())
+}
+
 /// Allowed hyphenation points in `word` as char indices (a hyphen goes before that char), with
 /// the paragraph limits applied to each letter run.
 pub fn hyphen_points(word: &str, lim: &Limits) -> Vec<usize> {
@@ -211,6 +368,7 @@ pub fn hyphen_points_in(word: &str, lim: &Limits, lang: Lang) -> Vec<usize> {
     }
     let min_before = lim.after_first.max(1);
     let min_after = lim.before_last.max(1);
+    let elides = matches!(lang, Lang::Patterns(hypher::Lang::French | hypher::Lang::Italian));
     // Run bounds of each point's letter run (trimmed of apostrophes).
     let run_of = |p: usize| {
         let mut a = p;
@@ -226,6 +384,10 @@ pub fn hyphen_points_in(word: &str, lim: &Limits, lang: Lang) -> Vec<usize> {
         }
         while b > a && is_apostrophe(chars[b - 1]) {
             b -= 1;
+        }
+        // After an elision the word is the part after its last apostrophe: the limits count that.
+        if elides && let Some(ap) = chars[a..b].iter().rposition(|&c| is_apostrophe(c)) {
+            a += ap + 1;
         }
         (a, b)
     };
@@ -287,6 +449,25 @@ fn heuristic_points(c: &[char]) -> Vec<usize> {
         return vec![];
     }
     let v: Vec<bool> = c.iter().map(|&x| is_vowel(x)).collect();
+    // A trailing silent `ed`, `es` or `e` comes off the right part. Which one depends only on how
+    // the word ends, so the right part's core is `c[i..n - silent]` (nothing comes off a right
+    // part shorter than the ending). Prefix sums of vowels and UTF-8 lengths then answer "does the
+    // core have a vowel" and "is it longer than one byte" without building each suffix, which was
+    // quadratic in the word's length.
+    let ends = |s: &str| c.ends_with(&s.chars().collect::<Vec<char>>());
+    let silent = if ends("ed") || ends("es") {
+        2
+    } else if ends("e") {
+        1
+    } else {
+        0
+    };
+    let mut vowels = vec![0_usize; n + 1];
+    let mut bytes = vec![0_usize; n + 1];
+    for (k, ch) in c.iter().enumerate() {
+        vowels[k + 1] = vowels[k] + usize::from(v[k]);
+        bytes[k + 1] = bytes[k] + ch.len_utf8();
+    }
     let mut out = vec![];
     for i in 1..n {
         let ok = if v[i - 1] && !v[i] {
@@ -297,9 +478,8 @@ fn heuristic_points(c: &[char]) -> Vec<usize> {
             false
         };
         // Both parts need a sounded vowel: a trailing silent `e`, `ed` or `es` doesn't count.
-        let right: String = c[i..].iter().collect();
-        let core = right.strip_suffix("ed").or_else(|| right.strip_suffix("es")).or_else(|| right.strip_suffix('e')).unwrap_or(&right);
-        if ok && core.chars().any(is_vowel) && core.len() > 1 && v[..i].iter().any(|x| *x) {
+        let core_end = if n - i >= silent { n - silent } else { n };
+        if ok && vowels[core_end] > vowels[i] && bytes[core_end] - bytes[i] > 1 && vowels[i] > 0 {
             out.push(i);
         }
     }
@@ -308,6 +488,65 @@ fn heuristic_points(c: &[char]) -> Vec<usize> {
 
 #[cfg(test)]
 mod tests {
+    /// A token no language's hyphenation should break: Korean particles on Latin words, and the
+    /// addresses a notice is full of (#1688).
+    #[test]
+    fn a_token_with_hangul_or_an_address_is_kept_whole() {
+        for t in [
+            "News\u{C640}",             // News와
+            "PDF\u{B85C}",              // PDF로
+            "\u{C77C}\u{BCF8}\u{C5B4}", // 일본어
+            "https://example.kr/page",
+            "www.example.kr",
+            "library.example.kr",
+            "mail@example.kr",
+            "/usr/share/fonts",
+            "C:\\Users\\Hong",
+            "example.kr",
+        ] {
+            assert!(keep_whole(t), "{t} should be kept whole");
+        }
+        // Ordinary words, including ones with a hyphen or a full stop, are still hyphenated.
+        for t in ["hyphenation", "well-known", "sentence.", "Mr.", "re-examine", "3.5"] {
+            assert!(!keep_whole(t), "{t} should not be protected");
+        }
+
+        // An address wrapped in prose punctuation is the same address.
+        for t in [
+            "library.example.kr,",
+            "(https://example.kr/page)",
+            "\u{201C}www.example.kr\u{201D}",
+            "mail@example.kr;",
+            "example.kr.",
+            // A bracket and then the sentence's full stop.
+            "(library.example.kr).",
+            "[https://example.kr]",
+        ] {
+            assert!(keep_whole(t), "{t} should be kept whole");
+        }
+
+        // Halfwidth katakana and a supplementary ideograph are CJK too.
+        for t in ["News\u{FF76}", "\u{20B9F}\u{C640}", "x\u{FF9F}"] {
+            assert!(keep_whole(t), "{t:?} should be kept whole");
+        }
+
+        // A domain's last label is lower-case letters as written: a name run into the next word
+        // after a full stop is not one, and its words still hyphenate.
+        for t in ["Mr.Smith", "Section.Introduction", "End.Next"] {
+            assert!(!keep_whole(t), "{t} is not an address");
+        }
+    }
+
+    /// A Korean paragraph gets no automatic hyphens whatever its language is set to (#1688).
+    #[test]
+    fn a_paragraph_that_is_mostly_hangul_is_not_hyphenated() {
+        assert!(mostly_hangul("\u{C774}\u{BC88} \u{D1B5}\u{C9C0}\u{BB38}\u{C740} News\u{C640} \u{AD00}\u{B828}"));
+        assert!(!mostly_hangul("An English paragraph about hyphenation and composition"));
+        // A Latin paragraph with a Korean word in it is still hyphenated as Latin.
+        assert!(!mostly_hangul("The Korean word \u{D55C}\u{AD6D} appears once in this English sentence"));
+        assert!(!mostly_hangul(""));
+    }
+
     use super::*;
 
     fn h(w: &str) -> String {
@@ -379,6 +618,82 @@ mod tests {
         assert!(hyphen_points("typography", &lim).is_empty());
     }
 
+    /// Only French and Italian elide at an apostrophe; other languages leave such words unbroken.
+    #[test]
+    fn apostrophe_words_hyphenate_only_in_french_and_italian() {
+        let de = Lang::for_language("German: 2006 Reform").unwrap();
+        assert!(hyphen_points_in("Rock'n'Roll", &Limits::default(), de).is_empty());
+        let fr = Lang::for_language("French").unwrap();
+        assert!(!hyphen_points_in("l'information", &Limits::default(), fr).is_empty());
+    }
+
+    #[test]
+    fn german_2006_uses_reformed_patterns() {
+        let de = Lang::for_language("German: 2006 Reform").unwrap();
+        assert_eq!(de, Lang::Patterns(hypher::Lang::German));
+        for name in [
+            "$ID/German: 2006 Reform",
+            " german: 2006 reform ",
+            "de",
+            "de-DE",
+            "de_AT",
+            "de_CH",
+            "de_DE_2006",
+            "German: Swiss 2006 Reform",
+            "$ID/German: Swiss 2006 Reform",
+            "de_CH_2006",
+        ] {
+            assert_eq!(Lang::for_language(name), Some(de), "{name}");
+        }
+        for (word, expected) in [
+            ("Silbentrennung", "Sil-ben-tren-nung"),
+            ("Zucker", "Zu-cker"),
+            ("Bäcker", "Bä-cker"),
+            ("Fenster", "Fens-ter"),
+            ("Straße", "Stra-ße"),
+            ("Fußgänger", "Fuß-gän-ger"),
+            ("Donaudampfschifffahrt", "Do-nau-dampf-schiff-fahrt"),
+            ("SILBENTRENNUNG", "SIL-BEN-TREN-NUNG"),
+        ] {
+            let pts = hyphen_points_in(word, &Limits::default(), de);
+            let actual: String = word.chars().enumerate().map(|(i, c)| if pts.contains(&i) { format!("-{c}") } else { c.to_string() }).collect();
+            assert_eq!(actual, expected, "{word}");
+        }
+    }
+
+    #[test]
+    fn non_2006_german_has_no_bundled_hyphenation() {
+        for name in [
+            "German",
+            "German: Traditional",
+            "$ID/German: Traditional",
+            "German: Swiss",
+            "German: 1901",
+            "German: 1996 Reform",
+            "German: Unknown",
+            "German: Traditional 2006 Reform",
+            "de_DE_1901",
+            "de-CH-1901",
+            "de_AT_1996",
+            "de_DE_2099",
+        ] {
+            assert_eq!(designcraft_doc::language_subtag(designcraft_doc::language_tag(name).unwrap()), "de", "{name}");
+            assert_eq!(Lang::for_language(name), None, "{name}: do not use 2006 ck/st breaks for unsupported spelling variants");
+        }
+    }
+
+    #[test]
+    fn german_2006_respects_paragraph_limits() {
+        let de = Lang::for_language("de_DE_2006").unwrap();
+        let lim = Limits { after_first: 4, before_last: 5, ..Limits::default() };
+        assert_eq!(hyphen_points_in("Silbentrennung", &lim, de), vec![6]);
+        let lim = Limits { min_word: 15, ..Limits::default() };
+        assert!(hyphen_points_in("Silbentrennung", &lim, de).is_empty());
+        let lim = Limits { capitalized: false, ..Limits::default() };
+        assert!(hyphen_points_in("Silbentrennung", &lim, de).is_empty());
+        assert!(!hyphen_points_in("silbentrennung", &lim, de).is_empty());
+    }
+
     #[test]
     fn spanish_uses_the_bezos_patterns() {
         let es = Lang::for_language("Spanish").unwrap();
@@ -393,7 +708,7 @@ mod tests {
         assert_eq!(h("desesperación"), "de-ses-pe-ra-ción");
         assert_eq!(h("teatro"), "tea-tro", "a vowel run stays whole");
         assert_eq!(h("calle"), "ca-lle", "ll stays whole");
-        assert!(Lang::for_language("French").is_none(), "only languages built in");
+        assert!(Lang::for_language("Swedish").is_none(), "only languages built in");
     }
 
     #[test]
@@ -416,6 +731,18 @@ mod tests {
     }
 
     #[test]
+    fn danish_uses_the_hyph_da_patterns() {
+        let da = Lang::for_language("Danish").unwrap();
+        assert_eq!(da, Lang::Patterns(hypher::Lang::Danish));
+        assert_eq!(da, Lang::for_language("da").unwrap());
+        assert_ne!(da, Lang::English);
+        assert_ne!(da, Lang::for_language("Norwegian").unwrap());
+        for w in ["bacheloruddannelser", "industrialiseringens", "samarbejdspartnere"] {
+            assert!(!hyphen_points_in(w, &Limits::default(), da).is_empty(), "{w} gets break points");
+        }
+    }
+
+    #[test]
     fn norwegian_uses_the_hyph_no_patterns() {
         let nb = Lang::for_language("Norwegian: Bokmål").unwrap();
         assert_eq!(nb, Lang::for_language("Norwegian").unwrap());
@@ -435,9 +762,221 @@ mod tests {
         assert_eq!(h("beveger"), "be-ve-ger");
     }
 
+    /// The paragraph limits count the letters of the word after an elision, not the elided prefix.
+    #[test]
+    fn elision_limits_apply_to_the_word_after_it() {
+        let fr = Lang::for_language("French").unwrap();
+        let lim = Limits { min_word: 5, after_first: 3, before_last: 2, capitalized: true };
+        assert_eq!(hyphen_points_in("l'imprimerie", &lim, fr), vec![7, 9]);
+        let lim = Limits { min_word: 11, ..Limits::default() };
+        assert!(hyphen_points_in("l'imprimerie", &lim, fr).is_empty());
+    }
+
+    /// A word with an elision ("l'", "dell'") hyphenates as the word after it.
+    fn marked(w: &str, l: Lang) -> String {
+        let pts = hyphen_points_in(w, &Limits::default(), l);
+        w.chars().enumerate().map(|(i, c)| if pts.contains(&i) { format!("-{c}") } else { c.to_string() }).collect()
+    }
+
+    #[test]
+    fn french_uses_the_hyph_fr_patterns() {
+        let fr = Lang::for_language("French").unwrap();
+        for name in ["fr", "fr_FR", "French: Canadian", "French: Swiss"] {
+            assert_eq!(Lang::for_language(name), Some(fr), "{name}");
+        }
+        assert_eq!(marked("hyphénation", fr), "hy-phé-na-tion");
+        assert_eq!(marked("typographie", fr), "ty-po-gra-phie");
+        assert_eq!(marked("Développement", fr), "Dé-ve-lop-pe-ment");
+        assert_eq!(marked("anticonstitutionnellement", fr), "an-ti-cons-ti-tu-tion-nel-le-ment");
+        assert_eq!(marked("paragraphe", fr), "pa-ra-graphe", "no break before a final mute syllable of two letters");
+        assert_eq!(marked("l'imprimerie", fr), "l'im-pri-me-rie", "after an elision");
+        assert_eq!(marked("l’imprimerie", fr), "l’im-pri-me-rie", "a typographer's apostrophe too");
+    }
+
+    #[test]
+    fn italian_uses_the_hyph_it_patterns() {
+        let it = Lang::for_language("Italian").unwrap();
+        for name in ["it", "it_IT"] {
+            assert_eq!(Lang::for_language(name), Some(it), "{name}");
+        }
+        assert_ne!(it, Lang::for_language("French").unwrap());
+        assert_eq!(marked("sillabazione", it), "sil-la-ba-zio-ne");
+        assert_eq!(marked("tipografia", it), "ti-po-gra-fia");
+        assert_eq!(marked("Repubblica", it), "Re-pub-bli-ca");
+        assert_eq!(marked("impaginazione", it), "im-pa-gi-na-zio-ne");
+        assert_eq!(marked("dell'impaginazione", it), "dell'im-pa-gi-na-zio-ne", "after an elision");
+    }
+
+    #[test]
+    fn dutch_uses_the_hyph_nl_patterns() {
+        let nl = Lang::for_language("Dutch").unwrap();
+        // InDesign writes the 2005 spelling as `nl_NL_2005`.
+        assert_eq!(nl, Lang::for_language("nl_NL_2005").unwrap());
+        assert_ne!(nl, Lang::for_language("Spanish").unwrap());
+        let h = |w: &str| {
+            let pts = hyphen_points_in(w, &Limits::default(), nl);
+            w.chars().enumerate().map(|(i, c)| if pts.contains(&i) { format!("-{c}") } else { c.to_string() }).collect::<String>()
+        };
+        assert_eq!(h("uitspraak"), "uit-spraak");
+        assert_eq!(h("kinderen"), "kin-de-ren");
+        assert_eq!(h("leesvaardigheid"), "lees-vaar-dig-heid");
+        assert_eq!(h("zelfvertrouwen"), "zelf-ver-trou-wen");
+        assert_eq!(h("Ontwikkelen"), "Ont-wik-ke-len");
+        // Long compounds break at their parts and at the syllables inside them.
+        assert_eq!(h("arbeidsongeschiktheidsverzekering"), "ar-beids-on-ge-schikt-heids-ver-ze-ke-ring");
+        assert_eq!(h("ziekenhuisopname"), "zie-ken-huis-op-na-me");
+        assert_eq!(h("gemeenteraadsverkiezingen"), "ge-meen-te-raads-ver-kie-zin-gen");
+        assert_eq!(h("kinderdagverblijf"), "kin-der-dag-ver-blijf");
+    }
+
     #[test]
     fn heuristic_fallback() {
         let c: Vec<char> = "happen".chars().collect();
         assert_eq!(heuristic_points(&c), vec![3]);
+    }
+
+    /// The heuristic as it was written before the prefix sums, building each right part.
+    fn heuristic_by_suffixes(c: &[char]) -> Vec<usize> {
+        let n = c.len();
+        if n < 4 || !c.iter().all(|c| c.is_alphabetic()) {
+            return vec![];
+        }
+        let v: Vec<bool> = c.iter().map(|&x| is_vowel(x)).collect();
+        let mut out = vec![];
+        for i in 1..n {
+            let ok = if v[i - 1] && !v[i] {
+                (i + 1 < n && v[i + 1]) || (i + 2 < n && onset_pair(c[i], c[i + 1]) && v[i + 2])
+            } else if !v[i - 1] && !v[i] {
+                i >= 2 && v[i - 2] && i + 1 < n && v[i + 1] && !onset_pair(c[i - 1], c[i]) && c[i - 1] != c[i]
+                    || (c[i - 1] == c[i] && i >= 2 && v[i - 2])
+            } else {
+                false
+            };
+            let right: String = c[i..].iter().collect();
+            let core = right.strip_suffix("ed").or_else(|| right.strip_suffix("es")).or_else(|| right.strip_suffix('e')).unwrap_or(&right);
+            if ok && core.chars().any(is_vowel) && core.len() > 1 && v[..i].iter().any(|x| *x) {
+                out.push(i);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn heuristic_matches_building_each_suffix() {
+        for w in [
+            "happen",
+            "typography",
+            "zzzzed",
+            "bakes",
+            "baked",
+            "flute",
+            "strengths",
+            "aeiou",
+            "rhythms",
+            "bookkeeper",
+            "naïveté",
+            "çabcde",
+            "ABCDE",
+            "plopped",
+            "staples",
+            "queued",
+            "ed",
+            "eded",
+            "abed",
+            "abes",
+            "cafés",
+            "aed",
+            "xaxed",
+            "xaxes",
+            "xaxe",
+            "ŝtupoe",
+            "ŝtupoed",
+            "ababababed",
+        ] {
+            let c: Vec<char> = w.chars().collect();
+            assert_eq!(heuristic_points(&c), heuristic_by_suffixes(&c), "{w}");
+        }
+    }
+
+    /// A very long word (no dictionary or pattern entry) takes time linear in its length.
+    #[test]
+    fn heuristic_on_a_long_word_is_linear() {
+        let c: Vec<char> = "taco".repeat(100_000).chars().collect();
+        let t = std::time::Instant::now();
+        let pts = heuristic_points(&c);
+        assert!(!pts.is_empty());
+        assert!(t.elapsed().as_secs() < 5, "{:?}", t.elapsed());
+    }
+}
+
+#[cfg(test)]
+mod korean_paragraph_tests {
+    use super::korean_paragraph;
+
+    /// `(byte, ch, generated)` per glyph, which is all the classification reads -- so these cases
+    /// need no font and state the counting rules directly.
+    fn k(glyphs: &[(usize, char, bool)]) -> bool {
+        korean_paragraph(glyphs.iter().copied())
+    }
+
+    /// One character per source byte, however many glyphs shaping made of it. A syllable shaped
+    /// into three glyphs voted three times, which could classify a mostly-Latin paragraph as
+    /// Korean.
+    #[test]
+    fn glyphs_of_one_cluster_vote_once() {
+        // Two Hangul characters, the first shaped into three glyphs, against three Latin letters.
+        let clustered = [
+            (0, '\u{AC00}', false),
+            (0, '\u{AC00}', false),
+            (0, '\u{AC00}', false),
+            (3, '\u{B098}', false),
+            (6, 'a', false),
+            (7, 'b', false),
+            (8, 'c', false),
+        ];
+        assert!(!k(&clustered), "two Hangul against three Latin is not Korean");
+        // Counting each glyph instead gives four Hangul against three, which flips it -- so the
+        // deduplication is what decides this case.
+        let per_glyph: Vec<char> = clustered.iter().map(|(_, c, _)| *c).collect();
+        assert!(super::mostly_hangul_chars(per_glyph.into_iter()), "per-glyph counting would call it Korean");
+    }
+
+    /// A generated label is not the paragraph's own text, and `prepend_label` gives it the
+    /// paragraph's *first* byte -- so counting it also swallowed the real first character in the
+    /// deduplication.
+    #[test]
+    fn a_generated_label_neither_votes_nor_hides_the_first_character() {
+        // A footnote label at byte 0, then two Hangul characters (the first also at byte 0) and
+        // two Latin letters. Two against two is Korean, since the test is `hangul >= latin` --
+        // and losing one Hangul character to the label makes it one against two, which is not.
+        let labelled = [(0, '1', true), (0, '\u{AC00}', false), (3, '\u{B098}', false), (6, 'a', false), (7, 'b', false)];
+        assert!(k(&labelled), "two Hangul against two Latin is Korean");
+        // Without the exclusion the label takes byte 0, the Hangul character there is deduplicated
+        // away, and one Hangul against two Latin is no longer Korean.
+        let counted: Vec<char> = {
+            let mut out = Vec::new();
+            let mut last = None;
+            for (b, c, _) in labelled {
+                if last != Some(b) {
+                    out.push(c);
+                }
+                last = Some(b);
+            }
+            out
+        };
+        assert!(!super::mostly_hangul_chars(counted.into_iter()), "counting the label loses the first character");
+    }
+
+    /// The remaining approximation, pinned so it is visible rather than surprising: a ligature is
+    /// one glyph over several characters, so Latin is under-counted and this paragraph classifies
+    /// as Korean although it has more Latin letters.
+    #[test]
+    fn a_ligature_under_counts_latin_which_is_a_known_approximation() {
+        // Two Hangul characters against three Latin letters shaped as one `ffi` glyph.
+        let ligated = [(0, '\u{AC00}', false), (3, '\u{B098}', false), (6, '\u{FB03}', false)];
+        assert!(k(&ligated), "the ligature counts as one character, so this reads as Korean");
+        // Spelled out, the same text is not Korean -- which is the error the approximation makes.
+        let spelled = [(0, '\u{AC00}', false), (3, '\u{B098}', false), (6, 'f', false), (7, 'f', false), (8, 'i', false)];
+        assert!(!k(&spelled), "the same characters unligated are not Korean");
     }
 }

@@ -175,13 +175,25 @@ pub fn menu_key(menu: &str, label: &str) -> String {
     format!("{menu}/{label}")
 }
 
+/// Whether any shown item is in `rest`, the entries after a separator: the separator is drawn only then, so hidden
+/// CJK commands leave no separator at the end of a menu (in the window and in the native macOS menu bar).
+pub fn has_shown_item(app: &DesignApp, rest: &[Item]) -> bool {
+    rest.iter().any(|e| match e {
+        Item::Cmd { id, .. } => shown(app, id),
+        Item::Sep => false,
+        Item::Sub(..) => true,
+    })
+}
+
 /// Draws a menu's items; returns how many were hidden.
 pub(super) fn menu_items(app: &mut DesignApp, ui: &mut egui::Ui, items: &[Item], path: &str) -> usize {
     let mut hidden = 0;
-    for it in items {
+    for (i, it) in items.iter().enumerate() {
         match it {
             Item::Sep => {
-                ui.separator();
+                if has_shown_item(app, &items[i + 1..]) {
+                    ui.separator();
+                }
             }
             Item::Sub(name, children) => {
                 let sub = format!("{path}/{name}");

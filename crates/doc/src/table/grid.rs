@@ -25,8 +25,16 @@ impl CellRange {
 
 impl Table {
     /// A `rows × cols` table (`header` + body + `footer` rows) whose columns share `width`.
+    ///
+    /// The shape is clamped to [`clamped_size`](super::clamped_size): the counts reach this from
+    /// IDML and DOCX files, where they are whatever the file says (#1583).
     pub fn new(id: u64, body_rows: usize, cols: usize, header: usize, footer: usize, width: f64) -> Table {
-        let cols = cols.max(1);
+        // Header, body and footer rows share one budget: the total is clamped first, then the
+        // header and footer take what they can of it, and the body keeps at least one row.
+        let (total, cols) = super::clamped_size(body_rows.max(1).saturating_add(header).saturating_add(footer), cols);
+        let header = header.min(total.saturating_sub(1));
+        let footer = footer.min(total.saturating_sub(header).saturating_sub(1));
+        let body_rows = total.saturating_sub(header).saturating_sub(footer).max(1);
         let mut rows = Vec::new();
         rows.extend((0..header).map(|_| Row { kind: RowKind::Header, ..Default::default() }));
         rows.extend((0..body_rows.max(1)).map(|_| Row::default()));
@@ -47,12 +55,15 @@ impl Table {
     pub fn from_strings(id: u64, data: &[Vec<String>], width: f64, para: &ParaFormat, fmt: &CharFormat) -> Table {
         let cols = data.iter().map(Vec::len).max().unwrap_or(1).max(1);
         let mut t = Table::new(id, data.len().max(1), cols, 0, 0, width);
-        for (r, row) in data.iter().enumerate() {
-            for (c, s) in row.iter().enumerate() {
+        // Every cell takes the text's format, the padding of a short row too.
+        for r in 0..t.nrows() {
+            for c in 0..t.ncols() {
                 let Some(cell) = t.cell_mut(r, c) else { continue };
                 cell.text = Story::with_text(StoryId(0), "", ParaFormat { table: None, ..para.clone() });
                 cell.text.chars[0].format = fmt.clone();
-                cell.text.insert(0, s);
+                if let Some(s) = data.get(r).and_then(|row| row.get(c)) {
+                    cell.text.insert(0, s);
+                }
             }
         }
         t
@@ -172,14 +183,19 @@ impl Table {
 
     /// Cell texts, rows separated by `\n`, cells by `\t` (Convert Table to Text, search, agents).
     pub fn plain_text(&self) -> String {
+        self.text_with("\t", "\n")
+    }
+
+    /// The cells' text, columns separated by `col` and rows by `row` (Convert Table to Text).
+    pub fn text_with(&self, col: &str, row: &str) -> String {
         let mut out = String::new();
         for r in 0..self.nrows() {
             if r > 0 {
-                out.push('\n');
+                out.push_str(row);
             }
             for c in 0..self.ncols() {
                 if c > 0 {
-                    out.push('\t');
+                    out.push_str(col);
                 }
                 if let Some(cell) = self.cell(r, c) {
                     out.push_str(&cell.text.text.replace('\n', " "));

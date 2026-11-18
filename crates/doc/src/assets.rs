@@ -9,7 +9,7 @@ use std::hash::BuildHasher;
 use std::sync::Arc;
 
 use crate::story::Story;
-use crate::{Asset, AssetId, Content, Document, Item};
+use crate::{Asset, AssetId, Content, Document, Fingerprint, Item};
 
 /// Nesting limit for groups, anchored objects, table cells and notes. A document nested deeper
 /// is treated as using every asset, so nothing it references is merged away or pruned.
@@ -82,6 +82,14 @@ impl Document {
 }
 
 impl Asset {
+    /// Link the asset to another file, or to none (embedded). The size and time kept with a link
+    /// ([`Asset::link_fingerprint`]) never outlive it: `loaded` is the new file's when `data` was
+    /// read from it, and `None` when it wasn't (a copy of the bytes, a file found again by name).
+    pub fn set_link(&mut self, link: Option<String>, loaded: Option<Fingerprint>) {
+        self.link_fingerprint = loaded.filter(|_| link.is_some());
+        self.link = link;
+    }
+
     /// Whether `other` holds the same file: the same type, PDF page and crop, link and bytes. Files at
     /// different paths stay apart even with identical bytes, since each can be updated or
     /// relinked on its own. Assets without bytes (a link that couldn't be read) are the same only
@@ -100,8 +108,23 @@ impl Asset {
         }
     }
 
+    /// The same bytes: the same version, or equal embedded bytes. Linked bytes aren't read here.
     fn same_bytes(&self, other: &Asset) -> bool {
-        Arc::ptr_eq(&self.data, &other.data) || (self.data.len() == other.data.len() && *self.data == *other.data)
+        if self.data.key() == other.data.key() {
+            return true;
+        }
+        match (self.data.embedded_bytes(), other.data.embedded_bytes()) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b) || (a.len() == b.len() && **a == **b),
+            _ => false,
+        }
+    }
+
+    /// A hash that is equal for assets with [`Asset::same_bytes`].
+    fn bytes_hash(&self, state: &std::collections::hash_map::RandomState) -> u64 {
+        match self.data.embedded_bytes() {
+            Some(b) => state.hash_one(b.as_slice()),
+            None => state.hash_one(self.data.key()),
+        }
     }
 }
 
@@ -112,18 +135,68 @@ pub fn find_same_asset(assets: &BTreeMap<AssetId, Arc<Asset>>, asset: &Asset) ->
 
 /// Add `asset` to `assets` unless they already hold the same file; returns the id placements
 /// should reference. A new asset with the bytes of an existing one shares its buffer.
+///
+/// This scans `assets`; an importer adding many files uses an [`AssetIndex`] instead.
 pub fn insert_asset(assets: &mut BTreeMap<AssetId, Arc<Asset>>, mut asset: Asset) -> AssetId {
-    if let Some(id) = find_same_asset(assets, &asset) {
+    // An empty, unlinked asset never holds the same file as another: nothing to search for.
+    if (!asset.data.is_empty() || asset.link.is_some())
+        && let Some(id) = find_same_asset(assets, &asset)
+    {
         return id;
     }
     if !asset.data.is_empty()
         && let Some(a) = assets.values().find(|a| a.same_bytes(&asset))
     {
-        asset.data = Arc::clone(&a.data);
+        asset.data = a.data.clone();
     }
     let id = asset.id;
     assets.insert(id, Arc::new(asset));
     id
+}
+
+/// A lookup of the assets added through it, by content, so that adding many files (an import)
+/// costs time in proportion to their number rather than its square. It only knows the assets
+/// it inserted: use one index per asset map, and add every asset through it.
+#[derive(Debug, Default)]
+pub struct AssetIndex {
+    fingerprint: std::collections::hash_map::RandomState,
+    /// Candidates for [`Asset::same_file`]: (bytes fingerprint, type, page, link).
+    files: HashMap<(u64, String, u32, Option<String>), Vec<AssetId>>,
+    /// One asset per distinct non-empty byte content, for buffer sharing.
+    bytes: HashMap<u64, Vec<AssetId>>,
+}
+
+impl AssetIndex {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// [`insert_asset`], looking up candidates by fingerprint instead of scanning `assets`.
+    /// A fingerprint only selects candidates; equality still compares the actual files.
+    pub fn insert_asset(&mut self, assets: &mut BTreeMap<AssetId, Arc<Asset>>, mut asset: Asset) -> AssetId {
+        // Empty, unlinked assets never compare equal: don't search for or index them.
+        if asset.data.is_empty() && asset.link.is_none() {
+            let id = asset.id;
+            assets.insert(id, Arc::new(asset));
+            return id;
+        }
+        let hash = asset.bytes_hash(&self.fingerprint);
+        let key = (hash, asset.mime.clone(), asset.page, asset.link.clone());
+        if let Some(id) = self.files.get(&key).and_then(|ids| ids.iter().copied().find(|id| assets.get(id).is_some_and(|a| a.same_file(&asset)))) {
+            return id;
+        }
+        if !asset.data.is_empty() {
+            let bucket = self.bytes.entry(hash).or_default();
+            match bucket.iter().find_map(|id| assets.get(id).filter(|a| a.same_bytes(&asset))) {
+                Some(a) => asset.data = a.data.clone(),
+                None => bucket.push(asset.id),
+            }
+        }
+        let id = asset.id;
+        self.files.entry(key).or_default().push(id);
+        assets.insert(id, Arc::new(asset));
+        id
+    }
 }
 
 /// Calls `f` with every asset reference in `it` and its children; false when nesting exceeded
@@ -323,7 +396,7 @@ impl Document {
             if a.data.is_empty() && a.link.is_none() {
                 continue;
             }
-            let hash = *hashes.entry(Arc::as_ptr(&a.data)).or_insert_with(|| fingerprint.hash_one(a.data.as_slice()));
+            let hash = *hashes.entry(a.data.key()).or_insert_with(|| a.bytes_hash(&fingerprint));
             let bucket = reps.entry((hash, a.mime.as_str(), a.page, a.link.as_deref())).or_default();
             // A fingerprint only selects candidates; equality still checks the actual file.
             match bucket.iter().find(|r| r.same_file(a)) {
@@ -353,7 +426,13 @@ mod tests {
     use designcraft_geom::{Affine, Rect, shapes};
 
     fn asset(id: u64, data: &[u8]) -> Asset {
-        Asset { id: AssetId(id), name: "p.png".into(), mime: "image/png".into(), data: Arc::new(data.to_vec()), ..Default::default() }
+        Asset {
+            id: AssetId(id),
+            name: "p.png".into(),
+            mime: "image/png".into(),
+            data: crate::AssetData::embedded(data.to_vec()),
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -368,7 +447,7 @@ mod tests {
         assert_eq!(d.merge_duplicate_assets(), 256);
         assert_eq!(d.assets.len(), 256);
         for id in 1..=256u64 {
-            assert_eq!(d.assets[&AssetId(id)].data[1016..], id.to_le_bytes());
+            assert_eq!(d.assets[&AssetId(id)].data.embedded_bytes().unwrap()[1016..], id.to_le_bytes());
         }
     }
 
@@ -463,6 +542,57 @@ mod tests {
         assert_ne!(m3, m4);
     }
 
+    /// The index dedupes exactly as the scan does, and skips empty unlinked assets.
+    #[test]
+    fn indexed_insert_matches_scanning_insert() {
+        let linked = |id, path: &str, data: &[u8]| Asset { link: Some(path.into()), ..asset(id, data) };
+        let cases = vec![
+            asset(1, b"same"),
+            asset(2, b"same"),
+            asset(3, b"diff"),
+            Asset { page: 1, ..asset(4, b"same") },
+            linked(5, "/p/a.png", b"same"),
+            linked(6, "/q/b.png", b"same"),
+            linked(7, "/p/a.png", b"same"),
+            linked(8, "/m/1.png", b""),
+            linked(9, "/m/1.png", b""),
+            asset(10, b""),
+            asset(11, b""),
+        ];
+        let mut scanned = BTreeMap::new();
+        let mut indexed = BTreeMap::new();
+        let mut index = AssetIndex::new();
+        for a in cases {
+            let s = insert_asset(&mut scanned, a.clone());
+            let i = index.insert_asset(&mut indexed, a);
+            assert_eq!(s, i);
+        }
+        assert_eq!(scanned.keys().collect::<Vec<_>>(), indexed.keys().collect::<Vec<_>>());
+        assert!(
+            Arc::ptr_eq(indexed[&AssetId(5)].data.embedded_bytes().unwrap(), indexed[&AssetId(6)].data.embedded_bytes().unwrap()),
+            "identical bytes share one buffer"
+        );
+    }
+
+    /// Many empty unlinked placements (graphics with neither bytes nor a link) insert without
+    /// comparing against each other.
+    #[test]
+    fn many_empty_unlinked_assets_insert_quickly() {
+        let mut assets = BTreeMap::new();
+        let mut index = AssetIndex::new();
+        for id in 1..=200_000u64 {
+            assert_eq!(insert_asset(&mut assets, asset(id, b"")), AssetId(id));
+        }
+        assert_eq!(assets.len(), 200_000);
+        let mut indexed = BTreeMap::new();
+        for id in 1..=20_000u64 {
+            let mut bytes = vec![7; 64];
+            bytes[56..].copy_from_slice(&id.to_le_bytes());
+            assert_eq!(index.insert_asset(&mut indexed, asset(id, &bytes)), AssetId(id));
+        }
+        assert_eq!(indexed.len(), 20_000);
+    }
+
     #[test]
     fn files_at_different_paths_stay_separate_assets() {
         let mut d = Document::new(&Default::default());
@@ -475,7 +605,10 @@ mod tests {
         assert!(embedded != a && a != b && embedded != b);
         assert_eq!(d.assets[&embedded].link, None);
         assert_eq!(d.assets[&b].link.as_deref(), Some("/q/b.png"));
-        assert!(Arc::ptr_eq(&d.assets[&a].data, &d.assets[&b].data), "identical bytes share one buffer");
+        assert!(
+            Arc::ptr_eq(d.assets[&a].data.embedded_bytes().unwrap(), d.assets[&b].data.embedded_bytes().unwrap()),
+            "identical bytes share one buffer"
+        );
     }
 
     #[test]

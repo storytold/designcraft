@@ -1,12 +1,12 @@
 use craft_pdf::write::backend as krilla;
 use std::sync::Arc;
 
+use craft_pdf::syntax::object::{Name, Object};
 use designcraft_color::{Color, Swatch};
 use designcraft_compose::Cache;
 use designcraft_doc::build::NewDocument;
 use designcraft_doc::{Asset, AssetId, Content, Document, Fill, Fitting, Graphic, Item, ItemId, Shape, SpreadRef};
 use designcraft_geom::{Affine, Rect};
-use hayro_syntax::object::{Name, Object};
 use image::{ExtendedColorType, ImageEncoder};
 
 use crate::{ExportReport, PdfOptions, Standard, check_pdfx4, export_pdf_with_report};
@@ -117,7 +117,7 @@ pub(super) fn x4(d: &Document) -> ExportReport {
 
 /// The `/ColorSpace` of every image XObject: a name, or `[` for an array (ICCBased, Indexed…).
 fn image_spaces(bytes: &[u8]) -> Vec<String> {
-    let pdf = hayro_syntax::Pdf::new(bytes.to_vec()).unwrap();
+    let pdf = craft_pdf::syntax::Pdf::new(bytes.to_vec()).unwrap();
     let mut out: Vec<String> = pdf
         .objects()
         .into_iter()
@@ -367,12 +367,12 @@ fn rgb_rasters() -> Vec<(&'static str, Vec<u8>)> {
 
 /// The decoded `/ICCBased` profile of every image XObject that has one.
 fn image_profiles(bytes: &[u8]) -> Vec<Vec<u8>> {
-    let pdf = hayro_syntax::Pdf::new(bytes.to_vec()).unwrap();
+    let pdf = craft_pdf::syntax::Pdf::new(bytes.to_vec()).unwrap();
     pdf.objects()
         .into_iter()
         .filter_map(|o| o.into_stream())
         .filter(|s| s.dict().get::<Name>(b"Subtype").is_some_and(|n| n.as_str() == "Image"))
-        .filter_map(|s| match s.dict().get::<hayro_syntax::object::Array>(b"ColorSpace")?.iter::<Object>().nth(1)? {
+        .filter_map(|s| match s.dict().get::<craft_pdf::syntax::object::Array>(b"ColorSpace")?.iter::<Object>().nth(1)? {
             Object::Stream(p) => Some(p.decoded().ok()?.into_owned()),
             _ => None,
         })
@@ -453,12 +453,115 @@ fn cmyk_tiff() -> Vec<u8> {
 #[test]
 fn xmp_states_trapped() {
     let r = x4(&Document::new(&NewDocument::default()));
-    let pdf = hayro_syntax::Pdf::new(r.bytes.clone()).unwrap();
+    let pdf = craft_pdf::syntax::Pdf::new(r.bytes.clone()).unwrap();
     let xref = pdf.xref();
-    let catalog = xref.get::<hayro_syntax::object::Dict>(xref.root_id()).unwrap();
-    let xmp = catalog.get::<hayro_syntax::object::Stream>(b"Metadata").unwrap().decoded().unwrap().into_owned();
+    let catalog = xref.get::<craft_pdf::syntax::object::Dict>(xref.root_id()).unwrap();
+    let xmp = catalog.get::<craft_pdf::syntax::object::Stream>(b"Metadata").unwrap().decoded().unwrap().into_owned();
     let xmp = String::from_utf8_lossy(&xmp);
     assert!(xmp.contains("xmlns:pdf=\"http://ns.adobe.com/pdf/1.3/\"") && xmp.contains("<pdf:Trapped>False</pdf:Trapped>"), "{xmp}");
     assert!(String::from_utf8_lossy(&r.bytes).contains("/Trapped/False"));
     assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+}
+
+/// `objects` (from 1) as a PDF 1.6 file with a classic cross-reference table and `trailer`.
+fn assemble_x4(objects: &[&str], trailer: &str) -> Vec<u8> {
+    let mut out = b"%PDF-1.6\n".to_vec();
+    let mut offsets = Vec::new();
+    for (i, o) in objects.iter().enumerate() {
+        offsets.push(out.len());
+        out.extend_from_slice(format!("{} 0 obj\n{o}\nendobj\n", i + 1).as_bytes());
+    }
+    let xref = out.len();
+    out.extend_from_slice(format!("xref\n0 {}\n0000000000 65535 f\r\n", objects.len() + 1).as_bytes());
+    for off in offsets {
+        out.extend_from_slice(format!("{off:010} 00000 n\r\n").as_bytes());
+    }
+    out.extend_from_slice(format!("trailer\n{trailer}\nstartxref\n{xref}\n%%EOF\n").as_bytes());
+    out
+}
+
+const NO_INTENT: &str = "no PDF/X output intent";
+const NO_INFO: &str = "the document information doesn't name PDF/X-4";
+
+/// The output intent and the document information are read as objects: whitespace between
+/// tokens (as qpdf and Ghostscript write them) doesn't hide them.
+#[test]
+fn x4_checks_ignore_whitespace_between_tokens() {
+    let pdf = assemble_x4(
+        &[
+            "<< /Type /Catalog /Pages 2 0 R /OutputIntents [ << /Type /OutputIntent /S /GTS_PDFX /DestOutputProfile 4 0 R >> ] >>",
+            "<< /Type /Pages /Kids [ 3 0 R ] /Count 1 >>",
+            "<< /Type /Page /Parent 2 0 R /MediaBox [ 0 0 100 100 ] /TrimBox [ 0 0 100 100 ] >>",
+            "<< /N 4 /Length 0 >>\nstream\n\nendstream",
+            "<< /GTS_PDFXVersion (PDF/X-4) /Trapped /False >>",
+        ],
+        "<< /Size 6 /Root 1 0 R /Info 5 0 R >>",
+    );
+    let issues = check_pdfx4(&pdf);
+    assert!(!issues.iter().any(|i| i == NO_INTENT || i == NO_INFO), "{issues:?}");
+    // Without them, both are still reported.
+    let bare = assemble_x4(
+        &[
+            "<< /Type /Catalog /Pages 2 0 R /OutputIntents [ << /Type /OutputIntent /S /GTS_PDFA1 >> ] >>",
+            "<< /Type /Pages /Kids [ 3 0 R ] /Count 1 >>",
+            "<< /Type /Page /Parent 2 0 R /MediaBox [ 0 0 100 100 ] /TrimBox [ 0 0 100 100 ] >>",
+            "<< /N 4 /Length 0 >>\nstream\n\nendstream",
+            "<< /Title (/S/GTS_PDFX /GTS_PDFXVersion(PDF/X-4)) /GTS_PDFXVersion (PDF/X-3:2002) >>",
+        ],
+        "<< /Size 6 /Root 1 0 R /Info 5 0 R >>",
+    );
+    let issues = check_pdfx4(&bare);
+    assert!(issues.iter().any(|i| i == NO_INTENT) && issues.iter().any(|i| i == NO_INFO), "{issues:?}");
+}
+
+/// The output intent and the document information are found inside a compressed object stream,
+/// through a cross-reference stream.
+#[test]
+fn x4_checks_read_object_streams() {
+    let plain = [
+        "<</Type/Catalog/Pages 2 0 R/OutputIntents[7 0 R]>>",
+        "<</Type/Pages/Kids[3 0 R]/Count 1>>",
+        "<</Type/Page/Parent 2 0 R/MediaBox[0 0 100 100]/TrimBox[0 0 100 100]>>",
+        "<</N 4/Length 0>>\nstream\n\nendstream",
+    ];
+    let (info, intent) = ("<</GTS_PDFXVersion(PDF/X-4)/Trapped/False>>", "<</Type/OutputIntent/S/GTS_PDFX/DestOutputProfile 4 0 R>>");
+    let mut out = b"%PDF-1.6\n".to_vec();
+    let mut offsets = Vec::new();
+    for (i, o) in plain.iter().enumerate() {
+        offsets.push(out.len());
+        out.extend_from_slice(format!("{} 0 obj\n{o}\nendobj\n", i + 1).as_bytes());
+    }
+    // Object 5 is free; 6 and 7 live in object stream 8.
+    let header = format!("6 0 7 {} ", info.len() + 1);
+    let body = format!("{header}{info} {intent}");
+    let objstm = out.len();
+    let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+    std::io::Write::write_all(&mut z, body.as_bytes()).unwrap();
+    let packed = z.finish().unwrap();
+    out.extend_from_slice(
+        format!("8 0 obj\n<</Type/ObjStm/N 2/First {}/Filter/FlateDecode/Length {}>>\nstream\n", header.len(), packed.len()).as_bytes(),
+    );
+    out.extend_from_slice(&packed);
+    out.extend_from_slice(b"\nendstream\nendobj\n");
+    let xref = out.len();
+    let mut rows = Vec::new();
+    let mut row = |kind: u8, field: usize, idx: u16| {
+        rows.push(kind);
+        rows.extend_from_slice(&u32::try_from(field).unwrap().to_be_bytes());
+        rows.extend_from_slice(&idx.to_be_bytes());
+    };
+    row(0, 0, 65535);
+    for off in &offsets {
+        row(1, *off, 0);
+    }
+    row(0, 0, 0);
+    row(2, 8, 0);
+    row(2, 8, 1);
+    row(1, objstm, 0);
+    row(1, xref, 0);
+    out.extend_from_slice(format!("9 0 obj\n<</Type/XRef/Size 10/W[1 4 2]/Root 1 0 R/Info 6 0 R/Length {}>>\nstream\n", rows.len()).as_bytes());
+    out.extend_from_slice(&rows);
+    out.extend_from_slice(format!("\nendstream\nendobj\nstartxref\n{xref}\n%%EOF\n").as_bytes());
+    let issues = check_pdfx4(&out);
+    assert!(!issues.iter().any(|i| i == NO_INTENT || i == NO_INFO), "{issues:?}");
 }
