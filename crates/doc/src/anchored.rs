@@ -237,15 +237,49 @@ fn remap_adopted_captions(st: &mut Story, ids: &HashMap<ItemId, ItemId>, depth: 
     }
 }
 
-/// Repair each text scope separately: equal old ids in different cells or notes are independent.
+/// Preserve fragment identity before insertion loses the boundary between original and copy.
+/// Only targets included in this fragment may remain linked to its graphics.
+pub(crate) fn prepare_anchored_fragment(dst: &Story, src: &Story) -> Option<Story> {
+    if !has_items(src) {
+        return None;
+    }
+    let mut occupied = HashSet::new();
+    items(dst, 0, &mut |item| {
+        occupied.insert(item.id);
+    });
+    let mut ids = HashMap::new();
+    items(src, 0, &mut |item| {
+        ids.insert(item.id, item.id);
+    });
+    let mut used = occupied.clone();
+    used.extend(ids.keys().copied());
+    let mut next = crate::ids::next_local_id(used.iter().map(|id| id.0));
+    // Traversal order, rather than hash iteration, keeps the resulting ids deterministic.
+    items(src, 0, &mut |item| {
+        if occupied.contains(&item.id) && ids.get(&item.id) == Some(&item.id) {
+            while used.contains(&ItemId(next)) {
+                next = next.checked_add(1).unwrap_or(1);
+            }
+            ids.insert(item.id, ItemId(next));
+            used.insert(ItemId(next));
+        }
+    });
+    let mut fragment = src.clone();
+    items_mut(&mut fragment, 0, &mut |item| {
+        if let Some(id) = ids.get(&item.id) {
+            item.id = *id;
+        }
+    });
+    remap_adopted_captions(&mut fragment, &ids, 0);
+    Some(fragment)
+}
+
+/// Repair each text scope separately: insertion already separated copied fragments' ids.
 fn repair_scope_ids(st: &mut Story, seen: &mut HashSet<ItemId>, next: &mut u64, depth: usize) -> usize {
-    let mut copies: HashMap<ItemId, Vec<ItemId>> = HashMap::new();
-    let mut links = Vec::new();
+    let mut copies = HashMap::new();
+    let mut ambiguous = HashSet::new();
     let mut changed = 0;
     for obj in &mut st.objects {
-        let old = obj.item.id;
-        let occurrence = copies.get(&old).map_or(0, Vec::len);
-        links.push((obj.caption_id, occurrence));
         walk_mut(&mut Arc::make_mut(obj).item, &mut |item| {
             let old = item.id;
             if !seen.insert(old) {
@@ -254,13 +288,14 @@ fn repair_scope_ids(st: &mut Story, seen: &mut HashSet<ItemId>, next: &mut u64, 
                 seen.insert(item.id);
                 changed += 1;
             }
-            copies.entry(old).or_default().push(item.id);
+            if copies.insert(old, item.id).is_some() {
+                ambiguous.insert(old);
+            }
         });
     }
-    // Match explicit links per copied occurrence, including when the original pair survives here.
-    // A partial copy must not acquire a link back into another occurrence of the original pair.
-    for (obj, (caption, occurrence)) in st.objects.iter_mut().zip(links) {
-        let caption = caption.and_then(|id| copies.get(&id).and_then(|ids| ids.get(occurrence)).copied());
+    // Malformed raw payloads have no fragment provenance: never guess an ambiguous target.
+    for obj in &mut st.objects {
+        let caption = obj.caption_id.filter(|id| !ambiguous.contains(id)).and_then(|id| copies.get(&id).copied());
         if obj.caption_id != caption {
             Arc::make_mut(obj).caption_id = caption;
         }
@@ -492,6 +527,8 @@ impl Document {
     /// missing). Returns how many items, threads and stories changed.
     pub fn fix_anchored_text_frames(&mut self) -> usize {
         let mut changed = 0;
+        // Story-local insertion can allocate ids beyond the document's current counter.
+        self.next_id = self.next_id.max(self.live_items().iter().map(|id| id.0).max().unwrap_or(0));
         // Fresh ids for copies: items on spreads keep theirs, then the first in story order.
         let mut seen = HashSet::new();
         for sp in self.spreads.iter().chain(&self.parents) {
@@ -693,6 +730,57 @@ mod tests {
         linked(&cell.text.notes[0].text);
         d.check().unwrap();
         assert_eq!(d.fix_anchored_text_frames(), 0, "repair is idempotent");
+    }
+
+    #[test]
+    fn review4_partial_fragment_before_complete_pair_keeps_caption_identity() {
+        for append in [false, true] {
+            for linked_partial in [false, true] {
+                use crate::{Content, Graphic, Shape};
+                let (mut d, sid) = doc();
+                let (_, caption) = anchor(&mut d, sid, "Caption");
+                let image = ItemId(d.alloc());
+                let mut item =
+                    Item::new(image, d.default_layer(), Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 30.0, 20.0)));
+                item.content = Content::Graphic(Graphic {
+                    layer_options: None,
+                    asset: AssetId(999),
+                    size: (30.0, 20.0),
+                    xf: designcraft_geom::Affine::IDENTITY,
+                    clip: None,
+                    auto_fit: Default::default(),
+                    fit_align: 4,
+                    crop: [0.0; 4],
+                    wrap: Default::default(),
+                    fill: Default::default(),
+                });
+                let mut obj = AnchoredObject::new(item, Default::default());
+                obj.caption_id = Some(caption);
+                d.story_mut(sid).unwrap().insert_object(0, obj);
+                d.check().unwrap();
+                let source = d.story(sid).unwrap().clone();
+                let mut partial = source.extract(0..crate::OBJECT_MARK.len_utf8());
+                if !linked_partial {
+                    Arc::make_mut(&mut partial.objects[0]).caption_id = None;
+                }
+                let st = d.story_mut(sid).unwrap();
+                if append {
+                    st.append_story(partial);
+                    st.append_story(source.clone());
+                } else {
+                    st.insert_story(st.len(), &partial);
+                    st.insert_story(st.len(), &source);
+                }
+                d.fix_anchored_text_frames();
+                let objects = &d.story(sid).unwrap().objects;
+                assert_eq!(objects.len(), 5);
+                assert_eq!(objects[0].caption_id, Some(objects[1].item.id));
+                assert_eq!(objects[2].caption_id, None, "partial fragment cannot steal another fragment's caption");
+                assert_eq!(objects[3].caption_id, Some(objects[4].item.id), "complete fragment keeps its own caption");
+                d.check().unwrap();
+                assert_eq!(d.fix_anchored_text_frames(), 0);
+            }
+        }
     }
 
     /// The stories the anchored text frames show, with their texts.

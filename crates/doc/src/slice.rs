@@ -68,6 +68,8 @@ impl Story {
         if src.text.is_empty() {
             return pos;
         }
+        let fragment = crate::anchored::prepare_anchored_fragment(self, src);
+        let src = fragment.as_ref().unwrap_or(src);
         // The table anchored in the paragraph at `pos` keeps its anchor wherever the paste moves it.
         let p0 = self.para_at(pos);
         let own = self.paras.get(p0).and_then(|p| p.table).and_then(|id| {
@@ -167,6 +169,9 @@ impl Story {
     pub fn append_story(&mut self, mut other: Story) {
         if other.text.is_empty() {
             return;
+        }
+        if let Some(fragment) = crate::anchored::prepare_anchored_fragment(self, &other) {
+            other = fragment;
         }
         if self.text.is_empty() {
             let (id, frames, rev, link) = (self.id, std::mem::take(&mut self.frames), self.rev, self.link.take());
