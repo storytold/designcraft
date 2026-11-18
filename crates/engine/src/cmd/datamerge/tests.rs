@@ -1657,6 +1657,7 @@ fn a_field_converted_into_a_table_is_filled_in_its_cell() {
     assert_eq!(exec(&mut s, "data.fields", json!({}))[0]["uses"], 1);
     exec(&mut s, "data.preview", json!({"record": 1}));
     assert_eq!(cell_texts(&s), ["Name", "Ada"], "the field is filled in its cell");
+    assert_eq!(exec(&mut s, "data.fields", json!({}))[0]["uses"], 1, "the count reads the unfilled template while previewing");
 }
 
 /// A table `Who⇥Where` with the caret in its second cell, and a source with `Name` and `City`.

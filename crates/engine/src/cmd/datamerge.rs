@@ -147,11 +147,12 @@ fn fields_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     let Some(src) = st.doc.data_merge.sources.first() else {
         return Ok(json!([]));
     };
-    let placeholders = &st.doc.data_merge.placeholders;
+    let doc = st.preview_stash.as_deref().unwrap_or(st.doc.as_ref());
+    let placeholders = &doc.data_merge.placeholders;
     let mut marker_counts = std::collections::HashMap::<String, usize>::new();
-    for (story_id, story) in &st.doc.stories {
+    for (story_id, story) in &doc.stories {
         // The generated endnote frame repeats note text already counted in its owning story.
-        if Some(*story_id) == st.doc.endnote_story {
+        if Some(*story_id) == doc.endnote_story {
             continue;
         }
         for (start, end, name) in fill::find_markers(&story.text) {
