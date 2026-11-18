@@ -1053,3 +1053,54 @@ fn reduced_decoding_refuses_progressive_jpegs_whose_full_size_coefficients_are_o
     let gray = decode_rgba_reduced(&progressive_jpeg(10_240, 8_800, 1), 3).unwrap();
     assert_eq!(gray.dimensions(), (1_280, 1_100));
 }
+
+/// Planar CMYK TIFFs and CMYK TIFFs with associated (premultiplied) alpha keep their inks through
+/// the shared decoder, so the PDF export's RGB fallback is only for other inks and oversized files.
+#[test]
+fn planar_and_premultiplied_cmyk_tiffs_keep_their_inks() {
+    use tiff::encoder::colortype::CMYKA8;
+    // 2×1, PlanarConfiguration 2: one strip per ink, 100% K then C0 M100 Y100 K0.
+    let (bps, offsets, counts, data) = (134u32, 142u32, 158u32, 174u32);
+    let entries: [(u16, u16, u32, u32); 10] = [
+        (256, 4, 1, 2),       // width
+        (257, 4, 1, 1),       // height
+        (258, 3, 4, bps),     // bits per sample
+        (259, 3, 1, 1),       // no compression
+        (262, 3, 1, 5),       // separated (CMYK)
+        (273, 4, 4, offsets), // strip offsets
+        (277, 3, 1, 4),       // samples per pixel
+        (278, 4, 1, 1),       // rows per strip
+        (279, 4, 4, counts),  // strip byte counts
+        (284, 3, 1, 2),       // planar
+    ];
+    let mut t = b"II*\0".to_vec();
+    t.extend(8u32.to_le_bytes());
+    t.extend(10u16.to_le_bytes());
+    for (tag, kind, count, value) in entries {
+        t.extend(tag.to_le_bytes());
+        t.extend(kind.to_le_bytes());
+        t.extend(count.to_le_bytes());
+        t.extend(value.to_le_bytes());
+    }
+    t.extend(0u32.to_le_bytes());
+    assert_eq!(t.len(), bps as usize);
+    t.extend([8u16; 4].iter().flat_map(|b| b.to_le_bytes()));
+    t.extend((0..4u32).flat_map(|i| (data + 2 * i).to_le_bytes()));
+    t.extend([2u32; 4].iter().flat_map(|c| c.to_le_bytes()));
+    assert_eq!(t.len(), data as usize);
+    t.extend([0, 0, 0, 255, 0, 255, 255, 0]);
+    assert!(is_cmyk_tiff(&t));
+    assert_eq!(decode_cmyk_tiff(&t), Some(CmykRaster { width: 2, height: 1, cmyk: vec![0, 0, 0, 255, 0, 255, 255, 0], alpha: None }));
+
+    // ExtraSamples 1 (associated alpha): the second pixel is C0 M100 Y100 K0 at half coverage.
+    let mut b = Vec::new();
+    let mut enc = tiff::encoder::TiffEncoder::new(std::io::Cursor::new(&mut b)).unwrap();
+    let mut img = enc.new_image::<CMYKA8>(2, 1).unwrap();
+    img.encoder().write_tag(tiff::tags::Tag::ExtraSamples, &[1u16][..]).unwrap();
+    img.write_data(&[0, 0, 0, 255, 255, 0, 128, 128, 0, 128]).unwrap();
+    let r = decode_cmyk_tiff(&b).expect("a CMYK TIFF with associated alpha keeps its inks");
+    assert_eq!(r.alpha, Some(vec![255, 128]));
+    assert_eq!(&r.cmyk[..4], &[0, 0, 0, 255]);
+    let straight = &r.cmyk[4..];
+    assert!(straight[0] <= 1 && straight[1] >= 254 && straight[2] >= 254 && straight[3] <= 1, "made straight: {straight:?}");
+}
