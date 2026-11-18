@@ -143,6 +143,9 @@ pub(super) fn context_parse(entries: &[&str]) -> Vec<(String, Vec<Item>)> {
 /// A canvas context menu: the menu bar's rows (labels, shortcuts, check marks, greyed when they
 /// can't run), scrolling when taller than the window.
 pub fn context_menu(app: &mut DesignApp, ui: &mut egui::Ui, kind: ContextMenu) {
+    if kind == ContextMenu::Text {
+        crate::panels::spelling::context_items(app, ui);
+    }
     let runs = context_parse(&context_entries(app, kind));
     let max_height = menu_max_height(ui, None);
     let mut scroll = egui::ScrollArea::vertical().max_height(max_height).min_scrolled_height(1.0);

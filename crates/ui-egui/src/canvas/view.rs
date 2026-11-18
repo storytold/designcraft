@@ -206,6 +206,39 @@ pub fn go_to_page(app: &mut DesignApp, abs: usize) {
     note_jump(app, true);
 }
 
+/// Where text is on the canvas: its first glyph's baseline. `None` when it isn't laid out.
+fn text_point(app: &DesignApp, story: designcraft_doc::StoryId, start: usize, end: usize) -> Option<Point> {
+    let st = app.session.active()?;
+    let layout = CanvasLayout::new(&st.doc, st.editing_parents);
+    let cs = app.session.cache.get(&st.doc, story, None);
+    for ft in &cs.frames {
+        for l in ft.lines.iter().filter(|l| l.range.start < end && l.range.end > start) {
+            let Some(g) = designcraft_compose::selected_glyphs(l, start, end).first().and_then(|i| l.glyphs.get(*i)) else { continue };
+            let (a, _) = super::frames::item_canvas_xf(&st.doc, &layout, ft.frame)?;
+            return Some(a * st.doc.text_xf(st.doc.item(ft.frame)?) * Point::new(g.x, l.baseline));
+        }
+    }
+    None
+}
+
+/// Scroll text to the centre, if it isn't well inside the canvas (keeps zoom). A jump Go Back can
+/// return from.
+pub fn reveal_text(app: &mut DesignApp, story: designcraft_doc::StoryId, start: usize, end: usize) {
+    /// Room around the text for the sentence it is in.
+    const MARGIN: f32 = 64.0;
+    let Some(rect) = app.canvas_rect else { return };
+    let Some(at) = text_point(app, story, start, end) else { return };
+    if app.view().is_none_or(|v| rect.shrink(MARGIN).contains(Xf::new(rect, v).to_screen(at))) {
+        return;
+    }
+    note_jump(app, false);
+    if let Some(v) = app.view_mut() {
+        let centre = Xf::new(rect, v).unrotate(rect.center());
+        v.origin = Point::new(at.x - (centre.x - rect.min.x) as f64 / v.zoom, at.y - (centre.y - rect.min.y) as f64 / v.zoom);
+    }
+    note_jump(app, true);
+}
+
 fn centre_page(app: &mut DesignApp, abs: usize) {
     let Some(st) = app.session.active() else { return };
     let layout = CanvasLayout::new(&st.doc, false);

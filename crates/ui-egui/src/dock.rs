@@ -35,6 +35,7 @@ pub const ICON_PANELS: &[(&str, &str, &str)] = &[
     ("preflight", "Preflight", "panel-preflight"),
     ("separations", "Separations Preview", "panel-swatches"),
     ("attributes", "Attributes", "panel-attributes"),
+    ("spelling", "Spelling", "panel-preflight"),
     ("conditions", "Conditional Text", "panel-conditions"),
     ("notes", "Notes", "panel-notes"),
     ("library", "Library", "panel-library"),
@@ -71,9 +72,10 @@ fn scrolled_body(app: &mut DesignApp, ui: &mut egui::Ui, id: &str, max_h: f32) {
     }
 }
 
-/// Panels that lay out their own scrolling parts (the Pages panel: parents, pages, footer).
+/// Panels that lay out their own scrolling parts (the Pages panel: parents, pages, footer; the
+/// Spelling panel: the review, then its actions in view).
 pub fn scrolls_itself(id: &str) -> bool {
-    id == "pages"
+    matches!(id, "pages" | "spelling")
 }
 
 /// The contents of an icon-column panel.
@@ -105,6 +107,7 @@ pub fn panel_body(app: &mut DesignApp, ui: &mut egui::Ui, id: &str) {
         "conditions" => panels::conditions::show(app, ui),
         "notes" => panels::notes::show(app, ui),
         "separations" => panels::separations::show(app, ui),
+        "spelling" => panels::spelling::show(app, ui),
         "library" => panels::library::show(app, ui),
         "hyperlinks" => panels::interactive::hyperlinks(app, ui),
         "bookmarks" => panels::interactive::bookmarks(app, ui),

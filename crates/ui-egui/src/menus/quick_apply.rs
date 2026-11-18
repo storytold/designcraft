@@ -48,7 +48,8 @@ pub fn palette(app: &mut DesignApp, ctx: &egui::Context) {
     });
     app.ui.palette = if close || run.is_some() { None } else { Some(q) };
     if let Some((id, params)) = run {
-        let _ = app.run(&id, params);
+        let id = if id == "spelling.check" { "app.checkSpelling" } else { &id };
+        let _ = app.run(id, params);
     }
 }
 
@@ -106,6 +107,9 @@ pub fn quick_apply_items(session: &designcraft_engine::Session, query: &str, cjk
 /// dialog to ask for it, or without one they reset a setting. Each stays in the menu, panel or
 /// dialog that gives it the value (the workspace menus, Keyboard Shortcuts, Preferences…).
 const NOT_SEARCHED: &[&str] = &[
+    // The existing Check Spelling entry invokes this UI alias (the query stays read-only).
+    "app.checkSpelling",
+    "app.spelling",
     // The workspace to switch to or delete.
     "window.workspace",
     "window.deleteWorkspace",

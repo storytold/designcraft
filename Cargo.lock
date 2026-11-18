@@ -1443,6 +1443,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-khmer"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=5a8e94506c37dd959763de01cdf5c81a1d7386dc#5a8e94506c37dd959763de01cdf5c81a1d7386dc"
+dependencies = [
+ "brotli",
+ "brotli-decompressor 5.0.3",
+ "crc32fast",
+ "regex",
+ "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "craft-math"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=7ad4765ee55496d0ccdb7659ad7a6375c7bbb484#7ad4765ee55496d0ccdb7659ad7a6375c7bbb484"
@@ -1601,6 +1614,26 @@ dependencies = [
  "tempfile",
  "winprint",
  "winsafe",
+]
+
+[[package]]
+name = "craft-proof"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=5a8e94506c37dd959763de01cdf5c81a1d7386dc#5a8e94506c37dd959763de01cdf5c81a1d7386dc"
+dependencies = [
+ "craft-khmer",
+ "log",
+ "miniz_oxide 0.9.1",
+ "toml",
+ "unicode-normalization",
+]
+
+[[package]]
+name = "craft-proof-ui"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=2444cc99ca4db03d08cc903b003ce3c275e7a80a#2444cc99ca4db03d08cc903b003ce3c275e7a80a"
+dependencies = [
+ "egui",
 ]
 
 [[package]]
@@ -2187,9 +2220,11 @@ dependencies = [
  "craft-docpath",
  "craft-file-formats",
  "craft-indd",
+ "craft-khmer",
  "craft-mime",
  "craft-prepress",
  "craft-print",
+ "craft-proof",
  "craft-svg 0.1.0 (git+https://github.com/storytold/craft-libs?rev=cc23ffd4d26f3074808e2187d332564817624f8f)",
  "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=899e396b9e2710fcdf1ad9b6249d6c456b7ca9a2)",
  "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=a5ac3aa05cf3ec013961a85599ddd9e0b5c03813)",
@@ -2425,6 +2460,7 @@ dependencies = [
  "craft-file-formats",
  "craft-keymap",
  "craft-prepress",
+ "craft-proof-ui",
  "craft-ui",
  "craft-update",
  "craft-window",
@@ -6300,6 +6336,8 @@ version = "1.0.154"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e7e9cc8b1b85264074fbcc02a88680c4096b1e47df8f739dceb03bf482f04bd6"
 dependencies = [
+ "foldhash 0.2.0",
+ "indexmap",
  "itoa",
  "memchr",
  "serde",
