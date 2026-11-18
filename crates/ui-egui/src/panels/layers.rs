@@ -453,6 +453,11 @@ pub fn show(app: &mut DesignApp, ui: &mut Ui) {
                 ui.close();
             }
             ui.separator();
+            let duplicate = crate::i18n::tr(&language, "Duplicate Layer \"{name}\"").replace("{name}", &l.name);
+            if ui.button(crate::rtl::widget(ui, duplicate)).clicked() {
+                cmds.push(("layer.duplicate", json!({"id": l.id.0})));
+                ui.close();
+            }
             if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&language, "Delete Layer"))).clicked() {
                 cmds.push(("layer.delete", json!({"id": l.id.0})));
                 ui.close();
@@ -550,7 +555,14 @@ pub fn show(app: &mut DesignApp, ui: &mut Ui) {
             if icons::button(ui, "trash", 20.0, false, crate::i18n::tr(&app.ui.language, "Delete Layer")).clicked() {
                 let _ = app.run("layer.delete", json!({"id": active.0}));
             }
-            if icons::button(ui, "plus", 20.0, false, crate::i18n::tr(&app.ui.language, "Create New Layer")).clicked() {
+            // Create New Layer; a layer dropped on it is duplicated.
+            let dragging = matches!(egui::DragAndDrop::payload::<LayersDrag>(ui.ctx()).as_deref(), Some(LayersDrag::Layer(_)));
+            let plus = icons::button(ui, "plus", 20.0, dragging, crate::i18n::tr(&app.ui.language, "Create New Layer"));
+            if let Some(payload) = plus.dnd_release_payload::<LayersDrag>() {
+                if let LayersDrag::Layer(id) = *payload {
+                    let _ = app.run("layer.duplicate", json!({"id": id.0}));
+                }
+            } else if plus.clicked() {
                 let _ = app.run("layer.new", json!({}));
             }
         });
@@ -668,6 +680,24 @@ mod tests {
         assert_eq!(layers(h.state()), ["Layer 1", "Art"]);
         h.state_mut().run("edit.undo", json!({})).unwrap();
         assert_eq!(layers(h.state()), ["Art", "Layer 1"], "one undo step");
+    }
+
+    #[test]
+    fn a_layer_dropped_on_create_new_layer_is_duplicated() {
+        use egui_kittest::kittest::Queryable;
+        let mut app = app();
+        app.run("layer.new", json!({"name": "Art"})).unwrap();
+        app.run("frame.create", json!({"rect": [0, 0, 10, 10]})).unwrap();
+        app.run("selection.set", json!({"ids": []})).unwrap();
+        let mut h = panel(app);
+        let plus = h.get_by_label("Create New Layer").rect().center();
+        // Rows: Art, its rectangle, Layer 1. Drop Layer 1 on the button.
+        drag(&mut h, row(2, 0.5, false), plus);
+        assert_eq!(layers(h.state()), ["Art", "Layer 1 copy", "Layer 1"]);
+        drag(&mut h, row(0, 0.5, false), plus);
+        assert_eq!(layers(h.state()), ["Art copy", "Art", "Layer 1 copy", "Layer 1"]);
+        let d = &h.state().session.active().unwrap().doc;
+        assert_eq!(d.spreads[0].items.iter().filter(|i| i.layer == d.layers[0].id).count(), 1, "the copy holds the rectangle");
     }
 
     #[test]
