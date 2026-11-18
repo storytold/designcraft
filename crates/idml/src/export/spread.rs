@@ -66,10 +66,7 @@ impl<'a> Ex<'a> {
         let based_on = sp.parent.as_ref().and_then(|i| i.based_on);
         // The spread's local copies of parent items: (parent item, copy, page the copy is on).
         let mut copies = Vec::new();
-        for it in &sp.items {
-            let page = sp.page_at_x(it.bounds().center().x);
-            collect_copies(it, page, &mut copies);
-        }
+        collect_copies(sp, &mut copies);
         let mut used = vec![false; copies.len()];
         // Each page's own copies are paired first, for every page, so one page's spread-wide fallback
         // can't take the copy another page overrides with.
@@ -179,23 +176,17 @@ fn push_page_guides(d: &Document, sp: &Spread, pg: &designcraft_doc::Page, pe: &
     }
 }
 
-/// The items in `it` (and `it` itself) that override a parent item: (parent item, item, `page`).
-/// Groups nested past 64 levels (only a hostile file has them) are not searched.
-fn collect_copies(it: &designcraft_doc::Item, page: Option<usize>, out: &mut Vec<(designcraft_doc::ItemId, designcraft_doc::ItemId, Option<usize>)>) {
-    fn walk(
-        it: &designcraft_doc::Item,
-        page: Option<usize>,
-        depth: usize,
-        out: &mut Vec<(designcraft_doc::ItemId, designcraft_doc::ItemId, Option<usize>)>,
-    ) {
+/// The items on the spread that override a parent item, in the order they are written: (parent
+/// item, item, page). A copy's page is the one under its own centre, a nested copy's through the
+/// groups it sits in. The walk keeps its own stack, so it reaches every copy the writer writes,
+/// however deep, and asks for the bounds of copies only.
+fn collect_copies(sp: &Spread, out: &mut Vec<(designcraft_doc::ItemId, designcraft_doc::ItemId, Option<usize>)>) {
+    let mut stack: Vec<(&designcraft_doc::Item, Affine)> = sp.items.iter().rev().map(|it| (&**it, Affine::IDENTITY)).collect();
+    while let Some((it, outer)) = stack.pop() {
         if let Some(parent) = it.overrides {
-            out.push((parent, it.id, page));
+            out.push((parent, it.id, sp.page_at_x((outer * it.bounds().center()).x)));
         }
-        if depth < 64 {
-            for child in it.children() {
-                walk(child, page, depth + 1, out);
-            }
-        }
+        let inner = outer * it.xf;
+        stack.extend(it.children().iter().rev().map(|c| (&**c, inner)));
     }
-    walk(it, page, 0, out);
 }

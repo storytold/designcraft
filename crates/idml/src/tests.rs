@@ -1157,13 +1157,15 @@ fn override_lists_pair_each_parent_item_with_its_override() {
     let (kept, deleted) = (parent(&mut d, 40.0), parent(&mut d, 200.0));
     // Each page overrides the first parent item with a copy of its own; page 1 also overrides the
     // second and deleted its copy.
-    let mut copies = Vec::new();
-    for (si, pi) in [(0, 0), (1, 0), (1, 1)] {
+    // The facing spread lists page 3's copy before page 2's, so a page that took the first copy
+    // on the spread instead of its own would get the other page's.
+    let mut copies = vec![String::new(); 3];
+    for (si, pi) in [(0, 0), (1, 1), (1, 0)] {
         let mut copy = kept.clone();
         copy.id = designcraft_doc::ItemId(d.alloc());
         copy.xf = designcraft_geom::Affine::translate((d.spreads[si].pages[pi].x - px, 0.0)) * copy.xf;
         copy.overrides = Some(kept.id);
-        copies.push(format!("u{:x}", copy.id.0));
+        copies[si + pi] = format!("u{:x}", copy.id.0);
         d.insert_item(SpreadRef::Doc(si), copy, None).unwrap();
         std::sync::Arc::make_mut(&mut d.spreads[si]).pages[pi].overridden.push(kept.id);
     }
@@ -1202,6 +1204,69 @@ fn override_lists_pair_each_parent_item_with_its_override() {
     assert_eq!(back.spreads[0].pages[0].overridden, ids);
     assert_eq!(back.spreads[1].pages[0].overridden, ids[..1]);
     assert_eq!(back.spreads[1].pages[1].overridden, ids[..1]);
+}
+
+/// #2896: a copy inside a group is paired on the page under its own centre, not the group's, and a
+/// copy nested deeper than 64 groups is still paired with its parent item.
+#[test]
+fn override_lists_pair_nested_copies_on_their_own_pages() {
+    use designcraft_doc::{Content, Item, ItemId};
+    use designcraft_geom::Affine;
+    use std::sync::Arc;
+    let mut d = Document::new(&NewDocument { pages: 3, facing_pages: true, ..Default::default() });
+    let lid = d.default_layer();
+    let (ppi, _) = d.parent_page_for(0).unwrap();
+    let parent = |d: &mut Document, y: f64| {
+        let item = Item::new(ItemId(d.alloc()), lid, Shape::Rectangle, shapes::rectangle(Rect::new(40.0, y, 200.0, y + 60.0)));
+        d.insert_item(SpreadRef::Parent(ppi), item.clone(), None).unwrap();
+        item
+    };
+    let (kept, deep) = (parent(&mut d, 40.0), parent(&mut d, 200.0));
+    let copy = |d: &mut Document, of: &Item, r: Rect| {
+        let mut c = Item::new(ItemId(d.alloc()), lid, Shape::Rectangle, shapes::rectangle(r));
+        c.overrides = Some(of.id);
+        c
+    };
+    let group = |d: &mut Document, items: Vec<Item>, xf: Affine| {
+        let mut g = Item::new(ItemId(d.alloc()), lid, Shape::Group, Default::default());
+        g.content = Content::Group { items: items.into_iter().map(Arc::new).collect() };
+        g.xf = xf;
+        g
+    };
+    let (left, right) = (d.spreads[1].pages[0].clone(), d.spreads[1].pages[1].clone());
+    assert!(left.x + left.width <= right.x + 1e-9, "page 2 is left of page 3");
+    // One group, moved onto page 2, holds page 3's small copy first and page 2's wide one, so its
+    // centre is on page 2.
+    let to_left = Affine::translate((left.x, 0.0));
+    let on_right = copy(&mut d, &kept, Rect::new(right.x - left.x + 10.0, 40.0, right.x - left.x + 40.0, 80.0));
+    let on_left = copy(&mut d, &kept, Rect::new(10.0, 40.0, left.width - 10.0, 80.0));
+    let (right_id, left_id) = (format!("u{:x}", on_right.id.0), format!("u{:x}", on_left.id.0));
+    let g = group(&mut d, vec![on_right, on_left], to_left);
+    assert!(g.bounds().center().x < left.x + left.width, "the group's centre is on page 2");
+    d.insert_item(SpreadRef::Doc(1), g, None).unwrap();
+    // Page 3 also overrides the second parent item with a copy 70 groups deep.
+    let mut nested = copy(&mut d, &deep, Rect::new(right.x + 10.0, 200.0, right.x + 100.0, 260.0));
+    let deep_id = format!("u{:x}", nested.id.0);
+    for _ in 0..70 {
+        nested = group(&mut d, vec![nested], Affine::IDENTITY);
+    }
+    d.insert_item(SpreadRef::Doc(1), nested, None).unwrap();
+    let sp = Arc::make_mut(&mut d.spreads[1]);
+    sp.pages[0].overridden.push(kept.id);
+    sp.pages[1].overridden.extend([kept.id, deep.id]);
+
+    let spreads = zip_text(&export_idml(&d), "Spreads/");
+    // Each page's OverrideList, from its start tag.
+    let lists: Vec<Vec<String>> = spreads
+        .split("<Page ")
+        .skip(1)
+        .map(|page| {
+            let tag = page.split('>').next().unwrap_or_default();
+            tag.split("OverrideList=\"").nth(1).and_then(|l| l.split('"').next()).unwrap_or_default().split_whitespace().map(str::to_owned).collect()
+        })
+        .collect();
+    let (k, dp) = (format!("u{:x}", kept.id.0), format!("u{:x}", deep.id.0));
+    assert_eq!(lists, [vec![], vec![k.clone(), left_id], vec![k, right_id, dp, deep_id]]);
 }
 
 #[test]
