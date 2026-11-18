@@ -10399,3 +10399,28 @@ fn page_numbers_in_a_paragraph_follow_the_frame_each_line_is_set_in() {
     // Every marker is set once.
     assert_eq!(first.len() + second.len(), 300);
 }
+
+/// A paragraph that starts with a page number drop cap and whose first line goes on to the frame
+/// on page 10: the drop cap shows 10. Its glyphs are kept apart from the first line's, so the
+/// check for numbers shaped for another page missed it and it showed 9.
+#[test]
+fn a_page_number_drop_cap_follows_the_frame_its_line_is_set_in() {
+    let text = format!("Opening.\n{}ne two three four five six.", story::PAGE_NUMBER);
+    let (mut d, sid, _) = doc_with(&text, Rect::new(36.0, 36.0, 156.0, 56.0), ParaAttrs::default());
+    d.story_mut(sid).unwrap().paras[1].para = drop_cap(2, 1);
+    let mut specs = frame_specs(&d, sid);
+    specs[0].page_name = Some("9".into());
+    let mut next = specs[0].clone();
+    next.id = ItemId(1 << 40);
+    next.area = Rect::new(36.0, 36.0, 156.0, 756.0);
+    next.page_name = Some("10".into());
+    specs.push(next);
+    let cs = compose(&d, d.story(sid).unwrap(), &specs, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    let para = text.find('\n').unwrap() + 1;
+    assert!(cs.frames[0].lines.iter().all(|l| l.range.end <= para), "the paragraph starts in the second frame");
+    let first = cs.frames[1].lines.first().unwrap();
+    assert!(first.drop_cap.is_some());
+    let shown: String = first.glyphs.iter().filter(|g| g.visible && g.byte == para).map(|g| g.rendered_char).collect();
+    assert_eq!(shown, "10");
+}
