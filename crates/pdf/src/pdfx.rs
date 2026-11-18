@@ -179,7 +179,7 @@ pub fn check_pdfx4(pdf: &[u8]) -> Vec<String> {
     issues
 }
 
-/// Page boxes that don't nest as PDF/X requires (#2947, #2948): the BleedBox within the MediaBox,
+/// Page boxes that don't nest as PDF/X requires (#2947, #2948): the CropBox and the BleedBox within the MediaBox,
 /// the TrimBox and ArtBox within the BleedBox (else the MediaBox), and within the CropBox, which
 /// is the visible page (the MediaBox when there is none). Each problem is named once, however
 /// many pages have it. The MediaBox and CropBox are the page's own or inherited ones.
@@ -204,6 +204,9 @@ fn box_nesting(file: &craft_pdf::syntax::Pdf) -> Vec<String> {
             && !inside(b, &media)
         {
             add("the bleed box extends past the media box".into());
+        }
+        if !inside(&crop, &media) {
+            add("the crop box extends past the media box".into());
         }
         for (name, key) in [("trim", &b"TrimBox"[..]), ("art", &b"ArtBox"[..])] {
             let Some(r) = raw.get::<Rect>(key) else { continue };

@@ -566,7 +566,7 @@ fn x4_checks_read_object_streams() {
     assert!(!issues.iter().any(|i| i == NO_INTENT || i == NO_INFO), "{issues:?}");
 }
 
-/// #2947, #2948: the page boxes nest as PDF/X requires. The BleedBox lies within the MediaBox, the
+/// #2947, #2948: the page boxes nest as PDF/X requires. The CropBox and the BleedBox lie within the MediaBox, the
 /// TrimBox (or ArtBox) within the BleedBox and the MediaBox, and the CropBox, the visible page,
 /// doesn't cut into the TrimBox. Boxes that agree to a hundredth of a point pass.
 #[test]
@@ -579,6 +579,7 @@ fn page_boxes_must_nest() {
     assert_eq!(boxes("/TrimBox[0 0 100.004 100]"), Vec::<String>::new(), "within a hundredth of a point");
     assert_eq!(boxes("/CropBox[0 0 100 100]/TrimBox[9 9 91 91]"), Vec::<String>::new());
     assert_eq!(boxes("/CropBox[30 30 60 60]/TrimBox[9 9 91 91]"), ["the crop box cuts into the trim box"]);
+    assert_eq!(boxes("/CropBox[-10 -10 110 110]/TrimBox[9 9 91 91]"), ["the crop box extends past the media box"]);
     assert_eq!(boxes("/TrimBox[0 0 300 400]"), ["the trim box extends past the media box"]);
     assert_eq!(boxes("/BleedBox[0 0 300 400]/TrimBox[9 9 91 91]"), ["the bleed box extends past the media box"]);
     assert_eq!(boxes("/BleedBox[10 10 90 90]/TrimBox[9 9 91 91]"), ["the trim box extends past the bleed box"]);
