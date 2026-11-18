@@ -71,22 +71,39 @@ impl<'a> Ex<'a> {
             collect_copies(it, page, &mut copies);
         }
         let mut used = vec![false; copies.len()];
+        // Each page's own copies are paired first, for every page, so one page's spread-wide fallback
+        // can't take the copy another page overrides with.
+        let mut own: Vec<Vec<Option<usize>>> = Vec::with_capacity(sp.pages.len());
+        for (i, pg) in sp.pages.iter().enumerate() {
+            let mut row = Vec::with_capacity(pg.overridden.len());
+            for parent in &pg.overridden {
+                let k = (0..copies.len()).find(|k| !used[*k] && copies[*k].0 == *parent && copies[*k].2 == Some(i));
+                if let Some(k) = k {
+                    used[k] = true;
+                }
+                row.push(k);
+            }
+            own.push(row);
+        }
         for (i, pg) in sp.pages.iter().enumerate() {
             let name = if master { sp.parent.as_ref().map(|i| i.prefix.clone()).unwrap_or_default() } else { d.page_name(first_page + i) };
             let applied = if master { based_on } else { pg.parent };
             // InDesign reads OverrideList two ids at a time: the parent item, then the item that
             // overrides it, and a list of parent items alone crashed it on open (#2896). The copy is
-            // the one on this page, else any on the spread not yet paired; a parent item whose
-            // override was deleted pairs with an id nothing else uses, as InDesign's own files do.
+            // the one on this page paired in the first pass, else any on the spread not yet paired; a
+            // parent item whose override was deleted pairs with an id nothing else uses, as
+            // InDesign's own files do.
             let mut overrides: Vec<String> = Vec::with_capacity(pg.overridden.len() * 2);
-            for parent in &pg.overridden {
-                let free = |k: &usize| !used[*k] && copies[*k].0 == *parent;
-                let k = (0..copies.len()).find(|k| free(k) && copies[*k].2 == Some(i)).or_else(|| (0..copies.len()).find(free));
-                let copy = match k {
-                    Some(k) => {
+            for (j, parent) in pg.overridden.iter().enumerate() {
+                let k = own.get(i).and_then(|r| r.get(j)).copied().flatten().or_else(|| {
+                    let k = (0..copies.len()).find(|k| !used[*k] && copies[*k].0 == *parent);
+                    if let Some(k) = k {
                         used[k] = true;
-                        uid(copies[k].1.0)
                     }
+                    k
+                });
+                let copy = match k.and_then(|k| copies.get(k)) {
+                    Some(c) => uid(c.1.0),
                     None => self.fresh(),
                 };
                 overrides.push(uid(parent.0));
