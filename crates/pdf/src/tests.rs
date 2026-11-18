@@ -792,11 +792,62 @@ fn link_annotation_export_refuses_non_web_schemes() {
     assert!(!s.contains("javascript:"), "a javascript URL is not exported: {s}");
 }
 
+/// Each page's link annotations: the last segment of the URL and the rectangle.
+fn page_links(bytes: Vec<u8>) -> Vec<Vec<(String, Vec<f32>)>> {
+    use craft_pdf::syntax::object::{Array, Dict};
+    let pdf = craft_pdf::syntax::Pdf::new(bytes).expect("parse");
+    pdf.pages()
+        .iter()
+        .map(|page| {
+            let Some(annots) = page.raw().get::<Array>(b"Annots") else { return Vec::new() };
+            annots
+                .iter::<Dict>()
+                .filter_map(|a| {
+                    let uri = a.get::<Dict>(b"A")?.get::<craft_pdf::syntax::object::String>(b"URI")?;
+                    let uri = String::from_utf8_lossy(uri.as_bytes()).into_owned();
+                    let name = uri.rsplit('/').next()?.to_owned();
+                    Some((name, a.get::<Array>(b"Rect")?.iter::<f32>().collect()))
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// A multi-state object draws only its active state, so only a link in that state goes into
+/// the PDF: a link in another state would be a clickable area over nothing (#2913 review).
+#[test]
+fn only_the_active_state_of_a_multi_state_object_links() {
+    use designcraft_doc::{Content, Hyperlink, HyperlinkDest, HyperlinkSource, Shape};
+    let mut d = Document::new(&NewDocument { pages: 1, facing_pages: false, ..NewDocument::default() });
+    let lid = d.default_layer();
+    let state = |d: &mut Document, r: Rect| Item::new(ItemId(d.alloc()), lid, Shape::Rectangle, designcraft_geom::shapes::rectangle(r));
+    let (a, b) = (state(&mut d, Rect::new(100.0, 100.0, 200.0, 160.0)), state(&mut d, Rect::new(300.0, 100.0, 400.0, 160.0)));
+    let (aid, bid) = (a.id, b.id);
+    let mut group = Item::new(ItemId(d.alloc()), lid, Shape::Group, designcraft_geom::PathData::default());
+    group.content = Content::Group { items: vec![std::sync::Arc::new(a), std::sync::Arc::new(b)] };
+    group.states = vec!["A".into(), "B".into()];
+    let gid = group.id;
+    d.insert_item(SpreadRef::Doc(0), group, None).unwrap();
+    for (id, name, item) in [(1, "a", aid), (2, "b", bid)] {
+        d.hyperlinks.push(Hyperlink {
+            id,
+            name: name.into(),
+            source: HyperlinkSource::Item { id: item },
+            dest: HyperlinkDest::Url(format!("https://example.com/{name}")),
+        });
+    }
+    let names = |d: &Document| -> Vec<String> {
+        page_links(export_pdf(d, &Cache::new(), &PdfOptions::default()).unwrap()).concat().into_iter().map(|(n, _)| n).collect()
+    };
+    assert_eq!(names(&d), ["a"], "state A shows");
+    d.item_mut(gid).unwrap().active_state = 1;
+    assert_eq!(names(&d), ["b"], "state B shows");
+}
+
 /// A hyperlink on a parent page's item or text links on every page that shows it, where it is
 /// drawn there; a page that hides its parent items has no link, nor has a hidden item (#2910).
 #[test]
 fn links_on_a_parent_page_link_on_its_pages() {
-    use craft_pdf::syntax::object::{Array, Dict};
     use designcraft_doc::story::PAGE_NUMBER;
     use designcraft_doc::{Hyperlink, HyperlinkDest, HyperlinkSource, Shape};
     let mut d = Document::new(&NewDocument { pages: 12, facing_pages: false, ..NewDocument::default() });
@@ -820,24 +871,7 @@ fn links_on_a_parent_page_link_on_its_pages() {
     }
     std::sync::Arc::make_mut(&mut d.spreads[1]).pages[0].show_parent_items = false;
     let bytes = export_pdf(&d, &Cache::new(), &PdfOptions::default()).unwrap();
-    // Each page's links: (the URL's last segment, the rectangle).
-    let pdf = craft_pdf::syntax::Pdf::new(bytes).expect("parse");
-    let pages: Vec<Vec<(String, Vec<f32>)>> = pdf
-        .pages()
-        .iter()
-        .map(|page| {
-            let Some(annots) = page.raw().get::<Array>(b"Annots") else { return Vec::new() };
-            annots
-                .iter::<Dict>()
-                .filter_map(|a| {
-                    let uri = a.get::<Dict>(b"A")?.get::<craft_pdf::syntax::object::String>(b"URI")?;
-                    let uri = String::from_utf8_lossy(uri.as_bytes()).into_owned();
-                    let name = uri.rsplit('/').next()?.to_owned();
-                    Some((name, a.get::<Array>(b"Rect")?.iter::<f32>().collect()))
-                })
-                .collect()
-        })
-        .collect();
+    let pages = page_links(bytes);
     assert_eq!(pages.len(), 12);
     assert!(pages[1].is_empty(), "page 2 hides its parent items: {:?}", pages[1]);
     let mut starts = Vec::new();
