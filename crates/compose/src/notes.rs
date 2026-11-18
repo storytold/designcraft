@@ -287,7 +287,9 @@ impl Notes {
                 for fragment in fragments {
                     let Some(p) = here.get(fragment.note) else { continue };
                     let Some(note) = story.notes.get(p.k) else { continue };
-                    let x = col.x0 + fragment.column as f64 * (width + o.clamped_column_gutter());
+                    let physical =
+                        if story.direction == designcraft_doc::TextDirection::RightToLeft { count - 1 - fragment.column } else { fragment.column };
+                    let x = col.x0 + physical as f64 * (width + o.clamped_column_gutter());
                     ft.notes.push(PlacedNote {
                         id: note.id,
                         index: p.k,

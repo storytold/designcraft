@@ -172,7 +172,7 @@ fn draw_cell_selection(
     };
     match cell.footnote_id() {
         Some(id) => {
-            let caret_part = compose::find_note_part(cs, id, ts.focus);
+            let caret_part = compose::find_note_part(cs, id, ts.focus).or_else(|| compose::find_note(cs, id));
             for (fi, ft) in cs.frames.iter().enumerate() {
                 for note in ft.notes.iter().filter(|n| n.id == id) {
                     let draw_caret = caret_part.is_some_and(|(_, part)| std::ptr::eq(part, note));
