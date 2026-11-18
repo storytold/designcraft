@@ -16,11 +16,14 @@ designcraft-fonts = { workspace = true }
 designcraft-compose = { workspace = true }
 designcraft-images = { workspace = true }
 skrifa = { workspace = true }
-image = { workspace = true }
 thiserror = { workspace = true }
-zip = { workspace = true }
+craft-opc = { workspace = true }
+craft-pptx = { workspace = true }
+craft-image-codecs = { workspace = true }
 chrono = { workspace = true }
 
 [dev-dependencies]
+zip = { workspace = true }
+image = { workspace = true, features = ["png"] }
 designcraft-fonts = { workspace = true, features = ["testing"] }
 quick-xml = { workspace = true }
