@@ -50,9 +50,11 @@ pub(crate) fn collect_media(doc: &Document, sheets: &[Sheet]) -> Vec<PlacedMedia
     let mut out = Vec::new();
     visit(doc, sheets, |pi, r, it| {
         if let (Some(m), designcraft_doc::Content::Graphic(g)) = (&it.media, &it.content)
-            && let Some(a) = doc.assets.get(&g.asset).filter(|a| !a.data.is_empty())
+            && let Some(a) = doc.assets.get(&g.asset)
+            && let Ok(data) = a.data.load()
+            && !data.is_empty()
         {
-            out.push((pi, r, a.name.clone(), a.mime.clone(), a.data.clone(), m.clone()));
+            out.push((pi, r, a.name.clone(), a.mime.clone(), data, m.clone()));
         }
     });
     out

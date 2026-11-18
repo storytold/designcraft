@@ -1,6 +1,6 @@
-# .deb/.rpm/Arch packages (nfpm: https://nfpm.goreleaser.com). Run by package.sh, which stages
+# .deb/.rpm packages (nfpm: https://nfpm.goreleaser.com). Run by package.sh, which stages
 # the file tree, substitutes its path for ${STAGE} (nfpm doesn't expand env vars in `src`) and
-# exports VERSION and NFPM_ARCH.
+# exports VERSION and NFPM_ARCH. The Arch package is built by the release workflow's makepkg job.
 #
 #   nfpm package -f packaging/linux/nfpm.yaml -p deb -t dist/release/
 name: designcraft
@@ -24,13 +24,15 @@ description: |-
 
 # The binaries link only glibc and libgcc_s directly. Windowing (X11/Wayland, xkbcommon) and the
 # GPU (Vulkan, EGL/GL) are loaded at runtime, so they are dependencies/recommendations here
-# rather than ELF NEEDED entries.
+# rather than ELF NEEDED entries. The X11 keyboard module is a separate library from the core
+# xkbcommon one, and winit's X11 backend panics without it, so it is required next to it.
 overrides:
   deb:
     depends:
       - libc6 (>= 2.35)
       - libgcc-s1
       - libxkbcommon0
+      - libxkbcommon-x11-0
       - libvulkan1 | libegl1
     recommends:
       - libwayland-client0
@@ -51,6 +53,7 @@ overrides:
       - libm.so.6(GLIBC_2.35)(64bit)
       - libgcc_s.so.1()(64bit)
       - libxkbcommon.so.0()(64bit)
+      - libxkbcommon-x11.so.0()(64bit)
       - (libvulkan.so.1()(64bit) or libEGL.so.1()(64bit))
     recommends:
       - libwayland-client
@@ -60,24 +63,6 @@ overrides:
       - libXrandr
       - mesa-vulkan-drivers
       - xdg-desktop-portal
-  # Named ai.storyteller.designcraft, not designcraft: the AUR already has designcraft, designcraft-bin and
-  # designcraft-git, and an AUR helper treats any installed package with an AUR name as its own and
-  # rebuilds it on the next update. ArtCraft Launcher also uses the bundle id to tell this package
-  # (which it updates with `pacman -U`) from an AUR build (which it leaves to the AUR helper).
-  # nfpm has no optdepends for Arch, so the recommends above have no equivalent here.
-  archlinux:
-    depends:
-      - glibc
-      - gcc-libs
-      - hicolor-icon-theme
-      - libxkbcommon
-      - vulkan-icd-loader
-    provides:
-      - designcraft
-    conflicts:
-      - designcraft
-      - designcraft-bin
-      - designcraft-git
 
 contents:
   - src: ${STAGE}/usr/bin/designcraft
