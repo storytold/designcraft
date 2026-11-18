@@ -1217,6 +1217,11 @@ dependencies = [
 [[package]]
 name = "craft-eps"
 version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=5bd7eb9e88e8574a9cd011accaa9b4beaf4118ac#5bd7eb9e88e8574a9cd011accaa9b4beaf4118ac"
+
+[[package]]
+name = "craft-eps"
+version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=b1b4602a71d19e09ad33f7752a10d6598cf39b2b#b1b4602a71d19e09ad33f7752a10d6598cf39b2b"
 
 [[package]]
@@ -1601,6 +1606,19 @@ dependencies = [
  "tempfile",
  "winprint",
  "winsafe",
+]
+
+[[package]]
+name = "craft-ps"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=5bd7eb9e88e8574a9cd011accaa9b4beaf4118ac#5bd7eb9e88e8574a9cd011accaa9b4beaf4118ac"
+dependencies = [
+ "craft-eps 0.1.0 (git+https://github.com/storytold/craft-libs?rev=5bd7eb9e88e8574a9cd011accaa9b4beaf4118ac)",
+ "kurbo",
+ "miniz_oxide 0.8.9",
+ "pdf-writer",
+ "skrifa 0.47.0",
+ "weezl",
 ]
 
 [[package]]
@@ -2296,6 +2314,7 @@ dependencies = [
  "craft-eps 0.1.0 (git+https://github.com/storytold/craft-libs?rev=ba24fe2435adb3c81ad6057faf36365fbba736cf)",
  "craft-file-formats",
  "craft-image-codecs 0.1.0 (git+https://github.com/storytold/craft-libs?rev=bfea7d9800a9f14e496209f9df30e9ef45655701)",
+ "craft-ps",
  "craft-psd",
  "craft-svg 0.1.0 (git+https://github.com/storytold/craft-libs?rev=cc23ffd4d26f3074808e2187d332564817624f8f)",
  "designcraft-color",
