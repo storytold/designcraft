@@ -104,8 +104,8 @@ fn split<C>(streams: &[Stream<C>], indices: &[usize], left: f64, right: f64, gut
 }
 
 /// Absorb holes between surviving neighbours, preserving every other live column. If the main
-/// text touches a hole it gets that space. Otherwise the two neighbours share it by their ratios.
-fn close_holes<C>(cfg: Config, streams: &[Stream<C>], regions: &mut [Region]) {
+/// text touches a hole it gets that space. The main hole splits at its last centre axis.
+fn close_holes<C>(cfg: Config, streams: &[Stream<C>], regions: &mut [Region], main_axis: Option<f64>) {
     if let Some(first) = regions.first_mut() {
         first.left = cfg.bounds.x0;
     }
@@ -117,6 +117,14 @@ fn close_holes<C>(cfg: Config, streams: &[Stream<C>], regions: &mut [Region]) {
         let (Some(left), Some(right)) = (before.last_mut(), after.first_mut()) else { continue };
         let extra = right.left - left.right - cfg.gutter;
         if extra <= EPS {
+            continue;
+        }
+        if left.stream < cfg.main
+            && right.stream > cfg.main
+            && let Some(axis) = main_axis
+        {
+            left.right = axis - cfg.gutter / 2.0;
+            right.left = axis + cfg.gutter / 2.0;
             continue;
         }
         let share = if left.stream == cfg.main {
@@ -145,7 +153,7 @@ fn initial<C>(cfg: Config, streams: &[Stream<C>], with_main: bool) -> Result<Vec
     let mut regions = split(streams, &inner, cfg.bounds.x0, left - cfg.gutter, cfg.gutter)?;
     regions.push(Region { stream: cfg.main, left, right });
     regions.extend(split(streams, &outer, right + cfg.gutter, cfg.bounds.x1, cfg.gutter)?);
-    close_holes(cfg, streams, &mut regions);
+    close_holes(cfg, streams, &mut regions, None);
     Ok(regions)
 }
 
@@ -232,8 +240,9 @@ pub fn layout<C, P>(
                 parts.push(Part { stream: region.stream, rect: Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + m.height), placement: m.placement });
             }
         }
+        let main_axis = regions.iter().find(|r| r.stream == cfg.main).map(|r| (r.left + r.right) / 2.0);
         regions.retain(|r| streams.get(r.stream).is_some_and(|s| !s.finished));
-        close_holes(cfg, &streams, &mut regions);
+        close_holes(cfg, &streams, &mut regions, main_axis);
         top = bottom;
         if !ended && (started || top < start) {
             break;

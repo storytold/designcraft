@@ -164,26 +164,84 @@ impl Page<'_> {
             streams.iter().take(main).filter(|s| !s.finished).map(|s| initial_width * s.ratio / main_ratio + self.options.gutter).sum::<f64>();
         let left = self.options.main_left_inset.unwrap_or(default_left);
         let right = self.options.main_right_inset.unwrap_or(self.frame.area.width() - default_left - initial_width);
-        let positioned = self.options.main_start_lines > 0 || self.options.main_left_inset.is_some() || self.options.main_right_inset.is_some();
+        let positioned = self.options.main_start_baseline.is_some()
+            || self.options.main_start_lines > 0
+            || self.options.main_left_inset.is_some()
+            || self.options.main_right_inset.is_some();
         let metric_width = if positioned { self.frame.area.width() - left - right } else { initial_width };
         if main_active && (!metric_width.is_finite() || metric_width <= 0.0) {
             return Err(super::Error::InvalidGeometry);
         }
-        let leading = if main_active && self.options.main_start_lines > 0 {
+        let first_main = if main_active && (self.options.main_start_lines > 0 || self.options.main_start_baseline.is_some()) {
             let metric =
                 band_frame(self.frame, Rect::new(self.frame.area.x0, self.frame.area.y0, self.frame.area.x0 + metric_width, self.frame.area.y1));
             let mut metrics = self.past.to_vec();
             metrics.push(metric);
-            main_layout(self.doc, self.story, &metrics, self.opts).frames.last().and_then(|f| f.lines.first()).map_or(0.0, |l| l.leading)
+            main_layout(self.doc, self.story, &metrics, self.opts).frames.last().and_then(|f| f.lines.first()).cloned()
         } else {
-            0.0
+            None
         };
+        let mut top = first_main.as_ref().map_or(0.0, |l| l.leading * f64::from(self.options.main_start_lines));
+        if let Some(n) = self.options.main_start_baseline.filter(|_| main_active) {
+            let neighbour = streams
+                .iter()
+                .enumerate()
+                .take(main)
+                .rev()
+                .find(|(_, s)| !s.finished)
+                .or_else(|| streams.iter().enumerate().skip(main.saturating_add(1)).find(|(_, s)| !s.finished));
+            if let Some((index, _)) = neighbour {
+                let series = self.options.streams.get(index).and_then(|s| s.series).ok_or(super::Error::InvalidGeometry)?;
+                let live: Vec<_> = streams.iter().enumerate().filter(|(i, s)| *i != main && !s.finished).map(|(i, _)| i).collect();
+                let regions = super::split(&streams, &live, self.frame.area.x0, self.frame.area.x1, self.options.gutter)?;
+                let region = regions.iter().find(|r| r.stream == index).ok_or(super::Error::InvalidGeometry)?;
+                let mut area = band_frame(
+                    self.frame,
+                    super::rectangle(
+                        Config { bounds: self.frame.area, gutter: self.options.gutter, main, mirror: self.frame.left_page, position: None },
+                        *region,
+                        self.frame.area.y0,
+                        self.frame.area.y1,
+                    ),
+                );
+                area.opts.note_stream = Some(NoteStream { story: self.story.id, series });
+                let fit = crate::notes::fit_stream_page_for(
+                    self.doc,
+                    self.story,
+                    StreamPageInput {
+                        page: self.frame.page.unwrap_or(0),
+                        main: self.start..wanted,
+                        areas: &[area],
+                        force_starts: Some(self.start..wanted),
+                    },
+                    self.before,
+                    &ComposeOptions { note_bands: true, ..self.opts.clone() },
+                    Some(series),
+                );
+                let lines: Vec<_> = fit
+                    .frames
+                    .iter()
+                    .flat_map(|f| &f.notes)
+                    .flat_map(|note| note.text.frames.iter().flat_map(move |f| f.lines.iter().map(move |l| (note.origin.y + l.baseline, l.leading))))
+                    .collect();
+                if let Some(&(baseline, leading)) = lines.get(n.saturating_sub(1) as usize).or_else(|| lines.first()) {
+                    let baseline = if lines.get(n.saturating_sub(1) as usize).is_some() {
+                        baseline
+                    } else {
+                        baseline + f64::from(n.saturating_sub(1)) * leading
+                    };
+                    top = (baseline - first_main.as_ref().map_or(self.frame.area.y0, |l| l.baseline)).max(0.0);
+                }
+            } else {
+                top = 0.0;
+            }
+        }
         let cfg = Config {
             bounds: self.frame.area,
             gutter: self.options.gutter,
             main,
             mirror: self.frame.left_page,
-            position: (positioned && main_active).then_some(MainPosition { top: leading * f64::from(self.options.main_start_lines), left, right }),
+            position: (positioned && main_active).then_some(MainPosition { top, left, right }),
         };
         let mut first_line_seen = None;
         let out = layout(cfg, streams, |index, cursor, rect| {
@@ -525,6 +583,7 @@ pub(crate) fn compose_frames(
             streams: vec![InsetStream { series: None, ratio: 1.0 }],
             gutter: 0.0,
             main_start_lines: 0,
+            main_start_baseline: None,
             main_left_inset: None,
             main_right_inset: None,
             catchwords: false,
@@ -615,11 +674,29 @@ pub(crate) fn compose_frames(
         frame.content_height =
             frame.lines.iter().map(|l| l.baseline + l.descent).chain(frame.notes.iter().map(|n| n.rect.y1)).fold(top, f64::max) - top;
     }
-    if state.pending_series().next().is_some() {
+    let commentary_overset = state.pending_series().next().is_some()
+        || story.notes.iter().enumerate().any(|(index, note)| {
+            let placed = merged
+                .iter()
+                .flat_map(|f| &f.notes)
+                .filter(|n| n.index == index)
+                .flat_map(|n| &n.text.frames)
+                .map(|f| f.range.end)
+                .max()
+                .unwrap_or(0);
+            refs.get(index).is_some_and(|at| *at < start)
+                && frames
+                    .iter()
+                    .filter_map(|f| f.opts.inset_columns.as_ref())
+                    .flat_map(|c| &c.streams)
+                    .any(|s| s.series == Some(doc.note_series_id(note.series)))
+                && placed < note.text.len()
+        });
+    if commentary_overset {
         warnings.push("Inset commentary remains after the final frame".into());
     }
     out.frames = merged;
-    out.overset_at = (start < story.text.len()).then_some(start);
+    out.overset_at = (start < story.text.len() || commentary_overset).then_some(start);
     out.warnings.extend(warnings);
     let catchwords: Vec<_> = pages.iter().map(|p| p.catchwords.clone()).collect();
     super::catchwords::place(doc, story, &mut out, frames, &catchwords);

@@ -2,7 +2,8 @@
 
 An inset frame holds its main story and commentary series in a shared area. Live outside
 commentary keeps its edge; the main text takes adjacent space when a commentary finishes.
-If the main text ends first, its neighbours share that space. The last stream uses full width.
+If the main text ends first, its neighbours widen to its last centre axis, with half a gutter
+on each side. The last stream uses full width.
 
 Create commentary series with `footnote.series.create {name, placement:"stream"}`, insert
 notes into the main story with `footnote.insert {series,text}`, then set the main frames with
@@ -28,7 +29,10 @@ no column or gutter. Streams are listed from the spine outward. Left pages mirro
 and insets; right and single pages use the unmirrored layout, independently of binding or
 paragraph direction. Without positioning options, streams start at the top with ratio widths.
 
-`mainStartLines` uses the main text's initial line metrics. Left and right insets are independent;
+`mainStartLines` uses the main text's initial line metrics. Optional `mainStartBaseline` overrides
+it and aligns the first main baseline with commentary baseline n, counted from one at the frame
+top. The nearest live stream on the spine side supplies the baseline; otherwise the nearest
+outside stream does. Both fields accept integers up to 65536. Left and right insets are independent;
 in a 600-point frame, 210 and 162 give a 228-point main block. Commentary fills the area above
 that block and its available side areas. Once a side ends, main can extend across its previous
 start edge. A surviving outside commentary keeps its column. `insetColumns:null` clears the
@@ -41,6 +45,9 @@ band keeps its old horizontal span until it clears the ended neighbour, while it
 continues at normal leading. This prevents mixed-size lines from colliding at a width change.
 Paragraph keeps treat same-page bands as one logical column; real page and column boundaries
 retain their keep constraints.
+
+Commentary left after the final frame sets the same story overset signal used by document
+inspection and preflight, even when all main text fits.
 
 The page fitter uses full-width main line ends as search keys. Each isolated trial lays out
 fixed page slices and rounds its cut to a whole main line from that layout. It retains the

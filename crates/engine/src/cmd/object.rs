@@ -619,7 +619,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Text Frame Options…",
             ["Object"],
             Some("Cmd+B"),
-            "{insetColumns?: {streams:[{series?,ratio?}],catchwords?,gutter?,mainStartLines?,mainLeftInset?,mainRightInset?}|null, noteStream?: {story, series}|null (commentary route; empty standalone frame), columns? (1..40), gutter? (pt, 0..15552), inset?: number|[t,l,b,r] (pt, each 0..15552; a list has four sides, null keeps that side), verticalJustification?: top|center|bottom|justify, paragraphSpacingLimit? (pt: Justify adds at most this between paragraphs, the rest between lines), columnsKind?: fixedNumber|fixedWidth|flexibleWidth, columnWidth? (pt, Fixed Width), firstBaseline?: ascent|capHeight|leading|xHeight|emboxHeight|fixed, firstBaselineMin? (pt), autoSize?: off|heightOnly|widthOnly|heightAndWidth|heightAndWidthProportionally, autoSizeReference?: topLeft|topCenter|topRight|leftCenter|center|rightCenter|bottomLeft|bottomCenter|bottomRight (the point that stays put), useMinimumHeight?: bool, minimumHeight? (pt), useMinimumWidth?: bool, minimumWidth? (pt), noLineBreaks?: bool, ignoreWrap?, balanceColumns?, columnRule?: bool, columnRuleWeight? (pt), columnRuleColor? (swatch name), columnRuleTint? (0..1), columnRuleOffset? (pt, horizontal), columnRuleTopInset? (pt), columnRuleBottomInset? (pt), baselineGrid?: {start? (pt), increment? (pt), relativeTo?: page|margin|frame|inset} (the frame's custom baseline grid; fields not given keep the frame's, or come from the document grid; null turns it off), vertical?: bool (sets the story direction of the frames' stories, as Type ▸ Story Direction), ids? (without ids or selected objects: the frame showing the text caret, or every frame holding part of the selected text)}",
+            "{insetColumns?: {streams:[{series?,ratio?}],catchwords?,gutter?,mainStartLines?,mainStartBaseline? (commentary baseline, overrides mainStartLines),mainLeftInset?,mainRightInset?}|null, noteStream?: {story, series}|null (commentary route; empty standalone frame), columns? (1..40), gutter? (pt, 0..15552), inset?: number|[t,l,b,r] (pt, each 0..15552; a list has four sides, null keeps that side), verticalJustification?: top|center|bottom|justify, paragraphSpacingLimit? (pt: Justify adds at most this between paragraphs, the rest between lines), columnsKind?: fixedNumber|fixedWidth|flexibleWidth, columnWidth? (pt, Fixed Width), firstBaseline?: ascent|capHeight|leading|xHeight|emboxHeight|fixed, firstBaselineMin? (pt), autoSize?: off|heightOnly|widthOnly|heightAndWidth|heightAndWidthProportionally, autoSizeReference?: topLeft|topCenter|topRight|leftCenter|center|rightCenter|bottomLeft|bottomCenter|bottomRight (the point that stays put), useMinimumHeight?: bool, minimumHeight? (pt), useMinimumWidth?: bool, minimumWidth? (pt), noLineBreaks?: bool, ignoreWrap?, balanceColumns?, columnRule?: bool, columnRuleWeight? (pt), columnRuleColor? (swatch name), columnRuleTint? (0..1), columnRuleOffset? (pt, horizontal), columnRuleTopInset? (pt), columnRuleBottomInset? (pt), baselineGrid?: {start? (pt), increment? (pt), relativeTo?: page|margin|frame|inset} (the frame's custom baseline grid; fields not given keep the frame's, or come from the document grid; null turns it off), vertical?: bool (sets the story direction of the frames' stories, as Type ▸ Story Direction), ids? (without ids or selected objects: the frame showing the text caret, or every frame holding part of the selected text)}",
             has_selection_or_text,
             text_frame_options
         ),
@@ -7323,7 +7323,7 @@ mod inset_column_options_tests {
         let a = s.execute("frame.create", &json!({"rect":[36,36,500,700],"content":"text","text":"Main text"})).unwrap();
         let id = ItemId(a["id"].as_u64().unwrap());
         let series = s.execute("footnote.series.create", &json!({"name":"Commentary","placement":"stream"})).unwrap()["id"].as_u64().unwrap();
-        let config = json!({"streams":[{"series":series},{"ratio":2}],"gutter":12,"mainStartLines":10,"mainLeftInset":210,"mainRightInset":162});
+        let config = json!({"streams":[{"series":series},{"ratio":2}],"gutter":12,"mainStartLines":10,"mainStartBaseline":6,"mainLeftInset":210,"mainRightInset":162});
         s.execute("textFrame.options", &json!({"ids":[id.0],"insetColumns":config})).unwrap();
         assert_eq!(s.doc().unwrap().doc.item(id).unwrap().text_frame().unwrap().options.inset_columns.as_ref().unwrap().main_start_lines, 10);
         s.execute("edit.undo", &json!({})).unwrap();
@@ -7334,9 +7334,15 @@ mod inset_column_options_tests {
             json!({"streams":[{"ratio":0}]}),
             json!({"streams":[{}, {"series":999}]}),
             json!({"streams":[{}],"mainStartLines":-1}),
+            json!({"streams":[{}],"mainStartBaseline":-1}),
+            json!({"streams":[{}],"mainStartBaseline":65537}),
         ] {
             assert!(s.execute("textFrame.options", &json!({"ids":[id.0],"insetColumns":config})).is_err());
             assert_eq!(s.doc().unwrap().doc.item(id).unwrap().text_frame().unwrap().options.inset_columns.as_ref().unwrap().main_start_lines, 10);
+            assert_eq!(
+                s.doc().unwrap().doc.item(id).unwrap().text_frame().unwrap().options.inset_columns.as_ref().unwrap().main_start_baseline,
+                Some(6)
+            );
         }
         s.execute("footnote.series.delete", &json!({"series":series})).unwrap();
         let options = s.doc().unwrap().doc.item(id).unwrap().text_frame().unwrap().options.inset_columns.as_ref().unwrap();

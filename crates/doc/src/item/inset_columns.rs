@@ -27,6 +27,9 @@ pub struct InsetColumns {
     pub gutter: f64,
     #[serde(default)]
     pub main_start_lines: u32,
+    /// Align the first main baseline to this neighbouring commentary baseline, counting from one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub main_start_baseline: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub main_left_inset: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -46,6 +49,7 @@ impl InsetColumns {
             && self.gutter.is_finite()
             && (0.0..=15552.0).contains(&self.gutter)
             && self.main_start_lines <= 65536
+            && self.main_start_baseline.is_none_or(|n| n <= 65536)
             && [self.main_left_inset, self.main_right_inset].into_iter().flatten().all(|v| v.is_finite() && (0.0..=15552.0).contains(&v))
             && self.streams.iter().enumerate().all(|(i, s)| s.series.is_none() || !self.streams.iter().take(i).any(|p| p.series == s.series))
     }

@@ -994,6 +994,7 @@ fn inset_columns_survive_native_roundtrip() {
         streams: vec![designcraft_doc::InsetStream { series: None, ratio: 2.0 }],
         gutter: 12.0,
         main_start_lines: 10,
+        main_start_baseline: Some(6),
         main_left_inset: Some(210.0),
         main_right_inset: Some(162.0),
         catchwords: true,

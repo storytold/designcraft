@@ -5611,6 +5611,7 @@ fn idml_warns_before_dropping_inset_geometry() {
         streams: vec![InsetStream { series: None, ratio: 1.0 }],
         gutter: 12.0,
         main_start_lines: 0,
+        main_start_baseline: None,
         main_left_inset: None,
         main_right_inset: None,
         catchwords: false,

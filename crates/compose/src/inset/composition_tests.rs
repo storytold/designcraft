@@ -47,6 +47,7 @@ fn document(pages: usize, main: &str, left: &str, right: &str) -> (Document, Sto
             ],
             gutter: 12.0,
             main_start_lines: 0,
+            main_start_baseline: None,
             main_left_inset: None,
             main_right_inset: None,
             catchwords: false,
@@ -67,6 +68,91 @@ fn document(pages: usize, main: &str, left: &str, right: &str) -> (Document, Sto
         });
     }
     (doc, sid)
+}
+
+#[test]
+fn main_start_matches_sixth_commentary_baseline_with_different_leading() {
+    let (doc, sid) = document(1, &"Main words. ".repeat(30), &"Commentary words. ".repeat(90), &"Outside words. ".repeat(90));
+    let mut frames = frame_specs(&doc, sid);
+    let options = frames[0].opts.inset_columns.as_mut().unwrap();
+    options.main_start_lines = 20;
+    options.main_start_baseline = Some(6);
+    let cs = compose(&doc, doc.story(sid).unwrap(), &frames, &Default::default());
+    let main = cs.frames[0].lines[0].baseline;
+    let (note, line) = cs.frames[0]
+        .notes
+        .iter()
+        .filter(|n| n.series == 1)
+        .flat_map(|n| n.text.frames.iter().flat_map(move |f| f.lines.iter().map(move |l| (n, l))))
+        .nth(5)
+        .unwrap();
+    assert!((main - note.origin.y - line.baseline).abs() < 0.01, "main {main}, commentary {}", note.origin.y + line.baseline);
+}
+
+#[test]
+fn commentary_continues_to_main_axis_without_losing_text() {
+    let (doc, sid) = document(1, "Short main text.", &"Inner commentary words. ".repeat(160), &"Outer commentary words. ".repeat(120));
+    let mut frames = frame_specs(&doc, sid);
+    let options = frames[0].opts.inset_columns.as_mut().unwrap();
+    options.main_left_inset = Some(210.0);
+    options.main_right_inset = Some(162.0);
+    options.streams[0].ratio = 2.0;
+    let cs = compose(&doc, doc.story(sid).unwrap(), &frames, &Default::default());
+    assert!(!cs.is_overset(), "{:?}", cs.warnings);
+    for note in &doc.story(sid).unwrap().notes {
+        let parts: Vec<_> = cs.frames.iter().flat_map(|f| &f.notes).filter(|n| n.id == note.id).collect();
+        let mut end = 0;
+        for part in &parts {
+            for frame in &part.text.frames {
+                assert_eq!(frame.range.start, end);
+                for line in &frame.lines {
+                    assert_eq!(line.range.start, end);
+                    end = line.range.end;
+                }
+            }
+        }
+        assert_eq!(end, note.text.len());
+        let widened = parts.iter().find(|n| if note.series == 1 { n.rect.x1 > 246.0 } else { n.rect.x0 < 474.0 }).unwrap();
+        let axis = 36.0 + (210.0 + 600.0 - 162.0) / 2.0;
+        assert!((if note.series == 1 { widened.rect.x1 - (axis - 6.0) } else { widened.rect.x0 - (axis + 6.0) }).abs() < 0.01, "{:?}", widened.rect);
+    }
+}
+
+#[test]
+fn unplaced_commentary_reports_story_overset() {
+    let (mut doc, sid) = document(1, "Short main text.", "Commentary.", "Outside.");
+    let frames = frame_specs(&doc, sid);
+    let note = doc.story_mut(sid).unwrap().notes[0].id;
+    doc.story_mut(sid).unwrap().note_mut(note).unwrap().text.insert(0, &"Unplaced words. ".repeat(5000));
+    let cs = compose(&doc, doc.story(sid).unwrap(), &frames, &Default::default());
+    assert!(cs.is_overset());
+}
+
+#[test]
+fn commentary_starting_mid_band_keeps_its_tail_below_main() {
+    let (mut doc, sid) = document(1, &"Main words. ".repeat(50), &"Inner words. ".repeat(300), &"First note. ".repeat(30));
+    let story = doc.story_mut(sid).unwrap();
+    let id = story.insert_note(6, &"Final commentary words. ".repeat(90), Default::default()).unwrap();
+    let note = story.note_mut(id).unwrap();
+    note.series = 2;
+    note.text.format_chars(0..note.text.len(), |f| {
+        f.over.size = Some(9.0);
+        f.over.leading = Some(designcraft_doc::Leading::Points(17.0));
+    });
+    let cs = compose(&doc, doc.story(sid).unwrap(), &frame_specs(&doc, sid), &Default::default());
+    let note = doc.story(sid).unwrap().note(id).unwrap();
+    let mut end = 0;
+    for part in cs.frames.iter().flat_map(|f| &f.notes).filter(|n| n.id == id) {
+        for frame in &part.text.frames {
+            for line in &frame.lines {
+                assert!(line.baseline >= 0.0);
+            }
+            assert_eq!(frame.range.start, end);
+            end = frame.lines.last().unwrap().range.end;
+        }
+    }
+    assert_eq!(end, note.text.len());
+    assert!(!cs.is_overset(), "{:?}", cs.warnings);
 }
 
 fn no_overlap(cs: &ComposedStory) {

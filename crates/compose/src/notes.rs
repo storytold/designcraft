@@ -111,6 +111,7 @@ pub(crate) struct Carry {
 }
 
 pub(crate) struct SplitPlan {
+    band_span: Option<f64>,
     exclusions: Vec<(usize, Vec<crate::Exclusion>)>,
     continuations: Vec<(usize, f64)>,
     remainder: bool,
@@ -491,6 +492,9 @@ impl SeriesNotes {
                     ));
                 }
                 return Some(SplitPlan {
+                    // A note can start below earlier notes in this band. Its continuation
+                    // translates by its own remaining span, not the whole band's height.
+                    band_span: self.band_span.map(|_| available - offset),
                     exclusions,
                     continuations: self.part_continuations(k, &heights, opts.note_bands).into_iter().filter(|(index, _)| *index <= part).collect(),
                     remainder: parts.get(heights.len()).is_some_and(Option::is_some),
@@ -573,7 +577,7 @@ impl SeriesNotes {
 
     fn place_split(&mut self, plan: SplitPlan, column: NoteColumn<'_>) {
         let part = plan.heights.len().saturating_sub(1);
-        if let Some(span) = self.band_span {
+        if let Some(span) = plan.band_span {
             self.band_spans.insert((plan.k, part), span);
             self.cache.clear();
         }
