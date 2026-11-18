@@ -1,5 +1,5 @@
+use super::Table;
 use super::cell::{Cell, Column, RowKind};
-use super::*;
 
 impl Table {
     /// Insert `n` rows before row `at` (formatted like the neighbouring row).
@@ -35,13 +35,11 @@ impl Table {
                 }
             })
             .collect();
-        for k in 0..n {
-            self.rows.insert(at + k, row.clone());
-            let i = (at + k) * nc;
-            for (c, cell) in template.iter().enumerate() {
-                self.cells.insert(i + c, cell.clone());
-            }
-        }
+        // All the new rows and cells in one move each (one at a time moved every later cell
+        // again for each one).
+        self.rows.splice(at..at, std::iter::repeat_n(row, n));
+        let i = at * nc;
+        self.cells.splice(i..i, (0..n).flat_map(|_| template.iter().cloned()));
         self.set_regions(&regions);
     }
 

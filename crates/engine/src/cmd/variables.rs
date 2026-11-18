@@ -28,7 +28,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Define Text Variable…",
             ["Type", "Text Variables"],
             None,
-            "{name, type: custom|lastPageNumber|chapterNumber|fileName|creationDate|modificationDate|outputDate|runningHeader, text?, format?, style?, use?: firstOnPage|lastOnPage, character?, section?, extension?, before?, after?} — creates or replaces by name",
+            "{name, type: custom|lastPageNumber|chapterNumber|fileName|creationDate|modificationDate|outputDate|runningHeader, text? (a string; a number or a boolean is shown as typed, anything else is refused), format?, style?, use?: firstOnPage|lastOnPage, character?, section?, extension?, before?, after?} — creates or replaces by name",
             has_doc,
             define
         ),
@@ -52,7 +52,11 @@ pub fn specs() -> Vec<CommandSpec> {
                             continue;
                         }
                         let st = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
-                        unvar(st, i, n, &value, 0);
+                        let mut replacements = Vec::new();
+                        unvar(st, i, n, &value, 0, &mut |pos, len, ins| replacements.push((pos, len, ins)));
+                        for (pos, tlen, ins) in replacements {
+                            d.adjust_text_ranges(sid, pos..pos + tlen, ins);
+                        }
                     }
                     d.text_variables.remove(i);
                     Ok(Value::Null)
@@ -352,18 +356,30 @@ fn needs_unvar(st: &designcraft_doc::Story, i: usize, depth: usize) -> bool {
 /// `i + 1..n` down by one, including table cells and foot/endnotes nested in the story. Only
 /// touches (and unshares) the parts that hold such instances; a story whose nested text changed
 /// gets a new revision.
-fn unvar(st: &mut designcraft_doc::Story, i: usize, n: usize, value: &str, depth: usize) {
+fn unvar(st: &mut designcraft_doc::Story, i: usize, n: usize, value: &str, depth: usize, on_replace: &mut dyn FnMut(usize, usize, usize)) {
     if depth > MAX_DEPTH {
         return;
     }
     if st.text.chars().any(|c| designcraft_doc::vars::var_index(c).is_some_and(|k| k >= i)) {
+        // The instances as they are now, replaced last first so earlier positions stay valid:
+        // text put in isn't searched again (a value holding the marker would never end).
+        let instances = |text: &str, target: &str| {
+            let mut at: Vec<usize> = text.match_indices(target).map(|(pos, _)| pos).collect();
+            at.reverse();
+            at
+        };
         let target = var_char(i).unwrap_or(' ').to_string();
-        while let Some(pos) = st.text.find(&target) {
-            st.replace(pos..pos + target.len(), value);
+        let at = instances(&st.text, &target);
+        if !at.is_empty() {
+            let value = var_char(i).map_or_else(|| value.to_string(), |c| value.replace(c, ""));
+            for pos in at {
+                st.replace(pos..pos + target.len(), &value);
+                on_replace(pos, target.len(), value.len());
+            }
         }
         for k in i + 1..n {
             let (from, to) = (var_char(k).unwrap_or(' ').to_string(), var_char(k - 1).unwrap_or(' ').to_string());
-            while let Some(pos) = st.text.find(&from) {
+            for pos in instances(&st.text, &from) {
                 st.replace(pos..pos + from.len(), &to);
             }
         }
@@ -375,14 +391,14 @@ fn unvar(st: &mut designcraft_doc::Story, i: usize, n: usize, value: &str, depth
         }
         for c in &mut std::sync::Arc::make_mut(t).cells {
             if needs_unvar(&c.text, i, depth + 1) {
-                unvar(&mut c.text, i, n, value, depth + 1);
+                unvar(&mut c.text, i, n, value, depth + 1, &mut |_, _, _| {});
             }
         }
         nested = true;
     }
     for note in st.notes.iter_mut().chain(st.endnotes.iter_mut()) {
         if needs_unvar(&note.text, i, depth + 1) {
-            unvar(&mut std::sync::Arc::make_mut(note).text, i, n, value, depth + 1);
+            unvar(&mut std::sync::Arc::make_mut(note).text, i, n, value, depth + 1, &mut |_, _, _| {});
             nested = true;
         }
     }
@@ -391,11 +407,30 @@ fn unvar(st: &mut designcraft_doc::Story, i: usize, n: usize, value: &str, depth
     }
 }
 
+/// A parameter's text: a string as it is; a number or a boolean spelled out. A Custom variable's
+/// text typed as `2026` reaches the command as a number (the dialog and JSON callers type their
+/// values), and it is still the text the variable shows (#2093).
+fn text_param(p: &Value, key: &str) -> Option<String> {
+    match p.get(key)? {
+        Value::String(s) => Some(s.clone()),
+        Value::Number(n) => Some(n.to_string()),
+        Value::Bool(b) => Some(b.to_string()),
+        _ => None,
+    }
+}
+
 fn define(s: &mut Session, p: &Value) -> Result<Value> {
     let name = str_param(p, "name").ok_or_else(|| bad("variables.define", "missing name"))?.to_string();
     let fmt = || str_param(p, "format").unwrap_or("MM/dd/yy").to_string();
     let kind = match str_param(p, "type").unwrap_or("custom") {
-        "custom" => VarKind::Custom { text: str_param(p, "text").unwrap_or("").into() },
+        "custom" => VarKind::Custom {
+            // No `text` is empty text; an object or an array is refused rather than stored as
+            // empty text in place of what a variable of that name holds.
+            text: match p.get("text") {
+                None | Some(Value::Null) => String::new(),
+                Some(_) => text_param(p, "text").ok_or_else(|| bad("variables.define", "`text` must be a string, a number or a boolean"))?,
+            },
+        },
         "lastPageNumber" => VarKind::LastPageNumber { section: p.get("section").and_then(Value::as_bool).unwrap_or(false) },
         "chapterNumber" => VarKind::ChapterNumber,
         "fileName" => VarKind::FileName { extension: p.get("extension").and_then(Value::as_bool).unwrap_or(false) },

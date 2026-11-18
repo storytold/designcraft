@@ -1,6 +1,6 @@
 use super::state::{shortcut_of, shortcut_text};
 use super::ui_commands::{CJK_ONLY, UI_COMMANDS, shown};
-use super::*;
+use super::{DesignApp, Value, json};
 
 /// Quick Apply (⌘Return): the document's styles and every command, searched by name.
 pub fn palette(app: &mut DesignApp, ctx: &egui::Context) {

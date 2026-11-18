@@ -1,4 +1,6 @@
-use super::*;
+use super::{
+    APP_BAR, APP_BAR_BAND, Color32, DesignApp, MAC_APP_BAR, MAC_CONTENT_LEFT, SEPARATOR, Sense, Stroke, Tokens, icons, json, semibold, vec2,
+};
 
 pub(super) fn search_id() -> egui::Id {
     egui::Id::unique("app_bar_search")

@@ -87,7 +87,7 @@ impl Exporter<'_> {
         let inks: Vec<Option<Ink>> = g.stops.iter().map(|s| self.stop_ink(s)).collect();
         let has_spot = inks.iter().any(|i| matches!(i, Some(Ink::Spot { .. })));
         let on_paper = g.stops.iter().any(|s| s.swatch.as_deref() == Some(designcraft_color::swatch::PAPER));
-        if !has_spot && !overprint && !(on_paper && self.for_print() && !self.rgb_only) {
+        if !(has_spot || overprint || on_paper && self.for_print() && !self.rgb_only) {
             return None;
         }
         let Some(inks) = inks.into_iter().collect::<Option<Vec<Ink>>>() else {
@@ -165,11 +165,12 @@ impl Exporter<'_> {
         let mut expanded: Vec<(f32, Vec<f32>, f32)> = Vec::with_capacity(tints.len() * 2);
         for (k, (s, v)) in g.stops.iter().zip(&tints).enumerate() {
             expanded.push((s.offset, v.clone(), s.opacity));
+            let midpoint = s.midpoint.clamp(0.01, 0.99);
             if let (Some(n), Some(nv)) = (g.stops.get(k + 1), tints.get(k + 1))
-                && (s.midpoint - 0.5).abs() > 1e-3
+                && (midpoint - 0.5).abs() > 1e-3
             {
                 let mid: Vec<f32> = v.iter().zip(nv).map(|(a, b)| (a + b) / 2.0).collect();
-                expanded.push((s.offset + (n.offset - s.offset) * s.midpoint, mid, (s.opacity + n.opacity) / 2.0));
+                expanded.push((s.offset + (n.offset - s.offset) * midpoint, mid, (s.opacity + n.opacity) / 2.0));
             }
         }
         let mut stops = Vec::with_capacity(expanded.len());

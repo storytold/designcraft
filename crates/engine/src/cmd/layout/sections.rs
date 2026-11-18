@@ -1,4 +1,4 @@
-use super::*;
+use super::{Result, Session, Value, bad, json};
 
 /// A start page number parameter: a whole number in 1..=[`designcraft_doc::MAX_PAGE_NUMBER`].
 pub(super) fn start_number(cmd: &str, key: &str, v: &Value) -> Result<u32> {
@@ -63,7 +63,13 @@ impl SectionEdit {
         let start = self.start;
         // Page 1 always starts a section.
         if self.remove && start != 0 {
-            d.sections.retain(|x| x.start != start);
+            // A section that starts an alternate layout stays (the layout needs it); it just
+            // continues the previous section's numbers.
+            if let Some(sec) = d.sections.iter_mut().find(|x| x.start == start && x.layout.is_some()) {
+                sec.start_number = None;
+            } else {
+                d.sections.retain(|x| x.start != start);
+            }
             // The pages after it follow the previous section's numbers again.
             d.repaginate();
             return;
@@ -74,6 +80,7 @@ impl SectionEdit {
             style: Default::default(),
             prefix: String::new(),
             marker: String::new(),
+            layout: None,
             include_prefix: false,
         });
         if let Some(n) = self.start_number {

@@ -900,7 +900,13 @@ fn layout(f: &Fonts, n: &Node, size: f64) -> MBox {
 pub fn to_svg(latex: &str, size: f64) -> (Vec<u8>, (f64, f64)) {
     let db = FontDb::global();
     let f = Fonts { upright: db.face(FAMILY, "Regular"), italic: db.face(FAMILY, "Italic"), fallback: db.face(FALLBACK, "Regular") };
-    let b = layout(&f, &parse(latex), size);
+    // XML 1.0 forbids most control characters and U+FFFE/U+FFFF; drop them before layout so
+    // they take no width either.
+    let latex: String = latex
+        .chars()
+        .filter(|c| matches!(c, '\t' | '\n' | '\r' | '\u{20}'..='\u{D7FF}' | '\u{E000}'..='\u{FFFD}' | '\u{10000}'..='\u{10FFFF}'))
+        .collect();
+    let b = layout(&f, &parse(&latex), size);
     let pad = size * 0.1;
     let (w, h) = (b.w + 2.0 * pad, b.asc + b.desc + 2.0 * pad);
     let base = pad + b.asc;

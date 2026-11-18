@@ -1,5 +1,5 @@
 use super::swatches::{parse_color, value_name};
-use super::*;
+use super::{CharAttrs, Result, Session, Styles, Swatch, SwatchValue, Value, bad, has_doc, json, str_param};
 
 fn gradient_json(name: &str, g: &designcraft_color::Gradient) -> Value {
     let stops: Vec<Value> = g
@@ -309,7 +309,7 @@ fn sample_item(
                 return None;
             }
             let asset = d.assets.get(&g.asset).filter(|a| a.is_raster())?;
-            let img = designcraft_images::decode_rgba(&asset.data)?;
+            let img = designcraft_images::decode_rgba(&asset.data.load().ok()?)?;
             let (pw, ph) = img.dimensions();
             let px = ((gp.x / w * f64::from(pw)) as u32).min(pw.checked_sub(1)?);
             let py = ((gp.y / h * f64::from(ph)) as u32).min(ph.checked_sub(1)?);

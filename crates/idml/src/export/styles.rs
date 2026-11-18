@@ -1,7 +1,9 @@
 use super::common::{bool_s, p, pct, pkg_root, with_props};
-use super::item::{Group, text_frame_pref};
+use super::item::text_frame_pref;
 use super::story::with_list_tab;
-use super::*;
+use super::{
+    CHAR_BUILTINS, El, Ex, NO_PARA_ID, OBJECT_BUILTINS, PARA_BUILTINS, Rule, TOC_STYLE_ID, TOC_STYLE_NAME, document, escape_id, names, num, st,
+};
 
 impl<'a> Ex<'a> {
     // ---------- Styles.xml ----------
@@ -12,7 +14,7 @@ impl<'a> Ex<'a> {
         let mut root = pkg_root("Styles");
 
         // Character styles.
-        let mut cg = Group::default();
+        let mut cg = craft_idml::model::StyleGroupWriter::new(craft_idml::model::StyleKind::Character, self.fresh());
         for cs in &styles.character {
             let id = names::style_self("CharacterStyle", CHAR_BUILTINS, &cs.name);
             let mut el =
@@ -26,14 +28,16 @@ impl<'a> Ex<'a> {
                 }
                 self.char_attrs(&mut el, &mut props, &cs.chars);
             }
-            cg.insert(&cs.name, with_props(el, props));
+            let mut el = with_props(el, props);
+            if let Some(t) = styles.export_tag(&cs.name, true) {
+                el.push(self.export_tag_map(t));
+            }
+            cg.insert(&cs.name, crate::xml::to_craft(&el));
         }
-        let mut rc = El::new("RootCharacterStyleGroup").attr("Self", self.fresh());
-        cg.emit(&mut rc, "CharacterStyleGroup", "");
-        root.push(rc);
+        root.push(crate::xml::from_craft(cg.to_el()));
 
         // Paragraph styles.
-        let mut pg = Group::default();
+        let mut pg = craft_idml::model::StyleGroupWriter::new(craft_idml::model::StyleKind::Paragraph, self.fresh());
         for ps in &styles.paragraph {
             let id = names::style_self("ParagraphStyle", PARA_BUILTINS, &ps.name);
             let mut el =
@@ -63,16 +67,116 @@ impl<'a> Ex<'a> {
             let pa = with_list_tab(pa, || (styles.resolve_para_style(&ps.name).0, parent_props));
             self.para_attrs(&mut el, &mut props, &pa, parent);
             self.char_attrs(&mut el, &mut props, &ca);
-            if styles.export_tag(&ps.name, false).is_some_and(|t| t.split) {
+            let tag = styles.export_tag(&ps.name, false);
+            if tag.is_some_and(|t| t.split) {
                 el.set("SplitDocument", "true");
             }
-            pg.insert(&ps.name, with_props(el, props));
+            let mut el = with_props(el, props);
+            if let Some(t) = tag {
+                el.push(self.export_tag_map(t));
+            }
+            pg.insert(&ps.name, crate::xml::to_craft(&el));
         }
-        let mut rp = El::new("RootParagraphStyleGroup").attr("Self", self.fresh());
-        pg.emit(&mut rp, "ParagraphStyleGroup", "");
-        root.push(rp);
+        root.push(crate::xml::from_craft(pg.to_el()));
 
-        // Cell and table styles.
+        self.append_cell_styles(&mut root, &styles);
+        self.append_table_styles(&mut root, &styles);
+        // Named numbered lists.
+        for l in &self.d.settings.lists {
+            root.push(
+                El::new("NumberingList")
+                    .attr("Self", format!("NumberingList/{}", escape_id(&l.name)))
+                    .attr("Name", &l.name)
+                    .attr("ContinueNumbersAcrossStories", bool_s(l.continue_across_stories))
+                    .attr("ContinueNumbersAcrossDocuments", "false"),
+            );
+        }
+
+        // Object styles.
+        let mut og = craft_idml::model::StyleGroupWriter::new(craft_idml::model::StyleKind::Object, self.fresh());
+        let mut have: Vec<&str> = styles.object.iter().map(|o| o.name.as_str()).collect();
+        let defaults = designcraft_doc::Styles::default();
+        let mut all: Vec<designcraft_doc::ObjectStyle> = styles.object.clone();
+        for b in &defaults.object {
+            if !have.contains(&b.name.as_str()) {
+                all.push(b.clone());
+                have.push(&b.name);
+            }
+        }
+        for os in &all {
+            let id = names::style_self("ObjectStyle", OBJECT_BUILTINS, &os.name);
+            let mut el = El::new("ObjectStyle").attr("Self", &id).attr("Name", names::style_name_out(OBJECT_BUILTINS, &os.name));
+            let mut props = Vec::new();
+            if os.name != designcraft_doc::NO_OBJECT_STYLE {
+                match os.based_on.as_deref().filter(|b| *b != designcraft_doc::NO_OBJECT_STYLE) {
+                    Some(b) => props.push(p("BasedOn", "object", names::style_self("ObjectStyle", OBJECT_BUILTINS, b))),
+                    None => props.push(p("BasedOn", "string", "$ID/[None]")),
+                }
+            }
+            el.set("EnableFill", bool_s(os.fill.is_some()));
+            el.set("EnableStroke", bool_s(os.stroke.is_some()));
+            el.set("EnableParagraphStyle", bool_s(os.paragraph_style.is_some()));
+            el.set("EnableTextFrameGeneralOptions", bool_s(os.text_frame.is_some()));
+            el.set("EnableStrokeAndCornerOptions", bool_s(os.corners.is_some()));
+            if let Some(c) = &os.corners {
+                for (n, c) in ["TopLeft", "TopRight", "BottomRight", "BottomLeft"].iter().zip(c.corners) {
+                    el.set(&format!("{n}CornerOption"), names::corner_out(c.shape));
+                    el.set(&format!("{n}CornerRadius"), num(c.size));
+                }
+            }
+            if let Some(f) = &os.fill {
+                el.set("FillColor", self.sw(&f.swatch));
+                el.set("FillTint", pct(f.tint as f64));
+            }
+            if let Some(s) = &os.stroke {
+                self.stroke_attrs(&mut el, s);
+            }
+            if let Some(ps) = &os.paragraph_style {
+                el.set("AppliedParagraphStyle", names::style_self("ParagraphStyle", PARA_BUILTINS, ps));
+                el.set("ApplyNextParagraphStyle", bool_s(os.apply_next_style));
+            }
+            let mut el = with_props(el, props);
+            if let Some(e) = &os.effects {
+                let mut t = El::new("TransparencySetting");
+                for c in self.effect_els(e, true) {
+                    t.push(c);
+                }
+                el.push(t);
+            }
+            if let Some(tf) = &os.text_frame {
+                el.push(text_frame_pref(tf, &self.sw(&tf.column_rule_color)));
+            }
+            // Effects: a style with effects sets the drop shadow and feather, never blending.
+            let on = bool_s(os.effects.is_some());
+            el.push(
+                El::new("ObjectStyleObjectEffectsCategorySettings")
+                    .attr("EnableTransparency", "false")
+                    .attr("EnableDropShadow", on)
+                    .attr("EnableFeather", on)
+                    .attr("EnableInnerShadow", "false")
+                    .attr("EnableOuterGlow", "false")
+                    .attr("EnableInnerGlow", "false")
+                    .attr("EnableBevelEmboss", "false")
+                    .attr("EnableSatin", "false")
+                    .attr("EnableDirectionalFeather", "false")
+                    .attr("EnableGradientFeather", "false"),
+            );
+            og.insert(&os.name, crate::xml::to_craft(&el));
+        }
+        root.push(crate::xml::from_craft(og.to_el()));
+        if let Some(toc) = d.toc.as_ref().filter(|t| d.story(t.story).is_some()) {
+            root.push(self.toc_style_el(toc));
+        }
+        document(&root)
+    }
+
+    /// A style's Export Tagging as its EPUB export tag map.
+    fn export_tag_map(&mut self, t: &designcraft_doc::ExportTag) -> El {
+        let model = craft_idml::model::EpubExportTagMap { tag: t.tag.clone(), class: t.class.clone(), split_document: t.split };
+        crate::xml::from_craft(model.to_el(&self.fresh()))
+    }
+
+    fn append_cell_styles(&mut self, root: &mut El, styles: &designcraft_doc::Styles) {
         let mut cells = El::new("RootCellStyleGroup")
             .attr("Self", self.fresh())
             .child(El::new("CellStyle").attr("Self", "CellStyle/$ID/[None]").attr("AppliedParagraphStyle", NO_PARA_ID).attr("Name", "$ID/[None]"));
@@ -86,14 +190,18 @@ impl<'a> Ex<'a> {
             if let Some(t) = cs.fill_tint {
                 el.set("FillTint", pct(t as f64));
             }
+            let inset_names =
+                [("TextTopInset", "TopInset"), ("TextLeftInset", "LeftInset"), ("TextBottomInset", "BottomInset"), ("TextRightInset", "RightInset")];
             if let Some(i) = cs.insets {
-                for (k, v) in ["TopInset", "LeftInset", "BottomInset", "RightInset"].iter().zip(i) {
-                    el.set(k, num(v));
+                for ((text, old), v) in inset_names.iter().zip(i) {
+                    el.set(text, num(v));
+                    el.set(old, num(v));
                 }
             }
-            for (key, value) in ["TopInset", "LeftInset", "BottomInset", "RightInset"].iter().zip(cs.inset_overrides) {
+            for ((text, old), value) in inset_names.iter().zip(cs.inset_overrides) {
                 if let Some(value) = value {
-                    el.set(key, num(value));
+                    el.set(text, num(value));
+                    el.set(old, num(value));
                 }
             }
             if let Some(vj) = cs.vj {
@@ -125,6 +233,9 @@ impl<'a> Ex<'a> {
             cells = cells.child(with_props(el, vec![based_on]));
         }
         root.push(cells);
+    }
+
+    fn append_table_styles(&mut self, root: &mut El, styles: &designcraft_doc::Styles) {
         let mut tables = El::new("RootTableStyleGroup").attr("Self", self.fresh());
         if !styles.table.iter().any(|s| s.name == designcraft_doc::NO_TABLE_STYLE) {
             tables.push(El::new("TableStyle").attr("Self", "TableStyle/$ID/[No table style]").attr("Name", "$ID/[No table style]"));
@@ -198,87 +309,6 @@ impl<'a> Ex<'a> {
             tables = tables.child(with_props(el, props));
         }
         root.push(tables);
-        // Named numbered lists.
-        for l in &self.d.settings.lists {
-            root.push(
-                El::new("NumberingList")
-                    .attr("Self", format!("NumberingList/{}", escape_id(&l.name)))
-                    .attr("Name", &l.name)
-                    .attr("ContinueNumbersAcrossStories", bool_s(l.continue_across_stories))
-                    .attr("ContinueNumbersAcrossDocuments", "false"),
-            );
-        }
-
-        // Object styles.
-        let mut og = Group::default();
-        let mut have: Vec<&str> = styles.object.iter().map(|o| o.name.as_str()).collect();
-        let defaults = designcraft_doc::Styles::default();
-        let mut all: Vec<designcraft_doc::ObjectStyle> = styles.object.clone();
-        for b in &defaults.object {
-            if !have.contains(&b.name.as_str()) {
-                all.push(b.clone());
-                have.push(&b.name);
-            }
-        }
-        for os in &all {
-            let id = names::style_self("ObjectStyle", OBJECT_BUILTINS, &os.name);
-            let mut el = El::new("ObjectStyle").attr("Self", &id).attr("Name", names::style_name_out(OBJECT_BUILTINS, &os.name));
-            let mut props = Vec::new();
-            if os.name != designcraft_doc::NO_OBJECT_STYLE {
-                match os.based_on.as_deref().filter(|b| *b != designcraft_doc::NO_OBJECT_STYLE) {
-                    Some(b) => props.push(p("BasedOn", "object", names::style_self("ObjectStyle", OBJECT_BUILTINS, b))),
-                    None => props.push(p("BasedOn", "string", "$ID/[None]")),
-                }
-            }
-            el.set("EnableFill", bool_s(os.fill.is_some()));
-            el.set("EnableStroke", bool_s(os.stroke.is_some()));
-            el.set("EnableParagraphStyle", bool_s(os.paragraph_style.is_some()));
-            el.set("EnableTextFrameGeneralOptions", bool_s(os.text_frame.is_some()));
-            if let Some(f) = &os.fill {
-                el.set("FillColor", self.sw(&f.swatch));
-                el.set("FillTint", pct(f.tint as f64));
-            }
-            if let Some(s) = &os.stroke {
-                self.stroke_attrs(&mut el, s);
-            }
-            if let Some(ps) = &os.paragraph_style {
-                el.set("AppliedParagraphStyle", names::style_self("ParagraphStyle", PARA_BUILTINS, ps));
-            }
-            let mut el = with_props(el, props);
-            if let Some(e) = &os.effects {
-                let mut t = El::new("TransparencySetting");
-                for c in self.effect_els(e, true) {
-                    t.push(c);
-                }
-                el.push(t);
-            }
-            if let Some(tf) = &os.text_frame {
-                el.push(text_frame_pref(tf, &self.sw(&tf.column_rule_color)));
-            }
-            // Effects: a style with effects sets the drop shadow and feather, never blending.
-            let on = bool_s(os.effects.is_some());
-            el.push(
-                El::new("ObjectStyleObjectEffectsCategorySettings")
-                    .attr("EnableTransparency", "false")
-                    .attr("EnableDropShadow", on)
-                    .attr("EnableFeather", on)
-                    .attr("EnableInnerShadow", "false")
-                    .attr("EnableOuterGlow", "false")
-                    .attr("EnableInnerGlow", "false")
-                    .attr("EnableBevelEmboss", "false")
-                    .attr("EnableSatin", "false")
-                    .attr("EnableDirectionalFeather", "false")
-                    .attr("EnableGradientFeather", "false"),
-            );
-            og.insert(&os.name, el);
-        }
-        let mut ro = El::new("RootObjectStyleGroup").attr("Self", self.fresh());
-        og.emit(&mut ro, "ObjectStyleGroup", "");
-        root.push(ro);
-        if let Some(toc) = d.toc.as_ref().filter(|t| d.story(t.story).is_some()) {
-            root.push(self.toc_style_el(toc));
-        }
-        document(&root)
     }
 
     /// The document's table of contents as a TOC style; its story names it in `AppliedTOCStyle`.
@@ -293,7 +323,7 @@ impl<'a> Ex<'a> {
             .attr("RunIn", "false")
             .attr("IncludeHidden", "false")
             .attr("IncludeBookDocuments", "false")
-            .attr("CreatePdfBookmarks", "false");
+            .attr("CreateBookmarks", if toc.create_bookmarks { "true" } else { "false" });
         for e in &toc.entries {
             let format = e.entry_style.clone().unwrap_or_else(|| format!("TOC Level {}", e.level));
             let position = match e.page_number {
@@ -326,6 +356,17 @@ impl<'a> Ex<'a> {
         el.set(&format!("{k}Offset"), num(r.offset));
         el.set(&format!("{k}LeftIndent"), num(r.left_indent));
         el.set(&format!("{k}RightIndent"), num(r.right_indent));
+        el.set(&format!("{k}Type"), names::stroke_type_out(&r.kind));
+        // A gap in Text Color is a string property, as the rule's own colour is.
+        if r.gap_color == designcraft_doc::TEXT_COLOR {
+            props.push(p(&format!("{k}GapColor"), "string", designcraft_doc::TEXT_COLOR));
+        } else {
+            el.set(&format!("{k}GapColor"), self.sw(&r.gap_color));
+        }
+        el.set(&format!("{k}GapTint"), pct(r.gap_tint as f64));
+        if k == "RuleAbove" {
+            el.set("KeepRuleAboveInFrame", bool_s(r.keep_in_frame));
+        }
         props.push(if r.color == designcraft_doc::TEXT_COLOR {
             p(&format!("{k}Color"), "string", designcraft_doc::TEXT_COLOR)
         } else {

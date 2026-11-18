@@ -63,13 +63,15 @@ fn regular(styles: &[String]) -> String {
     styles.iter().find(|s| *s == "Regular").or(styles.first()).cloned().unwrap_or_else(|| "Regular".into())
 }
 
-fn meta(ui: &Ui, fonts: &designcraft_fonts::ScopedFonts<'static>, scope: u32, family: &str) -> FamilyMeta {
+fn meta(ui: &Ui, fonts: &designcraft_fonts::ScopedFonts<'_>, scope: u32, family: &str) -> FamilyMeta {
     let key = egui::Id::unique(("font_meta", family, scope));
     if let Some(m) = ui.data(|d| d.get_temp::<FamilyMeta>(key)) {
         return m;
     }
     let styles = fonts.styles(family);
     let kind = fonts.face(family, &regular(&styles)).kind();
+    // Loading a catalogued variable font discovers its named instances.
+    let styles = fonts.styles(family);
     let m = FamilyMeta { styles, kind };
     ui.data_mut(|d| d.insert_temp(key, m.clone()));
     m
@@ -217,8 +219,7 @@ fn preview(
     ui: &Ui,
     fonts: &designcraft_fonts::ScopedFonts<'static>,
     scope: u32,
-    family: &str,
-    style: &str,
+    (family, style): (&str, &str),
     text: &str,
     size: f32,
     color: Color32,
@@ -536,6 +537,51 @@ pub fn font_menu_header<'a>(app: &'a mut DesignApp, ui: &mut Ui, menu: &'a [Fami
     FontMenu { app, menu, current, st, rows, highlighted_row, loading, sample, row_h, sample_size, down, up, escape, pick }
 }
 
+/// A family row's favourite star and (for a family of several styles) its open/close arrow.
+/// `flags`: favourite, expanded, has an arrow. Says which of the two was clicked.
+fn star_and_arrow(
+    ui: &Ui,
+    p: &egui::Painter,
+    r: Rect,
+    (f, recent): (&String, bool),
+    (fav, open, has_arrow): (bool, bool, bool),
+    t: &Tokens,
+    arrow_label: &str,
+) -> (bool, bool) {
+    let cy = r.center().y;
+    let star = Rect::from_center_size(pos2(r.min.x + 10.0, cy), vec2(16.0, 16.0));
+    let sr = ui.interact(star, ui.scope_id().with(("fav", f, recent)), Sense::click());
+    paint_star(p, star.center(), 6.5, fav, if fav { t.accent } else { t.text_dim });
+    let mut arrow_hit = false;
+    // The arrow opens a family of several styles.
+    if has_arrow {
+        let arrow = Rect::from_center_size(pos2(r.min.x + 28.0, cy), vec2(16.0, 16.0));
+        let ar = ui.interact(arrow, ui.scope_id().with(("open", f)), Sense::click());
+        ar.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, arrow_label));
+        crate::icons::paint(p, arrow.shrink(2.0), if open { "chevron-down" } else { "chevron-right" }, t.icon);
+        arrow_hit = ar.clicked();
+    }
+    (sr.clicked(), arrow_hit)
+}
+
+/// Removes `f` from the favourites if it is one, else adds it.
+fn toggle_favorite(favs: &mut Vec<String>, f: String) {
+    if favs.contains(&f) {
+        favs.retain(|x| *x != f);
+    } else {
+        favs.push(f);
+    }
+}
+
+/// Recently used fonts, newest first.
+fn remember_recent(app: &mut DesignApp, family: &str) {
+    let mut recent = app.session.prefs.recent_fonts.clone();
+    recent.retain(|f| f != family);
+    recent.insert(0, family.to_string());
+    recent.truncate(RECENT);
+    let _ = app.run("prefs.set", json!({ "recentFonts": recent }));
+}
+
 /// The Font menu's rows, under [`font_menu_header`]. Returns the font picked.
 pub fn font_menu_list(ui: &mut Ui, m: FontMenu<'_>) -> Option<FontPick> {
     let FontMenu { app, menu, current, mut st, rows, highlighted_row, loading, sample, row_h, sample_size, down, up, escape, mut pick } = m;
@@ -550,10 +596,8 @@ pub fn font_menu_list(ui: &mut Ui, m: FontMenu<'_>) -> Option<FontPick> {
     let mut toggle_expand = None;
     let mut toggle_fav = None;
     let mut similar = None;
-    if loading {
-        crate::rtl::label(ui, egui::RichText::new(tr("Loading fonts…")).color(t.text_dim));
-    } else if rows.is_empty() {
-        crate::rtl::label(ui, egui::RichText::new(tr("No fonts match")).color(t.text_dim));
+    if let Some(note) = if loading { Some("Loading fonts…") } else { rows.is_empty().then_some("No fonts match") } {
+        crate::rtl::label(ui, egui::RichText::new(tr(note)).color(t.text_dim));
     }
     for (i, row) in rows.iter().enumerate() {
         let (family, style, recent) = match row {
@@ -597,28 +641,17 @@ pub fn font_menu_list(ui: &mut Ui, m: FontMenu<'_>) -> Option<FontPick> {
         let cy = r.center().y;
         let mut handled = false;
         if style.is_none() {
-            // Favourite star.
-            let star = Rect::from_center_size(pos2(r.min.x + 10.0, cy), vec2(16.0, 16.0));
-            let fav = favs.contains(f);
-            let sr = ui.interact(star, ui.scope_id().with(("fav", f, recent)), Sense::click());
-            paint_star(&p, star.center(), 6.5, fav, if fav { t.accent } else { t.text_dim });
-            if sr.clicked() {
+            let expanded = st.expanded.contains(f);
+            let arrow_label = tr(if expanded { "Hide Styles" } else { "Show Styles" });
+            let flags = (favs.contains(f), expanded, m.styles.len() > 1 && !recent);
+            let (star_hit, arrow_hit) = star_and_arrow(ui, &p, r, (f, recent), flags, &t, arrow_label);
+            if star_hit {
                 toggle_fav = Some(f.clone());
                 handled = true;
             }
-            // The arrow opens a family of several styles.
-            if m.styles.len() > 1 && !recent {
-                let arrow = Rect::from_center_size(pos2(r.min.x + 28.0, cy), vec2(16.0, 16.0));
-                let ar = ui.interact(arrow, ui.scope_id().with(("open", f)), Sense::click());
-                ar.widget_info(|| {
-                    egui::WidgetInfo::labeled(egui::Role::Button, true, tr(if st.expanded.contains(f) { "Hide Styles" } else { "Show Styles" }))
-                });
-                let open = st.expanded.contains(f);
-                crate::icons::paint(&p, arrow.shrink(2.0), if open { "chevron-down" } else { "chevron-right" }, t.icon);
-                if ar.clicked() {
-                    toggle_expand = Some(f.clone());
-                    handled = true;
-                }
+            if arrow_hit {
+                toggle_expand = Some(f.clone());
+                handled = true;
             }
         }
         // Name (and how many styles), then the sample in the face, then the format.
@@ -628,7 +661,7 @@ pub fn font_menu_list(ui: &mut Ui, m: FontMenu<'_>) -> Option<FontPick> {
         let preview_x = r.min.x + (r.width() * 0.42).max(190.0);
         let icons_x = r.max.x - 52.0;
         let face_style = style.map_or_else(|| regular(&m.styles), str::to_string);
-        let tex = preview(ui, &fonts, scope, f, &face_style, &sample, sample_size, t.text);
+        let tex = preview(ui, &fonts, scope, (f, &face_style), &sample, sample_size, t.text);
         let size = tex.size_vec2() / ui.ctx().pixels_per_point();
         let shown = Rect::from_min_size(pos2(preview_x, cy - size.y / 2.0), size);
         let clip = Rect::from_min_max(pos2(preview_x, r.min.y), pos2(icons_x - 6.0, r.max.y));
@@ -659,11 +692,7 @@ pub fn font_menu_list(ui: &mut Ui, m: FontMenu<'_>) -> Option<FontPick> {
         st.expanded.insert(f);
     }
     if let Some(f) = toggle_fav {
-        if favs.contains(&f) {
-            favs.retain(|x| *x != f);
-        } else {
-            favs.push(f);
-        }
+        toggle_favorite(&mut favs, f);
         favs_changed = true;
     }
     if let Some(f) = similar {
@@ -675,12 +704,7 @@ pub fn font_menu_list(ui: &mut Ui, m: FontMenu<'_>) -> Option<FontPick> {
         let _ = app.run("prefs.set", json!({ "favoriteFonts": favs }));
     }
     if let Some(p) = &pick {
-        // Recently used, newest first.
-        let mut recent = app.session.prefs.recent_fonts.clone();
-        recent.retain(|f| *f != p.family);
-        recent.insert(0, p.family.clone());
-        recent.truncate(RECENT);
-        let _ = app.run("prefs.set", json!({ "recentFonts": recent }));
+        remember_recent(app, &p.family);
         ui.close();
     } else if escape {
         ui.close();
@@ -706,5 +730,118 @@ mod preview_cache_tests {
         assert_eq!((c.map.len(), c.order.len()), (Previews::CAP, Previews::CAP));
         assert!(c.get(key(1)).is_none(), "the oldest unused one was let go");
         assert!(c.get(key(Previews::CAP + 39)).is_some());
+    }
+}
+
+#[cfg(test)]
+mod variable_catalog_regression {
+    #[test]
+    #[ignore = "requires the pinned Bricolage fixture; see docs/testing-variable-fonts.md"]
+    fn cold_family_menu_contains_named_instances() {
+        let path = std::env::var_os("DESIGNCRAFT_TEST_VARIABLE_FONT").expect("set DESIGNCRAFT_TEST_VARIABLE_FONT");
+        let path = std::path::PathBuf::from(path);
+        let db = Box::leak(Box::new(designcraft_fonts::FontDb::with_font_dirs(vec![path.parent().unwrap().to_owned()])));
+        let fonts = db.scoped(0);
+        assert!(!fonts.styles("Bricolage Grotesque").contains(&"SemiBold".into()), "the fixture must be catalogued but not loaded");
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |root| {
+            egui::CentralPanel::default().show(root, |ui| {
+                let first = super::meta(ui, &fonts, 0, "Bricolage Grotesque");
+                assert!(
+                    first.styles.contains(&"SemiBold".into()),
+                    "cold menu cached {:?}, live styles {:?}",
+                    first.styles,
+                    fonts.styles("Bricolage Grotesque")
+                );
+                let second = super::meta(ui, &fonts, 0, "Bricolage Grotesque");
+                assert_eq!(first.styles, second.styles);
+            });
+        });
+        output.textures_delta.clear();
+
+        // Exercise the family menu's actual style-row selection too.
+        use egui_kittest::{Harness, kittest::Queryable};
+        designcraft_fonts::FontDb::global().add_font(std::fs::read(&path).unwrap());
+        let app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        let menu: Vec<_> =
+            designcraft_fonts::FontDb::global().scoped(0).family_infos().into_iter().filter(|f| f.family == "Bricolage Grotesque").collect();
+        let mut h = Harness::builder()
+            .with_context_setup(|ctx| {
+                crate::theme::install_fonts(ctx, "");
+            })
+            .with_size(egui::vec2(1000.0, 800.0))
+            .build_ui_state(
+                move |ui, state: &mut (crate::DesignApp, Option<super::FontPick>)| {
+                    let key = egui::Id::unique("font_menu_state");
+                    let mut st: super::MenuState = ui.data(|d| d.get_temp(key)).unwrap_or_default();
+                    st.expanded.insert("Bricolage Grotesque".into());
+                    ui.data_mut(|d| d.insert_temp(key, st));
+                    let m = super::font_menu_header(&mut state.0, ui, &menu, "Bricolage Grotesque", 560.0);
+                    if let Some(pick) = super::font_menu_list(ui, m) {
+                        state.1 = Some(pick);
+                    }
+                },
+                (app, None),
+            );
+        h.run_steps(3);
+        h.get_by_label("SemiBold").click();
+        h.run_steps(3);
+        let pick = h.state().1.as_ref().expect("a style row was picked");
+        assert_eq!(pick.family, "Bricolage Grotesque");
+        assert_eq!(pick.style.as_deref(), Some("SemiBold"));
+    }
+}
+
+#[cfg(test)]
+mod synthetic_variable_catalog_regression {
+    #[test]
+    fn family_menu_selects_a_synthetic_named_instance() {
+        use egui_kittest::{Harness, kittest::Queryable};
+        let family = "Synthetic Menu Wiring";
+        let db = designcraft_fonts::FontDb::global();
+        db.add_font(designcraft_fonts::testing::variable_font(family).unwrap());
+        let app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        let menu: Vec<_> = db.scoped(0).family_infos().into_iter().filter(|f| f.family == family).collect();
+        let mut h = Harness::builder()
+            .with_context_setup(|ctx| {
+                crate::theme::install_fonts(ctx, "");
+            })
+            .with_size(egui::vec2(1000.0, 800.0))
+            .build_ui_state(
+                |ui, state: &mut (crate::DesignApp, Option<super::FontPick>)| {
+                    let key = egui::Id::unique("font_menu_state");
+                    let mut st: super::MenuState = ui.data(|d| d.get_temp(key)).unwrap_or_default();
+                    st.expanded.insert(family.into());
+                    ui.data_mut(|d| d.insert_temp(key, st));
+                    let m = super::font_menu_header(&mut state.0, ui, &menu, family, 560.0);
+                    if let Some(pick) = super::font_menu_list(ui, m) {
+                        state.1 = Some(pick);
+                    }
+                },
+                (app, None),
+            );
+        h.run_steps(3);
+        h.get_by_label("SemiBold").click();
+        h.run_steps(3);
+        let pick = h.state().1.as_ref().expect("the real Family menu selected a style");
+        assert_eq!(pick.family, family);
+        assert_eq!(pick.style.as_deref(), Some("SemiBold"));
+    }
+    #[test]
+    fn cold_family_menu_discovers_and_caches_named_instances() {
+        let dir = tempfile::tempdir().unwrap();
+        let family = "Synthetic Cold Menu";
+        std::fs::write(dir.path().join("variable.ttf"), designcraft_fonts::testing::variable_font(family).unwrap()).unwrap();
+        let db = designcraft_fonts::FontDb::with_font_dirs(vec![dir.path().to_owned()]);
+        let fonts = db.scoped(0);
+        assert_eq!(fonts.styles(family), ["Regular"]);
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let first = super::meta(ui, &fonts, 0, family);
+            assert_eq!(first.styles, ["Regular", "SemiBold"]);
+            let second = super::meta(ui, &fonts, 0, family);
+            assert_eq!(first.styles, second.styles);
+        });
+        output.textures_delta.clear();
     }
 }

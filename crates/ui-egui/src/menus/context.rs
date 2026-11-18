@@ -1,6 +1,6 @@
 use super::bar::{menu_bar_submenu, menu_column, menu_max_height};
 use super::tree::{menu_tree, parse_entries};
-use super::*;
+use super::{DesignApp, Item};
 
 /// What a right-click on the canvas opens a menu for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

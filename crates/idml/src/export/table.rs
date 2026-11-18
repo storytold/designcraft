@@ -1,5 +1,5 @@
 use super::common::{bool_s, pct, uid};
-use super::*;
+use super::{Affine, CharFormat, Content, El, Ex, Item, ParaFormat, Shape, names, num};
 
 impl<'a> Ex<'a> {
     pub(super) fn cell_stroke_attrs(&self, el: &mut El, prefix: &str, s: &designcraft_doc::CellStroke) {
@@ -188,6 +188,10 @@ impl<'a> Ex<'a> {
                     .attr("LeftInset", num(cell.insets[1]))
                     .attr("BottomInset", num(cell.insets[2]))
                     .attr("RightInset", num(cell.insets[3]))
+                    .attr("TextTopInset", num(cell.insets[0]))
+                    .attr("TextLeftInset", num(cell.insets[1]))
+                    .attr("TextBottomInset", num(cell.insets[2]))
+                    .attr("TextRightInset", num(cell.insets[3]))
                     .attr("VerticalJustification", vj)
                     .attr("FirstBaselineOffset", names::first_baseline_out(cell.first_baseline))
                     .attr("MinimumFirstBaselineOffset", num(cell.first_baseline_min))

@@ -1,8 +1,6 @@
 //! Window › Interactive › Media: placed video and sound (shown as a poster or a placeholder,
 //! exported as `<video>` / `<audio>` in EPUB).
 
-use std::sync::Arc;
-
 use designcraft_doc::{Asset, AssetId, Content, Graphic, Item, ItemId, MediaOptions, Shape};
 use designcraft_geom::{Affine, Rect, shapes};
 use serde_json::{Value, json};
@@ -10,23 +8,26 @@ use serde_json::{Value, json};
 use super::{CommandSpec, bad, cmd, has_selection, ok, targets};
 use crate::{Result, Session};
 
-pub(crate) fn place_media(s: &mut Session, p: &Value, name: String, mime: &str, bytes: Vec<u8>, link: Option<String>) -> Result<Value> {
-    let video = mime.starts_with("video/");
+/// Place a video or sound file: `asset` has its name, type and bytes.
+pub(crate) fn place_media(s: &mut Session, p: &Value, asset: Asset) -> Result<Value> {
+    let video = asset.mime.starts_with("video/");
     let (w, h) = (
         p.get("width").and_then(Value::as_f64).unwrap_or(if video { 320.0 } else { 200.0 }),
         p.get("height").and_then(Value::as_f64).unwrap_or(if video { 180.0 } else { 48.0 }),
     );
-    let target = super::id_param(p, "frame").or_else(|| {
-        let st = s.active()?;
-        st.selection.items.iter().copied().find(|i| st.doc.item(*i).is_some_and(|it| matches!(it.content, Content::Unassigned | Content::Graphic(_))))
-    });
+    let target =
+        super::id_param(p, "frame").or_else(|| {
+            let st = s.active()?;
+            st.selection.items.iter().copied().find(|i| {
+                st.doc.item(*i).is_some_and(|it| it.path.encloses_area() && matches!(it.content, Content::Unassigned | Content::Graphic(_)))
+            })
+        });
     let spread = super::spread_param(p, "file.place")?;
     let lid = s.doc()?.active_layer;
     let (px, py) = (p.get("x").and_then(Value::as_f64), p.get("y").and_then(Value::as_f64));
-    let mime = mime.to_string();
     s.edit(|d, sel| {
         let fresh = AssetId(d.alloc());
-        let aid = d.add_asset(Asset { id: fresh, name, mime, link, data: Arc::new(bytes), ..Default::default() });
+        let aid = d.add_asset(Asset { id: fresh, ..asset });
         let id = match target {
             Some(fid) => {
                 let it = d.item_mut(fid).ok_or(designcraft_doc::DocError::NoItem(fid))?;
@@ -89,27 +90,31 @@ pub fn specs() -> Vec<CommandSpec> {
                 // A poster image is read before the edit.
                 let poster = match p.get("poster") {
                     Some(Value::Object(_)) => {
-                        let (bytes, name, link) = super::file::read_source(&p["poster"])?;
-                        let px = designcraft_render::image_size(&bytes).ok_or_else(|| bad("media.options", "the poster isn't a readable image"))?;
-                        Some(Some((bytes, name, link, px)))
+                        let source = super::file::read_source(&p["poster"])?;
+                        let px =
+                            designcraft_render::image_size(&source.bytes).ok_or_else(|| bad("media.options", "the poster isn't a readable image"))?;
+                        let mut poster = Asset {
+                            name: source.name.clone(),
+                            mime: designcraft_render::image_mime(&source.bytes).to_string(),
+                            pixels: Some(px),
+                            ..Default::default()
+                        };
+                        let pending = source.give(&mut poster, super::file::document_of(s).as_deref());
+                        Some(Some((poster, pending)))
                     }
                     Some(Value::Null) => Some(None),
                     _ => None,
                 };
-                s.edit(|d, _| {
+                let (poster, pending) = match poster {
+                    Some(Some((poster, pending))) => (Some(Some(poster)), pending),
+                    Some(None) => (Some(None), None),
+                    None => (None, None),
+                };
+                let r = s.edit(|d, _| {
                     let poster_id = match poster {
-                        Some(Some((bytes, name, link, px))) => {
+                        Some(Some(poster)) => {
                             let fresh = AssetId(d.alloc());
-                            let mime = designcraft_render::image_mime(&bytes).to_string();
-                            Some(Some(d.add_asset(Asset {
-                                id: fresh,
-                                name,
-                                mime,
-                                link,
-                                data: Arc::new(bytes),
-                                pixels: Some(px),
-                                ..Default::default()
-                            })))
+                            Some(Some(d.add_asset(Asset { id: fresh, ..poster })))
                         }
                         Some(None) => Some(None),
                         None => None,
@@ -136,7 +141,9 @@ pub fn specs() -> Vec<CommandSpec> {
                         return Err(bad("media.options", "select a video or sound"));
                     }
                     ok()
-                })
+                })?;
+                super::file::prepare_placed(s, pending);
+                Ok(r)
             }
         ),
         cmd!(query "media.get", "Media", [], None, "{id?} → {kind, name, playOnPageLoad, loop, controls, poster}", has_selection, |s, p| {
@@ -156,6 +163,22 @@ mod tests {
     use serde_json::json;
 
     use crate::Session;
+
+    #[test]
+    fn media_placement_leaves_a_selected_line_alone() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let line = s.execute("line.create", &json!({"a": [18, 600], "b": [594, 600]})).unwrap();
+        let original = serde_json::to_value(s.doc().unwrap().doc.item(designcraft_doc::ItemId(line["id"].as_u64().unwrap())).unwrap()).unwrap();
+        let fake = super::super::file::base64_encode(b"\x00\x00\x00\x18ftypmp42");
+
+        let r = s.execute("file.place", &json!({"base64": fake, "name": "clip.mp4"})).unwrap();
+
+        assert_ne!(r["id"], line["id"]);
+        let d = &s.doc().unwrap().doc;
+        assert_eq!(serde_json::to_value(d.item(designcraft_doc::ItemId(line["id"].as_u64().unwrap())).unwrap()).unwrap(), original);
+        assert_eq!(d.spreads[0].items.len(), 2);
+    }
 
     #[test]
     fn media_frames_place_render_and_export() {
