@@ -1129,7 +1129,7 @@ version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=453b0da782ccef39be9a6dac8d27c80b553ef1cc#453b0da782ccef39be9a6dac8d27c80b553ef1cc"
 dependencies = [
  "craft-document-bundle",
- "craft-eps",
+ "craft-eps 0.1.0 (git+https://github.com/storytold/craft-libs?rev=453b0da782ccef39be9a6dac8d27c80b553ef1cc)",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -1201,6 +1201,11 @@ version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=453b0da782ccef39be9a6dac8d27c80b553ef1cc#453b0da782ccef39be9a6dac8d27c80b553ef1cc"
 
 [[package]]
+name = "craft-eps"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=5bd7eb9e88e8574a9cd011accaa9b4beaf4118ac#5bd7eb9e88e8574a9cd011accaa9b4beaf4118ac"
+
+[[package]]
 name = "craft-epub"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=453b0da782ccef39be9a6dac8d27c80b553ef1cc#453b0da782ccef39be9a6dac8d27c80b553ef1cc"
@@ -1215,7 +1220,7 @@ name = "craft-file-formats"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=453b0da782ccef39be9a6dac8d27c80b553ef1cc#453b0da782ccef39be9a6dac8d27c80b553ef1cc"
 dependencies = [
- "craft-eps",
+ "craft-eps 0.1.0 (git+https://github.com/storytold/craft-libs?rev=453b0da782ccef39be9a6dac8d27c80b553ef1cc)",
  "craft-idml",
  "craft-svg",
  "craft-zip",
@@ -1431,6 +1436,19 @@ dependencies = [
  "tempfile",
  "winprint",
  "winsafe",
+]
+
+[[package]]
+name = "craft-ps"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=5bd7eb9e88e8574a9cd011accaa9b4beaf4118ac#5bd7eb9e88e8574a9cd011accaa9b4beaf4118ac"
+dependencies = [
+ "craft-eps 0.1.0 (git+https://github.com/storytold/craft-libs?rev=5bd7eb9e88e8574a9cd011accaa9b4beaf4118ac)",
+ "kurbo",
+ "miniz_oxide 0.8.9",
+ "pdf-writer",
+ "skrifa 0.47.0",
+ "weezl",
 ]
 
 [[package]]
@@ -1944,9 +1962,10 @@ name = "designcraft-images"
 version = "0.21.0"
 dependencies = [
  "craft-cms",
- "craft-eps",
+ "craft-eps 0.1.0 (git+https://github.com/storytold/craft-libs?rev=453b0da782ccef39be9a6dac8d27c80b553ef1cc)",
  "craft-file-formats",
  "craft-image-codecs",
+ "craft-ps",
  "craft-psd",
  "craft-svg",
  "designcraft-color",
