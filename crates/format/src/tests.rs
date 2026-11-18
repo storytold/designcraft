@@ -241,6 +241,30 @@ fn save_v1(doc: &Document) -> Vec<u8> {
     z.finish().unwrap().into_inner()
 }
 
+#[test]
+fn older_native_document_without_anchored_style_options_still_loads() {
+    let mut d = Document::new(&NewDocument::default());
+    d.styles_mut().object.push(designcraft_doc::ObjectStyle {
+        name: "Legacy anchored style".into(),
+        anchored_options: Some(designcraft_doc::AnchoredObjectStyleOptions { enabled: Some(true), settings: Some(Default::default()) }),
+        ..Default::default()
+    });
+    let mut json = serde_json::to_value(&d).unwrap();
+    let object_styles = json["styles"]["object"].as_array_mut().unwrap();
+    let legacy_style = object_styles.iter_mut().find(|style| style["name"] == "Legacy anchored style").unwrap();
+    assert!(legacy_style.as_object_mut().unwrap().remove("anchoredOptions").is_some());
+
+    let mut archive = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    archive.start_file("meta.json", zip::write::SimpleFileOptions::default()).unwrap();
+    archive.write_all(br#"{"format":"designcraft","version":4}"#).unwrap();
+    archive.start_file("document.json", zip::write::SimpleFileOptions::default()).unwrap();
+    archive.write_all(&serde_json::to_vec(&json).unwrap()).unwrap();
+
+    let opened = load(&archive.finish().unwrap().into_inner()).unwrap();
+    let style = opened.styles.object_style("Legacy anchored style").unwrap();
+    assert_eq!(style.anchored_options, None, "an older document defaults the added optional field");
+}
+
 fn para_style(name: &str, based_on: Option<&str>, keep_all_lines: Option<bool>) -> designcraft_doc::ParagraphStyle {
     designcraft_doc::ParagraphStyle {
         name: name.into(),
