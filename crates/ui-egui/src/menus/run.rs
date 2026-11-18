@@ -309,7 +309,8 @@ fn run_ui_part1(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
         }
         "app.language" => {
             let Some(v) = p.get("lang").and_then(Value::as_str) else { return Some(app.run("app.preferences", json!({}))) };
-            if !crate::i18n::LANGUAGES.iter().any(|(c, _)| *c == v) {
+            // The picker's list: a language the web can't draw (no font for its script) is refused too.
+            if !crate::i18n::picker_languages().iter().any(|(c, _)| *c == v) {
                 return Some(Err(format!("unknown language `{v}`")));
             }
             app.ui.language = v.to_string();

@@ -20,6 +20,7 @@ mod pl;
 mod pt_br;
 mod ru;
 mod sv;
+mod ta;
 mod uk;
 
 /// Supported interface languages: (code, name in that language).
@@ -40,6 +41,7 @@ pub const LANGUAGES: &[(&str, &str)] = &[
     ("ka", "ქართული"),
     ("hu", "Magyar"),
     ("sv", "Svenska"),
+    ("ta", "தமிழ்"),
 ];
 
 /// The interface languages in the order the Preferences picker lists them: English first (the
@@ -47,9 +49,23 @@ pub const LANGUAGES: &[(&str, &str)] = &[
 /// C. Names in other scripts follow the Latin ones in code point order: Cyrillic, Arabic,
 /// Georgian, then the CJK languages.
 pub fn picker_languages() -> Vec<(&'static str, &'static str)> {
-    let mut rest: Vec<(&str, &str)> = LANGUAGES.iter().copied().filter(|(code, _)| !code.is_empty()).collect();
+    let web = cfg!(target_arch = "wasm32");
+    let mut rest: Vec<(&str, &str)> =
+        LANGUAGES.iter().copied().filter(|(code, _)| !code.is_empty() && can_draw(code, web, designcraft_fonts::CRAFT_FONTS)).collect();
     rest.sort_by_cached_key(|(_, name)| name_sort_key(name));
     std::iter::once(LANGUAGES[0]).chain(rest).collect()
+}
+
+/// Interface languages whose script only a built-in craft-fonts face draws on the web, which has
+/// no installed fonts. The desktop draws them from installed faces (`theme::SYSTEM_UI_FONTS`).
+const WEB_FONT_SCRIPTS: &[(&str, &str)] = &[("ta", "Taml")];
+
+/// Whether the interface can draw `lang`: on the web, only with a craft-fonts face for its script.
+fn can_draw(lang: &str, web: bool, craft: &[designcraft_fonts::CraftFont]) -> bool {
+    match WEB_FONT_SCRIPTS.iter().find(|(code, _)| *code == lang) {
+        Some((_, script)) if web => craft.iter().any(|f| f.scripts.contains(script)),
+        _ => true,
+    }
 }
 
 /// Interface direction; independent of document binding and paragraph direction.
@@ -97,6 +113,7 @@ fn lookup<'a>(lang: &str, s: &'a str) -> &'a str {
     static FRENCH: OnceLock<HashMap<&str, &str>> = OnceLock::new();
     static GEORGIAN: OnceLock<HashMap<&str, &str>> = OnceLock::new();
     static HUNGARIAN: OnceLock<HashMap<&str, &str>> = OnceLock::new();
+    static TAMIL: OnceLock<HashMap<&str, &str>> = OnceLock::new();
     if lang == "hu" {
         return HUNGARIAN.get_or_init(|| hu::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
     }
@@ -133,6 +150,9 @@ fn lookup<'a>(lang: &str, s: &'a str) -> &'a str {
     }
     if lang == "ka" {
         return GEORGIAN.get_or_init(|| ka::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
+    }
+    if lang == "ta" {
+        return TAMIL.get_or_init(|| ta::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
     }
     if lang == "sv" {
         return SWEDISH.get_or_init(|| sv::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
@@ -198,12 +218,13 @@ pub(crate) fn swedish_has(s: &str) -> bool {
     sv::TABLE.iter().any(|(key, _)| *key == s)
 }
 
-/// Ukrainian, Russian, Polish and Georgian put the category before the value in count captions
-/// ("сторінок: 5", "страниц: 5", "Strony: 5", "გვერდი: 5"): every number stays grammatical in the
-/// languages with several plural forms, and Georgian nouns stay singular after numerals. Other
+/// Ukrainian, Russian, Polish, Georgian and Tamil put the category before the value in count captions
+/// ("сторінок: 5", "страниц: 5", "Strony: 5", "გვერდი: 5", "பக்கங்கள்: 5"): every number stays
+/// grammatical in the languages with several plural forms, Georgian nouns stay singular after
+/// numerals, and Tamil needs no singular form for one. Other
 /// languages keep the existing value-first caption.
 pub fn category_first(lang: &str) -> bool {
-    matches!(lang, "uk" | "ru" | "pl" | "ka")
+    matches!(lang, "uk" | "ru" | "pl" | "ka" | "ta")
 }
 
 /// Swedish singular for a count of one, where it differs from the catalog's plural ("1 sida",
@@ -340,5 +361,17 @@ mod picker_order_tests {
         assert!(pos("cs") < pos("de"), "Čeština sorts under C");
         assert!(pos("pl") < pos("ru"), "Latin names come before Cyrillic");
         assert!(pos("ru") < pos("ja"), "Cyrillic names come before CJK");
+    }
+
+    /// The web has no installed fonts: Tamil is offered there only with a craft-fonts Tamil face.
+    #[test]
+    fn tamil_is_offered_on_the_web_only_with_a_tamil_face() {
+        let tamil = designcraft_fonts::CraftFont { family: "Noto Sans Tamil", style: "Regular", scripts: &["Taml"], bytes: &[] };
+        let georgian = designcraft_fonts::CraftFont { family: "Noto Sans Georgian", style: "Regular", scripts: &["Geor"], bytes: &[] };
+        assert!(can_draw("ta", false, &[]), "the desktop draws Tamil from installed fonts");
+        assert!(!can_draw("ta", true, &[]));
+        assert!(!can_draw("ta", true, &[georgian]));
+        assert!(can_draw("ta", true, &[tamil]));
+        assert!(can_draw("de", true, &[]), "other languages are unaffected");
     }
 }

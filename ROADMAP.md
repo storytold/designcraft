@@ -367,7 +367,7 @@ A string without a translation shows in English and fails no check; `cargo xtask
 | Korean | ko | none | 0% |
 | Vietnamese | vi | none | 0% |
 
-Also shipped (2026-11-04 `i18n-report`, of 2,939): Czech (69%), Italian (68%), Ukrainian (65%), Polish (64%), Georgian (98%), Swedish (98%), Hungarian (65%), Russian (63%).
+Also shipped (2026-11-04 `i18n-report`, of 2,939): Czech (69%), Italian (68%), Ukrainian (65%), Polish (64%), Georgian (98%), Swedish (98%), Hungarian (65%), Russian (63%); Tamil (100% of 3,008, 2026-11-18).
 
 ## Upcoming
 
@@ -394,6 +394,7 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 ## Progress log
 
+- **2026-11-18** · Tamil (தமிழ்) interface language: all 3,008 interface strings, count captions category-first. The desktop draws it from installed Tamil faces; the web picker offers it only when craft-fonts has a Tamil face built in. No readiness percentage change.
 - **2026-11-15** · Removed the obsolete gap saying pull requests have no test workflow: [CI](.github/workflows/ci.yml) runs the shared quality gate on every pull request and push to main (#1352). No readiness percentage change.
 - **2026-11-15** · Accepting tracked deletions or rejecting insertions follows body-text selections through the removed text, including resolving all changes, and preserves independent cell and footnote insertion points. No readiness percentage change.
 - **2026-11-15** · Format follow-ups to the craft-libs cutover (craft-libs#778; ported from #2734 by Dylan M. Taylor): IDML export keeps CDATA image contents and table spans such as `inf` reach the table edge; DOCX plain-text import leaves out deleted tracked changes and expands inline objects; an XLSX number cell that isn't a number shows as written; unmarked CMYK JPEGs keep the shared decoder's ink polarity; PPTX export writes exact opacity; PDF export repins craft-pdf and craft-prepress to craft-libs main. No readiness percentage change.

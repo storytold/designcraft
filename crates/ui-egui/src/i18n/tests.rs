@@ -15,6 +15,7 @@ const LANGUAGE_TABLES: &[(&str, &[(&str, &str)])] = &[
     ("pt-br", pt_br::TABLE),
     ("ru", ru::TABLE),
     ("sv", sv::TABLE),
+    ("ta", ta::TABLE),
     ("uk", uk::TABLE),
 ];
 
@@ -489,7 +490,7 @@ fn only_built_in_style_and_workspace_names_are_translated() {
 #[test]
 fn category_first_counts_put_the_category_before_every_number() {
     assert!(!category_first("de") && !category_first(""));
-    for lang in ["ka", "uk", "ru", "pl"] {
+    for lang in ["ka", "uk", "ru", "pl", "ta"] {
         assert!(category_first(lang), "{lang}");
         for noun in ["pages", "objects", "errors"] {
             for n in [0, 1, 2, 4, 5, 11, 12, 21, 22, 25, 101, 111] {
