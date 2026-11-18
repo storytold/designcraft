@@ -5693,6 +5693,7 @@ fn confirm_part6(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
             app.run("xref.insert", params)
         }
         "footnoteOptions" => {
+            let (columns, column_gutter) = footnote_column_params(&d)?;
             let pt = |k: &str| d.pt(k).map_or(Value::Null, |v| json!(v));
             let mut p = json!({
                 "style": d.s("style"), "startAt": d.n("startAt").unwrap_or(1.0).max(0.0) as u32, "restart": d.s("restart"),
@@ -5701,7 +5702,7 @@ fn confirm_part6(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
                 "separator": d.s("separator").replace("^t", "\t").replace("^m", "\u{2003}").replace("^>", "\u{2002}"),
                 "spaceBefore": pt("spaceBefore"), "spaceBetween": pt("spaceBetween"), "firstBaseline": d.s("firstBaseline"),
                 "firstBaselineMin": pt("firstBaselineMin"), "spanColumns": d.b("spanColumns"),
-                "columns": d.s("columns").parse::<u8>().map_or(Value::Null, |v| json!(v)), "columnGutter": pt("columnGutter"),
+                "columns": columns, "columnGutter": column_gutter,
                 "rule": {"on": d.b("rule.on"), "weight": pt("rule.weight"), "color": d.s("rule.color"), "width": pt("rule.width"),
                     "offset": pt("rule.offset"), "leftIndent": pt("rule.leftIndent")},
             });
@@ -8821,6 +8822,19 @@ fn rule_types() -> Vec<designcraft_doc::StrokeType> {
     ]
 }
 
+/// Parse these layout fields before dropping any unrelated unparsable legacy measures.
+fn footnote_column_params(d: &Dialog) -> Result<(u8, f64), String> {
+    let columns = d.s("columns").parse::<u8>().map_err(|_| "Footnote columns must be an integer from 1 to 4".to_string())?;
+    if !(1..=4).contains(&columns) {
+        return Err("Footnote columns must be an integer from 1 to 4".into());
+    }
+    let gutter = d.pt("columnGutter").ok_or("Column gutter must be a measure from 0 to 144 pt")?;
+    if !gutter.is_finite() || !(0.0..=144.0).contains(&gutter) {
+        return Err("Column gutter must be a measure from 0 to 144 pt".into());
+    }
+    Ok((columns, gutter))
+}
+
 /// Document Footnote Options: Numbering and Formatting / Layout tabs.
 fn footnote_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     ui.horizontal(|ui| {
@@ -8846,10 +8860,10 @@ fn footnote_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
             ui.end_row();
         });
         egui::Grid::new("fn_columns").num_columns(2).show(ui, |ui| {
-            ui.label("Footnote columns (1–4):");
+            crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Footnote columns (1–4):"));
             text_field(ui, d, "columns", 70.0);
             ui.end_row();
-            ui.label("Column gutter:");
+            crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Column gutter:"));
             text_field(ui, d, "columnGutter", 70.0);
             ui.end_row();
         });

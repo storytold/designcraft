@@ -287,7 +287,7 @@ impl Notes {
                 for fragment in fragments {
                     let Some(p) = here.get(fragment.note) else { continue };
                     let Some(note) = story.notes.get(p.k) else { continue };
-                    let x = col.x0 + fragment.column as f64 * (width + o.column_gutter);
+                    let x = col.x0 + fragment.column as f64 * (width + o.clamped_column_gutter());
                     ft.notes.push(PlacedNote {
                         id: note.id,
                         index: p.k,
@@ -334,6 +334,24 @@ pub fn find_note(cs: &ComposedStory, id: u64) -> Option<(usize, &PlacedNote)> {
     cs.frames.iter().enumerate().find_map(|(fi, ft)| ft.notes.iter().find(|n| n.id == id).map(|n| (fi, n)))
 }
 
+/// Find the footnote part holding byte `pos` for caret movement and selection drawing.
+/// The story-end caret belongs to the last part.
+pub fn find_note_part(cs: &ComposedStory, id: u64, pos: usize) -> Option<(usize, &PlacedNote)> {
+    let mut last = None;
+    for (fi, ft) in cs.frames.iter().enumerate() {
+        for n in ft.notes.iter().filter(|n| n.id == id) {
+            let range = &n.text.frames.first()?.range;
+            if range.contains(&pos) {
+                return Some((fi, n));
+            }
+            if pos == range.end {
+                last = Some((fi, n));
+            }
+        }
+    }
+    last
+}
+
 /// Footnote text hit at frame-inner point `p`: (footnote id, byte in the footnote's story).
 pub fn hit_note(cs: &ComposedStory, fi: usize, p: Point) -> Option<(u64, usize)> {
     hit_note_with(cs, fi, p, crate::hit)
@@ -350,12 +368,7 @@ pub fn hit_note_with(cs: &ComposedStory, fi: usize, p: Point, hit: fn(&ComposedS
 /// Caret geometry for byte `pos` of a footnote's story, in frame inner space:
 /// (frame index, x, baseline, ascent, descent).
 pub fn note_caret(cs: &ComposedStory, id: u64, pos: usize) -> Option<(usize, f64, f64, f64, f64)> {
-    let (fi, n) = cs
-        .frames
-        .iter()
-        .enumerate()
-        .find_map(|(fi, ft)| ft.notes.iter().find(|n| n.id == id && n.text.frames.first().is_some_and(|f| f.range.contains(&pos))).map(|n| (fi, n)))
-        .or_else(|| find_note(cs, id))?;
+    let (fi, n) = find_note_part(cs, id, pos).or_else(|| find_note(cs, id))?;
     match crate::caret(&n.text, pos) {
         Some((_, x, bl, a, d)) => Some((fi, x + n.origin.x, bl + n.origin.y, a, d)),
         None => Some((fi, n.origin.x, n.origin.y + 10.0, 9.0, 3.0)),

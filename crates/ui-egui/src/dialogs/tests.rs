@@ -5909,3 +5909,18 @@ fn parent_resize_exact_dialog_keeps_its_target_and_rejects_invalid_input() {
     assert!(app.ui.dialog.is_some());
     assert!(std::sync::Arc::ptr_eq(&saved, &app.session.doc().unwrap().doc));
 }
+
+#[test]
+fn footnote_column_fields_reject_invalid_edits() {
+    let mut d = Dialog::new("footnoteOptions", json!({"columns":2,"columnGutter":17}));
+    assert_eq!(footnote_column_params(&d).unwrap(), (2, 17.0));
+    for value in ["-1", "1.5", "bad", "0", "5"] {
+        d.fields.insert("columns".into(), json!(value));
+        assert!(footnote_column_params(&d).is_err());
+    }
+    d.fields.insert("columns".into(), json!(2));
+    for value in ["-1 pt", "145 pt", "bad"] {
+        d.fields.insert("columnGutter".into(), json!(value));
+        assert!(footnote_column_params(&d).is_err());
+    }
+}
