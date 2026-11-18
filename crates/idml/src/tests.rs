@@ -1275,7 +1275,7 @@ fn override_lists_pair_nested_copies_on_their_own_pages() {
 /// copy, in order, and the export takes about a second (#2940 review asked about the cost of the
 /// search for each entry at this size).
 #[test]
-fn many_overrides_pair_in_linear_time() {
+fn many_overrides_pair_with_their_own_copies() {
     use designcraft_doc::{Item, ItemId};
     let mut d = Document::new(&NewDocument { pages: 1, ..Default::default() });
     let lid = d.default_layer();
