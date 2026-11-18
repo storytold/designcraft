@@ -3057,7 +3057,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Millimeters", "მილიმეტრები"),
     ("Minimum Height", "მინიმალური სიმაღლე"),
     ("Minimum Width", "მინიმალური სიგანე"),
-    ("No Line Breaks", "სტრიქონის გადატანის გარეშე"),
+    ("No Line Breaks", "სტრიქონის წყვეტის გარეშე"),
     ("Object Style…", "ობიექტის სტილი…"),
     ("Parent Page Size", "საბაზო გვერდის ზომა"),
     ("Paste Image", "გამოსახულების ჩასმა"),
