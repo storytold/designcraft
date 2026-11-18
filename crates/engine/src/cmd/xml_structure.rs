@@ -461,133 +461,77 @@ pub(super) fn addresses_ids(xml: &str) -> bool {
 /// the elements: `<table frame="…">` whose first element is a `tgroup`, with no text of its own (not
 /// any element named table).
 fn cals_tables(xml: &str) -> std::result::Result<HashSet<usize>, String> {
-    use quick_xml::events::Event;
-    // Open elements: their place, whether they may be CALS, whether their first element was a
-    // tgroup (none yet: `None`), and whether text of their own came.
-    let mut stack: Vec<(usize, bool, Option<bool>, bool)> = Vec::new();
-    let (mut out, mut n) = (HashSet::new(), 0usize);
-    let mut r = quick_xml::Reader::from_str(xml);
-    loop {
-        match r.read_event().map_err(|e| e.to_string())? {
-            ev @ (Event::Start(_) | Event::Empty(_)) => {
-                let (Event::Start(e) | Event::Empty(e)) = &ev else { continue };
-                if let Some(top) = stack.last_mut() {
-                    top.2.get_or_insert(e.local_name().as_ref() == b"tgroup");
-                }
-                if matches!(ev, Event::Start(_)) {
-                    let cand = e.local_name().as_ref() == b"table" && e.attributes().flatten().any(|a| a.key.as_ref() == b"frame");
-                    stack.push((n, cand, None, false));
-                }
-                n += 1;
-            }
-            Event::End(_) => {
-                if let Some((at, true, Some(true), false)) = stack.pop() {
-                    out.insert(at);
-                }
-            }
-            Event::Text(t) => {
-                if let Some(top) = stack.last_mut() {
-                    top.3 |= !t.decode().map_err(|e| e.to_string())?.trim().is_empty();
-                }
-            }
-            Event::GeneralRef(_) | Event::CData(_) => {
-                if let Some(top) = stack.last_mut() {
-                    top.3 = true;
-                }
-            }
-            Event::Eof => break,
-            _ => {}
+    fn walk(e: &craft_xml::El, n: &mut usize, out: &mut HashSet<usize>) {
+        let at = *n;
+        *n += 1;
+        let first_tgroup = e.elements().next().is_some_and(|c| c.local() == "tgroup");
+        let own_text = e.children.iter().any(|c| matches!(c, craft_xml::Node::Text(t) | craft_xml::Node::CData(t) if !t.trim().is_empty()));
+        if e.local() == "table" && e.attr("frame").is_some() && first_tgroup && !own_text {
+            out.insert(at);
+        }
+        for c in e.elements() {
+            walk(c, n, out);
         }
     }
+    let mut out = HashSet::new();
+    walk(&super::xml::xml_tree(xml)?, &mut 0, &mut out);
     Ok(out)
 }
 
 fn texts_by_id(xml: &str) -> std::result::Result<IdTexts, String> {
-    use quick_xml::events::Event;
-    let cals = cals_tables(xml)?;
-    let mut r = quick_xml::Reader::from_str(xml);
-    // Open elements: the Id of each one that has one, and whether it is a table (a tagged one,
-    // aid:table="table", or an untagged one written as CALS).
-    let mut stack: Vec<(Option<String>, bool)> = Vec::new();
-    let mut texts = IdTexts::default();
-    let mut n = 0usize;
-    let mut id_of = |e: &quick_xml::events::BytesStart| -> std::result::Result<(Option<String>, bool), String> {
-        let (mut id, mut table) = (None, cals.contains(&n));
-        n += 1;
-        for a in e.attributes() {
-            let a = a.map_err(|e| e.to_string())?;
-            let value = a.normalized_value(quick_xml::XmlVersion::Implicit1_0).map_err(|e| e.to_string())?;
-            if a.key.local_name().as_ref() == b"Id" {
-                id = Some(value.to_string());
-            } else if a.key.as_ref() == b"aid:table" && value == "table" {
-                table = true;
+    /// Walks the elements in order (`n`: each one's place, as [`cals_tables`] counts them), with
+    /// the open elements' Ids and whether each is a table (tagged, aid:table="table", or CALS).
+    struct Walk<'a> {
+        cals: &'a HashSet<usize>,
+        n: usize,
+        stack: Vec<(Option<String>, bool)>,
+        texts: IdTexts,
+    }
+    impl Walk<'_> {
+        fn element(&mut self, e: &craft_xml::El) {
+            let id = e.attr_local("Id").map(str::to_string);
+            let table = self.cals.contains(&self.n) || e.attr("aid:table") == Some("table");
+            self.n += 1;
+            if let Some(i) = &id {
+                self.texts.own.entry(i.clone()).or_default();
+                self.texts.parts.entry(i.clone()).or_default();
+                // A table is no child of its parent's text: its text is its cells'.
+                if !table && let Some(p) = owner(&self.stack) {
+                    self.texts.parts.entry(p.clone()).or_default().push(Piece::Child(i.clone()));
+                }
             }
+            self.stack.push((id, table));
+            for node in &e.children {
+                match node {
+                    craft_xml::Node::Text(t) | craft_xml::Node::CData(t) => self.text(t),
+                    craft_xml::Node::El(c) => self.element(c),
+                    craft_xml::Node::Pi { .. } | craft_xml::Node::Comment(_) => {}
+                }
+            }
+            self.stack.pop();
         }
-        Ok((id, table))
-    };
-    loop {
-        match r.read_event().map_err(|e| e.to_string())? {
-            Event::Start(e) => {
-                let (id, table) = id_of(&e)?;
-                if let Some(i) = &id {
-                    texts.own.entry(i.clone()).or_default();
-                    texts.parts.entry(i.clone()).or_default();
-                    // A table is no child of its parent's text: its text is its cells'.
-                    if !table && let Some(p) = owner(&stack) {
-                        texts.parts.entry(p.clone()).or_default().push(Piece::Child(i.clone()));
-                    }
-                }
-                stack.push((id, table));
+
+        fn text(&mut self, s: &str) {
+            let s = s.replace('\u{2029}', "\n");
+            if let Some((Some(id), _)) = self.stack.iter().rev().find(|(i, _)| i.is_some())
+                && let Some(t) = self.texts.own.get_mut(id)
+            {
+                t.push_str(&s);
             }
-            Event::Empty(e) => {
-                if let (Some(i), table) = id_of(&e)? {
-                    texts.own.entry(i.clone()).or_default();
-                    texts.parts.entry(i.clone()).or_default();
-                    if !table && let Some(p) = owner(&stack) {
-                        texts.parts.entry(p.clone()).or_default().push(Piece::Child(i));
-                    }
+            if let Some(o) = owner(&self.stack)
+                && let Some(parts) = self.texts.parts.get_mut(o)
+            {
+                match parts.last_mut() {
+                    Some(Piece::Text(t)) => t.push_str(&s),
+                    _ => parts.push(Piece::Text(s)),
                 }
             }
-            Event::End(_) => {
-                stack.pop();
-            }
-            ev @ (Event::Text(_) | Event::GeneralRef(_) | Event::CData(_)) => {
-                let s = match ev {
-                    Event::Text(t) => t.decode().map_err(|e| e.to_string())?.to_string(),
-                    Event::CData(t) => String::from_utf8_lossy(&t).to_string(),
-                    Event::GeneralRef(g) => match g.resolve_char_ref().map_err(|e| e.to_string())? {
-                        Some(c) => c.to_string(),
-                        None => match g.decode().map_err(|e| e.to_string())?.as_ref() {
-                            "amp" => "&".into(),
-                            "lt" => "<".into(),
-                            "gt" => ">".into(),
-                            "quot" => "\"".into(),
-                            "apos" => "'".into(),
-                            _ => String::new(),
-                        },
-                    },
-                    _ => String::new(),
-                };
-                let s = s.replace('\u{2029}', "\n");
-                if let Some((Some(id), _)) = stack.iter().rev().find(|(i, _)| i.is_some())
-                    && let Some(t) = texts.own.get_mut(id)
-                {
-                    t.push_str(&s);
-                }
-                if let Some(o) = owner(&stack)
-                    && let Some(parts) = texts.parts.get_mut(o)
-                {
-                    match parts.last_mut() {
-                        Some(Piece::Text(t)) => t.push_str(&s),
-                        _ => parts.push(Piece::Text(s)),
-                    }
-                }
-            }
-            Event::Eof => break,
-            _ => {}
         }
     }
-    Ok(texts)
+    let cals = cals_tables(xml)?;
+    let mut w = Walk { cals: &cals, n: 0, stack: Vec::new(), texts: IdTexts::default() };
+    w.element(&super::xml::xml_tree(xml)?);
+    Ok(w.texts)
 }
 
 /// Each inline element's text in `st`: the runs tagged with it, from its first to its last.

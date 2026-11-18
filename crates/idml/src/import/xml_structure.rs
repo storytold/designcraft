@@ -30,7 +30,7 @@ pub(super) struct XmlImport {
 
 /// A tag name from `MarkupTag="XMLTag/…"` (percent-escaped like other IDML names).
 fn tag_name(markup: &str) -> String {
-    crate::import::package::percent_decode(markup.strip_prefix("XMLTag/").unwrap_or(markup))
+    craft_idml::value::percent_decode(markup.strip_prefix("XMLTag/").unwrap_or(markup))
 }
 
 impl<'r> Importer<'r> {
