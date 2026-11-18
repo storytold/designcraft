@@ -13,49 +13,14 @@ pub enum Tone {
 
 /// The [`Tone`] of an image file, `None` when a swatch doesn't colour it.
 pub fn tone(bytes: &[u8]) -> Option<Tone> {
-    use image::{ExtendedColorType as E, ImageDecoder, ImageFormat as F};
-    if crate::is_psd(bytes) {
-        // Header: channels at 12, colour mode at 24 (big-endian). A second channel is alpha or spot.
-        let be = |i: usize| Some(u16::from_be_bytes([*bytes.get(i)?, *bytes.get(i + 1)?]));
-        return match (be(12)?, be(24)?) {
-            (1, 0) => Some(Tone::Bitmap),
-            (1, 1) => Some(Tone::Gray),
-            _ => None,
-        };
+    if let Some(info) = craft_image_codecs::inspect_raster(bytes).ok().flatten()
+        && info.channels > 1
+    {
+        return None;
     }
-    let reader = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?;
-    match reader.format()? {
-        F::Png => {
-            // `image` expands 1-bit greys to 8 bits: the depth is IHDR's (signature, length, type,
-            // width, height, then the bit depth).
-            let gray = matches!(reader.into_decoder().ok()?.color_type(), image::ColorType::L8 | image::ColorType::L16);
-            let one_bit = *bytes.get(24)? == 1;
-            gray.then_some(if one_bit { Tone::Bitmap } else { Tone::Gray })
-        }
-        F::Tiff | F::Jpeg | F::Bmp => match reader.into_decoder().ok()?.original_color_type() {
-            E::L1 => Some(Tone::Bitmap),
-            E::L2 | E::L4 | E::L8 | E::L16 => Some(Tone::Gray),
-            _ => None,
-        },
-        // Indexed: what the palette holds decides. Transparent pixels are left out of a bitmap.
-        F::Gif => {
-            if crate::too_large_to_decode(bytes) {
-                return None;
-            }
-            let img = image::load_from_memory_with_format(bytes, F::Gif).ok()?.into_rgba8();
-            let mut opaque = true;
-            let mut two_level = true;
-            for p in img.pixels() {
-                let [r, g, b, a] = p.0;
-                match a {
-                    0 => opaque = false,
-                    255 if r == g && g == b => two_level &= r == 0 || r == 255,
-                    _ => return None,
-                }
-            }
-            if two_level { Some(Tone::Bitmap) } else { opaque.then_some(Tone::Gray) }
-        }
-        _ => None,
+    match craft_image_codecs::classify_tone(bytes)? {
+        craft_image_codecs::ToneClass::Bitmap => Some(Tone::Bitmap),
+        craft_image_codecs::ToneClass::Gray => Some(Tone::Gray),
     }
 }
 
