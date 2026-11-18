@@ -604,6 +604,8 @@ fn a_page_without_a_trim_box_fails_wherever_it_is_stored() {
     assert!(trim(&object_stream_pdf("/ArtBox null")), "a null box is no box");
     assert!(trim(&tiny_pdf("/TrimBox null", "")), "a null box is no box");
     assert!(trim(&tiny_pdf("/TrimBox 5", "")), "nor is a number");
+    assert!(trim(&tiny_pdf("/TrimBox[5 5 95 95 100]", "")), "nor five numbers");
+    assert!(trim(&tiny_pdf("/TrimBox[5 5 95 /x]", "")), "nor three numbers and a name");
     assert!(trim(&tiny_pdf("", "")));
     assert!(!trim(&tiny_pdf("/TrimBox[5 5 95 95]", "")));
 }
