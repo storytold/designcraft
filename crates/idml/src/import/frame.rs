@@ -4,26 +4,36 @@ use super::{Columns, ColumnsKind, El, Margins, TextFrameOptions, TextWrap, names
 /// Drop-shadow angle (degrees) from IDML offsets (inverse of export's mapping).
 /// A `TextWrapPreference` element (of a page item or a placed graphic).
 pub(super) fn text_wrap(w: &El) -> TextWrap {
+    let model = craft_idml::model::TextWrapPreference::from_el(&crate::xml::to_craft(w));
     let mut tw = TextWrap {
-        mode: names::wrap_mode_in(w.get("TextWrapMode").unwrap_or("None")),
-        invert: w.get("Inverse") == Some("true"),
-        side: names::wrap_side_in(w.get("TextWrapSide").unwrap_or("BothSides")),
-        contour: names::contour_type_in(w.find("ContourOption").and_then(|c| c.get("ContourType")).unwrap_or("SameAsClipping")),
+        mode: names::wrap_mode_in(model.mode().unwrap_or("None")),
+        invert: model.inverse(),
+        side: names::wrap_side_in(model.side().unwrap_or("BothSides")),
+        contour: names::contour_type_in(model.contour_type().unwrap_or("SameAsClipping")),
+        inside_edges: w.find("ContourOption").and_then(|c| c.get("IncludeInsideEdges")) == Some("true"),
         ..TextWrap::default()
     };
-    if let Some(o) = w.prop_el("TextWrapOffset") {
-        tw.offsets = [o.num("Top").unwrap_or(0.0), o.num("Left").unwrap_or(0.0), o.num("Bottom").unwrap_or(0.0), o.num("Right").unwrap_or(0.0)];
+    if let Some(offsets) = model.offsets() {
+        tw.offsets = offsets;
     }
     tw
 }
 
-pub(super) fn margins_of(m: &El) -> (Margins, Columns) {
-    let g = |k: &str, d: f64| m.num(k).filter(|v| v.is_finite()).unwrap_or(d);
-    let margins = Margins { top: g("Top", 36.0), bottom: g("Bottom", 36.0), inside: g("Left", 36.0), outside: g("Right", 36.0) };
-    let count = g("ColumnCount", 1.0).clamp(1.0, f64::from(designcraft_doc::MAX_COLUMNS)) as u32;
-    let gutter = g("ColumnGutter", 12.0);
-    let positions = m.get("ColumnsPositions").and_then(|s| custom_columns(s, count, gutter));
+pub(super) fn margins_of(m: &craft_idml::model::MarginPreference) -> (Margins, Columns) {
+    let margins = Margins {
+        top: m.top().unwrap_or(36.0),
+        bottom: m.bottom().unwrap_or(36.0),
+        inside: m.left().unwrap_or(36.0),
+        outside: m.right().unwrap_or(36.0),
+    };
+    let count = m.column_count().unwrap_or(1.0).clamp(1.0, f64::from(designcraft_doc::MAX_COLUMNS)) as u32;
+    let gutter = m.column_gutter().unwrap_or(12.0);
+    let positions = m.column_positions(2 * count as usize + 1).and_then(|pos| custom_columns(&pos, count, gutter));
     (margins, Columns { count, gutter, positions })
+}
+
+pub(super) fn margins_of_el(m: &El) -> (Margins, Columns) {
+    margins_of(&craft_idml::model::MarginPreference::from_el(&crate::xml::to_craft(m)))
 }
 
 /// `ColumnsPositions` when the column guides have been dragged off the even split: `2 × count`
@@ -32,16 +42,14 @@ pub(super) fn margins_of(m: &El) -> (Margins, Columns) {
 /// an even set is dropped: `positions` means "custom", and keeping an even copy would freeze the
 /// columns against a later change of count or gutter. Anything malformed is the even split; at
 /// most one number past `2 × count` is parsed, so a long list costs nothing.
-fn custom_columns(s: &str, count: u32, gutter: f64) -> Option<Vec<f64>> {
-    let want = 2 * count as usize;
-    let pos = s.split_whitespace().take(want + 1).map(|v| v.parse::<f64>().ok()).collect::<Option<Vec<f64>>>()?;
+fn custom_columns(pos: &[f64], count: u32, gutter: f64) -> Option<Vec<f64>> {
     let width = *pos.last()?;
-    if !designcraft_doc::valid_column_positions(&pos, count, width) {
+    if !designcraft_doc::valid_column_positions(pos, count, width) {
         return None;
     }
     let even = Columns { count, gutter, positions: None }.edges(width);
     // The tolerance only absorbs float noise in InDesign's arithmetic; a dragged guide moves far more.
-    pos.iter().zip(&even).any(|(a, b)| (a - b).abs() > 1e-4).then_some(pos)
+    pos.iter().zip(&even).any(|(a, b)| (a - b).abs() > 1e-4).then(|| pos.to_vec())
 }
 
 /// `columns` with custom positions only when they fit the margin box of a `page_width`-wide page
@@ -54,88 +62,74 @@ pub(super) fn fit_columns(mut columns: Columns, margins: &Margins, page_width: f
     columns
 }
 
-/// A `BaselineFrameGridRelativeOption` value (`TopOfInsetOfBaselineFrameGridRelativeOption`, or a
-/// short form such as `TopOfInset`); unknown values measure from the top of the page.
-pub(super) fn frame_grid_relative(v: &str) -> designcraft_doc::FrameGridRelative {
-    use designcraft_doc::FrameGridRelative as R;
-    let v = v.strip_suffix("OfBaselineFrameGridRelativeOption").unwrap_or(v);
-    match v {
-        "TopOfMargin" | "TopMargin" => R::TopMargin,
-        "TopOfFrame" => R::TopOfFrame,
-        "TopOfInset" | "TopInset" => R::TopInset,
-        _ => R::TopOfPage,
-    }
-}
-
 /// Text Frame Options from `TextFramePreference` elements: each attribute from the first that sets it.
 pub(super) fn text_frame_options(prefs: &[&El]) -> TextFrameOptions {
-    let e = Prefs(prefs);
+    let elements: Vec<_> = prefs.iter().map(|pref| crate::xml::to_craft(pref)).collect();
+    let model_elements: Vec<_> = elements.iter().collect();
+    let e = craft_idml::model::TextFramePreferences::from_elements(&model_elements);
     let mut o = TextFrameOptions::default();
-    if let Some(v) = e.num("TextColumnCount") {
+    if let Some(v) = e.column_count {
         o.columns = v.clamp(1.0, 216.0) as u32;
     }
-    if let Some(v) = e.num("TextColumnGutter") {
+    if let Some(v) = e.column_gutter {
         o.gutter = v;
     }
-    o.columns_kind = if e.prop("UseFixedColumnWidth").as_deref().map(str::trim) == Some("true") {
+    o.columns_kind = if e.fixed_width {
         ColumnsKind::FixedWidth
-    } else if e.prop("UseFlexibleColumnWidth").as_deref().map(str::trim) == Some("true") {
+    } else if e.flexible_width {
         ColumnsKind::FlexibleWidth
     } else {
         ColumnsKind::FixedNumber
     };
     if o.columns_kind != ColumnsKind::FixedNumber
-        && let Some(v) = e.num("TextColumnFixedWidth")
+        && let Some(v) = e.fixed_column_width
     {
         o.column_width = v;
     }
-    o.balance_columns = e.prop("VerticalBalanceColumns").as_deref().map(str::trim) == Some("true");
-    if let Some(p) = prefs.iter().find(|p| p.prop("InsetSpacing").is_some())
-        && let Some(inset) = inset_spacing(p)
-    {
+    o.balance_columns = e.balance_columns;
+    if let Some(inset) = e.inset {
         o.inset = inset;
     }
-    if let Some(v) = e.prop("VerticalJustification") {
+    if let Some(v) = e.vertical_justification.as_deref() {
         o.vertical_justification = names::vj_in(v.trim());
     }
-    if let Some(v) = e.num("VerticalThreshold") {
+    if let Some(v) = e.vertical_threshold {
         o.vj_paragraph_spacing_limit = v;
     }
-    if let Some(v) = e.prop("FirstBaselineOffset") {
+    if let Some(v) = e.first_baseline.as_deref() {
         o.first_baseline = names::first_baseline_in(v.trim());
     }
-    if let Some(v) = e.num("MinimumFirstBaselineOffset") {
+    if let Some(v) = e.minimum_first_baseline {
         o.first_baseline_min = v;
     }
-    o.ignore_wrap = e.prop("IgnoreWrap").as_deref().map(str::trim) == Some("true");
-    if let Some(v) = e.prop("AutoSizingType") {
+    o.ignore_wrap = e.ignore_wrap;
+    if let Some(v) = e.auto_sizing_type.as_deref() {
         o.auto_size = names::auto_size_in(v.trim());
     }
-    if let Some(v) = e.prop("AutoSizingReferencePoint") {
+    if let Some(v) = e.auto_sizing_reference.as_deref() {
         o.auto_size_ref = names::REF_POINTS.iter().position(|p| *p == v.trim()).unwrap_or(1) as u8;
     }
-    let size = |k: &str| e.num(k).filter(|v| v.is_finite()).map(|v| v.clamp(0.0, 10_000.0));
-    o.auto_size_use_min_height = e.prop("UseMinimumHeightForAutoSizing").as_deref().map(str::trim) == Some("true");
-    o.auto_size_min_height = size("MinimumHeightForAutoSizing").unwrap_or(0.0);
-    o.auto_size_use_min_width = e.prop("UseMinimumWidthForAutoSizing").as_deref().map(str::trim) == Some("true");
-    o.auto_size_min_width = size("MinimumWidthForAutoSizing").unwrap_or(0.0);
-    o.auto_size_no_line_breaks = e.prop("UseNoLineBreaksForAutoSizing").as_deref().map(str::trim) == Some("true");
+    let size = |v: Option<f64>| v.map(|v| v.clamp(0.0, 10_000.0));
+    o.auto_size_use_min_height = e.use_minimum_height;
+    o.auto_size_min_height = size(e.minimum_height).unwrap_or(0.0);
+    o.auto_size_use_min_width = e.use_minimum_width;
+    o.auto_size_min_width = size(e.minimum_width).unwrap_or(0.0);
+    o.auto_size_no_line_breaks = e.no_line_breaks;
     // Column rules (the colour is a swatch reference: see `Importer::frame_options`).
-    o.column_rule = e.prop("ColumnRuleOverride").as_deref().map(str::trim) == Some("true");
-    let finite = |k: &str| e.num(k).filter(|v| v.is_finite());
-    if let Some(v) = finite("ColumnRuleStrokeWidth") {
+    o.column_rule = e.column_rule_override;
+    if let Some(v) = e.column_rule_width {
         o.column_rule_weight = v.clamp(0.0, 1000.0);
     }
-    if let Some(t) = tint(finite("ColumnRuleStrokeTint")) {
+    if let Some(t) = tint(e.column_rule_tint) {
         o.column_rule_tint = t.clamp(0.0, 1.0);
     }
-    for (k, v) in [
-        ("ColumnRuleOffset", &mut o.column_rule_offset),
-        ("ColumnRuleTopInset", &mut o.column_rule_top_inset),
-        ("ColumnRuleBottomInset", &mut o.column_rule_bottom_inset),
+    for (value, slot) in [
+        (e.column_rule_offset, &mut o.column_rule_offset),
+        (e.column_rule_top_inset, &mut o.column_rule_top_inset),
+        (e.column_rule_bottom_inset, &mut o.column_rule_bottom_inset),
     ] {
-        if let Some(x) = finite(k) {
-            *v = x.clamp(-1440.0, 1440.0);
+        if let Some(x) = value {
+            *slot = x.clamp(-1440.0, 1440.0);
         }
     }
     o
@@ -147,36 +141,6 @@ pub(super) struct Prefs<'a>(pub(super) &'a [&'a El]);
 impl Prefs<'_> {
     pub(super) fn prop(&self, k: &str) -> Option<String> {
         self.0.iter().find_map(|e| e.prop(k))
-    }
-    fn num(&self, k: &str) -> Option<f64> {
-        // The nearest preference wins; within it, attributes precede property children.
-        self.prop(k).and_then(|v| v.trim().parse::<f64>().ok()).filter(|v| v.is_finite())
-    }
-}
-
-/// A scalar applies to every edge; a list is top, left, bottom, right. Keep the
-/// existing property-element precedence over the legacy scalar attribute, even
-/// when the property is malformed. Finite negative insets remain supported.
-fn inset_spacing(e: &El) -> Option<[f64; 4]> {
-    let number = |s: &str| s.trim().parse::<f64>().ok().filter(|v| v.is_finite());
-    let Some(property) = e.prop_el("InsetSpacing") else {
-        return e.get("InsetSpacing").and_then(number).map(|v| [v; 4]);
-    };
-    let mut items = property.elements();
-    if property.get("type") == Some("list") || property.find("ListItem").is_some() {
-        let mut inset = [0.0; 4];
-        for edge in &mut inset {
-            let item = items.next()?;
-            if item.local() != "ListItem" || item.elements().next().is_some() {
-                return None;
-            }
-            *edge = number(&item.text_content())?;
-        }
-        items.next().is_none().then_some(inset)
-    } else if items.next().is_none() {
-        number(&property.text_content()).map(|v| [v; 4])
-    } else {
-        None
     }
 }
 
@@ -351,7 +315,7 @@ mod page_column_import_safety_tests {
                 .attr("Bottom", "-inf")
                 .attr("Left", "NaN")
                 .attr("Right", "1e309");
-            let (margins, columns) = margins_of(&m);
+            let (margins, columns) = margins_of_el(&m);
             assert_eq!(columns.count, expected);
             assert_eq!(columns.gutter, 12.);
             assert_eq!(margins, Margins::uniform(36.));
@@ -364,7 +328,7 @@ mod page_column_import_safety_tests {
     fn hostile_column_positions_fall_back_to_the_even_split() {
         let positions = |count: &str, raw: &str| {
             let m = El::new("MarginPreference").attr("ColumnCount", count).attr("ColumnGutter", "20").attr("ColumnsPositions", raw);
-            margins_of(&m).1.positions
+            margins_of_el(&m).1.positions
         };
         assert_eq!(positions("2", "0 150 170 450"), Some(vec![0., 150., 170., 450.]));
         let huge = (0..10_000).map(|i| i.to_string()).collect::<Vec<_>>().join(" ");
@@ -391,7 +355,7 @@ mod page_column_import_safety_tests {
         // makes them custom.
         let gapless = |raw: &str| {
             let m = El::new("MarginPreference").attr("ColumnCount", "216").attr("ColumnGutter", "0").attr("ColumnsPositions", raw);
-            margins_of(&m).1.positions
+            margins_of_el(&m).1.positions
         };
         let edges = |first_right: &str| {
             (0..432).map(|i| if i == 1 { first_right.to_string() } else { ((i + 1) / 2).to_string() }).collect::<Vec<_>>().join(" ")
