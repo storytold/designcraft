@@ -35,9 +35,13 @@ attr_set! {
         drop_cap_scale_descenders: bool = false,
         /// Keep Size: the drop cap keeps its own point size. A cap taller than the body hangs
         /// from the first line's tops; one no taller sits on the first baseline like any word.
-        /// Only the first `drop_cap_lines` lines are indented by its width; a kept cap that
-        /// reaches lower overlaps the lines below it, so raise Lines to clear it.
+        /// Intersecting line bands are indented, up to `drop_cap_lines`; a cap reaching
+        /// past that upper bound can overlap, so raise Lines to clear it. Character-style
+        /// baseline shift moves only the cap and participates in its ink bounds.
         drop_cap_keep_size: bool = false,
+        /// Body-size multiplier, 0 disables it; (0, 20] implies Keep Size and overrides
+        /// the drop cap character style's size.
+        drop_cap_scale: f64 = 0.0,
         /// Nested styles, in order from the paragraph start.
         nested_styles: Vec<NestedStyle> = Vec::new(),
         /// GREP styles: a character style for every match of a pattern (applied after nested).

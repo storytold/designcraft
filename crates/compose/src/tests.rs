@@ -5507,7 +5507,7 @@ fn hebrew_drop_word_aligns_top_strokes_instead_of_serifs() {
 }
 
 #[test]
-fn right_to_left_drop_word_keeps_size_hangs_from_the_tops_and_indents_two_lines() {
+fn right_to_left_drop_word_keeps_size_hangs_from_the_tops_and_indents_intersecting_lines() {
     const FAMILY: &str = "DC Test Hebrew Keep Size";
     // A horizontal top makes ink-top alignment equivalent to stroke-top alignment.
     designcraft_fonts::FontDb::global().add_font(designcraft_fonts::testing::font_with_glyph(FAMILY, &['ה', 'ד', ' '], 'z').unwrap());
@@ -5564,6 +5564,125 @@ fn keep_size_drop_cap_trailing_space_follows_word_spacing() {
     let body_gap = spaced_lines[0].glyphs.iter().find(|g| g.byte == 10).unwrap().adv;
     let normal_body_gap = normal_lines[0].glyphs.iter().find(|g| g.byte == 10).unwrap().adv;
     assert!((body_gap - normal_body_gap - gap).abs() < 0.01);
+}
+
+#[test]
+fn s2c_inline_fixed_leading_pitch() {
+    let text = format!("{LOREM} {LOREM}");
+    let (mut d, sid, _) = drop_doc(&text, ParaAttrs::default());
+    let before = compose_story(&d, sid, &ComposeOptions::default());
+    d.story_mut(sid).unwrap().format_chars(20..25, |f| f.over.size = Some(13.0));
+    let after = compose_story(&d, sid, &ComposeOptions::default());
+    let pitches = |cs: &ComposedStory| all_lines(cs).windows(2).map(|l| l[1].baseline - l[0].baseline).collect::<Vec<_>>();
+    eprintln!("inline 1.3x pitches before {:?}, after {:?}", pitches(&before), pitches(&after));
+    assert!(pitches(&after).iter().all(|p| (*p - 12.0).abs() < 0.01));
+}
+
+#[test]
+fn s2c_note_drop_word_clears_next_line() {
+    let text = "הדה הדה הדה ".repeat(40);
+    let (mut d, sid, _) = drop_doc(LOREM, ParaAttrs::default());
+    let fmt = ParaFormat {
+        para: ParaAttrs {
+            direction: Some(designcraft_doc::TextDirection::RightToLeft),
+            align: Some(Align::Right),
+            drop_cap_words: Some(1),
+            drop_cap_scale: Some(1.6),
+            ..drop_cap(2, 0)
+        },
+        chars: designcraft_doc::CharAttrs { size: Some(10.0), leading: Some(designcraft_doc::Leading::Points(15.1)), ..Default::default() },
+        ..Default::default()
+    };
+    d.story_mut(sid).unwrap().insert_note(5, &text, fmt);
+    let note = std::sync::Arc::make_mut(&mut d.story_mut(sid).unwrap().notes[0]);
+    note.text.format_chars(0.."הדה".len(), |f| f.over.size = Some(16.0));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let note = &cs.frames[0].notes[0];
+    let lines = all_lines(&note.text);
+    let dc = lines[0].drop_cap.unwrap();
+    let db = designcraft_fonts::FontDb::global();
+    let ink = |g: &PlacedGlyph, line: &Line| {
+        let r = designcraft_geom::Shape::bounding_box(&*db.outline(&g.face, g.gid));
+        Rect::new(g.x + r.x0 * g.sx, line.baseline + g.y + r.y0 * g.sy, g.x + r.x1 * g.sx, line.baseline + g.y + r.y1 * g.sy)
+    };
+    for a in lines[0].glyphs.iter().filter(|g| g.byte < dc.end && g.visible && g.len > 0) {
+        for (i, line) in lines.iter().enumerate().skip(1) {
+            for b in line.glyphs.iter().filter(|g| g.visible && g.len > 0) {
+                assert!(ink(a, lines[0]).intersect(ink(b, line)).area() < 0.01, "drop word intersects note line {}", i + 1);
+            }
+        }
+        if a.byte < "הדה".len() {
+            assert!((a.sy * a.face.upem - 16.0).abs() < 0.01);
+        }
+    }
+}
+
+#[test]
+fn s2c_ratio_shift_baselines_and_indent() {
+    let text = "הדה הדה הדה ".repeat(40);
+    let para = ParaAttrs { direction: Some(designcraft_doc::TextDirection::RightToLeft), align: Some(Align::Right), ..Default::default() };
+    let (mut d, sid, _) = drop_doc(&text, para);
+    let plain = compose_story(&d, sid, &ComposeOptions::default());
+    {
+        let st = d.story_mut(sid).unwrap();
+        st.paras[0].para.drop_cap_words = Some(1);
+        st.paras[0].para.drop_cap_lines = Some(2);
+        st.paras[0].para.drop_cap_scale = Some(1.6);
+        st.format_chars(0.."הדה".len(), |f| {
+            f.over.size = Some(40.0);
+            f.over.baseline_shift = Some(1.0);
+        });
+    }
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    let before = all_lines(&plain);
+    let dc = lines[0].drop_cap.unwrap();
+    for (i, l) in lines.iter().take(4).enumerate() {
+        assert!((l.baseline - before[i].baseline).abs() < 0.01, "line {i}: {} vs {}", l.baseline, before[i].baseline);
+    }
+    let cap = lines[0].glyphs.iter().find(|g| g.byte == 0).unwrap();
+    assert!((cap.sy * cap.face.upem - 16.0).abs() < 0.01);
+    let right = |l: &Line| l.glyphs.iter().filter(|g| g.visible && g.byte >= dc.end).map(|g| g.x + g.adv).fold(0.0_f64, f64::max);
+    assert!((300.0 - right(lines[1]) - dc.rect.width()).abs() < 0.01);
+    assert!((300.0 - right(lines[2])).abs() < 0.01);
+    eprintln!(
+        "baseline delta {}, line-2 indent {} pt, line-3 indent {} pt",
+        lines[0].baseline - before[0].baseline,
+        300.0 - right(lines[1]),
+        300.0 - right(lines[2])
+    );
+    d.story_mut(sid).unwrap().format_chars(0.."הדה".len(), |f| f.over.baseline_shift = Some(8.0));
+    let raised = compose_story(&d, sid, &ComposeOptions::default());
+    let line = all_lines(&raised)[0];
+    let db = designcraft_fonts::FontDb::global();
+    for g in line.glyphs.iter().filter(|g| g.byte < "הדה".len()) {
+        let ink = designcraft_geom::Shape::bounding_box(&*db.outline(&g.face, g.gid));
+        assert!(line.drop_cap.unwrap().rect.y0 <= line.baseline + g.y + ink.y0 * g.sy + 0.01);
+    }
+    assert!((line.baseline - before[0].baseline).abs() < 0.01);
+}
+
+#[test]
+fn s2c_short_note_drop_cap_clears_the_next_note() {
+    let (mut d, sid, _) = drop_doc(LOREM, ParaAttrs::default());
+    let fmt = ParaFormat {
+        para: ParaAttrs { drop_cap_keep_size: Some(true), ..drop_cap(2, 1) },
+        chars: designcraft_doc::CharAttrs { size: Some(10.0), leading: Some(designcraft_doc::Leading::Points(12.0)), ..Default::default() },
+        ..Default::default()
+    };
+    let st = d.story_mut(sid).unwrap();
+    st.insert_note(5, "A short note.", fmt.clone());
+    std::sync::Arc::make_mut(&mut st.notes[0]).text.format_chars(0..1, |f| f.over.size = Some(30.0));
+    st.insert_note(15, "Another note.", ParaFormat { para: ParaAttrs::default(), ..fmt });
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let notes = &cs.frames[0].notes;
+    assert_eq!(notes.len(), 2);
+    let first = all_lines(&notes[0].text)[0];
+    let next = all_lines(&notes[1].text)[0];
+    let cap_bottom = notes[0].origin.y + first.drop_cap.unwrap().rect.y1;
+    let next_top = notes[1].origin.y + next.baseline - next.ascent;
+    eprintln!("short-note cap bottom {cap_bottom}, next line top {next_top}");
+    assert!(cap_bottom <= next_top + 0.01, "drop cap overprints the following note");
 }
 
 #[test]

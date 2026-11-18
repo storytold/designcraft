@@ -286,13 +286,19 @@ fn drop_cap_keep_size_command_round_trips_and_undoes() {
         d.styles.resolve_para(&d.story(StoryId(sid)).unwrap().paras[0]).0
     };
     assert!(!props(&s).drop_cap_keep_size);
-    s.execute("type.para", &json!({"attrs":{"dropCapKeepSize":true}})).unwrap();
+    for value in [json!(-1), json!(20.1), json!("NaN")] {
+        assert!(s.execute("type.para", &json!({"attrs":{"dropCapScale":value}})).is_err());
+    }
+    s.execute("type.para", &json!({"attrs":{"dropCapKeepSize":true,"dropCapScale":1.6}})).unwrap();
     assert!(props(&s).drop_cap_keep_size);
+    assert_eq!(props(&s).drop_cap_scale, 1.6);
     let d = &s.doc().unwrap().doc;
     let back = designcraft_format::load(&designcraft_format::save(d).unwrap()).unwrap();
     assert!(back.styles.resolve_para(&back.story(StoryId(sid)).unwrap().paras[0]).0.drop_cap_keep_size);
+    assert_eq!(back.styles.resolve_para(&back.story(StoryId(sid)).unwrap().paras[0]).0.drop_cap_scale, 1.6);
     s.execute("edit.undo", &json!({})).unwrap();
     assert!(!props(&s).drop_cap_keep_size);
+    assert_eq!(props(&s).drop_cap_scale, 0.0);
     s.execute("edit.redo", &json!({})).unwrap();
     assert!(props(&s).drop_cap_keep_size);
 }

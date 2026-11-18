@@ -172,6 +172,11 @@ fn percent(v: f64) -> String {
 /// the order of each row once the values are applied.
 pub(crate) fn validate_para_values(attrs: &ParaAttrs, command_id: &str) -> Result<()> {
     use designcraft_doc::Align;
+    if let Some(v) = attrs.drop_cap_scale
+        && !(0.0..=20.0).contains(&v)
+    {
+        return Err(bad(command_id, "dropCapScale: 0 (off) or greater than 0 through 20"));
+    }
     let spaces = [
         ("leftIndent", attrs.left_indent, 0.0),
         ("rightIndent", attrs.right_indent, 0.0),

@@ -456,6 +456,10 @@ fn paragraph_more(app: &mut DesignApp, ui: &mut Ui, p: &Value, fw: f32) {
         }
     }
     ui.add_space(4.0);
+    if let Some(v) = widgets::number(ui, "dropCapScale", p["dropCapScale"].as_f64(), "", 60.0, 2) {
+        let _ = app.run("type.para", json!({"attrs": {"dropCapScale": v.clamp(0.0, 20.0)}}));
+    }
+    ui.label(tr("Drop Cap Body Size Multiplier (0 = off)"));
     ui.horizontal(|ui| {
         // First Line Only is aligned too: the button shows it pressed, and a click turns alignment off.
         let grid = matches!(p["gridAlign"].as_str(), Some("allLines" | "firstLineOnly"));

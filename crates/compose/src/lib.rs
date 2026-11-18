@@ -1713,6 +1713,7 @@ fn apply_nested_line_styles(input: NestedLineStyleInput<'_, '_, '_>) {
                 drop_grid,
                 drop_align,
                 pp.drop_cap_keep_size,
+                (pp.drop_cap_scale, base_chars.size),
                 pp.word_space_desired,
                 drop_tabs,
             );
@@ -2647,7 +2648,7 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
                     end: dc.end,
                     baseline: baseline + dc.drop,
                     // From its line's top, or its own top when it rises above that line.
-                    rect: Rect::new(at, (baseline - asc).min(baseline + dc.drop - dc.cap), at + dc.width, baseline + dc.drop + desc),
+                    rect: dc.bounds(at, baseline, asc, desc),
                 });
             }
             ruby::annotate(db, styles_tab, &story.text, &mut placed, doc.settings.glyph_fallback, f.vertical);
@@ -2894,6 +2895,7 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
         drop_grid,
         drop_align,
         pp.drop_cap_keep_size,
+        (pp.drop_cap_scale, base_chars.size),
         pp.word_space_desired,
         (&pp.tabs[..], drop_tab_indent),
     );
@@ -5748,6 +5750,8 @@ struct DropCap {
     drop: f64,
     /// Its cap height as set (how far its top sits above its baseline).
     cap: f64,
+    descent: f64,
+    kept: bool,
 }
 
 /// Measure the top of the horizontal stroke at the glyph's centre so that serifs don't count.
@@ -5787,6 +5791,7 @@ fn split_drop_cap(
     grid: Option<f64>,
     align_left: bool,
     keep_size: bool,
+    scale: (f64, f64),
     word_space: f64,
     tabs: (&[designcraft_doc::TabStop], f64),
 ) -> Option<DropCap> {
@@ -5796,6 +5801,29 @@ fn split_drop_cap(
     }
     let lines = lines.clamp(1, MAX_DROP_CAP_LINES) as usize;
     let mut dc: Vec<Glyph> = glyphs.drain(..n).collect();
+    let (scale, base_size) = scale;
+    let scale = if scale.is_finite() && (0.0..=20.0).contains(&scale) { scale } else { 0.0 };
+    let keep_size = keep_size || scale > 0.0;
+    let body_size = glyphs.iter().find(|g| !g.is_space() && g.size > 0.0).map_or(base_size, |g| g.size);
+    if scale > 0.0 {
+        for g in &mut dc {
+            let k = body_size * scale / g.size;
+            if k.is_finite() && k > 0.0 {
+                g.adv *= k;
+                g.dx *= k;
+                g.dy *= k;
+                g.sx *= k;
+                g.sy *= k;
+                g.ascent *= k;
+                g.typo_ascent *= k;
+                g.descent *= k;
+                g.cap *= k;
+                g.xh *= k;
+                g.size *= k;
+                g.space *= k;
+            }
+        }
+    }
     let spaces = glyphs.iter().take_while(|g| g.is_space()).count();
     let mut after: Vec<Glyph> = glyphs.drain(..spaces).collect();
     let end = after.last().map_or(end, |g| g.byte.saturating_add(g.len).max(end));
@@ -5898,11 +5926,35 @@ fn split_drop_cap(
     // Kept at its size, the word sits in the line, so the space after it separates it from the next word.
     let width = dc.iter().chain(after.iter().filter(|_| keep_size)).map(|g| g.adv).sum();
     dc.append(&mut after);
-    let cap = dc.iter().map(|g| height(g, hebrew)).fold(0.0, f64::max);
-    Some(DropCap { glyphs: dc, end, lines, width, drop, lsb, cap })
+    let (ink_top, ink_bottom) = dc
+        .iter()
+        .filter(|g| !g.is_space())
+        .map(|g| {
+            let ink = designcraft_geom::Shape::bounding_box(&*db.outline(g.face.get(), g.gid));
+            (-g.shift + g.dy + ink.y0 * g.sy, -g.shift + g.dy + ink.y1 * g.sy)
+        })
+        .reduce(|a, b| (a.0.min(b.0), a.1.max(b.1)))
+        .unwrap_or((0.0, 0.0));
+    let lines = if keep_size && lead.is_finite() && lead > 0.0 {
+        // Only bands meeting the ink need its indent; Lines remains a hard upper bound.
+        // Like wrap_slot, a line band starts one leading above its baseline.
+        (((drop + ink_bottom + lead) / lead).ceil().max(1.0) as usize).min(lines)
+    } else {
+        lines
+    };
+    let cap = if keep_size { -ink_top } else { dc.iter().map(|g| height(g, hebrew)).fold(0.0, f64::max) };
+    Some(DropCap { glyphs: dc, end, lines, width, drop, lsb, cap, descent: ink_bottom, kept: keep_size })
 }
 
 impl DropCap {
+    fn bounds(&self, at: f64, baseline: f64, ascent: f64, descent: f64) -> Rect {
+        if self.kept {
+            Rect::new(at, baseline + self.drop - self.cap, at + self.width, baseline + self.drop + self.descent)
+        } else {
+            Rect::new(at, (baseline - ascent).min(baseline + self.drop - self.cap), at + self.width, baseline + self.drop + descent)
+        }
+    }
+
     /// How far the lines beside it are indented: to the end of its advance.
     fn indent(&self) -> f64 {
         self.width - self.lsb

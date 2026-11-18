@@ -6924,6 +6924,12 @@ fn drop_cap_fields(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, cn
             }
             ui.end_row();
         }
+        crate::rtl::label(ui, crate::i18n::tr(lang, "Body Size Multiplier:"));
+        let v = field_or(d, "p.dropCapScale", &pv["dropCapScale"]).as_f64();
+        if let Some(n) = crate::widgets::number(ui, "psdropCapScale", v, "", 60.0, 2) {
+            d.fields.insert("p.dropCapScale".into(), json!(n.clamp(0.0, 20.0)));
+        }
+        ui.end_row();
         crate::rtl::label(ui, crate::i18n::tr(lang, "Character Style:"));
         let style = field_or(d, "p.dropCapStyle", &pv["dropCapStyle"]).as_str().unwrap_or("").to_string();
         let style = if style.is_empty() { designcraft_doc::NO_CHAR_STYLE.to_string() } else { style };
