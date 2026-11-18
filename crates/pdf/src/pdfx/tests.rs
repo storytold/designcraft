@@ -587,6 +587,8 @@ fn page_boxes_must_nest() {
     );
     // A box wholly off the media is past it, and has nothing on it for the CropBox to cut.
     assert_eq!(boxes("/CropBox[0 0 90 100]/TrimBox[110 10 120 90]"), ["the trim box extends past the media box"]);
+    // A box just past the media edge, within the hundredth of a point, is on it and can be cut.
+    assert_eq!(boxes("/CropBox[0 0 90 100]/TrimBox[100.002 10 100.008 90]"), ["the crop box cuts into the trim box"]);
     // The hundredth of a point is in points: with /UserUnit 10 a user unit is ten of them.
     assert_eq!(boxes("/UserUnit 10/TrimBox[0 0 100.0005 100]"), Vec::<String>::new());
     assert_eq!(boxes("/UserUnit 10/TrimBox[0 0 100.005 100]"), ["the trim box extends past the media box"]);
