@@ -5094,7 +5094,7 @@ fn layout_tabs(line: &mut [Glyph], pp: &ParaProps, geometry: TabMeasure) -> (Vec
             let (w, stop) = tab_advance(&pp.tabs, pp.left_indent, x0 + x - tab_origin, line.get(i + 1..).unwrap_or_default());
             // A tab that ends the line stops at the edge: the breaker keeps one that starts before
             // the edge even when its stop lies beyond it.
-            let ends_line = line.get(i + 1..).is_none_or(|rest| rest.iter().all(|g| g.ch == '\t' || g.is_space()));
+            let ends_line = line.get(i + 1..).is_none_or(|rest| rest.iter().all(|g| g.ch == '\t' || g.is_space() || breaker::is_forced(g.ch)));
             let w = if ends_line && x + w > measure { (measure - x).max(0.0) } else { w };
             if let Some(t) = stop
                 && !t.leader.is_empty()
