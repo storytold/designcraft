@@ -1,4 +1,4 @@
-use super::*;
+use super::{ControlRequest, DesignApp, Receiver};
 
 impl DesignApp {
     pub fn with_control(mut self, rx: Receiver<ControlRequest>) -> Self {

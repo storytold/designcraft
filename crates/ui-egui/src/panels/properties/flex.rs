@@ -1,5 +1,8 @@
 use super::object::preview_dropdown;
-use super::*;
+use super::{
+    DesignApp, FIELD_H, NumField, Rect, Sense, Stroke, StrokeKind, Tokens, Ui, Value, block, icons, json, place, section, set_temp_bool, sub,
+    temp_bool, units, vec2, widgets,
+};
 
 // ---------------------------------------------------------------- Flex Layout
 
@@ -168,7 +171,7 @@ pub(super) fn flex_section(app: &mut DesignApp, ui: &mut Ui) {
         let cur = serde_json::to_value(cur).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
         let icon = FLEX_JUSTIFY.iter().find(|j| j.0 == cur).map(|j| j.1).unwrap_or("flex-start");
         let resp = place(ui, sub(b, 0.0, 0.0, 58.0, FIELD_H), |ui| {
-            preview_dropdown(ui, 58.0, |p, r| icons::paint(p, r.shrink2(vec2(6.0, 2.0)), icon, egui::Color32::from_gray(60)))
+            preview_dropdown(ui, 58.0, &tr("Justification"), |p, r| icons::paint(p, r.shrink2(vec2(6.0, 2.0)), icon, egui::Color32::from_gray(60)))
         });
         egui::Popup::menu(&resp).show(|ui| {
             ui.set_min_width(150.0);

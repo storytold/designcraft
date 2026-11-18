@@ -1,5 +1,5 @@
 use super::common::{bool_s, uid};
-use super::*;
+use super::{Affine, Document, El, Ex, PageSide, Spread, names, num};
 
 /// The IDML spread origin in our spread coordinates.
 pub(crate) fn spread_origin(sp: &Spread, facing: bool) -> (f64, f64) {

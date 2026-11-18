@@ -1,13 +1,19 @@
+#[cfg(not(target_arch = "wasm32"))]
+use super::PendingDrop;
 use super::clock::now_ms;
-#[cfg(test)]
-use super::services::Inbox;
 use super::services::Services;
 use super::state::{CanvasCache, ImportRequest, ImportedFile, Perf, ScreenMode, UiState, View, second_window_viewport};
-use super::*;
+use super::{
+    ControlRequest, ControlResponse, DesignApp, HashMap, InputGeneration, LivePreview, QuitState, Receiver, SCREENSHOT_MAX_AGGREGATE_BYTES,
+    SCREENSHOT_MAX_IMAGE_BYTES, SCREENSHOT_MAX_REQUESTS, ScreenshotGeometry, Sender, Session, ShotRequest, UiRequest, Value, ViewInfo, about, canvas,
+    chrome, cursors, dialogs, dock, json, menus, new_document, page_history, panel_docking, shortcut_import, story_editor, theme, toolbar,
+    updates_ui,
+};
 
 mod clipboard;
 mod commands;
 mod control;
+pub(crate) mod file_dialogs;
 mod files;
 mod frame;
 mod ime;
@@ -29,14 +35,28 @@ impl DesignApp {
         // The app owns the monotonic origin for recovery timing and frame pacing; `now_ms` itself
         // is process-global so screenshot deadlines stay comparable across hosts.
         let now = now_ms() / 1000.0;
+        #[cfg(not(target_arch = "wasm32"))]
+        let dialog_wake = std::sync::Arc::new(std::sync::OnceLock::new());
         DesignApp {
             pending_pdf: None,
+            pending_pdf_rest: Vec::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            file_dialogs: file_dialogs::new_dialogs(dialog_wake.clone()),
+            #[cfg(not(target_arch = "wasm32"))]
+            asked: Vec::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            held_answers: Vec::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            dialog_wake,
             session,
             ui: UiState::default(),
             services,
             views: HashMap::new(),
             page_history: HashMap::new(),
             canvas: CanvasCache::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            links_worker: crate::links_worker::State::default(),
+            preflight: crate::preflight_worker::State::default(),
             canvas_rect: None,
             split: false,
             second_window: false,
@@ -92,9 +112,11 @@ impl DesignApp {
             shortcut_answers: Default::default(),
             last_time: now,
             last_recovery: now,
+            recovery_writing: false,
             egui_ctx: None,
             in_control: false,
             object_clip_text: None,
+            object_clip_change: None,
             ime_marked: None,
             ime_discard: false,
             canvas_ime: false,
@@ -107,6 +129,7 @@ impl DesignApp {
             close_requested_pending: false,
             quit_without_asking: false,
             quitting: None,
+            waiting_save: None,
             cursors: cursors::Images::default(),
             live_preview: LivePreview::default(),
             updates_rt: updates_ui::Runtime::default(),
@@ -190,17 +213,7 @@ impl DesignApp {
         // must not replay shortcuts or dropped files from stale input.
         if ctx.current_pass_index() == 0 {
             #[cfg(not(target_arch = "wasm32"))]
-            {
-                // Sample the generation once for the whole batch: placing the first valid file
-                // must not suppress later files that belong to the same captured batch.
-                let current = self.input_generation();
-                for drop in std::mem::take(&mut self.pending_drops) {
-                    if drop.generation != current {
-                        continue;
-                    }
-                    let _ = self.open_dropped_at(&drop.path, drop.pointer);
-                }
-            }
+            self.take_pending_drops();
             menus::shortcuts(self, &ctx);
         }
         let t0 = now_ms();

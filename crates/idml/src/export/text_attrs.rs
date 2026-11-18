@@ -1,5 +1,5 @@
 use super::common::{bool_s, p, pct};
-use super::*;
+use super::{CHAR_BUILTINS, CharAttrs, El, Ex, ListType, ParaAttrs, SpanColumns, escape_id, names, num, st};
 
 impl<'a> Ex<'a> {
     pub(super) fn char_attrs(&mut self, el: &mut El, props: &mut Vec<El>, a: &CharAttrs) {
@@ -21,6 +21,93 @@ impl<'a> Ex<'a> {
         if let Some(v) = a.character_alignment {
             el.set("CharacterAlignment", crate::cjk::alignment_out(v));
         }
+        self.char_font_attrs(el, props, a);
+        if let Some(v) = &a.fill {
+            el.set("FillColor", self.sw(v));
+        }
+        if let Some(v) = a.fill_tint {
+            el.set("FillTint", pct(v as f64));
+        }
+        if let Some(v) = &a.stroke {
+            el.set("StrokeColor", self.sw(v));
+        }
+        if let Some(v) = a.stroke_tint {
+            el.set("StrokeTint", pct(v as f64));
+        }
+        if let Some(v) = a.stroke_weight {
+            el.set("StrokeWeight", num(v));
+        }
+        if let Some(v) = a.stroke_behind_fill {
+            el.set("StrokeAlignment", if v { "OutsideAlignment" } else { "CenterAlignment" });
+        }
+        if let Some(v) = a.capitalization {
+            el.set("Capitalization", names::caps_out(v));
+        }
+        if let Some(v) = a.position {
+            el.set("Position", names::position_out(v));
+        }
+        if let Some(v) = a.underline {
+            el.set("Underline", bool_s(v));
+        }
+        if let Some(v) = a.strikethrough {
+            el.set("StrikeThru", bool_s(v));
+        }
+        if let Some(v) = a.ligatures {
+            el.set("Ligatures", bool_s(v));
+        }
+        self.char_decoration_attrs(el, a);
+        if let Some(list) = &a.otf_features {
+            for (tag, _, attr) in designcraft_doc::otf::TOGGLES {
+                el.set(attr, bool_s(designcraft_doc::otf::is_on(list, tag)));
+            }
+            let fig = designcraft_doc::otf::figures(list);
+            if let Some(f) = designcraft_doc::otf::FIGURES.iter().find(|f| f.0 == fig) {
+                el.set("OTFFigureStyle", f.3);
+            }
+            el.set("OTFStylisticSets", designcraft_doc::otf::stylistic_sets(list).to_string());
+        }
+        if let Some(v) = &a.glyph_form {
+            el.set("GlyphForm", v);
+        }
+        if let Some(v) = a.no_break {
+            el.set("NoBreak", bool_s(v));
+        }
+        self.char_arabic_attrs(el, a);
+        self.char_cjk_layout_attrs(el, props, a);
+        self.cjk_settings_chars(el, props, a);
+        if let Some(list) = &a.conditions {
+            el.set("AppliedConditions", list.iter().map(|c| format!("Condition/{}", escape_id(c))).collect::<Vec<_>>().join(" "));
+        }
+        if let Some(v) = &a.language {
+            el.set("AppliedLanguage", format!("$ID/{v}"));
+        }
+    }
+
+    fn char_arabic_attrs(&self, el: &mut El, a: &CharAttrs) {
+        if let Some(v) = a.digits {
+            el.set("DigitsType", names::digits_out(v));
+        }
+        if let Some(v) = a.character_direction {
+            el.set("CharacterDirection", crate::arabic::direction_out(v));
+        }
+        if let Some(v) = a.allow_kashidas {
+            el.set("Kashidas", if v { "DefaultKashidas" } else { "KashidasOff" });
+        }
+        if let Some(v) = a.diacritic_position {
+            el.set("DiacriticPosition", crate::arabic::diacritic_out(v));
+        }
+        if let Some(v) = a.diacritic_x_offset {
+            el.set("XOffsetDiacritic", num(v));
+        }
+        if let Some(v) = a.diacritic_y_offset {
+            el.set("YOffsetDiacritic", num(v));
+        }
+        if let Some(v) = &a.positional_form {
+            el.set("PositionalForm", v);
+        }
+    }
+
+    fn char_font_attrs(&mut self, el: &mut El, props: &mut Vec<El>, a: &CharAttrs) {
         if let Some(f) = &a.font_family {
             if let Some(composite) = self.d.styles.composite_font(f) {
                 props.push(p("AppliedFont", "object", format!("CompositeFont/{}", escape_id(&composite.name))));
@@ -63,39 +150,9 @@ impl<'a> Ex<'a> {
         if let Some(v) = a.skew {
             el.set("Skew", num(v));
         }
-        if let Some(v) = &a.fill {
-            el.set("FillColor", self.sw(v));
-        }
-        if let Some(v) = a.fill_tint {
-            el.set("FillTint", pct(v as f64));
-        }
-        if let Some(v) = &a.stroke {
-            el.set("StrokeColor", self.sw(v));
-        }
-        if let Some(v) = a.stroke_tint {
-            el.set("StrokeTint", pct(v as f64));
-        }
-        if let Some(v) = a.stroke_weight {
-            el.set("StrokeWeight", num(v));
-        }
-        if let Some(v) = a.stroke_behind_fill {
-            el.set("StrokeAlignment", if v { "OutsideAlignment" } else { "CenterAlignment" });
-        }
-        if let Some(v) = a.capitalization {
-            el.set("Capitalization", names::caps_out(v));
-        }
-        if let Some(v) = a.position {
-            el.set("Position", names::position_out(v));
-        }
-        if let Some(v) = a.underline {
-            el.set("Underline", bool_s(v));
-        }
-        if let Some(v) = a.strikethrough {
-            el.set("StrikeThru", bool_s(v));
-        }
-        if let Some(v) = a.ligatures {
-            el.set("Ligatures", bool_s(v));
-        }
+    }
+
+    fn char_decoration_attrs(&self, el: &mut El, a: &CharAttrs) {
         for (k, w, o, c, t) in [
             ("Underline", a.underline_weight, a.underline_offset, &a.underline_color, a.underline_tint),
             ("StrikeThru", a.strikethrough_weight, a.strikethrough_offset, &a.strikethrough_color, a.strikethrough_tint),
@@ -113,43 +170,9 @@ impl<'a> Ex<'a> {
                 el.set(&format!("{k}Tint"), num(t as f64 * 100.0));
             }
         }
-        if let Some(list) = &a.otf_features {
-            for (tag, _, attr) in designcraft_doc::otf::TOGGLES {
-                el.set(attr, bool_s(designcraft_doc::otf::is_on(list, tag)));
-            }
-            let fig = designcraft_doc::otf::figures(list);
-            if let Some(f) = designcraft_doc::otf::FIGURES.iter().find(|f| f.0 == fig) {
-                el.set("OTFFigureStyle", f.3);
-            }
-            el.set("OTFStylisticSets", designcraft_doc::otf::stylistic_sets(list).to_string());
-        }
-        if let Some(v) = &a.glyph_form {
-            el.set("GlyphForm", v);
-        }
-        if let Some(v) = a.no_break {
-            el.set("NoBreak", bool_s(v));
-        }
-        if let Some(v) = a.digits {
-            el.set("DigitsType", names::digits_out(v));
-        }
-        if let Some(v) = a.character_direction {
-            el.set("CharacterDirection", crate::arabic::direction_out(v));
-        }
-        if let Some(v) = a.allow_kashidas {
-            el.set("Kashidas", if v { "DefaultKashidas" } else { "KashidasOff" });
-        }
-        if let Some(v) = a.diacritic_position {
-            el.set("DiacriticPosition", crate::arabic::diacritic_out(v));
-        }
-        if let Some(v) = a.diacritic_x_offset {
-            el.set("XOffsetDiacritic", num(v));
-        }
-        if let Some(v) = a.diacritic_y_offset {
-            el.set("YOffsetDiacritic", num(v));
-        }
-        if let Some(v) = &a.positional_form {
-            el.set("PositionalForm", v);
-        }
+    }
+
+    fn char_cjk_layout_attrs(&mut self, el: &mut El, props: &mut Vec<El>, a: &CharAttrs) {
         if let Some(r) = a.ruby.as_ref() {
             el.set("RubyFlag", if r.is_empty() { "0" } else { "1" });
             el.set("RubyString", r.as_str());
@@ -196,66 +219,9 @@ impl<'a> Ex<'a> {
         if let Some(v) = a.warichu_chars_after_break {
             el.set("WarichuCharsAfterBreak", v);
         }
-        self.cjk_settings_chars(el, props, a);
-        if let Some(list) = &a.conditions {
-            el.set("AppliedConditions", list.iter().map(|c| format!("Condition/{}", escape_id(c))).collect::<Vec<_>>().join(" "));
-        }
-        if let Some(v) = &a.language {
-            el.set("AppliedLanguage", format!("$ID/{v}"));
-        }
     }
 
-    /// Write paragraph attributes `a`, set over the resolved paragraph style `parent` (`None` for the
-    /// root style).
-    pub(super) fn para_attrs(&mut self, el: &mut El, props: &mut Vec<El>, a: &ParaAttrs, parent: Option<&str>) {
-        if let Some(v) = &a.mojikumi {
-            props.push(p("Mojikumi", if v.starts_with("MojikumiTable/") { "object" } else { "enumeration" }, v));
-        }
-        if let Some(v) = &a.kinsoku_type {
-            el.set("KinsokuType", v);
-        }
-        if let Some(v) = a.kinsoku_hang {
-            el.set(
-                "KinsokuHangType",
-                match v {
-                    designcraft_doc::cjk::KinsokuHang::None => "None",
-                    designcraft_doc::cjk::KinsokuHang::Regular => "KinsokuHangRegular",
-                    designcraft_doc::cjk::KinsokuHang::Force => "KinsokuHangForce",
-                },
-            );
-        }
-        if let Some(v) = a.bunri_kinshi {
-            el.set("BunriKinshi", bool_s(v));
-        }
-        if let Some(v) = a.rensuuji {
-            el.set("Rensuuji", bool_s(v));
-        }
-        if let Some(v) = a.treat_ideographic_space_as_space {
-            el.set("TreatIdeographicSpaceAsSpace", bool_s(v));
-        }
-        cjk_settings_para(el, a);
-        if let Some(Some(k)) = &a.kinsoku {
-            props.push(p(
-                "KinsokuSet",
-                if k.name.is_empty() { "enumeration" } else { "object" },
-                if k.name.is_empty() { "Nothing".into() } else { format!("KinsokuTable/{}", escape_id(&k.name)) },
-            ));
-        }
-        if let Some(n) = &a.list_name {
-            el.set(
-                "AppliedNumberingList",
-                if n.is_empty() { "NumberingList/$ID/[Default]".to_string() } else { format!("NumberingList/{}", escape_id(n)) },
-            );
-        }
-        if let Some(v) = a.start_at {
-            match v {
-                Some(n) => {
-                    el.set("NumberingContinue", "false");
-                    el.set("NumberingStartAt", n);
-                }
-                None => el.set("NumberingContinue", "true"),
-            }
-        }
+    fn para_nested_styles(&self, props: &mut Vec<El>, a: &ParaAttrs, parent: Option<&str>) {
         // Nested and GREP styles: property lists of records. The drop cap's character style is the
         // nested style list's leading "through 1 Dropcap" entry (IDML has no attribute for it): a
         // drop cap style set here (`[None]` included) restyles that entry, and a real one is
@@ -280,178 +246,148 @@ impl<'a> Ex<'a> {
                 _ => {}
             }
         }
-        if let Some(list) = &list {
-            let mut l = El::new("AllNestedStyles").attr("type", "list");
-            for ns in list {
-                let (ty, delim) = names::nested_until_out(&ns.until);
-                l = l.child(
-                    El::new("ListItem")
-                        .attr("type", "record")
-                        .child(p("AppliedCharacterStyle", "object", names::style_self("CharacterStyle", CHAR_BUILTINS, &ns.style)))
-                        .child(p("Delimiter", ty, delim))
-                        .child(p("Repetition", "long", ns.count.to_string()))
-                        .child(p("Inclusive", "boolean", bool_s(ns.through))),
-                );
+        let values = craft_idml::model::NestedStyleValues {
+            nested: list.map(|list| {
+                list.iter()
+                    .map(|style| {
+                        let (delimiter_type, delimiter) = names::nested_until_out(&style.until);
+                        craft_idml::model::NestedStyleValue {
+                            character_style: names::style_self("CharacterStyle", CHAR_BUILTINS, &style.style),
+                            inclusive: style.through,
+                            repetition: style.count,
+                            delimiter_type: delimiter_type.into(),
+                            delimiter,
+                        }
+                    })
+                    .collect()
+            }),
+            lines: a.nested_line_styles.as_ref().map(|list| {
+                list.iter()
+                    .map(|style| craft_idml::model::NestedLineStyleValue {
+                        character_style: names::style_self("CharacterStyle", CHAR_BUILTINS, &style.style),
+                        line_count: style.lines,
+                    })
+                    .collect()
+            }),
+            grep: a.grep_styles.as_ref().map(|list| {
+                list.iter()
+                    .map(|style| craft_idml::model::GrepStyleValue {
+                        character_style: names::style_self("CharacterStyle", CHAR_BUILTINS, &style.style),
+                        expression: style.pattern.clone(),
+                    })
+                    .collect()
+            }),
+        };
+        props.extend(values.to_els().into_iter().map(crate::xml::from_craft));
+    }
+
+    fn para_alignment_attrs(&self, el: &mut El, a: &ParaAttrs, parent: Option<&str>) {
+        let detail = if a.drop_cap_align_left.is_some() || a.drop_cap_scale_descenders.is_some() {
+            let defaults = parent.map(|name| self.d.styles.resolve_para_style(name).0).unwrap_or_default();
+            Some(
+                u32::from(a.drop_cap_align_left.unwrap_or(defaults.drop_cap_align_left))
+                    | u32::from(a.drop_cap_scale_descenders.unwrap_or(defaults.drop_cap_scale_descenders)) << 1,
+            )
+        } else {
+            None
+        };
+        let (grid_alignment, grid_align_first_line_only) = match a.grid_align {
+            Some(designcraft_doc::GridAlign::None) => (Some("None".to_string()), None),
+            Some(designcraft_doc::GridAlign::AllLines) => {
+                (Some(crate::cjk::grid_reference_out(a.grid_reference.unwrap_or_default()).into()), Some(false))
             }
-            props.push(l);
-        }
-        if let Some(list) = &a.nested_line_styles {
-            let mut l = El::new("AllNestedLineStyles").attr("type", "list");
-            for ns in list {
-                l = l.child(
-                    El::new("ListItem")
-                        .attr("type", "record")
-                        .child(p("AppliedCharacterStyle", "object", names::style_self("CharacterStyle", CHAR_BUILTINS, &ns.style)))
-                        .child(p("LineCount", "long", ns.lines.to_string())),
-                );
+            Some(designcraft_doc::GridAlign::FirstLineOnly) => {
+                (Some(crate::cjk::grid_reference_out(a.grid_reference.unwrap_or_default()).into()), Some(true))
             }
-            props.push(l);
-        }
-        if let Some(list) = &a.grep_styles {
-            let mut l = El::new("AllGREPStyles").attr("type", "list");
-            for g in list {
-                l = l.child(
-                    El::new("ListItem")
-                        .attr("type", "record")
-                        .child(p("AppliedCharacterStyle", "object", names::style_self("CharacterStyle", CHAR_BUILTINS, &g.style)))
-                        .child(p("GrepExpression", "string", g.pattern.clone())),
-                );
-            }
-            props.push(l);
-        }
-        macro_rules! n {
-            ($f:ident, $k:literal) => {
-                if let Some(v) = a.$f {
-                    el.set($k, num(v as f64));
-                }
-            };
-            ($f:ident, $k:literal, pct) => {
-                if let Some(v) = a.$f {
-                    el.set($k, pct(v as f64));
-                }
-            };
-        }
-        macro_rules! b {
-            ($f:ident, $k:literal) => {
-                if let Some(v) = a.$f {
-                    el.set($k, bool_s(v));
-                }
-            };
-        }
-        if let Some(v) = a.align {
-            el.set("Justification", names::align_out(v));
-        }
-        if let Some(v) = a.direction {
-            el.set(
-                "ParagraphDirection",
-                if v == designcraft_doc::TextDirection::RightToLeft { "RightToLeftDirection" } else { "LeftToRightDirection" },
-            );
-        }
-        if let Some(v) = a.kashidas {
-            el.set("Kashidas", if v { "DefaultKashidas" } else { "KashidasOff" });
-        }
-        if let Some(v) = &a.arabic_justification {
-            el.set("ParagraphJustification", v);
-        }
-        if let Some(Some(v)) = a.paragraph_kashida_width {
-            el.set("ParagraphKashidaWidth", num(v));
-        }
-        n!(left_indent, "LeftIndent");
-        n!(right_indent, "RightIndent");
-        n!(first_line_indent, "FirstLineIndent");
-        n!(last_line_indent, "LastLineIndent");
-        n!(space_before, "SpaceBefore");
-        n!(space_after, "SpaceAfter");
-        match a.same_para_style_spacing {
-            Some(Some(v)) => el.set("SameParaStyleSpacing", num(v)),
-            // Explicit Ignore: must be written so it still overrides a based-on style's value.
-            Some(None) => el.set("SameParaStyleSpacing", "Nothing"),
-            None => {}
-        }
-        n!(drop_cap_lines, "DropCapLines");
-        n!(drop_cap_chars, "DropCapCharacters");
-        if a.drop_cap_align_left.is_some() || a.drop_cap_scale_descenders.is_some() {
-            let d = parent.map(|name| self.d.styles.resolve_para_style(name).0).unwrap_or_default();
-            let bits = u32::from(a.drop_cap_align_left.unwrap_or(d.drop_cap_align_left))
-                | u32::from(a.drop_cap_scale_descenders.unwrap_or(d.drop_cap_scale_descenders)) << 1;
-            el.set("DropcapDetail", bits);
-        }
-        if let Some(g) = a.grid_align {
-            // IDML has one attribute for on/off and the reference: a reference set without
-            // `grid_align` isn't written.
-            let reference = crate::cjk::grid_reference_out(a.grid_reference.unwrap_or_default());
-            match g {
-                designcraft_doc::GridAlign::None => el.set("GridAlignment", "None"),
-                designcraft_doc::GridAlign::AllLines => {
-                    el.set("GridAlignment", reference);
-                    el.set("GridAlignFirstLineOnly", "false");
-                }
-                designcraft_doc::GridAlign::FirstLineOnly => {
-                    el.set("GridAlignment", reference);
-                    el.set("GridAlignFirstLineOnly", "true");
-                }
-            }
-        }
-        if let Some(c) = a.composer {
-            el.set(
-                "Composer",
-                match c {
+            None => (None, None),
+        };
+        let values = craft_idml::model::ParagraphAlignmentValues {
+            justification: a.align.map(|value| names::align_out(value).into()),
+            direction: a.direction.map(|value| {
+                if value == designcraft_doc::TextDirection::RightToLeft { "RightToLeftDirection" } else { "LeftToRightDirection" }.into()
+            }),
+            kashidas: a.kashidas.map(|value| if value { "DefaultKashidas" } else { "KashidasOff" }.into()),
+            paragraph_justification: a.arabic_justification.clone(),
+            paragraph_kashida_width: a.paragraph_kashida_width.flatten(),
+            left_indent: a.left_indent,
+            right_indent: a.right_indent,
+            first_line_indent: a.first_line_indent,
+            last_line_indent: a.last_line_indent,
+            space_before: a.space_before,
+            space_after: a.space_after,
+            same_para_style_spacing: a.same_para_style_spacing,
+            drop_cap_lines: a.drop_cap_lines.map(f64::from),
+            drop_cap_chars: a.drop_cap_chars.map(f64::from),
+            dropcap_detail: detail,
+            grid_alignment,
+            grid_align_first_line_only,
+            composer: a.composer.map(|value| {
+                match value {
                     designcraft_doc::Composer::Paragraph => "HL Composer",
                     designcraft_doc::Composer::SingleLine => "HL Single",
                     designcraft_doc::Composer::Japanese => "HL Composer J",
                     designcraft_doc::Composer::JapaneseSingleLine => "HL Single J",
-                },
-            );
-        }
-        b!(hyphenate, "Hyphenation");
-        n!(hyph_min_word, "HyphenateWordsLongerThan");
-        n!(hyph_after_first, "HyphenateAfterFirst");
-        n!(hyph_before_last, "HyphenateBeforeLast");
-        n!(hyph_limit, "HyphenateLadderLimit");
-        n!(hyph_zone, "HyphenationZone");
-        b!(hyph_capitalized, "HyphenateCapitalizedWords");
-        b!(hyph_last_word, "HyphenateLastWord");
-        b!(hyph_across_column, "HyphenateAcrossColumns");
-        if let Some(v) = a.hyph_weight {
-            el.set("HyphenWeight", num((v * 10.0).round()));
-        }
-        n!(word_space_min, "MinimumWordSpacing", pct);
-        n!(word_space_desired, "DesiredWordSpacing", pct);
-        n!(word_space_max, "MaximumWordSpacing", pct);
-        n!(letter_space_min, "MinimumLetterSpacing", pct);
-        n!(letter_space_desired, "DesiredLetterSpacing", pct);
-        n!(letter_space_max, "MaximumLetterSpacing", pct);
-        n!(glyph_scale_min, "MinimumGlyphScaling", pct);
-        n!(glyph_scale_desired, "DesiredGlyphScaling", pct);
-        n!(glyph_scale_max, "MaximumGlyphScaling", pct);
-        n!(auto_leading, "AutoLeading", pct);
-        if let Some(v) = a.single_word_justify {
-            el.set("SingleWordJustification", names::align_out(v));
-        }
-        n!(keep_with_next, "KeepWithNext");
-        b!(keep_lines_together, "KeepLinesTogether");
-        b!(ignore_optical_margin, "IgnoreEdgeAlignment");
-        b!(keep_all_lines, "KeepAllLinesTogether");
-        n!(keep_first, "KeepFirstLines");
-        n!(keep_last, "KeepLastLines");
-        if let Some(v) = a.start_paragraph {
-            el.set("StartParagraph", names::start_para_out(v));
-        }
-        if let Some(sc) = a.span_columns {
-            match sc {
-                SpanColumns::Single => el.set("SpanColumnType", "SingleColumn"),
-                SpanColumns::Span(n) | SpanColumns::Split(n) => {
-                    el.set("SpanColumnType", if matches!(sc, SpanColumns::Span(_)) { "SpanColumns" } else { "SplitColumns" });
-                    props.push(if n == 0 {
-                        p("SpanSplitColumnCount", "enumeration", "All")
-                    } else {
-                        p("SpanSplitColumnCount", "long", n.to_string())
-                    });
                 }
-            }
+                .into()
+            }),
+        };
+        for (key, value) in values.to_attrs() {
+            el.set(&key, value);
         }
-        n!(split_inside_gutter, "SplitColumnInsideGutter");
-        n!(split_outside_gutter, "SplitColumnOutsideGutter");
+    }
+
+    fn para_flow_attrs(&self, el: &mut El, a: &ParaAttrs) {
+        let percent = |value: Option<f64>| value.map(|value| value * 100.0);
+        let values = craft_idml::model::ParagraphFlowValues {
+            hyphenate: a.hyphenate,
+            hyphenate_min_word: a.hyph_min_word.map(f64::from),
+            hyphenate_after_first: a.hyph_after_first.map(f64::from),
+            hyphenate_before_last: a.hyph_before_last.map(f64::from),
+            hyphenate_ladder_limit: a.hyph_limit.map(f64::from),
+            hyphenation_zone: a.hyph_zone,
+            hyphenate_capitalized: a.hyph_capitalized,
+            hyphenate_last_word: a.hyph_last_word,
+            hyphenate_across_columns: a.hyph_across_column,
+            hyphen_weight: a.hyph_weight.map(|value| (value * 10.0).round()),
+            word_spacing: [percent(a.word_space_min), percent(a.word_space_desired), percent(a.word_space_max)],
+            letter_spacing: [percent(a.letter_space_min), percent(a.letter_space_desired), percent(a.letter_space_max)],
+            glyph_scaling: [percent(a.glyph_scale_min), percent(a.glyph_scale_desired), percent(a.glyph_scale_max)],
+            auto_leading: percent(a.auto_leading),
+            single_word_justification: a.single_word_justify.map(|value| names::align_out(value).into()),
+            keep_with_next: a.keep_with_next.map(f64::from),
+            keep_lines_together: a.keep_lines_together,
+            ignore_edge_alignment: a.ignore_optical_margin,
+            keep_all_lines_together: a.keep_all_lines,
+            keep_first_lines: a.keep_first.map(f64::from),
+            keep_last_lines: a.keep_last.map(f64::from),
+            start_paragraph: a.start_paragraph.map(|value| names::start_para_out(value).into()),
+        };
+        for (key, value) in values.to_attrs() {
+            el.set(&key, value);
+        }
+    }
+
+    fn para_columns_and_list_attrs(&mut self, el: &mut El, props: &mut Vec<El>, a: &ParaAttrs) {
+        let span = craft_idml::model::ParagraphSpanValues {
+            kind: a.span_columns.map(|span| match span {
+                SpanColumns::Single => "SingleColumn".into(),
+                SpanColumns::Span(_) => "SpanColumns".into(),
+                SpanColumns::Split(_) => "SplitColumns".into(),
+            }),
+            split_column_count: a.span_columns.and_then(|span| match span {
+                SpanColumns::Single => None,
+                SpanColumns::Span(count) | SpanColumns::Split(count) => Some(count),
+            }),
+            inside_gutter: a.split_inside_gutter,
+            outside_gutter: a.split_outside_gutter,
+            space_before: a.span_space_before,
+            space_after: a.span_space_after,
+        };
+        let (span_attrs, span_properties) = span.to_parts();
+        for (key, value) in span_attrs {
+            el.set(&key, value);
+        }
+        props.extend(span_properties.into_iter().map(crate::xml::from_craft));
         if let Some(r) = &a.rule_above {
             self.rule(el, props, "RuleAbove", r);
         }
@@ -459,166 +395,126 @@ impl<'a> Ex<'a> {
             self.rule(el, props, "RuleBelow", r);
         }
         if let Some(tabs) = &a.tabs {
-            let mut tl = El::new("TabList").attr("type", "list");
-            for t in tabs {
-                tl.push(
-                    El::new("ListItem")
-                        .attr("type", "record")
-                        .child(p("Alignment", "enumeration", names::tab_align_out(t.align)))
-                        .child(p("AlignmentCharacter", "string", if t.align_on.is_empty() { ".".to_string() } else { t.align_on.clone() }))
-                        .child(p("Leader", "string", t.leader.clone()))
-                        .child(p("Position", "unit", num(t.position))),
-                );
-            }
-            props.push(tl);
+            let values: Vec<_> = tabs
+                .iter()
+                .map(|t| craft_idml::model::TabStopValues {
+                    position: t.position,
+                    alignment: names::tab_align_out(t.align).into(),
+                    leader: t.leader.clone(),
+                    alignment_character: if t.align_on.is_empty() { ".".into() } else { t.align_on.clone() },
+                })
+                .collect();
+            props.push(crate::xml::from_craft(craft_idml::model::TabStopValues::to_list(&values)));
         }
-        if let Some(l) = a.list_type {
-            el.set(
-                "BulletsAndNumberingListType",
-                match l {
+        let list = craft_idml::model::ParagraphListValues {
+            applied_list: a.list_name.as_deref().map(craft_idml::model::ParagraphListValues::numbering_list_reference),
+            list_type: a.list_type.map(|list| {
+                match list {
                     ListType::None => "NoList",
                     ListType::Bullets => "BulletList",
                     ListType::Numbers => "NumberedList",
-                },
-            );
-        }
-        if let Some(n) = a.number_style {
-            props.push(p("NumberingFormat", "string", names::numbering_format_out(n)));
-        }
-        if let Some(x) = &a.number_expression {
-            el.set("NumberingExpression", names::list_text_out(x));
-        }
-        if let Some(x) = &a.list_separator {
-            el.set("BulletsTextAfter", names::list_text_out(x));
-        }
-        if let Some(c) = a.bullet_char.as_deref().and_then(|s| s.chars().next()) {
-            props.push(El::new("BulletChar").attr("BulletCharacterType", "UnicodeOnly").attr("BulletCharacterValue", u32::from(c).to_string()));
-        }
-        if let Some(b) = a.balance_ragged {
-            props.push(p("BalanceRaggedLines", "enumeration", if b { "FullyBalanced" } else { "NoBalancing" }));
-        }
-        b!(shading_on, "ParagraphShadingOn");
-        if let Some(c) = &a.shading_color {
-            props.push(p("ParagraphShadingColor", "object", self.sw(c)));
-        }
-        n!(shading_tint, "ParagraphShadingTint", pct);
-        const SIDES: [&str; 4] = ["Top", "Left", "Bottom", "Right"];
-        if let Some(o) = a.shading_offsets {
-            for (i, side) in SIDES.iter().enumerate() {
-                el.set(&format!("ParagraphShading{side}Offset"), num(o[i]));
-            }
-        }
-        b!(border_on, "ParagraphBorderOn");
-        if let Some(c) = &a.border_color {
-            props.push(p("ParagraphBorderColor", "object", self.sw(c)));
-        }
-        n!(border_tint, "ParagraphBorderTint", pct);
-        if let Some(w) = a.border_weights {
-            for (i, side) in SIDES.iter().enumerate() {
-                el.set(&format!("ParagraphBorder{side}LineWeight"), num(w[i]));
-            }
-        }
-        if let Some(o) = a.border_offsets {
-            for (i, side) in SIDES.iter().enumerate() {
-                el.set(&format!("ParagraphBorder{side}Offset"), num(o[i]));
-            }
-        }
-        if let Some(t) = &a.border_type {
-            props.push(p("ParagraphBorderType", "object", names::stroke_type_out(t)));
-        }
-        if let Some(c) = a.border_cap {
-            el.set("ParagraphBorderStrokeEndCap", names::cap_out(c));
-        }
-        if let Some(j) = a.border_join {
-            el.set("ParagraphBorderStrokeEndJoin", names::join_out(j));
-        }
-        const CORNERS: [&str; 4] = ["TopLeft", "TopRight", "BottomRight", "BottomLeft"];
-        for (prefix, corners) in [("ParagraphBorder", a.border_corners), ("ParagraphShading", a.shading_corners)] {
-            if let Some(cs) = corners {
-                for (c, k) in cs.iter().zip(CORNERS) {
-                    el.set(&format!("{prefix}{k}CornerOption"), names::corner_out(c.shape));
-                    el.set(&format!("{prefix}{k}CornerRadius"), num(c.size));
                 }
-            }
+                .into()
+            }),
+            numbering_format: a.number_style.map(|style| names::numbering_format_out(style).into()),
+            expression: a.number_expression.as_ref().map(|text| names::list_text_out(text)),
+            separator: a.list_separator.as_ref().map(|text| names::list_text_out(text)),
+            bullet_type: a.bullet_char.as_deref().and_then(|text| text.chars().next()).map(|_| "UnicodeOnly".into()),
+            bullet_value: a.bullet_char.as_deref().and_then(|text| text.chars().next()).map(|character| u32::from(character).to_string()),
+            balance_ragged: a.balance_ragged.map(|balanced| if balanced { "FullyBalanced" } else { "NoBalancing" }.into()),
+            level: a.list_level.map(f64::from),
+            bullet_character_style: a.bullet_char_style.as_ref().map(|style| names::style_self("CharacterStyle", CHAR_BUILTINS, style)),
+            numbering_character_style: a.number_char_style.as_ref().map(|style| names::style_self("CharacterStyle", CHAR_BUILTINS, style)),
+            bullet_alignment: a.bullet_align.map(|alignment| names::list_align_out(alignment).into()),
+            numbering_alignment: a.number_align.map(|alignment| names::list_align_out(alignment).into()),
+            restart_numbers: a.restart_numbers,
+            restart_after_level: a.restart_after_level,
+            restart_after_specific_level: a.restart_after_level.is_some_and(|level| level != 0),
+            numbering_continue: a.start_at.map(|start_at| start_at.is_none()),
+            numbering_start_at: a.start_at.flatten().map(f64::from),
+            bullet_font: a.bullet_font.clone(),
+            bullet_font_style: a.bullet_font_style.clone(),
+        };
+        for (key, value) in list.to_attrs() {
+            el.set(&key, value);
         }
-        if let Some(w) = a.border_width {
-            el.set("ParagraphBorderWidth", names::box_width_out(w));
-        }
-        if let Some(t) = a.border_top {
-            el.set("ParagraphBorderTopOrigin", names::box_top_out(t));
-        }
-        if let Some(b) = a.border_bottom {
-            el.set("ParagraphBorderBottomOrigin", names::box_bottom_out(b));
-        }
-        b!(border_display_if_splits, "ParagraphBorderDisplayIfSplits");
-        b!(border_merge, "MergeConsecutiveParaBorders");
-        if let Some(c) = &a.border_gap_color {
-            props.push(p("ParagraphBorderGapColor", "object", self.sw(c)));
-        }
-        n!(border_gap_tint, "ParagraphBorderGapTint", pct);
-        if let Some(w) = a.shading_width {
-            el.set("ParagraphShadingWidth", names::box_width_out(w));
-        }
-        if let Some(t) = a.shading_top {
-            el.set("ParagraphShadingTopOrigin", names::box_top_out(t));
-        }
-        if let Some(b) = a.shading_bottom {
-            el.set("ParagraphShadingBottomOrigin", names::box_bottom_out(b));
-        }
-        b!(shading_clip, "ParagraphShadingClipToFrame");
-        b!(shading_nonprinting, "ParagraphShadingSuppressPrinting");
-        n!(span_space_before, "SpanColumnMinSpaceBefore");
-        n!(span_space_after, "SpanColumnMinSpaceAfter");
-        n!(list_level, "NumberingLevel");
-        for (k, style) in [("BulletsCharacterStyle", &a.bullet_char_style), ("NumberingCharacterStyle", &a.number_char_style)] {
-            if let Some(st) = style {
-                props.push(p(k, "object", names::style_self("CharacterStyle", CHAR_BUILTINS, st)));
-            }
-        }
-        if let Some(v) = a.bullet_align {
-            el.set("BulletsAlignment", names::list_align_out(v));
-        }
-        if let Some(v) = a.number_align {
-            el.set("NumberingAlignment", names::list_align_out(v));
-        }
-        b!(restart_numbers, "NumberingApplyRestartPolicy");
-        if let Some(level) = a.restart_after_level {
-            let (policy, level) = if level == 0 { ("AnyPreviousLevel", 0) } else { ("SpecificPreviousLevel", level) };
-            props.push(
-                El::new("NumberingRestartPolicies")
-                    .attr("RestartPolicy", policy)
-                    .attr("LowerLevel", level.to_string())
-                    .attr("UpperLevel", level.to_string()),
-            );
-        }
-        if let Some(f) = &a.bullet_font {
-            props.push(p("BulletsFont", "string", if f.is_empty() { "$ID/".to_string() } else { f.clone() }));
-        }
-        if let Some(f) = a.bullet_font_style.as_ref().filter(|f| !f.is_empty()) {
-            props.push(p("BulletsFontStyle", "string", f.clone()));
-        }
+        props.extend(list.to_els().into_iter().map(crate::xml::from_craft));
     }
-}
 
-/// Auto tate-chu-yoko, Japanese composition and grid settings of a paragraph range or style.
-fn cjk_settings_para(el: &mut El, a: &ParaAttrs) {
-    if let Some(v) = a.auto_tcy {
-        el.set("AutoTcy", v);
+    fn para_box_attrs(&self, el: &mut El, props: &mut Vec<El>, a: &ParaAttrs) {
+        let corners = |values: Option<[designcraft_geom::corners::Corner; 4]>| {
+            values.map(|corners| corners.map(|corner| (names::corner_out(corner.shape).to_string(), corner.size)))
+        };
+        let values = craft_idml::model::ParagraphBoxValues {
+            shading_on: a.shading_on,
+            shading_color: a.shading_color.as_ref().map(|color| self.sw(color)),
+            shading_tint: a.shading_tint.map(|tint| f64::from(tint) * 100.0),
+            shading_offsets: a.shading_offsets,
+            shading_overprint: a.shading_overprint,
+            border_on: a.border_on,
+            border_color: a.border_color.as_ref().map(|color| self.sw(color)),
+            border_tint: a.border_tint.map(|tint| f64::from(tint) * 100.0),
+            border_weights: a.border_weights,
+            border_offsets: a.border_offsets,
+            border_type: a.border_type.as_ref().map(names::stroke_type_out),
+            border_cap: a.border_cap.map(|cap| names::cap_out(cap).to_string()),
+            border_join: a.border_join.map(|join| names::join_out(join).to_string()),
+            border_corners: corners(a.border_corners),
+            border_width: a.border_width.map(|width| names::box_width_out(width).to_string()),
+            border_top: a.border_top.map(|origin| names::box_top_out(origin).to_string()),
+            border_bottom: a.border_bottom.map(|origin| names::box_bottom_out(origin).to_string()),
+            border_display_if_splits: a.border_display_if_splits,
+            border_merge: a.border_merge,
+            border_gap_color: a.border_gap_color.as_ref().map(|color| self.sw(color)),
+            border_gap_tint: a.border_gap_tint.map(|tint| f64::from(tint) * 100.0),
+            border_overprint: a.border_overprint,
+            border_gap_overprint: a.border_gap_overprint,
+            shading_width: a.shading_width.map(|width| names::box_width_out(width).to_string()),
+            shading_top: a.shading_top.map(|origin| names::box_top_out(origin).to_string()),
+            shading_bottom: a.shading_bottom.map(|origin| names::box_bottom_out(origin).to_string()),
+            shading_clip: a.shading_clip,
+            shading_nonprinting: a.shading_nonprinting,
+            shading_corners: corners(a.shading_corners),
+        };
+        let (attributes, properties) = values.to_parts();
+        for (key, value) in attributes {
+            el.set(&key, value);
+        }
+        props.extend(properties.into_iter().map(crate::xml::from_craft));
     }
-    if let Some(v) = a.auto_tcy_include_roman {
-        el.set("AutoTcyIncludeRoman", bool_s(v));
-    }
-    if let Some(v) = a.rotate_roman {
-        el.set("RotateSingleByteCharacters", bool_s(v));
-    }
-    if let Some(v) = a.roman_word_break {
-        el.set("AllowArbitraryHyphenation", bool_s(v));
-    }
-    if let Some(v) = a.grid_gyoudori {
-        el.set("GridGyoudori", v);
-    }
-    if let Some(v) = a.paragraph_gyoudori {
-        el.set("ParagraphGyoudori", bool_s(v));
+
+    /// Write paragraph attributes `a`, set over the resolved paragraph style `parent` (`None` for the
+    /// root style).
+    pub(super) fn para_attrs(&mut self, el: &mut El, props: &mut Vec<El>, a: &ParaAttrs, parent: Option<&str>) {
+        let cjk = craft_idml::model::CjkParagraphValues {
+            kinsoku_hang: a.kinsoku_hang.map(|value| match value {
+                designcraft_doc::cjk::KinsokuHang::None => "None".into(),
+                designcraft_doc::cjk::KinsokuHang::Regular => "KinsokuHangRegular".into(),
+                designcraft_doc::cjk::KinsokuHang::Force => "KinsokuHangForce".into(),
+            }),
+            mojikumi: a.mojikumi.clone(),
+            kinsoku_type: a.kinsoku_type.clone(),
+            bunri_kinshi: a.bunri_kinshi,
+            rensuuji: a.rensuuji,
+            treat_ideographic_space_as_space: a.treat_ideographic_space_as_space,
+            kinsoku_set: a.kinsoku.as_ref().and_then(Option::as_ref).map(|set| craft_idml::model::CjkParagraphValues::kinsoku_reference(&set.name)),
+            auto_tcy: a.auto_tcy.map(f64::from),
+            auto_tcy_include_roman: a.auto_tcy_include_roman,
+            rotate_single_byte_characters: a.rotate_roman,
+            allow_arbitrary_hyphenation: a.roman_word_break,
+            grid_gyoudori: a.grid_gyoudori.map(f64::from),
+            paragraph_gyoudori: a.paragraph_gyoudori,
+        };
+        let (attributes, properties) = cjk.to_parts();
+        for (key, value) in attributes {
+            el.set(&key, value);
+        }
+        props.extend(properties.into_iter().map(crate::xml::from_craft));
+        self.para_nested_styles(props, a, parent);
+        self.para_alignment_attrs(el, a, parent);
+        self.para_flow_attrs(el, a);
+        self.para_columns_and_list_attrs(el, props, a);
+        self.para_box_attrs(el, props, a);
     }
 }
 

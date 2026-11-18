@@ -21,8 +21,7 @@ fn text_image(height: f64) -> Rendered {
         &d,
         &Cache::new(),
         &[Placed { spread: SpreadRef::Doc(0), xf: Affine::IDENTITY }],
-        160,
-        100,
+        (160, 100),
         Affine::IDENTITY,
         &RenderOptions { background: Some([255; 4]), ..Default::default() },
     )

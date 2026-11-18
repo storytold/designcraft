@@ -96,7 +96,9 @@ pub fn value_name(c: Color) -> String {
         Color::Cmyk { c, m, y, k } => cmyk_name(c, m, y, k),
         other => {
             let [r, g, b] = other.to_rgb();
-            format!("R={} G={} B={}", (r * 255.0).round(), (g * 255.0).round(), (b * 255.0).round())
+            // `+ 0.0` turns -0.0 into 0.0 so it prints as "0", not "-0".
+            let p = |v: f32| (v * 255.0).round() + 0.0;
+            format!("R={} G={} B={}", p(r), p(g), p(b))
         }
     }
 }
@@ -143,7 +145,9 @@ pub fn apply_tint(c: Color, tint: f32) -> Color {
     }
 }
 
-/// A new document's swatches, in panel order.
+/// A new document's swatches, in panel order: InDesign's four specials, then its six process
+/// colours (cyan, magenta, yellow, red, green and blue as C=15 M=100 Y=100, C=75 M=5 Y=100 and
+/// C=100 M=90 Y=10).
 pub fn default_swatches() -> Vec<Swatch> {
     let special = |name: &str, value: SwatchValue| Swatch { name: name.into(), value, locked: true, named: true, hidden: false };
     let mut v = vec![
@@ -152,17 +156,9 @@ pub fn default_swatches() -> Vec<Swatch> {
         special(PAPER, SwatchValue::Paper { color: Color::WHITE }),
         special(BLACK, SwatchValue::Color { color: Color::cmyk(0.0, 0.0, 0.0, 1.0), color_type: ColorType::Process }),
     ];
-    for (c, m, y, k) in [
-        (1.0, 0.0, 0.0, 0.0),
-        (0.0, 1.0, 0.0, 0.0),
-        (0.0, 0.0, 1.0, 0.0),
-        (0.0, 1.0, 1.0, 0.0),
-        (1.0, 0.0, 1.0, 0.0),
-        (1.0, 1.0, 0.0, 0.0),
-        (0.15, 1.0, 1.0, 0.0),
-        (0.75, 0.05, 1.0, 0.0),
-        (1.0, 0.9, 0.1, 0.0),
-    ] {
+    for (c, m, y, k) in
+        [(1.0, 0.0, 0.0, 0.0), (0.0, 1.0, 0.0, 0.0), (0.0, 0.0, 1.0, 0.0), (0.15, 1.0, 1.0, 0.0), (0.75, 0.05, 1.0, 0.0), (1.0, 0.9, 0.1, 0.0)]
+    {
         v.push(Swatch::cmyk(c, m, y, k));
     }
     v
@@ -173,12 +169,38 @@ mod tests {
     use super::*;
 
     #[test]
+    fn value_name_has_no_negative_zero() {
+        assert_eq!(value_name(Color::rgb(-0.001, 0.5, 1.0)), "R=0 G=128 B=255");
+    }
+
+    #[test]
     fn defaults_start_with_specials() {
         let s = default_swatches();
         assert_eq!(s[0].name, NONE);
         assert_eq!(s[3].name, BLACK);
         assert!(s[..4].iter().all(|s| s.locked));
         assert!(s.iter().any(|s| s.name == "C=100 M=0 Y=0 K=0"));
+    }
+
+    /// The Swatches panel of a new InDesign document (Zero2Graphic's page layout tutorial, 3:22).
+    #[test]
+    fn defaults_are_indesigns_ten() {
+        let names: Vec<String> = default_swatches().into_iter().map(|s| s.name).collect();
+        assert_eq!(
+            names,
+            [
+                "[None]",
+                "[Registration]",
+                "[Paper]",
+                "[Black]",
+                "C=100 M=0 Y=0 K=0",
+                "C=0 M=100 Y=0 K=0",
+                "C=0 M=0 Y=100 K=0",
+                "C=15 M=100 Y=100 K=0",
+                "C=75 M=5 Y=100 K=0",
+                "C=100 M=90 Y=10 K=0",
+            ]
+        );
     }
 
     #[test]

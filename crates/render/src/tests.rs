@@ -31,6 +31,36 @@ fn eps_source_decodes_like_its_preview() {
 }
 
 #[test]
+fn decoded_images_are_premultiplied_for_every_alpha() {
+    // Column x holds colour value x, row y holds alpha y.
+    let img = image::RgbaImage::from_fn(256, 256, |x, y| image::Rgba([x as u8, 255 - x as u8, (x / 2) as u8, y as u8]));
+    let mut png = Vec::new();
+    image::DynamicImage::ImageRgba8(img.clone()).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
+    let pm = decode_pixmap(&png).unwrap();
+    assert_eq!((pm.width(), pm.height()), (256, 256));
+    for (p, q) in img.pixels().zip(pm.data()) {
+        let m = |c: u8| ((c as u16 * p[3] as u16 + 127) / 255) as u8;
+        assert_eq!([q.r, q.g, q.b, q.a], [m(p[0]), m(p[1]), m(p[2]), p[3]], "{p:?}");
+    }
+}
+
+#[test]
+fn premultiplied_pixels_reuse_the_decoded_buffer() {
+    use vello_cpu::color::PremulRgba8;
+    let expected =
+        [PremulRgba8 { r: 10, g: 20, b: 30, a: 255 }, PremulRgba8 { r: 100, g: 50, b: 25, a: 128 }, PremulRgba8 { r: 0, g: 0, b: 0, a: 0 }];
+    let px = vec![10, 20, 30, 255, 200, 100, 50, 128, 1, 2, 3, 0];
+    let ptr = px.as_ptr() as usize;
+    let out = decode::premultiply(px);
+    assert_eq!(out.as_ptr() as usize, ptr);
+    assert_eq!(out, expected);
+    // A capacity that is not a whole number of pixels is copied.
+    let mut px = Vec::with_capacity(13);
+    px.extend([10, 20, 30, 255, 200, 100, 50, 128, 1, 2, 3, 0]);
+    assert_eq!(decode::premultiply(px), expected);
+}
+
+#[test]
 fn footnote_vector_objects_are_painted() {
     use designcraft_doc::{AnchorPosition, AnchoredObject, ItemId, Shape, SpreadRef};
     let mut d = Document::new(&NewDocument::default());
@@ -64,11 +94,11 @@ fn very_wide_renders_do_not_panic() {
     let doc = Document::new(&NewDocument::default());
     let cache = Cache::new();
     let mut r = Renderer::new();
-    let img = r.render(&doc, &cache, &[], 70_000, 4, Affine::IDENTITY, &RenderOptions::default());
+    let img = r.render(&doc, &cache, &[], (70_000, 4), Affine::IDENTITY, &RenderOptions::default());
     assert_eq!(img.width, MAX_SIDE);
     let page = [Placed { spread: SpreadRef::Doc(0), xf: Affine::IDENTITY }];
     let opts = RenderOptions { background: Some([255, 255, 255, 255]), ..Default::default() };
-    let img = r.render(&doc, &cache, &page, 70_000, 64, Affine::scale(120.0), &opts);
+    let img = r.render(&doc, &cache, &page, (70_000, 64), Affine::scale(120.0), &opts);
     assert_eq!(img.width, MAX_SIDE);
     assert!(r.render_page(&doc, &cache, 0, 500.0, true, &RenderOptions::default()).is_none());
 }
@@ -376,7 +406,7 @@ fn display_performance_fast_draws_grey_boxes() {
             id: aid,
             name: "red.png".into(),
             mime: "image/png".into(),
-            data: Arc::new(png),
+            data: designcraft_doc::AssetData::embedded(png),
             pixels: Some((4, 4)),
             ..Default::default()
         }),
@@ -422,7 +452,7 @@ fn clipping_path_hides_the_image_outside_it() {
             name: "red.png".into(),
             mime: "image/png".into(),
             link: None,
-            data: Arc::new(png),
+            data: designcraft_doc::AssetData::embedded(png),
             pixels: Some((4, 4)),
             ..Default::default()
         }),
@@ -518,6 +548,55 @@ fn table_edges_paint_gap_colour_between_dashes_and_stripes() {
 }
 
 #[test]
+fn cell_diagonal_lines_draw_in_front_of_or_behind_the_cell_text() {
+    let render = |lines, in_front| {
+        let mut d = Document::new(&NewDocument::default());
+        let lid = d.default_layer();
+        let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 336.0, 400.0), lid, "", ParaFormat::default()).unwrap();
+        let mut t = designcraft_doc::Table::new(1, 1, 1, 0, 0, 200.0);
+        t.rows[0].height = 60.0;
+        t.rows[0].mode = designcraft_doc::RowHeightMode::Exactly;
+        let cell = t.cell_mut(0, 0).unwrap();
+        cell.text.insert(0, "WWWWWWWWWWWWWWWWWWWW");
+        cell.text.format_chars(0..20, |f| f.over.size = Some(30.0));
+        let stroke = designcraft_doc::CellStroke { weight: 6.0, color: "C=100 M=0 Y=0 K=0".into(), ..Default::default() };
+        cell.diagonal = designcraft_doc::CellDiagonal { lines, stroke, in_front };
+        d.story_mut(sid).unwrap().insert_table(0, t);
+        let cache = Cache::new();
+        let rect = cache.get(&d, sid, None).frames[0].tables[0].cell(0, 0).unwrap().rect;
+        let mut r = Renderer::new();
+        r.threads = 0;
+        let img = r.render_page(&d, &cache, 0, 1.0, false, &RenderOptions::default()).unwrap();
+        let cyan = |p: [u8; 4]| p[0] < 80 && p[2] > 150;
+        let inside = |x: f64, y: f64| x > rect.x0 + 4.0 && x < rect.x1 - 4.0 && y > rect.y0 + 4.0 && y < rect.y1 - 4.0;
+        let count = |a: (f64, f64), b: (f64, f64)| {
+            (0..=200)
+                .map(|i| (a.0 + (b.0 - a.0) * i as f64 / 200.0, a.1 + (b.1 - a.1) * i as f64 / 200.0))
+                .filter(|&(x, y)| inside(x, y) && cyan(img.pixel(x as u32, y as u32)))
+                .count()
+        };
+        let down = count((rect.x0, rect.y0), (rect.x1, rect.y1));
+        let up = count((rect.x1, rect.y0), (rect.x0, rect.y1));
+        // Just past the corner, outside the cell.
+        let outside = img.pixel((rect.x1 + 2.0) as u32, (rect.y1 + 2.0) as u32);
+        (down, up, cyan(outside))
+    };
+    use designcraft_doc::DiagonalLines;
+    assert_eq!(render(DiagonalLines::None, true), (0, 0, false));
+    let (down, up, outside) = render(DiagonalLines::Crossed, true);
+    assert!(down > 150 && up > 150 && !outside, "crossed: {down} {up} {outside}");
+    let (down, up, _) = render(DiagonalLines::TopLeft, true);
+    // The other diagonal meets this one only where they cross, near the middle.
+    assert!(down > 150 && up < 40, "top left to bottom right: {down} {up}");
+    let (down, up, _) = render(DiagonalLines::TopRight, true);
+    assert!(down < 40 && up > 150, "top right to bottom left: {down} {up}");
+    // The text covers part of the line drawn behind it.
+    let (behind, _, _) = render(DiagonalLines::TopLeft, false);
+    let (front, _, _) = render(DiagonalLines::TopLeft, true);
+    assert!(behind + 10 < front, "content in front: {behind} vs {front}");
+}
+
+#[test]
 fn degenerate_dash_patterns_draw_solid_and_fill_types_close_table_corners() {
     let fine = designcraft_doc::StrokeType::Dashed { pattern: vec![1e-6, 1e-6] };
     // Expanding these would take ~10^8 dashes per edge.
@@ -529,9 +608,9 @@ fn degenerate_dash_patterns_draw_solid_and_fill_types_close_table_corners() {
     let (fid, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 336.0, 400.0), lid, "", ParaFormat::default()).unwrap();
     d.item_mut(fid).unwrap().stroke = designcraft_doc::Stroke { weight: 2.0, kind: fine.clone(), ..Default::default() };
     let mut t = designcraft_doc::Table::new(1, 2, 2, 0, 0, 200.0);
-    for r in 0..2 {
-        t.rows[r].height = 60.0;
-        t.rows[r].mode = designcraft_doc::RowHeightMode::Exactly;
+    for row in &mut t.rows {
+        row.height = 60.0;
+        row.mode = designcraft_doc::RowHeightMode::Exactly;
     }
     let stroke = |kind| designcraft_doc::CellStroke { weight: 8.0, kind, gap_color: "C=100 M=0 Y=0 K=0".into(), ..Default::default() };
     for cell in &mut t.cells {
@@ -668,4 +747,211 @@ fn content_crop_box_is_measured_without_rendering_the_page() {
     let want = [100.0 / 612.0, 200.0 / 792.0, 500.0 / 612.0, 697.0 / 792.0];
     assert!(frac.iter().zip(want).all(|(a, b)| (a - b).abs() < 1e-6), "{frac:?} vs {want:?}");
     assert!((size.0 - 400.0).abs() < 1e-3 && (size.1 - 497.0).abs() < 1e-3, "{size:?}");
+}
+
+/// In InDesign, removing an inherited item from a parent page means overriding it there and
+/// deleting the override: the parent's page keeps the item in its override list with no copy
+/// of its own. The pages that use that parent still drew the base's item — a signature block
+/// from parent B over the notice text of every page using parent E (#1469).
+#[test]
+fn an_item_a_parent_overrode_and_deleted_is_gone_from_the_pages_that_use_it() {
+    let mut d = Document::new(&NewDocument { pages: 1, facing_pages: false, ..Default::default() });
+    let lid = d.default_layer();
+    // Parent A: a black box. Parent B: based on A, nothing of its own.
+    let a = d.parents[0].id;
+    let margins = d.parents[0].pages[0].margins;
+    let b = d.add_parent("B", "Parent", 1, 0.0, margins);
+    let box_id = designcraft_doc::ItemId(d.alloc());
+    let rect = Rect::new(100.0, 100.0, 200.0, 160.0);
+    let mut it = Item::new(box_id, lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(rect));
+    it.fill = designcraft_doc::Fill::swatch(designcraft_color::swatch::BLACK);
+    d.insert_item(SpreadRef::Parent(0), it, None).unwrap();
+    {
+        let bp = std::sync::Arc::make_mut(&mut d.parents[1]);
+        bp.parent.as_mut().unwrap().based_on = Some(a);
+    }
+    std::sync::Arc::make_mut(&mut d.spreads[0]).pages[0].parent = Some(b);
+    let ink = |d: &Document, r: &mut Renderer| {
+        let img = r.render_page(d, &Cache::new(), 0, 1.0, false, &RenderOptions::default()).unwrap();
+        img.pixel(rect.center().x as u32, rect.center().y as u32)[0] < 64
+    };
+    let mut r = Renderer::new();
+    r.threads = 0;
+    assert!(ink(&d, &mut r), "the page shows parent A's box through parent B");
+
+    // B overrides the box and the override is deleted: B's page keeps it in its override list.
+    std::sync::Arc::make_mut(&mut d.parents[1]).pages[0].overridden.push(box_id);
+    let mut r = Renderer::new();
+    r.threads = 0;
+    assert!(!ink(&d, &mut r), "the box is removed on B, so the page using B does not show it");
+
+    // Removing the override on B brings it back, which is how InDesign's Remove All Local
+    // Overrides behaves.
+    std::sync::Arc::make_mut(&mut d.parents[1]).pages[0].overridden.clear();
+    let mut r = Renderer::new();
+    r.threads = 0;
+    assert!(ink(&d, &mut r), "the box shows again");
+}
+
+/// An inline object is painted under its frame's text, as InDesign draws it: a picture
+/// whose frame reaches down into the next line (a negative Y offset) doesn't hide that line.
+#[test]
+fn inline_objects_are_painted_under_the_text() {
+    use designcraft_doc::{AnchorPosition, AnchoredObject, ItemId, Shape, SpreadRef};
+    let mut d = Document::new(&NewDocument::default());
+    let (fid, sid) =
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(20.0, 20.0, 300.0, 300.0), d.default_layer(), "A\nWWWW", ParaFormat::default()).unwrap();
+    let mut item =
+        Item::new(ItemId(d.alloc()), d.default_layer(), Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 250.0, 60.0)));
+    item.fill = Fill::swatch(designcraft_color::swatch::PAPER);
+    d.story_mut(sid).unwrap().insert_object(1, AnchoredObject::new(item, AnchorPosition::Inline { y_offset: -40.0 }));
+    let cache = Cache::new();
+    let cs = cache.get(&d, sid, None);
+    let (ft, obj) = (&cs.frames[0], &cs.frames[0].objects[0]);
+    let l = ft.lines.iter().find(|l| l.range.start > 1).unwrap();
+    // The second line lies inside the white box.
+    assert!(obj.origin.y + obj.size.1 > l.baseline && obj.origin.y < l.baseline - l.ascent, "{:?} {}", obj.origin, l.baseline);
+    let m = d.text_xf(d.item(fid).unwrap());
+    let image = Renderer::new().render_page(&d, &cache, 0, 1.0, false, &RenderOptions::default()).unwrap();
+    let (a, b) = (m * designcraft_geom::Point::new(l.x0, l.baseline - l.ascent), m * designcraft_geom::Point::new(l.end_x, l.baseline));
+    let dark =
+        (a.y as u32..b.y as u32).flat_map(|y| (a.x as u32..b.x as u32).map(move |x| (x, y))).filter(|&(x, y)| image.pixel(x, y)[0] < 100).count();
+    assert!(dark > 20, "the line's glyphs show over the box: {dark} dark pixels");
+}
+
+#[test]
+fn dotted_strokes_draw_every_dot() {
+    // A 4 pt dotted line 96 pt long: dots every 8 pt, 13 of them.
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let id = designcraft_doc::ItemId(d.alloc());
+    let path = designcraft_geom::shapes::line(designcraft_geom::Point::new(100.0, 400.0), designcraft_geom::Point::new(196.0, 400.0));
+    let mut line = Item::new(id, lid, designcraft_doc::Shape::GraphicLine, path);
+    line.stroke = designcraft_doc::Stroke {
+        swatch: designcraft_color::swatch::BLACK.into(),
+        weight: 4.0,
+        kind: designcraft_doc::StrokeType::Dotted,
+        ..Default::default()
+    };
+    d.insert_item(SpreadRef::Doc(0), line, None).unwrap();
+    let cache = Cache::new();
+    let mut r = Renderer::new();
+    r.threads = 0;
+    let img = r.render_page(&d, &cache, 0, 1.0, false, &RenderOptions::default()).unwrap();
+    for i in 0..13 {
+        let x = 100 + i * 8;
+        assert!(img.pixel(x, 400)[0] < 128, "dot {i} at x={x}: {:?}", img.pixel(x, 400));
+        if i < 12 {
+            assert_eq!(img.pixel(x + 4, 400), [255, 255, 255, 255], "gap after dot {i}");
+        }
+    }
+    // Table and paragraph rules: one round dot per period.
+    let stroke = text::cell_stroke(&designcraft_doc::StrokeType::Dotted, 4.0, 96.0);
+    let edge = kurbo::Line::new((0.0, 0.0), (96.0, 0.0));
+    let outline = kurbo::stroke(kurbo::Shape::path_elements(&edge, 0.01), &stroke, &kurbo::StrokeOpts::default(), 0.01);
+    let dots = outline.elements().iter().filter(|e| matches!(e, kurbo::PathEl::MoveTo(_))).count();
+    assert_eq!(dots, 13);
+}
+
+/// The size the image cache budgets for a decode is the size the decode has: a PDF page by the
+/// pixels it is rasterized at, not by its size in points.
+#[test]
+fn decode_size_estimates_match_the_decodes() {
+    let mut png = Vec::new();
+    image::RgbaImage::from_pixel(30, 20, image::Rgba([1, 2, 3, 255])).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
+    let pdf = one_page_pdf("0 0 1 rg 0 0 100 100 re f");
+    for bytes in [&png, &pdf] {
+        let pm = decode_pixmap_page(bytes, 0).unwrap();
+        assert_eq!(decode::decoded_bytes(bytes, 0), pm.width() as usize * pm.height() as usize * 16 / 3);
+    }
+    assert_eq!(decode::decoded_bytes(b"not an image", 0), 0);
+    // An EPS drawn from its PostScript is budgeted at no less than it takes.
+    let eps = b"%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 100 50\n%%EndComments\n0 0 1 setrgbcolor 0 0 100 50 rectfill\n%%EOF\n";
+    let pm = decode_pixmap_page(eps, 0).unwrap();
+    let drawn = pm.width() as usize * pm.height() as usize * 16 / 3;
+    assert!(drawn > 200 * 100 * 16 / 3, "drawn above 2 pixels per point: {}×{}", pm.width(), pm.height());
+    assert!(decode::decoded_bytes(eps, 0) >= drawn);
+    // A wide EPS whose PostScript isn't drawn keeps its placeholder, clamped to 4000 pixels on
+    // each side: it is budgeted at no less than that.
+    let eps = b"%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 10000 4000\n%%EndComments\n0 0 moveto 10 10 lineto stroke\n%%EOF\n";
+    let pm = decode_pixmap_page(eps, 0).unwrap();
+    assert_eq!((pm.width(), pm.height()), (4000, 4000));
+    let px = pm.width() as usize * pm.height() as usize;
+    assert!(decode::decoded_bytes(eps, 0) >= px * 16 / 3);
+    assert!(decode::decode_sizes(eps, 0).1 >= px * 8);
+}
+
+#[test]
+fn images_in_view_are_decoded_together_before_drawing() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    // Place a 4×4 PNG of one red value in `r`; returns its encoded bytes.
+    let place = |d: &mut Document, r: Rect, red: u8, hidden: bool| {
+        let mut png = Vec::new();
+        image::RgbaImage::from_pixel(4, 4, image::Rgba([red, 0, 0, 255]))
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let data = designcraft_doc::AssetData::embedded(png);
+        let aid = designcraft_doc::AssetId(d.alloc());
+        let asset = designcraft_doc::Asset {
+            id: aid,
+            name: "red.png".into(),
+            mime: "image/png".into(),
+            data: data.clone(),
+            pixels: Some((4, 4)),
+            ..Default::default()
+        };
+        d.assets.insert(aid, Arc::new(asset));
+        let mut it = Item::new(designcraft_doc::ItemId(d.alloc()), lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(r));
+        it.hidden = hidden;
+        it.content = designcraft_doc::Content::Graphic(designcraft_doc::Graphic {
+            layer_options: None,
+            asset: aid,
+            size: (r.width(), r.height()),
+            xf: Affine::translate((r.x0, r.y0)),
+            clip: None,
+            auto_fit: Default::default(),
+            fit_align: 4,
+            crop: [0.0; 4],
+            wrap: Default::default(),
+            fill: Default::default(),
+        });
+        d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+        data
+    };
+    let shown: Vec<_> =
+        (0..3).map(|i| place(&mut d, Rect::new(20.0 + 90.0 * i as f64, 20.0, 100.0 + 90.0 * i as f64, 100.0), 200 + i as u8, false)).collect();
+    let hidden = place(&mut d, Rect::new(20.0, 150.0, 100.0, 230.0), 10, true);
+    let outside = place(&mut d, Rect::new(400.0, 600.0, 500.0, 700.0), 20, false);
+    // Scaled 4 times, a 10 point stroke reaches 40 points out: from 320 to the left of the view's
+    // edge at 300. The render draws this image, so it is decoded ahead too.
+    let stretched = place(&mut d, Rect::new(0.0, 0.0, 20.0, 20.0), 30, false);
+    let sid = d.spread(SpreadRef::Doc(0)).unwrap().items.last().unwrap().id;
+    let it = d.item_mut(sid).unwrap();
+    it.xf = Affine::translate((320.0, 20.0)) * Affine::scale(4.0);
+    it.stroke = designcraft_doc::Stroke { swatch: designcraft_color::swatch::BLACK.into(), weight: 10.0, ..Default::default() };
+    // Decodes logged from here on with these images' keys are theirs.
+    let since = images::DECODED_ON.lock().unwrap().len();
+    let cache = Cache::new();
+    let mut r = Renderer::new();
+    r.threads = 0;
+    let placed = [Placed { spread: SpreadRef::Doc(0), xf: Affine::IDENTITY }];
+    let img = r.render(&d, &cache, &placed, (300, 300), Affine::IDENTITY, &RenderOptions { background: Some([255; 4]), ..Default::default() });
+    for i in 0..3u8 {
+        assert_eq!(img.pixel(60 + 90 * u32::from(i), 60)[..3], [200 + i, 0, 0], "image {i} drawn");
+    }
+    let me = std::thread::current().id();
+    let decoded_on = |data: &designcraft_doc::AssetData| -> Vec<std::thread::ThreadId> {
+        let id = data.key();
+        images::DECODED_ON.lock().unwrap().iter().skip(since).filter(|(a, _)| *a == id).map(|(_, t)| *t).collect()
+    };
+    for (i, data) in shown.iter().enumerate() {
+        let on = decoded_on(data);
+        assert_eq!(on.len(), 1, "image {i} decoded once");
+        assert_ne!(on[0], me, "image {i} decoded ahead, off the render thread");
+    }
+    let on = decoded_on(&stretched);
+    assert!(on.len() == 1 && on[0] != me, "a scaled image whose stroke reaches the view is decoded ahead: {on:?}");
+    assert!(decoded_on(&hidden).is_empty(), "a hidden image is not decoded");
+    assert!(decoded_on(&outside).is_empty(), "an image out of view is not decoded");
 }
