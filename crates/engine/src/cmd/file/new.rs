@@ -172,7 +172,7 @@ fn apply_settings(nd: &mut NewDocument, p: &Value) {
     }
     nd.width = f64_or(p, "width", nd.width);
     nd.height = f64_or(p, "height", nd.height);
-    nd.pages = p.get("pages").and_then(Value::as_u64).map(|v| v as usize).unwrap_or(nd.pages).clamp(1, 9999);
+    nd.pages = p.get("pages").and_then(Value::as_u64).map(|v| v.min(9999) as usize).unwrap_or(nd.pages).clamp(1, 9999);
     nd.start_page = p.get("startPage").and_then(Value::as_u64).map(|v| v.clamp(1, 99_999) as u32).unwrap_or(nd.start_page);
     nd.facing_pages = p.get("facingPages").and_then(Value::as_bool).unwrap_or(nd.facing_pages);
     nd.columns = p.get("columns").and_then(Value::as_u64).map(|v| v.clamp(1, 216) as u32).unwrap_or(nd.columns);
@@ -252,6 +252,25 @@ mod new_document_tests {
         s.execute("file.deletePreset", &json!({"name": "newsletter"})).unwrap();
         assert!(s.execute("file.deletePreset", &json!({"name": "newsletter"})).is_err());
         assert!(s.execute("file.new", &json!({"preset": "Newsletter"})).is_err());
+    }
+
+    #[test]
+    fn page_count_is_clamped_before_platform_conversion() {
+        let mut settings = designcraft_doc::build::NewDocument::default();
+        for pages in [0, 1, 9999, 10_000, 1u64 << 32, (1u64 << 32) + 1, u64::MAX] {
+            super::apply_settings(&mut settings, &json!({"pages": pages}));
+            assert_eq!(settings.pages, pages.clamp(1, 9999) as usize, "{pages}");
+        }
+        // Missing or malformed counts keep the default, subject to the same bounds.
+        settings.pages = 37;
+        super::apply_settings(&mut settings, &json!({}));
+        assert_eq!(settings.pages, 37);
+        settings.pages = 0;
+        super::apply_settings(&mut settings, &json!({}));
+        assert_eq!(settings.pages, 1);
+        settings.pages = 10_000;
+        super::apply_settings(&mut settings, &json!({"pages": "many"}));
+        assert_eq!(settings.pages, 9999);
     }
 
     #[test]
