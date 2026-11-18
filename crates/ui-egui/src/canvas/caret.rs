@@ -18,11 +18,7 @@ pub(super) fn reset(ctx: &egui::Context) {
 }
 
 pub(super) fn visible(ctx: &egui::Context, caret: TextSel) -> bool {
-    if !ctx.input(|i| i.focused) {
-        return false;
-    }
     let now = ctx.input(|i| i.time);
-
     let start = ctx.data_mut(|d| match (d.get_temp::<f64>(start_id()), d.get_temp::<TextSel>(caret_id())) {
         (Some(start), Some(last)) if last == caret => start,
         _ => {
