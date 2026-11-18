@@ -6,9 +6,7 @@ use std::collections::{HashMap, HashSet};
 use craft_wordmodel::Block;
 use craft_wordmodel::numbering::LevelSuffix;
 use craft_wordmodel::para::{InlineObject, NoteKind, Paragraph};
-use craft_wordmodel::props::{
-    Align as WordAlign, CharProps as WordCharProps, NumRef, ParaProps as WordParaProps, Underline, VertAlign,
-};
+use craft_wordmodel::props::{Align as WordAlign, CharProps as WordCharProps, NumRef, ParaProps as WordParaProps, Underline, VertAlign};
 use craft_wordmodel::section::NumFormat;
 use craft_wordmodel::styles::{StyleKind, StyleSheet};
 use designcraft_doc::story::{BASIC_PARAGRAPH, NO_CHAR_STYLE};
@@ -321,6 +319,7 @@ fn plain_blocks(blocks: &[std::sync::Arc<Block>]) -> String {
                     out.push('\n');
                 }
                 first = false;
+                // The importer accepts tracked changes: deletions are left out, inline objects expanded.
                 let text = p.final_text();
                 let is_break = |c: char| matches!(c, designcraft_doc::PAGE_BREAK | designcraft_doc::COLUMN_BREAK);
                 out.push_str(&text.chars().map(|c| if is_break(c) { '\n' } else { c }).collect::<String>());
