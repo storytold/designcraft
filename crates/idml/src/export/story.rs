@@ -32,6 +32,7 @@ impl<'a> Ex<'a> {
 
     pub(super) fn footnote_option_el(&self) -> El {
         let o = &self.d.footnote_options;
+        // Independent note columns and their gutter have no IDML equivalent and are omitted.
         let marker = if o.ref_char_style == st::NO_CHAR_STYLE {
             NO_CHAR_ID.to_string()
         } else {
