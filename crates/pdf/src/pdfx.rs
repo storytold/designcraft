@@ -171,9 +171,57 @@ pub fn check_pdfx4(pdf: &[u8]) -> Vec<String> {
     if text.contains("/Subtype/Type3") {
         issues.push("Type 3 fonts aren't allowed".into());
     }
+    if let Some(f) = file.as_ref() {
+        issues.extend(box_nesting(f));
+    }
     issues.extend(device_rgb(file.as_ref()));
     issues.extend(fonts::unembedded_fonts(pdf));
     issues
+}
+
+/// Page boxes that don't nest as PDF/X requires (#2947, #2948): the BleedBox within the MediaBox,
+/// the TrimBox and ArtBox within the BleedBox (else the MediaBox), and within the CropBox, which
+/// is the visible page (the MediaBox when there is none). Each problem is named once, however
+/// many pages have it. The MediaBox and CropBox are the page's own or inherited ones.
+fn box_nesting(file: &craft_pdf::syntax::Pdf) -> Vec<String> {
+    use craft_pdf::syntax::object::Rect;
+    // Within a hundredth of a point: writers round box coordinates differently.
+    let inside = |inner: &Rect, outer: &Rect| {
+        const E: f64 = 0.01;
+        inner.x0 >= outer.x0 - E && inner.y0 >= outer.y0 - E && inner.x1 <= outer.x1 + E && inner.y1 <= outer.y1 + E
+    };
+    let mut found: Vec<String> = Vec::new();
+    let mut add = |what: String| {
+        if !found.contains(&what) {
+            found.push(what);
+        }
+    };
+    for page in file.pages().iter() {
+        let (media, crop) = (page.media_box(), page.crop_box());
+        let raw = page.raw();
+        let bleed = raw.get::<Rect>(b"BleedBox");
+        if let Some(b) = &bleed
+            && !inside(b, &media)
+        {
+            add("the bleed box extends past the media box".into());
+        }
+        for (name, key) in [("trim", &b"TrimBox"[..]), ("art", &b"ArtBox"[..])] {
+            let Some(r) = raw.get::<Rect>(key) else { continue };
+            if !inside(&r, &media) {
+                add(format!("the {name} box extends past the media box"));
+            }
+            if let Some(b) = &bleed
+                && !inside(&r, b)
+            {
+                add(format!("the {name} box extends past the bleed box"));
+            }
+            // Without a CropBox of its own the page's is its MediaBox, said above.
+            if inside(&r, &media) && !inside(&r, &crop) {
+                add(format!("the crop box cuts into the {name} box"));
+            }
+        }
+    }
+    found
 }
 
 /// The document information's `GTS_PDFXVersion` (`PDF/X-4`, `PDF/X-1:2003`, …), read as an
