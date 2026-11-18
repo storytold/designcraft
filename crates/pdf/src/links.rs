@@ -102,15 +102,112 @@ fn source_rects(doc: &Document, cache: &designcraft_compose::Cache, src: &Hyperl
                         if l.range.end <= *start || l.range.start >= *end {
                             continue;
                         }
-                        let gs: Vec<_> = l.glyphs.iter().filter(|g| g.len > 0 && g.byte >= *start && g.byte < *end).collect();
-                        let (Some(a), Some(b)) = (gs.first(), gs.last()) else { continue };
-                        let r = Rect::new(a.x, l.baseline - l.ascent, b.x + b.adv, l.baseline + l.descent);
-                        out.push(m.transform_rect_bbox(r));
+                        // Every glyph the source's characters produced, not only the ones that own
+                        // their bytes: the glyphs of generated text — a cross-reference's — all point
+                        // at the one marker character, and only the first of them owns it, so asking
+                        // for owned bytes measured the first letter and nothing else (#1446).
+                        //
+                        // The bullet or number a paragraph's list adds is not the paragraph's text,
+                        // but the composer gives it the first character's offset and no length, so a
+                        // link starting at that character took the label in and the rectangle
+                        // covered text outside the link. So `list_label` glyphs are left out, and so are the zero-length glyphs that are not
+                        // generated text (kenten marks, ruby, kashidas, tab leaders, a cluster's later glyphs): they
+                        // sit over or inside text that is counted already (noted in review).
+                        for (x0, x1) in visual_link_spans(l.glyphs.iter().filter_map(|g| {
+                            // Decorative marks do not partition a text row. Generated cross-reference
+                            // glyphs do count even when only their first glyph owns the source byte.
+                            if g.list_label || (g.len == 0 && g.generated_text.is_none()) {
+                                return None;
+                            }
+                            let stacked = cs.styles.get(g.style as usize).is_some_and(|style| style.warichu);
+                            Some((link_row(stacked, g.y), g.x, g.x + g.adv, g.byte >= *start && g.byte < *end))
+                        })) {
+                            let r = Rect::new(x0, l.baseline - l.ascent, x1, l.baseline + l.descent);
+                            out.push(m.transform_rect_bbox(r));
+                        }
                     }
                 }
             }
             out
         }
+    }
+}
+
+/// Selected horizontal spans, split by intervening unselected text, not by empty
+/// letter spacing. The composer retains logical glyph order after bidi positioning;
+/// sort the positioned text by row and x instead. Separate rows (warichu, for example)
+/// must not act as separators for one another. Non-finite or zero-width glyphs cannot
+/// define clickable coverage or a visible separator.
+fn link_row(stacked: bool, y: f64) -> f64 {
+    if stacked { y } else { 0.0 }
+}
+
+fn visual_link_spans(glyphs: impl Iterator<Item = (f64, f64, f64, bool)>) -> Vec<(f64, f64)> {
+    let mut glyphs: Vec<_> = glyphs.filter(|(y, x0, x1, _)| y.is_finite() && x0.is_finite() && x1.is_finite() && x1 > x0).collect();
+    glyphs.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.total_cmp(&b.1)));
+    let mut out = Vec::new();
+    let mut first = 0;
+    while first < glyphs.len() {
+        let row = glyphs[first].0;
+        let end = first + glyphs[first..].iter().take_while(|g| g.0 == row).count();
+        let items = &glyphs[first..end];
+        let selected = items.iter().filter(|g| g.3);
+        let left = selected.clone().map(|g| g.1).fold(f64::INFINITY, f64::min);
+        let right = selected.map(|g| g.2).fold(f64::NEG_INFINITY, f64::max);
+        let mut cursor = left;
+        // Subtract unselected advances even when they overlap selected glyphs. Prefer
+        // a smaller clickable region over assigning another text cluster this link.
+        for (_, x0, x1, _) in items.iter().filter(|g| !g.3) {
+            if *x1 <= cursor || *x0 >= right {
+                continue;
+            }
+            if *x0 > cursor {
+                out.push((cursor, *x0));
+            }
+            cursor = cursor.max(*x1);
+        }
+        if cursor < right {
+            out.push((cursor, right));
+        }
+        first = end;
+    }
+    out
+}
+
+#[cfg(test)]
+mod visual_link_tests {
+    use super::{link_row, visual_link_spans};
+
+    #[test]
+    fn bidi_selection_does_not_cover_intervening_unselected_text() {
+        // Logical order differs from visual order: selected Hebrew at the right,
+        // then a selected digit at the left, with unselected digits between them.
+        let glyphs = [(0.0, 30.0, 40.0, true), (0.0, 0.0, 10.0, true), (0.0, 10.0, 20.0, false), (0.0, 20.0, 30.0, false)];
+        assert_eq!(visual_link_spans(glyphs.into_iter()), [(0.0, 10.0), (30.0, 40.0)]);
+    }
+
+    #[test]
+    fn letter_spacing_and_zero_width_marks_do_not_split_selected_text() {
+        let glyphs = [(0.0, 0.0, 10.0, true), (0.0, 12.0, 22.0, true), (0.0, 11.0, 11.0, false)];
+        assert_eq!(visual_link_spans(glyphs.into_iter()), [(0.0, 22.0)]);
+    }
+
+    #[test]
+    fn baseline_shifted_unselected_text_is_still_a_separator() {
+        let glyphs = [(link_row(false, 0.0), 0.0, 10.0, true), (link_row(false, -5.0), 10.0, 20.0, false), (link_row(false, 0.0), 20.0, 30.0, true)];
+        assert_eq!(visual_link_spans(glyphs.into_iter()), [(0.0, 10.0), (20.0, 30.0)]);
+    }
+
+    #[test]
+    fn overlapping_unselected_advance_is_not_clickable() {
+        let glyphs = [(0.0, 0.0, 20.0, true), (0.0, 10.0, 15.0, false), (0.0, 15.0, 25.0, true)];
+        assert_eq!(visual_link_spans(glyphs.into_iter()), [(0.0, 10.0), (15.0, 25.0)]);
+    }
+
+    #[test]
+    fn another_text_row_is_not_a_separator() {
+        let glyphs = [(0.0, 0.0, 10.0, true), (0.0, 20.0, 30.0, true), (link_row(true, 5.0), 10.0, 20.0, false)];
+        assert_eq!(visual_link_spans(glyphs.into_iter()), [(0.0, 30.0)]);
     }
 }
 
