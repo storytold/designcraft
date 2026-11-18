@@ -9,6 +9,16 @@ use super::{
 /// InDesign's corner size when a corner shape is set without an explicit radius.
 const INDESIGN_CORNER_SIZE: f64 = 12.0;
 
+/// Matches any element name, so `first_start` returns the root's start tag.
+#[derive(Clone, Copy)]
+struct AnyTag;
+
+impl craft_xml::Pat for AnyTag {
+    fn matches(self, _: &str) -> bool {
+        true
+    }
+}
+
 /// The viewBox size of an SVG whose root has a viewBox but no width or height (percentages count
 /// as none): such a file is placed at one viewBox unit to the point. A leading UTF-8 byte order
 /// mark is skipped. Only the root's start tag is read, and a file over 16 MiB gives no size. A
@@ -18,13 +28,7 @@ fn svg_viewbox_size(data: &[u8]) -> Option<(f64, f64)> {
     if data.len() > 16 << 20 || data.iter().find(|b| !b.is_ascii_whitespace()) != Some(&b'<') {
         return None;
     }
-    let text = craft_xml::to_utf8(data);
-    let mut events = craft_xml::Options::default().events(&text);
-    let root = loop {
-        if let craft_xml::Event::Start { name, attrs } = events.next().ok()?? {
-            break craft_xml::El { name, attrs, children: Vec::new() };
-        }
-    };
+    let root = craft_xml::Options::default().first_start(data, AnyTag)?;
     if root.local() != "svg" {
         return None;
     }
