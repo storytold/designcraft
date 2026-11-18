@@ -5239,15 +5239,28 @@ fn drop_cap_words_override_characters_and_keep_hebrew_marks() {
 #[test]
 fn drop_cap_words_end_at_whitespace_and_clamp_to_the_paragraph() {
     let props = designcraft_doc::ParaProps { drop_cap_lines: 2, drop_cap_words: 2, ..Default::default() };
-    for (text, expected) in
-        [("  one\t two\u{a0}three", "  one\t two".len()), ("one", 3), ("one two\n", 7), ("one־two three four", "one־two three".len())]
-    {
+    for (text, expected) in [
+        ("  one\t two\u{a0}three", "  one\t two".len()),
+        ("one", 3),
+        ("one two\n", 7),
+        ("one־two three four", "one־two three".len()),
+        ("  \t ", 0),
+        ("one\t ", 3),
+    ] {
         assert_eq!(super::drop_cap_end(text, 0..text.len(), &props, false), expected);
     }
     assert_eq!(super::drop_cap_end("one two", 0..7, &props, true), 0);
     let props = designcraft_doc::ParaProps { drop_cap_words: u32::MAX, ..props };
     let text = "word ".repeat(30);
     assert_eq!(super::drop_cap_end(&text, 0..text.len(), &props, false), 25 * 5 - 1);
+}
+
+#[test]
+fn unplaced_drop_word_is_reported_overset_from_the_paragraph_start() {
+    let para = ParaAttrs { drop_cap_words: Some(2), ..drop_cap(2, 0) };
+    let (d, sid, _) = drop_doc_in("one two body", Rect::new(0.0, 0.0, 300.0, 4.0), para);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert_eq!(cs.overset_at, Some(0));
 }
 
 #[test]

@@ -2283,7 +2283,8 @@ fn placement_overflow(input: PlacementOverflow<'_>) -> LinePlacement {
     if range.is_empty() && range.start >= story.text.len() {
         return LinePlacement::StoryComplete;
     }
-    out.overset_at = Some(glyphs.get(glyph_index).map(|g| g.byte).unwrap_or(range.start));
+    // Nothing of the paragraph placed: its drop cap, already split from `glyphs`, is overset too.
+    out.overset_at = Some(if glyph_index == 0 { range.start } else { glyphs.get(glyph_index).map_or(range.start, |g| g.byte) });
     LinePlacement::Overset
 }
 
@@ -5718,7 +5719,8 @@ fn drop_cap_end(text: &str, prange: Range<usize>, pp: &ParaProps, vertical: bool
                 }
                 None
             })
-            .unwrap_or(para.len())
+            // Out of text: end after the last word, so trailing spaces or a tab stay out.
+            .unwrap_or(word_end)
     } else {
         let n = pp.drop_cap_chars.min(MAX_DROP_CAP_CHARS) as usize;
         para.char_indices().nth(n).map_or(para.len(), |(i, _)| i)

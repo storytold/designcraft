@@ -6939,6 +6939,10 @@ fn drop_cap_fields(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, cn
             });
         ui.end_row();
     });
+    // Characters stays stored, so setting Words back to 0 restores it.
+    if field_or(d, "p.dropCapWords", &pv["dropCapWords"]).as_u64().unwrap_or(0) > 0 {
+        crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(lang, "Words overrides Characters. Set Words to 0 to use Characters.")).weak());
+    }
     for (label, key) in
         [("Align Left Edge", "dropCapAlignLeft"), ("Scale for Descenders", "dropCapScaleDescenders"), ("Keep Size", "dropCapKeepSize")]
     {
