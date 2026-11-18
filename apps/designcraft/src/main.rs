@@ -15,6 +15,7 @@
 
 #[cfg(target_os = "macos")]
 mod apple_events;
+mod clipboard_image;
 mod control_server;
 mod gpu;
 mod gpu_limits;
@@ -235,6 +236,9 @@ fn services() -> Services {
         applications: Some(Box::new(open_with::applications)),
         // Links › Reveal in Finder (Explorer, the file manager).
         reveal: Some(Box::new(designcraft_ui_egui::reveal::system_reveal)),
+        clipboard_image: Some(Box::new(clipboard_image::read)),
+        #[cfg(target_os = "macos")]
+        clipboard_change: Some(Box::new(clipboard_image::change_count)),
         #[cfg(target_os = "macos")]
         pointer: Some(Box::new(pointer::screen_position)),
         ..Default::default()

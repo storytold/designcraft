@@ -1,15 +1,11 @@
 //! Table fragments as native PowerPoint tables: the grid from the cells' edges, merged cells as
 //! spans, fills, edges as cell borders, and each cell's composed text.
 
-use std::fmt::Write as _;
-
 use designcraft_compose::{FrameText, PlacedCell, StrokeSeg, TableFrag};
 use designcraft_doc::StrokeType;
 use designcraft_geom::{Affine, Rect};
 
 use crate::slide::{Exporter, box_of};
-use crate::text::{paragraphs, seg_rect, segments};
-use crate::xml::{emu, emu_len};
 
 /// Sorted distinct values (within 0.25 pt).
 fn edges(mut v: Vec<f64>) -> Vec<f64> {
@@ -86,19 +82,47 @@ impl<'a> EdgeIndex<'a> {
     }
 }
 
-fn border(ex: &mut Exporter, tag: &str, s: Option<&StrokeSeg>, k: f64, opacity: f32) -> String {
-    let Some(s) = s.filter(|s| s.stroke.weight > 0.0) else { return format!("<a:{tag} w=\"0\"><a:noFill/></a:{tag}>") };
-    let st = &s.stroke;
-    let Some(c) = ex.color(&st.color, st.tint, opacity) else { return format!("<a:{tag} w=\"0\"><a:noFill/></a:{tag}>") };
-    let dash = match st.kind {
-        StrokeType::Dashed { .. } => "dash",
-        StrokeType::Dotted => "sysDot",
-        _ => "solid",
+fn model_border(ex: &Exporter, s: Option<&StrokeSeg>, k: f64, opacity: f32) -> craft_pptx::Line {
+    let Some(stroke) = s.filter(|s| s.stroke.weight > 0.0) else { return craft_pptx::Line::none() };
+    let Some(color) = ex.model_color(&stroke.stroke.color, stroke.stroke.tint, opacity) else { return craft_pptx::Line::none() };
+    let mut line = craft_pptx::Line::solid(color, stroke.stroke.weight * k);
+    line.cap = Some(craft_pptx::style::LineCap::Flat);
+    line.dash = match stroke.stroke.kind {
+        StrokeType::Dashed { .. } => Some(craft_pptx::style::Dash::Preset { name: "dash".into() }),
+        StrokeType::Dotted => Some(craft_pptx::style::Dash::Preset { name: "sysDot".into() }),
+        _ => None,
     };
-    format!(
-        "<a:{tag} w=\"{}\" cap=\"flat\" cmpd=\"sng\"><a:solidFill>{c}</a:solidFill><a:prstDash val=\"{dash}\"/></a:{tag}>",
-        emu_len(st.weight * k)
-    )
+    line
+}
+
+fn model_cell_text(ex: &mut Exporter, c: &PlacedCell, k: f64, opacity: f32) -> (craft_pptx::TextBody, [f64; 4]) {
+    let Some(frame) = c.text.frames.first() else {
+        let mut text = craft_pptx::TextBody::from_text("");
+        if let Some(paragraph) = text.paragraphs.first_mut() {
+            paragraph.end_props.lang = Some("en-US".into());
+        }
+        return (text, [0.0; 4]);
+    };
+    let segments = crate::text::segments(ex, &c.text, frame, &c.source, &[]);
+    let mut all = segments.first().cloned().unwrap_or_default();
+    for segment in segments.iter().skip(1) {
+        all.lines.extend(segment.lines.iter().cloned());
+        all.x1 = all.x1.max(segment.x1);
+    }
+    if all.lines.is_empty() {
+        let mut text = craft_pptx::TextBody::from_text("");
+        if let Some(paragraph) = text.paragraphs.first_mut() {
+            paragraph.end_props.lang = Some("en-US".into());
+        }
+        return (text, [0.0; 4]);
+    }
+    let bounds = crate::text::seg_rect(&all);
+    let bounds = Rect::new(bounds.x0 + c.origin.x, bounds.y0 + c.origin.y, bounds.x1 + c.origin.x, bounds.y1 + c.origin.y);
+    let margins =
+        [(bounds.x0 - c.rect.x0).max(0.0), (bounds.y0 - c.rect.y0).max(0.0), (c.rect.x1 - bounds.x1).max(0.0), (c.rect.y1 - bounds.y1).max(0.0)];
+    let mut body = crate::text::model_body(ex, &all, k, opacity, [0.0; 4]);
+    body.body = Default::default();
+    (body, margins)
 }
 
 fn table(ex: &mut Exporter, t: &TableFrag, m: Affine, k: f64, opacity: f32) {
@@ -145,100 +169,67 @@ fn table(ex: &mut Exporter, t: &TableFrag, m: Affine, k: f64, opacity: f32) {
     }
     let edges_of = EdgeIndex::new(&t.strokes);
     let id = ex.id();
-    let mut s = format!(
-        "<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id=\"{id}\" name=\"Table {id}\"/><p:cNvGraphicFramePr><a:graphicFrameLocks noGrp=\"1\"/></p:cNvGraphicFramePr><p:nvPr/></p:nvGraphicFramePr>\
-<p:xfrm><a:off x=\"{}\" y=\"{}\"/><a:ext cx=\"{}\" cy=\"{}\"/></p:xfrm><a:graphic><a:graphicData uri=\"http://schemas.openxmlformats.org/drawingml/2006/table\"><a:tbl><a:tblPr/><a:tblGrid>",
-        emu(xfrm.rect.x0),
-        emu(xfrm.rect.y0),
-        emu_len(xfrm.rect.width()),
-        emu_len(xfrm.rect.height())
-    );
-    for w in xs.windows(2) {
-        let _ = write!(s, "<a:gridCol w=\"{}\"/>", emu_len((w[1] - w[0]) * k));
-    }
-    s.push_str("</a:tblGrid>");
-    for r in 0..nr {
-        let h = ys.get(r + 1).zip(ys.get(r)).map_or(0.0, |(b, a)| b - a);
-        let _ = write!(s, "<a:tr h=\"{}\">", emu_len(h * k));
+    let mut model = craft_pptx::table::Table {
+        cols: xs.windows(2).map(|w| (w[1] - w[0]) * k).collect(),
+        rows: ys
+            .windows(2)
+            .map(|w| craft_pptx::table::Row { height: (w[1] - w[0]) * k, cells: vec![craft_pptx::table::Cell::default(); nc] })
+            .collect(),
+        style: String::new(),
+        first_row: false,
+        first_col: false,
+        last_row: false,
+        last_col: false,
+        band_row: false,
+        band_col: false,
+        ..Default::default()
+    };
+    for row in 0..nr {
         for col in 0..nc {
-            let at = r * nc + col;
-            let (hm, vm) = covered.get(at).copied().unwrap_or((false, false));
-            if hm || vm {
-                let _ = write!(
-                    s,
-                    "<a:tc{}{}><a:txBody><a:bodyPr/><a:lstStyle/><a:p><a:endParaRPr lang=\"en-US\" dirty=\"0\"/></a:p></a:txBody><a:tcPr/></a:tc>",
-                    if hm { " hMerge=\"1\"" } else { "" },
-                    if vm { " vMerge=\"1\"" } else { "" }
-                );
+            let at = row * nc + col;
+            let Some(cell) = model.rows.get_mut(row).and_then(|r| r.cells.get_mut(col)) else { continue };
+            let (horizontal, vertical) = covered.get(at).copied().unwrap_or((false, false));
+            if horizontal || vertical {
+                cell.h_merge = horizontal;
+                cell.v_merge = vertical;
                 continue;
             }
-            let (gs, rs) = span.get(at).copied().unwrap_or((1, 1));
-            let mut attrs = String::new();
-            if gs > 1 {
-                let _ = write!(attrs, " gridSpan=\"{gs}\"");
-            }
-            if rs > 1 {
-                let _ = write!(attrs, " rowSpan=\"{rs}\"");
-            }
-            let Some(c) = origin.get(at).copied().flatten() else {
-                let _ = write!(
-                    s,
-                    "<a:tc{attrs}><a:txBody><a:bodyPr/><a:lstStyle/><a:p><a:endParaRPr lang=\"en-US\" dirty=\"0\"/></a:p></a:txBody><a:tcPr marL=\"0\" marR=\"0\" marT=\"0\" marB=\"0\"><a:noFill/></a:tcPr></a:tc>"
-                );
+            let (grid_span, row_span) = span.get(at).copied().unwrap_or((1, 1));
+            cell.grid_span = u32::try_from(grid_span).unwrap_or(u32::MAX);
+            cell.row_span = u32::try_from(row_span).unwrap_or(u32::MAX);
+            let Some(placed) = origin.get(at).copied().flatten() else {
+                cell.fill = Some(craft_pptx::Fill::None);
+                cell.margins = Some([0.0; 4]);
                 continue;
             };
-            s.push_str(&cell(ex, c, &attrs, &edges_of, k, opacity));
-        }
-        s.push_str("</a:tr>");
-    }
-    s.push_str("</a:tbl></a:graphicData></a:graphic></p:graphicFrame>");
-    ex.out.push_str(&s);
-}
-
-fn cell(ex: &mut Exporter, c: &PlacedCell, attrs: &str, edges: &EdgeIndex, k: f64, opacity: f32) -> String {
-    let rc = c.rect;
-    let mut body = String::new();
-    let mut margins = [0.0f64; 4];
-    if let Some(cft) = c.text.frames.first() {
-        let segs = segments(ex, &c.text, cft, &c.source, &[]);
-        // A cell holds one box: its lines, from the first segment's slot.
-        let mut all = segs.first().cloned().unwrap_or_default();
-        for sg in segs.iter().skip(1) {
-            all.lines.extend(sg.lines.iter().cloned());
-            all.x1 = all.x1.max(sg.x1);
-        }
-        if !all.lines.is_empty() {
-            let r = seg_rect(&all);
-            let r = Rect::new(r.x0 + c.origin.x, r.y0 + c.origin.y, r.x1 + c.origin.x, r.y1 + c.origin.y);
-            margins = [(r.x0 - rc.x0).max(0.0), (r.y0 - rc.y0).max(0.0), (rc.x1 - r.x1).max(0.0), (rc.y1 - r.y1).max(0.0)];
-            let local = Rect::new(r.x0 - c.origin.x, r.y0 - c.origin.y, r.x1 - c.origin.x, r.y1 - c.origin.y);
-            body = paragraphs(ex, &all, local, k, opacity);
+            let (text, [left, top, right, bottom]) = model_cell_text(ex, placed, k, opacity);
+            cell.text = text;
+            cell.margins = Some([left * k, right * k, top * k, bottom * k]);
+            cell.fill = Some(
+                placed
+                    .fill
+                    .as_ref()
+                    .and_then(|(swatch, tint)| ex.model_color(swatch, *tint, opacity))
+                    .map_or(craft_pptx::Fill::None, craft_pptx::Fill::solid),
+            );
+            let bounds = placed.rect;
+            let edge = |side: char| {
+                let (a, b) = match side {
+                    'L' => ((bounds.x0, bounds.y0), (bounds.x0, bounds.y1)),
+                    'R' => ((bounds.x1, bounds.y0), (bounds.x1, bounds.y1)),
+                    'T' => ((bounds.x0, bounds.y0), (bounds.x1, bounds.y0)),
+                    _ => ((bounds.x0, bounds.y1), (bounds.x1, bounds.y1)),
+                };
+                edges_of.stroke(a, b)
+            };
+            cell.borders = ['L', 'R', 'T', 'B'].map(|side| Some(model_border(ex, edge(side), k, opacity)));
         }
     }
-    if body.is_empty() {
-        body = "<a:p><a:endParaRPr lang=\"en-US\" dirty=\"0\"/></a:p>".into();
-    }
-    let [l, tp, r, b] = margins.map(|v| emu_len(v * k));
-    let ln = |side: char| -> ((f64, f64), (f64, f64)) {
-        match side {
-            'L' => ((rc.x0, rc.y0), (rc.x0, rc.y1)),
-            'R' => ((rc.x1, rc.y0), (rc.x1, rc.y1)),
-            'T' => ((rc.x0, rc.y0), (rc.x1, rc.y0)),
-            _ => ((rc.x0, rc.y1), (rc.x1, rc.y1)),
-        }
-    };
-    let mut pr = format!("<a:tcPr marL=\"{l}\" marR=\"{r}\" marT=\"{tp}\" marB=\"{b}\">");
-    for (tag, side) in [("lnL", 'L'), ("lnR", 'R'), ("lnT", 'T'), ("lnB", 'B')] {
-        let (a, bb) = ln(side);
-        let seg = edges.stroke(a, bb);
-        pr.push_str(&border(ex, tag, seg, k, opacity));
-    }
-    match c.fill.as_ref().and_then(|(sw, tint)| ex.color(sw, *tint, opacity)) {
-        Some(col) => {
-            let _ = write!(pr, "<a:solidFill>{col}</a:solidFill>");
-        }
-        None => pr.push_str("<a:noFill/>"),
-    }
-    pr.push_str("</a:tcPr>");
-    format!("<a:tc{attrs}><a:txBody><a:bodyPr/><a:lstStyle/>{body}</a:txBody>{pr}</a:tc>")
+    ex.native_shapes.push(craft_pptx::Shape {
+        id: craft_pptx::ShapeId(id),
+        name: format!("Table {id}"),
+        xfrm: Some(craft_pptx::Xfrm::new(xfrm.rect.x0, xfrm.rect.y0, xfrm.rect.width(), xfrm.rect.height())),
+        kind: craft_pptx::ShapeKind::Table(model),
+        ..Default::default()
+    });
 }
